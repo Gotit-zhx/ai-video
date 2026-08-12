@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="本地 Chrome Profile 管理器">
+  <title>Chrome Profile 管理器</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true"><span></span><i></i><b></b></div>
+        <div>
+          <strong>PROFILE DESK</strong>
+          <small>Chrome 本地账号工作台</small>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="local-badge"><i></i>仅在本机运行</span>
+        <button id="refresh-button" class="ghost-button" type="button">刷新列表</button>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">PROFILE CONTROL ROOM</p>
+          <h1>把浏览器身份，<em>排成一张清单。</em></h1>
+          <p class="hero-description">每个 Chrome Profile 都保留自己的登录状态。这里负责识别、打开和记录；密码、Cookie 与登录动作留在 Chrome 里。</p>
+        </div>
+        <div class="hero-orbit" aria-label="Profile 统计">
+          <div class="orbit-ring"><span id="orbit-number">0</span><small>PROFILES</small></div>
+          <div class="orbit-note"><span class="signal-dot"></span><strong id="hero-status">正在读取 Chrome</strong><small id="hero-status-detail">请稍候</small></div>
+        </div>
+      </section>
+
+      <section class="control-strip" aria-label="本地设置">
+        <div class="control-field directory-field">
+          <span class="field-label">CHROME DATA DIRECTORY</span>
+          <strong id="data-directory">正在读取…</strong>
+        </div>
+        <div class="control-field launch-field">
+          <label class="field-label" for="launch-url">打开 Profile 时访问</label>
+          <input id="launch-url" type="url" placeholder="https://gemini.google.com/">
+        </div>
+        <button id="save-url-button" class="small-button" type="button">保存网址</button>
+        <button id="choose-directory-button" class="small-button secondary" type="button">更换目录</button>
+        <button id="open-directory-button" class="icon-button" type="button" aria-label="打开 Chrome 数据目录" title="打开 Chrome 数据目录">↗</button>
+      </section>
+
+      <div id="scan-warning" class="scan-warning" hidden>
+        <span class="warning-icon">!</span>
+        <div><strong>还没有读到 Chrome Profile</strong><p id="scan-warning-copy">请确认 Chrome 已安装，或选择正确的 User Data 文件夹。</p></div>
+        <button id="warning-directory-button" class="text-button" type="button">选择目录</button>
+      </div>
+
+      <section class="workspace-grid">
+        <aside class="side-panel">
+          <div class="side-heading">
+            <div><p class="eyebrow">TODAY / MANUAL LOG</p><h2>今天的使用记录</h2></div>
+            <span class="count-chip" id="usage-total">0</span>
+          </div>
+          <div class="usage-meter"><span id="usage-meter-bar"></span></div>
+          <p class="side-copy">“记录一次使用”是人工记录，不会驱动自动登录、自动登出或账号轮换。</p>
+          <div class="stats-list">
+            <div><span>发现 Profile</span><strong id="profile-count">0</strong></div>
+            <div><span>已绑定账号</span><strong id="configured-count">0</strong></div>
+            <div><span>未绑定账号</span><strong id="unconfigured-count">0</strong></div>
+          </div>
+          <button id="reset-counts-button" class="reset-button" type="button">清空今天的记录</button>
+          <div class="privacy-card">
+            <span class="privacy-icon">⌁</span>
+            <div><strong>凭据留在 Chrome</strong><p>工具只读 Profile 名称与本地状态摘要，不读取密码或 Cookie。</p></div>
+          </div>
+        </aside>
+
+        <section class="profiles-section">
+          <div class="section-heading">
+            <div><p class="eyebrow">YOUR PROFILES</p><h2>Chrome Profile</h2></div>
+            <span id="profile-summary" class="section-summary">0 个 Profile</span>
+          </div>
+          <div id="empty-state" class="empty-state" hidden>
+            <div class="empty-mark">+</div>
+            <h3>还没有可管理的 Profile</h3>
+            <p>在 Chrome 里先创建个人资料并登录，然后点击刷新列表。</p>
+            <button id="empty-directory-button" class="primary-button" type="button">选择 Chrome 目录</button>
+          </div>
+          <div id="profile-grid" class="profile-grid" aria-live="polite"></div>
+        </section>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <span>LOCAL PROFILE DESK <i></i> v0.1</span>
+      <span>用于管理你有权限使用的 Chrome Profile</span>
+    </footer>
+  </div>
+
+  <dialog id="edit-dialog" class="edit-dialog">
+    <form id="edit-form" method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">PROFILE LABEL</p><h2>编辑 Profile</h2></div><button id="close-dialog" class="close-button" type="button" aria-label="关闭">×</button></div>
+      <input id="edit-directory" type="hidden">
+      <label><span>管理名称</span><input id="edit-alias" maxlength="80" placeholder="例如：Gemini 01"></label>
+      <label><span>备注</span><textarea id="edit-note" maxlength="240" rows="3" placeholder="记录用途或其他提示"></textarea></label>
+      <div id="edit-error" class="form-error" hidden></div>
+      <div class="dialog-actions"><button id="cancel-edit" class="ghost-button" type="button">取消</button><button class="primary-button" type="submit">保存名称</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="./app.js"></script>
+</body>
+</html>

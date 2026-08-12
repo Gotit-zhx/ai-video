@@ -1,0 +1,75 @@
+{
+  "name": "heyi-automation-agent",
+  "version": "0.1.0",
+  "description": "赫逸自动化助手 - 连接赫逸智能化平台与本机浏览器",
+  "main": "src/main.js",
+  "author": "赫逸智能化",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:debug": "electron . --remote-debugging-port=9333",
+    "test": "node --test test/*.test.js",
+    "icons": "node scripts/build-icons.js",
+    "pack": "electron-builder --dir",
+    "dist:win": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "playwright-core": "^1.62.0",
+    "png-to-ico": "^3.0.2",
+    "sharp": "^0.35.3"
+  },
+  "build": {
+    "appId": "com.heyi.automation.agent",
+    "productName": "赫逸自动化助手",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "bundled-skills/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "bundled-skills",
+        "to": "bundled-skills"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Heyi-Automation-Agent-${version}-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "赫逸自动化助手"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.business",
+      "artifactName": "Heyi-Automation-Agent-${version}-${arch}.${ext}"
+    }
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "ws": "^8.21.1"
+  }
+}

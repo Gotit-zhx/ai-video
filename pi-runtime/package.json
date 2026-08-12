@@ -1,0 +1,16 @@
+{
+  "name": "heyi-pi-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.82.1",
+    "@earendil-works/pi-ai": "0.82.1",
+    "jsonrepair": "3.15.0",
+    "typebox": "^1.0.60",
+    "undici": "7.16.0"
+  }
+}

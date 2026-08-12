@@ -1,0 +1,4 @@
+interface:
+  display_name: "Yue Bill Parallel"
+  short_description: "Run three bill workers with a five-session hard cap"
+  default_prompt: "Use $yue-bill-parallel-10 to export monthly bills with three workers and no more than five active or preserved Feikua store sessions."

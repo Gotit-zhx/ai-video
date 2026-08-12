@@ -1,0 +1,27 @@
+target/
+.idea/
+.vscode/
+*.iml
+*.log
+.env
+.DS_Store
+
+# Local dependencies and packaged desktop builds
+**/node_modules/
+automation-agent/build/
+automation-agent/release*/
+
+# Local Codex inspection artifacts
+/.codex-*/
+
+# Generated model outputs and media experiments
+/minimax_h3*/
+
+# Runtime caches and downloaded browser drivers
+**/__pycache__/
+**/*.pyc
+**/drivers/*/chromedriver-win64/
+
+# Local conversion packages and visual QA captures
+/*.zip
+automation-agent/*ui-check*.png

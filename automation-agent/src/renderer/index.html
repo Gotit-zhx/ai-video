@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>赫逸自动化助手</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main id="setup-view" class="setup-view">
+    <section class="setup-brand">
+      <div class="brand-mark" aria-hidden="true">
+        <span>H</span><i></i>
+      </div>
+      <div class="brand-name">
+        <strong>赫逸自动化助手</strong>
+        <span>HEYI AUTOMATION AGENT</span>
+      </div>
+      <div class="setup-copy">
+        <p class="section-code">本机执行程序</p>
+        <h1>让平台任务，<br>在这台电脑上执行。</h1>
+        <p>连接赫逸智能化平台与本机浏览器。飞跨和谷歌浏览器都由这台电脑执行，过程与结果实时回传平台。</p>
+      </div>
+      <ol class="setup-route" aria-label="连接步骤">
+        <li class="active"><span>1</span><div><strong>连接平台</strong><small>确认任务从哪里下发</small></div></li>
+        <li><span>2</span><div><strong>检测双执行器</strong><small>飞跨 + 谷歌浏览器</small></div></li>
+        <li><span>3</span><div><strong>开始接单</strong><small>执行任务并回传结果</small></div></li>
+      </ol>
+    </section>
+
+    <section class="setup-panel">
+      <div class="setup-card">
+        <span class="setup-step">首次使用</span>
+        <h2>连接这台电脑</h2>
+        <p>先确认平台和本机双执行器是否连通。正式配对入口将在平台生成一次性配对码。</p>
+        <form id="setup-form">
+          <label>
+            <span>这台电脑的名称</span>
+            <input id="setup-agent-name" maxlength="60" placeholder="例如：运营一组电脑">
+          </label>
+          <label>
+            <span>赫逸平台地址</span>
+            <input id="setup-platform-url" type="url" value="http://localhost:8080" required>
+          </label>
+          <div id="setup-error" class="inline-error" hidden></div>
+          <button type="submit" class="primary-action">
+            <span>进入本机试运行</span>
+            <b>→</b>
+          </button>
+        </form>
+        <p class="setup-note"><i></i> 本机试运行不会自动打开或操作任何店铺</p>
+      </div>
+    </section>
+  </main>
+
+  <main id="agent-view" class="agent-shell" hidden>
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-mark small" aria-hidden="true"><span>H</span><i></i></div>
+        <div>
+          <strong>赫逸自动化助手</strong>
+          <span>本机执行程序</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="header-state" class="header-state"><i></i>正在检查</span>
+        <button id="settings-button" class="quiet-action" type="button">设置</button>
+      </div>
+    </header>
+
+    <div class="agent-content">
+      <section class="connection-path" aria-labelledby="connection-title">
+        <div class="path-heading">
+          <div>
+            <span class="section-code">本机连接</span>
+            <h1 id="connection-title">连接正常，等待平台任务</h1>
+          </div>
+          <button id="probe-button" class="quiet-action" type="button">重新检测</button>
+        </div>
+        <div class="path-rail">
+          <article class="path-node" data-node="platform">
+            <span class="node-light"></span>
+            <div><small>任务来源</small><strong>赫逸平台</strong><p id="platform-state">正在连接</p></div>
+          </article>
+          <div class="path-line"><span></span></div>
+          <article class="path-node" data-node="agent">
+            <span class="node-light"></span>
+            <div><small>本机</small><strong>自动化助手</strong><p id="agent-state">正在启动</p></div>
+          </article>
+          <div class="path-line"><span></span></div>
+          <div class="executor-cluster" aria-label="双浏览器执行器">
+            <div class="executor-cluster-heading">
+              <span>双执行器</span>
+              <small id="browser-state">正在检测</small>
+            </div>
+            <div class="executor-cluster-grid">
+              <article class="path-node compact-node" data-node="feikua">
+                <span class="node-light"></span>
+                <div><small>店铺浏览器</small><strong>飞跨</strong><p id="feikua-state">正在检测</p></div>
+              </article>
+              <article class="path-node compact-node" data-node="browser-act">
+                <span class="node-light"></span>
+                <div><small>网页自动化</small><strong>谷歌浏览器</strong><p id="browser-act-state">正在检测</p></div>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="control-grid">
+        <article class="readiness-card">
+          <div class="readiness-top">
+            <span id="readiness-orbit" class="readiness-orbit"><i></i></span>
+            <div>
+              <span class="section-code">执行状态</span>
+              <h2 id="readiness-title">准备接收任务</h2>
+              <p id="readiness-copy">平台下发任务后会显示在右侧。</p>
+            </div>
+          </div>
+          <button id="accept-jobs-button" class="accept-action" type="button">
+            <span class="toggle-track"><i></i></span>
+            <span id="accept-jobs-label">正在接收任务</span>
+          </button>
+          <dl class="device-facts">
+            <div><dt>设备名称</dt><dd id="device-name">—</dd></div>
+            <div><dt>运行环境</dt><dd id="device-platform">—</dd></div>
+            <div><dt>助手版本</dt><dd id="device-version">—</dd></div>
+          </dl>
+        </article>
+
+        <article class="task-card">
+          <div class="card-heading">
+            <div><span class="section-code">当前任务</span><h2>执行队列</h2></div>
+            <span id="task-count" class="count-tag">0 个任务</span>
+          </div>
+          <div id="task-list" class="task-list">
+            <div class="task-empty">
+              <span aria-hidden="true">↘</span>
+              <strong>等待平台下发任务</strong>
+              <p>任务到达后，助手会按任务选择飞跨或谷歌浏览器，再开始操作。</p>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="account-pool-card" aria-labelledby="account-pool-title">
+        <div class="pool-heading">
+          <div class="pool-title-block">
+            <span class="section-code">账号调度</span>
+            <h2 id="account-pool-title">账号库</h2>
+            <p>账号导入一次即可。任务到达后，助手只启动被指定的账号。</p>
+          </div>
+          <div class="pool-heading-actions">
+            <div class="pool-state-copy"><span id="pool-state-label">等待平台任务</span><small id="pool-configured-count">已导入 0 个账号</small></div>
+            <span id="pool-count" class="pool-capacity">0<small>/5</small></span>
+            <button id="pool-add-button" class="quiet-action pool-add" type="button">＋ 导入账号</button>
+          </div>
+        </div>
+        <div id="pool-error" class="inline-error" hidden></div>
+        <div class="pool-workspace">
+          <div class="pool-stage">
+            <div class="pool-stage-label"><span>已导入账号</span><small><i aria-hidden="true"></i>任务执行时每 3 秒同步状态</small></div>
+            <div id="pool-enrollment" class="pool-enrollment" hidden></div>
+            <div id="pool-slots" class="pool-slots"></div>
+          </div>
+          <aside class="pool-operator">
+            <div class="operator-head">
+              <span class="operator-pulse"></span>
+              <div><strong>账号调度</strong><small id="pool-flow-status">尚未启动</small></div>
+            </div>
+            <div id="pool-discovered-accounts" class="pool-discovered-accounts" hidden></div>
+            <div class="pool-queue-line">
+              <div><span>待命</span><small id="pool-queue-count">0 个</small></div>
+              <div id="pool-waiting" class="pool-waiting"><em>尚未配置候补账号</em></div>
+            </div>
+            <div id="pool-auth-required" class="pool-auth-required" hidden></div>
+            <form id="pool-command-form" class="pool-command-form">
+              <label for="pool-command">关闭账号</label>
+              <div><input id="pool-command" placeholder="关闭 user@example.com"><button type="submit">关闭并补位</button></div>
+            </form>
+          </aside>
+        </div>
+      </section>
+
+      <section class="lower-grid">
+        <article class="environment-card">
+          <div class="card-heading">
+            <div><span class="section-code">本机环境</span><h2>飞跨连接</h2></div>
+            <span id="store-count" class="count-tag muted">未检测</span>
+          </div>
+          <div id="feikua-detail" class="environment-result">
+            <span class="environment-icon">F</span>
+            <div><strong>正在检测飞跨客户端</strong><p>请稍候</p></div>
+            <i class="state-dot"></i>
+          </div>
+        </article>
+
+        <article class="environment-card">
+          <div class="card-heading">
+            <div><span class="section-code">网页自动化</span><h2>谷歌浏览器</h2></div>
+            <span id="browser-act-count" class="count-tag muted">未检测</span>
+          </div>
+          <div id="browser-act-detail" class="environment-result">
+            <span class="environment-icon">B</span>
+            <div><strong>正在检测谷歌浏览器</strong><p>请稍候</p></div>
+            <i class="state-dot"></i>
+          </div>
+        </article>
+
+        <article class="event-card">
+          <div class="card-heading">
+            <div><span class="section-code">最近动态</span><h2>运行记录</h2></div>
+            <button id="open-logs-button" class="text-action" type="button">打开日志目录</button>
+          </div>
+          <ul id="event-list" class="event-list"></ul>
+        </article>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="settings-dialog" class="settings-dialog">
+    <form id="settings-form" method="dialog">
+      <div class="dialog-heading">
+        <div><span class="section-code">助手设置</span><h2>本机连接</h2></div>
+        <button id="settings-close" class="close-action" type="button" aria-label="关闭">×</button>
+      </div>
+      <label><span>设备名称</span><input id="settings-agent-name" maxlength="60"></label>
+      <label><span>平台地址</span><input id="settings-platform-url" type="url" required></label>
+      <div class="settings-section browser-act-connect">
+        <div><span class="section-code">谷歌浏览器连接</span><strong id="browser-act-auth-state">正在检测</strong></div>
+        <div class="browser-act-connect-row">
+          <div class="browser-act-auth-copy">
+            <i id="browser-act-auth-dot" aria-hidden="true"></i>
+            <div><strong id="browser-act-auth-title">检查本机授权</strong><small id="browser-act-auth-detail">连接后自动识别这台电脑上的可用环境</small></div>
+          </div>
+          <button id="browser-act-auth-button" class="primary-action compact" type="button">连接谷歌浏览器</button>
+        </div>
+        <div class="browser-act-site-row">
+          <small>执行服务官网：browseract.com；Google 登录资料仍只保存在本机。</small>
+          <button id="browser-act-website-button" class="text-action" type="button">打开执行服务网站 ↗</button>
+        </div>
+        <div id="browser-act-auth-error" class="inline-error" hidden></div>
+      </div>
+      <div class="settings-section">
+            <div><span class="section-code">浏览器执行</span><strong>双执行器默认策略</strong></div>
+        <label><span>未指定时的默认执行器</span><select id="settings-executor-preference"><option value="AUTO">按任务自动选择</option><option value="FEIKUA">优先飞跨</option><option value="BROWSER_ACT">优先谷歌浏览器</option></select></label>
+        <label><span>浏览器实例</span><select id="settings-browser-id"><option value="">请先安装或创建浏览器实例</option></select></label>
+        <div class="settings-pair">
+          <label><span>网络线路</span><select id="settings-proxy-policy"><option value="DIRECT">直连</option><option value="PRECONFIGURED">使用实例预配置代理</option></select></label>
+          <label><span>国家/地区代码</span><input id="settings-required-region" maxlength="20" placeholder="例如：PH、MY"></label>
+        </div>
+        <small>这里只设置本机默认实例；管理员可以为每个 Skill 单独指定。代理仅作用于对应浏览器实例。</small>
+      </div>
+      <div class="settings-section account-pool-settings">
+        <div><span class="section-code">Google 账号池</span><strong>多席管理</strong></div>
+        <div class="settings-pair pool-setting-row">
+          <label><span>活跃席位数</span><input id="settings-pool-size" type="number" min="1" max="10" value="5"></label>
+          <label><span>启动页面</span><input id="settings-pool-url" type="url" value="https://myaccount.google.com/"></label>
+        </div>
+        <div class="pool-account-toolbar">
+          <span>账号与独立谷歌浏览器环境</span>
+          <button id="pool-account-add" class="text-action" type="button">＋ 添加账号</button>
+        </div>
+        <div id="pool-account-rows" class="pool-account-rows"></div>
+        <small>每个账号必须绑定不同的谷歌浏览器环境。选择登录来源 Profile 后，助手会验证实际邮箱；会话失效时优先复用 Profile，只有复用失败才需要重新登录。</small>
+      </div>
+      <p>修改后会重新检测连接，不会影响飞跨中的店铺资料，也不会修改整台电脑的网络。</p>
+      <div id="settings-error" class="inline-error" hidden></div>
+      <div class="dialog-actions">
+        <button id="reset-button" class="danger-action" type="button">解除本机连接</button>
+        <button class="primary-action compact" type="submit">保存设置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./app.js"></script>
+</body>
+</html>

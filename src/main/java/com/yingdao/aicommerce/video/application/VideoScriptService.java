@@ -1,0 +1,485 @@
+package com.yingdao.aicommerce.video.application;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.yingdao.aicommerce.auth.PlatformPrincipal;
+import com.yingdao.aicommerce.common.exception.BusinessException;
+import com.yingdao.aicommerce.video.domain.VideoScript;
+import com.yingdao.aicommerce.video.domain.VideoScriptShot;
+import com.yingdao.aicommerce.video.mapper.VideoScriptMapper;
+import com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
+import tools.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+
+@Service
+public class VideoScriptService {
+
+    private static final long MAX_VIDEO_BYTES = 100L * 1024 * 1024;
+    private static final Set<String> VIDEO_EXTENSIONS = Set.of("mp4", "mov", "m4v", "webm", "avi", "mkv");
+
+    private final Path storageRoot;
+    private final VideoScriptMapper scriptMapper;
+    private final VideoScriptShotMapper shotMapper;
+    private final VideoScriptAnalysisProcessor processor;
+    private final ObjectMapper objectMapper;
+
+    public VideoScriptService(
+            @Value("${app.video-script-storage:/data/video-scripts}") String storageRoot,
+            VideoScriptMapper scriptMapper,
+            VideoScriptShotMapper shotMapper,
+            VideoScriptAnalysisProcessor processor,
+            ObjectMapper objectMapper
+    ) {
+        this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
+        this.scriptMapper = scriptMapper;
+        this.shotMapper = shotMapper;
+        this.processor = processor;
+        this.objectMapper = objectMapper;
+    }
+
+    public VideoScript createAnalysis(
+            MultipartFile video,
+            String name,
+            String targetMarket,
+            String requirements,
+            PlatformPrincipal principal
+    ) {
+        VideoScript blocking = currentBlocking(principal);
+        if (blocking != null) {
+            throw new BusinessException(
+                    HttpStatus.CONFLICT,
+                    "当前视频还在拆解或等待重试，请先完成当前任务"
+            );
+        }
+        validateVideo(video);
+        String id = UUID.randomUUID().toString();
+        String originalName = safeFileName(video.getOriginalFilename());
+        String extension = extension(originalName);
+        Path directory = storageRoot
+                .resolve(principal.organizationId())
+                .resolve(id)
+                .normalize();
+        if (!directory.startsWith(storageRoot)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频存储路径无效");
+        }
+        Path source = directory.resolve("source." + extension);
+        try {
+            Files.createDirectories(directory);
+            video.transferTo(source);
+        } catch (IOException exception) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "视频上传保存失败");
+        }
+
+        String normalizedName = name == null || name.isBlank()
+                ? originalName.replaceFirst("\\.[^.]+$", "")
+                : name.trim();
+        VideoScript script = new VideoScript(
+                id,
+                principal.organizationId(),
+                normalizedName.substring(0, Math.min(normalizedName.length(), 160)),
+                "VIDEO_ANALYSIS",
+                originalName,
+                source.toString(),
+                video.getContentType(),
+                video.getSize(),
+                trimTo(targetMarket, 80),
+                trimTo(requirements, 4000),
+                principal.userId()
+        );
+        try {
+            scriptMapper.insert(script);
+        } catch (DuplicateKeyException exception) {
+            deleteQuietly(directory);
+            throw new BusinessException(
+                    HttpStatus.CONFLICT,
+                    "当前视频还在拆解或等待重试，请先完成当前任务"
+            );
+        }
+        processor.analyze(id);
+        return script;
+    }
+
+    public VideoScript currentBlocking(PlatformPrincipal principal) {
+        return scriptMapper.selectOne(
+                new LambdaQueryWrapper<VideoScript>()
+                        .eq(VideoScript::getOrganizationId, principal.organizationId())
+                        .eq(VideoScript::getCreatedBy, principal.userId())
+                        .in(VideoScript::getStatus, "QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING", "FAILED")
+                        .orderByDesc(VideoScript::getUpdatedAt)
+                        .last("LIMIT 1")
+        );
+    }
+
+    public VideoScript retry(String id, PlatformPrincipal principal) {
+        VideoScript script = requireOwnedScript(id, principal);
+        if (!"FAILED".equals(script.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "只有拆解失败的任务可以重试");
+        }
+        script.prepareRetry();
+        scriptMapper.updateById(script);
+        processor.analyze(script.getId());
+        return script;
+    }
+
+    public VideoScript reanalyze(String id, PlatformPrincipal principal) {
+        VideoScript script = requireOwnedScript(id, principal);
+        if (!"READY".equals(script.getStatus()) || !"VIDEO_ANALYSIS".equals(script.getSourceType())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "只有已完成的视频拆解脚本可以重新精拆");
+        }
+        VideoScript blocking = currentBlocking(principal);
+        if (blocking != null && !blocking.getId().equals(script.getId())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前已有一条视频拆解任务待处理，请完成后再重新精拆");
+        }
+        try {
+            script.prepareReanalysis();
+            scriptMapper.updateById(script);
+        } catch (DuplicateKeyException exception) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前已有一条视频拆解任务正在运行");
+        }
+        processor.analyze(script.getId());
+        return script;
+    }
+
+    public void delete(String id, PlatformPrincipal principal) {
+        VideoScript script = requireOwnedScript(id, principal);
+        if (Set.of("QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING").contains(script.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "视频正在拆解，完成或失败后才能删除");
+        }
+        scriptMapper.deleteById(script.getId());
+        if (script.getSourceFilePath() != null && !script.getSourceFilePath().isBlank()) {
+            Path source = Path.of(script.getSourceFilePath()).toAbsolutePath().normalize();
+            Path directory = source.getParent();
+            if (directory != null && directory.startsWith(storageRoot)) {
+                deleteQuietly(directory);
+            }
+        }
+    }
+
+    public List<VideoScript> list(PlatformPrincipal principal) {
+        return scriptMapper.selectList(
+                new LambdaQueryWrapper<VideoScript>()
+                        .eq(VideoScript::getOrganizationId, principal.organizationId())
+                        .orderByDesc(VideoScript::getUpdatedAt)
+                        .last("LIMIT 100")
+        );
+    }
+
+    public VideoScriptDetail detail(String id, PlatformPrincipal principal) {
+        VideoScript script = requireScript(id, principal.organizationId());
+        List<VideoScriptShot> shots = shotMapper.selectList(
+                new LambdaQueryWrapper<VideoScriptShot>()
+                        .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
+                        .eq(VideoScriptShot::getScriptId, id)
+                        .orderByAsc(VideoScriptShot::getSequenceNo)
+        );
+        return new VideoScriptDetail(script, shots);
+    }
+
+    public ShotPreview shotPreview(String scriptId, String shotId, PlatformPrincipal principal) {
+        VideoScript script = requireScript(scriptId, principal.organizationId());
+        VideoScriptShot shot = shotMapper.selectOne(
+                new LambdaQueryWrapper<VideoScriptShot>()
+                        .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
+                        .eq(VideoScriptShot::getScriptId, scriptId)
+                        .eq(VideoScriptShot::getId, shotId)
+                        .last("LIMIT 1")
+        );
+        if (shot == null) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "分镜不存在");
+        }
+        if (script.getSourceFilePath() == null || script.getSourceFilePath().isBlank()) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "该脚本没有视频抽帧预览");
+        }
+        Path source = Path.of(script.getSourceFilePath()).toAbsolutePath().normalize();
+        Path frameDirectory = source.getParent() == null ? null : source.getParent().resolve("frames").normalize();
+        if (frameDirectory == null || !frameDirectory.startsWith(storageRoot) || !Files.isDirectory(frameDirectory)) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "视频抽帧预览不存在");
+        }
+        List<Path> frames;
+        try (var files = Files.list(frameDirectory)) {
+            frames = files
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jpg"))
+                    .sorted(Comparator.naturalOrder())
+                    .toList();
+        } catch (IOException exception) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取分镜预览失败");
+        }
+        if (frames.isEmpty()) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "视频抽帧预览不存在");
+        }
+
+        List<VideoScriptShot> allShots = shotMapper.selectList(
+                new LambdaQueryWrapper<VideoScriptShot>()
+                        .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
+                        .eq(VideoScriptShot::getScriptId, scriptId)
+                        .orderByAsc(VideoScriptShot::getSequenceNo)
+        );
+        double timelineEnd = allShots.stream()
+                .map(VideoScriptShot::getEndSecond)
+                .filter(value -> value != null)
+                .mapToDouble(BigDecimal::doubleValue)
+                .max()
+                .orElse(0.0);
+        double midpoint = midpoint(shot);
+        int frameIndex;
+        if (timelineEnd > 0.0 && midpoint >= 0.0) {
+            frameIndex = (int) Math.round((midpoint / timelineEnd) * (frames.size() - 1));
+        } else {
+            int position = 0;
+            for (int index = 0; index < allShots.size(); index++) {
+                if (allShots.get(index).getSequenceNo() == shot.getSequenceNo()) {
+                    position = index;
+                    break;
+                }
+            }
+            frameIndex = allShots.size() <= 1
+                    ? 0
+                    : (int) Math.round(position * (frames.size() - 1.0) / (allShots.size() - 1.0));
+        }
+        frameIndex = Math.max(0, Math.min(frames.size() - 1, frameIndex));
+        Path preview = frames.get(frameIndex);
+        try {
+            return new ShotPreview(preview, Files.getLastModifiedTime(preview).toInstant());
+        } catch (IOException exception) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取分镜预览失败");
+        }
+    }
+
+    @Transactional
+    public VideoScriptShot updateShot(
+            String scriptId,
+            String shotId,
+            ShotUpdate update,
+            PlatformPrincipal principal
+    ) {
+        VideoScript script = requireScript(scriptId, principal.organizationId());
+        if (Set.of("QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING").contains(script.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "视频正在拆解，暂时不能编辑分镜");
+        }
+        VideoScriptShot shot = shotMapper.selectOne(
+                new LambdaQueryWrapper<VideoScriptShot>()
+                        .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
+                        .eq(VideoScriptShot::getScriptId, scriptId)
+                        .eq(VideoScriptShot::getId, shotId)
+                        .last("LIMIT 1")
+        );
+        if (shot == null) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "分镜不存在");
+        }
+        String stage = normalizeStage(update.stage());
+        shot.updateContent(
+                stage,
+                required(update.title(), "分镜标题", 160),
+                required(update.sceneDescription(), "画面描述", 8000),
+                update.motionDescription() == null
+                        ? shot.getMotionDescription()
+                        : trimTo(update.motionDescription(), 8000),
+                update.motionIntensity() == null
+                        ? shot.getMotionIntensity()
+                        : normalizeMotionIntensity(update.motionIntensity()),
+                trimTo(update.narration(), 8000),
+                trimTo(update.shotSize(), 80),
+                trimTo(update.cameraMovement(), 120),
+                trimTo(update.emotion(), 120)
+        );
+        shotMapper.updateById(shot);
+        List<VideoScriptShot> shots = shotMapper.selectList(
+                new LambdaQueryWrapper<VideoScriptShot>()
+                        .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
+                        .eq(VideoScriptShot::getScriptId, scriptId)
+                        .orderByAsc(VideoScriptShot::getSequenceNo)
+        );
+        script.saveEditedJson(rebuildScriptJson(script, shots));
+        scriptMapper.updateById(script);
+        return shot;
+    }
+
+    public VideoScript status(String id, PlatformPrincipal principal) {
+        return requireScript(id, principal.organizationId());
+    }
+
+    private VideoScript requireScript(String id, String organizationId) {
+        VideoScript script = scriptMapper.selectById(id);
+        if (script == null || !organizationId.equals(script.getOrganizationId())) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "视频脚本不存在");
+        }
+        return script;
+    }
+
+    private VideoScript requireOwnedScript(String id, PlatformPrincipal principal) {
+        VideoScript script = requireScript(id, principal.organizationId());
+        if (!principal.userId().equals(script.getCreatedBy())) {
+            throw new BusinessException(HttpStatus.FORBIDDEN, "无权操作该视频拆解任务");
+        }
+        return script;
+    }
+
+    private void deleteQuietly(Path directory) {
+        try {
+            if (!Files.exists(directory)) return;
+            try (var paths = Files.walk(directory)) {
+                paths.sorted((left, right) -> right.compareTo(left)).forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (IOException ignored) {
+                        // Best-effort cleanup after a rejected duplicate request.
+                    }
+                });
+            }
+        } catch (IOException ignored) {
+            // The scheduled file-retention cleanup will remove leftovers.
+        }
+    }
+
+    private void validateVideo(MultipartFile video) {
+        if (video == null || video.isEmpty()) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择需要拆解的视频");
+        }
+        if (video.getSize() > MAX_VIDEO_BYTES) {
+            throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "视频不能超过 100MB");
+        }
+        String name = safeFileName(video.getOriginalFilename());
+        String extension = extension(name);
+        String contentType = video.getContentType() == null ? "" : video.getContentType().toLowerCase(Locale.ROOT);
+        if (!VIDEO_EXTENSIONS.contains(extension) || (!contentType.isBlank() && !contentType.startsWith("video/"))) {
+            throw new BusinessException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "仅支持 MP4、MOV、M4V、WebM、AVI 或 MKV 视频");
+        }
+    }
+
+    private String extension(String name) {
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) return "";
+        return name.substring(dot + 1).toLowerCase(Locale.ROOT);
+    }
+
+    private String safeFileName(String value) {
+        String name = value == null ? "video.mp4" : Path.of(value).getFileName().toString().trim();
+        name = name.replaceAll("[\\r\\n\\u0000]", "_");
+        return name.isBlank() ? "video.mp4" : name.substring(0, Math.min(name.length(), 240));
+    }
+
+    private String trimTo(String value, int max) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.trim();
+        return normalized.substring(0, Math.min(normalized.length(), max));
+    }
+
+    private String required(String value, String label, int max) {
+        String normalized = trimTo(value, max);
+        if (normalized == null) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, label + "不能为空");
+        }
+        return normalized;
+    }
+
+    private String normalizeStage(String value) {
+        String normalized = value == null ? "CONTENT" : value.trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("HOOK", "SOLUTION", "TRUST", "CTA", "CONTENT").contains(normalized)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "分镜阶段无效");
+        }
+        return normalized;
+    }
+
+    private String normalizeMotionIntensity(String value) {
+        String normalized = trimTo(value, 20);
+        if (normalized == null) return null;
+        if (!Set.of("静止", "微幅", "小幅", "中幅", "大幅").contains(normalized)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "动作幅度无效");
+        }
+        return normalized;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String rebuildScriptJson(VideoScript script, List<VideoScriptShot> shots) {
+        Map<String, Object> root = new LinkedHashMap<>();
+        if (script.getScriptJson() != null && !script.getScriptJson().isBlank()) {
+            try {
+                root.putAll(objectMapper.readValue(script.getScriptJson(), Map.class));
+            } catch (Exception ignored) {
+                // Rebuild a clean JSON document from persisted shot data.
+            }
+        }
+        root.put("title", script.getName());
+        root.put("summary", script.getSummary());
+        root.put("globalVisualTone", script.getVisualTone());
+        List<Map<String, Object>> shotValues = new ArrayList<>();
+        for (VideoScriptShot shot : shots) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("sequence", shot.getSequenceNo());
+            value.put("stage", shot.getStage());
+            value.put("title", shot.getTitle());
+            value.put("startSecond", shot.getStartSecond());
+            value.put("endSecond", shot.getEndSecond());
+            value.put("durationSeconds", shot.getDurationSeconds());
+            value.put("sceneDescription", shot.getSceneDescription());
+            value.put("motionDescription", shot.getMotionDescription());
+            value.put("motionIntensity", shot.getMotionIntensity());
+            value.put("narration", shot.getNarration());
+            value.put("shotSize", shot.getShotSize());
+            value.put("cameraMovement", shot.getCameraMovement());
+            value.put("emotion", shot.getEmotion());
+            value.put("imagePrompt", parseJsonValue(shot.getImagePromptJson()));
+            shotValues.add(value);
+        }
+        root.put("shots", shotValues);
+        try {
+            return objectMapper.writeValueAsString(root);
+        } catch (Exception exception) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "分镜 JSON 保存失败");
+        }
+    }
+
+    private Object parseJsonValue(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return objectMapper.readValue(value, Object.class);
+        } catch (Exception ignored) {
+            return value;
+        }
+    }
+
+    private double midpoint(VideoScriptShot shot) {
+        double start = shot.getStartSecond() == null ? -1.0 : shot.getStartSecond().doubleValue();
+        double end = shot.getEndSecond() == null ? -1.0 : shot.getEndSecond().doubleValue();
+        if (start >= 0.0 && end >= start) return (start + end) / 2.0;
+        return start;
+    }
+
+    public record VideoScriptDetail(VideoScript script, List<VideoScriptShot> shots) {
+    }
+
+    public record ShotPreview(Path path, Instant lastModified) {
+    }
+
+    public record ShotUpdate(
+            String stage,
+            String title,
+            String sceneDescription,
+            String motionDescription,
+            String motionIntensity,
+            String narration,
+            String shotSize,
+            String cameraMovement,
+            String emotion
+    ) {
+    }
+}

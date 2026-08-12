@@ -1,0 +1,10 @@
+.git
+.idea
+.vscode
+target/*
+!target/*.jar
+automation-agent
+frontend
+pi-runtime
+*.zip
+*.log

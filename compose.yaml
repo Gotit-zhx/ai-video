@@ -1,0 +1,119 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-commerce-platform:local
+    container_name: ai-commerce-app
+    environment:
+      APP_PORT: 8080
+      DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-ai_commerce}?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false
+      DB_USERNAME: ${MYSQL_USER:-ai_commerce}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-ai_commerce_dev}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-ai_commerce_dev}
+      APP_ADMIN_PHONE: ${APP_ADMIN_PHONE:-13800000000}
+      APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:-admin123}
+      APP_TENANT_CODE: ${APP_TENANT_CODE:-heyi}
+      APP_TENANT_NAME: ${APP_TENANT_NAME:-赫逸智能化}
+      APP_MODEL_SECRET_KEY: ${APP_MODEL_SECRET_KEY:-local-development-model-secret-change-me}
+      APP_AUTOMATION_AGENT_TOKEN: ${APP_AUTOMATION_AGENT_TOKEN:-heyi-local-agent-dev-token}
+      APP_AUTOMATION_SKILL_STORAGE: /data/automation-skills
+      APP_AUTOMATION_ATTACHMENT_STORAGE: /data/automation-attachments
+      APP_VIDEO_SCRIPT_STORAGE: /data/video-scripts
+      APP_AI_VIDEO_TASK_STORAGE: /data/ai-video-tasks
+      APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-http://localhost:8080}
+      APP_PI_RUNTIME_URL: http://pi-runtime:8090
+      APP_PI_RUNTIME_TOKEN: ${APP_PI_RUNTIME_TOKEN:-heyi-pi-runtime-dev-token}
+      APP_DISPATCH_ENABLED: ${APP_DISPATCH_ENABLED:-true}
+      APP_DISPATCH_WORKER_ID: ${APP_DISPATCH_WORKER_ID:-heyi-app-worker}
+      APP_DISPATCH_WORKER_THREADS: ${APP_DISPATCH_WORKER_THREADS:-8}
+      APP_MAX_ACTIVE_TASKS: ${APP_MAX_ACTIVE_TASKS:-80}
+      APP_MAX_MODEL_CALLS: ${APP_MAX_MODEL_CALLS:-20}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      - automation_skill_data:/data/automation-skills
+      - automation_attachment_data:/data/automation-attachments
+      - video_script_data:/data/video-scripts
+      - ai_video_task_data:/data/ai-video-tasks
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pi-runtime:
+        condition: service_started
+    restart: unless-stopped
+
+  pi-runtime:
+    build:
+      context: ./pi-runtime
+    image: heyi-pi-runtime:local
+    container_name: heyi-pi-runtime
+    environment:
+      PORT: 8090
+      PI_RUNTIME_TOKEN: ${APP_PI_RUNTIME_TOKEN:-heyi-pi-runtime-dev-token}
+    ports:
+      - "8090:8090"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    image: heyi-ai-frontend:local
+    container_name: ai-commerce-frontend
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+
+  mysql:
+    image: mysql:8.4
+    container_name: ai-commerce-mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_commerce}
+      MYSQL_USER: ${MYSQL_USER:-ai_commerce}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ai_commerce_dev}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_dev_only}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    container_name: ai-commerce-redis
+    command: ["sh", "-c", "redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-ai_commerce_dev}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:
+  automation_skill_data:
+  automation_attachment_data:
+  video_script_data:
+  ai_video_task_data:

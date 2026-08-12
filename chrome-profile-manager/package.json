@@ -1,0 +1,14 @@
+{
+  "name": "chrome-profile-manager",
+  "version": "0.1.0",
+  "description": "本地 Chrome Profile 管理器",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:local": "powershell -ExecutionPolicy Bypass -File ./start.ps1"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0"
+  }
+}

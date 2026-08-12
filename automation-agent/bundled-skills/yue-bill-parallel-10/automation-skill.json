@@ -1,0 +1,17 @@
+{
+  "code": "YUE_BILL_EXPORT",
+  "name": "月账单导出",
+  "version": "1.0.0",
+  "description": "按日期批量导出 TikTok、Shopee、Lazada 店铺收入、广告和余额账单",
+  "commandType": "YUE_BILL_EXPORT",
+  "runnerType": "PROCESS_LOCAL",
+  "supportedOs": ["WINDOWS"],
+  "entryPoint": "run.ps1",
+  "inputs": [
+    {"name": "workbookPath", "label": "店铺工作簿", "type": "localFile", "required": true, "accept": ".xlsx"},
+    {"name": "startDate", "label": "开始日期", "type": "date", "required": true},
+    {"name": "endDate", "label": "结束日期", "type": "date", "required": true},
+    {"name": "outputRoot", "label": "输出目录", "type": "localDirectory", "required": true},
+    {"name": "maxConcurrency", "label": "并发店铺数", "type": "number", "required": true, "default": 3, "min": 1, "max": 5}
+  ]
+}

@@ -1,0 +1,1097 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="赫逸智能化 AI 平台——连接内容生成、智能编排与电商发布。">
+  <title>赫逸智能化 AI 平台</title>
+  <link rel="icon" href="/logo.svg">
+  <link rel="stylesheet" href="/styles.css?v=20260804-assistant-workspace-3">
+</head>
+<body>
+  <main id="login-view" class="login-shell">
+    <section class="brand-stage" aria-labelledby="brand-title">
+      <header class="brand-lockup">
+        <img src="/logo.svg" alt="赫逸智能化 Logo" class="brand-logo">
+        <div>
+          <strong>赫逸智能化</strong>
+          <span>HEYI INTELLIGENCE</span>
+        </div>
+      </header>
+
+      <div class="brand-copy">
+        <p class="eyebrow">AI CONTENT OPERATING SYSTEM</p>
+        <h1 id="brand-title">让创意沿着<br><span>一条生产线</span>抵达生意。</h1>
+        <p class="company-intro">
+          赫逸智能化致力于把内容创作、商品运营与平台发布编排成可追踪的智能生产线，
+          帮助团队稳定地产出、审阅和交付每一份 AI 素材。
+        </p>
+      </div>
+
+      <div class="pipeline" aria-label="平台工作流：素材、生成、成片、发布">
+        <div class="pipeline-track" aria-hidden="true"></div>
+        <article class="pipeline-step active">
+          <span class="step-dot">01</span>
+          <div><strong>素材输入</strong><small>图片 · 脚本 · 商品</small></div>
+        </article>
+        <article class="pipeline-step">
+          <span class="step-dot">02</span>
+          <div><strong>智能生成</strong><small>生图 · 裂变 · 白底图</small></div>
+        </article>
+        <article class="pipeline-step">
+          <span class="step-dot">03</span>
+          <div><strong>成片编排</strong><small>分镜 · 剪辑 · 质检</small></div>
+        </article>
+        <article class="pipeline-step">
+          <span class="step-dot">04</span>
+          <div><strong>平台发布</strong><small>热词 · 商品 · 闪购</small></div>
+        </article>
+      </div>
+
+      <footer class="brand-footer">
+        <span><i></i> 服务运行状态</span>
+        <span id="health-label">正在连接</span>
+      </footer>
+    </section>
+
+    <section class="login-panel">
+      <div class="login-card">
+        <div class="mobile-brand">
+          <img src="/logo.svg" alt="" class="brand-logo">
+          <strong>赫逸智能化 AI 平台</strong>
+        </div>
+        <p class="login-kicker">WORKSPACE ACCESS</p>
+        <h2>欢迎回来</h2>
+        <p class="login-help">登录你的企业工作空间，继续管理 AI 内容任务。</p>
+
+        <form id="login-form" novalidate>
+          <label for="tenant-code">企业代码</label>
+          <div class="field">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 21V7l8-4 8 4v14M8 10h2m4 0h2M8 14h2m4 0h2M9 21v-4h6v4"/></svg>
+            <input id="tenant-code" name="tenantCode" autocomplete="organization" value="heyi" placeholder="请输入企业代码" required>
+          </div>
+
+          <label for="username">手机号</label>
+          <div class="field">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"/></svg>
+            <input id="username" name="username" autocomplete="username" inputmode="tel" placeholder="请输入手机号" required>
+          </div>
+
+          <label for="password">密码</label>
+          <div class="field">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 10V8a6 6 0 0 1 12 0v2M5 10h14v11H5V10Zm7 5v2"/></svg>
+            <input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+            <button type="button" id="toggle-password" class="icon-button" aria-label="显示密码">显示</button>
+          </div>
+
+          <div id="login-error" class="form-error" role="alert" hidden></div>
+          <button id="login-button" class="primary-button" type="submit">
+            <span>进入工作台</span>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+        </form>
+
+        <p class="security-note">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.6 2.8 8.6 7 10 4.2-1.4 7-5.4 7-10V6l-7-3Z"/></svg>
+          企业账号访问 · 同一账号仅允许一处登录
+        </p>
+      </div>
+      <p class="copyright">© 2026 赫逸智能化 · AI Platform</p>
+    </section>
+  </main>
+
+  <main id="dashboard-view" class="dashboard" hidden>
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <img src="/logo.svg" alt="赫逸智能化 Logo">
+        <div><strong>赫逸智能化</strong><span>AI 平台</span></div>
+      </div>
+      <nav aria-label="主导航">
+        <a href="#" id="nav-dashboard" class="nav-item active"><span>⌂</span>工作台</a>
+        <a href="#" id="nav-video-scripts" class="nav-item"><span>▤</span>视频脚本管理</a>
+        <a href="#" id="nav-ai-video-tasks" class="nav-item"><span>▷</span>AI 视频任务</a>
+        <a href="#" id="nav-publish" class="nav-item"><span>△</span>发布视频</a>
+        <a href="#" id="nav-automations" class="nav-item"><span>↯</span>自动化中心</a>
+        <a href="#" id="nav-automation-admin" class="nav-item"><span>⌘</span>自动化管理</a>
+        <a href="#" id="nav-models" class="nav-item"><span>◎</span>模型接入</a>
+        <a href="#" id="nav-system" class="nav-item"><span>⚙</span>系统管理</a>
+        <a href="#" id="nav-assistant-test" class="nav-item nav-test-item"><span>⌁</span><span class="nav-test-copy">助手测试<small>临时</small></span></a>
+      </nav>
+      <div class="sidebar-about">
+        <span>HEYI / AI OS</span>
+        <p>连接创意、生产与生意</p>
+      </div>
+    </aside>
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <p>企业工作空间</p>
+          <h2>内容运营工作台</h2>
+        </div>
+        <div class="user-area">
+          <span class="status-pill"><i></i>系统在线</span>
+          <span id="current-user">平台管理员</span>
+          <button id="logout-button" class="quiet-button">退出</button>
+        </div>
+      </header>
+      <div id="dashboard-page" class="workspace-body">
+        <section class="welcome-strip">
+          <div>
+            <p>今日生产线</p>
+            <h1>从一张商品图开始，<br>编排下一条内容。</h1>
+          </div>
+          <button class="new-job-button" id="new-job-button">＋ 新建 AI 任务</button>
+        </section>
+        <section id="current-task-banner" class="current-task-banner" hidden>
+          <div class="current-task-copy">
+            <span>CURRENT TASK</span>
+            <strong id="current-task-title">当前任务</strong>
+            <small id="current-task-detail">正在读取执行进度</small>
+          </div>
+          <div class="current-task-actions">
+            <span id="current-task-status" class="job-status">处理中</span>
+            <button id="cancel-current-task" class="quiet-button" type="button">取消任务</button>
+          </div>
+        </section>
+        <section class="summary-grid">
+          <article><span>待执行任务</span><strong id="queued-count">—</strong><small>等待进入生产线</small></article>
+          <article><span>运行中</span><strong id="running-count">—</strong><small>AI 流程执行中</small></article>
+          <article><span>需要审核</span><strong id="review-count">—</strong><small>等待运营确认</small></article>
+          <article><span>本月预算</span><strong>可控</strong><small>调用成本全程记录</small></article>
+        </section>
+        <section class="workbench-card">
+          <div class="section-heading">
+            <div><p>WORKFLOW QUEUE</p><h3>最近任务</h3></div>
+            <button id="refresh-button" class="quiet-button">刷新</button>
+          </div>
+          <div id="job-list" class="job-list">
+            <div class="empty-state">正在读取任务...</div>
+          </div>
+        </section>
+      </div>
+
+      <div id="system-page" class="workspace-body system-page" hidden>
+        <nav class="system-tabs" aria-label="系统配置">
+          <button class="system-tab active" data-system-tab="people">组织与人员</button>
+          <button class="system-tab" data-system-tab="rbac">角色与权限</button>
+        </nav>
+
+        <div id="system-people-panel" class="system-panel">
+          <section class="people-layout">
+            <aside class="department-panel">
+              <div class="panel-heading">
+                <div><small>ORGANIZATION</small><h3>部门架构</h3></div>
+                <button id="add-department-button" class="circle-button" aria-label="添加部门">＋</button>
+              </div>
+              <div id="department-list" class="department-list"></div>
+            </aside>
+
+            <div class="people-panel">
+              <div class="panel-heading people-heading">
+                <div><small>IDENTITY</small><h3>人员与账号</h3></div>
+                <div class="people-tools">
+                  <input id="user-search" type="search" placeholder="搜索姓名或手机号">
+                  <button id="refresh-users-button" class="quiet-button">刷新</button>
+                  <button id="add-user-button" class="new-job-button compact-action">＋ 添加人员</button>
+                </div>
+              </div>
+              <div class="people-table-wrap">
+                <table class="people-table">
+                  <thead><tr><th>人员</th><th>部门 / 职位</th><th>角色</th><th>账号状态</th><th>管理操作</th></tr></thead>
+                  <tbody id="user-table-body">
+                    <tr><td colspan="5" class="table-empty">正在读取人员...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div id="system-rbac-panel" class="system-panel" hidden>
+          <section class="rbac-layout">
+            <aside class="role-rail">
+              <div class="panel-heading">
+                <div><small>ROLE SET</small><h3>角色集合</h3></div>
+                <button id="add-role-button" class="circle-button" aria-label="新增角色">＋</button>
+              </div>
+              <p class="panel-help">角色是权限的集合，人员可同时拥有多个角色。</p>
+              <div id="role-list" class="role-config-list"></div>
+            </aside>
+
+            <section class="permission-panel">
+              <div class="permission-empty" id="permission-empty">
+                <strong>选择一个角色</strong>
+                <span>查看它能访问的菜单、接口和操作权限。</span>
+              </div>
+              <div id="permission-editor" hidden>
+                <div class="permission-editor-head">
+                  <div>
+                    <span id="selected-role-code">ROLE</span>
+                    <h3 id="selected-role-name">角色名称</h3>
+                    <p id="selected-role-description"></p>
+                  </div>
+                  <button id="edit-role-button" class="quiet-button">编辑角色与权限</button>
+                </div>
+                <dl class="role-facts">
+                  <div><dt>成员数量</dt><dd id="selected-role-users">0 人</dd></div>
+                  <div><dt>数据范围</dt><dd id="selected-role-scope">仅本人</dd></div>
+                  <div><dt>权限数量</dt><dd id="selected-role-permissions">0 项</dd></div>
+                  <div><dt>角色状态</dt><dd id="selected-role-status">正常</dd></div>
+                </dl>
+                <div id="permission-preview" class="permission-preview"></div>
+              </div>
+            </section>
+          </section>
+        </div>
+
+        <div id="system-profile-panel" class="system-panel" hidden>
+          <section class="organization-card profile-card">
+            <div class="org-mark"><img src="/logo.svg" alt=""></div>
+            <div class="org-copy">
+              <span id="org-code">HEYI</span>
+              <h2 id="org-name">赫逸智能化</h2>
+              <p id="org-description">正在读取企业资料...</p>
+            </div>
+            <dl class="org-meta">
+              <div><dt>当前套餐</dt><dd id="org-plan">STARTER</dd></div>
+              <div><dt>企业状态</dt><dd class="active-text">正常</dd></div>
+            </dl>
+            <button id="edit-org-button" class="quiet-button">编辑企业资料</button>
+          </section>
+          <section class="boundary-note">
+            <strong>配置边界</strong>
+            <p>部门、角色和人员是业务实体，不属于数据字典。字典只维护平台类型、素材分类、任务标签等可选项，不参与鉴权判断。</p>
+          </section>
+        </div>
+      </div>
+
+      <div id="video-scripts-page" class="workspace-body video-studio-page" hidden>
+        <section class="video-studio-heading">
+          <div>
+            <span class="prototype-mark">交互原型</span>
+            <p>VIDEO SCRIPT LIBRARY</p>
+            <h1>视频脚本管理</h1>
+            <small>把参考视频拆成可复用、可修改、可追溯的分镜脚本与生图 JSON。</small>
+          </div>
+          <div class="video-heading-actions">
+            <button id="import-video-script" class="quiet-button" type="button">上传视频拆解</button>
+            <button id="create-manual-script" class="new-job-button" type="button">＋ 手动创建脚本</button>
+          </div>
+        </section>
+
+        <section class="script-library-layout">
+          <aside id="video-script-library" class="script-library-rail">
+            <header><div><span>脚本库</span><small>最近更新</small></div><button type="button" aria-label="筛选">⌕</button></header>
+            <button class="script-library-item active" type="button" data-script-demo="tshirt">
+              <span class="script-source-badge ai">AI</span>
+              <div><strong>修身黑色 T 恤 · 约会场景</strong><small>参考视频拆解 · 9 个分镜</small></div>
+              <em>已确认</em>
+            </button>
+            <button class="script-library-item" type="button" data-script-demo="snickers">
+              <span class="script-source-badge manual">手</span>
+              <div><strong>士力架草莓味 · 午后能量</strong><small>手动创建 · 9 个分镜</small></div>
+              <em class="draft">草稿</em>
+            </button>
+            <button class="script-library-item" type="button" data-script-demo="skincare">
+              <span class="script-source-badge ai">AI</span>
+              <div><strong>敏感肌修护霜 · 换季场景</strong><small>参考视频拆解 · 12 个分镜</small></div>
+              <em class="review">待确认</em>
+            </button>
+            <button class="script-library-item" type="button" data-script-demo="dress">
+              <span class="script-source-badge manual">手</span>
+              <div><strong>法式连衣裙 · 通勤转约会</strong><small>手动创建 · 6 个分镜</small></div>
+              <em>已确认</em>
+            </button>
+          </aside>
+
+          <article id="video-script-detail" class="script-detail-stage">
+            <header class="script-detail-head">
+              <div>
+                <div id="script-detail-meta" class="script-detail-meta"><span>AI 视频反推</span><span>版本 v3</span><span>9 个分镜</span></div>
+                <h2 id="script-detail-title">修身黑色 T 恤 · 约会场景</h2>
+                <p id="script-detail-source">来源：dating-look-reference.mp4 · 15 秒 · 创建人：内容运营</p>
+              </div>
+              <div class="script-detail-actions"><button class="quiet-button" type="button">复制版本</button><button id="reanalyze-video-script" class="quiet-button" type="button" hidden>补足为 9 镜</button><button id="delete-video-script" class="danger-text-button" type="button">删除脚本</button></div>
+            </header>
+
+            <section class="visual-anchor-card">
+              <span>全局视觉基调</span>
+              <strong id="script-detail-visual-tone">中性纯素色系｜清晨自然柔光｜真实生活闺蜜 Vlog｜去广告感场景摄影</strong>
+              <button type="button">编辑</button>
+            </section>
+
+            <div class="script-view-tabs">
+              <button class="active" type="button" data-script-view="storyboard">中文分镜</button>
+              <button type="button" data-script-view="json">生图 JSON</button>
+              <span>保存后版本号递增，并同步更新分镜与生图 JSON</span>
+            </div>
+
+            <section id="script-storyboard-view" class="storyboard-workspace">
+              <div class="storyboard-group-legend">
+                <span class="hook">Hook · 1–3</span><span class="solution">Solution · 4–6</span><span class="cta">Trust & CTA · 7–9</span>
+              </div>
+              <div id="script-film-strip" class="film-strip" aria-label="9 个分镜">
+                <button class="film-frame hook active" type="button" data-shot="1" data-shot-title="痛点开场" data-shot-copy="达人站在镜子前，满脸沮丧地看着一件领口松垮、全是褶皱的旧衣服。"><i>01</i><b>痛点开场</b><small>慢推镜</small></button>
+                <button class="film-frame hook" type="button" data-shot="2" data-shot-title="版型对比" data-shot-copy="镜头快速切到松垮领口与肩线，突出普通 T 恤显臃肿的问题。"><i>02</i><b>版型对比</b><small>极端特写</small></button>
+                <button class="film-frame hook" type="button" data-shot="3" data-shot-title="发现新品" data-shot-copy="达人拿起修身黑色 T 恤，眼神亮起，形成节奏转折。"><i>03</i><b>发现新品</b><small>快速推镜</small></button>
+                <button class="film-frame solution" type="button" data-shot="4" data-shot-title="产品亮相" data-shot-copy="黑色 T 恤在干净背景中完整展示，面料纹理和修身轮廓清晰可见。"><i>04</i><b>产品亮相</b><small>定镜</small></button>
+                <button class="film-frame solution" type="button" data-shot="5" data-shot-title="面料细节" data-shot-copy="手指轻捏弹力面料，特写展示细腻纹理、回弹和不透肤效果。"><i>05</i><b>面料细节</b><small>微距推镜</small></button>
+                <button class="film-frame solution" type="button" data-shot="6" data-shot-title="上身过程" data-shot-copy="达人自然穿上 T 恤并整理下摆，肩颈和腰线逐渐显现。"><i>06</i><b>上身过程</b><small>横移跟拍</small></button>
+                <button class="film-frame cta" type="button" data-shot="7" data-shot-title="效果呈现" data-shot-copy="达人换好完整约会穿搭，自信转身，展示正面和侧面修身效果。"><i>07</i><b>效果呈现</b><small>缓慢拉镜</small></button>
+                <button class="film-frame cta" type="button" data-shot="8" data-shot-title="场景验证" data-shot-copy="自然光咖啡馆场景，达人坐下抬手，衣身依旧平整贴合。"><i>08</i><b>场景验证</b><small>生活跟拍</small></button>
+                <button class="film-frame cta" type="button" data-shot="9" data-shot-title="购买引导" data-shot-copy="达人面向镜头微笑并指向同款，保留干净画面供后续添加口播和商品信息。"><i>09</i><b>购买引导</b><small>低角仰拍</small></button>
+              </div>
+              <div class="shot-editor-card">
+                <img id="selected-shot-preview" class="shot-editor-preview" alt="当前分镜原视频画面" hidden>
+                <div><span id="selected-shot-number">分镜 01 · Hook</span><h3 id="selected-shot-title">痛点开场</h3><p id="selected-shot-copy">达人站在镜子前，满脸沮丧地看着一件领口松垮、全是褶皱的旧衣服。</p></div>
+                <dl><div><dt>景别</dt><dd id="selected-shot-size">中景</dd></div><div><dt>运镜</dt><dd id="selected-shot-camera">缓慢推镜</dd></div><div><dt>情绪</dt><dd id="selected-shot-emotion">真实、沮丧</dd></div></dl>
+                <button id="edit-video-shot" class="quiet-button" type="button">编辑该分镜</button>
+              </div>
+            </section>
+
+            <section id="script-json-view" class="script-json-view" hidden>
+              <header><div><strong>生产 JSON · v3</strong><span>字段校验通过 · 9 个 shots</span></div><button class="quiet-button" type="button">复制 JSON</button></header>
+              <pre id="script-json-content">{
+  "image_generation_model": "configured_image_model",
+  "grid_layout": "3x3",
+  "grid_aspect_ratio": "9:16",
+  "global_style": "neutral solid tones, soft morning natural light, authentic lifestyle vlog",
+  "shots": [
+    { "shot_number": 1, "stage": "HOOK", "prompt_text": "Medium shot, slow push in..." },
+    { "shot_number": 2, "stage": "HOOK", "prompt_text": "Extreme close-up, wrinkled collar..." },
+    { "shot_number": 3, "stage": "HOOK", "prompt_text": "Quick zoom in, woman discovers..." }
+  ]
+}</pre>
+            </section>
+          </article>
+        </section>
+      </div>
+
+      <div id="ai-video-tasks-page" class="workspace-body video-studio-page" hidden>
+        <section class="video-studio-heading">
+          <div>
+            <p>AI VIDEO PRODUCTION</p>
+            <h1>AI 视频任务</h1>
+            <small>人物穿搭与商品展示共用一套可追溯、逐分镜执行的图片生产线。</small>
+          </div>
+          <button id="create-video-task" class="new-job-button" type="button">＋ 新建视频任务</button>
+        </section>
+
+        <section class="video-task-layout batch-task-layout">
+          <aside class="video-task-rail batch-task-rail">
+            <header><div><span>视频任务</span><small>点击切换任务</small></div></header>
+            <div id="ai-video-task-list" class="video-task-list"><div class="video-task-empty">正在读取任务…</div></div>
+          </aside>
+
+          <section class="video-batch-stage">
+          <header class="video-batch-head">
+            <div>
+              <span id="ai-video-task-stage" class="task-stage-chip">等待选择任务</span>
+              <h2 id="ai-video-task-title">从左侧选择任务</h2>
+              <p id="ai-video-task-script">新建任务后，脚本版本会冻结在本轮生产中。</p>
+            </div>
+            <div class="batch-head-actions"><span id="ai-video-task-progress" class="task-progress-pill">0%</span></div>
+          </header>
+
+          <div class="batch-group-bar">
+            <div class="batch-task-context"><strong id="ai-video-task-market">未设置目标市场</strong><span>当前任务的商品素材与生成结果</span></div>
+            <label class="batch-upload-button" id="batch-garment-upload-label"><input id="batch-garment-upload" type="file" accept="image/*" multiple>＋ 批量上传商品</label>
+          </div>
+
+          <section class="garment-board">
+            <header>
+              <div><span>任务素材</span><h3 id="batch-group-title">还没有商品素材</h3><p>原图置顶，AI 主图与九宫格并排展示；点击图片可放大与下载。</p></div>
+              <div class="garment-board-summary"><strong id="selected-garment-count">0</strong><span>款商品</span></div>
+            </header>
+
+            <div class="garment-card-grid" id="garment-card-grid">
+              <div class="video-task-empty garment-empty">选择任务后，可一次上传多张商品图片。</div>
+              <!-- Cards are rendered from /api/v1/ai-video-tasks. -->
+              <template id="legacy-garment-template">
+              <article class="garment-card selected" data-garment-card>
+                <header class="garment-card-head">
+                  <label class="garment-select"><input type="checkbox" data-garment-select checked><span>✓</span></label>
+                  <div class="garment-card-copy"><div><strong>黑色修身 T 恤</strong><small>SKU · HY-T001</small></div><span class="garment-state ready">可启动</span></div>
+                </header>
+                <button class="garment-preview black-shirt" type="button" data-asset-preview="原始衣服图" aria-label="放大查看黑色修身 T 恤原始衣服图">
+                  <svg viewBox="0 0 120 120" aria-hidden="true"><path d="M35 24 48 17h24l13 7 20 17-13 18-10-8v52H38V51l-10 8-13-18 20-17Z"/></svg>
+                  <em>原始衣服图</em>
+                </button>
+                <div class="garment-output-grid">
+                  <section class="garment-output-slot model-output waiting" data-model-output><header><strong>AI 模特图</strong><span>等待生成</span></header><button class="model-output-canvas" type="button" data-asset-preview="AI 模特图" aria-label="放大查看 AI 模特图"><i></i><small>人物会输出到这里</small></button></section>
+                  <section class="garment-output-slot storyboard-output waiting" data-storyboard-output><header><strong>分镜九宫格</strong><span>等待生成</span></header><button class="mini-storyboard" type="button" data-asset-preview="分镜九宫格" aria-label="放大查看分镜九宫格"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></button></section>
+                </div>
+                <section class="garment-video-output waiting" data-video-output><header><strong>AI 视频生成结果</strong><span>等待生成</span></header><button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><i>▶</i><div><strong>成片会输出到这里</strong><small>生成后可放大播放</small></div><em>--:--</em></button></section>
+              </article>
+
+              <article class="garment-card selected" data-garment-card>
+                <header class="garment-card-head">
+                  <label class="garment-select"><input type="checkbox" data-garment-select checked><span>✓</span></label>
+                  <div class="garment-card-copy"><div><strong>奶油白短袖</strong><small>SKU · HY-T008</small></div><span class="garment-state ready">可启动</span></div>
+                </header>
+                <button class="garment-preview white-shirt" type="button" data-asset-preview="原始衣服图" aria-label="放大查看奶油白短袖原始衣服图">
+                  <svg viewBox="0 0 120 120" aria-hidden="true"><path d="M35 24 48 17h24l13 7 20 17-13 18-10-8v52H38V51l-10 8-13-18 20-17Z"/></svg>
+                  <em>原始衣服图</em>
+                </button>
+                <div class="garment-output-grid">
+                  <section class="garment-output-slot model-output waiting" data-model-output><header><strong>AI 模特图</strong><span>等待生成</span></header><button class="model-output-canvas" type="button" data-asset-preview="AI 模特图" aria-label="放大查看 AI 模特图"><i></i><small>人物会输出到这里</small></button></section>
+                  <section class="garment-output-slot storyboard-output waiting" data-storyboard-output><header><strong>分镜九宫格</strong><span>等待生成</span></header><button class="mini-storyboard" type="button" data-asset-preview="分镜九宫格" aria-label="放大查看分镜九宫格"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></button></section>
+                </div>
+                <section class="garment-video-output waiting" data-video-output><header><strong>AI 视频生成结果</strong><span>等待生成</span></header><button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><i>▶</i><div><strong>成片会输出到这里</strong><small>生成后可放大播放</small></div><em>--:--</em></button></section>
+              </article>
+
+              <article class="garment-card selected" data-garment-card>
+                <header class="garment-card-head">
+                  <label class="garment-select"><input type="checkbox" data-garment-select checked><span>✓</span></label>
+                  <div class="garment-card-copy"><div><strong>海盐条纹短袖</strong><small>SKU · HY-T012</small></div><span class="garment-state ready">可启动</span></div>
+                </header>
+                <button class="garment-preview stripe-shirt" type="button" data-asset-preview="原始衣服图" aria-label="放大查看海盐条纹短袖原始衣服图">
+                  <svg viewBox="0 0 120 120" aria-hidden="true"><path d="M35 24 48 17h24l13 7 20 17-13 18-10-8v52H38V51l-10 8-13-18 20-17Z"/></svg>
+                  <em>原始衣服图</em>
+                </button>
+                <div class="garment-output-grid">
+                  <section class="garment-output-slot model-output waiting" data-model-output><header><strong>AI 模特图</strong><span>等待生成</span></header><button class="model-output-canvas" type="button" data-asset-preview="AI 模特图" aria-label="放大查看 AI 模特图"><i></i><small>人物会输出到这里</small></button></section>
+                  <section class="garment-output-slot storyboard-output waiting" data-storyboard-output><header><strong>分镜九宫格</strong><span>等待生成</span></header><button class="mini-storyboard" type="button" data-asset-preview="分镜九宫格" aria-label="放大查看分镜九宫格"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></button></section>
+                </div>
+                <section class="garment-video-output waiting" data-video-output><header><strong>AI 视频生成结果</strong><span>等待生成</span></header><button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><i>▶</i><div><strong>成片会输出到这里</strong><small>生成后可放大播放</small></div><em>--:--</em></button></section>
+              </article>
+              </template>
+            </div>
+          </section>
+
+          <footer class="batch-action-dock">
+            <div><strong id="ai-video-task-summary">尚未选择任务</strong><span id="video-task-action-note">先新建任务并上传商品素材。</span></div>
+            <button id="generate-shot-images" class="new-job-button batch-start-button" type="button" disabled>开始批量生图</button>
+          </footer>
+          </section>
+        </section>
+      </div>
+
+      <div id="automations-page" class="workspace-body automation-page" hidden>
+        <section class="automation-heading">
+          <div><p>PI AGENT AUTOMATION</p><h1>自动化中心</h1><span>Pi Agent 负责全流程理解、监督与恢复，本机助手负责执行已授权工具。</span></div>
+          <button id="refresh-automations" class="quiet-button">刷新</button>
+        </section>
+        <section id="automation-assistant-link" class="automation-assistant-link checking" aria-live="polite">
+          <span class="assistant-link-beacon"><i></i></span>
+          <div>
+            <strong id="automation-assistant-title">正在检测本机助手</strong>
+            <small id="automation-assistant-detail">确认程序、平台心跳和接单状态…</small>
+          </div>
+          <span id="automation-assistant-state" class="assistant-link-state">检测中</span>
+        </section>
+        <div id="automation-skill-list" class="automation-skill-grid"></div>
+        <section class="workbench-card">
+          <div class="section-heading"><div><p>LOCAL RUNS</p><h3>最近执行</h3></div></div>
+          <div id="automation-job-list" class="job-list"></div>
+        </section>
+      </div>
+
+      <div id="automation-admin-page" class="workspace-body automation-page" hidden>
+        <section class="automation-heading">
+          <div><p>AUTOMATION CONTROL</p><h1>自动化管理</h1><span>管理员维护 Skill，并配置每位人员可使用的自动化。</span></div>
+          <button id="refresh-automation-admin" class="quiet-button">刷新</button>
+        </section>
+        <section id="skill-converter-card" class="skill-converter-card">
+          <div><strong>上传并转换技能</strong><p>支持 ZIP、RAR、SKILL.md 或文件夹。</p></div>
+          <label class="skill-name-field">技能名称
+            <input id="skill-display-name" type="text" maxlength="120" placeholder="例如：月账单导出">
+          </label>
+          <div class="skill-source-picker">
+            <span class="skill-field-label">技能文件</span>
+            <button id="skill-source-trigger" class="skill-picker-button skill-source-trigger" type="button"
+                    aria-haspopup="menu" aria-expanded="false" aria-controls="skill-source-menu">
+              <span id="skill-source-trigger-label">选择文件</span><span class="skill-source-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div id="skill-source-menu" class="skill-source-menu" role="menu" hidden>
+              <button type="button" role="menuitem" data-skill-source="package">
+                <strong>选择文件</strong><small>ZIP、RAR 或 SKILL.md</small>
+              </button>
+              <button type="button" role="menuitem" data-skill-source="folder">
+                <strong>选择文件夹</strong><small>直接导入完整技能目录</small>
+              </button>
+            </div>
+            <label class="skill-picker-button"><input id="skill-package-file" type="file" accept=".zip,.rar,.md,.markdown"><span>选择压缩包 / SKILL.md</span></label>
+            <label class="skill-picker-button secondary"><input id="skill-folder-file" type="file" webkitdirectory directory multiple><span>选择 Skill 文件夹</span></label>
+            <small id="skill-upload-selection">未选择文件</small>
+          </div>
+          <button id="convert-skill-button" class="new-job-button">上传并转换</button>
+          <div id="skill-convert-status" class="skill-convert-status" hidden role="status" aria-live="polite">
+            <div class="skill-convert-status-head">
+              <span id="skill-convert-status-label">准备转换</span>
+              <strong id="skill-convert-status-percent">0%</strong>
+            </div>
+            <div class="skill-convert-progress-track"><i id="skill-convert-progress-bar"></i></div>
+          </div>
+          <div id="managed-skill-list" class="managed-skill-list"></div>
+        </section>
+        <section id="automation-access-card" class="workbench-card automation-access-card">
+          <div class="section-heading"><div><p>PEOPLE ACCESS</p><h3>人员使用权限</h3></div></div>
+          <div id="automation-admin-users" class="automation-admin-list"></div>
+        </section>
+      </div>
+
+      <div id="models-page" class="workspace-body" hidden>
+        <section class="model-connect-card">
+          <header class="model-connect-heading">
+            <div>
+              <small>MODEL CONNECTION</small>
+              <h2>模型接入</h2>
+              <p>按用途管理模型。添加时只需填写 API 地址、模型 ID 和 API Key。</p>
+            </div>
+          </header>
+          <div class="model-category-grid">
+            <section class="model-category" data-model-category="DRIVER">
+              <header><span class="category-icon">D</span><div><h3>驱动模型</h3><p>任务理解、脚本拆解与流程调度</p></div><button class="circle-button" data-add-model-type="DRIVER" aria-label="添加驱动模型">＋</button></header>
+              <div class="model-config-list" data-model-list="DRIVER"><div class="model-empty compact">暂无接入</div></div>
+            </section>
+            <section class="model-category" data-model-category="VIDEO">
+              <header><span class="category-icon">V</span><div><h3>视频模型</h3><p>视频生成与动态画面处理</p></div><button class="circle-button" data-add-model-type="VIDEO" aria-label="添加视频模型">＋</button></header>
+              <div class="model-config-list" data-model-list="VIDEO"><div class="model-empty compact">暂无接入</div></div>
+            </section>
+            <section class="model-category" data-model-category="IMAGE">
+              <header><span class="category-icon">I</span><div><h3>图片模型</h3><p>生图、改图与商品图制作</p></div><button class="circle-button" data-add-model-type="IMAGE" aria-label="添加图片模型">＋</button></header>
+              <div class="model-config-list" data-model-list="IMAGE"><div class="model-empty compact">暂无接入</div></div>
+            </section>
+          </div>
+        </section>
+      </div>
+
+      <div id="assistant-test-page" class="workspace-body assistant-test-page" hidden>
+        <section class="assistant-status-strip">
+          <div class="assistant-test-title">
+            <span class="test-badge">临时测试入口</span>
+            <h1>让模型执行真实任务</h1>
+            <p>可以调度本机自动化，也可以调用平台图片模型完成文字生图与图生图。</p>
+          </div>
+          <div class="assistant-link-status" aria-label="自动化链路状态">
+            <span data-assistant-state="model"><i></i><b>驱动模型</b><small id="assistant-model-state">检查中</small></span>
+            <em>→</em>
+            <span data-assistant-state="pi"><i></i><b>智能调度</b><small id="assistant-pi-state">检查中</small></span>
+            <em>→</em>
+            <span data-assistant-state="agent"><i></i><b>本机助手</b><small id="assistant-agent-state">检查中</small></span>
+            <em>→</em>
+            <span data-assistant-state="feikua"><i></i><b>本机执行</b><small id="assistant-feikua-state">等待任务</small></span>
+          </div>
+        </section>
+
+        <section class="assistant-console">
+          <div class="assistant-chat-card">
+            <header>
+              <div><small>ASSISTANT CONVERSATION</small><h2>自动化对话</h2></div>
+              <button id="clear-assistant-chat" class="quiet-button" type="button">新对话</button>
+            </header>
+            <div id="assistant-messages" class="assistant-messages" aria-live="polite">
+              <article class="assistant-message system-message">
+                <span class="message-avatar">H</span>
+                <div>
+                  <strong>赫逸助手</strong>
+                  <p>当前可调度飞跨与 Google 账号池，也可以生成图片；上传参考图后即可执行图生图。</p>
+                </div>
+              </article>
+            </div>
+            <div class="assistant-examples">
+              <button type="button" data-assistant-prompt="测试一下赫逸自动化助手，检查本机飞跨环境是否正常">检查飞跨连接</button>
+              <button type="button" data-assistant-prompt="让本机助手统计飞跨里有多少个店铺环境">统计店铺数量</button>
+              <button type="button" data-assistant-prompt="请打开飞跨店铺：">打开指定店铺</button>
+              <button type="button" data-assistant-prompt="请启动本机的 Google 五席账号池">启动 Google 账号池</button>
+              <button type="button" data-assistant-prompt="生成一张白色背景的电商产品主图，主体居中，柔和棚拍光线">生成产品图</button>
+            </div>
+            <form id="assistant-chat-form" class="assistant-composer">
+              <div id="assistant-reference-list" class="assistant-reference-list" hidden></div>
+              <div class="assistant-compose-row">
+                <textarea id="assistant-prompt" maxlength="4000" rows="2" placeholder="描述自动化任务，或告诉我想生成、修改什么图片" required></textarea>
+                <button id="assistant-send-button" type="submit"><span>发送并测试</span><b>↗</b></button>
+              </div>
+              <div class="assistant-composer-tools">
+                <input id="assistant-image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+                <button id="assistant-image-picker" class="assistant-file-button" type="button"><span>＋</span> 添加参考图</button>
+                <small id="assistant-image-model-state">图片模型检查中</small>
+              </div>
+            </form>
+            <div id="assistant-form-error" class="form-error" hidden></div>
+          </div>
+
+          <aside class="assistant-trace-card">
+            <header>
+              <div><small>EXECUTION TRACE</small><h2>执行记录</h2></div>
+              <span id="assistant-trace-state" class="trace-state">等待测试</span>
+            </header>
+            <section class="assistant-token-monitor" aria-live="polite" aria-label="Token 消耗监控">
+              <div class="token-monitor-heading">
+                <span>TOKEN METER</span>
+                <b id="assistant-token-state">等待模型上报</b>
+              </div>
+              <div class="token-monitor-total">
+                <div><small>本次总消耗</small><strong id="assistant-token-total">—</strong></div>
+                <em>tokens</em>
+              </div>
+              <div class="token-monitor-split">
+                <span><small>输入</small><b id="assistant-token-input">—</b></span>
+                <span><small>输出</small><b id="assistant-token-output">—</b></span>
+                <span><small>自动化执行</small><b id="assistant-token-execution">—</b></span>
+              </div>
+              <div class="token-monitor-track" aria-hidden="true">
+                <i id="assistant-token-input-bar"></i><b id="assistant-token-output-bar"></b>
+              </div>
+              <footer>
+                <span>会话累计 <b id="assistant-token-session">—</b></span>
+                <span>模型调用 <b id="assistant-token-calls">—</b> 次</span>
+              </footer>
+            </section>
+            <ol id="assistant-trace-list" class="assistant-trace-list">
+              <li class="muted"><i></i><div><strong>还没有执行记录</strong><p>发送一条测试消息后，链路步骤会显示在这里。</p></div></li>
+            </ol>
+            <div class="assistant-safety-note">
+              <strong>当前权限</strong>
+              <p>允许检查环境和按精确名称打开店铺；页面点击、发布、删除与付款仍未开放。</p>
+            </div>
+          </aside>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="video-shot-edit-dialog" class="manage-dialog video-shot-edit-dialog">
+    <form id="video-shot-edit-form">
+      <div class="dialog-heading">
+        <div><small>STORYBOARD EDITOR</small><h2>编辑分镜</h2><p>修改后会同步保存到当前脚本和生图 JSON。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="shot-edit-layout">
+        <img id="shot-edit-preview" alt="待编辑分镜原视频画面">
+        <div class="form-grid">
+          <label>分镜标题<input id="shot-edit-title" required maxlength="160"></label>
+          <label>阶段<select id="shot-edit-stage"><option value="HOOK">Hook</option><option value="SOLUTION">Solution</option><option value="TRUST">Trust</option><option value="CTA">CTA</option><option value="CONTENT">Content</option></select></label>
+          <label class="full-field">画面描述<textarea id="shot-edit-description" required rows="5" maxlength="8000"></textarea></label>
+          <label class="full-field">动作轨迹<textarea id="shot-edit-motion" rows="4" maxlength="8000" placeholder="例如：双脚保持原位，右手由身侧缓慢抬至胸前，肩部和身体中心不移动"></textarea></label>
+          <label>动作幅度<select id="shot-edit-intensity"><option value="">未设置</option><option value="静止">静止</option><option value="微幅">微幅</option><option value="小幅">小幅</option><option value="中幅">中幅</option><option value="大幅">大幅</option></select></label>
+          <label class="full-field">口播 / 屏幕文案<textarea id="shot-edit-narration" rows="3" maxlength="8000" placeholder="无法从原视频确认时可以留空"></textarea></label>
+          <label>景别<input id="shot-edit-size" maxlength="80" placeholder="例如：中景、近景"></label>
+          <label>运镜<input id="shot-edit-camera" maxlength="120" placeholder="例如：缓慢推镜"></label>
+          <label class="full-field">情绪与氛围<input id="shot-edit-emotion" maxlength="120" placeholder="例如：自然、轻松、真实生活感"></label>
+        </div>
+      </div>
+      <p id="video-shot-edit-error" class="form-error" hidden></p>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button id="save-video-shot" type="submit" class="new-job-button">保存分镜</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="video-script-dialog" class="manage-dialog video-script-dialog">
+    <form id="video-script-form">
+      <div class="dialog-heading">
+        <div><small>VIDEO SCRIPT</small><h2 id="video-script-dialog-title">上传视频并拆解</h2><p id="video-script-dialog-copy">AI 会精拆为完整 9 个分镜，并同步生成生产 JSON。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="script-create-switch">
+        <button class="active" type="button" data-script-create-mode="ai">上传视频拆解</button>
+        <button type="button" data-script-create-mode="manual">手动创建脚本</button>
+      </div>
+      <section id="script-active-analysis" class="script-active-analysis" hidden>
+        <div class="active-analysis-orbit"><i></i><span id="active-script-progress-number">0%</span></div>
+        <div class="active-analysis-copy">
+          <small id="active-script-stage">等待处理</small>
+          <h3 id="active-script-name">视频拆解任务</h3>
+          <p id="active-script-message">任务已进入后台队列，请保持页面打开。</p>
+          <div class="active-analysis-track"><span id="active-script-progress-bar"></span></div>
+        </div>
+      </section>
+      <section id="script-create-ai" class="script-create-panel">
+        <label class="video-upload-drop">
+          <input id="script-source-video" name="video" type="file" accept="video/*">
+          <span>↑</span><strong>选择参考视频</strong><small id="script-video-file-name">MP4、MOV，建议 60 秒以内</small>
+        </label>
+        <div class="form-grid">
+          <label>脚本名称<input name="name" required maxlength="120" placeholder="例如：黑色修身 T 恤约会场景"></label>
+          <label>目标市场<select name="targetMarket"><option>菲律宾</option><option>马来西亚</option><option>泰国</option><option>新加坡</option></select></label>
+          <label class="full-field">额外要求<textarea name="requirements" rows="3" placeholder="例如：保留真实生活感，不要字幕和时间码；分镜固定为 9 个"></textarea></label>
+        </div>
+        <div class="ai-analysis-path"><span><i>1</i>识别口播与画面</span><b>→</b><span><i>2</i>生成中文分镜</span><b>→</b><span><i>3</i>确认后生成 JSON</span></div>
+      </section>
+      <section id="script-create-manual" class="script-create-panel" hidden>
+        <div class="form-grid">
+          <label>脚本名称<input maxlength="120" placeholder="例如：新品 15 秒带货脚本"></label>
+          <label>分镜数量<select><option>9 个分镜</option><option>6 个分镜</option><option>12 个分镜</option></select></label>
+          <label class="full-field">全局视觉基调<input placeholder="色系｜光影｜氛围｜摄影风格"></label>
+        </div>
+        <div class="manual-shot-seed">
+          <header><div><strong>中文分镜</strong><small>先写内容，JSON 可以由系统自动补齐或直接粘贴</small></div><button type="button">＋ 添加分镜</button></header>
+          <div><span>01</span><select><option>Hook</option><option>Solution</option><option>Trust & CTA</option></select><input placeholder="填写画面内容、主体动作和运镜"></div>
+          <div><span>02</span><select><option>Hook</option><option>Solution</option><option>Trust & CTA</option></select><input placeholder="填写画面内容、主体动作和运镜"></div>
+          <div><span>03</span><select><option>Hook</option><option>Solution</option><option>Trust & CTA</option></select><input placeholder="填写画面内容、主体动作和运镜"></div>
+        </div>
+      </section>
+      <p id="video-script-prototype-note" class="form-help">视频上传后将在后台抽帧，并调用当前启用的驱动模型进行拆解。</p>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>关闭</button><button id="retry-video-script" type="button" class="new-job-button" hidden>重试当前任务</button><button id="submit-video-script" type="submit" class="new-job-button">开始 AI 拆解</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="video-task-dialog" class="manage-dialog compact-dialog video-task-dialog">
+    <form id="video-task-form">
+      <div class="dialog-heading">
+        <div><small>NEW AI VIDEO TASK</small><h2>新建 AI 视频任务</h2><p>任务创建时会冻结脚本版本，后续修改脚本不会影响本轮生产。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <fieldset class="generation-mode-picker">
+        <legend>生成模式</legend>
+        <label class="generation-mode-option active"><input type="radio" name="generationMode" value="MODEL_WEAR" checked><i>人</i><span><strong>人物穿搭</strong><small>商品穿到 AI 模特身上</small></span></label>
+        <label class="generation-mode-option"><input type="radio" name="generationMode" value="PRODUCT_ONLY"><i>物</i><span><strong>商品展示</strong><small>静物、手持与特写按分镜执行</small></span></label>
+      </fieldset>
+      <fieldset class="background-mode-picker">
+        <legend>背景方式</legend>
+        <label class="background-mode-option active"><input type="radio" name="backgroundMode" value="SCRIPT_ORIGINAL" checked><i>原</i><span><strong>沿用脚本原背景</strong><small>保留原视频的房间、光线与场景切换</small></span><em>适合复刻</em></label>
+        <label class="background-mode-option"><input type="radio" name="backgroundMode" value="AI_DESIGNED"><i>AI</i><span><strong>AI 自动搭配背景</strong><small>根据商品、动作与市场重新设计真实场景</small></span><em>适合创作</em></label>
+      </fieldset>
+      <label id="video-task-music-field" class="video-task-music-field">
+        <input id="video-task-music" name="music" type="file" accept="audio/mpeg,audio/wav,.mp3,.wav">
+        <span class="music-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+        <span class="music-copy"><strong>配乐（可选）</strong><small id="video-task-music-name">未上传时，AI 自动生成轻快、有旋律的纯音乐</small></span>
+        <em id="video-task-music-action">选择音乐</em>
+      </label>
+      <p class="video-task-music-help">MP3 / WAV，2–15 秒，最大 15MB。上传后将作为整个任务的唯一 BGM。</p>
+      <div class="form-grid">
+        <label class="full-field">任务名称<input id="video-task-name" name="name" required maxlength="160" placeholder="例如：菲律宾 · 约会场景首批"></label>
+        <label class="full-field">选择 9 分镜脚本<select id="video-task-script-select" name="scriptId" required><option value="">正在读取脚本…</option></select></label>
+        <label class="full-field">目标市场<input id="video-task-market-input" name="targetMarket" maxlength="80" placeholder="例如：菲律宾（可选）"></label>
+        <label>商品类型<select name="productCategory"><option>服装</option><option>鞋包</option><option>饰品</option><option>家居</option><option>日用品</option><option>食品</option><option>通用商品</option></select></label>
+        <label>画幅<select name="aspectRatio"><option value="9:16">9:16 竖屏</option><option value="1:1">1:1 方形</option><option value="16:9">16:9 横屏</option></select></label>
+      </div>
+      <div class="storyboard-execution-rule">
+        <i aria-hidden="true">09</i>
+        <span><strong>场景、动作与手部状态以分镜为准</strong><small>每格独立读取：脚本写明手持才出现手部；未写明则不新增手部，场景、机位和构图也不使用任务级选项覆盖。</small></span>
+      </div>
+      <div class="task-snapshot-note"><span>脚本快照</span><p>将复制中文分镜、JSON、视觉基调和模型参数到任务中，确保执行过程可追溯。</p></div>
+      <p id="video-task-dialog-note" class="form-help">只显示已经拆解完成且包含 9 个分镜的脚本。</p>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">创建并准备素材</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="asset-preview-dialog" class="asset-preview-dialog">
+    <div class="asset-preview-shell">
+      <header>
+        <div><span id="asset-preview-kind">图片预览</span><h3 id="asset-preview-title">商品素材</h3></div>
+        <div class="asset-preview-actions">
+          <button id="asset-preview-download" type="button" class="asset-preview-download" hidden>↓ 下载图片</button>
+          <button type="button" class="dialog-close" data-close-dialog aria-label="关闭图片预览">×</button>
+        </div>
+      </header>
+      <div id="asset-preview-body" class="asset-preview-body"></div>
+      <footer><span>滚轮缩放查看细节，也可以下载原图。</span><button type="button" class="quiet-button" data-close-dialog>关闭</button></footer>
+    </div>
+  </dialog>
+
+  <dialog id="user-dialog" class="manage-dialog">
+    <form id="user-form" method="dialog" autocomplete="off">
+      <div class="dialog-heading">
+        <div><small>NEW MEMBER</small><h2>添加企业人员</h2><p>创建账号并分配首个部门与角色。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="form-grid">
+        <label>姓名<input name="displayName" required maxlength="120" placeholder="例如：林晓"></label>
+        <label>手机号（登录账号）<input name="phone" type="tel" inputmode="tel" required pattern="\+?[0-9]{6,20}" maxlength="21" autocomplete="tel" placeholder="例如：13800138000"></label>
+        <label>所属部门<select name="departmentId" id="user-department" required></select></label>
+        <div class="full-field"><span class="field-label">岗位角色（可多选）</span><div id="user-role-options" class="choice-grid"></div></div>
+        <label>职位<input name="jobTitle" maxlength="100" placeholder="例如：内容运营"></label>
+        <label>邮箱<input name="email" type="email" maxlength="160" placeholder="name@company.com"></label>
+        <label class="full-field">初始密码<input name="password" type="password" minlength="8" maxlength="72" required autocomplete="new-password" placeholder="至少 8 位，人员登录后应修改"></label>
+      </div>
+      <div id="user-form-error" class="form-error" hidden></div>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">创建人员</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="edit-user-dialog" class="manage-dialog">
+    <form id="edit-user-form" method="dialog" autocomplete="off">
+      <input type="hidden" name="userId">
+      <div class="dialog-heading">
+        <div><small>MEMBER PROFILE</small><h2>编辑人员与角色</h2><p>账号名不可修改，部门和角色变更会立即影响权限。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="form-grid">
+        <label>姓名<input name="displayName" required maxlength="120"></label>
+        <label>所属部门<select name="departmentId" id="edit-user-department" required></select></label>
+        <label>职位<input name="jobTitle" maxlength="100"></label>
+        <label>手机号（登录账号）<input name="phone" type="tel" inputmode="tel" required pattern="\+?[0-9]{6,20}" maxlength="21" autocomplete="tel"></label>
+        <label>邮箱<input name="email" type="email" maxlength="160"></label>
+        <div class="full-field"><span class="field-label">岗位角色（可多选）</span><div id="edit-user-role-options" class="choice-grid"></div></div>
+      </div>
+      <div id="edit-user-form-error" class="form-error" hidden></div>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">保存人员配置</button></div>
+    </form>
+  </dialog>
+
+    <dialog id="password-dialog" class="manage-dialog compact-dialog">
+    <form id="password-form" method="dialog" autocomplete="off">
+      <input type="hidden" name="userId">
+      <div class="dialog-heading">
+        <div><small>SECURITY ACTION</small><h2>重置登录密码</h2><p id="password-user-hint"></p></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <label class="single-field">新密码<input name="password" type="password" minlength="8" maxlength="72" required autocomplete="new-password" placeholder="至少 8 位"></label>
+      <div id="password-form-error" class="form-error" hidden></div>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">确认重置</button></div>
+    </form>
+    </dialog>
+
+    <dialog id="automation-access-dialog" class="manage-dialog compact-dialog">
+      <form id="automation-access-form">
+        <input type="hidden" name="userId">
+        <div class="dialog-heading">
+          <div><small>LOCAL AUTOMATION ACCESS</small><h2>配置自动化权限</h2><p id="automation-access-user-hint"></p></div>
+          <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+        </div>
+        <div class="form-grid">
+          <div class="full-field">
+            <span class="field-label">允许执行的自动化</span>
+            <div id="automation-access-options" class="choice-grid"></div>
+          </div>
+        </div>
+        <p class="form-help">员工进入自动化中心后，平台会自动检测并连接其当前电脑上的赫逸助手；不需要管理员选择设备。</p>
+        <div id="automation-access-error" class="form-error" hidden></div>
+        <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">保存自动化配置</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="automation-runtime-dialog" class="manage-dialog compact-dialog">
+      <form id="automation-runtime-form">
+        <input type="hidden" name="skillCode">
+        <div class="dialog-heading">
+          <div><small>BROWSER RUNTIME</small><h2 id="automation-runtime-title">配置执行环境</h2><p>指定 Skill 使用哪种本机浏览器，以及是否要求国家线路。</p></div>
+          <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+        </div>
+        <div class="form-grid">
+          <label>浏览器执行器<select name="browserEngine"><option value="FEIKUA">飞跨浏览器</option><option value="BROWSER_ACT">Browser Act</option></select></label>
+          <label>Browser Act 类型<select name="browserType"><option value="chrome">Chrome</option><option value="chrome-direct">本机 Chrome 直连</option><option value="stealth">Stealth 隔离浏览器</option></select></label>
+          <label class="full-field">首选浏览器实例 ID<input name="browserId" maxlength="120" placeholder="留空则使用员工本机助手的默认实例"></label>
+          <label>网络线路<select name="proxyPolicy"><option value="DIRECT">直连</option><option value="PRECONFIGURED">使用浏览器预配置代理</option></select></label>
+          <label>国家/地区代码<input name="requiredRegion" maxlength="20" placeholder="例如：PH、MY"></label>
+          <label class="full-field">允许访问的域名<textarea name="allowedDomains" rows="3" placeholder="每行一个，例如 seller.shopee.ph"></textarea></label>
+        </div>
+        <p class="form-help">代理凭据不上传平台。管理员只指定线路要求，员工本机助手选择已经配置好的浏览器实例。</p>
+        <div id="automation-runtime-error" class="form-error" hidden></div>
+        <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">保存执行环境</button></div>
+      </form>
+    </dialog>
+
+  <dialog id="role-dialog" class="manage-dialog role-dialog">
+    <form id="role-form" method="dialog">
+      <input type="hidden" name="roleId">
+      <div class="dialog-heading">
+        <div><small>RBAC ROLE</small><h2 id="role-dialog-title">新增企业角色</h2><p>角色定义功能权限，数据范围决定能操作哪些业务数据。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="form-grid">
+        <label>角色名称<input name="name" required maxlength="100" placeholder="例如：商品运营"></label>
+        <label>角色编码<input name="code" required pattern="[A-Za-z0-9_-]{2,60}" placeholder="例如：PRODUCT_OPERATOR"></label>
+        <label>数据范围<select name="dataScope" required>
+          <option value="SELF">仅本人</option>
+          <option value="DEPARTMENT">本部门</option>
+          <option value="DEPARTMENT_AND_CHILDREN">本部门及下级</option>
+          <option value="ALL">全部数据</option>
+        </select></label>
+        <label>角色状态<select name="status"><option value="ACTIVE">正常</option><option value="DISABLED">停用</option></select></label>
+        <label class="full-field">角色说明<textarea name="description" maxlength="500" rows="2"></textarea></label>
+        <div class="full-field"><span class="field-label">功能权限</span><div id="permission-options" class="permission-options"></div></div>
+      </div>
+      <div id="role-form-error" class="form-error" hidden></div>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">保存角色权限</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="department-dialog" class="manage-dialog compact-dialog">
+    <form id="department-form" method="dialog">
+      <input type="hidden" name="departmentId">
+      <div class="dialog-heading">
+        <div><small>DEPARTMENT</small><h2 id="department-dialog-title">添加部门</h2></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="form-grid">
+        <label>部门名称<input name="name" required maxlength="120" placeholder="例如：内容运营部"></label>
+        <label>部门编码<input name="code" required pattern="[A-Za-z0-9_-]{2,60}" placeholder="例如：CONTENT"></label>
+        <label class="full-field">上级部门<select name="parentId" id="parent-department"><option value="">无上级部门</option></select></label>
+      </div>
+      <div id="department-form-error" class="form-error" hidden></div>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button id="department-submit-button" type="submit" class="new-job-button">创建部门</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="organization-dialog" class="manage-dialog">
+    <form id="organization-form" method="dialog">
+      <div class="dialog-heading">
+        <div><small>COMPANY PROFILE</small><h2>编辑企业资料</h2></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="form-grid">
+        <label class="full-field">企业名称<input name="name" required maxlength="120"></label>
+        <label>联系人<input name="contactName" maxlength="80"></label>
+        <label>联系电话<input name="contactPhone" maxlength="40"></label>
+        <label class="full-field">Logo 地址<input name="logoUrl" maxlength="512" placeholder="https://..."></label>
+        <label class="full-field">企业简介<textarea name="description" maxlength="1000" rows="4"></textarea></label>
+      </div>
+      <div id="organization-form-error" class="form-error" hidden></div>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">保存企业资料</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="model-dialog" class="manage-dialog compact-dialog">
+    <form id="model-form" method="dialog" autocomplete="off">
+      <input type="hidden" name="configId">
+      <input type="hidden" name="modelType">
+      <input type="hidden" name="defaultModel" value="false">
+      <div class="dialog-heading">
+        <div><small>MODEL CONNECTION</small><h2 id="model-dialog-title">添加模型</h2><p>复制服务商控制台中的信息，按原样填入即可。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="simple-model-form">
+        <label id="video-provider-field" hidden><span>视频厂商</span><select name="provider"><option value="AUTO">自动识别</option><option value="DAYAN">大衍 MiniMax H3</option><option value="WENGAO">文高云 MiniMax H3</option></select></label>
+        <label><span>API 地址</span><input name="baseUrl" type="url" required maxlength="512" placeholder="https://api.example.com/v1"></label>
+        <label><span>模型 ID</span><input name="modelId" required maxlength="160" placeholder="例如：image-model-v1"></label>
+        <label><span>API Key</span><input name="apiKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="粘贴服务商提供的 Key"></label>
+      </div>
+      <p id="model-key-help" class="form-help">Key 会加密保存，保存后无法查看明文。</p>
+      <div id="model-form-error" class="form-error" hidden></div>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">保存连接</button></div>
+    </form>
+  </dialog>
+  <dialog id="workflow-dialog" class="manage-dialog compact-dialog">
+    <form id="workflow-form">
+      <div class="dialog-heading">
+        <div><small>NEW WORKFLOW</small><h2>新建 AI 任务</h2><p>每个账号同一时间只执行一条任务。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog>×</button>
+      </div>
+      <div class="form-grid">
+        <label class="full-field">任务名称
+          <input id="workflow-title" maxlength="200" required placeholder="例如：夏季新品图生视频">
+        </label>
+        <label>任务类型
+          <select id="workflow-type" required>
+            <option value="IMAGE_TO_VIDEO">图生视频</option>
+            <option value="IMAGE_COLLECTION">素材采集</option>
+            <option value="IMAGE_VARIATION">款式裂变</option>
+            <option value="ECOMMERCE_IMAGE">电商图生成</option>
+            <option value="PRODUCT_PUBLISH">商品发布</option>
+          </select>
+        </label>
+        <label>预算上限（元）
+          <input id="workflow-budget" type="number" min="0" step="0.01" placeholder="可不填">
+        </label>
+        <label class="full-field">任务说明
+          <textarea id="workflow-description" rows="4" placeholder="填写素材位置、脚本或执行要求"></textarea>
+        </label>
+      </div>
+      <p id="workflow-error" class="form-error" hidden></p>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button id="workflow-submit" type="submit" class="new-job-button">创建并开始</button></div>
+    </form>
+  </dialog>
+  <dialog id="automation-form-dialog" class="manage-dialog automation-form-dialog">
+    <form id="automation-form-designer">
+      <div class="dialog-heading">
+        <div>
+          <small>START FORM DESIGNER</small>
+          <h2 id="automation-form-title">配置启动表单</h2>
+          <p>拖入员工开始任务前必须填写的内容，保存后执行页自动更新。</p>
+        </div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="form-designer-layout">
+        <aside class="form-designer-palette">
+          <strong>可用控件</strong>
+          <span>拖入中间画布</span>
+          <div id="automation-field-palette">
+            <button type="button" data-field-type="text"><i>T</i>单行文本</button>
+            <button type="button" data-field-type="textarea"><i>¶</i>多行文本</button>
+            <button type="button" data-field-type="number"><i>#</i>数字</button>
+            <button type="button" data-field-type="date"><i>日</i>日期</button>
+            <button type="button" data-field-type="select"><i>⌄</i>下拉选择</button>
+            <button type="button" data-field-type="checkbox"><i>✓</i>确认开关</button>
+            <button type="button" data-field-type="localFile"><i>↑</i>文件上传</button>
+            <button type="button" data-field-type="prerequisite"><i>!</i>前置确认</button>
+          </div>
+        </aside>
+        <section class="form-designer-canvas-wrap">
+          <div class="form-designer-canvas-heading">
+            <div><strong>员工启动表单</strong><span id="automation-form-count">0 个控件</span></div>
+            <small>拖动控件调整顺序</small>
+          </div>
+          <div id="automation-form-canvas" class="form-designer-canvas"></div>
+        </section>
+        <aside id="automation-field-settings" class="form-designer-settings">
+          <div class="designer-settings-empty">
+            <strong>字段设置</strong>
+            <span>选择中间的控件进行配置。</span>
+          </div>
+        </aside>
+      </div>
+      <p class="form-help">本机文件由员工在网页上传；执行结果回传平台供员工下载，任务文件仅保留 3 天。</p>
+      <p id="automation-form-error" class="form-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="quiet-button" data-close-dialog>取消</button>
+        <button id="save-automation-form" type="submit" class="new-job-button">保存并发布表单</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="automation-run-dialog" class="manage-dialog automation-run-dialog">
+    <form id="automation-run-form">
+      <div class="dialog-heading">
+        <div><small>LOCAL AUTOMATION</small><h2 id="automation-run-title">执行自动化</h2><p id="automation-run-subtitle">开始前填写一次，提交后本轮不可修改。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog>×</button>
+      </div>
+      <section id="automation-setup-stage">
+        <div class="automation-start-notice">
+          <span>仅此一次</span>
+          <div><strong>确认后立即锁定本轮参数</strong><p>运行中不能更换上传文件、日期或其他条件。如需调整，请等待本轮结束后重新创建。</p></div>
+        </div>
+        <label class="automation-requirement-field">
+          <span>告诉助手本轮要怎么执行（可选）</span>
+          <textarea id="automation-execution-requirement" rows="3" maxlength="1000"
+            placeholder="例如：只处理前三个店铺；本轮只做 Shopee。"></textarea>
+          <small>模型会先审核计划，并在执行中持续复核；遇到异常会选择受控恢复方案，脚本从断点继续，确实无法恢复才判定失败。</small>
+        </label>
+        <div id="automation-prerequisites" class="automation-prerequisites"></div>
+        <div id="automation-run-fields" class="form-grid"></div>
+        <div id="automation-plan-loading" class="automation-plan-loading" hidden role="status" aria-live="polite">
+          <i class="plan-spinner" aria-hidden="true"></i>
+          <div><strong>Pi Agent 正在理解本轮要求</strong><span>正在识别店铺范围、数量和执行条件，请不要重复点击。</span></div>
+        </div>
+        <div id="automation-plan-preview" class="automation-plan-preview" hidden>
+          <header><div><small>EXECUTION PLAN</small><strong>请确认本轮执行计划</strong></div><span id="automation-plan-source"></span></header>
+          <p id="automation-plan-summary"></p>
+          <dl id="automation-plan-parameters"></dl>
+          <div id="automation-plan-notes"></div>
+          <button id="automation-replan-button" type="button" class="quiet-button">返回修改</button>
+        </div>
+        <p id="automation-run-error" class="form-error" hidden></p>
+        <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button id="automation-start-button" type="submit" class="new-job-button">确认条件并开始</button></div>
+      </section>
+      <section id="automation-live-stage" class="automation-live-stage" hidden>
+        <div class="automation-live-head">
+          <div><span id="automation-live-status" class="job-status status-queued">待执行</span><strong id="automation-live-progress">0%</strong></div>
+          <div class="automation-progress-track"><i id="automation-progress-bar"></i></div>
+        </div>
+        <div id="automation-control-bar" class="automation-control-bar"></div>
+        <section id="automation-business-results" class="automation-business-results" hidden>
+          <header><div><small>BUSINESS RESULTS</small><strong>本轮业务结果</strong></div><span id="automation-result-counts"></span></header>
+          <div id="automation-result-units" class="automation-result-units"></div>
+        </section>
+        <div class="automation-runtime-grid">
+          <aside>
+            <small>本轮参数 · 已锁定</small>
+            <dl id="automation-input-snapshot"></dl>
+          </aside>
+          <section>
+            <div class="automation-console-heading"><div><small>RUN OUTPUT</small><strong>助手与模型返回</strong></div><span id="automation-event-count">0 条</span></div>
+            <div id="automation-event-stream" class="automation-event-stream"></div>
+          </section>
+        </div>
+        <div id="automation-result-panel" class="automation-result-panel" hidden>
+          <strong>结果文件</strong>
+          <div id="automation-result-download"></div>
+          <details><summary>查看技术结果明细</summary><pre id="automation-result-output"></pre></details>
+        </div>
+      </section>
+    </form>
+  </dialog>
+  <script src="/vendor/sortable.min.js" defer></script>
+  <script src="/app.js?v=20260804-assistant-composer-2" defer></script>
+</body>
+</html>

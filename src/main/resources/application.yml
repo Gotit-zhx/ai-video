@@ -1,0 +1,87 @@
+spring:
+  application:
+    name: ai-commerce-platform
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/ai_commerce?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${DB_USERNAME:ai_commerce}
+    password: ${DB_PASSWORD:ai_commerce_dev}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      minimum-idle: 2
+      connection-timeout: 30000
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    validate-migration-naming: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:ai_commerce_dev}
+      timeout: 3s
+  session:
+    store-type: redis
+    redis:
+      namespace: heyi:session
+      repository-type: indexed
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+
+app:
+  default-organization-code: ${APP_TENANT_CODE:heyi}
+  default-organization-name: ${APP_TENANT_NAME:赫逸智能化}
+  model-secret-key: ${APP_MODEL_SECRET_KEY:local-development-model-secret-change-me}
+  automation-agent-token: ${APP_AUTOMATION_AGENT_TOKEN:heyi-local-agent-dev-token}
+  automation-skill-storage: ${APP_AUTOMATION_SKILL_STORAGE:/data/automation-skills}
+  automation-attachment-storage: ${APP_AUTOMATION_ATTACHMENT_STORAGE:/data/automation-attachments}
+  video-script-storage: ${APP_VIDEO_SCRIPT_STORAGE:/data/video-scripts}
+  ai-video-task-storage: ${APP_AI_VIDEO_TASK_STORAGE:/data/ai-video-tasks}
+  public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:8080}
+  pi-runtime-url: ${APP_PI_RUNTIME_URL:http://localhost:8090}
+  pi-runtime-token: ${APP_PI_RUNTIME_TOKEN:heyi-pi-runtime-dev-token}
+  dispatch:
+    enabled: ${APP_DISPATCH_ENABLED:true}
+    worker-id: ${APP_DISPATCH_WORKER_ID:heyi-app-worker}
+    worker-threads: ${APP_DISPATCH_WORKER_THREADS:8}
+    max-active-tasks: ${APP_MAX_ACTIVE_TASKS:80}
+    max-model-calls: ${APP_MAX_MODEL_CALLS:20}
+    permit-lease: ${APP_DISPATCH_PERMIT_LEASE:30m}
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+  global-config:
+    banner: false
+    db-config:
+      id-type: assign_uuid
+  type-aliases-package: com.yingdao.aicommerce.**.domain
+
+server:
+  port: ${APP_PORT:8080}
+  shutdown: graceful
+  servlet:
+    session:
+      timeout: 8h
+      cookie:
+        name: HEYI_SESSION
+        http-only: true
+        same-site: lax
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+
+logging:
+  level:
+    root: INFO
+    com.yingdao.aicommerce: INFO
