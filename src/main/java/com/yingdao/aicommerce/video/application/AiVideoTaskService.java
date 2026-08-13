@@ -81,16 +81,27 @@ public class AiVideoTaskService {
         String interactionType = "按分镜逐镜执行";
         boolean allowHand = false;
         String aspectRatio = normalizeAspectRatio(command.aspectRatio());
+        String resolution = normalizeResolution(command.resolution());
+        boolean useScriptReferenceVideo = command.useScriptReferenceVideo();
+        if (useScriptReferenceVideo && !"PRODUCT_ONLY".equals(generationMode)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "脚本视频复刻仅支持商品展示模式");
+        }
+        if (useScriptReferenceVideo && (!"VIDEO_ANALYSIS".equals(script.getSourceType())
+                || script.getSourceFilePath() == null || script.getSourceContentType() == null
+                || !script.getSourceContentType().startsWith("video/"))) {
+            throw new BusinessException(HttpStatus.CONFLICT, "所选脚本没有可提交的原始参考视频");
+        }
         String generationRules = json(Map.of("mode", generationMode, "backgroundMode", backgroundMode, "productCategory", productCategory,
                 "scenePolicy", "PER_SHOT", "interactionPolicy", "PER_SHOT", "handPolicy", "PER_SHOT",
-                "aspectRatio", aspectRatio));
+                "aspectRatio", aspectRatio, "resolution", resolution, "useScriptReferenceVideo", useScriptReferenceVideo));
         String qualityRules = json(Map.of("singleProduct", true, "preserveLogoAndText", true,
                 "preserveColorAndShape", true, "preventExtraPeople", !"MODEL_WEAR".equals(generationMode),
                 "preventExtraHands", true, "preventDeformation", true,
                 "preventFloatingAndCollision", true));
         AiVideoTask task = new AiVideoTask(principal.organizationId(), name, script.getId(), script.getVersion(),
                 script.getName(), script.getScriptJson(), normalizeNullable(command.targetMarket(), 80), generationMode,
-                backgroundMode, productCategory, sceneType, interactionType, allowHand, aspectRatio, generationRules, qualityRules,
+                backgroundMode, productCategory, sceneType, interactionType, allowHand, aspectRatio, resolution, useScriptReferenceVideo,
+                generationRules, qualityRules,
                 principal.userId());
         taskMapper.insert(task);
         return task;
@@ -277,6 +288,34 @@ public class AiVideoTaskService {
         }
     }
 
+    public AiVideoTask startGeneration(String id, PlatformPrincipal principal) {
+        AiVideoTask task = requireOwned(id, principal);
+        if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前视频生成流程已经在执行");
+        }
+        if (!List.of("READY", "FAILED", "IMAGE_READY", "VIDEO_READY").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前任务还不能启动视频生成");
+        }
+        List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
+                .eq(AiVideoTaskItem::getTaskId, id));
+        if (items.isEmpty()) throw new BusinessException(HttpStatus.CONFLICT, "请先上传商品素材");
+        String primaryAssetType = "MODEL_WEAR".equals(task.getGenerationMode())
+                ? "MODEL_IMAGE" : "PRODUCT_SCENE_IMAGE";
+        boolean imagesReady = items.stream().allMatch(item -> hasAsset(item.getId(), primaryAssetType)
+                && hasAsset(item.getId(), "STORYBOARD_GRID")
+                && hasAsset(item.getId(), "STORYBOARD_FIRST_FRAME"));
+        if (imagesReady) return startVideos(id, principal);
+        task.requestAutoStartVideo();
+        taskMapper.updateById(task);
+        return startImages(id, principal);
+    }
+
+    private boolean hasAsset(String itemId, String assetType) {
+        return assetMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskAsset>()
+                .eq(AiVideoTaskAsset::getItemId, itemId)
+                .eq(AiVideoTaskAsset::getAssetType, assetType)) > 0;
+    }
+
     public AiVideoTask regenerateStoryboard(String taskId, String itemId, PlatformPrincipal principal) {
         AiVideoTask task = requireOwned(taskId, principal);
         if ("IMAGE_GENERATING".equals(task.getStatus())) {
@@ -448,6 +487,14 @@ public class AiVideoTaskService {
         return ratio;
     }
 
+    private String normalizeResolution(String value) {
+        String resolution = value == null || value.isBlank() ? "720p" : value.trim();
+        if (!List.of("720p", "1080p", "2K", "4K").contains(resolution)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "不支持的视频分辨率");
+        }
+        return resolution;
+    }
+
     private String json(Map<String, Object> value) {
         try { return objectMapper.writeValueAsString(value); }
         catch (Exception exception) { throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "任务规则保存失败"); }
@@ -464,10 +511,13 @@ public class AiVideoTaskService {
         prompt.append("图1：从图2第 01 格裁出的商品首帧，是商品外观、位置、场景与初始状态的最高优先级锚点。\n");
         prompt.append("图2：4K 商品分镜九宫格，按从左到右、从上到下读取 01→09，仅表示同一件商品的连续展示过程。\n");
         prompt.append("图3：原始商品素材，用于校验颜色、结构、比例、Logo、包装文字、印花与材质。\n\n");
+        prompt.append("如请求中另附参考视频：它是原分镜脚本的动作母版，只用于复刻时间节奏、主体动作、运镜轨迹和镜头边界转场；不得继承其中的原商品外观、文字、品牌、人物身份或背景细节。\n\n");
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append(" 商品展示视频。全程只保留同一件商品主体，按 01→09 自然连续变化，不得复制或增加第二件同款。\n");
         prompt.append("商品的颜色、形状、比例、Logo、标签、包装文字、图案和材质必须与图3一致，不得重新设计、漂移、融化或变形。\n");
         prompt.append("场景、展示方式、机位、构图和手部状态逐镜读取图2与脚本时间轴，不得用某一格的设置覆盖其他格。镜头变化只采用脚本明确的推近、拉远、平移、环绕或细节特写。\n");
+        prompt.append("运镜不是静态构图备注：每个时间段必须真实执行脚本 cameraMovement 指定的方向、速度、起止景别和持续过程；只有脚本明确写固定机位时才允许完全固定。\n");
+        prompt.append("九宫格是 9 个时间轴关键帧，不代表 9 个物理镜头。只有 transitionDescription 明确标记真实切点时才执行转场；标记“同镜头连续，无转场”的相邻格必须保持同一镜头内连续运动。原片拆解出的闪光、光漏、遮挡、甩镜、变焦模糊、叠化或硬切要按类型、方向、颜色和时长复现，不得在九宫格内部凭空增加切镜。\n");
         prompt.append("分镜明确写出手持、拿取、摆放、打开或演示时，只在该分镜出现完成动作所需的一双自然手；分镜未要求手部互动时，不得新增人物、手臂、手部或持物动作。\n");
         prompt.append("商品不得悬浮，必须与手、桌面、地面、支架或包装建立符合该分镜的真实接触关系。\n");
         prompt.append("禁止穿模、异常反射、破损结构、额外配件、背景文字、水印、分屏、九宫格边框和画中画。\n\n");
@@ -522,7 +572,10 @@ public class AiVideoTaskService {
             Object rawShots = root.get("shots");
             if (!(rawShots instanceof List<?> shots) || shots.isEmpty()) return;
             prompt.append("【逐镜头时间轴】\n");
-            prompt.append("每一项对应图2中同编号格，必须在指定时段落实该格的场景、构图、景别和动作；同场景内部平滑运动，场景明显变化时在边界干净硬切。\n");
+            boolean productOnly = VideoTimelineSemantics.usesPhysicalShotTransitions(task.getGenerationMode());
+            prompt.append(productOnly
+                    ? "每一项对应图2中同编号关键帧，必须在指定时段落实该格的场景、构图、景别、动作和运镜；严格读取“进入转场”，其中“同镜头连续，无转场”表示平滑延续，只有明确的真实切点才允许切镜。\n"
+                    : "每一项对应图2中同编号格，必须在指定时段落实该格的场景、构图、景别和动作；同场景内部平滑运动，场景明显变化时在边界干净硬切。\n");
             prompt.append("时间轴文字中的人物外貌、发型、眼镜、配饰、上装和下装描述全部失效，人物与穿搭只认图1和图3；场景、动作、构图与景别以图2对应格的可见画面为最高标准。\n");
             for (Object rawShot : shots) {
                 if (!(rawShot instanceof Map<?, ?> shot)) continue;
@@ -535,6 +588,7 @@ public class AiVideoTaskService {
                 String intensity = textValue(shot.get("motionIntensity"));
                 String shotSize = textValue(shot.get("shotSize"));
                 String movement = textValue(shot.get("cameraMovement"));
+                String transition = textValue(shot.get("transitionDescription"));
                 String scene = textValue(shot.get("sceneDescription"));
                 prompt.append(String.format("%02d", sequence));
                 if (!start.isBlank() && !end.isBlank()) prompt.append("｜").append(start).append('–').append(end).append(" 秒");
@@ -543,6 +597,9 @@ public class AiVideoTaskService {
                 appendLine(prompt, "画面与场景", scene);
                 appendLine(prompt, "动作幅度", intensity);
                 appendLine(prompt, "手部规则", shotHandDirective(task, action, scene));
+                if (productOnly) {
+                    appendLine(prompt, "进入转场", VideoTimelineSemantics.enteringTransition(sequence, transition));
+                }
                 if (!shotSize.isBlank() || !movement.isBlank()) {
                     prompt.append("镜头：");
                     if (!shotSize.isBlank()) prompt.append(shotSize);
@@ -770,7 +827,7 @@ public class AiVideoTaskService {
 
     public record CreateCommand(String scriptId, String name, String targetMarket, String generationMode,
                                 String backgroundMode, String productCategory, String sceneType, String interactionType,
-                                boolean allowHand, String aspectRatio) {}
+                                boolean allowHand, String aspectRatio, String resolution, boolean useScriptReferenceVideo) {}
     public record TaskDetail(AiVideoTask task, List<AiVideoTaskItem> items, List<AiVideoTaskAsset> assets,
                              java.time.Instant videoSubmittedAt, Map<String, String> videoProviderTaskIds) {}
     public record AssetFile(Path path, String contentType, long size) {}

@@ -95,6 +95,7 @@ public class AiVideoImageProcessor {
     private final VideoScriptMapper scriptMapper;
     private final VideoScriptShotMapper shotMapper;
     private final ModelConfigService modelConfigService;
+    private final AiVideoGenerationService videoGenerationService;
     private final ObjectMapper objectMapper;
     private final RestClient piClient;
     private final Executor imageExecutor;
@@ -104,6 +105,7 @@ public class AiVideoImageProcessor {
     public AiVideoImageProcessor(AiVideoTaskMapper taskMapper, AiVideoTaskItemMapper itemMapper,
                                  AiVideoTaskAssetMapper assetMapper, VideoScriptMapper scriptMapper,
                                  VideoScriptShotMapper shotMapper, ModelConfigService modelConfigService,
+                                 AiVideoGenerationService videoGenerationService,
                                  ObjectMapper objectMapper,
                                  @Qualifier("aiVideoImageExecutor") Executor imageExecutor,
                                  @Value("${app.pi-runtime-url}") String piRuntimeUrl,
@@ -116,6 +118,7 @@ public class AiVideoImageProcessor {
         this.scriptMapper = scriptMapper;
         this.shotMapper = shotMapper;
         this.modelConfigService = modelConfigService;
+        this.videoGenerationService = videoGenerationService;
         this.objectMapper = objectMapper;
         this.imageExecutor = imageExecutor;
         this.piClient = RestClient.builder().baseUrl(piRuntimeUrl).defaultHeader("X-Internal-Token", piRuntimeToken).build();
@@ -176,6 +179,16 @@ public class AiVideoImageProcessor {
                 task.complete(completed, failures.isEmpty() ? null : String.join("；", failures));
             }
             taskMapper.updateById(task);
+            if (failures.isEmpty() && task.isAutoStartVideoAfterImages()) {
+                task.consumeAutoStartVideo();
+                taskMapper.updateById(task);
+                try {
+                    videoGenerationService.start(task);
+                } catch (Exception exception) {
+                    task.fail("图片已完成，但自动提交视频失败：" + readable(exception));
+                    taskMapper.updateById(task);
+                }
+            }
         } catch (Exception exception) {
             task.fail(readable(exception));
             taskMapper.updateById(task);

@@ -187,7 +187,7 @@ public class VideoScriptAnalysisProcessor {
                                 : cameraMotionAnalyzer.cameraMovementFor(
                                         cameraMotion, shot.startSecond(), shot.endSecond(), shot.cameraMovement()
                                 ),
-                        shot.emotion(), shot.imagePrompt()
+                        shot.transitionDescription(), shot.emotion(), shot.imagePrompt()
                 )
         ).toList();
         return new VideoScriptAnalysisResult(
@@ -220,6 +220,7 @@ public class VideoScriptAnalysisProcessor {
                         safeNullable(shot.narration(), 8000),
                         safeNullable(shot.shotSize(), 80),
                         safeNullable(shot.cameraMovement(), 120),
+                        safeNullable(shot.transitionDescription(), 500),
                         safeNullable(shot.emotion(), 120),
                         toJson(shot.imagePrompt())
                 ));

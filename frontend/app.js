@@ -44,18 +44,74 @@ let skillConvertStatusTimer = null;
 let videoScriptStatusTimer = null;
 let activeVideoScript = null;
 let selectedVideoScriptId = null;
+let selectedVideoScriptDetail = null;
 let selectedVideoShot = null;
 let videoScriptVisualTimer = null;
 let videoScriptVisualProgress = 0;
 let videoScriptVisualStatus = "";
+let videoScripts = [];
+let videoScriptSearchQuery = "";
 let aiVideoTasks = [];
+let aiVideoTaskSearchQuery = "";
 let selectedAiVideoTaskId = null;
 let aiVideoTaskDetail = null;
 let aiVideoTaskPollTimer = null;
+let aiVideoTaskPollInFlight = false;
 let aiVideoTaskRenderSignature = "";
 let aiVideoElapsedTimer = null;
+let aiVideoMonitorSnapshot = { stats: {}, tasks: [] };
+let selectedMonitorTaskId = null;
+let selectedMonitorTaskDetail = null;
+let aiVideoMonitorStatus = "ALL";
+let aiVideoMonitorTimer = null;
+let slidingSwitchFrame = 0;
 const flippedAiVideoPromptItems = new Set();
 const aiVideoPromptDrafts = new Map();
+
+const slidingSwitchSelector = ".sliding-switch";
+
+function syncSlidingSwitch(control) {
+  if (!control || control.offsetParent === null) return;
+  const active = control.querySelector("button.active:not([hidden])");
+  if (!active) return;
+  control.style.setProperty("--switch-x", `${active.offsetLeft}px`);
+  control.style.setProperty("--switch-y", `${active.offsetTop}px`);
+  control.style.setProperty("--switch-width", `${active.offsetWidth}px`);
+  control.style.setProperty("--switch-height", `${active.offsetHeight}px`);
+  control.classList.add("slider-ready");
+}
+
+function scheduleSlidingSwitchSync() {
+  if (slidingSwitchFrame) cancelAnimationFrame(slidingSwitchFrame);
+  slidingSwitchFrame = requestAnimationFrame(() => {
+    slidingSwitchFrame = 0;
+    document.querySelectorAll(slidingSwitchSelector).forEach(syncSlidingSwitch);
+  });
+}
+
+document.addEventListener("click", event => {
+  if (event.target.closest(`${slidingSwitchSelector} > button`)) {
+    requestAnimationFrame(scheduleSlidingSwitchSync);
+  }
+});
+
+window.addEventListener("resize", scheduleSlidingSwitchSync, { passive: true });
+
+if (typeof ResizeObserver === "function") {
+  const slidingSwitchResizeObserver = new ResizeObserver(scheduleSlidingSwitchSync);
+  document.querySelectorAll(slidingSwitchSelector).forEach(control =>
+    slidingSwitchResizeObserver.observe(control)
+  );
+}
+
+document.querySelectorAll("dialog:has(.sliding-switch)").forEach(dialog => {
+  new MutationObserver(scheduleSlidingSwitchSync).observe(dialog, {
+    attributes: true,
+    attributeFilter: ["open"]
+  });
+});
+
+scheduleSlidingSwitchSync();
 
 const statusNames = {
   DRAFT: "草稿",
@@ -118,7 +174,8 @@ async function showDashboard(user) {
   loginView.hidden = true;
   dashboardView.hidden = false;
   document.querySelector("#current-user").textContent = user.displayName || user.username;
-  document.querySelector(".topbar p").textContent = user.organizationName || "企业工作空间";
+  const topbarOrganization = document.querySelector(".topbar p");
+  if (topbarOrganization) topbarOrganization.textContent = user.organizationName || "企业工作空间";
   applyFeatureAccess();
   if (hasAnyPermission("dashboard:view", "workflow:view", "workflow:manage", "workflow:review")) {
     switchWorkspace("dashboard");
@@ -129,6 +186,9 @@ async function showDashboard(user) {
   } else if (hasAnyPermission("video:task:view", "video:task:manage")) {
     switchWorkspace("aiVideoTasks");
     await loadAiVideoTasks();
+  } else if (hasAnyPermission("video:monitor:view")) {
+    switchWorkspace("aiVideoMonitor");
+    await loadAiVideoMonitor();
   } else if (hasAnyPermission("automation:view", "automation:execute")) {
     switchWorkspace("automations");
     await loadAutomationCenter();
@@ -154,6 +214,7 @@ function applyFeatureAccess() {
   const canManageScripts = hasAnyPermission("video:script:manage");
   const canViewVideoTasks = hasAnyPermission("video:task:view", "video:task:manage");
   const canManageVideoTasks = hasAnyPermission("video:task:manage");
+  const canViewVideoMonitor = hasAnyPermission("video:monitor:view");
   const canUseAutomation = hasAnyPermission("automation:view", "automation:execute");
   const canViewAutomationAdmin = hasAnyPermission("system:automation:view", "system:automation:manage");
   const canManageAutomation = hasAnyPermission("system:automation:manage");
@@ -167,6 +228,7 @@ function applyFeatureAccess() {
   document.querySelector("#nav-dashboard").hidden = !canDashboard;
   document.querySelector("#nav-video-scripts").hidden = !canViewScripts;
   document.querySelector("#nav-ai-video-tasks").hidden = !canViewVideoTasks;
+  document.querySelector("#nav-ai-video-monitor").hidden = !canViewVideoMonitor;
   document.querySelector("#nav-publish").hidden = !hasAnyPermission("publish:view", "publish:manage");
   document.querySelector("#nav-automations").hidden = !canUseAutomation;
   document.querySelector("#nav-automation-admin").hidden = !canViewAutomationAdmin;
@@ -179,6 +241,8 @@ function applyFeatureAccess() {
   document.querySelector("#import-video-script").hidden = !canManageScripts;
   document.querySelector("#create-manual-script").hidden = !canManageScripts;
   document.querySelector("#delete-video-script").hidden = !canManageScripts;
+  document.querySelector("#copy-video-script").hidden = !canManageScripts;
+  document.querySelector("#edit-video-script-tone").hidden = !canManageScripts;
   document.querySelector("#edit-video-shot").hidden = !canManageScripts;
   document.querySelector("#create-video-task").hidden = !canManageVideoTasks;
   document.querySelector("#batch-garment-upload-label").hidden = !canManageVideoTasks;
@@ -358,6 +422,12 @@ document.querySelector("#nav-ai-video-tasks").addEventListener("click", async ev
   await loadAiVideoTasks();
 });
 
+document.querySelector("#nav-ai-video-monitor").addEventListener("click", async event => {
+  event.preventDefault();
+  switchWorkspace("aiVideoMonitor");
+  await loadAiVideoMonitor();
+});
+
 document.querySelector("#nav-assistant-test").addEventListener("click", async (event) => {
   event.preventDefault();
   switchWorkspace("assistant");
@@ -374,9 +444,11 @@ function switchWorkspace(page) {
   const isAutomationAdmin = page === "automationAdmin";
   const isVideoScripts = page === "videoScripts";
   const isAiVideoTasks = page === "aiVideoTasks";
+  const isAiVideoMonitor = page === "aiVideoMonitor";
   const isDashboard = page === "dashboard";
+  if (!isAiVideoTasks) setWorkspaceBackdrop("");
   document.querySelector("#dashboard-page").hidden =
-    isSystem || isModels || isAssistant || isAutomations || isAutomationAdmin || isVideoScripts || isAiVideoTasks;
+    isSystem || isModels || isAssistant || isAutomations || isAutomationAdmin || isVideoScripts || isAiVideoTasks || isAiVideoMonitor;
   document.querySelector("#system-page").hidden = !isSystem;
   document.querySelector("#models-page").hidden = !isModels;
   document.querySelector("#assistant-test-page").hidden = !isAssistant;
@@ -384,6 +456,7 @@ function switchWorkspace(page) {
   document.querySelector("#automation-admin-page").hidden = !isAutomationAdmin;
   document.querySelector("#video-scripts-page").hidden = !isVideoScripts;
   document.querySelector("#ai-video-tasks-page").hidden = !isAiVideoTasks;
+  document.querySelector("#ai-video-monitor-page").hidden = !isAiVideoMonitor;
   document.querySelector("#nav-dashboard").classList.toggle("active", isDashboard);
   document.querySelector("#nav-system").classList.toggle("active", isSystem && !isModels);
   document.querySelector("#nav-models").classList.toggle("active", isModels);
@@ -392,8 +465,9 @@ function switchWorkspace(page) {
   document.querySelector("#nav-automation-admin").classList.toggle("active", isAutomationAdmin);
   document.querySelector("#nav-video-scripts").classList.toggle("active", isVideoScripts);
   document.querySelector("#nav-ai-video-tasks").classList.toggle("active", isAiVideoTasks);
+  document.querySelector("#nav-ai-video-monitor").classList.toggle("active", isAiVideoMonitor);
   document.querySelector(".topbar h2").textContent =
-    isVideoScripts ? "视频脚本管理" : isAiVideoTasks ? "AI 视频任务" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
+    isVideoScripts ? "视频脚本管理" : isAiVideoTasks ? "AI 视频任务" : isAiVideoMonitor ? "AI 任务监控" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
   if (!isAssistant) stopAssistantCommandPolling();
   if (!isAutomations && automationAssistantHeartbeat) {
     clearInterval(automationAssistantHeartbeat);
@@ -403,6 +477,11 @@ function switchWorkspace(page) {
     clearInterval(aiVideoTaskPollTimer);
     aiVideoTaskPollTimer = null;
   }
+  if (!isAiVideoMonitor && aiVideoMonitorTimer) {
+    clearInterval(aiVideoMonitorTimer);
+    aiVideoMonitorTimer = null;
+  }
+  scheduleSlidingSwitchSync();
 }
 
 function createAssistantSessionId() {
@@ -1020,7 +1099,7 @@ async function checkLocalAutomationAssistant() {
   } catch (error) {
     localAutomationAssistant = {
       ready: false,
-      message: error.name === "AbortError"
+      message: error.name === "AbortError" || error instanceof TypeError
         ? "未发现当前电脑上的赫逸助手"
         : error.message
     };
@@ -1038,7 +1117,8 @@ async function checkLocalAutomationAssistant() {
 function renderAutomationAssistantLink(state, title, detail) {
   const panel = document.querySelector("#automation-assistant-link");
   if (!panel) return;
-  panel.className = `automation-assistant-link ${state}`;
+  panel.classList.remove("checking", "ready", "offline");
+  panel.classList.add(state);
   document.querySelector("#automation-assistant-title").textContent = title;
   document.querySelector("#automation-assistant-detail").textContent = detail;
   document.querySelector("#automation-assistant-state").textContent = {
@@ -1079,6 +1159,7 @@ function renderAutomationAdminUsers() {
   const canManage = hasAnyPermission("system:automation:manage");
   container.innerHTML = users.map(user => `
     <article>
+      <span class="automation-user-avatar" aria-hidden="true">${escapeHtml((user.displayName || user.username || "人").slice(0, 1))}</span>
       <div><strong>${escapeHtml(user.displayName)}</strong><span>${escapeHtml(user.departmentName || "未分配部门")} · ${escapeHtml(user.phone || user.username)}</span></div>
       ${canManage ? `<button class="row-action" data-configure-automation-user="${escapeHtml(user.id)}">配置权限</button>` : ""}
     </article>
@@ -1407,8 +1488,10 @@ function initializeAutomationFormDrag() {
 
 function renderAutomationSkills() {
   const container = document.querySelector("#automation-skill-list");
+  const count = document.querySelector("#automation-skill-count");
+  if (count) count.textContent = `${automationSkills.length} 项可用`;
   if (!automationSkills.length) {
-    container.innerHTML = '<div class="empty-state"><strong>暂未分配自动化</strong><span>请联系管理员为当前人员开通需要的 Skill。</span></div>';
+    container.innerHTML = '<div class="empty-state automation-empty-state"><i aria-hidden="true">↯</i><strong>还没有可执行的自动化</strong><span>管理员授权后，工作流会出现在这里。</span><small>可前往“自动化管理”为当前账号开通权限</small></div>';
     return;
   }
   const canExecute = hasAnyPermission("automation:execute");
@@ -1739,8 +1822,10 @@ document.querySelector("#automation-run-form-legacy")?.addEventListener("submit"
 function renderAutomationJobs(jobs) {
   automationJobs = jobs;
   const list = document.querySelector("#automation-job-list");
+  const count = document.querySelector("#automation-job-count");
+  if (count) count.textContent = `${jobs.length} 条记录`;
   if (!jobs.length) {
-    list.innerHTML = '<div class="empty-state">还没有本机自动化执行记录。</div>';
+    list.innerHTML = '<div class="empty-state automation-empty-state compact"><i aria-hidden="true">✓</i><strong>这里还很安静</strong><span>运行第一项自动化后，进度与结果会保存在这里。</span></div>';
     return;
   }
   list.innerHTML = jobs.map(job => `
@@ -3107,6 +3192,20 @@ function selectVideoScriptCreateMode(mode) {
     : "视频上传后将在后台抽帧，并调用当前启用的驱动模型进行拆解。";
 }
 
+function prepareVideoScriptCreationDialog(mode) {
+  stopVideoScriptVisualProgress();
+  videoScriptVisualProgress = 0;
+  videoScriptVisualStatus = "";
+  paintVideoScriptProgress(0);
+  document.querySelector("#script-active-analysis").hidden = true;
+  document.querySelector(".script-create-switch").hidden = false;
+  document.querySelector("#submit-video-script").hidden = false;
+  document.querySelector("#retry-video-script").hidden = true;
+  const orbit = document.querySelector(".active-analysis-orbit");
+  orbit?.classList.remove("failed", "done");
+  selectVideoScriptCreateMode(mode);
+}
+
 const videoScriptStatusNames = {
   QUEUED: "等待处理",
   EXTRACTING_FRAMES: "正在抽帧",
@@ -3160,6 +3259,7 @@ function startVideoScriptVisualProgress(status, serverProgress) {
   paintVideoScriptProgress(videoScriptVisualProgress);
   if (videoScriptVisualTimer) return;
   videoScriptVisualTimer = setInterval(() => {
+    if (document.hidden) return;
     const current = videoScriptVisualCaps[videoScriptVisualStatus];
     if (!current || videoScriptVisualProgress >= current.cap) return;
     const distance = current.cap - videoScriptVisualProgress;
@@ -3225,40 +3325,77 @@ function videoScriptStatusClass(status) {
   return "review";
 }
 
+function normalizedFuzzyValue(value = "") {
+  return String(value).normalize("NFKC").toLocaleLowerCase("zh-CN").replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function fuzzySearchMatches(values, query) {
+  const needle = normalizedFuzzyValue(query);
+  if (!needle) return true;
+  const haystack = normalizedFuzzyValue(values.filter(Boolean).join(" "));
+  if (haystack.includes(needle)) return true;
+  let cursor = 0;
+  for (const character of haystack) {
+    if (character === needle[cursor]) cursor++;
+    if (cursor === needle.length) return true;
+  }
+  return false;
+}
+
+function filteredVideoScripts() {
+  return videoScripts.filter(script => fuzzySearchMatches([
+    script.name, script.sourceFileName, script.modelId, script.id, script.status,
+    videoScriptStatusNames[script.status], script.sourceType
+  ], videoScriptSearchQuery));
+}
+
+function renderVideoScriptLibrary() {
+  const list = document.querySelector("#video-script-list");
+  const filtered = filteredVideoScripts();
+  if (!videoScripts.length) {
+    list.innerHTML = '<div class="video-task-empty"><strong>还没有视频脚本</strong><span>上传视频或手动创建第一条脚本。</span></div>';
+    return filtered;
+  }
+  if (!filtered.length) {
+    list.innerHTML = `<div class="video-task-empty"><strong>没有匹配脚本</strong><span>换一个名称、状态或 ID 片段。</span></div>`;
+    return filtered;
+  }
+  list.innerHTML = "";
+  filtered.forEach(script => {
+    const item = document.createElement("button");
+    item.className = `script-library-item${script.id === selectedVideoScriptId ? " active" : ""}`;
+    item.type = "button";
+    item.dataset.videoScriptId = script.id;
+    item.innerHTML = `
+      <span class="script-source-badge ai">AI</span>
+      <div><strong>${escapeHtml(script.name || script.sourceFileName || "未命名脚本")}</strong>
+        <small>${escapeHtml(script.modelId || "等待驱动模型")} · ${Number(script.progress || 0)}%</small></div>
+      <em class="${videoScriptStatusClass(script.status)}">${escapeHtml(videoScriptStatusNames[script.status] || script.status)}</em>`;
+    item.addEventListener("click", async () => {
+      selectedVideoScriptId = script.id;
+      renderVideoScriptLibrary();
+      await loadVideoScriptDetail(script.id);
+    });
+    list.append(item);
+  });
+  return filtered;
+}
+
 async function loadVideoScripts(preferredId = null) {
   try {
     const result = await api("/api/v1/video-scripts");
-    const scripts = Array.isArray(result?.data) ? result.data : [];
+    videoScripts = Array.isArray(result?.data) ? result.data : [];
     const currentResult = await api("/api/v1/video-scripts/current");
     activeVideoScript = currentResult?.data || null;
     document.querySelector("#import-video-script").textContent = activeVideoScript ? "查看拆解进度" : "上传视频拆解";
-    const library = document.querySelector("#video-script-library");
-    library.querySelectorAll(".script-library-item").forEach(item => item.remove());
-    if (!scripts.length) {
+    if (!videoScripts.length) {
       selectedVideoScriptId = null;
-      library.insertAdjacentHTML("beforeend", '<div class="empty-state">还没有视频脚本</div>');
+      renderVideoScriptLibrary();
       return;
     }
-    const selectedId = preferredId || scripts[0].id;
+    const selectedId = videoScripts.some(script => script.id === preferredId) ? preferredId : videoScripts[0].id;
     selectedVideoScriptId = selectedId;
-    scripts.forEach(script => {
-      const item = document.createElement("button");
-      item.className = `script-library-item${script.id === selectedId ? " active" : ""}`;
-      item.type = "button";
-      item.dataset.videoScriptId = script.id;
-      item.innerHTML = `
-        <span class="script-source-badge ai">AI</span>
-        <div><strong>${escapeHtml(script.name || script.sourceFileName || "未命名脚本")}</strong>
-          <small>${escapeHtml(script.modelId || "等待驱动模型")} · ${Number(script.progress || 0)}%</small></div>
-        <em class="${videoScriptStatusClass(script.status)}">${escapeHtml(videoScriptStatusNames[script.status] || script.status)}</em>`;
-      item.addEventListener("click", async () => {
-        library.querySelectorAll(".script-library-item").forEach(candidate => candidate.classList.remove("active"));
-        item.classList.add("active");
-        selectedVideoScriptId = script.id;
-        await loadVideoScriptDetail(script.id);
-      });
-      library.append(item);
-    });
+    renderVideoScriptLibrary();
     await loadVideoScriptDetail(selectedId);
     if (activeVideoScript && activeVideoScript.status !== "FAILED" && !videoScriptStatusTimer) {
       startVideoScriptPolling(activeVideoScript.id);
@@ -3292,7 +3429,6 @@ function renderStoryboardBuildingState(script) {
     <section class="storyboard-building" role="status" aria-live="polite">
       <header>
         <div class="storyboard-building-copy">
-          <small>AI STORYBOARD BUILD</small>
           <strong>正在编排完整 9 个分镜</strong>
           <span>模型正在对齐时间轴、画面动作和镜头节奏</span>
         </div>
@@ -3314,6 +3450,7 @@ function selectRenderedShot(button, shot, scriptId) {
   document.querySelector("#selected-shot-copy").textContent = shot.sceneDescription || "暂无画面描述";
   document.querySelector("#selected-shot-size").textContent = shot.shotSize || "未填写";
   document.querySelector("#selected-shot-camera").textContent = shot.cameraMovement || "未填写";
+  document.querySelector("#selected-shot-transition").textContent = shot.transitionDescription || (Number(shot.sequence) === 1 ? "无" : "直接硬切");
   document.querySelector("#selected-shot-emotion").textContent = shot.emotion || "未填写";
   const preview = document.querySelector("#selected-shot-preview");
   if (scriptId && shot.id) {
@@ -3332,6 +3469,7 @@ async function loadVideoScriptDetail(id) {
   const result = await api(`/api/v1/video-scripts/${encodeURIComponent(id)}`);
   const detail = result?.data;
   if (!detail?.script) return;
+  selectedVideoScriptDetail = detail;
   const script = detail.script;
   const shots = Array.isArray(detail.shots) ? detail.shots : [];
   document.querySelector("#script-detail-title").textContent = script.name || "视频脚本分析中";
@@ -3342,7 +3480,19 @@ async function loadVideoScriptDetail(id) {
   document.querySelector("#script-detail-visual-tone").textContent = script.status === "FAILED"
     ? `拆解失败：${script.errorMessage || "模型未返回有效结果"}`
     : (script.visualTone || script.summary || "模型正在理解视频画面，请稍候…");
-  document.querySelector("#script-json-content").textContent = detail.scriptJson || "等待 AI 生成生产 JSON…";
+  const rawScriptJson = detail.scriptJson;
+  let displayScriptJson = rawScriptJson || "等待 AI 生成生产 JSON…";
+  if (rawScriptJson) {
+    try {
+      const parsedScriptJson = typeof rawScriptJson === "string"
+        ? JSON.parse(rawScriptJson)
+        : rawScriptJson;
+      displayScriptJson = JSON.stringify(parsedScriptJson, null, 2);
+    } catch {
+      // 保留模型返回的原始内容，仍通过查看区自动换行展示。
+    }
+  }
+  document.querySelector("#script-json-content").textContent = displayScriptJson;
   const reanalyzeButton = document.querySelector("#reanalyze-video-script");
   const canManageScripts = hasAnyPermission("video:script:manage");
   const canReanalyze = canManageScripts && script.status === "READY" && script.sourceType === "VIDEO_ANALYSIS";
@@ -3352,10 +3502,19 @@ async function loadVideoScriptDetail(id) {
     ? "使用当前原视频重新生成完整 9 个分镜"
     : `当前只有 ${shots.length} 个分镜，使用原视频重新精拆为 9 个`;
   const deleteButton = document.querySelector("#delete-video-script");
+  const copyButton = document.querySelector("#copy-video-script");
+  const editToneButton = document.querySelector("#edit-video-script-tone");
   deleteButton.hidden = !canManageScripts;
+  copyButton.hidden = !canManageScripts;
+  editToneButton.hidden = !canManageScripts;
   document.querySelector("#edit-video-shot").hidden = !canManageScripts;
-  deleteButton.disabled = ["QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING"].includes(script.status);
+  const scriptIsProcessing = ["QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING"].includes(script.status);
+  deleteButton.disabled = scriptIsProcessing;
+  copyButton.disabled = scriptIsProcessing || !["READY", "DRAFT"].includes(script.status);
+  editToneButton.disabled = scriptIsProcessing;
   deleteButton.title = deleteButton.disabled ? "视频拆解处理中，暂时不能删除" : "删除脚本及其服务器文件";
+  copyButton.title = copyButton.disabled ? "脚本处理完成后才能复制" : "创建一个可独立编辑的脚本副本";
+  editToneButton.title = editToneButton.disabled ? "视频拆解处理中，暂时不能编辑" : "编辑全局视觉基调";
 
   const strip = document.querySelector("#script-film-strip");
   const shotEditor = document.querySelector("#script-storyboard-view .shot-editor-card");
@@ -3396,6 +3555,7 @@ document.querySelector("#edit-video-shot").addEventListener("click", () => {
   document.querySelector("#shot-edit-narration").value = selectedVideoShot.narration || "";
   document.querySelector("#shot-edit-size").value = selectedVideoShot.shotSize || "";
   document.querySelector("#shot-edit-camera").value = selectedVideoShot.cameraMovement || "";
+  document.querySelector("#shot-edit-transition").value = selectedVideoShot.transitionDescription || (Number(selectedVideoShot.sequence) === 1 ? "无" : "直接硬切");
   document.querySelector("#shot-edit-emotion").value = selectedVideoShot.emotion || "";
   document.querySelector("#video-shot-edit-error").hidden = true;
   document.querySelector("#video-shot-edit-dialog").showModal();
@@ -3422,6 +3582,7 @@ document.querySelector("#video-shot-edit-form").addEventListener("submit", async
         narration: document.querySelector("#shot-edit-narration").value.trim(),
         shotSize: document.querySelector("#shot-edit-size").value.trim(),
         cameraMovement: document.querySelector("#shot-edit-camera").value.trim(),
+        transitionDescription: document.querySelector("#shot-edit-transition").value.trim(),
         emotion: document.querySelector("#shot-edit-emotion").value.trim()
       })
     });
@@ -3438,11 +3599,65 @@ document.querySelector("#video-shot-edit-form").addEventListener("submit", async
   }
 });
 
+document.querySelector("#copy-video-script").addEventListener("click", async () => {
+  if (!selectedVideoScriptId) return;
+  const button = document.querySelector("#copy-video-script");
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = "复制中…";
+  try {
+    const result = await api(`/api/v1/video-scripts/${encodeURIComponent(selectedVideoScriptId)}/copy`, { method: "POST" });
+    const copiedScript = result?.data;
+    if (!copiedScript?.id) throw new Error("版本已复制，但没有返回新脚本编号");
+    await loadVideoScripts(copiedScript.id);
+    button.textContent = "复制完成";
+  } catch (error) {
+    window.alert(error.message);
+    button.textContent = "复制版本";
+  } finally {
+    button.disabled = false;
+    window.setTimeout(() => { button.textContent = "复制版本"; }, 1200);
+  }
+});
+
+document.querySelector("#edit-video-script-tone").addEventListener("click", () => {
+  if (!selectedVideoScriptId || !selectedVideoScriptDetail?.script) return;
+  document.querySelector("#video-script-tone-input").value = selectedVideoScriptDetail.script.visualTone || "";
+  document.querySelector("#video-script-tone-error").hidden = true;
+  document.querySelector("#video-script-tone-dialog").showModal();
+});
+
+document.querySelector("#video-script-tone-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!selectedVideoScriptId) return;
+  const scriptId = selectedVideoScriptId;
+  const save = document.querySelector("#save-video-script-tone");
+  const error = document.querySelector("#video-script-tone-error");
+  save.disabled = true;
+  save.textContent = "正在保存…";
+  error.hidden = true;
+  try {
+    await api(`/api/v1/video-scripts/${encodeURIComponent(scriptId)}/visual-tone`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visualTone: document.querySelector("#video-script-tone-input").value.trim() })
+    });
+    document.querySelector("#video-script-tone-dialog").close();
+    await loadVideoScripts(scriptId);
+  } catch (requestError) {
+    error.textContent = requestError.message;
+    error.hidden = false;
+  } finally {
+    save.disabled = false;
+    save.textContent = "保存基调";
+  }
+});
+
 function startVideoScriptPolling(id) {
   if (videoScriptStatusTimer) clearInterval(videoScriptStatusTimer);
   let polling = false;
   videoScriptStatusTimer = setInterval(async () => {
-    if (polling) return;
+    if (polling || document.hidden) return;
     polling = true;
     try {
       const result = await api(`/api/v1/video-scripts/${encodeURIComponent(id)}/status`);
@@ -3476,7 +3691,7 @@ document.querySelector("#import-video-script").addEventListener("click", async (
 });
 
 document.querySelector("#create-manual-script").addEventListener("click", () => {
-  selectVideoScriptCreateMode("manual");
+  prepareVideoScriptCreationDialog("manual");
   document.querySelector("#video-script-dialog").showModal();
 });
 
@@ -3773,6 +3988,7 @@ function stopAiVideoElapsedTimer() {
 }
 
 function refreshAiVideoElapsedLabels() {
+  if (document.hidden) return;
   document.querySelectorAll("[data-video-submitted-at]").forEach(label => {
     label.textContent = formatAiVideoElapsed(label.dataset.videoSubmittedAt);
   });
@@ -3783,6 +3999,14 @@ function syncAiVideoElapsedTimer() {
   if (aiVideoTaskDetail?.task?.status !== "VIDEO_GENERATING") return;
   refreshAiVideoElapsedLabels();
   aiVideoElapsedTimer = setInterval(refreshAiVideoElapsedLabels, 15000);
+}
+
+function filteredAiVideoTasks() {
+  return aiVideoTasks.filter(task => fuzzySearchMatches([
+    task.name, task.id, task.scriptId, task.scriptName, task.modelId, task.status,
+    aiVideoTaskStatusNames[task.status], task.targetMarket, task.productCategory,
+    task.resolution, aiVideoGenerationModeNames[aiVideoMode(task)]
+  ], aiVideoTaskSearchQuery));
 }
 
 async function copyTextToClipboard(text) {
@@ -3812,9 +4036,14 @@ function renderAiVideoTaskList() {
   const list = document.querySelector("#ai-video-task-list");
   if (!aiVideoTasks.length) {
     list.innerHTML = `<div class="video-task-empty"><strong>还没有视频任务</strong><span>点击右上角新建，从 9 分镜脚本开始。</span></div>`;
-    return;
+    return [];
   }
-  list.innerHTML = aiVideoTasks.map(task => {
+  const filtered = filteredAiVideoTasks();
+  if (!filtered.length) {
+    list.innerHTML = `<div class="video-task-empty"><strong>没有匹配任务</strong><span>换一个任务名、脚本名或 ID 片段。</span></div>`;
+    return filtered;
+  }
+  list.innerHTML = filtered.map(task => {
     const active = task.id === selectedAiVideoTaskId;
     const status = aiVideoTaskStatusNames[task.status] || task.status;
     const progress = task.status === "VIDEO_GENERATING"
@@ -3822,14 +4051,25 @@ function renderAiVideoTaskList() {
       : task.status === "IMAGE_GENERATING" ? `${Number(task.progress || 0)}%` : active ? "当前" : status;
     return `<button class="video-task-item ${active ? "active" : ""}" type="button" data-ai-video-task-id="${escapeHtml(task.id)}">
       <i class="${aiVideoTaskStatusClass(task.status)}"></i>
-      <div><strong>${escapeHtml(task.name)}</strong><small>${escapeHtml(aiVideoGenerationModeNames[aiVideoMode(task)] || aiVideoMode(task))} · ${Number(task.totalItems || 0)} 款商品 · ${escapeHtml(status)}</small></div>
+      <div><strong>${escapeHtml(task.name)}</strong><small>${escapeHtml(task.resolution || "720p")} · ${escapeHtml(aiVideoGenerationModeNames[aiVideoMode(task)] || aiVideoMode(task))} · ${Number(task.totalItems || 0)} 款商品 · ${escapeHtml(status)}</small></div>
       <em>${escapeHtml(progress)}</em>
     </button>`;
   }).join("");
+  return filtered;
 }
 
 function renderAiVideoEmpty(title, note) {
   document.querySelector("#garment-card-grid").innerHTML = `<div class="video-task-empty garment-empty"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(note)}</span></div>`;
+}
+
+function setWorkspaceBackdrop(source) {
+  const dashboard = document.querySelector("#dashboard-view");
+  if (!dashboard) return;
+  if (!source) {
+    dashboard.style.removeProperty("--workspace-backdrop-image");
+    return;
+  }
+  dashboard.style.setProperty("--workspace-backdrop-image", `url(${JSON.stringify(String(source))})`);
 }
 
 function renderAiVideoTaskDetail() {
@@ -3839,6 +4079,7 @@ function renderAiVideoTaskDetail() {
   const canManageVideoTasks = hasAnyPermission("video:task:manage");
   startButton.hidden = !canManageVideoTasks;
   if (!detail) {
+    setWorkspaceBackdrop("");
     stopAiVideoElapsedTimer();
     document.querySelector("#ai-video-task-stage").textContent = "等待选择任务";
     document.querySelector("#ai-video-task-title").textContent = "从左侧选择任务";
@@ -3877,7 +4118,7 @@ function renderAiVideoTaskDetail() {
   document.querySelector("#ai-video-task-stage").textContent = statusName;
   document.querySelector("#ai-video-task-title").textContent = task.name;
   const musicLabel = task.musicMode === "UPLOADED" ? `已上传配乐 · ${task.musicFileName || "音乐"}` : "AI 轻快旋律 BGM";
-  document.querySelector("#ai-video-task-script").innerHTML = `<span class="task-mode-badge">${escapeHtml(aiVideoGenerationModeNames[mode] || mode)}</span><span class="task-mode-badge background">${escapeHtml(aiVideoBackgroundModeNames[task.backgroundMode || "SCRIPT_ORIGINAL"])}</span><span class="task-mode-badge music">${escapeHtml(musicLabel)}</span> 使用脚本：${escapeHtml(task.scriptName)} / v${Number(task.scriptVersion || 1)} <b>已冻结</b>`;
+  document.querySelector("#ai-video-task-script").innerHTML = `<span class="task-mode-badge resolution">${escapeHtml(task.resolution || "720p")}</span><span class="task-mode-badge">${escapeHtml(aiVideoGenerationModeNames[mode] || mode)}</span><span class="task-mode-badge background">${escapeHtml(aiVideoBackgroundModeNames[task.backgroundMode || "SCRIPT_ORIGINAL"])}</span><span class="task-mode-badge music">${escapeHtml(musicLabel)}</span> 使用脚本：${escapeHtml(task.scriptName)} / v${Number(task.scriptVersion || 1)} <b>已冻结</b>`;
   const taskProgress = document.querySelector("#ai-video-task-progress");
   taskProgress.textContent = videoGenerating ? formatAiVideoElapsed(detail.videoSubmittedAt) : `${Number(task.progress || 0)}%`;
   if (videoGenerating && detail.videoSubmittedAt) taskProgress.dataset.videoSubmittedAt = detail.videoSubmittedAt;
@@ -3891,32 +4132,31 @@ function renderAiVideoTaskDetail() {
   upload.disabled = !canManageVideoTasks || generating || !["DRAFT", "READY"].includes(task.status);
   document.querySelector("#batch-garment-upload-label").classList.toggle("disabled", upload.disabled);
   const allVideosReady = detail.items.length > 0 && detail.items.every(item => (assetsByItem.get(item.id) || []).some(asset => asset.assetType === "VIDEO_RESULT"));
-  const canStartVideo = allImagesReady && ["IMAGE_READY", "FAILED", "VIDEO_READY"].includes(task.status) && !allVideosReady;
-  startButton.dataset.action = canStartVideo ? "video" : "image";
-  startButton.disabled = generating || allVideosReady || detail.items.length === 0 || (!canStartVideo && !["READY", "FAILED", "IMAGE_READY"].includes(task.status));
+  startButton.disabled = generating || allVideosReady || detail.items.length === 0 || !["READY", "FAILED", "IMAGE_READY", "VIDEO_READY"].includes(task.status);
   startButton.classList.toggle("is-background-processing", videoGenerating);
-  startButton.textContent = imageGenerating ? `正在生图 ${Number(task.progress || 0)}%`
-    : videoGenerating ? "正在后台生成"
+  startButton.textContent = imageGenerating ? `正在准备视频素材 ${Number(task.progress || 0)}%`
+    : videoGenerating ? "正在后台生成视频"
       : allVideosReady ? "视频已全部完成"
-        : canStartVideo ? (task.status === "FAILED" ? "重试失败视频" : "开始批量生成视频")
-          : detail.assets.length ? "补齐缺失图片" : task.status === "FAILED" ? "重试失败图片" : "开始批量生图";
+        : task.status === "FAILED" ? "重试视频生成" : "开始批量生成视频";
   const failedVideoItem = detail.items.find(item => item.status === "VIDEO_FAILED");
   document.querySelector("#video-task-action-note").textContent = failedVideoItem
     ? friendlyAiVideoError(failedVideoItem.errorMessage, "video")
     : task.errorMessage && !allImagesReady
     ? friendlyAiVideoError(task.errorMessage, "image")
     : videoGenerating
-      ? "视频已提交厂商，通常 20–40 分钟完成；可以离开此页面，成片就绪后会自动回显。"
+      ? "视频正在后台生成，通常 20–40 分钟完成；可以离开此页面，成片就绪后会自动回显。"
       : imageGenerating
-        ? `已完成 ${Number(task.completedItems || 0)} / ${Number(task.totalItems || detail.items.length)} 款，结果会自动回显。`
-      : `${primaryAssetName}用于制作九宫格；首帧由最终九宫格第 01 格自动裁切，不额外调用模型。`;
+        ? `正在准备首帧和九宫格：已完成 ${Number(task.completedItems || 0)} / ${Number(task.totalItems || detail.items.length)} 款；全部完成后自动提交视频。`
+      : `点击生成视频后，系统会自动准备${primaryAssetName}、首帧和九宫格，再提交视频模型。`;
 
   if (!detail.items.length) {
+    setWorkspaceBackdrop("");
     syncAiVideoElapsedTimer();
     renderAiVideoEmpty("上传商品素材", "支持 JPG、PNG、WebP；单个任务最多 30 款，每张不超过 20MB。");
     return;
   }
 
+  setWorkspaceBackdrop(aiVideoSourceUrl(task.id, detail.items[0].id, detail.items[0].updatedAt));
   document.querySelector("#garment-card-grid").innerHTML = detail.items.map(item => {
     const assets = assetsByItem.get(item.id) || [];
     const model = assets.find(asset => asset.assetType === primaryAssetType);
@@ -3948,7 +4188,7 @@ function renderAiVideoTaskDetail() {
     const itemStateLabel = itemVideoWaiting ? "后台生成中" : `${itemState} · ${Number(item.progress || 0)}%`;
     const providerTaskId = String(item.videoProviderTaskId || "");
     const providerTaskCopyButton = providerTaskId
-      ? `<button class="copy-provider-task-button" type="button" data-provider-task-copy="${escapeHtml(providerTaskId)}" title="大衍任务 ID：${escapeHtml(providerTaskId)}" aria-label="一键复制大衍任务 ID"><i aria-hidden="true">⧉</i><span>复制任务 ID</span></button>`
+      ? `<button class="copy-provider-task-button" type="button" data-provider-task-copy="${escapeHtml(providerTaskId)}" title="大衍任务 ID：${escapeHtml(providerTaskId)}" aria-label="一键复制大衍任务 ID"><i aria-hidden="true">⧉</i><span>复制 ID</span></button>`
       : "";
     return `<article class="garment-card selected ${itemVideoWaiting ? "is-video-processing" : ""} ${flipped ? "is-prompt-flipped" : ""}" data-garment-card data-item-id="${escapeHtml(item.id)}">
       <div class="garment-card-flip">
@@ -3964,15 +4204,15 @@ function renderAiVideoTaskDetail() {
           <div class="garment-portrait-grid">
             <section class="garment-output-slot garment-original-output completed"><header><strong>原始商品图</strong><span>已上传</span></header><button class="garment-preview real-asset" type="button" data-asset-preview="原始商品图" title="悬停后滚轮缩放，双击还原" aria-label="放大查看 ${escapeHtml(item.name)} 原图"><img src="${source}" alt="${escapeHtml(item.name)} 原始商品图" loading="lazy"></button></section>
             <div class="garment-output-grid">
-              <section class="garment-output-slot model-output ${modelState}" data-model-output><header><strong>${escapeHtml(primaryAssetName)}</strong><div class="storyboard-slot-actions"><span>${model ? "已生成" : modelState === "processing" ? "生成中" : "等待生成"}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-first-frame title="使用脚本第 01 分镜真实画面重做首帧，并同步重建九宫格">重做首帧</button>` : ""}</div></header><button class="model-output-canvas real-asset" type="button" data-asset-preview="${escapeHtml(primaryAssetName)}" title="用于制作最终九宫格" aria-label="放大查看 ${escapeHtml(primaryAssetName)}">${modelCanvas}</button></section>
+              <section class="garment-output-slot model-output ${modelState}" data-model-output><header><strong>${escapeHtml(primaryAssetName)}</strong><div class="storyboard-slot-actions"><span>${model ? "已生成" : modelState === "processing" ? "生成中" : "等待生成"}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-first-frame title="使用脚本第 01 分镜真实画面重做首帧，并同步重建九宫格">重做</button>` : ""}</div></header><button class="model-output-canvas real-asset" type="button" data-asset-preview="${escapeHtml(primaryAssetName)}" title="用于制作最终九宫格" aria-label="放大查看 ${escapeHtml(primaryAssetName)}">${modelCanvas}</button></section>
               <section class="garment-output-slot storyboard-output ${shotState}" data-storyboard-output><header><strong>4K 分镜九宫格</strong><div class="storyboard-slot-actions"><span>${storyboard ? "已生成" : shotState === "processing" ? "生成中" : "等待生成"}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-storyboard title="保留 AI 模特图，重建动作底图并重新执行人物替换">${storyboard ? "重建" : "重新生成"}</button>` : ""}</div></header><button class="mini-storyboard real-assets" type="button" data-asset-preview="4K 分镜九宫格" title="9:16 画幅；悬停后滚轮缩放，双击还原" aria-label="放大查看 4K 分镜九宫格">${storyboardTiles}</button></section>
             </div>
           </div>
           ${error}
-          <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemVideoWaiting ? "已提交厂商" : "等待生成"}</span>${providerTaskCopyButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>已保存到平台，可下载</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemVideoWaiting ? "视频正在后台生成" : "图片完成后可启动视频生成"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : "不会自动消耗视频额度"}</small></div><em${itemVideoWaiting && detail.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(detail.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemVideoWaiting ? formatAiVideoElapsed(detail.videoSubmittedAt) : "--:--"}</em></button>`}</section>
+          <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemVideoWaiting ? "生成中" : "等待生成"}</span>${providerTaskCopyButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>已保存到平台，可下载</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemVideoWaiting ? "视频正在后台生成" : imageGenerating ? "正在自动准备视频素材" : "等待一键生成视频"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : "点击生成后会自动完成图片与视频两阶段"}</small></div><em${itemVideoWaiting && detail.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(detail.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemVideoWaiting ? formatAiVideoElapsed(detail.videoSubmittedAt) : "--:--"}</em></button>`}</section>
         </div>
         <section class="garment-card-face garment-card-back" aria-hidden="${!flipped}">
-          <header class="video-prompt-head"><div><span>VIDEO PROMPT</span><strong>${escapeHtml(item.name)}</strong><small>上传顺序：${isModelWear ? "单人首帧" : "商品首帧"} → 4K 九宫格 → 原始商品图</small></div><div class="video-prompt-head-actions"><button class="copy-prompt-button" type="button" data-prompt-copy aria-label="一键复制本款视频提示词"><i aria-hidden="true">⧉</i><span>一键复制</span></button><button type="button" data-card-flip ${editingPrompt ? "disabled" : ""}><i>↻</i> 返回画面</button></div></header>
+          <header class="video-prompt-head"><div><strong>${escapeHtml(item.name)}</strong><small>上传顺序：${isModelWear ? "单人首帧" : "商品首帧"} → 4K 九宫格 → 原始商品图</small></div><div class="video-prompt-head-actions"><button class="copy-prompt-button" type="button" data-prompt-copy aria-label="一键复制本款视频提示词"><i aria-hidden="true">⧉</i><span>一键复制</span></button><button type="button" data-card-flip ${editingPrompt ? "disabled" : ""}><i>↻</i> 返回画面</button></div></header>
           <div class="video-prompt-body">
             <div class="video-prompt-label"><span>本段视频提示词</span><em>${promptCount.toLocaleString()} / 20,000</em></div>
             <textarea class="video-prompt-editor" data-video-prompt-editor maxlength="20000" spellcheck="false" ${editingPrompt ? "" : "readonly"} placeholder="还没有视频提示词，点击编辑后填写。">${escapeHtml(promptValue)}</textarea>
@@ -4016,11 +4256,16 @@ function syncAiVideoTaskPolling() {
   aiVideoTaskPollTimer = null;
   if (!["IMAGE_GENERATING", "VIDEO_GENERATING"].includes(aiVideoTaskDetail?.task?.status)) return;
   aiVideoTaskPollTimer = setInterval(async () => {
-    if (!selectedAiVideoTaskId) return;
-    await selectAiVideoTask(selectedAiVideoTaskId, { startPolling: false });
-    if (!["IMAGE_GENERATING", "VIDEO_GENERATING"].includes(aiVideoTaskDetail?.task?.status)) {
-      clearInterval(aiVideoTaskPollTimer);
-      aiVideoTaskPollTimer = null;
+    if (!selectedAiVideoTaskId || document.hidden || aiVideoTaskPollInFlight) return;
+    aiVideoTaskPollInFlight = true;
+    try {
+      await selectAiVideoTask(selectedAiVideoTaskId, { startPolling: false });
+      if (!["IMAGE_GENERATING", "VIDEO_GENERATING"].includes(aiVideoTaskDetail?.task?.status)) {
+        clearInterval(aiVideoTaskPollTimer);
+        aiVideoTaskPollTimer = null;
+      }
+    } finally {
+      aiVideoTaskPollInFlight = false;
     }
   }, 5000);
 }
@@ -4043,6 +4288,215 @@ async function loadAiVideoTasks(preferredId = selectedAiVideoTaskId) {
   }
 }
 
+const monitorStatusNames = {
+  DRAFT: "草稿", READY: "等待生图", IMAGE_GENERATING: "正在生图", IMAGE_READY: "图片完成",
+  VIDEO_GENERATING: "正在生视频", VIDEO_READY: "全部完成", FAILED: "失败",
+  GENERATING_MODEL: "生成主图", GENERATING_STORYBOARD: "生成九宫格", VIDEO_SUBMITTING: "提交视频",
+  SUCCEEDED: "成功", RUNNING: "处理中", QUEUED: "排队中", SUBMITTING: "提交中",
+  REVIEW_REQUIRED: "需要确认", VIDEO_FAILED: "视频失败"
+};
+
+const monitorAssetNames = {
+  MODEL_IMAGE: "AI 模特主图", PRODUCT_SCENE_IMAGE: "商品场景主图", STORYBOARD_GRID: "4K 分镜九宫格",
+  STORYBOARD_GUIDE: "分镜参考图", STORYBOARD_FIRST_FRAME: "视频首帧", VIDEO_RESULT: "视频成片"
+};
+
+function monitorStatusGroup(status) {
+  if (["IMAGE_GENERATING", "VIDEO_GENERATING", "GENERATING_MODEL", "GENERATING_STORYBOARD", "VIDEO_SUBMITTING", "RUNNING", "QUEUED", "SUBMITTING"].includes(status)) return "ACTIVE";
+  if (["FAILED", "VIDEO_FAILED", "REVIEW_REQUIRED"].includes(status)) return "FAILED";
+  if (["IMAGE_READY", "VIDEO_READY", "SUCCEEDED"].includes(status)) return "COMPLETED";
+  return "WAITING";
+}
+
+function monitorDuration(start, end) {
+  if (!start) return "—";
+  const seconds = Math.max(0, Math.round((new Date(end || Date.now()) - new Date(start)) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return seconds < 3600 ? `${minutes} 分 ${seconds % 60} 秒` : `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
+}
+
+function monitorFilteredTasks() {
+  const query = document.querySelector("#monitor-search-input").value.trim().toLowerCase();
+  return (aiVideoMonitorSnapshot.tasks || []).filter(task => {
+    const statusMatches = aiVideoMonitorStatus === "ALL" || monitorStatusGroup(task.status) === aiVideoMonitorStatus;
+    const haystack = [task.name, task.scriptName, task.modelId, task.id, task.status].filter(Boolean).join(" ").toLowerCase();
+    return statusMatches && (!query || haystack.includes(query));
+  });
+}
+
+function renderAiVideoMonitorOverview() {
+  const stats = aiVideoMonitorSnapshot.stats || {};
+  document.querySelector("#monitor-total-tasks").textContent = stats.totalTasks || 0;
+  document.querySelector("#monitor-active-tasks").textContent = stats.activeTasks || 0;
+  document.querySelector("#monitor-image-requests").textContent = stats.imageRequests || 0;
+  document.querySelector("#monitor-video-requests").textContent = stats.videoRequests || 0;
+  document.querySelector("#monitor-failed-tasks").textContent = stats.failedTasks || 0;
+}
+
+function renderAiVideoMonitorList() {
+  const tasks = monitorFilteredTasks();
+  const list = document.querySelector("#monitor-task-list");
+  document.querySelector("#monitor-result-count").textContent = `${tasks.length} 条结果`;
+  if (!tasks.length) {
+    list.innerHTML = `<div class="monitor-empty"><strong>没有匹配任务</strong><span>调整状态或关键词后再试。</span></div>`;
+    return;
+  }
+  list.innerHTML = tasks.map(task => {
+    const group = monitorStatusGroup(task.status).toLowerCase();
+    return `<button class="monitor-task-row ${task.id === selectedMonitorTaskId ? "active" : ""}" type="button" data-monitor-task-id="${escapeHtml(task.id)}">
+      <span class="monitor-task-signal ${group}"><i></i></span>
+      <span class="monitor-task-copy"><strong>${escapeHtml(task.name || "未命名任务")}</strong><small>${escapeHtml(task.scriptName || "未关联脚本")} · ${formatDate(task.updatedAt)}</small></span>
+      <span class="monitor-task-meta"><b>${monitorStatusNames[task.status] || escapeHtml(task.status)}</b><small>${task.imageRequests || 0} 图 / ${task.videoRequests || 0} 视频请求</small></span>
+      <span class="monitor-task-progress"><i style="--progress:${Math.max(0, Math.min(100, task.progress || 0))}%"></i></span>
+    </button>`;
+  }).join("");
+}
+
+function renderMonitorImageEvents(events) {
+  if (!events?.length) return `<div class="monitor-sub-empty">还没有生图资产。运行中的请求可从上方任务与单品状态判断。</div>`;
+  return events.map(event => `<article class="monitor-request-card image-request">
+    <header><span class="request-kind">IMG</span><div><strong>${monitorAssetNames[event.type] || escapeHtml(event.type)}</strong><small>${formatDate(event.createdAt)} · ${escapeHtml(event.modelId || "未记录模型")}</small></div><b>已落盘</b></header>
+    <dl><div><dt>资产 ID</dt><dd>${escapeHtml(event.id)}</dd></div><div><dt>文件</dt><dd>${escapeHtml(event.contentType || "—")} · ${event.sizeBytes ? `${(event.sizeBytes / 1024 / 1024).toFixed(2)} MB` : "—"}</dd></div></dl>
+    <details><summary>查看本次生图提示词</summary><pre>${escapeHtml(event.prompt || "该资产未保存提示词")}</pre></details>
+  </article>`).join("");
+}
+
+function renderMonitorVideoRequests(requests, videoPrompt) {
+  if (!requests?.length) return `<div class="monitor-sub-empty">还没有向视频线路提交请求。</div>`;
+  return requests.map(request => {
+    const group = monitorStatusGroup(request.status).toLowerCase();
+    return `<article class="monitor-request-card video-request ${group}">
+      <header><span class="request-kind">VID</span><div><strong>${escapeHtml(request.provider || "视频线路")} · 第 ${request.attempt} 次尝试</strong><small>${formatDate(request.createdAt)} · ${monitorDuration(request.createdAt, request.completedAt || request.updatedAt)}</small></div><b>${monitorStatusNames[request.status] || escapeHtml(request.status)}</b></header>
+      <dl>
+        <div><dt>请求 ID</dt><dd>${escapeHtml(request.id)}</dd></div><div><dt>供应商任务 ID</dt><dd>${escapeHtml(request.providerTaskId || "尚未受理")}</dd></div>
+        <div><dt>模型</dt><dd>${escapeHtml(request.modelId || "—")}</dd></div><div><dt>规格</dt><dd>${request.durationSeconds || "—"} 秒 · ${escapeHtml(request.aspectRatio || "—")} · ${escapeHtml(request.resolution || "—")}</dd></div>
+        <div><dt>请求状态</dt><dd>${escapeHtml(request.requestState || "—")}</dd></div><div><dt>费用</dt><dd>${request.cost == null ? "—" : escapeHtml(request.cost)}</dd></div>
+      </dl>
+      ${request.errorMessage ? `<p class="monitor-request-error">${escapeHtml(request.errorMessage)}</p>` : ""}
+      <details><summary>查看本次视频提示词与用量</summary><div class="monitor-request-payload"><span>视频提示词</span><pre>${escapeHtml(videoPrompt || "未保存提示词")}</pre><span>用量数据</span><pre>${escapeHtml(request.usage || "暂无")}</pre></div></details>
+    </article>`;
+  }).join("");
+}
+
+function renderAiVideoMonitorDetail() {
+  const stage = document.querySelector("#monitor-detail-stage");
+  const task = selectedMonitorTaskDetail;
+  if (!task) {
+    stage.innerHTML = `<div class="monitor-empty monitor-detail-empty"><strong>选择一条任务</strong><span>这里会展示生图和生视频的完整请求轨迹。</span></div>`;
+    return;
+  }
+  const allImageEvents = task.items.flatMap(item => item.imageEvents || []);
+  const allVideoRequests = task.items.flatMap(item => item.videoRequests || []);
+  const hasImage = allImageEvents.length > 0;
+  const hasVideo = allVideoRequests.length > 0;
+  const finished = ["IMAGE_READY", "VIDEO_READY", "FAILED"].includes(task.status);
+  stage.innerHTML = `
+    <header class="monitor-detail-head">
+      <div><span class="monitor-detail-id">TASK · ${escapeHtml(task.id)}</span><h2>${escapeHtml(task.name || "未命名任务")}</h2><p>${escapeHtml(task.scriptName || "未关联脚本")} · v${task.scriptVersion} · ${escapeHtml(task.generationMode || "—")}</p></div>
+      <div class="monitor-detail-status ${monitorStatusGroup(task.status).toLowerCase()}"><i></i><span>${monitorStatusNames[task.status] || escapeHtml(task.status)}</span><strong>${task.progress || 0}%</strong></div>
+    </header>
+    <section class="monitor-trace" aria-label="任务生成轨迹">
+      <div class="done"><i></i><span>任务创建</span><small>${formatDate(task.createdAt)}</small></div><b class="done"></b>
+      <div class="${hasImage ? "done" : monitorStatusGroup(task.status) === "ACTIVE" ? "current" : ""}"><i></i><span>生图</span><small>${allImageEvents.length} 个资产</small></div><b class="${hasImage ? "done" : ""}"></b>
+      <div class="${hasVideo ? "done" : task.status === "VIDEO_GENERATING" ? "current" : ""}"><i></i><span>生视频</span><small>${allVideoRequests.length} 次请求</small></div><b class="${hasVideo ? "done" : ""}"></b>
+      <div class="${finished ? "done" : ""}"><i></i><span>${task.status === "FAILED" ? "异常结束" : "任务完成"}</span><small>${monitorDuration(task.createdAt, task.completedAt || task.updatedAt)}</small></div>
+    </section>
+    <section class="monitor-task-facts">
+      <div><span>目标市场</span><strong>${escapeHtml(task.targetMarket || "未设置")}</strong></div><div><span>商品品类</span><strong>${escapeHtml(task.productCategory || "未设置")}</strong></div>
+      <div><span>画面规格</span><strong>${escapeHtml(task.aspectRatio || "—")} · ${escapeHtml(task.resolution || "—")}</strong></div><div><span>当前模型</span><strong>${escapeHtml(task.modelId || "尚未调用")}</strong></div>
+    </section>
+    ${task.errorMessage ? `<p class="monitor-task-error"><strong>任务错误</strong>${escapeHtml(task.errorMessage)}</p>` : ""}
+    <section class="monitor-items"><header><div><span>请求轨迹</span><h3>${task.items.length} 个商品单品</h3></div><small>展开单品查看完整参数</small></header>
+      ${task.items.map((item, index) => `<details class="monitor-item" ${index === 0 ? "open" : ""}>
+        <summary><span class="monitor-item-index">${String(index + 1).padStart(2, "0")}</span><div><strong>${escapeHtml(item.name || item.sourceFileName || "未命名单品")}</strong><small>${escapeHtml(item.sku || "无 SKU")} · 更新于 ${formatDate(item.updatedAt)}</small></div><span class="monitor-item-count">${item.imageEvents?.length || 0} 图 / ${item.videoRequests?.length || 0} 请求</span><b>${monitorStatusNames[item.status] || escapeHtml(item.status)}</b></summary>
+        <div class="monitor-item-body">
+          ${item.errorMessage ? `<p class="monitor-request-error">${escapeHtml(item.errorMessage)}</p>` : ""}
+          <div class="monitor-request-section"><h4><span>生图轨迹</span><small>输出资产及真实提示词</small></h4>${renderMonitorImageEvents(item.imageEvents)}</div>
+          <div class="monitor-request-section"><h4><span>生视频请求</span><small>每次线路提交与重试</small></h4>${renderMonitorVideoRequests(item.videoRequests, item.videoPrompt)}</div>
+        </div>
+      </details>`).join("")}
+    </section>`;
+}
+
+async function selectAiVideoMonitorTask(id) {
+  selectedMonitorTaskId = id;
+  renderAiVideoMonitorList();
+  const stage = document.querySelector("#monitor-detail-stage");
+  stage.innerHTML = `<div class="monitor-empty monitor-detail-empty">正在读取请求明细…</div>`;
+  try {
+    const result = await api(`/api/v1/ai-video-monitor/${encodeURIComponent(id)}`);
+    if (selectedMonitorTaskId !== id) return;
+    selectedMonitorTaskDetail = result.data;
+    renderAiVideoMonitorDetail();
+  } catch (error) {
+    stage.innerHTML = `<div class="monitor-empty monitor-detail-empty"><strong>明细读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;
+  }
+}
+
+async function loadAiVideoMonitor(options = {}) {
+  const list = document.querySelector("#monitor-task-list");
+  if (!options.silent) list.innerHTML = `<div class="monitor-empty">正在读取任务轨迹…</div>`;
+  try {
+    const result = await api("/api/v1/ai-video-monitor");
+    aiVideoMonitorSnapshot = result.data || { stats: {}, tasks: [] };
+    renderAiVideoMonitorOverview();
+    const filtered = monitorFilteredTasks();
+    const nextId = filtered.some(task => task.id === selectedMonitorTaskId) ? selectedMonitorTaskId : filtered[0]?.id || null;
+    const nextSummary = filtered.find(task => task.id === nextId);
+    selectedMonitorTaskId = nextId;
+    renderAiVideoMonitorList();
+    const detailChanged = !selectedMonitorTaskDetail || selectedMonitorTaskDetail.id !== nextId
+      || selectedMonitorTaskDetail.updatedAt !== nextSummary?.updatedAt;
+    if (nextId && (!options.silent || detailChanged)) {
+      await selectAiVideoMonitorTask(nextId);
+    } else {
+      if (!nextId) {
+        selectedMonitorTaskDetail = null;
+        renderAiVideoMonitorDetail();
+      }
+    }
+    if (!aiVideoMonitorTimer) {
+      aiVideoMonitorTimer = setInterval(() => {
+        if (!document.querySelector("#ai-video-monitor-page").hidden && !document.hidden) loadAiVideoMonitor({ silent: true });
+      }, 10000);
+    }
+  } catch (error) {
+    list.innerHTML = `<div class="monitor-empty"><strong>监控数据读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;
+  }
+}
+
+document.querySelector("#monitor-task-list").addEventListener("click", event => {
+  const task = event.target.closest("[data-monitor-task-id]");
+  if (task) selectAiVideoMonitorTask(task.dataset.monitorTaskId);
+});
+
+document.querySelector("#monitor-search-input").addEventListener("input", () => {
+  selectedMonitorTaskId = null;
+  selectedMonitorTaskDetail = null;
+  renderAiVideoMonitorList();
+  renderAiVideoMonitorDetail();
+});
+
+document.querySelector("#monitor-status-filter").addEventListener("click", event => {
+  const button = event.target.closest("[data-monitor-status]");
+  if (!button) return;
+  aiVideoMonitorStatus = button.dataset.monitorStatus;
+  document.querySelectorAll("[data-monitor-status]").forEach(item => item.classList.toggle("active", item === button));
+  selectedMonitorTaskId = null;
+  selectedMonitorTaskDetail = null;
+  renderAiVideoMonitorList();
+  renderAiVideoMonitorDetail();
+});
+
+document.querySelector("#refresh-ai-video-monitor").addEventListener("click", () => loadAiVideoMonitor());
+document.querySelector("#reset-monitor-filters").addEventListener("click", () => {
+  aiVideoMonitorStatus = "ALL";
+  document.querySelector("#monitor-search-input").value = "";
+  document.querySelectorAll("[data-monitor-status]").forEach(item => item.classList.toggle("active", item.dataset.monitorStatus === "ALL"));
+  renderAiVideoMonitorList();
+});
+
 async function loadAiVideoTaskScripts() {
   const select = document.querySelector("#video-task-script-select");
   const submit = document.querySelector("#video-task-form button[type=submit]");
@@ -4054,12 +4508,13 @@ async function loadAiVideoTaskScripts() {
     const details = await Promise.all(readyScripts.map(script => api(`/api/v1/video-scripts/${encodeURIComponent(script.id)}`).catch(() => null)));
     const usable = details.filter(Boolean).map(result => result.data).filter(detail => detail?.shots?.length === 9);
     select.innerHTML = usable.length
-      ? `<option value="">请选择脚本</option>${usable.map(detail => `<option value="${escapeHtml(detail.script.id)}">${escapeHtml(detail.script.name)} / v${Number(detail.script.version || 1)}</option>`).join("")}`
+      ? `<option value="">请选择脚本</option>${usable.map(detail => `<option value="${escapeHtml(detail.script.id)}" data-source-type="${escapeHtml(detail.script.sourceType || "")}">${escapeHtml(detail.script.name)} / v${Number(detail.script.version || 1)}</option>`).join("")}`
       : `<option value="">暂无完整 9 分镜脚本</option>`;
     submit.disabled = usable.length === 0;
     document.querySelector("#video-task-dialog-note").textContent = usable.length
       ? `找到 ${usable.length} 个可用脚本，创建后会冻结当前版本。`
       : "请先在视频脚本管理中完成一个包含 9 个分镜的脚本。";
+    syncVideoTaskModeForm();
   } catch (error) {
     select.innerHTML = `<option value="">脚本读取失败</option>`;
     document.querySelector("#video-task-dialog-note").textContent = error.message;
@@ -4069,19 +4524,37 @@ async function loadAiVideoTaskScripts() {
 function syncVideoTaskModeForm() {
   const form = document.querySelector("#video-task-form");
   const mode = form.querySelector("input[name=generationMode]:checked")?.value || "MODEL_WEAR";
+  const scriptSelect = form.elements.scriptId;
+  const selectedScript = scriptSelect?.selectedOptions?.[0];
+  const hasSourceVideo = selectedScript?.dataset.sourceType === "VIDEO_ANALYSIS";
+  const referencePicker = document.querySelector("#script-video-reference-picker");
+  const referenceToggle = form.elements.useScriptReferenceVideo;
+  const canUseReferenceVideo = mode === "PRODUCT_ONLY" && hasSourceVideo;
   form.querySelectorAll(".generation-mode-option").forEach(option => {
     option.classList.toggle("active", option.querySelector("input")?.checked);
   });
   form.querySelectorAll(".background-mode-option").forEach(option => {
     option.classList.toggle("active", option.querySelector("input")?.checked);
   });
+  form.querySelectorAll(".resolution-option").forEach(option => {
+    option.classList.toggle("active", option.querySelector("input")?.checked);
+  });
+  referencePicker.hidden = mode !== "PRODUCT_ONLY";
+  referencePicker.classList.toggle("unavailable", mode === "PRODUCT_ONLY" && !hasSourceVideo);
+  referenceToggle.disabled = !canUseReferenceVideo;
+  if (!canUseReferenceVideo) referenceToggle.checked = false;
+  document.querySelector("#script-video-reference-note").textContent = hasSourceVideo
+    ? "把脚本原视频作为动作、运镜与转场参考一起提交"
+    : "所选脚本没有可提交的原始参考视频";
+  document.querySelector(".script-video-reference-option").classList.toggle("active", referenceToggle.checked);
+  document.querySelector("#script-video-rate-warning").hidden = !referenceToggle.checked;
   const category = form.elements.productCategory;
   if (mode === "MODEL_WEAR" && !["服装", "鞋包", "饰品"].includes(category.value)) category.value = "服装";
   if (mode !== "MODEL_WEAR" && category.value === "服装") category.value = "通用商品";
 }
 
 document.querySelector("#video-task-form").addEventListener("change", event => {
-  if (["generationMode", "backgroundMode"].includes(event.target.name)) syncVideoTaskModeForm();
+  if (["generationMode", "backgroundMode", "resolution", "scriptId", "useScriptReferenceVideo"].includes(event.target.name)) syncVideoTaskModeForm();
   if (event.target.name === "music") {
     const file = event.target.files?.[0];
     const field = document.querySelector("#video-task-music-field");
@@ -4123,8 +4596,10 @@ document.querySelector("#video-task-form").addEventListener("submit", async even
         targetMarket: values.get("targetMarket"),
         generationMode: values.get("generationMode"),
         backgroundMode: values.get("backgroundMode"),
+        useScriptReferenceVideo: values.get("useScriptReferenceVideo") === "true",
         productCategory: values.get("productCategory"),
-        aspectRatio: values.get("aspectRatio")
+        aspectRatio: values.get("aspectRatio"),
+        resolution: values.get("resolution") || "720p"
       })
     });
     createdTaskId = result.data.id;
@@ -4153,6 +4628,46 @@ document.querySelector("#video-task-form").addEventListener("submit", async even
 document.querySelector("#ai-video-task-list").addEventListener("click", event => {
   const button = event.target.closest("[data-ai-video-task-id]");
   if (button) selectAiVideoTask(button.dataset.aiVideoTaskId);
+});
+
+document.querySelector("#video-script-search").addEventListener("input", event => {
+  videoScriptSearchQuery = event.currentTarget.value;
+  renderVideoScriptLibrary();
+});
+
+document.querySelector("#video-script-search").addEventListener("keydown", async event => {
+  if (event.key === "Escape") {
+    event.currentTarget.value = "";
+    videoScriptSearchQuery = "";
+    renderVideoScriptLibrary();
+    return;
+  }
+  if (event.key !== "Enter") return;
+  const first = filteredVideoScripts()[0];
+  if (!first) return;
+  event.preventDefault();
+  selectedVideoScriptId = first.id;
+  renderVideoScriptLibrary();
+  await loadVideoScriptDetail(first.id);
+});
+
+document.querySelector("#ai-video-task-search").addEventListener("input", event => {
+  aiVideoTaskSearchQuery = event.currentTarget.value;
+  renderAiVideoTaskList();
+});
+
+document.querySelector("#ai-video-task-search").addEventListener("keydown", async event => {
+  if (event.key === "Escape") {
+    event.currentTarget.value = "";
+    aiVideoTaskSearchQuery = "";
+    renderAiVideoTaskList();
+    return;
+  }
+  if (event.key !== "Enter") return;
+  const first = filteredAiVideoTasks()[0];
+  if (!first) return;
+  event.preventDefault();
+  await selectAiVideoTask(first.id);
 });
 
 document.querySelector("#batch-garment-upload").addEventListener("change", async event => {
@@ -4204,7 +4719,7 @@ document.querySelector("#garment-card-grid").addEventListener("click", async eve
     if (label) label.textContent = copied ? "已复制" : "复制失败";
     providerTaskCopy.classList.toggle("copied", copied);
     window.setTimeout(() => {
-      if (label) label.textContent = "复制任务 ID";
+      if (label) label.textContent = "复制 ID";
       providerTaskCopy.classList.remove("copied");
     }, 1600);
     return;
@@ -4430,15 +4945,14 @@ document.querySelector("#generate-shot-images").addEventListener("click", async 
   const button = event.currentTarget;
   button.disabled = true;
   button.textContent = "正在启动…";
-  const action = button.dataset.action === "video" ? "video" : "image";
-  document.querySelector("#video-task-action-note").textContent = action === "video" ? "正在选择主用视频线路并提交厂商任务…" : "正在检查图片模型并创建生图任务…";
+  document.querySelector("#video-task-action-note").textContent = "正在启动一键视频生成；系统会先补齐所需图片，再自动提交视频模型…";
   try {
-    await api(`/api/v1/ai-video-tasks/${encodeURIComponent(selectedAiVideoTaskId)}/${action === "video" ? "start-videos" : "start-images"}`, { method: "POST" });
+    await api(`/api/v1/ai-video-tasks/${encodeURIComponent(selectedAiVideoTaskId)}/start-generation`, { method: "POST" });
     await selectAiVideoTask(selectedAiVideoTaskId);
   } catch (error) {
     document.querySelector("#video-task-action-note").textContent = error.message;
     button.disabled = false;
-    button.textContent = action === "video" ? "开始批量生成视频" : "开始批量生图";
+    button.textContent = "开始批量生成视频";
   }
 });
 

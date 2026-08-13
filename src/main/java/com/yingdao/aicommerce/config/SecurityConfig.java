@@ -58,6 +58,8 @@ public class SecurityConfig {
                             .hasAnyAuthority("video:task:view", "video:task:manage", "ROLE_ADMIN")
                         .requestMatchers("/api/v1/ai-video-tasks/**")
                             .hasAnyAuthority("video:task:manage", "ROLE_ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/ai-video-monitor/**")
+                            .hasAnyAuthority("video:monitor:view", "ROLE_ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/v1/tasks/current")
                             .hasAnyAuthority(
                                     "dashboard:view",

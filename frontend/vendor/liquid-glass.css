@@ -1,0 +1,1680 @@
+/*
+ * Direct CSS mount for nikdelvin/liquid-glass's LiquidGlass component.
+ * Upstream: https://github.com/nikdelvin/liquid-glass — MIT License.
+ */
+.liquid-glass {
+  isolation: isolate;
+}
+
+/* Script-video replication is a deliberate paid choice inside the product-video route. */
+#video-task-dialog .script-video-reference-option {
+  border-color: rgba(255, 255, 255, .34);
+  background: rgba(9, 20, 32, .24);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+#video-task-dialog .script-video-reference-option .reference-video-copy strong { color: rgba(248, 251, 255, .96); }
+#video-task-dialog .script-video-reference-option .reference-video-copy small { color: rgba(210, 222, 235, .76); }
+#video-task-dialog .script-video-reference-option .reference-video-mark {
+  border-color: rgba(255, 255, 255, .28);
+  background: rgba(255, 255, 255, .09);
+}
+
+#video-task-dialog .script-video-reference-option.active {
+  border-color: rgba(244, 183, 79, .64);
+  background: linear-gradient(135deg, rgba(91, 55, 8, .52), rgba(44, 30, 12, .32));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12), 0 0 0 3px rgba(244, 183, 79, .08);
+}
+
+#video-task-dialog .script-video-rate-warning {
+  border-color: rgba(244, 183, 79, .48);
+  color: #ffe8bd;
+  background: rgba(68, 42, 7, .52);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+#video-task-dialog .script-video-rate-warning small { color: rgba(255, 224, 173, .74); }
+.liquid-glass.lg-positioned { position: relative; }
+
+/* The upstream demo image is the optical medium refracted by every component. */
+.login-shell {
+  background-image: url("/assets/liquid-glass/background.webp");
+  background-position: center;
+  background-size: cover;
+  background-attachment: fixed;
+}
+.dashboard {
+  position: relative;
+  isolation: isolate;
+  background-image: none;
+  background-color: rgba(9, 9, 11, .25);
+}
+.dashboard::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(9, 9, 11, .24), rgba(9, 9, 11, .24)),
+    url("/assets/liquid-glass/background.webp") center / cover no-repeat;
+  transform: translateZ(0);
+  will-change: transform;
+}
+.dashboard > .sidebar,
+.dashboard > .workspace {
+  position: relative;
+  z-index: 1;
+}
+.dashboard > .workspace,
+.login-shell > .login-panel { background: transparent; }
+
+.current-task-banner.liquid-glass,
+.batch-action-dock.liquid-glass,
+.assistant-status-strip.liquid-glass {
+  background: transparent;
+}
+.welcome-strip.liquid-glass { background: transparent; }
+
+.liquid-glass > .lg-overlay-bg,
+.liquid-glass > .lg-filter-layer,
+.liquid-glass > .lg-filter-layer > .glass-box {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.liquid-glass > .lg-overlay-bg { z-index: -2; overflow: hidden; }
+.liquid-glass > .lg-filter-layer { z-index: -1; overflow: hidden; }
+
+.liquid-glass.lg-performance-fallback > .lg-filter-layer {
+  transform: translateZ(0);
+  will-change: backdrop-filter;
+}
+.liquid-glass.button > .lg-content {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: inherit;
+}
+
+.glass-box.glass-black {
+  background: #09090b80;
+  box-shadow: inset 0 0 4px 0 #fafafa80;
+  filter: brightness(.6);
+}
+.glass-box.glass-white {
+  background: #fafafa80;
+  box-shadow: inset 0 0 4px 0 #fafafa80;
+}
+.glass-box.glass-transparent {
+  background: #09090b00;
+  box-shadow: inset 0 0 4px 0 #fafafa80;
+}
+
+.liquid-glass.button {
+  cursor: pointer;
+  transform-origin: top center;
+  transition: all .3s ease-out;
+  scale: 1;
+  rotate: 0deg;
+}
+.liquid-glass.button:hover:not(:disabled) {
+  scale: 1.05;
+  rotate: -1deg;
+}
+
+/* Application mounting layer. The optical recipe above is kept identical to
+   LiquidGlass.astro; these rules only make the existing product DOM act as its slots. */
+[data-lg-profile] {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+[data-lg-profile="surface"] {
+  border-color: rgba(255, 255, 255, .46) !important;
+}
+
+[data-lg-profile="dark-surface"] {
+  border-color: rgba(255, 255, 255, .16) !important;
+}
+
+[data-lg-profile="script-surface"] {
+  border-color: rgba(255, 255, 255, .34) !important;
+}
+
+.dashboard .workspace {
+  color: #111827;
+}
+
+.sidebar {
+  border-right: 1px solid rgba(255, 255, 255, .18);
+}
+
+.sidebar-brand {
+  border-bottom-color: rgba(255, 255, 255, .16);
+}
+
+.nav-item {
+  border: 1px solid transparent;
+}
+
+.nav-item:hover,
+.nav-item.active {
+  border-color: rgba(255, 255, 255, .2);
+}
+
+.topbar {
+  margin: 14px 18px 0;
+  height: 72px;
+  border: 1px solid rgba(255, 255, 255, .28);
+  border-radius: 20px;
+  background: transparent !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .12) !important;
+}
+
+.dashboard .topbar h2 {
+  color: rgba(255, 255, 255, .96);
+  font-weight: 760;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, .82);
+}
+
+.dashboard .topbar .user-area,
+.dashboard .topbar #current-user {
+  color: rgba(245, 249, 255, .92);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .72);
+}
+
+.dashboard .topbar .status-pill {
+  color: #bff8eb;
+  border: 1px solid rgba(105, 232, 205, .3);
+  background: rgba(9, 30, 29, .38);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12), 0 8px 20px rgba(0, 0, 0, .12);
+  backdrop-filter: blur(10px) saturate(125%);
+}
+
+.dashboard .topbar .status-pill i {
+  background: #58e0c2;
+  box-shadow: 0 0 0 4px rgba(88, 224, 194, .12), 0 0 12px rgba(88, 224, 194, .48);
+}
+
+.dashboard .topbar #logout-button {
+  color: rgba(248, 251, 255, .94);
+  border: 1px solid rgba(255, 255, 255, .28);
+  background: rgba(9, 9, 11, .34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1);
+  backdrop-filter: blur(10px) saturate(120%);
+}
+
+.dashboard .topbar #logout-button:hover {
+  border-color: rgba(255, 255, 255, .5);
+  background: rgba(255, 255, 255, .14);
+}
+
+.workspace-body {
+  padding-top: 26px;
+}
+
+.welcome-strip,
+.workbench-card,
+.department-panel,
+.people-panel,
+.role-rail,
+.permission-panel,
+.organization-card,
+.boundary-note,
+.script-library-rail,
+.script-detail-stage,
+.video-task-rail,
+.video-batch-stage,
+.automation-live-stage,
+.model-connect-card,
+.assistant-chat-card,
+.assistant-trace-card,
+.form-designer-palette,
+.form-designer-canvas-wrap,
+.form-designer-settings {
+  border-radius: 24px !important;
+}
+
+.summary-grid > article,
+.garment-card,
+.garment-output-slot,
+.garment-video-output,
+.shot-editor-card,
+.automation-access-card,
+.automation-result-panel,
+.model-output,
+.simple-model-form,
+.assistant-message,
+.assistant-composer,
+.assistant-token-monitor {
+  border-radius: 18px !important;
+}
+
+.form-grid > label,
+.choice-grid > label,
+.permission-options > label,
+.visual-anchor-card,
+.script-detail-head,
+.script-view-tabs,
+.video-batch-head,
+.batch-group-bar,
+.automation-heading,
+.automation-assistant-link,
+.automation-start-notice,
+.automation-prerequisites,
+.automation-business-results,
+.automation-runtime-grid > aside,
+.automation-runtime-grid > section {
+  border-radius: 16px !important;
+}
+
+.video-studio-heading {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+#video-scripts-page .video-studio-heading,
+#ai-video-tasks-page .video-studio-heading {
+  justify-content: flex-end;
+}
+
+#video-scripts-page .video-studio-heading > div:first-child,
+#ai-video-tasks-page .video-studio-heading > div:first-child {
+  display: none;
+}
+
+.system-tabs,
+.current-task-banner,
+.batch-action-dock,
+.assistant-status-strip,
+.automation-control-bar {
+  border-radius: 18px !important;
+}
+
+.login-panel {
+  backdrop-filter: brightness(.9);
+}
+
+.login-card {
+  width: min(100%, 470px);
+  padding: 38px;
+  border: 1px solid rgba(255, 255, 255, .55);
+  border-radius: 30px;
+}
+
+.pipeline {
+  padding-inline: 22px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 24px;
+}
+
+.field,
+.form-grid input,
+.form-grid select,
+.form-grid textarea,
+.simple-model-form input,
+.simple-model-form select,
+.simple-model-form textarea,
+.people-tools input,
+.assistant-composer textarea,
+.skill-name-field,
+input[type="search"] {
+  border-color: rgba(255, 255, 255, .62) !important;
+  background: rgba(250, 250, 250, .56) !important;
+  box-shadow: inset 0 0 4px rgba(250, 250, 250, .5), 0 8px 22px rgba(9, 9, 11, .08);
+  backdrop-filter: blur(14px) saturate(150%);
+}
+
+.field input {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+.field:focus-within {
+  outline: none;
+  border-color: rgba(255, 255, 255, .92) !important;
+  box-shadow: inset 0 0 4px #fafafa80, 0 0 0 3px rgba(92, 124, 250, .2) !important;
+}
+
+.manage-dialog,
+.asset-preview-dialog {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.manage-dialog::backdrop,
+.asset-preview-dialog::backdrop {
+  background: rgba(9, 9, 11, .46);
+  backdrop-filter: blur(18px) saturate(130%);
+}
+
+.manage-dialog > form,
+.asset-preview-shell {
+  border: 1px solid rgba(255, 255, 255, .56);
+  border-radius: 26px;
+}
+
+/* Inner workbench surfaces: remove the old opaque white slabs so the native
+   refraction mounted on each block can see the shared optical background. */
+.garment-card-head,
+.garment-board > header,
+.garment-card-front,
+.garment-upload-card,
+.garment-output-slot,
+.garment-video-output,
+.garment-preview,
+.model-output-canvas,
+.mini-storyboard,
+.garment-video-canvas,
+.shot-production-card,
+.source-thumbnails span,
+.source-thumbnails label,
+.script-library-item,
+.video-task-item,
+.task-group-tabs button,
+.batch-group-tabs button,
+.automation-prerequisites label,
+.automation-plan-preview dl > div,
+.automation-result-unit,
+.automation-event,
+.automation-runtime-grid > aside,
+.automation-runtime-grid > section,
+.managed-skill-row,
+.automation-skill-card,
+.model-config-card,
+.designer-field-card,
+.form-designer-canvas,
+.generated-image-card,
+.assistant-examples button,
+.asset-preview-shell > header,
+.asset-preview-shell > footer,
+.skill-source-menu,
+.video-prompt-actions,
+.video-prompt-editor[readonly],
+.people-table-wrap,
+.people-table th,
+.people-table td {
+  background: rgba(250, 250, 250, .16) !important;
+  border-color: rgba(255, 255, 255, .42) !important;
+}
+
+.script-library-item.active,
+.video-task-item.active,
+.task-group-tabs button.active,
+.batch-group-tabs button.active,
+.resolution-option.active {
+  background: rgba(250, 250, 250, .42) !important;
+  border-color: rgba(255, 255, 255, .7) !important;
+}
+
+.garment-preview,
+.model-output-canvas,
+.mini-storyboard,
+.garment-video-canvas,
+.shot-production-card,
+.generated-image-card {
+  border-radius: 14px !important;
+}
+
+.people-table tbody tr:hover td {
+  background: rgba(250, 250, 250, .28) !important;
+}
+
+.empty-state,
+.video-task-empty,
+.permission-empty,
+.model-empty,
+.designer-settings-empty,
+.garment-empty,
+.table-empty {
+  background: rgba(250, 250, 250, .12) !important;
+  border-color: rgba(255, 255, 255, .38) !important;
+}
+
+/* Video script studio has late, ID-scoped legacy rules. Keep this page fully
+   transparent so its individually mounted LiquidGlass layers remain visible. */
+#video-scripts-page {
+  background: transparent !important;
+  color: rgba(248, 251, 255, .96);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#video-scripts-page h1,
+#video-scripts-page h2,
+#video-scripts-page h3,
+#video-scripts-page strong,
+#video-scripts-page b {
+  color: #fff !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .72);
+}
+
+#video-scripts-page p,
+#video-scripts-page small,
+#video-scripts-page .script-detail-head p,
+#video-scripts-page .script-library-item small,
+#video-scripts-page .shot-editor-card p,
+#video-scripts-page .script-view-tabs > span {
+  color: rgba(224, 233, 244, .86) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .72);
+}
+
+#video-scripts-page .script-library-rail > header span,
+#video-scripts-page .visual-anchor-card > span,
+#video-scripts-page .shot-editor-card span,
+#video-scripts-page .shot-editor-card dt,
+#video-scripts-page .shot-editor-card dd,
+#video-scripts-page .script-json-view header span {
+  color: rgba(235, 242, 250, .9) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .68);
+}
+
+#video-scripts-page .quiet-button,
+#video-scripts-page .danger-text-button,
+#video-scripts-page .visual-anchor-card button,
+#video-scripts-page .script-view-tabs button {
+  color: rgba(248, 251, 255, .94) !important;
+  background: rgba(9, 9, 11, .3) !important;
+  border-color: rgba(255, 255, 255, .35) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .7);
+}
+
+#video-scripts-page .script-view-tabs button.active {
+  color: #fff !important;
+  border-bottom-color: rgba(255, 255, 255, .92) !important;
+}
+
+#video-scripts-page .script-detail-meta span,
+#video-scripts-page .script-source-badge,
+#video-scripts-page .script-library-item em,
+#video-scripts-page .storyboard-group-legend span {
+  color: rgba(248, 251, 255, .94) !important;
+  background: rgba(9, 9, 11, .42) !important;
+  border: 1px solid rgba(255, 255, 255, .24);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .7);
+}
+
+#video-scripts-page .script-library-item.active {
+  background: rgba(9, 9, 11, .34) !important;
+}
+
+#video-scripts-page .script-library-item:hover {
+  background: rgba(9, 9, 11, .24) !important;
+}
+
+#video-scripts-page .shot-editor-card dl div {
+  border-left-color: rgba(255, 255, 255, .2);
+}
+
+#video-scripts-page .storyboard-group-legend .hook,
+#video-scripts-page .storyboard-group-legend .solution,
+#video-scripts-page .storyboard-group-legend .cta {
+  color: #fff !important;
+}
+
+#video-scripts-page .film-frame {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .95);
+}
+
+#video-scripts-page .video-studio-heading,
+#video-scripts-page .script-library-rail,
+#video-scripts-page .script-library-rail > header,
+#video-scripts-page .script-library-item,
+#video-scripts-page .script-detail-stage,
+#video-scripts-page .script-detail-head,
+#video-scripts-page .visual-anchor-card,
+#video-scripts-page .script-view-tabs,
+#video-scripts-page .storyboard-workspace,
+#video-scripts-page .shot-editor-card,
+#video-scripts-page .script-json-view,
+#video-scripts-page .script-json-view > header {
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, .44) !important;
+  box-shadow: none !important;
+}
+
+#video-scripts-page .script-library-rail,
+#video-scripts-page .script-detail-stage {
+  border-radius: 22px !important;
+}
+
+#video-scripts-page .script-library-rail > header,
+#video-scripts-page .script-detail-head,
+#video-scripts-page .visual-anchor-card,
+#video-scripts-page .script-view-tabs,
+#video-scripts-page .storyboard-workspace,
+#video-scripts-page .shot-editor-card,
+#video-scripts-page .script-json-view {
+  border-radius: 16px !important;
+}
+
+#video-scripts-page .script-library-item:hover,
+#video-scripts-page .script-library-item.active {
+  background: rgba(9, 9, 11, .32) !important;
+}
+
+#video-scripts-page .film-strip {
+  background: transparent !important;
+  border: 1px solid rgba(255, 255, 255, .2);
+  border-radius: 16px !important;
+}
+
+#video-scripts-page .film-frame {
+  border-color: rgba(255, 255, 255, .28);
+  border-radius: 12px !important;
+}
+
+#video-scripts-page .script-json-view pre {
+  background: rgba(9, 9, 11, .68) !important;
+  border-radius: 0 0 16px 16px;
+}
+
+/* AI video production uses the same transparent native glass treatment. */
+#ai-video-tasks-page {
+  background: transparent !important;
+  color: rgba(248, 251, 255, .96);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#ai-video-tasks-page .video-studio-heading,
+#ai-video-tasks-page .video-task-rail,
+#ai-video-tasks-page .video-batch-stage,
+#ai-video-tasks-page .video-batch-head,
+#ai-video-tasks-page .batch-group-bar,
+#ai-video-tasks-page .garment-board,
+#ai-video-tasks-page .garment-board > header,
+#ai-video-tasks-page .garment-card,
+#ai-video-tasks-page .garment-card-front,
+#ai-video-tasks-page .garment-output-slot,
+#ai-video-tasks-page .garment-video-output,
+#ai-video-tasks-page .batch-action-dock {
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, .38) !important;
+  box-shadow: none !important;
+}
+
+#ai-video-tasks-page .video-task-rail,
+#ai-video-tasks-page .video-batch-stage {
+  border-radius: 22px !important;
+}
+
+#ai-video-tasks-page .video-batch-head,
+#ai-video-tasks-page .batch-group-bar,
+#ai-video-tasks-page .garment-board,
+#ai-video-tasks-page .garment-card,
+#ai-video-tasks-page .batch-action-dock {
+  border-radius: 16px !important;
+}
+
+#ai-video-tasks-page h1,
+#ai-video-tasks-page h2,
+#ai-video-tasks-page h3,
+#ai-video-tasks-page strong,
+#ai-video-tasks-page b {
+  color: #fff !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .75);
+}
+
+#ai-video-tasks-page p,
+#ai-video-tasks-page small,
+#ai-video-tasks-page .video-task-item small,
+#ai-video-tasks-page .garment-card-copy small,
+#ai-video-tasks-page .garment-board > header p,
+#ai-video-tasks-page .model-output-canvas small,
+#ai-video-tasks-page .garment-video-canvas small,
+#ai-video-tasks-page .batch-action-dock span {
+  color: rgba(224, 233, 244, .86) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .72);
+}
+
+#ai-video-tasks-page .video-task-item {
+  color: rgba(244, 248, 253, .94) !important;
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, .16) !important;
+}
+
+#ai-video-tasks-page .batch-task-rail > header {
+  color: rgba(248, 251, 255, .96);
+  background: rgba(9, 9, 11, .3) !important;
+  border-bottom-color: rgba(255, 255, 255, .2) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+#ai-video-tasks-page .batch-task-rail > header span {
+  color: #fff;
+  font-weight: 760;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .78);
+}
+
+#ai-video-tasks-page .batch-task-rail > header small {
+  color: rgba(220, 231, 242, .8) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .72);
+}
+
+#ai-video-tasks-page .video-task-item:hover,
+#ai-video-tasks-page .video-task-item.active {
+  background: rgba(9, 9, 11, .3) !important;
+}
+
+#ai-video-tasks-page .quiet-button,
+#ai-video-tasks-page .batch-upload-button,
+#ai-video-tasks-page .garment-download-rail button,
+#ai-video-tasks-page .garment-card-tools button {
+  color: rgba(248, 251, 255, .94) !important;
+  background: rgba(9, 9, 11, .3) !important;
+  border-color: rgba(255, 255, 255, .34) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .72);
+}
+
+#ai-video-tasks-page .task-stage-chip,
+#ai-video-tasks-page .task-progress-pill,
+#ai-video-tasks-page .task-mode-badge,
+#ai-video-tasks-page .garment-state,
+#ai-video-tasks-page .video-task-item em {
+  color: rgba(248, 251, 255, .94) !important;
+  background: rgba(9, 9, 11, .42) !important;
+  border-color: rgba(255, 255, 255, .24) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .72);
+}
+
+#ai-video-tasks-page .task-progress-pill {
+  min-width: 64px;
+  color: rgba(248, 251, 255, .94) !important;
+  background: rgba(9, 9, 11, .36) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1);
+}
+
+#ai-video-tasks-page .batch-upload-button {
+  color: rgba(248, 251, 255, .96) !important;
+  background: rgba(9, 9, 11, .34) !important;
+  border: 1px solid rgba(255, 255, 255, .3) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1) !important;
+}
+
+#ai-video-tasks-page .batch-upload-button:not(.disabled):not(.busy):hover {
+  border-color: rgba(255, 255, 255, .52) !important;
+  background: rgba(255, 255, 255, .14) !important;
+}
+
+#ai-video-tasks-page .garment-output-slot > header,
+#ai-video-tasks-page .garment-video-output > header,
+#ai-video-tasks-page .garment-card-head,
+#ai-video-tasks-page .garment-download-rail {
+  background: rgba(9, 9, 11, .2) !important;
+  border-color: rgba(255, 255, 255, .18) !important;
+}
+
+#ai-video-tasks-page .garment-preview,
+#ai-video-tasks-page .model-output-canvas,
+#ai-video-tasks-page .mini-storyboard,
+#ai-video-tasks-page .garment-video-canvas {
+  background-color: rgba(9, 9, 11, .24) !important;
+  border-color: rgba(255, 255, 255, .22) !important;
+}
+
+/* Readable production-console type scale. Increase text deliberately instead
+   of zooming the page, which would reduce the usable canvas and break grids. */
+.dashboard .sidebar-brand strong { font-size: 17px; }
+.dashboard .nav-item { font-size: 15px; line-height: 1.35; }
+.dashboard .topbar h2 { font-size: 21px; }
+.dashboard .user-area { font-size: 14px; }
+.dashboard .status-pill { font-size: 12px; }
+.dashboard .quiet-button,
+.dashboard .new-job-button,
+.dashboard .primary-button,
+.dashboard .circle-button { font-size: 13px; }
+
+.dashboard .workspace-body h1 { font-size: 30px; line-height: 1.2; }
+.dashboard .workspace-body h2 { font-size: 23px; line-height: 1.28; }
+.dashboard .workspace-body h3 { font-size: 17px; line-height: 1.35; }
+.dashboard .workspace-body p { font-size: 13px; line-height: 1.65; }
+.dashboard .workspace-body label { font-size: 13px; line-height: 1.45; }
+.dashboard .workspace-body input,
+.dashboard .workspace-body select,
+.dashboard .workspace-body textarea { font-size: 13px; line-height: 1.5; }
+.dashboard .people-table,
+.dashboard .permission-preview,
+.dashboard .job-list { font-size: 12px; }
+
+#video-scripts-page .script-library-rail > header span { font-size: 16px; }
+#video-scripts-page .script-library-rail > header small { font-size: 11px !important; }
+#video-scripts-page .script-library-item strong { font-size: 13px; }
+#video-scripts-page .script-library-item small { font-size: 10px !important; line-height: 1.45; }
+#video-scripts-page .script-library-item em { font-size: 9px; }
+#video-scripts-page .script-detail-head h2 { font-size: 24px; }
+#video-scripts-page .script-detail-head p { font-size: 12px !important; }
+#video-scripts-page .script-detail-meta span { font-size: 10px; }
+#video-scripts-page .visual-anchor-card > span { font-size: 11px; }
+#video-scripts-page .visual-anchor-card strong { font-size: 14px; line-height: 1.45; }
+#video-scripts-page .visual-anchor-card button,
+#video-scripts-page .script-view-tabs button { font-size: 13px; }
+#video-scripts-page .script-view-tabs > span { font-size: 10px; }
+#video-scripts-page .storyboard-group-legend span { font-size: 10px; }
+#video-scripts-page .film-frame b { font-size: 10px; line-height: 1.3; }
+#video-scripts-page .film-frame small { font-size: 8px !important; line-height: 1.35; }
+#video-scripts-page .film-frame i { font-size: 9px; }
+#video-scripts-page .shot-editor-card span { font-size: 10px; }
+#video-scripts-page .shot-editor-card h3 { font-size: 16px; }
+#video-scripts-page .shot-editor-card p { font-size: 11px !important; }
+#video-scripts-page .shot-editor-card dt { font-size: 9px; }
+#video-scripts-page .shot-editor-card dd { font-size: 11px; }
+#video-scripts-page .script-json-view header strong { font-size: 13px; }
+#video-scripts-page .script-json-view header span { font-size: 10px; }
+#video-scripts-page .script-json-view pre { font-size: 12px; line-height: 1.75; }
+
+#ai-video-tasks-page .batch-task-rail > header strong { font-size: 16px; }
+#ai-video-tasks-page .batch-task-rail > header small { font-size: 11px !important; }
+#ai-video-tasks-page .video-task-item strong { font-size: 13px; }
+#ai-video-tasks-page .video-task-item small { font-size: 10px !important; }
+#ai-video-tasks-page .video-task-item em { font-size: 10px; }
+#ai-video-tasks-page .video-batch-stage > header h2 { font-size: 25px; }
+#ai-video-tasks-page .video-batch-stage > header p { font-size: 12px !important; }
+#ai-video-tasks-page .task-stage-chip,
+#ai-video-tasks-page .task-progress-pill,
+#ai-video-tasks-page .task-mode-badge { font-size: 10px; }
+#ai-video-tasks-page .batch-task-context strong { font-size: 15px; }
+#ai-video-tasks-page .batch-task-context span { font-size: 11px; }
+#ai-video-tasks-page .garment-board > header span { font-size: 11px; }
+#ai-video-tasks-page .garment-board > header h3 { font-size: 17px; }
+#ai-video-tasks-page .garment-board > header p { font-size: 11px !important; }
+#ai-video-tasks-page .garment-card-copy strong { font-size: 14px; }
+#ai-video-tasks-page .garment-card-copy small { font-size: 10px !important; }
+#ai-video-tasks-page .garment-state { font-size: 10px; }
+#ai-video-tasks-page .garment-output-slot > header strong,
+#ai-video-tasks-page .garment-video-output > header strong { font-size: 12px; }
+#ai-video-tasks-page .garment-output-slot > header span,
+#ai-video-tasks-page .garment-video-output > header span { font-size: 10px; }
+#ai-video-tasks-page .garment-download-rail button { font-size: 12px; }
+#ai-video-tasks-page .model-output-canvas small { font-size: 10px !important; }
+#ai-video-tasks-page .garment-video-canvas > div strong { font-size: 13px; }
+#ai-video-tasks-page .garment-video-canvas > div small { font-size: 10px !important; }
+#ai-video-tasks-page .batch-action-dock strong { font-size: 15px; }
+#ai-video-tasks-page .batch-action-dock span { font-size: 11px !important; }
+
+@media (max-width: 760px) {
+  .dashboard .nav-item { font-size: 14px; }
+  .dashboard .workspace-body h1 { font-size: 26px; }
+  .dashboard .workspace-body h2 { font-size: 21px; }
+  .dashboard .workspace-body h3 { font-size: 16px; }
+}
+
+/* Asset lightbox: translucent optical frame while the media keeps its true color. */
+.asset-preview-dialog::backdrop {
+  background: rgba(5, 7, 12, .48) !important;
+  backdrop-filter: blur(24px) saturate(126%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(126%) !important;
+}
+
+.asset-preview-dialog .asset-preview-shell {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .38) !important;
+  border-radius: 22px !important;
+  color: rgba(239, 246, 253, .94);
+  background:
+    linear-gradient(120deg, rgba(255, 255, 255, .12), transparent 24% 72%, rgba(255, 255, 255, .045)),
+    radial-gradient(circle at 10% 0%, rgba(104, 138, 178, .2), transparent 34%),
+    linear-gradient(155deg, rgba(18, 28, 45, .7), rgba(7, 12, 21, .54)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .18),
+    0 30px 84px rgba(0, 0, 0, .4);
+  backdrop-filter: blur(30px) saturate(132%);
+  -webkit-backdrop-filter: blur(30px) saturate(132%);
+}
+
+.asset-preview-dialog .asset-preview-shell > header,
+.asset-preview-dialog .asset-preview-shell > footer {
+  border-color: rgba(255, 255, 255, .12) !important;
+  background: rgba(10, 17, 29, .32) !important;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.asset-preview-dialog .asset-preview-shell > header span {
+  color: rgba(142, 207, 255, .9);
+}
+
+.asset-preview-dialog .asset-preview-shell > header h3 {
+  color: #fff;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, .24);
+}
+
+.asset-preview-dialog .asset-preview-body,
+.asset-preview-dialog .asset-preview-body.is-video {
+  background:
+    radial-gradient(circle at 50% 36%, rgba(255, 255, 255, .09), transparent 42%),
+    rgba(8, 14, 24, .28) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.asset-preview-dialog .asset-preview-download,
+.asset-preview-dialog .dialog-close,
+.asset-preview-dialog .asset-preview-shell > footer .quiet-button {
+  border: 1px solid rgba(255, 255, 255, .24) !important;
+  border-radius: 999px !important;
+  color: rgba(244, 249, 255, .94) !important;
+  background: rgba(255, 255, 255, .09) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1);
+}
+
+.asset-preview-dialog .asset-preview-download:hover:not(:disabled),
+.asset-preview-dialog .dialog-close:hover,
+.asset-preview-dialog .asset-preview-shell > footer .quiet-button:hover {
+  border-color: rgba(255, 255, 255, .48) !important;
+  background: rgba(255, 255, 255, .16) !important;
+}
+
+.asset-preview-dialog .asset-preview-shell > footer span {
+  color: rgba(194, 207, 224, .68);
+}
+
+.asset-preview-dialog .asset-preview-body .garment-preview,
+.asset-preview-dialog .asset-preview-body .model-output-canvas,
+.asset-preview-dialog .asset-preview-body .mini-storyboard,
+.asset-preview-dialog .asset-preview-video {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .16) !important;
+  border-radius: 14px !important;
+  background: rgba(5, 9, 16, .34) !important;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, .22);
+}
+
+/* Prompt workbench: a compact production side-panel instead of a white form sheet. */
+#ai-video-tasks-page .garment-card.is-prompt-flipped .garment-card-back {
+  height: min(720px, calc(100vh - 28px));
+  min-height: 560px;
+  align-self: start;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .28);
+  border-radius: 18px;
+  color: rgba(239, 245, 252, .96);
+  background:
+    linear-gradient(118deg, rgba(255, 255, 255, .12), transparent 22% 76%, rgba(255, 255, 255, .045)),
+    radial-gradient(circle at 15% 0%, rgba(93, 128, 170, .24), transparent 38%),
+    linear-gradient(160deg, rgba(15, 25, 42, .72), rgba(7, 12, 22, .58));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .18),
+    inset 1px 0 0 rgba(255, 255, 255, .05),
+    0 24px 58px rgba(0, 0, 0, .34);
+  backdrop-filter: blur(28px) saturate(132%);
+  -webkit-backdrop-filter: blur(28px) saturate(132%);
+}
+
+#ai-video-tasks-page .video-prompt-head {
+  min-height: 0;
+  padding: 15px 15px 13px 17px;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, .1);
+  background: linear-gradient(180deg, rgba(20, 32, 52, .48), rgba(10, 18, 31, .24));
+}
+
+#ai-video-tasks-page .video-prompt-head > div:first-child {
+  gap: 4px;
+}
+
+#ai-video-tasks-page .video-prompt-head strong {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 760;
+  letter-spacing: -.01em;
+}
+
+#ai-video-tasks-page .video-prompt-head small {
+  overflow: hidden;
+  color: rgba(190, 203, 221, .66);
+  font-size: 9px !important;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#ai-video-tasks-page .video-prompt-head > .video-prompt-head-actions {
+  gap: 6px;
+}
+
+#ai-video-tasks-page .video-prompt-head button,
+#ai-video-tasks-page .video-prompt-head .copy-prompt-button {
+  height: 31px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, .2) !important;
+  border-radius: 999px;
+  color: rgba(242, 247, 253, .92) !important;
+  background: rgba(255, 255, 255, .075) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+  font-size: 9px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+#ai-video-tasks-page .video-prompt-head button:hover,
+#ai-video-tasks-page .video-prompt-head button:focus-visible {
+  border-color: rgba(255, 255, 255, .42) !important;
+  color: #fff !important;
+  background: rgba(255, 255, 255, .14) !important;
+}
+
+#ai-video-tasks-page .video-prompt-body {
+  min-height: 0;
+  padding: 13px 14px 12px;
+  gap: 10px;
+  background: rgba(7, 12, 21, .08);
+}
+
+#ai-video-tasks-page .video-prompt-label {
+  min-width: 0;
+  gap: 9px;
+  color: rgba(238, 245, 252, .9);
+}
+
+#ai-video-tasks-page .video-prompt-label::after {
+  content: "";
+  height: 4px;
+  min-width: 22px;
+  flex: 1 1 auto;
+  opacity: .52;
+  background: repeating-linear-gradient(90deg, rgba(164, 184, 210, .42) 0 1px, transparent 1px 7px);
+}
+
+#ai-video-tasks-page .video-prompt-label span {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: .02em;
+}
+
+#ai-video-tasks-page .video-prompt-label em {
+  flex: 0 0 auto;
+  color: rgba(188, 202, 220, .66);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+#ai-video-tasks-page .video-prompt-editor,
+#ai-video-tasks-page .video-prompt-editor[readonly] {
+  min-height: 0;
+  height: 100%;
+  padding: 16px 15px 22px;
+  resize: none;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 14px;
+  outline: none;
+  color: rgba(233, 240, 249, .91);
+  background:
+    linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px) 0 21px / 100% 26px,
+    linear-gradient(145deg, rgba(255, 255, 255, .075), rgba(255, 255, 255, .035));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .1),
+    inset 0 18px 36px rgba(0, 0, 0, .06),
+    0 10px 28px rgba(0, 0, 0, .08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  caret-color: #9fe3d4;
+  font: 500 13px/1.85 "Microsoft YaHei UI", "PingFang SC", sans-serif !important;
+  scrollbar-color: rgba(191, 207, 225, .44) transparent;
+  scrollbar-width: thin;
+}
+
+#ai-video-tasks-page .video-prompt-editor::selection {
+  color: #fff;
+  background: rgba(94, 169, 226, .38);
+}
+
+#ai-video-tasks-page .video-prompt-editor::-webkit-scrollbar {
+  width: 8px;
+}
+
+#ai-video-tasks-page .video-prompt-editor::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#ai-video-tasks-page .video-prompt-editor::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(191, 207, 225, .38);
+  background-clip: padding-box;
+}
+
+#ai-video-tasks-page .video-prompt-editor:not([readonly]):focus {
+  border-color: rgba(144, 208, 238, .64);
+  background-color: rgba(255, 255, 255, .075);
+  box-shadow:
+    0 0 0 3px rgba(102, 180, 218, .1),
+    inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+#ai-video-tasks-page .video-prompt-actions {
+  min-height: 55px;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(255, 255, 255, .1);
+  background: linear-gradient(180deg, rgba(11, 18, 30, .34), rgba(8, 14, 24, .52));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 -12px 30px rgba(0, 0, 0, .12);
+}
+
+#ai-video-tasks-page .video-prompt-actions > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(190, 203, 220, .68);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+#ai-video-tasks-page .video-prompt-actions > span::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: #72d8bd;
+  box-shadow: 0 0 0 4px rgba(114, 216, 189, .09);
+}
+
+#ai-video-tasks-page .edit-prompt-button,
+#ai-video-tasks-page .save-prompt-button,
+#ai-video-tasks-page .quiet-prompt-button {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+#ai-video-tasks-page .edit-prompt-button,
+#ai-video-tasks-page .save-prompt-button {
+  border: 1px solid rgba(173, 229, 217, .46);
+  color: #eafffa;
+  background: rgba(52, 132, 114, .54);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .13);
+}
+
+#ai-video-tasks-page .edit-prompt-button:hover,
+#ai-video-tasks-page .save-prompt-button:hover {
+  border-color: rgba(194, 243, 232, .7);
+  background: rgba(62, 151, 131, .66);
+}
+
+#ai-video-tasks-page .quiet-prompt-button {
+  border: 1px solid rgba(255, 255, 255, .18);
+  color: rgba(232, 240, 249, .84);
+  background: rgba(255, 255, 255, .07);
+}
+
+@media (max-width: 680px) {
+  #ai-video-tasks-page .garment-card.is-prompt-flipped .garment-card-back {
+    height: calc(100svh - 16px);
+    min-height: 460px;
+    border-radius: 15px;
+  }
+
+  #ai-video-tasks-page .video-prompt-head {
+    padding: 12px;
+    align-items: flex-start;
+  }
+
+  #ai-video-tasks-page .video-prompt-head small,
+  #ai-video-tasks-page .video-prompt-head button span {
+    display: none;
+  }
+
+  #ai-video-tasks-page .video-prompt-head button,
+  #ai-video-tasks-page .video-prompt-head .copy-prompt-button {
+    width: 31px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  #ai-video-tasks-page .video-prompt-actions {
+    align-items: center;
+    flex-direction: row;
+  }
+
+  #ai-video-tasks-page .video-prompt-actions > span {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Product asset gallery: imagery is the surface; metadata floats in a quiet film strip. */
+#ai-video-tasks-page .garment-card-head {
+  min-height: 72px;
+}
+
+#ai-video-tasks-page .garment-card-head .garment-card-copy {
+  padding: 10px 10px 9px 42px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 5px;
+}
+
+#ai-video-tasks-page .garment-card-copy > div:first-child {
+  display: contents;
+}
+
+#ai-video-tasks-page .garment-card-copy > div:first-child > strong {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+#ai-video-tasks-page .garment-card-copy > div:first-child > small {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#ai-video-tasks-page .garment-card-copy > .garment-card-tools {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: max-content;
+}
+
+#ai-video-tasks-page .copy-provider-task-button {
+  height: 24px;
+  padding: 0 8px;
+  gap: 5px;
+  border: 1px solid rgba(255, 255, 255, .22) !important;
+  border-radius: 999px;
+  color: rgba(231, 239, 248, .82) !important;
+  background: rgba(8, 13, 22, .32) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: .01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .56);
+}
+
+#ai-video-tasks-page .copy-provider-task-button i {
+  color: rgba(179, 211, 235, .86);
+  font-size: 11px;
+}
+
+#ai-video-tasks-page .copy-provider-task-button:hover,
+#ai-video-tasks-page .copy-provider-task-button:focus-visible {
+  border-color: rgba(255, 255, 255, .42) !important;
+  color: #fff !important;
+  background: rgba(255, 255, 255, .12) !important;
+}
+
+#ai-video-tasks-page .copy-provider-task-button.copied {
+  border-color: rgba(119, 220, 194, .44) !important;
+  color: rgba(218, 255, 246, .94) !important;
+  background: rgba(42, 122, 103, .34) !important;
+}
+
+#ai-video-tasks-page .batch-task-rail .video-task-item {
+  min-height: 48px;
+  padding-block: 9px;
+}
+
+#ai-video-tasks-page .batch-task-rail .video-task-item > div {
+  gap: 0;
+}
+
+#ai-video-tasks-page .batch-task-rail .video-task-item small {
+  display: none !important;
+}
+
+#ai-video-tasks-page .batch-task-rail .video-task-item strong {
+  font-size: 14px !important;
+  line-height: 1.25;
+}
+
+#ai-video-tasks-page .batch-task-rail .video-task-item em {
+  padding: 3px 5px;
+  font-size: 10px !important;
+  line-height: 1;
+}
+
+#ai-video-tasks-page .garment-download-rail,
+#ai-video-tasks-page .model-output .storyboard-slot-actions button,
+#ai-video-tasks-page .storyboard-output .storyboard-slot-actions button {
+  display: none !important;
+}
+
+#ai-video-tasks-page .garment-portrait-grid {
+  padding: 12px !important;
+  gap: 10px !important;
+  background: transparent !important;
+}
+
+#ai-video-tasks-page .garment-portrait-grid > .garment-output-grid {
+  display: contents !important;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot {
+  min-width: 0;
+  position: relative;
+  display: block !important;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .34) !important;
+  border-radius: 17px !important;
+  background: rgba(6, 10, 18, .2) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .12),
+    0 12px 30px rgba(0, 0, 0, .14) !important;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, .58) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .16),
+    0 17px 36px rgba(0, 0, 0, .2) !important;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header {
+  min-height: 0 !important;
+  height: 48px;
+  padding: 10px 11px 16px !important;
+  position: absolute;
+  z-index: 3;
+  inset: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  border: 0 !important;
+  background: linear-gradient(180deg, rgba(5, 9, 16, .76), rgba(5, 9, 16, .34) 58%, transparent) !important;
+  box-shadow: none !important;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header strong {
+  padding-top: 3px;
+  overflow: hidden;
+  color: rgba(255, 255, 255, .96) !important;
+  font-size: 12px !important;
+  font-weight: 760;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, .82);
+  white-space: nowrap;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .storyboard-slot-actions {
+  min-width: 0;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .model-output > header strong,
+#ai-video-tasks-page .garment-portrait-grid .storyboard-output > header strong {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .model-output .storyboard-slot-actions,
+#ai-video-tasks-page .garment-portrait-grid .storyboard-output .storyboard-slot-actions {
+  gap: 4px;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .model-output .storyboard-slot-actions span,
+#ai-video-tasks-page .garment-portrait-grid .storyboard-output .storyboard-slot-actions span {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  padding: 0;
+  overflow: hidden;
+  font-size: 0 !important;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .model-output .storyboard-slot-actions span::before,
+#ai-video-tasks-page .garment-portrait-grid .storyboard-output .storyboard-slot-actions span::before {
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header span {
+  padding: 4px 7px 4px 16px;
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 999px;
+  color: rgba(236, 246, 244, .94) !important;
+  background: rgba(5, 20, 19, .48) !important;
+  font-size: 9px !important;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: none;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header span::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  position: absolute;
+  top: 50%;
+  left: 7px;
+  border-radius: 50%;
+  background: #67e2c6;
+  box-shadow: 0 0 0 3px rgba(103, 226, 198, .1);
+  transform: translateY(-50%);
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot.processing > header span::before {
+  background: #82aaff;
+  box-shadow: 0 0 0 3px rgba(130, 170, 255, .12);
+}
+
+#ai-video-tasks-page .garment-portrait-grid .storyboard-slot-actions button {
+  height: 25px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, .32) !important;
+  border-radius: 999px;
+  color: #fff !important;
+  background: rgba(9, 9, 11, .42) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1);
+  font-size: 9px;
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .7);
+}
+
+#ai-video-tasks-page .garment-portrait-grid .storyboard-slot-actions button:hover {
+  border-color: rgba(255, 255, 255, .56) !important;
+  background: rgba(255, 255, 255, .16) !important;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-preview,
+#ai-video-tasks-page .garment-portrait-grid .model-output-canvas,
+#ai-video-tasks-page .garment-portrait-grid .mini-storyboard {
+  display: grid;
+  overflow: hidden;
+  border: 0 !important;
+  border-radius: 16px !important;
+  outline-offset: -3px;
+  background: rgba(5, 8, 14, .3) !important;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-preview > img,
+#ai-video-tasks-page .garment-portrait-grid .model-output-canvas > img,
+#ai-video-tasks-page .garment-portrait-grid .mini-storyboard > img.storyboard-grid-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: rgba(5, 8, 14, .18) !important;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-original-output {
+  grid-column: 1 / -1;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .garment-original-output .garment-preview {
+  aspect-ratio: 16 / 9;
+}
+
+#ai-video-tasks-page .garment-portrait-grid .model-output-canvas,
+#ai-video-tasks-page .garment-portrait-grid .mini-storyboard {
+  aspect-ratio: 9 / 16;
+}
+
+@media (max-width: 680px) {
+  #ai-video-tasks-page .garment-portrait-grid {
+    padding: 8px !important;
+    gap: 7px !important;
+  }
+
+  #ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header {
+    height: 43px;
+    padding: 8px 8px 14px !important;
+  }
+
+  #ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header strong {
+    font-size: 10px !important;
+  }
+
+  #ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header span {
+    padding-inline: 13px 5px;
+    font-size: 8px !important;
+  }
+
+  #ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header span::before {
+    left: 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ai-video-tasks-page .garment-portrait-grid .garment-output-slot { transition: none; }
+}
+
+/* XL readability pass requested for desktop operation. */
+@media (min-width: 761px) {
+  .dashboard .sidebar-brand strong { font-size: 19px; }
+  .dashboard .nav-item { font-size: 17px; }
+  .dashboard .topbar h2 { font-size: 24px; }
+  .dashboard .user-area { font-size: 16px; }
+  .dashboard .status-pill { font-size: 13px; }
+  .dashboard .quiet-button,
+  .dashboard .new-job-button,
+  .dashboard .primary-button,
+  .dashboard .circle-button { font-size: 15px; }
+
+  .dashboard .workspace-body h1 { font-size: 34px; }
+  .dashboard .workspace-body h2 { font-size: 27px; }
+  .dashboard .workspace-body h3 { font-size: 20px; }
+  .dashboard .workspace-body p { font-size: 15px; }
+  .dashboard .workspace-body label,
+  .dashboard .workspace-body input,
+  .dashboard .workspace-body select,
+  .dashboard .workspace-body textarea { font-size: 15px; }
+  .dashboard .people-table,
+  .dashboard .permission-preview,
+  .dashboard .job-list { font-size: 14px; }
+
+  #video-scripts-page .script-library-rail > header span,
+  #ai-video-tasks-page .batch-task-rail > header strong { font-size: 18px; }
+  #video-scripts-page .script-library-rail > header small,
+  #ai-video-tasks-page .batch-task-rail > header small { font-size: 12px !important; }
+  #video-scripts-page .script-library-item strong,
+  #ai-video-tasks-page .video-task-item strong { font-size: 15px; }
+  #video-scripts-page .script-library-item small,
+  #ai-video-tasks-page .video-task-item small { font-size: 11px !important; }
+  #video-scripts-page .script-library-item em,
+  #ai-video-tasks-page .video-task-item em { font-size: 10px; }
+
+  #video-scripts-page .script-detail-head h2,
+  #ai-video-tasks-page .video-batch-stage > header h2 { font-size: 29px; }
+  #video-scripts-page .script-detail-head p,
+  #ai-video-tasks-page .video-batch-stage > header p { font-size: 14px !important; }
+  #video-scripts-page .visual-anchor-card > span,
+  #video-scripts-page .storyboard-group-legend span { font-size: 12px; }
+  #video-scripts-page .visual-anchor-card strong { font-size: 16px; }
+  #video-scripts-page .visual-anchor-card button,
+  #video-scripts-page .script-view-tabs button { font-size: 15px; }
+  #video-scripts-page .script-view-tabs > span { font-size: 12px; }
+  #video-scripts-page .film-frame b { font-size: 11px; }
+  #video-scripts-page .film-frame small { font-size: 9px !important; }
+  #video-scripts-page .shot-editor-card h3 { font-size: 18px; }
+  #video-scripts-page .shot-editor-card p { font-size: 13px !important; }
+  #video-scripts-page .shot-editor-card dt { font-size: 10px; }
+  #video-scripts-page .shot-editor-card dd { font-size: 13px; }
+
+  #ai-video-tasks-page .task-stage-chip,
+  #ai-video-tasks-page .task-progress-pill,
+  #ai-video-tasks-page .task-mode-badge { font-size: 12px; }
+  #ai-video-tasks-page .batch-task-context strong { font-size: 18px; }
+  #ai-video-tasks-page .batch-task-context span { font-size: 13px; }
+  #ai-video-tasks-page .garment-board > header h3 { font-size: 20px; }
+  #ai-video-tasks-page .garment-board > header p { font-size: 13px !important; }
+  #ai-video-tasks-page .garment-card-copy strong { font-size: 16px; }
+  #ai-video-tasks-page .garment-card-copy small { font-size: 12px !important; }
+  #ai-video-tasks-page .garment-state { font-size: 11px; }
+  #ai-video-tasks-page .garment-output-slot > header strong,
+  #ai-video-tasks-page .garment-video-output > header strong { font-size: 14px; }
+  #ai-video-tasks-page .garment-output-slot > header span,
+  #ai-video-tasks-page .garment-video-output > header span { font-size: 11px; }
+  #ai-video-tasks-page .garment-download-rail button { font-size: 14px; }
+  #ai-video-tasks-page .batch-action-dock strong { font-size: 17px; }
+  #ai-video-tasks-page .batch-action-dock span { font-size: 13px !important; }
+}
+
+.script-library-item,
+.video-task-item,
+.garment-card,
+.job-list > article,
+.automation-event,
+.managed-skill-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 72px;
+}
+
+.garment-card { contain-intrinsic-size: auto 640px; }
+
+[data-lg-profile="button-dark"],
+[data-lg-profile="button-light"] {
+  border-color: rgba(255, 255, 255, .44) !important;
+}
+
+[data-lg-profile="button-dark"] {
+  color: rgba(255, 255, 255, .92);
+}
+
+[data-lg-profile="micro"] {
+  border-color: rgba(255, 255, 255, .5) !important;
+  border-radius: 999px !important;
+}
+
+.nav-item .lg-content,
+.script-library-item .lg-content,
+.film-frame .lg-content,
+.batch-upload-button .lg-content {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.nav-item .lg-content > span:first-child {
+  width: 18px;
+  flex: 0 0 18px;
+  text-align: center;
+}
+
+.script-library-item .lg-content {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.film-frame .lg-content {
+  display: grid;
+}
+
+.batch-upload-button .lg-content {
+  display: flex;
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    margin: 8px 10px 0;
+    border-radius: 16px;
+  }
+
+  .login-card {
+    padding: 26px;
+    border-radius: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liquid-glass.button { transition: none; }
+  .liquid-glass.button:hover:not(:disabled) { scale: 1; rotate: 0deg; }
+}
+
+/* Script view switch: two quiet floating pills, not boxed form tabs. */
+#video-scripts-page .script-view-tabs {
+  min-height: 48px;
+  margin: 10px 14px 4px;
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+#video-scripts-page .script-view-tabs button {
+  min-width: 126px;
+  min-height: 42px;
+  padding: 9px 18px;
+  border: 1px solid rgba(255, 255, 255, .22) !important;
+  border-radius: 999px;
+  color: rgba(222, 232, 243, .82) !important;
+  background: rgba(9, 9, 11, .22) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07);
+  transition: color .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+#video-scripts-page .script-view-tabs button:hover {
+  color: #fff !important;
+  border-color: rgba(255, 255, 255, .42) !important;
+  background: rgba(255, 255, 255, .1) !important;
+}
+
+#video-scripts-page .script-view-tabs button.active {
+  color: #fff !important;
+  border-color: rgba(159, 242, 226, .58) !important;
+  background: rgba(24, 80, 73, .46) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .18),
+    0 0 0 3px rgba(83, 224, 194, .08),
+    0 10px 24px rgba(0, 0, 0, .16);
+}
+
+#video-scripts-page .script-view-tabs button:active {
+  transform: scale(.98);
+}
+
+#video-scripts-page .script-view-tabs > span {
+  margin-left: auto;
+  padding-left: 18px;
+  text-align: right;
+}
+
+@media (max-width: 760px) {
+  #video-scripts-page .script-view-tabs {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  #video-scripts-page .script-view-tabs button {
+    min-width: 0;
+    flex: 1 1 120px;
+  }
+
+  #video-scripts-page .script-view-tabs > span {
+    width: 100%;
+    margin-left: 0;
+    padding: 4px 2px 0;
+    text-align: left;
+  }
+}

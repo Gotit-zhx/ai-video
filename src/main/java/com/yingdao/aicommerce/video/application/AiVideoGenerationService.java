@@ -14,10 +14,12 @@ import com.yingdao.aicommerce.video.domain.AiVideoGenerationJob;
 import com.yingdao.aicommerce.video.domain.AiVideoTask;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskAsset;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
+import com.yingdao.aicommerce.video.domain.VideoScript;
 import com.yingdao.aicommerce.video.mapper.AiVideoGenerationJobMapper;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskAssetMapper;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper;
+import com.yingdao.aicommerce.video.mapper.VideoScriptMapper;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -55,6 +57,7 @@ public class AiVideoGenerationService {
     private final AiVideoTaskItemMapper itemMapper;
     private final AiVideoTaskAssetMapper assetMapper;
     private final AiVideoGenerationJobMapper jobMapper;
+    private final VideoScriptMapper scriptMapper;
     private final ModelConfigService modelConfigs;
     private final VideoProviderRegistry providers;
     private final VideoReferenceLinkService referenceLinks;
@@ -69,6 +72,7 @@ public class AiVideoGenerationService {
 
     public AiVideoGenerationService(AiVideoTaskMapper taskMapper, AiVideoTaskItemMapper itemMapper,
                                     AiVideoTaskAssetMapper assetMapper, AiVideoGenerationJobMapper jobMapper,
+                                    VideoScriptMapper scriptMapper,
                                     ModelConfigService modelConfigs, VideoProviderRegistry providers,
                                     VideoReferenceLinkService referenceLinks, VideoReferenceDeliveryService referenceDelivery,
                                     ObjectMapper objectMapper,
@@ -77,6 +81,7 @@ public class AiVideoGenerationService {
         this.itemMapper = itemMapper;
         this.assetMapper = assetMapper;
         this.jobMapper = jobMapper;
+        this.scriptMapper = scriptMapper;
         this.modelConfigs = modelConfigs;
         this.providers = providers;
         this.referenceLinks = referenceLinks;
@@ -185,13 +190,14 @@ public class AiVideoGenerationService {
         }
         int attempt = attempted.size() + 1;
         int duration = duration(task.getScriptJson());
-        String resolution = "WENGAO".equals(connection.provider()) ? "768P" : "720p";
+        String resolution = task.getResolution() == null || task.getResolution().isBlank()
+                ? "720p" : task.getResolution();
         AiVideoGenerationJob job = new AiVideoGenerationJob(runId, task.getOrganizationId(), taskId, itemId, attempt,
                 connection.id(), connection.provider(), connection.modelId(), duration, task.getAspectRatio(), resolution);
         jobMapper.insert(job);
         try {
             VideoGenerationProvider provider = providers.require(connection.provider());
-            GenerationRequest request = new GenerationRequest(item.getVideoPromptText(), references(task, item, connection),
+            GenerationRequest request = new GenerationRequest(item.getVideoPromptText(), references(task, item, connection, provider),
                     duration, task.getAspectRatio(), resolution, audioReference(task));
             SubmitResult submitted = provider.submit(connection, request);
             job.accepted(submitted.providerTaskId(), submitted.status(), Instant.now().plusSeconds(pollSeconds(connection.provider())));
@@ -275,7 +281,8 @@ public class AiVideoGenerationService {
         return provider + "：" + latest.getErrorMessage().trim();
     }
 
-    private List<Reference> references(AiVideoTask task, AiVideoTaskItem item, RuntimeModelConnection connection) throws Exception {
+    private List<Reference> references(AiVideoTask task, AiVideoTaskItem item, RuntimeModelConnection connection,
+                                       VideoGenerationProvider provider) throws Exception {
         List<AiVideoTaskAsset> assets = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, item.getId()));
         AiVideoTaskAsset first = requireAsset(assets, "STORYBOARD_FIRST_FRAME");
@@ -286,12 +293,34 @@ public class AiVideoGenerationService {
         if (referenceLinks.isPubliclyReachable()) {
             referenceDelivery.prepare(first);
             referenceDelivery.prepare(grid);
-            return List.of(new Reference(referenceLinks.deliveryAsset(first.getId()), "image/jpeg"),
-                    new Reference(referenceLinks.deliveryAsset(grid.getId()), "image/jpeg"),
-                    new Reference(referenceLinks.source(item.getId()), item.getSourceContentType()));
+            List<Reference> result = new ArrayList<>();
+            result.add(new Reference(referenceLinks.deliveryAsset(first.getId()), "image/jpeg"));
+            result.add(new Reference(referenceLinks.deliveryAsset(grid.getId()), "image/jpeg"));
+            result.add(new Reference(referenceLinks.source(item.getId()), item.getSourceContentType()));
+            referenceVideo(task, provider, connection).ifPresent(result::add);
+            return List.copyOf(result);
         }
         return List.of(data(first.getFilePath(), first.getContentType()), data(grid.getFilePath(), grid.getContentType()),
                 data(item.getSourceFilePath(), item.getSourceContentType()));
+    }
+
+    private java.util.Optional<Reference> referenceVideo(AiVideoTask task, VideoGenerationProvider provider,
+                                                         RuntimeModelConnection connection) {
+        if (!task.isUseScriptReferenceVideo()
+                || !"PRODUCT_ONLY".equals(task.getGenerationMode())
+                || !provider.supportsReferenceVideo(connection)
+                || task.getScriptId() == null || task.getScriptId().isBlank()) {
+            return java.util.Optional.empty();
+        }
+        VideoScript script = scriptMapper.selectById(task.getScriptId());
+        if (script == null || !"VIDEO_ANALYSIS".equals(script.getSourceType())
+                || script.getSourceFilePath() == null || script.getSourceContentType() == null
+                || !script.getSourceContentType().startsWith("video/")
+                || !Files.isRegularFile(Path.of(script.getSourceFilePath()))) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(new Reference(
+                referenceLinks.scriptSource(script.getId()), script.getSourceContentType()));
     }
 
     private Reference data(String filePath, String mediaType) throws Exception {

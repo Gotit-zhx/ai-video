@@ -8,6 +8,7 @@ import java.util.Map;
 
 public interface VideoGenerationProvider {
     String code();
+    default boolean supportsReferenceVideo(RuntimeModelConnection connection) { return false; }
     SubmitResult submit(RuntimeModelConnection connection, GenerationRequest request);
     QueryResult query(RuntimeModelConnection connection, String providerTaskId);
 

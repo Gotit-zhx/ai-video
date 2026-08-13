@@ -26,6 +26,7 @@ public class VideoScriptShot {
     private String narration;
     private String shotSize;
     private String cameraMovement;
+    private String transitionDescription;
     private String emotion;
     private String imagePromptJson;
     private Instant createdAt;
@@ -49,6 +50,7 @@ public class VideoScriptShot {
             String narration,
             String shotSize,
             String cameraMovement,
+            String transitionDescription,
             String emotion,
             String imagePromptJson
     ) {
@@ -67,6 +69,7 @@ public class VideoScriptShot {
         this.narration = narration;
         this.shotSize = shotSize;
         this.cameraMovement = cameraMovement;
+        this.transitionDescription = transitionDescription;
         this.emotion = emotion;
         this.imagePromptJson = imagePromptJson;
         this.createdAt = Instant.now();
@@ -82,6 +85,7 @@ public class VideoScriptShot {
             String narration,
             String shotSize,
             String cameraMovement,
+            String transitionDescription,
             String emotion
     ) {
         this.stage = stage;
@@ -92,6 +96,7 @@ public class VideoScriptShot {
         this.narration = narration;
         this.shotSize = shotSize;
         this.cameraMovement = cameraMovement;
+        this.transitionDescription = transitionDescription;
         this.emotion = emotion;
         this.updatedAt = Instant.now();
     }
@@ -111,6 +116,7 @@ public class VideoScriptShot {
     public String getNarration() { return narration; }
     public String getShotSize() { return shotSize; }
     public String getCameraMovement() { return cameraMovement; }
+    public String getTransitionDescription() { return transitionDescription; }
     public String getEmotion() { return emotion; }
     public String getImagePromptJson() { return imagePromptJson; }
     public Instant getCreatedAt() { return createdAt; }

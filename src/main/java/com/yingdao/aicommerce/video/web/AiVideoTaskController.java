@@ -49,7 +49,8 @@ public class AiVideoTaskController {
         return ApiResponse.created(TaskResponse.from(service.create(
                 new AiVideoTaskService.CreateCommand(request.scriptId(), request.name(), request.targetMarket(),
                         request.generationMode(), request.backgroundMode(), request.productCategory(), request.sceneType(), request.interactionType(),
-                        Boolean.TRUE.equals(request.allowHand()), request.aspectRatio()), principal)));
+                        Boolean.TRUE.equals(request.allowHand()), request.aspectRatio(), request.resolution(),
+                        Boolean.TRUE.equals(request.useScriptReferenceVideo())), principal)));
     }
 
     @GetMapping
@@ -89,6 +90,13 @@ public class AiVideoTaskController {
     public ApiResponse<TaskResponse> startVideos(@PathVariable String id,
                                                  @AuthenticationPrincipal PlatformPrincipal principal) {
         return ApiResponse.ok(TaskResponse.from(service.startVideos(id, principal)));
+    }
+
+    @PostMapping("/{id}/start-generation")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ApiResponse<TaskResponse> startGeneration(@PathVariable String id,
+                                                      @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.ok(TaskResponse.from(service.startGeneration(id, principal)));
     }
 
     @PostMapping("/{taskId}/items/{itemId}/regenerate-storyboard")
@@ -166,13 +174,16 @@ public class AiVideoTaskController {
                                 @Size(max = 80) String targetMarket, @Size(max = 32) String generationMode,
                                 @Size(max = 32) String backgroundMode, @Size(max = 80) String productCategory, @Size(max = 80) String sceneType,
                                 @Size(max = 80) String interactionType, Boolean allowHand,
-                                @Size(max = 16) String aspectRatio) {}
+                                @Size(max = 16) String aspectRatio, @Size(max = 16) String resolution,
+                                Boolean useScriptReferenceVideo) {}
 
     public record UpdateVideoPromptRequest(@NotBlank @Size(max = 20000) String prompt) {}
 
     public record TaskResponse(String id, String name, String scriptId, int scriptVersion, String scriptName,
                                String targetMarket, String generationMode, String productCategory, String sceneType,
                                String backgroundMode, String interactionType, boolean allowHand, String aspectRatio,
+                               String resolution,
+                               boolean useScriptReferenceVideo,
                                String musicMode, String musicFileName, String musicContentType, long musicSizeBytes,
                                String status, int progress, int totalItems,
                                int completedItems, String modelId, String errorMessage,
@@ -181,6 +192,8 @@ public class AiVideoTaskController {
             return new TaskResponse(task.getId(), task.getName(), task.getScriptId(), task.getScriptVersion(),
                     task.getScriptName(), task.getTargetMarket(), task.getGenerationMode(), task.getProductCategory(),
                     task.getSceneType(), task.getBackgroundMode(), task.getInteractionType(), task.isAllowHand(), task.getAspectRatio(),
+                    task.getResolution(),
+                    task.isUseScriptReferenceVideo(),
                     task.getMusicMode(), task.getMusicFileName(), task.getMusicContentType(), task.getMusicSizeBytes(),
                     task.getStatus(), task.getProgress(),
                     task.getTotalItems(), task.getCompletedItems(), task.getModelId(), task.getErrorMessage(),

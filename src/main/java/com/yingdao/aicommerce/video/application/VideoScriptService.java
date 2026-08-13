@@ -18,6 +18,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Comparator;
@@ -155,6 +156,85 @@ public class VideoScriptService {
             throw new BusinessException(HttpStatus.CONFLICT, "当前已有一条视频拆解任务正在运行");
         }
         processor.analyze(script.getId());
+        return script;
+    }
+
+    @Transactional
+    public VideoScript copy(String id, PlatformPrincipal principal) {
+        VideoScript original = requireScript(id, principal.organizationId());
+        if (!Set.of("READY", "DRAFT").contains(original.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "脚本处理完成后才能复制版本");
+        }
+
+        String copyId = UUID.randomUUID().toString();
+        String copyName = trimTo(original.getName() + " - 副本", 160);
+        Path copiedSource = copyScriptFiles(original, copyId);
+        try {
+            VideoScript copy = new VideoScript(
+                    copyId,
+                    original.getOrganizationId(),
+                    copyName,
+                    original.getSourceType(),
+                    original.getSourceFileName(),
+                    copiedSource == null ? null : copiedSource.toString(),
+                    original.getSourceContentType(),
+                    original.getSourceSizeBytes(),
+                    original.getTargetMarket(),
+                    original.getRequirements(),
+                    principal.userId()
+            );
+            List<VideoScriptShot> originalShots = shotMapper.selectList(
+                    new LambdaQueryWrapper<VideoScriptShot>()
+                            .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
+                            .eq(VideoScriptShot::getScriptId, original.getId())
+                            .orderByAsc(VideoScriptShot::getSequenceNo)
+            );
+            List<VideoScriptShot> copiedShots = originalShots.stream()
+                    .map(shot -> new VideoScriptShot(
+                            original.getOrganizationId(), copyId, shot.getSequenceNo(), shot.getStage(), shot.getTitle(),
+                            shot.getStartSecond(), shot.getEndSecond(), shot.getDurationSeconds(),
+                            shot.getSceneDescription(), shot.getMotionDescription(), shot.getMotionIntensity(),
+                            shot.getNarration(), shot.getShotSize(), shot.getCameraMovement(),
+                            shot.getTransitionDescription(), shot.getEmotion(),
+                            shot.getImagePromptJson()
+                    ))
+                    .toList();
+            String copiedJson = rebuildScriptJson(
+                    original.getScriptJson(), copyName, original.getSummary(), original.getVisualTone(), copiedShots
+            );
+            if ("DRAFT".equals(original.getStatus())) {
+                copy.saveManual(original.getSummary(), original.getVisualTone(), copiedJson);
+            } else {
+                copy.complete(original.getSummary(), original.getVisualTone(), copiedJson);
+            }
+            copy.preserveAnalysisModel(original.getModelConfigId(), original.getModelId());
+            scriptMapper.insert(copy);
+            copiedShots.forEach(shotMapper::insert);
+            return copy;
+        } catch (RuntimeException exception) {
+            if (copiedSource != null) deleteQuietly(copiedSource.getParent());
+            throw exception;
+        }
+    }
+
+    @Transactional
+    public VideoScript updateVisualTone(String id, String visualTone, PlatformPrincipal principal) {
+        VideoScript script = requireScript(id, principal.organizationId());
+        if (Set.of("QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING").contains(script.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "视频正在拆解，暂时不能编辑视觉基调");
+        }
+        String normalizedTone = required(visualTone, "全局视觉基调", 4000);
+        List<VideoScriptShot> shots = shotMapper.selectList(
+                new LambdaQueryWrapper<VideoScriptShot>()
+                        .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
+                        .eq(VideoScriptShot::getScriptId, id)
+                        .orderByAsc(VideoScriptShot::getSequenceNo)
+        );
+        String scriptJson = rebuildScriptJson(
+                script.getScriptJson(), script.getName(), script.getSummary(), normalizedTone, shots
+        );
+        script.saveEditedVisualTone(normalizedTone, scriptJson);
+        scriptMapper.updateById(script);
         return script;
     }
 
@@ -299,6 +379,7 @@ public class VideoScriptService {
                 trimTo(update.narration(), 8000),
                 trimTo(update.shotSize(), 80),
                 trimTo(update.cameraMovement(), 120),
+                trimTo(update.transitionDescription(), 500),
                 trimTo(update.emotion(), 120)
         );
         shotMapper.updateById(shot);
@@ -347,6 +428,44 @@ public class VideoScriptService {
             }
         } catch (IOException ignored) {
             // The scheduled file-retention cleanup will remove leftovers.
+        }
+    }
+
+    private Path copyScriptFiles(VideoScript original, String copyId) {
+        if (original.getSourceFilePath() == null || original.getSourceFilePath().isBlank()) return null;
+        Path sourceFile = Path.of(original.getSourceFilePath()).toAbsolutePath().normalize();
+        Path sourceDirectory = sourceFile.getParent();
+        Path targetDirectory = storageRoot.resolve(original.getOrganizationId()).resolve(copyId).normalize();
+        if (sourceDirectory == null || !sourceDirectory.startsWith(storageRoot)
+                || !sourceFile.startsWith(sourceDirectory) || !Files.isRegularFile(sourceFile)
+                || !targetDirectory.startsWith(storageRoot)) {
+            throw new BusinessException(HttpStatus.CONFLICT, "原视频文件不存在，暂时无法复制版本");
+        }
+        try {
+            List<Path> sourcePaths;
+            try (var paths = Files.walk(sourceDirectory)) {
+                sourcePaths = paths.sorted().toList();
+            }
+            for (Path sourcePath : sourcePaths) {
+                Path targetPath = targetDirectory.resolve(sourceDirectory.relativize(sourcePath)).normalize();
+                if (!targetPath.startsWith(targetDirectory)) {
+                    throw new IOException("复制目标路径越界");
+                }
+                if (Files.isDirectory(sourcePath)) {
+                    Files.createDirectories(targetPath);
+                    continue;
+                }
+                Files.createDirectories(targetPath.getParent());
+                try {
+                    Files.createLink(targetPath, sourcePath);
+                } catch (IOException | UnsupportedOperationException | SecurityException linkError) {
+                    Files.copy(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+            return targetDirectory.resolve(sourceDirectory.relativize(sourceFile)).normalize();
+        } catch (IOException exception) {
+            deleteQuietly(targetDirectory);
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "复制脚本素材失败");
         }
     }
 
@@ -410,17 +529,30 @@ public class VideoScriptService {
 
     @SuppressWarnings("unchecked")
     private String rebuildScriptJson(VideoScript script, List<VideoScriptShot> shots) {
+        return rebuildScriptJson(
+                script.getScriptJson(), script.getName(), script.getSummary(), script.getVisualTone(), shots
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private String rebuildScriptJson(
+            String existingJson,
+            String name,
+            String summary,
+            String visualTone,
+            List<VideoScriptShot> shots
+    ) {
         Map<String, Object> root = new LinkedHashMap<>();
-        if (script.getScriptJson() != null && !script.getScriptJson().isBlank()) {
+        if (existingJson != null && !existingJson.isBlank()) {
             try {
-                root.putAll(objectMapper.readValue(script.getScriptJson(), Map.class));
+                root.putAll(objectMapper.readValue(existingJson, Map.class));
             } catch (Exception ignored) {
                 // Rebuild a clean JSON document from persisted shot data.
             }
         }
-        root.put("title", script.getName());
-        root.put("summary", script.getSummary());
-        root.put("globalVisualTone", script.getVisualTone());
+        root.put("title", name);
+        root.put("summary", summary);
+        root.put("globalVisualTone", visualTone);
         List<Map<String, Object>> shotValues = new ArrayList<>();
         for (VideoScriptShot shot : shots) {
             Map<String, Object> value = new LinkedHashMap<>();
@@ -436,6 +568,7 @@ public class VideoScriptService {
             value.put("narration", shot.getNarration());
             value.put("shotSize", shot.getShotSize());
             value.put("cameraMovement", shot.getCameraMovement());
+            value.put("transitionDescription", shot.getTransitionDescription());
             value.put("emotion", shot.getEmotion());
             value.put("imagePrompt", parseJsonValue(shot.getImagePromptJson()));
             shotValues.add(value);
@@ -479,6 +612,7 @@ public class VideoScriptService {
             String narration,
             String shotSize,
             String cameraMovement,
+            String transitionDescription,
             String emotion
     ) {
     }

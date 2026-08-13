@@ -129,6 +129,18 @@ public class VideoScript {
         this.updatedAt = Instant.now();
     }
 
+    public void saveEditedVisualTone(String visualTone, String scriptJson) {
+        this.visualTone = visualTone;
+        this.scriptJson = scriptJson;
+        this.version += 1;
+        this.updatedAt = Instant.now();
+    }
+
+    public void preserveAnalysisModel(String modelConfigId, String modelId) {
+        this.modelConfigId = modelConfigId;
+        this.modelId = modelId;
+    }
+
     public String getId() { return id; }
     public String getOrganizationId() { return organizationId; }
     public String getName() { return name; }

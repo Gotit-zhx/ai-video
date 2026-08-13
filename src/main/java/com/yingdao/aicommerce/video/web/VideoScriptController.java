@@ -90,6 +90,26 @@ public class VideoScriptController {
         return ApiResponse.ok(VideoScriptSummaryResponse.from(service.reanalyze(id, principal)));
     }
 
+    @PostMapping("/{id}/copy")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<VideoScriptSummaryResponse> copy(
+            @PathVariable String id,
+            @AuthenticationPrincipal PlatformPrincipal principal
+    ) {
+        return ApiResponse.created(VideoScriptSummaryResponse.from(service.copy(id, principal)));
+    }
+
+    @PatchMapping("/{id}/visual-tone")
+    public ApiResponse<VideoScriptSummaryResponse> updateVisualTone(
+            @PathVariable String id,
+            @RequestBody UpdateVisualToneRequest request,
+            @AuthenticationPrincipal PlatformPrincipal principal
+    ) {
+        return ApiResponse.ok(VideoScriptSummaryResponse.from(
+                service.updateVisualTone(id, request.visualTone(), principal)
+        ));
+    }
+
     @GetMapping("/{id}")
     public ApiResponse<VideoScriptDetailResponse> detail(
             @PathVariable String id,
@@ -134,7 +154,7 @@ public class VideoScriptController {
                 new VideoScriptService.ShotUpdate(
                         request.stage(), request.title(), request.sceneDescription(),
                         request.motionDescription(), request.motionIntensity(), request.narration(),
-                        request.shotSize(), request.cameraMovement(), request.emotion()
+                        request.shotSize(), request.cameraMovement(), request.transitionDescription(), request.emotion()
                 ),
                 principal
         );
@@ -234,6 +254,7 @@ public class VideoScriptController {
             String narration,
             String shotSize,
             String cameraMovement,
+            String transitionDescription,
             String emotion,
             String imagePromptJson
     ) {
@@ -243,7 +264,7 @@ public class VideoScriptController {
                     shot.getStartSecond(), shot.getEndSecond(), shot.getDurationSeconds(),
                     shot.getSceneDescription(), shot.getMotionDescription(), shot.getMotionIntensity(),
                     shot.getNarration(), shot.getShotSize(),
-                    shot.getCameraMovement(), shot.getEmotion(), shot.getImagePromptJson()
+                    shot.getCameraMovement(), shot.getTransitionDescription(), shot.getEmotion(), shot.getImagePromptJson()
             );
         }
     }
@@ -257,7 +278,11 @@ public class VideoScriptController {
             String narration,
             String shotSize,
             String cameraMovement,
+            String transitionDescription,
             String emotion
     ) {
+    }
+
+    public record UpdateVisualToneRequest(String visualTone) {
     }
 }

@@ -24,6 +24,7 @@ public record VideoScriptAnalysisResult(
             String narration,
             String shotSize,
             String cameraMovement,
+            String transitionDescription,
             String emotion,
             Map<String, Object> imagePrompt
     ) {

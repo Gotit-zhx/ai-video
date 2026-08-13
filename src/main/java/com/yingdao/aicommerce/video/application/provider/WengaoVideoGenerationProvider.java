@@ -29,7 +29,7 @@ public class WengaoVideoGenerationProvider extends ProviderJsonSupport implement
         body.put("content", content);
         body.put("duration", Math.max(4, Math.min(15, request.durationSeconds())));
         body.put("ratio", request.aspectRatio());
-        body.put("resolution", "768P");
+        body.put("resolution", request.resolution());
         Map<String, Object> response = post(tasksEndpoint(connection.baseUrl()), connection.apiKey(), body);
         String id = text(response, "id");
         if (id.isBlank()) throw new VideoProviderException("文高云没有返回视频任务 ID", false);

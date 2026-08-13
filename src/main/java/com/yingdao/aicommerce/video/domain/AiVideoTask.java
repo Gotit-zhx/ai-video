@@ -33,6 +33,9 @@ public class AiVideoTask {
     private String interactionType;
     private boolean allowHand;
     private String aspectRatio;
+    private String resolution;
+    private boolean autoStartVideoAfterImages;
+    private boolean useScriptReferenceVideo;
     private String generationRulesJson;
     private String qualityRulesJson;
     private String status;
@@ -53,7 +56,8 @@ public class AiVideoTask {
     public AiVideoTask(String organizationId, String name, String scriptId, int scriptVersion,
                        String scriptName, String scriptJson, String targetMarket, String generationMode,
                        String backgroundMode, String productCategory, String sceneType, String interactionType, boolean allowHand,
-                       String aspectRatio, String generationRulesJson, String qualityRulesJson, String createdBy) {
+                       String aspectRatio, String resolution, boolean useScriptReferenceVideo,
+                       String generationRulesJson, String qualityRulesJson, String createdBy) {
         this.id = UUID.randomUUID().toString();
         this.organizationId = organizationId;
         this.name = name;
@@ -70,6 +74,8 @@ public class AiVideoTask {
         this.interactionType = interactionType;
         this.allowHand = allowHand;
         this.aspectRatio = aspectRatio;
+        this.resolution = resolution;
+        this.useScriptReferenceVideo = useScriptReferenceVideo;
         this.generationRulesJson = generationRulesJson;
         this.qualityRulesJson = qualityRulesJson;
         this.status = "DRAFT";
@@ -102,6 +108,16 @@ public class AiVideoTask {
         this.modelId = modelId;
         this.errorMessage = null;
         this.completedAt = null;
+        this.updatedAt = Instant.now();
+    }
+
+    public void requestAutoStartVideo() {
+        this.autoStartVideoAfterImages = true;
+        this.updatedAt = Instant.now();
+    }
+
+    public void consumeAutoStartVideo() {
+        this.autoStartVideoAfterImages = false;
         this.updatedAt = Instant.now();
     }
 
@@ -168,6 +184,9 @@ public class AiVideoTask {
     public String getInteractionType() { return interactionType; }
     public boolean isAllowHand() { return allowHand; }
     public String getAspectRatio() { return aspectRatio; }
+    public String getResolution() { return resolution; }
+    public boolean isAutoStartVideoAfterImages() { return autoStartVideoAfterImages; }
+    public boolean isUseScriptReferenceVideo() { return useScriptReferenceVideo; }
     public String getGenerationRulesJson() { return generationRulesJson; }
     public String getQualityRulesJson() { return qualityRulesJson; }
     public String getStatus() { return status; }

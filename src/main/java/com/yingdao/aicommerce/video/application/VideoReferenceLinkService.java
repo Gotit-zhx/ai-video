@@ -15,6 +15,7 @@ public class VideoReferenceLinkService {
     public String asset(String assetId) { return link("asset", assetId); }
     public String deliveryAsset(String assetId) { return link("delivery-asset", assetId); }
     public String source(String itemId) { return link("source", itemId); }
+    public String scriptSource(String scriptId) { return link("script-source", scriptId); }
     public String taskAudio(String taskId) { return link("task-audio", taskId); }
 
     public boolean isPubliclyReachable() {

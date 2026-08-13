@@ -14,12 +14,20 @@ import java.util.Map;
 public class DayanVideoGenerationProvider extends ProviderJsonSupport implements VideoGenerationProvider {
     public DayanVideoGenerationProvider(ObjectMapper objectMapper) { super(objectMapper); }
     @Override public String code() { return "DAYAN"; }
+    @Override public boolean supportsReferenceVideo(RuntimeModelConnection connection) { return true; }
 
     @Override
     public SubmitResult submit(RuntimeModelConnection connection, GenerationRequest request) {
         List<Map<String, Object>> content = new ArrayList<>();
         content.add(Map.of("type", "text", "text", request.prompt()));
-        request.references().forEach(reference -> content.add(Map.of("type", "image_url", "image_url", reference.url())));
+        request.references().forEach(reference -> {
+            boolean video = reference.mediaType() != null && reference.mediaType().startsWith("video/");
+            content.add(Map.of(
+                    "type", video ? "video_url" : "image_url",
+                    video ? "video_url" : "image_url",
+                    reference.url()
+            ));
+        });
         if (request.audioUrl() != null && !request.audioUrl().isBlank()) {
             content.add(Map.of("type", "audio_url", "audio_url", request.audioUrl()));
         }
@@ -28,7 +36,7 @@ public class DayanVideoGenerationProvider extends ProviderJsonSupport implements
         body.put("content", content);
         body.put("duration", request.durationSeconds());
         body.put("ratio", request.aspectRatio());
-        body.put("resolution", "720p");
+        body.put("resolution", request.resolution());
         Map<String, Object> response = post(tasksEndpoint(connection.baseUrl()), connection.apiKey(), body);
         String id = text(response, "id");
         if (id.isBlank()) throw new VideoProviderException("大衍没有返回视频任务 ID", false);
