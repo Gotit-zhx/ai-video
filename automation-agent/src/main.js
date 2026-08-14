@@ -2022,7 +2022,8 @@ function createWindow() {
     minWidth: 920,
     minHeight: 640,
     show: false,
-    backgroundColor: "#edf2f7",
+    backgroundColor: "#151d31",
+    icon: path.join(__dirname, "renderer", "assets", "hoyee-symbol.png"),
     title: "赫逸自动化助手",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -2048,13 +2049,10 @@ function createWindow() {
 }
 
 function createTray() {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">
-      <rect width="32" height="32" rx="8" fill="#2457D6"/>
-      <path d="M8 7v18M23 7 13 16l10 9M8 16h5" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-      <circle cx="24" cy="8" r="3" fill="#45D0BE"/>
-    </svg>`;
-  tray = new Tray(nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`));
+  const trayIcon = nativeImage
+    .createFromPath(path.join(__dirname, "renderer", "assets", "hoyee-symbol.png"))
+    .resize({ width: 22, height: 22 });
+  tray = new Tray(trayIcon);
   tray.setToolTip("赫逸自动化助手");
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "打开赫逸自动化助手", click: () => mainWindow.show() },

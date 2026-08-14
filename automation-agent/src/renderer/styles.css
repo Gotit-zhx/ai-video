@@ -1123,6 +1123,300 @@ body {
   .pool-slot.account-slot:hover { transform: none; }
 }
 
+/* HOYEE platform-aligned desktop theme. */
+:root {
+  --ink: #f5f8ff;
+  --ink-soft: rgba(218, 228, 242, .72);
+  --fog: #151d31;
+  --paper: rgba(35, 40, 63, .54);
+  --line: rgba(255, 255, 255, .24);
+  --blue: #79a9d5;
+  --mint: #62d8ca;
+  --amber: #efbd72;
+  --danger: #ef8795;
+  --shadow: 0 22px 60px rgba(2, 7, 18, .24);
+  --hoyee-glass: rgba(37, 42, 67, .46);
+  --hoyee-glass-soft: rgba(70, 77, 112, .28);
+  --hoyee-glass-strong: rgba(17, 23, 40, .72);
+  --hoyee-line: rgba(255, 255, 255, .28);
+  color: rgba(248, 251, 255, .96);
+  background: #151d31;
+}
+
+html, body {
+  color: rgba(248, 251, 255, .96);
+  background: #151d31;
+}
+
+body {
+  position: relative;
+  isolation: isolate;
+  background:
+    linear-gradient(rgba(9, 12, 22, .34), rgba(9, 12, 22, .45)),
+    url("./assets/snow-pastel.jpg") center / cover fixed no-repeat;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 74% 12%, rgba(94, 153, 216, .16), transparent 34%),
+    radial-gradient(circle at 30% 8%, rgba(157, 114, 184, .13), transparent 30%);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid rgba(98, 216, 202, .78);
+  outline-offset: 2px;
+}
+
+.setup-view,
+.agent-shell {
+  background: transparent;
+}
+
+.setup-view {
+  padding: 26px;
+  gap: 18px;
+}
+
+.setup-brand,
+.setup-panel,
+.app-header,
+.connection-path,
+.readiness-card,
+.task-card,
+.account-pool-card,
+.environment-card,
+.event-card,
+.settings-dialog {
+  border: 1px solid var(--hoyee-line);
+  background: var(--hoyee-glass);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .09), var(--shadow);
+  backdrop-filter: blur(18px) saturate(122%);
+  -webkit-backdrop-filter: blur(18px) saturate(122%);
+}
+
+.setup-brand {
+  min-height: calc(100vh - 52px);
+  padding: 42px 50px;
+  border-radius: 22px;
+  overflow: hidden;
+  background:
+    linear-gradient(150deg, rgba(31, 45, 76, .7), rgba(52, 43, 68, .38)),
+    rgba(20, 27, 46, .46);
+}
+
+.setup-brand::after {
+  right: -160px;
+  bottom: -180px;
+  border-color: rgba(119, 174, 214, .1);
+}
+
+.brand-mark {
+  width: 76px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.brand-mark::after,
+.brand-mark > i { display: none; }
+.brand-mark img { width: 100%; height: 100%; display: block; object-fit: contain; }
+.brand-mark-full { width: 86px; height: 86px; }
+
+.brand-name {
+  left: 142px;
+  top: 55px;
+  gap: 5px;
+}
+
+.brand-name strong { color: #fff; font-size: 17px; }
+.brand-name span { color: rgba(211, 224, 240, .62); font-size: 9px; }
+.setup-copy .section-code { color: #79ddd0; }
+.setup-copy h1 { color: #fff; text-shadow: 0 3px 18px rgba(0, 0, 0, .24); }
+.setup-copy > p:last-child { color: rgba(222, 231, 243, .74); }
+.setup-route::before { background: rgba(255, 255, 255, .16); }
+.setup-route li > span { border-color: rgba(255, 255, 255, .24); color: rgba(222, 231, 243, .68); background: rgba(17, 24, 42, .52); }
+.setup-route li.active > span { border-color: var(--mint); color: #c8fff7; background: rgba(53, 146, 134, .18); }
+.setup-route small { color: rgba(207, 218, 232, .58); }
+
+.setup-panel {
+  min-height: calc(100vh - 52px);
+  padding: 42px;
+  border-radius: 22px;
+  background: rgba(51, 55, 82, .38);
+}
+
+.setup-card h2,
+.setup-card label span { color: rgba(250, 252, 255, .97); }
+.setup-card > p { color: rgba(214, 224, 237, .7); }
+.setup-step, .section-code { color: #8ebce1; }
+.setup-note { color: rgba(207, 219, 234, .66) !important; }
+
+input,
+select {
+  color: rgba(250, 252, 255, .96) !important;
+  border-color: rgba(255, 255, 255, .22) !important;
+  background: rgba(17, 23, 40, .42) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+}
+
+input::placeholder { color: rgba(204, 216, 231, .46); }
+select option { color: #eef4fb; background: #202a42; }
+
+.primary-action,
+.pool-start {
+  border-color: rgba(126, 206, 194, .48) !important;
+  color: #effffc !important;
+  background: linear-gradient(135deg, rgba(55, 143, 132, .88), rgba(50, 91, 133, .88)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 10px 24px rgba(11, 33, 48, .22);
+}
+
+.primary-action:hover,
+.pool-start:hover { filter: brightness(1.08); }
+
+.app-header {
+  width: calc(100% - 36px);
+  min-height: 70px;
+  margin: 18px 18px 0;
+  padding: 11px 18px;
+  border-radius: 20px;
+  background: rgba(36, 46, 75, .5);
+}
+
+.brand-mark.small {
+  width: 46px;
+  height: 46px;
+  padding: 3px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .06);
+  border: 1px solid rgba(255, 255, 255, .16);
+}
+
+.header-brand strong { color: #fff; font-size: 15px; }
+.header-brand span { color: rgba(209, 221, 237, .62); font-size: 10px; }
+.header-state { color: rgba(234, 242, 251, .86); background: rgba(22, 29, 48, .5); border-color: rgba(255, 255, 255, .14); }
+.header-state i { background: var(--mint); box-shadow: 0 0 0 5px rgba(98, 216, 202, .12); }
+
+.quiet-action,
+.text-action {
+  color: rgba(238, 245, 253, .9);
+  border-color: rgba(255, 255, 255, .22);
+  background: rgba(23, 30, 49, .42);
+}
+.quiet-action:hover,
+.text-action:hover { color: #fff; border-color: rgba(255, 255, 255, .38); background: rgba(255, 255, 255, .09); }
+
+.agent-content { padding: 18px 18px 34px; }
+.connection-path { padding: 24px 26px; border-radius: 20px; background: rgba(24, 31, 52, .56); }
+.path-heading h1 { color: #fff; }
+.path-node,
+.executor-cluster { border-color: rgba(255, 255, 255, .15); background: rgba(255, 255, 255, .035); }
+.path-node small,
+.executor-cluster-heading span { color: rgba(207, 218, 233, .56); }
+.path-node strong { color: rgba(249, 251, 255, .96); }
+.path-node p,
+.executor-cluster-heading small { color: rgba(216, 227, 240, .72); }
+.path-line { background: rgba(255, 255, 255, .16); }
+
+.control-grid,
+.lower-grid { gap: 14px; margin-top: 14px; }
+.readiness-card,
+.task-card,
+.environment-card,
+.event-card { border-radius: 18px; background: rgba(53, 58, 85, .38); }
+.readiness-top h2,
+.card-heading h2,
+.pool-title-block h2 { color: #fff; }
+.readiness-top p,
+.task-empty p,
+.pool-title-block p { color: rgba(211, 222, 236, .66); }
+.readiness-orbit::before { background: rgba(98, 216, 202, .12); }
+.accept-action { color: #dffffa; border-color: rgba(98, 216, 202, .26); background: rgba(46, 137, 126, .18); }
+.accept-action.paused { color: #ffe4b8; border-color: rgba(239, 189, 114, .28); background: rgba(138, 96, 31, .16); }
+.device-facts { border-top-color: rgba(255, 255, 255, .13); }
+.device-facts dt { color: rgba(202, 214, 229, .54); }
+.device-facts dd { color: rgba(244, 248, 254, .9); }
+.task-empty > span { color: #b9d8f1; background: rgba(121, 169, 213, .12); }
+.task-empty strong { color: #f6f9ff; }
+.count-tag,
+.count-tag.muted { color: #c9fff7; background: rgba(58, 151, 138, .16); }
+
+.account-pool-card {
+  margin-top: 14px;
+  border-radius: 20px;
+  background: rgba(50, 53, 78, .4);
+}
+.pool-heading { border-bottom-color: rgba(255, 255, 255, .14); }
+.pool-state-copy span { color: rgba(242, 247, 253, .9); }
+.pool-state-copy small,
+.pool-stage-label span,
+.pool-stage-label small { color: rgba(207, 219, 234, .62); }
+.pool-capacity { color: #dffcf8; background: rgba(65, 139, 132, .16); }
+.pool-add { color: #e9f5ff; border-color: rgba(255, 255, 255, .22); background: rgba(59, 75, 109, .48); box-shadow: none; }
+
+.pool-slot.account-slot,
+.pool-slot,
+.pool-enrollment,
+.environment-result,
+.task-list,
+.pool-account-row {
+  color: rgba(245, 249, 255, .92);
+  border-color: rgba(255, 255, 255, .17);
+  background: rgba(24, 31, 50, .38) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+}
+.pool-slot.account-slot:hover { border-color: rgba(144, 188, 224, .44); box-shadow: 0 13px 28px rgba(4, 10, 22, .16); }
+.account-avatar { color: #d9ecfb; background: rgba(121, 169, 213, .15); }
+.account-slot .account-identity strong { color: #fff; }
+.account-slot .account-identity small { color: rgba(208, 220, 235, .6); }
+.account-card-footer { border-top-color: rgba(255, 255, 255, .12); background: rgba(14, 20, 35, .22); }
+.account-card-footer .account-delete-action { color: #ffadb7; }
+.account-card-footer .account-delete-action:hover { color: #ffd5da; background: rgba(196, 70, 88, .14); }
+.active-slot { border-color: rgba(98, 216, 202, .32) !important; background: rgba(34, 83, 79, .24) !important; }
+.attention-slot { border-color: rgba(239, 135, 149, .3) !important; background: rgba(103, 43, 55, .22) !important; }
+
+.pool-operator { color: rgba(238, 245, 253, .9); background: rgba(16, 22, 38, .66); border-color: rgba(255, 255, 255, .15); }
+.pool-waiting span { color: rgba(222, 231, 242, .78); background: rgba(255, 255, 255, .07); }
+.pool-command-form input { color: #fff; border-color: rgba(255, 255, 255, .18); background: rgba(12, 18, 31, .46); }
+.pool-command-form button { color: #eafffc; background: rgba(52, 142, 131, .74); }
+.environment-icon { color: #bff8ef; background: rgba(19, 28, 47, .7); }
+.event-list { color: rgba(220, 230, 242, .72); }
+
+.settings-dialog {
+  color: rgba(246, 250, 255, .96);
+  border-radius: 22px;
+  background: rgba(27, 34, 55, .88);
+}
+.settings-dialog::backdrop { background: rgba(6, 10, 18, .58); backdrop-filter: blur(8px); }
+.settings-dialog h2,
+.settings-dialog strong,
+.settings-dialog label span { color: rgba(249, 251, 255, .96); }
+.settings-dialog > form > p,
+.settings-section > small { color: rgba(205, 217, 232, .64); }
+.settings-section,
+.browser-act-connect { border-color: rgba(255, 255, 255, .16); background: rgba(255, 255, 255, .04); }
+.close-action { color: #eef5fd; border: 1px solid rgba(255, 255, 255, .16); background: rgba(255, 255, 255, .07); }
+.danger-action { color: #ffb7c0; border-color: rgba(239, 135, 149, .28); background: rgba(111, 44, 55, .18); }
+
+.inline-error { color: #ffd1d7; border-color: rgba(239, 135, 149, .32); background: rgba(102, 38, 49, .28); }
+
+@media (max-width: 920px) {
+  .setup-view { padding: 16px; grid-template-columns: 1fr; }
+  .setup-brand, .setup-panel { min-height: auto; }
+  .setup-brand { padding: 34px; }
+  .setup-copy { margin-top: 110px; }
+  .setup-panel { padding: 34px; }
+}
+
 /* v26 — calm local control station */
 :root {
   --console-navy: #10213a;
@@ -1385,4 +1679,84 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .pool-slot.account-slot { transition: none; }
   .pool-slot.account-slot:hover { transform: none; }
+}
+
+/* Final cascade lock: v26 layout stays, HOYEE platform materials win. */
+body {
+  color: rgba(248, 251, 255, .96);
+  background:
+    linear-gradient(rgba(9, 12, 22, .34), rgba(9, 12, 22, .45)),
+    url("./assets/snow-pastel.jpg") center / cover fixed no-repeat;
+}
+
+.app-header {
+  width: calc(100% - 36px);
+  margin: 18px 18px 0;
+  padding: 11px 18px;
+  border: 1px solid var(--hoyee-line);
+  border-radius: 20px;
+  background: rgba(36, 46, 75, .5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .09), var(--shadow);
+  backdrop-filter: blur(18px) saturate(122%);
+  -webkit-backdrop-filter: blur(18px) saturate(122%);
+}
+
+.agent-content { max-width: 1440px; padding: 18px 18px 34px; }
+.connection-path { border-color: rgba(255, 255, 255, .22); border-radius: 20px; background: rgba(20, 30, 51, .7); }
+
+.account-pool-card,
+.readiness-card,
+.task-card,
+.environment-card,
+.event-card {
+  color: rgba(245, 249, 255, .94);
+  border-color: var(--hoyee-line);
+  background: rgba(48, 52, 78, .46);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07), 0 18px 44px rgba(3, 8, 20, .16);
+  backdrop-filter: blur(18px) saturate(118%);
+  -webkit-backdrop-filter: blur(18px) saturate(118%);
+}
+
+.account-pool-card { margin-top: 14px; border-radius: 20px; }
+.pool-heading {
+  border-bottom-color: rgba(255, 255, 255, .14);
+  background: transparent;
+}
+.pool-heading h2,
+.readiness-top h2,
+.card-heading h2 { color: #fff; }
+.pool-heading p,
+.readiness-top p,
+.task-empty p { color: rgba(211, 222, 236, .68); }
+.pool-state-copy { border-right-color: rgba(255, 255, 255, .14); }
+.pool-state-copy span { color: rgba(242, 247, 253, .92); }
+.pool-state-copy small,
+.pool-stage-label span,
+.pool-stage-label small { color: rgba(207, 219, 234, .64); }
+.pool-capacity { color: #dffcf8; background: rgba(65, 139, 132, .18); }
+.pool-add { color: #eaf5ff; border-color: rgba(255, 255, 255, .24); background: rgba(59, 75, 109, .5); box-shadow: none; }
+
+.pool-slot.account-slot {
+  border-color: rgba(255, 255, 255, .2);
+  background: rgba(24, 31, 50, .48) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+}
+.pool-slot.account-slot:hover { border-color: rgba(144, 188, 224, .46); box-shadow: 0 13px 28px rgba(4, 10, 22, .16); }
+.account-avatar { color: #d9ecfb; background: rgba(121, 169, 213, .18); }
+.account-slot .account-identity strong { color: #fff; }
+.account-slot .account-identity small { color: rgba(208, 220, 235, .62); }
+.account-card-footer { border-top-color: rgba(255, 255, 255, .13); background: rgba(14, 20, 35, .28); }
+.active-slot { border-color: rgba(98, 216, 202, .34) !important; background: rgba(34, 83, 79, .28) !important; }
+.attention-slot { border-color: rgba(239, 135, 149, .32) !important; background: rgba(103, 43, 55, .26) !important; }
+
+.control-grid { margin-top: 14px; gap: 14px; }
+.lower-grid { margin-top: 14px; gap: 14px; }
+.readiness-card,
+.task-card,
+.environment-card,
+.event-card { border-radius: 18px; }
+
+@media (max-width: 760px) {
+  .app-header { width: calc(100% - 24px); margin: 12px 12px 0; padding-inline: 14px; }
+  .agent-content { padding: 14px 12px 28px; }
 }
