@@ -16,16 +16,42 @@ abstract class ProviderJsonSupport {
     protected ProviderJsonSupport(ObjectMapper objectMapper) { this.objectMapper = objectMapper; }
 
     protected Map<String, Object> post(String url, String apiKey, Object body) {
+        for (int attempt = 0; ; attempt++) {
+            try {
+                String value = RestClient.create().post().uri(url)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                        .contentType(MediaType.APPLICATION_JSON).body(body)
+                        .retrieve().body(String.class);
+                return read(value);
+            } catch (RestClientResponseException exception) {
+                if (retryableSubmitFailure(exception) && attempt < 3) {
+                    waitBeforeRetry(attempt);
+                    continue;
+                }
+                throw new VideoProviderException(readable(exception), true, null,
+                        rawJson(exception.getResponseBodyAsString()));
+            } catch (ResourceAccessException exception) {
+                throw new VideoProviderException("连接厂商时网络结果未知：" + rootMessage(exception), false);
+            }
+        }
+    }
+
+    private boolean retryableSubmitFailure(RestClientResponseException exception) {
+        int status = exception.getStatusCode().value();
+        String value = exception.getResponseBodyAsString();
+        return status == 429 || status == 502 || status == 503 || status == 504
+                || value.contains("素材暂时无法读取")
+                || value.contains("生成服务暂不可用")
+                || value.toLowerCase().contains("temporarily unable to read");
+    }
+
+    private void waitBeforeRetry(int attempt) {
+        long[] delays = {1_000L, 3_000L, 8_000L};
         try {
-            String value = RestClient.create().post().uri(url)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                    .contentType(MediaType.APPLICATION_JSON).body(body)
-                    .retrieve().body(String.class);
-            return read(value);
-        } catch (RestClientResponseException exception) {
-            throw new VideoProviderException(readable(exception), true);
-        } catch (ResourceAccessException exception) {
-            throw new VideoProviderException("连接厂商时网络结果未知：" + rootMessage(exception), false);
+            Thread.sleep(delays[Math.min(attempt, delays.length - 1)]);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new VideoProviderException("视频提交重试被中断", true);
         }
     }
 
@@ -36,7 +62,8 @@ abstract class ProviderJsonSupport {
                     .retrieve().body(String.class);
             return read(value);
         } catch (RestClientResponseException exception) {
-            throw new VideoProviderException(readable(exception), false);
+            throw new VideoProviderException(readable(exception), false, null,
+                    rawJson(exception.getResponseBodyAsString()));
         } catch (ResourceAccessException exception) {
             throw new VideoProviderException("查询厂商任务失败：" + rootMessage(exception), false);
         }
@@ -51,6 +78,17 @@ abstract class ProviderJsonSupport {
     protected String text(Map<String, Object> value, String key) {
         Object raw = value == null ? null : value.get(key);
         return raw == null ? "" : String.valueOf(raw);
+    }
+
+    protected String json(Object value) {
+        try { return objectMapper.writeValueAsString(value == null ? Map.of() : value); }
+        catch (Exception exception) { return String.valueOf(value); }
+    }
+
+    protected String rawJson(String value) {
+        if (value == null || value.isBlank()) return "{}";
+        try { return json(objectMapper.readValue(value, Object.class)); }
+        catch (Exception ignored) { return json(Map.of("raw", value)); }
     }
 
     @SuppressWarnings("unchecked")

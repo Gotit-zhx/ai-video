@@ -1,3 +1,5 @@
+name: web_sdk_
+
 services:
   app:
     build:
@@ -69,6 +71,10 @@ services:
       - app
     ports:
       - "${FRONTEND_PORT:-3000}:80"
+      - "${FRONTEND_HTTPS_PORT:-443}:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /opt/heyi/shared/certbot-webroot:/var/www/certbot:ro
 
   mysql:
     image: mysql:8.4

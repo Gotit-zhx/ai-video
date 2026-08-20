@@ -30,6 +30,10 @@ public class AiVideoGenerationJob {
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private BigDecimal costAmount;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String usageJson;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String errorMessage;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS) private String submitRequestJson;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS) private String submitResponseJson;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS) private String queryRequestJson;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS) private String queryResponseJson;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private Instant nextPollAt;
     private Instant createdAt;
     private Instant updatedAt;
@@ -67,9 +71,32 @@ public class AiVideoGenerationJob {
         this.updatedAt = Instant.now();
     }
 
+    public void captureSubmitExchange(String requestJson, String responseJson) {
+        this.submitRequestJson = requestJson;
+        this.submitResponseJson = responseJson;
+        this.updatedAt = Instant.now();
+    }
+
+    /**
+     * Persist the network boundary before calling the provider. A job left in
+     * NOT_SENT can then be recovered safely after an application restart,
+     * while a SENDING job is treated as possibly accepted to avoid duplicates.
+     */
+    public void sending() {
+        this.requestState = "SENDING";
+        this.updatedAt = Instant.now();
+    }
+
+    public void captureQueryExchange(String requestJson, String responseJson) {
+        this.queryRequestJson = requestJson;
+        this.queryResponseJson = responseJson;
+        this.updatedAt = Instant.now();
+    }
+
     public void running(String status, Instant nextPollAt) {
         this.status = status;
         this.nextPollAt = nextPollAt;
+        this.errorMessage = null;
         this.updatedAt = Instant.now();
     }
 
@@ -128,6 +155,10 @@ public class AiVideoGenerationJob {
     public BigDecimal getCostAmount() { return costAmount; }
     public String getUsageJson() { return usageJson; }
     public String getErrorMessage() { return errorMessage; }
+    public String getSubmitRequestJson() { return submitRequestJson; }
+    public String getSubmitResponseJson() { return submitResponseJson; }
+    public String getQueryRequestJson() { return queryRequestJson; }
+    public String getQueryResponseJson() { return queryResponseJson; }
     public Instant getNextPollAt() { return nextPollAt; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

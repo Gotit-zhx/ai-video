@@ -147,7 +147,7 @@
   const profiles = [
     {
       name: "dark-surface",
-      selector: ".brand-stage, .sidebar, .welcome-strip, .assistant-console, #video-scripts-page .film-strip",
+      selector: ".brand-stage, .welcome-strip, .assistant-console, #video-scripts-page .film-strip",
       options: { color: "black" }
     },
     {
@@ -155,6 +155,8 @@
       selector: [
         "#video-scripts-page .script-library-rail",
         "#video-scripts-page .script-library-rail > header",
+        "#ai-video-tasks-page .video-task-rail",
+        "#ai-video-tasks-page .batch-task-rail > header",
         "#video-scripts-page .script-library-item",
         "#video-scripts-page .script-detail-stage",
         "#video-scripts-page .script-detail-head",
@@ -170,7 +172,6 @@
     {
       name: "video-task-surface",
       selector: [
-        "#ai-video-tasks-page .video-task-rail",
         "#ai-video-tasks-page .video-batch-stage",
         "#ai-video-tasks-page .video-batch-head",
         "#ai-video-tasks-page .batch-group-bar",
@@ -185,12 +186,41 @@
       options: { color: "transparent" }
     },
     {
+      name: "dialog-surface",
+      selector: ".manage-dialog > form, .automation-form-dialog > form, .automation-run-dialog > form, .asset-preview-shell",
+      options: { color: "transparent" }
+    },
+    {
+      name: "automation-home-surface",
+      selector: [
+        "#automations-page .automation-heading",
+        "#automations-page .automation-assistant-link",
+        "#automations-page .automation-skill-card",
+        "#automations-page .automation-skill-grid > article",
+        "#automations-page .automation-history-card",
+        "#automations-page .automation-empty-state",
+        "#automations-page .automation-job-list > article",
+        "#automations-page .job-list > article"
+      ].join(", "),
+      options: { color: "transparent" }
+    },
+    {
+      name: "automation-admin-surface",
+      selector: [
+        "#automation-admin-page .automation-heading",
+        "#automation-admin-page .skill-converter-card",
+        "#automation-admin-page .skill-source-menu",
+        "#automation-admin-page .managed-skill-row",
+        "#automation-admin-page .automation-access-card",
+        "#automation-admin-page .automation-admin-list > article"
+      ].join(", "),
+      options: { color: "transparent" }
+    },
+    {
       name: "surface",
       selector: [
         ".login-card", ".pipeline", ".current-task-banner",
-        ".summary-grid > article", ".workbench-card", ".system-tabs",
-        ".department-panel", ".people-panel", ".role-rail", ".permission-panel",
-        ".organization-card", ".boundary-note",
+        ".summary-grid > article", ".workbench-card", ".boundary-note",
         ".script-library-rail", "#video-scripts-page .script-library-rail > header",
         ".script-detail-stage", ".script-detail-head",
         ".script-create-panel", ".visual-anchor-card", ".script-view-tabs",
@@ -205,25 +235,22 @@
         ".automation-prerequisites", ".automation-business-results", ".automation-result-panel",
         ".automation-plan-preview", ".automation-skill-grid > article", ".skill-converter-card",
         ".automation-runtime-grid > aside", ".automation-runtime-grid > section",
-        ".model-connect-card", ".model-category", ".model-category-grid > *",
-        ".model-output", ".simple-model-form",
+        ".model-output",
         ".assistant-chat-card", ".assistant-trace-card", ".assistant-status-strip",
         ".assistant-composer", ".assistant-token-monitor", ".assistant-examples button",
         ".generated-image-card", ".form-designer-palette", ".form-designer-canvas",
         ".form-designer-canvas-wrap", ".form-designer-settings", ".designer-field-card",
-        ".asset-preview-shell", ".asset-preview-shell > header", ".asset-preview-shell > footer",
+        ".asset-preview-shell > header", ".asset-preview-shell > footer",
         ".garment-upload-card", ".garment-card-front", ".garment-board > header",
         ".garment-preview", ".model-output-canvas", ".mini-storyboard", ".garment-video-canvas",
         ".shot-production-card", ".source-thumbnails > *", ".task-group-tabs button",
         ".batch-group-tabs button", ".video-prompt-actions", ".video-prompt-editor",
         ".automation-prerequisites label", ".automation-plan-preview dl > div",
         ".automation-result-unit", ".automation-event", ".managed-skill-row",
-        ".model-config-card", ".skill-source-menu", ".resolution-cost-warning",
-        ".people-table-wrap",
-        ".manage-dialog > form", ".automation-form-dialog > form", ".automation-run-dialog > form",
+        ".skill-source-menu", ".resolution-cost-warning",
         ".form-grid > label", ".choice-grid > label", ".permission-options > label",
         ".job-list > article", ".department-list > *", ".role-config-list > *",
-        ".model-config-list > *", ".managed-skill-list > *", ".automation-admin-list > *",
+        ".managed-skill-list > *", ".automation-admin-list > *",
         ".automation-event-stream > *", ".assistant-message", ".assistant-trace-list > *"
       ].join(", "),
       options: { color: "white", noMorph: true }

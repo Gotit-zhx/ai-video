@@ -3,20 +3,25 @@ package com.yingdao.aicommerce.video.application;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yingdao.aicommerce.saas.application.ModelConfigService;
+import com.yingdao.aicommerce.storage.OssStorageService;
 import com.yingdao.aicommerce.video.domain.AiVideoTask;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskAsset;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
+import com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult;
 import com.yingdao.aicommerce.video.domain.VideoScript;
 import com.yingdao.aicommerce.video.domain.VideoScriptShot;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskAssetMapper;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper;
+import com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper;
 import com.yingdao.aicommerce.video.mapper.VideoScriptMapper;
 import com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import tools.jackson.core.type.TypeReference;
@@ -27,19 +32,27 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.HexFormat;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class AiVideoImageProcessor {
@@ -92,35 +105,49 @@ public class AiVideoImageProcessor {
     private final AiVideoTaskMapper taskMapper;
     private final AiVideoTaskItemMapper itemMapper;
     private final AiVideoTaskAssetMapper assetMapper;
+    private final AiVideoPendingImageResultMapper pendingImageResultMapper;
     private final VideoScriptMapper scriptMapper;
     private final VideoScriptShotMapper shotMapper;
     private final ModelConfigService modelConfigService;
+    private final ProductFunctionAnalysisService productFunctionAnalysisService;
     private final AiVideoGenerationService videoGenerationService;
     private final ObjectMapper objectMapper;
     private final RestClient piClient;
     private final Executor imageExecutor;
+    private final Executor imageCoordinatorExecutor;
+    private final Set<String> activeGenerationTaskIds = ConcurrentHashMap.newKeySet();
     private final Path storageRoot;
     private final Path videoScriptStorageRoot;
+    private final OssStorageService ossStorage;
 
     public AiVideoImageProcessor(AiVideoTaskMapper taskMapper, AiVideoTaskItemMapper itemMapper,
-                                 AiVideoTaskAssetMapper assetMapper, VideoScriptMapper scriptMapper,
+                                 AiVideoTaskAssetMapper assetMapper,
+                                 AiVideoPendingImageResultMapper pendingImageResultMapper,
+                                 VideoScriptMapper scriptMapper,
                                  VideoScriptShotMapper shotMapper, ModelConfigService modelConfigService,
+                                 ProductFunctionAnalysisService productFunctionAnalysisService,
                                  AiVideoGenerationService videoGenerationService,
                                  ObjectMapper objectMapper,
-                                 @Qualifier("aiVideoImageExecutor") Executor imageExecutor,
-                                 @Value("${app.pi-runtime-url}") String piRuntimeUrl,
+                                  @Qualifier("aiVideoImageExecutor") Executor imageExecutor,
+                                  @Qualifier("aiVideoImageCoordinatorExecutor") Executor imageCoordinatorExecutor,
+                                  ObjectProvider<OssStorageService> ossStorage,
+                                  @Value("${app.pi-runtime-url}") String piRuntimeUrl,
                                  @Value("${app.pi-runtime-token}") String piRuntimeToken,
                                  @Value("${app.ai-video-task-storage:/data/ai-video-tasks}") String storageRoot,
                                  @Value("${app.video-script-storage:/data/video-scripts}") String videoScriptStorageRoot) {
         this.taskMapper = taskMapper;
         this.itemMapper = itemMapper;
         this.assetMapper = assetMapper;
+        this.pendingImageResultMapper = pendingImageResultMapper;
         this.scriptMapper = scriptMapper;
         this.shotMapper = shotMapper;
         this.modelConfigService = modelConfigService;
+        this.productFunctionAnalysisService = productFunctionAnalysisService;
         this.videoGenerationService = videoGenerationService;
         this.objectMapper = objectMapper;
         this.imageExecutor = imageExecutor;
+        this.imageCoordinatorExecutor = imageCoordinatorExecutor;
+        this.ossStorage = ossStorage.getIfAvailable();
         this.piClient = RestClient.builder().baseUrl(piRuntimeUrl).defaultHeader("X-Internal-Token", piRuntimeToken).build();
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
         this.videoScriptStorageRoot = Path.of(videoScriptStorageRoot).toAbsolutePath().normalize();
@@ -146,32 +173,194 @@ public class AiVideoImageProcessor {
         }
     }
 
-    @Async("automationDiagnosisExecutor")
+    @Scheduled(initialDelay = 3_000, fixedDelay = 5_000)
+    public void recoverAutoStartPipelines() {
+        Instant retryBefore = Instant.now().minus(Duration.ofSeconds(5));
+        List<AiVideoTask> recoverable = taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
+                .eq(AiVideoTask::isAutoStartVideoAfterImages, true)
+                .in(AiVideoTask::getStatus, List.of("IMAGE_READY", "FAILED"))
+                .ge(AiVideoTask::getUpdatedAt, Instant.now().minus(Duration.ofHours(2)))
+                .orderByDesc(AiVideoTask::getUpdatedAt)
+                .last("LIMIT 100"));
+        for (AiVideoTask task : recoverable) {
+            try {
+                List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
+                        .eq(AiVideoTaskItem::getTaskId, task.getId()));
+                List<AiVideoTaskItem> failedItems = items.stream()
+                        .filter(item -> "FAILED".equals(item.getStatus())).toList();
+                boolean hasTerminalFailure = failedItems.stream()
+                        .anyMatch(item -> !retryableImageTransientFailure(item.getErrorMessage()));
+                boolean hasRetryableFailure = failedItems.stream()
+                        .anyMatch(item -> retryableImageTransientFailure(item.getErrorMessage()));
+                boolean retryDelayElapsed = failedItems.stream()
+                        .filter(item -> retryableImageTransientFailure(item.getErrorMessage()))
+                        .map(AiVideoTaskItem::getUpdatedAt)
+                        .filter(value -> value != null)
+                        .anyMatch(value -> !value.isAfter(retryBefore));
+                if (hasTerminalFailure) {
+                    task.consumeAutoStartVideo();
+                    taskMapper.updateById(task);
+                    continue;
+                }
+                if (hasRetryableFailure && !retryDelayElapsed) continue;
+                prepare(task);
+                dispatchRecoveredGeneration(task.getId());
+            } catch (Exception ignored) {
+                // Another request may have claimed the task between select and update.
+            }
+        }
+        List<AiVideoTask> pipelined = taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
+                .eq(AiVideoTask::getStatus, "VIDEO_GENERATING")
+                .ge(AiVideoTask::getUpdatedAt, Instant.now().minus(Duration.ofHours(2)))
+                .orderByDesc(AiVideoTask::getUpdatedAt)
+                .last("LIMIT 100"));
+        for (AiVideoTask task : pipelined) dispatchRecoveredGeneration(task.getId());
+    }
+
+    static boolean retryableImageConcurrencyFailure(String message) {
+        if (message == null || message.isBlank()) return false;
+        String value = message.toLowerCase();
+        return value.contains("并发限制") || value.contains("并发已满")
+                || value.contains("限流") || value.contains("concurrency limit exceeded")
+                || value.contains("too many concurrent") || value.contains("rate limit")
+                || value.contains("too many requests") || value.contains("(429)") || value.contains("（429）");
+    }
+
+    static boolean retryableImageTransientFailure(String message) {
+        if (retryableImageConcurrencyFailure(message)) return true;
+        if (message == null || message.isBlank()) return false;
+        String value = message.toLowerCase();
+        if (value.contains("内容策略可能误判")
+                || value.contains("image generation produced no asset")
+                || value.contains("该提示可能违反了我们的内容政策")
+                || value.contains("该提示可能违反我们的内容政策")
+                || value.contains("content policy") && value.contains("no asset")) return true;
+        return value.contains("fetch failed") || value.contains("网络超时")
+                || value.contains("响应超时") || value.contains("headers timeout")
+                || value.contains("header timeout") || value.contains("body timeout")
+                || value.contains("und_err_headers_timeout") || value.contains("und_err_body_timeout")
+                || value.contains("etimedout") || value.contains("header parser received no bytes")
+                || value.contains("i/o error on post request") || value.contains("unexpected end of file")
+                || value.contains("connection reset");
+    }
+
+    static boolean retryablePipelineImageFailure(String status, String message) {
+        if (!retryableImageTransientFailure(message)) return false;
+        if ("FAILED".equals(status)) return true;
+        if (!"VIDEO_FAILED".equals(status) || message == null) return false;
+        String value = message.toLowerCase();
+        return value.contains("图片生成失败") || value.contains("图片模型")
+                || value.contains("image generation") || value.contains("image model");
+    }
+
+    private void dispatchRecoveredGeneration(String taskId) {
+        imageCoordinatorExecutor.execute(() -> generate(taskId));
+    }
+
+    @Async("aiVideoImageCoordinatorExecutor")
     public void generate(String taskId) {
+        if (!activeGenerationTaskIds.add(taskId)) return;
+        try {
+            generateClaimed(taskId);
+        } finally {
+            activeGenerationTaskIds.remove(taskId);
+        }
+    }
+
+    private void generateClaimed(String taskId) {
         AiVideoTask task = taskMapper.selectById(taskId);
-        if (task == null || !"IMAGE_GENERATING".equals(task.getStatus())) return;
+        boolean pipelineRecovery = task != null && "VIDEO_GENERATING".equals(task.getStatus());
+        if (task == null || !("IMAGE_GENERATING".equals(task.getStatus()) || pipelineRecovery)) return;
         List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getTaskId, taskId).orderByAsc(AiVideoTaskItem::getCreatedAt));
+        if (pipelineRecovery) {
+            Instant retryBefore = Instant.now().minus(Duration.ofSeconds(5));
+            boolean waitingForConcurrencyRetry = items.stream()
+                    .filter(item -> retryablePipelineImageFailure(item.getStatus(), item.getErrorMessage()))
+                    .map(AiVideoTaskItem::getUpdatedAt)
+                    .filter(value -> value != null)
+                    .anyMatch(value -> value.isAfter(retryBefore));
+            if (waitingForConcurrencyRetry) return;
+            items = items.stream()
+                    .filter(item -> item.getStatus() == null
+                            || retryablePipelineImageFailure(item.getStatus(), item.getErrorMessage())
+                            || (!item.getStatus().startsWith("VIDEO_") && !"FAILED".equals(item.getStatus())))
+                    .toList();
+            if (items.isEmpty()) {
+                task.consumeAutoStartVideo();
+                taskMapper.updateById(task);
+                videoGenerationService.refreshPipelinedTask(taskId);
+                return;
+            }
+        }
+        final List<AiVideoTaskItem> generationItems = items;
         try {
             ModelConfigService.RuntimeModelConnection model = modelConfigService.imageConnection(task.getOrganizationId())
                     .orElseThrow(() -> new IllegalStateException("图片模型连接已失效"));
             List<ShotPrompt> shots = readShots(task.getScriptJson());
             if (shots.size() != 9) throw new IllegalStateException("冻结脚本不是完整 9 个分镜");
-            int completed = 0;
-            List<String> failures = new ArrayList<>();
-            for (int index = 0; index < items.size(); index++) {
-                AiVideoTaskItem item = items.get(index);
-                try {
-                    generateItem(task, item, shots, model);
-                    completed++;
-                } catch (Exception exception) {
-                    String message = readable(exception);
-                    item.fail(message);
-                    itemMapper.updateById(item);
-                    failures.add(item.getName() + "：" + message);
+            AtomicInteger processed = new AtomicInteger();
+            AtomicInteger completedCount = new AtomicInteger();
+            List<CompletableFuture<String>> futures = generationItems.stream()
+                    .map(item -> CompletableFuture.supplyAsync(() -> {
+                        String failure = null;
+                        try {
+                            generateItem(task, item, shots, model, pipelineRecovery);
+                            completedCount.incrementAndGet();
+                            if (task.isAutoStartVideoAfterImages() || pipelineRecovery) {
+                                try {
+                                    videoGenerationService.startReadyItemDuringImages(task.getId(), item.getId());
+                                } catch (Exception exception) {
+                                    failure = item.getName() + "：图片已完成，但自动提交视频失败：" + readable(exception);
+                                }
+                            }
+                        } catch (Exception exception) {
+                            String message = readable(exception);
+                            item.fail(message);
+                            itemMapper.updateById(item);
+                            failure = item.getName() + "：" + message;
+                        } finally {
+                            int finished = processed.incrementAndGet();
+                            synchronized (task) {
+                                AiVideoTask current = taskMapper.selectById(task.getId());
+                                if (current != null && "IMAGE_GENERATING".equals(current.getStatus())) {
+                                    current.reportProgress(Math.min(99, Math.max(2,
+                                                    (finished * 100) / Math.max(1, generationItems.size()))),
+                                            completedCount.get());
+                                    taskMapper.updateById(current);
+                                }
+                            }
+                        }
+                        return failure;
+                    }, imageExecutor))
+                    .toList();
+            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+            List<String> failures = futures.stream()
+                    .map(CompletableFuture::join)
+                    .filter(message -> message != null && !message.isBlank())
+                    .toList();
+            int completed = completedCount.get();
+            AiVideoTask current = taskMapper.selectById(task.getId());
+            if (current != null && current.getStatus() != null && current.getStatus().startsWith("VIDEO_")) {
+                boolean waitingForPersistedDownload = false;
+                for (AiVideoTaskItem candidate : generationItems) {
+                    AiVideoTaskItem latest = itemMapper.selectById(candidate.getId());
+                    if (latest != null && "FAILED".equals(latest.getStatus())) {
+                        if (hasPendingImageResult(latest.getId())) {
+                            waitingForPersistedDownload = true;
+                            continue;
+                        }
+                        String message = latest.getErrorMessage();
+                        latest.videoFail("图片生成失败：" + (message == null || message.isBlank() ? "未生成有效图片" : message));
+                        itemMapper.updateById(latest);
+                    }
                 }
-                task.reportProgress(Math.min(99, Math.max(2, ((index + 1) * 100) / Math.max(1, items.size()))), completed);
-                taskMapper.updateById(task);
+                if (!waitingForPersistedDownload) current.consumeAutoStartVideo();
+                taskMapper.updateById(current);
+                if ("VIDEO_GENERATING".equals(current.getStatus())) {
+                    videoGenerationService.refreshPipelinedTask(task.getId());
+                }
+                return;
             }
             if (completed == 0) {
                 task.fail(failures.isEmpty() ? "图片模型没有生成有效结果" : String.join("；", failures));
@@ -196,10 +385,14 @@ public class AiVideoImageProcessor {
     }
 
     private void generateItem(AiVideoTask task, AiVideoTaskItem item, List<ShotPrompt> shots,
-                              ModelConfigService.RuntimeModelConnection model) throws Exception {
+                              ModelConfigService.RuntimeModelConnection model,
+                              boolean pipelineRecovery) throws Exception {
         List<AiVideoTaskAsset> existing = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, item.getId()));
         boolean modelWear = "MODEL_WEAR".equals(task.getGenerationMode());
+        if (shouldRunProductFunctionAnalysis(modelWear, pipelineRecovery)) {
+            productFunctionAnalysisService.ensureAnalysis(task, item);
+        }
         boolean preserveScriptBackground = preserveScriptBackground(task);
         String primaryAssetType = modelWear ? "MODEL_IMAGE" : "PRODUCT_SCENE_IMAGE";
         AiVideoTaskAsset modelAsset = usableAsset(existing, primaryAssetType);
@@ -208,35 +401,37 @@ public class AiVideoImageProcessor {
         AiVideoTaskAsset storyboardGuideAsset = usableAsset(existing, "STORYBOARD_GUIDE");
         boolean hasModel = modelAsset != null;
         boolean hasStoryboard = storyboardAsset != null;
+        boolean productVisibleInFirstShot = modelWear || shotShowsProduct(shots.getFirst());
         item.start();
         if (hasModel && !hasStoryboard) item.modelReady();
         itemMapper.updateById(item);
         if (hasModel && hasStoryboard) {
             if (firstFrameAsset == null) {
                 if (modelWear) ensureModelFirstFrame(task, modelAsset);
-                else ensureProductFirstFrame(task, modelAsset);
+                else ensureProductTimelineFirstFrame(task, modelAsset, storyboardAsset, productVisibleInFirstShot);
             }
             item.complete();
             itemMapper.updateById(item);
             return;
         }
         ReferenceImage garment = reference(Path.of(item.getSourceFilePath()), "参考图1 商品素材", item.getSourceContentType());
-        ReferenceImage scriptFirstFrame = preserveScriptBackground ? firstScriptFrameReference(task) : null;
+        ReferenceImage scriptFirstFrame = preserveScriptBackground && (modelWear || productVisibleInFirstShot)
+                ? firstScriptFrameReference(task) : null;
+        ShotPrompt productAnchorShot = shots.stream().filter(this::shotShowsProduct).findFirst().orElse(shots.getLast());
         String modelPrompt = modelWear
                 ? modelWearPrompt(task, item, shots.getFirst(), scriptFirstFrame != null)
-                : productScenePrompt(task, shots.getFirst(), scriptFirstFrame != null);
+                : productScenePrompt(task, item, productAnchorShot, scriptFirstFrame != null);
         if (!hasModel) {
             List<ReferenceImage> modelReferences = scriptFirstFrame == null
                     ? List.of(garment)
                     : List.of(garment, scriptFirstFrame);
-            modelAsset = CompletableFuture.supplyAsync(
-                    () -> generateAsset(task, item, model, primaryAssetType, modelPrompt, modelReferences), imageExecutor).join();
+            modelAsset = generateAsset(task, item, model, primaryAssetType, modelPrompt, modelReferences);
             item.modelReady();
             itemMapper.updateById(item);
         }
         if (!hasStoryboard) {
-            ReferenceImage generatedModel = reference(Path.of(modelAsset.getFilePath()),
-                    modelWear ? "AI模特图" : "AI商品场景图", modelAsset.getContentType());
+            ReferenceImage generatedModel = reference(modelAsset.getFilePath(),
+                    modelWear ? "参考图2 AI模特人物与穿着母版" : "AI商品场景图", modelAsset.getContentType());
             if (modelWear) {
                 boolean realFrameGuide = false;
                 if (storyboardGuideAsset == null && preserveScriptBackground) {
@@ -245,19 +440,17 @@ public class AiVideoImageProcessor {
                 }
                 if (storyboardGuideAsset == null) {
                     String guidePrompt = storyboardGridPrompt(task, shots);
-                    storyboardGuideAsset = CompletableFuture.supplyAsync(
-                            () -> generateAsset(task, item, model, "STORYBOARD_GUIDE", guidePrompt,
-                                    List.of(generatedModel)), imageExecutor).join();
+                    storyboardGuideAsset = generateAsset(task, item, model, "STORYBOARD_GUIDE", guidePrompt,
+                            List.of(generatedModel));
                 } else {
                     realFrameGuide = storyboardGuideAsset.getPromptText() != null
                             && storyboardGuideAsset.getPromptText().startsWith("REAL_VIDEO_FRAMES_V1");
                 }
-                ReferenceImage storyboardGuide = reference(Path.of(storyboardGuideAsset.getFilePath()),
-                        "动作场景九宫格底图", storyboardGuideAsset.getContentType());
+                ReferenceImage storyboardGuide = reference(storyboardGuideAsset.getFilePath(),
+                        "参考图3 动作场景九宫格底图", storyboardGuideAsset.getContentType());
                 String identityPrompt = storyboardIdentityTransferPrompt(task, shots, realFrameGuide);
-                storyboardAsset = CompletableFuture.supplyAsync(
-                        () -> generateAsset(task, item, model, "STORYBOARD_GRID", identityPrompt,
-                                List.of(storyboardGuide, generatedModel)), imageExecutor).join();
+                storyboardAsset = generateAsset(task, item, model, "STORYBOARD_GRID", identityPrompt,
+                        List.of(garment, generatedModel, storyboardGuide));
             } else {
                 boolean realFrameGuide = false;
                 if (storyboardGuideAsset == null && preserveScriptBackground) {
@@ -267,10 +460,10 @@ public class AiVideoImageProcessor {
                     realFrameGuide = storyboardGuideAsset.getPromptText() != null
                             && storyboardGuideAsset.getPromptText().startsWith("REAL_VIDEO_FRAMES_V1");
                 }
-                String productStoryboardPrompt = productStoryboardGridPrompt(task, shots, realFrameGuide);
+                String productStoryboardPrompt = productStoryboardGridPrompt(task, item, shots, realFrameGuide);
                 List<ReferenceImage> productReferences;
                 if (realFrameGuide) {
-                    ReferenceImage storyboardGuide = reference(Path.of(storyboardGuideAsset.getFilePath()),
+                    ReferenceImage storyboardGuide = reference(storyboardGuideAsset.getFilePath(),
                             "参考图1 原视频真实九帧动作与构图母版", storyboardGuideAsset.getContentType());
                     ReferenceImage productMaster = reference(Path.of(item.getSourceFilePath()),
                             "参考图2 用户上传商品外观唯一母版", item.getSourceContentType());
@@ -278,15 +471,18 @@ public class AiVideoImageProcessor {
                 } else {
                     productReferences = List.of(generatedModel, garment);
                 }
-                storyboardAsset = CompletableFuture.supplyAsync(
-                        () -> generateAsset(task, item, model, "STORYBOARD_GRID", productStoryboardPrompt,
-                                productReferences), imageExecutor).join();
+                storyboardAsset = generateAsset(task, item, model, "STORYBOARD_GRID", productStoryboardPrompt,
+                        productReferences);
             }
             if (modelWear) ensureModelFirstFrame(task, modelAsset);
-            else ensureProductFirstFrame(task, modelAsset);
+            else ensureProductTimelineFirstFrame(task, modelAsset, storyboardAsset, productVisibleInFirstShot);
         }
         item.complete();
         itemMapper.updateById(item);
+    }
+
+    static boolean shouldRunProductFunctionAnalysis(boolean modelWear, boolean pipelineRecovery) {
+        return !modelWear && !pipelineRecovery;
     }
 
     private boolean hasUsableAsset(List<AiVideoTaskAsset> assets, String type) {
@@ -297,6 +493,8 @@ public class AiVideoImageProcessor {
         for (AiVideoTaskAsset asset : assets) {
             if (!type.equals(asset.getAssetType())) continue;
             try {
+                if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())
+                        && ossStorage.exists(asset.getFilePath())) return asset;
                 Path path = Path.of(asset.getFilePath()).toAbsolutePath().normalize();
                 if (path.startsWith(storageRoot) && Files.isRegularFile(path) && Files.size(path) > 0) return asset;
             } catch (Exception ignored) {
@@ -311,8 +509,10 @@ public class AiVideoImageProcessor {
                                            ModelConfigService.RuntimeModelConnection model,
                                            String assetType, String prompt, List<ReferenceImage> references) {
         try {
-            PiArtifact artifact = call(model, prompt, references);
-            return store(task, item, assetType, null, artifact, prompt);
+            PiArtifact artifact = call(task, item, assetType, model, prompt, references);
+            AiVideoTaskAsset stored = store(task, item, assetType, null, artifact, prompt);
+            clearPendingImageResult(item.getId(), assetType, imageRequestHash(prompt, references));
+            return stored;
         } catch (Exception exception) {
             throw new CompletionException(exception);
         }
@@ -396,15 +596,11 @@ public class AiVideoImageProcessor {
                 selected.add(frames.get(Math.max(0, Math.min(frames.size() - 1, frameIndex))));
             }
             BufferedImage guide = composePortraitStoryboard(selected);
-            Path directory = storageRoot.resolve(task.getOrganizationId()).resolve(task.getId())
-                    .resolve(item.getId()).resolve("outputs").normalize();
-            if (!directory.startsWith(storageRoot)) throw new IllegalStateException("分镜底图输出目录不安全");
-            Files.createDirectories(directory);
-            Path output = directory.resolve("storyboard-guide.png").normalize();
-            if (!ImageIO.write(guide, "png", output.toFile())) throw new IllegalStateException("真实分镜底图编码失败");
+            byte[] content = png(guide);
+            StoredMedia stored = storeGenerated(task, item, content, "image/png", "storyboard-guide.png");
             String marker = "REAL_VIDEO_FRAMES_V1｜原视频九个分镜时间中点抽帧，背景与构图应像素级保留";
             AiVideoTaskAsset asset = new AiVideoTaskAsset(task.getOrganizationId(), task.getId(), item.getId(),
-                    "STORYBOARD_GUIDE", null, output.toString(), "image/png", Files.size(output), marker, "ffmpeg");
+                    "STORYBOARD_GUIDE", null, stored.location(), "image/png", stored.size(), marker, "ffmpeg");
             assetMapper.insert(asset);
             return asset;
         } catch (Exception ignored) {
@@ -449,24 +645,19 @@ public class AiVideoImageProcessor {
                 .eq(AiVideoTaskAsset::getAssetType, "STORYBOARD_FIRST_FRAME")
                 .last("LIMIT 1"));
         if (existing != null) {
-            try {
-                Path path = Path.of(existing.getFilePath()).toAbsolutePath().normalize();
-                if (path.startsWith(storageRoot) && Files.isRegularFile(path) && Files.size(path) > 0) return existing;
-            } catch (Exception ignored) { }
+            if (assetReadable(existing)) return existing;
             assetMapper.deleteById(existing.getId());
         }
         try {
-            Path source = Path.of(modelAsset.getFilePath()).toAbsolutePath().normalize();
-            if (!source.startsWith(storageRoot) || !Files.isRegularFile(source)) {
-                throw new IllegalStateException("AI 模特图不存在，无法复用为首帧");
-            }
-            String ext = extension(modelAsset.getContentType());
-            Path output = source.getParent().resolve("storyboard-first-frame." + ext).normalize();
-            if (!output.startsWith(storageRoot)) throw new IllegalStateException("首帧输出目录不安全");
-            Files.copy(source, output, StandardCopyOption.REPLACE_EXISTING);
+            if (!assetReadable(modelAsset)) throw new IllegalStateException("AI 模特图不存在，无法复用为首帧");
+            AiVideoTaskItem item = itemMapper.selectById(modelAsset.getItemId());
+            if (item == null) throw new IllegalStateException("首帧所属商品不存在");
+            String fileName = "storyboard-first-frame." + extension(modelAsset.getContentType());
+            StoredMedia stored = storeGenerated(task, item, readAsset(modelAsset.getFilePath()),
+                    modelAsset.getContentType(), fileName);
             AiVideoTaskAsset asset = new AiVideoTaskAsset(task.getOrganizationId(), task.getId(),
-                    modelAsset.getItemId(), "STORYBOARD_FIRST_FRAME", 1, output.toString(),
-                    modelAsset.getContentType(), Files.size(output),
+                    modelAsset.getItemId(), "STORYBOARD_FIRST_FRAME", 1, stored.location(),
+                    modelAsset.getContentType(), stored.size(),
                     "复用 4K AI 模特图作为视频第 01 分镜，不增加模型调用", modelAsset.getModelId());
             try {
                 assetMapper.insert(asset);
@@ -477,7 +668,7 @@ public class AiVideoImageProcessor {
                         .eq(AiVideoTaskAsset::getAssetType, "STORYBOARD_FIRST_FRAME")
                         .last("LIMIT 1"));
             }
-        } catch (IOException exception) {
+        } catch (Exception exception) {
             throw new IllegalStateException("复用 4K AI 模特图作为首帧失败", exception);
         }
     }
@@ -493,24 +684,19 @@ public class AiVideoImageProcessor {
                 .eq(AiVideoTaskAsset::getAssetType, "STORYBOARD_FIRST_FRAME")
                 .last("LIMIT 1"));
         if (existing != null) {
-            try {
-                Path path = Path.of(existing.getFilePath()).toAbsolutePath().normalize();
-                if (path.startsWith(storageRoot) && Files.isRegularFile(path) && Files.size(path) > 0) return existing;
-            } catch (Exception ignored) { }
+            if (assetReadable(existing)) return existing;
             assetMapper.deleteById(existing.getId());
         }
         try {
-            Path source = Path.of(productSceneAsset.getFilePath()).toAbsolutePath().normalize();
-            if (!source.startsWith(storageRoot) || !Files.isRegularFile(source)) {
-                throw new IllegalStateException("AI 商品场景图不存在，无法复用为首帧");
-            }
-            String ext = extension(productSceneAsset.getContentType());
-            Path output = source.getParent().resolve("storyboard-first-frame." + ext).normalize();
-            if (!output.startsWith(storageRoot)) throw new IllegalStateException("商品首帧输出目录不安全");
-            Files.copy(source, output, StandardCopyOption.REPLACE_EXISTING);
+            if (!assetReadable(productSceneAsset)) throw new IllegalStateException("AI 商品场景图不存在，无法复用为首帧");
+            AiVideoTaskItem item = itemMapper.selectById(productSceneAsset.getItemId());
+            if (item == null) throw new IllegalStateException("首帧所属商品不存在");
+            String fileName = "storyboard-first-frame." + extension(productSceneAsset.getContentType());
+            StoredMedia stored = storeGenerated(task, item, readAsset(productSceneAsset.getFilePath()),
+                    productSceneAsset.getContentType(), fileName);
             AiVideoTaskAsset asset = new AiVideoTaskAsset(task.getOrganizationId(), task.getId(),
-                    productSceneAsset.getItemId(), "STORYBOARD_FIRST_FRAME", 1, output.toString(),
-                    productSceneAsset.getContentType(), Files.size(output),
+                    productSceneAsset.getItemId(), "STORYBOARD_FIRST_FRAME", 1, stored.location(),
+                    productSceneAsset.getContentType(), stored.size(),
                     "复用脚本对齐的 AI 商品场景图作为第 01 分镜，不从九宫格裁切", productSceneAsset.getModelId());
             try {
                 assetMapper.insert(asset);
@@ -521,9 +707,29 @@ public class AiVideoImageProcessor {
                         .eq(AiVideoTaskAsset::getAssetType, "STORYBOARD_FIRST_FRAME")
                         .last("LIMIT 1"));
             }
-        } catch (IOException exception) {
+        } catch (Exception exception) {
             throw new IllegalStateException("复用 AI 商品场景图作为首帧失败", exception);
         }
+    }
+
+    public AiVideoTaskAsset ensureProductTimelineFirstFrame(AiVideoTask task, AiVideoTaskAsset productSceneAsset,
+                                                             AiVideoTaskAsset storyboardAsset) {
+        try {
+            List<ShotPrompt> shots = readShots(task.getScriptJson());
+            boolean productVisible = shots.isEmpty() || shotShowsProduct(shots.getFirst());
+            return ensureProductTimelineFirstFrame(task, productSceneAsset, storyboardAsset, productVisible);
+        } catch (Exception ignored) {
+            return ensureProductFirstFrame(task, productSceneAsset);
+        }
+    }
+
+    private AiVideoTaskAsset ensureProductTimelineFirstFrame(AiVideoTask task, AiVideoTaskAsset productSceneAsset,
+                                                              AiVideoTaskAsset storyboardAsset,
+                                                              boolean productVisibleInFirstShot) {
+        if (!productVisibleInFirstShot && storyboardAsset != null) {
+            return ensureStoryboardFirstFrame(task, storyboardAsset);
+        }
+        return ensureProductFirstFrame(task, productSceneAsset);
     }
 
     public AiVideoTaskAsset ensureStoryboardFirstFrame(AiVideoTask task, AiVideoTaskAsset storyboardAsset) {
@@ -533,28 +739,20 @@ public class AiVideoImageProcessor {
                 .eq(AiVideoTaskAsset::getAssetType, "STORYBOARD_FIRST_FRAME")
                 .last("LIMIT 1"));
         if (existing != null) {
-            try {
-                Path path = Path.of(existing.getFilePath()).toAbsolutePath().normalize();
-                if (path.startsWith(storageRoot) && Files.isRegularFile(path) && Files.size(path) > 0) return existing;
-            } catch (Exception ignored) { }
+            if (assetReadable(existing)) return existing;
             assetMapper.deleteById(existing.getId());
         }
         try {
-            Path storyboardPath = Path.of(storyboardAsset.getFilePath()).toAbsolutePath().normalize();
-            if (!storyboardPath.startsWith(storageRoot) || !Files.isRegularFile(storyboardPath)) {
-                throw new IllegalStateException("最终九宫格文件不存在，无法裁切首帧");
-            }
-            BufferedImage source = ImageIO.read(storyboardPath.toFile());
+            BufferedImage source = ImageIO.read(new ByteArrayInputStream(readAsset(storyboardAsset.getFilePath())));
+            if (source == null) throw new IllegalStateException("最终九宫格文件不存在，无法裁切首帧");
             BufferedImage firstFrame = cropFirstStoryboardCell(source);
-            Path directory = storyboardPath.getParent();
-            Path output = directory.resolve("storyboard-first-frame.png").normalize();
-            if (!output.startsWith(storageRoot)) throw new IllegalStateException("首帧输出目录不安全");
-            if (!ImageIO.write(firstFrame, "png", output.toFile())) {
-                throw new IllegalStateException("首帧图片编码失败");
-            }
+            byte[] content = png(firstFrame);
+            AiVideoTaskItem item = itemMapper.selectById(storyboardAsset.getItemId());
+            if (item == null) throw new IllegalStateException("首帧所属商品不存在");
+            StoredMedia stored = storeGenerated(task, item, content, "image/png", "storyboard-first-frame.png");
             AiVideoTaskAsset asset = new AiVideoTaskAsset(task.getOrganizationId(), task.getId(),
-                    storyboardAsset.getItemId(), "STORYBOARD_FIRST_FRAME", 1, output.toString(), "image/png",
-                    Files.size(output), "从最终 4K 九宫格第 01 格自动裁切", storyboardAsset.getModelId());
+                    storyboardAsset.getItemId(), "STORYBOARD_FIRST_FRAME", 1, stored.location(), "image/png",
+                    stored.size(), "从最终 4K 九宫格第 01 格自动裁切", storyboardAsset.getModelId());
             try {
                 assetMapper.insert(asset);
                 return asset;
@@ -564,7 +762,7 @@ public class AiVideoImageProcessor {
                         .eq(AiVideoTaskAsset::getAssetType, "STORYBOARD_FIRST_FRAME")
                         .last("LIMIT 1"));
             }
-        } catch (IOException exception) {
+        } catch (Exception exception) {
             throw new IllegalStateException("九宫格首帧裁切失败：" + exception.getMessage(), exception);
         }
     }
@@ -585,8 +783,17 @@ public class AiVideoImageProcessor {
         return result;
     }
 
-    private PiArtifact call(ModelConfigService.RuntimeModelConnection model, String prompt,
+    private PiArtifact call(AiVideoTask task, AiVideoTaskItem item, String assetType,
+                            ModelConfigService.RuntimeModelConnection model, String prompt,
                             List<ReferenceImage> references) {
+        String promptHash = imageRequestHash(prompt, references);
+        AiVideoPendingImageResult pending = pendingImageResult(item.getId(), assetType);
+        if (pending != null && !promptHash.equals(pending.getPromptHash())) {
+            pendingImageResultMapper.deleteById(pending.getId());
+            pending = null;
+        }
+        if (pending != null) return downloadPendingImage(model, prompt, pending);
+
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
                 "apiFormat", model.apiFormat(), "apiKey", model.apiKey()));
@@ -596,10 +803,79 @@ public class AiVideoImageProcessor {
         body.put("references", references);
         PiImageResponse response = piClient.post().uri("/v1/images/generate")
                 .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(PiImageResponse.class);
-        if (response == null || response.artifact() == null || response.artifact().dataBase64() == null) {
+        if (response != null && response.artifact() != null && response.artifact().dataBase64() != null) {
+            return response.artifact();
+        }
+        PiImageResult result = response == null ? null : response.result();
+        if (result == null || result.url() == null || result.url().isBlank()) {
             throw new IllegalStateException("Pi Agent 图片工具没有返回图片");
         }
-        return response.artifact();
+        pending = new AiVideoPendingImageResult(task.getOrganizationId(), task.getId(), item.getId(), assetType,
+                promptHash, result.url(), result.mimeType(), result.modelId(), result.mode(), result.revisedPrompt());
+        pendingImageResultMapper.insert(pending);
+        return downloadPendingImage(model, prompt, pending);
+    }
+
+    private PiArtifact downloadPendingImage(ModelConfigService.RuntimeModelConnection model, String prompt,
+                                            AiVideoPendingImageResult pending) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
+                "apiFormat", model.apiFormat(), "apiKey", model.apiKey()));
+        body.put("resultUrl", pending.getResultUrl());
+        body.put("mimeType", pending.getResultContentType());
+        body.put("modelId", pending.getModelId());
+        body.put("mode", pending.getMode());
+        body.put("prompt", prompt);
+        body.put("revisedPrompt", pending.getRevisedPrompt());
+        try {
+            PiImageResponse response = piClient.post().uri("/v1/images/download")
+                    .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(PiImageResponse.class);
+            if (response == null || response.artifact() == null || response.artifact().dataBase64() == null) {
+                throw new IllegalStateException("结果图片下载接口没有返回图片");
+            }
+            return response.artifact();
+        } catch (Exception exception) {
+            pending.downloadFailed(readable(exception));
+            pendingImageResultMapper.updateById(pending);
+            throw new IllegalStateException("模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址", exception);
+        }
+    }
+
+    private AiVideoPendingImageResult pendingImageResult(String itemId, String assetType) {
+        return pendingImageResultMapper.selectOne(new LambdaQueryWrapper<AiVideoPendingImageResult>()
+                .eq(AiVideoPendingImageResult::getItemId, itemId)
+                .eq(AiVideoPendingImageResult::getAssetType, assetType)
+                .last("LIMIT 1"));
+    }
+
+    private boolean hasPendingImageResult(String itemId) {
+        return pendingImageResultMapper.selectCount(new LambdaQueryWrapper<AiVideoPendingImageResult>()
+                .eq(AiVideoPendingImageResult::getItemId, itemId)) > 0;
+    }
+
+    private void clearPendingImageResult(String itemId, String assetType, String promptHash) {
+        pendingImageResultMapper.delete(new LambdaQueryWrapper<AiVideoPendingImageResult>()
+                .eq(AiVideoPendingImageResult::getItemId, itemId)
+                .eq(AiVideoPendingImageResult::getAssetType, assetType)
+                .eq(AiVideoPendingImageResult::getPromptHash, promptHash));
+    }
+
+    private String imageRequestHash(String prompt, List<ReferenceImage> references) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(prompt.getBytes(StandardCharsets.UTF_8));
+            for (ReferenceImage reference : references) {
+                digest.update((byte) 0);
+                digest.update(reference.name().getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+                digest.update(reference.mimeType().getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+                digest.update(reference.dataBase64().getBytes(StandardCharsets.UTF_8));
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (Exception exception) {
+            throw new IllegalStateException("无法计算图片请求标识", exception);
+        }
     }
 
     private AiVideoTaskAsset store(AiVideoTask task, AiVideoTaskItem item, String type, Integer sequence,
@@ -616,27 +892,28 @@ public class AiVideoImageProcessor {
                     : "STORYBOARD_GUIDE".equals(type)
                         ? "storyboard-guide." + ext
                     : String.format("shot-%02d.%s", sequence, ext);
-        Path directory = storageRoot.resolve(task.getOrganizationId()).resolve(task.getId()).resolve(item.getId()).resolve("outputs").normalize();
-        if (!directory.startsWith(storageRoot)) throw new IllegalStateException("生成目录不安全");
-        Files.createDirectories(directory);
-        Path path = directory.resolve(fileName);
-        Files.write(path, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        StoredMedia stored = storeGenerated(task, item, bytes, artifact.mimeType(), fileName);
         AiVideoTaskAsset asset = new AiVideoTaskAsset(task.getOrganizationId(), task.getId(), item.getId(), type,
-                sequence, path.toString(), artifact.mimeType(), bytes.length, prompt, artifact.modelId());
+                sequence, stored.location(), artifact.mimeType(), stored.size(), prompt, artifact.modelId());
         assetMapper.insert(asset);
         return asset;
     }
 
-    private String productScenePrompt(AiVideoTask task, ShotPrompt firstShot, boolean hasScriptFirstFrame) {
+    private String productScenePrompt(AiVideoTask task, AiVideoTaskItem item,
+                                      ShotPrompt anchorShot, boolean hasScriptFirstFrame) {
         String backgroundRequirement = hasScriptFirstFrame
                 ? "参考图2是脚本第 01 分镜的真实背景，必须沿用其空间、家具、材质、光源、曝光、白平衡和机位关系，只移除旧主体并放入当前商品，不得重新设计或美化背景。"
                 : "由模型根据商品类型、目标市场和展示方式搭配一个真实、克制、日常可落地的场景；不得复制脚本原视频房间，不使用空洞影棚、塑料感样板间或与商品无关的奢华布景。";
+        String functionBlock = productFunctionAnalysisService.promptBlock(
+                task, item.getProductFunctionAnalysisJson());
         StringBuilder prompt = new StringBuilder("【主体】基于参考商品图生成一张高保真电商商品场景主图。商品类型：")
                 .append(safe(task.getProductCategory(), "通用商品")).append("。")
                 .append("必须完整复制商品的颜色、结构、尺寸比例、Logo、包装文字、标签、图案、材质和边缘形状，")
                 .append("不得重新设计、增加第二件同款、改变文字、改变颜色、融化、变形、破损或悬浮。")
+                .append(functionBlock.isBlank() ? "" : functionBlock + "\n")
                 .append("【背景方式】").append(backgroundRequirement)
-                .append("【分镜 01】").append(shotExecutionDirection(task, firstShot)).append("主体层级清楚，")
+                .append("【商品首次出镜分镜 ").append(String.format("%02d", anchorShot.sequence())).append("】")
+                .append(shotExecutionDirection(task, anchorShot)).append("主体层级清楚，")
                 .append("构图像真实商业摄影而非素材拼贴，前景、主体和背景保持可信的尺寸与透视关系。")
                 .append("【光线与材质】").append(REAL_PHOTOGRAPHY_REQUIREMENT)
                 .append(FABRIC_AND_PRODUCT_REALISM_REQUIREMENT)
@@ -725,7 +1002,8 @@ public class AiVideoImageProcessor {
                 + "但不得改成参考图2旧人物的原搭配，也不得覆盖参考商品";
     }
 
-    private String productStoryboardGridPrompt(AiVideoTask task, List<ShotPrompt> shots, boolean realFrameGuide) {
+    private String productStoryboardGridPrompt(AiVideoTask task, AiVideoTaskItem item,
+                                               List<ShotPrompt> shots, boolean realFrameGuide) {
         String backgroundRequirement = preserveScriptBackground(task)
                 ? (realFrameGuide
                     ? "背景逐格沿用参考图1对应位置的原视频真实场景；连续分镜锁定空间、材质、光线和机位关系，原视频明确换景时才切换。"
@@ -733,17 +1011,20 @@ public class AiVideoImageProcessor {
                 : "背景以已生成的 AI 场景主图为视觉母版；根据各分镜动作合理延展空间，保持同一套真实摄影风格，脚本明确换景时才设计协调的新场景。";
         String referenceContract = realFrameGuide
                 ? "参考图1是原视频按九个分镜时间中点抽取并在后端拼成的真实 3×3 画面母版；参考图2是用户上传商品外观唯一母版。"
-                    + "两张参考图职责不可互换：参考图1逐格决定机位、景别、商品位置与尺度、手部有无、手部进入方向、接触点、动作阶段、环境和光影；"
+                    + "两张参考图职责不可互换：参考图1逐格决定机位、景别、商品是否出镜及其位置与尺度、手部有无、手部进入方向、接触点、动作阶段、环境和光影；"
                     + "参考图2以最高优先级锁定商品颜色、结构、文字、Logo、图案、标签和材质。"
-                    + "参考图1中的旧商品外观必须全部替换为参考图2，但不得借替换之名改变参考图1的动作、构图、景别或手部时序。"
+                    + "只有参考图1对应格明确出现商品时，才把其中旧商品外观替换为参考图2；原格没有商品时绝对不得添加商品。不得借替换之名改变参考图1的动作、构图、景别或手部时序。"
                 : "参考图1是商品场景与构图参考，参考图2是用户上传商品外观唯一母版，参考图2的商品拥有最高优先级。";
         String productMasterName = "参考图2";
+        String functionBlock = productFunctionAnalysisService.promptBlock(
+                task, item.getProductFunctionAnalysisJson());
         StringBuilder prompt = new StringBuilder(referenceContract)
                 .append("生成一张严格的 3×3 连续商品展示九宫格，按从左到右、从上到下对应 01→09。")
                 .append(PORTRAIT_4K_REQUIREMENT)
-                .append("先锁定").append(productMasterName).append("中商品的轮廓与表面内容，再生成九格；九格必须逐像素级保持同一件商品的颜色、结构、比例、Logo、包装文字、标签、插画、人物图案和材质一致。")
+                .append("先锁定").append(productMasterName).append("中商品的轮廓与表面内容，再生成九格；只在对应脚本明确要求商品出镜的格子放入商品，商品首次出镜之前的铺垫、环境和测试画面禁止强塞商品。商品一旦出镜，后续所有出镜格必须逐像素级保持同一件商品的颜色、结构、比例、Logo、包装文字、标签、插画、人物图案和材质一致。")
                 .append("禁止采用分镜脚本文字或原视频中出现的任何其他商品、品牌、颜色、Logo、包装、印花或文案。")
                 .append("不得把").append(productMasterName).append("的复杂插画或印花替换成纯文字、其他商品主题或模型自行设计的图案，也不得简化、概括或重新排版。")
+                .append(functionBlock.isBlank() ? "" : functionBlock + "\n")
                 .append(backgroundRequirement)
                 .append(realFrameGuide
                         ? "九格必须逐格对照参考图1的同一位置复刻，不能只模仿整体风格。参考图1某格无人手时该格绝对不能出现手、手臂或人体；"
@@ -777,8 +1058,26 @@ public class AiVideoImageProcessor {
         if (!shot.cameraMovement().isBlank()) value.append("运镜：").append(shot.cameraMovement()).append("；");
         if (value.isEmpty()) value.append("保持同一商品，进行轻微且连续的电商展示变化；");
         value.append("手部：").append(shotHandDirective(task, shot)).append("；");
-        value.append("只执行动作与运镜，任何商品外观描述均无效，商品始终严格复制参考图2。");
+        if (shotShowsProduct(shot)) {
+            value.append("本格明确要求当前任务商品出镜；只执行动作与运镜，任何旧商品外观描述均无效，商品严格复制参考图2。");
+        } else {
+            value.append("本格未要求当前任务商品出镜；严格复刻铺垫、环境或测试内容，禁止添加参考图2商品、包装、Logo 或商品替身。");
+        }
         return value.toString();
+    }
+
+    private boolean shotShowsProduct(ShotPrompt shot) {
+        String value = String.join(" ", shot.title(), shot.scene(), shot.motion(), shot.prompt()).toLowerCase();
+        return shotTextShowsProduct(value);
+    }
+
+    static boolean shotTextShowsProduct(String value) {
+        value = value == null ? "" : value.toLowerCase();
+        if (containsAny(value, "无商品", "不出现商品", "商品不出镜", "不要商品", "no product", "without product")) {
+            return false;
+        }
+        return containsAny(value, "商品", "产品", "包装", "瓶身", "罐体", "盒体",
+                "product appears", "show the product", "product close-up", "package", "bottle", "container");
     }
 
     private String storyboardGridPrompt(AiVideoTask task, List<ShotPrompt> shots) {
@@ -823,29 +1122,33 @@ public class AiVideoImageProcessor {
     }
 
     private String storyboardIdentityTransferPrompt(AiVideoTask task, List<ShotPrompt> shots, boolean realFrameGuide) {
-        StringBuilder prompt = new StringBuilder("执行一次严格的九宫格人物替换编辑。参考图1是必须保留内容和构图的 3×3 动作场景底图；")
-                .append("参考图2是唯一人物身份、完整穿搭和整体摄影风格母版。参考图2中的人物已经穿好最终商品，是已经完成的成衣结果，不需要也不允许再次试衣、换衣或贴图。")
-                .append("保持参考图1每一格指定的场景类型、主要物体、空间关系、机位方向、站位、动作姿态和时间顺序；原图中的远近景别和人物尺寸不保留，所有人物格必须重新按本提示词的近距离比例构图。")
+        StringBuilder prompt = new StringBuilder("执行一次严格的九宫格人物与商品替换编辑。三张参考图职责不可互换：")
+                .append("参考图1是用户上传的真实商品原图，是商品颜色、版型、领口、袖长、面料、缝线、印花、文字、数字、图形、Logo、位置、比例和排列顺序的唯一最高优先级母版；")
+                .append("参考图2是已经穿好当前商品的 AI 模特图，只负责唯一人物身份、脸、发型、身材、商品穿着位置、下装、配饰和整体摄影风格；")
+                .append("参考图3是 3×3 动作场景底图，只负责每格场景、主要物体、空间关系、机位方向、站位、动作姿态和时间顺序。")
+                .append("参考图3中的任何人物身份、脸、头发、肤色、衣服、颜色、印花、文字、Logo、下装和配饰全部是无效占位内容，必须删除，绝对不能继承、融合或折中。")
+                .append("参考图2若因生成误差与参考图1的商品细节不一致，以参考图1为准纠正商品；参考图2只提供商品穿在人身上的位置、尺度、遮挡和自然布料形变。")
+                .append("保持参考图3每一格指定的场景类型、主要物体、空间关系、机位方向、站位、动作姿态和时间顺序；原图中的远近景别和人物尺寸不保留，所有人物格必须重新按本提示词的近距离比例构图。")
                 .append(realFrameGuide
-                        ? "参考图1来自原视频真实抽帧。第 01 格以参考图2的人物身份、穿搭、背景和动作起点为准；第 02–09 格保留对应真实背景的墙面、门窗、家具、物品、磨损、阴影、曝光、白平衡和景深特征，但允许为了相机向前推进约二分之一而自然放大和重新取景。禁止把九格改造成样板间、木柜棚景、统一房间或模型新设计的室内布景。"
-                        : "当前任务选择 AI 自动搭配背景。参考图1决定每格动作、站位、景别、场景类型、场景切换和构图，参考图2提供人物、穿搭与真实摄影风格；不复刻脚本原视频房间，只重新设计每格环境的具体陈设。若背景存在塑料感、CG感、假材质、无来源高光或过度整洁，必须按参考图2的真实摄影标准重建材质与光线。")
+                        ? "参考图3来自原视频真实抽帧。第 01 格以参考图2的人物身份、穿搭、背景和动作起点为准；第 02–09 格保留参考图3对应位置的真实背景墙面、门窗、家具、物品、磨损、阴影、曝光、白平衡和景深特征，但允许为了相机向前推进约二分之一而自然放大和重新取景。禁止把九格改造成样板间、木柜棚景、统一房间或模型新设计的室内布景。"
+                        : "当前任务选择 AI 自动搭配背景。参考图3决定每格动作、站位、景别、场景类型、场景切换和构图，参考图2提供人物、穿着关系与真实摄影风格；不复刻脚本原视频房间，只重新设计每格环境的具体陈设。若背景存在塑料感、CG感、假材质、无来源高光或过度整洁，必须按参考图2的真实摄影标准重建材质与光线。")
                 .append(realFrameGuide
-                        ? "新人物必须适应参考图1各格原有的真实光源、色温、曝光、阴影与景深；不得反过来修改背景去迁就人物。"
+                        ? "新人物必须适应参考图3各格原有的真实光源、色温、曝光、阴影与景深；不得反过来修改背景去迁就人物。"
                         : "但九格的色温、曝光、对比度、手机随拍质感、光线自然度、材质表现和日常生活氛围统一匹配参考图2。")
                 .append(realFrameGuide
                         ? "参考图2只为第 01 格提供人物、成衣、背景和动作起点；第 02–09 格只继承其中的人物与成衣，不能把参考图2的房间复制到后八格。不同分镜原本存在的换景和商品特写必须保留；除纯商品特写和必须展示脚部的动作外，人物格全部统一为头顶至大腿中下段的近距离比例。"
-                        : "只迁移参考图2的视觉风格，不能把九格背景全部替换成参考图2的同一个房间，也不能抹掉参考图1要求的换景和商品特写。")
-                .append("把九格中的每一个无脸人体模型逐格替换为参考图2中的同一个真实人物。必须复制参考图2的同一张脸、五官比例、肤色、")
-                .append("发型、发长、身材比例、上衣、下装、鞋袜和配饰；九格人物必须是同一个人、同一套穿搭，不得重新选角或重新设计服装。")
-                .append("【人脸身份最高优先级】参考图2的脸是唯一合法人脸母版。参考图1即使残留原视频人物的脸、五官、年龄、肤色或表情，也全部视为需要被删除的旧主体，绝对不能继承、融合或折中。")
+                        : "只迁移参考图2的视觉风格，不能把九格背景全部替换成参考图2的同一个房间，也不能抹掉参考图3要求的换景和商品特写。")
+                .append("把九格中的每一个占位人体逐格替换为参考图2中的同一个真实人物。必须复制参考图2的同一张脸、五官比例、肤色、")
+                .append("发型、发长、身材比例、下装、鞋袜和配饰；上衣商品外观必须以参考图1为准。九格人物必须是同一个人、同一套穿搭，不得重新选角或重新设计服装。")
+                .append("【人脸身份最高优先级】参考图2的脸是唯一合法人脸母版。参考图3即使残留原视频人物的脸、五官、年龄、肤色或表情，也全部视为需要被删除的旧主体，绝对不能继承、融合或折中。")
                 .append("逐格保持参考图2的脸型轮廓、眉形、眼裂、眼距、虹膜、鼻梁、鼻翼、嘴唇、下颌线和年龄观感；只允许因转头、透视和轻微表情产生正常变化。")
                 .append("如果动作姿态与人脸身份发生冲突，优先保住参考图2的人脸身份与自然五官，再对姿态做最小幅度调整；禁止重新抽取另一位模特。")
                 .append("九格审美基调完全继承参考图2，不得为了所谓美化重新画脸，也不得把参考图2变老、变疲惫、变凶或改变亲和感。")
                 .append("【第 01 格硬约束】参考图2本身就是最终视频第 01 分镜的人物与动作母版。九宫格左上角第 01 格必须复现参考图2的同一人物、五官、穿搭、姿态、背景关系和清晰度，但必须按头顶至大腿中下段的近距离比例重新取景；第 02–09 格从它开始连续推进。")
                 .append(GRID_FACE_PIXEL_REQUIREMENT)
                 .append("参考图2如果是远景，不沿用它的人物尺寸；只沿用同一人物、穿搭、背景与机位方向，在每格中把相机距离推进约二分之一。第 01 格必须按该近距离规则重新构图，但人物身份、姿态起点和背景关系保持不变。")
-                .append("直接复制参考图2中上衣已经穿在人物身上的最终视觉结果，包括颜色、领型、袖长、版型、面料纹理、缝线、印花文字、数字、图形、大小、位置与排列顺序。")
-                .append("不得重新理解商品、不得重新生成一件相似款、不得把上衣从人物身上移除后重新穿戴，也不得改字、漏字、增加装饰或改变版型。")
+                .append("【商品外观最高优先级】逐格直接复制参考图1的真实商品设计，包括颜色、领型、袖长、版型、面料纹理、缝线、印花文字、数字、图形、Logo、大小、位置与排列顺序；参考图2只用于确认它穿在人物身上的位置与自然形变。")
+                .append("不得重新理解商品、不得生成相似款、不得继承参考图3的占位衣服，也不得改字、漏字、增加装饰、替换图案或改变版型。")
                 .append("侧身、坐姿和特写只允许产生符合真实透视的轻微布料形变，商品身份和全部可见设计必须保持不变。")
                 .append(PORTRAIT_SKIN_QUALITY_REQUIREMENT)
                 .append(FACE_COLOR_CONTINUITY_REQUIREMENT)
@@ -863,7 +1166,7 @@ public class AiVideoImageProcessor {
                     .append("：场景与动作按该格底图执行；").append(shotHandDirective(task, shot)).append("；")
                     .append(expression).append("；视线与该格动作目标一致，双眼共同对焦。\n");
         }
-        prompt.append("仅允许改变人物姿态和上述微表情以贴合参考图1，人物身份和服装纹理不得随姿态改变。")
+        prompt.append("仅允许改变人物姿态和上述微表情以贴合参考图3，人物身份和参考图1的商品外观不得随姿态改变。")
                 .append("【异常规避优先级】九宫格的可用性高于复杂动作的精确复刻。如果某个动作会导致脸部崩坏、手指异常、肢体穿模、重心失衡或服装图案扭曲，")
                 .append("必须把该格动作幅度缩小为解剖正确的中间姿态，不能带着异常输出。每个有人格必须且只能出现一个头、一个躯干、两条手臂、两只手、两条腿和两只脚；")
                 .append("可见手掌必须为五指且连接正确，头颈肩连接自然，脚底与地面接触，鞋履完整。侧身格也必须保持同一张脸、同一发型、同一发长和同一套穿搭。")
@@ -921,7 +1224,7 @@ public class AiVideoImageProcessor {
                 : "不得出现人物、手臂、手掌或手指，只保留商品与脚本规定的承托关系";
     }
 
-    private boolean containsAny(String value, String... candidates) {
+    private static boolean containsAny(String value, String... candidates) {
         for (String candidate : candidates) if (value.contains(candidate)) return true;
         return false;
     }
@@ -957,6 +1260,57 @@ public class AiVideoImageProcessor {
         byte[] bytes = Files.readAllBytes(path);
         return new ReferenceImage(name, mimeType, Base64.getEncoder().encodeToString(bytes));
     }
+
+    private ReferenceImage reference(String location, String name, String mimeType) throws Exception {
+        byte[] bytes = readAsset(location);
+        return new ReferenceImage(name, mimeType, Base64.getEncoder().encodeToString(bytes));
+    }
+
+    private boolean assetReadable(AiVideoTaskAsset asset) {
+        if (asset == null || asset.getFilePath() == null) return false;
+        try {
+            if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) {
+                return ossStorage.exists(asset.getFilePath());
+            }
+            Path path = Path.of(asset.getFilePath()).toAbsolutePath().normalize();
+            return path.startsWith(storageRoot) && Files.isRegularFile(path) && Files.size(path) > 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private byte[] readAsset(String location) throws Exception {
+        if (ossStorage != null && ossStorage.isOssLocation(location)) {
+            return ossStorage.readAllBytes(location, 64 * 1024 * 1024);
+        }
+        Path path = Path.of(location).toAbsolutePath().normalize();
+        if (!path.startsWith(storageRoot) || !Files.isRegularFile(path)) {
+            throw new IllegalStateException("生成素材不存在");
+        }
+        return Files.readAllBytes(path);
+    }
+
+    private StoredMedia storeGenerated(AiVideoTask task, AiVideoTaskItem item, byte[] bytes,
+                                       String contentType, String fileName) throws Exception {
+        if (ossStorage != null) {
+            String category = "generated-images/" + task.getOrganizationId() + "/" + task.getId() + "/" + item.getId();
+            OssStorageService.StoredObject stored = ossStorage.store(bytes, contentType, category, fileName);
+            return new StoredMedia(stored.location(), stored.size());
+        }
+        Path directory = storageRoot.resolve(task.getOrganizationId()).resolve(task.getId())
+                .resolve(item.getId()).resolve("outputs").normalize();
+        if (!directory.startsWith(storageRoot)) throw new IllegalStateException("生成目录不安全");
+        Files.createDirectories(directory);
+        Path path = directory.resolve(fileName).normalize();
+        Files.write(path, bytes);
+        return new StoredMedia(path.toString(), bytes.length);
+    }
+
+    private byte[] png(BufferedImage image) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        if (!ImageIO.write(image, "png", output)) throw new IOException("PNG 图片编码失败");
+        return output.toByteArray();
+    }
     private int number(Object value, int fallback) { try { return Integer.parseInt(String.valueOf(value)); } catch (Exception ignored) { return fallback; } }
     private String extension(String mime) { return "image/jpeg".equalsIgnoreCase(mime) ? "jpg" : "image/webp".equalsIgnoreCase(mime) ? "webp" : "png"; }
     private boolean preserveScriptBackground(AiVideoTask task) { return !"AI_DESIGNED".equals(task.getBackgroundMode()); }
@@ -981,7 +1335,10 @@ public class AiVideoImageProcessor {
     private record ShotPrompt(int sequence, String prompt, String title, String scene, String motion, String shotSize,
                               String cameraMovement, String emotion) {}
     private record ReferenceImage(String name, String mimeType, String dataBase64) {}
-    private record PiImageResponse(PiArtifact artifact, Map<String, Object> usage) {}
+    private record StoredMedia(String location, long size) {}
+    private record PiImageResponse(PiArtifact artifact, PiImageResult result, Map<String, Object> usage) {}
+    private record PiImageResult(String url, String mimeType, String modelId, String mode,
+                                 String prompt, String revisedPrompt) {}
     private record PiArtifact(String name, String mimeType, String dataBase64, String modelId, String mode,
                               String prompt, String revisedPrompt) {}
 }

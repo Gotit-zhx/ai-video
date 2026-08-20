@@ -2,6 +2,8 @@ package com.yingdao.aicommerce.video.domain;
 
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
+import com.baomidou.mybatisplus.annotation.TableField;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -19,6 +21,11 @@ public class AiVideoTaskAsset {
     private long sizeBytes;
     private String promptText;
     private String modelId;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String referenceRole;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String referenceInstruction;
+    private boolean primaryReference;
     private Instant createdAt;
 
     protected AiVideoTaskAsset() {}
@@ -40,6 +47,29 @@ public class AiVideoTaskAsset {
         this.createdAt = Instant.now();
     }
 
+    public static AiVideoTaskAsset videoReference(String organizationId, String taskId, String itemId,
+                                                  int order, String filePath, String contentType, long sizeBytes,
+                                                  String role, String instruction, boolean primary) {
+        AiVideoTaskAsset asset = new AiVideoTaskAsset(organizationId, taskId, itemId, "VIDEO_REFERENCE_IMAGE",
+                order, filePath, contentType, sizeBytes, null, "source-reference");
+        asset.referenceRole = role;
+        asset.referenceInstruction = instruction;
+        asset.primaryReference = primary;
+        return asset;
+    }
+
+    public void updateReference(int order, String role, String instruction, boolean primary) {
+        this.shotSequence = order;
+        this.referenceRole = role;
+        this.referenceInstruction = instruction;
+        this.primaryReference = primary;
+    }
+
+    public void relocate(String filePath, long sizeBytes) {
+        this.filePath = filePath;
+        this.sizeBytes = sizeBytes;
+    }
+
     public String getId() { return id; }
     public String getOrganizationId() { return organizationId; }
     public String getTaskId() { return taskId; }
@@ -51,5 +81,8 @@ public class AiVideoTaskAsset {
     public long getSizeBytes() { return sizeBytes; }
     public String getPromptText() { return promptText; }
     public String getModelId() { return modelId; }
+    public String getReferenceRole() { return referenceRole; }
+    public String getReferenceInstruction() { return referenceInstruction; }
+    public boolean isPrimaryReference() { return primaryReference; }
     public Instant getCreatedAt() { return createdAt; }
 }

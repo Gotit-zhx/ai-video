@@ -3,6 +3,7 @@ package com.yingdao.aicommerce.video.web;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.api.ApiResponse;
 import com.yingdao.aicommerce.video.application.VideoScriptService;
+import com.yingdao.aicommerce.video.application.ManualScriptAiService;
 import com.yingdao.aicommerce.video.domain.VideoScript;
 import com.yingdao.aicommerce.video.domain.VideoScriptShot;
 import jakarta.validation.constraints.Size;
@@ -36,9 +37,35 @@ import java.util.concurrent.TimeUnit;
 public class VideoScriptController {
 
     private final VideoScriptService service;
+    private final ManualScriptAiService manualScriptAiService;
 
-    public VideoScriptController(VideoScriptService service) {
+    public VideoScriptController(VideoScriptService service, ManualScriptAiService manualScriptAiService) {
         this.service = service;
+        this.manualScriptAiService = manualScriptAiService;
+    }
+
+    @PostMapping("/manual/analyze")
+    public ApiResponse<ManualScriptAiService.Draft> analyzeManualPrompt(
+            @RequestBody ManualScriptAiRequest request,
+            @AuthenticationPrincipal PlatformPrincipal principal
+    ) {
+        return ApiResponse.ok(manualScriptAiService.analyze(
+                request.prompt(), request.targetMarket(), request.name(), request.visualTone(), principal));
+    }
+
+    @PostMapping(value = "/manual/analyze-product", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<ManualScriptAiService.Draft> analyzeManualProduct(
+            @RequestParam("images") List<MultipartFile> images,
+            @RequestParam("imageContexts") List<@Size(max = 1200) String> imageContexts,
+            @RequestParam(value = "requirements", required = false) @Size(max = 12000) String requirements,
+            @RequestParam(value = "productContext", required = false) @Size(max = 4000) String productContext,
+            @RequestParam(value = "targetMarket", required = false) @Size(max = 80) String targetMarket,
+            @RequestParam(value = "name", required = false) @Size(max = 160) String name,
+            @RequestParam(value = "visualTone", required = false) @Size(max = 4000) String visualTone,
+            @AuthenticationPrincipal PlatformPrincipal principal
+    ) {
+        return ApiResponse.ok(manualScriptAiService.analyzeProduct(
+                images, imageContexts, requirements, productContext, targetMarket, name, visualTone, principal));
     }
 
     @PostMapping(value = "/analyze", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -52,6 +79,23 @@ public class VideoScriptController {
     ) {
         return ApiResponse.created(VideoScriptSummaryResponse.from(
                 service.createAnalysis(video, name, targetMarket, requirements, principal)
+        ));
+    }
+
+    @PostMapping("/manual")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<VideoScriptSummaryResponse> createManual(
+            @RequestBody ManualScriptRequest request,
+            @AuthenticationPrincipal PlatformPrincipal principal
+    ) {
+        List<VideoScriptService.ManualShot> shots = request.shots() == null ? List.of() : request.shots().stream()
+                .map(shot -> new VideoScriptService.ManualShot(
+                        shot.stage(), shot.title(), shot.startSecond(), shot.endSecond(),
+                        shot.sceneDescription(), shot.motionDescription(), shot.narration(),
+                        shot.shotSize(), shot.cameraMovement(), shot.emotion()
+                )).toList();
+        return ApiResponse.created(VideoScriptSummaryResponse.from(
+                service.createManual(request.name(), request.targetMarket(), request.visualTone(), shots, principal)
         ));
     }
 
@@ -284,5 +328,30 @@ public class VideoScriptController {
     }
 
     public record UpdateVisualToneRequest(String visualTone) {
+    }
+
+    public record ManualScriptRequest(
+            String name,
+            String targetMarket,
+            String visualTone,
+            List<ManualShotRequest> shots
+    ) {
+    }
+
+    public record ManualScriptAiRequest(String prompt, String targetMarket, String name, String visualTone) {
+    }
+
+    public record ManualShotRequest(
+            String stage,
+            String title,
+            BigDecimal startSecond,
+            BigDecimal endSecond,
+            String sceneDescription,
+            String motionDescription,
+            String narration,
+            String shotSize,
+            String cameraMovement,
+            String emotion
+    ) {
     }
 }

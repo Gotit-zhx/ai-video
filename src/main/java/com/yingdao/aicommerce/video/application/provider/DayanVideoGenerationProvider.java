@@ -37,19 +37,34 @@ public class DayanVideoGenerationProvider extends ProviderJsonSupport implements
         body.put("duration", request.durationSeconds());
         body.put("ratio", request.aspectRatio());
         body.put("resolution", request.resolution());
-        Map<String, Object> response = post(tasksEndpoint(connection.baseUrl()), connection.apiKey(), body);
+        String requestJson = json(body);
+        Map<String, Object> response;
+        try {
+            response = post(tasksEndpoint(connection.baseUrl()), connection.apiKey(), body);
+        } catch (VideoProviderException exception) {
+            throw exception.withRequest(requestJson);
+        }
         String id = text(response, "id");
-        if (id.isBlank()) throw new VideoProviderException("大衍没有返回视频任务 ID", false);
-        return new SubmitResult(id, normalize(text(response, "status")));
+        if (id.isBlank()) throw new VideoProviderException("大衍没有返回视频任务 ID", false,
+                requestJson, json(response));
+        return new SubmitResult(id, normalize(text(response, "status")), requestJson, json(response));
     }
 
     @Override
     public QueryResult query(RuntimeModelConnection connection, String providerTaskId) {
-        Map<String, Object> response = get(tasksEndpoint(connection.baseUrl()) + "/" + providerTaskId, connection.apiKey());
+        String endpoint = tasksEndpoint(connection.baseUrl()) + "/" + providerTaskId;
+        String requestJson = json(Map.of("method", "GET", "url", endpoint));
+        Map<String, Object> response;
+        try {
+            response = get(endpoint, connection.apiKey());
+        } catch (VideoProviderException exception) {
+            throw exception.withRequest(requestJson);
+        }
         Map<String, Object> content = map(response, "content");
         String error = text(response, "error_message");
         if (error.isBlank()) error = text(response, "message");
-        return new QueryResult(normalize(text(response, "status")), text(content, "video_url"), decimal(response.get("cost")), map(response, "usage"), error);
+        return new QueryResult(normalize(text(response, "status")), text(content, "video_url"), decimal(response.get("cost")),
+                map(response, "usage"), error, requestJson, json(response));
     }
 
     private String normalize(String status) {

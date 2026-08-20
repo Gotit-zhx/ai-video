@@ -17,7 +17,7 @@ public class VideoProviderRegistry {
 
     public VideoGenerationProvider require(String code) {
         VideoGenerationProvider provider = providers.get(code);
-        if (provider == null) throw new VideoProviderException("当前 API 地址无法识别厂商，请在模型接入中选择大衍或文高云", true);
+        if (provider == null) throw new VideoProviderException("当前 API 地址无法识别视频线路，请在模型接入中选择普通线路或高速线路", true);
         return provider;
     }
 }

@@ -39,9 +39,10 @@ public class AiVideoMonitorService {
     }
 
     public MonitorSnapshot snapshot(PlatformPrincipal principal) {
+        String ownerUserId = ownerUserIdScope(principal);
         List<AiVideoTask> tasks = taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
                 .eq(AiVideoTask::getOrganizationId, principal.organizationId())
-                .eq(AiVideoTask::getCreatedBy, principal.userId())
+                .eq(ownerUserId != null, AiVideoTask::getCreatedBy, ownerUserId)
                 .orderByDesc(AiVideoTask::getUpdatedAt));
         if (tasks.isEmpty()) return new MonitorSnapshot(new MonitorStats(0, 0, 0, 0, 0, 0), List.of());
 
@@ -68,10 +69,11 @@ public class AiVideoMonitorService {
     }
 
     public TaskMonitor detail(String taskId, PlatformPrincipal principal) {
+        String ownerUserId = ownerUserIdScope(principal);
         AiVideoTask task = taskMapper.selectOne(new LambdaQueryWrapper<AiVideoTask>()
                 .eq(AiVideoTask::getId, taskId)
                 .eq(AiVideoTask::getOrganizationId, principal.organizationId())
-                .eq(AiVideoTask::getCreatedBy, principal.userId()));
+                .eq(ownerUserId != null, AiVideoTask::getCreatedBy, ownerUserId));
         if (task == null) throw new BusinessException(HttpStatus.NOT_FOUND, "AI 视频任务不存在");
 
         List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
@@ -91,6 +93,14 @@ public class AiVideoMonitorService {
                 task.getStatus(), task.getProgress(), task.getGenerationMode(), task.getBackgroundMode(),
                 task.getTargetMarket(), task.getProductCategory(), task.getAspectRatio(), task.getResolution(),
                 task.getModelId(), task.getErrorMessage(), task.getCreatedAt(), task.getUpdatedAt(), task.getCompletedAt(), itemMonitors);
+    }
+
+    static boolean canViewOrganizationWide(PlatformPrincipal principal) {
+        return principal != null && principal.roleCodes().contains("ADMIN");
+    }
+
+    static String ownerUserIdScope(PlatformPrincipal principal) {
+        return canViewOrganizationWide(principal) ? null : principal.userId();
     }
 
     private long countItems(List<AiVideoTaskItem> items, String taskId) {
@@ -143,13 +153,17 @@ public class AiVideoMonitorService {
     public record RequestMonitor(String id, String runId, int attempt, String provider, String modelId,
                                  String providerTaskId, String status, String requestState, int durationSeconds,
                                  String aspectRatio, String resolution, BigDecimal cost, String usage,
-                                 String errorMessage, Instant nextPollAt, Instant createdAt, Instant updatedAt,
+                                 String errorMessage, String submitRequestJson, String submitResponseJson,
+                                 String queryRequestJson, String queryResponseJson,
+                                 Instant nextPollAt, Instant createdAt, Instant updatedAt,
                                  Instant completedAt) {
         static RequestMonitor from(AiVideoGenerationJob job) {
             return new RequestMonitor(job.getId(), job.getRunId(), job.getAttemptNo(), job.getProvider(), job.getModelId(),
                     job.getProviderTaskId(), job.getStatus(), job.getRequestState(), job.getDurationSeconds(),
                     job.getAspectRatio(), job.getResolution(), job.getCostAmount(), job.getUsageJson(),
-                    job.getErrorMessage(), job.getNextPollAt(), job.getCreatedAt(), job.getUpdatedAt(), job.getCompletedAt());
+                    job.getErrorMessage(), job.getSubmitRequestJson(), job.getSubmitResponseJson(),
+                    job.getQueryRequestJson(), job.getQueryResponseJson(),
+                    job.getNextPollAt(), job.getCreatedAt(), job.getUpdatedAt(), job.getCompletedAt());
         }
     }
 }

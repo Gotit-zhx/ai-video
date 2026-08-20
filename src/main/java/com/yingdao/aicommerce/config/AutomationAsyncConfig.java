@@ -12,6 +12,8 @@ import java.util.concurrent.Executor;
 @EnableAsync
 @EnableScheduling
 public class AutomationAsyncConfig {
+    private static final int AI_VIDEO_TASK_CONCURRENCY = 100;
+    private static final int AI_VIDEO_TASK_QUEUE_CAPACITY = 1_000;
 
     @Bean(name = "automationDiagnosisExecutor")
     public Executor automationDiagnosisExecutor() {
@@ -27,10 +29,21 @@ public class AutomationAsyncConfig {
     @Bean(name = "aiVideoImageExecutor")
     public Executor aiVideoImageExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(8);
-        executor.setMaxPoolSize(20);
-        executor.setQueueCapacity(200);
+        executor.setCorePoolSize(AI_VIDEO_TASK_CONCURRENCY);
+        executor.setMaxPoolSize(AI_VIDEO_TASK_CONCURRENCY);
+        executor.setQueueCapacity(AI_VIDEO_TASK_QUEUE_CAPACITY);
         executor.setThreadNamePrefix("ai-video-image-");
+        executor.initialize();
+        return executor;
+    }
+
+    @Bean(name = "aiVideoImageCoordinatorExecutor")
+    public Executor aiVideoImageCoordinatorExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(AI_VIDEO_TASK_CONCURRENCY);
+        executor.setMaxPoolSize(AI_VIDEO_TASK_CONCURRENCY);
+        executor.setQueueCapacity(AI_VIDEO_TASK_QUEUE_CAPACITY);
+        executor.setThreadNamePrefix("ai-video-image-coordinator-");
         executor.initialize();
         return executor;
     }
@@ -38,9 +51,9 @@ public class AutomationAsyncConfig {
     @Bean(name = "aiVideoGenerationExecutor")
     public Executor aiVideoGenerationExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(6);
-        executor.setMaxPoolSize(16);
-        executor.setQueueCapacity(200);
+        executor.setCorePoolSize(AI_VIDEO_TASK_CONCURRENCY);
+        executor.setMaxPoolSize(AI_VIDEO_TASK_CONCURRENCY);
+        executor.setQueueCapacity(AI_VIDEO_TASK_QUEUE_CAPACITY);
         executor.setThreadNamePrefix("ai-video-generate-");
         executor.initialize();
         return executor;

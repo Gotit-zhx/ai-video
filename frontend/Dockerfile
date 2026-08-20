@@ -8,4 +8,4 @@ COPY logo.svg /usr/share/nginx/html/logo.svg
 COPY assets /usr/share/nginx/html/assets
 COPY vendor /usr/share/nginx/html/vendor
 
-EXPOSE 80
+EXPOSE 80 443

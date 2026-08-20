@@ -1,0 +1,21 @@
+CREATE TABLE ai_video_pending_image_results (
+    id VARCHAR(36) PRIMARY KEY,
+    organization_id VARCHAR(36) NOT NULL,
+    task_id VARCHAR(36) NOT NULL,
+    item_id VARCHAR(36) NOT NULL,
+    asset_type VARCHAR(32) NOT NULL,
+    prompt_hash VARCHAR(64) NOT NULL,
+    result_url TEXT NOT NULL,
+    result_content_type VARCHAR(120),
+    model_id VARCHAR(160),
+    mode VARCHAR(32),
+    revised_prompt TEXT,
+    download_attempts INT NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMP(6) NOT NULL,
+    updated_at TIMESTAMP(6) NOT NULL,
+    UNIQUE KEY uk_pending_image_item_type (item_id, asset_type),
+    KEY idx_pending_image_task (task_id),
+    CONSTRAINT fk_pending_image_task FOREIGN KEY (task_id) REFERENCES ai_video_tasks(id) ON DELETE CASCADE,
+    CONSTRAINT fk_pending_image_item FOREIGN KEY (item_id) REFERENCES ai_video_task_items(id) ON DELETE CASCADE
+);

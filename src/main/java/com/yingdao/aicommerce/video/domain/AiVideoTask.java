@@ -36,6 +36,7 @@ public class AiVideoTask {
     private String resolution;
     private boolean autoStartVideoAfterImages;
     private boolean useScriptReferenceVideo;
+    private boolean directReferenceVideo;
     private String generationRulesJson;
     private String qualityRulesJson;
     private String status;
@@ -56,7 +57,7 @@ public class AiVideoTask {
     public AiVideoTask(String organizationId, String name, String scriptId, int scriptVersion,
                        String scriptName, String scriptJson, String targetMarket, String generationMode,
                        String backgroundMode, String productCategory, String sceneType, String interactionType, boolean allowHand,
-                       String aspectRatio, String resolution, boolean useScriptReferenceVideo,
+                       String aspectRatio, String resolution, boolean useScriptReferenceVideo, boolean directReferenceVideo,
                        String generationRulesJson, String qualityRulesJson, String createdBy) {
         this.id = UUID.randomUUID().toString();
         this.organizationId = organizationId;
@@ -76,6 +77,7 @@ public class AiVideoTask {
         this.aspectRatio = aspectRatio;
         this.resolution = resolution;
         this.useScriptReferenceVideo = useScriptReferenceVideo;
+        this.directReferenceVideo = directReferenceVideo;
         this.generationRulesJson = generationRulesJson;
         this.qualityRulesJson = qualityRulesJson;
         this.status = "DRAFT";
@@ -88,6 +90,18 @@ public class AiVideoTask {
     public void updateItemCount(int count) {
         this.totalItems = count;
         this.status = count > 0 ? "READY" : "DRAFT";
+        this.updatedAt = Instant.now();
+    }
+
+    public void syncItemCountPreservingResult(int count) {
+        this.totalItems = Math.max(0, count);
+        this.completedItems = Math.min(this.completedItems, this.totalItems);
+        if (this.totalItems == 0) {
+            this.status = "DRAFT";
+            this.progress = 0;
+            this.errorMessage = null;
+            this.completedAt = null;
+        }
         this.updatedAt = Instant.now();
     }
 
@@ -187,7 +201,12 @@ public class AiVideoTask {
     public String getResolution() { return resolution; }
     public boolean isAutoStartVideoAfterImages() { return autoStartVideoAfterImages; }
     public boolean isUseScriptReferenceVideo() { return useScriptReferenceVideo; }
+    public boolean isDirectReferenceVideo() { return directReferenceVideo; }
     public String getGenerationRulesJson() { return generationRulesJson; }
+    public String getVideoRoute() {
+        return generationRulesJson != null && generationRulesJson.contains("\"videoRoute\":\"SPEED\"")
+                ? "SPEED" : "QUALITY";
+    }
     public String getQualityRulesJson() { return qualityRulesJson; }
     public String getStatus() { return status; }
     public int getProgress() { return progress; }

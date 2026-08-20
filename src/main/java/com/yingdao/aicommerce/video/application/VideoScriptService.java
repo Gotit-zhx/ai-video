@@ -118,6 +118,61 @@ public class VideoScriptService {
         return script;
     }
 
+    @Transactional
+    public VideoScript createManual(
+            String name,
+            String targetMarket,
+            String visualTone,
+            List<ManualShot> requestedShots,
+            PlatformPrincipal principal
+    ) {
+        String normalizedName = required(name, "脚本名称", 160);
+        String normalizedTone = required(visualTone, "全局视觉基调", 4000);
+        if (requestedShots == null || requestedShots.size() != 9) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "手动脚本必须完整填写 9 个分镜");
+        }
+
+        String id = UUID.randomUUID().toString();
+        List<VideoScriptShot> shots = new ArrayList<>(9);
+        BigDecimal previousEnd = null;
+        for (int index = 0; index < requestedShots.size(); index++) {
+            ManualShot requested = requestedShots.get(index);
+            if (requested == null || requested.startSecond() == null || requested.endSecond() == null) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "第 " + (index + 1) + " 个分镜必须填写开始和结束秒数");
+            }
+            BigDecimal start = requested.startSecond().stripTrailingZeros();
+            BigDecimal end = requested.endSecond().stripTrailingZeros();
+            if (start.signum() < 0 || end.compareTo(start) <= 0) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "第 " + (index + 1) + " 个分镜时间范围无效");
+            }
+            if (previousEnd != null && start.compareTo(previousEnd) != 0) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "第 " + (index + 1) + " 个分镜必须从上一分镜结束时间开始");
+            }
+            String scene = required(requested.sceneDescription(), "第 " + (index + 1) + " 个分镜画面与动作", 8000);
+            String motion = trimTo(requested.motionDescription(), 8000);
+            if (motion == null) motion = scene;
+            String imagePrompt = toJson(Map.of("prompt", scene));
+            shots.add(new VideoScriptShot(
+                    principal.organizationId(), id, index + 1, normalizeStage(requested.stage()),
+                    required(requested.title(), "第 " + (index + 1) + " 个分镜标题", 160),
+                    start, end, end.subtract(start), scene, motion, null,
+                    trimTo(requested.narration(), 8000), trimTo(requested.shotSize(), 80),
+                    trimTo(requested.cameraMovement(), 120), null, trimTo(requested.emotion(), 120), imagePrompt
+            ));
+            previousEnd = end;
+        }
+
+        VideoScript script = new VideoScript(
+                id, principal.organizationId(), normalizedName, "MANUAL", null, null, null, null,
+                trimTo(targetMarket, 80), null, principal.userId()
+        );
+        String summary = "手动创建的 9 分镜生产脚本";
+        script.complete(summary, normalizedTone, rebuildScriptJson(null, normalizedName, summary, normalizedTone, shots));
+        scriptMapper.insert(script);
+        shots.forEach(shotMapper::insert);
+        return script;
+    }
+
     public VideoScript currentBlocking(PlatformPrincipal principal) {
         return scriptMapper.selectOne(
                 new LambdaQueryWrapper<VideoScript>()
@@ -590,6 +645,14 @@ public class VideoScriptService {
         }
     }
 
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception exception) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "手动分镜 JSON 保存失败");
+        }
+    }
+
     private double midpoint(VideoScriptShot shot) {
         double start = shot.getStartSecond() == null ? -1.0 : shot.getStartSecond().doubleValue();
         double end = shot.getEndSecond() == null ? -1.0 : shot.getEndSecond().doubleValue();
@@ -613,6 +676,20 @@ public class VideoScriptService {
             String shotSize,
             String cameraMovement,
             String transitionDescription,
+            String emotion
+    ) {
+    }
+
+    public record ManualShot(
+            String stage,
+            String title,
+            BigDecimal startSecond,
+            BigDecimal endSecond,
+            String sceneDescription,
+            String motionDescription,
+            String narration,
+            String shotSize,
+            String cameraMovement,
             String emotion
     ) {
     }

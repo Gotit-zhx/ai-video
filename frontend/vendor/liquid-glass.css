@@ -36,11 +36,13 @@
 #video-task-dialog .script-video-rate-warning small { color: rgba(255, 224, 173, .74); }
 .liquid-glass.lg-positioned { position: relative; }
 
-/* The upstream demo image is the optical medium refracted by every component. */
+/* Moonshot-inspired near-black optical medium for the login composition. */
 .login-shell {
-  background-image: url("/assets/liquid-glass/background.webp");
-  background-position: center;
-  background-size: cover;
+  background-color: #000;
+  background-image:
+    radial-gradient(circle at 31% 48%, rgba(50, 57, 66, .22) 0, rgba(17, 20, 24, .12) 22%, transparent 46%),
+    radial-gradient(circle at 82% 16%, rgba(29, 38, 47, .16) 0, transparent 38%),
+    linear-gradient(180deg, #050607 0%, #020304 48%, #000 100%);
   background-attachment: fixed;
 }
 .dashboard {
@@ -56,8 +58,8 @@
   z-index: 0;
   pointer-events: none;
   background:
-    linear-gradient(rgba(9, 9, 11, .24), rgba(9, 9, 11, .24)),
-    url("/assets/liquid-glass/background.webp") center / cover no-repeat;
+    linear-gradient(rgba(9, 9, 11, .32), rgba(9, 9, 11, .32)),
+    url("/assets/wallpaper-candidates/03-snow-pastel.jpg") center / cover no-repeat;
   transform: translateZ(0);
   will-change: transform;
 }
@@ -66,8 +68,18 @@
   position: relative;
   z-index: 1;
 }
-.dashboard > .workspace,
-.login-shell > .login-panel { background: transparent; }
+
+/* Workspace cards may cast wide shadows on monitoring pages. Keep the
+   navigation above that paint layer so those shadows cannot cross into it. */
+.dashboard > .sidebar { z-index: 2; }
+.dashboard > .workspace { background: transparent; }
+.login-shell > .login-panel {
+  border-left: 1px solid rgba(255, 255, 255, .2);
+  background:
+    radial-gradient(circle at 48% 22%, rgba(255, 255, 255, .2), transparent 42%),
+    linear-gradient(145deg, rgba(246, 249, 252, .34), rgba(191, 204, 216, .17));
+  box-shadow: inset 1px 0 rgba(255, 255, 255, .14), -24px 0 70px rgba(0, 0, 0, .12);
+}
 
 .current-task-banner.liquid-glass,
 .batch-action-dock.liquid-glass,
@@ -150,11 +162,233 @@
 }
 
 .dashboard .workspace {
-  color: #111827;
+  color: rgba(248, 251, 255, .96);
+}
+
+/* Shared workspace typography for every application module. */
+.dashboard .workspace-body {
+  color: rgba(248, 251, 255, .96);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.dashboard .workspace-body :where(h1, h2, h3, h4, h5, h6, strong, b, th, legend) {
+  color: rgba(252, 253, 255, .98) !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .78);
+}
+
+.dashboard .workspace-body :where(p, small, span, label, td, dt, dd, li, em) {
+  color: rgba(231, 238, 247, .9) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .72);
+}
+
+.dashboard .workspace-body :where(input, select, textarea) {
+  color: rgba(250, 252, 255, .98) !important;
+  background: rgba(9, 9, 11, .38) !important;
+  border-color: rgba(255, 255, 255, .34) !important;
+  caret-color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .7);
+}
+
+.dashboard .workspace-body :where(input, textarea)::placeholder {
+  color: rgba(222, 231, 242, .66) !important;
+}
+
+.dashboard .workspace-body select option {
+  color: #f7f9fd;
+  background: #17191f;
+}
+
+.dashboard .workspace-body :where(button, a) {
+  color: rgba(248, 251, 255, .95);
+}
+
+.dashboard .workspace-body :where(.danger-text-button, .error-text, .field-error, .automation-delivery-error, .garment-error) {
+  color: #ffd2d8 !important;
+}
+
+.dashboard .workspace-body :where(.success, .ready, .online) { color: #c7fff1 !important; }
+.dashboard .workspace-body :where(.warning, .review, .needs-attention) { color: #ffe8b8 !important; }
+
+/* The remaining application pages use the same dark liquid-glass depth as
+   video production instead of legacy white glass slabs. */
+#dashboard-page :where(.welcome-strip, .summary-grid > article, .workbench-card, .current-task-banner),
+#automations-page :where(.automation-heading, .automation-assistant-link, .automation-skill-card, .automation-history-card, .automation-empty-state),
+#automation-admin-page :where(.automation-heading, .skill-converter-card, .automation-access-card, .managed-skill-row),
+#models-page :where(.model-connect-card, .model-category, .model-config-card, .model-empty),
+#system-page :where(.system-tabs, .department-panel, .people-panel, .role-rail, .permission-panel, .people-table-wrap, .table-empty),
+#assistant-test-page :where(.assistant-status-strip, .assistant-chat-card, .assistant-trace-card, .assistant-message, .assistant-composer, .assistant-token-monitor, .assistant-examples button) {
+  background: rgba(9, 9, 11, .22) !important;
+  border-color: rgba(255, 255, 255, .3) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 14px 38px rgba(0, 0, 0, .1) !important;
+  backdrop-filter: blur(16px) saturate(128%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(128%) !important;
+}
+
+#automations-page :where(.automation-skill-grid, .automation-job-list, .job-list),
+#automation-admin-page :where(.automation-admin-list, .managed-skill-list),
+#models-page .model-config-list,
+#system-page :where(.department-list, .role-config-list, .people-table),
+#assistant-test-page :where(.assistant-messages, .assistant-examples) {
+  background: transparent !important;
+}
+
+#automations-page .automation-assistant-link,
+#automations-page .automation-empty-state,
+#automations-page .automation-history-card,
+#automation-admin-page .skill-converter-card,
+#models-page .model-category,
+#system-page .people-table-wrap,
+#assistant-test-page .assistant-message {
+  background: rgba(9, 9, 11, .28) !important;
+}
+
+#automations-page .automation-refresh,
+#automation-admin-page .quiet-button,
+#models-page .circle-button,
+#system-page :where(.quiet-button, .circle-button, .system-tab),
+#assistant-test-page :where(.quiet-button, .assistant-file-button, .assistant-examples button) {
+  color: rgba(248, 251, 255, .95) !important;
+  background: rgba(9, 9, 11, .34) !important;
+  border-color: rgba(255, 255, 255, .3) !important;
+}
+
+/* Automation home: use spatial hierarchy instead of stacked grey slabs. */
+#automations-page {
+  gap: 15px;
+}
+
+#automations-page .automation-hero {
+  min-height: auto;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, .28) !important;
+  border-radius: 18px !important;
+  background: linear-gradient(120deg, rgba(7, 12, 20, .5), rgba(9, 9, 11, .2)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 14px 34px rgba(0, 0, 0, .12) !important;
+  backdrop-filter: blur(16px) saturate(128%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(128%) !important;
+}
+
+#automations-page .automation-hero > div {
+  gap: 4px;
+}
+
+#automations-page .automation-hero h1 {
+  font-size: clamp(30px, 2.6vw, 40px);
+  letter-spacing: -.045em;
+}
+
+#automations-page .automation-refresh {
+  min-height: 38px;
+  border-radius: 999px;
+}
+
+#automations-page .automation-assistant-link {
+  min-height: 68px;
+  padding: 11px 15px;
+  grid-template-columns: auto minmax(210px, .75fr) minmax(280px, 1.25fr) auto;
+  gap: 14px;
+  border-radius: 16px !important;
+  background: linear-gradient(105deg, rgba(7, 12, 20, .5), rgba(9, 9, 11, .24)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 10px 28px rgba(0, 0, 0, .12) !important;
+}
+
+#automations-page .assistant-link-beacon {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .1);
+}
+
+#automations-page .assistant-link-beacon i {
+  width: 9px;
+  height: 9px;
+}
+
+#automations-page .assistant-link-copy {
+  gap: 2px;
+}
+
+#automations-page .assistant-link-route {
+  opacity: .72;
+}
+
+#automations-page .assistant-link-route span {
+  gap: 4px;
+}
+
+#automations-page .assistant-link-state {
+  padding: 6px 10px;
+  color: rgba(248, 251, 255, .92) !important;
+  background: rgba(255, 255, 255, .1);
+  border: 1px solid rgba(255, 255, 255, .18);
+}
+
+#automations-page .automation-skill-section {
+  gap: 10px;
+}
+
+#automations-page .automation-skill-grid > .automation-empty-state {
+  min-height: 125px;
+  padding: 20px;
+  background: rgba(9, 9, 11, .18) !important;
+  border-style: dashed !important;
+  box-shadow: none !important;
+}
+
+#automations-page .automation-history-card {
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, .28) !important;
+  border-radius: 18px !important;
+  background: linear-gradient(120deg, rgba(7, 12, 20, .5), rgba(9, 9, 11, .2)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 14px 34px rgba(0, 0, 0, .12) !important;
+  backdrop-filter: blur(16px) saturate(128%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(128%) !important;
+}
+
+#automations-page .automation-history-card .automation-section-heading {
+  padding: 0 0 12px;
+}
+
+#automations-page .automation-history-card .automation-empty-state.compact {
+  min-height: 105px;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, .14) !important;
+  border-radius: 14px !important;
+  background: rgba(3, 7, 13, .28) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06) !important;
+}
+
+#automations-page .automation-empty-state i {
+  width: 32px;
+  height: 32px;
+  margin-bottom: 1px;
+  border-radius: 10px;
+  color: #cffff4 !important;
+  background: rgba(60, 167, 143, .24) !important;
+}
+
+@media (max-width: 920px) {
+  #automations-page .automation-assistant-link {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  #automations-page .assistant-link-route { display: none; }
 }
 
 .sidebar {
-  border-right: 1px solid rgba(255, 255, 255, .18);
+  border-right: 1px solid rgba(255, 255, 255, .12);
+  background: linear-gradient(180deg, rgba(19, 21, 45, .28), rgba(8, 10, 26, .24)) !important;
+  box-shadow: none !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* The navigation is a full-height sheet, not a refractive card. Older cached
+   mount code may still inject these layers, so suppress them defensively. */
+.sidebar > .lg-overlay-bg,
+.sidebar > .lg-filter-layer {
+  display: none !important;
 }
 
 .sidebar-brand {
@@ -304,14 +538,25 @@
 }
 
 .login-panel {
-  backdrop-filter: brightness(.9);
+  backdrop-filter: blur(30px) saturate(120%) brightness(1.15);
 }
 
 .login-card {
   width: min(100%, 470px);
   padding: 38px;
-  border: 1px solid rgba(255, 255, 255, .55);
+  border: 1px solid rgba(255, 255, 255, .86);
   border-radius: 30px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .74);
+}
+
+.login-card > .lg-overlay-bg {
+  opacity: .12;
+}
+
+.login-card > .lg-filter-layer > .glass-box {
+  background: rgba(250, 251, 252, .74);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .78), inset 0 1px 8px rgba(255, 255, 255, .62);
+  filter: saturate(.82) brightness(1.08);
 }
 
 .pipeline {
@@ -368,6 +613,72 @@ textarea:focus,
 .asset-preview-shell {
   border: 1px solid rgba(255, 255, 255, .56);
   border-radius: 26px;
+}
+
+.video-script-dialog > form {
+  color: rgba(248, 251, 255, .96) !important;
+  background: linear-gradient(145deg, rgba(2, 6, 12, .44), rgba(5, 9, 16, .24)) !important;
+  border: 1px solid rgba(255, 255, 255, .3) !important;
+  border-radius: 24px !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 30px 80px rgba(0, 0, 0, .26) !important;
+  backdrop-filter: blur(18px) saturate(148%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(148%) !important;
+}
+
+.video-script-dialog > form > .lg-overlay-bg {
+  background: rgba(255, 255, 255, .025) !important;
+}
+
+.video-script-dialog :where(h2, h3, strong, label) {
+  color: rgba(250, 252, 255, .96) !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .72);
+}
+
+.video-script-dialog :where(p, small, span) {
+  color: rgba(226, 235, 246, .82) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .68);
+}
+
+.video-script-dialog .dialog-heading h2 { font-size: 24px !important; }
+.video-script-dialog .dialog-heading p { font-size: 12px !important; }
+.video-script-dialog #script-create-manual > .form-grid label { font-size: 12px !important; }
+.video-script-dialog #script-create-manual > .form-grid :where(input, select) { font-size: 13px !important; }
+.video-script-dialog .manual-shot-row :where(input, select, textarea) { font-size: 12px !important; }
+.video-script-dialog .script-create-switch button { font-size: 12px !important; }
+
+.video-script-dialog > form :where(input, select, textarea) {
+  color: rgba(250, 252, 255, .98) !important;
+  background: rgba(2, 6, 12, .28) !important;
+  border-color: rgba(255, 255, 255, .22) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045), 0 7px 18px rgba(0, 0, 0, .08) !important;
+}
+
+.video-script-dialog :where(input, textarea)::placeholder {
+  color: rgba(220, 230, 242, .5) !important;
+}
+
+.video-script-dialog select option {
+  color: #f7f9fd;
+  background: #10151d;
+}
+
+.video-script-dialog .dialog-close,
+.video-script-dialog :where(.quiet-button, .new-job-button) {
+  color: rgba(248, 251, 255, .94) !important;
+  background: rgba(2, 6, 12, .34) !important;
+  border: 1px solid rgba(255, 255, 255, .2) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07) !important;
+}
+
+.video-script-dialog .script-create-switch {
+  border: 1px solid rgba(255, 255, 255, .16);
+  background: rgba(3, 7, 13, .3) !important;
+}
+
+.video-script-dialog .script-create-switch button.active {
+  color: rgba(252, 253, 255, .98) !important;
+  background: linear-gradient(135deg, rgba(72, 183, 160, .28), rgba(75, 112, 216, .2)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 6px 18px rgba(0, 0, 0, .14) !important;
 }
 
 /* Inner workbench surfaces: remove the old opaque white slabs so the native
@@ -569,6 +880,48 @@ textarea:focus,
   background: rgba(9, 9, 11, .32) !important;
 }
 
+/* Rail search is one shared, cool-blue glass control in both video workspaces. */
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search {
+  min-height: 40px;
+  margin: 2px 9px 6px;
+  padding: 0 9px;
+  gap: 4px;
+  border: 1px solid #d8cfea;
+  border-radius: 9px;
+  background: linear-gradient(105deg, #bcb2d2, #c9bfdd);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .48), 0 5px 16px rgba(54, 42, 79, .1);
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search:focus-within {
+  border-color: #eee8fa;
+  background: linear-gradient(105deg, #c8bedc, #d4cae5);
+  box-shadow: 0 0 0 3px rgba(221, 211, 240, .22), inset 0 1px 0 rgba(255, 255, 255, .6), 0 6px 18px rgba(54, 42, 79, .12);
+}
+
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search > span {
+  color: #554a6b;
+  font-size: 15px;
+  transition: color .18s ease, transform .18s ease;
+}
+
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search:focus-within > span {
+  color: #493e60;
+  transform: translateY(-1px);
+}
+
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search input {
+  height: 39px;
+  color: #342c46;
+  font-size: 12px;
+  text-shadow: none;
+}
+
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search input::placeholder {
+  color: #685e7b;
+  text-shadow: none;
+}
+
 #video-scripts-page .film-strip {
   background: transparent !important;
   border: 1px solid rgba(255, 255, 255, .2);
@@ -616,6 +969,7 @@ textarea:focus,
 }
 
 #ai-video-tasks-page .video-batch-head,
+#ai-video-tasks-page .batch-task-rail > header,
 #ai-video-tasks-page .batch-group-bar,
 #ai-video-tasks-page .garment-board,
 #ai-video-tasks-page .garment-card,
@@ -779,7 +1133,7 @@ textarea:focus,
 #video-scripts-page .script-json-view header span { font-size: 10px; }
 #video-scripts-page .script-json-view pre { font-size: 12px; line-height: 1.75; }
 
-#ai-video-tasks-page .batch-task-rail > header strong { font-size: 16px; }
+#ai-video-tasks-page .batch-task-rail > header span { font-size: 16px; }
 #ai-video-tasks-page .batch-task-rail > header small { font-size: 11px !important; }
 #ai-video-tasks-page .video-task-item strong { font-size: 13px; }
 #ai-video-tasks-page .video-task-item small { font-size: 10px !important; }
@@ -1155,6 +1509,456 @@ textarea:focus,
   }
 }
 
+/* AI video creation is a desktop workbench, not a narrow mobile sheet. */
+#video-task-dialog.video-task-dialog {
+  width: min(980px, calc(100vw - 48px));
+}
+
+#video-task-dialog #video-task-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 20px;
+  row-gap: 14px;
+  padding: 30px 32px;
+}
+
+#video-task-dialog #video-task-form > .dialog-heading,
+#video-task-dialog #video-task-form > .direct-reference-mode-note,
+#video-task-dialog #video-task-form > .script-video-reference-picker,
+#video-task-dialog #video-task-form > .form-grid,
+#video-task-dialog #video-task-form > .storyboard-execution-rule,
+#video-task-dialog #video-task-form > .task-snapshot-note,
+#video-task-dialog #video-task-form > #video-task-dialog-note,
+#video-task-dialog #video-task-form > .dialog-actions {
+  grid-column: 1 / -1;
+}
+
+#video-task-dialog .dialog-heading {
+  padding-bottom: 18px;
+}
+
+#video-task-dialog .dialog-heading h2 {
+  font-size: 27px !important;
+}
+
+#video-task-dialog .dialog-heading p {
+  font-size: 13px !important;
+  line-height: 1.55;
+}
+
+#video-task-dialog :is(.generation-mode-picker, .background-mode-picker, .resolution-picker, .script-video-reference-picker) {
+  margin: 0;
+}
+
+#video-task-dialog .generation-mode-picker {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#video-task-dialog :is(.generation-mode-picker, .background-mode-picker, .resolution-picker, .script-video-reference-picker) legend {
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+#video-task-dialog :is(.generation-mode-option, .background-mode-option) {
+  min-height: 72px;
+  padding: 14px 15px;
+}
+
+#video-task-dialog :is(.generation-mode-option, .background-mode-option) > i {
+  width: 38px;
+  height: 38px;
+  font-size: 14px;
+}
+
+#video-task-dialog :is(.generation-mode-option, .background-mode-option) strong,
+#video-task-dialog .music-copy strong,
+#video-task-dialog .reference-video-copy strong {
+  font-size: 14px;
+}
+
+#video-task-dialog :is(.generation-mode-option, .background-mode-option) small,
+#video-task-dialog .music-copy small,
+#video-task-dialog .reference-video-copy small {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+#video-task-dialog :is(.generation-mode-option, .background-mode-option) > em,
+#video-task-dialog .script-video-reference-option > em,
+#video-task-dialog .video-task-music-field > em {
+  font-size: 11px;
+}
+
+#video-task-dialog .resolution-options {
+  min-height: 72px;
+}
+
+#video-task-dialog .resolution-option strong {
+  font-size: 15px;
+}
+
+#video-task-dialog .resolution-option small {
+  font-size: 11px;
+}
+
+#video-task-dialog .resolution-cost-warning strong,
+#video-task-dialog .script-video-rate-warning strong {
+  font-size: 12px;
+}
+
+#video-task-dialog .resolution-cost-warning small,
+#video-task-dialog .script-video-rate-warning small,
+#video-task-dialog .video-task-music-help {
+  font-size: 11px;
+}
+
+#video-task-dialog .video-task-music-field {
+  min-height: 78px;
+  margin: 23px 0 0;
+  padding: 14px 16px;
+}
+
+#video-task-dialog .video-task-music-help {
+  grid-column: 2;
+  margin: -10px 2px 0;
+}
+
+#video-task-dialog #video-task-form > .form-grid {
+  margin: 2px 0 0;
+  gap: 14px 16px;
+}
+
+#video-task-dialog .form-grid > label {
+  font-size: 13px;
+}
+
+#video-task-dialog .form-grid > label:nth-child(1),
+#video-task-dialog .form-grid > label:nth-child(2) {
+  grid-column: span 1;
+}
+
+#video-task-dialog .form-grid > label:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+#video-task-dialog .form-grid :where(input, select, textarea) {
+  min-height: 46px;
+  padding: 11px 13px;
+  font-size: 14px !important;
+}
+
+#video-task-dialog .storyboard-execution-rule strong,
+#video-task-dialog .task-snapshot-note span {
+  font-size: 13px;
+}
+
+#video-task-dialog .storyboard-execution-rule small,
+#video-task-dialog .task-snapshot-note p,
+#video-task-dialog #video-task-dialog-note {
+  font-size: 12px !important;
+  line-height: 1.55;
+}
+
+#video-task-dialog .direct-reference-mode-note strong {
+  font-size: 15px;
+}
+
+#video-task-dialog .direct-reference-mode-note small {
+  font-size: 12px;
+}
+
+#video-task-dialog .dialog-actions :is(button, .new-job-button) {
+  min-height: 42px;
+  padding: 9px 17px;
+  font-size: 14px;
+}
+
+@media (max-width: 760px) {
+  #video-task-dialog.video-task-dialog {
+    width: min(560px, calc(100vw - 24px));
+  }
+
+  #video-task-dialog #video-task-form {
+    grid-template-columns: 1fr;
+    padding: 24px 20px;
+  }
+
+  #video-task-dialog #video-task-form > *,
+  #video-task-dialog .video-task-music-help {
+    grid-column: 1;
+  }
+
+  #video-task-dialog .video-task-music-field {
+    margin-top: 0;
+  }
+
+  #video-task-dialog .form-grid > label:nth-child(1),
+  #video-task-dialog .form-grid > label:nth-child(2) {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Manual scripts are authored as text, so their storyboard behaves like a
+   writing board instead of pretending that unavailable source frames exist. */
+#video-scripts-page .script-detail-stage.is-manual-script .film-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(166px, auto));
+  gap: 9px;
+  padding: 10px;
+  overflow: visible;
+  background: rgba(7, 9, 15, .18) !important;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 16px;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .film-frame.manual-frame {
+  min-width: 0;
+  min-height: 166px;
+  aspect-ratio: auto;
+  padding: 16px 17px 14px;
+  display: grid;
+  grid-template-rows: auto auto minmax(52px, 1fr) auto;
+  align-content: start;
+  justify-content: stretch;
+  gap: 9px;
+  overflow: hidden;
+  color: rgba(246, 242, 252, .96);
+  border: 1px solid rgba(224, 210, 245, .17);
+  border-radius: 13px;
+  background:
+    linear-gradient(145deg, rgba(221, 205, 246, .09), rgba(22, 17, 31, .16)),
+    rgba(29, 23, 40, .28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07);
+  text-shadow: none;
+  transition: transform .18s ease, border-color .18s ease, background .18s ease;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .film-frame.manual-frame::before,
+#video-scripts-page .script-detail-stage.is-manual-script .film-frame.manual-frame::after {
+  display: none;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .film-frame.manual-frame:hover {
+  transform: translateY(-2px);
+  background:
+    linear-gradient(145deg, rgba(225, 210, 249, .14), rgba(30, 23, 42, .2)),
+    rgba(40, 31, 55, .32);
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .film-frame.manual-frame.active {
+  border-color: rgba(226, 211, 250, .58);
+  background:
+    linear-gradient(145deg, rgba(205, 181, 244, .2), rgba(56, 42, 76, .24)),
+    rgba(44, 34, 60, .36);
+  box-shadow: inset 3px 0 rgba(213, 188, 250, .72), inset 0 1px 0 rgba(255, 255, 255, .1);
+}
+
+#video-scripts-page .manual-shot-kicker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#video-scripts-page .manual-shot-kicker i {
+  position: static;
+  width: auto;
+  height: auto;
+  display: inline;
+  color: #f4eaff;
+  background: none;
+  font: 800 15px/1 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  letter-spacing: .06em;
+}
+
+#video-scripts-page .manual-shot-kicker em {
+  padding: 4px 7px;
+  border: 1px solid rgba(230, 217, 250, .14);
+  border-radius: 999px;
+  color: rgba(222, 208, 243, .72);
+  background: rgba(255, 255, 255, .05);
+  font-size: 11px;
+  font-style: normal;
+  letter-spacing: .08em;
+}
+
+#video-scripts-page .film-frame.manual-frame > b {
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+#video-scripts-page .film-frame.manual-frame > p {
+  position: relative;
+  z-index: 2;
+  margin: 0;
+  overflow: hidden;
+  color: rgba(225, 216, 237, .78);
+  font-size: 14px;
+  line-height: 1.65;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+#video-scripts-page .film-frame.manual-frame > small {
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, .1);
+  color: rgba(201, 188, 220, .64);
+  font-size: 12px;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .shot-editor-preview {
+  display: none !important;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card {
+  padding: 18px;
+  grid-template-columns: minmax(260px, 1.35fr) minmax(360px, .9fr) auto;
+  align-items: center;
+  gap: 22px;
+  background: rgba(12, 10, 18, .2) !important;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card > div {
+  padding-right: 20px;
+  border-right: 1px solid rgba(255, 255, 255, .12);
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card h3 {
+  font-size: 20px;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card p {
+  color: rgba(226, 217, 239, .8) !important;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(70px, 1fr));
+  gap: 0;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card dl div {
+  min-width: 0;
+  padding: 4px 10px;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card dd {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+#video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card dt {
+  font-size: 11px;
+}
+
+@media (max-width: 1120px) {
+  #video-scripts-page .script-detail-stage.is-manual-script .film-strip {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: none;
+  }
+
+  #video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  #video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card > div {
+    padding-right: 0;
+    padding-bottom: 14px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, .12);
+  }
+
+  #video-scripts-page .script-detail-stage.is-manual-script #edit-video-shot {
+    justify-self: end;
+  }
+}
+
+@media (max-width: 680px) {
+  #video-scripts-page .script-detail-stage.is-manual-script .film-strip {
+    grid-template-columns: 1fr;
+  }
+
+  #video-scripts-page .script-detail-stage.is-manual-script .shot-editor-card dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 12px;
+  }
+}
+
+/* Final visual parity: AI task rail inherits the exact script-library glass recipe. */
+#ai-video-tasks-page .batch-task-rail,
+#ai-video-tasks-page .batch-task-rail > header {
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, .44) !important;
+  box-shadow: none !important;
+}
+
+#ai-video-tasks-page .batch-task-rail {
+  border-radius: 22px !important;
+}
+
+#ai-video-tasks-page .batch-task-rail > header {
+  border-radius: 16px !important;
+}
+
+/* Inputs previously received a late dark-glass fill; keep the lavender parent visible. */
+:is(#video-scripts-page #video-script-search, #ai-video-tasks-page #ai-video-task-search) {
+  color: #342c46 !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  text-shadow: none !important;
+}
+
+:is(#video-scripts-page #video-script-search, #ai-video-tasks-page #ai-video-task-search)::placeholder {
+  color: #685e7b !important;
+  opacity: 1;
+  text-shadow: none !important;
+}
+
+/* Match the query field opacity to its script-surface rail. */
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search {
+  border-color: rgba(255, 255, 255, .44) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search:focus-within {
+  border-color: rgba(255, 255, 255, .68) !important;
+  background: rgba(255, 255, 255, .06) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12), 0 0 0 3px rgba(210, 221, 244, .08) !important;
+}
+
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search > span {
+  color: rgba(238, 244, 252, .76) !important;
+}
+
+:is(#video-scripts-page #video-script-search, #ai-video-tasks-page #ai-video-task-search) {
+  color: rgba(250, 252, 255, .96) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .45) !important;
+}
+
+:is(#video-scripts-page #video-script-search, #ai-video-tasks-page #ai-video-task-search)::placeholder {
+  color: rgba(234, 241, 250, .72) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .4) !important;
+}
+
+/* Borderless rail search: spacing and focus tint carry the affordance. */
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search,
+:is(#video-scripts-page .script-library-rail, #ai-video-tasks-page .batch-task-rail) > .rail-fuzzy-search:focus-within {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
 /* Product asset gallery: imagery is the surface; metadata floats in a quiet film strip. */
 #ai-video-tasks-page .garment-card-head {
   min-height: 72px;
@@ -1433,6 +2237,113 @@ textarea:focus,
   aspect-ratio: 16 / 9;
 }
 
+/* AI task monitor: match the fully transparent production workspaces. */
+#ai-video-monitor-page {
+  --monitor-ink: rgba(248, 251, 255, .96);
+  --monitor-muted: rgba(220, 231, 244, .8);
+  --monitor-line: rgba(255, 255, 255, .22);
+  background: transparent !important;
+  color: var(--monitor-ink);
+}
+
+#ai-video-monitor-page .monitor-query-panel,
+#ai-video-monitor-page .monitor-detail-stage,
+#ai-video-monitor-page .monitor-overview article,
+#ai-video-monitor-page .monitor-live-state,
+#ai-video-monitor-page .monitor-search,
+#ai-video-monitor-page .monitor-status-filter,
+#ai-video-monitor-page .monitor-task-row,
+#ai-video-monitor-page .monitor-trace,
+#ai-video-monitor-page .monitor-task-facts div,
+#ai-video-monitor-page .monitor-item,
+#ai-video-monitor-page .monitor-request-card,
+#ai-video-monitor-page .monitor-request-card dl div,
+#ai-video-monitor-page .monitor-request-card pre,
+#ai-video-monitor-page .monitor-request-payload > span {
+  background: rgba(9, 9, 11, .24) !important;
+  border-color: rgba(255, 255, 255, .3) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 14px 38px rgba(0, 0, 0, .1) !important;
+}
+
+#ai-video-monitor-page .monitor-query-panel,
+#ai-video-monitor-page .monitor-detail-stage,
+#ai-video-monitor-page .monitor-overview article {
+  background: rgba(9, 9, 11, .2) !important;
+  backdrop-filter: blur(18px) saturate(132%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(132%) !important;
+}
+
+#ai-video-monitor-page .monitor-search,
+#ai-video-monitor-page .monitor-status-filter,
+#ai-video-monitor-page .monitor-trace,
+#ai-video-monitor-page .monitor-task-facts div,
+#ai-video-monitor-page .monitor-item,
+#ai-video-monitor-page .monitor-request-card {
+  background: rgba(9, 9, 11, .18) !important;
+  backdrop-filter: blur(12px) saturate(120%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(120%) !important;
+}
+
+#ai-video-monitor-page .monitor-task-row:hover,
+#ai-video-monitor-page .monitor-task-row.active,
+#ai-video-monitor-page .monitor-status-filter button.active,
+#ai-video-monitor-page .monitor-detail-status {
+  background: rgba(9, 9, 11, .46) !important;
+  border-color: rgba(255, 255, 255, .4) !important;
+}
+
+#ai-video-monitor-page h1,
+#ai-video-monitor-page h2,
+#ai-video-monitor-page h3,
+#ai-video-monitor-page h4,
+#ai-video-monitor-page strong,
+#ai-video-monitor-page b,
+#ai-video-monitor-page .monitor-search input,
+#ai-video-monitor-page .monitor-task-row {
+  color: rgba(250, 252, 255, .98) !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .78);
+}
+
+#ai-video-monitor-page p,
+#ai-video-monitor-page small,
+#ai-video-monitor-page span,
+#ai-video-monitor-page dt,
+#ai-video-monitor-page dd,
+#ai-video-monitor-page .monitor-result-caption,
+#ai-video-monitor-page .monitor-detail-id,
+#ai-video-monitor-page .monitor-request-card summary {
+  color: rgba(224, 233, 244, .88) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .72);
+}
+
+#ai-video-monitor-page .monitor-search input::placeholder {
+  color: rgba(219, 229, 241, .68);
+}
+
+#ai-video-monitor-page .monitor-request-card pre,
+#ai-video-monitor-page .monitor-request-card dt,
+#ai-video-monitor-page .monitor-request-card dd,
+#ai-video-monitor-page .monitor-request-payload > span {
+  color: rgba(250, 252, 255, .96) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .82);
+}
+
+#ai-video-monitor-page .monitor-request-card pre {
+  background: rgba(3, 5, 9, .52) !important;
+}
+
+#ai-video-monitor-page .monitor-task-progress,
+#ai-video-monitor-page .monitor-trace > b {
+  background: rgba(255, 255, 255, .2);
+}
+
+#ai-video-monitor-page .monitor-task-error,
+#ai-video-monitor-page .monitor-request-error {
+  color: #ffd5d9 !important;
+  background: rgba(91, 15, 27, .32) !important;
+  border-color: rgba(255, 146, 158, .4) !important;
+}
+
 #ai-video-tasks-page .garment-portrait-grid .model-output-canvas,
 #ai-video-tasks-page .garment-portrait-grid .mini-storyboard {
   aspect-ratio: 9 / 16;
@@ -1492,7 +2403,7 @@ textarea:focus,
   .dashboard .job-list { font-size: 14px; }
 
   #video-scripts-page .script-library-rail > header span,
-  #ai-video-tasks-page .batch-task-rail > header strong { font-size: 18px; }
+  #ai-video-tasks-page .batch-task-rail > header span { font-size: 18px; }
   #video-scripts-page .script-library-rail > header small,
   #ai-video-tasks-page .batch-task-rail > header small { font-size: 12px !important; }
   #video-scripts-page .script-library-item strong,
@@ -1514,6 +2425,9 @@ textarea:focus,
   #video-scripts-page .script-view-tabs > span { font-size: 12px; }
   #video-scripts-page .film-frame b { font-size: 11px; }
   #video-scripts-page .film-frame small { font-size: 9px !important; }
+  #video-scripts-page .script-detail-stage.is-manual-script .film-frame.manual-frame > b { font-size: 16px; }
+  #video-scripts-page .script-detail-stage.is-manual-script .film-frame.manual-frame > p { font-size: 14px !important; }
+  #video-scripts-page .script-detail-stage.is-manual-script .film-frame.manual-frame > small { font-size: 12px !important; }
   #video-scripts-page .shot-editor-card h3 { font-size: 18px; }
   #video-scripts-page .shot-editor-card p { font-size: 13px !important; }
   #video-scripts-page .shot-editor-card dt { font-size: 10px; }
@@ -1677,4 +2591,1637 @@ textarea:focus,
     padding: 4px 2px 0;
     text-align: left;
   }
+}
+
+/* Dialogs share the same optical language as the workspace: one clear glass
+   shell, restrained dark tint, and only enough local contrast for editing. */
+.manage-dialog,
+.asset-preview-dialog {
+  color: rgba(248, 251, 255, .96) !important;
+}
+
+.manage-dialog::backdrop,
+.asset-preview-dialog::backdrop {
+  background: rgba(7, 9, 14, .36) !important;
+  backdrop-filter: blur(12px) saturate(118%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(118%) !important;
+}
+
+.manage-dialog > form,
+.asset-preview-dialog > .asset-preview-shell {
+  color: rgba(248, 251, 255, .96) !important;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, .085), rgba(255, 255, 255, .025)) !important;
+  border: 1px solid rgba(255, 255, 255, .44) !important;
+  border-radius: 24px !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .17),
+    0 28px 76px rgba(0, 0, 0, .27) !important;
+  backdrop-filter: blur(24px) saturate(138%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(138%) !important;
+}
+
+.manage-dialog > form {
+  max-height: calc(100vh - 38px);
+  overflow: auto;
+  scrollbar-color: rgba(218, 228, 240, .42) transparent;
+  scrollbar-width: thin;
+}
+
+.asset-preview-dialog > .asset-preview-shell {
+  overflow: hidden;
+}
+
+.manage-dialog > form > .lg-overlay-bg,
+.asset-preview-dialog > .asset-preview-shell > .lg-overlay-bg {
+  background: rgba(7, 10, 16, .2) !important;
+}
+
+.manage-dialog .dialog-heading,
+.manage-dialog .dialog-actions {
+  border-color: rgba(255, 255, 255, .16) !important;
+}
+
+.manage-dialog :where(h2, h3, h4, strong, label, .field-label, .single-field) {
+  color: rgba(250, 252, 255, .97) !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .46);
+}
+
+.manage-dialog :where(.dialog-heading p, .form-help, small) {
+  color: rgba(220, 230, 242, .74) !important;
+}
+
+.manage-dialog :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  color: rgba(250, 252, 255, .98) !important;
+  background: rgba(7, 10, 16, .24) !important;
+  border-color: rgba(255, 255, 255, .22) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .055), 0 7px 18px rgba(0, 0, 0, .06) !important;
+  backdrop-filter: blur(10px) saturate(120%);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+}
+
+.manage-dialog :where(input, textarea)::placeholder {
+  color: rgba(219, 229, 241, .48) !important;
+}
+
+.manage-dialog select option {
+  color: #f7f9fd;
+  background: #151923;
+}
+
+.manage-dialog :where(
+  .choice-item,
+  .permission-option-group,
+  .script-video-reference-option,
+  .generation-mode-option,
+  .background-mode-option,
+  .resolution-options,
+  .resolution-option,
+  .video-task-music-field,
+  .storyboard-execution-rule,
+  .task-snapshot-note
+) {
+  color: rgba(242, 247, 253, .94) !important;
+  background: rgba(7, 10, 16, .2) !important;
+  border-color: rgba(255, 255, 255, .18) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045);
+}
+
+.manage-dialog :where(
+  .generation-mode-option,
+  .background-mode-option,
+  .resolution-option
+).active {
+  background: rgba(65, 143, 130, .22) !important;
+  border-color: rgba(150, 236, 220, .48) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 0 0 3px rgba(99, 221, 198, .065);
+}
+
+.manage-dialog :where(
+  .generation-mode-option,
+  .background-mode-option,
+  .resolution-option,
+  .video-task-music-field,
+  .storyboard-execution-rule,
+  .task-snapshot-note
+) :where(strong, small, span, em) {
+  color: inherit !important;
+}
+
+.manage-dialog :where(
+  .generation-mode-option,
+  .background-mode-option
+) > i,
+.manage-dialog .music-wave {
+  color: rgba(187, 246, 234, .94) !important;
+  background: rgba(92, 198, 177, .15) !important;
+}
+
+.manage-dialog .video-task-music-field > em {
+  color: rgba(244, 248, 253, .92) !important;
+  background: rgba(255, 255, 255, .075) !important;
+  border-color: rgba(255, 255, 255, .2) !important;
+}
+
+.manage-dialog .permission-option-group label + label {
+  border-top-color: rgba(255, 255, 255, .12) !important;
+}
+
+.manage-dialog :where(.dialog-close, .quiet-button) {
+  color: rgba(248, 251, 255, .92) !important;
+  background: rgba(255, 255, 255, .075) !important;
+  border: 1px solid rgba(255, 255, 255, .2) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08) !important;
+}
+
+.manage-dialog :where(.dialog-close, .quiet-button):hover {
+  color: #fff !important;
+  background: rgba(255, 255, 255, .14) !important;
+  border-color: rgba(255, 255, 255, .38) !important;
+}
+
+.manage-dialog .new-job-button {
+  border: 1px solid rgba(255, 255, 255, .26) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 10px 24px rgba(0, 0, 0, .14) !important;
+}
+
+/* Manual shot editor: a compact, genuinely translucent drafting surface. */
+.video-shot-edit-dialog > form {
+  background:
+    radial-gradient(circle at 14% 0%, rgba(139, 167, 226, .17), transparent 38%),
+    linear-gradient(145deg, rgba(28, 35, 58, .48), rgba(9, 13, 24, .34)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .24),
+    inset 1px 0 0 rgba(255, 255, 255, .07),
+    0 30px 80px rgba(0, 0, 0, .34) !important;
+  backdrop-filter: blur(30px) saturate(142%) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(142%) !important;
+}
+
+.video-shot-edit-dialog.is-manual-edit > form {
+  background:
+    radial-gradient(circle at 15% 0%, rgba(169, 145, 229, .12), transparent 40%),
+    linear-gradient(145deg, rgba(33, 29, 56, .26), rgba(10, 13, 24, .16)) !important;
+}
+
+.video-shot-edit-dialog .shot-edit-advanced {
+  background: rgba(7, 10, 17, .08) !important;
+  border-color: rgba(255, 255, 255, .15) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045);
+  backdrop-filter: blur(14px) saturate(122%);
+  -webkit-backdrop-filter: blur(14px) saturate(122%);
+}
+
+.video-shot-edit-dialog.is-manual-edit .shot-edit-fields :is(input, select, textarea) {
+  color: rgba(250, 252, 255, .97) !important;
+  background-color: rgba(255, 255, 255, .055) !important;
+  background-image: linear-gradient(135deg, rgba(255, 255, 255, .025), rgba(255, 255, 255, 0)) !important;
+  border-color: rgba(255, 255, 255, .16) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .055) !important;
+  backdrop-filter: blur(8px) saturate(116%) !important;
+  -webkit-backdrop-filter: blur(8px) saturate(116%) !important;
+}
+
+.video-shot-edit-dialog.is-manual-edit .shot-edit-fields :is(input, select, textarea):focus {
+  background-color: rgba(255, 255, 255, .09) !important;
+  border-color: rgba(208, 188, 242, .48) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 0 0 3px rgba(180, 151, 227, .08) !important;
+}
+
+.video-shot-edit-dialog.is-manual-edit .shot-edit-advanced > .form-grid {
+  background: rgba(4, 7, 13, .035) !important;
+  border-top-color: rgba(255, 255, 255, .1) !important;
+}
+
+/* Dashboard overview: clear glass instead of pale grey slabs. */
+#dashboard-page .welcome-strip {
+  background:
+    radial-gradient(circle at 84% 10%, rgba(118, 152, 218, .11), transparent 34%),
+    linear-gradient(125deg, rgba(13, 17, 28, .18), rgba(24, 18, 34, .1)) !important;
+  border: 1px solid rgba(255, 255, 255, .18) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 16px 40px rgba(0, 0, 0, .1) !important;
+  backdrop-filter: blur(15px) saturate(124%) !important;
+  -webkit-backdrop-filter: blur(15px) saturate(124%) !important;
+}
+
+#dashboard-page .welcome-strip > .lg-overlay-bg,
+#dashboard-page .welcome-strip > .lg-filter-layer > .glass-box {
+  background: rgba(9, 12, 20, .06) !important;
+  filter: none !important;
+}
+
+#dashboard-page .summary-grid > article {
+  background: linear-gradient(145deg, rgba(255, 255, 255, .07), rgba(255, 255, 255, .018)) !important;
+  border-color: rgba(255, 255, 255, .2) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .09), 0 12px 30px rgba(0, 0, 0, .07) !important;
+  backdrop-filter: blur(13px) saturate(120%) !important;
+  -webkit-backdrop-filter: blur(13px) saturate(120%) !important;
+}
+
+#dashboard-page .workbench-card {
+  background:
+    radial-gradient(circle at 8% 0%, rgba(157, 134, 211, .07), transparent 30%),
+    linear-gradient(145deg, rgba(255, 255, 255, .06), rgba(7, 10, 17, .035)) !important;
+  border-color: rgba(255, 255, 255, .2) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .09), 0 16px 36px rgba(0, 0, 0, .08) !important;
+  backdrop-filter: blur(15px) saturate(122%) !important;
+  -webkit-backdrop-filter: blur(15px) saturate(122%) !important;
+}
+
+#dashboard-page .workbench-card .job-row {
+  border-top-color: rgba(255, 255, 255, .12) !important;
+  background: transparent !important;
+}
+
+#dashboard-page .workbench-card :where(.job-icon, .job-status, .quiet-button) {
+  background: rgba(255, 255, 255, .07) !important;
+  border-color: rgba(255, 255, 255, .16) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+/* Upload-and-analyse mode: replace the remaining legacy white utility slabs
+   with quiet inset glass so the wallpaper still reads through the dialog. */
+.video-script-dialog .video-upload-drop {
+  border: 1px dashed rgba(211, 225, 241, .44) !important;
+  color: rgba(246, 250, 255, .96) !important;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(124, 174, 230, .12), transparent 52%),
+    rgba(7, 10, 16, .18) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07), 0 12px 30px rgba(0, 0, 0, .07);
+  backdrop-filter: blur(12px) saturate(122%);
+  -webkit-backdrop-filter: blur(12px) saturate(122%);
+  transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+
+.video-script-dialog .video-upload-drop:hover,
+.video-script-dialog .video-upload-drop:focus-within {
+  border-color: rgba(168, 235, 222, .68) !important;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(102, 208, 188, .16), transparent 54%),
+    rgba(12, 20, 27, .24) !important;
+  transform: translateY(-1px);
+}
+
+.video-script-dialog .video-upload-drop > span {
+  color: rgba(194, 247, 236, .96) !important;
+  background: rgba(79, 188, 166, .16) !important;
+  border: 1px solid rgba(171, 239, 225, .26);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .09);
+}
+
+.video-script-dialog .video-upload-drop small {
+  color: rgba(214, 226, 240, .68) !important;
+}
+
+.video-script-dialog .ai-analysis-path {
+  color: rgba(224, 234, 245, .84) !important;
+  background: rgba(7, 10, 16, .18) !important;
+  border: 1px solid rgba(255, 255, 255, .14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+  backdrop-filter: blur(10px) saturate(120%);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+}
+
+.video-script-dialog .ai-analysis-path i {
+  color: rgba(247, 251, 255, .97) !important;
+  background: rgba(82, 132, 213, .58) !important;
+  border: 1px solid rgba(174, 205, 255, .32);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16);
+}
+
+.video-script-dialog .ai-analysis-path b {
+  color: rgba(211, 224, 239, .45) !important;
+}
+
+.video-script-dialog .script-active-analysis {
+  border-color: rgba(255, 255, 255, .24) !important;
+  color: rgba(244, 249, 255, .95) !important;
+  background:
+    radial-gradient(circle at 90% 0%, rgba(87, 198, 179, .12), transparent 36%),
+    rgba(7, 10, 16, .22) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 18px 45px rgba(0, 0, 0, .12) !important;
+}
+
+.video-script-dialog .script-active-analysis::before {
+  opacity: .22;
+}
+
+.video-script-dialog .active-analysis-orbit {
+  color: rgba(216, 244, 255, .96) !important;
+  background: rgba(63, 112, 155, .18) !important;
+  border-color: rgba(197, 229, 255, .34) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 12px 30px rgba(0, 0, 0, .14) !important;
+}
+
+.video-script-dialog .active-analysis-copy :where(h3, p, small) {
+  color: inherit !important;
+}
+
+.video-script-dialog .active-analysis-track {
+  border-color: rgba(255, 255, 255, .18) !important;
+  background: rgba(3, 6, 11, .3) !important;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, .18) !important;
+}
+
+/* Keep all nine manual shots in one continuous form flow. The dialog itself
+   owns scrolling, so users never mistake an inner two-row viewport for loss. */
+.video-script-dialog #script-create-manual,
+.video-script-dialog .manual-shot-seed,
+.video-script-dialog .manual-shot-rows {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.video-script-dialog #script-create-manual {
+  min-height: auto !important;
+  flex: 0 0 auto !important;
+}
+
+/* Manual-script direct reference video: the numbered track is UI metadata only. */
+#video-task-dialog .direct-reference-mode-note {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  margin: 2px 0 15px;
+  padding: 13px 14px;
+  border: 1px solid rgba(221, 205, 255, .28);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(208, 187, 255, .16), rgba(175, 151, 229, .08));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12);
+}
+#video-task-dialog .direct-reference-mode-note[hidden] { display: none; }
+#video-task-dialog .direct-reference-orbit { position: relative; width: 48px; height: 34px; }
+#video-task-dialog .direct-reference-orbit::before { content: ""; position: absolute; inset: 9px 11px; border-top: 1px solid rgba(229, 217, 255, .55); transform: rotate(-8deg); }
+#video-task-dialog .direct-reference-orbit i {
+  position: absolute; display: grid; place-items: center; width: 25px; height: 25px;
+  border-radius: 9px; color: #f7f2ff; font: 800 10px/1 ui-monospace, monospace;
+  border: 1px solid rgba(230, 217, 255, .36); background: rgba(200, 177, 251, .22);
+  box-shadow: 0 8px 18px rgba(19, 12, 34, .2);
+}
+#video-task-dialog .direct-reference-orbit i:first-child { left: 0; bottom: 0; }
+#video-task-dialog .direct-reference-orbit i:last-child { right: 0; top: 0; }
+#video-task-dialog .direct-reference-mode-note > div { display: grid; gap: 4px; }
+#video-task-dialog .direct-reference-mode-note strong { color: rgba(252, 249, 255, .96); font-size: 12px; }
+#video-task-dialog .direct-reference-mode-note small { color: rgba(220, 210, 235, .76); font-size: 9px; line-height: 1.55; }
+#video-task-dialog .direct-reference-mode-note > em { padding: 5px 8px; border-radius: 999px; color: #efe5ff; background: rgba(201, 175, 255, .2); font-size: 9px; font-style: normal; }
+
+#ai-video-tasks-page .task-mode-badge.direct { color: #f2e9ff; border-color: rgba(219, 198, 255, .3); background: rgba(205, 177, 255, .18); }
+#ai-video-tasks-page .direct-reference-card .garment-card-flip { min-height: 650px; }
+#ai-video-tasks-page .direct-reference-workspace {
+  display: grid; gap: 14px; padding: 18px; border-top: 1px solid rgba(216, 202, 239, .12);
+  border-bottom: 1px solid rgba(216, 202, 239, .12); background: rgba(68, 52, 91, .1);
+}
+#ai-video-tasks-page .direct-reference-workspace > header,
+#ai-video-tasks-page .direct-reference-workspace > footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+#ai-video-tasks-page .direct-reference-workspace > header > div { display: grid; gap: 3px; }
+#ai-video-tasks-page .direct-reference-workspace > header span { color: rgba(212, 196, 238, .62); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+#ai-video-tasks-page .direct-reference-workspace > header strong { color: rgba(251, 248, 255, .94); font-size: 12px; }
+#ai-video-tasks-page .direct-reference-workspace > header em { padding: 5px 9px; border-radius: 999px; color: #eadfff; background: rgba(201, 179, 244, .14); font-size: 9px; font-style: normal; }
+#ai-video-tasks-page .direct-reference-track {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 218px); gap: 11px;
+  overflow-x: auto; padding: 3px 2px 10px; scroll-snap-type: x proximity;
+}
+#ai-video-tasks-page .direct-reference-track::-webkit-scrollbar { height: 5px; }
+#ai-video-tasks-page .direct-reference-track::-webkit-scrollbar-thumb { border-radius: 99px; background: rgba(209, 188, 244, .28); }
+#ai-video-tasks-page .direct-reference-tile {
+  scroll-snap-align: start; display: grid; gap: 9px; padding: 10px; border-radius: 15px;
+  border: 1px solid rgba(218, 203, 240, .16); background: rgba(48, 38, 65, .36);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07), 0 12px 30px rgba(12, 7, 21, .13);
+  transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+#ai-video-tasks-page .direct-reference-tile.is-primary { border-color: rgba(226, 208, 255, .58); background: rgba(115, 87, 155, .26); }
+#ai-video-tasks-page .direct-reference-tile.is-pending { border-style: dashed; }
+#ai-video-tasks-page .direct-reference-tile > header { display: flex; align-items: center; justify-content: space-between; }
+#ai-video-tasks-page .direct-reference-tile > header span { color: #f0e6ff; font: 800 10px/1 ui-monospace, monospace; }
+#ai-video-tasks-page .direct-reference-tile > header div { display: flex; gap: 4px; }
+#ai-video-tasks-page .direct-reference-tile > header button { width: 25px; height: 23px; padding: 0; border-radius: 7px; border: 1px solid rgba(219, 203, 240, .16); color: #e8dcf8; background: rgba(255, 255, 255, .05); }
+#ai-video-tasks-page .direct-reference-tile > header button:disabled { opacity: .28; }
+#ai-video-tasks-page .direct-reference-preview { position: relative; height: 170px; padding: 0; overflow: hidden; border: 0; border-radius: 11px; background: rgba(18, 14, 25, .45); }
+#ai-video-tasks-page .direct-reference-preview img { width: 100%; height: 100%; object-fit: cover; }
+#ai-video-tasks-page .direct-reference-preview b {
+  position: absolute; left: 8px; top: 8px; display: grid; place-items: center; width: 27px; height: 27px;
+  border-radius: 9px; color: #fff; background: rgba(137, 103, 184, .78); backdrop-filter: blur(10px);
+  box-shadow: 0 8px 18px rgba(19, 10, 31, .28); font: 900 11px/1 ui-monospace, monospace;
+}
+#ai-video-tasks-page .direct-reference-tile > label { display: grid; gap: 5px; color: rgba(220, 207, 237, .7); font-size: 9px; }
+#ai-video-tasks-page .direct-reference-tile > label span { display: flex; justify-content: space-between; }
+#ai-video-tasks-page .direct-reference-tile > label em { color: rgba(220, 207, 237, .42); font-style: normal; }
+#ai-video-tasks-page .direct-reference-tile select,
+#ai-video-tasks-page .direct-reference-tile input[type="text"],
+#ai-video-tasks-page .direct-reference-tile input:not([type]) { width: 100%; min-height: 34px; padding: 7px 9px; border: 0; border-radius: 9px; color: #f5effd; background: rgba(24, 18, 34, .38); outline: 1px solid transparent; font-size: 10px; }
+#ai-video-tasks-page .direct-reference-tile select:focus,
+#ai-video-tasks-page .direct-reference-tile input:focus { outline-color: rgba(220, 198, 255, .48); }
+#ai-video-tasks-page .direct-reference-primary { grid-template-columns: auto 1fr; align-items: center; gap: 7px !important; padding: 7px 8px; border-radius: 9px; background: rgba(255, 255, 255, .04); }
+#ai-video-tasks-page .direct-reference-primary input { accent-color: #c9a9f3; }
+#ai-video-tasks-page .direct-reference-workspace > footer span { color: rgba(215, 202, 232, .58); font-size: 9px; }
+#ai-video-tasks-page .save-reference-config { padding: 9px 13px; border: 1px solid rgba(225, 207, 255, .34); border-radius: 10px; color: #f8f2ff; background: rgba(199, 171, 242, .2); font-size: 10px; font-weight: 750; }
+#ai-video-tasks-page .direct-reference-contract { display: grid; gap: 7px; margin-bottom: 14px; }
+#ai-video-tasks-page .direct-reference-contract > span { color: rgba(212, 194, 235, .66); font-size: 9px; letter-spacing: .08em; }
+#ai-video-tasks-page .direct-reference-contract pre { max-height: 155px; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; border-radius: 11px; color: rgba(239, 232, 248, .78); background: rgba(32, 24, 44, .34); font: 10px/1.6 ui-monospace, monospace; }
+#ai-video-tasks-page .direct-reference-empty { display: grid; place-items: center; min-height: 210px; color: rgba(221, 208, 238, .55); border: 1px dashed rgba(220, 204, 241, .2); border-radius: 14px; font-size: 10px; }
+
+@media (max-width: 720px) {
+  #video-task-dialog .direct-reference-mode-note { grid-template-columns: 44px minmax(0, 1fr); }
+  #video-task-dialog .direct-reference-mode-note > em { grid-column: 2; justify-self: start; }
+  #ai-video-tasks-page .direct-reference-track { grid-auto-columns: minmax(178px, 84vw); }
+  #ai-video-tasks-page .direct-reference-workspace > footer { align-items: flex-start; flex-direction: column; }
+}
+
+.video-script-dialog .manual-shot-row {
+  min-height: 62px;
+}
+
+.video-script-dialog .dialog-actions {
+  position: static !important;
+  flex: 0 0 auto;
+  margin-top: 12px !important;
+}
+
+/* Final pass for the AI-video dialog. These controls had more specific legacy
+   light-theme selectors, so keep their glass treatment scoped and explicit. */
+#video-task-dialog .form-grid :where(input, select, textarea) {
+  color: rgba(250, 252, 255, .98) !important;
+  background: rgba(7, 10, 16, .28) !important;
+  border-color: rgba(255, 255, 255, .22) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .055), 0 7px 18px rgba(0, 0, 0, .07) !important;
+}
+
+#video-task-dialog .background-mode-option > em,
+#video-task-dialog .background-mode-option.active > em {
+  color: rgba(228, 241, 250, .88) !important;
+  background: rgba(255, 255, 255, .085) !important;
+  border: 1px solid rgba(255, 255, 255, .14);
+}
+
+#video-task-dialog .background-mode-option.active > em {
+  color: rgba(194, 247, 236, .96) !important;
+  background: rgba(83, 187, 165, .16) !important;
+  border-color: rgba(165, 236, 222, .24);
+}
+
+#video-task-dialog .resolution-cost-warning > i {
+  color: rgba(255, 222, 162, .96) !important;
+  background: rgba(173, 110, 22, .2) !important;
+  border: 1px solid rgba(255, 207, 123, .24);
+}
+
+#video-task-dialog .storyboard-execution-rule > i {
+  color: rgba(194, 247, 236, .96) !important;
+  background: rgba(72, 175, 154, .17) !important;
+  border: 1px solid rgba(161, 236, 221, .22);
+}
+
+#video-task-dialog .script-video-reference-option > em {
+  color: rgba(224, 235, 247, .88) !important;
+  background: rgba(255, 255, 255, .08) !important;
+  border: 1px solid rgba(255, 255, 255, .14);
+}
+
+#video-task-dialog .script-video-reference-option.active > em {
+  color: rgba(255, 222, 162, .96) !important;
+  background: rgba(174, 109, 19, .18) !important;
+  border-color: rgba(255, 205, 117, .25);
+}
+
+/* Automation home uses the same clear optical medium as the video workspaces;
+   status colors remain semantic but no longer turn into pale solid chips. */
+#automations-page :where(
+  .automation-heading,
+  .automation-assistant-link,
+  .automation-skill-card,
+  .automation-history-card,
+  .automation-empty-state,
+  .automation-job-list > article,
+  .job-list > article
+) > .lg-overlay-bg {
+  background: rgba(7, 10, 16, .2) !important;
+}
+
+#automations-page .assistant-link-route span i {
+  background: rgba(255, 255, 255, .12) !important;
+  border-color: rgba(225, 235, 246, .4) !important;
+}
+
+#automations-page .automation-assistant-link.ready :where(.assistant-link-beacon, .assistant-link-state) {
+  color: rgba(194, 247, 236, .96) !important;
+  background: rgba(43, 155, 134, .18) !important;
+  border-color: rgba(154, 234, 218, .24) !important;
+}
+
+#automations-page .automation-assistant-link.offline :where(.assistant-link-beacon, .assistant-link-state) {
+  color: rgba(255, 207, 213, .95) !important;
+  background: rgba(151, 42, 57, .18) !important;
+  border-color: rgba(255, 160, 171, .22) !important;
+}
+
+#automations-page .automation-assistant-link.offline .assistant-link-route span:first-child i {
+  background: rgba(130, 144, 164, .5) !important;
+}
+
+#automations-page .automation-assistant-link.offline .assistant-link-route span:not(:first-child) i {
+  background: rgba(150, 44, 58, .18) !important;
+  border-color: rgba(235, 124, 137, .62) !important;
+}
+
+#automations-page.automation-page .automation-hero,
+#automations-page.automation-page .automation-assistant-link,
+#automations-page.automation-page .automation-skill-card,
+#automations-page.automation-page .automation-history-card,
+#automations-page.automation-page .automation-empty-state,
+#automations-page.automation-page .automation-job-list > article,
+#automations-page.automation-page .job-list > article {
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, .4) !important;
+  box-shadow: none !important;
+}
+
+#automations-page .automation-history-card .automation-empty-state.compact {
+  background: rgba(7, 10, 16, .12) !important;
+  border-color: rgba(255, 255, 255, .14) !important;
+}
+
+/* Automation administration: clear glass surfaces and a dark translucent
+   form-builder canvas, matching the automation home and video workspaces. */
+#automation-admin-page.automation-page .automation-heading,
+#automation-admin-page.automation-page .skill-converter-card,
+#automation-admin-page.automation-page .managed-skill-row,
+#automation-admin-page.automation-page .automation-access-card,
+#automation-admin-page.automation-page .automation-admin-list > article {
+  color: rgba(248, 251, 255, .96) !important;
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, .4) !important;
+  box-shadow: none !important;
+}
+
+#automation-admin-page :where(
+  .automation-heading,
+  .skill-converter-card,
+  .managed-skill-row,
+  .automation-access-card,
+  .automation-admin-list > article
+) > .lg-overlay-bg {
+  background: rgba(7, 10, 16, .2) !important;
+}
+
+#automation-admin-page .managed-skill-list {
+  border-top-color: rgba(255, 255, 255, .16) !important;
+}
+
+#automation-admin-page .skill-name-field {
+  color: rgba(238, 245, 252, .9) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+#automation-admin-page .skill-name-field input,
+#automation-runtime-dialog .form-grid :where(input, select, textarea) {
+  color: rgba(250, 252, 255, .98) !important;
+  background: rgba(7, 10, 16, .26) !important;
+  border-color: rgba(255, 255, 255, .22) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .055), 0 7px 18px rgba(0, 0, 0, .07) !important;
+}
+
+#automation-admin-page :where(.skill-field-label, .skill-name-field, .skill-converter-card strong) {
+  color: rgba(244, 249, 255, .94) !important;
+}
+
+#automation-admin-page .skill-source-trigger {
+  color: rgba(239, 246, 253, .94) !important;
+  background: rgba(7, 10, 16, .22) !important;
+  border-color: rgba(255, 255, 255, .22) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .055);
+}
+
+#automation-admin-page .skill-source-menu {
+  color: rgba(244, 249, 255, .94) !important;
+  background: rgba(10, 14, 22, .88) !important;
+  border-color: rgba(255, 255, 255, .24) !important;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, .28) !important;
+  backdrop-filter: blur(20px) saturate(128%);
+  -webkit-backdrop-filter: blur(20px) saturate(128%);
+}
+
+#automation-admin-page .skill-source-menu button {
+  color: rgba(242, 247, 253, .94) !important;
+}
+
+#automation-admin-page .skill-source-menu button:hover,
+#automation-admin-page .skill-source-menu button:focus-visible {
+  background: rgba(255, 255, 255, .1) !important;
+}
+
+#automation-admin-page .job-status.status-active {
+  color: rgba(194, 247, 236, .96) !important;
+  background: rgba(43, 155, 134, .18) !important;
+  border: 1px solid rgba(154, 234, 218, .24);
+}
+
+.automation-form-dialog .form-designer-layout {
+  background: rgba(7, 10, 16, .14) !important;
+  border-color: rgba(255, 255, 255, .18) !important;
+}
+
+.automation-form-dialog :where(.form-designer-palette, .form-designer-settings, .form-designer-canvas-wrap) {
+  color: rgba(242, 247, 253, .94) !important;
+  background-color: rgba(7, 10, 16, .18) !important;
+  border-color: rgba(255, 255, 255, .14) !important;
+}
+
+.automation-form-dialog .form-designer-canvas-wrap {
+  background-image: radial-gradient(rgba(215, 229, 243, .16) .7px, transparent .7px) !important;
+}
+
+.automation-form-dialog #automation-field-palette button {
+  color: rgba(236, 244, 252, .9) !important;
+  background: rgba(7, 10, 16, .22) !important;
+  border-color: rgba(255, 255, 255, .18) !important;
+}
+
+.automation-form-dialog #automation-field-palette button:hover,
+.automation-form-dialog #automation-field-palette button:focus-visible {
+  color: #fff !important;
+  background: rgba(68, 156, 139, .18) !important;
+  border-color: rgba(154, 234, 218, .4) !important;
+}
+
+.automation-form-dialog .form-designer-canvas,
+.automation-form-dialog .designer-field-card {
+  color: rgba(242, 247, 253, .94) !important;
+  background: rgba(7, 10, 16, .2) !important;
+  border-color: rgba(255, 255, 255, .17) !important;
+  box-shadow: none !important;
+}
+
+.automation-form-dialog :where(
+  .form-designer-palette > strong,
+  .form-designer-settings > strong,
+  .form-designer-canvas-heading strong,
+  .designer-settings-empty strong,
+  .designer-field-card strong
+) {
+  color: rgba(248, 251, 255, .96) !important;
+}
+
+.automation-form-dialog :where(.designer-settings-form input, .designer-settings-form select, .designer-settings-form textarea) {
+  color: rgba(250, 252, 255, .98) !important;
+  background: rgba(7, 10, 16, .26) !important;
+  border-color: rgba(255, 255, 255, .2) !important;
+}
+
+.automation-form-dialog .designer-setting-note {
+  color: rgba(218, 231, 244, .8) !important;
+  background: rgba(53, 147, 130, .15) !important;
+}
+
+#automation-access-dialog input[type="checkbox"] {
+  background: rgba(7, 10, 16, .3) !important;
+  border-color: rgba(255, 255, 255, .28) !important;
+  box-shadow: none !important;
+  accent-color: #58cdb8;
+}
+
+/* Direct-reference tasks are one continuous workbench, not a three-up product
+   card. Keep the reference contract and execution prompt in the same visual
+   field and let the content determine the panel height. */
+#ai-video-tasks-page .garment-card-grid > .direct-reference-card {
+  grid-column: auto;
+  width: 100%;
+  min-width: 0;
+}
+
+#ai-video-tasks-page .direct-reference-card .garment-card-flip {
+  min-height: 0;
+  display: block;
+  transform: none !important;
+}
+
+#ai-video-tasks-page .direct-reference-card .garment-card-face {
+  position: relative;
+  inset: auto;
+  transform: none !important;
+  backface-visibility: visible;
+  -webkit-backface-visibility: visible;
+}
+
+#ai-video-tasks-page .direct-reference-card .garment-card-face[aria-hidden="true"] {
+  display: none !important;
+}
+
+#ai-video-tasks-page .direct-reference-card.is-prompt-flipped .garment-card-back {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  grid-template-rows: auto auto auto;
+}
+
+#ai-video-tasks-page .direct-reference-card .video-prompt-head {
+  padding: 16px 20px;
+}
+
+#ai-video-tasks-page .direct-reference-card .video-prompt-head strong {
+  font-size: 16px;
+}
+
+#ai-video-tasks-page .direct-reference-card .video-prompt-body {
+  min-height: 0;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(250px, auto);
+  align-items: stretch;
+  gap: 10px;
+}
+
+#ai-video-tasks-page .direct-reference-card .direct-reference-contract {
+  grid-column: 1;
+  grid-row: auto;
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  align-content: start;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 14px;
+  background: rgba(19, 14, 29, .2);
+}
+
+#ai-video-tasks-page .direct-reference-card .direct-reference-contract > span {
+  color: rgba(232, 221, 248, .78);
+  font-size: 10px;
+}
+
+#ai-video-tasks-page .direct-reference-card .direct-reference-contract pre {
+  max-height: 150px;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  background: rgba(9, 7, 14, .26);
+  font-size: 11px;
+  line-height: 1.75;
+}
+
+#ai-video-tasks-page .direct-reference-card .video-prompt-label {
+  grid-column: 1;
+  grid-row: auto;
+}
+
+#ai-video-tasks-page .direct-reference-card .video-prompt-editor,
+#ai-video-tasks-page .direct-reference-card .video-prompt-editor[readonly] {
+  grid-column: 1;
+  grid-row: auto;
+  width: 100%;
+  height: 100%;
+  min-height: 250px;
+  max-height: 360px;
+  resize: vertical;
+}
+
+#ai-video-tasks-page .direct-reference-card .video-prompt-actions {
+  min-height: 58px;
+  padding: 10px 20px;
+}
+
+#ai-video-tasks-page .direct-reference-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+#ai-video-tasks-page .append-reference-button {
+  min-height: 34px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(225, 207, 255, .22);
+  border-radius: 10px;
+  color: rgba(242, 234, 253, .9);
+  background: rgba(255, 255, 255, .065);
+  font-size: 10px;
+  font-weight: 720;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#ai-video-tasks-page .append-reference-button:hover,
+#ai-video-tasks-page .append-reference-button:focus-within {
+  border-color: rgba(225, 207, 255, .46);
+  background: rgba(201, 175, 244, .14);
+}
+
+#ai-video-tasks-page .append-reference-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#ai-video-tasks-page .append-reference-button.disabled {
+  opacity: .42;
+  pointer-events: none;
+}
+
+#ai-video-tasks-page .reference-autosave-status {
+  min-height: 30px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(222, 209, 242, .14);
+  border-radius: 999px;
+  color: rgba(219, 208, 234, .68);
+  background: rgba(255, 255, 255, .045);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+#ai-video-tasks-page .reference-autosave-status i {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: rgba(175, 218, 205, .8);
+  box-shadow: 0 0 0 3px rgba(107, 197, 174, .08);
+}
+
+#ai-video-tasks-page .reference-autosave-status b {
+  font-weight: 680;
+}
+
+#ai-video-tasks-page .reference-autosave-status.pending i,
+#ai-video-tasks-page .reference-autosave-status.saving i {
+  background: #d8c2f5;
+  animation: reference-autosave-pulse 1s ease-in-out infinite;
+}
+
+#ai-video-tasks-page .reference-autosave-status.failed {
+  color: rgba(255, 201, 210, .9);
+  border-color: rgba(255, 160, 176, .2);
+  background: rgba(126, 34, 49, .12);
+}
+
+#ai-video-tasks-page .reference-autosave-status.failed i {
+  background: #f195a4;
+}
+
+@keyframes reference-autosave-pulse {
+  50% { opacity: .32; transform: scale(.76); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ai-video-tasks-page .reference-autosave-status i { animation: none !important; }
+}
+
+#ai-video-tasks-page .direct-reference-tile > header .direct-reference-delete {
+  color: rgba(255, 216, 222, .82);
+  border-color: rgba(255, 170, 184, .16);
+  background: rgba(118, 35, 51, .12);
+}
+
+#ai-video-tasks-page .direct-reference-tile > header .direct-reference-delete:hover,
+#ai-video-tasks-page .direct-reference-tile > header .direct-reference-delete:focus-visible {
+  color: #fff;
+  border-color: rgba(255, 176, 188, .48);
+  outline: none;
+  background: rgba(172, 48, 68, .42);
+}
+
+/* Reference groups read top-to-bottom in pairs. This keeps every role control
+   fully visible and removes the clipped horizontal carousel. */
+#ai-video-tasks-page .direct-reference-track {
+  grid-auto-flow: row;
+  grid-auto-columns: unset;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  overflow: visible;
+  padding: 3px 2px 4px;
+}
+
+#ai-video-tasks-page .direct-reference-tile {
+  min-width: 0;
+  width: auto;
+}
+
+@media (max-width: 520px) {
+  #ai-video-tasks-page .direct-reference-track {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 980px) {
+  #ai-video-tasks-page .direct-reference-card .video-prompt-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto minmax(250px, auto);
+  }
+
+  #ai-video-tasks-page .direct-reference-card .direct-reference-contract,
+  #ai-video-tasks-page .direct-reference-card .video-prompt-label,
+  #ai-video-tasks-page .direct-reference-card .video-prompt-editor,
+  #ai-video-tasks-page .direct-reference-card .video-prompt-editor[readonly] {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  #ai-video-tasks-page .direct-reference-card .direct-reference-contract pre {
+    max-height: 210px;
+  }
+}
+
+@media (max-width: 680px) {
+  #ai-video-tasks-page .direct-reference-card.is-prompt-flipped .garment-card-back {
+    height: auto;
+    min-height: 0;
+  }
+
+  #ai-video-tasks-page .direct-reference-card .video-prompt-head,
+  #ai-video-tasks-page .direct-reference-card .video-prompt-body,
+  #ai-video-tasks-page .direct-reference-card .video-prompt-actions {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  #ai-video-tasks-page .direct-reference-card-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  #ai-video-tasks-page .append-reference-button,
+  #ai-video-tasks-page .direct-reference-card-actions .save-reference-config {
+    flex: 1;
+  }
+}
+
+/* Keep the wide dialog typography above the legacy final-pass selectors. */
+#video-task-dialog.video-task-dialog .form-grid :where(input, select, textarea) {
+  min-height: 46px;
+  padding: 11px 13px;
+  font-size: 14px !important;
+}
+
+#video-task-dialog.video-task-dialog .direct-reference-mode-note strong {
+  font-size: 15px !important;
+}
+
+#video-task-dialog.video-task-dialog .direct-reference-mode-note small {
+  font-size: 12px !important;
+}
+
+/* Readability pass for manual shot editing. */
+.video-shot-edit-dialog.is-manual-edit .dialog-heading h2 {
+  font-size: 27px !important;
+}
+
+.video-shot-edit-dialog.is-manual-edit .dialog-heading p {
+  font-size: 14px !important;
+  line-height: 1.55;
+}
+
+.video-shot-edit-dialog.is-manual-edit .shot-edit-fields label {
+  font-size: 14px !important;
+}
+
+.video-shot-edit-dialog.is-manual-edit .shot-edit-fields :is(input, select, textarea) {
+  min-height: 44px;
+  padding: 11px 13px;
+  font-size: 15px !important;
+  line-height: 1.55;
+}
+
+.video-shot-edit-dialog.is-manual-edit .shot-edit-advanced summary {
+  min-height: 54px;
+  font-size: 15px;
+}
+
+.video-shot-edit-dialog.is-manual-edit .shot-edit-advanced summary small {
+  font-size: 12px !important;
+}
+
+.video-shot-edit-dialog.is-manual-edit .dialog-actions button {
+  min-height: 42px;
+  padding: 9px 16px;
+  font-size: 14px;
+}
+
+/* Direct-reference production cards must remain legible at dashboard scale. */
+#ai-video-tasks-page .direct-reference-card .garment-card-copy strong {
+  font-size: 18px !important;
+}
+
+#ai-video-tasks-page .direct-reference-card .garment-card-copy small {
+  font-size: 13px !important;
+}
+
+#ai-video-tasks-page .direct-reference-card :is(.garment-prompt-flip, .garment-state) {
+  font-size: 12px !important;
+}
+
+#ai-video-tasks-page .direct-reference-workspace > header span {
+  font-size: 12px;
+}
+
+#ai-video-tasks-page .direct-reference-workspace > header strong {
+  font-size: 16px;
+}
+
+#ai-video-tasks-page .direct-reference-workspace > header em {
+  font-size: 12px;
+}
+
+#ai-video-tasks-page .direct-reference-tile > header span {
+  font-size: 14px;
+}
+
+#ai-video-tasks-page .direct-reference-tile > label {
+  gap: 7px;
+  font-size: 13px;
+}
+
+#ai-video-tasks-page .direct-reference-tile select,
+#ai-video-tasks-page .direct-reference-tile input[type="text"],
+#ai-video-tasks-page .direct-reference-tile input:not([type]) {
+  min-height: 44px;
+  padding: 10px 11px;
+  font-size: 14px;
+}
+
+#ai-video-tasks-page .direct-reference-workspace > footer span,
+#ai-video-tasks-page .reference-autosave-status,
+#ai-video-tasks-page .append-reference-button,
+#ai-video-tasks-page .save-reference-config {
+  font-size: 12px;
+}
+
+#ai-video-tasks-page .append-reference-button {
+  min-height: 40px;
+}
+
+#ai-video-tasks-page .garment-video-output > header strong {
+  font-size: 16px;
+}
+
+#ai-video-tasks-page .garment-video-status-actions,
+#ai-video-tasks-page .garment-video-status-actions :is(span, button) {
+  font-size: 12px;
+}
+
+#ai-video-tasks-page .direct-reference-card .garment-video-canvas div strong {
+  font-size: 15px;
+}
+
+#ai-video-tasks-page .direct-reference-card .garment-video-canvas div small {
+  font-size: 12px !important;
+}
+
+/* Completed direct-reference groups are immutable while their media stays available. */
+#ai-video-tasks-page .direct-reference-card.is-reference-locked .direct-reference-workspace {
+  border-color: rgba(178, 204, 255, 0.34);
+  background: linear-gradient(145deg, rgba(34, 43, 69, 0.38), rgba(27, 29, 48, 0.26));
+}
+
+#ai-video-tasks-page .direct-reference-card.is-reference-locked .direct-reference-tile {
+  background: rgba(24, 27, 45, 0.34);
+}
+
+#ai-video-tasks-page .direct-reference-card.is-reference-locked :is(select, input):disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+#ai-video-tasks-page .reference-autosave-status.locked {
+  color: rgba(221, 232, 255, 0.94);
+  border-color: rgba(166, 194, 255, 0.38);
+  background: rgba(93, 119, 174, 0.22);
+}
+
+#ai-video-tasks-page .reference-autosave-status.locked i {
+  background: #a9c5ff;
+  box-shadow: 0 0 0 4px rgba(169, 197, 255, 0.12);
+}
+
+/* System management uses the same dark operational glass as task monitoring.
+   Its legacy white LiquidGlass fill otherwise turns these panels opaque grey. */
+#system-page :where(
+  .system-tabs,
+  .organization-card,
+  .department-panel,
+  .people-panel,
+  .role-section,
+  .role-rail,
+  .permission-panel
+) {
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, .38) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 14px 38px rgba(0, 0, 0, .1) !important;
+}
+
+#system-page .liquid-glass > .lg-overlay-bg {
+  background: rgba(0, 0, 0, .3) !important;
+  display: none !important;
+}
+
+#system-page .liquid-glass > .lg-filter-layer > .glass-box {
+  background: rgba(9, 9, 11, 0) !important;
+}
+
+#system-page .liquid-glass > .lg-filter-layer {
+  display: none !important;
+}
+
+#system-page .people-table-wrap,
+#system-page .people-table,
+#system-page .people-table td {
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, .12) !important;
+}
+
+#system-page .people-table th {
+  color: rgba(222, 232, 244, .72) !important;
+  background: rgba(9, 9, 11, .18) !important;
+  border-color: rgba(255, 255, 255, .12) !important;
+}
+
+#system-page .people-table tbody tr:hover td {
+  background: rgba(255, 255, 255, .08) !important;
+}
+
+#system-page .department-item:hover,
+#system-page .role-config-item:hover {
+  background: rgba(255, 255, 255, .07) !important;
+}
+
+#system-page .department-item.active,
+#system-page .role-config-item.active {
+  color: #fff !important;
+  border-color: rgba(122, 218, 202, .28) !important;
+  background: rgba(80, 160, 146, .16) !important;
+}
+
+#system-page .role-tags span,
+#system-page .role-config-item em {
+  color: rgba(223, 239, 255, .9) !important;
+  background: rgba(116, 161, 220, .18) !important;
+}
+
+#system-page :where(.role-facts, .permission-group) {
+  border-color: rgba(255, 255, 255, .28) !important;
+  background: transparent !important;
+}
+
+#system-page :where(.role-facts > div, .permission-group li) {
+  border-color: rgba(255, 255, 255, .13) !important;
+}
+
+#system-page :where(.permission-group > div, .permission-option-group > div) {
+  color: rgba(237, 244, 252, .9) !important;
+  background: rgba(9, 9, 11, .18) !important;
+}
+
+#system-page .permission-group > div span {
+  color: rgba(190, 205, 223, .68) !important;
+}
+
+/* System lists favor readable names and actions over decorative glyphs. */
+#system-page .system-tab {
+  padding: 10px 18px;
+  font-size: 13px;
+}
+
+#system-page .panel-heading h3 {
+  font-size: 22px;
+}
+
+#system-page .department-list {
+  gap: 8px;
+}
+
+#system-page .department-item {
+  min-height: 56px;
+  padding: 12px 14px;
+}
+
+#system-page .department-item strong {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+#system-page .department-item small {
+  font-size: 11px !important;
+  line-height: 1.4;
+}
+
+#system-page .department-edit,
+#system-page .department-delete {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  font-size: 14px;
+}
+
+#system-page .people-tools input,
+#system-page .people-tools button {
+  min-height: 40px;
+  font-size: 13px !important;
+}
+
+#system-page .people-table th {
+  padding: 13px 14px;
+  font-size: 12px !important;
+}
+
+#system-page .people-table td {
+  min-height: 64px;
+  padding: 15px 14px;
+  font-size: 13px !important;
+}
+
+#system-page .person-cell strong,
+#system-page .stacked-cell strong {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+#system-page .person-cell small,
+#system-page .stacked-cell small {
+  font-size: 11px !important;
+  line-height: 1.4;
+}
+
+#system-page .role-tags span,
+#system-page .account-status,
+#system-page .row-action {
+  font-size: 12px !important;
+}
+
+#system-page .row-action {
+  min-height: 32px;
+  padding: 7px 9px;
+}
+
+#system-page .role-config-item {
+  min-height: 62px;
+  padding: 13px 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+#system-page .role-config-item strong {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+#system-page .role-config-item > span:not([class]) {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+#system-page .role-config-item small,
+#system-page .role-config-item em {
+  font-size: 11px !important;
+}
+
+#system-page .permission-editor-head h3 {
+  font-size: 26px;
+}
+
+#system-page .permission-editor-head p {
+  font-size: 13px !important;
+}
+
+#system-page .role-facts dt {
+  font-size: 11px;
+}
+
+#system-page .role-facts dd {
+  font-size: 14px;
+}
+
+#system-page .permission-group > div strong {
+  font-size: 14px;
+}
+
+#system-page .permission-group > div span {
+  font-size: 11px;
+}
+
+#system-page .permission-group li {
+  min-height: 58px;
+  padding: 11px 13px;
+}
+
+#system-page .permission-group li strong {
+  font-size: 13px;
+}
+
+#system-page .permission-group li small,
+#system-page .permission-group li em {
+  font-size: 10px !important;
+}
+
+/* Keep preview actions intact when a long asset title shares the header. */
+.asset-preview-dialog .asset-preview-shell > header > div:first-child {
+  min-width: 0;
+}
+
+.asset-preview-dialog .asset-preview-shell > header h3 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-preview-dialog .asset-preview-actions {
+  flex: 0 0 auto;
+  min-width: max-content;
+}
+
+.asset-preview-dialog .asset-preview-download {
+  width: auto !important;
+  min-width: 112px;
+  min-height: 38px;
+  padding: 0 16px !important;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Model access follows the same clear operational glass as video tasks. */
+#models-page :where(.model-connect-card, .model-category, .model-config-card, .model-empty) {
+  background: transparent !important;
+  border-color: rgba(255, 255, 255, .38) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 14px 38px rgba(0, 0, 0, .1) !important;
+  backdrop-filter: blur(16px) saturate(128%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(128%) !important;
+}
+
+#models-page .liquid-glass > :where(.lg-overlay-bg, .lg-filter-layer) {
+  display: none !important;
+}
+
+#models-page .model-connect-heading h2 {
+  font-size: 28px;
+}
+
+#models-page .model-connect-heading p {
+  font-size: 14px !important;
+  line-height: 1.6;
+}
+
+#models-page .model-category {
+  padding: 20px;
+}
+
+#models-page .model-category > header {
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+#models-page .model-category h3 {
+  font-size: 18px;
+}
+
+#models-page .model-category header p {
+  font-size: 13px !important;
+  line-height: 1.5;
+}
+
+#models-page .model-category .circle-button {
+  width: 36px;
+  height: 36px;
+  font-size: 20px;
+}
+
+#models-page .model-config-card {
+  min-height: 112px;
+  padding: 16px;
+  background: rgba(9, 9, 11, .16) !important;
+}
+
+#models-page .model-config-title {
+  gap: 8px;
+}
+
+#models-page .model-config-title strong {
+  font-size: 15px;
+}
+
+#models-page :where(.default-tag, .backup-tag, .provider-tag, .connection-state) {
+  min-height: 22px;
+  padding: 3px 7px;
+  font-size: 11px;
+}
+
+#models-page .model-config-main p {
+  margin: 8px 0;
+  color: rgba(232, 239, 248, .86);
+  font-size: 13px;
+}
+
+#models-page .model-config-main small {
+  font-size: 11px !important;
+}
+
+#models-page .model-card-actions .row-action {
+  min-height: 34px;
+  padding: 7px 9px;
+  font-size: 12px !important;
+}
+
+#models-page .model-empty.compact {
+  font-size: 12px;
+}
+
+/* Model credentials dialog: override the legacy light simple-form fields. */
+#model-dialog .dialog-heading h2 {
+  font-size: 28px;
+}
+
+#model-dialog .dialog-heading p {
+  font-size: 14px !important;
+  line-height: 1.55;
+}
+
+#model-dialog .simple-model-form {
+  gap: 20px;
+  margin-top: 28px;
+}
+
+#model-dialog .simple-model-form label {
+  gap: 9px;
+}
+
+#model-dialog .simple-model-form label > span {
+  color: rgba(242, 247, 253, .9) !important;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+#model-dialog .simple-model-form :where(input, select) {
+  min-height: 50px;
+  padding: 13px 15px;
+  color: rgba(250, 252, 255, .98) !important;
+  background: rgba(7, 10, 16, .3) !important;
+  border-color: rgba(255, 255, 255, .28) !important;
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 8px 22px rgba(0, 0, 0, .08) !important;
+  font-size: 15px;
+  line-height: 1.45;
+  backdrop-filter: blur(12px) saturate(120%);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+}
+
+#model-dialog .simple-model-form :where(input, select):focus {
+  border-color: rgba(148, 224, 211, .68) !important;
+  box-shadow: 0 0 0 3px rgba(105, 204, 186, .12), inset 0 1px 0 rgba(255, 255, 255, .08) !important;
+}
+
+#model-dialog .simple-model-form input::placeholder {
+  color: rgba(205, 216, 230, .5) !important;
+}
+
+#model-dialog .form-help {
+  margin-top: 13px;
+  font-size: 12px !important;
+  line-height: 1.5;
+}
+
+#model-dialog .dialog-actions button {
+  min-height: 42px;
+  padding: 9px 16px;
+  font-size: 14px;
+}
+#models-page .model-category-grid {
+  margin-top: 0;
+}
+
+/* Automation administration: lift the near-black blocks into smoky blue glass. */
+#automation-admin-page.automation-page .automation-heading {
+  background: rgba(45, 57, 91, .38) !important;
+}
+
+#automation-admin-page.automation-page :where(.skill-converter-card, .automation-access-card) {
+  background: rgba(41, 43, 66, .34) !important;
+  backdrop-filter: blur(16px) saturate(118%);
+  -webkit-backdrop-filter: blur(16px) saturate(118%);
+}
+
+#automation-admin-page.automation-page :where(.managed-skill-row, .automation-admin-list > article) {
+  background: rgba(37, 40, 61, .46) !important;
+  border-color: rgba(255, 255, 255, .34) !important;
+}
+
+#automation-admin-page :where(
+  .automation-heading,
+  .skill-converter-card,
+  .managed-skill-row,
+  .automation-access-card,
+  .automation-admin-list > article
+) > .lg-overlay-bg {
+  background: rgba(113, 128, 168, .07) !important;
+}
+
+#automation-admin-page .skill-name-field input,
+#automation-admin-page .skill-source-trigger {
+  background: rgba(38, 46, 70, .52) !important;
+}
+
+#automation-admin-page #convert-skill-button {
+  background: rgba(31, 42, 62, .72) !important;
+  border-color: rgba(255, 255, 255, .28) !important;
+}
+
+/* Keep personnel access dense: it is a picker, not a second work area. */
+#automation-admin-page .automation-access-card {
+  padding: 16px 20px 18px;
+}
+
+#automation-admin-page .automation-access-card .section-heading h3 {
+  font-size: 19px;
+}
+
+#automation-admin-page .automation-admin-list {
+  margin-top: 10px;
+  gap: 6px;
+}
+
+#automation-admin-page .automation-admin-list article {
+  min-height: 42px;
+  padding: 6px 10px;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+#automation-admin-page .automation-user-avatar {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: rgba(120, 145, 185, .18);
+  color: rgba(244, 248, 255, .9);
+  font-size: 12px;
+}
+
+#automation-admin-page .automation-admin-list article > div {
+  gap: 2px;
+}
+
+#automation-admin-page .automation-admin-list strong {
+  font-size: 11px;
+}
+
+#automation-admin-page .automation-admin-list article > div span {
+  font-size: 9px;
+}
+
+#automation-admin-page .automation-admin-list .row-action {
+  min-height: 28px;
+  padding: 5px 9px;
+}
+
+/* Dense personnel access register. */
+#automation-admin-page .automation-access-card {
+  padding: 11px 14px 13px;
+}
+
+#automation-admin-page .automation-access-card .section-heading h3 {
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+#automation-admin-page .automation-admin-list {
+  margin-top: 7px;
+  gap: 4px;
+}
+
+#automation-admin-page .automation-admin-list article {
+  min-height: 35px;
+  padding: 4px 8px;
+  grid-template-columns: 23px minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+#automation-admin-page .automation-user-avatar {
+  width: 23px;
+  height: 23px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+#automation-admin-page .automation-admin-list article > div {
+  gap: 0;
+}
+
+#automation-admin-page .automation-admin-list .row-action {
+  min-height: 25px;
+  padding: 3px 7px;
+  font-size: 10px;
 }

@@ -41,6 +41,14 @@ app:
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:8080}
   pi-runtime-url: ${APP_PI_RUNTIME_URL:http://localhost:8090}
   pi-runtime-token: ${APP_PI_RUNTIME_TOKEN:heyi-pi-runtime-dev-token}
+  oss:
+    enabled: ${APP_OSS_ENABLED:false}
+    bucket: ${APP_OSS_BUCKET:}
+    region: ${APP_OSS_REGION:cn-guangzhou}
+    endpoint: ${APP_OSS_ENDPOINT:https://oss-cn-guangzhou-internal.aliyuncs.com}
+    public-endpoint: ${APP_OSS_PUBLIC_ENDPOINT:https://oss-cn-guangzhou.aliyuncs.com}
+    ecs-role-name: ${ALIBABA_CLOUD_ECS_METADATA:}
+    signed-url-ttl: ${APP_OSS_SIGNED_URL_TTL:2h}
   dispatch:
     enabled: ${APP_DISPATCH_ENABLED:true}
     worker-id: ${APP_DISPATCH_WORKER_ID:heyi-app-worker}

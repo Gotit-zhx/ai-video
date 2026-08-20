@@ -60,7 +60,9 @@ public class ModelConfigService {
                         .eq(ModelConfig::getStatus, "ACTIVE")
                         .orderByDesc(ModelConfig::isDefaultModel)
                         .orderByDesc(ModelConfig::getUpdatedAt))
-                .stream().map(this::runtimeConnection).toList();
+                .stream().map(this::runtimeConnection)
+                .filter(connection -> !"FAST".equals(connection.provider()))
+                .toList();
     }
 
     public Optional<RuntimeModelConnection> connectionById(String organizationId, String id) {
@@ -275,7 +277,7 @@ public class ModelConfigService {
     private String normalizeProvider(String modelType, String provider, String baseUrl) {
         if (!"VIDEO".equals(modelType)) return "AUTO";
         String normalized = provider == null || provider.isBlank() ? "AUTO" : provider.trim().toUpperCase();
-        if (!List.of("AUTO", "DAYAN", "WENGAO").contains(normalized)) {
+        if (!List.of("AUTO", "DAYAN", "H3_MULTI").contains(normalized)) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "暂不支持这个视频厂商");
         }
         return resolveProvider(normalized, baseUrl);
@@ -286,7 +288,8 @@ public class ModelConfigService {
             return provider.toUpperCase();
         }
         String value = baseUrl == null ? "" : baseUrl.toLowerCase();
-        if (value.contains("wengaocloud")) return "WENGAO";
+        if (value.contains("ai.usmercari.com")) return "FAST";
+        if (value.contains("h3.zhongbiao.cloud")) return "H3_MULTI";
         if (value.contains("dayan.design")) return "DAYAN";
         return "AUTO";
     }

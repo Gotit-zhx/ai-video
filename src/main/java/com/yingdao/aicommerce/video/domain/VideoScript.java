@@ -82,6 +82,15 @@ public class VideoScript {
         this.updatedAt = Instant.now();
     }
 
+    public boolean advanceAnalysisProgress(int nextProgress) {
+        if (!"AI_ANALYZING".equals(this.status)) return false;
+        int normalized = Math.max(55, Math.min(nextProgress, 95));
+        if (normalized <= this.progress) return false;
+        this.progress = normalized;
+        this.updatedAt = Instant.now();
+        return true;
+    }
+
     public void complete(String summary, String visualTone, String scriptJson) {
         this.summary = summary;
         this.visualTone = visualTone;

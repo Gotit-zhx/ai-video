@@ -83,7 +83,7 @@ public class ModelConfigController {
 
     public record CreateModelConfigRequest(
             @NotBlank @Pattern(regexp = "DRIVER|VIDEO|IMAGE") String modelType,
-            @Pattern(regexp = "AUTO|DAYAN|WENGAO") String provider,
+            @Pattern(regexp = "AUTO|DAYAN|H3_MULTI") String provider,
             @NotBlank
             @Size(max = 512)
             @Pattern(regexp = "https?://.+", message = "必须是 http 或 https 地址")
@@ -100,7 +100,7 @@ public class ModelConfigController {
             @Pattern(regexp = "https?://.+", message = "必须是 http 或 https 地址")
             String baseUrl,
             @NotBlank @Size(max = 160) String modelId,
-            @Pattern(regexp = "AUTO|DAYAN|WENGAO") String provider,
+            @Pattern(regexp = "AUTO|DAYAN|H3_MULTI") String provider,
             @Size(max = 4096) String apiKey,
             boolean defaultModel
     ) {
