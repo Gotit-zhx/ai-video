@@ -210,8 +210,9 @@ public class AiVideoTaskService {
         }
         return new TaskDetail(task, items, assets, videoGenerationService.currentRunSubmittedAt(id),
                 videoGenerationService.currentItemSubmittedAt(id),
-                videoGenerationService.currentRunProviderTaskIds(id), videoGenerationService.activeVideoSubmissions(),
-                AiVideoGenerationService.MAX_CONCURRENT_VIDEO_SUBMISSIONS);
+                videoGenerationService.currentRunProviderTaskIds(id),
+                videoGenerationService.activeVideoSubmissions(task.getOrganizationId()),
+                videoGenerationService.videoSubmissionLimit());
     }
 
     public List<AiVideoTaskItem> upload(String id, List<MultipartFile> files, String itemId, PlatformPrincipal principal) {

@@ -44,6 +44,23 @@ public class SaasAdminController {
         return ApiResponse.ok(OrganizationResponse.from(service.currentOrganization()));
     }
 
+    @GetMapping("/organizations")
+    public ApiResponse<List<OrganizationResponse>> organizations() {
+        return ApiResponse.ok(service.listOrganizations().stream()
+                .map(OrganizationResponse::from)
+                .toList());
+    }
+
+    @PostMapping("/organizations")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<OrganizationResponse> createOrganization(
+            @Valid @RequestBody CreateOrganizationRequest request
+    ) {
+        return ApiResponse.created(OrganizationResponse.from(service.createOrganization(
+                request.code(), request.name(), request.description()
+        )));
+    }
+
     @PutMapping("/organization")
     public ApiResponse<OrganizationResponse> updateOrganization(
             @Valid @RequestBody UpdateOrganizationRequest request
@@ -58,8 +75,10 @@ public class SaasAdminController {
     }
 
     @GetMapping("/departments")
-    public ApiResponse<List<DepartmentResponse>> departments() {
-        return ApiResponse.ok(service.listDepartments().stream()
+    public ApiResponse<List<DepartmentResponse>> departments(
+            @RequestParam(required = false) String organizationId
+    ) {
+        return ApiResponse.ok(service.listDepartments(organizationId).stream()
                 .map(DepartmentResponse::from)
                 .toList());
     }
@@ -70,6 +89,7 @@ public class SaasAdminController {
             @Valid @RequestBody CreateDepartmentRequest request
     ) {
         return ApiResponse.created(DepartmentResponse.from(service.createDepartment(
+                request.organizationId(),
                 request.parentId(),
                 request.name(),
                 request.code(),
@@ -97,14 +117,17 @@ public class SaasAdminController {
     }
 
     @GetMapping("/roles")
-    public ApiResponse<List<RoleResponse>> roles() {
-        return ApiResponse.ok(service.listRoles().stream().map(RoleResponse::from).toList());
+    public ApiResponse<List<RoleResponse>> roles(
+            @RequestParam(required = false) String organizationId
+    ) {
+        return ApiResponse.ok(service.listRoles(organizationId).stream().map(RoleResponse::from).toList());
     }
 
     @PostMapping("/roles")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<RoleResponse> createRole(@Valid @RequestBody CreateRoleRequest request) {
         return ApiResponse.created(RoleResponse.from(service.createRole(
+                request.organizationId(),
                 request.code(),
                 request.name(),
                 request.description(),
@@ -137,9 +160,10 @@ public class SaasAdminController {
 
     @GetMapping("/users")
     public ApiResponse<List<UserResponse>> users(
-            @RequestParam(required = false) String departmentId
+            @RequestParam(required = false) String departmentId,
+            @RequestParam(required = false) String organizationId
     ) {
-        return ApiResponse.ok(service.listUsers(departmentId).stream()
+        return ApiResponse.ok(service.listUsers(departmentId, organizationId).stream()
                 .map(UserResponse::from)
                 .toList());
     }
@@ -150,6 +174,7 @@ public class SaasAdminController {
             @Valid @RequestBody CreateUserRequest request
     ) {
         return ApiResponse.created(UserResponse.from(service.createUser(
+                request.organizationId(),
                 request.departmentId(),
                 request.displayName(),
                 request.email(),
@@ -203,7 +228,15 @@ public class SaasAdminController {
     ) {
     }
 
+    public record CreateOrganizationRequest(
+            @NotBlank @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_-]{1,39}") String code,
+            @NotBlank @Size(max = 120) String name,
+            @Size(max = 1000) String description
+    ) {
+    }
+
     public record CreateDepartmentRequest(
+            String organizationId,
             String parentId,
             @NotBlank @Size(max = 120) String name,
             @NotBlank @Pattern(regexp = "[A-Za-z0-9_-]{2,60}") String code,
@@ -219,6 +252,7 @@ public class SaasAdminController {
     }
 
     public record CreateUserRequest(
+            String organizationId,
             @NotBlank String departmentId,
             @NotBlank @Size(max = 120) String displayName,
             @Email @Size(max = 160) String email,
@@ -245,6 +279,7 @@ public class SaasAdminController {
     }
 
     public record CreateRoleRequest(
+            String organizationId,
             @NotBlank @Pattern(regexp = "[A-Za-z0-9_-]{2,60}") String code,
             @NotBlank @Size(max = 100) String name,
             @Size(max = 500) String description,
@@ -351,6 +386,8 @@ public class SaasAdminController {
 
     public record UserResponse(
             String id,
+            String organizationId,
+            String organizationName,
             String departmentId,
             String departmentName,
             String username,
@@ -366,7 +403,8 @@ public class SaasAdminController {
         static UserResponse from(SaasAdminService.UserOverview overview) {
             var user = overview.user();
             return new UserResponse(
-                    user.getId(), user.getDepartmentId(), overview.departmentName(),
+                    user.getId(), user.getOrganizationId(), overview.organizationName(),
+                    user.getDepartmentId(), overview.departmentName(),
                     user.getUsername(), user.getDisplayName(),
                     user.getEmail(), user.getPhone(), user.getJobTitle(), user.getStatus(),
                     overview.roleIds(), overview.roleNames(), user.getCreatedAt()

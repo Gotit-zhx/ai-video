@@ -216,7 +216,7 @@
 #automations-page :where(.automation-heading, .automation-assistant-link, .automation-skill-card, .automation-history-card, .automation-empty-state),
 #automation-admin-page :where(.automation-heading, .skill-converter-card, .automation-access-card, .managed-skill-row),
 #models-page :where(.model-connect-card, .model-category, .model-config-card, .model-empty),
-#system-page :where(.system-tabs, .department-panel, .people-panel, .role-rail, .permission-panel, .people-table-wrap, .table-empty),
+#system-page :where(.system-tabs, .department-panel, .people-panel, .role-rail, .permission-panel, .people-table-wrap, .table-empty, .organization-card, .organization-directory, .boundary-note),
 #assistant-test-page :where(.assistant-status-strip, .assistant-chat-card, .assistant-trace-card, .assistant-message, .assistant-composer, .assistant-token-monitor, .assistant-examples button) {
   background: rgba(9, 9, 11, .22) !important;
   border-color: rgba(255, 255, 255, .3) !important;
@@ -251,6 +251,127 @@
   color: rgba(248, 251, 255, .95) !important;
   background: rgba(9, 9, 11, .34) !important;
   border-color: rgba(255, 255, 255, .3) !important;
+}
+
+/* Company administration follows the same dark liquid-glass control language
+   as people and role management. The directory is already tenant-gated, so
+   its primary action stays visible whenever the directory itself is visible. */
+#system-page .organization-directory {
+  padding: 22px 24px !important;
+  overflow: hidden;
+  border-radius: 24px !important;
+  background: rgba(9, 9, 11, .22) !important;
+}
+
+#system-page .organization-directory-heading {
+  align-items: center;
+  padding-bottom: 17px;
+  border-bottom: 1px solid rgba(255, 255, 255, .16);
+}
+
+#system-page .organization-directory-heading > div:first-child > span {
+  color: #8ff2df !important;
+  text-shadow: 0 0 14px rgba(99, 214, 197, .24) !important;
+}
+
+#system-page .organization-directory-heading h3 {
+  margin-top: 7px;
+  font-size: 22px;
+  letter-spacing: -.025em;
+}
+
+#system-page .organization-directory-heading p {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+#system-page .organization-directory-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#system-page .organization-directory-actions > small {
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 999px;
+  color: rgba(231, 238, 247, .78) !important;
+  background: rgba(9, 9, 11, .2);
+  font-size: 10px;
+  text-shadow: none;
+}
+
+#organization-directory:not([hidden]) #add-organization-button {
+  min-height: 40px;
+  margin: 0;
+  padding: 9px 15px 9px 10px;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  visibility: visible !important;
+  opacity: 1 !important;
+  border: 1px solid rgba(122, 239, 218, .48) !important;
+  border-radius: 12px;
+  color: rgba(252, 255, 255, .98) !important;
+  background: linear-gradient(135deg, rgba(54, 153, 143, .72), rgba(29, 73, 127, .78)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), 0 10px 24px rgba(0, 0, 0, .18) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .46);
+  cursor: pointer;
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+
+#organization-directory:not([hidden]) #add-organization-button b {
+  width: 23px;
+  height: 23px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #d9fff8;
+  background: rgba(255, 255, 255, .12);
+  font-size: 17px;
+  line-height: 1;
+}
+
+#organization-directory:not([hidden]) #add-organization-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(169, 255, 239, .72) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24), 0 14px 30px rgba(0, 0, 0, .24) !important;
+}
+
+#system-page .organization-list {
+  margin-top: 14px;
+}
+
+#system-page .organization-directory-item {
+  min-height: 66px;
+  padding: 12px 14px;
+  border-color: rgba(255, 255, 255, .2) !important;
+  border-radius: 14px;
+  background: rgba(9, 9, 11, .26) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+#system-page .organization-directory-item.current {
+  border-color: rgba(111, 231, 210, .42) !important;
+  background: linear-gradient(110deg, rgba(48, 135, 128, .25), rgba(30, 54, 94, .2)) !important;
+}
+
+#system-page .organization-code-chip {
+  color: #a9f7e9 !important;
+  text-shadow: 0 0 12px rgba(99, 214, 197, .2) !important;
+}
+
+#system-page .organization-directory-item em {
+  border: 1px solid rgba(111, 231, 210, .22);
+  color: #c8fff4 !important;
+  background: rgba(54, 153, 143, .18) !important;
+  text-shadow: none;
+}
+
+@media (max-width: 720px) {
+  #system-page .organization-directory-heading { align-items: flex-start; }
+  #system-page .organization-directory-actions { width: 100%; justify-content: space-between; }
 }
 
 /* Automation home: use spatial hierarchy instead of stacked grey slabs. */

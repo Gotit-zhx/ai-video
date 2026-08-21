@@ -13,6 +13,7 @@ import com.yingdao.aicommerce.automation.mapper.UserAutomationGrantMapper;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.saas.domain.PlatformUser;
 import com.yingdao.aicommerce.saas.mapper.PlatformUserMapper;
+import com.yingdao.aicommerce.saas.application.OrganizationAccessPolicy;
 import com.yingdao.aicommerce.saas.application.TenantContext;
 import com.yingdao.aicommerce.task.application.ActiveUserTaskService;
 import com.github.junrar.Archive;
@@ -64,6 +65,7 @@ public class AutomationSkillService {
     private final AutomationModelService modelService;
     private final ActiveUserTaskService activeTaskService;
     private final TenantContext tenantContext;
+    private final OrganizationAccessPolicy organizationAccessPolicy;
     private final ObjectMapper objectMapper;
     private final Path storageRoot;
 
@@ -77,6 +79,7 @@ public class AutomationSkillService {
             AutomationModelService modelService,
             ActiveUserTaskService activeTaskService,
             TenantContext tenantContext,
+            OrganizationAccessPolicy organizationAccessPolicy,
             ObjectMapper objectMapper,
             @Value("${app.automation-skill-storage:/data/automation-skills}") String storageRoot
     ) {
@@ -89,6 +92,7 @@ public class AutomationSkillService {
         this.modelService = modelService;
         this.activeTaskService = activeTaskService;
         this.tenantContext = tenantContext;
+        this.organizationAccessPolicy = organizationAccessPolicy;
         this.objectMapper = objectMapper;
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
     }
@@ -888,9 +892,10 @@ public class AutomationSkillService {
 
     private PlatformUser requireUser(String userId) {
         PlatformUser user = userMapper.selectById(userId);
-        if (user == null || !tenantContext.organizationId().equals(user.getOrganizationId())) {
+        if (user == null) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "人员不存在");
         }
+        organizationAccessPolicy.resolveManagedOrganizationId(user.getOrganizationId());
         return user;
     }
 

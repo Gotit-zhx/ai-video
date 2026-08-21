@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+credential_file=/root/heyi-admin-console-credentials.txt
+install_log=/var/log/heyi-1panel-install.log
+panel_port=18443
+
+if command -v 1pctl >/dev/null 2>&1; then
+  echo "1Panel is already installed; leaving the existing installation unchanged."
+  exit 0
+fi
+
+panel_entrance="heyi_$(openssl rand -hex 8)"
+panel_username="heyiadmin_$(openssl rand -hex 4)"
+panel_password="$(openssl rand -hex 12)"
+
+umask 077
+
+PANEL_NON_INTERACTIVE=true \
+PANEL_LANG=zh \
+PANEL_INSTALL_DIR=/opt \
+PANEL_PORT="$panel_port" \
+PANEL_ENTRANCE="$panel_entrance" \
+PANEL_USERNAME="$panel_username" \
+PANEL_PASSWORD="$panel_password" \
+PANEL_INSTALL_DOCKER=n \
+PANEL_CONFIGURE_ACCELERATOR=n \
+PANEL_REPLACE_DAEMON_JSON=n \
+bash -c "$(curl --fail --silent --show-error --location https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh)" \
+  >"$install_log" 2>&1
+
+cat >>"$credential_file" <<EOF
+
+1Panel server console (use an SSH tunnel; the port is blocked from the public Internet):
+  Local URL after tunnel: http://127.0.0.1:${panel_port}/${panel_entrance}
+  Username: ${panel_username}
+  Password: ${panel_password}
+EOF
+
+chmod 0600 "$credential_file" "$install_log"
+1pctl status

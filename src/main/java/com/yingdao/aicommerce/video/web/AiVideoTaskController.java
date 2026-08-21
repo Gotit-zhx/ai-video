@@ -241,7 +241,7 @@ public class AiVideoTaskController {
     public record ReferenceUpdateRequest(@NotBlank String id, int order, @Size(max = 32) String role,
                                          @Size(max = 500) String instruction, Boolean primary) {}
 
-    public record TaskResponse(String id, String name, String scriptId, int scriptVersion, String scriptName,
+    public record TaskResponse(String id, String organizationId, String name, String scriptId, int scriptVersion, String scriptName,
                                String targetMarket, String generationMode, String productCategory, String sceneType,
                                String backgroundMode, String interactionType, boolean allowHand, String aspectRatio,
                                String resolution, String videoRoute,
@@ -252,7 +252,7 @@ public class AiVideoTaskController {
                                int completedItems, String modelId, String errorMessage,
                                Instant createdAt, Instant updatedAt, Instant completedAt) {
         static TaskResponse from(AiVideoTask task) {
-            return new TaskResponse(task.getId(), task.getName(), task.getScriptId(), task.getScriptVersion(),
+            return new TaskResponse(task.getId(), task.getOrganizationId(), task.getName(), task.getScriptId(), task.getScriptVersion(),
                     task.getScriptName(), task.getTargetMarket(), task.getGenerationMode(), task.getProductCategory(),
                     task.getSceneType(), task.getBackgroundMode(), task.getInteractionType(), task.isAllowHand(), task.getAspectRatio(),
                     task.getResolution(), task.getVideoRoute(),

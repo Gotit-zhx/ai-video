@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -32,8 +33,10 @@ public class ModelConfigController {
     }
 
     @GetMapping
-    public ApiResponse<List<ModelConfigResponse>> list() {
-        return ApiResponse.ok(service.list().stream().map(ModelConfigResponse::from).toList());
+    public ApiResponse<List<ModelConfigResponse>> list(
+            @RequestParam(required = false) String organizationId
+    ) {
+        return ApiResponse.ok(service.list(organizationId).stream().map(ModelConfigResponse::from).toList());
     }
 
     @PostMapping
@@ -42,6 +45,7 @@ public class ModelConfigController {
             @Valid @RequestBody CreateModelConfigRequest request
     ) {
         return ApiResponse.created(ModelConfigResponse.from(service.create(
+                request.organizationId(),
                 request.modelType(),
                 request.provider(),
                 request.baseUrl(),
@@ -82,6 +86,7 @@ public class ModelConfigController {
     }
 
     public record CreateModelConfigRequest(
+            String organizationId,
             @NotBlank @Pattern(regexp = "DRIVER|VIDEO|IMAGE") String modelType,
             @Pattern(regexp = "AUTO|DAYAN|H3_MULTI") String provider,
             @NotBlank
@@ -113,6 +118,7 @@ public class ModelConfigController {
 
     public record ModelConfigResponse(
             String id,
+            String organizationId,
             String modelType,
             String provider,
             String baseUrl,
@@ -125,6 +131,7 @@ public class ModelConfigController {
         static ModelConfigResponse from(ModelConfig config) {
             return new ModelConfigResponse(
                     config.getId(),
+                    config.getOrganizationId(),
                     config.getModelType(),
                     config.getProvider(),
                     config.getBaseUrl(),

@@ -216,6 +216,7 @@ public class VideoScriptController {
 
     public record VideoScriptSummaryResponse(
             String id,
+            String organizationId,
             String name,
             String sourceType,
             String sourceFileName,
@@ -234,6 +235,7 @@ public class VideoScriptController {
         static VideoScriptSummaryResponse from(VideoScript script) {
             return new VideoScriptSummaryResponse(
                     script.getId(),
+                    script.getOrganizationId(),
                     script.getName(),
                     script.getSourceType(),
                     script.getSourceFileName(),

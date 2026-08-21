@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Heyi MySQL database backup
+
+[Timer]
+OnCalendar=*-*-* 03:20:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=15m
+Unit=heyi-mysql-backup.service
+
+[Install]
+WantedBy=timers.target

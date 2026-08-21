@@ -12,7 +12,7 @@
   <meta name="description" content="赫逸智能化 AI 平台——连接内容生成、智能编排与电商发布。">
   <title>赫逸智能化 AI 平台</title>
   <link rel="icon" href="/assets/hoyee-logo-transparent-white.png">
-  <link rel="stylesheet" href="/styles.css?v=20260818-product-progress-1">
+  <link rel="stylesheet" href="/styles.css?v=20260820-company-scope-1">
   <link rel="stylesheet" href="/vendor/liquid-glass.css?v=login-moonshot-black-20260818-4">
 </head>
 <body>
@@ -35,6 +35,12 @@
         <p class="login-help">登录你的企业工作空间，继续管理 AI 内容任务。</p>
 
         <form id="login-form" novalidate>
+          <label for="organization-code">公司代码</label>
+          <div class="field">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 21V7l8-4 8 4v14M8 10h2m4 0h2M8 14h2m4 0h2M9 21v-3h6v3"/></svg>
+            <input id="organization-code" name="organizationCode" autocomplete="organization" maxlength="40" pattern="[A-Za-z0-9_-]{2,40}" value="heyi" placeholder="例如：heyi" required>
+          </div>
+
           <label for="username">手机号</label>
           <div class="field">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"/></svg>
@@ -131,7 +137,13 @@
         <nav class="system-tabs sliding-switch" aria-label="系统配置">
           <button class="system-tab active" data-system-tab="people">组织与人员</button>
           <button class="system-tab" data-system-tab="rbac">角色与权限</button>
+          <button class="system-tab" data-system-tab="profile">公司管理</button>
         </nav>
+
+        <header id="people-company-context" class="company-context-bar system-company-context" hidden>
+          <div><span>当前管理公司</span><strong id="people-company-name">正在读取公司</strong><small>部门、人员与角色均按所选公司独立管理</small></div>
+          <label>切换公司<select id="people-organization-select" aria-label="切换组织与人员所属公司"></select></label>
+        </header>
 
         <div id="system-people-panel" class="system-panel">
           <section class="people-layout">
@@ -215,9 +227,19 @@
             </dl>
             <button id="edit-org-button" class="quiet-button">编辑企业资料</button>
           </section>
+          <section id="organization-directory" class="organization-directory" hidden>
+            <header class="organization-directory-heading">
+              <div><span>公司工作空间</span><h3>公司名录</h3><p>每家公司拥有独立人员、脚本与模型配置。</p></div>
+              <div class="organization-directory-actions">
+                <small id="organization-count">0 个公司</small>
+                <button id="add-organization-button" class="new-job-button compact-action" type="button"><b aria-hidden="true">＋</b> 创建公司</button>
+              </div>
+            </header>
+            <div id="organization-list" class="organization-list"></div>
+          </section>
           <section class="boundary-note">
             <strong>配置边界</strong>
-            <p>部门、角色和人员是业务实体，不属于数据字典。字典只维护平台类型、素材分类、任务标签等可选项，不参与鉴权判断。</p>
+            <p>人员、脚本、任务与模型连接均按公司隔离。公司管理员只能访问本公司，平台管理员可切换公司进行配置。</p>
           </section>
         </div>
       </div>
@@ -545,6 +567,10 @@
 
       <div id="models-page" class="workspace-body" hidden>
         <section class="model-connect-card">
+          <header class="company-context-bar">
+            <div><span>当前配置公司</span><strong id="model-company-name">正在读取公司</strong><small>下面的模型、密钥、启停状态和默认项仅属于该公司</small></div>
+            <label id="model-company-field">切换公司<select id="model-organization-select"></select></label>
+          </header>
           <div class="model-category-grid">
             <section class="model-category" data-model-category="DRIVER">
               <header><div><h3>驱动模型</h3><p>任务理解、脚本拆解与流程调度</p></div><button class="circle-button" data-add-model-type="DRIVER" aria-label="添加驱动模型">＋</button></header>
@@ -895,6 +921,7 @@
         <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
       </div>
       <div class="form-grid">
+        <label class="full-field" id="user-organization-field">所属公司<select name="organizationId" id="user-organization" required></select></label>
         <label>姓名<input name="displayName" required maxlength="120" placeholder="例如：林晓"></label>
         <label>手机号（登录账号）<input name="phone" type="tel" inputmode="tel" required pattern="\+?[0-9]{6,20}" maxlength="21" autocomplete="tel" placeholder="例如：13800138000"></label>
         <label>所属部门<select name="departmentId" id="user-department" required></select></label>
@@ -1041,6 +1068,23 @@
     </form>
   </dialog>
 
+  <dialog id="create-organization-dialog" class="manage-dialog compact-dialog">
+    <form id="create-organization-form" method="dialog">
+      <div class="dialog-heading">
+        <div><h2>创建公司工作空间</h2><p>创建后自动生成公司总部和基础岗位角色。</p></div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <div class="form-grid">
+        <label>公司名称<input name="name" required maxlength="120" placeholder="例如：华南内容中心"></label>
+        <label>公司代码<input name="code" required maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,39}" placeholder="例如：south_content"></label>
+        <label class="full-field">公司简介<textarea name="description" maxlength="1000" rows="3" placeholder="说明该工作空间服务的业务范围"></textarea></label>
+      </div>
+      <p class="form-help">公司代码用于登录，创建后不可重复；建议使用简短英文或拼音。</p>
+      <div id="create-organization-form-error" class="form-error" hidden></div>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button type="submit" class="new-job-button">创建公司</button></div>
+    </form>
+  </dialog>
+
   <dialog id="model-dialog" class="manage-dialog compact-dialog">
     <form id="model-form" method="dialog" autocomplete="off">
       <input type="hidden" name="configId">
@@ -1051,6 +1095,7 @@
         <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
       </div>
       <div class="simple-model-form">
+        <label id="model-organization-field"><span>所属公司</span><select name="organizationId" id="model-organization" required></select></label>
         <label id="video-provider-field" hidden><span>视频线路</span><select name="provider"><option value="AUTO">自动识别</option><option value="DAYAN">高质量 · 低速度</option><option value="H3_MULTI">低质量 · 高速度</option></select></label>
         <label><span>API 地址</span><input name="baseUrl" type="url" required maxlength="512" placeholder="https://api.example.com/v1"></label>
         <label><span>模型 ID</span><input name="modelId" required maxlength="160" placeholder="例如：image-model-v1"></label>
@@ -1199,7 +1244,7 @@
     </form>
   </dialog>
   <script src="/vendor/sortable.min.js" defer></script>
-  <script src="/app.js?v=20260819-http-uuid-fallback-1" defer></script>
+  <script src="/app.js?v=20260820-company-scope-1" defer></script>
   <script src="/vendor/liquid-glass.js?v=models-clear-glass-20260814-40" defer></script>
 </body>
 </html>

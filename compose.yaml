@@ -25,6 +25,7 @@ services:
       APP_AUTOMATION_ATTACHMENT_STORAGE: /data/automation-attachments
       APP_VIDEO_SCRIPT_STORAGE: /data/video-scripts
       APP_AI_VIDEO_TASK_STORAGE: /data/ai-video-tasks
+      APP_VIDEO_MAX_CONCURRENT_SUBMISSIONS: ${APP_VIDEO_MAX_CONCURRENT_SUBMISSIONS:-500}
       APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-http://localhost:8080}
       APP_PI_RUNTIME_URL: http://pi-runtime:8090
       APP_PI_RUNTIME_TOKEN: ${APP_PI_RUNTIME_TOKEN:-heyi-pi-runtime-dev-token}

@@ -17,21 +17,29 @@ public class ModelConfigService {
     private final TenantContext tenantContext;
     private final ModelConfigMapper mapper;
     private final ModelSecretCipher secretCipher;
+    private final OrganizationAccessPolicy organizationAccessPolicy;
 
     public ModelConfigService(
             TenantContext tenantContext,
             ModelConfigMapper mapper,
-            ModelSecretCipher secretCipher
+            ModelSecretCipher secretCipher,
+            OrganizationAccessPolicy organizationAccessPolicy
     ) {
         this.tenantContext = tenantContext;
         this.mapper = mapper;
         this.secretCipher = secretCipher;
+        this.organizationAccessPolicy = organizationAccessPolicy;
     }
 
     public List<ModelConfig> list() {
+        return list(null);
+    }
+
+    public List<ModelConfig> list(String requestedOrganizationId) {
+        String organizationId = organizationAccessPolicy.resolveManagedOrganizationId(requestedOrganizationId);
         return mapper.selectList(
                 new LambdaQueryWrapper<ModelConfig>()
-                        .eq(ModelConfig::getOrganizationId, tenantContext.organizationId())
+                        .eq(ModelConfig::getOrganizationId, organizationId)
                         .orderByDesc(ModelConfig::isDefaultModel)
                         .orderByDesc(ModelConfig::getUpdatedAt)
         );
@@ -99,6 +107,7 @@ public class ModelConfigService {
 
     @Transactional
     public ModelConfig create(
+            String requestedOrganizationId,
             String modelType,
             String provider,
             String baseUrl,
@@ -106,7 +115,7 @@ public class ModelConfigService {
             String apiKey,
             boolean defaultModel
     ) {
-        String organizationId = tenantContext.organizationId();
+        String organizationId = organizationAccessPolicy.resolveManagedOrganizationId(requestedOrganizationId);
         String normalizedType = normalizeModelType(modelType);
         String normalizedProvider = normalizeProvider(normalizedType, provider, baseUrl);
         String normalizedUrl = normalizeBaseUrl(baseUrl);
@@ -132,6 +141,18 @@ public class ModelConfigService {
         );
         mapper.insert(config);
         return config;
+    }
+
+    @Transactional
+    public ModelConfig create(
+            String modelType,
+            String provider,
+            String baseUrl,
+            String modelId,
+            String apiKey,
+            boolean defaultModel
+    ) {
+        return create(null, modelType, provider, baseUrl, modelId, apiKey, defaultModel);
     }
 
     @Transactional
@@ -255,10 +276,10 @@ public class ModelConfigService {
 
     private ModelConfig requireConfig(String id) {
         ModelConfig config = mapper.selectById(id);
-        if (config == null
-                || !tenantContext.organizationId().equals(config.getOrganizationId())) {
+        if (config == null) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "模型连接不存在");
         }
+        organizationAccessPolicy.resolveManagedOrganizationId(config.getOrganizationId());
         return config;
     }
 

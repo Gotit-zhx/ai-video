@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
-$workspaceRoot = 'C:\Users\yingdao\Desktop\web_SDK_项目'
+$workspaceRoot = 'D:\Projects\web_SDK_项目'
 $releaseRoot = Join-Path $workspaceRoot 'automation-agent'
 $dockerUpdateTemp = 'C:\Users\yingdao\AppData\Local\Temp\DockerDesktopUpdates'
-$dockerVhd = 'C:\Users\yingdao\AppData\Local\Docker\wsl\disk\docker_data.vhdx'
+$dockerVhd = 'D:\DockerData\wsl\disk\docker_data.vhdx'
 $keepReleaseNames = @('release', 'release-agent-expanded-v27')
 $containerNames = @(
     'ai-commerce-mysql',

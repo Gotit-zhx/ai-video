@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+panel_port=18443
+
+iptables -C INPUT -i lo -p tcp --dport "$panel_port" -m comment --comment heyi-1panel-local -j ACCEPT 2>/dev/null \
+  || iptables -I INPUT 1 -i lo -p tcp --dport "$panel_port" -m comment --comment heyi-1panel-local -j ACCEPT
+iptables -C INPUT -p tcp --dport "$panel_port" -m comment --comment heyi-1panel-deny-public -j DROP 2>/dev/null \
+  || iptables -I INPUT 2 -p tcp --dport "$panel_port" -m comment --comment heyi-1panel-deny-public -j DROP

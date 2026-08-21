@@ -2,6 +2,7 @@ package com.yingdao.aicommerce.auth;
 
 import com.yingdao.aicommerce.common.api.ApiResponse;
 import com.yingdao.aicommerce.common.exception.BusinessException;
+import com.yingdao.aicommerce.saas.application.OrganizationAccessPolicy;
 import com.yingdao.aicommerce.saas.mapper.OrganizationMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -31,17 +32,20 @@ public class AuthController {
     private final AuthenticationManager authenticationManager;
     private final SecurityContextRepository securityContextRepository;
     private final FindByIndexNameSessionRepository<? extends Session> sessionRepository;
+    private final OrganizationAccessPolicy organizationAccessPolicy;
 
     public AuthController(
             OrganizationMapper organizationMapper,
             AuthenticationManager authenticationManager,
             SecurityContextRepository securityContextRepository,
-            FindByIndexNameSessionRepository<? extends Session> sessionRepository
+            FindByIndexNameSessionRepository<? extends Session> sessionRepository,
+            OrganizationAccessPolicy organizationAccessPolicy
     ) {
         this.organizationMapper = organizationMapper;
         this.authenticationManager = authenticationManager;
         this.securityContextRepository = securityContextRepository;
         this.sessionRepository = sessionRepository;
+        this.organizationAccessPolicy = organizationAccessPolicy;
     }
 
     @PostMapping("/login")
@@ -110,7 +114,8 @@ public class AuthController {
                 organization.getCode(),
                 organization.getName(),
                 principal.roleCodes(),
-                principal.permissionCodes()
+                principal.permissionCodes(),
+                organizationAccessPolicy.isPlatformAdmin(principal)
         );
     }
 
@@ -129,7 +134,8 @@ public class AuthController {
             String organizationCode,
             String organizationName,
             java.util.List<String> roles,
-            java.util.List<String> permissions
+            java.util.List<String> permissions,
+            boolean platformAdmin
     ) {
     }
 }

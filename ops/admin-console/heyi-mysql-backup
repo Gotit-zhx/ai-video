@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+backup_dir=/opt/heyi/backups/mysql
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+archive="$backup_dir/ai-commerce-$timestamp.sql.gz"
+temporary="$archive.tmp"
+
+umask 077
+mkdir -p "$backup_dir"
+
+docker exec ai-commerce-mysql sh -lc \
+  'exec mysqldump --single-transaction --quick --routines --events --triggers --no-tablespaces -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' \
+  | gzip -9 > "$temporary"
+
+test -s "$temporary"
+mv "$temporary" "$archive"
+find "$backup_dir" -maxdepth 1 -type f -name 'ai-commerce-*.sql.gz' -mtime +14 -delete

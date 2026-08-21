@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+docker exec ai-commerce-frontend nginx -t
+docker exec ai-commerce-frontend nginx -s reload

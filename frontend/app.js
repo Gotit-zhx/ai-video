@@ -4,13 +4,21 @@ const loginForm = document.querySelector("#login-form");
 const loginError = document.querySelector("#login-error");
 const loginButton = document.querySelector("#login-button");
 const passwordInput = document.querySelector("#password");
-const loginOrganizationCode = "heyi";
 let departments = [];
 let roles = [];
 let permissions = [];
 let users = [];
 let organization = null;
+let organizations = [];
 let modelConfigs = [];
+let selectedModelOrganizationId = "";
+let selectedPeopleOrganizationId = "";
+let userDialogDepartments = [];
+let userDialogRoles = [];
+const rememberedOrganizationCode = localStorage.getItem("heyi:last-organization-code");
+if (rememberedOrganizationCode) {
+  document.querySelector("#organization-code").value = rememberedOrganizationCode;
+}
 let selectedDepartmentId = "";
 let selectedRoleId = "";
 let currentUser = null;
@@ -44,6 +52,7 @@ let automationFormCanvasSortable = null;
 let skillConvertStatusTimer = null;
 let videoScriptStatusTimer = null;
 let videoScriptPollingGeneration = 0;
+let videoScriptLoadGeneration = 0;
 let activeVideoScript = null;
 let selectedVideoScriptId = null;
 let selectedVideoScriptDetail = null;
@@ -69,6 +78,7 @@ let selectedAiVideoTaskId = null;
 let aiVideoTaskDetail = null;
 let aiVideoTaskPollTimer = null;
 let aiVideoTaskPollInFlight = false;
+let aiVideoTaskLoadGeneration = 0;
 let aiVideoTaskRenderSignature = "";
 let aiVideoElapsedTimer = null;
 let aiVideoMonitorSnapshot = { stats: {}, tasks: [] };
@@ -76,6 +86,7 @@ let selectedMonitorTaskId = null;
 let selectedMonitorTaskDetail = null;
 let aiVideoMonitorStatus = "ALL";
 let aiVideoMonitorTimer = null;
+let aiVideoMonitorLoadGeneration = 0;
 let slidingSwitchFrame = 0;
 const flippedAiVideoPromptItems = new Set();
 const aiVideoPromptDrafts = new Map();
@@ -593,11 +604,16 @@ async function api(path, options = {}) {
 
 function showLogin() {
   stopWorkflowEvents();
+  resetCompanyScopedWorkspaceState();
+  currentUser = null;
   loginView.hidden = false;
   dashboardView.hidden = true;
 }
 
 async function showDashboard(user) {
+  if (currentUser?.organizationId && currentUser.organizationId !== user?.organizationId) {
+    resetCompanyScopedWorkspaceState();
+  }
   currentUser = user;
   loginView.hidden = true;
   dashboardView.hidden = false;
@@ -684,10 +700,11 @@ async function restoreSession() {
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const organizationCode = document.querySelector("#organization-code").value.trim().toLowerCase();
   const username = document.querySelector("#username").value.trim();
   const password = passwordInput.value;
-  if (!username || !password) {
-    loginError.textContent = "请输入手机号和密码";
+  if (!organizationCode || !username || !password) {
+    loginError.textContent = "请输入公司代码、手机号和密码";
     loginError.hidden = false;
     return;
   }
@@ -700,11 +717,12 @@ loginForm.addEventListener("submit", async (event) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        organizationCode: loginOrganizationCode,
+        organizationCode,
         phone: username,
         password
       })
     });
+    localStorage.setItem("heyi:last-organization-code", organizationCode);
     await showDashboard(result.data);
   } catch (error) {
     loginError.textContent = error.message;
@@ -2782,22 +2800,38 @@ async function loadSystemData() {
     "system:permission:view", "system:role:manage"
   );
   const canReadModels = hasAnyPermission("system:model:view", "system:model:manage");
+  const platformAdmin = Boolean(currentUser?.platformAdmin);
+  const [organizationResult, organizationsResult] = await Promise.all([
+    canReadOrganization ? api("/api/v1/system/organization") : Promise.resolve({ data: null }),
+    platformAdmin ? api("/api/v1/system/organizations") : Promise.resolve({ data: [] })
+  ]);
+  organization = organizationResult.data;
+  organizations = platformAdmin ? organizationsResult.data : organization ? [organization] : [];
+  if (!selectedModelOrganizationId || !organizations.some(item => item.id === selectedModelOrganizationId)) {
+    selectedModelOrganizationId = currentUser?.organizationId || organizations[0]?.id || "";
+  }
+  if (!selectedPeopleOrganizationId || !organizations.some(item => item.id === selectedPeopleOrganizationId)) {
+    selectedPeopleOrganizationId = currentUser?.organizationId || organizations[0]?.id || "";
+  }
+  const modelOrganizationId = selectedModelOrganizationId;
+  const peopleOrganizationQuery = platformAdmin && selectedPeopleOrganizationId
+    ? `?organizationId=${encodeURIComponent(selectedPeopleOrganizationId)}`
+    : "";
   const [
-    organizationResult,
     departmentResult,
     roleResult,
     permissionResult,
     userResult,
     modelResult
   ] = await Promise.all([
-    canReadOrganization ? api("/api/v1/system/organization") : Promise.resolve({ data: null }),
-    canReadPeople ? api("/api/v1/system/departments") : Promise.resolve({ data: [] }),
-    canReadRoles ? api("/api/v1/system/roles") : Promise.resolve({ data: [] }),
+    canReadPeople ? api(`/api/v1/system/departments${peopleOrganizationQuery}`) : Promise.resolve({ data: [] }),
+    canReadRoles ? api(`/api/v1/system/roles${peopleOrganizationQuery}`) : Promise.resolve({ data: [] }),
     canReadPermissions ? api("/api/v1/system/permissions") : Promise.resolve({ data: [] }),
-    canReadPeople ? api("/api/v1/system/users") : Promise.resolve({ data: [] }),
-    canReadModels ? api("/api/v1/system/model-configs") : Promise.resolve({ data: [] })
+    canReadPeople ? api(`/api/v1/system/users${peopleOrganizationQuery}`) : Promise.resolve({ data: [] }),
+    canReadModels
+      ? api(`/api/v1/system/model-configs?organizationId=${encodeURIComponent(modelOrganizationId)}`)
+      : Promise.resolve({ data: [] })
   ]);
-  organization = organizationResult.data;
   departments = departmentResult.data;
   roles = roleResult.data;
   permissions = permissionResult.data;
@@ -2808,10 +2842,12 @@ async function loadSystemData() {
   }
   configureSystemAccess();
   if (organization) renderOrganization();
+  renderOrganizationDirectory();
   renderDepartments();
   renderRoles();
   renderUsers();
   renderModelConfigs();
+  populateOrganizationSelectors();
   populateFormOptions();
 }
 
@@ -2841,6 +2877,12 @@ function configureSystemAccess() {
     !hasAnyPermission("system:role:manage");
   document.querySelector("#edit-org-button").hidden =
     !hasAnyPermission("system:organization:manage");
+  document.querySelector("#organization-directory").hidden = !currentUser?.platformAdmin;
+  document.querySelector("#add-organization-button").hidden = !currentUser?.platformAdmin;
+  document.querySelector("#user-organization-field").hidden = !currentUser?.platformAdmin;
+  document.querySelector("#model-company-field").hidden = !currentUser?.platformAdmin;
+  document.querySelector("#model-organization-field").hidden = !currentUser?.platformAdmin;
+  updatePeopleCompanyContextVisibility();
   document.querySelectorAll("[data-add-model-type]").forEach(button => {
     button.hidden = !hasAnyPermission("system:model:manage");
   });
@@ -2920,6 +2962,8 @@ function openModelDialog(config = null, modelType = "DRIVER") {
   form.elements.configId.value = config?.id || "";
   form.elements.modelType.value = config?.modelType || modelType;
   form.elements.defaultModel.value = String(config?.defaultModel || false);
+  form.elements.organizationId.value = config?.organizationId || selectedModelOrganizationId || currentUser?.organizationId || "";
+  form.elements.organizationId.disabled = Boolean(config);
   form.elements.baseUrl.value = config?.baseUrl || "";
   form.elements.modelId.value = config?.modelId || "";
   form.elements.provider.value = config?.provider || "AUTO";
@@ -2960,6 +3004,49 @@ function renderOrganization() {
   document.querySelector("#org-description").textContent =
     organization.description || "补充企业简介，让团队清楚这个工作空间服务于什么业务。";
   document.querySelector("#org-plan").textContent = organization.planCode;
+}
+
+function renderOrganizationDirectory() {
+  const target = document.querySelector("#organization-list");
+  if (!target || !currentUser?.platformAdmin) return;
+  document.querySelector("#organization-count").textContent = `${organizations.length} 个公司`;
+  target.innerHTML = organizations.map(item => `
+    <article class="organization-directory-item ${item.id === currentUser.organizationId ? "current" : ""}">
+      <span class="organization-code-chip">${escapeHtml(item.code.toUpperCase())}</span>
+      <div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description || "尚未填写公司简介")}</small></div>
+      <em>${item.status === "ACTIVE" ? "正常" : "已停用"}</em>
+    </article>
+  `).join("") || '<div class="model-empty compact">还没有可管理的公司。</div>';
+}
+
+function populateOrganizationSelectors() {
+  const options = organizations.map(item =>
+    `<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.code.toUpperCase())}</option>`
+  ).join("");
+  const modelSelect = document.querySelector("#model-organization-select");
+  const modelFormSelect = document.querySelector("#model-organization");
+  const userSelect = document.querySelector("#user-organization");
+  const peopleSelect = document.querySelector("#people-organization-select");
+  modelSelect.innerHTML = options;
+  modelFormSelect.innerHTML = options;
+  userSelect.innerHTML = options;
+  peopleSelect.innerHTML = options;
+  modelSelect.value = selectedModelOrganizationId;
+  modelFormSelect.value = selectedModelOrganizationId;
+  userSelect.value = selectedPeopleOrganizationId || currentUser?.organizationId || organizations[0]?.id || "";
+  peopleSelect.value = selectedPeopleOrganizationId;
+  const selectedModelOrganization = organizations.find(item => item.id === selectedModelOrganizationId);
+  const selectedPeopleOrganization = organizations.find(item => item.id === selectedPeopleOrganizationId);
+  document.querySelector("#model-company-name").textContent =
+    selectedModelOrganization?.name || organization?.name || "当前公司";
+  document.querySelector("#people-company-name").textContent =
+    selectedPeopleOrganization?.name || organization?.name || "当前公司";
+}
+
+function updatePeopleCompanyContextVisibility(tab) {
+  const activeTab = tab || document.querySelector("[data-system-tab].active")?.dataset.systemTab || "people";
+  document.querySelector("#people-company-context").hidden =
+    !currentUser?.platformAdmin || !["people", "rbac"].includes(activeTab);
 }
 
 function renderDepartments() {
@@ -3162,9 +3249,9 @@ async function openAutomationAccess(user) {
 }
 
 function populateFormOptions() {
-  document.querySelector("#user-department").innerHTML = departments
-    .map(department => `<option value="${department.id}">${escapeHtml(department.name)}</option>`)
-    .join("");
+  userDialogDepartments = departments;
+  userDialogRoles = roles;
+  populateUserCreationOptions();
   document.querySelector("#parent-department").innerHTML =
     '<option value="">无上级部门</option>' +
     departments.map(department => `<option value="${department.id}">${escapeHtml(department.name)}</option>`).join("");
@@ -3174,9 +3261,27 @@ function populateFormOptions() {
   renderRoleChoices("user-role-options", []);
 }
 
-function renderRoleChoices(containerId, selectedIds) {
+function populateUserCreationOptions() {
+  document.querySelector("#user-department").innerHTML = userDialogDepartments
+    .map(department => `<option value="${department.id}">${escapeHtml(department.name)}</option>`)
+    .join("");
+  renderRoleChoices("user-role-options", [], userDialogRoles);
+}
+
+async function loadUserOrganizationOptions(organizationId) {
+  const query = `?organizationId=${encodeURIComponent(organizationId)}`;
+  const [departmentResult, roleResult] = await Promise.all([
+    api(`/api/v1/system/departments${query}`),
+    api(`/api/v1/system/roles${query}`)
+  ]);
+  userDialogDepartments = departmentResult.data || [];
+  userDialogRoles = roleResult.data || [];
+  populateUserCreationOptions();
+}
+
+function renderRoleChoices(containerId, selectedIds, availableRoles = roles) {
   const selected = new Set(selectedIds || []);
-  document.querySelector(`#${containerId}`).innerHTML = roles
+  document.querySelector(`#${containerId}`).innerHTML = availableRoles
     .filter(role => role.status === "ACTIVE" || selected.has(role.id))
     .map(role => `
       <label class="choice-item">
@@ -3310,15 +3415,37 @@ document.querySelectorAll("[data-system-tab]").forEach(button => {
     document.querySelector("#system-people-panel").hidden = tab !== "people";
     document.querySelector("#system-rbac-panel").hidden = tab !== "rbac";
     document.querySelector("#system-profile-panel").hidden = tab !== "profile";
+    updatePeopleCompanyContextVisibility(tab);
   });
 });
 
 document.querySelector("#user-search").addEventListener("input", renderUsers);
 document.querySelector("#refresh-users-button").addEventListener("click", loadSystemData);
-document.querySelector("#add-user-button").addEventListener("click", () => {
-  document.querySelector("#user-form").reset();
-  populateFormOptions();
+document.querySelector("#add-user-button").addEventListener("click", async () => {
+  const form = document.querySelector("#user-form");
+  const error = document.querySelector("#user-form-error");
+  form.reset();
+  populateOrganizationSelectors();
+  const organizationId = selectedPeopleOrganizationId || currentUser?.organizationId || organizations[0]?.id || "";
+  form.elements.organizationId.value = organizationId;
   document.querySelector("#user-dialog").showModal();
+  error.hidden = true;
+  try {
+    await loadUserOrganizationOptions(organizationId);
+  } catch (requestError) {
+    error.textContent = requestError.message;
+    error.hidden = false;
+  }
+});
+document.querySelector("#user-organization").addEventListener("change", async event => {
+  const error = document.querySelector("#user-form-error");
+  error.hidden = true;
+  try {
+    await loadUserOrganizationOptions(event.currentTarget.value);
+  } catch (requestError) {
+    error.textContent = requestError.message;
+    error.hidden = false;
+  }
 });
 document.querySelector("#add-department-button").addEventListener("click", () => {
   openDepartmentDialog();
@@ -3330,6 +3457,12 @@ document.querySelector("#edit-org-button").addEventListener("click", () => {
   });
   document.querySelector("#organization-dialog").showModal();
 });
+document.querySelector("#add-organization-button").addEventListener("click", () => {
+  const form = document.querySelector("#create-organization-form");
+  form.reset();
+  document.querySelector("#create-organization-form-error").hidden = true;
+  document.querySelector("#create-organization-dialog").showModal();
+});
 document.querySelector("#add-role-button").addEventListener("click", () => openRoleDialog());
 document.querySelector("#edit-role-button").addEventListener("click", () =>
   openRoleDialog(roles.find(role => role.id === selectedRoleId))
@@ -3338,6 +3471,24 @@ document.querySelectorAll("[data-add-model-type]").forEach(button => {
   button.addEventListener("click", () =>
     openModelDialog(null, button.dataset.addModelType)
   );
+});
+document.querySelector("#model-organization-select").addEventListener("change", async event => {
+  selectedModelOrganizationId = event.currentTarget.value;
+  try {
+    await loadSystemData();
+  } catch (requestError) {
+    window.alert(requestError.message);
+  }
+});
+document.querySelector("#people-organization-select").addEventListener("change", async event => {
+  selectedPeopleOrganizationId = event.currentTarget.value;
+  selectedDepartmentId = "";
+  selectedRoleId = "";
+  try {
+    await loadSystemData();
+  } catch (requestError) {
+    window.alert(requestError.message);
+  }
 });
 
 document.querySelectorAll("[data-close-dialog]").forEach(button => {
@@ -3506,6 +3657,7 @@ document.querySelector("#role-form").addEventListener("submit", async (event) =>
   const payload = formToObject(form);
   const roleId = payload.roleId;
   delete payload.roleId;
+  if (!roleId) payload.organizationId = selectedPeopleOrganizationId || currentUser?.organizationId || "";
   payload.status = form.elements.status.value;
   payload.permissionIds = selectedValues("permission-options", "permissionIds");
   const path = roleId
@@ -3526,6 +3678,7 @@ document.querySelector("#department-form").addEventListener("submit", async (eve
   const payload = formToObject(form);
   const departmentId = payload.departmentId;
   delete payload.departmentId;
+  if (!departmentId) payload.organizationId = selectedPeopleOrganizationId || currentUser?.organizationId || "";
   payload.sortOrder = departments.length;
   if (departmentId) delete payload.sortOrder;
   await submitDialogForm(
@@ -3547,6 +3700,19 @@ document.querySelector("#organization-form").addEventListener("submit", async (e
     "organization-form-error",
     undefined,
     "PUT"
+  );
+});
+
+document.querySelector("#create-organization-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = formToObject(form);
+  payload.code = String(payload.code || "").trim().toLowerCase();
+  await submitDialogForm(
+    form,
+    "/api/v1/system/organizations",
+    "create-organization-form-error",
+    payload
   );
 });
 
@@ -3898,22 +4064,92 @@ function renderVideoScriptLibrary() {
   return filtered;
 }
 
+function renderEmptyVideoScriptDetail() {
+  selectedVideoScriptDetail = null;
+  selectedVideoShot = null;
+  const detail = document.querySelector("#video-script-detail");
+  if (!detail) return;
+  detail.classList.remove("is-manual-script");
+  document.querySelector("#script-detail-meta").innerHTML = "<span>本公司脚本库</span>";
+  document.querySelector("#script-detail-title").textContent = "还没有视频脚本";
+  document.querySelector("#script-detail-source").textContent = "上传视频或手动创建后，脚本只会保存在登录账号所属公司。";
+  document.querySelector("#script-detail-visual-tone").textContent = "创建第一条脚本后，这里会展示视觉基调与分镜。";
+  document.querySelector("#script-film-strip").innerHTML = '<div class="video-task-empty"><strong>脚本内容为空</strong><span>点击右上角“新建脚本”开始创建。</span></div>';
+  document.querySelector("#script-json-content").textContent = "";
+  document.querySelector("#script-storyboard-view .shot-editor-card").hidden = true;
+  ["#copy-video-script", "#reanalyze-video-script", "#delete-video-script", "#edit-video-script-tone"]
+    .forEach(selector => { document.querySelector(selector).hidden = true; });
+}
+
+function resetVideoScriptState() {
+  videoScriptLoadGeneration += 1;
+  stopVideoScriptPolling();
+  stopVideoScriptVisualProgress();
+  activeVideoScript = null;
+  selectedVideoScriptId = null;
+  selectedVideoScriptDetail = null;
+  selectedVideoShot = null;
+  videoScripts = [];
+  renderEmptyVideoScriptDetail();
+  renderVideoScriptLibrary();
+}
+
+function resetAiVideoTaskState() {
+  aiVideoTaskLoadGeneration += 1;
+  if (aiVideoTaskPollTimer) clearInterval(aiVideoTaskPollTimer);
+  aiVideoTaskPollTimer = null;
+  aiVideoTaskPollInFlight = false;
+  stopAiVideoElapsedTimer();
+  aiVideoTasks = [];
+  selectedAiVideoTaskId = null;
+  aiVideoTaskDetail = null;
+  aiVideoTaskRenderSignature = "";
+  flippedAiVideoPromptItems.clear();
+  aiVideoPromptDrafts.clear();
+  renderAiVideoTaskList();
+  renderAiVideoTaskDetail();
+}
+
+function resetAiVideoMonitorState() {
+  aiVideoMonitorLoadGeneration += 1;
+  if (aiVideoMonitorTimer) clearInterval(aiVideoMonitorTimer);
+  aiVideoMonitorTimer = null;
+  aiVideoMonitorSnapshot = { stats: {}, tasks: [] };
+  selectedMonitorTaskId = null;
+  selectedMonitorTaskDetail = null;
+  renderAiVideoMonitorOverview();
+  renderAiVideoMonitorList();
+  renderAiVideoMonitorDetail();
+}
+
+function resetCompanyScopedWorkspaceState() {
+  resetVideoScriptState();
+  resetAiVideoTaskState();
+  resetAiVideoMonitorState();
+}
+
 async function loadVideoScripts(preferredId = null) {
+  const generation = ++videoScriptLoadGeneration;
+  const organizationId = currentUser?.organizationId || "";
   try {
     const result = await api("/api/v1/video-scripts");
-    videoScripts = Array.isArray(result?.data) ? result.data : [];
+    if (generation !== videoScriptLoadGeneration || currentUser?.organizationId !== organizationId) return;
+    videoScripts = (Array.isArray(result?.data) ? result.data : [])
+      .filter(script => !script.organizationId || script.organizationId === organizationId);
     const currentResult = await api("/api/v1/video-scripts/current");
+    if (generation !== videoScriptLoadGeneration || currentUser?.organizationId !== organizationId) return;
     activeVideoScript = currentResult?.data || null;
     document.querySelector("#import-video-script").textContent = activeVideoScript ? "查看拆解进度" : "＋ 新建脚本";
     if (!videoScripts.length) {
       selectedVideoScriptId = null;
       renderVideoScriptLibrary();
+      renderEmptyVideoScriptDetail();
       return;
     }
     const selectedId = videoScripts.some(script => script.id === preferredId) ? preferredId : videoScripts[0].id;
     selectedVideoScriptId = selectedId;
     renderVideoScriptLibrary();
-    await loadVideoScriptDetail(selectedId);
+    await loadVideoScriptDetail(selectedId, generation, organizationId);
     if (activeVideoScript && activeVideoScript.status !== "FAILED" && !videoScriptStatusTimer) {
       startVideoScriptPolling(activeVideoScript.id);
     }
@@ -3980,16 +4216,25 @@ function selectRenderedShot(button, shot, scriptId) {
   }
 }
 
-async function loadVideoScriptDetail(id) {
+async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGeneration,
+                                     expectedOrganizationId = currentUser?.organizationId || "") {
   if (!id) return;
   selectedVideoScriptId = id;
   const result = await api(`/api/v1/video-scripts/${encodeURIComponent(id)}`);
+  if (expectedGeneration !== videoScriptLoadGeneration
+      || currentUser?.organizationId !== expectedOrganizationId) return;
   const detail = result?.data;
-  if (!detail?.script) return;
+  if (!detail?.script || (detail.script.organizationId
+      && detail.script.organizationId !== expectedOrganizationId)) {
+    renderEmptyVideoScriptDetail();
+    return;
+  }
   selectedVideoScriptDetail = detail;
   const script = detail.script;
   const shots = Array.isArray(detail.shots) ? detail.shots : [];
   const manualScript = script.sourceType === "MANUAL";
+  ["#copy-video-script", "#delete-video-script", "#edit-video-script-tone"]
+    .forEach(selector => { document.querySelector(selector).hidden = false; });
   document.querySelector("#video-script-detail").classList.toggle("is-manual-script", manualScript);
   const storyboardTab = document.querySelector('[data-script-view="storyboard"]');
   const jsonTab = document.querySelector('[data-script-view="json"]');
@@ -5408,7 +5653,7 @@ function renderAiVideoTaskDetail(options = {}) {
     : task.errorMessage && !allImagesReady && !directReferenceVideo
     ? friendlyAiVideoError(task.errorMessage, "image")
     : videoGenerating
-      ? `视频正在后台生成；当前平台并发 ${Number(detail.activeVideoSubmissions || 0)} / ${Number(detail.videoSubmissionLimit || 10)}，超出上限的请求会自动排队补位。`
+      ? `视频正在后台生成；并发数 ${Number(detail.activeVideoSubmissions || 0)} / ${Number(detail.videoSubmissionLimit || 500)}，超出上限的请求会自动排队补位。`
       : imageGenerating
         ? `正在准备首帧和九宫格：已完成 ${Number(task.completedItems || 0)} / ${Number(task.totalItems || detail.items.length)} 款；全部完成后自动提交视频。`
       : directReferenceVideo
@@ -5511,7 +5756,11 @@ function renderAiVideoTaskDetail(options = {}) {
   syncAiVideoElapsedTimer();
 }
 
-async function selectAiVideoTask(id, { startPolling = true } = {}) {
+async function selectAiVideoTask(id, {
+  startPolling = true,
+  expectedGeneration = aiVideoTaskLoadGeneration,
+  expectedOrganizationId = currentUser?.organizationId || ""
+} = {}) {
   const selectionChanged = selectedAiVideoTaskId !== id;
   selectedAiVideoTaskId = id;
   if (selectionChanged) {
@@ -5520,7 +5769,11 @@ async function selectAiVideoTask(id, { startPolling = true } = {}) {
   }
   try {
     const result = await api(`/api/v1/ai-video-tasks/${encodeURIComponent(id)}`);
-    if (selectedAiVideoTaskId !== id) return;
+    if (selectedAiVideoTaskId !== id
+        || expectedGeneration !== aiVideoTaskLoadGeneration
+        || currentUser?.organizationId !== expectedOrganizationId) return;
+    if (result.data?.task?.organizationId
+        && result.data.task.organizationId !== expectedOrganizationId) return;
     const nextSignature = aiVideoDetailRenderSignature(result.data);
     const shouldRender = nextSignature !== aiVideoTaskRenderSignature;
     const changedItemIds = selectionChanged ? null : changedAiVideoItemIds(aiVideoTaskDetail, result.data);
@@ -5534,6 +5787,8 @@ async function selectAiVideoTask(id, { startPolling = true } = {}) {
     }
     if (startPolling) syncAiVideoTaskPolling();
   } catch (error) {
+    if (expectedGeneration !== aiVideoTaskLoadGeneration
+        || currentUser?.organizationId !== expectedOrganizationId) return;
     if (startPolling) renderAiVideoEmpty("任务读取失败", error.message);
   }
 }
@@ -5565,19 +5820,27 @@ function shouldPollAiVideoTaskDetail() {
 }
 
 async function loadAiVideoTasks(preferredId = selectedAiVideoTaskId) {
+  const generation = ++aiVideoTaskLoadGeneration;
+  const organizationId = currentUser?.organizationId || "";
   const list = document.querySelector("#ai-video-task-list");
   list.innerHTML = `<div class="video-task-empty">正在读取任务…</div>`;
   try {
     const result = await api("/api/v1/ai-video-tasks");
-    aiVideoTasks = result.data || [];
+    if (generation !== aiVideoTaskLoadGeneration || currentUser?.organizationId !== organizationId) return;
+    aiVideoTasks = (result.data || [])
+      .filter(task => !task.organizationId || task.organizationId === organizationId);
     selectedAiVideoTaskId = aiVideoTasks.some(task => task.id === preferredId) ? preferredId : aiVideoTasks[0]?.id || null;
     renderAiVideoTaskList();
-    if (selectedAiVideoTaskId) await selectAiVideoTask(selectedAiVideoTaskId);
+    if (selectedAiVideoTaskId) await selectAiVideoTask(selectedAiVideoTaskId, {
+      expectedGeneration: generation,
+      expectedOrganizationId: organizationId
+    });
     else {
       aiVideoTaskDetail = null;
       renderAiVideoTaskDetail();
     }
   } catch (error) {
+    if (generation !== aiVideoTaskLoadGeneration || currentUser?.organizationId !== organizationId) return;
     list.innerHTML = `<div class="video-task-empty"><strong>任务读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;
   }
 }
@@ -5775,6 +6038,8 @@ function restoreAiVideoMonitorUiState(state) {
 
 async function selectAiVideoMonitorTask(id, options = {}) {
   const silent = Boolean(options.silent);
+  const expectedGeneration = options.expectedGeneration ?? aiVideoMonitorLoadGeneration;
+  const expectedOrganizationId = options.expectedOrganizationId ?? currentUser?.organizationId ?? "";
   const uiState = silent ? captureAiVideoMonitorUiState() : null;
   selectedMonitorTaskId = id;
   if (!silent) renderAiVideoMonitorList();
@@ -5782,21 +6047,31 @@ async function selectAiVideoMonitorTask(id, options = {}) {
   if (!silent) stage.innerHTML = `<div class="monitor-empty monitor-detail-empty">正在读取请求明细…</div>`;
   try {
     const result = await api(`/api/v1/ai-video-monitor/${encodeURIComponent(id)}`);
-    if (selectedMonitorTaskId !== id) return;
+    if (selectedMonitorTaskId !== id
+        || expectedGeneration !== aiVideoMonitorLoadGeneration
+        || currentUser?.organizationId !== expectedOrganizationId) return;
+    if (result.data?.organizationId && result.data.organizationId !== expectedOrganizationId) return;
     selectedMonitorTaskDetail = result.data;
     renderAiVideoMonitorDetail();
     restoreAiVideoMonitorUiState(uiState);
   } catch (error) {
+    if (expectedGeneration !== aiVideoMonitorLoadGeneration
+        || currentUser?.organizationId !== expectedOrganizationId) return;
     if (!silent) stage.innerHTML = `<div class="monitor-empty monitor-detail-empty"><strong>明细读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;
   }
 }
 
 async function loadAiVideoMonitor(options = {}) {
+  const generation = ++aiVideoMonitorLoadGeneration;
+  const organizationId = currentUser?.organizationId || "";
   const list = document.querySelector("#monitor-task-list");
   if (!options.silent) list.innerHTML = `<div class="monitor-empty">正在读取任务轨迹…</div>`;
   try {
     const result = await api("/api/v1/ai-video-monitor");
+    if (generation !== aiVideoMonitorLoadGeneration || currentUser?.organizationId !== organizationId) return;
     aiVideoMonitorSnapshot = result.data || { stats: {}, tasks: [] };
+    aiVideoMonitorSnapshot.tasks = (aiVideoMonitorSnapshot.tasks || [])
+      .filter(task => !task.organizationId || task.organizationId === organizationId);
     const listScrollTop = list.scrollTop;
     renderAiVideoMonitorOverview();
     const filtered = monitorFilteredTasks();
@@ -5808,7 +6083,11 @@ async function loadAiVideoMonitor(options = {}) {
     const detailChanged = !selectedMonitorTaskDetail || selectedMonitorTaskDetail.id !== nextId
       || selectedMonitorTaskDetail.updatedAt !== nextSummary?.updatedAt;
     if (nextId && (!options.silent || detailChanged)) {
-      await selectAiVideoMonitorTask(nextId, { silent: Boolean(options.silent) });
+      await selectAiVideoMonitorTask(nextId, {
+        silent: Boolean(options.silent),
+        expectedGeneration: generation,
+        expectedOrganizationId: organizationId
+      });
     } else {
       if (!nextId) {
         selectedMonitorTaskDetail = null;
@@ -5821,6 +6100,7 @@ async function loadAiVideoMonitor(options = {}) {
       }, 10000);
     }
   } catch (error) {
+    if (generation !== aiVideoMonitorLoadGeneration || currentUser?.organizationId !== organizationId) return;
     list.innerHTML = `<div class="monitor-empty"><strong>监控数据读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;
   }
 }

@@ -1,0 +1,30 @@
+services:
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:26.1.4
+    container_name: heyi-cloudbeaver
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8978:8978"
+    volumes:
+      - cloudbeaver_workspace:/opt/cloudbeaver/workspace
+    networks:
+      - project
+    environment:
+      CLOUDBEAVER_BIND_SESSION_TO_IP: "true"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+
+volumes:
+  cloudbeaver_workspace:
+    name: heyi_cloudbeaver_workspace
+
+networks:
+  project:
+    external: true
+    name: web_sdk__default

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+credential_file=/root/heyi-admin-console-credentials.txt
+readonly_password="$(openssl rand -base64 36 | tr -d '\n' | tr '/+' '_-')"
+maintenance_password="$(openssl rand -base64 36 | tr -d '\n' | tr '/+' '_-')"
+
+umask 077
+
+docker exec -i ai-commerce-mysql sh -lc 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' <<SQL
+CREATE USER IF NOT EXISTS 'heyi_readonly'@'%' IDENTIFIED BY '${readonly_password}';
+ALTER USER 'heyi_readonly'@'%' IDENTIFIED BY '${readonly_password}';
+GRANT SELECT, SHOW VIEW ON ai_commerce.* TO 'heyi_readonly'@'%';
+
+CREATE USER IF NOT EXISTS 'heyi_maintenance'@'%' IDENTIFIED BY '${maintenance_password}';
+ALTER USER 'heyi_maintenance'@'%' IDENTIFIED BY '${maintenance_password}';
+GRANT ALL PRIVILEGES ON ai_commerce.* TO 'heyi_maintenance'@'%';
+FLUSH PRIVILEGES;
+SQL
+
+cat >"$credential_file" <<EOF
+CloudBeaver database connections
+
+Read-only connection:
+  Host: mysql
+  Port: 3306
+  Database: ai_commerce
+  Username: heyi_readonly
+  Password: ${readonly_password}
+
+Full business-database maintenance connection:
+  Host: mysql
+  Port: 3306
+  Database: ai_commerce
+  Username: heyi_maintenance
+  Password: ${maintenance_password}
+
+The maintenance account can change data and schema, including dropping the ai_commerce database.
+It has no global MySQL administration, account-management, or GRANT OPTION privileges.
+EOF
+
+chmod 0600 "$credential_file"
+
+docker exec ai-commerce-mysql sh -lc 'exec mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW GRANTS FOR '\''heyi_readonly'\''@'\''%'\''; SHOW GRANTS FOR '\''heyi_maintenance'\''@'\''%'\'';"' \
+  | sed -E 's/IDENTIFIED BY PASSWORD .*/IDENTIFIED BY PASSWORD [REDACTED]/'

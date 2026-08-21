@@ -22,6 +22,7 @@ import com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper;
 import com.yingdao.aicommerce.video.mapper.VideoScriptMapper;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -56,7 +57,6 @@ import java.util.UUID;
 @Service
 public class AiVideoGenerationService {
     private static final long MAX_VIDEO_BYTES = 500L * 1024 * 1024;
-    public static final int MAX_CONCURRENT_VIDEO_SUBMISSIONS = 100;
     private static final long DAYAN_SUBMISSION_INTERVAL_MILLIS = 500L;
     private static final int MAX_AUTOMATIC_TRANSIENT_RETRIES = 3;
     private static final long[] AUTOMATIC_RETRY_DELAYS_SECONDS = {30L, 90L, 300L};
@@ -73,6 +73,7 @@ public class AiVideoGenerationService {
     private final OssStorageService ossStorage;
     private final ObjectMapper objectMapper;
     private final Executor executor;
+    private final int maxConcurrentVideoSubmissions;
     private final Instant serviceStartedAt = Instant.now();
     private final Set<String> queuedSubmissions = ConcurrentHashMap.newKeySet();
     private final Object dayanSubmissionPacingMonitor = new Object();
@@ -89,7 +90,8 @@ public class AiVideoGenerationService {
                                     VideoReferenceLinkService referenceLinks, VideoReferenceDeliveryService referenceDelivery,
                                     ObjectProvider<OssStorageService> ossStorage,
                                     ObjectMapper objectMapper,
-                                    @Qualifier("aiVideoGenerationExecutor") Executor executor) {
+                                    @Qualifier("aiVideoGenerationExecutor") Executor executor,
+                                    @Value("${app.video.max-concurrent-submissions:500}") int maxConcurrentVideoSubmissions) {
         this.taskMapper = taskMapper;
         this.itemMapper = itemMapper;
         this.assetMapper = assetMapper;
@@ -102,6 +104,7 @@ public class AiVideoGenerationService {
         this.ossStorage = ossStorage.getIfAvailable();
         this.objectMapper = objectMapper;
         this.executor = executor;
+        this.maxConcurrentVideoSubmissions = Math.max(1, maxConcurrentVideoSubmissions);
     }
 
     @Transactional
@@ -198,15 +201,13 @@ public class AiVideoGenerationService {
     @Scheduled(initialDelay = 2_000, fixedDelay = 5_000)
     public void recoverUnsubmittedItems() {
         recoverInterruptedNotSentJobs();
-        if (!hasSubmissionCapacity()) return;
         List<AiVideoTaskItem> stuck = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getStatus, "VIDEO_SUBMITTING")
-                .orderByAsc(AiVideoTaskItem::getUpdatedAt)
-                .last("LIMIT " + MAX_CONCURRENT_VIDEO_SUBMISSIONS));
+                .orderByAsc(AiVideoTaskItem::getUpdatedAt));
         for (AiVideoTaskItem item : stuck) {
-            if (!hasSubmissionCapacity()) break;
             AiVideoTask task = taskMapper.selectById(item.getTaskId());
             if (task == null || !"VIDEO_GENERATING".equals(task.getStatus()) || hasVideoResult(item.getId())) continue;
+            if (!hasSubmissionCapacity(task.getOrganizationId())) continue;
             long activeJobs = jobMapper.selectCount(new LambdaQueryWrapper<AiVideoGenerationJob>()
                     .eq(AiVideoGenerationJob::getItemId, item.getId())
                     .in(AiVideoGenerationJob::getStatus, ACTIVE_VIDEO_JOB_STATUSES));
@@ -222,8 +223,7 @@ public class AiVideoGenerationService {
                 .eq(AiVideoGenerationJob::getRequestState, "NOT_SENT")
                 .isNull(AiVideoGenerationJob::getProviderTaskId)
                 .lt(AiVideoGenerationJob::getUpdatedAt, serviceStartedAt)
-                .orderByAsc(AiVideoGenerationJob::getUpdatedAt)
-                .last("LIMIT " + MAX_CONCURRENT_VIDEO_SUBMISSIONS));
+                .orderByAsc(AiVideoGenerationJob::getUpdatedAt));
         for (AiVideoGenerationJob job : interrupted) {
             AiVideoTask task = taskMapper.selectById(job.getTaskId());
             AiVideoTaskItem item = itemMapper.selectById(job.getItemId());
@@ -231,7 +231,7 @@ public class AiVideoGenerationService {
                     || !"VIDEO_SUBMITTING".equals(item.getStatus()) || hasVideoResult(item.getId())) continue;
             job.failed("NOT_SENT", "提交服务重启中断，厂商未返回任务 ID；系统已自动重新提交");
             jobMapper.updateById(job);
-            if (!hasSubmissionCapacity() || !queuedSubmissions.add(item.getId())) continue;
+            if (!hasSubmissionCapacity(task.getOrganizationId()) || !queuedSubmissions.add(item.getId())) continue;
             item.startVideo();
             itemMapper.updateById(item);
             executor.execute(() -> {
@@ -246,14 +246,11 @@ public class AiVideoGenerationService {
 
     @Scheduled(initialDelay = 10_000, fixedDelay = 10_000)
     public void retryTransientSubmissionFailures() {
-        if (!hasSubmissionCapacity()) return;
         List<AiVideoTaskItem> failedItems = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getStatus, "VIDEO_FAILED")
-                .orderByAsc(AiVideoTaskItem::getUpdatedAt)
-                .last("LIMIT " + MAX_CONCURRENT_VIDEO_SUBMISSIONS));
+                .orderByAsc(AiVideoTaskItem::getUpdatedAt));
         Instant now = Instant.now();
         for (AiVideoTaskItem item : failedItems) {
-            if (!hasSubmissionCapacity()) break;
             AiVideoGenerationJob latest = latestJob(item.getId());
             if (latest == null || !"FAILED".equals(latest.getStatus())
                     || !isTransientSubmitFailure(latest.getErrorMessage())) continue;
@@ -271,6 +268,7 @@ public class AiVideoGenerationService {
             if (latest.getUpdatedAt().plusSeconds(delaySeconds).isAfter(now)) continue;
             AiVideoTask task = taskMapper.selectById(item.getTaskId());
             if (task == null || !"VIDEO_GENERATING".equals(task.getStatus())) continue;
+            if (!hasSubmissionCapacity(task.getOrganizationId())) continue;
             long activeJobs = jobMapper.selectCount(new LambdaQueryWrapper<AiVideoGenerationJob>()
                     .eq(AiVideoGenerationJob::getItemId, item.getId())
                     .in(AiVideoGenerationJob::getStatus, ACTIVE_VIDEO_JOB_STATUSES));
@@ -496,21 +494,27 @@ public class AiVideoGenerationService {
     private synchronized AiVideoGenerationJob reserveSubmissionSlot(String runId, AiVideoTask task, AiVideoTaskItem item,
                                                                      int attempt, RuntimeModelConnection connection,
                                                                      int duration, String resolution) {
-        if (!hasSubmissionCapacity()) return null;
+        if (!hasSubmissionCapacity(task.getOrganizationId())) return null;
         AiVideoGenerationJob job = new AiVideoGenerationJob(runId, task.getOrganizationId(), task.getId(), item.getId(), attempt,
                 connection.id(), connection.provider(), connection.modelId(), duration, task.getAspectRatio(), resolution);
         jobMapper.insert(job);
         return job;
     }
 
-    private boolean hasSubmissionCapacity() {
+    private boolean hasSubmissionCapacity(String organizationId) {
         return jobMapper.selectCount(new LambdaQueryWrapper<AiVideoGenerationJob>()
-                .in(AiVideoGenerationJob::getStatus, ACTIVE_VIDEO_JOB_STATUSES)) < MAX_CONCURRENT_VIDEO_SUBMISSIONS;
+                .eq(AiVideoGenerationJob::getOrganizationId, organizationId)
+                .in(AiVideoGenerationJob::getStatus, ACTIVE_VIDEO_JOB_STATUSES)) < maxConcurrentVideoSubmissions;
     }
 
-    public int activeVideoSubmissions() {
+    public int activeVideoSubmissions(String organizationId) {
         return Math.toIntExact(jobMapper.selectCount(new LambdaQueryWrapper<AiVideoGenerationJob>()
+                .eq(AiVideoGenerationJob::getOrganizationId, organizationId)
                 .in(AiVideoGenerationJob::getStatus, ACTIVE_VIDEO_JOB_STATUSES)));
+    }
+
+    public int videoSubmissionLimit() {
+        return maxConcurrentVideoSubmissions;
     }
 
     public String latestFailureMessage(String itemId) {
@@ -740,8 +744,7 @@ public class AiVideoGenerationService {
         List<AiVideoGenerationJob> jobs = jobMapper.selectList(new LambdaQueryWrapper<AiVideoGenerationJob>()
                 .in(AiVideoGenerationJob::getStatus, List.of("QUEUED", "RUNNING"))
                 .le(AiVideoGenerationJob::getNextPollAt, Instant.now())
-                .orderByAsc(AiVideoGenerationJob::getNextPollAt)
-                .last("LIMIT " + MAX_CONCURRENT_VIDEO_SUBMISSIONS));
+                .orderByAsc(AiVideoGenerationJob::getNextPollAt));
         Instant now = Instant.now();
         jobs.forEach(job -> {
             if (jobMapper.claimPoll(job.getId(), now, now.plusSeconds(90)) == 1) {

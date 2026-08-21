@@ -25,3 +25,4 @@ automation-agent/release*/
 # Local conversion packages and visual QA captures
 /*.zip
 automation-agent/*ui-check*.png
+/docs_work/

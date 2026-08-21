@@ -21,6 +21,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 @Service
 public class SaasAdminService {
@@ -34,6 +36,7 @@ public class SaasAdminService {
     private final PermissionMapper permissionMapper;
     private final RolePermissionMapper rolePermissionMapper;
     private final PasswordEncoder passwordEncoder;
+    private final OrganizationAccessPolicy organizationAccessPolicy;
 
     public SaasAdminService(
             TenantContext tenantContext,
@@ -44,7 +47,8 @@ public class SaasAdminService {
             UserRoleMapper userRoleMapper,
             PermissionMapper permissionMapper,
             RolePermissionMapper rolePermissionMapper,
-            PasswordEncoder passwordEncoder
+            PasswordEncoder passwordEncoder,
+            OrganizationAccessPolicy organizationAccessPolicy
     ) {
         this.tenantContext = tenantContext;
         this.organizationMapper = organizationMapper;
@@ -55,10 +59,48 @@ public class SaasAdminService {
         this.permissionMapper = permissionMapper;
         this.rolePermissionMapper = rolePermissionMapper;
         this.passwordEncoder = passwordEncoder;
+        this.organizationAccessPolicy = organizationAccessPolicy;
     }
 
     public Organization currentOrganization() {
         return organizationMapper.selectById(tenantContext.organizationId());
+    }
+
+    public List<Organization> listOrganizations() {
+        organizationAccessPolicy.requirePlatformAdmin();
+        return organizationMapper.selectList(
+                new LambdaQueryWrapper<Organization>()
+                        .orderByAsc(Organization::getName)
+                        .orderByAsc(Organization::getCreatedAt)
+        );
+    }
+
+    @Transactional
+    public Organization createOrganization(String code, String name, String description) {
+        organizationAccessPolicy.requirePlatformAdmin();
+        String normalizedCode = code == null ? "" : code.trim().toLowerCase(Locale.ROOT);
+        if (!normalizedCode.matches("[a-z0-9][a-z0-9_-]{1,39}")) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "公司代码需为 2–40 位小写字母、数字、下划线或短横线");
+        }
+        Long duplicate = organizationMapper.selectCount(
+                new LambdaQueryWrapper<Organization>()
+                        .eq(Organization::getCode, normalizedCode)
+        );
+        if (duplicate > 0) {
+            throw new BusinessException(HttpStatus.CONFLICT, "公司代码已存在");
+        }
+        Organization organization = new Organization(
+                normalizedCode,
+                name.trim(),
+                blankToNull(description)
+        );
+        organizationMapper.insert(organization);
+        Department headquarters = new Department(
+                organization.getId(), null, "公司总部", "HQ", 0
+        );
+        departmentMapper.insert(headquarters);
+        provisionBuiltInRoles(organization.getId());
+        return organization;
     }
 
     @Transactional
@@ -76,9 +118,14 @@ public class SaasAdminService {
     }
 
     public List<Department> listDepartments() {
+        return listDepartments(null);
+    }
+
+    public List<Department> listDepartments(String requestedOrganizationId) {
+        String organizationId = organizationAccessPolicy.resolveManagedOrganizationId(requestedOrganizationId);
         return departmentMapper.selectList(
                 new LambdaQueryWrapper<Department>()
-                        .eq(Department::getOrganizationId, tenantContext.organizationId())
+                        .eq(Department::getOrganizationId, organizationId)
                         .orderByAsc(Department::getSortOrder)
                         .orderByAsc(Department::getCreatedAt)
         );
@@ -86,12 +133,13 @@ public class SaasAdminService {
 
     @Transactional
     public Department createDepartment(
+            String requestedOrganizationId,
             String parentId,
             String name,
             String code,
             int sortOrder
     ) {
-        String organizationId = tenantContext.organizationId();
+        String organizationId = organizationAccessPolicy.resolveManagedOrganizationId(requestedOrganizationId);
         if (parentId != null && !parentId.isBlank()) {
             requireDepartment(parentId, organizationId);
         }
@@ -115,9 +163,19 @@ public class SaasAdminService {
     }
 
     @Transactional
+    public Department createDepartment(
+            String parentId,
+            String name,
+            String code,
+            int sortOrder
+    ) {
+        return createDepartment(null, parentId, name, code, sortOrder);
+    }
+
+    @Transactional
     public void deleteDepartment(String departmentId) {
-        String organizationId = tenantContext.organizationId();
-        Department department = requireDepartment(departmentId, organizationId);
+        Department department = requireManagedDepartment(departmentId);
+        String organizationId = department.getOrganizationId();
         Long childCount = departmentMapper.selectCount(
                 new LambdaQueryWrapper<Department>()
                         .eq(Department::getOrganizationId, organizationId)
@@ -144,8 +202,8 @@ public class SaasAdminService {
             String name,
             String code
     ) {
-        String organizationId = tenantContext.organizationId();
-        Department department = requireDepartment(departmentId, organizationId);
+        Department department = requireManagedDepartment(departmentId);
+        String organizationId = department.getOrganizationId();
         String normalizedParentId = blankToNull(parentId);
         if (departmentId.equals(normalizedParentId)) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "部门不能设置自己为上级");
@@ -177,9 +235,14 @@ public class SaasAdminService {
     }
 
     public List<RoleOverview> listRoles() {
+        return listRoles(null);
+    }
+
+    public List<RoleOverview> listRoles(String requestedOrganizationId) {
+        String organizationId = organizationAccessPolicy.resolveManagedOrganizationId(requestedOrganizationId);
         return roleMapper.selectList(
                 new LambdaQueryWrapper<Role>()
-                        .eq(Role::getOrganizationId, tenantContext.organizationId())
+                        .eq(Role::getOrganizationId, organizationId)
                         .orderByAsc(Role::getCreatedAt)
         ).stream()
                 .map(this::roleOverview)
@@ -196,6 +259,7 @@ public class SaasAdminService {
 
     @Transactional
     public RoleOverview createRole(
+            String requestedOrganizationId,
             String code,
             String name,
             String description,
@@ -203,7 +267,7 @@ public class SaasAdminService {
             List<String> permissionIds
     ) {
         validateDataScope(dataScope);
-        String organizationId = tenantContext.organizationId();
+        String organizationId = organizationAccessPolicy.resolveManagedOrganizationId(requestedOrganizationId);
         String normalizedCode = code.trim().toUpperCase(Locale.ROOT);
         Long duplicate = roleMapper.selectCount(
                 new LambdaQueryWrapper<Role>()
@@ -227,6 +291,17 @@ public class SaasAdminService {
     }
 
     @Transactional
+    public RoleOverview createRole(
+            String code,
+            String name,
+            String description,
+            String dataScope,
+            List<String> permissionIds
+    ) {
+        return createRole(null, code, name, description, dataScope, permissionIds);
+    }
+
+    @Transactional
     public RoleOverview updateRole(
             String roleId,
             String name,
@@ -239,7 +314,7 @@ public class SaasAdminService {
         if (!List.of("ACTIVE", "DISABLED").contains(status)) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "不支持的角色状态");
         }
-        Role role = requireRole(roleId);
+        Role role = requireManagedRole(roleId);
         if ("ADMIN".equals(role.getCode()) && !"ACTIVE".equals(status)) {
             throw new BusinessException(HttpStatus.CONFLICT, "企业管理员角色不能停用");
         }
@@ -250,7 +325,11 @@ public class SaasAdminService {
     }
 
     public List<UserOverview> listUsers(String departmentId) {
-        String organizationId = tenantContext.organizationId();
+        return listUsers(departmentId, null);
+    }
+
+    public List<UserOverview> listUsers(String departmentId, String requestedOrganizationId) {
+        String organizationId = organizationAccessPolicy.resolveManagedOrganizationId(requestedOrganizationId);
         var query = new LambdaQueryWrapper<PlatformUser>()
                 .eq(PlatformUser::getOrganizationId, organizationId)
                 .eq(departmentId != null && !departmentId.isBlank(),
@@ -259,6 +338,7 @@ public class SaasAdminService {
         return userMapper.selectList(query).stream()
                 .map(user -> new UserOverview(
                         user,
+                        organizationName(user.getOrganizationId()),
                         departmentName(user.getDepartmentId()),
                         userRoleMapper.selectRoleIds(user.getId()),
                         userMapper.selectRoleNames(user.getId())
@@ -268,6 +348,7 @@ public class SaasAdminService {
 
     @Transactional
     public UserOverview createUser(
+            String requestedOrganizationId,
             String departmentId,
             String displayName,
             String email,
@@ -276,9 +357,9 @@ public class SaasAdminService {
             String password,
             List<String> roleIds
     ) {
-        String organizationId = tenantContext.organizationId();
+        String organizationId = organizationAccessPolicy.resolveManagedOrganizationId(requestedOrganizationId);
         requireDepartment(departmentId, organizationId);
-        List<Role> assignedRoles = requireRoles(roleIds);
+        List<Role> assignedRoles = requireRoles(roleIds, organizationId);
         String normalizedPhone = normalizePhone(phone);
         Long duplicate = userMapper.selectCount(
                 new LambdaQueryWrapper<PlatformUser>()
@@ -305,6 +386,19 @@ public class SaasAdminService {
     }
 
     @Transactional
+    public UserOverview createUser(
+            String departmentId,
+            String displayName,
+            String email,
+            String phone,
+            String jobTitle,
+            String password,
+            List<String> roleIds
+    ) {
+        return createUser(null, departmentId, displayName, email, phone, jobTitle, password, roleIds);
+    }
+
+    @Transactional
     public UserOverview updateUser(
             String userId,
             String departmentId,
@@ -315,12 +409,13 @@ public class SaasAdminService {
             List<String> roleIds
     ) {
         PlatformUser user = requireUser(userId);
-        requireDepartment(departmentId, tenantContext.organizationId());
-        List<Role> assignedRoles = requireRoles(roleIds);
+        String organizationId = user.getOrganizationId();
+        requireDepartment(departmentId, organizationId);
+        List<Role> assignedRoles = requireRoles(roleIds, organizationId);
         String normalizedPhone = normalizePhone(phone);
         Long duplicate = userMapper.selectCount(
                 new LambdaQueryWrapper<PlatformUser>()
-                        .eq(PlatformUser::getOrganizationId, tenantContext.organizationId())
+                        .eq(PlatformUser::getOrganizationId, organizationId)
                         .eq(PlatformUser::getUsername, normalizedPhone)
                         .ne(PlatformUser::getId, userId)
         );
@@ -388,27 +483,81 @@ public class SaasAdminService {
         );
     }
 
-    private Role requireRole(String roleId) {
+    private Role requireManagedRole(String roleId) {
         Role role = roleMapper.selectById(roleId);
-        if (role == null || !tenantContext.organizationId().equals(role.getOrganizationId())) {
+        if (role == null) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "角色不存在");
         }
+        organizationAccessPolicy.resolveManagedOrganizationId(role.getOrganizationId());
         return role;
     }
 
     private List<Role> requireRoles(List<String> roleIds) {
+        return requireRoles(roleIds, tenantContext.organizationId());
+    }
+
+    private List<Role> requireRoles(List<String> roleIds, String organizationId) {
         if (roleIds == null || roleIds.isEmpty()) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "至少分配一个角色");
         }
         List<Role> assignedRoles = roleIds.stream()
                 .distinct()
-                .map(this::requireRole)
+                .map(roleId -> requireRole(roleId, organizationId))
                 .filter(role -> "ACTIVE".equals(role.getStatus()))
                 .toList();
         if (assignedRoles.size() != roleIds.stream().distinct().count()) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "包含已停用的角色");
         }
         return assignedRoles;
+    }
+
+    private void provisionBuiltInRoles(String organizationId) {
+        Map<String, RoleSeed> seeds = Map.of(
+                "ADMIN", new RoleSeed("企业管理员", "管理本公司配置、人员、模型、自动化与全部业务数据", "ALL"),
+                "OPERATOR", new RoleSeed("内容运营", "管理内容工作流、视频脚本、素材和 AI 视频生产", "DEPARTMENT_AND_CHILDREN"),
+                "DESIGNER", new RoleSeed("视觉设计", "处理商品素材、视频脚本、分镜和视觉生成任务", "DEPARTMENT"),
+                "REVIEWER", new RoleSeed("内容审核", "查看视频生产过程并审核内容与生成结果", "ALL"),
+                "PUBLISHER", new RoleSeed("发布专员", "查看视频成片并管理店铺发布与促销任务", "DEPARTMENT")
+        );
+        Map<String, Set<String>> grants = Map.of(
+                "OPERATOR", Set.of(
+                        "dashboard:view", "workflow:view", "workflow:manage",
+                        "asset:view", "asset:manage", "video:script:view", "video:script:manage",
+                        "video:task:view", "video:task:manage", "automation:view", "automation:execute"
+                ),
+                "DESIGNER", Set.of(
+                        "dashboard:view", "workflow:view", "asset:view", "asset:manage",
+                        "video:script:view", "video:script:manage", "video:task:view", "video:task:manage"
+                ),
+                "REVIEWER", Set.of(
+                        "dashboard:view", "workflow:view", "workflow:review", "asset:view",
+                        "video:script:view", "video:task:view"
+                ),
+                "PUBLISHER", Set.of(
+                        "dashboard:view", "workflow:view", "publish:view", "publish:manage", "video:task:view"
+                )
+        );
+        List<Permission> allPermissions = listPermissions();
+        seeds.forEach((code, seed) -> {
+            Role role = new Role(
+                    organizationId, code, seed.name(), seed.description(), seed.dataScope(), true
+            );
+            roleMapper.insert(role);
+            Set<String> permissionCodes = "ADMIN".equals(code)
+                    ? allPermissions.stream().map(Permission::getCode).collect(java.util.stream.Collectors.toSet())
+                    : grants.getOrDefault(code, Set.of());
+            allPermissions.stream()
+                    .filter(permission -> permissionCodes.contains(permission.getCode()))
+                    .forEach(permission -> rolePermissionMapper.insert(role.getId(), permission.getId()));
+        });
+    }
+
+    private Role requireRole(String roleId, String organizationId) {
+        Role role = roleMapper.selectById(roleId);
+        if (role == null || !organizationId.equals(role.getOrganizationId())) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "角色不存在");
+        }
+        return role;
     }
 
     private void validateDataScope(String dataScope) {
@@ -430,6 +579,7 @@ public class SaasAdminService {
     private UserOverview userOverview(PlatformUser user) {
         return new UserOverview(
                 user,
+                organizationName(user.getOrganizationId()),
                 departmentName(user.getDepartmentId()),
                 userRoleMapper.selectRoleIds(user.getId()),
                 userMapper.selectRoleNames(user.getId())
@@ -446,10 +596,20 @@ public class SaasAdminService {
 
     private PlatformUser requireUser(String id) {
         PlatformUser user = userMapper.selectById(id);
-        if (user == null || !tenantContext.organizationId().equals(user.getOrganizationId())) {
+        if (user == null) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "人员不存在");
         }
+        organizationAccessPolicy.resolveManagedOrganizationId(user.getOrganizationId());
         return user;
+    }
+
+    private Department requireManagedDepartment(String id) {
+        Department department = departmentMapper.selectById(id);
+        if (department == null) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "部门不存在");
+        }
+        organizationAccessPolicy.resolveManagedOrganizationId(department.getOrganizationId());
+        return department;
     }
 
     private String departmentName(String departmentId) {
@@ -458,6 +618,11 @@ public class SaasAdminService {
         }
         Department department = departmentMapper.selectById(departmentId);
         return department == null ? "未分配" : department.getName();
+    }
+
+    private String organizationName(String organizationId) {
+        Organization organization = organizationMapper.selectById(organizationId);
+        return organization == null ? "未知公司" : organization.getName();
     }
 
     private String blankToNull(String value) {
@@ -474,6 +639,7 @@ public class SaasAdminService {
 
     public record UserOverview(
             PlatformUser user,
+            String organizationName,
             String departmentName,
             List<String> roleIds,
             List<String> roleNames
@@ -486,5 +652,8 @@ public class SaasAdminService {
             List<String> permissionCodes,
             long userCount
     ) {
+    }
+
+    private record RoleSeed(String name, String description, String dataScope) {
     }
 }

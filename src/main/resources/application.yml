@@ -38,6 +38,8 @@ app:
   automation-attachment-storage: ${APP_AUTOMATION_ATTACHMENT_STORAGE:/data/automation-attachments}
   video-script-storage: ${APP_VIDEO_SCRIPT_STORAGE:/data/video-scripts}
   ai-video-task-storage: ${APP_AI_VIDEO_TASK_STORAGE:/data/ai-video-tasks}
+  video:
+    max-concurrent-submissions: ${APP_VIDEO_MAX_CONCURRENT_SUBMISSIONS:500}
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:8080}
   pi-runtime-url: ${APP_PI_RUNTIME_URL:http://localhost:8090}
   pi-runtime-token: ${APP_PI_RUNTIME_TOKEN:heyi-pi-runtime-dev-token}
