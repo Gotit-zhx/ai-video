@@ -24,12 +24,19 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.Deflater;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 @Service
 public class AiVideoTaskService {
@@ -37,6 +44,8 @@ public class AiVideoTaskService {
     public static final int MAX_VIDEO_REFERENCE_IMAGES = 9;
     private static final long MAX_IMAGE_BYTES = 20L * 1024 * 1024;
     private static final long MAX_AUDIO_BYTES = 15L * 1024 * 1024;
+    private static final int VIDEO_ARCHIVE_ATTEMPTS = 3;
+    private static final long MAX_VIDEO_ARCHIVE_BYTES = 20L * 1024 * 1024 * 1024;
 
     private final AiVideoTaskMapper taskMapper;
     private final AiVideoTaskItemMapper itemMapper;
@@ -126,10 +135,10 @@ public class AiVideoTaskService {
     }
 
     public List<AiVideoTask> list(PlatformPrincipal principal) {
-        return taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
-                .eq(AiVideoTask::getOrganizationId, principal.organizationId())
-                .eq(AiVideoTask::getCreatedBy, principal.userId())
-                .orderByDesc(AiVideoTask::getUpdatedAt));
+        LambdaQueryWrapper<AiVideoTask> query = new LambdaQueryWrapper<AiVideoTask>()
+                .eq(AiVideoTask::getOrganizationId, principal.organizationId());
+        if (!isCompanyAdministrator(principal)) query.eq(AiVideoTask::getCreatedBy, principal.userId());
+        return taskMapper.selectList(query.orderByDesc(AiVideoTask::getUpdatedAt));
     }
 
     @Scheduled(initialDelay = 5_000, fixedDelay = 86_400_000)
@@ -490,7 +499,7 @@ public class AiVideoTaskService {
 
     public AiVideoTask startImages(String id, PlatformPrincipal principal) {
         AiVideoTask task = requireOwned(id, principal);
-        if (!List.of("READY", "FAILED", "IMAGE_READY").contains(task.getStatus())) {
+        if (!List.of("READY", "FAILED", "IMAGE_READY", "VIDEO_READY").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务还不能启动生图");
         }
         long count = itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, id));
@@ -519,6 +528,58 @@ public class AiVideoTaskService {
         } catch (IllegalStateException exception) {
             throw new BusinessException(HttpStatus.CONFLICT, exception.getMessage());
         }
+    }
+
+    public AiVideoTask regenerateVideos(String id, PlatformPrincipal principal) {
+        AiVideoTask task = requireOwned(id, principal);
+        if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前任务正在生成，暂时不能重做视频");
+        }
+        List<AiVideoTaskAsset> videos = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
+                .eq(AiVideoTaskAsset::getTaskId, id)
+                .eq(AiVideoTaskAsset::getOrganizationId, task.getOrganizationId())
+                .eq(AiVideoTaskAsset::getAssetType, "VIDEO_RESULT"));
+        if (videos.isEmpty()) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前任务没有需要替换的旧视频");
+        }
+        List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
+                .eq(AiVideoTaskItem::getTaskId, id));
+        for (AiVideoTaskItem item : items) {
+            item.updateVideoPrompt(defaultVideoPrompt(task, item));
+            itemMapper.updateById(item);
+        }
+        for (AiVideoTaskAsset video : videos) {
+            deleteStoredFile(video.getFilePath());
+            assetMapper.deleteById(video.getId());
+        }
+        return startVideos(id, principal);
+    }
+
+    public AiVideoTask regenerateVideo(String taskId, String itemId, PlatformPrincipal principal) {
+        AiVideoTask task = requireOwned(taskId, principal);
+        if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前任务正在生成，暂时不能重做视频");
+        }
+        AiVideoTaskItem item = itemMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskItem>()
+                .eq(AiVideoTaskItem::getId, itemId)
+                .eq(AiVideoTaskItem::getTaskId, taskId)
+                .eq(AiVideoTaskItem::getOrganizationId, task.getOrganizationId()));
+        if (item == null) throw new BusinessException(HttpStatus.NOT_FOUND, "商品素材不存在");
+        List<AiVideoTaskAsset> videos = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
+                .eq(AiVideoTaskAsset::getTaskId, taskId)
+                .eq(AiVideoTaskAsset::getItemId, itemId)
+                .eq(AiVideoTaskAsset::getOrganizationId, task.getOrganizationId())
+                .eq(AiVideoTaskAsset::getAssetType, "VIDEO_RESULT"));
+        if (videos.isEmpty()) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前商品没有需要替换的旧视频");
+        }
+        item.updateVideoPrompt(defaultVideoPrompt(task, item));
+        itemMapper.updateById(item);
+        for (AiVideoTaskAsset video : videos) {
+            deleteStoredFile(video.getFilePath());
+            assetMapper.deleteById(video.getId());
+        }
+        return startVideos(taskId, principal);
     }
 
     public AiVideoTask startGeneration(String id, PlatformPrincipal principal) {
@@ -660,10 +721,12 @@ public class AiVideoTaskService {
             String extension = dot >= 0 ? original.substring(dot).toLowerCase() : ".mp4";
             String itemName = safeArchiveName(itemNames.getOrDefault(asset.getItemId(), "未命名商品"));
             String entryName = String.format("%02d-%s%s", files.size() + 1, itemName, extension);
-            files.add(new VideoBatchFile(path, location, entryName));
+            long expectedSize = asset.getSizeBytes() > 0 ? asset.getSizeBytes()
+                    : path == null ? -1 : fileSize(path);
+            files.add(new VideoBatchFile(path, location, entryName, expectedSize));
         }
         if (files.isEmpty()) throw new BusinessException(HttpStatus.CONFLICT, "当前任务还没有可下载的视频成片");
-        return new VideoBatch(task.getName(), files);
+        return new VideoBatch(task.getOrganizationId(), task.getId(), task.getName(), files);
     }
 
     public String signedAssetUrl(String location) {
@@ -676,6 +739,114 @@ public class AiVideoTaskService {
     public InputStream openVideoBatchFile(VideoBatchFile file) throws IOException {
         if (file.location() != null) return ossStorage.open(file.location());
         return Files.newInputStream(file.path());
+    }
+
+    public PreparedVideoBatch prepareVideoBatch(VideoBatch batch) {
+        Path directory = storageRoot.resolve("_download-archives").normalize();
+        if (!directory.startsWith(storageRoot)) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "视频压缩包目录不安全");
+        }
+        Path archive = null;
+        try {
+            Files.createDirectories(directory);
+            archive = Files.createTempFile(directory, "video-results-", ".zip");
+            IOException failure = null;
+            for (int attempt = 1; attempt <= VIDEO_ARCHIVE_ATTEMPTS; attempt++) {
+                try {
+                    writeVideoArchive(batch, archive);
+                    long size = Files.size(archive);
+                    if (ossStorage == null) return new PreparedVideoBatch(archive, null, size);
+                    try (InputStream input = Files.newInputStream(archive)) {
+                        OssStorageService.StoredObject stored = ossStorage.store(input, size,
+                                MAX_VIDEO_ARCHIVE_BYTES, "application/zip",
+                                "temporary-downloads/" + batch.organizationId() + "/" + batch.taskId(),
+                                "video-results.zip");
+                        Files.deleteIfExists(archive);
+                        return new PreparedVideoBatch(null, stored.location(), stored.size());
+                    } catch (Exception exception) {
+                        throw exception instanceof IOException io ? io
+                                : new IOException("上传临时视频压缩包到 OSS 失败", exception);
+                    }
+                } catch (IOException exception) {
+                    failure = exception;
+                    if (attempt < VIDEO_ARCHIVE_ATTEMPTS) {
+                        try {
+                            Thread.sleep(500L * attempt);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException("视频压缩包准备被中断", interrupted);
+                        }
+                    }
+                }
+            }
+            throw failure == null ? new IOException("视频压缩包准备失败") : failure;
+        } catch (IOException exception) {
+            if (archive != null) {
+                try { Files.deleteIfExists(archive); } catch (IOException ignored) { }
+            }
+            throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "视频文件读取不完整，系统已重试，请稍后重新下载");
+        }
+    }
+
+    private void writeVideoArchive(VideoBatch batch, Path archive) throws IOException {
+        try (OutputStream output = Files.newOutputStream(archive, StandardOpenOption.TRUNCATE_EXISTING);
+             ZipOutputStream zip = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
+            zip.setLevel(Deflater.NO_COMPRESSION);
+            for (VideoBatchFile file : batch.files()) {
+                zip.putNextEntry(new ZipEntry(file.entryName()));
+                try (InputStream input = openVideoBatchFile(file)) {
+                    copyExact(input, zip, file.expectedSize());
+                }
+                zip.closeEntry();
+            }
+            zip.finish();
+        }
+    }
+
+    static long copyExact(InputStream input, OutputStream output, long expectedSize) throws IOException {
+        long copied = input.transferTo(output);
+        if (expectedSize >= 0 && copied != expectedSize) {
+            throw new IOException("视频文件读取不完整：期望 " + expectedSize + " 字节，实际 " + copied + " 字节");
+        }
+        return copied;
+    }
+
+    public void deletePreparedVideoBatch(PreparedVideoBatch batch) {
+        if (batch == null || batch.path() == null) return;
+        try { Files.deleteIfExists(batch.path()); } catch (IOException ignored) { }
+    }
+
+    public String signedVideoBatchUrl(PreparedVideoBatch batch, String fileName) {
+        if (ossStorage == null || batch == null || !ossStorage.isOssLocation(batch.location())) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "OSS 视频压缩包不存在");
+        }
+        return ossStorage.signedDownloadUrl(batch.location(), fileName);
+    }
+
+    @Scheduled(initialDelay = 60_000, fixedDelay = 3_600_000)
+    public void cleanupStalePreparedVideoBatches() {
+        Path directory = storageRoot.resolve("_download-archives").normalize();
+        if (!directory.startsWith(storageRoot)) return;
+        if (Files.isDirectory(directory)) {
+            long cutoff = System.currentTimeMillis() - 2L * 60 * 60 * 1000;
+            try (var paths = Files.list(directory)) {
+                paths.filter(Files::isRegularFile).filter(path -> path.getFileName().toString().endsWith(".zip"))
+                        .forEach(path -> {
+                            try {
+                                if (Files.getLastModifiedTime(path).toMillis() < cutoff) Files.deleteIfExists(path);
+                            } catch (IOException ignored) { }
+                        });
+            } catch (IOException ignored) { }
+        }
+        if (ossStorage != null) {
+            try { ossStorage.deleteOlderThan("temporary-downloads/", Duration.ofHours(2)); }
+            catch (RuntimeException ignored) { }
+        }
+    }
+
+    private long fileSize(Path path) {
+        try { return Files.size(path); } catch (IOException ignored) { return -1; }
     }
 
     private String safeArchiveName(String value) {
@@ -696,12 +867,17 @@ public class AiVideoTaskService {
     }
 
     private AiVideoTask requireOwned(String id, PlatformPrincipal principal) {
-        AiVideoTask task = taskMapper.selectOne(new LambdaQueryWrapper<AiVideoTask>()
+        LambdaQueryWrapper<AiVideoTask> query = new LambdaQueryWrapper<AiVideoTask>()
                 .eq(AiVideoTask::getId, id)
-                .eq(AiVideoTask::getOrganizationId, principal.organizationId())
-                .eq(AiVideoTask::getCreatedBy, principal.userId()));
+                .eq(AiVideoTask::getOrganizationId, principal.organizationId());
+        if (!isCompanyAdministrator(principal)) query.eq(AiVideoTask::getCreatedBy, principal.userId());
+        AiVideoTask task = taskMapper.selectOne(query);
         if (task == null) throw new BusinessException(HttpStatus.NOT_FOUND, "AI 视频任务不存在");
         return task;
+    }
+
+    static boolean isCompanyAdministrator(PlatformPrincipal principal) {
+        return principal != null && principal.roleCodes().contains("ADMIN");
     }
 
     private Path itemDirectory(AiVideoTask task, AiVideoTaskItem item) {
@@ -840,6 +1016,7 @@ public class AiVideoTaskService {
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append(" 商品展示视频。全程只保留同一件商品主体，按 01→09 自然连续变化，不得复制或增加第二件同款。\n");
         prompt.append("商品的颜色、形状、比例、Logo、标签、包装文字、图案和材质必须与图3一致，不得重新设计、漂移、融化或变形。\n");
+        prompt.append("衣服被手指捏住或提起一角时，接触点必须清晰固定，其余未支撑布料受重力向下垂落，从受力点产生自然放射拉伸褶皱和弧形悬垂；手部移动时衣角应略有滞后、惯性摆动并逐渐衰减。禁止衣服像硬纸板、塑料片或冻结模型一样整片僵硬翻起。\n");
         prompt.append("场景、展示方式、机位、构图和手部状态逐镜读取图2与脚本时间轴，不得用某一格的设置覆盖其他格。镜头变化只采用脚本明确的推近、拉远、平移、环绕或细节特写。\n");
         prompt.append("运镜不是静态构图备注：每个时间段必须真实执行脚本指定的方向、速度、起止景别和持续过程；只有脚本明确写固定机位时才允许完全固定。\n");
         prompt.append("九宫格是 9 个时间轴关键帧，不代表 9 个物理镜头。只有转场说明明确标记真实切点时才执行转场；标记“同镜头连续，无转场”的相邻格必须保持同一镜头内连续运动。\n");
@@ -855,11 +1032,11 @@ public class AiVideoTaskService {
         StringBuilder prompt = new StringBuilder();
         prompt.append("提示词版本：V11.1 · V11 恢复版与局部帧保持\n\n");
         prompt.append("【参考图片顺序】\n");
-        prompt.append("图1：从图2第 01 格等比例裁出的单人首帧。它只锚定第 01 镜头的人物身份、脸、发型、身材、完整穿搭与初始姿势；不得用图1背景覆盖后续分镜。\n");
+        prompt.append("图1：从图2第 01 格等比例裁出的单人首帧。它只定义视频 t=0 的人物身份、脸、发型、身材、完整穿搭与初始姿势；从第 01 段动作开始后立即服从图2和时间轴推进，不得把图1的静态姿势、手持状态或背景延续到后续分镜。\n");
         prompt.append("图2：最终 4K 九宫格分镜表。按从左到右、从上到下读取 01→09；每一格都分别决定对应镜头的动作、场景、构图、景别和机位，不得只读取第 01 格。\n");
         prompt.append("图3：商品素材，只用于校验上衣颜色、版型、领口、袖长以及胸前印花的内容、位置和比例。\n\n");
         prompt.append("【生成任务】\n");
-        prompt.append("生成一条严格按图2的 01→09 顺序播放的多镜头电商短片。必须逐格读取并落实每格场景、动作、构图和景别；禁止把九格全部改写成第 01 格的背景与站姿。\n");
+        prompt.append("生成一条严格按图2的 01→09 顺序播放的多镜头电商短片。必须逐格读取并落实每格场景、动作、主体状态、构图和景别；图1仅约束 t=0，不具备覆盖时间轴的权限，禁止把九格全部改写成第 01 格的背景、站姿或手持状态。\n");
         prompt.append("相邻格背景、人物位置和景别一致时，使用同一身体的自然连续动作；相邻格出现明显换景、站立与坐姿切换、人物镜头与商品特写切换或景别大幅变化时，在分镜边界使用干净硬切，不得用人体变形、背景融化或强行走位完成转场。\n");
         prompt.append("【视角变化判定】若时间轴明确写出转身、回身、侧身、低头、抬头或回眸，则在约 0.8–1.5 秒内只完成这一项平滑运动，头、颈、肩和躯干按真实骨骼关系共同转动；转动期间不叠加新的微笑、挑眉、口型、眨眼或快速视线动作。\n");
         prompt.append("若时间轴没有连续动作指令，而相邻格出现正面/侧面/背面互换、身体朝向变化超过约 30°、头部俯仰变化超过约 20°、人物尺度明显改变或全身与局部景别互换，则在边界直接硬切。硬切前后各稳定约 4–6 帧，禁止中间脸、中间身体、交叉溶解、残影、变形插值和背景融化。\n");
@@ -873,6 +1050,7 @@ public class AiVideoTaskService {
         prompt.append("【商品纹理时序锁定】胸前文字、数字、图案、轮廓线、颜色块和相互间距是绑定在同一块布料坐标上的固定纹理，只能随整件衣服连续做透视、缩放和褶皱形变；不得独立移动、逐帧改字、换色、增删、闪烁、爬动或重新排列。\n");
         prompt.append("【印花帧保持】胸前印花在首个清晰正面帧完成一次校验后，后续直接复用同一纹理贴图，不执行 OCR、不重新拼写、不逐帧修复字母。侧身时允许自然变窄、降低可读性或被遮挡，不得为保持可读而重画。\n");
         prompt.append("衣服褶皱遵循连续布料物理，同一条褶皱随身体动作平滑移动，不得凭空出现、消失或像液体沸腾。皮肤的肤色、毛孔、细纹和关节折痕不得游走、闪烁或逐帧强化；分辨率不足时保持自然柔和的中频细节。\n");
+        prompt.append("【衣角提拉重力】当手指捏住、提起或掀起衣角、下摆、袖口时，接触点始终贴合指腹；只有受力点被牵引，未被支撑的布料必须受重力下垂，从捏点向外产生连续放射状张力褶皱和弧形垂坠。手开始移动时布料稍后跟随，停止后允许一次小幅回摆并迅速衰减；下摆其余部分保留重量和惯性。禁止把整件衣服当成纸板、塑料片或硬壳同步抬起，禁止平直无褶皱、冻结悬空、无重量飘浮或布料穿过手指与身体。\n");
         prompt.append("【曝光与色彩锁定】每个镜头分别以图2对应格的亮度、肤色、白平衡、色温、黑位、对比度和饱和度为基准；同一镜头内保持稳定，不得出现曝光呼吸、肤色闪烁、自动压暗、灰雾、暗角或电影滤镜。不同场景在硬切后直接采用下一格自身的曝光，不使用淡入淡出或黑场。\n");
         prompt.append("每个镜头的背景、焦段、光线与人物尺度以图2对应格为准；同一镜头内部保持稳定。不得显示图2格线、拼贴、文字或编号，不生成字幕、额外 Logo 或水印。\n\n");
         appendImageToVideoTimeline(prompt, task);
@@ -1091,6 +1269,8 @@ public class AiVideoTaskService {
                 || current.contains("提示词版本：V9 · 九宫格逐镜头场景调度与时序纹理稳定")
                 || current.contains("提示词版本：V10 · 九宫格逐镜头调度与曝光时序稳定")
                 || current.contains("提示词版本：V11 · 九宫格视角断点与曝光时序稳定")
+                || current.contains("提示词版本：V11.2 · 首帧商品锁定与布料重力")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V4")
                 || current.contains("提示词版本：V12 · 五官拓扑与商品印花静态锚定")
                 || current.contains("提示词版本：V12.1 · 核心约束精简版")
                 || current.contains("提示词版本：PRODUCT_COMPACT_V1")
@@ -1205,7 +1385,8 @@ public class AiVideoTaskService {
                              Map<String, String> videoProviderTaskIds,
                              int activeVideoSubmissions, int videoSubmissionLimit) {}
     public record AssetFile(Path path, String location, String contentType, long size) {}
-    public record VideoBatch(String taskName, List<VideoBatchFile> files) {}
-    public record VideoBatchFile(Path path, String location, String entryName) {}
+    public record VideoBatch(String organizationId, String taskId, String taskName, List<VideoBatchFile> files) {}
+    public record VideoBatchFile(Path path, String location, String entryName, long expectedSize) {}
+    public record PreparedVideoBatch(Path path, String location, long size) {}
     public record SourceFile(Path path, String contentType, long size) {}
 }

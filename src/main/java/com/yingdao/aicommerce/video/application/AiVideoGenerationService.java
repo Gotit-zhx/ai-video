@@ -837,17 +837,21 @@ public class AiVideoGenerationService {
         Files.createDirectories(directory);
         Path temporary = directory.resolve("video-" + job.getId() + ".part");
         Path output = directory.resolve("video-result.mp4");
-        try (InputStream input = response.body(); var target = Files.newOutputStream(temporary)) {
-            byte[] buffer = new byte[64 * 1024];
-            long total = 0;
-            for (int read; (read = input.read(buffer)) >= 0;) {
-                total += read;
-                if (total > MAX_VIDEO_BYTES) throw new IllegalStateException("厂商视频超过 500MB 限制");
-                target.write(buffer, 0, read);
+        try {
+            try (InputStream input = response.body(); var target = Files.newOutputStream(temporary)) {
+                byte[] buffer = new byte[64 * 1024];
+                long total = 0;
+                for (int read; (read = input.read(buffer)) >= 0;) {
+                    total += read;
+                    if (total > MAX_VIDEO_BYTES) throw new IllegalStateException("厂商视频超过 500MB 限制");
+                    target.write(buffer, 0, read);
+                }
             }
+            Files.move(temporary, output, StandardCopyOption.REPLACE_EXISTING);
+            return new GeneratedVideo(output.toString(), Files.size(output));
+        } finally {
+            Files.deleteIfExists(temporary);
         }
-        Files.move(temporary, output, StandardCopyOption.REPLACE_EXISTING);
-        return new GeneratedVideo(output.toString(), Files.size(output));
     }
 
     private void replaceVideoAsset(AiVideoGenerationJob job, GeneratedVideo output) throws Exception {
@@ -865,6 +869,12 @@ public class AiVideoGenerationService {
         AiVideoTask task = taskMapper.selectById(taskId);
         if (task == null || !"VIDEO_GENERATING".equals(task.getStatus())) return;
         List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, taskId));
+        for (AiVideoTaskItem item : items) {
+            if (!"VIDEO_READY".equals(item.getStatus()) && hasVideoResult(item.getId())) {
+                item.videoComplete();
+                itemMapper.updateById(item);
+            }
+        }
         int succeeded = (int) items.stream().filter(item -> "VIDEO_READY".equals(item.getStatus())).count();
         List<AiVideoTaskItem> failed = items.stream().filter(item -> "VIDEO_FAILED".equals(item.getStatus())).toList();
         int terminal = succeeded + failed.size();

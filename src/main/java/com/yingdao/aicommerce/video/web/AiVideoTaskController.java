@@ -33,13 +33,11 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 import java.nio.charset.StandardCharsets;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.net.URI;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import java.util.zip.Deflater;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 @Validated
 @RestController
@@ -98,6 +96,21 @@ public class AiVideoTaskController {
     public ApiResponse<TaskResponse> startVideos(@PathVariable String id,
                                                  @AuthenticationPrincipal PlatformPrincipal principal) {
         return ApiResponse.ok(TaskResponse.from(service.startVideos(id, principal)));
+    }
+
+    @PostMapping("/{id}/regenerate-videos")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ApiResponse<TaskResponse> regenerateVideos(@PathVariable String id,
+                                                      @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.ok(TaskResponse.from(service.regenerateVideos(id, principal)));
+    }
+
+    @PostMapping("/{taskId}/items/{itemId}/regenerate-video")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ApiResponse<TaskResponse> regenerateVideo(@PathVariable String taskId,
+                                                     @PathVariable String itemId,
+                                                     @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.ok(TaskResponse.from(service.regenerateVideo(taskId, itemId, principal)));
     }
 
     @PostMapping("/{id}/start-generation")
@@ -187,29 +200,31 @@ public class AiVideoTaskController {
     }
 
     @GetMapping(value = "/{taskId}/video-results.zip", produces = "application/zip")
-    public ResponseEntity<StreamingResponseBody> downloadVideos(@PathVariable String taskId,
-                                                                 @AuthenticationPrincipal PlatformPrincipal principal) {
+    public ResponseEntity<?> downloadVideos(@PathVariable String taskId,
+                                            @AuthenticationPrincipal PlatformPrincipal principal) {
         AiVideoTaskService.VideoBatch batch = service.videoBatch(taskId, principal);
-        StreamingResponseBody body = output -> {
-            try (ZipOutputStream zip = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
-                zip.setLevel(Deflater.NO_COMPRESSION);
-                for (AiVideoTaskService.VideoBatchFile file : batch.files()) {
-                    zip.putNextEntry(new ZipEntry(file.entryName()));
-                    try (InputStream input = service.openVideoBatchFile(file)) {
-                        input.transferTo(zip);
-                    }
-                    zip.closeEntry();
-                }
-                zip.finish();
-            }
-        };
+        AiVideoTaskService.PreparedVideoBatch prepared = service.prepareVideoBatch(batch);
         String name = batch.taskName() == null || batch.taskName().isBlank() ? "AI-视频任务" : batch.taskName();
         name = name.replaceAll("[\\\\/:*?\"<>|\\r\\n]+", "-");
         if (name.length() > 100) name = name.substring(0, 100);
+        String archiveName = name + "-视频成片.zip";
+        if (prepared.location() != null) {
+            return ResponseEntity.status(HttpStatus.TEMPORARY_REDIRECT)
+                    .location(URI.create(service.signedVideoBatchUrl(prepared, archiveName)))
+                    .cacheControl(CacheControl.noStore()).build();
+        }
+        StreamingResponseBody body = output -> {
+            try (InputStream input = Files.newInputStream(prepared.path())) {
+                input.transferTo(output);
+            } finally {
+                service.deletePreparedVideoBatch(prepared);
+            }
+        };
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
+                .contentLength(prepared.size())
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
-                        .filename(name + "-视频成片.zip", StandardCharsets.UTF_8).build().toString())
+                        .filename(archiveName, StandardCharsets.UTF_8).build().toString())
                 .body(body);
     }
 

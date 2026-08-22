@@ -10,6 +10,8 @@ import com.aliyun.oss.common.auth.CredentialsProvider;
 import com.aliyun.oss.common.auth.DefaultCredentials;
 import com.aliyun.oss.common.comm.SignVersion;
 import com.aliyun.oss.model.GeneratePresignedUrlRequest;
+import com.aliyun.oss.model.ListObjectsV2Request;
+import com.aliyun.oss.model.ListObjectsV2Result;
 import com.aliyun.oss.model.AbortMultipartUploadRequest;
 import com.aliyun.oss.model.CompleteMultipartUploadRequest;
 import com.aliyun.oss.model.InitiateMultipartUploadRequest;
@@ -211,6 +213,33 @@ public class OssStorageService {
         GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(bucket, key(location), HttpMethod.GET);
         request.setExpiration(Date.from(Instant.now().plus(signedUrlTtl)));
         return publicClient.generatePresignedUrl(request).toExternalForm();
+    }
+
+    public String signedDownloadUrl(String location, String fileName) {
+        GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(bucket, key(location), HttpMethod.GET);
+        request.setExpiration(Date.from(Instant.now().plus(signedUrlTtl)));
+        return publicClient.generatePresignedUrl(request).toExternalForm();
+    }
+
+    public int deleteOlderThan(String categoryPrefix, Duration age) {
+        String safePrefix = categoryPrefix == null ? "" : categoryPrefix.replaceAll("[^A-Za-z0-9/_-]", "-");
+        String prefix = "heyi/" + safePrefix;
+        Instant cutoff = Instant.now().minus(age);
+        int deleted = 0;
+        String continuationToken = null;
+        do {
+            ListObjectsV2Request request = new ListObjectsV2Request(bucket).withPrefix(prefix).withMaxKeys(500);
+            if (continuationToken != null) request.setContinuationToken(continuationToken);
+            ListObjectsV2Result result = internalClient.listObjectsV2(request);
+            for (var summary : result.getObjectSummaries()) {
+                if (summary.getLastModified() != null && summary.getLastModified().toInstant().isBefore(cutoff)) {
+                    internalClient.deleteObject(bucket, summary.getKey());
+                    deleted++;
+                }
+            }
+            continuationToken = result.isTruncated() ? result.getNextContinuationToken() : null;
+        } while (continuationToken != null && !continuationToken.isBlank());
+        return deleted;
     }
 
     public void delete(String location) {

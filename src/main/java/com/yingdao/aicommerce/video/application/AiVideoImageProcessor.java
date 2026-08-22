@@ -101,7 +101,10 @@ public class AiVideoImageProcessor {
             + "但同一连续段的人脸尺度不得忽大忽小。";
     private static final String FABRIC_AND_PRODUCT_REALISM_REQUIREMENT = "材质必须按真实物理方式受光：棉料保留细微织纹、厚薄、"
             + "缝线和受力褶皱，印花贴合布面起伏而非悬浮；纸、塑料、玻璃、金属和木材分别呈现正确的漫反射、粗糙度、"
-            + "透光或反射特征。避免所有表面同样光滑、边缘融化、无来源高光和不符合重力的悬浮。";
+            + "透光或反射特征。避免所有表面同样光滑、边缘融化、无来源高光和不符合重力的悬浮。"
+            + "当手指捏住、提起或掀起衣角、下摆、袖口时，接触点必须准确贴合指腹；只有捏住的位置被向上牵引，未被支撑的布料受重力向下垂落，"
+            + "从受力点向外形成疏密自然的放射状张力褶皱和弧形垂坠，下摆有轻微滞后、惯性与阻尼。禁止整片衣服像纸板、塑料片或硬壳一样平直抬起，"
+            + "禁止无重量、无褶皱、冻结悬空或所有布面同步刚性移动。";
     private final AiVideoTaskMapper taskMapper;
     private final AiVideoTaskItemMapper itemMapper;
     private final AiVideoTaskAssetMapper assetMapper;
@@ -159,7 +162,7 @@ public class AiVideoImageProcessor {
         task.start(model.id(), model.modelId());
         int updated = taskMapper.update(null, new LambdaUpdateWrapper<AiVideoTask>()
                 .eq(AiVideoTask::getId, task.getId())
-                .in(AiVideoTask::getStatus, List.of("READY", "FAILED", "IMAGE_READY"))
+                .in(AiVideoTask::getStatus, List.of("READY", "FAILED", "IMAGE_READY", "VIDEO_READY"))
                 .set(AiVideoTask::getStatus, task.getStatus())
                 .set(AiVideoTask::getProgress, task.getProgress())
                 .set(AiVideoTask::getCompletedItems, task.getCompletedItems())
@@ -230,6 +233,9 @@ public class AiVideoImageProcessor {
         if (retryableImageConcurrencyFailure(message)) return true;
         if (message == null || message.isBlank()) return false;
         String value = message.toLowerCase();
+        if (value.contains("模型已生成图片")
+                && value.contains("结果地址已保存")
+                && value.contains("下载失败")) return true;
         if (value.contains("内容策略可能误判")
                 || value.contains("image generation produced no asset")
                 || value.contains("该提示可能违反了我们的内容政策")
@@ -398,33 +404,47 @@ public class AiVideoImageProcessor {
         AiVideoTaskAsset modelAsset = usableAsset(existing, primaryAssetType);
         AiVideoTaskAsset storyboardAsset = usableAsset(existing, "STORYBOARD_GRID");
         AiVideoTaskAsset firstFrameAsset = usableAsset(existing, "STORYBOARD_FIRST_FRAME");
+        // Older MODEL_WEAR tasks copied the static model image as the video first frame. That made
+        // the video model overfit to a single holding pose and ignore the storyboard state changes.
+        // Migrate those assets lazily so retries use the actual first storyboard cell.
+        if (modelWear && isLegacyModelFirstFrame(firstFrameAsset)) {
+            deleteGeneratedAsset(firstFrameAsset);
+            firstFrameAsset = null;
+        }
         AiVideoTaskAsset storyboardGuideAsset = usableAsset(existing, "STORYBOARD_GUIDE");
+        boolean hasVideoResult = usableAsset(existing, "VIDEO_RESULT") != null;
         boolean hasModel = modelAsset != null;
         boolean hasStoryboard = storyboardAsset != null;
         boolean productVisibleInFirstShot = modelWear || shotShowsProduct(shots.getFirst());
+        boolean useScriptFrameForPrimary = useScriptFirstFrameForPrimary(modelWear, preserveScriptBackground);
+        ReferenceImage scriptFirstFrame = useScriptFrameForPrimary
+                ? firstScriptFrameReference(task) : null;
+        ShotPrompt productAnchorShot = shots.stream().filter(this::shotShowsProduct).findFirst().orElse(shots.getLast());
+        String modelPrompt = modelWear
+                ? modelWearPrompt(task, item, shots.getFirst(), scriptFirstFrame != null)
+                : productScenePrompt(task, item, productAnchorShot, false);
+        if (!modelWear && modelAsset != null && !modelPrompt.equals(modelAsset.getPromptText())) {
+            deleteGeneratedAsset(modelAsset);
+            modelAsset = null;
+            hasModel = false;
+        }
         item.start();
         if (hasModel && !hasStoryboard) item.modelReady();
         itemMapper.updateById(item);
         if (hasModel && hasStoryboard) {
             if (firstFrameAsset == null) {
-                if (modelWear) ensureModelFirstFrame(task, modelAsset);
+                if (modelWear) ensureStoryboardFirstFrame(task, storyboardAsset);
                 else ensureProductTimelineFirstFrame(task, modelAsset, storyboardAsset, productVisibleInFirstShot);
             }
-            item.complete();
+            completeImages(item, hasVideoResult);
             itemMapper.updateById(item);
             return;
         }
         ReferenceImage garment = reference(Path.of(item.getSourceFilePath()), "参考图1 商品素材", item.getSourceContentType());
-        ReferenceImage scriptFirstFrame = preserveScriptBackground && (modelWear || productVisibleInFirstShot)
-                ? firstScriptFrameReference(task) : null;
-        ShotPrompt productAnchorShot = shots.stream().filter(this::shotShowsProduct).findFirst().orElse(shots.getLast());
-        String modelPrompt = modelWear
-                ? modelWearPrompt(task, item, shots.getFirst(), scriptFirstFrame != null)
-                : productScenePrompt(task, item, productAnchorShot, scriptFirstFrame != null);
         if (!hasModel) {
-            List<ReferenceImage> modelReferences = scriptFirstFrame == null
-                    ? List.of(garment)
-                    : List.of(garment, scriptFirstFrame);
+            List<ReferenceImage> modelReferences = useScriptFrameForPrimary && scriptFirstFrame != null
+                    ? List.of(garment, scriptFirstFrame)
+                    : List.of(garment);
             modelAsset = generateAsset(task, item, model, primaryAssetType, modelPrompt, modelReferences);
             item.modelReady();
             itemMapper.updateById(item);
@@ -474,15 +494,30 @@ public class AiVideoImageProcessor {
                 storyboardAsset = generateAsset(task, item, model, "STORYBOARD_GRID", productStoryboardPrompt,
                         productReferences);
             }
-            if (modelWear) ensureModelFirstFrame(task, modelAsset);
+            if (modelWear) ensureStoryboardFirstFrame(task, storyboardAsset);
             else ensureProductTimelineFirstFrame(task, modelAsset, storyboardAsset, productVisibleInFirstShot);
         }
-        item.complete();
+        completeImages(item, hasVideoResult);
         itemMapper.updateById(item);
+    }
+
+    static boolean isLegacyModelFirstFrame(AiVideoTaskAsset asset) {
+        return asset != null
+                && asset.getPromptText() != null
+                && asset.getPromptText().startsWith("复用 4K AI 模特图作为视频第 01 分镜");
+    }
+
+    static void completeImages(AiVideoTaskItem item, boolean hasVideoResult) {
+        if (hasVideoResult) item.videoComplete();
+        else item.complete();
     }
 
     static boolean shouldRunProductFunctionAnalysis(boolean modelWear, boolean pipelineRecovery) {
         return !modelWear && !pipelineRecovery;
+    }
+
+    static boolean useScriptFirstFrameForPrimary(boolean modelWear, boolean preserveScriptBackground) {
+        return modelWear && preserveScriptBackground;
     }
 
     private boolean hasUsableAsset(List<AiVideoTaskAsset> assets, String type) {
@@ -732,6 +767,21 @@ public class AiVideoImageProcessor {
         return ensureProductFirstFrame(task, productSceneAsset);
     }
 
+    private void deleteGeneratedAsset(AiVideoTaskAsset asset) {
+        String location = asset.getFilePath();
+        if (location != null && !location.isBlank()) {
+            if (ossStorage != null && ossStorage.isOssLocation(location)) {
+                ossStorage.delete(location);
+            } else {
+                try {
+                    Path path = Path.of(location).toAbsolutePath().normalize();
+                    if (path.startsWith(storageRoot)) Files.deleteIfExists(path);
+                } catch (IOException ignored) { }
+            }
+        }
+        assetMapper.deleteById(asset.getId());
+    }
+
     public AiVideoTaskAsset ensureStoryboardFirstFrame(AiVideoTask task, AiVideoTaskAsset storyboardAsset) {
         if (storyboardAsset == null || !"STORYBOARD_GRID".equals(storyboardAsset.getAssetType())) return null;
         AiVideoTaskAsset existing = assetMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskAsset>()
@@ -782,6 +832,7 @@ public class AiVideoImageProcessor {
         }
         return result;
     }
+
 
     private PiArtifact call(AiVideoTask task, AiVideoTaskItem item, String assetType,
                             ModelConfigService.RuntimeModelConnection model, String prompt,
@@ -1125,10 +1176,10 @@ public class AiVideoImageProcessor {
         StringBuilder prompt = new StringBuilder("执行一次严格的九宫格人物与商品替换编辑。三张参考图职责不可互换：")
                 .append("参考图1是用户上传的真实商品原图，是商品颜色、版型、领口、袖长、面料、缝线、印花、文字、数字、图形、Logo、位置、比例和排列顺序的唯一最高优先级母版；")
                 .append("参考图2是已经穿好当前商品的 AI 模特图，只负责唯一人物身份、脸、发型、身材、商品穿着位置、下装、配饰和整体摄影风格；")
-                .append("参考图3是 3×3 动作场景底图，只负责每格场景、主要物体、空间关系、机位方向、站位、动作姿态和时间顺序。")
+                .append("参考图3是 3×3 动作场景底图，只提供每格可见场景、主要物体、空间关系、机位方向和姿态证据；下方逐格脚本决定最终必须执行的主体状态、动作阶段和时间顺序。")
                 .append("参考图3中的任何人物身份、脸、头发、肤色、衣服、颜色、印花、文字、Logo、下装和配饰全部是无效占位内容，必须删除，绝对不能继承、融合或折中。")
                 .append("参考图2若因生成误差与参考图1的商品细节不一致，以参考图1为准纠正商品；参考图2只提供商品穿在人身上的位置、尺度、遮挡和自然布料形变。")
-                .append("保持参考图3每一格指定的场景类型、主要物体、空间关系、机位方向、站位、动作姿态和时间顺序；原图中的远近景别和人物尺寸不保留，所有人物格必须重新按本提示词的近距离比例构图。")
+                .append("逐格同时核对参考图3与下方脚本：场景、物体和可见姿态取参考图3，主体是包装中、折叠、展开、手持、穿上、已穿着或局部特写等状态以及动作阶段严格取下方同编号脚本。两者冲突时不得自行折中或统一成同一姿势，必须以脚本状态和动作为准重建该格；原图中的远近景别和人物尺寸不保留，所有人物格必须重新按本提示词的近距离比例构图。")
                 .append(realFrameGuide
                         ? "参考图3来自原视频真实抽帧。第 01 格以参考图2的人物身份、穿搭、背景和动作起点为准；第 02–09 格保留参考图3对应位置的真实背景墙面、门窗、家具、物品、磨损、阴影、曝光、白平衡和景深特征，但允许为了相机向前推进约二分之一而自然放大和重新取景。禁止把九格改造成样板间、木柜棚景、统一房间或模型新设计的室内布景。"
                         : "当前任务选择 AI 自动搭配背景。参考图3决定每格动作、站位、景别、场景类型、场景切换和构图，参考图2提供人物、穿着关系与真实摄影风格；不复刻脚本原视频房间，只重新设计每格环境的具体陈设。若背景存在塑料感、CG感、假材质、无来源高光或过度整洁，必须按参考图2的真实摄影标准重建材质与光线。")
@@ -1163,7 +1214,7 @@ public class AiVideoImageProcessor {
         for (ShotPrompt shot : shots) {
             String expression = inferMicroExpression(shot);
             prompt.append("分镜 ").append(String.format("%02d", shot.sequence()))
-                    .append("：场景与动作按该格底图执行；").append(shotHandDirective(task, shot)).append("；")
+                    .append("：").append(shotExecutionDirection(task, shot))
                     .append(expression).append("；视线与该格动作目标一致，双眼共同对焦。\n");
         }
         prompt.append("仅允许改变人物姿态和上述微表情以贴合参考图3，人物身份和参考图1的商品外观不得随姿态改变。")

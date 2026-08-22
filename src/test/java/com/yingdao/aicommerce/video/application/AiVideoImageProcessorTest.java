@@ -1,5 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
+import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
+import com.yingdao.aicommerce.video.domain.AiVideoTaskAsset;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
@@ -22,6 +24,47 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiVideoImageProcessorTest {
+
+    @Test
+    void recognizesLegacyStaticModelFirstFrame() {
+        AiVideoTaskAsset asset = new AiVideoTaskAsset("org", "task", "item",
+                "STORYBOARD_FIRST_FRAME", 1, "old.png", "image/png", 1,
+                "复用 4K AI 模特图作为视频第 01 分镜，不增加模型调用", "model");
+
+        assertTrue(AiVideoImageProcessor.isLegacyModelFirstFrame(asset));
+    }
+
+    @Test
+    void keepsStoryboardDerivedFirstFrame() {
+        AiVideoTaskAsset asset = new AiVideoTaskAsset("org", "task", "item",
+                "STORYBOARD_FIRST_FRAME", 1, "frame.png", "image/png", 1,
+                "从最终 4K 九宫格第 01 格自动裁切", "model");
+
+        assertFalse(AiVideoImageProcessor.isLegacyModelFirstFrame(asset));
+    }
+
+    @Test
+    void completingImagesDoesNotDowngradeAnExistingVideo() {
+        AiVideoTaskItem item = item();
+
+        AiVideoImageProcessor.completeImages(item, true);
+
+        assertEquals("VIDEO_READY", item.getStatus());
+    }
+
+    @Test
+    void completingImagesWithoutVideoMarksImagesReady() {
+        AiVideoTaskItem item = item();
+
+        AiVideoImageProcessor.completeImages(item, false);
+
+        assertEquals("IMAGE_READY", item.getStatus());
+    }
+
+    private static AiVideoTaskItem item() {
+        return new AiVideoTaskItem("org", "task", "item", "sku",
+                "source.png", "C:/tmp/source.png", "image/png", 1);
+    }
     @Test
     void cropsTopLeftStoryboardCellAsFirstFrame() {
         BufferedImage storyboard = new BufferedImage(300, 600, BufferedImage.TYPE_INT_RGB);
@@ -63,6 +106,15 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void fabricRequirementIncludesGravityAndDrapeWhenAClothingCornerIsLifted() throws Exception {
+        String requirement = privateStaticString("FABRIC_AND_PRODUCT_REALISM_REQUIREMENT");
+
+        assertTrue(requirement.contains("未被支撑的布料受重力向下垂落"));
+        assertTrue(requirement.contains("放射状张力褶皱"));
+        assertTrue(requirement.contains("禁止整片衣服像纸板"));
+    }
+
+    @Test
     void productVisibilityFollowsTheShotInsteadOfForcingTheFirstFrame() {
         assertFalse(AiVideoImageProcessor.shotTextShowsProduct(
                 "无人物，画面从贴地近景开始，中线分隔旧地面与处理后地面"));
@@ -70,6 +122,13 @@ class AiVideoImageProcessorTest {
                 "商品不出镜，只展示空房间和地面测试"));
         assertTrue(AiVideoImageProcessor.shotTextShowsProduct(
                 "当前任务商品正面对镜定住，商品包装清晰可见"));
+    }
+
+    @Test
+    void productOnlyPrimaryImageNeverReceivesTheScriptFrame() {
+        assertFalse(AiVideoImageProcessor.useScriptFirstFrameForPrimary(false, true));
+        assertFalse(AiVideoImageProcessor.useScriptFirstFrameForPrimary(false, false));
+        assertTrue(AiVideoImageProcessor.useScriptFirstFrameForPrimary(true, true));
     }
 
     @Test
@@ -121,8 +180,12 @@ class AiVideoImageProcessorTest {
                 "图片模型调用失败：image generation produced no asset：该提示可能违反了我们的内容政策"));
         assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
                 "内容策略可能误判：图片模型未产出图片，已快速重试 3 次，系统将继续后台自动重试"));
+        assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
+                "模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址"));
         assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
                 "版权限制：素材包含受版权保护的角色"));
+        assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("FAILED",
+                "模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "图片生成失败：图片模型调用失败：Concurrency limit exceeded for user, please retry later"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
