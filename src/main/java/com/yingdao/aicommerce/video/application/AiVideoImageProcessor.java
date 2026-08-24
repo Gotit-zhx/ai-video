@@ -412,6 +412,13 @@ public class AiVideoImageProcessor {
             firstFrameAsset = null;
         }
         AiVideoTaskAsset storyboardGuideAsset = usableAsset(existing, "STORYBOARD_GUIDE");
+        if (isRawScriptFrameGuide(storyboardGuideAsset)) {
+            // A raw video frame can contain the previous video's product. Passing it into the
+            // image model lets those pixels compete with the current SKU even when the prompt
+            // says otherwise. Rebuild a clean, text-driven action guide instead.
+            deleteGeneratedAsset(storyboardGuideAsset);
+            storyboardGuideAsset = null;
+        }
         boolean hasVideoResult = usableAsset(existing, "VIDEO_RESULT") != null;
         boolean hasModel = modelAsset != null;
         boolean hasStoryboard = storyboardAsset != null;
@@ -454,10 +461,6 @@ public class AiVideoImageProcessor {
                     modelWear ? "参考图2 AI模特人物与穿着母版" : "AI商品场景图", modelAsset.getContentType());
             if (modelWear) {
                 boolean realFrameGuide = false;
-                if (storyboardGuideAsset == null && preserveScriptBackground) {
-                    storyboardGuideAsset = createRealFrameStoryboardGuide(task, item);
-                    realFrameGuide = storyboardGuideAsset != null;
-                }
                 if (storyboardGuideAsset == null) {
                     String guidePrompt = storyboardGridPrompt(task, shots);
                     storyboardGuideAsset = generateAsset(task, item, model, "STORYBOARD_GUIDE", guidePrompt,
@@ -473,13 +476,6 @@ public class AiVideoImageProcessor {
                         List.of(garment, generatedModel, storyboardGuide));
             } else {
                 boolean realFrameGuide = false;
-                if (storyboardGuideAsset == null && preserveScriptBackground) {
-                    storyboardGuideAsset = createRealFrameStoryboardGuide(task, item);
-                    realFrameGuide = storyboardGuideAsset != null;
-                } else if (storyboardGuideAsset != null) {
-                    realFrameGuide = storyboardGuideAsset.getPromptText() != null
-                            && storyboardGuideAsset.getPromptText().startsWith("REAL_VIDEO_FRAMES_V1");
-                }
                 String productStoryboardPrompt = productStoryboardGridPrompt(task, item, shots, realFrameGuide);
                 List<ReferenceImage> productReferences;
                 if (realFrameGuide) {
@@ -521,6 +517,12 @@ public class AiVideoImageProcessor {
         // contain a different product/person and therefore must only be used by the storyboard
         // stage as scene/action guides, never as primary-image model inputs.
         return false;
+    }
+
+    static boolean isRawScriptFrameGuide(AiVideoTaskAsset asset) {
+        return asset != null
+                && asset.getPromptText() != null
+                && asset.getPromptText().startsWith("REAL_VIDEO_FRAMES_V1");
     }
 
     private boolean hasUsableAsset(List<AiVideoTaskAsset> assets, String type) {

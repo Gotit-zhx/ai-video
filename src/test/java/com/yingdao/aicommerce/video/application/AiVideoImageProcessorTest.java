@@ -133,6 +133,20 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void rawScriptFramesAreRejectedAsStoryboardModelInputs() {
+        AiVideoTaskAsset rawGuide = new AiVideoTaskAsset(
+                "org", "task", "item", "STORYBOARD_GUIDE", null, "/tmp/guide.png",
+                "image/png", 10, "REAL_VIDEO_FRAMES_V1｜原视频九个分镜时间中点抽帧", "ffmpeg");
+        AiVideoTaskAsset generatedGuide = new AiVideoTaskAsset(
+                "org", "task", "item", "STORYBOARD_GUIDE", null, "/tmp/guide.png",
+                "image/png", 10, "text-driven guide", "gpt-image-2");
+
+        assertTrue(AiVideoImageProcessor.isRawScriptFrameGuide(rawGuide));
+        assertFalse(AiVideoImageProcessor.isRawScriptFrameGuide(generatedGuide));
+        assertFalse(AiVideoImageProcessor.isRawScriptFrameGuide(null));
+    }
+
+    @Test
     void productFunctionAnalysisOnlyRunsForDailyUseCategory() {
         assertTrue(ProductFunctionAnalysisService.isDailyUseCategory("日用品"));
         assertTrue(ProductFunctionAnalysisService.isDailyUseCategory(" 日用品 "));
