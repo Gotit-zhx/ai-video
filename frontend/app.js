@@ -5169,8 +5169,36 @@ function aiVideoTaskStatusClass(status) {
   return "material";
 }
 
-function aiVideoAssetUrl(taskId, assetId, version = "") {
-  return `/api/v1/ai-video-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(assetId)}?v=${encodeURIComponent(version || "1")}`;
+function aiVideoAssetUrl(taskId, assetId, version = "", preview = false) {
+  const suffix = preview ? "&preview=true" : "";
+  return `/api/v1/ai-video-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(assetId)}?v=${encodeURIComponent(version || "1")}${suffix}`;
+}
+
+function reusableMediaKey(node) {
+  const source = node?.getAttribute?.("src");
+  return source ? `${node.tagName}:${source}` : "";
+}
+
+function htmlFragmentPreservingMedia(currentRoot, html) {
+  const reusable = new Map();
+  currentRoot?.querySelectorAll?.("img[src], video[src]").forEach(node => {
+    const key = reusableMediaKey(node);
+    if (!key) return;
+    if (!reusable.has(key)) reusable.set(key, []);
+    reusable.get(key).push(node);
+  });
+  const template = document.createElement("template");
+  template.innerHTML = String(html || "").trim();
+  template.content.querySelectorAll("img[src], video[src]").forEach(node => {
+    const matches = reusable.get(reusableMediaKey(node));
+    const existing = matches?.shift();
+    if (existing) node.replaceWith(existing);
+  });
+  return template.content;
+}
+
+function replaceHtmlPreservingMedia(container, html) {
+  container.replaceChildren(htmlFragmentPreservingMedia(container, html));
 }
 
 function aiVideoSourceUrl(taskId, itemId, version = "") {
@@ -5489,7 +5517,7 @@ function renderDirectReferenceCard(detail, item, generating, canManageVideoTasks
   const references = directReferenceAssets(detail, item.id);
   const configured = directReferencesConfigured(references);
   const video = (detail.assets || []).find(asset => asset.itemId === item.id && asset.assetType === "VIDEO_RESULT");
-  const videoUrl = video ? aiVideoAssetUrl(task.id, video.id, item.updatedAt) : "";
+  const videoUrl = video ? aiVideoAssetUrl(task.id, video.id, video.createdAt) : "";
   const providerTaskId = String(item.videoProviderTaskId || "");
   const itemAwaitingAcceptance = item.status === "VIDEO_SUBMITTING" && !providerTaskId;
   const itemVideoWaiting = ["VIDEO_SUBMITTING", "VIDEO_GENERATING"].includes(item.status);
@@ -5505,10 +5533,11 @@ function renderDirectReferenceCard(detail, item, generating, canManageVideoTasks
   const roleOptions = Object.entries(directReferenceRoleNames)
     .map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("");
   const track = references.map((reference, index) => {
-    const url = aiVideoAssetUrl(task.id, reference.id, item.updatedAt);
+    const url = aiVideoAssetUrl(task.id, reference.id, reference.createdAt, true);
+    const fullUrl = aiVideoAssetUrl(task.id, reference.id, reference.createdAt);
     return `<article class="direct-reference-tile ${reference.primaryReference ? "is-primary" : ""} ${reference.referenceRole ? "is-specified" : "is-pending"}" data-reference-id="${escapeHtml(reference.id)}">
       <header><span>参考图 ${index + 1}</span><div><button type="button" data-reference-move="up" ${index === 0 || !canEditReferences ? "disabled" : ""} aria-label="向前移动参考图 ${index + 1}">←</button><button type="button" data-reference-move="down" ${index === references.length - 1 || !canEditReferences ? "disabled" : ""} aria-label="向后移动参考图 ${index + 1}">→</button>${canDeleteReferences ? `<button class="direct-reference-delete" type="button" data-reference-delete aria-label="删除参考图 ${index + 1}" title="删除这张参考图">×</button>` : ""}</div></header>
-      <button class="direct-reference-preview" type="button" data-asset-preview="参考图 ${index + 1}" aria-label="放大查看参考图 ${index + 1}"><img src="${url}" alt="参考图 ${index + 1}" loading="lazy"><b aria-hidden="true">${index + 1}</b></button>
+      <button class="direct-reference-preview" type="button" data-asset-preview="参考图 ${index + 1}" aria-label="放大查看参考图 ${index + 1}"><img src="${url}" data-full-src="${fullUrl}" alt="参考图 ${index + 1}" loading="lazy"><b aria-hidden="true">${index + 1}</b></button>
       <label class="direct-reference-primary"><input type="radio" name="primary-reference-${escapeHtml(item.id)}" data-reference-primary ${reference.primaryReference ? "checked" : ""} ${disabled}><span>设为主参考</span></label>
       <label><span>这张图负责</span><select data-reference-role ${disabled}><option value="">由用户指定…</option>${reference.referenceRole ? roleOptions.replace(`value="${reference.referenceRole}"`, `value="${reference.referenceRole}" selected`) : roleOptions}</select></label>
       <label><span>补充说明 <em>可选</em></span><input data-reference-instruction maxlength="500" value="${escapeHtml(reference.referenceInstruction || "")}" placeholder="例如：只参考袖口走线，不参考背景" ${disabled}></label>
@@ -5667,7 +5696,7 @@ function renderAiVideoTaskDetail(options = {}) {
     return;
   }
 
-  setWorkspaceBackdrop(aiVideoSourceUrl(task.id, detail.items[0].id, detail.items[0].updatedAt));
+  setWorkspaceBackdrop(aiVideoSourceUrl(task.id, detail.items[0].id, detail.items[0].createdAt));
   const garmentCardsByItemId = new Map(detail.items.map(item => {
     if (directReferenceVideo) return [item.id, renderDirectReferenceCard(detail, item, generating, canManageVideoTasks)];
     const assets = assetsByItem.get(item.id) || [];
@@ -5680,16 +5709,18 @@ function renderAiVideoTaskDetail(options = {}) {
     const itemState = !isModelWear && item.status === "GENERATING_MODEL"
       ? "生成场景主图"
       : aiVideoItemStatusNames[item.status] || item.status;
-    const source = aiVideoSourceUrl(task.id, item.id, item.updatedAt);
-    const modelUrl = model ? aiVideoAssetUrl(task.id, model.id, item.updatedAt) : "";
-    const storyboardUrl = storyboard ? aiVideoAssetUrl(task.id, storyboard.id, item.updatedAt) : "";
-    const firstFrameUrl = firstFrame ? aiVideoAssetUrl(task.id, firstFrame.id, item.updatedAt) : "";
-    const videoUrl = video ? aiVideoAssetUrl(task.id, video.id, item.updatedAt) : "";
+    const source = aiVideoSourceUrl(task.id, item.id, item.createdAt);
+    const modelUrl = model ? aiVideoAssetUrl(task.id, model.id, model.createdAt, true) : "";
+    const modelFullUrl = model ? aiVideoAssetUrl(task.id, model.id, model.createdAt) : "";
+    const storyboardUrl = storyboard ? aiVideoAssetUrl(task.id, storyboard.id, storyboard.createdAt, true) : "";
+    const storyboardFullUrl = storyboard ? aiVideoAssetUrl(task.id, storyboard.id, storyboard.createdAt) : "";
+    const firstFrameUrl = firstFrame ? aiVideoAssetUrl(task.id, firstFrame.id, firstFrame.createdAt) : "";
+    const videoUrl = video ? aiVideoAssetUrl(task.id, video.id, video.createdAt) : "";
     const modelCanvas = model
-      ? `<img src="${modelUrl}" alt="${escapeHtml(item.name)} ${escapeHtml(primaryAssetName)}" loading="lazy">`
+      ? `<img src="${modelUrl}" data-full-src="${modelFullUrl}" alt="${escapeHtml(item.name)} ${escapeHtml(primaryAssetName)}" loading="lazy">`
       : `<i></i><small>${item.status === "GENERATING_MODEL" ? `正在生成${primaryAssetName}` : `${primaryAssetName}会输出到这里`}</small>`;
     const storyboardTiles = storyboard
-      ? `<img class="storyboard-grid-image" src="${storyboardUrl}" alt="完整 4K 九宫格分镜图" loading="lazy">`
+      ? `<img class="storyboard-grid-image" src="${storyboardUrl}" data-full-src="${storyboardFullUrl}" alt="完整 4K 九宫格分镜图" loading="lazy">`
       : Array.from({ length: 9 }, (_, index) => `<i aria-label="分镜 ${index + 1} 等待生成"></i>`).join("");
     const error = item.errorMessage && !(model && storyboard) ? `<p class="garment-error">${escapeHtml(friendlyAiVideoError(item.errorMessage, "image"))}</p>` : "";
     const flipped = flippedAiVideoPromptItems.has(item.id);
@@ -5711,7 +5742,7 @@ function renderAiVideoTaskDetail(options = {}) {
           </header>
           <div class="garment-download-rail" aria-label="下载生成素材">
             <button type="button" data-download-asset data-url="${firstFrameUrl}" data-filename="${escapeHtml(item.name)}-分镜首帧" ${firstFrame ? "" : "disabled"}><i>↓</i><span>${firstFrame ? "下载首帧（第 01 格）" : "首帧裁切中"}</span></button>
-            <button type="button" data-download-asset data-url="${storyboardUrl}" data-filename="${escapeHtml(item.name)}-4K分镜九宫格" ${storyboard ? "" : "disabled"}><i>↓</i><span>${storyboard ? "下载九宫格" : "九宫格生成中"}</span></button>
+            <button type="button" data-download-asset data-url="${storyboardFullUrl}" data-filename="${escapeHtml(item.name)}-4K分镜九宫格" ${storyboard ? "" : "disabled"}><i>↓</i><span>${storyboard ? "下载九宫格" : "九宫格生成中"}</span></button>
           </div>
           <div class="garment-portrait-grid">
             <section class="garment-output-slot garment-original-output completed"><header><strong>原始商品图</strong><span>已上传</span></header><button class="garment-preview real-asset" type="button" data-asset-preview="原始商品图" title="悬停后滚轮缩放，双击还原" aria-label="放大查看 ${escapeHtml(item.name)} 原图"><img src="${source}" alt="${escapeHtml(item.name)} 原始商品图" loading="lazy"></button></section>
@@ -5743,12 +5774,12 @@ function renderAiVideoTaskDetail(options = {}) {
     && existingItemIds.length === nextItemIds.length
     && existingItemIds.every((itemId, index) => itemId === nextItemIds[index]);
   if (!canPatchChangedCards) {
-    garmentCardGrid.innerHTML = garmentCardsHtml;
+    replaceHtmlPreservingMedia(garmentCardGrid, garmentCardsHtml);
   } else if (changedItemIds.size) {
     const staging = document.createElement("div");
     changedItemIds.forEach(itemId => {
-      staging.innerHTML = garmentCardsByItemId.get(itemId) || "";
       const currentCard = garmentCardGrid.querySelector(`[data-garment-card][data-item-id="${CSS.escape(itemId)}"]`);
+      staging.replaceChildren(htmlFragmentPreservingMedia(currentCard, garmentCardsByItemId.get(itemId) || ""));
       const nextCard = staging.querySelector(`[data-garment-card][data-item-id="${CSS.escape(itemId)}"]`);
       if (currentCard && nextCard) currentCard.replaceWith(nextCard);
     });
@@ -5916,7 +5947,8 @@ function renderMonitorAssetPreview(event, taskId) {
     return `<div class="monitor-asset-preview is-video"><video src="${url}" controls preload="metadata" playsinline></video></div>`;
   }
   if (String(event.contentType || "").startsWith("image/")) {
-    return `<button class="monitor-asset-preview is-image" type="button" data-asset-preview="${escapeHtml(monitorAssetNames[event.type] || event.type || "生成图片")}" aria-label="放大查看${escapeHtml(monitorAssetNames[event.type] || "生成图片")}"><img src="${url}" alt="${escapeHtml(monitorAssetNames[event.type] || "生成图片")}" loading="lazy"></button>`;
+    const previewUrl = aiVideoAssetUrl(taskId, event.id, event.createdAt, true);
+    return `<button class="monitor-asset-preview is-image" type="button" data-asset-preview="${escapeHtml(monitorAssetNames[event.type] || event.type || "生成图片")}" aria-label="放大查看${escapeHtml(monitorAssetNames[event.type] || "生成图片")}"><img src="${previewUrl}" data-full-src="${url}" alt="${escapeHtml(monitorAssetNames[event.type] || "生成图片")}" loading="lazy"></button>`;
   }
   return "";
 }
@@ -5980,7 +6012,7 @@ function renderAiVideoMonitorDetail() {
   const hasImage = allImageEvents.length > 0;
   const hasVideo = allVideoRequests.length > 0;
   const finished = ["IMAGE_READY", "VIDEO_READY", "FAILED"].includes(task.status);
-  stage.innerHTML = `
+  const detailHtml = `
     <header class="monitor-detail-head">
       <div><span class="monitor-detail-id">TASK · ${escapeHtml(task.id)}</span><h2>${escapeHtml(task.name || "未命名任务")}</h2><p>${escapeHtml(task.scriptName || "未关联脚本")} · v${task.scriptVersion} · ${escapeHtml(task.generationMode || "—")}</p></div>
       <div class="monitor-detail-status ${monitorStatusGroup(task.status).toLowerCase()}"><i></i><span>${monitorStatusNames[task.status] || escapeHtml(task.status)}</span><strong>${task.progress || 0}%</strong></div>
@@ -6006,6 +6038,7 @@ function renderAiVideoMonitorDetail() {
         </div>
       </details>`).join("")}
     </section>`;
+  replaceHtmlPreservingMedia(stage, detailHtml);
 }
 
 function captureAiVideoMonitorUiState() {
@@ -6627,13 +6660,18 @@ document.querySelector("#garment-card-grid").addEventListener("click", async eve
     preview.removeAttribute("data-asset-preview");
     preview.removeAttribute("aria-label");
     preview.setAttribute("tabindex", "-1");
-    preview.querySelectorAll("img").forEach(image => image.removeAttribute("loading"));
+    preview.querySelectorAll("img").forEach(image => {
+      image.removeAttribute("loading");
+      const fullSource = image.dataset.fullSrc;
+      if (fullSource) image.src = fullSource;
+    });
   }
   const outputSlot = button.closest(".garment-output-slot");
   if (outputSlot?.classList.contains("completed")) preview.classList.add("preview-completed");
   if (outputSlot?.classList.contains("processing")) preview.classList.add("preview-processing");
   const download = document.querySelector("#asset-preview-download");
-  const downloadUrl = previewImage?.currentSrc || previewImage?.src || previewVideo?.currentSrc || previewVideo?.src || "";
+  const downloadUrl = previewImage?.dataset.fullSrc || previewImage?.currentSrc || previewImage?.src
+    || previewVideo?.currentSrc || previewVideo?.src || "";
   download.hidden = !downloadUrl;
   download.disabled = false;
   download.textContent = previewVideo ? "↓ 下载视频" : "↓ 下载图片";

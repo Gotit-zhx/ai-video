@@ -180,13 +180,16 @@ public class AiVideoTaskController {
     @GetMapping("/{taskId}/assets/{assetId}")
     public ResponseEntity<?> asset(@PathVariable String taskId, @PathVariable String assetId,
                                    @RequestParam(defaultValue = "false") boolean download,
+                                   @RequestParam(defaultValue = "false") boolean preview,
                                    @RequestParam(required = false) String filename,
                                    @AuthenticationPrincipal PlatformPrincipal principal) {
         AiVideoTaskService.AssetFile file = service.asset(taskId, assetId, principal);
         if (file.location() != null) {
+            boolean imagePreview = preview && !download && file.contentType() != null
+                    && file.contentType().startsWith("image/");
             return ResponseEntity.status(HttpStatus.TEMPORARY_REDIRECT)
-                    .location(URI.create(service.signedAssetUrl(file.location())))
-                    .cacheControl(CacheControl.noStore()).build();
+                    .location(URI.create(service.signedAssetUrl(file.location(), imagePreview)))
+                    .cacheControl(CacheControl.maxAge(1, TimeUnit.HOURS).cachePrivate()).build();
         }
         ResponseEntity.BodyBuilder response = ResponseEntity.ok()
                 .cacheControl(CacheControl.maxAge(1, TimeUnit.HOURS).cachePrivate())

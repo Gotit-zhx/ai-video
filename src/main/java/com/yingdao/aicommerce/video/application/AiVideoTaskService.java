@@ -730,10 +730,14 @@ public class AiVideoTaskService {
     }
 
     public String signedAssetUrl(String location) {
+        return signedAssetUrl(location, false);
+    }
+
+    public String signedAssetUrl(String location, boolean preview) {
         if (ossStorage == null || !ossStorage.isOssLocation(location)) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "OSS 素材不存在");
         }
-        return ossStorage.signedUrl(location);
+        return preview ? ossStorage.signedImagePreviewUrl(location) : ossStorage.signedUrl(location);
     }
 
     public InputStream openVideoBatchFile(VideoBatchFile file) throws IOException {

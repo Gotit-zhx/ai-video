@@ -210,8 +210,18 @@ public class OssStorageService {
     }
 
     public String signedUrl(String location) {
+        return signedUrl(location, null);
+    }
+
+    public String signedImagePreviewUrl(String location) {
+        return signedUrl(location,
+                "image/resize,m_lfit,w_960,limit_1/format,webp/quality,q_82");
+    }
+
+    private String signedUrl(String location, String process) {
         GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(bucket, key(location), HttpMethod.GET);
         request.setExpiration(Date.from(Instant.now().plus(signedUrlTtl)));
+        if (process != null && !process.isBlank()) request.setProcess(process);
         return publicClient.generatePresignedUrl(request).toExternalForm();
     }
 
