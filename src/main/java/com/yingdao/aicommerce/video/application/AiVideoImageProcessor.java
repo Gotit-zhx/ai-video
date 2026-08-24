@@ -517,7 +517,10 @@ public class AiVideoImageProcessor {
     }
 
     static boolean useScriptFirstFrameForPrimary(boolean modelWear, boolean preserveScriptBackground) {
-        return modelWear && preserveScriptBackground;
+        // The primary image establishes the current SKU's product identity. Script frames may
+        // contain a different product/person and therefore must only be used by the storyboard
+        // stage as scene/action guides, never as primary-image model inputs.
+        return false;
     }
 
     private boolean hasUsableAsset(List<AiVideoTaskAsset> assets, String type) {

@@ -125,10 +125,11 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
-    void productOnlyPrimaryImageNeverReceivesTheScriptFrame() {
+    void primaryImageNeverReceivesTheScriptFrame() {
         assertFalse(AiVideoImageProcessor.useScriptFirstFrameForPrimary(false, true));
         assertFalse(AiVideoImageProcessor.useScriptFirstFrameForPrimary(false, false));
-        assertTrue(AiVideoImageProcessor.useScriptFirstFrameForPrimary(true, true));
+        assertFalse(AiVideoImageProcessor.useScriptFirstFrameForPrimary(true, true));
+        assertFalse(AiVideoImageProcessor.useScriptFirstFrameForPrimary(true, false));
     }
 
     @Test
