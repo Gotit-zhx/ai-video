@@ -114,15 +114,15 @@ public class OssStorageService {
         try {
             List<SetBucketCORSRequest.CORSRule> rules = new ArrayList<>(internalClient.getBucketCORSRules(bucket));
             boolean configured = rules.stream().anyMatch(rule ->
-                    rule.getAllowedOrigins().contains("https://hoyee.org.cn")
+                    rule.getAllowedOrigins().contains("*")
                             && rule.getAllowedMethods().stream().anyMatch("PUT"::equalsIgnoreCase)
                             && rule.getAllowedHeaders().contains("*"));
             if (configured) {
-                log.info("OSS direct-upload CORS verified for https://hoyee.org.cn");
+                log.info("OSS direct-upload CORS verified");
                 return;
             }
             SetBucketCORSRequest.CORSRule directUpload = new SetBucketCORSRequest.CORSRule();
-            directUpload.setAllowedOrigins(List.of("https://hoyee.org.cn", "https://www.hoyee.org.cn"));
+            directUpload.setAllowedOrigins(List.of("*"));
             directUpload.setAllowedMethods(List.of("PUT", "GET", "HEAD"));
             directUpload.setAllowedHeaders(List.of("*"));
             directUpload.setExposeHeaders(List.of("ETag"));
@@ -132,7 +132,7 @@ public class OssStorageService {
             request.setCorsRules(rules);
             request.setResponseVary(true);
             internalClient.setBucketCORS(request);
-            log.info("OSS direct-upload CORS configured for https://hoyee.org.cn");
+            log.info("OSS direct-upload CORS configured");
         } catch (RuntimeException exception) {
             log.warn("Unable to verify or configure OSS direct-upload CORS", exception);
         }
