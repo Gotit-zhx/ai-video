@@ -512,6 +512,12 @@ public class AiVideoTaskService {
         }
         long count = itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, id));
         if (count == 0) throw new BusinessException(HttpStatus.CONFLICT, "请先上传商品素材");
+        VideoScript currentScript = scriptMapper.selectById(task.getScriptId());
+        if (currentScript != null && task.getOrganizationId().equals(currentScript.getOrganizationId())
+                && "READY".equals(currentScript.getStatus()) && currentScript.getScriptJson() != null) {
+            task.refreshScriptSnapshot(currentScript);
+            taskMapper.updateById(task);
+        }
         try {
             processor.prepare(task);
         } catch (DuplicateKeyException exception) {

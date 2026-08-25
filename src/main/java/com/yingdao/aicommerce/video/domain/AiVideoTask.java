@@ -114,6 +114,15 @@ public class AiVideoTask {
         this.updatedAt = Instant.now();
     }
 
+    public void refreshScriptSnapshot(VideoScript script) {
+        if (script == null || script.getScriptJson() == null || script.getScriptJson().isBlank()
+                || !this.scriptId.equals(script.getId())) return;
+        this.scriptVersion = script.getVersion();
+        this.scriptName = script.getName();
+        this.scriptJson = script.getScriptJson();
+        this.updatedAt = Instant.now();
+    }
+
     public void start(String modelConfigId, String modelId) {
         this.status = "IMAGE_GENERATING";
         this.progress = 1;
