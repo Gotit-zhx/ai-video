@@ -18,6 +18,7 @@ import com.aliyun.oss.model.InitiateMultipartUploadRequest;
 import com.aliyun.oss.model.InitiateMultipartUploadResult;
 import com.aliyun.oss.model.ObjectMetadata;
 import com.aliyun.oss.model.PutObjectRequest;
+import com.aliyun.oss.model.SetBucketCORSRequest;
 import com.aliyun.oss.model.UploadPartRequest;
 import com.aliyun.oss.model.UploadPartResult;
 import com.aliyun.oss.model.PartETag;
@@ -97,6 +98,7 @@ public class OssStorageService {
                 throw new IllegalStateException("OSS 校验对象写入后不可读");
             }
             log.info("OSS storage verified for private bucket {}", bucket);
+            ensureDirectUploadCors();
         } catch (RuntimeException exception) {
             throw new IllegalStateException("OSS 访问校验失败", exception);
         } finally {
@@ -105,6 +107,34 @@ public class OssStorageService {
             } catch (RuntimeException cleanupException) {
                 log.warn("Unable to remove OSS startup verification object {}", key, cleanupException);
             }
+        }
+    }
+
+    private void ensureDirectUploadCors() {
+        try {
+            List<SetBucketCORSRequest.CORSRule> rules = new ArrayList<>(internalClient.getBucketCORSRules(bucket));
+            boolean configured = rules.stream().anyMatch(rule ->
+                    rule.getAllowedOrigins().contains("https://hoyee.org.cn")
+                            && rule.getAllowedMethods().stream().anyMatch("PUT"::equalsIgnoreCase)
+                            && rule.getAllowedHeaders().contains("*"));
+            if (configured) {
+                log.info("OSS direct-upload CORS verified for https://hoyee.org.cn");
+                return;
+            }
+            SetBucketCORSRequest.CORSRule directUpload = new SetBucketCORSRequest.CORSRule();
+            directUpload.setAllowedOrigins(List.of("https://hoyee.org.cn", "https://www.hoyee.org.cn"));
+            directUpload.setAllowedMethods(List.of("PUT", "GET", "HEAD"));
+            directUpload.setAllowedHeaders(List.of("*"));
+            directUpload.setExposeHeaders(List.of("ETag"));
+            directUpload.setMaxAgeSeconds(3600);
+            rules.add(directUpload);
+            SetBucketCORSRequest request = new SetBucketCORSRequest(bucket);
+            request.setCorsRules(rules);
+            request.setResponseVary(true);
+            internalClient.setBucketCORS(request);
+            log.info("OSS direct-upload CORS configured for https://hoyee.org.cn");
+        } catch (RuntimeException exception) {
+            log.warn("Unable to verify or configure OSS direct-upload CORS", exception);
         }
     }
 
