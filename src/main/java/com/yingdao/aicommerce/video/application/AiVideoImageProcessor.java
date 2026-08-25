@@ -28,6 +28,7 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
 import javax.imageio.ImageIO;
+import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
@@ -472,6 +473,8 @@ public class AiVideoImageProcessor {
             }
             ReferenceImage generatedModel = reference(modelAsset.getFilePath(),
                     modelWear ? "参考图2 AI模特人物与穿着母版" : "AI商品场景图", modelAsset.getContentType());
+            ReferenceImage productIdentityGrid = productIdentityGridReference(
+                    Path.of(item.getSourceFilePath()), item.getSourceContentType());
             if (modelWear) {
                 boolean realFrameGuide = false;
                 if (storyboardGuideAsset == null) {
@@ -485,7 +488,7 @@ public class AiVideoImageProcessor {
                         "参考图3 动作场景九宫格底图", storyboardGuideAsset.getContentType());
                 String identityPrompt = storyboardIdentityTransferPrompt(task, item, shots, realFrameGuide);
                 storyboardAsset = generateTopologyVerifiedAsset(task, item, model, "STORYBOARD_GRID",
-                        identityPrompt, List.of(garment, generatedModel, storyboardGuide));
+                        identityPrompt, List.of(garment, generatedModel, storyboardGuide, productIdentityGrid));
             } else {
                 boolean realFrameGuide = isScriptMotionFrameGuide(storyboardGuideAsset);
                 String productStoryboardPrompt = productStoryboardGridPrompt(task, item, shots, realFrameGuide);
@@ -495,9 +498,9 @@ public class AiVideoImageProcessor {
                             "参考图1 用户上传商品外观唯一母版", item.getSourceContentType());
                     ReferenceImage storyboardGuide = reference(storyboardGuideAsset.getFilePath(),
                             "参考图2 原视频真实九帧动作结构母版", storyboardGuideAsset.getContentType());
-                    productReferences = List.of(productMaster, storyboardGuide, generatedModel);
+                    productReferences = List.of(productMaster, storyboardGuide, generatedModel, productIdentityGrid);
                 } else {
-                    productReferences = List.of(generatedModel, garment);
+                    productReferences = List.of(generatedModel, garment, productIdentityGrid);
                 }
                 storyboardAsset = generateTopologyVerifiedAsset(task, item, model, "STORYBOARD_GRID",
                         productStoryboardPrompt, productReferences);
@@ -578,34 +581,30 @@ public class AiVideoImageProcessor {
     }
 
     private AiVideoTaskAsset generateTopologyVerifiedAsset(AiVideoTask task, AiVideoTaskItem item,
-                                                            ModelConfigService.RuntimeModelConnection model,
-                                                            String assetType, String basePrompt,
-                                                            List<ReferenceImage> references) {
-        String prompt = basePrompt;
-        for (int attempt = 1; attempt <= 2; attempt++) {
-            AiVideoTaskAsset asset = generateAsset(task, item, model, assetType, prompt, references);
-            try {
-                ProductFunctionAnalysisService.GarmentValidation validation =
-                        productFunctionAnalysisService.validateGenerated(task, item, assetType,
-                                readAsset(asset.getFilePath()), asset.getContentType());
-                if (validation.valid()) return asset;
-                deleteGeneratedAsset(asset);
-                if (attempt == 2) {
-                    throw new IllegalStateException("服装结构复核未通过："
-                            + String.join("；", validation.violations()));
-                }
-                String correction = validation.correctionPrompt().isBlank()
-                        ? String.join("；", validation.violations()) : validation.correctionPrompt();
-                prompt = basePrompt + "\n【结构复核纠错｜必须执行】上一次结果已判废，原因："
-                        + correction + "。重新生成时先锁定原图领口的连续路径、穿着者固定露肩侧、左右袖数量和连接点；"
-                        + "禁止输出普通小圆领短袖，禁止用姿势或手拉来伪装结构。九宫格每一格均独立核对后再输出。";
-            } catch (Exception exception) {
-                if (assetMapper.selectById(asset.getId()) != null) deleteGeneratedAsset(asset);
-                throw exception instanceof RuntimeException runtime ? runtime
-                        : new IllegalStateException(exception.getMessage(), exception);
+                                                             ModelConfigService.RuntimeModelConnection model,
+                                                             String assetType, String basePrompt,
+                                                             List<ReferenceImage> references) {
+        try {
+            // One deterministic generation only: never spend image quota by drawing repeatedly.
+            // A candidate is kept private until the source-vs-result gate accepts it.
+            PiArtifact artifact = call(task, item, assetType, model, basePrompt, references);
+            clearPendingImageResult(item.getId(), assetType, imageRequestHash(basePrompt, references));
+            byte[] candidateBytes = Base64.getDecoder().decode(artifact.dataBase64());
+            if (candidateBytes.length == 0 || candidateBytes.length > 64L * 1024 * 1024) {
+                throw new IllegalStateException("生成图片大小无效");
             }
+            ProductFunctionAnalysisService.GarmentValidation validation =
+                    productFunctionAnalysisService.validateGenerated(task, item, assetType,
+                            candidateBytes, artifact.mimeType());
+            if (!validation.valid()) {
+                throw new IllegalStateException("服装结构复核未通过："
+                        + String.join("；", validation.violations()));
+            }
+            return store(task, item, assetType, null, artifact, basePrompt);
+        } catch (Exception exception) {
+            throw exception instanceof RuntimeException runtime ? runtime
+                    : new IllegalStateException(exception.getMessage(), exception);
         }
-        throw new IllegalStateException("服装结构复核未通过");
     }
 
     private ReferenceImage firstScriptFrameReference(AiVideoTask task) {
@@ -1146,16 +1145,21 @@ public class AiVideoImageProcessor {
                     : "背景沿用已生成的脚本原场景主图；连续分镜锁定同一空间、材质、光线和机位关系，脚本明确换景时才切换。")
                 : "背景以已生成的 AI 场景主图为视觉母版；根据各分镜动作合理延展空间，保持同一套真实摄影风格，脚本明确换景时才设计协调的新场景。";
         String referenceContract = realFrameGuide
-                ? "参考图1是用户上传商品外观唯一母版；参考图2是原视频按九个动作阶段抽取并拼成的真实 3×3 动作结构母版；参考图3是已生成的新商品场景主图。"
-                    + "三张参考图职责不可互换：参考图1以最高优先级锁定新商品颜色、结构、文字、Logo、图案、标签和材质；参考图2逐格决定机位、景别、商品位置与尺度、正面/侧面/背面朝向、手部有无、手部进入方向、抓握区域、动作阶段、环境和光影；参考图3只补充新场景摄影质感。"
+                ? "参考图1是用户上传商品外观唯一母版；参考图2是原视频按九个动作阶段抽取并拼成的真实 3×3 动作结构母版；参考图3是已生成的新商品场景主图；参考图4是服务器把参考图1原样重复到九个位置的商品身份锁定板。"
+                    + "四张参考图职责不可互换：参考图1以最高优先级锁定新商品颜色、结构、文字、Logo、图案、标签和材质；参考图2逐格决定机位、景别、商品位置与尺度、正面/侧面/背面朝向、手部有无、手部进入方向、抓握区域、动作阶段、环境和光影；参考图3只补充新场景摄影质感；参考图4逐格重复锁定参考图1的商品身份。"
+                    + "参考图4只用于让输出第01–09格各自直接回锚同一件原商品，不能照搬其中白底、静止姿态或九格重复构图；输出每格动作仍取参考图2。"
                     + "参考图2中的旧商品像素、旧颜色、旧图案和旧版型全部无效，必须完整替换为参考图1，但不能因此抹掉参考图2的手部接触点、旋转方向、可见正背面或悬垂状态。原格没有商品时绝对不得添加商品。"
-                : "参考图1是商品场景与构图参考，参考图2是用户上传商品外观唯一母版，参考图2的商品拥有最高优先级。";
+                : "参考图1是商品场景与构图参考，参考图2是用户上传商品外观唯一母版，参考图3是服务器把参考图2原样重复到九个位置的商品身份锁定板。参考图2的商品拥有最高优先级；参考图3只负责让输出每一格重新回锚原商品，不得照搬白底和重复构图。";
         String productMasterName = realFrameGuide ? "参考图1" : "参考图2";
         String functionBlock = productFunctionAnalysisService.promptBlock(
                 task, item.getProductFunctionAnalysisJson());
         StringBuilder prompt = new StringBuilder(referenceContract)
                 .append("生成一张严格的 3×3 连续商品展示九宫格，按从左到右、从上到下对应 01→09。")
                 .append(PORTRAIT_4K_REQUIREMENT)
+                .append("【九格商品身份必须独立回锚】生成 01–09 每一格之前，都必须重新直接读取")
+                .append(productMasterName).append("的原始商品像素，分别重建同一件商品；后一个格子只能继承动作时间，")
+                .append("绝对不能把前一个已生成格子的商品轮廓、领口、袖型、图案或文字当作新的商品参考。")
+                .append("禁止按 01→02→03 的方式连续改画商品，禁止误差沿时间轴累积；第 09 格与第 01 格承担完全相同的商品保真标准。")
                 .append("先锁定").append(productMasterName).append("中商品的轮廓与表面内容，再生成九格；只在对应脚本明确要求商品出镜的格子放入商品，商品首次出镜之前的铺垫、环境和测试画面禁止强塞商品。商品一旦出镜，后续所有出镜格必须逐像素级保持同一件商品的颜色、结构、比例、Logo、包装文字、标签、插画、人物图案和材质一致。")
                 .append("禁止采用分镜脚本文字或原视频中出现的任何其他商品、品牌、颜色、Logo、包装、印花或文案。")
                 .append("不得把").append(productMasterName).append("的复杂插画或印花替换成纯文字、其他商品主题或模型自行设计的图案，也不得简化、概括或重新排版。")
@@ -1181,6 +1185,7 @@ public class AiVideoImageProcessor {
                         ? "输出前把生成结果与参考图1逐格核对：01→09 的手部有无、进入方向、接触点、商品位置、尺度、景别与光影阶段必须一一对应；"
                         : "输出前逐格核对手部状态、商品位置、尺度、景别与光影阶段；")
                 .append("同时检查商品数量唯一、文字和 Logo 未改变、结构未变形、接触与阴影真实；任何一格不合格时只重算该格。")
+                .append("尤其将第 07、08、09 格分别与商品母版直接对照，不能只与第 06 格对照；若后段出现领口缩小、袖型变短、版型变窄、印花简化或材质改变，整张九宫格判废并重算。")
                 .append("最终只输出一张 2160×3840 的完整 4K 九宫格图片。");
         return prompt.toString();
     }
@@ -1262,11 +1267,13 @@ public class AiVideoImageProcessor {
                                                     List<ShotPrompt> shots, boolean realFrameGuide) {
         String topologyBlock = productFunctionAnalysisService.promptBlock(
                 task, item.getProductFunctionAnalysisJson());
-        StringBuilder prompt = new StringBuilder("执行一次严格的九宫格人物与商品替换编辑。三张参考图职责不可互换：")
+        StringBuilder prompt = new StringBuilder("执行一次严格的九宫格人物与商品替换编辑。四张参考图职责不可互换：")
                 .append("参考图1是用户上传的真实商品原图，是商品颜色、版型、领口、袖长、面料、缝线、印花、文字、数字、图形、Logo、位置、比例和排列顺序的唯一最高优先级母版；")
                 .append("参考图2是已经穿好当前商品的 AI 模特图，只负责唯一人物身份、脸、发型、身材、商品穿着位置、下装、配饰和整体摄影风格；")
                 .append("参考图3是 3×3 动作场景底图，只提供每格可见场景、主要物体、空间关系、机位方向和姿态证据；下方逐格脚本决定最终必须执行的主体状态、动作阶段和时间顺序。")
+                .append("参考图4是服务器把参考图1原样重复到九个对应位置的商品身份锁定板；生成输出第01–09格时必须分别读取参考图4同位置的原商品结构，不得让前一输出格成为后一格的商品参考。参考图4的白底、静止姿态和九格重复布局不是动作证据，不能覆盖参考图3与脚本。")
                 .append("参考图3中的任何人物身份、脸、头发、肤色、衣服、颜色、印花、文字、Logo、下装和配饰全部是无效占位内容，必须删除，绝对不能继承、融合或折中。")
+                .append("【手持商品格的结构锁定】分镜01–06即使是未穿着、包装、展开、领口特写或贴身比对，手中展示物也必须是参考图1同一件宽斜领商品，而不是参考图3的旧圆领T恤。未穿着时仍必须保留一侧低、一侧高的连续斜向大开口和两只真实短袖；画面中不得出现居中的封闭圆形领孔。领口特写必须特写斜向开口本身，不能因为出现领标就补画圆领圈。")
                 .append("参考图2若因生成误差与参考图1的商品细节不一致，以参考图1为准纠正商品；参考图2只提供商品穿在人身上的位置、尺度、遮挡和自然布料形变。")
                 .append("逐格同时核对参考图3与下方脚本：场景、物体和可见姿态取参考图3，主体是包装中、折叠、展开、手持、穿上、已穿着或局部特写等状态以及动作阶段严格取下方同编号脚本。两者冲突时不得自行折中或统一成同一姿势，必须以脚本状态和动作为准重建该格；原图中的远近景别和人物尺寸不保留，所有人物格必须重新按本提示词的近距离比例构图。")
                 .append(realFrameGuide
@@ -1284,7 +1291,7 @@ public class AiVideoImageProcessor {
                 .append("逐格保持参考图2的脸型轮廓、眉形、眼裂、眼距、虹膜、鼻梁、鼻翼、嘴唇、下颌线和年龄观感；只允许因转头、透视和轻微表情产生正常变化。")
                 .append("如果动作姿态与人脸身份发生冲突，优先保住参考图2的人脸身份与自然五官，再对姿态做最小幅度调整；禁止重新抽取另一位模特。")
                 .append("九格审美基调完全继承参考图2，不得为了所谓美化重新画脸，也不得把参考图2变老、变疲惫、变凶或改变亲和感。")
-                .append("【第 01 格硬约束】参考图2本身就是最终视频第 01 分镜的人物与动作母版。九宫格左上角第 01 格必须复现参考图2的同一人物、五官、穿搭、姿态、背景关系和清晰度，但必须按头顶至大腿中下段的近距离比例重新取景；第 02–09 格从它开始连续推进。")
+                .append("【第 01 格硬约束】参考图2只提供同一人物身份、正确穿法、搭配与摄影质感，不是脚本第01格动作。九宫格左上角第01格必须按脚本执行手持展示；如果脚本要求人物手里展开商品，人物自身不得同时再穿一件相同商品。手中商品结构取参考图1和参考图4，人物身份取参考图2。")
                 .append(GRID_FACE_PIXEL_REQUIREMENT)
                 .append("参考图2如果是远景，不沿用它的人物尺寸；只沿用同一人物、穿搭、背景与机位方向，在每格中把相机距离推进约二分之一。第 01 格必须按该近距离规则重新构图，但人物身份、姿态起点和背景关系保持不变。")
                 .append("【商品外观最高优先级】逐格直接复制参考图1的真实商品设计，包括颜色、领型、袖长、版型、面料纹理、缝线、印花文字、数字、图形、Logo、大小、位置与排列顺序；参考图2只用于确认它穿在人物身上的位置与自然形变。")
@@ -1414,6 +1421,34 @@ public class AiVideoImageProcessor {
     private ReferenceImage reference(String location, String name, String mimeType) throws Exception {
         byte[] bytes = readAsset(location);
         return new ReferenceImage(name, mimeType, Base64.getEncoder().encodeToString(bytes));
+    }
+
+    private ReferenceImage productIdentityGridReference(Path sourcePath, String sourceMimeType) throws Exception {
+        BufferedImage source = ImageIO.read(sourcePath.toFile());
+        if (source == null) return reference(sourcePath, "参考图4 九格商品身份锁定板", sourceMimeType);
+        int cellWidth = 512;
+        int cellHeight = 910;
+        BufferedImage guide = new BufferedImage(cellWidth * 3, cellHeight * 3, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = guide.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, guide.getWidth(), guide.getHeight());
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            double scale = Math.min((cellWidth * 0.92) / source.getWidth(),
+                    (cellHeight * 0.92) / source.getHeight());
+            int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
+            int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
+            for (int index = 0; index < 9; index++) {
+                int x = (index % 3) * cellWidth + (cellWidth - width) / 2;
+                int y = (index / 3) * cellHeight + (cellHeight - height) / 2;
+                graphics.drawImage(source, x, y, width, height, null);
+            }
+        } finally {
+            graphics.dispose();
+        }
+        return new ReferenceImage("参考图4 九格商品身份锁定板；每格均为同一原商品",
+                "image/png", Base64.getEncoder().encodeToString(png(guide)));
     }
 
     private boolean assetReadable(AiVideoTaskAsset asset) {

@@ -202,7 +202,7 @@ class AiVideoImageProcessorTest {
                 {"version":"GARMENT_TOPOLOGY_V1","asymmetrical":true,
                 "topologyClass":"ASYMMETRIC_ONE_SHOULDER"}
                 """));
-        assertFalse(service.requiresTopologyValidation("""
+        assertTrue(service.requiresTopologyValidation("""
                 {"version":"GARMENT_TOPOLOGY_V1","asymmetrical":false,
                 "topologyClass":"ROUND_NECK"}
                 """));

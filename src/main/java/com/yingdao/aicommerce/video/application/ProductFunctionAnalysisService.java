@@ -161,10 +161,10 @@ public class ProductFunctionAnalysisService {
         if (analysisJson == null || analysisJson.isBlank()) return false;
         try {
             Map<String, Object> value = objectMapper.readValue(analysisJson, new TypeReference<>() {});
-            return "GARMENT_TOPOLOGY_V1".equals(text(value.get("version"), 40))
-                    && (Boolean.TRUE.equals(value.get("asymmetrical"))
-                    || text(value.get("topologyClass"), 100).contains("ASYMMETRIC")
-                    || "EITHER_SIDE_CHOOSE_ONCE".equals(text(value.get("wearingSidePolicy"), 100)));
+            // Normal collars and sleeves can drift just as easily as special/asymmetric garments,
+            // especially in the last storyboard cells. Every analyzed garment therefore needs the
+            // same source-vs-candidate gate; the validator decides which visible structures matter.
+            return "GARMENT_TOPOLOGY_V1".equals(text(value.get("version"), 40));
         } catch (Exception ignored) {
             return false;
         }
