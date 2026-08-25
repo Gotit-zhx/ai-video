@@ -198,6 +198,14 @@ class AiVideoImageProcessorTest {
         assertTrue(block.contains("两只短袖始终存在"));
         assertTrue(block.contains("背面后屏幕左右自然反转"));
         assertTrue(block.contains("不得增加肩带"));
+        assertTrue(service.requiresTopologyValidation("""
+                {"version":"GARMENT_TOPOLOGY_V1","asymmetrical":true,
+                "topologyClass":"ASYMMETRIC_ONE_SHOULDER"}
+                """));
+        assertFalse(service.requiresTopologyValidation("""
+                {"version":"GARMENT_TOPOLOGY_V1","asymmetrical":false,
+                "topologyClass":"ROUND_NECK"}
+                """));
     }
 
     @Test

@@ -457,7 +457,8 @@ public class AiVideoImageProcessor {
             List<ReferenceImage> modelReferences = useScriptFrameForPrimary && scriptFirstFrame != null
                     ? List.of(garment, scriptFirstFrame)
                     : List.of(garment);
-            modelAsset = generateAsset(task, item, model, primaryAssetType, modelPrompt, modelReferences);
+            modelAsset = generateTopologyVerifiedAsset(task, item, model, primaryAssetType,
+                    modelPrompt, modelReferences);
             item.modelReady();
             itemMapper.updateById(item);
         }
@@ -483,8 +484,8 @@ public class AiVideoImageProcessor {
                 ReferenceImage storyboardGuide = reference(storyboardGuideAsset.getFilePath(),
                         "参考图3 动作场景九宫格底图", storyboardGuideAsset.getContentType());
                 String identityPrompt = storyboardIdentityTransferPrompt(task, item, shots, realFrameGuide);
-                storyboardAsset = generateAsset(task, item, model, "STORYBOARD_GRID", identityPrompt,
-                        List.of(garment, generatedModel, storyboardGuide));
+                storyboardAsset = generateTopologyVerifiedAsset(task, item, model, "STORYBOARD_GRID",
+                        identityPrompt, List.of(garment, generatedModel, storyboardGuide));
             } else {
                 boolean realFrameGuide = isScriptMotionFrameGuide(storyboardGuideAsset);
                 String productStoryboardPrompt = productStoryboardGridPrompt(task, item, shots, realFrameGuide);
@@ -498,8 +499,8 @@ public class AiVideoImageProcessor {
                 } else {
                     productReferences = List.of(generatedModel, garment);
                 }
-                storyboardAsset = generateAsset(task, item, model, "STORYBOARD_GRID", productStoryboardPrompt,
-                        productReferences);
+                storyboardAsset = generateTopologyVerifiedAsset(task, item, model, "STORYBOARD_GRID",
+                        productStoryboardPrompt, productReferences);
             }
             if (modelWear) ensureStoryboardFirstFrame(task, storyboardAsset);
             else ensureProductTimelineFirstFrame(task, modelAsset, storyboardAsset, productVisibleInFirstShot);
@@ -574,6 +575,37 @@ public class AiVideoImageProcessor {
         } catch (Exception exception) {
             throw new CompletionException(exception);
         }
+    }
+
+    private AiVideoTaskAsset generateTopologyVerifiedAsset(AiVideoTask task, AiVideoTaskItem item,
+                                                            ModelConfigService.RuntimeModelConnection model,
+                                                            String assetType, String basePrompt,
+                                                            List<ReferenceImage> references) {
+        String prompt = basePrompt;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            AiVideoTaskAsset asset = generateAsset(task, item, model, assetType, prompt, references);
+            try {
+                ProductFunctionAnalysisService.GarmentValidation validation =
+                        productFunctionAnalysisService.validateGenerated(task, item, assetType,
+                                readAsset(asset.getFilePath()), asset.getContentType());
+                if (validation.valid()) return asset;
+                deleteGeneratedAsset(asset);
+                if (attempt == 2) {
+                    throw new IllegalStateException("服装结构复核未通过："
+                            + String.join("；", validation.violations()));
+                }
+                String correction = validation.correctionPrompt().isBlank()
+                        ? String.join("；", validation.violations()) : validation.correctionPrompt();
+                prompt = basePrompt + "\n【结构复核纠错｜必须执行】上一次结果已判废，原因："
+                        + correction + "。重新生成时先锁定原图领口的连续路径、穿着者固定露肩侧、左右袖数量和连接点；"
+                        + "禁止输出普通小圆领短袖，禁止用姿势或手拉来伪装结构。九宫格每一格均独立核对后再输出。";
+            } catch (Exception exception) {
+                if (assetMapper.selectById(asset.getId()) != null) deleteGeneratedAsset(asset);
+                throw exception instanceof RuntimeException runtime ? runtime
+                        : new IllegalStateException(exception.getMessage(), exception);
+            }
+        }
+        throw new IllegalStateException("服装结构复核未通过");
     }
 
     private ReferenceImage firstScriptFrameReference(AiVideoTask task) {

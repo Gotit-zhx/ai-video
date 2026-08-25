@@ -47,7 +47,7 @@ public class ProductFunctionAnalysisService {
                 .defaultHeader("X-Internal-Token", piRuntimeToken).build();
     }
 
-    /** Analyze a product once. Failure remains non-fatal so an optional vision pass cannot block production. */
+    /** Analyze a product once. Garments fail closed because a missing topology contract corrupts every later frame. */
     public String ensureAnalysis(AiVideoTask task, AiVideoTaskItem item) {
         boolean garment = isGarmentTask(task);
         if (!garment && !isDailyUseCategory(task.getProductCategory())) return null;
@@ -55,17 +55,17 @@ public class ProductFunctionAnalysisService {
                 && !item.getProductFunctionAnalysisJson().isBlank()) {
             return item.getProductFunctionAnalysisJson();
         }
-        try {
+        Exception lastFailure = null;
+        int attempts = garment ? 3 : 1;
+        for (int attempt = 1; attempt <= attempts; attempt++) try {
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId()).orElse(null);
             if (model == null) {
-                log.warn("Product function analysis skipped for item {}: no active driver model", item.getId());
-                return null;
+                throw new IllegalStateException("没有可用的结构识别模型");
             }
             Path source = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize();
             if (!Files.isRegularFile(source) || Files.size(source) <= 0 || Files.size(source) > MAX_SOURCE_BYTES) {
-                log.warn("Product function analysis skipped for item {}: source image is unavailable", item.getId());
-                return null;
+                throw new IllegalStateException("商品原图不可用于结构识别");
             }
             Map<String, Object> request = new LinkedHashMap<>();
             request.put("model", Map.of(
@@ -89,16 +89,84 @@ public class ProductFunctionAnalysisService {
                     .body(request)
                     .retrieve()
                     .body(PiProductAnalysisResponse.class);
-            if (response == null || response.result() == null) return null;
+            if (response == null || response.result() == null) {
+                throw new IllegalStateException("结构识别模型没有返回结果");
+            }
             String json = normalizeAnalysis(response.result(), garment);
             item.updateProductFunctionAnalysis(json);
             item.updateVideoPrompt(applyToVideoPrompt(task, item.getVideoPromptText(), json));
             itemMapper.updateById(item);
             return json;
         } catch (Exception exception) {
+            lastFailure = exception;
             log.warn("Product function analysis unavailable for item {}: {}",
                     item.getId(), readable(exception));
-            return null;
+            if (attempt < attempts) {
+                try {
+                    Thread.sleep(750L * attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("服装结构识别被中断", interrupted);
+                }
+            }
+        }
+        if (garment) {
+            throw new IllegalStateException("服装结构识别暂时失败，已阻止无结构契约的错误生图："
+                    + readable(lastFailure == null ? new IllegalStateException("未知错误") : lastFailure), lastFailure);
+        }
+        return null;
+    }
+
+    public GarmentValidation validateGenerated(AiVideoTask task, AiVideoTaskItem item,
+                                                String assetType, byte[] candidateBytes,
+                                                String candidateMimeType) {
+        if (!isGarmentTask(task) || !requiresTopologyValidation(item.getProductFunctionAnalysisJson())) {
+            return new GarmentValidation(true, "", List.of(), 1.0);
+        }
+        try {
+            ModelConfigService.RuntimeModelConnection model = modelConfigService
+                    .driverConnection(task.getOrganizationId())
+                    .orElseThrow(() -> new IllegalStateException("没有可用的结构复核模型"));
+            Path source = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize();
+            Map<String, Object> request = new LinkedHashMap<>();
+            request.put("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
+                    "apiFormat", model.apiFormat(), "apiKey", model.apiKey()));
+            request.put("context", Map.of(
+                    "analysisType", "GARMENT_TOPOLOGY_VALIDATION_V1",
+                    "assetType", assetType,
+                    "expectedTopology", objectMapper.readValue(item.getProductFunctionAnalysisJson(), Map.class)
+            ));
+            request.put("image", Map.of("mimeType", item.getSourceContentType(),
+                    "data", Base64.getEncoder().encodeToString(Files.readAllBytes(source))));
+            request.put("candidateImage", Map.of("mimeType", candidateMimeType,
+                    "data", Base64.getEncoder().encodeToString(candidateBytes)));
+            PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
+                    .contentType(MediaType.APPLICATION_JSON).body(request).retrieve()
+                    .body(PiProductAnalysisResponse.class);
+            if (response == null || response.result() == null) {
+                throw new IllegalStateException("结构复核模型没有返回结果");
+            }
+            Map<String, Object> value = response.result();
+            boolean valid = Boolean.TRUE.equals(value.get("valid"));
+            return new GarmentValidation(valid, text(value.get("correctionPrompt"), 600),
+                    stringList(value.get("violations"), 12, 180),
+                    value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0);
+        } catch (Exception exception) {
+            throw new IllegalStateException("服装结构复核暂时失败，已阻止未经复核的图片进入九宫格："
+                    + readable(exception), exception);
+        }
+    }
+
+    boolean requiresTopologyValidation(String analysisJson) {
+        if (analysisJson == null || analysisJson.isBlank()) return false;
+        try {
+            Map<String, Object> value = objectMapper.readValue(analysisJson, new TypeReference<>() {});
+            return "GARMENT_TOPOLOGY_V1".equals(text(value.get("version"), 40))
+                    && (Boolean.TRUE.equals(value.get("asymmetrical"))
+                    || text(value.get("topologyClass"), 100).contains("ASYMMETRIC")
+                    || "EITHER_SIDE_CHOOSE_ONCE".equals(text(value.get("wearingSidePolicy"), 100)));
+        } catch (Exception ignored) {
+            return false;
         }
     }
 
@@ -312,4 +380,7 @@ public class ProductFunctionAnalysisService {
     }
 
     private record PiProductAnalysisResponse(Map<String, Object> result, String modelId, long latencyMs) {}
+
+    public record GarmentValidation(boolean valid, String correctionPrompt,
+                                    List<String> violations, double confidence) {}
 }

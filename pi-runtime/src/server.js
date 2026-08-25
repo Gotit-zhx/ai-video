@@ -274,6 +274,18 @@ const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `你是电商服装图像生产中的�
 10. 看不清的背部连接、隐藏肩带或内层结构不得猜测；写入 uncertainties 并降低 confidence。不得因为不确定而把可见的非对称结构改成常规款。
 11. 不评价模特、审美和搭配，不抄录品牌或营销文案。每个数组最多 10 项，每项简短明确。`;
 
+const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `你是服装生成结果的结构质检器。输入包含两张图片：第 1 张是用户上传的真实商品母版，第 2 张是待验收的 AI 主图或九宫格；用户消息还会给出已确认的服装结构契约。
+只检查商品结构是否被正确还原，不评价人物长相、背景、美感、清晰度或动作创意。必须逐格检查非对称领口路径、露肩身体侧、左右袖数量与连接位置、肩带/绕颈带/扣环、衣身开口以及商品正反面关系。
+九宫格必须检查全部 9 格；只要任意一格把斜领改成小圆领、把露肩补齐、把左右结构对称化、增删袖子/肩带、换露肩侧或把原商品改成普通 T 恤，valid 就必须为 false。布料因抓握、重力、转身产生的自然褶皱不算结构错误。
+只返回合法 JSON，不要 Markdown，不要额外文字：
+{
+  "valid": false,
+  "violations": ["指出第几格、哪一身体侧、哪段领口或哪只袖发生了什么错误"],
+  "correctionPrompt": "给下一次生成使用的简短、可执行纠错指令，明确必须保留的身体侧和连接关系",
+  "confidence": 0.0
+}
+如果第 2 张忠实保持结构，valid=true，violations 为空数组。不得因为印花文字的小误差判结构失败。`;
+
 const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策划器。输入可能是一名业务人员写的一整段自然语言需求，也可能包含按顺序排列的多张真实参考图片。你要理解真实营销意图，将其整理成可直接制作的固定 9 个分镜。
 只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字：
 {
@@ -2098,9 +2110,21 @@ async function runProductFunctionAnalysis(body) {
     throw new Error("没有可供分析的商品图片");
   }
   const analysisType = String(body?.context?.analysisType || "PRODUCT_FUNCTION_V1").trim();
-  const systemPrompt = analysisType === "GARMENT_TOPOLOGY_V1"
-    ? GARMENT_TOPOLOGY_ANALYSIS_PROMPT
-    : PRODUCT_FUNCTION_ANALYSIS_PROMPT;
+  const systemPrompt = analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1"
+    ? GARMENT_TOPOLOGY_VALIDATION_PROMPT
+    : analysisType === "GARMENT_TOPOLOGY_V1"
+      ? GARMENT_TOPOLOGY_ANALYSIS_PROMPT
+      : PRODUCT_FUNCTION_ANALYSIS_PROMPT;
+  const candidateImage = body.candidateImage || {};
+  const attachments = [{ type: "image", data, mimeType }];
+  if (analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1") {
+    const candidateMimeType = String(candidateImage.mimeType || "");
+    const candidateData = String(candidateImage.data || "");
+    if (!/^image\/(jpeg|png|webp)$/i.test(candidateMimeType) || !candidateData) {
+      throw new Error("没有可供校验的生成图片");
+    }
+    attachments.push({ type: "image", data: candidateData, mimeType: candidateMimeType });
+  }
   const runtimeAgent = new Agent({
     initialState: {
       systemPrompt,
@@ -2113,7 +2137,8 @@ async function runProductFunctionAnalysis(body) {
       streamSimple(model, context, {
         ...options,
         apiKey,
-        maxTokens: analysisType === "GARMENT_TOPOLOGY_V1" ? 2400 : 1400,
+        maxTokens: analysisType === "GARMENT_TOPOLOGY_V1" ? 2400
+          : analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1" ? 1200 : 1400,
         timeoutMs: 120_000,
         maxRetries: 2,
         maxRetryDelayMs: 10_000
@@ -2124,7 +2149,7 @@ async function runProductFunctionAnalysis(body) {
   const startedAt = Date.now();
   await runtimeAgent.prompt(
     JSON.stringify(body.context || {}),
-    [{ type: "image", data, mimeType }]
+    attachments
   );
   const assistant = [...runtimeAgent.state.messages]
     .reverse()
