@@ -39,26 +39,28 @@ public class ManualScriptAiService {
     }
 
     public Draft analyze(String prompt, String targetMarket, String existingName,
-                         String existingVisualTone, PlatformPrincipal principal) {
+                         String existingVisualTone, String presentationMode,
+                         PlatformPrincipal principal) {
         String requirement = text(prompt, 12000);
         if (requirement.isBlank()) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "请先粘贴业务人员的完整提示词");
         }
-        Map<String, Object> context = Map.of(
-                "analysisMode", "BUSINESS_PROMPT_TO_SCRIPT",
-                "businessPrompt", requirement,
-                "targetMarket", text(targetMarket, 80),
-                "existingName", text(existingName, 160),
-                "existingVisualTone", text(existingVisualTone, 4000),
-                "shotCount", SHOT_COUNT,
-                "totalDurationSeconds", 15
-        );
+        Map<String, Object> context = new LinkedHashMap<>();
+        context.put("analysisMode", "BUSINESS_PROMPT_TO_SCRIPT");
+        context.put("businessPrompt", requirement);
+        context.put("targetMarket", text(targetMarket, 80));
+        context.put("existingName", text(existingName, 160));
+        context.put("existingVisualTone", text(existingVisualTone, 4000));
+        context.put("presentationMode", normalizePresentationMode(presentationMode));
+        context.put("shotCount", SHOT_COUNT);
+        context.put("totalDurationSeconds", 15);
         return callModel(context, null, existingName, existingVisualTone, principal);
     }
 
     public Draft analyzeProduct(List<MultipartFile> images, List<String> imageContexts,
                                 String requirements, String productContext, String targetMarket,
-                                String existingName, String existingVisualTone, PlatformPrincipal principal) {
+                                String existingName, String existingVisualTone, String presentationMode,
+                                PlatformPrincipal principal) {
         validateProductImages(images, imageContexts);
         String normalizedProductContext = text(productContext, 4000);
         if (normalizedProductContext.isBlank()) {
@@ -80,6 +82,7 @@ public class ManualScriptAiService {
         context.put("targetMarketHint", text(targetMarket, 80));
         context.put("existingName", text(existingName, 160));
         context.put("existingVisualTone", text(existingVisualTone, 4000));
+        context.put("presentationMode", normalizePresentationMode(presentationMode));
         context.put("shotCount", SHOT_COUNT);
         context.put("totalDurationSeconds", 15);
         context.put("instruction", "按图一、图二的顺序逐张识别，并严格结合 imageGuide 中用户指定的内容和用途；多张图可以分别承担商品、细节、使用场景、动作或效果参考。脚本重点表现用户指定的真实使用方式和效果；图片只用于识别产品与功能，不得把商品颜色、形状、标签或包装装饰写进可复用脚本；不得虚构剂量、参数或未提供的功效数字");
@@ -161,6 +164,14 @@ public class ManualScriptAiService {
 
     private String imageLabel(int index) {
         return "图" + List.of("一", "二", "三", "四", "五", "六").get(index);
+    }
+
+    private String normalizePresentationMode(String value) {
+        String normalized = text(value, 32).toUpperCase();
+        if (!List.of("MODEL_WEAR", "PRODUCT_ONLY").contains(normalized)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择人物穿搭或纯商品脚本");
+        }
+        return normalized;
     }
 
     private Draft normalize(Map<String, Object> result, String existingName, String existingVisualTone) {

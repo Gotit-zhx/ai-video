@@ -13,6 +13,7 @@ class VideoScriptTest {
                 "org-1",
                 "用户填写的脚本名称",
                 "VIDEO_ANALYSIS",
+                "MODEL_WEAR",
                 "reference.mp4",
                 "C:/tmp/reference.mp4",
                 "video/mp4",
@@ -32,7 +33,7 @@ class VideoScriptTest {
     @Test
     void analysisProgressIsMonotonicAndStopsBeforeCompletion() {
         VideoScript script = new VideoScript(
-                "script-2", "org-1", "测试进度", "VIDEO_ANALYSIS", "reference.mp4",
+                "script-2", "org-1", "测试进度", "VIDEO_ANALYSIS", "PRODUCT_ONLY", "reference.mp4",
                 "C:/tmp/reference.mp4", "video/mp4", 1024L, "中国", null, "user-1"
         );
         script.markAnalyzing("model-config-1", "driver-model");

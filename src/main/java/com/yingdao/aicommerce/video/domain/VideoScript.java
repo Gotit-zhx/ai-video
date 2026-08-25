@@ -13,6 +13,7 @@ public class VideoScript {
     private String organizationId;
     private String name;
     private String sourceType;
+    private String presentationMode;
     private String sourceFileName;
     private String sourceFilePath;
     private String sourceContentType;
@@ -41,6 +42,7 @@ public class VideoScript {
             String organizationId,
             String name,
             String sourceType,
+            String presentationMode,
             String sourceFileName,
             String sourceFilePath,
             String sourceContentType,
@@ -53,6 +55,7 @@ public class VideoScript {
         this.organizationId = organizationId;
         this.name = name;
         this.sourceType = sourceType;
+        this.presentationMode = presentationMode;
         this.sourceFileName = sourceFileName;
         this.sourceFilePath = sourceFilePath;
         this.sourceContentType = sourceContentType;
@@ -154,6 +157,7 @@ public class VideoScript {
     public String getOrganizationId() { return organizationId; }
     public String getName() { return name; }
     public String getSourceType() { return sourceType; }
+    public String getPresentationMode() { return presentationMode; }
     public String getSourceFileName() { return sourceFileName; }
     public String getSourceFilePath() { return sourceFilePath; }
     public String getSourceContentType() { return sourceContentType; }

@@ -93,6 +93,13 @@ public class AiVideoTaskService {
         }
         String name = normalize(command.name(), script.getName() + " · 视频任务", 160);
         String generationMode = normalizeGenerationMode(command.generationMode());
+        String scriptMode = script.getPresentationMode() == null || script.getPresentationMode().isBlank()
+                ? "LEGACY_COMPAT" : script.getPresentationMode();
+        if (!"LEGACY_COMPAT".equals(scriptMode) && !generationMode.equals(scriptMode)) {
+            String requiredMode = "MODEL_WEAR".equals(scriptMode) ? "人物穿搭" : "纯商品";
+            throw new BusinessException(HttpStatus.CONFLICT,
+                    "所选脚本是" + requiredMode + "脚本，与当前生成模式不匹配");
+        }
         String backgroundMode = normalizeBackgroundMode(command.backgroundMode());
         String productCategory = normalize(command.productCategory(), "MODEL_WEAR".equals(generationMode) ? "服装" : "通用商品", 80);
         // These legacy columns remain for API/database compatibility. New tasks never use a task-level
@@ -984,7 +991,9 @@ public class AiVideoTaskService {
             return productFunctionAnalysisService.applyToVideoPrompt(
                     task, basePrompt, item.getProductFunctionAnalysisJson());
         }
-        return buildStoryboardAnimationPrompt(task, item.getName());
+        return productFunctionAnalysisService.applyToVideoPrompt(
+                task, buildStoryboardAnimationPrompt(task, item.getName()),
+                item.getProductFunctionAnalysisJson());
     }
 
     private String buildDirectReferenceVideoPrompt(AiVideoTask task, String subjectName) {
@@ -1020,7 +1029,7 @@ public class AiVideoTaskService {
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append(" 商品展示视频。全程只保留同一件商品主体，按 01→09 自然连续变化，不得复制或增加第二件同款。\n");
         prompt.append("商品的颜色、形状、比例、Logo、标签、包装文字、图案和材质必须与图3一致，不得重新设计、漂移、融化或变形。\n");
-        prompt.append("衣服被手指捏住或提起一角时，接触点必须清晰固定，其余未支撑布料受重力向下垂落，从受力点产生自然放射拉伸褶皱和弧形悬垂；手部移动时衣角应略有滞后、惯性摆动并逐渐衰减。禁止衣服像硬纸板、塑料片或冻结模型一样整片僵硬翻起。\n");
+        prompt.append("布料始终保留真实重量、柔软度、连续褶皱和支撑关系；具体抓握、翻面、提拉或摆放动作只按对应分镜执行，不得把某一格的手部姿势复制到整条视频。\n");
         prompt.append("场景、展示方式、机位、构图和手部状态逐镜读取图2与脚本时间轴，不得用某一格的设置覆盖其他格。镜头变化只采用脚本明确的推近、拉远、平移、环绕或细节特写。\n");
         prompt.append("运镜不是静态构图备注：每个时间段必须真实执行脚本指定的方向、速度、起止景别和持续过程；只有脚本明确写固定机位时才允许完全固定。\n");
         prompt.append("九宫格是 9 个时间轴关键帧，不代表 9 个物理镜头。只有转场说明明确标记真实切点时才执行转场；标记“同镜头连续，无转场”的相邻格必须保持同一镜头内连续运动。\n");
@@ -1054,7 +1063,7 @@ public class AiVideoTaskService {
         prompt.append("【商品纹理时序锁定】胸前文字、数字、图案、轮廓线、颜色块和相互间距是绑定在同一块布料坐标上的固定纹理，只能随整件衣服连续做透视、缩放和褶皱形变；不得独立移动、逐帧改字、换色、增删、闪烁、爬动或重新排列。\n");
         prompt.append("【印花帧保持】胸前印花在首个清晰正面帧完成一次校验后，后续直接复用同一纹理贴图，不执行 OCR、不重新拼写、不逐帧修复字母。侧身时允许自然变窄、降低可读性或被遮挡，不得为保持可读而重画。\n");
         prompt.append("衣服褶皱遵循连续布料物理，同一条褶皱随身体动作平滑移动，不得凭空出现、消失或像液体沸腾。皮肤的肤色、毛孔、细纹和关节折痕不得游走、闪烁或逐帧强化；分辨率不足时保持自然柔和的中频细节。\n");
-        prompt.append("【衣角提拉重力】当手指捏住、提起或掀起衣角、下摆、袖口时，接触点始终贴合指腹；只有受力点被牵引，未被支撑的布料必须受重力下垂，从捏点向外产生连续放射状张力褶皱和弧形垂坠。手开始移动时布料稍后跟随，停止后允许一次小幅回摆并迅速衰减；下摆其余部分保留重量和惯性。禁止把整件衣服当成纸板、塑料片或硬壳同步抬起，禁止平直无褶皱、冻结悬空、无重量飘浮或布料穿过手指与身体。\n");
+        prompt.append("【布料物理】衣服褶皱、重量和惯性必须逐镜服从该格实际支撑点；禁止把任一格的提拉动作扩散成全片固定手势。\n");
         prompt.append("【曝光与色彩锁定】每个镜头分别以图2对应格的亮度、肤色、白平衡、色温、黑位、对比度和饱和度为基准；同一镜头内保持稳定，不得出现曝光呼吸、肤色闪烁、自动压暗、灰雾、暗角或电影滤镜。不同场景在硬切后直接采用下一格自身的曝光，不使用淡入淡出或黑场。\n");
         prompt.append("每个镜头的背景、焦段、光线与人物尺度以图2对应格为准；同一镜头内部保持稳定。不得显示图2格线、拼贴、文字或编号，不生成字幕、额外 Logo 或水印。\n\n");
         appendImageToVideoTimeline(prompt, task);
@@ -1128,6 +1137,7 @@ public class AiVideoTaskService {
                 appendLine(prompt, "画面与场景", scene);
                 appendLine(prompt, "动作幅度", intensity);
                 appendLine(prompt, "手部规则", shotHandDirective(task, action, scene));
+                appendLine(prompt, "本镜头布料重力", fabricGripPhysicsDirective(action, scene));
                 appendLine(prompt, "进入转场", VideoTimelineSemantics.enteringTransition(sequence, transition));
                 if (!shotSize.isBlank() || !movement.isBlank()) {
                     prompt.append("镜头：");
@@ -1363,6 +1373,15 @@ public class AiVideoTaskService {
         return requiresHand
                 ? "本镜头按脚本出现完成动作所需的一双自然手；手的数量、方向、接触位置与动作必须一致，不能延续到其他镜头"
                 : "本镜头不出现人物、手臂、手掌或手指，只保留商品及脚本要求的承托关系";
+    }
+
+    private String fabricGripPhysicsDirective(String action, String scene) {
+        String context = (textValue(action) + " " + textValue(scene)).toLowerCase();
+        if (!containsAny(context,
+                "捏住", "捏起", "提起一角", "提着一角", "掀起", "拎起", "拉起衣角", "拉起下摆", "拉起袖口",
+                "pinch", "lift a corner", "lifted corner", "grip a corner")) return "";
+        return "只在本镜头应用：指腹接触点是明确受力点，未被支撑的对侧领口、肩袖、衣身和衣摆受重力下垂；"
+                + "从受力点产生自然放射褶皱、弧形悬垂、轻微滞后与阻尼。禁止整件衣服像纸板同步抬起；该手势不得延续到其他分镜";
     }
 
     private boolean containsAny(String value, String... candidates) {

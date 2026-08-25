@@ -107,11 +107,14 @@ class AiVideoImageProcessorTest {
 
     @Test
     void fabricRequirementIncludesGravityAndDrapeWhenAClothingCornerIsLifted() throws Exception {
-        String requirement = privateStaticString("FABRIC_AND_PRODUCT_REALISM_REQUIREMENT");
+        String general = privateStaticString("FABRIC_AND_PRODUCT_REALISM_REQUIREMENT");
+        String requirement = privateStaticString("FABRIC_GRIP_PHYSICS_REQUIREMENT");
 
+        assertFalse(general.contains("唯一最高受力点"));
         assertTrue(requirement.contains("未被支撑的布料受重力向下垂落"));
         assertTrue(requirement.contains("放射状张力褶皱"));
         assertTrue(requirement.contains("禁止整片衣服像纸板"));
+        assertTrue(requirement.contains("只约束脚本明确发生提拉的当前格"));
     }
 
     @Test
@@ -140,10 +143,15 @@ class AiVideoImageProcessorTest {
         AiVideoTaskAsset generatedGuide = new AiVideoTaskAsset(
                 "org", "task", "item", "STORYBOARD_GUIDE", null, "/tmp/guide.png",
                 "image/png", 10, "text-driven guide", "gpt-image-2");
+        AiVideoTaskAsset motionGuide = new AiVideoTaskAsset(
+                "org", "task", "item", "STORYBOARD_GUIDE", null, "/tmp/guide-v2.png",
+                "image/png", 10, "SCRIPT_MOTION_FRAMES_V2｜原视频九个动作状态母版", "ffmpeg");
 
         assertTrue(AiVideoImageProcessor.isRawScriptFrameGuide(rawGuide));
         assertFalse(AiVideoImageProcessor.isRawScriptFrameGuide(generatedGuide));
         assertFalse(AiVideoImageProcessor.isRawScriptFrameGuide(null));
+        assertTrue(AiVideoImageProcessor.isScriptMotionFrameGuide(motionGuide));
+        assertFalse(AiVideoImageProcessor.isScriptMotionFrameGuide(rawGuide));
     }
 
     @Test
@@ -153,13 +161,43 @@ class AiVideoImageProcessorTest {
         assertFalse(ProductFunctionAnalysisService.isDailyUseCategory("家居"));
         assertFalse(ProductFunctionAnalysisService.isDailyUseCategory("通用商品"));
         assertFalse(ProductFunctionAnalysisService.isDailyUseCategory(null));
+        assertTrue(ProductFunctionAnalysisService.isGarmentCategory("服装"));
+        assertTrue(ProductFunctionAnalysisService.isGarmentCategory("女装/T恤"));
+        assertFalse(ProductFunctionAnalysisService.isGarmentCategory("日用品"));
     }
 
     @Test
     void pipelineRetryDoesNotWaitForOptionalProductFunctionAnalysis() {
-        assertTrue(AiVideoImageProcessor.shouldRunProductFunctionAnalysis(false, false));
-        assertFalse(AiVideoImageProcessor.shouldRunProductFunctionAnalysis(false, true));
-        assertFalse(AiVideoImageProcessor.shouldRunProductFunctionAnalysis(true, false));
+        assertTrue(AiVideoImageProcessor.shouldRunProductFunctionAnalysis(true, false, false));
+        assertFalse(AiVideoImageProcessor.shouldRunProductFunctionAnalysis(true, true, false));
+        assertFalse(AiVideoImageProcessor.shouldRunProductFunctionAnalysis(true, false, true));
+        assertFalse(AiVideoImageProcessor.shouldRunProductFunctionAnalysis(false, false, false));
+    }
+
+    @Test
+    void garmentTopologyContractKeepsBodySideAndViewProjectionSeparate() {
+        ProductFunctionAnalysisService service = new ProductFunctionAnalysisService(
+                null, null, new ObjectMapper(), "http://localhost:8090", "test-token");
+        var task = new com.yingdao.aicommerce.video.domain.AiVideoTask(
+                "org", "task", "script", 1, "script", "{}", "菲律宾", "MODEL_WEAR",
+                "AI_DESIGNED", "服装", "按分镜", "按分镜", false, "9:16", "720p",
+                false, false, "{}", "{}", "user");
+
+        String block = service.promptBlock(task, """
+                {"version":"GARMENT_TOPOLOGY_V1","garmentType":"非对称斜领短袖",
+                "topologyClass":"ASYMMETRIC_ONE_SHOULDER","structureSymmetry":"INTRINSIC_ASYMMETRIC",
+                "wearingSidePolicy":"FIXED_WEARER_SIDE","wearerRightShoulderState":"露出",
+                "wearerLeftShoulderState":"覆盖","imageLeftSleeve":"短袖下落在上臂",
+                "imageRightSleeve":"正常短袖","necklinePath":"从穿着者左肩斜向右肩下方",
+                "supportElements":[],"viewpointProjectionRule":"转到背面后屏幕左右自然反转",
+                "fixedStructures":["两只短袖始终存在"],"forbiddenChanges":["不得增加肩带"]}
+                """);
+
+        assertTrue(block.contains("服装结构与穿法契约"));
+        assertTrue(block.contains("FIXED_WEARER_SIDE"));
+        assertTrue(block.contains("两只短袖始终存在"));
+        assertTrue(block.contains("背面后屏幕左右自然反转"));
+        assertTrue(block.contains("不得增加肩带"));
     }
 
     @Test

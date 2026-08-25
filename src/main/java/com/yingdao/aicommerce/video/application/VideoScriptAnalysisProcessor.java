@@ -125,6 +125,7 @@ public class VideoScriptAnalysisProcessor {
             context.put("sourceFileName", script.getSourceFileName());
             context.put("targetMarket", script.getTargetMarket() == null ? "" : script.getTargetMarket());
             context.put("requirements", script.getRequirements() == null ? "" : script.getRequirements());
+            context.put("presentationMode", script.getPresentationMode());
             double targetDurationSeconds = Math.min(frames.durationSeconds(), MAX_SCRIPT_DURATION_SECONDS.doubleValue());
             context.put("sourceDurationSeconds", frames.durationSeconds());
             context.put("durationSeconds", targetDurationSeconds);

@@ -175,7 +175,9 @@ const VIDEO_SCRIPT_ANALYSIS_PROMPT = `你是赫逸智能化平台的视频脚本
       "imagePrompt": {
         "prompt": "可直接用于图片模型的完整中文提示词",
         "negativePrompt": "需要避免的画面问题",
-        "aspectRatio": "9:16"
+        "aspectRatio": "9:16",
+        "sourceTimestampSeconds": 0.0,
+        "sourceDurationSeconds": 0.0
       }
     }
   ]
@@ -202,7 +204,11 @@ const VIDEO_SCRIPT_ANALYSIS_PROMPT = `你是赫逸智能化平台的视频脚本
 18. 必须逐帧追踪手与商品的接触关系及商品朝向。如果画面可见“商品倒立露出底部→点火工具接触底部点火位置→商品翻转回正→放到地面”或其他同类功能动作链，必须按真实顺序分配到连续分镜，并在 title、sceneDescription 和 motionDescription 中明确写出每一步；火焰、烟雾和点火接触点是动作证据，不得因商品去特征规则而省略。画面未出现时不得套用或虚构这些动作。
 19. 必须建立并逐帧保持“主体状态账本”：每一格都要确认当前任务商品此刻是包装中、取出中、折叠、展开、手持展示、正在穿上、已经穿在人物身上、局部特写或离开画面，以及人物是手持商品还是已穿着商品。凡原片真实出现的状态切换都属于主动作，必须在 title、sceneDescription、motionDescription 和 imagePrompt.prompt 中一致写明，禁止把“包装→取出→展开→穿上→穿着转身”压缩、改写成全程手持或同一姿势。
 20. 输出前按 01→09 做一次状态连续性自检：上一格结束状态必须等于下一格开始状态；人物、商品、包装和手部接触关系不得无解释出现、消失或回退。若抽帧明确显示后段人物已穿上当前任务商品，后段不得继续写成手持商品；若某格是包装、折叠、领口/印花特写或穿着展示，必须保留这一可见展示方式，不得为了动作平滑统一成胸前举衣。
-21. 输出必须是合法 JSON，所有字符串使用中文，不要加入注释。`;
+20.1 必须服从输入中的 presentationMode。MODEL_WEAR 表示“人物穿搭脚本”：九格以同一人物实际穿着当前任务商品为核心，允许必要的穿上过程和商品特写，但不得把主体流程写成无人静物展示。PRODUCT_ONLY 表示“纯商品脚本”：禁止人物穿着商品或出现完整人物，只允许脚本确有需要时出现一双手进行拿取、摆放、展开和细节展示；若原视频有人物，应只迁移可复用的动作节奏、运镜和构图，并改写成纯商品可执行动作。两种模式不得混用。
+21. 在阅读全部关键帧后，先在内部建立“动作状态账本”：对每个时间点分别记录商品可见面（正面/正面斜侧/窄边/背面斜侧/背面）、商品朝向、展开或折叠程度、手指实际抓握区域、支撑点数量、手腕旋转方向、布料最高受力点与未支撑侧。正面、侧面、背面和抓握位置属于动作状态，不属于被禁止的商品外观，必须准确保留。
+22. 九个 imagePrompt.sourceTimestampSeconds 必须由你从 frameOrder 中自主选择，且必须等于某个真实输入帧的 timestampSeconds；优先覆盖真实动作状态变化，不得固定等分。九个时间点严格递增，必须包含接近开头和接近结尾的证据帧。imagePrompt.sourceDurationSeconds 必须原样复制 sourceDurationSeconds。原片超过 15 秒时，只压缩输出的生产 startSecond/endSecond，不能丢弃 15 秒后的动作证据。
+23. 若同一只手全程持有商品，也不能把九格写成同一姿势；必须保留抓握位置、手腕角度、商品可见面、展开程度与运动方向的真实变化。例如原片出现正面→窄边→背面→再回正面时，九镜必须完整保留这个顺序。
+24. 输出必须是合法 JSON，所有字符串使用中文，不要加入注释。`;
 
 const PRODUCT_FUNCTION_ANALYSIS_PROMPT = `你是电商视频生产中的商品结构与工作原理分析器。你会收到一张用户上传的真实商品图，以及只用于理解预期动作的脚本上下文。
 你的任务只分析商品功能：联合商品图中的外形结构、包装上可读到的通用产品类型/用途/操作词，以及脚本中的画面动作、运动描述和对白旁白，判断商品是否具有需要被正确演示的物理功能。识别与功能直接相关的部件、正确操作顺序和操作时真实允许发生的局部状态变化，供后续图片与视频模型维持物理一致性。不要评价或描述颜色、包装设计、品牌、卖点、审美、材质质感和普通外观细节。
@@ -227,6 +233,46 @@ const PRODUCT_FUNCTION_ANALYSIS_PROMPT = `你是电商视频生产中的商品�
 6. 明确区分“部件移动或状态变化”和“凭空生成新部件”。例如点燃只改变燃点、火焰和烟雾，不应让燃烧部件自己伸长、膨胀或长出圆帽。
 7. 看不清的结构要用保守描述并降低 confidence，禁止猜测危险操作、化学成分或内部机械结构。
 8. 每个数组最多 8 项，每项使用简短、可直接注入生成提示词的中文句子。`;
+
+const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `你是电商服装图像生产中的服装拓扑与真实穿法分析器。你会收到一张用户上传的真实服装商品图，以及只用于理解展示动作的脚本上下文。
+你的任务是从原图识别服装不可改变的物理结构，尤其是非对称领口、单侧露肩、单侧袖、斜肩、绕颈、交叉、开口和非常规穿法。后续 AI 模特图、纯商品图、九宫格和视频会把你的结构化结论作为强约束。
+只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字。格式：
+{
+  "garmentType": "通用品类，例如单肩短袖上衣",
+  "topologyClass": "结构类型，例如 ASYMMETRIC_ONE_SHOULDER",
+  "asymmetrical": true,
+  "structureSymmetry": "INTRINSIC_ASYMMETRIC 或 SYMMETRIC_WIDE_NECK",
+  "wearingSidePolicy": "FIXED_WEARER_SIDE 或 EITHER_SIDE_CHOOSE_ONCE",
+  "imageLeftShoulderState": "原图画面左侧肩部的覆盖/露出/开口状态",
+  "imageRightShoulderState": "原图画面右侧肩部的覆盖/露出/开口状态",
+  "wearerLeftShoulderState": "穿着者左肩的覆盖/露出/开口状态；无法确认时写不确定",
+  "wearerRightShoulderState": "穿着者右肩的覆盖/露出/开口状态；无法确认时写不确定",
+  "imageLeftSleeve": "原图画面左侧袖子的数量、长度和连接位置",
+  "imageRightSleeve": "原图画面右侧袖子的数量、长度和连接位置",
+  "wearerLeftSleeve": "穿着者左袖状态；无法确认时写不确定",
+  "wearerRightSleeve": "穿着者右袖状态；无法确认时写不确定",
+  "necklinePath": "领口从原图画面左到右经过肩、锁骨、胸口的连续路径",
+  "supportElements": ["细肩带、绕颈带、扣环等辅助支撑的数量、连接位置与所在身体侧"],
+  "viewpointProjectionRule": "服装相对穿着者身体侧固定；正面、侧面、背面时应如何映射到屏幕左右",
+  "wearingMethod": ["头和双臂分别应穿过哪个开口，衣身如何落在肩颈与躯干"],
+  "fixedStructures": ["任何展示角度都必须保持不变的连接、开口、袖子数量和左右关系"],
+  "forbiddenChanges": ["模型容易误画但必须禁止的普通圆领化、对称化、补袖、删袖或镜像"],
+  "visualEvidence": ["支持判断的可见缝线、开口边缘、袖窿和布片连接证据"],
+  "uncertainties": ["单张图无法确认的事实"],
+  "confidence": 0.0
+}
+规则：
+1. 原图像素是最高证据。脚本只描述动作，不能改变服装结构，也不能让你继承脚本视频中的旧衣服。
+2. 必须先区分“原图画面左/右”和“穿着者自身左/右”。不要把两套坐标混写；文字或印花的正常阅读方向可辅助判断是否镜像。穿着者侧无法可靠确认时明确写不确定，但画面侧仍需准确记录。
+3. 领口不是一个类别标签，要描述连续路径：哪侧位于肩上、哪侧下落至肩下或锁骨、是否斜跨、是否闭合、与袖窿怎样连接。
+4. 袖子按左右分别计数。明确指出无袖、短袖、长袖、落肩布片或独立肩带，禁止把裸露肩部误认为缺损，也禁止把衣身边缘误认为第二只袖子。
+5. wearingMethod 要说明真实穿法和布料落点，避免模型把单肩服装套成普通 T 恤、把领口拉平或把裸肩侧补齐。
+6. 必须区分结构性非对称款和穿法可变的宽船领款。衣片、斜领或肩带本身决定唯一身体侧时，structureSymmetry=INTRINSIC_ASYMMETRIC、wearingSidePolicy=FIXED_WEARER_SIDE；双袖对称且依靠宽领口向任意一侧下拉形成露肩时，structureSymmetry=SYMMETRIC_WIDE_NECK、wearingSidePolicy=EITHER_SIDE_CHOOSE_ONCE。后一种允许 AI 主图任选一侧，但同一组九宫格和视频必须继承主图选择，不能逐格换侧。
+7. supportElements 必须记录所有细肩带、绕颈带、扣环和其他辅助承重结构。肩带数量、宽度类别、连接点和身体侧均不可在后续生成中丢失或增加。
+8. 服装左右固定在穿着者身体坐标，不是屏幕坐标。正面转到背面后同一身体侧在画面中的投影可能反转；viewpointProjectionRule 必须明确禁止模型因为画面左右变化而把衣服换到身体另一侧。
+9. fixedStructures 和 forbiddenChanges 必须足够具体，可直接用于逐格生成校验。结构性非对称服装必须明确禁止对称化、身体侧交换和逐格换侧。
+10. 看不清的背部连接、隐藏肩带或内层结构不得猜测；写入 uncertainties 并降低 confidence。不得因为不确定而把可见的非对称结构改成常规款。
+11. 不评价模特、审美和搭配，不抄录品牌或营销文案。每个数组最多 10 项，每项简短明确。`;
 
 const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策划器。输入可能是一名业务人员写的一整段自然语言需求，也可能包含按顺序排列的多张真实参考图片。你要理解真实营销意图，将其整理成可直接制作的固定 9 个分镜。
 只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字：
@@ -261,7 +307,8 @@ const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策�
 11. 产品海报模式必须读取海报中可见的商品名称、卖点文案和主要语言，用这些可见信息生成对应语言的自然旁白。分镜标题、sceneDescription 和 motionDescription 仍用中文，narration 使用“旁白：”加目标语言原文；品牌名和专有名词保持海报写法。
 12. 自动判断目的地语言：businessPrompt 明确指定语言或市场时优先服从；否则按海报营销正文的主要语言判断，targetMarketHint 仅在海报语言不明确时辅助。泰文用泰语，马来文用马来语，菲律宾文用菲律宾语，简体中文用中文，英文用英语；混合语言以主要营销正文为准。detectedLanguage 和 detectedTargetMarket 必须返回判断结果。
 13. 产品海报模式要把连贯旁白按语义顺序分到 9 段，每段都能在约 1.6—1.7 秒内自然说完；只使用海报可确认的信息，不虚构功效、参数、价格或承诺。如果海报没有足够文案，使用不带未证实卖点的通用展示旁白。
-14. 如果输入已有脚本名称或视觉基调，在不冲突时优先保留并优化。时间由平台统一分配，不要返回时间字段。`;
+14. 如果输入已有脚本名称或视觉基调，在不冲突时优先保留并优化。时间由平台统一分配，不要返回时间字段。
+15. 必须服从输入中的 presentationMode。MODEL_WEAR 表示“人物穿搭脚本”：九格必须围绕同一人物实际穿着当前任务商品展开，允许必要的穿上过程和商品特写，但不能写成无人静物流程。PRODUCT_ONLY 表示“纯商品脚本”：禁止人物穿着商品或出现完整人物；只有具体展示动作需要时才允许一双手进入，围绕商品静物、手持、展开、旋转、使用和细节特写设计。两种模式不得混用。`;
 
 const AUTOMATION_AGENT_PROMPT = `你是赫逸智能化平台中负责一条自动化任务全生命周期的 Pi Agent。
 你会持续收到同一任务的计划、脚本输出、检查点、页面异常、恢复结果和最终结果。
@@ -1758,7 +1805,8 @@ async function enforceVideoShotCount(runtimeAgent, parsed, desiredShotCount, pro
 7. 不得识别、转写或保留画面字幕、贴纸、字母、数字、水印和营销文案；没有音频转写时所有 narration 必须为空字符串；
 8. transitionDescription 必须保留真实镜头边界语义：首段为“无”，同一物理镜头内部为“同镜头连续，无转场”，只有真实切点才允许写硬切或具体转场；
 9. 补足或重整不得破坏主体状态账本。包装中、取出、折叠、展开、手持、穿上、已穿着、局部特写、离开画面等原片可见状态及其切换必须保留；尤其不得把后段“人物已穿着商品”改回“人物手持商品”，也不得把包装/展开/穿着等不同展示方式统一成同一姿势；
-10. 不得使用 Markdown，不得输出 JSON 之外的文字。`);
+10. 每个 imagePrompt 必须保留 sourceTimestampSeconds 与 sourceDurationSeconds。sourceTimestampSeconds 只能从最初 frameOrder 的真实时间戳中选择，九个时间点严格递增并覆盖原片开头到结尾；生产时间轴压缩不得覆盖或改写这两个原片证据字段；
+11. 不得使用 Markdown，不得输出 JSON 之外的文字。`);
   const adjustedAssistant = [...runtimeAgent.state.messages]
     .reverse()
     .find(message => message.role === "assistant");
@@ -1822,7 +1870,7 @@ async function runVideoScriptAnalysis(body) {
       sourceIndex: Number(frame.index || index + 1),
       timestampSeconds: Number(frame.timestampSeconds || 0)
     })),
-    note: "以下图片按视频时间先后顺序排列，并附原视频时间点；只提取可复用的动作、人物数量、机位、运镜、场景、光线、节奏和微表情。必须保留手与商品的接触关系、商品朝向和可见功能状态变化，例如包装中、取出、折叠、展开、手持、穿上、已穿着、局部特写、倒立、翻转、露出底部、点火、回正和放置；这些是动作与主体状态而非商品外观。逐帧建立主体状态账本，原片中的包装→展开→穿上→穿着展示等状态切换不得被压扁成全程手持或同一姿势。不得带入原人物身份、外貌、发型、妆容、饰品、穿搭，不得带入原视频商品类别、颜色、版型、印花、文字、Logo、卖点或搭配，不得抄录字幕。后续商品唯一来源是用户在 AI 视频任务中上传的商品图。运镜优先参考 cameraMotionEvidence；当前没有可靠音频转写，所有 narration 必须为空。"
+    note: "以下图片按视频时间先后顺序排列，并附原视频时间点；完整阅读全部帧后自行选择九个最能覆盖动作状态变化的真实时间点，不得固定等分。只提取可复用的动作、人物数量、机位、运镜、场景、光线、节奏和微表情。必须保留手与商品的接触关系、商品正面/斜侧/窄边/背面朝向、抓握区域、支撑点和可见功能状态变化，例如包装中、取出、折叠、展开、手持、穿上、已穿着、局部特写、倒立、翻转、露出底部、点火、回正和放置；这些是动作与主体状态而非商品外观。逐帧建立主体状态账本，原片中的正面→侧面→背面→回正、包装→展开→穿上→穿着展示等状态切换不得被压扁成全程手持或同一姿势。不得带入原人物身份、外貌、发型、妆容、饰品、穿搭，不得带入原视频商品类别、颜色、版型、印花、文字、Logo、卖点或搭配，不得抄录字幕。后续商品唯一来源是用户在 AI 视频任务中上传的商品图。运镜优先参考 cameraMotionEvidence；当前没有可靠音频转写，所有 narration 必须为空。"
   });
   try {
     progressReporter.beginPass("AI_STREAMING", 58, 84);
@@ -1848,16 +1896,46 @@ async function runVideoScriptAnalysis(body) {
       desiredShotCount,
       progressReporter
     );
-    progressReporter.publish(94, "RESULT_READY", true);
+    let audited = parsed;
+    try {
+      progressReporter.publish(90, "VERIFYING_ACTION_STATES");
+      await runtimeAgent.prompt(`请重新查看本轮最初提供的全部视频关键帧，并审计下面这份 9 分镜 JSON：
+${JSON.stringify(parsed.result)}
+
+只修正与真实视频证据不一致的动作状态，然后返回一份完整合法 JSON。必须重点核对：
+1. 九个 imagePrompt.sourceTimestampSeconds 是否都来自最初 frameOrder 的真实时间戳、严格递增，并覆盖开头到结尾；
+2. 商品可见面是否准确保留正面→斜侧/窄边→背面→回正等真实顺序；
+3. 每格手指抓握区域、支撑点、手腕旋转方向、展开/折叠程度是否与对应时间点一致；
+4. 同一只手持续入镜不代表同一姿势，禁止把九格统一成捏住同一位置；
+5. 原片超过 15 秒时必须保留 15 秒后的关键动作证据，只把生产时间轴压缩到 15 秒；
+6. presentationMode、去除原商品外观和其余既有规则保持不变。
+只输出完整 JSON，不要解释。`);
+      const auditAssistant = [...runtimeAgent.state.messages]
+        .reverse()
+        .find(message => message.role === "assistant");
+      if (!auditAssistant || auditAssistant.stopReason === "error") {
+        throw new Error(auditAssistant?.errorMessage || "动作状态复核没有返回有效结果");
+      }
+      audited = await enforceVideoShotCount(
+        runtimeAgent,
+        await parseVideoScriptResult(runtimeAgent, messageText(auditAssistant), progressReporter),
+        desiredShotCount,
+        progressReporter
+      );
+    } catch (auditError) {
+      console.warn(`[video-script] action-state audit fallback: ${String(auditError?.message || auditError)}`);
+    }
+    progressReporter.publish(96, "RESULT_READY", true);
     return {
-      result: parsed.result,
-      reply: parsed.reply,
+      result: audited.result,
+      reply: audited.reply,
       usage: tokenUsageFromMessages(runtimeAgent.state.messages),
       latencyMs: Date.now() - startedAt,
       modelId: config.modelId,
       analysisMode: "KEYFRAMES_WITH_BACKGROUND_MOTION",
-      repairedByModel: parsed.repairedByModel,
-      adjustedShotCount: parsed.adjustedShotCount
+      repairedByModel: audited.repairedByModel,
+      adjustedShotCount: audited.adjustedShotCount,
+      actionStateAudited: audited !== parsed
     };
   } catch (error) {
     progressReporter.publish(progressReporter.state.progress, "FAILED", true);
@@ -2019,9 +2097,13 @@ async function runProductFunctionAnalysis(body) {
   if (!/^image\/(jpeg|png|webp)$/i.test(mimeType) || !data) {
     throw new Error("没有可供分析的商品图片");
   }
+  const analysisType = String(body?.context?.analysisType || "PRODUCT_FUNCTION_V1").trim();
+  const systemPrompt = analysisType === "GARMENT_TOPOLOGY_V1"
+    ? GARMENT_TOPOLOGY_ANALYSIS_PROMPT
+    : PRODUCT_FUNCTION_ANALYSIS_PROMPT;
   const runtimeAgent = new Agent({
     initialState: {
-      systemPrompt: PRODUCT_FUNCTION_ANALYSIS_PROMPT,
+      systemPrompt,
       model: modelFrom(config),
       thinkingLevel: "low",
       messages: [],
@@ -2031,7 +2113,7 @@ async function runProductFunctionAnalysis(body) {
       streamSimple(model, context, {
         ...options,
         apiKey,
-        maxTokens: 1400,
+        maxTokens: analysisType === "GARMENT_TOPOLOGY_V1" ? 2400 : 1400,
         timeoutMs: 120_000,
         maxRetries: 2,
         maxRetryDelayMs: 10_000

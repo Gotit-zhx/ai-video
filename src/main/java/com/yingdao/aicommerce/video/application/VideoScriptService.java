@@ -61,6 +61,7 @@ public class VideoScriptService {
             String name,
             String targetMarket,
             String requirements,
+            String presentationMode,
             PlatformPrincipal principal
     ) {
         VideoScript blocking = currentBlocking(principal);
@@ -97,6 +98,7 @@ public class VideoScriptService {
                 principal.organizationId(),
                 normalizedName.substring(0, Math.min(normalizedName.length(), 160)),
                 "VIDEO_ANALYSIS",
+                normalizePresentationMode(presentationMode),
                 originalName,
                 source.toString(),
                 video.getContentType(),
@@ -123,6 +125,7 @@ public class VideoScriptService {
             String name,
             String targetMarket,
             String visualTone,
+            String presentationMode,
             List<ManualShot> requestedShots,
             PlatformPrincipal principal
     ) {
@@ -163,7 +166,8 @@ public class VideoScriptService {
         }
 
         VideoScript script = new VideoScript(
-                id, principal.organizationId(), normalizedName, "MANUAL", null, null, null, null,
+                id, principal.organizationId(), normalizedName, "MANUAL",
+                normalizePresentationMode(presentationMode), null, null, null, null,
                 trimTo(targetMarket, 80), null, principal.userId()
         );
         String summary = "手动创建的 9 分镜生产脚本";
@@ -230,6 +234,7 @@ public class VideoScriptService {
                     original.getOrganizationId(),
                     copyName,
                     original.getSourceType(),
+                    original.getPresentationMode(),
                     original.getSourceFileName(),
                     copiedSource == null ? null : copiedSource.toString(),
                     original.getSourceContentType(),
@@ -569,6 +574,14 @@ public class VideoScriptService {
         String normalized = value == null ? "CONTENT" : value.trim().toUpperCase(Locale.ROOT);
         if (!Set.of("HOOK", "SOLUTION", "TRUST", "CTA", "CONTENT").contains(normalized)) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "分镜阶段无效");
+        }
+        return normalized;
+    }
+
+    static String normalizePresentationMode(String value) {
+        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("MODEL_WEAR", "PRODUCT_ONLY").contains(normalized)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择人物穿搭或纯商品脚本");
         }
         return normalized;
     }

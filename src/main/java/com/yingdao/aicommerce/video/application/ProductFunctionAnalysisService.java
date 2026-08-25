@@ -26,6 +26,8 @@ public class ProductFunctionAnalysisService {
     private static final Logger log = LoggerFactory.getLogger(ProductFunctionAnalysisService.class);
     private static final String BLOCK_START = "【功能商品物理约束】";
     private static final String BLOCK_END = "【功能商品物理约束结束】";
+    private static final String GARMENT_BLOCK_START = "【服装结构与穿法契约】";
+    private static final String GARMENT_BLOCK_END = "【服装结构与穿法契约结束】";
     private static final int MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 
     private final AiVideoTaskItemMapper itemMapper;
@@ -45,13 +47,10 @@ public class ProductFunctionAnalysisService {
                 .defaultHeader("X-Internal-Token", piRuntimeToken).build();
     }
 
-    /**
-     * Analyze a pure-product item once. Failure is deliberately non-fatal: image generation can still
-     * continue with the existing visual-only constraints when the driver model is unavailable.
-     */
+    /** Analyze a product once. Failure remains non-fatal so an optional vision pass cannot block production. */
     public String ensureAnalysis(AiVideoTask task, AiVideoTaskItem item) {
-        if ("MODEL_WEAR".equals(task.getGenerationMode())
-                || !isDailyUseCategory(task.getProductCategory())) return null;
+        boolean garment = isGarmentTask(task);
+        if (!garment && !isDailyUseCategory(task.getProductCategory())) return null;
         if (item.getProductFunctionAnalysisJson() != null
                 && !item.getProductFunctionAnalysisJson().isBlank()) {
             return item.getProductFunctionAnalysisJson();
@@ -75,10 +74,12 @@ public class ProductFunctionAnalysisService {
                     "apiFormat", model.apiFormat(),
                     "apiKey", model.apiKey()
             ));
-            request.put("context", Map.of(
-                    "productCategory", "日用品",
-                    "scriptActionContext", functionalActionContext(task.getScriptJson())
-            ));
+            Map<String, Object> context = new LinkedHashMap<>();
+            context.put("analysisType", garment ? "GARMENT_TOPOLOGY_V1" : "PRODUCT_FUNCTION_V1");
+            context.put("productCategory", garment ? "服装" : "日用品");
+            context.put("itemName", safe(item.getName(), 100));
+            context.put("scriptActionContext", functionalActionContext(task.getScriptJson()));
+            request.put("context", context);
             request.put("image", Map.of(
                     "mimeType", item.getSourceContentType(),
                     "data", Base64.getEncoder().encodeToString(Files.readAllBytes(source))
@@ -89,7 +90,7 @@ public class ProductFunctionAnalysisService {
                     .retrieve()
                     .body(PiProductAnalysisResponse.class);
             if (response == null || response.result() == null) return null;
-            String json = normalizeAnalysis(response.result());
+            String json = normalizeAnalysis(response.result(), garment);
             item.updateProductFunctionAnalysis(json);
             item.updateVideoPrompt(applyToVideoPrompt(task, item.getVideoPromptText(), json));
             itemMapper.updateById(item);
@@ -102,10 +103,14 @@ public class ProductFunctionAnalysisService {
     }
 
     public String promptBlock(AiVideoTask task, String analysisJson) {
-        if (!isDailyUseCategory(task.getProductCategory())) return "";
         if (analysisJson == null || analysisJson.isBlank()) return "";
         try {
             Map<String, Object> value = objectMapper.readValue(analysisJson, new TypeReference<>() {});
+            if ("GARMENT_TOPOLOGY_V1".equals(text(value.get("version"), 40))) {
+                if (!isGarmentTask(task)) return "";
+                return garmentPromptBlock(value);
+            }
+            if (!isDailyUseCategory(task.getProductCategory())) return "";
             if (!Boolean.TRUE.equals(value.get("functional"))) return "";
             StringBuilder block = new StringBuilder(BLOCK_START).append('\n');
             append(block, "物品", text(value.get("productType"), 40));
@@ -133,7 +138,8 @@ public class ProductFunctionAnalysisService {
         return (base + "\n\n" + block).trim();
     }
 
-    private String normalizeAnalysis(Map<String, Object> source) throws Exception {
+    private String normalizeAnalysis(Map<String, Object> source, boolean garment) throws Exception {
+        if (garment) return normalizeGarmentAnalysis(source);
         Map<String, Object> normalized = new LinkedHashMap<>();
         normalized.put("version", "PRODUCT_FUNCTION_V1");
         normalized.put("functional", Boolean.TRUE.equals(source.get("functional")));
@@ -148,6 +154,64 @@ public class ProductFunctionAnalysisService {
         normalized.put("confidence", confidence instanceof Number number
                 ? Math.max(0.0, Math.min(1.0, number.doubleValue())) : 0.0);
         return objectMapper.writeValueAsString(normalized);
+    }
+
+    private String normalizeGarmentAnalysis(Map<String, Object> source) throws Exception {
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        normalized.put("version", "GARMENT_TOPOLOGY_V1");
+        normalized.put("garmentType", text(source.get("garmentType"), 100));
+        normalized.put("topologyClass", text(source.get("topologyClass"), 100));
+        normalized.put("asymmetrical", Boolean.TRUE.equals(source.get("asymmetrical")));
+        normalized.put("structureSymmetry", text(source.get("structureSymmetry"), 100));
+        normalized.put("wearingSidePolicy", text(source.get("wearingSidePolicy"), 100));
+        normalized.put("imageLeftShoulderState", text(source.get("imageLeftShoulderState"), 100));
+        normalized.put("imageRightShoulderState", text(source.get("imageRightShoulderState"), 100));
+        normalized.put("wearerLeftShoulderState", text(source.get("wearerLeftShoulderState"), 100));
+        normalized.put("wearerRightShoulderState", text(source.get("wearerRightShoulderState"), 100));
+        normalized.put("imageLeftSleeve", text(source.get("imageLeftSleeve"), 100));
+        normalized.put("imageRightSleeve", text(source.get("imageRightSleeve"), 100));
+        normalized.put("wearerLeftSleeve", text(source.get("wearerLeftSleeve"), 100));
+        normalized.put("wearerRightSleeve", text(source.get("wearerRightSleeve"), 100));
+        normalized.put("necklinePath", text(source.get("necklinePath"), 220));
+        normalized.put("supportElements", stringList(source.get("supportElements"), 8, 140));
+        normalized.put("viewpointProjectionRule", text(source.get("viewpointProjectionRule"), 240));
+        normalized.put("wearingMethod", stringList(source.get("wearingMethod"), 6, 140));
+        normalized.put("fixedStructures", stringList(source.get("fixedStructures"), 10, 140));
+        normalized.put("forbiddenChanges", stringList(source.get("forbiddenChanges"), 12, 140));
+        normalized.put("visualEvidence", stringList(source.get("visualEvidence"), 8, 140));
+        normalized.put("uncertainties", stringList(source.get("uncertainties"), 6, 140));
+        Object confidence = source.get("confidence");
+        normalized.put("confidence", confidence instanceof Number number
+                ? Math.max(0.0, Math.min(1.0, number.doubleValue())) : 0.0);
+        return objectMapper.writeValueAsString(normalized);
+    }
+
+    private String garmentPromptBlock(Map<String, Object> value) {
+        StringBuilder block = new StringBuilder(GARMENT_BLOCK_START).append('\n');
+        append(block, "品类", text(value.get("garmentType"), 50));
+        append(block, "结构类型", text(value.get("topologyClass"), 60));
+        append(block, "衣片结构", text(value.get("structureSymmetry"), 80));
+        append(block, "露肩侧策略", text(value.get("wearingSidePolicy"), 100));
+        append(block, "原图画面左侧肩部", text(value.get("imageLeftShoulderState"), 60));
+        append(block, "原图画面右侧肩部", text(value.get("imageRightShoulderState"), 60));
+        append(block, "穿着者左肩", text(value.get("wearerLeftShoulderState"), 60));
+        append(block, "穿着者右肩", text(value.get("wearerRightShoulderState"), 60));
+        append(block, "原图画面左侧袖", text(value.get("imageLeftSleeve"), 60));
+        append(block, "原图画面右侧袖", text(value.get("imageRightSleeve"), 60));
+        append(block, "穿着者左袖", text(value.get("wearerLeftSleeve"), 60));
+        append(block, "穿着者右袖", text(value.get("wearerRightSleeve"), 60));
+        append(block, "领口路径", text(value.get("necklinePath"), 180));
+        append(block, "肩带与支撑", join(value.get("supportElements"), 180));
+        append(block, "视角投影", text(value.get("viewpointProjectionRule"), 200));
+        append(block, "实际穿法", join(value.get("wearingMethod"), 220));
+        append(block, "固定结构", join(value.get("fixedStructures"), 260));
+        append(block, "禁止变化", join(value.get("forbiddenChanges"), 300));
+        block.append("以上是商品身份的一部分。AI 模特图、纯商品展示、九宫格 01–09 和最终视频逐帧都必须保持同一领口路径、袖子数量、肩带连接与穿着策略；")
+                .append("结构性非对称款锁定穿着者身体侧；镜头转到背面时屏幕左右可按真实透视反转，但衣服相对身体绝不能换侧。")
+                .append("宽船领等可左右露肩款在 AI 主图选定一次穿法后，后续九宫格和视频继承该穿法，不得逐格换侧。")
+                .append("不得按普通圆领短袖补齐、错误对称化、增删袖子、删除肩带或改变穿法。原图方向与文字/印花的正常阅读方向共同用于校验，禁止把整件衣服镜像。\n")
+                .append(GARMENT_BLOCK_END);
+        return block.toString();
     }
 
     @SuppressWarnings("unchecked")
@@ -178,6 +242,23 @@ public class ProductFunctionAnalysisService {
         return value != null && "日用品".equals(value.trim());
     }
 
+    static boolean isGarmentCategory(String value) {
+        if (value == null || value.isBlank()) return false;
+        String normalized = value.trim().toLowerCase();
+        return List.of("服装", "服饰", "上衣", "女装", "男装", "童装", "t恤", "t-shirt", "shirt",
+                        "衬衫", "裙", "裤", "外套", "毛衣", "卫衣", "背心", "内衣")
+                .stream().anyMatch(normalized::contains);
+    }
+
+    boolean supportsAnalysis(AiVideoTask task) {
+        return isGarmentTask(task) || isDailyUseCategory(task.getProductCategory());
+    }
+
+    private boolean isGarmentTask(AiVideoTask task) {
+        return "MODEL_WEAR".equals(task.getGenerationMode())
+                || isGarmentCategory(task.getProductCategory());
+    }
+
     private List<String> stringList(Object raw, int maxItems, int maxLength) {
         if (!(raw instanceof List<?> values)) return List.of();
         List<String> result = new ArrayList<>();
@@ -201,11 +282,16 @@ public class ProductFunctionAnalysisService {
     }
 
     private String removeBlock(String value) {
-        int start = value.indexOf(BLOCK_START);
+        return removeOneBlock(removeOneBlock(value, BLOCK_START, BLOCK_END),
+                GARMENT_BLOCK_START, GARMENT_BLOCK_END).trim();
+    }
+
+    private String removeOneBlock(String value, String blockStart, String blockEnd) {
+        int start = value.indexOf(blockStart);
         if (start < 0) return value.trim();
-        int end = value.indexOf(BLOCK_END, start);
+        int end = value.indexOf(blockEnd, start);
         if (end < 0) return value.substring(0, start).trim();
-        return (value.substring(0, start) + value.substring(end + BLOCK_END.length()))
+        return (value.substring(0, start) + value.substring(end + blockEnd.length()))
                 .replaceAll("\\n{3,}", "\n\n").trim();
     }
 

@@ -1,8 +1,9 @@
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /workspace
 COPY pom.xml .
+COPY maven-settings.xml .
 COPY src src
-RUN --mount=type=cache,target=/root/.m2 mvn -B clean package
+RUN --mount=type=cache,target=/root/.m2 mvn -B -s maven-settings.xml clean package
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app

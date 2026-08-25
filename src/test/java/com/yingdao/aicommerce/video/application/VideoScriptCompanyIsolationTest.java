@@ -29,7 +29,7 @@ class VideoScriptCompanyIsolationTest {
     @Test
     void scriptCanOnlyBeReadInsideItsCompany() {
         VideoScript script = new VideoScript(
-                "script-1", "org-a", "A 公司脚本", "MANUAL",
+                "script-1", "org-a", "A 公司脚本", "MANUAL", "MODEL_WEAR",
                 null, null, null, null, "中国", null, "user-a"
         );
         when(scriptMapper.selectById("script-1")).thenReturn(script);

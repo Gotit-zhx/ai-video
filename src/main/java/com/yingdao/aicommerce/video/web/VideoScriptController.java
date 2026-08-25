@@ -50,7 +50,8 @@ public class VideoScriptController {
             @AuthenticationPrincipal PlatformPrincipal principal
     ) {
         return ApiResponse.ok(manualScriptAiService.analyze(
-                request.prompt(), request.targetMarket(), request.name(), request.visualTone(), principal));
+                request.prompt(), request.targetMarket(), request.name(), request.visualTone(),
+                request.presentationMode(), principal));
     }
 
     @PostMapping(value = "/manual/analyze-product", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -62,10 +63,12 @@ public class VideoScriptController {
             @RequestParam(value = "targetMarket", required = false) @Size(max = 80) String targetMarket,
             @RequestParam(value = "name", required = false) @Size(max = 160) String name,
             @RequestParam(value = "visualTone", required = false) @Size(max = 4000) String visualTone,
+            @RequestParam("presentationMode") @Size(max = 32) String presentationMode,
             @AuthenticationPrincipal PlatformPrincipal principal
     ) {
         return ApiResponse.ok(manualScriptAiService.analyzeProduct(
-                images, imageContexts, requirements, productContext, targetMarket, name, visualTone, principal));
+                images, imageContexts, requirements, productContext, targetMarket, name, visualTone,
+                presentationMode, principal));
     }
 
     @PostMapping(value = "/analyze", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -75,10 +78,11 @@ public class VideoScriptController {
             @RequestParam(value = "name", required = false) @Size(max = 160) String name,
             @RequestParam(value = "targetMarket", required = false) @Size(max = 80) String targetMarket,
             @RequestParam(value = "requirements", required = false) @Size(max = 4000) String requirements,
+            @RequestParam("presentationMode") @Size(max = 32) String presentationMode,
             @AuthenticationPrincipal PlatformPrincipal principal
     ) {
         return ApiResponse.created(VideoScriptSummaryResponse.from(
-                service.createAnalysis(video, name, targetMarket, requirements, principal)
+                service.createAnalysis(video, name, targetMarket, requirements, presentationMode, principal)
         ));
     }
 
@@ -95,7 +99,8 @@ public class VideoScriptController {
                         shot.shotSize(), shot.cameraMovement(), shot.emotion()
                 )).toList();
         return ApiResponse.created(VideoScriptSummaryResponse.from(
-                service.createManual(request.name(), request.targetMarket(), request.visualTone(), shots, principal)
+                service.createManual(request.name(), request.targetMarket(), request.visualTone(),
+                        request.presentationMode(), shots, principal)
         ));
     }
 
@@ -219,6 +224,7 @@ public class VideoScriptController {
             String organizationId,
             String name,
             String sourceType,
+            String presentationMode,
             String sourceFileName,
             String targetMarket,
             String status,
@@ -238,6 +244,7 @@ public class VideoScriptController {
                     script.getOrganizationId(),
                     script.getName(),
                     script.getSourceType(),
+                    script.getPresentationMode(),
                     script.getSourceFileName(),
                     script.getTargetMarket(),
                     script.getStatus(),
@@ -336,11 +343,13 @@ public class VideoScriptController {
             String name,
             String targetMarket,
             String visualTone,
+            String presentationMode,
             List<ManualShotRequest> shots
     ) {
     }
 
-    public record ManualScriptAiRequest(String prompt, String targetMarket, String name, String visualTone) {
+    public record ManualScriptAiRequest(String prompt, String targetMarket, String name, String visualTone,
+                                        String presentationMode) {
     }
 
     public record ManualShotRequest(

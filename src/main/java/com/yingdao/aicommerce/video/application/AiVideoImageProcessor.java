@@ -102,9 +102,11 @@ public class AiVideoImageProcessor {
     private static final String FABRIC_AND_PRODUCT_REALISM_REQUIREMENT = "材质必须按真实物理方式受光：棉料保留细微织纹、厚薄、"
             + "缝线和受力褶皱，印花贴合布面起伏而非悬浮；纸、塑料、玻璃、金属和木材分别呈现正确的漫反射、粗糙度、"
             + "透光或反射特征。避免所有表面同样光滑、边缘融化、无来源高光和不符合重力的悬浮。"
-            + "当手指捏住、提起或掀起衣角、下摆、袖口时，接触点必须准确贴合指腹；只有捏住的位置被向上牵引，未被支撑的布料受重力向下垂落，"
+            + "布料在任何姿态下都保留重量、柔软度、连续褶皱和真实支撑关系，不得像纸板、塑料片或硬壳。";
+    private static final String FABRIC_GRIP_PHYSICS_REQUIREMENT = "【仅限本格明确提拉布料时的重力】手指捏住、提起或掀起衣角、下摆、袖口时，接触点必须准确贴合指腹；只有捏住的位置被向上牵引，未被支撑的布料受重力向下垂落，"
+            + "尤其捏住领口或肩部一角时，被捏角是全件衣服唯一最高受力点，对侧领口、对侧肩袖和衣摆必须明显低于捏点并耷拉下去，衣服重心垂直落在捏点下方；"
             + "从受力点向外形成疏密自然的放射状张力褶皱和弧形垂坠，下摆有轻微滞后、惯性与阻尼。禁止整片衣服像纸板、塑料片或硬壳一样平直抬起，"
-            + "禁止无重量、无褶皱、冻结悬空或所有布面同步刚性移动。";
+            + "禁止无重量、无褶皱、冻结悬空或所有布面同步刚性移动。本条只约束脚本明确发生提拉的当前格，不得据此给其他格新增手、捏角或提拉动作。";
     private final AiVideoTaskMapper taskMapper;
     private final AiVideoTaskItemMapper itemMapper;
     private final AiVideoTaskAssetMapper assetMapper;
@@ -396,9 +398,6 @@ public class AiVideoImageProcessor {
         List<AiVideoTaskAsset> existing = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, item.getId()));
         boolean modelWear = "MODEL_WEAR".equals(task.getGenerationMode());
-        if (shouldRunProductFunctionAnalysis(modelWear, pipelineRecovery)) {
-            productFunctionAnalysisService.ensureAnalysis(task, item);
-        }
         boolean preserveScriptBackground = preserveScriptBackground(task);
         String primaryAssetType = modelWear ? "MODEL_IMAGE" : "PRODUCT_SCENE_IMAGE";
         AiVideoTaskAsset modelAsset = usableAsset(existing, primaryAssetType);
@@ -422,6 +421,12 @@ public class AiVideoImageProcessor {
         boolean hasVideoResult = usableAsset(existing, "VIDEO_RESULT") != null;
         boolean hasModel = modelAsset != null;
         boolean hasStoryboard = storyboardAsset != null;
+        if (shouldRunProductFunctionAnalysis(productFunctionAnalysisService.supportsAnalysis(task),
+                pipelineRecovery, hasModel)) {
+            // Scope the new analysis to genuinely new primary-image work. Existing/running tasks and
+            // pipeline recovery retain their persisted prompts and assets unchanged.
+            productFunctionAnalysisService.ensureAnalysis(task, item);
+        }
         boolean productVisibleInFirstShot = modelWear || shotShowsProduct(shots.getFirst());
         boolean useScriptFrameForPrimary = useScriptFirstFrameForPrimary(modelWear, preserveScriptBackground);
         ReferenceImage scriptFirstFrame = useScriptFrameForPrimary
@@ -457,6 +462,13 @@ public class AiVideoImageProcessor {
             itemMapper.updateById(item);
         }
         if (!hasStoryboard) {
+            if (storyboardGuideAsset == null) {
+                // Always retain the source video's real action states for storyboard construction.
+                // This is independent from the optional final video-reference submission switch:
+                // the latter affects the video provider, while this guide only prevents a textual
+                // summary from flattening front/edge/back views and changing hand contact points.
+                storyboardGuideAsset = createRealFrameStoryboardGuide(task, item);
+            }
             ReferenceImage generatedModel = reference(modelAsset.getFilePath(),
                     modelWear ? "参考图2 AI模特人物与穿着母版" : "AI商品场景图", modelAsset.getContentType());
             if (modelWear) {
@@ -466,24 +478,23 @@ public class AiVideoImageProcessor {
                     storyboardGuideAsset = generateAsset(task, item, model, "STORYBOARD_GUIDE", guidePrompt,
                             List.of(generatedModel));
                 } else {
-                    realFrameGuide = storyboardGuideAsset.getPromptText() != null
-                            && storyboardGuideAsset.getPromptText().startsWith("REAL_VIDEO_FRAMES_V1");
+                    realFrameGuide = isScriptMotionFrameGuide(storyboardGuideAsset);
                 }
                 ReferenceImage storyboardGuide = reference(storyboardGuideAsset.getFilePath(),
                         "参考图3 动作场景九宫格底图", storyboardGuideAsset.getContentType());
-                String identityPrompt = storyboardIdentityTransferPrompt(task, shots, realFrameGuide);
+                String identityPrompt = storyboardIdentityTransferPrompt(task, item, shots, realFrameGuide);
                 storyboardAsset = generateAsset(task, item, model, "STORYBOARD_GRID", identityPrompt,
                         List.of(garment, generatedModel, storyboardGuide));
             } else {
-                boolean realFrameGuide = false;
+                boolean realFrameGuide = isScriptMotionFrameGuide(storyboardGuideAsset);
                 String productStoryboardPrompt = productStoryboardGridPrompt(task, item, shots, realFrameGuide);
                 List<ReferenceImage> productReferences;
                 if (realFrameGuide) {
-                    ReferenceImage storyboardGuide = reference(storyboardGuideAsset.getFilePath(),
-                            "参考图1 原视频真实九帧动作与构图母版", storyboardGuideAsset.getContentType());
                     ReferenceImage productMaster = reference(Path.of(item.getSourceFilePath()),
-                            "参考图2 用户上传商品外观唯一母版", item.getSourceContentType());
-                    productReferences = List.of(storyboardGuide, productMaster);
+                            "参考图1 用户上传商品外观唯一母版", item.getSourceContentType());
+                    ReferenceImage storyboardGuide = reference(storyboardGuideAsset.getFilePath(),
+                            "参考图2 原视频真实九帧动作结构母版", storyboardGuideAsset.getContentType());
+                    productReferences = List.of(productMaster, storyboardGuide, generatedModel);
                 } else {
                     productReferences = List.of(generatedModel, garment);
                 }
@@ -508,8 +519,9 @@ public class AiVideoImageProcessor {
         else item.complete();
     }
 
-    static boolean shouldRunProductFunctionAnalysis(boolean modelWear, boolean pipelineRecovery) {
-        return !modelWear && !pipelineRecovery;
+    static boolean shouldRunProductFunctionAnalysis(boolean analysisSupported, boolean pipelineRecovery,
+                                                    boolean hasPrimaryAsset) {
+        return analysisSupported && !pipelineRecovery && !hasPrimaryAsset;
     }
 
     static boolean useScriptFirstFrameForPrimary(boolean modelWear, boolean preserveScriptBackground) {
@@ -523,6 +535,12 @@ public class AiVideoImageProcessor {
         return asset != null
                 && asset.getPromptText() != null
                 && asset.getPromptText().startsWith("REAL_VIDEO_FRAMES_V1");
+    }
+
+    static boolean isScriptMotionFrameGuide(AiVideoTaskAsset asset) {
+        return asset != null
+                && asset.getPromptText() != null
+                && asset.getPromptText().startsWith("SCRIPT_MOTION_FRAMES_V2");
     }
 
     private boolean hasUsableAsset(List<AiVideoTaskAsset> assets, String type) {
@@ -627,18 +645,25 @@ public class AiVideoImageProcessor {
             List<Path> selected = new ArrayList<>(9);
             for (int index = 0; index < scriptShots.size(); index++) {
                 VideoScriptShot shot = scriptShots.get(index);
+                SourceFramePoint sourcePoint = sourceFramePoint(shot);
                 double start = shot.getStartSecond() == null ? -1.0 : shot.getStartSecond().doubleValue();
                 double end = shot.getEndSecond() == null ? -1.0 : shot.getEndSecond().doubleValue();
                 double midpoint = start >= 0.0 && end >= start ? (start + end) / 2.0 : -1.0;
-                int frameIndex = timelineEnd > 0.0 && midpoint >= 0.0
-                        ? (int) Math.round((midpoint / timelineEnd) * (frames.size() - 1))
-                        : (int) Math.round(index * (frames.size() - 1.0) / 8.0);
+                int frameIndex;
+                if (sourcePoint != null) {
+                    frameIndex = (int) Math.round((sourcePoint.timestampSeconds() / sourcePoint.durationSeconds())
+                            * (frames.size() - 1));
+                } else {
+                    frameIndex = timelineEnd > 0.0 && midpoint >= 0.0
+                            ? (int) Math.round((midpoint / timelineEnd) * (frames.size() - 1))
+                            : (int) Math.round(index * (frames.size() - 1.0) / 8.0);
+                }
                 selected.add(frames.get(Math.max(0, Math.min(frames.size() - 1, frameIndex))));
             }
             BufferedImage guide = composePortraitStoryboard(selected);
             byte[] content = png(guide);
             StoredMedia stored = storeGenerated(task, item, content, "image/png", "storyboard-guide.png");
-            String marker = "REAL_VIDEO_FRAMES_V1｜原视频九个分镜时间中点抽帧，背景与构图应像素级保留";
+            String marker = "SCRIPT_MOTION_FRAMES_V2｜原视频九个动作状态母版；只继承动作、朝向、接触点、机位与背景，不继承旧商品外观";
             AiVideoTaskAsset asset = new AiVideoTaskAsset(task.getOrganizationId(), task.getId(), item.getId(),
                     "STORYBOARD_GUIDE", null, stored.location(), "image/png", stored.size(), marker, "ffmpeg");
             assetMapper.insert(asset);
@@ -646,6 +671,29 @@ public class AiVideoImageProcessor {
         } catch (Exception ignored) {
             // Old/manual scripts or missing source frames safely fall back to the generated guide path.
             return null;
+        }
+    }
+
+    private SourceFramePoint sourceFramePoint(VideoScriptShot shot) {
+        if (shot.getImagePromptJson() == null || shot.getImagePromptJson().isBlank()) return null;
+        try {
+            Map<?, ?> prompt = objectMapper.readValue(shot.getImagePromptJson(), Map.class);
+            double timestamp = number(prompt.get("sourceTimestampSeconds"));
+            double duration = number(prompt.get("sourceDurationSeconds"));
+            if (!Double.isFinite(timestamp) || !Double.isFinite(duration)
+                    || timestamp < 0.0 || duration <= 0.0 || timestamp > duration) return null;
+            return new SourceFramePoint(timestamp, duration);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private double number(Object value) {
+        if (value instanceof Number number) return number.doubleValue();
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (Exception ignored) {
+            return Double.NaN;
         }
     }
 
@@ -973,6 +1021,7 @@ public class AiVideoImageProcessor {
                 .append("构图像真实商业摄影而非素材拼贴，前景、主体和背景保持可信的尺寸与透视关系。")
                 .append("【光线与材质】").append(REAL_PHOTOGRAPHY_REQUIREMENT)
                 .append(FABRIC_AND_PRODUCT_REALISM_REQUIREMENT)
+                .append(fabricGripPhysicsRequirement(anchorShot))
                 .append("商品与承托面建立真实接触和阴影，背景干净，无水印和促销文字。")
                 .append("【输出】").append(PORTRAIT_4K_REQUIREMENT);
         return prompt.toString();
@@ -982,6 +1031,8 @@ public class AiVideoImageProcessor {
         String sceneRequirement = hasScriptFirstFrame
                 ? "【脚本首帧只提供背景】参考图2仅用于锁定脚本第 01 分镜的房间、墙面、门窗、家具、物品、材质磨损、光源方向、阴影、曝光、白平衡、景深、机位方向与人物所处位置，不得重新设计、整理、美化或替换这些背景信息。参考图2的远近景别和人物尺寸不作为约束，必须在相同机位方向上把相机向人物推进约二分之一距离，并按近距离清晰构图重新取景。参考图2中的旧人物不是人物参考，必须完整移除；绝对不能继承或融合旧人物的五官、发型、发色、肤色、年龄、身材、妆容、表情、配饰、上装、下装或鞋履。新人物继续使用本提示词规定的独立模特五官与发型特色，只把参考图1商品准确穿在新人物身上；与原生成逻辑相比，背景空间与机位方向来自参考图2。"
                 : "【AI 自动搭配背景】不要复刻脚本原视频房间。根据商品颜色、品类、目标市场与第 01 分镜动作，设计一个真实有人居住、适合该商品的普通日常空间；后续九宫格以此为视觉母版。画面可自然出现少量书、杯子、折叠衣物、充电线、使用过的家具或不完全对齐的靠垫，但不能脏乱或遮挡商品。保留轻微材质磨损、墙面色差和自然遮挡，不要使用空样板间、完全对称布置、统一米白影棚或奢华网红布景。";
+        String topologyBlock = productFunctionAnalysisService.promptBlock(
+                task, item.getProductFunctionAnalysisJson());
         return "【REALISM V3｜手机日常随拍任务】参考图1是唯一商品素材。基于参考图1生成一张普通人用手机主摄在较近距离随手拍下的竖版服装展示照片。"
                 + "日常生活感是最高风格优先级：成片应像同事、朋友或家人在普通居住空间临时记录今天穿搭，"
                 + "而不是品牌广告、影棚 Lookbook、网红写真、模特卡或精修样片。目标市场："
@@ -1006,7 +1057,9 @@ public class AiVideoImageProcessor {
                 + "脚本中的侧身、转头、回眸和低头动作统一延后到第 02 格以后再开始。该正脸身份锚点优先级高于第 01 分镜动作。"
                 + "画面必须是动作刚开始且可以自然进入第 02 分镜的稳定姿态，不能生成侧脸、背脸、低头闭眼或无法进行人脸捕捉的首帧。"
                 + "【商品保真】必须保持参考服装的颜色、版型、领口、袖长、纹理、缝线、印花内容、位置和比例完全一致，"
-                + "不得增加、删除、简化或重新设计服装细节。" + FABRIC_AND_PRODUCT_REALISM_REQUIREMENT
+                + "不得增加、删除、简化或重新设计服装细节。"
+                + (topologyBlock.isBlank() ? "" : topologyBlock + "\n")
+                + FABRIC_AND_PRODUCT_REALISM_REQUIREMENT
                 + "【独立造型设计与商品最高优先级】参考图1中的展示商品是整套造型唯一不可改变的核心，先识别它属于上装、下装、裙装、套装或其他品类，"
                 + "其颜色、图案、文字、版型、长度、面料和所有可见细节拥有最高优先级。参考图2旧人物的发型、下装、鞋子、配饰和整体搭配全部无效，不得照搬。"
                 + "本款采用独立造型方向：" + stylingDirection(item) + "。如果参考商品是上装，按造型方向选择下装；如果参考商品本身是裤子或半身裙，"
@@ -1066,12 +1119,11 @@ public class AiVideoImageProcessor {
                     : "背景沿用已生成的脚本原场景主图；连续分镜锁定同一空间、材质、光线和机位关系，脚本明确换景时才切换。")
                 : "背景以已生成的 AI 场景主图为视觉母版；根据各分镜动作合理延展空间，保持同一套真实摄影风格，脚本明确换景时才设计协调的新场景。";
         String referenceContract = realFrameGuide
-                ? "参考图1是原视频按九个分镜时间中点抽取并在后端拼成的真实 3×3 画面母版；参考图2是用户上传商品外观唯一母版。"
-                    + "两张参考图职责不可互换：参考图1逐格决定机位、景别、商品是否出镜及其位置与尺度、手部有无、手部进入方向、接触点、动作阶段、环境和光影；"
-                    + "参考图2以最高优先级锁定商品颜色、结构、文字、Logo、图案、标签和材质。"
-                    + "只有参考图1对应格明确出现商品时，才把其中旧商品外观替换为参考图2；原格没有商品时绝对不得添加商品。不得借替换之名改变参考图1的动作、构图、景别或手部时序。"
+                ? "参考图1是用户上传商品外观唯一母版；参考图2是原视频按九个动作阶段抽取并拼成的真实 3×3 动作结构母版；参考图3是已生成的新商品场景主图。"
+                    + "三张参考图职责不可互换：参考图1以最高优先级锁定新商品颜色、结构、文字、Logo、图案、标签和材质；参考图2逐格决定机位、景别、商品位置与尺度、正面/侧面/背面朝向、手部有无、手部进入方向、抓握区域、动作阶段、环境和光影；参考图3只补充新场景摄影质感。"
+                    + "参考图2中的旧商品像素、旧颜色、旧图案和旧版型全部无效，必须完整替换为参考图1，但不能因此抹掉参考图2的手部接触点、旋转方向、可见正背面或悬垂状态。原格没有商品时绝对不得添加商品。"
                 : "参考图1是商品场景与构图参考，参考图2是用户上传商品外观唯一母版，参考图2的商品拥有最高优先级。";
-        String productMasterName = "参考图2";
+        String productMasterName = realFrameGuide ? "参考图1" : "参考图2";
         String functionBlock = productFunctionAnalysisService.promptBlock(
                 task, item.getProductFunctionAnalysisJson());
         StringBuilder prompt = new StringBuilder(referenceContract)
@@ -1083,10 +1135,11 @@ public class AiVideoImageProcessor {
                 .append(functionBlock.isBlank() ? "" : functionBlock + "\n")
                 .append(backgroundRequirement)
                 .append(realFrameGuide
-                        ? "九格必须逐格对照参考图1的同一位置复刻，不能只模仿整体风格。参考图1某格无人手时该格绝对不能出现手、手臂或人体；"
-                            + "某格有手时必须复刻同一只手的进入方向、掌心朝向、手指姿态、遮挡区域和接触位置。参考图1的光斑、轻微推移、商品占比和俯拍角度同样逐格保留。"
+                        ? "九格必须逐格对照参考图2的同一位置复刻动作结构，不能只模仿整体风格。参考图2某格无人手时该格绝对不能出现手、手臂或人体；"
+                            + "某格有手时必须复刻同一只手的进入方向、掌心朝向、手指姿态、遮挡区域和接触位置。参考图2的光斑、轻微推移、商品占比和俯拍角度同样逐格保留。"
                         : "没有真实抽帧母版时，严格按照下面每格文字执行手部与构图状态。")
                 .append("每格场景、展示方式、构图和手部状态只读取对应分镜，禁止用任一格覆盖九格。")
+                .append("原视频即使全程同一只手持商品，也必须逐格区分抓握位置、手腕角度、商品正面/斜侧/窄边/背面、展开程度和摆动方向；禁止把‘同一只手’误解成‘九格同一姿势’。")
                 .append("相邻格只推进一个小幅动作或镜头变化；商品不得复制、跳变、漂移、悬浮、融化、穿模或突然更换背景。")
                 .append("每格都必须保持真实摄影的透视、接触阴影和光源方向，并让商品材质对光线产生正确响应。")
                 .append(FABRIC_AND_PRODUCT_REALISM_REQUIREMENT)
@@ -1114,8 +1167,9 @@ public class AiVideoImageProcessor {
         if (!shot.cameraMovement().isBlank()) value.append("运镜：").append(shot.cameraMovement()).append("；");
         if (value.isEmpty()) value.append("保持同一商品，进行轻微且连续的电商展示变化；");
         value.append("手部：").append(shotHandDirective(task, shot)).append("；");
+        value.append(fabricGripPhysicsRequirement(shot));
         if (shotShowsProduct(shot)) {
-            value.append("本格明确要求当前任务商品出镜；只执行动作与运镜，任何旧商品外观描述均无效，商品严格复制参考图2。");
+            value.append("本格明确要求当前任务商品出镜；只执行动作与运镜，任何旧商品外观描述均无效，商品外观严格复制本提示词指定的用户上传商品唯一母版。");
         } else {
             value.append("本格未要求当前任务商品出镜；严格复刻铺垫、环境或测试内容，禁止添加参考图2商品、包装、Logo 或商品替身。");
         }
@@ -1177,7 +1231,10 @@ public class AiVideoImageProcessor {
         return prompt.toString();
     }
 
-    private String storyboardIdentityTransferPrompt(AiVideoTask task, List<ShotPrompt> shots, boolean realFrameGuide) {
+    private String storyboardIdentityTransferPrompt(AiVideoTask task, AiVideoTaskItem item,
+                                                    List<ShotPrompt> shots, boolean realFrameGuide) {
+        String topologyBlock = productFunctionAnalysisService.promptBlock(
+                task, item.getProductFunctionAnalysisJson());
         StringBuilder prompt = new StringBuilder("执行一次严格的九宫格人物与商品替换编辑。三张参考图职责不可互换：")
                 .append("参考图1是用户上传的真实商品原图，是商品颜色、版型、领口、袖长、面料、缝线、印花、文字、数字、图形、Logo、位置、比例和排列顺序的唯一最高优先级母版；")
                 .append("参考图2是已经穿好当前商品的 AI 模特图，只负责唯一人物身份、脸、发型、身材、商品穿着位置、下装、配饰和整体摄影风格；")
@@ -1204,6 +1261,7 @@ public class AiVideoImageProcessor {
                 .append(GRID_FACE_PIXEL_REQUIREMENT)
                 .append("参考图2如果是远景，不沿用它的人物尺寸；只沿用同一人物、穿搭、背景与机位方向，在每格中把相机距离推进约二分之一。第 01 格必须按该近距离规则重新构图，但人物身份、姿态起点和背景关系保持不变。")
                 .append("【商品外观最高优先级】逐格直接复制参考图1的真实商品设计，包括颜色、领型、袖长、版型、面料纹理、缝线、印花文字、数字、图形、Logo、大小、位置与排列顺序；参考图2只用于确认它穿在人物身上的位置与自然形变。")
+                .append(topologyBlock.isBlank() ? "" : topologyBlock + "\n")
                 .append("不得重新理解商品、不得生成相似款、不得继承参考图3的占位衣服，也不得改字、漏字、增加装饰、替换图案或改变版型。")
                 .append("侧身、坐姿和特写只允许产生符合真实透视的轻微布料形变，商品身份和全部可见设计必须保持不变。")
                 .append(PORTRAIT_SKIN_QUALITY_REQUIREMENT)
@@ -1220,7 +1278,8 @@ public class AiVideoImageProcessor {
             String expression = inferMicroExpression(shot);
             prompt.append("分镜 ").append(String.format("%02d", shot.sequence()))
                     .append("：").append(shotExecutionDirection(task, shot))
-                    .append(expression).append("；视线与该格动作目标一致，双眼共同对焦。\n");
+                    .append(expression).append("；视线与该格动作目标一致，双眼共同对焦。")
+                    .append(fabricGripPhysicsRequirement(shot)).append("\n");
         }
         prompt.append("仅允许改变人物姿态和上述微表情以贴合参考图3，人物身份和参考图1的商品外观不得随姿态改变。")
                 .append("【异常规避优先级】九宫格的可用性高于复杂动作的精确复刻。如果某个动作会导致脸部崩坏、手指异常、肢体穿模、重心失衡或服装图案扭曲，")
@@ -1278,6 +1337,14 @@ public class AiVideoImageProcessor {
         return requiresHand
                 ? "只出现完成本格动作所需的一双自然手，数量、方向、接触位置与脚本一致；其他格不得继承"
                 : "不得出现人物、手臂、手掌或手指，只保留商品与脚本规定的承托关系";
+    }
+
+    private String fabricGripPhysicsRequirement(ShotPrompt shot) {
+        String context = String.join(" ", shot.title(), shot.scene(), shot.motion(), shot.prompt()).toLowerCase();
+        return containsAny(context,
+                "捏住", "捏起", "提起一角", "提着一角", "掀起", "拎起", "拉起衣角", "拉起下摆", "拉起袖口",
+                "pinch", "lift a corner", "lifted corner", "grip a corner")
+                ? FABRIC_GRIP_PHYSICS_REQUIREMENT : "";
     }
 
     private static boolean containsAny(String value, String... candidates) {
@@ -1391,6 +1458,7 @@ public class AiVideoImageProcessor {
     private record ShotPrompt(int sequence, String prompt, String title, String scene, String motion, String shotSize,
                               String cameraMovement, String emotion) {}
     private record ReferenceImage(String name, String mimeType, String dataBase64) {}
+    private record SourceFramePoint(double timestampSeconds, double durationSeconds) {}
     private record StoredMedia(String location, long size) {}
     private record PiImageResponse(PiArtifact artifact, PiImageResult result, Map<String, Object> usage) {}
     private record PiImageResult(String url, String mimeType, String modelId, String mode,

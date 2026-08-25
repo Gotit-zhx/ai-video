@@ -737,6 +737,11 @@
         <button class="active" type="button" data-script-create-mode="ai">上传视频拆解</button>
         <button type="button" data-script-create-mode="manual">手动创建脚本</button>
       </div>
+      <fieldset class="generation-mode-picker script-presentation-mode-picker">
+        <legend>脚本展示类型</legend>
+        <label class="generation-mode-option active"><input type="radio" name="presentationMode" value="MODEL_WEAR" checked><i>人</i><span><strong>人物穿搭</strong><small>围绕人物实际穿着商品拆解 9 个分镜</small></span></label>
+        <label class="generation-mode-option"><input type="radio" name="presentationMode" value="PRODUCT_ONLY"><i>物</i><span><strong>纯商品</strong><small>只做静物、手持、使用与商品细节展示</small></span></label>
+      </fieldset>
       <section id="script-active-analysis" class="script-active-analysis" hidden>
         <div class="active-analysis-orbit"><i></i><span id="active-script-progress-number">0%</span></div>
         <div class="active-analysis-copy">

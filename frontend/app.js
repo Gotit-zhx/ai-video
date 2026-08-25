@@ -71,6 +71,7 @@ const manualProductReferenceLimit = 6;
 const manualProductImageByteLimit = 20 * 1024 * 1024;
 const manualProductTotalByteLimit = 60 * 1024 * 1024;
 let videoScripts = [];
+let aiVideoUsableScripts = [];
 let videoScriptSearchQuery = "";
 let aiVideoTasks = [];
 let aiVideoTaskSearchQuery = "";
@@ -3779,6 +3780,15 @@ function selectVideoScriptCreateMode(mode) {
     : "视频上传后将在后台抽帧，并调用当前启用的驱动模型进行拆解。";
 }
 
+function selectedScriptPresentationMode() {
+  return document.querySelector("#video-script-form input[name=presentationMode]:checked")?.value || "MODEL_WEAR";
+}
+
+function syncScriptPresentationModePicker() {
+  document.querySelectorAll("#video-script-form .script-presentation-mode-picker .generation-mode-option")
+    .forEach(option => option.classList.toggle("active", option.querySelector("input")?.checked));
+}
+
 function selectManualAnalysisMode(mode) {
   const productMode = mode === "product";
   document.querySelectorAll("[data-manual-analysis-mode]").forEach(button => {
@@ -3872,6 +3882,12 @@ const videoScriptStatusNames = {
   DRAFT: "草稿"
 };
 
+const videoScriptPresentationNames = {
+  MODEL_WEAR: "人物穿搭",
+  PRODUCT_ONLY: "纯商品",
+  LEGACY_COMPAT: "旧脚本兼容"
+};
+
 const blockingVideoScriptStatuses = new Set(["QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING", "FAILED"]);
 
 function paintVideoScriptProgress(value) {
@@ -3956,6 +3972,7 @@ function startVideoScriptVisualProgress(status, serverProgress, taskKey = "") {
 function renderVideoScriptProgress(script) {
   const activePanel = document.querySelector("#script-active-analysis");
   const createSwitch = document.querySelector(".script-create-switch");
+  const presentationPicker = document.querySelector(".script-presentation-mode-picker");
   const aiPanel = document.querySelector("#script-create-ai");
   const manualPanel = document.querySelector("#script-create-manual");
   const submit = document.querySelector("#submit-video-script");
@@ -3967,6 +3984,7 @@ function renderVideoScriptProgress(script) {
     videoScriptVisualStatus = "";
     activePanel.hidden = true;
     createSwitch.hidden = false;
+    presentationPicker.hidden = false;
     submit.hidden = false;
     retry.hidden = true;
     importButton.textContent = "＋ 新建脚本";
@@ -3980,6 +3998,7 @@ function renderVideoScriptProgress(script) {
   const ready = status === "READY";
   activePanel.hidden = false;
   createSwitch.hidden = true;
+  presentationPicker.hidden = true;
   aiPanel.hidden = true;
   manualPanel.hidden = true;
   submit.hidden = true;
@@ -4052,7 +4071,7 @@ function renderVideoScriptLibrary() {
     item.dataset.videoScriptId = script.id;
     item.innerHTML = `
       <div><strong>${escapeHtml(script.name || script.sourceFileName || "未命名脚本")}</strong>
-        <small>${script.sourceType === "MANUAL" ? "手动脚本" : escapeHtml(script.modelId || "等待驱动模型")} · <span data-video-script-progress-live="${escapeHtml(script.id)}">${script.id === videoScriptVisualKey ? videoScriptVisualProgress.toFixed(1) : Number(script.progress || 0)}</span>%</small></div>
+        <small>${escapeHtml(videoScriptPresentationNames[script.presentationMode] || "旧脚本兼容")} · ${script.sourceType === "MANUAL" ? "手动脚本" : escapeHtml(script.modelId || "等待驱动模型")} · <span data-video-script-progress-live="${escapeHtml(script.id)}">${script.id === videoScriptVisualKey ? videoScriptVisualProgress.toFixed(1) : Number(script.progress || 0)}</span>%</small></div>
       <em class="${videoScriptStatusClass(script.status)}">${escapeHtml(videoScriptStatusNames[script.status] || script.status)}</em>`;
     item.addEventListener("click", async () => {
       selectedVideoScriptId = script.id;
@@ -4493,6 +4512,10 @@ document.querySelectorAll("[data-script-create-mode]").forEach(button => {
   });
 });
 
+document.querySelectorAll("#video-script-form input[name=presentationMode]").forEach(input => {
+  input.addEventListener("change", syncScriptPresentationModePicker);
+});
+
 document.querySelectorAll("[data-manual-analysis-mode]").forEach(button => {
   button.addEventListener("click", () => selectManualAnalysisMode(button.dataset.manualAnalysisMode));
 });
@@ -4525,7 +4548,8 @@ document.querySelector("#analyze-manual-script").addEventListener("click", async
         prompt,
         targetMarket: form.elements.manualTargetMarket.value,
         name: form.elements.manualName.value.trim(),
-        visualTone: form.elements.manualVisualTone.value.trim()
+        visualTone: form.elements.manualVisualTone.value.trim(),
+        presentationMode: selectedScriptPresentationMode()
       })
     });
     fillManualScriptDraft(result?.data);
@@ -4820,6 +4844,7 @@ document.querySelector("#analyze-manual-product").addEventListener("click", asyn
     payload.append("targetMarket", form.elements.manualTargetMarket.value);
     payload.append("name", form.elements.manualName.value.trim());
     payload.append("visualTone", form.elements.manualVisualTone.value.trim());
+    payload.append("presentationMode", selectedScriptPresentationMode());
     const result = await api("/api/v1/video-scripts/manual/analyze-product", {
       method: "POST",
       body: payload
@@ -4869,6 +4894,7 @@ document.querySelector("#video-script-form").addEventListener("submit", async ev
           name: form.elements.manualName.value.trim(),
           targetMarket: form.elements.manualTargetMarket.value,
           visualTone: form.elements.manualVisualTone.value.trim(),
+          presentationMode: selectedScriptPresentationMode(),
           shots
         })
       });
@@ -6193,24 +6219,46 @@ async function loadAiVideoTaskScripts() {
     const result = await api("/api/v1/video-scripts");
     const readyScripts = (result.data || []).filter(script => script.status === "READY");
     const details = await Promise.all(readyScripts.map(script => api(`/api/v1/video-scripts/${encodeURIComponent(script.id)}`).catch(() => null)));
-    const usable = details.filter(Boolean).map(result => result.data).filter(detail => detail?.shots?.length === 9);
-    select.innerHTML = usable.length
-      ? `<option value="">请选择脚本</option>${usable.map(detail => `<option value="${escapeHtml(detail.script.id)}" data-source-type="${escapeHtml(detail.script.sourceType || "")}">${escapeHtml(detail.script.name)} / v${Number(detail.script.version || 1)}</option>`).join("")}`
-      : `<option value="">暂无完整 9 分镜脚本</option>`;
-    submit.disabled = usable.length === 0;
-    document.querySelector("#video-task-dialog-note").textContent = usable.length
-      ? `找到 ${usable.length} 个可用脚本，创建后会冻结当前版本。`
-      : "请先在视频脚本管理中完成一个包含 9 个分镜的脚本。";
+    aiVideoUsableScripts = details.filter(Boolean).map(result => result.data)
+      .filter(detail => detail?.shots?.length === 9);
+    renderAiVideoTaskScriptOptions();
     syncVideoTaskModeForm();
   } catch (error) {
+    aiVideoUsableScripts = [];
     select.innerHTML = `<option value="">脚本读取失败</option>`;
     document.querySelector("#video-task-dialog-note").textContent = error.message;
   }
 }
 
+function renderAiVideoTaskScriptOptions() {
+  const form = document.querySelector("#video-task-form");
+  const select = form.elements.scriptId;
+  const submit = form.querySelector("button[type=submit]");
+  const mode = form.querySelector("input[name=generationMode]:checked")?.value || "MODEL_WEAR";
+  const previous = select.value;
+  const matching = aiVideoUsableScripts.filter(detail => {
+    const scriptMode = detail.script.presentationMode || "LEGACY_COMPAT";
+    return scriptMode === "LEGACY_COMPAT" || scriptMode === mode;
+  });
+  const modeName = mode === "MODEL_WEAR" ? "人物穿搭" : "纯商品";
+  select.innerHTML = matching.length
+    ? `<option value="">请选择${modeName}脚本</option>${matching.map(detail => {
+        const scriptMode = detail.script.presentationMode || "LEGACY_COMPAT";
+        const legacy = scriptMode === "LEGACY_COMPAT" ? " · 旧脚本兼容" : "";
+        return `<option value="${escapeHtml(detail.script.id)}" data-source-type="${escapeHtml(detail.script.sourceType || "")}" data-presentation-mode="${escapeHtml(scriptMode)}">${escapeHtml(detail.script.name)} / v${Number(detail.script.version || 1)}${legacy}</option>`;
+      }).join("")}`
+    : `<option value="">暂无${modeName}的完整 9 分镜脚本</option>`;
+  if (matching.some(detail => detail.script.id === previous)) select.value = previous;
+  submit.disabled = matching.length === 0;
+  document.querySelector("#video-task-dialog-note").textContent = matching.length
+    ? `只显示 ${matching.length} 个与“${modeName}”匹配的脚本，创建后会冻结当前版本。`
+    : `没有可用的${modeName}脚本，请先在视频脚本管理中按该类型创建。`;
+}
+
 function syncVideoTaskModeForm() {
   const form = document.querySelector("#video-task-form");
   const mode = form.querySelector("input[name=generationMode]:checked")?.value || "MODEL_WEAR";
+  renderAiVideoTaskScriptOptions();
   const scriptSelect = form.elements.scriptId;
   const selectedScript = scriptSelect?.selectedOptions?.[0];
   const hasSourceVideo = selectedScript?.dataset.sourceType === "VIDEO_ANALYSIS";
@@ -6228,7 +6276,6 @@ function syncVideoTaskModeForm() {
     option.classList.toggle("active", option.querySelector("input")?.checked);
   });
   document.querySelector("#direct-reference-mode-note").hidden = !directReferenceVideo;
-  form.querySelector(".generation-mode-picker").hidden = directReferenceVideo;
   form.querySelector(".background-mode-picker").hidden = directReferenceVideo;
   referencePicker.hidden = directReferenceVideo || mode !== "PRODUCT_ONLY";
   referencePicker.classList.toggle("unavailable", mode === "PRODUCT_ONLY" && !hasSourceVideo);
