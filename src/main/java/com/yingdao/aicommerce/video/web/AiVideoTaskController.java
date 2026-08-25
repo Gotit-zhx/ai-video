@@ -77,6 +77,27 @@ public class AiVideoTaskController {
         return ApiResponse.ok(service.upload(id, files, itemId, principal).stream().map(ItemResponse::from).toList());
     }
 
+    @PostMapping("/{id}/garments/direct-upload")
+    public ApiResponse<List<DirectUploadResponse>> prepareDirectUpload(@PathVariable String id,
+                                                                        @RequestBody List<DirectUploadRequest> request,
+                                                                        @AuthenticationPrincipal PlatformPrincipal principal) {
+        List<AiVideoTaskService.DirectUploadFile> files = request.stream()
+                .map(value -> new AiVideoTaskService.DirectUploadFile(value.name(), value.contentType(), value.size())).toList();
+        return ApiResponse.ok(service.prepareDirectUploads(id, files, principal).stream()
+                .map(value -> new DirectUploadResponse(value.name(), value.contentType(), value.size(),
+                        value.location(), value.uploadUrl())).toList());
+    }
+
+    @PostMapping("/{id}/garments/direct-upload/complete")
+    public ApiResponse<List<ItemResponse>> completeDirectUpload(@PathVariable String id,
+                                                                 @RequestBody List<DirectUploadCompleteRequest> request,
+                                                                 @AuthenticationPrincipal PlatformPrincipal principal) {
+        List<AiVideoTaskService.DirectUploadCompletion> uploads = request.stream()
+                .map(value -> new AiVideoTaskService.DirectUploadCompletion(value.name(), value.contentType(),
+                        value.size(), value.location())).toList();
+        return ApiResponse.ok(service.completeDirectUploads(id, uploads, principal).stream().map(ItemResponse::from).toList());
+    }
+
     @PostMapping(value = "/{id}/music", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResponse<TaskResponse> uploadMusic(@PathVariable String id,
                                                   @RequestParam("file") MultipartFile file,
@@ -256,6 +277,12 @@ public class AiVideoTaskController {
                                  @Pattern(regexp = "QUALITY|SPEED") String videoRoute) {}
 
     public record UpdateVideoPromptRequest(@NotBlank @Size(max = 20000) String prompt) {}
+    public record DirectUploadRequest(@NotBlank @Size(max = 200) String name,
+                                      @NotBlank @Size(max = 100) String contentType, long size) {}
+    public record DirectUploadCompleteRequest(@NotBlank @Size(max = 200) String name,
+                                              @NotBlank @Size(max = 100) String contentType, long size,
+                                              @NotBlank String location) {}
+    public record DirectUploadResponse(String name, String contentType, long size, String location, String uploadUrl) {}
     public record ReferenceUpdateRequest(@NotBlank String id, int order, @Size(max = 32) String role,
                                          @Size(max = 500) String instruction, Boolean primary) {}
 

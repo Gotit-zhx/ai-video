@@ -603,6 +603,67 @@ async function api(path, options = {}) {
   return result;
 }
 
+function uploadFormData(path, formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", path, true);
+    request.responseType = "json";
+    request.withCredentials = true;
+    request.upload.addEventListener("progress", event => {
+      if (!event.lengthComputable || typeof onProgress !== "function") return;
+      onProgress(Math.min(99, Math.max(1, Math.round(event.loaded * 100 / event.total))));
+    });
+    request.addEventListener("load", () => {
+      const result = request.response || (() => {
+        try { return JSON.parse(request.responseText || "null"); } catch (_) { return null; }
+      })();
+      if (request.status === 401) {
+        currentUser = null;
+        showLogin();
+        reject(new Error("登录已失效，请重新登录"));
+        return;
+      }
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error(result?.message || "图片上传失败，请稍后重试"));
+        return;
+      }
+      resolve(result);
+    });
+    request.addEventListener("error", () => reject(new Error("图片上传连接中断，请检查网络后重试")));
+    request.addEventListener("abort", () => reject(new Error("图片上传已中断，请重新选择图片")));
+    request.send(formData);
+  });
+}
+
+function uploadFileToOss(ticket, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", ticket.uploadUrl, true);
+    request.setRequestHeader("Content-Type", ticket.contentType || file.type || "application/octet-stream");
+    request.upload.addEventListener("progress", event => {
+      if (event.lengthComputable && typeof onProgress === "function") onProgress(event.loaded, event.total);
+    });
+    request.addEventListener("load", () => {
+      if (request.status >= 200 && request.status < 300) resolve();
+      else reject(new Error(`OSS 上传失败（HTTP ${request.status}）`));
+    });
+    request.addEventListener("error", () => reject(new Error("无法连接 OSS，请检查网络后重试")));
+    request.addEventListener("abort", () => reject(new Error("OSS 上传已中断，请重新选择图片")));
+    request.send(file);
+  });
+}
+
+async function runWithConcurrency(values, limit, worker) {
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (cursor < values.length) {
+      const index = cursor++;
+      await worker(values[index], index);
+    }
+  });
+  await Promise.all(runners);
+}
+
 function showLogin() {
   stopWorkflowEvents();
   resetCompanyScopedWorkspaceState();
@@ -6414,6 +6475,7 @@ document.querySelector("#batch-garment-upload").addEventListener("change", async
   const input = event.currentTarget;
   const files = [...input.files];
   if (!selectedAiVideoTaskId || !files.length) return;
+  const uploadTaskId = selectedAiVideoTaskId;
   const directReferenceVideo = Boolean(aiVideoTaskDetail?.task?.directReferenceVideo);
   const referenceLimit = Number(aiVideoTaskDetail?.task?.referenceImageLimit || 9);
   if (directReferenceVideo && files.length > referenceLimit) {
@@ -6429,13 +6491,52 @@ document.querySelector("#batch-garment-upload").addEventListener("change", async
     ? `正在创建新视频组并上传 ${files.length} 张参考图…`
     : `正在上传 ${files.length} 张商品图片…`;
   try {
-    await api(`/api/v1/ai-video-tasks/${encodeURIComponent(selectedAiVideoTaskId)}/garments`, { method: "POST", body: formData });
-    await selectAiVideoTask(selectedAiVideoTaskId);
+    if (directReferenceVideo) {
+      await uploadFormData(`/api/v1/ai-video-tasks/${encodeURIComponent(uploadTaskId)}/garments`, formData, percent => {
+        document.querySelector("#batch-upload-label-text").textContent = `正在上传 ${percent}%`;
+        document.querySelector("#video-task-action-note").textContent = `正在上传 ${files.length} 张参考图 · ${percent}%`;
+      });
+    } else {
+      const prepared = await api(`/api/v1/ai-video-tasks/${encodeURIComponent(uploadTaskId)}/garments/direct-upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(files.map(file => ({
+          name: file.name,
+          contentType: file.type || "image/jpeg",
+          size: file.size
+        })))
+      });
+      const tickets = prepared.data || [];
+      if (tickets.length !== files.length) throw new Error("OSS 上传凭证数量不正确");
+      const loaded = new Array(files.length).fill(0);
+      const total = files.reduce((sum, file) => sum + file.size, 0);
+      await runWithConcurrency(tickets, 4, async (ticket, index) => {
+        await uploadFileToOss(ticket, files[index], bytes => {
+          loaded[index] = bytes;
+          const percent = Math.min(99, Math.max(1, Math.round(loaded.reduce((sum, value) => sum + value, 0) * 100 / total)));
+          document.querySelector("#batch-upload-label-text").textContent = `直传 OSS ${percent}%`;
+          document.querySelector("#video-task-action-note").textContent = `正在直传 OSS · ${files.length} 张图片 · ${percent}%`;
+        });
+      });
+      document.querySelector("#batch-upload-label-text").textContent = "正在登记图片…";
+      await api(`/api/v1/ai-video-tasks/${encodeURIComponent(uploadTaskId)}/garments/direct-upload/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(tickets.map(ticket => ({
+          name: ticket.name,
+          contentType: ticket.contentType,
+          size: ticket.size,
+          location: ticket.location
+        })))
+      });
+    }
+    if (selectedAiVideoTaskId === uploadTaskId) await selectAiVideoTask(uploadTaskId);
   } catch (error) {
     document.querySelector("#video-task-action-note").textContent = error.message;
   } finally {
     input.value = "";
     document.querySelector("#batch-garment-upload-label").classList.remove("busy");
+    document.querySelector("#batch-upload-label-text").textContent = directReferenceVideo ? "＋ 新建参考图组" : "＋ 批量上传商品";
     input.disabled = aiVideoTaskDetail?.task?.status === "IMAGE_GENERATING";
   }
 });

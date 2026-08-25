@@ -268,6 +268,86 @@ public class AiVideoTaskService {
         return created;
     }
 
+    public List<DirectUploadTicket> prepareDirectUploads(String id, List<DirectUploadFile> files,
+                                                          PlatformPrincipal principal) {
+        AiVideoTask task = requireOwned(id, principal);
+        if (ossStorage == null) throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "OSS 直传暂不可用");
+        if (!List.of("DRAFT", "READY").contains(task.getStatus()) || task.isDirectReferenceVideo()) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前任务不支持商品图片直传");
+        }
+        if (files == null || files.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择商品图片");
+        long existing = itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, id));
+        if (existing + files.size() > MAX_ITEMS) throw new BusinessException(HttpStatus.BAD_REQUEST, "单个任务最多上传 30 款衣服");
+        String category = directUploadCategory(task);
+        return files.stream().map(file -> {
+            validateDirectImage(file);
+            String name = safeFileName(file.name());
+            OssStorageService.DirectUpload upload = ossStorage.directUpload(category, name, file.contentType(), Duration.ofMinutes(20));
+            return new DirectUploadTicket(name, file.contentType(), file.size(), upload.location(), upload.url());
+        }).toList();
+    }
+
+    public List<AiVideoTaskItem> completeDirectUploads(String id, List<DirectUploadCompletion> uploads,
+                                                        PlatformPrincipal principal) {
+        AiVideoTask task = requireOwned(id, principal);
+        if (ossStorage == null) throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "OSS 直传暂不可用");
+        if (!List.of("DRAFT", "READY").contains(task.getStatus()) || task.isDirectReferenceVideo()) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前任务不支持商品图片直传");
+        }
+        if (uploads == null || uploads.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "没有待确认的图片");
+        long existing = itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, id));
+        if (existing + uploads.size() > MAX_ITEMS) throw new BusinessException(HttpStatus.BAD_REQUEST, "单个任务最多上传 30 款衣服");
+        String category = directUploadCategory(task);
+        List<AiVideoTaskItem> created = new ArrayList<>();
+        int sequence = (int) existing + 1;
+        for (DirectUploadCompletion upload : uploads) {
+            if (upload == null || !ossStorage.belongsTo(upload.location(), category)) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "OSS 图片地址无效");
+            }
+            OssStorageService.ObjectInfo info;
+            try { info = ossStorage.info(upload.location()); }
+            catch (RuntimeException exception) { throw new BusinessException(HttpStatus.BAD_REQUEST, "OSS 图片尚未上传完成"); }
+            DirectUploadFile file = new DirectUploadFile(upload.name(), upload.contentType(), info.size());
+            validateDirectImage(file);
+            String contentType = info.contentType() != null && info.contentType().startsWith("image/")
+                    ? info.contentType() : upload.contentType();
+            String originalName = safeFileName(upload.name());
+            String sku = "SKU-" + String.format("%03d", sequence++);
+            AiVideoTaskItem item = new AiVideoTaskItem(task.getOrganizationId(), task.getId(), stripExtension(originalName), sku,
+                    originalName, upload.location(), contentType, info.size());
+            item.updateVideoPrompt(defaultVideoPrompt(task, item));
+            Path directory = itemDirectory(task, item);
+            Path source = directory.resolve("source" + extension(originalName));
+            try (InputStream input = ossStorage.open(upload.location())) {
+                Files.createDirectories(directory);
+                Files.copy(input, source);
+            } catch (IOException | RuntimeException exception) {
+                throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "OSS 图片同步失败，请重新上传");
+            }
+            // The browser upload goes straight to OSS. Keep a local working copy so existing image
+            // workers can continue without changing or interrupting tasks that are already running.
+            item.attachSource(source.toString());
+            itemMapper.insert(item);
+            created.add(item);
+        }
+        int total = Math.toIntExact(itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, id)));
+        task.updateItemCount(total);
+        taskMapper.updateById(task);
+        return created;
+    }
+
+    private String directUploadCategory(AiVideoTask task) {
+        return "source-images/" + task.getOrganizationId() + "/" + task.getId();
+    }
+
+    private void validateDirectImage(DirectUploadFile file) {
+        if (file == null || file.size() <= 0) throw new BusinessException(HttpStatus.BAD_REQUEST, "衣服图片不能为空");
+        if (file.size() > MAX_IMAGE_BYTES) throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "单张衣服图片不能超过 20MB");
+        if (file.contentType() == null || !file.contentType().startsWith("image/")) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "只支持上传图片文件");
+        }
+    }
+
     private List<AiVideoTaskItem> uploadDirectReferences(AiVideoTask task, List<MultipartFile> files, String itemId) {
         List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getTaskId, task.getId()).orderByAsc(AiVideoTaskItem::getCreatedAt));
@@ -1082,6 +1162,7 @@ public class AiVideoTaskService {
         prompt.append("若时间轴没有连续动作指令，而相邻格出现正面/侧面/背面互换、身体朝向变化超过约 30°、头部俯仰变化超过约 20°、人物尺度明显改变或全身与局部景别互换，则在边界直接硬切。硬切前后各稳定约 4–6 帧，禁止中间脸、中间身体、交叉溶解、残影、变形插值和背景融化。\n");
         prompt.append("每格都必须在对应时间段真实出现，不得跳过中间格或长期停留第 01 格。镜头内每次只推进一个主要动作，不自行增加舞蹈、挥手、转圈或夸张表演。\n");
         prompt.append("所有有人分镜始终使用图1中的同一个人物和同一套穿搭，任一镜头最多 1 人；纯商品特写允许人物不出镜。禁止第二人物、复制、分身、镜像人物、换脸、换发型、换装、四肢增生、关节反折和穿模。\n");
+        prompt.append("【手持服装结构不变】人物拿着、展开、折叠、从包装取出、贴身比对或特写商品时，手中商品仍须逐帧服从后附《服装结构契约》。斜肩、单肩、宽船领或露肩款不得在手里变成普通圆领短袖；领口连续路径、左右肩高度与覆盖关系、袖子数量和连接点必须保持。穿到身上后继续沿用同一结构和同一穿着侧。\n");
         prompt.append("【面部身份与运动分离】图1是整条视频唯一的人脸几何母版。脸型、眉形、眼裂与眼距、虹膜、鼻梁、鼻翼与鼻孔、静止唇形、嘴角、下颌线和脸颈肤色持续锁定；头部转动只产生正常透视变化，不得逐帧重新生成五官。\n");
         prompt.append("脚本没有明确面部动作时保持放松自然表情、稳定闭口和稳定视线；禁止眼睛大小或虹膜漂移、左右眼不同步、嘴角抽动、嘴唇无意义开合、下颌抖动、鼻翼或鼻孔收缩扩张、眉毛跳动和表情来回切换。全片最多一次自然眨眼，且只能发生在人物正面稳定时。\n");
         prompt.append("【局部帧保持】同一镜头中，当人物姿势或表情没有变化时，眼睛、鼻子、嘴巴直接保持上一帧的局部形状与纹理，只做必要的位置跟随，不重新采样、锐化、补全或美化。转身、低头和抬头期间以最近稳定关键帧为身份锚点，只做连续几何变换；清晰度不足时宁可保持柔和，也不得重新画一套五官。\n");
@@ -1439,4 +1520,7 @@ public class AiVideoTaskService {
     public record VideoBatchFile(Path path, String location, String entryName, long expectedSize) {}
     public record PreparedVideoBatch(Path path, String location, long size) {}
     public record SourceFile(Path path, String contentType, long size) {}
+    public record DirectUploadFile(String name, String contentType, long size) {}
+    public record DirectUploadTicket(String name, String contentType, long size, String location, String uploadUrl) {}
+    public record DirectUploadCompletion(String name, String contentType, long size, String location) {}
 }

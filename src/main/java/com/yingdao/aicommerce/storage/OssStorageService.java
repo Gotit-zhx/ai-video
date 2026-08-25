@@ -231,6 +231,25 @@ public class OssStorageService {
         return publicClient.generatePresignedUrl(request).toExternalForm();
     }
 
+    public DirectUpload directUpload(String category, String fileName, String contentType, Duration ttl) {
+        String key = objectKey(category, fileName, UUID.randomUUID().toString().replace("-", ""));
+        GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(bucket, key, HttpMethod.PUT);
+        request.setExpiration(Date.from(Instant.now().plus(ttl == null ? Duration.ofMinutes(20) : ttl)));
+        if (contentType != null && !contentType.isBlank()) request.setContentType(contentType);
+        return new DirectUpload(location(key), publicClient.generatePresignedUrl(request).toExternalForm());
+    }
+
+    public ObjectInfo info(String location) {
+        ObjectMetadata metadata = internalClient.getObjectMetadata(bucket, key(location));
+        return new ObjectInfo(metadata.getContentLength(), metadata.getContentType());
+    }
+
+    public boolean belongsTo(String location, String categoryPrefix) {
+        if (!isOssLocation(location)) return false;
+        String safePrefix = categoryPrefix == null ? "" : categoryPrefix.replaceAll("[^A-Za-z0-9/_-]", "-");
+        return key(location).startsWith("heyi/" + safePrefix + "/");
+    }
+
     public int deleteOlderThan(String categoryPrefix, Duration age) {
         String safePrefix = categoryPrefix == null ? "" : categoryPrefix.replaceAll("[^A-Za-z0-9/_-]", "-");
         String prefix = "heyi/" + safePrefix;
@@ -282,4 +301,6 @@ public class OssStorageService {
     }
 
     public record StoredObject(String location, long size) {}
+    public record DirectUpload(String location, String url) {}
+    public record ObjectInfo(long size, String contentType) {}
 }
