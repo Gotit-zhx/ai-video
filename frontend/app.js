@@ -6902,6 +6902,17 @@ async function startAiVideoGeneration(button, retryFailed = false) {
     : directReferenceVideo
       ? "正在按参考图 1–9 的编号顺序直接提交视频模型，不调用图片模型…"
       : "正在启动一键视频生成；系统会先补齐所需图片，再自动提交视频模型…";
+  const optimisticImageStart = !retryFailed
+    && !directReferenceVideo
+    && aiVideoTaskDetail?.task
+    && !["IMAGE_READY", "VIDEO_GENERATING", "VIDEO_READY"].includes(aiVideoTaskDetail.task.status);
+  if (optimisticImageStart) {
+    // Give immediate visual acknowledgement while the start request is in flight.
+    // The next detail fetch always replaces this with authoritative server state.
+    aiVideoTaskDetail.task.status = "IMAGE_GENERATING";
+    aiVideoTaskDetail.task.progress = Math.max(1, Number(aiVideoTaskDetail.task.progress || 0));
+    renderAiVideoTaskDetail();
+  }
   if (retryFailed && aiVideoTaskDetail?.task) {
     const submittedAt = new Date().toISOString();
     aiVideoTaskDetail.items.forEach(item => {
@@ -6920,7 +6931,7 @@ async function startAiVideoGeneration(button, retryFailed = false) {
     await api(`/api/v1/ai-video-tasks/${encodeURIComponent(selectedAiVideoTaskId)}/start-generation`, { method: "POST" });
     await selectAiVideoTask(selectedAiVideoTaskId);
   } catch (error) {
-    if (retryFailed) await selectAiVideoTask(selectedAiVideoTaskId);
+    if (retryFailed || optimisticImageStart) await selectAiVideoTask(selectedAiVideoTaskId);
     document.querySelector("#video-task-action-note").textContent = error.message;
     button.disabled = false;
     button.textContent = retryFailed ? "↻ 重试失败任务" : directReferenceVideo ? "提交参考图生成视频" : "开始批量生成视频";
