@@ -255,8 +255,17 @@ public class AiVideoTaskService {
             try {
                 Files.createDirectories(directory);
                 file.transferTo(source);
+                if (ossStorage != null) {
+                    try (InputStream input = Files.newInputStream(source)) {
+                        ossStorage.store(input, Files.size(source), MAX_IMAGE_BYTES, item.getSourceContentType(),
+                                "source-images/" + task.getOrganizationId() + "/" + task.getId() + "/" + item.getId(),
+                                originalName);
+                    }
+                }
             } catch (IOException exception) {
                 throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "衣服图片保存失败");
+            } catch (Exception exception) {
+                throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "衣服图片写入 OSS 失败");
             }
             item.attachSource(source.toString());
             itemMapper.insert(item);
@@ -266,86 +275,6 @@ public class AiVideoTaskService {
         task.updateItemCount(total);
         taskMapper.updateById(task);
         return created;
-    }
-
-    public List<DirectUploadTicket> prepareDirectUploads(String id, List<DirectUploadFile> files,
-                                                          PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
-        if (ossStorage == null) throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "OSS 直传暂不可用");
-        if (!List.of("DRAFT", "READY").contains(task.getStatus()) || task.isDirectReferenceVideo()) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前任务不支持商品图片直传");
-        }
-        if (files == null || files.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择商品图片");
-        long existing = itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, id));
-        if (existing + files.size() > MAX_ITEMS) throw new BusinessException(HttpStatus.BAD_REQUEST, "单个任务最多上传 30 款衣服");
-        String category = directUploadCategory(task);
-        return files.stream().map(file -> {
-            validateDirectImage(file);
-            String name = safeFileName(file.name());
-            OssStorageService.DirectUpload upload = ossStorage.directUpload(category, name, file.contentType(), Duration.ofMinutes(20));
-            return new DirectUploadTicket(name, file.contentType(), file.size(), upload.location(), upload.url());
-        }).toList();
-    }
-
-    public List<AiVideoTaskItem> completeDirectUploads(String id, List<DirectUploadCompletion> uploads,
-                                                        PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
-        if (ossStorage == null) throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "OSS 直传暂不可用");
-        if (!List.of("DRAFT", "READY").contains(task.getStatus()) || task.isDirectReferenceVideo()) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前任务不支持商品图片直传");
-        }
-        if (uploads == null || uploads.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "没有待确认的图片");
-        long existing = itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, id));
-        if (existing + uploads.size() > MAX_ITEMS) throw new BusinessException(HttpStatus.BAD_REQUEST, "单个任务最多上传 30 款衣服");
-        String category = directUploadCategory(task);
-        List<AiVideoTaskItem> created = new ArrayList<>();
-        int sequence = (int) existing + 1;
-        for (DirectUploadCompletion upload : uploads) {
-            if (upload == null || !ossStorage.belongsTo(upload.location(), category)) {
-                throw new BusinessException(HttpStatus.BAD_REQUEST, "OSS 图片地址无效");
-            }
-            OssStorageService.ObjectInfo info;
-            try { info = ossStorage.info(upload.location()); }
-            catch (RuntimeException exception) { throw new BusinessException(HttpStatus.BAD_REQUEST, "OSS 图片尚未上传完成"); }
-            DirectUploadFile file = new DirectUploadFile(upload.name(), upload.contentType(), info.size());
-            validateDirectImage(file);
-            String contentType = info.contentType() != null && info.contentType().startsWith("image/")
-                    ? info.contentType() : upload.contentType();
-            String originalName = safeFileName(upload.name());
-            String sku = "SKU-" + String.format("%03d", sequence++);
-            AiVideoTaskItem item = new AiVideoTaskItem(task.getOrganizationId(), task.getId(), stripExtension(originalName), sku,
-                    originalName, upload.location(), contentType, info.size());
-            item.updateVideoPrompt(defaultVideoPrompt(task, item));
-            Path directory = itemDirectory(task, item);
-            Path source = directory.resolve("source" + extension(originalName));
-            try (InputStream input = ossStorage.open(upload.location())) {
-                Files.createDirectories(directory);
-                Files.copy(input, source);
-            } catch (IOException | RuntimeException exception) {
-                throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "OSS 图片同步失败，请重新上传");
-            }
-            // The browser upload goes straight to OSS. Keep a local working copy so existing image
-            // workers can continue without changing or interrupting tasks that are already running.
-            item.attachSource(source.toString());
-            itemMapper.insert(item);
-            created.add(item);
-        }
-        int total = Math.toIntExact(itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, id)));
-        task.updateItemCount(total);
-        taskMapper.updateById(task);
-        return created;
-    }
-
-    private String directUploadCategory(AiVideoTask task) {
-        return "source-images/" + task.getOrganizationId() + "/" + task.getId();
-    }
-
-    private void validateDirectImage(DirectUploadFile file) {
-        if (file == null || file.size() <= 0) throw new BusinessException(HttpStatus.BAD_REQUEST, "衣服图片不能为空");
-        if (file.size() > MAX_IMAGE_BYTES) throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "单张衣服图片不能超过 20MB");
-        if (file.contentType() == null || !file.contentType().startsWith("image/")) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "只支持上传图片文件");
-        }
     }
 
     private List<AiVideoTaskItem> uploadDirectReferences(AiVideoTask task, List<MultipartFile> files, String itemId) {
@@ -1520,7 +1449,4 @@ public class AiVideoTaskService {
     public record VideoBatchFile(Path path, String location, String entryName, long expectedSize) {}
     public record PreparedVideoBatch(Path path, String location, long size) {}
     public record SourceFile(Path path, String contentType, long size) {}
-    public record DirectUploadFile(String name, String contentType, long size) {}
-    public record DirectUploadTicket(String name, String contentType, long size, String location, String uploadUrl) {}
-    public record DirectUploadCompletion(String name, String contentType, long size, String location) {}
 }
