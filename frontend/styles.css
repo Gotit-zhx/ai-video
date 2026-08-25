@@ -4100,6 +4100,105 @@ dialog.automation-form-dialog > form {
   .garment-output-slot.processing .mini-storyboard i { animation: none; }
 }
 
+/* Immediate, honest feedback while an image item is being claimed/prepared.
+   This never invents progress; it only makes the active pipeline visible. */
+#ai-video-tasks-page .task-progress-pill.image-preparing {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 70px;
+  border-color: rgba(68, 208, 190, .42);
+  color: #dffefa;
+  background: rgba(25, 64, 78, .58);
+  box-shadow: 0 0 0 1px rgba(116, 245, 224, .08), 0 8px 24px rgba(31, 213, 184, .12);
+  animation: image-status-float 1.8s ease-in-out infinite;
+}
+
+#ai-video-tasks-page .task-progress-pill.image-preparing::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #5debd3;
+  box-shadow: 0 0 0 0 rgba(93, 235, 211, .45);
+  animation: image-status-ping 1.35s ease-out infinite;
+}
+
+#ai-video-tasks-page .garment-card.is-image-processing .garment-output-slot.processing {
+  position: relative;
+  isolation: isolate;
+  border-color: rgba(86, 221, 199, .42);
+  box-shadow: inset 0 0 0 1px rgba(94, 235, 212, .08), 0 10px 28px rgba(29, 188, 170, .08);
+}
+
+#ai-video-tasks-page .garment-card.is-image-processing .garment-output-slot.processing::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset: 38px 0 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 30%, rgba(137, 255, 236, .16) 46%, rgba(255, 255, 255, .25) 50%, transparent 66%);
+  transform: translateX(-120%);
+  animation: image-slot-sheen 2.25s ease-in-out infinite;
+}
+
+#ai-video-tasks-page .garment-card.is-image-processing .model-output.processing .model-output-canvas > i {
+  animation: image-model-float 1.75s ease-in-out infinite;
+}
+
+#ai-video-tasks-page .garment-card.is-image-processing .model-output.processing .model-output-canvas small {
+  color: #70d9c7;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+#ai-video-tasks-page .garment-card.is-image-processing .storyboard-output.processing .mini-storyboard i {
+  background: linear-gradient(135deg, rgba(107, 139, 170, .38), rgba(89, 231, 207, .42), rgba(107, 139, 170, .38));
+  background-size: 220% 220%;
+  animation: image-tile-breathe 1.55s ease-in-out infinite;
+}
+
+#ai-video-tasks-page .garment-card.is-image-processing .storyboard-output.processing .mini-storyboard i:nth-child(2n) { animation-delay: .12s; }
+#ai-video-tasks-page .garment-card.is-image-processing .storyboard-output.processing .mini-storyboard i:nth-child(3n) { animation-delay: .24s; }
+
+@keyframes image-status-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+
+@keyframes image-status-ping {
+  0% { box-shadow: 0 0 0 0 rgba(93, 235, 211, .48); }
+  70%, 100% { box-shadow: 0 0 0 7px rgba(93, 235, 211, 0); }
+}
+
+@keyframes image-slot-sheen {
+  0%, 18% { transform: translateX(-120%); }
+  72%, 100% { transform: translateX(120%); }
+}
+
+@keyframes image-model-float {
+  0%, 100% { transform: translateY(0) scale(.98); filter: drop-shadow(0 5px 9px rgba(42, 211, 185, .08)); }
+  50% { transform: translateY(-5px) scale(1.02); filter: drop-shadow(0 9px 14px rgba(42, 211, 185, .22)); }
+}
+
+@keyframes image-tile-breathe {
+  0%, 100% { opacity: .46; background-position: 0% 50%; transform: scale(.97); }
+  50% { opacity: 1; background-position: 100% 50%; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ai-video-tasks-page .task-progress-pill.image-preparing,
+  #ai-video-tasks-page .task-progress-pill.image-preparing::before,
+  #ai-video-tasks-page .garment-card.is-image-processing .garment-output-slot.processing::after,
+  #ai-video-tasks-page .garment-card.is-image-processing .model-output.processing .model-output-canvas > i,
+  #ai-video-tasks-page .garment-card.is-image-processing .storyboard-output.processing .mini-storyboard i {
+    animation: none;
+  }
+}
+
 @media (max-width: 1050px) {
   #ai-video-tasks-page .garment-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

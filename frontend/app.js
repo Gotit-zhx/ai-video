@@ -5639,7 +5639,9 @@ function renderAiVideoTaskDetail(options = {}) {
     document.querySelector("#ai-video-task-stage").textContent = "等待选择任务";
     document.querySelector("#ai-video-task-title").textContent = "从左侧选择任务";
     document.querySelector("#ai-video-task-script").textContent = "新建任务后，脚本版本会冻结在本轮生产中。";
-    document.querySelector("#ai-video-task-progress").textContent = "0%";
+    const emptyTaskProgress = document.querySelector("#ai-video-task-progress");
+    emptyTaskProgress.textContent = "0%";
+    emptyTaskProgress.classList.remove("running", "video-waiting", "image-preparing");
     document.querySelector("#ai-video-task-market").textContent = "未设置目标市场";
     document.querySelector("#selected-garment-count").textContent = "0";
     document.querySelector("#selected-garment-unit").textContent = "款商品";
@@ -5695,6 +5697,7 @@ function renderAiVideoTaskDetail(options = {}) {
   else delete taskProgress.dataset.videoSubmittedAt;
   taskProgress.classList.toggle("running", generating);
   taskProgress.classList.toggle("video-waiting", videoGenerating);
+  taskProgress.classList.toggle("image-preparing", imageGenerating);
   document.querySelector("#ai-video-task-market").textContent = task.targetMarket || "未设置目标市场";
   const directReferenceCount = directReferenceVideo ? detail.items.reduce((total, item) => total + directReferenceAssets(detail, item.id).length, 0) : 0;
   const configuredGroupCount = directReferenceVideo ? detail.items.filter(item => directReferencesConfigured(directReferenceAssets(detail, item.id))).length : 0;
@@ -5762,8 +5765,12 @@ function renderAiVideoTaskDetail(options = {}) {
     const storyboard = assets.find(asset => asset.assetType === "STORYBOARD_GRID");
     const firstFrame = assets.find(asset => asset.assetType === "STORYBOARD_FIRST_FRAME");
     const video = assets.find(asset => asset.assetType === "VIDEO_RESULT");
-    const modelState = model ? "completed" : item.status === "GENERATING_MODEL" ? "processing" : "waiting";
-    const shotState = storyboard ? "completed" : item.status === "GENERATING_STORYBOARD" ? "processing" : "waiting";
+    // The task becomes IMAGE_GENERATING before the worker claims each item. Keep the
+    // queued preparation phase visibly alive instead of showing a static empty card.
+    const itemImagePreparing = imageGenerating
+      && !["FAILED", "VIDEO_FAILED", "VIDEO_READY"].includes(item.status);
+    const modelState = model ? "completed" : itemImagePreparing ? "processing" : "waiting";
+    const shotState = storyboard ? "completed" : itemImagePreparing ? "processing" : "waiting";
     const itemState = !isModelWear && item.status === "GENERATING_MODEL"
       ? "生成场景主图"
       : aiVideoItemStatusNames[item.status] || item.status;
@@ -5774,9 +5781,19 @@ function renderAiVideoTaskDetail(options = {}) {
     const storyboardFullUrl = storyboard ? aiVideoAssetUrl(task.id, storyboard.id, storyboard.createdAt) : "";
     const firstFrameUrl = firstFrame ? aiVideoAssetUrl(task.id, firstFrame.id, firstFrame.createdAt) : "";
     const videoUrl = video ? aiVideoAssetUrl(task.id, video.id, video.createdAt) : "";
+    const modelStatusText = model
+      ? "已生成"
+      : item.status === "GENERATING_MODEL"
+        ? "正在生成"
+        : itemImagePreparing ? "正在准备" : "等待生成";
+    const storyboardStatusText = storyboard
+      ? "已生成"
+      : item.status === "GENERATING_STORYBOARD"
+        ? "正在生成"
+        : itemImagePreparing && !model ? "准备分镜" : itemImagePreparing ? "正在排队" : "等待生成";
     const modelCanvas = model
       ? `<img src="${modelUrl}" data-full-src="${modelFullUrl}" alt="${escapeHtml(item.name)} ${escapeHtml(primaryAssetName)}" loading="lazy">`
-      : `<i></i><small>${item.status === "GENERATING_MODEL" ? `正在生成${primaryAssetName}` : `${primaryAssetName}会输出到这里`}</small>`;
+      : `<i></i><small>${item.status === "GENERATING_MODEL" ? `正在生成${primaryAssetName}` : itemImagePreparing ? `正在识别商品并准备${primaryAssetName}` : `${primaryAssetName}会输出到这里`}</small>`;
     const storyboardTiles = storyboard
       ? `<img class="storyboard-grid-image" src="${storyboardUrl}" data-full-src="${storyboardFullUrl}" alt="完整 4K 九宫格分镜图" loading="lazy">`
       : Array.from({ length: 9 }, (_, index) => `<i aria-label="分镜 ${index + 1} 等待生成"></i>`).join("");
@@ -5792,7 +5809,7 @@ function renderAiVideoTaskDetail(options = {}) {
     const providerTaskCopyButton = providerTaskId
       ? `<button class="copy-provider-task-button" type="button" data-provider-task-copy="${escapeHtml(providerTaskId)}" title="大衍任务 ID：${escapeHtml(providerTaskId)}" aria-label="一键复制大衍任务 ID"><i aria-hidden="true">⧉</i><span>复制 ID</span></button>`
       : "";
-    return [item.id, `<article class="garment-card selected ${itemVideoWaiting ? "is-video-processing" : ""} ${flipped ? "is-prompt-flipped" : ""}" data-garment-card data-item-id="${escapeHtml(item.id)}">
+    return [item.id, `<article class="garment-card selected ${itemImagePreparing ? "is-image-processing" : ""} ${itemVideoWaiting ? "is-video-processing" : ""} ${flipped ? "is-prompt-flipped" : ""}" data-garment-card data-item-id="${escapeHtml(item.id)}">
       <div class="garment-card-flip">
         <div class="garment-card-face garment-card-front" aria-hidden="${flipped}">
           <header class="garment-card-head">
@@ -5805,8 +5822,8 @@ function renderAiVideoTaskDetail(options = {}) {
           <div class="garment-portrait-grid">
             <section class="garment-output-slot garment-original-output completed"><header><strong>原始商品图</strong><span>已上传</span></header><button class="garment-preview real-asset" type="button" data-asset-preview="原始商品图" title="悬停后滚轮缩放，双击还原" aria-label="放大查看 ${escapeHtml(item.name)} 原图"><img src="${source}" alt="${escapeHtml(item.name)} 原始商品图" loading="lazy"></button></section>
             <div class="garment-output-grid">
-              <section class="garment-output-slot model-output ${modelState}" data-model-output><header><strong>${escapeHtml(primaryAssetName)}</strong><div class="storyboard-slot-actions"><span>${model ? "已生成" : modelState === "processing" ? "生成中" : "等待生成"}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-first-frame title="使用脚本第 01 分镜真实画面重做首帧，并同步重建九宫格">重做</button>` : ""}</div></header><button class="model-output-canvas real-asset" type="button" data-asset-preview="${escapeHtml(primaryAssetName)}" title="用于制作最终九宫格" aria-label="放大查看 ${escapeHtml(primaryAssetName)}">${modelCanvas}</button></section>
-              <section class="garment-output-slot storyboard-output ${shotState}" data-storyboard-output><header><strong>4K 分镜九宫格</strong><div class="storyboard-slot-actions"><span>${storyboard ? "已生成" : shotState === "processing" ? "生成中" : "等待生成"}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-storyboard title="保留 AI 模特图，重建动作底图并重新执行人物替换">${storyboard ? "重建" : "重新生成"}</button>` : ""}</div></header><button class="mini-storyboard real-assets" type="button" data-asset-preview="4K 分镜九宫格" title="9:16 画幅；悬停后滚轮缩放，双击还原" aria-label="放大查看 4K 分镜九宫格">${storyboardTiles}</button></section>
+              <section class="garment-output-slot model-output ${modelState}" data-model-output><header><strong>${escapeHtml(primaryAssetName)}</strong><div class="storyboard-slot-actions"><span>${modelStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-first-frame title="使用脚本第 01 分镜真实画面重做首帧，并同步重建九宫格">重做</button>` : ""}</div></header><button class="model-output-canvas real-asset" type="button" data-asset-preview="${escapeHtml(primaryAssetName)}" title="用于制作最终九宫格" aria-label="放大查看 ${escapeHtml(primaryAssetName)}">${modelCanvas}</button></section>
+              <section class="garment-output-slot storyboard-output ${shotState}" data-storyboard-output><header><strong>4K 分镜九宫格</strong><div class="storyboard-slot-actions"><span>${storyboardStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-storyboard title="保留 AI 模特图，重建动作底图并重新执行人物替换">${storyboard ? "重建" : "重新生成"}</button>` : ""}</div></header><button class="mini-storyboard real-assets" type="button" data-asset-preview="4K 分镜九宫格" title="9:16 画幅；悬停后滚轮缩放，双击还原" aria-label="放大查看 4K 分镜九宫格">${storyboardTiles}</button></section>
             </div>
           </div>
           ${error}
