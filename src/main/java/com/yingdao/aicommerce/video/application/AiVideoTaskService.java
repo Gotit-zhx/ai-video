@@ -506,6 +506,7 @@ public class AiVideoTaskService {
 
     public AiVideoTask startImages(String id, PlatformPrincipal principal) {
         AiVideoTask task = requireOwned(id, principal);
+        requireCompatibleScriptMode(task);
         if (!List.of("READY", "FAILED", "IMAGE_READY", "VIDEO_READY").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务还不能启动生图");
         }
@@ -524,6 +525,7 @@ public class AiVideoTaskService {
 
     public AiVideoTask startVideos(String id, PlatformPrincipal principal) {
         AiVideoTask task = requireOwned(id, principal);
+        requireCompatibleScriptMode(task);
         if (!(List.of("IMAGE_READY", "FAILED", "VIDEO_READY").contains(task.getStatus())
                 || task.isDirectReferenceVideo() && "READY".equals(task.getStatus()))) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务还不能启动视频生成");
@@ -539,6 +541,7 @@ public class AiVideoTaskService {
 
     public AiVideoTask regenerateVideos(String id, PlatformPrincipal principal) {
         AiVideoTask task = requireOwned(id, principal);
+        requireCompatibleScriptMode(task);
         if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务正在生成，暂时不能重做视频");
         }
@@ -564,6 +567,7 @@ public class AiVideoTaskService {
 
     public AiVideoTask regenerateVideo(String taskId, String itemId, PlatformPrincipal principal) {
         AiVideoTask task = requireOwned(taskId, principal);
+        requireCompatibleScriptMode(task);
         if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务正在生成，暂时不能重做视频");
         }
@@ -591,6 +595,7 @@ public class AiVideoTaskService {
 
     public AiVideoTask startGeneration(String id, PlatformPrincipal principal) {
         AiVideoTask task = requireOwned(id, principal);
+        requireCompatibleScriptMode(task);
         if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前视频生成流程已经在执行");
         }
@@ -620,6 +625,7 @@ public class AiVideoTaskService {
 
     public AiVideoTask regenerateStoryboard(String taskId, String itemId, PlatformPrincipal principal) {
         AiVideoTask task = requireOwned(taskId, principal);
+        requireCompatibleScriptMode(task);
         if ("IMAGE_GENERATING".equals(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前有图片正在生成，请完成后再重建九宫格");
         }
@@ -645,6 +651,7 @@ public class AiVideoTaskService {
 
     public AiVideoTask regenerateFirstFrame(String taskId, String itemId, PlatformPrincipal principal) {
         AiVideoTask task = requireOwned(taskId, principal);
+        requireCompatibleScriptMode(task);
         if ("IMAGE_GENERATING".equals(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前有图片正在生成，请完成后再重做首帧");
         }
@@ -681,6 +688,20 @@ public class AiVideoTaskService {
                 try { Files.deleteIfExists(path); } catch (IOException ignored) { }
             });
         } catch (IOException ignored) { }
+    }
+
+    private void requireCompatibleScriptMode(AiVideoTask task) {
+        VideoScript script = scriptMapper.selectById(task.getScriptId());
+        if (script == null || !task.getOrganizationId().equals(script.getOrganizationId())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "所选脚本已不存在");
+        }
+        String scriptMode = script.getPresentationMode() == null
+                ? "LEGACY_COMPAT" : script.getPresentationMode().trim().toUpperCase();
+        if ("LEGACY_COMPAT".equals(scriptMode) || task.getGenerationMode().equals(scriptMode)) return;
+        String taskMode = "MODEL_WEAR".equals(task.getGenerationMode()) ? "AI人物" : "纯商品";
+        String requiredMode = "MODEL_WEAR".equals(scriptMode) ? "人物穿搭" : "纯商品";
+        throw new BusinessException(HttpStatus.CONFLICT,
+                "当前任务选择了" + taskMode + "，但脚本属于" + requiredMode + "脚本，请重新创建匹配的任务");
     }
 
     public AssetFile asset(String taskId, String assetId, PlatformPrincipal principal) {
