@@ -6764,7 +6764,22 @@ document.querySelector("#garment-card-grid").addEventListener("click", async eve
     preview.querySelectorAll("img").forEach(image => {
       image.removeAttribute("loading");
       const fullSource = image.dataset.fullSrc;
-      if (fullSource) image.src = fullSource;
+      if (!fullSource || fullSource === image.getAttribute("src")) return;
+      // Keep the already painted thumbnail visible. Switching src before the 4K
+      // OSS image is decoded creates a blank frame and makes the dialog flash.
+      const fullResolutionImage = new Image();
+      fullResolutionImage.decoding = "async";
+      fullResolutionImage.src = fullSource;
+      const revealFullResolution = () => {
+        if (!image.isConnected) return;
+        image.src = fullSource;
+        image.classList.add("full-resolution-ready");
+      };
+      if (typeof fullResolutionImage.decode === "function") {
+        fullResolutionImage.decode().then(revealFullResolution).catch(() => {});
+      } else {
+        fullResolutionImage.addEventListener("load", revealFullResolution, { once: true });
+      }
     });
   }
   const outputSlot = button.closest(".garment-output-slot");

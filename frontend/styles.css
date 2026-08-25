@@ -4581,8 +4581,16 @@ dialog.automation-form-dialog > form {
 }
 
 .asset-preview-dialog::backdrop {
-  background: rgba(8, 18, 34, .64);
-  backdrop-filter: blur(4px);
+  background: rgba(8, 18, 34, .72);
+}
+
+/* Keep the preview compositing layer stable while the live task continues behind it. */
+body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .task-progress-pill.image-preparing,
+body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .task-progress-pill.image-preparing::before,
+body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-image-processing .garment-output-slot.processing::after,
+body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-image-processing .model-output.processing .model-output-canvas > i,
+body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-image-processing .storyboard-output.processing .mini-storyboard i {
+  animation-play-state: paused !important;
 }
 
 .asset-preview-shell > header,
