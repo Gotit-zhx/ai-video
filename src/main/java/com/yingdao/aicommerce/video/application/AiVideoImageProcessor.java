@@ -471,8 +471,9 @@ public class AiVideoImageProcessor {
                 // summary from flattening front/edge/back views and changing hand contact points.
                 storyboardGuideAsset = createRealFrameStoryboardGuide(task, item);
             }
-            ReferenceImage generatedModel = reference(modelAsset.getFilePath(),
-                    modelWear ? "参考图2 AI模特人物与穿着母版" : "AI商品场景图", modelAsset.getContentType());
+            ReferenceImage generatedModel = modelWear
+                    ? modelIdentityGridReference(modelAsset.getFilePath(), modelAsset.getContentType())
+                    : reference(modelAsset.getFilePath(), "AI商品场景图", modelAsset.getContentType());
             ReferenceImage productIdentityGrid = productIdentityGridReference(
                     Path.of(item.getSourceFilePath()), item.getSourceContentType());
             if (modelWear) {
@@ -588,7 +589,6 @@ public class AiVideoImageProcessor {
             // One deterministic generation only: never spend image quota by drawing repeatedly.
             // A candidate is kept private until the source-vs-result gate accepts it.
             PiArtifact artifact = call(task, item, assetType, model, basePrompt, references);
-            clearPendingImageResult(item.getId(), assetType, imageRequestHash(basePrompt, references));
             byte[] candidateBytes = Base64.getDecoder().decode(artifact.dataBase64());
             if (candidateBytes.length == 0 || candidateBytes.length > 64L * 1024 * 1024) {
                 throw new IllegalStateException("生成图片大小无效");
@@ -600,7 +600,11 @@ public class AiVideoImageProcessor {
                 throw new IllegalStateException("服装结构复核未通过："
                         + String.join("；", validation.violations()));
             }
-            return store(task, item, assetType, null, artifact, basePrompt);
+            AiVideoTaskAsset stored = store(task, item, assetType, null, artifact, basePrompt);
+            // Preserve the paid provider result until both validation and persistence succeed.
+            // A transient validator failure can then retry the exact same image without redrawing.
+            clearPendingImageResult(item.getId(), assetType, imageRequestHash(basePrompt, references));
+            return stored;
         } catch (Exception exception) {
             throw exception instanceof RuntimeException runtime ? runtime
                     : new IllegalStateException(exception.getMessage(), exception);
@@ -1269,7 +1273,7 @@ public class AiVideoImageProcessor {
                 task, item.getProductFunctionAnalysisJson());
         StringBuilder prompt = new StringBuilder("执行一次严格的九宫格人物与商品替换编辑。四张参考图职责不可互换：")
                 .append("参考图1是用户上传的真实商品原图，是商品颜色、版型、领口、袖长、面料、缝线、印花、文字、数字、图形、Logo、位置、比例和排列顺序的唯一最高优先级母版；")
-                .append("参考图2是已经穿好当前商品的 AI 模特图，只负责唯一人物身份、脸、发型、身材、商品穿着位置、下装、配饰和整体摄影风格；")
+                .append("参考图2是把同一张 AI 模特穿着母版原样重复九次的人物身份锁定板，只负责唯一人物身份、脸、发型、身材、商品穿着位置、下装、配饰和整体摄影风格；九个重复格不是动作证据。")
                 .append("参考图3是 3×3 动作场景底图，只提供每格可见场景、主要物体、空间关系、机位方向和姿态证据；下方逐格脚本决定最终必须执行的主体状态、动作阶段和时间顺序。")
                 .append("参考图4是服务器把参考图1原样重复到九个对应位置的商品身份锁定板；生成输出第01–09格时必须分别读取参考图4同位置的原商品结构，不得让前一输出格成为后一格的商品参考。参考图4的白底、静止姿态和九格重复布局不是动作证据，不能覆盖参考图3与脚本。")
                 .append("参考图3中的任何人物身份、脸、头发、肤色、衣服、颜色、印花、文字、Logo、下装和配饰全部是无效占位内容，必须删除，绝对不能继承、融合或折中。")
@@ -1448,6 +1452,45 @@ public class AiVideoImageProcessor {
             graphics.dispose();
         }
         return new ReferenceImage("参考图4 九格商品身份锁定板；每格均为同一原商品",
+                "image/png", Base64.getEncoder().encodeToString(png(guide)));
+    }
+
+    private ReferenceImage modelIdentityGridReference(String location, String sourceMimeType) throws Exception {
+        byte[] sourceBytes = readAsset(location);
+        BufferedImage source = ImageIO.read(new ByteArrayInputStream(sourceBytes));
+        if (source == null) {
+            return new ReferenceImage("参考图2 AI模特九格身份锁定板", sourceMimeType,
+                    Base64.getEncoder().encodeToString(sourceBytes));
+        }
+        int cellWidth = 512;
+        int cellHeight = 910;
+        BufferedImage guide = new BufferedImage(cellWidth * 3, cellHeight * 3, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = guide.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, guide.getWidth(), guide.getHeight());
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            double targetRatio = cellWidth / (double) cellHeight;
+            int cropWidth = source.getWidth();
+            int cropHeight = source.getHeight();
+            if (source.getWidth() / (double) source.getHeight() > targetRatio) {
+                cropWidth = Math.max(1, (int) Math.round(source.getHeight() * targetRatio));
+            } else {
+                cropHeight = Math.max(1, (int) Math.round(source.getWidth() / targetRatio));
+            }
+            int sourceX = Math.max(0, (source.getWidth() - cropWidth) / 2);
+            int sourceY = Math.max(0, (source.getHeight() - cropHeight) / 2);
+            for (int index = 0; index < 9; index++) {
+                int x = (index % 3) * cellWidth;
+                int y = (index / 3) * cellHeight;
+                graphics.drawImage(source, x, y, x + cellWidth, y + cellHeight,
+                        sourceX, sourceY, sourceX + cropWidth, sourceY + cropHeight, null);
+            }
+        } finally {
+            graphics.dispose();
+        }
+        return new ReferenceImage("参考图2 AI模特九格身份锁定板；九格均为同一人物，只锁身份不锁动作",
                 "image/png", Base64.getEncoder().encodeToString(png(guide)));
     }
 

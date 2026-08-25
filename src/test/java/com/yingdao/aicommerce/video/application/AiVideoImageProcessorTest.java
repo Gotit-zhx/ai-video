@@ -225,6 +225,16 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void topologyValidationRetriesTransientStreamFailuresWithoutRedrawing() {
+        assertTrue(ProductFunctionAnalysisService.isTransientValidationFailure(
+                "Stream ended without finish_reason"));
+        assertTrue(ProductFunctionAnalysisService.isTransientValidationFailure(
+                "upstream returned 502"));
+        assertFalse(ProductFunctionAnalysisService.isTransientValidationFailure(
+                "服装结构复核未通过：领口结构错误"));
+    }
+
+    @Test
     void transientAndNoAssetPolicyFailuresAreEligibleForAutomaticImageRetry() {
         assertTrue(AiVideoImageProcessor.retryableImageConcurrencyFailure(
                 "并发限制：图片模型当前并发已满"));

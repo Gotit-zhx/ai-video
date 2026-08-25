@@ -2297,7 +2297,10 @@ async function handlePlatformImageGeneration(request, response) {
   const body = await readBody(request);
   const references = (Array.isArray(body.references) ? body.references : [])
     .filter(value => /^image\//i.test(String(value?.mimeType || "")) && String(value?.dataBase64 || "").length > 0)
-    .slice(0, 3);
+    // The storyboard pipeline supplies four independent contracts: original product,
+    // AI-model identity, motion/scene guide, and per-cell product identity lock.
+    // Dropping the fourth image silently disabled the product lock and let later cells drift.
+    .slice(0, 4);
   const result = await callImageModel(body.model || {}, {
     mode: references.length ? "edit" : "generate",
     prompt: String(body.prompt || ""),

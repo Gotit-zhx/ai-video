@@ -123,7 +123,8 @@ public class ProductFunctionAnalysisService {
         if (!isGarmentTask(task) || !requiresTopologyValidation(item.getProductFunctionAnalysisJson())) {
             return new GarmentValidation(true, "", List.of(), 1.0);
         }
-        try {
+        Exception lastFailure = null;
+        for (int attempt = 1; attempt <= 3; attempt++) try {
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId())
                     .orElseThrow(() -> new IllegalStateException("没有可用的结构复核模型"));
@@ -152,9 +153,30 @@ public class ProductFunctionAnalysisService {
                     stringList(value.get("violations"), 12, 180),
                     value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0);
         } catch (Exception exception) {
-            throw new IllegalStateException("服装结构复核暂时失败，已阻止未经复核的图片进入九宫格："
-                    + readable(exception), exception);
+            lastFailure = exception;
+            if (attempt >= 3 || !isTransientValidationFailure(readable(exception))) break;
+            log.warn("Garment validation stream unavailable for item {} (attempt {}/3): {}",
+                    item.getId(), attempt, readable(exception));
+            try {
+                Thread.sleep(750L * attempt);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("服装结构复核被中断", interrupted);
+            }
         }
+        throw new IllegalStateException("服装结构复核暂时失败，已保留本次生图结果供后续继续复核："
+                + readable(lastFailure == null ? new IllegalStateException("未知错误") : lastFailure), lastFailure);
+    }
+
+    static boolean isTransientValidationFailure(String message) {
+        if (message == null || message.isBlank()) return false;
+        String value = message.toLowerCase();
+        return value.contains("stream ended without finish_reason")
+                || value.contains("stream ended") || value.contains("unexpected end")
+                || value.contains("connection reset") || value.contains("connection closed")
+                || value.contains("eof") || value.contains("timeout") || value.contains("timed out")
+                || value.contains("temporarily unavailable") || value.contains("没有返回结果")
+                || value.contains("502") || value.contains("503") || value.contains("504");
     }
 
     boolean requiresTopologyValidation(String analysisJson) {
