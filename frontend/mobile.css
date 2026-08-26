@@ -1,0 +1,630 @@
+/* HOYEE mobile shell
+   Loaded after the glass theme so mobile layout rules remain authoritative. */
+
+@media (max-width: 720px) {
+  :root {
+    --mobile-edge: 12px;
+    --mobile-nav-height: 72px;
+    --mobile-top-height: 58px;
+  }
+
+  html {
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  [hidden],
+  .dashboard[hidden],
+  .workspace-body[hidden] {
+    display: none !important;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  button,
+  a,
+  label,
+  select {
+    touch-action: manipulation;
+  }
+
+  /* Login: one calm, thumb-friendly panel. */
+  .login-shell {
+    min-height: 100dvh;
+    display: block;
+  }
+
+  .login-panel {
+    min-height: 100dvh;
+    padding: max(24px, env(safe-area-inset-top)) 18px max(24px, env(safe-area-inset-bottom));
+    display: grid;
+    place-items: center;
+  }
+
+  .login-card {
+    width: min(100%, 430px);
+    padding: 28px 22px 24px;
+    border-radius: 24px;
+  }
+
+  .mobile-brand {
+    margin-bottom: 28px;
+  }
+
+  .login-card h2 {
+    font-size: clamp(28px, 9vw, 38px);
+  }
+
+  .login-card .field,
+  .login-card .field input {
+    min-height: 54px;
+  }
+
+  .login-card .primary-button {
+    min-height: 52px;
+  }
+
+  .copyright {
+    display: none;
+  }
+
+  /* App shell: top context bar + horizontally scrollable bottom command dock. */
+  .dashboard {
+    min-height: 100dvh;
+    display: block !important;
+    padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom));
+  }
+
+  .dashboard > .sidebar {
+    position: fixed !important;
+    z-index: 1000 !important;
+    inset: auto 0 0 !important;
+    width: 100% !important;
+    min-height: 0 !important;
+    height: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom)) !important;
+    padding: 7px 8px env(safe-area-inset-bottom) !important;
+    display: block !important;
+    overflow: hidden !important;
+    border: 1px solid rgba(255, 255, 255, .18) !important;
+    border-width: 1px 0 0 !important;
+    background: linear-gradient(180deg, rgba(29, 37, 62, .91), rgba(16, 23, 43, .97)) !important;
+    box-shadow: 0 -12px 32px rgba(7, 12, 27, .28) !important;
+    backdrop-filter: blur(24px) saturate(145%) !important;
+  }
+
+  .dashboard > .sidebar .sidebar-brand,
+  .dashboard > .sidebar > .lg-overlay-bg,
+  .dashboard > .sidebar > .lg-filter-layer {
+    display: none !important;
+  }
+
+  .dashboard > .sidebar nav {
+    width: 100%;
+    height: 100%;
+    margin: 0 !important;
+    padding: 0 2px 4px;
+    display: flex !important;
+    align-items: stretch;
+    gap: 4px !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+
+  .dashboard > .sidebar nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dashboard > .sidebar .nav-item,
+  .dashboard > .sidebar .nav-item.active {
+    width: auto !important;
+    min-width: 66px;
+    height: 56px;
+    flex: 0 0 66px;
+    padding: 6px 5px !important;
+    display: flex !important;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px !important;
+    overflow: hidden;
+    border: 0 !important;
+    border-radius: 14px !important;
+    color: rgba(218, 226, 241, .7) !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    font-size: 10px !important;
+    line-height: 1.1;
+    white-space: nowrap;
+    scroll-snap-align: center;
+  }
+
+  .dashboard > .sidebar .nav-item.active {
+    color: #effffc !important;
+    background: linear-gradient(145deg, rgba(78, 214, 196, .22), rgba(75, 116, 190, .2)) !important;
+    box-shadow: inset 0 0 0 1px rgba(116, 232, 215, .25) !important;
+  }
+
+  .dashboard > .sidebar .nav-item::before,
+  .dashboard > .sidebar .nav-item::after {
+    display: none !important;
+  }
+
+  .dashboard > .sidebar .nav-item > span:first-child {
+    min-width: 0 !important;
+    font-size: 18px !important;
+    line-height: 1;
+  }
+
+  .dashboard > .sidebar .nav-test-item .nav-test-copy {
+    display: inline !important;
+    font-size: 10px !important;
+  }
+
+  .workspace {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .dashboard .topbar {
+    position: sticky;
+    z-index: 80;
+    top: 0;
+    width: 100%;
+    height: var(--mobile-top-height) !important;
+    min-height: var(--mobile-top-height);
+    padding: env(safe-area-inset-top) 14px 0 !important;
+    border-radius: 0 !important;
+    background: rgba(28, 37, 64, .78) !important;
+    box-shadow: 0 8px 28px rgba(7, 12, 28, .13) !important;
+    backdrop-filter: blur(20px) saturate(140%) !important;
+  }
+
+  .dashboard .topbar h2 {
+    max-width: 58vw;
+    overflow: hidden;
+    font-size: 17px !important;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dashboard .topbar .status-pill,
+  .dashboard .topbar #current-user {
+    display: none !important;
+  }
+
+  .dashboard .topbar #logout-button {
+    min-width: 52px;
+    min-height: 36px;
+    margin: 0 !important;
+    padding: 0 12px !important;
+    font-size: 12px !important;
+  }
+
+  .workspace-body,
+  #ai-video-tasks-page,
+  #video-scripts-page,
+  .ai-video-monitor-page,
+  .automation-page {
+    width: 100%;
+    min-width: 0;
+    padding: 14px var(--mobile-edge) 24px !important;
+  }
+
+  .workspace-body :where(button, a) {
+    min-height: 40px;
+  }
+
+  /* Headings and high-level actions stack without squeezing labels. */
+  .video-studio-heading,
+  .video-batch-head,
+  .section-heading,
+  .automation-hero,
+  .people-heading,
+  .company-context-bar,
+  .monitor-command-bar {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+  }
+
+  .video-studio-heading h1,
+  .monitor-command-bar h1 {
+    font-size: clamp(26px, 9vw, 36px) !important;
+    line-height: 1.05;
+  }
+
+  .video-studio-heading > button,
+  .video-batch-head > button,
+  .video-batch-head .batch-head-actions,
+  .batch-head-actions,
+  .people-tools,
+  .company-context-bar label {
+    width: 100% !important;
+  }
+
+  .video-studio-heading > button,
+  .batch-head-actions > button,
+  .people-tools > button {
+    margin: 0 !important;
+  }
+
+  /* AI task rail becomes a swipeable task strip instead of a tall sidebar. */
+  #ai-video-tasks-page .batch-task-layout,
+  #video-scripts-page .script-library-layout {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 10px !important;
+  }
+
+  #ai-video-tasks-page .batch-task-rail,
+  #video-scripts-page .script-library-rail {
+    position: static !important;
+    width: 100%;
+    max-height: none !important;
+    overflow: hidden !important;
+    border-radius: 16px !important;
+  }
+
+  #ai-video-tasks-page .batch-task-rail > header,
+  #video-scripts-page .script-library-rail > header {
+    padding: 12px !important;
+  }
+
+  #ai-video-tasks-page .video-task-list,
+  #video-scripts-page .script-library-list {
+    min-height: 70px;
+    padding: 8px !important;
+    display: flex !important;
+    gap: 8px;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+
+  #ai-video-tasks-page .video-task-list::-webkit-scrollbar,
+  #video-scripts-page .script-library-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  #ai-video-tasks-page .batch-task-rail .video-task-item,
+  #video-scripts-page .script-library-list > * {
+    min-width: min(74vw, 250px) !important;
+    flex: 0 0 min(74vw, 250px) !important;
+    scroll-snap-align: start;
+    border: 1px solid rgba(255, 255, 255, .16) !important;
+    border-radius: 12px !important;
+  }
+
+  #ai-video-tasks-page .video-batch-stage,
+  #ai-video-tasks-page .garment-board,
+  #video-scripts-page .script-detail-stage,
+  .monitor-query-panel,
+  .monitor-detail-stage {
+    width: 100%;
+    min-width: 0;
+    margin-inline: 0 !important;
+    border-radius: 16px !important;
+  }
+
+  #ai-video-tasks-page .batch-group-bar,
+  #ai-video-tasks-page .garment-board > header {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    padding: 12px !important;
+  }
+
+  #ai-video-tasks-page .batch-group-actions,
+  #ai-video-tasks-page .batch-upload-button,
+  #ai-video-tasks-page .batch-video-download-button {
+    width: 100% !important;
+  }
+
+  #ai-video-tasks-page .garment-card-grid {
+    padding: 8px !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 12px !important;
+  }
+
+  #ai-video-tasks-page .garment-card,
+  #ai-video-tasks-page .direct-reference-card {
+    width: 100%;
+    min-width: 0;
+    border-radius: 14px !important;
+  }
+
+  #ai-video-tasks-page .garment-portrait-grid {
+    padding: 8px !important;
+    gap: 7px !important;
+  }
+
+  #ai-video-tasks-page .garment-output-grid {
+    gap: 7px !important;
+  }
+
+  #ai-video-tasks-page .garment-output-slot > header {
+    min-height: 36px;
+    padding: 7px 8px !important;
+  }
+
+  #ai-video-tasks-page .garment-output-slot > header strong {
+    font-size: 10px !important;
+  }
+
+  #ai-video-tasks-page .garment-output-slot > header span,
+  #ai-video-tasks-page .model-output-canvas small {
+    font-size: 9px !important;
+  }
+
+  #ai-video-tasks-page .direct-reference-track {
+    grid-auto-columns: min(78vw, 290px) !important;
+    overflow-x: auto !important;
+    scroll-snap-type: x mandatory;
+  }
+
+  #ai-video-tasks-page .direct-reference-tile {
+    scroll-snap-align: center;
+  }
+
+  #ai-video-tasks-page .batch-action-dock {
+    position: sticky;
+    z-index: 50;
+    bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom) + 6px);
+    width: calc(100% - 12px);
+    margin: 12px 6px 0 !important;
+    padding: 12px !important;
+    align-items: stretch !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+    border: 1px solid rgba(255, 255, 255, .18) !important;
+    border-radius: 16px !important;
+    background: rgba(28, 37, 62, .86) !important;
+    box-shadow: 0 14px 36px rgba(5, 11, 26, .24) !important;
+    backdrop-filter: blur(18px) saturate(130%) !important;
+  }
+
+  #ai-video-tasks-page .batch-action-buttons,
+  #ai-video-tasks-page .batch-action-buttons .batch-start-button {
+    width: 100% !important;
+  }
+
+  #ai-video-tasks-page .batch-action-buttons {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #ai-video-tasks-page .batch-action-buttons .batch-start-button:only-child {
+    grid-column: 1 / -1;
+  }
+
+  /* Monitoring, system and automation pages collapse to one readable column. */
+  .monitor-overview,
+  .monitor-task-facts,
+  .monitor-workspace,
+  .summary-grid,
+  .people-layout,
+  .rbac-layout,
+  .role-list,
+  .role-config-list,
+  .model-category-grid,
+  .automation-grid,
+  .automation-summary-grid,
+  .automation-home-grid,
+  .assistant-console {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .monitor-task-list {
+    max-height: 300px !important;
+  }
+
+  .monitor-media-event-row {
+    scroll-snap-type: x mandatory;
+  }
+
+  .monitor-media-event-row > .monitor-request-card {
+    min-width: 88vw !important;
+    flex-basis: 88vw !important;
+  }
+
+  .system-tabs,
+  .batch-group-tabs,
+  .script-create-switch {
+    width: 100%;
+    display: flex !important;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .system-tabs::-webkit-scrollbar,
+  .batch-group-tabs::-webkit-scrollbar,
+  .script-create-switch::-webkit-scrollbar {
+    display: none;
+  }
+
+  .system-tab,
+  .batch-group-tabs button,
+  .script-create-switch button {
+    flex: 0 0 auto;
+  }
+
+  .people-tools {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .people-tools input {
+    width: 100% !important;
+    min-width: 0;
+  }
+
+  .table-wrap,
+  .people-table-wrap,
+  .organization-table-wrap,
+  .model-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  /* Native dialogs become stable full-screen sheets on phones. */
+  dialog.manage-dialog,
+  dialog.asset-preview-dialog,
+  dialog.video-script-dialog,
+  dialog.video-task-dialog,
+  dialog.automation-form-dialog,
+  dialog.automation-run-dialog {
+    inset: 0 !important;
+    width: 100vw !important;
+    max-width: none !important;
+    height: 100dvh !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  dialog.manage-dialog > form,
+  dialog.video-script-dialog > form,
+  dialog.video-task-dialog > form,
+  dialog.automation-form-dialog > form,
+  dialog.automation-run-dialog > form,
+  .asset-preview-shell {
+    width: 100%;
+    height: 100dvh;
+    max-height: none !important;
+    padding: max(16px, env(safe-area-inset-top)) 14px max(16px, env(safe-area-inset-bottom)) !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    border-radius: 0 !important;
+  }
+
+  .asset-preview-shell {
+    padding: 0 !important;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden !important;
+  }
+
+  .asset-preview-shell > header,
+  .asset-preview-shell > footer {
+    padding: 12px 14px !important;
+  }
+
+  .asset-preview-body,
+  .asset-preview-body.is-video {
+    width: 100%;
+    min-height: 0 !important;
+    height: auto !important;
+    max-height: none !important;
+    padding: 10px !important;
+  }
+
+  .asset-preview-video {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+  }
+
+  .dialog-heading {
+    position: sticky;
+    z-index: 4;
+    top: calc(-1 * max(16px, env(safe-area-inset-top)));
+    padding: 4px 0 12px !important;
+    background: rgba(25, 33, 56, .94);
+    backdrop-filter: blur(18px);
+  }
+
+  .dialog-heading h2 {
+    font-size: 22px !important;
+  }
+
+  .dialog-heading p {
+    font-size: 11px !important;
+  }
+
+  .dialog-close {
+    width: 42px !important;
+    height: 42px !important;
+    flex: 0 0 42px;
+  }
+
+  .form-grid,
+  .permission-options,
+  .shot-edit-layout,
+  .shot-edit-fields,
+  .background-mode-options,
+  .video-route-options,
+  .generation-mode-options,
+  .resolution-options {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .dialog-actions {
+    position: sticky;
+    z-index: 5;
+    bottom: calc(-1 * max(16px, env(safe-area-inset-bottom)));
+    margin-top: 18px !important;
+    padding: 12px 0 max(12px, env(safe-area-inset-bottom)) !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    background: linear-gradient(180deg, transparent, rgba(24, 32, 55, .96) 25%);
+  }
+
+  .dialog-actions button {
+    width: 100%;
+    min-height: 46px !important;
+    margin: 0 !important;
+  }
+}
+
+@media (max-width: 390px) {
+  :root { --mobile-edge: 9px; }
+
+  .dashboard > .sidebar .nav-item,
+  .dashboard > .sidebar .nav-item.active {
+    min-width: 62px;
+    flex-basis: 62px;
+  }
+
+  #ai-video-tasks-page .garment-output-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  #ai-video-tasks-page .garment-output-grid .model-output-canvas,
+  #ai-video-tasks-page .garment-output-grid .mini-storyboard {
+    max-height: 440px;
+  }
+
+  #ai-video-tasks-page .batch-action-buttons {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  #ai-video-tasks-page .batch-action-buttons > * {
+    grid-column: 1 !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard > .sidebar nav,
+  #ai-video-tasks-page .video-task-list,
+  #video-scripts-page .script-library-list {
+    scroll-behavior: auto;
+  }
+}
