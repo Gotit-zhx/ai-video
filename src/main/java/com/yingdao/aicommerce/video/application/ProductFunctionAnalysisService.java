@@ -8,11 +8,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
+import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -20,6 +28,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 
 @Service
 public class ProductFunctionAnalysisService {
@@ -29,11 +38,15 @@ public class ProductFunctionAnalysisService {
     private static final String GARMENT_BLOCK_START = "【服装结构与穿法契约】";
     private static final String GARMENT_BLOCK_END = "【服装结构与穿法契约结束】";
     private static final int MAX_SOURCE_BYTES = 20 * 1024 * 1024;
+    private static final int VALIDATION_MAX_EDGE = 768;
+    private static final int MAX_CONCURRENT_VALIDATIONS = 3;
 
     private final AiVideoTaskItemMapper itemMapper;
     private final ModelConfigService modelConfigService;
     private final ObjectMapper objectMapper;
     private final RestClient piClient;
+    private final RestClient piValidationClient;
+    private final Semaphore validationSlots = new Semaphore(MAX_CONCURRENT_VALIDATIONS, true);
 
     public ProductFunctionAnalysisService(AiVideoTaskItemMapper itemMapper,
                                           ModelConfigService modelConfigService,
@@ -44,6 +57,12 @@ public class ProductFunctionAnalysisService {
         this.modelConfigService = modelConfigService;
         this.objectMapper = objectMapper;
         this.piClient = RestClient.builder().baseUrl(piRuntimeUrl)
+                .defaultHeader("X-Internal-Token", piRuntimeToken).build();
+        SimpleClientHttpRequestFactory validationRequestFactory = new SimpleClientHttpRequestFactory();
+        validationRequestFactory.setConnectTimeout(5_000);
+        validationRequestFactory.setReadTimeout(190_000);
+        this.piValidationClient = RestClient.builder().baseUrl(piRuntimeUrl)
+                .requestFactory(validationRequestFactory)
                 .defaultHeader("X-Internal-Token", piRuntimeToken).build();
     }
 
@@ -123,8 +142,10 @@ public class ProductFunctionAnalysisService {
         if (!isGarmentTask(task) || !requiresTopologyValidation(item.getProductFunctionAnalysisJson())) {
             return new GarmentValidation(true, "", List.of(), 1.0);
         }
-        Exception lastFailure = null;
-        for (int attempt = 1; attempt <= 3; attempt++) try {
+        boolean validationSlotAcquired = false;
+        try {
+            validationSlots.acquire();
+            validationSlotAcquired = true;
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId())
                     .orElseThrow(() -> new IllegalStateException("没有可用的结构复核模型"));
@@ -135,13 +156,22 @@ public class ProductFunctionAnalysisService {
             request.put("context", Map.of(
                     "analysisType", "GARMENT_TOPOLOGY_VALIDATION_V1",
                     "assetType", assetType,
-                    "expectedTopology", objectMapper.readValue(item.getProductFunctionAnalysisJson(), Map.class)
+                    "expectedTopology", objectMapper.readValue(item.getProductFunctionAnalysisJson(), Map.class),
+                    "framingContract", Map.of(
+                            "personFraming", "头顶至大腿中下段、膝盖上方的中近景",
+                            "minimumFaceHeightRatio", 0.15,
+                            "forbidden", List.of("远景", "全景", "全身", "膝盖以下入镜", "双脚或鞋子入镜", "人物突然缩小", "镜头拉远"),
+                            "productOnlyFraming", "纯商品格必须采用商品近景并让主体填满主要画面"
+                    )
             ));
-            request.put("image", Map.of("mimeType", item.getSourceContentType(),
-                    "data", Base64.getEncoder().encodeToString(Files.readAllBytes(source))));
-            request.put("candidateImage", Map.of("mimeType", candidateMimeType,
-                    "data", Base64.getEncoder().encodeToString(candidateBytes)));
-            PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
+            ValidationImage sourceImage = compactForValidation(
+                    Files.readAllBytes(source), item.getSourceContentType());
+            ValidationImage candidateImage = compactForValidation(candidateBytes, candidateMimeType);
+            request.put("image", Map.of("mimeType", sourceImage.mimeType(),
+                    "data", Base64.getEncoder().encodeToString(sourceImage.bytes())));
+            request.put("candidateImage", Map.of("mimeType", candidateImage.mimeType(),
+                    "data", Base64.getEncoder().encodeToString(candidateImage.bytes())));
+            PiProductAnalysisResponse response = piValidationClient.post().uri("/v1/product/analyze")
                     .contentType(MediaType.APPLICATION_JSON).body(request).retrieve()
                     .body(PiProductAnalysisResponse.class);
             if (response == null || response.result() == null) {
@@ -153,19 +183,14 @@ public class ProductFunctionAnalysisService {
                     stringList(value.get("violations"), 12, 180),
                     value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0);
         } catch (Exception exception) {
-            lastFailure = exception;
-            if (attempt >= 3 || !isTransientValidationFailure(readable(exception))) break;
-            log.warn("Garment validation stream unavailable for item {} (attempt {}/3): {}",
-                    item.getId(), attempt, readable(exception));
-            try {
-                Thread.sleep(750L * attempt);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("服装结构复核被中断", interrupted);
-            }
+            if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
+            log.warn("Garment validation unavailable for item {}; the private candidate will be rechecked: {}",
+                    item.getId(), readable(exception));
+            throw new IllegalStateException("服装结构复核暂时失败，已私有保存本次候选图并将在后台继续复核："
+                    + readable(exception), exception);
+        } finally {
+            if (validationSlotAcquired) validationSlots.release();
         }
-        throw new IllegalStateException("服装结构复核暂时失败，已保留本次生图结果供后续继续复核："
-                + readable(lastFailure == null ? new IllegalStateException("未知错误") : lastFailure), lastFailure);
     }
 
     static boolean isTransientValidationFailure(String message) {
@@ -177,6 +202,42 @@ public class ProductFunctionAnalysisService {
                 || value.contains("eof") || value.contains("timeout") || value.contains("timed out")
                 || value.contains("temporarily unavailable") || value.contains("没有返回结果")
                 || value.contains("502") || value.contains("503") || value.contains("504");
+    }
+
+    static ValidationImage compactForValidation(byte[] sourceBytes, String sourceMimeType) {
+        if (sourceBytes == null || sourceBytes.length == 0) {
+            return new ValidationImage(sourceMimeType, sourceBytes == null ? new byte[0] : sourceBytes);
+        }
+        try {
+            BufferedImage source = ImageIO.read(new ByteArrayInputStream(sourceBytes));
+            if (source == null || source.getWidth() <= 0 || source.getHeight() <= 0) {
+                return new ValidationImage(sourceMimeType, sourceBytes);
+            }
+            double scale = Math.min(1.0, (double) VALIDATION_MAX_EDGE
+                    / Math.max(source.getWidth(), source.getHeight()));
+            int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
+            int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
+            BufferedImage compact = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+            Graphics2D graphics = compact.createGraphics();
+            try {
+                graphics.setColor(Color.WHITE);
+                graphics.fillRect(0, 0, width, height);
+                graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                        RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                graphics.setRenderingHint(RenderingHints.KEY_RENDERING,
+                        RenderingHints.VALUE_RENDER_QUALITY);
+                graphics.drawImage(source, 0, 0, width, height, null);
+            } finally {
+                graphics.dispose();
+            }
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            if (!ImageIO.write(compact, "jpeg", output) || output.size() == 0) {
+                return new ValidationImage(sourceMimeType, sourceBytes);
+            }
+            return new ValidationImage("image/jpeg", output.toByteArray());
+        } catch (Exception ignored) {
+            return new ValidationImage(sourceMimeType, sourceBytes);
+        }
     }
 
     boolean requiresTopologyValidation(String analysisJson) {
@@ -406,4 +467,6 @@ public class ProductFunctionAnalysisService {
 
     public record GarmentValidation(boolean valid, String correctionPrompt,
                                     List<String> violations, double confidence) {}
+
+    record ValidationImage(String mimeType, byte[] bytes) {}
 }

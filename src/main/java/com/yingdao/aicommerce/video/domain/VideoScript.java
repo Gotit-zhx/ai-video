@@ -3,6 +3,7 @@ package com.yingdao.aicommerce.video.domain;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 
 @TableName("video_scripts")
@@ -18,8 +19,12 @@ public class VideoScript {
     private String sourceFilePath;
     private String sourceContentType;
     private Long sourceSizeBytes;
+    private BigDecimal sourceDurationSeconds;
+    private BigDecimal clipStartSecond;
+    private BigDecimal clipEndSecond;
     private String targetMarket;
     private String requirements;
+    private boolean extractAudio;
     private String status;
     private int progress;
     private String summary;
@@ -153,6 +158,18 @@ public class VideoScript {
         this.modelId = modelId;
     }
 
+    public void requestAudioExtraction(boolean extractAudio) {
+        this.extractAudio = extractAudio;
+        this.updatedAt = Instant.now();
+    }
+
+    public void configureClip(BigDecimal sourceDurationSeconds, BigDecimal clipStartSecond, BigDecimal clipEndSecond) {
+        this.sourceDurationSeconds = sourceDurationSeconds;
+        this.clipStartSecond = clipStartSecond;
+        this.clipEndSecond = clipEndSecond;
+        this.updatedAt = Instant.now();
+    }
+
     public String getId() { return id; }
     public String getOrganizationId() { return organizationId; }
     public String getName() { return name; }
@@ -162,8 +179,12 @@ public class VideoScript {
     public String getSourceFilePath() { return sourceFilePath; }
     public String getSourceContentType() { return sourceContentType; }
     public Long getSourceSizeBytes() { return sourceSizeBytes; }
+    public BigDecimal getSourceDurationSeconds() { return sourceDurationSeconds; }
+    public BigDecimal getClipStartSecond() { return clipStartSecond; }
+    public BigDecimal getClipEndSecond() { return clipEndSecond; }
     public String getTargetMarket() { return targetMarket; }
     public String getRequirements() { return requirements; }
+    public boolean isExtractAudio() { return extractAudio; }
     public String getStatus() { return status; }
     public int getProgress() { return progress; }
     public String getSummary() { return summary; }

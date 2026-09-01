@@ -49,6 +49,13 @@ public class AiVideoTaskItem {
     }
 
     public void start() { status = "GENERATING_MODEL"; progress = 1; errorMessage = null; updatedAt = Instant.now(); }
+    public void validationPending(boolean storyboard) {
+        status = storyboard ? "GENERATING_STORYBOARD" : "GENERATING_MODEL";
+        progress = Math.max(progress, storyboard ? 88 : 8);
+        errorMessage = null;
+        completedAt = null;
+        updatedAt = Instant.now();
+    }
     public void attachSource(String sourceFilePath) { this.sourceFilePath = sourceFilePath; this.updatedAt = Instant.now(); }
     public void modelReady() { status = "GENERATING_STORYBOARD"; progress = 12; updatedAt = Instant.now(); }
     public void shotReady(int sequence) { status = "GENERATING_STORYBOARD"; progress = 10 + sequence * 10; updatedAt = Instant.now(); }

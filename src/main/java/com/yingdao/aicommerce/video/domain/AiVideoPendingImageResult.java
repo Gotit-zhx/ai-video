@@ -44,8 +44,13 @@ public class AiVideoPendingImageResult {
         this.updatedAt = this.createdAt;
     }
 
-    public void downloadFailed(String message) {
+    public void downloadStarted() {
         this.downloadAttempts += 1;
+        this.lastError = null;
+        this.updatedAt = Instant.now();
+    }
+
+    public void downloadFailed(String message) {
         this.lastError = message == null ? "结果图片下载失败" : message.substring(0, Math.min(1800, message.length()));
         this.updatedAt = Instant.now();
     }

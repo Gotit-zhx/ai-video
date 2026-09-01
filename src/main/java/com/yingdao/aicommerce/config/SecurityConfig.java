@@ -32,6 +32,7 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers("/api/public/v1/video-references/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
+                        .requestMatchers("/api/v1/auth/social/**").permitAll()
                         .requestMatchers("/api/v1/automation-agent/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/assistant-test/**")
                             .hasAnyAuthority("assistant:view", "assistant:use", "ROLE_ADMIN")
@@ -58,8 +59,12 @@ public class SecurityConfig {
                             .hasAnyAuthority("video:task:view", "video:task:manage", "ROLE_ADMIN")
                         .requestMatchers("/api/v1/ai-video-tasks/**")
                             .hasAnyAuthority("video:task:manage", "ROLE_ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/general-video-tasks/**")
+                            .hasAnyAuthority("video:task:view", "video:task:manage", "ROLE_ADMIN")
+                        .requestMatchers("/api/v1/general-video-tasks/**")
+                            .hasAnyAuthority("video:task:manage", "ROLE_ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/v1/ai-video-monitor/**")
-                            .hasAnyAuthority("video:monitor:view", "ROLE_ADMIN")
+                            .hasAnyAuthority("video:monitor:view", "video:task:view", "video:task:manage", "ROLE_ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/v1/tasks/current")
                             .hasAnyAuthority(
                                     "dashboard:view",

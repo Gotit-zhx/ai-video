@@ -9,7 +9,6 @@ import com.yingdao.aicommerce.video.mapper.VideoScriptMapper;
 import com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -20,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.ArrayList;
@@ -34,12 +34,16 @@ import java.util.UUID;
 public class VideoScriptService {
 
     private static final long MAX_VIDEO_BYTES = 100L * 1024 * 1024;
+    static final BigDecimal ANALYSIS_CLIP_SECONDS = new BigDecimal("15");
+    static final BigDecimal MIN_ANALYSIS_CLIP_SECONDS = new BigDecimal("0.1");
+    private static final BigDecimal CLIP_BOUNDARY_TOLERANCE_SECONDS = new BigDecimal("0.05");
     private static final Set<String> VIDEO_EXTENSIONS = Set.of("mp4", "mov", "m4v", "webm", "avi", "mkv");
 
     private final Path storageRoot;
     private final VideoScriptMapper scriptMapper;
     private final VideoScriptShotMapper shotMapper;
     private final VideoScriptAnalysisProcessor processor;
+    private final VideoFrameExtractor videoFrameExtractor;
     private final ObjectMapper objectMapper;
 
     public VideoScriptService(
@@ -47,12 +51,14 @@ public class VideoScriptService {
             VideoScriptMapper scriptMapper,
             VideoScriptShotMapper shotMapper,
             VideoScriptAnalysisProcessor processor,
+            VideoFrameExtractor videoFrameExtractor,
             ObjectMapper objectMapper
     ) {
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
         this.scriptMapper = scriptMapper;
         this.shotMapper = shotMapper;
         this.processor = processor;
+        this.videoFrameExtractor = videoFrameExtractor;
         this.objectMapper = objectMapper;
     }
 
@@ -62,15 +68,38 @@ public class VideoScriptService {
             String targetMarket,
             String requirements,
             String presentationMode,
+            boolean extractAudio,
             PlatformPrincipal principal
     ) {
-        VideoScript blocking = currentBlocking(principal);
-        if (blocking != null) {
-            throw new BusinessException(
-                    HttpStatus.CONFLICT,
-                    "当前视频还在拆解或等待重试，请先完成当前任务"
-            );
-        }
+        return createAnalysis(video, name, targetMarket, requirements, presentationMode,
+                extractAudio, BigDecimal.ZERO, null, principal);
+    }
+
+    public VideoScript createAnalysis(
+            MultipartFile video,
+            String name,
+            String targetMarket,
+            String requirements,
+            String presentationMode,
+            boolean extractAudio,
+            BigDecimal clipStartSecond,
+            PlatformPrincipal principal
+    ) {
+        return createAnalysis(video, name, targetMarket, requirements, presentationMode,
+                extractAudio, clipStartSecond, null, principal);
+    }
+
+    public VideoScript createAnalysis(
+            MultipartFile video,
+            String name,
+            String targetMarket,
+            String requirements,
+            String presentationMode,
+            boolean extractAudio,
+            BigDecimal clipStartSecond,
+            BigDecimal clipEndSecond,
+            PlatformPrincipal principal
+    ) {
         validateVideo(video);
         String id = UUID.randomUUID().toString();
         String originalName = safeFileName(video.getOriginalFilename());
@@ -82,12 +111,42 @@ public class VideoScriptService {
         if (!directory.startsWith(storageRoot)) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "视频存储路径无效");
         }
-        Path source = directory.resolve("source." + extension);
+        Path originalSource = directory.resolve("original." + extension).normalize();
+        if (!originalSource.startsWith(directory)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频存储路径无效");
+        }
+        Path analysisSource = originalSource;
+        BigDecimal sourceDuration = null;
+        BigDecimal clipStart = null;
+        BigDecimal clipEnd = null;
+        boolean inserted = false;
         try {
             Files.createDirectories(directory);
-            video.transferTo(source);
+            video.transferTo(originalSource);
+            double probedDuration = videoFrameExtractor.probeDuration(originalSource);
+            sourceDuration = seconds(probedDuration);
+            ClipWindow window = clipWindow(
+                    BigDecimal.valueOf(probedDuration), clipStartSecond, clipEndSecond);
+            clipStart = window.startSecond();
+            clipEnd = window.trimmed() ? window.endSecond() : sourceDuration;
+            if (window.trimmed()) {
+                analysisSource = directory.resolve("source.mp4").normalize();
+                if (!analysisSource.startsWith(directory)) {
+                    throw new BusinessException(HttpStatus.BAD_REQUEST, "视频存储路径无效");
+                }
+                videoFrameExtractor.trim(
+                        originalSource,
+                        analysisSource,
+                        clipStart.doubleValue(),
+                        window.durationSeconds().doubleValue()
+                );
+            }
         } catch (IOException exception) {
+            deleteQuietly(directory);
             throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "视频上传保存失败");
+        } catch (RuntimeException exception) {
+            deleteQuietly(directory);
+            throw exception;
         }
 
         String normalizedName = name == null || name.isBlank()
@@ -100,24 +159,24 @@ public class VideoScriptService {
                 "VIDEO_ANALYSIS",
                 normalizePresentationMode(presentationMode),
                 originalName,
-                source.toString(),
-                video.getContentType(),
-                video.getSize(),
+                analysisSource.toString(),
+                analysisSource.equals(originalSource) ? video.getContentType() : "video/mp4",
+                fileSize(analysisSource),
                 trimTo(targetMarket, 80),
                 trimTo(requirements, 4000),
                 principal.userId()
         );
+        script.requestAudioExtraction(extractAudio);
+        script.configureClip(sourceDuration, clipStart, clipEnd);
         try {
             scriptMapper.insert(script);
-        } catch (DuplicateKeyException exception) {
-            deleteQuietly(directory);
-            throw new BusinessException(
-                    HttpStatus.CONFLICT,
-                    "当前视频还在拆解或等待重试，请先完成当前任务"
-            );
+            inserted = true;
+            processor.analyze(id);
+            return script;
+        } catch (RuntimeException exception) {
+            if (!inserted) deleteQuietly(directory);
+            throw exception;
         }
-        processor.analyze(id);
-        return script;
     }
 
     @Transactional
@@ -182,7 +241,7 @@ public class VideoScriptService {
                 new LambdaQueryWrapper<VideoScript>()
                         .eq(VideoScript::getOrganizationId, principal.organizationId())
                         .eq(VideoScript::getCreatedBy, principal.userId())
-                        .in(VideoScript::getStatus, "QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING", "FAILED")
+                        .in(VideoScript::getStatus, "QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING")
                         .orderByDesc(VideoScript::getUpdatedAt)
                         .last("LIMIT 1")
         );
@@ -204,16 +263,8 @@ public class VideoScriptService {
         if (!"READY".equals(script.getStatus()) || !"VIDEO_ANALYSIS".equals(script.getSourceType())) {
             throw new BusinessException(HttpStatus.CONFLICT, "只有已完成的视频拆解脚本可以重新精拆");
         }
-        VideoScript blocking = currentBlocking(principal);
-        if (blocking != null && !blocking.getId().equals(script.getId())) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前已有一条视频拆解任务待处理，请完成后再重新精拆");
-        }
-        try {
-            script.prepareReanalysis();
-            scriptMapper.updateById(script);
-        } catch (DuplicateKeyException exception) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前已有一条视频拆解任务正在运行");
-        }
+        script.prepareReanalysis();
+        scriptMapper.updateById(script);
         processor.analyze(script.getId());
         return script;
     }
@@ -242,6 +293,12 @@ public class VideoScriptService {
                     original.getTargetMarket(),
                     original.getRequirements(),
                     principal.userId()
+            );
+            copy.requestAudioExtraction(original.isExtractAudio());
+            copy.configureClip(
+                    original.getSourceDurationSeconds(),
+                    original.getClipStartSecond(),
+                    original.getClipEndSecond()
             );
             List<VideoScriptShot> originalShots = shotMapper.selectList(
                     new LambdaQueryWrapper<VideoScriptShot>()
@@ -544,6 +601,114 @@ public class VideoScriptService {
         }
     }
 
+    static ClipWindow clipWindow(BigDecimal sourceDuration, BigDecimal requestedStart) {
+        return clipWindow(sourceDuration, requestedStart, null);
+    }
+
+    static ClipWindow clipWindow(
+            BigDecimal sourceDuration,
+            BigDecimal requestedStart,
+            BigDecimal requestedEnd
+    ) {
+        if (sourceDuration == null || sourceDuration.signum() <= 0) {
+            throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "视频时长无效");
+        }
+        BigDecimal normalizedStart = normalizeClipSecond(requestedStart, BigDecimal.ZERO);
+        if (normalizedStart.signum() < 0) {
+            if (normalizedStart.abs().compareTo(CLIP_BOUNDARY_TOLERANCE_SECONDS) <= 0) {
+                normalizedStart = BigDecimal.ZERO;
+            } else {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "截取开始位置不能小于 0 秒");
+            }
+        }
+        if (requestedEnd != null) {
+            return explicitClipWindow(sourceDuration, normalizedStart, requestedEnd);
+        }
+
+        if (sourceDuration.compareTo(ANALYSIS_CLIP_SECONDS) <= 0) {
+            if (normalizedStart.signum() != 0) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "不足 15 秒的视频将使用完整视频，开始位置必须为 0");
+            }
+            return new ClipWindow(BigDecimal.ZERO, sourceDuration, false);
+        }
+        BigDecimal maximumStart = sourceDuration.subtract(ANALYSIS_CLIP_SECONDS);
+        if (normalizedStart.compareTo(maximumStart) > 0) {
+            if (normalizedStart.subtract(maximumStart).compareTo(CLIP_BOUNDARY_TOLERANCE_SECONDS) <= 0) {
+                normalizedStart = maximumStart;
+            } else {
+                throw new BusinessException(
+                        HttpStatus.BAD_REQUEST,
+                        "截取开始位置最晚为 " + displaySeconds(maximumStart) + " 秒，截取片段固定为 15 秒"
+                );
+            }
+        }
+        return new ClipWindow(normalizedStart, normalizedStart.add(ANALYSIS_CLIP_SECONDS), true);
+    }
+
+    private static ClipWindow explicitClipWindow(
+            BigDecimal sourceDuration,
+            BigDecimal normalizedStart,
+            BigDecimal requestedEnd
+    ) {
+        BigDecimal normalizedEnd = normalizeClipSecond(requestedEnd, null);
+        BigDecimal sourceDelta = normalizedEnd.subtract(sourceDuration).abs();
+        if (sourceDelta.compareTo(CLIP_BOUNDARY_TOLERANCE_SECONDS) <= 0) {
+            normalizedEnd = sourceDuration;
+        } else if (normalizedEnd.compareTo(sourceDuration) > 0) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "截取结束位置不能超过源视频时长");
+        }
+        if (normalizedStart.compareTo(sourceDuration) >= 0) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "截取开始位置必须小于源视频时长");
+        }
+        if (normalizedEnd.signum() <= 0 || normalizedEnd.compareTo(normalizedStart) <= 0) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "截取结束位置必须大于开始位置");
+        }
+
+        BigDecimal duration = normalizedEnd.subtract(normalizedStart);
+        if (duration.compareTo(MIN_ANALYSIS_CLIP_SECONDS) < 0) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频截取片段不能短于 0.1 秒");
+        }
+        if (duration.compareTo(ANALYSIS_CLIP_SECONDS) > 0) {
+            BigDecimal overflow = duration.subtract(ANALYSIS_CLIP_SECONDS);
+            if (overflow.compareTo(CLIP_BOUNDARY_TOLERANCE_SECONDS) <= 0) {
+                normalizedEnd = normalizedStart.add(ANALYSIS_CLIP_SECONDS);
+            } else {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "视频截取片段不能超过 15 秒");
+            }
+        }
+
+        boolean fullSource = normalizedStart.signum() == 0 && normalizedEnd.compareTo(sourceDuration) == 0;
+        return new ClipWindow(normalizedStart, normalizedEnd, !fullSource);
+    }
+
+    private static BigDecimal normalizeClipSecond(BigDecimal value, BigDecimal fallback) {
+        if (value == null) {
+            if (fallback != null) return fallback;
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "截取结束位置不能为空");
+        }
+        return value.setScale(3, RoundingMode.HALF_UP).stripTrailingZeros();
+    }
+
+    private static BigDecimal seconds(double value) {
+        if (!Double.isFinite(value) || value <= 0) {
+            throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "视频时长无效");
+        }
+        return BigDecimal.valueOf(value).setScale(3, RoundingMode.HALF_UP).stripTrailingZeros();
+    }
+
+    private static String displaySeconds(BigDecimal value) {
+        return value.setScale(Math.min(Math.max(value.scale(), 0), 3), RoundingMode.DOWN)
+                .stripTrailingZeros().toPlainString();
+    }
+
+    private long fileSize(Path file) {
+        try {
+            return Files.size(file);
+        } catch (IOException exception) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "视频文件读取失败");
+        }
+    }
+
     private String extension(String name) {
         int dot = name.lastIndexOf('.');
         if (dot < 0 || dot == name.length() - 1) return "";
@@ -580,8 +745,8 @@ public class VideoScriptService {
 
     static String normalizePresentationMode(String value) {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
-        if (!Set.of("MODEL_WEAR", "PRODUCT_ONLY").contains(normalized)) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择人物穿搭或纯商品脚本");
+        if (!Set.of("MODEL_WEAR", "PRODUCT_ONLY", "CAST_PRODUCT").contains(normalized)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择人物穿搭、纯商品或人物＋商品脚本");
         }
         return normalized;
     }
@@ -674,6 +839,12 @@ public class VideoScriptService {
     }
 
     public record VideoScriptDetail(VideoScript script, List<VideoScriptShot> shots) {
+    }
+
+    record ClipWindow(BigDecimal startSecond, BigDecimal endSecond, boolean trimmed) {
+        BigDecimal durationSeconds() {
+            return endSecond.subtract(startSecond);
+        }
     }
 
     public record ShotPreview(Path path, Instant lastModified) {

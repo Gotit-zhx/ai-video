@@ -23,6 +23,7 @@ class VideoScriptCompanyIsolationTest {
             scriptMapper,
             mock(VideoScriptShotMapper.class),
             mock(VideoScriptAnalysisProcessor.class),
+            mock(VideoFrameExtractor.class),
             mock(ObjectMapper.class)
     );
 

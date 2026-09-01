@@ -55,7 +55,8 @@ public class AiVideoMonitorService {
                 .in(AiVideoGenerationJob::getTaskId, taskIds));
 
         List<TaskSummary> summaries = tasks.stream().map(task -> new TaskSummary(
-                task.getId(), task.getOrganizationId(), task.getName(), task.getScriptName(), task.getStatus(), task.getProgress(),
+                task.getId(), task.getOrganizationId(), task.getName(), task.getTaskType(), task.getDurationSeconds(),
+                task.getScriptName(), task.getStatus(), task.getProgress(),
                 task.getTotalItems(), task.getCompletedItems(), task.getGenerationMode(), task.getAspectRatio(),
                 task.getResolution(), task.getModelId(), task.getErrorMessage(),
                 countItems(items, task.getId()), countGeneratedImages(assets, task.getId()),
@@ -89,7 +90,8 @@ public class AiVideoMonitorService {
                 assets.stream().filter(asset -> item.getId().equals(asset.getItemId())).map(AssetMonitor::from).toList(),
                 jobs.stream().filter(job -> item.getId().equals(job.getItemId())).map(RequestMonitor::from).toList())).toList();
 
-        return new TaskMonitor(task.getId(), task.getOrganizationId(), task.getName(), task.getScriptName(), task.getScriptVersion(),
+        return new TaskMonitor(task.getId(), task.getOrganizationId(), task.getName(), task.getTaskType(),
+                task.getDurationSeconds(), task.getScriptName(), task.getScriptVersion(),
                 task.getStatus(), task.getProgress(), task.getGenerationMode(), task.getBackgroundMode(),
                 task.getTargetMarket(), task.getProductCategory(), task.getAspectRatio(), task.getResolution(),
                 task.getModelId(), task.getErrorMessage(), task.getCreatedAt(), task.getUpdatedAt(), task.getCompletedAt(), itemMonitors);
@@ -126,13 +128,15 @@ public class AiVideoMonitorService {
 
     public record MonitorSnapshot(MonitorStats stats, List<TaskSummary> tasks) {}
 
-    public record TaskSummary(String id, String organizationId, String name, String scriptName, String status, int progress,
+    public record TaskSummary(String id, String organizationId, String name, String taskType, int durationSeconds,
+                              String scriptName, String status, int progress,
                               int totalItems, int completedItems, String generationMode, String aspectRatio,
                               String resolution, String modelId, String errorMessage, long itemCount,
                               long imageRequests, long videoResults, long videoRequests,
                               Instant createdAt, Instant updatedAt, Instant completedAt) {}
 
-    public record TaskMonitor(String id, String organizationId, String name, String scriptName, int scriptVersion, String status,
+    public record TaskMonitor(String id, String organizationId, String name, String taskType, int durationSeconds,
+                              String scriptName, int scriptVersion, String status,
                               int progress, String generationMode, String backgroundMode, String targetMarket,
                               String productCategory, String aspectRatio, String resolution, String modelId,
                               String errorMessage, Instant createdAt, Instant updatedAt, Instant completedAt,

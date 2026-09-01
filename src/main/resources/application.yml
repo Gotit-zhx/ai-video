@@ -37,10 +37,27 @@ app:
   automation-skill-storage: ${APP_AUTOMATION_SKILL_STORAGE:/data/automation-skills}
   automation-attachment-storage: ${APP_AUTOMATION_ATTACHMENT_STORAGE:/data/automation-attachments}
   video-script-storage: ${APP_VIDEO_SCRIPT_STORAGE:/data/video-scripts}
+  video-script-analysis-concurrency: ${APP_VIDEO_SCRIPT_ANALYSIS_CONCURRENCY:4}
   ai-video-task-storage: ${APP_AI_VIDEO_TASK_STORAGE:/data/ai-video-tasks}
   video:
     max-concurrent-submissions: ${APP_VIDEO_MAX_CONCURRENT_SUBMISSIONS:500}
+    reference-link-secret: ${APP_VIDEO_REFERENCE_LINK_SECRET:${APP_MODEL_SECRET_KEY:local-development-model-secret-change-me}}
+    reference-link-ttl: ${APP_VIDEO_REFERENCE_LINK_TTL:6h}
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:8080}
+  allow-insecure-public-http: ${APP_ALLOW_INSECURE_PUBLIC_HTTP:false}
+  social-login:
+    google:
+      enabled: ${APP_SOCIAL_GOOGLE_ENABLED:false}
+      client-id: ${APP_SOCIAL_GOOGLE_CLIENT_ID:}
+      client-secret: ${APP_SOCIAL_GOOGLE_CLIENT_SECRET:}
+    wechat:
+      enabled: ${APP_SOCIAL_WECHAT_ENABLED:false}
+      client-id: ${APP_SOCIAL_WECHAT_CLIENT_ID:}
+      client-secret: ${APP_SOCIAL_WECHAT_CLIENT_SECRET:}
+    apple:
+      enabled: ${APP_SOCIAL_APPLE_ENABLED:false}
+      client-id: ${APP_SOCIAL_APPLE_CLIENT_ID:}
+      client-secret: ${APP_SOCIAL_APPLE_CLIENT_SECRET:}
   pi-runtime-url: ${APP_PI_RUNTIME_URL:http://localhost:8090}
   pi-runtime-token: ${APP_PI_RUNTIME_TOKEN:heyi-pi-runtime-dev-token}
   oss:

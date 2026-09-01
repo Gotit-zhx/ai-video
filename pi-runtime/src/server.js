@@ -1,6 +1,17 @@
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import {
+  Agent,
+  AgentHarness,
+  InMemorySessionRepo,
+  loadSkills
+} from "@earendil-works/pi-agent-core";
+import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import { jsonrepair } from "jsonrepair";
 import { Type } from "typebox";
@@ -8,6 +19,14 @@ import { Agent as UndiciAgent } from "undici";
 
 const PORT = Number(process.env.PORT || 8090);
 const INTERNAL_TOKEN = process.env.PI_RUNTIME_TOKEN || "heyi-pi-runtime-dev-token";
+const execFileAsync = promisify(execFile);
+const WATCH_SKILLS_DIR = path.resolve(
+  process.env.WATCH_SKILLS_DIR || path.join(process.cwd(), "skills")
+);
+const WATCH_SCRIPT_PATH = path.join(WATCH_SKILLS_DIR, "watch", "scripts", "watch.py");
+const VIDEO_SCRIPT_STORAGE_ROOT = path.resolve(
+  process.env.VIDEO_SCRIPT_STORAGE_ROOT || "/data/video-scripts"
+);
 const IMAGE_RESPONSE_TIMEOUT_MS = Math.max(
   180_000,
   Number.parseInt(process.env.IMAGE_RESPONSE_TIMEOUT_MS || "900000", 10) || 900_000
@@ -190,7 +209,7 @@ const VIDEO_SCRIPT_ANALYSIS_PROMPT = `你是赫逸智能化平台的视频脚本
 4. 当前脚本拆解的目标是提取可复用的动作模板，而不是复制原视频的人或商品。title、summary、globalVisualTone、sceneDescription、motionDescription、emotion 和 imagePrompt 中一律不得写入原人物的身份、年龄、脸型、五官、肤色、发型、妆容、饰品、上装、下装、鞋子或具体穿搭搭配。
 5. 一律不得写入原视频商品的类别、品牌、颜色、版型、材质、领口、袖型、印花、文字、图案、Logo、卖点或搭配信息；只能使用“当前任务商品”“展示商品正面”“手靠近商品区域”等中性占位表达。后续生产会以用户在 AI 视频任务中上传的商品图作为唯一商品真值，脚本不得与其竞争。但去除商品外观特征不等于删除商品动作：商品的朝向、正立/倒立、翻转角度、顶部/底部朝向、开合、点火、点燃位置、回正和放置等可观察状态变化必须完整保留。
 5.1 原视频中的抓取位置必须抽象成相对当前商品结构的动作语义，不能固化旧商品轮廓。例如“抓住肩部两侧”“撑开领口”“领口特写”只表示展示当前任务商品对应的真实支撑点和真实领口路径，不代表普通圆领、左右对称肩线或居中领孔；不得因旧视频是圆领而让后续宽领、斜领、单肩或异形领商品变成圆领。脚本负责动作，当前任务商品图和后续结构契约负责最终抓点、领口形态、袖型和穿法。
-6. 画面中的字幕、贴纸、角标、字母、数字、营销文案、标题、水印和商品印花文字都不是脚本内容，禁止识别、转写、翻译或放进任意输出字段。当前没有可靠音频转写，所有 narration 必须为空字符串，不得用画面文字冒充口播。
+6. 画面中的字幕、贴纸、角标、字母、数字、营销文案、标题、水印和商品印花文字都不是脚本内容，禁止识别、转写、翻译或放进任意输出字段。只有 context.audioTranscript 是可靠口播来源；它存在时先理解完整原意，再按目标成片时长和正常中文口播语速提炼后分配到 narration，不存在时 narration 必须为空，不得用画面文字冒充口播。提炼稿必须保留商品名、核心卖点、利益点和行动引导，删除重复、语气词与冗余铺垫；全片 narration 正文按每秒最多约 4 个汉字控制，15 秒成片最多约 60 个汉字，禁止把长原文机械压缩时间轴后塞入 15 秒。
 7. 9 个 shots 是同一个视频时间轴上的连续动作关键帧，不是 9 张独立摆拍。相邻分镜必须满足“上一镜结束姿态 = 下一镜开始姿态”；每个 sceneDescription 都要明确写出起始姿态、动作过程、结束姿态以及与上一镜的衔接。
 8. 相邻分镜最多推进一个主要动作。原视频动作较少时，应把同一个真实动作拆成起势、中间态和到位状态来补足 9 镜，不得凭空添加转身、走动、抬手或换姿势。
 9. imagePrompt.prompt 必须写成可连续插值的动作关键帧描述：仅固定人物数量、机位、焦段、背景、光线和地面位置，并使用“当前任务人物”“当前任务商品”等中性占位词；只描述本格相对上一格发生的小幅动作增量，不得复述原人物或原商品视觉信息。
@@ -205,7 +224,7 @@ const VIDEO_SCRIPT_ANALYSIS_PROMPT = `你是赫逸智能化平台的视频脚本
 18. 必须逐帧追踪手与商品的接触关系及商品朝向。如果画面可见“商品倒立露出底部→点火工具接触底部点火位置→商品翻转回正→放到地面”或其他同类功能动作链，必须按真实顺序分配到连续分镜，并在 title、sceneDescription 和 motionDescription 中明确写出每一步；火焰、烟雾和点火接触点是动作证据，不得因商品去特征规则而省略。画面未出现时不得套用或虚构这些动作。
 19. 必须建立并逐帧保持“主体状态账本”：每一格都要确认当前任务商品此刻是包装中、取出中、折叠、展开、手持展示、正在穿上、已经穿在人物身上、局部特写或离开画面，以及人物是手持商品还是已穿着商品。凡原片真实出现的状态切换都属于主动作，必须在 title、sceneDescription、motionDescription 和 imagePrompt.prompt 中一致写明，禁止把“包装→取出→展开→穿上→穿着转身”压缩、改写成全程手持或同一姿势。
 20. 输出前按 01→09 做一次状态连续性自检：上一格结束状态必须等于下一格开始状态；人物、商品、包装和手部接触关系不得无解释出现、消失或回退。若抽帧明确显示后段人物已穿上当前任务商品，后段不得继续写成手持商品；若某格是包装、折叠、领口/印花特写或穿着展示，必须保留这一可见展示方式，不得为了动作平滑统一成胸前举衣。
-20.1 必须服从输入中的 presentationMode。MODEL_WEAR 表示“人物穿搭脚本”：九格以同一人物实际穿着当前任务商品为核心，允许必要的穿上过程和商品特写，但不得把主体流程写成无人静物展示。PRODUCT_ONLY 表示“纯商品脚本”：禁止人物穿着商品或出现完整人物，只允许脚本确有需要时出现一双手进行拿取、摆放、展开和细节展示；若原视频有人物，应只迁移可复用的动作节奏、运镜和构图，并改写成纯商品可执行动作。两种模式不得混用。
+20.1 必须服从输入中的 presentationMode。MODEL_WEAR 是人物穿搭；PRODUCT_ONLY 是纯商品，禁止完整人物；CAST_PRODUCT 是人物＋商品，必须完整保留原视频中的出镜人数、商品数量、人物之间以及人物与商品的互动关系，但只写“当前任务人物/商品”占位，不复制原人物身份和原商品外观。
 21. 在阅读全部关键帧后，先在内部建立“动作状态账本”：对每个时间点分别记录商品可见面（正面/正面斜侧/窄边/背面斜侧/背面）、商品朝向、展开或折叠程度、手指实际抓握区域、支撑点数量、手腕旋转方向、布料最高受力点与未支撑侧。正面、侧面、背面和抓握位置属于动作状态，不属于被禁止的商品外观，必须准确保留。
 22. 九个 imagePrompt.sourceTimestampSeconds 必须由你从 frameOrder 中自主选择，且必须等于某个真实输入帧的 timestampSeconds；优先覆盖真实动作状态变化，不得固定等分。九个时间点严格递增，必须包含接近开头和接近结尾的证据帧。imagePrompt.sourceDurationSeconds 必须原样复制 sourceDurationSeconds。原片超过 15 秒时，只压缩输出的生产 startSecond/endSecond，不能丢弃 15 秒后的动作证据。
 23. 若同一只手全程持有商品，也不能把九格写成同一姿势；必须保留抓握位置、手腕角度、商品可见面、展开程度与运动方向的真实变化。例如原片出现正面→窄边→背面→再回正面时，九镜必须完整保留这个顺序。
@@ -275,18 +294,19 @@ const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `你是电商服装图像生产中的�
 10. 看不清的背部连接、隐藏肩带或内层结构不得猜测；写入 uncertainties 并降低 confidence。不得因为不确定而把可见的非对称结构改成常规款。
 11. 不评价模特、审美和搭配，不抄录品牌或营销文案。每个数组最多 10 项，每项简短明确。`;
 
-const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `你是服装生成结果的商品身份与结构质检器。输入包含两张图片：第 1 张是用户上传的真实商品母版，第 2 张是待验收的 AI 主图或九宫格；用户消息还会给出已确认的服装结构契约。
-只检查商品身份和物理结构是否被正确还原，不评价人物长相、背景、美感、清晰度或动作创意。普通款与特殊款采用同一验收标准：必须检查领口的宽度、深度和连续路径，肩线与露肩状态，左右袖数量、长度与连接位置，衣身长宽比例、下摆、肩带/绕颈带/扣环、衣身开口、正反面关系，以及主印花/Logo 的类别、位置和占比是否仍能确认是同一件商品。自然透视、遮挡、褶皱和合理的局部文字形变可以接受，但不能把商品改成相似款。
+const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `你是服装生成结果的商品身份、结构与中近景构图质检器。输入包含两张图片：第 1 张是用户上传的真实商品母版，第 2 张是待验收的 AI 主图或九宫格；用户消息还会给出已确认的服装结构契约和 framingContract。
+必须同时检查商品身份、物理结构和中近景构图；不评价人物美丑、背景审美或动作创意。普通款与特殊款采用同一验收标准：必须检查领口的宽度、深度和连续路径，肩线与露肩状态，左右袖数量、长度与连接位置，衣身长宽比例、下摆、肩带/绕颈带/扣环、衣身开口、正反面关系，以及主印花/Logo 的类别、位置和占比是否仍能确认是同一件商品。自然透视、遮挡、褶皱和合理的局部文字形变可以接受，但不能把商品改成相似款。
 用户消息中的 assetType=MODEL_IMAGE 时，第 2 张必须是人物已经按真实开口正确穿好商品的穿着母版；如果人物只是把衣服举在胸前、拿在手中、披在身前，或用手向外拉领口伪造露肩，即使商品平铺形状接近也必须判 valid=false。双手不得遮挡或人为牵拉领口、肩线和袖口。
+中近景是与商品结构同级的硬验收条件：MODEL_IMAGE 的人物必须从头顶拍到大腿中下段、下边界位于膝盖上方，膝盖以下、双脚和鞋子不可见；脸从发际线到下巴的高度必须至少占整张图高度 15%。STORYBOARD_GRID 必须逐格检查，所有人物格都满足同一 15% 人脸占比和膝盖上方裁切，人物主体尺度在 01–09 保持稳定；任意一格是远景、全景、完整全身、露出膝盖以下/脚部、人物明显过小或镜头突然拉远，都必须判 valid=false。纯商品格不要求人脸，但商品必须采用近景并填满主要画面。不得因为脚本、原视频或参考图采用远景而放行。
 九宫格必须将全部 9 格分别直接与第 1 张商品母版核对，不能用前一格作为后一格的商品标准；第 07、08、09 格也必须保持与第 01 格相同的商品保真度。只要任意一格把宽领缩成小口领、改变领口深度、缩短或增长袖子、改变衣身比例、把斜领改成小圆领、把露肩补齐、把左右结构对称化、增删袖子/肩带、换露肩侧、丢失主要印花身份或把原商品改成普通/相似 T 恤，valid 就必须为 false。布料因抓握、重力、转身产生的自然褶皱不算结构错误。
-只返回合法 JSON，不要 Markdown，不要额外文字：
+只返回合法、紧凑的 JSON，不要 Markdown，不要解释推理过程，不要额外文字：
 {
   "valid": false,
-  "violations": ["指出第几格、哪一身体侧、哪段领口或哪只袖发生了什么错误"],
-  "correctionPrompt": "给下一次生成使用的简短、可执行纠错指令，明确必须保留的身体侧和连接关系",
+  "violations": ["第几格/身体侧/部位：错误"],
+  "correctionPrompt": "一句可执行纠错指令",
   "confidence": 0.0
 }
-如果第 2 张忠实保持同一商品身份和结构，valid=true，violations 为空数组。不得因为小段印花文字的轻微变形判失败，但主图案类别、位置、面积或商品识别性明显改变时必须判失败。`;
+violations 最多 3 条，每条最多 30 个汉字；构图错误必须注明 MODEL_IMAGE 或具体格号。correctionPrompt 最多 80 个汉字，只保留最关键的结构和构图修正。valid=true 时 violations 必须为空数组且 correctionPrompt 为空字符串。不得因为小段印花文字的轻微变形判失败，但主图案类别、位置、面积或商品识别性明显改变时必须判失败。`;
 
 const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策划器。输入可能是一名业务人员写的一整段自然语言需求，也可能包含按顺序排列的多张真实参考图片。你要理解真实营销意图，将其整理成可直接制作的固定 9 个分镜。
 只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字：
@@ -323,7 +343,23 @@ const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策�
 12. 自动判断目的地语言：businessPrompt 明确指定语言或市场时优先服从；否则按海报营销正文的主要语言判断，targetMarketHint 仅在海报语言不明确时辅助。泰文用泰语，马来文用马来语，菲律宾文用菲律宾语，简体中文用中文，英文用英语；混合语言以主要营销正文为准。detectedLanguage 和 detectedTargetMarket 必须返回判断结果。
 13. 产品海报模式要把连贯旁白按语义顺序分到 9 段，每段都能在约 1.6—1.7 秒内自然说完；只使用海报可确认的信息，不虚构功效、参数、价格或承诺。如果海报没有足够文案，使用不带未证实卖点的通用展示旁白。
 14. 如果输入已有脚本名称或视觉基调，在不冲突时优先保留并优化。时间由平台统一分配，不要返回时间字段。
-15. 必须服从输入中的 presentationMode。MODEL_WEAR 表示“人物穿搭脚本”：九格必须围绕同一人物实际穿着当前任务商品展开，允许必要的穿上过程和商品特写，但不能写成无人静物流程。PRODUCT_ONLY 表示“纯商品脚本”：禁止人物穿着商品或出现完整人物；只有具体展示动作需要时才允许一双手进入，围绕商品静物、手持、展开、旋转、使用和细节特写设计。两种模式不得混用。`;
+15. 必须服从输入中的 presentationMode。MODEL_WEAR 是人物穿搭；PRODUCT_ONLY 是纯商品；CAST_PRODUCT 是人物＋商品，需保留指定的多人物、多商品数量和互动关系。不同模式不得混用。`;
+
+const NARRATION_LOCALIZATION_PROMPT = `你是电商短视频旁白本地化引擎。输入包含目标市场 targetMarket，以及若干已有旁白的分镜。
+只返回 JSON，不要解释：
+{
+  "targetLanguage": "实际使用的语言",
+  "shots": [{"sequence": 1, "narration": "旁白：本地化后的完整口播"}]
+}
+
+规则：
+1. 只翻译输入中已有的 narration，绝不为没有旁白的分镜新增文字；返回的 sequence 集合必须与输入完全一致。
+2. 保留每条开头的“对白：”“旁白：”或“口播：”类型标记；只翻译标记后的正文。
+3. 不改商品名、品牌名、数字、价格、单位、优惠条件和专有名词，不增加原文没有的卖点、承诺或事实。
+4. 保持原意、营销力度和行动引导，使用目标市场自然、口语化、适合短视频的表达，不做逐字生硬直译。
+5. 译文必须适配原分镜的可说时长；不得比原文明显更长。必要时在不破坏含义的前提下精炼。
+6. 市场语言固定规则：中国→简体中文；菲律宾→菲律宾语（Filipino/Tagalog）；马来西亚→马来语；泰国→泰语；新加坡→英语；印度尼西亚→印尼语；越南→越南语；日本→日语；韩国→韩语；美国/英国/澳大利亚/加拿大→英语。其他市场使用该市场面向消费者最主要的官方语言。
+7. 输入正文已经是目标语言时仅做自然度校正，不改成其他语言。`;
 
 const AUTOMATION_AGENT_PROMPT = `你是赫逸智能化平台中负责一条自动化任务全生命周期的 Pi Agent。
 你会持续收到同一任务的计划、脚本输出、检查点、页面异常、恢复结果和最终结果。
@@ -437,6 +473,387 @@ function modelFrom(config) {
       supportsUsageInStreaming: true
     }
   };
+}
+
+let watchSkillPromise;
+
+function pathIsInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function validatedSourceVideoPath(value) {
+  const candidate = path.resolve(String(value || "").trim());
+  if (!String(value || "").trim()) throw new Error("视频原文件路径为空");
+  if (!pathIsInside(VIDEO_SCRIPT_STORAGE_ROOT, candidate)) {
+    throw new Error("视频原文件不在已授权的脚本存储目录中");
+  }
+  if (!/\.(mp4|mov|mkv|webm|m4v|avi)$/i.test(candidate)) {
+    throw new Error("视频原文件格式不受支持");
+  }
+  return candidate;
+}
+
+async function getWatchSkill() {
+  watchSkillPromise ??= (async () => {
+    const env = new NodeExecutionEnv({ cwd: WATCH_SKILLS_DIR });
+    const loaded = await loadSkills(env, WATCH_SKILLS_DIR);
+    const skill = loaded.skills.find(candidate => candidate.name === "watch");
+    if (!skill) {
+      const details = loaded.diagnostics.map(item => item.message).filter(Boolean).join("; ");
+      throw new Error(`watch Skill 加载失败${details ? `: ${details}` : ""}`);
+    }
+    return skill;
+  })();
+  return watchSkillPromise;
+}
+
+function createRestrictedFrameReadTool(workDirectory) {
+  const root = path.resolve(workDirectory);
+  return {
+    name: "read",
+    label: "read",
+    description: "读取 watch Skill 在当前任务目录中生成的文本或 JPEG/PNG/WebP 关键帧。",
+    parameters: Type.Object({
+      path: Type.String({ description: "watch 报告列出的关键帧绝对路径" })
+    }),
+    async execute(_toolCallId, input) {
+      const candidate = path.resolve(root, String(input?.path || ""));
+      if (!pathIsInside(root, candidate)) {
+        throw new Error("拒绝读取当前视频任务目录之外的文件");
+      }
+      const info = await stat(candidate);
+      if (!info.isFile()) throw new Error("读取目标不是文件");
+      if (info.size > 12 * 1024 * 1024) throw new Error("读取文件超过 12MB 限制");
+      const bytes = await readFile(candidate);
+      const extension = path.extname(candidate).toLowerCase();
+      const mimeType = extension === ".png" ? "image/png"
+        : extension === ".webp" ? "image/webp"
+          : [".jpg", ".jpeg"].includes(extension) ? "image/jpeg" : null;
+      if (mimeType) {
+        return {
+          content: [
+            { type: "text", text: `已读取关键帧 ${path.basename(candidate)}` },
+            { type: "image", data: bytes.toString("base64"), mimeType }
+          ]
+        };
+      }
+      return {
+        content: [{ type: "text", text: bytes.toString("utf8").slice(0, 200_000) }]
+      };
+    }
+  };
+}
+
+async function preprocessVideoWithWatch(sourceVideoPath, progressReporter) {
+  const sourceInfo = await stat(sourceVideoPath);
+  if (!sourceInfo.isFile() || sourceInfo.size <= 0) throw new Error("视频原文件不存在或为空");
+  const workDirectory = await mkdtemp(path.join(os.tmpdir(), "heyi-watch-"));
+  progressReporter?.publish(58, "WATCH_EXTRACTING_KEYFRAMES");
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      "python3",
+      [
+        WATCH_SCRIPT_PATH,
+        sourceVideoPath,
+        "--detail", "balanced",
+        "--max-frames", "30",
+        "--resolution", "512",
+        "--no-whisper",
+        "--out-dir", workDirectory
+      ],
+      {
+        timeout: 120_000,
+        maxBuffer: 4 * 1024 * 1024,
+        windowsHide: true
+      }
+    );
+    const report = String(stdout || "").trim();
+    if (!report || !/\.(?:jpe?g|png|webp)\b/i.test(report)) {
+      throw new Error(`watch Skill 没有返回可读取的关键帧${stderr ? `: ${String(stderr).slice(-500)}` : ""}`);
+    }
+    const frameCount = (report.match(/\.(?:jpe?g|png|webp)\b/gi) || []).length;
+    progressReporter?.publish(62, "WATCH_KEYFRAMES_READY");
+    return { workDirectory, report, frameCount };
+  } catch (error) {
+    await rm(workDirectory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function createWatchHarness(config, apiKey, workDirectory, progressReporter) {
+  const watchSkill = await getWatchSkill();
+  const sessionRepo = new InMemorySessionRepo();
+  const session = await sessionRepo.create({ id: `watch-${randomUUID()}` });
+  const state = { messages: [] };
+  const models = {
+    streamSimple(model, context, options = {}) {
+      return streamSimple(model, context, {
+        ...options,
+        apiKey,
+        maxTokens: 6500,
+        timeoutMs: Number(options.timeoutMs || 180_000),
+        maxRetries: Number(options.maxRetries ?? 2),
+        maxRetryDelayMs: 15_000
+      });
+    }
+  };
+  const harness = new AgentHarness({
+    session,
+    models,
+    model: modelFrom(config),
+    thinkingLevel: "medium",
+    systemPrompt: VIDEO_SCRIPT_ANALYSIS_PROMPT,
+    resources: { skills: [watchSkill] },
+    tools: [createRestrictedFrameReadTool(workDirectory)],
+    activeToolNames: ["read"],
+    streamOptions: {
+      timeoutMs: 180_000,
+      maxRetries: 2,
+      maxRetryDelayMs: 15_000
+    }
+  });
+  harness.subscribe(event => {
+    progressReporter?.handleEvent(event);
+    if (event.type === "message_end" && event.message?.role === "assistant") {
+      state.messages.push(event.message);
+    }
+  });
+  return {
+    state,
+    prompt: (text) => harness.prompt(text),
+    skill: (name, instructions) => harness.skill(name, instructions)
+  };
+}
+
+function spokenNarrationLength(result) {
+  const shots = Array.isArray(result?.shots) ? result.shots : [];
+  return shots.reduce((total, shot) => {
+    const narration = String(shot?.narration || "")
+      .replace(/^(对白|旁白|口播)[：:]\s*/, "")
+      .replace(/\s+/g, "");
+    return total + Array.from(narration).length;
+  }, 0);
+}
+
+function completedReplyOrThrow(assistant, fallbackMessage) {
+  if (!assistant) throw new Error(fallbackMessage);
+  const reply = messageText(assistant);
+  if (assistant.stopReason !== "error") return { reply, recoveredMissingFinishReason: false };
+  const missingFinishReason = /stream ended without finish_reason/i.test(String(assistant.errorMessage || ""));
+  if (missingFinishReason && reply.trim()) {
+    return { reply, recoveredMissingFinishReason: true };
+  }
+  throw new Error(assistant.errorMessage || fallbackMessage);
+}
+
+function recoverableStreamFailure(error) {
+  return /(connection error|stream ended without finish_reason|fetch failed|socket|timed? out|timeout|econnreset|eof)/i
+    .test(String(error?.message || error || ""));
+}
+
+async function requestNonStreamingChat(
+  config, apiKey, systemPrompt, prompt, frames, maxTokens = 6500, timeoutMs = 180_000) {
+  const baseUrl = String(config.baseUrl || "").trim().replace(/\/+$/, "");
+  const endpoint = /\/chat\/completions$/i.test(baseUrl)
+    ? baseUrl
+    : `${baseUrl}/chat/completions`;
+  const modelId = String(config.modelId || "").trim();
+  const tokenOptions = /^gpt-5(?:\.|-|$)/i.test(modelId)
+    ? { max_completion_tokens: maxTokens, reasoning_effort: "low" }
+    : { max_tokens: maxTokens };
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: modelId,
+      stream: false,
+      ...tokenOptions,
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            ...frames.map(frame => ({
+              type: "image_url",
+              image_url: {
+                url: `data:${String(frame.mimeType)};base64,${String(frame.data)}`
+              }
+            }))
+          ]
+        }
+      ]
+    }),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(`非流式兜底请求失败 ${response.status}: ${body.slice(0, 500)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new Error("非流式兜底响应不是有效 JSON");
+  }
+  const content = parsed?.choices?.[0]?.message?.content;
+  const reply = Array.isArray(content)
+    ? content.map(part => typeof part === "string" ? part : String(part?.text || "")).join("")
+    : String(content || "");
+  if (!reply.trim()) throw new Error("非流式兜底没有返回有效视频脚本");
+  return reply.trim();
+}
+
+async function requestVideoScriptNonStreaming(config, apiKey, prompt, frames) {
+  return requestNonStreamingChat(
+    config, apiKey, VIDEO_SCRIPT_ANALYSIS_PROMPT, prompt, frames, 6500);
+}
+
+async function requestStreamingChat(
+  config, apiKey, systemPrompt, prompt, frames, maxTokens = 6500, options = {}) {
+  const agent = new Agent({
+    initialState: {
+      systemPrompt,
+      model: modelFrom(config),
+      thinkingLevel: String(options.thinkingLevel || "medium"),
+      messages: [],
+      tools: []
+    },
+    streamFn: (model, context, options) =>
+      streamSimple(model, context, {
+        ...options,
+        apiKey,
+        maxTokens,
+        timeoutMs: Number(options.timeoutMs || 180_000),
+        maxRetries: Number(options.maxRetries ?? 2),
+        maxRetryDelayMs: 15_000
+      }),
+    convertToLlm: messages =>
+      messages.filter(message => ["user", "assistant"].includes(message.role))
+  });
+  await agent.prompt(
+    prompt,
+    frames.map(frame => ({
+      type: "image",
+      data: String(frame.data),
+      mimeType: String(frame.mimeType)
+    }))
+  );
+  const assistant = [...agent.state.messages]
+    .reverse()
+    .find(message => message.role === "assistant");
+  return completedReplyOrThrow(assistant, "并行分批分析没有返回有效结果").reply;
+}
+
+async function requestVideoScriptBatched(config, apiKey, prompt, frames, onBatchComplete = null) {
+  const batchSize = 8;
+  const batches = [];
+  for (let offset = 0; offset < frames.length; offset += batchSize) {
+    batches.push(frames.slice(offset, offset + batchSize));
+  }
+  let completedBatches = 0;
+  const reportCompleted = (batchIndex) => {
+    completedBatches += 1;
+    if (typeof onBatchComplete === "function") {
+      onBatchComplete(completedBatches, batches.length, batchIndex);
+    }
+  };
+  const batchPromptFor = (batch, batchIndex, globalOffset, task = "逐帧提取视频动作证据，不生成最终脚本") => JSON.stringify({
+    task,
+    batchNumber: batchIndex + 1,
+    totalBatches: batches.length,
+    frameOrder: batch.map((frame, index) => ({
+      imagePosition: index + 1,
+      sourceIndex: Number(frame.index || globalOffset + index + 1),
+      timestampSeconds: Number(frame.timestampSeconds || 0)
+    })),
+    requirements: [
+      "逐张记录时间点、人物数量、商品数量、人物与商品状态、手部接触点、抓握区域、商品朝向和动作变化",
+      "记录包装、取出、折叠、展开、手持、穿上、已穿着、局部特写等可见状态切换",
+      "记录机位、景别、运镜、背景、光线和镜头切点",
+      "只描述可复用动作证据，不复制原人物身份或原商品外观，不读取字幕水印",
+      "输出紧凑 JSON 数组，每张输入图对应一条 observation，必须保留 timestampSeconds"
+    ]
+  });
+  const initialResults = await Promise.allSettled(batches.map(async (batch, batchIndex) => {
+    const batchStartedAt = Date.now();
+    console.info(`[video-script] parallel batch ${batchIndex + 1}/${batches.length} started (${batch.length} frames)`);
+    const globalOffset = batchIndex * batchSize;
+    const batchPrompt = batchPromptFor(batch, batchIndex, globalOffset);
+    let result;
+    try {
+      result = await requestStreamingChat(
+        config,
+        apiKey,
+        "你是视频关键帧证据提取器。只忠实观察当前批次图片，输出合法 JSON，不生成最终营销脚本。",
+        batchPrompt,
+        batch,
+        1400,
+        { thinkingLevel: "low", timeoutMs: 120_000, maxRetries: 0 }
+      );
+    } catch (error) {
+      console.warn(`[video-script] parallel batch ${batchIndex + 1}/${batches.length} failed after ${Date.now() - batchStartedAt}ms: ${String(error?.message || error)}`);
+      throw error;
+    }
+    console.info(`[video-script] parallel batch ${batchIndex + 1}/${batches.length} completed in ${Date.now() - batchStartedAt}ms`);
+    reportCompleted(batchIndex);
+    return result;
+  }));
+  const evidence = new Array(batches.length);
+  await Promise.all(initialResults.map(async (settled, batchIndex) => {
+    if (settled.status === "fulfilled") {
+      evidence[batchIndex] = settled.value;
+      return;
+    }
+    const batch = batches[batchIndex];
+    console.warn(`[video-script] recovering only failed batch ${batchIndex + 1}/${batches.length} as 4-frame sub-batches`);
+    const subBatchSize = 4;
+    const subResults = await Promise.all(Array.from(
+      { length: Math.ceil(batch.length / subBatchSize) },
+      async (_, subIndex) => {
+        const subBatch = batch.slice(subIndex * subBatchSize, (subIndex + 1) * subBatchSize);
+        const globalOffset = batchIndex * batchSize + subIndex * subBatchSize;
+        const subPrompt = batchPromptFor(
+          subBatch,
+          batchIndex,
+          globalOffset,
+          `补齐第 ${batchIndex + 1} 批的第 ${subIndex + 1} 个子批证据，不生成最终脚本`
+        );
+        try {
+          return await requestStreamingChat(
+            config,
+            apiKey,
+            "你是视频关键帧证据提取器。只忠实观察当前小批图片，输出合法 JSON。",
+            subPrompt,
+            subBatch,
+            800,
+            { thinkingLevel: "low", timeoutMs: 90_000, maxRetries: 0 }
+          );
+        } catch (streamError) {
+          console.warn(`[video-script] sub-batch ${batchIndex + 1}.${subIndex + 1} stream fallback: ${String(streamError?.message || streamError)}`);
+          return requestNonStreamingChat(
+            config,
+            apiKey,
+            "你是视频关键帧证据提取器。只忠实观察当前小批图片，输出合法 JSON。",
+            subPrompt,
+            subBatch,
+            800
+          );
+        }
+      }
+    ));
+    evidence[batchIndex] = subResults.join("\n");
+    reportCompleted(batchIndex);
+    console.info(`[video-script] failed batch ${batchIndex + 1}/${batches.length} recovered from ${subResults.length} sub-batches`);
+  }));
+  const synthesisPrompt = `${prompt}\n\n以下是按完整时间轴分成 ${batches.length} 批、覆盖全部 ${frames.length} 张关键帧得到的结构化视觉证据。你必须综合全部批次生成最终 9 分镜，不得只使用第一批，也不得改变原始要求：\n${evidence.map((value, index) => `批次 ${index + 1}:\n${value}`).join("\n\n")}`;
+  const reply = await requestStreamingChat(
+    config, apiKey, VIDEO_SCRIPT_ANALYSIS_PROMPT, synthesisPrompt, [], 6500);
+  return { reply, evidence };
 }
 
 function modelSignature(config = {}) {
@@ -606,11 +1023,17 @@ function imageEndpoint(baseUrl, mode) {
   return `${normalized}/images/${target}`;
 }
 
-function imageMime(buffer, fallback = "image/png") {
+function detectedImageMime(buffer) {
   if (buffer.length >= 12 && buffer[0] === 0x89 && buffer[1] === 0x50) return "image/png";
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8) return "image/jpeg";
   if (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF"
       && buffer.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  return "";
+}
+
+function imageMime(buffer, fallback = "image/png") {
+  const detected = detectedImageMime(buffer);
+  if (detected) return detected;
   return String(fallback || "image/png").split(";")[0].trim().toLowerCase();
 }
 
@@ -620,24 +1043,65 @@ function extensionForMime(mimeType) {
   return "png";
 }
 
-async function responseImageBytes(item, apiKey) {
+function normalizeReferenceImage(input, index) {
+  const bytes = Buffer.from(String(input?.dataBase64 || ""), "base64");
+  if (!bytes.length) {
+    const error = new Error(`参考图 ${index + 1} 为空或 Base64 无效`);
+    error.statusCode = 400;
+    error.failureCode = "REFERENCE_IMAGE_INVALID";
+    throw error;
+  }
+  if (bytes.length > 64 * 1024 * 1024) {
+    const error = new Error(`参考图 ${index + 1} 超过 64MB 限制`);
+    error.statusCode = 400;
+    error.failureCode = "REFERENCE_IMAGE_TOO_LARGE";
+    throw error;
+  }
+  // Trust the actual file signature instead of an upload-time content type. Some OpenAI-compatible
+  // providers parse multipart images from the filename extension and otherwise report a vague
+  // "failed to read reference image" even though the bytes are valid.
+  const mimeType = detectedImageMime(bytes);
+  if (!/^image\/(jpeg|png|webp)$/i.test(mimeType)) {
+    const error = new Error(`参考图 ${index + 1} 不是可读取的 JPEG、PNG 或 WEBP 图片`);
+    error.statusCode = 400;
+    error.failureCode = "REFERENCE_IMAGE_UNSUPPORTED";
+    throw error;
+  }
+  return { bytes, mimeType, fileName: `reference-${index + 1}.${extensionForMime(mimeType)}` };
+}
+
+function resultDownloadFailure(error) {
+  const upstreamStatus = Number(error?.status || 0);
+  const causeCode = String(error?.cause?.code || error?.code || "");
+  if (upstreamStatus > 0) {
+    return { upstreamStatus, failureCode: `RESULT_DOWNLOAD_HTTP_${upstreamStatus}` };
+  }
+  if (/timeout|timed out|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|ETIMEDOUT/i
+      .test(`${String(error?.message || "")} ${causeCode}`)) {
+    return { upstreamStatus: 0, failureCode: "RESULT_DOWNLOAD_TIMEOUT" };
+  }
+  return { upstreamStatus: 0, failureCode: "RESULT_DOWNLOAD_NETWORK_ERROR" };
+}
+
+async function responseImageBytes(item, apiKey, options = {}) {
   const encoded = String(item?.b64_json || item?.b64Json || item?.image_base64 || "");
   if (encoded) return Buffer.from(encoded.replace(/^data:image\/[^;]+;base64,/i, ""), "base64");
   const url = String(item?.url || "").trim();
   if (!/^https?:\/\//i.test(url)) throw new Error("图片模型没有返回图片数据");
-  const retryDelays = [1_000, 3_000, 8_000];
+  const retryDelays = Array.isArray(options.retryDelays) ? options.retryDelays : [1_000, 3_000, 8_000];
+  const requestTimeoutMs = Math.max(5_000, Number(options.timeoutMs || 120_000));
   let lastError;
   for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
     try {
       let result = await fetch(url, {
         dispatcher: IMAGE_FETCH_DISPATCHER,
-        signal: AbortSignal.timeout(120_000)
+        signal: AbortSignal.timeout(requestTimeoutMs)
       });
       if ((result.status === 401 || result.status === 403) && apiKey) {
         result = await fetch(url, {
           headers: { Authorization: `Bearer ${apiKey}` },
           dispatcher: IMAGE_FETCH_DISPATCHER,
-          signal: AbortSignal.timeout(120_000)
+          signal: AbortSignal.timeout(requestTimeoutMs)
         });
       }
       if (!result.ok) {
@@ -826,6 +1290,7 @@ async function callImageModel(config, params, inputImages) {
   const headers = { Authorization: `Bearer ${config.apiKey}` };
   let bodyFactory;
   if (mode === "edit") {
+    const normalizedReferences = inputImages.map(normalizeReferenceImage);
     bodyFactory = () => {
       const form = new FormData();
       form.append("model", String(config.modelId));
@@ -833,13 +1298,12 @@ async function callImageModel(config, params, inputImages) {
       form.append("size", size);
       if (quality) form.append("quality", quality);
       if (inputFidelity) form.append("input_fidelity", inputFidelity);
-      inputImages.forEach((input, index) => {
-        const bytes = Buffer.from(String(input.dataBase64 || ""), "base64");
+      normalizedReferences.forEach((input) => {
         const field = inputImages.length === 1 ? "image" : "image[]";
         form.append(
           field,
-          new Blob([bytes], { type: String(input.mimeType || "image/png") }),
-          String(input.name || `reference-${index + 1}.png`)
+          new Blob([input.bytes], { type: input.mimeType }),
+          input.fileName
         );
       });
       return form;
@@ -1817,7 +2281,7 @@ async function enforceVideoShotCount(runtimeAgent, parsed, desiredShotCount, pro
 4. 每个分镜都必须保留完整的 sceneDescription、motionDescription、motionIntensity、shotSize、cameraMovement、emotion 和 imagePrompt；
 5. 相邻分镜必须是同一动作的连续可达状态，上一镜结束姿态必须等于下一镜开始姿态；每镜最多推进一个主要动作，禁止姿势重置、瞬移、反关节和穿模；
 6. 重整过程中仍然不得带入原人物的身份、外貌、发型、妆容、饰品和穿搭，不得带入原视频商品的类别、颜色、版型、印花、文字、Logo、卖点或搭配；商品只写“当前任务商品”；
-7. 不得识别、转写或保留画面字幕、贴纸、字母、数字、水印和营销文案；没有音频转写时所有 narration 必须为空字符串；
+7. 不得识别、转写或保留画面字幕、贴纸、字母、数字、水印和营销文案；只允许使用 context.audioTranscript 中的转写口播，没有音频转写时所有 narration 必须为空字符串；
 8. transitionDescription 必须保留真实镜头边界语义：首段为“无”，同一物理镜头内部为“同镜头连续，无转场”，只有真实切点才允许写硬切或具体转场；
 9. 补足或重整不得破坏主体状态账本。包装中、取出、折叠、展开、手持、穿上、已穿着、局部特写、离开画面等原片可见状态及其切换必须保留；尤其不得把后段“人物已穿着商品”改回“人物手持商品”，也不得把包装/展开/穿着等不同展示方式统一成同一姿势；
 10. 每个 imagePrompt 必须保留 sourceTimestampSeconds 与 sourceDurationSeconds。sourceTimestampSeconds 只能从最初 frameOrder 的真实时间戳中选择，九个时间点严格递增并覆盖原片开头到结尾；生产时间轴压缩不得覆盖或改写这两个原片证据字段；
@@ -1845,100 +2309,88 @@ async function runVideoScriptAnalysis(body) {
   const config = body.model || {};
   const apiKey = String(config.apiKey || "");
   if (!apiKey) throw new Error("模型 API Key 不能为空");
-  const frames = (Array.isArray(body.frames) ? body.frames : [])
-    .filter(frame => /^image\/(jpeg|png|webp)$/i.test(String(frame?.mimeType || ""))
-      && String(frame?.data || "").length > 0)
-    .slice(0, 48);
-  if (!frames.length) throw new Error("没有可供模型分析的视频关键帧");
-
-  const runtimeAgent = new Agent({
-    initialState: {
-      systemPrompt: VIDEO_SCRIPT_ANALYSIS_PROMPT,
-      model: modelFrom(config),
-      thinkingLevel: "medium",
-      messages: [],
-      tools: []
-    },
-    streamFn: (model, context, options) =>
-      streamSimple(model, context, {
-        ...options,
-        apiKey,
-        maxTokens: 6500,
-        timeoutMs: 180_000,
-        maxRetries: 2,
-        maxRetryDelayMs: 15_000
-      }),
-    convertToLlm: messages =>
-      messages.filter(message => ["user", "assistant"].includes(message.role))
-  });
+  const sourceVideoPath = validatedSourceVideoPath(body.sourceVideoPath);
   const progressReporter = createVideoScriptProgressReporter(body.progressId);
-  const unsubscribeProgress = runtimeAgent.subscribe(progressReporter.handleEvent);
   const startedAt = Date.now();
   const context = body.context && typeof body.context === "object" ? body.context : {};
+  const hasAudioTranscript = Boolean(context.hasReliableAudioTranscript)
+    && Array.isArray(context.audioTranscript?.segments)
+    && context.audioTranscript.segments.length > 0;
+  const narrationInstruction = hasAudioTranscript
+    ? `audioTranscript 是原视频音轨的唯一权威口播来源。先完整理解原意，再为 ${Number(context.durationSeconds || 15)} 秒目标成片生成自然可朗读的精简口播：保留商品名、核心卖点、利益点和行动引导，删除重复、语气词及冗余铺垫，不得添加转写中不存在的事实。全片 narration 正文按每秒最多约 4 个汉字控制，15 秒最多约 60 个汉字；按语义节拍分配到各镜，使用“对白：”或“旁白：”前缀。不得机械搬运全部原文，不得把画面字幕当成口播。`
+    : "当前没有可靠音频转写，所有 narration 必须为空。";
   const desiredShotCount = 9;
-  const prompt = JSON.stringify({
+  const analysisContext = {
     ...context,
     desiredShotCount,
-    analysisMode: "KEYFRAMES_WITH_BACKGROUND_MOTION",
-    frameOrder: frames.map((frame, index) => ({
-      imagePosition: index + 1,
-      sourceIndex: Number(frame.index || index + 1),
-      timestampSeconds: Number(frame.timestampSeconds || 0)
-    })),
-    note: "以下图片按视频时间先后顺序排列，并附原视频时间点；完整阅读全部帧后自行选择九个最能覆盖动作状态变化的真实时间点，不得固定等分。只提取可复用的动作、人物数量、机位、运镜、场景、光线、节奏和微表情。必须保留手与商品的接触关系、商品正面/斜侧/窄边/背面朝向、抓握区域、支撑点和可见功能状态变化，例如包装中、取出、折叠、展开、手持、穿上、已穿着、局部特写、倒立、翻转、露出底部、点火、回正和放置；这些是动作与主体状态而非商品外观。逐帧建立主体状态账本，原片中的正面→侧面→背面→回正、包装→展开→穿上→穿着展示等状态切换不得被压扁成全程手持或同一姿势。不得带入原人物身份、外貌、发型、妆容、饰品、穿搭，不得带入原视频商品类别、颜色、版型、印花、文字、Logo、卖点或搭配，不得抄录字幕。后续商品唯一来源是用户在 AI 视频任务中上传的商品图。运镜优先参考 cameraMotionEvidence；当前没有可靠音频转写，所有 narration 必须为空。"
-  });
+    analysisMode: "PI_WATCH_SKILL_WITH_DAYAN_TRANSCRIPT",
+    note: "watch 报告中的图片按原视频时间顺序排列并附真实时间点。必须先读取全部关键帧，再选择九个覆盖动作状态变化的真实时间点，不得固定等分。只提取可复用的动作、人物数量、机位、运镜、场景、光线、节奏和微表情。必须保留手与商品的接触关系、商品朝向、抓握区域、支撑点和可见功能状态变化。逐帧建立主体状态账本，包装、取出、展开、手持、穿上、穿着展示和局部特写等状态不得压扁成同一姿势。不得带入原人物身份或原商品外观，不得抄录画面字幕。后续商品唯一来源是用户在 AI 视频任务中上传的商品图。运镜优先参考 cameraMotionEvidence；" + narrationInstruction
+  };
+  let workDirectory = null;
   try {
-    progressReporter.beginPass("AI_STREAMING", 58, 84);
-    await runtimeAgent.prompt(
-      prompt,
-      frames.map(frame => ({
-        type: "image",
-        data: String(frame.data),
-        mimeType: String(frame.mimeType)
-      }))
+    const watch = await preprocessVideoWithWatch(sourceVideoPath, progressReporter);
+    workDirectory = watch.workDirectory;
+    const runtimeAgent = await createWatchHarness(
+      config, apiKey, watch.workDirectory, progressReporter
     );
-    const assistant = [...runtimeAgent.state.messages]
-      .reverse()
-      .find(message => message.role === "assistant");
-    if (!assistant || assistant.stopReason === "error") {
-      throw new Error(assistant?.errorMessage || "Pi Agent 没有返回有效视频脚本");
-    }
-    progressReporter.completePass(85, "AI_RESPONSE_RECEIVED");
-    const reply = messageText(assistant);
+    progressReporter.beginPass("WATCH_READING_KEYFRAMES", 62, 84);
+    const skillInstructions = `watch 视频预处理已由平台后端完成，不要运行 Bash，不要重新抽帧，不要调用 Whisper。
+你必须使用 read 工具读取下面 watch 报告列出的每一张关键帧，尽量在同一轮并行发起全部 read；不得未看图就生成结果。
+
+watch 报告：
+${watch.report}
+
+平台分析上下文（大言 Qwen-Audio 转写已在 audioTranscript 中，这是唯一可用的口播来源）：
+${JSON.stringify(analysisContext)}
+
+阅读全部关键帧后，严格按系统提示输出一个完整合法 JSON 对象。shots 必须恰好 9 个。不得使用 Markdown，不得输出 JSON 之外的文字。`;
+    const skillAssistant = await runtimeAgent.skill("watch", skillInstructions);
+    const skillResult = completedReplyOrThrow(
+      skillAssistant, "watch Skill 没有返回有效视频脚本"
+    );
+    progressReporter.completePass(85, "WATCH_ANALYSIS_RECEIVED");
     const parsed = await enforceVideoShotCount(
       runtimeAgent,
-      await parseVideoScriptResult(runtimeAgent, reply, progressReporter),
+      await parseVideoScriptResult(runtimeAgent, skillResult.reply, progressReporter),
       desiredShotCount,
       progressReporter
     );
     let audited = parsed;
-    try {
-      progressReporter.publish(90, "VERIFYING_ACTION_STATES");
-      await runtimeAgent.prompt(`请重新查看本轮最初提供的全部视频关键帧，并审计下面这份 9 分镜 JSON：
-${JSON.stringify(parsed.result)}
+    let narrationSemanticallyCondensed = false;
+    const narrationBudget = Math.max(1, Math.floor(Math.min(15, Number(context.durationSeconds || 15)) * 4));
+    if (hasAudioTranscript && spokenNarrationLength(audited.result) > narrationBudget) {
+      progressReporter.publish(94, "CONDENSING_NARRATION");
+      await runtimeAgent.prompt(`下面 9 分镜的口播超过 ${Number(context.durationSeconds || 15)} 秒正常语速预算。请基于权威原始转写进行一次语义提炼，并返回完整合法 JSON：
 
-只修正与真实视频证据不一致的动作状态，然后返回一份完整合法 JSON。必须重点核对：
-1. 九个 imagePrompt.sourceTimestampSeconds 是否都来自最初 frameOrder 的真实时间戳、严格递增，并覆盖开头到结尾；
-2. 商品可见面是否准确保留正面→斜侧/窄边→背面→回正等真实顺序；
-3. 每格手指抓握区域、支撑点、手腕旋转方向、展开/折叠程度是否与对应时间点一致；
-4. 同一只手持续入镜不代表同一姿势，禁止把九格统一成捏住同一位置；
-5. 原片超过 15 秒时必须保留 15 秒后的关键动作证据，只把生产时间轴压缩到 15 秒；
-6. presentationMode、去除原商品外观和其余既有规则保持不变。
+权威原始转写：
+${JSON.stringify(context.audioTranscript)}
+
+当前分镜 JSON：
+${JSON.stringify(audited.result)}
+
+要求：
+1. 只改写各镜 narration，其他字段、九镜顺序、时间、动作和画面描述全部保持不变；
+2. 保留原口播的核心含义、商品名、核心卖点、利益点、关键限定条件和行动引导；
+3. 删除重复、语气词、口头停顿与冗余铺垫，不得增加转写中不存在的事实；
+4. 按语义完整句提炼，禁止截断句子、截断词语或只保留前半段；
+5. 全片 narration 正文合计不超过 ${narrationBudget} 个汉字，并能在 ${Number(context.durationSeconds || 15)} 秒内自然读完；
+6. 使用“对白：”或“旁白：”前缀，把精简稿按语义节拍分配到对应镜头；允许没有口播的镜头留空。
 只输出完整 JSON，不要解释。`);
-      const auditAssistant = [...runtimeAgent.state.messages]
+      const narrationAssistant = [...runtimeAgent.state.messages]
         .reverse()
         .find(message => message.role === "assistant");
-      if (!auditAssistant || auditAssistant.stopReason === "error") {
-        throw new Error(auditAssistant?.errorMessage || "动作状态复核没有返回有效结果");
-      }
-      audited = await enforceVideoShotCount(
+      const narrationReply = completedReplyOrThrow(narrationAssistant, "口播语义提炼没有返回有效结果");
+      const condensed = await enforceVideoShotCount(
         runtimeAgent,
-        await parseVideoScriptResult(runtimeAgent, messageText(auditAssistant), progressReporter),
+        await parseVideoScriptResult(runtimeAgent, narrationReply.reply, progressReporter),
         desiredShotCount,
         progressReporter
       );
-    } catch (auditError) {
-      console.warn(`[video-script] action-state audit fallback: ${String(auditError?.message || auditError)}`);
+      if (spokenNarrationLength(condensed.result) > narrationBudget) {
+        throw new Error(`口播语义提炼后仍超过 ${narrationBudget} 字的正常语速预算`);
+      }
+      audited = condensed;
+      narrationSemanticallyCondensed = true;
     }
     progressReporter.publish(96, "RESULT_READY", true);
     return {
@@ -1947,16 +2399,21 @@ ${JSON.stringify(parsed.result)}
       usage: tokenUsageFromMessages(runtimeAgent.state.messages),
       latencyMs: Date.now() - startedAt,
       modelId: config.modelId,
-      analysisMode: "KEYFRAMES_WITH_BACKGROUND_MOTION",
+      analysisMode: "PI_WATCH_SKILL_WITH_DAYAN_TRANSCRIPT",
+      watchFrameCount: watch.frameCount,
       repairedByModel: audited.repairedByModel,
       adjustedShotCount: audited.adjustedShotCount,
-      actionStateAudited: audited !== parsed
+      actionStateAudited: false,
+      narrationSemanticallyCondensed,
+      recoveredMissingFinishReason: skillResult.recoveredMissingFinishReason
     };
   } catch (error) {
     progressReporter.publish(progressReporter.state.progress, "FAILED", true);
     throw error;
   } finally {
-    unsubscribeProgress();
+    if (workDirectory) {
+      await rm(workDirectory, { recursive: true, force: true });
+    }
   }
 }
 
@@ -1992,7 +2449,10 @@ async function runManualScriptAnalysis(body) {
     initialState: {
       systemPrompt: MANUAL_SCRIPT_ANALYSIS_PROMPT,
       model: modelFrom(config),
-      thinkingLevel: "low",
+      // Manual script analysis is a constrained JSON transformation. Minimal reasoning
+      // keeps the long-form model from spending minutes on hidden deliberation; local
+      // structural checks below still enforce all nine shots and product neutrality.
+      thinkingLevel: "minimal",
       messages: [],
       tools: []
     },
@@ -2000,7 +2460,7 @@ async function runManualScriptAnalysis(body) {
       streamSimple(model, context, {
         ...options,
         apiKey,
-        maxTokens: 4200,
+        maxTokens: 3200,
         timeoutMs: 120_000,
         maxRetries: 2,
         maxRetryDelayMs: 10_000
@@ -2034,6 +2494,7 @@ async function runManualScriptAnalysis(body) {
   let result = extractJsonObject(reply);
   if (!Array.isArray(result?.shots) || result.shots.length !== 9) {
     modelPasses += 1;
+    await runtimeAgent.setThinkingLevel("low");
     console.warn(`[manual-script] requesting shot-count correction received=${Array.isArray(result?.shots) ? result.shots.length : 0}`);
     await runtimeAgent.prompt(`你刚才返回了 ${Array.isArray(result?.shots) ? result.shots.length : 0} 个分镜。请重新返回完整 JSON，shots 必须恰好 9 个，并保持原业务需求。`);
     assistant = [...runtimeAgent.state.messages].reverse().find(message => message.role === "assistant");
@@ -2049,6 +2510,7 @@ async function runManualScriptAnalysis(body) {
   let appearanceViolations = productMode ? productScriptAppearanceViolations(result) : [];
   if (appearanceViolations.length) {
     modelPasses += 1;
+    await runtimeAgent.setThinkingLevel("low");
     console.warn(`[manual-script] requesting appearance cleanup violations=${appearanceViolations.length}`);
     await runtimeAgent.prompt(`你刚才把参考产品的颜色、形状、标签或包装装饰写进了可复用脚本（例如：${appearanceViolations.slice(0, 3).join("；")}）。请重新返回完整 JSON，保持原来的 9 分镜功能与动作，但删除所有商品外观描述；使用“当前任务商品、商品容器、商品内容物”等中性称呼。场景和植物颜色可以保留。`);
     assistant = [...runtimeAgent.state.messages].reverse().find(message => message.role === "assistant");
@@ -2102,6 +2564,73 @@ async function handleManualScriptAnalysis(request, response) {
   json(response, 200, await runManualScriptAnalysis(body));
 }
 
+async function runNarrationLocalization(body) {
+  const config = body.model || {};
+  const apiKey = String(config.apiKey || "");
+  if (!apiKey) throw new Error("模型 API Key 不能为空");
+  const context = body.context || {};
+  const targetMarket = String(context.targetMarket || "").trim();
+  const shots = Array.isArray(context.shots) ? context.shots.filter(shot =>
+    Number.isInteger(Number(shot?.sequence)) && String(shot?.narration || "").trim()
+  ) : [];
+  if (!targetMarket) throw new Error("目标市场不能为空");
+  if (!shots.length) throw new Error("脚本没有需要本地化的旁白");
+
+  const runtimeAgent = new Agent({
+    initialState: {
+      systemPrompt: NARRATION_LOCALIZATION_PROMPT,
+      model: modelFrom(config),
+      thinkingLevel: "low",
+      messages: [],
+      tools: []
+    },
+    streamFn: (model, messages, options) =>
+      streamSimple(model, messages, {
+        ...options,
+        apiKey,
+        maxTokens: 2400,
+        timeoutMs: 120_000,
+        maxRetries: 2,
+        maxRetryDelayMs: 10_000
+      }),
+    convertToLlm: messages => messages.filter(message => ["user", "assistant"].includes(message.role))
+  });
+  const startedAt = Date.now();
+  await runtimeAgent.prompt(JSON.stringify({ targetMarket, shots }));
+  const assistant = [...runtimeAgent.state.messages].reverse().find(message => message.role === "assistant");
+  const completed = completedReplyOrThrow(assistant, "旁白本地化模型没有返回结果");
+  const result = extractJsonObject(completed.reply);
+  const localizedShots = Array.isArray(result?.shots) ? result.shots : [];
+  const expectedSequences = shots.map(shot => Number(shot.sequence)).sort((a, b) => a - b);
+  const actualSequences = localizedShots.map(shot => Number(shot?.sequence)).sort((a, b) => a - b);
+  if (localizedShots.some(shot => !String(shot?.narration || "").trim())
+      || JSON.stringify(expectedSequences) !== JSON.stringify(actualSequences)) {
+    throw new Error("旁白本地化结果缺少分镜或旁白内容");
+  }
+  return {
+    result: {
+      targetLanguage: String(result?.targetLanguage || "").trim(),
+      shots: localizedShots.map(shot => ({
+        sequence: Number(shot.sequence),
+        narration: String(shot.narration || "").trim()
+      }))
+    },
+    usage: tokenUsageFromMessages(runtimeAgent.state.messages),
+    latencyMs: Date.now() - startedAt,
+    modelId: config.modelId,
+    recoveredMissingFinishReason: completed.recoveredMissingFinishReason
+  };
+}
+
+async function handleNarrationLocalization(request, response) {
+  if (request.headers["x-internal-token"] !== INTERNAL_TOKEN) {
+    json(response, 401, { message: "旁白本地化服务认证失败" });
+    return;
+  }
+  const body = await readBody(request);
+  json(response, 200, await runNarrationLocalization(body));
+}
+
 async function runProductFunctionAnalysis(body) {
   const config = body.model || {};
   const apiKey = String(config.apiKey || "");
@@ -2128,6 +2657,30 @@ async function runProductFunctionAnalysis(body) {
     }
     attachments.push({ type: "image", data: candidateData, mimeType: candidateMimeType });
   }
+  const startedAt = Date.now();
+  if (analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1") {
+    try {
+      const reply = await requestNonStreamingChat(
+        config,
+        apiKey,
+        systemPrompt,
+        JSON.stringify(body.context || {}),
+        attachments,
+        400,
+        180_000
+      );
+      console.info(`[product-analysis] validation completed model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
+      return {
+        result: extractJsonObject(reply),
+        usage: null,
+        latencyMs: Date.now() - startedAt,
+        modelId: config.modelId
+      };
+    } catch (error) {
+      console.warn(`[product-analysis] validation failed model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
+      throw error;
+    }
+  }
   const runtimeAgent = new Agent({
     initialState: {
       systemPrompt,
@@ -2149,7 +2702,6 @@ async function runProductFunctionAnalysis(body) {
     convertToLlm: messages =>
       messages.filter(message => ["user", "assistant"].includes(message.role))
   });
-  const startedAt = Date.now();
   await runtimeAgent.prompt(
     JSON.stringify(body.context || {}),
     attachments
@@ -2322,12 +2874,20 @@ async function handlePlatformImageDownload(request, response) {
   if (!/^https?:\/\//i.test(resultUrl)) throw new Error("结果图片地址无效");
   let bytes;
   try {
-    bytes = await responseImageBytes({ url: resultUrl }, String(body?.model?.apiKey || ""));
+    // Persisted-result recovery is already scheduled by the platform. Keep each attempt
+    // short and singular: no hidden inner backoff, no multi-minute opaque request.
+    bytes = await responseImageBytes({ url: resultUrl }, String(body?.model?.apiKey || ""), {
+      retryDelays: [],
+      timeoutMs: 60_000
+    });
   } catch (error) {
+    const failure = resultDownloadFailure(error);
     throw annotateImageFailure(error, {
       requestState: "COMPLETED_RESPONSE_RECEIVED",
       retrySafe: false,
       resultUrl,
+      upstreamStatus: failure.upstreamStatus,
+      failureCode: failure.failureCode,
       resultDownloadRetryCount: Number(error?.resultDownloadRetryCount || 0)
     });
   }
@@ -2377,6 +2937,10 @@ const server = http.createServer(async (request, response) => {
       await handleManualScriptAnalysis(request, response);
       return;
     }
+    if (request.method === "POST" && request.url === "/v1/video-script/localize-narration") {
+      await handleNarrationLocalization(request, response);
+      return;
+    }
     if (request.method === "POST" && request.url === "/v1/product/analyze") {
       await handleProductFunctionAnalysis(request, response);
       return;
@@ -2397,6 +2961,10 @@ const server = http.createServer(async (request, response) => {
       payload.requestState = String(error.requestState);
       payload.retrySafe = Boolean(error.retrySafe);
       payload.safeRetryCount = Number(error.safeRetryCount || 0);
+    }
+    if (error?.failureCode) payload.failureCode = String(error.failureCode);
+    if (Number.isFinite(Number(error?.upstreamStatus))) {
+      payload.upstreamStatus = Number(error.upstreamStatus);
     }
     if (error?.resultUrl) payload.resultUrl = String(error.resultUrl);
     json(response, Number(error?.statusCode || 502), payload);

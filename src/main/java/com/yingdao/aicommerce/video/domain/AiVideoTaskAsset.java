@@ -70,6 +70,10 @@ public class AiVideoTaskAsset {
         this.sizeBytes = sizeBytes;
     }
 
+    public void markPromptValidated(String promptText) {
+        this.promptText = promptText;
+    }
+
     public String getId() { return id; }
     public String getOrganizationId() { return organizationId; }
     public String getTaskId() { return taskId; }

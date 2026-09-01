@@ -7,7 +7,9 @@ import com.yingdao.aicommerce.storage.OssStorageService;
 import com.yingdao.aicommerce.video.domain.AiVideoTask;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskAsset;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
+import com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult;
 import com.yingdao.aicommerce.video.domain.VideoScript;
+import com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskAssetMapper;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper;
 import com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper;
@@ -19,6 +21,9 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.databind.ObjectMapper;
 
@@ -32,6 +37,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.Deflater;
@@ -42,7 +48,10 @@ import java.util.zip.ZipOutputStream;
 public class AiVideoTaskService {
     private static final int MAX_ITEMS = 30;
     public static final int MAX_VIDEO_REFERENCE_IMAGES = 9;
+    private static final int GENERAL_TASK_NAME_TARGET_LENGTH = 32;
+    private static final int GENERAL_TASK_NAME_MAX_LENGTH = 36;
     private static final long MAX_IMAGE_BYTES = 20L * 1024 * 1024;
+    private static final long MAX_GENERAL_REFERENCE_BYTES = 90L * 1024 * 1024;
     private static final long MAX_AUDIO_BYTES = 15L * 1024 * 1024;
     private static final int VIDEO_ARCHIVE_ATTEMPTS = 3;
     private static final long MAX_VIDEO_ARCHIVE_BYTES = 20L * 1024 * 1024 * 1024;
@@ -50,30 +59,36 @@ public class AiVideoTaskService {
     private final AiVideoTaskMapper taskMapper;
     private final AiVideoTaskItemMapper itemMapper;
     private final AiVideoTaskAssetMapper assetMapper;
+    private final AiVideoPendingImageResultMapper pendingImageResultMapper;
     private final VideoScriptMapper scriptMapper;
     private final VideoScriptShotMapper shotMapper;
     private final AiVideoImageProcessor processor;
     private final ProductFunctionAnalysisService productFunctionAnalysisService;
     private final AiVideoGenerationService videoGenerationService;
+    private final NarrationLocalizationService narrationLocalizationService;
     private final ObjectMapper objectMapper;
     private final Path storageRoot;
     private final OssStorageService ossStorage;
 
     public AiVideoTaskService(AiVideoTaskMapper taskMapper, AiVideoTaskItemMapper itemMapper,
-                              AiVideoTaskAssetMapper assetMapper, VideoScriptMapper scriptMapper,
+                              AiVideoTaskAssetMapper assetMapper, AiVideoPendingImageResultMapper pendingImageResultMapper,
+                              VideoScriptMapper scriptMapper,
                               VideoScriptShotMapper shotMapper, AiVideoImageProcessor processor, ObjectMapper objectMapper,
                                ProductFunctionAnalysisService productFunctionAnalysisService,
                                AiVideoGenerationService videoGenerationService,
+                               NarrationLocalizationService narrationLocalizationService,
                                ObjectProvider<OssStorageService> ossStorage,
                                @Value("${app.ai-video-task-storage:/data/ai-video-tasks}") String storageRoot) {
         this.taskMapper = taskMapper;
         this.itemMapper = itemMapper;
         this.assetMapper = assetMapper;
+        this.pendingImageResultMapper = pendingImageResultMapper;
         this.scriptMapper = scriptMapper;
         this.shotMapper = shotMapper;
         this.processor = processor;
         this.productFunctionAnalysisService = productFunctionAnalysisService;
         this.videoGenerationService = videoGenerationService;
+        this.narrationLocalizationService = narrationLocalizationService;
         this.objectMapper = objectMapper;
         this.ossStorage = ossStorage.getIfAvailable();
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
@@ -96,7 +111,7 @@ public class AiVideoTaskService {
         String scriptMode = script.getPresentationMode() == null || script.getPresentationMode().isBlank()
                 ? "LEGACY_COMPAT" : script.getPresentationMode();
         if (!"LEGACY_COMPAT".equals(scriptMode) && !generationMode.equals(scriptMode)) {
-            String requiredMode = "MODEL_WEAR".equals(scriptMode) ? "人物穿搭" : "纯商品";
+            String requiredMode = modeName(scriptMode);
             throw new BusinessException(HttpStatus.CONFLICT,
                     "所选脚本是" + requiredMode + "脚本，与当前生成模式不匹配");
         }
@@ -111,9 +126,24 @@ public class AiVideoTaskService {
         String resolution = normalizeResolution(command.resolution());
         String videoRoute = normalizeVideoRoute(command.videoRoute());
         boolean useScriptReferenceVideo = command.useScriptReferenceVideo();
-        boolean directReferenceVideo = "MANUAL".equals(script.getSourceType());
-        if (useScriptReferenceVideo && !"PRODUCT_ONLY".equals(generationMode)) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "脚本视频复刻仅支持商品展示模式");
+        boolean directReferenceVideo = "MANUAL".equals(script.getSourceType())
+                || "CAST_PRODUCT".equals(generationMode)
+                || useScriptReferenceVideo;
+        String voiceoverMode = normalizeVoiceoverMode(command.voiceoverMode());
+        String customVoiceover = normalizeNullable(command.customVoiceover(), 4000);
+        if ("CUSTOM".equals(voiceoverMode) && customVoiceover == null) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请填写自定义口播文字");
+        }
+        String videoTitle = normalizeNullable(command.videoTitle(), 160);
+        String targetMarket = normalizeNullable(command.targetMarket(), 80);
+        if (targetMarket == null) targetMarket = normalizeNullable(script.getTargetMarket(), 80);
+        String frozenScriptJson = script.getScriptJson();
+        String narrationLanguage = "";
+        if ("SCRIPT".equals(voiceoverMode) && narrationLocalizationService.hasNarration(frozenScriptJson)) {
+            NarrationLocalizationService.LocalizedScript localized = narrationLocalizationService.localize(
+                    frozenScriptJson, targetMarket, principal.organizationId());
+            frozenScriptJson = localized.scriptJson();
+            narrationLanguage = localized.language();
         }
         if (useScriptReferenceVideo && (!"VIDEO_ANALYSIS".equals(script.getSourceType())
                 || script.getSourceFilePath() == null || script.getSourceContentType() == null
@@ -126,13 +156,16 @@ public class AiVideoTaskService {
                 Map.entry("interactionPolicy", "PER_SHOT"), Map.entry("handPolicy", "PER_SHOT"),
                 Map.entry("aspectRatio", aspectRatio), Map.entry("resolution", resolution),
                 Map.entry("useScriptReferenceVideo", useScriptReferenceVideo),
-                Map.entry("directReferenceVideo", directReferenceVideo), Map.entry("videoRoute", videoRoute)));
+                Map.entry("directReferenceVideo", directReferenceVideo), Map.entry("videoRoute", videoRoute),
+                Map.entry("voiceoverMode", voiceoverMode), Map.entry("customVoiceover", customVoiceover == null ? "" : customVoiceover),
+                Map.entry("narrationLanguage", narrationLanguage),
+                Map.entry("videoTitle", videoTitle == null ? "" : videoTitle)));
         String qualityRules = json(Map.of("singleProduct", true, "preserveLogoAndText", true,
                 "preserveColorAndShape", true, "preventExtraPeople", !"MODEL_WEAR".equals(generationMode),
                 "preventExtraHands", true, "preventDeformation", true,
                 "preventFloatingAndCollision", true));
         AiVideoTask task = new AiVideoTask(principal.organizationId(), name, script.getId(), script.getVersion(),
-                script.getName(), script.getScriptJson(), normalizeNullable(command.targetMarket(), 80), generationMode,
+                script.getName(), frozenScriptJson, targetMarket, generationMode,
                 backgroundMode, productCategory, sceneType, interactionType, allowHand, aspectRatio, resolution, useScriptReferenceVideo,
                 directReferenceVideo,
                 generationRules, qualityRules,
@@ -141,17 +174,83 @@ public class AiVideoTaskService {
         return task;
     }
 
+    @Transactional
+    public AiVideoTask createGeneral(GeneralCreateCommand command, List<MultipartFile> files,
+                                     PlatformPrincipal principal) {
+        String prompt = command.prompt() == null ? "" : command.prompt();
+        if (prompt.isBlank()) throw new BusinessException(HttpStatus.BAD_REQUEST, "视频提示词不能为空");
+        if (prompt.length() > 20000) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频提示词不能超过 20000 个字符");
+        }
+        if (files == null || files.isEmpty()) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请上传至少 1 张参考图");
+        }
+        if (files.size() > MAX_VIDEO_REFERENCE_IMAGES) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST,
+                    "参考图最多上传 " + MAX_VIDEO_REFERENCE_IMAGES + " 张");
+        }
+        validateGeneralReferenceBatch(files);
+        int durationSeconds = normalizeDurationSeconds(command.durationSeconds());
+        String aspectRatio = normalizeAspectRatio(command.aspectRatio());
+        String resolution = normalizeResolution(command.resolution());
+        String videoRoute = normalizeVideoRoute(command.videoRoute());
+        String name = resolveGeneralTaskName(command.name(), prompt, files);
+        String generationRules = json(Map.of(
+                "taskType", "GENERAL",
+                "durationSeconds", durationSeconds,
+                "aspectRatio", aspectRatio,
+                "resolution", resolution,
+                "videoRoute", videoRoute));
+        AiVideoTask task = AiVideoTask.general(principal.organizationId(), name, "{}", durationSeconds,
+                aspectRatio, resolution, generationRules, json(Map.of("preserveReferences", true)),
+                principal.userId());
+        taskMapper.insert(task);
+        registerRollbackFileCleanup(task);
+        try {
+            AiVideoTaskItem item = uploadDirectReferences(task, files, null).getFirst();
+            item.updateVideoPrompt(prompt);
+            itemMapper.updateById(item);
+            if (command.autoStart()) return startVideos(task);
+            return task;
+        } catch (RuntimeException | Error failure) {
+            deleteTaskDirectory(task);
+            throw failure;
+        }
+    }
+
     public List<AiVideoTask> list(PlatformPrincipal principal) {
         LambdaQueryWrapper<AiVideoTask> query = new LambdaQueryWrapper<AiVideoTask>()
-                .eq(AiVideoTask::getOrganizationId, principal.organizationId());
+                .eq(AiVideoTask::getOrganizationId, principal.organizationId())
+                .eq(AiVideoTask::getTaskType, "PRODUCT");
         if (!isCompanyAdministrator(principal)) query.eq(AiVideoTask::getCreatedBy, principal.userId());
         return taskMapper.selectList(query.orderByDesc(AiVideoTask::getUpdatedAt));
+    }
+
+    public List<AiVideoTask> listGeneral(PlatformPrincipal principal) {
+        LambdaQueryWrapper<AiVideoTask> query = new LambdaQueryWrapper<AiVideoTask>()
+                .eq(AiVideoTask::getOrganizationId, principal.organizationId())
+                .eq(AiVideoTask::getTaskType, "GENERAL");
+        if (!isCompanyAdministrator(principal)) query.eq(AiVideoTask::getCreatedBy, principal.userId());
+        return taskMapper.selectList(query.orderByDesc(AiVideoTask::getUpdatedAt));
+    }
+
+    public TaskDetail detailGeneral(String id, PlatformPrincipal principal) {
+        return detail(requireGeneral(id, principal));
+    }
+
+    public AiVideoTask startGeneral(String id, PlatformPrincipal principal) {
+        return startVideos(requireGeneral(id, principal));
+    }
+
+    public AssetFile generalAsset(String taskId, String assetId, PlatformPrincipal principal) {
+        return asset(requireGeneral(taskId, principal), assetId);
     }
 
     @Scheduled(initialDelay = 5_000, fixedDelay = 86_400_000)
     public void migrateLegacyGeneratedVideoPrompts() {
         List<AiVideoTask> tasks = taskMapper.selectList(null);
         for (AiVideoTask task : tasks) {
+            if (task.isGeneral()) continue;
             List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                     .eq(AiVideoTaskItem::getTaskId, task.getId()));
             for (AiVideoTaskItem item : items) {
@@ -164,12 +263,16 @@ public class AiVideoTaskService {
     }
 
     public TaskDetail detail(String id, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
+        return detail(requireProduct(id, principal));
+    }
+
+    private TaskDetail detail(AiVideoTask task) {
+        String id = task.getId();
         List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getTaskId, id).orderByAsc(AiVideoTaskItem::getCreatedAt));
         for (AiVideoTaskItem item : items) {
-            if (item.getVideoPromptText() == null || item.getVideoPromptText().isBlank()
-                    || isLegacyGeneratedPrompt(task, item)) {
+            if (!task.isGeneral() && (item.getVideoPromptText() == null || item.getVideoPromptText().isBlank()
+                    || isLegacyGeneratedPrompt(task, item))) {
                 item.updateVideoPrompt(defaultVideoPrompt(task, item));
                 itemMapper.updateById(item);
             }
@@ -224,7 +327,15 @@ public class AiVideoTaskService {
                     .orderByAsc(AiVideoTaskAsset::getAssetType)
                     .orderByAsc(AiVideoTaskAsset::getShotSequence));
         }
-        return new TaskDetail(task, items, assets, videoGenerationService.currentRunSubmittedAt(id),
+        Map<String, PendingImageDownload> pendingImageDownloads = new LinkedHashMap<>();
+        for (AiVideoPendingImageResult pending : pendingImageResultMapper.selectList(
+                new LambdaQueryWrapper<AiVideoPendingImageResult>()
+                        .eq(AiVideoPendingImageResult::getTaskId, id)
+                        .orderByDesc(AiVideoPendingImageResult::getUpdatedAt))) {
+            pendingImageDownloads.putIfAbsent(pending.getItemId(), new PendingImageDownload(
+                    pending.getAssetType(), pending.getDownloadAttempts(), pending.getLastError(), pending.getUpdatedAt()));
+        }
+        return new TaskDetail(task, items, assets, pendingImageDownloads, videoGenerationService.currentRunSubmittedAt(id),
                 videoGenerationService.currentItemSubmittedAt(id),
                 videoGenerationService.currentRunProviderTaskIds(id),
                 videoGenerationService.activeVideoSubmissions(task.getOrganizationId()),
@@ -232,7 +343,7 @@ public class AiVideoTaskService {
     }
 
     public List<AiVideoTaskItem> upload(String id, List<MultipartFile> files, String itemId, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
+        AiVideoTask task = requireProduct(id, principal);
         if (!List.of("DRAFT", "READY").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务状态不能继续上传衣服素材");
         }
@@ -243,15 +354,15 @@ public class AiVideoTaskService {
         List<AiVideoTaskItem> created = new ArrayList<>();
         int sequence = (int) existing + 1;
         for (MultipartFile file : files) {
-            validateImage(file);
+            ImageFormat imageFormat = validateImage(file);
             String originalName = safeFileName(file.getOriginalFilename());
             String displayName = stripExtension(originalName);
             String sku = "SKU-" + String.format("%03d", sequence++);
             AiVideoTaskItem item = new AiVideoTaskItem(task.getOrganizationId(), task.getId(), displayName, sku,
-                    originalName, "pending", safeContentType(file), file.getSize());
+                    originalName, "pending", imageFormat.contentType(), file.getSize());
             item.updateVideoPrompt(defaultVideoPrompt(task, item));
             Path directory = itemDirectory(task, item);
-            Path source = directory.resolve("source" + extension(originalName));
+            Path source = directory.resolve("source" + imageFormat.extension());
             try {
                 Files.createDirectories(directory);
                 file.transferTo(source);
@@ -291,15 +402,16 @@ public class AiVideoTaskService {
         if (existing + files.size() > MAX_VIDEO_REFERENCE_IMAGES) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "参考图最多上传 " + MAX_VIDEO_REFERENCE_IMAGES + " 张");
         }
-        files.forEach(this::validateImage);
+        List<ImageFormat> imageFormats = files.stream().map(this::validateImage).toList();
         if (item == null) {
             MultipartFile first = files.getFirst();
+            ImageFormat firstFormat = imageFormats.getFirst();
             String firstName = safeFileName(first.getOriginalFilename());
             int groupSequence = items.size() + 1;
             item = new AiVideoTaskItem(task.getOrganizationId(), task.getId(),
                     "视频组 " + String.format("%02d", groupSequence) + " · " + stripExtension(firstName),
                     "REF-" + String.format("%03d", groupSequence),
-                    firstName, "pending", safeContentType(first), first.getSize());
+                    firstName, "pending", firstFormat.contentType(), first.getSize());
             item.updateVideoPrompt(defaultVideoPrompt(task, item));
             itemMapper.insert(item);
         }
@@ -307,9 +419,11 @@ public class AiVideoTaskService {
         try { Files.createDirectories(directory); }
         catch (IOException exception) { throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "参考图目录创建失败"); }
         int order = (int) existing + 1;
-        for (MultipartFile file : files) {
+        for (int index = 0; index < files.size(); index++) {
+            MultipartFile file = files.get(index);
+            ImageFormat imageFormat = imageFormats.get(index);
             String originalName = safeFileName(file.getOriginalFilename());
-            Path output = directory.resolve(String.format("reference-%02d%s", order, extension(originalName))).normalize();
+            Path output = directory.resolve(String.format("reference-%02d%s", order, imageFormat.extension())).normalize();
             if (!output.startsWith(directory)) throw new BusinessException(HttpStatus.BAD_REQUEST, "参考图路径不安全");
             try (var input = file.getInputStream()) {
                 Files.copy(input, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
@@ -317,7 +431,7 @@ public class AiVideoTaskService {
                 throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "参考图保存失败");
             }
             AiVideoTaskAsset reference = AiVideoTaskAsset.videoReference(task.getOrganizationId(), task.getId(), item.getId(),
-                    order, output.toString(), safeContentType(file), file.getSize(),
+                    order, output.toString(), imageFormat.contentType(), file.getSize(),
                     null, "", false);
             assetMapper.insert(reference);
             if (order == 1) {
@@ -335,7 +449,7 @@ public class AiVideoTaskService {
 
     public List<AiVideoTaskAsset> updateReferences(String taskId, String itemId,
                                                     List<ReferenceUpdate> updates, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(taskId, principal);
+        AiVideoTask task = requireProduct(taskId, principal);
         if (!task.isDirectReferenceVideo()) throw new BusinessException(HttpStatus.CONFLICT, "当前任务不是参考图直接生视频模式");
         requireEditableDirectReferenceItem(taskId, itemId, principal);
         List<AiVideoTaskAsset> references = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
@@ -377,7 +491,7 @@ public class AiVideoTaskService {
     }
 
     public void deleteReference(String taskId, String itemId, String assetId, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(taskId, principal);
+        AiVideoTask task = requireProduct(taskId, principal);
         if (!task.isDirectReferenceVideo()) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务不是参考图直接生视频模式");
         }
@@ -445,6 +559,27 @@ public class AiVideoTaskService {
         } catch (IOException ignored) { }
     }
 
+    private void registerRollbackFileCleanup(AiVideoTask task) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) return;
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED) deleteTaskDirectory(task);
+            }
+        });
+    }
+
+    private void deleteTaskDirectory(AiVideoTask task) {
+        if (task == null || task.getOrganizationId() == null || task.getId() == null) return;
+        Path directory = storageRoot.resolve(task.getOrganizationId()).resolve(task.getId()).normalize();
+        if (!directory.startsWith(storageRoot) || !Files.exists(directory)) return;
+        try (var paths = Files.walk(directory)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+            });
+        } catch (IOException ignored) { }
+    }
+
     private String normalizeReferenceRole(String value) {
         String role = value == null ? "" : value.trim().toUpperCase();
         if (role.isBlank()) return null;
@@ -455,7 +590,7 @@ public class AiVideoTaskService {
     }
 
     public AiVideoTask uploadMusic(String id, MultipartFile file, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
+        AiVideoTask task = requireProduct(id, principal);
         if (!List.of("DRAFT", "READY", "IMAGE_READY", "FAILED").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务正在执行，暂时不能更换配乐");
         }
@@ -484,7 +619,7 @@ public class AiVideoTaskService {
     }
 
     public AiVideoTaskItem updateVideoPrompt(String taskId, String itemId, String value, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(taskId, principal);
+        AiVideoTask task = requireProduct(taskId, principal);
         AiVideoTaskItem item = itemMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getId, itemId)
                 .eq(AiVideoTaskItem::getTaskId, taskId)
@@ -514,7 +649,7 @@ public class AiVideoTaskService {
     }
 
     public AiVideoTask startImages(String id, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
+        AiVideoTask task = requireProduct(id, principal);
         requireCompatibleScriptMode(task);
         if (!List.of("READY", "FAILED", "IMAGE_READY", "VIDEO_READY").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务还不能启动生图");
@@ -539,7 +674,10 @@ public class AiVideoTaskService {
     }
 
     public AiVideoTask startVideos(String id, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
+        return startVideos(requireProduct(id, principal));
+    }
+
+    private AiVideoTask startVideos(AiVideoTask task) {
         requireCompatibleScriptMode(task);
         if (!(List.of("IMAGE_READY", "FAILED", "VIDEO_READY").contains(task.getStatus())
                 || task.isDirectReferenceVideo() && "READY".equals(task.getStatus()))) {
@@ -555,7 +693,7 @@ public class AiVideoTaskService {
     }
 
     public AiVideoTask regenerateVideos(String id, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
+        AiVideoTask task = requireProduct(id, principal);
         requireCompatibleScriptMode(task);
         if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务正在生成，暂时不能重做视频");
@@ -569,9 +707,11 @@ public class AiVideoTaskService {
         }
         List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getTaskId, id));
-        for (AiVideoTaskItem item : items) {
-            item.updateVideoPrompt(defaultVideoPrompt(task, item));
-            itemMapper.updateById(item);
+        if (!task.isGeneral()) {
+            for (AiVideoTaskItem item : items) {
+                item.updateVideoPrompt(defaultVideoPrompt(task, item));
+                itemMapper.updateById(item);
+            }
         }
         for (AiVideoTaskAsset video : videos) {
             deleteStoredFile(video.getFilePath());
@@ -581,7 +721,7 @@ public class AiVideoTaskService {
     }
 
     public AiVideoTask regenerateVideo(String taskId, String itemId, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(taskId, principal);
+        AiVideoTask task = requireProduct(taskId, principal);
         requireCompatibleScriptMode(task);
         if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前任务正在生成，暂时不能重做视频");
@@ -599,8 +739,10 @@ public class AiVideoTaskService {
         if (videos.isEmpty()) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前商品没有需要替换的旧视频");
         }
-        item.updateVideoPrompt(defaultVideoPrompt(task, item));
-        itemMapper.updateById(item);
+        if (!task.isGeneral()) {
+            item.updateVideoPrompt(defaultVideoPrompt(task, item));
+            itemMapper.updateById(item);
+        }
         for (AiVideoTaskAsset video : videos) {
             deleteStoredFile(video.getFilePath());
             assetMapper.deleteById(video.getId());
@@ -609,7 +751,7 @@ public class AiVideoTaskService {
     }
 
     public AiVideoTask startGeneration(String id, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
+        AiVideoTask task = requireProduct(id, principal);
         requireCompatibleScriptMode(task);
         if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前视频生成流程已经在执行");
@@ -639,7 +781,7 @@ public class AiVideoTaskService {
     }
 
     public AiVideoTask regenerateStoryboard(String taskId, String itemId, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(taskId, principal);
+        AiVideoTask task = requireProduct(taskId, principal);
         requireCompatibleScriptMode(task);
         if ("IMAGE_GENERATING".equals(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前有图片正在生成，请完成后再重建九宫格");
@@ -665,7 +807,7 @@ public class AiVideoTaskService {
     }
 
     public AiVideoTask regenerateFirstFrame(String taskId, String itemId, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(taskId, principal);
+        AiVideoTask task = requireProduct(taskId, principal);
         requireCompatibleScriptMode(task);
         if ("IMAGE_GENERATING".equals(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前有图片正在生成，请完成后再重做首帧");
@@ -687,7 +829,7 @@ public class AiVideoTaskService {
     }
 
     public void delete(String id, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(id, principal);
+        AiVideoTask task = requireProduct(id, principal);
         if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "任务生成中，暂时不能删除");
         }
@@ -706,6 +848,7 @@ public class AiVideoTaskService {
     }
 
     private void requireCompatibleScriptMode(AiVideoTask task) {
+        if (task.isGeneral()) return;
         VideoScript script = scriptMapper.selectById(task.getScriptId());
         if (script == null || !task.getOrganizationId().equals(script.getOrganizationId())) {
             throw new BusinessException(HttpStatus.CONFLICT, "所选脚本已不存在");
@@ -720,11 +863,14 @@ public class AiVideoTaskService {
     }
 
     public AssetFile asset(String taskId, String assetId, PlatformPrincipal principal) {
-        requireOwned(taskId, principal);
+        return asset(requireProduct(taskId, principal), assetId);
+    }
+
+    private AssetFile asset(AiVideoTask task, String assetId) {
         AiVideoTaskAsset asset = assetMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getId, assetId)
-                .eq(AiVideoTaskAsset::getTaskId, taskId)
-                .eq(AiVideoTaskAsset::getOrganizationId, principal.organizationId()));
+                .eq(AiVideoTaskAsset::getTaskId, task.getId())
+                .eq(AiVideoTaskAsset::getOrganizationId, task.getOrganizationId()));
         if (asset == null) throw new BusinessException(HttpStatus.NOT_FOUND, "生成图片不存在");
         if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) {
             if (!ossStorage.exists(asset.getFilePath())) throw new BusinessException(HttpStatus.NOT_FOUND, "生成素材不存在");
@@ -738,7 +884,7 @@ public class AiVideoTaskService {
     }
 
     public VideoBatch videoBatch(String taskId, PlatformPrincipal principal) {
-        AiVideoTask task = requireOwned(taskId, principal);
+        AiVideoTask task = requireProduct(taskId, principal);
         Map<String, String> itemNames = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                         .eq(AiVideoTaskItem::getTaskId, taskId))
                 .stream().collect(java.util.stream.Collectors.toMap(AiVideoTaskItem::getId,
@@ -904,7 +1050,7 @@ public class AiVideoTaskService {
     }
 
     public SourceFile source(String taskId, String itemId, PlatformPrincipal principal) {
-        requireOwned(taskId, principal);
+        requireProduct(taskId, principal);
         AiVideoTaskItem item = itemMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getId, itemId).eq(AiVideoTaskItem::getTaskId, taskId));
         if (item == null) throw new BusinessException(HttpStatus.NOT_FOUND, "衣服素材不存在");
@@ -920,6 +1066,22 @@ public class AiVideoTaskService {
         if (!isCompanyAdministrator(principal)) query.eq(AiVideoTask::getCreatedBy, principal.userId());
         AiVideoTask task = taskMapper.selectOne(query);
         if (task == null) throw new BusinessException(HttpStatus.NOT_FOUND, "AI 视频任务不存在");
+        return task;
+    }
+
+    private AiVideoTask requireProduct(String id, PlatformPrincipal principal) {
+        AiVideoTask task = requireOwned(id, principal);
+        if (task.isGeneral()) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "AI 视频任务不存在");
+        }
+        return task;
+    }
+
+    private AiVideoTask requireGeneral(String id, PlatformPrincipal principal) {
+        AiVideoTask task = requireOwned(id, principal);
+        if (!task.isGeneral()) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "通用生成任务不存在");
+        }
         return task;
     }
 
@@ -939,12 +1101,40 @@ public class AiVideoTaskService {
         return path;
     }
 
-    private void validateImage(MultipartFile file) {
-        if (file == null || file.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "衣服图片不能为空");
-        if (file.getSize() > MAX_IMAGE_BYTES) throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "单张衣服图片不能超过 20MB");
-        if (file.getContentType() == null || !file.getContentType().startsWith("image/")) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "只支持上传图片文件");
+    private void validateGeneralReferenceBatch(List<MultipartFile> files) {
+        long total = 0L;
+        for (MultipartFile file : files) {
+            validateImage(file);
+            long size = file.getSize();
+            if (size > MAX_GENERAL_REFERENCE_BYTES - total) {
+                throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE,
+                        "参考图总大小不能超过 90MB");
+            }
+            total += size;
         }
+    }
+
+    private ImageFormat validateImage(MultipartFile file) {
+        if (file == null || file.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "图片不能为空");
+        if (file.getSize() > MAX_IMAGE_BYTES) {
+            throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "单张图片不能超过 20MB");
+        }
+        ImageFormat format;
+        try (InputStream input = file.getInputStream()) {
+            format = ImageFormat.detect(input.readNBytes(12));
+        } catch (IOException exception) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "图片文件无法读取");
+        }
+        if (format == null) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "图片仅支持 JPEG、PNG、WebP 或 GIF");
+        }
+        if (!format.matchesContentType(file.getContentType())) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "图片格式与 Content-Type 不一致");
+        }
+        if (!format.matchesFileName(file.getOriginalFilename())) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "图片格式与文件扩展名不一致");
+        }
+        return format;
     }
 
     private void validateAudio(MultipartFile file) {
@@ -964,20 +1154,89 @@ public class AiVideoTaskService {
         return ".wav".equals(extension) ? "audio/wav" : "audio/mpeg";
     }
 
-    private String safeContentType(MultipartFile file) { return file.getContentType() == null ? "image/jpeg" : file.getContentType(); }
     private String safeFileName(String value) {
         String name = value == null ? "garment.jpg" : Path.of(value).getFileName().toString().replaceAll("[\\r\\n]", "");
         return name.substring(0, Math.min(name.length(), 200));
     }
     private String stripExtension(String value) { int dot = value.lastIndexOf('.'); return normalize(dot > 0 ? value.substring(0, dot) : value, "未命名衣服", 160); }
-    private String extension(String value) { int dot = value.lastIndexOf('.'); return dot >= 0 && dot >= value.length() - 6 ? value.substring(dot).toLowerCase() : ".jpg"; }
     private String normalize(String value, String fallback, int max) { String v = value == null || value.isBlank() ? fallback : value.trim(); return v.substring(0, Math.min(v.length(), max)); }
     private String normalizeNullable(String value, int max) { return value == null || value.isBlank() ? null : value.trim().substring(0, Math.min(value.trim().length(), max)); }
 
+    private String resolveGeneralTaskName(String requestedName, String prompt, List<MultipartFile> files) {
+        if (requestedName != null && !requestedName.isBlank()) {
+            return normalize(requestedName, "通用生成", 160);
+        }
+        String extracted = extractGeneralTaskName(prompt, files);
+        if (!extracted.isBlank()) return extracted;
+        String fileName = originalFileBaseName(files.getFirst());
+        return fileName.isBlank() ? "通用生成" : truncateGeneralTaskName(fileName);
+    }
+
+    private String extractGeneralTaskName(String prompt, List<MultipartFile> files) {
+        String title = prompt == null ? "" : prompt;
+        for (MultipartFile file : files) {
+            String originalName = file == null ? null : file.getOriginalFilename();
+            if (originalName != null && !originalName.isBlank()) {
+                title = title.replace("@" + originalName, " ");
+            }
+        }
+        title = title.replaceAll("(?iu)@[^\\s@]*\\.(?:jpe?g|jfif|png|webp|gif)(?![\\p{L}\\p{N}])", " ");
+        title = title.replaceAll("\\s+", " ").trim();
+        title = title.replaceAll("([，。！？；：,.!?;:、])(?:\\s*[，。！？；：,.!?;:、])+", "$1");
+        title = title.replaceAll("^[\\p{P}\\p{S}\\s]+|[\\p{P}\\p{S}\\s]+$", "");
+        return truncateGeneralTaskName(title.replaceAll("\\s+", " ").trim());
+    }
+
+    private String originalFileBaseName(MultipartFile file) {
+        String value = file == null ? null : file.getOriginalFilename();
+        if (value == null || value.isBlank()) return "";
+        String fileName = value.replace('\\', '/');
+        fileName = fileName.substring(fileName.lastIndexOf('/') + 1).trim();
+        int dot = fileName.lastIndexOf('.');
+        String baseName = (dot > 0 ? fileName.substring(0, dot) : fileName).replaceAll("\\s+", " ").trim();
+        return baseName.replaceAll("^[\\p{P}\\p{S}\\s]+|[\\p{P}\\p{S}\\s]+$", "");
+    }
+
+    private String truncateGeneralTaskName(String value) {
+        int codePoints = value.codePointCount(0, value.length());
+        if (codePoints <= GENERAL_TASK_NAME_MAX_LENGTH) return value;
+        int boundary = -1;
+        for (int index = GENERAL_TASK_NAME_MAX_LENGTH - 1; index >= 28; index--) {
+            int offset = value.offsetByCodePoints(0, index);
+            int codePoint = value.codePointAt(offset);
+            if (Character.isWhitespace(codePoint) || isGeneralTaskNameBoundary(codePoint)) {
+                boundary = index;
+                break;
+            }
+        }
+        int kept = boundary >= 28 ? boundary : GENERAL_TASK_NAME_TARGET_LENGTH;
+        return value.substring(0, value.offsetByCodePoints(0, kept)).stripTrailing() + "…";
+    }
+
+    private boolean isGeneralTaskNameBoundary(int codePoint) {
+        return "，。！？；：,.!?;:、".indexOf(codePoint) >= 0;
+    }
+
     private String normalizeGenerationMode(String value) {
         String mode = value == null ? "MODEL_WEAR" : value.trim().toUpperCase();
-        if (!List.of("MODEL_WEAR", "PRODUCT_ONLY", "PARTIAL_INTERACT").contains(mode)) {
+        if (!List.of("MODEL_WEAR", "PRODUCT_ONLY", "PARTIAL_INTERACT", "CAST_PRODUCT").contains(mode)) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "不支持的生成模式");
+        }
+        return mode;
+    }
+
+    private String modeName(String mode) {
+        return switch (mode) {
+            case "MODEL_WEAR" -> "人物穿搭";
+            case "CAST_PRODUCT" -> "人物＋商品";
+            default -> "纯商品";
+        };
+    }
+
+    private String normalizeVoiceoverMode(String value) {
+        String mode = value == null || value.isBlank() ? "SCRIPT" : value.trim().toUpperCase();
+        if (!List.of("SCRIPT", "CUSTOM", "NONE").contains(mode)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "不支持的口播方式");
         }
         return mode;
     }
@@ -1006,6 +1265,14 @@ public class AiVideoTaskService {
         return resolution;
     }
 
+    private int normalizeDurationSeconds(Integer value) {
+        int duration = value == null ? 6 : value;
+        if (duration < 4 || duration > 15) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频时长仅支持 4–15 秒");
+        }
+        return duration;
+    }
+
     private String normalizeVideoRoute(String value) {
         String route = value == null || value.isBlank() ? "QUALITY" : value.trim().toUpperCase();
         if (!List.of("QUALITY", "SPEED").contains(route)) {
@@ -1020,6 +1287,10 @@ public class AiVideoTaskService {
     }
 
     private String defaultVideoPrompt(AiVideoTask task, AiVideoTaskItem item) {
+        if (task.isGeneral()) return item.getVideoPromptText() == null ? "" : item.getVideoPromptText();
+        if (isScriptVideoReplacement(task)) {
+            return buildScriptVideoReplacementPrompt(task);
+        }
         if (!"MODEL_WEAR".equals(task.getGenerationMode())) {
             String basePrompt = task.isDirectReferenceVideo()
                     ? buildDirectReferenceVideoPrompt(task, item.getName())
@@ -1032,21 +1303,65 @@ public class AiVideoTaskService {
                 item.getProductFunctionAnalysisJson());
     }
 
+    static boolean isScriptVideoReplacement(AiVideoTask task) {
+        return task != null
+                && task.isUseScriptReferenceVideo();
+    }
+
+    private String buildScriptVideoReplacementPrompt(AiVideoTask task) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("提示词版本：SCRIPT_VIDEO_REPLACE_V2 · 精准复刻\n");
+        prompt.append("【母版】以随请求提交的原视频为唯一时空母版。只执行上方《替换映射》，未映射的人物、商品和环境保持原样。\n");
+        prompt.append("【外观】被替换对象的身份或商品外观服从对应图片；其在画面中的位置、比例、透视、遮挡、光影、动作和接触关系服从原视频。\n");
+        prompt.append("【时序】原视频的动作时点、镜头路径、切换边界、节奏和总时长不变；不新增、删除、复制或互换人物与物品。\n");
+        prompt.append("【稳定】替换结果全程跟随目标，颜色、结构、比例、Logo、文字、图案和材质不漂移、不融化、不换款。\n");
+        if ("PRODUCT_ONLY".equals(task.getGenerationMode())) {
+            prompt.append("【景别】商品全程近景清楚。原视频过远时只收紧主体尺度，不改动作、运镜方向、节奏和切换时点。\n");
+        } else {
+            prompt.append("【景别】人物全程保持头顶至膝盖上方的中近景，脸和商品清晰。原视频过远时只收紧主体尺度，不改其他时空信息。\n");
+        }
+        prompt.append("【输出】直接输出完成视频，不显示参考图、映射文字、编号、边框、额外字幕或水印。\n");
+        appendMusicPrompt(prompt, task);
+        return prompt.toString().trim();
+    }
+
+    private void appendCloseFramingLock(StringBuilder prompt, AiVideoTask task) {
+        prompt.append("【全片中近景锁定｜最高优先级且覆盖脚本、参考图和原视频景别】\n");
+        if ("PRODUCT_ONLY".equals(task.getGenerationMode())) {
+            prompt.append("所有商品镜头均采用商品近景，主体持续填满主要画面；禁止远景、空旷全景、主体突然缩小、后退拉远或以展示环境为理由拉开距离。脚本中的拉远改为近景范围内的轻微横移、环绕或固定机位。\n\n");
+            return;
+        }
+        prompt.append("所有出现人物的画面都必须保持头顶至大腿中下段、下边界在膝盖上方的中近景；膝盖以下、双脚和鞋子始终不可见。")
+                .append("脸从发际线到下巴的高度在每一帧都不得低于画面高度 15%，头顶、完整五官、胸前商品、双臂和动作所需双手必须清楚。")
+                .append("禁止远景、全景、完整全身、广角缩人、人物后退变小、镜头拉远或切到远景；脚本、shotSize、cameraMovement、参考图或原视频若与此冲突，一律把动作改写到中近景内完成。")
+                .append("允许硬切和轻微推近、横移、环绕，但切换前后仍须保持相同中近景主体尺度，不能用拉远交代环境。纯商品特写可以无人，但商品必须近景填满主要画面。\n\n");
+    }
+
+    private String closeFramingTimelineDirective(AiVideoTask task) {
+        return "PRODUCT_ONLY".equals(task.getGenerationMode())
+                ? "商品近景，主体填满主要画面；禁止远景、主体缩小和拉远"
+                : "人物中近景：头顶至膝盖上方、脸高≥15%；禁止远景、全身、脚部入镜和拉远";
+    }
+
     private String buildDirectReferenceVideoPrompt(AiVideoTask task, String subjectName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：DIRECT_DETAIL_V3\n\n");
+        prompt.append("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定\n\n");
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append("短视频，主体：").append(subjectName).append("。\n");
         prompt.append("参考图的编号、主参考和各图用途由用户单独指定；严格服从提交时附加的《参考图职责协议》，不得按上传顺序自行猜测，也不得把编号、用途说明或协议文字拍进成片。\n");
+        if ("CAST_PRODUCT".equals(task.getGenerationMode())) {
+            prompt.append("【多人物＋多商品关系】\n脚本决定出镜人数、商品数量、人物之间及人物与商品的互动关系；CHARACTER 参考锁定各人物身份，APPEARANCE/DETAIL 参考锁定各商品。不得合并、互换、减少或复制人物和商品。\n\n");
+        }
+        appendCloseFramingLock(prompt, task);
         prompt.append("每一张参考图只影响它被指定的职责。发生冲突时，主参考决定主体身份和整体外观，专项参考只覆盖对应的商品细节、人物、场景、动作、角度或结束画面。\n\n");
         prompt.append("【人物人脸景别保护】\n");
         prompt.append("有人物时，全片保持同一人物身份、脸型、五官比例、肤色、年龄、发型、身材和穿搭；头部转动只产生真实透视变化，不得逐帧重绘五官、换脸或改变年龄。\n");
-        prompt.append("景别服从每段脚本和对应参考图；脸部出现时必须清晰、自然且结构稳定。非台词时保持自然闭口，不自行增加眨眼、挑眉、口型、手势、舞蹈或夸张表演。\n\n");
+        prompt.append("动作、场景和主体关系服从每段脚本与对应参考图，但景别始终服从《全片中近景锁定》；脸部必须清晰、自然且结构稳定。非台词时保持自然闭口，不自行增加眨眼、挑眉、口型、手势、舞蹈或夸张表演。\n\n");
         prompt.append("【商品与物理一致性】\n");
         prompt.append("商品颜色、结构、数量、比例、Logo、文字、图案、材质和功能部件全片稳定，不得换款、复制、漂移、融化或凭空生长。拿取、开启、点燃、喷洒、倾倒和使用效果必须遵守真实接触关系、结构和功能原理。\n");
         prompt.append("手部只在脚本需要时出现，数量与动作自然；主体不得悬浮，必须与手、桌面、地面、支架或环境建立真实接触。\n\n");
         prompt.append("【镜头执行与质量】\n");
-        prompt.append("逐段落实脚本中的场景、动作、构图、景别、机位、运镜和转场。连续段在同一镜头内补齐平滑运动；只有脚本明确的切点才硬切，禁止用人体变形、商品形变或背景融化代替转场。\n");
+        prompt.append("逐段落实脚本中的场景、动作、构图意图、机位方向、运镜和转场；原脚本景别不执行，全部由《全片中近景锁定》硬覆写。连续段在同一镜头内补齐平滑运动；只有脚本明确的切点才硬切，禁止用人体变形、商品形变或背景融化代替转场。\n");
         prompt.append("禁止第二主体、复制、分身、镜像、残影、肢体增生、关节反折、穿模、异常反射、分屏、格线、九宫格、编号、额外字幕、Logo 和水印。光线、曝光、白平衡和背景在同一镜头内保持稳定。\n\n");
         appendMusicPrompt(prompt, task);
         appendImageToVideoTimeline(prompt, task);
@@ -1056,7 +1371,7 @@ public class AiVideoTaskService {
 
     private String buildProductVideoPrompt(AiVideoTask task, String productName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：PRODUCT_DETAIL_V3\n\n");
+        prompt.append("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定\n\n");
         prompt.append("【参考图片】\n");
         prompt.append("图1：从图2第 01 格裁出的商品首帧，是商品外观、位置、场景与初始状态的最高优先级锚点。\n");
         prompt.append("图2：4K 商品分镜九宫格，按从左到右、从上到下读取 01→09，仅表示同一件商品的连续展示过程。\n");
@@ -1064,10 +1379,11 @@ public class AiVideoTaskService {
         prompt.append("如请求中另附参考视频：它是原分镜脚本的动作母版，只用于复刻时间节奏、主体动作、运镜轨迹和镜头边界转场；不得继承其中的原商品外观、文字、品牌、人物身份或背景细节。\n\n");
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append(" 商品展示视频。全程只保留同一件商品主体，按 01→09 自然连续变化，不得复制或增加第二件同款。\n");
+        appendCloseFramingLock(prompt, task);
         prompt.append("商品的颜色、形状、比例、Logo、标签、包装文字、图案和材质必须与图3一致，不得重新设计、漂移、融化或变形。\n");
         prompt.append("布料始终保留真实重量、柔软度、连续褶皱和支撑关系；具体抓握、翻面、提拉或摆放动作只按对应分镜执行，不得把某一格的手部姿势复制到整条视频。\n");
-        prompt.append("场景、展示方式、机位、构图和手部状态逐镜读取图2与脚本时间轴，不得用某一格的设置覆盖其他格。镜头变化只采用脚本明确的推近、拉远、平移、环绕或细节特写。\n");
-        prompt.append("运镜不是静态构图备注：每个时间段必须真实执行脚本指定的方向、速度、起止景别和持续过程；只有脚本明确写固定机位时才允许完全固定。\n");
+        prompt.append("场景、展示方式、机位方向、构图意图和手部状态逐镜读取图2与脚本时间轴，不得用某一格的设置覆盖其他格；但所有镜头都必须重新归一为商品近景。\n");
+        prompt.append("运镜在商品近景范围内执行：推近、平移、环绕和细节特写可保留；拉远、后退、远景或主体缩小一律改为近景范围内的轻微横移、环绕或固定机位。\n");
         prompt.append("九宫格是 9 个时间轴关键帧，不代表 9 个物理镜头。只有转场说明明确标记真实切点时才执行转场；标记“同镜头连续，无转场”的相邻格必须保持同一镜头内连续运动。\n");
         prompt.append("分镜明确写出手持、拿取、摆放、打开或演示时，只在该分镜出现完成动作所需的一双自然手；分镜未要求手部互动时，不得新增人物、手臂、手部或持物动作。\n");
         prompt.append("商品不得悬浮，必须与手、桌面、地面、支架或包装建立符合该分镜的真实接触关系。禁止穿模、异常反射、破损结构、额外配件、背景文字、水印、分屏、九宫格边框和画中画。\n\n");
@@ -1079,16 +1395,17 @@ public class AiVideoTaskService {
 
     private String buildStoryboardAnimationPrompt(AiVideoTask task, String garmentName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：V11.1 · V11 恢复版与局部帧保持\n\n");
+        prompt.append("提示词版本：V11.3 · 全片中近景与局部帧保持\n\n");
         prompt.append("【参考图片顺序】\n");
         prompt.append("图1：从图2第 01 格等比例裁出的单人首帧。它只定义视频 t=0 的人物身份、脸、发型、身材、完整穿搭与初始姿势；从第 01 段动作开始后立即服从图2和时间轴推进，不得把图1的静态姿势、手持状态或背景延续到后续分镜。\n");
-        prompt.append("图2：最终 4K 九宫格分镜表。按从左到右、从上到下读取 01→09；每一格都分别决定对应镜头的动作、场景、构图、景别和机位，不得只读取第 01 格。\n");
+        prompt.append("图2：最终 4K 九宫格分镜表。按从左到右、从上到下读取 01→09；每一格分别决定对应镜头的动作、场景、构图意图和机位方向，不得只读取第 01 格；其中远景、全身或拉远信息无效，人物尺度始终由《全片中近景锁定》决定。\n");
         prompt.append("图3：商品素材，只用于校验上衣颜色、版型、领口、袖长以及胸前印花的内容、位置和比例。\n\n");
         prompt.append("【生成任务】\n");
-        prompt.append("生成一条严格按图2的 01→09 顺序播放的多镜头电商短片。必须逐格读取并落实每格场景、动作、主体状态、构图和景别；图1仅约束 t=0，不具备覆盖时间轴的权限，禁止把九格全部改写成第 01 格的背景、站姿或手持状态。\n");
+        prompt.append("生成一条严格按图2的 01→09 顺序播放的多镜头电商短片。必须逐格读取并落实每格场景、动作、主体状态和构图意图；图1仅约束 t=0，不具备覆盖时间轴的权限，禁止把九格全部改写成第 01 格的背景、站姿或手持状态。所有人物镜头的景别统一由后述中近景锁定覆盖。\n");
+        appendCloseFramingLock(prompt, task);
         prompt.append("相邻格背景、人物位置和景别一致时，使用同一身体的自然连续动作；相邻格出现明显换景、站立与坐姿切换、人物镜头与商品特写切换或景别大幅变化时，在分镜边界使用干净硬切，不得用人体变形、背景融化或强行走位完成转场。\n");
         prompt.append("【视角变化判定】若时间轴明确写出转身、回身、侧身、低头、抬头或回眸，则在约 0.8–1.5 秒内只完成这一项平滑运动，头、颈、肩和躯干按真实骨骼关系共同转动；转动期间不叠加新的微笑、挑眉、口型、眨眼或快速视线动作。\n");
-        prompt.append("若时间轴没有连续动作指令，而相邻格出现正面/侧面/背面互换、身体朝向变化超过约 30°、头部俯仰变化超过约 20°、人物尺度明显改变或全身与局部景别互换，则在边界直接硬切。硬切前后各稳定约 4–6 帧，禁止中间脸、中间身体、交叉溶解、残影、变形插值和背景融化。\n");
+        prompt.append("若时间轴没有连续动作指令，而相邻格出现正面/侧面/背面互换、身体朝向变化超过约 30°或头部俯仰变化超过约 20°，则在边界直接硬切。参考格出现人物尺度改变、全身或远景时不能照搬其距离，必须先归一为相同中近景再硬切。硬切前后各稳定约 4–6 帧，禁止中间脸、中间身体、交叉溶解、残影、变形插值和背景融化。\n");
         prompt.append("每格都必须在对应时间段真实出现，不得跳过中间格或长期停留第 01 格。镜头内每次只推进一个主要动作，不自行增加舞蹈、挥手、转圈或夸张表演。\n");
         prompt.append("所有有人分镜始终使用图1中的同一个人物和同一套穿搭，任一镜头最多 1 人；纯商品特写允许人物不出镜。禁止第二人物、复制、分身、镜像人物、换脸、换发型、换装、四肢增生、关节反折和穿模。\n");
         prompt.append("【手持服装结构不变】人物拿着、展开、折叠、从包装取出、贴身比对或特写商品时，手中商品仍须逐帧服从后附《服装结构契约》。斜肩、单肩、宽船领或露肩款不得在手里变成普通圆领短袖；领口连续路径、左右肩高度与覆盖关系、袖子数量和连接点必须保持。穿到身上后继续沿用同一结构和同一穿着侧。\n");
@@ -1102,14 +1419,18 @@ public class AiVideoTaskService {
         prompt.append("衣服褶皱遵循连续布料物理，同一条褶皱随身体动作平滑移动，不得凭空出现、消失或像液体沸腾。皮肤的肤色、毛孔、细纹和关节折痕不得游走、闪烁或逐帧强化；分辨率不足时保持自然柔和的中频细节。\n");
         prompt.append("【布料物理】衣服褶皱、重量和惯性必须逐镜服从该格实际支撑点；禁止把任一格的提拉动作扩散成全片固定手势。\n");
         prompt.append("【曝光与色彩锁定】每个镜头分别以图2对应格的亮度、肤色、白平衡、色温、黑位、对比度和饱和度为基准；同一镜头内保持稳定，不得出现曝光呼吸、肤色闪烁、自动压暗、灰雾、暗角或电影滤镜。不同场景在硬切后直接采用下一格自身的曝光，不使用淡入淡出或黑场。\n");
-        prompt.append("每个镜头的背景、焦段、光线与人物尺度以图2对应格为准；同一镜头内部保持稳定。不得显示图2格线、拼贴、文字或编号，不生成字幕、额外 Logo 或水印。\n\n");
+        prompt.append("每个镜头的背景、机位方向与光线以图2对应格为准；焦段和人物尺度始终服从全片中近景锁定，同一镜头内部保持稳定。不得显示图2格线、拼贴、文字或编号，不生成字幕、额外 Logo 或水印。\n\n");
         appendImageToVideoTimeline(prompt, task);
         String value = prompt.toString().trim();
         return value.substring(0, Math.min(value.length(), 20000));
     }
 
     private void appendMusicPrompt(StringBuilder prompt, AiVideoTask task) {
-        boolean spokenAudio = hasNarration(task);
+        Map<String, Object> rules = generationRules(task);
+        String voiceoverMode = textValue(rules.get("voiceoverMode"));
+        boolean spokenAudio = "CUSTOM".equals(voiceoverMode)
+                ? !textValue(rules.get("customVoiceover")).isBlank()
+                : !"NONE".equals(voiceoverMode) && hasNarration(task);
         if ("UPLOADED".equals(task.getMusicMode())) {
             prompt.append(spokenAudio
                     ? "【音频】已上传音乐是全片唯一BGM并保持连续；按时间轴生成指定对白/旁白，说话时仅压低BGM，句末恢复。\n"
@@ -1121,8 +1442,22 @@ public class AiVideoTaskService {
         }
         if (spokenAudio) {
             prompt.append("【人声】逐字说时间轴文字，不增删重复；“对白”由人物在对应时段自然开口并同步口型，“旁白”用画外音且人物不动嘴；空白时段禁说话。人声清楚，BGM不得盖住或消失。\n");
+            String narrationLanguage = textValue(rules.get("narrationLanguage"));
+            if ("SCRIPT".equals(voiceoverMode) && !narrationLanguage.isBlank()) {
+                prompt.append("【旁白语言锁定】全部对白和旁白必须使用")
+                        .append(narrationLanguage).append("，对应目标市场：")
+                        .append(task.getTargetMarket()).append("。时间轴文字已经完成本地化，禁止改回中文、夹杂其他语言或再次翻译。\n");
+            }
         } else {
             prompt.append("【人声】全片不说话、不动嘴；BGM不驱动表情或身体动作。\n");
+        }
+        if ("CUSTOM".equals(voiceoverMode)) {
+            prompt.append("【自定义口播原文】").append(textValue(rules.get("customVoiceover"))).append('\n');
+        }
+        String videoTitle = textValue(rules.get("videoTitle"));
+        if (!videoTitle.isBlank()) {
+            prompt.append("【视频标题】开场前 2 秒只显示以下精确文字：").append(videoTitle)
+                    .append("。不得把口播另行生成字幕。\n");
         }
     }
 
@@ -1138,6 +1473,11 @@ public class AiVideoTaskService {
         }
     }
 
+    private Map<String, Object> generationRules(AiVideoTask task) {
+        try { return objectMapper.readValue(task.getGenerationRulesJson(), Map.class); }
+        catch (Exception ignored) { return Map.of(); }
+    }
+
     @SuppressWarnings("unchecked")
     private void appendImageToVideoTimeline(StringBuilder prompt, AiVideoTask task) {
         try {
@@ -1150,9 +1490,9 @@ public class AiVideoTaskService {
                 prompt.append("按人工脚本的时间段逐项执行；每段场景、构图、动作和声音均须落实，参考图职责服从提交时附加的协议。\n");
             } else {
                 prompt.append(productOnly
-                        ? "每一项对应图2中同编号关键帧，必须在指定时段落实该格的场景、构图、景别、动作和运镜；严格读取“进入转场”，其中“同镜头连续，无转场”表示平滑延续，只有明确的真实切点才允许切镜。\n"
-                        : "每一项对应图2中同编号格，必须在指定时段落实该格的场景、构图、景别和动作；同场景内部平滑运动，场景明显变化时在边界干净硬切。\n");
-                prompt.append("时间轴文字中的人物外貌、发型、眼镜、配饰、上装和下装描述全部失效，人物与穿搭只认图1和图3；场景、动作、构图与景别以图2对应格的可见画面为最高标准。\n");
+                        ? "每一项对应图2中同编号关键帧，必须在指定时段落实该格的场景、构图意图、动作和运镜；原始景别只作废不继承，严格读取“进入转场”，其中“同镜头连续，无转场”表示平滑延续，只有明确的真实切点才允许切镜。\n"
+                        : "每一项对应图2中同编号格，必须在指定时段落实该格的场景、构图意图和动作；原始景别只作废不继承，同场景内部平滑运动，场景明显变化时在边界干净硬切。\n");
+                prompt.append("时间轴文字中的人物外貌、发型、眼镜、配饰、上装和下装描述全部失效，人物与穿搭只认图1和图3；场景、动作与构图意图以图2对应格为准，景别必须服从全片中近景锁定，远景、全身和拉远信息无效。\n");
             }
             for (Object rawShot : shots) {
                 if (!(rawShot instanceof Map<?, ?> shot)) continue;
@@ -1175,17 +1515,37 @@ public class AiVideoTaskService {
                 appendLine(prompt, "动作幅度", intensity);
                 appendLine(prompt, "手部规则", shotHandDirective(task, action, scene));
                 appendLine(prompt, "本镜头布料重力", fabricGripPhysicsDirective(action, scene));
+                appendLine(prompt, "景别硬覆写", closeFramingTimelineDirective(task));
                 appendLine(prompt, "进入转场", VideoTimelineSemantics.enteringTransition(sequence, transition));
-                if (!shotSize.isBlank() || !movement.isBlank()) {
-                    prompt.append("镜头：");
-                    if (!shotSize.isBlank()) prompt.append(shotSize);
-                    if (!shotSize.isBlank() && !movement.isBlank()) prompt.append(" / ");
-                    prompt.append(movement).append('\n');
+                if (!shotSize.isBlank()) {
+                    appendLine(prompt, "原脚本景别（已禁用）", shotSize);
                 }
-                String narration = textValue(shot.get("narration"));
+                appendLine(prompt, "执行镜头", normalizedCameraMovement(task, movement));
+                String voiceoverMode = textValue(generationRules(task).get("voiceoverMode"));
+                String narration = "NONE".equals(voiceoverMode) || "CUSTOM".equals(voiceoverMode)
+                        ? "" : textValue(shot.get("narration"));
                 appendLine(prompt, "对白 / 旁白", narration);
             }
         } catch (Exception ignored) { }
+    }
+
+    private String normalizedCameraMovement(AiVideoTask task, String movement) {
+        String base = closeFramingTimelineDirective(task);
+        if (movement == null || movement.isBlank()) {
+            return base + "；固定机位或近景范围内轻微运动";
+        }
+        String normalized = movement.toLowerCase();
+        boolean pullsAway = normalized.contains("拉远")
+                || normalized.contains("后退")
+                || normalized.contains("远离")
+                || normalized.contains("zoom out")
+                || normalized.contains("dolly out")
+                || normalized.contains("pull back")
+                || normalized.contains("truck out");
+        if (pullsAway) {
+            return base + "；原拉远/后退运镜已禁用，改为近景范围内轻微横移、环绕或固定机位";
+        }
+        return base + "；仅在不改变主体近景尺度的前提下执行原运镜：" + movement;
     }
 
     private String buildThreeReferenceGridPromptV3(AiVideoTask task, String garmentName) {
@@ -1291,12 +1651,18 @@ public class AiVideoTaskService {
     private boolean isLegacyGeneratedPrompt(AiVideoTask task, AiVideoTaskItem item) {
         String current = item.getVideoPromptText();
         if (current == null) return false;
-        if (current.contains("提示词版本：DIRECT_DETAIL_V3")
-                || current.contains("提示词版本：PRODUCT_DETAIL_V3")
-                || current.contains("提示词版本：V11.1 · V11 恢复版与局部帧保持")) {
+        if (isScriptVideoReplacement(task)) {
+            return !current.contains("提示词版本：SCRIPT_VIDEO_REPLACE_V2 · 精准复刻");
+        }
+        if (current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定")
+                || current.contains("提示词版本：V11.3 · 全片中近景与局部帧保持")) {
             return false;
         }
-        return ((task.isDirectReferenceVideo()
+        return (current.contains("提示词版本：DIRECT_DETAIL_V3")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V3")
+                || current.contains("提示词版本：V11.1 · V11 恢复版与局部帧保持")
+                || (task.isDirectReferenceVideo()
                     && current.contains("参考图的编号、主参考和各图用途由用户单独指定")
                     && (!current.contains("【人物人脸景别保护】")
                         || current.contains("每一项对应图2中同编号")
@@ -1435,12 +1801,73 @@ public class AiVideoTaskService {
         try { return Integer.parseInt(textValue(value)); } catch (Exception ignored) { return fallback; }
     }
 
+    private enum ImageFormat {
+        JPEG("image/jpeg", ".jpg"),
+        PNG("image/png", ".png"),
+        WEBP("image/webp", ".webp"),
+        GIF("image/gif", ".gif");
+
+        private final String contentType;
+        private final String extension;
+
+        ImageFormat(String contentType, String extension) {
+            this.contentType = contentType;
+            this.extension = extension;
+        }
+
+        String contentType() { return contentType; }
+        String extension() { return extension; }
+
+        boolean matchesContentType(String value) {
+            if (value == null || value.isBlank()) return false;
+            String normalized = value.split(";", 2)[0].trim().toLowerCase(java.util.Locale.ROOT);
+            if (this == JPEG) {
+                return List.of("image/jpeg", "image/jpg", "image/pjpeg").contains(normalized);
+            }
+            if (this == PNG) return List.of("image/png", "image/x-png").contains(normalized);
+            return contentType.equals(normalized);
+        }
+
+        boolean matchesFileName(String value) {
+            if (value == null || value.isBlank()) return true;
+            String name = value.toLowerCase(java.util.Locale.ROOT);
+            int dot = name.lastIndexOf('.');
+            if (dot < 0) return true;
+            String suffix = name.substring(dot);
+            if (this == JPEG) return List.of(".jpg", ".jpeg", ".jfif").contains(suffix);
+            return extension.equals(suffix);
+        }
+
+        static ImageFormat detect(byte[] header) {
+            if (header == null) return null;
+            if (header.length >= 3 && unsigned(header[0]) == 0xff && unsigned(header[1]) == 0xd8
+                    && unsigned(header[2]) == 0xff) return JPEG;
+            if (header.length >= 8 && unsigned(header[0]) == 0x89 && header[1] == 'P' && header[2] == 'N'
+                    && header[3] == 'G' && unsigned(header[4]) == 0x0d && unsigned(header[5]) == 0x0a
+                    && unsigned(header[6]) == 0x1a && unsigned(header[7]) == 0x0a) return PNG;
+            if (header.length >= 6 && header[0] == 'G' && header[1] == 'I' && header[2] == 'F'
+                    && header[3] == '8' && (header[4] == '7' || header[4] == '9') && header[5] == 'a') return GIF;
+            if (header.length >= 12 && header[0] == 'R' && header[1] == 'I' && header[2] == 'F'
+                    && header[3] == 'F' && header[8] == 'W' && header[9] == 'E'
+                    && header[10] == 'B' && header[11] == 'P') return WEBP;
+            return null;
+        }
+
+        private static int unsigned(byte value) { return value & 0xff; }
+    }
+
     public record CreateCommand(String scriptId, String name, String targetMarket, String generationMode,
                                 String backgroundMode, String productCategory, String sceneType, String interactionType,
                                 boolean allowHand, String aspectRatio, String resolution, boolean useScriptReferenceVideo,
-                                String videoRoute) {}
+                                String videoRoute, String voiceoverMode, String customVoiceover, String videoTitle) {}
+    public record GeneralCreateCommand(String name, String prompt, Integer durationSeconds,
+                                       String aspectRatio, String resolution, String videoRoute,
+                                       boolean autoStart) {}
     public record ReferenceUpdate(String id, int order, String role, String instruction, boolean primary) {}
+    public record PendingImageDownload(String assetType, int attempts, String lastError,
+                                       java.time.Instant updatedAt) {}
     public record TaskDetail(AiVideoTask task, List<AiVideoTaskItem> items, List<AiVideoTaskAsset> assets,
+                             Map<String, PendingImageDownload> pendingImageDownloads,
                              java.time.Instant videoSubmittedAt, Map<String, java.time.Instant> itemVideoSubmittedAt,
                              Map<String, String> videoProviderTaskIds,
                              int activeVideoSubmissions, int videoSubmissionLimit) {}

@@ -29,6 +29,7 @@ import java.util.Map;
 public class H3MultimodalVideoGenerationProvider extends ProviderJsonSupport implements VideoGenerationProvider {
     private static final long MAX_REFERENCE_BYTES = 128L * 1024 * 1024;
     private static final long MAX_TOTAL_REFERENCE_BYTES = 384L * 1024 * 1024;
+    private static final String PROVIDER_RESOLUTION = "768P";
     private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
 
     public H3MultimodalVideoGenerationProvider(ObjectMapper objectMapper) { super(objectMapper); }
@@ -36,14 +37,17 @@ public class H3MultimodalVideoGenerationProvider extends ProviderJsonSupport imp
     @Override public String code() { return "H3_MULTI"; }
     @Override public boolean supportsReferenceVideo(RuntimeModelConnection connection) { return true; }
     @Override public boolean requiresAuthenticatedDownload() { return true; }
-    @Override public String effectiveResolution(String requestedResolution) { return "768P"; }
+    @Override public String effectiveResolution(String requestedResolution) {
+        return is720pTier(requestedResolution) ? PROVIDER_RESOLUTION : requestedResolution;
+    }
 
     @Override
     public SubmitResult submit(RuntimeModelConnection connection, GenerationRequest request) {
+        String resolution = providerResolution(request.resolution());
         MultipartBodyBuilder multipart = new MultipartBodyBuilder();
         multipart.part("prompt", request.prompt());
         multipart.part("mode", "ref2va");
-        multipart.part("resolution", "768P");
+        multipart.part("resolution", resolution);
         multipart.part("duration", String.valueOf(request.durationSeconds()));
         multipart.part("steps", "10");
         multipart.part("aspectRatio", request.aspectRatio());
@@ -91,7 +95,7 @@ public class H3MultimodalVideoGenerationProvider extends ProviderJsonSupport imp
         Map<String, Object> requestManifest = new LinkedHashMap<>();
         requestManifest.put("prompt", request.prompt());
         requestManifest.put("mode", "ref2va");
-        requestManifest.put("resolution", "768P");
+        requestManifest.put("resolution", resolution);
         requestManifest.put("duration", request.durationSeconds());
         requestManifest.put("steps", 10);
         requestManifest.put("aspectRatio", request.aspectRatio());
@@ -235,6 +239,18 @@ public class H3MultimodalVideoGenerationProvider extends ProviderJsonSupport imp
     private String tasksEndpoint(String baseUrl) {
         String normalized = baseUrl.replaceAll("/+$", "");
         return normalized.endsWith("/api/videos") ? normalized : normalized + "/api/videos";
+    }
+
+    private String providerResolution(String requestedResolution) {
+        if (is720pTier(requestedResolution)) return PROVIDER_RESOLUTION;
+        throw new VideoProviderException(
+                "多模态高速线路固定输出 768P，不支持请求的分辨率 " + requestedResolution,
+                true);
+    }
+
+    private boolean is720pTier(String resolution) {
+        return "720p".equalsIgnoreCase(resolution == null ? "" : resolution.trim())
+                || PROVIDER_RESOLUTION.equalsIgnoreCase(resolution == null ? "" : resolution.trim());
     }
 
     private String extension(String mediaType) {

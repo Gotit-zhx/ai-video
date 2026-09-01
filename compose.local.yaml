@@ -1,0 +1,17 @@
+services:
+  pi-runtime:
+    extra_hosts:
+      - "api.dayan.design:123.56.45.111"
+      - "monotoo.shop:128.140.47.212"
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    extra_hosts:
+      - "api.dayan.design:123.56.45.111"
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.local
+    ports:
+      - "3000:80"

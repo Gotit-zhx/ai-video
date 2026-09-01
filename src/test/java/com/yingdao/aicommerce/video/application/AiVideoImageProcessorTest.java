@@ -2,13 +2,19 @@ package com.yingdao.aicommerce.video.application;
 
 import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskAsset;
+import com.yingdao.aicommerce.video.domain.AiVideoTask;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.ObjectMapper;
 
+import javax.imageio.ImageIO;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
+import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -16,7 +22,10 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -24,6 +33,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiVideoImageProcessorTest {
+
+    @TempDir
+    Path tempDirectory;
 
     @Test
     void recognizesLegacyStaticModelFirstFrame() {
@@ -61,9 +73,87 @@ class AiVideoImageProcessorTest {
         assertEquals("IMAGE_READY", item.getStatus());
     }
 
+    @Test
+    void compactsLargeValidationImagesWithoutLosingVisibleTopology() throws Exception {
+        BufferedImage source = new BufferedImage(1800, 900, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = source.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, source.getWidth(), source.getHeight());
+            graphics.setColor(Color.BLACK);
+            graphics.fillRect(300, 120, 1200, 660);
+        } finally {
+            graphics.dispose();
+        }
+        ByteArrayOutputStream png = new ByteArrayOutputStream();
+        assertTrue(ImageIO.write(source, "png", png));
+
+        ProductFunctionAnalysisService.ValidationImage compact =
+                ProductFunctionAnalysisService.compactForValidation(png.toByteArray(), "image/png");
+        BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(compact.bytes()));
+
+        assertEquals("image/jpeg", compact.mimeType());
+        assertNotNull(decoded);
+        assertTrue(Math.max(decoded.getWidth(), decoded.getHeight()) <= 1280);
+        assertTrue(compact.bytes().length < 500_000);
+    }
+
+    @Test
+    void exposesCandidateValidationAsRealIntermediateProgress() {
+        AiVideoTaskItem model = item();
+        model.start();
+        model.validationPending(false);
+        assertEquals("GENERATING_MODEL", model.getStatus());
+        assertEquals(8, model.getProgress());
+
+        AiVideoTaskItem storyboard = item();
+        storyboard.modelReady();
+        storyboard.validationPending(true);
+        assertEquals("GENERATING_STORYBOARD", storyboard.getStatus());
+        assertEquals(88, storyboard.getProgress());
+    }
+
+    @Test
+    void persistsPrivateCandidateAcrossRecoveryWithoutPublishingAnAsset() throws Exception {
+        AiVideoImageProcessor processor = processor(tempDirectory);
+        AiVideoTask task = new AiVideoTask(
+                "org", "task", "script", 1, "script", "{}", "菲律宾", "MODEL_WEAR",
+                "AI_DESIGNED", "服装", "按分镜", "按分镜", false, "9:16", "720p",
+                false, false, "{}", "{}", "user");
+        AiVideoTaskItem item = item();
+        byte[] image = new byte[] {1, 2, 3, 4, 5};
+        var candidate = new AiVideoImageProcessor.TopologyCandidate(
+                "image/png", image, "image-model", "url", "frozen prompt", "revised");
+
+        processor.saveTopologyCandidate(task, item, "MODEL_IMAGE", candidate);
+        var recovered = processor.loadTopologyCandidate(task, item, "MODEL_IMAGE");
+
+        assertNotNull(recovered);
+        assertArrayEquals(image, recovered.bytes());
+        assertEquals("frozen prompt", recovered.prompt());
+        processor.discardTopologyCandidate(task, item, "MODEL_IMAGE");
+        assertNull(processor.loadTopologyCandidate(task, item, "MODEL_IMAGE"));
+    }
+
     private static AiVideoTaskItem item() {
         return new AiVideoTaskItem("org", "task", "item", "sku",
                 "source.png", "C:/tmp/source.png", "image/png", 1);
+    }
+
+    private static AiVideoImageProcessor processor(Path storageRoot) {
+        return new AiVideoImageProcessor(
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskAssetMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper.class),
+                mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class),
+                mock(ProductFunctionAnalysisService.class),
+                mock(AiVideoGenerationService.class),
+                new ObjectMapper(), Runnable::run, Runnable::run,
+                mock(org.springframework.beans.factory.ObjectProvider.class),
+                "http://localhost:8090", "test-token", storageRoot.toString(), storageRoot.toString());
     }
     @Test
     void cropsTopLeftStoryboardCellAsFirstFrame() {
@@ -102,6 +192,10 @@ class AiVideoImageProcessorTest {
 
         assertTrue(requirement.contains("约 190 像素"));
         assertTrue(requirement.contains("膝盖、小腿、双脚和鞋子不可见"));
+        assertTrue(requirement.contains("覆盖脚本景别"));
+        assertTrue(requirement.contains("远景、全景、全身、拉远"));
+        assertTrue(requirement.contains("纯商品格采用填满主体区域的商品近景"));
+        assertFalse(requirement.contains("才允许该格采用对应景别并显示鞋子"));
         assertFalse(requirement.contains("鞋底全部可见"));
     }
 
@@ -235,6 +329,27 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void topologyRedrawPromptTargetsOnlyTheRejectedCellsAndPreservesIdentity() {
+        var validation = new ProductFunctionAnalysisService.GarmentValidation(false,
+                "第03格补回左胸橙色圆环 Logo，第08格保持正面朝向",
+                java.util.List.of("第03格 Logo 缺失", "第08格前后朝向不一致"), 0.92);
+
+        String prompt = AiVideoImageProcessor.topologyCorrectionPrompt("原始九宫格提示", validation);
+
+        assertTrue(prompt.startsWith("原始九宫格提示"));
+        assertTrue(prompt.contains("本轮纠错重绘"));
+        assertTrue(prompt.contains("只纠正下面指出的失败分镜"));
+        assertTrue(prompt.contains("第03格 Logo 缺失"));
+        assertTrue(prompt.contains("第08格前后朝向不一致"));
+        assertTrue(prompt.contains("第03格补回左胸橙色圆环 Logo"));
+        assertTrue(prompt.contains("参考图1"));
+        assertTrue(prompt.contains("结构与中近景复核"));
+        assertTrue(prompt.contains("脸高不低于画面高度 15%"));
+        assertTrue(prompt.contains("禁止远景、全身"));
+        assertTrue(prompt.contains("不得用相似款、无 Logo 款或镜像错误代替"));
+    }
+
+    @Test
     void transientAndNoAssetPolicyFailuresAreEligibleForAutomaticImageRetry() {
         assertTrue(AiVideoImageProcessor.retryableImageConcurrencyFailure(
                 "并发限制：图片模型当前并发已满"));
@@ -253,6 +368,16 @@ class AiVideoImageProcessorTest {
                 "内容策略可能误判：图片模型未产出图片，已快速重试 3 次，系统将继续后台自动重试"));
         assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
                 "模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址"));
+        assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
+                "服装结构复核未通过（本轮已自动纠错重抽 1 次，系统将继续抽卡直至通过）：第03格 Logo 缺失"));
+        assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
+                "服装结构复核暂时失败，已私有保存本次候选图并将在后台继续复核：模型服务响应超时"));
+        assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
+                "服装结构复核暂时失败，已保留本次生图结果供后续继续复核：EOF reached while reading"));
+        assertTrue(AiVideoImageProcessor.privateValidationRetryPending(
+                "服装结构复核暂时失败，已私有保存本次候选图并将在后台继续复核：模型服务响应超时"));
+        assertFalse(AiVideoImageProcessor.privateValidationRetryPending(
+                "服装结构复核未通过：第08格商品身份不一致"));
         assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
                 "版权限制：素材包含受版权保护的角色"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("FAILED",
@@ -263,6 +388,12 @@ class AiVideoImageProcessorTest {
                 "图片生成失败：fetch failed"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "图片生成失败：image generation produced no asset：该提示可能违反了我们的内容政策"));
+        assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
+                "图片生成失败：服装结构复核未通过：第08格商品身份不一致"));
+        assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
+                "图片生成失败：服装结构复核暂时失败，已保留本次生图结果供后续继续复核：EOF reached while reading"));
+        assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("FAILED",
+                "参考图片获取失败，请重新上传"));
         assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "视频厂商并发限制：Concurrency limit exceeded for user, please retry later"));
     }
@@ -273,8 +404,43 @@ class AiVideoImageProcessorTest {
                 "Concurrency limit exceeded for user, please retry later"));
         assertTrue(AiVideoGenerationService.retryableVideoConcurrencyFailure(
                 "厂商拒绝请求（429）"));
+        assertTrue(AiVideoGenerationService.retryableVideoConcurrencyFailure(
+                "参考图片获取失败，请重新上传"));
         assertFalse(AiVideoGenerationService.retryableVideoConcurrencyFailure(
                 "copyrighted character is not allowed"));
+    }
+
+    @Test
+    void preservesAProviderResultUrlAcrossRepeatedGatewayFailures() {
+        var pending = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                "org-1", "task-1", "item-1", "MODEL_IMAGE", "hash",
+                "https://provider.invalid/image", "image/png", "model-1", "url", null);
+        for (int attempt = 0; attempt < 2; attempt++) pending.downloadStarted();
+        pending.downloadFailed("RESULT_DOWNLOAD_HTTP_502 [upstream=502]");
+        assertFalse(AiVideoImageProcessor.replaceUnavailablePendingImage(pending));
+        pending.downloadStarted();
+        pending.downloadFailed("RESULT_DOWNLOAD_HTTP_502 [upstream=502]");
+        assertFalse(AiVideoImageProcessor.replaceUnavailablePendingImage(pending));
+    }
+
+    @Test
+    void replacesOnlyPermanentResultFailuresAndPreservesTransportFailures() {
+        var missing = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                "org-1", "task-1", "item-1", "MODEL_IMAGE", "hash",
+                "https://provider.invalid/missing", "image/png", "model-1", "url", null);
+        missing.downloadStarted();
+        missing.downloadFailed("RESULT_DOWNLOAD_HTTP_404 [upstream=404]");
+        assertTrue(AiVideoImageProcessor.replaceUnavailablePendingImage(missing));
+
+        var timeout = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                "org-1", "task-1", "item-2", "MODEL_IMAGE", "hash",
+                "https://provider.invalid/slow", "image/png", "model-1", "url", null);
+        for (int attempt = 0; attempt < 3; attempt++) timeout.downloadStarted();
+        timeout.downloadFailed("RESULT_DOWNLOAD_TIMEOUT");
+        assertFalse(AiVideoImageProcessor.replaceUnavailablePendingImage(timeout));
+        timeout.downloadStarted();
+        timeout.downloadFailed("RESULT_DOWNLOAD_TIMEOUT");
+        assertFalse(AiVideoImageProcessor.replaceUnavailablePendingImage(timeout));
     }
 
     @Test

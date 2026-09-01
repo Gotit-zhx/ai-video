@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class H3MultimodalVideoGenerationProviderTest {
     private HttpServer server;
@@ -55,6 +56,30 @@ class H3MultimodalVideoGenerationProviderTest {
         assertThat(queried.usage()).containsEntry("progress", 100);
         assertThat(queried.outputUrl()).isEqualTo(baseUrl() + "/api/videos/job-nested-1/content");
         assertThat(queried.requestJson()).contains(baseUrl() + "/api/videos/job-nested-1");
+    }
+
+    @Test
+    void exposesFixed768pOutputOnlyForThe720pTier() {
+        H3MultimodalVideoGenerationProvider provider = new H3MultimodalVideoGenerationProvider(new ObjectMapper());
+
+        assertThat(provider.effectiveResolution("720p")).isEqualTo("768P");
+        assertThat(provider.effectiveResolution("768P")).isEqualTo("768P");
+        assertThat(provider.effectiveResolution("1080p")).isEqualTo("1080p");
+    }
+
+    @Test
+    void rejectsUnsupportedResolutionInsteadOfSilentlyDowngradingIt() {
+        H3MultimodalVideoGenerationProvider provider = new H3MultimodalVideoGenerationProvider(new ObjectMapper());
+        RuntimeModelConnection connection = new RuntimeModelConnection("id", "http://localhost:1",
+                "MiniMax H3", "OPENAI_COMPATIBLE", "H3_MULTI", "secret");
+
+        assertThatThrownBy(() -> provider.submit(connection,
+                new VideoGenerationProvider.GenerationRequest("prompt", List.of(),
+                        5, "16:9", "1080p", null)))
+                .isInstanceOf(VideoProviderException.class)
+                .hasMessageContaining("768P")
+                .hasMessageContaining("1080p")
+                .satisfies(exception -> assertThat(((VideoProviderException) exception).isSafeToFailover()).isTrue());
     }
 
     private String baseUrl() {

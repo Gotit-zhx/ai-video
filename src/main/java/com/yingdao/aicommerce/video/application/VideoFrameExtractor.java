@@ -122,7 +122,10 @@ public class VideoFrameExtractor {
         }
     }
 
-    private double probeDuration(Path video) {
+    public double probeDuration(Path video) {
+        if (!Files.isRegularFile(video)) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "上传的视频文件不存在");
+        }
         ProcessResult result = run(
                 List.of(
                         "ffprobe", "-v", "error",
@@ -143,6 +146,51 @@ public class VideoFrameExtractor {
             return duration;
         } catch (NumberFormatException exception) {
             throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "视频时长无效或超过 10 分钟");
+        }
+    }
+
+    public void trim(Path source, Path output, double startSeconds, double durationSeconds) {
+        if (!Files.isRegularFile(source)) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "上传的视频文件不存在");
+        }
+        if (!Double.isFinite(startSeconds) || startSeconds < 0
+                || !Double.isFinite(durationSeconds) || durationSeconds <= 0) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频截取范围无效");
+        }
+        Path normalizedSource = source.toAbsolutePath().normalize();
+        Path normalizedOutput = output.toAbsolutePath().normalize();
+        Path parent = normalizedOutput.getParent();
+        if (parent == null || normalizedSource.equals(normalizedOutput)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频截取输出路径无效");
+        }
+        try {
+            Files.createDirectories(parent);
+            ProcessResult result = run(
+                    List.of(
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-ss", String.format(Locale.ROOT, "%.6f", startSeconds),
+                            "-i", normalizedSource.toString(),
+                            "-t", String.format(Locale.ROOT, "%.6f", durationSeconds),
+                            "-map", "0:v:0", "-map", "0:a?", "-sn", "-dn",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                            "-movflags", "+faststart", "-avoid_negative_ts", "make_zero",
+                            normalizedOutput.toString()
+                    ),
+                    Duration.ofMinutes(5)
+            );
+            if (result.exitCode() != 0 || !Files.isRegularFile(normalizedOutput)
+                    || Files.size(normalizedOutput) == 0) {
+                Files.deleteIfExists(normalizedOutput);
+                throw new BusinessException(
+                        HttpStatus.UNPROCESSABLE_ENTITY,
+                        "视频截取失败：" + concise(result.output())
+                );
+            }
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (IOException exception) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "视频截取文件保存失败");
         }
     }
 

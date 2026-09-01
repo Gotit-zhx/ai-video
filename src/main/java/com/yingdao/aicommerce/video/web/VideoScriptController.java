@@ -79,10 +79,14 @@ public class VideoScriptController {
             @RequestParam(value = "targetMarket", required = false) @Size(max = 80) String targetMarket,
             @RequestParam(value = "requirements", required = false) @Size(max = 4000) String requirements,
             @RequestParam("presentationMode") @Size(max = 32) String presentationMode,
+            @RequestParam(value = "extractAudio", defaultValue = "false") boolean extractAudio,
+            @RequestParam(value = "clipStartSecond", defaultValue = "0") BigDecimal clipStartSecond,
+            @RequestParam(value = "clipEndSecond", required = false) BigDecimal clipEndSecond,
             @AuthenticationPrincipal PlatformPrincipal principal
     ) {
         return ApiResponse.created(VideoScriptSummaryResponse.from(
-                service.createAnalysis(video, name, targetMarket, requirements, presentationMode, principal)
+                service.createAnalysis(video, name, targetMarket, requirements, presentationMode,
+                        extractAudio, clipStartSecond, clipEndSecond, principal)
         ));
     }
 
@@ -226,7 +230,11 @@ public class VideoScriptController {
             String sourceType,
             String presentationMode,
             String sourceFileName,
+            BigDecimal sourceDurationSeconds,
+            BigDecimal clipStartSecond,
+            BigDecimal clipEndSecond,
             String targetMarket,
+            boolean extractAudio,
             String status,
             int progress,
             String summary,
@@ -246,7 +254,11 @@ public class VideoScriptController {
                     script.getSourceType(),
                     script.getPresentationMode(),
                     script.getSourceFileName(),
+                    script.getSourceDurationSeconds(),
+                    script.getClipStartSecond(),
+                    script.getClipEndSecond(),
                     script.getTargetMarket(),
+                    script.isExtractAudio(),
                     script.getStatus(),
                     script.getProgress(),
                     script.getSummary(),

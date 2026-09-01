@@ -55,7 +55,8 @@ public class AiVideoTaskController {
                 new AiVideoTaskService.CreateCommand(request.scriptId(), request.name(), request.targetMarket(),
                         request.generationMode(), request.backgroundMode(), request.productCategory(), request.sceneType(), request.interactionType(),
                         Boolean.TRUE.equals(request.allowHand()), request.aspectRatio(), request.resolution(),
-                        Boolean.TRUE.equals(request.useScriptReferenceVideo()), request.videoRoute()), principal)));
+                        Boolean.TRUE.equals(request.useScriptReferenceVideo()), request.videoRoute(),
+                        request.voiceoverMode(), request.customVoiceover(), request.videoTitle()), principal)));
     }
 
     @GetMapping
@@ -253,13 +254,17 @@ public class AiVideoTaskController {
                                  @Size(max = 80) String interactionType, Boolean allowHand,
                                  @Size(max = 16) String aspectRatio, @Size(max = 16) String resolution,
                                  Boolean useScriptReferenceVideo,
-                                 @Pattern(regexp = "QUALITY|SPEED") String videoRoute) {}
+                                 @Pattern(regexp = "QUALITY|SPEED") String videoRoute,
+                                 @Pattern(regexp = "SCRIPT|CUSTOM|NONE") String voiceoverMode,
+                                 @Size(max = 4000) String customVoiceover,
+                                 @Size(max = 160) String videoTitle) {}
 
     public record UpdateVideoPromptRequest(@NotBlank @Size(max = 20000) String prompt) {}
     public record ReferenceUpdateRequest(@NotBlank String id, int order, @Size(max = 32) String role,
                                          @Size(max = 500) String instruction, Boolean primary) {}
 
-    public record TaskResponse(String id, String organizationId, String name, String scriptId, int scriptVersion, String scriptName,
+    public record TaskResponse(String id, String organizationId, String name, String taskType, int durationSeconds,
+                               String scriptId, int scriptVersion, String scriptName,
                                String targetMarket, String generationMode, String productCategory, String sceneType,
                                String backgroundMode, String interactionType, boolean allowHand, String aspectRatio,
                                String resolution, String videoRoute,
@@ -270,7 +275,8 @@ public class AiVideoTaskController {
                                int completedItems, String modelId, String errorMessage,
                                Instant createdAt, Instant updatedAt, Instant completedAt) {
         static TaskResponse from(AiVideoTask task) {
-            return new TaskResponse(task.getId(), task.getOrganizationId(), task.getName(), task.getScriptId(), task.getScriptVersion(),
+            return new TaskResponse(task.getId(), task.getOrganizationId(), task.getName(), task.getTaskType(),
+                    task.getDurationSeconds(), task.getScriptId(), task.getScriptVersion(),
                     task.getScriptName(), task.getTargetMarket(), task.getGenerationMode(), task.getProductCategory(),
                     task.getSceneType(), task.getBackgroundMode(), task.getInteractionType(), task.isAllowHand(), task.getAspectRatio(),
                     task.getResolution(), task.getVideoRoute(),
@@ -286,15 +292,20 @@ public class AiVideoTaskController {
     public record ItemResponse(String id, String name, String sku, String sourceFileName, String status,
                                int progress, String errorMessage, String videoPromptText, String videoProviderTaskId,
                                Instant videoSubmittedAt,
+                               boolean imageDownloadPending, String pendingImageAssetType,
+                               int pendingImageDownloadAttempts, Instant pendingImageUpdatedAt,
                                Instant createdAt, Instant updatedAt) {
         static ItemResponse from(AiVideoTaskItem item) {
-            return from(item, null, null);
+            return from(item, null, null, null);
         }
 
-        static ItemResponse from(AiVideoTaskItem item, String videoProviderTaskId, Instant videoSubmittedAt) {
+        static ItemResponse from(AiVideoTaskItem item, String videoProviderTaskId, Instant videoSubmittedAt,
+                                 AiVideoTaskService.PendingImageDownload pending) {
             return new ItemResponse(item.getId(), item.getName(), item.getSku(), item.getSourceFileName(),
                     item.getStatus(), item.getProgress(), item.getErrorMessage(), item.getVideoPromptText(), videoProviderTaskId,
                     videoSubmittedAt,
+                    pending != null, pending == null ? null : pending.assetType(),
+                    pending == null ? 0 : pending.attempts(), pending == null ? null : pending.updatedAt(),
                     item.getCreatedAt(), item.getUpdatedAt());
         }
     }
@@ -315,7 +326,8 @@ public class AiVideoTaskController {
         static TaskDetailResponse from(AiVideoTaskService.TaskDetail detail) {
             return new TaskDetailResponse(TaskResponse.from(detail.task()),
                     detail.items().stream().map(item -> ItemResponse.from(item,
-                            detail.videoProviderTaskIds().get(item.getId()), detail.itemVideoSubmittedAt().get(item.getId()))).toList(),
+                            detail.videoProviderTaskIds().get(item.getId()), detail.itemVideoSubmittedAt().get(item.getId()),
+                            detail.pendingImageDownloads().get(item.getId()))).toList(),
                     detail.assets().stream().map(AssetResponse::from).toList(), detail.videoSubmittedAt(),
                     detail.activeVideoSubmissions(), detail.videoSubmissionLimit());
         }

@@ -7,14 +7,33 @@
     if (window.location.search) {
       window.history.replaceState(null, document.title, window.location.pathname + window.location.hash);
     }
+
+    // Resolve the preferred theme before the render-blocking stylesheet loads.
+    // Automatic mode follows Beijing time: light from 07:00 through 18:59.
+    (() => {
+      const storageKey = "heyi:theme-mode";
+      const supportedModes = new Set(["light", "dark", "auto"]);
+      let mode = "auto";
+      try {
+        const storedMode = localStorage.getItem(storageKey);
+        if (supportedModes.has(storedMode)) mode = storedMode;
+      } catch (_) {
+        // Storage can be unavailable in a restricted browser context; auto remains safe.
+      }
+      const beijingHour = (new Date().getUTCHours() + 8) % 24;
+      const resolvedTheme = mode === "auto"
+        ? (beijingHour >= 7 && beijingHour < 19 ? "light" : "dark")
+        : mode;
+      document.documentElement.dataset.themeMode = mode;
+      document.documentElement.dataset.theme = resolvedTheme;
+      document.documentElement.style.colorScheme = resolvedTheme;
+    })();
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="赫逸智能化 AI 平台——连接内容生成、智能编排与电商发布。">
   <title>赫逸智能化 AI 平台</title>
   <link rel="icon" href="/assets/hoyee-logo-transparent-white.png">
-  <link rel="stylesheet" href="/styles.css?v=20260820-company-scope-1">
-  <link rel="stylesheet" href="/vendor/liquid-glass.css?v=login-moonshot-black-20260818-4">
-  <link rel="stylesheet" href="/mobile.css?v=20260826-mobile-shell-1">
+  <link rel="stylesheet" href="/resend-theme.css?v=20260831-dual-clip-2">
 </head>
 <body>
   <main id="login-view" class="login-shell">
@@ -24,16 +43,27 @@
       <div class="brand-copy">
         <h1 id="brand-title">HOYEE AI</h1>
       </div>
-
     </section>
 
     <section class="login-panel">
       <div class="login-card">
-        <div class="mobile-brand">
-          <img src="/assets/hoyee-logo-transparent-white.png" alt="HOYEE 赫逸 Logo" class="brand-logo hoyee-logo">
+        <div class="login-method-switch" role="tablist" aria-label="选择登录方式">
+          <button type="button" class="active" role="tab" aria-selected="true" aria-controls="wechat-login-panel" data-login-method="wechat">微信扫码</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="password-login-panel" data-login-method="password">账号密码</button>
         </div>
-        <h2>欢迎回来</h2>
-        <p class="login-help">登录你的企业工作空间，继续管理 AI 内容任务。</p>
+        <div id="login-error" class="form-error" role="alert" hidden></div>
+        <section id="wechat-login-panel" class="login-method-panel wechat-login-panel" role="tabpanel">
+          <div id="wechat-qr-frame" class="wechat-qr-frame is-disabled" aria-live="polite">
+            <div id="wechat-qr-code" class="wechat-qr-code" aria-label="微信登录二维码">
+              <span class="wechat-mark" aria-hidden="true">微</span>
+              <small>二维码</small>
+            </div>
+          </div>
+          <p id="social-login-status" class="social-login-status">正在连接…</p>
+          <button id="wechat-login-button" type="button" class="primary-button wechat-login-button" data-social-provider="wechat" disabled hidden><span>微信登录</span></button>
+        </section>
+
+        <section id="password-login-panel" class="login-method-panel password-login-panel" role="tabpanel" hidden>
 
         <form id="login-form" novalidate>
           <label for="organization-code">公司代码</label>
@@ -55,37 +85,77 @@
             <button type="button" id="toggle-password" class="icon-button" aria-label="显示密码">显示</button>
           </div>
 
-          <div id="login-error" class="form-error" role="alert" hidden></div>
           <button id="login-button" class="primary-button" type="submit">
-            <span>进入平台</span>
+            <span>登录</span>
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
           </button>
         </form>
 
-        <p class="security-note">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.6 2.8 8.6 7 10 4.2-1.4 7-5.4 7-10V6l-7-3Z"/></svg>
-          企业账号访问 · 同一账号仅允许一处登录
-        </p>
+        </section>
+
+        <div class="social-login-divider"><span>或</span></div>
+        <div id="social-login-options" class="social-login-options" aria-label="第三方登录">
+          <button type="button" class="social-login-button" data-social-provider="google" disabled>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.7 4.7 0 0 1-2 3v2.5h3.3c1.9-1.8 2.9-4.4 2.9-7.4Z"/><path d="M12 22c2.7 0 5-.9 6.7-2.4l-3.3-2.5c-.9.6-2.1 1-3.4 1a5.9 5.9 0 0 1-5.6-4.1H3v2.6A10 10 0 0 0 12 22Z"/><path d="M6.4 14a6 6 0 0 1 0-3.9V7.5H3a10 10 0 0 0 0 9.1L6.4 14Z"/><path d="M12 5.9c1.5 0 2.8.5 3.9 1.5l2.9-2.9A9.8 9.8 0 0 0 3 7.5l3.4 2.6A5.9 5.9 0 0 1 12 5.9Z"/></svg>
+            <span>Google</span>
+          </button>
+          <button type="button" class="social-login-button" data-social-provider="apple" disabled>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M17.1 12.5c0-2.6 2.1-3.9 2.2-4-1.2-1.8-3.1-2-3.8-2-1.6-.2-3.2 1-4 1-.9 0-2.2-.9-3.6-.9-1.8 0-3.6 1.1-4.5 2.8-1.9 3.3-.5 8.2 1.4 10.9.9 1.3 2 2.8 3.5 2.7 1.4-.1 1.9-.9 3.6-.9 1.7 0 2.2.9 3.6.9 1.5 0 2.4-1.3 3.3-2.7 1.1-1.5 1.5-3 1.5-3.1-.1 0-3.2-1.2-3.2-4.7ZM14.5 4.8c.8-1 1.3-2.4 1.2-3.8-1.2.1-2.6.8-3.4 1.8-.7.8-1.4 2.2-1.2 3.5 1.3.1 2.6-.6 3.4-1.5Z"/></svg>
+            <span>Apple</span>
+          </button>
+        </div>
+
       </div>
-      <p class="copyright">© 2026 赫逸智能化 · AI Platform</p>
+      <p class="login-icp"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备2026033745号-1</a></p>
     </section>
+
   </main>
 
+  <dialog id="social-bind-dialog" class="manage-dialog social-bind-dialog">
+    <form id="social-bind-form">
+      <div class="dialog-heading">
+        <div>
+          <p class="dialog-eyebrow">首次使用第三方登录</p>
+          <h2>绑定企业账号</h2>
+          <p id="social-bind-description">验证一次现有账号，以后即可直接登录。</p>
+        </div>
+        <button type="button" class="dialog-close" data-social-bind-close aria-label="关闭">×</button>
+      </div>
+      <label>公司代码<input id="social-bind-organization" name="organizationCode" required readonly></label>
+      <label>手机号<input id="social-bind-phone" name="phone" type="tel" inputmode="tel" autocomplete="username" required></label>
+      <label>账号密码<input id="social-bind-password" name="password" type="password" autocomplete="current-password" required></label>
+      <p class="form-help">第三方账号只用于登录，不会覆盖企业权限、部门或任务数据。</p>
+      <p id="social-bind-error" class="form-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="quiet-button" data-social-bind-close>暂不绑定</button>
+        <button id="social-bind-submit" type="submit" class="primary-button"><span>验证并绑定</span></button>
+      </div>
+    </form>
+  </dialog>
+
   <main id="dashboard-view" class="dashboard" hidden>
-    <aside class="sidebar">
+    <div id="workspace-backdrop" class="workspace-backdrop" aria-hidden="true">
+      <img class="workspace-backdrop-image workspace-backdrop-fallback" src="/assets/wallpaper-candidates/03-snow-pastel.jpg" alt="" draggable="false">
+      <div class="workspace-backdrop-shade"></div>
+    </div>
+    <aside id="primary-sidebar" class="sidebar">
       <div class="sidebar-brand">
         <img src="/assets/hoyee-logo-transparent-white.png" alt="HOYEE 赫逸 Logo" class="hoyee-logo">
       </div>
-      <nav aria-label="主导航">
-        <a href="#" id="nav-ai-video-monitor" class="nav-item active"><span>⌁</span>任务监控台</a>
-        <a href="#" id="nav-video-scripts" class="nav-item"><span>▤</span>视频脚本管理</a>
-        <a href="#" id="nav-ai-video-tasks" class="nav-item"><span>▷</span>AI 视频任务</a>
-        <a href="#" id="nav-publish" class="nav-item"><span>△</span>发布视频</a>
-        <a href="#" id="nav-automations" class="nav-item"><span>↯</span>自动化中心</a>
-        <a href="#" id="nav-automation-admin" class="nav-item"><span>⌘</span>自动化管理</a>
-        <a href="#" id="nav-models" class="nav-item"><span>◎</span>模型接入</a>
-        <a href="#" id="nav-system" class="nav-item"><span>⚙</span>系统管理</a>
-        <a href="#" id="nav-assistant-test" class="nav-item nav-test-item"><span>⌁</span><span class="nav-test-copy">助手测试</span></a>
+      <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-controls="primary-navigation" aria-expanded="false" aria-label="展开主导航" title="展开主导航">
+        <span aria-hidden="true">›</span>
+      </button>
+      <nav id="primary-navigation" aria-label="主导航">
+        <a href="#" id="nav-ai-video-monitor" class="nav-item active" data-nav-label="任务监控台" title="任务监控台"><span aria-hidden="true">⌁</span><span class="nav-label">任务监控台</span></a>
+        <a href="#" id="nav-video-scripts" class="nav-item" data-nav-label="视频脚本管理" title="视频脚本管理"><span aria-hidden="true">▤</span><span class="nav-label">视频脚本管理</span></a>
+        <a href="#" id="nav-ai-video-tasks" class="nav-item" data-nav-label="AI 视频任务" title="AI 视频任务"><span aria-hidden="true">▷</span><span class="nav-label">AI 视频任务</span></a>
+        <a href="#" id="nav-general-video" class="nav-item" data-nav-label="通用生成" title="通用生成"><span aria-hidden="true">◇</span><span class="nav-label">通用生成</span></a>
+        <a href="#" id="nav-publish" class="nav-item" data-nav-label="发布视频" title="发布视频"><span aria-hidden="true">△</span><span class="nav-label">发布视频</span></a>
+        <a href="#" id="nav-automations" class="nav-item" data-nav-label="自动化中心" title="自动化中心"><span aria-hidden="true">↯</span><span class="nav-label">自动化中心</span></a>
+        <a href="#" id="nav-automation-admin" class="nav-item" data-nav-label="自动化管理" title="自动化管理"><span aria-hidden="true">⌘</span><span class="nav-label">自动化管理</span></a>
+        <a href="#" id="nav-models" class="nav-item" data-nav-label="模型接入" title="模型接入"><span aria-hidden="true">◎</span><span class="nav-label">模型接入</span></a>
+        <a href="#" id="nav-system" class="nav-item" data-nav-label="系统管理" title="系统管理"><span aria-hidden="true">⚙</span><span class="nav-label">系统管理</span></a>
+        <a href="#" id="nav-assistant-test" class="nav-item nav-test-item" data-nav-label="助手测试" title="助手测试"><span aria-hidden="true">⌁</span><span class="nav-label nav-test-copy">助手测试</span></a>
       </nav>
     </aside>
     <section class="workspace">
@@ -94,6 +164,11 @@
           <h2>内容运营工作台</h2>
         </div>
         <div class="user-area">
+          <div class="theme-mode-control topbar-theme-control" role="group" aria-label="外观主题">
+            <button class="theme-mode-option" type="button" data-theme-choice="light" aria-pressed="false" title="日间：始终使用浅色主题">日间</button>
+            <button class="theme-mode-option" type="button" data-theme-choice="dark" aria-pressed="false" title="夜间：始终使用深色主题">夜间</button>
+            <button class="theme-mode-option" type="button" data-theme-choice="auto" aria-pressed="false" title="自动：按北京时间自动切换主题">自动</button>
+          </div>
           <span class="status-pill"><i></i>系统在线</span>
           <span id="current-user">平台管理员</span>
           <button id="logout-button" class="quiet-button">退出</button>
@@ -248,7 +323,9 @@
       <div id="video-scripts-page" class="workspace-body video-studio-page" hidden>
         <section class="video-studio-heading">
           <div>
+            <p class="script-page-kicker">STORYBOARD DESK / AI PRODUCTION</p>
             <h1>视频脚本管理</h1>
+            <small>从原视频拆解到逐镜确认，在同一个制作台管理脚本版本、画面节奏与生图指令。</small>
           </div>
           <div class="video-heading-actions">
             <button id="import-video-script" class="new-job-button" type="button">＋ 新建脚本</button>
@@ -257,7 +334,10 @@
 
         <section class="script-library-layout">
           <aside id="video-script-library" class="script-library-rail">
-            <header><div><span>脚本库</span></div></header>
+            <header>
+              <div><span>脚本库</span><small id="video-script-library-summary" aria-live="polite">正在读取脚本…</small></div>
+              <em>RECENT</em>
+            </header>
             <label class="rail-fuzzy-search" for="video-script-search"><span aria-hidden="true">⌕</span><input id="video-script-search" type="search" autocomplete="off" placeholder="查名称、状态或 ID"></label>
             <div id="video-script-list" class="script-library-list">
             <button class="script-library-item active" type="button" data-script-demo="tshirt">
@@ -286,6 +366,7 @@
           <article id="video-script-detail" class="script-detail-stage">
             <header class="script-detail-head">
               <div>
+                <span class="script-detail-kicker">ACTIVE SCRIPT / STORYBOARD</span>
                 <div id="script-detail-meta" class="script-detail-meta"><span>AI 视频反推</span><span>版本 v3</span><span>9 个分镜</span></div>
                 <h2 id="script-detail-title">修身黑色 T 恤 · 约会场景</h2>
                 <p id="script-detail-source">来源：dating-look-reference.mp4 · 15 秒 · 创建人：内容运营</p>
@@ -329,7 +410,7 @@
             </section>
 
             <section id="script-json-view" class="script-json-view" hidden>
-              <header><div><strong>生产 JSON · v3</strong><span>字段校验通过 · 9 个 shots</span></div><button class="quiet-button" type="button">复制 JSON</button></header>
+              <header><div><strong id="script-json-title">生产 JSON · v3</strong><span id="script-json-summary">字段校验通过 · 9 个 shots</span></div><button id="copy-script-json" class="quiet-button" type="button">复制 JSON</button></header>
               <pre id="script-json-content">{
   "image_generation_model": "configured_image_model",
   "grid_layout": "3x3",
@@ -346,10 +427,68 @@
         </section>
       </div>
 
+      <div id="general-video-page" class="workspace-body general-video-page" hidden>
+        <section class="general-video-heading">
+          <div>
+            <h1>通用生成</h1>
+            <p>用提示词与参考图直接生成视频。</p>
+          </div>
+          <button id="general-video-refresh" class="quiet-button" type="button">刷新任务</button>
+        </section>
+
+        <section class="general-video-studio">
+          <form id="general-video-form" class="general-video-composer" novalidate>
+            <header class="general-composer-head">
+              <div><h2>创建视频</h2><p>描述画面，上传参考图。</p></div>
+              <span class="general-capability"><i></i>多模态线路 · 自动匹配</span>
+            </header>
+
+            <div class="general-composer-grid">
+              <section class="general-prompt-panel">
+                <div class="general-editor-box">
+                  <label class="general-prompt-field" for="general-video-prompt">
+                    <span>提示词</span>
+                    <textarea id="general-video-prompt" name="prompt" maxlength="20000" rows="8" placeholder="描述主体、动作、环境、镜头和光线。任务名称会自动从提示词中提取。" required></textarea>
+                  </label>
+                  <div id="general-reference-list" class="general-reference-list" hidden></div>
+                  <footer class="general-editor-meta">
+                    <div id="general-reference-mentions" class="general-reference-mentions" aria-label="插入图片引用"></div>
+                    <div class="general-editor-actions">
+                      <em id="general-prompt-count">0 / 20,000</em>
+                      <label id="general-reference-drop" class="general-reference-drop" title="JPG、PNG、WEBP、GIF；1–9 张，单图 20 MB，合计 90 MB">
+                        <input id="general-reference-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" multiple>
+                        <span aria-hidden="true">＋</span><strong>参考素材</strong><em id="general-reference-count">0 / 9</em>
+                      </label>
+                    </div>
+                  </footer>
+                </div>
+                <p id="general-reference-error" class="form-error" role="status" aria-live="polite" hidden></p>
+              </section>
+            </div>
+
+            <footer class="general-generation-controls">
+              <fieldset><legend>画面比例</legend><label><input type="radio" name="aspectRatio" value="9:16" checked><span>9:16</span></label><label><input type="radio" name="aspectRatio" value="16:9"><span>16:9</span></label><label><input type="radio" name="aspectRatio" value="1:1"><span>1:1</span></label></fieldset>
+              <fieldset><legend>分辨率</legend><label><input type="radio" name="resolution" value="720p" checked><span>720p</span></label><label><input type="radio" name="resolution" value="1080p"><span>1080p</span></label></fieldset>
+              <fieldset><legend>时长</legend><label><input type="radio" name="durationSeconds" value="5" checked><span>5 秒</span></label><label><input type="radio" name="durationSeconds" value="10"><span>10 秒</span></label><label><input type="radio" name="durationSeconds" value="15"><span>15 秒</span></label></fieldset>
+              <fieldset><legend>生成线路</legend><label><input type="radio" name="videoRoute" value="QUALITY" checked><span>质量</span></label><label><input type="radio" name="videoRoute" value="SPEED"><span>极速 · 768p</span></label></fieldset>
+              <label class="general-auto-start"><input type="checkbox" name="autoStart" checked><span><b>立即开始</b><small>创建后自动进入视频线路</small></span></label>
+              <button id="general-video-submit" class="new-job-button" type="submit">开始生成 <span aria-hidden="true">→</span></button>
+            </footer>
+            <p id="general-video-form-status" class="general-form-status" role="status" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section class="general-recent-section">
+          <header><div><span>RECENT RUNS</span><h2>最近任务</h2></div><p>封面轻量加载；展开后才读取视频。</p></header>
+          <div id="general-video-task-grid" class="general-video-task-grid"><div class="general-video-empty">正在读取任务…</div></div>
+        </section>
+      </div>
+
       <div id="ai-video-tasks-page" class="workspace-body video-studio-page" hidden>
         <section class="video-studio-heading">
           <div>
             <h1>AI 视频任务</h1>
+            <small>从商品素材到成片，集中管理生成、复核与失败恢复。</small>
           </div>
           <button id="create-video-task" class="new-job-button" type="button">＋ 新建视频任务</button>
         </section>
@@ -742,6 +881,7 @@
         <legend>脚本展示类型</legend>
         <label class="generation-mode-option active"><input type="radio" name="presentationMode" value="MODEL_WEAR" checked><i>人</i><span><strong>人物穿搭</strong><small>围绕人物实际穿着商品拆解 9 个分镜</small></span></label>
         <label class="generation-mode-option"><input type="radio" name="presentationMode" value="PRODUCT_ONLY"><i>物</i><span><strong>纯商品</strong><small>只做静物、手持、使用与商品细节展示</small></span></label>
+        <label class="generation-mode-option"><input type="radio" name="presentationMode" value="CAST_PRODUCT"><i>组</i><span><strong>人物＋商品</strong><small>复刻多人物与多商品的互动关系</small></span></label>
       </fieldset>
       <section id="script-active-analysis" class="script-active-analysis" hidden>
         <div class="active-analysis-orbit"><i></i><span id="active-script-progress-number">0%</span></div>
@@ -755,13 +895,46 @@
       <section id="script-create-ai" class="script-create-panel">
         <label class="video-upload-drop">
           <input id="script-source-video" name="video" type="file" accept="video/*">
-          <span>↑</span><strong>选择参考视频</strong><small id="script-video-file-name">MP4、MOV，建议 60 秒以内</small>
+          <span>↑</span><strong>选择参考视频</strong><small id="script-video-file-name">MP4、MOV · 自由截取最长 15 秒</small>
         </label>
+        <section id="script-video-clip-editor" class="video-clip-editor" aria-label="选择需要拆解的视频片段" hidden>
+          <div class="video-clip-preview">
+            <video id="script-video-preview" preload="metadata" playsinline></video>
+            <span class="video-clip-limit">≤ 15s</span>
+            <span class="video-clip-preview-progress" aria-hidden="true"><i id="script-video-preview-progress"></i></span>
+          </div>
+          <div class="video-clip-controls">
+            <header>
+              <div><strong>选择拆解片段</strong><small id="script-video-clip-help">正在读取视频时长…</small></div>
+              <output id="script-video-clip-window" for="script-video-clip-start script-video-clip-end">00:00.0 → 00:15.0</output>
+            </header>
+            <div class="video-clip-range-label">
+              <span id="script-video-clip-range-help">拖动两个端点，自由选择不超过 15 秒的片段</span>
+              <div id="script-video-clip-range" class="video-clip-range">
+                <span class="video-clip-range-track" aria-hidden="true"><i id="script-video-clip-selection"></i></span>
+                <input id="script-video-clip-start" name="clipStartSecond" type="range" min="0" max="0" step="0.1" value="0" aria-label="片段开始时间" aria-describedby="script-video-clip-range-help" disabled>
+                <input id="script-video-clip-end" name="clipEndSecond" type="range" min="0" max="0" step="0.1" value="0" aria-label="片段结束时间" aria-describedby="script-video-clip-range-help" disabled>
+              </div>
+            </div>
+            <div class="video-clip-endpoints"><label for="script-video-clip-start">开始 <output id="script-video-clip-start-value">00:00.0</output></label><label for="script-video-clip-end">结束 <output id="script-video-clip-end-value">00:15.0</output></label></div>
+            <div class="video-clip-time-scale" aria-hidden="true"><span>00:00.0</span><span id="script-video-duration">--:--.-</span></div>
+            <div class="video-clip-actions">
+              <small id="script-video-clip-summary">截取后将仅拆解所选片段</small>
+              <button id="script-video-preview-toggle" class="quiet-button" type="button" disabled>▶ 预览所选片段</button>
+            </div>
+          </div>
+        </section>
         <div class="form-grid">
           <label>脚本名称<input name="name" required maxlength="120" placeholder="例如：黑色修身 T 恤约会场景"></label>
           <label>目标市场<select name="targetMarket"><option>菲律宾</option><option>马来西亚</option><option>泰国</option><option>新加坡</option></select></label>
           <label class="full-field">额外要求<textarea name="requirements" rows="3" placeholder="例如：保留真实生活感，不要字幕和时间码；分镜固定为 9 个"></textarea></label>
         </div>
+        <label class="script-audio-extraction-option">
+          <input type="checkbox" name="extractAudio" value="true">
+          <span aria-hidden="true">声</span>
+          <div><strong>提取原视频口播</strong></div>
+          <em>可选</em>
+        </label>
         <div class="ai-analysis-path"><span><i>1</i>识别口播与画面</span><b>→</b><span><i>2</i>生成中文分镜</span><b>→</b><span><i>3</i>确认后生成 JSON</span></div>
       </section>
       <section id="script-create-manual" class="script-create-panel" hidden>
@@ -836,10 +1009,12 @@
         <div><h2>新建 AI 视频任务</h2><p>任务创建时会冻结脚本版本，后续修改脚本不会影响本轮生产。</p></div>
         <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
       </div>
-      <fieldset class="generation-mode-picker">
+      <fieldset class="generation-mode-picker video-task-generation-mode-picker">
         <legend>生成模式</legend>
         <label class="generation-mode-option active"><input type="radio" name="generationMode" value="MODEL_WEAR" checked><i>人</i><span><strong>人物穿搭</strong><small>商品穿到 AI 模特身上</small></span></label>
         <label class="generation-mode-option"><input type="radio" name="generationMode" value="PRODUCT_ONLY"><i>物</i><span><strong>商品展示</strong><small>静物、手持与特写按分镜执行</small></span></label>
+        <label class="generation-mode-option"><input type="radio" name="generationMode" value="CAST_PRODUCT"><i>组</i><span><strong>人物＋商品</strong><small>指定多个人物和商品，直接生成视频</small></span></label>
+        <label class="generation-mode-option generation-mode-option-replica"><input type="radio" name="generationMode" value="SCRIPT_REPLICA"><i>复</i><span><strong>脚本视频复刻</strong><small>沿用原视频，定向替换人物或商品</small></span><em>×2 收费</em></label>
       </fieldset>
       <fieldset class="generation-mode-picker video-route-picker">
         <legend>视频生成线路</legend>
@@ -851,26 +1026,23 @@
         <div><strong>手动脚本·参考图直接生视频</strong><small>跳过图片模型。上传 1–9 张图后，由用户为每张图指定用途和主参考，再按编号顺序提交视频模型。</small></div>
         <em>不生图</em>
       </section>
+      <section id="script-video-rate-warning" class="script-video-rate-warning replica-charge-panel" hidden>
+        <i aria-hidden="true">×2</i>
+        <span><strong>脚本视频复刻按普通视频生成的 2 倍收费</strong><small>人物、背景、动作与节奏沿用原视频；每组可上传 1–9 张对象图并分别指定替换目标。</small></span>
+        <label class="replica-charge-confirm"><input id="replica-charge-confirm" type="checkbox" name="replicaChargeAccepted" value="true"><span>我已知晓本次复刻按 2 倍收费</span></label>
+      </section>
+      <section id="cast-product-options" class="cast-product-options" hidden>
+        <header><div><strong>口播与标题</strong><small>参考图会直接提交给视频模型，跳过生图</small></div><em>不生图</em></header>
+        <div class="form-grid">
+          <label>口播方式<select name="voiceoverMode"><option value="SCRIPT">使用脚本口播</option><option value="CUSTOM">使用自定义口播</option><option value="NONE">不要人声</option></select></label>
+          <label>视频标题<input name="videoTitle" maxlength="160" placeholder="例如：宝宝日常护理小技巧"></label>
+          <label id="custom-voiceover-field" class="full-field" hidden>自定义口播<textarea name="customVoiceover" maxlength="4000" rows="3" placeholder="填写需要角色逐字说出的内容"></textarea></label>
+        </div>
+      </section>
       <fieldset class="background-mode-picker">
         <legend>背景方式</legend>
         <label class="background-mode-option active"><input type="radio" name="backgroundMode" value="SCRIPT_ORIGINAL" checked><i>原</i><span><strong>沿用脚本原背景</strong><small>保留原视频的房间、光线与场景切换</small></span><em>适合复刻</em></label>
         <label class="background-mode-option"><input type="radio" name="backgroundMode" value="AI_DESIGNED"><i>AI</i><span><strong>AI 自动搭配背景</strong><small>根据商品、动作与市场重新设计真实场景</small></span><em>适合创作</em></label>
-      </fieldset>
-      <fieldset id="script-video-reference-picker" class="script-video-reference-picker" hidden>
-        <legend>商品视频参考</legend>
-        <label class="script-video-reference-option">
-          <input id="use-script-reference-video" type="checkbox" name="useScriptReferenceVideo" value="true">
-          <span class="reference-video-mark" aria-hidden="true"><i></i></span>
-          <span class="reference-video-copy">
-            <strong>提交脚本视频复刻</strong>
-            <small id="script-video-reference-note">把脚本原视频作为动作、运镜与转场参考一起提交</small>
-          </span>
-          <em>可选</em>
-        </label>
-        <p id="script-video-rate-warning" class="script-video-rate-warning" hidden>
-          <i aria-hidden="true">×2</i>
-          <span><strong>已启用视频复刻，生成费率上涨两倍</strong><small>参考视频会随每款商品一起提交；取消勾选即可恢复基础费率。</small></span>
-        </p>
       </fieldset>
       <fieldset class="resolution-picker">
         <legend>视频分辨率</legend>
@@ -892,7 +1064,8 @@
       <div class="form-grid">
         <label class="full-field">任务名称<input id="video-task-name" name="name" required maxlength="160" placeholder="例如：菲律宾 · 约会场景首批"></label>
         <label class="full-field">选择 9 分镜脚本<select id="video-task-script-select" name="scriptId" required><option value="">正在读取脚本…</option></select></label>
-        <label class="full-field">目标市场<input id="video-task-market-input" name="targetMarket" maxlength="80" placeholder="例如：菲律宾（可选）"></label>
+        <label class="full-field">目标国家<input id="video-task-market-input" name="targetMarket" list="video-task-market-options" maxlength="80" placeholder="例如：菲律宾（可选）"><small>脚本含旁白时必填，系统会把已有旁白转换为该国家对应语言。</small></label>
+        <datalist id="video-task-market-options"><option value="中国"></option><option value="菲律宾"></option><option value="马来西亚"></option><option value="泰国"></option><option value="新加坡"></option><option value="印度尼西亚"></option><option value="越南"></option><option value="日本"></option><option value="韩国"></option><option value="美国"></option><option value="英国"></option><option value="澳大利亚"></option><option value="加拿大"></option></datalist>
         <label>商品类型<select name="productCategory"><option>服装</option><option>鞋包</option><option>饰品</option><option>家居</option><option>日用品</option><option>食品</option><option>通用商品</option></select></label>
         <label>画幅<select name="aspectRatio"><option value="9:16">9:16 竖屏</option><option value="1:1">1:1 方形</option><option value="16:9">16:9 横屏</option></select></label>
       </div>
@@ -1250,7 +1423,7 @@
     </form>
   </dialog>
   <script src="/vendor/sortable.min.js" defer></script>
-  <script src="/app.js?v=20260820-company-scope-1" defer></script>
-  <script src="/vendor/liquid-glass.js?v=models-clear-glass-20260814-40" defer></script>
+  <script src="/vendor/qrcode.js" defer></script>
+  <script src="/app.js?v=20260831-dual-clip-2" defer></script>
 </body>
 </html>

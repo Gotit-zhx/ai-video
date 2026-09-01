@@ -268,7 +268,9 @@ form label { display: block; margin: 20px 0 9px; font-size: 13px; font-weight: 7
   font-size: 12px;
 }
 .security-note svg { width: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; }
-.copyright { margin: 20px 0 0; color: #929daf; font-size: 11px; letter-spacing: .06em; }
+.copyright { margin: 20px 0 0; color: #929daf; font-size: 11px; line-height: 1.8; letter-spacing: .06em; }
+.copyright a { color: inherit; text-decoration: none; transition: color .2s; }
+.copyright a:hover { color: #c5d1e4; text-decoration: underline; }
 
 .dashboard { min-height: 100vh; display: grid; grid-template-columns: 220px minmax(0, 1fr); background: var(--paper); }
 .sidebar {
@@ -5246,6 +5248,10 @@ body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-imag
   gap: 9px;
   border: 0;
 }
+.video-task-generation-mode-picker,
+.video-route-picker {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 
 .generation-mode-picker legend {
   margin-bottom: 8px;
@@ -5255,6 +5261,7 @@ body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-imag
 }
 
 .generation-mode-option {
+  position: relative;
   min-width: 0;
   padding: 12px;
   display: flex;
@@ -5295,6 +5302,29 @@ body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-imag
 
 .generation-mode-option strong { color: #14233a; font-size: 11px; }
 .generation-mode-option small { color: #7a8799; font-size: 9px; line-height: 1.35; }
+.generation-mode-option > em {
+  align-self: flex-start;
+  padding: 4px 6px;
+  border-radius: 999px;
+  color: #84500e;
+  background: #ffedc8;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.generation-mode-option-replica {
+  border-color: rgba(221, 154, 48, .42);
+  background: linear-gradient(135deg, #fffaf0, #fff7e7);
+}
+.generation-mode-option-replica > i { color: #995d0c; background: #ffedc8; }
+.generation-mode-option-replica.active {
+  border-color: #df9c34;
+  background: linear-gradient(135deg, #fff7e7, #fff1d2);
+  box-shadow: 0 0 0 3px rgba(224, 157, 53, .13);
+}
+.generation-mode-option-replica.active > i { color: #fff; background: #b87516; }
 
 .generation-mode-option.active {
   border-color: #4fcdbd;
@@ -5305,6 +5335,38 @@ body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-imag
 .generation-mode-option.active > i {
   color: #126f62;
   background: #dff7f1;
+}
+.generation-mode-option.generation-mode-option-replica.active {
+  border-color: #df9c34;
+  background: linear-gradient(135deg, #fff7e7, #fff1d2);
+  box-shadow: 0 0 0 3px rgba(224, 157, 53, .13);
+}
+.generation-mode-option.generation-mode-option-replica.active > i {
+  color: #fff;
+  background: #b87516;
+}
+
+.script-audio-extraction-option,
+.cast-product-options {
+  margin: 0 0 16px;
+  padding: 13px 14px;
+  border: 1px solid rgba(79, 205, 189, .35);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(79, 205, 189, .09), rgba(49, 93, 186, .06));
+}
+
+.script-audio-extraction-option { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+.script-audio-extraction-option input { width: 17px; height: 17px; accent-color: #27a995; }
+.script-audio-extraction-option > span { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 10px; background: #dff7f1; color: #126f62; font-weight: 900; }
+.script-audio-extraction-option div { flex: 1; display: grid; gap: 3px; }
+.script-audio-extraction-option strong, .cast-product-options strong { color: #14233a; font-size: 11px; }
+.script-audio-extraction-option small, .cast-product-options small { color: #6d7b8f; font-size: 9px; line-height: 1.4; }
+.script-audio-extraction-option em, .cast-product-options header em { color: #126f62; font-size: 9px; font-style: normal; font-weight: 800; }
+.cast-product-options header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.cast-product-options header div { display: grid; gap: 3px; }
+
+@media (max-width: 720px) {
+  .script-audio-extraction-option { align-items: flex-start; }
 }
 
 .background-mode-picker {
@@ -5538,88 +5600,6 @@ body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-imag
 .video-task-music-field.has-file > em { color: #126f62; border-color: #a9ddd5; }
 .video-task-music-help { margin: 6px 0 15px; color: #8290a1; font-size: 8px; }
 
-.script-video-reference-picker {
-  margin: 0 0 16px;
-  padding: 0;
-  border: 0;
-}
-.script-video-reference-picker[hidden] { display: none; }
-.script-video-reference-picker legend {
-  margin-bottom: 8px;
-  color: #53647a;
-  font-size: 11px;
-  font-weight: 800;
-}
-.script-video-reference-option {
-  position: relative;
-  padding: 13px 14px;
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 11px;
-  border: 1px solid #d7e1ed;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #fbfdff, #f4f8fd);
-  cursor: pointer;
-  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
-}
-.script-video-reference-option > input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-}
-.reference-video-mark {
-  width: 42px;
-  height: 34px;
-  position: relative;
-  display: grid;
-  place-items: center;
-  border: 1px solid #c8d8e8;
-  border-radius: 10px;
-  background: rgba(255,255,255,.76);
-}
-.reference-video-mark::before {
-  content: "";
-  width: 0;
-  height: 0;
-  margin-left: 2px;
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  border-left: 9px solid #58708e;
-}
-.reference-video-mark i {
-  width: 13px;
-  height: 13px;
-  position: absolute;
-  right: -5px;
-  bottom: -5px;
-  border: 3px solid #fff;
-  border-radius: 50%;
-  background: #b9c6d5;
-}
-.reference-video-copy { min-width: 0; display: grid; gap: 4px; }
-.reference-video-copy strong { color: #17263d; font-size: 11px; }
-.reference-video-copy small { color: #7c899a; font-size: 9px; line-height: 1.45; }
-.script-video-reference-option > em {
-  padding: 5px 8px;
-  border-radius: 999px;
-  color: #60738b;
-  background: #eaf0f6;
-  font-size: 8px;
-  font-style: normal;
-  font-weight: 800;
-}
-.script-video-reference-option.active {
-  border-color: #e3ad58;
-  background: linear-gradient(135deg, #fffaf0, #fff5df);
-  box-shadow: 0 0 0 3px rgba(224,157,53,.10);
-}
-.script-video-reference-option.active .reference-video-mark { border-color: #e3ad58; background: #fff8e9; }
-.script-video-reference-option.active .reference-video-mark::before { border-left-color: #a9650b; }
-.script-video-reference-option.active .reference-video-mark i { background: #e69a25; }
-.script-video-reference-option.active > em { color: #88530f; background: #ffe7bd; }
-.script-video-reference-picker.unavailable .script-video-reference-option { cursor: not-allowed; opacity: .58; }
 .script-video-rate-warning {
   margin: 8px 0 0;
   padding: 11px 13px;
@@ -5630,6 +5610,36 @@ body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-imag
   border-radius: 11px;
   color: #71430a;
   background: rgba(255,244,220,.82);
+}
+.replica-charge-panel {
+  margin: 0 0 16px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+}
+.replica-charge-panel .replica-charge-confirm {
+  grid-column: 2;
+  margin-top: 7px;
+  padding-top: 7px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-top: 1px solid rgba(184,117,22,.18);
+  color: #71430a;
+  font-size: 9px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.replica-charge-confirm input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #b87516;
+}
+.replica-charge-confirm:focus-within {
+  outline: 2px solid rgba(184,117,22,.25);
+  outline-offset: 3px;
+  border-radius: 4px;
 }
 .script-video-rate-warning[hidden] { display: none; }
 .script-video-rate-warning > i {
@@ -5681,8 +5691,7 @@ body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-imag
   .resolution-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .video-task-music-field { grid-template-columns: 38px minmax(0, 1fr); }
   .video-task-music-field > em { grid-column: 2; justify-self: start; }
-  .script-video-reference-option { grid-template-columns: 38px minmax(0, 1fr); }
-  .script-video-reference-option > em { grid-column: 2; justify-self: start; }
+  .generation-mode-option > em { position: absolute; top: 7px; right: 7px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

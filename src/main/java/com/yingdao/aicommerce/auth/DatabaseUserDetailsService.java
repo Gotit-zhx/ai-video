@@ -34,6 +34,20 @@ public class DatabaseUserDetailsService implements UserDetailsService {
         if (user == null) {
             throw new UsernameNotFoundException("Enterprise account not found");
         }
+        return principalFor(user);
+    }
+
+    public PlatformPrincipal loadByUserId(String userId) {
+        var user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new UsernameNotFoundException("Enterprise account not found");
+        }
+        return principalFor(user);
+    }
+
+    private PlatformPrincipal principalFor(
+            com.yingdao.aicommerce.saas.domain.PlatformUser user
+    ) {
         var organization = organizationMapper.selectById(user.getOrganizationId());
         if (organization == null || !"ACTIVE".equals(organization.getStatus())) {
             throw new UsernameNotFoundException("Enterprise is not active");
@@ -41,7 +55,7 @@ public class DatabaseUserDetailsService implements UserDetailsService {
         return new PlatformPrincipal(
                 user.getId(),
                 user.getOrganizationId(),
-                organizationCode,
+                organization.getCode(),
                 user.getUsername(),
                 user.getDisplayName(),
                 user.getPasswordHash(),

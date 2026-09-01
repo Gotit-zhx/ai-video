@@ -13,6 +13,8 @@ public class AiVideoTask {
     @TableId private String id;
     private String organizationId;
     private String name;
+    private String taskType;
+    private int durationSeconds;
     private String scriptId;
     private int scriptVersion;
     private String scriptName;
@@ -62,6 +64,8 @@ public class AiVideoTask {
         this.id = UUID.randomUUID().toString();
         this.organizationId = organizationId;
         this.name = name;
+        this.taskType = "PRODUCT";
+        this.durationSeconds = 12;
         this.scriptId = scriptId;
         this.scriptVersion = scriptVersion;
         this.scriptName = scriptName;
@@ -85,6 +89,36 @@ public class AiVideoTask {
         this.createdBy = createdBy;
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
+    }
+
+    public static AiVideoTask general(String organizationId, String name, String promptSnapshot,
+                                      int durationSeconds, String aspectRatio, String resolution,
+                                      String generationRulesJson, String qualityRulesJson, String createdBy) {
+        AiVideoTask task = new AiVideoTask();
+        task.id = UUID.randomUUID().toString();
+        task.organizationId = organizationId;
+        task.name = name;
+        task.taskType = "GENERAL";
+        task.durationSeconds = durationSeconds;
+        task.scriptVersion = 0;
+        task.scriptName = "通用生成";
+        task.scriptJson = promptSnapshot;
+        task.generationMode = "GENERAL";
+        task.backgroundMode = "REFERENCE";
+        task.musicMode = "NONE";
+        task.productCategory = "通用";
+        task.sceneType = "用户提示词";
+        task.interactionType = "用户提示词";
+        task.aspectRatio = aspectRatio;
+        task.resolution = resolution;
+        task.directReferenceVideo = true;
+        task.generationRulesJson = generationRulesJson;
+        task.qualityRulesJson = qualityRulesJson;
+        task.status = "DRAFT";
+        task.createdBy = createdBy;
+        task.createdAt = Instant.now();
+        task.updatedAt = task.createdAt;
+        return task;
     }
 
     public void updateItemCount(int count) {
@@ -190,6 +224,9 @@ public class AiVideoTask {
     public String getId() { return id; }
     public String getOrganizationId() { return organizationId; }
     public String getName() { return name; }
+    public String getTaskType() { return taskType == null || taskType.isBlank() ? "PRODUCT" : taskType; }
+    public int getDurationSeconds() { return durationSeconds > 0 ? durationSeconds : 12; }
+    public boolean isGeneral() { return "GENERAL".equals(getTaskType()); }
     public String getScriptId() { return scriptId; }
     public int getScriptVersion() { return scriptVersion; }
     public String getScriptName() { return scriptName; }

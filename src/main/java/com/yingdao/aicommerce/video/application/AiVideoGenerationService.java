@@ -119,8 +119,15 @@ public class AiVideoGenerationService {
         List<AiVideoTaskItem> items = allItems.stream().filter(item -> !hasVideoResult(item.getId())).toList();
         if (items.isEmpty()) throw new IllegalStateException("当前任务的全部视频已经生成，无需重复提交");
         for (AiVideoTaskItem item : items) {
-            if (task.isDirectReferenceVideo()) validateDirectReferences(item.getId());
-            else if (!hasRequiredImages(item.getId())) throw new IllegalStateException(item.getName() + " 的首帧或九宫格尚未生成");
+            if (task.isDirectReferenceVideo()) {
+                validateDirectReferences(task, item.getId());
+                if (AiVideoTaskService.isScriptVideoReplacement(task)) {
+                    validateReplacementMappings(item.getId());
+                }
+            }
+            else if (!AiVideoTaskService.isScriptVideoReplacement(task) && !hasRequiredImages(item.getId())) {
+                throw new IllegalStateException(item.getName() + " 的首帧或九宫格尚未生成");
+            }
             if (item.getVideoPromptText() == null || item.getVideoPromptText().isBlank()) {
                 throw new IllegalStateException(item.getName() + " 的视频提示词不能为空");
             }
@@ -148,7 +155,7 @@ public class AiVideoGenerationService {
                 || !List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) return false;
         if (hasVideoResult(itemId)
                 || List.of("VIDEO_SUBMITTING", "VIDEO_GENERATING", "VIDEO_READY").contains(item.getStatus())) return true;
-        if (!hasRequiredImages(itemId)) return false;
+        if (!AiVideoTaskService.isScriptVideoReplacement(task) && !hasRequiredImages(itemId)) return false;
         if (item.getVideoPromptText() == null || item.getVideoPromptText().isBlank()) {
             throw new IllegalStateException(item.getName() + " 的视频提示词不能为空");
         }
@@ -323,7 +330,17 @@ public class AiVideoGenerationService {
                 || value.contains("并发限制") || value.contains("并发已满")
                 || value.contains("限流") || value.contains("concurrency limit exceeded")
                 || value.contains("too many concurrent") || value.contains("rate limit")
-                || value.contains("too many requests");
+                || value.contains("too many requests")
+                // The persisted references are still valid. A retry issues fresh delivery URLs,
+                // so a temporary provider-side reference fetch must not require a re-upload.
+                || value.contains("参考图片获取失败")
+                || value.contains("参考图片读取失败")
+                || value.contains("参考图片下载失败")
+                || value.contains("素材暂时无法读取")
+                || value.contains("failed to fetch reference image")
+                || value.contains("failed to download reference image")
+                || value.contains("reference image") && (value.contains("fetch failed")
+                        || value.contains("download failed") || value.contains("unavailable"));
     }
 
     private boolean hasAutomaticRetryPending(AiVideoTaskItem item) {
@@ -429,7 +446,7 @@ public class AiVideoGenerationService {
                                       RuntimeModelConnection connection, int attempt) {
         String taskId = task.getId();
         String itemId = item.getId();
-        int duration = duration(task.getScriptJson());
+        int duration = task.isGeneral() ? task.getDurationSeconds() : duration(task.getScriptJson());
         String requestedResolution = task.getResolution() == null || task.getResolution().isBlank()
                 ? "720p" : task.getResolution();
         VideoGenerationProvider provider = providers.require(connection.provider());
@@ -441,8 +458,8 @@ public class AiVideoGenerationService {
             return;
         }
         try {
-            String prompt = task.isDirectReferenceVideo()
-                    ? directReferencePrompt(item) : item.getVideoPromptText();
+            String prompt = task.isGeneral() ? item.getVideoPromptText()
+                    : task.isDirectReferenceVideo() ? directReferencePrompt(task, item) : item.getVideoPromptText();
             GenerationRequest request = new GenerationRequest(prompt, references(task, item, connection, provider),
                     duration, task.getAspectRatio(), resolution, audioReference(task));
             paceSubmission(connection.provider());
@@ -569,6 +586,43 @@ public class AiVideoGenerationService {
                                        VideoGenerationProvider provider) throws Exception {
         List<AiVideoTaskAsset> assets = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, item.getId()));
+        if (AiVideoTaskService.isScriptVideoReplacement(task)) {
+            if (ossStorage == null && !referenceLinks.isPubliclyReachable()
+                    && requiresPublicReferences(connection.provider())) {
+                throw new VideoProviderException("当前视频线路只接收公网素材地址；部署后请设置 APP_PUBLIC_BASE_URL 为平台 HTTPS 地址", true);
+            }
+            List<Reference> result = new ArrayList<>();
+            List<AiVideoTaskAsset> replacementObjects = assets.stream()
+                    .filter(asset -> "VIDEO_REFERENCE_IMAGE".equals(asset.getAssetType()))
+                    .sorted(Comparator.comparing(asset -> asset.getShotSequence() == null
+                            ? Integer.MAX_VALUE : asset.getShotSequence()))
+                    .toList();
+            if (!replacementObjects.isEmpty() && ossStorage != null) {
+                for (AiVideoTaskAsset replacementObject : replacementObjects) {
+                    result.add(ossReference(replacementObject, "video-references"));
+                }
+            } else if (!replacementObjects.isEmpty() && referenceLinks.isPubliclyReachable()) {
+                for (AiVideoTaskAsset replacementObject : replacementObjects) {
+                    referenceDelivery.prepare(replacementObject);
+                    result.add(new Reference(referenceLinks.deliveryAsset(replacementObject.getId()),
+                            replacementObject.getContentType()));
+                }
+            } else if (!replacementObjects.isEmpty()) {
+                for (AiVideoTaskAsset replacementObject : replacementObjects) {
+                    result.add(data(replacementObject.getFilePath(), replacementObject.getContentType()));
+                }
+            } else if (ossStorage != null) {
+                // Compatibility for replacement tasks created before multi-object groups existed.
+                result.add(ossReference(Path.of(item.getSourceFilePath()), item.getSourceContentType(), "source-images"));
+            } else if (referenceLinks.isPubliclyReachable()) {
+                result.add(new Reference(referenceLinks.source(item.getId()), item.getSourceContentType()));
+            } else {
+                result.add(data(item.getSourceFilePath(), item.getSourceContentType()));
+            }
+            result.add(referenceVideo(task, provider, connection)
+                    .orElseThrow(() -> new VideoProviderException("当前视频线路不支持原视频定向替换，请更换支持参考视频的线路", true)));
+            return List.copyOf(result);
+        }
         if (task.isDirectReferenceVideo()) {
             List<AiVideoTaskAsset> references = assets.stream()
                     .filter(asset -> "VIDEO_REFERENCE_IMAGE".equals(asset.getAssetType()))
@@ -620,7 +674,7 @@ public class AiVideoGenerationService {
                 data(item.getSourceFilePath(), item.getSourceContentType()));
     }
 
-    private void validateDirectReferences(String itemId) {
+    private void validateDirectReferences(AiVideoTask task, String itemId) {
         List<AiVideoTaskAsset> references = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, itemId)
                 .eq(AiVideoTaskAsset::getAssetType, "VIDEO_REFERENCE_IMAGE")
@@ -629,6 +683,7 @@ public class AiVideoGenerationService {
         if (references.size() > AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES) {
             throw new IllegalStateException("参考图不能超过 " + AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES + " 张");
         }
+        if (task.isGeneral()) return;
         long primaryCount = references.stream().filter(AiVideoTaskAsset::isPrimaryReference).count();
         if (primaryCount != 1) {
             throw new IllegalStateException("每组必须指定且只能指定一张主参考图");
@@ -638,11 +693,37 @@ public class AiVideoGenerationService {
         }
     }
 
-    private String directReferencePrompt(AiVideoTaskItem item) {
+    private void validateReplacementMappings(String itemId) {
+        List<AiVideoTaskAsset> references = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
+                .eq(AiVideoTaskAsset::getItemId, itemId)
+                .eq(AiVideoTaskAsset::getAssetType, "VIDEO_REFERENCE_IMAGE")
+                .orderByAsc(AiVideoTaskAsset::getShotSequence));
+        if (references.stream().anyMatch(reference -> reference.getReferenceInstruction() == null
+                || reference.getReferenceInstruction().isBlank())) {
+            throw new IllegalStateException("请为每张对象图填写要替换原视频中的哪个对象");
+        }
+    }
+
+    private String directReferencePrompt(AiVideoTask task, AiVideoTaskItem item) {
         List<AiVideoTaskAsset> references = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, item.getId())
                 .eq(AiVideoTaskAsset::getAssetType, "VIDEO_REFERENCE_IMAGE")
                 .orderByAsc(AiVideoTaskAsset::getShotSequence));
+        if (AiVideoTaskService.isScriptVideoReplacement(task)) {
+            StringBuilder prompt = new StringBuilder("【替换映射】\n");
+            for (AiVideoTaskAsset reference : references) {
+                int order = reference.getShotSequence() == null
+                        ? references.indexOf(reference) + 1 : reference.getShotSequence();
+                String instruction = reference.getReferenceInstruction() == null ? ""
+                        : reference.getReferenceInstruction().replaceAll("\\s+", " ").trim();
+                prompt.append("图").append(order)
+                        .append(reference.isPrimaryReference() ? "（主参考）：" : "：")
+                        .append(instruction).append('\n');
+            }
+            prompt.append("每张图只执行本行指定的替换，不得串用到其他对象。\n")
+                    .append(item.getVideoPromptText().trim());
+            return prompt.toString();
+        }
         StringBuilder prompt = new StringBuilder("【参考图职责】编号仅对应图片发送顺序。按指定职责引用商品、人物、动作或场景；不得把编号、边框、水印、拼图布局及无关背景复制到成片中。\n");
         for (AiVideoTaskAsset reference : references) {
             int order = reference.getShotSequence() == null ? references.indexOf(reference) + 1 : reference.getShotSequence();
@@ -677,7 +758,6 @@ public class AiVideoGenerationService {
     private java.util.Optional<Reference> referenceVideo(AiVideoTask task, VideoGenerationProvider provider,
                                                          RuntimeModelConnection connection) {
         if (!task.isUseScriptReferenceVideo()
-                || !"PRODUCT_ONLY".equals(task.getGenerationMode())
                 || !provider.supportsReferenceVideo(connection)
                 || task.getScriptId() == null || task.getScriptId().isBlank()) {
             return java.util.Optional.empty();
@@ -697,7 +777,14 @@ public class AiVideoGenerationService {
                 throw new IllegalStateException("无法把参考视频发布到 OSS", exception);
             }
         }
-        return java.util.Optional.of(new Reference(referenceLinks.scriptSource(script.getId()), script.getSourceContentType()));
+        if (referenceLinks.isPubliclyReachable()) {
+            return java.util.Optional.of(new Reference(referenceLinks.scriptSource(script.getId()), script.getSourceContentType()));
+        }
+        try {
+            return java.util.Optional.of(data(script.getSourceFilePath(), script.getSourceContentType()));
+        } catch (Exception exception) {
+            throw new IllegalStateException("无法读取脚本原视频", exception);
+        }
     }
 
     private Reference data(String filePath, String mediaType) throws Exception {

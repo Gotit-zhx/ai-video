@@ -5,6 +5,8 @@ target/
 *.log
 .env
 .DS_Store
+app-local.jar
+prod.cookies
 
 # Local dependencies and packaged desktop builds
 **/node_modules/

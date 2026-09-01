@@ -1,5 +1,6 @@
 package com.yingdao.aicommerce.video.application;
 
+import com.yingdao.aicommerce.video.domain.AiVideoTask;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -8,7 +9,11 @@ import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class AiVideoTaskServiceTest {
 
@@ -30,5 +35,21 @@ class AiVideoTaskServiceTest {
         assertEquals(video.length,
                 AiVideoTaskService.copyExact(new ByteArrayInputStream(video), output, video.length));
         assertArrayEquals(video, output.toByteArray());
+    }
+
+    @Test
+    void scriptVideoReplacementAppliesToEveryScriptModeWhenOriginalVideoIsEnabled() {
+        AiVideoTask task = mock(AiVideoTask.class);
+        when(task.isUseScriptReferenceVideo()).thenReturn(true);
+
+        when(task.getGenerationMode()).thenReturn("MODEL_WEAR");
+        assertTrue(AiVideoTaskService.isScriptVideoReplacement(task));
+        when(task.getGenerationMode()).thenReturn("PRODUCT_ONLY");
+        assertTrue(AiVideoTaskService.isScriptVideoReplacement(task));
+        when(task.getGenerationMode()).thenReturn("CAST_PRODUCT");
+        assertTrue(AiVideoTaskService.isScriptVideoReplacement(task));
+
+        when(task.isUseScriptReferenceVideo()).thenReturn(false);
+        assertFalse(AiVideoTaskService.isScriptVideoReplacement(task));
     }
 }

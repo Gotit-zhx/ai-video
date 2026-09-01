@@ -73,6 +73,13 @@ public class ModelConfigService {
                 .toList();
     }
 
+    public Optional<RuntimeModelConnection> dayanConnection(String organizationId) {
+        return videoConnections(organizationId).stream()
+                .filter(connection -> "DAYAN".equals(connection.provider())
+                        || connection.baseUrl() != null && connection.baseUrl().contains("dayan.design"))
+                .findFirst();
+    }
+
     public Optional<RuntimeModelConnection> connectionById(String organizationId, String id) {
         ModelConfig config = mapper.selectOne(new LambdaQueryWrapper<ModelConfig>()
                 .eq(ModelConfig::getOrganizationId, organizationId)

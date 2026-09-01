@@ -55,6 +55,56 @@ class VideoScriptAnalysisProcessorTest {
         assertSame(original, VideoScriptAnalysisProcessor.normalizeLongVideoTimeline(original, 15.0));
     }
 
+    @Test
+    void keepsModelCondensedNarrationInsteadOfRestoringTheLongTranscript() {
+        VideoScriptAnalysisResult original = resultWithNineShots(new BigDecimal("15.0"));
+        List<VideoScriptAnalysisResult.Shot> shots = new ArrayList<>(original.shots());
+        VideoScriptAnalysisResult.Shot first = shots.getFirst();
+        shots.set(0, copyWithNarration(first, "旁白：轻松照顾宝宝，从这一刻开始"));
+        VideoScriptAnalysisResult condensed = new VideoScriptAnalysisResult(
+                original.title(), original.summary(), original.globalVisualTone(), original.durationSeconds(), shots);
+        DayanAudioTranscriptionService.Transcript transcript = new DayanAudioTranscriptionService.Transcript(
+                "这是一段很长并且包含大量重复表达的原始口播内容",
+                List.of(new DayanAudioTranscriptionService.Segment(
+                        BigDecimal.ZERO, new BigDecimal("15.0"), null,
+                        "这是一段很长并且包含大量重复表达的原始口播内容")));
+
+        VideoScriptAnalysisResult applied = VideoScriptAnalysisProcessor.applyAudioTranscript(
+                condensed, transcript, 15.0);
+
+        assertEquals("旁白：轻松照顾宝宝，从这一刻开始", applied.shots().getFirst().narration());
+    }
+
+    @Test
+    void neverCutsModelNarrationInTheMiddleOfItsMeaning() {
+        VideoScriptAnalysisResult original = resultWithNineShots(new BigDecimal("15.0"));
+        List<VideoScriptAnalysisResult.Shot> shots = new ArrayList<>();
+        for (VideoScriptAnalysisResult.Shot shot : original.shots()) {
+            shots.add(copyWithNarration(shot, "口播：这是一段明显超过正常十五秒口播速度的冗长内容需要被限制"));
+        }
+        VideoScriptAnalysisResult verbose = new VideoScriptAnalysisResult(
+                original.title(), original.summary(), original.globalVisualTone(), original.durationSeconds(), shots);
+
+        DayanAudioTranscriptionService.Transcript transcript = new DayanAudioTranscriptionService.Transcript(
+                "原始口播", List.of(new DayanAudioTranscriptionService.Segment(
+                BigDecimal.ZERO, new BigDecimal("15.0"), null, "原始口播")));
+
+        VideoScriptAnalysisResult preserved = VideoScriptAnalysisProcessor.applyAudioTranscript(
+                verbose, transcript, 15.0);
+
+        assertEquals(verbose.shots().getFirst().narration(), preserved.shots().getFirst().narration());
+        assertEquals(verbose.shots().getLast().narration(), preserved.shots().getLast().narration());
+    }
+
+    private VideoScriptAnalysisResult.Shot copyWithNarration(
+            VideoScriptAnalysisResult.Shot shot, String narration) {
+        return new VideoScriptAnalysisResult.Shot(
+                shot.sequence(), shot.stage(), shot.title(), shot.startSecond(), shot.endSecond(),
+                shot.durationSeconds(), shot.sceneDescription(), shot.motionDescription(),
+                shot.motionIntensity(), narration, shot.shotSize(), shot.cameraMovement(),
+                shot.transitionDescription(), shot.emotion(), shot.imagePrompt());
+    }
+
     private VideoScriptAnalysisResult resultWithNineShots(BigDecimal duration) {
         List<VideoScriptAnalysisResult.Shot> shots = new ArrayList<>();
         BigDecimal originalShotDuration = duration.divide(BigDecimal.valueOf(9), 4, java.math.RoundingMode.HALF_UP);

@@ -23,11 +23,9 @@ import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.http.HttpClient;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,6 +46,7 @@ public class VideoScriptAnalysisProcessor {
     private final ModelConfigService modelConfigService;
     private final VideoFrameExtractor frameExtractor;
     private final VideoCameraMotionAnalyzer cameraMotionAnalyzer;
+    private final DayanAudioTranscriptionService audioTranscriptionService;
     private final ObjectMapper objectMapper;
     private final RestClient piClient;
     private final RestClient piProgressClient;
@@ -59,6 +58,7 @@ public class VideoScriptAnalysisProcessor {
             ModelConfigService modelConfigService,
             VideoFrameExtractor frameExtractor,
             VideoCameraMotionAnalyzer cameraMotionAnalyzer,
+            DayanAudioTranscriptionService audioTranscriptionService,
             ObjectMapper objectMapper,
             TransactionTemplate transactionTemplate,
             @Value("${app.pi-runtime-url}") String piRuntimeUrl,
@@ -69,6 +69,7 @@ public class VideoScriptAnalysisProcessor {
         this.modelConfigService = modelConfigService;
         this.frameExtractor = frameExtractor;
         this.cameraMotionAnalyzer = cameraMotionAnalyzer;
+        this.audioTranscriptionService = audioTranscriptionService;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
         this.piClient = RestClient.builder()
@@ -86,7 +87,7 @@ public class VideoScriptAnalysisProcessor {
                 .build();
     }
 
-    @Async("automationDiagnosisExecutor")
+    @Async("videoScriptAnalysisExecutor")
     public void analyze(String scriptId) {
         VideoScript script = scriptMapper.selectById(scriptId);
         if (script == null) return;
@@ -103,6 +104,17 @@ public class VideoScriptAnalysisProcessor {
                     source.getParent().resolve("motion-frames"),
                     frames.durationSeconds()
             );
+            DayanAudioTranscriptionService.Transcript transcript = DayanAudioTranscriptionService.Transcript.empty();
+            String audioExtractionStatus = script.isExtractAudio() ? "REQUESTED" : "NOT_REQUESTED";
+            if (script.isExtractAudio()) {
+                try {
+                    transcript = audioTranscriptionService.transcribe(script);
+                    audioExtractionStatus = transcript.available() ? "TRANSCRIBED" : "NO_SPEECH";
+                } catch (DayanAudioTranscriptionService.NoAudioTrackException exception) {
+                    audioExtractionStatus = "NO_AUDIO_TRACK";
+                    log.info("Video script {} has no usable audio track; continue with visual analysis", scriptId);
+                }
+            }
 
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(script.getOrganizationId())
@@ -145,18 +157,19 @@ public class VideoScriptAnalysisProcessor {
                     "productionProductSource", "USER_UPLOADED_TASK_PRODUCT_IMAGE_ONLY"
             ));
             context.put("cameraMotionEvidence", cameraMotion);
+            context.put("hasReliableAudioTranscript", transcript.available());
+            context.put("audioExtractionStatus", audioExtractionStatus);
+            context.put("audioTranscript", Map.of(
+                    "fullText", transcript.fullText(),
+                    "segments", transcript.segments().stream().map(segment -> Map.of(
+                            "startSecond", segment.startSecond(),
+                            "endSecond", segment.endSecond(),
+                            "speaker", segment.speaker() == null ? "" : segment.speaker(),
+                            "text", segment.text()
+                    )).toList()
+            ));
             request.put("context", context);
-            List<Map<String, Object>> encodedFrames = new ArrayList<>();
-            for (int index = 0; index < frames.files().size(); index++) {
-                byte[] bytes = Files.readAllBytes(frames.files().get(index));
-                encodedFrames.add(Map.of(
-                        "index", index + 1,
-                        "timestampSeconds", Math.round(frames.timestampSeconds(index) * 100.0) / 100.0,
-                        "mimeType", "image/jpeg",
-                        "data", Base64.getEncoder().encodeToString(bytes)
-                ));
-            }
-            request.put("frames", encodedFrames);
+            request.put("sourceVideoPath", source.toString());
 
             PiAnalysisResponse response = requestAnalysisWithProgress(scriptId, progressId, request);
             if (response == null || response.result() == null) {
@@ -170,6 +183,7 @@ public class VideoScriptAnalysisProcessor {
             persistAnalysisProgress(scriptId, 95);
             result = normalizeLongVideoTimeline(result, frames.durationSeconds());
             result = applyCameraMotionEvidence(result, cameraMotion, frames.durationSeconds());
+            result = applyAudioTranscript(result, transcript, frames.durationSeconds());
             persistResult(script, result);
         } catch (Exception exception) {
             String message = readableMessage(exception);
@@ -320,7 +334,7 @@ public class VideoScriptAnalysisProcessor {
                 new VideoScriptAnalysisResult.Shot(
                         shot.sequence(), shot.stage(), shot.title(), shot.startSecond(), shot.endSecond(),
                         shot.durationSeconds(), shot.sceneDescription(), shot.motionDescription(),
-                        shot.motionIntensity(), null, shot.shotSize(),
+                        shot.motionIntensity(), shot.narration(), shot.shotSize(),
                         cameraMotion.windows().isEmpty()
                                 ? shot.cameraMovement()
                                 : cameraMotionAnalyzer.cameraMovementFor(
@@ -335,6 +349,47 @@ public class VideoScriptAnalysisProcessor {
         return new VideoScriptAnalysisResult(
                 result.title(), result.summary(), result.globalVisualTone(), result.durationSeconds(), adjusted
         );
+    }
+
+    static VideoScriptAnalysisResult applyAudioTranscript(
+            VideoScriptAnalysisResult result,
+            DayanAudioTranscriptionService.Transcript transcript,
+            double sourceDurationSeconds) {
+        if (result == null || result.shots() == null || transcript == null || !transcript.available()) return result;
+        boolean hasCondensedNarration = result.shots().stream()
+                .anyMatch(shot -> shot.narration() != null && !shot.narration().isBlank());
+        if (hasCondensedNarration) {
+            return result;
+        }
+
+        double resultDuration = result.durationSeconds() == null
+                ? sourceDurationSeconds : result.durationSeconds().doubleValue();
+        double scale = sourceDurationSeconds > resultDuration && sourceDurationSeconds > 0
+                ? resultDuration / sourceDurationSeconds : 1.0;
+        List<VideoScriptAnalysisResult.Shot> shots = result.shots().stream().map(shot -> {
+            String narration = transcript.segments().stream()
+                    .filter(segment -> overlaps(shot.startSecond(), shot.endSecond(),
+                            segment.startSecond().multiply(BigDecimal.valueOf(scale)),
+                            segment.endSecond().multiply(BigDecimal.valueOf(scale))))
+                    .map(DayanAudioTranscriptionService.Segment::text)
+                    .filter(text -> text != null && !text.isBlank())
+                    .reduce((left, right) -> left + right).orElse("");
+            if (narration.isBlank()) narration = shot.narration();
+            else narration = "口播：" + narration;
+            return new VideoScriptAnalysisResult.Shot(
+                    shot.sequence(), shot.stage(), shot.title(), shot.startSecond(), shot.endSecond(),
+                    shot.durationSeconds(), shot.sceneDescription(), shot.motionDescription(),
+                    shot.motionIntensity(), narration, shot.shotSize(), shot.cameraMovement(),
+                    shot.transitionDescription(), shot.emotion(), shot.imagePrompt());
+        }).toList();
+        return new VideoScriptAnalysisResult(
+                result.title(), result.summary(), result.globalVisualTone(), result.durationSeconds(), shots);
+    }
+
+    private static boolean overlaps(BigDecimal shotStart, BigDecimal shotEnd,
+                                    BigDecimal segmentStart, BigDecimal segmentEnd) {
+        if (shotStart == null || shotEnd == null) return false;
+        return segmentEnd.compareTo(shotStart) > 0 && segmentStart.compareTo(shotEnd) < 0;
     }
 
     private BigDecimal scaleTimelineSecond(BigDecimal second, double scale) {

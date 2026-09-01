@@ -168,8 +168,8 @@ public class ManualScriptAiService {
 
     private String normalizePresentationMode(String value) {
         String normalized = text(value, 32).toUpperCase();
-        if (!List.of("MODEL_WEAR", "PRODUCT_ONLY").contains(normalized)) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择人物穿搭或纯商品脚本");
+        if (!List.of("MODEL_WEAR", "PRODUCT_ONLY", "CAST_PRODUCT").contains(normalized)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择人物穿搭、纯商品或人物＋商品脚本");
         }
         return normalized;
     }

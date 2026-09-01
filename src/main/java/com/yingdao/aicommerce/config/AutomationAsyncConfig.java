@@ -2,6 +2,7 @@ package com.yingdao.aicommerce.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -25,6 +26,22 @@ public class AutomationAsyncConfig {
         executor.setMaxPoolSize(6);
         executor.setQueueCapacity(100);
         executor.setThreadNamePrefix("automation-model-");
+        executor.initialize();
+        return executor;
+    }
+
+    @Bean(name = "videoScriptAnalysisExecutor")
+    public Executor videoScriptAnalysisExecutor(
+            @Value("${app.video-script-analysis-concurrency:4}") int concurrency
+    ) {
+        int poolSize = Math.max(1, Math.min(concurrency, 16));
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(poolSize);
+        executor.setMaxPoolSize(poolSize);
+        executor.setQueueCapacity(200);
+        executor.setKeepAliveSeconds(60);
+        executor.setAllowCoreThreadTimeOut(true);
+        executor.setThreadNamePrefix("video-script-analysis-");
         executor.initialize();
         return executor;
     }

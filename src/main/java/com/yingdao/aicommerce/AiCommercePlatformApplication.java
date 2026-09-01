@@ -5,6 +5,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @MapperScan({
+        "com.yingdao.aicommerce.auth",
         "com.yingdao.aicommerce.workflow.mapper",
         "com.yingdao.aicommerce.saas.mapper",
         "com.yingdao.aicommerce.automation.mapper",
