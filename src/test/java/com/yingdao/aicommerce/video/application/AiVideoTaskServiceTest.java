@@ -35,12 +35,16 @@ class AiVideoTaskServiceTest {
 
     @Test
     void gridStoryboardSafetyPromptKeepsTheGridAsInputButRemovesItsLayoutFromOutput() {
-        String result = AiVideoGenerationService.gridStoryboardSafetyPrompt("原提示词");
+        String result = AiVideoGenerationService.gridStoryboardSafetyPrompt("原提示词", "1:1");
 
-        assertTrue(result.contains("图2是3×3九宫格时间索引表"));
-        assertTrue(result.contains("零输出权限"));
-        assertTrue(result.contains("严禁整张复现、局部复现"));
-        assertTrue(result.contains("恰好两条手臂和两只手"));
+        assertTrue(result.contains("图2是按左到右、上到下读取01→09的时间索引"));
+        assertTrue(result.contains("必须采用图2每格的动作与场景"));
+        assertTrue(result.contains("铺满1:1画布"));
+        assertTrue(result.contains("禁止输出九宫格布局、画中画、分屏、拼贴"));
+        assertTrue(result.contains("转场只服从后附时间轴"));
+        assertTrue(result.contains("被遮挡或出画的肢体无需补出"));
+        assertTrue(result.contains("纯商品镜头可以无人无手"));
+        assertTrue(result.length() < 700);
         assertTrue(result.endsWith("原提示词"));
     }
 }

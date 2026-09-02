@@ -443,7 +443,7 @@ public class AiVideoGenerationService {
         try {
             String prompt = task.isDirectReferenceVideo()
                     ? directReferencePrompt(item) : item.getVideoPromptText();
-            if (!task.isDirectReferenceVideo()) prompt = gridStoryboardSafetyPrompt(prompt);
+            if (!task.isDirectReferenceVideo()) prompt = gridStoryboardSafetyPrompt(prompt, task.getAspectRatio());
             GenerationRequest request = new GenerationRequest(prompt, references(task, item, connection, provider),
                     duration, task.getAspectRatio(), resolution, audioReference(task));
             paceSubmission(connection.provider());
@@ -621,12 +621,13 @@ public class AiVideoGenerationService {
                 data(item.getSourceFilePath(), item.getSourceContentType()));
     }
 
-    static String gridStoryboardSafetyPrompt(String prompt) {
-        return "【本次实际参考图协议｜最高优先级】\n"
-                + "图1是第01格裁出的单画面首帧；图2是3×3九宫格时间索引表，只能在内部按左到右、上到下读取01→09的动作与场景，绝不是画面素材、首帧、转场模板或版式参考；图3是原始商品母版，只校验商品结构与纹理。\n"
-                + "输出视频从第一帧到最后一帧，每一帧都必须只有一个铺满画布的完整9:16实景画面。图2的外框、内框、九个面板、缩略图比例和拼贴布局拥有零输出权限：严禁整张复现、局部复现、淡入、闪现、叠加、缩放进入、作为背景、作为贴纸或作为画中画。不得出现任何2×2、3×3、多窗口、分屏、拼贴、宫格、照片墙、小窗和缩略图。\n"
-                + "先在内部读取图2九格并丢弃其版式，再逐时间段单独重建对应的单画面镜头。相邻格姿势或手势突变时必须干净硬切，禁止把两格同时显示，也禁止用复制肢体、残影或多手插值过渡。\n"
-                + "每个人始终恰好两条手臂和两只手；每只手只连接一条手臂。无动作指令时双手保持稳定，不新增挥手、指向或托举。\n\n"
+    static String gridStoryboardSafetyPrompt(String prompt, String aspectRatio) {
+        String outputRatio = aspectRatio == null || aspectRatio.isBlank() ? "请求画幅" : aspectRatio.trim();
+        return "【九宫格参考协议】\n"
+                + "图1锁定首帧；图2是按左到右、上到下读取01→09的时间索引；图3锁定完整商品身份。必须采用图2每格的动作与场景，但要把对应内容重建为单画面。\n"
+                + "成片每一帧只能有一个铺满" + outputRatio + "画布的场景。禁止输出九宫格布局、画中画、分屏、拼贴、缩略图或格线；转场中也不得闪现完整或局部宫格。\n"
+                + "转场只服从后附时间轴：标为同镜头连续时自然衔接，标为真实切点时干净切换。不得同时混合两格，也不得用残影、复制肢体或多手连接相邻格。\n"
+                + "人物身体最多两条手臂和两只手；被遮挡或出画的肢体无需补出，纯商品镜头可以无人无手。每只可见手必须自然连接到唯一手臂。\n\n"
                 + (prompt == null ? "" : prompt);
     }
 

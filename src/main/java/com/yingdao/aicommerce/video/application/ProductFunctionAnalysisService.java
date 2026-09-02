@@ -80,8 +80,10 @@ public class ProductFunctionAnalysisService {
             Map<String, Object> context = new LinkedHashMap<>();
             context.put("analysisType", garment ? GARMENT_TOPOLOGY_VERSION : "PRODUCT_FUNCTION_V1");
             context.put("productCategory", garment ? "服装" : "日用品");
-            context.put("itemName", safe(item.getName(), 100));
-            context.put("scriptActionContext", functionalActionContext(task.getScriptJson()));
+            if (!garment) {
+                context.put("itemName", safe(item.getName(), 100));
+                context.put("scriptActionContext", functionalActionContext(task.getScriptJson()));
+            }
             request.put("context", context);
             request.put("image", Map.of(
                     "mimeType", item.getSourceContentType(),
@@ -263,7 +265,9 @@ public class ProductFunctionAnalysisService {
         normalized.put("version", GARMENT_TOPOLOGY_VERSION);
         normalized.put("garmentType", text(source.get("garmentType"), 100));
         normalized.put("topologyClass", text(source.get("topologyClass"), 100));
-        normalized.put("asymmetrical", Boolean.TRUE.equals(source.get("asymmetrical")));
+        if (source.get("asymmetrical") instanceof Boolean asymmetrical) {
+            normalized.put("asymmetrical", asymmetrical);
+        }
         normalized.put("structureSymmetry", text(source.get("structureSymmetry"), 100));
         normalized.put("wearingSidePolicy", text(source.get("wearingSidePolicy"), 100));
         normalized.put("imageLeftShoulderState", text(source.get("imageLeftShoulderState"), 100));
@@ -296,32 +300,27 @@ public class ProductFunctionAnalysisService {
 
     private String garmentPromptBlock(Map<String, Object> value) {
         StringBuilder block = new StringBuilder(GARMENT_BLOCK_START).append('\n');
-        append(block, "品类", text(value.get("garmentType"), 50));
-        append(block, "结构类型", text(value.get("topologyClass"), 60));
-        append(block, "衣片结构", text(value.get("structureSymmetry"), 80));
-        append(block, "露肩侧策略", text(value.get("wearingSidePolicy"), 100));
+        block.append("原图可见像素是最高真值；以下内容只是按原图整理的结构证据，若有冲突以原图为准。\n");
         append(block, "原图画面左侧肩部", text(value.get("imageLeftShoulderState"), 60));
         append(block, "原图画面右侧肩部", text(value.get("imageRightShoulderState"), 60));
-        append(block, "穿着者左肩", text(value.get("wearerLeftShoulderState"), 60));
-        append(block, "穿着者右肩", text(value.get("wearerRightShoulderState"), 60));
         append(block, "原图画面左侧袖", text(value.get("imageLeftSleeve"), 60));
         append(block, "原图画面右侧袖", text(value.get("imageRightSleeve"), 60));
-        append(block, "穿着者左袖", text(value.get("wearerLeftSleeve"), 60));
-        append(block, "穿着者右袖", text(value.get("wearerRightSleeve"), 60));
         append(block, "原图可见袖子总数", text(value.get("visibleSleeveCount"), 20));
         append(block, "开口清单", join(value.get("openingInventory"), 220));
         append(block, "缝线连接清单", join(value.get("seamConnections"), 260));
         append(block, "领口路径", text(value.get("necklinePath"), 180));
         append(block, "肩带与支撑", join(value.get("supportElements"), 180));
+        append(block, "像素证据", join(value.get("visualEvidence"), 240));
+        append(block, "穿着者左肩", text(value.get("wearerLeftShoulderState"), 60));
+        append(block, "穿着者右肩", text(value.get("wearerRightShoulderState"), 60));
+        append(block, "穿着者左袖", text(value.get("wearerLeftSleeve"), 60));
+        append(block, "穿着者右袖", text(value.get("wearerRightSleeve"), 60));
+        append(block, "穿着侧约束", text(value.get("wearingSidePolicy"), 100));
         append(block, "视角投影", text(value.get("viewpointProjectionRule"), 200));
         append(block, "实际穿法", join(value.get("wearingMethod"), 220));
         append(block, "固定结构", join(value.get("fixedStructures"), 260));
         append(block, "禁止变化", join(value.get("forbiddenChanges"), 300));
-        block.append("以上是商品身份的一部分。AI 模特图、纯商品展示、九宫格 01–09 和最终视频逐帧都必须保持同一领口路径、袖子数量、肩带连接与穿着策略；")
-                .append("结构性非对称款锁定穿着者身体侧；镜头转到背面时屏幕左右可按真实透视反转，但衣服相对身体绝不能换侧。")
-                .append("宽船领等可左右露肩款在 AI 主图选定一次穿法后，后续九宫格和视频继承该穿法，不得逐格换侧。")
-                .append("人物手里拿着、展开、包装中、折叠、贴身比对和领口特写时，展示物仍是同一结构商品：领口必须沿上述领口路径连续存在，左右肩覆盖、袖子数量及连接点不得因未穿着而重建。若结构类型为斜肩、单肩、宽船领或露肩，手持状态绝不能补成居中的封闭圆领；若结构类型为普通圆领，则不得擅自改成斜肩或露肩。")
-                .append("不得按普通圆领短袖补齐、错误对称化、增删袖子、删除肩带或改变穿法。原图方向与文字/印花的正常阅读方向共同用于校验，禁止把整件衣服镜像。\n")
+        block.append("所有出镜状态只复现上述当前商品证据；不要重新分类，也不要套用其他款式的通用规则。\n")
                 .append(GARMENT_BLOCK_END);
         return block.toString();
     }
