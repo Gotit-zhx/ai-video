@@ -27,6 +27,8 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
@@ -61,7 +63,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class AiVideoImageProcessor {
+    private static final Logger log = LoggerFactory.getLogger(AiVideoImageProcessor.class);
     private static final int MAX_ITEM_RECOVERY_CONCURRENCY = 64;
+    static final int MAX_TOPOLOGY_REDRAWS = 3;
     private static final String CLOSE_FRAMING_GATE_VERSION = "CLOSE_FRAMING_GATE_V1";
     private static final String PORTRAIT_4K_SIZE = "2160x3840";
     private static final String PORTRAIT_4K_REQUIREMENT = "最终必须输出实际像素为 2160×3840 的 9:16 竖屏 4K 图片，"
@@ -366,9 +370,6 @@ public class AiVideoImageProcessor {
                 || value.contains("该提示可能违反了我们的内容政策")
                 || value.contains("该提示可能违反我们的内容政策")
                 || value.contains("content policy") && value.contains("no asset")) return true;
-        if (value.contains("服装结构复核未通过")
-                || value.contains("服装一致性复核未通过")
-                || value.contains("商品一致性复核未通过")) return true;
         if (privateValidationRetryPending(message)) return true;
         if (value.contains("参考图片获取失败")
                 || value.contains("参考图片读取失败")
@@ -776,7 +777,11 @@ public class AiVideoImageProcessor {
                                                              List<ReferenceImage> references) {
         try {
             ProductFunctionAnalysisService.GarmentValidation previousValidation = null;
-            for (int generationAttempt = 1; generationAttempt <= 2; generationAttempt++) {
+            PiArtifact bestRejectedArtifact = null;
+            String bestRejectedPrompt = null;
+            int bestViolationCount = Integer.MAX_VALUE;
+            int generationLimit = 1 + MAX_TOPOLOGY_REDRAWS;
+            for (int generationAttempt = 1; generationAttempt <= generationLimit; generationAttempt++) {
                 String prompt = generationAttempt == 1
                         ? basePrompt
                         : topologyCorrectionPrompt(basePrompt, previousValidation);
@@ -813,9 +818,25 @@ public class AiVideoImageProcessor {
                 discardTopologyCandidate(task, item, assetType);
                 clearPendingImageResult(item.getId(), assetType, imageRequestHash(prompt, references));
                 previousValidation = validation;
-                if (generationAttempt == 2) {
-                    throw new IllegalStateException("服装结构复核未通过（本轮已自动纠错重抽 1 次，系统将继续抽卡直至通过）："
-                            + String.join("；", validation.violations()));
+                int violationCount = validation.violations() == null
+                        ? Integer.MAX_VALUE : validation.violations().size();
+                if (bestRejectedArtifact == null || violationCount <= bestViolationCount) {
+                    bestRejectedArtifact = artifact;
+                    bestRejectedPrompt = prompt;
+                    bestViolationCount = violationCount;
+                }
+                if (generationAttempt == generationLimit) {
+                    List<String> finalViolations = validation.violations() == null
+                            ? List.of() : validation.violations();
+                    log.warn("Garment validation still rejected {} for item {} after {} redraws; "
+                                    + "storing the best candidate and continuing the pipeline. Violations: {}",
+                            assetType, item.getId(), MAX_TOPOLOGY_REDRAWS,
+                            String.join("; ", finalViolations));
+                    AiVideoTaskAsset stored = store(task, item, assetType, null,
+                            bestRejectedArtifact, bestRejectedPrompt);
+                    clearPendingImageResult(item.getId(), assetType,
+                            imageRequestHash(bestRejectedPrompt, references));
+                    return stored;
                 }
             }
             throw new IllegalStateException("服装结构复核没有返回可用结果");
@@ -898,8 +919,8 @@ public class AiVideoImageProcessor {
         String correction = validation == null || validation.correctionPrompt() == null
                 ? "" : validation.correctionPrompt().trim();
         StringBuilder prompt = new StringBuilder(basePrompt).append("\n\n")
-                .append("【结构与中近景复核后的本轮纠错重绘｜最高优先级】上一候选图未通过商品结构或中近景构图复核。")
-                .append("重新生成完整图片，但只纠正下面指出的失败分镜；未列出的分镜继续严格执行原提示。")
+                .append("【一次定向纠错】上一候选图未通过商品结构或中近景构图复核。")
+                .append("重新生成完整图片，优先修正下面的失败项；其余格仍按原提示从参考图重建，不要求复制上一候选图。")
                 .append("所有失败格必须重新对照参考图1，恢复同一件商品的领口、袖型、印花/Logo、前后朝向和穿着方式，")
                 .append("重新清点参考图1左右两侧的袖筒、袖口、袖片、领口开口和缝线连接，不能沿用上一候选的品类猜测；斜领或露肩不等于无袖，参考图两侧都有袖口时必须恢复两只袖子。")
                 .append("并把相机推进到头顶至膝盖上方的中近景，保证脸高不低于画面高度 15%；禁止远景、全身、露出膝盖以下或拉远。")

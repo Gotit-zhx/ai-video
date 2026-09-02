@@ -38,7 +38,7 @@ public class ProductFunctionAnalysisService {
     private static final String GARMENT_BLOCK_START = "【服装结构与穿法契约】";
     private static final String GARMENT_BLOCK_END = "【服装结构与穿法契约结束】";
     private static final int MAX_SOURCE_BYTES = 20 * 1024 * 1024;
-    private static final int VALIDATION_MAX_EDGE = 768;
+    private static final int VALIDATION_MAX_EDGE = 1280;
     private static final int MAX_CONCURRENT_VALIDATIONS = 3;
     private static final String GARMENT_TOPOLOGY_VERSION = "GARMENT_TOPOLOGY_V2";
 

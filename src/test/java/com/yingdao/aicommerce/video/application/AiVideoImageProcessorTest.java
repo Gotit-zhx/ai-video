@@ -332,7 +332,7 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
-    void topologyRedrawPromptTargetsOnlyTheRejectedCellsAndPreservesIdentity() {
+    void topologyRedrawPromptPrioritizesRejectedCellsWithoutPromisingLocalEdits() {
         var validation = new ProductFunctionAnalysisService.GarmentValidation(false,
                 "第03格补回左胸橙色圆环 Logo，第08格保持正面朝向",
                 java.util.List.of("第03格 Logo 缺失", "第08格前后朝向不一致"), 0.92);
@@ -340,16 +340,23 @@ class AiVideoImageProcessorTest {
         String prompt = AiVideoImageProcessor.topologyCorrectionPrompt("原始九宫格提示", validation);
 
         assertTrue(prompt.startsWith("原始九宫格提示"));
-        assertTrue(prompt.contains("本轮纠错重绘"));
-        assertTrue(prompt.contains("只纠正下面指出的失败分镜"));
+        assertTrue(prompt.contains("一次定向纠错"));
+        assertTrue(prompt.contains("优先修正下面的失败项"));
+        assertTrue(prompt.contains("不要求复制上一候选图"));
+        assertFalse(prompt.contains("只纠正下面指出的失败分镜"));
         assertTrue(prompt.contains("第03格 Logo 缺失"));
         assertTrue(prompt.contains("第08格前后朝向不一致"));
         assertTrue(prompt.contains("第03格补回左胸橙色圆环 Logo"));
         assertTrue(prompt.contains("参考图1"));
-        assertTrue(prompt.contains("结构与中近景复核"));
+        assertTrue(prompt.contains("商品结构或中近景构图复核"));
         assertTrue(prompt.contains("脸高不低于画面高度 15%"));
         assertTrue(prompt.contains("禁止远景、全身"));
         assertTrue(prompt.contains("不得用相似款、无 Logo 款或镜像错误代替"));
+    }
+
+    @Test
+    void topologyRedrawsAreBoundedToThreeBeforeContinuing() {
+        assertEquals(3, AiVideoImageProcessor.MAX_TOPOLOGY_REDRAWS);
     }
 
     @Test
@@ -371,8 +378,8 @@ class AiVideoImageProcessorTest {
                 "内容策略可能误判：图片模型未产出图片，已快速重试 3 次，系统将继续后台自动重试"));
         assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
                 "模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址"));
-        assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
-                "服装结构复核未通过（本轮已自动纠错重抽 1 次，系统将继续抽卡直至通过）：第03格 Logo 缺失"));
+        assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
+                "服装结构复核未通过（已完成 1 次定向纠错，不再自动重抽）：第03格 Logo 缺失"));
         assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
                 "服装结构复核暂时失败，已私有保存本次候选图并将在后台继续复核：模型服务响应超时"));
         assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
@@ -391,7 +398,7 @@ class AiVideoImageProcessorTest {
                 "图片生成失败：fetch failed"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "图片生成失败：image generation produced no asset：该提示可能违反了我们的内容政策"));
-        assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
+        assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "图片生成失败：服装结构复核未通过：第08格商品身份不一致"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "图片生成失败：服装结构复核暂时失败，已保留本次生图结果供后续继续复核：EOF reached while reading"));
