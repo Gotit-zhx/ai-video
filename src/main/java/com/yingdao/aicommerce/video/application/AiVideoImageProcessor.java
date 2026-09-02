@@ -197,11 +197,13 @@ public class AiVideoImageProcessor {
 
     @Scheduled(initialDelay = 3_000, fixedDelay = 5_000)
     public void recoverAutoStartPipelines() {
-        Instant retryBefore = Instant.now().minus(Duration.ofSeconds(5));
+        Instant retryBefore = Instant.now();
         List<AiVideoTask> recoverable = taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
-                .eq(AiVideoTask::isAutoStartVideoAfterImages, true)
-                .in(AiVideoTask::getStatus, List.of("IMAGE_READY", "FAILED"))
-                .ge(AiVideoTask::getUpdatedAt, Instant.now().minus(Duration.ofHours(2)))
+                .and(candidate -> candidate
+                        .eq(AiVideoTask::isAutoStartVideoAfterImages, true)
+                        .in(AiVideoTask::getStatus, List.of("IMAGE_READY", "FAILED"))
+                        .or()
+                        .eq(AiVideoTask::getStatus, "FAILED"))
                 .orderByDesc(AiVideoTask::getUpdatedAt)
                 .last("LIMIT 100"));
         for (AiVideoTask task : recoverable) {
@@ -220,8 +222,10 @@ public class AiVideoImageProcessor {
                         .filter(value -> value != null)
                         .anyMatch(value -> !value.isAfter(retryBefore));
                 if (hasTerminalFailure) {
-                    task.consumeAutoStartVideo();
-                    taskMapper.updateById(task);
+                    if (task.isAutoStartVideoAfterImages()) {
+                        task.consumeAutoStartVideo();
+                        taskMapper.updateById(task);
+                    }
                     continue;
                 }
                 if (hasRetryableFailure && !retryDelayElapsed) continue;
@@ -241,7 +245,6 @@ public class AiVideoImageProcessor {
 
         List<AiVideoTask> pipelined = taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
                 .eq(AiVideoTask::getStatus, "VIDEO_GENERATING")
-                .ge(AiVideoTask::getUpdatedAt, Instant.now().minus(Duration.ofHours(2)))
                 .orderByDesc(AiVideoTask::getUpdatedAt)
                 .last("LIMIT 100"));
         for (AiVideoTask task : pipelined) dispatchRecoveredGeneration(task.getId());

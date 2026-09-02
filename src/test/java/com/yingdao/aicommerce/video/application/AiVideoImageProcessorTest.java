@@ -352,6 +352,18 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void garmentValidationReceivesTheSameHardFramingContractAsGeneration() {
+        var contract = ProductFunctionAnalysisService.garmentFramingContract();
+
+        assertEquals("头顶至大腿中下段、膝盖上方的中近景", contract.get("personFraming"));
+        assertEquals(0.15, contract.get("minimumFaceHeightRatio"));
+        assertTrue(String.valueOf(contract.get("forbidden")).contains("远景"));
+        assertTrue(String.valueOf(contract.get("forbidden")).contains("双脚或鞋子入镜"));
+        assertTrue(String.valueOf(contract.get("forbidden")).contains("镜头拉远"));
+        assertTrue(String.valueOf(contract.get("productOnlyFraming")).contains("商品近景"));
+    }
+
+    @Test
     void fabricRequirementIncludesGravityAndDrapeWhenAClothingCornerIsLifted() throws Exception {
         String general = privateStaticString("FABRIC_AND_PRODUCT_REALISM_REQUIREMENT");
         String requirement = privateStaticString("FABRIC_GRIP_PHYSICS_REQUIREMENT");

@@ -140,7 +140,8 @@ public class ProductFunctionAnalysisService {
             request.put("context", Map.of(
                     "analysisType", "GARMENT_TOPOLOGY_VALIDATION_V1",
                     "assetType", assetType,
-                    "expectedTopology", objectMapper.readValue(item.getProductFunctionAnalysisJson(), Map.class)
+                    "expectedTopology", objectMapper.readValue(item.getProductFunctionAnalysisJson(), Map.class),
+                    "framingContract", garmentFramingContract()
             ));
             request.put("image", Map.of("mimeType", item.getSourceContentType(),
                     "data", Base64.getEncoder().encodeToString(Files.readAllBytes(source))));
@@ -174,6 +175,15 @@ public class ProductFunctionAnalysisService {
         }
         throw new IllegalStateException("服装结构复核暂时失败，已保留本次生图结果供后续继续复核："
                 + readable(lastFailure == null ? new IllegalStateException("未知错误") : lastFailure), lastFailure);
+    }
+
+    static Map<String, Object> garmentFramingContract() {
+        return Map.of(
+                "personFraming", "头顶至大腿中下段、膝盖上方的中近景",
+                "minimumFaceHeightRatio", 0.15,
+                "forbidden", List.of("远景", "全景", "全身", "膝盖以下入镜", "双脚或鞋子入镜", "人物突然缩小", "镜头拉远"),
+                "productOnlyFraming", "纯商品格必须采用商品近景并让主体填满主要画面"
+        );
     }
 
     static boolean isTransientValidationFailure(String message) {
