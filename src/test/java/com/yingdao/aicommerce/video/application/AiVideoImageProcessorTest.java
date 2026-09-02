@@ -14,6 +14,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -26,7 +27,11 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -53,6 +58,28 @@ class AiVideoImageProcessorTest {
                 "从最终 4K 九宫格第 01 格自动裁切", "model");
 
         assertFalse(AiVideoImageProcessor.isLegacyModelFirstFrame(asset));
+    }
+
+    @Test
+    void keepsLegacyAssetWhenFramingValidatorIsTemporarilyUnavailable() throws Exception {
+        ProductFunctionAnalysisService validationService = mock(ProductFunctionAnalysisService.class);
+        AiVideoImageProcessor processor = processor(tempDirectory, validationService);
+        AiVideoTask task = mock(AiVideoTask.class);
+        AiVideoTaskItem item = mock(AiVideoTaskItem.class);
+        Path assetPath = tempDirectory.resolve("legacy-model.png");
+        Files.write(assetPath, new byte[] {1, 2, 3});
+        AiVideoTaskAsset asset = new AiVideoTaskAsset("org", "task", "item",
+                "MODEL_IMAGE", null, assetPath.toString(), "image/png", 3,
+                "旧提示词", "image-model");
+        when(validationService.validateGenerated(any(), any(), anyString(), any(), anyString()))
+                .thenThrow(new IllegalStateException("服装结构复核暂时失败：响应超时"));
+
+        AiVideoTaskAsset result = processor.recheckLegacyFramingAsset(
+                task, item, asset, "MODEL_IMAGE");
+
+        assertSame(asset, result);
+        verify(validationService, times(1))
+                .validateGenerated(eq(task), eq(item), eq("MODEL_IMAGE"), any(byte[].class), eq("image/png"));
     }
 
     @Test
@@ -141,6 +168,11 @@ class AiVideoImageProcessorTest {
     }
 
     private static AiVideoImageProcessor processor(Path storageRoot) {
+        return processor(storageRoot, mock(ProductFunctionAnalysisService.class));
+    }
+
+    private static AiVideoImageProcessor processor(Path storageRoot,
+                                                   ProductFunctionAnalysisService validationService) {
         return new AiVideoImageProcessor(
                 mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper.class),
                 mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class),
@@ -149,7 +181,7 @@ class AiVideoImageProcessorTest {
                 mock(com.yingdao.aicommerce.video.mapper.VideoScriptMapper.class),
                 mock(com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper.class),
                 mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class),
-                mock(ProductFunctionAnalysisService.class),
+                validationService,
                 mock(AiVideoGenerationService.class),
                 new ObjectMapper(), Runnable::run, Runnable::run,
                 mock(org.springframework.beans.factory.ObjectProvider.class),
@@ -189,6 +221,7 @@ class AiVideoImageProcessorTest {
     @Test
     void storyboardGridUsesCloserFramingInsteadOfMandatoryFullBody() throws Exception {
         String requirement = privateStaticString("GRID_FACE_PIXEL_REQUIREMENT");
+        String poseRequirement = privateStaticString("GRID_POSE_SCALE_REQUIREMENT");
 
         assertTrue(requirement.contains("约 190 像素"));
         assertTrue(requirement.contains("膝盖、小腿、双脚和鞋子不可见"));
@@ -197,6 +230,9 @@ class AiVideoImageProcessorTest {
         assertTrue(requirement.contains("纯商品格采用填满主体区域的商品近景"));
         assertFalse(requirement.contains("才允许该格采用对应景别并显示鞋子"));
         assertFalse(requirement.contains("鞋底全部可见"));
+        assertTrue(poseRequirement.contains("构图内自然可见"));
+        assertTrue(poseRequirement.contains("被遮挡或出画的肢体无需补出"));
+        assertFalse(poseRequirement.contains("双臂及本格动作需要"));
     }
 
     @Test
@@ -378,10 +414,13 @@ class AiVideoImageProcessorTest {
     void topologyCandidateRankingUsesTotalViolationsAndRejectsMissingDetails() {
         var summarized = new ProductFunctionAnalysisService.GarmentValidation(false, "",
                 java.util.List.of("问题一", "问题二", "问题三"), 0.9, 7);
+        var undercounted = new ProductFunctionAnalysisService.GarmentValidation(false, "",
+                java.util.List.of("问题一", "问题二", "问题三"), 0.9, 1);
         var missingDetails = new ProductFunctionAnalysisService.GarmentValidation(false, "",
                 java.util.List.of(), 0.1, 0);
 
         assertEquals(7, AiVideoImageProcessor.topologyViolationCount(summarized));
+        assertEquals(3, AiVideoImageProcessor.topologyViolationCount(undercounted));
         assertEquals(Integer.MAX_VALUE, AiVideoImageProcessor.topologyViolationCount(missingDetails));
         assertTrue(AiVideoImageProcessor.preferNewTopologyCandidate(7, 2));
         assertTrue(AiVideoImageProcessor.preferNewTopologyCandidate(2, 2));
@@ -447,6 +486,10 @@ class AiVideoImageProcessorTest {
                 "参考图片获取失败，请重新上传"));
         assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "图片生成失败：服装结构复核暂时失败：响应超时"));
+        assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("FAILED",
+                "服装结构复核暂时失败：image generation produced no asset；content policy；429"));
+        assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
+                "Image generation failed: garment validation unavailable; content policy; 429"));
         assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "视频厂商并发限制：Concurrency limit exceeded for user, please retry later"));
     }

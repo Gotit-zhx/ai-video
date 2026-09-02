@@ -1326,14 +1326,14 @@ public class AiVideoTaskService {
         return prompt.toString().trim();
     }
 
-    private void appendCloseFramingLock(StringBuilder prompt, AiVideoTask task) {
+    static void appendCloseFramingLock(StringBuilder prompt, AiVideoTask task) {
         prompt.append("【全片中近景锁定｜最高优先级且覆盖脚本、参考图和原视频景别】\n");
         if ("PRODUCT_ONLY".equals(task.getGenerationMode())) {
             prompt.append("所有商品镜头均采用商品近景，主体持续填满主要画面；禁止远景、空旷全景、主体突然缩小、后退拉远或以展示环境为理由拉开距离。脚本中的拉远改为近景范围内的轻微横移、环绕或固定机位。\n\n");
             return;
         }
         prompt.append("所有出现人物的画面都必须保持头顶至大腿中下段、下边界在膝盖上方的中近景；膝盖以下、双脚和鞋子始终不可见。")
-                .append("脸从发际线到下巴的高度在每一帧都不得低于画面高度 15%，头顶、完整五官、胸前商品、双臂和动作所需双手必须清楚。")
+                .append("脸从发际线到下巴的高度在每一帧都不得低于画面高度 15%，头顶、完整五官、胸前商品、构图内可见手臂和动作实际需要的手必须清楚；被遮挡或出画的肢体无需补出。")
                 .append("禁止远景、全景、完整全身、广角缩人、人物后退变小、镜头拉远或切到远景；脚本、shotSize、cameraMovement、参考图或原视频若与此冲突，一律把动作改写到中近景内完成。")
                 .append("允许硬切和轻微推近、横移、环绕，但切换前后仍须保持相同中近景主体尺度，不能用拉远交代环境。纯商品特写可以无人，但商品必须近景填满主要画面。\n\n");
     }

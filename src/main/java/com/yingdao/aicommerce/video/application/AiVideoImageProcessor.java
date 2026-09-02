@@ -116,7 +116,7 @@ public class AiVideoImageProcessor {
             + "不得为了保留全身、脚部、背景或原视频远景而缩小人物。即使脚本、原视频、参考图或 shotSize 写了远景、全景、全身、拉远、后退、看到脚部，也必须改写成中近景内能够完成的动作和运镜；"
             + "纯商品格采用填满主体区域的商品近景。01–09 的主体尺度必须稳定，禁止任何一格突然拉远。";
     private static final String GRID_POSE_SCALE_REQUIREMENT = "【动作底图尺度】每个 720×1280 子画面采用头顶至大腿中下段的中近景；"
-            + "无脸人体的头部轮廓高度不得低于单格高度的 15%，但不得生成可识别五官。头部、躯干、双臂及本格动作需要的可见手部必须完整，"
+            + "无脸人体的头部轮廓高度不得低于单格高度的 15%，但不得生成可识别五官。构图内自然可见的头部、躯干、手臂及本格动作实际需要的手部结构必须完整；被遮挡或出画的肢体无需补出，"
             + "不为显示膝盖以下、双脚、鞋子或原视频远景而缩小人物；纯商品格采用填满主体区域的商品近景。";
     private static final String FABRIC_AND_PRODUCT_REALISM_REQUIREMENT = "材质必须按真实物理方式受光：棉料保留细微织纹、厚薄、"
             + "缝线和受力褶皱，印花贴合布面起伏而非悬浮；纸、塑料、玻璃、金属和木材分别呈现正确的漫反射、粗糙度、"
@@ -694,13 +694,19 @@ public class AiVideoImageProcessor {
         itemMapper.updateById(item);
     }
 
-    private AiVideoTaskAsset recheckLegacyFramingAsset(AiVideoTask task, AiVideoTaskItem item,
-                                                       AiVideoTaskAsset asset, String assetType) throws Exception {
+    AiVideoTaskAsset recheckLegacyFramingAsset(AiVideoTask task, AiVideoTaskItem item,
+                                               AiVideoTaskAsset asset, String assetType) throws Exception {
         if (asset == null || (asset.getPromptText() != null
                 && asset.getPromptText().contains(CLOSE_FRAMING_GATE_VERSION))) return asset;
-        ProductFunctionAnalysisService.GarmentValidation validation =
-                productFunctionAnalysisService.validateGenerated(task, item, assetType,
-                        readAsset(asset.getFilePath()), asset.getContentType());
+        ProductFunctionAnalysisService.GarmentValidation validation;
+        try {
+            validation = productFunctionAnalysisService.validateGenerated(task, item, assetType,
+                    readAsset(asset.getFilePath()), asset.getContentType());
+        } catch (Exception exception) {
+            log.warn("旧图片服装结构复核暂时不可用，保留现有资产继续，taskId={}, itemId={}, assetType={}: {}",
+                    task.getId(), item.getId(), assetType, exception.getMessage());
+            return asset;
+        }
         if (!validation.valid()) {
             deleteGeneratedAsset(asset);
             return null;
@@ -961,9 +967,10 @@ public class AiVideoImageProcessor {
 
     static int topologyViolationCount(ProductFunctionAnalysisService.GarmentValidation validation) {
         if (validation == null || validation.valid()) return 0;
-        if (validation.violationCount() > 0) return validation.violationCount();
         List<String> violations = validation.violations();
-        return violations == null || violations.isEmpty() ? Integer.MAX_VALUE : violations.size();
+        int detailedCount = violations == null ? 0 : violations.size();
+        if (detailedCount == 0 && validation.violationCount() <= 0) return Integer.MAX_VALUE;
+        return Math.max(validation.violationCount(), detailedCount);
     }
 
     static boolean preferNewTopologyCandidate(int currentBestViolationCount, int newViolationCount) {
@@ -1481,7 +1488,7 @@ public class AiVideoImageProcessor {
                 + safe(task.getTargetMarket(), "通用电商市场") + "。只出现一位成年人物，头顶、五官、胸前商品、双肩和构图内可见手臂清楚入镜；没有动作需要时手可以自然遮挡或出画，不为凑齐双手而补手。"
                 + FRIENDLY_MODEL_FACE_BASELINE
                 + "人物大致面向镜头但不要证件照式立正：身体相对画面中心轻微偏移，重心自然落在一条腿上，两侧肩髋不完全水平，"
-                + "双臂以略有差异的方式自然下垂，一只手可轻微弯曲，头部有极小角度偏转，眼神像刚注意到拍摄者；"
+                + "构图内可见手臂以略有差异的方式自然放置，可见手臂可轻微弯曲，头部有极小角度偏转，眼神像刚注意到拍摄者；"
                 + "表情处在尚未刻意摆拍的自然瞬间，可以只是轻微嘴角变化，不能露出模板化甜美微笑。"
                 + "姿态松弛但能够完整展示上衣，不摆夸张时尚姿势；身体比例、关节和五根手指正确。"
                 + "【AI 模特穿着母版｜不是视频首帧】这张图的唯一职责是建立同一人物正确穿着当前商品的高清母版，九宫格会另行生成脚本第 01 分镜首帧。"
