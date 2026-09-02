@@ -288,10 +288,13 @@ class AiVideoImageProcessorTest {
                 """);
 
         assertTrue(block.contains("服装结构与穿法契约"));
+        assertTrue(block.contains("原图可见像素是最高真值"));
         assertTrue(block.contains("FIXED_WEARER_SIDE"));
         assertTrue(block.contains("两只短袖始终存在"));
         assertTrue(block.contains("背面后屏幕左右自然反转"));
         assertTrue(block.contains("不得增加肩带"));
+        assertFalse(block.contains("结构类型：ASYMMETRIC_ONE_SHOULDER"));
+        assertTrue(block.indexOf("原图画面左侧袖") < block.indexOf("穿着侧约束"));
         assertTrue(service.requiresTopologyValidation("""
                 {"version":"GARMENT_TOPOLOGY_V1","asymmetrical":true,
                 "topologyClass":"ASYMMETRIC_ONE_SHOULDER"}
