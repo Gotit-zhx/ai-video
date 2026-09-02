@@ -1497,7 +1497,6 @@ public class AiVideoTaskService {
                 String action = textValue(shot.get("motionDescription"));
                 if (action.isBlank()) action = textValue(shot.get("title"));
                 String intensity = textValue(shot.get("motionIntensity"));
-                String shotSize = textValue(shot.get("shotSize"));
                 String movement = textValue(shot.get("cameraMovement"));
                 String transition = textValue(shot.get("transitionDescription"));
                 String scene = textValue(shot.get("sceneDescription"));
@@ -1511,9 +1510,6 @@ public class AiVideoTaskService {
                 appendLine(prompt, "本镜头布料重力", fabricGripPhysicsDirective(action, scene));
                 appendLine(prompt, "景别硬覆写", closeFramingTimelineDirective(task));
                 appendLine(prompt, "进入转场", VideoTimelineSemantics.enteringTransition(sequence, transition));
-                if (!shotSize.isBlank()) {
-                    appendLine(prompt, "原脚本景别（已禁用）", shotSize);
-                }
                 appendLine(prompt, "执行镜头", normalizedCameraMovement(task, movement));
                 String voiceoverMode = textValue(generationRules(task).get("voiceoverMode"));
                 String narration = "NONE".equals(voiceoverMode) || "CUSTOM".equals(voiceoverMode)
