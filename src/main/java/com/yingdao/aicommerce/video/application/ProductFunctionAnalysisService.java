@@ -423,7 +423,10 @@ public class ProductFunctionAnalysisService {
         if (valid) return 0;
         if (rawCount instanceof Number number) {
             long count = number.longValue();
-            if (count > 0) return (int) Math.min(Integer.MAX_VALUE, count);
+            if (count > 0) {
+                long listedCount = violations == null ? 0 : violations.size();
+                return (int) Math.min(Integer.MAX_VALUE, Math.max(count, listedCount));
+            }
         }
         return violations == null || violations.isEmpty() ? Integer.MAX_VALUE : violations.size();
     }

@@ -106,6 +106,14 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void realFrameProductGridReadsMotionAndBackgroundFromReferenceTwo() {
+        assertTrue(AiVideoImageProcessor.PRODUCT_REAL_FRAME_BACKGROUND_REQUIREMENT.contains("参考图2"));
+        assertFalse(AiVideoImageProcessor.PRODUCT_REAL_FRAME_BACKGROUND_REQUIREMENT.contains("参考图1"));
+        assertTrue(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("参考图2逐格核对"));
+        assertFalse(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("参考图1逐格核对"));
+    }
+
+    @Test
     void fabricRequirementIncludesGravityAndDrapeWhenAClothingCornerIsLifted() throws Exception {
         String general = privateStaticString("FABRIC_AND_PRODUCT_REALISM_REQUIREMENT");
         String requirement = privateStaticString("FABRIC_GRIP_PHYSICS_REQUIREMENT");
@@ -286,6 +294,8 @@ class AiVideoImageProcessorTest {
         assertFalse(AiVideoImageProcessor.preferNewTopologyCandidate(2, 3));
         assertEquals(9, ProductFunctionAnalysisService.validationViolationCount(
                 9, false, java.util.List.of("只列最关键问题")));
+        assertEquals(3, ProductFunctionAnalysisService.validationViolationCount(
+                1, false, java.util.List.of("问题一", "问题二", "问题三")));
         assertEquals(Integer.MAX_VALUE, ProductFunctionAnalysisService.validationViolationCount(
                 0, false, java.util.List.of()));
     }
@@ -312,6 +322,10 @@ class AiVideoImageProcessorTest {
         assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
                 "服装结构复核未通过：第03格 Logo 缺失"));
         assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
+                "服装结构复核暂时失败，已保留候选图：模型服务响应超时"));
+        assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
+                "Garment validation unavailable: unexpected end of file"));
+        assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
                 "版权限制：素材包含受版权保护的角色"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("FAILED",
                 "模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址"));
@@ -323,6 +337,8 @@ class AiVideoImageProcessorTest {
                 "图片生成失败：image generation produced no asset：该提示可能违反了我们的内容政策"));
         assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "图片生成失败：服装结构复核未通过：第08格商品身份不一致"));
+        assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
+                "图片生成失败：服装结构复核暂时失败：响应超时"));
         assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "视频厂商并发限制：Concurrency limit exceeded for user, please retry later"));
     }
