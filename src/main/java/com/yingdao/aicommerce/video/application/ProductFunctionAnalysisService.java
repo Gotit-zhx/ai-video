@@ -40,6 +40,7 @@ public class ProductFunctionAnalysisService {
     private static final int MAX_SOURCE_BYTES = 20 * 1024 * 1024;
     private static final int VALIDATION_MAX_EDGE = 768;
     private static final int MAX_CONCURRENT_VALIDATIONS = 3;
+    private static final String GARMENT_TOPOLOGY_VERSION = "GARMENT_TOPOLOGY_V2";
 
     private final AiVideoTaskItemMapper itemMapper;
     private final ModelConfigService modelConfigService;
@@ -71,7 +72,9 @@ public class ProductFunctionAnalysisService {
         boolean garment = isGarmentTask(task);
         if (!garment && !isDailyUseCategory(task.getProductCategory())) return null;
         if (item.getProductFunctionAnalysisJson() != null
-                && !item.getProductFunctionAnalysisJson().isBlank()) {
+                && !item.getProductFunctionAnalysisJson().isBlank()
+                && (!garment || hasGarmentTopologyVersion(
+                        item.getProductFunctionAnalysisJson(), GARMENT_TOPOLOGY_VERSION))) {
             return item.getProductFunctionAnalysisJson();
         }
         Exception lastFailure = null;
@@ -94,7 +97,7 @@ public class ProductFunctionAnalysisService {
                     "apiKey", model.apiKey()
             ));
             Map<String, Object> context = new LinkedHashMap<>();
-            context.put("analysisType", garment ? "GARMENT_TOPOLOGY_V1" : "PRODUCT_FUNCTION_V1");
+            context.put("analysisType", garment ? GARMENT_TOPOLOGY_VERSION : "PRODUCT_FUNCTION_V1");
             context.put("productCategory", garment ? "服装" : "日用品");
             context.put("itemName", safe(item.getName(), 100));
             context.put("scriptActionContext", functionalActionContext(task.getScriptJson()));
@@ -247,7 +250,16 @@ public class ProductFunctionAnalysisService {
             // Normal collars and sleeves can drift just as easily as special/asymmetric garments,
             // especially in the last storyboard cells. Every analyzed garment therefore needs the
             // same source-vs-candidate gate; the validator decides which visible structures matter.
-            return "GARMENT_TOPOLOGY_V1".equals(text(value.get("version"), 40));
+            return text(value.get("version"), 40).startsWith("GARMENT_TOPOLOGY_V");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private boolean hasGarmentTopologyVersion(String analysisJson, String expectedVersion) {
+        try {
+            Map<String, Object> value = objectMapper.readValue(analysisJson, new TypeReference<>() {});
+            return expectedVersion.equals(text(value.get("version"), 40));
         } catch (Exception ignored) {
             return false;
         }
@@ -257,7 +269,7 @@ public class ProductFunctionAnalysisService {
         if (analysisJson == null || analysisJson.isBlank()) return "";
         try {
             Map<String, Object> value = objectMapper.readValue(analysisJson, new TypeReference<>() {});
-            if ("GARMENT_TOPOLOGY_V1".equals(text(value.get("version"), 40))) {
+            if (text(value.get("version"), 40).startsWith("GARMENT_TOPOLOGY_V")) {
                 if (!isGarmentTask(task)) return "";
                 return garmentPromptBlock(value);
             }
@@ -309,7 +321,7 @@ public class ProductFunctionAnalysisService {
 
     private String normalizeGarmentAnalysis(Map<String, Object> source) throws Exception {
         Map<String, Object> normalized = new LinkedHashMap<>();
-        normalized.put("version", "GARMENT_TOPOLOGY_V1");
+        normalized.put("version", GARMENT_TOPOLOGY_VERSION);
         normalized.put("garmentType", text(source.get("garmentType"), 100));
         normalized.put("topologyClass", text(source.get("topologyClass"), 100));
         normalized.put("asymmetrical", Boolean.TRUE.equals(source.get("asymmetrical")));
@@ -323,6 +335,12 @@ public class ProductFunctionAnalysisService {
         normalized.put("imageRightSleeve", text(source.get("imageRightSleeve"), 100));
         normalized.put("wearerLeftSleeve", text(source.get("wearerLeftSleeve"), 100));
         normalized.put("wearerRightSleeve", text(source.get("wearerRightSleeve"), 100));
+        Object visibleSleeveCount = source.get("visibleSleeveCount");
+        if (visibleSleeveCount instanceof Number number) {
+            normalized.put("visibleSleeveCount", Math.max(0, Math.min(4, number.intValue())));
+        }
+        normalized.put("openingInventory", stringList(source.get("openingInventory"), 8, 140));
+        normalized.put("seamConnections", stringList(source.get("seamConnections"), 10, 140));
         normalized.put("necklinePath", text(source.get("necklinePath"), 220));
         normalized.put("supportElements", stringList(source.get("supportElements"), 8, 140));
         normalized.put("viewpointProjectionRule", text(source.get("viewpointProjectionRule"), 240));
@@ -351,6 +369,9 @@ public class ProductFunctionAnalysisService {
         append(block, "原图画面右侧袖", text(value.get("imageRightSleeve"), 60));
         append(block, "穿着者左袖", text(value.get("wearerLeftSleeve"), 60));
         append(block, "穿着者右袖", text(value.get("wearerRightSleeve"), 60));
+        append(block, "原图可见袖子总数", text(value.get("visibleSleeveCount"), 20));
+        append(block, "开口清单", join(value.get("openingInventory"), 220));
+        append(block, "缝线连接清单", join(value.get("seamConnections"), 260));
         append(block, "领口路径", text(value.get("necklinePath"), 180));
         append(block, "肩带与支撑", join(value.get("supportElements"), 180));
         append(block, "视角投影", text(value.get("viewpointProjectionRule"), 200));

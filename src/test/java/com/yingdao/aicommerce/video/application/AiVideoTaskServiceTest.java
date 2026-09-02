@@ -52,4 +52,15 @@ class AiVideoTaskServiceTest {
         when(task.isUseScriptReferenceVideo()).thenReturn(false);
         assertFalse(AiVideoTaskService.isScriptVideoReplacement(task));
     }
+
+    @Test
+    void gridStoryboardSafetyPromptKeepsTheGridAsInputButRemovesItsLayoutFromOutput() {
+        String result = AiVideoGenerationService.gridStoryboardSafetyPrompt("原提示词");
+
+        assertTrue(result.contains("图2是3×3九宫格时间索引表"));
+        assertTrue(result.contains("零输出权限"));
+        assertTrue(result.contains("严禁整张复现、局部复现"));
+        assertTrue(result.contains("恰好两条手臂和两只手"));
+        assertTrue(result.endsWith("原提示词"));
+    }
 }
