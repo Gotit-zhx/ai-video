@@ -1,5 +1,6 @@
 package com.yingdao.aicommerce.video.application;
 
+import com.yingdao.aicommerce.video.domain.AiVideoTask;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -8,8 +9,11 @@ import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class AiVideoTaskServiceTest {
 
@@ -58,5 +62,21 @@ class AiVideoTaskServiceTest {
         assertTrue(oneHand.contains("不新增第二只手"));
         assertTrue(genericHand.contains("只出现一只自然手"));
         assertTrue(twoHands.contains("最多出现两只自然手"));
+    }
+
+    @Test
+    void closeFramingLockKeepsNearCompositionWithoutForcingHiddenHands() {
+        AiVideoTask task = mock(AiVideoTask.class);
+        when(task.getGenerationMode()).thenReturn("MODEL_WEAR");
+        StringBuilder prompt = new StringBuilder();
+
+        AiVideoTaskService.appendCloseFramingLock(prompt, task);
+
+        String result = prompt.toString();
+        assertTrue(result.contains("头顶至大腿中下段"));
+        assertTrue(result.contains("脸从发际线到下巴的高度在每一帧都不得低于画面高度 15%"));
+        assertTrue(result.contains("被遮挡或出画的肢体无需补出"));
+        assertTrue(result.contains("禁止远景、全景、完整全身"));
+        assertFalse(result.contains("动作所需双手必须清楚"));
     }
 }

@@ -24,8 +24,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -52,6 +55,28 @@ class AiVideoImageProcessorTest {
                 "从最终 4K 九宫格第 01 格自动裁切", "model");
 
         assertFalse(AiVideoImageProcessor.isLegacyModelFirstFrame(asset));
+    }
+
+    @Test
+    void keepsLegacyAssetWhenFramingValidatorIsTemporarilyUnavailable() throws Exception {
+        ProductFunctionAnalysisService validationService = mock(ProductFunctionAnalysisService.class);
+        AiVideoImageProcessor processor = processor(tempDirectory, validationService);
+        AiVideoTask task = mock(AiVideoTask.class);
+        AiVideoTaskItem item = mock(AiVideoTaskItem.class);
+        Path assetPath = tempDirectory.resolve("legacy-model.png");
+        Files.write(assetPath, new byte[] {1, 2, 3});
+        AiVideoTaskAsset asset = new AiVideoTaskAsset("org", "task", "item",
+                "MODEL_IMAGE", null, assetPath.toString(), "image/png", 3,
+                "旧提示词", "image-model");
+        when(validationService.validateGenerated(any(), any(), anyString(), any(), anyString()))
+                .thenThrow(new IllegalStateException("服装结构复核暂时失败：响应超时"));
+
+        AiVideoTaskAsset result = processor.recheckLegacyFramingAsset(
+                task, item, asset, "MODEL_IMAGE");
+
+        assertSame(asset, result);
+        verify(validationService, times(1))
+                .validateGenerated(eq(task), eq(item), eq("MODEL_IMAGE"), any(byte[].class), eq("image/png"));
     }
 
     @Test
@@ -204,12 +229,33 @@ class AiVideoImageProcessorTest {
     }
 
     private static AiVideoImageProcessor processor(Path storageRoot) {
-        return processor(storageRoot,
+        return processor(
+                storageRoot,
+                mock(ProductFunctionAnalysisService.class),
                 mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class));
     }
 
     private static AiVideoImageProcessor processor(
             Path storageRoot,
+            ProductFunctionAnalysisService validationService) {
+        return processor(
+                storageRoot,
+                validationService,
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class));
+    }
+
+    private static AiVideoImageProcessor processor(
+            Path storageRoot,
+            com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper pendingMapper) {
+        return processor(
+                storageRoot,
+                mock(ProductFunctionAnalysisService.class),
+                pendingMapper);
+    }
+
+    private static AiVideoImageProcessor processor(
+            Path storageRoot,
+            ProductFunctionAnalysisService validationService,
             com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper pendingMapper) {
         return new AiVideoImageProcessor(
                 mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper.class),
@@ -219,7 +265,7 @@ class AiVideoImageProcessorTest {
                 mock(com.yingdao.aicommerce.video.mapper.VideoScriptMapper.class),
                 mock(com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper.class),
                 mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class),
-                mock(ProductFunctionAnalysisService.class),
+                validationService,
                 mock(AiVideoGenerationService.class),
                 new ObjectMapper(), Runnable::run, Runnable::run,
                 mock(org.springframework.beans.factory.ObjectProvider.class),
@@ -230,6 +276,7 @@ class AiVideoImageProcessorTest {
         return storageRoot.resolve(task.getOrganizationId()).resolve(task.getId())
                 .resolve(item.getId()).resolve("private-validation");
     }
+
     @Test
     void cropsTopLeftStoryboardCellAsFirstFrame() {
         BufferedImage storyboard = new BufferedImage(300, 600, BufferedImage.TYPE_INT_RGB);
@@ -280,6 +327,28 @@ class AiVideoImageProcessorTest {
         assertFalse(AiVideoImageProcessor.PRODUCT_REAL_FRAME_BACKGROUND_REQUIREMENT.contains("参考图1"));
         assertTrue(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("参考图2逐格核对"));
         assertFalse(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("参考图1逐格核对"));
+        assertTrue(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("景别和主体尺度不继承原远景"));
+        assertTrue(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("商品近景"));
+        assertFalse(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("尺度、景别与光影阶段必须一一对应"));
+    }
+
+    @Test
+    void perShotFramingDisablesDistantScaleAndPullAwayInstructions() {
+        String modelFraming = AiVideoImageProcessor.imageFramingDirective("MODEL_WEAR");
+        String productFraming = AiVideoImageProcessor.imageFramingDirective("PRODUCT_ONLY");
+
+        assertTrue(modelFraming.contains("头顶至大腿中下段"));
+        assertTrue(modelFraming.contains("脸高至少15%"));
+        assertTrue(modelFraming.contains("禁止远景、全身、脚部入镜和拉远"));
+        assertTrue(productFraming.contains("商品近景"));
+        assertTrue(productFraming.contains("主体填满主要画面"));
+
+        String pullAway = AiVideoImageProcessor.normalizedImageCameraMovement("镜头缓慢后退并拉远");
+        String lateral = AiVideoImageProcessor.normalizedImageCameraMovement("轻微向右横移");
+        assertTrue(pullAway.contains("已禁用"));
+        assertTrue(pullAway.contains("近景范围内"));
+        assertTrue(lateral.contains("不改变主体近景尺度"));
+        assertTrue(lateral.contains("轻微向右横移"));
     }
 
     @Test
