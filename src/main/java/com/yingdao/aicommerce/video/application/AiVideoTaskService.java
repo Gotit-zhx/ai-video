@@ -797,6 +797,7 @@ public class AiVideoTaskService {
                 .eq(AiVideoTaskAsset::getItemId, itemId)
                 .eq(AiVideoTaskAsset::getAssetType, primaryAssetType));
         if (modelCount == 0) throw new BusinessException(HttpStatus.CONFLICT, "请先生成主展示图");
+        processor.resetTopologyRetryState(task, item, List.of("STORYBOARD_GRID"));
         List<AiVideoTaskAsset> storyboards = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, itemId)
                 .in(AiVideoTaskAsset::getAssetType, List.of("STORYBOARD_GRID", "STORYBOARD_GUIDE", "STORYBOARD_FIRST_FRAME")));
@@ -819,6 +820,7 @@ public class AiVideoTaskService {
                 .eq(AiVideoTaskItem::getOrganizationId, principal.organizationId()));
         if (item == null) throw new BusinessException(HttpStatus.NOT_FOUND, "商品素材不存在");
         String primaryAssetType = "MODEL_WEAR".equals(task.getGenerationMode()) ? "MODEL_IMAGE" : "PRODUCT_SCENE_IMAGE";
+        processor.resetTopologyRetryState(task, item, List.of(primaryAssetType, "STORYBOARD_GRID"));
         List<AiVideoTaskAsset> generatedAssets = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, itemId)
                 .in(AiVideoTaskAsset::getAssetType, List.of(primaryAssetType, "STORYBOARD_GRID", "STORYBOARD_GUIDE", "STORYBOARD_FIRST_FRAME")));
