@@ -362,9 +362,12 @@ public class AiVideoImageProcessor {
     }
 
     static boolean retryableImageTransientFailure(String message) {
-        if (retryableImageConcurrencyFailure(message)) return true;
         if (message == null || message.isBlank()) return false;
         String value = message.toLowerCase();
+        // A validator outage is fail-open inside the bounded generation method and must never
+        // re-enter the scheduled image pipeline, even if its nested cause mentions 429 or policy.
+        if (value.contains("服装结构复核") || value.contains("garment validation")) return false;
+        if (retryableImageConcurrencyFailure(message)) return true;
         if (value.contains("模型已生成图片")
                 && value.contains("结果地址已保存")
                 && value.contains("下载失败")) return true;
@@ -375,8 +378,6 @@ public class AiVideoImageProcessor {
                 || value.contains("该提示可能违反了我们的内容政策")
                 || value.contains("该提示可能违反我们的内容政策")
                 || value.contains("content policy") && value.contains("no asset")) return true;
-        // A validator outage must not restart the image pipeline or consume more redraws.
-        if (value.contains("服装结构复核") || value.contains("garment validation")) return false;
         if (privateValidationRetryPending(message)) return true;
         if (value.contains("参考图片获取失败")
                 || value.contains("参考图片读取失败")
