@@ -326,6 +326,8 @@ class AiVideoImageProcessorTest {
         assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
                 "Garment validation unavailable: unexpected end of file"));
         assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
+                "服装结构复核暂时失败：image generation produced no asset；content policy；429"));
+        assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
                 "版权限制：素材包含受版权保护的角色"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("FAILED",
                 "模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址"));
