@@ -1398,7 +1398,7 @@ public class AiVideoTaskService {
 
     private String buildStoryboardAnimationPrompt(AiVideoTask task, String garmentName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：V11.5 · 单画面与证据优先精简版\n\n");
+        prompt.append("提示词版本：V11.6 · 近景证据优先精简版\n\n");
         prompt.append("【参考图职责】\n");
         prompt.append("图1：第01格单画面首帧。人物身份、脸、发型、身材和非商品穿搭在全片保持一致；只有姿势、手持状态和背景仅约束 t=0。\n");
         prompt.append("图2：完整3×3时间索引，按左到右、上到下读取01→09。采用每格的动作、场景、构图意图和机位方向，但把对应内容重建为铺满画布的单画面；远景、全身和拉远信息由中近景规则覆盖，九宫格版式本身不是输出内容。\n");
@@ -1650,11 +1650,12 @@ public class AiVideoTaskService {
         }
         if (current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")
                 || current.contains("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定")
-                || current.contains("提示词版本：V11.5 · 单画面与证据优先精简版")) {
+                || current.contains("提示词版本：V11.6 · 近景证据优先精简版")) {
             return false;
         }
         return (current.contains("提示词版本：DIRECT_DETAIL_V3")
                 || current.contains("提示词版本：PRODUCT_DETAIL_V3")
+                || current.contains("提示词版本：V11.5 · 单画面与证据优先精简版")
                 || current.contains("提示词版本：V11.1 · V11 恢复版与局部帧保持")
                 || current.contains("提示词版本：V11.3 · 全片中近景与局部帧保持")
                 || current.contains("提示词版本：V11.4 · 独立分镜与人体完整性")
@@ -1762,9 +1763,7 @@ public class AiVideoTaskService {
     private String shotHandDirective(AiVideoTask task, String action, String scene) {
         String context = (textValue(action) + " " + textValue(scene)).toLowerCase();
         boolean explicitlyNoHand = containsAny(context, "无人手", "无手部", "不出现手", "没有手", "纯静物", "平铺", "仅商品", "no hand", "hands-free");
-        boolean requiresHand = !explicitlyNoHand && containsAny(context,
-                "手持", "拿取", "拿起", "拿着", "握住", "抓住", "托住", "捏住", "摆放", "放下", "拆封", "开箱", "双手", "单手", "手掌", "手指",
-                "hold", "holding", "pick up", "grip", "handheld", "unbox");
+        boolean requiresHand = !explicitlyNoHand && handInteractionRequired(context);
         if ("MODEL_WEAR".equals(task.getGenerationMode())) {
             if (explicitlyNoHand) {
                 return "按本镜头构图让手自然遮挡或出画；不为凑齐数量补手，也不得从边缘新增手掌";
@@ -1783,9 +1782,7 @@ public class AiVideoTaskService {
         }
         boolean twoHands = containsAny(context, "双手", "两手", "一双手", "both hands", "two hands");
         boolean oneHand = containsAny(context, "单手", "一只手", "one hand");
-        boolean requiresHand = containsAny(context,
-                "手持", "拿取", "拿起", "拿着", "握住", "抓住", "托住", "捏住", "摆放", "放下", "拆封", "开箱", "手掌", "手指",
-                "hold", "holding", "pick up", "grip", "handheld", "unbox");
+        boolean requiresHand = handInteractionRequired(context);
         if (twoHands) {
             return "本镜头最多出现两只自然手，按脚本完成双手动作；两只手各自连接唯一手臂，方向和接触位置正确，不延续到其他镜头";
         }
@@ -1793,6 +1790,18 @@ public class AiVideoTaskService {
             return "本镜头只出现一只自然手完成动作；该手连接唯一手臂，方向和接触位置正确，不新增第二只手，也不延续到其他镜头";
         }
         return "本镜头不出现人物、手臂、手掌或手指，只保留商品及脚本要求的承托关系";
+    }
+
+    static boolean handInteractionRequired(String context) {
+        String value = context == null ? "" : context.toLowerCase();
+        boolean explicitPhysicalAction = containsAny(value,
+                "拿取", "拿起", "拿着", "握住", "抓住", "托住", "捏住", "摆放", "放下", "拆封", "开箱",
+                "双手", "单手", "手掌", "手指", "hold", "holding", "pick up", "grip", "unbox");
+        if (explicitPhysicalAction) return true;
+        boolean handheldCamera = containsAny(value,
+                "手持镜头", "手持拍摄", "手持摄影", "手持相机", "手持机位", "手持运镜",
+                "handheld camera", "hand-held camera", "handheld shot", "handheld filming", "handheld footage");
+        return !handheldCamera && containsAny(value, "手持", "handheld");
     }
 
     private String fabricGripPhysicsDirective(String action, String scene) {

@@ -396,6 +396,28 @@ class AiVideoImageProcessorTest {
         assertFalse(AiVideoImageProcessor.PRODUCT_REAL_FRAME_BACKGROUND_REQUIREMENT.contains("参考图1"));
         assertTrue(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("参考图2逐格核对"));
         assertFalse(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("参考图1逐格核对"));
+        assertTrue(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("景别和主体尺度不继承原远景"));
+        assertTrue(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("商品近景"));
+        assertFalse(AiVideoImageProcessor.PRODUCT_REAL_FRAME_OUTPUT_CHECK.contains("尺度、景别与光影阶段必须一一对应"));
+    }
+
+    @Test
+    void perShotFramingDisablesDistantScaleAndPullAwayInstructions() {
+        String modelFraming = AiVideoImageProcessor.imageFramingDirective("MODEL_WEAR");
+        String productFraming = AiVideoImageProcessor.imageFramingDirective("PRODUCT_ONLY");
+
+        assertTrue(modelFraming.contains("头顶至大腿中下段"));
+        assertTrue(modelFraming.contains("脸高至少15%"));
+        assertTrue(modelFraming.contains("禁止远景、全身、脚部入镜和拉远"));
+        assertTrue(productFraming.contains("商品近景"));
+        assertTrue(productFraming.contains("主体填满主要画面"));
+
+        String pullAway = AiVideoImageProcessor.normalizedImageCameraMovement("镜头缓慢后退并拉远");
+        String lateral = AiVideoImageProcessor.normalizedImageCameraMovement("轻微向右横移");
+        assertTrue(pullAway.contains("已禁用"));
+        assertTrue(pullAway.contains("近景范围内"));
+        assertTrue(lateral.contains("不改变主体近景尺度"));
+        assertTrue(lateral.contains("轻微向右横移"));
     }
 
     @Test
