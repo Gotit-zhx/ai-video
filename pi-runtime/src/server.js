@@ -309,11 +309,12 @@ const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `你是服装生成结果的商品身
 只返回合法、紧凑的 JSON，不要 Markdown，不要解释推理过程，不要额外文字：
 {
   "valid": false,
+  "violationCount": 1,
   "violations": ["第几格/身体侧/部位：错误"],
   "correctionPrompt": "一句可执行纠错指令",
   "confidence": 0.0
 }
-violations 最多 3 条，每条最多 30 个汉字；构图错误必须注明 MODEL_IMAGE 或具体格号。correctionPrompt 最多 80 个汉字，只保留最关键的结构和构图修正。valid=true 时 violations 必须为空数组且 correctionPrompt 为空字符串。不得因为小段印花文字的轻微变形判失败，但主图案类别、位置、面积或商品识别性明显改变时必须判失败。`;
+violationCount 必须统计整张候选图中所有相互独立的问题总数；每个格号、身体侧、商品部位、构图或人体错误分别计数，不得把多个问题合并成一个。violations 只列最关键的 3 条，每条最多 30 个汉字；即使问题总数超过 3，也必须在 violationCount 中完整计数。构图错误须注明 MODEL_IMAGE 或具体格号。correctionPrompt 最多 80 个汉字，只保留最关键的结构和构图修正。valid=false 时 violationCount 必须大于 0；valid=true 时 violationCount=0、violations 为空数组且 correctionPrompt 为空字符串。不得因为小段印花文字的轻微变形判失败，但主图案类别、位置、面积或商品识别性明显改变时必须判失败。`;
 
 const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策划器。输入可能是一名业务人员写的一整段自然语言需求，也可能包含按顺序排列的多张真实参考图片。你要理解真实营销意图，将其整理成可直接制作的固定 9 个分镜。
 只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字：

@@ -66,6 +66,7 @@ public class AiVideoImageProcessor {
     private static final Logger log = LoggerFactory.getLogger(AiVideoImageProcessor.class);
     private static final int MAX_ITEM_RECOVERY_CONCURRENCY = 64;
     static final int MAX_TOPOLOGY_REDRAWS = 3;
+    static final int MAX_TOPOLOGY_GENERATIONS = 1 + MAX_TOPOLOGY_REDRAWS;
     private static final String CLOSE_FRAMING_GATE_VERSION = "CLOSE_FRAMING_GATE_V1";
     private static final String PORTRAIT_4K_SIZE = "2160x3840";
     private static final String PORTRAIT_4K_REQUIREMENT = "最终必须输出实际像素为 2160×3840 的 9:16 竖屏 4K 图片，"
@@ -780,8 +781,9 @@ public class AiVideoImageProcessor {
             PiArtifact bestRejectedArtifact = null;
             String bestRejectedPrompt = null;
             int bestViolationCount = Integer.MAX_VALUE;
-            int generationLimit = 1 + MAX_TOPOLOGY_REDRAWS;
-            for (int generationAttempt = 1; generationAttempt <= generationLimit; generationAttempt++) {
+            for (int generationAttempt = 1;
+                 generationAttempt <= MAX_TOPOLOGY_GENERATIONS;
+                 generationAttempt++) {
                 String prompt = generationAttempt == 1
                         ? basePrompt
                         : topologyCorrectionPrompt(basePrompt, previousValidation);
@@ -818,14 +820,14 @@ public class AiVideoImageProcessor {
                 discardTopologyCandidate(task, item, assetType);
                 clearPendingImageResult(item.getId(), assetType, imageRequestHash(prompt, references));
                 previousValidation = validation;
-                int violationCount = validation.violations() == null
-                        ? Integer.MAX_VALUE : validation.violations().size();
-                if (bestRejectedArtifact == null || violationCount <= bestViolationCount) {
+                int violationCount = topologyViolationCount(validation);
+                if (bestRejectedArtifact == null
+                        || preferNewTopologyCandidate(bestViolationCount, violationCount)) {
                     bestRejectedArtifact = artifact;
                     bestRejectedPrompt = prompt;
                     bestViolationCount = violationCount;
                 }
-                if (generationAttempt == generationLimit) {
+                if (generationAttempt == MAX_TOPOLOGY_GENERATIONS) {
                     List<String> finalViolations = validation.violations() == null
                             ? List.of() : validation.violations();
                     log.warn("Garment validation still rejected {} for item {} after {} redraws; "
@@ -919,16 +921,31 @@ public class AiVideoImageProcessor {
         String correction = validation == null || validation.correctionPrompt() == null
                 ? "" : validation.correctionPrompt().trim();
         StringBuilder prompt = new StringBuilder(basePrompt).append("\n\n")
-                .append("【一次定向纠错】上一候选图未通过商品结构或中近景构图复核。")
-                .append("重新生成完整图片，优先修正下面的失败项；其余格仍按原提示从参考图重建，不要求复制上一候选图。")
-                .append("所有失败格必须重新对照参考图1，恢复同一件商品的领口、袖型、印花/Logo、前后朝向和穿着方式，")
-                .append("重新清点参考图1左右两侧的袖筒、袖口、袖片、领口开口和缝线连接，不能沿用上一候选的品类猜测；斜领或露肩不等于无袖，参考图两侧都有袖口时必须恢复两只袖子。")
-                .append("并把相机推进到头顶至膝盖上方的中近景，保证脸高不低于画面高度 15%；禁止远景、全身、露出膝盖以下或拉远。")
-                .append("不得用相似款、无 Logo 款或镜像错误代替。\n")
+                .append("【定向纠错重绘】上一候选图未通过复核，请完整重生成一张图片。")
+                .append("优先修正下面的失败项；其他内容继续遵循原提示并从参考图重建，不复制上一候选，也不假设能够只改局部。")
+                .append("不要重新分类，直接按原提示指定的用户上传商品母版逐像素核对：分别清点画面左侧和右侧的袖筒、袖口、袖片，")
+                .append("并核对领口开口路径及每片布料的缝线连接。斜肩或露肩只代表领口路径不对称，不等于一侧无袖；")
+                .append("参考图两侧都有袖片和袖口证据时，生成结果必须保留两只袖子。")
+                .append("可见范围服从原提示的构图要求；不得为凑数量新增或复制肢体，每只可见手只能连接一条自然手臂。")
+                .append("如输出九宫格，仍须生成一张完整九宫格图片，并让每个商品出镜格保持同一商品结构。\n")
                 .append("复核失败项：")
                 .append(violations.isEmpty() ? "商品结构或标识未与参考图一致" : String.join("；", violations));
-        if (!correction.isBlank()) prompt.append("\n复核模型纠正要求：").append(correction);
+        if (!correction.isBlank()) {
+            prompt.append("\n复核模型纠正要求（仅在与商品母版可见像素和原提示不冲突时执行）：")
+                    .append(correction);
+        }
         return prompt.toString();
+    }
+
+    static int topologyViolationCount(ProductFunctionAnalysisService.GarmentValidation validation) {
+        if (validation == null || validation.valid()) return 0;
+        if (validation.violationCount() > 0) return validation.violationCount();
+        List<String> violations = validation.violations();
+        return violations == null || violations.isEmpty() ? Integer.MAX_VALUE : violations.size();
+    }
+
+    static boolean preferNewTopologyCandidate(int currentBestViolationCount, int newViolationCount) {
+        return newViolationCount <= currentBestViolationCount;
     }
 
     private ReferenceImage firstScriptFrameReference(AiVideoTask task) {

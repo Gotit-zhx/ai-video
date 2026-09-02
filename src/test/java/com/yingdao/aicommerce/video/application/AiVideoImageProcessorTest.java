@@ -340,23 +340,48 @@ class AiVideoImageProcessorTest {
         String prompt = AiVideoImageProcessor.topologyCorrectionPrompt("原始九宫格提示", validation);
 
         assertTrue(prompt.startsWith("原始九宫格提示"));
-        assertTrue(prompt.contains("一次定向纠错"));
+        assertTrue(prompt.contains("定向纠错重绘"));
+        assertTrue(prompt.contains("完整重生成一张图片"));
         assertTrue(prompt.contains("优先修正下面的失败项"));
-        assertTrue(prompt.contains("不要求复制上一候选图"));
+        assertTrue(prompt.contains("不复制上一候选"));
+        assertTrue(prompt.contains("不假设能够只改局部"));
         assertFalse(prompt.contains("只纠正下面指出的失败分镜"));
+        assertFalse(prompt.contains("只修改失败格"));
         assertTrue(prompt.contains("第03格 Logo 缺失"));
         assertTrue(prompt.contains("第08格前后朝向不一致"));
         assertTrue(prompt.contains("第03格补回左胸橙色圆环 Logo"));
-        assertTrue(prompt.contains("参考图1"));
-        assertTrue(prompt.contains("商品结构或中近景构图复核"));
-        assertTrue(prompt.contains("脸高不低于画面高度 15%"));
-        assertTrue(prompt.contains("禁止远景、全身"));
-        assertTrue(prompt.contains("不得用相似款、无 Logo 款或镜像错误代替"));
+        assertTrue(prompt.contains("用户上传商品母版"));
+        assertTrue(prompt.contains("不要重新分类"));
+        assertTrue(prompt.contains("斜肩或露肩只代表领口路径不对称"));
+        assertTrue(prompt.contains("必须保留两只袖子"));
+        assertTrue(prompt.contains("不得为凑数量新增或复制肢体"));
+        assertTrue(prompt.contains("一张完整九宫格图片"));
+        assertTrue(prompt.contains("每个商品出镜格"));
+        assertTrue(prompt.contains("仅在与商品母版可见像素和原提示不冲突时执行"));
     }
 
     @Test
     void topologyRedrawsAreBoundedToThreeBeforeContinuing() {
         assertEquals(3, AiVideoImageProcessor.MAX_TOPOLOGY_REDRAWS);
+        assertEquals(4, AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS);
+    }
+
+    @Test
+    void topologyCandidateRankingUsesTotalViolationsAndRejectsMissingDetails() {
+        var summarized = new ProductFunctionAnalysisService.GarmentValidation(false, "",
+                java.util.List.of("问题一", "问题二", "问题三"), 0.9, 7);
+        var missingDetails = new ProductFunctionAnalysisService.GarmentValidation(false, "",
+                java.util.List.of(), 0.1, 0);
+
+        assertEquals(7, AiVideoImageProcessor.topologyViolationCount(summarized));
+        assertEquals(Integer.MAX_VALUE, AiVideoImageProcessor.topologyViolationCount(missingDetails));
+        assertTrue(AiVideoImageProcessor.preferNewTopologyCandidate(7, 2));
+        assertTrue(AiVideoImageProcessor.preferNewTopologyCandidate(2, 2));
+        assertFalse(AiVideoImageProcessor.preferNewTopologyCandidate(2, 3));
+        assertEquals(9, ProductFunctionAnalysisService.validationViolationCount(
+                9, false, java.util.List.of("只列最关键问题")));
+        assertEquals(Integer.MAX_VALUE, ProductFunctionAnalysisService.validationViolationCount(
+                0, false, java.util.List.of()));
     }
 
     @Test
