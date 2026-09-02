@@ -158,6 +158,28 @@ class AiVideoImageProcessorTest {
                 .reserve("首次提示").releaseReservation();
         assertEquals(0, failedWithoutCandidate.attemptsReserved());
         assertTrue(failedWithoutCandidate.reservedPrompt().isBlank());
+
+        var unavailableSavedResult = AiVideoImageProcessor.reconcileTopologyGenerationFailure(
+                AiVideoImageProcessor.TopologyRetryState.initial(false, "").reserve("首次提示"),
+                true, false, false, true);
+        assertEquals(1, unavailableSavedResult.attemptsReserved());
+        assertTrue(unavailableSavedResult.reservedPrompt().isBlank());
+        assertTrue(unavailableSavedResult.canGenerate());
+
+        var unavailableFourthResult = AiVideoImageProcessor.reconcileTopologyGenerationFailure(
+                new AiVideoImageProcessor.TopologyRetryState(
+                        AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS, "第四次提示", validation, false),
+                true, false, false, true);
+        assertEquals(AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS,
+                unavailableFourthResult.attemptsReserved());
+        assertTrue(unavailableFourthResult.reservedPrompt().isBlank());
+        assertFalse(unavailableFourthResult.canGenerate());
+
+        var requestNeverProducedAResult = AiVideoImageProcessor.reconcileTopologyGenerationFailure(
+                AiVideoImageProcessor.TopologyRetryState.initial(false, "").reserve("首次提示"),
+                false, false, false, true);
+        assertEquals(0, requestNeverProducedAResult.attemptsReserved());
+        assertTrue(requestNeverProducedAResult.reservedPrompt().isBlank());
     }
 
     @Test
@@ -600,6 +622,55 @@ class AiVideoImageProcessorTest {
                 "Image generation failed: garment validation unavailable; content policy; 429"));
         assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "视频厂商并发限制：Concurrency limit exceeded for user, please retry later"));
+    }
+
+    @Test
+    void taskLevelFailuresWithoutFailedItemsRetryOnlyWhenTransient() {
+        assertTrue(AiVideoImageProcessor.terminalTaskFailureWithoutFailedItem(
+                "FAILED", "图片模型连接已失效", false));
+        assertTrue(AiVideoImageProcessor.terminalTaskFailureWithoutFailedItem(
+                "FAILED", "冻结脚本不是完整 9 个分镜", false));
+        assertTrue(AiVideoImageProcessor.terminalTaskFailureWithoutFailedItem(
+                "FAILED", null, false));
+        assertFalse(AiVideoImageProcessor.terminalTaskFailureWithoutFailedItem(
+                "FAILED", "fetch failed", false));
+        assertFalse(AiVideoImageProcessor.terminalTaskFailureWithoutFailedItem(
+                "FAILED", "网络超时：图片模型长时间未返回响应", false));
+        assertFalse(AiVideoImageProcessor.terminalTaskFailureWithoutFailedItem(
+                "IMAGE_READY", "图片模型连接已失效", false));
+        assertFalse(AiVideoImageProcessor.terminalTaskFailureWithoutFailedItem(
+                "FAILED", "图片模型连接已失效", true));
+    }
+
+    @Test
+    void replacesOnlyPermanentPendingResultUrls() {
+        var missing = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                "org-1", "task-1", "item-1", "MODEL_IMAGE", "hash",
+                "https://provider.invalid/missing", "image/png", "model-1", "url", null);
+        missing.downloadFailed("RESULT_DOWNLOAD_HTTP_404 [upstream=404]");
+        assertTrue(AiVideoImageProcessor.replaceUnavailablePendingImage(missing));
+
+        var unauthorized = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                "org-1", "task-1", "item-2", "MODEL_IMAGE", "hash",
+                "https://provider.invalid/private", "image/png", "model-1", "url", null);
+        unauthorized.downloadFailed("RESULT_DOWNLOAD_HTTP_403 [upstream=403]");
+        assertFalse(AiVideoImageProcessor.replaceUnavailablePendingImage(unauthorized));
+        unauthorized.downloadFailed("RESULT_DOWNLOAD_HTTP_403 [upstream=403]");
+        assertTrue(AiVideoImageProcessor.replaceUnavailablePendingImage(unauthorized));
+
+        var gateway = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                "org-1", "task-1", "item-3", "MODEL_IMAGE", "hash",
+                "https://provider.invalid/gateway", "image/png", "model-1", "url", null);
+        for (int attempt = 0; attempt < 4; attempt++) {
+            gateway.downloadFailed("RESULT_DOWNLOAD_HTTP_502 [upstream=502]");
+        }
+        assertFalse(AiVideoImageProcessor.replaceUnavailablePendingImage(gateway));
+
+        var timeout = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                "org-1", "task-1", "item-4", "MODEL_IMAGE", "hash",
+                "https://provider.invalid/slow", "image/png", "model-1", "url", null);
+        for (int attempt = 0; attempt < 4; attempt++) timeout.downloadFailed("RESULT_DOWNLOAD_TIMEOUT");
+        assertFalse(AiVideoImageProcessor.replaceUnavailablePendingImage(timeout));
     }
 
     @Test

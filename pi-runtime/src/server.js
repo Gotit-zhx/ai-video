@@ -629,24 +629,38 @@ function extensionForMime(mimeType) {
   return "png";
 }
 
-async function responseImageBytes(item, apiKey) {
+function resultDownloadFailure(error) {
+  const upstreamStatus = Number(error?.status || 0);
+  const causeCode = String(error?.cause?.code || error?.code || "");
+  if (upstreamStatus > 0) {
+    return { upstreamStatus, failureCode: `RESULT_DOWNLOAD_HTTP_${upstreamStatus}` };
+  }
+  if (/timeout|timed out|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|ETIMEDOUT/i
+      .test(`${String(error?.message || "")} ${causeCode}`)) {
+    return { upstreamStatus: 0, failureCode: "RESULT_DOWNLOAD_TIMEOUT" };
+  }
+  return { upstreamStatus: 0, failureCode: "RESULT_DOWNLOAD_NETWORK_ERROR" };
+}
+
+async function responseImageBytes(item, apiKey, options = {}) {
   const encoded = String(item?.b64_json || item?.b64Json || item?.image_base64 || "");
   if (encoded) return Buffer.from(encoded.replace(/^data:image\/[^;]+;base64,/i, ""), "base64");
   const url = String(item?.url || "").trim();
   if (!/^https?:\/\//i.test(url)) throw new Error("图片模型没有返回图片数据");
-  const retryDelays = [1_000, 3_000, 8_000];
+  const retryDelays = Array.isArray(options.retryDelays) ? options.retryDelays : [1_000, 3_000, 8_000];
+  const requestTimeoutMs = Math.max(5_000, Number(options.timeoutMs || 120_000));
   let lastError;
   for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
     try {
       let result = await fetch(url, {
         dispatcher: IMAGE_FETCH_DISPATCHER,
-        signal: AbortSignal.timeout(120_000)
+        signal: AbortSignal.timeout(requestTimeoutMs)
       });
       if ((result.status === 401 || result.status === 403) && apiKey) {
         result = await fetch(url, {
           headers: { Authorization: `Bearer ${apiKey}` },
           dispatcher: IMAGE_FETCH_DISPATCHER,
-          signal: AbortSignal.timeout(120_000)
+          signal: AbortSignal.timeout(requestTimeoutMs)
         });
       }
       if (!result.ok) {
@@ -2331,12 +2345,20 @@ async function handlePlatformImageDownload(request, response) {
   if (!/^https?:\/\//i.test(resultUrl)) throw new Error("结果图片地址无效");
   let bytes;
   try {
-    bytes = await responseImageBytes({ url: resultUrl }, String(body?.model?.apiKey || ""));
+    // Persisted-result recovery is scheduled by the platform. Keep each attempt singular and
+    // bounded so one stale provider URL cannot occupy a worker for several minutes.
+    bytes = await responseImageBytes({ url: resultUrl }, String(body?.model?.apiKey || ""), {
+      retryDelays: [],
+      timeoutMs: 60_000
+    });
   } catch (error) {
+    const failure = resultDownloadFailure(error);
     throw annotateImageFailure(error, {
       requestState: "COMPLETED_RESPONSE_RECEIVED",
       retrySafe: false,
       resultUrl,
+      upstreamStatus: failure.upstreamStatus,
+      failureCode: failure.failureCode,
       resultDownloadRetryCount: Number(error?.resultDownloadRetryCount || 0)
     });
   }
@@ -2406,6 +2428,10 @@ const server = http.createServer(async (request, response) => {
       payload.requestState = String(error.requestState);
       payload.retrySafe = Boolean(error.retrySafe);
       payload.safeRetryCount = Number(error.safeRetryCount || 0);
+    }
+    if (error?.failureCode) payload.failureCode = String(error.failureCode);
+    if (Number.isFinite(Number(error?.upstreamStatus))) {
+      payload.upstreamStatus = Number(error.upstreamStatus);
     }
     if (error?.resultUrl) payload.resultUrl = String(error.resultUrl);
     json(response, Number(error?.statusCode || 502), payload);

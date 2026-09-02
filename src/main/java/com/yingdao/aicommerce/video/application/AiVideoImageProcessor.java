@@ -24,6 +24,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -212,15 +213,27 @@ public class AiVideoImageProcessor {
                         .eq(AiVideoTaskItem::getTaskId, task.getId()));
                 List<AiVideoTaskItem> failedItems = items.stream()
                         .filter(item -> "FAILED".equals(item.getStatus())).toList();
+                boolean hasFailedItem = !failedItems.isEmpty();
+                boolean hasTerminalTaskFailure = terminalTaskFailureWithoutFailedItem(
+                        task.getStatus(), task.getErrorMessage(), hasFailedItem);
+                boolean hasRetryableTaskFailure = "FAILED".equals(task.getStatus())
+                        && !hasFailedItem && !hasTerminalTaskFailure;
                 boolean hasTerminalFailure = failedItems.stream()
-                        .anyMatch(item -> !retryableImageTransientFailure(item.getErrorMessage()));
+                        .anyMatch(item -> !retryableImageTransientFailure(item.getErrorMessage()))
+                        || hasTerminalTaskFailure;
                 boolean hasRetryableFailure = failedItems.stream()
-                        .anyMatch(item -> retryableImageTransientFailure(item.getErrorMessage()));
+                        .anyMatch(item -> retryableImageTransientFailure(item.getErrorMessage()))
+                        || hasRetryableTaskFailure;
                 boolean retryDelayElapsed = failedItems.stream()
                         .filter(item -> retryableImageTransientFailure(item.getErrorMessage()))
                         .map(AiVideoTaskItem::getUpdatedAt)
                         .filter(value -> value != null)
                         .anyMatch(value -> !value.isAfter(retryBefore));
+                if (hasRetryableTaskFailure) {
+                    Instant updatedAt = task.getUpdatedAt();
+                    retryDelayElapsed = retryDelayElapsed
+                            || updatedAt == null || !updatedAt.isAfter(retryBefore);
+                }
                 if (hasTerminalFailure) {
                     if (task.isAutoStartVideoAfterImages()) {
                         task.consumeAutoStartVideo();
@@ -269,6 +282,8 @@ public class AiVideoImageProcessor {
         if (value.contains("模型已生成图片")
                 && value.contains("结果地址已保存")
                 && value.contains("下载失败")) return true;
+        if (value.contains("旧图片结果地址持续不可用")
+                && value.contains("重新生成")) return true;
         if (value.contains("内容策略可能误判")
                 || value.contains("image generation produced no asset")
                 || value.contains("该提示可能违反了我们的内容政策")
@@ -281,6 +296,12 @@ public class AiVideoImageProcessor {
                 || value.contains("etimedout") || value.contains("header parser received no bytes")
                 || value.contains("i/o error on post request") || value.contains("unexpected end of file")
                 || value.contains("connection reset");
+    }
+
+    static boolean terminalTaskFailureWithoutFailedItem(String status, String message,
+                                                        boolean hasFailedItem) {
+        return "FAILED".equals(status) && !hasFailedItem
+                && !retryableImageTransientFailure(message);
     }
 
     static boolean retryablePipelineImageFailure(String status, String message) {
@@ -678,7 +699,7 @@ public class AiVideoImageProcessor {
                         // Remove it before reserving the next bounded redraw.
                         clearPendingImageResult(item.getId(), assetType);
                         int nextAttempt = state.attemptsReserved() + 1;
-                        String prompt = nextAttempt == 1
+                        String prompt = nextAttempt == 1 || state.previousValidation() == null
                                 ? basePrompt
                                 : topologyCorrectionPrompt(basePrompt, state.previousValidation());
                         state = state.reserve(prompt);
@@ -718,10 +739,29 @@ public class AiVideoImageProcessor {
                         // A failed request with no saved provider result produced no candidate and
                         // therefore does not consume one of the four candidate slots. A saved URL
                         // keeps the reservation so recovery only retries its download.
-                        if (pending == null && pendingImageResult(item.getId(), assetType) == null
-                                && reservedInThisInvocation) {
-                            state = state.releaseReservation();
+                        boolean unavailableSavedResult = generationFailure
+                                instanceof UnavailablePendingImageResultException;
+                        boolean hasPendingAfterFailure = pendingImageResult(item.getId(), assetType) != null;
+                        TopologyRetryState reconciled = reconcileTopologyGenerationFailure(
+                                state, unavailableSavedResult, pending != null,
+                                hasPendingAfterFailure, reservedInThisInvocation);
+                        if (!reconciled.equals(state)) {
+                            state = reconciled;
                             saveTopologyRetryState(task, item, assetType, state);
+                        }
+                        if (unavailableSavedResult) {
+                            pending = null;
+                            reservedInThisInvocation = false;
+                            if (!state.canGenerate()) {
+                                if (best != null) {
+                                    logExhaustedTopologyBudget(assetType, item, state, best.violationCount());
+                                    return storeFinalTopologyCandidate(task, item, assetType, best.candidate());
+                                }
+                                throw new IllegalStateException(
+                                        "图片结果地址已失效且服装结构重抽预算已用完，未取得可用候选图",
+                                        generationFailure);
+                            }
+                            continue;
                         }
                         throw generationFailure;
                     }
@@ -1062,6 +1102,19 @@ public class AiVideoImageProcessor {
                     .append(correction);
         }
         return prompt.toString();
+    }
+
+    static TopologyRetryState reconcileTopologyGenerationFailure(
+            TopologyRetryState state,
+            boolean unavailableSavedResult,
+            boolean hadPendingBeforeCall,
+            boolean hasPendingAfterFailure,
+            boolean reservedInThisInvocation) {
+        if (unavailableSavedResult) return state.abandonReservation();
+        if (!hadPendingBeforeCall && !hasPendingAfterFailure && reservedInThisInvocation) {
+            return state.releaseReservation();
+        }
+        return state;
     }
 
     static int topologyViolationCount(ProductFunctionAnalysisService.GarmentValidation validation) {
@@ -1439,10 +1492,59 @@ public class AiVideoImageProcessor {
             }
             return response.artifact();
         } catch (Exception exception) {
-            pending.downloadFailed(readable(exception));
+            pending.downloadFailed(pendingDownloadFailure(exception));
             pendingImageResultMapper.updateById(pending);
+            if (replaceUnavailablePendingImage(pending)) {
+                pendingImageResultMapper.deleteById(pending.getId());
+                throw new UnavailablePendingImageResultException(
+                        "旧图片结果地址持续不可用，已放弃旧地址并将重新生成该图片", exception);
+            }
             throw new IllegalStateException("模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址", exception);
         }
+    }
+
+    static boolean replaceUnavailablePendingImage(AiVideoPendingImageResult pending) {
+        if (pending == null || pending.getLastError() == null) return false;
+        String message = pending.getLastError().toLowerCase();
+        if (message.contains("result_download_http_404") || message.contains("result_download_http_410")
+                || message.contains("(404)") || message.contains("（404）")
+                || message.contains("(410)") || message.contains("（410）")) {
+            return pending.getDownloadAttempts() >= 1;
+        }
+        if (message.contains("result_download_http_401") || message.contains("result_download_http_403")
+                || message.contains("(401)") || message.contains("（401）")
+                || message.contains("(403)") || message.contains("（403）")) {
+            return pending.getDownloadAttempts() >= 2;
+        }
+        if (message.contains("result_download_http_502") || message.contains("result_download_http_503")
+                || message.contains("result_download_http_504")
+                || message.contains("(502)") || message.contains("（502）")
+                || message.contains("(503)") || message.contains("（503）")
+                || message.contains("(504)") || message.contains("（504）")) {
+            return false;
+        }
+        if (message.contains("result_download_timeout")
+                || message.contains("result_download_network_error")) return false;
+        return false;
+    }
+
+    private String pendingDownloadFailure(Exception exception) {
+        if (exception instanceof RestClientResponseException responseException) {
+            try {
+                Map<String, Object> payload = objectMapper.readValue(responseException.getResponseBodyAsString(),
+                        new TypeReference<Map<String, Object>>() {});
+                String failureCode = nullableText(payload.get("failureCode"));
+                String message = nullableText(payload.get("message"));
+                Object upstreamStatus = payload.get("upstreamStatus");
+                if (!failureCode.isBlank()) {
+                    return failureCode + (upstreamStatus == null ? "" : " [upstream=" + upstreamStatus + "]")
+                            + (message.isBlank() ? "" : ": " + message);
+                }
+            } catch (Exception ignored) {
+                // Fall through to Spring's transport message if an older Pi runtime returned no JSON body.
+            }
+        }
+        return readable(exception);
     }
 
     private AiVideoPendingImageResult pendingImageResult(String itemId, String assetType) {
@@ -1672,7 +1774,6 @@ public class AiVideoImageProcessor {
         if (!shot.title().isBlank()) value.append("目标：").append(shot.title()).append("；");
         if (!shot.scene().isBlank()) value.append("场景与构图意图：").append(shot.scene()).append("；");
         if (!shot.motion().isBlank()) value.append("动作：").append(shot.motion()).append("；");
-        if (!shot.shotSize().isBlank()) value.append("原脚本景别（已禁用）：").append(shot.shotSize()).append("；");
         value.append("景别硬覆写：").append(imageFramingDirective(task.getGenerationMode())).append("；");
         value.append("执行运镜：").append(normalizedImageCameraMovement(shot.cameraMovement())).append("；");
         if (value.isEmpty()) value.append("保持同一商品，进行轻微且连续的电商展示变化；");
@@ -1826,7 +1927,6 @@ public class AiVideoImageProcessor {
                     .append(shot.scene()).append("；");
         }
         if (!shot.motion().isBlank()) value.append("动作严格按脚本：").append(shot.motion()).append("；");
-        if (!shot.shotSize().isBlank()) value.append("原脚本景别（已禁用）：").append(shot.shotSize()).append("；");
         value.append("景别硬覆写：").append(imageFramingDirective(task.getGenerationMode()))
                 .append("；执行运镜：").append(normalizedImageCameraMovement(shot.cameraMovement())).append("；");
         value.append("手部规则：").append(shotHandDirective(task, shot)).append("；");
@@ -1901,7 +2001,7 @@ public class AiVideoImageProcessor {
             }
             shots.add(new ShotPrompt(sequence, prompt,
                     nullableText(shot.get("title")), nullableText(shot.get("sceneDescription")), nullableText(shot.get("motionDescription")),
-                    nullableText(shot.get("shotSize")), nullableText(shot.get("cameraMovement")),
+                    nullableText(shot.get("cameraMovement")),
                     nullableText(shot.get("emotion"))));
         }
         shots.sort(Comparator.comparingInt(ShotPrompt::sequence));
@@ -2051,7 +2151,7 @@ public class AiVideoImageProcessor {
         return value.substring(0, Math.min(value.length(), 1000));
     }
 
-    private record ShotPrompt(int sequence, String prompt, String title, String scene, String motion, String shotSize,
+    private record ShotPrompt(int sequence, String prompt, String title, String scene, String motion,
                               String cameraMovement, String emotion) {}
     private record ReferenceImage(String name, String mimeType, String dataBase64) {}
     private record SourceFramePoint(double timestampSeconds, double durationSeconds) {}
@@ -2128,4 +2228,9 @@ public class AiVideoImageProcessor {
                                  String prompt, String revisedPrompt) {}
     private record PiArtifact(String name, String mimeType, String dataBase64, String modelId, String mode,
                               String prompt, String revisedPrompt) {}
+    private static final class UnavailablePendingImageResultException extends IllegalStateException {
+        private UnavailablePendingImageResultException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
 }
