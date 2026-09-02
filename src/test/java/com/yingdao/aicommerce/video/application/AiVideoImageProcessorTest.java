@@ -256,17 +256,38 @@ class AiVideoImageProcessorTest {
         assertTrue(prompt.contains("第03格 Logo 缺失"));
         assertTrue(prompt.contains("第08格前后朝向不一致"));
         assertTrue(prompt.contains("第03格补回左胸橙色圆环 Logo"));
-        assertTrue(prompt.contains("参考图1"));
+        assertTrue(prompt.contains("用户上传商品母版"));
+        assertTrue(prompt.contains("不要重新分类"));
         assertTrue(prompt.contains("斜肩或露肩只代表领口路径不对称"));
         assertTrue(prompt.contains("必须保留两只袖子"));
-        assertTrue(prompt.contains("最多只有两条手臂和两只手"));
+        assertTrue(prompt.contains("不得为凑数量新增或复制肢体"));
         assertTrue(prompt.contains("一张完整九宫格图片"));
+        assertTrue(prompt.contains("每个商品出镜格"));
+        assertTrue(prompt.contains("仅在与商品母版可见像素和原提示不冲突时执行"));
     }
 
     @Test
     void topologyRedrawsAreBoundedToThreeBeforeContinuing() {
         assertEquals(3, AiVideoImageProcessor.MAX_TOPOLOGY_REDRAWS);
         assertEquals(4, AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS);
+    }
+
+    @Test
+    void topologyCandidateRankingUsesTotalViolationsAndRejectsMissingDetails() {
+        var summarized = new ProductFunctionAnalysisService.GarmentValidation(false, "",
+                java.util.List.of("问题一", "问题二", "问题三"), 0.9, 7);
+        var missingDetails = new ProductFunctionAnalysisService.GarmentValidation(false, "",
+                java.util.List.of(), 0.1, 0);
+
+        assertEquals(7, AiVideoImageProcessor.topologyViolationCount(summarized));
+        assertEquals(Integer.MAX_VALUE, AiVideoImageProcessor.topologyViolationCount(missingDetails));
+        assertTrue(AiVideoImageProcessor.preferNewTopologyCandidate(7, 2));
+        assertTrue(AiVideoImageProcessor.preferNewTopologyCandidate(2, 2));
+        assertFalse(AiVideoImageProcessor.preferNewTopologyCandidate(2, 3));
+        assertEquals(9, ProductFunctionAnalysisService.validationViolationCount(
+                9, false, java.util.List.of("只列最关键问题")));
+        assertEquals(Integer.MAX_VALUE, ProductFunctionAnalysisService.validationViolationCount(
+                0, false, java.util.List.of()));
     }
 
     @Test

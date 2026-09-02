@@ -621,9 +621,9 @@ public class AiVideoImageProcessor {
                     return stored;
                 }
                 previousValidation = validation;
-                int violationCount = validation.violations() == null
-                        ? Integer.MAX_VALUE : validation.violations().size();
-                if (bestRejectedArtifact == null || violationCount <= bestViolationCount) {
+                int violationCount = topologyViolationCount(validation);
+                if (bestRejectedArtifact == null
+                        || preferNewTopologyCandidate(bestViolationCount, violationCount)) {
                     bestRejectedArtifact = artifact;
                     bestRejectedPrompt = prompt;
                     bestViolationCount = violationCount;
@@ -662,15 +662,29 @@ public class AiVideoImageProcessor {
         StringBuilder prompt = new StringBuilder(basePrompt).append("\n\n")
                 .append("【定向纠错重绘】上一候选图未通过复核，请完整重生成一张图片。")
                 .append("优先修正下面的失败项；其他内容继续遵循原提示并从参考图重建，不复制上一候选，也不假设能够只改局部。")
-                .append("先逐像素对照参考图1，再判断商品类别：分别清点画面左侧和右侧的袖筒、袖口、袖片，")
+                .append("不要重新分类，直接按原提示指定的用户上传商品母版逐像素核对：分别清点画面左侧和右侧的袖筒、袖口、袖片，")
                 .append("并核对领口开口路径及每片布料的缝线连接。斜肩或露肩只代表领口路径不对称，不等于一侧无袖；")
                 .append("参考图两侧都有袖片和袖口证据时，生成结果必须保留两只袖子。")
-                .append("人物最多只有两条手臂和两只手；遮挡或出画的肢体无需补出，每只可见手只能连接一条自然手臂。")
-                .append("如输出九宫格，仍须生成一张完整九宫格图片，并让每格保持同一商品结构。\n")
+                .append("可见范围服从原提示的构图要求；不得为凑数量新增或复制肢体，每只可见手只能连接一条自然手臂。")
+                .append("如输出九宫格，仍须生成一张完整九宫格图片，并让每个商品出镜格保持同一商品结构。\n")
                 .append("复核失败项：")
                 .append(violations.isEmpty() ? "商品结构或标识未与参考图一致" : String.join("；", violations));
-        if (!correction.isBlank()) prompt.append("\n复核模型纠正要求：").append(correction);
+        if (!correction.isBlank()) {
+            prompt.append("\n复核模型纠正要求（仅在与商品母版可见像素和原提示不冲突时执行）：")
+                    .append(correction);
+        }
         return prompt.toString();
+    }
+
+    static int topologyViolationCount(ProductFunctionAnalysisService.GarmentValidation validation) {
+        if (validation == null || validation.valid()) return 0;
+        if (validation.violationCount() > 0) return validation.violationCount();
+        List<String> violations = validation.violations();
+        return violations == null || violations.isEmpty() ? Integer.MAX_VALUE : violations.size();
+    }
+
+    static boolean preferNewTopologyCandidate(int currentBestViolationCount, int newViolationCount) {
+        return newViolationCount <= currentBestViolationCount;
     }
 
     private ReferenceImage firstScriptFrameReference(AiVideoTask task) {

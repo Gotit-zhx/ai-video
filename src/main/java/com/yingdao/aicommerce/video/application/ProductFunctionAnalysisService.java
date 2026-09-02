@@ -154,9 +154,12 @@ public class ProductFunctionAnalysisService {
             }
             Map<String, Object> value = response.result();
             boolean valid = Boolean.TRUE.equals(value.get("valid"));
+            List<String> violations = stringList(value.get("violations"), 12, 180);
+            int violationCount = validationViolationCount(value.get("violationCount"), valid, violations);
             return new GarmentValidation(valid, text(value.get("correctionPrompt"), 600),
-                    stringList(value.get("violations"), 12, 180),
-                    value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0);
+                    violations,
+                    value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0,
+                    violationCount);
         } catch (Exception exception) {
             lastFailure = exception;
             if (attempt >= 3 || !isTransientValidationFailure(readable(exception))) break;
@@ -416,6 +419,15 @@ public class ProductFunctionAnalysisService {
         return text(value, maxLength);
     }
 
+    static int validationViolationCount(Object rawCount, boolean valid, List<String> violations) {
+        if (valid) return 0;
+        if (rawCount instanceof Number number) {
+            long count = number.longValue();
+            if (count > 0) return (int) Math.min(Integer.MAX_VALUE, count);
+        }
+        return violations == null || violations.isEmpty() ? Integer.MAX_VALUE : violations.size();
+    }
+
     private String readable(Exception exception) {
         Throwable current = exception;
         while (current.getCause() != null) current = current.getCause();
@@ -425,5 +437,11 @@ public class ProductFunctionAnalysisService {
     private record PiProductAnalysisResponse(Map<String, Object> result, String modelId, long latencyMs) {}
 
     public record GarmentValidation(boolean valid, String correctionPrompt,
-                                    List<String> violations, double confidence) {}
+                                    List<String> violations, double confidence, int violationCount) {
+        public GarmentValidation(boolean valid, String correctionPrompt,
+                                 List<String> violations, double confidence) {
+            this(valid, correctionPrompt, violations, confidence,
+                    validationViolationCount(null, valid, violations));
+        }
+    }
 }
