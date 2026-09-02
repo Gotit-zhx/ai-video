@@ -44,7 +44,7 @@ public class SocialLoginService {
     }
 
     public List<ProviderStatus> providerStatuses() {
-        return List.of("wechat", "google", "apple").stream()
+        return List.of("wechat", "google").stream()
                 .map(id -> {
                     ProviderConfig config = config(id);
                     return new ProviderStatus(
@@ -138,10 +138,13 @@ public class SocialLoginService {
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
                 .retrieve()
                 .body(Map.class);
+        if (!Boolean.TRUE.equals(user.get("email_verified"))) {
+            throw new BusinessException(HttpStatus.UNAUTHORIZED, "Google 账号邮箱尚未验证");
+        }
         return new ExternalProfile(
                 "google",
                 required(user, "sub"),
-                text(user, "email"),
+                required(user, "email"),
                 text(user, "name")
         );
     }
@@ -255,7 +258,6 @@ public class SocialLoginService {
         String label = switch (id) {
             case "wechat" -> "微信";
             case "google" -> "Google";
-            case "apple" -> "Apple";
             default -> throw unsupportedProvider();
         };
         String prefix = "app.social-login." + id + ".";

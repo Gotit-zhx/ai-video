@@ -21,6 +21,7 @@ public class PlatformUser {
     private String jobTitle;
     private String passwordHash;
     private String status;
+    private String registrationSource;
     private Instant lastLoginAt;
     private Instant createdAt;
     private Instant updatedAt;
@@ -50,6 +51,7 @@ public class PlatformUser {
         this.jobTitle = jobTitle;
         this.passwordHash = passwordHash;
         this.status = "ACTIVE";
+        this.registrationSource = "LOCAL";
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
     }
@@ -82,6 +84,11 @@ public class PlatformUser {
         this.updatedAt = Instant.now();
     }
 
+    public void markExternalRegistration(String provider) {
+        this.registrationSource = provider == null ? "EXTERNAL" : provider.trim().toUpperCase();
+        this.updatedAt = Instant.now();
+    }
+
     public String getId() { return id; }
     public String getOrganizationId() { return organizationId; }
     public String getDepartmentId() { return departmentId; }
@@ -93,6 +100,7 @@ public class PlatformUser {
     public String getJobTitle() { return jobTitle; }
     public String getPasswordHash() { return passwordHash; }
     public String getStatus() { return status; }
+    public String getRegistrationSource() { return registrationSource; }
     public Instant getLastLoginAt() { return lastLoginAt; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

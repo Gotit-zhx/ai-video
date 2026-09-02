@@ -60,6 +60,7 @@ public class DatabaseUserDetailsService implements UserDetailsService {
                 user.getDisplayName(),
                 user.getPasswordHash(),
                 "ACTIVE".equals(user.getStatus()),
+                user.getRegistrationSource(),
                 userMapper.selectRoleCodes(user.getId()),
                 userMapper.selectPermissionCodes(user.getId())
         );

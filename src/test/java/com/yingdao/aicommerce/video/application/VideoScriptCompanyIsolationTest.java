@@ -41,10 +41,31 @@ class VideoScriptCompanyIsolationTest {
                 .hasMessageContaining("视频脚本不存在");
     }
 
+    @Test
+    void externallyRegisteredUserCanOnlyReadOwnScript() {
+        VideoScript script = new VideoScript(
+                "script-1", "org-a", "其他人的脚本", "MANUAL", "MODEL_WEAR",
+                null, null, null, null, "中国", null, "user-a"
+        );
+        when(scriptMapper.selectById("script-1")).thenReturn(script);
+
+        assertThat(service.status("script-1", externalPrincipal("user-a"))).isSameAs(script);
+        assertThatThrownBy(() -> service.status("script-1", externalPrincipal("user-b")))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("视频脚本不存在");
+    }
+
     private PlatformPrincipal principal(String organizationId, String organizationCode) {
         return new PlatformPrincipal(
                 "user-1", organizationId, organizationCode, "13800000000", "测试用户",
                 "password", true, List.of("ADMIN"), List.of("video:script:view")
+        );
+    }
+
+    private PlatformPrincipal externalPrincipal(String userId) {
+        return new PlatformPrincipal(
+                userId, "org-a", "a", "google-user", "Google 用户",
+                null, true, "GOOGLE", List.of("OPERATOR"), List.of("video:script:view")
         );
     }
 }

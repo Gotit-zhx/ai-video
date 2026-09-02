@@ -271,7 +271,7 @@ public class VideoScriptService {
 
     @Transactional
     public VideoScript copy(String id, PlatformPrincipal principal) {
-        VideoScript original = requireScript(id, principal.organizationId());
+        VideoScript original = requireAccessibleScript(id, principal);
         if (!Set.of("READY", "DRAFT").contains(original.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "脚本处理完成后才能复制版本");
         }
@@ -336,7 +336,7 @@ public class VideoScriptService {
 
     @Transactional
     public VideoScript updateVisualTone(String id, String visualTone, PlatformPrincipal principal) {
-        VideoScript script = requireScript(id, principal.organizationId());
+        VideoScript script = requireAccessibleScript(id, principal);
         if (Set.of("QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING").contains(script.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "视频正在拆解，暂时不能编辑视觉基调");
         }
@@ -374,13 +374,14 @@ public class VideoScriptService {
         return scriptMapper.selectList(
                 new LambdaQueryWrapper<VideoScript>()
                         .eq(VideoScript::getOrganizationId, principal.organizationId())
+                        .eq(principal.externallyRegistered(), VideoScript::getCreatedBy, principal.userId())
                         .orderByDesc(VideoScript::getUpdatedAt)
                         .last("LIMIT 100")
         );
     }
 
     public VideoScriptDetail detail(String id, PlatformPrincipal principal) {
-        VideoScript script = requireScript(id, principal.organizationId());
+        VideoScript script = requireAccessibleScript(id, principal);
         List<VideoScriptShot> shots = shotMapper.selectList(
                 new LambdaQueryWrapper<VideoScriptShot>()
                         .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
@@ -391,7 +392,7 @@ public class VideoScriptService {
     }
 
     public ShotPreview shotPreview(String scriptId, String shotId, PlatformPrincipal principal) {
-        VideoScript script = requireScript(scriptId, principal.organizationId());
+        VideoScript script = requireAccessibleScript(scriptId, principal);
         VideoScriptShot shot = shotMapper.selectOne(
                 new LambdaQueryWrapper<VideoScriptShot>()
                         .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
@@ -468,7 +469,7 @@ public class VideoScriptService {
             ShotUpdate update,
             PlatformPrincipal principal
     ) {
-        VideoScript script = requireScript(scriptId, principal.organizationId());
+        VideoScript script = requireAccessibleScript(scriptId, principal);
         if (Set.of("QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING").contains(script.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "视频正在拆解，暂时不能编辑分镜");
         }
@@ -512,7 +513,15 @@ public class VideoScriptService {
     }
 
     public VideoScript status(String id, PlatformPrincipal principal) {
-        return requireScript(id, principal.organizationId());
+        return requireAccessibleScript(id, principal);
+    }
+
+    private VideoScript requireAccessibleScript(String id, PlatformPrincipal principal) {
+        VideoScript script = requireScript(id, principal.organizationId());
+        if (principal.externallyRegistered() && !principal.userId().equals(script.getCreatedBy())) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "视频脚本不存在");
+        }
+        return script;
     }
 
     private VideoScript requireScript(String id, String organizationId) {

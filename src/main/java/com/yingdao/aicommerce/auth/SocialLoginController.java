@@ -37,6 +37,7 @@ public class SocialLoginController {
 
     private final SocialLoginService socialLoginService;
     private final SocialLoginIdentityMapper identityMapper;
+    private final GoogleSocialAccountService googleAccountService;
     private final DatabaseUserDetailsService userDetailsService;
     private final AuthenticationManager authenticationManager;
     private final AuthenticatedSessionService sessionService;
@@ -44,12 +45,14 @@ public class SocialLoginController {
     public SocialLoginController(
             SocialLoginService socialLoginService,
             SocialLoginIdentityMapper identityMapper,
+            GoogleSocialAccountService googleAccountService,
             DatabaseUserDetailsService userDetailsService,
             AuthenticationManager authenticationManager,
             AuthenticatedSessionService sessionService
     ) {
         this.socialLoginService = socialLoginService;
         this.identityMapper = identityMapper;
+        this.googleAccountService = googleAccountService;
         this.userDetailsService = userDetailsService;
         this.authenticationManager = authenticationManager;
         this.sessionService = sessionService;
@@ -173,8 +176,14 @@ public class SocialLoginController {
             var result = socialLoginService.complete(provider, state, code);
             var profile = result.profile();
             String userId = identityMapper.selectUserId(profile.provider(), profile.subject());
+            if (userId == null && "google".equals(profile.provider())) {
+                userId = googleAccountService.resolveOrCreate(result.organizationCode(), profile);
+            }
             if (userId != null) {
                 PlatformPrincipal principal = userDetailsService.loadByUserId(userId);
+                if (!principal.isEnabled()) {
+                    throw new BusinessException(HttpStatus.FORBIDDEN, "该企业账号已停用");
+                }
                 sessionService.establish(principal, request, response);
                 response.sendRedirect("/");
                 return;

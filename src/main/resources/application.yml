@@ -54,10 +54,6 @@ app:
       enabled: ${APP_SOCIAL_WECHAT_ENABLED:false}
       client-id: ${APP_SOCIAL_WECHAT_CLIENT_ID:}
       client-secret: ${APP_SOCIAL_WECHAT_CLIENT_SECRET:}
-    apple:
-      enabled: ${APP_SOCIAL_APPLE_ENABLED:false}
-      client-id: ${APP_SOCIAL_APPLE_CLIENT_ID:}
-      client-secret: ${APP_SOCIAL_APPLE_CLIENT_SECRET:}
   pi-runtime-url: ${APP_PI_RUNTIME_URL:http://localhost:8090}
   pi-runtime-token: ${APP_PI_RUNTIME_TOKEN:heyi-pi-runtime-dev-token}
   oss:

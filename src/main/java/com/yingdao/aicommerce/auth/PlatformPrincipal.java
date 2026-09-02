@@ -22,6 +22,7 @@ public class PlatformPrincipal implements UserDetails, Serializable {
     private final String displayName;
     private final String password;
     private final boolean enabled;
+    private final String registrationSource;
     private final List<String> roleCodes;
     private final List<String> permissionCodes;
     private final List<GrantedAuthority> authorities;
@@ -37,6 +38,22 @@ public class PlatformPrincipal implements UserDetails, Serializable {
             List<String> roleCodes,
             List<String> permissionCodes
     ) {
+        this(userId, organizationId, organizationCode, username, displayName, password,
+                enabled, "LOCAL", roleCodes, permissionCodes);
+    }
+
+    public PlatformPrincipal(
+            String userId,
+            String organizationId,
+            String organizationCode,
+            String username,
+            String displayName,
+            String password,
+            boolean enabled,
+            String registrationSource,
+            List<String> roleCodes,
+            List<String> permissionCodes
+    ) {
         this.userId = userId;
         this.organizationId = organizationId;
         this.organizationCode = organizationCode;
@@ -45,6 +62,7 @@ public class PlatformPrincipal implements UserDetails, Serializable {
         this.displayName = displayName;
         this.password = password;
         this.enabled = enabled;
+        this.registrationSource = registrationSource == null ? "LOCAL" : registrationSource;
         this.roleCodes = List.copyOf(roleCodes);
         this.permissionCodes = List.copyOf(permissionCodes);
         this.authorities = java.util.stream.Stream.concat(
@@ -64,6 +82,7 @@ public class PlatformPrincipal implements UserDetails, Serializable {
     public String displayName() { return displayName; }
     public List<String> roleCodes() { return roleCodes; }
     public List<String> permissionCodes() { return permissionCodes; }
+    public boolean externallyRegistered() { return !"LOCAL".equals(registrationSource); }
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() { return authorities; }

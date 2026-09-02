@@ -256,7 +256,8 @@ label { color: var(--ink-soft); font-weight: 550; }
 .field input:not([type="checkbox"]):not([type="radio"]) { border: 0; box-shadow: none; }
 .social-login-divider { display: flex; align-items: center; gap: 12px; margin: 26px 0 15px; color: var(--quiet); font-size: 13px; }
 .social-login-divider::before, .social-login-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-.social-login-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.social-login-options { display: flex; justify-content: center; }
+.social-login-options .social-login-button { width: min(100%, 320px); }
 .social-login-button { min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); }
 .social-login-button svg { width: 16px; fill: currentColor; }
 .login-local-note { margin-top: 14px; }

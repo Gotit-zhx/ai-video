@@ -5024,10 +5024,10 @@ async function loadSocialLoginProviders() {
     });
     const wechat = statuses.get("wechat");
     renderWechatQr(wechat);
-    socialLoginStatus.textContent = wechat?.enabled ? "扫码即登录" : "暂不可用";
+    socialLoginStatus.textContent = wechat?.enabled ? "扫码即登录" : "微信登录暂未启用";
   } catch (error) {
     renderWechatQr(null);
-    socialLoginStatus.textContent = "暂不可用";
+    socialLoginStatus.textContent = "微信登录尚未配置";
   }
 }
 

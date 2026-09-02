@@ -97,7 +97,8 @@ public class AiVideoTaskService {
     public AiVideoTask create(CreateCommand command, PlatformPrincipal principal) {
         VideoScript script = scriptMapper.selectOne(new LambdaQueryWrapper<VideoScript>()
                 .eq(VideoScript::getId, command.scriptId())
-                .eq(VideoScript::getOrganizationId, principal.organizationId()));
+                .eq(VideoScript::getOrganizationId, principal.organizationId())
+                .eq(principal.externallyRegistered(), VideoScript::getCreatedBy, principal.userId()));
         if (script == null || !"READY".equals(script.getStatus()) || script.getScriptJson() == null) {
             throw new BusinessException(HttpStatus.CONFLICT, "请选择已经完成拆解的视频脚本");
         }
