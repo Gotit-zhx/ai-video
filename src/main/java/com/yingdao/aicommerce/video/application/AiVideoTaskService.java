@@ -1386,7 +1386,7 @@ public class AiVideoTaskService {
         prompt.append("场景、展示方式、机位方向、构图意图和手部状态逐镜读取图2与脚本时间轴，不得用某一格的设置覆盖其他格；但所有镜头都必须重新归一为商品近景。\n");
         prompt.append("运镜在商品近景范围内执行：推近、平移、环绕和细节特写可保留；拉远、后退、远景或主体缩小一律改为近景范围内的轻微横移、环绕或固定机位。\n");
         prompt.append("九宫格是 9 个时间轴关键帧，不代表 9 个物理镜头。只有转场说明明确标记真实切点时才执行转场；标记“同镜头连续，无转场”的相邻格必须保持同一镜头内连续运动。\n");
-        prompt.append("分镜明确写出手持、拿取、摆放、打开或演示时，只在该分镜出现完成动作所需的一双自然手；分镜未要求手部互动时，不得新增人物、手臂、手部或持物动作。\n");
+        prompt.append("分镜明确写出手持、拿取、摆放、打开或演示时，只出现完成动作所需的手；未明确双手时默认一只，最多两只。分镜未要求手部互动时，不得新增人物、手臂、手部或持物动作。\n");
         prompt.append("商品不得悬浮，必须与手、桌面、地面、支架或包装建立符合该分镜的真实接触关系。禁止穿模、异常反射、破损结构、额外配件、背景文字、水印、分屏、九宫格边框和画中画。\n\n");
         appendMusicPrompt(prompt, task);
         appendImageToVideoTimeline(prompt, task);
@@ -1771,9 +1771,26 @@ public class AiVideoTaskService {
                     ? "本镜头按脚本执行指定手势或触碰；只做该动作，不新增拿取、指向、挥手或其他手势"
                     : "沿用该分镜实际可见的手部状态；允许自然遮挡或出画，不新增手持、指向、拉扯、点赞或挥手动作";
         }
-        return requiresHand
-                ? "本镜头按脚本出现完成动作所需的一双自然手；手的数量、方向、接触位置与动作必须一致，不能延续到其他镜头"
-                : "本镜头不出现人物、手臂、手掌或手指，只保留商品及脚本要求的承托关系";
+        return productOnlyHandDirective(action, scene);
+    }
+
+    static String productOnlyHandDirective(String action, String scene) {
+        String context = ((action == null ? "" : action) + " " + (scene == null ? "" : scene)).toLowerCase();
+        if (containsAny(context, "无人手", "无手部", "不出现手", "没有手", "纯静物", "平铺", "仅商品", "no hand", "hands-free")) {
+            return "本镜头不出现人物、手臂、手掌或手指，只保留商品及脚本要求的承托关系";
+        }
+        boolean twoHands = containsAny(context, "双手", "两手", "一双手", "both hands", "two hands");
+        boolean oneHand = containsAny(context, "单手", "一只手", "one hand");
+        boolean requiresHand = containsAny(context,
+                "手持", "拿取", "拿起", "拿着", "握住", "抓住", "托住", "捏住", "摆放", "放下", "拆封", "开箱", "手掌", "手指",
+                "hold", "holding", "pick up", "grip", "handheld", "unbox");
+        if (twoHands) {
+            return "本镜头最多出现两只自然手，按脚本完成双手动作；两只手各自连接唯一手臂，方向和接触位置正确，不延续到其他镜头";
+        }
+        if (oneHand || requiresHand) {
+            return "本镜头只出现一只自然手完成动作；该手连接唯一手臂，方向和接触位置正确，不新增第二只手，也不延续到其他镜头";
+        }
+        return "本镜头不出现人物、手臂、手掌或手指，只保留商品及脚本要求的承托关系";
     }
 
     private String fabricGripPhysicsDirective(String action, String scene) {
@@ -1789,7 +1806,7 @@ public class AiVideoTaskService {
                 + "从受力点产生自然放射褶皱、弧形悬垂、轻微滞后与阻尼。禁止整件衣服像纸板同步抬起；该手势不得延续到其他分镜";
     }
 
-    private boolean containsAny(String value, String... candidates) {
+    private static boolean containsAny(String value, String... candidates) {
         for (String candidate : candidates) if (value.contains(candidate)) return true;
         return false;
     }

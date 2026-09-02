@@ -68,6 +68,10 @@ public class AiVideoImageProcessor {
     static final int MAX_TOPOLOGY_REDRAWS = 3;
     static final int MAX_TOPOLOGY_GENERATIONS = 1 + MAX_TOPOLOGY_REDRAWS;
     private static final String CLOSE_FRAMING_GATE_VERSION = "CLOSE_FRAMING_GATE_V1";
+    static final String PRODUCT_REAL_FRAME_BACKGROUND_REQUIREMENT =
+            "背景逐格沿用参考图2对应位置的原视频真实场景；连续分镜锁定空间、材质、光线和机位关系，原视频明确换景时才切换。";
+    static final String PRODUCT_REAL_FRAME_OUTPUT_CHECK =
+            "输出前把生成结果与参考图2逐格核对：01→09 的手部有无、进入方向、接触点、商品位置、尺度、景别与光影阶段必须一一对应；";
     private static final String PORTRAIT_4K_SIZE = "2160x3840";
     private static final String PORTRAIT_4K_REQUIREMENT = "最终必须输出实际像素为 2160×3840 的 9:16 竖屏 4K 图片，"
             + "不是仅在画面风格上表现为高清；主体边缘、服装纹理、印花和背景细节必须清晰可辨。";
@@ -93,7 +97,7 @@ public class AiVideoImageProcessor {
             + "妆容为轻薄伪素颜：薄而透的底妆不遮掉毛孔与细小瑕疵，眉毛只轻微整理，眼妆极淡，使用接近原生的自然唇色。"
             + "不使用浓眼线、夸张睫毛、假睫毛、明显卧蚕、高饱和眼影、强腮红、高光修容或玻璃唇；"
             + "眼睛大小与脸型比例自然，不追求网红大眼。嘴唇放松，眼神有明确落点，像朋友用手机临时拍下的自然一瞬。";
-    private static final String ANTI_MANNEQUIN_REQUIREMENT = "人物处在真实呼吸与承重状态：一侧肩髋略低，重心落在一条腿，双手姿态不完全相同，"
+    private static final String ANTI_MANNEQUIN_REQUIREMENT = "人物处在真实呼吸与承重状态：一侧肩髋略低，重心落在一条腿，构图内可见手臂姿态不完全相同，"
             + "颈肩、锁骨和衣料褶皱呈现同一受力关系。人物边缘、发丝、皮肤和背景都服从同一现场光线；"
             + "保留手机照片自然的局部锐度差和暗部细微传感器纹理，4K 只增加真实信息，不把人脸处理成均匀、对称、无表情的假人。";
     private static final String FACE_COLOR_CONTINUITY_REQUIREMENT = "【肤色连续】脸、耳、颈、锁骨、手臂和双腿属于同一暖中性自然肤色，"
@@ -104,11 +108,11 @@ public class AiVideoImageProcessor {
             + "禁止赤脚、只穿袜子、拖鞋、酒店拖鞋、鞋子残缺或鞋子凭空消失。九宫格中鞋款与颜色保持一致。";
     private static final String CLOSE_PORTRAIT_COMPOSITION_REQUIREMENT = "【中近景门禁版本：CLOSE_FRAMING_GATE_V1】【近距离清晰构图｜最高优先级】相机相对原全身构图向前推进约二分之一距离，"
             + "这不是完整全身照。按示例红框比例构图：画面上沿在头顶上方保留 5%–8% 空间，画面下沿必须明确落在大腿中下段至膝盖上方，膝盖、小腿、双脚和鞋子必须位于画面之外且不可见。"
-            + "头顶、完整五官、胸前商品、双肩、双臂和执行动作的双手必须清楚入镜；不能为了保留双脚或展示整套穿搭而缩小人物。"
+            + "头顶、完整五官、胸前商品、双肩、构图内可见手臂和执行动作实际需要的手必须清楚入镜；不可见的手臂或手无需补出，不能为了保留双脚或展示整套穿搭而缩小人物。"
             + "人脸从发际线到下巴的有效高度不得低于整张 2160×3840 图片高度的 15%，约 575 像素，"
             + "双眼虹膜边缘、上下眼睑、鼻翼、唇线、毛孔和细小绒毛必须具有真实可辨的像素信息。必须通过真实相机靠近和重新构图获得清晰度，禁止先生成远景再数码放大、裁切或锐化。";
     private static final String GRID_FACE_PIXEL_REQUIREMENT = "【中近景门禁版本：CLOSE_FRAMING_GATE_V1】【九宫格中近景硬约束｜覆盖脚本景别】每个 720×1280 子画面只要有人物，就必须采用头顶至大腿中下段、接近膝盖上方的中近景。"
-            + "格子下边界必须落在大腿中下段至膝盖上方，膝盖、小腿、双脚和鞋子不可见且始终位于画面之外；每张脸从发际线到下巴不得低于单格高度的 15%，约 190 像素。头顶、五官、胸前商品、双臂和执行动作的双手必须完整清楚，"
+            + "格子下边界必须落在大腿中下段至膝盖上方，膝盖、小腿、双脚和鞋子不可见且始终位于画面之外；每张脸从发际线到下巴不得低于单格高度的 15%，约 190 像素。头顶、五官、胸前商品、构图内可见手臂和本格动作实际需要的手必须完整清楚，不可见肢体无需补出，"
             + "不得为了保留全身、脚部、背景或原视频远景而缩小人物。即使脚本、原视频、参考图或 shotSize 写了远景、全景、全身、拉远、后退、看到脚部，也必须改写成中近景内能够完成的动作和运镜；"
             + "纯商品格采用填满主体区域的商品近景。01–09 的主体尺度必须稳定，禁止任何一格突然拉远。";
     private static final String GRID_POSE_SCALE_REQUIREMENT = "【动作底图尺度】每个 720×1280 子画面采用头顶至大腿中下段的中近景；"
@@ -371,6 +375,8 @@ public class AiVideoImageProcessor {
                 || value.contains("该提示可能违反了我们的内容政策")
                 || value.contains("该提示可能违反我们的内容政策")
                 || value.contains("content policy") && value.contains("no asset")) return true;
+        // A validator outage must not restart the image pipeline or consume more redraws.
+        if (value.contains("服装结构复核") || value.contains("garment validation")) return false;
         if (privateValidationRetryPending(message)) return true;
         if (value.contains("参考图片获取失败")
                 || value.contains("参考图片读取失败")
@@ -808,9 +814,24 @@ public class AiVideoImageProcessor {
                 }
                 item.validationPending("STORYBOARD_GRID".equals(assetType));
                 itemMapper.updateById(item);
-                ProductFunctionAnalysisService.GarmentValidation validation =
-                        productFunctionAnalysisService.validateGenerated(task, item, assetType,
-                                candidateBytes, artifact.mimeType());
+                ProductFunctionAnalysisService.GarmentValidation validation;
+                try {
+                    validation = productFunctionAnalysisService.validateGenerated(task, item, assetType,
+                            candidateBytes, artifact.mimeType());
+                } catch (Exception validationFailure) {
+                    PiArtifact fallbackArtifact = bestRejectedArtifact == null
+                            ? artifact : bestRejectedArtifact;
+                    String fallbackPrompt = bestRejectedPrompt == null ? prompt : bestRejectedPrompt;
+                    log.warn("Garment validation unavailable for {} on item {}; storing the best known "
+                                    + "candidate and continuing without another redraw: {}",
+                            assetType, item.getId(), validationFailure.getMessage());
+                    AiVideoTaskAsset stored = store(task, item, assetType, null,
+                            fallbackArtifact, fallbackPrompt);
+                    discardTopologyCandidate(task, item, assetType);
+                    clearPendingImageResult(item.getId(), assetType,
+                            imageRequestHash(prompt, references));
+                    return stored;
+                }
                 if (validation.valid()) {
                     AiVideoTaskAsset stored = store(task, item, assetType, null, artifact, prompt);
                     discardTopologyCandidate(task, item, assetType);
@@ -1456,7 +1477,7 @@ public class AiVideoImageProcessor {
         return "【REALISM V3｜手机日常随拍任务】参考图1是唯一商品素材。基于参考图1生成一张普通人用手机主摄在较近距离随手拍下的竖版服装展示照片。"
                 + "日常生活感是最高风格优先级：成片应像同事、朋友或家人在普通居住空间临时记录今天穿搭，"
                 + "而不是品牌广告、影棚 Lookbook、网红写真、模特卡或精修样片。目标市场："
-                + safe(task.getTargetMarket(), "通用电商市场") + "。只出现一位成年人物，头顶、五官、胸前商品、双臂和双手完整清楚入镜。"
+                + safe(task.getTargetMarket(), "通用电商市场") + "。只出现一位成年人物，头顶、五官、胸前商品、双肩和构图内可见手臂清楚入镜；没有动作需要时手可以自然遮挡或出画，不为凑齐双手而补手。"
                 + FRIENDLY_MODEL_FACE_BASELINE
                 + "人物大致面向镜头但不要证件照式立正：身体相对画面中心轻微偏移，重心自然落在一条腿上，两侧肩髋不完全水平，"
                 + "双臂以略有差异的方式自然下垂，一只手可轻微弯曲，头部有极小角度偏转，眼神像刚注意到拍摄者；"
@@ -1465,7 +1486,7 @@ public class AiVideoImageProcessor {
                 + "【AI 模特穿着母版｜不是视频首帧】这张图的唯一职责是建立同一人物正确穿着当前商品的高清母版，九宫格会另行生成脚本第 01 分镜首帧。"
                 + "人物必须已经按参考商品的真实开口和穿法把衣服完整穿在身上；头、双臂分别穿过正确开口，领口依靠真实裁片、缝线和肩部支撑自然落位。"
                 + "禁止把衣服举在胸前、拿在手里、披在身体前方或靠双手向外拉成露肩；禁止用手指牵拉领边伪造宽领、斜领或单肩结构。"
-                + "双手自然下垂或在远离领口、肩线和袖口的位置轻松放置，不能遮挡领口连续路径、左右袖连接点和露肩侧。"
+                + "可见的手自然下垂或在远离领口、肩线和袖口的位置轻松放置，不能遮挡领口连续路径、左右袖连接点和露肩侧；遮挡或出画的手不补出。"
                 + "脚本第 01 分镜中的举起、展开、包装、拿取、比对、抓领口和其他商品状态只由后续九宫格执行，绝不能覆盖本图的‘正确穿着母版’职责。"
                 + "【清晰正脸约束】人物先建立可识别的近正面人脸："
                 + "脸部可保留约 2–10 度的自然轻微偏转或侧倾，双眼、眉毛、鼻梁、鼻翼、嘴唇和下颌均清楚可见；"
@@ -1531,7 +1552,7 @@ public class AiVideoImageProcessor {
                                                List<ShotPrompt> shots, boolean realFrameGuide) {
         String backgroundRequirement = preserveScriptBackground(task)
                 ? (realFrameGuide
-                    ? "背景逐格沿用参考图1对应位置的原视频真实场景；连续分镜锁定空间、材质、光线和机位关系，原视频明确换景时才切换。"
+                    ? PRODUCT_REAL_FRAME_BACKGROUND_REQUIREMENT
                     : "背景沿用已生成的脚本原场景主图；连续分镜锁定同一空间、材质、光线和机位关系，脚本明确换景时才切换。")
                 : "背景以已生成的 AI 场景主图为视觉母版；根据各分镜动作合理延展空间，保持同一套真实摄影风格，脚本明确换景时才设计协调的新场景。";
         String referenceContract = realFrameGuide
@@ -1564,7 +1585,7 @@ public class AiVideoImageProcessor {
                 .append("相邻格只推进一个小幅动作或镜头变化；商品不得复制、跳变、漂移、悬浮、融化、穿模或突然更换背景。")
                 .append("每格都必须保持真实摄影的透视、接触阴影和光源方向，并让商品材质对光线产生正确响应。")
                 .append(FABRIC_AND_PRODUCT_REALISM_REQUIREMENT)
-                .append("连续分镜若都要求手部互动，必须保持同一双手、相同方向和连续接触点；只在脚本指定的分镜边界出现或退出手部。")
+                .append("连续分镜若都要求手部互动，必须保持同一只手或同一双手，数量、进入方向和接触点连续；只有脚本明确重新抓握时才改变接触点，只在指定边界出现或退出手部。")
                 .append("不得添加编号、文字、边框、水印、额外商品或无关配件。每格要求如下：\n");
         for (ShotPrompt shot : shots) {
             String value = productMotionDirection(task, shot);
@@ -1572,9 +1593,9 @@ public class AiVideoImageProcessor {
             prompt.append("分镜 ").append(String.format("%02d", shot.sequence())).append("：").append(value).append('\n');
         }
         prompt.append(realFrameGuide
-                        ? "输出前把生成结果与参考图1逐格核对：01→09 的手部有无、进入方向、接触点、商品位置、尺度、景别与光影阶段必须一一对应；"
+                        ? PRODUCT_REAL_FRAME_OUTPUT_CHECK
                         : "输出前逐格核对手部状态、商品位置、尺度、景别与光影阶段；")
-                .append("同时检查商品数量唯一、文字和 Logo 未改变、结构未变形、接触与阴影真实；任何一格不合格时只重算该格。")
+                .append("同时检查商品数量唯一、文字和 Logo 未改变、结构未变形、接触与阴影真实；发现任一格不合格时重新完成整张九宫格，不承诺局部修改。")
                 .append("尤其将第 07、08、09 格分别与商品母版直接对照，不能只与第 06 格对照；若后段出现领口缩小、袖型变短、版型变窄、印花简化或材质改变，整张九宫格判废并重算。")
                 .append("最终只输出一张 2160×3840 的完整 4K 九宫格图片。");
         return prompt.toString();
@@ -1669,7 +1690,7 @@ public class AiVideoImageProcessor {
                         ? "新人物必须适应参考图3各格原有的真实光源、色温、曝光、阴影与景深；不得反过来修改背景去迁就人物。"
                         : "但九格的色温、曝光、对比度、手机随拍质感、光线自然度、材质表现和日常生活氛围统一匹配参考图2。")
                 .append(realFrameGuide
-                        ? "参考图2只提供人物身份、非商品搭配与商品穿着尺度，不提供任何格的背景或动作。不同分镜原本存在的换景和商品特写必须保留；除纯商品特写和必须展示脚部的动作外，人物格采用头顶至大腿中下段的近距离比例。"
+                        ? "参考图2只提供人物身份、非商品搭配与商品穿着尺度，不提供任何格的背景或动作。不同分镜原本存在的换景和商品特写必须保留；人物格的景别和可见范围只服从下方近景构图规则，不在此另设脚部例外。"
                         : "只迁移参考图2的视觉风格，不能把九格背景全部替换成参考图2的同一个房间，也不能抹掉参考图3要求的换景和商品特写。")
                 .append("把九格中的每一个占位人体逐格替换为参考图2中的同一个真实人物。必须复制参考图2的同一张脸、五官比例、肤色、")
                 .append("发型、发长、身材比例、下装、鞋袜和配饰；上衣商品外观必须以参考图1为准。九格人物必须是同一个人、同一套穿搭，不得重新选角或重新设计服装。")
@@ -1708,7 +1729,7 @@ public class AiVideoImageProcessor {
                 .append("只约束构图内可见部分，不为凑数量补出被遮挡或出画的手脚。每只可见手必须连接唯一手臂，头颈肩连接自然。侧身格也保持同一人物和穿搭。")
                 .append("第 01–09 格的朝向均服从各自脚本；不得为了人脸锚定把侧脸、低头或商品特写强制改成正脸。")
                 .append("人物必须正确落在地面并与环境建立合理遮挡，手臂、手指、头发和双腿不得穿过身体、衣服、家具或墙面；")
-                .append("输出前逐格检查人物边界与脸部像素：头顶、完整五官、胸前商品、双臂和执行动作的手不得越界、贴边或被截断；默认在大腿中下段至膝盖上方结束构图。人脸低于约 190 像素、五官无法辨认或人物被缩成远景时，必须保持原动作把相机推进并重新构图，不得通过后期裁切放大补救。")
+                .append("输出前逐格检查人物边界与脸部像素：头顶、完整五官、胸前商品、构图内可见手臂和执行动作实际需要的手不得越界、贴边或被截断；不可见肢体无需补出。默认在大腿中下段至膝盖上方结束构图。人脸低于约 190 像素、五官无法辨认或人物被缩成远景时，必须保持原动作把相机推进并重新构图，不得通过后期裁切放大补救。")
                 .append("不得出现换脸、脸型漂移、年龄变化、发型变化、衣服变化、图案乱码、反关节、手指融合、肢体增减、身体扭曲或重影。")
                 .append("最终只输出一张 2160×3840 的 9:16 竖屏 4K 九宫格成图，不输出解释、文字、编号、水印或额外画面。")
                 .append("输出前逐格进行人脸、脸颈肤色、眼神、头发、穿搭和背景风格一致性核验；重点对比每格脸、耳朵、脖子和手臂，"
@@ -1754,12 +1775,11 @@ public class AiVideoImageProcessor {
                 return "按本格构图让手自然遮挡或出画，不为凑齐数量补手，也不得从画面边缘新增手掌";
             }
             return requiresHand
-                    ? "只执行本格写明的手势、拿取或触碰，双手数量、朝向、接触位置与脚本一致，不新增其他手势"
+                    ? "只执行本格写明的手势、拿取或触碰，可见手的数量、朝向和接触位置与脚本一致，不新增其他手势"
                     : "沿用本格实际可见的手部状态；允许自然遮挡或出画，不新增拿取、指向、拉扯、点赞、挥手或持物动作";
         }
-        return requiresHand
-                ? "只出现完成本格动作所需的一双自然手，数量、方向、接触位置与脚本一致；其他格不得继承"
-                : "不得出现人物、手臂、手掌或手指，只保留商品与脚本规定的承托关系";
+        return AiVideoTaskService.productOnlyHandDirective(
+                shot.title() + " " + shot.motion() + " " + shot.prompt(), shot.scene());
     }
 
     private String fabricGripPhysicsRequirement(ShotPrompt shot) {

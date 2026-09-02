@@ -67,4 +67,16 @@ class AiVideoTaskServiceTest {
         assertTrue(result.length() < 700);
         assertTrue(result.endsWith("原提示词"));
     }
+
+    @Test
+    void productOnlyHandDirectiveDoesNotTurnOneHandIntoAForcedPair() {
+        String oneHand = AiVideoTaskService.productOnlyHandDirective("单手拿起商品", "商品近景");
+        String genericHand = AiVideoTaskService.productOnlyHandDirective("拿取商品", "桌面展示");
+        String twoHands = AiVideoTaskService.productOnlyHandDirective("双手展开商品", "正面展示");
+
+        assertTrue(oneHand.contains("只出现一只自然手"));
+        assertTrue(oneHand.contains("不新增第二只手"));
+        assertTrue(genericHand.contains("只出现一只自然手"));
+        assertTrue(twoHands.contains("最多出现两只自然手"));
+    }
 }
