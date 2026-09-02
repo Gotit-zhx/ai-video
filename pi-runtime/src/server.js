@@ -252,6 +252,9 @@ const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `你是电商服装图像生产中的�
   "imageRightSleeve": "原图画面右侧袖子的数量、长度和连接位置",
   "wearerLeftSleeve": "穿着者左袖状态；无法确认时写不确定",
   "wearerRightSleeve": "穿着者右袖状态；无法确认时写不确定",
+  "visibleSleeveCount": 2,
+  "openingInventory": ["逐项列出领口、左袖口、右袖口、下摆等可见开口"],
+  "seamConnections": ["逐项列出袖片、肩片、领边与衣身的可见连接关系"],
   "necklinePath": "领口从原图画面左到右经过肩、锁骨、胸口的连续路径",
   "supportElements": ["细肩带、绕颈带、扣环等辅助支撑的数量、连接位置与所在身体侧"],
   "viewpointProjectionRule": "服装相对穿着者身体侧固定；正面、侧面、背面时应如何映射到屏幕左右",
@@ -267,17 +270,22 @@ const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `你是电商服装图像生产中的�
 2. 必须先区分“原图画面左/右”和“穿着者自身左/右”。不要把两套坐标混写；文字或印花的正常阅读方向可辅助判断是否镜像。穿着者侧无法可靠确认时明确写不确定，但画面侧仍需准确记录。
 3. 领口不是一个类别标签，要描述连续路径：哪侧位于肩上、哪侧下落至肩下或锁骨、是否斜跨、是否闭合、与袖窿怎样连接。
 4. 袖子按左右分别计数。明确指出无袖、短袖、长袖、落肩布片或独立肩带，禁止把裸露肩部误认为缺损，也禁止把衣身边缘误认为第二只袖子。
+4.1 判断领型之前，必须先独立完成“袖子清点”：沿原图画面左、右两侧分别寻找袖筒、袖口边缘、袖片外轮廓及其与衣身的连接。只要一侧可见连续袖片和独立袖口，该侧袖子数量就必须记为 1；斜领下降、露出肩部或领口落到肩下不等于无袖。只有确认该侧完全不存在袖筒、袖片和袖口时，才允许记为 0。
+4.2 斜领上衣可能是“两侧都有短袖，但领口仅在一侧露肩”。当画面左右都可见袖筒/袖口时，必须识别为双袖斜领或双袖露肩结构，禁止套用“一侧有袖、另一侧无袖”的单袖模板；topologyClass、garmentType、fixedStructures 和 forbiddenChanges 必须明确写出“两只袖子均保留”。
+4.3 visibleSleeveCount 必须由可见袖筒和独立袖口直接计数，不得从“单肩/斜肩/露肩”等品类名称推断。openingInventory 和 seamConnections 必须先写像素证据，再填写 topologyClass；分类与清单冲突时以清单为准并改正分类。
 5. wearingMethod 要说明真实穿法和布料落点，避免模型把单肩服装套成普通 T 恤、把领口拉平或把裸肩侧补齐。
 6. 必须区分结构性非对称款和穿法可变的宽船领款。衣片、斜领或肩带本身决定唯一身体侧时，structureSymmetry=INTRINSIC_ASYMMETRIC、wearingSidePolicy=FIXED_WEARER_SIDE；双袖对称且依靠宽领口向任意一侧下拉形成露肩时，structureSymmetry=SYMMETRIC_WIDE_NECK、wearingSidePolicy=EITHER_SIDE_CHOOSE_ONCE。后一种允许 AI 主图任选一侧，但同一组九宫格和视频必须继承主图选择，不能逐格换侧。
 7. supportElements 必须记录所有细肩带、绕颈带、扣环和其他辅助承重结构。肩带数量、宽度类别、连接点和身体侧均不可在后续生成中丢失或增加。
 8. 服装左右固定在穿着者身体坐标，不是屏幕坐标。正面转到背面后同一身体侧在画面中的投影可能反转；viewpointProjectionRule 必须明确禁止模型因为画面左右变化而把衣服换到身体另一侧。
 9. fixedStructures 和 forbiddenChanges 必须足够具体，可直接用于逐格生成校验。结构性非对称服装必须明确禁止对称化、身体侧交换和逐格换侧。
-10. 看不清的背部连接、隐藏肩带或内层结构不得猜测；写入 uncertainties 并降低 confidence。不得因为不确定而把可见的非对称结构改成常规款。
+10. 看不清的背部连接、隐藏肩带或内层结构不得猜测；写入 uncertainties 并降低 confidence。不得因为不确定而把可见的非对称结构改成常规款，也不得在一侧袖口可见时猜成无袖。袖子数量与身体侧映射任一项不确定时 confidence 不得高于 0.75。
 11. 不评价模特、审美和搭配，不抄录品牌或营销文案。每个数组最多 10 项，每项简短明确。`;
 
-const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `你是服装生成结果的商品身份与结构质检器。输入包含两张图片：第 1 张是用户上传的真实商品母版，第 2 张是待验收的 AI 主图或九宫格；用户消息还会给出已确认的服装结构契约。
+const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `你是服装生成结果的商品身份、结构与人体完整性质检器。输入包含两张图片：第 1 张是用户上传的真实商品母版，第 2 张是待验收的 AI 主图或九宫格；用户消息还会给出服装结构契约。
+第 1 张商品母版的可见像素永远是最高真值，结构契约只是辅助摘要。若摘要与母版冲突，必须忽略冲突字段并直接按母版验收，不能用错误摘要放行候选图。开始比较前，先分别清点母版画面左、右两侧的袖筒、袖片、袖口和连接点，再对候选图做同样清点。斜领下降、单侧露肩不等于该侧无袖；母版两侧都有袖口而候选只剩一只袖子时必须 valid=false。
 只检查商品身份和物理结构是否被正确还原，不评价人物长相、背景、美感、清晰度或动作创意。普通款与特殊款采用同一验收标准：必须检查领口的宽度、深度和连续路径，肩线与露肩状态，左右袖数量、长度与连接位置，衣身长宽比例、下摆、肩带/绕颈带/扣环、衣身开口、正反面关系，以及主印花/Logo 的类别、位置和占比是否仍能确认是同一件商品。自然透视、遮挡、褶皱和合理的局部文字形变可以接受，但不能把商品改成相似款。
 用户消息中的 assetType=MODEL_IMAGE 时，第 2 张必须是人物已经按真实开口正确穿好商品的穿着母版；如果人物只是把衣服举在胸前、拿在手中、披在身前，或用手向外拉领口伪造露肩，即使商品平铺形状接近也必须判 valid=false。双手不得遮挡或人为牵拉领口、肩线和袖口。
+人物完整性也是硬条件：每个人只能有两条手臂、两只手，每只手必须自然连接到唯一手臂；出现额外手掌、额外手臂、断肢、复制肢体、镜像肢体或从画面边缘无来源伸入的手，必须 valid=false。STORYBOARD_GRID 必须逐格检查，任一格违规即整图失败。
 九宫格必须将全部 9 格分别直接与第 1 张商品母版核对，不能用前一格作为后一格的商品标准；第 07、08、09 格也必须保持与第 01 格相同的商品保真度。只要任意一格把宽领缩成小口领、改变领口深度、缩短或增长袖子、改变衣身比例、把斜领改成小圆领、把露肩补齐、把左右结构对称化、增删袖子/肩带、换露肩侧、丢失主要印花身份或把原商品改成普通/相似 T 恤，valid 就必须为 false。布料因抓握、重力、转身产生的自然褶皱不算结构错误。
 只返回合法 JSON，不要 Markdown，不要额外文字：
 {
@@ -2115,7 +2123,7 @@ async function runProductFunctionAnalysis(body) {
   const analysisType = String(body?.context?.analysisType || "PRODUCT_FUNCTION_V1").trim();
   const systemPrompt = analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1"
     ? GARMENT_TOPOLOGY_VALIDATION_PROMPT
-    : analysisType === "GARMENT_TOPOLOGY_V1"
+    : (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2")
       ? GARMENT_TOPOLOGY_ANALYSIS_PROMPT
       : PRODUCT_FUNCTION_ANALYSIS_PROMPT;
   const candidateImage = body.candidateImage || {};
@@ -2140,7 +2148,7 @@ async function runProductFunctionAnalysis(body) {
       streamSimple(model, context, {
         ...options,
         apiKey,
-        maxTokens: analysisType === "GARMENT_TOPOLOGY_V1" ? 2400
+        maxTokens: (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2") ? 2400
           : analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1" ? 1200 : 1400,
         timeoutMs: 120_000,
         maxRetries: 2,
