@@ -26,6 +26,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
@@ -57,6 +59,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class AiVideoImageProcessor {
+    private static final Logger log = LoggerFactory.getLogger(AiVideoImageProcessor.class);
+    static final int MAX_TOPOLOGY_REDRAWS = 3;
+    static final int MAX_TOPOLOGY_GENERATIONS = 1 + MAX_TOPOLOGY_REDRAWS;
     private static final String PORTRAIT_4K_SIZE = "2160x3840";
     private static final String PORTRAIT_4K_REQUIREMENT = "最终必须输出实际像素为 2160×3840 的 9:16 竖屏 4K 图片，"
             + "不是仅在画面风格上表现为高清；主体边缘、服装纹理、印花和背景细节必须清晰可辨。";
@@ -592,29 +597,80 @@ public class AiVideoImageProcessor {
                                                              String assetType, String basePrompt,
                                                              List<ReferenceImage> references) {
         try {
-            // One deterministic generation only: never spend image quota by drawing repeatedly.
-            // A candidate is kept private until the source-vs-result gate accepts it.
-            PiArtifact artifact = call(task, item, assetType, model, basePrompt, references);
-            byte[] candidateBytes = Base64.getDecoder().decode(artifact.dataBase64());
-            if (candidateBytes.length == 0 || candidateBytes.length > 64L * 1024 * 1024) {
-                throw new IllegalStateException("生成图片大小无效");
+            ProductFunctionAnalysisService.GarmentValidation previousValidation = null;
+            PiArtifact bestRejectedArtifact = null;
+            String bestRejectedPrompt = null;
+            int bestViolationCount = Integer.MAX_VALUE;
+            for (int generationAttempt = 1;
+                 generationAttempt <= MAX_TOPOLOGY_GENERATIONS;
+                 generationAttempt++) {
+                String prompt = generationAttempt == 1
+                        ? basePrompt
+                        : topologyCorrectionPrompt(basePrompt, previousValidation);
+                PiArtifact artifact = call(task, item, assetType, model, prompt, references);
+                byte[] candidateBytes = Base64.getDecoder().decode(artifact.dataBase64());
+                if (candidateBytes.length == 0 || candidateBytes.length > 64L * 1024 * 1024) {
+                    throw new IllegalStateException("生成图片大小无效");
+                }
+                ProductFunctionAnalysisService.GarmentValidation validation =
+                        productFunctionAnalysisService.validateGenerated(task, item, assetType,
+                                candidateBytes, artifact.mimeType());
+                if (validation.valid()) {
+                    AiVideoTaskAsset stored = store(task, item, assetType, null, artifact, prompt);
+                    clearPendingImageResult(item.getId(), assetType, imageRequestHash(prompt, references));
+                    return stored;
+                }
+                previousValidation = validation;
+                int violationCount = validation.violations() == null
+                        ? Integer.MAX_VALUE : validation.violations().size();
+                if (bestRejectedArtifact == null || violationCount <= bestViolationCount) {
+                    bestRejectedArtifact = artifact;
+                    bestRejectedPrompt = prompt;
+                    bestViolationCount = violationCount;
+                }
+                // A rejected result must not be reused by the next redraw, even when the
+                // correction text happens to be identical to the previous attempt.
+                clearPendingImageResult(item.getId(), assetType, imageRequestHash(prompt, references));
             }
-            ProductFunctionAnalysisService.GarmentValidation validation =
-                    productFunctionAnalysisService.validateGenerated(task, item, assetType,
-                            candidateBytes, artifact.mimeType());
-            if (!validation.valid()) {
-                throw new IllegalStateException("服装结构复核未通过："
-                        + String.join("；", validation.violations()));
+            if (bestRejectedArtifact == null || bestRejectedPrompt == null) {
+                throw new IllegalStateException("服装结构复核没有返回可用候选图");
             }
-            AiVideoTaskAsset stored = store(task, item, assetType, null, artifact, basePrompt);
-            // Preserve the paid provider result until both validation and persistence succeed.
-            // A transient validator failure can then retry the exact same image without redrawing.
-            clearPendingImageResult(item.getId(), assetType, imageRequestHash(basePrompt, references));
+            List<String> finalViolations = previousValidation == null
+                    || previousValidation.violations() == null
+                    ? List.of() : previousValidation.violations();
+            log.warn("Garment validation still rejected {} for item {} after {} redraws; "
+                            + "storing the best candidate with {} violations and continuing. Last violations: {}",
+                    assetType, item.getId(), MAX_TOPOLOGY_REDRAWS, bestViolationCount,
+                    String.join("; ", finalViolations));
+            AiVideoTaskAsset stored = store(task, item, assetType, null,
+                    bestRejectedArtifact, bestRejectedPrompt);
+            clearPendingImageResult(item.getId(), assetType,
+                    imageRequestHash(bestRejectedPrompt, references));
             return stored;
         } catch (Exception exception) {
             throw exception instanceof RuntimeException runtime ? runtime
                     : new IllegalStateException(exception.getMessage(), exception);
         }
+    }
+
+    static String topologyCorrectionPrompt(String basePrompt,
+                                           ProductFunctionAnalysisService.GarmentValidation validation) {
+        List<String> violations = validation == null || validation.violations() == null
+                ? List.of() : validation.violations();
+        String correction = validation == null || validation.correctionPrompt() == null
+                ? "" : validation.correctionPrompt().trim();
+        StringBuilder prompt = new StringBuilder(basePrompt).append("\n\n")
+                .append("【定向纠错重绘】上一候选图未通过复核，请完整重生成一张图片。")
+                .append("优先修正下面的失败项；其他内容继续遵循原提示并从参考图重建，不复制上一候选，也不假设能够只改局部。")
+                .append("先逐像素对照参考图1，再判断商品类别：分别清点画面左侧和右侧的袖筒、袖口、袖片，")
+                .append("并核对领口开口路径及每片布料的缝线连接。斜肩或露肩只代表领口路径不对称，不等于一侧无袖；")
+                .append("参考图两侧都有袖片和袖口证据时，生成结果必须保留两只袖子。")
+                .append("人物最多只有两条手臂和两只手；遮挡或出画的肢体无需补出，每只可见手只能连接一条自然手臂。")
+                .append("如输出九宫格，仍须生成一张完整九宫格图片，并让每格保持同一商品结构。\n")
+                .append("复核失败项：")
+                .append(violations.isEmpty() ? "商品结构或标识未与参考图一致" : String.join("；", violations));
+        if (!correction.isBlank()) prompt.append("\n复核模型纠正要求：").append(correction);
+        return prompt.toString();
     }
 
     private ReferenceImage firstScriptFrameReference(AiVideoTask task) {

@@ -238,6 +238,38 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void topologyRedrawPromptPrioritizesRejectedCellsWithoutPromisingLocalEdits() {
+        var validation = new ProductFunctionAnalysisService.GarmentValidation(false,
+                "第03格补回左胸橙色圆环 Logo，第08格保持正面朝向",
+                java.util.List.of("第03格 Logo 缺失", "第08格前后朝向不一致"), 0.92);
+
+        String prompt = AiVideoImageProcessor.topologyCorrectionPrompt("原始九宫格提示", validation);
+
+        assertTrue(prompt.startsWith("原始九宫格提示"));
+        assertTrue(prompt.contains("定向纠错重绘"));
+        assertTrue(prompt.contains("完整重生成一张图片"));
+        assertTrue(prompt.contains("优先修正下面的失败项"));
+        assertTrue(prompt.contains("不复制上一候选"));
+        assertTrue(prompt.contains("不假设能够只改局部"));
+        assertFalse(prompt.contains("只纠正下面指出的失败分镜"));
+        assertFalse(prompt.contains("只修改失败格"));
+        assertTrue(prompt.contains("第03格 Logo 缺失"));
+        assertTrue(prompt.contains("第08格前后朝向不一致"));
+        assertTrue(prompt.contains("第03格补回左胸橙色圆环 Logo"));
+        assertTrue(prompt.contains("参考图1"));
+        assertTrue(prompt.contains("斜肩或露肩只代表领口路径不对称"));
+        assertTrue(prompt.contains("必须保留两只袖子"));
+        assertTrue(prompt.contains("最多只有两条手臂和两只手"));
+        assertTrue(prompt.contains("一张完整九宫格图片"));
+    }
+
+    @Test
+    void topologyRedrawsAreBoundedToThreeBeforeContinuing() {
+        assertEquals(3, AiVideoImageProcessor.MAX_TOPOLOGY_REDRAWS);
+        assertEquals(4, AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS);
+    }
+
+    @Test
     void transientAndNoAssetPolicyFailuresAreEligibleForAutomaticImageRetry() {
         assertTrue(AiVideoImageProcessor.retryableImageConcurrencyFailure(
                 "并发限制：图片模型当前并发已满"));
@@ -257,6 +289,8 @@ class AiVideoImageProcessorTest {
         assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(
                 "模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址"));
         assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
+                "服装结构复核未通过：第03格 Logo 缺失"));
+        assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(
                 "版权限制：素材包含受版权保护的角色"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("FAILED",
                 "模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址"));
@@ -266,6 +300,8 @@ class AiVideoImageProcessorTest {
                 "图片生成失败：fetch failed"));
         assertTrue(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "图片生成失败：image generation produced no asset：该提示可能违反了我们的内容政策"));
+        assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
+                "图片生成失败：服装结构复核未通过：第08格商品身份不一致"));
         assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "视频厂商并发限制：Concurrency limit exceeded for user, please retry later"));
     }
