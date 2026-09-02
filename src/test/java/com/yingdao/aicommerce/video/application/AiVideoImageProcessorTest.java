@@ -2,28 +2,39 @@ package com.yingdao.aicommerce.video.application;
 
 import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskAsset;
+import com.yingdao.aicommerce.video.domain.AiVideoTask;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.ObjectMapper;
 
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.lang.reflect.Field;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiVideoImageProcessorTest {
+
+    @TempDir
+    Path tempDirectory;
 
     @Test
     void recognizesLegacyStaticModelFirstFrame() {
@@ -61,9 +72,163 @@ class AiVideoImageProcessorTest {
         assertEquals("IMAGE_READY", item.getStatus());
     }
 
+    @Test
+    void topologyRetryStatePersistsBudgetValidationAndBestCandidate() throws Exception {
+        AiVideoImageProcessor processor = processor(tempDirectory);
+        AiVideoTask task = task();
+        AiVideoTaskItem item = item();
+        var validation = new ProductFunctionAnalysisService.GarmentValidation(false,
+                "补回右袖", java.util.List.of("右袖缺失", "领口路径错误"), 0.82, 2);
+        var state = new AiVideoImageProcessor.TopologyRetryState(2, "", validation, false);
+        var current = new AiVideoImageProcessor.TopologyCandidate(
+                "image/png", new byte[] {4, 5, 6}, "model", "generate", "第二次提示", "");
+        var best = new AiVideoImageProcessor.BestTopologyCandidate(
+                new AiVideoImageProcessor.TopologyCandidate(
+                        "image/png", new byte[] {1, 2, 3}, "model", "generate", "第一次提示", ""), 1, 1);
+
+        processor.saveTopologyRetryState(task, item, "MODEL_IMAGE", state);
+        processor.saveTopologyCandidate(task, item, "MODEL_IMAGE", current);
+        processor.saveBestTopologyCandidate(task, item, "MODEL_IMAGE", best);
+
+        var recoveredState = processor.loadTopologyRetryState(task, item, "MODEL_IMAGE");
+        var recoveredCurrent = processor.loadTopologyCandidate(task, item, "MODEL_IMAGE");
+        var recoveredBest = processor.loadBestTopologyCandidate(task, item, "MODEL_IMAGE");
+        assertNotNull(recoveredState);
+        assertEquals(2, recoveredState.attemptsReserved());
+        assertEquals("补回右袖", recoveredState.previousValidation().correctionPrompt());
+        assertEquals(2, recoveredState.previousValidation().violationCount());
+        assertArrayEquals(new byte[] {4, 5, 6}, recoveredCurrent.bytes());
+        assertEquals("第二次提示", recoveredCurrent.prompt());
+        assertArrayEquals(new byte[] {1, 2, 3}, recoveredBest.candidate().bytes());
+        assertEquals(1, recoveredBest.violationCount());
+    }
+
+    @Test
+    void legacyRecoveryConsumesTheUnknownBudgetAndNeverReservesAFifthGeneration() {
+        var recovered = AiVideoImageProcessor.TopologyRetryState.initial(true, "旧候选提示");
+
+        assertEquals(AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS, recovered.attemptsReserved());
+        assertEquals("旧候选提示", recovered.reservedPrompt());
+        assertTrue(recovered.legacyRecovery());
+        assertFalse(recovered.canGenerate());
+
+        var validation = new ProductFunctionAnalysisService.GarmentValidation(false, "",
+                java.util.List.of("仍有结构问题"), 0.5, 1);
+        var fresh = AiVideoImageProcessor.TopologyRetryState.initial(false, "");
+        for (int attempt = 1; attempt <= AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS; attempt++) {
+            fresh = fresh.reserve("提示 " + attempt).reject(validation);
+        }
+        assertEquals(4, fresh.attemptsReserved());
+        assertFalse(fresh.canGenerate());
+
+        var reservedFourth = new AiVideoImageProcessor.TopologyRetryState(
+                4, "第四次提示", validation, false);
+        assertFalse(reservedFourth.mayProcessReservedAttempt(false, false));
+        assertTrue(reservedFourth.mayProcessReservedAttempt(false, true));
+        assertFalse(reservedFourth.abandonReservation().canGenerate());
+        assertTrue(reservedFourth.acceptsPendingHash("same", "same"));
+        assertFalse(reservedFourth.acceptsPendingHash("stale", "expected"));
+        assertTrue(recovered.acceptsPendingHash("legacy-hash", "expected"));
+        var failedWithoutCandidate = AiVideoImageProcessor.TopologyRetryState.initial(false, "")
+                .reserve("首次提示").releaseReservation();
+        assertEquals(0, failedWithoutCandidate.attemptsReserved());
+        assertTrue(failedWithoutCandidate.reservedPrompt().isBlank());
+    }
+
+    @Test
+    void corruptedRetryStateFailsClosedInsteadOfResettingTheBudget() throws Exception {
+        AiVideoImageProcessor processor = processor(tempDirectory);
+        AiVideoTask task = task();
+        AiVideoTaskItem item = item();
+        Path directory = topologyDirectory(tempDirectory, task, item);
+        Files.createDirectories(directory);
+        Files.writeString(directory.resolve("model_image.state.json"), "{not-json");
+
+        var recovered = processor.loadTopologyRetryState(task, item, "MODEL_IMAGE");
+
+        assertNotNull(recovered);
+        assertEquals(4, recovered.attemptsReserved());
+        assertTrue(recovered.legacyRecovery());
+        assertFalse(recovered.canGenerate());
+    }
+
+    @Test
+    void unfinishedBestWriteCannotMixNewBytesWithTheOldManifest() throws Exception {
+        AiVideoImageProcessor processor = processor(tempDirectory);
+        AiVideoTask task = task();
+        AiVideoTaskItem item = item();
+        var first = new AiVideoImageProcessor.BestTopologyCandidate(
+                new AiVideoImageProcessor.TopologyCandidate(
+                        "image/png", new byte[] {1, 2, 3}, "model", "generate", "第一次提示", ""),
+                1, 1);
+        processor.saveBestTopologyCandidate(task, item, "MODEL_IMAGE", first);
+        Files.write(topologyDirectory(tempDirectory, task, item).resolve("model_image.best-2.bin"),
+                new byte[] {9, 9, 9});
+
+        var recovered = processor.loadBestTopologyCandidate(task, item, "MODEL_IMAGE");
+
+        assertNotNull(recovered);
+        assertEquals(1, recovered.attemptNumber());
+        assertArrayEquals(new byte[] {1, 2, 3}, recovered.candidate().bytes());
+    }
+
+    @Test
+    void explicitResetClearsPersistedBudgetCandidateAndPendingResult() throws Exception {
+        var pendingMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class);
+        AiVideoImageProcessor processor = processor(tempDirectory, pendingMapper);
+        AiVideoTask task = task();
+        AiVideoTaskItem item = item();
+        processor.saveTopologyRetryState(task, item, "STORYBOARD_GRID",
+                new AiVideoImageProcessor.TopologyRetryState(3, "提示", null, false));
+        processor.saveTopologyCandidate(task, item, "STORYBOARD_GRID",
+                new AiVideoImageProcessor.TopologyCandidate(
+                        "image/png", new byte[] {1}, "model", "generate", "提示", ""));
+
+        processor.resetTopologyRetryState(task, item, java.util.List.of("STORYBOARD_GRID"));
+
+        assertNull(processor.loadTopologyRetryState(task, item, "STORYBOARD_GRID"));
+        assertNull(processor.loadTopologyCandidate(task, item, "STORYBOARD_GRID"));
+        verify(pendingMapper).delete(any());
+    }
+
     private static AiVideoTaskItem item() {
         return new AiVideoTaskItem("org", "task", "item", "sku",
                 "source.png", "C:/tmp/source.png", "image/png", 1);
+    }
+
+    private static AiVideoTask task() {
+        return new AiVideoTask(
+                "org", "task", "script", 1, "script", "{}", "菲律宾", "MODEL_WEAR",
+                "AI_DESIGNED", "服装", "按分镜", "按分镜", false, "9:16", "720p",
+                false, false, "{}", "{}", "user");
+    }
+
+    private static AiVideoImageProcessor processor(Path storageRoot) {
+        return processor(storageRoot,
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class));
+    }
+
+    private static AiVideoImageProcessor processor(
+            Path storageRoot,
+            com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper pendingMapper) {
+        return new AiVideoImageProcessor(
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskAssetMapper.class),
+                pendingMapper,
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper.class),
+                mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class),
+                mock(ProductFunctionAnalysisService.class),
+                mock(AiVideoGenerationService.class),
+                new ObjectMapper(), Runnable::run, Runnable::run,
+                mock(org.springframework.beans.factory.ObjectProvider.class),
+                "http://localhost:8090", "test-token", storageRoot.toString(), storageRoot.toString());
+    }
+
+    private static Path topologyDirectory(Path storageRoot, AiVideoTask task, AiVideoTaskItem item) {
+        return storageRoot.resolve(task.getOrganizationId()).resolve(task.getId())
+                .resolve(item.getId()).resolve("private-validation");
     }
     @Test
     void cropsTopLeftStoryboardCellAsFirstFrame() {
@@ -99,10 +264,14 @@ class AiVideoImageProcessorTest {
     @Test
     void storyboardGridUsesCloserFramingInsteadOfMandatoryFullBody() throws Exception {
         String requirement = privateStaticString("GRID_FACE_PIXEL_REQUIREMENT");
+        String poseRequirement = privateStaticString("GRID_POSE_SCALE_REQUIREMENT");
 
         assertTrue(requirement.contains("约 190 像素"));
         assertTrue(requirement.contains("膝盖、小腿、双脚和鞋子不可见"));
         assertFalse(requirement.contains("鞋底全部可见"));
+        assertTrue(poseRequirement.contains("构图内自然可见"));
+        assertTrue(poseRequirement.contains("被遮挡或出画的肢体无需补出"));
+        assertFalse(poseRequirement.contains("双臂及本格动作需要"));
     }
 
     @Test
@@ -284,10 +453,13 @@ class AiVideoImageProcessorTest {
     void topologyCandidateRankingUsesTotalViolationsAndRejectsMissingDetails() {
         var summarized = new ProductFunctionAnalysisService.GarmentValidation(false, "",
                 java.util.List.of("问题一", "问题二", "问题三"), 0.9, 7);
+        var undercounted = new ProductFunctionAnalysisService.GarmentValidation(false, "",
+                java.util.List.of("问题一", "问题二", "问题三"), 0.9, 1);
         var missingDetails = new ProductFunctionAnalysisService.GarmentValidation(false, "",
                 java.util.List.of(), 0.1, 0);
 
         assertEquals(7, AiVideoImageProcessor.topologyViolationCount(summarized));
+        assertEquals(3, AiVideoImageProcessor.topologyViolationCount(undercounted));
         assertEquals(Integer.MAX_VALUE, AiVideoImageProcessor.topologyViolationCount(missingDetails));
         assertTrue(AiVideoImageProcessor.preferNewTopologyCandidate(7, 2));
         assertTrue(AiVideoImageProcessor.preferNewTopologyCandidate(2, 2));
@@ -341,6 +513,10 @@ class AiVideoImageProcessorTest {
                 "图片生成失败：服装结构复核未通过：第08格商品身份不一致"));
         assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "图片生成失败：服装结构复核暂时失败：响应超时"));
+        assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("FAILED",
+                "服装结构复核暂时失败：image generation produced no asset；content policy；429"));
+        assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
+                "Image generation failed: garment validation unavailable; content policy; 429"));
         assertFalse(AiVideoImageProcessor.retryablePipelineImageFailure("VIDEO_FAILED",
                 "视频厂商并发限制：Concurrency limit exceeded for user, please retry later"));
     }

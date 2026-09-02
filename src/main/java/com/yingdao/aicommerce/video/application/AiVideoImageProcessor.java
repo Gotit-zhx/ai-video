@@ -39,6 +39,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.StandardCopyOption;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -110,7 +112,7 @@ public class AiVideoImageProcessor {
             + "不得为了保留全身和鞋底把人物缩小。脚本明确要求纯商品特写、坐姿或动作必须看到脚部时，才允许该格采用对应景别并显示鞋子，"
             + "但同一连续段的人脸尺度不得忽大忽小。";
     private static final String GRID_POSE_SCALE_REQUIREMENT = "【动作底图尺度】每个 720×1280 子画面默认采用头顶至大腿中下段的中近景；"
-            + "无脸人体的头部轮廓高度不得低于单格高度的 15%，但不得生成可识别五官。头部、躯干、双臂及本格动作需要的可见手部必须完整，"
+            + "无脸人体的头部轮廓高度不得低于单格高度的 15%，但不得生成可识别五官。构图内自然可见的头部、躯干、手臂及本格动作实际需要的手部结构必须完整；被遮挡或出画的肢体无需补出，"
             + "不为显示膝盖以下、双脚或鞋子而缩小人物；脚本明确需要脚部或纯商品特写时才使用对应景别。";
     private static final String FABRIC_AND_PRODUCT_REALISM_REQUIREMENT = "材质必须按真实物理方式受光：棉料保留细微织纹、厚薄、"
             + "缝线和受力褶皱，印花贴合布面起伏而非悬浮；纸、塑料、玻璃、金属和木材分别呈现正确的漫反射、粗糙度、"
@@ -230,6 +232,14 @@ public class AiVideoImageProcessor {
                 // Another request may have claimed the task between select and update.
             }
         }
+        List<AiVideoTask> interruptedImageTasks = taskMapper.selectList(
+                new LambdaQueryWrapper<AiVideoTask>()
+                        .eq(AiVideoTask::getStatus, "IMAGE_GENERATING")
+                        .le(AiVideoTask::getUpdatedAt, Instant.now().minus(Duration.ofSeconds(30)))
+                        .orderByAsc(AiVideoTask::getUpdatedAt)
+                        .last("LIMIT 100"));
+        for (AiVideoTask task : interruptedImageTasks) dispatchRecoveredGeneration(task.getId());
+
         List<AiVideoTask> pipelined = taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
                 .eq(AiVideoTask::getStatus, "VIDEO_GENERATING")
                 .ge(AiVideoTask::getUpdatedAt, Instant.now().minus(Duration.ofHours(2)))
@@ -422,6 +432,8 @@ public class AiVideoImageProcessor {
         AiVideoTaskAsset modelAsset = usableAsset(existing, primaryAssetType);
         AiVideoTaskAsset storyboardAsset = usableAsset(existing, "STORYBOARD_GRID");
         AiVideoTaskAsset firstFrameAsset = usableAsset(existing, "STORYBOARD_FIRST_FRAME");
+        if (modelAsset != null) reconcileCompletedTopologyAsset(task, item, primaryAssetType);
+        if (storyboardAsset != null) reconcileCompletedTopologyAsset(task, item, "STORYBOARD_GRID");
         // Older MODEL_WEAR tasks copied the static model image as the video first frame. That made
         // the video model overfit to a single holding pose and ignore the storyboard state changes.
         // Migrate those assets lazily so retries use the actual first storyboard cell.
@@ -604,73 +616,397 @@ public class AiVideoImageProcessor {
                                                              String assetType, String basePrompt,
                                                              List<ReferenceImage> references) {
         try {
-            ProductFunctionAnalysisService.GarmentValidation previousValidation = null;
-            PiArtifact bestRejectedArtifact = null;
-            String bestRejectedPrompt = null;
-            int bestViolationCount = Integer.MAX_VALUE;
-            for (int generationAttempt = 1;
-                 generationAttempt <= MAX_TOPOLOGY_GENERATIONS;
-                 generationAttempt++) {
-                String prompt = generationAttempt == 1
-                        ? basePrompt
-                        : topologyCorrectionPrompt(basePrompt, previousValidation);
-                PiArtifact artifact = call(task, item, assetType, model, prompt, references);
-                byte[] candidateBytes = Base64.getDecoder().decode(artifact.dataBase64());
-                if (candidateBytes.length == 0 || candidateBytes.length > 64L * 1024 * 1024) {
-                    throw new IllegalStateException("生成图片大小无效");
+            TopologyCandidate candidate = loadTopologyCandidate(task, item, assetType);
+            BestTopologyCandidate best = loadBestTopologyCandidate(task, item, assetType);
+            TopologyRetryState state = loadTopologyRetryState(task, item, assetType);
+            AiVideoPendingImageResult pending = pendingImageResult(item.getId(), assetType);
+            if (state == null) {
+                boolean legacyRecovery = candidate != null || best != null || pending != null;
+                String recoveredPrompt = candidate != null ? candidate.prompt()
+                        : pending != null ? basePrompt : "";
+                state = TopologyRetryState.initial(legacyRecovery, recoveredPrompt);
+                saveTopologyRetryState(task, item, assetType, state);
+            } else if (state.legacyRecovery() && state.reservedPrompt().isBlank()
+                    && candidate == null && pending != null) {
+                state = state.recoverPending(basePrompt);
+                saveTopologyRetryState(task, item, assetType, state);
+            }
+
+            boolean reservedInThisInvocation = false;
+            while (true) {
+                if (candidate == null) {
+                    if (state.reservedPrompt().isBlank()) {
+                        if (!state.canGenerate()) {
+                            if (best == null) {
+                                throw new IllegalStateException("服装结构复核重抽预算已用完且没有可恢复候选图");
+                            }
+                            logExhaustedTopologyBudget(assetType, item, state, best.violationCount());
+                            return storeFinalTopologyCandidate(task, item, assetType, best.candidate());
+                        }
+                        // Any pending row left after a completed rejection belongs to the old prompt.
+                        // Remove it before reserving the next bounded redraw.
+                        clearPendingImageResult(item.getId(), assetType);
+                        int nextAttempt = state.attemptsReserved() + 1;
+                        String prompt = nextAttempt == 1
+                                ? basePrompt
+                                : topologyCorrectionPrompt(basePrompt, state.previousValidation());
+                        state = state.reserve(prompt);
+                        saveTopologyRetryState(task, item, assetType, state);
+                        reservedInThisInvocation = true;
+                    }
+
+                    pending = pendingImageResult(item.getId(), assetType);
+                    String expectedPromptHash = imageRequestHash(state.reservedPrompt(), references);
+                    if (pending != null && !state.acceptsPendingHash(
+                            pending.getPromptHash(), expectedPromptHash)) {
+                        pendingImageResultMapper.deleteById(pending.getId());
+                        pending = null;
+                    }
+                    if (!state.mayProcessReservedAttempt(
+                            reservedInThisInvocation, pending != null)) {
+                        // The process stopped after reserving this slot but before persisting a
+                        // recoverable result. Count the slot as consumed; never replay the POST.
+                        state = state.abandonReservation();
+                        saveTopologyRetryState(task, item, assetType, state);
+                        if (best != null) {
+                            if (!state.canGenerate()) {
+                                logExhaustedTopologyBudget(assetType, item, state, best.violationCount());
+                                return storeFinalTopologyCandidate(task, item, assetType, best.candidate());
+                            }
+                            continue;
+                        }
+                        if (state.canGenerate()) continue;
+                        throw new IllegalStateException("服装候选图已不可恢复；为避免超过四次生成上限，已停止继续重抽");
+                    }
+                    PiArtifact artifact;
+                    try {
+                        artifact = pending == null
+                                ? call(task, item, assetType, model, state.reservedPrompt(), references)
+                                : downloadPendingImage(model, state.reservedPrompt(), pending);
+                    } catch (Exception generationFailure) {
+                        // A failed request with no saved provider result produced no candidate and
+                        // therefore does not consume one of the four candidate slots. A saved URL
+                        // keeps the reservation so recovery only retries its download.
+                        if (pending == null && pendingImageResult(item.getId(), assetType) == null
+                                && reservedInThisInvocation) {
+                            state = state.releaseReservation();
+                            saveTopologyRetryState(task, item, assetType, state);
+                        }
+                        throw generationFailure;
+                    }
+                    byte[] candidateBytes = Base64.getDecoder().decode(artifact.dataBase64());
+                    validateTopologyCandidateSize(candidateBytes);
+                    candidate = TopologyCandidate.fromArtifact(
+                            artifact, state.reservedPrompt(), candidateBytes);
+                    saveTopologyCandidate(task, item, assetType, candidate);
+                    reservedInThisInvocation = false;
                 }
+
+                PiArtifact artifact = candidate.toArtifact();
+                byte[] candidateBytes = candidate.bytes();
+                validateTopologyCandidateSize(candidateBytes);
                 ProductFunctionAnalysisService.GarmentValidation validation;
                 try {
                     validation = productFunctionAnalysisService.validateGenerated(task, item, assetType,
                             candidateBytes, artifact.mimeType());
                 } catch (Exception validationFailure) {
-                    PiArtifact fallbackArtifact = bestRejectedArtifact == null
-                            ? artifact : bestRejectedArtifact;
-                    String fallbackPrompt = bestRejectedPrompt == null ? prompt : bestRejectedPrompt;
+                    TopologyCandidate fallback = best == null ? candidate : best.candidate();
                     log.warn("Garment validation unavailable for {} on item {}; storing the best known "
                                     + "candidate and continuing without another redraw: {}",
                             assetType, item.getId(), validationFailure.getMessage());
-                    AiVideoTaskAsset stored = store(task, item, assetType, null,
-                            fallbackArtifact, fallbackPrompt);
-                    clearPendingImageResult(item.getId(), assetType,
-                            imageRequestHash(prompt, references));
-                    return stored;
+                    return storeFinalTopologyCandidate(task, item, assetType, fallback);
                 }
                 if (validation.valid()) {
-                    AiVideoTaskAsset stored = store(task, item, assetType, null, artifact, prompt);
-                    clearPendingImageResult(item.getId(), assetType, imageRequestHash(prompt, references));
-                    return stored;
+                    return storeFinalTopologyCandidate(task, item, assetType, candidate);
                 }
-                previousValidation = validation;
+
                 int violationCount = topologyViolationCount(validation);
-                if (bestRejectedArtifact == null
-                        || preferNewTopologyCandidate(bestViolationCount, violationCount)) {
-                    bestRejectedArtifact = artifact;
-                    bestRejectedPrompt = prompt;
-                    bestViolationCount = violationCount;
+                if (best == null || preferNewTopologyCandidate(best.violationCount(), violationCount)) {
+                    best = new BestTopologyCandidate(candidate, violationCount, state.attemptsReserved());
+                    saveBestTopologyCandidate(task, item, assetType, best);
                 }
-                // A rejected result must not be reused by the next redraw, even when the
-                // correction text happens to be identical to the previous attempt.
-                clearPendingImageResult(item.getId(), assetType, imageRequestHash(prompt, references));
+                state = state.reject(validation);
+                saveTopologyRetryState(task, item, assetType, state);
+                clearPendingImageResult(item.getId(), assetType);
+                discardTopologyCandidate(task, item, assetType);
+                candidate = null;
+                reservedInThisInvocation = false;
+
+                if (!state.canGenerate()) {
+                    logExhaustedTopologyBudget(assetType, item, state, best.violationCount());
+                    return storeFinalTopologyCandidate(task, item, assetType, best.candidate());
+                }
             }
-            if (bestRejectedArtifact == null || bestRejectedPrompt == null) {
-                throw new IllegalStateException("服装结构复核没有返回可用候选图");
-            }
-            List<String> finalViolations = previousValidation == null
-                    || previousValidation.violations() == null
-                    ? List.of() : previousValidation.violations();
-            log.warn("Garment validation still rejected {} for item {} after {} redraws; "
-                            + "storing the best candidate with {} violations and continuing. Last violations: {}",
-                    assetType, item.getId(), MAX_TOPOLOGY_REDRAWS, bestViolationCount,
-                    String.join("; ", finalViolations));
-            AiVideoTaskAsset stored = store(task, item, assetType, null,
-                    bestRejectedArtifact, bestRejectedPrompt);
-            clearPendingImageResult(item.getId(), assetType,
-                    imageRequestHash(bestRejectedPrompt, references));
-            return stored;
         } catch (Exception exception) {
             throw exception instanceof RuntimeException runtime ? runtime
                     : new IllegalStateException(exception.getMessage(), exception);
+        }
+    }
+
+    private void validateTopologyCandidateSize(byte[] bytes) {
+        if (bytes == null || bytes.length == 0 || bytes.length > 64L * 1024 * 1024) {
+            throw new IllegalStateException("生成图片大小无效");
+        }
+    }
+
+    private AiVideoTaskAsset storeFinalTopologyCandidate(AiVideoTask task, AiVideoTaskItem item,
+                                                          String assetType,
+                                                          TopologyCandidate candidate) throws Exception {
+        AiVideoTaskAsset stored = store(task, item, assetType, null,
+                candidate.toArtifact(), candidate.prompt());
+        clearPendingImageResult(item.getId(), assetType);
+        discardTopologyRetryState(task, item, assetType);
+        return stored;
+    }
+
+    private void logExhaustedTopologyBudget(String assetType, AiVideoTaskItem item,
+                                             TopologyRetryState state, int bestViolationCount) {
+        List<String> finalViolations = state.previousValidation() == null
+                || state.previousValidation().violations() == null
+                ? List.of() : state.previousValidation().violations();
+        log.warn("Garment validation still rejected {} for item {} after {} redraws; "
+                        + "storing the best candidate with {} violations and continuing. Last violations: {}",
+                assetType, item.getId(), MAX_TOPOLOGY_REDRAWS, bestViolationCount,
+                String.join("; ", finalViolations));
+    }
+
+    void saveTopologyCandidate(AiVideoTask task, AiVideoTaskItem item, String assetType,
+                               TopologyCandidate candidate) throws Exception {
+        Path dataPath = topologyCandidatePath(task, item, assetType, ".bin");
+        Path metadataPath = topologyCandidatePath(task, item, assetType, ".json");
+        Files.createDirectories(dataPath.getParent());
+        writeAtomically(dataPath, candidate.bytes());
+        writeAtomically(metadataPath, objectMapper.writeValueAsBytes(topologyCandidateMetadata(candidate)));
+    }
+
+    TopologyCandidate loadTopologyCandidate(AiVideoTask task, AiVideoTaskItem item, String assetType) {
+        Path dataPath = topologyCandidatePath(task, item, assetType, ".bin");
+        Path metadataPath = topologyCandidatePath(task, item, assetType, ".json");
+        if (!Files.isRegularFile(dataPath) || !Files.isRegularFile(metadataPath)) return null;
+        try {
+            return readTopologyCandidate(dataPath, metadataPath);
+        } catch (Exception exception) {
+            discardTopologyCandidate(task, item, assetType);
+            return null;
+        }
+    }
+
+    void discardTopologyCandidate(AiVideoTask task, AiVideoTaskItem item, String assetType) {
+        deleteTopologyFiles(task, item, assetType, ".bin", ".json");
+    }
+
+    void saveBestTopologyCandidate(AiVideoTask task, AiVideoTaskItem item, String assetType,
+                                   BestTopologyCandidate best) throws Exception {
+        String dataSuffix = bestTopologyDataSuffix(best.attemptNumber());
+        Path dataPath = topologyCandidatePath(task, item, assetType, dataSuffix);
+        Path metadataPath = topologyCandidatePath(task, item, assetType, ".best.json");
+        Files.createDirectories(dataPath.getParent());
+        writeAtomically(dataPath, best.candidate().bytes());
+        Map<String, Object> metadata = topologyCandidateMetadata(best.candidate());
+        metadata.put("violationCount", best.violationCount());
+        metadata.put("attemptNumber", best.attemptNumber());
+        metadata.put("sizeBytes", best.candidate().bytes().length);
+        metadata.put("sha256", sha256(best.candidate().bytes()));
+        writeAtomically(metadataPath, objectMapper.writeValueAsBytes(metadata));
+    }
+
+    BestTopologyCandidate loadBestTopologyCandidate(AiVideoTask task, AiVideoTaskItem item,
+                                                     String assetType) {
+        Path metadataPath = topologyCandidatePath(task, item, assetType, ".best.json");
+        if (!Files.isRegularFile(metadataPath)) return null;
+        try {
+            Map<String, Object> metadata = objectMapper.readValue(
+                    metadataPath.toFile(), new TypeReference<>() {});
+            int attemptNumber = number(metadata.get("attemptNumber"), 0);
+            Path dataPath = topologyCandidatePath(task, item, assetType,
+                    attemptNumber > 0 ? bestTopologyDataSuffix(attemptNumber) : ".best.bin");
+            TopologyCandidate candidate = readTopologyCandidate(dataPath, metadata);
+            int expectedSize = number(metadata.get("sizeBytes"), candidate.bytes().length);
+            if (expectedSize != candidate.bytes().length) {
+                throw new IllegalStateException("历史最佳候选图大小不一致");
+            }
+            String expectedHash = nullableText(metadata.get("sha256"));
+            if (!expectedHash.isBlank() && !expectedHash.equals(sha256(candidate.bytes()))) {
+                throw new IllegalStateException("历史最佳候选图校验和不一致");
+            }
+            int violationCount = Math.max(1, number(metadata.get("violationCount"), Integer.MAX_VALUE));
+            return new BestTopologyCandidate(candidate, violationCount,
+                    attemptNumber > 0 ? attemptNumber : MAX_TOPOLOGY_GENERATIONS);
+        } catch (Exception exception) {
+            deleteTopologyFiles(task, item, assetType, ".best.json");
+            return null;
+        }
+    }
+
+    private String bestTopologyDataSuffix(int attemptNumber) {
+        if (attemptNumber < 1 || attemptNumber > MAX_TOPOLOGY_GENERATIONS) {
+            throw new IllegalStateException("历史最佳候选图轮次无效");
+        }
+        return ".best-" + attemptNumber + ".bin";
+    }
+
+    private String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (Exception exception) {
+            throw new IllegalStateException("候选图校验和计算失败", exception);
+        }
+    }
+
+    void saveTopologyRetryState(AiVideoTask task, AiVideoTaskItem item, String assetType,
+                                TopologyRetryState state) throws Exception {
+        Path statePath = topologyCandidatePath(task, item, assetType, ".state.json");
+        Files.createDirectories(statePath.getParent());
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("attemptsReserved", state.attemptsReserved());
+        metadata.put("reservedPrompt", state.reservedPrompt());
+        metadata.put("legacyRecovery", state.legacyRecovery());
+        if (state.previousValidation() != null) {
+            ProductFunctionAnalysisService.GarmentValidation validation = state.previousValidation();
+            Map<String, Object> previous = new LinkedHashMap<>();
+            previous.put("valid", validation.valid());
+            previous.put("correctionPrompt", validation.correctionPrompt());
+            previous.put("violations", validation.violations() == null ? List.of() : validation.violations());
+            previous.put("confidence", validation.confidence());
+            previous.put("violationCount", validation.violationCount());
+            metadata.put("previousValidation", previous);
+        }
+        writeAtomically(statePath, objectMapper.writeValueAsBytes(metadata));
+    }
+
+    TopologyRetryState loadTopologyRetryState(AiVideoTask task, AiVideoTaskItem item,
+                                               String assetType) {
+        Path statePath = topologyCandidatePath(task, item, assetType, ".state.json");
+        if (!Files.isRegularFile(statePath)) return null;
+        try {
+            Map<String, Object> metadata = objectMapper.readValue(
+                    statePath.toFile(), new TypeReference<>() {});
+            int attempts = number(metadata.get("attemptsReserved"), 0);
+            String reservedPrompt = nullableText(metadata.get("reservedPrompt"));
+            boolean legacyRecovery = Boolean.TRUE.equals(metadata.get("legacyRecovery"));
+            ProductFunctionAnalysisService.GarmentValidation previous =
+                    readTopologyValidation(metadata.get("previousValidation"));
+            return new TopologyRetryState(attempts, reservedPrompt, previous, legacyRecovery);
+        } catch (Exception exception) {
+            log.warn("服装结构重抽状态损坏，按四次预算已用完保守恢复，taskId={}, itemId={}, assetType={}: {}",
+                    task.getId(), item.getId(), assetType, exception.getMessage());
+            return TopologyRetryState.initial(true, "");
+        }
+    }
+
+    private ProductFunctionAnalysisService.GarmentValidation readTopologyValidation(Object raw) {
+        if (!(raw instanceof Map<?, ?> value)) return null;
+        List<String> violations = value.get("violations") instanceof List<?> items
+                ? items.stream().map(this::nullableText).filter(text -> !text.isBlank()).limit(20).toList()
+                : List.of();
+        double confidence;
+        try {
+            confidence = Double.parseDouble(String.valueOf(value.get("confidence")));
+        } catch (Exception ignored) {
+            confidence = 0.0;
+        }
+        return new ProductFunctionAnalysisService.GarmentValidation(
+                Boolean.TRUE.equals(value.get("valid")), nullableText(value.get("correctionPrompt")),
+                violations, confidence, number(value.get("violationCount"),
+                violations.isEmpty() ? Integer.MAX_VALUE : violations.size()));
+    }
+
+    private Map<String, Object> topologyCandidateMetadata(TopologyCandidate candidate) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("mimeType", candidate.mimeType());
+        metadata.put("modelId", candidate.modelId());
+        metadata.put("mode", candidate.mode());
+        metadata.put("prompt", candidate.prompt());
+        metadata.put("revisedPrompt", candidate.revisedPrompt());
+        metadata.put("sizeBytes", candidate.bytes().length);
+        metadata.put("sha256", sha256(candidate.bytes()));
+        return metadata;
+    }
+
+    private TopologyCandidate readTopologyCandidate(Path dataPath, Path metadataPath) throws Exception {
+        Map<String, Object> metadata = objectMapper.readValue(
+                metadataPath.toFile(), new TypeReference<>() {});
+        return readTopologyCandidate(dataPath, metadata);
+    }
+
+    private TopologyCandidate readTopologyCandidate(Path dataPath,
+                                                    Map<String, Object> metadata) throws Exception {
+        byte[] bytes = Files.readAllBytes(dataPath);
+        validateTopologyCandidateSize(bytes);
+        int expectedSize = number(metadata.get("sizeBytes"), bytes.length);
+        String expectedHash = nullableText(metadata.get("sha256"));
+        if (expectedSize != bytes.length
+                || !expectedHash.isBlank() && !expectedHash.equals(sha256(bytes))) {
+            throw new IllegalStateException("私有候选图完整性校验失败");
+        }
+        String mimeType = nullableText(metadata.get("mimeType"));
+        String prompt = nullableText(metadata.get("prompt"));
+        if (!Set.of("image/jpeg", "image/png", "image/webp").contains(mimeType.toLowerCase())
+                || prompt.isBlank()) {
+            throw new IllegalStateException("私有候选图元数据无效");
+        }
+        return new TopologyCandidate(mimeType, bytes, nullableText(metadata.get("modelId")),
+                nullableText(metadata.get("mode")), prompt,
+                nullableText(metadata.get("revisedPrompt")));
+    }
+
+    private Path topologyCandidatePath(AiVideoTask task, AiVideoTaskItem item,
+                                       String assetType, String suffix) {
+        String safeAssetType = assetType == null ? "IMAGE"
+                : assetType.replaceAll("[^A-Za-z0-9_-]", "_");
+        Path directory = storageRoot.resolve(task.getOrganizationId()).resolve(task.getId())
+                .resolve(item.getId()).resolve("private-validation").normalize();
+        if (!directory.startsWith(storageRoot)) throw new IllegalStateException("候选图目录不安全");
+        return directory.resolve(safeAssetType.toLowerCase() + suffix).normalize();
+    }
+
+    private void writeAtomically(Path target, byte[] content) throws IOException {
+        Path temporary = target.resolveSibling(target.getFileName() + ".part");
+        Files.write(temporary, content);
+        try {
+            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void discardTopologyRetryState(AiVideoTask task, AiVideoTaskItem item,
+                                            String assetType) {
+        deleteTopologyFiles(task, item, assetType,
+                ".bin", ".json", ".best.bin", ".best-1.bin", ".best-2.bin",
+                ".best-3.bin", ".best-4.bin", ".best.json", ".state.json");
+    }
+
+    private void reconcileCompletedTopologyAsset(AiVideoTask task, AiVideoTaskItem item,
+                                                  String assetType) {
+        try {
+            clearPendingImageResult(item.getId(), assetType);
+            discardTopologyRetryState(task, item, assetType);
+        } catch (Exception exception) {
+            log.warn("已完成图片的服装重抽临时状态清理失败，taskId={}, itemId={}, assetType={}: {}",
+                    task.getId(), item.getId(), assetType, exception.getMessage());
+        }
+    }
+
+    public void resetTopologyRetryState(AiVideoTask task, AiVideoTaskItem item,
+                                        List<String> assetTypes) {
+        if (task == null || item == null || assetTypes == null) return;
+        for (String assetType : assetTypes) {
+            clearPendingImageResult(item.getId(), assetType);
+            discardTopologyRetryState(task, item, assetType);
+        }
+    }
+
+    private void deleteTopologyFiles(AiVideoTask task, AiVideoTaskItem item,
+                                     String assetType, String... suffixes) {
+        for (String suffix : suffixes) {
+            try {
+                Files.deleteIfExists(topologyCandidatePath(task, item, assetType, suffix));
+                Files.deleteIfExists(topologyCandidatePath(task, item, assetType, suffix + ".part"));
+            } catch (IOException ignored) {
+                // The final database asset remains authoritative; stale private files are never served.
+            }
         }
     }
 
@@ -699,9 +1035,10 @@ public class AiVideoImageProcessor {
 
     static int topologyViolationCount(ProductFunctionAnalysisService.GarmentValidation validation) {
         if (validation == null || validation.valid()) return 0;
-        if (validation.violationCount() > 0) return validation.violationCount();
         List<String> violations = validation.violations();
-        return violations == null || violations.isEmpty() ? Integer.MAX_VALUE : violations.size();
+        int detailedCount = violations == null ? 0 : violations.size();
+        if (detailedCount == 0 && validation.violationCount() <= 0) return Integer.MAX_VALUE;
+        return Math.max(validation.violationCount(), detailedCount);
     }
 
     static boolean preferNewTopologyCandidate(int currentBestViolationCount, int newViolationCount) {
@@ -1096,6 +1433,12 @@ public class AiVideoImageProcessor {
                 .eq(AiVideoPendingImageResult::getPromptHash, promptHash));
     }
 
+    private void clearPendingImageResult(String itemId, String assetType) {
+        pendingImageResultMapper.delete(new LambdaQueryWrapper<AiVideoPendingImageResult>()
+                .eq(AiVideoPendingImageResult::getItemId, itemId)
+                .eq(AiVideoPendingImageResult::getAssetType, assetType));
+    }
+
     private String imageRequestHash(String prompt, List<ReferenceImage> references) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -1171,7 +1514,7 @@ public class AiVideoImageProcessor {
                 + safe(task.getTargetMarket(), "通用电商市场") + "。只出现一位成年人物，头顶、五官、胸前商品、双肩和构图内可见手臂清楚入镜；没有动作需要时手可以自然遮挡或出画，不为凑齐双手而补手。"
                 + FRIENDLY_MODEL_FACE_BASELINE
                 + "人物大致面向镜头但不要证件照式立正：身体相对画面中心轻微偏移，重心自然落在一条腿上，两侧肩髋不完全水平，"
-                + "双臂以略有差异的方式自然下垂，一只手可轻微弯曲，头部有极小角度偏转，眼神像刚注意到拍摄者；"
+                + "构图内可见手臂以略有差异的方式自然放置，可见手臂可轻微弯曲，头部有极小角度偏转，眼神像刚注意到拍摄者；"
                 + "表情处在尚未刻意摆拍的自然瞬间，可以只是轻微嘴角变化，不能露出模板化甜美微笑。"
                 + "姿态松弛但能够完整展示上衣，不摆夸张时尚姿势；身体比例、关节和五根手指正确。"
                 + "【AI 模特穿着母版｜不是视频首帧】这张图的唯一职责是建立同一人物正确穿着当前商品的高清母版，九宫格会另行生成脚本第 01 分镜首帧。"
@@ -1665,6 +2008,73 @@ public class AiVideoImageProcessor {
     private record ReferenceImage(String name, String mimeType, String dataBase64) {}
     private record SourceFramePoint(double timestampSeconds, double durationSeconds) {}
     private record StoredMedia(String location, long size) {}
+    record TopologyRetryState(int attemptsReserved, String reservedPrompt,
+                              ProductFunctionAnalysisService.GarmentValidation previousValidation,
+                              boolean legacyRecovery) {
+        TopologyRetryState {
+            attemptsReserved = Math.max(0, Math.min(MAX_TOPOLOGY_GENERATIONS, attemptsReserved));
+            reservedPrompt = reservedPrompt == null ? "" : reservedPrompt;
+        }
+
+        static TopologyRetryState initial(boolean legacyRecovery, String recoveredPrompt) {
+            return new TopologyRetryState(
+                    legacyRecovery ? MAX_TOPOLOGY_GENERATIONS : 0,
+                    legacyRecovery ? recoveredPrompt : "", null, legacyRecovery);
+        }
+
+        boolean canGenerate() {
+            return attemptsReserved < MAX_TOPOLOGY_GENERATIONS;
+        }
+
+        TopologyRetryState reserve(String prompt) {
+            if (!canGenerate() || !reservedPrompt.isBlank()) {
+                throw new IllegalStateException("服装结构重抽轮次状态无效");
+            }
+            return new TopologyRetryState(attemptsReserved + 1, prompt, previousValidation, false);
+        }
+
+        TopologyRetryState reject(ProductFunctionAnalysisService.GarmentValidation validation) {
+            return new TopologyRetryState(attemptsReserved, "", validation, legacyRecovery);
+        }
+
+        TopologyRetryState recoverPending(String prompt) {
+            return new TopologyRetryState(attemptsReserved, prompt, previousValidation, true);
+        }
+
+        TopologyRetryState abandonReservation() {
+            if (reservedPrompt.isBlank()) return this;
+            return new TopologyRetryState(attemptsReserved, "", previousValidation, legacyRecovery);
+        }
+
+        TopologyRetryState releaseReservation() {
+            if (reservedPrompt.isBlank()) return this;
+            return new TopologyRetryState(Math.max(0, attemptsReserved - 1), "",
+                    previousValidation, legacyRecovery);
+        }
+
+        boolean acceptsPendingHash(String pendingHash, String expectedHash) {
+            return legacyRecovery || expectedHash != null && expectedHash.equals(pendingHash);
+        }
+
+        boolean mayProcessReservedAttempt(boolean reservedInThisInvocation,
+                                          boolean hasRecoverablePending) {
+            return !reservedPrompt.isBlank()
+                    && (reservedInThisInvocation || hasRecoverablePending);
+        }
+    }
+    record TopologyCandidate(String mimeType, byte[] bytes, String modelId, String mode,
+                             String prompt, String revisedPrompt) {
+        static TopologyCandidate fromArtifact(PiArtifact artifact, String prompt, byte[] bytes) {
+            return new TopologyCandidate(artifact.mimeType(), bytes, artifact.modelId(), artifact.mode(),
+                    prompt, artifact.revisedPrompt());
+        }
+
+        PiArtifact toArtifact() {
+            return new PiArtifact("private-validation", mimeType,
+                    Base64.getEncoder().encodeToString(bytes), modelId, mode, prompt, revisedPrompt);
+        }
+    }
+    record BestTopologyCandidate(TopologyCandidate candidate, int violationCount, int attemptNumber) {}
     private record PiImageResponse(PiArtifact artifact, PiImageResult result, Map<String, Object> usage) {}
     private record PiImageResult(String url, String mimeType, String modelId, String mode,
                                  String prompt, String revisedPrompt) {}
