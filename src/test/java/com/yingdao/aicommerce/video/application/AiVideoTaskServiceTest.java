@@ -57,11 +57,17 @@ class AiVideoTaskServiceTest {
         String oneHand = AiVideoTaskService.productOnlyHandDirective("单手拿起商品", "商品近景");
         String genericHand = AiVideoTaskService.productOnlyHandDirective("拿取商品", "桌面展示");
         String twoHands = AiVideoTaskService.productOnlyHandDirective("双手展开商品", "正面展示");
+        String handheldCamera = AiVideoTaskService.productOnlyHandDirective("手持镜头缓慢横移", "商品近景");
 
         assertTrue(oneHand.contains("只出现一只自然手"));
         assertTrue(oneHand.contains("不新增第二只手"));
         assertTrue(genericHand.contains("只出现一只自然手"));
         assertTrue(twoHands.contains("最多出现两只自然手"));
+        assertTrue(handheldCamera.contains("不出现人物、手臂、手掌或手指"));
+        assertFalse(AiVideoTaskService.handInteractionRequired("handheld camera moves closer"));
+        assertFalse(AiVideoTaskService.handInteractionRequired("手持拍摄并轻微环绕"));
+        assertTrue(AiVideoTaskService.handInteractionRequired("手持商品靠近镜头"));
+        assertTrue(AiVideoTaskService.handInteractionRequired("手持镜头后拿起商品"));
     }
 
     @Test
