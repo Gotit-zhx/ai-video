@@ -582,8 +582,11 @@ label { color: var(--ink-soft); font-weight: 550; }
 #video-scripts-page .script-library-rail {
   position: sticky;
   top: calc(var(--topbar-height) + 14px);
-  height: calc(100vh - var(--topbar-height) - 30px);
-  min-height: 560px;
+  align-self: start;
+  height: auto;
+  min-height: 0;
+  max-height: calc(100vh - var(--topbar-height) - 30px);
+  max-height: calc(100dvh - var(--topbar-height) - 30px);
   display: flex;
   flex-direction: column;
   border-color: var(--line-strong);
@@ -617,7 +620,7 @@ label { color: var(--ink-soft); font-weight: 550; }
 }
 #video-scripts-page .rail-fuzzy-search:focus-within { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
 #video-scripts-page .script-library-list {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   max-height: none;
   gap: 0;
