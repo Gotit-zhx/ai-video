@@ -143,6 +143,7 @@ public class AiVideoImageProcessor {
     private final Executor imageCoordinatorExecutor;
     private final Set<String> activeGenerationTaskIds = ConcurrentHashMap.newKeySet();
     private final Set<String> activeGenerationItemIds = ConcurrentHashMap.newKeySet();
+    private final Set<String> generationContinuationTaskIds = ConcurrentHashMap.newKeySet();
     private final Semaphore itemRecoverySlots = new Semaphore(MAX_ITEM_RECOVERY_CONCURRENCY);
     private final Path storageRoot;
     private final Path videoScriptStorageRoot;
@@ -287,13 +288,11 @@ public class AiVideoImageProcessor {
                     try {
                         recoverPendingImageDownload(pending);
                     } finally {
-                        activeGenerationItemIds.remove(pending.getItemId());
-                        itemRecoverySlots.release();
+                        releaseRecoveredItemAndContinue(pending.getTaskId(), pending.getItemId());
                     }
                 });
             } catch (RuntimeException exception) {
-                activeGenerationItemIds.remove(pending.getItemId());
-                itemRecoverySlots.release();
+                releaseRecoveredItem(pending.getItemId());
                 throw exception;
             }
         }
@@ -319,16 +318,28 @@ public class AiVideoImageProcessor {
                     try {
                         recoverImageItem(task, item);
                     } finally {
-                        activeGenerationItemIds.remove(item.getId());
-                        itemRecoverySlots.release();
+                        releaseRecoveredItemAndContinue(item.getTaskId(), item.getId());
                     }
                 });
             } catch (RuntimeException exception) {
-                activeGenerationItemIds.remove(item.getId());
-                itemRecoverySlots.release();
+                releaseRecoveredItem(item.getId());
                 throw exception;
             }
         }
+    }
+
+    private void releaseRecoveredItemAndContinue(String taskId, String itemId) {
+        releaseRecoveredItem(itemId);
+        AiVideoTaskItem latest = itemMapper.selectById(itemId);
+        if (latest == null || !("IMAGE_READY".equals(latest.getStatus())
+                || latest.getStatus() != null && latest.getStatus().startsWith("VIDEO_"))) return;
+        generationContinuationTaskIds.add(taskId);
+        dispatchRecoveredGeneration(taskId);
+    }
+
+    private void releaseRecoveredItem(String itemId) {
+        activeGenerationItemIds.remove(itemId);
+        itemRecoverySlots.release();
     }
 
     private void recoverPendingImageDownload(AiVideoPendingImageResult pending) {
@@ -439,10 +450,14 @@ public class AiVideoImageProcessor {
     @Async("aiVideoImageCoordinatorExecutor")
     public void generate(String taskId) {
         if (!activeGenerationTaskIds.add(taskId)) return;
+        generationContinuationTaskIds.remove(taskId);
         try {
             generateClaimed(taskId);
         } finally {
             activeGenerationTaskIds.remove(taskId);
+            if (generationContinuationTaskIds.remove(taskId)) {
+                dispatchRecoveredGeneration(taskId);
+            }
         }
     }
 
@@ -482,9 +497,13 @@ public class AiVideoImageProcessor {
             AtomicInteger processed = new AtomicInteger();
             AtomicInteger completedCount = new AtomicInteger();
             AtomicBoolean waitingForPrivateValidation = new AtomicBoolean();
+            AtomicBoolean waitingForActiveGeneration = new AtomicBoolean();
             List<CompletableFuture<String>> futures = generationItems.stream()
                     .map(item -> CompletableFuture.supplyAsync(() -> {
-                        if (!activeGenerationItemIds.add(item.getId())) return null;
+                        if (!activeGenerationItemIds.add(item.getId())) {
+                            waitingForActiveGeneration.set(true);
+                            return null;
+                        }
                         String failure = null;
                         try {
                             generateItem(task, item, shots, model, pipelineRecovery);
@@ -532,6 +551,13 @@ public class AiVideoImageProcessor {
                     .map(CompletableFuture::join)
                     .filter(message -> message != null && !message.isBlank())
                     .toList();
+            if (waitingForActiveGeneration.get()) {
+                // A recovery worker owns at least one SKU. Treating that skipped future as a
+                // successful result can finalize the task and submit video before its storyboard
+                // exists. Yield this aggregation pass; the owner schedules a continuation after
+                // releasing the item, so no image-executor thread blocks or polls indefinitely.
+                return;
+            }
             int completed = completedCount.get();
             AiVideoTask current = taskMapper.selectById(task.getId());
             if (current != null && current.getStatus() != null && current.getStatus().startsWith("VIDEO_")) {

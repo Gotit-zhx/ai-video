@@ -16,11 +16,16 @@ import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -33,6 +38,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -829,9 +835,161 @@ class AiVideoImageProcessorTest {
         }
     }
 
+    @Test
+    void recoveryContinuationIsNotLostWhileTheTaskCoordinatorIsStillActive() throws Exception {
+        var taskMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper.class);
+        var itemMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class);
+        CountDownLatch firstGenerationEntered = new CountDownLatch(1);
+        CountDownLatch allowFirstGenerationToFinish = new CountDownLatch(1);
+        CountDownLatch continuationRan = new CountDownLatch(1);
+        AtomicInteger selections = new AtomicInteger();
+        when(taskMapper.selectById("task-1")).thenAnswer(invocation -> {
+            if (selections.incrementAndGet() == 1) {
+                firstGenerationEntered.countDown();
+                assertTrue(allowFirstGenerationToFinish.await(2, TimeUnit.SECONDS));
+            } else {
+                continuationRan.countDown();
+            }
+            return null;
+        });
+        AiVideoTaskItem recoveredItem = new AiVideoTaskItem("org", "task-1", "SKU-001", "sku",
+                "source.png", tempDirectory.resolve("source.png").toString(), "image/png", 1);
+        recoveredItem.complete();
+        when(itemMapper.selectById(recoveredItem.getId())).thenReturn(recoveredItem);
+        AiVideoImageProcessor processor = new AiVideoImageProcessor(
+                taskMapper, itemMapper,
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskAssetMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper.class),
+                mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class),
+                mock(ProductFunctionAnalysisService.class), mock(AiVideoGenerationService.class),
+                new ObjectMapper(), Runnable::run, Runnable::run,
+                mock(org.springframework.beans.factory.ObjectProvider.class),
+                "http://localhost:8090", "test-token", tempDirectory.toString(), tempDirectory.toString());
+
+        @SuppressWarnings("unchecked")
+        Set<String> activeItems = (Set<String>) privateField(processor, "activeGenerationItemIds");
+        Semaphore recoverySlots = (Semaphore) privateField(processor, "itemRecoverySlots");
+        assertTrue(recoverySlots.tryAcquire());
+        assertTrue(activeItems.add(recoveredItem.getId()));
+        var release = AiVideoImageProcessor.class.getDeclaredMethod(
+                "releaseRecoveredItemAndContinue", String.class, String.class);
+        release.setAccessible(true);
+
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<?> first = executor.submit(() -> processor.generate("task-1"));
+            assertTrue(firstGenerationEntered.await(2, TimeUnit.SECONDS));
+
+            release.invoke(processor, "task-1", recoveredItem.getId());
+            assertEquals(1, selections.get());
+
+            allowFirstGenerationToFinish.countDown();
+            first.get();
+            assertTrue(continuationRan.await(2, TimeUnit.SECONDS));
+            assertEquals(2, selections.get());
+        } finally {
+            allowFirstGenerationToFinish.countDown();
+        }
+    }
+
+    @Test
+    void occupiedRecoveryItemDefersFinalizationUntilItsWorkerFinishes() throws Exception {
+        var taskMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper.class);
+        var itemMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class);
+        var assetMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskAssetMapper.class);
+        var pendingMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class);
+        var modelConfigService = mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class);
+        var productFunctionAnalysisService = mock(ProductFunctionAnalysisService.class);
+        var videoGenerationService = mock(AiVideoGenerationService.class);
+
+        AiVideoTask task = new AiVideoTask(
+                "org", "task", "script", 1, "script", nineShotScript(), "菲律宾", "MODEL_WEAR",
+                "AI_DESIGNED", "服装", "按分镜", "按分镜", false, "9:16", "720p",
+                false, false, "{}", "{}", "user");
+        task.requestAutoStartVideo();
+        task.start("config", "image-model");
+        AiVideoTaskItem item = new AiVideoTaskItem("org", task.getId(), "SKU-001", "sku",
+                "source.png", tempDirectory.resolve("source.png").toString(), "image/png", 1);
+        item.fail("fetch failed");
+
+        Path modelPath = Files.write(tempDirectory.resolve("model.png"), new byte[] {1});
+        Path storyboardPath = Files.write(tempDirectory.resolve("storyboard.png"), new byte[] {2});
+        Path firstFramePath = Files.write(tempDirectory.resolve("first-frame.png"), new byte[] {3});
+        List<AiVideoTaskAsset> assets = List.of(
+                new AiVideoTaskAsset("org", task.getId(), item.getId(), "MODEL_IMAGE", null,
+                        modelPath.toString(), "image/png", 1, "CLOSE_FRAMING_GATE_V1", "image-model"),
+                new AiVideoTaskAsset("org", task.getId(), item.getId(), "STORYBOARD_GRID", null,
+                        storyboardPath.toString(), "image/png", 1, "CLOSE_FRAMING_GATE_V1", "image-model"),
+                new AiVideoTaskAsset("org", task.getId(), item.getId(), "STORYBOARD_FIRST_FRAME", 1,
+                        firstFramePath.toString(), "image/png", 1, "从最终九宫格裁切", "image-model"));
+
+        when(taskMapper.selectById(task.getId())).thenReturn(task);
+        when(itemMapper.selectList(any())).thenReturn(List.of(item));
+        when(itemMapper.selectById(item.getId())).thenReturn(item);
+        when(assetMapper.selectList(any())).thenReturn(assets);
+        when(modelConfigService.imageConnection("org")).thenReturn(Optional.of(
+                new com.yingdao.aicommerce.saas.application.ModelConfigService.RuntimeModelConnection(
+                        "config", "https://image.invalid", "image-model", "OPENAI", "provider", "key")));
+        when(productFunctionAnalysisService.promptBlock(any(), any())).thenReturn("");
+        when(videoGenerationService.start(task)).thenReturn(task);
+
+        AiVideoImageProcessor processor = new AiVideoImageProcessor(
+                taskMapper, itemMapper, assetMapper, pendingMapper,
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper.class),
+                modelConfigService, productFunctionAnalysisService, videoGenerationService,
+                new ObjectMapper(), Runnable::run, Runnable::run,
+                mock(org.springframework.beans.factory.ObjectProvider.class),
+                "http://localhost:8090", "test-token", tempDirectory.toString(), tempDirectory.toString());
+
+        @SuppressWarnings("unchecked")
+        Set<String> activeItems = (Set<String>) privateField(processor, "activeGenerationItemIds");
+        Semaphore recoverySlots = (Semaphore) privateField(processor, "itemRecoverySlots");
+        assertTrue(recoverySlots.tryAcquire());
+        assertTrue(activeItems.add(item.getId()));
+
+        processor.generate(task.getId());
+
+        assertEquals("IMAGE_GENERATING", task.getStatus());
+        assertTrue(task.isAutoStartVideoAfterImages());
+        verify(videoGenerationService, never()).start(task);
+
+        item.complete();
+        var release = AiVideoImageProcessor.class.getDeclaredMethod(
+                "releaseRecoveredItemAndContinue", String.class, String.class);
+        release.setAccessible(true);
+        release.invoke(processor, task.getId(), item.getId());
+
+        assertEquals("IMAGE_READY", item.getStatus(), item.getErrorMessage());
+        verify(videoGenerationService, times(1)).start(task);
+    }
+
+    private static String nineShotScript() {
+        return """
+                {"shots":[
+                  {"sequence":1,"sceneDescription":"分镜1"},
+                  {"sequence":2,"sceneDescription":"分镜2"},
+                  {"sequence":3,"sceneDescription":"分镜3"},
+                  {"sequence":4,"sceneDescription":"分镜4"},
+                  {"sequence":5,"sceneDescription":"分镜5"},
+                  {"sequence":6,"sceneDescription":"分镜6"},
+                  {"sequence":7,"sceneDescription":"分镜7"},
+                  {"sequence":8,"sceneDescription":"分镜8"},
+                  {"sequence":9,"sceneDescription":"分镜9"}
+                ]}
+                """;
+    }
+
     private static String privateStaticString(String fieldName) throws Exception {
         Field field = AiVideoImageProcessor.class.getDeclaredField(fieldName);
         field.setAccessible(true);
         return (String) field.get(null);
+    }
+
+    private static Object privateField(Object target, String fieldName) throws Exception {
+        Field field = target.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return field.get(target);
     }
 }
