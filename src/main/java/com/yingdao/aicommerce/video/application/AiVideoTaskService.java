@@ -1041,7 +1041,7 @@ public class AiVideoTaskService {
             return;
         }
         prompt.append("所有出现人物的画面都必须保持头顶至大腿中下段、下边界在膝盖上方的中近景；膝盖以下、双脚和鞋子始终不可见。")
-                .append("脸从发际线到下巴的高度在每一帧都不得低于画面高度 15%，头顶、完整五官、胸前商品、构图内可见手臂和动作实际需要的手必须清楚；被遮挡或出画的肢体无需补出。")
+                .append("正面或侧脸可见时，脸从发际线到下巴的高度不得低于画面高度 15%；背身、后脑、低头遮脸或商品遮脸时，不得为满足人脸条件强行补画五官或把人物转正，改以头部轮廓高度不低于 15% 保持同一主体尺度。头顶、该朝向自然可见的五官、本镜头按时间轴可见的当前商品部位、构图内可见手臂和动作实际需要的手必须清楚；被遮挡或出画的肢体无需补出。")
                 .append("禁止远景、全景、完整全身、广角缩人、人物后退变小、镜头拉远或切到远景；脚本、shotSize、cameraMovement、参考图或原视频若与此冲突，一律把动作改写到中近景内完成。")
                 .append("允许硬切和轻微推近、横移、环绕，但切换前后仍须保持相同中近景主体尺度，不能用拉远交代环境。纯商品特写可以无人，但商品必须近景填满主要画面。\n\n");
     }
@@ -1049,7 +1049,7 @@ public class AiVideoTaskService {
     private String closeFramingTimelineDirective(AiVideoTask task) {
         return "PRODUCT_ONLY".equals(task.getGenerationMode())
                 ? "商品近景，主体填满主要画面；禁止远景、主体缩小和拉远"
-                : "人物中近景：头顶至膝盖上方、脸高≥15%；禁止远景、全身、脚部入镜和拉远";
+                : "人物中近景：头顶至膝盖上方、可见脸或头部轮廓高度≥15%；背身或遮脸不补脸、不转正；禁止远景、全身、脚部入镜和拉远";
     }
 
     private String buildDirectReferenceVideoPrompt(AiVideoTask task, String subjectName) {

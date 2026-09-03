@@ -337,6 +337,12 @@ class AiVideoImageProcessorTest {
 
         assertTrue(requirement.contains("约 190 像素"));
         assertTrue(requirement.contains("膝盖、小腿、双脚和鞋子不可见"));
+        assertTrue(requirement.contains("正面或侧脸可见格"));
+        assertTrue(requirement.contains("背身、后脑、低头遮脸或商品遮脸格"));
+        assertTrue(requirement.contains("不得为通过校验强行补画五官或把人物转正"));
+        assertTrue(requirement.contains("本格按脚本可见的当前商品部位"));
+        assertFalse(requirement.contains("每张脸从发际线到下巴"));
+        assertFalse(requirement.contains("胸前商品"));
         assertFalse(requirement.contains("鞋底全部可见"));
         assertTrue(poseRequirement.contains("构图内自然可见"));
         assertTrue(poseRequirement.contains("被遮挡或出画的肢体无需补出"));
@@ -360,7 +366,8 @@ class AiVideoImageProcessorTest {
         String productFraming = AiVideoImageProcessor.imageFramingDirective("PRODUCT_ONLY");
 
         assertTrue(modelFraming.contains("头顶至大腿中下段"));
-        assertTrue(modelFraming.contains("脸高至少15%"));
+        assertTrue(modelFraming.contains("可见脸或头部轮廓高度至少15%"));
+        assertTrue(modelFraming.contains("背身或遮脸动作不得强行补脸或转正"));
         assertTrue(modelFraming.contains("禁止远景、全身、脚部入镜和拉远"));
         assertTrue(productFraming.contains("商品近景"));
         assertTrue(productFraming.contains("主体填满主要画面"));
@@ -379,6 +386,8 @@ class AiVideoImageProcessorTest {
 
         assertEquals("头顶至大腿中下段、膝盖上方的中近景", contract.get("personFraming"));
         assertEquals(0.15, contract.get("minimumFaceHeightRatio"));
+        assertTrue(String.valueOf(contract.get("faceVisibilityPolicy")).contains("校验头部轮廓高度"));
+        assertTrue(String.valueOf(contract.get("faceVisibilityPolicy")).contains("不得强行补画五官或转正"));
         assertTrue(String.valueOf(contract.get("forbidden")).contains("远景"));
         assertTrue(String.valueOf(contract.get("forbidden")).contains("双脚或鞋子入镜"));
         assertTrue(String.valueOf(contract.get("forbidden")).contains("镜头拉远"));

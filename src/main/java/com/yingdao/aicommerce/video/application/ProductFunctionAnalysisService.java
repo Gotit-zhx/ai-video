@@ -181,6 +181,7 @@ public class ProductFunctionAnalysisService {
         return Map.of(
                 "personFraming", "头顶至大腿中下段、膝盖上方的中近景",
                 "minimumFaceHeightRatio", 0.15,
+                "faceVisibilityPolicy", "正面或侧脸可见时校验脸高；背身、后脑、低头遮脸或商品遮脸时校验头部轮廓高度，不得强行补画五官或转正",
                 "forbidden", List.of("远景", "全景", "全身", "膝盖以下入镜", "双脚或鞋子入镜", "人物突然缩小", "镜头拉远"),
                 "productOnlyFraming", "纯商品格必须采用商品近景并让主体填满主要画面"
         );

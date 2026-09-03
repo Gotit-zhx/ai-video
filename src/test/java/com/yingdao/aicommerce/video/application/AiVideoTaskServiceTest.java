@@ -80,9 +80,14 @@ class AiVideoTaskServiceTest {
 
         String result = prompt.toString();
         assertTrue(result.contains("头顶至大腿中下段"));
-        assertTrue(result.contains("脸从发际线到下巴的高度在每一帧都不得低于画面高度 15%"));
+        assertTrue(result.contains("正面或侧脸可见时"));
+        assertTrue(result.contains("头部轮廓高度不低于 15%"));
+        assertTrue(result.contains("不得为满足人脸条件强行补画五官或把人物转正"));
+        assertTrue(result.contains("本镜头按时间轴可见的当前商品部位"));
         assertTrue(result.contains("被遮挡或出画的肢体无需补出"));
         assertTrue(result.contains("禁止远景、全景、完整全身"));
+        assertFalse(result.contains("头顶、完整五官"));
+        assertFalse(result.contains("胸前商品"));
         assertFalse(result.contains("动作所需双手必须清楚"));
     }
 }
