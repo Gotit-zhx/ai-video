@@ -391,6 +391,39 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void excludesEarlyGridDividersAndNeighboringCellsFromFirstFrame() {
+        BufferedImage storyboard = new BufferedImage(2160, 3840, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = storyboard.createGraphics();
+        try {
+            graphics.setColor(Color.RED);
+            graphics.fillRect(0, 0, 689, 1216);
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(689, 0, 11, 3840);
+            graphics.fillRect(0, 1216, 2160, 64);
+            graphics.setColor(Color.BLUE);
+            graphics.fillRect(700, 0, 1460, 1216);
+            graphics.setColor(Color.GREEN);
+            graphics.fillRect(0, 1280, 2160, 2560);
+        } finally {
+            graphics.dispose();
+        }
+
+        BufferedImage firstFrame = AiVideoImageProcessor.cropFirstStoryboardCell(storyboard);
+
+        assertEquals(720, firstFrame.getWidth());
+        assertEquals(1280, firstFrame.getHeight());
+        for (int y = 0; y < firstFrame.getHeight(); y += 16) {
+            for (int x = 0; x < firstFrame.getWidth(); x += 16) {
+                assertEquals(Color.RED.getRGB(), firstFrame.getRGB(x, y),
+                        "first frame contains a shifted divider or neighboring cell at " + x + "," + y);
+            }
+        }
+        assertEquals(Color.RED.getRGB(), firstFrame.getRGB(719, 1279));
+        assertEquals(Color.RED.getRGB(), firstFrame.getRGB(719, 640));
+        assertEquals(Color.RED.getRGB(), firstFrame.getRGB(360, 1279));
+    }
+
+    @Test
     void closerPortraitCompositionAllocatesEnoughPixelsToFace() throws Exception {
         String requirement = privateStaticString("CLOSE_PORTRAIT_COMPOSITION_REQUIREMENT");
 
