@@ -448,6 +448,62 @@ function modelFrom(config) {
   };
 }
 
+async function requestNonStreamingChat(
+  config, apiKey, systemPrompt, prompt, frames, maxTokens = 6500, timeoutMs = 180_000) {
+  const baseUrl = String(config.baseUrl || "").trim().replace(/\/+$/, "");
+  const endpoint = /\/chat\/completions$/i.test(baseUrl)
+    ? baseUrl
+    : `${baseUrl}/chat/completions`;
+  const modelId = String(config.modelId || "").trim();
+  const tokenOptions = /^gpt-5(?:\.|-|$)/i.test(modelId)
+    ? { max_completion_tokens: maxTokens, reasoning_effort: "low" }
+    : { max_tokens: maxTokens };
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: modelId,
+      stream: false,
+      ...tokenOptions,
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            ...frames.map(frame => ({
+              type: "image_url",
+              image_url: {
+                url: `data:${String(frame.mimeType)};base64,${String(frame.data)}`
+              }
+            }))
+          ]
+        }
+      ]
+    }),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(`非流式兜底请求失败 ${response.status}: ${body.slice(0, 500)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new Error("非流式兜底响应不是有效 JSON");
+  }
+  const content = parsed?.choices?.[0]?.message?.content;
+  const reply = Array.isArray(content)
+    ? content.map(part => typeof part === "string" ? part : String(part?.text || "")).join("")
+    : String(content || "");
+  if (!reply.trim()) throw new Error("非流式兜底没有返回有效结果");
+  return reply.trim();
+}
+
 function modelSignature(config = {}) {
   const baseUrl = String(config.baseUrl || "").trim().replace(/\/+$/, "");
   const modelId = String(config.modelId || "").trim();
@@ -2151,6 +2207,54 @@ async function runProductFunctionAnalysis(body) {
     }
     attachments.push({ type: "image", data: candidateData, mimeType: candidateMimeType });
   }
+  const startedAt = Date.now();
+  if (analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1") {
+    try {
+      const reply = await requestNonStreamingChat(
+        config,
+        apiKey,
+        systemPrompt,
+        JSON.stringify(body.context || {}),
+        attachments,
+        400,
+        180_000
+      );
+      console.info(`[product-analysis] validation completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
+      return {
+        result: extractJsonObject(reply),
+        usage: null,
+        latencyMs: Date.now() - startedAt,
+        modelId: config.modelId
+      };
+    } catch (error) {
+      console.warn(`[product-analysis] validation failed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
+      throw error;
+    }
+  }
+  if (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2") {
+    try {
+      const reply = await requestNonStreamingChat(
+        config,
+        apiKey,
+        systemPrompt,
+        JSON.stringify(body.context || {}),
+        attachments,
+        2400,
+        180_000
+      );
+      console.info(`[product-analysis] topology completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
+      return {
+        result: extractJsonObject(reply),
+        reply,
+        usage: null,
+        latencyMs: Date.now() - startedAt,
+        modelId: config.modelId
+      };
+    } catch (error) {
+      console.warn(`[product-analysis] topology failed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
+      throw error;
+    }
+  }
   const runtimeAgent = new Agent({
     initialState: {
       systemPrompt,
@@ -2172,7 +2276,6 @@ async function runProductFunctionAnalysis(body) {
     convertToLlm: messages =>
       messages.filter(message => ["user", "assistant"].includes(message.role))
   });
-  const startedAt = Date.now();
   await runtimeAgent.prompt(
     JSON.stringify(body.context || {}),
     attachments
