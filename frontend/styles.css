@@ -1027,8 +1027,10 @@ form label { display: block; margin: 20px 0 9px; font-size: 13px; font-weight: 7
 
 @media (min-width: 901px) {
   #video-scripts-page .script-library-rail {
+    align-self: start;
     display: flex;
     flex-direction: column;
+    height: auto;
     max-height: calc(100vh - 202px);
     max-height: calc(100dvh - 202px);
     overflow: hidden;
@@ -1036,6 +1038,10 @@ form label { display: block; margin: 20px 0 9px; font-size: 13px; font-weight: 7
 
   #video-scripts-page .script-library-rail > header {
     flex: 0 0 auto;
+  }
+
+  #video-scripts-page .script-library-list {
+    flex: 0 1 auto;
   }
 }
 
