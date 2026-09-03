@@ -140,6 +140,7 @@ public class AiVideoImageProcessor {
     private final Executor imageExecutor;
     private final Executor imageCoordinatorExecutor;
     private final Set<String> activeGenerationTaskIds = ConcurrentHashMap.newKeySet();
+    private final Set<String> generationContinuationTaskIds = ConcurrentHashMap.newKeySet();
     private final Path storageRoot;
     private final Path videoScriptStorageRoot;
     private final OssStorageService ossStorage;
@@ -320,11 +321,28 @@ public class AiVideoImageProcessor {
 
     @Async("aiVideoImageCoordinatorExecutor")
     public void generate(String taskId) {
-        if (!activeGenerationTaskIds.add(taskId)) return;
+        if (!activeGenerationTaskIds.add(taskId)) {
+            requestGenerationContinuation(taskId);
+            return;
+        }
+        generationContinuationTaskIds.remove(taskId);
         try {
             generateClaimed(taskId);
         } finally {
             activeGenerationTaskIds.remove(taskId);
+            if (generationContinuationTaskIds.remove(taskId)) {
+                dispatchRecoveredGeneration(taskId);
+            }
+        }
+    }
+
+    private void requestGenerationContinuation(String taskId) {
+        generationContinuationTaskIds.add(taskId);
+        // The active owner can finish between the failed claim and this marker. In that narrow
+        // window it has already missed the marker, so dispatch the continuation from here.
+        if (!activeGenerationTaskIds.contains(taskId)
+                && generationContinuationTaskIds.remove(taskId)) {
+            dispatchRecoveredGeneration(taskId);
         }
     }
 

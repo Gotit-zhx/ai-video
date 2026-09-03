@@ -18,6 +18,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -765,6 +766,79 @@ class AiVideoImageProcessorTest {
             allowFirstGenerationToFinish.countDown();
             first.get();
         }
+    }
+
+    @Test
+    void recoveryContinuationIsNotLostWhileTheTaskCoordinatorIsStillActive() throws Exception {
+        var taskMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper.class);
+        CountDownLatch firstGenerationEntered = new CountDownLatch(1);
+        CountDownLatch allowFirstGenerationToFinish = new CountDownLatch(1);
+        CountDownLatch continuationRan = new CountDownLatch(1);
+        AtomicInteger selections = new AtomicInteger();
+        when(taskMapper.selectById("task-1")).thenAnswer(invocation -> {
+            if (selections.incrementAndGet() == 1) {
+                firstGenerationEntered.countDown();
+                assertTrue(allowFirstGenerationToFinish.await(2, TimeUnit.SECONDS));
+            } else {
+                continuationRan.countDown();
+            }
+            return null;
+        });
+        AiVideoImageProcessor processor = new AiVideoImageProcessor(
+                taskMapper, mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskAssetMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper.class),
+                mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class),
+                mock(ProductFunctionAnalysisService.class), mock(AiVideoGenerationService.class),
+                new ObjectMapper(), Runnable::run, Runnable::run,
+                mock(org.springframework.beans.factory.ObjectProvider.class),
+                "http://localhost:8090", "test-token", tempDirectory.toString(), tempDirectory.toString());
+
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<?> first = executor.submit(() -> processor.generate("task-1"));
+            assertTrue(firstGenerationEntered.await(2, TimeUnit.SECONDS));
+
+            processor.generate("task-1");
+            processor.generate("task-1");
+            assertEquals(1, selections.get());
+
+            allowFirstGenerationToFinish.countDown();
+            first.get();
+            assertTrue(continuationRan.await(2, TimeUnit.SECONDS));
+            assertEquals(2, selections.get());
+        } finally {
+            allowFirstGenerationToFinish.countDown();
+        }
+    }
+
+    @Test
+    void lateRecoveryContinuationRunsAfterThePreviousCoordinatorHasExited() throws Exception {
+        var taskMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper.class);
+        AtomicInteger selections = new AtomicInteger();
+        when(taskMapper.selectById("task-1")).thenAnswer(invocation -> {
+            selections.incrementAndGet();
+            return null;
+        });
+        AiVideoImageProcessor processor = new AiVideoImageProcessor(
+                taskMapper, mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskAssetMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptMapper.class),
+                mock(com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper.class),
+                mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class),
+                mock(ProductFunctionAnalysisService.class), mock(AiVideoGenerationService.class),
+                new ObjectMapper(), Runnable::run, Runnable::run,
+                mock(org.springframework.beans.factory.ObjectProvider.class),
+                "http://localhost:8090", "test-token", tempDirectory.toString(), tempDirectory.toString());
+
+        var request = AiVideoImageProcessor.class.getDeclaredMethod(
+                "requestGenerationContinuation", String.class);
+        request.setAccessible(true);
+        request.invoke(processor, "task-1");
+
+        assertEquals(1, selections.get());
     }
 
     private static String privateStaticString(String fieldName) throws Exception {
