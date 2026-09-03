@@ -44,17 +44,18 @@ public class ProductFunctionAnalysisService {
     private static final String GARMENT_BLOCK_END = "【服装结构与穿法契约结束】";
     private static final int MAX_SOURCE_BYTES = 20 * 1024 * 1024;
     private static final int VALIDATION_MAX_EDGE = 1280;
+    static final int INITIAL_ANALYSIS_MAX_BYTES = 256 * 1024;
     static final int VALIDATION_MAX_BYTES = 384 * 1024;
+    static final int MAX_INITIAL_ANALYSIS_ATTEMPTS = 2;
     static final int MAX_VALIDATION_ATTEMPTS = 2;
-    private static final int MAX_CONCURRENT_VALIDATIONS = 2;
+    static final int MAX_CONCURRENT_VISION_ANALYSES = 2;
     private static final String GARMENT_TOPOLOGY_VERSION = "GARMENT_TOPOLOGY_V2";
 
     private final AiVideoTaskItemMapper itemMapper;
     private final ModelConfigService modelConfigService;
     private final ObjectMapper objectMapper;
     private final RestClient piClient;
-    private final RestClient piValidationClient;
-    private final Semaphore validationSlots = new Semaphore(MAX_CONCURRENT_VALIDATIONS, true);
+    private final Semaphore visionAnalysisSlots = new Semaphore(MAX_CONCURRENT_VISION_ANALYSES, true);
 
     public ProductFunctionAnalysisService(AiVideoTaskItemMapper itemMapper,
                                           ModelConfigService modelConfigService,
@@ -64,13 +65,11 @@ public class ProductFunctionAnalysisService {
         this.itemMapper = itemMapper;
         this.modelConfigService = modelConfigService;
         this.objectMapper = objectMapper;
+        SimpleClientHttpRequestFactory visionRequestFactory = new SimpleClientHttpRequestFactory();
+        visionRequestFactory.setConnectTimeout(5_000);
+        visionRequestFactory.setReadTimeout(190_000);
         this.piClient = RestClient.builder().baseUrl(piRuntimeUrl)
-                .defaultHeader("X-Internal-Token", piRuntimeToken).build();
-        SimpleClientHttpRequestFactory validationRequestFactory = new SimpleClientHttpRequestFactory();
-        validationRequestFactory.setConnectTimeout(5_000);
-        validationRequestFactory.setReadTimeout(190_000);
-        this.piValidationClient = RestClient.builder().baseUrl(piRuntimeUrl)
-                .requestFactory(validationRequestFactory)
+                .requestFactory(visionRequestFactory)
                 .defaultHeader("X-Internal-Token", piRuntimeToken).build();
     }
 
@@ -85,8 +84,8 @@ public class ProductFunctionAnalysisService {
             return item.getProductFunctionAnalysisJson();
         }
         Exception lastFailure = null;
-        int attempts = garment ? 3 : 1;
-        for (int attempt = 1; attempt <= attempts; attempt++) try {
+        boolean analysisSlotAcquired = false;
+        try {
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId()).orElse(null);
             if (model == null) {
@@ -96,6 +95,9 @@ public class ProductFunctionAnalysisService {
             if (!Files.isRegularFile(source) || Files.size(source) <= 0 || Files.size(source) > MAX_SOURCE_BYTES) {
                 throw new IllegalStateException("商品原图不可用于结构识别");
             }
+            byte[] sourceBytes = Files.readAllBytes(source);
+            ValidationImage analysisImage = compactForInitialAnalysis(
+                    sourceBytes, item.getSourceContentType());
             Map<String, Object> request = new LinkedHashMap<>();
             request.put("model", Map.of(
                     "baseUrl", model.baseUrl(),
@@ -112,34 +114,59 @@ public class ProductFunctionAnalysisService {
             }
             request.put("context", context);
             request.put("image", Map.of(
-                    "mimeType", item.getSourceContentType(),
-                    "data", Base64.getEncoder().encodeToString(Files.readAllBytes(source))
+                    "mimeType", analysisImage.mimeType(),
+                    "data", Base64.getEncoder().encodeToString(analysisImage.bytes())
             ));
-            PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(request)
-                    .retrieve()
-                    .body(PiProductAnalysisResponse.class);
-            if (response == null || response.result() == null) {
-                throw new IllegalStateException("结构识别模型没有返回结果");
+            log.info("Product structure analysis payload compacted for item {}: source {} -> {} bytes",
+                    item.getId(), sourceBytes.length, analysisImage.bytes().length);
+            Map<String, Object> analysisResult = null;
+            visionAnalysisSlots.acquire();
+            analysisSlotAcquired = true;
+            for (int attempt = 1; attempt <= MAX_INITIAL_ANALYSIS_ATTEMPTS; attempt++) {
+                try {
+                    PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body(request)
+                            .retrieve()
+                            .body(PiProductAnalysisResponse.class);
+                    if (response == null || response.result() == null) {
+                        throw new IllegalStateException("结构识别模型没有返回结果");
+                    }
+                    analysisResult = response.result();
+                    break;
+                } catch (Exception exception) {
+                    lastFailure = exception;
+                    String failure = readable(exception);
+                    log.warn("Product function analysis unavailable for item {} (attempt {}/{}): {}",
+                            item.getId(), attempt, MAX_INITIAL_ANALYSIS_ATTEMPTS, failure);
+                    if (!shouldRetryInitialAnalysisFailure(attempt, failure)) break;
+                    try {
+                        Thread.sleep(750L * attempt);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        lastFailure = interrupted;
+                        break;
+                    }
+                }
             }
-            String json = normalizeAnalysis(response.result(), garment);
-            item.updateProductFunctionAnalysis(json);
-            item.updateVideoPrompt(applyToVideoPrompt(task, item.getVideoPromptText(), json));
-            itemMapper.updateById(item);
-            return json;
+            visionAnalysisSlots.release();
+            analysisSlotAcquired = false;
+            if (analysisResult != null) {
+                // Only transport failures are retried. Schema validation and persistence happen
+                // once so a local data error can never duplicate the paid model request.
+                String json = normalizeAnalysis(analysisResult, garment);
+                item.updateProductFunctionAnalysis(json);
+                item.updateVideoPrompt(applyToVideoPrompt(task, item.getVideoPromptText(), json));
+                itemMapper.updateById(item);
+                return json;
+            }
         } catch (Exception exception) {
             lastFailure = exception;
             log.warn("Product function analysis unavailable for item {}: {}",
                     item.getId(), readable(exception));
-            if (attempt < attempts) {
-                try {
-                    Thread.sleep(750L * attempt);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException("服装结构识别被中断", interrupted);
-                }
-            }
+            if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
+        } finally {
+            if (analysisSlotAcquired) visionAnalysisSlots.release();
         }
         if (garment) {
             throw new IllegalStateException("服装结构识别暂时失败，已阻止无结构契约的错误生图："
@@ -156,7 +183,7 @@ public class ProductFunctionAnalysisService {
         }
         boolean validationSlotAcquired = false;
         try {
-            validationSlots.acquire();
+            visionAnalysisSlots.acquire();
             validationSlotAcquired = true;
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId())
@@ -188,7 +215,7 @@ public class ProductFunctionAnalysisService {
             for (int attempt = 1; attempt <= MAX_VALIDATION_ATTEMPTS; attempt++) {
                 attemptsPerformed = attempt;
                 try {
-                    PiProductAnalysisResponse response = piValidationClient.post().uri("/v1/product/analyze")
+                    PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
                             .contentType(MediaType.APPLICATION_JSON).body(request).retrieve()
                             .body(PiProductAnalysisResponse.class);
                     if (response == null || response.result() == null) {
@@ -228,7 +255,7 @@ public class ProductFunctionAnalysisService {
             throw new IllegalStateException("服装结构复核暂时失败，已私有保存本次候选图并将在后台继续复核："
                     + readable(exception), exception);
         } finally {
-            if (validationSlotAcquired) validationSlots.release();
+            if (validationSlotAcquired) visionAnalysisSlots.release();
         }
     }
 
@@ -248,6 +275,8 @@ public class ProductFunctionAnalysisService {
         return value.contains("stream ended without finish_reason")
                 || value.contains("stream ended") || value.contains("unexpected end")
                 || value.contains("connection reset") || value.contains("connection closed")
+                || value.contains("connection refused") || value.contains("connectexception")
+                || value.contains("broken pipe")
                 || value.contains("fetch failed") || value.contains("socket")
                 || value.contains("other side closed") || value.contains("terminated")
                 || value.contains("eof") || value.contains("timeout") || value.contains("timed out")
@@ -259,7 +288,21 @@ public class ProductFunctionAnalysisService {
         return failedAttempt < MAX_VALIDATION_ATTEMPTS && isTransientValidationFailure(message);
     }
 
+    static boolean shouldRetryInitialAnalysisFailure(int failedAttempt, String message) {
+        return failedAttempt < MAX_INITIAL_ANALYSIS_ATTEMPTS && isTransientValidationFailure(message);
+    }
+
+    static ValidationImage compactForInitialAnalysis(byte[] sourceBytes, String sourceMimeType) {
+        return compactForVisionAnalysis(
+                sourceBytes, sourceMimeType, INITIAL_ANALYSIS_MAX_BYTES);
+    }
+
     static ValidationImage compactForValidation(byte[] sourceBytes, String sourceMimeType) {
+        return compactForVisionAnalysis(sourceBytes, sourceMimeType, VALIDATION_MAX_BYTES);
+    }
+
+    private static ValidationImage compactForVisionAnalysis(
+            byte[] sourceBytes, String sourceMimeType, int maxBytes) {
         if (sourceBytes == null || sourceBytes.length == 0) {
             return new ValidationImage(sourceMimeType, sourceBytes == null ? new byte[0] : sourceBytes);
         }
@@ -267,16 +310,18 @@ public class ProductFunctionAnalysisService {
         try {
             source = ImageIO.read(new ByteArrayInputStream(sourceBytes));
         } catch (Exception exception) {
-            throw new IllegalStateException("结构复核图片无法解码", exception);
+            throw new IllegalStateException("AI 视觉分析图片无法解码", exception);
         }
         if (source == null || source.getWidth() <= 0 || source.getHeight() <= 0) {
-            throw new IllegalStateException("结构复核图片无法解码");
+            throw new IllegalStateException("AI 视觉分析图片无法解码");
         }
         try {
             byte[] smallest = null;
             int previousWidth = -1;
             int previousHeight = -1;
-            for (int maxEdge : new int[] {VALIDATION_MAX_EDGE, 1120, 960}) {
+            // Real product photos normally satisfy the cap at 1280 px. The smaller sizes are
+            // deterministic safety fallbacks for unusually noisy PNGs, never the saved original.
+            for (int maxEdge : new int[] {VALIDATION_MAX_EDGE, 1120, 960, 800, 640}) {
                 BufferedImage compact = resizeValidationImage(source, maxEdge);
                 if (compact.getWidth() == previousWidth && compact.getHeight() == previousHeight) continue;
                 previousWidth = compact.getWidth();
@@ -284,16 +329,16 @@ public class ProductFunctionAnalysisService {
                 for (float quality : new float[] {0.82f, 0.74f, 0.66f, 0.58f, 0.50f}) {
                     byte[] encoded = encodeValidationJpeg(compact, quality);
                     if (smallest == null || encoded.length < smallest.length) smallest = encoded;
-                    if (encoded.length <= VALIDATION_MAX_BYTES) {
+                    if (encoded.length <= maxBytes) {
                         return new ValidationImage("image/jpeg", encoded);
                     }
                 }
             }
-            throw new IllegalStateException("结构复核副本超过体积上限："
+            throw new IllegalStateException("AI 视觉分析副本超过体积上限："
                     + (smallest == null ? 0 : smallest.length) + " bytes");
         } catch (Exception exception) {
             try {
-                return validationOriginalIfSmall(sourceBytes, sourceMimeType);
+                return visionAnalysisOriginalIfSmall(sourceBytes, sourceMimeType, maxBytes);
             } catch (Exception fallbackFailure) {
                 fallbackFailure.addSuppressed(exception);
                 throw fallbackFailure;
@@ -301,13 +346,14 @@ public class ProductFunctionAnalysisService {
         }
     }
 
-    private static ValidationImage validationOriginalIfSmall(byte[] sourceBytes, String sourceMimeType) {
-        if (sourceBytes.length <= VALIDATION_MAX_BYTES
+    private static ValidationImage visionAnalysisOriginalIfSmall(
+            byte[] sourceBytes, String sourceMimeType, int maxBytes) {
+        if (sourceBytes.length <= maxBytes
                 && sourceMimeType != null
                 && sourceMimeType.matches("(?i)^image/(jpeg|png|webp)$")) {
             return new ValidationImage(sourceMimeType, sourceBytes);
         }
-        throw new IllegalStateException("结构复核图片无法压缩，已拒绝发送过大原图");
+        throw new IllegalStateException("AI 视觉分析图片无法压缩，已拒绝发送过大原图");
     }
 
     private static BufferedImage resizeValidationImage(BufferedImage source, int maxEdge) {

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.ObjectMapper;
 
+import javax.imageio.ImageIO;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
@@ -21,7 +22,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
@@ -137,14 +140,7 @@ class AiVideoImageProcessorTest {
 
     @Test
     void capsNoisyFourKValidationCopyWithoutChangingTheGeneratedOriginal() throws Exception {
-        BufferedImage source = new BufferedImage(1440, 2560, BufferedImage.TYPE_INT_RGB);
-        int[] pixels = new int[source.getWidth() * source.getHeight()];
-        Random random = new Random(20260903L);
-        for (int index = 0; index < pixels.length; index++) pixels[index] = random.nextInt();
-        source.setRGB(0, 0, source.getWidth(), source.getHeight(), pixels, 0, source.getWidth());
-        ByteArrayOutputStream png = new ByteArrayOutputStream();
-        assertTrue(javax.imageio.ImageIO.write(source, "png", png));
-        byte[] original = png.toByteArray();
+        byte[] original = noisyPng(1440, 2560);
         byte[] untouched = original.clone();
 
         ProductFunctionAnalysisService.ValidationImage compact =
@@ -160,6 +156,63 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void initialProductAnalysisStopsAfterTwoFailuresWithTheSameCompactedSource() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        List<byte[]> requestBodies = new ArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/product/analyze", exchange -> {
+            requestBodies.add(exchange.getRequestBody().readAllBytes());
+            calls.incrementAndGet();
+            respondJson(exchange, 502, "{\"message\":\"fetch failed\"}");
+        });
+        server.start();
+        try {
+            byte[] original = noisyPng(1000, 1000);
+            byte[] untouched = original.clone();
+            Path source = tempDirectory.resolve("initial-analysis-source.png");
+            Files.write(source, original);
+            AiVideoTaskItem item = new AiVideoTaskItem("org", "task", "item", "sku",
+                    "source.png", source.toString(), "image/png", original.length);
+            AiVideoTask dailyUseTask = mock(AiVideoTask.class);
+            when(dailyUseTask.getGenerationMode()).thenReturn("PRODUCT_ONLY");
+            when(dailyUseTask.getProductCategory()).thenReturn("日用品");
+            when(dailyUseTask.getOrganizationId()).thenReturn("org");
+            when(dailyUseTask.getScriptJson()).thenReturn("{}");
+            ModelConfigService modelConfig = mock(ModelConfigService.class);
+            when(modelConfig.driverConnection("org")).thenReturn(Optional.of(
+                    new ModelConfigService.RuntimeModelConnection(
+                            "driver", "https://monotoo.shop/v1", "gpt-5.4",
+                            "OPENAI", "AUTO", "test-key")));
+            ProductFunctionAnalysisService service = new ProductFunctionAnalysisService(
+                    mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class),
+                    modelConfig, new ObjectMapper(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "test-token");
+
+            String result = service.ensureAnalysis(dailyUseTask, item);
+
+            assertNull(result);
+            assertArrayEquals(untouched, original);
+            assertEquals(2, calls.get());
+            assertArrayEquals(requestBodies.get(0), requestBodies.get(1));
+            ObjectMapper mapper = new ObjectMapper();
+            Map<String, Object> sent = mapper.readValue(requestBodies.get(0), Map.class);
+            Map<String, Object> sentImage = (Map<String, Object>) sent.get("image");
+            byte[] analysisCopy = java.util.Base64.getDecoder()
+                    .decode(String.valueOf(sentImage.get("data")));
+            assertEquals("image/jpeg", sentImage.get("mimeType"));
+            assertTrue(analysisCopy.length <= ProductFunctionAnalysisService.INITIAL_ANALYSIS_MAX_BYTES);
+            assertTrue(requestBodies.get(0).length
+                    <= ProductFunctionAnalysisService.INITIAL_ANALYSIS_MAX_BYTES * 4L / 3L + 4096L);
+            assertTrue(original.length > analysisCopy.length * 5L);
+            assertEquals(2, ProductFunctionAnalysisService.MAX_INITIAL_ANALYSIS_ATTEMPTS);
+            assertEquals(2, ProductFunctionAnalysisService.MAX_CONCURRENT_VISION_ANALYSES);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void neverFallsBackToAnOversizedUndecodableValidationPayload() {
         byte[] invalidLargeImage = new byte[ProductFunctionAnalysisService.VALIDATION_MAX_BYTES + 1];
 
@@ -168,6 +221,22 @@ class AiVideoImageProcessorTest {
                         invalidLargeImage, "image/png"));
 
         assertTrue(failure.getMessage().contains("无法解码"));
+    }
+
+    @Test
+    void decodesAndCompactsOversizedWebpSourcesInsteadOfRejectingTheUploadFormat() throws Exception {
+        byte[] tinyWebp = java.util.Base64.getDecoder().decode(
+                "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA");
+        byte[] oversizedWebp = Arrays.copyOf(
+                tinyWebp, ProductFunctionAnalysisService.INITIAL_ANALYSIS_MAX_BYTES + 1024);
+
+        ProductFunctionAnalysisService.ValidationImage compact =
+                ProductFunctionAnalysisService.compactForInitialAnalysis(
+                        oversizedWebp, "image/webp");
+
+        assertEquals("image/jpeg", compact.mimeType());
+        assertTrue(compact.bytes().length <= ProductFunctionAnalysisService.INITIAL_ANALYSIS_MAX_BYTES);
+        assertNotNull(ImageIO.read(new ByteArrayInputStream(compact.bytes())));
     }
 
     @Test
@@ -418,6 +487,17 @@ class AiVideoImageProcessorTest {
     private static Path topologyDirectory(Path storageRoot, AiVideoTask task, AiVideoTaskItem item) {
         return storageRoot.resolve(task.getOrganizationId()).resolve(task.getId())
                 .resolve(item.getId()).resolve("private-validation");
+    }
+
+    private static byte[] noisyPng(int width, int height) throws java.io.IOException {
+        BufferedImage source = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        int[] pixels = new int[width * height];
+        Random random = new Random(20260903L);
+        for (int index = 0; index < pixels.length; index++) pixels[index] = random.nextInt();
+        source.setRGB(0, 0, width, height, pixels, 0, width);
+        ByteArrayOutputStream png = new ByteArrayOutputStream();
+        if (!ImageIO.write(source, "png", png)) throw new java.io.IOException("PNG encoder unavailable");
+        return png.toByteArray();
     }
 
     @Test
@@ -734,6 +814,8 @@ class AiVideoImageProcessorTest {
                 "upstream returned 502"));
         assertTrue(ProductFunctionAnalysisService.isTransientValidationFailure(
                 "TypeError: fetch failed; UND_ERR_SOCKET: other side closed"));
+        assertTrue(ProductFunctionAnalysisService.isTransientValidationFailure(
+                "java.net.ConnectException: Connection refused"));
         assertFalse(ProductFunctionAnalysisService.isTransientValidationFailure(
                 "服装结构复核未通过：领口结构错误"));
         assertEquals(2, ProductFunctionAnalysisService.MAX_VALIDATION_ATTEMPTS);
@@ -743,6 +825,10 @@ class AiVideoImageProcessorTest {
                 2, "UND_ERR_SOCKET: other side closed"));
         assertFalse(ProductFunctionAnalysisService.shouldRetryValidationFailure(
                 1, "服装结构复核未通过：右袖缺失"));
+        assertTrue(ProductFunctionAnalysisService.shouldRetryInitialAnalysisFailure(
+                1, "ConnectException: connection refused"));
+        assertFalse(ProductFunctionAnalysisService.shouldRetryInitialAnalysisFailure(
+                2, "502 Bad Gateway: fetch failed"));
     }
 
     @Test
