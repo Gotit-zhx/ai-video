@@ -2689,6 +2689,30 @@ async function runProductFunctionAnalysis(body) {
       throw error;
     }
   }
+  if (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2") {
+    try {
+      const reply = await requestNonStreamingChat(
+        config,
+        apiKey,
+        systemPrompt,
+        JSON.stringify(body.context || {}),
+        attachments,
+        2400,
+        180_000
+      );
+      console.info(`[product-analysis] topology completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
+      return {
+        result: extractJsonObject(reply),
+        reply,
+        usage: null,
+        latencyMs: Date.now() - startedAt,
+        modelId: config.modelId
+      };
+    } catch (error) {
+      console.warn(`[product-analysis] topology failed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
+      throw error;
+    }
+  }
   const runtimeAgent = new Agent({
     initialState: {
       systemPrompt,
