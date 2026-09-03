@@ -65,6 +65,7 @@ public class AiVideoImageProcessor {
     private static final Logger log = LoggerFactory.getLogger(AiVideoImageProcessor.class);
     static final int MAX_TOPOLOGY_REDRAWS = 3;
     static final int MAX_TOPOLOGY_GENERATIONS = 1 + MAX_TOPOLOGY_REDRAWS;
+    private static final double STORYBOARD_FIRST_CELL_SAFE_SCALE = 0.95d;
     private static final String CLOSE_FRAMING_GATE_VERSION = "CLOSE_FRAMING_GATE_V1";
     static final String PRODUCT_REAL_FRAME_BACKGROUND_REQUIREMENT =
             "背景逐格沿用参考图2对应位置的原视频真实场景；连续分镜锁定空间、材质、光线和机位关系，原视频明确换景时才切换。";
@@ -1429,10 +1430,18 @@ public class AiVideoImageProcessor {
         }
         int width = source.getWidth() / 3;
         int height = source.getHeight() / 3;
+        // Image models occasionally place a grid divider slightly before the mathematical third.
+        // Keep the top-left origin, trim the trailing edges equally, then scale back to the
+        // expected cell size so the video model never receives pixels from an adjacent cell.
+        int sourceWidth = Math.max(1, (int) Math.floor(width * STORYBOARD_FIRST_CELL_SAFE_SCALE));
+        int sourceHeight = Math.max(1, (int) Math.floor(height * STORYBOARD_FIRST_CELL_SAFE_SCALE));
         BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         Graphics2D graphics = result.createGraphics();
         try {
-            graphics.drawImage(source, 0, 0, width, height, 0, 0, width, height, null);
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            graphics.drawImage(source, 0, 0, width, height,
+                    0, 0, sourceWidth, sourceHeight, null);
         } finally {
             graphics.dispose();
         }
