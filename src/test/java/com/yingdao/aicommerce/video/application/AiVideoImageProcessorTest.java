@@ -596,6 +596,30 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void spokenSmileStillProducesAClosedMouthStoryboardExpression() {
+        String expression = AiVideoImageProcessor.inferMicroExpression(
+                "微笑口播介绍新品",
+                "人物开心地讲解并说出台词");
+
+        assertTrue(expression.contains("只作为画外音语义"));
+        assertTrue(expression.contains("嘴唇自然闭合且稳定"));
+        assertTrue(expression.contains("不露齿"));
+        assertTrue(expression.contains("不张口"));
+        assertTrue(expression.contains("可保留克制的闭口微笑"));
+        assertFalse(expression.contains("嘴唇连续平滑运动"));
+    }
+
+    @Test
+    void primaryModelFaceBaselineForbidsAnOpenOrToothyMouth() throws Exception {
+        String faceBaseline = privateStaticString("FRIENDLY_MODEL_FACE_BASELINE");
+
+        assertTrue(faceBaseline.contains("嘴唇放松且自然闭合"));
+        assertTrue(faceBaseline.contains("不露齿"));
+        assertTrue(faceBaseline.contains("不张口"));
+        assertTrue(faceBaseline.contains("不呈现说话、唱歌或对口型姿态"));
+    }
+
+    @Test
     void topologyCandidateRankingUsesTotalViolationsAndRejectsMissingDetails() {
         var summarized = new ProductFunctionAnalysisService.GarmentValidation(false, "",
                 java.util.List.of("问题一", "问题二", "问题三"), 0.9, 7);

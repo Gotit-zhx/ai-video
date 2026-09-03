@@ -444,6 +444,7 @@ public class AiVideoGenerationService {
             String prompt = task.isDirectReferenceVideo()
                     ? directReferencePrompt(item) : item.getVideoPromptText();
             if (!task.isDirectReferenceVideo()) prompt = gridStoryboardSafetyPrompt(prompt, task.getAspectRatio());
+            prompt = finalAudioPerformancePrompt(prompt, task, objectMapper);
             GenerationRequest request = new GenerationRequest(prompt, references(task, item, connection, provider),
                     duration, task.getAspectRatio(), resolution, audioReference(task));
             paceSubmission(connection.provider());
@@ -629,6 +630,25 @@ public class AiVideoGenerationService {
                 + "转场只服从后附时间轴：标为同镜头连续时自然衔接，标为真实切点时干净切换。不得同时混合两格，也不得用残影、复制肢体或多手连接相邻格。\n"
                 + "人物身体最多两条手臂和两只手；被遮挡或出画的肢体无需补出，纯商品镜头可以无人无手。每只可见手必须自然连接到唯一手臂。\n\n"
                 + (prompt == null ? "" : prompt);
+    }
+
+    static String finalAudioPerformancePrompt(String prompt, AiVideoTask task, ObjectMapper objectMapper) {
+        boolean hasVoiceover = AiVideoTaskService.hasVoiceover(task, objectMapper);
+        String market = task.getTargetMarket() == null || task.getTargetMarket().isBlank()
+                ? "脚本文案所用语言" : "目标市场“" + task.getTargetMarket().trim() + "”对应的本地语言";
+        String music = "UPLOADED".equals(task.getMusicMode())
+                ? "已上传配乐是唯一BGM，必须从0秒贯穿结尾，完整保留清晰旋律和稳定节拍"
+                : "必须生成从0秒贯穿结尾、具有清晰可辨主旋律和稳定节拍的纯器乐伴奏；不得静音，也不得仅有无旋律环境底噪";
+        String voice = hasVoiceover
+                ? "只允许按时间轴生成与画面人物分离的画外旁白。旁白使用" + market
+                    + "，逐字朗读给定原文，发音自然清晰；禁止增删、改写、换语言、混入乱码、无意义音节、含糊拟声、歌声、哼唱或呢喃。旁白时只适度压低BGM，旁白结束立即恢复，伴奏不可消失"
+                : "时间轴没有旁白，因此全片禁止对白、旁白、口播、歌声、哼唱、呢喃、乱码或任何无意义人声；音轨只允许纯器乐BGM和必要的自然环境声";
+        String base = prompt == null ? "" : prompt.trim();
+        return base + "\n\n【最终音画硬约束｜最高优先级并覆盖前文】\n"
+                + "所有出镜人物全程保持嘴唇自然闭合、下颌稳定，不说话、不口播、不唱歌、不念台词，也不做任何对口型动作。"
+                + "脚本或自定义提示中的“对白、台词、口播、讲解、旁白、narration、speak、talk、lip sync”一律只作画外旁白语义，绝不由出镜人物演绎，且不得驱动嘴唇、表情、头部、手势或身体节拍。\n"
+                + music + "；不得包含歌词、演唱或含糊人声。\n"
+                + voice + "。与前文任何要求冲突时，只执行本段。";
     }
 
     private void validateDirectReferences(String itemId) {

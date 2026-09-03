@@ -1054,7 +1054,7 @@ public class AiVideoTaskService {
 
     private String buildDirectReferenceVideoPrompt(AiVideoTask task, String subjectName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定\n\n");
+        prompt.append("提示词版本：DIRECT_DETAIL_V5 · 模特静默与全片中近景锁定\n\n");
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append("短视频，主体：").append(subjectName).append("。\n");
         prompt.append("参考图的编号、主参考和各图用途由用户单独指定；严格服从提交时附加的《参考图职责协议》，不得按上传顺序自行猜测，也不得把编号、用途说明或协议文字拍进成片。\n");
@@ -1062,7 +1062,7 @@ public class AiVideoTaskService {
         prompt.append("每一张参考图只影响它被指定的职责。发生冲突时，主参考决定主体身份和整体外观，专项参考只覆盖对应的商品细节、人物、场景、动作、角度或结束画面。\n\n");
         prompt.append("【人物人脸景别保护】\n");
         prompt.append("有人物时，全片保持同一人物身份、脸型、五官比例、肤色、年龄、发型、身材和穿搭；头部转动只产生真实透视变化，不得逐帧重绘五官、换脸或改变年龄。\n");
-        prompt.append("动作、场景和主体关系服从每段脚本与对应参考图，但景别始终服从《全片中近景锁定》；脸部必须清晰、自然且结构稳定。非台词时保持自然闭口，不自行增加眨眼、挑眉、口型、手势、舞蹈或夸张表演。\n\n");
+        prompt.append("动作、场景和主体关系服从每段脚本与对应参考图，但景别始终服从《全片中近景锁定》；脸部必须清晰、自然且结构稳定。出镜人物全程自然闭口，不说话、不唱歌、不做口型；脚本中的任何人声文字都只允许作为画外旁白，不得驱动人物眨眼、挑眉、口型、手势、舞蹈或夸张表演。\n\n");
         prompt.append("【商品与物理一致性】\n");
         prompt.append("商品颜色、结构、数量、比例、Logo、文字、图案、材质和功能部件全片稳定，不得换款、复制、漂移、融化或凭空生长。拿取、开启、点燃、喷洒、倾倒和使用效果必须遵守真实接触关系、结构和功能原理。\n");
         prompt.append("手部只在脚本需要时出现，数量与动作自然；主体不得悬浮，必须与手、桌面、地面、支架或环境建立真实接触。\n\n");
@@ -1077,7 +1077,7 @@ public class AiVideoTaskService {
 
     private String buildProductVideoPrompt(AiVideoTask task, String productName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定\n\n");
+        prompt.append("提示词版本：PRODUCT_DETAIL_V6 · 旋律伴奏与全片商品近景锁定\n\n");
         prompt.append("【参考图片】\n");
         prompt.append("图1：从图2第 01 格裁出的商品首帧，是商品外观、位置、场景与初始状态的最高优先级锚点。\n");
         prompt.append("图2：4K 商品分镜九宫格，按从左到右、从上到下读取 01→09，仅表示同一件商品的连续展示过程。\n");
@@ -1101,7 +1101,7 @@ public class AiVideoTaskService {
 
     private String buildStoryboardAnimationPrompt(AiVideoTask task, String garmentName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：V11.6 · 近景证据优先精简版\n\n");
+        prompt.append("提示词版本：V11.7 · 模特静默与旋律伴奏版\n\n");
         prompt.append("【参考图职责】\n");
         prompt.append("图1：第01格单画面首帧。人物身份、脸、发型、身材和非商品穿搭在全片保持一致；只有姿势、手持状态和背景仅约束 t=0。\n");
         prompt.append("图2：完整3×3时间索引，按左到右、上到下读取01→09。采用每格的动作、场景、构图意图和机位方向，但把对应内容重建为铺满画布的单画面；远景、全身和拉远信息由中近景规则覆盖，九宫格版式本身不是输出内容。\n");
@@ -1115,7 +1115,7 @@ public class AiVideoTaskService {
         prompt.append("每段只执行时间轴写明的主要动作，不新增挥手、指向、舞蹈或夸张表演。手势差异不得通过多手、复制肢体或残影插值。\n");
         prompt.append("【商品与人物稳定】\n");
         prompt.append("商品在穿着、手持、展开、折叠和特写状态下都保持图3及后附结构证据中的同一结构；只允许真实透视、遮挡、布料受力和褶皱变化。\n");
-        prompt.append("脸部保持图1身份，转头只产生自然透视；没有明确表情或口型动作时保持自然稳定。商品印花随同一块布料运动，不改字、不增删、不漂移。\n");
+        prompt.append("脸部保持图1身份，转头只产生自然透视；嘴唇全程自然闭合且稳定，不说话、不唱歌、不做任何对口型动作。画外旁白不得驱动嘴唇、表情、头部、手势或身体节拍。商品印花随同一块布料运动，不改字、不增删、不漂移。\n");
         appendMusicPrompt(prompt, task);
         prompt.append("同一镜头内保持曝光、白平衡、背景和人物尺度稳定；不生成字幕、额外Logo或水印。\n\n");
         appendImageToVideoTimeline(prompt, task);
@@ -1124,33 +1124,51 @@ public class AiVideoTaskService {
     }
 
     private void appendMusicPrompt(StringBuilder prompt, AiVideoTask task) {
-        boolean spokenAudio = hasNarration(task);
+        boolean spokenAudio = hasVoiceover(task, objectMapper);
+        String language = voiceoverLanguageDirective(task);
         if ("UPLOADED".equals(task.getMusicMode())) {
             prompt.append(spokenAudio
-                    ? "【音频】已上传音乐是全片唯一BGM并保持连续；按时间轴生成指定对白/旁白，说话时仅压低BGM，句末恢复。\n"
-                    : "【音频】已上传音乐是唯一BGM，保留旋律与节奏；不生成其他人声或音效。\n");
+                    ? "【伴奏】已上传音乐是全片唯一BGM，从0秒到结尾保持清晰旋律与稳定节拍；画外旁白出现时只适度压低音量，旁白结束立即恢复，伴奏不可中断或消失。\n"
+                    : "【伴奏】已上传音乐是全片唯一BGM，从0秒到结尾完整保留清晰旋律与稳定节拍；不生成其他人声、歌声、哼唱或突兀音效。\n");
         } else {
             prompt.append(spokenAudio
-                    ? "【音频】生成连续清晰的纯器乐BGM；按时间轴生成指定对白/旁白，说话时压低BGM，句末恢复。\n"
-                    : "【音频】生成轻快、连续、干净的纯器乐BGM，无人声、杂音或突兀音效。\n");
+                    ? "【伴奏】必须生成从0秒贯穿结尾、具有清晰可辨主旋律和稳定节拍的纯器乐BGM；不得用无旋律环境底噪、静音或人声代替。画外旁白出现时只适度压低音量，旁白结束立即恢复。\n"
+                    : "【伴奏】必须生成从0秒贯穿结尾、具有清晰可辨主旋律和稳定节拍的轻快纯器乐BGM；不得静音，不得只有无旋律环境底噪，不得包含歌词、歌声、哼唱、呢喃或无意义人声。\n");
         }
         if (spokenAudio) {
-            prompt.append("【人声】逐字说时间轴文字，不增删重复；“对白”由人物在对应时段自然开口并同步口型，“旁白”用画外音且人物不动嘴；空白时段禁说话。人声清楚，BGM不得盖住或消失。\n");
+            prompt.append("【画外旁白】时间轴中的“对白、台词、口播、旁白、narration”一律转换为与画面人物分离的画外旁白，出镜人物始终闭口。")
+                    .append(language)
+                    .append("只逐字朗读时间轴给出的旁白原文，不增删、不改写、不翻译成其他语言，不夹杂乱码、无意义音节或含糊拟声；发音自然清晰、语速适合对应时段。没有旁白文字的时段禁止任何人声。\n");
         } else {
-            prompt.append("【人声】全片不说话、不动嘴；BGM不驱动表情或身体动作。\n");
+            prompt.append("【人声】全片没有对白、旁白、口播、歌声、哼唱、呢喃或无意义人声；出镜人物始终自然闭口，BGM不得驱动嘴唇、表情或身体动作。\n");
         }
     }
 
-    private boolean hasNarration(AiVideoTask task) {
+    static boolean hasVoiceover(AiVideoTask task, ObjectMapper objectMapper) {
         try {
             Map<String, Object> root = objectMapper.readValue(task.getScriptJson(), Map.class);
             Object rawShots = root.get("shots");
             if (!(rawShots instanceof List<?> shots)) return false;
             return shots.stream().anyMatch(raw -> raw instanceof Map<?, ?> shot
-                    && !textValue(shot.get("narration")).isBlank());
+                    && !voiceoverText(shot.get("narration")).isBlank());
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    static String voiceoverText(Object value) {
+        if (value == null) return "";
+        return String.valueOf(value).replaceAll("\\s+", " ").trim()
+                .replaceFirst("(?i)^(?:对白|旁白|口播|台词|voice\\s*over|voiceover|dialogue|narration)\\s*[:：]\\s*", "")
+                .trim();
+    }
+
+    private String voiceoverLanguageDirective(AiVideoTask task) {
+        if (task.getTargetMarket() == null || task.getTargetMarket().isBlank()) {
+            return "旁白使用脚本文案本身的语言和自然口音；";
+        }
+        return "旁白使用目标市场“" + task.getTargetMarket().trim()
+                + "”对应的本地语言和自然口音；脚本文案已经是目标语言时保持原文；";
     }
 
     @SuppressWarnings("unchecked")
@@ -1191,8 +1209,9 @@ public class AiVideoTaskService {
                 appendLine(prompt, "景别硬覆写", closeFramingTimelineDirective(task));
                 appendLine(prompt, "进入转场", VideoTimelineSemantics.enteringTransition(sequence, transition));
                 appendLine(prompt, "执行镜头", normalizedCameraMovement(task, movement));
-                String narration = textValue(shot.get("narration"));
-                appendLine(prompt, "对白 / 旁白", narration);
+                appendLine(prompt, "人物口型", "出镜人物自然闭口；本镜头任何说话、口播、讲解或台词要求只作为画外旁白语义，不执行张嘴或对口型");
+                String narration = voiceoverText(shot.get("narration"));
+                appendLine(prompt, "画外旁白（人物不得说话或动嘴）", narration);
             }
         } catch (Exception ignored) { }
     }
@@ -1319,12 +1338,15 @@ public class AiVideoTaskService {
     private boolean isLegacyGeneratedPrompt(AiVideoTask task, AiVideoTaskItem item) {
         String current = item.getVideoPromptText();
         if (current == null) return false;
-        if (current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")
-                || current.contains("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定")
-                || current.contains("提示词版本：V11.6 · 近景证据优先精简版")) {
+        if (current.contains("提示词版本：DIRECT_DETAIL_V5 · 模特静默与全片中近景锁定")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V6 · 旋律伴奏与全片商品近景锁定")
+                || current.contains("提示词版本：V11.7 · 模特静默与旋律伴奏版")) {
             return false;
         }
-        return (current.contains("提示词版本：DIRECT_DETAIL_V3")
+        return (current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定")
+                || current.contains("提示词版本：V11.6 · 近景证据优先精简版")
+                || current.contains("提示词版本：DIRECT_DETAIL_V3")
                 || current.contains("提示词版本：PRODUCT_DETAIL_V3")
                 || current.contains("提示词版本：V11.5 · 单画面与证据优先精简版")
                 || current.contains("提示词版本：V11.1 · V11 恢复版与局部帧保持")

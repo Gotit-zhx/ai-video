@@ -96,7 +96,7 @@ public class AiVideoImageProcessor {
             + "但必须像现实生活中的具体个人而不是统一网红模板。眉眼、鼻头、唇形、脸颊与下颌保留克制的个人特征和轻微左右差异；"
             + "妆容为轻薄伪素颜：薄而透的底妆不遮掉毛孔与细小瑕疵，眉毛只轻微整理，眼妆极淡，使用接近原生的自然唇色。"
             + "不使用浓眼线、夸张睫毛、假睫毛、明显卧蚕、高饱和眼影、强腮红、高光修容或玻璃唇；"
-            + "眼睛大小与脸型比例自然，不追求网红大眼。嘴唇放松，眼神有明确落点，像朋友用手机临时拍下的自然一瞬。";
+            + "眼睛大小与脸型比例自然，不追求网红大眼。嘴唇放松且自然闭合，不露齿、不张口，不呈现说话、唱歌或对口型姿态；眼神有明确落点，像朋友用手机临时拍下的自然一瞬。";
     private static final String ANTI_MANNEQUIN_REQUIREMENT = "人物处在真实呼吸与承重状态：一侧肩髋略低，重心落在一条腿，构图内可见手臂姿态不完全相同，"
             + "颈肩、锁骨和衣料褶皱呈现同一受力关系。人物边缘、发丝、皮肤和背景都服从同一现场光线；"
             + "保留手机照片自然的局部锐度差和暗部细微传感器纹理，4K 只增加真实信息，不把人脸处理成均匀、对称、无表情的假人。";
@@ -1675,7 +1675,7 @@ public class AiVideoImageProcessor {
                 + FRIENDLY_MODEL_FACE_BASELINE
                 + "人物大致面向镜头但不要证件照式立正：身体相对画面中心轻微偏移，重心自然落在一条腿上，两侧肩髋不完全水平，"
                 + "构图内可见手臂以略有差异的方式自然放置，可见手臂可轻微弯曲，头部有极小角度偏转，眼神像刚注意到拍摄者；"
-                + "表情处在尚未刻意摆拍的自然瞬间，可以只是轻微嘴角变化，不能露出模板化甜美微笑。"
+                + "表情处在尚未刻意摆拍的自然瞬间，只允许闭口的轻微嘴角变化；嘴唇必须自然闭合，不露齿、不张口、不呈现说话或对口型姿态，不能露出模板化甜美微笑。"
                 + "姿态松弛但能够完整展示上衣，不摆夸张时尚姿势；身体比例、关节和五根手指正确。"
                 + "【AI 模特穿着母版｜不是视频首帧】这张图的唯一职责是建立同一人物正确穿着当前商品的高清母版，九宫格会另行生成脚本第 01 分镜首帧。"
                 + "人物必须已经按参考商品的真实开口和穿法把衣服完整穿在身上；头、双臂分别穿过正确开口，领口依靠真实裁片、缝线和肩部支撑自然落位。"
@@ -1906,8 +1906,8 @@ public class AiVideoImageProcessor {
                 .append(REAL_PHOTOGRAPHY_REQUIREMENT)
                 .append(FABRIC_AND_PRODUCT_REALISM_REQUIREMENT)
                 .append("九格必须锁定参考图2的同一套基础肤色、脸与脖子的色差关系、曝光、白平衡和锐度参数，不能逐格重新美颜、重新上妆或改变皮肤质感。")
-                .append("微表情不需要每格都变化。脚本未明确写出笑、眨眼、视线转移、说话、挑眉或其他面部动作时，后一格必须沿用前一格的自然表情，")
-                .append("不能为了让九格看起来不同而逐格重新生成眉毛、眼睑、眼球、鼻翼、嘴唇和嘴角。只有明确的面部动作才允许建立一次起势→过程→到位的连续变化，不能突然大笑、张大嘴、瞪眼或改变年龄和脸型。每格面部状态如下：\n");
+                .append("【模特静默】所有人物格都必须保持嘴唇自然闭合和下颌稳定，不露齿、不张口、不说话、不唱歌、不做口型。脚本中的对白、台词、口播、讲解、旁白或 narration 只作为后期画外旁白语义，绝不能变成人物口型。")
+                .append("微表情不需要每格都变化。不能为了让九格看起来不同而逐格重新生成眉毛、眼睑、眼球、鼻翼、嘴唇和嘴角。只有不涉及开口的明确面部动作才允许建立一次起势→过程→到位的连续变化，不能突然大笑、张嘴、露齿、瞪眼或改变年龄和脸型。每格面部状态如下：\n");
         for (ShotPrompt shot : shots) {
             String expression = inferMicroExpression(shot);
             prompt.append("分镜 ").append(String.format("%02d", shot.sequence()))
@@ -1930,20 +1930,25 @@ public class AiVideoImageProcessor {
     }
 
     private String inferMicroExpression(ShotPrompt shot) {
-        String context = (shot.title() + " " + shot.motion()).toLowerCase();
+        return inferMicroExpression(shot.title(), shot.motion());
+    }
+
+    static String inferMicroExpression(String title, String motion) {
+        String context = ((title == null ? "" : title) + " " + (motion == null ? "" : motion)).toLowerCase();
+        if (containsAny(context, "说话", "口播", "台词", "讲解", "对白", "旁白", "解说",
+                "speak", "talk", "dialogue", "voiceover", "voice over", "lip sync", "narration")) {
+            return "说话、口播、台词或旁白只作为画外音语义；人物嘴唇自然闭合且稳定，不露齿、不张口、不生成口型，可保留克制的闭口微笑";
+        }
         if (containsAny(context, "眨眼", "闭眼", "睁眼")) {
             return "按动作只完成一次双眼同步的完整眨眼，其他五官保持稳定，不连续眨眼或眼睑颤动";
         }
         if (containsAny(context, "微笑", "笑", "开心", "愉悦")) {
-            return "嘴角从原状态缓慢形成轻微自然微笑并稳定保持，眉毛、鼻翼与下颌不跟随抽动";
-        }
-        if (containsAny(context, "说话", "口播", "台词", "讲解")) {
-            return "仅保留与明确台词对应的克制口型，嘴唇连续平滑运动，鼻翼、眉毛和视线不被口型带动";
+            return "嘴唇自然闭合、不露齿，嘴角从原状态缓慢形成轻微闭口微笑并稳定保持，眉毛、鼻翼与下颌不跟随抽动";
         }
         if (containsAny(context, "看向", "视线", "回眸", "低头", "抬头")) {
             return "双眼只向动作目标平滑移动一次并稳定对焦，嘴角、眉毛和鼻翼沿用上一格状态";
         }
-        return "沿用上一格的放松自然表情，闭口稳定，不新增嘴角、眉毛、鼻翼、眼睑或眼球动作";
+        return "沿用上一格的放松自然表情，嘴唇闭合稳定、不露齿、不张口，不新增嘴角、眉毛、鼻翼、眼睑或眼球动作";
     }
 
     private String shotExecutionDirection(AiVideoTask task, ShotPrompt shot) {
@@ -1954,6 +1959,7 @@ public class AiVideoImageProcessor {
                     .append(shot.scene()).append("；");
         }
         if (!shot.motion().isBlank()) value.append("动作严格按脚本：").append(shot.motion()).append("；");
+        value.append("人物静默硬覆写：脚本中的说话、口播、讲解、对白、台词或旁白只作为画外音语义；人物嘴唇自然闭合，不张口、不做口型；");
         value.append("景别硬覆写：").append(imageFramingDirective(task.getGenerationMode()))
                 .append("；执行运镜：").append(normalizedImageCameraMovement(shot.cameraMovement())).append("；");
         value.append("手部规则：").append(shotHandDirective(task, shot)).append("；");

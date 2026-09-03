@@ -3853,7 +3853,7 @@ function renderManualShotRows() {
       <label>结束秒<input name="manualEnd${index}" type="number" min="0.1" max="300" step="0.1" required value="${suggestedEnd}"></label>
       <label class="manual-shot-title">分镜标题<input name="manualTitle${index}" required maxlength="160" placeholder="例如：商品第一眼亮相"></label>
       <label class="manual-shot-scene">画面与动作<textarea name="manualScene${index}" required maxlength="8000" rows="2" placeholder="描述主体、场景、动作与构图，系统将据此生成画面"></textarea></label>
-      <label class="manual-shot-narration">对白 / 旁白<textarea name="manualNarration${index}" maxlength="8000" rows="2" placeholder="例如：对白：今天给大家看一下；未指定则留空"></textarea></label>
+      <label class="manual-shot-narration">画外旁白（模特不说话）<textarea name="manualNarration${index}" maxlength="8000" rows="2" placeholder="例如：旁白：今天给大家看一下；按目标市场语言填写，未指定则留空"></textarea></label>
       <label class="manual-shot-motion">运镜补充<input name="manualMotion${index}" maxlength="8000" placeholder="例如：镜头缓慢向前推进（可选）"></label>
     </article>`;
   }).join("");
