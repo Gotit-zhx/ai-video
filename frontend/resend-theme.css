@@ -1137,8 +1137,10 @@ label { color: var(--ink-soft); font-weight: 550; }
 #ai-video-tasks-page .batch-task-rail {
   position: sticky;
   top: calc(var(--topbar-height) + 14px);
-  height: var(--ai-video-task-rail-height, calc(100vh - var(--topbar-height) - 30px));
-  min-height: 560px;
+  align-self: start;
+  height: auto;
+  min-height: 0;
+  max-height: var(--ai-video-task-rail-height, calc(100vh - var(--topbar-height) - 30px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1157,7 +1159,7 @@ label { color: var(--ink-soft); font-weight: 550; }
 #ai-video-tasks-page .rail-fuzzy-search { flex: 0 0 auto; margin: 12px; background: var(--surface); }
 #ai-video-tasks-page .rail-fuzzy-search:focus-within { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
 #ai-video-tasks-page .video-task-list {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   max-height: none;
   align-content: start;
