@@ -464,6 +464,11 @@ public class AiVideoGenerationService {
                     && !AiVideoTaskService.isScriptVideoReplacement(task)) {
                 prompt = gridStoryboardSafetyPrompt(prompt, task.getAspectRatio());
             }
+            if (!task.isGeneral()) {
+                NarrationPolicy narration = narrationPolicy(task);
+                prompt = offCameraNarrationPrompt(prompt, "UPLOADED".equals(task.getMusicMode()),
+                        narration.enabled(), narration.languageOrMarket());
+            }
             GenerationRequest request = new GenerationRequest(prompt, references(task, item, connection, provider),
                     duration, task.getAspectRatio(), resolution, audioReference(task));
             paceSubmission(connection.provider());
@@ -684,8 +689,84 @@ public class AiVideoGenerationService {
                 + "图1锁定首帧；图2是按左到右、上到下读取01→09的时间索引；图3锁定完整商品身份。必须采用图2每格的动作与场景，但要把对应内容重建为单画面。\n"
                 + "成片每一帧只能有一个铺满" + outputRatio + "画布的场景。禁止输出九宫格布局、画中画、分屏、拼贴、缩略图或格线；转场中也不得闪现完整或局部宫格。\n"
                 + "转场只服从后附时间轴：标为同镜头连续时自然衔接，标为真实切点时干净切换。不得同时混合两格，也不得用残影、复制肢体或多手连接相邻格。\n"
+                + "图2任何格若出现张嘴、说话或口型，都只视为画外旁白的时间提示；成片人物每帧自然闭口、嘴唇静止。\n"
                 + "人物身体最多两条手臂和两只手；被遮挡或出画的肢体无需补出，纯商品镜头可以无人无手。每只可见手必须自然连接到唯一手臂。\n\n"
                 + (prompt == null ? "" : prompt);
+    }
+
+    static String offCameraNarrationPrompt(String prompt, boolean uploadedMusic,
+                                           boolean narrationEnabled, String languageOrMarket) {
+        String source = prompt == null ? "" : prompt;
+        StringBuilder cleaned = new StringBuilder();
+        for (String line : source.split("\\R", -1)) {
+            String stripped = line.stripLeading();
+            if (stripped.startsWith("【音频】") || stripped.startsWith("【BGM】")
+                    || stripped.startsWith("【人声】")
+                    || stripped.startsWith("【人声与口型")
+                    || stripped.startsWith("【人物口型")
+                    || stripped.startsWith("【人物与人声")
+                    || stripped.startsWith("【画外旁白】")
+                    || stripped.startsWith("【旁白语言锁定】")
+                    || stripped.startsWith("【人物静默与无人声")) {
+                continue;
+            }
+            if (stripped.startsWith("【自定义口播原文】")) {
+                line = line.replace("【自定义口播原文】", "【自定义画外旁白原文】");
+            } else if (stripped.startsWith("对白 / 旁白：")) {
+                line = line.replaceFirst("对白 / 旁白：", "画外旁白（画面人物闭口）：");
+            } else if (stripped.startsWith("台词：")) {
+                line = line.replaceFirst("台词：", "画外旁白（画面人物闭口）：");
+            }
+            line = line.replaceFirst("(画外旁白（画面人物闭口）：)\\s*(?:对白|旁白|口播)[：:]\\s*", "$1")
+                    .replaceFirst("(【自定义画外旁白原文】)\\s*(?:对白|旁白|口播)[：:]\\s*", "$1");
+            line = line.replace("非台词时保持自然闭口", "全程保持自然闭口")
+                    .replace("没有明确表情或口型动作时保持自然稳定",
+                            "全程不做口型并保持自然稳定");
+            if (!cleaned.isEmpty()) cleaned.append('\n');
+            cleaned.append(line);
+        }
+        String bgmRule = uploadedMusic
+                ? "已上传音乐是唯一 BGM，保留完整清晰主旋律并贯穿全片。"
+                : "生成有清晰主旋律且贯穿全片的轻快纯器乐 BGM。";
+        String language = languageOrMarket == null ? "" : languageOrMarket.replaceAll("\\s+", " ").trim();
+        String voiceRule = narrationEnabled
+                ? "仅允许不出镜的画外配音者逐字朗读提示词中的《画外旁白》；不增删、不改写、不重复、不再次翻译，发音必须清晰可懂，禁止乱码式、伪语言、含混音节或额外人声。"
+                        + (language.isBlank() ? "" : "旁白语言锁定为" + language + "，不得夹杂其他语言。")
+                        + "旁白期间只适度压低 BGM，句末立即恢复，BGM 不得中断或消失。"
+                : "本任务无画外旁白；不生成对白、旁白、哼唱、呢喃、喘词、笑声或任何可辨识人声。";
+        String guard = "\n\n【闭口画外旁白与 BGM｜最终最高优先级】\n"
+                + "画面中所有人物在每一帧都自然闭口、嘴唇静止；不说话、不对口型、不朗读。参考图或参考视频中的张嘴、说话口型和出镜人声一律不继承。\n"
+                + voiceRule + "\n" + bgmRule;
+        int maximumBaseLength = Math.max(0, 20_000 - guard.length());
+        String base = cleaned.toString().strip();
+        if (base.length() > maximumBaseLength) base = base.substring(0, maximumBaseLength).stripTrailing();
+        return (base + guard).strip();
+    }
+
+    @SuppressWarnings("unchecked")
+    private NarrationPolicy narrationPolicy(AiVideoTask task) {
+        try {
+            Map<String, Object> rules = objectMapper.readValue(task.getGenerationRulesJson(), Map.class);
+            String mode = String.valueOf(rules.getOrDefault("voiceoverMode", "SCRIPT")).trim().toUpperCase();
+            boolean enabled;
+            if ("CUSTOM".equals(mode)) {
+                enabled = !String.valueOf(rules.getOrDefault("customVoiceover", "")).isBlank();
+            } else if ("NONE".equals(mode)) {
+                enabled = false;
+            } else {
+                Map<String, Object> script = objectMapper.readValue(task.getScriptJson(), Map.class);
+                Object rawShots = script.get("shots");
+                enabled = rawShots instanceof List<?> shots && shots.stream().anyMatch(raw -> raw instanceof Map<?, ?> shot
+                        && shot.get("narration") != null && !String.valueOf(shot.get("narration")).isBlank());
+            }
+            String language = String.valueOf(rules.getOrDefault("narrationLanguage", "")).trim();
+            if (language.isBlank() && task.getTargetMarket() != null && !task.getTargetMarket().isBlank()) {
+                language = task.getTargetMarket().trim() + "市场对应的主要消费语言";
+            }
+            return new NarrationPolicy(enabled, language);
+        } catch (Exception ignored) {
+            return new NarrationPolicy(false, "");
+        }
     }
 
     private void validateDirectReferences(AiVideoTask task, String itemId) {
@@ -1007,5 +1088,6 @@ public class AiVideoGenerationService {
     private boolean requiresPublicReferences(String provider) { return "DAYAN".equals(provider) || "FAST".equals(provider); }
     private String json(Object value) { try { return objectMapper.writeValueAsString(value == null ? Map.of() : value); } catch (Exception ignored) { return "{}"; } }
     private String readable(Throwable value) { return value.getMessage() == null ? value.getClass().getSimpleName() : value.getMessage(); }
+    private record NarrationPolicy(boolean enabled, String languageOrMarket) {}
     private record GeneratedVideo(String location, long size) {}
 }

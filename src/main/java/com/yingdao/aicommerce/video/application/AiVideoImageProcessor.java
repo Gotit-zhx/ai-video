@@ -1830,7 +1830,7 @@ public class AiVideoImageProcessor {
                 + FRIENDLY_MODEL_FACE_BASELINE
                 + "人物大致面向镜头但不要证件照式立正：身体相对画面中心轻微偏移，重心自然落在一条腿上，两侧肩髋不完全水平，"
                 + "构图内可见手臂以略有差异的方式自然放置，可见手臂可轻微弯曲，头部有极小角度偏转，眼神像刚注意到拍摄者；"
-                + "表情处在尚未刻意摆拍的自然瞬间，可以只是轻微嘴角变化，不能露出模板化甜美微笑。"
+                + "表情处在尚未刻意摆拍的自然瞬间，可以只是轻微嘴角变化，不能露出模板化甜美微笑。人物必须自然闭口、嘴唇静止，不能张嘴、说话或做口型。"
                 + "姿态松弛但能够完整展示上衣，不摆夸张时尚姿势；身体比例、关节和五根手指正确。"
                 + "【AI 模特穿着母版｜不是视频首帧】这张图的唯一职责是建立同一人物正确穿着当前商品的高清母版，九宫格会另行生成脚本第 01 分镜首帧。"
                 + "人物必须已经按参考商品的真实开口和穿法把衣服完整穿在身上；头、双臂分别穿过正确开口，领口依靠真实裁片、缝线和肩部支撑自然落位。"
@@ -2061,8 +2061,8 @@ public class AiVideoImageProcessor {
                 .append(REAL_PHOTOGRAPHY_REQUIREMENT)
                 .append(FABRIC_AND_PRODUCT_REALISM_REQUIREMENT)
                 .append("九格必须锁定参考图2的同一套基础肤色、脸与脖子的色差关系、曝光、白平衡和锐度参数，不能逐格重新美颜、重新上妆或改变皮肤质感。")
-                .append("微表情不需要每格都变化。脚本未明确写出笑、眨眼、视线转移、说话、挑眉或其他面部动作时，后一格必须沿用前一格的自然表情，")
-                .append("不能为了让九格看起来不同而逐格重新生成眉毛、眼睑、眼球、鼻翼、嘴唇和嘴角。只有明确的面部动作才允许建立一次起势→过程→到位的连续变化，不能突然大笑、张大嘴、瞪眼或改变年龄和脸型。每格面部状态如下：\n");
+                .append("微表情不需要每格都变化。笑、眨眼、视线转移或挑眉只在脚本明确要求时以最小幅度执行；脚本中的说话、口播、台词和讲解都是画外旁白信息，不是人物面部动作。")
+                .append("第 01–09 格所有人物必须始终自然闭口、嘴唇静止，禁止张嘴、说话口型或对口型。不能为了让九格看起来不同而逐格重新生成眉毛、眼睑、眼球、鼻翼、嘴唇和嘴角。允许的面部动作只建立一次起势→过程→到位的连续变化，不能突然大笑、张大嘴、瞪眼或改变年龄和脸型。每格面部状态如下：\n");
         for (ShotPrompt shot : shots) {
             String expression = inferMicroExpression(shot);
             prompt.append("分镜 ").append(String.format("%02d", shot.sequence()))
@@ -2085,7 +2085,11 @@ public class AiVideoImageProcessor {
     }
 
     private String inferMicroExpression(ShotPrompt shot) {
-        String context = (shot.title() + " " + shot.motion()).toLowerCase();
+        return inferMicroExpression(shot.title(), shot.motion());
+    }
+
+    static String inferMicroExpression(String title, String motion) {
+        String context = ((title == null ? "" : title) + " " + (motion == null ? "" : motion)).toLowerCase();
         if (containsAny(context, "眨眼", "闭眼", "睁眼")) {
             return "按动作只完成一次双眼同步的完整眨眼，其他五官保持稳定，不连续眨眼或眼睑颤动";
         }
@@ -2093,7 +2097,7 @@ public class AiVideoImageProcessor {
             return "嘴角从原状态缓慢形成轻微自然微笑并稳定保持，眉毛、鼻翼与下颌不跟随抽动";
         }
         if (containsAny(context, "说话", "口播", "台词", "讲解")) {
-            return "仅保留与明确台词对应的克制口型，嘴唇连续平滑运动，鼻翼、眉毛和视线不被口型带动";
+            return "将说话、口播、台词或讲解视为画外旁白；人物自然闭口且嘴唇静止，不做任何口型";
         }
         if (containsAny(context, "看向", "视线", "回眸", "低头", "抬头")) {
             return "双眼只向动作目标平滑移动一次并稳定对焦，嘴角、眉毛和鼻翼沿用上一格状态";

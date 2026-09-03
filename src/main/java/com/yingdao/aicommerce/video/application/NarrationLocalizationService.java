@@ -133,11 +133,11 @@ public class NarrationLocalizationService {
         }
     }
 
-    static String preservePrefix(String original, String localized) {
-        Matcher originalMatcher = SPEECH_PREFIX.matcher(original == null ? "" : original.trim());
-        Matcher localizedMatcher = SPEECH_PREFIX.matcher(localized == null ? "" : localized.trim());
-        String body = localizedMatcher.find() ? localized.substring(localizedMatcher.end()).trim() : localized.trim();
-        return originalMatcher.find() ? originalMatcher.group(1) + "：" + body : body;
+    static String preservePrefix(String ignoredOriginal, String localized) {
+        String normalized = localized == null ? "" : localized.trim();
+        Matcher localizedMatcher = SPEECH_PREFIX.matcher(normalized);
+        String body = localizedMatcher.find() ? normalized.substring(localizedMatcher.end()).trim() : normalized;
+        return body.isBlank() ? "" : "旁白：" + body;
     }
 
     private int number(Object value) {

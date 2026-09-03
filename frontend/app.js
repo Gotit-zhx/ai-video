@@ -3996,7 +3996,7 @@ function renderManualShotRows() {
       <label>结束秒<input name="manualEnd${index}" type="number" min="0.1" max="300" step="0.1" required value="${suggestedEnd}"></label>
       <label class="manual-shot-title">分镜标题<input name="manualTitle${index}" required maxlength="160" placeholder="例如：商品第一眼亮相"></label>
       <label class="manual-shot-scene">画面与动作<textarea name="manualScene${index}" required maxlength="8000" rows="2" placeholder="描述主体、场景、动作与构图，系统将据此生成画面"></textarea></label>
-      <label class="manual-shot-narration">对白 / 旁白<textarea name="manualNarration${index}" maxlength="8000" rows="2" placeholder="例如：对白：今天给大家看一下；未指定则留空"></textarea></label>
+      <label class="manual-shot-narration">画外旁白（人物不动嘴）<textarea name="manualNarration${index}" maxlength="8000" rows="2" placeholder="例如：旁白：今天给大家看一下；未指定则留空"></textarea></label>
       <label class="manual-shot-motion">运镜补充<input name="manualMotion${index}" maxlength="8000" placeholder="例如：镜头缓慢向前推进（可选）"></label>
     </article>`;
   }).join("");
@@ -7202,8 +7202,8 @@ function syncVideoTaskModeForm() {
     : directReferenceVideo ? "创建参考图任务" : "创建并准备素材";
   if (hasScriptNarration) {
     document.querySelector("#video-task-dialog-note").textContent = marketInput.value.trim()
-      ? `该脚本含旁白，创建任务时会转换为“${marketInput.value.trim()}”对应语言；动作、镜头和时间不变。`
-      : "该脚本含旁白，必须选择或填写目标国家；系统只转换已有旁白，不会新增文案。";
+      ? `该脚本含画外旁白，创建任务时会转换为“${marketInput.value.trim()}”对应语言；人物全程闭口，动作、镜头和时间不变。`
+      : "该脚本含画外旁白，必须选择或填写目标国家；人物全程闭口，系统只转换已有旁白。";
   }
   const category = form.elements.productCategory;
   if (mode === "MODEL_WEAR" && !["服装", "鞋包", "饰品"].includes(category.value)) category.value = "服装";

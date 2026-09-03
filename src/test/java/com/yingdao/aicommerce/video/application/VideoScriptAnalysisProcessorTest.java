@@ -76,6 +76,19 @@ class VideoScriptAnalysisProcessorTest {
     }
 
     @Test
+    void transcriptFallbackIsAlwaysLabeledAsOffCameraNarration() {
+        VideoScriptAnalysisResult original = resultWithNineShots(new BigDecimal("15.0"));
+        DayanAudioTranscriptionService.Transcript transcript = new DayanAudioTranscriptionService.Transcript(
+                "今天看看新款", List.of(new DayanAudioTranscriptionService.Segment(
+                BigDecimal.ZERO, new BigDecimal("1.6"), null, "今天看看新款")));
+
+        VideoScriptAnalysisResult applied = VideoScriptAnalysisProcessor.applyAudioTranscript(
+                original, transcript, 15.0);
+
+        assertEquals("旁白：今天看看新款", applied.shots().getFirst().narration());
+    }
+
+    @Test
     void neverCutsModelNarrationInTheMiddleOfItsMeaning() {
         VideoScriptAnalysisResult original = resultWithNineShots(new BigDecimal("15.0"));
         List<VideoScriptAnalysisResult.Shot> shots = new ArrayList<>();
@@ -92,8 +105,10 @@ class VideoScriptAnalysisProcessorTest {
         VideoScriptAnalysisResult preserved = VideoScriptAnalysisProcessor.applyAudioTranscript(
                 verbose, transcript, 15.0);
 
-        assertEquals(verbose.shots().getFirst().narration(), preserved.shots().getFirst().narration());
-        assertEquals(verbose.shots().getLast().narration(), preserved.shots().getLast().narration());
+        assertEquals("旁白：这是一段明显超过正常十五秒口播速度的冗长内容需要被限制",
+                preserved.shots().getFirst().narration());
+        assertEquals("旁白：这是一段明显超过正常十五秒口播速度的冗长内容需要被限制",
+                preserved.shots().getLast().narration());
     }
 
     private VideoScriptAnalysisResult.Shot copyWithNarration(

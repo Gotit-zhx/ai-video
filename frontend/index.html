@@ -395,7 +395,7 @@
                 <button class="film-frame solution" type="button" data-shot="6" data-shot-title="上身过程" data-shot-copy="达人自然穿上 T 恤并整理下摆，肩颈和腰线逐渐显现。"><i>06</i><b>上身过程</b><small>横移跟拍</small></button>
                 <button class="film-frame cta" type="button" data-shot="7" data-shot-title="效果呈现" data-shot-copy="达人换好完整约会穿搭，自信转身，展示正面和侧面修身效果。"><i>07</i><b>效果呈现</b><small>缓慢拉镜</small></button>
                 <button class="film-frame cta" type="button" data-shot="8" data-shot-title="场景验证" data-shot-copy="自然光咖啡馆场景，达人坐下抬手，衣身依旧平整贴合。"><i>08</i><b>场景验证</b><small>生活跟拍</small></button>
-                <button class="film-frame cta" type="button" data-shot="9" data-shot-title="购买引导" data-shot-copy="达人面向镜头微笑并指向同款，保留干净画面供后续添加口播和商品信息。"><i>09</i><b>购买引导</b><small>低角仰拍</small></button>
+                <button class="film-frame cta" type="button" data-shot="9" data-shot-title="购买引导" data-shot-copy="达人面向镜头闭口微笑并指向同款，保留干净画面供后续添加画外旁白和商品信息。"><i>09</i><b>购买引导</b><small>低角仰拍</small></button>
               </div>
               <div class="shot-editor-card">
                 <img id="selected-shot-preview" class="shot-editor-preview" alt="当前分镜原视频画面" hidden>
@@ -841,7 +841,7 @@
               <label>运镜<input id="shot-edit-camera" maxlength="120" placeholder="例如：持续缓慢推近"></label>
               <label>情绪与氛围<input id="shot-edit-emotion" maxlength="120" placeholder="例如：自然、轻松"></label>
               <label class="full-field">进入本镜头的转场<input id="shot-edit-transition" maxlength="500" placeholder="例如：直接硬切；首镜头填写无"></label>
-              <label class="full-field">对白 / 旁白（视频会说出）<textarea id="shot-edit-narration" rows="2" maxlength="8000" placeholder="例如：对白：今天给大家看一下；旁白：使用前先轻轻摇匀；没有则留空"></textarea></label>
+              <label class="full-field">画外旁白（模特全程闭口）<textarea id="shot-edit-narration" rows="2" maxlength="8000" placeholder="例如：旁白：使用前先轻轻摇匀；没有则留空"></textarea></label>
             </div>
           </details>
         </div>
@@ -928,10 +928,10 @@
         <label class="script-audio-extraction-option">
           <input type="checkbox" name="extractAudio" value="true">
           <span aria-hidden="true">声</span>
-          <div><strong>提取原视频口播</strong></div>
+          <div><strong>提取原视频人声并转为画外旁白</strong></div>
           <em>可选</em>
         </label>
-        <div class="ai-analysis-path"><span><i>1</i>识别口播与画面</span><b>→</b><span><i>2</i>生成中文分镜</span><b>→</b><span><i>3</i>确认后生成 JSON</span></div>
+        <div class="ai-analysis-path"><span><i>1</i>识别人声与画面</span><b>→</b><span><i>2</i>整理为画外旁白</span><b>→</b><span><i>3</i>确认后生成 JSON</span></div>
       </section>
       <section id="script-create-manual" class="script-create-panel" hidden>
         <section class="manual-ai-assist">
@@ -1028,11 +1028,11 @@
         <label class="replica-charge-confirm"><input id="replica-charge-confirm" type="checkbox" name="replicaChargeAccepted" value="true"><span>我已知晓本次复刻按 2 倍收费</span></label>
       </section>
       <section id="cast-product-options" class="cast-product-options" hidden>
-        <header><div><strong>口播与标题</strong><small>参考图会直接提交给视频模型，跳过生图</small></div><em>不生图</em></header>
+        <header><div><strong>画外旁白与标题</strong><small>人物全程闭口，旁白由画外音轨播放</small></div><em>不生图</em></header>
         <div class="form-grid">
-          <label>口播方式<select name="voiceoverMode"><option value="SCRIPT">使用脚本口播</option><option value="CUSTOM">使用自定义口播</option><option value="NONE">不要人声</option></select></label>
+          <label>旁白方式<select name="voiceoverMode"><option value="SCRIPT">使用脚本画外旁白</option><option value="CUSTOM">使用自定义画外旁白</option><option value="NONE">不要人声</option></select></label>
           <label>视频标题<input name="videoTitle" maxlength="160" placeholder="例如：宝宝日常护理小技巧"></label>
-          <label id="custom-voiceover-field" class="full-field" hidden>自定义口播<textarea name="customVoiceover" maxlength="4000" rows="3" placeholder="填写需要角色逐字说出的内容"></textarea></label>
+          <label id="custom-voiceover-field" class="full-field" hidden>自定义画外旁白<textarea name="customVoiceover" maxlength="4000" rows="3" placeholder="填写画外音需要逐字说出的内容，画面人物不动嘴"></textarea></label>
         </div>
       </section>
       <fieldset class="background-mode-picker">

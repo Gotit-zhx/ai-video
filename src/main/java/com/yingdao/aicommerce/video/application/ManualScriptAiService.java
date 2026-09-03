@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 @Service
 public class ManualScriptAiService {
@@ -26,6 +27,7 @@ public class ManualScriptAiService {
     private static final int MAX_PRODUCT_IMAGE_COUNT = 6;
     private static final long MAX_PRODUCT_IMAGE_BYTES = 20L * 1024 * 1024;
     private static final long MAX_PRODUCT_IMAGES_TOTAL_BYTES = 60L * 1024 * 1024;
+    private static final Pattern SPEECH_PREFIX = Pattern.compile("^(对白|旁白|口播)[：:]\\s*");
 
     private final ModelConfigService modelConfigService;
     private final RestClient piClient;
@@ -194,7 +196,7 @@ public class ManualScriptAiService {
             String motion = text(shot.get("motionDescription"), 8000);
             shots.add(new ShotDraft(index + 1, defaultStage(text(shot.get("stage"), 20), index), title,
                     boundary(index), boundary(index + 1), scene, motion.isBlank() ? scene : motion,
-                    text(shot.get("narration"), 8000)));
+                    normalizeOffCameraNarration(text(shot.get("narration"), 8000))));
         }
         String name = text(result.get("name"), 160);
         String tone = text(result.get("visualTone"), 4000);
@@ -210,6 +212,13 @@ public class ManualScriptAiService {
     static BigDecimal boundary(int index) {
         return TOTAL_SECONDS.multiply(BigDecimal.valueOf(index))
                 .divide(BigDecimal.valueOf(SHOT_COUNT), 1, RoundingMode.HALF_UP);
+    }
+
+    static String normalizeOffCameraNarration(String value) {
+        String normalized = value == null ? "" : value.replaceAll("\\s+", " ").trim();
+        if (normalized.isBlank()) return "";
+        normalized = SPEECH_PREFIX.matcher(normalized).replaceFirst("").trim();
+        return normalized.isBlank() ? "" : "旁白：" + normalized;
     }
 
     private String defaultStage(String requested, int index) {

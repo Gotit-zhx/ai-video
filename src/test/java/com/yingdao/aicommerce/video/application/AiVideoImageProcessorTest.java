@@ -49,6 +49,15 @@ class AiVideoImageProcessorTest {
     Path tempDirectory;
 
     @Test
+    void speakingCueBecomesClosedMouthOffCameraNarrationInStoryboard() {
+        String direction = AiVideoImageProcessor.inferMicroExpression("达人口播", "对镜头讲解商品");
+
+        assertTrue(direction.contains("画外旁白"));
+        assertTrue(direction.contains("自然闭口"));
+        assertTrue(direction.contains("不做任何口型"));
+    }
+
+    @Test
     void recognizesLegacyStaticModelFirstFrame() {
         AiVideoTaskAsset asset = new AiVideoTaskAsset("org", "task", "item",
                 "STORYBOARD_FIRST_FRAME", 1, "old.png", "image/png", 1,

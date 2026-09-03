@@ -359,7 +359,15 @@ public class VideoScriptAnalysisProcessor {
         boolean hasCondensedNarration = result.shots().stream()
                 .anyMatch(shot -> shot.narration() != null && !shot.narration().isBlank());
         if (hasCondensedNarration) {
-            return result;
+            List<VideoScriptAnalysisResult.Shot> normalized = result.shots().stream().map(shot ->
+                    new VideoScriptAnalysisResult.Shot(
+                            shot.sequence(), shot.stage(), shot.title(), shot.startSecond(), shot.endSecond(),
+                            shot.durationSeconds(), shot.sceneDescription(), shot.motionDescription(),
+                            shot.motionIntensity(), ManualScriptAiService.normalizeOffCameraNarration(shot.narration()),
+                            shot.shotSize(), shot.cameraMovement(), shot.transitionDescription(), shot.emotion(),
+                            shot.imagePrompt())).toList();
+            return new VideoScriptAnalysisResult(
+                    result.title(), result.summary(), result.globalVisualTone(), result.durationSeconds(), normalized);
         }
 
         double resultDuration = result.durationSeconds() == null
@@ -375,7 +383,7 @@ public class VideoScriptAnalysisProcessor {
                     .filter(text -> text != null && !text.isBlank())
                     .reduce((left, right) -> left + right).orElse("");
             if (narration.isBlank()) narration = shot.narration();
-            else narration = "口播：" + narration;
+            else narration = "旁白：" + narration;
             return new VideoScriptAnalysisResult.Shot(
                     shot.sequence(), shot.stage(), shot.title(), shot.startSecond(), shot.endSecond(),
                     shot.durationSeconds(), shot.sceneDescription(), shot.motionDescription(),

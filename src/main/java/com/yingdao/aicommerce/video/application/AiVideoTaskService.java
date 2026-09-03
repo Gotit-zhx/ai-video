@@ -133,7 +133,7 @@ public class AiVideoTaskService {
         String voiceoverMode = normalizeVoiceoverMode(command.voiceoverMode());
         String customVoiceover = normalizeNullable(command.customVoiceover(), 4000);
         if ("CUSTOM".equals(voiceoverMode) && customVoiceover == null) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "请填写自定义口播文字");
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请填写自定义画外旁白文字");
         }
         String videoTitle = normalizeNullable(command.videoTitle(), 160);
         String targetMarket = normalizeNullable(command.targetMarket(), 80);
@@ -1239,7 +1239,7 @@ public class AiVideoTaskService {
     private String normalizeVoiceoverMode(String value) {
         String mode = value == null || value.isBlank() ? "SCRIPT" : value.trim().toUpperCase();
         if (!List.of("SCRIPT", "CUSTOM", "NONE").contains(mode)) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "不支持的口播方式");
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "不支持的画外旁白方式");
         }
         return mode;
     }
@@ -1313,7 +1313,7 @@ public class AiVideoTaskService {
 
     private String buildScriptVideoReplacementPrompt(AiVideoTask task) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：SCRIPT_VIDEO_REPLACE_V2 · 精准复刻\n");
+        prompt.append("提示词版本：SCRIPT_VIDEO_REPLACE_V3 · 闭口画外旁白\n");
         prompt.append("【母版】以随请求提交的原视频为唯一时空母版。只执行上方《替换映射》，未映射的人物、商品和环境保持原样。\n");
         prompt.append("【外观】被替换对象的身份或商品外观服从对应图片；其在画面中的位置、比例、透视、遮挡、光影、动作和接触关系服从原视频。\n");
         prompt.append("【时序】原视频的动作时点、镜头路径、切换边界、节奏和总时长不变；不新增、删除、复制或互换人物与物品。\n");
@@ -1348,7 +1348,7 @@ public class AiVideoTaskService {
 
     private String buildDirectReferenceVideoPrompt(AiVideoTask task, String subjectName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定\n\n");
+        prompt.append("提示词版本：DIRECT_DETAIL_V5 · 中近景与闭口旁白\n\n");
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append("短视频，主体：").append(subjectName).append("。\n");
         prompt.append("参考图的编号、主参考和各图用途由用户单独指定；严格服从提交时附加的《参考图职责协议》，不得按上传顺序自行猜测，也不得把编号、用途说明或协议文字拍进成片。\n");
@@ -1359,7 +1359,7 @@ public class AiVideoTaskService {
         prompt.append("每一张参考图只影响它被指定的职责。发生冲突时，主参考决定主体身份和整体外观，专项参考只覆盖对应的商品细节、人物、场景、动作、角度或结束画面。\n\n");
         prompt.append("【人物人脸景别保护】\n");
         prompt.append("有人物时，全片保持同一人物身份、脸型、五官比例、肤色、年龄、发型、身材和穿搭；头部转动只产生真实透视变化，不得逐帧重绘五官、换脸或改变年龄。\n");
-        prompt.append("动作、场景和主体关系服从每段脚本与对应参考图，但景别始终服从《全片中近景锁定》；脸部必须清晰、自然且结构稳定。非台词时保持自然闭口，不自行增加眨眼、挑眉、口型、手势、舞蹈或夸张表演。\n\n");
+        prompt.append("动作、场景和主体关系服从每段脚本与对应参考图，但景别始终服从《全片中近景锁定》；脸部必须清晰、自然且结构稳定。全片人物自然闭口且嘴唇静止，任何台词都只用画外旁白播放；不自行增加口型、眨眼、挑眉、手势、舞蹈或夸张表演。\n\n");
         prompt.append("【商品与物理一致性】\n");
         prompt.append("商品颜色、结构、数量、比例、Logo、文字、图案、材质和功能部件全片稳定，不得换款、复制、漂移、融化或凭空生长。拿取、开启、点燃、喷洒、倾倒和使用效果必须遵守真实接触关系、结构和功能原理。\n");
         prompt.append("手部只在脚本需要时出现，数量与动作自然；主体不得悬浮，必须与手、桌面、地面、支架或环境建立真实接触。\n\n");
@@ -1374,7 +1374,7 @@ public class AiVideoTaskService {
 
     private String buildProductVideoPrompt(AiVideoTask task, String productName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定\n\n");
+        prompt.append("提示词版本：PRODUCT_DETAIL_V6 · 近景与画外旁白\n\n");
         prompt.append("【参考图片】\n");
         prompt.append("图1：从图2第 01 格裁出的商品首帧，是商品外观、位置、场景与初始状态的最高优先级锚点。\n");
         prompt.append("图2：4K 商品分镜九宫格，按从左到右、从上到下读取 01→09，仅表示同一件商品的连续展示过程。\n");
@@ -1398,7 +1398,7 @@ public class AiVideoTaskService {
 
     private String buildStoryboardAnimationPrompt(AiVideoTask task, String garmentName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：V11.6 · 近景证据优先精简版\n\n");
+        prompt.append("提示词版本：V11.7 · 近景与闭口旁白\n\n");
         prompt.append("【参考图职责】\n");
         prompt.append("图1：第01格单画面首帧。人物身份、脸、发型、身材和非商品穿搭在全片保持一致；只有姿势、手持状态和背景仅约束 t=0。\n");
         prompt.append("图2：完整3×3时间索引，按左到右、上到下读取01→09。采用每格的动作、场景、构图意图和机位方向，但把对应内容重建为铺满画布的单画面；远景、全身和拉远信息由中近景规则覆盖，九宫格版式本身不是输出内容。\n");
@@ -1412,7 +1412,7 @@ public class AiVideoTaskService {
         prompt.append("每段只执行时间轴写明的主要动作，不新增挥手、指向、舞蹈或夸张表演。手势差异不得通过多手、复制肢体或残影插值。\n");
         prompt.append("【商品与人物稳定】\n");
         prompt.append("商品在穿着、手持、展开、折叠和特写状态下都保持图3及后附结构证据中的同一结构；只允许真实透视、遮挡、布料受力和褶皱变化。\n");
-        prompt.append("脸部保持图1身份，转头只产生自然透视；没有明确表情或口型动作时保持自然稳定。商品印花随同一块布料运动，不改字、不增删、不漂移。\n");
+        prompt.append("脸部保持图1身份，转头只产生自然透视；全程自然闭口、嘴唇静止，脚本有旁白时也不做口型。商品印花随同一块布料运动，不改字、不增删、不漂移。\n");
         appendMusicPrompt(prompt, task);
         prompt.append("同一镜头内保持曝光、白平衡、背景和人物尺度稳定；不生成字幕、额外Logo或水印。\n\n");
         appendImageToVideoTimeline(prompt, task);
@@ -1428,31 +1428,33 @@ public class AiVideoTaskService {
                 : !"NONE".equals(voiceoverMode) && hasNarration(task);
         if ("UPLOADED".equals(task.getMusicMode())) {
             prompt.append(spokenAudio
-                    ? "【音频】已上传音乐是全片唯一BGM并保持连续；按时间轴生成指定对白/旁白，说话时仅压低BGM，句末恢复。\n"
-                    : "【音频】已上传音乐是唯一BGM，保留旋律与节奏；不生成其他人声或音效。\n");
+                    ? "【BGM】已上传音乐是全片唯一 BGM，保留完整主旋律与节奏并全程连续；画外旁白时只适度压低 BGM，句末立即恢复，不得中断或消失。\n"
+                    : "【BGM】已上传音乐是全片唯一 BGM，保留完整主旋律与节奏并全程连续；不生成其他人声或突兀音效。\n");
         } else {
             prompt.append(spokenAudio
-                    ? "【音频】生成连续清晰的纯器乐BGM；按时间轴生成指定对白/旁白，说话时压低BGM，句末恢复。\n"
-                    : "【音频】生成轻快、连续、干净的纯器乐BGM，无人声、杂音或突兀音效。\n");
+                    ? "【BGM】生成有清晰主旋律、轻快且全程连续的纯器乐 BGM；画外旁白时只适度压低 BGM，句末立即恢复，不得中断或消失。\n"
+                    : "【BGM】生成有清晰主旋律、轻快且全程连续的纯器乐 BGM，无人声、杂音或突兀音效，不得中断或消失。\n");
         }
         if (spokenAudio) {
-            prompt.append("【人声】逐字说时间轴文字，不增删重复；“对白”由人物在对应时段自然开口并同步口型，“旁白”用画外音且人物不动嘴；空白时段禁说话。人声清楚，BGM不得盖住或消失。\n");
+            prompt.append("【人物口型｜最高优先级】画面内所有人物全程自然闭口、嘴唇静止，不说话、不对口型，不得因旁白张嘴。\n");
+            prompt.append("【画外旁白】仅由不出镜的画外配音者在对应时段逐字说出时间轴文字；不增字、不删字、不改写、不重复，发音清晰可懂，不得出现乱码式、伪语言或含混音节；无旁白文字的时段不生成人声。\n");
             String narrationLanguage = textValue(rules.get("narrationLanguage"));
             if ("SCRIPT".equals(voiceoverMode) && !narrationLanguage.isBlank()) {
-                prompt.append("【旁白语言锁定】全部对白和旁白必须使用")
+                prompt.append("【旁白语言锁定】全部画外旁白必须使用")
                         .append(narrationLanguage).append("，对应目标市场：")
-                        .append(task.getTargetMarket()).append("。时间轴文字已经完成本地化，禁止改回中文、夹杂其他语言或再次翻译。\n");
+                        .append(task.getTargetMarket()).append("。时间轴文字已完成本地化，必须原样朗读，禁止改回中文、夹杂其他语言或再次翻译。\n");
             }
         } else {
-            prompt.append("【人声】全片不说话、不动嘴；BGM不驱动表情或身体动作。\n");
+            prompt.append("【人物与人声｜最高优先级】全片人物自然闭口、嘴唇静止，不说话、不做口型；不生成对白、画外旁白、哼唱、呢喃、喘词、笑声或任何可辨识人声。BGM 不驱动嘴唇、表情或身体动作。\n");
         }
-        if ("CUSTOM".equals(voiceoverMode)) {
-            prompt.append("【自定义口播原文】").append(textValue(rules.get("customVoiceover"))).append('\n');
+        if (spokenAudio && "CUSTOM".equals(voiceoverMode)) {
+            prompt.append("【自定义画外旁白原文】")
+                    .append(offCameraNarrationText(rules.get("customVoiceover"))).append('\n');
         }
         String videoTitle = textValue(rules.get("videoTitle"));
         if (!videoTitle.isBlank()) {
             prompt.append("【视频标题】开场前 2 秒只显示以下精确文字：").append(videoTitle)
-                    .append("。不得把口播另行生成字幕。\n");
+                    .append("。不得把画外旁白另行生成字幕。\n");
         }
     }
 
@@ -1482,7 +1484,7 @@ public class AiVideoTaskService {
             prompt.append("【逐镜头时间轴】\n");
             boolean productOnly = VideoTimelineSemantics.usesPhysicalShotTransitions(task.getGenerationMode());
             if (task.isDirectReferenceVideo()) {
-                prompt.append("按人工脚本的时间段逐项执行；每段场景、构图、动作和声音均须落实，参考图职责服从提交时附加的协议。\n");
+                prompt.append("按人工脚本的时间段逐项执行；每段场景、构图、动作和画外旁白均须落实，参考图职责服从提交时附加的协议。\n");
             } else {
                 prompt.append(productOnly
                         ? "每一项对应图2中同编号关键帧，必须在指定时段落实该格的场景、构图意图、动作和运镜；原始景别只作废不继承，严格读取“进入转场”，其中“同镜头连续，无转场”表示平滑延续，只有明确的真实切点才允许切镜。\n"
@@ -1513,8 +1515,8 @@ public class AiVideoTaskService {
                 appendLine(prompt, "执行镜头", normalizedCameraMovement(task, movement));
                 String voiceoverMode = textValue(generationRules(task).get("voiceoverMode"));
                 String narration = "NONE".equals(voiceoverMode) || "CUSTOM".equals(voiceoverMode)
-                        ? "" : textValue(shot.get("narration"));
-                appendLine(prompt, "对白 / 旁白", narration);
+                        ? "" : offCameraNarrationText(shot.get("narration"));
+                appendLine(prompt, "画外旁白（画面人物闭口）", narration);
             }
         } catch (Exception ignored) { }
     }
@@ -1642,16 +1644,20 @@ public class AiVideoTaskService {
         String current = item.getVideoPromptText();
         if (current == null) return false;
         if (isScriptVideoReplacement(task)) {
-            return !current.contains("提示词版本：SCRIPT_VIDEO_REPLACE_V2 · 精准复刻");
+            return !current.contains("提示词版本：SCRIPT_VIDEO_REPLACE_V3 · 闭口画外旁白");
         }
-        if (current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")
-                || current.contains("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定")
-                || current.contains("提示词版本：V11.6 · 近景证据优先精简版")) {
+        if (current.contains("提示词版本：DIRECT_DETAIL_V5 · 中近景与闭口旁白")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V6 · 近景与画外旁白")
+                || current.contains("提示词版本：V11.7 · 近景与闭口旁白")) {
             return false;
         }
-        return (current.contains("提示词版本：DIRECT_DETAIL_V3")
+        return (current.contains("提示词版本：SCRIPT_VIDEO_REPLACE_V2")
+                || current.contains("提示词版本：DIRECT_DETAIL_V3")
+                || current.contains("提示词版本：DIRECT_DETAIL_V4")
                 || current.contains("提示词版本：PRODUCT_DETAIL_V3")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V5")
                 || current.contains("提示词版本：V11.5 · 单画面与证据优先精简版")
+                || current.contains("提示词版本：V11.6 · 近景证据优先精简版")
                 || current.contains("提示词版本：V11.1 · V11 恢复版与局部帧保持")
                 || current.contains("提示词版本：V11.3 · 全片中近景与局部帧保持")
                 || current.contains("提示词版本：V11.4 · 独立分镜与人体完整性")
@@ -1743,7 +1749,8 @@ public class AiVideoTaskService {
                         if (!shotSize.isBlank() && !movement.isBlank()) prompt.append(" / ");
                         prompt.append(movement).append('\n');
                     }
-                    appendLine(prompt, "台词", shot.get("narration"));
+                    appendLine(prompt, "画外旁白（画面人物闭口）",
+                            offCameraNarrationText(shot.get("narration")));
                 }
             }
         } catch (Exception ignored) {
@@ -1754,6 +1761,10 @@ public class AiVideoTaskService {
     private void appendLine(StringBuilder target, String label, Object value) {
         String text = textValue(value);
         if (!text.isBlank()) target.append(label).append('：').append(text).append('\n');
+    }
+
+    private String offCameraNarrationText(Object value) {
+        return textValue(value).replaceFirst("^(对白|旁白|口播)[：:]\\s*", "").trim();
     }
 
     private String shotHandDirective(AiVideoTask task, String action, String scene) {
