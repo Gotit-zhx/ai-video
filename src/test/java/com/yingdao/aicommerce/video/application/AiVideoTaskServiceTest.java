@@ -84,6 +84,8 @@ class AiVideoTaskServiceTest {
         assertTrue(result.contains("画面：模特展示衣服"));
         assertTrue(result.contains("动作：轻轻转身"));
         assertTrue(result.contains("已上传音乐是唯一 BGM"));
+        assertTrue(result.contains("从0秒开始贯穿成片结尾"));
+        assertTrue(result.contains("清晰主旋律和稳定节拍"));
         assertTrue(result.contains("嘴唇静止"));
         assertTrue(result.contains("不出镜的画外配音者"));
         assertTrue(result.contains("不增删、不改写、不重复"));
@@ -101,6 +103,8 @@ class AiVideoTaskServiceTest {
                 "x".repeat(20_000), false, false, "泰国市场对应的主要消费语言");
 
         assertTrue(result.contains("纯器乐 BGM"));
+        assertTrue(result.contains("从0秒开始贯穿成片结尾"));
+        assertTrue(result.contains("清晰主旋律和稳定节拍"));
         assertTrue(result.contains("任何可辨识人声"));
         assertTrue(result.contains("本任务无画外旁白"));
         assertTrue(result.length() <= 20_000);

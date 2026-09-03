@@ -726,8 +726,8 @@ public class AiVideoGenerationService {
             cleaned.append(line);
         }
         String bgmRule = uploadedMusic
-                ? "已上传音乐是唯一 BGM，保留完整清晰主旋律并贯穿全片。"
-                : "生成有清晰主旋律且贯穿全片的轻快纯器乐 BGM。";
+                ? "已上传音乐是唯一 BGM，必须从0秒开始贯穿成片结尾，完整保留清晰主旋律和稳定节拍，并保持纯器乐；不得中断、消失或混入人声。"
+                : "生成从0秒开始贯穿成片结尾、具有清晰主旋律和稳定节拍的轻快纯器乐 BGM；不得中断、消失或混入人声。";
         String language = languageOrMarket == null ? "" : languageOrMarket.replaceAll("\\s+", " ").trim();
         String voiceRule = narrationEnabled
                 ? "仅允许不出镜的画外配音者逐字朗读提示词中的《画外旁白》；不增删、不改写、不重复、不再次翻译，发音必须清晰可懂，禁止乱码式、伪语言、含混音节或额外人声。"

@@ -329,7 +329,7 @@ public class ProductFunctionAnalysisService {
         return objectMapper.writeValueAsString(normalized);
     }
 
-    private String normalizeGarmentAnalysis(Map<String, Object> source) throws Exception {
+    String normalizeGarmentAnalysis(Map<String, Object> source) throws Exception {
         Map<String, Object> normalized = new LinkedHashMap<>();
         normalized.put("version", GARMENT_TOPOLOGY_VERSION);
         normalized.put("garmentType", text(source.get("garmentType"), 100));
@@ -361,10 +361,29 @@ public class ProductFunctionAnalysisService {
         normalized.put("forbiddenChanges", stringList(source.get("forbiddenChanges"), 12, 140));
         normalized.put("visualEvidence", stringList(source.get("visualEvidence"), 8, 140));
         normalized.put("uncertainties", stringList(source.get("uncertainties"), 6, 140));
+        requireGarmentTopologyFields(normalized);
         Object confidence = source.get("confidence");
         normalized.put("confidence", confidence instanceof Number number
                 ? Math.max(0.0, Math.min(1.0, number.doubleValue())) : 0.0);
         return objectMapper.writeValueAsString(normalized);
+    }
+
+    private void requireGarmentTopologyFields(Map<String, Object> value) {
+        List<String> missing = new ArrayList<>();
+        for (String field : List.of("garmentType", "topologyClass", "structureSymmetry",
+                "wearingSidePolicy", "imageLeftShoulderState", "imageRightShoulderState",
+                "wearerLeftShoulderState", "wearerRightShoulderState", "imageLeftSleeve",
+                "imageRightSleeve", "wearerLeftSleeve", "wearerRightSleeve", "necklinePath",
+                "viewpointProjectionRule")) {
+            if (!(value.get(field) instanceof String text) || text.isBlank()) missing.add(field);
+        }
+        for (String field : List.of("openingInventory", "seamConnections", "wearingMethod",
+                "fixedStructures", "forbiddenChanges", "visualEvidence")) {
+            if (!(value.get(field) instanceof List<?> entries) || entries.isEmpty()) missing.add(field);
+        }
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException("服装结构识别结果缺少必填字段：" + String.join(", ", missing));
+        }
     }
 
     private String garmentPromptBlock(Map<String, Object> value) {
