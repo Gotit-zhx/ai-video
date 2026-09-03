@@ -535,6 +535,62 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void garmentTopologyNormalizationRejectsProductFunctionSchema() {
+        ProductFunctionAnalysisService service = new ProductFunctionAnalysisService(
+                null, null, new ObjectMapper(), "http://localhost:8090", "test-token");
+        var wrongSchema = new java.util.LinkedHashMap<String, Object>();
+        wrongSchema.put("functional", false);
+        wrongSchema.put("productType", "服装");
+        wrongSchema.put("fixedStructures", java.util.List.of("袖子数量固定"));
+        wrongSchema.put("forbiddenChanges", java.util.List.of("不得通电"));
+
+        Exception failure = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> service.normalizeGarmentAnalysis(wrongSchema));
+
+        assertTrue(failure.getMessage().contains("garmentType"));
+        assertTrue(failure.getMessage().contains("imageLeftSleeve"));
+        assertTrue(failure.getMessage().contains("visualEvidence"));
+    }
+
+    @Test
+    void garmentTopologyNormalizationAcceptsAsymmetricTopWithTwoSleeves() throws Exception {
+        ProductFunctionAnalysisService service = new ProductFunctionAnalysisService(
+                null, null, new ObjectMapper(), "http://localhost:8090", "test-token");
+        var source = new java.util.LinkedHashMap<String, Object>();
+        source.put("garmentType", "非对称斜领双短袖上衣");
+        source.put("topologyClass", "ASYMMETRIC_OFF_SHOULDER_TWO_SLEEVES");
+        source.put("structureSymmetry", "INTRINSIC_ASYMMETRIC");
+        source.put("wearingSidePolicy", "FIXED_WEARER_SIDE");
+        source.put("imageLeftShoulderState", "领口下落露肩");
+        source.put("imageRightShoulderState", "衣片覆盖肩部");
+        source.put("wearerLeftShoulderState", "衣片覆盖肩部");
+        source.put("wearerRightShoulderState", "领口下落露肩");
+        source.put("imageLeftSleeve", "低侧仍有完整短袖和独立袖口");
+        source.put("imageRightSleeve", "高侧有完整短袖和独立袖口");
+        source.put("wearerLeftSleeve", "完整短袖");
+        source.put("wearerRightSleeve", "低位完整短袖");
+        source.put("visibleSleeveCount", 2);
+        source.put("openingInventory", java.util.List.of("一条斜向领口", "两只独立袖口", "衣身下摆开口"));
+        source.put("seamConnections", java.util.List.of("两侧袖片分别连续连接衣身"));
+        source.put("necklinePath", "从画面左侧肩下斜升至画面右侧肩上");
+        source.put("supportElements", java.util.List.of());
+        source.put("viewpointProjectionRule", "固定在穿着者身体侧，转身时仅屏幕投影左右变化");
+        source.put("wearingMethod", java.util.List.of("头穿过斜领口，双臂分别穿过两只袖口"));
+        source.put("fixedStructures", java.util.List.of("低侧短袖与高侧短袖始终同时存在"));
+        source.put("forbiddenChanges", java.util.List.of("不得把低侧短袖删除成无袖"));
+        source.put("visualEvidence", java.util.List.of("画面左右均可见连续袖片和独立袖口"));
+        source.put("uncertainties", java.util.List.of());
+        source.put("confidence", 0.98);
+
+        String normalized = service.normalizeGarmentAnalysis(source);
+
+        assertTrue(normalized.contains("GARMENT_TOPOLOGY_V2"));
+        assertTrue(normalized.contains("\"visibleSleeveCount\":2"));
+        assertTrue(normalized.contains("低侧短袖与高侧短袖始终同时存在"));
+        assertTrue(normalized.contains("不得把低侧短袖删除成无袖"));
+    }
+
+    @Test
     void productFunctionAnalysisReceivesAllScriptFunctionSignals() {
         ProductFunctionAnalysisService service = new ProductFunctionAnalysisService(
                 null, null, new ObjectMapper(), "http://localhost:8090", "test-token");
