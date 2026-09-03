@@ -1,5 +1,8 @@
 package com.yingdao.aicommerce.video.application;
 
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskAsset;
 import com.yingdao.aicommerce.video.domain.AiVideoTask;
@@ -14,10 +17,14 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -33,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -138,6 +146,89 @@ class AiVideoImageProcessorTest {
         assertNotNull(decoded);
         assertTrue(Math.max(decoded.getWidth(), decoded.getHeight()) <= 1280);
         assertTrue(compact.bytes().length < 500_000);
+    }
+
+    @Test
+    void capsNoisyFourKValidationCopyWithoutChangingTheGeneratedOriginal() throws Exception {
+        BufferedImage source = new BufferedImage(1440, 2560, BufferedImage.TYPE_INT_RGB);
+        int[] pixels = new int[source.getWidth() * source.getHeight()];
+        Random random = new Random(20260903L);
+        for (int index = 0; index < pixels.length; index++) pixels[index] = random.nextInt();
+        source.setRGB(0, 0, source.getWidth(), source.getHeight(), pixels, 0, source.getWidth());
+        ByteArrayOutputStream png = new ByteArrayOutputStream();
+        assertTrue(ImageIO.write(source, "png", png));
+        byte[] original = png.toByteArray();
+        byte[] untouched = original.clone();
+
+        ProductFunctionAnalysisService.ValidationImage compact =
+                ProductFunctionAnalysisService.compactForValidation(original, "image/png");
+        BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(compact.bytes()));
+
+        assertArrayEquals(untouched, original);
+        assertEquals("image/jpeg", compact.mimeType());
+        assertNotNull(decoded);
+        assertTrue(Math.max(decoded.getWidth(), decoded.getHeight()) <= 1280);
+        assertTrue(compact.bytes().length <= ProductFunctionAnalysisService.VALIDATION_MAX_BYTES);
+        assertTrue(original.length > compact.bytes().length * 10L);
+    }
+
+    @Test
+    void neverFallsBackToAnOversizedUndecodableValidationPayload() {
+        byte[] invalidLargeImage = new byte[ProductFunctionAnalysisService.VALIDATION_MAX_BYTES + 1];
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> ProductFunctionAnalysisService.compactForValidation(
+                        invalidLargeImage, "image/png"));
+
+        assertTrue(failure.getMessage().contains("无法解码"));
+    }
+
+    @Test
+    void retriesTheSamePrivateCandidateAfterATransientValidationGatewayFailure() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        List<byte[]> requestBodies = new ArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/product/analyze", exchange -> {
+            requestBodies.add(exchange.getRequestBody().readAllBytes());
+            if (calls.incrementAndGet() == 1) {
+                respondJson(exchange, 502, "{\"message\":\"fetch failed\"}");
+            } else {
+                respondJson(exchange, 200, """
+                        {"result":{"valid":true,"violations":[],"violationCount":0,
+                        "correctionPrompt":"","confidence":0.97},"modelId":"gpt-5.4","latencyMs":5}
+                        """);
+            }
+        });
+        server.start();
+        try {
+            BufferedImage image = new BufferedImage(64, 64, BufferedImage.TYPE_INT_RGB);
+            ByteArrayOutputStream png = new ByteArrayOutputStream();
+            assertTrue(ImageIO.write(image, "png", png));
+            Path source = tempDirectory.resolve("source.png");
+            Files.write(source, png.toByteArray());
+            AiVideoTaskItem item = new AiVideoTaskItem("org", "task", "item", "sku",
+                    "source.png", source.toString(), "image/png", png.size());
+            item.updateProductFunctionAnalysis("{\"version\":\"GARMENT_TOPOLOGY_V2\"}");
+            ModelConfigService modelConfig = mock(ModelConfigService.class);
+            when(modelConfig.driverConnection("org")).thenReturn(Optional.of(
+                    new ModelConfigService.RuntimeModelConnection(
+                            "driver", "https://monotoo.shop/v1", "gpt-5.4",
+                            "OPENAI", "AUTO", "test-key")));
+            ProductFunctionAnalysisService service = new ProductFunctionAnalysisService(
+                    mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class),
+                    modelConfig, new ObjectMapper(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "test-token");
+
+            ProductFunctionAnalysisService.GarmentValidation result = service.validateGenerated(
+                    task(), item, "MODEL_IMAGE", png.toByteArray(), "image/png");
+
+            assertTrue(result.valid());
+            assertEquals(2, calls.get());
+            assertEquals(2, requestBodies.size());
+            assertArrayEquals(requestBodies.get(0), requestBodies.get(1));
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test
@@ -377,6 +468,14 @@ class AiVideoImageProcessorTest {
     private static Path topologyDirectory(Path storageRoot, AiVideoTask task, AiVideoTaskItem item) {
         return storageRoot.resolve(task.getOrganizationId()).resolve(task.getId())
                 .resolve(item.getId()).resolve("private-validation");
+    }
+
+    private static void respondJson(HttpExchange exchange, int status, String json) throws java.io.IOException {
+        byte[] body = json.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(status, body.length);
+        exchange.getResponseBody().write(body);
+        exchange.close();
     }
 
     @Test
@@ -695,8 +794,17 @@ class AiVideoImageProcessorTest {
                 "Stream ended without finish_reason"));
         assertTrue(ProductFunctionAnalysisService.isTransientValidationFailure(
                 "upstream returned 502"));
+        assertTrue(ProductFunctionAnalysisService.isTransientValidationFailure(
+                "TypeError: fetch failed; UND_ERR_SOCKET: other side closed"));
         assertFalse(ProductFunctionAnalysisService.isTransientValidationFailure(
                 "服装结构复核未通过：领口结构错误"));
+        assertEquals(2, ProductFunctionAnalysisService.MAX_VALIDATION_ATTEMPTS);
+        assertTrue(ProductFunctionAnalysisService.shouldRetryValidationFailure(
+                1, "502 Bad Gateway: fetch failed"));
+        assertFalse(ProductFunctionAnalysisService.shouldRetryValidationFailure(
+                2, "UND_ERR_SOCKET: other side closed"));
+        assertFalse(ProductFunctionAnalysisService.shouldRetryValidationFailure(
+                1, "服装结构复核未通过：右袖缺失"));
     }
 
     @Test

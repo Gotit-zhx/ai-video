@@ -14,13 +14,18 @@ import org.springframework.web.client.RestClient;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -39,7 +44,9 @@ public class ProductFunctionAnalysisService {
     private static final String GARMENT_BLOCK_END = "【服装结构与穿法契约结束】";
     private static final int MAX_SOURCE_BYTES = 20 * 1024 * 1024;
     private static final int VALIDATION_MAX_EDGE = 1280;
-    private static final int MAX_CONCURRENT_VALIDATIONS = 3;
+    static final int VALIDATION_MAX_BYTES = 384 * 1024;
+    static final int MAX_VALIDATION_ATTEMPTS = 2;
+    private static final int MAX_CONCURRENT_VALIDATIONS = 2;
     private static final String GARMENT_TOPOLOGY_VERSION = "GARMENT_TOPOLOGY_V2";
 
     private final AiVideoTaskItemMapper itemMapper;
@@ -171,20 +178,49 @@ public class ProductFunctionAnalysisService {
                     "data", Base64.getEncoder().encodeToString(sourceImage.bytes())));
             request.put("candidateImage", Map.of("mimeType", candidateImage.mimeType(),
                     "data", Base64.getEncoder().encodeToString(candidateImage.bytes())));
-            PiProductAnalysisResponse response = piValidationClient.post().uri("/v1/product/analyze")
-                    .contentType(MediaType.APPLICATION_JSON).body(request).retrieve()
-                    .body(PiProductAnalysisResponse.class);
-            if (response == null || response.result() == null) {
-                throw new IllegalStateException("结构复核模型没有返回结果");
+            log.info("Garment validation payload compacted for item {} asset {}: source {} bytes, "
+                            + "candidate {} -> {} bytes",
+                    item.getId(), assetType, sourceImage.bytes().length,
+                    candidateBytes == null ? 0 : candidateBytes.length, candidateImage.bytes().length);
+
+            Exception lastFailure = null;
+            int attemptsPerformed = 0;
+            for (int attempt = 1; attempt <= MAX_VALIDATION_ATTEMPTS; attempt++) {
+                attemptsPerformed = attempt;
+                try {
+                    PiProductAnalysisResponse response = piValidationClient.post().uri("/v1/product/analyze")
+                            .contentType(MediaType.APPLICATION_JSON).body(request).retrieve()
+                            .body(PiProductAnalysisResponse.class);
+                    if (response == null || response.result() == null) {
+                        throw new IllegalStateException("结构复核模型没有返回结果");
+                    }
+                    Map<String, Object> value = response.result();
+                    boolean valid = Boolean.TRUE.equals(value.get("valid"));
+                    List<String> violations = stringList(value.get("violations"), 12, 180);
+                    int violationCount = validationViolationCount(value.get("violationCount"), valid, violations);
+                    return new GarmentValidation(valid, text(value.get("correctionPrompt"), 600),
+                            violations,
+                            value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0,
+                            violationCount);
+                } catch (Exception exception) {
+                    lastFailure = exception;
+                    String failure = readable(exception);
+                    if (!shouldRetryValidationFailure(attempt, failure)) break;
+                    log.warn("Garment validation transport unavailable for item {} asset {} "
+                                    + "(attempt {}/{}); retrying the same private candidate: {}",
+                            item.getId(), assetType, attempt, MAX_VALIDATION_ATTEMPTS, failure);
+                    try {
+                        Thread.sleep(750L * attempt);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw interrupted;
+                    }
+                }
             }
-            Map<String, Object> value = response.result();
-            boolean valid = Boolean.TRUE.equals(value.get("valid"));
-            List<String> violations = stringList(value.get("violations"), 12, 180);
-            int violationCount = validationViolationCount(value.get("violationCount"), valid, violations);
-            return new GarmentValidation(valid, text(value.get("correctionPrompt"), 600),
-                    violations,
-                    value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0,
-                    violationCount);
+            throw new IllegalStateException("服装结构复核连续失败 " + attemptsPerformed
+                    + " 次，已停止继续等待："
+                    + readable(lastFailure == null ? new IllegalStateException("未知错误") : lastFailure),
+                    lastFailure);
         } catch (Exception exception) {
             if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
             log.warn("Garment validation unavailable for item {}; the private candidate will be rechecked: {}",
@@ -212,44 +248,106 @@ public class ProductFunctionAnalysisService {
         return value.contains("stream ended without finish_reason")
                 || value.contains("stream ended") || value.contains("unexpected end")
                 || value.contains("connection reset") || value.contains("connection closed")
+                || value.contains("fetch failed") || value.contains("socket")
+                || value.contains("other side closed") || value.contains("terminated")
                 || value.contains("eof") || value.contains("timeout") || value.contains("timed out")
                 || value.contains("temporarily unavailable") || value.contains("没有返回结果")
                 || value.contains("502") || value.contains("503") || value.contains("504");
+    }
+
+    static boolean shouldRetryValidationFailure(int failedAttempt, String message) {
+        return failedAttempt < MAX_VALIDATION_ATTEMPTS && isTransientValidationFailure(message);
     }
 
     static ValidationImage compactForValidation(byte[] sourceBytes, String sourceMimeType) {
         if (sourceBytes == null || sourceBytes.length == 0) {
             return new ValidationImage(sourceMimeType, sourceBytes == null ? new byte[0] : sourceBytes);
         }
+        BufferedImage source;
         try {
-            BufferedImage source = ImageIO.read(new ByteArrayInputStream(sourceBytes));
-            if (source == null || source.getWidth() <= 0 || source.getHeight() <= 0) {
-                return new ValidationImage(sourceMimeType, sourceBytes);
+            source = ImageIO.read(new ByteArrayInputStream(sourceBytes));
+        } catch (Exception exception) {
+            throw new IllegalStateException("结构复核图片无法解码", exception);
+        }
+        if (source == null || source.getWidth() <= 0 || source.getHeight() <= 0) {
+            throw new IllegalStateException("结构复核图片无法解码");
+        }
+        try {
+            byte[] smallest = null;
+            int previousWidth = -1;
+            int previousHeight = -1;
+            for (int maxEdge : new int[] {VALIDATION_MAX_EDGE, 1120, 960}) {
+                BufferedImage compact = resizeValidationImage(source, maxEdge);
+                if (compact.getWidth() == previousWidth && compact.getHeight() == previousHeight) continue;
+                previousWidth = compact.getWidth();
+                previousHeight = compact.getHeight();
+                for (float quality : new float[] {0.82f, 0.74f, 0.66f, 0.58f, 0.50f}) {
+                    byte[] encoded = encodeValidationJpeg(compact, quality);
+                    if (smallest == null || encoded.length < smallest.length) smallest = encoded;
+                    if (encoded.length <= VALIDATION_MAX_BYTES) {
+                        return new ValidationImage("image/jpeg", encoded);
+                    }
+                }
             }
-            double scale = Math.min(1.0, (double) VALIDATION_MAX_EDGE
-                    / Math.max(source.getWidth(), source.getHeight()));
-            int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
-            int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
-            BufferedImage compact = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-            Graphics2D graphics = compact.createGraphics();
+            throw new IllegalStateException("结构复核副本超过体积上限："
+                    + (smallest == null ? 0 : smallest.length) + " bytes");
+        } catch (Exception exception) {
             try {
-                graphics.setColor(Color.WHITE);
-                graphics.fillRect(0, 0, width, height);
-                graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                        RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-                graphics.setRenderingHint(RenderingHints.KEY_RENDERING,
-                        RenderingHints.VALUE_RENDER_QUALITY);
-                graphics.drawImage(source, 0, 0, width, height, null);
-            } finally {
-                graphics.dispose();
+                return validationOriginalIfSmall(sourceBytes, sourceMimeType);
+            } catch (Exception fallbackFailure) {
+                fallbackFailure.addSuppressed(exception);
+                throw fallbackFailure;
             }
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            if (!ImageIO.write(compact, "jpeg", output) || output.size() == 0) {
-                return new ValidationImage(sourceMimeType, sourceBytes);
-            }
-            return new ValidationImage("image/jpeg", output.toByteArray());
-        } catch (Exception ignored) {
+        }
+    }
+
+    private static ValidationImage validationOriginalIfSmall(byte[] sourceBytes, String sourceMimeType) {
+        if (sourceBytes.length <= VALIDATION_MAX_BYTES
+                && sourceMimeType != null
+                && sourceMimeType.matches("(?i)^image/(jpeg|png|webp)$")) {
             return new ValidationImage(sourceMimeType, sourceBytes);
+        }
+        throw new IllegalStateException("结构复核图片无法压缩，已拒绝发送过大原图");
+    }
+
+    private static BufferedImage resizeValidationImage(BufferedImage source, int maxEdge) {
+        double scale = Math.min(1.0, (double) maxEdge
+                / Math.max(source.getWidth(), source.getHeight()));
+        int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
+        int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
+        BufferedImage compact = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = compact.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, width, height);
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING,
+                    RenderingHints.VALUE_RENDER_QUALITY);
+            graphics.drawImage(source, 0, 0, width, height, null);
+        } finally {
+            graphics.dispose();
+        }
+        return compact;
+    }
+
+    private static byte[] encodeValidationJpeg(BufferedImage image, float quality) throws IOException {
+        ImageWriter writer = ImageIO.getImageWritersByFormatName("jpeg").next();
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream();
+             ImageOutputStream imageOutput = ImageIO.createImageOutputStream(output)) {
+            writer.setOutput(imageOutput);
+            ImageWriteParam parameters = writer.getDefaultWriteParam();
+            if (parameters.canWriteCompressed()) {
+                parameters.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                parameters.setCompressionQuality(quality);
+            }
+            writer.write(null, new IIOImage(image, null, null), parameters);
+            imageOutput.flush();
+            byte[] encoded = output.toByteArray();
+            if (encoded.length == 0) throw new IOException("JPEG encoder returned an empty image");
+            return encoded;
+        } finally {
+            writer.dispose();
         }
     }
 
