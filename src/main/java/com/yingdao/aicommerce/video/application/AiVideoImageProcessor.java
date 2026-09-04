@@ -206,7 +206,9 @@ public class AiVideoImageProcessor {
                         .eq(AiVideoTask::isAutoStartVideoAfterImages, true)
                         .in(AiVideoTask::getStatus, List.of("IMAGE_READY", "FAILED"))
                         .or()
-                        .eq(AiVideoTask::getStatus, "FAILED"))
+                        .eq(AiVideoTask::getStatus, "FAILED")
+                        .or()
+                        .eq(AiVideoTask::getStatus, "IMAGE_READY").isNotNull(AiVideoTask::getErrorMessage))
                 .orderByDesc(AiVideoTask::getUpdatedAt)
                 .last("LIMIT 100"));
         for (AiVideoTask task : recoverable) {
@@ -236,13 +238,14 @@ public class AiVideoImageProcessor {
                     retryDelayElapsed = retryDelayElapsed
                             || updatedAt == null || !updatedAt.isAfter(retryBefore);
                 }
-                if (hasTerminalFailure) {
+                if (hasTerminalFailure && !hasRetryableFailure) {
                     if (task.isAutoStartVideoAfterImages()) {
                         task.consumeAutoStartVideo();
                         taskMapper.updateById(task);
                     }
                     continue;
                 }
+                if (!hasRetryableFailure && !task.isAutoStartVideoAfterImages()) continue;
                 if (hasRetryableFailure && !retryDelayElapsed) continue;
                 prepare(task);
                 dispatchRecoveredGeneration(task.getId());
@@ -280,6 +283,7 @@ public class AiVideoImageProcessor {
         // A validator outage is fail-open inside the bounded generation method and must never
         // re-enter the scheduled image pipeline, even if its nested cause mentions 429 or policy.
         if (value.contains("服装结构复核") || value.contains("garment validation")) return false;
+        if (value.startsWith("图片自动恢复等待重试：")) return true;
         if (retryableImageConcurrencyFailure(message)) return true;
         if (value.contains("模型已生成图片")
                 && value.contains("结果地址已保存")
@@ -384,9 +388,26 @@ public class AiVideoImageProcessor {
                     .map(item -> CompletableFuture.supplyAsync(() -> {
                         String failure = null;
                         try {
-                            generateItem(task, item, shots, model, pipelineRecovery);
+                            // Recovery belongs to this item, not the allOf task barrier below.
+                            // A stalled sibling must not delay downloading an already-paid image.
+                            runWithImageRecovery(
+                                    () -> generateItem(task, item, shots, model, pipelineRecovery),
+                                    message -> {
+                                        item.fail("图片自动恢复等待重试：" + message);
+                                        itemMapper.updateById(item);
+                                        log.info("Image item {} awaiting independent recovery", item.getId());
+                                    },
+                                    () -> {
+                                        Thread.sleep(10_000);
+                                        AiVideoTask latest = taskMapper.selectById(task.getId());
+                                        if (latest == null || !("IMAGE_GENERATING".equals(latest.getStatus())
+                                                || "VIDEO_GENERATING".equals(latest.getStatus()))) {
+                                            throw new InterruptedException("图片任务已停止，取消自动恢复");
+                                        }
+                                    });
                             completedCount.incrementAndGet();
-                            if (task.isAutoStartVideoAfterImages() || pipelineRecovery) {
+                            AiVideoTask latest = taskMapper.selectById(task.getId());
+                            if (latest != null && latest.isAutoStartVideoAfterImages()) {
                                 try {
                                     videoGenerationService.startReadyItemDuringImages(task.getId(), item.getId());
                                 } catch (Exception exception) {
@@ -463,6 +484,54 @@ public class AiVideoImageProcessor {
         }
     }
 
+    @FunctionalInterface
+    interface ImageAttempt { void run() throws Exception; }
+
+    @FunctionalInterface
+    interface ImageRetryWait { void await() throws InterruptedException; }
+
+    static void runWithImageRecovery(ImageAttempt attempt, java.util.function.Consumer<String> onRetry,
+                                     ImageRetryWait retryWait) throws Exception {
+        int malformedResponses = 0;
+        while (true) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException("图片恢复已中断");
+            try {
+                attempt.run();
+                return;
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            } catch (Exception failure) {
+                String message = readable(failure);
+                boolean malformed = message.contains("服装结构识别结果缺少必填字段");
+                // Incomplete model JSON may be sampled again, but never bypass the contract or
+                // turn a persistent schema problem into unlimited paid model calls.
+                boolean retry = malformed ? ++malformedResponses <= 2 : retryableImageException(failure);
+                if (!retry) throw failure;
+                onRetry.accept(message);
+                try {
+                    retryWait.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw interrupted;
+                }
+            }
+        }
+    }
+
+    private static boolean retryableImageException(Exception failure) {
+        String message = readable(failure);
+        if (message.contains("服装结构复核") || message.toLowerCase().contains("garment validation")) return false;
+        if (retryableImageTransientFailure(message)) return true;
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof RestClientResponseException response
+                    && (response.getStatusCode().is5xxServerError() || response.getStatusCode().value() == 429)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void generateItem(AiVideoTask task, AiVideoTaskItem item, List<ShotPrompt> shots,
                               ModelConfigService.RuntimeModelConnection model,
                               boolean pipelineRecovery) throws Exception {
@@ -498,6 +567,10 @@ public class AiVideoImageProcessor {
         boolean hasVideoResult = usableAsset(existing, "VIDEO_RESULT") != null;
         boolean hasModel = modelAsset != null;
         boolean hasStoryboard = storyboardAsset != null;
+        // Publish recovery before the potentially 500-second analysis request, not after it.
+        item.start();
+        if (hasModel && !hasStoryboard) item.modelReady();
+        itemMapper.updateById(item);
         if (shouldRunProductFunctionAnalysis(productFunctionAnalysisService.supportsAnalysis(task),
                 pipelineRecovery, hasModel)) {
             // Scope the new analysis to genuinely new primary-image work. Existing/running tasks and
@@ -2168,7 +2241,7 @@ public class AiVideoImageProcessor {
     private boolean preserveScriptBackground(AiVideoTask task) { return !"AI_DESIGNED".equals(task.getBackgroundMode()); }
     private String safe(String value, String fallback) { return value == null || value.isBlank() || "null".equals(value) ? fallback : value; }
     private String nullableText(Object value) { return value == null || "null".equals(String.valueOf(value)) ? "" : String.valueOf(value).replaceAll("\\s+", " ").trim(); }
-    private String readable(Exception exception) {
+    private static String readable(Exception exception) {
         Throwable source = exception;
         while ((source instanceof CompletionException || source.getMessage() == null) && source.getCause() != null) {
             source = source.getCause();

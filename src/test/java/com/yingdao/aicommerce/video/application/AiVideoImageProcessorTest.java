@@ -52,6 +52,87 @@ import static org.mockito.Mockito.when;
 
 class AiVideoImageProcessorTest {
 
+    @Test
+    void failedImageRecoversWhileAnotherItemIsStillBlocked() throws Exception {
+        CountDownLatch slowStarted = new CountDownLatch(1);
+        CountDownLatch releaseSlow = new CountDownLatch(1);
+        AtomicInteger attempts = new AtomicInteger();
+        AtomicInteger retries = new AtomicInteger();
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<?> slow = executor.submit(() -> {
+                AiVideoImageProcessor.runWithImageRecovery(() -> {
+                    slowStarted.countDown();
+                    assertTrue(releaseSlow.await(5, TimeUnit.SECONDS));
+                }, ignored -> {}, () -> {});
+                return null;
+            });
+            try {
+                assertTrue(slowStarted.await(2, TimeUnit.SECONDS));
+                Future<?> recovered = executor.submit(() -> {
+                    AiVideoImageProcessor.runWithImageRecovery(() -> {
+                        if (attempts.incrementAndGet() == 1) {
+                            throw new IllegalStateException("模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址");
+                        }
+                    }, ignored -> retries.incrementAndGet(), () -> {});
+                    return null;
+                });
+                recovered.get(2, TimeUnit.SECONDS);
+                assertFalse(slow.isDone());
+                assertEquals(2, attempts.get());
+                assertEquals(1, retries.get());
+            } finally {
+                releaseSlow.countDown();
+            }
+            slow.get(2, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void malformedAnalysisRetriesAreBoundedWithoutBypassingRequiredFields() {
+        AtomicInteger attempts = new AtomicInteger();
+        assertThrows(IllegalStateException.class, () -> AiVideoImageProcessor.runWithImageRecovery(() -> {
+            attempts.incrementAndGet();
+            throw new IllegalStateException("服装结构识别结果缺少必填字段：wearingMethod");
+        }, ignored -> {}, () -> {}));
+        assertEquals(3, attempts.get());
+    }
+
+    @Test
+    void terminalValidationFailureDoesNotRetryEvenWithNestedServiceUnavailable() {
+        AtomicInteger attempts = new AtomicInteger();
+        assertThrows(IllegalStateException.class, () -> AiVideoImageProcessor.runWithImageRecovery(() -> {
+            attempts.incrementAndGet();
+            throw new IllegalStateException("服装结构复核失败", new org.springframework.web.client.HttpServerErrorException(
+                    org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE));
+        }, ignored -> {}, () -> {}));
+        assertEquals(1, attempts.get());
+    }
+
+    @Test
+    void recoveryStopsOnInterruptInsteadOfResubmitting() {
+        AtomicInteger attempts = new AtomicInteger();
+        try {
+            assertThrows(InterruptedException.class, () -> AiVideoImageProcessor.runWithImageRecovery(() -> {
+                attempts.incrementAndGet();
+                throw new IllegalStateException("网络超时");
+            }, ignored -> {}, () -> { throw new InterruptedException("shutdown"); }));
+            assertEquals(1, attempts.get());
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void retriesUpstream503EvenWhenReadableMessageHasNoTimeoutKeyword() throws Exception {
+        AtomicInteger attempts = new AtomicInteger();
+        AiVideoImageProcessor.runWithImageRecovery(() -> {
+            if (attempts.incrementAndGet() == 1) throw new org.springframework.web.client.HttpServerErrorException(
+                    org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
+        }, ignored -> {}, () -> {});
+        assertEquals(2, attempts.get());
+    }
+
     @TempDir
     Path tempDirectory;
 
