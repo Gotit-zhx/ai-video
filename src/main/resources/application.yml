@@ -40,6 +40,8 @@ app:
   ai-video-task-storage: ${APP_AI_VIDEO_TASK_STORAGE:/data/ai-video-tasks}
   video:
     max-concurrent-submissions: ${APP_VIDEO_MAX_CONCURRENT_SUBMISSIONS:500}
+    reference-link-secret: ${APP_VIDEO_REFERENCE_LINK_SECRET:${APP_MODEL_SECRET_KEY:local-development-model-secret-change-me}}
+    reference-link-ttl: ${APP_VIDEO_REFERENCE_LINK_TTL:72h}
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:8080}
   pi-runtime-url: ${APP_PI_RUNTIME_URL:http://localhost:8090}
   pi-runtime-token: ${APP_PI_RUNTIME_TOKEN:heyi-pi-runtime-dev-token}
@@ -51,6 +53,9 @@ app:
     public-endpoint: ${APP_OSS_PUBLIC_ENDPOINT:https://oss-cn-guangzhou.aliyuncs.com}
     ecs-role-name: ${ALIBABA_CLOUD_ECS_METADATA:}
     signed-url-ttl: ${APP_OSS_SIGNED_URL_TTL:2h}
+    signing-credentials-file: ${APP_OSS_SIGNING_CREDENTIALS_FILE:}
+    direct-link-ttl: ${APP_OSS_DIRECT_LINK_TTL:72h}
+    public-images: ${APP_OSS_PUBLIC_IMAGES:false}
   dispatch:
     enabled: ${APP_DISPATCH_ENABLED:true}
     worker-id: ${APP_DISPATCH_WORKER_ID:heyi-app-worker}

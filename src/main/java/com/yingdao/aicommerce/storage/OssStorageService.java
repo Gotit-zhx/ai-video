@@ -17,6 +17,7 @@ import com.aliyun.oss.model.CompleteMultipartUploadRequest;
 import com.aliyun.oss.model.InitiateMultipartUploadRequest;
 import com.aliyun.oss.model.InitiateMultipartUploadResult;
 import com.aliyun.oss.model.ObjectMetadata;
+import com.aliyun.oss.model.CannedAccessControlList;
 import com.aliyun.oss.model.PutObjectRequest;
 import com.aliyun.oss.model.UploadPartRequest;
 import com.aliyun.oss.model.UploadPartResult;
@@ -28,10 +29,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.core.io.AbstractResource;
+import org.springframework.core.io.Resource;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,6 +46,7 @@ import java.util.Date;
 import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 @Service
@@ -53,6 +58,9 @@ public class OssStorageService {
     private final Duration signedUrlTtl;
     private final OSS internalClient;
     private final OSS publicClient;
+    private final OssReadOnlySigner readOnlySigner;
+    private final boolean publicImages;
+    private final URI publicEndpoint;
 
     public OssStorageService(
             @Value("${app.oss.bucket}") String bucket,
@@ -60,12 +68,17 @@ public class OssStorageService {
             @Value("${app.oss.endpoint}") String endpoint,
             @Value("${app.oss.public-endpoint}") String publicEndpoint,
             @Value("${app.oss.ecs-role-name}") String roleName,
-            @Value("${app.oss.signed-url-ttl:2h}") Duration signedUrlTtl
+            @Value("${app.oss.signed-url-ttl:2h}") Duration signedUrlTtl,
+            @Value("${app.oss.public-images:${APP_OSS_PUBLIC_IMAGES:false}}") boolean publicImages,
+            OssReadOnlySigner readOnlySigner
     ) throws Exception {
         if (bucket == null || bucket.isBlank()) throw new IllegalArgumentException("OSS Bucket 不能为空");
         if (roleName == null || roleName.isBlank()) throw new IllegalArgumentException("ECS RAM 角色名称不能为空");
         this.bucket = bucket.trim();
         this.signedUrlTtl = signedUrlTtl;
+        this.readOnlySigner = readOnlySigner;
+        this.publicImages = publicImages;
+        this.publicEndpoint = URI.create(publicEndpoint);
 
         com.aliyun.credentials.models.Config credentialsConfig = new com.aliyun.credentials.models.Config()
                 .setType("ecs_ram_role")
@@ -132,7 +145,7 @@ public class OssStorageService {
         metadata.setContentLength(content.length);
         metadata.setContentType(contentType == null || contentType.isBlank()
                 ? "application/octet-stream" : contentType);
-        metadata.setCacheControl("private, max-age=31536000, immutable");
+        configureVisibility(metadata);
         internalClient.putObject(new PutObjectRequest(bucket, key, new ByteArrayInputStream(content), metadata));
         return new StoredObject(location(key), content.length);
     }
@@ -151,7 +164,7 @@ public class OssStorageService {
         ObjectMetadata metadata = new ObjectMetadata();
         metadata.setContentType(contentType == null || contentType.isBlank()
                 ? "application/octet-stream" : contentType);
-        metadata.setCacheControl("private, max-age=31536000, immutable");
+        configureVisibility(metadata);
         InitiateMultipartUploadRequest initiate = new InitiateMultipartUploadRequest(bucket, key);
         initiate.setObjectMetadata(metadata);
         InitiateMultipartUploadResult initiated = internalClient.initiateMultipartUpload(initiate);
@@ -175,8 +188,12 @@ public class OssStorageService {
                 parts.add(result.getPartETag());
             }
             if (parts.isEmpty()) throw new IllegalStateException("待上传 OSS 的内容为空");
-            internalClient.completeMultipartUpload(new CompleteMultipartUploadRequest(
-                    bucket, key, initiated.getUploadId(), parts));
+            CompleteMultipartUploadRequest complete = new CompleteMultipartUploadRequest(
+                    bucket, key, initiated.getUploadId(), parts);
+            // OSS applies multipart object ACL on completion, not initiation.
+            if (publicImages) complete.setObjectACL(isImageContentType(metadata.getContentType())
+                    ? CannedAccessControlList.PublicRead : CannedAccessControlList.Private);
+            internalClient.completeMultipartUpload(complete);
             return new StoredObject(location(key), total);
         } catch (Exception exception) {
             try {
@@ -210,8 +227,29 @@ public class OssStorageService {
     }
 
     public String signedUrl(String location) {
+        // Provider submissions must go straight to OSS, not through the app's
+        // bandwidth-limited material gateway. Sign again on each submission.
+        String objectKey = key(location);
+        if (isPublicImage(objectKey)) return publicImageUrl(objectKey, null);
+        if (readOnlySigner.isEnabled()) return readOnlySigner.sign(bucket, objectKey);
         return signedUrl(location, null);
     }
+
+    /** Stream with current ECS credentials, not credentials captured in a URL. */
+    public Download download(String location) {
+        String objectKey = key(location);
+        ObjectMetadata metadata = internalClient.getObjectMetadata(bucket, objectKey);
+        long size = metadata.getContentLength();
+        Resource resource = new AbstractResource() {
+            @Override public String getDescription() { return "Private OSS reference"; }
+            @Override public String getFilename() { return objectKey.substring(objectKey.lastIndexOf('/') + 1); }
+            @Override public long contentLength() { return size; }
+            @Override public InputStream getInputStream() { return open(location); }
+        };
+        return new Download(resource, size, metadata.getContentType());
+    }
+
+    public record Download(Resource resource, long size, String contentType) {}
 
     public String signedImagePreviewUrl(String location) {
         return signedUrl(location,
@@ -219,16 +257,52 @@ public class OssStorageService {
     }
 
     private String signedUrl(String location, String process) {
-        GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(bucket, key(location), HttpMethod.GET);
+        String objectKey = key(location);
+        if (isPublicImage(objectKey)) return publicImageUrl(objectKey, process);
+        GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(bucket, objectKey, HttpMethod.GET);
         request.setExpiration(Date.from(Instant.now().plus(signedUrlTtl)));
         if (process != null && !process.isBlank()) request.setProcess(process);
         return publicClient.generatePresignedUrl(request).toExternalForm();
     }
 
     public String signedDownloadUrl(String location, String fileName) {
-        GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(bucket, key(location), HttpMethod.GET);
+        String objectKey = key(location);
+        if (isPublicImage(objectKey)) return publicImageUrl(objectKey, null);
+        GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(bucket, objectKey, HttpMethod.GET);
         request.setExpiration(Date.from(Instant.now().plus(signedUrlTtl)));
         return publicClient.generatePresignedUrl(request).toExternalForm();
+    }
+
+    private void configureVisibility(ObjectMetadata metadata) {
+        boolean image = publicImages && isImageContentType(metadata.getContentType());
+        metadata.setCacheControl((image ? "public" : "private") + ", max-age=31536000, immutable");
+        if (publicImages) {
+            // Ordinary PUT ACL is atomic with the upload. Multipart also sets
+            // this ACL on its completion request before returning the new URL.
+            metadata.setObjectAcl(image ? CannedAccessControlList.PublicRead : CannedAccessControlList.Private);
+        }
+    }
+
+    private boolean isImageContentType(String contentType) {
+        return contentType != null && contentType.trim().toLowerCase(Locale.ROOT).startsWith("image/");
+    }
+
+    private boolean isPublicImage(String objectKey) {
+        // Use MIME metadata rather than filenames so extensionless images work
+        // and a video or archive named *.png is not exposed as an image.
+        return publicImages && objectKey.startsWith("heyi/")
+                && isImageContentType(internalClient.getObjectMetadata(bucket, objectKey).getContentType());
+    }
+
+    private String publicImageUrl(String objectKey, String process) {
+        try {
+            String host = publicEndpoint.getHost();
+            if (!host.startsWith(bucket + ".")) host = bucket + "." + host;
+            return new URI(publicEndpoint.getScheme(), null, host, publicEndpoint.getPort(),
+                    "/" + objectKey, process == null ? null : "x-oss-process=" + process, null).toASCIIString();
+        } catch (URISyntaxException exception) {
+            throw new IllegalArgumentException("OSS 图片公开地址无效", exception);
+        }
     }
 
     public int deleteOlderThan(String categoryPrefix, Duration age) {
