@@ -122,10 +122,13 @@ public class ProductFunctionAnalysisService {
             log.info("Product structure analysis payload compacted for item {}: source {} -> {} bytes",
                     item.getId(), sourceBytes.length, analysisImage.bytes().length);
             Map<String, Object> analysisResult = null;
+            String progressAssetType = garment ? "MODEL_IMAGE" : "PRODUCT_SCENE_IMAGE";
+            ImageExecutionProgress.record(itemMapper, item, progressAssetType, "ANALYSIS_QUEUED");
             visionAnalysisSlots.acquire();
             analysisSlotAcquired = true;
             for (int attempt = 1; attempt <= MAX_INITIAL_ANALYSIS_ATTEMPTS; attempt++) {
                 try {
+                    ImageExecutionProgress.record(itemMapper, item, progressAssetType, "ANALYZING");
                     PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
                             .contentType(MediaType.APPLICATION_JSON)
                             .body(request)
@@ -142,6 +145,7 @@ public class ProductFunctionAnalysisService {
                     log.warn("Product function analysis unavailable for item {} (attempt {}/{}): {}",
                             item.getId(), attempt, MAX_INITIAL_ANALYSIS_ATTEMPTS, failure);
                     if (!shouldRetryInitialAnalysisFailure(attempt, failure)) break;
+                    ImageExecutionProgress.record(itemMapper, item, progressAssetType, "ANALYSIS_RETRY_WAIT");
                     try {
                         Thread.sleep(750L * attempt);
                     } catch (InterruptedException interrupted) {
@@ -185,6 +189,7 @@ public class ProductFunctionAnalysisService {
         }
         boolean validationSlotAcquired = false;
         try {
+            ImageExecutionProgress.record(itemMapper, item, assetType, "VALIDATION_QUEUED");
             visionAnalysisSlots.acquire();
             validationSlotAcquired = true;
             ModelConfigService.RuntimeModelConnection model = modelConfigService
@@ -217,6 +222,7 @@ public class ProductFunctionAnalysisService {
             for (int attempt = 1; attempt <= MAX_VALIDATION_ATTEMPTS; attempt++) {
                 attemptsPerformed = attempt;
                 try {
+                    ImageExecutionProgress.record(itemMapper, item, assetType, "VALIDATING");
                     PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
                             .contentType(MediaType.APPLICATION_JSON).body(request).retrieve()
                             .body(PiProductAnalysisResponse.class);
@@ -235,6 +241,7 @@ public class ProductFunctionAnalysisService {
                     lastFailure = exception;
                     String failure = readable(exception);
                     if (!shouldRetryValidationFailure(attempt, failure)) break;
+                    ImageExecutionProgress.record(itemMapper, item, assetType, "VALIDATION_RETRY_WAIT");
                     log.warn("Garment validation transport unavailable for item {} asset {} "
                                     + "(attempt {}/{}); retrying the same private candidate: {}",
                             item.getId(), assetType, attempt, MAX_VALIDATION_ATTEMPTS, failure);

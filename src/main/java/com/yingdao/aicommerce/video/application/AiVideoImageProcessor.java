@@ -137,6 +137,7 @@ public class AiVideoImageProcessor {
     private final AiVideoGenerationService videoGenerationService;
     private final ObjectMapper objectMapper;
     private final RestClient piClient;
+    private final ImageRuntimeProgress imageRuntimeProgress;
     private final Executor imageExecutor;
     private final Executor imageCoordinatorExecutor;
     private final Set<String> activeGenerationTaskIds = ConcurrentHashMap.newKeySet();
@@ -174,9 +175,13 @@ public class AiVideoImageProcessor {
         this.imageCoordinatorExecutor = imageCoordinatorExecutor;
         this.ossStorage = ossStorage.getIfAvailable();
         this.piClient = RestClient.builder().baseUrl(piRuntimeUrl).defaultHeader("X-Internal-Token", piRuntimeToken).build();
+        this.imageRuntimeProgress = new ImageRuntimeProgress(itemMapper, piClient);
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
         this.videoScriptStorageRoot = Path.of(videoScriptStorageRoot).toAbsolutePath().normalize();
     }
+
+    @Scheduled(fixedDelay = 2_000)
+    public void refreshImageExecutionProgress() { imageRuntimeProgress.poll(); }
 
     public void prepare(AiVideoTask task) {
         ModelConfigService.RuntimeModelConnection model = modelConfigService.imageConnection(task.getOrganizationId())
@@ -393,6 +398,7 @@ public class AiVideoImageProcessor {
                             runWithImageRecovery(
                                     () -> generateItem(task, item, shots, model, pipelineRecovery),
                                     message -> {
+                                        ImageExecutionProgress.record(itemMapper, item.getId(), item.getActiveImageAssetType(), "RETRY_WAIT");
                                         item.fail("图片自动恢复等待重试：" + message);
                                         itemMapper.updateById(item);
                                         log.info("Image item {} awaiting independent recovery", item.getId());
@@ -416,6 +422,7 @@ public class AiVideoImageProcessor {
                             }
                         } catch (Exception exception) {
                             String message = readable(exception);
+                            ImageExecutionProgress.record(itemMapper, item.getId(), item.getActiveImageAssetType(), "FAILED");
                             item.fail(message);
                             itemMapper.updateById(item);
                             failure = item.getName() + "：" + message;
@@ -544,6 +551,7 @@ public class AiVideoImageProcessor {
         AiVideoTaskAsset storyboardAsset = usableAsset(existing, "STORYBOARD_GRID");
         AiVideoTaskAsset firstFrameAsset = usableAsset(existing, "STORYBOARD_FIRST_FRAME");
         if (modelWear) {
+            if (modelAsset == null) ImageExecutionProgress.record(itemMapper, item, primaryAssetType, "PREPARING");
             modelAsset = recheckLegacyFramingAsset(task, item, modelAsset, primaryAssetType);
             storyboardAsset = recheckLegacyFramingAsset(task, item, storyboardAsset, "STORYBOARD_GRID");
         }
@@ -760,6 +768,7 @@ public class AiVideoImageProcessor {
                                                              String assetType, String basePrompt,
                                                              List<ReferenceImage> references) {
         try {
+            item.setActiveImageAssetType(assetType);
             TopologyCandidate candidate = loadTopologyCandidate(task, item, assetType);
             BestTopologyCandidate best = loadBestTopologyCandidate(task, item, assetType);
             TopologyRetryState state = loadTopologyRetryState(task, item, assetType);
@@ -1156,6 +1165,8 @@ public class AiVideoImageProcessor {
                                         List<String> assetTypes) {
         if (task == null || item == null || assetTypes == null) return;
         for (String assetType : assetTypes) {
+            try { itemMapper.resetImageStep(item.getId(), assetType); }
+            catch (RuntimeException exception) { log.warn("Could not reset image telemetry for item {}", item.getId()); }
             clearPendingImageResult(item.getId(), assetType);
             discardTopologyRetryState(task, item, assetType);
         }
@@ -1543,6 +1554,7 @@ public class AiVideoImageProcessor {
     private PiArtifact call(AiVideoTask task, AiVideoTaskItem item, String assetType,
                             ModelConfigService.RuntimeModelConnection model, String prompt,
                             List<ReferenceImage> references) {
+        item.setActiveImageAssetType(assetType);
         String promptHash = imageRequestHash(prompt, references);
         AiVideoPendingImageResult pending = pendingImageResult(item.getId(), assetType);
         if (pending != null && !promptHash.equals(pending.getPromptHash())) {
@@ -1558,8 +1570,15 @@ public class AiVideoImageProcessor {
         body.put("size", PORTRAIT_4K_SIZE);
         body.put("inputFidelity", references.isEmpty() ? "" : "high");
         body.put("references", references);
-        PiImageResponse response = piClient.post().uri("/v1/images/generate")
-                .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(PiImageResponse.class);
+        String progressId = imageRuntimeProgress.begin(item.getId(), assetType);
+        body.put("progressRequestId", progressId);
+        PiImageResponse response;
+        try {
+            response = piClient.post().uri("/v1/images/generate")
+                    .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(PiImageResponse.class);
+        } finally {
+            imageRuntimeProgress.finish(progressId);
+        }
         if (response != null && response.artifact() != null && response.artifact().dataBase64() != null) {
             return response.artifact();
         }
@@ -1585,6 +1604,7 @@ public class AiVideoImageProcessor {
         body.put("prompt", prompt);
         body.put("revisedPrompt", pending.getRevisedPrompt());
         try {
+            ImageExecutionProgress.record(itemMapper, pending.getItemId(), pending.getAssetType(), "DOWNLOADING");
             PiImageResponse response = piClient.post().uri("/v1/images/download")
                     .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(PiImageResponse.class);
             if (response == null || response.artifact() == null || response.artifact().dataBase64() == null) {
@@ -1692,6 +1712,7 @@ public class AiVideoImageProcessor {
 
     private AiVideoTaskAsset store(AiVideoTask task, AiVideoTaskItem item, String type, Integer sequence,
                                    PiArtifact artifact, String prompt) throws Exception {
+        ImageExecutionProgress.record(itemMapper, item, type, "STORING");
         byte[] bytes = Base64.getDecoder().decode(artifact.dataBase64());
         if (bytes.length == 0 || bytes.length > 64L * 1024 * 1024) throw new IllegalStateException("生成图片大小无效");
         String ext = extension(artifact.mimeType());
@@ -1708,6 +1729,7 @@ public class AiVideoImageProcessor {
         AiVideoTaskAsset asset = new AiVideoTaskAsset(task.getOrganizationId(), task.getId(), item.getId(), type,
                 sequence, stored.location(), artifact.mimeType(), stored.size(), prompt, artifact.modelId());
         assetMapper.insert(asset);
+        ImageExecutionProgress.record(itemMapper, item, type, "COMPLETED");
         return asset;
     }
 

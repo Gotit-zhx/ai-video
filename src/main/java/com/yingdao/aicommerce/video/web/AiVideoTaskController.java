@@ -286,7 +286,7 @@ public class AiVideoTaskController {
     public record ItemResponse(String id, String name, String sku, String sourceFileName, String status,
                                int progress, String errorMessage, String videoPromptText, String videoProviderTaskId,
                                Instant videoSubmittedAt,
-                               Instant createdAt, Instant updatedAt) {
+                               Instant createdAt, Instant updatedAt, String imageProgressJson) {
         static ItemResponse from(AiVideoTaskItem item) {
             return from(item, null, null);
         }
@@ -295,7 +295,7 @@ public class AiVideoTaskController {
             return new ItemResponse(item.getId(), item.getName(), item.getSku(), item.getSourceFileName(),
                     item.getStatus(), item.getProgress(), item.getErrorMessage(), item.getVideoPromptText(), videoProviderTaskId,
                     videoSubmittedAt,
-                    item.getCreatedAt(), item.getUpdatedAt());
+                    item.getCreatedAt(), item.getUpdatedAt(), item.getImageProgressJson());
         }
     }
 

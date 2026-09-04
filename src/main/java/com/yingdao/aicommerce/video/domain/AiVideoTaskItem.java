@@ -26,6 +26,11 @@ public class AiVideoTaskItem {
     private String videoPromptText;
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String productFunctionAnalysisJson;
+    // Updated atomically by the progress recorder, never by stale worker/video entity snapshots.
+    @TableField(updateStrategy = FieldStrategy.NEVER, insertStrategy = FieldStrategy.NEVER)
+    private String imageProgressJson;
+    @TableField(exist = false)
+    private String activeImageAssetType;
     private Instant createdAt;
     private Instant updatedAt;
     private Instant completedAt;
@@ -91,6 +96,9 @@ public class AiVideoTaskItem {
     public String getErrorMessage() { return errorMessage; }
     public String getVideoPromptText() { return videoPromptText; }
     public String getProductFunctionAnalysisJson() { return productFunctionAnalysisJson; }
+    public String getImageProgressJson() { return imageProgressJson; }
+    public String getActiveImageAssetType() { return activeImageAssetType; }
+    public void setActiveImageAssetType(String assetType) { this.activeImageAssetType = assetType; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public Instant getCompletedAt() { return completedAt; }

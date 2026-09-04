@@ -5123,17 +5123,41 @@ const aiVideoItemStatusNames = {
 };
 
 function aiVideoImagePresentation(task, item, model, storyboard) {
-  const retrying = /图片自动恢复等待重试：/.test(item.errorMessage || "");
+  let steps = {};
+  try { steps = JSON.parse(item.imageProgressJson || "{}") || {}; } catch { /* Historical tasks have no telemetry. */ }
+  const modelStep = steps[aiVideoPrimaryAssetType(task)];
+  const gridStep = steps.STORYBOARD_GRID;
+  const labels = { PREPARING: "准备参考图", ANALYSIS_QUEUED: "等待识别", ANALYZING: "商品识别中",
+    ANALYSIS_RETRY_WAIT: "识别等待重试", GENERATION_QUEUED: "等待生图请求", GENERATING: "正在生图", DOWNLOADING: "下载图片中",
+    RESPONSE_RECEIVED: "已收到生图结果", PROCESSING_RESPONSE: "处理生图结果",
+    VALIDATION_QUEUED: "等待校验", VALIDATING: "正在校验", VALIDATION_RETRY_WAIT: "校验等待重试",
+    STORING: "保存图片中", RETRY_WAIT: "等待重试", FAILED: "生成失败", COMPLETED: "保存完成" };
+  const retrying = /图片自动恢复等待重试：/.test(item.errorMessage || "")
+    || (!model && /RETRY_WAIT$/.test(modelStep?.stage || ""))
+    || (!storyboard && /RETRY_WAIT$/.test(gridStep?.stage || ""));
   const active = retrying || ["GENERATING_MODEL", "GENERATING_STORYBOARD"].includes(item.status)
     || (task.status === "IMAGE_GENERATING" && item.status === "READY");
   const failed = !retrying && ["FAILED", "VIDEO_FAILED"].includes(item.status);
   const state = asset => asset ? "completed" : retrying ? "retrying" : failed ? "failed" : active ? "processing" : "waiting";
-  const modelLabel = model ? "已生成" : retrying ? "等待重试" : failed ? "生成失败" : active ? "生成 / 校验中" : "等待生成";
-  const storyboardLabel = storyboard ? "已生成" : retrying ? "等待重试" : failed ? "生成失败"
-    : active && model ? "生成 / 校验中" : active ? "等待主图" : "等待生成";
+  const modelLabel = model ? "已生成" : retrying ? (labels[modelStep?.stage] || "等待重试") : failed ? "生成失败" : active ? (labels[modelStep?.stage] || "等待执行记录") : "等待生成";
+  const storyboardLabel = storyboard ? "已生成" : retrying ? (labels[gridStep?.stage] || "等待重试") : failed ? "生成失败"
+    : active && model ? (labels[gridStep?.stage] || "准备分镜素材") : active ? "等待主图" : "等待生成";
   return { active, retrying, modelState: state(model), shotState: state(storyboard), modelLabel, storyboardLabel,
+    modelStep, gridStep,
     hint: retrying ? "系统会自动重试，无需重复提交" : failed ? "查看下方失败原因" : active && model
       ? "生成和校验完成后自动展示" : active ? "主图完成后继续生成九宫格" : "九宫格完成后在这里展示" };
+}
+
+function aiVideoImageAttemptDetails(step) {
+  if (!step) return "历史次数未记录";
+  const n = key => Math.max(0, Number(step[key]) || 0);
+  const calls = n('generationAttempts');
+  return `已记录：生图 ${calls} 次 · 重试 ${Math.max(0, calls - 1)} 次\n识别 ${n('analysisAttempts')} 次 · 校验 ${n('validationAttempts')} 次 · 下载 ${n('downloadAttempts')} 次`;
+}
+
+function aiVideoImageAttemptMarkup(step) {
+  if (!step) return "";
+  return `<div class="image-attempt-details" title="本轮已记录的真实请求次数，含线路内部重试；手动重做后重新计数；历史未记录次数不补算"><span>${escapeHtml(aiVideoImageAttemptDetails(step))}</span><small>步骤更新：${escapeHtml(new Date(step.updatedAt).toLocaleTimeString('zh-CN', { hour12: false }))}</small></div>`;
 }
 
 function aiVideoImagePlaceholder(label, hint) {
@@ -5291,8 +5315,8 @@ function aiVideoDetailRenderSignature(detail) {
     items: (detail.items || []).map(item => {
       const itemVideoWaiting = ["VIDEO_SUBMITTING", "VIDEO_GENERATING"].includes(item.status);
       return itemVideoWaiting
-        ? [item.id, item.status, item.errorMessage, item.videoPromptText, item.videoProviderTaskId, item.videoSubmittedAt]
-        : [item.id, item.status, item.progress, item.errorMessage, item.videoPromptText, item.videoProviderTaskId, item.updatedAt];
+        ? [item.id, item.status, item.errorMessage, item.videoPromptText, item.videoProviderTaskId, item.videoSubmittedAt, item.imageProgressJson]
+        : [item.id, item.status, item.progress, item.errorMessage, item.videoPromptText, item.videoProviderTaskId, item.updatedAt, item.imageProgressJson];
     }),
     assets: (detail.assets || []).map(asset => [asset.id, asset.itemId, asset.assetType, asset.sizeBytes, asset.createdAt])
   });
@@ -5310,7 +5334,7 @@ function aiVideoItemRenderSignature(detail, item) {
     : [item.id, item.name, item.sku, item.sourceFileName, item.status, item.progress,
         item.errorMessage, item.videoPromptText, item.videoProviderTaskId,
         item.videoSubmittedAt, item.updatedAt];
-  return JSON.stringify([state, assets]);
+  return JSON.stringify([state, assets, item.imageProgressJson]);
 }
 
 function changedAiVideoItemIds(previous, next) {
@@ -5816,7 +5840,7 @@ function renderAiVideoTaskDetail(options = {}) {
     const itemAwaitingAcceptance = item.status === "VIDEO_SUBMITTING" && !providerTaskId;
     const itemVideoWaiting = ["VIDEO_SUBMITTING", "VIDEO_GENERATING"].includes(item.status);
     const itemStateLabel = itemAwaitingAcceptance ? "等待厂商受理" : itemVideoWaiting ? "后台生成中"
-      : imagePresentation.retrying ? "图片等待自动重试" : itemImagePreparing ? (model ? "九宫格生成 / 校验中" : "主图生成 / 校验中") : itemState;
+      : imagePresentation.retrying ? "图片等待自动重试" : itemImagePreparing ? (model ? `九宫格 · ${storyboardStatusText}` : `主图 · ${modelStatusText}`) : itemState;
     const providerTaskCopyButton = providerTaskId
       ? `<button class="copy-provider-task-button" type="button" data-provider-task-copy="${escapeHtml(providerTaskId)}" title="大衍任务 ID：${escapeHtml(providerTaskId)}" aria-label="一键复制大衍任务 ID"><i aria-hidden="true">⧉</i><span>复制 ID</span></button>`
       : "";
@@ -5833,8 +5857,8 @@ function renderAiVideoTaskDetail(options = {}) {
           <div class="garment-portrait-grid">
             <section class="garment-output-slot garment-original-output completed"><header><strong>原始商品图</strong><span>已上传</span></header><button class="garment-preview real-asset" type="button" data-asset-preview="原始商品图" title="悬停后滚轮缩放，双击还原" aria-label="放大查看 ${escapeHtml(item.name)} 原图"><img src="${source}" alt="${escapeHtml(item.name)} 原始商品图" loading="lazy"></button></section>
             <div class="garment-output-grid">
-              <section class="garment-output-slot model-output ${modelState}" data-model-output><header><strong>${escapeHtml(primaryAssetName)}</strong><div class="storyboard-slot-actions"><span>${modelStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-first-frame title="使用脚本第 01 分镜真实画面重做首帧，并同步重建九宫格">重做</button>` : ""}</div></header><button class="model-output-canvas real-asset" type="button" ${model ? "" : "disabled"} data-asset-preview="${escapeHtml(primaryAssetName)}" title="用于制作最终九宫格" aria-label="放大查看 ${escapeHtml(primaryAssetName)}">${modelCanvas}</button></section>
-              <section class="garment-output-slot storyboard-output ${shotState}" data-storyboard-output><header><strong>4K 分镜九宫格</strong><div class="storyboard-slot-actions"><span>${storyboardStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-storyboard title="保留 AI 模特图，重建动作底图并重新执行人物替换">${storyboard ? "重建" : "重新生成"}</button>` : ""}</div></header><button class="mini-storyboard real-assets" type="button" ${storyboard ? "" : "disabled"} data-asset-preview="4K 分镜九宫格" title="9:16 画幅；悬停后滚轮缩放，双击还原" aria-label="放大查看 4K 分镜九宫格">${storyboardTiles}</button></section>
+              <section class="garment-output-slot model-output ${modelState}" data-model-output><header><strong>${escapeHtml(primaryAssetName)}</strong><div class="storyboard-slot-actions"><span>${modelStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-first-frame title="使用脚本第 01 分镜真实画面重做首帧，并同步重建九宫格">重做</button>` : ""}</div></header><button class="model-output-canvas real-asset" type="button" ${model ? "" : "disabled"} data-asset-preview="${escapeHtml(primaryAssetName)}" title="用于制作最终九宫格" aria-label="放大查看 ${escapeHtml(primaryAssetName)}">${modelCanvas}</button>${aiVideoImageAttemptMarkup(imagePresentation.modelStep)}</section>
+              <section class="garment-output-slot storyboard-output ${shotState}" data-storyboard-output><header><strong>4K 分镜九宫格</strong><div class="storyboard-slot-actions"><span>${storyboardStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-storyboard title="保留 AI 模特图，重建动作底图并重新执行人物替换">${storyboard ? "重建" : "重新生成"}</button>` : ""}</div></header><button class="mini-storyboard real-assets" type="button" ${storyboard ? "" : "disabled"} data-asset-preview="4K 分镜九宫格" title="9:16 画幅；悬停后滚轮缩放，双击还原" aria-label="放大查看 4K 分镜九宫格">${storyboardTiles}</button>${aiVideoImageAttemptMarkup(imagePresentation.gridStep)}</section>
             </div>
           </div>
           ${error}

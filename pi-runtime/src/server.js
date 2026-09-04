@@ -773,7 +773,7 @@ function annotateImageFailure(error, details) {
   return error;
 }
 
-async function requestImageModel(endpoint, headers, bodyFactory) {
+async function requestImageModel(endpoint, headers, bodyFactory, onProgress = () => {}) {
   const requestId = randomUUID();
   const requestHeaders = { ...headers, "Idempotency-Key": requestId };
   let safeRetryCount = 0;
@@ -781,6 +781,7 @@ async function requestImageModel(endpoint, headers, bodyFactory) {
   while (true) {
     let result;
     try {
+      onProgress("GENERATING", safeRetryCount + 1);
       result = await fetch(endpoint, {
         method: "POST",
         headers: requestHeaders,
@@ -803,6 +804,7 @@ async function requestImageModel(endpoint, headers, bodyFactory) {
       if (retryableTransportFailure && safeRetryCount < retryLimit) {
         safeRetryCount += 1;
         const delay = responseTimeout ? IMAGE_NETWORK_RETRY_DELAYS_MS[safeRetryCount - 1] : 1_000;
+        onProgress("RETRY_WAIT", safeRetryCount);
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
       }
@@ -847,6 +849,7 @@ async function requestImageModel(endpoint, headers, bodyFactory) {
           : explicitPolicyRejection
             ? IMAGE_POLICY_RETRY_DELAYS_MS[safeRetryCount - 1]
             : 1_000;
+        onProgress("RETRY_WAIT", safeRetryCount);
         await new Promise((resolve) => setTimeout(resolve, retryDelay));
         continue;
       }
@@ -899,7 +902,7 @@ async function callImageModel(config, params, inputImages) {
     bodyFactory = () => jsonBody;
   }
   const endpoint = imageEndpoint(config.baseUrl, mode);
-  const { payload, safeRetryCount } = await requestImageModel(endpoint, headers, bodyFactory);
+  const { payload, safeRetryCount } = await requestImageModel(endpoint, headers, bodyFactory, params.onProgress);
   const item = Array.isArray(payload.data) ? payload.data[0]
     : Array.isArray(payload.images) ? payload.images[0]
       : payload.output?.[0] || payload.image || null;
@@ -918,6 +921,7 @@ async function callImageModel(config, params, inputImages) {
       requestMeta: { requestState: "COMPLETED_RESPONSE_RECEIVED", safeRetryCount }
     };
   }
+  params.onProgress?.("PROCESSING_RESPONSE", safeRetryCount + 1);
   let bytes;
   try {
     bytes = await responseImageBytes(item, config.apiKey);
@@ -2385,6 +2389,29 @@ async function handleAutomationAnalysis(request, response) {
   json(response, 200, await runAutomationAnalysis(body));
 }
 
+// Internal operational metadata only: never retain image bytes, prompts or credentials.
+const imageExecutionProgress = new Map();
+function beginImageProgress(requestId) {
+  if (!/^[a-f0-9-]{36}$/i.test(String(requestId || ""))) return () => {};
+  for (const [key, entry] of imageExecutionProgress) {
+    if (entry.updatedAt < Date.now() - 3_600_000) imageExecutionProgress.delete(key);
+  }
+  if (imageExecutionProgress.size >= 10_000) imageExecutionProgress.delete(imageExecutionProgress.keys().next().value);
+  const entry = { stage: "GENERATION_QUEUED", attempts: 0, updatedAt: Date.now() };
+  imageExecutionProgress.set(requestId, entry);
+  return (stage, attempts = entry.attempts) => {
+    Object.assign(entry, { stage, attempts, updatedAt: Date.now() });
+  };
+}
+function handleImageExecutionProgress(request, response, url) {
+  if (request.headers["x-internal-token"] !== INTERNAL_TOKEN) {
+    json(response, 401, { message: "图片进度服务认证失败" });
+    return;
+  }
+  const entry = imageExecutionProgress.get(url.searchParams.get("requestId"));
+  json(response, entry ? 200 : 404, entry || { message: "尚无执行记录" });
+}
+
 async function handlePlatformImageGeneration(request, response) {
   if (request.headers["x-internal-token"] !== INTERNAL_TOKEN) {
     json(response, 401, { message: "图片生成服务认证失败" });
@@ -2397,15 +2424,23 @@ async function handlePlatformImageGeneration(request, response) {
     // AI-model identity, motion/scene guide, and per-cell product identity lock.
     // Dropping the fourth image silently disabled the product lock and let later cells drift.
     .slice(0, 4);
+  const onProgress = beginImageProgress(body.progressRequestId);
+  try {
   const result = await callImageModel(body.model || {}, {
     mode: references.length ? "edit" : "generate",
     prompt: String(body.prompt || ""),
     size: String(body.size || "1024x1536"),
     quality: String(body.quality || ""),
     inputFidelity: String(body.inputFidelity || ""),
-    deferDownload: true
+    deferDownload: true,
+    onProgress
   }, references);
+  onProgress("RESPONSE_RECEIVED");
   json(response, 200, result);
+  } catch (error) {
+    onProgress("FAILED");
+    throw error;
+  }
 }
 
 async function handlePlatformImageDownload(request, response) {
@@ -2463,6 +2498,10 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "GET" && requestUrl.pathname === "/v1/video-script/progress") {
       handleVideoScriptProgress(request, response, requestUrl);
+      return;
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/v1/images/progress") {
+      handleImageExecutionProgress(request, response, requestUrl);
       return;
     }
     if (request.method === "POST" && request.url === "/v1/chat") {

@@ -4406,6 +4406,17 @@ textarea:focus,
   background: rgba(16, 19, 27, .84) !important;
 }
 @keyframes image-stage-turn { to { transform: rotate(360deg); } }
+.image-attempt-details {
+  position: relative;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255,255,255,.12);
+  background: rgba(16,19,27,.84);
+  color: #eef2fa;
+  font-size: 12px;
+  line-height: 1.8;
+  white-space: pre-line;
+}
+.image-attempt-details small { display: block; color: #bbc5d5; font-size: 11px; }
 @media (prefers-reduced-motion: reduce) {
   #ai-video-tasks-page .garment-portrait-grid .processing .image-stage-indicator { animation: none; }
 }
