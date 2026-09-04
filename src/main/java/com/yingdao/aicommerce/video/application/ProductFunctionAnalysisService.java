@@ -48,7 +48,9 @@ public class ProductFunctionAnalysisService {
     static final int VALIDATION_MAX_BYTES = 384 * 1024;
     static final int MAX_INITIAL_ANALYSIS_ATTEMPTS = 2;
     static final int MAX_VALIDATION_ATTEMPTS = 2;
-    static final int MAX_CONCURRENT_VISION_ANALYSES = 2;
+    static final int MAX_CONCURRENT_VISION_ANALYSES = 50;
+    // Runtime allows 500 seconds; leave time for transfer and error serialization.
+    static final int VISION_READ_TIMEOUT_MS = 520_000;
     private static final String GARMENT_TOPOLOGY_VERSION = "GARMENT_TOPOLOGY_V2";
 
     private final AiVideoTaskItemMapper itemMapper;
@@ -67,7 +69,7 @@ public class ProductFunctionAnalysisService {
         this.objectMapper = objectMapper;
         SimpleClientHttpRequestFactory visionRequestFactory = new SimpleClientHttpRequestFactory();
         visionRequestFactory.setConnectTimeout(5_000);
-        visionRequestFactory.setReadTimeout(190_000);
+        visionRequestFactory.setReadTimeout(VISION_READ_TIMEOUT_MS);
         this.piClient = RestClient.builder().baseUrl(piRuntimeUrl)
                 .requestFactory(visionRequestFactory)
                 .defaultHeader("X-Internal-Token", piRuntimeToken).build();

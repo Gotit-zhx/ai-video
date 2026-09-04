@@ -8,6 +8,14 @@ import { Agent as UndiciAgent } from "undici";
 
 const PORT = Number(process.env.PORT || 8090);
 const INTERNAL_TOKEN = process.env.PI_RUNTIME_TOKEN || "heyi-pi-runtime-dev-token";
+const PRODUCT_ANALYSIS_TIMEOUT_MS = 500_000;
+const PRODUCT_ANALYSIS_MAX_TOKENS = 1800;
+// Explicit transport limits avoid Undici's shorter default header timeout.
+const PRODUCT_ANALYSIS_DISPATCHER = new UndiciAgent({
+  connect: { timeout: 60_000 },
+  headersTimeout: PRODUCT_ANALYSIS_TIMEOUT_MS + 10_000,
+  bodyTimeout: PRODUCT_ANALYSIS_TIMEOUT_MS + 10_000
+});
 const IMAGE_RESPONSE_TIMEOUT_MS = Math.max(
   180_000,
   Number.parseInt(process.env.IMAGE_RESPONSE_TIMEOUT_MS || "900000", 10) || 900_000
@@ -235,67 +243,28 @@ const PRODUCT_FUNCTION_ANALYSIS_PROMPT = `你是电商视频生产中的商品�
 7. 看不清的结构要用保守描述并降低 confidence，禁止猜测危险操作、化学成分或内部机械结构。
 8. 每个数组最多 8 项，每项使用简短、可直接注入生成提示词的中文句子。`;
 
-const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `你是电商服装图像生产中的服装拓扑与真实穿法分析器。你只根据用户上传的真实服装商品图判断结构。
-你的任务是从原图识别服装不可改变的物理结构，尤其是非对称领口、单侧露肩、单侧袖、斜肩、绕颈、交叉、开口和非常规穿法。后续 AI 模特图、纯商品图、九宫格和视频会把你的结构化结论作为强约束。
-只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字。格式：
-{
-  "imageLeftShoulderState": "原图画面左侧肩部的覆盖/露出/开口状态",
-  "imageRightShoulderState": "原图画面右侧肩部的覆盖/露出/开口状态",
-  "imageLeftSleeve": "原图画面左侧袖子的数量、长度和连接位置",
-  "imageRightSleeve": "原图画面右侧袖子的数量、长度和连接位置",
-  "visibleSleeveCount": null,
-  "openingInventory": ["逐项列出原图可见开口及其位置"],
-  "seamConnections": ["逐项列出原图可见衣片连接及其位置"],
-  "necklinePath": "领口从原图画面左到右的连续路径；不适用时写 N/A",
-  "visualEvidence": ["支持上述观察的可见边缘、袖口、缝线和衣片证据"],
-  "wearerLeftShoulderState": "穿着者左肩状态；无法确认时写不确定；不适用时写 N/A",
-  "wearerRightShoulderState": "穿着者右肩状态；无法确认时写不确定；不适用时写 N/A",
-  "wearerLeftSleeve": "穿着者左袖状态；无法确认时写不确定",
-  "wearerRightSleeve": "穿着者右袖状态；无法确认时写不确定",
-  "supportElements": ["细肩带、绕颈带、扣环等辅助支撑的数量、连接位置与所在身体侧"],
-  "viewpointProjectionRule": "服装相对穿着者身体侧固定；正面、侧面、背面时应如何映射到屏幕左右",
-  "wearingMethod": ["头和双臂分别应穿过哪个开口，衣身如何落在肩颈与躯干"],
-  "fixedStructures": ["任何展示角度都必须保持不变的连接、开口、袖子数量和左右关系"],
-  "forbiddenChanges": ["模型容易误画但必须禁止的普通圆领化、对称化、补袖、删袖或镜像"],
-  "uncertainties": ["单张图无法确认的事实"],
-  "garmentType": "根据上述证据归纳的通用品类；无法可靠分类时写不确定",
-  "topologyClass": "根据上述证据归纳的结构类型；无法可靠分类时写 UNKNOWN",
-  "asymmetrical": null,
-  "structureSymmetry": "SYMMETRIC_FIXED、INTRINSIC_ASYMMETRIC、SYMMETRIC_WIDE_NECK、NOT_APPLICABLE 或 UNKNOWN",
-  "wearingSidePolicy": "FIXED_WEARER_SIDE、EITHER_SIDE_CHOOSE_ONCE、NOT_APPLICABLE 或 UNKNOWN",
-  "confidence": 0.0
-}
+const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `仅按商品原图识别服装结构，供生图和视频保持同款。只返回紧凑合法 JSON，不要 Markdown、推理过程、品牌文字或重复解释。
+必须包含以下字段（字符串用短语，数组只列独立事实，不适用写 N/A，看不清写不确定或 null）：
+{"imageLeftShoulderState":"","imageRightShoulderState":"","imageLeftSleeve":"","imageRightSleeve":"","visibleSleeveCount":null,"openingInventory":[],"seamConnections":[],"necklinePath":"","visualEvidence":[],"wearerLeftShoulderState":"","wearerRightShoulderState":"","wearerLeftSleeve":"","wearerRightSleeve":"","supportElements":[],"viewpointProjectionRule":"","wearingMethod":[],"fixedStructures":[],"forbiddenChanges":[],"uncertainties":[],"garmentType":"","topologyClass":"UNKNOWN","asymmetrical":null,"structureSymmetry":"UNKNOWN","wearingSidePolicy":"UNKNOWN","confidence":0.0}
 规则：
-1. 原图像素是最高证据。脚本只描述动作，不能改变服装结构，也不能让你继承脚本视频中的旧衣服。
-2. 必须先区分“原图画面左/右”和“穿着者自身左/右”。不要把两套坐标混写；文字或印花的正常阅读方向可辅助判断是否镜像。穿着者侧无法可靠确认时明确写不确定，但画面侧仍需准确记录。
-3. 领口不是一个类别标签，要描述连续路径：哪侧位于肩上、哪侧下落至肩下或锁骨、是否斜跨、是否闭合、与袖窿怎样连接。
-4. 先记录证据，最后分类。沿原图画面左右两侧分别记录袖片、袖筒、袖口、开口、边缘和接缝连接；visibleSleeveCount 只填写可由像素直接确认的整数，无法确认时填 null。露肩或斜领不等于无袖；一侧存在连续袖片并终止于独立袖口时，该侧必须计为一只可见袖子。
-4.1 当画面左右两侧都能确认袖片与袖口时，结论必须保留双袖；不得因“单肩、斜肩、露肩”等类别名称改写观察结果。分类字段与观察清单冲突时，改正分类，不得改动证据。
-4.2 裤装、裙装等没有领口或袖子的商品，相关字段写 N/A，不得为满足上衣字段而虚构领口、袖子或肩部结构。
-5. wearingMethod 要说明真实穿法和布料落点，避免模型把单肩服装套成普通 T 恤、把领口拉平或把裸肩侧补齐。
-6. 普通固定对称款使用 SYMMETRIC_FIXED；结构性非对称款使用 INTRINSIC_ASYMMETRIC；仅靠宽领口改变露肩侧的对称款使用 SYMMETRIC_WIDE_NECK。只有证据足够时才填写对应穿着侧策略，否则写 UNKNOWN；不涉及身体侧时写 NOT_APPLICABLE。
-7. supportElements 必须记录所有细肩带、绕颈带、扣环和其他辅助承重结构。肩带数量、宽度类别、连接点和身体侧均不可在后续生成中丢失或增加。
-8. 服装左右固定在穿着者身体坐标，不是屏幕坐标。正面转到背面后同一身体侧在画面中的投影可能反转；viewpointProjectionRule 必须明确禁止模型因为画面左右变化而把衣服换到身体另一侧。
-9. fixedStructures 和 forbiddenChanges 必须足够具体，可直接用于逐格生成校验。结构性非对称服装必须明确禁止对称化、身体侧交换和逐格换侧。
-10. 看不清的背部连接、隐藏肩带或内层结构不得猜测；写入 uncertainties 并降低 confidence。不得因为不确定而把可见的非对称结构改成常规款，也不得在一侧袖口可见时猜成无袖。袖子数量与身体侧映射任一项不确定时 confidence 不得高于 0.75。
-11. 不评价模特、审美和搭配，不抄录品牌或营销文案。每个数组最多 10 项，每项简短明确。`;
+1. 原图像素优先，先观察再分类；脚本和旧衣服不能覆盖商品证据。区分画面左右与穿着者身体左右，映射不确定须明说。
+2. 分别清点两侧袖片、袖口、开口和接缝；连续袖片终止于独立袖口算一只袖。露肩/斜领不等于无袖，两侧袖口可见必须保留双袖，不得为迁就分类增删袖。裤裙相关肩袖领口字段写 N/A。
+3. necklinePath 简述领口从画面左到右的连续路径、落点和连接；supportElements 列全肩带/绕颈带/扣环的数量、宽度类别、连接点及身体侧。wearingMethod 说明头臂穿过的开口及布料落点。
+4. structureSymmetry 仅选 SYMMETRIC_FIXED、INTRINSIC_ASYMMETRIC、SYMMETRIC_WIDE_NECK、NOT_APPLICABLE、UNKNOWN；wearingSidePolicy 仅选 FIXED_WEARER_SIDE、EITHER_SIDE_CHOOSE_ONCE、NOT_APPLICABLE、UNKNOWN。证据不足不猜。
+5. 身体侧固定，转身后屏幕左右投影可反转，但不能换身体侧。fixedStructures 和 forbiddenChanges 记录必须保留的连接/袖数/开口/左右关系，禁止对称化、补袖删袖、领口常规化及逐格换侧。
+6. 隐藏结构不猜，列入 uncertainties；袖数或身体侧映射不确定时 confidence≤0.75，仍保留清楚可见的结构。
+节省输出：普通字符串尽量≤24字，领口/穿法/投影≤50字；数组通常1–3项、每项≤30字，独立结构较多时可适当增加但不遗漏。相同事实不在各数组重复展开。`;
 
-const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `你是服装生成结果的商品身份、结构、中近景构图与人体完整性质检器。输入包含两张图片：第 1 张是用户上传的真实商品母版，第 2 张是待验收的 AI 主图或九宫格；用户消息还会给出服装结构契约和 framingContract。
-第 1 张商品母版的可见像素永远是最高真值，结构契约只是辅助摘要。若摘要与母版冲突，必须忽略冲突字段并直接按母版验收，不能用错误摘要放行候选图。开始比较前，先分别清点母版画面左、右两侧的袖筒、袖片、袖口和连接点，再对候选图做同样清点。斜领下降、单侧露肩不等于该侧无袖；母版两侧都有袖口而候选只剩一只袖子时必须 valid=false。
-必须同时检查商品身份、物理结构、中近景构图和人体完整性；不评价人物美丑、背景审美或动作创意。普通款与特殊款采用同一商品标准：检查领口路径、肩线、左右袖数量与连接、衣身比例、下摆、肩带/扣环、开口、正反面关系，以及主印花/Logo 是否仍能确认是同一件商品。自然透视、遮挡、褶皱和轻微文字形变可以接受，但不能把商品改成相似款。
-用户消息中的 assetType=MODEL_IMAGE 时，第 2 张必须是人物已经按真实开口正确穿好商品的穿着母版；如果人物只是把衣服举在胸前、拿在手中、披在身前，或用手向外拉领口伪造露肩，即使商品平铺形状接近也必须判 valid=false。双手不得遮挡或人为牵拉领口、肩线和袖口。
-人物完整性也是硬条件：每个人最多两条手臂、两只手；自然遮挡或构图外的肢体不要求补出，但每只可见手必须有唯一且合理的手臂来源。出现额外手掌、额外手臂、断开的手、复制或镜像肢体时必须 valid=false。STORYBOARD_GRID 必须逐格检查，任一格违规即整图失败。
-中近景是与商品结构同级的硬验收条件：MODEL_IMAGE 是清晰正脸穿着母版，人物必须从头顶拍到大腿中下段、下边界位于膝盖上方，膝盖以下、双脚和鞋子不可见；脸从发际线到下巴的高度必须至少占整张图高度 15%。STORYBOARD_GRID 必须逐格检查膝盖上方裁切并让人物主体尺度在 01–09 保持稳定：正面或侧脸可见格按 15% 人脸高度验收；背身、后脑、低头遮脸或商品遮脸格不得要求补画五官或把人物转正，按 15% 头部轮廓高度验收。任意一格是远景、全景、完整全身、露出膝盖以下/脚部、人物明显过小或镜头突然拉远，都必须判 valid=false。纯商品格不要求人脸，但商品必须采用近景并填满主要画面。不得因为脚本、原视频或参考图采用远景而放行，也不得因为人脸不可见而改变有证据的真实动作朝向。
-九宫格必须将全部 9 格分别直接与第 1 张商品母版核对，不能用前一格作为后一格的商品标准；第 07、08、09 格也必须保持与第 01 格相同的商品保真度。只要任意一格把宽领缩成小口领、改变领口深度、缩短或增长袖子、改变衣身比例、把斜领改成小圆领、把露肩补齐、把左右结构对称化、增删袖子/肩带、换露肩侧、丢失主要印花身份或把原商品改成普通/相似 T 恤，valid 就必须为 false。布料因抓握、重力、转身产生的自然褶皱不算结构错误。
-只返回合法、紧凑的 JSON，不要 Markdown，不要解释推理过程，不要额外文字：
-{
-  "valid": false,
-  "violationCount": 1,
-  "violations": ["第几格/身体侧/部位：错误"],
-  "correctionPrompt": "一句可执行纠错指令",
-  "confidence": 0.0
-}
-violationCount 必须统计整张候选图中所有相互独立的问题总数；每个格号、身体侧、商品部位、构图或人体错误分别计数，不得把多个问题合并成一个。violations 只列最关键的 3 条，每条最多 30 个汉字；即使问题总数超过 3，也必须在 violationCount 中完整计数。构图错误须注明 MODEL_IMAGE 或具体格号。correctionPrompt 最多 80 个汉字，只保留最关键的结构和构图修正。valid=false 时 violationCount 必须大于 0；valid=true 时 violationCount=0、violations 为空数组且 correctionPrompt 为空字符串。不得因为小段印花文字的轻微变形判失败，但主图案类别、位置、面积或商品识别性明显改变时必须判失败。`;
+const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `校验同款服装、穿法、构图和人体完整性。图1是商品真值，图2是 AI 主图或九宫格；context 提供结构摘要、assetType 和 framingContract。摘要与图1冲突时按图1验收。
+逐项核对：
+1. 先分别清点两图画面左右袖片、袖口和连接；露肩/斜领不等于无袖。保留领口路径、肩线、袖数/长度/连接、衣身比例、下摆、开口、肩带/扣环及主要印花身份。不得改成普通/相似款、对称化、增删袖/肩带或换身体侧。允许自然透视、遮挡、褶皱及轻微文字变形。
+2. MODEL_IMAGE 必须正确穿好，不得举衣/披衣代替穿着或牵拉领口伪造露肩；双手不得遮挡或拉扯领口、肩线、袖口。
+3. 每人最多两臂两手；可见手须有合理唯一来源，不得多手、多臂、断肢或复制肢体。自然遮挡和画外肢体不要求补出。
+4. 人物从头顶至大腿中下段、膝盖上方裁切，不能露膝盖以下/脚/鞋，不能全身远景或突然拉远。MODEL_IMAGE 要清晰正脸，脸高≥图高15%。九宫格正/侧脸可见格脸高≥15%；背身、低头、遮脸格按头部轮廓≥15%，不得强行转正补脸。01–09主体尺度稳定；纯商品格采用近景填满主体区域。
+5. 九宫格每格都直接对照图1，包含07–09；不得沿用前格错误。任一格商品结构、身份、穿法、构图或人体违规，整图 valid=false。不评价美丑和背景审美。
+仅返回紧凑 JSON：
+{"valid":false,"violationCount":1,"violations":["格号/身体侧/部位：错误"],"correctionPrompt":"一句修正指令","confidence":0.0}
+violationCount 统计全部独立问题（按格号/身体侧/部位/构图/人体分别计数）；violations 仅列最关键3条，每条≤30字；correctionPrompt≤80字。通过时 violationCount=0、数组为空、纠错为空；失败时 violationCount>0。不输出推理过程。`;
 
 const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策划器。输入可能是一名业务人员写的一整段自然语言需求，也可能包含按顺序排列的多张真实参考图片。你要理解真实营销意图，将其整理成可直接制作的固定 9 个分镜。
 只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字：
@@ -484,6 +453,7 @@ async function requestNonStreamingChat(
         }
       ]
     }),
+    dispatcher: PRODUCT_ANALYSIS_DISPATCHER,
     signal: AbortSignal.timeout(timeoutMs)
   });
   const body = await response.text();
@@ -2217,7 +2187,7 @@ async function runProductFunctionAnalysis(body) {
         JSON.stringify(body.context || {}),
         attachments,
         400,
-        180_000
+        PRODUCT_ANALYSIS_TIMEOUT_MS
       );
       console.info(`[product-analysis] validation completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
       return {
@@ -2239,8 +2209,8 @@ async function runProductFunctionAnalysis(body) {
         systemPrompt,
         JSON.stringify(body.context || {}),
         attachments,
-        2400,
-        180_000
+        PRODUCT_ANALYSIS_MAX_TOKENS,
+        PRODUCT_ANALYSIS_TIMEOUT_MS
       );
       console.info(`[product-analysis] topology completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
       return {
