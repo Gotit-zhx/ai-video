@@ -2266,18 +2266,18 @@ textarea:focus,
 
 #ai-video-tasks-page .garment-portrait-grid .model-output .storyboard-slot-actions span,
 #ai-video-tasks-page .garment-portrait-grid .storyboard-output .storyboard-slot-actions span {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
-  padding: 0;
+  width: auto;
+  height: auto;
+  flex: 0 1 auto;
+  padding: 5px 7px 5px 16px;
   overflow: hidden;
-  font-size: 0 !important;
+  font-size: 10px !important;
 }
 
 #ai-video-tasks-page .garment-portrait-grid .model-output .storyboard-slot-actions span::before,
 #ai-video-tasks-page .garment-portrait-grid .storyboard-output .storyboard-slot-actions span::before {
-  left: 50%;
-  transform: translate(-50%, -50%);
+  left: 7px;
+  transform: translateY(-50%);
 }
 
 #ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header span {
@@ -2301,8 +2301,8 @@ textarea:focus,
   top: 50%;
   left: 7px;
   border-radius: 50%;
-  background: #67e2c6;
-  box-shadow: 0 0 0 3px rgba(103, 226, 198, .1);
+  background: #a4adbc;
+  box-shadow: none;
   transform: translateY(-50%);
 }
 
@@ -4345,4 +4345,67 @@ textarea:focus,
   min-height: 25px;
   padding: 3px 7px;
   font-size: 10px;
+}
+
+/* Image stages are not percentages. Only persisted outputs receive a green badge. */
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot > header {
+  flex-wrap: wrap;
+  gap: 5px;
+}
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot.completed > header span::before {
+  background: #67e2c6;
+  box-shadow: 0 0 0 3px rgba(103, 226, 198, .1);
+}
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot.retrying > header span::before {
+  background: #f5c46b;
+}
+#ai-video-tasks-page .garment-portrait-grid .garment-output-slot.failed > header span::before {
+  background: #f38b93;
+}
+#ai-video-tasks-page .garment-portrait-grid .image-stage-placeholder {
+  grid-area: 1 / 1 / -1 / -1;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 64px 16px 24px;
+  color: #eef2fa;
+  text-align: center;
+  white-space: normal;
+  line-height: 1.6;
+}
+#ai-video-tasks-page .garment-portrait-grid .image-stage-placeholder strong {
+  font-weight: 600;
+  line-height: 1.6;
+  font-family: inherit;
+  font-size: 14px;
+}
+#ai-video-tasks-page .garment-portrait-grid .image-stage-placeholder small {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #bbc5d5;
+}
+#ai-video-tasks-page .garment-portrait-grid .image-stage-indicator {
+  width: 24px;
+  height: 24px;
+  border: 2px solid #566174;
+  border-radius: 50%;
+}
+#ai-video-tasks-page .garment-portrait-grid .processing .image-stage-indicator {
+  border-top-color: #82aaff;
+  animation: image-stage-turn 1.2s linear infinite;
+}
+#ai-video-tasks-page .garment-portrait-grid .retrying .image-stage-indicator { border-color: #f5c46b; }
+#ai-video-tasks-page .garment-portrait-grid .failed .image-stage-indicator { border-color: #f38b93; }
+#ai-video-tasks-page .garment-portrait-grid button:has(> .image-stage-placeholder) {
+  cursor: default;
+  opacity: 1;
+  background: rgba(16, 19, 27, .84) !important;
+}
+@keyframes image-stage-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  #ai-video-tasks-page .garment-portrait-grid .processing .image-stage-indicator { animation: none; }
 }
