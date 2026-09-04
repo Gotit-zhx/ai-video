@@ -567,7 +567,7 @@ public class AiVideoImageProcessor {
         boolean hasVideoResult = usableAsset(existing, "VIDEO_RESULT") != null;
         boolean hasModel = modelAsset != null;
         boolean hasStoryboard = storyboardAsset != null;
-        // Publish recovery before the potentially 500-second analysis request, not after it.
+        // Publish recovery before the potentially 1000-second analysis request, not after it.
         item.start();
         if (hasModel && !hasStoryboard) item.modelReady();
         itemMapper.updateById(item);

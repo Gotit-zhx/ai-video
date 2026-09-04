@@ -49,8 +49,8 @@ public class ProductFunctionAnalysisService {
     static final int MAX_INITIAL_ANALYSIS_ATTEMPTS = 2;
     static final int MAX_VALIDATION_ATTEMPTS = 2;
     static final int MAX_CONCURRENT_VISION_ANALYSES = 50;
-    // Runtime allows 500 seconds; leave time for transfer and error serialization.
-    static final int VISION_READ_TIMEOUT_MS = 520_000;
+    // Runtime allows 1000 seconds; leave time for transfer and error serialization.
+    static final int VISION_READ_TIMEOUT_MS = 1_020_000;
     private static final String GARMENT_TOPOLOGY_VERSION = "GARMENT_TOPOLOGY_V2";
 
     private final AiVideoTaskItemMapper itemMapper;

@@ -8,7 +8,7 @@ import { Agent as UndiciAgent } from "undici";
 
 const PORT = Number(process.env.PORT || 8090);
 const INTERNAL_TOKEN = process.env.PI_RUNTIME_TOKEN || "heyi-pi-runtime-dev-token";
-const PRODUCT_ANALYSIS_TIMEOUT_MS = 500_000;
+const PRODUCT_ANALYSIS_TIMEOUT_MS = 1_000_000;
 const PRODUCT_ANALYSIS_MAX_TOKENS = 1800;
 // Explicit transport limits avoid Undici's shorter default header timeout.
 const PRODUCT_ANALYSIS_DISPATCHER = new UndiciAgent({

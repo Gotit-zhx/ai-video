@@ -288,7 +288,7 @@ class AiVideoImageProcessorTest {
             assertTrue(original.length > analysisCopy.length * 5L);
             assertEquals(2, ProductFunctionAnalysisService.MAX_INITIAL_ANALYSIS_ATTEMPTS);
             assertEquals(50, ProductFunctionAnalysisService.MAX_CONCURRENT_VISION_ANALYSES);
-            assertEquals(520_000, ProductFunctionAnalysisService.VISION_READ_TIMEOUT_MS);
+            assertEquals(1_020_000, ProductFunctionAnalysisService.VISION_READ_TIMEOUT_MS);
         } finally {
             server.stop(0);
         }
