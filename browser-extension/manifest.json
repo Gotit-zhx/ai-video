@@ -1,0 +1,124 @@
+{
+  "manifest_version": 3,
+  "name": "赫逸商品一键采集",
+  "description": "从 Shopee 与 TikTok Shop 商品页采集公开商品信息，并安全提交到赫逸平台。",
+  "version": "0.1.0",
+  "minimum_chrome_version": "111",
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "赫逸商品一键采集",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "32": "assets/icons/icon-32.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.shopee.sg/*",
+        "https://*.shopee.com.my/*",
+        "https://*.shopee.ph/*",
+        "https://*.shopee.co.th/*",
+        "https://*.shopee.co.id/*",
+        "https://*.shopee.vn/*",
+        "https://shop.tiktok.com/*",
+        "https://www.tiktok.com/shop/*",
+        "https://www.tiktok.com/view/product/*",
+        "https://www.tiktok.com/pdp/*",
+        "https://www.tiktok.com/*/pdp/*"
+      ],
+      "exclude_matches": [
+        "https://seller.shopee.sg/*", "https://seller.shopee.com.my/*", "https://seller.shopee.ph/*",
+        "https://seller.shopee.co.th/*", "https://seller.shopee.co.id/*", "https://seller.shopee.vn/*",
+        "https://banhang.shopee.vn/*"
+      ],
+      "js": [
+        "src/content/tiktok-observer-main.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://*.shopee.sg/*",
+        "https://*.shopee.com.my/*",
+        "https://*.shopee.ph/*",
+        "https://*.shopee.co.th/*",
+        "https://*.shopee.co.id/*",
+        "https://*.shopee.vn/*",
+        "https://shop.tiktok.com/*",
+        "https://www.tiktok.com/shop/*",
+        "https://www.tiktok.com/view/product/*",
+        "https://www.tiktok.com/pdp/*",
+        "https://www.tiktok.com/*/pdp/*"
+      ],
+      "exclude_matches": [
+        "https://seller.shopee.sg/*", "https://seller.shopee.com.my/*", "https://seller.shopee.ph/*",
+        "https://seller.shopee.co.th/*", "https://seller.shopee.co.id/*", "https://seller.shopee.vn/*",
+        "https://banhang.shopee.vn/*"
+      ],
+      "js": [
+        "src/content/tiktok-observer-client.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://*.shopee.sg/*",
+        "https://*.shopee.com.my/*",
+        "https://*.shopee.ph/*",
+        "https://*.shopee.co.th/*",
+        "https://*.shopee.co.id/*",
+        "https://*.shopee.vn/*",
+        "https://shop.tiktok.com/*",
+        "https://www.tiktok.com/shop/*",
+        "https://www.tiktok.com/view/product/*",
+        "https://www.tiktok.com/pdp/*",
+        "https://www.tiktok.com/*/pdp/*"
+      ],
+      "exclude_matches": [
+        "https://seller.shopee.sg/*",
+        "https://seller.shopee.com.my/*",
+        "https://seller.shopee.ph/*",
+        "https://seller.shopee.co.th/*",
+        "https://seller.shopee.co.id/*",
+        "https://seller.shopee.vn/*",
+        "https://banhang.shopee.vn/*"
+      ],
+      "js": [
+        "src/content/page-guard.js",
+        "src/content/common.js",
+        "src/content/shopee-data.js",
+        "src/content/tiktok-data.js",
+        "src/content/shopee.js",
+        "src/content/tiktok.js",
+        "src/content/inject.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  }
+}

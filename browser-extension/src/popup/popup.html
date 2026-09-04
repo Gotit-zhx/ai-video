@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>赫逸商品一键采集</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="heading">
+      <img class="brand-mark" src="../../assets/icons/icon-48.png" alt="">
+      <div>
+        <p>HOYEE AI</p>
+        <h1>商品一键采集</h1>
+      </div>
+      <span id="connection-dot" class="connection-dot" title="未配对"></span>
+    </header>
+
+    <div id="notice" class="notice" role="status" hidden></div>
+
+    <div id="revocation-warning" class="revocation-warning" role="status" aria-live="polite" hidden>
+      <strong>旧凭证待撤销</strong>
+      <span id="revocation-warning-copy"></span>
+    </div>
+
+    <section class="platform-card" aria-labelledby="platform-title">
+      <div class="section-heading">
+        <h2 id="platform-title">平台连接</h2>
+        <span id="platform-state">未连接</span>
+      </div>
+      <label class="field">
+        <span>赫逸平台地址</span>
+        <input id="platform-url" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://hoyee.org.cn">
+      </label>
+      <p class="hint">只授权你填写的这个平台域名；生产环境必须使用 HTTPS。</p>
+    </section>
+
+    <section id="pairing-panel" class="pairing-card" aria-labelledby="pairing-title">
+      <div class="section-heading">
+        <h2 id="pairing-title">登录并配对</h2>
+        <span>一次性绑定码</span>
+      </div>
+      <ol class="steps">
+        <li>打开平台并完成登录</li>
+        <li>进入“商品采集/发布”页生成绑定码</li>
+        <li>把绑定码粘贴到下方完成配对</li>
+      </ol>
+      <button id="open-platform" class="secondary-button" type="button">打开平台生成绑定码</button>
+      <form id="pairing-form">
+        <label class="field">
+          <span>绑定码</span>
+          <input id="pairing-code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" minlength="6" maxlength="160" required placeholder="输入一次性绑定码">
+        </label>
+        <label class="field">
+          <span>设备名称</span>
+          <input id="device-name" type="text" autocomplete="off" maxlength="80" required>
+        </label>
+        <button id="pair-button" class="primary-button" type="submit">配对登录</button>
+      </form>
+      <p class="privacy-note">插件不会保存平台密码，也不会接收 ReefAPI、AI 或店铺 API Key。</p>
+    </section>
+
+    <section id="account-panel" class="account-card" aria-labelledby="account-title" hidden>
+      <div class="section-heading">
+        <h2 id="account-title">当前账号</h2>
+        <span class="status-ok">已配对</span>
+      </div>
+      <dl class="identity-list">
+        <div><dt>用户</dt><dd id="current-user">—</dd></div>
+        <div><dt>企业</dt><dd id="current-organization">—</dd></div>
+        <div><dt>有效期</dt><dd id="token-expiry">—</dd></div>
+      </dl>
+      <div class="permissions-block">
+        <span>当前权限</span>
+        <div id="permission-list" class="permission-list"></div>
+      </div>
+      <p class="ready-copy">现在可以在 Shopee 或 TikTok Shop 商品详情和商品卡片上点击“一键采集”。发布仍需回到平台确认。</p>
+      <button id="logout-button" class="danger-button" type="button">退出并撤销本设备</button>
+    </section>
+
+    <footer>采集公开商品字段 · 不读取店铺 Cookie · 不自动发布</footer>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

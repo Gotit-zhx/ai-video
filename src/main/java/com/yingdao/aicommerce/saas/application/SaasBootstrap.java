@@ -169,20 +169,22 @@ public class SaasBootstrap implements ApplicationRunner {
                     "asset:view", "asset:manage",
                     "video:script:view", "video:script:manage",
                     "video:task:view", "video:task:manage",
-                    "automation:view", "automation:execute"
+                    "automation:view", "automation:execute",
+                    "product:collect", "product:view", "product:edit", "asset:watermark"
             );
             case "DESIGNER" -> List.of(
                     "dashboard:view", "workflow:view", "asset:view", "asset:manage",
                     "video:script:view", "video:script:manage",
-                    "video:task:view", "video:task:manage"
+                    "video:task:view", "video:task:manage",
+                    "product:collect", "product:view", "product:edit", "asset:watermark"
             );
             case "REVIEWER" -> List.of(
                     "dashboard:view", "workflow:view", "workflow:review", "asset:view",
-                    "video:script:view", "video:task:view"
+                    "video:script:view", "video:task:view", "product:view", "product:edit"
             );
             case "PUBLISHER" -> List.of(
                     "dashboard:view", "workflow:view", "publish:view", "publish:manage",
-                    "video:task:view"
+                    "video:task:view", "product:view", "product:publish"
             );
             default -> List.of();
         };

@@ -10,7 +10,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
         "com.yingdao.aicommerce.saas.mapper",
         "com.yingdao.aicommerce.automation.mapper",
         "com.yingdao.aicommerce.task.mapper",
-        "com.yingdao.aicommerce.video.mapper"
+        "com.yingdao.aicommerce.video.mapper",
+        "com.yingdao.aicommerce.product.mapper",
+        "com.yingdao.aicommerce.shop.mapper"
 })
 @SpringBootApplication
 public class AiCommercePlatformApplication {

@@ -116,6 +116,10 @@ if (rememberedOrganizationCode) {
 let selectedDepartmentId = "";
 let selectedRoleId = "";
 let currentUser = null;
+let activeWorkspace = "";
+let pendingWorkspaceAfterLogin = "";
+let pendingProductCaptureAfterLogin = "";
+let sessionExpiryActive = false;
 let assistantSessionId = createAssistantSessionId();
 let assistantCommandPoll = null;
 let assistantLastChatUsage = {};
@@ -200,6 +204,47 @@ let generalVideoPollTimer = null;
 let generalVideoPollInFlight = false;
 const expandedGeneralVideoTaskIds = new Set();
 const generalVideoTaskDetails = new Map();
+let productCaptures = [];
+let selectedProductCaptureId = null;
+let selectedProductCaptureDetail = null;
+let productCaptureStatusFilter = "ALL";
+let productCaptureSearchQuery = "";
+let productCaptureLoadGeneration = 0;
+let productCaptureDetailLoadGeneration = 0;
+let productCapturePage = -1;
+let productCaptureTotalElements = 0;
+let productCaptureTotalPages = 0;
+let productCaptureStatusCounts = {};
+let productCaptureStatusCountsKnown = false;
+let productCaptureLegacyListResponse = false;
+let productCaptureListLoading = false;
+let productCaptureAppendLoading = false;
+let productCapturePaginationMessage = "";
+let productCaptureSearchDebounceTimer = null;
+let productCapturePollTimer = null;
+let productCapturePollInFlight = false;
+let productPairingExpiresAt = null;
+let productPairingCountdownTimer = null;
+let productPublishIdempotencyKey = "";
+let productPublishIdempotencyCaptureId = "";
+let marketplaceShops = [];
+let marketplaceIntegrationStatus = {
+  shopeeConfigured: false,
+  tiktokShopConfigured: false,
+  livePublishingEnabled: false,
+  publishingProvider: "DRY_RUN"
+};
+let productLastNotice = null;
+let productSkuCompletenessDirty = false;
+let productSkuDraftDirty = false;
+let productSkuDraftCaptureId = null;
+let productSkuDraftState = [];
+let selectedProductSkuIndex = 0;
+let productSkuSearchQuery = "";
+let productEditorDirty = false;
+let productCaptureSaveInFlightId = null;
+const productImageProcessingMeta = new Map();
+const productPublishAuditMeta = new Map();
 let socialProviderStatuses = new Map();
 
 function createLoginParticleField() {
@@ -694,21 +739,72 @@ const typeNames = {
   PRODUCT_PUBLISH: "商品发布"
 };
 
+class ApiRequestError extends Error {
+  constructor(message, status = 0, payload = null) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
+const PRODUCT_CAPTURE_RETURN_KEY = "heyi:return-to-product-capture";
+
+function rememberProductCaptureRoute(enabled) {
+  try {
+    if (enabled) sessionStorage.setItem(PRODUCT_CAPTURE_RETURN_KEY, "1");
+    else sessionStorage.removeItem(PRODUCT_CAPTURE_RETURN_KEY);
+  } catch (_error) {
+    // The URL hash still preserves the route when storage is unavailable.
+  }
+}
+
+function hasRememberedProductCaptureRoute() {
+  try {
+    return sessionStorage.getItem(PRODUCT_CAPTURE_RETURN_KEY) === "1";
+  } catch (_error) {
+    return false;
+  }
+}
+
+function rememberWorkspaceForLogin() {
+  if (!currentUser) return;
+  pendingWorkspaceAfterLogin = activeWorkspace;
+  if (activeWorkspace === "productPublish") {
+    pendingProductCaptureAfterLogin = selectedProductCaptureId || "";
+  }
+}
+
+function handleSessionExpired() {
+  if (sessionExpiryActive && !currentUser) return;
+  const hadSession = Boolean(currentUser);
+  rememberWorkspaceForLogin();
+  sessionExpiryActive = hadSession;
+  showLogin({ message: hadSession ? "登录已过期，请重新登录。登录后将返回刚才的商品页面。" : "" });
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    cache: options.cache || "no-store",
-    credentials: "same-origin",
-    headers: { ...(options.headers || {}) }
-  });
-  if (response.status === 401) {
-    currentUser = null;
-    showLogin();
-    throw new Error("登录已失效，请重新登录");
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      cache: options.cache || "no-store",
+      credentials: "same-origin",
+      headers: { ...(options.headers || {}) }
+    });
+  } catch (_error) {
+    throw new ApiRequestError("无法连接平台服务，请检查网络后重试", 0);
   }
   const result = await response.json().catch(() => null);
+  if (response.status === 401 && path !== "/api/v1/auth/login") {
+    handleSessionExpired();
+    throw new ApiRequestError(result?.message || "登录已失效，请重新登录", 401, result);
+  }
   if (!response.ok) {
-    throw new Error(result?.message || "服务暂时不可用，请稍后重试");
+    const fallback = response.status === 403
+      ? "当前账号已登录，但没有执行此操作的权限"
+      : "服务暂时不可用，请稍后重试";
+    throw new ApiRequestError(result?.message || fallback, response.status, result);
   }
   return result;
 }
@@ -742,13 +838,15 @@ function uploadFormData(path, formData, onProgress) {
         try { return JSON.parse(request.responseText || "null"); } catch (_) { return null; }
       })();
       if (request.status === 401) {
-        currentUser = null;
-        showLogin();
-        reject(new Error("登录已失效，请重新登录"));
+        handleSessionExpired();
+        reject(new ApiRequestError(result?.message || "登录已失效，请重新登录", 401, result));
         return;
       }
       if (request.status < 200 || request.status >= 300) {
-        reject(new Error(result?.message || "图片上传失败，请稍后重试"));
+        const fallback = request.status === 403
+          ? "当前账号已登录，但没有上传或处理图片的权限"
+          : "图片上传失败，请稍后重试";
+        reject(new ApiRequestError(result?.message || fallback, request.status, result));
         return;
       }
       resolve(result);
@@ -759,12 +857,14 @@ function uploadFormData(path, formData, onProgress) {
   });
 }
 
-function showLogin() {
+function showLogin({ message = "" } = {}) {
   stopWorkflowEvents();
   resetCompanyScopedWorkspaceState();
   currentUser = null;
   loginView.hidden = false;
   dashboardView.hidden = true;
+  loginError.textContent = message;
+  loginError.hidden = !message;
   selectLoginMethod("wechat");
 }
 
@@ -773,12 +873,31 @@ async function showDashboard(user) {
     resetCompanyScopedWorkspaceState();
   }
   currentUser = user;
+  sessionExpiryActive = false;
   loginView.hidden = true;
   dashboardView.hidden = false;
+  loginError.hidden = true;
+  loginError.textContent = "";
   document.querySelector("#current-user").textContent = user.displayName || user.username;
-  const topbarOrganization = document.querySelector(".topbar p");
-  if (topbarOrganization) topbarOrganization.textContent = user.organizationName || "企业工作空间";
+  document.querySelector("#current-organization").textContent = `${user.organizationName || "企业工作空间"}${user.organizationCode ? ` · ${user.organizationCode}` : ""}`;
+  document.querySelector("#current-permission-state").textContent = productPermissionLabel();
   applyFeatureAccess();
+  const returnToProducts = window.location.hash === "#product-capture"
+    || pendingWorkspaceAfterLogin === "productPublish"
+    || hasRememberedProductCaptureRoute();
+  const returnCaptureId = pendingProductCaptureAfterLogin;
+  pendingWorkspaceAfterLogin = "";
+  pendingProductCaptureAfterLogin = "";
+  if (returnToProducts && canAccessProductCenter()) {
+    switchWorkspace("productPublish");
+    await Promise.all([
+      loadProductCaptures(returnCaptureId || null),
+      loadMarketplaceShops({ silent: true })
+    ]);
+    consumeMarketplaceAuthorizationReturn();
+    return;
+  }
+  if (returnToProducts) rememberProductCaptureRoute(false);
   if (hasAnyPermission("video:monitor:view")) {
     switchWorkspace("aiVideoMonitor");
     await loadAiVideoMonitor();
@@ -788,6 +907,10 @@ async function showDashboard(user) {
   } else if (hasAnyPermission("video:task:view", "video:task:manage")) {
     switchWorkspace("aiVideoTasks");
     await loadAiVideoTasks();
+  } else if (canAccessProductCenter()) {
+    switchWorkspace("productPublish");
+    await Promise.all([loadProductCaptures(), loadMarketplaceShops({ silent: true })]);
+    consumeMarketplaceAuthorizationReturn();
   } else if (hasAnyPermission("automation:view", "automation:execute")) {
     switchWorkspace("automations");
     await loadAutomationCenter();
@@ -806,6 +929,32 @@ function hasAnyPermission(...codes) {
   return isAdmin || codes.some(code => granted.has(code));
 }
 
+function productAccessCapabilities() {
+  return {
+    collect: hasAnyPermission("product:collect"),
+    view: hasAnyPermission("product:view"),
+    edit: hasAnyPermission("product:edit"),
+    publish: hasAnyPermission("product:publish"),
+    watermark: hasAnyPermission("asset:watermark")
+  };
+}
+
+function canAccessProductCenter() {
+  return productAccessCapabilities().view;
+}
+
+function productPermissionLabel() {
+  const access = productAccessCapabilities();
+  const abilities = [];
+  if (access.collect) abilities.push("采集");
+  if (access.edit) abilities.push("编辑/审核");
+  if (access.watermark) abilities.push("图片处理");
+  if (access.publish) abilities.push("发布");
+  if (abilities.length) return `商品权限 · 可${abilities.join("、")}`;
+  if (access.view) return "商品权限 · 仅查看";
+  return "未授予商品权限";
+}
+
 function applyFeatureAccess() {
   const canManageWorkflow = hasAnyPermission("workflow:manage");
   const canViewScripts = hasAnyPermission("video:script:view", "video:script:manage");
@@ -817,6 +966,7 @@ function applyFeatureAccess() {
   const canViewAutomationAdmin = hasAnyPermission("system:automation:view", "system:automation:manage");
   const canManageAutomation = hasAnyPermission("system:automation:manage");
   const canViewAssistant = hasAnyPermission("assistant:view", "assistant:use");
+  const productAccess = productAccessCapabilities();
   const canOpenSystem = hasAnyPermission(
     "system:organization:view", "system:organization:manage",
     "system:user:view", "system:user:manage",
@@ -827,7 +977,7 @@ function applyFeatureAccess() {
   document.querySelector("#nav-ai-video-tasks").hidden = !canViewVideoTasks;
   document.querySelector("#nav-general-video").hidden = !canViewVideoTasks;
   document.querySelector("#nav-ai-video-monitor").hidden = !canViewVideoMonitor;
-  document.querySelector("#nav-publish").hidden = !hasAnyPermission("publish:view", "publish:manage");
+  document.querySelector("#nav-publish").hidden = !canAccessProductCenter();
   document.querySelector("#nav-automations").hidden = !canUseAutomation;
   document.querySelector("#nav-automation-admin").hidden = !canViewAutomationAdmin;
   document.querySelector("#nav-models").hidden = !hasAnyPermission("system:model:view", "system:model:manage");
@@ -847,6 +997,11 @@ function applyFeatureAccess() {
   document.querySelector("#general-video-submit").hidden = !canManageVideoTasks;
   document.querySelector("#general-reference-drop").classList.toggle("is-disabled", !canManageVideoTasks);
   document.querySelector("#general-reference-input").disabled = !canManageVideoTasks;
+  document.querySelector("#create-extension-pairing-code").hidden = !productAccess.collect;
+  document.querySelector("#save-product-capture").hidden = !productAccess.edit;
+  document.querySelector("#process-product-images").hidden = !productAccess.watermark;
+  document.querySelector("#approve-product-capture").hidden = !productAccess.edit;
+  document.querySelector("#open-product-publish").hidden = !productAccess.publish;
   document.querySelector("#skill-converter-card").hidden = !canManageAutomation;
   document.querySelector("#automation-access-card").hidden = !canManageAutomation;
 }
@@ -855,8 +1010,8 @@ async function restoreSession() {
   try {
     const result = await api("/api/v1/auth/me");
     await showDashboard(result.data);
-  } catch {
-    showLogin();
+  } catch (error) {
+    showLogin({ message: error?.status === 401 ? "" : error?.message || "平台连接失败，请稍后重试" });
   }
 }
 
@@ -906,6 +1061,9 @@ document.querySelector("#logout-button").addEventListener("click", async () => {
   try {
     await api("/api/v1/auth/logout", { method: "POST" });
   } finally {
+    sessionExpiryActive = false;
+    pendingWorkspaceAfterLogin = "";
+    pendingProductCaptureAfterLogin = "";
     loginForm.reset();
     showLogin();
   }
@@ -1017,6 +1175,15 @@ document.querySelector("#nav-ai-video-tasks").addEventListener("click", async ev
   await loadAiVideoTasks();
 });
 
+document.querySelector("#nav-publish").addEventListener("click", async event => {
+  event.preventDefault();
+  switchWorkspace("productPublish");
+  await Promise.all([
+    loadProductCaptures(selectedProductCaptureId),
+    loadMarketplaceShops({ silent: true })
+  ]);
+});
+
 document.querySelector("#nav-general-video").addEventListener("click", async event => {
   event.preventDefault();
   switchWorkspace("generalVideo");
@@ -1038,6 +1205,7 @@ document.querySelector("#nav-assistant-test").addEventListener("click", async (e
 });
 
 function switchWorkspace(page) {
+  activeWorkspace = page;
   const isSystem = page === "system";
   const isModels = page === "models";
   const isAssistant = page === "assistant";
@@ -1047,6 +1215,7 @@ function switchWorkspace(page) {
   const isAiVideoTasks = page === "aiVideoTasks";
   const isGeneralVideo = page === "generalVideo";
   const isAiVideoMonitor = page === "aiVideoMonitor";
+  const isProductPublish = page === "productPublish";
   document.querySelector("#dashboard-page").hidden = true;
   document.querySelector("#system-page").hidden = !isSystem;
   document.querySelector("#models-page").hidden = !isModels;
@@ -1057,6 +1226,7 @@ function switchWorkspace(page) {
   document.querySelector("#ai-video-tasks-page").hidden = !isAiVideoTasks;
   document.querySelector("#general-video-page").hidden = !isGeneralVideo;
   document.querySelector("#ai-video-monitor-page").hidden = !isAiVideoMonitor;
+  document.querySelector("#product-publish-page").hidden = !isProductPublish;
   document.querySelector("#nav-system").classList.toggle("active", isSystem && !isModels);
   document.querySelector("#nav-models").classList.toggle("active", isModels);
   document.querySelector("#nav-assistant-test").classList.toggle("active", isAssistant);
@@ -1066,8 +1236,18 @@ function switchWorkspace(page) {
   document.querySelector("#nav-ai-video-tasks").classList.toggle("active", isAiVideoTasks);
   document.querySelector("#nav-general-video").classList.toggle("active", isGeneralVideo);
   document.querySelector("#nav-ai-video-monitor").classList.toggle("active", isAiVideoMonitor);
+  document.querySelector("#nav-publish").classList.toggle("active", isProductPublish);
   document.querySelector(".topbar h2").textContent =
-    isVideoScripts ? "视频脚本管理" : isGeneralVideo ? "通用生成" : isAiVideoTasks ? "AI 视频任务" : isAiVideoMonitor ? "AI 任务监控" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
+    isVideoScripts ? "视频脚本管理" : isGeneralVideo ? "通用生成" : isAiVideoTasks ? "AI 视频任务" : isAiVideoMonitor ? "AI 任务监控" : isProductPublish ? "商品采集与发布" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
+  if (isProductPublish) {
+    rememberProductCaptureRoute(true);
+    if (window.location.hash !== "#product-capture") {
+      window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#product-capture`);
+    }
+  } else if (window.location.hash === "#product-capture") {
+    rememberProductCaptureRoute(false);
+    window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
+  }
   if (!isAssistant) stopAssistantCommandPolling();
   if (!isVideoScripts) {
     stopVideoScriptPolling();
@@ -1089,10 +1269,21 @@ function switchWorkspace(page) {
     clearInterval(generalVideoPollTimer);
     generalVideoPollTimer = null;
   }
+  if (!isProductPublish && productCapturePollTimer) {
+    clearInterval(productCapturePollTimer);
+    productCapturePollTimer = null;
+  }
   if (isGeneralVideo) syncGeneralVideoPolling();
+  if (isProductPublish) syncProductCapturePolling();
   if (isAiVideoTasks) requestAnimationFrame(syncAiVideoTaskRailHeight);
   scheduleSlidingSwitchSync();
 }
+
+window.addEventListener("hashchange", () => {
+  if (window.location.hash !== "#product-capture" || !currentUser || !canAccessProductCenter()) return;
+  switchWorkspace("productPublish");
+  loadProductCaptures(selectedProductCaptureId);
+});
 
 function createAssistantSessionId() {
   const secureUuid = globalThis.crypto?.randomUUID?.();
@@ -2963,6 +3154,2150 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
+const PRODUCT_CAPTURE_API_ROOT = "/api/v1/product-captures";
+const MARKETPLACE_SHOP_API_ROOT = "/api/v1/shops";
+const PRODUCT_CAPTURE_PAGE_SIZE = 30;
+const productCaptureStatusNames = {
+  CAPTURED: "待整理",
+  DRAFT: "待整理",
+  IMAGE_PROCESSING: "图片处理中",
+  PROCESSING: "处理中",
+  READY: "待人工确认",
+  REVIEW: "待人工确认",
+  APPROVED: "可发布",
+  PUBLISHED: "已发布",
+  FAILED: "处理失败"
+};
+
+function productCaptureApi(path = "", options = {}) {
+  return api(`${PRODUCT_CAPTURE_API_ROOT}${path}`, options);
+}
+
+function marketplaceShopApi(path = "", options = {}) {
+  return api(`${MARKETPLACE_SHOP_API_ROOT}${path}`, options);
+}
+
+function marketplacePlatformName(platform) {
+  return String(platform || "").toUpperCase() === "SHOPEE" ? "Shopee" : "TikTok Shop";
+}
+
+function activeMarketplaceShops(platform = "") {
+  const normalized = String(platform || "").toUpperCase();
+  return marketplaceShops.filter(shop => String(shop.status).toUpperCase() === "ACTIVE"
+    && (!normalized || String(shop.platform).toUpperCase() === normalized));
+}
+
+function renderMarketplaceShops() {
+  const list = document.querySelector("#marketplace-shop-list");
+  const state = document.querySelector("#marketplace-live-state");
+  const note = document.querySelector("#marketplace-shop-note");
+  const active = activeMarketplaceShops();
+  const live = marketplaceIntegrationStatus.livePublishingEnabled;
+  state.textContent = live ? "官方发布已启用" : "安全演练模式";
+  state.className = live ? "is-live" : "";
+  const badge = document.querySelector("#product-publishing-mode-badge");
+  if (badge) {
+    badge.textContent = live ? "发布：官方接口已启用" : "发布：DRY RUN";
+    badge.classList.toggle("is-live", live);
+  }
+  list.innerHTML = active.length ? active.map(shop => `
+    <div class="marketplace-shop-row is-active">
+      <div><strong>${escapeHtml(shop.name || shop.externalShopId)}</strong><small>${escapeHtml(marketplacePlatformName(shop.platform))} · ${escapeHtml(shop.region || "地区未返回")}</small></div>
+      <em>已授权</em>
+    </div>`).join("") : `<span>还没有已授权店铺。</span>`;
+  document.querySelectorAll("[data-authorize-shop]").forEach(button => {
+    const configured = button.dataset.authorizeShop === "SHOPEE"
+      ? marketplaceIntegrationStatus.shopeeConfigured
+      : marketplaceIntegrationStatus.tiktokShopConfigured;
+    button.disabled = !configured || !hasAnyPermission("product:publish");
+    button.title = configured ? "打开平台官方授权页" : "管理员尚未配置该平台 App Key/Secret";
+  });
+  if (!marketplaceIntegrationStatus.shopeeConfigured && !marketplaceIntegrationStatus.tiktokShopConfigured) {
+    note.textContent = "需先在服务端配置官方开发者应用；密钥不会发送到浏览器。";
+  } else if (!marketplaceIntegrationStatus.livePublishingEnabled) {
+    note.textContent = "当前保持 Dry Run；授权可先联调，真实发布需单独开启服务端开关。";
+  } else {
+    note.textContent = `${active.length} 家店铺可用于官方发布。`;
+  }
+  syncPublishShopOptions();
+}
+
+async function loadMarketplaceShops({ silent = false } = {}) {
+  if (!currentUser || !hasAnyPermission("product:view", "product:publish")) return;
+  try {
+    const [shopsResult, statusResult] = await Promise.all([
+      marketplaceShopApi(),
+      marketplaceShopApi("/integration-status")
+    ]);
+    marketplaceShops = Array.isArray(shopsResult.data) ? shopsResult.data : [];
+    marketplaceIntegrationStatus = { ...marketplaceIntegrationStatus, ...(statusResult.data || {}) };
+    renderMarketplaceShops();
+  } catch (error) {
+    if (error?.status === 401) return;
+    document.querySelector("#marketplace-shop-list").innerHTML = `<span>${escapeHtml(error.message)}</span>`;
+    if (!silent) document.querySelector("#marketplace-shop-note").textContent = "授权店铺读取失败，请刷新后重试。";
+  }
+}
+
+async function startMarketplaceAuthorization(platform, button) {
+  if (!hasAnyPermission("product:publish")) return;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "正在打开…";
+  try {
+    rememberProductCaptureRoute(true);
+    const result = await api(`/api/v1/shop-authorizations/${encodeURIComponent(platform)}/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ returnPath: "/?view=product-publish" })
+    });
+    const url = safeProductUrl(result.data?.authorizationUrl);
+    if (!url) throw new ApiRequestError("平台没有返回有效的官方授权地址", 502, result);
+    window.location.assign(url);
+  } catch (error) {
+    document.querySelector("#marketplace-shop-note").textContent = error.message;
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function consumeMarketplaceAuthorizationReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const state = params.get("shopAuth");
+  if (!state) return;
+  const platform = marketplacePlatformName(params.get("platform"));
+  const note = document.querySelector("#marketplace-shop-note");
+  note.textContent = state === "success"
+    ? `${platform} 官方授权成功，已同步 ${params.get("connected") || "1"} 家店铺。`
+    : `${platform} 授权失败：${params.get("message") || "请重新发起授权"}`;
+  ["shopAuth", "platform", "connected", "message", "view"].forEach(key => params.delete(key));
+  const query = params.toString();
+  window.history.replaceState(null, document.title,
+    `${window.location.pathname}${query ? `?${query}` : ""}#product-capture`);
+}
+
+function productCapturePayload(value) {
+  if (!value || typeof value !== "object") return null;
+  if (value.productCapture) return productCapturePayload(value.productCapture);
+  if (!value.capture) return value;
+  const detailFields = ["skus", "images", "fieldSources", "normalizedData", "rawData"];
+  const isCaptureDetail = detailFields.some(field => Object.prototype.hasOwnProperty.call(value, field));
+  if (!isCaptureDetail) return productCapturePayload(value.capture);
+  const entity = productCapturePayload(value.capture) || {};
+  const { capture: _nestedCapture, ...detail } = value;
+  return {
+    ...entity,
+    ...detail,
+    skus: Array.isArray(value.skus) ? value.skus : productCaptureSkus(entity),
+    images: Array.isArray(value.images) ? value.images : productCaptureImages(entity),
+    fieldSources: Array.isArray(value.fieldSources) ? value.fieldSources : entity.fieldSources || [],
+    normalizedData: value.normalizedData ?? entity.normalizedData ?? {},
+    rawData: value.rawData ?? entity.rawData ?? {}
+  };
+}
+
+function productCaptureListPayload(value) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  return value.items || value.captures || value.content || [];
+}
+
+function productCaptureCountValue(value, fallback = 0) {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? Math.trunc(count) : fallback;
+}
+
+function productCapturePagePayload(value, requestedPage = 0) {
+  const objectValue = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const paged = Boolean(objectValue && (
+    Object.prototype.hasOwnProperty.call(objectValue, "totalElements")
+    || Object.prototype.hasOwnProperty.call(objectValue, "totalPages")
+    || Object.prototype.hasOwnProperty.call(objectValue, "statusCounts")
+  ));
+  const content = productCaptureListPayload(value);
+  const page = paged ? productCaptureCountValue(objectValue.page, requestedPage) : 0;
+  const size = paged ? productCaptureCountValue(objectValue.size, PRODUCT_CAPTURE_PAGE_SIZE) : content.length;
+  const totalElements = paged
+    ? productCaptureCountValue(objectValue.totalElements, content.length)
+    : content.length;
+  const totalPagesFallback = totalElements
+    ? Math.ceil(totalElements / Math.max(1, size || PRODUCT_CAPTURE_PAGE_SIZE))
+    : 0;
+  const totalPages = paged
+    ? productCaptureCountValue(objectValue.totalPages, totalPagesFallback)
+    : (content.length ? 1 : 0);
+  return {
+    content,
+    page,
+    size,
+    totalElements,
+    totalPages,
+    statusCounts: objectValue?.statusCounts,
+    paged
+  };
+}
+
+function productCaptureListPath(page = 0) {
+  const parameters = new URLSearchParams({
+    page: String(Math.max(0, page)),
+    size: String(PRODUCT_CAPTURE_PAGE_SIZE),
+    status: productCaptureStatusFilter,
+    query: productCaptureSearchQuery.trim()
+  });
+  return `?${parameters.toString()}`;
+}
+
+function productCaptureStatusGroup(status = "") {
+  const normalized = String(status).toUpperCase();
+  if (["CAPTURED", "DRAFT", "RECEIVED"].includes(normalized)) return "DRAFT";
+  if (["IMAGE_PROCESSING", "PROCESSING", "QUEUED", "RUNNING", "PUBLISHING"].includes(normalized)) return "PROCESSING";
+  if (["READY", "REVIEW_REQUIRED"].includes(normalized)) return "REVIEW";
+  if (normalized === "APPROVED") return "APPROVED";
+  if (normalized === "PUBLISHED") return "PUBLISHED";
+  if (["FAILED", "REJECTED"].includes(normalized)) return "FAILED";
+  return "DRAFT";
+}
+
+function emptyProductCaptureStatusCounts() {
+  return { DRAFT: 0, PROCESSING: 0, REVIEW: 0, APPROVED: 0, PUBLISHED: 0, FAILED: 0 };
+}
+
+function normalizeProductCaptureStatusCounts(value) {
+  const counts = emptyProductCaptureStatusCounts();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return counts;
+  Object.entries(value).forEach(([status, rawCount]) => {
+    const count = Number(rawCount);
+    if (!Number.isFinite(count) || count < 0) return;
+    counts[productCaptureStatusGroup(status)] += Math.trunc(count);
+  });
+  return counts;
+}
+
+function deriveProductCaptureStatusCounts(captures = productCaptures) {
+  const counts = emptyProductCaptureStatusCounts();
+  captures.forEach(capture => {
+    counts[productCaptureStatusGroup(capture?.status)] += 1;
+  });
+  return counts;
+}
+
+function productCaptureStatusName(status) {
+  return productCaptureStatusNames[status] || status || "待整理";
+}
+
+function productCaptureDisplayStatus(capture = {}) {
+  const status = String(capture.status || "CAPTURED").toUpperCase();
+  const hasCompletenessEvidence = Object.prototype.hasOwnProperty.call(capture, "skuCompleteness")
+    || Object.prototype.hasOwnProperty.call(capture, "normalizedData")
+    || Object.prototype.hasOwnProperty.call(capture, "missingFields");
+  if (!hasCompletenessEvidence) return productCaptureStatusName(status);
+  const skuCompleteness = productSkuCompletenessMeta(capture);
+  if (skuCompleteness.incomplete && ["CAPTURED", "READY"].includes(status)) return "SKU 待补采";
+  if (!skuCompleteness.known && ["CAPTURED", "READY"].includes(status)) return "SKU 待确认";
+  if (capture.completeness === "NEEDS_ENRICHMENT"
+      && productBlockingMissingFields(capture, skuCompleteness).length > 0
+      && ["CAPTURED", "READY"].includes(status)) return "待补全";
+  return productCaptureStatusName(status);
+}
+
+function productImageState(image = {}) {
+  const status = String(image.status || "").toUpperCase();
+  if (["FAILED", "ERROR"].includes(status)) return "failed";
+  if (["PROCESSING", "RUNNING", "QUEUED"].includes(status)) return "processing";
+  if (["COMPLETED", "PROCESSED", "READY", "SUCCEEDED", "SUCCESS"].includes(status)) return "completed";
+  if (image.processedUrl && !image.errorMessage) return "completed";
+  return "waiting";
+}
+
+function productImageStateName(image = {}) {
+  const state = productImageState(image);
+  if (state === "completed") return "去水印完成";
+  if (state === "processing") return "AI 处理中";
+  if (state === "failed") return "处理失败";
+  return "等待处理";
+}
+
+function productImageIsDryRun(image = {}, capture = selectedProductCaptureDetail) {
+  const meta = productImageProcessingMeta.get(capture?.id) || {};
+  const provider = image.processingProvider || image.provider
+    || capture?.imageProcessingProvider || capture?.watermarkProvider || meta.provider || "";
+  const original = safeProductUrl(image.originalUrl || image.url);
+  const processed = safeProductUrl(image.processedUrl);
+  return image.dryRun === true
+    || capture?.imageProcessingDryRun === true
+    || meta.dryRun === true
+    || /dry.?run/i.test(String(provider))
+    || Boolean(original && processed && original === processed);
+}
+
+function productImageDisplayState(image = {}, capture = selectedProductCaptureDetail) {
+  if (productImageState(image) === "completed" && productImageIsDryRun(image, capture)) {
+    return "Dry Run 占位图（未实际去水印）";
+  }
+  return productImageStateName(image);
+}
+
+function safeProductUrl(value) {
+  if (!value) return "";
+  try {
+    const url = new URL(String(value), window.location.origin);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function productSourcePlatformName(value) {
+  const key = String(value || "").toUpperCase();
+  return ({ SHOPEE: "Shopee", TIKTOK: "TikTok Shop", TIKTOK_SHOP: "TikTok Shop", LAZADA: "Lazada" })[key]
+    || value || "来源平台";
+}
+
+function productCaptureImages(capture = selectedProductCaptureDetail) {
+  return Array.isArray(capture?.images) ? capture.images : [];
+}
+
+function productCaptureSkus(capture = selectedProductCaptureDetail) {
+  return Array.isArray(capture?.skus) ? capture.skus : [];
+}
+
+function canonicalProductSkuImageSource(value) {
+  const source = String(value || "").trim().toUpperCase();
+  return source === "PRODUCT_MAIN_PAGE" ? "PRODUCT_MAIN" : source;
+}
+
+function productSkuEntrySource(sku = {}) {
+  const source = sku.entrySource || sku.sourceType || sku.origin
+    || sku.source?.entrySource || sku.source?.sourceType || sku.source?.origin || "";
+  if (/user.?edited/i.test(String(source))) return "USER_EDITED";
+  return /manual|user/i.test(String(source)) ? "MANUAL" : "PLATFORM";
+}
+
+function productSkuCompletenessMeta(capture = selectedProductCaptureDetail) {
+  const normalized = capture?.normalizedData && typeof capture.normalizedData === "object"
+    ? capture.normalizedData : {};
+  const value = capture?.skuCompleteness ?? normalized.skuCompleteness;
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const skus = productCaptureSkus(capture);
+  const count = input => {
+    if (input === null || input === undefined || input === "") return null;
+    const number = Number(input);
+    return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : null;
+  };
+  const declaredExpectedCount = count(raw.expectedCount);
+  // Marketplace fallbacks use 0 to mean that no authoritative SKU count was
+  // available. Treat it as unknown so an editor can replace the missing matrix
+  // and explicitly confirm the complete USER-authored listing.
+  const expectedCount = declaredExpectedCount && declaredExpectedCount > 0
+    ? declaredExpectedCount : null;
+  const variantDimensionCount = count(raw.variantDimensionCount);
+  const hasVariants = typeof raw.hasVariants === "boolean"
+    ? raw.hasVariants : (variantDimensionCount || 0) > 0;
+  const capturedCount = count(raw.capturedCount)
+    ?? skus.filter(sku => productSkuEntrySource(sku) !== "MANUAL").length;
+  const missingFields = Array.isArray(capture?.missingFields)
+    ? capture.missingFields.map(field => String(field).toUpperCase()) : [];
+  const locallyDirty = productSkuCompletenessDirty && capture?.id === selectedProductCaptureId;
+  const countsMatch = expectedCount !== null
+    && expectedCount === capturedCount
+    && expectedCount === skus.length;
+  const rawIssues = Array.isArray(raw.issues) ? raw.issues.filter(Boolean) : [];
+  const inventoryIssues = rawIssues.filter(productSkuIssueIsOptionalInventory).slice(0, 80);
+  const issues = rawIssues.filter(issue => !productSkuIssueIsOptionalInventory(issue)).slice(0, 80);
+  // Inventory is optional. Legacy captures can still declare complete=false and
+  // SKU_INCOMPLETE when their only parser findings are missing stock values.
+  const onlyOptionalInventoryIssues = rawIssues.length > 0
+    && rawIssues.every(productSkuIssueIsOptionalInventory);
+  const stockOnlyDeclarationFailure = raw.complete === false && onlyOptionalInventoryIssues;
+  const explicitlyIncomplete = (missingFields.includes("SKU_INCOMPLETE") && !onlyOptionalInventoryIssues)
+    || (raw.complete === false && !stockOnlyDeclarationFailure);
+  const completeDeclaration = raw.complete === true || stockOnlyDeclarationFailure;
+  const complete = completeDeclaration && countsMatch && issues.length === 0
+    && !explicitlyIncomplete && !locallyDirty;
+  const known = Object.keys(raw).length > 0 || missingFields.includes("SKU_INCOMPLETE");
+  const incomplete = !complete && (known || locallyDirty);
+  const source = String(raw.source || "UNKNOWN").trim().toUpperCase() || "UNKNOWN";
+  return {
+    raw,
+    expectedCount,
+    variantDimensionCount,
+    hasVariants,
+    capturedCount,
+    actualCount: skus.length,
+    complete,
+    incomplete,
+    known,
+    source,
+    issues,
+    inventoryIssues,
+    inventoryMissingCount: skus.filter(sku => sku.stock === null || sku.stock === undefined || sku.stock === "").length,
+    userConfirmed: /USER|MANUAL/.test(source),
+    locallyDirty
+  };
+}
+
+function productSkuCompletenessSourceLabel(source) {
+  const normalized = String(source || "UNKNOWN").toUpperCase();
+  if (/USER|MANUAL/.test(normalized)) return "人工核对（USER）";
+  if (/DOM|PAGE|PLATFORM|SHOPEE|TIKTOK/.test(normalized)) return "商品详情页直采";
+  if (/API|REEF|TMAPI/.test(normalized)) return `数据接口（${source}）`;
+  return normalized === "UNKNOWN" ? "等待平台返回" : source;
+}
+
+function productSkuCompletenessIssueText(issue) {
+  if (issue && typeof issue === "object") {
+    if (issue.message) return String(issue.message);
+    issue = issue.code || issue.type || JSON.stringify(issue);
+  }
+  const code = String(issue || "").toUpperCase();
+  const exact = {
+    AUTHORITATIVE_SKU_DATA_UNAVAILABLE: "未读取到平台权威 SKU 数据",
+    MODELS_MISSING: "页面数据中缺少 Shopee 规格模型",
+    SKUS_MISSING: "页面数据中缺少 SKU 列表",
+    NO_REAL_SKU_MODELS: "未发现真实 Shopee SKU 模型",
+    NO_REAL_SKUS: "未发现真实 SKU",
+    SKU_LIMIT_EXCEEDED: "SKU 超过单商品 500 条安全上限",
+    SKU_COUNT_MISMATCH: "已采集数量与平台应有数量不一致",
+    DUPLICATE_MODEL_ID: "存在重复的平台 SKU ID",
+    IMAGE_LIMIT_EXCEEDED: "刊登素材超过 30 张上限，已按主图、规格图、图库、详情图顺序保留",
+    VARIANT_IMAGE_COVERAGE_TRUNCATED: "30 张上限无法容纳全部规格代表图，禁止审核",
+    GALLERY_IMAGE_COVERAGE_TRUNCATED: "30 张上限导致部分商品图库未纳入",
+    DETAIL_IMAGE_COVERAGE_TRUNCATED: "30 张上限导致部分详情图未纳入"
+  };
+  if (exact[code]) return exact[code];
+  const match = code.match(/^SKU_(\d+)_(.+)$/);
+  if (match) {
+    const reasons = {
+      INVALID: "数据无效",
+      MODEL_ID_MISSING: "缺少平台型号 ID",
+      ID_MISSING: "缺少平台 SKU ID",
+      ATTRIBUTES_MISSING: "规格属性维度不完整",
+      PRICE_MISSING: "缺少售价",
+      ORIGINAL_PRICE_MISSING: "缺少原价",
+      ORIGINAL_PRICE_INVALID: "原价低于售价",
+      STOCK_MISSING: "缺少库存",
+      IMAGE_MISSING: "缺少 SKU 图片或可继承图片"
+    };
+    return `SKU ${match[1]}：${reasons[match[2]] || match[2]}`;
+  }
+  return code || "SKU 完整性未通过";
+}
+
+function productSkuIssueCode(issue) {
+  if (issue && typeof issue === "object") return String(issue.code || issue.type || "").toUpperCase();
+  return String(issue || "").toUpperCase();
+}
+
+function productSkuIssueIsOptionalInventory(issue) {
+  const code = productSkuIssueCode(issue);
+  return code === "STOCK_MISSING"
+    || /^SKU_\d+_(?:STOCK|INVENTORY)_MISSING$/.test(code);
+}
+
+function productMissingFieldIsOptionalInventory(field) {
+  return ["STOCK", "SKU_STOCK", "SKU_INVENTORY"].includes(String(field || "").toUpperCase());
+}
+
+function productBlockingMissingFields(capture, skuCompleteness = productSkuCompletenessMeta(capture)) {
+  const fields = Array.isArray(capture?.missingFields) ? capture.missingFields : [];
+  return fields
+    .map(field => String(field).toUpperCase())
+    .filter(field => !productMissingFieldIsOptionalInventory(field))
+    .filter(field => field !== "SKU_INCOMPLETE" || !skuCompleteness.complete);
+}
+
+function productSkuIssueIsRepairable(issue) {
+  const code = productSkuIssueCode(issue);
+  if (/^SKU_\d+_(INVALID|MODEL_ID_MISSING|ID_MISSING|ATTRIBUTES_MISSING|PRICE_MISSING|ORIGINAL_PRICE_MISSING|ORIGINAL_PRICE_INVALID|STOCK_MISSING|IMAGE_MISSING)$/.test(code)) {
+    return true;
+  }
+  return [
+    "AUTHORITATIVE_SKU_DATA_UNAVAILABLE",
+    "MODELS_MISSING",
+    "SKUS_MISSING",
+    "NO_REAL_SKU_MODELS",
+    "NO_REAL_SKUS",
+    "SKU_COUNT_MISMATCH",
+    "DUPLICATE_MODEL_ID"
+  ].includes(code);
+}
+
+function productSkuNonRepairableIssues(issues = []) {
+  return issues.filter(issue => !productSkuIssueIsRepairable(issue));
+}
+
+function productCaptureSearchText(capture) {
+  return [
+    capture.id, capture.title, capture.sourceProductId, capture.sourceShopId,
+    capture.sourcePlatform, capture.categoryName, capture.brandName,
+    ...productCaptureSkus(capture).flatMap(sku => [sku.externalSkuId, sku.sellerSku, sku.variationName])
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function filteredProductCaptures() {
+  if (!productCaptureLegacyListResponse) return productCaptures;
+  const query = productCaptureSearchQuery.trim().toLowerCase();
+  return productCaptures.filter(capture => {
+    const statusMatches = productCaptureStatusFilter === "ALL"
+      || productCaptureStatusGroup(capture.status) === productCaptureStatusFilter;
+    return statusMatches && (!query || productCaptureSearchText(capture).includes(query));
+  });
+}
+
+function productPriceLabel(capture) {
+  const min = capture?.priceMin;
+  const max = capture?.priceMax;
+  if (min === null || min === undefined || min === "") return "价格待核对";
+  const currency = capture.currency || "";
+  return max !== null && max !== undefined && max !== "" && String(max) !== String(min)
+    ? `${currency} ${min}–${max}`.trim()
+    : `${currency} ${min}`.trim();
+}
+
+function renderProductPageIdentity() {
+  document.querySelector("#product-company-context").textContent = currentUser
+    ? `${currentUser.organizationName || "当前公司"}${currentUser.organizationCode ? ` · ${currentUser.organizationCode}` : ""}`
+    : "尚未登录";
+  document.querySelector("#product-permission-context").textContent = productPermissionLabel();
+}
+
+function renderProductSummary() {
+  const counts = productCaptureStatusCountsKnown
+    ? productCaptureStatusCounts
+    : deriveProductCaptureStatusCounts();
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  document.querySelector("#product-total-count").textContent = total;
+  document.querySelector("#product-processing-count").textContent = counts.PROCESSING;
+  document.querySelector("#product-review-count").textContent = counts.REVIEW;
+  document.querySelector("#product-approved-count").textContent = counts.APPROVED;
+  document.querySelector("#product-published-count").textContent = counts.PUBLISHED;
+}
+
+function syncProductCapturePagination(message = productCapturePaginationMessage) {
+  const filtered = filteredProductCaptures();
+  const shown = filtered.length;
+  const total = productCaptureLegacyListResponse ? shown : productCaptureTotalElements;
+  document.querySelector("#product-result-count").textContent = `已显示 ${shown} / 共 ${total} 条`;
+
+  const pagination = document.querySelector("#product-capture-pagination");
+  const button = document.querySelector("#load-more-product-captures");
+  const status = document.querySelector("#product-load-more-status");
+  const hasMore = !productCaptureLegacyListResponse
+    && productCapturePage + 1 < productCaptureTotalPages
+    && shown < total;
+  const appending = productCaptureListLoading && productCaptureAppendLoading;
+  pagination.hidden = !hasMore && !appending && !message;
+  button.hidden = !hasMore && !appending;
+  button.disabled = productCaptureListLoading;
+  button.textContent = appending ? "正在加载…" : "加载更多";
+  status.textContent = message;
+}
+
+function renderProductCaptureList() {
+  const list = document.querySelector("#product-capture-list");
+  const filtered = filteredProductCaptures();
+  syncProductCapturePagination();
+  if (!filtered.length) {
+    const hasCriteria = productCaptureStatusFilter !== "ALL" || Boolean(productCaptureSearchQuery.trim());
+    list.innerHTML = hasCriteria
+      ? `<div class="product-empty"><strong>没有匹配商品</strong><span>调整状态筛选或搜索关键词。</span></div>`
+      : `<div class="product-empty"><strong>还没有采集商品</strong><span>安装并登录浏览器插件，在商品详情页点击“采集商品”。</span></div>`;
+    return;
+  }
+  list.innerHTML = filtered.map(capture => {
+    const group = productCaptureStatusGroup(capture.status).toLowerCase();
+    const title = capture.title || `商品 ${capture.sourceProductId || capture.id}`;
+    const image = productCaptureImages(capture)[0];
+    const thumb = safeProductUrl(capture.thumbnailUrl || image?.processedUrl || image?.originalUrl);
+    const rawThumbnailStatus = String(capture.thumbnailStatus || "").toUpperCase();
+    const thumbnailStatus = ["PROCESSING", "QUEUED", "FAILED"].includes(rawThumbnailStatus)
+      ? rawThumbnailStatus.toLowerCase() : "";
+    const selected = capture.id === selectedProductCaptureId;
+    return `<button class="product-capture-row ${selected ? "active" : ""}" type="button" data-product-capture-id="${escapeHtml(capture.id)}"${selected ? ` aria-current="true"` : ""}>
+      <span class="product-row-thumb ${escapeHtml(thumbnailStatus)}">${thumb ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy">` : `<i aria-hidden="true">◇</i>`}</span>
+      <span class="product-row-copy"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(productSourcePlatformName(capture.sourcePlatform))} · ${escapeHtml(productPriceLabel(capture))}</small><em>${formatDate(capture.updatedAt || capture.createdAt)}</em></span>
+      <span class="product-row-status ${group}">${escapeHtml(productCaptureDisplayStatus(capture))}</span>
+    </button>`;
+  }).join("");
+}
+
+function renderProductCaptureEmpty(title = "选择一条商品草稿", note = "插件完成采集后，商品资料、SKU 和图片处理结果会显示在这里。", loading = false) {
+  const empty = document.querySelector("#product-capture-empty");
+  document.querySelector("#product-capture-editor").hidden = true;
+  empty.hidden = false;
+  empty.classList.toggle("is-loading", loading);
+  empty.querySelector("strong").textContent = title;
+  empty.querySelector("p").textContent = note;
+}
+
+function productSkuImageMeta(sku = {}) {
+  const url = safeProductUrl(sku.imageUrl || sku.skuImageUrl || sku.resolvedImageUrl);
+  const source = canonicalProductSkuImageSource(sku.imageSource || sku.source?.imageSource);
+  const inherited = sku.imageInherited === true || sku.source?.imageInherited === true;
+  let label = "未提供 SKU 图";
+  if (url && (inherited || source === "PRODUCT_MAIN")) label = "继承商品主图";
+  else if (url && source === "VARIANT_OPTION") label = "继承规格图";
+  else if (url && ["MODEL", "SKU"].includes(source)) label = "SKU 专属图";
+  else if (url && /USER|MANUAL/.test(source)) label = "人工补录图片";
+  else if (url) label = "SKU 图片";
+  return { url, source, inherited, label };
+}
+
+function productSkuDraftText(value) {
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function createProductSkuEditorDraft(sku = {}) {
+  return {
+    original: sku,
+    fields: {
+      variationName: productSkuDraftText(sku.variationName || sku.name || "默认规格"),
+      externalSkuId: productSkuDraftText(sku.externalSkuId || sku.skuId),
+      attributes: JSON.stringify(productSkuAttributes(sku)),
+      imageUrl: productSkuDraftText(sku.imageUrl || sku.skuImageUrl),
+      sellerSku: productSkuDraftText(sku.sellerSku || sku.sku),
+      price: productSkuDraftText(sku.price),
+      originalPrice: productSkuDraftText(sku.originalPrice),
+      stock: productSkuDraftText(sku.stock)
+    },
+    edited: false,
+    imageEdited: false,
+    originalPriceEdited: false
+  };
+}
+
+function resetProductSkuEditorState(capture = null) {
+  const skus = productCaptureSkus(capture);
+  const nextCaptureId = capture?.id || null;
+  const switchingCapture = productSkuDraftCaptureId !== nextCaptureId;
+  productSkuDraftCaptureId = nextCaptureId;
+  productSkuDraftState = skus.map(createProductSkuEditorDraft);
+  productSkuDraftDirty = false;
+  selectedProductSkuIndex = switchingCapture
+    ? 0
+    : Math.min(Math.max(0, selectedProductSkuIndex), Math.max(0, skus.length - 1));
+  productSkuSearchQuery = "";
+}
+
+function ensureProductSkuEditorState(capture = selectedProductCaptureDetail) {
+  if (productSkuDraftCaptureId !== capture?.id) resetProductSkuEditorState(capture);
+  return productSkuDraftState;
+}
+
+function syncCurrentProductSkuDraftFromEditor() {
+  const editor = document.querySelector("#product-sku-editor[data-product-sku-index]");
+  if (!editor) return;
+  const index = Number(editor.dataset.productSkuIndex);
+  const draft = productSkuDraftState[index];
+  if (!draft) return;
+  editor.querySelectorAll("[data-product-sku-field]").forEach(field => {
+    draft.fields[field.dataset.productSkuField] = field.value;
+  });
+  draft.edited = editor.dataset.productSkuEdited === "true";
+  draft.imageEdited = editor.dataset.productSkuImageEdited === "true";
+  draft.originalPriceEdited = editor.dataset.productSkuOriginalPriceEdited === "true";
+}
+
+function productSkuDraftSearchText(draft = {}) {
+  const fields = draft.fields || {};
+  return [fields.variationName, fields.externalSkuId, fields.sellerSku, fields.attributes]
+    .join(" ").toLocaleLowerCase();
+}
+
+function filteredProductSkuIndexes() {
+  const query = productSkuSearchQuery.trim().toLocaleLowerCase();
+  return productSkuDraftState.reduce((indexes, draft, index) => {
+    if (!query || productSkuDraftSearchText(draft).includes(query)) indexes.push(index);
+    return indexes;
+  }, []);
+}
+
+function productSkuDraftLabel(draft = {}, index = 0) {
+  const fields = draft.fields || {};
+  const variation = fields.variationName.trim() || `未命名规格 ${index + 1}`;
+  const code = fields.sellerSku.trim() || fields.externalSkuId.trim();
+  return code ? `${variation} · ${code}` : variation;
+}
+
+function renderProductSkuSelector() {
+  const select = document.querySelector("#product-sku-select");
+  const indexes = filteredProductSkuIndexes();
+  const total = productSkuDraftState.length;
+  const selectedVisiblePosition = indexes.indexOf(selectedProductSkuIndex);
+  if (indexes.length && selectedVisiblePosition < 0) selectedProductSkuIndex = indexes[0];
+  select.innerHTML = indexes.length
+    ? indexes.map(index => `<option value="${index}"${index === selectedProductSkuIndex ? " selected" : ""}>${escapeHtml(`${index + 1}. ${productSkuDraftLabel(productSkuDraftState[index], index)}`)}</option>`).join("")
+    : `<option value="" selected>没有匹配的 SKU</option>`;
+  select.disabled = indexes.length === 0;
+  const position = indexes.indexOf(selectedProductSkuIndex);
+  document.querySelector("#product-sku-previous").disabled = position <= 0;
+  document.querySelector("#product-sku-next").disabled = position < 0 || position >= indexes.length - 1;
+  document.querySelector("#product-sku-position").textContent = indexes.length
+    ? `第 ${selectedProductSkuIndex + 1} / ${total} 条`
+    : total ? `无匹配 / 共 ${total} 条` : "第 0 / 0 条";
+  document.querySelector("#product-sku-filter-status").textContent = productSkuSearchQuery.trim()
+    ? `筛选到 ${indexes.length} 条；清空搜索可查看全部 ${total} 条`
+    : `${total} 条规格组合；可用 Alt + ← / → 快速切换`;
+}
+
+function renderCurrentProductSkuEditor() {
+  const editor = document.querySelector("#product-sku-editor");
+  if (productSkuSearchQuery.trim() && !filteredProductSkuIndexes().length) {
+    editor.removeAttribute("data-product-sku-index");
+    editor.innerHTML = `<div class="product-sku-no-match">没有匹配的 SKU；清空搜索后可继续编辑原有规格。</div>`;
+    return;
+  }
+  const draft = productSkuDraftState[selectedProductSkuIndex];
+  if (!draft) {
+    editor.removeAttribute("data-product-sku-index");
+    editor.innerHTML = `<div class="product-sku-no-match">没有匹配的 SKU；清空搜索后可继续编辑原有规格。</div>`;
+    return;
+  }
+  const index = selectedProductSkuIndex;
+  const sku = draft.original || {};
+  const fields = draft.fields;
+  const entrySource = productSkuEntrySource(sku);
+  const entrySourceLabel = entrySource === "MANUAL"
+    ? "人工补充" : entrySource === "USER_EDITED" ? "人工编辑" : "平台采集";
+  const image = productSkuImageMeta({
+    ...sku,
+    imageUrl: fields.imageUrl,
+    imageSource: draft.imageEdited ? "USER" : sku.imageSource,
+    imageInherited: draft.imageEdited ? false : sku.imageInherited
+  });
+  editor.dataset.productSkuIndex = String(index);
+  editor.dataset.productSkuEdited = String(draft.edited);
+  editor.dataset.productSkuImageEdited = String(draft.imageEdited);
+  editor.dataset.productSkuOriginalPriceEdited = String(draft.originalPriceEdited);
+  editor.innerHTML = `<header class="product-sku-editor-head">
+    <div><small>正在编辑第 ${index + 1} 条</small><strong>${escapeHtml(productSkuDraftLabel(draft, index))}</strong></div>
+    <div><span class="product-sku-source ${entrySource === "PLATFORM" ? "" : "manual"}">${entrySourceLabel}</span><button class="product-sku-remove" type="button" data-remove-product-sku="${index}" aria-label="删除第 ${index + 1} 条 SKU：${escapeHtml(fields.variationName)}">删除此 SKU</button></div>
+  </header>
+  <div class="product-sku-editor-grid">
+    <label class="product-sku-field-wide">规格组合<input data-product-sku-field="variationName" value="${escapeHtml(fields.variationName)}" autocomplete="off" aria-label="SKU ${index + 1} 规格组合"></label>
+    <label>平台 SKU ID<input data-product-sku-field="externalSkuId" value="${escapeHtml(fields.externalSkuId)}" autocomplete="off" placeholder="平台规格 ID" aria-label="SKU ${index + 1} 平台 ID"></label>
+    <label>商家 SKU<input data-product-sku-field="sellerSku" value="${escapeHtml(fields.sellerSku)}" autocomplete="off" placeholder="选填商家编码" aria-label="SKU ${index + 1} 商家编码"></label>
+    <label>售价<input data-product-sku-field="price" inputmode="decimal" value="${escapeHtml(fields.price)}" autocomplete="off" aria-label="SKU ${index + 1} 售价"></label>
+    <label>原价<input data-product-sku-field="originalPrice" inputmode="decimal" value="${escapeHtml(fields.originalPrice)}" autocomplete="off" aria-label="SKU ${index + 1} 原价"></label>
+    <label class="product-sku-field-wide">规格属性 JSON<textarea data-product-sku-field="attributes" rows="3" spellcheck="false" placeholder='{"颜色":"蓝色","尺码":"M"}' aria-label="SKU ${index + 1} 规格属性 JSON">${escapeHtml(fields.attributes)}</textarea></label>
+    <div class="product-sku-image-field product-sku-field-wide"><span class="product-sku-image-preview">${image.url ? `<img src="${escapeHtml(image.url)}" alt="SKU ${index + 1} 图片" loading="lazy">` : "无图"}</span><label class="product-sku-image-copy">SKU 图片 URL<input data-product-sku-field="imageUrl" value="${escapeHtml(fields.imageUrl)}" autocomplete="off" placeholder="https://…" aria-label="SKU ${index + 1} 图片 URL"><small>${escapeHtml(image.label)}</small></label></div>
+    <details class="product-sku-legacy-stock product-sku-field-wide">
+      <summary>来源库存（选填，不影响采集完整性）</summary>
+      <label>页面原始库存<input data-product-sku-field="stock" inputmode="numeric" value="${escapeHtml(fields.stock)}" autocomplete="off" placeholder="可留空；上架时再填写" aria-label="SKU ${index + 1} 来源库存（选填）"></label>
+    </details>
+  </div>`;
+}
+
+function renderProductSkus(capture) {
+  const skus = productCaptureSkus(capture);
+  ensureProductSkuEditorState(capture);
+  document.querySelector("#product-sku-count").textContent = `${productSkuDraftState.length} 个 SKU`;
+  document.querySelector("#product-sku-search").value = productSkuSearchQuery;
+  document.querySelector("#product-sku-workbench").hidden = productSkuDraftState.length === 0;
+  document.querySelector("#product-sku-empty").hidden = productSkuDraftState.length > 0;
+  if (!skus.length && !productSkuDraftState.length) return;
+  selectedProductSkuIndex = Math.min(Math.max(0, selectedProductSkuIndex), productSkuDraftState.length - 1);
+  renderProductSkuSelector();
+  renderCurrentProductSkuEditor();
+}
+
+function productSkuManualConfirmationEligible(capture = selectedProductCaptureDetail, skus = productCaptureSkus(capture)) {
+  const meta = productSkuCompletenessMeta(capture);
+  if (!skus.length || productSkuNonRepairableIssues(meta.issues).length > 0
+      || (meta.expectedCount !== null && skus.length !== meta.expectedCount)) return false;
+  const ids = skus.map(sku => String(sku.externalSkuId || sku.skuId || "").trim());
+  const completeAttributes = sku => {
+    if (!meta.hasVariants) return true;
+    const attributes = productSkuAttributes(sku);
+    if (!productSkuAttributesComplete(attributes)) return false;
+    return !meta.variantDimensionCount
+      || Object.keys(attributes).length === meta.variantDimensionCount;
+  };
+  const validPrice = value => value !== null && value !== undefined && value !== ""
+    && Number.isFinite(Number(value)) && Number(value) >= 0;
+  return ids.every(Boolean)
+    && new Set(ids).size === ids.length
+    && skus.every(completeAttributes)
+    && skus.every(sku => validPrice(sku.price))
+    && skus.every(sku => validPrice(sku.originalPrice) && Number(sku.originalPrice) >= Number(sku.price))
+    && skus.every(sku => Boolean(productSkuImageMeta(sku).url));
+}
+
+function renderProductSkuCompleteness(capture) {
+  const meta = productSkuCompletenessMeta(capture);
+  const panel = document.querySelector("#product-sku-completeness");
+  let displayedSkus = productCaptureSkus(capture);
+  let draftValidationError = "";
+  if (capture?.id === selectedProductCaptureId && productSkuDraftDirty) {
+    try {
+      displayedSkus = productSkuDrafts();
+    } catch (error) {
+      draftValidationError = error.message || "当前 SKU 输入格式需要修正";
+    }
+  }
+  const manualCount = displayedSkus
+    .filter(sku => productSkuEntrySource(sku) === "MANUAL").length;
+  const editedCount = displayedSkus
+    .filter(sku => productSkuEntrySource(sku) === "USER_EDITED").length;
+  const platformComplete = meta.complete && !meta.userConfirmed;
+  panel.className = `product-sku-completeness ${platformComplete ? "is-complete" : meta.complete ? "is-user-complete" : meta.incomplete ? "is-incomplete" : "is-unknown"}`;
+  document.querySelector("#product-sku-completeness-status").textContent = platformComplete
+    ? "页面 SKU 必填字段齐全"
+    : meta.complete ? "人工核对完整"
+      : meta.incomplete ? "SKU 不完整 · 阻断审核" : "完整性待确认 · 阻断审核";
+  document.querySelector("#product-sku-completeness-count").textContent = meta.expectedCount === null
+    ? `已采集 ${meta.capturedCount} / 应有数量未知`
+    : `已采集 ${meta.capturedCount} / 应有 ${meta.expectedCount}`;
+  const dimensionLabel = meta.hasVariants
+    ? `${meta.variantDimensionCount ?? "未知"} 个变体维度`
+    : "无变体单 SKU 可使用空属性";
+  document.querySelector("#product-sku-completeness-source").textContent =
+    `来源：${productSkuCompletenessSourceLabel(meta.source)} · ${dimensionLabel}${meta.locallyDirty ? " · 有未保存人工修改" : ""} · 当前列表 ${displayedSkus.length} 条${manualCount ? ` · ${manualCount} 条人工补充` : ""}${editedCount ? ` · ${editedCount} 条人工编辑` : ""}${draftValidationError ? " · 当前输入待修正" : ""}`;
+
+  const note = document.querySelector("#product-sku-completeness-note");
+  if (platformComplete) {
+    note.textContent = meta.inventoryMissingCount > 0
+      ? `采集数量及必填 SKU 字段齐全；${meta.inventoryMissingCount} 个 SKU 的库存未采集，库存为选填，不影响审核。`
+      : "采集数量与详情页声明数量一致，且每个 SKU 的平台 ID、变体属性、售价、原价和图片均齐全；库存为选填，发布前仍需人员核对。";
+  } else if (meta.complete) {
+    note.textContent = "当前刊登 SKU 已由人员逐项核对；来源为 USER，不代表插件已证明平台原始规格完整。";
+  } else {
+    note.textContent = meta.expectedCount !== null && meta.actualCount < meta.expectedCount
+      ? `还缺 ${meta.expectedCount - meta.actualCount} 条规格。请刷新并展开商品详情页全部规格后重新采集；手工补充不会冒充平台采集。`
+      : "请刷新并展开商品详情页全部规格后重新采集。也可补齐全部字段后以 USER 来源人工确认。";
+  }
+  const issueList = document.querySelector("#product-sku-completeness-issues");
+  issueList.hidden = meta.issues.length === 0;
+  issueList.innerHTML = meta.issues.map(issue =>
+    `<li>${escapeHtml(productSkuCompletenessIssueText(issue))}</li>`
+  ).join("");
+
+  const sourceLink = document.querySelector("#product-sku-recapture-link");
+  const sourceUrl = safeProductUrl(capture?.sourceUrl);
+  sourceLink.hidden = meta.complete || !sourceUrl;
+  sourceLink.href = sourceUrl || "#";
+
+  const access = productAccessCapabilities();
+  const published = String(capture?.status || "").toUpperCase() === "PUBLISHED";
+  const confirmLabel = document.querySelector("#product-sku-manual-confirm-label");
+  const confirm = document.querySelector("#product-sku-manual-confirm");
+  confirmLabel.hidden = platformComplete || !access.edit || published;
+  confirm.checked = meta.complete && meta.userConfirmed && !productSkuCompletenessDirty;
+  confirm.disabled = Boolean(draftValidationError)
+    || !productSkuManualConfirmationEligible(capture, displayedSkus);
+  confirm.title = confirm.disabled
+    ? draftValidationError || "请先清除采集问题，并补齐应有数量、平台 ID、变体属性、售价、原价和 SKU 图片；库存为选填"
+    : "保存后完整性来源会标记为 USER";
+}
+
+function renderProductImages(capture) {
+  const images = productCaptureImages(capture);
+  const completed = images.filter(image => productImageState(image) === "completed").length;
+  const progress = images.length ? Math.round(completed * 100 / images.length) : 0;
+  document.querySelector("#product-image-progress-text").textContent = `${completed} / ${images.length}`;
+  document.querySelector("#product-image-progress-bar").style.width = `${progress}%`;
+  const grid = document.querySelector("#product-image-grid");
+  if (!images.length) {
+    grid.innerHTML = `<div class="product-empty"><strong>没有采集到图片</strong><span>请返回来源商品页重新采集。</span></div>`;
+    return;
+  }
+  grid.innerHTML = images
+    .slice()
+    .sort((left, right) => Number(left.sortOrder || 0) - Number(right.sortOrder || 0))
+    .map((image, index) => {
+      const original = safeProductUrl(image.originalUrl || image.url);
+      const processed = safeProductUrl(image.processedUrl);
+      const state = productImageState(image);
+      const dryRun = productImageIsDryRun(image, capture);
+      const roleName = String(image.role || image.roleName || "").toUpperCase();
+      const role = roleName === "MAIN" ? "主图"
+        : roleName === "VARIANT" ? "规格图"
+          : ["DESCRIPTION", "DETAIL"].includes(roleName) ? "详情图" : `商品图 ${index + 1}`;
+      return `<article class="product-image-card ${state}">
+        <header><div><strong>${escapeHtml(role)}</strong><small>${escapeHtml(image.mimeType || "图片")}</small></div><span>${escapeHtml(productImageDisplayState(image, capture))}</span></header>
+        <div class="product-image-compare">
+          <figure><figcaption>来源原图</figcaption>${original ? `<button type="button" data-asset-preview="来源原图" aria-label="放大查看来源原图"><img src="${escapeHtml(original)}" data-full-src="${escapeHtml(original)}" alt="${escapeHtml(role)}来源原图" loading="lazy"></button>` : `<div class="product-image-placeholder">无原图</div>`}</figure>
+          <figure><figcaption>${dryRun ? "Dry Run 占位图" : "AI 处理图"}</figcaption>${processed ? `<button type="button" data-asset-preview="${dryRun ? "Dry Run 占位图" : "AI 去水印结果"}" aria-label="放大查看${dryRun ? " Dry Run 占位图" : " AI 去水印结果"}"><img src="${escapeHtml(processed)}" data-full-src="${escapeHtml(processed)}" alt="${escapeHtml(role)}处理图" loading="lazy"></button>` : `<div class="product-image-placeholder"><i></i><span>${state === "failed" ? "处理失败" : state === "processing" ? "处理中" : "等待处理"}</span></div>`}</figure>
+        </div>
+        ${image.errorMessage ? `<p>${escapeHtml(image.errorMessage)}</p>` : ""}
+      </article>`;
+    }).join("");
+}
+
+function productReadiness(capture) {
+  const images = productCaptureImages(capture);
+  const skus = productCaptureSkus(capture);
+  const rawMissingFields = Array.isArray(capture?.missingFields) ? capture.missingFields.filter(Boolean) : [];
+  const skuCompleteness = productSkuCompletenessMeta(capture);
+  const missingFields = productBlockingMissingFields(capture, skuCompleteness);
+  const missingLabels = {
+    TITLE: "标题", DESCRIPTION: "描述", CATEGORY: "分类", CATEGORY_NAME: "分类",
+    BRAND: "品牌", BRAND_NAME: "品牌", PRICE: "价格", PRICE_MIN: "价格",
+    SKU: "SKU", SKUS: "SKU", SKU_PRICE: "SKU 价格", SKU_ORIGINAL_PRICE: "SKU 原价",
+    SKU_IMAGE: "SKU 图片", SKU_IMAGE_ASSET: "未纳入处理素材的 SKU 图片",
+    SKU_INCOMPLETE: "平台 SKU 完整性", IMAGES: "图片",
+    IMAGE_INCOMPLETE: "商品刊登图片不完整"
+  };
+  const needsEnrichment = capture?.completeness === "NEEDS_ENRICHMENT"
+    && (!Array.isArray(capture?.missingFields) || missingFields.length > 0);
+  const completenessKnown = Boolean(capture?.completeness) || rawMissingFields.length > 0;
+  const completenessLabel = missingFields.length
+    ? `页面未提供：${missingFields.map(field => missingLabels[String(field).toUpperCase()] || field).join("、")}，待补全`
+    : needsEnrichment ? "页面仍有字段待补全" : "页面直采字段已补全";
+  const allImagesProcessed = images.length > 0 && images.every(image => productImageState(image) === "completed");
+  const publicationImageUrls = new Set(images.map(image =>
+    safeProductUrl(image.originalUrl || image.url)
+  ).filter(Boolean));
+  const dryRunImages = allImagesProcessed && images.some(image => productImageIsDryRun(image, capture));
+  const checks = [
+    ...(completenessKnown ? [{ ok: !needsEnrichment && missingFields.length === 0, label: completenessLabel }] : []),
+    { ok: Boolean(String(capture?.title || "").trim()), label: "商品标题已填写" },
+    { ok: Boolean(String(capture?.description || "").trim()), label: "商品描述已填写" },
+    { ok: capture?.priceMin !== null && capture?.priceMin !== undefined && capture?.priceMin !== "", label: "价格已核对" },
+    { ok: skus.length > 0, label: "至少包含一个 SKU" },
+    {
+      ok: skuCompleteness.complete,
+      label: skuCompleteness.complete
+        ? `${skuCompleteness.userConfirmed ? "人工核对" : "平台采集"} SKU 完整（${skuCompleteness.capturedCount} / ${skuCompleteness.expectedCount}）`
+        : skuCompleteness.expectedCount === null
+          ? "SKU 应有数量尚未确认，禁止审核"
+          : `SKU 不完整：已采 ${skuCompleteness.capturedCount} / 应有 ${skuCompleteness.expectedCount}，禁止审核`
+    },
+    { ok: skus.length > 0 && skus.every(sku => sku.price !== null && sku.price !== undefined && sku.price !== ""), label: "SKU 价格已补全" },
+    {
+      ok: skus.length > 0 && skus.every(sku => sku.originalPrice !== null && sku.originalPrice !== undefined
+        && sku.originalPrice !== "" && Number(sku.originalPrice) >= Number(sku.price)),
+      label: "SKU 原价已补全且不低于售价"
+    },
+    {
+      ok: skus.length > 0 && skus.every(sku => !skuCompleteness.hasVariants
+        || (productSkuAttributesComplete(productSkuAttributes(sku))
+          && (!skuCompleteness.variantDimensionCount
+            || Object.keys(productSkuAttributes(sku)).length === skuCompleteness.variantDimensionCount))),
+      label: skuCompleteness.hasVariants
+        ? `SKU 变体属性已覆盖 ${skuCompleteness.variantDimensionCount ?? "未知"} 个维度`
+        : "无变体商品无需 SKU 属性"
+    },
+    { ok: skus.length > 0 && skus.every(sku => Boolean(productSkuImageMeta(sku).url)), label: "每个 SKU 均有专属图或继承图" },
+    {
+      ok: skus.length > 0 && skus.every(sku => publicationImageUrls.has(productSkuImageMeta(sku).url)),
+      label: "每张 SKU / 规格图均已纳入图片处理任务"
+    },
+    { ok: images.length > 0, label: "至少包含一张商品图" },
+    { ok: allImagesProcessed, label: dryRunImages ? "Dry Run 占位图已生成（未实际去水印）" : "全部图片去水印完成" }
+  ];
+  return { checks, ready: checks.every(check => check.ok) };
+}
+
+function syncProductEditorAccess(capture) {
+  const access = productAccessCapabilities();
+  const published = capture.status === "PUBLISHED";
+  const saving = productCaptureSaveInFlightId === capture.id;
+  document.querySelectorAll("#product-capture-editor input, #product-capture-editor textarea").forEach(field => {
+    field.disabled = !access.edit || published || saving;
+  });
+  const skuSearch = document.querySelector("#product-sku-search");
+  skuSearch.disabled = productSkuDraftState.length === 0;
+  document.querySelector("#product-sku-select").disabled = filteredProductSkuIndexes().length === 0;
+  document.querySelector("#add-product-sku").hidden = !access.edit || published;
+  document.querySelector("#add-product-sku").disabled = saving;
+  document.querySelectorAll("#product-sku-editor [data-remove-product-sku]").forEach(button => {
+    button.hidden = !access.edit || published;
+    button.disabled = saving;
+  });
+  document.querySelector("#product-edit-access-note").textContent = published
+    ? "已发布记录不可修改"
+    : saving ? "正在保存，请稍候" : access.edit ? "修改后先保存草稿" : "当前账号仅可查看";
+  document.querySelector("#save-product-capture").hidden = !access.edit;
+  document.querySelector("#process-product-images").hidden = !access.watermark;
+  document.querySelector("#approve-product-capture").hidden = !access.edit;
+  document.querySelector("#open-product-publish").hidden = !access.publish;
+}
+
+function syncProductActions(capture) {
+  const status = String(capture.status || "CAPTURED").toUpperCase();
+  const images = productCaptureImages(capture);
+  const readiness = productReadiness(capture);
+  const skuCompleteness = productSkuCompletenessMeta(capture);
+  const processing = status === "IMAGE_PROCESSING";
+  const published = status === "PUBLISHED";
+  const approved = status === "APPROVED";
+  const saving = Boolean(productCaptureSaveInFlightId);
+  const localChanges = productEditorDirty && selectedProductCaptureId === capture.id;
+  document.querySelector("#save-product-capture").disabled = processing || published || saving;
+  document.querySelector("#save-product-capture").textContent = productCaptureSaveInFlightId === capture.id
+    ? "正在保存…" : "保存修改";
+  document.querySelector("#process-product-images").disabled = processing || published || !images.length || localChanges || saving;
+  document.querySelector("#process-product-images").textContent = status === "FAILED" ? "重试图片处理 Dry Run" : processing ? "Dry Run 处理中…" : "图片处理 Dry Run";
+  document.querySelector("#approve-product-capture").disabled = status !== "READY" || !readiness.ready || localChanges || saving;
+  document.querySelector("#approve-product-capture").textContent = approved ? "已人工确认" : "人工确认";
+  document.querySelector("#open-product-publish").disabled = !approved;
+  document.querySelector("#open-product-publish").textContent = published ? "已真实发布" : "一键发布";
+
+  const title = document.querySelector("#product-action-title");
+  const note = document.querySelector("#product-action-note");
+  if (published) {
+    title.textContent = "发布流程已完成";
+    note.textContent = "只有 dryRun=false 且状态为 PUBLISHED 才代表真实店铺已上架。";
+  } else if (approved && productPublishAuditMeta.get(capture.id)?.dryRun) {
+    title.textContent = "Dry Run 已验证";
+    note.textContent = "模拟发布校验已通过，商品仍为可发布状态，未在真实店铺上架。";
+    document.querySelector("#open-product-publish").textContent = "重新验证";
+  } else if (approved) {
+    title.textContent = "商品已通过人工确认";
+    note.textContent = "选择目标店铺后，执行最后一次 Dry Run 发布确认。";
+  } else if (!skuCompleteness.complete && !processing) {
+    title.textContent = "SKU 尚未完整，人工审核已阻断";
+    note.textContent = skuCompleteness.expectedCount === null
+      ? "请回商品详情页刷新、展开全部规格后重新采集，或完整补录后以 USER 来源人工确认。"
+      : `已采 ${skuCompleteness.capturedCount} / 应有 ${skuCompleteness.expectedCount}；请回详情页重新采集缺失规格。`;
+  } else if (processing) {
+    title.textContent = "AI 正在处理商品图片";
+    note.textContent = "处理结束后页面会自动刷新，无需重复提交。";
+  } else if (status === "READY" && readiness.ready) {
+    title.textContent = "资料完整，等待人工确认";
+    note.textContent = "确认后商品才会进入可发布状态。";
+  } else {
+    title.textContent = "先补齐商品资料与图片";
+    note.textContent = "保存修改并完成全部图片去水印后再确认。";
+  }
+}
+
+function renderProductReadiness(capture) {
+  const readiness = productReadiness(capture);
+  const skuCompleteness = productSkuCompletenessMeta(capture);
+  const status = String(capture.status || "CAPTURED").toUpperCase();
+  const approved = ["APPROVED", "PUBLISHED"].includes(status);
+  document.querySelector("#product-readiness-title").textContent = approved
+    ? "已通过人工确认"
+    : !skuCompleteness.complete ? "SKU 完整性未通过，禁止审核"
+    : readiness.ready ? "资料完整，等待人工确认" : "还有项目需要处理";
+  document.querySelector("#product-readiness-note").textContent = approved
+    ? "任何正式发布仍需在目标平台侧复核。"
+    : !skuCompleteness.complete
+      ? "手工新增属于刊登补充；只有重新采集完整平台 SKU，或明确以 USER 来源逐项核对后，才可继续。"
+    : "有商品编辑/审核权限的成员可以执行人工确认；真实发布另需发布权限。";
+  document.querySelector("#product-readiness-list").innerHTML = readiness.checks.map(check =>
+    `<li class="${check.ok ? "passed" : "missing"}"><i>${check.ok ? "✓" : "!"}</i><span>${escapeHtml(check.label)}</span></li>`
+  ).join("");
+}
+
+function showProductNotice(message, type = "error") {
+  const element = document.querySelector("#product-detail-error");
+  element.textContent = message;
+  element.classList.toggle("is-success", type === "success");
+  element.hidden = !message;
+}
+
+function renderProductCaptureDetail() {
+  const capture = selectedProductCaptureDetail;
+  if (!capture) {
+    renderProductCaptureEmpty();
+    return;
+  }
+  const empty = document.querySelector("#product-capture-empty");
+  const editor = document.querySelector("#product-capture-editor");
+  empty.hidden = true;
+  editor.hidden = false;
+  const statusChip = document.querySelector("#product-detail-status");
+  statusChip.textContent = productCaptureDisplayStatus(capture);
+  statusChip.className = `product-status-chip ${productCaptureStatusGroup(capture.status).toLowerCase()}`;
+  document.querySelector("#product-source-platform").textContent = productSourcePlatformName(capture.sourcePlatform);
+  document.querySelector("#product-capture-mode").textContent = capture.captureMode === "DIRECT_DOM" || !capture.captureMode
+    ? "页面直采 · 未调用付费 API"
+    : capture.captureMode;
+  document.querySelector("#product-source-id").textContent = capture.sourceProductId || capture.id;
+  document.querySelector("#product-detail-title").textContent = capture.title || "未命名商品";
+  document.querySelector("#product-updated-at").textContent = `更新于 ${formatDate(capture.updatedAt || capture.createdAt)}`;
+  const sourceLink = document.querySelector("#product-source-link");
+  const sourceUrl = safeProductUrl(capture.sourceUrl);
+  sourceLink.hidden = !sourceUrl;
+  sourceLink.href = sourceUrl || "#";
+  document.querySelector("#product-title-input").value = capture.title || "";
+  document.querySelector("#product-category-input").value = capture.categoryName || "";
+  document.querySelector("#product-brand-input").value = capture.brandName || "";
+  document.querySelector("#product-currency-input").value = capture.currency || "";
+  document.querySelector("#product-price-min-input").value = capture.priceMin ?? "";
+  document.querySelector("#product-price-max-input").value = capture.priceMax ?? "";
+  document.querySelector("#product-description-input").value = capture.description || "";
+  renderProductSkus(capture);
+  renderProductImages(capture);
+  renderProductReadiness(capture);
+  syncProductEditorAccess(capture);
+  renderProductSkuCompleteness(capture);
+  syncProductActions(capture);
+  if (productLastNotice?.captureId === capture.id) {
+    showProductNotice(productLastNotice.message, productLastNotice.type);
+  } else {
+    showProductNotice("");
+  }
+}
+
+function updateProductCaptureInMemory(capture, { preserveSelectedEditor = false } = {}) {
+  if (!capture?.id) return;
+  const index = productCaptures.findIndex(item => item.id === capture.id);
+  const previousCapture = index >= 0
+    ? productCaptures[index]
+    : selectedProductCaptureId === capture.id ? selectedProductCaptureDetail : null;
+  const previousVersion = Number(previousCapture?.version);
+  const incomingVersion = Number(capture.version);
+  if (Number.isSafeInteger(previousVersion) && Number.isSafeInteger(incomingVersion)
+      && incomingVersion < previousVersion) return;
+  const previousGroup = previousCapture?.status
+    ? productCaptureStatusGroup(previousCapture.status) : null;
+  const nextGroup = capture.status ? productCaptureStatusGroup(capture.status) : previousGroup;
+  if (productCaptureStatusCountsKnown && previousGroup && nextGroup && previousGroup !== nextGroup) {
+    productCaptureStatusCounts[previousGroup] = Math.max(0, productCaptureStatusCounts[previousGroup] - 1);
+    productCaptureStatusCounts[nextGroup] += 1;
+  }
+  const leavesActiveServerFilter = !productCaptureLegacyListResponse
+    && productCaptureStatusFilter !== "ALL"
+    && nextGroup !== productCaptureStatusFilter;
+  if (index >= 0 && leavesActiveServerFilter) {
+    productCaptures.splice(index, 1);
+    productCaptureTotalElements = Math.max(0, productCaptureTotalElements - 1);
+    productCaptureTotalPages = productCaptureTotalElements
+      ? Math.ceil(productCaptureTotalElements / PRODUCT_CAPTURE_PAGE_SIZE) : 0;
+  } else if (index >= 0) productCaptures[index] = { ...productCaptures[index], ...capture };
+  else if (productCaptureLegacyListResponse) productCaptures.unshift(capture);
+  if (selectedProductCaptureId === capture.id && !preserveSelectedEditor) {
+    productSkuCompletenessDirty = false;
+    productSkuDraftDirty = false;
+    productEditorDirty = false;
+    selectedProductCaptureDetail = capture;
+    resetProductSkuEditorState(capture);
+  }
+  renderProductSummary();
+  renderProductCaptureList();
+  if (selectedProductCaptureId === capture.id && !preserveSelectedEditor) renderProductCaptureDetail();
+}
+
+async function selectProductCapture(id, { silent = false, force = false } = {}) {
+  const generation = ++productCaptureDetailLoadGeneration;
+  if (!id) {
+    selectedProductCaptureId = null;
+    selectedProductCaptureDetail = null;
+    productEditorDirty = false;
+    productSkuCompletenessDirty = false;
+    resetProductSkuEditorState();
+    renderProductCaptureList();
+    renderProductCaptureEmpty();
+    return;
+  }
+  if (selectedProductCaptureId !== id) {
+    productEditorDirty = false;
+    productSkuCompletenessDirty = false;
+    resetProductSkuEditorState();
+  } else if (!force && (productEditorDirty || productCaptureSaveInFlightId)) {
+    renderProductCaptureList();
+    return;
+  }
+  selectedProductCaptureId = id;
+  renderProductCaptureList();
+  if (!silent) renderProductCaptureEmpty("正在读取商品详情…", "正在同步商品信息、SKU 与图片处理结果。", true);
+  const organizationId = currentUser?.organizationId || "";
+  try {
+    const result = await productCaptureApi(`/${encodeURIComponent(id)}`);
+    if (generation !== productCaptureDetailLoadGeneration
+        || selectedProductCaptureId !== id
+        || currentUser?.organizationId !== organizationId) return;
+    const capture = productCapturePayload(result.data);
+    if (!capture?.id) throw new ApiRequestError("商品详情响应不完整，请刷新后重试", 502, result);
+    const preserveSelectedEditor = !force
+      && selectedProductCaptureId === id
+      && (productEditorDirty || Boolean(productCaptureSaveInFlightId));
+    updateProductCaptureInMemory(capture, { preserveSelectedEditor });
+    syncProductCapturePolling();
+  } catch (error) {
+    if (generation !== productCaptureDetailLoadGeneration || selectedProductCaptureId !== id) return;
+    if (error?.status === 401) return;
+    if (!force && (productEditorDirty || productCaptureSaveInFlightId)) return;
+    selectedProductCaptureDetail = null;
+    renderProductCaptureEmpty(
+      error?.status === 403 ? "没有查看权限" : "商品详情读取失败",
+      error.message || "请稍后重试"
+    );
+  }
+}
+
+function mergeProductCapturePages(existing, incoming) {
+  const merged = existing.slice();
+  const indexes = new Map(merged.map((capture, index) => [capture.id, index]));
+  incoming.forEach(capture => {
+    const index = indexes.get(capture.id);
+    if (index === undefined) {
+      indexes.set(capture.id, merged.length);
+      merged.push(capture);
+    } else {
+      merged[index] = { ...merged[index], ...capture };
+    }
+  });
+  return merged;
+}
+
+async function loadProductCaptures(preferredId = null, {
+  silent = false,
+  append = false,
+  page = append ? productCapturePage + 1 : 0,
+  refreshDetail = true,
+  refreshLoadedPages = false
+} = {}) {
+  if (append && (productCaptureListLoading || page < 1 || page >= productCaptureTotalPages)) return;
+  const generation = ++productCaptureLoadGeneration;
+  const organizationId = currentUser?.organizationId || "";
+  const requestedPage = Math.max(0, page);
+  const loadedThroughPage = !append && refreshLoadedPages
+    ? Math.max(0, productCapturePage)
+    : requestedPage;
+  const requestedPages = !append && refreshLoadedPages
+    ? Array.from({ length: loadedThroughPage + 1 }, (_value, index) => index)
+    : [requestedPage];
+  renderProductPageIdentity();
+  productCaptureListLoading = true;
+  productCaptureAppendLoading = append;
+  productCapturePaginationMessage = "";
+  const list = document.querySelector("#product-capture-list");
+  list.setAttribute("aria-busy", "true");
+  if (!silent && !append) {
+    document.querySelector("#product-capture-list").innerHTML = `<div class="product-empty is-loading"><strong>正在读取商品草稿…</strong><span>只显示当前公司的采集数据。</span></div>`;
+    document.querySelector("#product-result-count").textContent = "正在读取商品…";
+    document.querySelector("#product-capture-pagination").hidden = true;
+  } else {
+    syncProductCapturePagination();
+  }
+  try {
+    const results = await Promise.all(requestedPages.map(requested =>
+      productCaptureApi(productCaptureListPath(requested))));
+    if (generation !== productCaptureLoadGeneration || currentUser?.organizationId !== organizationId) return;
+    const payloads = results.map((result, index) =>
+      productCapturePagePayload(result.data, requestedPages[index]));
+    const payload = payloads[0];
+    const captures = mergeProductCapturePages([], payloads.flatMap(current => current.content)
+      .map(productCapturePayload)
+      .filter(Boolean)
+      .filter(capture => !capture.organizationId || capture.organizationId === organizationId));
+    productCaptureLegacyListResponse = !payload.paged;
+    productCapturePage = payload.paged
+      ? Math.min(
+        Math.max(...payloads.map(current => current.page)),
+        Math.max(0, payload.totalPages - 1)
+      )
+      : 0;
+    productCaptureTotalElements = payload.totalElements;
+    productCaptureTotalPages = payload.totalPages;
+    if (payload.statusCounts && typeof payload.statusCounts === "object") {
+      productCaptureStatusCounts = normalizeProductCaptureStatusCounts(payload.statusCounts);
+      productCaptureStatusCountsKnown = true;
+    } else if (!payload.paged) {
+      productCaptureStatusCounts = deriveProductCaptureStatusCounts(captures);
+      productCaptureStatusCountsKnown = true;
+    } else if (!append) {
+      productCaptureStatusCounts = emptyProductCaptureStatusCounts();
+      productCaptureStatusCountsKnown = false;
+    }
+    productCaptures = append && payload.paged
+      ? mergeProductCapturePages(productCaptures, captures)
+      : captures;
+    productCaptureListLoading = false;
+    productCaptureAppendLoading = false;
+    list.setAttribute("aria-busy", "false");
+    renderProductSummary();
+    const candidateId = selectedProductCaptureId || preferredId || null;
+    if (candidateId) selectedProductCaptureId = candidateId;
+    renderProductCaptureList();
+    if (!candidateId) {
+      if (!selectedProductCaptureDetail) {
+        const hasResults = filteredProductCaptures().length > 0;
+        renderProductCaptureEmpty(
+          hasResults ? "选择一条商品草稿" : "等待插件采集商品",
+          hasResults
+            ? "选择左侧商品后，再按需读取完整资料、SKU 和图片。"
+            : "在 Shopee 商品详情页点击插件的“采集商品”，草稿会自动进入当前公司。"
+        );
+      }
+      syncProductCapturePolling();
+      return;
+    }
+    const canRefreshSelectedDetail = !productEditorDirty && !productCaptureSaveInFlightId;
+    if (refreshDetail && canRefreshSelectedDetail) {
+      const detailIsVisible = selectedProductCaptureDetail?.id === candidateId;
+      await selectProductCapture(candidateId, { silent: silent || detailIsVisible });
+    } else if (canRefreshSelectedDetail && selectedProductCaptureDetail?.id === candidateId) {
+      renderProductCaptureDetail();
+    }
+    syncProductCapturePolling();
+  } catch (error) {
+    if (generation !== productCaptureLoadGeneration || currentUser?.organizationId !== organizationId) return;
+    productCaptureListLoading = false;
+    productCaptureAppendLoading = false;
+    list.setAttribute("aria-busy", "false");
+    if (error?.status === 401) return;
+    if (append) {
+      productCapturePaginationMessage = `加载更多失败：${error.message || "请稍后重试"}`;
+      syncProductCapturePagination();
+    } else if (silent && refreshLoadedPages) {
+      productCapturePaginationMessage = `自动刷新失败，已保留当前列表：${error.message || "请稍后重试"}`;
+      syncProductCapturePagination();
+    } else {
+      document.querySelector("#product-capture-list").innerHTML = `<div class="product-empty"><strong>${error?.status === 403 ? "没有商品查看权限" : "商品草稿读取失败"}</strong><span>${escapeHtml(error.message)}</span></div>`;
+      document.querySelector("#product-result-count").textContent = "读取失败";
+      document.querySelector("#product-capture-pagination").hidden = true;
+    }
+  }
+}
+
+function syncProductCapturePolling() {
+  if (productCapturePollTimer) clearInterval(productCapturePollTimer);
+  productCapturePollTimer = null;
+  const page = document.querySelector("#product-publish-page");
+  if (!page || page.hidden) return;
+  const active = (productCaptureStatusCountsKnown && productCaptureStatusCounts.PROCESSING > 0)
+    || productCaptures.some(capture => productCaptureStatusGroup(capture.status) === "PROCESSING")
+    || productCaptureStatusGroup(selectedProductCaptureDetail?.status) === "PROCESSING";
+  productCapturePollTimer = window.setInterval(() => {
+    if (productCapturePollInFlight || document.hidden || page.hidden) return;
+    productCapturePollInFlight = true;
+    const refreshSelectedDetail = productCaptureStatusGroup(selectedProductCaptureDetail?.status) === "PROCESSING"
+      && !productEditorDirty
+      && !productCaptureSaveInFlightId;
+    loadProductCaptures(selectedProductCaptureId, {
+      silent: true,
+      refreshDetail: refreshSelectedDetail,
+      refreshLoadedPages: true
+    })
+      .finally(() => { productCapturePollInFlight = false; });
+  }, active ? 5000 : 15000);
+}
+
+function nullableProductValue(value) {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
+}
+
+function productSkuAttributes(sku = {}) {
+  if (sku.attributes && typeof sku.attributes === "object" && !Array.isArray(sku.attributes)) {
+    return sku.attributes;
+  }
+  if (typeof sku.attributesJson === "string" && sku.attributesJson.trim()) {
+    try {
+      const parsed = JSON.parse(sku.attributesJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch (_error) {
+      // Preserve a valid empty attribute object when legacy JSON cannot be decoded.
+    }
+  }
+  return {};
+}
+
+function productSkuAttributesComplete(value) {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return Boolean(value.trim());
+  if (Array.isArray(value)) return value.length > 0 && value.every(productSkuAttributesComplete);
+  if (typeof value === "object") {
+    const values = Object.values(value);
+    return values.length > 0 && values.every(productSkuAttributesComplete);
+  }
+  return true;
+}
+
+function parseProductSkuAttributesDraft(value, index) {
+  const text = String(value || "").trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch (_error) {
+    // A field-specific validation error below is more useful than the JSON parser detail.
+  }
+  throw new ApiRequestError(`SKU ${index + 1} 的规格属性必须是 JSON 对象，例如 {"颜色":"蓝色"}`, 400);
+}
+
+function parseProductSkuStockDraft(value, index) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  if (!/^\d+$/.test(text)) throw new ApiRequestError(`SKU ${index + 1} 的库存必须是非负整数`, 400);
+  const stock = Number(text);
+  if (!Number.isSafeInteger(stock) || stock > 2147483647) {
+    throw new ApiRequestError(`SKU ${index + 1} 的库存超出允许范围`, 400);
+  }
+  return stock;
+}
+
+function productSkuDrafts() {
+  ensureProductSkuEditorState();
+  syncCurrentProductSkuDraftFromEditor();
+  return productSkuDraftState.map((draft, index) => {
+    const original = draft.original || {};
+    const field = name => draft.fields[name] ?? "";
+    const originalEntrySource = productSkuEntrySource(original);
+    const entrySource = originalEntrySource === "MANUAL"
+      ? "MANUAL_LISTING"
+      : draft.edited || originalEntrySource === "USER_EDITED"
+        ? "USER_EDITED" : "PLATFORM_CAPTURE";
+    return {
+      externalSkuId: nullableProductValue(field("externalSkuId")),
+      variationName: field("variationName").trim(),
+      sellerSku: field("sellerSku").trim(),
+      price: nullableProductValue(field("price")),
+      originalPrice: nullableProductValue(field("originalPrice")),
+      originalPriceSource: draft.originalPriceEdited ? "USER" : original.originalPriceSource || original.source?.originalPriceSource || null,
+      stock: parseProductSkuStockDraft(field("stock"), index),
+      attributes: parseProductSkuAttributesDraft(field("attributes"), index),
+      imageUrl: nullableProductValue(field("imageUrl")),
+      imageSource: draft.imageEdited ? "USER"
+        : canonicalProductSkuImageSource(original.imageSource || original.source?.imageSource) || null,
+      imageInherited: draft.imageEdited ? false : Boolean(
+        original.imageInherited ?? original.source?.imageInherited
+          ?? canonicalProductSkuImageSource(original.imageSource || original.source?.imageSource) === "PRODUCT_MAIN"
+      ),
+      status: original.status || null,
+      entrySource,
+      sortOrder: index
+    };
+  });
+}
+
+function productSkuPatchCompleteness(skus) {
+  const current = productSkuCompletenessMeta();
+  const manuallyConfirmed = document.querySelector("#product-sku-manual-confirm").checked;
+  if (manuallyConfirmed) {
+    return {
+      expectedCount: skus.length,
+      capturedCount: skus.length,
+      hasVariants: current.hasVariants,
+      variantDimensionCount: current.variantDimensionCount ?? 0,
+      complete: true,
+      source: "USER",
+      manualConfirmed: true,
+      issues: productSkuNonRepairableIssues(current.issues)
+    };
+  }
+  if (!productSkuCompletenessDirty && current.known) {
+    return {
+      expectedCount: current.expectedCount,
+      capturedCount: current.capturedCount,
+      hasVariants: current.hasVariants,
+      variantDimensionCount: current.variantDimensionCount ?? 0,
+      complete: current.complete,
+      source: current.source,
+      issues: current.issues
+    };
+  }
+  return {
+    expectedCount: current.expectedCount,
+    capturedCount: skus.filter(sku => productSkuEntrySource(sku) !== "MANUAL").length,
+    hasVariants: current.hasVariants,
+    variantDimensionCount: current.variantDimensionCount ?? 0,
+    complete: false,
+    source: "USER",
+    issues: current.issues
+  };
+}
+
+function addProductSku() {
+  const capture = selectedProductCaptureDetail;
+  if (!capture || !hasAnyPermission("product:edit") || capture.status === "PUBLISHED") return;
+  ensureProductSkuEditorState(capture);
+  syncCurrentProductSkuDraftFromEditor();
+  const skus = productCaptureSkus(capture);
+  const skuCompleteness = productSkuCompletenessMeta(capture);
+  productSkuCompletenessDirty = true;
+  productSkuDraftDirty = true;
+  productEditorDirty = true;
+  const newSku = {
+    id: null,
+    externalSkuId: null,
+    sellerSku: "",
+    variationName: skus.length ? `规格 ${skus.length + 1}` : "默认规格",
+    price: capture.priceMin ?? null,
+    originalPrice: null,
+    originalPriceSource: "USER",
+    stock: null,
+    attributes: {},
+    imageUrl: null,
+    imageSource: "USER",
+    imageInherited: false,
+    entrySource: "MANUAL_LISTING",
+    sortOrder: skus.length
+  };
+  selectedProductCaptureDetail = {
+    ...capture,
+    completeness: "NEEDS_ENRICHMENT",
+    skuCompleteness: {
+      expectedCount: skuCompleteness.expectedCount,
+      capturedCount: skuCompleteness.capturedCount,
+      hasVariants: skuCompleteness.hasVariants,
+      variantDimensionCount: skuCompleteness.variantDimensionCount ?? 0,
+      complete: false,
+      source: "USER",
+      issues: skuCompleteness.issues
+    },
+    skus: [...skus, newSku]
+  };
+  productSkuDraftState.push(createProductSkuEditorDraft(newSku));
+  selectedProductSkuIndex = productSkuDraftState.length - 1;
+  productSkuSearchQuery = "";
+  renderProductSkus(selectedProductCaptureDetail);
+  renderProductReadiness(selectedProductCaptureDetail);
+  syncProductEditorAccess(selectedProductCaptureDetail);
+  renderProductSkuCompleteness(selectedProductCaptureDetail);
+  syncProductActions(selectedProductCaptureDetail);
+  document.querySelector("#product-sku-editor [data-product-sku-field=\"variationName\"]")?.focus();
+}
+
+function removeProductSku(index) {
+  const capture = selectedProductCaptureDetail;
+  if (!capture || !hasAnyPermission("product:edit") || capture.status === "PUBLISHED") return;
+  ensureProductSkuEditorState(capture);
+  syncCurrentProductSkuDraftFromEditor();
+  const skus = productCaptureSkus(capture).filter((_sku, skuIndex) => skuIndex !== index);
+  const skuCompleteness = productSkuCompletenessMeta(capture);
+  productSkuCompletenessDirty = true;
+  productSkuDraftDirty = true;
+  productEditorDirty = true;
+  productSkuDraftState.splice(index, 1);
+  selectedProductSkuIndex = Math.min(index, Math.max(0, productSkuDraftState.length - 1));
+  if (productSkuSearchQuery && !filteredProductSkuIndexes().length) productSkuSearchQuery = "";
+  selectedProductCaptureDetail = {
+    ...capture,
+    completeness: "NEEDS_ENRICHMENT",
+    skuCompleteness: {
+      expectedCount: skuCompleteness.expectedCount,
+      capturedCount: skus.filter(sku => productSkuEntrySource(sku) !== "MANUAL").length,
+      hasVariants: skuCompleteness.hasVariants,
+      variantDimensionCount: skuCompleteness.variantDimensionCount ?? 0,
+      complete: false,
+      source: "USER",
+      issues: skuCompleteness.issues
+    },
+    skus
+  };
+  renderProductSkus(selectedProductCaptureDetail);
+  renderProductReadiness(selectedProductCaptureDetail);
+  syncProductEditorAccess(selectedProductCaptureDetail);
+  renderProductSkuCompleteness(selectedProductCaptureDetail);
+  syncProductActions(selectedProductCaptureDetail);
+}
+
+function selectProductSku(index, { focusField = "" } = {}) {
+  ensureProductSkuEditorState();
+  syncCurrentProductSkuDraftFromEditor();
+  if (!Number.isSafeInteger(index) || !productSkuDraftState[index]) return;
+  selectedProductSkuIndex = index;
+  renderProductSkuSelector();
+  renderCurrentProductSkuEditor();
+  if (selectedProductCaptureDetail) syncProductEditorAccess(selectedProductCaptureDetail);
+  if (focusField) document.querySelector(`#product-sku-editor [data-product-sku-field="${focusField}"]`)?.focus();
+}
+
+function stepProductSku(direction, { focusField = "" } = {}) {
+  const indexes = filteredProductSkuIndexes();
+  const position = indexes.indexOf(selectedProductSkuIndex);
+  const nextPosition = position + direction;
+  if (position < 0 || nextPosition < 0 || nextPosition >= indexes.length) return;
+  selectProductSku(indexes[nextPosition], { focusField });
+}
+
+function productCapturePatchPayload(capture = selectedProductCaptureDetail) {
+  const version = Number(capture?.version);
+  if (!Number.isSafeInteger(version) || version < 0) {
+    throw new ApiRequestError("商品版本信息缺失，请刷新后重试", 409);
+  }
+  const payload = {
+    version,
+    title: document.querySelector("#product-title-input").value.trim(),
+    description: document.querySelector("#product-description-input").value.trim(),
+    categoryName: document.querySelector("#product-category-input").value.trim(),
+    brandName: document.querySelector("#product-brand-input").value.trim(),
+    currency: document.querySelector("#product-currency-input").value.trim().toUpperCase(),
+    priceMin: nullableProductValue(document.querySelector("#product-price-min-input").value),
+    priceMax: nullableProductValue(document.querySelector("#product-price-max-input").value)
+  };
+  if (productSkuDraftDirty || productSkuCompletenessDirty) {
+    const skus = productSkuDrafts();
+    payload.skus = skus;
+    payload.skuCompleteness = productSkuPatchCompleteness(skus);
+  }
+  return payload;
+}
+
+async function saveProductCapture() {
+  if (!selectedProductCaptureId || !hasAnyPermission("product:edit") || productCaptureSaveInFlightId) return;
+  const requestCaptureId = selectedProductCaptureId;
+  const requestCapture = selectedProductCaptureDetail;
+  showProductNotice("");
+  try {
+    const payload = productCapturePatchPayload(requestCapture);
+    productCaptureSaveInFlightId = requestCaptureId;
+    if (selectedProductCaptureId === requestCaptureId && selectedProductCaptureDetail) {
+      syncProductEditorAccess(selectedProductCaptureDetail);
+      syncProductActions(selectedProductCaptureDetail);
+    }
+    const result = await productCaptureApi(`/${encodeURIComponent(requestCaptureId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const capture = productCapturePayload(result.data);
+    productCaptureDetailLoadGeneration += 1;
+    productLastNotice = { captureId: capture.id, type: "success", message: "商品资料已保存；若内容发生变化，请重新执行人工确认。" };
+    updateProductCaptureInMemory(capture);
+  } catch (error) {
+    if (error?.status === 409) {
+      productLastNotice = {
+        captureId: requestCaptureId,
+        type: "error",
+        message: "商品已被其他操作更新，已载入服务器最新版本；请重新核对后再保存。"
+      };
+      if (selectedProductCaptureId === requestCaptureId) {
+        await selectProductCapture(requestCaptureId, { silent: true, force: true });
+      }
+    } else if (error?.status !== 401) showProductNotice(error.message);
+  } finally {
+    if (productCaptureSaveInFlightId === requestCaptureId) productCaptureSaveInFlightId = null;
+    if (selectedProductCaptureDetail) {
+      syncProductEditorAccess(selectedProductCaptureDetail);
+      syncProductActions(selectedProductCaptureDetail);
+    }
+  }
+}
+
+async function processProductImages() {
+  if (!selectedProductCaptureId || !hasAnyPermission("asset:watermark")) return;
+  const button = document.querySelector("#process-product-images");
+  button.disabled = true;
+  button.textContent = "正在提交…";
+  showProductNotice("");
+  try {
+    const idempotencyKey = `images-${selectedProductCaptureId}-${newProductIdempotencyKey()}`;
+    const result = await productCaptureApi(`/${encodeURIComponent(selectedProductCaptureId)}/images/process`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ idempotencyKey })
+    });
+    const capture = productCapturePayload(result.data);
+    const job = result.data?.job || result.data?.processingJob || {};
+    const provider = job.provider || result.data?.provider || "";
+    const responseDryRun = job.dryRun ?? result.data?.dryRun;
+    const dryRun = typeof responseDryRun === "boolean"
+      ? responseDryRun
+      : /dry.?run/i.test(String(provider));
+    if (capture?.id) {
+      productImageProcessingMeta.set(capture.id, {
+        provider,
+        dryRun
+      });
+    }
+    productLastNotice = {
+      captureId: selectedProductCaptureId,
+      type: "success",
+      message: dryRun
+        ? capture?.status === "READY"
+          ? "图片处理 Dry Run 已完成；当前结果仅为占位图，尚未实际去除水印。"
+          : "图片处理 Dry Run 已提交，页面会自动刷新处理进度。"
+        : capture?.status === "READY"
+          ? `图片处理已由${provider ? ` ${provider}` : "正式提供方"}完成，请核对实际去水印结果。`
+          : `图片处理已提交到${provider ? ` ${provider}` : "正式提供方"}，页面会自动刷新处理进度。`
+    };
+    if (capture?.id) updateProductCaptureInMemory(capture);
+    await loadProductCaptures(selectedProductCaptureId, { silent: true });
+  } catch (error) {
+    if (error?.status !== 401) showProductNotice(error.message);
+  } finally {
+    if (selectedProductCaptureDetail) syncProductActions(selectedProductCaptureDetail);
+  }
+}
+
+async function approveProductCapture() {
+  if (!selectedProductCaptureId || !hasAnyPermission("product:edit")) return;
+  if (!window.confirm("确认商品资料、SKU 与全部处理图片均已核对无误？确认后商品将进入可发布状态。")) return;
+  const button = document.querySelector("#approve-product-capture");
+  button.disabled = true;
+  button.textContent = "正在确认…";
+  showProductNotice("");
+  try {
+    const result = await productCaptureApi(`/${encodeURIComponent(selectedProductCaptureId)}/approve`, { method: "POST" });
+    const capture = productCapturePayload(result.data);
+    const provider = String(marketplaceIntegrationStatus.publishingProvider || "");
+    const officialPublishing = marketplaceIntegrationStatus.livePublishingEnabled && !/dry.?run/i.test(provider);
+    productLastNotice = {
+      captureId: capture.id,
+      type: "success",
+      message: officialPublishing
+        ? "人工确认已记录，现在可以选择目标店铺执行官方发布。"
+        : "人工确认已记录，现在可以选择目标店铺执行 Dry Run 发布。"
+    };
+    updateProductCaptureInMemory(capture);
+  } catch (error) {
+    if (error?.status !== 401) showProductNotice(error.message);
+  } finally {
+    if (selectedProductCaptureDetail) syncProductActions(selectedProductCaptureDetail);
+  }
+}
+
+function newProductIdempotencyKey() {
+  return globalThis.crypto?.randomUUID?.()
+    || `product_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+}
+
+function syncPublishShopOptions(preferredShopId = "") {
+  const select = document.querySelector("#publish-shop-id");
+  if (!select) return;
+  const platform = document.querySelector("#publish-destination-platform")?.value || "SHOPEE";
+  const shops = activeMarketplaceShops(platform);
+  const previous = preferredShopId || select.value;
+  const dryRun = !marketplaceIntegrationStatus.livePublishingEnabled;
+  const options = [`<option value="">${shops.length ? "请选择已授权店铺" : "没有已授权店铺"}</option>`];
+  shops.forEach(shop => options.push(`<option value="${escapeHtml(shop.id)}">${escapeHtml(shop.name || shop.externalShopId)} · ${escapeHtml(shop.region || shop.externalShopId)}</option>`));
+  if (dryRun) options.push(`<option value="dry-run-shop">仅执行 Dry Run（不连接店铺）</option>`);
+  select.innerHTML = options.join("");
+  if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
+  else if (shops.length === 1) select.value = shops[0].id;
+  else if (!shops.length && dryRun) select.value = "dry-run-shop";
+}
+
+function syncOfficialPublishFields() {
+  const platform = document.querySelector("#publish-destination-platform").value;
+  const live = marketplaceIntegrationStatus.livePublishingEnabled;
+  const stockMax = platform === "TIKTOK_SHOP" ? 99999 : 999999;
+  const fields = document.querySelector("#product-official-publish-fields");
+  fields.hidden = !live;
+  if (live) fields.open = true;
+  document.querySelectorAll("[data-tiktok-publish-field]").forEach(field => {
+    field.hidden = platform !== "TIKTOK_SHOP";
+  });
+  document.querySelectorAll("[data-shopee-publish-field]").forEach(field => {
+    field.hidden = platform !== "SHOPEE";
+  });
+  const shopeeLogisticInfo = document.querySelector("#publish-logistic-info");
+  shopeeLogisticInfo.required = live && platform === "SHOPEE";
+  shopeeLogisticInfo.setAttribute("aria-required", String(shopeeLogisticInfo.required));
+  const publishStock = document.querySelector("#publish-stock");
+  publishStock.max = String(stockMax);
+  publishStock.setAttribute("aria-label", `上架库存，0 到 ${stockMax}`);
+  const skuKeys = productCaptureSkus(selectedProductCaptureDetail)
+    .map(sku => String(sku.skuKey || "").trim())
+    .filter(Boolean);
+  const skuStockHelp = document.querySelector("#publish-sku-stocks-help");
+  skuStockHelp.textContent = skuKeys.length
+    ? `键必须使用当前商品的 SKU Key，例如 ${skuKeys.slice(0, 3).join("、")}${skuKeys.length > 3 ? "…" : ""}；${marketplacePlatformName(platform)} 库存只能是 0–${stockMax} 的整数，留空则全部使用上架库存。`
+    : `键必须使用当前商品的 SKU Key；${marketplacePlatformName(platform)} 库存只能是 0–${stockMax} 的整数，留空则全部使用上架库存。`;
+  document.querySelector("#product-official-publish-hint").textContent = platform === "SHOPEE"
+    ? "Shopee：类目、库存、重量与物流均需填写"
+    : "TikTok Shop：类目、库存、仓库与包裹均需填写";
+  const notice = document.querySelector(".product-dry-run-notice");
+  notice.classList.toggle("is-live", live);
+  notice.querySelector("span").textContent = live ? "OFFICIAL API" : "DRY RUN";
+  document.querySelector("#product-publish-mode-title").textContent = live
+    ? "这次会向官方店铺提交商品" : "这次不会正式上架";
+  document.querySelector("#product-publish-mode-note").textContent = live
+    ? "系统将使用店铺 OAuth Token 调用官方商品接口；Shopee 会先创建未上架商品，规格成功后再上架。"
+    : "系统会验证字段与权限，并保存模拟发布审计；当前没有向店铺提交内容。";
+  document.querySelector("#product-publish-dialog-mode").textContent = live
+    ? "人工确认 · OFFICIAL API" : "人工确认 · Dry Run";
+  document.querySelector("#product-publish-dialog-copy").textContent = live
+    ? "请再次核对目标平台、授权店铺和刊登参数；确认后系统会调用官方接口正式上架。"
+    : "请再次核对目标平台与店铺。本次只执行发布校验和模拟回执，不会在真实店铺上架商品。";
+  document.querySelector("#product-publish-confirm-copy").textContent = live
+    ? "我已核对商品、SKU、处理图片、刊登参数与目标店铺，并确认正式上架。"
+    : "我已核对商品、SKU、处理图片与目标店铺，并确认执行本次 Dry Run。";
+  document.querySelector("#submit-product-publish").textContent = live ? "确认官方发布" : "确认 Dry Run 发布";
+  syncPublishShopOptions();
+}
+
+async function openProductPublishDialog() {
+  const capture = selectedProductCaptureDetail;
+  if (!capture || capture.status !== "APPROVED" || !hasAnyPermission("product:publish")) return;
+  await loadMarketplaceShops({ silent: true });
+  const skus = productCaptureSkus(capture);
+  const images = productCaptureImages(capture).filter(image => productImageState(image) === "completed");
+  const normalized = capture.normalizedData && typeof capture.normalizedData === "object" ? capture.normalizedData : {};
+  if (!productPublishIdempotencyKey || productPublishIdempotencyCaptureId !== capture.id) {
+    productPublishIdempotencyKey = newProductIdempotencyKey();
+    productPublishIdempotencyCaptureId = capture.id;
+  }
+  document.querySelector("#publish-product-title").textContent = capture.title || "未命名商品";
+  document.querySelector("#publish-organization-name").textContent = currentUser?.organizationName || "当前公司";
+  document.querySelector("#publish-image-count").textContent = `${images.length} 张`;
+  document.querySelector("#publish-sku-count").textContent = `${skus.length} 个`;
+  const requestedPlatform = String(capture.destinationPlatform || normalized.destinationPlatform || "").toUpperCase();
+  const sourcePlatform = String(capture.sourcePlatform || "").toUpperCase();
+  document.querySelector("#publish-destination-platform").value = ["SHOPEE", "TIKTOK_SHOP"].includes(requestedPlatform)
+    ? requestedPlatform : sourcePlatform === "TIKTOK" ? "TIKTOK_SHOP" : "SHOPEE";
+  syncPublishShopOptions(capture.destinationShopId || capture.shopId || normalized.shopId || "");
+  ["#publish-category-id", "#publish-stock", "#publish-weight-grams", "#publish-warehouse-id",
+    "#publish-package-length", "#publish-package-width", "#publish-package-height",
+    "#publish-sku-stocks", "#publish-logistic-info", "#publish-product-attributes",
+    "#publish-shopee-payload", "#publish-sales-attributes"].forEach(selector => {
+      document.querySelector(selector).value = "";
+    });
+  const skuKeys = skus.map(sku => String(sku.skuKey || "").trim()).filter(Boolean);
+  const skuStocks = document.querySelector("#publish-sku-stocks");
+  const exampleSkuKey = skuKeys[0] || "SKU_KEY";
+  skuStocks.placeholder = JSON.stringify({ [exampleSkuKey]: 20 });
+  syncOfficialPublishFields();
+  document.querySelector("#publish-confirmed").checked = false;
+  document.querySelector("#product-publish-error").hidden = true;
+  document.querySelector("#product-publish-dialog").showModal();
+}
+
+async function submitProductPublish(event) {
+  event.preventDefault();
+  if (!selectedProductCaptureId || !hasAnyPermission("product:publish")) return;
+  const confirmed = document.querySelector("#publish-confirmed").checked;
+  const destinationPlatform = document.querySelector("#publish-destination-platform").value;
+  const shopId = document.querySelector("#publish-shop-id").value.trim();
+  const errorLabel = document.querySelector("#product-publish-error");
+  if (!confirmed || !shopId) {
+    errorLabel.textContent = "请选择目标店铺，并勾选人工确认。";
+    errorLabel.hidden = false;
+    return;
+  }
+  const button = document.querySelector("#submit-product-publish");
+  button.disabled = true;
+  button.textContent = marketplaceIntegrationStatus.livePublishingEnabled ? "正在调用官方接口…" : "正在执行 Dry Run…";
+  errorLabel.hidden = true;
+  try {
+    const idempotencyKey = productPublishIdempotencyKey || newProductIdempotencyKey();
+    const payload = { confirmed: true, destinationPlatform, shopId, idempotencyKey };
+    if (marketplaceIntegrationStatus.livePublishingEnabled) {
+      payload.categoryId = document.querySelector("#publish-category-id").value.trim();
+      payload.publishStock = parseProductPublishStock(destinationPlatform);
+      payload.weightGrams = document.querySelector("#publish-weight-grams").value.trim();
+      payload.skuStocks = parseProductSkuStocks("#publish-sku-stocks", destinationPlatform);
+      if (destinationPlatform === "TIKTOK_SHOP") {
+        payload.warehouseId = document.querySelector("#publish-warehouse-id").value.trim();
+        payload.packageLengthCm = document.querySelector("#publish-package-length").value.trim();
+        payload.packageWidthCm = document.querySelector("#publish-package-width").value.trim();
+        payload.packageHeightCm = document.querySelector("#publish-package-height").value.trim();
+        payload.salesAttributesBySku = parseProductPublishJson("#publish-sales-attributes", "TikTok 多规格映射");
+      } else {
+        payload.logisticInfo = parseShopeeLogisticInfo();
+        payload.productAttributes = parseProductPublishJson("#publish-product-attributes", "Shopee 类目属性", [], "array");
+        payload.shopeePayload = parseProductPublishJson("#publish-shopee-payload", "Shopee 条件必填补充参数", {}, "object");
+      }
+    }
+    const result = await productCaptureApi(`/${encodeURIComponent(selectedProductCaptureId)}/publish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(payload)
+    });
+    const audit = result.data?.audit || result.data?.publishAudit || {};
+    const capture = productCapturePayload(result.data);
+    if (String(audit.status || "").toUpperCase() === "FAILED") {
+      productPublishIdempotencyKey = newProductIdempotencyKey();
+      throw new ApiRequestError(audit.errorMessage || "Dry Run 发布校验失败", 422, result);
+    }
+    productLastNotice = {
+      captureId: selectedProductCaptureId,
+      type: "success",
+      message: audit.dryRun === false
+        ? `发布请求已受理${audit.externalId ? `，回执 ${audit.externalId}` : ""}。`
+        : `Dry Run 已通过${audit.externalId ? `，模拟回执 ${audit.externalId}` : ""}；未在真实店铺上架。`
+    };
+    productPublishAuditMeta.set(selectedProductCaptureId, {
+      dryRun: audit.dryRun !== false || String(audit.status || "").toUpperCase() === "DRY_RUN_SUCCEEDED",
+      status: audit.status || "",
+      externalId: audit.externalId || ""
+    });
+    document.querySelector("#product-publish-dialog").close();
+    productPublishIdempotencyKey = "";
+    productPublishIdempotencyCaptureId = "";
+    if (capture?.id) updateProductCaptureInMemory(capture);
+    await loadProductCaptures(selectedProductCaptureId, { silent: true });
+  } catch (error) {
+    if (error?.status === 401) return;
+    errorLabel.textContent = error.message;
+    errorLabel.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = marketplaceIntegrationStatus.livePublishingEnabled ? "确认官方发布" : "确认 Dry Run 发布";
+  }
+}
+
+function parseProductPublishJson(selector, label, fallback = {}, expectedType = "object") {
+  const value = document.querySelector(selector).value.trim();
+  if (!value) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    const validType = expectedType === "array"
+      ? Array.isArray(parsed)
+      : parsed && typeof parsed === "object" && !Array.isArray(parsed);
+    if (!validType) throw new Error("unexpected JSON type");
+    return parsed;
+  } catch (_error) {
+    throw new ApiRequestError(`${label}必须是 JSON ${expectedType === "array" ? "数组" : "对象"}`, 400);
+  }
+}
+
+function parseShopeeLogisticInfo() {
+  const logisticInfo = parseProductPublishJson("#publish-logistic-info", "Shopee 官方物流渠道", [], "array");
+  if (!logisticInfo.length) {
+    throw new ApiRequestError("Shopee 官方物流渠道为必填项，请填写至少一个物流渠道", 400);
+  }
+  return logisticInfo;
+}
+
+function parseProductPublishStock(platform) {
+  const max = platform === "TIKTOK_SHOP" ? 99999 : 999999;
+  const text = document.querySelector("#publish-stock").value.trim();
+  if (!/^\d+$/.test(text)) {
+    throw new ApiRequestError(`上架库存必须是 0 到 ${max} 的整数`, 400);
+  }
+  const stock = Number(text);
+  if (!Number.isSafeInteger(stock) || stock > max) {
+    throw new ApiRequestError(`上架库存必须是 0 到 ${max} 的整数`, 400);
+  }
+  return stock;
+}
+
+function parseProductSkuStocks(selector, platform) {
+  const stocks = parseProductPublishJson(selector, "SKU 库存映射", {}, "object");
+  const normalized = {};
+  const max = platform === "TIKTOK_SHOP" ? 99999 : 999999;
+  const allowedKeys = new Set(productCaptureSkus(selectedProductCaptureDetail)
+    .map(sku => String(sku.skuKey || "").trim())
+    .filter(Boolean));
+  Object.entries(stocks).forEach(([rawKey, rawValue]) => {
+    const key = rawKey.trim();
+    if (!key) throw new ApiRequestError("SKU 库存映射不能包含空键", 400);
+    if (allowedKeys.size && !allowedKeys.has(key)) {
+      throw new ApiRequestError(`“${key}”不是当前商品的 SKU Key，请使用发布面板提示的实际 Key`, 400);
+    }
+    const text = typeof rawValue === "string" ? rawValue.trim() : String(rawValue);
+    if (!/^\d+$/.test(text)) {
+      throw new ApiRequestError(`SKU “${key}”的发布库存必须是 0 到 ${max} 的整数`, 400);
+    }
+    const stock = Number(text);
+    if (!Number.isSafeInteger(stock) || stock > max) {
+      throw new ApiRequestError(`SKU “${key}”的发布库存必须是 0 到 ${max} 的整数`, 400);
+    }
+    normalized[key] = stock;
+  });
+  return normalized;
+}
+
+function stopProductPairingCountdown() {
+  if (productPairingCountdownTimer) clearInterval(productPairingCountdownTimer);
+  productPairingCountdownTimer = null;
+}
+
+function updateProductPairingCountdown() {
+  const expiry = document.querySelector("#extension-pairing-expiry");
+  const state = document.querySelector("#extension-pairing-state");
+  const copy = document.querySelector("#copy-extension-pairing-code");
+  if (!productPairingExpiresAt) return;
+  const seconds = Math.max(0, Math.ceil((productPairingExpiresAt.getTime() - Date.now()) / 1000));
+  if (seconds <= 0) {
+    stopProductPairingCountdown();
+    productPairingExpiresAt = null;
+    state.textContent = "已过期";
+    state.className = "is-expired";
+    expiry.textContent = "绑定码已过期，请重新生成";
+    copy.disabled = true;
+    return;
+  }
+  state.textContent = "等待插件绑定";
+  state.className = "is-active";
+  expiry.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} 后过期 · 仅限当前公司`;
+}
+
+async function createExtensionPairingCode() {
+  if (!hasAnyPermission("product:collect")) return;
+  const button = document.querySelector("#create-extension-pairing-code");
+  const state = document.querySelector("#extension-pairing-state");
+  button.disabled = true;
+  button.textContent = "正在生成…";
+  try {
+    const result = await productCaptureApi("/extension/pairing-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const pairing = result.data?.pairing || result.data || {};
+    if (!pairing.code) throw new ApiRequestError("平台没有返回绑定码，请稍后重试", 502, result);
+    const code = String(pairing.code);
+    const codeOutput = document.querySelector("#extension-pairing-code");
+    codeOutput.textContent = code;
+    codeOutput.dataset.code = code;
+    document.querySelector("#copy-extension-pairing-code").disabled = false;
+    productPairingExpiresAt = pairing.expiresAt ? new Date(pairing.expiresAt) : new Date(Date.now() + 5 * 60 * 1000);
+    stopProductPairingCountdown();
+    updateProductPairingCountdown();
+    productPairingCountdownTimer = window.setInterval(updateProductPairingCountdown, 1000);
+  } catch (error) {
+    if (error?.status === 401) return;
+    state.textContent = error?.status === 403 ? "无绑定权限" : "生成失败";
+    state.className = "is-expired";
+    document.querySelector("#extension-pairing-expiry").textContent = error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = "生成绑定码";
+  }
+}
+
+document.querySelector("#product-capture-list").addEventListener("click", event => {
+  const row = event.target.closest("[data-product-capture-id]");
+  if (!row) return;
+  productLastNotice = null;
+  selectProductCapture(row.dataset.productCaptureId);
+});
+
+document.querySelector("#product-status-filter").addEventListener("click", event => {
+  const button = event.target.closest("[data-product-status]");
+  if (!button) return;
+  if (productCaptureSearchDebounceTimer) clearTimeout(productCaptureSearchDebounceTimer);
+  productCaptureSearchDebounceTimer = null;
+  productCaptureStatusFilter = button.dataset.productStatus;
+  document.querySelectorAll("#product-status-filter [data-product-status]").forEach(item => {
+    const active = item === button;
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-pressed", String(active));
+  });
+  loadProductCaptures(selectedProductCaptureId, { silent: true, refreshDetail: false });
+});
+
+document.querySelector("#product-capture-search").addEventListener("input", event => {
+  productCaptureSearchQuery = event.currentTarget.value;
+  if (productCaptureSearchDebounceTimer) clearTimeout(productCaptureSearchDebounceTimer);
+  document.querySelector("#product-result-count").textContent = "正在准备搜索…";
+  productCaptureSearchDebounceTimer = window.setTimeout(() => {
+    productCaptureSearchDebounceTimer = null;
+    loadProductCaptures(selectedProductCaptureId, { silent: true, refreshDetail: false });
+  }, 300);
+});
+
+document.querySelector("#load-more-product-captures").addEventListener("click", () =>
+  loadProductCaptures(selectedProductCaptureId, { append: true, silent: true, refreshDetail: false }));
+
+document.querySelector("#add-product-sku").addEventListener("click", addProductSku);
+document.querySelector("#product-sku-select").addEventListener("change", event => {
+  const index = Number(event.currentTarget.value);
+  if (Number.isSafeInteger(index)) selectProductSku(index);
+});
+document.querySelector("#product-sku-search").addEventListener("input", event => {
+  syncCurrentProductSkuDraftFromEditor();
+  productSkuSearchQuery = event.currentTarget.value;
+  renderProductSkuSelector();
+  renderCurrentProductSkuEditor();
+  if (selectedProductCaptureDetail) syncProductEditorAccess(selectedProductCaptureDetail);
+});
+document.querySelector("#product-sku-search").addEventListener("keydown", event => {
+  if (event.key !== "Escape" || !event.currentTarget.value) return;
+  event.preventDefault();
+  event.currentTarget.value = "";
+  event.currentTarget.dispatchEvent(new Event("input", { bubbles: true }));
+});
+document.querySelector("#product-sku-previous").addEventListener("click", () => stepProductSku(-1));
+document.querySelector("#product-sku-next").addEventListener("click", () => stepProductSku(1));
+document.querySelector("#product-sku-workbench").addEventListener("keydown", event => {
+  if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  event.preventDefault();
+  stepProductSku(event.key === "ArrowLeft" ? -1 : 1, {
+    focusField: event.target.dataset?.productSkuField || ""
+  });
+});
+document.querySelector("#product-sku-editor").addEventListener("click", event => {
+  const button = event.target.closest("[data-remove-product-sku]");
+  if (!button) return;
+  removeProductSku(Number(button.dataset.removeProductSku));
+});
+document.querySelector("#product-sku-editor").addEventListener("input", event => {
+  if (!event.target.matches("[data-product-sku-field]")) return;
+  const row = event.currentTarget;
+  const index = Number(row.dataset.productSkuIndex);
+  const draft = productSkuDraftState[index];
+  if (!draft) return;
+  const fieldName = event.target.dataset.productSkuField;
+  draft.fields[fieldName] = event.target.value;
+  draft.edited = true;
+  row.dataset.productSkuEdited = "true";
+  if (fieldName === "imageUrl") {
+    draft.imageEdited = true;
+    row.dataset.productSkuImageEdited = "true";
+    const imageUrl = safeProductUrl(event.target.value.trim());
+    const preview = row.querySelector(".product-sku-image-preview");
+    const label = row.querySelector(".product-sku-image-copy small");
+    preview.replaceChildren();
+    if (imageUrl) {
+      const image = document.createElement("img");
+      image.src = imageUrl;
+      image.alt = `SKU ${index + 1} 图片`;
+      preview.append(image);
+      label.textContent = "人工补录图片";
+    } else {
+      preview.textContent = "无图";
+      label.textContent = "未提供 SKU 图";
+    }
+  }
+  if (fieldName === "originalPrice") {
+    draft.originalPriceEdited = true;
+    row.dataset.productSkuOriginalPriceEdited = "true";
+  }
+  if (fieldName !== "stock") {
+    productSkuCompletenessDirty = true;
+    document.querySelector("#product-sku-manual-confirm").checked = false;
+  }
+  productSkuDraftDirty = true;
+  productEditorDirty = true;
+  if (["variationName", "externalSkuId", "sellerSku"].includes(fieldName)) {
+    const label = productSkuDraftLabel(draft, index);
+    const option = document.querySelector(`#product-sku-select option[value="${index}"]`);
+    if (option) option.textContent = `${index + 1}. ${label}`;
+    const heading = row.querySelector(".product-sku-editor-head strong");
+    if (heading) heading.textContent = label;
+  }
+  if (!selectedProductCaptureDetail) return;
+  renderProductSkuCompleteness(selectedProductCaptureDetail);
+  renderProductReadiness(selectedProductCaptureDetail);
+  syncProductActions(selectedProductCaptureDetail);
+});
+document.querySelector("#product-sku-manual-confirm").addEventListener("change", event => {
+  productSkuCompletenessDirty = true;
+  productEditorDirty = true;
+  if (!selectedProductCaptureDetail) return;
+  if (!event.currentTarget.checked) renderProductSkuCompleteness(selectedProductCaptureDetail);
+  renderProductReadiness(selectedProductCaptureDetail);
+  syncProductActions(selectedProductCaptureDetail);
+});
+
+[
+  "#product-title-input", "#product-description-input", "#product-category-input",
+  "#product-brand-input", "#product-currency-input", "#product-price-min-input",
+  "#product-price-max-input"
+].forEach(selector => document.querySelector(selector).addEventListener("input", () => {
+  productEditorDirty = true;
+  if (selectedProductCaptureDetail) syncProductActions(selectedProductCaptureDetail);
+}));
+
+document.querySelector("#refresh-product-captures").addEventListener("click", () =>
+  loadProductCaptures(selectedProductCaptureId));
+document.querySelector("#save-product-capture").addEventListener("click", saveProductCapture);
+document.querySelector("#process-product-images").addEventListener("click", processProductImages);
+document.querySelector("#approve-product-capture").addEventListener("click", approveProductCapture);
+document.querySelector("#open-product-publish").addEventListener("click", openProductPublishDialog);
+document.querySelector("#product-publish-form").addEventListener("submit", submitProductPublish);
+document.querySelector("#product-publish-form").addEventListener("input", () => {
+  document.querySelector("#product-publish-error").hidden = true;
+});
+document.querySelector("#publish-destination-platform").addEventListener("change", syncOfficialPublishFields);
+document.querySelector("#marketplace-shop-panel").addEventListener("click", event => {
+  const button = event.target.closest("[data-authorize-shop]");
+  if (button) startMarketplaceAuthorization(button.dataset.authorizeShop, button);
+});
+document.querySelector("#product-publish-dialog").addEventListener("close", () => {
+  productPublishIdempotencyKey = "";
+  productPublishIdempotencyCaptureId = "";
+});
+document.querySelector("#create-extension-pairing-code").addEventListener("click", createExtensionPairingCode);
+document.querySelector("#copy-extension-pairing-code").addEventListener("click", async event => {
+  const code = document.querySelector("#extension-pairing-code").dataset.code || "";
+  if (!code) return;
+  const copied = await copyTextToClipboard(code);
+  event.currentTarget.textContent = copied ? "已复制" : "复制失败";
+  window.setTimeout(() => { event.currentTarget.textContent = "复制"; }, 1500);
+});
+
 async function loadSystemData() {
   const canReadOrganization = hasAnyPermission(
     "system:organization:view", "system:organization:manage"
@@ -4349,11 +6684,73 @@ function resetGeneralVideoState() {
   document.querySelector("#general-video-task-grid").innerHTML = `<div class="general-video-empty">还没有通用生成任务。</div>`;
 }
 
+function resetProductCaptureState() {
+  productCaptureLoadGeneration += 1;
+  productCaptureDetailLoadGeneration += 1;
+  if (productCaptureSearchDebounceTimer) clearTimeout(productCaptureSearchDebounceTimer);
+  productCaptureSearchDebounceTimer = null;
+  if (productCapturePollTimer) clearInterval(productCapturePollTimer);
+  productCapturePollTimer = null;
+  productCapturePollInFlight = false;
+  stopProductPairingCountdown();
+  productPairingExpiresAt = null;
+  productPublishIdempotencyKey = "";
+  productPublishIdempotencyCaptureId = "";
+  marketplaceShops = [];
+  marketplaceIntegrationStatus = {
+    shopeeConfigured: false,
+    tiktokShopConfigured: false,
+    livePublishingEnabled: false,
+    publishingProvider: "DRY_RUN"
+  };
+  productLastNotice = null;
+  productSkuCompletenessDirty = false;
+  resetProductSkuEditorState();
+  productEditorDirty = false;
+  productCaptureSaveInFlightId = null;
+  productCaptures = [];
+  selectedProductCaptureId = null;
+  selectedProductCaptureDetail = null;
+  productCaptureStatusFilter = "ALL";
+  productCaptureSearchQuery = "";
+  productCapturePage = -1;
+  productCaptureTotalElements = 0;
+  productCaptureTotalPages = 0;
+  productCaptureStatusCounts = emptyProductCaptureStatusCounts();
+  productCaptureStatusCountsKnown = false;
+  productCaptureLegacyListResponse = false;
+  productCaptureListLoading = false;
+  productCaptureAppendLoading = false;
+  productCapturePaginationMessage = "";
+  const search = document.querySelector("#product-capture-search");
+  if (search) search.value = "";
+  document.querySelectorAll("#product-status-filter [data-product-status]").forEach(button => {
+    const active = button.dataset.productStatus === "ALL";
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  document.querySelector("#product-capture-list")?.setAttribute("aria-busy", "false");
+  const code = document.querySelector("#extension-pairing-code");
+  code.textContent = "— — — — — —";
+  code.dataset.code = "";
+  document.querySelector("#copy-extension-pairing-code").disabled = true;
+  document.querySelector("#extension-pairing-state").textContent = "未生成";
+  document.querySelector("#extension-pairing-state").className = "";
+  document.querySelector("#extension-pairing-expiry").textContent = "登录后可生成 5 分钟有效的绑定码";
+  document.querySelector("#marketplace-shop-list").innerHTML = "<span>正在读取授权店铺…</span>";
+  document.querySelector("#marketplace-shop-note").textContent = "";
+  renderMarketplaceShops();
+  renderProductSummary();
+  renderProductCaptureList();
+  renderProductCaptureEmpty();
+}
+
 function resetCompanyScopedWorkspaceState() {
   resetVideoScriptState();
   resetAiVideoTaskState();
   resetAiVideoMonitorState();
   resetGeneralVideoState();
+  resetProductCaptureState();
 }
 
 async function loadVideoScripts(preferredId = null) {
@@ -8252,6 +10649,7 @@ document.querySelector("#general-video-form").addEventListener("submit", async e
 
 syncGeneralVideoRouteResolution();
 
+if (window.location.hash === "#product-capture") rememberProductCaptureRoute(true);
 loadSocialLoginProviders();
 handleSocialLoginReturn();
 restoreSession();
