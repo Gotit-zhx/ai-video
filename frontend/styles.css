@@ -1029,8 +1029,10 @@ form label { display: block; margin: 20px 0 9px; font-size: 13px; font-weight: 7
 
 @media (min-width: 901px) {
   #video-scripts-page .script-library-rail {
+    align-self: start;
     display: flex;
     flex-direction: column;
+    height: auto;
     max-height: calc(100vh - 202px);
     max-height: calc(100dvh - 202px);
     overflow: hidden;
@@ -1038,6 +1040,10 @@ form label { display: block; margin: 20px 0 9px; font-size: 13px; font-weight: 7
 
   #video-scripts-page .script-library-rail > header {
     flex: 0 0 auto;
+  }
+
+  #video-scripts-page .script-library-list {
+    flex: 0 1 auto;
   }
 }
 
@@ -6399,9 +6405,11 @@ body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-imag
 /* AI 视频任务：左侧任务列表限定在视口内独立滚动 */
 @media (min-width: 901px) {
   #ai-video-tasks-page .batch-task-rail {
+    align-self: start;
     display: flex;
     flex-direction: column;
-    height: var(--ai-video-task-rail-height, min(680px, calc(100dvh - 202px)));
+    height: auto;
+    min-height: 0;
     max-height: var(--ai-video-task-rail-height, min(680px, calc(100dvh - 202px)));
     overflow: hidden;
   }
@@ -6411,7 +6419,10 @@ body:has(#asset-preview-dialog[open]) #ai-video-tasks-page .garment-card.is-imag
   }
 
   #ai-video-tasks-page .video-task-list {
+    flex: 0 1 auto;
     min-height: 0;
+    align-content: start;
+    grid-auto-rows: max-content;
     overflow-y: auto;
     overscroll-behavior-y: contain;
     scrollbar-gutter: auto;

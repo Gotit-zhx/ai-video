@@ -1,0 +1,47 @@
+/* Image execution telemetry, using the workspace's light/dark tokens. */
+.garment-portrait-grid .image-stage-placeholder {
+  grid-area: 1 / 1 / -1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 180px;
+  box-sizing: border-box;
+  gap: 12px;
+  padding: 24px 12px;
+  color: var(--ink);
+  text-align: center;
+  white-space: normal;
+  line-height: 1.6;
+}
+.image-stage-placeholder strong { font: 600 14px/1.6 var(--font-sans); }
+.image-stage-placeholder small { font-size: 12px; color: var(--muted); }
+.image-stage-indicator {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--line-strong);
+  border-radius: 50%;
+}
+.processing .image-stage-indicator { border-top-color: var(--info); animation: image-stage-turn 1.2s linear infinite; }
+.retrying .image-stage-indicator { border-color: var(--warning); }
+.failed .image-stage-indicator { border-color: var(--danger); }
+.garment-portrait-grid button:has(> .image-stage-placeholder) {
+  cursor: default;
+  opacity: 1;
+  background: var(--surface-soft);
+}
+.image-attempt-details {
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.8;
+  white-space: pre-line;
+}
+.image-attempt-details small { display: block; color: var(--muted); font-size: 11px; }
+@keyframes image-stage-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .processing .image-stage-indicator { animation: none; }
+}

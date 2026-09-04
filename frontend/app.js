@@ -3996,7 +3996,7 @@ function renderManualShotRows() {
       <label>结束秒<input name="manualEnd${index}" type="number" min="0.1" max="300" step="0.1" required value="${suggestedEnd}"></label>
       <label class="manual-shot-title">分镜标题<input name="manualTitle${index}" required maxlength="160" placeholder="例如：商品第一眼亮相"></label>
       <label class="manual-shot-scene">画面与动作<textarea name="manualScene${index}" required maxlength="8000" rows="2" placeholder="描述主体、场景、动作与构图，系统将据此生成画面"></textarea></label>
-      <label class="manual-shot-narration">对白 / 旁白<textarea name="manualNarration${index}" maxlength="8000" rows="2" placeholder="例如：对白：今天给大家看一下；未指定则留空"></textarea></label>
+      <label class="manual-shot-narration">画外旁白（模特不说话）<textarea name="manualNarration${index}" maxlength="8000" rows="2" placeholder="例如：旁白：今天给大家看一下；按目标市场语言填写，未指定则留空"></textarea></label>
       <label class="manual-shot-motion">运镜补充<input name="manualMotion${index}" maxlength="8000" placeholder="例如：镜头缓慢向前推进（可选）"></label>
     </article>`;
   }).join("");
@@ -5758,6 +5758,52 @@ const aiVideoItemStatusNames = {
   FAILED: "生成失败"
 };
 
+function aiVideoImagePresentation(task, item, model, storyboard) {
+  let steps = {};
+  try { steps = JSON.parse(item.imageProgressJson || "{}") || {}; } catch { /* Historical tasks have no telemetry. */ }
+  const modelStep = steps[aiVideoPrimaryAssetType(task)];
+  const gridStep = steps.STORYBOARD_GRID;
+  const labels = { PREPARING: "准备参考图", ANALYSIS_QUEUED: "等待识别", ANALYZING: "商品识别中",
+    ANALYSIS_RETRY_WAIT: "识别等待重试", GENERATION_QUEUED: "等待生图请求", GENERATING: "正在生图", DOWNLOADING: "下载图片中",
+    RESPONSE_RECEIVED: "已收到生图结果", PROCESSING_RESPONSE: "处理生图结果",
+    VALIDATION_QUEUED: "等待校验", VALIDATING: "正在校验", VALIDATION_RETRY_WAIT: "校验等待重试",
+    STORING: "保存图片中", RETRY_WAIT: "等待重试", FAILED: "生成失败", COMPLETED: "保存完成" };
+  const retrying = /图片自动恢复等待重试：/.test(item.errorMessage || "")
+    || (!model && /RETRY_WAIT$/.test(modelStep?.stage || ""))
+    || (!storyboard && /RETRY_WAIT$/.test(gridStep?.stage || ""));
+  const pendingDownload = Boolean(item.imageDownloadPending) && !["VIDEO_FAILED", "VIDEO_READY"].includes(item.status);
+  const active = pendingDownload || retrying || ["GENERATING_MODEL", "GENERATING_STORYBOARD"].includes(item.status)
+    || (task.status === "IMAGE_GENERATING" && item.status === "READY");
+  const failed = !pendingDownload && !retrying && ["FAILED", "VIDEO_FAILED"].includes(item.status);
+  const state = asset => asset ? "completed" : retrying ? "retrying" : failed ? "failed" : active ? "processing" : "waiting";
+  const downloadLabel = `下载图片中 · 已尝试 ${Math.max(0, Number(item.pendingImageDownloadAttempts) || 0)} 次`;
+  const modelLabel = model ? "已生成" : pendingDownload && !modelStep && item.pendingImageAssetType === aiVideoPrimaryAssetType(task) ? downloadLabel
+    : retrying ? (labels[modelStep?.stage] || "等待重试") : failed ? "生成失败" : active ? (labels[modelStep?.stage] || "等待执行记录") : "等待生成";
+  const storyboardLabel = storyboard ? "已生成" : pendingDownload && !gridStep && item.pendingImageAssetType === "STORYBOARD_GRID" ? downloadLabel
+    : retrying ? (labels[gridStep?.stage] || "等待重试") : failed ? "生成失败"
+    : active && model ? (labels[gridStep?.stage] || "准备分镜素材") : active ? "等待主图" : "等待生成";
+  return { active, retrying, modelState: state(model), shotState: state(storyboard), modelLabel, storyboardLabel,
+    modelStep, gridStep,
+    hint: retrying ? "系统会自动重试，无需重复提交" : failed ? "查看下方失败原因" : active && model
+      ? "生成和校验完成后自动展示" : active ? "主图完成后继续生成九宫格" : "九宫格完成后在这里展示" };
+}
+
+function aiVideoImageAttemptDetails(step) {
+  if (!step) return "历史次数未记录";
+  const n = key => Math.max(0, Number(step[key]) || 0);
+  const calls = n('generationAttempts');
+  return `已记录：生图 ${calls} 次 · 重试 ${Math.max(0, calls - 1)} 次\n识别 ${n('analysisAttempts')} 次 · 校验 ${n('validationAttempts')} 次 · 下载 ${n('downloadAttempts')} 次`;
+}
+
+function aiVideoImageAttemptMarkup(step) {
+  if (!step) return "";
+  return `<div class="image-attempt-details" title="本轮已记录的真实请求次数，含线路内部重试；手动重做后重新计数；历史未记录次数不补算"><span>${escapeHtml(aiVideoImageAttemptDetails(step))}</span><small>步骤更新：${escapeHtml(new Date(step.updatedAt).toLocaleTimeString('zh-CN', { hour12: false }))}</small></div>`;
+}
+
+function aiVideoImagePlaceholder(label, hint) {
+  return `<span class="image-stage-placeholder" role="status"><span class="image-stage-indicator" aria-hidden="true"></span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(hint)}</small></span>`;
+}
+
 function isAiVideoCopyrightError(message = "") {
   return /版权|著作权|知识产权|商标|授权角色|第三方内容.{0,20}相似|相似性.{0,20}防护|供应商相似性|copyright|copyrighted|intellectual property|trademark|protected character|character rights|IP infringement|third[- ]party content.{0,30}similar|content similarity|similarity safeguard/i
     .test(String(message || ""));
@@ -5919,8 +5965,8 @@ function aiVideoDetailRenderSignature(detail) {
     items: (detail.items || []).map(item => {
       const itemVideoWaiting = ["VIDEO_SUBMITTING", "VIDEO_GENERATING"].includes(item.status);
       return itemVideoWaiting
-        ? [item.id, item.status, item.errorMessage, item.videoPromptText, item.videoProviderTaskId, item.videoSubmittedAt]
-        : [item.id, item.status, item.progress, item.errorMessage, item.videoPromptText, item.videoProviderTaskId, item.updatedAt];
+        ? [item.id, item.status, item.errorMessage, item.videoPromptText, item.videoProviderTaskId, item.videoSubmittedAt, item.imageProgressJson]
+        : [item.id, item.status, item.progress, item.errorMessage, item.videoPromptText, item.videoProviderTaskId, item.updatedAt, item.imageProgressJson];
     }),
     assets: (detail.assets || []).map(asset => [asset.id, asset.itemId, asset.assetType, asset.sizeBytes, asset.createdAt])
   });
@@ -5938,7 +5984,7 @@ function aiVideoItemRenderSignature(detail, item) {
     : [item.id, item.name, item.sku, item.sourceFileName, item.status, item.progress,
         item.errorMessage, item.videoPromptText, item.videoProviderTaskId,
         item.videoSubmittedAt, item.updatedAt];
-  return JSON.stringify([state, assets]);
+  return JSON.stringify([state, assets, item.imageProgressJson]);
 }
 
 function changedAiVideoItemIds(previous, next) {
@@ -6032,7 +6078,7 @@ function renderAiVideoTaskList() {
     const status = aiVideoTaskStatusNames[task.status] || task.status;
     const progress = task.status === "VIDEO_GENERATING"
       ? "≤40 分钟"
-      : task.status === "IMAGE_GENERATING" ? `${Number(task.progress || 0)}%` : active ? "当前" : status;
+      : task.status === "IMAGE_GENERATING" ? "生图中" : active ? "当前" : status;
     const unit = task.directReferenceVideo ? "组视频" : "款商品";
     return `<button class="video-task-item ${active ? "active" : ""}" type="button" data-ai-video-task-id="${escapeHtml(task.id)}">
       <i class="${aiVideoTaskStatusClass(task.status)}"></i>
@@ -6475,7 +6521,7 @@ function renderAiVideoTaskDetail(options = {}) {
   const taskProgress = document.querySelector("#ai-video-task-progress");
   taskProgress.textContent = waitingForProviderAcceptance
     ? "等待受理"
-    : mixedVideoSubmissionState ? "提交中" : videoGenerating ? formatAiVideoElapsed(detail.videoSubmittedAt) : `${Number(task.progress || 0)}%`;
+    : mixedVideoSubmissionState ? "提交中" : videoGenerating ? formatAiVideoElapsed(detail.videoSubmittedAt) : imageGenerating ? "准备图片中" : `${Number(task.progress || 0)}%`;
   if (videoGenerating && !waitingForProviderAcceptance && !mixedVideoSubmissionState && detail.videoSubmittedAt) taskProgress.dataset.videoSubmittedAt = detail.videoSubmittedAt;
   else delete taskProgress.dataset.videoSubmittedAt;
   taskProgress.classList.toggle("running", generating);
@@ -6511,7 +6557,7 @@ function renderAiVideoTaskDetail(options = {}) {
     || !["READY", "FAILED", "IMAGE_READY", "VIDEO_READY"].includes(task.status);
   startButton.classList.toggle("needs-reference-configuration", missingRequiredReferences);
   startButton.classList.toggle("is-background-processing", videoGenerating);
-  startButton.textContent = imageGenerating ? `正在准备视频素材 ${Number(task.progress || 0)}%`
+  startButton.textContent = imageGenerating ? "正在准备视频素材"
     : videoGenerating ? "正在后台生成视频"
       : allVideosReady ? "视频已全部完成"
         : task.status === "FAILED" ? "重试视频生成" : directReferenceVideo ? (task.useScriptReferenceVideo ? "提交对象替换视频" : "提交参考图生成视频") : "开始批量生成视频";
@@ -6553,16 +6599,10 @@ function renderAiVideoTaskDetail(options = {}) {
     // The task becomes IMAGE_GENERATING before the worker claims each item. Keep the
     // queued preparation phase visibly alive instead of showing a static empty card.
     const pendingImageDownload = Boolean(item.imageDownloadPending);
-    const pendingImageAttempts = Math.max(1, Number(item.pendingImageDownloadAttempts || 0));
-    const pendingImageAssetType = String(item.pendingImageAssetType || "");
-    const pendingImageLabel = `图片下载第 ${pendingImageAttempts} 次`;
-    const itemImageRunning = ["GENERATING_MODEL", "GENERATING_STORYBOARD"].includes(item.status);
-    const itemImageRetrying = item.status === "FAILED"
-      && (isAiVideoImageDownloadRetry(item.errorMessage) || isAiVideoReferenceFetchError(item.errorMessage) || isAiVideoTransientNetworkError(item.errorMessage));
-    const itemImagePreparing = (imageGenerating || itemImageRunning || itemImageRetrying || pendingImageDownload)
-      && !["VIDEO_FAILED", "VIDEO_READY"].includes(item.status);
-    const modelState = model ? "completed" : itemImagePreparing ? "processing" : "waiting";
-    const shotState = storyboard ? "completed" : itemImagePreparing ? "processing" : "waiting";
+    const imagePresentation = aiVideoImagePresentation(task, item, model, storyboard);
+    const itemImagePreparing = imagePresentation.active;
+    const modelState = imagePresentation.modelState;
+    const shotState = imagePresentation.shotState;
     const itemState = !isModelWear && item.status === "GENERATING_MODEL"
       ? "生成场景主图"
       : aiVideoItemStatusNames[item.status] || item.status;
@@ -6571,7 +6611,10 @@ function renderAiVideoTaskDetail(options = {}) {
     const itemVideoRetrying = item.status === "VIDEO_FAILED"
       && (isAiVideoTransientNetworkError(item.errorMessage) || isAiVideoReferenceFetchError(item.errorMessage) || isAiVideoConcurrencyError(item.errorMessage));
     const itemVideoWaiting = ["VIDEO_SUBMITTING", "VIDEO_GENERATING"].includes(item.status) || itemVideoRetrying;
-    const itemStateLabel = pendingImageDownload ? `${pendingImageLabel} · 单次最长 15 秒` : itemAwaitingAcceptance ? "等待厂商受理" : itemVideoRetrying ? "自动重试中" : itemVideoWaiting ? "后台生成中" : `${itemState} · ${Number(item.progress || 0)}%`;
+    const itemStateLabel = itemAwaitingAcceptance ? "等待厂商受理" : itemVideoRetrying ? "自动重试中" : itemVideoWaiting ? "后台生成中"
+      : imagePresentation.retrying ? "图片等待自动重试"
+      : itemImagePreparing ? (model ? `九宫格 · ${imagePresentation.storyboardLabel}` : `主图 · ${imagePresentation.modelLabel}`)
+      : itemState;
     const source = aiVideoSourceUrl(task.id, item.id, item.createdAt);
     const expanded = expandedAiVideoItemIds.has(item.id);
     if (!expanded) {
@@ -6596,27 +6639,15 @@ function renderAiVideoTaskDetail(options = {}) {
     const storyboardFullUrl = storyboard ? aiVideoAssetUrl(task.id, storyboard.id, storyboard.createdAt) : "";
     const firstFrameUrl = firstFrame ? aiVideoAssetUrl(task.id, firstFrame.id, firstFrame.createdAt) : "";
     const videoUrl = video ? aiVideoAssetUrl(task.id, video.id, video.createdAt) : "";
-    const modelStatusText = model
-      ? "已生成"
-      : pendingImageDownload && pendingImageAssetType === primaryAssetType
-        ? pendingImageLabel
-      : item.status === "GENERATING_MODEL"
-        ? "正在生成"
-        : itemImagePreparing ? "正在准备" : "等待生成";
-    const storyboardStatusText = storyboard
-      ? "已生成"
-      : pendingImageDownload && pendingImageAssetType === "STORYBOARD_GRID"
-        ? pendingImageLabel
-      : item.status === "GENERATING_STORYBOARD"
-        ? "正在生成"
-        : itemImagePreparing && !model ? "准备分镜" : itemImagePreparing ? "正在排队" : "等待生成";
+    const modelStatusText = imagePresentation.modelLabel;
+    const storyboardStatusText = imagePresentation.storyboardLabel;
     const modelCanvas = model
       ? `<img src="${modelUrl}" data-full-src="${modelFullUrl}" alt="${escapeHtml(item.name)} ${escapeHtml(primaryAssetName)}" loading="lazy">`
-      : `<i></i><small>${pendingImageDownload && pendingImageAssetType === primaryAssetType ? `${primaryAssetName}已生成，${pendingImageLabel}` : item.status === "GENERATING_MODEL" ? `正在生成${primaryAssetName}` : itemImagePreparing ? `正在识别商品并准备${primaryAssetName}` : `${primaryAssetName}会输出到这里`}</small>`;
+      : aiVideoImagePlaceholder(modelStatusText, imagePresentation.retrying ? imagePresentation.hint : "主图完成后自动展示");
     const storyboardTiles = storyboard
       ? `<img class="storyboard-grid-image" src="${storyboardUrl}" data-full-src="${storyboardFullUrl}" alt="完整 4K 九宫格分镜图" loading="lazy">`
-      : Array.from({ length: 9 }, (_, index) => `<i aria-label="分镜 ${index + 1} 等待生成"></i>`).join("");
-    const error = item.errorMessage && !pendingImageDownload && !(model && storyboard) ? `<p class="garment-error">${escapeHtml(friendlyAiVideoError(item.errorMessage, "image"))}</p>` : "";
+      : aiVideoImagePlaceholder(storyboardStatusText, imagePresentation.hint);
+    const error = item.errorMessage && !(model && storyboard) ? `<p class="garment-error">${escapeHtml(friendlyAiVideoError(item.errorMessage, "image"))}</p>` : "";
     const flipped = flippedAiVideoPromptItems.has(item.id);
     const editingPrompt = aiVideoPromptDrafts.has(item.id);
     const promptValue = editingPrompt ? aiVideoPromptDrafts.get(item.id) : item.videoPromptText || "";
@@ -6628,7 +6659,7 @@ function renderAiVideoTaskDetail(options = {}) {
       <div class="garment-card-flip">
         <div class="garment-card-face garment-card-front" aria-hidden="${flipped}">
           <header class="garment-card-head">
-            <div class="garment-card-copy"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.sku || item.sourceFileName)}</small></div><div class="garment-card-tools"><button class="garment-prompt-flip" type="button" data-card-flip aria-label="查看本款视频提示词"><i>↻</i><span>提示词</span></button><span class="garment-state ${["FAILED", "VIDEO_FAILED"].includes(item.status) && !pendingImageDownload ? "failed" : generating || pendingImageDownload ? "running" : "ready"}">${escapeHtml(itemStateLabel)}</span>${renderAiVideoCardExpandButton(item, true)}</div></div>
+            <div class="garment-card-copy"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.sku || item.sourceFileName)}</small></div><div class="garment-card-tools"><button class="garment-prompt-flip" type="button" data-card-flip aria-label="查看本款视频提示词"><i>↻</i><span>提示词</span></button><span class="garment-state ${imagePresentation.retrying ? "running" : ["FAILED", "VIDEO_FAILED"].includes(item.status) ? "failed" : itemImagePreparing || itemVideoWaiting ? "running" : "ready"}">${escapeHtml(itemStateLabel)}</span>${renderAiVideoCardExpandButton(item, true)}</div></div>
           </header>
           <div class="garment-download-rail" aria-label="下载生成素材">
             <button type="button" data-download-asset data-url="${firstFrameUrl}" data-filename="${escapeHtml(item.name)}-分镜首帧" ${firstFrame ? "" : "disabled"}><i>↓</i><span>${firstFrame ? "下载首帧（第 01 格）" : "首帧裁切中"}</span></button>
@@ -6637,12 +6668,12 @@ function renderAiVideoTaskDetail(options = {}) {
           <div class="garment-portrait-grid">
             <section class="garment-output-slot garment-original-output completed"><header><strong>原始商品图</strong><span>已上传</span></header><button class="garment-preview real-asset" type="button" data-asset-preview="原始商品图" title="悬停后滚轮缩放，双击还原" aria-label="放大查看 ${escapeHtml(item.name)} 原图"><img src="${source}" alt="${escapeHtml(item.name)} 原始商品图" loading="lazy"></button></section>
             <div class="garment-output-grid">
-              <section class="garment-output-slot model-output ${modelState}" data-model-output><header><strong>${escapeHtml(primaryAssetName)}</strong><div class="storyboard-slot-actions"><span>${modelStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-first-frame title="使用脚本第 01 分镜真实画面重做首帧，并同步重建九宫格">重做</button>` : ""}</div></header><button class="model-output-canvas real-asset" type="button" data-asset-preview="${escapeHtml(primaryAssetName)}" title="用于制作最终九宫格" aria-label="放大查看 ${escapeHtml(primaryAssetName)}">${modelCanvas}</button></section>
-              <section class="garment-output-slot storyboard-output ${shotState}" data-storyboard-output><header><strong>4K 分镜九宫格</strong><div class="storyboard-slot-actions"><span>${storyboardStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-storyboard title="保留 AI 模特图，重建动作底图并重新执行人物替换">${storyboard ? "重建" : "重新生成"}</button>` : ""}</div></header><button class="mini-storyboard real-assets" type="button" data-asset-preview="4K 分镜九宫格" title="9:16 画幅；悬停后滚轮缩放，双击还原" aria-label="放大查看 4K 分镜九宫格">${storyboardTiles}</button></section>
+              <section class="garment-output-slot model-output ${modelState}" data-model-output><header><strong>${escapeHtml(primaryAssetName)}</strong><div class="storyboard-slot-actions"><span>${modelStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-first-frame title="使用脚本第 01 分镜真实画面重做首帧，并同步重建九宫格">重做</button>` : ""}</div></header><button class="model-output-canvas real-asset" type="button" ${model ? "" : "disabled"} data-asset-preview="${escapeHtml(primaryAssetName)}" title="用于制作最终九宫格" aria-label="放大查看 ${escapeHtml(primaryAssetName)}">${modelCanvas}</button>${aiVideoImageAttemptMarkup(imagePresentation.modelStep)}</section>
+              <section class="garment-output-slot storyboard-output ${shotState}" data-storyboard-output><header><strong>4K 分镜九宫格</strong><div class="storyboard-slot-actions"><span>${storyboardStatusText}</span>${canManageVideoTasks && model && !generating ? `<button type="button" data-regenerate-storyboard title="保留 AI 模特图，重建动作底图并重新执行人物替换">${storyboard ? "重建" : "重新生成"}</button>` : ""}</div></header><button class="mini-storyboard real-assets" type="button" ${storyboard ? "" : "disabled"} data-asset-preview="4K 分镜九宫格" title="9:16 画幅；悬停后滚轮缩放，双击还原" aria-label="放大查看 4K 分镜九宫格">${storyboardTiles}</button>${aiVideoImageAttemptMarkup(imagePresentation.gridStep)}</section>
             </div>
           </div>
           ${error}
-          <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemAwaitingAcceptance ? "等待受理" : itemVideoWaiting ? "生成中" : "等待生成"}</span>${providerTaskCopyButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>已保存到平台，可下载</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemAwaitingAcceptance ? "正在提交，等待厂商受理" : itemVideoWaiting ? "视频正在后台生成" : imageGenerating ? "正在自动准备视频素材" : "等待一键生成视频"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemAwaitingAcceptance ? "厂商返回任务 ID 后才会进入视频生成" : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : "点击生成后会自动完成图片与视频两阶段"}</small></div><em${!itemAwaitingAcceptance && itemVideoWaiting && item.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(item.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemAwaitingAcceptance ? "待受理" : itemVideoWaiting ? formatAiVideoElapsed(item.videoSubmittedAt) : "--:--"}</em></button>`}</section>
+          <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemAwaitingAcceptance ? "等待受理" : itemVideoWaiting ? "生成中" : "等待生成"}</span>${providerTaskCopyButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>已保存到平台，可下载</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemAwaitingAcceptance ? "正在提交，等待厂商受理" : itemVideoWaiting ? "视频正在后台生成" : itemImagePreparing ? "正在自动准备视频素材" : "等待一键生成视频"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemAwaitingAcceptance ? "厂商返回任务 ID 后才会进入视频生成" : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : itemImagePreparing ? "图片正在生成或校验，无需重复点击" : "点击生成后会自动完成图片与视频两阶段"}</small></div><em${!itemAwaitingAcceptance && itemVideoWaiting && item.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(item.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemAwaitingAcceptance ? "待受理" : itemVideoWaiting ? formatAiVideoElapsed(item.videoSubmittedAt) : "--:--"}</em></button>`}</section>
         </div>
         <section class="garment-card-face garment-card-back" aria-hidden="${!flipped}">
           <header class="video-prompt-head"><div><strong>${escapeHtml(item.name)}</strong><small>上传顺序：${isModelWear ? "单人首帧" : "商品首帧"} → 4K 九宫格 → 原始商品图</small></div><div class="video-prompt-head-actions">${renderAiVideoCardExpandButton(item, true)}<button class="copy-prompt-button" type="button" data-prompt-copy aria-label="一键复制本款视频提示词"><i aria-hidden="true">⧉</i><span>一键复制</span></button><button type="button" data-card-flip ${editingPrompt ? "disabled" : ""}><i>↻</i> 返回画面</button></div></header>

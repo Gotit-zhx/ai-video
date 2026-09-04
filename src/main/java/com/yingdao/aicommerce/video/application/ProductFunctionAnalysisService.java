@@ -14,13 +14,18 @@ import org.springframework.web.client.RestClient;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -38,15 +43,21 @@ public class ProductFunctionAnalysisService {
     private static final String GARMENT_BLOCK_START = "【服装结构与穿法契约】";
     private static final String GARMENT_BLOCK_END = "【服装结构与穿法契约结束】";
     private static final int MAX_SOURCE_BYTES = 20 * 1024 * 1024;
-    private static final int VALIDATION_MAX_EDGE = 768;
-    private static final int MAX_CONCURRENT_VALIDATIONS = 3;
+    private static final int VALIDATION_MAX_EDGE = 1280;
+    static final int INITIAL_ANALYSIS_MAX_BYTES = 256 * 1024;
+    static final int VALIDATION_MAX_BYTES = 384 * 1024;
+    static final int MAX_INITIAL_ANALYSIS_ATTEMPTS = 2;
+    static final int MAX_VALIDATION_ATTEMPTS = 2;
+    static final int MAX_CONCURRENT_VISION_ANALYSES = 50;
+    // Runtime allows 1000 seconds; leave time for transfer and error serialization.
+    static final int VISION_READ_TIMEOUT_MS = 1_020_000;
+    private static final String GARMENT_TOPOLOGY_VERSION = "GARMENT_TOPOLOGY_V2";
 
     private final AiVideoTaskItemMapper itemMapper;
     private final ModelConfigService modelConfigService;
     private final ObjectMapper objectMapper;
     private final RestClient piClient;
-    private final RestClient piValidationClient;
-    private final Semaphore validationSlots = new Semaphore(MAX_CONCURRENT_VALIDATIONS, true);
+    private final Semaphore visionAnalysisSlots = new Semaphore(MAX_CONCURRENT_VISION_ANALYSES, true);
 
     public ProductFunctionAnalysisService(AiVideoTaskItemMapper itemMapper,
                                           ModelConfigService modelConfigService,
@@ -56,13 +67,11 @@ public class ProductFunctionAnalysisService {
         this.itemMapper = itemMapper;
         this.modelConfigService = modelConfigService;
         this.objectMapper = objectMapper;
+        SimpleClientHttpRequestFactory visionRequestFactory = new SimpleClientHttpRequestFactory();
+        visionRequestFactory.setConnectTimeout(5_000);
+        visionRequestFactory.setReadTimeout(VISION_READ_TIMEOUT_MS);
         this.piClient = RestClient.builder().baseUrl(piRuntimeUrl)
-                .defaultHeader("X-Internal-Token", piRuntimeToken).build();
-        SimpleClientHttpRequestFactory validationRequestFactory = new SimpleClientHttpRequestFactory();
-        validationRequestFactory.setConnectTimeout(5_000);
-        validationRequestFactory.setReadTimeout(190_000);
-        this.piValidationClient = RestClient.builder().baseUrl(piRuntimeUrl)
-                .requestFactory(validationRequestFactory)
+                .requestFactory(visionRequestFactory)
                 .defaultHeader("X-Internal-Token", piRuntimeToken).build();
     }
 
@@ -71,12 +80,14 @@ public class ProductFunctionAnalysisService {
         boolean garment = isGarmentTask(task);
         if (!garment && !isDailyUseCategory(task.getProductCategory())) return null;
         if (item.getProductFunctionAnalysisJson() != null
-                && !item.getProductFunctionAnalysisJson().isBlank()) {
+                && !item.getProductFunctionAnalysisJson().isBlank()
+                && (!garment || hasGarmentTopologyVersion(
+                        item.getProductFunctionAnalysisJson(), GARMENT_TOPOLOGY_VERSION))) {
             return item.getProductFunctionAnalysisJson();
         }
         Exception lastFailure = null;
-        int attempts = garment ? 3 : 1;
-        for (int attempt = 1; attempt <= attempts; attempt++) try {
+        boolean analysisSlotAcquired = false;
+        try {
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId()).orElse(null);
             if (model == null) {
@@ -86,6 +97,9 @@ public class ProductFunctionAnalysisService {
             if (!Files.isRegularFile(source) || Files.size(source) <= 0 || Files.size(source) > MAX_SOURCE_BYTES) {
                 throw new IllegalStateException("商品原图不可用于结构识别");
             }
+            byte[] sourceBytes = Files.readAllBytes(source);
+            ValidationImage analysisImage = compactForInitialAnalysis(
+                    sourceBytes, item.getSourceContentType());
             Map<String, Object> request = new LinkedHashMap<>();
             request.put("model", Map.of(
                     "baseUrl", model.baseUrl(),
@@ -94,40 +108,71 @@ public class ProductFunctionAnalysisService {
                     "apiKey", model.apiKey()
             ));
             Map<String, Object> context = new LinkedHashMap<>();
-            context.put("analysisType", garment ? "GARMENT_TOPOLOGY_V1" : "PRODUCT_FUNCTION_V1");
+            context.put("analysisType", garment ? GARMENT_TOPOLOGY_VERSION : "PRODUCT_FUNCTION_V1");
             context.put("productCategory", garment ? "服装" : "日用品");
-            context.put("itemName", safe(item.getName(), 100));
-            context.put("scriptActionContext", functionalActionContext(task.getScriptJson()));
+            if (!garment) {
+                context.put("itemName", safe(item.getName(), 100));
+                context.put("scriptActionContext", functionalActionContext(task.getScriptJson()));
+            }
             request.put("context", context);
             request.put("image", Map.of(
-                    "mimeType", item.getSourceContentType(),
-                    "data", Base64.getEncoder().encodeToString(Files.readAllBytes(source))
+                    "mimeType", analysisImage.mimeType(),
+                    "data", Base64.getEncoder().encodeToString(analysisImage.bytes())
             ));
-            PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(request)
-                    .retrieve()
-                    .body(PiProductAnalysisResponse.class);
-            if (response == null || response.result() == null) {
-                throw new IllegalStateException("结构识别模型没有返回结果");
+            log.info("Product structure analysis payload compacted for item {}: source {} -> {} bytes",
+                    item.getId(), sourceBytes.length, analysisImage.bytes().length);
+            Map<String, Object> analysisResult = null;
+            String progressAssetType = garment ? "MODEL_IMAGE" : "PRODUCT_SCENE_IMAGE";
+            ImageExecutionProgress.record(itemMapper, item, progressAssetType, "ANALYSIS_QUEUED");
+            visionAnalysisSlots.acquire();
+            analysisSlotAcquired = true;
+            for (int attempt = 1; attempt <= MAX_INITIAL_ANALYSIS_ATTEMPTS; attempt++) {
+                try {
+                    ImageExecutionProgress.record(itemMapper, item, progressAssetType, "ANALYZING");
+                    PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body(request)
+                            .retrieve()
+                            .body(PiProductAnalysisResponse.class);
+                    if (response == null || response.result() == null) {
+                        throw new IllegalStateException("结构识别模型没有返回结果");
+                    }
+                    analysisResult = response.result();
+                    break;
+                } catch (Exception exception) {
+                    lastFailure = exception;
+                    String failure = readable(exception);
+                    log.warn("Product function analysis unavailable for item {} (attempt {}/{}): {}",
+                            item.getId(), attempt, MAX_INITIAL_ANALYSIS_ATTEMPTS, failure);
+                    if (!shouldRetryInitialAnalysisFailure(attempt, failure)) break;
+                    ImageExecutionProgress.record(itemMapper, item, progressAssetType, "ANALYSIS_RETRY_WAIT");
+                    try {
+                        Thread.sleep(750L * attempt);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        lastFailure = interrupted;
+                        break;
+                    }
+                }
             }
-            String json = normalizeAnalysis(response.result(), garment);
-            item.updateProductFunctionAnalysis(json);
-            item.updateVideoPrompt(applyToVideoPrompt(task, item.getVideoPromptText(), json));
-            itemMapper.updateById(item);
-            return json;
+            visionAnalysisSlots.release();
+            analysisSlotAcquired = false;
+            if (analysisResult != null) {
+                // Only transport failures are retried. Schema validation and persistence happen
+                // once so a local data error can never duplicate the paid model request.
+                String json = normalizeAnalysis(analysisResult, garment);
+                item.updateProductFunctionAnalysis(json);
+                item.updateVideoPrompt(applyToVideoPrompt(task, item.getVideoPromptText(), json));
+                itemMapper.updateById(item);
+                return json;
+            }
         } catch (Exception exception) {
             lastFailure = exception;
             log.warn("Product function analysis unavailable for item {}: {}",
                     item.getId(), readable(exception));
-            if (attempt < attempts) {
-                try {
-                    Thread.sleep(750L * attempt);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException("服装结构识别被中断", interrupted);
-                }
-            }
+            if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
+        } finally {
+            if (analysisSlotAcquired) visionAnalysisSlots.release();
         }
         if (garment) {
             throw new IllegalStateException("服装结构识别暂时失败，已阻止无结构契约的错误生图："
@@ -144,7 +189,8 @@ public class ProductFunctionAnalysisService {
         }
         boolean validationSlotAcquired = false;
         try {
-            validationSlots.acquire();
+            ImageExecutionProgress.record(itemMapper, item, assetType, "VALIDATION_QUEUED");
+            visionAnalysisSlots.acquire();
             validationSlotAcquired = true;
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId())
@@ -157,12 +203,7 @@ public class ProductFunctionAnalysisService {
                     "analysisType", "GARMENT_TOPOLOGY_VALIDATION_V1",
                     "assetType", assetType,
                     "expectedTopology", objectMapper.readValue(item.getProductFunctionAnalysisJson(), Map.class),
-                    "framingContract", Map.of(
-                            "personFraming", "头顶至大腿中下段、膝盖上方的中近景",
-                            "minimumFaceHeightRatio", 0.15,
-                            "forbidden", List.of("远景", "全景", "全身", "膝盖以下入镜", "双脚或鞋子入镜", "人物突然缩小", "镜头拉远"),
-                            "productOnlyFraming", "纯商品格必须采用商品近景并让主体填满主要画面"
-                    )
+                    "framingContract", garmentFramingContract()
             ));
             ValidationImage sourceImage = compactForValidation(
                     Files.readAllBytes(source), item.getSourceContentType());
@@ -171,17 +212,51 @@ public class ProductFunctionAnalysisService {
                     "data", Base64.getEncoder().encodeToString(sourceImage.bytes())));
             request.put("candidateImage", Map.of("mimeType", candidateImage.mimeType(),
                     "data", Base64.getEncoder().encodeToString(candidateImage.bytes())));
-            PiProductAnalysisResponse response = piValidationClient.post().uri("/v1/product/analyze")
-                    .contentType(MediaType.APPLICATION_JSON).body(request).retrieve()
-                    .body(PiProductAnalysisResponse.class);
-            if (response == null || response.result() == null) {
-                throw new IllegalStateException("结构复核模型没有返回结果");
+            log.info("Garment validation payload compacted for item {} asset {}: source {} bytes, "
+                            + "candidate {} -> {} bytes",
+                    item.getId(), assetType, sourceImage.bytes().length,
+                    candidateBytes == null ? 0 : candidateBytes.length, candidateImage.bytes().length);
+
+            Exception lastFailure = null;
+            int attemptsPerformed = 0;
+            for (int attempt = 1; attempt <= MAX_VALIDATION_ATTEMPTS; attempt++) {
+                attemptsPerformed = attempt;
+                try {
+                    ImageExecutionProgress.record(itemMapper, item, assetType, "VALIDATING");
+                    PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
+                            .contentType(MediaType.APPLICATION_JSON).body(request).retrieve()
+                            .body(PiProductAnalysisResponse.class);
+                    if (response == null || response.result() == null) {
+                        throw new IllegalStateException("结构复核模型没有返回结果");
+                    }
+                    Map<String, Object> value = response.result();
+                    boolean valid = Boolean.TRUE.equals(value.get("valid"));
+                    List<String> violations = stringList(value.get("violations"), 12, 180);
+                    int violationCount = validationViolationCount(value.get("violationCount"), valid, violations);
+                    return new GarmentValidation(valid, text(value.get("correctionPrompt"), 600),
+                            violations,
+                            value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0,
+                            violationCount);
+                } catch (Exception exception) {
+                    lastFailure = exception;
+                    String failure = readable(exception);
+                    if (!shouldRetryValidationFailure(attempt, failure)) break;
+                    ImageExecutionProgress.record(itemMapper, item, assetType, "VALIDATION_RETRY_WAIT");
+                    log.warn("Garment validation transport unavailable for item {} asset {} "
+                                    + "(attempt {}/{}); retrying the same private candidate: {}",
+                            item.getId(), assetType, attempt, MAX_VALIDATION_ATTEMPTS, failure);
+                    try {
+                        Thread.sleep(750L * attempt);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw interrupted;
+                    }
+                }
             }
-            Map<String, Object> value = response.result();
-            boolean valid = Boolean.TRUE.equals(value.get("valid"));
-            return new GarmentValidation(valid, text(value.get("correctionPrompt"), 600),
-                    stringList(value.get("violations"), 12, 180),
-                    value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0);
+            throw new IllegalStateException("服装结构复核连续失败 " + attemptsPerformed
+                    + " 次，已停止继续等待："
+                    + readable(lastFailure == null ? new IllegalStateException("未知错误") : lastFailure),
+                    lastFailure);
         } catch (Exception exception) {
             if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
             log.warn("Garment validation unavailable for item {}; the private candidate will be rechecked: {}",
@@ -189,8 +264,18 @@ public class ProductFunctionAnalysisService {
             throw new IllegalStateException("服装结构复核暂时失败，已私有保存本次候选图并将在后台继续复核："
                     + readable(exception), exception);
         } finally {
-            if (validationSlotAcquired) validationSlots.release();
+            if (validationSlotAcquired) visionAnalysisSlots.release();
         }
+    }
+
+    static Map<String, Object> garmentFramingContract() {
+        return Map.of(
+                "personFraming", "头顶至大腿中下段、膝盖上方的中近景",
+                "minimumFaceHeightRatio", 0.15,
+                "faceVisibilityPolicy", "正面或侧脸可见时校验脸高；背身、后脑、低头遮脸或商品遮脸时校验头部轮廓高度，不得强行补画五官或转正",
+                "forbidden", List.of("远景", "全景", "全身", "膝盖以下入镜", "双脚或鞋子入镜", "人物突然缩小", "镜头拉远"),
+                "productOnlyFraming", "纯商品格必须采用商品近景并让主体填满主要画面"
+        );
     }
 
     static boolean isTransientValidationFailure(String message) {
@@ -199,44 +284,125 @@ public class ProductFunctionAnalysisService {
         return value.contains("stream ended without finish_reason")
                 || value.contains("stream ended") || value.contains("unexpected end")
                 || value.contains("connection reset") || value.contains("connection closed")
+                || value.contains("connection refused") || value.contains("connectexception")
+                || value.contains("broken pipe")
+                || value.contains("fetch failed") || value.contains("socket")
+                || value.contains("other side closed") || value.contains("terminated")
                 || value.contains("eof") || value.contains("timeout") || value.contains("timed out")
                 || value.contains("temporarily unavailable") || value.contains("没有返回结果")
                 || value.contains("502") || value.contains("503") || value.contains("504");
     }
 
+    static boolean shouldRetryValidationFailure(int failedAttempt, String message) {
+        return failedAttempt < MAX_VALIDATION_ATTEMPTS && isTransientValidationFailure(message);
+    }
+
+    static boolean shouldRetryInitialAnalysisFailure(int failedAttempt, String message) {
+        return failedAttempt < MAX_INITIAL_ANALYSIS_ATTEMPTS && isTransientValidationFailure(message);
+    }
+
+    static ValidationImage compactForInitialAnalysis(byte[] sourceBytes, String sourceMimeType) {
+        return compactForVisionAnalysis(
+                sourceBytes, sourceMimeType, INITIAL_ANALYSIS_MAX_BYTES);
+    }
+
     static ValidationImage compactForValidation(byte[] sourceBytes, String sourceMimeType) {
+        return compactForVisionAnalysis(sourceBytes, sourceMimeType, VALIDATION_MAX_BYTES);
+    }
+
+    private static ValidationImage compactForVisionAnalysis(
+            byte[] sourceBytes, String sourceMimeType, int maxBytes) {
         if (sourceBytes == null || sourceBytes.length == 0) {
             return new ValidationImage(sourceMimeType, sourceBytes == null ? new byte[0] : sourceBytes);
         }
+        BufferedImage source;
         try {
-            BufferedImage source = ImageIO.read(new ByteArrayInputStream(sourceBytes));
-            if (source == null || source.getWidth() <= 0 || source.getHeight() <= 0) {
-                return new ValidationImage(sourceMimeType, sourceBytes);
+            source = ImageIO.read(new ByteArrayInputStream(sourceBytes));
+        } catch (Exception exception) {
+            throw new IllegalStateException("AI 视觉分析图片无法解码", exception);
+        }
+        if (source == null || source.getWidth() <= 0 || source.getHeight() <= 0) {
+            throw new IllegalStateException("AI 视觉分析图片无法解码");
+        }
+        try {
+            byte[] smallest = null;
+            int previousWidth = -1;
+            int previousHeight = -1;
+            // Real product photos normally satisfy the cap at 1280 px. The smaller sizes are
+            // deterministic safety fallbacks for unusually noisy PNGs, never the saved original.
+            for (int maxEdge : new int[] {VALIDATION_MAX_EDGE, 1120, 960, 800, 640}) {
+                BufferedImage compact = resizeValidationImage(source, maxEdge);
+                if (compact.getWidth() == previousWidth && compact.getHeight() == previousHeight) continue;
+                previousWidth = compact.getWidth();
+                previousHeight = compact.getHeight();
+                for (float quality : new float[] {0.82f, 0.74f, 0.66f, 0.58f, 0.50f}) {
+                    byte[] encoded = encodeValidationJpeg(compact, quality);
+                    if (smallest == null || encoded.length < smallest.length) smallest = encoded;
+                    if (encoded.length <= maxBytes) {
+                        return new ValidationImage("image/jpeg", encoded);
+                    }
+                }
             }
-            double scale = Math.min(1.0, (double) VALIDATION_MAX_EDGE
-                    / Math.max(source.getWidth(), source.getHeight()));
-            int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
-            int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
-            BufferedImage compact = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-            Graphics2D graphics = compact.createGraphics();
+            throw new IllegalStateException("AI 视觉分析副本超过体积上限："
+                    + (smallest == null ? 0 : smallest.length) + " bytes");
+        } catch (Exception exception) {
             try {
-                graphics.setColor(Color.WHITE);
-                graphics.fillRect(0, 0, width, height);
-                graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                        RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-                graphics.setRenderingHint(RenderingHints.KEY_RENDERING,
-                        RenderingHints.VALUE_RENDER_QUALITY);
-                graphics.drawImage(source, 0, 0, width, height, null);
-            } finally {
-                graphics.dispose();
+                return visionAnalysisOriginalIfSmall(sourceBytes, sourceMimeType, maxBytes);
+            } catch (Exception fallbackFailure) {
+                fallbackFailure.addSuppressed(exception);
+                throw fallbackFailure;
             }
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            if (!ImageIO.write(compact, "jpeg", output) || output.size() == 0) {
-                return new ValidationImage(sourceMimeType, sourceBytes);
-            }
-            return new ValidationImage("image/jpeg", output.toByteArray());
-        } catch (Exception ignored) {
+        }
+    }
+
+    private static ValidationImage visionAnalysisOriginalIfSmall(
+            byte[] sourceBytes, String sourceMimeType, int maxBytes) {
+        if (sourceBytes.length <= maxBytes
+                && sourceMimeType != null
+                && sourceMimeType.matches("(?i)^image/(jpeg|png|webp)$")) {
             return new ValidationImage(sourceMimeType, sourceBytes);
+        }
+        throw new IllegalStateException("AI 视觉分析图片无法压缩，已拒绝发送过大原图");
+    }
+
+    private static BufferedImage resizeValidationImage(BufferedImage source, int maxEdge) {
+        double scale = Math.min(1.0, (double) maxEdge
+                / Math.max(source.getWidth(), source.getHeight()));
+        int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
+        int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
+        BufferedImage compact = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = compact.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, width, height);
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING,
+                    RenderingHints.VALUE_RENDER_QUALITY);
+            graphics.drawImage(source, 0, 0, width, height, null);
+        } finally {
+            graphics.dispose();
+        }
+        return compact;
+    }
+
+    private static byte[] encodeValidationJpeg(BufferedImage image, float quality) throws IOException {
+        ImageWriter writer = ImageIO.getImageWritersByFormatName("jpeg").next();
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream();
+             ImageOutputStream imageOutput = ImageIO.createImageOutputStream(output)) {
+            writer.setOutput(imageOutput);
+            ImageWriteParam parameters = writer.getDefaultWriteParam();
+            if (parameters.canWriteCompressed()) {
+                parameters.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                parameters.setCompressionQuality(quality);
+            }
+            writer.write(null, new IIOImage(image, null, null), parameters);
+            imageOutput.flush();
+            byte[] encoded = output.toByteArray();
+            if (encoded.length == 0) throw new IOException("JPEG encoder returned an empty image");
+            return encoded;
+        } finally {
+            writer.dispose();
         }
     }
 
@@ -247,7 +413,16 @@ public class ProductFunctionAnalysisService {
             // Normal collars and sleeves can drift just as easily as special/asymmetric garments,
             // especially in the last storyboard cells. Every analyzed garment therefore needs the
             // same source-vs-candidate gate; the validator decides which visible structures matter.
-            return "GARMENT_TOPOLOGY_V1".equals(text(value.get("version"), 40));
+            return text(value.get("version"), 40).startsWith("GARMENT_TOPOLOGY_V");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private boolean hasGarmentTopologyVersion(String analysisJson, String expectedVersion) {
+        try {
+            Map<String, Object> value = objectMapper.readValue(analysisJson, new TypeReference<>() {});
+            return expectedVersion.equals(text(value.get("version"), 40));
         } catch (Exception ignored) {
             return false;
         }
@@ -257,7 +432,7 @@ public class ProductFunctionAnalysisService {
         if (analysisJson == null || analysisJson.isBlank()) return "";
         try {
             Map<String, Object> value = objectMapper.readValue(analysisJson, new TypeReference<>() {});
-            if ("GARMENT_TOPOLOGY_V1".equals(text(value.get("version"), 40))) {
+            if (text(value.get("version"), 40).startsWith("GARMENT_TOPOLOGY_V")) {
                 if (!isGarmentTask(task)) return "";
                 return garmentPromptBlock(value);
             }
@@ -307,12 +482,14 @@ public class ProductFunctionAnalysisService {
         return objectMapper.writeValueAsString(normalized);
     }
 
-    private String normalizeGarmentAnalysis(Map<String, Object> source) throws Exception {
+    String normalizeGarmentAnalysis(Map<String, Object> source) throws Exception {
         Map<String, Object> normalized = new LinkedHashMap<>();
-        normalized.put("version", "GARMENT_TOPOLOGY_V1");
+        normalized.put("version", GARMENT_TOPOLOGY_VERSION);
         normalized.put("garmentType", text(source.get("garmentType"), 100));
         normalized.put("topologyClass", text(source.get("topologyClass"), 100));
-        normalized.put("asymmetrical", Boolean.TRUE.equals(source.get("asymmetrical")));
+        if (source.get("asymmetrical") instanceof Boolean asymmetrical) {
+            normalized.put("asymmetrical", asymmetrical);
+        }
         normalized.put("structureSymmetry", text(source.get("structureSymmetry"), 100));
         normalized.put("wearingSidePolicy", text(source.get("wearingSidePolicy"), 100));
         normalized.put("imageLeftShoulderState", text(source.get("imageLeftShoulderState"), 100));
@@ -323,6 +500,12 @@ public class ProductFunctionAnalysisService {
         normalized.put("imageRightSleeve", text(source.get("imageRightSleeve"), 100));
         normalized.put("wearerLeftSleeve", text(source.get("wearerLeftSleeve"), 100));
         normalized.put("wearerRightSleeve", text(source.get("wearerRightSleeve"), 100));
+        Object visibleSleeveCount = source.get("visibleSleeveCount");
+        if (visibleSleeveCount instanceof Number number) {
+            normalized.put("visibleSleeveCount", Math.max(0, Math.min(4, number.intValue())));
+        }
+        normalized.put("openingInventory", stringList(source.get("openingInventory"), 8, 140));
+        normalized.put("seamConnections", stringList(source.get("seamConnections"), 10, 140));
         normalized.put("necklinePath", text(source.get("necklinePath"), 220));
         normalized.put("supportElements", stringList(source.get("supportElements"), 8, 140));
         normalized.put("viewpointProjectionRule", text(source.get("viewpointProjectionRule"), 240));
@@ -331,37 +514,54 @@ public class ProductFunctionAnalysisService {
         normalized.put("forbiddenChanges", stringList(source.get("forbiddenChanges"), 12, 140));
         normalized.put("visualEvidence", stringList(source.get("visualEvidence"), 8, 140));
         normalized.put("uncertainties", stringList(source.get("uncertainties"), 6, 140));
+        requireGarmentTopologyFields(normalized);
         Object confidence = source.get("confidence");
         normalized.put("confidence", confidence instanceof Number number
                 ? Math.max(0.0, Math.min(1.0, number.doubleValue())) : 0.0);
         return objectMapper.writeValueAsString(normalized);
     }
 
+    private void requireGarmentTopologyFields(Map<String, Object> value) {
+        List<String> missing = new ArrayList<>();
+        for (String field : List.of("garmentType", "topologyClass", "structureSymmetry",
+                "wearingSidePolicy", "imageLeftShoulderState", "imageRightShoulderState",
+                "wearerLeftShoulderState", "wearerRightShoulderState", "imageLeftSleeve",
+                "imageRightSleeve", "wearerLeftSleeve", "wearerRightSleeve", "necklinePath",
+                "viewpointProjectionRule")) {
+            if (!(value.get(field) instanceof String text) || text.isBlank()) missing.add(field);
+        }
+        for (String field : List.of("openingInventory", "seamConnections", "wearingMethod",
+                "fixedStructures", "forbiddenChanges", "visualEvidence")) {
+            if (!(value.get(field) instanceof List<?> entries) || entries.isEmpty()) missing.add(field);
+        }
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException("服装结构识别结果缺少必填字段：" + String.join(", ", missing));
+        }
+    }
+
     private String garmentPromptBlock(Map<String, Object> value) {
         StringBuilder block = new StringBuilder(GARMENT_BLOCK_START).append('\n');
-        append(block, "品类", text(value.get("garmentType"), 50));
-        append(block, "结构类型", text(value.get("topologyClass"), 60));
-        append(block, "衣片结构", text(value.get("structureSymmetry"), 80));
-        append(block, "露肩侧策略", text(value.get("wearingSidePolicy"), 100));
+        block.append("原图可见像素是最高真值；以下内容只是按原图整理的结构证据，若有冲突以原图为准。\n");
         append(block, "原图画面左侧肩部", text(value.get("imageLeftShoulderState"), 60));
         append(block, "原图画面右侧肩部", text(value.get("imageRightShoulderState"), 60));
-        append(block, "穿着者左肩", text(value.get("wearerLeftShoulderState"), 60));
-        append(block, "穿着者右肩", text(value.get("wearerRightShoulderState"), 60));
         append(block, "原图画面左侧袖", text(value.get("imageLeftSleeve"), 60));
         append(block, "原图画面右侧袖", text(value.get("imageRightSleeve"), 60));
-        append(block, "穿着者左袖", text(value.get("wearerLeftSleeve"), 60));
-        append(block, "穿着者右袖", text(value.get("wearerRightSleeve"), 60));
+        append(block, "原图可见袖子总数", text(value.get("visibleSleeveCount"), 20));
+        append(block, "开口清单", join(value.get("openingInventory"), 220));
+        append(block, "缝线连接清单", join(value.get("seamConnections"), 260));
         append(block, "领口路径", text(value.get("necklinePath"), 180));
         append(block, "肩带与支撑", join(value.get("supportElements"), 180));
+        append(block, "像素证据", join(value.get("visualEvidence"), 240));
+        append(block, "穿着者左肩", text(value.get("wearerLeftShoulderState"), 60));
+        append(block, "穿着者右肩", text(value.get("wearerRightShoulderState"), 60));
+        append(block, "穿着者左袖", text(value.get("wearerLeftSleeve"), 60));
+        append(block, "穿着者右袖", text(value.get("wearerRightSleeve"), 60));
+        append(block, "穿着侧约束", text(value.get("wearingSidePolicy"), 100));
         append(block, "视角投影", text(value.get("viewpointProjectionRule"), 200));
         append(block, "实际穿法", join(value.get("wearingMethod"), 220));
         append(block, "固定结构", join(value.get("fixedStructures"), 260));
         append(block, "禁止变化", join(value.get("forbiddenChanges"), 300));
-        block.append("以上是商品身份的一部分。AI 模特图、纯商品展示、九宫格 01–09 和最终视频逐帧都必须保持同一领口路径、袖子数量、肩带连接与穿着策略；")
-                .append("结构性非对称款锁定穿着者身体侧；镜头转到背面时屏幕左右可按真实透视反转，但衣服相对身体绝不能换侧。")
-                .append("宽船领等可左右露肩款在 AI 主图选定一次穿法后，后续九宫格和视频继承该穿法，不得逐格换侧。")
-                .append("人物手里拿着、展开、包装中、折叠、贴身比对和领口特写时，展示物仍是同一结构商品：领口必须沿上述领口路径连续存在，左右肩覆盖、袖子数量及连接点不得因未穿着而重建。若结构类型为斜肩、单肩、宽船领或露肩，手持状态绝不能补成居中的封闭圆领；若结构类型为普通圆领，则不得擅自改成斜肩或露肩。")
-                .append("不得按普通圆领短袖补齐、错误对称化、增删袖子、删除肩带或改变穿法。原图方向与文字/印花的正常阅读方向共同用于校验，禁止把整件衣服镜像。\n")
+        block.append("所有出镜状态只复现上述当前商品证据；不要重新分类，也不要套用其他款式的通用规则。\n")
                 .append(GARMENT_BLOCK_END);
         return block.toString();
     }
@@ -457,6 +657,18 @@ public class ProductFunctionAnalysisService {
         return text(value, maxLength);
     }
 
+    static int validationViolationCount(Object rawCount, boolean valid, List<String> violations) {
+        if (valid) return 0;
+        if (rawCount instanceof Number number) {
+            long count = number.longValue();
+            if (count > 0) {
+                long listedCount = violations == null ? 0 : violations.size();
+                return (int) Math.min(Integer.MAX_VALUE, Math.max(count, listedCount));
+            }
+        }
+        return violations == null || violations.isEmpty() ? Integer.MAX_VALUE : violations.size();
+    }
+
     private String readable(Exception exception) {
         Throwable current = exception;
         while (current.getCause() != null) current = current.getCause();
@@ -466,7 +678,13 @@ public class ProductFunctionAnalysisService {
     private record PiProductAnalysisResponse(Map<String, Object> result, String modelId, long latencyMs) {}
 
     public record GarmentValidation(boolean valid, String correctionPrompt,
-                                    List<String> violations, double confidence) {}
+                                    List<String> violations, double confidence, int violationCount) {
+        public GarmentValidation(boolean valid, String correctionPrompt,
+                                 List<String> violations, double confidence) {
+            this(valid, correctionPrompt, violations, confidence,
+                    validationViolationCount(null, valid, violations));
+        }
+    }
 
     record ValidationImage(String mimeType, byte[] bytes) {}
 }

@@ -294,7 +294,7 @@ public class AiVideoTaskController {
                                Instant videoSubmittedAt,
                                boolean imageDownloadPending, String pendingImageAssetType,
                                int pendingImageDownloadAttempts, Instant pendingImageUpdatedAt,
-                               Instant createdAt, Instant updatedAt) {
+                               Instant createdAt, Instant updatedAt, String imageProgressJson) {
         static ItemResponse from(AiVideoTaskItem item) {
             return from(item, null, null, null);
         }
@@ -306,7 +306,7 @@ public class AiVideoTaskController {
                     videoSubmittedAt,
                     pending != null, pending == null ? null : pending.assetType(),
                     pending == null ? 0 : pending.attempts(), pending == null ? null : pending.updatedAt(),
-                    item.getCreatedAt(), item.getUpdatedAt());
+                    item.getCreatedAt(), item.getUpdatedAt(), item.getImageProgressJson());
         }
     }
 

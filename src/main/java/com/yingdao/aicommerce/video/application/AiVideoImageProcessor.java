@@ -27,6 +27,8 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
@@ -38,10 +40,11 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -55,14 +58,20 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class AiVideoImageProcessor {
-    private static final int MAX_ITEM_RECOVERY_CONCURRENCY = 64;
+    private static final Logger log = LoggerFactory.getLogger(AiVideoImageProcessor.class);
+    static final int MAX_TOPOLOGY_REDRAWS = 3;
+    static final int MAX_TOPOLOGY_GENERATIONS = 1 + MAX_TOPOLOGY_REDRAWS;
+    private static final double STORYBOARD_FIRST_CELL_SAFE_SCALE = 0.95d;
     private static final String CLOSE_FRAMING_GATE_VERSION = "CLOSE_FRAMING_GATE_V1";
+    static final String PRODUCT_REAL_FRAME_BACKGROUND_REQUIREMENT =
+            "背景逐格沿用参考图2对应位置的原视频真实场景；连续分镜锁定空间、材质、光线和机位关系，原视频明确换景时才切换。";
+    static final String PRODUCT_REAL_FRAME_OUTPUT_CHECK =
+            "输出前把生成结果与参考图2逐格核对：01→09 的手部有无、进入方向、接触点、商品位置、朝向、动作与光影阶段必须一一对应；"
+                    + "景别和主体尺度不继承原远景，所有商品出镜格统一为主体填满主要画面的商品近景；";
     private static final String PORTRAIT_4K_SIZE = "2160x3840";
     private static final String PORTRAIT_4K_REQUIREMENT = "最终必须输出实际像素为 2160×3840 的 9:16 竖屏 4K 图片，"
             + "不是仅在画面风格上表现为高清；主体边缘、服装纹理、印花和背景细节必须清晰可辨。";
@@ -87,29 +96,32 @@ public class AiVideoImageProcessor {
             + "但必须像现实生活中的具体个人而不是统一网红模板。眉眼、鼻头、唇形、脸颊与下颌保留克制的个人特征和轻微左右差异；"
             + "妆容为轻薄伪素颜：薄而透的底妆不遮掉毛孔与细小瑕疵，眉毛只轻微整理，眼妆极淡，使用接近原生的自然唇色。"
             + "不使用浓眼线、夸张睫毛、假睫毛、明显卧蚕、高饱和眼影、强腮红、高光修容或玻璃唇；"
-            + "眼睛大小与脸型比例自然，不追求网红大眼。嘴唇放松，眼神有明确落点，像朋友用手机临时拍下的自然一瞬。";
-    private static final String ANTI_MANNEQUIN_REQUIREMENT = "人物处在真实呼吸与承重状态：一侧肩髋略低，重心落在一条腿，双手姿态不完全相同，"
+            + "眼睛大小与脸型比例自然，不追求网红大眼。嘴唇放松且自然闭合，不露齿、不张口，不呈现说话、唱歌或对口型姿态；眼神有明确落点，像朋友用手机临时拍下的自然一瞬。";
+    private static final String ANTI_MANNEQUIN_REQUIREMENT = "人物处在真实呼吸与承重状态：一侧肩髋略低，重心落在一条腿，构图内可见手臂姿态不完全相同，"
             + "颈肩、锁骨和衣料褶皱呈现同一受力关系。人物边缘、发丝、皮肤和背景都服从同一现场光线；"
             + "保留手机照片自然的局部锐度差和暗部细微传感器纹理，4K 只增加真实信息，不把人脸处理成均匀、对称、无表情的假人。";
     private static final String FACE_COLOR_CONTINUITY_REQUIREMENT = "【肤色连续】脸、耳、颈、锁骨、手臂和双腿属于同一暖中性自然肤色，"
             + "明暗与冷暖只随现场光线渐变；脸颊可有极淡且不对称的血色，鼻翼和眼下保留细微真实色差。"
             + "不得出现灰脸、黄绿脸、单独脸部滤镜、粉底面具边界或脸颈色温断层。";
-    private static final String DIGNIFIED_STYLING_REQUIREMENT = "本规则只约束鞋履，不约束也不得改写上衣、下装、配色、配饰或整体穿搭。"
-            + "只有画面本来能看见脚部时，才必须穿完整且合脚的普通日常鞋，优先简洁干净的休闲鞋或低帮鞋；不得为了展示鞋子把人物缩小或把相机拉远。"
-            + "禁止赤脚、只穿袜子、拖鞋、酒店拖鞋、鞋子残缺或鞋子凭空消失。九宫格中鞋款与颜色保持一致。";
     private static final String CLOSE_PORTRAIT_COMPOSITION_REQUIREMENT = "【中近景门禁版本：CLOSE_FRAMING_GATE_V1】【近距离清晰构图｜最高优先级】相机相对原全身构图向前推进约二分之一距离，"
             + "这不是完整全身照。按示例红框比例构图：画面上沿在头顶上方保留 5%–8% 空间，画面下沿必须明确落在大腿中下段至膝盖上方，膝盖、小腿、双脚和鞋子必须位于画面之外且不可见。"
-            + "头顶、完整五官、胸前商品、双肩、双臂和执行动作的双手必须清楚入镜；不能为了保留双脚或展示整套穿搭而缩小人物。"
+            + "头顶、完整五官、胸前商品、双肩、构图内可见手臂和执行动作实际需要的手必须清楚入镜；不可见的手臂或手无需补出，不能为了保留双脚或展示整套穿搭而缩小人物。"
             + "人脸从发际线到下巴的有效高度不得低于整张 2160×3840 图片高度的 15%，约 575 像素，"
             + "双眼虹膜边缘、上下眼睑、鼻翼、唇线、毛孔和细小绒毛必须具有真实可辨的像素信息。必须通过真实相机靠近和重新构图获得清晰度，禁止先生成远景再数码放大、裁切或锐化。";
     private static final String GRID_FACE_PIXEL_REQUIREMENT = "【中近景门禁版本：CLOSE_FRAMING_GATE_V1】【九宫格中近景硬约束｜覆盖脚本景别】每个 720×1280 子画面只要有人物，就必须采用头顶至大腿中下段、接近膝盖上方的中近景。"
-            + "格子下边界必须落在大腿中下段至膝盖上方，膝盖、小腿、双脚和鞋子不可见且始终位于画面之外；每张脸从发际线到下巴不得低于单格高度的 15%，约 190 像素。头顶、五官、胸前商品、双臂和执行动作的双手必须完整清楚，"
+            + "格子下边界必须落在大腿中下段至膝盖上方，膝盖、小腿、双脚和鞋子不可见且始终位于画面之外；正面或侧脸可见格中，脸从发际线到下巴不得低于单格高度的 15%，约 190 像素。背身、后脑、低头遮脸或商品遮脸格不得为通过校验强行补画五官或把人物转正，改以头部轮廓不低于单格高度的 15% 锁定人物尺度。头顶、该朝向自然可见的五官、本格按脚本可见的当前商品部位、构图内可见手臂和本格动作实际需要的手必须清楚，不可见肢体无需补出，"
             + "不得为了保留全身、脚部、背景或原视频远景而缩小人物。即使脚本、原视频、参考图或 shotSize 写了远景、全景、全身、拉远、后退、看到脚部，也必须改写成中近景内能够完成的动作和运镜；"
             + "纯商品格采用填满主体区域的商品近景。01–09 的主体尺度必须稳定，禁止任何一格突然拉远。";
+    private static final String GRID_POSE_SCALE_REQUIREMENT = "【动作底图尺度】每个 720×1280 子画面采用头顶至大腿中下段的中近景；"
+            + "无脸人体的头部轮廓高度不得低于单格高度的 15%，但不得生成可识别五官。构图内自然可见的头部、躯干、手臂及本格动作实际需要的手部结构必须完整；被遮挡或出画的肢体无需补出，"
+            + "不为显示膝盖以下、双脚、鞋子或原视频远景而缩小人物；纯商品格采用填满主体区域的商品近景。";
     private static final String FABRIC_AND_PRODUCT_REALISM_REQUIREMENT = "材质必须按真实物理方式受光：棉料保留细微织纹、厚薄、"
             + "缝线和受力褶皱，印花贴合布面起伏而非悬浮；纸、塑料、玻璃、金属和木材分别呈现正确的漫反射、粗糙度、"
             + "透光或反射特征。避免所有表面同样光滑、边缘融化、无来源高光和不符合重力的悬浮。"
             + "布料在任何姿态下都保留重量、柔软度、连续褶皱和真实支撑关系，不得像纸板、塑料片或硬壳。";
+    private static final String GARMENT_PIXEL_STRUCTURE_REQUIREMENT = "【商品结构】参考图1可见像素是最高真值，结构摘要只用于指出细节。"
+            + "复现原商品的外轮廓、领口路径、左右袖片与袖口、开口、肩带和可见接缝连接。露肩或斜领不等于无袖；"
+            + "参考图1两侧各有袖片与袖口时必须保留两袖。不得镜像、换侧或改成相似款。";
     private static final String FABRIC_GRIP_PHYSICS_REQUIREMENT = "【仅限本格明确提拉布料时的重力】手指捏住、提起或掀起衣角、下摆、袖口时，接触点必须准确贴合指腹；只有捏住的位置被向上牵引，未被支撑的布料受重力向下垂落，"
             + "尤其捏住领口或肩部一角时，被捏角是全件衣服唯一最高受力点，对侧领口、对侧肩袖和衣摆必须明显低于捏点并耷拉下去，衣服重心垂直落在捏点下方；"
             + "从受力点向外形成疏密自然的放射状张力褶皱和弧形垂坠，下摆有轻微滞后、惯性与阻尼。禁止整片衣服像纸板、塑料片或硬壳一样平直抬起，"
@@ -125,11 +137,11 @@ public class AiVideoImageProcessor {
     private final AiVideoGenerationService videoGenerationService;
     private final ObjectMapper objectMapper;
     private final RestClient piClient;
+    private final ImageRuntimeProgress imageRuntimeProgress;
     private final Executor imageExecutor;
     private final Executor imageCoordinatorExecutor;
     private final Set<String> activeGenerationTaskIds = ConcurrentHashMap.newKeySet();
-    private final Set<String> activeGenerationItemIds = ConcurrentHashMap.newKeySet();
-    private final Semaphore itemRecoverySlots = new Semaphore(MAX_ITEM_RECOVERY_CONCURRENCY);
+    private final Set<String> generationContinuationTaskIds = ConcurrentHashMap.newKeySet();
     private final Path storageRoot;
     private final Path videoScriptStorageRoot;
     private final OssStorageService ossStorage;
@@ -163,9 +175,13 @@ public class AiVideoImageProcessor {
         this.imageCoordinatorExecutor = imageCoordinatorExecutor;
         this.ossStorage = ossStorage.getIfAvailable();
         this.piClient = RestClient.builder().baseUrl(piRuntimeUrl).defaultHeader("X-Internal-Token", piRuntimeToken).build();
+        this.imageRuntimeProgress = new ImageRuntimeProgress(itemMapper, piClient);
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
         this.videoScriptStorageRoot = Path.of(videoScriptStorageRoot).toAbsolutePath().normalize();
     }
+
+    @Scheduled(fixedDelay = 2_000)
+    public void refreshImageExecutionProgress() { imageRuntimeProgress.poll(); }
 
     public void prepare(AiVideoTask task) {
         ModelConfigService.RuntimeModelConnection model = modelConfigService.imageConnection(task.getOrganizationId())
@@ -195,7 +211,9 @@ public class AiVideoImageProcessor {
                         .eq(AiVideoTask::isAutoStartVideoAfterImages, true)
                         .in(AiVideoTask::getStatus, List.of("IMAGE_READY", "FAILED"))
                         .or()
-                        .eq(AiVideoTask::getStatus, "FAILED"))
+                        .eq(AiVideoTask::getStatus, "FAILED")
+                        .or()
+                        .eq(AiVideoTask::getStatus, "IMAGE_READY").isNotNull(AiVideoTask::getErrorMessage))
                 .orderByDesc(AiVideoTask::getUpdatedAt)
                 .last("LIMIT 100"));
         for (AiVideoTask task : recoverable) {
@@ -204,22 +222,35 @@ public class AiVideoImageProcessor {
                         .eq(AiVideoTaskItem::getTaskId, task.getId()));
                 List<AiVideoTaskItem> failedItems = items.stream()
                         .filter(item -> "FAILED".equals(item.getStatus())).toList();
+                boolean hasFailedItem = !failedItems.isEmpty();
+                boolean hasTerminalTaskFailure = terminalTaskFailureWithoutFailedItem(
+                        task.getStatus(), task.getErrorMessage(), hasFailedItem);
+                boolean hasRetryableTaskFailure = "FAILED".equals(task.getStatus())
+                        && !hasFailedItem && !hasTerminalTaskFailure;
                 boolean hasTerminalFailure = failedItems.stream()
-                        .anyMatch(item -> !retryableImageTransientFailure(item.getErrorMessage()));
+                        .anyMatch(item -> !retryableImageTransientFailure(item.getErrorMessage()))
+                        || hasTerminalTaskFailure;
                 boolean hasRetryableFailure = failedItems.stream()
-                        .anyMatch(item -> retryableImageTransientFailure(item.getErrorMessage()));
+                        .anyMatch(item -> retryableImageTransientFailure(item.getErrorMessage()))
+                        || hasRetryableTaskFailure;
                 boolean retryDelayElapsed = failedItems.stream()
                         .filter(item -> retryableImageTransientFailure(item.getErrorMessage()))
                         .map(AiVideoTaskItem::getUpdatedAt)
                         .filter(value -> value != null)
                         .anyMatch(value -> !value.isAfter(retryBefore));
-                if (hasTerminalFailure) {
+                if (hasRetryableTaskFailure) {
+                    Instant updatedAt = task.getUpdatedAt();
+                    retryDelayElapsed = retryDelayElapsed
+                            || updatedAt == null || !updatedAt.isAfter(retryBefore);
+                }
+                if (hasTerminalFailure && !hasRetryableFailure) {
                     if (task.isAutoStartVideoAfterImages()) {
                         task.consumeAutoStartVideo();
                         taskMapper.updateById(task);
                     }
                     continue;
                 }
+                if (!hasRetryableFailure && !task.isAutoStartVideoAfterImages()) continue;
                 if (hasRetryableFailure && !retryDelayElapsed) continue;
                 prepare(task);
                 dispatchRecoveredGeneration(task.getId());
@@ -227,115 +258,20 @@ public class AiVideoImageProcessor {
                 // Another request may have claimed the task between select and update.
             }
         }
-        List<AiVideoTask> interruptedImageTasks = taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
-                .eq(AiVideoTask::getStatus, "IMAGE_GENERATING")
-                .orderByDesc(AiVideoTask::getUpdatedAt)
-                .last("LIMIT 100"));
+        List<AiVideoTask> interruptedImageTasks = taskMapper.selectList(
+                new LambdaQueryWrapper<AiVideoTask>()
+                        .eq(AiVideoTask::getStatus, "IMAGE_GENERATING")
+                        .le(AiVideoTask::getUpdatedAt, Instant.now().minus(Duration.ofSeconds(30)))
+                        .orderByAsc(AiVideoTask::getUpdatedAt)
+                        .last("LIMIT 100"));
         for (AiVideoTask task : interruptedImageTasks) dispatchRecoveredGeneration(task.getId());
         List<AiVideoTask> pipelined = taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
                 .eq(AiVideoTask::getStatus, "VIDEO_GENERATING")
                 .orderByDesc(AiVideoTask::getUpdatedAt)
                 .last("LIMIT 100"));
         for (AiVideoTask task : pipelined) dispatchRecoveredGeneration(task.getId());
-        recoverPendingImageDownloads(retryBefore);
-        recoverRetryableFailedItems();
     }
 
-    private void recoverPendingImageDownloads(Instant retryBefore) {
-        List<AiVideoPendingImageResult> pendingResults = pendingImageResultMapper.selectList(
-                new LambdaQueryWrapper<AiVideoPendingImageResult>()
-                        .le(AiVideoPendingImageResult::getUpdatedAt, retryBefore)
-                        .orderByAsc(AiVideoPendingImageResult::getUpdatedAt)
-                        .last("LIMIT 100"));
-        for (AiVideoPendingImageResult pending : pendingResults) {
-            if (!itemRecoverySlots.tryAcquire()) break;
-            if (!activeGenerationItemIds.add(pending.getItemId())) {
-                itemRecoverySlots.release();
-                continue;
-            }
-            try {
-                imageExecutor.execute(() -> {
-                    try {
-                        recoverPendingImageDownload(pending);
-                    } finally {
-                        activeGenerationItemIds.remove(pending.getItemId());
-                        itemRecoverySlots.release();
-                    }
-                });
-            } catch (RuntimeException exception) {
-                activeGenerationItemIds.remove(pending.getItemId());
-                itemRecoverySlots.release();
-                throw exception;
-            }
-        }
-    }
-
-    private void recoverRetryableFailedItems() {
-        List<AiVideoTaskItem> failedItems = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
-                .eq(AiVideoTaskItem::getStatus, "FAILED")
-                .orderByAsc(AiVideoTaskItem::getUpdatedAt)
-                .last("LIMIT 200"));
-        for (AiVideoTaskItem item : failedItems) {
-            if (!retryableImageTransientFailure(item.getErrorMessage())) continue;
-            AiVideoTask task = taskMapper.selectById(item.getTaskId());
-            if (task == null || !("IMAGE_GENERATING".equals(task.getStatus())
-                    || "VIDEO_GENERATING".equals(task.getStatus()))) continue;
-            if (!itemRecoverySlots.tryAcquire()) break;
-            if (!activeGenerationItemIds.add(item.getId())) {
-                itemRecoverySlots.release();
-                continue;
-            }
-            try {
-                imageExecutor.execute(() -> {
-                    try {
-                        recoverImageItem(task, item);
-                    } finally {
-                        activeGenerationItemIds.remove(item.getId());
-                        itemRecoverySlots.release();
-                    }
-                });
-            } catch (RuntimeException exception) {
-                activeGenerationItemIds.remove(item.getId());
-                itemRecoverySlots.release();
-                throw exception;
-            }
-        }
-    }
-
-    private void recoverPendingImageDownload(AiVideoPendingImageResult pending) {
-        AiVideoTask task = taskMapper.selectById(pending.getTaskId());
-        AiVideoTaskItem item = itemMapper.selectById(pending.getItemId());
-        if (task == null || item == null
-                || !("IMAGE_GENERATING".equals(task.getStatus()) || "VIDEO_GENERATING".equals(task.getStatus()))) return;
-        recoverImageItem(task, item);
-    }
-
-    private void recoverImageItem(AiVideoTask task, AiVideoTaskItem item) {
-        boolean pipelineRecovery = "VIDEO_GENERATING".equals(task.getStatus());
-        try {
-            ModelConfigService.RuntimeModelConnection model = modelConfigService.imageConnection(task.getOrganizationId())
-                    .orElseThrow(() -> new IllegalStateException("图片模型连接已失效"));
-            List<ShotPrompt> shots = readShots(task.getScriptJson());
-            if (shots.size() != 9) throw new IllegalStateException("冻结脚本不是完整 9 个分镜");
-            generateItem(task, item, shots, model, pipelineRecovery);
-            if (task.isAutoStartVideoAfterImages() || pipelineRecovery) {
-                videoGenerationService.startReadyItemDuringImages(task.getId(), item.getId());
-            }
-        } catch (Exception exception) {
-            String message = readable(exception);
-            if (privateValidationRetryPending(message)) {
-                item.validationPending("GENERATING_STORYBOARD".equals(item.getStatus()));
-            } else {
-                item.fail(message);
-            }
-            itemMapper.updateById(item);
-        } finally {
-            taskMapper.update(null, new LambdaUpdateWrapper<AiVideoTask>()
-                    .eq(AiVideoTask::getId, task.getId())
-                    .set(AiVideoTask::getUpdatedAt, Instant.now()));
-            if (pipelineRecovery) videoGenerationService.refreshPipelinedTask(task.getId());
-        }
-    }
 
     static boolean retryableImageConcurrencyFailure(String message) {
         if (message == null || message.isBlank()) return false;
@@ -347,9 +283,13 @@ public class AiVideoImageProcessor {
     }
 
     static boolean retryableImageTransientFailure(String message) {
-        if (retryableImageConcurrencyFailure(message)) return true;
         if (message == null || message.isBlank()) return false;
         String value = message.toLowerCase();
+        // A validator outage is fail-open inside the bounded generation method and must never
+        // re-enter the scheduled image pipeline, even if its nested cause mentions 429 or policy.
+        if (value.contains("服装结构复核") || value.contains("garment validation")) return false;
+        if (value.startsWith("图片自动恢复等待重试：")) return true;
+        if (retryableImageConcurrencyFailure(message)) return true;
         if (value.contains("模型已生成图片")
                 && value.contains("结果地址已保存")
                 && value.contains("下载失败")) return true;
@@ -360,10 +300,6 @@ public class AiVideoImageProcessor {
                 || value.contains("该提示可能违反了我们的内容政策")
                 || value.contains("该提示可能违反我们的内容政策")
                 || value.contains("content policy") && value.contains("no asset")) return true;
-        if (value.contains("服装结构复核未通过")
-                || value.contains("服装一致性复核未通过")
-                || value.contains("商品一致性复核未通过")) return true;
-        if (privateValidationRetryPending(message)) return true;
         if (value.contains("参考图片获取失败")
                 || value.contains("参考图片读取失败")
                 || value.contains("参考图片下载失败")
@@ -379,13 +315,10 @@ public class AiVideoImageProcessor {
                 || value.contains("connection reset");
     }
 
-    static boolean privateValidationRetryPending(String message) {
-        if (message == null || message.isBlank()) return false;
-        String value = message.toLowerCase();
-        return value.contains("服装结构复核暂时失败")
-                && (value.contains("私有保存")
-                || value.contains("已保留本次生图结果")
-                || value.contains("已保留本次候选图"));
+    static boolean terminalTaskFailureWithoutFailedItem(String status, String message,
+                                                        boolean hasFailedItem) {
+        return "FAILED".equals(status) && !hasFailedItem
+                && !retryableImageTransientFailure(message);
     }
 
     static boolean retryablePipelineImageFailure(String status, String message) {
@@ -403,11 +336,28 @@ public class AiVideoImageProcessor {
 
     @Async("aiVideoImageCoordinatorExecutor")
     public void generate(String taskId) {
-        if (!activeGenerationTaskIds.add(taskId)) return;
+        if (!activeGenerationTaskIds.add(taskId)) {
+            requestGenerationContinuation(taskId);
+            return;
+        }
+        generationContinuationTaskIds.remove(taskId);
         try {
             generateClaimed(taskId);
         } finally {
             activeGenerationTaskIds.remove(taskId);
+            if (generationContinuationTaskIds.remove(taskId)) {
+                dispatchRecoveredGeneration(taskId);
+            }
+        }
+    }
+
+    private void requestGenerationContinuation(String taskId) {
+        generationContinuationTaskIds.add(taskId);
+        // The active owner can finish between the failed claim and this marker. In that narrow
+        // window it has already missed the marker, so dispatch the continuation from here.
+        if (!activeGenerationTaskIds.contains(taskId)
+                && generationContinuationTaskIds.remove(taskId)) {
+            dispatchRecoveredGeneration(taskId);
         }
     }
 
@@ -446,15 +396,31 @@ public class AiVideoImageProcessor {
             if (shots.size() != 9) throw new IllegalStateException("冻结脚本不是完整 9 个分镜");
             AtomicInteger processed = new AtomicInteger();
             AtomicInteger completedCount = new AtomicInteger();
-            AtomicBoolean waitingForPrivateValidation = new AtomicBoolean();
             List<CompletableFuture<String>> futures = generationItems.stream()
                     .map(item -> CompletableFuture.supplyAsync(() -> {
-                        if (!activeGenerationItemIds.add(item.getId())) return null;
                         String failure = null;
                         try {
-                            generateItem(task, item, shots, model, pipelineRecovery);
+                            // Recovery belongs to this item, not the allOf task barrier below.
+                            // A stalled sibling must not delay downloading an already-paid image.
+                            runWithImageRecovery(
+                                    () -> generateItem(task, item, shots, model, pipelineRecovery),
+                                    message -> {
+                                        ImageExecutionProgress.record(itemMapper, item.getId(), item.getActiveImageAssetType(), "RETRY_WAIT");
+                                        item.fail("图片自动恢复等待重试：" + message);
+                                        itemMapper.updateById(item);
+                                        log.info("Image item {} awaiting independent recovery", item.getId());
+                                    },
+                                    () -> {
+                                        Thread.sleep(10_000);
+                                        AiVideoTask latest = taskMapper.selectById(task.getId());
+                                        if (latest == null || !("IMAGE_GENERATING".equals(latest.getStatus())
+                                                || "VIDEO_GENERATING".equals(latest.getStatus()))) {
+                                            throw new InterruptedException("图片任务已停止，取消自动恢复");
+                                        }
+                                    });
                             completedCount.incrementAndGet();
-                            if (task.isAutoStartVideoAfterImages() || pipelineRecovery) {
+                            AiVideoTask latest = taskMapper.selectById(task.getId());
+                            if (latest != null && latest.isAutoStartVideoAfterImages()) {
                                 try {
                                     videoGenerationService.startReadyItemDuringImages(task.getId(), item.getId());
                                 } catch (Exception exception) {
@@ -463,16 +429,11 @@ public class AiVideoImageProcessor {
                             }
                         } catch (Exception exception) {
                             String message = readable(exception);
-                            if (privateValidationRetryPending(message)) {
-                                item.validationPending("GENERATING_STORYBOARD".equals(item.getStatus()));
-                                waitingForPrivateValidation.set(true);
-                            } else {
-                                item.fail(message);
-                            }
+                            ImageExecutionProgress.record(itemMapper, item.getId(), item.getActiveImageAssetType(), "FAILED");
+                            item.fail(message);
                             itemMapper.updateById(item);
                             failure = item.getName() + "：" + message;
                         } finally {
-                            activeGenerationItemIds.remove(item.getId());
                             int finished = processed.incrementAndGet();
                             synchronized (task) {
                                 AiVideoTask current = taskMapper.selectById(task.getId());
@@ -520,12 +481,6 @@ public class AiVideoImageProcessor {
                 }
                 return;
             }
-            if (completed == 0 && waitingForPrivateValidation.get()) {
-                taskMapper.update(null, new LambdaUpdateWrapper<AiVideoTask>()
-                        .eq(AiVideoTask::getId, task.getId())
-                        .set(AiVideoTask::getUpdatedAt, Instant.now()));
-                return;
-            }
             if (completed == 0) {
                 task.fail(failures.isEmpty() ? "图片模型没有生成有效结果" : String.join("；", failures));
             } else {
@@ -548,6 +503,54 @@ public class AiVideoImageProcessor {
         }
     }
 
+    @FunctionalInterface
+    interface ImageAttempt { void run() throws Exception; }
+
+    @FunctionalInterface
+    interface ImageRetryWait { void await() throws InterruptedException; }
+
+    static void runWithImageRecovery(ImageAttempt attempt, java.util.function.Consumer<String> onRetry,
+                                     ImageRetryWait retryWait) throws Exception {
+        int malformedResponses = 0;
+        while (true) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException("图片恢复已中断");
+            try {
+                attempt.run();
+                return;
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            } catch (Exception failure) {
+                String message = readable(failure);
+                boolean malformed = message.contains("服装结构识别结果缺少必填字段");
+                // Incomplete model JSON may be sampled again, but never bypass the contract or
+                // turn a persistent schema problem into unlimited paid model calls.
+                boolean retry = malformed ? ++malformedResponses <= 2 : retryableImageException(failure);
+                if (!retry) throw failure;
+                onRetry.accept(message);
+                try {
+                    retryWait.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw interrupted;
+                }
+            }
+        }
+    }
+
+    private static boolean retryableImageException(Exception failure) {
+        String message = readable(failure);
+        if (message.contains("服装结构复核") || message.toLowerCase().contains("garment validation")) return false;
+        if (retryableImageTransientFailure(message)) return true;
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof RestClientResponseException response
+                    && (response.getStatusCode().is5xxServerError() || response.getStatusCode().value() == 429)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void generateItem(AiVideoTask task, AiVideoTaskItem item, List<ShotPrompt> shots,
                               ModelConfigService.RuntimeModelConnection model,
                               boolean pipelineRecovery) throws Exception {
@@ -567,9 +570,12 @@ public class AiVideoImageProcessor {
         AiVideoTaskAsset storyboardAsset = usableAsset(existing, "STORYBOARD_GRID");
         AiVideoTaskAsset firstFrameAsset = usableAsset(existing, "STORYBOARD_FIRST_FRAME");
         if (modelWear) {
+            if (modelAsset == null) ImageExecutionProgress.record(itemMapper, item, primaryAssetType, "PREPARING");
             modelAsset = recheckLegacyFramingAsset(task, item, modelAsset, primaryAssetType);
             storyboardAsset = recheckLegacyFramingAsset(task, item, storyboardAsset, "STORYBOARD_GRID");
         }
+        if (modelAsset != null) reconcileCompletedTopologyAsset(task, item, primaryAssetType);
+        if (storyboardAsset != null) reconcileCompletedTopologyAsset(task, item, "STORYBOARD_GRID");
         // Older MODEL_WEAR tasks copied the static model image as the video first frame. That made
         // the video model overfit to a single holding pose and ignore the storyboard state changes.
         // Migrate those assets lazily so retries use the actual first storyboard cell.
@@ -588,6 +594,10 @@ public class AiVideoImageProcessor {
         boolean hasVideoResult = usableAsset(existing, "VIDEO_RESULT") != null;
         boolean hasModel = modelAsset != null;
         boolean hasStoryboard = storyboardAsset != null;
+        // Publish recovery before the potentially 1000-second analysis request, not after it.
+        item.start();
+        if (hasModel && !hasStoryboard) item.modelReady();
+        itemMapper.updateById(item);
         if (shouldRunProductFunctionAnalysis(productFunctionAnalysisService.supportsAnalysis(task),
                 pipelineRecovery, hasModel)) {
             // Scope the new analysis to genuinely new primary-image work. Existing/running tasks and
@@ -679,20 +689,28 @@ public class AiVideoImageProcessor {
         itemMapper.updateById(item);
     }
 
-    private AiVideoTaskAsset recheckLegacyFramingAsset(AiVideoTask task, AiVideoTaskItem item,
-                                                       AiVideoTaskAsset asset, String assetType) throws Exception {
+    AiVideoTaskAsset recheckLegacyFramingAsset(AiVideoTask task, AiVideoTaskItem item,
+                                               AiVideoTaskAsset asset, String assetType) throws Exception {
         if (asset == null || (asset.getPromptText() != null
                 && asset.getPromptText().contains(CLOSE_FRAMING_GATE_VERSION))) return asset;
-        ProductFunctionAnalysisService.GarmentValidation validation =
-                productFunctionAnalysisService.validateGenerated(task, item, assetType,
-                        readAsset(asset.getFilePath()), asset.getContentType());
+        ProductFunctionAnalysisService.GarmentValidation validation;
+        try {
+            validation = productFunctionAnalysisService.validateGenerated(task, item, assetType,
+                    readAsset(asset.getFilePath()), asset.getContentType());
+        } catch (Exception exception) {
+            log.warn("旧图片服装结构复核暂时不可用，保留现有资产继续，taskId={}, itemId={}, assetType={}: {}",
+                    task.getId(), item.getId(), assetType, exception.getMessage());
+            return asset;
+        }
         if (!validation.valid()) {
             deleteGeneratedAsset(asset);
             return null;
         }
-        asset.markPromptValidated((asset.getPromptText() == null ? "" : asset.getPromptText())
-                + "\n【中近景门禁版本：" + CLOSE_FRAMING_GATE_VERSION + "】");
-        assetMapper.updateById(asset);
+        String validatedPrompt = (asset.getPromptText() == null ? "" : asset.getPromptText())
+                + "\n【中近景门禁版本：" + CLOSE_FRAMING_GATE_VERSION + "】";
+        assetMapper.update(null, new LambdaUpdateWrapper<AiVideoTaskAsset>()
+                .eq(AiVideoTaskAsset::getId, asset.getId())
+                .set(AiVideoTaskAsset::getPromptText, validatedPrompt));
         return asset;
     }
 
@@ -769,69 +787,186 @@ public class AiVideoImageProcessor {
                                                              String assetType, String basePrompt,
                                                              List<ReferenceImage> references) {
         try {
-            ProductFunctionAnalysisService.GarmentValidation previousValidation = null;
-            for (int generationAttempt = 1; generationAttempt <= 2; generationAttempt++) {
-                String prompt = generationAttempt == 1
-                        ? basePrompt
-                        : topologyCorrectionPrompt(basePrompt, previousValidation);
-                TopologyCandidate cachedCandidate = loadTopologyCandidate(task, item, assetType);
-                PiArtifact artifact;
-                byte[] candidateBytes;
-                if (cachedCandidate != null) {
-                    prompt = cachedCandidate.prompt();
-                    candidateBytes = cachedCandidate.bytes();
-                    artifact = cachedCandidate.toArtifact();
-                } else {
-                    artifact = call(task, item, assetType, model, prompt, references);
-                    candidateBytes = Base64.getDecoder().decode(artifact.dataBase64());
-                    if (candidateBytes.length == 0 || candidateBytes.length > 64L * 1024 * 1024) {
-                        throw new IllegalStateException("生成图片大小无效");
+            item.setActiveImageAssetType(assetType);
+            TopologyCandidate candidate = loadTopologyCandidate(task, item, assetType);
+            BestTopologyCandidate best = loadBestTopologyCandidate(task, item, assetType);
+            TopologyRetryState state = loadTopologyRetryState(task, item, assetType);
+            AiVideoPendingImageResult pending = pendingImageResult(item.getId(), assetType);
+            if (state == null) {
+                boolean legacyRecovery = candidate != null || best != null || pending != null;
+                String recoveredPrompt = candidate != null ? candidate.prompt()
+                        : pending != null ? basePrompt : "";
+                state = TopologyRetryState.initial(legacyRecovery, recoveredPrompt);
+                saveTopologyRetryState(task, item, assetType, state);
+            } else if (state.legacyRecovery() && state.reservedPrompt().isBlank()
+                    && candidate == null && pending != null) {
+                state = state.recoverPending(basePrompt);
+                saveTopologyRetryState(task, item, assetType, state);
+            }
+
+            boolean reservedInThisInvocation = false;
+            while (true) {
+                if (candidate == null) {
+                    if (state.reservedPrompt().isBlank()) {
+                        if (!state.canGenerate()) {
+                            if (best == null) {
+                                throw new IllegalStateException("服装结构复核重抽预算已用完且没有可恢复候选图");
+                            }
+                            logExhaustedTopologyBudget(assetType, item, state, best.violationCount());
+                            return storeFinalTopologyCandidate(task, item, assetType, best.candidate());
+                        }
+                        // Any pending row left after a completed rejection belongs to the old prompt.
+                        // Remove it before reserving the next bounded redraw.
+                        clearPendingImageResult(item.getId(), assetType);
+                        int nextAttempt = state.attemptsReserved() + 1;
+                        String prompt = nextAttempt == 1 || state.previousValidation() == null
+                                ? basePrompt
+                                : topologyCorrectionPrompt(basePrompt, state.previousValidation());
+                        state = state.reserve(prompt);
+                        saveTopologyRetryState(task, item, assetType, state);
+                        reservedInThisInvocation = true;
                     }
-                    saveTopologyCandidate(task, item, assetType,
-                            TopologyCandidate.fromArtifact(artifact, prompt, candidateBytes));
+
+                    pending = pendingImageResult(item.getId(), assetType);
+                    String expectedPromptHash = imageRequestHash(state.reservedPrompt(), references);
+                    if (pending != null && !state.acceptsPendingHash(
+                            pending.getPromptHash(), expectedPromptHash)) {
+                        pendingImageResultMapper.deleteById(pending.getId());
+                        pending = null;
+                    }
+                    if (!state.mayProcessReservedAttempt(
+                            reservedInThisInvocation, pending != null)) {
+                        // The process stopped after reserving this slot but before persisting a
+                        // recoverable result. Count the slot as consumed; never replay the POST.
+                        state = state.abandonReservation();
+                        saveTopologyRetryState(task, item, assetType, state);
+                        if (best != null) {
+                            if (!state.canGenerate()) {
+                                logExhaustedTopologyBudget(assetType, item, state, best.violationCount());
+                                return storeFinalTopologyCandidate(task, item, assetType, best.candidate());
+                            }
+                            continue;
+                        }
+                        if (state.canGenerate()) continue;
+                        throw new IllegalStateException("服装候选图已不可恢复；为避免超过四次生成上限，已停止继续重抽");
+                    }
+                    PiArtifact artifact;
+                    try {
+                        artifact = pending == null
+                                ? call(task, item, assetType, model, state.reservedPrompt(), references)
+                                : downloadPendingImage(model, state.reservedPrompt(), pending);
+                    } catch (Exception generationFailure) {
+                        // A failed request with no saved provider result produced no candidate and
+                        // therefore does not consume one of the four candidate slots. A saved URL
+                        // keeps the reservation so recovery only retries its download.
+                        boolean unavailableSavedResult = generationFailure
+                                instanceof UnavailablePendingImageResultException;
+                        boolean hasPendingAfterFailure = pendingImageResult(item.getId(), assetType) != null;
+                        TopologyRetryState reconciled = reconcileTopologyGenerationFailure(
+                                state, unavailableSavedResult, pending != null,
+                                hasPendingAfterFailure, reservedInThisInvocation);
+                        if (!reconciled.equals(state)) {
+                            state = reconciled;
+                            saveTopologyRetryState(task, item, assetType, state);
+                        }
+                        if (unavailableSavedResult) {
+                            pending = null;
+                            reservedInThisInvocation = false;
+                            if (!state.canGenerate()) {
+                                if (best != null) {
+                                    logExhaustedTopologyBudget(assetType, item, state, best.violationCount());
+                                    return storeFinalTopologyCandidate(task, item, assetType, best.candidate());
+                                }
+                                throw new IllegalStateException(
+                                        "图片结果地址已失效且服装结构重抽预算已用完，未取得可用候选图",
+                                        generationFailure);
+                            }
+                            continue;
+                        }
+                        throw generationFailure;
+                    }
+                    byte[] candidateBytes = Base64.getDecoder().decode(artifact.dataBase64());
+                    validateTopologyCandidateSize(candidateBytes);
+                    candidate = TopologyCandidate.fromArtifact(
+                            artifact, state.reservedPrompt(), candidateBytes);
+                    saveTopologyCandidate(task, item, assetType, candidate);
+                    reservedInThisInvocation = false;
                 }
-                if (candidateBytes.length == 0 || candidateBytes.length > 64L * 1024 * 1024) {
-                    throw new IllegalStateException("生成图片大小无效");
+
+                PiArtifact artifact = candidate.toArtifact();
+                byte[] candidateBytes = candidate.bytes();
+                validateTopologyCandidateSize(candidateBytes);
+                ProductFunctionAnalysisService.GarmentValidation validation;
+                try {
+                    validation = productFunctionAnalysisService.validateGenerated(task, item, assetType,
+                            candidateBytes, artifact.mimeType());
+                } catch (Exception validationFailure) {
+                    TopologyCandidate fallback = best == null ? candidate : best.candidate();
+                    log.warn("Garment validation unavailable for {} on item {}; storing the best known "
+                                    + "candidate and continuing without another redraw: {}",
+                            assetType, item.getId(), validationFailure.getMessage());
+                    return storeFinalTopologyCandidate(task, item, assetType, fallback);
                 }
-                item.validationPending("STORYBOARD_GRID".equals(assetType));
-                itemMapper.updateById(item);
-                ProductFunctionAnalysisService.GarmentValidation validation =
-                        productFunctionAnalysisService.validateGenerated(task, item, assetType,
-                                candidateBytes, artifact.mimeType());
                 if (validation.valid()) {
-                    AiVideoTaskAsset stored = store(task, item, assetType, null, artifact, prompt);
-                    discardTopologyCandidate(task, item, assetType);
-                    clearPendingImageResult(item.getId(), assetType, imageRequestHash(prompt, references));
-                    return stored;
+                    return storeFinalTopologyCandidate(task, item, assetType, candidate);
                 }
+
+                int violationCount = topologyViolationCount(validation);
+                if (best == null || preferNewTopologyCandidate(best.violationCount(), violationCount)) {
+                    best = new BestTopologyCandidate(candidate, violationCount, state.attemptsReserved());
+                    saveBestTopologyCandidate(task, item, assetType, best);
+                }
+                state = state.reject(validation);
+                saveTopologyRetryState(task, item, assetType, state);
+                clearPendingImageResult(item.getId(), assetType);
                 discardTopologyCandidate(task, item, assetType);
-                clearPendingImageResult(item.getId(), assetType, imageRequestHash(prompt, references));
-                previousValidation = validation;
-                if (generationAttempt == 2) {
-                    throw new IllegalStateException("服装结构复核未通过（本轮已自动纠错重抽 1 次，系统将继续抽卡直至通过）："
-                            + String.join("；", validation.violations()));
+                candidate = null;
+                reservedInThisInvocation = false;
+
+                if (!state.canGenerate()) {
+                    logExhaustedTopologyBudget(assetType, item, state, best.violationCount());
+                    return storeFinalTopologyCandidate(task, item, assetType, best.candidate());
                 }
             }
-            throw new IllegalStateException("服装结构复核没有返回可用结果");
         } catch (Exception exception) {
             throw exception instanceof RuntimeException runtime ? runtime
                     : new IllegalStateException(exception.getMessage(), exception);
         }
     }
 
+    private void validateTopologyCandidateSize(byte[] bytes) {
+        if (bytes == null || bytes.length == 0 || bytes.length > 64L * 1024 * 1024) {
+            throw new IllegalStateException("生成图片大小无效");
+        }
+    }
+
+    private AiVideoTaskAsset storeFinalTopologyCandidate(AiVideoTask task, AiVideoTaskItem item,
+                                                          String assetType,
+                                                          TopologyCandidate candidate) throws Exception {
+        AiVideoTaskAsset stored = store(task, item, assetType, null,
+                candidate.toArtifact(), candidate.prompt());
+        clearPendingImageResult(item.getId(), assetType);
+        discardTopologyRetryState(task, item, assetType);
+        return stored;
+    }
+
+    private void logExhaustedTopologyBudget(String assetType, AiVideoTaskItem item,
+                                             TopologyRetryState state, int bestViolationCount) {
+        List<String> finalViolations = state.previousValidation() == null
+                || state.previousValidation().violations() == null
+                ? List.of() : state.previousValidation().violations();
+        log.warn("Garment validation still rejected {} for item {} after {} redraws; "
+                        + "storing the best candidate with {} violations and continuing. Last violations: {}",
+                assetType, item.getId(), MAX_TOPOLOGY_REDRAWS, bestViolationCount,
+                String.join("; ", finalViolations));
+    }
     void saveTopologyCandidate(AiVideoTask task, AiVideoTaskItem item, String assetType,
                                TopologyCandidate candidate) throws Exception {
         Path dataPath = topologyCandidatePath(task, item, assetType, ".bin");
         Path metadataPath = topologyCandidatePath(task, item, assetType, ".json");
         Files.createDirectories(dataPath.getParent());
         writeAtomically(dataPath, candidate.bytes());
-        Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("mimeType", candidate.mimeType());
-        metadata.put("modelId", candidate.modelId());
-        metadata.put("mode", candidate.mode());
-        metadata.put("prompt", candidate.prompt());
-        metadata.put("revisedPrompt", candidate.revisedPrompt());
-        writeAtomically(metadataPath, objectMapper.writeValueAsBytes(metadata));
+        writeAtomically(metadataPath, objectMapper.writeValueAsBytes(topologyCandidateMetadata(candidate)));
     }
 
     TopologyCandidate loadTopologyCandidate(AiVideoTask task, AiVideoTaskItem item, String assetType) {
@@ -839,19 +974,7 @@ public class AiVideoImageProcessor {
         Path metadataPath = topologyCandidatePath(task, item, assetType, ".json");
         if (!Files.isRegularFile(dataPath) || !Files.isRegularFile(metadataPath)) return null;
         try {
-            byte[] bytes = Files.readAllBytes(dataPath);
-            if (bytes.length == 0 || bytes.length > 64L * 1024 * 1024) {
-                throw new IllegalStateException("私有候选图大小无效");
-            }
-            Map<String, Object> metadata = objectMapper.readValue(metadataPath.toFile(), new TypeReference<>() {});
-            String mimeType = nullableText(metadata.get("mimeType"));
-            String prompt = nullableText(metadata.get("prompt"));
-            if (!Set.of("image/jpeg", "image/png", "image/webp").contains(mimeType.toLowerCase())
-                    || prompt.isBlank()) {
-                throw new IllegalStateException("私有候选图元数据无效");
-            }
-            return new TopologyCandidate(mimeType, bytes, nullableText(metadata.get("modelId")),
-                    nullableText(metadata.get("mode")), prompt, nullableText(metadata.get("revisedPrompt")));
+            return readTopologyCandidate(dataPath, metadataPath);
         } catch (Exception exception) {
             discardTopologyCandidate(task, item, assetType);
             return null;
@@ -859,16 +982,168 @@ public class AiVideoImageProcessor {
     }
 
     void discardTopologyCandidate(AiVideoTask task, AiVideoTaskItem item, String assetType) {
+        deleteTopologyFiles(task, item, assetType, ".bin", ".json");
+    }
+
+    void saveBestTopologyCandidate(AiVideoTask task, AiVideoTaskItem item, String assetType,
+                                   BestTopologyCandidate best) throws Exception {
+        String dataSuffix = bestTopologyDataSuffix(best.attemptNumber());
+        Path dataPath = topologyCandidatePath(task, item, assetType, dataSuffix);
+        Path metadataPath = topologyCandidatePath(task, item, assetType, ".best.json");
+        Files.createDirectories(dataPath.getParent());
+        writeAtomically(dataPath, best.candidate().bytes());
+        Map<String, Object> metadata = topologyCandidateMetadata(best.candidate());
+        metadata.put("violationCount", best.violationCount());
+        metadata.put("attemptNumber", best.attemptNumber());
+        metadata.put("sizeBytes", best.candidate().bytes().length);
+        metadata.put("sha256", sha256(best.candidate().bytes()));
+        writeAtomically(metadataPath, objectMapper.writeValueAsBytes(metadata));
+    }
+
+    BestTopologyCandidate loadBestTopologyCandidate(AiVideoTask task, AiVideoTaskItem item,
+                                                     String assetType) {
+        Path metadataPath = topologyCandidatePath(task, item, assetType, ".best.json");
+        if (!Files.isRegularFile(metadataPath)) return null;
         try {
-            Files.deleteIfExists(topologyCandidatePath(task, item, assetType, ".bin"));
-            Files.deleteIfExists(topologyCandidatePath(task, item, assetType, ".json"));
-        } catch (IOException ignored) {
-            // A validated database asset remains authoritative. A stale private file is never served.
+            Map<String, Object> metadata = objectMapper.readValue(
+                    metadataPath.toFile(), new TypeReference<>() {});
+            int attemptNumber = number(metadata.get("attemptNumber"), 0);
+            Path dataPath = topologyCandidatePath(task, item, assetType,
+                    attemptNumber > 0 ? bestTopologyDataSuffix(attemptNumber) : ".best.bin");
+            TopologyCandidate candidate = readTopologyCandidate(dataPath, metadata);
+            int expectedSize = number(metadata.get("sizeBytes"), candidate.bytes().length);
+            if (expectedSize != candidate.bytes().length) {
+                throw new IllegalStateException("历史最佳候选图大小不一致");
+            }
+            String expectedHash = nullableText(metadata.get("sha256"));
+            if (!expectedHash.isBlank() && !expectedHash.equals(sha256(candidate.bytes()))) {
+                throw new IllegalStateException("历史最佳候选图校验和不一致");
+            }
+            int violationCount = Math.max(1, number(metadata.get("violationCount"), Integer.MAX_VALUE));
+            return new BestTopologyCandidate(candidate, violationCount,
+                    attemptNumber > 0 ? attemptNumber : MAX_TOPOLOGY_GENERATIONS);
+        } catch (Exception exception) {
+            deleteTopologyFiles(task, item, assetType, ".best.json");
+            return null;
         }
     }
 
-    private Path topologyCandidatePath(AiVideoTask task, AiVideoTaskItem item, String assetType, String suffix) {
-        String safeAssetType = assetType == null ? "IMAGE" : assetType.replaceAll("[^A-Za-z0-9_-]", "_");
+    private String bestTopologyDataSuffix(int attemptNumber) {
+        if (attemptNumber < 1 || attemptNumber > MAX_TOPOLOGY_GENERATIONS) {
+            throw new IllegalStateException("历史最佳候选图轮次无效");
+        }
+        return ".best-" + attemptNumber + ".bin";
+    }
+
+    private String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (Exception exception) {
+            throw new IllegalStateException("候选图校验和计算失败", exception);
+        }
+    }
+
+    void saveTopologyRetryState(AiVideoTask task, AiVideoTaskItem item, String assetType,
+                                TopologyRetryState state) throws Exception {
+        Path statePath = topologyCandidatePath(task, item, assetType, ".state.json");
+        Files.createDirectories(statePath.getParent());
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("attemptsReserved", state.attemptsReserved());
+        metadata.put("reservedPrompt", state.reservedPrompt());
+        metadata.put("legacyRecovery", state.legacyRecovery());
+        if (state.previousValidation() != null) {
+            ProductFunctionAnalysisService.GarmentValidation validation = state.previousValidation();
+            Map<String, Object> previous = new LinkedHashMap<>();
+            previous.put("valid", validation.valid());
+            previous.put("correctionPrompt", validation.correctionPrompt());
+            previous.put("violations", validation.violations() == null ? List.of() : validation.violations());
+            previous.put("confidence", validation.confidence());
+            previous.put("violationCount", validation.violationCount());
+            metadata.put("previousValidation", previous);
+        }
+        writeAtomically(statePath, objectMapper.writeValueAsBytes(metadata));
+    }
+
+    TopologyRetryState loadTopologyRetryState(AiVideoTask task, AiVideoTaskItem item,
+                                               String assetType) {
+        Path statePath = topologyCandidatePath(task, item, assetType, ".state.json");
+        if (!Files.isRegularFile(statePath)) return null;
+        try {
+            Map<String, Object> metadata = objectMapper.readValue(
+                    statePath.toFile(), new TypeReference<>() {});
+            int attempts = number(metadata.get("attemptsReserved"), 0);
+            String reservedPrompt = nullableText(metadata.get("reservedPrompt"));
+            boolean legacyRecovery = Boolean.TRUE.equals(metadata.get("legacyRecovery"));
+            ProductFunctionAnalysisService.GarmentValidation previous =
+                    readTopologyValidation(metadata.get("previousValidation"));
+            return new TopologyRetryState(attempts, reservedPrompt, previous, legacyRecovery);
+        } catch (Exception exception) {
+            log.warn("服装结构重抽状态损坏，按四次预算已用完保守恢复，taskId={}, itemId={}, assetType={}: {}",
+                    task.getId(), item.getId(), assetType, exception.getMessage());
+            return TopologyRetryState.initial(true, "");
+        }
+    }
+
+    private ProductFunctionAnalysisService.GarmentValidation readTopologyValidation(Object raw) {
+        if (!(raw instanceof Map<?, ?> value)) return null;
+        List<String> violations = value.get("violations") instanceof List<?> items
+                ? items.stream().map(this::nullableText).filter(text -> !text.isBlank()).limit(20).toList()
+                : List.of();
+        double confidence;
+        try {
+            confidence = Double.parseDouble(String.valueOf(value.get("confidence")));
+        } catch (Exception ignored) {
+            confidence = 0.0;
+        }
+        return new ProductFunctionAnalysisService.GarmentValidation(
+                Boolean.TRUE.equals(value.get("valid")), nullableText(value.get("correctionPrompt")),
+                violations, confidence, number(value.get("violationCount"),
+                violations.isEmpty() ? Integer.MAX_VALUE : violations.size()));
+    }
+
+    private Map<String, Object> topologyCandidateMetadata(TopologyCandidate candidate) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("mimeType", candidate.mimeType());
+        metadata.put("modelId", candidate.modelId());
+        metadata.put("mode", candidate.mode());
+        metadata.put("prompt", candidate.prompt());
+        metadata.put("revisedPrompt", candidate.revisedPrompt());
+        metadata.put("sizeBytes", candidate.bytes().length);
+        metadata.put("sha256", sha256(candidate.bytes()));
+        return metadata;
+    }
+
+    private TopologyCandidate readTopologyCandidate(Path dataPath, Path metadataPath) throws Exception {
+        Map<String, Object> metadata = objectMapper.readValue(
+                metadataPath.toFile(), new TypeReference<>() {});
+        return readTopologyCandidate(dataPath, metadata);
+    }
+
+    private TopologyCandidate readTopologyCandidate(Path dataPath,
+                                                    Map<String, Object> metadata) throws Exception {
+        byte[] bytes = Files.readAllBytes(dataPath);
+        validateTopologyCandidateSize(bytes);
+        int expectedSize = number(metadata.get("sizeBytes"), bytes.length);
+        String expectedHash = nullableText(metadata.get("sha256"));
+        if (expectedSize != bytes.length
+                || !expectedHash.isBlank() && !expectedHash.equals(sha256(bytes))) {
+            throw new IllegalStateException("私有候选图完整性校验失败");
+        }
+        String mimeType = nullableText(metadata.get("mimeType"));
+        String prompt = nullableText(metadata.get("prompt"));
+        if (!Set.of("image/jpeg", "image/png", "image/webp").contains(mimeType.toLowerCase())
+                || prompt.isBlank()) {
+            throw new IllegalStateException("私有候选图元数据无效");
+        }
+        return new TopologyCandidate(mimeType, bytes, nullableText(metadata.get("modelId")),
+                nullableText(metadata.get("mode")), prompt,
+                nullableText(metadata.get("revisedPrompt")));
+    }
+
+    private Path topologyCandidatePath(AiVideoTask task, AiVideoTaskItem item,
+                                       String assetType, String suffix) {
+        String safeAssetType = assetType == null ? "IMAGE"
+                : assetType.replaceAll("[^A-Za-z0-9_-]", "_");
         Path directory = storageRoot.resolve(task.getOrganizationId()).resolve(task.getId())
                 .resolve(item.getId()).resolve("private-validation").normalize();
         if (!directory.startsWith(storageRoot)) throw new IllegalStateException("候选图目录不安全");
@@ -879,12 +1154,53 @@ public class AiVideoImageProcessor {
         Path temporary = target.resolveSibling(target.getFileName() + ".part");
         Files.write(temporary, content);
         try {
-            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException ignored) {
             Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
+    private void discardTopologyRetryState(AiVideoTask task, AiVideoTaskItem item,
+                                            String assetType) {
+        deleteTopologyFiles(task, item, assetType,
+                ".bin", ".json", ".best.bin", ".best-1.bin", ".best-2.bin",
+                ".best-3.bin", ".best-4.bin", ".best.json", ".state.json");
+    }
+
+    private void reconcileCompletedTopologyAsset(AiVideoTask task, AiVideoTaskItem item,
+                                                  String assetType) {
+        try {
+            clearPendingImageResult(item.getId(), assetType);
+            discardTopologyRetryState(task, item, assetType);
+        } catch (Exception exception) {
+            log.warn("已完成图片的服装重抽临时状态清理失败，taskId={}, itemId={}, assetType={}: {}",
+                    task.getId(), item.getId(), assetType, exception.getMessage());
+        }
+    }
+
+    public void resetTopologyRetryState(AiVideoTask task, AiVideoTaskItem item,
+                                        List<String> assetTypes) {
+        if (task == null || item == null || assetTypes == null) return;
+        for (String assetType : assetTypes) {
+            try { itemMapper.resetImageStep(item.getId(), assetType); }
+            catch (RuntimeException exception) { log.warn("Could not reset image telemetry for item {}", item.getId()); }
+            clearPendingImageResult(item.getId(), assetType);
+            discardTopologyRetryState(task, item, assetType);
+        }
+    }
+
+    private void deleteTopologyFiles(AiVideoTask task, AiVideoTaskItem item,
+                                     String assetType, String... suffixes) {
+        for (String suffix : suffixes) {
+            try {
+                Files.deleteIfExists(topologyCandidatePath(task, item, assetType, suffix));
+                Files.deleteIfExists(topologyCandidatePath(task, item, assetType, suffix + ".part"));
+            } catch (IOException ignored) {
+                // The final database asset remains authoritative; stale private files are never served.
+            }
+        }
+    }
     static String topologyCorrectionPrompt(String basePrompt,
                                            ProductFunctionAnalysisService.GarmentValidation validation) {
         List<String> violations = validation == null || validation.violations() == null
@@ -892,17 +1208,46 @@ public class AiVideoImageProcessor {
         String correction = validation == null || validation.correctionPrompt() == null
                 ? "" : validation.correctionPrompt().trim();
         StringBuilder prompt = new StringBuilder(basePrompt).append("\n\n")
-                .append("【结构与中近景复核后的本轮纠错重绘｜最高优先级】上一候选图未通过商品结构或中近景构图复核。")
-                .append("重新生成完整图片，但只纠正下面指出的失败分镜；未列出的分镜继续严格执行原提示。")
-                .append("所有失败格必须重新对照参考图1，恢复同一件商品的领口、袖型、印花/Logo、前后朝向和穿着方式，")
-                .append("并把相机推进到头顶至膝盖上方的中近景，保证脸高不低于画面高度 15%；禁止远景、全身、露出膝盖以下或拉远。")
-                .append("不得用相似款、无 Logo 款或镜像错误代替。\n")
+                .append("【定向纠错重绘】上一候选图未通过复核，请完整重生成一张图片。")
+                .append("优先修正下面的失败项；其他内容继续遵循原提示并从参考图重建，不复制上一候选，也不假设能够只改局部。")
+                .append("不要重新分类，直接按原提示指定的用户上传商品母版逐像素核对：分别清点画面左侧和右侧的袖筒、袖口、袖片，")
+                .append("并核对领口开口路径及每片布料的缝线连接。斜肩或露肩只代表领口路径不对称，不等于一侧无袖；")
+                .append("参考图两侧都有袖片和袖口证据时，生成结果必须保留两只袖子。")
+                .append("可见范围服从原提示的构图要求；不得为凑数量新增或复制肢体，每只可见手只能连接一条自然手臂。")
+                .append("如输出九宫格，仍须生成一张完整九宫格图片，并让每个商品出镜格保持同一商品结构。\n")
                 .append("复核失败项：")
                 .append(violations.isEmpty() ? "商品结构或标识未与参考图一致" : String.join("；", violations));
-        if (!correction.isBlank()) prompt.append("\n复核模型纠正要求：").append(correction);
+        if (!correction.isBlank()) {
+            prompt.append("\n复核模型纠正要求（仅在与商品母版可见像素和原提示不冲突时执行）：")
+                    .append(correction);
+        }
         return prompt.toString();
     }
 
+    static TopologyRetryState reconcileTopologyGenerationFailure(
+            TopologyRetryState state,
+            boolean unavailableSavedResult,
+            boolean hadPendingBeforeCall,
+            boolean hasPendingAfterFailure,
+            boolean reservedInThisInvocation) {
+        if (unavailableSavedResult) return state.abandonReservation();
+        if (!hadPendingBeforeCall && !hasPendingAfterFailure && reservedInThisInvocation) {
+            return state.releaseReservation();
+        }
+        return state;
+    }
+
+    static int topologyViolationCount(ProductFunctionAnalysisService.GarmentValidation validation) {
+        if (validation == null || validation.valid()) return 0;
+        List<String> violations = validation.violations();
+        int detailedCount = violations == null ? 0 : violations.size();
+        if (detailedCount == 0 && validation.violationCount() <= 0) return Integer.MAX_VALUE;
+        return Math.max(validation.violationCount(), detailedCount);
+    }
+
+    static boolean preferNewTopologyCandidate(int currentBestViolationCount, int newViolationCount) {
+        return newViolationCount <= currentBestViolationCount;
+    }
     private ReferenceImage firstScriptFrameReference(AiVideoTask task) {
         VideoScript script = scriptMapper.selectById(task.getScriptId());
         if (script == null || !task.getOrganizationId().equals(script.getOrganizationId())
@@ -1203,10 +1548,18 @@ public class AiVideoImageProcessor {
         }
         int width = source.getWidth() / 3;
         int height = source.getHeight() / 3;
+        // Image models occasionally place a grid divider slightly before the mathematical third.
+        // Keep the top-left origin, trim the trailing edges equally, then scale back to the
+        // expected cell size so the video model never receives pixels from an adjacent cell.
+        int sourceWidth = Math.max(1, (int) Math.floor(width * STORYBOARD_FIRST_CELL_SAFE_SCALE));
+        int sourceHeight = Math.max(1, (int) Math.floor(height * STORYBOARD_FIRST_CELL_SAFE_SCALE));
         BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         Graphics2D graphics = result.createGraphics();
         try {
-            graphics.drawImage(source, 0, 0, width, height, 0, 0, width, height, null);
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            graphics.drawImage(source, 0, 0, width, height,
+                    0, 0, sourceWidth, sourceHeight, null);
         } finally {
             graphics.dispose();
         }
@@ -1217,6 +1570,7 @@ public class AiVideoImageProcessor {
     private PiArtifact call(AiVideoTask task, AiVideoTaskItem item, String assetType,
                             ModelConfigService.RuntimeModelConnection model, String prompt,
                             List<ReferenceImage> references) {
+        item.setActiveImageAssetType(assetType);
         String promptHash = imageRequestHash(prompt, references);
         AiVideoPendingImageResult pending = pendingImageResult(item.getId(), assetType);
         if (pending != null && !promptHash.equals(pending.getPromptHash())) {
@@ -1232,8 +1586,15 @@ public class AiVideoImageProcessor {
         body.put("size", PORTRAIT_4K_SIZE);
         body.put("inputFidelity", references.isEmpty() ? "" : "high");
         body.put("references", references);
-        PiImageResponse response = piClient.post().uri("/v1/images/generate")
-                .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(PiImageResponse.class);
+        String progressId = imageRuntimeProgress.begin(item.getId(), assetType);
+        body.put("progressRequestId", progressId);
+        PiImageResponse response;
+        try {
+            response = piClient.post().uri("/v1/images/generate")
+                    .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(PiImageResponse.class);
+        } finally {
+            imageRuntimeProgress.finish(progressId);
+        }
         if (response != null && response.artifact() != null && response.artifact().dataBase64() != null) {
             return response.artifact();
         }
@@ -1261,6 +1622,7 @@ public class AiVideoImageProcessor {
         body.put("prompt", prompt);
         body.put("revisedPrompt", pending.getRevisedPrompt());
         try {
+            ImageExecutionProgress.record(itemMapper, pending.getItemId(), pending.getAssetType(), "DOWNLOADING");
             PiImageResponse response = piClient.post().uri("/v1/images/download")
                     .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(PiImageResponse.class);
             if (response == null || response.artifact() == null || response.artifact().dataBase64() == null) {
@@ -1272,7 +1634,8 @@ public class AiVideoImageProcessor {
             pendingImageResultMapper.updateById(pending);
             if (replaceUnavailablePendingImage(pending)) {
                 pendingImageResultMapper.deleteById(pending.getId());
-                throw new IllegalStateException("旧图片结果地址持续不可用，已放弃旧地址并将重新生成该图片", exception);
+                throw new UnavailablePendingImageResultException(
+                        "旧图片结果地址持续不可用，已放弃旧地址并将重新生成该图片", exception);
             }
             throw new IllegalStateException("模型已生成图片，结果地址已保存；下载失败，系统将继续重试同一地址", exception);
         }
@@ -1286,7 +1649,9 @@ public class AiVideoImageProcessor {
                 || message.contains("(410)") || message.contains("（410）")) {
             return pending.getDownloadAttempts() >= 1;
         }
-        if (message.contains("result_download_http_401") || message.contains("result_download_http_403")) {
+        if (message.contains("result_download_http_401") || message.contains("result_download_http_403")
+                || message.contains("(401)") || message.contains("（401）")
+                || message.contains("(403)") || message.contains("（403）")) {
             return pending.getDownloadAttempts() >= 2;
         }
         if (message.contains("result_download_http_502") || message.contains("result_download_http_503")
@@ -1339,6 +1704,12 @@ public class AiVideoImageProcessor {
                 .eq(AiVideoPendingImageResult::getPromptHash, promptHash));
     }
 
+    private void clearPendingImageResult(String itemId, String assetType) {
+        pendingImageResultMapper.delete(new LambdaQueryWrapper<AiVideoPendingImageResult>()
+                .eq(AiVideoPendingImageResult::getItemId, itemId)
+                .eq(AiVideoPendingImageResult::getAssetType, assetType));
+    }
+
     private String imageRequestHash(String prompt, List<ReferenceImage> references) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -1359,6 +1730,7 @@ public class AiVideoImageProcessor {
 
     private AiVideoTaskAsset store(AiVideoTask task, AiVideoTaskItem item, String type, Integer sequence,
                                    PiArtifact artifact, String prompt) throws Exception {
+        ImageExecutionProgress.record(itemMapper, item, type, "STORING");
         byte[] bytes = Base64.getDecoder().decode(artifact.dataBase64());
         if (bytes.length == 0 || bytes.length > 64L * 1024 * 1024) throw new IllegalStateException("生成图片大小无效");
         String ext = extension(artifact.mimeType());
@@ -1375,6 +1747,7 @@ public class AiVideoImageProcessor {
         AiVideoTaskAsset asset = new AiVideoTaskAsset(task.getOrganizationId(), task.getId(), item.getId(), type,
                 sequence, stored.location(), artifact.mimeType(), stored.size(), prompt, artifact.modelId());
         assetMapper.insert(asset);
+        ImageExecutionProgress.record(itemMapper, item, type, "COMPLETED");
         return asset;
     }
 
@@ -1411,16 +1784,16 @@ public class AiVideoImageProcessor {
         return "【REALISM V3｜手机日常随拍任务】参考图1是唯一商品素材。基于参考图1生成一张普通人用手机主摄在较近距离随手拍下的竖版服装展示照片。"
                 + "日常生活感是最高风格优先级：成片应像同事、朋友或家人在普通居住空间临时记录今天穿搭，"
                 + "而不是品牌广告、影棚 Lookbook、网红写真、模特卡或精修样片。目标市场："
-                + safe(task.getTargetMarket(), "通用电商市场") + "。只出现一位成年人物，头顶、五官、胸前商品、双臂和双手完整清楚入镜。"
+                + safe(task.getTargetMarket(), "通用电商市场") + "。只出现一位成年人物，头顶、五官、胸前商品、双肩和构图内可见手臂清楚入镜；没有动作需要时手可以自然遮挡或出画，不为凑齐双手而补手。"
                 + FRIENDLY_MODEL_FACE_BASELINE
                 + "人物大致面向镜头但不要证件照式立正：身体相对画面中心轻微偏移，重心自然落在一条腿上，两侧肩髋不完全水平，"
-                + "双臂以略有差异的方式自然下垂，一只手可轻微弯曲，头部有极小角度偏转，眼神像刚注意到拍摄者；"
-                + "表情处在尚未刻意摆拍的自然瞬间，可以只是轻微嘴角变化，不能露出模板化甜美微笑。"
+                + "构图内可见手臂以略有差异的方式自然放置，可见手臂可轻微弯曲，头部有极小角度偏转，眼神像刚注意到拍摄者；"
+                + "表情处在尚未刻意摆拍的自然瞬间，只允许闭口的轻微嘴角变化；嘴唇必须自然闭合，不露齿、不张口、不呈现说话或对口型姿态，不能露出模板化甜美微笑。"
                 + "姿态松弛但能够完整展示上衣，不摆夸张时尚姿势；身体比例、关节和五根手指正确。"
                 + "【AI 模特穿着母版｜不是视频首帧】这张图的唯一职责是建立同一人物正确穿着当前商品的高清母版，九宫格会另行生成脚本第 01 分镜首帧。"
                 + "人物必须已经按参考商品的真实开口和穿法把衣服完整穿在身上；头、双臂分别穿过正确开口，领口依靠真实裁片、缝线和肩部支撑自然落位。"
                 + "禁止把衣服举在胸前、拿在手里、披在身体前方或靠双手向外拉成露肩；禁止用手指牵拉领边伪造宽领、斜领或单肩结构。"
-                + "双手自然下垂或在远离领口、肩线和袖口的位置轻松放置，不能遮挡领口连续路径、左右袖连接点和露肩侧。"
+                + "可见的手自然下垂或在远离领口、肩线和袖口的位置轻松放置，不能遮挡领口连续路径、左右袖连接点和露肩侧；遮挡或出画的手不补出。"
                 + "脚本第 01 分镜中的举起、展开、包装、拿取、比对、抓领口和其他商品状态只由后续九宫格执行，绝不能覆盖本图的‘正确穿着母版’职责。"
                 + "【清晰正脸约束】人物先建立可识别的近正面人脸："
                 + "脸部可保留约 2–10 度的自然轻微偏转或侧倾，双眼、眉毛、鼻梁、鼻翼、嘴唇和下颌均清楚可见；"
@@ -1428,6 +1801,7 @@ public class AiVideoImageProcessor {
                 + "人物保持稳定自然站姿，不能生成侧脸、背脸、低头闭眼或无法进行人脸捕捉的画面。"
                 + "【商品保真】必须保持参考服装的颜色、版型、领口、袖长、纹理、缝线、印花内容、位置和比例完全一致，"
                 + "不得增加、删除、简化或重新设计服装细节。"
+                + GARMENT_PIXEL_STRUCTURE_REQUIREMENT
                 + (topologyBlock.isBlank() ? "" : topologyBlock + "\n")
                 + FABRIC_AND_PRODUCT_REALISM_REQUIREMENT
                 + "【独立造型设计与商品最高优先级】参考图1中的展示商品是整套造型唯一不可改变的核心，先识别它属于上装、下装、裙装、套装或其他品类，"
@@ -1485,12 +1859,13 @@ public class AiVideoImageProcessor {
                                                List<ShotPrompt> shots, boolean realFrameGuide) {
         String backgroundRequirement = preserveScriptBackground(task)
                 ? (realFrameGuide
-                    ? "背景逐格沿用参考图1对应位置的原视频真实场景；连续分镜锁定空间、材质、光线和机位关系，原视频明确换景时才切换。"
+                    ? PRODUCT_REAL_FRAME_BACKGROUND_REQUIREMENT
                     : "背景沿用已生成的脚本原场景主图；连续分镜锁定同一空间、材质、光线和机位关系，脚本明确换景时才切换。")
                 : "背景以已生成的 AI 场景主图为视觉母版；根据各分镜动作合理延展空间，保持同一套真实摄影风格，脚本明确换景时才设计协调的新场景。";
         String referenceContract = realFrameGuide
                 ? "参考图1是用户上传商品外观唯一母版；参考图2是原视频按九个动作阶段抽取并拼成的真实 3×3 动作结构母版；参考图3是已生成的新商品场景主图；参考图4是服务器把参考图1原样重复到九个位置的商品身份锁定板。"
-                    + "四张参考图职责不可互换：参考图1以最高优先级锁定新商品颜色、结构、文字、Logo、图案、标签和材质；参考图2逐格决定机位、景别、商品位置与尺度、正面/侧面/背面朝向、手部有无、手部进入方向、抓握区域、动作阶段、环境和光影；参考图3只补充新场景摄影质感；参考图4逐格重复锁定参考图1的商品身份。"
+                    + "四张参考图职责不可互换：参考图1以最高优先级锁定新商品颜色、结构、文字、Logo、图案、标签和材质；参考图2逐格决定机位方向、商品位置、正面/侧面/背面朝向、手部有无、手部进入方向、抓握区域、动作阶段、环境和光影；参考图3只补充新场景摄影质感；参考图4逐格重复锁定参考图1的商品身份。"
+                    + "参考图2的原景别与主体尺度不继承：输出中凡商品出镜都必须重新构图为主体填满主要区域的商品近景，远景、全景、拉远、后退和主体缩小信息无效。"
                     + "参考图4只用于让输出第01–09格各自直接回锚同一件原商品，不能照搬其中白底、静止姿态或九格重复构图；输出每格动作仍取参考图2。"
                     + "参考图2中的旧商品像素、旧颜色、旧图案和旧版型全部无效，必须完整替换为参考图1，但不能因此抹掉参考图2的手部接触点、旋转方向、可见正背面或悬垂状态。原格没有商品时绝对不得添加商品。"
                 : "参考图1是商品场景与构图参考，参考图2是用户上传商品外观唯一母版，参考图3是服务器把参考图2原样重复到九个位置的商品身份锁定板。参考图2的商品拥有最高优先级；参考图3只负责让输出每一格重新回锚原商品，不得照搬白底和重复构图。";
@@ -1511,14 +1886,14 @@ public class AiVideoImageProcessor {
                 .append(backgroundRequirement)
                 .append(realFrameGuide
                         ? "九格必须逐格对照参考图2的同一位置复刻动作结构，不能只模仿整体风格。参考图2某格无人手时该格绝对不能出现手、手臂或人体；"
-                            + "某格有手时必须复刻同一只手的进入方向、掌心朝向、手指姿态、遮挡区域和接触位置。参考图2的光斑、轻微推移、商品占比和俯拍角度同样逐格保留。"
+                            + "某格有手时必须复刻同一只手的进入方向、掌心朝向、手指姿态、遮挡区域和接触位置。参考图2的光斑、动作阶段和俯拍角度逐格保留；商品占比按商品近景门禁重新归一。"
                         : "没有真实抽帧母版时，严格按照下面每格文字执行手部与构图状态。")
-                .append("每格场景、展示方式、构图和手部状态只读取对应分镜，禁止用任一格覆盖九格。")
+                .append("每格场景、展示方式、构图意图和手部状态只读取对应分镜，禁止用任一格覆盖九格；所有商品出镜格的尺度统一服从商品近景门禁。")
                 .append("原视频即使全程同一只手持商品，也必须逐格区分抓握位置、手腕角度、商品正面/斜侧/窄边/背面、展开程度和摆动方向；禁止把‘同一只手’误解成‘九格同一姿势’。")
                 .append("相邻格只推进一个小幅动作或镜头变化；商品不得复制、跳变、漂移、悬浮、融化、穿模或突然更换背景。")
                 .append("每格都必须保持真实摄影的透视、接触阴影和光源方向，并让商品材质对光线产生正确响应。")
                 .append(FABRIC_AND_PRODUCT_REALISM_REQUIREMENT)
-                .append("连续分镜若都要求手部互动，必须保持同一双手、相同方向和连续接触点；只在脚本指定的分镜边界出现或退出手部。")
+                .append("连续分镜若都要求手部互动，必须保持同一只手或同一双手，数量、进入方向和接触点连续；只有脚本明确重新抓握时才改变接触点，只在指定边界出现或退出手部。")
                 .append("不得添加编号、文字、边框、水印、额外商品或无关配件。每格要求如下：\n");
         for (ShotPrompt shot : shots) {
             String value = productMotionDirection(task, shot);
@@ -1526,9 +1901,9 @@ public class AiVideoImageProcessor {
             prompt.append("分镜 ").append(String.format("%02d", shot.sequence())).append("：").append(value).append('\n');
         }
         prompt.append(realFrameGuide
-                        ? "输出前把生成结果与参考图1逐格核对：01→09 的手部有无、进入方向、接触点、商品位置、尺度、景别与光影阶段必须一一对应；"
-                        : "输出前逐格核对手部状态、商品位置、尺度、景别与光影阶段；")
-                .append("同时检查商品数量唯一、文字和 Logo 未改变、结构未变形、接触与阴影真实；任何一格不合格时只重算该格。")
+                        ? PRODUCT_REAL_FRAME_OUTPUT_CHECK
+                        : "输出前逐格核对手部状态、商品位置、朝向、动作与光影阶段；所有商品出镜格必须保持主体填满主要区域的商品近景；")
+                .append("同时检查商品数量唯一、文字和 Logo 未改变、结构未变形、接触与阴影真实；发现任一格不合格时重新完成整张九宫格，不承诺局部修改。")
                 .append("尤其将第 07、08、09 格分别与商品母版直接对照，不能只与第 06 格对照；若后段出现领口缩小、袖型变短、版型变窄、印花简化或材质改变，整张九宫格判废并重算。")
                 .append("最终只输出一张 2160×3840 的完整 4K 九宫格图片。");
         return prompt.toString();
@@ -1537,10 +1912,10 @@ public class AiVideoImageProcessor {
     private String productMotionDirection(AiVideoTask task, ShotPrompt shot) {
         StringBuilder value = new StringBuilder();
         if (!shot.title().isBlank()) value.append("目标：").append(shot.title()).append("；");
-        if (!shot.scene().isBlank()) value.append("场景与构图：").append(shot.scene()).append("；");
+        if (!shot.scene().isBlank()) value.append("场景与构图意图：").append(shot.scene()).append("；");
         if (!shot.motion().isBlank()) value.append("动作：").append(shot.motion()).append("；");
-        if (!shot.shotSize().isBlank()) value.append("景别：").append(shot.shotSize()).append("；");
-        if (!shot.cameraMovement().isBlank()) value.append("运镜：").append(shot.cameraMovement()).append("；");
+        value.append("景别硬覆写：").append(imageFramingDirective(task.getGenerationMode())).append("；");
+        value.append("执行运镜：").append(normalizedImageCameraMovement(shot.cameraMovement())).append("；");
         if (value.isEmpty()) value.append("保持同一商品，进行轻微且连续的电商展示变化；");
         value.append("手部：").append(shotHandDirective(task, shot)).append("；");
         value.append(fabricGripPhysicsRequirement(shot));
@@ -1575,31 +1950,25 @@ public class AiVideoImageProcessor {
                 + "借用参考图1的真实光源、自然曝光、白平衡、动态范围、材质细节、空气透视和有人日常使用过的生活痕迹；"
                 + backgroundRequirement
                 + "九格须按各自分镜建立对应环境，不能无条件把九格固化成同一个背景。"
-                + "生成一张严格的 3×3 九宫格连续动作控制图。本图只负责动作、站位、景别、机位和环境，"
+                + "生成一张严格的 3×3 九宫格连续动作控制图。本图只负责动作、站位、构图意图、机位方向和环境，景别统一服从中近景门禁，"
                 + "不得生成任何可识别的真实人物身份。每格使用同一个无脸中性人体模型或简洁写实的人体姿态轮廓："
                 + "脸部保持空白，不画五官、发型、肤色、年龄特征，不穿带有颜色、图案、文字或款式特征的具体服装。"
                 + "人体只用于准确表达关节、肢体朝向、重心和动作轨迹；后续视频会用独立模特图替换该人体。"
                 + PORTRAIT_4K_REQUIREMENT
                 + "整张图必须正好包含 9 个大小一致的 9:16 竖屏画面，每格在 4K 总图中约为 720×1280 像素，"
-                + "按从左到右、从上到下的顺序对应分镜 1 到 9。01→09 是同一个镜头内按时间先后发生的连续动作关键帧，"
-                + "不是 9 张互不相关的摆拍照片。相邻两格之间只能推进一个主要动作，姿势变化必须小而可达；"
-                + "上一格的结束姿态必须自然衔接下一格的开始姿态，禁止人物瞬移、肢体跳变、突然回正、脚底换位、镜头变焦或场景重置。"
-                + "01/04/07 是每段起始关键帧，02/05/08 是动作中间态，03/06/09 是动作结束态；"
-                + "同一段三格必须清楚呈现起势→过程→到位，且第 03 格能平滑衔接第 04 格、第 06 格能平滑衔接第 07 格。"
-                + "同一场景的连续分镜必须锁定机位、焦段、背景结构、光线、人物地面位置与身体尺度；"
-                + "脚本明确换场景、坐立变化或商品特写时必须按对应分镜切换环境与构图，不能把九格都固化成第 01 格背景。"
-                + GRID_FACE_PIXEL_REQUIREMENT
-                + "除脚本明确要求外，连续动作中的双脚支撑点保持稳定。"
+                + "按从左到右、从上到下的顺序对应分镜 1 到 9。01→09 是按时间排序的动作关键帧，不是 9 张互不相关的摆拍照片。"
+                + "同一真实镜头内，相邻格只推进一个小而可达的主要动作，结束姿态自然衔接下一格；"
+                + "只有脚本标记的真实镜头边界才切换场景或机位方向；主体中近景尺度始终稳定。不得瞬移、肢体跳变、无原因回正或承重漂移。"
+                + GRID_POSE_SCALE_REQUIREMENT
+                + "画外不可见的承重与重心必须连续稳定；不得为了显示脚或地面接触而拉远。"
                 + "九格中的无脸人体模型必须保持相同身体比例，但不携带任何人物身份与穿搭信息；分镜描述中的人物外貌、发型、衣服和配饰一律忽略。"
                 + "分镜描述中的原视频商品类别、颜色、版型、材质、印花、文字、Logo、字幕和卖点同样一律忽略；动作区域只允许称为当前任务商品，最终商品以任务上传商品图和后续模特图为准。"
                 + "所有姿态必须符合真实人体骨骼、关节角度、重心与惯性；手臂和手指不得穿过身体或衣服，双腿不得粘连，"
                 + "人物不得穿入家具、墙面或地面，不得出现反关节、肢体增减、手指融合、身体扭曲、重影或衣服穿模。"
                 + "不要添加文字、数字、边框、水印或额外格子。每格内容如下：\n");
         for (ShotPrompt shot : shots) {
-            String value = shot.prompt().replaceAll("\\s+", " ").trim();
-            if (value.length() > 800) value = value.substring(0, 800);
-            prompt.append("分镜 ").append(shot.sequence()).append("：").append(value)
-                    .append("；执行校验：").append(shotExecutionDirection(task, shot)).append("\n");
+            prompt.append("分镜 ").append(shot.sequence()).append("：")
+                    .append(shotExecutionDirection(task, shot)).append("\n");
         }
         prompt.append("最终只输出一张 2160×3840 的完整 4K 九宫格图片，不得降级为 1024 像素级别。"
                 + "构图清楚、格子边界规整，背景真实自然，无多余肢体。输出前逐格核对：九格不得出现真实人脸或具体服装，"
@@ -1612,33 +1981,34 @@ public class AiVideoImageProcessor {
         String topologyBlock = productFunctionAnalysisService.promptBlock(
                 task, item.getProductFunctionAnalysisJson());
         StringBuilder prompt = new StringBuilder("执行一次严格的九宫格人物与商品替换编辑。四张参考图职责不可互换：")
-                .append("参考图1是用户上传的真实商品原图，是商品颜色、版型、领口、袖长、面料、缝线、印花、文字、数字、图形、Logo、位置、比例和排列顺序的唯一最高优先级母版；")
+                .append("参考图1是用户上传的真实商品原图，锁定商品颜色、结构、面料、缝线、印花、文字、图形、Logo、位置和比例；")
                 .append("参考图2是把同一张 AI 模特穿着母版原样重复九次的人物身份锁定板，只负责唯一人物身份、脸、发型、身材、商品穿着位置、下装、配饰和整体摄影风格；九个重复格不是动作证据。")
                 .append("参考图3是 3×3 动作场景底图，只提供每格可见场景、主要物体、空间关系、机位方向和姿态证据；下方逐格脚本决定最终必须执行的主体状态、动作阶段和时间顺序。")
                 .append("参考图4是服务器把参考图1原样重复到九个对应位置的商品身份锁定板；生成输出第01–09格时必须分别读取参考图4同位置的原商品结构，不得让前一输出格成为后一格的商品参考。参考图4的白底、静止姿态和九格重复布局不是动作证据，不能覆盖参考图3与脚本。")
                 .append("参考图3中的任何人物身份、脸、头发、肤色、衣服、颜色、印花、文字、Logo、下装和配饰全部是无效占位内容，必须删除，绝对不能继承、融合或折中。")
-                .append("【手持商品格的结构锁定】任何分镜只要是未穿着、包装、展开、领口特写或贴身比对，手中展示物仍必须是参考图1同一件商品，不能继承参考图3占位服装的领口和袖型。逐格读取下方服装结构契约：斜肩、单肩、宽船领或露肩款在未穿着时仍保留原始连续大开口、左右高度关系、袖子数量和连接点，绝不能补成居中的封闭圆领；普通圆领款则保持普通圆领，不能被改成斜肩。领口特写必须展示真实领口路径，不能因为出现领标而重造领圈。")
+                .append("【商品状态】无论商品处于穿着、手持、展开、折叠、包装或特写状态，都复现参考图1和下方结构证据中的同一件商品；不得从参考图3的占位服装继承结构。")
                 .append("参考图2若因生成误差与参考图1的商品细节不一致，以参考图1为准纠正商品；参考图2只提供商品穿在人身上的位置、尺度、遮挡和自然布料形变。")
                 .append("逐格同时核对参考图3与下方脚本：场景、物体和可见姿态取参考图3，主体是包装中、折叠、展开、手持、穿上、已穿着或局部特写等状态以及动作阶段严格取下方同编号脚本。两者冲突时不得自行折中或统一成同一姿势，必须以脚本状态和动作为准重建该格；原图中的远近景别和人物尺寸不保留，所有人物格必须重新按本提示词的近距离比例构图。")
                 .append(realFrameGuide
-                        ? "参考图3来自原视频真实抽帧。第 01 格以参考图2的人物身份、穿搭、背景和动作起点为准；第 02–09 格保留参考图3对应位置的真实背景墙面、门窗、家具、物品、磨损、阴影、曝光、白平衡和景深特征，但允许为了相机向前推进约二分之一而自然放大和重新取景。禁止把九格改造成样板间、木柜棚景、统一房间或模型新设计的室内布景。"
-                        : "当前任务选择 AI 自动搭配背景。参考图3决定每格动作、站位、景别、场景类型、场景切换和构图，参考图2提供人物、穿着关系与真实摄影风格；不复刻脚本原视频房间，只重新设计每格环境的具体陈设。若背景存在塑料感、CG感、假材质、无来源高光或过度整洁，必须按参考图2的真实摄影标准重建材质与光线。")
+                        ? "参考图3来自原视频真实抽帧。第 01–09 格的背景、动作和机位均取参考图3对应位置；人物身份与非商品搭配取参考图2。允许为了近景构图自然放大和重新取景，不得把九格改造成统一样板间。"
+                        : "当前任务选择 AI 自动搭配背景。参考图3决定每格动作、站位、场景类型、场景切换和构图意图，景别只服从中近景门禁；参考图2提供人物、穿着关系与真实摄影风格。不复刻脚本原视频房间，只重新设计每格环境的具体陈设。若背景存在塑料感、CG感、假材质、无来源高光或过度整洁，必须按参考图2的真实摄影标准重建材质与光线。")
                 .append(realFrameGuide
                         ? "新人物必须适应参考图3各格原有的真实光源、色温、曝光、阴影与景深；不得反过来修改背景去迁就人物。"
                         : "但九格的色温、曝光、对比度、手机随拍质感、光线自然度、材质表现和日常生活氛围统一匹配参考图2。")
                 .append(realFrameGuide
-                        ? "参考图2只为第 01 格提供人物、成衣、背景和动作起点；第 02–09 格只继承其中的人物与成衣，不能把参考图2的房间复制到后八格。不同分镜原本存在的换景和商品特写必须保留；除纯商品特写和必须展示脚部的动作外，人物格全部统一为头顶至大腿中下段的近距离比例。"
+                        ? "参考图2只提供人物身份、非商品搭配与商品穿着尺度，不提供任何格的背景或动作。不同分镜原本存在的换景和商品特写必须保留；人物格的景别和可见范围只服从下方近景构图规则，不在此另设脚部例外。"
                         : "只迁移参考图2的视觉风格，不能把九格背景全部替换成参考图2的同一个房间，也不能抹掉参考图3要求的换景和商品特写。")
                 .append("把九格中的每一个占位人体逐格替换为参考图2中的同一个真实人物。必须复制参考图2的同一张脸、五官比例、肤色、")
-                .append("发型、发长、身材比例、下装、鞋袜和配饰；上衣商品外观必须以参考图1为准。九格人物必须是同一个人、同一套穿搭，不得重新选角或重新设计服装。")
-                .append("【人脸身份最高优先级】参考图2的脸是唯一合法人脸母版。参考图3即使残留原视频人物的脸、五官、年龄、肤色或表情，也全部视为需要被删除的旧主体，绝对不能继承、融合或折中。")
+                .append("发型、发长、身材比例、构图内可见下装和配饰；上衣商品外观必须以参考图1为准。九格人物必须是同一个人、同一套穿搭，不得重新选角或重新设计服装。")
+                .append("【人物身份】参考图2的脸是唯一人物母版。参考图3残留的人脸、年龄、肤色或发型均为占位内容，不得继承或融合。")
                 .append("逐格保持参考图2的脸型轮廓、眉形、眼裂、眼距、虹膜、鼻梁、鼻翼、嘴唇、下颌线和年龄观感；只允许因转头、透视和轻微表情产生正常变化。")
                 .append("如果动作姿态与人脸身份发生冲突，优先保住参考图2的人脸身份与自然五官，再对姿态做最小幅度调整；禁止重新抽取另一位模特。")
                 .append("九格审美基调完全继承参考图2，不得为了所谓美化重新画脸，也不得把参考图2变老、变疲惫、变凶或改变亲和感。")
-                .append("【第 01 格硬约束】参考图2只提供同一人物身份、正确穿法、搭配与摄影质感，不是脚本第01格动作。九宫格左上角第01格必须按脚本执行手持展示；如果脚本要求人物手里展开商品，人物自身不得同时再穿一件相同商品。手中商品结构取参考图1和参考图4，人物身份取参考图2。")
+                .append("【第 01 格】人物身份取参考图2；商品状态、动作、姿态和场景只按参考图3第01格及同编号脚本执行，不预设手持、穿着、正脸或商品特写。")
                 .append(GRID_FACE_PIXEL_REQUIREMENT)
-                .append("参考图2如果是远景，不沿用它的人物尺寸；只沿用同一人物、穿搭、背景与机位方向，在每格中把相机距离推进约二分之一。第 01 格必须按该近距离规则重新构图，但人物身份、姿态起点和背景关系保持不变。")
-                .append("【商品外观最高优先级】逐格直接复制参考图1的真实商品设计，包括颜色、领型、袖长、版型、面料纹理、缝线、印花文字、数字、图形、Logo、大小、位置与排列顺序；参考图2只用于确认它穿在人物身上的位置与自然形变。")
+                .append("参考图2如果是远景，不沿用其人物尺寸；每格按近景规则重新构图，但姿态、场景和机位方向仍取参考图3与脚本。")
+                .append("【商品外观】逐格复制参考图1的真实商品设计，包括颜色、结构、面料、缝线、印花、文字、图形、Logo、大小、位置与排列顺序；参考图2只用于确认穿着尺度与自然布料形变。")
+                .append(GARMENT_PIXEL_STRUCTURE_REQUIREMENT)
                 .append(topologyBlock.isBlank() ? "" : topologyBlock + "\n")
                 .append("不得重新理解商品、不得生成相似款、不得继承参考图3的占位衣服，也不得改字、漏字、增加装饰、替换图案或改变版型。")
                 .append("侧身、坐姿和特写只允许产生符合真实透视的轻微布料形变，商品身份和全部可见设计必须保持不变。")
@@ -1646,12 +2016,11 @@ public class AiVideoImageProcessor {
                 .append(FACE_COLOR_CONTINUITY_REQUIREMENT)
                 .append(NATURAL_HAIR_REQUIREMENT)
                 .append(NATURAL_EYE_REQUIREMENT)
-                .append(DIGNIFIED_STYLING_REQUIREMENT)
                 .append(REAL_PHOTOGRAPHY_REQUIREMENT)
                 .append(FABRIC_AND_PRODUCT_REALISM_REQUIREMENT)
                 .append("九格必须锁定参考图2的同一套基础肤色、脸与脖子的色差关系、曝光、白平衡和锐度参数，不能逐格重新美颜、重新上妆或改变皮肤质感。")
-                .append("微表情不需要每格都变化。脚本未明确写出笑、眨眼、视线转移、说话、挑眉或其他面部动作时，后一格必须沿用前一格的自然表情，")
-                .append("不能为了让九格看起来不同而逐格重新生成眉毛、眼睑、眼球、鼻翼、嘴唇和嘴角。只有明确的面部动作才允许建立一次起势→过程→到位的连续变化，不能突然大笑、张大嘴、瞪眼或改变年龄和脸型。每格面部状态如下：\n");
+                .append("【模特静默】所有人物格都必须保持嘴唇自然闭合和下颌稳定，不露齿、不张口、不说话、不唱歌、不做口型。脚本中的对白、台词、口播、讲解、旁白或 narration 只作为后期画外旁白语义，绝不能变成人物口型。")
+                .append("微表情不需要每格都变化。不能为了让九格看起来不同而逐格重新生成眉毛、眼睑、眼球、鼻翼、嘴唇和嘴角。只有不涉及开口的明确面部动作才允许建立一次起势→过程→到位的连续变化，不能突然大笑、张嘴、露齿、瞪眼或改变年龄和脸型。每格面部状态如下：\n");
         for (ShotPrompt shot : shots) {
             String expression = inferMicroExpression(shot);
             prompt.append("分镜 ").append(String.format("%02d", shot.sequence()))
@@ -1661,68 +2030,96 @@ public class AiVideoImageProcessor {
         }
         prompt.append("仅允许改变人物姿态和上述微表情以贴合参考图3，人物身份和参考图1的商品外观不得随姿态改变。")
                 .append("【异常规避优先级】九宫格的可用性高于复杂动作的精确复刻。如果某个动作会导致脸部崩坏、手指异常、肢体穿模、重心失衡或服装图案扭曲，")
-                .append("必须把该格动作幅度缩小为解剖正确的中间姿态，不能带着异常输出。每个有人格必须且只能出现一个头、一个躯干、两条手臂、两只手、两条腿和两只脚；")
-                .append("可见手掌必须为五指且连接正确，头颈肩连接自然，脚底与地面接触，鞋履完整。侧身格也必须保持同一张脸、同一发型、同一发长和同一套穿搭。")
-                .append("第 01 格必须严格复现参考图2的清晰正脸身份锚点；第 02–09 格才按脚本逐步进行转头、侧身、回眸或低头，禁止第 01 格再次被改成侧脸。")
-                .append("人物必须正确落在地面并与环境建立合理遮挡，手臂、手指、头发和双腿不得穿过身体、衣服、家具或墙面；")
-                .append("输出前逐格检查人物边界与脸部像素：头顶、完整五官、胸前商品、双臂和执行动作的手不得越界、贴边或被截断；默认在大腿中下段至膝盖上方结束构图。人脸低于约 190 像素、五官无法辨认或人物被缩成远景时，必须保持原动作把相机推进并重新构图，不得通过后期裁切放大补救。")
+                .append("必须把该格动作幅度缩小为解剖正确的中间姿态，不能带着异常输出。每个人的身体最多两条手臂、两只手和两条腿；")
+                .append("只约束构图内可见部分，不为凑数量补出被遮挡或出画的手脚。每只可见手必须连接唯一手臂，头颈肩连接自然。侧身格也保持同一人物和穿搭。")
+                .append("第 01–09 格的朝向均服从各自脚本；不得为了人脸锚定把侧脸、低头或商品特写强制改成正脸。")
+                .append("人物的画外承重与重心必须连续稳定并与环境建立合理遮挡；不得为了显示脚地接触而拉远。手臂、手指、头发和构图内可见下肢不得穿过身体、衣服、家具或墙面；")
+                .append("输出前逐格检查人物边界与可见脸部或头部轮廓：头顶、该朝向自然可见的五官、本格按脚本可见的当前商品部位、构图内可见手臂和执行动作实际需要的手不得越界、贴边或被截断；不可见肢体无需补出。背身、后脑、低头遮脸或商品遮脸格不得强行补画五官或转成正脸。默认在大腿中下段至膝盖上方结束构图。可见人脸或头部轮廓低于约 190 像素、人物被缩成远景时，必须保持原动作把相机推进并重新构图，不得通过后期裁切放大补救。")
                 .append("不得出现换脸、脸型漂移、年龄变化、发型变化、衣服变化、图案乱码、反关节、手指融合、肢体增减、身体扭曲或重影。")
                 .append("最终只输出一张 2160×3840 的 9:16 竖屏 4K 九宫格成图，不输出解释、文字、编号、水印或额外画面。")
-                .append("输出前逐格进行人脸、脸颈肤色、眼神、头发、穿搭和背景风格一致性核验；重点对比每格脸、耳朵、脖子和手臂，"
-                        + "出现偏灰、偏黄、偏绿、局部泛红、面具边界或与参考图2肤色不一致时，该格视为不合格并只重算人物。"
-                        + "任意一格不一致时不得改变其他格；即使需要重算，也保持该格原有场景内容与构图。");
+                .append("输出前只对各格实际可见的人脸、耳朵、脖子、手臂、头发、穿搭和背景做一致性核验；不可见部位无需补出。"
+                        + "可见皮肤出现偏灰、偏黄、偏绿、局部泛红、面具边界或与参考图2肤色不一致时，该格视为不合格。");
         return prompt.toString();
     }
 
     private String inferMicroExpression(ShotPrompt shot) {
-        String context = (shot.title() + " " + shot.motion()).toLowerCase();
+        return inferMicroExpression(shot.title(), shot.motion());
+    }
+
+    static String inferMicroExpression(String title, String motion) {
+        String context = ((title == null ? "" : title) + " " + (motion == null ? "" : motion)).toLowerCase();
+        if (containsAny(context, "说话", "口播", "台词", "讲解", "对白", "旁白", "解说",
+                "speak", "talk", "dialogue", "voiceover", "voice over", "lip sync", "narration")) {
+            return "说话、口播、台词或旁白只作为画外音语义；人物嘴唇自然闭合且稳定，不露齿、不张口、不生成口型，可保留克制的闭口微笑";
+        }
         if (containsAny(context, "眨眼", "闭眼", "睁眼")) {
             return "按动作只完成一次双眼同步的完整眨眼，其他五官保持稳定，不连续眨眼或眼睑颤动";
         }
         if (containsAny(context, "微笑", "笑", "开心", "愉悦")) {
-            return "嘴角从原状态缓慢形成轻微自然微笑并稳定保持，眉毛、鼻翼与下颌不跟随抽动";
-        }
-        if (containsAny(context, "说话", "口播", "台词", "讲解")) {
-            return "仅保留与明确台词对应的克制口型，嘴唇连续平滑运动，鼻翼、眉毛和视线不被口型带动";
+            return "嘴唇自然闭合、不露齿，嘴角从原状态缓慢形成轻微闭口微笑并稳定保持，眉毛、鼻翼与下颌不跟随抽动";
         }
         if (containsAny(context, "看向", "视线", "回眸", "低头", "抬头")) {
             return "双眼只向动作目标平滑移动一次并稳定对焦，嘴角、眉毛和鼻翼沿用上一格状态";
         }
-        return "沿用上一格的放松自然表情，闭口稳定，不新增嘴角、眉毛、鼻翼、眼睑或眼球动作";
+        return "沿用上一格的放松自然表情，嘴唇闭合稳定、不露齿、不张口，不新增嘴角、眉毛、鼻翼、眼睑或眼球动作";
     }
 
     private String shotExecutionDirection(AiVideoTask task, ShotPrompt shot) {
         StringBuilder value = new StringBuilder();
-        if (!shot.scene().isBlank()) value.append("场景与构图严格按脚本：").append(shot.scene()).append("；");
+        if (!shot.title().isBlank()) value.append("目标：").append(shot.title()).append("；");
+        if (!shot.scene().isBlank()) {
+            value.append("场景与构图意图（其中远景、全身、脚部和拉远信息无效）：")
+                    .append(shot.scene()).append("；");
+        }
         if (!shot.motion().isBlank()) value.append("动作严格按脚本：").append(shot.motion()).append("；");
-        if (!shot.shotSize().isBlank()) value.append("景别：").append(shot.shotSize()).append("；");
-        if (!shot.cameraMovement().isBlank()) value.append("机位与运镜：").append(shot.cameraMovement()).append("；");
+        value.append("人物静默硬覆写：脚本中的说话、口播、讲解、对白、台词或旁白只作为画外音语义；人物嘴唇自然闭合，不张口、不做口型；");
+        value.append("景别硬覆写：").append(imageFramingDirective(task.getGenerationMode()))
+                .append("；执行运镜：").append(normalizedImageCameraMovement(shot.cameraMovement())).append("；");
         value.append("手部规则：").append(shotHandDirective(task, shot)).append("；");
         return value.toString();
+    }
+
+    static String imageFramingDirective(String generationMode) {
+        return "PRODUCT_ONLY".equals(generationMode)
+                ? "商品近景，主体填满主要画面，禁止远景、全景、拉远和主体缩小"
+                : "人物中近景，头顶至大腿中下段、下边界在膝盖上方、可见脸或头部轮廓高度至少15%，禁止远景、全身、脚部入镜和拉远；背身或遮脸动作不得强行补脸或转正";
+    }
+
+    static String normalizedImageCameraMovement(String movement) {
+        if (movement == null || movement.isBlank()) return "固定机位或近景范围内轻微运动";
+        String normalized = movement.toLowerCase();
+        boolean pullsAway = containsAny(normalized,
+                "拉远", "后退", "远离", "广角缩人", "zoom out", "dolly out", "pull back", "truck out", "wide shot");
+        if (pullsAway) return "原拉远、后退或广角缩人运镜已禁用，改为近景范围内轻微横移、环绕或固定机位";
+        return "仅在不改变主体近景尺度的前提下执行原运镜：" + movement;
     }
 
     private String shotHandDirective(AiVideoTask task, ShotPrompt shot) {
         String context = (shot.title() + " " + shot.scene() + " " + shot.motion() + " " + shot.prompt()).toLowerCase();
         boolean explicitlyNoHand = containsAny(context, "无人手", "无手部", "不出现手", "没有手", "纯静物", "平铺", "仅商品", "no hand", "hands-free");
-        boolean requiresHand = !explicitlyNoHand && containsAny(context,
-                "手持", "拿取", "拿起", "拿着", "握住", "抓住", "托住", "捏住", "摆放", "放下", "拆封", "开箱", "双手", "单手", "手掌", "手指",
-                "hold", "holding", "pick up", "grip", "handheld", "unbox");
+        boolean requiresHand = !explicitlyNoHand && AiVideoTaskService.handInteractionRequired(context);
         if ("MODEL_WEAR".equals(task.getGenerationMode())) {
+            if (explicitlyNoHand) {
+                return "按本格构图让手自然遮挡或出画，不为凑齐数量补手，也不得从画面边缘新增手掌";
+            }
             return requiresHand
-                    ? "只执行本格写明的手势、拿取或触碰，双手数量、朝向、接触位置与脚本一致，不新增其他手势"
-                    : "人物双手保持该格自然姿势，不新增拿取、指向、拉扯、点赞、挥手或持物动作";
+                    ? "只执行本格写明的手势、拿取或触碰，可见手的数量、朝向和接触位置与脚本一致，不新增其他手势"
+                    : "沿用本格实际可见的手部状态；允许自然遮挡或出画，不新增拿取、指向、拉扯、点赞、挥手或持物动作";
         }
-        return requiresHand
-                ? "只出现完成本格动作所需的一双自然手，数量、方向、接触位置与脚本一致；其他格不得继承"
-                : "不得出现人物、手臂、手掌或手指，只保留商品与脚本规定的承托关系";
+        return AiVideoTaskService.productOnlyHandDirective(
+                shot.title() + " " + shot.motion() + " " + shot.prompt(), shot.scene());
     }
 
     private String fabricGripPhysicsRequirement(ShotPrompt shot) {
         String context = String.join(" ", shot.title(), shot.scene(), shot.motion(), shot.prompt()).toLowerCase();
-        return containsAny(context,
+        if (!containsAny(context,
                 "捏住", "捏起", "提起一角", "提着一角", "掀起", "拎起", "拉起衣角", "拉起下摆", "拉起袖口",
-                "pinch", "lift a corner", "lifted corner", "grip a corner")
-                ? FABRIC_GRIP_PHYSICS_REQUIREMENT : "";
+                "pinch", "lift a corner", "lifted corner", "grip a corner")) return "";
+        if (containsAny(context, "双手", "两手", "左右两侧", "两边", "both hands", "two hands")) {
+            return "【双手布料受力】只使用脚本中的两个真实接触点，接触点之间形成自然张力，未支撑部分受重力下垂；"
+                    + "不得增加第三只手，也不得改变袖片、袖口、领口和接缝连接。";
+        }
+        return FABRIC_GRIP_PHYSICS_REQUIREMENT;
     }
 
     private static boolean containsAny(String value, String... candidates) {
@@ -1750,7 +2147,7 @@ public class AiVideoImageProcessor {
             }
             shots.add(new ShotPrompt(sequence, prompt,
                     nullableText(shot.get("title")), nullableText(shot.get("sceneDescription")), nullableText(shot.get("motionDescription")),
-                    nullableText(shot.get("shotSize")), nullableText(shot.get("cameraMovement")),
+                    nullableText(shot.get("cameraMovement")),
                     nullableText(shot.get("emotion"))));
         }
         shots.sort(Comparator.comparingInt(ShotPrompt::sequence));
@@ -1884,7 +2281,7 @@ public class AiVideoImageProcessor {
     private boolean preserveScriptBackground(AiVideoTask task) { return !"AI_DESIGNED".equals(task.getBackgroundMode()); }
     private String safe(String value, String fallback) { return value == null || value.isBlank() || "null".equals(value) ? fallback : value; }
     private String nullableText(Object value) { return value == null || "null".equals(String.valueOf(value)) ? "" : String.valueOf(value).replaceAll("\\s+", " ").trim(); }
-    private String readable(Exception exception) {
+    private static String readable(Exception exception) {
         Throwable source = exception;
         while ((source instanceof CompletionException || source.getMessage() == null) && source.getCause() != null) {
             source = source.getCause();
@@ -1900,11 +2297,65 @@ public class AiVideoImageProcessor {
         return value.substring(0, Math.min(value.length(), 1000));
     }
 
-    private record ShotPrompt(int sequence, String prompt, String title, String scene, String motion, String shotSize,
+    private record ShotPrompt(int sequence, String prompt, String title, String scene, String motion,
                               String cameraMovement, String emotion) {}
     private record ReferenceImage(String name, String mimeType, String dataBase64) {}
     private record SourceFramePoint(double timestampSeconds, double durationSeconds) {}
     private record StoredMedia(String location, long size) {}
+    record TopologyRetryState(int attemptsReserved, String reservedPrompt,
+                              ProductFunctionAnalysisService.GarmentValidation previousValidation,
+                              boolean legacyRecovery) {
+        TopologyRetryState {
+            attemptsReserved = Math.max(0, Math.min(MAX_TOPOLOGY_GENERATIONS, attemptsReserved));
+            reservedPrompt = reservedPrompt == null ? "" : reservedPrompt;
+        }
+
+        static TopologyRetryState initial(boolean legacyRecovery, String recoveredPrompt) {
+            return new TopologyRetryState(
+                    legacyRecovery ? MAX_TOPOLOGY_GENERATIONS : 0,
+                    legacyRecovery ? recoveredPrompt : "", null, legacyRecovery);
+        }
+
+        boolean canGenerate() {
+            return attemptsReserved < MAX_TOPOLOGY_GENERATIONS;
+        }
+
+        TopologyRetryState reserve(String prompt) {
+            if (!canGenerate() || !reservedPrompt.isBlank()) {
+                throw new IllegalStateException("服装结构重抽轮次状态无效");
+            }
+            return new TopologyRetryState(attemptsReserved + 1, prompt, previousValidation, false);
+        }
+
+        TopologyRetryState reject(ProductFunctionAnalysisService.GarmentValidation validation) {
+            return new TopologyRetryState(attemptsReserved, "", validation, legacyRecovery);
+        }
+
+        TopologyRetryState recoverPending(String prompt) {
+            return new TopologyRetryState(attemptsReserved, prompt, previousValidation, true);
+        }
+
+        TopologyRetryState abandonReservation() {
+            if (reservedPrompt.isBlank()) return this;
+            return new TopologyRetryState(attemptsReserved, "", previousValidation, legacyRecovery);
+        }
+
+        TopologyRetryState releaseReservation() {
+            if (reservedPrompt.isBlank()) return this;
+            return new TopologyRetryState(Math.max(0, attemptsReserved - 1), "",
+                    previousValidation, legacyRecovery);
+        }
+
+        boolean acceptsPendingHash(String pendingHash, String expectedHash) {
+            return legacyRecovery || expectedHash != null && expectedHash.equals(pendingHash);
+        }
+
+        boolean mayProcessReservedAttempt(boolean reservedInThisInvocation,
+                                          boolean hasRecoverablePending) {
+            return !reservedPrompt.isBlank()
+                    && (reservedInThisInvocation || hasRecoverablePending);
+        }
+    }
     record TopologyCandidate(String mimeType, byte[] bytes, String modelId, String mode,
                              String prompt, String revisedPrompt) {
         static TopologyCandidate fromArtifact(PiArtifact artifact, String prompt, byte[] bytes) {
@@ -1913,13 +2364,19 @@ public class AiVideoImageProcessor {
         }
 
         PiArtifact toArtifact() {
-            return new PiArtifact("private-validation", mimeType, Base64.getEncoder().encodeToString(bytes),
-                    modelId, mode, prompt, revisedPrompt);
+            return new PiArtifact("private-validation", mimeType,
+                    Base64.getEncoder().encodeToString(bytes), modelId, mode, prompt, revisedPrompt);
         }
     }
+    record BestTopologyCandidate(TopologyCandidate candidate, int violationCount, int attemptNumber) {}
     private record PiImageResponse(PiArtifact artifact, PiImageResult result, Map<String, Object> usage) {}
     private record PiImageResult(String url, String mimeType, String modelId, String mode,
                                  String prompt, String revisedPrompt) {}
     private record PiArtifact(String name, String mimeType, String dataBase64, String modelId, String mode,
                               String prompt, String revisedPrompt) {}
+    private static final class UnavailablePendingImageResultException extends IllegalStateException {
+        private UnavailablePendingImageResultException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
 }

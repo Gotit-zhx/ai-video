@@ -797,6 +797,7 @@ public class AiVideoTaskService {
                 .eq(AiVideoTaskAsset::getItemId, itemId)
                 .eq(AiVideoTaskAsset::getAssetType, primaryAssetType));
         if (modelCount == 0) throw new BusinessException(HttpStatus.CONFLICT, "请先生成主展示图");
+        processor.resetTopologyRetryState(task, item, List.of("STORYBOARD_GRID"));
         List<AiVideoTaskAsset> storyboards = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, itemId)
                 .in(AiVideoTaskAsset::getAssetType, List.of("STORYBOARD_GRID", "STORYBOARD_GUIDE", "STORYBOARD_FIRST_FRAME")));
@@ -819,6 +820,7 @@ public class AiVideoTaskService {
                 .eq(AiVideoTaskItem::getOrganizationId, principal.organizationId()));
         if (item == null) throw new BusinessException(HttpStatus.NOT_FOUND, "商品素材不存在");
         String primaryAssetType = "MODEL_WEAR".equals(task.getGenerationMode()) ? "MODEL_IMAGE" : "PRODUCT_SCENE_IMAGE";
+        processor.resetTopologyRetryState(task, item, List.of(primaryAssetType, "STORYBOARD_GRID"));
         List<AiVideoTaskAsset> generatedAssets = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, itemId)
                 .in(AiVideoTaskAsset::getAssetType, List.of(primaryAssetType, "STORYBOARD_GRID", "STORYBOARD_GUIDE", "STORYBOARD_FIRST_FRAME")));
@@ -1326,14 +1328,14 @@ public class AiVideoTaskService {
         return prompt.toString().trim();
     }
 
-    private void appendCloseFramingLock(StringBuilder prompt, AiVideoTask task) {
+    static void appendCloseFramingLock(StringBuilder prompt, AiVideoTask task) {
         prompt.append("【全片中近景锁定｜最高优先级且覆盖脚本、参考图和原视频景别】\n");
         if ("PRODUCT_ONLY".equals(task.getGenerationMode())) {
             prompt.append("所有商品镜头均采用商品近景，主体持续填满主要画面；禁止远景、空旷全景、主体突然缩小、后退拉远或以展示环境为理由拉开距离。脚本中的拉远改为近景范围内的轻微横移、环绕或固定机位。\n\n");
             return;
         }
         prompt.append("所有出现人物的画面都必须保持头顶至大腿中下段、下边界在膝盖上方的中近景；膝盖以下、双脚和鞋子始终不可见。")
-                .append("脸从发际线到下巴的高度在每一帧都不得低于画面高度 15%，头顶、完整五官、胸前商品、双臂和动作所需双手必须清楚。")
+                .append("正面或侧脸可见时，脸从发际线到下巴的高度不得低于画面高度 15%；背身、后脑、低头遮脸或商品遮脸时，不得为满足人脸条件强行补画五官或把人物转正，改以头部轮廓高度不低于 15% 保持同一主体尺度。头顶、该朝向自然可见的五官、本镜头按时间轴可见的当前商品部位、构图内可见手臂和动作实际需要的手必须清楚；被遮挡或出画的肢体无需补出。")
                 .append("禁止远景、全景、完整全身、广角缩人、人物后退变小、镜头拉远或切到远景；脚本、shotSize、cameraMovement、参考图或原视频若与此冲突，一律把动作改写到中近景内完成。")
                 .append("允许硬切和轻微推近、横移、环绕，但切换前后仍须保持相同中近景主体尺度，不能用拉远交代环境。纯商品特写可以无人，但商品必须近景填满主要画面。\n\n");
     }
@@ -1341,12 +1343,12 @@ public class AiVideoTaskService {
     private String closeFramingTimelineDirective(AiVideoTask task) {
         return "PRODUCT_ONLY".equals(task.getGenerationMode())
                 ? "商品近景，主体填满主要画面；禁止远景、主体缩小和拉远"
-                : "人物中近景：头顶至膝盖上方、脸高≥15%；禁止远景、全身、脚部入镜和拉远";
+                : "人物中近景：头顶至膝盖上方、可见脸或头部轮廓高度≥15%；背身或遮脸不补脸、不转正；禁止远景、全身、脚部入镜和拉远";
     }
 
     private String buildDirectReferenceVideoPrompt(AiVideoTask task, String subjectName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定\n\n");
+        prompt.append("提示词版本：DIRECT_DETAIL_V5 · 模特静默与全片中近景锁定\n\n");
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append("短视频，主体：").append(subjectName).append("。\n");
         prompt.append("参考图的编号、主参考和各图用途由用户单独指定；严格服从提交时附加的《参考图职责协议》，不得按上传顺序自行猜测，也不得把编号、用途说明或协议文字拍进成片。\n");
@@ -1357,7 +1359,7 @@ public class AiVideoTaskService {
         prompt.append("每一张参考图只影响它被指定的职责。发生冲突时，主参考决定主体身份和整体外观，专项参考只覆盖对应的商品细节、人物、场景、动作、角度或结束画面。\n\n");
         prompt.append("【人物人脸景别保护】\n");
         prompt.append("有人物时，全片保持同一人物身份、脸型、五官比例、肤色、年龄、发型、身材和穿搭；头部转动只产生真实透视变化，不得逐帧重绘五官、换脸或改变年龄。\n");
-        prompt.append("动作、场景和主体关系服从每段脚本与对应参考图，但景别始终服从《全片中近景锁定》；脸部必须清晰、自然且结构稳定。非台词时保持自然闭口，不自行增加眨眼、挑眉、口型、手势、舞蹈或夸张表演。\n\n");
+        prompt.append("动作、场景和主体关系服从每段脚本与对应参考图，但景别始终服从《全片中近景锁定》；脸部必须清晰、自然且结构稳定。出镜人物全程自然闭口，不说话、不唱歌、不做口型；脚本中的任何人声文字都只允许作为画外旁白，不得驱动人物眨眼、挑眉、口型、手势、舞蹈或夸张表演。\n\n");
         prompt.append("【商品与物理一致性】\n");
         prompt.append("商品颜色、结构、数量、比例、Logo、文字、图案、材质和功能部件全片稳定，不得换款、复制、漂移、融化或凭空生长。拿取、开启、点燃、喷洒、倾倒和使用效果必须遵守真实接触关系、结构和功能原理。\n");
         prompt.append("手部只在脚本需要时出现，数量与动作自然；主体不得悬浮，必须与手、桌面、地面、支架或环境建立真实接触。\n\n");
@@ -1372,7 +1374,7 @@ public class AiVideoTaskService {
 
     private String buildProductVideoPrompt(AiVideoTask task, String productName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定\n\n");
+        prompt.append("提示词版本：PRODUCT_DETAIL_V6 · 旋律伴奏与全片商品近景锁定\n\n");
         prompt.append("【参考图片】\n");
         prompt.append("图1：从图2第 01 格裁出的商品首帧，是商品外观、位置、场景与初始状态的最高优先级锚点。\n");
         prompt.append("图2：4K 商品分镜九宫格，按从左到右、从上到下读取 01→09，仅表示同一件商品的连续展示过程。\n");
@@ -1386,7 +1388,7 @@ public class AiVideoTaskService {
         prompt.append("场景、展示方式、机位方向、构图意图和手部状态逐镜读取图2与脚本时间轴，不得用某一格的设置覆盖其他格；但所有镜头都必须重新归一为商品近景。\n");
         prompt.append("运镜在商品近景范围内执行：推近、平移、环绕和细节特写可保留；拉远、后退、远景或主体缩小一律改为近景范围内的轻微横移、环绕或固定机位。\n");
         prompt.append("九宫格是 9 个时间轴关键帧，不代表 9 个物理镜头。只有转场说明明确标记真实切点时才执行转场；标记“同镜头连续，无转场”的相邻格必须保持同一镜头内连续运动。\n");
-        prompt.append("分镜明确写出手持、拿取、摆放、打开或演示时，只在该分镜出现完成动作所需的一双自然手；分镜未要求手部互动时，不得新增人物、手臂、手部或持物动作。\n");
+        prompt.append("分镜明确写出手持、拿取、摆放、打开或演示时，只出现完成动作所需的手；未明确双手时默认一只，最多两只。分镜未要求手部互动时，不得新增人物、手臂、手部或持物动作。\n");
         prompt.append("商品不得悬浮，必须与手、桌面、地面、支架或包装建立符合该分镜的真实接触关系。禁止穿模、异常反射、破损结构、额外配件、背景文字、水印、分屏、九宫格边框和画中画。\n\n");
         appendMusicPrompt(prompt, task);
         appendImageToVideoTimeline(prompt, task);
@@ -1396,31 +1398,23 @@ public class AiVideoTaskService {
 
     private String buildStoryboardAnimationPrompt(AiVideoTask task, String garmentName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：V11.3 · 全片中近景与局部帧保持\n\n");
-        prompt.append("【参考图片顺序】\n");
-        prompt.append("图1：从图2第 01 格等比例裁出的单人首帧。它只定义视频 t=0 的人物身份、脸、发型、身材、完整穿搭与初始姿势；从第 01 段动作开始后立即服从图2和时间轴推进，不得把图1的静态姿势、手持状态或背景延续到后续分镜。\n");
-        prompt.append("图2：最终 4K 九宫格分镜表。按从左到右、从上到下读取 01→09；每一格分别决定对应镜头的动作、场景、构图意图和机位方向，不得只读取第 01 格；其中远景、全身或拉远信息无效，人物尺度始终由《全片中近景锁定》决定。\n");
-        prompt.append("图3：商品素材，只用于校验上衣颜色、版型、领口、袖长以及胸前印花的内容、位置和比例。\n\n");
+        prompt.append("提示词版本：V11.7 · 模特静默与旋律伴奏版\n\n");
+        prompt.append("【参考图职责】\n");
+        prompt.append("图1：第01格单画面首帧。人物身份、脸、发型、身材和非商品穿搭在全片保持一致；只有姿势、手持状态和背景仅约束 t=0。\n");
+        prompt.append("图2：完整3×3时间索引，按左到右、上到下读取01→09。采用每格的动作、场景、构图意图和机位方向，但把对应内容重建为铺满画布的单画面；远景、全身和拉远信息由中近景规则覆盖，九宫格版式本身不是输出内容。\n");
+        prompt.append("图3：原始商品母版，锁定完整商品身份，包括颜色、结构、比例、面料、缝线、印花、文字和Logo；商品信息冲突时以图3可见像素为准。\n\n");
         prompt.append("【生成任务】\n");
-        prompt.append("生成一条严格按图2的 01→09 顺序播放的多镜头电商短片。必须逐格读取并落实每格场景、动作、主体状态和构图意图；图1仅约束 t=0，不具备覆盖时间轴的权限，禁止把九格全部改写成第 01 格的背景、站姿或手持状态。所有人物镜头的景别统一由后述中近景锁定覆盖。\n");
+        prompt.append("生成一条").append(task.getAspectRatio()).append("电商短片，按01→09落实全部时间段，不跳格、不长期停留第01格。每帧只显示一个铺满请求画幅的场景。\n");
         appendCloseFramingLock(prompt, task);
-        prompt.append("相邻格背景、人物位置和景别一致时，使用同一身体的自然连续动作；相邻格出现明显换景、站立与坐姿切换、人物镜头与商品特写切换或景别大幅变化时，在分镜边界使用干净硬切，不得用人体变形、背景融化或强行走位完成转场。\n");
-        prompt.append("【视角变化判定】若时间轴明确写出转身、回身、侧身、低头、抬头或回眸，则在约 0.8–1.5 秒内只完成这一项平滑运动，头、颈、肩和躯干按真实骨骼关系共同转动；转动期间不叠加新的微笑、挑眉、口型、眨眼或快速视线动作。\n");
-        prompt.append("若时间轴没有连续动作指令，而相邻格出现正面/侧面/背面互换、身体朝向变化超过约 30°或头部俯仰变化超过约 20°，则在边界直接硬切。参考格出现人物尺度改变、全身或远景时不能照搬其距离，必须先归一为相同中近景再硬切。硬切前后各稳定约 4–6 帧，禁止中间脸、中间身体、交叉溶解、残影、变形插值和背景融化。\n");
-        prompt.append("每格都必须在对应时间段真实出现，不得跳过中间格或长期停留第 01 格。镜头内每次只推进一个主要动作，不自行增加舞蹈、挥手、转圈或夸张表演。\n");
-        prompt.append("所有有人分镜始终使用图1中的同一个人物和同一套穿搭，任一镜头最多 1 人；纯商品特写允许人物不出镜。禁止第二人物、复制、分身、镜像人物、换脸、换发型、换装、四肢增生、关节反折和穿模。\n");
-        prompt.append("【手持服装结构不变】人物拿着、展开、折叠、从包装取出、贴身比对或特写商品时，手中商品仍须逐帧服从后附《服装结构契约》。斜肩、单肩、宽船领或露肩款不得在手里变成普通圆领短袖；领口连续路径、左右肩高度与覆盖关系、袖子数量和连接点必须保持。穿到身上后继续沿用同一结构和同一穿着侧。\n");
-        prompt.append("【面部身份与运动分离】图1是整条视频唯一的人脸几何母版。脸型、眉形、眼裂与眼距、虹膜、鼻梁、鼻翼与鼻孔、静止唇形、嘴角、下颌线和脸颈肤色持续锁定；头部转动只产生正常透视变化，不得逐帧重新生成五官。\n");
-        prompt.append("脚本没有明确面部动作时保持放松自然表情、稳定闭口和稳定视线；禁止眼睛大小或虹膜漂移、左右眼不同步、嘴角抽动、嘴唇无意义开合、下颌抖动、鼻翼或鼻孔收缩扩张、眉毛跳动和表情来回切换。全片最多一次自然眨眼，且只能发生在人物正面稳定时。\n");
-        prompt.append("【局部帧保持】同一镜头中，当人物姿势或表情没有变化时，眼睛、鼻子、嘴巴直接保持上一帧的局部形状与纹理，只做必要的位置跟随，不重新采样、锐化、补全或美化。转身、低头和抬头期间以最近稳定关键帧为身份锚点，只做连续几何变换；清晰度不足时宁可保持柔和，也不得重新画一套五官。\n");
-        prompt.append("允许时间轴明确要求的单次微笑、眨眼或视线转移，但每次只执行一项，从稳定表情缓慢进入，到位后保持至少 0.4 秒；不得同时触发眨眼、转头、张嘴、挑眉和视线跳转。身体动作不自动触发表情。\n");
+        prompt.append("转场只服从后附时间轴：同一真实镜头内自然连续，明确真实切点处干净切换；不得用人体变形、背景融化、残影或同时显示两格代替转场。\n");
+        prompt.append("【人物与动作】\n");
+        prompt.append("有人镜头最多一人，并始终是图1中的同一人物；纯商品特写可以无人无手。人物身体最多两条手臂和两只手，被遮挡或出画的肢体无需补出；每只可见手必须自然连接到唯一手臂。\n");
+        prompt.append("每段只执行时间轴写明的主要动作，不新增挥手、指向、舞蹈或夸张表演。手势差异不得通过多手、复制肢体或残影插值。\n");
+        prompt.append("【商品与人物稳定】\n");
+        prompt.append("商品在穿着、手持、展开、折叠和特写状态下都保持图3及后附结构证据中的同一结构；只允许真实透视、遮挡、布料受力和褶皱变化。\n");
+        prompt.append("脸部保持图1身份，转头只产生自然透视；嘴唇全程自然闭合且稳定，不说话、不唱歌、不做任何对口型动作。画外旁白不得驱动嘴唇、表情、头部、手势或身体节拍。商品印花随同一块布料运动，不改字、不增删、不漂移。\n");
         appendMusicPrompt(prompt, task);
-        prompt.append("【商品纹理时序锁定】胸前文字、数字、图案、轮廓线、颜色块和相互间距是绑定在同一块布料坐标上的固定纹理，只能随整件衣服连续做透视、缩放和褶皱形变；不得独立移动、逐帧改字、换色、增删、闪烁、爬动或重新排列。\n");
-        prompt.append("【印花帧保持】胸前印花在首个清晰正面帧完成一次校验后，后续直接复用同一纹理贴图，不执行 OCR、不重新拼写、不逐帧修复字母。侧身时允许自然变窄、降低可读性或被遮挡，不得为保持可读而重画。\n");
-        prompt.append("衣服褶皱遵循连续布料物理，同一条褶皱随身体动作平滑移动，不得凭空出现、消失或像液体沸腾。皮肤的肤色、毛孔、细纹和关节折痕不得游走、闪烁或逐帧强化；分辨率不足时保持自然柔和的中频细节。\n");
-        prompt.append("【布料物理】衣服褶皱、重量和惯性必须逐镜服从该格实际支撑点；禁止把任一格的提拉动作扩散成全片固定手势。\n");
-        prompt.append("【曝光与色彩锁定】每个镜头分别以图2对应格的亮度、肤色、白平衡、色温、黑位、对比度和饱和度为基准；同一镜头内保持稳定，不得出现曝光呼吸、肤色闪烁、自动压暗、灰雾、暗角或电影滤镜。不同场景在硬切后直接采用下一格自身的曝光，不使用淡入淡出或黑场。\n");
-        prompt.append("每个镜头的背景、机位方向与光线以图2对应格为准；焦段和人物尺度始终服从全片中近景锁定，同一镜头内部保持稳定。不得显示图2格线、拼贴、文字或编号，不生成字幕、额外 Logo 或水印。\n\n");
+        prompt.append("同一镜头内保持曝光、白平衡、背景和人物尺度稳定；不生成字幕、额外Logo或水印。\n\n");
         appendImageToVideoTimeline(prompt, task);
         String value = prompt.toString().trim();
         return value.substring(0, Math.min(value.length(), 20000));
@@ -1431,18 +1425,21 @@ public class AiVideoTaskService {
         String voiceoverMode = textValue(rules.get("voiceoverMode"));
         boolean spokenAudio = "CUSTOM".equals(voiceoverMode)
                 ? !textValue(rules.get("customVoiceover")).isBlank()
-                : !"NONE".equals(voiceoverMode) && hasNarration(task);
+                : !"NONE".equals(voiceoverMode) && hasVoiceover(task, objectMapper);
+        String language = voiceoverLanguageDirective(task);
         if ("UPLOADED".equals(task.getMusicMode())) {
             prompt.append(spokenAudio
-                    ? "【音频】已上传音乐是全片唯一BGM并保持连续；按时间轴生成指定对白/旁白，说话时仅压低BGM，句末恢复。\n"
-                    : "【音频】已上传音乐是唯一BGM，保留旋律与节奏；不生成其他人声或音效。\n");
+                    ? "【伴奏】已上传音乐是全片唯一BGM，从0秒到结尾保持清晰旋律与稳定节拍；画外旁白出现时只适度压低音量，旁白结束立即恢复，伴奏不可中断或消失。\n"
+                    : "【伴奏】已上传音乐是全片唯一BGM，从0秒到结尾完整保留清晰旋律与稳定节拍；不生成其他人声、歌声、哼唱或突兀音效。\n");
         } else {
             prompt.append(spokenAudio
-                    ? "【音频】生成连续清晰的纯器乐BGM；按时间轴生成指定对白/旁白，说话时压低BGM，句末恢复。\n"
-                    : "【音频】生成轻快、连续、干净的纯器乐BGM，无人声、杂音或突兀音效。\n");
+                    ? "【伴奏】必须生成从0秒贯穿结尾、具有清晰可辨主旋律和稳定节拍的纯器乐BGM；不得用无旋律环境底噪、静音或人声代替。画外旁白出现时只适度压低音量，旁白结束立即恢复。\n"
+                    : "【伴奏】必须生成从0秒贯穿结尾、具有清晰可辨主旋律和稳定节拍的轻快纯器乐BGM；不得静音，不得只有无旋律环境底噪，不得包含歌词、歌声、哼唱、呢喃或无意义人声。\n");
         }
         if (spokenAudio) {
-            prompt.append("【人声】逐字说时间轴文字，不增删重复；“对白”由人物在对应时段自然开口并同步口型，“旁白”用画外音且人物不动嘴；空白时段禁说话。人声清楚，BGM不得盖住或消失。\n");
+            prompt.append("【画外旁白】时间轴中的“对白、台词、口播、旁白、narration”一律转换为与画面人物分离的画外旁白，出镜人物始终闭口。")
+                    .append(language)
+                    .append("只逐字朗读时间轴给出的旁白原文，不增删、不改写、不翻译成其他语言，不夹杂乱码、无意义音节或含糊拟声；发音自然清晰、语速适合对应时段。没有旁白文字的时段禁止任何人声。\n");
             String narrationLanguage = textValue(rules.get("narrationLanguage"));
             if ("SCRIPT".equals(voiceoverMode) && !narrationLanguage.isBlank()) {
                 prompt.append("【旁白语言锁定】全部对白和旁白必须使用")
@@ -1450,7 +1447,7 @@ public class AiVideoTaskService {
                         .append(task.getTargetMarket()).append("。时间轴文字已经完成本地化，禁止改回中文、夹杂其他语言或再次翻译。\n");
             }
         } else {
-            prompt.append("【人声】全片不说话、不动嘴；BGM不驱动表情或身体动作。\n");
+            prompt.append("【人声】全片没有对白、旁白、口播、歌声、哼唱、呢喃或无意义人声；出镜人物始终自然闭口，BGM不得驱动嘴唇、表情或身体动作。\n");
         }
         if ("CUSTOM".equals(voiceoverMode)) {
             prompt.append("【自定义口播原文】").append(textValue(rules.get("customVoiceover"))).append('\n');
@@ -1462,13 +1459,22 @@ public class AiVideoTaskService {
         }
     }
 
-    private boolean hasNarration(AiVideoTask task) {
+    static boolean hasVoiceover(AiVideoTask task, ObjectMapper objectMapper) {
+        try {
+            Map<String, Object> rules = objectMapper.readValue(task.getGenerationRulesJson(), Map.class);
+            if ("NONE".equals(rules.get("voiceoverMode"))) return false;
+            if ("CUSTOM".equals(rules.get("voiceoverMode"))) {
+                return !voiceoverText(rules.get("customVoiceover")).isBlank();
+            }
+        } catch (Exception ignored) {
+            // Legacy tasks predate generation rules; use their script narration.
+        }
         try {
             Map<String, Object> root = objectMapper.readValue(task.getScriptJson(), Map.class);
             Object rawShots = root.get("shots");
             if (!(rawShots instanceof List<?> shots)) return false;
             return shots.stream().anyMatch(raw -> raw instanceof Map<?, ?> shot
-                    && !textValue(shot.get("narration")).isBlank());
+                    && !voiceoverText(shot.get("narration")).isBlank());
         } catch (Exception ignored) {
             return false;
         }
@@ -1477,6 +1483,21 @@ public class AiVideoTaskService {
     private Map<String, Object> generationRules(AiVideoTask task) {
         try { return objectMapper.readValue(task.getGenerationRulesJson(), Map.class); }
         catch (Exception ignored) { return Map.of(); }
+    }
+
+    static String voiceoverText(Object value) {
+        if (value == null) return "";
+        return String.valueOf(value).replaceAll("\\s+", " ").trim()
+                .replaceFirst("(?i)^(?:对白|旁白|口播|台词|voice\\s*over|voiceover|dialogue|narration)\\s*[:：]\\s*", "")
+                .trim();
+    }
+
+    private String voiceoverLanguageDirective(AiVideoTask task) {
+        if (task.getTargetMarket() == null || task.getTargetMarket().isBlank()) {
+            return "旁白使用脚本文案本身的语言和自然口音；";
+        }
+        return "旁白使用目标市场“" + task.getTargetMarket().trim()
+                + "”对应的本地语言和自然口音；脚本文案已经是目标语言时保持原文；";
     }
 
     @SuppressWarnings("unchecked")
@@ -1501,10 +1522,8 @@ public class AiVideoTaskService {
                 String start = textValue(shot.get("startSecond"));
                 String end = textValue(shot.get("endSecond"));
                 String action = textValue(shot.get("motionDescription"));
-                if (action.isBlank()) action = textValue(shot.get("sceneDescription"));
                 if (action.isBlank()) action = textValue(shot.get("title"));
                 String intensity = textValue(shot.get("motionIntensity"));
-                String shotSize = textValue(shot.get("shotSize"));
                 String movement = textValue(shot.get("cameraMovement"));
                 String transition = textValue(shot.get("transitionDescription"));
                 String scene = textValue(shot.get("sceneDescription"));
@@ -1518,14 +1537,12 @@ public class AiVideoTaskService {
                 appendLine(prompt, "本镜头布料重力", fabricGripPhysicsDirective(action, scene));
                 appendLine(prompt, "景别硬覆写", closeFramingTimelineDirective(task));
                 appendLine(prompt, "进入转场", VideoTimelineSemantics.enteringTransition(sequence, transition));
-                if (!shotSize.isBlank()) {
-                    appendLine(prompt, "原脚本景别（已禁用）", shotSize);
-                }
                 appendLine(prompt, "执行镜头", normalizedCameraMovement(task, movement));
+                appendLine(prompt, "人物口型", "出镜人物自然闭口；本镜头任何说话、口播、讲解或台词要求只作为画外旁白语义，不执行张嘴或对口型");
                 String voiceoverMode = textValue(generationRules(task).get("voiceoverMode"));
                 String narration = "NONE".equals(voiceoverMode) || "CUSTOM".equals(voiceoverMode)
-                        ? "" : textValue(shot.get("narration"));
-                appendLine(prompt, "对白 / 旁白", narration);
+                        ? "" : voiceoverText(shot.get("narration"));
+                appendLine(prompt, "画外旁白（人物不得说话或动嘴）", narration);
             }
         } catch (Exception ignored) { }
     }
@@ -1655,14 +1672,19 @@ public class AiVideoTaskService {
         if (isScriptVideoReplacement(task)) {
             return !current.contains("提示词版本：SCRIPT_VIDEO_REPLACE_V2 · 精准复刻");
         }
-        if (current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")
-                || current.contains("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定")
-                || current.contains("提示词版本：V11.3 · 全片中近景与局部帧保持")) {
+        if (current.contains("提示词版本：DIRECT_DETAIL_V5 · 模特静默与全片中近景锁定")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V6 · 旋律伴奏与全片商品近景锁定")
+                || current.contains("提示词版本：V11.7 · 模特静默与旋律伴奏版")) {
             return false;
         }
-        return (current.contains("提示词版本：DIRECT_DETAIL_V3")
+        return (current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定")
+                || current.contains("提示词版本：V11.6 · 近景证据优先精简版")
+                || current.contains("提示词版本：DIRECT_DETAIL_V3")
                 || current.contains("提示词版本：PRODUCT_DETAIL_V3")
+                || current.contains("提示词版本：V11.5 · 单画面与证据优先精简版")
                 || current.contains("提示词版本：V11.1 · V11 恢复版与局部帧保持")
+                || current.contains("提示词版本：V11.4 · 九宫格零输出与人体完整性")
                 || (task.isDirectReferenceVideo()
                     && current.contains("参考图的编号、主参考和各图用途由用户单独指定")
                     && (!current.contains("【人物人脸景别保护】")
@@ -1766,17 +1788,45 @@ public class AiVideoTaskService {
     private String shotHandDirective(AiVideoTask task, String action, String scene) {
         String context = (textValue(action) + " " + textValue(scene)).toLowerCase();
         boolean explicitlyNoHand = containsAny(context, "无人手", "无手部", "不出现手", "没有手", "纯静物", "平铺", "仅商品", "no hand", "hands-free");
-        boolean requiresHand = !explicitlyNoHand && containsAny(context,
-                "手持", "拿取", "拿起", "拿着", "握住", "抓住", "托住", "捏住", "摆放", "放下", "拆封", "开箱", "双手", "单手", "手掌", "手指",
-                "hold", "holding", "pick up", "grip", "handheld", "unbox");
+        boolean requiresHand = !explicitlyNoHand && handInteractionRequired(context);
         if ("MODEL_WEAR".equals(task.getGenerationMode())) {
+            if (explicitlyNoHand) {
+                return "按本镜头构图让手自然遮挡或出画；不为凑齐数量补手，也不得从边缘新增手掌";
+            }
             return requiresHand
                     ? "本镜头按脚本执行指定手势或触碰；只做该动作，不新增拿取、指向、挥手或其他手势"
-                    : "人物双手自然沿用该分镜姿势；不新增手持、拿取、指向、拉扯、点赞或挥手动作";
+                    : "沿用该分镜实际可见的手部状态；允许自然遮挡或出画，不新增手持、指向、拉扯、点赞或挥手动作";
         }
-        return requiresHand
-                ? "本镜头按脚本出现完成动作所需的一双自然手；手的数量、方向、接触位置与动作必须一致，不能延续到其他镜头"
-                : "本镜头不出现人物、手臂、手掌或手指，只保留商品及脚本要求的承托关系";
+        return productOnlyHandDirective(action, scene);
+    }
+
+    static String productOnlyHandDirective(String action, String scene) {
+        String context = ((action == null ? "" : action) + " " + (scene == null ? "" : scene)).toLowerCase();
+        if (containsAny(context, "无人手", "无手部", "不出现手", "没有手", "纯静物", "平铺", "仅商品", "no hand", "hands-free")) {
+            return "本镜头不出现人物、手臂、手掌或手指，只保留商品及脚本要求的承托关系";
+        }
+        boolean twoHands = containsAny(context, "双手", "两手", "一双手", "both hands", "two hands");
+        boolean oneHand = containsAny(context, "单手", "一只手", "one hand");
+        boolean requiresHand = handInteractionRequired(context);
+        if (twoHands) {
+            return "本镜头最多出现两只自然手，按脚本完成双手动作；两只手各自连接唯一手臂，方向和接触位置正确，不延续到其他镜头";
+        }
+        if (oneHand || requiresHand) {
+            return "本镜头只出现一只自然手完成动作；该手连接唯一手臂，方向和接触位置正确，不新增第二只手，也不延续到其他镜头";
+        }
+        return "本镜头不出现人物、手臂、手掌或手指，只保留商品及脚本要求的承托关系";
+    }
+
+    static boolean handInteractionRequired(String context) {
+        String value = context == null ? "" : context.toLowerCase();
+        boolean explicitPhysicalAction = containsAny(value,
+                "拿取", "拿起", "拿着", "握住", "抓住", "托住", "捏住", "摆放", "放下", "拆封", "开箱",
+                "双手", "单手", "手掌", "手指", "hold", "holding", "pick up", "grip", "unbox");
+        if (explicitPhysicalAction) return true;
+        boolean handheldCamera = containsAny(value,
+                "手持镜头", "手持拍摄", "手持摄影", "手持相机", "手持机位", "手持运镜",
+                "handheld camera", "hand-held camera", "handheld shot", "handheld filming", "handheld footage");
+        return !handheldCamera && containsAny(value, "手持", "handheld");
     }
 
     private String fabricGripPhysicsDirective(String action, String scene) {
@@ -1784,11 +1834,15 @@ public class AiVideoTaskService {
         if (!containsAny(context,
                 "捏住", "捏起", "提起一角", "提着一角", "掀起", "拎起", "拉起衣角", "拉起下摆", "拉起袖口",
                 "pinch", "lift a corner", "lifted corner", "grip a corner")) return "";
+        if (containsAny(context, "双手", "两手", "左右两侧", "两边", "both hands", "two hands")) {
+            return "只在本镜头应用：双手形成两个真实接触点，接触点之间自然受张力，未支撑部分受重力下垂；"
+                    + "不得增加第三只手或改变袖片、袖口、领口和接缝结构";
+        }
         return "只在本镜头应用：指腹接触点是明确受力点，未被支撑的对侧领口、肩袖、衣身和衣摆受重力下垂；"
                 + "从受力点产生自然放射褶皱、弧形悬垂、轻微滞后与阻尼。禁止整件衣服像纸板同步抬起；该手势不得延续到其他分镜";
     }
 
-    private boolean containsAny(String value, String... candidates) {
+    private static boolean containsAny(String value, String... candidates) {
         for (String candidate : candidates) if (value.contains(candidate)) return true;
         return false;
     }
