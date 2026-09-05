@@ -21,3 +21,10 @@ test('test workspace theme and collapsed card controls survive telemetry merge',
   assert.ok(app.includes('renderAiVideoCardExpandButton(item, true)'));
   assert.ok(app.includes('renderAiVideoCardExpandButton(item, false)'));
 });
+
+test('expired sessions close workspace dialogs and clear the retained password', () => {
+  const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const showLogin = app.match(/function showLogin\([^]*?\n}\n\nasync function showDashboard/)[0];
+  assert.ok(showLogin.includes('document.querySelectorAll("dialog[open]").forEach(dialog => dialog.close())'));
+  assert.ok(showLogin.includes('passwordInput.value = ""'));
+});

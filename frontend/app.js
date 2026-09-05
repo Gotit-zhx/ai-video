@@ -869,6 +869,8 @@ function uploadFormData(path, formData, onProgress) {
 
 function showLogin({ message = "" } = {}) {
   stopWorkflowEvents();
+  document.querySelectorAll("dialog[open]").forEach(dialog => dialog.close());
+  passwordInput.value = "";
   resetCompanyScopedWorkspaceState();
   currentUser = null;
   loginView.hidden = false;

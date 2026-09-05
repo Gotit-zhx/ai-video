@@ -150,7 +150,9 @@ callback 白名单网关，只允许上述两个 OAuth GET 回调通过 HTTPS �
 `APP_SHOP_AUTH_CALLBACK_BASE_URL`，单机联调可让 `APP_SHOP_AUTH_FRONTEND_BASE_URL` 保持为
 `http://localhost:3000`，授权完成后浏览器会回到本机页面。免费域名重启后可能变化，每次都要同步
 更新 Shopee/TikTok 开发者后台登记值。本地 `http://localhost:3000` 不经过代理协议头，不会被
-HTTPS 重定向。
+HTTPS 重定向。使用 `compose.local.yaml` 需要 Docker Compose 2.24.4 或更高版本；该配置会把前端、
+后端、MySQL、Redis 和 Pi Runtime 端口只绑定到 `127.0.0.1`，公网联调始终只经过 callback
+白名单网关。
 
 默认始终是 `DRY_RUN`。只有联调完成、图片去水印提供方不再是 Dry Run，并确认应用已取得
 商品与物流权限后，才同时设置以下两个变量启用真实官方发布：
