@@ -126,6 +126,7 @@ https://api.example.com/api/v1/shop-authorizations/callback/tiktok_shop
 
 ```text
 APP_SHOP_CREDENTIAL_KEY=<独立的至少 32 位随机值>
+APP_SESSION_COOKIE_SECURE=true
 APP_SHOP_AUTH_CALLBACK_BASE_URL=https://api.example.com
 APP_SHOP_AUTH_FRONTEND_BASE_URL=https://app.example.com
 APP_SHOPEE_ENABLED=true
@@ -141,6 +142,15 @@ APP_TIKTOK_SHOP_AUTHORIZATION_BASE_URL=https://services.tiktokshop.com
 APP_TIKTOK_SHOP_TOKEN_BASE_URL=https://auth.tiktok-shops.com
 APP_TIKTOK_SHOP_API_BASE_URL=https://open-api.tiktokglobalshop.com
 ```
+
+临时使用 cpolar 联调回调时，先确认管理员密码、模型密钥、店铺凭证密钥及内部 Agent/Runtime
+Token 均已替换为独立随机值，再运行 `scripts/start-cpolar-secure.sh`。脚本会在回环地址启动
+callback 白名单网关，只允许上述两个 OAuth GET 回调通过 HTTPS 隧道，不会把登录页、后台 API
+或静态站点整体暴露到公网；同时关闭 cpolar Dashboard、inspection 与落盘日志。按脚本输出设置
+`APP_SHOP_AUTH_CALLBACK_BASE_URL`，单机联调可让 `APP_SHOP_AUTH_FRONTEND_BASE_URL` 保持为
+`http://localhost:3000`，授权完成后浏览器会回到本机页面。免费域名重启后可能变化，每次都要同步
+更新 Shopee/TikTok 开发者后台登记值。本地 `http://localhost:3000` 不经过代理协议头，不会被
+HTTPS 重定向。
 
 默认始终是 `DRY_RUN`。只有联调完成、图片去水印提供方不再是 Dry Run，并确认应用已取得
 商品与物流权限后，才同时设置以下两个变量启用真实官方发布：

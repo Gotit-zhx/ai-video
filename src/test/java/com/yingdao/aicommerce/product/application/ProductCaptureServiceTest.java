@@ -8,11 +8,13 @@ import com.yingdao.aicommerce.product.application.provider.DryRunProductPublishi
 import com.yingdao.aicommerce.product.application.provider.ProductEnrichmentProvider;
 import com.yingdao.aicommerce.product.application.provider.ProductEnrichmentRegistry;
 import com.yingdao.aicommerce.product.application.provider.ProductPublishingRegistry;
+import com.yingdao.aicommerce.product.application.provider.WatermarkRemovalProvider;
 import com.yingdao.aicommerce.product.application.provider.WatermarkRemovalRegistry;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureFieldSource;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
 import com.yingdao.aicommerce.product.domain.ProductCaptureSku;
+import com.yingdao.aicommerce.product.domain.ProductImageProcessingJob;
 import com.yingdao.aicommerce.product.domain.ProductPublishAudit;
 import com.yingdao.aicommerce.product.mapper.ProductCaptureFieldSourceMapper;
 import com.yingdao.aicommerce.product.mapper.ProductCaptureImageMapper;
@@ -51,8 +53,10 @@ class ProductCaptureServiceTest {
     private ProductCaptureImageMapper imageMapper;
     private ProductCaptureFieldSourceMapper fieldSourceMapper;
     private ProductPublishAuditMapper publishAuditMapper;
+    private ProductImageProcessingJobMapper imageJobMapper;
     private ProductEnrichmentRegistry enrichmentRegistry;
     private ProductPublishingRegistry publishingRegistry;
+    private WatermarkRemovalRegistry watermarkRegistry;
     private ProductCaptureService service;
 
     @BeforeEach
@@ -62,8 +66,10 @@ class ProductCaptureServiceTest {
         imageMapper = mock(ProductCaptureImageMapper.class);
         fieldSourceMapper = mock(ProductCaptureFieldSourceMapper.class);
         publishAuditMapper = mock(ProductPublishAuditMapper.class);
+        imageJobMapper = mock(ProductImageProcessingJobMapper.class);
         enrichmentRegistry = mock(ProductEnrichmentRegistry.class);
         publishingRegistry = mock(ProductPublishingRegistry.class);
+        watermarkRegistry = mock(WatermarkRemovalRegistry.class);
         when(enrichmentRegistry.enrich(anyString(), any(), any()))
                 .thenReturn(ProductEnrichmentProvider.EnrichmentResult.empty());
         when(skuMapper.selectList(any())).thenReturn(List.of());
@@ -72,9 +78,9 @@ class ProductCaptureServiceTest {
         when(captureMapper.updateById(any(ProductCapture.class))).thenReturn(1);
         service = new ProductCaptureService(
                 captureMapper, skuMapper, imageMapper, fieldSourceMapper,
-                mock(ProductImageProcessingJobMapper.class), publishAuditMapper,
+                imageJobMapper, publishAuditMapper,
                 new ProductSourceUrlParser(), new SafeProductImageUrl(), enrichmentRegistry,
-                mock(WatermarkRemovalRegistry.class), publishingRegistry, new ObjectMapper()
+                watermarkRegistry, publishingRegistry, new ObjectMapper()
         );
     }
 
@@ -921,6 +927,40 @@ class ProductCaptureServiceTest {
     }
 
     @Test
+    void retryingImageProcessingReusesAlreadyProcessedImages() throws Exception {
+        ProductCapture capture = capture("org-a");
+        capture.fail("earlier image failed");
+        ProductCaptureImage completed = new ProductCaptureImage(
+                "org-a", capture.getId(), "https://cdn.example.com/completed-original.webp",
+                "MAIN", null, 0, "image/webp", "{}");
+        completed.processed("https://cdn.example.com/completed-clean.webp");
+        ProductCaptureImage retry = new ProductCaptureImage(
+                "org-a", capture.getId(), "https://cdn.example.com/retry-original.webp",
+                "GALLERY", null, 1, "image/webp", "{}");
+        retry.failed("temporary provider failure");
+        when(captureMapper.selectOne(any())).thenReturn(capture);
+        when(imageMapper.selectList(any())).thenReturn(List.of(completed, retry));
+        when(imageJobMapper.selectOne(any())).thenReturn(null);
+        WatermarkRemovalProvider provider = mock(WatermarkRemovalProvider.class);
+        when(provider.code()).thenReturn("TEST_WATERMARK");
+        when(provider.process(any(ProductCapture.class), any(ProductCaptureImage.class)))
+                .thenReturn(new WatermarkRemovalProvider.ProcessedImage(
+                        "https://cdn.example.com/retry-clean.webp", Map.of("requestId", "wm-2")));
+        when(watermarkRegistry.current()).thenReturn(provider);
+
+        ProductCaptureService.ImageProcessResult result = service.processImages(
+                capture.getId(), Map.of(), "retry-images-123", principal("org-a"));
+
+        assertEquals("SUCCEEDED", result.job().getStatus(), result.job().getErrorMessage());
+        assertEquals(2, result.job().getTotalImages());
+        assertEquals(2, result.job().getProcessedImages());
+        assertEquals("READY", result.capture().capture().getStatus());
+        assertEquals("https://cdn.example.com/completed-clean.webp", completed.getProcessedUrl());
+        verify(provider, never()).process(capture, completed);
+        verify(provider).process(capture, retry);
+    }
+
+    @Test
     void publishRequiresConfirmationAndPriorApproval() {
         ProductCapture draft = capture("org-a");
         when(captureMapper.selectOne(any())).thenReturn(draft);
@@ -981,6 +1021,84 @@ class ProductCaptureServiceTest {
         assertEquals("DRY_RUN_SUCCEEDED", audit.getStatus());
         assertEquals("APPROVED", approved.getStatus());
         assertNull(approved.getPublishedAt());
+    }
+
+    @Test
+    void publishedProductCanBePublishedToAnotherAuthorizedShop() {
+        ProductCapture published = capture("org-a");
+        published.startImageProcessing();
+        published.imagesReady();
+        published.approve("reviewer-1");
+        published.published();
+        when(captureMapper.selectOne(any())).thenReturn(published);
+        when(publishAuditMapper.selectOne(any())).thenReturn(null);
+        when(publishingRegistry.forPlatform("SHOPEE"))
+                .thenReturn(new DryRunProductPublishingProvider());
+
+        ProductCaptureService.PublishResult result = service.publish(
+                published.getId(), Map.of(
+                        "confirmed", true,
+                        "destinationPlatform", "SHOPEE",
+                        "shopId", "shop-2"
+                ), "publish-second-shop", principal("org-a")
+        );
+
+        assertEquals("shop-2", result.audit().getShopId());
+        assertEquals("DRY_RUN_SUCCEEDED", result.audit().getStatus());
+        assertEquals("PUBLISHED", published.getStatus());
+    }
+
+    @Test
+    void reusedPublishIdempotencyKeyCannotTargetADifferentShop() {
+        ProductCapture approved = capture("org-a");
+        approved.startImageProcessing();
+        approved.imagesReady();
+        approved.approve("reviewer-1");
+        ProductPublishAudit firstShopAudit = new ProductPublishAudit(
+                "org-a", approved.getId(), "user-1", "shared-publish-key",
+                "SHOPEE", "shop-1", "DRY_RUN", true, "{}"
+        );
+        when(captureMapper.selectOne(any())).thenReturn(approved);
+        when(publishAuditMapper.selectOne(any())).thenReturn(firstShopAudit);
+
+        BusinessException failure = assertThrows(BusinessException.class, () -> service.publish(
+                approved.getId(), Map.of(
+                        "confirmed", true,
+                        "destinationPlatform", "SHOPEE",
+                        "shopId", "shop-2"
+                ), "shared-publish-key", principal("org-a")
+        ));
+
+        assertEquals(HttpStatus.CONFLICT, failure.getStatus());
+        verify(publishingRegistry, never()).forPlatform(anyString());
+    }
+
+    @Test
+    void reusedPublishIdempotencyKeyCannotChangePublishParameters() {
+        ProductCapture approved = capture("org-a");
+        approved.startImageProcessing();
+        approved.imagesReady();
+        approved.approve("reviewer-1");
+        ProductPublishAudit originalRequest = new ProductPublishAudit(
+                "org-a", approved.getId(), "user-1", "stable-publish-key",
+                "SHOPEE", "shop-1", "DRY_RUN", true,
+                "{\"confirmed\":true,\"destinationPlatform\":\"SHOPEE\","
+                        + "\"shopId\":\"shop-1\",\"publishStock\":10}"
+        );
+        when(captureMapper.selectOne(any())).thenReturn(approved);
+        when(publishAuditMapper.selectOne(any())).thenReturn(originalRequest);
+
+        BusinessException failure = assertThrows(BusinessException.class, () -> service.publish(
+                approved.getId(), Map.of(
+                        "confirmed", true,
+                        "destinationPlatform", "SHOPEE",
+                        "shopId", "shop-1",
+                        "publishStock", 20
+                ), "stable-publish-key", principal("org-a")
+        ));
+
+        assertEquals(HttpStatus.CONFLICT, failure.getStatus());
+        verify(publishingRegistry, never()).forPlatform(anyString());
     }
 
     @Test

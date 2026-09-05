@@ -450,6 +450,18 @@ public class ProductCaptureService {
         List<Map<String, Object>> results = new ArrayList<>();
         String firstError = null;
         for (ProductCaptureImage image : images) {
+            if ("PROCESSED".equals(image.getStatus())
+                    && image.getProcessedUrl() != null && !image.getProcessedUrl().isBlank()) {
+                // A new workflow may retry only the failed portion of an earlier image job.
+                // Preserve successful paid work and keep the replacement job's progress truthful.
+                job.incrementProcessed();
+                Map<String, Object> reused = new LinkedHashMap<>();
+                reused.put("imageId", image.getId());
+                reused.put("processedUrl", image.getProcessedUrl());
+                reused.put("reused", true);
+                results.add(reused);
+                continue;
+            }
             image.processing();
             imageMapper.updateById(image);
             try {
@@ -506,6 +518,13 @@ public class ProductCaptureService {
     @Transactional
     public PublishResult publish(String id, Map<String, Object> request,
                                  String headerIdempotencyKey, PlatformPrincipal principal) {
+        return publish(id, request, headerIdempotencyKey, principal, () -> {});
+    }
+
+    @Transactional
+    public PublishResult publish(String id, Map<String, Object> request,
+                                 String headerIdempotencyKey, PlatformPrincipal principal,
+                                 ProductPublishingProvider.ExternalCreateBoundary externalCreateBoundary) {
         ProductCapture capture = requireCapture(id, principal.organizationId());
         Map<String, Object> body = mutableMap(request);
         if (!Boolean.TRUE.equals(booleanValue(value(body, "confirmed")))) {
@@ -525,10 +544,10 @@ public class ProductCaptureService {
                         .eq(ProductPublishAudit::getOrganizationId, principal.organizationId())
                         .eq(ProductPublishAudit::getIdempotencyKey, key));
         if (existing != null) {
-            if (!capture.getId().equals(existing.getCaptureId())) throw idempotencyConflict();
+            verifyPublishIdempotency(existing, capture, destination, shopId, body);
             return new PublishResult(existing, detail(capture));
         }
-        if (!"APPROVED".equals(capture.getStatus())) {
+        if (!List.of("APPROVED", "PUBLISHED").contains(capture.getStatus())) {
             throw conflict("商品必须先通过人工审核，才能一键发布");
         }
         ProductPublishingProvider provider = publishingRegistry.forPlatform(destination);
@@ -543,7 +562,8 @@ public class ProductCaptureService {
                     new LambdaQueryWrapper<ProductPublishAudit>()
                             .eq(ProductPublishAudit::getOrganizationId, principal.organizationId())
                             .eq(ProductPublishAudit::getIdempotencyKey, key));
-            if (duplicate != null && capture.getId().equals(duplicate.getCaptureId())) {
+            if (duplicate != null) {
+                verifyPublishIdempotency(duplicate, capture, destination, shopId, body);
                 return new PublishResult(duplicate, detail(capture));
             }
             throw exception;
@@ -551,7 +571,8 @@ public class ProductCaptureService {
         audit.publishing();
         publishAuditMapper.updateById(audit);
         try {
-            ProductPublishingProvider.PublishResult result = provider.publish(capture, destination, shopId, body);
+            ProductPublishingProvider.PublishResult result = provider.publish(
+                    capture, destination, shopId, body, externalCreateBoundary);
             Map<String, Object> providerResponse = new LinkedHashMap<>();
             if (result.providerResponse() != null) providerResponse.putAll(result.providerResponse());
             providerResponse.put("dryRun", provider.dryRun());
@@ -565,6 +586,21 @@ public class ProductCaptureService {
         }
         publishAuditMapper.updateById(audit);
         return new PublishResult(audit, detail(capture));
+    }
+
+    private void verifyPublishIdempotency(ProductPublishAudit existing, ProductCapture capture,
+                                          String destination, String shopId,
+                                          Map<String, Object> request) {
+        Map<String, Object> storedRequest = new LinkedHashMap<>(readMap(existing.getRequestJson()));
+        Map<String, Object> currentRequest = new LinkedHashMap<>(request);
+        storedRequest.remove("idempotencyKey");
+        currentRequest.remove("idempotencyKey");
+        if (!capture.getId().equals(existing.getCaptureId())
+                || !destination.equals(existing.getDestinationPlatform())
+                || !shopId.equals(existing.getShopId())
+                || !writeJson(canonical(storedRequest)).equals(writeJson(canonical(currentRequest)))) {
+            throw idempotencyConflict();
+        }
     }
 
     private CaptureDetail verifyIdempotent(ProductCapture existing, String fingerprint,

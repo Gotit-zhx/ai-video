@@ -56,6 +56,13 @@ public class SecurityConfig {
                                 "/api/v1/product-captures/*/images/process")
                             .hasAuthority("asset:watermark")
                         .requestMatchers(HttpMethod.POST,
+                                "/api/v1/product-captures/*/publish-workflows")
+                            .hasAuthority("product:publish")
+                        .requestMatchers(HttpMethod.GET,
+                                "/api/v1/product-captures/*/publish-workflows",
+                                "/api/v1/product-captures/*/publish-workflows/*")
+                            .hasAnyAuthority("product:view", "product:publish")
+                        .requestMatchers(HttpMethod.POST,
                                 "/api/v1/product-captures/*/approve")
                             .hasAuthority("product:edit")
                         .requestMatchers(HttpMethod.POST,

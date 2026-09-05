@@ -36,7 +36,13 @@ public final class MarketplaceAccess {
     }
 
     public record RemoteShop(String externalShopId, String merchantId, String shopCipher,
-                             String sellerType, String name, String region) {}
+                             String sellerType, String name, String region,
+                             String authorizationSubjectType, String authorizationSubjectId) {
+        public RemoteShop(String externalShopId, String merchantId, String shopCipher,
+                          String sellerType, String name, String region) {
+            this(externalShopId, merchantId, shopCipher, sellerType, name, region, null, null);
+        }
+    }
 
     public record AuthorizationGrant(TokenSet tokens, List<RemoteShop> shops) {
         public AuthorizationGrant {

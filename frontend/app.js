@@ -227,7 +227,17 @@ let productPairingExpiresAt = null;
 let productPairingCountdownTimer = null;
 let productPublishIdempotencyKey = "";
 let productPublishIdempotencyCaptureId = "";
+let productUploadInFlightCaptureId = "";
+let productPublishWorkflowState = null;
+let productPublishWorkflowPollTimer = null;
+let productPublishWorkflowPollGeneration = 0;
+let productPublishWorkflowLookupGeneration = 0;
+const finalizedProductPublishWorkflowIds = new Set();
 let marketplaceShops = [];
+let marketplaceShopPlatformFilter = "ALL";
+let marketplaceShopStatusFilter = "ALL";
+let marketplaceShopLoadGeneration = 0;
+const marketplaceShopActionsInFlight = new Set();
 let marketplaceIntegrationStatus = {
   shopeeConfigured: false,
   tiktokShopConfigured: false,
@@ -3156,6 +3166,7 @@ function formatDate(value) {
 
 const PRODUCT_CAPTURE_API_ROOT = "/api/v1/product-captures";
 const MARKETPLACE_SHOP_API_ROOT = "/api/v1/shops";
+const PRODUCT_PUBLISH_WORKFLOW_STORAGE_PREFIX = "heyi:product-publish-workflow";
 const PRODUCT_CAPTURE_PAGE_SIZE = 30;
 const productCaptureStatusNames = {
   CAPTURED: "待整理",
@@ -3165,7 +3176,7 @@ const productCaptureStatusNames = {
   READY: "待人工确认",
   REVIEW: "待人工确认",
   APPROVED: "可发布",
-  PUBLISHED: "已发布",
+  PUBLISHED: "已提交平台",
   FAILED: "处理失败"
 };
 
@@ -3177,21 +3188,173 @@ function marketplaceShopApi(path = "", options = {}) {
   return api(`${MARKETPLACE_SHOP_API_ROOT}${path}`, options);
 }
 
+function productPublishWorkflowPath(captureId, workflowId = "") {
+  const root = `${PRODUCT_CAPTURE_API_ROOT}/${encodeURIComponent(captureId)}/publish-workflows`;
+  return workflowId ? `${root}/${encodeURIComponent(workflowId)}` : root;
+}
+
 function marketplacePlatformName(platform) {
   return String(platform || "").toUpperCase() === "SHOPEE" ? "Shopee" : "TikTok Shop";
 }
 
-function activeMarketplaceShops(platform = "") {
+function normalizedMarketplacePlatform(platform) {
   const normalized = String(platform || "").toUpperCase();
+  return normalized === "TIKTOK" ? "TIKTOK_SHOP" : normalized;
+}
+
+function activeMarketplaceShops(platform = "") {
+  const normalized = normalizedMarketplacePlatform(platform);
   return marketplaceShops.filter(shop => String(shop.status).toUpperCase() === "ACTIVE"
-    && (!normalized || String(shop.platform).toUpperCase() === normalized));
+    && (!normalized || normalizedMarketplacePlatform(shop.platform) === normalized));
+}
+
+function marketplaceShopStatusMeta(status) {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "ACTIVE") {
+    return { bucket: "ACTIVE", label: "可发布", className: "is-active", rank: 0 };
+  }
+  if (normalized === "DISABLED" || normalized === "DISCONNECTED") {
+    return { bucket: "DISABLED", label: "已断开", className: "is-disabled", rank: 2 };
+  }
+  const labels = {
+    TOKEN_EXPIRED: "授权已过期",
+    ERROR: "授权异常",
+    PENDING: "授权处理中"
+  };
+  return {
+    bucket: "ATTENTION",
+    label: labels[normalized] || (normalized ? normalized.replaceAll("_", " ") : "状态未知"),
+    className: "is-attention",
+    rank: 1
+  };
+}
+
+function formatMarketplaceShopTime(value, fallback = "未返回") {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"
+  }).format(date);
+}
+
+function marketplaceShopExpiry(shop) {
+  if (shop.authorizationExpiresAt) {
+    return { label: "授权到期", value: shop.authorizationExpiresAt,
+      text: formatMarketplaceShopTime(shop.authorizationExpiresAt) };
+  }
+  if (shop.refreshTokenExpiresAt) {
+    return { label: "刷新凭证到期", value: shop.refreshTokenExpiresAt,
+      text: formatMarketplaceShopTime(shop.refreshTokenExpiresAt) };
+  }
+  if (shop.accessTokenExpiresAt) {
+    return { label: "访问 Token", value: shop.accessTokenExpiresAt,
+      text: `${formatMarketplaceShopTime(shop.accessTokenExpiresAt)} 自动刷新` };
+  }
+  const value = shop.tokenExpiresAt || shop.expiresAt;
+  return { label: "凭证有效期", value, text: formatMarketplaceShopTime(value, "平台未返回") };
+}
+
+function filteredMarketplaceShops() {
+  return marketplaceShops.filter(shop => {
+    const platform = normalizedMarketplacePlatform(shop.platform);
+    const status = marketplaceShopStatusMeta(shop.status).bucket;
+    return (marketplaceShopPlatformFilter === "ALL" || platform === marketplaceShopPlatformFilter)
+      && (marketplaceShopStatusFilter === "ALL" || status === marketplaceShopStatusFilter);
+  });
+}
+
+function renderMarketplaceShopCard(shop) {
+  const shopId = String(shop.id || "");
+  const platform = normalizedMarketplacePlatform(shop.platform);
+  const status = marketplaceShopStatusMeta(shop.status);
+  const expiry = marketplaceShopExpiry(shop);
+  const isDisconnected = status.bucket === "DISABLED";
+  const busy = marketplaceShopActionsInFlight.has(shopId);
+  const canManage = hasAnyPermission("product:publish");
+  const name = shop.name || shop.externalShopId || "未命名店铺";
+  const externalId = shop.externalShopId || "未返回";
+  const region = shop.region || "地区未返回";
+  const scopes = Array.isArray(shop.scopes) ? shop.scopes.filter(Boolean) : [];
+  const sellerType = shop.sellerType || "类型未返回";
+  const syncedAt = formatMarketplaceShopTime(shop.lastSyncedAt, "尚未同步");
+  const syncTitle = shop.lastSyncedAt ? String(shop.lastSyncedAt) : "服务端尚未返回同步时间";
+  const expiryTitle = expiry.value
+    ? `${expiry.label}：${expiry.value}${expiry.label === "访问 Token" ? "；服务端会在调用官方接口前自动刷新，不代表店铺授权失效" : ""}`
+    : "当前接口未返回凭证到期时间；服务端仍会在调用官方接口前检查并刷新";
+  const error = String(shop.lastAuthError || "").trim();
+  const actionMarkup = isDisconnected
+    ? `<button type="button" data-authorize-shop="${escapeHtml(platform)}" ${canManage ? "" : "disabled"}>重新授权</button>`
+    : `<button type="button" data-refresh-shop="${escapeHtml(shopId)}" ${busy || !canManage ? "disabled" : ""}>${busy ? "处理中…" : "刷新授权"}</button>
+       <button class="is-danger" type="button" data-disconnect-shop="${escapeHtml(shopId)}" ${busy || !canManage ? "disabled" : ""}>断开</button>`;
+  return `
+    <article class="marketplace-shop-card ${status.className}" data-shop-id="${escapeHtml(shopId)}">
+      <header>
+        <div><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small>${escapeHtml(region)} · ${escapeHtml(marketplacePlatformName(platform))}</small></div>
+        <span class="marketplace-shop-status">${escapeHtml(status.label)}</span>
+      </header>
+      <dl>
+        <div><dt>外部 ID</dt><dd title="${escapeHtml(externalId)}">${escapeHtml(externalId)}</dd></div>
+        <div><dt>店铺类型</dt><dd title="${escapeHtml(sellerType)}">${escapeHtml(sellerType)}</dd></div>
+        <div><dt>最近同步</dt><dd title="${escapeHtml(syncTitle)}">${escapeHtml(syncedAt)}</dd></div>
+        <div><dt>${escapeHtml(expiry.label)}</dt><dd title="${escapeHtml(expiryTitle)}">${escapeHtml(expiry.text)}</dd></div>
+      </dl>
+      ${scopes.length ? `<small class="marketplace-shop-scopes" title="${escapeHtml(scopes.join("、"))}">${scopes.length} 项官方权限</small>` : ""}
+      ${error ? `<p class="marketplace-shop-error" title="${escapeHtml(error)}">${escapeHtml(error)}</p>` : ""}
+      <footer>${actionMarkup}</footer>
+    </article>`;
+}
+
+function renderMarketplaceShopList() {
+  const list = document.querySelector("#marketplace-shop-list");
+  const visible = filteredMarketplaceShops().sort((left, right) => {
+    const platformOrder = { SHOPEE: 0, TIKTOK_SHOP: 1 };
+    const platformDifference = (platformOrder[normalizedMarketplacePlatform(left.platform)] ?? 9)
+      - (platformOrder[normalizedMarketplacePlatform(right.platform)] ?? 9);
+    if (platformDifference) return platformDifference;
+    const statusDifference = marketplaceShopStatusMeta(left.status).rank
+      - marketplaceShopStatusMeta(right.status).rank;
+    if (statusDifference) return statusDifference;
+    return String(left.name || left.externalShopId || "").localeCompare(
+      String(right.name || right.externalShopId || ""), "zh-CN");
+  });
+  const organizationName = currentUser?.organizationName || "当前公司";
+  const count = document.querySelector("#marketplace-shop-count");
+  count.textContent = `${organizationName} · ${visible.length === marketplaceShops.length ? `${marketplaceShops.length} 家` : `${visible.length} / ${marketplaceShops.length} 家`}店铺`;
+  document.querySelectorAll("[data-shop-platform-filter]").forEach(button => {
+    const active = button.dataset.shopPlatformFilter === marketplaceShopPlatformFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  const statusSelect = document.querySelector("#marketplace-shop-status-filter");
+  if (statusSelect) statusSelect.value = marketplaceShopStatusFilter;
+  if (!visible.length) {
+    list.innerHTML = `<div class="marketplace-shop-empty"><strong>${marketplaceShops.length ? "没有符合筛选的店铺" : "还没有授权店铺"}</strong><span>${marketplaceShops.length ? "切换平台或状态查看其他店铺。" : "可在下方继续授权多个 Shopee 或 TikTok Shop 店铺。"}</span></div>`;
+    return;
+  }
+  const groups = new Map();
+  visible.forEach(shop => {
+    const platform = normalizedMarketplacePlatform(shop.platform);
+    const status = marketplaceShopStatusMeta(shop.status);
+    const key = `${platform}:${status.bucket}`;
+    if (!groups.has(key)) groups.set(key, { platform, status, shops: [] });
+    groups.get(key).shops.push(shop);
+  });
+  list.innerHTML = [...groups.values()].map(group => `
+    <section class="marketplace-shop-group">
+      <div class="marketplace-shop-group-heading">
+        <strong>${escapeHtml(marketplacePlatformName(group.platform))}</strong>
+        <span>${escapeHtml(group.status.bucket === "ATTENTION" ? "需处理" : group.status.label)} · ${group.shops.length}</span>
+      </div>
+      ${group.shops.map(renderMarketplaceShopCard).join("")}
+    </section>`).join("");
 }
 
 function renderMarketplaceShops() {
-  const list = document.querySelector("#marketplace-shop-list");
   const state = document.querySelector("#marketplace-live-state");
   const note = document.querySelector("#marketplace-shop-note");
   const active = activeMarketplaceShops();
+  const attention = marketplaceShops.filter(shop => marketplaceShopStatusMeta(shop.status).bucket === "ATTENTION");
   const live = marketplaceIntegrationStatus.livePublishingEnabled;
   state.textContent = live ? "官方发布已启用" : "安全演练模式";
   state.className = live ? "is-live" : "";
@@ -3200,13 +3363,9 @@ function renderMarketplaceShops() {
     badge.textContent = live ? "发布：官方接口已启用" : "发布：DRY RUN";
     badge.classList.toggle("is-live", live);
   }
-  list.innerHTML = active.length ? active.map(shop => `
-    <div class="marketplace-shop-row is-active">
-      <div><strong>${escapeHtml(shop.name || shop.externalShopId)}</strong><small>${escapeHtml(marketplacePlatformName(shop.platform))} · ${escapeHtml(shop.region || "地区未返回")}</small></div>
-      <em>已授权</em>
-    </div>`).join("") : `<span>还没有已授权店铺。</span>`;
+  renderMarketplaceShopList();
   document.querySelectorAll("[data-authorize-shop]").forEach(button => {
-    const configured = button.dataset.authorizeShop === "SHOPEE"
+    const configured = normalizedMarketplacePlatform(button.dataset.authorizeShop) === "SHOPEE"
       ? marketplaceIntegrationStatus.shopeeConfigured
       : marketplaceIntegrationStatus.tiktokShopConfigured;
     button.disabled = !configured || !hasAnyPermission("product:publish");
@@ -3214,29 +3373,111 @@ function renderMarketplaceShops() {
   });
   if (!marketplaceIntegrationStatus.shopeeConfigured && !marketplaceIntegrationStatus.tiktokShopConfigured) {
     note.textContent = "需先在服务端配置官方开发者应用；密钥不会发送到浏览器。";
+  } else if (!marketplaceShops.length) {
+    note.textContent = "同一公司可以继续授权多个店铺；回调完成后会自动同步到这里。";
   } else if (!marketplaceIntegrationStatus.livePublishingEnabled) {
-    note.textContent = "当前保持 Dry Run；授权可先联调，真实发布需单独开启服务端开关。";
+    note.textContent = `当前保持 Dry Run；${active.length} 家可发布${attention.length ? `，${attention.length} 家授权需处理` : ""}。`;
   } else {
-    note.textContent = `${active.length} 家店铺可用于官方发布。`;
+    note.textContent = `${active.length} 家店铺可用于官方发布${attention.length ? `，${attention.length} 家授权需处理` : ""}。`;
   }
   syncPublishShopOptions();
 }
 
 async function loadMarketplaceShops({ silent = false } = {}) {
   if (!currentUser || !hasAnyPermission("product:view", "product:publish")) return;
+  const generation = ++marketplaceShopLoadGeneration;
+  const organizationId = currentUser.organizationId || "";
   try {
     const [shopsResult, statusResult] = await Promise.all([
       marketplaceShopApi(),
       marketplaceShopApi("/integration-status")
     ]);
+    if (generation !== marketplaceShopLoadGeneration
+        || !currentUser || (currentUser.organizationId || "") !== organizationId) return;
     marketplaceShops = Array.isArray(shopsResult.data) ? shopsResult.data : [];
     marketplaceIntegrationStatus = { ...marketplaceIntegrationStatus, ...(statusResult.data || {}) };
     renderMarketplaceShops();
   } catch (error) {
+    if (generation !== marketplaceShopLoadGeneration
+        || !currentUser || (currentUser.organizationId || "") !== organizationId) return;
     if (error?.status === 401) return;
     document.querySelector("#marketplace-shop-list").innerHTML = `<span>${escapeHtml(error.message)}</span>`;
+    document.querySelector("#marketplace-shop-count").textContent = `${currentUser?.organizationName || "当前公司"} · 读取失败`;
     if (!silent) document.querySelector("#marketplace-shop-note").textContent = "授权店铺读取失败，请刷新后重试。";
   }
+}
+
+function replaceMarketplaceShop(updatedShop) {
+  if (!updatedShop?.id) return;
+  const index = marketplaceShops.findIndex(shop => String(shop.id) === String(updatedShop.id));
+  if (index < 0) marketplaceShops = [...marketplaceShops, updatedShop];
+  else marketplaceShops = marketplaceShops.map((shop, position) => position === index ? updatedShop : shop);
+}
+
+async function refreshMarketplaceShop(shopId) {
+  if (!shopId || !hasAnyPermission("product:publish") || marketplaceShopActionsInFlight.has(shopId)) return;
+  const shop = marketplaceShops.find(candidate => String(candidate.id) === String(shopId));
+  if (!shop) return;
+  const organizationId = currentUser?.organizationId || "";
+  marketplaceShopActionsInFlight.add(shopId);
+  renderMarketplaceShops();
+  let feedback = "";
+  try {
+    const result = await marketplaceShopApi(`/${encodeURIComponent(shopId)}/refresh`, { method: "POST" });
+    if (!currentUser || (currentUser.organizationId || "") !== organizationId) return;
+    replaceMarketplaceShop(result.data);
+    feedback = `${shop.name || shop.externalShopId || "店铺"} 的授权已刷新，状态和同步时间已更新。`;
+  } catch (error) {
+    if (error?.status === 401) return;
+    feedback = `刷新失败：${error.message}`;
+  } finally {
+    marketplaceShopActionsInFlight.delete(shopId);
+    if (currentUser && (currentUser.organizationId || "") === organizationId) {
+      renderMarketplaceShops();
+      if (feedback) document.querySelector("#marketplace-shop-note").textContent = feedback;
+    }
+  }
+}
+
+async function disconnectMarketplaceShop(shopId) {
+  if (!shopId || !hasAnyPermission("product:publish") || marketplaceShopActionsInFlight.has(shopId)) return;
+  const shop = marketplaceShops.find(candidate => String(candidate.id) === String(shopId));
+  if (!shop) return;
+  const organizationId = currentUser?.organizationId || "";
+  const shopName = shop.name || shop.externalShopId || "未命名店铺";
+  const externalId = shop.externalShopId || "未返回";
+  const confirmed = window.confirm(
+    `确认断开 ${marketplacePlatformName(shop.platform)} 店铺“${shopName}”吗？\n\n外部 ID：${externalId}\n断开后服务端会删除该店铺凭证，不能再向它发布商品；恢复使用需要重新走官方授权。`
+  );
+  if (!confirmed) return;
+  marketplaceShopActionsInFlight.add(shopId);
+  renderMarketplaceShops();
+  let feedback = "";
+  try {
+    const result = await marketplaceShopApi(`/${encodeURIComponent(shopId)}/disconnect`, { method: "POST" });
+    if (!currentUser || (currentUser.organizationId || "") !== organizationId) return;
+    replaceMarketplaceShop(result.data);
+    feedback = `已断开“${shopName}”；该店铺已从可发布目标中移除。`;
+  } catch (error) {
+    if (error?.status === 401) return;
+    feedback = `断开失败：${error.message}`;
+  } finally {
+    marketplaceShopActionsInFlight.delete(shopId);
+    if (currentUser && (currentUser.organizationId || "") === organizationId) {
+      renderMarketplaceShops();
+      if (feedback) document.querySelector("#marketplace-shop-note").textContent = feedback;
+    }
+  }
+}
+
+async function reloadMarketplaceShops(button) {
+  if (button.disabled) return;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "读取中…";
+  await loadMarketplaceShops();
+  button.disabled = false;
+  button.textContent = original;
 }
 
 async function startMarketplaceAuthorization(platform, button) {
@@ -3814,9 +4055,7 @@ function filteredProductSkuIndexes() {
 
 function productSkuDraftLabel(draft = {}, index = 0) {
   const fields = draft.fields || {};
-  const variation = fields.variationName.trim() || `未命名规格 ${index + 1}`;
-  const code = fields.sellerSku.trim() || fields.externalSkuId.trim();
-  return code ? `${variation} · ${code}` : variation;
+  return fields.variationName.trim() || `未命名规格 ${index + 1}`;
 }
 
 function renderProductSkuSelector() {
@@ -3859,12 +4098,6 @@ function renderCurrentProductSkuEditor() {
   const entrySource = productSkuEntrySource(sku);
   const entrySourceLabel = entrySource === "MANUAL"
     ? "人工补充" : entrySource === "USER_EDITED" ? "人工编辑" : "平台采集";
-  const image = productSkuImageMeta({
-    ...sku,
-    imageUrl: fields.imageUrl,
-    imageSource: draft.imageEdited ? "USER" : sku.imageSource,
-    imageInherited: draft.imageEdited ? false : sku.imageInherited
-  });
   editor.dataset.productSkuIndex = String(index);
   editor.dataset.productSkuEdited = String(draft.edited);
   editor.dataset.productSkuImageEdited = String(draft.imageEdited);
@@ -3873,18 +4106,10 @@ function renderCurrentProductSkuEditor() {
     <div><small>正在编辑第 ${index + 1} 条</small><strong>${escapeHtml(productSkuDraftLabel(draft, index))}</strong></div>
     <div><span class="product-sku-source ${entrySource === "PLATFORM" ? "" : "manual"}">${entrySourceLabel}</span><button class="product-sku-remove" type="button" data-remove-product-sku="${index}" aria-label="删除第 ${index + 1} 条 SKU：${escapeHtml(fields.variationName)}">删除此 SKU</button></div>
   </header>
-  <div class="product-sku-editor-grid">
-    <label class="product-sku-field-wide">规格组合<input data-product-sku-field="variationName" value="${escapeHtml(fields.variationName)}" autocomplete="off" aria-label="SKU ${index + 1} 规格组合"></label>
-    <label>平台 SKU ID<input data-product-sku-field="externalSkuId" value="${escapeHtml(fields.externalSkuId)}" autocomplete="off" placeholder="平台规格 ID" aria-label="SKU ${index + 1} 平台 ID"></label>
-    <label>商家 SKU<input data-product-sku-field="sellerSku" value="${escapeHtml(fields.sellerSku)}" autocomplete="off" placeholder="选填商家编码" aria-label="SKU ${index + 1} 商家编码"></label>
+  <div class="product-sku-editor-grid is-simple">
+    <label>规格组合 / 名称<input data-product-sku-field="variationName" value="${escapeHtml(fields.variationName)}" autocomplete="off" aria-label="SKU ${index + 1} 规格组合或名称"></label>
     <label>售价<input data-product-sku-field="price" inputmode="decimal" value="${escapeHtml(fields.price)}" autocomplete="off" aria-label="SKU ${index + 1} 售价"></label>
-    <label>原价<input data-product-sku-field="originalPrice" inputmode="decimal" value="${escapeHtml(fields.originalPrice)}" autocomplete="off" aria-label="SKU ${index + 1} 原价"></label>
-    <label class="product-sku-field-wide">规格属性 JSON<textarea data-product-sku-field="attributes" rows="3" spellcheck="false" placeholder='{"颜色":"蓝色","尺码":"M"}' aria-label="SKU ${index + 1} 规格属性 JSON">${escapeHtml(fields.attributes)}</textarea></label>
-    <div class="product-sku-image-field product-sku-field-wide"><span class="product-sku-image-preview">${image.url ? `<img src="${escapeHtml(image.url)}" alt="SKU ${index + 1} 图片" loading="lazy">` : "无图"}</span><label class="product-sku-image-copy">SKU 图片 URL<input data-product-sku-field="imageUrl" value="${escapeHtml(fields.imageUrl)}" autocomplete="off" placeholder="https://…" aria-label="SKU ${index + 1} 图片 URL"><small>${escapeHtml(image.label)}</small></label></div>
-    <details class="product-sku-legacy-stock product-sku-field-wide">
-      <summary>来源库存（选填，不影响采集完整性）</summary>
-      <label>页面原始库存<input data-product-sku-field="stock" inputmode="numeric" value="${escapeHtml(fields.stock)}" autocomplete="off" placeholder="可留空；上架时再填写" aria-label="SKU ${index + 1} 来源库存（选填）"></label>
-    </details>
+    <p class="product-sku-preserved-note">其他平台字段已自动保留，无需填写。</p>
   </div>`;
 }
 
@@ -4092,22 +4317,24 @@ function productReadiness(capture) {
 function syncProductEditorAccess(capture) {
   const access = productAccessCapabilities();
   const published = capture.status === "PUBLISHED";
+  const workflowRunning = productUploadInFlightCaptureId === capture.id;
   const saving = productCaptureSaveInFlightId === capture.id;
   document.querySelectorAll("#product-capture-editor input, #product-capture-editor textarea").forEach(field => {
-    field.disabled = !access.edit || published || saving;
+    field.disabled = !access.edit || published || saving || workflowRunning;
   });
   const skuSearch = document.querySelector("#product-sku-search");
   skuSearch.disabled = productSkuDraftState.length === 0;
   document.querySelector("#product-sku-select").disabled = filteredProductSkuIndexes().length === 0;
-  document.querySelector("#add-product-sku").hidden = !access.edit || published;
-  document.querySelector("#add-product-sku").disabled = saving;
+  document.querySelector("#add-product-sku").hidden = true;
+  document.querySelector("#add-product-sku").disabled = saving || workflowRunning;
   document.querySelectorAll("#product-sku-editor [data-remove-product-sku]").forEach(button => {
     button.hidden = !access.edit || published;
-    button.disabled = saving;
+    button.disabled = saving || workflowRunning;
   });
   document.querySelector("#product-edit-access-note").textContent = published
-    ? "已发布记录不可修改"
-    : saving ? "正在保存，请稍候" : access.edit ? "修改后先保存草稿" : "当前账号仅可查看";
+    ? "已提交平台的记录不可修改"
+    : workflowRunning ? "一键上传正在后台执行，商品资料暂时只读"
+      : saving ? "正在保存，请稍候" : access.edit ? "修改后先保存草稿" : "当前账号仅可查看";
   document.querySelector("#save-product-capture").hidden = !access.edit;
   document.querySelector("#process-product-images").hidden = !access.watermark;
   document.querySelector("#approve-product-capture").hidden = !access.edit;
@@ -4122,23 +4349,31 @@ function syncProductActions(capture) {
   const processing = status === "IMAGE_PROCESSING";
   const published = status === "PUBLISHED";
   const approved = status === "APPROVED";
+  const publishable = approved || published;
+  const uploadableStatus = ["CAPTURED", "DRAFT", "FAILED", "IMAGE_PROCESSING", "READY", "APPROVED", "PUBLISHED"].includes(status);
+  const access = productAccessCapabilities();
+  const hasStagePermissions = (!["CAPTURED", "DRAFT", "FAILED"].includes(status) || (access.watermark && access.edit))
+    && (status !== "READY" || access.edit);
   const saving = Boolean(productCaptureSaveInFlightId);
+  const workflowRunning = productUploadInFlightCaptureId === capture.id;
   const localChanges = productEditorDirty && selectedProductCaptureId === capture.id;
-  document.querySelector("#save-product-capture").disabled = processing || published || saving;
+  document.querySelector("#save-product-capture").disabled = processing || published || saving || workflowRunning;
   document.querySelector("#save-product-capture").textContent = productCaptureSaveInFlightId === capture.id
     ? "正在保存…" : "保存修改";
-  document.querySelector("#process-product-images").disabled = processing || published || !images.length || localChanges || saving;
+  document.querySelector("#process-product-images").disabled = processing || published || !images.length || localChanges || saving || workflowRunning;
   document.querySelector("#process-product-images").textContent = status === "FAILED" ? "重试图片处理 Dry Run" : processing ? "Dry Run 处理中…" : "图片处理 Dry Run";
-  document.querySelector("#approve-product-capture").disabled = status !== "READY" || !readiness.ready || localChanges || saving;
-  document.querySelector("#approve-product-capture").textContent = approved ? "已人工确认" : "人工确认";
-  document.querySelector("#open-product-publish").disabled = !approved;
-  document.querySelector("#open-product-publish").textContent = published ? "已真实发布" : "一键发布";
+  document.querySelector("#approve-product-capture").disabled = status !== "READY" || !readiness.ready || localChanges || saving || workflowRunning;
+  document.querySelector("#approve-product-capture").textContent = publishable ? "已人工确认" : "人工确认";
+  document.querySelector("#open-product-publish").disabled = !uploadableStatus || !hasStagePermissions
+    || localChanges || saving;
+  document.querySelector("#open-product-publish").textContent = workflowRunning
+    ? "查看上传进度" : published ? "提交到其他店铺" : "一键上传";
 
   const title = document.querySelector("#product-action-title");
   const note = document.querySelector("#product-action-note");
   if (published) {
-    title.textContent = "发布流程已完成";
-    note.textContent = "只有 dryRun=false 且状态为 PUBLISHED 才代表真实店铺已上架。";
+    title.textContent = "已有平台提交记录";
+    note.textContent = "商品资料保持只读；是否已上架以平台状态为准，仍可选择另一家店铺继续提交。";
   } else if (approved && productPublishAuditMeta.get(capture.id)?.dryRun) {
     title.textContent = "Dry Run 已验证";
     note.textContent = "模拟发布校验已通过，商品仍为可发布状态，未在真实店铺上架。";
@@ -4173,7 +4408,7 @@ function renderProductReadiness(capture) {
     : !skuCompleteness.complete ? "SKU 完整性未通过，禁止审核"
     : readiness.ready ? "资料完整，等待人工确认" : "还有项目需要处理";
   document.querySelector("#product-readiness-note").textContent = approved
-    ? "任何正式发布仍需在目标平台侧复核。"
+    ? "平台是否审核通过并实际上架，仍需以目标平台状态为准。"
     : !skuCompleteness.complete
       ? "手工新增属于刊登补充；只有重新采集完整平台 SKU，或明确以 USER 来源逐项核对后，才可继续。"
     : "有商品编辑/审核权限的成员可以执行人工确认；真实发布另需发布权限。";
@@ -4275,6 +4510,8 @@ function updateProductCaptureInMemory(capture, { preserveSelectedEditor = false 
 async function selectProductCapture(id, { silent = false, force = false } = {}) {
   const generation = ++productCaptureDetailLoadGeneration;
   if (!id) {
+    stopProductPublishWorkflowPolling({ clearState: true });
+    productPublishWorkflowLookupGeneration += 1;
     selectedProductCaptureId = null;
     selectedProductCaptureDetail = null;
     productEditorDirty = false;
@@ -4285,6 +4522,8 @@ async function selectProductCapture(id, { silent = false, force = false } = {}) 
     return;
   }
   if (selectedProductCaptureId !== id) {
+    stopProductPublishWorkflowPolling({ clearState: true });
+    productPublishWorkflowLookupGeneration += 1;
     productEditorDirty = false;
     productSkuCompletenessDirty = false;
     resetProductSkuEditorState();
@@ -4308,6 +4547,7 @@ async function selectProductCapture(id, { silent = false, force = false } = {}) 
       && (productEditorDirty || Boolean(productCaptureSaveInFlightId));
     updateProductCaptureInMemory(capture, { preserveSelectedEditor });
     syncProductCapturePolling();
+    void restoreProductPublishWorkflow(id);
   } catch (error) {
     if (generation !== productCaptureDetailLoadGeneration || selectedProductCaptureId !== id) return;
     if (error?.status === 401) return;
@@ -4523,24 +4763,47 @@ function parseProductSkuStockDraft(value, index) {
   return stock;
 }
 
+const PRODUCT_SKU_SERVER_FIELDS = new Set([
+  "id", "organizationId", "organization_id", "captureId", "capture_id", "skuKey",
+  "createdAt", "created_at", "updatedAt", "updated_at",
+  "__proto__", "prototype", "constructor"
+]);
+
+function productSkuPreservedFields(original = {}) {
+  const source = original.source && typeof original.source === "object"
+    && !Array.isArray(original.source) ? original.source : {};
+  const preserved = { ...source };
+  Object.entries(original).forEach(([key, value]) => {
+    if (key !== "source" && !PRODUCT_SKU_SERVER_FIELDS.has(key)) preserved[key] = value;
+  });
+  if (Object.keys(source).length) preserved.source = source;
+  return preserved;
+}
+
 function productSkuDrafts() {
   ensureProductSkuEditorState();
   syncCurrentProductSkuDraftFromEditor();
   return productSkuDraftState.map((draft, index) => {
     const original = draft.original || {};
     const field = name => draft.fields[name] ?? "";
+    const price = nullableProductValue(field("price"));
+    const capturedOriginalPrice = nullableProductValue(field("originalPrice"));
+    const deriveOriginalPrice = price !== null && (capturedOriginalPrice === null
+      || !Number.isFinite(Number(capturedOriginalPrice)) || Number(capturedOriginalPrice) < Number(price));
     const originalEntrySource = productSkuEntrySource(original);
     const entrySource = originalEntrySource === "MANUAL"
-      ? "MANUAL_LISTING"
+        ? "MANUAL_LISTING"
       : draft.edited || originalEntrySource === "USER_EDITED"
         ? "USER_EDITED" : "PLATFORM_CAPTURE";
     return {
+      ...productSkuPreservedFields(original),
       externalSkuId: nullableProductValue(field("externalSkuId")),
       variationName: field("variationName").trim(),
       sellerSku: field("sellerSku").trim(),
-      price: nullableProductValue(field("price")),
-      originalPrice: nullableProductValue(field("originalPrice")),
-      originalPriceSource: draft.originalPriceEdited ? "USER" : original.originalPriceSource || original.source?.originalPriceSource || null,
+      price,
+      originalPrice: deriveOriginalPrice ? price : capturedOriginalPrice,
+      originalPriceSource: deriveOriginalPrice ? "DERIVED"
+        : draft.originalPriceEdited ? "USER" : original.originalPriceSource || original.source?.originalPriceSource || null,
       stock: parseProductSkuStockDraft(field("stock"), index),
       attributes: parseProductSkuAttributesDraft(field("attributes"), index),
       imageUrl: nullableProductValue(field("imageUrl")),
@@ -4698,7 +4961,7 @@ function stepProductSku(direction, { focusField = "" } = {}) {
   selectProductSku(indexes[nextPosition], { focusField });
 }
 
-function productCapturePatchPayload(capture = selectedProductCaptureDetail) {
+function productCapturePatchPayload(capture = selectedProductCaptureDetail, { forceSkus = false } = {}) {
   const version = Number(capture?.version);
   if (!Number.isSafeInteger(version) || version < 0) {
     throw new ApiRequestError("商品版本信息缺失，请刷新后重试", 409);
@@ -4713,12 +4976,37 @@ function productCapturePatchPayload(capture = selectedProductCaptureDetail) {
     priceMin: nullableProductValue(document.querySelector("#product-price-min-input").value),
     priceMax: nullableProductValue(document.querySelector("#product-price-max-input").value)
   };
-  if (productSkuDraftDirty || productSkuCompletenessDirty) {
+  if (forceSkus || productSkuDraftDirty || productSkuCompletenessDirty) {
     const skus = productSkuDrafts();
     payload.skus = skus;
     payload.skuCompleteness = productSkuPatchCompleteness(skus);
+    const prices = skus.map(sku => ({ value: sku.price, number: Number(sku.price) }))
+      .filter(price => price.value !== null && Number.isFinite(price.number) && price.number >= 0)
+      .sort((left, right) => left.number - right.number);
+    if (prices.length) {
+      payload.priceMin = String(prices[0].value);
+      payload.priceMax = String(prices[prices.length - 1].value);
+      document.querySelector("#product-price-min-input").value = payload.priceMin;
+      document.querySelector("#product-price-max-input").value = payload.priceMax;
+    }
   }
   return payload;
+}
+
+function productSkuPriceNormalizationNeeded(capture = selectedProductCaptureDetail) {
+  const skus = productCaptureSkus(capture);
+  const prices = skus.map(sku => Number(sku.price)).filter(Number.isFinite);
+  if (!prices.length) return false;
+  if (skus.some(sku => {
+    const price = Number(sku.price);
+    const originalPrice = Number(sku.originalPrice);
+    const originalMissing = sku.originalPrice === null || sku.originalPrice === undefined || sku.originalPrice === "";
+    return Number.isFinite(price) && (originalMissing || !Number.isFinite(originalPrice) || originalPrice < price);
+  })) return true;
+  const rangeMissing = capture?.priceMin === null || capture?.priceMin === undefined || capture?.priceMin === ""
+    || capture?.priceMax === null || capture?.priceMax === undefined || capture?.priceMax === "";
+  return rangeMissing || Number(capture.priceMin) !== Math.min(...prices)
+    || Number(capture.priceMax) !== Math.max(...prices);
 }
 
 async function saveProductCapture() {
@@ -4840,25 +5128,461 @@ function newProductIdempotencyKey() {
     || `product_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
 }
 
-function syncPublishShopOptions(preferredShopId = "") {
+function productPublishWorkflowStorageKey(captureId, organizationId = currentUser?.organizationId || "") {
+  if (!captureId || !organizationId) return "";
+  return `${PRODUCT_PUBLISH_WORKFLOW_STORAGE_PREFIX}:${organizationId}:${captureId}`;
+}
+
+function storedProductPublishWorkflowId(captureId, organizationId = currentUser?.organizationId || "") {
+  const key = productPublishWorkflowStorageKey(captureId, organizationId);
+  if (!key) return "";
+  try {
+    return String(localStorage.getItem(key) || "").trim();
+  } catch (_error) {
+    return "";
+  }
+}
+
+function rememberProductPublishWorkflow(workflow, organizationId = currentUser?.organizationId || "") {
+  const key = productPublishWorkflowStorageKey(workflow?.captureId, organizationId);
+  if (!key || !workflow?.id) return;
+  try {
+    localStorage.setItem(key, String(workflow.id));
+  } catch (_error) {
+    // The list endpoint remains the recovery fallback when storage is unavailable.
+  }
+}
+
+function forgetProductPublishWorkflow(captureId, organizationId = currentUser?.organizationId || "") {
+  const key = productPublishWorkflowStorageKey(captureId, organizationId);
+  if (!key) return;
+  try {
+    localStorage.removeItem(key);
+  } catch (_error) {
+    // A terminal workflow is ignored by list recovery even if this key cannot be removed.
+  }
+}
+
+function productPublishWorkflowIsActive(workflow) {
+  return ["PENDING", "RUNNING"].includes(String(workflow?.status || "").toUpperCase());
+}
+
+function productPublishWorkflowMayHaveReachedPlatform(workflow) {
+  return Boolean(workflow?.publicationAttempted)
+    && String(workflow?.executionMode || "").toUpperCase() === "LIVE"
+    && workflow?.publication?.dryRun !== true;
+}
+
+function productPublishWorkflowForCapture(captureId) {
+  return productPublishWorkflowState?.captureId === captureId ? productPublishWorkflowState : null;
+}
+
+function productPublishWorkflowPlatform(workflow) {
+  return normalizedMarketplacePlatform(workflow?.destinationPlatform || "SHOPEE");
+}
+
+function productPublishRemoteStatus(workflow) {
+  return String(workflow?.publication?.remoteStatus || "").trim().toUpperCase();
+}
+
+function productPublishOutcome(workflow) {
+  const audit = workflow?.publication || {};
+  const live = String(workflow?.executionMode || "").toUpperCase() === "LIVE"
+    && audit.dryRun === false;
+  if (!live) {
+    return {
+      kind: "dry-run",
+      remoteStatus: "",
+      stepText: "Dry Run 通过",
+      buttonText: "Dry Run 流程已完成"
+    };
+  }
+  const remoteStatus = productPublishRemoteStatus(workflow);
+  if (["REVIEWING", "PENDING"].includes(remoteStatus)) {
+    return {
+      kind: "reviewing",
+      remoteStatus,
+      stepText: "已提交，平台审核中",
+      buttonText: "平台审核中"
+    };
+  }
+  if (["NORMAL", "ACTIVATE"].includes(remoteStatus)) {
+    return {
+      kind: "listed",
+      remoteStatus,
+      stepText: "平台已确认上架",
+      buttonText: "已上架"
+    };
+  }
+  return {
+    kind: "submitted",
+    remoteStatus,
+    stepText: "已提交，状态待确认",
+    buttonText: "平台状态待确认"
+  };
+}
+
+function productPublishWorkflowError(workflow) {
+  return String(workflow?.errorMessage
+    || workflow?.imageProcessing?.errorMessage
+    || workflow?.publication?.errorMessage
+    || "一键上传后台任务执行失败").trim();
+}
+
+function stopProductPublishWorkflowPolling({ clearState = false } = {}) {
+  productPublishWorkflowPollGeneration += 1;
+  if (productPublishWorkflowPollTimer) clearTimeout(productPublishWorkflowPollTimer);
+  productPublishWorkflowPollTimer = null;
+  if (!clearState) return;
+  const trackedCaptureId = productPublishWorkflowState?.captureId || productUploadInFlightCaptureId;
+  productPublishWorkflowState = null;
+  if (!trackedCaptureId || productUploadInFlightCaptureId === trackedCaptureId) {
+    productUploadInFlightCaptureId = "";
+  }
+}
+
+function renderProductPublishWorkflow(workflow) {
+  if (!workflow) return;
+  const status = String(workflow.status || "").toUpperCase();
+  const requestedStep = String(workflow.currentStep || "IMAGES").toUpperCase();
+  const steps = ["IMAGES", "APPROVE", "PUBLISH"];
+  const currentStep = steps.includes(requestedStep)
+    ? requestedStep : status === "SUCCEEDED" ? "PUBLISH" : "IMAGES";
+  const currentIndex = steps.indexOf(currentStep);
+  const outcome = productPublishOutcome(workflow);
+  const completeText = { IMAGES: "处理完成", APPROVE: "校验通过", PUBLISH: "上传完成" };
+  const waitingText = { IMAGES: "等待后台任务", APPROVE: "等待上一步", PUBLISH: "等待上一步" };
+  const runningText = {
+    IMAGES: status === "PENDING" ? "等待后台处理图片" : "后台正在处理图片",
+    APPROVE: status === "PENDING" ? "等待后台校验" : "后台正在校验审核",
+    PUBLISH: status === "PENDING"
+      ? "等待后台上传"
+      : marketplaceIntegrationStatus.livePublishingEnabled ? "正在上传官方店铺" : "正在执行 Dry Run"
+  };
+  steps.forEach((step, index) => {
+    if (status === "SUCCEEDED") {
+      setProductUploadStep(step, "complete", step === "PUBLISH"
+        ? outcome.stepText
+        : completeText[step]);
+    } else if (status === "FAILED" && index === currentIndex) {
+      setProductUploadStep(step, "failed", "失败，请查看原因");
+    } else if (index < currentIndex) {
+      setProductUploadStep(step, "complete", completeText[step]);
+    } else if (index === currentIndex && productPublishWorkflowIsActive(workflow)) {
+      setProductUploadStep(step, "running", runningText[step]);
+    } else {
+      setProductUploadStep(step, "", waitingText[step]);
+    }
+  });
+  const button = document.querySelector("#submit-product-publish");
+  if (!button) return;
+  if (productPublishWorkflowIsActive(workflow)) {
+    button.textContent = status === "PENDING" ? "后台任务排队中…" : "后台任务执行中…";
+  } else if (status === "SUCCEEDED") {
+    button.textContent = outcome.buttonText;
+  } else if (productPublishWorkflowMayHaveReachedPlatform(workflow)) {
+    button.textContent = "上传结果需人工核查";
+  } else {
+    button.textContent = marketplaceIntegrationStatus.livePublishingEnabled
+      ? "重新确认并一键上传" : "重新确认并执行 Dry Run";
+  }
+}
+
+async function refreshProductCaptureAfterWorkflow(captureId, organizationId) {
+  try {
+    const result = await productCaptureApi(`/${encodeURIComponent(captureId)}`);
+    if (!currentUser || currentUser.organizationId !== organizationId) return;
+    const capture = productCapturePayload(result.data);
+    if (capture?.id) updateProductCaptureInMemory(capture);
+  } catch (error) {
+    if (error?.status !== 401 && selectedProductCaptureId === captureId) {
+      showProductNotice("上传流程已结束，但商品状态暂时刷新失败，请稍后刷新列表。", "error");
+    }
+  }
+}
+
+async function finalizeProductPublishWorkflow(workflow, organizationId) {
+  if (!workflow?.id || finalizedProductPublishWorkflowIds.has(workflow.id)) return;
+  finalizedProductPublishWorkflowIds.add(workflow.id);
+  stopProductPublishWorkflowPolling();
+  forgetProductPublishWorkflow(workflow.captureId, organizationId);
+  if (productUploadInFlightCaptureId === workflow.captureId) productUploadInFlightCaptureId = "";
+  const succeeded = String(workflow.status || "").toUpperCase() === "SUCCEEDED";
+  const audit = workflow.publication || {};
+  const errorLabel = document.querySelector("#product-publish-error");
+  const dialog = document.querySelector("#product-publish-dialog");
+  if (succeeded) {
+    const outcome = productPublishOutcome(workflow);
+    const dryRun = outcome.kind === "dry-run";
+    const receipt = audit.externalId ? `，平台回执 ${audit.externalId}` : "";
+    productPublishAuditMeta.set(workflow.captureId, {
+      dryRun,
+      status: audit.status || "",
+      externalId: audit.externalId || "",
+      remoteStatus: outcome.remoteStatus
+    });
+    productLastNotice = {
+      captureId: workflow.captureId,
+      type: "success",
+      message: outcome.kind === "dry-run"
+        ? `Dry Run 已通过${audit.externalId ? `，模拟回执 ${audit.externalId}` : ""}；未向真实店铺提交。`
+        : outcome.kind === "reviewing"
+          ? `商品已提交，平台正在审核${receipt}；当前不是“已上架”。`
+          : outcome.kind === "listed"
+            ? `平台已确认商品上架${receipt}。`
+            : `商品已提交${receipt}，但平台状态尚未确认；请到 Seller Center 核查。`
+    };
+    if (dialog?.open) {
+      errorLabel.classList.add("is-success");
+      errorLabel.textContent = outcome.kind === "dry-run"
+        ? "三步流程已完成；本次为 Dry Run，没有向真实店铺提交。"
+        : outcome.kind === "reviewing"
+          ? "商品已提交到所选店铺，平台正在审核；审核通过前不会显示为已上架。"
+          : outcome.kind === "listed"
+            ? "平台已回读并确认商品处于上架状态。"
+            : "商品已提交到所选店铺，但平台状态尚未确认，请到 Seller Center 核查。";
+      errorLabel.hidden = false;
+    }
+    productPublishIdempotencyKey = "";
+    productPublishIdempotencyCaptureId = "";
+  } else {
+    const message = productPublishWorkflowError(workflow);
+    const stageName = ({ IMAGES: "图片去水印", APPROVE: "资料校验与审核", PUBLISH: "上传店铺" })[
+      String(workflow.currentStep || "").toUpperCase()] || "一键上传";
+    productLastNotice = { captureId: workflow.captureId, type: "error", message: `${stageName}失败：${message}` };
+    if (dialog?.open) {
+      errorLabel.classList.remove("is-success");
+      errorLabel.textContent = productPublishWorkflowMayHaveReachedPlatform(workflow)
+        ? `${stageName}失败：${message}。平台请求可能已经发出，为防止重复刊登，系统不会自动重试；请先到目标店铺核查。`
+        : `${stageName}失败：${message}`;
+      errorLabel.hidden = false;
+    }
+    productPublishIdempotencyKey = newProductIdempotencyKey();
+    productPublishIdempotencyCaptureId = workflow.captureId;
+  }
+  renderProductPublishWorkflow(workflow);
+  if (dialog?.open) {
+    setProductUploadFormBusy(false);
+    const button = document.querySelector("#submit-product-publish");
+    button.disabled = succeeded || productPublishWorkflowMayHaveReachedPlatform(workflow);
+  }
+  if (productPublishWorkflowState?.id === workflow.id) productPublishWorkflowState = null;
+  await refreshProductCaptureAfterWorkflow(workflow.captureId, organizationId);
+  if (selectedProductCaptureDetail?.id === workflow.captureId) {
+    renderProductPublishWorkflow(workflow);
+    syncProductEditorAccess(selectedProductCaptureDetail);
+    syncProductActions(selectedProductCaptureDetail);
+  }
+}
+
+function acceptProductPublishWorkflow(workflow, organizationId) {
+  if (!workflow?.id || !workflow.captureId || !currentUser
+      || currentUser.organizationId !== organizationId
+      || selectedProductCaptureId !== workflow.captureId) return false;
+  productPublishWorkflowState = workflow;
+  const dialog = document.querySelector("#product-publish-dialog");
+  if (dialog?.open) {
+    const platform = productPublishWorkflowPlatform(workflow);
+    document.querySelector("#publish-destination-platform").value = platform;
+    syncPublishShopOptions(String(workflow.shopId || ""), { requireExplicit: true });
+  }
+  renderProductPublishWorkflow(workflow);
+  if (productPublishWorkflowIsActive(workflow)) {
+    productUploadInFlightCaptureId = workflow.captureId;
+    rememberProductPublishWorkflow(workflow, organizationId);
+    if (dialog?.open) setProductUploadFormBusy(true);
+  } else {
+    if (productUploadInFlightCaptureId === workflow.captureId) productUploadInFlightCaptureId = "";
+    void finalizeProductPublishWorkflow(workflow, organizationId);
+  }
+  if (selectedProductCaptureDetail?.id === workflow.captureId) {
+    syncProductEditorAccess(selectedProductCaptureDetail);
+    syncProductActions(selectedProductCaptureDetail);
+  }
+  return true;
+}
+
+function pollProductPublishWorkflow(workflow) {
+  if (!productPublishWorkflowIsActive(workflow)) return;
+  if (productPublishWorkflowPollTimer) clearTimeout(productPublishWorkflowPollTimer);
+  const generation = ++productPublishWorkflowPollGeneration;
+  const organizationId = currentUser?.organizationId || "";
+  const captureId = workflow.captureId;
+  const workflowId = workflow.id;
+  const poll = async () => {
+    if (generation !== productPublishWorkflowPollGeneration
+        || !currentUser || currentUser.organizationId !== organizationId
+        || selectedProductCaptureId !== captureId) return;
+    let delay = document.hidden ? 5000 : 1500;
+    try {
+      const result = await api(productPublishWorkflowPath(captureId, workflowId));
+      if (generation !== productPublishWorkflowPollGeneration
+          || !currentUser || currentUser.organizationId !== organizationId
+          || selectedProductCaptureId !== captureId) return;
+      const latest = result.data;
+      if (!acceptProductPublishWorkflow(latest, organizationId)) return;
+      if (!productPublishWorkflowIsActive(latest)) return;
+    } catch (error) {
+      if (generation !== productPublishWorkflowPollGeneration) return;
+      if (error?.status === 401) return;
+      if (error?.status === 404) {
+        forgetProductPublishWorkflow(captureId, organizationId);
+        stopProductPublishWorkflowPolling({ clearState: true });
+        if (selectedProductCaptureDetail?.id === captureId) {
+          syncProductEditorAccess(selectedProductCaptureDetail);
+          syncProductActions(selectedProductCaptureDetail);
+        }
+        return;
+      }
+      delay = 3500;
+      const errorLabel = document.querySelector("#product-publish-error");
+      if (document.querySelector("#product-publish-dialog")?.open) {
+        errorLabel.classList.remove("is-success");
+        errorLabel.textContent = "进度读取暂时失败，后台任务仍会继续；系统正在自动重连。";
+        errorLabel.hidden = false;
+      }
+    }
+    if (generation === productPublishWorkflowPollGeneration) {
+      productPublishWorkflowPollTimer = window.setTimeout(poll, delay);
+    }
+  };
+  productPublishWorkflowPollTimer = window.setTimeout(poll, 800);
+}
+
+async function restoreProductPublishWorkflow(captureId) {
+  if (!captureId || !currentUser || !hasAnyPermission("product:view", "product:publish")) return;
+  if (productPublishWorkflowIsActive(productPublishWorkflowForCapture(captureId))
+      && productPublishWorkflowPollTimer) return;
+  const generation = ++productPublishWorkflowLookupGeneration;
+  const organizationId = currentUser.organizationId || "";
+  let workflow = null;
+  const storedId = storedProductPublishWorkflowId(captureId, organizationId);
+  if (storedId) {
+    try {
+      const result = await api(productPublishWorkflowPath(captureId, storedId));
+      workflow = result.data;
+    } catch (error) {
+      if (error?.status === 401) return;
+      if (error?.status !== 404) return;
+      forgetProductPublishWorkflow(captureId, organizationId);
+    }
+  }
+  if (!workflow) {
+    try {
+      const result = await api(`${productPublishWorkflowPath(captureId)}?limit=20`);
+      const workflows = Array.isArray(result.data) ? result.data : [];
+      workflow = workflows.find(productPublishWorkflowIsActive) || null;
+    } catch (error) {
+      if (error?.status !== 401) {
+        // Product detail remains usable even when workflow recovery is temporarily unavailable.
+      }
+      return;
+    }
+  }
+  if (generation !== productPublishWorkflowLookupGeneration
+      || !currentUser || currentUser.organizationId !== organizationId
+      || selectedProductCaptureId !== captureId) return;
+  if (!workflow) {
+    if (productPublishWorkflowState?.captureId === captureId) productPublishWorkflowState = null;
+    if (productUploadInFlightCaptureId === captureId) productUploadInFlightCaptureId = "";
+    if (selectedProductCaptureDetail?.id === captureId) {
+      syncProductEditorAccess(selectedProductCaptureDetail);
+      syncProductActions(selectedProductCaptureDetail);
+    }
+    return;
+  }
+  if (!acceptProductPublishWorkflow(workflow, organizationId)) return;
+  if (productPublishWorkflowIsActive(workflow)) pollProductPublishWorkflow(workflow);
+}
+
+function syncPublishShopOptions(preferredShopId = "", {
+  requireExplicit = String(selectedProductCaptureDetail?.status || "").toUpperCase() === "PUBLISHED"
+} = {}) {
   const select = document.querySelector("#publish-shop-id");
   if (!select) return;
   const platform = document.querySelector("#publish-destination-platform")?.value || "SHOPEE";
-  const shops = activeMarketplaceShops(platform);
+  const shops = activeMarketplaceShops(platform).sort((left, right) => {
+    const regionDifference = String(left.region || "").localeCompare(String(right.region || ""), "zh-CN");
+    if (regionDifference) return regionDifference;
+    return String(left.name || left.externalShopId || "").localeCompare(
+      String(right.name || right.externalShopId || ""), "zh-CN");
+  });
   const previous = preferredShopId || select.value;
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = shops.length ? `请选择 ${shops.length} 家可发布店铺中的一家` : "没有可发布的授权店铺";
+  select.replaceChildren(placeholder);
+  const regionGroups = new Map();
+  shops.forEach(shop => {
+    const region = shop.region || "地区未返回";
+    if (!regionGroups.has(region)) regionGroups.set(region, []);
+    regionGroups.get(region).push(shop);
+  });
+  regionGroups.forEach((regionShops, region) => {
+    const group = document.createElement("optgroup");
+    group.label = `${region} · ${regionShops.length} 家`;
+    regionShops.forEach(shop => {
+      const option = document.createElement("option");
+      option.value = String(shop.id || "");
+      option.textContent = `${shop.name || shop.externalShopId || "未命名店铺"} · ID ${shop.externalShopId || "未返回"}`;
+      group.append(option);
+    });
+    select.append(group);
+  });
   const dryRun = !marketplaceIntegrationStatus.livePublishingEnabled;
-  const options = [`<option value="">${shops.length ? "请选择已授权店铺" : "没有已授权店铺"}</option>`];
-  shops.forEach(shop => options.push(`<option value="${escapeHtml(shop.id)}">${escapeHtml(shop.name || shop.externalShopId)} · ${escapeHtml(shop.region || shop.externalShopId)}</option>`));
-  if (dryRun) options.push(`<option value="dry-run-shop">仅执行 Dry Run（不连接店铺）</option>`);
-  select.innerHTML = options.join("");
-  if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
-  else if (shops.length === 1) select.value = shops[0].id;
+  if (dryRun) {
+    const dryRunGroup = document.createElement("optgroup");
+    dryRunGroup.label = "安全演练";
+    const dryRunOption = document.createElement("option");
+    dryRunOption.value = "dry-run-shop";
+    dryRunOption.textContent = "仅执行 Dry Run（不连接店铺）";
+    dryRunGroup.append(dryRunOption);
+    select.append(dryRunGroup);
+  }
+  const preferredShop = shops.find(shop => String(shop.id) === String(previous)
+    || String(shop.externalShopId) === String(previous));
+  if (preferredShop) select.value = String(preferredShop.id);
+  else if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
+  else if (shops.length === 1 && !requireExplicit) select.value = shops[0].id;
   else if (!shops.length && dryRun) select.value = "dry-run-shop";
+  const count = document.querySelector("#publish-shop-count");
+  if (count) count.textContent = `${shops.length} 家可选`;
+  syncPublishShopContext();
+}
+
+function syncPublishShopContext() {
+  const select = document.querySelector("#publish-shop-id");
+  const context = document.querySelector("#publish-shop-context");
+  if (!select || !context) return;
+  const platform = document.querySelector("#publish-destination-platform")?.value || "SHOPEE";
+  const shops = activeMarketplaceShops(platform);
+  const republishing = String(selectedProductCaptureDetail?.status || "").toUpperCase() === "PUBLISHED";
+  if (select.value === "dry-run-shop") {
+    context.textContent = "本次仅校验并保存模拟回执，不会使用任何店铺授权。";
+    context.className = "is-dry-run";
+    return;
+  }
+  const selected = shops.find(shop => String(shop.id) === String(select.value));
+  if (!selected) {
+    context.textContent = shops.length > 1
+      ? `当前有 ${shops.length} 家 ${marketplacePlatformName(platform)} 店铺，请根据地区和外部 ID 确认目标，避免错发。`
+      : shops.length === 1
+        ? republishing
+          ? "此商品已有平台提交记录，请明确选择目标店铺；当前页面无法根据商品状态判断此前提交的是哪一家。"
+          : "已自动选择唯一可发布店铺。"
+        : `没有状态为“可发布”的 ${marketplacePlatformName(platform)} 店铺，请先授权或刷新失效授权。`;
+    context.className = shops.length ? "" : "is-warning";
+    return;
+  }
+  const prefix = republishing ? "继续提交目标 · " : "";
+  context.textContent = `${prefix}${selected.name || selected.externalShopId || "未命名店铺"} · ${selected.region || "地区未返回"} · 外部 ID ${selected.externalShopId || "未返回"} · 最近同步 ${formatMarketplaceShopTime(selected.lastSyncedAt, "尚未同步")}`;
+  context.className = "is-selected";
 }
 
 function syncOfficialPublishFields() {
   const platform = document.querySelector("#publish-destination-platform").value;
   const live = marketplaceIntegrationStatus.livePublishingEnabled;
+  const republishing = String(selectedProductCaptureDetail?.status || "").toUpperCase() === "PUBLISHED";
   const stockMax = platform === "TIKTOK_SHOP" ? 99999 : 999999;
   const fields = document.querySelector("#product-official-publish-fields");
   fields.hidden = !live;
@@ -4889,28 +5613,164 @@ function syncOfficialPublishFields() {
   notice.classList.toggle("is-live", live);
   notice.querySelector("span").textContent = live ? "OFFICIAL API" : "DRY RUN";
   document.querySelector("#product-publish-mode-title").textContent = live
-    ? "这次会向官方店铺提交商品" : "这次不会正式上架";
+    ? "这次会向官方店铺提交刊登" : "这次不会向真实店铺提交";
   document.querySelector("#product-publish-mode-note").textContent = live
-    ? "系统将使用店铺 OAuth Token 调用官方商品接口；Shopee 会先创建未上架商品，规格成功后再上架。"
-    : "系统会验证字段与权限，并保存模拟发布审计；当前没有向店铺提交内容。";
+    ? "系统将使用店铺 OAuth Token 调用官方商品接口；提交后会回读平台状态，审核中不会显示为已上架。"
+    : "系统会按顺序处理图片、完成审核并保存模拟发布审计；当前不会向店铺提交内容。";
   document.querySelector("#product-publish-dialog-mode").textContent = live
     ? "人工确认 · OFFICIAL API" : "人工确认 · Dry Run";
-  document.querySelector("#product-publish-dialog-copy").textContent = live
-    ? "请再次核对目标平台、授权店铺和刊登参数；确认后系统会调用官方接口正式上架。"
-    : "请再次核对目标平台与店铺。本次只执行发布校验和模拟回执，不会在真实店铺上架商品。";
+  document.querySelector("#product-publish-dialog-title").textContent = republishing
+    ? "提交到其他店铺" : "确认一键上传";
+  document.querySelector("#product-publish-dialog-copy").textContent = republishing
+    ? live
+      ? "此商品已有平台提交记录。请选择另一家状态为“可发布”的目标店铺，核对刊登参数后继续提交。"
+      : "此商品已有平台提交记录。本次可改选另一家店铺继续执行 Dry Run，不会影响已有记录。"
+    : live
+      ? "请再次核对目标平台、授权店铺和刊登参数；确认一次后系统会依次处理图片、审核并调用官方接口提交刊登。"
+      : "请再次核对目标平台与店铺。确认一次后系统会依次处理图片、审核和模拟发布，不会向真实店铺提交商品。";
   document.querySelector("#product-publish-confirm-copy").textContent = live
-    ? "我已核对商品、SKU、处理图片、刊登参数与目标店铺，并确认正式上架。"
-    : "我已核对商品、SKU、处理图片与目标店铺，并确认执行本次 Dry Run。";
-  document.querySelector("#submit-product-publish").textContent = live ? "确认官方发布" : "确认 Dry Run 发布";
+    ? "我已核对商品、SKU、刊登参数与目标店铺，并确认依次处理图片、审核和提交平台刊登。"
+    : "我已核对商品、SKU 与目标店铺，并确认依次处理图片、审核和执行 Dry Run。";
+  document.querySelector("#submit-product-publish").textContent = live
+    ? "确认并提交平台刊登" : "确认一键上传（Dry Run）";
   syncPublishShopOptions();
+}
+
+function setProductUploadStep(step, state, text) {
+  const item = document.querySelector(`[data-upload-step="${step}"]`);
+  if (!item) return;
+  item.classList.remove("is-running", "is-complete", "is-failed");
+  if (state) item.classList.add(`is-${state}`);
+  const status = item.querySelector("em");
+  if (status) status.textContent = text;
+  const marker = item.querySelector(":scope > span");
+  if (marker) marker.textContent = state === "complete" ? "✓" : state === "failed" ? "!" : ({ IMAGES: "1", APPROVE: "2", PUBLISH: "3" })[step];
+}
+
+function renderProductUploadSteps(capture) {
+  const status = String(capture?.status || "CAPTURED").toUpperCase();
+  const images = productCaptureImages(capture);
+  const imagesComplete = ["READY", "APPROVED", "PUBLISHED"].includes(status)
+    || (images.length > 0 && images.every(image => productImageState(image) === "completed"));
+  const approved = ["APPROVED", "PUBLISHED"].includes(status);
+  setProductUploadStep("IMAGES", imagesComplete ? "complete" : "", imagesComplete ? "已有结果，将跳过" : "确认后执行");
+  setProductUploadStep("APPROVE", approved ? "complete" : "", approved ? "已审核，将跳过" : imagesComplete ? "等待执行" : "等待上一步");
+  setProductUploadStep("PUBLISH", "", status === "PUBLISHED" ? "选择其他店铺" : approved ? "等待执行" : "等待上一步");
+}
+
+function setProductUploadFormBusy(busy) {
+  const dialog = document.querySelector("#product-publish-dialog");
+  dialog.dataset.uploading = busy ? "true" : "false";
+  dialog.querySelectorAll("button, input, select, textarea").forEach(control => {
+    if (busy) {
+      // The workflow is durable, so users may close the progress dialog while it
+      // continues in the background and reopen it from the product action later.
+      if (control.matches("[data-close-dialog]")) return;
+      if (!Object.prototype.hasOwnProperty.call(control.dataset, "uploadDisabledBefore")) {
+        control.dataset.uploadDisabledBefore = String(control.disabled);
+      }
+      control.disabled = true;
+    } else if (Object.prototype.hasOwnProperty.call(control.dataset, "uploadDisabledBefore")) {
+      control.disabled = control.dataset.uploadDisabledBefore === "true";
+      delete control.dataset.uploadDisabledBefore;
+    }
+  });
+}
+
+function buildProductPublishPayload(destinationPlatform, shopId, idempotencyKey) {
+  const payload = { confirmed: true, destinationPlatform, shopId, idempotencyKey };
+  if (!marketplaceIntegrationStatus.livePublishingEnabled) return payload;
+  payload.categoryId = document.querySelector("#publish-category-id").value.trim();
+  payload.publishStock = parseProductPublishStock(destinationPlatform);
+  payload.weightGrams = document.querySelector("#publish-weight-grams").value.trim();
+  payload.skuStocks = parseProductSkuStocks("#publish-sku-stocks", destinationPlatform);
+  if (destinationPlatform === "TIKTOK_SHOP") {
+    payload.warehouseId = document.querySelector("#publish-warehouse-id").value.trim();
+    payload.packageLengthCm = document.querySelector("#publish-package-length").value.trim();
+    payload.packageWidthCm = document.querySelector("#publish-package-width").value.trim();
+    payload.packageHeightCm = document.querySelector("#publish-package-height").value.trim();
+    payload.salesAttributesBySku = parseProductPublishJson("#publish-sales-attributes", "TikTok 多规格映射");
+  } else {
+    payload.logisticInfo = parseShopeeLogisticInfo();
+    payload.productAttributes = parseProductPublishJson("#publish-product-attributes", "Shopee 类目属性", [], "array");
+    payload.shopeePayload = parseProductPublishJson("#publish-shopee-payload", "Shopee 条件必填补充参数", {}, "object");
+  }
+  return payload;
+}
+
+function productPublishWorkflowMatchesTarget(workflow, captureId, payload) {
+  return workflow?.captureId === captureId
+    && productPublishWorkflowPlatform(workflow) === normalizedMarketplacePlatform(payload.destinationPlatform)
+    && String(workflow.shopId || "") === String(payload.shopId || "");
+}
+
+function productPublishWorkflowCreateMayHaveCommitted(error) {
+  const status = Number(error?.status || 0);
+  return status === 0 || status === 408 || status >= 500;
+}
+
+async function createProductPublishWorkflow(captureId, payload, idempotencyKey) {
+  const request = () => api(productPublishWorkflowPath(captureId), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload)
+  });
+  let firstError;
+  try {
+    const result = await request();
+    if (!result?.data?.id) throw new ApiRequestError("一键上传任务响应不完整，请稍后重试", 502, result);
+    return result.data;
+  } catch (error) {
+    if (!productPublishWorkflowCreateMayHaveCommitted(error)) throw error;
+    firstError = error;
+  }
+
+  // A lost response does not tell us whether the POST committed. Replaying the
+  // exact body with the exact same key is safe and lets the server return the
+  // already-created workflow instead of creating a duplicate publication.
+  try {
+    const result = await request();
+    if (!result?.data?.id) throw new ApiRequestError("一键上传任务响应不完整，请稍后重试", 502, result);
+    return result.data;
+  } catch (retryError) {
+    if (!productPublishWorkflowCreateMayHaveCommitted(retryError)) throw retryError;
+    try {
+      const result = await api(`${productPublishWorkflowPath(captureId)}?limit=20`);
+      const workflows = Array.isArray(result.data) ? result.data : [];
+      const recovered = workflows.find(workflow => productPublishWorkflowMatchesTarget(workflow, captureId, payload));
+      if (recovered?.id) return recovered;
+    } catch (lookupError) {
+      if (lookupError?.status === 401) throw lookupError;
+    }
+    throw new ApiRequestError(
+      "一键上传任务的提交结果暂时无法确认。后台可能仍在执行；请保持当前页面，点击重试时系统会沿用同一请求，不会重复创建任务。",
+      retryError?.status || firstError?.status || 0,
+      retryError?.payload || firstError?.payload || null
+    );
+  }
 }
 
 async function openProductPublishDialog() {
   const capture = selectedProductCaptureDetail;
-  if (!capture || capture.status !== "APPROVED" || !hasAnyPermission("product:publish")) return;
+  const status = String(capture?.status || "").toUpperCase();
+  const supported = ["CAPTURED", "DRAFT", "FAILED", "IMAGE_PROCESSING", "READY", "APPROVED", "PUBLISHED"].includes(status);
+  if (!capture || !supported || !hasAnyPermission("product:publish")) return;
+  if (productEditorDirty || productCaptureSaveInFlightId) {
+    showProductNotice("请先保存当前商品修改，再执行一键上传。", "error");
+    return;
+  }
+  if (["CAPTURED", "DRAFT", "FAILED"].includes(status) && !hasAnyPermission("asset:watermark")) {
+    showProductNotice("当前商品需要先处理图片，但账号没有去水印权限。", "error");
+    return;
+  }
+  if (["CAPTURED", "DRAFT", "FAILED", "READY"].includes(status) && !hasAnyPermission("product:edit")) {
+    showProductNotice("当前商品需要先审核，但账号没有商品编辑/审核权限。", "error");
+    return;
+  }
   await loadMarketplaceShops({ silent: true });
   const skus = productCaptureSkus(capture);
-  const images = productCaptureImages(capture).filter(image => productImageState(image) === "completed");
+  const images = productCaptureImages(capture);
+  const completedImages = images.filter(image => productImageState(image) === "completed").length;
   const normalized = capture.normalizedData && typeof capture.normalizedData === "object" ? capture.normalizedData : {};
   if (!productPublishIdempotencyKey || productPublishIdempotencyCaptureId !== capture.id) {
     productPublishIdempotencyKey = newProductIdempotencyKey();
@@ -4918,13 +5778,15 @@ async function openProductPublishDialog() {
   }
   document.querySelector("#publish-product-title").textContent = capture.title || "未命名商品";
   document.querySelector("#publish-organization-name").textContent = currentUser?.organizationName || "当前公司";
-  document.querySelector("#publish-image-count").textContent = `${images.length} 张`;
+  document.querySelector("#publish-image-count").textContent = `${completedImages} / ${images.length} 张`;
   document.querySelector("#publish-sku-count").textContent = `${skus.length} 个`;
   const requestedPlatform = String(capture.destinationPlatform || normalized.destinationPlatform || "").toUpperCase();
   const sourcePlatform = String(capture.sourcePlatform || "").toUpperCase();
   document.querySelector("#publish-destination-platform").value = ["SHOPEE", "TIKTOK_SHOP"].includes(requestedPlatform)
     ? requestedPlatform : sourcePlatform === "TIKTOK" ? "TIKTOK_SHOP" : "SHOPEE";
-  syncPublishShopOptions(capture.destinationShopId || capture.shopId || normalized.shopId || "");
+  if (status === "PUBLISHED") document.querySelector("#publish-shop-id").value = "";
+  syncPublishShopOptions(status === "PUBLISHED"
+    ? "" : capture.destinationShopId || capture.shopId || normalized.shopId || "");
   ["#publish-category-id", "#publish-stock", "#publish-weight-grams", "#publish-warehouse-id",
     "#publish-package-length", "#publish-package-width", "#publish-package-height",
     "#publish-sku-stocks", "#publish-logistic-info", "#publish-product-attributes",
@@ -4936,14 +5798,36 @@ async function openProductPublishDialog() {
   const exampleSkuKey = skuKeys[0] || "SKU_KEY";
   skuStocks.placeholder = JSON.stringify({ [exampleSkuKey]: 20 });
   syncOfficialPublishFields();
+  renderProductUploadSteps(capture);
+  document.querySelector("#product-publish-dialog-title").textContent = status === "PUBLISHED"
+    ? "提交到其他店铺" : "确认一键上传";
+  if (status === "PUBLISHED") {
+    document.querySelector("#product-publish-dialog-copy").textContent = marketplaceIntegrationStatus.livePublishingEnabled
+      ? "此商品已有平台提交记录。请选择另一家状态为“可发布”的目标店铺，核对刊登参数后继续提交。"
+      : "此商品已有平台提交记录。本次可改选另一家店铺继续执行 Dry Run，不会影响已有记录。";
+    syncPublishShopContext();
+  }
   document.querySelector("#publish-confirmed").checked = false;
   document.querySelector("#product-publish-error").hidden = true;
+  document.querySelector("#product-publish-error").classList.remove("is-success");
+  setProductUploadFormBusy(false);
+  document.querySelector("#submit-product-publish").disabled = false;
   document.querySelector("#product-publish-dialog").showModal();
+  const trackedWorkflow = productPublishWorkflowForCapture(capture.id);
+  if (productPublishWorkflowIsActive(trackedWorkflow)) {
+    acceptProductPublishWorkflow(trackedWorkflow, currentUser?.organizationId || "");
+    pollProductPublishWorkflow(trackedWorkflow);
+  } else {
+    if (trackedWorkflow) productPublishWorkflowState = null;
+    await restoreProductPublishWorkflow(capture.id);
+  }
 }
 
 async function submitProductPublish(event) {
   event.preventDefault();
-  if (!selectedProductCaptureId || !hasAnyPermission("product:publish")) return;
+  if (!selectedProductCaptureId || !hasAnyPermission("product:publish") || productUploadInFlightCaptureId) return;
+  const captureId = selectedProductCaptureId;
+  const organizationId = currentUser?.organizationId || "";
   const confirmed = document.querySelector("#publish-confirmed").checked;
   const destinationPlatform = document.querySelector("#publish-destination-platform").value;
   const shopId = document.querySelector("#publish-shop-id").value.trim();
@@ -4953,65 +5837,113 @@ async function submitProductPublish(event) {
     errorLabel.hidden = false;
     return;
   }
+  if (marketplaceIntegrationStatus.livePublishingEnabled && shopId === "dry-run-shop") {
+    errorLabel.textContent = "真实发布已启用，请重新选择已授权店铺。";
+    errorLabel.hidden = false;
+    return;
+  }
   const button = document.querySelector("#submit-product-publish");
-  button.disabled = true;
-  button.textContent = marketplaceIntegrationStatus.livePublishingEnabled ? "正在调用官方接口…" : "正在执行 Dry Run…";
-  errorLabel.hidden = true;
+  const idempotencyKey = productPublishIdempotencyKey || newProductIdempotencyKey();
+  let payload;
   try {
-    const idempotencyKey = productPublishIdempotencyKey || newProductIdempotencyKey();
-    const payload = { confirmed: true, destinationPlatform, shopId, idempotencyKey };
-    if (marketplaceIntegrationStatus.livePublishingEnabled) {
-      payload.categoryId = document.querySelector("#publish-category-id").value.trim();
-      payload.publishStock = parseProductPublishStock(destinationPlatform);
-      payload.weightGrams = document.querySelector("#publish-weight-grams").value.trim();
-      payload.skuStocks = parseProductSkuStocks("#publish-sku-stocks", destinationPlatform);
-      if (destinationPlatform === "TIKTOK_SHOP") {
-        payload.warehouseId = document.querySelector("#publish-warehouse-id").value.trim();
-        payload.packageLengthCm = document.querySelector("#publish-package-length").value.trim();
-        payload.packageWidthCm = document.querySelector("#publish-package-width").value.trim();
-        payload.packageHeightCm = document.querySelector("#publish-package-height").value.trim();
-        payload.salesAttributesBySku = parseProductPublishJson("#publish-sales-attributes", "TikTok 多规格映射");
-      } else {
-        payload.logisticInfo = parseShopeeLogisticInfo();
-        payload.productAttributes = parseProductPublishJson("#publish-product-attributes", "Shopee 类目属性", [], "array");
-        payload.shopeePayload = parseProductPublishJson("#publish-shopee-payload", "Shopee 条件必填补充参数", {}, "object");
-      }
-    }
-    const result = await productCaptureApi(`/${encodeURIComponent(selectedProductCaptureId)}/publish`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify(payload)
-    });
-    const audit = result.data?.audit || result.data?.publishAudit || {};
-    const capture = productCapturePayload(result.data);
-    if (String(audit.status || "").toUpperCase() === "FAILED") {
-      productPublishIdempotencyKey = newProductIdempotencyKey();
-      throw new ApiRequestError(audit.errorMessage || "Dry Run 发布校验失败", 422, result);
-    }
-    productLastNotice = {
-      captureId: selectedProductCaptureId,
-      type: "success",
-      message: audit.dryRun === false
-        ? `发布请求已受理${audit.externalId ? `，回执 ${audit.externalId}` : ""}。`
-        : `Dry Run 已通过${audit.externalId ? `，模拟回执 ${audit.externalId}` : ""}；未在真实店铺上架。`
-    };
-    productPublishAuditMeta.set(selectedProductCaptureId, {
-      dryRun: audit.dryRun !== false || String(audit.status || "").toUpperCase() === "DRY_RUN_SUCCEEDED",
-      status: audit.status || "",
-      externalId: audit.externalId || ""
-    });
-    document.querySelector("#product-publish-dialog").close();
-    productPublishIdempotencyKey = "";
-    productPublishIdempotencyCaptureId = "";
-    if (capture?.id) updateProductCaptureInMemory(capture);
-    await loadProductCaptures(selectedProductCaptureId, { silent: true });
+    payload = buildProductPublishPayload(destinationPlatform, shopId, idempotencyKey);
   } catch (error) {
-    if (error?.status === 401) return;
+    errorLabel.classList.remove("is-success");
     errorLabel.textContent = error.message;
     errorLabel.hidden = false;
+    return;
+  }
+  productPublishIdempotencyKey = idempotencyKey;
+  productUploadInFlightCaptureId = captureId;
+  if (selectedProductCaptureDetail?.id === captureId) {
+    syncProductEditorAccess(selectedProductCaptureDetail);
+    syncProductActions(selectedProductCaptureDetail);
+  }
+  setProductUploadFormBusy(true);
+  button.textContent = "正在准备一键上传…";
+  errorLabel.classList.remove("is-success");
+  errorLabel.hidden = true;
+  let activeStep = "";
+  let workflowAccepted = false;
+  try {
+    let workingCapture = selectedProductCaptureDetail;
+    let status = String(workingCapture?.status || "CAPTURED").toUpperCase();
+    if (["CAPTURED", "FAILED", "READY"].includes(status)
+        && productSkuPriceNormalizationNeeded(workingCapture)) {
+      activeStep = "IMAGES";
+      if (!hasAnyPermission("product:edit")) {
+        throw new ApiRequestError("SKU 原价或商品价格区间需要自动补齐，但账号没有商品编辑权限", 403);
+      }
+      setProductUploadStep("IMAGES", "running", "正在同步 SKU 价格…");
+      button.textContent = "正在同步规格与价格…";
+      let patchResult;
+      try {
+        patchResult = await productCaptureApi(`/${encodeURIComponent(captureId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(productCapturePatchPayload(workingCapture, { forceSkus: true }))
+        });
+      } catch (patchError) {
+        // PATCH itself is versioned but not idempotent. If its response was lost
+        // (or another request won the version race), read the latest capture and
+        // continue only when the requested normalization is already present.
+        if (patchError?.status !== 409 && !productPublishWorkflowCreateMayHaveCommitted(patchError)) {
+          throw patchError;
+        }
+        try {
+          const latestResult = await productCaptureApi(`/${encodeURIComponent(captureId)}`);
+          const latestCapture = productCapturePayload(latestResult.data);
+          if (!latestCapture?.id || productSkuPriceNormalizationNeeded(latestCapture)) throw patchError;
+          patchResult = { data: latestCapture };
+        } catch (refreshError) {
+          if (refreshError === patchError || refreshError?.status === 401) throw refreshError;
+          throw patchError;
+        }
+      }
+      if (!currentUser || (currentUser.organizationId || "") !== organizationId) return;
+      workingCapture = productCapturePayload(patchResult.data);
+      status = String(workingCapture?.status || "CAPTURED").toUpperCase();
+      if (workingCapture?.id) updateProductCaptureInMemory(workingCapture);
+    }
+    activeStep = "";
+    renderProductUploadSteps(workingCapture);
+    button.textContent = "正在创建后台一键上传任务…";
+    const workflow = await createProductPublishWorkflow(captureId, payload, idempotencyKey);
+    if (!currentUser || (currentUser.organizationId || "") !== organizationId) return;
+    if (selectedProductCaptureId !== captureId) return;
+    workflowAccepted = acceptProductPublishWorkflow(workflow, organizationId);
+    if (!workflowAccepted) return;
+    if (productPublishWorkflowIsActive(workflow)) pollProductPublishWorkflow(workflow);
+  } catch (error) {
+    if (error?.status === 401) return;
+    if (!currentUser || (currentUser.organizationId || "") !== organizationId
+        || selectedProductCaptureId !== captureId) return;
+    if (activeStep === "IMAGES") {
+      try {
+        await selectProductCapture(captureId, { silent: true, force: true });
+      } catch (_refreshError) {
+        // Keep the normalization error below; the normal refresh control remains available.
+      }
+    }
+    if (activeStep) setProductUploadStep(activeStep, "failed", "失败，请查看原因");
+    const stageName = activeStep === "IMAGES" ? "规格与价格同步" : "后台任务创建";
+    errorLabel.classList.remove("is-success");
+    errorLabel.textContent = `${stageName}失败：${error.message}`;
+    errorLabel.hidden = false;
   } finally {
-    button.disabled = false;
-    button.textContent = marketplaceIntegrationStatus.livePublishingEnabled ? "确认官方发布" : "确认 Dry Run 发布";
+    if (!workflowAccepted && currentUser
+        && (currentUser.organizationId || "") === organizationId
+        && selectedProductCaptureId === captureId) {
+      if (productUploadInFlightCaptureId === captureId) productUploadInFlightCaptureId = "";
+      setProductUploadFormBusy(false);
+      button.disabled = false;
+      button.textContent = marketplaceIntegrationStatus.livePublishingEnabled
+        ? "重试并提交平台刊登" : "重试一键上传（Dry Run）";
+      if (selectedProductCaptureDetail) {
+        syncProductEditorAccess(selectedProductCaptureDetail);
+        syncProductActions(selectedProductCaptureDetail);
+      }
+    }
   }
 }
 
@@ -5281,11 +6213,38 @@ document.querySelector("#product-publish-form").addEventListener("input", () => 
   document.querySelector("#product-publish-error").hidden = true;
 });
 document.querySelector("#publish-destination-platform").addEventListener("change", syncOfficialPublishFields);
+document.querySelector("#publish-shop-id").addEventListener("change", syncPublishShopContext);
+document.querySelector("#marketplace-shop-status-filter").addEventListener("change", event => {
+  marketplaceShopStatusFilter = event.currentTarget.value;
+  renderMarketplaceShopList();
+});
 document.querySelector("#marketplace-shop-panel").addEventListener("click", event => {
+  const platformFilter = event.target.closest("[data-shop-platform-filter]");
+  if (platformFilter) {
+    marketplaceShopPlatformFilter = platformFilter.dataset.shopPlatformFilter;
+    renderMarketplaceShopList();
+    return;
+  }
+  const reloadButton = event.target.closest("[data-reload-shops]");
+  if (reloadButton) {
+    reloadMarketplaceShops(reloadButton);
+    return;
+  }
+  const refreshButton = event.target.closest("[data-refresh-shop]");
+  if (refreshButton) {
+    refreshMarketplaceShop(refreshButton.dataset.refreshShop);
+    return;
+  }
+  const disconnectButton = event.target.closest("[data-disconnect-shop]");
+  if (disconnectButton) {
+    disconnectMarketplaceShop(disconnectButton.dataset.disconnectShop);
+    return;
+  }
   const button = event.target.closest("[data-authorize-shop]");
   if (button) startMarketplaceAuthorization(button.dataset.authorizeShop, button);
 });
-document.querySelector("#product-publish-dialog").addEventListener("close", () => {
+document.querySelector("#product-publish-dialog").addEventListener("close", event => {
+  if (event.currentTarget.dataset.uploading === "true") return;
   productPublishIdempotencyKey = "";
   productPublishIdempotencyCaptureId = "";
 });
@@ -6687,6 +7646,9 @@ function resetGeneralVideoState() {
 function resetProductCaptureState() {
   productCaptureLoadGeneration += 1;
   productCaptureDetailLoadGeneration += 1;
+  productPublishWorkflowLookupGeneration += 1;
+  stopProductPublishWorkflowPolling({ clearState: true });
+  finalizedProductPublishWorkflowIds.clear();
   if (productCaptureSearchDebounceTimer) clearTimeout(productCaptureSearchDebounceTimer);
   productCaptureSearchDebounceTimer = null;
   if (productCapturePollTimer) clearInterval(productCapturePollTimer);
@@ -6696,7 +7658,12 @@ function resetProductCaptureState() {
   productPairingExpiresAt = null;
   productPublishIdempotencyKey = "";
   productPublishIdempotencyCaptureId = "";
+  productUploadInFlightCaptureId = "";
+  marketplaceShopLoadGeneration += 1;
+  marketplaceShopActionsInFlight.clear();
   marketplaceShops = [];
+  marketplaceShopPlatformFilter = "ALL";
+  marketplaceShopStatusFilter = "ALL";
   marketplaceIntegrationStatus = {
     shopeeConfigured: false,
     tiktokShopConfigured: false,

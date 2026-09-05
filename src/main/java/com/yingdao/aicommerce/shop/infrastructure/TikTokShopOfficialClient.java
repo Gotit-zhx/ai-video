@@ -88,11 +88,13 @@ public class TikTokShopOfficialClient implements MarketplaceAccess.Client {
                 String externalId = firstText(value, "id", "shop_id", "code");
                 String cipher = firstText(value, "cipher", "shop_cipher");
                 if (externalId == null || cipher == null) continue;
+                String sellerId = firstText(tokenData, "open_id", "seller_id");
                 shops.add(new MarketplaceAccess.RemoteShop(externalId,
-                        firstText(tokenData, "open_id", "seller_id"), cipher,
+                        sellerId, cipher,
                         firstText(value, "seller_type", "type"),
                         fallback(firstText(value, "name", "shop_name"), "TikTok Shop " + externalId),
-                        firstText(value, "region", "seller_base_region")));
+                        firstText(value, "region", "seller_base_region"),
+                        "SELLER", sellerId));
             }
         }
         if (shops.isEmpty()) throw new MarketplaceApiException("TikTok Shop 授权成功，但未返回任何可用店铺");

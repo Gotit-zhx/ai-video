@@ -124,6 +124,7 @@ server:
       cookie:
         name: HEYI_SESSION
         http-only: true
+        secure: ${APP_SESSION_COOKIE_SECURE:true}
         same-site: lax
 
 management:
