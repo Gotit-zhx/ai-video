@@ -74,6 +74,38 @@ app:
     max-active-tasks: ${APP_MAX_ACTIVE_TASKS:80}
     max-model-calls: ${APP_MAX_MODEL_CALLS:20}
     permit-lease: ${APP_DISPATCH_PERMIT_LEASE:30m}
+  product-capture:
+    extension:
+      pairing-code-ttl: ${APP_PRODUCT_EXTENSION_PAIRING_CODE_TTL:5m}
+      token-ttl: ${APP_PRODUCT_EXTENSION_TOKEN_TTL:8h}
+    enrichment:
+      auto-enabled: false
+    watermark:
+      provider: ${APP_PRODUCT_WATERMARK_PROVIDER:DRY_RUN}
+    publishing:
+      provider: ${APP_PRODUCT_PUBLISHING_PROVIDER:DRY_RUN}
+  shop-auth:
+    state-ttl: ${APP_SHOP_AUTH_STATE_TTL:10m}
+    credential-key: ${APP_SHOP_CREDENTIAL_KEY:local-development-shop-secret-change-me}
+    callback-base-url: ${APP_SHOP_AUTH_CALLBACK_BASE_URL:${APP_PUBLIC_BASE_URL:http://localhost:8080}}
+    frontend-base-url: ${APP_SHOP_AUTH_FRONTEND_BASE_URL:http://localhost:3000}
+    live-publishing-enabled: ${APP_SHOP_LIVE_PUBLISHING_ENABLED:false}
+    token-refresh-skew: ${APP_SHOP_TOKEN_REFRESH_SKEW:5m}
+    shopee:
+      enabled: ${APP_SHOPEE_ENABLED:false}
+      partner-id: ${APP_SHOPEE_PARTNER_ID:}
+      partner-key: ${APP_SHOPEE_PARTNER_KEY:}
+      auth-base-url: ${APP_SHOPEE_AUTH_BASE_URL:https://open.shopee.com}
+      api-base-url: ${APP_SHOPEE_API_BASE_URL:https://partner.shopeemobile.com}
+      image-upload-sign-scope: ${APP_SHOPEE_IMAGE_UPLOAD_SIGN_SCOPE:SHOP}
+    tiktok-shop:
+      enabled: ${APP_TIKTOK_SHOP_ENABLED:false}
+      service-id: ${APP_TIKTOK_SHOP_SERVICE_ID:}
+      app-key: ${APP_TIKTOK_SHOP_APP_KEY:}
+      app-secret: ${APP_TIKTOK_SHOP_APP_SECRET:}
+      authorization-base-url: ${APP_TIKTOK_SHOP_AUTHORIZATION_BASE_URL:https://services.tiktokshop.com}
+      token-base-url: ${APP_TIKTOK_SHOP_TOKEN_BASE_URL:${APP_TIKTOK_SHOP_AUTH_BASE_URL:https://auth.tiktok-shops.com}}
+      api-base-url: ${APP_TIKTOK_SHOP_API_BASE_URL:https://open-api.tiktokglobalshop.com}
 
 mybatis-plus:
   configuration:
@@ -87,6 +119,7 @@ mybatis-plus:
 
 server:
   port: ${APP_PORT:8080}
+  forward-headers-strategy: framework
   shutdown: graceful
   servlet:
     session:

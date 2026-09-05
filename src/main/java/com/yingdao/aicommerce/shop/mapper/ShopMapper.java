@@ -1,0 +1,9 @@
+package com.yingdao.aicommerce.shop.mapper;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.yingdao.aicommerce.shop.domain.Shop;
+import org.apache.ibatis.annotations.Mapper;
+
+@Mapper
+public interface ShopMapper extends BaseMapper<Shop> {
+}

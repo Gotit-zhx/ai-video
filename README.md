@@ -108,6 +108,55 @@ API 鉴权和前端菜单/操作入口控制。
 生产环境必须在 `.env` 中将 `APP_MODEL_SECRET_KEY` 设置为至少 32 位的随机值，
 并妥善备份；变更该值会导致已有模型密钥无法解密。
 
+## Shopee / TikTok Shop 官方店铺授权与发布
+
+商品采集插件只负责读取商品详情页，店铺授权和发布始终由服务端调用官方 Open API。
+店铺 `access_token`、`refresh_token` 使用独立 AES-256-GCM 密钥加密，并绑定企业与店铺
+作为附加认证数据；网页和插件只能看到店铺名称、地区及授权状态。
+
+先在 Shopee Open Platform、TikTok Shop Partner Center 创建并审核应用，把 OAuth 回调
+分别登记为：
+
+```text
+https://api.example.com/api/v1/shop-authorizations/callback/shopee
+https://api.example.com/api/v1/shop-authorizations/callback/tiktok_shop
+```
+
+然后在 `.env` 配置：
+
+```text
+APP_SHOP_CREDENTIAL_KEY=<独立的至少 32 位随机值>
+APP_SHOP_AUTH_CALLBACK_BASE_URL=https://api.example.com
+APP_SHOP_AUTH_FRONTEND_BASE_URL=https://app.example.com
+APP_SHOPEE_ENABLED=true
+APP_SHOPEE_PARTNER_ID=<Partner ID>
+APP_SHOPEE_PARTNER_KEY=<Partner Key>
+APP_SHOPEE_AUTH_BASE_URL=https://open.shopee.com
+APP_SHOPEE_API_BASE_URL=https://partner.shopeemobile.com
+APP_TIKTOK_SHOP_ENABLED=true
+APP_TIKTOK_SHOP_SERVICE_ID=<Service ID>
+APP_TIKTOK_SHOP_APP_KEY=<App Key>
+APP_TIKTOK_SHOP_APP_SECRET=<App Secret>
+APP_TIKTOK_SHOP_AUTHORIZATION_BASE_URL=https://services.tiktokshop.com
+APP_TIKTOK_SHOP_TOKEN_BASE_URL=https://auth.tiktok-shops.com
+APP_TIKTOK_SHOP_API_BASE_URL=https://open-api.tiktokglobalshop.com
+```
+
+默认始终是 `DRY_RUN`。只有联调完成、图片去水印提供方不再是 Dry Run，并确认应用已取得
+商品与物流权限后，才同时设置以下两个变量启用真实官方发布：
+
+```text
+APP_PRODUCT_PUBLISHING_PROVIDER=OFFICIAL
+APP_SHOP_LIVE_PUBLISHING_ENABLED=true
+```
+
+两个开关缺少任意一个都不会向店铺提交商品。库存不依赖采集结果，而是在最后发布确认时
+由运营人员填写；官方叶子类目、TikTok 仓库与多规格属性映射也必须以目标店铺返回的数据为准。
+
+实施细节、最新版接口路径、Sandbox 阻断清单和 GitHub 项目对比见
+[`docs/official-shop-integration.md`](docs/official-shop-integration.md)；插件安装、登录配对、
+采集边界和测试清单见 [`browser-extension/README.md`](browser-extension/README.md)。
+
 ## Pi Agent 与助手联调
 
 左侧“助手测试”是临时联调入口，链路为：

@@ -523,18 +523,21 @@ public class SaasAdminService {
                 "OPERATOR", Set.of(
                         "dashboard:view", "workflow:view", "workflow:manage",
                         "asset:view", "asset:manage", "video:script:view", "video:script:manage",
-                        "video:task:view", "video:task:manage", "automation:view", "automation:execute"
+                        "video:task:view", "video:task:manage", "automation:view", "automation:execute",
+                        "product:collect", "product:view", "product:edit", "asset:watermark"
                 ),
                 "DESIGNER", Set.of(
                         "dashboard:view", "workflow:view", "asset:view", "asset:manage",
-                        "video:script:view", "video:script:manage", "video:task:view", "video:task:manage"
+                        "video:script:view", "video:script:manage", "video:task:view", "video:task:manage",
+                        "product:collect", "product:view", "product:edit", "asset:watermark"
                 ),
                 "REVIEWER", Set.of(
                         "dashboard:view", "workflow:view", "workflow:review", "asset:view",
-                        "video:script:view", "video:task:view"
+                        "video:script:view", "video:task:view", "product:view", "product:edit"
                 ),
                 "PUBLISHER", Set.of(
-                        "dashboard:view", "workflow:view", "publish:view", "publish:manage", "video:task:view"
+                        "dashboard:view", "workflow:view", "publish:view", "publish:manage", "video:task:view",
+                        "product:view", "product:publish"
                 )
         );
         List<Permission> allPermissions = listPermissions();

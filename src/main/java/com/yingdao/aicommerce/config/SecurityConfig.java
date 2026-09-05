@@ -1,9 +1,11 @@
 package com.yingdao.aicommerce.config;
 
+import com.yingdao.aicommerce.auth.ExtensionBearerAuthenticationFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -11,11 +13,16 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.session.data.redis.config.annotation.web.http.EnableRedisIndexedHttpSession;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.io.IOException;
+import java.util.List;
 
 @Configuration
 @EnableRedisIndexedHttpSession(
@@ -25,15 +32,47 @@ import java.io.IOException;
 public class SecurityConfig {
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http,
+                                            ExtensionBearerAuthenticationFilter extensionBearerFilter)
+            throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
+                .cors(Customizer.withDefaults())
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers("/api/public/v1/video-references/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
                         .requestMatchers("/api/v1/auth/social/**").permitAll()
+                        .requestMatchers(HttpMethod.GET,
+                                "/api/v1/shop-authorizations/callback/**").permitAll()
                         .requestMatchers("/api/v1/automation-agent/**").permitAll()
+                        .requestMatchers(HttpMethod.OPTIONS,
+                                "/api/v1/product-captures/**", "/api/v1/extension-auth/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/extension-auth/exchange").permitAll()
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/product-captures/extension/pairing-code")
+                            .hasAuthority("product:collect")
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/product-captures/*/images/process")
+                            .hasAuthority("asset:watermark")
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/product-captures/*/approve")
+                            .hasAuthority("product:edit")
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/product-captures/*/publish")
+                            .hasAuthority("product:publish")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/shops/**")
+                            .hasAnyAuthority("product:view", "product:publish")
+                        .requestMatchers("/api/v1/shops/**", "/api/v1/shop-authorizations/**")
+                            .hasAuthority("product:publish")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/product-captures")
+                            .hasAuthority("product:collect")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/product-captures/**")
+                            .hasAuthority("product:view")
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/product-captures/*")
+                            .hasAuthority("product:edit")
+                        .requestMatchers("/api/v1/product-captures/**").denyAll()
+                        .requestMatchers("/api/v1/extension-auth/**").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/assistant-test/**")
                             .hasAnyAuthority("assistant:view", "assistant:use", "ROLE_ADMIN")
                         .requestMatchers("/api/v1/assistant-test/**")
@@ -122,7 +161,10 @@ public class SecurityConfig {
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint((request, response, exception) ->
                                 writeUnauthorized(response, exception))
-                );
+                        .accessDeniedHandler((request, response, exception) ->
+                                writeForbidden(response))
+                )
+                .addFilterBefore(extensionBearerFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }
 
@@ -135,6 +177,15 @@ public class SecurityConfig {
         response.setContentType("application/json");
         response.getWriter().write(
                 "{\"success\":false,\"message\":\"登录已失效，请重新登录\"}"
+        );
+    }
+
+    private void writeForbidden(jakarta.servlet.http.HttpServletResponse response) throws IOException {
+        response.setStatus(403);
+        response.setCharacterEncoding("UTF-8");
+        response.setContentType("application/json");
+        response.getWriter().write(
+                "{\"success\":false,\"message\":\"当前账号没有权限执行此操作\"}"
         );
     }
 
@@ -153,5 +204,22 @@ public class SecurityConfig {
     @Bean
     PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOriginPatterns(List.of("chrome-extension://*"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PATCH", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of(
+                "Authorization", "Content-Type", "Accept", "Idempotency-Key"
+        ));
+        configuration.setExposedHeaders(List.of("Location"));
+        configuration.setAllowCredentials(false);
+        configuration.setMaxAge(3600L);
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/api/v1/product-captures/**", configuration);
+        source.registerCorsConfiguration("/api/v1/extension-auth/**", configuration);
+        return source;
     }
 }

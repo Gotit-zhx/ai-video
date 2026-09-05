@@ -147,7 +147,7 @@
         <a href="#" id="nav-video-scripts" class="nav-item" data-nav-label="视频脚本管理" title="视频脚本管理"><span aria-hidden="true">▤</span><span class="nav-label">视频脚本管理</span></a>
         <a href="#" id="nav-ai-video-tasks" class="nav-item" data-nav-label="AI 视频任务" title="AI 视频任务"><span aria-hidden="true">▷</span><span class="nav-label">AI 视频任务</span></a>
         <a href="#" id="nav-general-video" class="nav-item" data-nav-label="通用生成" title="通用生成"><span aria-hidden="true">◇</span><span class="nav-label">通用生成</span></a>
-        <a href="#" id="nav-publish" class="nav-item" data-nav-label="发布视频" title="发布视频"><span aria-hidden="true">△</span><span class="nav-label">发布视频</span></a>
+        <a href="#product-capture" id="nav-publish" class="nav-item" data-nav-label="商品采集/发布" title="商品采集/发布"><span aria-hidden="true">◇</span><span class="nav-label">商品采集/发布</span></a>
         <a href="#" id="nav-automations" class="nav-item" data-nav-label="自动化中心" title="自动化中心"><span aria-hidden="true">↯</span><span class="nav-label">自动化中心</span></a>
         <a href="#" id="nav-automation-admin" class="nav-item" data-nav-label="自动化管理" title="自动化管理"><span aria-hidden="true">⌘</span><span class="nav-label">自动化管理</span></a>
         <a href="#" id="nav-models" class="nav-item" data-nav-label="模型接入" title="模型接入"><span aria-hidden="true">◎</span><span class="nav-label">模型接入</span></a>
@@ -157,8 +157,9 @@
     </aside>
     <section class="workspace">
       <header class="topbar" data-liquid-glass data-color="transparent" data-blur="0" data-cab="2" data-depth="10" data-strength="100">
-        <div>
+        <div class="topbar-context">
           <h2>内容运营工作台</h2>
+          <p id="current-organization">正在读取公司</p>
         </div>
         <div class="user-area">
           <div class="theme-mode-control topbar-theme-control" role="group" aria-label="外观主题">
@@ -167,7 +168,7 @@
             <button class="theme-mode-option" type="button" data-theme-choice="auto" aria-pressed="false" title="自动：按北京时间自动切换主题">自动</button>
           </div>
           <span class="status-pill"><i></i>系统在线</span>
-          <span id="current-user">平台管理员</span>
+          <span class="topbar-identity"><b id="current-user">平台管理员</b><small id="current-permission-state">正在检查权限</small></span>
           <button id="logout-button" class="quiet-button">退出</button>
         </div>
       </header>
@@ -629,6 +630,177 @@
         </section>
       </div>
 
+      <div id="product-publish-page" class="workspace-body product-publish-page" hidden>
+        <section class="product-page-heading">
+          <div>
+            <span class="product-page-kicker">Commerce capture desk</span>
+            <h1>商品采集与发布</h1>
+            <p>插件直接读取商品详情页可见内容；先在这里补全资料、核对图片处理结果，再由有权限的人员人工确认发布。</p>
+          </div>
+          <div class="product-page-context">
+          <div class="product-context-badges"><span class="product-free-capture-badge">页面直采 · 未调用付费 API</span><span id="product-publishing-mode-badge" class="product-dry-run-badge">发布：DRY RUN</span></div>
+            <strong id="product-company-context">正在读取公司</strong>
+            <small id="product-permission-context">正在检查商品权限</small>
+          </div>
+        </section>
+
+        <section class="product-summary-grid" aria-label="商品采集概览">
+          <article><span>全部商品</span><strong id="product-total-count">0</strong><small>商品页面直采</small></article>
+          <article class="is-processing"><span>图片处理中</span><strong id="product-processing-count">0</strong><small>去水印 Dry Run 队列</small></article>
+          <article class="is-review"><span>等待确认</span><strong id="product-review-count">0</strong><small>资料已整理</small></article>
+          <article class="is-ready"><span>可发布</span><strong id="product-approved-count">0</strong><small>人工审核通过</small></article>
+          <article><span>已发布记录</span><strong id="product-published-count">0</strong><small>仅统计真实发布</small></article>
+        </section>
+
+        <section class="product-capture-workspace">
+          <aside class="product-capture-rail">
+            <section id="extension-pairing-panel" class="extension-pairing-panel">
+              <header>
+                <div><span>浏览器插件</span><strong>登录并绑定当前公司</strong></div>
+                <i id="extension-pairing-state">未生成</i>
+              </header>
+              <p>插件打开本页登录后，输入一次性绑定码即可采集；绑定码不会授予超出当前账号的权限。</p>
+              <div class="extension-pairing-actions">
+                <output id="extension-pairing-code" aria-live="polite">— — — — — —</output>
+                <button id="copy-extension-pairing-code" type="button" disabled>复制</button>
+              </div>
+              <footer>
+                <small id="extension-pairing-expiry">登录后可生成 5 分钟有效的绑定码</small>
+                <button id="create-extension-pairing-code" type="button">生成绑定码</button>
+              </footer>
+            </section>
+
+            <section id="marketplace-shop-panel" class="marketplace-shop-panel">
+              <header>
+                <div><span>官方店铺</span><strong>授权后才能真实发布</strong></div>
+                <i id="marketplace-live-state">检查中</i>
+              </header>
+              <p>OAuth 与 Token 全部由平台服务端保管，采集插件和网页都无法读取店铺密钥。</p>
+              <div id="marketplace-shop-list" class="marketplace-shop-list"><span>正在读取授权店铺…</span></div>
+              <footer>
+                <button type="button" data-authorize-shop="SHOPEE">授权 Shopee</button>
+                <button type="button" data-authorize-shop="TIKTOK_SHOP">授权 TikTok Shop</button>
+              </footer>
+              <small id="marketplace-shop-note"></small>
+            </section>
+
+            <label class="product-capture-search" for="product-capture-search">
+              <span aria-hidden="true">⌕</span>
+              <input id="product-capture-search" type="search" autocomplete="off" placeholder="商品名、店铺、SKU 或来源 ID" aria-label="搜索采集商品">
+            </label>
+            <div id="product-status-filter" class="product-status-filter" aria-label="筛选商品状态">
+              <button class="active" type="button" data-product-status="ALL" aria-pressed="true">全部</button>
+              <button type="button" data-product-status="DRAFT" aria-pressed="false">待整理</button>
+              <button type="button" data-product-status="PROCESSING" aria-pressed="false">处理中</button>
+              <button type="button" data-product-status="REVIEW" aria-pressed="false">待确认</button>
+              <button type="button" data-product-status="APPROVED" aria-pressed="false">可发布</button>
+              <button type="button" data-product-status="PUBLISHED" aria-pressed="false">已发布</button>
+              <button type="button" data-product-status="FAILED" aria-pressed="false">失败</button>
+            </div>
+            <div class="product-result-caption"><span id="product-result-count" role="status" aria-live="polite">已显示 0 / 共 0 条</span><button id="refresh-product-captures" type="button" aria-controls="product-capture-list">刷新</button></div>
+            <div id="product-capture-list" class="product-capture-list" aria-label="采集商品列表" aria-busy="true"><div class="product-empty">正在读取商品草稿…</div></div>
+            <div id="product-capture-pagination" class="product-capture-pagination" hidden>
+              <button id="load-more-product-captures" type="button" aria-controls="product-capture-list">加载更多</button>
+              <span id="product-load-more-status" role="status" aria-live="polite"></span>
+            </div>
+          </aside>
+
+          <section id="product-capture-detail" class="product-capture-detail">
+            <div id="product-capture-empty" class="product-empty product-detail-empty">
+              <span aria-hidden="true">◇</span>
+              <strong>选择一条商品草稿</strong>
+              <p>插件完成采集后，商品资料、SKU 和图片处理结果会显示在这里。</p>
+            </div>
+
+            <div id="product-capture-editor" hidden>
+              <header class="product-detail-head">
+                <div>
+                  <div class="product-detail-eyebrow"><span id="product-source-platform">来源平台</span><span id="product-capture-mode">页面直采 · 未调用付费 API</span><span id="product-source-id">—</span></div>
+                  <h2 id="product-detail-title">商品草稿</h2>
+                  <p><a id="product-source-link" href="#" target="_blank" rel="noopener noreferrer">打开来源商品页 ↗</a><span id="product-updated-at">尚未更新</span></p>
+                </div>
+                <span id="product-detail-status" class="product-status-chip">待整理</span>
+              </header>
+
+              <div id="product-detail-error" class="form-error" role="alert" hidden></div>
+
+              <section class="product-edit-section">
+                <header><div><span>01</span><h3>商品信息</h3></div><small id="product-edit-access-note">修改后先保存草稿</small></header>
+                <div class="product-form-grid">
+                  <label class="product-field-wide">商品标题<input id="product-title-input" maxlength="300" autocomplete="off"></label>
+                  <label>分类<input id="product-category-input" maxlength="160" autocomplete="off"></label>
+                  <label>品牌<input id="product-brand-input" maxlength="160" autocomplete="off"></label>
+                  <label>币种<input id="product-currency-input" maxlength="12" autocomplete="off" placeholder="PHP"></label>
+                  <label>最低价<input id="product-price-min-input" inputmode="decimal" autocomplete="off"></label>
+                  <label>最高价<input id="product-price-max-input" inputmode="decimal" autocomplete="off"></label>
+                  <label class="product-field-wide">商品描述<textarea id="product-description-input" rows="7" maxlength="30000"></textarea></label>
+                </div>
+              </section>
+
+              <section class="product-edit-section product-sku-section">
+                <header><div><span>02</span><h3>SKU 规格</h3></div><div class="product-sku-tools"><small id="product-sku-count">0 个 SKU</small><button id="add-product-sku" type="button">＋ 添加 SKU</button></div></header>
+                <div id="product-sku-completeness" class="product-sku-completeness is-unknown" aria-live="polite">
+                  <div class="product-sku-completeness-main">
+                    <span id="product-sku-completeness-status">完整性待确认</span>
+                    <strong id="product-sku-completeness-count">已采集 0 / 应有数量未知</strong>
+                    <small id="product-sku-completeness-source">来源：等待平台返回</small>
+                  </div>
+                  <div class="product-sku-completeness-guidance">
+                    <p id="product-sku-completeness-note">平台规格数量及每个 SKU 的 ID、变体属性、售价、原价和图片完整后即可进入人工审核；库存为选填。</p>
+                    <ul id="product-sku-completeness-issues" class="product-sku-completeness-issues" hidden></ul>
+                    <a id="product-sku-recapture-link" href="#" target="_blank" rel="noopener noreferrer" hidden>打开商品详情页重新采集 ↗</a>
+                  </div>
+                  <label id="product-sku-manual-confirm-label" class="product-sku-manual-confirm" hidden>
+                    <input id="product-sku-manual-confirm" type="checkbox">
+                    <span>我已对照商品详情页逐项核对全部规格，以「人工 USER」来源确认当前刊登 SKU 完整。</span>
+                  </label>
+                </div>
+                <div id="product-sku-workbench" class="product-sku-workbench" hidden>
+                  <div class="product-sku-master">
+                    <label class="product-sku-search-field" for="product-sku-search"><span>查找规格</span><input id="product-sku-search" type="search" autocomplete="off" placeholder="规格名、SKU ID、商家编码…"></label>
+                    <div class="product-sku-picker">
+                      <button id="product-sku-previous" type="button" aria-label="上一条 SKU" aria-controls="product-sku-editor" aria-keyshortcuts="Alt+ArrowLeft">← <span>上一条</span></button>
+                      <label for="product-sku-select"><span>选择 SKU</span><select id="product-sku-select" aria-controls="product-sku-editor" aria-describedby="product-sku-position product-sku-filter-status"></select></label>
+                      <button id="product-sku-next" type="button" aria-label="下一条 SKU" aria-controls="product-sku-editor" aria-keyshortcuts="Alt+ArrowRight"><span>下一条</span> →</button>
+                    </div>
+                    <div class="product-sku-position-line">
+                      <strong id="product-sku-position" role="status" aria-live="polite">第 0 / 0 条</strong>
+                      <small id="product-sku-filter-status">选择一条 SKU 后在下方编辑</small>
+                    </div>
+                  </div>
+                  <div id="product-sku-editor" class="product-sku-editor" aria-label="当前 SKU 编辑区"></div>
+                </div>
+                <div id="product-sku-empty" class="product-sku-empty">尚无 SKU 数据，请添加一条 SKU。</div>
+              </section>
+
+              <section class="product-edit-section product-image-section">
+                <header>
+                  <div><span>03</span><h3>图片处理 / AI 去水印</h3></div>
+                  <div class="product-image-progress"><strong id="product-image-progress-text">0 / 0</strong><i><b id="product-image-progress-bar"></b></i></div>
+                </header>
+                <p class="product-section-help">每张图同时保留来源原图与处理图。当前测试提供方只生成 Dry Run 占位图，不代表已经实际去除水印。</p>
+                <div id="product-image-grid" class="product-image-grid"><div class="product-empty">尚无图片</div></div>
+              </section>
+
+              <section class="product-readiness-panel">
+                <div><span>发布前检查</span><strong id="product-readiness-title">等待商品资料</strong><p id="product-readiness-note">标题、价格、SKU 和图片处理完成后才可人工确认。</p></div>
+                <ul id="product-readiness-list"><li>正在检查字段…</li></ul>
+              </section>
+
+              <footer class="product-action-dock">
+                <div><strong id="product-action-title">先核对采集结果</strong><span id="product-action-note">所有真实发布动作都必须由人员再次确认。</span></div>
+                <div class="product-action-buttons">
+                  <button id="save-product-capture" class="quiet-button" type="button">保存修改</button>
+                  <button id="process-product-images" class="quiet-button" type="button">AI 去水印</button>
+                  <button id="approve-product-capture" class="quiet-button" type="button">人工确认</button>
+                  <button id="open-product-publish" class="new-job-button" type="button">一键发布</button>
+                </div>
+              </footer>
+            </div>
+          </section>
+        </section>
+      </div>
+
       <div id="automations-page" class="workspace-body automation-page" hidden>
         <section class="automation-heading automation-hero">
           <div>
@@ -818,6 +990,55 @@
       </div>
     </section>
   </main>
+
+  <dialog id="product-publish-dialog" class="manage-dialog product-publish-dialog">
+    <form id="product-publish-form" novalidate>
+      <div class="dialog-heading">
+        <div>
+          <p id="product-publish-dialog-mode" class="dialog-eyebrow">人工确认 · Dry Run</p>
+          <h2>确认一键发布</h2>
+          <p id="product-publish-dialog-copy">请再次核对目标平台与店铺。本测试分支只执行发布校验和模拟回执，不会在真实店铺上架商品。</p>
+        </div>
+        <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      </div>
+      <section class="product-publish-summary">
+        <div><span>商品</span><strong id="publish-product-title">—</strong></div>
+        <div><span>当前公司</span><strong id="publish-organization-name">—</strong></div>
+        <div><span>处理图片</span><strong id="publish-image-count">0 张</strong></div>
+        <div><span>SKU</span><strong id="publish-sku-count">0 个</strong></div>
+      </section>
+      <div class="product-publish-targets">
+        <label>目标平台<select id="publish-destination-platform" name="destinationPlatform" required><option value="SHOPEE">Shopee 虾皮</option><option value="TIKTOK_SHOP">TikTok Shop</option></select></label>
+        <label>已授权店铺<select id="publish-shop-id" name="shopId" required><option value="">请先授权并选择店铺</option></select></label>
+      </div>
+      <details id="product-official-publish-fields" class="product-official-publish-fields" hidden>
+        <summary><span>官方刊登参数</span><small id="product-official-publish-hint">类目、库存、包裹与平台必填项</small></summary>
+        <div class="product-publish-targets">
+          <label>官方叶子类目 ID<input id="publish-category-id" inputmode="numeric" maxlength="80" autocomplete="off" placeholder="必填"></label>
+          <label>上架库存<input id="publish-stock" inputmode="numeric" min="0" max="999999" autocomplete="off" placeholder="发布时填写，不依赖采集库存"></label>
+          <label>包裹重量（克）<input id="publish-weight-grams" inputmode="decimal" min="0" autocomplete="off" placeholder="例如 350"></label>
+          <label data-tiktok-publish-field>TikTok 仓库 ID<input id="publish-warehouse-id" maxlength="120" autocomplete="off" placeholder="TikTok Shop 必填"></label>
+          <label data-tiktok-publish-field>包裹长（cm）<input id="publish-package-length" inputmode="decimal" min="0" autocomplete="off"></label>
+          <label data-tiktok-publish-field>包裹宽（cm）<input id="publish-package-width" inputmode="decimal" min="0" autocomplete="off"></label>
+          <label data-tiktok-publish-field>包裹高（cm）<input id="publish-package-height" inputmode="decimal" min="0" autocomplete="off"></label>
+        </div>
+        <div class="product-publish-json-grid">
+          <label class="product-publish-json-field">SKU 库存映射 JSON（选填）<textarea id="publish-sku-stocks" rows="3" spellcheck="false" aria-describedby="publish-sku-stocks-help" placeholder='{"SKU_KEY": 20}'></textarea><small id="publish-sku-stocks-help">键必须使用当前商品的 SKU Key；库存范围会随目标平台切换，留空则全部使用上方“上架库存”。</small></label>
+          <label class="product-publish-json-field" data-shopee-publish-field>Shopee 官方物流渠道 JSON（必填）<textarea id="publish-logistic-info" rows="3" spellcheck="false" aria-describedby="publish-logistic-info-help" placeholder='[{"logistic_id": 123, "enabled": true}]'></textarea><small id="publish-logistic-info-help">必须填写至少一个渠道。请从目标店铺的 Shopee 官方物流渠道接口准备，当前页面不会自动拉取或猜测。</small></label>
+          <label class="product-publish-json-field" data-shopee-publish-field>Shopee 类目属性 JSON（按类目要求）<textarea id="publish-product-attributes" rows="4" spellcheck="false" placeholder='[{"attribute_id": 100, "attribute_value_list": [{"value_id": 200}]}]'></textarea><small>请使用目标店铺与叶子类目的官方属性准备接口返回值；留空按空数组提交，不表示类目无需属性。</small></label>
+          <label class="product-publish-json-field" data-shopee-publish-field>Shopee 条件必填补充参数 JSON<textarea id="publish-shopee-payload" rows="4" spellcheck="false" placeholder='{"brand": {"brand_id": 0}, "condition": "NEW"}'></textarea><small>用于透传品牌、尺寸、税务等当前类目要求的官方字段；留空按空对象提交，页面不会伪装成已经自动补全。</small></label>
+          <label class="product-publish-json-field" data-tiktok-publish-field>TikTok 多规格映射 JSON（可选；留空则使用已采集规格名称）<textarea id="publish-sales-attributes" rows="4" spellcheck="false" placeholder='{"SKU_KEY": [{"id":"...","value_id":"..."}]}'></textarea></label>
+        </div>
+      </details>
+      <div class="product-dry-run-notice">
+        <span>DRY RUN</span>
+        <div><strong id="product-publish-mode-title">这次不会正式上架</strong><p id="product-publish-mode-note">系统会验证字段与权限，并保存模拟发布审计；当前没有向店铺提交内容。</p></div>
+      </div>
+      <label class="product-publish-confirm"><input id="publish-confirmed" type="checkbox" required><span id="product-publish-confirm-copy">我已核对商品、SKU、处理图片与目标店铺，并确认执行本次 Dry Run。</span></label>
+      <p id="product-publish-error" class="form-error" hidden></p>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-close-dialog>取消</button><button id="submit-product-publish" type="submit" class="new-job-button">确认 Dry Run 发布</button></div>
+    </form>
+  </dialog>
 
   <dialog id="video-shot-edit-dialog" class="manage-dialog video-shot-edit-dialog">
     <form id="video-shot-edit-form">
