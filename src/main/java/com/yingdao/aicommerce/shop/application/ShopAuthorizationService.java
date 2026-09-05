@@ -11,7 +11,6 @@ import com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException;
 import com.yingdao.aicommerce.shop.mapper.ShopAuthorizationSessionMapper;
 import com.yingdao.aicommerce.shop.mapper.ShopCredentialMapper;
 import com.yingdao.aicommerce.shop.mapper.ShopMapper;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,16 +23,17 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 public class ShopAuthorizationService {
     private final ShopMapper shopMapper;
     private final ShopCredentialMapper credentialMapper;
     private final ShopAuthorizationSessionMapper sessionMapper;
+    private final ShopAuthorizationGrantPersistence grantPersistence;
     private final MarketplaceClientRegistry clients;
     private final ShopCredentialCipher cipher;
     private final ShopIntegrationSettings settings;
@@ -43,6 +43,7 @@ public class ShopAuthorizationService {
     public ShopAuthorizationService(ShopMapper shopMapper,
                                     ShopCredentialMapper credentialMapper,
                                     ShopAuthorizationSessionMapper sessionMapper,
+                                    ShopAuthorizationGrantPersistence grantPersistence,
                                     MarketplaceClientRegistry clients,
                                     ShopCredentialCipher cipher,
                                     ShopIntegrationSettings settings,
@@ -50,6 +51,7 @@ public class ShopAuthorizationService {
         this.shopMapper = shopMapper;
         this.credentialMapper = credentialMapper;
         this.sessionMapper = sessionMapper;
+        this.grantPersistence = grantPersistence;
         this.clients = clients;
         this.cipher = cipher;
         this.settings = settings;
@@ -64,7 +66,13 @@ public class ShopAuthorizationService {
                 .orderByAsc(Shop::getPlatform)
                 .orderByAsc(Shop::getName);
         if (requested != null) query.eq(Shop::getPlatform, requested.name());
-        return shopMapper.selectList(query).stream().map(this::view).toList();
+        List<Shop> shops = shopMapper.selectList(query);
+        if (shops.isEmpty()) return List.of();
+        Map<String, ShopCredential> credentials = credentialMapper.selectForShops(
+                        principal.organizationId(), shops.stream().map(Shop::getId).toList())
+                .stream()
+                .collect(Collectors.toMap(ShopCredential::getShopId, Function.identity()));
+        return shops.stream().map(shop -> view(shop, credentials.get(shop.getId()))).toList();
     }
 
     public PlatformStatus status() {
@@ -110,10 +118,10 @@ public class ShopAuthorizationService {
             }
             List<ShopView> connected = new ArrayList<>();
             String scopes = writeJson(grant.tokens().scopes());
-            for (MarketplaceAccess.RemoteShop remote : grant.shops()) {
-                Shop shop = upsertShop(session.getOrganizationId(), platform, remote, scopes);
-                upsertCredential(shop, grant.tokens());
-                connected.add(view(shop));
+            for (ShopAuthorizationGrantPersistence.AuthorizedShop saved
+                    : grantPersistence.persist(session.getOrganizationId(), session.getCreatedBy(),
+                    platform, grant, scopes)) {
+                connected.add(view(saved.shop(), saved.credential()));
             }
             session.succeeded();
             sessionMapper.updateById(session);
@@ -153,16 +161,13 @@ public class ShopAuthorizationService {
         if (!"ACTIVE".equals(shop.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "目标店铺授权已失效，请重新授权");
         }
-        ShopCredential stored = credentialMapper.selectForUpdate(shop.getId());
-        if (stored == null || !organizationId.equals(stored.getOrganizationId())) {
-            throw new BusinessException(HttpStatus.CONFLICT, "目标店铺没有可用凭证，请重新授权");
-        }
+        List<ShopCredential> tokenGroup = requireTokenGroup(shop, organizationId);
+        ShopCredential stored = credentialForShop(tokenGroup, shop.getId());
         MarketplaceAccess.TokenSet current = decrypt(stored, shop);
         if (mustRefresh(current.accessTokenExpiresAt())) {
             try {
                 MarketplaceAccess.TokenSet refreshed = clients.require(platform).refresh(current, shop);
-                rotate(stored, shop, refreshed);
-                credentialMapper.updateById(stored);
+                rotateTokenGroup(tokenGroup, organizationId, refreshed);
                 current = refreshed;
             } catch (RuntimeException exception) {
                 throw new BusinessException(HttpStatus.BAD_GATEWAY,
@@ -175,25 +180,39 @@ public class ShopAuthorizationService {
     @Transactional
     public ShopView refresh(String id, PlatformPrincipal principal) {
         Shop shop = requireOwned(id, principal.organizationId());
-        ShopCredential stored = credentialMapper.selectForUpdate(shop.getId());
-        if (stored == null) throw new BusinessException(HttpStatus.CONFLICT, "店铺没有刷新凭证，请重新授权");
+        List<ShopCredential> tokenGroup = requireTokenGroup(shop, principal.organizationId());
+        ShopCredential stored = credentialForShop(tokenGroup, shop.getId());
         MarketplacePlatform platform = MarketplacePlatform.parse(shop.getPlatform());
         MarketplaceAccess.TokenSet refreshed = clients.require(platform).refresh(decrypt(stored, shop), shop);
-        rotate(stored, shop, refreshed);
-        credentialMapper.updateById(stored);
-        shop.authorized(shop.getMerchantId(), shop.getShopCipher(), shop.getSellerType(),
-                shop.getName(), shop.getRegion(), writeJson(refreshed.scopes()));
-        shopMapper.updateById(shop);
-        return view(shop);
+        rotateTokenGroup(tokenGroup, principal.organizationId(), refreshed);
+        shop.refreshed(writeJson(refreshed.scopes()));
+        if (shopMapper.updateById(shop) != 1) {
+            throw new BusinessException(HttpStatus.CONFLICT,
+                    "店铺授权状态已被其他请求更新，请重试");
+        }
+        return view(shop, stored);
     }
 
     @Transactional
     public ShopView disconnect(String id, PlatformPrincipal principal) {
         Shop shop = requireOwned(id, principal.organizationId());
-        credentialMapper.deleteById(shop.getId());
-        shop.disabled();
-        shopMapper.updateById(shop);
-        return view(shop);
+        List<ShopCredential> tokenGroup = credentialMapper.selectTokenGroupForUpdate(
+                principal.organizationId(), shop.getId());
+        if (tokenGroup != null && !tokenGroup.isEmpty()) {
+            credentialForShop(tokenGroup, shop.getId());
+            if (credentialMapper.deleteById(shop.getId()) != 1) {
+                throw new BusinessException(HttpStatus.CONFLICT,
+                        "店铺凭证已被其他请求更新，请重试");
+            }
+        }
+        if (!"DISABLED".equals(shop.getStatus())) {
+            shop.disabled(principal.userId());
+            if (shopMapper.updateById(shop) != 1) {
+                throw new BusinessException(HttpStatus.CONFLICT,
+                        "店铺授权状态已被其他请求更新，请重试");
+            }
+        }
+        return view(shop, null);
     }
 
     public String callbackRedirect(CallbackResult result) {
@@ -217,54 +236,50 @@ public class ShopAuthorizationService {
                 .last("LIMIT 1"));
     }
 
-    private Shop upsertShop(String organizationId, MarketplacePlatform platform,
-                            MarketplaceAccess.RemoteShop remote, String scopes) {
-        Shop existing = shopMapper.selectOne(new LambdaQueryWrapper<Shop>()
-                .eq(Shop::getOrganizationId, organizationId)
-                .eq(Shop::getPlatform, platform.name())
-                .eq(Shop::getExternalShopId, remote.externalShopId())
-                .last("LIMIT 1"));
-        if (existing == null) {
-            Shop created = new Shop(organizationId, platform, remote.externalShopId(),
-                    remote.merchantId(), remote.shopCipher(), remote.sellerType(),
-                    remote.name(), remote.region(), scopes);
-            try {
-                shopMapper.insert(created);
-                return created;
-            } catch (DuplicateKeyException exception) {
-                existing = shopMapper.selectOne(new LambdaQueryWrapper<Shop>()
-                        .eq(Shop::getOrganizationId, organizationId)
-                        .eq(Shop::getPlatform, platform.name())
-                        .eq(Shop::getExternalShopId, remote.externalShopId())
-                        .last("LIMIT 1"));
-                if (existing == null) throw exception;
+    private void rotate(ShopCredential credential, String organizationId,
+                        MarketplaceAccess.TokenSet tokens) {
+        credential.rotate(
+                cipher.encrypt(tokens.accessToken(), organizationId, credential.getShopId()),
+                tokens.refreshToken() == null ? null
+                        : cipher.encrypt(tokens.refreshToken(), organizationId, credential.getShopId()),
+                tokens.accessTokenExpiresAt(), tokens.refreshTokenExpiresAt());
+    }
+
+    private void rotateTokenGroup(List<ShopCredential> tokenGroup, String organizationId,
+                                  MarketplaceAccess.TokenSet tokens) {
+        for (ShopCredential credential : tokenGroup) {
+            if (!organizationId.equals(credential.getOrganizationId())) {
+                throw new BusinessException(HttpStatus.CONFLICT,
+                        "店铺凭证企业归属不一致，已拒绝刷新");
+            }
+            rotate(credential, organizationId, tokens);
+            if (credentialMapper.updateById(credential) != 1) {
+                throw new BusinessException(HttpStatus.CONFLICT,
+                        "店铺凭证已被其他请求更新，请重试");
             }
         }
-        existing.authorized(remote.merchantId(), remote.shopCipher(), remote.sellerType(),
-                remote.name(), remote.region(), scopes);
-        shopMapper.updateById(existing);
-        return existing;
     }
 
-    private void upsertCredential(Shop shop, MarketplaceAccess.TokenSet tokens) {
-        ShopCredential credential = credentialMapper.selectById(shop.getId());
-        if (credential == null) {
-            credentialMapper.insert(new ShopCredential(shop.getId(), shop.getOrganizationId(),
-                    cipher.encrypt(tokens.accessToken(), shop.getOrganizationId(), shop.getId()),
-                    cipher.encrypt(tokens.refreshToken(), shop.getOrganizationId(), shop.getId()),
-                    tokens.accessTokenExpiresAt(), tokens.refreshTokenExpiresAt()));
-            return;
+    private List<ShopCredential> requireTokenGroup(Shop shop, String organizationId) {
+        List<ShopCredential> tokenGroup = credentialMapper.selectTokenGroupForUpdate(
+                organizationId, shop.getId());
+        if (tokenGroup == null || tokenGroup.isEmpty()) {
+            throw new BusinessException(HttpStatus.CONFLICT, "目标店铺没有可用凭证，请重新授权");
         }
-        rotate(credential, shop, tokens);
-        credentialMapper.updateById(credential);
+        ShopCredential target = credentialForShop(tokenGroup, shop.getId());
+        if (!organizationId.equals(target.getOrganizationId())) {
+            throw new BusinessException(HttpStatus.CONFLICT,
+                    "店铺凭证企业归属不一致，已拒绝访问");
+        }
+        return tokenGroup;
     }
 
-    private void rotate(ShopCredential credential, Shop shop, MarketplaceAccess.TokenSet tokens) {
-        credential.rotate(
-                cipher.encrypt(tokens.accessToken(), shop.getOrganizationId(), shop.getId()),
-                tokens.refreshToken() == null ? null
-                        : cipher.encrypt(tokens.refreshToken(), shop.getOrganizationId(), shop.getId()),
-                tokens.accessTokenExpiresAt(), tokens.refreshTokenExpiresAt());
+    private ShopCredential credentialForShop(List<ShopCredential> tokenGroup, String shopId) {
+        return tokenGroup.stream()
+                .filter(value -> shopId.equals(value.getShopId()))
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT,
+                        "目标店铺没有可用凭证，请重新授权"));
     }
 
     private MarketplaceAccess.TokenSet decrypt(ShopCredential stored, Shop shop) {
@@ -304,10 +319,18 @@ public class ShopAuthorizationService {
         catch (Exception exception) { throw new IllegalStateException("无法保存店铺授权范围", exception); }
     }
 
-    private ShopView view(Shop shop) {
+    private ShopView view(Shop shop, ShopCredential credential) {
+        boolean ownedCredential = credential != null
+                && shop.getId().equals(credential.getShopId())
+                && shop.getOrganizationId().equals(credential.getOrganizationId());
         return new ShopView(shop.getId(), shop.getPlatform(), shop.getExternalShopId(),
                 shop.getName(), shop.getRegion(), shop.getSellerType(), shop.getStatus(),
-                readScopes(shop.getAuthorizedScopes()), shop.getLastSyncedAt(), shop.getLastAuthError());
+                shop.getAuthorizationSubjectType(), shop.getAuthorizationSubjectId(),
+                readScopes(shop.getAuthorizedScopes()), shop.getAuthorizedBy(), shop.getAuthorizedAt(),
+                shop.getDisconnectedBy(), shop.getDisconnectedAt(),
+                ownedCredential ? credential.getAccessTokenExpiresAt() : null,
+                ownedCredential ? credential.getRefreshTokenExpiresAt() : null,
+                shop.getLastSyncedAt(), shop.getLastAuthError());
     }
 
     private String state() {
@@ -352,7 +375,12 @@ public class ShopAuthorizationService {
     }
 
     public record ShopView(String id, String platform, String externalShopId, String name,
-                           String region, String sellerType, String status, List<String> scopes,
+                           String region, String sellerType, String status,
+                           String authorizationSubjectType, String authorizationSubjectId,
+                           List<String> scopes,
+                           String authorizedBy, Instant authorizedAt,
+                           String disconnectedBy, Instant disconnectedAt,
+                           Instant accessTokenExpiresAt, Instant refreshTokenExpiresAt,
                            Instant lastSyncedAt, String lastAuthError) {}
     public record PlatformStatus(boolean shopeeConfigured, boolean tiktokShopConfigured,
                                  boolean livePublishingEnabled, String publishingProvider) {}

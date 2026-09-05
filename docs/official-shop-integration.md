@@ -521,6 +521,7 @@ TikTok Shop 正式 SDK 应从 Partner Center 根据已生效应用生成/下载�
 # 通用
 APP_SHOP_AUTH_STATE_TTL=10m
 APP_SHOP_CREDENTIAL_KEY=<独立的至少32位随机密钥>
+APP_SESSION_COOKIE_SECURE=true
 APP_SHOP_AUTH_CALLBACK_BASE_URL=https://api.example.com
 APP_SHOP_AUTH_FRONTEND_BASE_URL=https://app.example.com
 APP_SHOP_TOKEN_REFRESH_SKEW=5m
@@ -544,6 +545,13 @@ APP_TIKTOK_SHOP_AUTHORIZATION_BASE_URL=https://services.tiktokshop.com
 APP_TIKTOK_SHOP_TOKEN_BASE_URL=https://auth.tiktok-shops.com
 APP_TIKTOK_SHOP_API_BASE_URL=https://open-api.tiktokglobalshop.com
 ```
+
+临时公网回调应使用 `scripts/start-cpolar-secure.sh`，不要直接运行默认的 `cpolar http 3000`。
+脚本只把两个 OAuth GET callback 转发给回环地址上的前端代理，其他路径返回 404；隧道限定
+HTTPS，并关闭本地 Dashboard、inspection 与落盘日志。反向代理对 OAuth callback 禁用 access
+log，其他请求也只记录不含 query 的 `$uri`。单机联调时，callback base 使用脚本输出的公网域名，
+frontend base 使用 `http://localhost:3000`。公网联调前，Compose 要求管理员密码、模型密钥、
+店铺凭证密钥以及 Agent/Runtime Token 必须显式配置；任何一个缺失都会拒绝启动。
 
 `APP_SHOPEE_IMAGE_UPLOAD_SIGN_SCOPE` 必须在 Sandbox 验证后明确设置为 `PUBLIC` 或
 `SHOP`；不得依赖默认值进入生产。

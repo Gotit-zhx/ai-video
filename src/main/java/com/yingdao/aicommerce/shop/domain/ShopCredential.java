@@ -12,6 +12,7 @@ import java.time.Instant;
 public class ShopCredential {
     @TableId private String shopId;
     private String organizationId;
+    private String tokenGroupId;
     private String accessTokenCiphertext;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String refreshTokenCiphertext;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private Instant accessTokenExpiresAt;
@@ -25,14 +26,33 @@ public class ShopCredential {
     public ShopCredential(String shopId, String organizationId, String accessTokenCiphertext,
                           String refreshTokenCiphertext, Instant accessTokenExpiresAt,
                           Instant refreshTokenExpiresAt) {
+        this(shopId, organizationId, shopId, accessTokenCiphertext, refreshTokenCiphertext,
+                accessTokenExpiresAt, refreshTokenExpiresAt);
+    }
+
+    public ShopCredential(String shopId, String organizationId, String tokenGroupId,
+                          String accessTokenCiphertext, String refreshTokenCiphertext,
+                          Instant accessTokenExpiresAt, Instant refreshTokenExpiresAt) {
         this.shopId = shopId;
         this.organizationId = organizationId;
+        this.tokenGroupId = tokenGroupId;
         this.accessTokenCiphertext = accessTokenCiphertext;
         this.refreshTokenCiphertext = refreshTokenCiphertext;
         this.accessTokenExpiresAt = accessTokenExpiresAt;
         this.refreshTokenExpiresAt = refreshTokenExpiresAt;
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
+    }
+
+    public void reauthorized(String tokenGroupId, String accessTokenCiphertext,
+                             String refreshTokenCiphertext, Instant accessTokenExpiresAt,
+                             Instant refreshTokenExpiresAt) {
+        this.tokenGroupId = tokenGroupId;
+        this.accessTokenCiphertext = accessTokenCiphertext;
+        this.refreshTokenCiphertext = refreshTokenCiphertext;
+        this.accessTokenExpiresAt = accessTokenExpiresAt;
+        this.refreshTokenExpiresAt = refreshTokenExpiresAt;
+        this.updatedAt = Instant.now();
     }
 
     public void rotate(String accessTokenCiphertext, String refreshTokenCiphertext,
@@ -46,6 +66,7 @@ public class ShopCredential {
 
     public String getShopId() { return shopId; }
     public String getOrganizationId() { return organizationId; }
+    public String getTokenGroupId() { return tokenGroupId; }
     public String getAccessTokenCiphertext() { return accessTokenCiphertext; }
     public String getRefreshTokenCiphertext() { return refreshTokenCiphertext; }
     public Instant getAccessTokenExpiresAt() { return accessTokenExpiresAt; }

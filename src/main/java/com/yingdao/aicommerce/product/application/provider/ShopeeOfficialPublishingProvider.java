@@ -25,6 +25,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @Component
@@ -34,10 +35,13 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     private static final String INIT_VARIATION = "/api/v2/product/init_tier_variation";
     private static final String ADD_MODEL = "/api/v2/product/add_model";
     private static final String GET_MODEL_LIST = "/api/v2/product/get_model_list";
+    private static final String GET_ITEM_BASE_INFO = "/api/v2/product/get_item_base_info";
     private static final String UNLIST_ITEM = "/api/v2/product/unlist_item";
     private static final int MODEL_BATCH_SIZE = 50;
     private static final int MODEL_READBACK_ATTEMPTS = 5;
     private static final long MODEL_READBACK_DELAY_MILLIS = 1_000L;
+    private static final int ITEM_STATUS_READBACK_ATTEMPTS = 5;
+    private static final long ITEM_STATUS_READBACK_DELAY_MILLIS = 1_000L;
     private static final long VARIATION_INITIALIZATION_DELAY_MILLIS = 5_000L;
 
     private final ShopAuthorizationService shopAuthorizationService;
@@ -69,7 +73,8 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
 
     @Override
     public PublishResult publish(ProductCapture capture, String destinationPlatform,
-                                 String shopId, Map<String, Object> request) {
+                                 String shopId, Map<String, Object> request,
+                                 ExternalCreateBoundary externalCreateBoundary) {
         MarketplaceAccess.Connection connection = shopAuthorizationService.connectionForPublishing(
                 capture.getOrganizationId(), shopId, MarketplacePlatform.SHOPEE);
         verifyLocalProductRoute(connection);
@@ -124,6 +129,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
                 ? variationPayload("0", skus, publishStock, uploadedByUrl, request)
                 : Map.of();
 
+        // Everything above is either local validation or image staging. Once ADD_ITEM can start,
+        // a timeout/crash has an unknowable remote result and must never be retried blindly.
+        externalCreateBoundary.enter();
         Map<String, Object> created = client.shopPost(ADD_ITEM, connection, addItem);
         String itemId = nestedText(created, "response", "item_id");
         if (itemId == null) itemId = text(created, "item_id");
@@ -148,6 +156,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             Map<String, Object> activation = client.shopPost(UNLIST_ITEM, connection, Map.of(
                     "item_list", List.of(Map.of("item_id", numericItemId, "unlist", false))
             ));
+            verifyActivationResponse(activation, numericItemId);
+            String remoteStatus = readActivatedItemStatus(
+                    connection, numericItemId, Thread::sleep);
             Map<String, Object> receipt = new LinkedHashMap<>();
             receipt.put("platform", "SHOPEE");
             receipt.put("apiVersion", "v2");
@@ -159,6 +170,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             receipt.put("addModelBatchCount", addModelBatchCount);
             receipt.put("models", publishedModels);
             receipt.put("activationRequestId", text(activation, "request_id"));
+            receipt.put("remoteStatus", remoteStatus);
             return new PublishResult(itemId, receipt);
         } catch (RuntimeException exception) {
             String reason = fallbackText(exception.getMessage(), "Shopee 官方接口未确认完成");
@@ -315,6 +327,91 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     private void waitForVariationInitializationWindow() {
         pause(VARIATION_INITIALIZATION_DELAY_MILLIS,
                 "Shopee 商品已按未上架状态创建，但等待规格初始化时任务被中断");
+    }
+
+    void verifyActivationResponse(Map<String, Object> activation, long itemId) {
+        Object rawResponse = nestedValue(activation, "response");
+        Map<?, ?> response = rawResponse instanceof Map<?, ?> values ? values : activation;
+        Map<?, ?> failure = itemEntry(response.get("failure_list"), itemId);
+        if (failure != null) {
+            String reason = firstEntryText(failure, "failed_reason", "failure_reason", "message");
+            throw conflict("Shopee 商品激活失败："
+                    + truncate(fallbackText(reason, "官方返回 failure_list"), 500));
+        }
+
+        Map<?, ?> success = itemEntry(response.get("success_list"), itemId);
+        if (success == null) {
+            throw conflict("Shopee 激活响应未在 success_list 中确认目标商品");
+        }
+        if (!Boolean.FALSE.equals(success.get("unlist"))) {
+            throw conflict("Shopee 激活响应未确认目标商品 unlist=false");
+        }
+    }
+
+    String readActivatedItemStatus(MarketplaceAccess.Connection connection, long itemId,
+                                   ItemStatusReadbackSleeper sleeper) {
+        String lastStatus = null;
+        for (int attempt = 1; attempt <= ITEM_STATUS_READBACK_ATTEMPTS; attempt++) {
+            Map<String, Object> response = client.shopGet(GET_ITEM_BASE_INFO, connection,
+                    Map.of("item_id_list", itemId));
+            String status = itemStatus(response, itemId);
+            if (status != null) {
+                lastStatus = status.trim().toUpperCase(Locale.ROOT);
+                if ("NORMAL".equals(lastStatus) || "REVIEWING".equals(lastStatus)) {
+                    return lastStatus;
+                }
+                if (!"UNLIST".equals(lastStatus)) {
+                    throw conflict("Shopee 商品激活后状态为 " + truncate(lastStatus, 80)
+                            + "，不能标记为提交成功");
+                }
+            }
+            if (attempt < ITEM_STATUS_READBACK_ATTEMPTS) {
+                try {
+                    sleeper.sleep(ITEM_STATUS_READBACK_DELAY_MILLIS * attempt);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw conflict("Shopee 商品已请求激活，但等待状态回读时任务被中断");
+                }
+            }
+        }
+        if ("UNLIST".equals(lastStatus)) {
+            throw conflict("Shopee 商品激活后回读仍为 UNLIST，不能标记为提交成功");
+        }
+        throw conflict("Shopee 商品激活后未能回读到目标商品状态");
+    }
+
+    private String itemStatus(Map<String, Object> response, long itemId) {
+        Object rawItems = nestedValue(response, "response", "item_list");
+        if (!(rawItems instanceof List<?>)) rawItems = response.get("item_list");
+        Map<?, ?> item = itemEntry(rawItems, itemId);
+        return item == null ? null : firstEntryText(item, "item_status");
+    }
+
+    private Map<?, ?> itemEntry(Object rawEntries, long itemId) {
+        if (!(rawEntries instanceof List<?> entries)) return null;
+        for (Object rawEntry : entries) {
+            if (!(rawEntry instanceof Map<?, ?> entry)) continue;
+            if (sameItemId(entry.get("item_id"), itemId)) return entry;
+        }
+        return null;
+    }
+
+    private boolean sameItemId(Object rawItemId, long itemId) {
+        try {
+            return new BigDecimal(String.valueOf(rawItemId)).longValueExact() == itemId;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private String firstEntryText(Map<?, ?> values, String... keys) {
+        for (String key : keys) {
+            Object value = values.get(key);
+            if (value != null && !String.valueOf(value).isBlank()) {
+                return String.valueOf(value).trim();
+            }
+        }
+        return null;
     }
 
     private List<Map<String, Object>> readPublishedModels(MarketplaceAccess.Connection connection,
@@ -686,4 +783,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
 
     record VariationSubmission(Map<String, Object> initResponse,
                                List<Map<String, Object>> addModelResponses) { }
+
+    @FunctionalInterface
+    interface ItemStatusReadbackSleeper {
+        void sleep(long millis) throws InterruptedException;
+    }
 }

@@ -58,6 +58,8 @@ class TikTokShopOfficialPublishingProviderTest {
                 "https://processed.example/red.jpg");
         ProductCaptureImage blue = image("https://source.example/blue.jpg", "VARIANT", 1,
                 "https://processed.example/blue.jpg");
+        ProductPublishingProvider.ExternalCreateBoundary createBoundary =
+                mock(ProductPublishingProvider.ExternalCreateBoundary.class);
 
         when(authorizationService.connectionForPublishing(
                 capture.getOrganizationId(), "shop-local", MarketplacePlatform.TIKTOK_SHOP))
@@ -98,15 +100,16 @@ class TikTokShopOfficialPublishingProviderTest {
                         "request_id", "readback-request"));
 
         ProductPublishingProvider.PublishResult result = provider.publish(
-                capture, "TIKTOK_SHOP", "shop-local", publishRequest());
+                capture, "TIKTOK_SHOP", "shop-local", publishRequest(), createBoundary);
 
         @SuppressWarnings("rawtypes")
         ArgumentCaptor<Map> listingPayload = ArgumentCaptor.forClass(Map.class);
         @SuppressWarnings("rawtypes")
         ArgumentCaptor<Map> createPayload = ArgumentCaptor.forClass(Map.class);
-        InOrder ordered = inOrder(client);
+        InOrder ordered = inOrder(client, createBoundary);
         ordered.verify(client).apiPost(eq("/product/202309/products/listing_check"), eq(connection),
                 eq(Map.of()), listingPayload.capture());
+        ordered.verify(createBoundary).enter();
         ordered.verify(client).apiPost(eq("/product/202309/products"), eq(connection),
                 eq(Map.of()), createPayload.capture());
         ordered.verify(client).apiGet(eq("/product/202309/products/product-1"), eq("access-token"),
@@ -198,6 +201,46 @@ class TikTokShopOfficialPublishingProviderTest {
                 .hasMessageContaining("SKU 数量不一致")
                 .hasMessageContaining("远端商品可能已经存在")
                 .hasMessageContaining("禁止盲目重试");
+    }
+
+    @Test
+    void getProductAllowsOnlySubmittedStatusesAndRejectsEveryOtherRemoteState() {
+        TikTokShopOfficialPublishingProvider provider = provider(
+                mock(ShopAuthorizationService.class), mock(TikTokShopOfficialClient.class),
+                mock(ProductCaptureSkuMapper.class), mock(ProductCaptureImageMapper.class),
+                mock(MarketplaceImageDownloader.class));
+        Map<String, Object> createPayload = Map.of("skus", List.of(
+                Map.of("seller_sku", "RED-S")));
+        Map<String, Object> createResponse = Map.of("data", Map.of(
+                "product_id", "product-1",
+                "skus", List.of(Map.of("id", "remote-red", "seller_sku", "RED-S"))));
+
+        for (String status : List.of("PENDING", "ACTIVATE", "pending", "activate")) {
+            TikTokShopOfficialPublishingProvider.ReadbackVerification verification =
+                    provider.verifyReadback("product-1", createPayload, createResponse,
+                            Map.of("data", Map.of(
+                                    "id", "product-1",
+                                    "status", status,
+                                    "skus", List.of(Map.of(
+                                            "id", "remote-red", "seller_sku", "RED-S")))));
+            assertThat(verification.status()).isEqualTo(status);
+        }
+
+        for (String status : List.of(
+                "FAILED", "REJECTED", "REJECT", "DELETED", "DRAFT", "FROZEN",
+                "SELLER_DEACTIVATED", "PLATFORM_DEACTIVATED", "UNKNOWN", "failed")) {
+            assertThatThrownBy(() -> provider.verifyReadback(
+                    "product-1", createPayload, createResponse,
+                    Map.of("data", Map.of(
+                            "id", "product-1",
+                            "status", status,
+                            "skus", List.of(Map.of(
+                                    "id", "remote-red", "seller_sku", "RED-S"))))))
+                    .hasMessageContaining("product_id=product-1")
+                    .hasMessageContaining("status=" + status)
+                    .hasMessageContaining("人工核查")
+                    .hasMessageContaining("禁止盲目重试");
+        }
     }
 
     @Test

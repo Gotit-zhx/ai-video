@@ -34,6 +34,8 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
     private static final long READBACK_RETRY_DELAY_MILLIS = 500;
     private static final Set<String> LISTING_CHECK_UNSUPPORTED_CREATE_FIELDS = Set.of(
             "save_mode", "category_version", "is_not_for_sale", "idempotency_key");
+    private static final Set<String> ACCEPTED_REMOTE_PRODUCT_STATUSES = Set.of(
+            "PENDING", "ACTIVATE");
     private final ShopAuthorizationService shopAuthorizationService;
     private final TikTokShopOfficialClient client;
     private final ProductCaptureSkuMapper skuMapper;
@@ -64,7 +66,8 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
 
     @Override
     public PublishResult publish(ProductCapture capture, String destinationPlatform,
-                                 String shopId, Map<String, Object> request) {
+                                 String shopId, Map<String, Object> request,
+                                 ExternalCreateBoundary externalCreateBoundary) {
         MarketplaceAccess.Connection connection = shopAuthorizationService.connectionForPublishing(
                 capture.getOrganizationId(), shopId, MarketplacePlatform.TIKTOK_SHOP);
         requireVerifiedLocalProductFlow(connection.shop());
@@ -116,6 +119,9 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 productBasePath + "/listing_check", connection, Map.of(), listingCheckPayload(body));
         verifyListingCheck(listingCheckResponse);
 
+        // The listing check is retryable validation. Persist the irreversible boundary only after
+        // it passes and immediately before Create Product can reach TikTok Shop.
+        externalCreateBoundary.enter();
         Map<String, Object> response = client.apiPost(productBasePath, connection, Map.of(), body);
         String productId = nestedText(response, "data", "product_id");
         if (productId == null) productId = nestedText(response, "data", "id");
@@ -271,8 +277,16 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         if (status == null) {
             throw readbackFailure(productId, "Get Product 响应缺少 status/product_status");
         }
+        verifyRemoteStatus(productId, status);
         return new ReadbackVerification(
                 status, Map.copyOf(skuIdsBySellerSku));
+    }
+
+    void verifyRemoteStatus(String productId, String status) {
+        String normalized = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
+        if (ACCEPTED_REMOTE_PRODUCT_STATUSES.contains(normalized)) return;
+        throw readbackFailure(productId, "Get Product 未返回可接受的刊登状态 status="
+                + truncate(status, 80) + "；请人工核查该商品，禁止盲目重试");
     }
 
     void rejectCreateWarnings(String productId, Map<String, Object> createResponse) {

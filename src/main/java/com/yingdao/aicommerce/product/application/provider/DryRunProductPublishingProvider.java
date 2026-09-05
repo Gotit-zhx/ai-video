@@ -13,7 +13,9 @@ public class DryRunProductPublishingProvider implements ProductPublishingProvide
 
     @Override
     public PublishResult publish(ProductCapture capture, String destinationPlatform,
-                                 String shopId, Map<String, Object> request) {
+                                 String shopId, Map<String, Object> request,
+                                 ExternalCreateBoundary externalCreateBoundary) {
+        // A Dry Run never crosses the external-create boundary.
         return new PublishResult("dryrun-" + capture.getId(), Map.of(
                 "dryRun", true,
                 "destinationPlatform", destinationPlatform,
