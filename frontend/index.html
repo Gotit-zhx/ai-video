@@ -635,7 +635,15 @@
       <div id="product-publish-page" class="workspace-body product-publish-page" hidden>
         <details class="commerce-planner">
           <summary>铺货工作流规划 · 模板 v1</summary>
-          <p>预览素材数量、分店排期与预算。不会生成图片、发布商品或创建广告；本次输入不保存。</p>
+          <p>预览素材数量、分店排期与预算。不会生成图片、发布商品或创建广告；只有点击保存模板才会保存配置。</p>
+          <div class="commerce-template-controls">
+            <label>本公司工作流模板<select id="commerce-template-select"><option value="">新模板</option></select></label>
+            <button type="button" id="commerce-template-refresh">刷新模板</button>
+            <label>模板名称<input id="commerce-template-name" maxlength="120" placeholder="例如：菲律宾女装7天测款"></label>
+            <button type="button" id="commerce-template-save">保存为新版本</button>
+            <button type="button" id="commerce-template-new">另建模板</button>
+            <span id="commerce-template-status" role="status" aria-live="polite"></span>
+          </div>
           <form id="commerce-plan-form" class="commerce-plan-form">
             <label>商品模式<select name="mode"><option value="STOCK_MARKETING">现货 · 营销素材裂变</option><option value="POD_DESIGN">POD · 可生产设计裂变</option></select></label>
             <label>目标平台<select name="platform"><option value="TIKTOK_SHOP">TikTok Shop</option><option value="SHOPEE">Shopee</option><option value="SHEIN">SHEIN（仅规划）</option><option value="TEMU">TEMU（仅规划）</option><option value="AMAZON">Amazon（仅规划）</option><option value="ALIEXPRESS">AliExpress（仅规划）</option></select></label>

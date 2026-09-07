@@ -18,7 +18,7 @@ function setup(api) {
   const values = { mode: 'POD_DESIGN', platform: 'TIKTOK_SHOP', market: 'PH', sourceProducts: '30',
     designsPerProduct: '10', imagesPerDesign: '1', shopCount: '6', dailyListingsPerShop: '50',
     dailyBudgetPerShop: '1000', observationDays: '7', targetRoi: '6.5' };
-  vm.runInNewContext(source, { document: { getElementById: id => id === 'commerce-plan-form' ? form : result,
+  vm.runInNewContext(source, { document: { getElementById: id => id === 'commerce-plan-form' ? form : id === 'commerce-plan-result' ? result : null,
     createElement: element }, FormData: function() { return Object.entries(values); }, api, Intl });
   return { handlers, result, button };
 }

@@ -1,6 +1,9 @@
 /* Commerce planning stays separate from live publishing and advertising controls. */
 .commerce-planner { margin-bottom: 20px; padding: 20px; border: 1px solid var(--border-color, #dce2ea); border-radius: 16px; background: var(--surface, #fff); color: var(--text-primary, #182333); }
 .commerce-planner summary { cursor: pointer; font-size: 17px; font-weight: 650; }
+.commerce-template-controls { display:flex; flex-wrap:wrap; gap:12px; align-items:end; padding:14px 0; border-bottom:1px solid #dce2ea; }
+.commerce-template-controls label { display:grid; gap:6px; font-size:13px; }
+.commerce-template-controls input, .commerce-template-controls select, .commerce-template-controls button { min-height:36px; max-width:100%; }
 .commerce-plan-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 18px 0; }
 .commerce-plan-form > label { display: flex; flex-direction: column; gap: 7px; font-size: 13px; }
 .commerce-plan-form select, .commerce-plan-form input:not([type="checkbox"]) { width: 100%; min-height: 38px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; background: white; color: #182333; box-sizing: border-box; }

@@ -39,6 +39,8 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(Customizer.withDefaults())
                 .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(HttpMethod.POST, "/api/v1/commerce-templates/**").hasAuthority("product:edit")
+                        .requestMatchers("/api/v1/commerce-templates/**").hasAnyAuthority("product:view", "product:publish")
                         .requestMatchers("/api/v1/commerce-plans/**")
                             .hasAnyAuthority("product:view", "product:publish")
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
