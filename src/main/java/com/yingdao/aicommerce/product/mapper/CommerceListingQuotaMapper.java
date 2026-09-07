@@ -5,6 +5,8 @@ import java.time.LocalDate;
 import java.util.List;
 @Mapper
 public interface CommerceListingQuotaMapper {
+    @Select("SELECT reserved_count FROM commerce_shop_daily_usage WHERE organization_id=#{org} AND shop_id=#{shop} AND listing_date=#{date}")
+    Integer reservedCount(@Param("org") String org,@Param("shop") String shop,@Param("date") LocalDate date);
     @Select("SELECT * FROM commerce_listing_reservations WHERE organization_id=#{org} AND batch_id=#{batch} AND status='RESERVED' ORDER BY listing_date,shop_id,item_id")
     List<CommerceListingReservation> list(@Param("org") String org,@Param("batch") String batch);
     @Insert("""

@@ -3,6 +3,7 @@ import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.product.domain.*;
 import com.yingdao.aicommerce.product.mapper.CommerceTemplateMapper;
 import com.yingdao.aicommerce.product.mapper.CommerceBatchReviewMapper;
+import com.yingdao.aicommerce.product.mapper.CommerceListingQuotaMapper;
 import com.yingdao.aicommerce.shop.domain.*;
 import com.yingdao.aicommerce.shop.mapper.*;
 import org.junit.jupiter.api.Test;
@@ -20,7 +21,8 @@ class CommerceBatchPreflightServiceTest {
     final ShopMapper shops=mock(ShopMapper.class);
     final ShopOperatingSettingsMapper settings=mock(ShopOperatingSettingsMapper.class);
     final ObjectMapper json=new ObjectMapper();
-    final CommerceBatchPreflightService service=new CommerceBatchPreflightService(batches,templates,captures,shops,settings,json,mock(CommerceBatchReviewMapper.class));
+    final CommerceListingQuotaMapper quota=mock(CommerceListingQuotaMapper.class);
+    final CommerceBatchPreflightService service=new CommerceBatchPreflightService(batches,templates,captures,shops,settings,json,mock(CommerceBatchReviewMapper.class),quota);
     final PlatformPrincipal user=new PlatformPrincipal("u","org","code","login","User","x",true,List.of(),List.of("product:view"));
     void setup(long liveVersion,String state,String env){
         var item=new CommerceBatchItem("item","org","batch","capture",1,"shop","name",1,"DRAFT",Instant.now());
@@ -38,4 +40,12 @@ class CommerceBatchPreflightServiceTest {
     @Test void cleanItemDoesNotPretendProductionAndExecutionAreReady(){setup(1,"APPROVED","TEST");var report=service.check("batch",user);assertEquals(1,report.itemsWithoutDataBlockers());assertFalse(report.executable());assertTrue(report.batchBlockers().stream().anyMatch(s->s.contains("生产文件")));verify(captures,never()).approve(anyString(),any());}
     @Test void changedEnvironmentMustBeConfirmedAgain(){setup(1,"APPROVED","UNKNOWN");var report=service.check("batch",user);assertTrue(report.items().getFirst().blockers().contains("店铺环境尚未确认"));}
     @Test void sharedApprovalValidationIsUsed(){setup(1,"APPROVED","TEST");when(captures.approvalMissingFields(any(),anyList(),anyList())).thenReturn(List.of("SKU 图片"));assertTrue(service.check("batch",user).items().getFirst().blockers().contains("商品资料缺失：SKU 图片"));}
+    void reserve(int count){
+        var date=java.time.LocalDate.of(2026,9,8);
+        when(quota.list("org","batch")).thenReturn(List.of(new CommerceListingReservation("r","org","batch","item","shop",date,"Asia/Manila","u",Instant.now())));
+        when(quota.reservedCount("org","shop",date)).thenReturn(count);
+    }
+    @Test void realReservationClearsMissingQuotaButDoesNotPermitExecution(){setup(1,"APPROVED","TEST");reserve(1);var report=service.check("batch",user);assertFalse(report.batchBlockers().stream().anyMatch(s->s.contains("额度")));assertFalse(report.executable());}
+    @Test void loweredShopLimitChecksAllBatchesNotOnlyThisBatch(){setup(1,"APPROVED","TEST");reserve(51);assertTrue(service.check("batch",user).batchBlockers().stream().anyMatch(s->s.contains("跨批次预留超过")));}
+    @Test void missingLedgerIsNotTreatedAsValidReservation(){setup(1,"APPROVED","TEST");reserve(0);assertTrue(service.check("batch",user).batchBlockers().stream().anyMatch(s->s.contains("台账不一致")));}
 }

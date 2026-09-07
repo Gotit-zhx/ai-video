@@ -2,6 +2,7 @@ package com.yingdao.aicommerce.product.application;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.product.mapper.CommerceTemplateMapper;
 import com.yingdao.aicommerce.product.mapper.CommerceBatchReviewMapper;
+import com.yingdao.aicommerce.product.mapper.CommerceListingQuotaMapper;
 import com.yingdao.aicommerce.shop.mapper.ShopMapper;
 import com.yingdao.aicommerce.shop.mapper.ShopOperatingSettingsMapper;
 import com.yingdao.aicommerce.common.exception.BusinessException;
@@ -24,9 +25,10 @@ public class CommerceBatchPreflightService {
     private final ShopOperatingSettingsMapper operating;
     private final ObjectMapper json;
     private final CommerceBatchReviewMapper reviews;
+    private final CommerceListingQuotaMapper quota;
     public CommerceBatchPreflightService(CommerceBatchService batches,CommerceTemplateMapper templates,
-            ProductCaptureService captures,ShopMapper shops,ShopOperatingSettingsMapper operating,ObjectMapper json,CommerceBatchReviewMapper reviews){
-        this.batches=batches;this.templates=templates;this.captures=captures;this.shops=shops;this.operating=operating;this.json=json;this.reviews=reviews;
+            ProductCaptureService captures,ShopMapper shops,ShopOperatingSettingsMapper operating,ObjectMapper json,CommerceBatchReviewMapper reviews,CommerceListingQuotaMapper quota){
+        this.batches=batches;this.templates=templates;this.captures=captures;this.shops=shops;this.operating=operating;this.json=json;this.reviews=reviews;this.quota=quota;
     }
     public Report check(String id,PlatformPrincipal user){
         var batch=batches.get(id,user);
@@ -36,7 +38,25 @@ public class CommerceBatchPreflightService {
         List<String> global=new ArrayList<>();
         if(reviews.get(user.organizationId(),id)==null)
             global.add("批次尚未绑定使用权、供货和质量审核证据；需要针对本批实际商品审批");
-        global.add("尚未预留跨批次全店每日额度，也未验证官方API环境与店铺环境的一致性");
+        if(!"DRAFT".equals(batch.status()))global.add("批次不是待执行草稿："+batch.status());
+        var reservations=quota.list(user.organizationId(),id);
+        var reservedItems=new HashMap<String,com.yingdao.aicommerce.product.domain.CommerceListingReservation>();
+        reservations.forEach(r->reservedItems.put(r.itemId(),r));
+        boolean quotaComplete=reservations.size()==batch.items().size() && batch.items().stream().allMatch(item->{
+            var r=reservedItems.get(item.id());
+            return r!=null && item.shopId().equals(r.shopId()) && "RESERVED".equals(r.status());
+        });
+        if(!quotaComplete)global.add("实际条目尚未全部绑定有效店铺日额度预留");
+        var checkedDays=new HashSet<String>();
+        for(var r:reservations){
+            if(!checkedDays.add(r.shopId()+":"+r.listingDate()))continue;
+            var setting=operating.get(user.organizationId(),r.shopId());
+            var count=quota.reservedCount(user.organizationId(),r.shopId(),r.listingDate());
+            long batchCount=reservations.stream().filter(v->v.shopId().equals(r.shopId())&&v.listingDate().equals(r.listingDate())).count();
+            if(count==null||count<batchCount)global.add("店铺日额度台账不一致："+r.shopId()+" / "+r.listingDate());
+            else if(setting!=null && count>setting.dailyListingLimit())global.add("跨批次预留超过店铺当前日限额："+r.shopId()+" / "+r.listingDate());
+        }
+        global.add("尚未验证官方API环境与店铺环境的一致性");
         global.add("当前批次执行器未开放；检查不会生成、发布、投放或删除");
         if(config.mode()==CommerceBatchPlanner.Mode.POD_DESIGN)
             global.add("POD需逐设计绑定真实基础款、印刷区域、生产文件及生产审核结果");

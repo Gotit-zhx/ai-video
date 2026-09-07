@@ -27,6 +27,7 @@ function setup(failFirst=false){
     if(url==='/api/v1/shops')return {data:[{id:'s1',name:'店1',platform:'SHOPEE',region:'PH',status:'ACTIVE'},{id:'s2',name:'店2',platform:'SHOPEE',region:'PH',status:'ACTIVE'},{id:'foreign-market',platform:'SHOPEE',region:'SG',status:'ACTIVE'}]};
     if(url==='/api/v1/commerce-batches')return {data:[]};
     if(url.endsWith('/review'))return {data:null};
+    if(url.endsWith('/quota-reservations'))return {data:[{shopId:'s1',listingDate:'2026-09-08',timeZone:'Asia/Manila'}]};
     if(url.includes('product-captures'))return {data:{page:0,totalPages:1,content:[1,2,3,4].map(i=>({id:'p'+i,title:'商品'+i,sourcePlatform:'SHOPEE',status:'CAPTURED'}))}};
     return {data:{id:'batch',name:'每日批次',status:'DRAFT',templateSnapshotId:'snapshot',items:[{id:'item-1',captureId:'p1',captureVersion:3,shopName:'店1',plannedDay:1,status:'DRAFT'}]}};
   };
@@ -53,6 +54,12 @@ test('filters shops by platform/market and distributes each product only once',a
   assert.equal(new Set(body.targets.map(t=>t.captureId)).size,4);
   assert.match(s.nodes.status.textContent,/未执行发布/);
   assert.ok(!s.calls.some(c=>c.url.includes('publish-workflows')));
+});
+test('batch details read and display persisted reservation dates',async()=>{
+  const s=setup();await s.choose();await s.nodes.form.handlers.submit({preventDefault(){}});
+  const text=[];const walk=e=>{text.push(e.textContent);e.children.forEach(walk);};walk(s.nodes.detail);
+  assert.ok(text.some(t=>t.includes('2026-09-08（Asia/Manila）· 1 条')));
+  assert.ok(s.calls.some(c=>!c.options&&c.url.endsWith('/quota-reservations')));
 });
 test('unchanged request retries use the same idempotency key',async()=>{
   const s=setup(true);await s.choose();

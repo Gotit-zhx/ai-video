@@ -76,6 +76,7 @@
             const r=await api(`/api/v1/commerce-batches/${encodeURIComponent(id)}/quota-reservations`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({firstListingDate:date.value,confirmed:true})});
             if(ticket!==generation)return;
             quotaStatus.textContent=`已预留 ${r.data.length} 条额度，不会自动执行。`;
+            if(current())await showBatch(id);
           }catch(e){quotaStatus.textContent=e.message;}
           finally{reserve.disabled=false;cancel.disabled=false;}
         });
@@ -103,6 +104,22 @@
         finally{check.disabled=false;}
       });
       b.items.forEach(i=>text("p",`第${i.plannedDay}天 · ${i.shopName} · 商品 ${i.captureId} / v${i.captureVersion} · ${i.status}`,detail));
+      const reservedBox=text("details","",detail);text("summary","查看已预留日期与额度",reservedBox);
+      const reservedStatus=text("p","正在读取额度记录…",reservedBox);
+      try{
+        const response=await api(`/api/v1/commerce-batches/${encodeURIComponent(id)}/quota-reservations`);
+        if(!current())return;
+        const reservations=response.data;
+        reservedStatus.textContent=reservations.length?`当前有效预留 ${reservations.length} 条；预留不代表已发布。`:"当前没有有效预留。";
+        const days=new Map();
+        reservations.forEach(r=>{
+          const key=JSON.stringify([r.shopId,r.listingDate,r.timeZone]);days.set(key,(days.get(key)||0)+1);
+        });
+        days.forEach((count,key)=>{
+          const [shopId,date,zone]=JSON.parse(key), name=b.items.find(i=>i.shopId===shopId)?.shopName||shopId;
+          text("p",`${name} · ${date}（${zone}）· ${count} 条`,reservedBox);
+        });
+      }catch(e){if(current())reservedStatus.textContent=`额度记录读取失败：${e.message}`;}
       const reviewBox=text("fieldset","",detail);text("legend","逐条审核依据",reviewBox);
       const reviewStatus=text("p","正在读取审核记录…",reviewBox);
       try{
