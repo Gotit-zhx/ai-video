@@ -3,6 +3,7 @@ FROM nginx:1.29-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY index.html /usr/share/nginx/html/index.html
 COPY resend-theme.css /usr/share/nginx/html/resend-theme.css
+COPY image-progress.css /usr/share/nginx/html/image-progress.css
 COPY app.js /usr/share/nginx/html/app.js
 COPY commerce-planner.js commerce-planner.css /usr/share/nginx/html/
 COPY commerce-batches.js /usr/share/nginx/html/
