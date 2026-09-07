@@ -18,7 +18,8 @@ class CommerceDesignGenerationServiceTest {
     final CommerceDesignGenerationCoordinator coordinator=mock(CommerceDesignGenerationCoordinator.class);
     final CommerceDesignResultCollector collector=mock(CommerceDesignResultCollector.class);
     final ModelConfigService models=mock(ModelConfigService.class);
-    final CommerceDesignGenerationService service=new CommerceDesignGenerationService(designs,attempts,captures,preparer,coordinator,collector,models,new ObjectMapper(),false);
+    final CommerceDesignConsentLedger consents=mock(CommerceDesignConsentLedger.class);
+    final CommerceDesignGenerationService service=new CommerceDesignGenerationService(designs,attempts,captures,preparer,coordinator,collector,models,new ObjectMapper(),consents,false);
     final PlatformPrincipal user=new PlatformPrincipal("u","org","code","login","name","x",true,List.of(),List.of("product:view","product:edit"));
     void setup(String status){when(designs.get("org","d")).thenReturn(new CommerceDesignDraft("d","org","c",1,"key","hash",1,"STOCK_MARKETING","brief","rights","[]","DRAFT","u",Instant.now()));if(status!=null)when(attempts.byDesign("org","d")).thenReturn(new CommerceDesignAttempt("a","org","d",status,"[{\"imageId\":\"i\",\"storageKey\":\"key\"}]","{}",null,Instant.now(),Instant.now()));}
     CommerceDesignGenerationService.Request request(){return new CommerceDesignGenerationService.Request(List.of("i"),true);}
@@ -28,7 +29,7 @@ class CommerceDesignGenerationServiceTest {
     @Test void changedReferencesCannotReuseAttempt(){setup("UNKNOWN");assertThrows(BusinessException.class,()->service.generate("d",new CommerceDesignGenerationService.Request(List.of("other"),true),user));verifyNoInteractions(preparer,coordinator,collector);}
     @Test void explicitConfirmationRequired(){setup(null);assertThrows(BusinessException.class,()->service.generate("d",new CommerceDesignGenerationService.Request(List.of("i"),false),user));verifyNoInteractions(preparer,coordinator,collector);}
     @Test void enabledNewDesignPreparesGeneratesThenCollects(){
-        setup(null);var enabled=new CommerceDesignGenerationService(designs,attempts,captures,preparer,coordinator,collector,models,new ObjectMapper(),true);
+        setup(null);var enabled=new CommerceDesignGenerationService(designs,attempts,captures,preparer,coordinator,collector,models,new ObjectMapper(),consents,true);
         var capture=mock(ProductCapture.class);when(capture.getVersion()).thenReturn(1L);when(captures.get("c",user)).thenReturn(new ProductCaptureService.CaptureDetail(capture,List.of(),List.of(),List.of(),Map.of(),Map.of()));
         when(models.imageConnection("org")).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection("m","url","model","format","provider","test")));
         var refs=List.of(new CommerceDesignGenerationCoordinator.PreparedReference("i","key"));when(preparer.prepare(any(),anyList())).thenReturn(refs);

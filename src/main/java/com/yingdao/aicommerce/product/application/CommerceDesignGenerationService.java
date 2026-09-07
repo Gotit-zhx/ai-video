@@ -16,10 +16,12 @@ public class CommerceDesignGenerationService {
     private final CommerceDesignMapper designs;private final CommerceDesignAttemptMapper attempts;private final ProductCaptureService captures;
     private final CommerceDesignReferencePreparer preparer;private final CommerceDesignGenerationCoordinator coordinator;private final CommerceDesignResultCollector collector;
     private final ModelConfigService models;private final ObjectMapper json;private final boolean enabled;
+    private final CommerceDesignConsentLedger consents;
     public CommerceDesignGenerationService(CommerceDesignMapper designs,CommerceDesignAttemptMapper attempts,ProductCaptureService captures,
             CommerceDesignReferencePreparer preparer,CommerceDesignGenerationCoordinator coordinator,CommerceDesignResultCollector collector,
-            ModelConfigService models,ObjectMapper json,@Value("${app.commerce-design-generation-enabled:false}")boolean enabled){
+            ModelConfigService models,ObjectMapper json,CommerceDesignConsentLedger consents,@Value("${app.commerce-design-generation-enabled:false}")boolean enabled){
         this.designs=designs;this.attempts=attempts;this.captures=captures;this.preparer=preparer;this.coordinator=coordinator;this.collector=collector;this.models=models;this.json=json;this.enabled=enabled;
+        this.consents=consents;
     }
     public State state(String id,PlatformPrincipal u){authorize(id,u,false);return state(id,attempts.byDesign(u.organizationId(),id));}
     /** Synchronous single-design operation. No external call is inside a database transaction. */
@@ -33,18 +35,19 @@ public class CommerceDesignGenerationService {
             if(!references.stream().map(CommerceDesignGenerationCoordinator.PreparedReference::imageId).toList().equals(request.imageIds()))throw error(HttpStatus.CONFLICT,"本设计已固定不同参考图，请另建草稿");
             if("RESULT_RECEIVED".equals(attempt.status())){collector.collect(u.organizationId(),attempt.id());return state(id,attempts.byDesign(u.organizationId(),id));}
             if(!"PREPARED".equals(attempt.status()))return state(id,attempt);
-            requireEnabledModel(u.organizationId());
+            var model=requireEnabledModel(u.organizationId());consents.record(id,request.imageIds(),model,u);
             coordinator.execute(draft,references);
         }else{
-            requireEnabledModel(u.organizationId());
+            var model=requireEnabledModel(u.organizationId());
             if(captures.get(draft.captureId(),u).capture().getVersion()!=draft.captureVersion())throw error(HttpStatus.CONFLICT,"来源商品已修改，请创建新版本设计草稿");
+            consents.record(id,request.imageIds(),model,u);
             var references=preparer.prepare(draft,request.imageIds());coordinator.execute(draft,references);
         }
         var current=attempts.byDesign(u.organizationId(),id);
         if(current!=null&&"RESULT_RECEIVED".equals(current.status()))collector.collect(u.organizationId(),current.id());
         return state(id,attempts.byDesign(u.organizationId(),id));
     }
-    private void requireEnabledModel(String org){if(!enabled)throw error(HttpStatus.CONFLICT,"商品设计生成尚未由管理员开启，不会调用模型");if(models.imageConnection(org).isEmpty())throw error(HttpStatus.CONFLICT,"当前公司没有配置图片模型");}
+    private ModelConfigService.RuntimeModelConnection requireEnabledModel(String org){if(!enabled)throw error(HttpStatus.CONFLICT,"商品设计生成尚未由管理员开启，不会调用模型");return models.imageConnection(org).orElseThrow(()->error(HttpStatus.CONFLICT,"当前公司没有配置图片模型"));}
     private CommerceDesignDraft authorize(String id,PlatformPrincipal u,boolean edit){
         if(u==null||u.organizationId()==null||!(edit?u.permissionCodes().contains("product:edit"):u.permissionCodes().contains("product:view")||u.permissionCodes().contains("product:publish")))throw error(HttpStatus.FORBIDDEN,"无设计生成权限");
         var d=designs.get(u.organizationId(),id);if(d==null||u.externallyRegistered()&&!u.userId().equals(d.createdBy()))throw error(HttpStatus.NOT_FOUND,"设计不存在");captures.get(d.captureId(),u);return d;
