@@ -53,7 +53,7 @@ class CommerceDesignHttpIntegrationTest {
         var bytes=new ByteArrayOutputStream();ImageIO.write(new BufferedImage(3,3,BufferedImage.TYPE_INT_RGB),"png",bytes);byte[] png=bytes.toByteArray();
         when(downloader.download("https://cdn.example.com/ref.png")).thenReturn(new MarketplaceImageDownloader.ImageBinary(png,"image/png",".png"));
         when(models.imageConnection(anyString())).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection("model","https://mock-model.invalid","image-model","IMAGES","CUSTOM","test-only")));
-        when(gateway.generate(any(),anyList(),anyString())).thenReturn(new CommerceDesignImageGateway.Response(new CommerceDesignImageGateway.Artifact(Base64.getEncoder().encodeToString(png),"image/png","image-model","edit",""),null));
+        when(gateway.generate(any(),anyList(),anyString(),any())).thenReturn(new CommerceDesignImageGateway.Response(new CommerceDesignImageGateway.Artifact(Base64.getEncoder().encodeToString(png),"image/png","image-model","edit",""),null));
         call("/api/v1/commerce-designs",null,401);
         call("/api/v1/auth/login",Map.of("organizationCode","heyi","phone","13800000000","password","disposable-test-only"),200);
         var capture=call("/api/v1/product-captures",Map.of("sourceUrl","https://shopee.ph/a-i.123.456","title","QA商品","images",List.of(Map.of("url","https://cdn.example.com/ref.png","role","MAIN"))),201);
@@ -63,7 +63,7 @@ class CommerceDesignHttpIntegrationTest {
         var request=Map.of("imageIds",List.of(imageId),"confirmed",true);
         assertEquals("OUTPUT_ARCHIVED",call(generation,request,200).path("status").asText());
         assertEquals("OUTPUT_ARCHIVED",call(generation,request,200).path("status").asText());
-        verify(gateway,times(1)).generate(any(),anyList(),anyString());verify(downloader,times(1)).download(anyString());
+        verify(gateway,times(1)).generate(any(),anyList(),anyString(),any());verify(downloader,times(1)).download(anyString());
         String outputPath="/api/v1/commerce-designs/"+design+"/output";var output=call(outputPath,null,200);
         assertEquals("PENDING_REVIEW",output.path("status").asText());
         var imageResponse=http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+outputPath+"/image")).build(),HttpResponse.BodyHandlers.ofByteArray());

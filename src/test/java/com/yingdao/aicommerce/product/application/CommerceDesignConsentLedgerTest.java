@@ -20,4 +20,27 @@ class CommerceDesignConsentLedgerTest {
     @Test void retryPreservesOriginalConfirmation(){setup();var c=ledger.record("d",List.of("i"),model,user);when(consents.get("org","d")).thenReturn(c);assertSame(c,ledger.record("d",List.of("i"),model,user));verify(consents,times(1)).insert(any());}
     @Test void changedReferencesRequireNewDesign(){setup();var c=ledger.record("d",List.of("i"),model,user);when(consents.get("org","d")).thenReturn(c);assertThrows(BusinessException.class,()->ledger.record("d",List.of("other"),model,user));}
     @Test void foreignDesignCannotRecordConsent(){assertThrows(BusinessException.class,()->ledger.record("d",List.of("i"),model,user));verifyNoInteractions(consents);}
+    @Test void changedEndpointWithSameModelIdRequiresNewDesign(){
+        setup();var original=ledger.record("d",List.of("i"),model,user);when(consents.get("org","d")).thenReturn(original);
+        var changed=new ModelConfigService.RuntimeModelConnection(model.id(),"https://different.example",model.modelId(),model.apiFormat(),model.provider(),model.apiKey());
+        assertThrows(BusinessException.class,()->ledger.record("d",List.of("i"),changed,user));
+    }
+    @Test void keyRotationDoesNotPersistCredentialsOrChangeFingerprint(){
+        setup();var original=ledger.record("d",List.of("i"),model,user);when(consents.get("org","d")).thenReturn(original);
+        var rotated=new ModelConfigService.RuntimeModelConnection(model.id(),model.baseUrl(),model.modelId(),model.apiFormat(),model.provider(),"rotated-test-secret");
+        assertSame(original,ledger.record("d",List.of("i"),rotated,user));
+        assertEquals(64,original.modelConfigurationSha256().length());
+        assertFalse(new ObjectMapper().writeValueAsString(original).contains("rotated-test-secret"));
+    }
+    @Test void legacyConsentIsNotSilentlyAssumedToMatch(){
+        setup();when(consents.get("org","d")).thenReturn(new CommerceDesignConsent("old","org","d",1,"[\"i\"]",model.id(),model.modelId(),"u",Instant.now(),null));
+        assertThrows(BusinessException.class,()->ledger.record("d",List.of("i"),model,user));
+        verify(consents,never()).insert(any());
+    }
+    @Test void changedModelCannotReusePreviousCostConfirmation(){
+        setup();var original=ledger.record("d",List.of("i"),model,user);when(consents.get("org","d")).thenReturn(original);
+        var changed=new ModelConfigService.RuntimeModelConnection("m",model.baseUrl(),"different-image-model",model.apiFormat(),model.provider(),model.apiKey());
+        assertThrows(BusinessException.class,()->ledger.record("d",List.of("i"),changed,user));
+        verify(consents,times(1)).insert(any());
+    }
 }

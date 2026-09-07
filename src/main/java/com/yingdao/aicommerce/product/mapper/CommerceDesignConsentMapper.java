@@ -6,8 +6,8 @@ public interface CommerceDesignConsentMapper {
     @Select("SELECT * FROM commerce_design_generation_consents WHERE organization_id=#{org} AND design_id=#{design}")
     CommerceDesignConsent get(@Param("org")String org,@Param("design")String design);
     @Insert("""
-      INSERT INTO commerce_design_generation_consents(id,organization_id,design_id,capture_version,image_ids_json,model_connection_id,model_id,confirmed_by,confirmed_at)
-      VALUES(#{id},#{organizationId},#{designId},#{captureVersion},#{imageIdsJson},#{modelConnectionId},#{modelId},#{confirmedBy},#{confirmedAt})
+      INSERT INTO commerce_design_generation_consents(id,organization_id,design_id,capture_version,image_ids_json,model_connection_id,model_id,confirmed_by,confirmed_at,model_configuration_sha256)
+      VALUES(#{id},#{organizationId},#{designId},#{captureVersion},#{imageIdsJson},#{modelConnectionId},#{modelId},#{confirmedBy},#{confirmedAt},#{modelConfigurationSha256})
       """)
     int insert(CommerceDesignConsent consent);
 }

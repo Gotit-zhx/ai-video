@@ -28,12 +28,24 @@ class CommerceDesignGenerationServiceTest {
     @Test void completedProviderResultCanRetryDownloadEvenWhenGenerationDisabled(){setup("RESULT_RECEIVED");service.generate("d",request(),user);verify(collector).collect("org","a");verifyNoInteractions(preparer,coordinator,models);}
     @Test void changedReferencesCannotReuseAttempt(){setup("UNKNOWN");assertThrows(BusinessException.class,()->service.generate("d",new CommerceDesignGenerationService.Request(List.of("other"),true),user));verifyNoInteractions(preparer,coordinator,collector);}
     @Test void explicitConfirmationRequired(){setup(null);assertThrows(BusinessException.class,()->service.generate("d",new CommerceDesignGenerationService.Request(List.of("i"),false),user));verifyNoInteractions(preparer,coordinator,collector);}
+    @Test void preparedAttemptCannotProceedWhenConsentRejectsChangedModel(){
+        setup("PREPARED");var enabled=new CommerceDesignGenerationService(designs,attempts,captures,preparer,coordinator,collector,models,new ObjectMapper(),consents,true);
+        var model=new ModelConfigService.RuntimeModelConnection("m","url","changed","format","provider","test");
+        when(models.imageConnection("org")).thenReturn(Optional.of(model));
+        when(consents.record(eq("d"),eq(List.of("i")),same(model),eq(user))).thenThrow(new BusinessException(org.springframework.http.HttpStatus.CONFLICT,"model changed"));
+        assertThrows(BusinessException.class,()->enabled.generate("d",request(),user));
+        verifyNoInteractions(preparer,coordinator,collector);
+    }
     @Test void enabledNewDesignPreparesGeneratesThenCollects(){
         setup(null);var enabled=new CommerceDesignGenerationService(designs,attempts,captures,preparer,coordinator,collector,models,new ObjectMapper(),consents,true);
         var capture=mock(ProductCapture.class);when(capture.getVersion()).thenReturn(1L);when(captures.get("c",user)).thenReturn(new ProductCaptureService.CaptureDetail(capture,List.of(),List.of(),List.of(),Map.of(),Map.of()));
-        when(models.imageConnection("org")).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection("m","url","model","format","provider","test")));
+        var model=new ModelConfigService.RuntimeModelConnection("m","url","model","format","provider","test");
+        when(models.imageConnection("org")).thenReturn(Optional.of(model),Optional.of(new ModelConfigService.RuntimeModelConnection("different","other-url","other-model","format","provider","other-test")));
         var refs=List.of(new CommerceDesignGenerationCoordinator.PreparedReference("i","key"));when(preparer.prepare(any(),anyList())).thenReturn(refs);
         var received=new CommerceDesignAttempt("a","org","d","RESULT_RECEIVED","[]","{}",null,Instant.now(),Instant.now());when(attempts.byDesign("org","d")).thenReturn(null,received,received);
-        enabled.generate("d",request(),user);var order=inOrder(preparer,coordinator,collector);order.verify(preparer).prepare(any(),eq(List.of("i")));order.verify(coordinator).execute(any(),eq(refs));order.verify(collector).collect("org","a");
+        enabled.generate("d",request(),user);var order=inOrder(consents,preparer,coordinator,collector);
+        order.verify(consents).record(eq("d"),eq(List.of("i")),same(model),eq(user));
+        order.verify(preparer).prepare(any(),eq(List.of("i")));order.verify(coordinator).execute(any(),eq(refs),same(model));order.verify(collector).collect("org","a");
+        verify(models,times(1)).imageConnection("org");
     }
 }

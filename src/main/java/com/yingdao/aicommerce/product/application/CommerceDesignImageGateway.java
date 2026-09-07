@@ -17,17 +17,18 @@ public class CommerceDesignImageGateway {
     public record Artifact(String dataBase64,String mimeType,String modelId,String mode,String revisedPrompt) {}
     public record PendingResult(String url,String mimeType,String modelId,String mode,String revisedPrompt) {}
     public record Response(Artifact artifact,PendingResult result) {}
-    private final ModelConfigService models;private final RestClient client;
+    private final RestClient client;
     @Autowired
-    public CommerceDesignImageGateway(ModelConfigService models,
+    public CommerceDesignImageGateway(
             @Value("${app.pi-runtime-url}")String url,@Value("${app.pi-runtime-token}")String token){
-        this(models,RestClient.builder(),url,token);
+        this(RestClient.builder(),url,token);
     }
-    public CommerceDesignImageGateway(ModelConfigService models,RestClient.Builder builder,
+    public CommerceDesignImageGateway(RestClient.Builder builder,
             @Value("${app.pi-runtime-url}")String url,@Value("${app.pi-runtime-token}")String token){
-        this.models=models;this.client=builder.clone().baseUrl(url).defaultHeader("X-Internal-Token",token).build();
+        this.client=builder.clone().baseUrl(url).defaultHeader("X-Internal-Token",token).build();
     }
-    public Response generate(CommerceDesignDraft draft,List<Reference> references,String attemptId){
+    public Response generate(CommerceDesignDraft draft,List<Reference> references,String attemptId,ModelConfigService.RuntimeModelConnection model){
+        if(model==null)throw bad("缺少已确认的图片模型配置");
         if(draft==null||!"DRAFT".equals(draft.status()))throw bad("仅设计草稿可提交生成");
         if(attemptId==null||!attemptId.matches("[A-Za-z0-9_-]{8,128}"))throw bad("缺少已持久化的生成尝试编号");
         if(references==null||references.isEmpty()||references.size()>4)throw bad("请选择1至4张明确的参考图，不允许静默截断");
@@ -35,7 +36,6 @@ public class CommerceDesignImageGateway {
             if(reference==null||!Set.of("image/png","image/jpeg","image/webp").contains(Objects.toString(reference.mimeType(),""))||reference.dataBase64()==null||reference.dataBase64().isBlank()||reference.dataBase64().length()>12_000_000)throw bad("参考图须为PNG/JPEG/WEBP且编码长度不超过1200万字符");
             try{Base64.getDecoder().decode(reference.dataBase64());}catch(IllegalArgumentException e){throw bad("参考图编码无效");}
         }
-        var model=models.imageConnection(draft.organizationId()).orElseThrow(()->new BusinessException(HttpStatus.CONFLICT,"当前公司尚未配置图片模型"));
         var body=new LinkedHashMap<String,Object>();
         body.put("model",Map.of("baseUrl",model.baseUrl(),"modelId",model.modelId(),"apiFormat",model.apiFormat(),"apiKey",model.apiKey()));
         body.put("prompt",prompt(draft));body.put("size","1024x1024");body.put("inputFidelity","high");body.put("references",references);body.put("progressRequestId",attemptId);

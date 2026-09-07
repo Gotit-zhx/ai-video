@@ -36,12 +36,12 @@ public class CommerceDesignGenerationService {
             if("RESULT_RECEIVED".equals(attempt.status())){collector.collect(u.organizationId(),attempt.id());return state(id,attempts.byDesign(u.organizationId(),id));}
             if(!"PREPARED".equals(attempt.status()))return state(id,attempt);
             var model=requireEnabledModel(u.organizationId());consents.record(id,request.imageIds(),model,u);
-            coordinator.execute(draft,references);
+            coordinator.execute(draft,references,model);
         }else{
             var model=requireEnabledModel(u.organizationId());
             if(captures.get(draft.captureId(),u).capture().getVersion()!=draft.captureVersion())throw error(HttpStatus.CONFLICT,"来源商品已修改，请创建新版本设计草稿");
             consents.record(id,request.imageIds(),model,u);
-            var references=preparer.prepare(draft,request.imageIds());coordinator.execute(draft,references);
+            var references=preparer.prepare(draft,request.imageIds());coordinator.execute(draft,references,model);
         }
         var current=attempts.byDesign(u.organizationId(),id);
         if(current!=null&&"RESULT_RECEIVED".equals(current.status()))collector.collect(u.organizationId(),current.id());

@@ -27,7 +27,7 @@ class CommerceMapperIntegrationTest {
                     "V59__record_batch_cancellation.sql","V60__add_batch_review_evidence.sql",
                     "V61__add_commerce_design_drafts.sql","V62__add_design_generation_attempts.sql",
                     "V63__add_commerce_design_outputs.sql","V64__add_commerce_design_reviews.sql",
-                    "V65__audit_design_generation_consent.sql"}){
+                    "V65__audit_design_generation_consent.sql","V66__pin_design_model_configuration.sql"}){
                 ScriptUtils.executeSqlScript(connection,new ClassPathResource("db/migration/"+file));
             }
         }
@@ -82,9 +82,10 @@ class CommerceMapperIntegrationTest {
             assertEquals(now,designReviews.get("org","output").reviewedAt());assertNull(designReviews.get("foreign","output"));
             assertEquals(1,outputs.reviewed("org","output","QUALITY_APPROVED"));assertEquals(0,outputs.reviewed("org","output","REJECTED"));
             var consents=session.getMapper(CommerceDesignConsentMapper.class);
-            consents.insert(new CommerceDesignConsent("consent","org","design",4,"[\"image\"]","model-connection","image-model","user",now));
+            consents.insert(new CommerceDesignConsent("consent","org","design",4,"[\"image\"]","model-connection","image-model","user",now,"a".repeat(64)));
+            assertEquals("a".repeat(64),consents.get("org","design").modelConfigurationSha256());
             assertEquals(4,consents.get("org","design").captureVersion());assertEquals("user",consents.get("org","design").confirmedBy());assertNull(consents.get("foreign","design"));
-            assertThrows(org.apache.ibatis.exceptions.PersistenceException.class,()->consents.insert(new CommerceDesignConsent("duplicate","org","design",4,"[]","m","model","user",now)));
+            assertThrows(org.apache.ibatis.exceptions.PersistenceException.class,()->consents.insert(new CommerceDesignConsent("duplicate","org","design",4,"[]","m","model","user",now,null)));
             session.rollback();
         }
         try(var session=factory.openSession(true)){

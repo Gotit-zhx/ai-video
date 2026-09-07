@@ -1,5 +1,6 @@
 package com.yingdao.aicommerce.product.application;
 import com.yingdao.aicommerce.product.domain.CommerceDesignDraft;
+import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 import java.security.MessageDigest;
@@ -12,7 +13,8 @@ public class CommerceDesignGenerationCoordinator {
     private final CommerceDesignAttemptLedger ledger;private final CommerceDesignImageGateway gateway;private final ObjectMapper json;
     private final CommerceImageArchive archive;
     public CommerceDesignGenerationCoordinator(CommerceDesignAttemptLedger ledger,CommerceDesignImageGateway gateway,ObjectMapper json,CommerceImageArchive archive){this.ledger=ledger;this.gateway=gateway;this.json=json;this.archive=archive;}
-    public String execute(CommerceDesignDraft draft,List<PreparedReference> references){
+    public String execute(CommerceDesignDraft draft,List<PreparedReference> references,ModelConfigService.RuntimeModelConnection model){
+        if(model==null)throw new IllegalArgumentException("缺少已确认的图片模型配置");
         if(draft==null||!"DRAFT".equals(draft.status())||references==null||references.isEmpty()||references.size()>4)throw new IllegalArgumentException("需要草稿与1至4张归档参考图");
         var sourceIds=new HashSet<String>();for(var node:json.readTree(draft.sourceImagesJson()))sourceIds.add(node.path("imageId").asText());
         var manifest=new ArrayList<CommerceDesignAttemptLedger.ReferenceManifest>();
@@ -27,7 +29,7 @@ public class CommerceDesignGenerationCoordinator {
         var attempt=ledger.prepare(draft.organizationId(),draft.id(),manifest);
         if(!ledger.claim(draft.organizationId(),attempt.id()))return attempt.id();
         try{
-            var response=gateway.generate(draft,List.copyOf(images),attempt.id());
+            var response=gateway.generate(draft,List.copyOf(images),attempt.id(),model);
             ledger.received(draft.organizationId(),attempt.id(),response);
         }catch(RuntimeException failure){
             ledger.uncertain(draft.organizationId(),attempt.id());
