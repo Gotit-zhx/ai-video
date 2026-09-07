@@ -82,6 +82,8 @@ V58新增店铺日额度台账和逐批次条目预留记录。`/api/v1/commerce
 
 ### 完整启动与前端打包验证（2026-09-07）
 
+新增可重复执行的 `scripts/commerce-http-smoke.cjs`，已在独立 internal 网络中的完整应用 + 空 MySQL + Redis 上实际通过：未登录401、密码登录建立会话、当前用户回读、AD_TEST创建及追加v2、旧版本更新409、历史v1预算保留、WORKFLOW创建清除批次确认、两类模板列表隔离、跨类型更新400、广告评估返回PREVIEW_ONLY与正确建议、登出后401。仅使用临时QA账号，不调用外部平台。脚本需显式 HEYI_QA_CONFIRM_DISPOSABLE=yes、HEYI_QA_URL、HEYI_QA_PHONE、HEYI_QA_PASSWORD；仅允许本机或指定隔离容器主机，运行会创建模板记录，不可指向用户数据库。临时环境验证后删除。此项尚未覆盖浏览器、店铺授权、图片生成与真实发布。
+
 使用当前源码打包 JAR，在独立 Docker internal 网络、空 MySQL 8.4 与独立 Redis 上启动完整 Spring 应用，60 个 Flyway 迁移成功；health 返回 200/UP，未登录访问批次与广告模板接口均返回 401。网络不连接外网、无平台凭据，发布设置保持 DRY_RUN。测试完成清理临时服务和数据库，不修改原应用容器或用户数据库。
 
 发现 `frontend/Dockerfile.local` 遗漏全部新增业务脚本，同时两份前端 Dockerfile 均遗漏 index 引用的 image-progress.css；已补齐。新增回归测试遍历 HTML 根路径脚本及样式，校验两份镜像清单都覆盖。实际构建独立 QA 前端镜像，镜像内六个新增/补漏文件均非空。完整启动不等于登录后端到端流程或视觉验收通过，后两项仍待执行。
