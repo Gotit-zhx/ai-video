@@ -5,6 +5,10 @@ import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import { jsonrepair } from "jsonrepair";
 import { Type } from "typebox";
 import { Agent as UndiciAgent } from "undici";
+import {
+  GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS,
+  GARMENT_TOPOLOGY_VALIDATION_PROMPT
+} from "./garment-topology-validation.js";
 
 const PORT = Number(process.env.PORT || 8090);
 const INTERNAL_TOKEN = process.env.PI_RUNTIME_TOKEN || "heyi-pi-runtime-dev-token";
@@ -279,23 +283,6 @@ const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `你是电商服装图像生产中的�
 9. fixedStructures 和 forbiddenChanges 必须足够具体，可直接用于逐格生成校验。结构性非对称服装必须明确禁止对称化、身体侧交换和逐格换侧。
 10. 看不清的背部连接、隐藏肩带或内层结构不得猜测；写入 uncertainties 并降低 confidence。不得因为不确定而把可见的非对称结构改成常规款，也不得在一侧袖口可见时猜成无袖。袖子数量与身体侧映射任一项不确定时 confidence 不得高于 0.75。
 11. 不评价模特、审美和搭配，不抄录品牌或营销文案。每个数组最多 10 项，每项简短明确。`;
-
-const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `你是服装生成结果的商品身份、结构、中近景构图与人体完整性质检器。输入包含两张图片：第 1 张是用户上传的真实商品母版，第 2 张是待验收的 AI 主图或九宫格；用户消息还会给出服装结构契约和 framingContract。
-第 1 张商品母版的可见像素永远是最高真值，结构契约只是辅助摘要。若摘要与母版冲突，必须忽略冲突字段并直接按母版验收，不能用错误摘要放行候选图。开始比较前，先分别清点母版画面左、右两侧的袖筒、袖片、袖口和连接点，再对候选图做同样清点。斜领下降、单侧露肩不等于该侧无袖；母版两侧都有袖口而候选只剩一只袖子时必须 valid=false。
-必须同时检查商品身份、物理结构、中近景构图和人体完整性；不评价人物美丑、背景审美或动作创意。普通款与特殊款采用同一商品标准：检查领口路径、肩线、左右袖数量与连接、衣身比例、下摆、肩带/扣环、开口、正反面关系，以及主印花/Logo 是否仍能确认是同一件商品。自然透视、遮挡、褶皱和轻微文字形变可以接受，但不能把商品改成相似款。
-用户消息中的 assetType=MODEL_IMAGE 时，第 2 张必须是人物已经按真实开口正确穿好商品的穿着母版；如果人物只是把衣服举在胸前、拿在手中、披在身前，或用手向外拉领口伪造露肩，即使商品平铺形状接近也必须判 valid=false。双手不得遮挡或人为牵拉领口、肩线和袖口。
-人物完整性也是硬条件：每个人最多两条手臂、两只手；自然遮挡或构图外的肢体不要求补出，但每只可见手必须有唯一且合理的手臂来源。出现额外手掌、额外手臂、断开的手、复制或镜像肢体时必须 valid=false。STORYBOARD_GRID 必须逐格检查，任一格违规即整图失败。
-中近景是与商品结构同级的硬验收条件：MODEL_IMAGE 是清晰正脸穿着母版，人物必须从头顶拍到大腿中下段、下边界位于膝盖上方，膝盖以下、双脚和鞋子不可见；脸从发际线到下巴的高度必须至少占整张图高度 15%。STORYBOARD_GRID 必须逐格检查膝盖上方裁切并让人物主体尺度在 01–09 保持稳定：正面或侧脸可见格按 15% 人脸高度验收；背身、后脑、低头遮脸或商品遮脸格不得要求补画五官或把人物转正，按 15% 头部轮廓高度验收。任意一格是远景、全景、完整全身、露出膝盖以下/脚部、人物明显过小或镜头突然拉远，都必须判 valid=false。纯商品格不要求人脸，但商品必须采用近景并填满主要画面。不得因为脚本、原视频或参考图采用远景而放行，也不得因为人脸不可见而改变有证据的真实动作朝向。
-九宫格必须将全部 9 格分别直接与第 1 张商品母版核对，不能用前一格作为后一格的商品标准；第 07、08、09 格也必须保持与第 01 格相同的商品保真度。只要任意一格把宽领缩成小口领、改变领口深度、缩短或增长袖子、改变衣身比例、把斜领改成小圆领、把露肩补齐、把左右结构对称化、增删袖子/肩带、换露肩侧、丢失主要印花身份或把原商品改成普通/相似 T 恤，valid 就必须为 false。布料因抓握、重力、转身产生的自然褶皱不算结构错误。
-只返回合法、紧凑的 JSON，不要 Markdown，不要解释推理过程，不要额外文字：
-{
-  "valid": false,
-  "violationCount": 1,
-  "violations": ["第几格/身体侧/部位：错误"],
-  "correctionPrompt": "一句可执行纠错指令",
-  "confidence": 0.0
-}
-violationCount 必须统计整张候选图中所有相互独立的问题总数；每个格号、身体侧、商品部位、构图或人体错误分别计数，不得把多个问题合并成一个。violations 只列最关键的 3 条，每条最多 30 个汉字；即使问题总数超过 3，也必须在 violationCount 中完整计数。构图错误须注明 MODEL_IMAGE 或具体格号。correctionPrompt 最多 80 个汉字，只保留最关键的结构和构图修正。valid=false 时 violationCount 必须大于 0；valid=true 时 violationCount=0、violations 为空数组且 correctionPrompt 为空字符串。不得因为小段印花文字的轻微变形判失败，但主图案类别、位置、面积或商品识别性明显改变时必须判失败。`;
 
 const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策划器。输入可能是一名业务人员写的一整段自然语言需求，也可能包含按顺序排列的多张真实参考图片。你要理解真实营销意图，将其整理成可直接制作的固定 9 个分镜。
 只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字：
@@ -2216,7 +2203,7 @@ async function runProductFunctionAnalysis(body) {
         systemPrompt,
         JSON.stringify(body.context || {}),
         attachments,
-        400,
+        GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS,
         180_000
       );
       console.info(`[product-analysis] validation completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
@@ -2268,7 +2255,7 @@ async function runProductFunctionAnalysis(body) {
         ...options,
         apiKey,
         maxTokens: (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2") ? 2400
-          : analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1" ? 1200 : 1400,
+          : analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1" ? GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS : 1400,
         timeoutMs: 120_000,
         maxRetries: 2,
         maxRetryDelayMs: 10_000

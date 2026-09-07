@@ -228,7 +228,7 @@ public class ProductFunctionAnalysisService {
                     return new GarmentValidation(valid, text(value.get("correctionPrompt"), 600),
                             violations,
                             value.get("confidence") instanceof Number number ? number.doubleValue() : 0.0,
-                            violationCount);
+                            violationCount, valid ? List.of() : readCorrectionTargets(value.get("correctionTargets")));
                 } catch (Exception exception) {
                     lastFailure = exception;
                     String failure = readable(exception);
@@ -420,12 +420,27 @@ public class ProductFunctionAnalysisService {
     }
 
     public String promptBlock(AiVideoTask task, String analysisJson) {
+        if (task != null && isGarmentTask(task)) {
+            // The user's back-design rule also applies to old tasks without a saved topology
+            // analysis. An absent/invalid analysis contributes no invented structural evidence.
+            Map<String, Object> garmentAnalysis = Map.of();
+            if (analysisJson != null && !analysisJson.isBlank()) {
+                try {
+                    Map<String, Object> parsed = objectMapper.readValue(analysisJson, new TypeReference<>() {});
+                    if (text(parsed.get("version"), 40).startsWith("GARMENT_TOPOLOGY_V")) {
+                        garmentAnalysis = parsed;
+                    }
+                } catch (Exception ignored) {
+                    // Keep the reference-only policy; generation still owns its analysis gate.
+                }
+            }
+            return garmentPromptBlock(garmentAnalysis);
+        }
         if (analysisJson == null || analysisJson.isBlank()) return "";
         try {
             Map<String, Object> value = objectMapper.readValue(analysisJson, new TypeReference<>() {});
             if (text(value.get("version"), 40).startsWith("GARMENT_TOPOLOGY_V")) {
-                if (!isGarmentTask(task)) return "";
-                return garmentPromptBlock(value);
+                return "";
             }
             if (!isDailyUseCategory(task.getProductCategory())) return "";
             if (!Boolean.TRUE.equals(value.get("functional"))) return "";
@@ -553,6 +568,7 @@ public class ProductFunctionAnalysisService {
         append(block, "固定结构", join(value.get("fixedStructures"), 260));
         append(block, "禁止变化", join(value.get("forbiddenChanges"), 300));
         block.append("所有出镜状态只复现上述当前商品证据；不要重新分类，也不要套用其他款式的通用规则。\n")
+                .append(GarmentBackDesignPolicy.PROMPT).append('\n')
                 .append(GARMENT_BLOCK_END);
         return block.toString();
     }
@@ -668,8 +684,45 @@ public class ProductFunctionAnalysisService {
 
     private record PiProductAnalysisResponse(Map<String, Object> result, String modelId, long latencyMs) {}
 
+    static List<GarmentCorrectionTarget> readCorrectionTargets(Object raw) {
+        if (!(raw instanceof List<?> entries)) return List.of();
+        List<GarmentCorrectionTarget> targets = new ArrayList<>();
+        for (Object entry : entries) {
+            if (!(entry instanceof Map<?, ?> fields)) continue;
+            String location = correctionText(fields.get("location"), 120);
+            String evidence = correctionText(fields.get("sourceEvidence"), 180);
+            String observed = correctionText(fields.get("observedError"), 180);
+            String repair = correctionText(fields.get("repairInstruction"), 240);
+            String preserve = correctionText(fields.get("preserveDetails"), 180);
+            // An ungrounded repair must not invent a sleeve or a left/right mapping.
+            if (location.isBlank() || evidence.isBlank() || observed.isBlank() || repair.isBlank()) continue;
+            targets.add(new GarmentCorrectionTarget(location, evidence, observed, repair, preserve));
+            if (targets.size() == 3) break;
+        }
+        return List.copyOf(targets);
+    }
+
+    private static String correctionText(Object value, int maxLength) {
+        if (!(value instanceof String text)) return "";
+        String normalized = text.replaceAll("\\s+", " ").trim();
+        return normalized.substring(0, Math.min(normalized.length(), maxLength));
+    }
+
+    public record GarmentCorrectionTarget(String location, String sourceEvidence, String observedError,
+                                          String repairInstruction, String preserveDetails) {}
+
     public record GarmentValidation(boolean valid, String correctionPrompt,
-                                    List<String> violations, double confidence, int violationCount) {
+                                    List<String> violations, double confidence, int violationCount,
+                                    List<GarmentCorrectionTarget> correctionTargets) {
+        public GarmentValidation {
+            correctionTargets = valid || correctionTargets == null ? List.of() : List.copyOf(correctionTargets);
+        }
+
+        public GarmentValidation(boolean valid, String correctionPrompt,
+                                 List<String> violations, double confidence, int violationCount) {
+            this(valid, correctionPrompt, violations, confidence, violationCount, List.of());
+        }
+
         public GarmentValidation(boolean valid, String correctionPrompt,
                                  List<String> violations, double confidence) {
             this(valid, correctionPrompt, violations, confidence,

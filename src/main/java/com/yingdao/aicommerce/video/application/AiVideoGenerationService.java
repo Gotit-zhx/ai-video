@@ -625,9 +625,9 @@ public class AiVideoGenerationService {
     static String gridStoryboardSafetyPrompt(String prompt, String aspectRatio) {
         String outputRatio = aspectRatio == null || aspectRatio.isBlank() ? "请求画幅" : aspectRatio.trim();
         return "【九宫格参考协议】\n"
-                + "图1锁定首帧；图2是按左到右、上到下读取01→09的时间索引；图3锁定完整商品身份。必须采用图2每格的动作与场景，但要把对应内容重建为单画面。\n"
+                + "图1锁定首帧；图2是按左到右、上到下读取01→09的时间索引；图3锁定完整商品身份。采用图2每格的动作与场景意图，但只执行后附时间轴已归一化的动作、景别与转场，再重建为单画面。\n"
                 + "成片每一帧只能有一个铺满" + outputRatio + "画布的场景。禁止输出九宫格布局、画中画、分屏、拼贴、缩略图或格线；转场中也不得闪现完整或局部宫格。\n"
-                + "转场只服从后附时间轴：标为同镜头连续时自然衔接，标为真实切点时干净切换。不得同时混合两格，也不得用残影、复制肢体或多手连接相邻格。\n"
+                + VideoTimelineSemantics.TRANSITION_POLICY + "\n"
                 + "人物身体最多两条手臂和两只手；被遮挡或出画的肢体无需补出，纯商品镜头可以无人无手。每只可见手必须自然连接到唯一手臂。\n\n"
                 + (prompt == null ? "" : prompt);
     }

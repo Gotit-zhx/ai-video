@@ -959,6 +959,7 @@ public class AiVideoImageProcessor {
             previous.put("violations", validation.violations() == null ? List.of() : validation.violations());
             previous.put("confidence", validation.confidence());
             previous.put("violationCount", validation.violationCount());
+            previous.put("correctionTargets", validation.correctionTargets());
             metadata.put("previousValidation", previous);
         }
         writeAtomically(statePath, objectMapper.writeValueAsBytes(metadata));
@@ -998,7 +999,8 @@ public class AiVideoImageProcessor {
         return new ProductFunctionAnalysisService.GarmentValidation(
                 Boolean.TRUE.equals(value.get("valid")), nullableText(value.get("correctionPrompt")),
                 violations, confidence, number(value.get("violationCount"),
-                violations.isEmpty() ? Integer.MAX_VALUE : violations.size()));
+                violations.isEmpty() ? Integer.MAX_VALUE : violations.size()),
+                ProductFunctionAnalysisService.readCorrectionTargets(value.get("correctionTargets")));
     }
 
     private Map<String, Object> topologyCandidateMetadata(TopologyCandidate candidate) {
@@ -1109,6 +1111,7 @@ public class AiVideoImageProcessor {
         StringBuilder prompt = new StringBuilder(basePrompt).append("\n\n")
                 .append("【定向纠错重绘】上一候选图未通过复核，请完整重生成一张图片。")
                 .append("优先修正下面的失败项；其他内容继续遵循原提示并从参考图重建，不复制上一候选，也不假设能够只改局部。")
+                .append("下列纠错只覆盖已被商品母版可见证据证实有误的商品描述，不能被原提示中的错误款式简称抵消；不覆盖构图和人物数量规则。")
                 .append("不要重新分类，直接按原提示指定的用户上传商品母版逐像素核对：分别清点画面左侧和右侧的袖筒、袖口、袖片，")
                 .append("并核对领口开口路径及每片布料的缝线连接。斜肩或露肩只代表领口路径不对称，不等于一侧无袖；")
                 .append("参考图两侧都有袖片和袖口证据时，生成结果必须保留两只袖子。")
@@ -1117,8 +1120,26 @@ public class AiVideoImageProcessor {
                 .append("复核失败项：")
                 .append(violations.isEmpty() ? "商品结构或标识未与参考图一致" : String.join("；", violations));
         if (!correction.isBlank()) {
-            prompt.append("\n复核模型纠正要求（仅在与商品母版可见像素和原提示不冲突时执行）：")
+            prompt.append("\n复核模型纠正要求（以商品母版可见证据为准；纠正有误的商品描述，同时保留原构图和人物数量规则）：")
                     .append(correction);
+        }
+        if (validation != null && !validation.correctionTargets().isEmpty()) {
+            prompt.append("\n【逐项证据纠错计划】以下内容是复核观察，必须重新对照商品母版确认，不是新的商品设计。")
+                    .append("左右必须区分母版画面侧、候选格画面侧与人物身体侧；转身、背面或镜像时不得直接沿用画面左右，无法对应时不要猜侧。")
+                    .append("遮挡和出画不等于结构缺失，不得为证明袖子存在而补肢体或改变姿势、景别。\n");
+            for (var target : validation.correctionTargets()) {
+                prompt.append("定位：").append(target.location())
+                        .append("\n母版可见证据：").append(target.sourceEvidence())
+                        .append("\n候选偏差：").append(target.observedError())
+                        .append("\n本轮修正：").append(target.repairInstruction());
+                if (target.preserveDetails() != null && !target.preserveDetails().isBlank()) {
+                    prompt.append("\n必须保留：").append(target.preserveDetails());
+                }
+                prompt.append('\n');
+            }
+            prompt.append("缺袖修正只恢复母版证实存在的袖片、袖口及其连接，不得抬高斜领、填平露肩开口、改露肩侧或把款式对称化；")
+                    .append("母版真实无袖或隐藏结构不可见时不得强加袖子。保持另一侧结构、主印花、颜色和版型不变。")
+                    .append("交付仍是原任务要求的一张完整图片；不是只生成袖子特写，也不是拼接补丁。\n");
         }
         return prompt.toString();
     }

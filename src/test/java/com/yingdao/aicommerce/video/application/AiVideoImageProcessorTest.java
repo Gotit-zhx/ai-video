@@ -293,7 +293,9 @@ class AiVideoImageProcessorTest {
         AiVideoTask task = task();
         AiVideoTaskItem item = item();
         var validation = new ProductFunctionAnalysisService.GarmentValidation(false,
-                "补回右袖", java.util.List.of("右袖缺失", "领口路径错误"), 0.82, 2);
+                "补回右袖", java.util.List.of("右袖缺失", "领口路径错误"), 0.82, 2,
+                List.of(new ProductFunctionAnalysisService.GarmentCorrectionTarget(
+                        "MODEL_IMAGE/画面右侧", "母版有袖口", "袖片缺失", "恢复袖片连接", "斜领不变")));
         var state = new AiVideoImageProcessor.TopologyRetryState(2, "", validation, false);
         var current = new AiVideoImageProcessor.TopologyCandidate(
                 "image/png", new byte[] {4, 5, 6}, "model", "generate", "第二次提示", "");
@@ -312,10 +314,53 @@ class AiVideoImageProcessorTest {
         assertEquals(2, recoveredState.attemptsReserved());
         assertEquals("补回右袖", recoveredState.previousValidation().correctionPrompt());
         assertEquals(2, recoveredState.previousValidation().violationCount());
+        assertEquals(validation.correctionTargets(), recoveredState.previousValidation().correctionTargets());
         assertArrayEquals(new byte[] {4, 5, 6}, recoveredCurrent.bytes());
         assertEquals("第二次提示", recoveredCurrent.prompt());
         assertArrayEquals(new byte[] {1, 2, 3}, recoveredBest.candidate().bytes());
         assertEquals(1, recoveredBest.violationCount());
+    }
+
+    @Test
+    void validationResponseDeliversEvidenceTargetsToTheNextRedrawPrompt() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/product/analyze", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respondJson(exchange, 200, """
+                    {"result":{"valid":false,"violations":["第03格缺袖"],"violationCount":1,
+                    "correctionPrompt":"恢复原短袖","confidence":0.96,"correctionTargets":[{
+                    "location":"第03格/画面右侧","sourceEvidence":"原图可见短袖袖片与袖口",
+                    "observedError":"该侧改成无袖","repairInstruction":"恢复袖片与袖口连接",
+                    "preserveDetails":"保留原斜领及露肩范围"}]},"modelId":"test","latencyMs":1}
+                    """);
+        });
+        server.start();
+        try {
+            ByteArrayOutputStream png = new ByteArrayOutputStream();
+            ImageIO.write(new BufferedImage(64, 64, BufferedImage.TYPE_INT_RGB), "png", png);
+            Path source = tempDirectory.resolve("validation-source.png");
+            Files.write(source, png.toByteArray());
+            AiVideoTaskItem item = new AiVideoTaskItem("org", "task", "item", "sku",
+                    "source.png", source.toString(), "image/png", png.size());
+            item.updateProductFunctionAnalysis("{\"version\":\"GARMENT_TOPOLOGY_V2\"}");
+            ModelConfigService config = mock(ModelConfigService.class);
+            when(config.driverConnection("org")).thenReturn(Optional.of(
+                    new ModelConfigService.RuntimeModelConnection("test", "http://localhost", "test",
+                            "OPENAI", "AUTO", "test-key")));
+            ProductFunctionAnalysisService service = new ProductFunctionAnalysisService(
+                    mock(com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper.class),
+                    config, new ObjectMapper(), "http://127.0.0.1:" + server.getAddress().getPort(), "test-token");
+
+            var validation = service.validateGenerated(task(), item, "STORYBOARD_GRID", png.toByteArray(), "image/png");
+            assertFalse(validation.valid());
+            assertEquals(1, validation.correctionTargets().size());
+            String prompt = AiVideoImageProcessor.topologyCorrectionPrompt("母版规则", validation);
+            assertTrue(prompt.contains("原图可见短袖袖片与袖口"));
+            assertTrue(prompt.contains("本轮修正：恢复袖片与袖口连接"));
+            assertTrue(prompt.contains("必须保留：保留原斜领及露肩范围"));
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test
@@ -857,13 +902,70 @@ class AiVideoImageProcessorTest {
         assertTrue(prompt.contains("不得为凑数量新增或复制肢体"));
         assertTrue(prompt.contains("一张完整九宫格图片"));
         assertTrue(prompt.contains("每个商品出镜格"));
-        assertTrue(prompt.contains("仅在与商品母版可见像素和原提示不冲突时执行"));
+        assertTrue(prompt.contains("以商品母版可见证据为准；纠正有误的商品描述，同时保留原构图和人物数量规则"));
     }
 
     @Test
     void topologyRedrawsAreBoundedToThreeBeforeContinuing() {
         assertEquals(3, AiVideoImageProcessor.MAX_TOPOLOGY_REDRAWS);
         assertEquals(4, AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS);
+    }
+
+    @Test
+    void targetedSleeveCorrectionKeepsTheOriginalNecklineAndDoesNotInventBodySides() {
+        var target = new ProductFunctionAnalysisService.GarmentCorrectionTarget(
+                "第03格/画面右侧（人物身体侧尚未确认）", "母版画面右侧可见短袖袖口与袖片",
+                "对应袖片被删除为无袖", "核对朝向后恢复原短袖袖片和袖口连接",
+                "原斜领露肩范围、另一侧袖子与胸前印花");
+        var validation = new ProductFunctionAnalysisService.GarmentValidation(false,
+                "恢复母版证实存在的袖片", List.of("第03格：缺袖"), .95, 1, List.of(target));
+
+        String prompt = AiVideoImageProcessor.topologyCorrectionPrompt("原图生成规则", validation);
+
+        assertTrue(prompt.contains("母版可见证据：" + target.sourceEvidence()));
+        assertTrue(prompt.contains("候选偏差：" + target.observedError()));
+        assertTrue(prompt.contains("本轮修正：" + target.repairInstruction()));
+        assertTrue(prompt.contains("必须保留：" + target.preserveDetails()));
+        assertTrue(prompt.contains("无法对应时不要猜侧"));
+        assertTrue(prompt.contains("遮挡和出画不等于结构缺失"));
+        assertTrue(prompt.contains("不得抬高斜领、填平露肩开口"));
+        assertTrue(prompt.contains("母版真实无袖或隐藏结构不可见时不得强加袖子"));
+        assertTrue(prompt.contains("不能被原提示中的错误款式简称抵消"));
+        assertTrue(prompt.contains("不是只生成袖子特写，也不是拼接补丁"));
+        assertEquals(1, prompt.split("【逐项证据纠错计划】", -1).length - 1);
+    }
+
+    @Test
+    void legacyCorrectionCanOverrideAnIncorrectGarmentLabelWithoutOverridingFraming() {
+        var validation = new ProductFunctionAnalysisService.GarmentValidation(false,
+                "母版画面右侧有袖口，恢复该侧袖片并保留斜领", List.of("误删袖片"), .96);
+        String prompt = AiVideoImageProcessor.topologyCorrectionPrompt("错误简称：单袖款；人物中近景", validation);
+
+        assertTrue(prompt.startsWith("错误简称：单袖款；人物中近景"));
+        assertTrue(prompt.contains("不能被原提示中的错误款式简称抵消"));
+        assertTrue(prompt.contains("纠正有误的商品描述，同时保留原构图和人物数量规则"));
+        assertTrue(prompt.contains(validation.correctionPrompt()));
+        assertFalse(prompt.contains("原提示不冲突时执行"));
+        assertFalse(prompt.contains("【逐项证据纠错计划】"));
+    }
+
+    @Test
+    void correctionTargetParserRejectsUngroundedEntriesAndBoundsModelOutput() {
+        Map<String, Object> complete = Map.of("location", "第03格/画面右侧",
+                "sourceEvidence", "母版有袖口", "observedError", "缺袖",
+                "repairInstruction", "恢复袖片", "preserveDetails", "斜领".repeat(200));
+        var targets = ProductFunctionAnalysisService.readCorrectionTargets(List.of(
+                "invalid", Map.of("repairInstruction", "添加袖子"), complete, complete, complete, complete));
+
+        assertEquals(3, targets.size());
+        assertEquals(180, targets.getFirst().preserveDetails().length());
+        assertEquals("母版有袖口", targets.getFirst().sourceEvidence());
+        assertTrue(ProductFunctionAnalysisService.readCorrectionTargets(null).isEmpty());
+        assertTrue(ProductFunctionAnalysisService.readCorrectionTargets(Map.of()).isEmpty());
+        assertTrue(new ProductFunctionAnalysisService.GarmentValidation(true, "", List.of(), 1, 0,
+                targets).correctionTargets().isEmpty());
+        assertTrue(new ProductFunctionAnalysisService.GarmentValidation(false, "旧版纠错",
+                List.of("缺袖"), .9).correctionTargets().isEmpty());
     }
 
     @Test
