@@ -6,6 +6,13 @@ import java.util.List;
 
 @Mapper
 public interface CommerceTemplateMapper {
+    @Select("""
+        SELECT t.* FROM commerce_template_versions t WHERE t.organization_id=#{org} AND t.kind=#{kind}
+          AND NOT EXISTS (SELECT 1 FROM commerce_template_versions n WHERE n.organization_id=t.organization_id
+            AND n.template_id=t.template_id AND n.version>t.version)
+        ORDER BY t.created_at DESC LIMIT 100
+        """)
+    List<CommerceTemplateVersion> listKind(@Param("org") String org,@Param("kind") String kind);
     @Select("SELECT * FROM commerce_template_versions WHERE organization_id=#{org} AND id=#{id}")
     CommerceTemplateVersion snapshot(@Param("org") String org,@Param("id") String id);
     @Select("""

@@ -48,6 +48,7 @@ public class ShopOperatingSettingsService {
         if(template!=null){
             var snapshot=templates.snapshot(user.organizationId(),template);
             if(snapshot==null)throw new BusinessException(HttpStatus.NOT_FOUND,"默认模板不存在");
+            if(!"WORKFLOW".equals(snapshot.kind()))throw new BusinessException(HttpStatus.BAD_REQUEST,"店铺默认上架模板必须为铺货工作流类型");
             var config=json.readValue(snapshot.configJson(),CommerceBatchPlanner.Request.class);
             if(!config.platform().name().equals(shop.getPlatform()) || !config.market().equalsIgnoreCase(shop.getRegion()))
                 throw new BusinessException(HttpStatus.BAD_REQUEST,"默认模板平台与站点不匹配");

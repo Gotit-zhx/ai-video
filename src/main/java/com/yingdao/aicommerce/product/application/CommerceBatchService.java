@@ -56,6 +56,7 @@ public class CommerceBatchService {
         if(existing!=null) return replay(existing,hash,user);
         var snapshot=templates.snapshot(user.organizationId(),r.templateSnapshotId());
         if(snapshot==null) throw error(HttpStatus.NOT_FOUND,"模板版本不存在");
+        if(!"WORKFLOW".equals(snapshot.kind()))throw bad("批次只能绑定铺货工作流模板");
         var c=json.readValue(snapshot.configJson(),CommerceBatchPlanner.Request.class);
         new CommerceBatchPlanner().preview(c);
         Map<String,Integer> counts=new LinkedHashMap<>();

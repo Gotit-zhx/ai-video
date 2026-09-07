@@ -45,6 +45,8 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/commerce-batches/**").hasAnyAuthority("product:view","product:publish")
                         .requestMatchers(HttpMethod.POST, "/api/v1/commerce-templates/**").hasAuthority("product:edit")
                         .requestMatchers("/api/v1/commerce-templates/**").hasAnyAuthority("product:view", "product:publish")
+                        .requestMatchers(HttpMethod.POST,"/api/v1/commerce-ad-templates/**").hasAuthority("product:edit")
+                        .requestMatchers("/api/v1/commerce-ad-templates/**").hasAnyAuthority("product:view","product:publish")
                         .requestMatchers("/api/v1/commerce-plans/**")
                             .hasAnyAuthority("product:view", "product:publish")
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()

@@ -27,11 +27,11 @@ public class CommerceTemplateService {
     }
     public List<View> list(PlatformPrincipal user) {
         readAccess(user);
-        return mapper.list(user.organizationId()).stream().map(this::view).toList();
+        return mapper.listKind(user.organizationId(),"WORKFLOW").stream().map(this::view).toList();
     }
     public List<View> history(String id, PlatformPrincipal user) {
         readAccess(user);
-        return mapper.history(user.organizationId(), validId(id)).stream().map(this::view).toList();
+        return mapper.history(user.organizationId(), validId(id)).stream().filter(t->"WORKFLOW".equals(t.kind())).map(this::view).toList();
     }
     @Transactional
     public View save(SaveRequest r, PlatformPrincipal user) {
@@ -51,6 +51,7 @@ public class CommerceTemplateService {
             if (mapper.lockRoot(user.organizationId(),id)==null)
                 throw new BusinessException(HttpStatus.NOT_FOUND,"模板不存在");
             var current=mapper.latest(user.organizationId(),id);
+            if(!"WORKFLOW".equals(current.kind()))throw bad("模板类型不匹配");
             if(current.version()!=r.expectedVersion())
                 throw new BusinessException(HttpStatus.CONFLICT,"模板已被更新，请刷新后另存新版本");
         }

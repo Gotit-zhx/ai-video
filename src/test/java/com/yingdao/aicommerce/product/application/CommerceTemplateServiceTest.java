@@ -32,8 +32,8 @@ class CommerceTemplateServiceTest {
         verify(mapper).insert(argThat(t->t.organizationId().equals("org1") && t.createdBy().equals("u1") && t.version()==1));
     }
     @Test void onlyReadsCurrentOrganization() {
-        when(mapper.list("org1")).thenReturn(List.of());
-        assertTrue(service.list(user).isEmpty()); verify(mapper).list("org1");
+        when(mapper.listKind("org1","WORKFLOW")).thenReturn(List.of());
+        assertTrue(service.list(user).isEmpty()); verify(mapper).listKind("org1","WORKFLOW");
     }
     @Test void foreignTemplateCannotBeUpdated() {
         String id=UUID.randomUUID().toString();
