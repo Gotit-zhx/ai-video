@@ -2,6 +2,7 @@ package com.yingdao.aicommerce.product.application;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.product.domain.*;
 import com.yingdao.aicommerce.product.mapper.CommerceTemplateMapper;
+import com.yingdao.aicommerce.product.mapper.CommerceBatchReviewMapper;
 import com.yingdao.aicommerce.shop.domain.*;
 import com.yingdao.aicommerce.shop.mapper.*;
 import org.junit.jupiter.api.Test;
@@ -19,7 +20,7 @@ class CommerceBatchPreflightServiceTest {
     final ShopMapper shops=mock(ShopMapper.class);
     final ShopOperatingSettingsMapper settings=mock(ShopOperatingSettingsMapper.class);
     final ObjectMapper json=new ObjectMapper();
-    final CommerceBatchPreflightService service=new CommerceBatchPreflightService(batches,templates,captures,shops,settings,json);
+    final CommerceBatchPreflightService service=new CommerceBatchPreflightService(batches,templates,captures,shops,settings,json,mock(CommerceBatchReviewMapper.class));
     final PlatformPrincipal user=new PlatformPrincipal("u","org","code","login","User","x",true,List.of(),List.of("product:view"));
     void setup(long liveVersion,String state,String env){
         var item=new CommerceBatchItem("item","org","batch","capture",1,"shop","name",1,"DRAFT",Instant.now());

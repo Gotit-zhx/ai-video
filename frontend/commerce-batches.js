@@ -4,7 +4,7 @@
   const get=id=>document.getElementById(`commerce-batch-${id}`);
   const status=get("status"), selector=get("template"), shopBox=get("shops"), products=get("products");
   let templates=[],shops=[], selectedProducts=new Set(), page=0, query="", pages=0;
-  let pendingRequest=null, generation=0, loading=false;
+  let pendingRequest=null, generation=0, loading=false, detailGeneration=0;
   const text=(tag,value,parent)=>{const e=document.createElement(tag);e.textContent=value;parent.append(e);return e;};
   const invalidate=()=>{pendingRequest=null;};
   globalThis.addEventListener?.("heyi:company-reset",()=>{
@@ -50,9 +50,11 @@
   }
   async function showBatch(id){
     const ticket=generation;
+    const detailTicket=++detailGeneration;
+    const current=()=>ticket===generation && detailTicket===detailGeneration;
     try{
       const r=await api(`/api/v1/commerce-batches/${encodeURIComponent(id)}`), b=r.data;
-      if(ticket!==generation)return;
+      if(!current())return;
       const detail=get("detail");detail.replaceChildren();
       text("h4",`${b.name} · ${b.status}`,detail);
       text("p",`固定模板快照：${b.templateSnapshotId}；${b.items.length}条实际商品店铺组合。`,detail);
@@ -101,6 +103,43 @@
         finally{check.disabled=false;}
       });
       b.items.forEach(i=>text("p",`第${i.plannedDay}天 · ${i.shopName} · 商品 ${i.captureId} / v${i.captureVersion} · ${i.status}`,detail));
+      const reviewBox=text("fieldset","",detail);text("legend","逐条审核依据",reviewBox);
+      const reviewStatus=text("p","正在读取审核记录…",reviewBox);
+      try{
+        const response=await api(`/api/v1/commerce-batches/${encodeURIComponent(id)}/review`);
+        if(!current())return;
+        const saved=response.data;
+        reviewStatus.textContent=saved?`已记录审核人 ${saved.reviewedBy} · ${saved.reviewedAt}；记录不可修改，不代表已发布。`:"填写真实来源或内部记录编号；这些说明不是平台授权或文件真实性验证。POD 商品必须补充生产依据。";
+        const evidence=saved?JSON.parse(saved.evidenceJson):[];
+        const rows=b.items.map(item=>{
+          const section=text("details","",reviewBox);
+          text("summary",`${item.shopName} · 商品 ${item.captureId} / v${item.captureVersion}`,section);
+          const prior=evidence.find(e=>e.itemId===item.id);
+          const fields={};
+          [["rightsEvidence","图片及商品使用权依据"],["supplySku","供应商 SKU / 货源记录"],["qualityReview","规格、价格及图片质量复核记录"],["productionEvidence","POD 基础款、生产规格及文件依据（普通商品可留空）"]].forEach(([key,label])=>{
+            const wrap=text("label",label,section), input=document.createElement("textarea");
+            input.maxLength=2000;input.rows=2;input.value=prior?.[key]||"";input.disabled=!!saved||b.status!=="DRAFT";wrap.append(input);fields[key]=input;
+          });
+          return {item,fields,section};
+        });
+        if(!saved && b.status==="DRAFT" && rows.length){
+          const label=text("label","",reviewBox), agree=document.createElement("input");agree.type="checkbox";label.append(agree);
+          text("span","我已逐条复核，确认依据真实；提交后不可修改",label);
+          const submit=text("button","保存审核依据（不发布）",reviewBox);submit.type="button";
+          submit.addEventListener("click",async()=>{
+            if(!agree.checked){reviewStatus.textContent="请先确认已逐条复核。";return;}
+            const items=rows.map(({item,fields})=>({itemId:item.id,captureVersion:item.captureVersion,...Object.fromEntries(Object.entries(fields).map(([key,input])=>[key,input.value.trim()]))}));
+            const missing=items.findIndex(e=>!e.rightsEvidence||!e.supplySku||!e.qualityReview);
+            if(missing>=0){rows[missing].section.open=true;reviewStatus.textContent="请补齐该条目的使用权、货源和质量复核依据。";return;}
+            submit.disabled=true;
+            try{
+              await api(`/api/v1/commerce-batches/${encodeURIComponent(id)}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirmed:true,items})});
+              if(current())await showBatch(id);
+            }catch(e){if(current())reviewStatus.textContent=e.message;}
+            finally{submit.disabled=false;}
+          });
+        }
+      }catch(e){if(current())reviewStatus.textContent=`审核记录读取失败：${e.message}。请重新打开批次后重试。`;}
     }catch(e){status.textContent=e.message;}
   }
   function renderBatches(batches){

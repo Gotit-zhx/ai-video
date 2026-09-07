@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.product.application;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.product.mapper.CommerceTemplateMapper;
+import com.yingdao.aicommerce.product.mapper.CommerceBatchReviewMapper;
 import com.yingdao.aicommerce.shop.mapper.ShopMapper;
 import com.yingdao.aicommerce.shop.mapper.ShopOperatingSettingsMapper;
 import com.yingdao.aicommerce.common.exception.BusinessException;
@@ -22,9 +23,10 @@ public class CommerceBatchPreflightService {
     private final ShopMapper shops;
     private final ShopOperatingSettingsMapper operating;
     private final ObjectMapper json;
+    private final CommerceBatchReviewMapper reviews;
     public CommerceBatchPreflightService(CommerceBatchService batches,CommerceTemplateMapper templates,
-            ProductCaptureService captures,ShopMapper shops,ShopOperatingSettingsMapper operating,ObjectMapper json){
-        this.batches=batches;this.templates=templates;this.captures=captures;this.shops=shops;this.operating=operating;this.json=json;
+            ProductCaptureService captures,ShopMapper shops,ShopOperatingSettingsMapper operating,ObjectMapper json,CommerceBatchReviewMapper reviews){
+        this.batches=batches;this.templates=templates;this.captures=captures;this.shops=shops;this.operating=operating;this.json=json;this.reviews=reviews;
     }
     public Report check(String id,PlatformPrincipal user){
         var batch=batches.get(id,user);
@@ -32,7 +34,8 @@ public class CommerceBatchPreflightService {
         if(snapshot==null)throw new BusinessException(HttpStatus.CONFLICT,"批次模板快照不可用");
         var config=json.readValue(snapshot.configJson(),CommerceBatchPlanner.Request.class);
         List<String> global=new ArrayList<>();
-        global.add("批次尚未绑定使用权、供货和质量审核证据；需要针对本批实际商品审批");
+        if(reviews.get(user.organizationId(),id)==null)
+            global.add("批次尚未绑定使用权、供货和质量审核证据；需要针对本批实际商品审批");
         global.add("尚未预留跨批次全店每日额度，也未验证官方API环境与店铺环境的一致性");
         global.add("当前批次执行器未开放；检查不会生成、发布、投放或删除");
         if(config.mode()==CommerceBatchPlanner.Mode.POD_DESIGN)

@@ -15,6 +15,9 @@
 #commerce-batch-form fieldset { margin:14px 0; border:1px solid #dce2ea; border-radius:8px; }
 #commerce-batch-list { display:flex; flex-wrap:wrap; gap:8px; }
 #commerce-batch-detail { max-height:400px; overflow:auto; line-height:1.7; }
+#commerce-batch-detail details { margin:10px 0; padding:12px; border:1px solid #dce2ea; border-radius:8px; overflow-wrap:anywhere; }
+#commerce-batch-detail details label { display:grid; gap:6px; margin-top:10px; }
+#commerce-batch-detail textarea { width:100%; box-sizing:border-box; min-height:64px; resize:vertical; font:inherit; }
 #shop-management-page .marketplace-shop-panel { padding:24px; }
 #shop-management-page .marketplace-shop-panel > p, #shop-management-page .marketplace-shop-panel > small { font-size:13px; }
 #shop-management-page .marketplace-shop-panel > header strong { font-size:18px; }

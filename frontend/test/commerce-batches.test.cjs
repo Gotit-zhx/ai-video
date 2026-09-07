@@ -26,8 +26,9 @@ function setup(failFirst=false){
     if(url==='/api/v1/commerce-templates')return {data:[template]};
     if(url==='/api/v1/shops')return {data:[{id:'s1',name:'店1',platform:'SHOPEE',region:'PH',status:'ACTIVE'},{id:'s2',name:'店2',platform:'SHOPEE',region:'PH',status:'ACTIVE'},{id:'foreign-market',platform:'SHOPEE',region:'SG',status:'ACTIVE'}]};
     if(url==='/api/v1/commerce-batches')return {data:[]};
+    if(url.endsWith('/review'))return {data:null};
     if(url.includes('product-captures'))return {data:{page:0,totalPages:1,content:[1,2,3,4].map(i=>({id:'p'+i,title:'商品'+i,sourcePlatform:'SHOPEE',status:'CAPTURED'}))}};
-    return {data:{id:'batch',name:'每日批次',status:'DRAFT',templateSnapshotId:'snapshot',items:[]}};
+    return {data:{id:'batch',name:'每日批次',status:'DRAFT',templateSnapshotId:'snapshot',items:[{id:'item-1',captureId:'p1',captureVersion:3,shopName:'店1',plannedDay:1,status:'DRAFT'}]}};
   };
   let uuid=0;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../commerce-batches.js'),'utf8'),{
@@ -61,4 +62,21 @@ test('unchanged request retries use the same idempotency key',async()=>{
   assert.equal(writes.length,2);
   assert.equal(writes[0].options.headers['Idempotency-Key'],writes[1].options.headers['Idempotency-Key']);
   assert.equal(writes[0].options.body,writes[1].options.body);
+});
+test('review requires confirmation and evidence, submits pinned item version without publishing',async()=>{
+  const s=setup();await s.choose();await s.nodes.form.handlers.submit({preventDefault(){}});
+  const all=[];const walk=e=>e.children.forEach(c=>{all.push(c);walk(c);});walk(s.nodes.detail);
+  const submit=all.find(e=>e.textContent==='保存审核依据（不发布）');
+  assert.ok(submit);
+  await submit.handlers.click();
+  assert.equal(s.calls.filter(c=>c.options&&c.url.endsWith('/review')).length,0);
+  const label=all.find(e=>e.children.some(c=>c.textContent==='我已逐条复核，确认依据真实；提交后不可修改'));
+  label.children.find(e=>e.type==='checkbox').checked=true;
+  await submit.handlers.click();
+  assert.equal(s.calls.filter(c=>c.options&&c.url.endsWith('/review')).length,0);
+  all.filter(e=>e.tag==='textarea').forEach((e,i)=>e.value=['授权记录 R-1','供应 SKU-1','复核 Q-1',''][i]);
+  await submit.handlers.click();
+  const write=s.calls.find(c=>c.options&&c.url.endsWith('/review'));
+  assert.deepEqual(JSON.parse(write.options.body),{confirmed:true,items:[{itemId:'item-1',captureVersion:3,rightsEvidence:'授权记录 R-1',supplySku:'供应 SKU-1',qualityReview:'复核 Q-1',productionEvidence:''}]});
+  assert.ok(!s.calls.some(c=>c.url.includes('publish-workflows')));
 });
