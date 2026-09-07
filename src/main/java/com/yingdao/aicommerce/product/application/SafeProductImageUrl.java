@@ -50,9 +50,8 @@ public class SafeProductImageUrl {
             }
         }
         try {
-            return new URI("https", null, host, -1,
-                    uri.getRawPath() == null || uri.getRawPath().isBlank() ? "/" : uri.getRawPath(),
-                    uri.getRawQuery(), null).toASCIIString();
+            return URI.create("https://"+host+(uri.getRawPath()==null||uri.getRawPath().isBlank()?"/":uri.getRawPath())
+                    +(uri.getRawQuery()==null?"":"?"+uri.getRawQuery())).toASCIIString();
         } catch (Exception exception) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "商品图片地址格式不正确");
         }

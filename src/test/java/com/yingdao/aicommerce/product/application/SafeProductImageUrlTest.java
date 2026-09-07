@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class SafeProductImageUrlTest {
     private final SafeProductImageUrl validator = new SafeProductImageUrl();
+    @Test void preservesEncodedPathsAndSignedQueries(){assertEquals("https://cdn.example.com/a%20b.png?signature=x%2By%3D",validator.validate("https://cdn.example.com/a%20b.png?signature=x%2By%3D#ignored"));}
 
     @Test
     void allowsPublicHttpsAndRejectsLocalAddresses() {
