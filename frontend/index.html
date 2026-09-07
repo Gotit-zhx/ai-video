@@ -35,6 +35,7 @@
   <link rel="icon" href="/assets/hoyee-logo-transparent-white.png">
   <link rel="stylesheet" href="/resend-theme.css?v=20260905-publish-flow-3">
   <link rel="stylesheet" href="/image-progress.css?v=20260904-test-merge-1">
+  <link rel="stylesheet" href="/commerce-planner.css?v=20260907-1">
 </head>
 <body>
   <main id="login-view" class="login-shell">
@@ -632,6 +633,30 @@
       </div>
 
       <div id="product-publish-page" class="workspace-body product-publish-page" hidden>
+        <details class="commerce-planner">
+          <summary>铺货工作流规划 · 模板 v1</summary>
+          <p>预览素材数量、分店排期与预算。不会生成图片、发布商品或创建广告；本次输入不保存。</p>
+          <form id="commerce-plan-form" class="commerce-plan-form">
+            <label>商品模式<select name="mode"><option value="STOCK_MARKETING">现货 · 营销素材裂变</option><option value="POD_DESIGN">POD · 可生产设计裂变</option></select></label>
+            <label>目标平台<select name="platform"><option value="TIKTOK_SHOP">TikTok Shop</option><option value="SHOPEE">Shopee</option><option value="SHEIN">SHEIN（仅规划）</option><option value="TEMU">TEMU（仅规划）</option><option value="AMAZON">Amazon（仅规划）</option><option value="ALIEXPRESS">AliExpress（仅规划）</option></select></label>
+            <label>目标市场<select name="market"><option value="PH">菲律宾 · PHP</option><option value="SG">新加坡 · SGD</option><option value="MY">马来西亚 · MYR</option><option value="TH">泰国 · THB</option><option value="VN">越南 · VND</option><option value="ID">印度尼西亚 · IDR</option></select></label>
+            <label>原始商品数<input name="sourceProducts" type="number" min="1" max="500" value="30" required></label>
+            <label>每款设计／营销版本<input name="designsPerProduct" type="number" min="1" max="20" value="10" required></label>
+            <label>每个版本图片数<input name="imagesPerDesign" type="number" min="1" max="20" value="1" required></label>
+            <label>规划店铺数（非授权选择）<input name="shopCount" type="number" min="1" max="50" value="6" required></label>
+            <label>每日每店最多刊登<input name="dailyListingsPerShop" type="number" min="1" max="500" value="50" required></label>
+            <label>每店每日广告总上限（所选市场币种）<input name="dailyBudgetPerShop" type="number" min="0" max="1000000000" step="0.01" value="1000" required></label>
+            <label>预算观察天数<input name="observationDays" type="number" min="1" max="90" value="7" required></label>
+            <label>目标 ROI（非收益保证）<input name="targetRoi" type="number" min="0.01" max="1000" step="0.01" value="6.5" required></label>
+            <fieldset><legend>准备情况（仅自查，不代替发布审核）</legend>
+              <label><input name="rightsConfirmed" type="checkbox">已确认素材与设计使用权</label>
+              <label><input name="supplyConfirmed" type="checkbox">已确认供货与履约</label>
+              <label><input name="productionFilesConfirmed" type="checkbox">POD生产文件已准备</label>
+            </fieldset>
+            <button type="submit" class="primary-button">预览工作流 · 不执行</button>
+          </form>
+          <div id="commerce-plan-result" role="status" aria-live="polite"></div>
+        </details>
         <section class="product-page-heading">
           <div>
             <span class="product-page-kicker">Commerce capture desk</span>
@@ -1672,5 +1697,6 @@
   <script src="/vendor/sortable.min.js" defer></script>
   <script src="/vendor/qrcode.js" defer></script>
   <script src="/app.js?v=20260905-publish-flow-3" defer></script>
+  <script src="/commerce-planner.js?v=20260907-1" defer></script>
 </body>
 </html>
