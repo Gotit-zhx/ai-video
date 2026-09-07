@@ -23,3 +23,67 @@
 #shop-management-page .marketplace-shop-panel > header strong { font-size:18px; }
 #shop-management-page .marketplace-shop-panel button { font-size:13px; }
 #shop-management-page .marketplace-shop-list { max-height:none; }
+
+/* Two-level navigation: four workspaces, with task-specific child destinations. */
+:root { --sidebar-expanded-width: 224px; }
+#primary-navigation { display:flex; flex-direction:column; gap:8px; overflow-y:auto; padding-bottom:24px; }
+.nav-group { flex:none; border-bottom:1px solid #ffffff0d; padding-bottom:8px; }
+.nav-group > summary { display:flex; align-items:center; gap:12px; min-height:44px; padding:0 11px; border-radius:9px; cursor:pointer; color:#a3a3a3; font-size:13px; font-weight:600; list-style:none; }
+.nav-group > summary::-webkit-details-marker { display:none; }
+.nav-group > summary > span:first-child { width:18px; text-align:center; font-size:17px; }
+.nav-group > summary i { margin-left:auto; font-style:normal; transition:transform .18s; }
+.nav-group[open] > summary i { transform:rotate(180deg); }
+.nav-group > summary:hover, .nav-group.has-active > summary { color:#fafafa; background:#ffffff08; }
+.nav-group > summary:focus-visible { outline:2px solid #2dd4bf; outline-offset:-2px; }
+.nav-children { padding:4px 0 2px 15px; margin-left:18px; border-left:1px solid #ffffff16; }
+.nav-children .nav-item { min-height:35px; margin:3px 0; padding:0 9px; font-size:12px; border-radius:7px; gap:8px; }
+.nav-children .nav-item > span:first-child { display:none; }
+.nav-children .nav-item.active { color:#9de5d6; background:#17352e; }
+.nav-children .nav-item.active::before { left:-16px; height:16px; background:#72d8bd; border-radius:3px; }
+.dashboard:not(.sidebar-expanded) .nav-group-label, .dashboard:not(.sidebar-expanded) .nav-group > summary i,
+.dashboard:not(.sidebar-expanded) .nav-children { display:none; }
+.dashboard:not(.sidebar-expanded) .nav-group > summary { justify-content:center; padding:0; }
+html[data-theme="dark"] .nav-group { border-color:#0000000d; }
+html[data-theme="dark"] .nav-group > summary { color:#65656c; }
+html[data-theme="dark"] .nav-group > summary:hover, html[data-theme="dark"] .nav-group.has-active > summary { color:#17171a; background:#00000005; }
+html[data-theme="dark"] .nav-children { border-color:#00000015; }
+html[data-theme="dark"] .nav-children .nav-item.active { color:#145e4e; background:#d9eee7; }
+
+/* Each commerce destination owns the full content canvas; forms are never stacked. */
+[data-commerce-panel][hidden] { display:none !important; }
+.commerce-page-panel { max-width:1240px; margin:0 auto; padding:30px; border:1px solid #e5e9ee; border-radius:20px; background:#fff; box-shadow:0 8px 30px #142a4010; }
+.commerce-section-heading { padding-bottom:22px; margin-bottom:22px; border-bottom:1px solid #e9edf0; }
+.commerce-section-heading > span { color:#6e8b83; font-size:11px; letter-spacing:2px; font-weight:700; }
+.commerce-section-heading h1 { font-size:28px; line-height:1.25; font-weight:650; letter-spacing:-.7px; margin:10px 0; color:#1a2925; }
+.commerce-section-heading p, .commerce-page-panel > p { font-size:13px; line-height:1.8; color:#74807b; max-width:800px; }
+.commerce-page-panel > p { background:#f5f8f7; padding:12px 16px; border-radius:10px; margin-bottom:22px; }
+.commerce-page-panel button { border:1px solid #dce4e0; border-radius:8px; background:#fff; color:#354a43; padding:9px 14px; min-height:38px; font:inherit; font-size:12px; cursor:pointer; transition:background .15s; }
+.commerce-page-panel button:hover:not(:disabled) { background:#edf5f1; border-color:#b6cfc3; }
+.commerce-page-panel button:disabled { opacity:.45; cursor:not-allowed; }
+.commerce-page-panel button[type="submit"], #commerce-batch-refresh { background:#214f40; border-color:#214f40; color:white; }
+.commerce-page-panel button[type="submit"]:hover:not(:disabled), #commerce-batch-refresh:hover:not(:disabled) { background:#163e30; color:white; }
+.commerce-page-panel input:not([type="checkbox"]), .commerce-page-panel select, .commerce-page-panel textarea { border:1px solid #dce4e0; border-radius:8px; min-height:40px; padding:9px 11px; background:#fbfcfb; color:#233c32; max-width:100%; box-sizing:border-box; font:inherit; font-size:13px; }
+.commerce-page-panel textarea { min-height:96px; resize:vertical; }
+.commerce-page-panel input:focus, .commerce-page-panel select:focus, .commerce-page-panel textarea:focus { outline:2px solid #91c8b2; outline-offset:1px; }
+.commerce-page-panel .commerce-plan-form { gap:20px; grid-template-columns:repeat(3,minmax(0,1fr)); padding:22px; background:#f8faf9; border:1px solid #edf0ee; border-radius:14px; }
+.commerce-page-panel .commerce-plan-form fieldset { grid-column:1/-1; padding:16px; background:white; }
+.commerce-template-controls { padding:0 0 22px; gap:14px; border-color:#e9edf0; }
+#commerce-design-workspace > button { margin:8px 7px 8px 0; }
+#commerce-design-workspace > label { display:block; color:#718078; font-size:12px; }
+#commerce-design-workspace > label input { display:block; margin-top:8px; width:min(100%,480px); }
+.commerce-batch-products label, #commerce-batch-shops label { background:#fbfcfb; padding:13px; line-height:1.6; }
+@media(max-width:1100px) { .commerce-page-panel .commerce-plan-form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:900px) {
+  #primary-sidebar { position:relative; display:block; width:100%; padding:10px 14px; box-sizing:border-box; overflow:visible; }
+  #primary-sidebar .sidebar-brand { position:static; height:30px; padding:0 10px; margin-bottom:8px; }
+  #primary-navigation { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; max-height:240px; padding-bottom:0; overflow:auto; }
+  .topbar { position:relative; top:0; }
+  .nav-group { min-width:0; }
+  .nav-children { padding-left:8px; margin-left:12px; }
+  .nav-children .nav-item { white-space:normal; }
+  .nav-group > summary { min-height:40px; }
+  .nav-children .nav-item.active::before { inset:auto auto auto -16px; width:2px; }
+  .commerce-page-panel { padding:18px; border-radius:14px; }
+  .commerce-page-panel .commerce-plan-form { grid-template-columns:1fr; padding:14px; }
+  .commerce-section-heading h1 { font-size:24px; }
+}

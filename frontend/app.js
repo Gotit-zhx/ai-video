@@ -34,7 +34,34 @@ document.addEventListener("keydown", event => {
     sidebarToggle?.focus();
   }
 });
-applySidebarExpanded(false);
+applySidebarExpanded(true);
+
+const commerceSections = {
+  "product-capture": "商品资料库",
+  "commerce-designs": "图片设计",
+  "commerce-templates": "铺货模板",
+  "commerce-batches": "批次上架",
+  "commerce-ads": "广告测款"
+};
+function commerceRouteFromHash() {
+  const route = window.location.hash.slice(1);
+  return Object.hasOwn(commerceSections, route) ? route : null;
+}
+function selectCommerceSection() {
+  const route = commerceRouteFromHash() || "product-capture";
+  document.querySelectorAll("[data-commerce-panel]").forEach(panel => { panel.hidden = panel.dataset.commercePanel !== route; });
+  document.querySelectorAll("[data-commerce-route]").forEach(link => {
+    const active = link.dataset.commerceRoute === route;
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+  });
+  document.querySelector("#nav-publish").classList.toggle("active", route === "product-capture");
+  document.querySelector(".topbar h2").textContent = `商品运营 / ${commerceSections[route]}`;
+  window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${route}`);
+}
+document.querySelectorAll(".nav-group > summary").forEach(summary => {
+  summary.addEventListener("click", () => { if (!sidebarExpanded) applySidebarExpanded(true); });
+});
 
 const THEME_MODE_STORAGE_KEY = "heyi:theme-mode";
 const supportedThemeModes = new Set(["light", "dark", "auto"]);
@@ -901,7 +928,7 @@ async function showDashboard(user) {
     consumeMarketplaceAuthorizationReturn();
     return;
   }
-  const returnToProducts = window.location.hash === "#product-capture"
+  const returnToProducts = Boolean(commerceRouteFromHash())
     || pendingWorkspaceAfterLogin === "productPublish"
     || hasRememberedProductCaptureRoute();
   const returnCaptureId = pendingProductCaptureAfterLogin;
@@ -1003,6 +1030,10 @@ function applyFeatureAccess() {
   document.querySelector("#nav-models").hidden = !hasAnyPermission("system:model:view", "system:model:manage");
   document.querySelector("#nav-system").hidden = !canOpenSystem;
   document.querySelector("#nav-assistant-test").hidden = !canViewAssistant;
+  document.querySelectorAll("[data-commerce-route]").forEach(link => { link.hidden = !canAccessProductCenter(); });
+  document.querySelectorAll(".nav-group").forEach(group => {
+    group.hidden = ![...group.querySelectorAll(".nav-item")].some(link => !link.hidden);
+  });
 
   document.querySelector("#new-job-button").hidden = !canManageWorkflow;
   document.querySelector("#cancel-current-task").hidden = !hasAnyPermission("workflow:manage", "workflow:review");
@@ -1197,11 +1228,21 @@ document.querySelector("#nav-ai-video-tasks").addEventListener("click", async ev
 
 document.querySelector("#nav-publish").addEventListener("click", async event => {
   event.preventDefault();
+  window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#product-capture`);
   switchWorkspace("productPublish");
   await Promise.all([
     loadProductCaptures(selectedProductCaptureId),
     loadMarketplaceShops({ silent: true })
   ]);
+});
+
+document.querySelectorAll("[data-commerce-route]").forEach(link => {
+  link.addEventListener("click", async event => {
+    event.preventDefault();
+    if (!currentUser || !canAccessProductCenter()) return;
+    window.history.pushState(null, document.title, `${window.location.pathname}${window.location.search}#${link.dataset.commerceRoute}`);
+    switchWorkspace("productPublish");
+  });
 });
 
 document.querySelector("#nav-general-video").addEventListener("click", async event => {
@@ -1267,6 +1308,7 @@ function switchWorkspace(page) {
   document.querySelector("#nav-general-video").classList.toggle("active", isGeneralVideo);
   document.querySelector("#nav-ai-video-monitor").classList.toggle("active", isAiVideoMonitor);
   document.querySelector("#nav-publish").classList.toggle("active", isProductPublish);
+  document.querySelectorAll("[data-commerce-route]").forEach(link => { link.classList.remove("active"); link.removeAttribute("aria-current"); });
   document.querySelector(".topbar h2").textContent =
     isShops ? "店铺管理" :
     isVideoScripts ? "视频脚本管理" : isGeneralVideo ? "通用生成" : isAiVideoTasks ? "AI 视频任务" : isAiVideoMonitor ? "AI 任务监控" : isProductPublish ? "商品采集与发布" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
@@ -1275,10 +1317,8 @@ function switchWorkspace(page) {
     window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#shops`);
   } else if (isProductPublish) {
     rememberProductCaptureRoute(true);
-    if (window.location.hash !== "#product-capture") {
-      window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#product-capture`);
-    }
-  } else if (["#product-capture", "#shops"].includes(window.location.hash)) {
+    selectCommerceSection();
+  } else if (commerceRouteFromHash() || window.location.hash === "#shops") {
     rememberProductCaptureRoute(false);
     window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
   }
@@ -1309,6 +1349,15 @@ function switchWorkspace(page) {
   }
   if (isGeneralVideo) syncGeneralVideoPolling();
   if (isProductPublish) syncProductCapturePolling();
+  document.querySelectorAll(".nav-group").forEach(group => {
+    const active = Boolean(group.querySelector(".nav-item.active"));
+    group.classList.toggle("has-active", active);
+    if (active) group.open = true;
+    group.querySelectorAll(".nav-item").forEach(link => {
+      if (link.classList.contains("active")) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
+  });
   if (isAiVideoTasks) requestAnimationFrame(syncAiVideoTaskRailHeight);
   scheduleSlidingSwitchSync();
 }
@@ -1319,7 +1368,7 @@ window.addEventListener("hashchange", () => {
     loadMarketplaceShops();
     return;
   }
-  if (window.location.hash !== "#product-capture" || !currentUser || !canAccessProductCenter()) return;
+  if (!commerceRouteFromHash() || !currentUser || !canAccessProductCenter()) return;
   switchWorkspace("productPublish");
   loadProductCaptures(selectedProductCaptureId);
 });

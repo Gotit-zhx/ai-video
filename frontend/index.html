@@ -145,17 +145,29 @@
         <span aria-hidden="true">›</span>
       </button>
       <nav id="primary-navigation" aria-label="主导航">
+        <details class="nav-group" data-nav-group="video"><summary title="视频工作台"><span aria-hidden="true">▷</span><span class="nav-group-label">视频工作台</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
         <a href="#" id="nav-ai-video-monitor" class="nav-item active" data-nav-label="任务监控台" title="任务监控台"><span aria-hidden="true">⌁</span><span class="nav-label">任务监控台</span></a>
         <a href="#" id="nav-video-scripts" class="nav-item" data-nav-label="视频脚本管理" title="视频脚本管理"><span aria-hidden="true">▤</span><span class="nav-label">视频脚本管理</span></a>
         <a href="#" id="nav-ai-video-tasks" class="nav-item" data-nav-label="AI 视频任务" title="AI 视频任务"><span aria-hidden="true">▷</span><span class="nav-label">AI 视频任务</span></a>
         <a href="#" id="nav-general-video" class="nav-item" data-nav-label="通用生成" title="通用生成"><span aria-hidden="true">◇</span><span class="nav-label">通用生成</span></a>
+        </div></details>
+        <details class="nav-group" data-nav-group="commerce"><summary title="商品运营"><span aria-hidden="true">◇</span><span class="nav-group-label">商品运营</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
+        <a href="#product-capture" id="nav-publish" class="nav-item" data-nav-label="商品资料库" title="商品资料库"><span aria-hidden="true">◇</span><span class="nav-label">商品资料库</span></a>
+        <a href="#commerce-designs" class="nav-item" data-commerce-route="commerce-designs" data-nav-label="图片设计" title="图片设计"><span aria-hidden="true">◈</span><span class="nav-label">图片设计</span></a>
+        <a href="#commerce-templates" class="nav-item" data-commerce-route="commerce-templates" data-nav-label="铺货模板" title="铺货模板"><span aria-hidden="true">▤</span><span class="nav-label">铺货模板</span></a>
+        <a href="#commerce-batches" class="nav-item" data-commerce-route="commerce-batches" data-nav-label="批次上架" title="批次上架"><span aria-hidden="true">▦</span><span class="nav-label">批次上架</span></a>
+        <a href="#commerce-ads" class="nav-item" data-commerce-route="commerce-ads" data-nav-label="广告测款" title="广告测款"><span aria-hidden="true">↗</span><span class="nav-label">广告测款</span></a>
         <a href="#shops" id="nav-shops" class="nav-item" data-nav-label="店铺管理" title="店铺管理"><span aria-hidden="true">▣</span><span class="nav-label">店铺管理</span></a>
-        <a href="#product-capture" id="nav-publish" class="nav-item" data-nav-label="商品采集/发布" title="商品采集/发布"><span aria-hidden="true">◇</span><span class="nav-label">商品采集/发布</span></a>
+        </div></details>
+        <details class="nav-group" data-nav-group="automation"><summary title="自动化"><span aria-hidden="true">↯</span><span class="nav-group-label">自动化</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
         <a href="#" id="nav-automations" class="nav-item" data-nav-label="自动化中心" title="自动化中心"><span aria-hidden="true">↯</span><span class="nav-label">自动化中心</span></a>
         <a href="#" id="nav-automation-admin" class="nav-item" data-nav-label="自动化管理" title="自动化管理"><span aria-hidden="true">⌘</span><span class="nav-label">自动化管理</span></a>
+        </div></details>
+        <details class="nav-group" data-nav-group="system"><summary title="系统设置"><span aria-hidden="true">⚙</span><span class="nav-group-label">系统设置</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
         <a href="#" id="nav-models" class="nav-item" data-nav-label="模型接入" title="模型接入"><span aria-hidden="true">◎</span><span class="nav-label">模型接入</span></a>
         <a href="#" id="nav-system" class="nav-item" data-nav-label="系统管理" title="系统管理"><span aria-hidden="true">⚙</span><span class="nav-label">系统管理</span></a>
         <a href="#" id="nav-assistant-test" class="nav-item nav-test-item" data-nav-label="助手测试" title="助手测试"><span aria-hidden="true">⌁</span><span class="nav-label nav-test-copy">助手测试</span></a>
+        </div></details>
       </nav>
     </aside>
     <section class="workspace">
@@ -687,8 +699,8 @@
             </section>
       </div>
       <div id="product-publish-page" class="workspace-body product-publish-page" hidden>
-        <details class="commerce-planner">
-          <summary>铺货工作流规划 · 模板 v1</summary>
+        <section class="commerce-planner commerce-page-panel" data-commerce-panel="commerce-templates" hidden>
+          <header class="commerce-section-heading"><span>TEMPLATES / 02</span><h1>铺货模板</h1><p>配置每家店的刊登节奏，让批次沿用同一套标准。</p></header>
           <p>预览素材数量、分店排期与预算。不会生成图片、发布商品或创建广告；只有点击保存模板才会保存配置。</p>
           <div class="commerce-template-controls">
             <label>本公司工作流模板<select id="commerce-template-select"><option value="">新模板</option></select></label>
@@ -718,20 +730,20 @@
             <button type="submit" class="primary-button">预览工作流 · 不执行</button>
           </form>
           <div id="commerce-plan-result" role="status" aria-live="polite"></div>
-        </details>
-        <details class="commerce-planner" id="commerce-design-panel">
-          <summary>商品图片裂变 · 设计草稿</summary>
+        </section>
+        <section class="commerce-planner commerce-page-panel" id="commerce-design-panel" data-commerce-panel="commerce-designs" hidden>
+          <header class="commerce-section-heading"><span>DESIGN STUDIO / 01</span><h1>图片设计</h1><p>从来源商品开始，建立营销图或 POD 设计草稿。</p></header>
           <p>先固定来源商品和参考图。这里只保存草稿，不调用AI、不产生图片或发布商品。现货仅变营销展示；POD还需生产文件审核。</p>
           <div id="commerce-design-workspace"></div>
-        </details>
-        <details class="commerce-planner" id="commerce-ad-panel">
-          <summary>广告测款评估（手工数据 · 不执行投放）</summary>
+        </section>
+        <section class="commerce-planner commerce-page-panel" id="commerce-ad-panel" data-commerce-panel="commerce-ads" hidden>
+          <header class="commerce-section-heading"><span>AD INSIGHTS / 04</span><h1>广告测款</h1><p>先验证规则与预算，再决定下一轮运营动作。</p></header>
           <p>使用同一计划、同一币种和统计周期的数据。预算是整轮上限；例如单店每日1000 PHP、7天即7000 PHP。最低样本仅为试填值，应由运营按类目调整。</p>
           <form id="commerce-ad-form" class="commerce-plan-form"></form>
           <div id="commerce-ad-result" role="status" aria-live="polite"></div>
-        </details>
-        <details class="commerce-planner" id="commerce-batch-panel">
-          <summary>批次工作台 · 绑定实际商品和店铺</summary>
+        </section>
+        <section class="commerce-planner commerce-page-panel" id="commerce-batch-panel" data-commerce-panel="commerce-batches" hidden>
+          <header class="commerce-section-heading"><span>BATCH WORKSPACE / 03</span><h1>批次上架</h1><p>把商品、模板和目标店铺组织成可追踪的工作批次。</p></header>
           <p>固定已保存的模板版本，将选中商品均分给匹配店铺。只保存草稿，不生成、不刊登、不投放。排期仅为本批次相对天数。</p>
           <button type="button" id="commerce-batch-refresh">读取本公司模板、店铺与批次</button>
           <form id="commerce-batch-form">
@@ -752,11 +764,12 @@
           <p id="commerce-batch-status" role="status" aria-live="polite"></p>
           <div id="commerce-batch-list"></div>
           <div id="commerce-batch-detail"></div>
-        </details>
+        </section>
+        <div data-commerce-panel="product-capture">
         <section class="product-page-heading">
           <div>
-            <span class="product-page-kicker">Commerce capture desk</span>
-            <h1>商品采集与发布</h1>
+            <span class="product-page-kicker">PRODUCT LIBRARY / 00</span>
+            <h1>商品资料库</h1>
             <p>插件直接读取商品详情页可见内容；先在这里补全资料、核对图片处理结果，再由有权限的人员人工确认发布。</p>
           </div>
           <div class="product-page-context">
@@ -909,6 +922,7 @@
             </div>
           </section>
         </section>
+        </div>
       </div>
 
       <div id="automations-page" class="workspace-body automation-page" hidden>
