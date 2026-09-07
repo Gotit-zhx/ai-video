@@ -78,6 +78,10 @@ V58新增店铺日额度台账和逐批次条目预留记录。`/api/v1/commerce
 
 ### 2026-09-07 真实 MySQL 映射验证
 
+### 广告测款规则首版（2026-09-07）
+
+新增 `CommerceAdEvaluator` 与 `/api/v1/commerce-plans/ads/evaluate` 只读计算接口，沿用规划读取权限。采集工作台提供折叠评估表，手工输入同一计划的周期、净归因 GMV、花费、样本门槛、整轮预算及目标；默认 7 天 / 门槛 5 / 目标 6.5 / 重测 9，最低样本是可调整试填值，不声称平台推荐。依次评估预算硬上限、观察期、归因结算、投放样本、订单样本、ROAS 门槛。未达标建议人工暂停原计划、另预算审批重测，不同时“删除并修改同一个计划”。用未舍入数值判断门槛，避免显示四舍五入造成误判。没有任何广告写入、扣费、商品删除或达人寄样调用；真实报表、账户授权、预算审批、自动执行尚待实现。Java 常规测试 372 项通过（另 1 项 MySQL 选择性测试跳过），前端与运行时 18 项通过；界面尚未浏览器视觉验收。
+
 新增 `CommerceMapperIntegrationTest`，在独立 MySQL 8.4 空数据库实际应用 V55–V60，并调用 MyBatis mapper 写入回读模板、批次、条目、预留及审核记录；验证租户读取隔离、日额度上限、释放不可负数、释放后隐藏预留、Instant/LocalDate/record 构造器映射。该集成测试实际运行 1 项通过（未跳过），临时容器及卷随后删除，现有应用数据库未修改。
 
 重复运行需自行创建一次性空数据库，通过 `HEYI_MAPPER_TEST_URL=jdbc:mysql://127.0.0.1:<临时端口>/heyi_mapper_test?allowPublicKeyRetrieval=true&useSSL=false&connectionTimeZone=UTC` 指定；运行 `mvn -s maven-settings.xml -Dtest=CommerceMapperIntegrationTest test`。测试固定使用临时 root 空密码，仅允许本机地址及专用数据库名，检测非空数据库直接失败，不删除现存表。常规测试未设置环境变量时跳过此项。此项不是完整 Spring 安全链、服务事务并发或官方发布端到端测试。
