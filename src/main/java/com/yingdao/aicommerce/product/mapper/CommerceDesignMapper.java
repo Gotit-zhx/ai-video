@@ -4,6 +4,8 @@ import org.apache.ibatis.annotations.*;
 import java.util.List;
 @Mapper
 public interface CommerceDesignMapper {
+    @Select("SELECT * FROM commerce_design_drafts WHERE organization_id=#{org} AND id=#{id}")
+    CommerceDesignDraft get(@Param("org")String org,@Param("id")String id);
     @Select("SELECT * FROM commerce_design_drafts WHERE organization_id=#{org} AND request_key=#{key} ORDER BY variant_index")
     List<CommerceDesignDraft> byRequest(@Param("org")String org,@Param("key")String key);
     @Select("SELECT * FROM commerce_design_drafts WHERE organization_id=#{org} AND (#{creator} IS NULL OR created_by=#{creator}) ORDER BY created_at DESC,id LIMIT 100")

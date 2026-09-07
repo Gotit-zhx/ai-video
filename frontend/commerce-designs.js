@@ -37,12 +37,38 @@
   search.addEventListener('click',()=>{searchQuery=query.value.trim();return loadPage(0);});
   previous.addEventListener('click',()=>loadPage(Math.max(0,page-1)));next.addEventListener('click',()=>loadPage(page+1));
   previous.disabled=next.disabled=true;
+  async function showOutput(designId,box,ticket){
+    box.replaceChildren();text('p','正在读取生成结果…',box);
+    try{
+      const response=await api(`/api/v1/commerce-designs/${encodeURIComponent(designId)}/output`);if(ticket!==generation)return;
+      box.replaceChildren();const output=response.data;if(!output){text('p','尚无归档生成结果，草稿不等于已生成图片。',box);return;}
+      text('p',`图片状态：${output.status}；质量批准不等于生产或发布批准。`,box);
+      const image=text('img','',box);image.src=`/api/v1/commerce-designs/${encodeURIComponent(designId)}/output/image`;image.alt='待复核的生成结果';image.style.maxWidth='100%';image.style.maxHeight='480px';
+      if(output.review){text('p',`${output.review.decision} · ${output.review.reviewedAt} · ${output.review.notes}`,box);return;}
+      const checks={};[['singleImage','单张图片，无九宫格或拼贴'],['noAnatomyArtifacts','没有多手、多肢体等异常'],['matchesDesignScope','符合设计用途；现货未改变实物款式'],['noInventedBackPrint','未凭空添加或复制背面图案']].forEach(([key,label])=>{
+        const wrap=text('label',label,box),input=text('input','',wrap);input.type='checkbox';checks[key]=input;
+      });
+      const notes=text('textarea','',text('label','复核说明（必填）',box));notes.maxLength=2000;
+      const approve=button('确认质量通过',box),reject=button('不通过',box),reviewStatus=text('p','',box);
+      let loaded=false;approve.disabled=reject.disabled=true;
+      image.addEventListener('load',()=>{loaded=true;approve.disabled=reject.disabled=false;});
+      image.addEventListener('error',()=>{reviewStatus.textContent='图片加载失败，请重新查看后审核。';});
+      async function review(decision){
+        if(!loaded||!notes.value.trim()){reviewStatus.textContent='请先查看图片并填写说明。';return;}
+        approve.disabled=reject.disabled=true;
+        try{await api(`/api/v1/commerce-designs/${encodeURIComponent(designId)}/output/review`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contentSha256:output.contentSha256,decision,checks:Object.fromEntries(Object.entries(checks).map(([key,input])=>[key,input.checked])),notes:notes.value.trim(),confirmed:true})});if(ticket===generation)await showOutput(designId,box,ticket);}
+        catch(e){if(ticket===generation)reviewStatus.textContent=e.message;}finally{approve.disabled=reject.disabled=false;}
+      }
+      approve.addEventListener('click',()=>review('APPROVE'));reject.addEventListener('click',()=>review('REJECT'));
+    }catch(e){if(ticket===generation)text('p',e.message,box);}
+  }
   async function loadDrafts(){
     const ticket=generation;refresh.disabled=true;
     try{const r=await api('/api/v1/commerce-designs');if(ticket!==generation)return;drafts.replaceChildren();
       if(!r.data.length)text('p','暂无设计草稿。',drafts);
       r.data.forEach(d=>{const box=text('details','',drafts);text('summary',`商品 ${d.captureId} / v${d.captureVersion} · 变体 ${d.variantIndex} · ${d.status}`,box);
         text('p',d.mode==='POD_DESIGN'?'POD设计：尚需生产文件与审核':'现货营销图：保留真实款式、颜色与结构',box);text('p',d.brief,box);text('p',`创建时间：${d.createdAt}；草稿不是生成结果。`,box);
+        const view=button('查看结果 / 质量审核',box),outputBox=text('div','',box);view.addEventListener('click',()=>showOutput(d.id,outputBox,ticket));
       });
     }catch(e){if(ticket===generation)status.textContent=e.message;}finally{refresh.disabled=false;}
   }

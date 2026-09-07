@@ -3,6 +3,12 @@ import com.yingdao.aicommerce.product.domain.CommerceDesignOutput;
 import org.apache.ibatis.annotations.*;
 @Mapper
 public interface CommerceDesignOutputMapper {
+    @Select("SELECT * FROM commerce_design_outputs WHERE organization_id=#{org} AND design_id=#{design}")
+    CommerceDesignOutput byDesign(@Param("org")String org,@Param("design")String design);
+    @Select("SELECT * FROM commerce_design_outputs WHERE organization_id=#{org} AND id=#{id} FOR UPDATE")
+    CommerceDesignOutput lock(@Param("org")String org,@Param("id")String id);
+    @Update("UPDATE commerce_design_outputs SET status=#{status} WHERE organization_id=#{org} AND id=#{id} AND status='PENDING_REVIEW'")
+    int reviewed(@Param("org")String org,@Param("id")String id,@Param("status")String status);
     @Select("SELECT * FROM commerce_design_outputs WHERE organization_id=#{org} AND attempt_id=#{attempt}")
     CommerceDesignOutput byAttempt(@Param("org")String org,@Param("attempt")String attempt);
     @Insert("""
