@@ -12,6 +12,8 @@ public interface CommerceDesignMapper {
     List<CommerceDesignDraft> byRequest(@Param("org")String org,@Param("key")String key);
     @Select("SELECT * FROM commerce_design_drafts WHERE organization_id=#{org} AND (#{creator} IS NULL OR created_by=#{creator}) ORDER BY created_at DESC,id LIMIT 100")
     List<CommerceDesignDraft> list(@Param("org")String org,@Param("creator")String creator);
+    @Select("SELECT * FROM commerce_design_drafts WHERE organization_id=#{org} AND capture_id=#{capture} AND capture_version=#{version} AND (#{creator} IS NULL OR created_by=#{creator}) ORDER BY created_at DESC,id LIMIT 100")
+    List<CommerceDesignDraft> forCapture(@Param("org")String org,@Param("capture")String capture,@Param("version")long version,@Param("creator")String creator);
     @Insert("""
         INSERT INTO commerce_design_drafts(id,organization_id,capture_id,capture_version,request_key,request_hash,
         variant_index,mode,brief,rights_evidence,source_images_json,status,created_by,created_at)

@@ -26,6 +26,8 @@ function setup(failFirst=false){
     if(url==='/api/v1/commerce-templates')return {data:[template]};
     if(url==='/api/v1/shops')return {data:[{id:'s1',name:'店1',platform:'SHOPEE',region:'PH',status:'ACTIVE'},{id:'s2',name:'店2',platform:'SHOPEE',region:'PH',status:'ACTIVE'},{id:'foreign-market',platform:'SHOPEE',region:'SG',status:'ACTIVE'}]};
     if(url==='/api/v1/commerce-batches')return {data:[]};
+    if(url.includes('/design-assets/candidates'))return {data:[{designId:'design-1',contentSha256:'a'.repeat(64),variantIndex:1,mode:'STOCK_MARKETING'}]};
+    if(url.endsWith('/design-assets'))return {data:[]};
     if(url.endsWith('/review'))return {data:null};
     if(url.endsWith('/quota-reservations'))return {data:[{shopId:'s1',listingDate:'2026-09-08',timeZone:'Asia/Manila'}]};
     if(url.includes('product-captures'))return {data:{page:0,totalPages:1,content:[1,2,3,4].map(i=>({id:'p'+i,title:'商品'+i,sourcePlatform:'SHOPEE',status:'CAPTURED'}))}};
@@ -43,6 +45,18 @@ function setup(failFirst=false){
   }
   return {nodes,calls,choose};
 }
+test('asset binding requires loaded preview and confirmation and pins selected output',async()=>{
+  const s=setup();await s.choose();await s.nodes.form.handlers.submit({preventDefault(){}});
+  const all=()=>{const a=[];const walk=e=>{a.push(e);e.children.forEach(walk);};walk(s.nodes.detail);return a;};
+  const load=all().find(e=>e.textContent==='读取已审核图片与绑定记录');
+  const item=all().find(e=>e.tag==='select');item.value='item-1';await load.handlers.click();
+  const bind=all().find(e=>e.textContent==='固定这张图片');assert.equal(bind.disabled,true);
+  const img=all().find(e=>e.tag==='img');img.handlers.load();
+  await bind.handlers.click();assert.equal(s.calls.filter(c=>c.options&&c.url.endsWith('/design-assets')).length,0);
+  const card=all().find(e=>e.tag==='article');card.children.find(e=>e.tag==='label'&&e.children.some(c=>c.type==='checkbox')).children.find(e=>e.type==='checkbox').checked=true;
+  await bind.handlers.click();const write=s.calls.find(c=>c.options&&c.url.endsWith('/design-assets'));
+  assert.deepEqual(JSON.parse(write.options.body),{itemId:'item-1',designId:'design-1',contentSha256:'a'.repeat(64),imagePosition:1,confirmed:true});
+});
 test('filters shops by platform/market and distributes each product only once',async()=>{
   const s=setup();await s.choose();
   assert.equal(s.nodes.shops.children.length,2);

@@ -27,13 +27,14 @@ class CommerceMapperIntegrationTest {
                     "V59__record_batch_cancellation.sql","V60__add_batch_review_evidence.sql",
                     "V61__add_commerce_design_drafts.sql","V62__add_design_generation_attempts.sql",
                     "V63__add_commerce_design_outputs.sql","V64__add_commerce_design_reviews.sql",
-                    "V65__audit_design_generation_consent.sql","V66__pin_design_model_configuration.sql"}){
+                    "V65__audit_design_generation_consent.sql","V66__pin_design_model_configuration.sql","V67__bind_batch_design_assets.sql"}){
                 ScriptUtils.executeSqlScript(connection,new ClassPathResource("db/migration/"+file));
             }
         }
         var config=new Configuration(new Environment("integration",new JdbcTransactionFactory(),ds));
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(CommerceTemplateMapper.class);config.addMapper(CommerceBatchMapper.class);
+        config.addMapper(CommerceBatchDesignAssetMapper.class);
         config.addMapper(CommerceListingQuotaMapper.class);config.addMapper(CommerceBatchReviewMapper.class);
         config.addMapper(CommerceDesignMapper.class);config.addMapper(CommerceDesignAttemptMapper.class);
         config.addMapper(CommerceDesignOutputMapper.class);config.addMapper(CommerceDesignReviewMapper.class);config.addMapper(CommerceDesignConsentMapper.class);
@@ -86,6 +87,11 @@ class CommerceMapperIntegrationTest {
             assertEquals("a".repeat(64),consents.get("org","design").modelConfigurationSha256());
             assertEquals(4,consents.get("org","design").captureVersion());assertEquals("user",consents.get("org","design").confirmedBy());assertNull(consents.get("foreign","design"));
             assertThrows(org.apache.ibatis.exceptions.PersistenceException.class,()->consents.insert(new CommerceDesignConsent("duplicate","org","design",4,"[]","m","model","user",now,null)));
+            var designAssets=session.getMapper(CommerceBatchDesignAssetMapper.class);
+            designAssets.insert(new CommerceBatchDesignAsset("asset","org","batch","item",1,"design","output","a".repeat(64),"dr","user",now));
+            assertEquals("output",designAssets.list("org","batch").getFirst().outputId());
+            assertTrue(designAssets.list("other","batch").isEmpty());
+            assertThrows(org.apache.ibatis.exceptions.PersistenceException.class,()->designAssets.insert(new CommerceBatchDesignAsset("duplicate-asset","org","batch","item",1,"design2","output2","b".repeat(64),"dr2","user",now)));
             session.rollback();
         }
         try(var session=factory.openSession(true)){

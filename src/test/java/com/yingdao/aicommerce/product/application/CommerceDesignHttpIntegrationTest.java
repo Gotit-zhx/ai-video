@@ -27,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.*;
 @EnabledIfEnvironmentVariable(named="HEYI_DESIGN_HTTP_DB",matches="jdbc:mysql://127\\.0\\.0\\.1:[0-9]+/heyi_design_http_test.*")
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT)
 class CommerceDesignHttpIntegrationTest {
+    @org.springframework.beans.factory.annotation.Autowired com.yingdao.aicommerce.product.mapper.CommerceBatchMapper batches;
+    @org.springframework.beans.factory.annotation.Autowired com.yingdao.aicommerce.product.mapper.CommerceTemplateMapper templates;
     @LocalServerPort int port;
     @MockitoBean MarketplaceImageDownloader downloader;
     @MockitoBean CommerceDesignImageGateway gateway;
@@ -74,5 +76,17 @@ class CommerceDesignHttpIntegrationTest {
         call(outputPath+"/review",review,200);call(outputPath+"/review",review,200);
         assertEquals("QUALITY_APPROVED",call(outputPath,null,200).path("status").asText());
         call(outputPath+"/review",Map.of("contentSha256",output.path("contentSha256").asText(),"decision","REJECT","checks",checks,"notes","覆盖历史","confirmed",true),409);
+        // Seed only the batch target fixture; binding itself goes through real HTTP/security/SQL/archive.
+        var identity=call("/api/v1/auth/me",null,200);String org=identity.path("organizationId").asText(),actor=identity.path("userId").asText();
+        var now=java.time.Instant.now();
+        templates.insert(new com.yingdao.aicommerce.product.domain.CommerceTemplateVersion("asset-template",org,"asset-template-root",1,"WORKFLOW","QA","{\"mode\":\"STOCK_MARKETING\"}",actor,now));
+        batches.insert(new com.yingdao.aicommerce.product.domain.CommerceBatch("asset-batch",org,"QA","asset-template","asset-key","asset-hash","DRAFT",actor,now));
+        batches.insertItem(new com.yingdao.aicommerce.product.domain.CommerceBatchItem("asset-item",org,"asset-batch",captureId,capture.path("version").asLong(),"qa-shop","QA",1,"DRAFT",now));
+        String assetsPath="/api/v1/commerce-batches/asset-batch/design-assets";
+        var candidates=call(assetsPath+"/candidates?itemId=asset-item",null,200);assertEquals(design,candidates.get(0).path("designId").asText());
+        var binding=Map.of("itemId","asset-item","designId",design,"contentSha256",output.path("contentSha256").asText(),"imagePosition",1,"confirmed",true);
+        var bound=call(assetsPath,binding,200);assertEquals(bound.path("id"),call(assetsPath,binding,200).path("id"));
+        assertEquals(1,call(assetsPath,null,200).size());
+        call(assetsPath,Map.of("itemId","asset-item","designId",design,"contentSha256",output.path("contentSha256").asText(),"imagePosition",2,"confirmed",true),409);
     }
 }

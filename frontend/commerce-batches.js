@@ -58,6 +58,46 @@
       const detail=get("detail");detail.replaceChildren();
       text("h4",`${b.name} · ${b.status}`,detail);
       text("p",`固定模板快照：${b.templateSnapshotId}；${b.items.length}条实际商品店铺组合。`,detail);
+      const assetBox=text("details","",detail);text("summary","设计素材 · 绑定审核后的图片",assetBox);
+      text("p","只选择当前商品同版本的已审核设计。绑定不会发布；图片顺序固定，批次审核后不能追加。POD仍需生产规格审核。",assetBox);
+      const itemLabel=text("label","目标商品 / 店铺",assetBox),itemSelect=text("select","",itemLabel);
+      b.items.forEach(item=>{const option=text("option",`${item.shopName || '店铺'} · 商品 ${item.captureId} · v${item.captureVersion}`,itemSelect);option.value=item.id;});
+      const readAssets=text("button","读取已审核图片与绑定记录",assetBox);readAssets.type="button";
+      const choices=text("div","",assetBox);choices.className="commerce-asset-choices";
+      const assetStatus=text("p","",assetBox);let assetGeneration=0;
+      itemSelect.addEventListener("change",()=>{assetGeneration++;choices.replaceChildren();assetStatus.textContent="请重新读取所选商品的设计图片。";});
+      readAssets.addEventListener("click",async()=>{
+        const assetTicket=++assetGeneration,itemId=itemSelect.value;if(!itemId)return;
+        choices.replaceChildren();readAssets.disabled=true;
+        try{
+          const root=`/api/v1/commerce-batches/${encodeURIComponent(id)}/design-assets`;
+          const [available,bound]=await Promise.all([api(`${root}/candidates?itemId=${encodeURIComponent(itemId)}`),api(root)]);
+          if(!current()||assetTicket!==assetGeneration)return;
+          const existing=bound.data.filter(a=>a.itemId===itemId);
+          assetStatus.textContent=`本商品已绑定 ${existing.length} 张。候选来自同版本最近100份设计，绑定记录不可覆盖。`;
+          existing.forEach(a=>text("p",`图片 ${a.imagePosition} · 设计 ${a.designId}`,choices));
+          available.data.forEach(candidate=>{
+            const card=text("article","",choices);text("strong",`设计版本 ${candidate.variantIndex} · ${candidate.mode}`,card);
+            const preview=text("img","",card);preview.alt=`设计版本 ${candidate.variantIndex} 预览`;preview.loading="lazy";
+            const positionLabel=text("label","图片顺序（1–9）",card),position=text("input","",positionLabel);position.type="number";position.min="1";position.max="9";position.step="1";position.value=String(existing.length+1);
+            const confirmLabel=text("label","",card),confirmed=text("input","",confirmLabel);confirmed.type="checkbox";text("span","我已查看图片并确认用于该商品",confirmLabel);
+            const bind=text("button","固定这张图片",card);bind.type="button";bind.disabled=true;let imageLoaded=false;
+            preview.addEventListener("load",()=>{imageLoaded=true;bind.disabled=b.status!=="DRAFT";});
+            preview.addEventListener("error",()=>{imageLoaded=false;bind.disabled=true;text("small","图片读取失败，不能绑定。",card);});
+            preview.src=`/api/v1/commerce-designs/${encodeURIComponent(candidate.designId)}/output/image`;
+            bind.addEventListener("click",async()=>{
+              if(!imageLoaded||!confirmed.checked){assetStatus.textContent="请先查看图片并勾选确认。";return;}
+              const imagePosition=Number(position.value);if(!Number.isInteger(imagePosition)||imagePosition<1||imagePosition>9){assetStatus.textContent="图片顺序须为1至9。";return;}
+              bind.disabled=true;
+              try{await api(root,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({itemId,designId:candidate.designId,contentSha256:candidate.contentSha256,imagePosition,confirmed:true})});
+                if(current()&&assetTicket===assetGeneration)assetStatus.textContent=`已固定图片 ${imagePosition}，不会自动发布。`;
+              }catch(e){if(current()&&assetTicket===assetGeneration){assetStatus.textContent=e.message;bind.disabled=false;}}
+            });
+          });
+          if(!available.data.length)text("p","暂无已通过审核的同版本设计，请先到图片设计完成生成与审核。",choices);
+        }catch(e){if(current()&&assetTicket===assetGeneration)assetStatus.textContent=e.message;}
+        finally{readAssets.disabled=false;}
+      });
       const check=text("button","检查发布前条件（只读）",detail);check.type="button";
       const reportBox=text("div","",detail);
       if(b.status==="DRAFT"){
