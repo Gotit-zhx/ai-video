@@ -30,6 +30,7 @@ spring:
       max-request-size: 100MB
 
 app:
+  commerce-design-generation-enabled: ${APP_COMMERCE_DESIGN_GENERATION_ENABLED:false}
   default-organization-code: ${APP_TENANT_CODE:heyi}
   default-organization-name: ${APP_TENANT_NAME:赫逸智能化}
   model-secret-key: ${APP_MODEL_SECRET_KEY:local-development-model-secret-change-me}
