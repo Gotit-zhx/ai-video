@@ -16,6 +16,10 @@ import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import { jsonrepair } from "jsonrepair";
 import { Type } from "typebox";
 import { Agent as UndiciAgent } from "undici";
+import {
+  GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS,
+  GARMENT_TOPOLOGY_VALIDATION_PROMPT
+} from "./garment-topology-validation.js";
 
 const PORT = Number(process.env.PORT || 8090);
 const INTERNAL_TOKEN = process.env.PI_RUNTIME_TOKEN || "heyi-pi-runtime-dev-token";
@@ -273,17 +277,6 @@ const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `仅按商品原图识别服装结构�
 5. 身体侧固定，转身后屏幕左右投影可反转，但不能换身体侧。fixedStructures 和 forbiddenChanges 记录必须保留的连接/袖数/开口/左右关系，禁止对称化、补袖删袖、领口常规化及逐格换侧。
 6. 隐藏结构不猜，列入 uncertainties；袖数或身体侧映射不确定时 confidence≤0.75，仍保留清楚可见的结构。
 节省输出：普通字符串尽量≤24字，领口/穿法/投影≤50字；数组通常1–3项、每项≤30字，独立结构较多时可适当增加但不遗漏。相同事实不在各数组重复展开。`;
-
-const GARMENT_TOPOLOGY_VALIDATION_PROMPT = `校验同款服装、穿法、构图和人体完整性。图1是商品真值，图2是 AI 主图或九宫格；context 提供结构摘要、assetType 和 framingContract。摘要与图1冲突时按图1验收。
-逐项核对：
-1. 先分别清点两图画面左右袖片、袖口和连接；露肩/斜领不等于无袖。保留领口路径、肩线、袖数/长度/连接、衣身比例、下摆、开口、肩带/扣环及主要印花身份。不得改成普通/相似款、对称化、增删袖/肩带或换身体侧。允许自然透视、遮挡、褶皱及轻微文字变形。
-2. MODEL_IMAGE 必须正确穿好，不得举衣/披衣代替穿着或牵拉领口伪造露肩；双手不得遮挡或拉扯领口、肩线、袖口。
-3. 每人最多两臂两手；可见手须有合理唯一来源，不得多手、多臂、断肢或复制肢体。自然遮挡和画外肢体不要求补出。
-4. 人物从头顶至大腿中下段、膝盖上方裁切，不能露膝盖以下/脚/鞋，不能全身远景或突然拉远。MODEL_IMAGE 要清晰正脸，脸高≥图高15%。九宫格正/侧脸可见格脸高≥15%；背身、低头、遮脸格按头部轮廓≥15%，不得强行转正补脸。01–09主体尺度稳定；纯商品格采用近景填满主体区域。
-5. 九宫格每格都直接对照图1，包含07–09；不得沿用前格错误。任一格商品结构、身份、穿法、构图或人体违规，整图 valid=false。不评价美丑和背景审美。
-仅返回紧凑 JSON：
-{"valid":false,"violationCount":1,"violations":["格号/身体侧/部位：错误"],"correctionPrompt":"一句修正指令","confidence":0.0}
-violationCount 统计全部独立问题（按格号/身体侧/部位/构图/人体分别计数）；violations 仅列最关键3条，每条≤30字；correctionPrompt≤80字。通过时 violationCount=0、数组为空、纠错为空；失败时 violationCount>0。不输出推理过程。`;
 
 const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策划器。输入可能是一名业务人员写的一整段自然语言需求，也可能包含按顺序排列的多张真实参考图片。你要理解真实营销意图，将其整理成可直接制作的固定 9 个分镜。
 只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字：
@@ -2645,7 +2638,7 @@ async function runProductFunctionAnalysis(body) {
         systemPrompt,
         JSON.stringify(body.context || {}),
         attachments,
-        400,
+        GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS,
         PRODUCT_ANALYSIS_TIMEOUT_MS
       );
       console.info(`[product-analysis] validation completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
@@ -2697,7 +2690,7 @@ async function runProductFunctionAnalysis(body) {
         ...options,
         apiKey,
         maxTokens: (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2") ? 2400
-          : analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1" ? 1200 : 1400,
+          : analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1" ? GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS : 1400,
         timeoutMs: 120_000,
         maxRetries: 2,
         maxRetryDelayMs: 10_000

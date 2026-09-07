@@ -1,12 +1,18 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.yingdao.aicommerce.video.domain.AiVideoTask;
+import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
+import com.yingdao.aicommerce.video.mapper.AiVideoTaskItemMapper;
+import com.yingdao.aicommerce.video.mapper.AiVideoTaskMapper;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -14,6 +20,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiVideoTaskServiceTest {
@@ -59,10 +72,11 @@ class AiVideoTaskServiceTest {
         String result = AiVideoGenerationService.gridStoryboardSafetyPrompt("原提示词", "1:1");
 
         assertTrue(result.contains("图2是按左到右、上到下读取01→09的时间索引"));
-        assertTrue(result.contains("必须采用图2每格的动作与场景"));
+        assertTrue(result.contains("采用图2每格的动作与场景意图"));
+        assertTrue(result.contains("只执行后附时间轴已归一化的动作、景别与转场"));
         assertTrue(result.contains("铺满1:1画布"));
         assertTrue(result.contains("禁止输出九宫格布局、画中画、分屏、拼贴"));
-        assertTrue(result.contains("转场只服从后附时间轴"));
+        assertTrue(result.contains(VideoTimelineSemantics.TRANSITION_POLICY));
         assertTrue(result.contains("被遮挡或出画的肢体无需补出"));
         assertTrue(result.contains("纯商品镜头可以无人无手"));
         assertTrue(result.length() < 700);
@@ -167,5 +181,78 @@ class AiVideoTaskServiceTest {
         assertTrue(AiVideoTaskService.hasVoiceover(task, mapper));
         when(task.getGenerationRulesJson()).thenReturn("{\"voiceoverMode\":\"CUSTOM\",\"customVoiceover\":\"\"}");
         assertFalse(AiVideoTaskService.hasVoiceover(task, mapper));
+    }
+
+    @Test
+    void everyVideoModeUsesNormalizedTimelineAndOneTransitionPolicy() {
+        AiVideoTaskService service = testService(mock(AiVideoTaskMapper.class), mock(AiVideoTaskItemMapper.class),
+                mock(ProductFunctionAnalysisService.class));
+        for (String mode : List.of("MODEL_WEAR", "PRODUCT_ONLY")) {
+            for (boolean direct : List.of(false, true)) {
+                AiVideoTask task = mock(AiVideoTask.class);
+                when(task.getGenerationMode()).thenReturn(mode);
+                when(task.isDirectReferenceVideo()).thenReturn(direct);
+                when(task.getScriptJson()).thenReturn("""
+                        {"shots":[
+                          {"sequence":1,"motionDescription":"左手提起衣摆，镜头拉远展示全身","sceneDescription":"全景镜头，白色房间","cameraMovement":"后退并横移","transitionDescription":"硬切"},
+                          {"sequence":2,"motionDescription":"转身展示后背","sceneDescription":"蓝色房间","transitionDescription":"同一镜头连续，无转场，背景切换"},
+                          {"sequence":3,"motionDescription":"自然放下手","transitionDescription":"硬切到商品特写"}
+                        ]}
+                        """);
+                StringBuilder prompt = new StringBuilder();
+
+                ReflectionTestUtils.invokeMethod(service, "appendImageToVideoTimeline", prompt, task);
+
+                String result = prompt.toString();
+                assertTrue(result.contains(VideoTimelineSemantics.TRANSITION_POLICY));
+                assertTrue(result.contains("左手提起衣摆"));
+                assertTrue(result.contains("转身展示后背"));
+                assertTrue(result.contains("自然放下手"));
+                assertTrue(result.contains("进入转场：无"));
+                assertTrue(result.contains("进入转场：同镜头连续，无转场"));
+                assertTrue(result.contains("进入转场：硬切到商品特写"));
+                assertTrue(result.contains("保持固定机位并横移"));
+                assertFalse(result.contains("场景明显变化时在边界干净硬切"));
+                assertFalse(result.contains("镜头拉远展示全身"));
+                assertFalse(result.contains("全景镜头，白色房间"));
+                assertFalse(result.contains("进入转场：同一镜头连续，无转场，背景切换"));
+                assertEquals(!direct, result.contains("图2中同编号关键帧"));
+            }
+        }
+    }
+
+    @Test
+    void storedGeneratedPromptsMigrateToNewVersionWithoutRegeneratingVideoOrTouchingCustomText() {
+        AiVideoTaskMapper tasks = mock(AiVideoTaskMapper.class);
+        AiVideoTaskItemMapper items = mock(AiVideoTaskItemMapper.class);
+        ProductFunctionAnalysisService analysis = mock(ProductFunctionAnalysisService.class);
+        AiVideoTask task = mock(AiVideoTask.class);
+        when(task.getId()).thenReturn("task-1");
+        when(task.getGenerationMode()).thenReturn("MODEL_WEAR");
+        when(task.getAspectRatio()).thenReturn("9:16");
+        when(task.getScriptJson()).thenReturn("{\"shots\":[]}");
+        AiVideoTaskItem old = mock(AiVideoTaskItem.class);
+        when(old.getName()).thenReturn("样品");
+        when(old.getVideoPromptText()).thenReturn("提示词版本：V11.7 · 模特静默与旋律伴奏版\n旧时间轴");
+        AiVideoTaskItem custom = mock(AiVideoTaskItem.class);
+        when(custom.getVideoPromptText()).thenReturn("自定义：固定机位展示商品。");
+        when(custom.getName()).thenReturn("自定义样品");
+        when(tasks.selectList(null)).thenReturn(List.of(task));
+        when(items.selectList(any())).thenReturn(List.of(old, custom));
+        when(analysis.applyToVideoPrompt(eq(task), anyString(), isNull())).thenAnswer(call -> call.getArgument(1));
+
+        testService(tasks, items, analysis).migrateLegacyGeneratedVideoPrompts();
+
+        verify(old).updateVideoPrompt(argThat(prompt -> prompt.startsWith("提示词版本：V11.8 · 统一转场与近景动作归一")));
+        verify(items).updateById(old);
+        verify(custom, never()).updateVideoPrompt(anyString());
+        verify(items, never()).updateById(custom);
+    }
+
+    @SuppressWarnings("unchecked")
+    private AiVideoTaskService testService(AiVideoTaskMapper tasks, AiVideoTaskItemMapper items,
+                                         ProductFunctionAnalysisService analysis) {
+        return new AiVideoTaskService(tasks, items, null, null, null, null, null, new ObjectMapper(),
+                analysis, null, null, mock(ObjectProvider.class), ".");
     }
 }

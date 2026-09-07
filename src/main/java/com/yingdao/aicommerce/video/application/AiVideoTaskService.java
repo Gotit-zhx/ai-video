@@ -1337,7 +1337,7 @@ public class AiVideoTaskService {
         prompt.append("所有出现人物的画面都必须保持头顶至大腿中下段、下边界在膝盖上方的中近景；膝盖以下、双脚和鞋子始终不可见。")
                 .append("正面或侧脸可见时，脸从发际线到下巴的高度不得低于画面高度 15%；背身、后脑、低头遮脸或商品遮脸时，不得为满足人脸条件强行补画五官或把人物转正，改以头部轮廓高度不低于 15% 保持同一主体尺度。头顶、该朝向自然可见的五官、本镜头按时间轴可见的当前商品部位、构图内可见手臂和动作实际需要的手必须清楚；被遮挡或出画的肢体无需补出。")
                 .append("禁止远景、全景、完整全身、广角缩人、人物后退变小、镜头拉远或切到远景；脚本、shotSize、cameraMovement、参考图或原视频若与此冲突，一律把动作改写到中近景内完成。")
-                .append("允许硬切和轻微推近、横移、环绕，但切换前后仍须保持相同中近景主体尺度，不能用拉远交代环境。纯商品特写可以无人，但商品必须近景填满主要画面。\n\n");
+                .append("允许轻微推近、横移、环绕；硬切仅由时间轴的明确进入转场决定，切换前后仍须保持相同中近景主体尺度，不能用拉远交代环境。纯商品特写可以无人，但商品必须近景填满主要画面。\n\n");
     }
 
     private String closeFramingTimelineDirective(AiVideoTask task) {
@@ -1348,7 +1348,7 @@ public class AiVideoTaskService {
 
     private String buildDirectReferenceVideoPrompt(AiVideoTask task, String subjectName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：DIRECT_DETAIL_V5 · 模特静默与全片中近景锁定\n\n");
+        prompt.append("提示词版本：DIRECT_DETAIL_V6 · 统一转场与近景动作归一\n\n");
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append("短视频，主体：").append(subjectName).append("。\n");
         prompt.append("参考图的编号、主参考和各图用途由用户单独指定；严格服从提交时附加的《参考图职责协议》，不得按上传顺序自行猜测，也不得把编号、用途说明或协议文字拍进成片。\n");
@@ -1374,12 +1374,12 @@ public class AiVideoTaskService {
 
     private String buildProductVideoPrompt(AiVideoTask task, String productName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：PRODUCT_DETAIL_V6 · 旋律伴奏与全片商品近景锁定\n\n");
+        prompt.append("提示词版本：PRODUCT_DETAIL_V7 · 统一转场与近景动作归一\n\n");
         prompt.append("【参考图片】\n");
         prompt.append("图1：从图2第 01 格裁出的商品首帧，是商品外观、位置、场景与初始状态的最高优先级锚点。\n");
         prompt.append("图2：4K 商品分镜九宫格，按从左到右、从上到下读取 01→09，仅表示同一件商品的连续展示过程。\n");
         prompt.append("图3：原始商品素材，用于校验颜色、结构、比例、Logo、包装文字、印花与材质。\n\n");
-        prompt.append("如请求中另附参考视频：它是原分镜脚本的动作母版，只用于复刻时间节奏、主体动作、运镜轨迹和镜头边界转场；不得继承其中的原商品外观、文字、品牌、人物身份或背景细节。\n\n");
+        prompt.append("如请求中另附参考视频：它只提供与后附已归一化时间轴兼容的时间节奏、主体动作和运镜参考；镜头边界与转场只认时间轴的“进入转场”，不得从参考视频另增切镜、拉远或全身构图。不得继承其中的原商品外观、文字、品牌、人物身份或背景细节。\n\n");
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append(" 商品展示视频。全程只保留同一件商品主体，按 01→09 自然连续变化，不得复制或增加第二件同款。\n");
         appendCloseFramingLock(prompt, task);
@@ -1398,7 +1398,7 @@ public class AiVideoTaskService {
 
     private String buildStoryboardAnimationPrompt(AiVideoTask task, String garmentName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：V11.7 · 模特静默与旋律伴奏版\n\n");
+        prompt.append("提示词版本：V11.8 · 统一转场与近景动作归一\n\n");
         prompt.append("【参考图职责】\n");
         prompt.append("图1：第01格单画面首帧。人物身份、脸、发型、身材和非商品穿搭在全片保持一致；只有姿势、手持状态和背景仅约束 t=0。\n");
         prompt.append("图2：完整3×3时间索引，按左到右、上到下读取01→09。采用每格的动作、场景、构图意图和机位方向，但把对应内容重建为铺满画布的单画面；远景、全身和拉远信息由中近景规则覆盖，九宫格版式本身不是输出内容。\n");
@@ -1507,14 +1507,12 @@ public class AiVideoTaskService {
             Object rawShots = root.get("shots");
             if (!(rawShots instanceof List<?> shots) || shots.isEmpty()) return;
             prompt.append("【逐镜头时间轴】\n");
-            boolean productOnly = VideoTimelineSemantics.usesPhysicalShotTransitions(task.getGenerationMode());
+            prompt.append(VideoTimelineSemantics.TRANSITION_POLICY).append('\n');
             if (task.isDirectReferenceVideo()) {
                 prompt.append("按人工脚本的时间段逐项执行；每段场景、构图、动作和声音均须落实，参考图职责服从提交时附加的协议。\n");
             } else {
-                prompt.append(productOnly
-                        ? "每一项对应图2中同编号关键帧，必须在指定时段落实该格的场景、构图意图、动作和运镜；原始景别只作废不继承，严格读取“进入转场”，其中“同镜头连续，无转场”表示平滑延续，只有明确的真实切点才允许切镜。\n"
-                        : "每一项对应图2中同编号格，必须在指定时段落实该格的场景、构图意图和动作；原始景别只作废不继承，同场景内部平滑运动，场景明显变化时在边界干净硬切。\n");
-                prompt.append("时间轴文字中的人物外貌、发型、眼镜、配饰、上装和下装描述全部失效，人物与穿搭只认图1和图3；场景、动作与构图意图以图2对应格为准，景别必须服从全片中近景锁定，远景、全身和拉远信息无效。\n");
+                prompt.append("每一项对应图2中同编号关键帧，在指定时段落实该格的动作与构图意图；使用下列已归一化的动作轨迹、画面场景和执行镜头，不重新引入图2的远景、全身或拉远指令。严格读取“进入转场”，不按换格或场景差异自行切镜。\n");
+                prompt.append("时间轴文字中的人物外貌、发型、眼镜、配饰、上装和下装描述全部失效，人物与穿搭只认图1和图3；图2只提供与已归一化时间轴兼容的场景、动作与构图意图，景别必须服从全片中近景锁定。\n");
             }
             for (Object rawShot : shots) {
                 if (!(rawShot instanceof Map<?, ?> shot)) continue;
@@ -1523,10 +1521,12 @@ public class AiVideoTaskService {
                 String end = textValue(shot.get("endSecond"));
                 String action = textValue(shot.get("motionDescription"));
                 if (action.isBlank()) action = textValue(shot.get("title"));
+                action = VideoTimelineSemantics.normalizeCloseFraming(task.getGenerationMode(), action);
                 String intensity = textValue(shot.get("motionIntensity"));
                 String movement = textValue(shot.get("cameraMovement"));
                 String transition = textValue(shot.get("transitionDescription"));
-                String scene = textValue(shot.get("sceneDescription"));
+                String scene = VideoTimelineSemantics.normalizeCloseFraming(
+                        task.getGenerationMode(), textValue(shot.get("sceneDescription")));
                 prompt.append(String.format("%02d", sequence));
                 if (!start.isBlank() && !end.isBlank()) prompt.append("｜").append(start).append('–').append(end).append(" 秒");
                 prompt.append('\n');
@@ -1552,18 +1552,8 @@ public class AiVideoTaskService {
         if (movement == null || movement.isBlank()) {
             return base + "；固定机位或近景范围内轻微运动";
         }
-        String normalized = movement.toLowerCase();
-        boolean pullsAway = normalized.contains("拉远")
-                || normalized.contains("后退")
-                || normalized.contains("远离")
-                || normalized.contains("zoom out")
-                || normalized.contains("dolly out")
-                || normalized.contains("pull back")
-                || normalized.contains("truck out");
-        if (pullsAway) {
-            return base + "；原拉远/后退运镜已禁用，改为近景范围内轻微横移、环绕或固定机位";
-        }
-        return base + "；仅在不改变主体近景尺度的前提下执行原运镜：" + movement;
+        return base + "；仅在不改变主体近景尺度的前提下执行："
+                + VideoTimelineSemantics.normalizeCameraMovement(task.getGenerationMode(), movement);
     }
 
     private String buildThreeReferenceGridPromptV3(AiVideoTask task, String garmentName) {
@@ -1672,12 +1662,15 @@ public class AiVideoTaskService {
         if (isScriptVideoReplacement(task)) {
             return !current.contains("提示词版本：SCRIPT_VIDEO_REPLACE_V2 · 精准复刻");
         }
-        if (current.contains("提示词版本：DIRECT_DETAIL_V5 · 模特静默与全片中近景锁定")
-                || current.contains("提示词版本：PRODUCT_DETAIL_V6 · 旋律伴奏与全片商品近景锁定")
-                || current.contains("提示词版本：V11.7 · 模特静默与旋律伴奏版")) {
+        if (current.contains("提示词版本：DIRECT_DETAIL_V6 · 统一转场与近景动作归一")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V7 · 统一转场与近景动作归一")
+                || current.contains("提示词版本：V11.8 · 统一转场与近景动作归一")) {
             return false;
         }
-        return (current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")
+        return (current.contains("提示词版本：DIRECT_DETAIL_V5 · 模特静默与全片中近景锁定")
+                || current.contains("提示词版本：PRODUCT_DETAIL_V6 · 旋律伴奏与全片商品近景锁定")
+                || current.contains("提示词版本：V11.7 · 模特静默与旋律伴奏版")
+                || current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")
                 || current.contains("提示词版本：PRODUCT_DETAIL_V5 · 全片商品近景锁定")
                 || current.contains("提示词版本：V11.6 · 近景证据优先精简版")
                 || current.contains("提示词版本：DIRECT_DETAIL_V3")
