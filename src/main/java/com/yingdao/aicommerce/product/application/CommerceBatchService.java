@@ -5,6 +5,7 @@ import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.product.domain.*;
 import com.yingdao.aicommerce.product.mapper.*;
 import com.yingdao.aicommerce.shop.mapper.ShopMapper;
+import com.yingdao.aicommerce.shop.mapper.ShopOperatingSettingsMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,9 +27,10 @@ public class CommerceBatchService {
     private final ProductCaptureMapper captures;
     private final ShopMapper shops;
     private final ObjectMapper json;
+    private final ShopOperatingSettingsMapper operatingSettings;
     public CommerceBatchService(CommerceBatchMapper batches,CommerceTemplateMapper templates,
-            ProductCaptureMapper captures,ShopMapper shops,ObjectMapper json) {
-        this.batches=batches; this.templates=templates; this.captures=captures; this.shops=shops; this.json=json;
+            ProductCaptureMapper captures,ShopMapper shops,ObjectMapper json,ShopOperatingSettingsMapper operatingSettings) {
+        this.batches=batches; this.templates=templates; this.captures=captures; this.shops=shops; this.json=json; this.operatingSettings=operatingSettings;
     }
     public List<View> list(PlatformPrincipal user) {
         access(user,false);
@@ -59,6 +61,7 @@ public class CommerceBatchService {
         Map<String,Integer> counts=new LinkedHashMap<>();
         String id=UUID.randomUUID().toString(); Instant now=Instant.now();
         List<CommerceBatchItem> items=new ArrayList<>();
+        Set<String> environments=new HashSet<>();
         for(Target t:r.targets()) {
             var capture=captures.selectById(t.captureId());
             if(capture==null || !user.organizationId().equals(capture.getOrganizationId())) throw error(HttpStatus.NOT_FOUND,"商品不存在或不可访问");
@@ -67,10 +70,16 @@ public class CommerceBatchService {
             if(!"ACTIVE".equals(shop.getStatus())) throw bad("目标店铺授权不可用");
             if(!c.platform().name().equals(shop.getPlatform()) || !c.market().equalsIgnoreCase(shop.getRegion()))
                 throw bad("目标店铺平台或站点与模板不一致");
+            var operating=operatingSettings.get(user.organizationId(),t.shopId());
+            if(operating==null || !Set.of("TEST","LIVE").contains(operating.environment()))
+                throw bad("请先在店铺管理确认各店铺的测试/正式标记");
+            environments.add(operating.environment());
+            if(environments.size()>1)throw bad("同一批次不能混用测试店铺与正式店铺");
+            int dailyLimit=Math.min(c.dailyListingsPerShop(),operating.dailyListingLimit());
             int position=counts.merge(t.shopId(),1,Integer::sum);
             items.add(new CommerceBatchItem(UUID.randomUUID().toString(),user.organizationId(),id,
                     capture.getId(),capture.getVersion(),shop.getId(),shop.getName(),
-                    (position-1)/c.dailyListingsPerShop()+1,"DRAFT",now));
+                    (position-1)/dailyLimit+1,"DRAFT",now));
         }
         if(counts.size()!=c.shopCount()) throw bad("实际目标店铺数与模板规划不一致，请调整模板或店铺选择");
         var batch=new CommerceBatch(id,user.organizationId(),r.name().trim(),snapshot.id(),key,hash,"DRAFT",user.userId(),now);

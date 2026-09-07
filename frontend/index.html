@@ -634,6 +634,20 @@
       </div>
 
       <div id="shop-management-page" class="workspace-body" hidden>
+        <details class="commerce-planner">
+          <summary>店铺运营配置</summary>
+          <p>测试／正式是运营标记，不改变官方API环境；额度用于批次排期，尚不代表全店跨批次执行额度已预留。</p>
+          <button type="button" id="shop-settings-refresh">读取店铺配置</button>
+          <form id="shop-settings-form" class="commerce-plan-form">
+            <label>店铺<select id="shop-settings-shop" required><option value="">请先读取店铺</option></select></label>
+            <label>分组<input name="groupName" maxlength="80" placeholder="例如：菲律宾女装一组"></label>
+            <label>环境标记<select name="environment"><option value="UNKNOWN">未确认</option><option value="TEST">测试店铺</option><option value="LIVE">正式店铺</option></select></label>
+            <label>每日上架额度<input name="dailyListingLimit" type="number" min="1" max="500" value="50" required></label>
+            <label>默认模板固定版本<select name="defaultTemplateSnapshotId" id="shop-settings-template"><option value="">无默认模板</option></select></label>
+            <button type="submit">保存配置</button>
+          </form>
+          <p id="shop-settings-status" role="status" aria-live="polite"></p>
+        </details>
         <section class="product-page-heading"><div><h1>店铺管理</h1><p>独立管理本公司店铺授权；商品发布和批次工作台共用这些店铺。</p></div></section>
             <section id="marketplace-shop-panel" class="marketplace-shop-panel">
               <header>
@@ -1735,5 +1749,6 @@
   <script src="/app.js?v=20260905-publish-flow-3" defer></script>
   <script src="/commerce-planner.js?v=20260907-1" defer></script>
   <script src="/commerce-batches.js?v=20260907-1" defer></script>
+  <script src="/shop-settings.js?v=20260907-1" defer></script>
 </body>
 </html>

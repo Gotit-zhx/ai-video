@@ -5,6 +5,8 @@ import com.yingdao.aicommerce.product.domain.*;
 import com.yingdao.aicommerce.product.mapper.*;
 import com.yingdao.aicommerce.shop.domain.Shop;
 import com.yingdao.aicommerce.shop.mapper.ShopMapper;
+import com.yingdao.aicommerce.shop.mapper.ShopOperatingSettingsMapper;
+import com.yingdao.aicommerce.shop.domain.ShopOperatingSettings;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
@@ -19,7 +21,8 @@ class CommerceBatchServiceTest {
     final ProductCaptureMapper captures=mock(ProductCaptureMapper.class);
     final ShopMapper shops=mock(ShopMapper.class);
     final ObjectMapper json=new ObjectMapper();
-    final CommerceBatchService service=new CommerceBatchService(batches,templates,captures,shops,json);
+    final ShopOperatingSettingsMapper operating=mock(ShopOperatingSettingsMapper.class);
+    final CommerceBatchService service=new CommerceBatchService(batches,templates,captures,shops,json,operating);
     final PlatformPrincipal user=new PlatformPrincipal("u","org","code","login","User","x",true,List.of(),List.of("product:view","product:edit"));
     CommerceBatchService.CreateRequest setup(String captureOrg,String shopOrg,String market) {
         var config=new CommerceBatchPlanner.Request(CommerceBatchPlanner.Mode.STOCK_MARKETING,
@@ -32,6 +35,7 @@ class CommerceBatchServiceTest {
         when(shop.getStatus()).thenReturn("ACTIVE"); when(shop.getPlatform()).thenReturn("SHOPEE");
         when(shop.getRegion()).thenReturn(market); when(shop.getName()).thenReturn("测试店");
         when(shops.selectById("shop")).thenReturn(shop);
+        when(operating.get("org","shop")).thenReturn(new ShopOperatingSettings("shop","org","group","TEST",50,null,1,"u",Instant.now()));
         return new CommerceBatchService.CreateRequest("批次","snapshot",List.of(new CommerceBatchService.Target("capture","shop")));
     }
     @Test void draftPinsTemplateAndProductVersionWithoutDispatch() {
@@ -60,6 +64,11 @@ class CommerceBatchServiceTest {
     @Test void reusedKeyWithDifferentRequestIsRejected() {
         var r=setup("org","org","PH");
         when(batches.byKey("org","batch-key-1")).thenReturn(new CommerceBatch("b","org","name","snapshot","batch-key-1","different","DRAFT","u",Instant.now()));
+        assertThrows(BusinessException.class,()->service.create(r,"batch-key-1",user));
+        verify(batches,never()).insert(any());
+    }
+    @Test void unconfirmedEnvironmentCannotCreateBatch() {
+        var r=setup("org","org","PH");when(operating.get("org","shop")).thenReturn(null);
         assertThrows(BusinessException.class,()->service.create(r,"batch-key-1",user));
         verify(batches,never()).insert(any());
     }
