@@ -665,6 +665,29 @@
           </form>
           <div id="commerce-plan-result" role="status" aria-live="polite"></div>
         </details>
+        <details class="commerce-planner" id="commerce-batch-panel">
+          <summary>批次工作台 · 绑定实际商品和店铺</summary>
+          <p>固定已保存的模板版本，将选中商品均分给匹配店铺。只保存草稿，不生成、不刊登、不投放。排期仅为本批次相对天数。</p>
+          <button type="button" id="commerce-batch-refresh">读取本公司模板、店铺与批次</button>
+          <form id="commerce-batch-form">
+            <div class="commerce-plan-form">
+              <label>批次名称<input name="name" maxlength="120" required></label>
+              <label>模板版本<select name="snapshot" id="commerce-batch-template" required><option value="">先读取模板</option></select></label>
+            </div>
+            <fieldset><legend>目标店铺（平台和站点须与模板一致）</legend><div id="commerce-batch-shops"></div></fieldset>
+            <fieldset><legend>实际商品</legend>
+              <input id="commerce-batch-query" type="search" placeholder="搜索已采集商品" aria-label="搜索已采集商品">
+              <button id="commerce-batch-search" type="button">查询</button>
+              <span id="commerce-batch-selected-count">已选 0 款</span>
+              <div id="commerce-batch-products" class="commerce-batch-products"></div>
+              <button id="commerce-batch-more" type="button" disabled>加载更多</button>
+            </fieldset>
+            <button type="submit">保存批次草稿 · 不执行</button>
+          </form>
+          <p id="commerce-batch-status" role="status" aria-live="polite"></p>
+          <div id="commerce-batch-list"></div>
+          <div id="commerce-batch-detail"></div>
+        </details>
         <section class="product-page-heading">
           <div>
             <span class="product-page-kicker">Commerce capture desk</span>
@@ -1706,5 +1729,6 @@
   <script src="/vendor/qrcode.js" defer></script>
   <script src="/app.js?v=20260905-publish-flow-3" defer></script>
   <script src="/commerce-planner.js?v=20260907-1" defer></script>
+  <script src="/commerce-batches.js?v=20260907-1" defer></script>
 </body>
 </html>

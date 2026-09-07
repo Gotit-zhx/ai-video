@@ -10,3 +10,8 @@
 .commerce-plan-form fieldset { display: grid; gap: 8px; border: 1px solid #cbd5e1; border-radius: 8px; }
 .commerce-plan-form button { align-self: end; min-height: 40px; }
 #commerce-plan-result { line-height: 1.7; overflow-wrap: anywhere; }
+.commerce-batch-products { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; margin:12px 0; max-height:360px; overflow:auto; }
+.commerce-batch-products label, #commerce-batch-shops label { display:block; padding:8px; border:1px solid #dce2ea; border-radius:8px; overflow-wrap:anywhere; }
+#commerce-batch-form fieldset { margin:14px 0; border:1px solid #dce2ea; border-radius:8px; }
+#commerce-batch-list { display:flex; flex-wrap:wrap; gap:8px; }
+#commerce-batch-detail { max-height:400px; overflow:auto; line-height:1.7; }
