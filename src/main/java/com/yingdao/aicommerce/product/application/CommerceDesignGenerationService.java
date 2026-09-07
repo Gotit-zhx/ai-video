@@ -12,7 +12,7 @@ import java.util.*;
 @Service
 public class CommerceDesignGenerationService {
     public record Request(List<String> imageIds,boolean confirmed){}
-    public record State(String designId,String attemptId,String status,boolean generationEnabled,String message){}
+    public record State(String designId,String attemptId,String status,boolean generationEnabled,String message,List<String> referenceImageIds){}
     private final CommerceDesignMapper designs;private final CommerceDesignAttemptMapper attempts;private final ProductCaptureService captures;
     private final CommerceDesignReferencePreparer preparer;private final CommerceDesignGenerationCoordinator coordinator;private final CommerceDesignResultCollector collector;
     private final ModelConfigService models;private final ObjectMapper json;private final boolean enabled;
@@ -49,6 +49,6 @@ public class CommerceDesignGenerationService {
         if(u==null||u.organizationId()==null||!(edit?u.permissionCodes().contains("product:edit"):u.permissionCodes().contains("product:view")||u.permissionCodes().contains("product:publish")))throw error(HttpStatus.FORBIDDEN,"无设计生成权限");
         var d=designs.get(u.organizationId(),id);if(d==null||u.externallyRegistered()&&!u.userId().equals(d.createdBy()))throw error(HttpStatus.NOT_FOUND,"设计不存在");captures.get(d.captureId(),u);return d;
     }
-    private State state(String id,CommerceDesignAttempt a){String status=a==null?"NOT_STARTED":a.status();String message=switch(status){case "SUBMITTING","UNKNOWN"->"提交中或结果待核查，不会自动重新生成";case "RESULT_RECEIVED"->"已有模型结果，可重试下载，不重新生成";case "OUTPUT_ARCHIVED"->"结果已归档，请进行质量审核";default->enabled?"尚未生成，需确认参考图与模型费用":"管理员尚未开启商品设计生成";};return new State(id,a==null?null:a.id(),status,enabled,message);}
+    private State state(String id,CommerceDesignAttempt a){String status=a==null?"NOT_STARTED":a.status();String message=switch(status){case "SUBMITTING","UNKNOWN"->"提交中或结果待核查，不会自动重新生成";case "RESULT_RECEIVED"->"已有模型结果，可重试下载，不重新生成";case "OUTPUT_ARCHIVED"->"结果已归档，请进行质量审核";default->enabled?"尚未生成，需确认参考图与模型费用":"管理员尚未开启商品设计生成";};var ids=new ArrayList<String>();if(a!=null)for(var node:json.readTree(a.referenceManifestJson()))ids.add(node.path("imageId").asText());return new State(id,a==null?null:a.id(),status,enabled,message,List.copyOf(ids));}
     private static BusinessException error(HttpStatus s,String message){return new BusinessException(s,message);}
 }

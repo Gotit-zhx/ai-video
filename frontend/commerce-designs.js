@@ -37,6 +37,31 @@
   search.addEventListener('click',()=>{searchQuery=query.value.trim();return loadPage(0);});
   previous.addEventListener('click',()=>loadPage(Math.max(0,page-1)));next.addEventListener('click',()=>loadPage(page+1));
   previous.disabled=next.disabled=true;
+  async function showGeneration(draft,box,ticket){
+    box.replaceChildren();text('p','正在读取生成状态…',box);
+    try{
+      const response=await api(`/api/v1/commerce-designs/${encodeURIComponent(draft.id)}/generation`);if(ticket!==generation)return;
+      const state=response.data;box.replaceChildren();text('p',`${state.status} · ${state.message}`,box);
+      const reload=button('刷新生成状态',box);reload.addEventListener('click',()=>showGeneration(draft,box,ticket));
+      if(['SUBMITTING','UNKNOWN','OUTPUT_ARCHIVED'].includes(state.status))return;
+      const downloadOnly=state.status==='RESULT_RECEIVED';
+      if(!state.generationEnabled&&!downloadOnly)return;
+      const sources=JSON.parse(draft.sourceImagesJson),inputs=[];
+      sources.forEach((source,index)=>{
+        const label=text('label',`参考图 ${index+1} · ${source.role||'GALLERY'}`,box),input=text('input','',label);input.type='checkbox';input.value=source.imageId;input.checked=state.referenceImageIds.includes(source.imageId);input.disabled=!!state.attemptId;inputs.push(input);
+      });
+      const confirmation=text('input','',text('label',downloadOnly?'确认重试下载已有结果（不重新生成）':'确认本设计生成一张图片，可能产生模型费用；不自动发布',box));confirmation.type='checkbox';
+      const submit=button(downloadOnly?'重试结果下载':'确认生成单张图片',box),message=text('p','',box);
+      submit.addEventListener('click',async()=>{
+        const imageIds=state.attemptId?state.referenceImageIds:inputs.filter(i=>i.checked).map(i=>i.value);
+        if(!confirmation.checked||imageIds.length<1||imageIds.length>4){message.textContent='请选择1至4张参考图并明确确认。';return;}
+        submit.disabled=reload.disabled=true;message.textContent='正在处理；即使等待超时也请先刷新状态，不要重复生成。';
+        try{const result=await api(`/api/v1/commerce-designs/${encodeURIComponent(draft.id)}/generation`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageIds,confirmed:true})});if(ticket!==generation)return;message.textContent=result.data.message;await showGeneration(draft,box,ticket);}
+        catch(e){if(ticket===generation)message.textContent=`${e.message}。请刷新生成状态后再决定下一步。`;}
+        finally{reload.disabled=false;}
+      });
+    }catch(e){if(ticket===generation)text('p',e.message,box);}
+  }
   async function showOutput(designId,box,ticket){
     box.replaceChildren();text('p','正在读取生成结果…',box);
     try{
@@ -69,6 +94,7 @@
       r.data.forEach(d=>{const box=text('details','',drafts);text('summary',`商品 ${d.captureId} / v${d.captureVersion} · 变体 ${d.variantIndex} · ${d.status}`,box);
         text('p',d.mode==='POD_DESIGN'?'POD设计：尚需生产文件与审核':'现货营销图：保留真实款式、颜色与结构',box);text('p',d.brief,box);text('p',`创建时间：${d.createdAt}；草稿不是生成结果。`,box);
         const view=button('查看结果 / 质量审核',box),outputBox=text('div','',box);view.addEventListener('click',()=>showOutput(d.id,outputBox,ticket));
+        const generate=button('生成图片 / 查看进度',box),generationBox=text('div','',box);generate.addEventListener('click',()=>showGeneration(d,generationBox,ticket));
       });
     }catch(e){if(ticket===generation)status.textContent=e.message;}finally{refresh.disabled=false;}
   }
