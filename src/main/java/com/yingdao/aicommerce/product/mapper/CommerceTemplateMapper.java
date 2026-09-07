@@ -6,6 +6,8 @@ import java.util.List;
 
 @Mapper
 public interface CommerceTemplateMapper {
+    @Select("SELECT * FROM commerce_template_versions WHERE organization_id=#{org} AND id=#{id}")
+    CommerceTemplateVersion snapshot(@Param("org") String org,@Param("id") String id);
     @Select("""
         SELECT * FROM commerce_template_versions
         WHERE organization_id=#{org} AND template_id=#{template} AND version=1 FOR UPDATE
