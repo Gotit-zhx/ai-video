@@ -6,7 +6,7 @@ function setup(withOutput=false,generationState={status:'NOT_STARTED',generation
     document:{getElementById:()=>root,createElement:node},crypto:{randomUUID:()=>`key-${calls.length}`},encodeURIComponent,
     api:async(url,options)=>{calls.push({url,options});if(options){if(fail){fail=false;throw new Error('network');}return {data:[{id:'draft'}]};}
       if(url.includes('?page='))return {data:{page:0,totalPages:1,content:[{id:'p1',title:'商品1',sourcePlatform:'SHOPEE'}]}};
-      if(url.endsWith('/p1'))return {data:{capture:{version:7},images:[{}]}};
+      if(url.endsWith('/p1'))return {data:{id:'p1',version:7,images:[{}]}};
       if(url.endsWith('/generation'))return {data:generationState};
       if(withOutput&&url.endsWith('/output'))return {data:{contentSha256:'hash',status:'PENDING_REVIEW',review:null}};
       if(withOutput&&url==='/api/v1/commerce-designs')return {data:[{id:'d1',captureId:'p1',captureVersion:7,status:'DRAFT',mode:'STOCK_MARKETING',variantIndex:1,brief:'brief',sourceImagesJson:'[{"imageId":"i1","role":"MAIN"}]'}]};

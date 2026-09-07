@@ -27,7 +27,7 @@
           if(busy)return;
           const selectionTicket=++selectionGeneration,companyTicket=generation;selected=null;pending=null;selectedLabel.textContent='正在读取商品版本…';
           try{const detail=await api(`/api/v1/product-captures/${encodeURIComponent(p.id)}`);if(selectionTicket!==selectionGeneration||companyTicket!==generation)return;
-            selected={id:p.id,version:detail.data.capture.version};selectedLabel.textContent=`已固定：${p.title} · v${selected.version} · ${detail.data.images.length} 张参考图`;
+            selected={id:p.id,version:detail.data.version};selectedLabel.textContent=`已固定：${p.title} · v${selected.version} · ${detail.data.images.length} 张参考图`;
           }catch(e){if(selectionTicket===selectionGeneration&&companyTicket===generation)selectedLabel.textContent=e.message;}
         });
       });

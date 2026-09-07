@@ -12,6 +12,13 @@ import org.springframework.http.MediaType;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.*;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.*;
 class CommerceDesignImageGatewayTest {
+    @Test void springCanConstructGatewayWithoutAnAutoConfiguredRestClientBuilder(){
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+            .withPropertyValues("app.pi-runtime-url=http://127.0.0.1:1","app.pi-runtime-token=test-only")
+            .withBean(ModelConfigService.class,()->mock(ModelConfigService.class))
+            .withUserConfiguration(CommerceDesignImageGateway.class)
+            .run(context->{assertNull(context.getStartupFailure());assertNotNull(context.getBean(CommerceDesignImageGateway.class));});
+    }
     final ModelConfigService models=mock(ModelConfigService.class);
     final CommerceDesignImageGateway gateway=new CommerceDesignImageGateway(models,RestClient.builder(),"http://127.0.0.1:1","test-token");
     CommerceDesignDraft draft(String mode){return new CommerceDesignDraft("id","org","capture",1,"request","hash",3,mode,"背景换成浅灰","R","[]","DRAFT","u",Instant.now());}

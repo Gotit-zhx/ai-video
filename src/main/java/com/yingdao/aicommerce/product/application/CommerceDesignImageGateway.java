@@ -3,6 +3,7 @@ import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.product.domain.CommerceDesignDraft;
 import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -17,6 +18,11 @@ public class CommerceDesignImageGateway {
     public record PendingResult(String url,String mimeType,String modelId,String mode,String revisedPrompt) {}
     public record Response(Artifact artifact,PendingResult result) {}
     private final ModelConfigService models;private final RestClient client;
+    @Autowired
+    public CommerceDesignImageGateway(ModelConfigService models,
+            @Value("${app.pi-runtime-url}")String url,@Value("${app.pi-runtime-token}")String token){
+        this(models,RestClient.builder(),url,token);
+    }
     public CommerceDesignImageGateway(ModelConfigService models,RestClient.Builder builder,
             @Value("${app.pi-runtime-url}")String url,@Value("${app.pi-runtime-token}")String token){
         this.models=models;this.client=builder.clone().baseUrl(url).defaultHeader("X-Internal-Token",token).build();
