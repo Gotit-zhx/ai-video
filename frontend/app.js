@@ -1053,6 +1053,7 @@ function applyFeatureAccess() {
   document.querySelector("#process-product-images").hidden = !productAccess.watermark;
   document.querySelector("#approve-product-capture").hidden = !productAccess.edit;
   document.querySelector("#open-product-publish").hidden = !productAccess.publish;
+  document.querySelector("#design-current-product").hidden = !productAccess.edit;
   document.querySelector("#skill-converter-card").hidden = !canManageAutomation;
   document.querySelector("#automation-access-card").hidden = !canManageAutomation;
 }
@@ -4418,6 +4419,7 @@ function syncProductEditorAccess(capture) {
   document.querySelector("#process-product-images").hidden = !access.watermark;
   document.querySelector("#approve-product-capture").hidden = !access.edit;
   document.querySelector("#open-product-publish").hidden = !access.publish;
+  document.querySelector("#design-current-product").hidden = !access.edit;
 }
 
 function syncProductActions(capture) {
@@ -4436,6 +4438,7 @@ function syncProductActions(capture) {
   const saving = Boolean(productCaptureSaveInFlightId);
   const workflowRunning = productUploadInFlightCaptureId === capture.id;
   const localChanges = productEditorDirty && selectedProductCaptureId === capture.id;
+  document.querySelector("#design-current-product").disabled = localChanges || saving || processing || workflowRunning;
   document.querySelector("#save-product-capture").disabled = processing || published || saving || workflowRunning;
   document.querySelector("#save-product-capture").textContent = productCaptureSaveInFlightId === capture.id
     ? "正在保存…" : "保存修改";
@@ -6284,6 +6287,22 @@ document.querySelector("#product-sku-manual-confirm").addEventListener("change",
 document.querySelector("#refresh-product-captures").addEventListener("click", () =>
   loadProductCaptures(selectedProductCaptureId));
 document.querySelector("#save-product-capture").addEventListener("click", saveProductCapture);
+document.querySelector("#design-current-product").addEventListener("click", () => {
+  const capture=selectedProductCaptureDetail;
+  if(!capture||!productAccessCapabilities().edit)return;
+  if(productEditorDirty||productCaptureSaveInFlightId){
+    document.querySelector("#product-action-note").textContent="请先保存商品修改，再进入图片设计。";return;
+  }
+  window.history.pushState(null,document.title,`${window.location.pathname}${window.location.search}#commerce-designs`);
+  switchWorkspace("productPublish");
+  window.dispatchEvent(new CustomEvent("heyi:design-source-selected",{detail:{captureId:capture.id,captureVersion:capture.version}}));
+});
+window.addEventListener("heyi:design-source-return",async event=>{
+  if(!currentUser||!canAccessProductCenter()||typeof event.detail?.captureId!=="string")return;
+  window.history.pushState(null,document.title,`${window.location.pathname}${window.location.search}#product-capture`);
+  switchWorkspace("productPublish");
+  await loadProductCaptures(event.detail.captureId);
+});
 document.querySelector("#process-product-images").addEventListener("click", processProductImages);
 document.querySelector("#approve-product-capture").addEventListener("click", approveProductCapture);
 document.querySelector("#open-product-publish").addEventListener("click", openProductPublishDialog);

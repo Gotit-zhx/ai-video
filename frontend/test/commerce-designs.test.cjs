@@ -1,9 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 function setup(withOutput=false,generationState={status:'NOT_STARTED',generationEnabled:false,message:'disabled',referenceImageIds:[]}){
-  const nodes=[],calls=[];let fail=true;
+  const nodes=[],calls=[],events={};let fail=true;
   function node(tag){const n={tag,children:[],handlers:{},style:{},value:'',append(e){this.children.push(e);if(this.tag==='select'&&!this.value)this.value='STOCK_MARKETING';},replaceChildren(){this.children=[];},addEventListener(k,f){this.handlers[k]=f;}};nodes.push(n);return n;}
   const root=node('div');vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../commerce-designs.js'),'utf8'),{
     document:{getElementById:()=>root,createElement:node},crypto:{randomUUID:()=>`key-${calls.length}`},encodeURIComponent,
+    addEventListener:(name,handler)=>{events[name]=handler;},
     api:async(url,options)=>{calls.push({url,options});if(options){if(fail){fail=false;throw new Error('network');}return {data:[{id:'draft'}]};}
       if(url.includes('?page='))return {data:{page:0,totalPages:1,content:[{id:'p1',title:'商品1',sourcePlatform:'SHOPEE'}]}};
       if(url.endsWith('/p1'))return {data:{id:'p1',version:7,images:[{}]}};
@@ -12,8 +13,22 @@ function setup(withOutput=false,generationState={status:'NOT_STARTED',generation
       if(withOutput&&url==='/api/v1/commerce-designs')return {data:[{id:'d1',captureId:'p1',captureVersion:7,status:'DRAFT',mode:'STOCK_MARKETING',variantIndex:1,brief:'brief',sourceImagesJson:'[{"imageId":"i1","role":"MAIN"}]'}]};
       return {data:[]};}
   });
-  return {nodes,calls,button:label=>nodes.find(n=>n.textContent===label)};
+  return {nodes,calls,events,button:label=>nodes.find(n=>n.textContent===label)};
 }
+test('source handoff verifies expected version without searching or generating',async()=>{
+  const s=setup();await s.events['heyi:design-source-selected']({detail:{captureId:'p1',captureVersion:7}});
+  assert.equal(s.calls.length,1);assert.equal(s.calls[0].url,'/api/v1/product-captures/p1');
+  assert.equal(s.button('回看来源商品').hidden,false);
+  s.nodes.filter(n=>n.tag==='textarea').forEach(n=>n.value='record');
+  await s.nodes.find(n=>n.tag==='form').handlers.submit({preventDefault(){}});
+  assert.equal(JSON.parse(s.calls.find(c=>c.options).options.body).captureVersion,7);
+});
+test('stale handoff blocks design creation',async()=>{
+  const s=setup();await s.events['heyi:design-source-selected']({detail:{captureId:'p1',captureVersion:6}});
+  await s.nodes.find(n=>n.tag==='form').handlers.submit({preventDefault(){}});
+  assert.equal(s.calls.filter(c=>c.options).length,0);
+  assert.ok(s.nodes.some(n=>n.textContent?.includes('商品版本已变化')));
+});
 test('design creation pins selected version and retries identical request key',async()=>{
   const s=setup();await s.button('搜索商品').handlers.click();await s.button('商品1 · SHOPEE').handlers.click();
   const areas=s.nodes.filter(n=>n.tag==='textarea');areas[0].value='只改变背景';areas[1].value='授权记录';

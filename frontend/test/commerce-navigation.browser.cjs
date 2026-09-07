@@ -23,6 +23,13 @@ const path=require('node:path');
     await page.locator('#dashboard-view').waitFor({state:'visible'});
     assert.equal(await page.locator('.nav-group').count(),4);
     assert.equal(await page.locator('[data-commerce-panel]:visible').count(),1);
+    await page.locator('[data-product-capture-id]').first().click();
+    await page.locator('#product-capture-editor').waitFor({state:'visible'});
+    await page.locator('#design-current-product').click();
+    await page.getByText(/^已固定：/).waitFor({state:'visible'});
+    assert.equal(new URL(page.url()).hash,'#commerce-designs');
+    await page.getByRole('button',{name:'回看来源商品'}).click();
+    await page.locator('#product-capture-editor').waitFor({state:'visible'});
     const routes=['commerce-designs','commerce-templates','commerce-batches','commerce-ads'];
     for(const route of routes){
       await page.locator(`[data-commerce-route="${route}"]`).click();

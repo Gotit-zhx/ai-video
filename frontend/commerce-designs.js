@@ -2,6 +2,9 @@
   const root=document.getElementById('commerce-design-workspace');if(!root)return;
   const text=(tag,value,parent=root)=>{const e=document.createElement(tag);e.textContent=value;parent.append(e);return e;};
   const button=(label,parent=root)=>{const e=text('button',label,parent);e.type='button';return e;};
+  const contextBar=text('div','');contextBar.className='commerce-source-context';
+  text('small','01 商品资料 → 02 图片设计 → 03 批次准备',contextBar);
+  const sourceBack=button('回看来源商品',contextBar);sourceBack.hidden=true;
   const searchLabel=text('label','搜索已采集商品 '),query=text('input','',searchLabel);
   const search=button('搜索商品'),previous=button('上一页'),next=button('下一页');
   const pageLabel=text('p',''),products=text('div','');products.className='commerce-batch-products';
@@ -15,6 +18,25 @@
   const create=text('button','创建草稿（不生成图片）',form);create.type='submit';
   const status=text('p',''),refresh=button('刷新设计草稿'),drafts=text('div','');
   let generation=0,selectionGeneration=0,selected=null,pending=null,page=0,totalPages=0,searchQuery='',busy=false;
+  async function selectSource(id,title,expectedVersion){
+    if(busy){status.textContent='正在保存设计草稿，请完成后再切换来源。';return;}
+    const selectionTicket=++selectionGeneration,companyTicket=generation;
+    selected=null;pending=null;sourceBack.hidden=true;selectedLabel.textContent='正在读取商品版本…';
+    try{
+      const detail=await api(`/api/v1/product-captures/${encodeURIComponent(id)}`);
+      if(selectionTicket!==selectionGeneration||companyTicket!==generation)return;
+      const capture=detail.data;
+      if(capture.id!==id||!Number.isSafeInteger(capture.version))throw new Error('商品版本信息无效，请重新读取。');
+      if(expectedVersion!==undefined&&capture.version!==expectedVersion)throw new Error('商品版本已变化，请回商品资料库刷新后重新进入设计。');
+      selected={id,version:capture.version};sourceBack.hidden=false;
+      selectedLabel.textContent=`已固定：${capture.title||title||id} · v${selected.version} · ${capture.images.length} 张参考图`;
+    }catch(e){if(selectionTicket===selectionGeneration&&companyTicket===generation)selectedLabel.textContent=e.message;}
+  }
+  sourceBack.addEventListener('click',()=>{if(selected)globalThis.dispatchEvent(new CustomEvent('heyi:design-source-return',{detail:{captureId:selected.id}}));});
+  globalThis.addEventListener?.('heyi:design-source-selected',event=>{
+    if(typeof event.detail?.captureId!=='string'||!Number.isSafeInteger(event.detail.captureVersion))return;
+    return selectSource(event.detail.captureId,'',event.detail.captureVersion);
+  });
   async function loadPage(target){
     const ticket=++generation;search.disabled=previous.disabled=next.disabled=true;
     try{
@@ -23,13 +45,7 @@
       pageLabel.textContent=totalPages?`第 ${page+1} / ${totalPages} 页`:'暂无商品';
       r.data.content.forEach(p=>{
         const choose=button(`${p.title} · ${p.sourcePlatform}`,products);
-        choose.addEventListener('click',async()=>{
-          if(busy)return;
-          const selectionTicket=++selectionGeneration,companyTicket=generation;selected=null;pending=null;selectedLabel.textContent='正在读取商品版本…';
-          try{const detail=await api(`/api/v1/product-captures/${encodeURIComponent(p.id)}`);if(selectionTicket!==selectionGeneration||companyTicket!==generation)return;
-            selected={id:p.id,version:detail.data.version};selectedLabel.textContent=`已固定：${p.title} · v${selected.version} · ${detail.data.images.length} 张参考图`;
-          }catch(e){if(selectionTicket===selectionGeneration&&companyTicket===generation)selectedLabel.textContent=e.message;}
-        });
+        choose.addEventListener('click',()=>selectSource(p.id,p.title));
       });
     }catch(e){if(ticket===generation)status.textContent=e.message;}
     finally{if(ticket===generation){search.disabled=false;previous.disabled=page===0;next.disabled=page+1>=totalPages;}}
@@ -110,5 +126,5 @@
     }catch(e){if(ticket===generation)status.textContent=`${e.message}；内容不变重试会复用原请求。`;}
     finally{busy=false;create.disabled=false;}
   });
-  globalThis.addEventListener?.('heyi:company-reset',()=>{generation++;selectionGeneration++;selected=null;pending=null;form.reset();query.value='';searchQuery='';page=totalPages=0;products.replaceChildren();drafts.replaceChildren();pageLabel.textContent='';selectedLabel.textContent='尚未选择来源商品';status.textContent='';search.disabled=false;previous.disabled=next.disabled=true;});
+  globalThis.addEventListener?.('heyi:company-reset',()=>{generation++;selectionGeneration++;selected=null;pending=null;sourceBack.hidden=true;form.reset();query.value='';searchQuery='';page=totalPages=0;products.replaceChildren();drafts.replaceChildren();pageLabel.textContent='';selectedLabel.textContent='尚未选择来源商品';status.textContent='';search.disabled=false;previous.disabled=next.disabled=true;});
 })();
