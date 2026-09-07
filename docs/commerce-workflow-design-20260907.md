@@ -75,3 +75,9 @@ V58新增店铺日额度台账和逐批次条目预留记录。`/api/v1/commerce
 ### 2026-09-07 额度预检与可见排期
 
 预检读取真实 RESERVED 记录，逐条核对商品条目和店铺绑定；核对对应店铺日期台账是否缺失、低于本批预留或超过店铺当前日限额（包含其他批次）。已有完整预留不再固定报告“尚未预留”。批次详情增加店铺、日期、时区与预留数量回读，预留成功自动刷新。363 项 Java 测试、16 项 Node 测试通过。预检仍为只读快照，正式执行时必须在事务/锁内重新检查；日期到期调度、实际消耗、真实官方环境核验及执行器仍待接入。
+
+### 2026-09-07 真实 MySQL 映射验证
+
+新增 `CommerceMapperIntegrationTest`，在独立 MySQL 8.4 空数据库实际应用 V55–V60，并调用 MyBatis mapper 写入回读模板、批次、条目、预留及审核记录；验证租户读取隔离、日额度上限、释放不可负数、释放后隐藏预留、Instant/LocalDate/record 构造器映射。该集成测试实际运行 1 项通过（未跳过），临时容器及卷随后删除，现有应用数据库未修改。
+
+重复运行需自行创建一次性空数据库，通过 `HEYI_MAPPER_TEST_URL=jdbc:mysql://127.0.0.1:<临时端口>/heyi_mapper_test?allowPublicKeyRetrieval=true&useSSL=false&connectionTimeZone=UTC` 指定；运行 `mvn -s maven-settings.xml -Dtest=CommerceMapperIntegrationTest test`。测试固定使用临时 root 空密码，仅允许本机地址及专用数据库名，检测非空数据库直接失败，不删除现存表。常规测试未设置环境变量时跳过此项。此项不是完整 Spring 安全链、服务事务并发或官方发布端到端测试。
