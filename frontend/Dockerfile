@@ -8,6 +8,7 @@ COPY app.js /usr/share/nginx/html/app.js
 COPY commerce-planner.js commerce-planner.css /usr/share/nginx/html/
 COPY commerce-batches.js /usr/share/nginx/html/
 COPY commerce-ad-evaluation.js /usr/share/nginx/html/
+COPY commerce-designs.js /usr/share/nginx/html/
 COPY shop-settings.js /usr/share/nginx/html/
 COPY logo.svg /usr/share/nginx/html/logo.svg
 COPY assets /usr/share/nginx/html/assets
