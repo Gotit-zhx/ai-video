@@ -56,6 +56,20 @@
       const detail=get("detail");detail.replaceChildren();
       text("h4",`${b.name} · ${b.status}`,detail);
       text("p",`固定模板快照：${b.templateSnapshotId}；${b.items.length}条实际商品店铺组合。`,detail);
+      const check=text("button","检查发布前条件（只读）",detail);check.type="button";
+      const reportBox=text("div","",detail);
+      check.addEventListener("click",async()=>{
+        check.disabled=true;reportBox.textContent="正在核对商品版本、审核资料和店铺状态…";
+        try{
+          const response=await api(`/api/v1/commerce-batches/${encodeURIComponent(id)}/preflight`);
+          if(ticket!==generation)return;
+          const report=response.data;reportBox.replaceChildren();
+          text("p",`检查 ${report.checkedItems} 条，其中 ${report.itemsWithoutDataBlockers} 条未发现条目级资料问题。检查不代表可执行。`,reportBox);
+          report.batchBlockers.forEach(message=>text("p",`批次：${message}`,reportBox));
+          report.items.filter(i=>i.blockers.length).forEach(i=>text("p",`商品 ${i.captureId} → 店铺 ${i.shopId}：${i.blockers.join("；")}`,reportBox));
+        }catch(e){reportBox.textContent=e.message;}
+        finally{check.disabled=false;}
+      });
       b.items.forEach(i=>text("p",`第${i.plannedDay}天 · ${i.shopName} · 商品 ${i.captureId} / v${i.captureVersion} · ${i.status}`,detail));
     }catch(e){status.textContent=e.message;}
   }

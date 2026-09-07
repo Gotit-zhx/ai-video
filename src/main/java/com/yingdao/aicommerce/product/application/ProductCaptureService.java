@@ -1339,7 +1339,7 @@ public class ProductCaptureService {
         }
     }
 
-    private List<String> approvalMissingFields(ProductCapture capture, List<ProductCaptureSku> skus,
+    List<String> approvalMissingFields(ProductCapture capture, List<ProductCaptureSku> skus,
                                                List<ProductCaptureImage> images) {
         List<String> missing = new ArrayList<>();
         Map<String, Object> normalized = readMap(capture.getNormalizedData());
