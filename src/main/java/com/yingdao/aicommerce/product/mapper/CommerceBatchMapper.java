@@ -6,6 +6,8 @@ import java.util.List;
 
 @Mapper
 public interface CommerceBatchMapper {
+    @Select("SELECT * FROM commerce_batches WHERE organization_id=#{org} AND id=#{id} FOR UPDATE")
+    CommerceBatch lock(@Param("org") String org,@Param("id") String id);
     @Select("SELECT * FROM commerce_batches WHERE organization_id=#{org} AND id=#{id}")
     CommerceBatch get(@Param("org") String org,@Param("id") String id);
     @Select("SELECT * FROM commerce_batches WHERE organization_id=#{org} AND idempotency_key=#{key}")
