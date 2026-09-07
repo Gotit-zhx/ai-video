@@ -15,3 +15,8 @@
 #commerce-batch-form fieldset { margin:14px 0; border:1px solid #dce2ea; border-radius:8px; }
 #commerce-batch-list { display:flex; flex-wrap:wrap; gap:8px; }
 #commerce-batch-detail { max-height:400px; overflow:auto; line-height:1.7; }
+#shop-management-page .marketplace-shop-panel { padding:24px; }
+#shop-management-page .marketplace-shop-panel > p, #shop-management-page .marketplace-shop-panel > small { font-size:13px; }
+#shop-management-page .marketplace-shop-panel > header strong { font-size:18px; }
+#shop-management-page .marketplace-shop-panel button { font-size:13px; }
+#shop-management-page .marketplace-shop-list { max-height:none; }

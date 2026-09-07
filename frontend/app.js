@@ -894,6 +894,13 @@ async function showDashboard(user) {
   document.querySelector("#current-organization").textContent = `${user.organizationName || "企业工作空间"}${user.organizationCode ? ` · ${user.organizationCode}` : ""}`;
   document.querySelector("#current-permission-state").textContent = productPermissionLabel();
   applyFeatureAccess();
+  if ((window.location.hash === "#shops" || new URLSearchParams(window.location.search).get("view") === "shops")
+      && hasAnyPermission("product:view", "product:publish")) {
+    switchWorkspace("shops");
+    await loadMarketplaceShops({ silent: true });
+    consumeMarketplaceAuthorizationReturn();
+    return;
+  }
   const returnToProducts = window.location.hash === "#product-capture"
     || pendingWorkspaceAfterLogin === "productPublish"
     || hasRememberedProductCaptureRoute();
@@ -990,6 +997,7 @@ function applyFeatureAccess() {
   document.querySelector("#nav-general-video").hidden = !canViewVideoTasks;
   document.querySelector("#nav-ai-video-monitor").hidden = !canViewVideoMonitor;
   document.querySelector("#nav-publish").hidden = !canAccessProductCenter();
+  document.querySelector("#nav-shops").hidden = !hasAnyPermission("product:view", "product:publish");
   document.querySelector("#nav-automations").hidden = !canUseAutomation;
   document.querySelector("#nav-automation-admin").hidden = !canViewAutomationAdmin;
   document.querySelector("#nav-models").hidden = !hasAnyPermission("system:model:view", "system:model:manage");
@@ -1216,6 +1224,13 @@ document.querySelector("#nav-assistant-test").addEventListener("click", async (e
   startAssistantCommandPolling();
 });
 
+document.querySelector("#nav-shops").addEventListener("click", async event => {
+  event.preventDefault();
+  if (!hasAnyPermission("product:view", "product:publish")) return;
+  switchWorkspace("shops");
+  await loadMarketplaceShops();
+});
+
 function switchWorkspace(page) {
   activeWorkspace = page;
   const isSystem = page === "system";
@@ -1228,6 +1243,9 @@ function switchWorkspace(page) {
   const isGeneralVideo = page === "generalVideo";
   const isAiVideoMonitor = page === "aiVideoMonitor";
   const isProductPublish = page === "productPublish";
+  const isShops = page === "shops";
+  document.querySelector("#shop-management-page").hidden = !isShops;
+  document.querySelector("#nav-shops").classList.toggle("active", isShops);
   document.querySelector("#dashboard-page").hidden = true;
   document.querySelector("#system-page").hidden = !isSystem;
   document.querySelector("#models-page").hidden = !isModels;
@@ -1250,13 +1268,17 @@ function switchWorkspace(page) {
   document.querySelector("#nav-ai-video-monitor").classList.toggle("active", isAiVideoMonitor);
   document.querySelector("#nav-publish").classList.toggle("active", isProductPublish);
   document.querySelector(".topbar h2").textContent =
+    isShops ? "店铺管理" :
     isVideoScripts ? "视频脚本管理" : isGeneralVideo ? "通用生成" : isAiVideoTasks ? "AI 视频任务" : isAiVideoMonitor ? "AI 任务监控" : isProductPublish ? "商品采集与发布" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
-  if (isProductPublish) {
+  if (isShops) {
+    rememberProductCaptureRoute(false);
+    window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#shops`);
+  } else if (isProductPublish) {
     rememberProductCaptureRoute(true);
     if (window.location.hash !== "#product-capture") {
       window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#product-capture`);
     }
-  } else if (window.location.hash === "#product-capture") {
+  } else if (["#product-capture", "#shops"].includes(window.location.hash)) {
     rememberProductCaptureRoute(false);
     window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
   }
@@ -1292,6 +1314,11 @@ function switchWorkspace(page) {
 }
 
 window.addEventListener("hashchange", () => {
+  if (window.location.hash === "#shops" && currentUser && hasAnyPermission("product:view", "product:publish")) {
+    switchWorkspace("shops");
+    loadMarketplaceShops();
+    return;
+  }
   if (window.location.hash !== "#product-capture" || !currentUser || !canAccessProductCenter()) return;
   switchWorkspace("productPublish");
   loadProductCaptures(selectedProductCaptureId);
@@ -3492,7 +3519,7 @@ async function startMarketplaceAuthorization(platform, button) {
     const result = await api(`/api/v1/shop-authorizations/${encodeURIComponent(platform)}/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ returnPath: "/?view=product-publish" })
+      body: JSON.stringify({ returnPath: "/?view=shops" })
     });
     const url = safeProductUrl(result.data?.authorizationUrl);
     if (!url) throw new ApiRequestError("平台没有返回有效的官方授权地址", 502, result);
@@ -3516,7 +3543,8 @@ function consumeMarketplaceAuthorizationReturn() {
   ["shopAuth", "platform", "connected", "message", "view"].forEach(key => params.delete(key));
   const query = params.toString();
   window.history.replaceState(null, document.title,
-    `${window.location.pathname}${query ? `?${query}` : ""}#product-capture`);
+    `${window.location.pathname}${query ? `?${query}` : ""}#shops`);
+  switchWorkspace("shops");
 }
 
 function productCapturePayload(value) {
@@ -7715,6 +7743,7 @@ function resetProductCaptureState() {
 }
 
 function resetCompanyScopedWorkspaceState() {
+  window.dispatchEvent(new Event("heyi:company-reset"));
   resetVideoScriptState();
   resetAiVideoTaskState();
   resetAiVideoMonitorState();

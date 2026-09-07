@@ -7,6 +7,11 @@
   let pendingRequest=null, generation=0, loading=false;
   const text=(tag,value,parent)=>{const e=document.createElement(tag);e.textContent=value;parent.append(e);return e;};
   const invalidate=()=>{pendingRequest=null;};
+  globalThis.addEventListener?.("heyi:company-reset",()=>{
+    generation++; templates=[];shops=[];selectedProducts.clear();pendingRequest=null;page=0;pages=0;
+    [products,shopBox,selector,get("list"),get("detail")].forEach(e=>e.replaceChildren());
+    status.textContent="";get("selected-count").textContent="已选 0 款";form.reset();
+  });
   function selectedTemplate(){return templates.find(t=>t.snapshotId===selector.value);}
   function renderShops(){
     shopBox.replaceChildren();
@@ -60,11 +65,12 @@
   }
   get("refresh").addEventListener("click",async()=>{
     if(loading)return;
-    generation++;get("refresh").disabled=true;selectedProducts.clear();pendingRequest=null;
+    const ticket=++generation;get("refresh").disabled=true;selectedProducts.clear();pendingRequest=null;
     products.replaceChildren();get("detail").replaceChildren();get("list").replaceChildren();shopBox.replaceChildren();selector.replaceChildren();
     get("selected-count").textContent="已选 0 款";templates=[];shops=[];
     try{
       const [t,s,b]=await Promise.all([api("/api/v1/commerce-templates"),api("/api/v1/shops"),api("/api/v1/commerce-batches")]);
+      if(ticket!==generation)return;
       templates=t.data;shops=s.data;
       templates.forEach(v=>{const option=text("option",`${v.name} · v${v.version}`,selector);option.value=v.snapshotId;});
       renderShops();renderBatches(b.data);
@@ -89,10 +95,12 @@
       targets:Array.from(selectedProducts).map((captureId,i)=>({captureId,shopId:targets[i%targets.length]}))};
     if(!pendingRequest || pendingRequest.body!==JSON.stringify(body))pendingRequest={key:crypto.randomUUID(),body:JSON.stringify(body)};
     const request=pendingRequest;
+    const ticket=generation;
     const controls=Array.from(form.querySelectorAll("input,select,button"));
     const disabled=controls.map(c=>c.disabled);controls.forEach(c=>c.disabled=true);get("refresh").disabled=true;
     try{
       const r=await api("/api/v1/commerce-batches",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":request.key},body:request.body});
+      if(ticket!==generation)return;
       status.textContent=`已保存草稿 ${r.data.name}，未执行发布。`;pendingRequest=null;
       selectedProducts.clear();products.querySelectorAll('input[type="checkbox"]').forEach(c=>c.checked=false);
       get("selected-count").textContent="已选 0 款";

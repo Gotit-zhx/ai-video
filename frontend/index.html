@@ -149,6 +149,7 @@
         <a href="#" id="nav-video-scripts" class="nav-item" data-nav-label="视频脚本管理" title="视频脚本管理"><span aria-hidden="true">▤</span><span class="nav-label">视频脚本管理</span></a>
         <a href="#" id="nav-ai-video-tasks" class="nav-item" data-nav-label="AI 视频任务" title="AI 视频任务"><span aria-hidden="true">▷</span><span class="nav-label">AI 视频任务</span></a>
         <a href="#" id="nav-general-video" class="nav-item" data-nav-label="通用生成" title="通用生成"><span aria-hidden="true">◇</span><span class="nav-label">通用生成</span></a>
+        <a href="#shops" id="nav-shops" class="nav-item" data-nav-label="店铺管理" title="店铺管理"><span aria-hidden="true">▣</span><span class="nav-label">店铺管理</span></a>
         <a href="#product-capture" id="nav-publish" class="nav-item" data-nav-label="商品采集/发布" title="商品采集/发布"><span aria-hidden="true">◇</span><span class="nav-label">商品采集/发布</span></a>
         <a href="#" id="nav-automations" class="nav-item" data-nav-label="自动化中心" title="自动化中心"><span aria-hidden="true">↯</span><span class="nav-label">自动化中心</span></a>
         <a href="#" id="nav-automation-admin" class="nav-item" data-nav-label="自动化管理" title="自动化管理"><span aria-hidden="true">⌘</span><span class="nav-label">自动化管理</span></a>
@@ -632,6 +633,45 @@
         </section>
       </div>
 
+      <div id="shop-management-page" class="workspace-body" hidden>
+        <section class="product-page-heading"><div><h1>店铺管理</h1><p>独立管理本公司店铺授权；商品发布和批次工作台共用这些店铺。</p></div></section>
+            <section id="marketplace-shop-panel" class="marketplace-shop-panel">
+              <header>
+                <div><span>官方店铺</span><strong>多店铺授权与管理</strong></div>
+                <i id="marketplace-live-state">检查中</i>
+              </header>
+              <p>这里只显示当前公司的店铺。OAuth Token 由服务端保管，插件和网页无法读取。</p>
+              <div class="marketplace-shop-filters" aria-label="筛选授权店铺">
+                <div class="marketplace-shop-filter-row">
+                  <span>平台</span>
+                  <div role="group" aria-label="按平台筛选">
+                    <button class="active" type="button" data-shop-platform-filter="ALL" aria-pressed="true">全部</button>
+                    <button type="button" data-shop-platform-filter="SHOPEE" aria-pressed="false">Shopee</button>
+                    <button type="button" data-shop-platform-filter="TIKTOK_SHOP" aria-pressed="false">TikTok</button>
+                  </div>
+                </div>
+                <label class="marketplace-shop-status-filter" for="marketplace-shop-status-filter">
+                  <span>状态</span>
+                  <select id="marketplace-shop-status-filter">
+                    <option value="ALL">全部状态</option>
+                    <option value="ACTIVE">可发布</option>
+                    <option value="ATTENTION">需处理</option>
+                    <option value="DISABLED">已断开</option>
+                  </select>
+                </label>
+              </div>
+              <div class="marketplace-shop-list-caption">
+                <span id="marketplace-shop-count">当前公司 · 0 家店铺</span>
+                <button type="button" data-reload-shops>刷新列表</button>
+              </div>
+              <div id="marketplace-shop-list" class="marketplace-shop-list"><span>正在读取授权店铺…</span></div>
+              <footer>
+                <button type="button" data-authorize-shop="SHOPEE">新增 Shopee 店铺</button>
+                <button type="button" data-authorize-shop="TIKTOK_SHOP">新增 TikTok Shop 店铺</button>
+              </footer>
+              <small id="marketplace-shop-note" role="status" aria-live="polite"></small>
+            </section>
+      </div>
       <div id="product-publish-page" class="workspace-body product-publish-page" hidden>
         <details class="commerce-planner">
           <summary>铺货工作流规划 · 模板 v1</summary>
@@ -727,42 +767,7 @@
               </footer>
             </section>
 
-            <section id="marketplace-shop-panel" class="marketplace-shop-panel">
-              <header>
-                <div><span>官方店铺</span><strong>多店铺授权与管理</strong></div>
-                <i id="marketplace-live-state">检查中</i>
-              </header>
-              <p>这里只显示当前公司的店铺。OAuth Token 由服务端保管，插件和网页无法读取。</p>
-              <div class="marketplace-shop-filters" aria-label="筛选授权店铺">
-                <div class="marketplace-shop-filter-row">
-                  <span>平台</span>
-                  <div role="group" aria-label="按平台筛选">
-                    <button class="active" type="button" data-shop-platform-filter="ALL" aria-pressed="true">全部</button>
-                    <button type="button" data-shop-platform-filter="SHOPEE" aria-pressed="false">Shopee</button>
-                    <button type="button" data-shop-platform-filter="TIKTOK_SHOP" aria-pressed="false">TikTok</button>
-                  </div>
-                </div>
-                <label class="marketplace-shop-status-filter" for="marketplace-shop-status-filter">
-                  <span>状态</span>
-                  <select id="marketplace-shop-status-filter">
-                    <option value="ALL">全部状态</option>
-                    <option value="ACTIVE">可发布</option>
-                    <option value="ATTENTION">需处理</option>
-                    <option value="DISABLED">已断开</option>
-                  </select>
-                </label>
-              </div>
-              <div class="marketplace-shop-list-caption">
-                <span id="marketplace-shop-count">当前公司 · 0 家店铺</span>
-                <button type="button" data-reload-shops>刷新列表</button>
-              </div>
-              <div id="marketplace-shop-list" class="marketplace-shop-list"><span>正在读取授权店铺…</span></div>
-              <footer>
-                <button type="button" data-authorize-shop="SHOPEE">新增 Shopee 店铺</button>
-                <button type="button" data-authorize-shop="TIKTOK_SHOP">新增 TikTok Shop 店铺</button>
-              </footer>
-              <small id="marketplace-shop-note" role="status" aria-live="polite"></small>
-            </section>
+            <a href="#shops" class="quiet-button">管理店铺与授权 →</a>
 
             <label class="product-capture-search" for="product-capture-search">
               <span aria-hidden="true">⌕</span>

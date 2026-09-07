@@ -28,6 +28,14 @@
   let templates = [];
   let selected = null;
   let templateRequest = 0;
+  globalThis.addEventListener?.("heyi:company-reset", () => {
+    revision++; templateRequest++; selected=null; templates=[];
+    selector?.replaceChildren();
+    if(templateName)templateName.value="";
+    if(templateStatus)templateStatus.textContent="";
+    result.replaceChildren();
+    form.reset();
+  });
   if (selector && refresh && save && newTemplate && templateName && templateStatus) {
     refresh.addEventListener("click", async () => {
       const ticket = ++templateRequest;
@@ -73,12 +81,14 @@
       const name=templateName.value.trim();
       if(!name) { templateStatus.textContent="请填写模板名称。"; return; }
       save.disabled=true; selector.disabled=true; refresh.disabled=true; newTemplate.disabled=true;
+      const sessionTicket=templateRequest;
       try {
         const response=await api("/api/v1/commerce-templates", { method:"POST",
           headers:{"Content-Type":"application/json"}, body:JSON.stringify({
             templateId:selected?.templateId || null, expectedVersion:selected?.version || 0,
             name, configuration:configuration()
           }) });
+        if(sessionTicket!==templateRequest)return;
         selected=response.data;
         templates=templates.filter(t=>t.templateId!==selected.templateId).concat(selected);
         let option=Array.from(selector.options).find(o=>o.value===selected.templateId);
