@@ -3,6 +3,8 @@ import com.yingdao.aicommerce.product.domain.CommerceDesignAttempt;
 import org.apache.ibatis.annotations.*;
 @Mapper
 public interface CommerceDesignAttemptMapper {
+    @Select("SELECT * FROM commerce_design_attempts WHERE organization_id=#{org} AND id=#{id} FOR UPDATE")
+    CommerceDesignAttempt lock(@Param("org")String org,@Param("id")String id);
     @Select("SELECT * FROM commerce_design_attempts WHERE organization_id=#{org} AND design_id=#{design}")
     CommerceDesignAttempt byDesign(@Param("org")String org,@Param("design")String design);
     @Select("SELECT * FROM commerce_design_attempts WHERE organization_id=#{org} AND id=#{id}")
