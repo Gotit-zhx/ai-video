@@ -31,4 +31,27 @@ class CommerceListingQuotaServiceTest {
     @Test void changedDateCannotDoubleReserve(){setup();var old=new CommerceListingReservation("r","org","batch","item","shop",date,"Asia/Manila","u",Instant.now());when(quota.list("org","batch")).thenReturn(List.of(old));assertThrows(BusinessException.class,()->service.reserve("batch",new CommerceListingQuotaService.Request(date.plusDays(1),true),user));}
     @Test void requiresExplicitConfirmation(){setup();assertThrows(BusinessException.class,()->service.reserve("batch",new CommerceListingQuotaService.Request(date,false),user));verifyNoInteractions(quota);}
     @Test void pastDateRejected(){setup();assertThrows(BusinessException.class,()->service.reserve("batch",new CommerceListingQuotaService.Request(date.minusDays(5),true),user));verify(quota,never()).reserve(any(),any(),any(),anyInt(),anyInt());}
+    @Test void cancellingDraftReturnsCapacityAndRetainsAudit(){
+        setup();var r=new CommerceListingReservation("r","org","batch","item","shop",date,"Asia/Manila","u",Instant.now());
+        when(quota.list("org","batch")).thenReturn(List.of(r));when(quota.releaseDay("org","shop",date,1)).thenReturn(1);
+        when(quota.releaseBatch("org","batch","u")).thenReturn(1);when(batches.cancel("org","batch")).thenReturn(1);
+        var result=service.cancel("batch",new CommerceListingQuotaService.CancelRequest(true,"运营调整"),user);
+        assertEquals(1,result.releasedReservations());verify(batches).cancelItems("org","batch");
+        verify(batches).cancellationEvent(anyString(),eq("org"),eq("batch"),eq("运营调整"),eq("u"));
+    }
+    @Test void cancellingTwiceNeverReturnsCapacityTwice(){
+        setup();when(batches.lock("org","batch")).thenReturn(new CommerceBatch("batch","org","name","snapshot","key","hash","CANCELLED","u",Instant.now()));
+        assertTrue(service.cancel("batch",new CommerceListingQuotaService.CancelRequest(true,"再次取消"),user).alreadyCancelled());
+        verifyNoInteractions(quota);
+    }
+    @Test void executingItemsCannotBeCancelled(){
+        setup();when(batches.items("org","batch")).thenReturn(List.of(new CommerceBatchItem("item","org","batch","capture",1,"shop","name",1,"RUNNING",Instant.now())));
+        assertThrows(BusinessException.class,()->service.cancel("batch",new CommerceListingQuotaService.CancelRequest(true,"停止"),user));
+        verify(quota,never()).releaseDay(any(),any(),any(),anyInt());
+    }
+    @Test void inconsistentLedgerCannotMarkBatchCancelled(){
+        setup();when(quota.list("org","batch")).thenReturn(List.of(new CommerceListingReservation("r","org","batch","item","shop",date,"Asia/Manila","u",Instant.now())));
+        assertThrows(BusinessException.class,()->service.cancel("batch",new CommerceListingQuotaService.CancelRequest(true,"停止"),user));
+        verify(batches,never()).cancel(any(),any());
+    }
 }

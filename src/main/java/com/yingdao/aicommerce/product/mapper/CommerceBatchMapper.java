@@ -26,4 +26,14 @@ public interface CommerceBatchMapper {
       VALUES (#{id},#{organizationId},#{batchId},#{captureId},#{captureVersion},#{shopId},#{shopName},#{plannedDay},#{status},#{createdAt})
       """)
     int insertItem(CommerceBatchItem item);
+    @Update("UPDATE commerce_batches SET status='CANCELLED' WHERE organization_id=#{org} AND id=#{id} AND status='DRAFT'")
+    int cancel(@Param("org") String org,@Param("id") String id);
+    @Update("UPDATE commerce_batch_items SET status='CANCELLED' WHERE organization_id=#{org} AND batch_id=#{id} AND status='DRAFT'")
+    int cancelItems(@Param("org") String org,@Param("id") String id);
+    @Insert("""
+      INSERT INTO commerce_batch_events(id,organization_id,batch_id,event_type,reason,actor_id,created_at)
+      VALUES(#{eventId},#{org},#{id},'CANCELLED',#{reason},#{actor},CURRENT_TIMESTAMP(6))
+      """)
+    int cancellationEvent(@Param("eventId") String eventId,@Param("org") String org,@Param("id") String id,
+                          @Param("reason") String reason,@Param("actor") String actor);
 }

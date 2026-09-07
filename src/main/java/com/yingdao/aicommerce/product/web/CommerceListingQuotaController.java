@@ -11,6 +11,8 @@ import java.util.List;
 public class CommerceListingQuotaController {
     private final CommerceListingQuotaService service;
     public CommerceListingQuotaController(CommerceListingQuotaService service){this.service=service;}
+    @PostMapping("/cancel-batch") public ApiResponse<CommerceListingQuotaService.Cancellation> cancel(@PathVariable String id,
+            @RequestBody CommerceListingQuotaService.CancelRequest r,@AuthenticationPrincipal PlatformPrincipal u){return ApiResponse.ok(service.cancel(id,r,u));}
     @GetMapping public ApiResponse<List<CommerceListingReservation>> list(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal u){return ApiResponse.ok(service.list(id,u));}
     @PostMapping public ApiResponse<List<CommerceListingReservation>> reserve(@PathVariable String id,
             @RequestBody CommerceListingQuotaService.Request r,@AuthenticationPrincipal PlatformPrincipal u){return ApiResponse.ok(service.reserve(id,r,u));}

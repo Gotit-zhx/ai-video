@@ -58,6 +58,36 @@
       text("p",`固定模板快照：${b.templateSnapshotId}；${b.items.length}条实际商品店铺组合。`,detail);
       const check=text("button","检查发布前条件（只读）",detail);check.type="button";
       const reportBox=text("div","",detail);
+      if(b.status==="DRAFT"){
+        const quotaBox=text("fieldset","",detail);text("legend","预留额度 / 取消草稿",quotaBox);
+        text("p","预留仅占用本系统批次额度，不自动发布。按店铺站点当地日期计算；取消会保留记录并释放预留。",quotaBox);
+        const dateLabel=text("label","首日刊登日期 ",quotaBox), date=document.createElement("input");date.type="date";dateLabel.append(date);
+        const confirmation=text("label","",quotaBox), agree=document.createElement("input");agree.type="checkbox";confirmation.append(agree);text("span","确认占用这些店铺的日额度",confirmation);
+        const reserve=text("button","预留额度（不发布）",quotaBox);reserve.type="button";
+        const reasonLabel=text("label","取消原因 ",quotaBox),reason=document.createElement("input");reason.maxLength=500;reasonLabel.append(reason);
+        const cancel=text("button","取消此草稿并释放额度",quotaBox);cancel.type="button";
+        const quotaStatus=text("p","",quotaBox);
+        reserve.addEventListener("click",async()=>{
+          if(!date.value||!agree.checked){quotaStatus.textContent="请选择日期并确认占用额度。";return;}
+          reserve.disabled=true;cancel.disabled=true;
+          try{
+            const r=await api(`/api/v1/commerce-batches/${encodeURIComponent(id)}/quota-reservations`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({firstListingDate:date.value,confirmed:true})});
+            if(ticket!==generation)return;
+            quotaStatus.textContent=`已预留 ${r.data.length} 条额度，不会自动执行。`;
+          }catch(e){quotaStatus.textContent=e.message;}
+          finally{reserve.disabled=false;cancel.disabled=false;}
+        });
+        cancel.addEventListener("click",async()=>{
+          if(!reason.value.trim()){quotaStatus.textContent="请填写取消原因。";return;}
+          if(!window.confirm("确认取消这个草稿批次并释放其预留额度？批次记录将保留。"))return;
+          reserve.disabled=true;cancel.disabled=true;
+          try{
+            await api(`/api/v1/commerce-batches/${encodeURIComponent(id)}/quota-reservations/cancel-batch`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirmed:true,reason:reason.value.trim()})});
+            if(ticket!==generation)return;
+            await showBatch(id);
+          }catch(e){quotaStatus.textContent=e.message;reserve.disabled=false;cancel.disabled=false;}
+        });
+      }
       check.addEventListener("click",async()=>{
         check.disabled=true;reportBox.textContent="正在核对商品版本、审核资料和店铺状态…";
         try{

@@ -13,6 +13,8 @@ import java.util.*;
 @Service
 public class CommerceListingQuotaService {
     public record Request(LocalDate firstListingDate,boolean confirmed) {}
+    public record CancelRequest(boolean confirmed,String reason) {}
+    public record Cancellation(String batchId,String status,int releasedReservations,boolean alreadyCancelled) {}
     private final CommerceBatchMapper batches;
     private final CommerceListingQuotaMapper quota;
     private final ShopMapper shops;
@@ -79,6 +81,35 @@ public class CommerceListingQuotaService {
             case "PH"->"Asia/Manila";case "SG"->"Asia/Singapore";case "MY"->"Asia/Kuala_Lumpur";
             case "TH"->"Asia/Bangkok";case "VN"->"Asia/Ho_Chi_Minh";case "ID"->"Asia/Jakarta";
             default->throw error(HttpStatus.BAD_REQUEST,"当前站点未配置额度时区");};
+    }
+    @Transactional
+    public Cancellation cancel(String batchId,CancelRequest request,PlatformPrincipal user){
+        access(user,true);
+        if(request==null||!request.confirmed()||request.reason()==null||request.reason().isBlank()||request.reason().trim().length()>500)
+            throw error(HttpStatus.BAD_REQUEST,"取消需明确确认并填写1至500字原因");
+        var batch=batches.lock(user.organizationId(),batchId);
+        if(batch==null)throw error(HttpStatus.NOT_FOUND,"批次不存在");
+        if("CANCELLED".equals(batch.status()))return new Cancellation(batchId,"CANCELLED",0,true);
+        if(!"DRAFT".equals(batch.status()))throw error(HttpStatus.CONFLICT,"批次已进入执行流程，不能直接取消并释放额度");
+        var items=batches.items(user.organizationId(),batchId);
+        if(items.stream().anyMatch(i->!"DRAFT".equals(i.status())))throw error(HttpStatus.CONFLICT,"存在已开始执行的条目，禁止直接释放额度");
+        var reservations=quota.list(user.organizationId(),batchId);
+        // Match reserve's shop/date lock order, not the query's date/shop ordering.
+        record Day(String shop,LocalDate date) implements Comparable<Day>{
+            public int compareTo(Day other){int c=shop.compareTo(other.shop);return c!=0?c:date.compareTo(other.date);}
+        }
+        Map<Day,Integer> totals=new TreeMap<>();
+        reservations.forEach(r->totals.merge(new Day(r.shopId(),r.listingDate()),1,Integer::sum));
+        for(var entry:totals.entrySet()){
+            if(quota.releaseDay(user.organizationId(),entry.getKey().shop(),entry.getKey().date(),entry.getValue())!=1)
+                throw error(HttpStatus.CONFLICT,"额度台账不一致，已停止取消，请管理员核查");
+        }
+        if(quota.releaseBatch(user.organizationId(),batchId,user.userId())!=reservations.size())
+            throw error(HttpStatus.CONFLICT,"额度预留记录已改变，请重试");
+        if(batches.cancel(user.organizationId(),batchId)!=1)throw error(HttpStatus.CONFLICT,"批次状态已改变");
+        batches.cancelItems(user.organizationId(),batchId);
+        batches.cancellationEvent(UUID.randomUUID().toString(),user.organizationId(),batchId,request.reason().trim(),user.userId());
+        return new Cancellation(batchId,"CANCELLED",reservations.size(),false);
     }
     private static void access(PlatformPrincipal u,boolean edit){
         if(u==null||u.organizationId()==null||!(edit?u.permissionCodes().contains("product:publish"):
