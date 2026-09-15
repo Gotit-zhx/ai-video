@@ -16,6 +16,14 @@ import sys
 import time
 import uuid
 
+RUNTIME_INBOUND_COUNTS = """const fs = require('fs'); let established = 0;
+for (const path of ['/proc/net/tcp', '/proc/net/tcp6']) {
+  for (const line of fs.readFileSync(path, 'utf8').trim().split('\\n').slice(1)) {
+    const columns = line.trim().split(/\\s+/);
+    if (columns[3] === '01' && parseInt(columns[1].split(':').at(-1), 16) === 8090) established++;
+  }
+} process.stdout.write(JSON.stringify({ established }));"""
+
 
 def assert_app_only(before, after, require):
     comparison = copy.deepcopy(after)
@@ -40,7 +48,9 @@ class AppUpdate:
         self.path = self.base.private / 'app-update-state.json'
         self.state = json.loads(self.path.read_text()) if self.path.exists() else None
         self.activity_query = runtime['EXTERNAL_VIDEO_ACTIVITY_QUERY']
-        self.socket_script = runtime['SOCKET_COUNTS']
+        # Runtime itself is not restarted here. Only its inbound requests can
+        # depend on the app process; an idle upstream HTTPS keep-alive is not work.
+        self.socket_script = RUNTIME_INBOUND_COUNTS
         self.args = args
 
     def save(self):
