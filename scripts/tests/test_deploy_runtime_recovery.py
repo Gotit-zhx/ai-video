@@ -20,7 +20,11 @@ class ExternalVideoGuardTest(unittest.TestCase):
             CREATE TABLE ai_video_task_items (id TEXT, task_id TEXT, organization_id TEXT, status TEXT);
             CREATE TABLE ai_video_generation_jobs (id TEXT, task_id TEXT, item_id TEXT, organization_id TEXT, status TEXT);
             CREATE TABLE video_scripts (id TEXT, status TEXT);
-            CREATE TABLE ai_video_pending_image_results (id TEXT);
+            CREATE TABLE ai_video_pending_image_results
+                (id TEXT, task_id TEXT, item_id TEXT, organization_id TEXT, asset_type TEXT);
+            CREATE TABLE ai_video_task_assets
+                (id TEXT, task_id TEXT, item_id TEXT, organization_id TEXT,
+                 asset_type TEXT, size_bytes INTEGER, file_path TEXT);
         ''')
 
     def family(self, statuses=('VIDEO_GENERATING', 'VIDEO_READY'), task_status='VIDEO_GENERATING'):
@@ -55,11 +59,56 @@ class ExternalVideoGuardTest(unittest.TestCase):
 
     def test_pending_paid_image_and_active_script_remain_blocked(self):
         self.family()
-        self.db.execute('INSERT INTO ai_video_pending_image_results VALUES (?)', ('paid-image',))
+        self.db.execute('INSERT INTO ai_video_pending_image_results (id) VALUES (?)', ('paid-image',))
         self.db.execute('INSERT INTO video_scripts VALUES (?,?)', ('script-a', 'AI_ANALYZING'))
         counts = self.counts()
         self.assertEqual(counts['pending_image_results'], 1)
         self.assertEqual(counts['video_scripts'], 1)
+
+    def completed_pending(self, with_asset=True):
+        self.db.execute('INSERT INTO ai_video_tasks VALUES (?,?,?)', ('old-task', 'org-a', 'VIDEO_READY'))
+        self.db.execute('INSERT INTO ai_video_task_items VALUES (?,?,?,?)',
+                        ('old-item', 'old-task', 'org-a', 'VIDEO_READY'))
+        self.db.execute('INSERT INTO ai_video_pending_image_results VALUES (?,?,?,?,?)',
+                        ('paid-old', 'old-task', 'old-item', 'org-a', 'STORYBOARD_GRID'))
+        if with_asset:
+            self.db.execute('INSERT INTO ai_video_task_assets VALUES (?,?,?,?,?,?,?)',
+                            ('stored-old', 'old-task', 'old-item', 'org-a', 'STORYBOARD_GRID', 4096, '/data/stored.png'))
+
+    def test_completed_historical_pending_is_retained_and_exempt(self):
+        self.completed_pending()
+        self.assertEqual(self.counts()['pending_image_results'], 0)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM ai_video_pending_image_results').fetchone()[0], 1)
+
+    def test_completed_pending_without_matching_asset_still_blocks(self):
+        self.completed_pending(with_asset=False)
+        self.assertEqual(self.counts()['pending_image_results'], 1)
+
+    def test_invalid_or_mismatched_completed_asset_does_not_exempt_pending(self):
+        self.completed_pending()
+        for column, invalid in [('size_bytes', 0), ('file_path', ''), ('file_path', '   '), ('file_path', None),
+                                ('asset_type', 'MODEL_IMAGE'), ('task_id', 'other-task'),
+                                ('item_id', 'other-item'), ('organization_id', 'other-org')]:
+            with self.subTest(column=column, invalid=invalid):
+                self.db.execute('SAVEPOINT fixture')
+                self.db.execute(f'UPDATE ai_video_task_assets SET {column} = ?', (invalid,))
+                self.assertEqual(self.counts()['pending_image_results'], 1)
+                self.db.execute('ROLLBACK TO fixture')
+                self.db.execute('RELEASE fixture')
+
+    def test_pending_for_a_running_task_or_unfinished_child_still_blocks(self):
+        self.completed_pending()
+        self.db.execute("UPDATE ai_video_tasks SET status = 'VIDEO_GENERATING'")
+        self.assertEqual(self.counts()['ai_video_tasks'], 0)
+        self.assertEqual(self.counts()['pending_image_results'], 1)
+        self.db.execute("UPDATE ai_video_tasks SET status = 'VIDEO_READY'")
+        self.db.execute("UPDATE ai_video_task_items SET status = 'IMAGE_READY'")
+        self.assertEqual(self.counts()['pending_image_results'], 1)
+
+    def test_mismatched_pending_ownership_is_not_exempt(self):
+        self.completed_pending()
+        self.db.execute("UPDATE ai_video_pending_image_results SET organization_id = 'other-org'")
+        self.assertEqual(self.counts()['pending_image_results'], 1)
 
     def test_unrelated_or_wrong_company_video_job_is_not_exempt(self):
         self.family()

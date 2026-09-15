@@ -53,7 +53,19 @@ WHERE status NOT IN ('SUCCEEDED','FAILED','CANCELLED')
       WHERE pure.id = job.task_id AND job.organization_id = pure.organization_id
         AND item.id = job.item_id
   )
-UNION ALL SELECT 'pending_image_results', COUNT(*) FROM ai_video_pending_image_results;"""
+UNION ALL SELECT 'pending_image_results', COUNT(*) FROM ai_video_pending_image_results pending
+WHERE NOT EXISTS (
+    SELECT 1 FROM ai_video_tasks task
+    JOIN ai_video_task_items item
+      ON item.task_id = task.id AND item.organization_id = task.organization_id
+    JOIN ai_video_task_assets asset
+      ON asset.task_id = task.id AND asset.item_id = item.id
+     AND asset.organization_id = task.organization_id AND asset.asset_type = pending.asset_type
+     AND asset.size_bytes > 0 AND NULLIF(TRIM(asset.file_path), '') IS NOT NULL
+    WHERE task.id = pending.task_id AND item.id = pending.item_id
+      AND task.organization_id = pending.organization_id
+      AND task.status = 'VIDEO_READY' AND item.status = 'VIDEO_READY'
+);"""
 
 
 class RuntimeUpdate:
@@ -137,6 +149,7 @@ class RuntimeUpdate:
         if self.args.allow_external_video_work:
             # Exempt only nonempty, wholly video-stage families in one DB snapshot.
             # A mixed parent, failed image, or paid result awaiting download cannot qualify.
+            # Historical pending rows with completed videos and matching stored assets stay intact.
             activity = self.base.sql(EXTERNAL_VIDEO_ACTIVITY_QUERY)
             counts = {line.split('\t')[0]: int(line.split('\t')[1]) for line in activity.splitlines()}
             self.require(set(counts) == {'video_scripts', 'ai_video_tasks', 'ai_video_task_items',
@@ -233,7 +246,7 @@ def main():
     parser.add_argument('--sources')
     parser.add_argument('--commit')
     parser.add_argument('--allow-external-video-work', action='store_true',
-                        help='Permit wholly external video-stage task families only; pending images must be zero')
+                        help='Permit wholly external video-stage task families; unresolved pending images still block')
     args = parser.parse_args()
     try:
         support = runpy.run_path(args.support_script)
