@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.video.domain.VideoScript;
@@ -9,7 +10,6 @@ import com.yingdao.aicommerce.video.mapper.VideoScriptMapper;
 import com.yingdao.aicommerce.video.mapper.VideoScriptShotMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
 
 @Service
 public class VideoScriptService {
@@ -64,13 +65,6 @@ public class VideoScriptService {
             String presentationMode,
             PlatformPrincipal principal
     ) {
-        VideoScript blocking = currentBlocking(principal);
-        if (blocking != null) {
-            throw new BusinessException(
-                    HttpStatus.CONFLICT,
-                    "当前视频还在拆解或等待重试，请先完成当前任务"
-            );
-        }
         validateVideo(video);
         String id = UUID.randomUUID().toString();
         String originalName = safeFileName(video.getOriginalFilename());
@@ -109,14 +103,11 @@ public class VideoScriptService {
         );
         try {
             scriptMapper.insert(script);
-        } catch (DuplicateKeyException exception) {
+        } catch (RuntimeException exception) {
             deleteQuietly(directory);
-            throw new BusinessException(
-                    HttpStatus.CONFLICT,
-                    "当前视频还在拆解或等待重试，请先完成当前任务"
-            );
+            throw exception;
         }
-        processor.analyze(id);
+        submitAnalysis(script);
         return script;
     }
 
@@ -182,7 +173,7 @@ public class VideoScriptService {
                 new LambdaQueryWrapper<VideoScript>()
                         .eq(VideoScript::getOrganizationId, principal.organizationId())
                         .eq(VideoScript::getCreatedBy, principal.userId())
-                        .in(VideoScript::getStatus, "QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING", "FAILED")
+                        .in(VideoScript::getStatus, "QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING")
                         .orderByDesc(VideoScript::getUpdatedAt)
                         .last("LIMIT 1")
         );
@@ -193,9 +184,7 @@ public class VideoScriptService {
         if (!"FAILED".equals(script.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "只有拆解失败的任务可以重试");
         }
-        script.prepareRetry();
-        scriptMapper.updateById(script);
-        processor.analyze(script.getId());
+        queueExistingAnalysis(script, false);
         return script;
     }
 
@@ -204,18 +193,49 @@ public class VideoScriptService {
         if (!"READY".equals(script.getStatus()) || !"VIDEO_ANALYSIS".equals(script.getSourceType())) {
             throw new BusinessException(HttpStatus.CONFLICT, "只有已完成的视频拆解脚本可以重新精拆");
         }
-        VideoScript blocking = currentBlocking(principal);
-        if (blocking != null && !blocking.getId().equals(script.getId())) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前已有一条视频拆解任务待处理，请完成后再重新精拆");
-        }
-        try {
-            script.prepareReanalysis();
-            scriptMapper.updateById(script);
-        } catch (DuplicateKeyException exception) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前已有一条视频拆解任务正在运行");
-        }
-        processor.analyze(script.getId());
+        queueExistingAnalysis(script, true);
         return script;
+    }
+
+    private void queueExistingAnalysis(VideoScript script, boolean reanalysis) {
+        String previousStatus = script.getStatus();
+        Instant previousUpdatedAt = script.getUpdatedAt();
+        if (reanalysis) script.prepareReanalysis();
+        else script.prepareRetry();
+        int changed = scriptMapper.update(null, new LambdaUpdateWrapper<VideoScript>()
+                .eq(VideoScript::getId, script.getId())
+                .eq(VideoScript::getOrganizationId, script.getOrganizationId())
+                .eq(VideoScript::getCreatedBy, script.getCreatedBy())
+                .eq(VideoScript::getStatus, previousStatus)
+                .eq(VideoScript::getUpdatedAt, previousUpdatedAt)
+                .set(VideoScript::getStatus, script.getStatus())
+                .set(VideoScript::getProgress, script.getProgress())
+                .set(VideoScript::getErrorMessage, null)
+                .set(VideoScript::getCompletedAt, null)
+                .set(VideoScript::getUpdatedAt, script.getUpdatedAt())
+                .set(VideoScript::getVersion, script.getVersion()));
+        if (changed != 1) {
+            throw new BusinessException(HttpStatus.CONFLICT, "这条视频脚本状态已更新，请刷新后重试");
+        }
+        submitAnalysis(script);
+    }
+
+    private void submitAnalysis(VideoScript script) {
+        try {
+            processor.analyze(script.getId());
+        } catch (RejectedExecutionException exception) {
+            script.fail("视频拆解队列已满，任务和原视频已保存，请稍后重试当前任务");
+            // Rejection happens before an async worker starts; never leave an orphaned QUEUED row.
+            scriptMapper.update(null, new LambdaUpdateWrapper<VideoScript>()
+                    .eq(VideoScript::getId, script.getId())
+                    .eq(VideoScript::getStatus, "QUEUED")
+                    .set(VideoScript::getStatus, script.getStatus())
+                    .set(VideoScript::getProgress, script.getProgress())
+                    .set(VideoScript::getErrorMessage, script.getErrorMessage())
+                    .set(VideoScript::getCompletedAt, script.getCompletedAt())
+                    .set(VideoScript::getUpdatedAt, script.getUpdatedAt()));
+            throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, script.getErrorMessage());
+        }
     }
 
     @Transactional

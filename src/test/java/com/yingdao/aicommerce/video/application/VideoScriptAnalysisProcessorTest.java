@@ -25,6 +25,18 @@ class VideoScriptAnalysisProcessorTest {
     }
 
     @Test
+    void explicitRuntimeRetryContractOverridesStatusAndMessageKeywords() {
+        String permanent = "{\"message\":\"上游请求 timeout 500\",\"failureCode\":\"CHAT_MODEL_UNAVAILABLE\",\"retryable\":false,\"upstreamStatus\":500}";
+        assertFalse(VideoScriptAnalysisProcessor.retryablePiFailure(502, permanent));
+        assertFalse(ProductFunctionAnalysisService.isTransientValidationFailure(permanent));
+        assertFalse(ProductFunctionAnalysisService.isTransientValidationFailure("502 Bad Gateway: \"" + permanent + "\""));
+        assertTrue(VideoScriptAnalysisProcessor.retryablePiFailure(502, "{\"message\":\"retryable=false is text only\"}"));
+        assertTrue(ProductFunctionAnalysisService.isTransientValidationFailure("{\"message\":\"timeout\",\"retryable\":\"false\"}"));
+        assertTrue(ProductFunctionAnalysisService.isTransientValidationFailure("{\"message\":\"服务繁忙\",\"retryable\":true,\"upstreamStatus\":500}"));
+        assertTrue(VideoScriptAnalysisProcessor.retryablePiFailure(502, "{\"message\":\"overloaded\",\"retryable\":true}"));
+    }
+
+    @Test
     void longVideoIsReplannedAsAContinuousFifteenSecondTimeline() {
         VideoScriptAnalysisResult original = resultWithNineShots(new BigDecimal("42.0"));
 

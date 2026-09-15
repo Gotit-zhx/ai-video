@@ -5,6 +5,8 @@ import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import { jsonrepair } from "jsonrepair";
 import { Type } from "typebox";
 import { Agent as UndiciAgent } from "undici";
+import { VideoScriptSession, VIDEO_SCRIPT_REQUEST_TIMEOUT_MS } from "./video-script-session.js";
+import { requestChatCompletion } from "./chat-completion-transport.js";
 
 const PORT = Number(process.env.PORT || 8090);
 const INTERNAL_TOKEN = process.env.PI_RUNTIME_TOKEN || "heyi-pi-runtime-dev-token";
@@ -24,6 +26,11 @@ const IMAGE_FETCH_DISPATCHER = new UndiciAgent({
   connect: { timeout: 60_000 },
   headersTimeout: IMAGE_RESPONSE_TIMEOUT_MS,
   bodyTimeout: IMAGE_RESPONSE_TIMEOUT_MS
+});
+const VIDEO_SCRIPT_DISPATCHER = new UndiciAgent({
+  connect: { timeout: 60_000 },
+  headersTimeout: VIDEO_SCRIPT_REQUEST_TIMEOUT_MS + 10_000,
+  bodyTimeout: VIDEO_SCRIPT_REQUEST_TIMEOUT_MS + 10_000
 });
 const IMAGE_CONCURRENCY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
 const IMAGE_NETWORK_RETRY_DELAYS_MS = [2_000, 5_000];
@@ -419,59 +426,24 @@ function modelFrom(config) {
 
 async function requestNonStreamingChat(
   config, apiKey, systemPrompt, prompt, frames, maxTokens = 6500, timeoutMs = 180_000) {
-  const baseUrl = String(config.baseUrl || "").trim().replace(/\/+$/, "");
-  const endpoint = /\/chat\/completions$/i.test(baseUrl)
-    ? baseUrl
-    : `${baseUrl}/chat/completions`;
-  const modelId = String(config.modelId || "").trim();
-  const tokenOptions = /^gpt-5(?:\.|-|$)/i.test(modelId)
-    ? { max_completion_tokens: maxTokens, reasoning_effort: "low" }
-    : { max_tokens: maxTokens };
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: modelId,
-      stream: false,
-      ...tokenOptions,
-      messages: [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            ...frames.map(frame => ({
-              type: "image_url",
-              image_url: {
-                url: `data:${String(frame.mimeType)};base64,${String(frame.data)}`
-              }
-            }))
-          ]
-        }
-      ]
-    }),
+  const { reply } = await requestChatCompletion({
+    config, apiKey, maxTokens, timeoutMs,
     dispatcher: PRODUCT_ANALYSIS_DISPATCHER,
-    signal: AbortSignal.timeout(timeoutMs)
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          ...frames.map(frame => ({
+            type: "image_url",
+            image_url: { url: `data:${String(frame.mimeType)};base64,${String(frame.data)}` }
+          }))
+        ]
+      }
+    ]
   });
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`非流式兜底请求失败 ${response.status}: ${body.slice(0, 500)}`);
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    throw new Error("非流式兜底响应不是有效 JSON");
-  }
-  const content = parsed?.choices?.[0]?.message?.content;
-  const reply = Array.isArray(content)
-    ? content.map(part => typeof part === "string" ? part : String(part?.text || "")).join("")
-    : String(content || "");
-  if (!reply.trim()) throw new Error("非流式兜底没有返回有效结果");
-  return reply.trim();
+  return reply;
 }
 
 function modelSignature(config = {}) {
@@ -951,6 +923,7 @@ async function callImageModel(config, params, inputImages) {
 }
 
 function publicErrorMessage(error) {
+  if (error?.chatTransport) return error.message;
   const message = String(error?.message || "");
   const causeCode = String(error?.cause?.code || error?.code || "");
   if (error?.failureKind === "COPYRIGHT" || isCopyrightImageMessage(message)) {
@@ -1900,25 +1873,11 @@ async function runVideoScriptAnalysis(body) {
     .slice(0, 48);
   if (!frames.length) throw new Error("没有可供模型分析的视频关键帧");
 
-  const runtimeAgent = new Agent({
-    initialState: {
-      systemPrompt: VIDEO_SCRIPT_ANALYSIS_PROMPT,
-      model: modelFrom(config),
-      thinkingLevel: "medium",
-      messages: [],
-      tools: []
-    },
-    streamFn: (model, context, options) =>
-      streamSimple(model, context, {
-        ...options,
-        apiKey,
-        maxTokens: 6500,
-        timeoutMs: 180_000,
-        maxRetries: 2,
-        maxRetryDelayMs: 15_000
-      }),
-    convertToLlm: messages =>
-      messages.filter(message => ["user", "assistant"].includes(message.role))
+  const runtimeAgent = new VideoScriptSession({
+    config,
+    apiKey,
+    systemPrompt: VIDEO_SCRIPT_ANALYSIS_PROMPT,
+    dispatcher: VIDEO_SCRIPT_DISPATCHER
   });
   const progressReporter = createVideoScriptProgressReporter(body.progressId);
   const unsubscribeProgress = runtimeAgent.subscribe(progressReporter.handleEvent);
@@ -1937,7 +1896,7 @@ async function runVideoScriptAnalysis(body) {
     note: "以下图片按视频时间先后顺序排列，并附原视频时间点；完整阅读全部帧后自行选择九个最能覆盖动作状态变化的真实时间点，不得固定等分。只提取可复用的动作、人物数量、机位、运镜、场景、光线、节奏和微表情。必须保留手与商品的接触关系、商品正面/斜侧/窄边/背面朝向、抓握区域、支撑点和可见功能状态变化，例如包装中、取出、折叠、展开、手持、穿上、已穿着、局部特写、倒立、翻转、露出底部、点火、回正和放置；这些是动作与主体状态而非商品外观。逐帧建立主体状态账本，原片中的正面→侧面→背面→回正、包装→展开→穿上→穿着展示等状态切换不得被压扁成全程手持或同一姿势。不得带入原人物身份、外貌、发型、妆容、饰品、穿搭，不得带入原视频商品类别、颜色、版型、印花、文字、Logo、卖点或搭配，不得抄录字幕。后续商品唯一来源是用户在 AI 视频任务中上传的商品图。运镜优先参考 cameraMotionEvidence；当前没有可靠音频转写，所有 narration 必须为空。"
   });
   try {
-    progressReporter.beginPass("AI_STREAMING", 58, 84);
+    progressReporter.beginPass("AI_ANALYZING", 58, 84);
     await runtimeAgent.prompt(
       prompt,
       frames.map(frame => ({
@@ -1990,6 +1949,7 @@ ${JSON.stringify(parsed.result)}
       console.warn(`[video-script] action-state audit fallback: ${String(auditError?.message || auditError)}`);
     }
     progressReporter.publish(96, "RESULT_READY", true);
+    console.info(`[video-script] completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt} actionStateAudited=${audited !== parsed}`);
     return {
       result: audited.result,
       reply: audited.reply,
@@ -2503,6 +2463,7 @@ const server = http.createServer(async (request, response) => {
       payload.safeRetryCount = Number(error.safeRetryCount || 0);
     }
     if (error?.failureCode) payload.failureCode = String(error.failureCode);
+    if (typeof error?.retryable === "boolean") payload.retryable = error.retryable;
     if (Number.isFinite(Number(error?.upstreamStatus))) {
       payload.upstreamStatus = Number(error.upstreamStatus);
     }

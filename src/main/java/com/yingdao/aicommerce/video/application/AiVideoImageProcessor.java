@@ -279,6 +279,7 @@ public class AiVideoImageProcessor {
 
     static boolean retryableImageTransientFailure(String message) {
         if (message == null || message.isBlank()) return false;
+        if (ProductFunctionAnalysisService.isStructureAnalysisPaused(message)) return false;
         String value = message.toLowerCase();
         // A validator outage is fail-open inside the bounded generation method and must never
         // re-enter the scheduled image pipeline, even if its nested cause mentions 429 or policy.
@@ -503,6 +504,7 @@ public class AiVideoImageProcessor {
                 throw interrupted;
             } catch (Exception failure) {
                 String message = readable(failure);
+                if (ProductFunctionAnalysisService.isStructureAnalysisPaused(message)) throw failure;
                 boolean malformed = message.contains("服装结构识别结果缺少必填字段");
                 // Incomplete model JSON may be sampled again, but never bypass the contract or
                 // turn a persistent schema problem into unlimited paid model calls.
@@ -521,6 +523,7 @@ public class AiVideoImageProcessor {
 
     private static boolean retryableImageException(Exception failure) {
         String message = readable(failure);
+        if (ProductFunctionAnalysisService.isStructureAnalysisPaused(message)) return false;
         if (message.contains("服装结构复核") || message.toLowerCase().contains("garment validation")) return false;
         if (retryableImageTransientFailure(message)) return true;
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
@@ -2249,7 +2252,7 @@ public class AiVideoImageProcessor {
         String value = source.getMessage() == null ? "图片生成失败" : source.getMessage().replaceAll("\\s+", " ").trim();
         String marker = "\"message\":\"";
         int markerIndex = value.indexOf(marker);
-        if (markerIndex >= 0) {
+        if (markerIndex >= 0 && !ProductFunctionAnalysisService.isStructureAnalysisPaused(value)) {
             int messageStart = markerIndex + marker.length();
             int messageEnd = value.indexOf('"', messageStart);
             if (messageEnd > messageStart) value = value.substring(messageStart, messageEnd);

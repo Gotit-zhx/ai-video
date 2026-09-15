@@ -49,6 +49,7 @@ public class ProductFunctionAnalysisService {
     static final int MAX_INITIAL_ANALYSIS_ATTEMPTS = 2;
     static final int MAX_VALIDATION_ATTEMPTS = 2;
     static final int MAX_CONCURRENT_VISION_ANALYSES = 50;
+    static final String STRUCTURE_ANALYSIS_PAUSED = "STRUCTURE_ANALYSIS_PAUSED";
     // Runtime allows 1000 seconds; leave time for transfer and error serialization.
     static final int VISION_READ_TIMEOUT_MS = 1_020_000;
     private static final String GARMENT_TOPOLOGY_VERSION = "GARMENT_TOPOLOGY_V2";
@@ -86,6 +87,8 @@ public class ProductFunctionAnalysisService {
             return item.getProductFunctionAnalysisJson();
         }
         Exception lastFailure = null;
+        String selectedModelId = "未配置";
+        int attemptsPerformed = 0;
         boolean analysisSlotAcquired = false;
         try {
             ModelConfigService.RuntimeModelConnection model = modelConfigService
@@ -93,6 +96,7 @@ public class ProductFunctionAnalysisService {
             if (model == null) {
                 throw new IllegalStateException("没有可用的结构识别模型");
             }
+            selectedModelId = model.modelId();
             Path source = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize();
             if (!Files.isRegularFile(source) || Files.size(source) <= 0 || Files.size(source) > MAX_SOURCE_BYTES) {
                 throw new IllegalStateException("商品原图不可用于结构识别");
@@ -125,6 +129,7 @@ public class ProductFunctionAnalysisService {
             visionAnalysisSlots.acquire();
             analysisSlotAcquired = true;
             for (int attempt = 1; attempt <= MAX_INITIAL_ANALYSIS_ATTEMPTS; attempt++) {
+                attemptsPerformed = attempt;
                 try {
                     PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -141,7 +146,8 @@ public class ProductFunctionAnalysisService {
                     String failure = readable(exception);
                     log.warn("Product function analysis unavailable for item {} (attempt {}/{}): {}",
                             item.getId(), attempt, MAX_INITIAL_ANALYSIS_ATTEMPTS, failure);
-                    if (!shouldRetryInitialAnalysisFailure(attempt, failure)) break;
+                    if (PiRuntimeFailure.from(exception).explicitlyNonRetryable()
+                            || !shouldRetryInitialAnalysisFailure(attempt, failure)) break;
                     try {
                         Thread.sleep(750L * attempt);
                     } catch (InterruptedException interrupted) {
@@ -170,11 +176,11 @@ public class ProductFunctionAnalysisService {
         } finally {
             if (analysisSlotAcquired) visionAnalysisSlots.release();
         }
-        if (garment) {
-            throw new IllegalStateException("服装结构识别暂时失败，已阻止无结构契约的错误生图："
-                    + readable(lastFailure == null ? new IllegalStateException("未知错误") : lastFailure), lastFailure);
-        }
-        return null;
+        PiRuntimeFailure.Details failure = PiRuntimeFailure.from(lastFailure);
+        throw new IllegalStateException("[" + STRUCTURE_ANALYSIS_PAUSED + "] 模型「" + selectedModelId
+                + "」的" + (garment ? "服装" : "商品") + "结构识别失败 [" + failure.failureCode() + "]，已尝试 "
+                + attemptsPerformed + " 次并停止自动重试；原图已保留，请检查模型连接后重试。"
+                + safe(failure.message(), 600), lastFailure);
     }
 
     public GarmentValidation validateGenerated(AiVideoTask task, AiVideoTaskItem item,
@@ -184,12 +190,14 @@ public class ProductFunctionAnalysisService {
             return new GarmentValidation(true, "", List.of(), 1.0);
         }
         boolean validationSlotAcquired = false;
+        String selectedModelId = "未配置";
         try {
             visionAnalysisSlots.acquire();
             validationSlotAcquired = true;
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId())
                     .orElseThrow(() -> new IllegalStateException("没有可用的结构复核模型"));
+            selectedModelId = model.modelId();
             Path source = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize();
             Map<String, Object> request = new LinkedHashMap<>();
             request.put("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
@@ -234,7 +242,8 @@ public class ProductFunctionAnalysisService {
                 } catch (Exception exception) {
                     lastFailure = exception;
                     String failure = readable(exception);
-                    if (!shouldRetryValidationFailure(attempt, failure)) break;
+                    if (PiRuntimeFailure.from(exception).explicitlyNonRetryable()
+                            || !shouldRetryValidationFailure(attempt, failure)) break;
                     log.warn("Garment validation transport unavailable for item {} asset {} "
                                     + "(attempt {}/{}); retrying the same private candidate: {}",
                             item.getId(), assetType, attempt, MAX_VALIDATION_ATTEMPTS, failure);
@@ -254,8 +263,10 @@ public class ProductFunctionAnalysisService {
             if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
             log.warn("Garment validation unavailable for item {}; the private candidate will be rechecked: {}",
                     item.getId(), readable(exception));
-            throw new IllegalStateException("服装结构复核暂时失败，已私有保存本次候选图并将在后台继续复核："
-                    + readable(exception), exception);
+            PiRuntimeFailure.Details failure = PiRuntimeFailure.from(exception);
+            throw new IllegalStateException("服装结构复核暂时失败，模型「" + selectedModelId + "」["
+                    + failure.failureCode() + "]，已私有保存本次候选图："
+                    + safe(failure.message(), 600), exception);
         } finally {
             if (validationSlotAcquired) visionAnalysisSlots.release();
         }
@@ -273,6 +284,8 @@ public class ProductFunctionAnalysisService {
 
     static boolean isTransientValidationFailure(String message) {
         if (message == null || message.isBlank()) return false;
+        PiRuntimeFailure.Details failure = PiRuntimeFailure.parse(message);
+        if (failure.retryable() != null) return Boolean.TRUE.equals(failure.retryable());
         String value = message.toLowerCase();
         return value.contains("stream ended without finish_reason")
                 || value.contains("stream ended") || value.contains("unexpected end")
@@ -284,6 +297,10 @@ public class ProductFunctionAnalysisService {
                 || value.contains("eof") || value.contains("timeout") || value.contains("timed out")
                 || value.contains("temporarily unavailable") || value.contains("没有返回结果")
                 || value.contains("502") || value.contains("503") || value.contains("504");
+    }
+
+    static boolean isStructureAnalysisPaused(String message) {
+        return message != null && message.contains(STRUCTURE_ANALYSIS_PAUSED);
     }
 
     static boolean shouldRetryValidationFailure(int failedAttempt, String message) {

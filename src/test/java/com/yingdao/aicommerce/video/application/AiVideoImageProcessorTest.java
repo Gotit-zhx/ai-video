@@ -270,9 +270,19 @@ class AiVideoImageProcessorTest {
                     modelConfig, new ObjectMapper(),
                     "http://127.0.0.1:" + server.getAddress().getPort(), "test-token");
 
-            String result = service.ensureAnalysis(dailyUseTask, item);
-
-            assertNull(result);
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> service.ensureAnalysis(dailyUseTask, item));
+            assertTrue(failure.getMessage().contains("STRUCTURE_ANALYSIS_PAUSED"));
+            assertTrue(failure.getMessage().contains("gpt-5.4"));
+            assertTrue(failure.getMessage().contains("UPSTREAM_HTTP_502"));
+            AtomicInteger outerAttempts = new AtomicInteger();
+            assertThrows(IllegalStateException.class, () -> AiVideoImageProcessor.runWithImageRecovery(() -> {
+                outerAttempts.incrementAndGet();
+                throw failure;
+            }, ignored -> {}, () -> {}));
+            assertEquals(1, outerAttempts.get());
+            assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(failure.getMessage()));
+            assertFalse(AiVideoImageProcessor.retryableImageTransientFailure("图片自动恢复等待重试：" + failure.getMessage()));
             assertArrayEquals(untouched, original);
             assertEquals(2, calls.get());
             assertArrayEquals(requestBodies.get(0), requestBodies.get(1));

@@ -53,6 +53,8 @@ let skillConvertStatusTimer = null;
 let videoScriptStatusTimer = null;
 let videoScriptPollingGeneration = 0;
 let videoScriptLoadGeneration = 0;
+let videoScriptDetailGeneration = 0;
+let videoScriptProgressId = null;
 let activeVideoScript = null;
 let selectedVideoScriptId = null;
 let selectedVideoScriptDetail = null;
@@ -3888,10 +3890,12 @@ function fillManualScriptDraft(draft) {
 }
 
 function prepareVideoScriptCreationDialog(mode) {
+  videoScriptProgressId = null;
   stopVideoScriptVisualProgress();
   videoScriptVisualProgress = 0;
   videoScriptVisualStatus = "";
-  paintVideoScriptProgress(0);
+  videoScriptVisualKey = "";
+  videoScriptVisualServerProgress = 0;
   document.querySelector("#script-active-analysis").hidden = true;
   document.querySelector(".script-create-switch").hidden = false;
   document.querySelector("#submit-video-script").hidden = false;
@@ -3920,7 +3924,7 @@ const videoScriptPresentationNames = {
   LEGACY_COMPAT: "旧脚本兼容"
 };
 
-const blockingVideoScriptStatuses = new Set(["QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING", "FAILED"]);
+const processingVideoScriptStatuses = new Set(["QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING"]);
 
 function paintVideoScriptProgress(value) {
   const progress = Math.max(0, Math.min(100, value));
@@ -4002,6 +4006,7 @@ function startVideoScriptVisualProgress(status, serverProgress, taskKey = "") {
 }
 
 function renderVideoScriptProgress(script) {
+  videoScriptProgressId = script?.id || null;
   const activePanel = document.querySelector("#script-active-analysis");
   const createSwitch = document.querySelector(".script-create-switch");
   const presentationPicker = document.querySelector(".script-presentation-mode-picker");
@@ -4014,6 +4019,8 @@ function renderVideoScriptProgress(script) {
     stopVideoScriptVisualProgress();
     videoScriptVisualProgress = 0;
     videoScriptVisualStatus = "";
+    videoScriptVisualKey = "";
+    videoScriptVisualServerProgress = 0;
     activePanel.hidden = true;
     createSwitch.hidden = false;
     presentationPicker.hidden = false;
@@ -4035,11 +4042,11 @@ function renderVideoScriptProgress(script) {
   manualPanel.hidden = true;
   submit.hidden = true;
   retry.hidden = !failed;
-  importButton.textContent = ready ? "＋ 新建脚本" : "查看拆解进度";
+  importButton.textContent = "＋ 新建脚本";
   document.querySelector("#video-script-dialog-title").textContent = ready ? "视频拆解完成" : failed ? "视频拆解未完成" : "视频拆解处理中";
   document.querySelector("#video-script-dialog-copy").textContent = ready
     ? "分镜和生产 JSON 已经生成，可以关闭窗口查看结果。"
-    : failed ? "任务和原视频已保留，可以重试当前任务或删除后重新上传。" : "当前任务会持续保留；完成前不会接受第二个视频。";
+    : failed ? "任务和原视频已保留，可以重试当前任务或删除后重新上传。" : "当前任务会在后台持续处理；你可以关闭窗口并继续上传其他视频。";
   document.querySelector("#active-script-stage").textContent = videoScriptStatusNames[status] || status;
   document.querySelector("#active-script-name").textContent = script.name || script.sourceFileName || "视频拆解任务";
   document.querySelector("#active-script-message").textContent = failed
@@ -4051,7 +4058,7 @@ function renderVideoScriptProgress(script) {
   orbit.classList.toggle("done", ready);
   document.querySelector("#video-script-prototype-note").textContent = failed
     ? "系统已保留失败原因和上传文件，不会静默丢失。"
-    : ready ? "当前任务已完成，现在可以创建新的视频拆解任务。" : "处理中请等待，无需重复点击或重新上传。";
+    : ready ? "当前任务已完成，现在可以创建新的视频拆解任务。" : "当前视频正在后台拆解，可关闭窗口继续新建脚本。";
 }
 
 function videoScriptStatusClass(status) {
@@ -4137,6 +4144,8 @@ function resetVideoScriptState() {
   stopVideoScriptPolling();
   stopVideoScriptVisualProgress();
   activeVideoScript = null;
+  videoScriptProgressId = null;
+  videoScriptDetailGeneration += 1;
   selectedVideoScriptId = null;
   selectedVideoScriptDetail = null;
   selectedVideoShot = null;
@@ -4179,33 +4188,59 @@ function resetCompanyScopedWorkspaceState() {
   resetAiVideoMonitorState();
 }
 
-async function loadVideoScripts(preferredId = null) {
+function videoScriptRequestIsCurrent(generation, organizationId, pollingGeneration = null) {
+  return generation === videoScriptLoadGeneration
+    && currentUser?.organizationId === organizationId
+    && (pollingGeneration === null || pollingGeneration === videoScriptPollingGeneration);
+}
+
+function isVideoScriptProgressDialogOpen() {
+  return Boolean(videoScriptProgressId && document.querySelector("#video-script-dialog").open);
+}
+
+async function loadVideoScripts(preferredId = null, pollingGeneration = null) {
   const generation = ++videoScriptLoadGeneration;
   const organizationId = currentUser?.organizationId || "";
+  const selectionAtRequest = selectedVideoScriptId;
+  let refreshed = false;
   try {
     const result = await api("/api/v1/video-scripts");
-    if (generation !== videoScriptLoadGeneration || currentUser?.organizationId !== organizationId) return;
+    if (!videoScriptRequestIsCurrent(generation, organizationId, pollingGeneration)) return;
     videoScripts = (Array.isArray(result?.data) ? result.data : [])
       .filter(script => !script.organizationId || script.organizationId === organizationId);
-    const currentResult = await api("/api/v1/video-scripts/current");
-    if (generation !== videoScriptLoadGeneration || currentUser?.organizationId !== organizationId) return;
-    activeVideoScript = currentResult?.data || null;
-    document.querySelector("#import-video-script").textContent = activeVideoScript ? "查看拆解进度" : "＋ 新建脚本";
+    activeVideoScript = videoScripts.find(script => processingVideoScriptStatuses.has(script.status)) || null;
+    refreshed = true;
+    document.querySelector("#import-video-script").textContent = "＋ 新建脚本";
     if (!videoScripts.length) {
       selectedVideoScriptId = null;
       renderVideoScriptLibrary();
       renderEmptyVideoScriptDetail();
+      stopVideoScriptPolling();
+      stopVideoScriptVisualProgress();
       return;
     }
-    const selectedId = videoScripts.some(script => script.id === preferredId) ? preferredId : videoScripts[0].id;
+    // A selection made while the list request was pending belongs to the user.
+    const preferredSelection = selectedVideoScriptId !== selectionAtRequest
+      ? selectedVideoScriptId : preferredId || selectedVideoScriptId;
+    const selectedId = videoScripts.some(script => script.id === preferredSelection)
+      ? preferredSelection : videoScripts[0].id;
     selectedVideoScriptId = selectedId;
     renderVideoScriptLibrary();
-    await loadVideoScriptDetail(selectedId, generation, organizationId);
-    if (activeVideoScript && activeVideoScript.status !== "FAILED" && !videoScriptStatusTimer) {
-      startVideoScriptPolling(activeVideoScript.id);
+    if (isVideoScriptProgressDialogOpen()) {
+      const progressScript = videoScripts.find(script => script.id === videoScriptProgressId);
+      if (progressScript) renderVideoScriptProgress(progressScript);
     }
+    await loadVideoScriptDetail(selectedId, generation, organizationId, pollingGeneration);
   } catch (error) {
-    document.querySelector("#video-script-prototype-note").textContent = error.message;
+    if (videoScriptRequestIsCurrent(generation, organizationId, pollingGeneration)) {
+      document.querySelector("#video-script-prototype-note").textContent = error.message;
+    }
+  } finally {
+    // Detail failures must not stop the other scripts from receiving updates.
+    if (refreshed && videoScriptRequestIsCurrent(generation, organizationId, pollingGeneration)) {
+      if (activeVideoScript) startVideoScriptPolling();
+      else stopVideoScriptPolling();
+    }
   }
 }
 
@@ -4268,12 +4303,14 @@ function selectRenderedShot(button, shot, scriptId) {
 }
 
 async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGeneration,
-                                     expectedOrganizationId = currentUser?.organizationId || "") {
+                                     expectedOrganizationId = currentUser?.organizationId || "",
+                                     pollingGeneration = null) {
   if (!id) return;
+  const detailGeneration = ++videoScriptDetailGeneration;
   selectedVideoScriptId = id;
   const result = await api(`/api/v1/video-scripts/${encodeURIComponent(id)}`);
-  if (expectedGeneration !== videoScriptLoadGeneration
-      || currentUser?.organizationId !== expectedOrganizationId) return;
+  if (detailGeneration !== videoScriptDetailGeneration || selectedVideoScriptId !== id
+      || !videoScriptRequestIsCurrent(expectedGeneration, expectedOrganizationId, pollingGeneration)) return;
   const detail = result?.data;
   if (!detail?.script || (detail.script.organizationId
       && detail.script.organizationId !== expectedOrganizationId)) {
@@ -4324,10 +4361,14 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
   const reanalyzeButton = document.querySelector("#reanalyze-video-script");
   const canManageScripts = hasAnyPermission("video:script:manage");
   const canReanalyze = canManageScripts && script.status === "READY" && script.sourceType === "VIDEO_ANALYSIS";
-  reanalyzeButton.hidden = !canReanalyze;
-  reanalyzeButton.textContent = shots.length === 9 ? "重新精拆 9 镜" : "补足为 9 镜";
-  reanalyzeButton.title = shots.length === 9
-    ? "使用当前原视频重新生成完整 9 个分镜"
+  const canInspectAnalysis = canManageScripts && script.sourceType === "VIDEO_ANALYSIS"
+    && (processingVideoScriptStatuses.has(script.status) || script.status === "FAILED");
+  reanalyzeButton.hidden = !canReanalyze && !canInspectAnalysis;
+  reanalyzeButton.textContent = canInspectAnalysis
+    ? (script.status === "FAILED" ? "重试拆解" : "查看拆解进度")
+    : shots.length === 9 ? "重新精拆 9 镜" : "补足为 9 镜";
+  reanalyzeButton.title = canInspectAnalysis ? "查看当前脚本的拆解状态和失败原因"
+    : shots.length === 9 ? "使用当前原视频重新生成完整 9 个分镜"
     : `当前只有 ${shots.length} 个分镜，使用原视频重新精拆为 9 个`;
   const deleteButton = document.querySelector("#delete-video-script");
   const copyButton = document.querySelector("#copy-video-script");
@@ -4336,7 +4377,7 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
   copyButton.hidden = !canManageScripts;
   editToneButton.hidden = !canManageScripts;
   document.querySelector("#edit-video-shot").hidden = !canManageScripts;
-  const scriptIsProcessing = ["QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING"].includes(script.status);
+  const scriptIsProcessing = processingVideoScriptStatuses.has(script.status);
   deleteButton.disabled = scriptIsProcessing;
   copyButton.disabled = scriptIsProcessing || !["READY", "DRAFT"].includes(script.status);
   editToneButton.disabled = scriptIsProcessing;
@@ -4344,6 +4385,10 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
   copyButton.title = copyButton.disabled ? "脚本处理完成后才能复制" : "创建一个可独立编辑的脚本副本";
   editToneButton.title = editToneButton.disabled ? "视频拆解处理中，暂时不能编辑" : "编辑全局视觉基调";
 
+  if (!isVideoScriptProgressDialogOpen()) {
+    startVideoScriptVisualProgress(script.status, script.progress, script.id);
+    if (!scriptIsProcessing) stopVideoScriptVisualProgress();
+  }
   const strip = document.querySelector("#script-film-strip");
   const shotEditor = document.querySelector("#script-storyboard-view .shot-editor-card");
   if (!shots.length) {
@@ -4354,7 +4399,6 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
     strip.innerHTML = script.status === "FAILED"
       ? `<section class="storyboard-build-error"><span>!</span><div><strong>这次拆解没有完成</strong><p>${escapeHtml(script.errorMessage || "模型没有生成有效分镜，可以重试当前任务。")}</p></div></section>`
       : renderStoryboardBuildingState(script);
-    if (script.status !== "FAILED") startVideoScriptVisualProgress(script.status, script.progress, script.id);
     return;
   }
   shotEditor.hidden = false;
@@ -4490,30 +4534,17 @@ document.querySelector("#video-script-tone-form").addEventListener("submit", asy
   }
 });
 
-function startVideoScriptPolling(id) {
-  stopVideoScriptPolling();
+function startVideoScriptPolling() {
+  if (videoScriptStatusTimer || document.querySelector("#video-scripts-page").hidden) return;
   const generation = ++videoScriptPollingGeneration;
   let polling = false;
   const timer = setInterval(async () => {
-    if (generation !== videoScriptPollingGeneration) return;
-    if (polling || document.hidden) return;
+    if (generation !== videoScriptPollingGeneration || polling || document.hidden) return;
     polling = true;
     try {
-      const result = await api(`/api/v1/video-scripts/${encodeURIComponent(id)}/status`);
-      const status = result?.data;
-      const progressView = activeVideoScript?.id === id
-        ? { ...activeVideoScript, ...status }
-        : status;
-      renderVideoScriptProgress(progressView);
-      await loadVideoScripts(id);
-      if (generation === videoScriptPollingGeneration
-          && (status?.status === "READY" || status?.status === "FAILED")) {
-        clearInterval(timer);
-        if (videoScriptStatusTimer === timer) videoScriptStatusTimer = null;
-        if (status.status === "READY") activeVideoScript = null;
-      }
+      await loadVideoScripts(selectedVideoScriptId, generation);
     } catch {
-      // Keep the current task visible and retry on the next heartbeat.
+      // Keep all tasks visible and retry on the next heartbeat.
     } finally {
       polling = false;
     }
@@ -4527,14 +4558,17 @@ function stopVideoScriptPolling() {
   videoScriptStatusTimer = null;
 }
 
-document.querySelector("#import-video-script").addEventListener("click", async () => {
-  const result = await api("/api/v1/video-scripts/current");
-  activeVideoScript = result?.data || null;
-  renderVideoScriptProgress(activeVideoScript);
+function openVideoScriptProgress(script) {
+  renderVideoScriptProgress(script);
   document.querySelector("#video-script-dialog").showModal();
-  if (activeVideoScript && activeVideoScript.status !== "FAILED") {
-    startVideoScriptPolling(activeVideoScript.id);
-  }
+  if (processingVideoScriptStatuses.has(script.status)) startVideoScriptPolling();
+}
+
+document.querySelector("#import-video-script").addEventListener("click", () => {
+  renderVideoScriptProgress(null);
+  prepareVideoScriptCreationDialog("ai");
+  syncScriptPresentationModePicker();
+  document.querySelector("#video-script-dialog").showModal();
 });
 
 document.querySelectorAll("[data-script-create-mode]").forEach(button => {
@@ -4966,16 +5000,10 @@ document.querySelector("#video-script-form").addEventListener("submit", async ev
     form.reset();
     document.querySelector("#script-video-file-name").textContent = "MP4、MOV，建议 60 秒以内";
     activeVideoScript = script;
-    renderVideoScriptProgress(script);
+    selectedVideoScriptId = script.id;
     dialog.close();
-    startVideoScriptPolling(script.id);
-    const refreshResults = await Promise.allSettled([
-      loadVideoScripts(script.id),
-      loadVideoScriptDetail(script.id)
-    ]);
-    if (refreshResults.some(result => result.status === "rejected")) {
-      console.warn("视频拆解任务已创建，但页面数据刷新未完全成功，将由轮询继续同步。", refreshResults);
-    }
+    startVideoScriptPolling();
+    await loadVideoScripts(script.id);
   } catch (error) {
     note.textContent = `创建失败：${error.message}`;
   } finally {
@@ -4985,22 +5013,29 @@ document.querySelector("#video-script-form").addEventListener("submit", async ev
 });
 
 document.querySelector("#video-script-dialog").addEventListener("close", async () => {
-  await loadVideoScripts(activeVideoScript?.id || selectedVideoScriptId);
+  videoScriptProgressId = null;
+  await loadVideoScripts(selectedVideoScriptId);
 });
 
 document.querySelector("#retry-video-script").addEventListener("click", async () => {
-  if (!activeVideoScript?.id) return;
+  const scriptId = videoScriptProgressId;
+  const organizationId = currentUser?.organizationId || "";
   const retry = document.querySelector("#retry-video-script");
+  if (!scriptId || retry.disabled) return;
   retry.disabled = true;
   retry.textContent = "正在重新提交…";
   try {
-    const result = await api(`/api/v1/video-scripts/${encodeURIComponent(activeVideoScript.id)}/retry`, { method: "POST" });
-    activeVideoScript = result?.data || activeVideoScript;
-    renderVideoScriptProgress(activeVideoScript);
-    await loadVideoScripts(activeVideoScript.id);
-    startVideoScriptPolling(activeVideoScript.id);
+    const result = await api(`/api/v1/video-scripts/${encodeURIComponent(scriptId)}/retry`, { method: "POST" });
+    if (currentUser?.organizationId !== organizationId) return;
+    if (isVideoScriptProgressDialogOpen() && videoScriptProgressId === scriptId && result?.data) {
+      renderVideoScriptProgress(result.data);
+    }
+    startVideoScriptPolling();
+    await loadVideoScripts(selectedVideoScriptId || scriptId);
   } catch (error) {
-    document.querySelector("#active-script-message").textContent = error.message;
+    if (currentUser?.organizationId === organizationId && videoScriptProgressId === scriptId) {
+      document.querySelector("#active-script-message").textContent = error.message;
+    }
   } finally {
     retry.disabled = false;
     retry.textContent = "重试当前任务";
@@ -5008,24 +5043,35 @@ document.querySelector("#retry-video-script").addEventListener("click", async ()
 });
 
 document.querySelector("#reanalyze-video-script").addEventListener("click", async () => {
-  if (!selectedVideoScriptId) return;
+  const script = selectedVideoScriptDetail?.script;
+  if (!script?.id || script.id !== selectedVideoScriptId) return;
+  if (processingVideoScriptStatuses.has(script.status) || script.status === "FAILED") {
+    openVideoScriptProgress(script);
+    return;
+  }
+  const scriptId = script.id;
+  const organizationId = currentUser?.organizationId || "";
   const button = document.querySelector("#reanalyze-video-script");
   if (!window.confirm("将使用原视频重新精拆为完整 9 个分镜，成功后替换当前分镜。确认继续？")) return;
   button.disabled = true;
   button.textContent = "正在提交…";
   try {
-    const result = await api(`/api/v1/video-scripts/${encodeURIComponent(selectedVideoScriptId)}/reanalyze`, { method: "POST" });
-    activeVideoScript = result?.data || null;
-    renderVideoScriptProgress(activeVideoScript);
-    document.querySelector("#video-script-dialog").showModal();
-    await loadVideoScripts(selectedVideoScriptId);
-    await loadVideoScriptDetail(selectedVideoScriptId);
-    startVideoScriptPolling(selectedVideoScriptId);
+    const result = await api(`/api/v1/video-scripts/${encodeURIComponent(scriptId)}/reanalyze`, { method: "POST" });
+    if (currentUser?.organizationId !== organizationId) return;
+    if (selectedVideoScriptId === scriptId && result?.data
+        && !document.querySelector("#video-script-dialog").open) {
+      openVideoScriptProgress(result.data);
+    }
+    startVideoScriptPolling();
+    await loadVideoScripts(selectedVideoScriptId || scriptId);
   } catch (error) {
-    window.alert(error.message);
+    if (currentUser?.organizationId === organizationId) window.alert(error.message);
   } finally {
     button.disabled = false;
-    button.textContent = "补足为 9 镜";
+    if (selectedVideoScriptDetail?.script?.id === scriptId
+        && selectedVideoScriptDetail.script.status === "READY") {
+      button.textContent = (selectedVideoScriptDetail.shots || []).length === 9 ? "重新精拆 9 镜" : "补足为 9 镜";
+    }
   }
 });
 

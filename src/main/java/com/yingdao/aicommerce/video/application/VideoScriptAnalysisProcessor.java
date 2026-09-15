@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import com.yingdao.aicommerce.video.domain.VideoScript;
 import com.yingdao.aicommerce.video.domain.VideoScriptShot;
@@ -26,6 +27,7 @@ import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -42,6 +44,7 @@ public class VideoScriptAnalysisProcessor {
     private static final int REQUIRED_SHOT_COUNT = 9;
     private static final BigDecimal MAX_SCRIPT_DURATION_SECONDS = new BigDecimal("15.0");
     private static final long[] ANALYSIS_RETRY_DELAYS_MILLIS = {1_000L, 3_000L};
+    private static final Duration ANALYSIS_READ_TIMEOUT = Duration.ofSeconds(960);
 
     private final VideoScriptMapper scriptMapper;
     private final VideoScriptShotMapper shotMapper;
@@ -71,9 +74,14 @@ public class VideoScriptAnalysisProcessor {
         this.cameraMotionAnalyzer = cameraMotionAnalyzer;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
+        JdkClientHttpRequestFactory analysisRequestFactory = new JdkClientHttpRequestFactory(
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
+        );
+        analysisRequestFactory.setReadTimeout(ANALYSIS_READ_TIMEOUT);
         this.piClient = RestClient.builder()
                 .baseUrl(piRuntimeUrl)
                 .defaultHeader("X-Internal-Token", piRuntimeToken)
+                .requestFactory(analysisRequestFactory)
                 .build();
         JdkClientHttpRequestFactory progressRequestFactory = new JdkClientHttpRequestFactory(
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
@@ -86,13 +94,22 @@ public class VideoScriptAnalysisProcessor {
                 .build();
     }
 
-    @Async("automationDiagnosisExecutor")
+    @Async("videoScriptAnalysisExecutor")
     public void analyze(String scriptId) {
         VideoScript script = scriptMapper.selectById(scriptId);
-        if (script == null) return;
+        if (script == null || !"QUEUED".equals(script.getStatus())) return;
+        Instant queuedAt = script.getUpdatedAt();
+        script.markExtracting();
+        int claimed = scriptMapper.update(null, new LambdaUpdateWrapper<VideoScript>()
+                .eq(VideoScript::getId, scriptId)
+                .eq(VideoScript::getStatus, "QUEUED")
+                .eq(VideoScript::getUpdatedAt, queuedAt)
+                .set(VideoScript::getStatus, script.getStatus())
+                .set(VideoScript::getProgress, script.getProgress())
+                .set(VideoScript::getErrorMessage, null)
+                .set(VideoScript::getUpdatedAt, script.getUpdatedAt()));
+        if (claimed != 1) return;
         try {
-            script.markExtracting();
-            scriptMapper.updateById(script);
             Path source = Path.of(script.getSourceFilePath()).toAbsolutePath().normalize();
             VideoFrameExtractor.ExtractedFrames frames = frameExtractor.extract(
                     source,
@@ -173,6 +190,11 @@ public class VideoScriptAnalysisProcessor {
             persistResult(script, result);
         } catch (Exception exception) {
             String message = readableMessage(exception);
+            if (script.getModelId() != null) {
+                PiRuntimeFailure.Details failure = PiRuntimeFailure.from(exception);
+                message = "模型「" + script.getModelId() + "」拆解失败 [" + failure.failureCode() + "]："
+                        + (failure.message() == null ? message : failure.message());
+            }
             log.error("Video script analysis failed for {}: {}", scriptId, message, exception);
             VideoScript failed = scriptMapper.selectById(scriptId);
             if (failed != null) {
@@ -269,6 +291,7 @@ public class VideoScriptAnalysisProcessor {
     }
 
     static boolean retryablePiFailure(int statusCode, String responseBody) {
+        if (PiRuntimeFailure.parse(responseBody).explicitlyNonRetryable()) return false;
         if (statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode >= 500) return true;
         String message = responseBody == null ? "" : responseBody.toLowerCase();
         return message.contains("stream ended without finish_reason")

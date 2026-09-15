@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { requestChatCompletion } from '../src/chat-completion-transport.js';
 
 const source = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
 function section(start, end) {
@@ -15,11 +16,13 @@ function harness(ok = true) {
   const context = vm.createContext({
     console: { info() {}, warn() {} },
     UndiciAgent: class { constructor(options) { agents.push(options); } },
-    AbortSignal: { timeout(ms) { timeouts.push(ms); return { timeout: ms }; } },
     extractJsonObject: JSON.parse,
-    fetch: async (url, options) => {
-      calls.push({ url, ...options, payload: JSON.parse(options.body) });
-      return { ok, status: ok ? 200 : 502, text: async () => JSON.stringify({ choices: [{ message: { content: '{"valid":true}' } }] }) };
+    requestChatCompletion: options => {
+      timeouts.push(options.timeoutMs);
+      return requestChatCompletion({ ...options, fetchImpl: async (url, request) => {
+        calls.push({ url, ...request, payload: JSON.parse(request.body) });
+        return { ok, status: ok ? 200 : 502, text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"valid":true}' } }] }) };
+      } });
     }
   });
   vm.runInContext(
@@ -42,8 +45,8 @@ test('topology uses 1000 seconds, explicit transport limits and reduced output b
   assert.equal(h.agents[0].headersTimeout, 1_010_000);
   assert.equal(h.agents[0].bodyTimeout, 1_010_000);
   assert.ok(h.calls[0].dispatcher);
-  assert.equal(h.calls[0].payload.max_completion_tokens, 1800);
-  assert.equal(h.calls[0].payload.reasoning_effort, 'low');
+  assert.equal(h.calls[0].payload.max_tokens, 1800);
+  assert.equal(h.calls[0].payload.reasoning_effort, undefined);
   const prompt = h.calls[0].payload.messages[0].content;
   assert.ok(prompt.length < 1500);
   for (const key of ['visibleSleeveCount', 'seamConnections', 'supportElements', 'necklinePath',
@@ -55,7 +58,7 @@ test('validation retains two images and compact response with the same timeout',
   const h = harness();
   await h.context.runProductFunctionAnalysis(input('GARMENT_TOPOLOGY_VALIDATION_V1'));
   assert.deepEqual(h.timeouts, [1_000_000]);
-  assert.equal(h.calls[0].payload.max_completion_tokens, 400);
+  assert.equal(h.calls[0].payload.max_tokens, 400);
   assert.equal(h.calls[0].payload.messages[1].content.filter(x => x.type === 'image_url').length, 2);
   const prompt = h.calls[0].payload.messages[0].content;
   for (const rule of ['15%', '07–09', 'violationCount', '多手', '身体侧']) assert.ok(prompt.includes(rule), rule);
