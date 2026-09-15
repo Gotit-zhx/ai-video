@@ -278,6 +278,7 @@ public class AiVideoImageProcessor {
     }
 
     static boolean retryableImageTransientFailure(String message) {
+        if (message != null && (message.startsWith("VIDEO_REVIEW_PAUSED:") || message.startsWith("VIDEO_GRID_REJECTED:"))) return false;
         if (message == null || message.isBlank()) return false;
         if (ProductFunctionAnalysisService.isStructureAnalysisPaused(message)) return false;
         String value = message.toLowerCase();

@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.storage.OssStorageService;
@@ -33,6 +34,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
@@ -501,6 +503,42 @@ public class AiVideoTaskService {
         return item;
     }
 
+    @SuppressWarnings("unchecked")
+    public AiVideoTask updateVideoReferenceMode(String taskId, String mode, PlatformPrincipal principal) {
+        if (!"GRID".equals(mode) && !"INDIVIDUAL_FRAMES".equals(mode)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频参考模式只能是 GRID 或 INDIVIDUAL_FRAMES");
+        }
+        AiVideoTask task = requireOwned(taskId, principal);
+        if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "任务正在生成，暂时不能修改视频参考模式");
+        }
+        if (task.isDirectReferenceVideo() && "INDIVIDUAL_FRAMES".equals(mode)) {
+            throw new BusinessException(HttpStatus.CONFLICT, "独立分镜参考仅适用于已有九宫格的脚本视频任务");
+        }
+        Map<String, Object> rules;
+        try {
+            rules = task.getGenerationRulesJson() == null || task.getGenerationRulesJson().isBlank()
+                    ? new LinkedHashMap<>()
+                    : new LinkedHashMap<>(objectMapper.readValue(task.getGenerationRulesJson(), Map.class));
+        } catch (Exception exception) {
+            throw new BusinessException(HttpStatus.CONFLICT, "任务规则无法读取，未修改现有规则");
+        }
+        rules.put("videoReferenceMode", mode);
+        java.time.Instant previousUpdatedAt = task.getUpdatedAt();
+        task.updateGenerationRulesJson(json(rules));
+        int changed = taskMapper.update(null, new LambdaUpdateWrapper<AiVideoTask>()
+                .eq(AiVideoTask::getId, taskId)
+                .eq(AiVideoTask::getOrganizationId, principal.organizationId())
+                .eq(AiVideoTask::getUpdatedAt, previousUpdatedAt)
+                .notIn(AiVideoTask::getStatus, List.of("IMAGE_GENERATING", "VIDEO_GENERATING"))
+                .set(AiVideoTask::getGenerationRulesJson, task.getGenerationRulesJson())
+                .set(AiVideoTask::getUpdatedAt, task.getUpdatedAt()));
+        if (changed != 1) {
+            throw new BusinessException(HttpStatus.CONFLICT, "任务状态已变化，请刷新后重试");
+        }
+        return task;
+    }
+
     private AiVideoTaskItem requireEditableDirectReferenceItem(String taskId, String itemId, PlatformPrincipal principal) {
         AiVideoTaskItem item = itemMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getId, itemId)
@@ -570,8 +608,10 @@ public class AiVideoTaskService {
         List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getTaskId, id));
         for (AiVideoTaskItem item : items) {
-            item.updateVideoPrompt(defaultVideoPrompt(task, item));
-            itemMapper.updateById(item);
+            if (item.getVideoPromptText() == null || item.getVideoPromptText().isBlank()) {
+                item.updateVideoPrompt(defaultVideoPrompt(task, item));
+                itemMapper.updateById(item);
+            }
         }
         for (AiVideoTaskAsset video : videos) {
             deleteStoredFile(video.getFilePath());
@@ -599,8 +639,10 @@ public class AiVideoTaskService {
         if (videos.isEmpty()) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前商品没有需要替换的旧视频");
         }
-        item.updateVideoPrompt(defaultVideoPrompt(task, item));
-        itemMapper.updateById(item);
+        if (item.getVideoPromptText() == null || item.getVideoPromptText().isBlank()) {
+            item.updateVideoPrompt(defaultVideoPrompt(task, item));
+            itemMapper.updateById(item);
+        }
         for (AiVideoTaskAsset video : videos) {
             deleteStoredFile(video.getFilePath());
             assetMapper.deleteById(video.getId());

@@ -14,7 +14,7 @@ public interface AiVideoGenerationJobMapper extends BaseMapper<AiVideoGeneration
             UPDATE ai_video_generation_jobs
                SET next_poll_at = #{reservedUntil}, updated_at = CURRENT_TIMESTAMP(6)
              WHERE id = #{id}
-               AND status IN ('QUEUED', 'RUNNING')
+               AND status IN ('QUEUED', 'RUNNING', 'REVIEWING')
                AND next_poll_at <= #{now}
             """)
     int claimPoll(@Param("id") String id, @Param("now") Instant now,

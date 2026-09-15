@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import { Agent as UndiciAgent } from "undici";
 import { VideoScriptSession, VIDEO_SCRIPT_REQUEST_TIMEOUT_MS } from "./video-script-session.js";
 import { requestChatCompletion } from "./chat-completion-transport.js";
+import { auditVideoFrame } from "./video-frame-layout-audit.js";
 
 const PORT = Number(process.env.PORT || 8090);
 const INTERNAL_TOKEN = process.env.PI_RUNTIME_TOKEN || "heyi-pi-runtime-dev-token";
@@ -2423,6 +2424,16 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "POST" && request.url === "/v1/product/analyze") {
       await handleProductFunctionAnalysis(request, response);
+      return;
+    }
+    if (request.method === "POST" && request.url === "/v1/video/frame-audit") {
+      if (request.headers["x-internal-token"] !== INTERNAL_TOKEN) {
+        json(response, 401, { message: "视频首帧审核服务认证失败" });
+        return;
+      }
+      json(response, 200, await auditVideoFrame(await readBody(request), {
+        dispatcher: PRODUCT_ANALYSIS_DISPATCHER
+      }));
       return;
     }
     if (request.method === "POST" && request.url === "/v1/images/generate") {
