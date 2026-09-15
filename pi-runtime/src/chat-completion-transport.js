@@ -89,7 +89,7 @@ function httpError(status, details) {
   return new ChatCompletionError(`模型请求失败 ${status}`, "CHAT_UPSTREAM_FAILED", status >= 500 || status === 408, { upstreamStatus: status });
 }
 
-async function readCompletionResponse(response) {
+async function readCompletionResponse(response, onTextDelta) {
   if (!/text\/event-stream/i.test(response.headers?.get("content-type") || "")) {
     const body = await response.text();
     try { return JSON.parse(body); }
@@ -117,9 +117,11 @@ async function readCompletionResponse(response) {
     const choice = event.choices?.find(item => item.index === 0) || event.choices?.[0];
     if (!choice) return;
     const content = choice.delta?.content;
-    if (typeof content === "string") reply += content;
-    else if (Array.isArray(content)) {
-      reply += content.map(part => typeof part === "string" ? part : String(part?.text || "")).join("");
+    const delta = typeof content === "string" ? content : Array.isArray(content)
+      ? content.map(part => typeof part === "string" ? part : String(part?.text || "")).join("") : "";
+    if (delta) {
+      reply += delta;
+      onTextDelta?.(delta);
     }
     if (choice.finish_reason) finishReason = choice.finish_reason;
   };
@@ -164,7 +166,7 @@ async function readCompletionResponse(response) {
 }
 
 export async function requestChatCompletion({ config, apiKey, messages, maxTokens = 6500,
-  timeoutMs = 180_000, dispatcher, fetchImpl = fetch }) {
+  timeoutMs = 180_000, dispatcher, fetchImpl = fetch, onTextDelta }) {
   const endpoint = chatCompletionEndpoint(config.baseUrl);
   const modelId = String(config.modelId || "").trim();
   if (!modelId || !apiKey) {
@@ -193,7 +195,7 @@ export async function requestChatCompletion({ config, apiKey, messages, maxToken
         }),
         ...(dispatcher ? { dispatcher } : {}), signal
       });
-      if (response.ok) parsed = await readCompletionResponse(response);
+      if (response.ok) parsed = await readCompletionResponse(response, onTextDelta);
       else body = await response.text();
     } catch (cause) {
       if (cause?.chatTransport) throw cause;

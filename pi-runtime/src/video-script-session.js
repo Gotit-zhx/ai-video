@@ -2,8 +2,10 @@ import { chatCompletionEndpoint, requestChatCompletion } from "./chat-completion
 
 // Video analysis does not use tools. The shared transport requires a complete
 // response and explicit termination before accepting a storyboard or its audit.
-export const VIDEO_SCRIPT_REQUEST_TIMEOUT_MS = 300_000;
 export const VIDEO_SCRIPT_TOTAL_TIMEOUT_MS = 900_000;
+// A long first analysis may use the whole budget. Every later pass receives
+// only the remaining time; the session never renews its absolute deadline.
+export const VIDEO_SCRIPT_REQUEST_TIMEOUT_MS = VIDEO_SCRIPT_TOTAL_TIMEOUT_MS;
 
 export class VideoScriptSession {
   constructor({ config, apiKey, systemPrompt, dispatcher,
@@ -41,13 +43,19 @@ export class VideoScriptSession {
       ]
     };
     const messages = [...this.messages, user];
+    let partialReply = "";
     const { reply, usage } = await requestChatCompletion({
       config: this.config,
       apiKey: this.apiKey,
       messages,
       maxTokens: 6500,
       timeoutMs: Math.min(this.timeoutMs, remainingMs),
-      dispatcher: this.dispatcher
+      dispatcher: this.dispatcher,
+      onTextDelta: delta => {
+        partialReply += delta;
+        const message = { role: "assistant", content: [{ type: "text", text: partialReply }] };
+        for (const listener of this.listeners) listener({ type: "message_update", message });
+      }
     });
     const input = Number(usage.prompt_tokens || 0);
     const output = Number(usage.completion_tokens || 0);

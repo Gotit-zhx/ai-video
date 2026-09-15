@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { VideoScriptSession } from "../src/video-script-session.js";
+import { VideoScriptSession, VIDEO_SCRIPT_REQUEST_TIMEOUT_MS, VIDEO_SCRIPT_TOTAL_TIMEOUT_MS } from "../src/video-script-session.js";
 
 const source = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
 function section(start, end) {
@@ -64,6 +64,9 @@ function pipeline(config, options = {}) {
     VIDEO_SCRIPT_DISPATCHER: undefined,
     VideoScriptSession: class extends VideoScriptSession {
       constructor(args) { super({ ...args, ...options }); }
+      subscribe(listener) {
+        return super.subscribe(event => { listener(event); options.observeEvent?.(event); });
+      }
     },
     jsonrepair: value => value
   });
@@ -237,4 +240,67 @@ test("remaining total budget bounds a request even when its individual timeout i
   await assert.rejects(s.prompt("test", [frame]), /请求超时/);
   await assert.rejects(s.prompt("next pass"), /超过总时间限制/);
   assert.equal(mock.calls.length, 1);
+});
+
+test("a first video pass can use the 900-second budget and subsequent passes only receive remaining time", async t => {
+  assert.equal(VIDEO_SCRIPT_TOTAL_TIMEOUT_MS, 900_000);
+  assert.equal(VIDEO_SCRIPT_REQUEST_TIMEOUT_MS, 900_000);
+  const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+  const limits = [];
+  t.mock.method(AbortSignal, "timeout", milliseconds => {
+    limits.push(milliseconds);
+    return originalTimeout(milliseconds);
+  });
+  const mock = await mockModel(t, response => complete(response, storyboard(9)));
+  const s = session(mock.config);
+  await s.prompt("first", [frame]);
+  assert.ok(limits[0] > 300_000 && limits[0] <= 900_000);
+  s.deadline = Date.now() + 500;
+  await s.prompt("audit");
+  assert.ok(limits[1] > 0 && limits[1] <= 500);
+  assert.equal(mock.calls.length, 2);
+});
+
+test("video progress advances on actual SSE text before the complete response arrives", async t => {
+  const fullReply = JSON.stringify({ title: "观察".repeat(300), shots: JSON.parse(storyboard(9)).shots });
+  const split = 610;
+  let releaseResponse;
+  let notifyDelta;
+  const deltaObserved = new Promise(resolve => { notifyDelta = resolve; });
+  const mock = await mockModel(t, (response, call) => {
+    if (call !== 1) { complete(response, storyboard(9)); return; }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: fullReply.slice(0, split) } }] })}\n\n`);
+    releaseResponse = () => response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: fullReply.slice(split) }, finish_reason: "stop" }] })}\n\n` + "data: [DONE]\n\n");
+  });
+  const p = pipeline(mock.config, { observeEvent: event => {
+    if (event.type === "message_update") notifyDelta();
+  } });
+  let settled = false;
+  const pending = p.run().finally(() => { settled = true; });
+  await deltaObserved;
+  assert.equal(settled, false);
+  const progress = p.progress.get("test-progress");
+  assert.equal(progress.stage, "AI_ANALYZING");
+  assert.equal(progress.done, false);
+  assert.equal(progress.outputCharacters, split);
+  assert.ok(progress.progress > 58 && progress.progress < 85);
+  releaseResponse();
+  const result = await pending;
+  assert.equal(result.result.shots.length, 9);
+  assert.equal(p.progress.get("test-progress").stage, "RESULT_READY");
+});
+
+test("partial text progress never commits an incomplete assistant to conversation history", async t => {
+  const mock = await mockModel(t, response => {
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+  });
+  const s = session(mock.config);
+  const events = [];
+  s.subscribe(event => events.push(event.type));
+  await assert.rejects(s.prompt("test", [frame]), { failureCode: "CHAT_INCOMPLETE_RESPONSE" });
+  assert.deepEqual(events, ["message_update"]);
+  assert.equal(s.state.messages.length, 0);
+  assert.equal(s.messages.length, 1);
 });
