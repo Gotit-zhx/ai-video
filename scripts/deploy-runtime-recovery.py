@@ -25,6 +25,35 @@ for (const path of ['/proc/net/tcp', '/proc/net/tcp6']) {
     const columns = line.trim().split(/\\s+/); if (columns[3] === '01') established++;
   }
 } process.stdout.write(JSON.stringify({ established }));"""
+EXTERNAL_VIDEO_ACTIVITY_QUERY = """WITH pure_external_video AS (
+    SELECT task.id, task.organization_id FROM ai_video_tasks task
+    WHERE task.status = 'VIDEO_GENERATING'
+      AND EXISTS (SELECT 1 FROM ai_video_task_items item WHERE item.task_id = task.id)
+      AND NOT EXISTS (
+          SELECT 1 FROM ai_video_task_items item WHERE item.task_id = task.id
+          AND (item.status IS NULL
+               OR item.status NOT IN ('VIDEO_SUBMITTING','VIDEO_GENERATING','VIDEO_READY')
+               OR item.organization_id <> task.organization_id)
+      )
+)
+SELECT 'video_scripts', COUNT(*) FROM video_scripts
+WHERE status IN ('QUEUED','EXTRACTING_FRAMES','AI_ANALYZING')
+UNION ALL SELECT 'ai_video_tasks', COUNT(*) FROM ai_video_tasks task
+WHERE status NOT IN ('DRAFT','READY','FAILED','IMAGE_READY','VIDEO_READY','CANCELLED')
+  AND NOT EXISTS (SELECT 1 FROM pure_external_video pure WHERE pure.id = task.id)
+UNION ALL SELECT 'ai_video_task_items', COUNT(*) FROM ai_video_task_items item
+WHERE status NOT IN ('DRAFT','READY','FAILED','IMAGE_READY','VIDEO_READY','VIDEO_FAILED','CANCELLED')
+  AND NOT EXISTS (SELECT 1 FROM pure_external_video pure
+                  WHERE pure.id = item.task_id AND pure.organization_id = item.organization_id)
+UNION ALL SELECT 'ai_video_generation_jobs', COUNT(*) FROM ai_video_generation_jobs job
+WHERE status NOT IN ('SUCCEEDED','FAILED','CANCELLED')
+  AND NOT EXISTS (
+      SELECT 1 FROM pure_external_video pure JOIN ai_video_task_items item
+        ON item.task_id = pure.id AND item.organization_id = pure.organization_id
+      WHERE pure.id = job.task_id AND job.organization_id = pure.organization_id
+        AND item.id = job.item_id
+  )
+UNION ALL SELECT 'pending_image_results', COUNT(*) FROM ai_video_pending_image_results;"""
 
 
 class RuntimeUpdate:
@@ -105,7 +134,16 @@ class RuntimeUpdate:
         print(json.dumps({'result': 'runtime_image_built', 'tag': self.state['tag'], 'commit': self.state['commit']}), flush=True)
 
     def idle(self):
-        counts = self.base.active_counts()
+        if self.args.allow_external_video_work:
+            # Exempt only nonempty, wholly video-stage families in one DB snapshot.
+            # A mixed parent, failed image, or paid result awaiting download cannot qualify.
+            activity = self.base.sql(EXTERNAL_VIDEO_ACTIVITY_QUERY)
+            counts = {line.split('\t')[0]: int(line.split('\t')[1]) for line in activity.splitlines()}
+            self.require(set(counts) == {'video_scripts', 'ai_video_tasks', 'ai_video_task_items',
+                                         'ai_video_generation_jobs', 'pending_image_results'},
+                         'External-video activity snapshot is incomplete')
+        else:
+            counts = self.base.active_counts()
         automation = self.base.sql("SELECT 'workflow_runs', COUNT(*) FROM workflow_runs WHERE status IN ('QUEUED','RUNNING') UNION ALL SELECT 'automation_commands', COUNT(*) FROM automation_commands WHERE status IN ('RUNNING','PAUSE_REQUESTED','INTERRUPT_REQUESTED','CANCEL_REQUESTED');")
         counts.update({line.split('\t')[0]: int(line.split('\t')[1]) for line in automation.splitlines()})
         sockets = json.loads(self.base.run(['docker', 'exec', CONTAINER, 'node', '-e', SOCKET_COUNTS], 'runtime-socket-count'))
@@ -194,6 +232,8 @@ def main():
     parser.add_argument('--support-script', default=str(Path(__file__).with_name('deploy-video-script-recovery.py')))
     parser.add_argument('--sources')
     parser.add_argument('--commit')
+    parser.add_argument('--allow-external-video-work', action='store_true',
+                        help='Permit wholly external video-stage task families only; pending images must be zero')
     args = parser.parse_args()
     try:
         support = runpy.run_path(args.support_script)
