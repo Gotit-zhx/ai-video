@@ -27,8 +27,9 @@ function harness(ok = true) {
   });
   vm.runInContext(
     section('const PRODUCT_ANALYSIS_TIMEOUT_MS', 'const IMAGE_RESPONSE_TIMEOUT_MS') +
-    section('const GARMENT_TOPOLOGY_ANALYSIS_PROMPT', 'const MANUAL_SCRIPT') +
-    section('async function requestNonStreamingChat(', 'function modelSignature(') +
+    section('const PRODUCT_FUNCTION_ANALYSIS_PROMPT', 'const MANUAL_SCRIPT') +
+    section('function imageApiUsage(', 'function imageEndpoint(') +
+    section('async function requestAnalysisChat(', 'function modelSignature(') +
     section('async function runProductFunctionAnalysis(', 'async function handleProductFunctionAnalysis('), context);
   return { context, calls, timeouts, agents };
 }
@@ -67,4 +68,15 @@ test('upstream failure is surfaced without adding a duplicate runtime retry', as
   const h = harness(false);
   await assert.rejects(h.context.runProductFunctionAnalysis(input('GARMENT_TOPOLOGY_V2')), /502/);
   assert.equal(h.calls.length, 1);
+});
+test('daily-use product analysis uses the same transport and keeps its image and 1400-token budget', async () => {
+  const h = harness();
+  await h.context.runProductFunctionAnalysis(input('PRODUCT_FUNCTION_V1'));
+  assert.deepEqual(h.timeouts, [120_000]);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].payload.max_tokens, 1400);
+  assert.equal(h.calls[0].payload.stream, true);
+  assert.equal(h.calls[0].payload.stream_options, undefined);
+  assert.equal(h.calls[0].payload.reasoning_effort, undefined);
+  assert.equal(h.calls[0].payload.messages[1].content.filter(x => x.type === 'image_url').length, 1);
 });

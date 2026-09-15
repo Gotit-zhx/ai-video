@@ -57,7 +57,7 @@ function negotiateProfile(status, details, profile) {
     return null;
   }
   // Only transport hints can change. Never drop images, change model, switch to
-  // streaming, remove the output limit, or retry 5xx by guessing parameters.
+  // protocol, remove the output limit, or retry 5xx by guessing parameters.
   const explicitParam = details.param || (
     details.message.match(/(?:unsupported|unrecognized|unknown)\s+(?:request\s+)?(?:parameter|argument)(?:\s+supplied)?\s*:?\s*["'`]?([a-z_]+)/i)?.[1]
     || details.message.match(/["'`]?(reasoning_effort|max_completion_tokens|max_tokens)["'`]?\s+(?:is\s+)?(?:not supported|unsupported|not allowed)/i)?.[1]
@@ -86,7 +86,81 @@ function httpError(status, details) {
   if ([400, 422].includes(status)) {
     return new ChatCompletionError(`模型服务拒绝请求参数（${status}），请检查该模型的接口兼容性`, "CHAT_PARAMETERS_REJECTED", false, { upstreamStatus: status });
   }
-  return new ChatCompletionError(`模型非流式请求失败 ${status}`, "CHAT_UPSTREAM_FAILED", status >= 500 || status === 408, { upstreamStatus: status });
+  return new ChatCompletionError(`模型请求失败 ${status}`, "CHAT_UPSTREAM_FAILED", status >= 500 || status === 408, { upstreamStatus: status });
+}
+
+async function readCompletionResponse(response) {
+  if (!/text\/event-stream/i.test(response.headers?.get("content-type") || "")) {
+    const body = await response.text();
+    try { return JSON.parse(body); }
+    catch { throw new ChatCompletionError("模型响应不是完整 JSON", "CHAT_INVALID_RESPONSE", true); }
+  }
+  if (!response.body) throw new ChatCompletionError("模型流式响应为空", "CHAT_EMPTY_RESPONSE", true);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let buffer = "", data = [], eventType = "", reply = "", finishReason = null, usage = {}, done = false, bytes = 0;
+  const consumeEvent = () => {
+    const type = eventType;
+    eventType = "";
+    if (!data.length) return;
+    const raw = data.join("\n");
+    data = [];
+    if (raw === "[DONE]") { done = true; return; }
+    let event;
+    try { event = JSON.parse(raw); }
+    catch { throw new ChatCompletionError("模型流式事件不是完整 JSON", "CHAT_INVALID_RESPONSE", true); }
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      throw new ChatCompletionError("模型流式事件格式无效", "CHAT_INVALID_RESPONSE", true);
+    }
+    if (type === "error" || event.error || event.type === "error") throw httpError(502, errorDetails(raw));
+    if (event.usage) usage = event.usage;
+    const choice = event.choices?.find(item => item.index === 0) || event.choices?.[0];
+    if (!choice) return;
+    const content = choice.delta?.content;
+    if (typeof content === "string") reply += content;
+    else if (Array.isArray(content)) {
+      reply += content.map(part => typeof part === "string" ? part : String(part?.text || "")).join("");
+    }
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+  };
+  const consumeLine = line => {
+    if (!line) { consumeEvent(); return; }
+    if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    if (line.startsWith("event:")) eventType = line.slice(6).replace(/^ /, "");
+  };
+  const drainLines = () => {
+    // Preserve a trailing CR until the next chunk to handle split CRLF pairs.
+    while (!done) {
+      const match = /\r\n|\n|\r(?!$)/.exec(buffer);
+      if (!match) break;
+      const line = buffer.slice(0, match.index);
+      buffer = buffer.slice(match.index + match[0].length);
+      consumeLine(line);
+    }
+  };
+  try {
+    while (!done) {
+      const next = await reader.read();
+      if (next.done) {
+        buffer += decoder.decode();
+        drainLines();
+        if (buffer) consumeLine(buffer.replace(/\r$/, ""));
+        consumeEvent();
+        break;
+      }
+      bytes += next.value.byteLength;
+      if (bytes > 16 * 1024 * 1024) {
+        throw new ChatCompletionError("模型响应超过大小限制", "CHAT_INVALID_RESPONSE", false);
+      }
+      buffer += decoder.decode(next.value, { stream: true });
+      drainLines();
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  if (!done) throw new ChatCompletionError("模型流式响应缺少结束标记 [DONE]", "CHAT_INCOMPLETE_RESPONSE", true);
+  return { choices: [{ finish_reason: finishReason, message: { content: reply } }], usage };
 }
 
 export async function requestChatCompletion({ config, apiKey, messages, maxTokens = 6500,
@@ -108,23 +182,25 @@ export async function requestChatCompletion({ config, apiKey, messages, maxToken
   for (let attempt = 0; attempt < 2; attempt++) {
     visited.add(JSON.stringify(profile));
     let response;
-    let body;
+    let body, parsed;
     try {
       response = await fetchImpl(endpoint, {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: modelId, stream: false, messages,
+          model: modelId, stream: true, messages,
           [profile.tokenField]: maxTokens
         }),
         ...(dispatcher ? { dispatcher } : {}), signal
       });
-      body = await response.text();
+      if (response.ok) parsed = await readCompletionResponse(response);
+      else body = await response.text();
     } catch (cause) {
+      if (cause?.chatTransport) throw cause;
       if (signal.aborted || cause?.name === "TimeoutError" || cause?.name === "AbortError") {
-        throw new ChatCompletionError("模型非流式请求超时", "CHAT_TIMEOUT", true, { cause });
+        throw new ChatCompletionError("模型请求超时", "CHAT_TIMEOUT", true, { cause });
       }
-      throw new ChatCompletionError("模型非流式响应中断", "CHAT_NETWORK_INTERRUPTED", true, { cause });
+      throw new ChatCompletionError("模型响应中断", "CHAT_NETWORK_INTERRUPTED", true, { cause });
     }
     if (!response.ok) {
       const details = errorDetails(body);
@@ -134,12 +210,6 @@ export async function requestChatCompletion({ config, apiKey, messages, maxToken
         continue;
       }
       throw httpError(response.status, details);
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      throw new ChatCompletionError("模型非流式响应不是完整 JSON", "CHAT_INVALID_RESPONSE", true);
     }
     const choice = parsed?.choices?.[0];
     if (choice?.finish_reason !== "stop") {
@@ -153,11 +223,11 @@ export async function requestChatCompletion({ config, apiKey, messages, maxToken
     const reply = (Array.isArray(content)
       ? content.map(part => typeof part === "string" ? part : String(part?.text || "")).join("")
       : typeof content === "string" ? content : "").trim();
-    if (!reply) throw new ChatCompletionError("模型非流式请求没有返回有效结果", "CHAT_EMPTY_RESPONSE", true);
+    if (!reply) throw new ChatCompletionError("模型请求没有返回有效结果", "CHAT_EMPTY_RESPONSE", true);
     if (compatibilityCache.size >= CACHE_LIMIT && !compatibilityCache.has(key)) {
       compatibilityCache.delete(compatibilityCache.keys().next().value);
     }
     compatibilityCache.set(key, { profile, expiresAt: Date.now() + CACHE_TTL_MS });
-    return { reply, usage: parsed.usage || {}, transport: "non-streaming", compatibilityRequests: attempt };
+    return { reply, usage: parsed.usage || {}, transport: "streaming", compatibilityRequests: attempt };
   }
 }

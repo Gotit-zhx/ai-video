@@ -40,11 +40,10 @@ async function mockModel(t, respond) {
 }
 
 function complete(response, content, options = {}) {
-  response.writeHead(200, { "Content-Type": "application/json" });
-  response.end(JSON.stringify({
-    choices: [{ message: { content }, finish_reason: "stop", ...options }],
-    usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 }
-  }));
+  response.writeHead(200, { "Content-Type": "text/event-stream" });
+  response.end(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: "stop", ...options }] })}\n\n`
+    + `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 } })}\n\n`
+    + "data: [DONE]\n\n");
 }
 const storyboard = count => JSON.stringify({
   title: "测试视频", shots: Array.from({ length: count }, (_, i) => ({
@@ -93,7 +92,7 @@ test("analysis and action audit send complete HTTP requests with image history, 
   for (const { url, headers, payload } of mock.calls) {
     assert.equal(url, "/v1/chat/completions");
     assert.equal(headers.authorization, "Bearer fake-http-test-only");
-    assert.equal(payload.stream, false);
+    assert.equal(payload.stream, true);
     assert.equal(payload.model, "gpt-5.5");
     assert.equal(payload.max_tokens, 6500);
     assert.equal(payload.reasoning_effort, undefined);
@@ -163,7 +162,7 @@ test("a proxy SSE response without finish_reason is rejected, not repaired", asy
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
   });
-  await assert.rejects(pipeline(mock.config).run(), /不是完整 JSON/);
+  await assert.rejects(pipeline(mock.config).run(), /缺少结束标记/);
   assert.equal(mock.calls.length, 1);
 });
 

@@ -64,8 +64,9 @@ test("explicit 400/422 token negotiation is bounded and cached without changing 
     assert.equal(u.calls.length, 2);
     for (const payload of u.calls) {
       assert.equal(payload.model, "gpt-5.5");
-      assert.equal(payload.stream, false);
+      assert.equal(payload.stream, true);
       assert.equal(payload.reasoning_effort, undefined);
+      assert.equal(payload.stream_options, undefined);
       assert.deepEqual(payload.messages, messages);
       assert.equal(payload.max_completion_tokens || payload.max_tokens, 6500);
     }
@@ -185,4 +186,88 @@ test("negotiation shares one timeout budget instead of granting each attempt ano
   assert.equal(u.calls.length, 2);
   assert.equal(signals[0], signals[1]);
   assert.equal(signals[0].aborted, true);
+});
+
+function sse(response, events) {
+  response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
+  response.end(events);
+}
+const event = (text, finish = null) => `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: finish }] })}\n\n`;
+
+test("SSE preserves UTF-8 and CRLF split across network chunks, multi-line data, comments and usage", async t => {
+  const u = await upstream(t, (response) => {
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const bytes = Buffer.from(': heartbeat\r\nevent: message\r\ndata: {"choices":\r\ndata: [{"index":0,"delta":{"content":"双袖完整"},"finish_reason":null}]}\r\n\r\n'
+      + event("", "stop") + 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}\n\n'
+      + 'data: [DONE]\r\n\r\n');
+    let offset = 0;
+    const send = () => {
+      if (response.destroyed) return;
+      if (offset >= bytes.length) { response.end(); return; }
+      response.write(bytes.subarray(offset, ++offset));
+      setImmediate(send);
+    };
+    send();
+  });
+  const result = await u.request();
+  assert.equal(result.reply, "双袖完整");
+  assert.equal(result.usage.total_tokens, 30);
+  assert.equal(u.calls[0].stream, true);
+  assert.equal(u.calls[0].stream_options, undefined);
+  assert.equal(u.calls[0].reasoning_effort, undefined);
+});
+
+test("SSE requires both an explicit finish reason and DONE, even if partial text parses as JSON", async t => {
+  for (const wire of [event('{"ok":true}', "stop"), event('{"ok":true}') + 'data: [DONE]\n\n']) {
+    const u = await upstream(t, response => sse(response, wire));
+    await assert.rejects(u.request(), { failureCode: "CHAT_INCOMPLETE_RESPONSE", retryable: true });
+    assert.equal(u.calls.length, 1);
+  }
+});
+
+test("SSE length termination is rejected instead of accepting a truncated result", async t => {
+  const u = await upstream(t, response => sse(response, event('{"ok":true}', "length") + 'data: [DONE]\n\n'));
+  await assert.rejects(u.request(), { failureCode: "CHAT_OUTPUT_TRUNCATED", retryable: false });
+});
+
+test("SSE error events interrupt completion and do not trigger compatibility guesses", async t => {
+  const u = await upstream(t, response => sse(response, event("partial")
+    + 'event: error\ndata: {"error":{"code":"upstream_error","message":"provider unavailable"}}\n\n'));
+  await assert.rejects(u.request(), { failureCode: "CHAT_UPSTREAM_FAILED", retryable: true });
+  assert.equal(u.calls.length, 1);
+});
+
+test("SSE named error event is recognized when the payload has no error envelope", async t => {
+  const u = await upstream(t, response => sse(response,
+    'event: error\ndata: {"code":"model_not_found","message":"model not found"}\n\n'));
+  await assert.rejects(u.request(), { failureCode: "CHAT_MODEL_UNAVAILABLE", retryable: false });
+});
+
+test("SSE malformed JSON events fail even when a later event claims completion", async t => {
+  const u = await upstream(t, response => sse(response, 'data: {bad}\n\n' + event("valid", "stop") + 'data: [DONE]\n\n'));
+  await assert.rejects(u.request(), { failureCode: "CHAT_INVALID_RESPONSE" });
+});
+
+test("SSE body idle time is bounded after receiving partial output", async t => {
+  const u = await upstream(t, response => {
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(event("partial"));
+  });
+  await assert.rejects(u.request({ timeoutMs: 100 }), { failureCode: "CHAT_TIMEOUT", retryable: true });
+  assert.equal(u.calls.length, 1);
+});
+
+test("SSE can complete after token-field negotiation while retaining all images and the original budget", async t => {
+  const u = await upstream(t, (response, payload) => payload.max_tokens
+    ? rejected(response, 400, "max_tokens")
+    : sse(response, event('{"complete":true}', "stop") + 'data: [DONE]\n\n'));
+  const result = await u.request();
+  assert.equal(result.reply, '{"complete":true}');
+  assert.equal(u.calls.length, 2);
+  for (const call of u.calls) {
+    assert.deepEqual(call.messages, messages);
+    assert.equal(call.max_tokens || call.max_completion_tokens, 6500);
+    assert.equal(call.stream_options, undefined);
+    assert.equal(call.reasoning_effort, undefined);
+  }
 });

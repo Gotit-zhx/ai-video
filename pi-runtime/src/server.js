@@ -424,7 +424,7 @@ function modelFrom(config) {
   };
 }
 
-async function requestNonStreamingChat(
+async function requestAnalysisChat(
   config, apiKey, systemPrompt, prompt, frames, maxTokens = 6500, timeoutMs = 180_000) {
   const { reply } = await requestChatCompletion({
     config, apiKey, maxTokens, timeoutMs,
@@ -1949,7 +1949,7 @@ ${JSON.stringify(parsed.result)}
       console.warn(`[video-script] action-state audit fallback: ${String(auditError?.message || auditError)}`);
     }
     progressReporter.publish(96, "RESULT_READY", true);
-    console.info(`[video-script] completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt} actionStateAudited=${audited !== parsed}`);
+    console.info(`[video-script] completed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt} actionStateAudited=${audited !== parsed}`);
     return {
       result: audited.result,
       reply: audited.reply,
@@ -2140,7 +2140,7 @@ async function runProductFunctionAnalysis(body) {
   const startedAt = Date.now();
   if (analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1") {
     try {
-      const reply = await requestNonStreamingChat(
+      const reply = await requestAnalysisChat(
         config,
         apiKey,
         systemPrompt,
@@ -2149,7 +2149,7 @@ async function runProductFunctionAnalysis(body) {
         400,
         PRODUCT_ANALYSIS_TIMEOUT_MS
       );
-      console.info(`[product-analysis] validation completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
+      console.info(`[product-analysis] validation completed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
       return {
         result: extractJsonObject(reply),
         usage: null,
@@ -2157,13 +2157,13 @@ async function runProductFunctionAnalysis(body) {
         modelId: config.modelId
       };
     } catch (error) {
-      console.warn(`[product-analysis] validation failed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
+      console.warn(`[product-analysis] validation failed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
       throw error;
     }
   }
   if (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2") {
     try {
-      const reply = await requestNonStreamingChat(
+      const reply = await requestAnalysisChat(
         config,
         apiKey,
         systemPrompt,
@@ -2172,7 +2172,7 @@ async function runProductFunctionAnalysis(body) {
         PRODUCT_ANALYSIS_MAX_TOKENS,
         PRODUCT_ANALYSIS_TIMEOUT_MS
       );
-      console.info(`[product-analysis] topology completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
+      console.info(`[product-analysis] topology completed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
       return {
         result: extractJsonObject(reply),
         reply,
@@ -2181,46 +2181,26 @@ async function runProductFunctionAnalysis(body) {
         modelId: config.modelId
       };
     } catch (error) {
-      console.warn(`[product-analysis] topology failed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
+      console.warn(`[product-analysis] topology failed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
       throw error;
     }
   }
-  const runtimeAgent = new Agent({
-    initialState: {
-      systemPrompt,
-      model: modelFrom(config),
-      thinkingLevel: "low",
-      messages: [],
-      tools: []
-    },
-    streamFn: (model, context, options) =>
-      streamSimple(model, context, {
-        ...options,
-        apiKey,
-        maxTokens: (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2") ? 2400
-          : analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1" ? 1200 : 1400,
-        timeoutMs: 120_000,
-        maxRetries: 2,
-        maxRetryDelayMs: 10_000
-      }),
-    convertToLlm: messages =>
-      messages.filter(message => ["user", "assistant"].includes(message.role))
+  const { reply, usage } = await requestChatCompletion({
+    config, apiKey, maxTokens: 1400, timeoutMs: 120_000,
+    dispatcher: PRODUCT_ANALYSIS_DISPATCHER,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: [
+        { type: "text", text: JSON.stringify(body.context || {}) },
+        ...attachments.map(image => ({
+          type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` }
+        }))
+      ] }
+    ]
   });
-  await runtimeAgent.prompt(
-    JSON.stringify(body.context || {}),
-    attachments
-  );
-  const assistant = [...runtimeAgent.state.messages]
-    .reverse()
-    .find(message => message.role === "assistant");
-  if (!assistant || assistant.stopReason === "error") {
-    throw new Error(assistant?.errorMessage || "模型没有返回有效的商品功能分析");
-  }
-  const reply = messageText(assistant);
   return {
-    result: extractJsonObject(reply),
-    reply,
-    usage: tokenUsageFromMessages(runtimeAgent.state.messages),
+    result: extractJsonObject(reply), reply,
+    usage: imageApiUsage({ usage }),
     latencyMs: Date.now() - startedAt,
     modelId: config.modelId
   };

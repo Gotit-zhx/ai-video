@@ -1,7 +1,7 @@
 import { chatCompletionEndpoint, requestChatCompletion } from "./chat-completion-transport.js";
 
-// Video analysis does not use tools. A complete HTTP response avoids accepting a
-// proxy's interrupted SSE stream as a finished storyboard, including during audit.
+// Video analysis does not use tools. The shared transport requires a complete
+// response and explicit termination before accepting a storyboard or its audit.
 export const VIDEO_SCRIPT_REQUEST_TIMEOUT_MS = 300_000;
 export const VIDEO_SCRIPT_TOTAL_TIMEOUT_MS = 900_000;
 
