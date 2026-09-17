@@ -514,18 +514,16 @@ public class SaasAdminService {
     private void provisionBuiltInRoles(String organizationId) {
         Map<String, RoleSeed> seeds = Map.of(
                 "ADMIN", new RoleSeed("企业管理员", "管理本公司配置、人员、模型、自动化与全部业务数据", "ALL"),
-                "OPERATOR", new RoleSeed("内容运营", "管理内容工作流、视频脚本、素材和 AI 视频生产", "DEPARTMENT_AND_CHILDREN"),
+                "OPERATOR", new RoleSeed("内容运营", "仅使用视频工作台：任务监控、视频脚本、AI 视频任务与通用生成", "DEPARTMENT_AND_CHILDREN"),
                 "DESIGNER", new RoleSeed("视觉设计", "处理商品素材、视频脚本、分镜和视觉生成任务", "DEPARTMENT"),
                 "REVIEWER", new RoleSeed("内容审核", "查看视频生产过程并审核内容与生成结果", "ALL"),
                 "PUBLISHER", new RoleSeed("发布专员", "查看视频成片并管理店铺发布与促销任务", "DEPARTMENT")
         );
         Map<String, Set<String>> grants = Map.of(
                 "OPERATOR", Set.of(
-                        "dashboard:view", "workflow:view", "workflow:manage",
-                        "asset:view", "asset:manage", "video:script:view", "video:script:manage",
-                        "video:task:view", "video:task:manage", "automation:view", "automation:execute",
-                        "product:collect", "product:view", "product:edit", "asset:watermark"
-                ),
+                    "video:monitor:view", "video:script:view", "video:script:manage",
+                    "video:task:view", "video:task:manage"
+            ),
                 "DESIGNER", Set.of(
                         "dashboard:view", "workflow:view", "asset:view", "asset:manage",
                         "video:script:view", "video:script:manage", "video:task:view", "video:task:manage",

@@ -3323,3 +3323,34 @@ html[data-theme="dark"] select { color-scheme: dark; }
 .general-clip-editor footer > small {margin-right:auto;}
 .general-clip-editor button {white-space:nowrap;}
 @media(max-width:640px){#general-video-reference-preview {flex-direction:column;}#general-video-reference-preview .general-clip-media video{height:200px;}#general-video-reference-preview .general-clip-editor{padding:14px;}}
+
+/* Role administration: align metadata and permission rows in both themes. */
+#system-rbac-panel .rbac-layout { grid-template-columns: 260px minmax(0, 1fr); align-items: start; }
+#system-rbac-panel .role-rail, #system-rbac-panel .permission-panel { min-width: 0; }
+#system-rbac-panel .role-config-list { display: grid; gap: 8px; margin-top: 18px; }
+#system-rbac-panel .role-config-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 14px 12px; text-align: left; border: 1px solid transparent; border-radius: 8px; }
+#system-rbac-panel .role-config-item.active { border-color: var(--line); background: var(--surface-soft); }
+#system-rbac-panel .role-config-item > span { display: grid; gap: 6px; }
+#system-rbac-panel .role-config-item small { color: var(--muted); font-size: 12px; }
+#system-rbac-panel .role-config-item em { font-style: normal; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; flex-shrink: 0; }
+#system-rbac-panel .permission-editor-head { align-items: start; }
+#system-rbac-panel #selected-role-code { color: var(--muted); font-size: 11px; letter-spacing: .08em; }
+#system-rbac-panel #selected-role-name { margin: 6px 0 8px; font-size: 20px; }
+#system-rbac-panel #selected-role-description { color: var(--muted); line-height: 1.7; font-size: 13px; }
+#system-rbac-panel .role-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 20px 0; padding: 16px; background: var(--surface-soft); border-radius: 8px; }
+#system-rbac-panel .role-facts dt { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+#system-rbac-panel .role-facts dd { margin: 0; font-size: 14px; font-weight: 600; }
+#system-rbac-panel .permission-preview { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+#system-rbac-panel .permission-group { padding: 0; overflow: hidden; }
+#system-rbac-panel .permission-group > div { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--line); background: var(--surface-soft); }
+#system-rbac-panel .permission-group > div span { color: var(--muted); font-size: 12px; }
+#system-rbac-panel .permission-group ul { margin: 0; padding: 6px 16px; gap: 0; }
+#system-rbac-panel .permission-group li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+#system-rbac-panel .permission-group li:last-child { border-bottom: 0; }
+#system-rbac-panel .permission-group li > span { display: grid; gap: 5px; min-width: 0; }
+#system-rbac-panel .permission-group li strong { font-size: 13px; font-weight: 500; }
+#system-rbac-panel .permission-group li small { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+#system-rbac-panel .permission-group li i, #system-rbac-panel .permission-group li em { font-style: normal; }
+#system-rbac-panel .permission-group li em { font-size: 11px; color: var(--muted); }
+@media (max-width: 1100px) { #system-rbac-panel .permission-preview { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { #system-rbac-panel .rbac-layout { grid-template-columns: 1fr; } #system-rbac-panel .role-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } #system-rbac-panel .permission-editor-head { flex-wrap: wrap; } }
