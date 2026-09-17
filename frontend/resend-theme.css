@@ -3433,3 +3433,21 @@ html[data-theme="dark"] select { color-scheme: dark; }
   #manual-shot-rows .manual-shot-narration { grid-column: 1 / -1; grid-row: 4; }
   #manual-shot-rows .manual-shot-motion { grid-column: 1 / -1; grid-row: 5; }
 }
+
+/* Quiet, separated stage tiles: no connectors through labels. */
+#ai-video-monitor-page .monitor-trace { gap: 8px; padding: 0; margin: 16px 0; border: 0; background: transparent; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+#ai-video-monitor-page .monitor-trace > div { min-height: 72px; padding: 12px; gap: 4px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+#ai-video-monitor-page .monitor-trace > div::after { display: none; }
+#ai-video-monitor-page .monitor-trace > div i { width: 28px; height: 28px; border-radius: 50%; box-shadow: none; }
+#ai-video-monitor-page .monitor-trace > div.done i { color: #218353; background: #edf8f1; border-color: #d5eadc; }
+#ai-video-monitor-page .monitor-trace > div.done i::before { content: "✓"; font: 600 14px/1 sans-serif; }
+#ai-video-monitor-page .monitor-trace > div.current { border-color: color-mix(in srgb, var(--info) 35%, var(--line)); background: color-mix(in srgb, var(--info) 5%, var(--surface)); }
+#ai-video-monitor-page .monitor-trace > div.current i { background: var(--info); border-color: var(--info); color: #fff; box-shadow: none; }
+#ai-video-monitor-page .monitor-trace > div.current i::after { display: none; }
+#ai-video-monitor-page .monitor-trace > div.current span { color: var(--info); }
+#ai-video-monitor-page .monitor-trace > div.failed i { color: #b42318; border-color: #f3d0cd; background: #fef0ee; }
+#ai-video-monitor-page .monitor-trace > div.failed i::before { content: "!"; }
+#ai-video-monitor-page .monitor-trace > div span { font-size: 13px; }
+#ai-video-monitor-page .monitor-trace > div small { font: 12px/1.4 var(--font-sans, sans-serif); }
+@media (max-width: 1100px) { #ai-video-monitor-page .monitor-trace { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { #ai-video-monitor-page .monitor-trace { grid-template-columns: 1fr; } }

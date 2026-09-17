@@ -11859,9 +11859,9 @@ function renderAiVideoMonitorDetail() {
     </header>
     <section class="monitor-trace" aria-label="任务生成轨迹">
       <div class="done"><i></i><span>任务创建</span><small>${formatDate(task.createdAt)}</small></div><b class="done"></b>
-      <div class="${hasImage ? "done" : monitorStatusGroup(task.status) === "ACTIVE" ? "current" : ""}"><i></i><span>${generalTask ? "参考图" : "生图"}</span><small>${allImageEvents.length} 个资产</small></div><b class="${hasImage ? "done" : ""}"></b>
-      <div class="${hasVideo ? "done" : task.status === "VIDEO_GENERATING" ? "current" : ""}"><i></i><span>生视频</span><small>${allVideoRequests.length} 次请求</small></div><b class="${hasVideo ? "done" : ""}"></b>
-      <div class="${finished ? "done" : ""}"><i></i><span>${task.status === "FAILED" ? "异常结束" : "任务完成"}</span><small>${monitorDuration(task.createdAt, task.completedAt || task.updatedAt)}</small></div>
+      <div class="${task.status === "IMAGE_GENERATING" ? "current" : hasImage ? "done" : ""}"><i></i><span>${generalTask ? "参考图" : "生图"}</span><small>${allImageEvents.length} 个资产</small></div><b class="${hasImage ? "done" : ""}"></b>
+      <div class="${task.status === "VIDEO_GENERATING" ? "current" : task.status === "VIDEO_READY" ? "done" : ""}"><i></i><span>生视频</span><small>${allVideoRequests.length} 次请求</small></div><b class="${hasVideo ? "done" : ""}"></b>
+      <div class="${task.status === "FAILED" ? "failed" : finished ? "done" : ""}"><i></i><span>${task.status === "FAILED" ? "异常结束" : "任务完成"}</span><small>${finished ? monitorDuration(task.createdAt, task.completedAt || task.updatedAt) : "等待全部完成"}</small></div>
     </section>
     <section class="monitor-task-facts">
       <div><span>任务类型</span><strong>${generalTask ? "通用生成" : "商品视频"}</strong></div><div><span>${generalTask ? "视频时长" : "商品品类"}</span><strong>${generalTask ? `${escapeHtml(task.durationSeconds || "—")} 秒` : escapeHtml(task.productCategory || "未设置")}</strong></div>
