@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -26,6 +26,12 @@ export class ImageOperationStore {
   constructor(directory, {maxNetworkRetries = 2, maxAttemptsPerRoute = 8} = {}) {
     this.directory = directory; this.maxNetworkRetries = maxNetworkRetries;
     this.maxAttemptsPerRoute = maxAttemptsPerRoute; this.active = new Map();
+  }
+  async initialize() {
+    await mkdir(this.directory, {recursive:true,mode:0o700});
+    const probe = path.join(this.directory, `.write-check-${randomUUID()}`);
+    try { await writeFile(probe, 'ready', {mode:0o600,flag:'wx'}); }
+    finally { await rm(probe, {force:true}); }
   }
   async write(file, value) {
     await mkdir(this.directory, {recursive:true,mode:0o700});

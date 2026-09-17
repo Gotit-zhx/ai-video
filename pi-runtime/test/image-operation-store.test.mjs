@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,readFile,readdir,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,readdir,rm,writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {ImageOperationStore} from '../src/image-operation-store.js';
@@ -46,4 +46,12 @@ test('restart after an interrupted POST consumes a finite recovery budget',async
  await new ImageOperationStore(dir).execute('request-005',{},async op=>{const options=await op.forRoute(config);assert.equal(options.networkRetryCount,2);await options.beforeAttempt();return {};});
  record=JSON.parse(await readFile(recordPath,'utf8'));record.status='RUNNING';Object.values(record.routes)[0].pending=true;await store.write(recordPath,record);
  await assert.rejects(new ImageOperationStore(dir).execute('request-005',{},op=>op.forRoute(config)),/次数已用完/);
+});
+
+test('startup verifies ledger writes and fails before accepting work on invalid storage',async t=>{
+ const {dir}=await fixture(t);
+ const store=new ImageOperationStore(path.join(dir,'nested'));
+ await store.initialize();
+ await writeFile(path.join(dir,'not-a-directory'),'occupied');
+ await assert.rejects(new ImageOperationStore(path.join(dir,'not-a-directory','ledger')).initialize());
 });

@@ -67,6 +67,7 @@ const VIDEO_SCRIPT_DISPATCHER = new UndiciAgent({
 const IMAGE_CONCURRENCY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
 const IMAGE_NETWORK_RETRY_DELAYS_MS = [2_000, 5_000];
 const imageOperationStore = new ImageOperationStore(process.env.IMAGE_OPERATION_STORAGE_ROOT || "/data/image-operations");
+await imageOperationStore.initialize();
 const IMAGE_POLICY_RETRY_DELAYS_MS = [500, 1_000, 2_000];
 const sessions = new Map();
 const automationSessions = new Map();

@@ -928,6 +928,14 @@ class AiVideoImageProcessorTest {
         assertTrue(normalized.contains("\"visibleSleeveCount\":2"));
         assertTrue(normalized.contains("低侧短袖与高侧短袖始终同时存在"));
         assertTrue(normalized.contains("不得把低侧短袖删除成无袖"));
+        source.put("wearingMethod", "头穿过斜领口，双臂分别穿过两只袖口");
+        assertTrue(service.normalizeGarmentAnalysis(source).contains("头穿过斜领口"));
+        source.remove("wearingMethod");
+        String uncertain = service.normalizeGarmentAnalysis(source);
+        assertTrue(uncertain.contains("不推断隐藏穿法"));
+        assertTrue(uncertain.contains("\"confidence\":0.75"));
+        assertTrue(uncertain.contains("低侧短袖与高侧短袖始终同时存在"));
+
     }
 
     @Test

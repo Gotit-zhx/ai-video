@@ -558,10 +558,21 @@ public class ProductFunctionAnalysisService {
         normalized.put("forbiddenChanges", stringList(source.get("forbiddenChanges"), 12, 140));
         normalized.put("visualEvidence", stringList(source.get("visualEvidence"), 8, 140));
         normalized.put("uncertainties", stringList(source.get("uncertainties"), 6, 140));
+        // A still product photo may not establish how the garment is put on.
+        // Preserve that uncertainty instead of inventing a method or rejecting
+        // otherwise usable visible structure evidence.
+        boolean wearingUnknown = ((List<?>) normalized.get("wearingMethod")).isEmpty();
+        if (wearingUnknown) {
+            String unknown = "原图未明确展示穿法；保留可见开口和连接关系，不推断隐藏穿法";
+            normalized.put("wearingMethod", List.of(unknown));
+            List<String> uncertainties = new ArrayList<>((List<String>) normalized.get("uncertainties"));
+            uncertainties.add(unknown);
+            normalized.put("uncertainties", uncertainties);
+        }
         requireGarmentTopologyFields(normalized);
         Object confidence = source.get("confidence");
         normalized.put("confidence", confidence instanceof Number number
-                ? Math.max(0.0, Math.min(1.0, number.doubleValue())) : 0.0);
+                ? Math.max(0.0, Math.min(wearingUnknown ? 0.75 : 1.0, number.doubleValue())) : 0.0);
         return objectMapper.writeValueAsString(normalized);
     }
 
@@ -657,7 +668,8 @@ public class ProductFunctionAnalysisService {
     }
 
     private List<String> stringList(Object raw, int maxItems, int maxLength) {
-        if (!(raw instanceof List<?> values)) return List.of();
+        List<?> values = raw instanceof String scalar ? List.of(scalar)
+                : raw instanceof List<?> list ? list : List.of();
         List<String> result = new ArrayList<>();
         for (Object value : values) {
             String text = text(value, maxLength);
