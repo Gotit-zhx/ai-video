@@ -343,7 +343,8 @@ public class AiVideoGenerationService {
     static boolean retryableVideoConcurrencyFailure(String message) {
         if (message == null) return false;
         String value = message.toLowerCase();
-        return value.contains("（429）") || value.contains("(429)")
+        return value.startsWith("连接厂商失败，请求尚未发送：")
+                || value.contains("（429）") || value.contains("(429)")
                 || value.contains("（502）") || value.contains("(502)")
                 || value.contains("（503）") || value.contains("(503)")
                 || value.contains("（504）") || value.contains("(504)")

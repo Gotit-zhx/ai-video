@@ -56,6 +56,41 @@ class AiVideoImageProcessorTest {
     Path tempDirectory;
 
     @Test
+    void retriesConnectionFailuresOnlyWhenProviderConfirmsRequestWasNotSent() {
+        assertTrue(AiVideoGenerationService.retryableVideoConcurrencyFailure(
+                "连接厂商失败，请求尚未发送：HTTP connect timed out"));
+        assertFalse(AiVideoGenerationService.retryableVideoConcurrencyFailure(
+                "连接厂商时网络结果未知：HTTP read timed out"));
+        assertFalse(AiVideoGenerationService.retryableVideoConcurrencyFailure("HTTP connect timed out"));
+    }
+
+    @Test
+    void recoveredImagesContinueRunningVideoPipelineAfterAutoStartFlagWasConsumed() throws Exception {
+        var processor = processor(tempDirectory,
+                mock(ProductFunctionAnalysisService.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class));
+        Field field = AiVideoImageProcessor.class.getDeclaredField("videoGenerationService");
+        field.setAccessible(true);
+        var videos = (AiVideoGenerationService) field.get(processor);
+        var task = new AiVideoTask("org", "task", "script", 1, "script", "{}", "菲律宾", "MODEL_WEAR",
+                "AI_DESIGNED", "服装", "按分镜", "按分镜", false, "9:16", "720p",
+                false, false, "{}", "{}", "user");
+        task.start("image-config", "image-model");
+        processor.continueVideoAfterImages(task, "images-only");
+        org.mockito.Mockito.verifyNoInteractions(videos);
+        task.requestAutoStartVideo();
+        processor.continueVideoAfterImages(task, "first-item");
+        verify(videos).startReadyItemDuringImages(task.getId(), "first-item");
+        task.startVideos("video-config", "video-model");
+        task.consumeAutoStartVideo();
+        processor.continueVideoAfterImages(task, "recovered-item");
+        verify(videos).startReadyItemDuringImages(task.getId(), "recovered-item");
+        task.completeVideos(2, null);
+        processor.continueVideoAfterImages(task, "finished-item");
+        org.mockito.Mockito.verifyNoMoreInteractions(videos);
+    }
+
+    @Test
     void failedImageRecoversWhileAnotherItemIsStillBlocked() throws Exception {
         CountDownLatch slowStarted = new CountDownLatch(1);
         CountDownLatch releaseSlow = new CountDownLatch(1);

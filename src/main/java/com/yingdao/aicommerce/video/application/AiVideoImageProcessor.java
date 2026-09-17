@@ -430,12 +430,10 @@ public class AiVideoImageProcessor {
                                     });
                             completedCount.incrementAndGet();
                             AiVideoTask latest = taskMapper.selectById(task.getId());
-                            if (latest != null && latest.isAutoStartVideoAfterImages()) {
-                                try {
-                                    videoGenerationService.startReadyItemDuringImages(task.getId(), item.getId());
-                                } catch (Exception exception) {
-                                    failure = item.getName() + "：图片已完成，但自动提交视频失败：" + readable(exception);
-                                }
+                            try {
+                                continueVideoAfterImages(latest, item.getId());
+                            } catch (Exception exception) {
+                                failure = item.getName() + "：图片已完成，但自动提交视频失败：" + readable(exception);
                             }
                         } catch (Exception exception) {
                             String message = readable(exception);
@@ -512,6 +510,15 @@ public class AiVideoImageProcessor {
         } catch (Exception exception) {
             task.fail(readable(exception));
             taskMapper.updateById(task);
+        }
+    }
+
+    void continueVideoAfterImages(AiVideoTask task, String itemId) {
+        // The one-shot image auto-start flag can already be consumed by a sibling.
+        // A running video pipeline still owns recovered images and must submit them.
+        if (task != null && (task.isAutoStartVideoAfterImages()
+                || "VIDEO_GENERATING".equals(task.getStatus()))) {
+            videoGenerationService.startReadyItemDuringImages(task.getId(), itemId);
         }
     }
 
