@@ -417,7 +417,6 @@ public class VideoScriptService {
         return scriptMapper.selectList(
                 new LambdaQueryWrapper<VideoScript>()
                         .eq(VideoScript::getOrganizationId, principal.organizationId())
-                        .eq(principal.externallyRegistered(), VideoScript::getCreatedBy, principal.userId())
                         .orderByDesc(VideoScript::getUpdatedAt)
                         .last("LIMIT 100")
         );
@@ -574,11 +573,7 @@ public class VideoScriptService {
     }
 
     private VideoScript requireAccessibleScript(String id, PlatformPrincipal principal) {
-        VideoScript script = requireScript(id, principal.organizationId());
-        if (principal.externallyRegistered() && !principal.userId().equals(script.getCreatedBy())) {
-            throw new BusinessException(HttpStatus.NOT_FOUND, "视频脚本不存在");
-        }
-        return script;
+        return requireScript(id, principal.organizationId());
     }
 
     private VideoScript requireScript(String id, String organizationId) {
