@@ -12628,7 +12628,18 @@ function openAssetPreview(button) {
     || (button.closest("#product-image-grid") ? document.querySelector("#product-detail-title").textContent : "生成图片");
   const previewImage = button.querySelector("img");
   const previewVideo = button.querySelector("video");
-  const preview = previewVideo ? document.createElement("video") : button.cloneNode(true);
+  const singleImage = previewImage && button.querySelectorAll("img").length === 1;
+  const preview = previewVideo ? document.createElement("video")
+    : singleImage ? document.createElement("div") : button.cloneNode(true);
+  if (!previewVideo && singleImage) {
+    // Do not inherit thumbnail grid columns, overlays, or an existing zoom.
+    preview.className = "asset-preview-image real-asset";
+    const image = document.createElement("img");
+    image.src = previewImage.currentSrc || previewImage.src;
+    image.alt = previewImage.alt || button.dataset.assetPreview || "图片预览";
+    if (previewImage.dataset.fullSrc) image.dataset.fullSrc = previewImage.dataset.fullSrc;
+    preview.append(image);
+  }
   if (previewVideo) {
     preview.className = "asset-preview-video";
     preview.src = previewVideo.currentSrc || previewVideo.src;
