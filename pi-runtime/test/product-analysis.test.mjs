@@ -44,13 +44,13 @@ const input = type => ({
   context: { analysisType: type }, image: { mimeType: 'image/jpeg', data: 'AA==' },
   candidateImage: { mimeType: 'image/png', data: 'AA==' }
 });
-test('topology uses 1000 seconds, explicit transport limits and reduced output budget', async () => {
+test('topology is bounded to 180 seconds and retains its structure output budget', async () => {
   const h = harness();
   await h.context.runProductFunctionAnalysis(input('GARMENT_TOPOLOGY_V2'));
   assert.equal(h.calls.length, 1);
-  assert.deepEqual(h.timeouts, [1_000_000]);
-  assert.equal(h.agents[0].headersTimeout, 1_010_000);
-  assert.equal(h.agents[0].bodyTimeout, 1_010_000);
+  assert.deepEqual(h.timeouts, [180_000]);
+  assert.equal(h.agents[0].headersTimeout, 190_000);
+  assert.equal(h.agents[0].bodyTimeout, 190_000);
   assert.ok(h.calls[0].dispatcher);
   assert.equal(h.calls[0].payload.max_tokens, 1800);
   assert.equal(h.calls[0].payload.reasoning_effort, undefined);
@@ -61,10 +61,10 @@ test('topology uses 1000 seconds, explicit transport limits and reduced output b
     assert.ok(prompt.includes('"' + key + '"'), key);
   }
 });
-test('validation retains two images and compact response with the same timeout', async () => {
+test('validation retains both images and stops waiting after 90 seconds', async () => {
   const h = harness();
   await h.context.runProductFunctionAnalysis(input('GARMENT_TOPOLOGY_VALIDATION_V1'));
-  assert.deepEqual(h.timeouts, [1_000_000]);
+  assert.deepEqual(h.timeouts, [90_000]);
   assert.equal(h.calls[0].payload.max_tokens, GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS);
   assert.equal(h.calls[0].payload.messages[1].content.filter(x => x.type === 'image_url').length, 2);
   const prompt = h.calls[0].payload.messages[0].content;

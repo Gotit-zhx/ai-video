@@ -42,7 +42,7 @@ const WATCH_SCRIPT_PATH = path.join(WATCH_SKILLS_DIR, "watch", "scripts", "watch
 const VIDEO_SCRIPT_STORAGE_ROOT = path.resolve(
   process.env.VIDEO_SCRIPT_STORAGE_ROOT || "/data/video-scripts"
 );
-const PRODUCT_ANALYSIS_TIMEOUT_MS = 1_000_000;
+const PRODUCT_ANALYSIS_TIMEOUT_MS = 180_000;
 const PRODUCT_ANALYSIS_MAX_TOKENS = 1800;
 // Explicit transport limits avoid Undici's shorter default header timeout.
 const PRODUCT_ANALYSIS_DISPATCHER = new UndiciAgent({
@@ -3049,7 +3049,7 @@ async function runProductFunctionAnalysis(body) {
         JSON.stringify(body.context || {}),
         attachments,
         GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS,
-        PRODUCT_ANALYSIS_TIMEOUT_MS
+        Math.min(PRODUCT_ANALYSIS_TIMEOUT_MS, 90_000)
       );
       console.info(`[product-analysis] validation completed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
       return {
