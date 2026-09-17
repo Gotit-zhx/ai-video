@@ -507,7 +507,7 @@ class ProductCaptureServiceTest {
     void clientImageDeclarationCanOnlyMakeServerPlanMoreConservative() {
         when(captureMapper.selectOne(any())).thenReturn(null);
         List<String> images = new ArrayList<>();
-        for (int index = 0; index < 31; index++) {
+        for (int index = 0; index < 121; index++) {
             images.add("https://cdn.example.com/image-" + index + ".webp");
         }
         Map<String, Object> request = new java.util.LinkedHashMap<>();
@@ -515,8 +515,8 @@ class ProductCaptureServiceTest {
         request.put("title", "图片超限商品");
         request.put("images", images);
         request.put("imageCompleteness", Map.of(
-                "expectedCount", 30,
-                "capturedCount", 30,
+                "expectedCount", 120,
+                "capturedCount", 120,
                 "requiredSkuImageCount", 0,
                 "coveredSkuImageCount", 0,
                 "complete", true,
@@ -528,11 +528,11 @@ class ProductCaptureServiceTest {
         );
 
         Map<?, ?> completeness = (Map<?, ?>) detail.normalizedData().get("imageCompleteness");
-        assertEquals(31, completeness.get("expectedCount"));
-        assertEquals(30, completeness.get("capturedCount"));
+        assertEquals(121, completeness.get("expectedCount"));
+        assertEquals(120, completeness.get("capturedCount"));
         assertEquals(false, completeness.get("complete"));
         assertTrue(((List<?>) completeness.get("issues")).contains("IMAGE_LIMIT_EXCEEDED"));
-        verify(imageMapper, org.mockito.Mockito.times(30)).insert(any(ProductCaptureImage.class));
+        verify(imageMapper, org.mockito.Mockito.times(120)).insert(any(ProductCaptureImage.class));
     }
 
     @Test
@@ -733,6 +733,53 @@ class ProductCaptureServiceTest {
         assertEquals(true, completeness.get("complete"));
         assertEquals(List.of(), completeness.get("issues"));
         assertEquals("CAPTURED", retried.capture().getStatus());
+    }
+
+    @Test
+    void incompleteRecapturePreservesAll96SkusButCompletePriceRefreshStillWorks() {
+        AtomicReference<ProductCapture> stored = storedCapture();
+        List<ProductCaptureSku> storedSkus = new ArrayList<>();
+        when(skuMapper.insert(any(ProductCaptureSku.class))).thenAnswer(invocation -> {
+            storedSkus.add(invocation.getArgument(0));
+            return 1;
+        });
+        when(skuMapper.delete(any())).thenAnswer(invocation -> {
+            storedSkus.clear();
+            return 1;
+        });
+        when(skuMapper.selectList(any())).thenAnswer(invocation -> List.copyOf(storedSkus));
+        List<Map<String, Object>> fullSkus = new ArrayList<>();
+        List<Map<String, Object>> updatedSkus = new ArrayList<>();
+        for (int index = 0; index < 96; index++) {
+            Map<String, Object> attributes = Map.of("Color", "Color-" + index / 6, "Size", "Size-" + index % 6);
+            fullSkus.add(completeSku("model-" + index, attributes));
+            updatedSkus.add(completeSkuAtPrice("model-" + index, new BigDecimal("109.00"), attributes));
+        }
+        Map<String, Object> complete = Map.of("expectedCount", 96, "capturedCount", 96,
+                "variantDimensionCount", 2, "complete", true, "source", "SHOPEE_PAGE_RESPONSE", "issues", List.of());
+        var original = service.create(captureRequest(fullSkus, complete), "capture-preserve-96", principal("org-a"));
+        String originalRaw = stored.get().getRawData();
+        String originalNormalized = stored.get().getNormalizedData();
+
+        var incomplete = captureRequest(List.of(), Map.of("expectedCount", 96, "capturedCount", 0,
+                "variantDimensionCount", 2, "complete", false, "source", "UNAVAILABLE", "issues", List.of("SKU_COUNT_MISMATCH")));
+        BusinessException rejected = assertThrows(BusinessException.class,
+                () -> service.create(incomplete, "capture-preserve-96", principal("org-a")));
+        assertEquals(HttpStatus.CONFLICT, rejected.getStatus());
+        assertTrue(rejected.getMessage().contains("已保留之前完整的商品数据"));
+        assertEquals(96, storedSkus.size());
+        assertEquals(originalRaw, stored.get().getRawData());
+        assertEquals(originalNormalized, stored.get().getNormalizedData());
+        verify(captureMapper, never()).updateById(any(ProductCapture.class));
+        verify(skuMapper, never()).delete(any());
+        verify(imageMapper, never()).delete(any());
+        verify(fieldSourceMapper, never()).delete(any());
+
+        var refreshed = service.create(captureRequest(updatedSkus, complete), "capture-preserve-96", principal("org-a"));
+        assertEquals(original.capture().getId(), refreshed.capture().getId());
+        assertEquals(96, refreshed.skus().size());
+        assertTrue(refreshed.skus().stream().allMatch(sku -> new BigDecimal("109.00").compareTo(sku.getPrice()) == 0));
+        assertEquals(true, ((Map<?, ?>) refreshed.normalizedData().get("skuCompleteness")).get("complete"));
     }
 
     @Test
@@ -1024,6 +1071,198 @@ class ProductCaptureServiceTest {
     }
 
     @Test
+    void headerOnlyPublishPassesResolvedKeyToProviderWithoutChangingAuditOrRetryIdentity() {
+        ProductCapture approved = capture("org-a");
+        approved.startImageProcessing(); approved.imagesReady(); approved.approve("reviewer-1");
+        when(captureMapper.selectOne(any())).thenReturn(approved);
+        when(publishAuditMapper.selectOne(any())).thenReturn(null);
+        var provider = mock(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+        when(provider.code()).thenReturn("TIKTOK_SHOP_OFFICIAL_202309");
+        when(publishingRegistry.forPlatform("TIKTOK")).thenReturn(provider);
+        Map<String, Object> request = Map.of("confirmed", true, "destinationPlatform", "TIKTOK_SHOP",
+                "shopId", "target-tiktok-shop", "publishStock", 999);
+        String headerKey = "header-only-publish-0001";
+        AtomicReference<Map<String, Object>> providerBody = new AtomicReference<>();
+        when(provider.publish(any(), anyString(), anyString(), any(), any())).thenAnswer(call -> {
+            Map<String, Object> parameters = call.getArgument(3);
+            providerBody.set(new java.util.LinkedHashMap<>(parameters));
+            parameters.put("providerOnlyState", "internal");
+            return new com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.PublishResult(
+                    "remote-tiktok-product", Map.of("remoteStatus", "DRAFT"));
+        });
+
+        ProductCaptureService.PublishResult first = service.publish(approved.getId(), request, headerKey, principal("org-a"));
+        Map<String, Object> expectedProviderBody = new java.util.LinkedHashMap<>(request);
+        expectedProviderBody.put("idempotencyKey", headerKey);
+        assertEquals(expectedProviderBody, providerBody.get());
+        assertEquals(headerKey, first.audit().getIdempotencyKey());
+        assertEquals("PUBLISHED", first.audit().getStatus());
+        String originalAuditJson = first.audit().getRequestJson();
+        assertEquals(request, new ObjectMapper().readValue(originalAuditJson, Map.class));
+        assertFalse(request.containsKey("idempotencyKey"));
+        assertFalse(request.containsKey("providerOnlyState"));
+
+        when(publishAuditMapper.selectOne(any())).thenReturn(first.audit());
+        assertSame(first.audit(), service.publish(approved.getId(), request, headerKey, principal("org-a")).audit());
+        assertSame(first.audit(), service.publish(approved.getId(), expectedProviderBody, headerKey, principal("org-a")).audit());
+        assertEquals(originalAuditJson, first.audit().getRequestJson());
+        verify(provider, org.mockito.Mockito.times(1)).publish(any(), anyString(), anyString(), any(), any());
+        verify(publishAuditMapper, org.mockito.Mockito.times(1)).insert(any(ProductPublishAudit.class));
+    }
+
+    @Test
+    void pendingVideoBeforeItemCreateRollsBackProvisionalPublishAuditForWorkflowRetry() {
+        ProductCapture approved = capture("org-a");
+        approved.startImageProcessing(); approved.imagesReady(); approved.approve("reviewer-1");
+        when(captureMapper.selectOne(any())).thenReturn(approved);
+        when(publishAuditMapper.selectOne(any())).thenReturn(null);
+        var provider = mock(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+        when(provider.code()).thenReturn("SHOPEE_OFFICIAL_V2");
+        when(publishingRegistry.forPlatform("SHOPEE")).thenReturn(provider);
+        var pending = new com.yingdao.aicommerce.product.application.provider.VideoUploadPendingException("视频仍在转码");
+        when(provider.publish(any(), anyString(), anyString(), any(), any())).thenThrow(pending);
+        var manager = mock(org.springframework.transaction.PlatformTransactionManager.class);
+        var transaction = new org.springframework.transaction.support.SimpleTransactionStatus();
+        when(manager.getTransaction(any())).thenReturn(transaction);
+        var factory = new org.springframework.aop.framework.ProxyFactory(service);
+        factory.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager,
+                new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+        var transactionalService = (ProductCaptureService) factory.getProxy();
+        var boundaryCalls = new java.util.concurrent.atomic.AtomicInteger();
+
+        assertSame(pending, assertThrows(com.yingdao.aicommerce.product.application.provider.VideoUploadPendingException.class,
+                () -> transactionalService.publish(approved.getId(), Map.of("confirmed", true, "destinationPlatform", "SHOPEE", "shopId", "123"),
+                        "video-pending-publish", principal("org-a"), boundaryCalls::incrementAndGet)));
+
+        verify(manager).rollback(transaction);
+        verify(manager, never()).commit(any());
+        assertEquals(0, boundaryCalls.get());
+        assertEquals("APPROVED", approved.getStatus());
+        verify(publishAuditMapper, org.mockito.Mockito.times(1)).updateById(any(ProductPublishAudit.class));
+        assertEquals(org.springframework.transaction.annotation.Propagation.REQUIRES_NEW,
+                com.yingdao.aicommerce.product.application.provider.ShopeeProductVideoUploadLedger.class
+                        .getAnnotation(org.springframework.transaction.annotation.Transactional.class).propagation());
+    }
+
+    @Test
+    void pendingExceptionAfterItemCreateBoundaryRemainsFailedAndCannotAuthorizeAnotherCreate() {
+        ProductCapture approved = capture("org-a");
+        approved.startImageProcessing(); approved.imagesReady(); approved.approve("reviewer-1");
+        when(captureMapper.selectOne(any())).thenReturn(approved);
+        when(publishAuditMapper.selectOne(any())).thenReturn(null);
+        var provider = mock(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+        when(provider.code()).thenReturn("SHOPEE_OFFICIAL_V2");
+        when(publishingRegistry.forPlatform("SHOPEE")).thenReturn(provider);
+        when(provider.publish(any(), anyString(), anyString(), any(), any())).thenAnswer(call -> {
+            ((com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.ExternalCreateBoundary) call.getArgument(4)).enter();
+            throw new com.yingdao.aicommerce.product.application.provider.VideoUploadPendingException("结果尚未确认");
+        });
+        var boundaryCalls = new java.util.concurrent.atomic.AtomicInteger();
+        var result = service.publish(approved.getId(), Map.of("confirmed", true, "destinationPlatform", "SHOPEE", "shopId", "123"),
+                "video-after-create", principal("org-a"), boundaryCalls::incrementAndGet);
+        assertEquals("FAILED", result.audit().getStatus());
+        assertEquals(1, boundaryCalls.get());
+    }
+
+    @Test
+    void transportBeforeItemCreateRollsBackProvisionalPublishAuditForWorkflowRetry() {
+        ProductCapture approved = capture("org-a");
+        approved.startImageProcessing(); approved.imagesReady(); approved.approve("reviewer-1");
+        when(captureMapper.selectOne(any())).thenReturn(approved);
+        when(publishAuditMapper.selectOne(any())).thenReturn(null);
+        var provider = mock(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+        when(provider.code()).thenReturn("SHOPEE_OFFICIAL_V2");
+        when(publishingRegistry.forPlatform("SHOPEE")).thenReturn(provider);
+        var pending = new com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException("店铺官方接口请求失败", new java.io.IOException("connection reset"));
+        when(provider.publish(any(), anyString(), anyString(), any(), any())).thenThrow(pending);
+        var manager = mock(org.springframework.transaction.PlatformTransactionManager.class);
+        var transaction = new org.springframework.transaction.support.SimpleTransactionStatus();
+        when(manager.getTransaction(any())).thenReturn(transaction);
+        var factory = new org.springframework.aop.framework.ProxyFactory(service);
+        factory.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager,
+                new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+        var transactionalService = (ProductCaptureService) factory.getProxy();
+        var boundaryCalls = new java.util.concurrent.atomic.AtomicInteger();
+
+        assertSame(pending, assertThrows(com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException.class,
+                () -> transactionalService.publish(approved.getId(), Map.of("confirmed", true, "destinationPlatform", "SHOPEE", "shopId", "123"),
+                        "video-pending-publish", principal("org-a"), boundaryCalls::incrementAndGet)));
+
+        verify(manager).rollback(transaction);
+        verify(manager, never()).commit(any());
+        assertEquals(0, boundaryCalls.get());
+        assertEquals("APPROVED", approved.getStatus());
+        verify(publishAuditMapper, org.mockito.Mockito.times(1)).updateById(any(ProductPublishAudit.class));
+        assertEquals(org.springframework.transaction.annotation.Propagation.REQUIRES_NEW,
+                com.yingdao.aicommerce.product.application.provider.ShopeeProductVideoUploadLedger.class
+                        .getAnnotation(org.springframework.transaction.annotation.Transactional.class).propagation());
+    }
+
+    @Test
+    void transportAfterItemCreateRemainsFailedAndCannotAuthorizeAnotherCreate() {
+        ProductCapture approved = capture("org-a");
+        approved.startImageProcessing(); approved.imagesReady(); approved.approve("reviewer-1");
+        when(captureMapper.selectOne(any())).thenReturn(approved);
+        when(publishAuditMapper.selectOne(any())).thenReturn(null);
+        var provider = mock(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+        when(provider.code()).thenReturn("SHOPEE_OFFICIAL_V2");
+        when(publishingRegistry.forPlatform("SHOPEE")).thenReturn(provider);
+        when(provider.publish(any(), anyString(), anyString(), any(), any())).thenAnswer(call -> {
+            ((com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.ExternalCreateBoundary) call.getArgument(4)).enter();
+            throw new com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException("店铺官方接口请求失败", new java.net.http.HttpTimeoutException("timeout"));
+        });
+        var boundaryCalls = new java.util.concurrent.atomic.AtomicInteger();
+        var result = service.publish(approved.getId(), Map.of("confirmed", true, "destinationPlatform", "SHOPEE", "shopId", "123"),
+                "video-after-create", principal("org-a"), boundaryCalls::incrementAndGet);
+        assertEquals("FAILED", result.audit().getStatus());
+        assertEquals(1, boundaryCalls.get());
+    }
+
+    @Test
+    void rollbackOnlyProviderFailureKeepsTheOriginalCauseAndDoesNotLoseTheCreateBoundarySignal() throws Exception {
+        for (boolean created : List.of(false, true)) {
+            ProductCapture approved = capture("org-a");
+            approved.startImageProcessing(); approved.imagesReady(); approved.approve("reviewer-1");
+            when(captureMapper.selectOne(any())).thenReturn(approved);
+            when(publishAuditMapper.selectOne(any())).thenReturn(null);
+            var dataSource = mock(javax.sql.DataSource.class);
+            var connection = mock(java.sql.Connection.class);
+            when(connection.getAutoCommit()).thenReturn(true);
+            when(dataSource.getConnection()).thenReturn(connection);
+            var manager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource);
+            var delegate = mock(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+            when(delegate.code()).thenReturn("TIKTOK_SHOP_OFFICIAL_202309");
+            BusinessException original = new BusinessException(HttpStatus.BAD_GATEWAY, "original provider failure");
+            when(delegate.publish(any(), anyString(), anyString(), any(), any())).thenAnswer(call -> {
+                if (created) ((com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.ExternalCreateBoundary) call.getArgument(4)).enter();
+                throw original;
+            });
+            var attributes = new org.springframework.transaction.interceptor.NameMatchTransactionAttributeSource();
+            attributes.addTransactionalMethod("publish", new org.springframework.transaction.interceptor.DefaultTransactionAttribute());
+            var providerFactory = new org.springframework.aop.framework.ProxyFactory();
+            providerFactory.setTarget(delegate);
+            providerFactory.setInterfaces(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+            providerFactory.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));
+            when(publishingRegistry.forPlatform("TIKTOK")).thenReturn(
+                    (com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider) providerFactory.getProxy());
+            var serviceFactory = new org.springframework.aop.framework.ProxyFactory(service);
+            serviceFactory.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager,
+                    new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+            ProductCaptureService transactionalService = (ProductCaptureService) serviceFactory.getProxy();
+            var boundaryCalls = new java.util.concurrent.atomic.AtomicInteger();
+
+            assertSame(original, assertThrows(BusinessException.class, () -> transactionalService.publish(approved.getId(),
+                    Map.of("confirmed", true, "destinationPlatform", "TIKTOK_SHOP", "shopId", "target-shop"),
+                    "rollback-cause-" + created, principal("org-a"), boundaryCalls::incrementAndGet)));
+            assertEquals(created ? 1 : 0, boundaryCalls.get());
+            verify(connection).rollback();
+            verify(connection, never()).commit();
+            verify(delegate, org.mockito.Mockito.times(1)).publish(any(), anyString(), anyString(), any(), any());
+            assertEquals("APPROVED", approved.getStatus());
+        }
+    }
+
+    @Test
     void publishedProductCanBePublishedToAnotherAuthorizedShop() {
         ProductCapture published = capture("org-a");
         published.startImageProcessing();
@@ -1046,6 +1285,141 @@ class ProductCaptureServiceTest {
         assertEquals("shop-2", result.audit().getShopId());
         assertEquals("DRY_RUN_SUCCEEDED", result.audit().getStatus());
         assertEquals("PUBLISHED", published.getStatus());
+    }
+
+    @Test
+    void concurrentPublicationsToTwoShopsKeepBothConfirmedReceiptsAfterTheCaptureVersionChanges() throws Exception {
+        ProductCapture first = capture("org-a");
+        first.startImageProcessing(); first.imagesReady(); first.approve("reviewer-1");
+        ProductCapture second = capture("org-a");
+        second.startImageProcessing(); second.imagesReady(); second.approve("reviewer-1");
+        org.springframework.test.util.ReflectionTestUtils.setField(second, "id", first.getId());
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        AtomicReference<ProductCapture> committed = new AtomicReference<>();
+        when(captureMapper.selectOne(any())).thenAnswer(call -> call.getArgument(0) instanceof QueryWrapper<?>
+                ? committed.get() : reads.getAndIncrement() == 0 ? first : second);
+        when(captureMapper.updateById(any(ProductCapture.class))).thenAnswer(call -> {
+            synchronized (committed) {
+                ProductCapture candidate = call.getArgument(0);
+                if (committed.get() != null) return 0;
+                org.springframework.test.util.ReflectionTestUtils.setField(candidate, "version", candidate.getVersion() + 1);
+                committed.set(candidate);
+                return 1;
+            }
+        });
+        var bothCreating = new java.util.concurrent.CyclicBarrier(2);
+        var provider = mock(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+        when(provider.code()).thenReturn("TIKTOK_SHOP_OFFICIAL_202309");
+        when(provider.publish(any(), anyString(), anyString(), any(), any())).thenAnswer(call -> {
+            bothCreating.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            ((com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.ExternalCreateBoundary) call.getArgument(4)).enter();
+            String shopId = call.getArgument(2);
+            return new com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.PublishResult(
+                    "product-" + shopId, Map.of("remoteStatus", "DRAFT", "remoteSkuIds", Map.of("source-sku", "sku-" + shopId)));
+        });
+        when(publishingRegistry.forPlatform("TIKTOK")).thenReturn(provider);
+        var boundaries = new java.util.concurrent.atomic.AtomicInteger();
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var results = List.of("shop-1", "shop-2").stream().map(shop -> executor.submit(() -> service.publish(
+                    first.getId(), Map.of("confirmed", true, "destinationPlatform", "TIKTOK_SHOP", "shopId", shop),
+                    "concurrent-" + shop, principal("org-a"), boundaries::incrementAndGet))).toList();
+            for (var pending : results) {
+                var result = pending.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals("PUBLISHED", result.audit().getStatus());
+                assertEquals("product-" + result.audit().getShopId(), result.audit().getExternalId());
+                var receipt = new ObjectMapper().readValue(result.audit().getResponseJson(), Map.class);
+                assertEquals("DRAFT", receipt.get("remoteStatus"));
+                assertEquals(Map.of("source-sku", "sku-" + result.audit().getShopId()), receipt.get("remoteSkuIds"));
+                assertSame(committed.get(), result.capture().capture());
+                assertEquals(1, result.capture().capture().getVersion());
+            }
+        }
+        assertEquals(2, boundaries.get());
+        verify(provider, org.mockito.Mockito.times(2)).publish(any(), anyString(), anyString(), any(), any());
+        verify(captureMapper, org.mockito.Mockito.times(2)).updateById(any(ProductCapture.class));
+        verify(publishAuditMapper, org.mockito.Mockito.times(4)).updateById(any(ProductPublishAudit.class));
+    }
+
+    @Test
+    void confirmedPublicationPreservesAConcurrentUserEditAndReturnsTheCurrentCapture() {
+        ProductCapture stale = capture("org-a");
+        stale.startImageProcessing(); stale.imagesReady(); stale.approve("reviewer-1");
+        ProductCapture edited = capture("org-a");
+        org.springframework.test.util.ReflectionTestUtils.setField(edited, "id", stale.getId());
+        org.springframework.test.util.ReflectionTestUtils.setField(edited, "version", 1L);
+        edited.updateDraft("用户的新标题", "新的商品内容", null, null, "PHP", BigDecimal.ONE, BigDecimal.ONE, "{}");
+        when(captureMapper.selectOne(any())).thenAnswer(call -> call.getArgument(0) instanceof QueryWrapper<?>
+                ? edited : stale);
+        when(captureMapper.updateById(any(ProductCapture.class))).thenReturn(0);
+        var provider = mock(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+        when(provider.code()).thenReturn("TIKTOK_SHOP_OFFICIAL_202309");
+        when(provider.publish(any(), anyString(), anyString(), any(), any())).thenReturn(
+                new com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.PublishResult(
+                        "confirmed-product", Map.of("remoteStatus", "DRAFT", "remoteSkuIds", Map.of("sku", "remote-sku"))));
+        when(publishingRegistry.forPlatform("TIKTOK")).thenReturn(provider);
+
+        var result = service.publish(stale.getId(),
+                Map.of("confirmed", true, "destinationPlatform", "TIKTOK_SHOP", "shopId", "shop-1"),
+                "concurrent-user-edit", principal("org-a"));
+
+        assertEquals("PUBLISHED", result.audit().getStatus());
+        assertEquals("confirmed-product", result.audit().getExternalId());
+        assertNull(result.audit().getErrorMessage());
+        var receipt = new ObjectMapper().readValue(result.audit().getResponseJson(), Map.class);
+        assertEquals("DRAFT", receipt.get("remoteStatus"));
+        assertEquals(Map.of("sku", "remote-sku"), receipt.get("remoteSkuIds"));
+        assertSame(edited, result.capture().capture());
+        assertEquals("用户的新标题", edited.getTitle());
+        assertEquals("CAPTURED", edited.getStatus());
+        assertEquals(1, edited.getVersion());
+        verify(captureMapper).updateById(stale);
+        verify(captureMapper, never()).updateById(edited);
+        verify(provider).publish(any(), anyString(), anyString(), any(), any());
+        @SuppressWarnings("unchecked") var query = ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(captureMapper, org.mockito.Mockito.times(2)).selectOne(query.capture());
+        var currentRead = (QueryWrapper<?>) query.getAllValues().getLast();
+        assertTrue(currentRead.getSqlSegment().endsWith("FOR SHARE"));
+        assertTrue(currentRead.getSqlSegment().contains("organization_id"));
+        assertTrue(currentRead.getParamNameValuePairs().containsValue("org-a"));
+        assertTrue(currentRead.getParamNameValuePairs().containsValue(stale.getId()));
+    }
+
+    @Test
+    void databaseFailureAfterConfirmedCreationStillRollsBackAndKeepsTheCreateBoundary() throws Exception {
+        ProductCapture approved = capture("org-a");
+        approved.startImageProcessing(); approved.imagesReady(); approved.approve("reviewer-1");
+        when(captureMapper.selectOne(any())).thenReturn(approved);
+        var databaseFailure = new org.springframework.dao.CannotAcquireLockException("capture update failed");
+        when(captureMapper.updateById(any(ProductCapture.class))).thenThrow(databaseFailure);
+        var provider = mock(com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.class);
+        when(provider.code()).thenReturn("TIKTOK_SHOP_OFFICIAL_202309");
+        when(provider.publish(any(), anyString(), anyString(), any(), any())).thenAnswer(call -> {
+            ((com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.ExternalCreateBoundary) call.getArgument(4)).enter();
+            return new com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider.PublishResult(
+                    "confirmed-product", Map.of("remoteStatus", "DRAFT"));
+        });
+        when(publishingRegistry.forPlatform("TIKTOK")).thenReturn(provider);
+        var dataSource = mock(javax.sql.DataSource.class);
+        var connection = mock(java.sql.Connection.class);
+        when(connection.getAutoCommit()).thenReturn(true);
+        when(dataSource.getConnection()).thenReturn(connection);
+        var manager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource);
+        var factory = new org.springframework.aop.framework.ProxyFactory(service);
+        factory.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager,
+                new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+        ProductCaptureService proxy = (ProductCaptureService) factory.getProxy();
+        var boundaries = new java.util.concurrent.atomic.AtomicInteger();
+
+        assertSame(databaseFailure, assertThrows(org.springframework.dao.CannotAcquireLockException.class,
+                () -> proxy.publish(approved.getId(),
+                        Map.of("confirmed", true, "destinationPlatform", "TIKTOK_SHOP", "shopId", "shop-1"),
+                        "confirmed-db-failure", principal("org-a"), boundaries::incrementAndGet)));
+
+        assertEquals(1, boundaries.get());
+        verify(connection).rollback();
+        verify(connection, never()).commit();
+        verify(provider).publish(any(), anyString(), anyString(), any(), any());
+        verify(publishAuditMapper).updateById(any(ProductPublishAudit.class));
     }
 
     @Test

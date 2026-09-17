@@ -97,7 +97,7 @@
       const galleryImages = common.collectImages(
         root,
         [...(productData?.images || []), ...(structured?.images || [])],
-        detail ? 60 : 6,
+        detail ? 120 : 6,
         detail
           ? "[data-e2e*='product-image' i] img, [data-testid*='product-image' i] img, [class*='product-image'] img, [class*='product-gallery'] img, [class*='sku-image'] img"
           : "picture img, img"
@@ -106,7 +106,7 @@
         root,
         "[data-e2e*='product-description' i] img, [data-testid*='product-description' i] img, [class*='product-description'] img, [class*='description-content'] img, [class*='extended-description'] img, [itemprop='description'] img",
         "DETAIL",
-        60
+        120
       ) : [];
       const responseSkuImages = (productData?.skus || []).map(sku => ({
         url: sku?.imageUrl,
@@ -116,8 +116,9 @@
       const imagePlan = common.planListingImages([
         ...galleryImages,
         ...responseSkuImages,
+        ...(productData?.detailImages || []).map(url => ({ url, role: "DETAIL", alt: "商品详情图" })),
         ...detailDomImages
-      ], detail ? 30 : 3);
+      ], detail ? 120 : 3);
       const images = imagePlan.images;
       common.applyStructuredSkuImageFallback(productData, images);
       const domVariantHints = detail ? common.extractVariantHints(root, [
@@ -140,9 +141,10 @@
         images,
         skus
       );
-      const category = detail ? common.firstText(root, [
-        "nav[aria-label*='breadcrumb' i]", "[data-e2e*='breadcrumb' i]", "[class*='breadcrumb']"
-      ], 255) : { text: "", selector: "" };
+      // Shop's mobile/translated PDP renders taxonomy links below recommendations,
+      // outside <main> and without breadcrumb class/ARIA attributes.
+      const category = detail ? common.extractTikTokCategory(document, productUrl)
+        : { text: "", selector: "" };
       const shop = detail ? common.firstText(root, [
         "[data-e2e*='shop-name' i]", "[data-testid*='shop-name' i]", "[class*='shop-name']", "[class*='seller-name']"
       ], 160) : { text: "", selector: "" };
@@ -152,6 +154,10 @@
       const attributes = { ...common.extractKeyValueAttributes(root), ...(productData?.attributes || {}) };
 
       const fieldSources = [];
+      if (productData?.categoryName || category.text) fieldSources.push(common.fieldSource(
+        "categoryName", productData?.categoryName ? productData.source : "DOM",
+        productData?.categoryName ? "product category" : category.selector, 0.95));
+
       if (title) fieldSources.push(common.fieldSource("title", titleResult.text ? "DOM" : structured?.name ? "JSON_LD" : "META", titleResult.selector || metaTitle.key, titleResult.text ? 0.9 : 0.75));
       if (price.priceText) fieldSources.push(common.fieldSource("price", price.sourceSelector ? "DOM" : "JSON_LD", price.sourceSelector, price.sourceSelector ? 0.85 : 0.75));
       if (images.length) fieldSources.push(common.fieldSource("images", "DOM_META", "visible images / structured metadata", 0.8));
@@ -202,6 +208,46 @@
         ].filter(Boolean)
       };
     }
+  };
+
+  common.extractTikTokCategory = function extractTikTokCategory(root, productUrl) {
+    const empty = { text: "", selector: "" };
+    let page;
+    try { page = new URL(productUrl); } catch { return empty; }
+    if (!productIdentity(productUrl)) return empty;
+    const selectors = "a[href*='/c/']";
+    const links = [];
+    for (const anchor of root.querySelectorAll(selectors)) {
+      let url;
+      try { url = new URL(anchor.href || anchor.getAttribute("href"), page); } catch { continue; }
+      if (url.origin !== page.origin || !/^\/[a-z]{2}\/c\/[^/]+\/\d{3,32}\/?$/i.test(url.pathname)) continue;
+      if (!common.isVisible(anchor)) continue;
+      const name = common.cleanText(anchor.textContent, 100);
+      if (!name || links.some(link => link.id === url.pathname)) continue;
+      links.push({id: url.pathname, name, element: anchor});
+    }
+    // Category menus contain many unrelated links. Only accept a compact path
+    // whose links share a container without unrelated product or category cards.
+    if (links.length > 0 && links.length <= 8) {
+      let container = links[0].element.parentElement;
+      for (let depth = 0; container && depth < 6; depth++, container = container.parentElement) {
+        if (!links.every(link => container.contains(link.element))) continue;
+        const otherLinks = [...container.querySelectorAll("a[href]")].filter(a =>
+          !links.some(link => link.element === a));
+        if (otherLinks.length > 1) break;
+        const onlyHome = otherLinks.every(a => {
+          try { const u = new URL(a.href, page); return u.origin === page.origin && /^\/[a-z]{2}\/?$/i.test(u.pathname); }
+          catch { return false; }
+        });
+        if (onlyHome) return {text: links.map(link => link.name).join(" > "), selector: selectors};
+        break;
+      }
+    }
+    const named = common.firstText(root, [
+      "nav[aria-label*='breadcrumb' i]", "[data-e2e*='breadcrumb' i]",
+      "[data-testid*='breadcrumb' i]", "[class*='breadcrumb' i]"
+    ], 255);
+    return named.text ? named : empty;
   };
 
   function productIdentity(value) {

@@ -4,6 +4,8 @@ import org.apache.ibatis.annotations.*;
 import java.util.List;
 @Mapper
 public interface CommerceDesignMapper {
+    @Select("SELECT MIN(id) FROM commerce_design_drafts WHERE organization_id=#{org} AND (#{creator} IS NULL OR created_by=#{creator}) GROUP BY request_key ORDER BY MIN(created_at) DESC,request_key LIMIT #{offset},#{size}")
+    List<String> slotIds(@Param("org")String org,@Param("creator")String creator,@Param("offset")int offset,@Param("size")int size);
     @Select("SELECT * FROM commerce_design_drafts WHERE organization_id=#{org} AND id=#{id} FOR UPDATE")
     CommerceDesignDraft lock(@Param("org")String org,@Param("id")String id);
     @Select("SELECT * FROM commerce_design_drafts WHERE organization_id=#{org} AND id=#{id}")

@@ -10,9 +10,12 @@ import com.yingdao.aicommerce.product.mapper.ProductCaptureSkuMapper;
 import com.yingdao.aicommerce.shop.application.MarketplaceAccess;
 import com.yingdao.aicommerce.shop.application.ShopAuthorizationService;
 import com.yingdao.aicommerce.shop.domain.MarketplacePlatform;
+import com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException;
 import com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp;
 import com.yingdao.aicommerce.shop.infrastructure.MarketplaceImageDownloader;
 import com.yingdao.aicommerce.shop.infrastructure.ShopeeOfficialClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.type.TypeReference;
@@ -20,6 +23,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -27,9 +31,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.LongConsumer;
+import java.util.regex.Pattern;
 
 @Component
 public class ShopeeOfficialPublishingProvider implements ProductPublishingProvider {
+    private static final Logger log = LoggerFactory.getLogger(ShopeeOfficialPublishingProvider.class);
     private static final String UPLOAD_IMAGE = "/api/v2/media_space/upload_image";
     private static final String ADD_ITEM = "/api/v2/product/add_item";
     private static final String INIT_VARIATION = "/api/v2/product/init_tier_variation";
@@ -43,6 +50,11 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     private static final int ITEM_STATUS_READBACK_ATTEMPTS = 5;
     private static final long ITEM_STATUS_READBACK_DELAY_MILLIS = 1_000L;
     private static final long VARIATION_INITIALIZATION_DELAY_MILLIS = 5_000L;
+    private static final int IMAGE_UPLOAD_ATTEMPTS = 3;
+    private static final long IMAGE_UPLOAD_RETRY_DELAY_MILLIS = 1_000L;
+    private static final Pattern HTTP_FAILURE_STATUS = Pattern.compile("^店铺官方接口 HTTP ([0-9]{3})(?:：|:|\\s|$)");
+    private static final Pattern TRANSIENT_API_ERROR = Pattern.compile(
+            "(?i)^(?:error[._-])?(?:system|internal|server|service_unavailable|timeout|rate_limit|too_many_requests|busy)(?:[._-]error)?$");
 
     private final ShopAuthorizationService shopAuthorizationService;
     private final ShopeeOfficialClient client;
@@ -50,19 +62,22 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     private final ProductCaptureImageMapper imageMapper;
     private final MarketplaceImageDownloader imageDownloader;
     private final ObjectMapper objectMapper;
+    private final ShopeeProductVideoUploader videoUploader;
 
     public ShopeeOfficialPublishingProvider(ShopAuthorizationService shopAuthorizationService,
                                             ShopeeOfficialClient client,
                                             ProductCaptureSkuMapper skuMapper,
                                             ProductCaptureImageMapper imageMapper,
                                             MarketplaceImageDownloader imageDownloader,
-                                            ObjectMapper objectMapper) {
+                                            ObjectMapper objectMapper,
+                                            ShopeeProductVideoUploader videoUploader) {
         this.shopAuthorizationService = shopAuthorizationService;
         this.client = client;
         this.skuMapper = skuMapper;
         this.imageMapper = imageMapper;
         this.imageDownloader = imageDownloader;
         this.objectMapper = objectMapper;
+        this.videoUploader = videoUploader;
     }
 
     @Override public String code() { return "SHOPEE_OFFICIAL_V2"; }
@@ -78,7 +93,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         MarketplaceAccess.Connection connection = shopAuthorizationService.connectionForPublishing(
                 capture.getOrganizationId(), shopId, MarketplacePlatform.SHOPEE);
         verifyLocalProductRoute(connection);
-        List<ProductCaptureSku> skus = skus(capture);
+        ShopeePublishPricing.validate(connection.shop().getRegion(), capture.getCurrency(), request);
+        List<ProductCaptureSku> allSkus = skus(capture);
+        List<ProductCaptureSku> skus = client.isSandboxEnvironment() ? allSkus.stream().limit(50).toList() : allSkus;
         List<ProductCaptureImage> images = images(capture);
         boolean variants = hasVariants(skus);
         rejectDryRunImages(images);
@@ -87,7 +104,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         List<Map<String, Object>> logisticInfo = requiredLogisticInfo(request.get("logisticInfo"));
         BigDecimal weightKg = requiredDecimal(request, "weightGrams", "Shopee 发布前必须填写包裹重量")
                 .divide(BigDecimal.valueOf(1000), 3, RoundingMode.UP);
-        BigDecimal itemPrice = requiredPrice(basePrice(capture, skus), "Shopee 发布价格必须大于 0");
+        BigDecimal itemPrice = requiredPrice(ShopeePublishPricing.price(basePrice(capture, skus), request), "Shopee 发布价格必须大于 0");
         skus.forEach(this::shopeeSku);
         if (variants) {
             Map<String, Object> preflight = variationPayload(
@@ -95,6 +112,8 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             ensureUniqueTierIndexes(modelList(preflight, "model"));
         }
 
+        // A still-transcoding video should not cause gallery images to be staged on every poll.
+        ShopeeProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection);
         Map<String, String> uploadedByUrl = uploadImages(connection, images);
         List<String> galleryImageIds = images.stream()
                 .sorted(Comparator.comparingInt(ProductCaptureImage::getSortOrder))
@@ -107,6 +126,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         }
 
         Map<String, Object> addItem = mutableMap(request.get("shopeePayload"));
+        addItem.putIfAbsent("brand", Map.of("brand_id", 0, "original_brand_name", "NoBrand"));
         addItem.put("category_id", categoryId);
         addItem.put("item_name", capture.getTitle());
         addItem.put("description", capture.getDescription());
@@ -115,8 +135,8 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         addItem.put("original_price", itemPrice);
         addItem.remove("normal_stock");
         addItem.remove("tier_variation");
-        if (variants) addItem.remove("seller_stock");
-        else addItem.put("seller_stock", sellerStock(publishStock));
+        // ADD_ITEM requires initial stock even before tier variations are initialized.
+        addItem.put("seller_stock", sellerStock(publishStock));
         addItem.put("weight", weightKg);
         addItem.put("image", Map.of("image_id_list", galleryImageIds));
         String sellerSku = variants || skus.isEmpty() ? null : shopeeSku(skus.getFirst());
@@ -124,12 +144,15 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         putOptional(addItem, "dimension", dimension(request));
         addItem.put("logistic_info", logisticInfo);
         putOptional(addItem, "attribute_list", listValue(request.get("productAttributes")));
+        // Only the tenant's archived capture video can supply this media reference.
+        addItem.remove("video_upload_id");
+        if (video.present()) addItem.put("video_upload_id", List.of(video.uploadId()));
 
         Map<String, Object> fullVariationPayload = variants
                 ? variationPayload("0", skus, publishStock, uploadedByUrl, request)
                 : Map.of();
 
-        // Everything above is either local validation or image staging. Once ADD_ITEM can start,
+        // Everything above is local validation or media staging. Once ADD_ITEM can start,
         // a timeout/crash has an unknowable remote result and must never be retried blindly.
         externalCreateBoundary.enter();
         Map<String, Object> created = client.shopPost(ADD_ITEM, connection, addItem);
@@ -153,23 +176,30 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
                 publishedModels = readPublishedModels(connection, itemId,
                         modelList(submissionPayload, "model"));
             }
-            Map<String, Object> activation = client.shopPost(UNLIST_ITEM, connection, Map.of(
-                    "item_list", List.of(Map.of("item_id", numericItemId, "unlist", false))
-            ));
-            verifyActivationResponse(activation, numericItemId);
-            String remoteStatus = readActivatedItemStatus(
-                    connection, numericItemId, Thread::sleep);
+            Map<String, Object> pending = client.shopGet(GET_ITEM_BASE_INFO, connection,
+                    Map.of("item_id_list", numericItemId));
+            String remoteStatus = itemStatus(pending, numericItemId);
+            if (!"UNLIST".equals(remoteStatus)) throw conflict("商品上传后未确认待上架状态：" + remoteStatus);
             Map<String, Object> receipt = new LinkedHashMap<>();
             receipt.put("platform", "SHOPEE");
             receipt.put("apiVersion", "v2");
             receipt.put("externalShopId", connection.shop().getExternalShopId());
             receipt.put("itemId", itemId);
             receipt.put("imageCount", galleryImageIds.size());
+            receipt.put("videoCount", video.present() ? 1 : 0);
+            receipt.put("sourceVideoCount", video.sourceCount());
+            if (video.present()) {
+                receipt.put("videoUploadId", video.uploadId());
+                receipt.put("sourceVideoId", video.sourceVideoId());
+                if (video.sourceCount() > 1) receipt.put("videoNotice", "Shopee 每件商品支持 1 个视频，已上传首个采集视频，其余视频保留在采集记录中");
+            }
             receipt.put("skuCount", skus.size());
+            receipt.put("sourceSkuCount", allSkus.size());
+            receipt.put("sandboxSkuLimited", allSkus.size() != skus.size());
             receipt.put("variantInitialized", !variationResponse.isEmpty());
             receipt.put("addModelBatchCount", addModelBatchCount);
             receipt.put("models", publishedModels);
-            receipt.put("activationRequestId", text(activation, "request_id"));
+            receipt.put("listingMode", "PENDING_LISTING");
             receipt.put("remoteStatus", remoteStatus);
             return new PublishResult(itemId, receipt);
         } catch (RuntimeException exception) {
@@ -182,17 +212,23 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
 
     Map<String, String> uploadImages(MarketplaceAccess.Connection connection,
                                      List<ProductCaptureImage> images) {
+        return uploadImages(connection, images,
+                delay -> pause(delay, "Shopee 图片上传等待重试时任务被中断；商品尚未提交"));
+    }
+
+    Map<String, String> uploadImages(MarketplaceAccess.Connection connection,
+                                     List<ProductCaptureImage> images, LongConsumer sleeper) {
         Map<String, String> result = new LinkedHashMap<>();
         int index = 0;
         for (ProductCaptureImage image : images) {
+            index++;
             String url = publishUrl(image);
             if (url == null) continue;
             String imageId = result.get(url);
             if (imageId == null) {
-                MarketplaceImageDownloader.ImageBinary binary = imageDownloader.download(url);
-                Map<String, Object> response = client.shopMultipart(UPLOAD_IMAGE, connection,
-                        "product-" + (++index) + binary.extension(), binary.contentType(), binary.bytes(),
-                        Map.of("scene", "normal"));
+                MarketplaceImageDownloader.ImageBinary binary = url.startsWith(com.yingdao.aicommerce.product.application.ProductWatermarkAssets.PREFIX)
+                        ? imageDownloader.downloadProductImage(url,image) : imageDownloader.download(url);
+                Map<String, Object> response = uploadImageBinary(connection, binary, index, images.size(), sleeper);
                 imageId = nestedText(response, "response", "image_info", "image_id");
                 if (imageId == null) imageId = nestedText(response, "response", "image_id");
                 if (imageId == null) throw conflict("Shopee 图片上传响应缺少 image_id");
@@ -206,6 +242,81 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             }
         }
         return result;
+    }
+
+    private Map<String, Object> uploadImageBinary(MarketplaceAccess.Connection connection,
+                                                 MarketplaceImageDownloader.ImageBinary binary,
+                                                 int index, int total, LongConsumer sleeper) {
+        for (int attempt = 1; attempt <= IMAGE_UPLOAD_ATTEMPTS; attempt++) {
+            try {
+                return client.shopMultipart(UPLOAD_IMAGE, connection,
+                        "product-" + index + binary.extension(), binary.contentType(), binary.bytes(),
+                        Map.of("scene", "normal"));
+            } catch (MarketplaceApiException exception) {
+                boolean retry = attempt < IMAGE_UPLOAD_ATTEMPTS && retryableImageUpload(exception);
+                String causeType = imageUploadCauseType(exception);
+                Integer status = imageUploadHttpStatus(exception);
+                // Never log the remote message/cause: a transport exception may include a signed URL.
+                log.warn("Shopee image upload failed: image={}/{}, api={}, attempt={}/{}, causeType={}, httpStatus={}, retry={}",
+                        index, total, UPLOAD_IMAGE, attempt, IMAGE_UPLOAD_ATTEMPTS, causeType, status, retry);
+                if (!retry) {
+                    throw new MarketplaceApiException("Shopee 第 " + index + "/" + total
+                            + " 张图片上传失败（接口 " + UPLOAD_IMAGE + "，尝试 " + attempt
+                            + " 次，异常 " + causeType + (status == null ? "" : "，HTTP " + status)
+                            + "）；商品尚未提交");
+                }
+                // Retry only this media request. Earlier image IDs and this image's downloaded
+                // bytes stay in memory; no product create request has been sent at this point.
+                sleeper.accept(IMAGE_UPLOAD_RETRY_DELAY_MILLIS * attempt);
+            }
+        }
+        throw new IllegalStateException("Shopee 图片上传重试状态错误");
+    }
+
+    private boolean retryableImageUpload(MarketplaceApiException exception) {
+        Integer status = imageUploadHttpStatus(exception);
+        if (status != null) return (status == 500 || status == 502 || status == 503 || status == 504)
+                && !explicitImageUploadBusinessRejection(exception);
+        boolean network = false;
+        Throwable cause = exception;
+        for (int depth = 0; cause != null && depth < 16; depth++, cause = cause.getCause()) {
+            String className = cause.getClass().getName();
+            boolean responseEof = "店铺官方接口请求失败".equals(exception.getMessage())
+                    && (className.equals("tools.jackson.core.exc.UnexpectedEndOfInputException")
+                    || className.equals("com.fasterxml.jackson.core.io.JsonEOFException"));
+            if (cause instanceof InterruptedException
+                    || cause instanceof javax.net.ssl.SSLHandshakeException
+                    || cause instanceof javax.net.ssl.SSLPeerUnverifiedException
+                    || cause instanceof java.io.InterruptedIOException && !(cause instanceof java.net.SocketTimeoutException)
+                    || (className.startsWith("tools.jackson.") || className.startsWith("com.fasterxml.jackson.")) && !responseEof) return false;
+            if (cause instanceof IOException || responseEof) network = true;
+        }
+        return network;
+    }
+
+    private boolean explicitImageUploadBusinessRejection(MarketplaceApiException exception) {
+        var matcher = HTTP_FAILURE_STATUS.matcher(exception.getMessage() == null ? "" : exception.getMessage());
+        if (!matcher.find()) return false;
+        try {
+            Map<?, ?> response = objectMapper.readValue(exception.getMessage().substring(matcher.end()).trim(), Map.class);
+            Object raw = response.get("error");
+            if (raw == null || Boolean.FALSE.equals(raw)) return false;
+            String error = String.valueOf(raw).trim();
+            return !error.isEmpty() && !"0".equals(error) && !TRANSIENT_API_ERROR.matcher(error).matches();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private Integer imageUploadHttpStatus(MarketplaceApiException exception) {
+        var matcher = HTTP_FAILURE_STATUS.matcher(exception.getMessage() == null ? "" : exception.getMessage());
+        return matcher.find() ? Integer.valueOf(matcher.group(1)) : null;
+    }
+
+    private String imageUploadCauseType(Throwable exception) {
+        Throwable cause = exception;
+        for (int depth = 0; cause.getCause() != null && depth < 16; depth++) cause = cause.getCause();
+        return cause.getClass().getSimpleName();
     }
 
     Map<String, Object> variationPayload(String itemId, List<ProductCaptureSku> skus,
@@ -262,7 +373,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             Map<String, Object> model = new LinkedHashMap<>();
             model.put("tier_index", tierIndex);
             model.put("original_price", requiredPrice(
-                    sku.getPrice() == null ? basePrice(null, skus) : sku.getPrice(),
+                    ShopeePublishPricing.price(sku.getPrice() == null ? basePrice(null, skus) : sku.getPrice(), request),
                     "Shopee SKU “" + fallbackText(sku.getVariationName(), sku.getSkuKey())
                             + "” 的发布价格必须大于 0"));
             model.put("seller_stock", sellerStock(stockBySku.getOrDefault(sku.getSkuKey(), stock)));

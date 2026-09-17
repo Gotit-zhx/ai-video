@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -32,15 +33,17 @@ HOP_BY_HOP_HEADERS = frozenset(
 )
 MAX_REQUEST_TARGET_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
+MEDIA_PATH = re.compile(r"/api/public/v1/video-references/(?:asset|delivery-asset|source|script-source|task-audio|storyboard-frame/[1-9])/[A-Za-z0-9-]+|/api/public/v1/video-references/script-audio/[A-Za-z0-9-]+(?:/transcription-audio\.mp3)?")
 
 
 class CallbackGateway(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, server_address: tuple[str, int], upstream: tuple[str, int]):
+    def __init__(self, server_address: tuple[str, int], upstream: tuple[str, int], allow_video_media: bool = False):
         super().__init__(server_address, CallbackHandler)
         self.upstream = upstream
+        self.allow_video_media = allow_video_media
 
 
 class CallbackHandler(BaseHTTPRequestHandler):
@@ -51,7 +54,8 @@ class CallbackHandler(BaseHTTPRequestHandler):
             self._empty(414)
             return
         parsed = urlsplit(self.path)
-        if parsed.path not in ALLOWED_CALLBACKS:
+        media = self.server.allow_video_media and MEDIA_PATH.fullmatch(parsed.path) is not None
+        if (parsed.path not in ALLOWED_CALLBACKS and not media) or (self.command == "HEAD" and not media):
             self._empty(404)
             return
 
@@ -59,7 +63,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
         upstream = http.client.HTTPConnection(upstream_host, upstream_port, timeout=30)
         try:
             upstream.request(
-                "GET",
+                self.command,
                 self.path,
                 headers={
                     "Host": f"{upstream_host}:{upstream_port}",
@@ -67,9 +71,26 @@ class CallbackHandler(BaseHTTPRequestHandler):
                     "Accept": self.headers.get("Accept", "*/*"),
                     "X-Forwarded-Proto": "https",
                     "X-Forwarded-Host": self.headers.get("Host", ""),
+                    **({"Range": self.headers["Range"]} if media and self.headers.get("Range") else {}),
                 },
             )
             response = upstream.getresponse()
+            if media:
+                self.send_response(response.status)
+                for name, value in response.getheaders():
+                    if name.lower() not in HOP_BY_HOP_HEADERS:
+                        self.send_header(name, value)
+                if response.getheader("Content-Length"):
+                    self.send_header("Content-Length", response.getheader("Content-Length"))
+                if not response.getheader("Content-Length"):
+                    self.send_header("Connection", "close")
+                self.end_headers()
+                if self.command != "HEAD":
+                    while chunk := response.read(64 * 1024):
+                        self.wfile.write(chunk)
+                self.wfile.flush()
+                self.close_connection = not bool(response.getheader("Content-Length"))
+                return
             body = response.read(MAX_RESPONSE_BYTES + 1)
             if len(body) > MAX_RESPONSE_BYTES:
                 self._empty(502)
@@ -89,7 +110,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
             upstream.close()
 
     def do_HEAD(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        self._empty(404)
+        self.do_GET()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         self._empty(405)
@@ -117,12 +138,13 @@ def parse_upstream(value: str) -> tuple[str, int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--allow-video-media", action="store_true", help="Proxy signed, expiring video references; backend verifies signatures")
     parser.add_argument("--listen-port", type=int, default=39080)
     parser.add_argument("--upstream", type=parse_upstream, default=parse_upstream("127.0.0.1:3000"))
     args = parser.parse_args()
     if not 1 <= args.listen_port <= 65535:
         parser.error("listen port must be between 1 and 65535")
-    server = CallbackGateway(("127.0.0.1", args.listen_port), args.upstream)
+    server = CallbackGateway(("127.0.0.1", args.listen_port), args.upstream, args.allow_video_media)
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:

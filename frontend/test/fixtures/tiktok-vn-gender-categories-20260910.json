@@ -1,0 +1,58 @@
+{
+  "categories": [
+    {
+      "id": "601152",
+      "is_leaf": false,
+      "local_name": "Womenswear & Underwear",
+      "parent_id": "0",
+      "permission_statuses": [
+        "AVAILABLE"
+      ]
+    },
+    {
+      "id": "824328",
+      "is_leaf": false,
+      "local_name": "Menswear & Underwear",
+      "parent_id": "0",
+      "permission_statuses": [
+        "NON_MAIN_CATEGORY"
+      ]
+    },
+    {
+      "id": "839944",
+      "is_leaf": false,
+      "local_name": "Men's Tops",
+      "parent_id": "824328",
+      "permission_statuses": [
+        "NON_MAIN_CATEGORY"
+      ]
+    },
+    {
+      "id": "842248",
+      "is_leaf": false,
+      "local_name": "Women's Tops",
+      "parent_id": "601152",
+      "permission_statuses": [
+        "AVAILABLE"
+      ]
+    },
+    {
+      "id": "601226",
+      "is_leaf": true,
+      "local_name": "T-shirts",
+      "parent_id": "839944",
+      "permission_statuses": [
+        "NON_MAIN_CATEGORY"
+      ]
+    },
+    {
+      "id": "601302",
+      "is_leaf": true,
+      "local_name": "Women's T-shirts",
+      "parent_id": "842248",
+      "permission_statuses": [
+        "AVAILABLE"
+      ]
+    }
+  ]
+}

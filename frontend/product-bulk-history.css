@@ -1,0 +1,31 @@
+.product-bulk-toolbar-actions { display:flex; align-items:center; flex-wrap:wrap; gap:14px; }
+#product-bulk-history-dialog { width:min(760px,94vw); color:var(--ink); background:var(--surface); border-color:var(--line); }
+#product-bulk-history-dialog h2 { margin:0; font-size:20px; }
+#product-bulk-history-dialog > header button { padding:7px 12px; border:1px solid var(--line); border-radius:6px; color:var(--ink); background:var(--surface); cursor:pointer; }
+.product-bulk-history-copy { margin:10px 0 20px; color:var(--muted); font-size:13px; line-height:1.7; }
+#product-bulk-history-list { display:grid; grid-template-columns:minmax(0,1fr); min-width:0; gap:12px; }
+.product-bulk-history-row { min-width:0; max-width:100%; box-sizing:border-box; padding:16px; border:1px solid var(--line); border-radius:10px; background:var(--surface-soft); }
+.product-bulk-history-heading,.product-bulk-history-footer { display:flex; align-items:center; justify-content:space-between; gap:14px; }
+.product-bulk-history-heading strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; font-weight:600; }
+.product-bulk-history-status { flex-shrink:0; padding:3px 8px; border-radius:5px; color:var(--muted); background:var(--surface-muted); font-size:11px; }
+.product-bulk-history-status.is-running { color:var(--info); background:var(--info-soft); }
+.product-bulk-history-status.is-succeeded { color:var(--success); background:var(--success-soft); }
+.product-bulk-history-status.is-failed { color:var(--danger); background:var(--danger-soft); }
+.product-bulk-history-products { min-width:0; max-width:100%; margin:10px 0 16px; overflow:hidden; color:var(--muted); font-size:13px; line-height:1.6; text-overflow:ellipsis; white-space:nowrap; }
+.product-bulk-history-counts { display:flex; min-width:0; max-width:100%; align-items:center; flex-wrap:wrap; gap:16px; margin:0; }
+.product-bulk-history-counts > div { display:flex; align-items:baseline; gap:5px; }
+.product-bulk-history-counts dt { color:var(--muted); font-size:11px; }
+.product-bulk-history-counts dd { margin:0; font-size:14px; font-weight:600; font-variant-numeric:tabular-nums; }
+.product-bulk-history-counts .is-success dd { color:var(--success); }
+.product-bulk-history-counts .is-failed dd { color:var(--danger); }
+.product-bulk-history-footer > button { flex-shrink:0; padding:7px 10px; border:1px solid var(--line-strong); border-radius:6px; color:var(--ink); background:var(--surface); font:inherit; font-size:12px; cursor:pointer; }
+.product-bulk-history-footer > button:hover,#product-bulk-history-dialog > header button:hover { background:var(--surface-muted); }
+#product-bulk-history-dialog button:focus-visible { outline:2px solid var(--info); outline-offset:3px; }
+.product-bulk-history-empty { margin:0; padding:32px 16px; border:1px dashed var(--line); border-radius:10px; color:var(--muted); text-align:center; line-height:1.8; }
+@media(max-width:600px) {
+  .product-bulk-toolbar-actions { gap:10px; }
+  #product-bulk-history-dialog { padding:18px; }
+  .product-bulk-history-footer { align-items:flex-start; flex-direction:column; gap:14px; }
+  .product-bulk-history-counts { gap:12px; }
+  .product-bulk-history-footer > button { align-self:flex-end; }
+}

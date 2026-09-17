@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "defaultPresetId": "cream-cotton-knit",
+  "presets": [
+    {
+      "schemaVersion": 1,
+      "id": "cream-cotton-knit",
+      "name": "米白色纯棉针织",
+      "provenance": {
+        "source": "image-inference",
+        "compositionVerified": false,
+        "note": "根据商品参考图估计；纯棉成分及厚度未经过实物确认。"
+      },
+      "appearance": {
+        "color": "米白色",
+        "finish": "哑光",
+        "opacity": "不透光",
+        "texture": "细微针织纹理",
+        "thickness": "中等厚度（估计）"
+      },
+      "threeMaterial": {
+        "type": "MeshPhysicalMaterial",
+        "color": "#F2EAD9",
+        "roughness": 0.9,
+        "metalness": 0,
+        "sheen": 0.25,
+        "sheenColor": "#F2EAD9",
+        "sheenRoughness": 0.9,
+        "clearcoat": 0,
+        "transmission": 0,
+        "opacity": 1
+      },
+      "geometryHints": {
+        "fabricThicknessRelativeToGarmentHeight": 0.0005,
+        "note": "几何厚度与褶皱由模型实现，材质参数本身不会改变版型。"
+      }
+    }
+  ]
+}

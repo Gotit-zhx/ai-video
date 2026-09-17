@@ -13,10 +13,15 @@ import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Iterator;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.List;
+import java.security.MessageDigest;
 
 /**
  * Creates compact, full-resolution delivery copies for external video providers.
@@ -52,9 +57,35 @@ public class VideoReferenceDeliveryService {
         }
     }
 
+    public synchronized List<Delivery> prepareStoryboardFrames(byte[] original) {
+        try {
+            String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(original));
+            Path directory = cacheRoot.resolve("storyboard-frames-v1").resolve(digest);
+            Files.createDirectories(directory);
+            List<Path> paths = new ArrayList<>(9);
+            for (int index = 1; index <= 9; index++) paths.add(directory.resolve(String.format("%02d.jpg", index)));
+            boolean cached = true;
+            for (Path path : paths) if (!Files.isRegularFile(path) || Files.size(path) == 0) cached = false;
+            if (!cached) {
+                BufferedImage input = ImageIO.read(new ByteArrayInputStream(original));
+                List<BufferedImage> frames = StoryboardFrameExtractor.split(input);
+                for (int index = 0; index < frames.size(); index++) writeJpeg(frames.get(index), paths.get(index));
+            }
+            List<Delivery> result = new ArrayList<>(9);
+            for (Path path : paths) result.add(new Delivery(path, Files.size(path), "image/jpeg"));
+            return List.copyOf(result);
+        } catch (Exception exception) {
+            throw new IllegalStateException("无法从九宫格准备九张独立视频参考图", exception);
+        }
+    }
+
     private void writeJpeg(Path source, Path target) throws IOException {
         BufferedImage input = ImageIO.read(source.toFile());
         if (input == null) throw new IOException("不支持的参考图片格式");
+        writeJpeg(input, target);
+    }
+
+    private void writeJpeg(BufferedImage input, Path target) throws IOException {
         BufferedImage rgb = new BufferedImage(input.getWidth(), input.getHeight(), BufferedImage.TYPE_INT_RGB);
         Graphics2D graphics = rgb.createGraphics();
         try {

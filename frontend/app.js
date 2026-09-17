@@ -37,14 +37,15 @@ document.addEventListener("keydown", event => {
 applySidebarExpanded(true);
 
 const commerceSections = {
-  "product-capture": "商品资料库",
-  "commerce-designs": "图片设计",
-  "commerce-templates": "铺货模板",
+  "commerce-assets": "素材管理",
+  "product-capture": "采集链接",
+  "commerce-designs": "一键裂变",
+  "commerce-templates": "模板配置",
   "commerce-batches": "批次上架",
   "commerce-ads": "广告测款"
 };
 function commerceRouteFromHash() {
-  const route = window.location.hash.slice(1);
+  const route = window.location.hash.slice(1).split("?")[0];
   return Object.hasOwn(commerceSections, route) ? route : null;
 }
 function selectCommerceSection() {
@@ -55,9 +56,12 @@ function selectCommerceSection() {
     link.classList.toggle("active", active);
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
-  document.querySelector("#nav-publish").classList.toggle("active", route === "product-capture");
+  const workbenchActive=route==='product-capture';
+  document.querySelector("#nav-publish").classList.toggle("active",workbenchActive);
+  if(workbenchActive)document.querySelector('#nav-publish').setAttribute('aria-current','page');else document.querySelector('#nav-publish').removeAttribute('aria-current');
   document.querySelector(".topbar h2").textContent = `商品运营 / ${commerceSections[route]}`;
-  window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${route}`);
+  window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${route}${route === "product-capture" ? window.location.hash.slice(1).replace(/^[^?]*/, "") : ""}`);
+  syncProductCaptureView();
 }
 document.querySelectorAll(".nav-group > summary").forEach(summary => {
   summary.addEventListener("click", () => { if (!sidebarExpanded) applySidebarExpanded(true); });
@@ -178,6 +182,8 @@ let skillConvertStatusTimer = null;
 let videoScriptStatusTimer = null;
 let videoScriptPollingGeneration = 0;
 let videoScriptLoadGeneration = 0;
+let videoScriptDetailGeneration = 0;
+let videoScriptProgressId = null;
 let activeVideoScript = null;
 let selectedVideoScriptId = null;
 let selectedVideoScriptDetail = null;
@@ -188,6 +194,7 @@ let videoScriptVisualKey = "";
 let videoScriptVisualServerProgress = 0;
 let videoScriptVisualProgressTimer = null;
 let videoScriptVisualProgressUpdatedAt = 0;
+const videoScriptProgressStates = new Map();
 let manualProductProgressTimer = null;
 let manualProductProgressStartedAt = 0;
 let manualProductReferences = [];
@@ -226,6 +233,8 @@ const aiVideoPromptDrafts = new Map();
 const expandedAiVideoItemIds = new Set();
 let generalVideoTasks = [];
 let generalVideoReferences = [];
+let generalVideoReference = null;
+let generalMentionStart = null;
 let generalVideoLoadGeneration = 0;
 let generalVideoPollTimer = null;
 let generalVideoPollInFlight = false;
@@ -233,8 +242,15 @@ const expandedGeneralVideoTaskIds = new Set();
 const generalVideoTaskDetails = new Map();
 let productCaptures = [];
 let selectedProductCaptureId = null;
+const productBulkSelectedIds = new Set();
+const productBulkSelectedCaptures = new Map();
+let productBulkItems = [];
+let productBulkStorageKey = "";
+let productBulkOrganization = "";
+let productBulkBusy = false;
+let productBulkPollTimer = null;
 let selectedProductCaptureDetail = null;
-let productCaptureStatusFilter = "ALL";
+let productCaptureStatusFilter = "CAPTURED";
 let productCaptureSearchQuery = "";
 let productCaptureLoadGeneration = 0;
 let productCaptureDetailLoadGeneration = 0;
@@ -833,6 +849,7 @@ async function api(path, options = {}) {
     throw new ApiRequestError("无法连接平台服务，请检查网络后重试", 0);
   }
   const result = await response.json().catch(() => null);
+  if (options.signal?.aborted) throw options.signal.reason || new ApiRequestError('请求已取消', 0);
   if (response.status === 401 && path !== "/api/v1/auth/login") {
     handleSessionExpired();
     throw new ApiRequestError(result?.message || "登录已失效，请重新登录", 401, result);
@@ -1052,7 +1069,6 @@ function applyFeatureAccess() {
   document.querySelector("#save-product-capture").hidden = !productAccess.edit;
   document.querySelector("#process-product-images").hidden = !productAccess.watermark;
   document.querySelector("#approve-product-capture").hidden = !productAccess.edit;
-  document.querySelector("#open-product-publish").hidden = !productAccess.publish;
   document.querySelector("#design-current-product").hidden = !productAccess.edit;
   document.querySelector("#skill-converter-card").hidden = !canManageAutomation;
   document.querySelector("#automation-access-card").hidden = !canManageAutomation;
@@ -1230,9 +1246,10 @@ document.querySelector("#nav-ai-video-tasks").addEventListener("click", async ev
 document.querySelector("#nav-publish").addEventListener("click", async event => {
   event.preventDefault();
   window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#product-capture`);
+  resetProductCaptureDefaultFilter();
   switchWorkspace("productPublish");
   await Promise.all([
-    loadProductCaptures(selectedProductCaptureId),
+    loadProductCaptures(null, { page: 0, refreshDetail: false }),
     loadMarketplaceShops({ silent: true })
   ]);
 });
@@ -1242,7 +1259,11 @@ document.querySelectorAll("[data-commerce-route]").forEach(link => {
     event.preventDefault();
     if (!currentUser || !canAccessProductCenter()) return;
     window.history.pushState(null, document.title, `${window.location.pathname}${window.location.search}#${link.dataset.commerceRoute}`);
+    if (link.dataset.commerceRoute === "product-capture") resetProductCaptureDefaultFilter();
     switchWorkspace("productPublish");
+    if (link.dataset.commerceRoute === "product-capture") {
+      await loadProductCaptures(null, { page: 0, refreshDetail: false });
+    }
   });
 });
 
@@ -3246,7 +3267,7 @@ function formatDate(value) {
 const PRODUCT_CAPTURE_API_ROOT = "/api/v1/product-captures";
 const MARKETPLACE_SHOP_API_ROOT = "/api/v1/shops";
 const PRODUCT_PUBLISH_WORKFLOW_STORAGE_PREFIX = "heyi:product-publish-workflow";
-const PRODUCT_CAPTURE_PAGE_SIZE = 30;
+const PRODUCT_CAPTURE_PAGE_SIZE = 24;
 const productCaptureStatusNames = {
   CAPTURED: "待整理",
   DRAFT: "待整理",
@@ -3352,36 +3373,16 @@ function renderMarketplaceShopCard(shop) {
   const busy = marketplaceShopActionsInFlight.has(shopId);
   const canManage = hasAnyPermission("product:publish");
   const name = shop.name || shop.externalShopId || "未命名店铺";
-  const externalId = shop.externalShopId || "未返回";
-  const region = shop.region || "地区未返回";
-  const scopes = Array.isArray(shop.scopes) ? shop.scopes.filter(Boolean) : [];
-  const sellerType = shop.sellerType || "类型未返回";
-  const syncedAt = formatMarketplaceShopTime(shop.lastSyncedAt, "尚未同步");
-  const syncTitle = shop.lastSyncedAt ? String(shop.lastSyncedAt) : "服务端尚未返回同步时间";
-  const expiryTitle = expiry.value
-    ? `${expiry.label}：${expiry.value}${expiry.label === "访问 Token" ? "；服务端会在调用官方接口前自动刷新，不代表店铺授权失效" : ""}`
-    : "当前接口未返回凭证到期时间；服务端仍会在调用官方接口前检查并刷新";
-  const error = String(shop.lastAuthError || "").trim();
-  const actionMarkup = isDisconnected
-    ? `<button type="button" data-authorize-shop="${escapeHtml(platform)}" ${canManage ? "" : "disabled"}>重新授权</button>`
-    : `<button type="button" data-refresh-shop="${escapeHtml(shopId)}" ${busy || !canManage ? "disabled" : ""}>${busy ? "处理中…" : "刷新授权"}</button>
-       <button class="is-danger" type="button" data-disconnect-shop="${escapeHtml(shopId)}" ${busy || !canManage ? "disabled" : ""}>断开</button>`;
-  return `
-    <article class="marketplace-shop-card ${status.className}" data-shop-id="${escapeHtml(shopId)}">
-      <header>
-        <div><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small>${escapeHtml(region)} · ${escapeHtml(marketplacePlatformName(platform))}</small></div>
-        <span class="marketplace-shop-status">${escapeHtml(status.label)}</span>
-      </header>
-      <dl>
-        <div><dt>外部 ID</dt><dd title="${escapeHtml(externalId)}">${escapeHtml(externalId)}</dd></div>
-        <div><dt>店铺类型</dt><dd title="${escapeHtml(sellerType)}">${escapeHtml(sellerType)}</dd></div>
-        <div><dt>最近同步</dt><dd title="${escapeHtml(syncTitle)}">${escapeHtml(syncedAt)}</dd></div>
-        <div><dt>${escapeHtml(expiry.label)}</dt><dd title="${escapeHtml(expiryTitle)}">${escapeHtml(expiry.text)}</dd></div>
-      </dl>
-      ${scopes.length ? `<small class="marketplace-shop-scopes" title="${escapeHtml(scopes.join("、"))}">${scopes.length} 项官方权限</small>` : ""}
-      ${error ? `<p class="marketplace-shop-error" title="${escapeHtml(error)}">${escapeHtml(error)}</p>` : ""}
-      <footer>${actionMarkup}</footer>
-    </article>`;
+  const type = ({LOCAL:'本土店',CROSS_BORDER:'跨境店',SELLER:'卖家店铺'})[shop.sellerType] || shop.sellerType || '店铺';
+  const disabled = busy || !canManage ? 'disabled' : '';
+  return `<article class="marketplace-shop-card ${status.className}" data-shop-id="${escapeHtml(shopId)}">
+    <small class="shop-type-label">${escapeHtml(shop.region || '')} · ${escapeHtml(type)}</small>
+    <strong class="shop-display-name" title="${escapeHtml(name)}">${escapeHtml(name)}</strong>
+    <dl><div><dt>实际名称</dt><dd title="${escapeHtml(shop.actualName || shop.name || '')}">${escapeHtml(shop.actualName || shop.name || '未返回')}</dd></div>
+    <div><dt>到期时间</dt><dd title="${escapeHtml(expiry.label)}">${escapeHtml(expiry.text)}</dd></div></dl>
+    <footer><button type="button" data-rename-shop="${escapeHtml(shopId)}" ${disabled}>重命名</button>
+    ${isDisconnected ? `<button type="button" data-authorize-shop="${escapeHtml(platform)}" ${disabled}>重新授权</button>` : `<button type="button" data-refresh-shop="${escapeHtml(shopId)}" ${disabled}>${busy ? '处理中…' : '刷新授权'}</button>`}
+    <button type="button" data-delete-shop="${escapeHtml(shopId)}" ${disabled}>删除</button></footer></article>`;
 }
 
 function renderMarketplaceShopList() {
@@ -3518,6 +3519,36 @@ async function refreshMarketplaceShop(shopId) {
   }
 }
 
+async function editMarketplaceShop(shopId, remove = false) {
+  if (!hasAnyPermission('product:publish') || marketplaceShopActionsInFlight.has(shopId)) return;
+  const shop = marketplaceShops.find(item => String(item.id) === shopId);
+  if (!shop) return;
+  const organizationId = currentUser?.organizationId;
+  let name;
+  if (remove) {
+    if (!window.confirm(`删除店铺“${shop.name}”？将移除本地连接和授权凭证，历史上传记录保留。`)) return;
+  } else {
+    name = window.prompt('设置店铺名称（最多 100 字）', shop.name || '');
+    if (name === null) return;
+    name = name.trim();
+    if (!name || name.length > 100) { document.querySelector('#marketplace-shop-note').textContent = '名称需为 1–100 个字符'; return; }
+  }
+  marketplaceShopActionsInFlight.add(shopId);
+  renderMarketplaceShops();
+  let message;
+  try {
+    const result = await marketplaceShopApi(`/${encodeURIComponent(shopId)}`, {method:remove ? 'DELETE' : 'PATCH', ...(remove ? {} : {headers:{'Content-Type':'application/json'},body:JSON.stringify({name})})});
+    if (currentUser?.organizationId !== organizationId) return;
+    if (remove) marketplaceShops = marketplaceShops.filter(item => String(item.id) !== shopId);
+    else replaceMarketplaceShop(result.data);
+    message = remove ? '店铺已删除' : '店铺名称已保存';
+  } catch(error) { message = error.message; }
+  finally {
+    marketplaceShopActionsInFlight.delete(shopId);
+    if (currentUser?.organizationId === organizationId) { renderMarketplaceShops(); document.querySelector('#marketplace-shop-note').textContent = message || ''; }
+  }
+}
+
 async function disconnectMarketplaceShop(shopId) {
   if (!shopId || !hasAnyPermission("product:publish") || marketplaceShopActionsInFlight.has(shopId)) return;
   const shop = marketplaceShops.find(candidate => String(candidate.id) === String(shopId));
@@ -3569,7 +3600,9 @@ async function startMarketplaceAuthorization(platform, button) {
     const result = await api(`/api/v1/shop-authorizations/${encodeURIComponent(platform)}/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ returnPath: "/?view=shops" })
+      body: JSON.stringify({ returnPath: "/?view=shops",
+        ...(platform === "TIKTOK_SHOP" ? {market: button.dataset.authorizationMarket
+          || document.querySelector("#tiktok-authorization-market")?.value || "ROW"} : {}) })
     });
     const url = safeProductUrl(result.data?.authorizationUrl);
     if (!url) throw new ApiRequestError("平台没有返回有效的官方授权地址", 502, result);
@@ -3658,6 +3691,17 @@ function productCapturePagePayload(value, requestedPage = 0) {
   };
 }
 
+function resetProductCaptureDefaultFilter() {
+  productCaptureStatusFilter = "CAPTURED";
+  if (productCaptureSearchDebounceTimer) clearTimeout(productCaptureSearchDebounceTimer);
+  productCaptureSearchDebounceTimer = null;
+  document.querySelectorAll("#product-status-filter [data-product-status]").forEach(button => {
+    const active = button.dataset.productStatus === productCaptureStatusFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
 function productCaptureListPath(page = 0) {
   const parameters = new URLSearchParams({
     page: String(Math.max(0, page)),
@@ -3721,10 +3765,45 @@ function productCaptureDisplayStatus(capture = {}) {
   return productCaptureStatusName(status);
 }
 
+const productLiveImageProgress = new Map();
+function productLiveImageStage(image) {
+  return productLiveImageProgress.get(selectedProductCaptureId)?.find(row => row.imageId === image.id);
+}
+function productImageProgressTime(row) {
+  const timestamp = String(row?.updatedAt || "");
+  return new Date(/[zZ]$|[+-]\d{2}:\d{2}$/.test(timestamp) ? timestamp : `${timestamp}Z`).getTime();
+}
+function productImageIsActivelyProcessing(image) {
+  const row = productLiveImageStage(image);
+  return row && !(String(image.status).toUpperCase() === "FAILED" && new Date(image.updatedAt).getTime() >= productImageProgressTime(row))
+    && ["RUNNING", "DETECTING", "EDITING", "RESULT_RECEIVED", "EDITED"].includes(row.status)
+    && Date.now() - productImageProgressTime(row) < 20 * 60 * 1000;
+}
+let productLiveProgressBusy = false;
+async function refreshProductLiveImageProgress() {
+  const id = selectedProductCaptureId;
+  const org = currentUser?.organizationId;
+  if (productLiveProgressBusy || !id || !org || document.hidden || !document.querySelector("#product-publish-page").classList.contains("capture-detail-view") || document.querySelector("#product-publish-page").hidden) return;
+  productLiveProgressBusy = true;
+  try {
+    const response = await productCaptureApi(`/${encodeURIComponent(id)}/image-progress`);
+    if (selectedProductCaptureId !== id || currentUser?.organizationId !== org) return;
+    productLiveImageProgress.set(id, Array.isArray(response.data) ? response.data : []);
+    if (selectedProductCaptureDetail?.id === id && !document.querySelector("#asset-preview-dialog").open) renderProductImages(selectedProductCaptureDetail);
+  } catch (_) { /* Keep the last known image state if progress refresh is unavailable. */ }
+  finally { productLiveProgressBusy = false; }
+}
+window.setInterval(refreshProductLiveImageProgress, 3000);
+
 function productImageState(image = {}) {
+  const live = productLiveImageStage(image);
+  if (live?.status === "QUEUED") return "waiting";
+  if (live?.status === "FAILED") return "failed";
+  if (productImageIsActivelyProcessing(image)) return "processing";
   const status = String(image.status || "").toUpperCase();
   if (["FAILED", "ERROR"].includes(status)) return "failed";
-  if (["PROCESSING", "RUNNING", "QUEUED"].includes(status)) return "processing";
+  if (["PROCESSING", "RUNNING"].includes(status)) return "processing";
+  if (["QUEUED", "PENDING"].includes(status)) return "waiting";
   if (["COMPLETED", "PROCESSED", "READY", "SUCCEEDED", "SUCCESS"].includes(status)) return "completed";
   if (image.processedUrl && !image.errorMessage) return "completed";
   return "waiting";
@@ -3733,9 +3812,9 @@ function productImageState(image = {}) {
 function productImageStateName(image = {}) {
   const state = productImageState(image);
   if (state === "completed") return "去水印完成";
-  if (state === "processing") return "AI 处理中";
+  if (state === "processing") return productLiveImageStage(image)?.status === "DETECTING" ? "水印检测中" : "AI 去水印中";
   if (state === "failed") return "处理失败";
-  return "等待处理";
+  return productLiveImageStage(image)?.message?.includes("并发") ? "接口限流，自动排队" : "排队中";
 }
 
 function productImageIsDryRun(image = {}, capture = selectedProductCaptureDetail) {
@@ -3960,7 +4039,7 @@ function filteredProductCaptures() {
   const query = productCaptureSearchQuery.trim().toLowerCase();
   return productCaptures.filter(capture => {
     const statusMatches = productCaptureStatusFilter === "ALL"
-      || productCaptureStatusGroup(capture.status) === productCaptureStatusFilter;
+      || productCaptureStatusGroup(capture.status) === productCaptureStatusGroup(productCaptureStatusFilter);
     return statusMatches && (!query || productCaptureSearchText(capture).includes(query));
   });
 }
@@ -3994,24 +4073,28 @@ function renderProductSummary() {
   document.querySelector("#product-published-count").textContent = counts.PUBLISHED;
 }
 
-function syncProductCapturePagination(message = productCapturePaginationMessage) {
-  const filtered = filteredProductCaptures();
-  const shown = filtered.length;
-  const total = productCaptureLegacyListResponse ? shown : productCaptureTotalElements;
-  document.querySelector("#product-result-count").textContent = `已显示 ${shown} / 共 ${total} 条`;
+function syncProductCaptureView() {
+  const id = new URLSearchParams(window.location.hash.split("?")[1] || "").get("id");
+  document.querySelector("#product-publish-page").classList.toggle("capture-detail-view", Boolean(id));
+  return id;
+}
 
-  const pagination = document.querySelector("#product-capture-pagination");
-  const button = document.querySelector("#load-more-product-captures");
-  const status = document.querySelector("#product-load-more-status");
-  const hasMore = !productCaptureLegacyListResponse
-    && productCapturePage + 1 < productCaptureTotalPages
-    && shown < total;
-  const appending = productCaptureListLoading && productCaptureAppendLoading;
-  pagination.hidden = !hasMore && !appending && !message;
-  button.hidden = !hasMore && !appending;
-  button.disabled = productCaptureListLoading;
-  button.textContent = appending ? "正在加载…" : "加载更多";
-  status.textContent = message;
+function syncProductCapturePagination(message = productCapturePaginationMessage) {
+  const total = productCaptureLegacyListResponse ? filteredProductCaptures().length : productCaptureTotalElements;
+  const pages = Math.max(1, productCaptureTotalPages);
+  const current = Math.max(0, productCapturePage);
+  document.querySelector("#product-result-count").textContent = `共 ${total} 件商品 · 每页 ${PRODUCT_CAPTURE_PAGE_SIZE} 件`;
+  document.querySelector("#product-capture-pagination").hidden = false;
+  const prev = document.querySelector("#previous-product-captures");
+  const next = document.querySelector("#load-more-product-captures");
+  prev.disabled = productCaptureListLoading || current === 0;
+  next.disabled = productCaptureListLoading || current + 1 >= pages;
+  next.hidden = false;
+  next.textContent = "下一页 →";
+  document.querySelector("#product-page-numbers").innerHTML = Array.from({length: pages}, (_, i) => i)
+    .filter(i => i === 0 || i === pages - 1 || Math.abs(i - current) <= 2)
+    .map((i, n, all) => `${n && i - all[n - 1] > 1 ? '<span>…</span>' : ''}<button type="button" data-capture-page="${i}" ${i === current ? 'aria-current="page"' : ''} ${productCaptureListLoading ? 'disabled' : ''}>${i + 1}</button>`).join("");
+  document.querySelector("#product-load-more-status").textContent = message;
 }
 
 function renderProductCaptureList() {
@@ -4034,11 +4117,12 @@ function renderProductCaptureList() {
     const thumbnailStatus = ["PROCESSING", "QUEUED", "FAILED"].includes(rawThumbnailStatus)
       ? rawThumbnailStatus.toLowerCase() : "";
     const selected = capture.id === selectedProductCaptureId;
-    return `<button class="product-capture-row ${selected ? "active" : ""}" type="button" data-product-capture-id="${escapeHtml(capture.id)}"${selected ? ` aria-current="true"` : ""}>
-      <span class="product-row-thumb ${escapeHtml(thumbnailStatus)}">${thumb ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy">` : `<i aria-hidden="true">◇</i>`}</span>
+    const selectable = hasAnyPermission("product:publish") && ["CAPTURED", "READY", "APPROVED", "FAILED"].includes(capture.status);
+    return `<div class="product-selectable-row"><input type="checkbox" data-product-bulk-id="${escapeHtml(capture.id)}" aria-label="勾选 ${escapeHtml(title)}" ${productBulkSelectedIds.has(capture.id) ? "checked" : ""} ${selectable ? "" : "disabled"}><button class="product-capture-row ${selected ? "active" : ""}" type="button" data-product-capture-id="${escapeHtml(capture.id)}"${selected ? ` aria-current="true"` : ""}>
+      <span class="product-row-thumb ${escapeHtml(thumbnailStatus)}">${thumb ? `<span class="capture-thumbnail-placeholder">商品图片加载中</span><img src="${escapeHtml(thumb)}" alt="" loading="lazy" onload="this.previousElementSibling.hidden=true" onerror="this.hidden=true;this.previousElementSibling.textContent='图片暂不可用'">` : `<span class="capture-thumbnail-placeholder">暂无商品图片</span>`}</span>
       <span class="product-row-copy"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(productSourcePlatformName(capture.sourcePlatform))} · ${escapeHtml(productPriceLabel(capture))}</small><em>${formatDate(capture.updatedAt || capture.createdAt)}</em></span>
       <span class="product-row-status ${group}">${escapeHtml(productCaptureDisplayStatus(capture))}</span>
-    </button>`;
+    </button>${hasAnyPermission("product:edit") ? `<button type="button" class="capture-delete-button" data-delete-capture="${escapeHtml(capture.id)}" aria-label="删除 ${escapeHtml(title)}">删除</button>` : ""}</div>`;
   }).join("");
 }
 
@@ -4295,11 +4379,29 @@ function renderProductSkuCompleteness(capture) {
     : "保存后完整性来源会标记为 USER";
 }
 
+let productVideoLoadGeneration=0;
+async function renderProductVideos(capture) {
+ const generation=++productVideoLoadGeneration, org=currentUser?.organizationId;
+ let section=document.querySelector('#product-captured-videos');
+ if(!section){section=document.createElement('section');section.id='product-captured-videos';document.querySelector('.product-action-dock').before(section);}
+ section.replaceChildren();section.hidden=true;
+ try {
+  const result=await api(`/api/v1/product-captures/${encodeURIComponent(capture.id)}/videos`);
+  if(generation!==productVideoLoadGeneration||selectedProductCaptureId!==capture.id||currentUser?.organizationId!==org)return;
+  const videos=result.data||[];if(!videos.length)return;
+  section.hidden=false;const title=document.createElement('h3');title.textContent=`已采集视频（${videos.length}）`;section.append(title);
+  for(const item of videos){const url=`/api/v1/product-captures/${encodeURIComponent(capture.id)}/videos/${encodeURIComponent(item.id)}/file`;const box=document.createElement('div');box.style.display='inline-flex';box.style.flexDirection='column';box.style.margin='12px';const video=document.createElement('video');video.controls=true;video.preload='metadata';video.src=url;video.style.cssText='width:260px;max-height:360px;background:#111;border-radius:8px';const link=document.createElement('a');link.href=url;link.download=`${capture.id}-${item.id}.mp4`;link.textContent='下载原视频';box.append(video,link);section.append(box);}
+ }catch(error){if(generation===productVideoLoadGeneration&&selectedProductCaptureId===capture.id){section.hidden=false;section.textContent='视频读取失败，请刷新重试';}}
+}
+
 function renderProductImages(capture) {
   const images = productCaptureImages(capture);
   const completed = images.filter(image => productImageState(image) === "completed").length;
   const progress = images.length ? Math.round(completed * 100 / images.length) : 0;
   document.querySelector("#product-image-progress-text").textContent = `${completed} / ${images.length}`;
+  const counts = {processing:0,waiting:0,failed:0};
+  images.forEach(image => { const state = productImageState(image); if (state in counts) counts[state]++; });
+  document.querySelector("#product-image-queue-summary").textContent = `处理中 ${counts.processing} · 排队中 ${counts.waiting} · 失败 ${counts.failed} · 全局最多并发 500 张`;
   document.querySelector("#product-image-progress-bar").style.width = `${progress}%`;
   const grid = document.querySelector("#product-image-grid");
   if (!images.length) {
@@ -4311,20 +4413,20 @@ function renderProductImages(capture) {
     .sort((left, right) => Number(left.sortOrder || 0) - Number(right.sortOrder || 0))
     .map((image, index) => {
       const original = safeProductUrl(image.originalUrl || image.url);
-      const processed = safeProductUrl(image.processedUrl);
       const state = productImageState(image);
+      const processed = ["processing", "waiting"].includes(state) ? "" : safeProductUrl(image.processedUrl);
       const dryRun = productImageIsDryRun(image, capture);
       const roleName = String(image.role || image.roleName || "").toUpperCase();
       const role = roleName === "MAIN" ? "主图"
         : roleName === "VARIANT" ? "规格图"
           : ["DESCRIPTION", "DETAIL"].includes(roleName) ? "详情图" : `商品图 ${index + 1}`;
-      return `<article class="product-image-card ${state}">
+      return `<article class="product-image-card ${state}" aria-busy="${state === "processing"}">
         <header><div><strong>${escapeHtml(role)}</strong><small>${escapeHtml(image.mimeType || "图片")}</small></div><span>${escapeHtml(productImageDisplayState(image, capture))}</span></header>
         <div class="product-image-compare">
           <figure><figcaption>来源原图</figcaption>${original ? `<button type="button" data-asset-preview="来源原图" aria-label="放大查看来源原图"><img src="${escapeHtml(original)}" data-full-src="${escapeHtml(original)}" alt="${escapeHtml(role)}来源原图" loading="lazy"></button>` : `<div class="product-image-placeholder">无原图</div>`}</figure>
-          <figure><figcaption>${dryRun ? "Dry Run 占位图" : "AI 处理图"}</figcaption>${processed ? `<button type="button" data-asset-preview="${dryRun ? "Dry Run 占位图" : "AI 去水印结果"}" aria-label="放大查看${dryRun ? " Dry Run 占位图" : " AI 去水印结果"}"><img src="${escapeHtml(processed)}" data-full-src="${escapeHtml(processed)}" alt="${escapeHtml(role)}处理图" loading="lazy"></button>` : `<div class="product-image-placeholder"><i></i><span>${state === "failed" ? "处理失败" : state === "processing" ? "处理中" : "等待处理"}</span></div>`}</figure>
+          <figure><figcaption>${dryRun ? "Dry Run 占位图" : "AI 处理图"}</figcaption>${processed ? `<button type="button" data-asset-preview="${dryRun ? "Dry Run 占位图" : "AI 去水印结果"}" aria-label="放大查看${dryRun ? " Dry Run 占位图" : " AI 去水印结果"}"><img src="${escapeHtml(processed)}" data-full-src="${escapeHtml(processed)}" alt="${escapeHtml(role)}处理图" loading="lazy"></button>` : `<div class="product-image-placeholder"><i></i><span>${state === "failed" ? "处理失败" : state === "processing" ? "AI 去水印中" : "排队中"}</span></div>`}</figure>
         </div>
-        ${image.errorMessage ? `<p>${escapeHtml(image.errorMessage)}</p>` : ""}
+        ${state === "processing" ? `<p class="product-image-working-note"><i aria-hidden="true"></i>${escapeHtml(productImageStateName(image))}，请稍候…</p>` : state === "failed" && (productLiveImageStage(image)?.message || image.errorMessage) ? `<p role="status">${escapeHtml(productLiveImageStage(image)?.message || image.errorMessage)}</p>` : ""}
       </article>`;
     }).join("");
 }
@@ -4418,10 +4520,29 @@ function syncProductEditorAccess(capture) {
   document.querySelector("#save-product-capture").hidden = !access.edit;
   document.querySelector("#process-product-images").hidden = !access.watermark;
   document.querySelector("#approve-product-capture").hidden = !access.edit;
-  document.querySelector("#open-product-publish").hidden = !access.publish;
   document.querySelector("#design-current-product").hidden = !access.edit;
 }
 
+const productUploadResultByCapture = new Map();
+function renderProductUploadResult(capture) {
+  const el = document.querySelector('#product-upload-result');
+  if (!el) return;
+  const workflow = productUploadResultByCapture.get(`${currentUser?.organizationId}:${capture.id}`);
+  el.hidden = !workflow;
+  if (!workflow) return;
+  const state = String(workflow.status || '').toUpperCase();
+  const remoteId = workflow.publication?.externalId || String(workflow.errorMessage || '').match(/Shopee 商品 (\d+) 已按未上架状态创建/)?.[1];
+  const success = state === 'SUCCEEDED';
+  const running = productPublishWorkflowIsActive(workflow);
+  const dry = workflow.executionMode !== 'LIVE';
+  el.dataset.state = success ? 'success' : running ? 'running' : 'warning';
+  const title = success ? dry ? '模拟上传完成' : '✓ 上传成功' : running ? '上传处理中…' : remoteId ? '已创建，后续上传未完成' : '上传失败';
+  const detail = success ? productPublishOutcome(workflow).stepText : running ? ({IMAGES:'图片处理中',APPROVE:'资料校验中',PUBLISH:'正在提交平台'})[workflow.currentStep] || '排队中' : workflow.errorMessage || '请查看上传结果';
+  el.replaceChildren();
+  const heading = document.createElement('strong'); heading.textContent = title;
+  const copy = document.createElement('span'); copy.textContent = `${remoteId ? '平台商品 ID：' + remoteId + ' · ' : ''}${detail}`;
+  el.append(heading, copy);
+}
 function syncProductActions(capture) {
   const status = String(capture.status || "CAPTURED").toUpperCase();
   const images = productCaptureImages(capture);
@@ -4431,10 +4552,6 @@ function syncProductActions(capture) {
   const published = status === "PUBLISHED";
   const approved = status === "APPROVED";
   const publishable = approved || published;
-  const uploadableStatus = ["CAPTURED", "DRAFT", "FAILED", "IMAGE_PROCESSING", "READY", "APPROVED", "PUBLISHED"].includes(status);
-  const access = productAccessCapabilities();
-  const hasStagePermissions = (!["CAPTURED", "DRAFT", "FAILED"].includes(status) || (access.watermark && access.edit))
-    && (status !== "READY" || access.edit);
   const saving = Boolean(productCaptureSaveInFlightId);
   const workflowRunning = productUploadInFlightCaptureId === capture.id;
   const localChanges = productEditorDirty && selectedProductCaptureId === capture.id;
@@ -4443,13 +4560,9 @@ function syncProductActions(capture) {
   document.querySelector("#save-product-capture").textContent = productCaptureSaveInFlightId === capture.id
     ? "正在保存…" : "保存修改";
   document.querySelector("#process-product-images").disabled = processing || published || !images.length || localChanges || saving || workflowRunning;
-  document.querySelector("#process-product-images").textContent = status === "FAILED" ? "重试图片处理 Dry Run" : processing ? "Dry Run 处理中…" : "图片处理 Dry Run";
+  document.querySelector("#process-product-images").textContent = status === "FAILED" ? "重试图片处理" : processing ? "图片处理中…" : "开始图片处理";
   document.querySelector("#approve-product-capture").disabled = status !== "READY" || !readiness.ready || localChanges || saving || workflowRunning;
   document.querySelector("#approve-product-capture").textContent = publishable ? "已人工确认" : "人工确认";
-  document.querySelector("#open-product-publish").disabled = !uploadableStatus || !hasStagePermissions
-    || localChanges || saving;
-  document.querySelector("#open-product-publish").textContent = workflowRunning
-    ? "查看上传进度" : published ? "提交到其他店铺" : "一键上传";
 
   const title = document.querySelector("#product-action-title");
   const note = document.querySelector("#product-action-note");
@@ -4459,10 +4572,9 @@ function syncProductActions(capture) {
   } else if (approved && productPublishAuditMeta.get(capture.id)?.dryRun) {
     title.textContent = "Dry Run 已验证";
     note.textContent = "模拟发布校验已通过，商品仍为可发布状态，未在真实店铺上架。";
-    document.querySelector("#open-product-publish").textContent = "重新验证";
   } else if (approved) {
     title.textContent = "商品已通过人工确认";
-    note.textContent = "选择目标店铺后，执行最后一次 Dry Run 发布确认。";
+    note.textContent = "可返回商品列表，选择商品后从批量上传入口提交目标店铺。";
   } else if (!skuCompleteness.complete && !processing) {
     title.textContent = "SKU 尚未完整，人工审核已阻断";
     note.textContent = skuCompleteness.expectedCount === null
@@ -4478,6 +4590,7 @@ function syncProductActions(capture) {
     title.textContent = "先补齐商品资料与图片";
     note.textContent = "保存修改并完成全部图片去水印后再确认。";
   }
+  renderProductUploadResult(capture);
 }
 
 function renderProductReadiness(capture) {
@@ -4539,6 +4652,7 @@ function renderProductCaptureDetail() {
   document.querySelector("#product-description-input").value = capture.description || "";
   renderProductSkus(capture);
   renderProductImages(capture);
+  void renderProductVideos(capture);
   renderProductReadiness(capture);
   syncProductEditorAccess(capture);
   renderProductSkuCompleteness(capture);
@@ -4569,7 +4683,7 @@ function updateProductCaptureInMemory(capture, { preserveSelectedEditor = false 
   }
   const leavesActiveServerFilter = !productCaptureLegacyListResponse
     && productCaptureStatusFilter !== "ALL"
-    && nextGroup !== productCaptureStatusFilter;
+    && nextGroup !== productCaptureStatusGroup(productCaptureStatusFilter);
   if (index >= 0 && leavesActiveServerFilter) {
     productCaptures.splice(index, 1);
     productCaptureTotalElements = Math.max(0, productCaptureTotalElements - 1);
@@ -4630,6 +4744,7 @@ async function selectProductCapture(id, { silent = false, force = false } = {}) 
     updateProductCaptureInMemory(capture, { preserveSelectedEditor });
     syncProductCapturePolling();
     void restoreProductPublishWorkflow(id);
+    void refreshProductLiveImageProgress();
   } catch (error) {
     if (generation !== productCaptureDetailLoadGeneration || selectedProductCaptureId !== id) return;
     if (error?.status === 401) return;
@@ -4660,7 +4775,7 @@ function mergeProductCapturePages(existing, incoming) {
 async function loadProductCaptures(preferredId = null, {
   silent = false,
   append = false,
-  page = append ? productCapturePage + 1 : 0,
+  page = Math.max(0, productCapturePage),
   refreshDetail = true,
   refreshLoadedPages = false
 } = {}) {
@@ -4668,12 +4783,7 @@ async function loadProductCaptures(preferredId = null, {
   const generation = ++productCaptureLoadGeneration;
   const organizationId = currentUser?.organizationId || "";
   const requestedPage = Math.max(0, page);
-  const loadedThroughPage = !append && refreshLoadedPages
-    ? Math.max(0, productCapturePage)
-    : requestedPage;
-  const requestedPages = !append && refreshLoadedPages
-    ? Array.from({ length: loadedThroughPage + 1 }, (_value, index) => index)
-    : [requestedPage];
+  const requestedPages = [requestedPage];
   renderProductPageIdentity();
   productCaptureListLoading = true;
   productCaptureAppendLoading = append;
@@ -4694,6 +4804,9 @@ async function loadProductCaptures(preferredId = null, {
     const payloads = results.map((result, index) =>
       productCapturePagePayload(result.data, requestedPages[index]));
     const payload = payloads[0];
+    if (payload.paged && requestedPage > 0 && requestedPage >= payload.totalPages) {
+      return await loadProductCaptures(preferredId, {page:Math.max(0,payload.totalPages-1),silent,refreshDetail});
+    }
     const captures = mergeProductCapturePages([], payloads.flatMap(current => current.content)
       .map(productCapturePayload)
       .filter(Boolean)
@@ -4724,7 +4837,7 @@ async function loadProductCaptures(preferredId = null, {
     productCaptureAppendLoading = false;
     list.setAttribute("aria-busy", "false");
     renderProductSummary();
-    const candidateId = selectedProductCaptureId || preferredId || null;
+    const candidateId = syncProductCaptureView();
     if (candidateId) selectedProductCaptureId = candidateId;
     renderProductCaptureList();
     if (!candidateId) {
@@ -5091,6 +5204,78 @@ function productSkuPriceNormalizationNeeded(capture = selectedProductCaptureDeta
     || Number(capture.priceMax) !== Math.max(...prices);
 }
 
+async function normalizeProductCaptureForUpload(capture, isCurrent = () => true, requestApi = productCaptureApi) {
+  const requireCurrent = () => {
+    if (!isCurrent()) throw new ApiRequestError("当前企业已切换，已停止商品价格同步", 409);
+  };
+  requireCurrent();
+  if (!["CAPTURED", "FAILED", "READY"].includes(String(capture?.status || "").toUpperCase())
+      || !productSkuPriceNormalizationNeeded(capture)) return capture;
+  if (!hasAnyPermission("product:edit")) {
+    throw new ApiRequestError("SKU 原价或商品价格区间需要自动补齐，但账号没有商品编辑权限", 403);
+  }
+  const version = Number(capture.version);
+  if (!Number.isSafeInteger(version) || version < 0 || !capture.id) {
+    throw new ApiRequestError("商品版本信息缺失，请刷新后重试", 409);
+  }
+  const sourceSkus = productCaptureSkus(capture);
+  const prices = sourceSkus.map(sku => nullableProductValue(sku.price))
+    .filter(value => value !== null && Number.isFinite(Number(value)) && Number(value) >= 0)
+    .sort((left, right) => Number(left) - Number(right));
+  if (!prices.length) return capture;
+  let originalsChanged = false;
+  const skus = sourceSkus.map(sku => {
+    const price = nullableProductValue(sku.price);
+    const originalPrice = nullableProductValue(sku.originalPrice);
+    const derive = price !== null && Number.isFinite(Number(price)) && Number(price) >= 0
+      && (originalPrice === null || !Number.isFinite(Number(originalPrice))
+        || Number(originalPrice) < Number(price));
+    originalsChanged ||= derive;
+    return {
+      ...productSkuPreservedFields(sku),
+      attributes: productSkuAttributes(sku),
+      ...(derive ? { originalPrice: price, originalPriceSource: "DERIVED" } : {})
+    };
+  });
+  // Read this capture only: the detail editor may currently display another product.
+  // A range-only repair does not need to rewrite SKU identities or image associations.
+  const payload = { version, priceMin: prices[0], priceMax: prices[prices.length - 1] };
+  if (originalsChanged) {
+    payload.skus = skus;
+    const completeness = capture.skuCompleteness ?? capture.normalizedData?.skuCompleteness;
+    if (completeness && typeof completeness === "object" && !Array.isArray(completeness)) {
+      payload.skuCompleteness = { ...completeness };
+    }
+  }
+  const path = `/${encodeURIComponent(capture.id)}`;
+  let result;
+  try {
+    requireCurrent();
+    result = await requestApi(path, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    requireCurrent();
+    if (error?.status !== 409 && !productPublishWorkflowCreateMayHaveCommitted(error)) throw error;
+    // The versioned PATCH may have succeeded before its response was lost. Read it
+    // back instead of replaying a mutation that can reset image-processing state.
+    try {
+      const latest = await requestApi(path);
+      requireCurrent();
+      const recovered = productCapturePayload(latest.data);
+      if (recovered?.id !== capture.id || productSkuPriceNormalizationNeeded(recovered)) throw error;
+      return recovered;
+    } catch (refreshError) {
+      if (refreshError?.status === 401 || !isCurrent()) throw refreshError;
+      throw error;
+    }
+  }
+  requireCurrent();
+  const updated = productCapturePayload(result.data);
+  if (updated?.id !== capture.id) throw new ApiRequestError("商品价格同步响应不完整，请刷新后重试", 502, result);
+  return updated;
+}
+
 async function saveProductCapture() {
   if (!selectedProductCaptureId || !hasAnyPermission("product:edit") || productCaptureSaveInFlightId) return;
   const requestCaptureId = selectedProductCaptureId;
@@ -5280,6 +5465,7 @@ function productPublishOutcome(workflow) {
     };
   }
   const remoteStatus = productPublishRemoteStatus(workflow);
+  if (["UNLIST", "DRAFT"].includes(remoteStatus)) return { kind: "unlisted", remoteStatus, stepText: "已上传至待上架", buttonText: "已上传 · 待上架" };
   if (["REVIEWING", "PENDING"].includes(remoteStatus)) {
     return {
       kind: "reviewing",
@@ -5325,6 +5511,8 @@ function stopProductPublishWorkflowPolling({ clearState = false } = {}) {
 
 function renderProductPublishWorkflow(workflow) {
   if (!workflow) return;
+  productUploadResultByCapture.set(`${currentUser?.organizationId}:${workflow.captureId}`, workflow);
+  if (selectedProductCaptureDetail?.id === workflow.captureId) renderProductUploadResult(selectedProductCaptureDetail);
   const status = String(workflow.status || "").toUpperCase();
   const requestedStep = String(workflow.currentStep || "IMAGES").toUpperCase();
   const steps = ["IMAGES", "APPROVE", "PUBLISH"];
@@ -5553,7 +5741,7 @@ async function restoreProductPublishWorkflow(captureId) {
     try {
       const result = await api(`${productPublishWorkflowPath(captureId)}?limit=20`);
       const workflows = Array.isArray(result.data) ? result.data : [];
-      workflow = workflows.find(productPublishWorkflowIsActive) || null;
+      workflow = workflows.find(productPublishWorkflowIsActive) || workflows[0] || null;
     } catch (error) {
       if (error?.status !== 401) {
         // Product detail remains usable even when workflow recovery is temporarily unavailable.
@@ -5661,6 +5849,536 @@ function syncPublishShopContext() {
   context.className = "is-selected";
 }
 
+let productPublishPrepareVersion = 0;
+let productPublishPreparation = null;
+
+function requireTikTokDraftCapability(shop, options) {
+  const method = options?.listingMethod;
+  const crossBorder = String(shop?.sellerType || '').toUpperCase() === 'CROSS_BORDER';
+  if (options?.canCreateDraft !== true || !['LOCAL', 'LOCAL_REPLICATION'].includes(method)
+      || (crossBorder && method !== 'LOCAL_REPLICATION')) {
+    const error = Error(crossBorder
+      ? '跨境刊登模式未就绪：当前店铺尚未确认支持上传到待上架草稿，请重新读取店铺配置或切换店铺'
+      : '当前 TikTok 店铺尚未确认支持上传到待上架草稿，请重新读取店铺配置或切换店铺');
+    error.draftCapabilityBlocked = true;
+    throw error;
+  }
+  return method;
+}
+
+function productPublishPreparationError(platform, shopId) {
+  if (platform !== 'TIKTOK_SHOP' || !marketplaceIntegrationStatus.livePublishingEnabled) return '';
+  const state = productPublishPreparation;
+  if (!state || state.platform !== platform || state.shopId !== shopId
+      || state.captureId !== selectedProductCaptureDetail?.id || state.organizationId !== currentUser?.organizationId
+      || state.version !== productPublishPrepareVersion) return '目标店铺已变化，请等待重新读取当前店铺配置后再提交';
+  if (state.status === 'READY' || (state.status === 'LOCAL_FALLBACK' && state.categoryLeaves)) {
+    const selected = state.categoryLeaves?.find(category => category.id === document.querySelector('#publish-category-id').value);
+    if (!selected) return '请选择当前店铺返回的有效商品类目';
+    return tikTokCategoryPermissionError(selected);
+  }
+  if (state.status === 'LOCAL_FALLBACK') return '';
+  return state.error || '正在读取当前 TikTok 店铺的刊登能力，请稍等片刻';
+}
+const publishReusableFields = ['warehouse-id', 'package-length', 'package-width', 'package-height'];
+function publishPreferenceKey(category = false, capture = selectedProductCaptureDetail,
+  shop = document.querySelector('#publish-shop-id').value,
+  platform = document.querySelector('#publish-destination-platform').value,
+  org = currentUser?.organizationId) {
+  if (!org || !shop || shop === 'dry-run-shop') return null;
+  return JSON.stringify(['publish-settings-v1', org, platform, shop,
+    category ? capture?.categoryName || capture?.id : 'shop']);
+}
+function readPublishPreference(category = false, ...context) {
+  try { return JSON.parse(localStorage.getItem(publishPreferenceKey(category, ...context)) || '{}'); } catch { return {}; }
+}
+function rememberPublishPreferences() {
+  if (!marketplaceIntegrationStatus.livePublishingEnabled) return;
+  const common = {};
+  publishReusableFields.forEach(name => common[name] = document.querySelector(`#publish-${name}`).value);
+  common.logistic = document.querySelector('#publish-logistic-choice').value;
+  // Weight, price, SKU overrides and product attributes belong to this product, never to the whole shop.
+  const category = {category: document.querySelector('#publish-category-id').value};
+  try {
+    if (publishPreferenceKey()) localStorage.setItem(publishPreferenceKey(), JSON.stringify(common));
+    if (publishPreferenceKey(true)) localStorage.setItem(publishPreferenceKey(true), JSON.stringify(category));
+  } catch { /* Browser storage is optional; publication must still work. */ }
+}
+function originalProductWeight(capture) {
+  const data = capture?.normalizedData || {};
+  for (const value of [capture?.weightGrams, data.weightGrams, data.weight_grams]) {
+    if (Number(value) > 0 && Number.isFinite(Number(value))) return String(value);
+  }
+  const weight = data.packageWeight || data.package_weight;
+  const unit = String(weight?.unit || data.weightUnit || '').toLowerCase();
+  const value = Number(weight?.value ?? data.weight);
+  if (value > 0 && Number.isFinite(value)) {
+    if (['g','gram','grams'].includes(unit)) return String(value);
+    if (['kg','kilogram','kilograms'].includes(unit)) return String(Math.round(value * 1000));
+  }
+  return '';
+}
+function automaticProductPublishDefaults(capture, common = {}) {
+  return {
+    publishStock: 999,
+    weightGrams: originalProductWeight(capture) || '250',
+    autoConvertPrice: true,
+    packageLengthCm: common['package-length'] || '30',
+    packageWidthCm: common['package-width'] || '25',
+    packageHeightCm: common['package-height'] || '2',
+    skuStocks: {}, productAttributes: [],
+    shopeePayload: { brand: { brand_id: 0, original_brand_name: 'NoBrand' } }
+  };
+}
+
+function destinationCategoryLeaves(categories, platform) {
+  const shopee = platform === 'SHOPEE';
+  const id = c => String(shopee ? c.category_id : c.id);
+  const parent = c => String((shopee ? c.parent_category_id : c.parent_id) || '');
+  const names = c => [...new Set((shopee
+    ? [c.display_category_name, c.original_category_name]
+    : [c.local_name, c.name]).filter(Boolean).map(String))];
+  const byId = new Map(categories.map(c => [id(c), c]));
+  const parentIds = new Set(categories.map(parent).filter(Boolean));
+  const permissions = c => c.permission_statuses == null ? [] : Array.isArray(c.permission_statuses)
+    ? c.permission_statuses.map(value => String(value).toUpperCase()) : ['UNKNOWN'];
+  return categories.filter(c => (shopee ? c.has_children === false : c.is_leaf === true)
+    && !parentIds.has(id(c))).map(c => {
+    const ancestors = [c], seen = new Set([id(c)]);
+    while (parent(c) && byId.has(parent(c)) && !seen.has(parent(c))) {
+      c = byId.get(parent(c)); seen.add(id(c)); ancestors.unshift(c);
+    }
+    const labels = [0, 1].map(index => ancestors.map(node => names(node)[index] || names(node)[0] || id(node)).join(' > '));
+    const leaf = ancestors[ancestors.length - 1];
+    return {id: id(leaf), label: labels[0], aliases: [...new Set(labels)], leafNames: names(leaf),
+      ...(!shopee ? {permissionStatuses: permissions(leaf),
+        permissionPath: ancestors.map(node => ({id: id(node), label: names(node)[0] || id(node), permissionStatuses: permissions(node)}))} : {})};
+  });
+}
+function tikTokCategoryPermissionError(category) {
+  const path = category.permissionPath || [category];
+  const denied = path.find(node => node.permissionStatuses?.some(status => status !== 'AVAILABLE'));
+  if (!denied) return '';
+  const statuses = denied.permissionStatuses.filter(status => status !== 'AVAILABLE');
+  const reason = statuses.includes('NON_MAIN_CATEGORY')
+    ? '该类目不在当前店铺已开通的主营类目范围内'
+    : `平台未允许当前店铺使用该类目（${statuses.join('、')}）`;
+  return `已匹配最适合的类目“${category.label}”（${category.id}），但${reason}。请更换有该类目权限的店铺，或在 TikTok Shop 后台开通权限后重试。`;
+}
+function requireTikTokCategoryPermission(category) {
+  const message = category && tikTokCategoryPermissionError(category);
+  if (message) {
+    const error = Error(message);
+    error.categoryPermissionBlocked = true;
+    throw error;
+  }
+}
+function resolveShopeePublishOptions(capture, options, common = {}, category = {}) {
+  const leaves = destinationCategoryLeaves(options?.categories?.category_list || [], 'SHOPEE');
+  if (!leaves.length) throw Error('官方未返回可用类目');
+  const categoryId = matchDestinationCategory(capture, leaves, category);
+  const channels = (options?.logistics?.logistics_channel_list || []).filter(c => c.enabled === true);
+  const logistic = channels.some(c => String(c.logistics_channel_id) === common.logistic)
+    ? common.logistic : channels.length ? String(channels[0].logistics_channel_id) : '';
+  return { leaves, categoryId, matchedOriginal: Boolean(categoryId), channels, logistic,
+    logisticInfo: logistic ? [{ logistic_id: Number(logistic), enabled: true }] : [] };
+}
+
+function resolveTikTokPublishOptions(capture, options, common = {}, category = {}) {
+  const leaves = destinationCategoryLeaves(options?.categories?.categories || [], 'TIKTOK_SHOP');
+  if (!leaves.length) throw Error('官方未返回可用类目');
+  let categoryId = matchDestinationCategory(capture, leaves, category);
+  const originalMatch = leaves.find(leaf => leaf.id === categoryId);
+  // The user permits gender-category conversion for equivalent everyday garments.
+  // Preserve product type, age, sleeves and purpose; never substitute an unrelated authorized category.
+  const profile = originalMatch && publishCategoryProfile(originalMatch.label);
+  const convertible = new Set(['tshirt', 'shirt', 'hoodie', 'sweater', 'jacket', 'coat', 'jeans', 'trousers', 'shorts', 'socks']);
+  const permissionPath = originalMatch?.permissionPath || (originalMatch ? [originalMatch] : []);
+  const onlyMainCategoryDenied = permissionPath.some(node => node.permissionStatuses?.includes('NON_MAIN_CATEGORY'))
+    && permissionPath.every(node => node.permissionStatuses?.every(status => ['AVAILABLE', 'NON_MAIN_CATEGORY'].includes(status)));
+  if (onlyMainCategoryDenied && profile.gender.size === 1 && profile.types.size === 1
+      && [...profile.types].every(type => convertible.has(type)) && profile.age !== 'child') {
+    const authorized = leaves.filter(leaf => (leaf.permissionPath || [leaf]).every(node =>
+      node.permissionStatuses?.length && node.permissionStatuses.every(status => status === 'AVAILABLE')));
+    const alternative = matchDestinationCategory(capture, authorized, {}, profile.gender.has('male') ? 'female' : 'male');
+    if (alternative) categoryId = alternative;
+  }
+  requireTikTokCategoryPermission(leaves.find(leaf => leaf.id === categoryId));
+  const warehouses = (options?.warehouses?.warehouses || []).filter(w =>
+    w.type === 'SALES_WAREHOUSE' && (!w.status || w.status === 'ENABLED' || w.status === 'ACTIVE'));
+  const warehouseId = warehouses.find(w => String(w.id) === common['warehouse-id'])?.id
+    || warehouses.find(w => w.is_default === true)?.id
+    || (warehouses.length === 1 ? warehouses[0].id : '');
+  return {leaves, categoryId, matchedOriginal: Boolean(categoryId), genderConverted: Boolean(originalMatch && originalMatch.id !== categoryId), warehouseId: String(warehouseId || '')};
+}
+function publishCategoryText(value) {
+  return String(value || '').normalize('NFKC').toLowerCase()
+    .replace(/\[s\]|\(do not delete\)|bd test\s*-\s*/g, '')
+    .replace(/[’']/g, '').replace(/\b(?:kemeja|baju)[\s-]+t\b|\bt[\s-]?shirts?\b/g, 'tshirt')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+function publishCategoryProfile(value) {
+  const text = publishCategoryText(value);
+  // These are product types, not translations of whole platform category IDs.
+  // Keep generic clothing words separate so "Women/Fashion" cannot select a product type.
+  const definitions = [
+    ['tshirt', 'tops', /\b(?:tshirt|tees?|kemeja t|baju t|kaos|baju tee)\b|t恤|体恤|短袖(?!衬衫)|短袖t/],
+    ['shirt', 'tops', /\b(?:shirts?|kemeja)\b|衬衫|襯衫/],
+    ['blouse', 'tops', /\b(?:blouses?|blaus)\b|雪纺衫|罩衫/],
+    ['tank', 'tops', /\b(?:tanks?(?: tops?)?|camis(?:oles?)?|singlets?)\b|背心|吊带|吊帶/],
+    ['polo', 'tops', /\bpolo\b|翻领t恤/],
+    ['hoodie', 'tops', /\b(?:hoodies?|sweatshirts?|baju sejuk)\b|卫衣|衛衣/],
+    ['sweater', 'tops', /\b(?:sweaters?|cardigans?|knitwear)\b|毛衣|针织衫|針織衫|开衫/],
+    ['jacket', 'outerwear', /\b(?:jackets?|jaket)\b|夹克|夾克|外套/],
+    ['coat', 'outerwear', /\b(?:coats?|windbreakers?)\b|大衣|风衣|風衣/],
+    ['dress', 'dresses', /\b(?:dresses|dress|gaun)\b|连衣裙|連衣裙|洋装/],
+    ['skirt', 'bottoms', /\b(?:skirts?|skirt|rok)\b|半身裙|短裙|裙装/],
+    ['jeans', 'bottoms', /\b(?:jeans|denim pants|seluar jeans)\b|牛仔裤|牛仔褲/],
+    ['trousers', 'bottoms', /\b(?:trousers?|pants|seluar panjang)\b|长裤|長褲|休闲裤/],
+    ['shorts', 'bottoms', /\b(?:shorts|seluar pendek)\b|短裤|短褲/],
+    ['leggings', 'bottoms', /\bleggings?\b|打底裤|紧身裤/],
+    ['bra', 'underwear', /\b(?:bras?|brassieres?)\b|胸罩|文胸/],
+    ['underpants', 'underwear', /\b(?:underpants|panties|boxers|seluar dalam)\b|内裤|內褲/],
+    ['socks', 'socks', /\b(?:socks?|stoking)\b|袜子|袜类|襪子/],
+    ['swimwear', 'swimwear', /\b(?:swimwear|swimsuits?|bikinis?|pakaian renang)\b|泳装|泳衣/],
+    ['sneakers', 'footwear', /\b(?:sneakers?|trainers?|running shoes|kasut sukan)\b|运动鞋|跑步鞋/],
+    ['sandals', 'footwear', /\b(?:sandals?|sandal|selipar)\b|凉鞋|拖鞋/],
+    ['boots', 'footwear', /\bboots?\b|靴子|短靴|长靴/],
+    ['handbag', 'bags', /\b(?:handbags?|shoulder bags?|beg tangan)\b|手提包|手袋|单肩包/],
+    ['backpack', 'bags', /\b(?:backpacks?|rucksacks?|beg galas)\b|双肩包|背包/],
+    ['phonecase', 'electronics', /\b(?:phone cases?|phone covers?|casing telefon|sarung telefon)\b|手机壳|手机套/],
+    ['phone', 'electronics', /\b(?:smartphones?|mobile phones?|telefon pintar|telefon bimbit)\b|手机|智能手机/],
+    ['charger', 'electronics', /\b(?:chargers?|pengecas)\b|充电器/],
+    ['earphones', 'electronics', /\b(?:earphones?|earbuds?|headphones?|fon telinga)\b|耳机|耳機/],
+    ['cable', 'electronics', /\b(?:usb cables?|data cables?|kabel usb)\b|数据线|充电线/],
+    ['bottle', 'home', /\b(?:water bottles?|drinking bottles?|botol air)\b|水杯|水壶|水瓶/],
+    ['bedsheet', 'home', /\b(?:bed ?sheets?|cadar)\b|床单|床單/],
+    ['toys', 'toys', /\b(?:toys?|mainan)\b|玩具/],
+    ['shampoo', 'beauty', /\b(?:shampoos?|syampu)\b|洗发水|洗髮/],
+    ['cleanser', 'beauty', /\b(?:facial cleansers?|face wash|pencuci muka)\b|洗面奶|洁面/]
+  ];
+  const types = new Set(), families = new Set();
+  definitions.forEach(([type, family, pattern]) => {
+    if (pattern.test(text)) { types.add(type); families.add(family); }
+  });
+  if (types.has('polo')) types.delete('tshirt');
+  if (types.has('phonecase')) types.delete('phone');
+  if (types.has('jeans') || types.has('leggings') || types.has('shorts')) types.delete('trousers');
+  if ((types.has('shirt') || types.has('blouse')) && !/\b(?:tshirt|tees?|kaos)\b|t恤|体恤/.test(text)) types.delete('tshirt');
+  if (types.has('dress') && /\btshirt dress(?:es)?\b|t恤裙/.test(text)) types.delete('tshirt');
+  if (/\b(?:tops?|atasan|baju atasan)\b|上装|上衣|上裝/.test(text)) families.add('tops');
+  if (/\b(?:bottoms?)\b|下装|下裝/.test(text)) families.add('bottoms');
+  if (/\b(?:shoes?|footwear|kasut)\b|鞋/.test(text)) families.add('footwear');
+  if (/\b(?:bags?|beg)\b|箱包/.test(text)) families.add('bags');
+  const gender = new Set();
+  if (/\b(?:women(?:s|swear)?|womenswear|woman|ladies|lady|female|wanita|perempuan|girls?)\b|女/.test(text)) gender.add('female');
+  if (/\b(?:men(?:s|swear)?|menswear|man|male|lelaki|pria|boys?)\b|男/.test(text)) gender.add('male');
+  if (/\bunisex\b|男女通用|男女同款/.test(text)) { gender.add('female'); gender.add('male'); }
+  const child = /\b(?:kids?|childrens?|children|babies|baby|boys?|girls?|kanak kanak|bayi)\b|童装|童鞋|儿童|婴儿|婴童|男童|女童/.test(text);
+  const adult = !child && (/\b(?:adults?|women(?:s|swear)?|womenswear|ladies|men(?:s|swear)?|menswear|wanita|lelaki)\b|女装|男装|女士|男士|成人/.test(text));
+  const sleeve = new Set();
+  if (/\b(?:short sleeve[ds]?|lengan pendek)\b|短袖/.test(text)) sleeve.add('short');
+  if (/\b(?:long sleeve[ds]?|lengan panjang)\b|长袖|長袖/.test(text)) sleeve.add('long');
+  if (/\b(?:sleeveless|tanpa lengan)\b|无袖|無袖/.test(text)) sleeve.add('none');
+  if (types.has('tank') && types.size === 1) sleeve.add('none');
+  const purposes = new Set();
+  [
+    ['maternity', /\b(?:maternity|pregnancy|pregnant|ibu hamil)\b|孕妇|孕婦|孕装/],
+    ['nursing', /\b(?:nursing|breastfeeding|menyusu)\b|哺乳/],
+    ['sports', /\b(?:sportswear|activewear|sports|sport|athletic|sukan|yoga)\b|运动|運動|瑜伽/],
+    ['pet', /\b(?:pets?|dogs?|cats?|haiwan)\b|宠物|寵物|狗|猫/],
+    ['costume', /\b(?:costumes?|cosplay)\b|演出服|角色扮演/]
+  ].forEach(([purpose, pattern]) => { if (pattern.test(text)) purposes.add(purpose); });
+  return {text, types, families, gender, age: child ? 'child' : adult ? 'adult' : '', sleeve, purposes};
+}
+function publishCategoryAttributeText(capture) {
+  const values = [];
+  const visit = (value, depth = 0) => {
+    if (depth > 4 || values.length >= 160 || value == null) return;
+    if (typeof value === 'string') { values.push(value.slice(0, 250)); return; }
+    if (Array.isArray(value)) { value.slice(0, 60).forEach(item => visit(item, depth + 1)); return; }
+    if (typeof value === 'object') Object.entries(value).slice(0, 60).forEach(([key, item]) => {
+      if (!/^(?:id|.*_id|url|image|images)$/i.test(key)) { values.push(key); visit(item, depth + 1); }
+    });
+  };
+  visit(capture?.attributes); visit(capture?.normalizedData?.attributes);
+  visit(capture?.productAttributes); visit(capture?.normalizedData?.productAttributes);
+  return values.join(' ');
+}
+function publishCategoryTokens(value) {
+  const generic = new Set(['women','womens','men','mens','ladies','male','female','fashion','clothes','clothing',
+    'apparel','pakaian','wanita','lelaki','other','others','lain','dan','and','with','for','the','new','stock',
+    'accessories','accessory','products','product','items','general','miscellaneous','其他','其它','配件','其他配件',
+    'cotton','polyester','soft','summer','short','long','sleeve','sleeves','ready','white','black','multicoloured']);
+  return new Set(publishCategoryText(value).split(/\s+/).filter(word => word.length >= 3 && !generic.has(word))
+    .map(word => /^[a-z]+s$/.test(word) && !word.endsWith('ss') ? word.slice(0, -1) : word));
+}
+function publishCategoryExplicitFacts(capture) {
+  const facts = {sleeve: new Set(), neckline: new Set(), condition: new Set(), gender: new Set()};
+  const textValues = value => {
+    if (Array.isArray(value)) return value.flatMap(textValues);
+    if (value && typeof value === 'object') {
+      for (const key of ['name', 'value_name', 'valueName', 'value', 'values']) {
+        if (Object.hasOwn(value, key)) return textValues(value[key]);
+      }
+      return [];
+    }
+    return typeof value === 'string' ? [publishCategoryText(value)] : [];
+  };
+  const add = (label, raw) => {
+    const key = publishCategoryText(label).replace(/\s/g, '');
+    for (const value of textValues(raw)) {
+      if (/^(?:gender|sex|targetgender|性别|適用性別|适用性别|jeniskelamin|jantina)$/.test(key)) {
+        publishCategoryProfile(value).gender.forEach(gender => facts.gender.add(gender));
+      }
+      if (/^(?:sleevelength|panjanglengan(?:baju)?|袖长|袖長)$/.test(key)) {
+        if (/^(?:short sleeve[ds]?|lengan pendek|短袖)$/.test(value)) facts.sleeve.add('short');
+        else if (/^(?:long sleeve[ds]?|lengan panjang|长袖|長袖)$/.test(value)) facts.sleeve.add('long');
+        else if (/^(?:sleeveless|tanpa lengan|无袖|無袖)$/.test(value)) facts.sleeve.add('none');
+      }
+      if (/^(?:collar|neckline|necktype|garisleher|领口|领型|領口|領型)$/.test(key) && value) {
+        facts.neckline.add(/^(?:round neck|crew neck|crewneck|leher krew|圆领|圓領)$/.test(value) ? 'round' : 'other');
+      }
+      if (/^(?:(?:product|item)?condition|keadaan(?:barang)?|kondisibarang|商品状况|商品成色|成色)$/.test(key)) {
+        if (/^(?:new|brand new|baru|全新|https? schema org newcondition)$/.test(value)) facts.condition.add('new');
+        else if (/^(?:used|pre owned|preowned|second hand|terpakai|二手|https? schema org usedcondition)$/.test(value)) facts.condition.add('used');
+        else if (/^(?:refurbished|翻新|https? schema org refurbishedcondition)$/.test(value)) facts.condition.add('refurbished');
+      }
+    }
+  };
+  const visit = (value, depth = 0) => {
+    if (!value || depth > 4) return;
+    if (Array.isArray(value)) { value.slice(0, 160).forEach(entry => visit(entry, depth + 1)); return; }
+    if (typeof value !== 'object') return;
+    const label = value.name || value.attribute_name || value.attributeName || value.property_name || value.propertyName;
+    if (label) {
+      for (const key of ['values', 'value', 'value_name', 'valueName']) {
+        if (Object.hasOwn(value, key)) { add(label, value[key]); return; }
+      }
+    } else Object.entries(value).slice(0, 160).forEach(([key, entry]) => add(key, entry));
+  };
+  for (const source of [capture, capture?.normalizedData]) {
+    for (const key of ['attributes', 'productAttributes', 'product_attributes', 'productProperties', 'product_properties']) visit(source?.[key]);
+    for (const key of ['condition', 'productCondition', 'product_condition', 'itemCondition', 'item_condition']) add('condition', source?.[key]);
+  }
+  // Only labelled specifications are facts. Free-form descriptions and marketing titles cannot change product type.
+  const description = String(capture?.description || capture?.normalizedData?.description || '').slice(0, 100000)
+    .replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ');
+  const fields = /(?:^|[\s;；|])((?:sleeve\s+length|panjang\s+lengan(?:\s+baju)?|袖长|袖長)|(?:collar|neckline|neck\s+type|garis\s+leher|领口|领型|領口|領型))\s*[:：]\s*((?:short|long)\s+sleeve[ds]?|sleeveless|lengan\s+(?:pendek|panjang)|tanpa\s+lengan|短袖|长袖|長袖|无袖|無袖|round\s+neck|crew\s*neck|(?:v|square|scoop)[\s-]+neck|collared|polo|leher\s+krew|圆领|圓領)(?=$|[\s;；,.，。|])/gi;
+  for (const field of description.matchAll(fields)) add(field[1], field[2]);
+  return facts;
+}
+function publishCategoryResaleType(value) {
+  const text = publishCategoryText(value);
+  if (/\brefurbished\b|翻新/.test(text)) return 'refurbished';
+  if (/\b(?:pre owned|preowned|second hand|used|terpakai|bekas)\b|二手|中古/.test(text)) return 'used';
+  return '';
+}
+function matchDestinationCategory(capture, leaves, saved = {}, genderOverride = '') {
+  const normalize = value => publishCategoryText(value).replace(/\s/g, '');
+  const split = value => String(value || '').split(/\s*(?:>|→|›|\/)\s*/).filter(Boolean);
+  const path = String(capture?.categoryName || capture?.normalizedData?.categoryName || '');
+  const labels = c => c.aliases?.length ? c.aliases : [c.label];
+  const leafName = split(path).pop() || '';
+  const categoryProfile = publishCategoryProfile(path), sourceLeaf = publishCategoryProfile(leafName);
+  const title = String(capture?.title || capture?.normalizedData?.title || '');
+  const attributes = publishCategoryAttributeText(capture);
+  const detailProfile = publishCategoryProfile(`${title} ${attributes}`);
+  let sourceTypes = sourceLeaf.types.size ? sourceLeaf.types : detailProfile.types;
+  const sourceFamilies = sourceLeaf.families.size ? sourceLeaf.families
+    : categoryProfile.families.size ? categoryProfile.families : detailProfile.families;
+  let sourceGender = categoryProfile.gender.size ? categoryProfile.gender : detailProfile.gender;
+  const sourceAge = categoryProfile.age || detailProfile.age;
+  const facts = publishCategoryExplicitFacts(capture);
+  const titleProfile = publishCategoryProfile(title);
+  // A source seller's broad gender taxonomy must not override an explicit garment audience.
+  // Only a title describing the same apparel family can correct it (never incidental print text).
+  const apparelFamilies = new Set(['tops', 'outerwear', 'dresses', 'bottoms', 'underwear', 'socks', 'swimwear']);
+  const sameGarmentFamily = [...sourceFamilies].some(family => apparelFamilies.has(family) && titleProfile.families.has(family));
+  if (sameGarmentFamily && titleProfile.gender.size === 1) {
+    if (facts.gender.size && ![...titleProfile.gender].every(gender => facts.gender.has(gender))) return '';
+    sourceGender = titleProfile.gender;
+  }
+  if (facts.gender.size) sourceGender = facts.gender;
+  if (genderOverride === 'female' || genderOverride === 'male') sourceGender = new Set([genderOverride]);
+  if (facts.condition.size > 1 || (sourceFamilies.has('tops') && (facts.sleeve.size > 1 || facts.neckline.size > 1))) return '';
+  const sourceCondition = [...facts.condition][0] || publishCategoryResaleType(path);
+  const sourceSleeve = sourceFamilies.has('tops') && facts.sleeve.size
+    ? facts.sleeve : sourceLeaf.sleeve.size ? sourceLeaf.sleeve : detailProfile.sleeve;
+  // A short-sleeved, round-neck top cannot be a tank. This requires explicit specifications inside a tops taxonomy.
+  // It never promotes a phone case or a different garment merely because its marketing text mentions a T-shirt.
+  if (sourceFamilies.has('tops') && sourceTypes.size === 1 && sourceTypes.has('tank')
+    && facts.sleeve.size === 1 && facts.sleeve.has('short') && facts.neckline.size === 1 && facts.neckline.has('round')) sourceTypes = new Set(['tshirt']);
+  const sourcePurposes = new Set([...categoryProfile.purposes, ...detailProfile.purposes]);
+  const intersect = (left, right) => [...left].filter(value => right.has(value)).length;
+  const sourceTokens = publishCategoryTokens(leafName);
+  const contextTokens = publishCategoryTokens(`${path} ${title} ${attributes}`);
+  const eligible = leaves.map(candidate => {
+    const candidateLeafNames = candidate.leafNames?.length ? candidate.leafNames : labels(candidate).map(label => split(label).pop() || '');
+    const leafProfile = publishCategoryProfile(candidateLeafNames.join(' '));
+    const profile = publishCategoryProfile(labels(candidate).join(' '));
+    const resaleType = publishCategoryResaleType(labels(candidate).join(' '));
+    if ((resaleType && resaleType !== sourceCondition)
+      || (sourceGender.size && profile.gender.size && !intersect(sourceGender, profile.gender))
+      || (sourceAge && profile.age && sourceAge !== profile.age)
+      || [...profile.purposes].some(purpose => !sourcePurposes.has(purpose))
+      || (sourceSleeve.size && leafProfile.sleeve.size && !intersect(sourceSleeve, leafProfile.sleeve))) return null;
+    // Different concrete product types cannot be rescued by a shared word such as "Women" or "Cotton".
+    const typeMatches = intersect(sourceTypes, leafProfile.types);
+    if (sourceTypes.size && leafProfile.types.size && !typeMatches) return null;
+    return {candidate, candidateLeafNames, leafProfile, profile, typeMatches, resaleType};
+  }).filter(Boolean);
+  const full = path ? eligible.filter(({candidate}) => labels(candidate).some(label => normalize(label) === normalize(path))) : [];
+  if (full.length === 1) return String(full[0].candidate.id);
+  const ranked = eligible.map(({candidate, candidateLeafNames, leafProfile, profile, typeMatches, resaleType}) => {
+    const exactLeaf = leafName && sourceTokens.size && candidateLeafNames.some(name => normalize(name) === normalize(leafName));
+    const candidateTokens = publishCategoryTokens(candidateLeafNames.join(' '));
+    const wordMatches = intersect(sourceTokens, candidateTokens);
+    const lexicalMatch = wordMatches > 0 && wordMatches / Math.max(1, sourceTokens.size) >= 0.6;
+    // A destination may expose only a broad leaf such as Tops; never infer its children in reverse.
+    const broadMatch = !leafProfile.types.size && leafProfile.families.size
+      && (sourceTypes.size || sourceFamilies.size) && intersect(sourceFamilies, leafProfile.families);
+    if (!exactLeaf && !typeMatches && !lexicalMatch && !broadMatch) return null;
+    let score = exactLeaf ? 100 : typeMatches ? 85 : lexicalMatch ? 65 : 45;
+    if (sourceGender.size === 1 && profile.gender.size === 1) score += 24;
+    if (sourceAge && sourceAge === profile.age) score += 16;
+    if (sourceSleeve.size && intersect(sourceSleeve, leafProfile.sleeve)) score += 16;
+    if (intersect(sourcePurposes, profile.purposes)) score += 20;
+    if (typeMatches && sourceLeaf.types.size) score += 8;
+    if (resaleType && resaleType === sourceCondition) score += 20;
+    score += Math.min(12, intersect(contextTokens, publishCategoryTokens(labels(candidate).join(' '))) * 3);
+    return {id: String(candidate.id), score};
+  }).filter(Boolean).sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
+  // A saved choice needs positive semantic evidence and may only resolve a close match.
+  // It cannot turn clothing into an unrecognized household type, or displace a stronger category.
+  const remembered = saved.category == null ? null : ranked.find(candidate => candidate.id === String(saved.category));
+  if (remembered && ranked[0].score - remembered.score < 12) return remembered.id;
+  // Equal or near-equal evidence means the product information cannot distinguish those leaves.
+  return ranked.length && (!ranked[1] || ranked[0].score - ranked[1].score >= 12) ? ranked[0].id : '';
+}
+function resolveDestinationPublishOptions(platform, capture, options, common = {}, category = {}) {
+  return platform === 'TIKTOK_SHOP'
+    ? resolveTikTokPublishOptions(capture, options, common, category)
+    : resolveShopeePublishOptions(capture, options, common, category);
+}
+function crossPlatformPublishShops() {
+  return [...activeMarketplaceShops('SHOPEE'), ...activeMarketplaceShops('TIKTOK_SHOP')];
+}
+
+async function prepareSimpleProductPublish() {
+  const version = ++productPublishPrepareVersion;
+  const captureId = selectedProductCaptureDetail?.id;
+  const organizationId = currentUser?.organizationId;
+  const platform = document.querySelector('#publish-destination-platform').value;
+  const shopId = document.querySelector('#publish-shop-id').value;
+  const live = marketplaceIntegrationStatus.livePublishingEnabled;
+  const current = () => version === productPublishPrepareVersion
+    && captureId === selectedProductCaptureDetail?.id && organizationId === currentUser?.organizationId
+    && shopId === document.querySelector('#publish-shop-id').value
+    && platform === document.querySelector('#publish-destination-platform').value;
+  const preparation = {version, captureId, organizationId, platform, shopId, status:'LOADING', error:''};
+  productPublishPreparation = preparation;
+  const common = readPublishPreference();
+  const category = readPublishPreference(true);
+  const defaults = automaticProductPublishDefaults(selectedProductCaptureDetail, common);
+  const field = name => document.querySelector(`#publish-${name}`);
+  field('auto-summary').dataset.loading = 'false';
+  field('auto-summary').dataset.prepareError = '';
+  field('auto-summary').dataset.shopId = shopId;
+  field('stock').value = String(defaults.publishStock);
+  field('weight-grams').value = defaults.weightGrams;
+  field('warehouse-id').value = common['warehouse-id'] || '';
+  field('package-length').value = defaults.packageLengthCm;
+  field('package-width').value = defaults.packageWidthCm;
+  field('package-height').value = defaults.packageHeightCm;
+  ['sku-stocks','logistic-info','product-attributes','shopee-payload','sales-attributes','price'].forEach(name => field(name).value = '');
+  field('category-id').value = category.category || '';
+  field('category-id').hidden = true;
+  field('category-choice').hidden = false;
+  field('category-choice').required = false;
+  field('category-choice').replaceChildren(new Option('正在读取官方类目…', ''));
+  field('logistic-choice').replaceChildren(new Option('正在读取店铺物流…', ''));
+  field('advanced').open = false;
+  const shop = activeMarketplaceShops(platform).find(s => String(s.id) === shopId);
+  const currency = {MY:'MYR',PH:'PHP',SG:'SGD',TH:'THB',VN:'VND',ID:'IDR',TW:'TWD',BR:'BRL',MX:'MXN',US:'USD',GB:'GBP'}[String(shop?.region || '').toUpperCase()];
+  field('price').dataset.currency = currency || '';
+  field('price-field').hidden = true;
+  field('price-currency').textContent = currency || '';
+  field('price').required = false;
+  for (const name of ['stock','weight-grams']) field(name).required = live;
+  field('category-id').required = false;
+  field('auto-summary').textContent = `每个 SKU 默认库存 999 · ${originalProductWeight(selectedProductCaptureDetail) ? '已沿用原商品重量' : '重量默认 250 克/件'} · 默认无品牌 · 各 SKU 原售价按最新汇率自动换算为 ${currency || '目标币种'}`;
+  const fallback = message => {
+    field('category-choice').hidden = true;
+    field('category-id').hidden = false;
+    field('category-id').required = live;
+    field('category-choice').required = false;
+    field('logistic-choice').replaceChildren(new Option('请在高级设置填写物流', ''));
+    field('auto-summary').textContent += `。${message}`;
+    if (platform === 'SHOPEE') field('advanced').open = true;
+  };
+  if (!live || !shopId) { preparation.status = live ? 'BLOCKED' : 'READY'; fallback('选择店铺后自动读取类目与物流'); return; }
+  try {
+    field('auto-summary').dataset.loading = 'true';
+    const result = await api(`/api/v1/shops/${encodeURIComponent(shopId)}/publish-options`);
+    if (!current()) return;
+    const listingMethod = platform === 'TIKTOK_SHOP' ? requireTikTokDraftCapability(shop, result.data) : '';
+    const resolved = resolveDestinationPublishOptions(platform, selectedProductCaptureDetail, result.data, common, category);
+    field('category-choice').replaceChildren(new Option('请选择商品类目（下次同类商品自动带入）', ''), ...resolved.leaves.map(c => {
+      const denied = platform === 'TIKTOK_SHOP' && Boolean(tikTokCategoryPermissionError(c));
+      const option = new Option(c.label + (denied ? '（当前店铺无权限）' : ''), c.id);
+      option.disabled = denied;
+      return option;
+    }));
+    if (resolved.matchedOriginal) field('auto-summary').textContent += resolved.genderConverted ? ' · 已自动转换为店铺支持的同类男装／女装类目' : ' · 已匹配商品类目';
+    field('category-choice').value = resolved.categoryId;
+    field('category-id').value = resolved.categoryId;
+    field('category-choice').required = true;
+    if (platform === 'TIKTOK_SHOP') {
+      preparation.categoryLeaves = resolved.leaves;
+      field('warehouse-id').value = resolved.warehouseId;
+      if (!resolved.warehouseId) throw Error('目标店铺没有唯一或默认发货仓库，请在店铺后台设置默认仓库');
+      field('auto-summary').textContent += ' · 已匹配发货仓库 · 保存为草稿';
+      if (listingMethod === 'LOCAL_REPLICATION') field('auto-summary').textContent += ' · 已确认跨境店铺刊登模式';
+      preparation.status = 'READY';
+      return;
+    }
+    const channels = resolved.channels;
+    field('logistic-choice').replaceChildren(new Option('请选择配送渠道（下次自动带入）',''), ...channels.map(c => new Option(c.logistics_channel_name, String(c.logistics_channel_id))));
+    field('logistic-choice').value = resolved.logistic;
+    syncSimplePublishLogistics();
+    if (!channels.length) { field('advanced').open = true; field('auto-summary').textContent += '。店铺未返回已启用物流，请检查店铺配置。'; }
+    preparation.status = 'READY';
+  } catch (error) {
+    if (!current()) return;
+    const localFallback = platform === 'TIKTOK_SHOP' && String(shop?.sellerType || '').toUpperCase() === 'LOCAL'
+      && !error.draftCapabilityBlocked && !error.categoryPermissionBlocked
+      && !String(error.message || '').startsWith('跨境刊登模式未就绪');
+    if (platform !== 'TIKTOK_SHOP' || localFallback) {
+      preparation.status = localFallback ? 'LOCAL_FALLBACK' : 'READY';
+      fallback(`自动读取失败：${error.message}`);
+    } else {
+      preparation.status = 'BLOCKED';
+      preparation.error = `${shop?.name || shop?.externalShopId || '当前 TikTok 店铺'}：${error.message}`;
+      field('category-id').value = '';
+      field('category-id').hidden = true;
+      field('category-id').required = false;
+      field('category-choice').replaceChildren(new Option('当前店铺暂无法提交，请更换店铺或重新读取', ''));
+      field('category-choice').required = false;
+      field('warehouse-id').value = '';
+      field('advanced').open = false;
+      field('auto-summary').dataset.prepareError = preparation.error;
+      field('auto-summary').textContent = preparation.error;
+    }
+  } finally {
+    if (current()) field('auto-summary').dataset.loading = 'false';
+  }
+}
+function syncSimplePublishLogistics() {
+  const id = document.querySelector('#publish-logistic-choice').value;
+  document.querySelector('#publish-logistic-info').value = id ? JSON.stringify([{logistic_id:Number(id),enabled:true}]) : '';
+}
+
 function syncOfficialPublishFields() {
   const platform = document.querySelector("#publish-destination-platform").value;
   const live = marketplaceIntegrationStatus.livePublishingEnabled;
@@ -5689,8 +6407,8 @@ function syncOfficialPublishFields() {
     ? `键必须使用当前商品的 SKU Key，例如 ${skuKeys.slice(0, 3).join("、")}${skuKeys.length > 3 ? "…" : ""}；${marketplacePlatformName(platform)} 库存只能是 0–${stockMax} 的整数，留空则全部使用上架库存。`
     : `键必须使用当前商品的 SKU Key；${marketplacePlatformName(platform)} 库存只能是 0–${stockMax} 的整数，留空则全部使用上架库存。`;
   document.querySelector("#product-official-publish-hint").textContent = platform === "SHOPEE"
-    ? "Shopee：类目、库存、重量与物流均需填写"
-    : "TikTok Shop：类目、库存、仓库与包裹均需填写";
+    ? "默认库存 999 · 自动读取类目与物流"
+    : "默认库存 999 · 沿用原商品重量";
   const notice = document.querySelector(".product-dry-run-notice");
   notice.classList.toggle("is-live", live);
   notice.querySelector("span").textContent = live ? "OFFICIAL API" : "DRY RUN";
@@ -5762,9 +6480,17 @@ function setProductUploadFormBusy(busy) {
 function buildProductPublishPayload(destinationPlatform, shopId, idempotencyKey) {
   const payload = { confirmed: true, destinationPlatform, shopId, idempotencyKey };
   if (!marketplaceIntegrationStatus.livePublishingEnabled) return payload;
+  const preparationError = productPublishPreparationError(destinationPlatform, shopId);
+  if (preparationError) throw Error(preparationError);
+  if (document.querySelector("#publish-auto-summary").dataset.loading === "true") throw Error("正在读取店铺配置，请稍等片刻");
   payload.categoryId = document.querySelector("#publish-category-id").value.trim();
+  if (!payload.categoryId) throw Error("请选择商品类目");
   payload.publishStock = parseProductPublishStock(destinationPlatform);
   payload.weightGrams = document.querySelector("#publish-weight-grams").value.trim();
+  payload.autoConvertPrice = true;
+  payload.packageLengthCm = document.querySelector("#publish-package-length").value.trim();
+  payload.packageWidthCm = document.querySelector("#publish-package-width").value.trim();
+  payload.packageHeightCm = document.querySelector("#publish-package-height").value.trim();
   payload.skuStocks = parseProductSkuStocks("#publish-sku-stocks", destinationPlatform);
   if (destinationPlatform === "TIKTOK_SHOP") {
     payload.warehouseId = document.querySelector("#publish-warehouse-id").value.trim();
@@ -5775,7 +6501,7 @@ function buildProductPublishPayload(destinationPlatform, shopId, idempotencyKey)
   } else {
     payload.logisticInfo = parseShopeeLogisticInfo();
     payload.productAttributes = parseProductPublishJson("#publish-product-attributes", "Shopee 类目属性", [], "array");
-    payload.shopeePayload = parseProductPublishJson("#publish-shopee-payload", "Shopee 条件必填补充参数", {}, "object");
+    payload.shopeePayload = { brand: { brand_id: 0, original_brand_name: "NoBrand" }, ...parseProductPublishJson("#publish-shopee-payload", "Shopee 条件必填补充参数", {}, "object") };
   }
   return payload;
 }
@@ -5791,48 +6517,54 @@ function productPublishWorkflowCreateMayHaveCommitted(error) {
   return status === 0 || status === 408 || status >= 500;
 }
 
-async function createProductPublishWorkflow(captureId, payload, idempotencyKey) {
-  const request = () => api(productPublishWorkflowPath(captureId), {
+async function createProductPublishWorkflow(captureId, payload, idempotencyKey, {
+  requestApi = api, allowTargetRecovery = true, maxAttempts = 2, onRetry,
+  isCurrent = () => true, sleep = delay => new Promise(resolve => setTimeout(resolve, delay))
+} = {}) {
+  const request = () => requestApi(productPublishWorkflowPath(captureId), {
     method: "POST",
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
     body: JSON.stringify(payload)
   });
-  let firstError;
-  try {
-    const result = await request();
-    if (!result?.data?.id) throw new ApiRequestError("一键上传任务响应不完整，请稍后重试", 502, result);
-    return result.data;
-  } catch (error) {
-    if (!productPublishWorkflowCreateMayHaveCommitted(error)) throw error;
-    firstError = error;
-  }
-
+  let lastError;
   // A lost response does not tell us whether the POST committed. Replaying the
   // exact body with the exact same key is safe and lets the server return the
   // already-created workflow instead of creating a duplicate publication.
-  try {
-    const result = await request();
-    if (!result?.data?.id) throw new ApiRequestError("一键上传任务响应不完整，请稍后重试", 502, result);
-    return result.data;
-  } catch (retryError) {
-    if (!productPublishWorkflowCreateMayHaveCommitted(retryError)) throw retryError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (!isCurrent()) throw new ApiRequestError('当前操作已变化，已停止旧提交', 409);
     try {
-      const result = await api(`${productPublishWorkflowPath(captureId)}?limit=20`);
-      const workflows = Array.isArray(result.data) ? result.data : [];
-      const recovered = workflows.find(workflow => productPublishWorkflowMatchesTarget(workflow, captureId, payload));
-      if (recovered?.id) return recovered;
-    } catch (lookupError) {
-      if (lookupError?.status === 401) throw lookupError;
+      const result = await request();
+      if (!result?.data?.id) throw new ApiRequestError("一键上传任务响应不完整，请稍后重试", 502, result);
+      return result.data;
+    } catch (error) {
+      if (!productPublishWorkflowCreateMayHaveCommitted(error) || error?.name === 'AbortError') throw error;
+      lastError = error;
+      if (attempt < maxAttempts) {
+        const delayMs = attempt === 1 ? 2000 : 5000;
+        if (!isCurrent()) throw new ApiRequestError('当前操作已变化，已停止旧提交', 409);
+        onRetry?.({attempt: attempt + 1, maxAttempts, delayMs});
+        await sleep(delayMs);
+      }
     }
-    throw new ApiRequestError(
-      "一键上传任务的提交结果暂时无法确认。后台可能仍在执行；请保持当前页面，点击重试时系统会沿用同一请求，不会重复创建任务。",
-      retryError?.status || firstError?.status || 0,
-      retryError?.payload || firstError?.payload || null
-    );
   }
+  if (!isCurrent()) throw new ApiRequestError('当前操作已变化，已停止旧提交', 409);
+  try {
+    // Bulk requests must recover through the exact persisted key. This list
+    // currently does not expose keys, so matching only a shop is insufficient.
+    const result = allowTargetRecovery ? await requestApi(`${productPublishWorkflowPath(captureId)}?limit=20`) : null;
+    const workflows = Array.isArray(result?.data) ? result.data : [];
+    const recovered = workflows.find(workflow => productPublishWorkflowMatchesTarget(workflow, captureId, payload));
+    if (recovered?.id) return recovered;
+  } catch (lookupError) {
+    if (lookupError?.status === 401) throw lookupError;
+  }
+  throw new ApiRequestError(
+    "一键上传任务的提交结果暂时无法确认。后台可能仍在执行；请保持当前页面，点击重试时系统会沿用同一请求，不会重复创建任务。",
+    lastError?.status || 0, lastError?.payload || null
+  );
 }
 
-async function openProductPublishDialog() {
+async function openProductPublishDialog({ background = false } = {}) {
   const capture = selectedProductCaptureDetail;
   const status = String(capture?.status || "").toUpperCase();
   const supported = ["CAPTURED", "DRAFT", "FAILED", "IMAGE_PROCESSING", "READY", "APPROVED", "PUBLISHED"].includes(status);
@@ -5880,6 +6612,7 @@ async function openProductPublishDialog() {
   const exampleSkuKey = skuKeys[0] || "SKU_KEY";
   skuStocks.placeholder = JSON.stringify({ [exampleSkuKey]: 20 });
   syncOfficialPublishFields();
+  await prepareSimpleProductPublish();
   renderProductUploadSteps(capture);
   document.querySelector("#product-publish-dialog-title").textContent = status === "PUBLISHED"
     ? "提交到其他店铺" : "确认一键上传";
@@ -5894,7 +6627,7 @@ async function openProductPublishDialog() {
   document.querySelector("#product-publish-error").classList.remove("is-success");
   setProductUploadFormBusy(false);
   document.querySelector("#submit-product-publish").disabled = false;
-  document.querySelector("#product-publish-dialog").showModal();
+  if (!background) document.querySelector("#product-publish-dialog").showModal();
   const trackedWorkflow = productPublishWorkflowForCapture(capture.id);
   if (productPublishWorkflowIsActive(trackedWorkflow)) {
     acceptProductPublishWorkflow(trackedWorkflow, currentUser?.organizationId || "");
@@ -5903,7 +6636,537 @@ async function openProductPublishDialog() {
     if (trackedWorkflow) productPublishWorkflowState = null;
     await restoreProductPublishWorkflow(capture.id);
   }
+  return true;
 }
+
+function saveProductBulkItems(items = productBulkItems, key = productBulkStorageKey, org = productBulkOrganization) {
+  let previous;
+  try { previous = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) {}
+  const now = new Date().toISOString();
+  const prefix = `heyi:bulk-upload:batch:${encodeURIComponent(org)}:`;
+  const batchId = key.startsWith(prefix) ? decodeURIComponent(key.slice(prefix.length)) : previous?.batchId || key;
+  localStorage.setItem(key, JSON.stringify({organizationId:org, batchId,
+    createdAt:previous?.createdAt || now, updatedAt:now, items}));
+}
+
+const productBulkRuns = new Map();
+let productBulkViewGeneration = 0;
+let productBulkPollGeneration = 0;
+let productBulkPollSession = null;
+
+function productBulkApi(path, options = {}, {signal, timeoutMs = 90000, onRetry, isCurrent = () => true, retry = true} = {}) {
+  const request = () => {
+    if (!isCurrent()) throw new ApiRequestError('当前操作已变化，已停止旧请求', 409);
+    return ProductBulkUpload.withDeadline(deadlineSignal => api(path, {...options, signal: deadlineSignal}), {
+      signal: signal || options.signal, timeoutMs, timeoutMessage: '平台请求超时，已停止等待；可沿用原任务重试'
+    });
+  };
+  return retry && (!options.method || options.method === 'GET')
+    ? ProductBulkUpload.retryRead(request, {onRetry, isCurrent, signal: signal || options.signal}) : request();
+}
+
+function productBulkCaptureApi(path, options = {}, {signal, timeoutMs = 90000, onRetry, isCurrent = () => true, retry = true} = {}) {
+  const request = () => {
+    if (!isCurrent()) throw new ApiRequestError('当前操作已变化，已停止旧请求', 409);
+    return ProductBulkUpload.withDeadline(deadlineSignal => productCaptureApi(path, {...options, signal: deadlineSignal}), {
+      signal: signal || options.signal, timeoutMs, timeoutMessage: '商品资料读取或同步超时，请稍后重试'
+    });
+  };
+  return retry && (!options.method || options.method === 'GET')
+    ? ProductBulkUpload.retryRead(request, {onRetry, isCurrent, signal: signal || options.signal}) : request();
+}
+
+function recordProductBulkRetry(item, label, {attempt, maxAttempts, delayMs}, run) {
+  item.retryCount = (item.retryCount || 0) + 1;
+  item.retryMessage = `${label}暂时失败，${Math.ceil(delayMs / 1000)} 秒后自动重试（第 ${attempt}/${maxAttempts} 次尝试）`;
+  if (run) {
+    saveProductBulkItems(run.items, run.key, run.org);
+    if (productBulkItems === run.items && productBulkStorageKey === run.key) renderProductBulkProgress();
+    renderProductBulkHistory();
+  } else {
+    saveProductBulkItems();
+    renderProductBulkProgress();
+  }
+}
+
+function stopProductBulkPolling() {
+  clearTimeout(productBulkPollTimer);
+  productBulkPollTimer = null;
+  productBulkPollGeneration++;
+  productBulkPollSession?.controller.abort();
+  productBulkPollSession = null;
+}
+
+function productBulkPollIsCurrent(session) {
+  return productBulkPollSession === session && session.generation === productBulkPollGeneration
+    && currentUser?.organizationId === session.org && productBulkItems === session.items
+    && document.querySelector('#product-bulk-dialog').open && !session.controller.signal.aborted;
+}
+
+function scheduleProductBulkPolling(session, delay = 3000) {
+  if (!productBulkPollIsCurrent(session)) return;
+  clearTimeout(productBulkPollTimer);
+  productBulkPollTimer = setTimeout(() => {
+    productBulkPollTimer = null;
+    if (productBulkPollIsCurrent(session)) void pollProductBulkProgress();
+  }, delay);
+}
+
+function syncProductBulkCapture(item, session) {
+  if (!productBulkPollIsCurrent(session) || !item.workflow?.id || productPublishWorkflowIsActive(item.workflow)) return;
+  const previous = session.syncs.get(item);
+  if (previous?.inFlight || previous?.done || previous?.paused || previous?.retryAt > Date.now()) return;
+  if (session.syncActive >= 3) return;
+  const sync = {inFlight: true, done: false, retryAt: 0, attempts: (previous?.attempts || 0) + 1};
+  session.syncs.set(item, sync);
+  session.syncActive++;
+  // Detail synchronization is independent of workflow polling. A slow detail
+  // request must never prevent another product's terminal status from rendering.
+  void productBulkCaptureApi(`/${encodeURIComponent(item.captureId)}`, {}, {
+    signal: session.controller.signal, timeoutMs: 30000, retry: false
+  }).then(result => {
+    if (!productBulkPollIsCurrent(session)) return;
+    const capture = productCapturePayload(result?.data);
+    if (capture?.id !== item.captureId) throw Error('商品状态同步响应不完整');
+    updateProductCaptureInMemory(capture, {preserveSelectedEditor: productEditorDirty || Boolean(productCaptureSaveInFlightId)});
+    sync.done = true;
+    item.syncError = '';
+    item.syncPaused = false;
+    item.retryMessage = '';
+    renderProductBulkProgress();
+  }).catch(error => {
+    if (!productBulkPollIsCurrent(session)) return;
+    if (error?.status === 401) { stopProductBulkPolling(); return; }
+    if (ProductBulkUpload.isRetryableReadError(error) && sync.attempts < 3) {
+      const delayMs = sync.attempts === 1 ? 2000 : 5000;
+      sync.retryAt = Date.now() + delayMs;
+      item.syncError = '商品状态同步暂时失败，正在自动重试';
+      recordProductBulkRetry(item, '同步商品状态', {attempt: sync.attempts + 1, maxAttempts: 3, delayMs});
+    } else {
+      sync.paused = true;
+      item.syncPaused = true;
+      item.syncError = `商品状态同步失败，已尝试 ${sync.attempts} 次；请点击重试进度同步`;
+    }
+    renderProductBulkProgress();
+  }).finally(() => {
+    sync.inFlight = false;
+    session.syncActive--;
+    if (productBulkPollIsCurrent(session)) {
+      for (const pending of session.items) syncProductBulkCapture(pending, session);
+      if (!sync.done && !sync.paused) scheduleProductBulkPolling(session, Math.max(0, sync.retryAt - Date.now()));
+    }
+  });
+}
+
+function productBulkThumbnail(item) {
+  const id = item.captureId || item.id;
+  const capture = productCaptures.find(candidate => candidate.id === id) || productBulkSelectedCaptures.get(id);
+  const image = capture?.images?.[0];
+  return safeProductUrl(item.thumbnailUrl || capture?.thumbnailUrl || image?.processedUrl || image?.originalUrl);
+}
+function renderProductBulkCard(item, shops = [], preview = false) {
+  const workflow = item.workflow;
+  const state = workflow?.status || item.status || 'WAITING';
+  const failed = ['PREPARE_FAILED','CREATE_FAILED','FAILED','REVIEW_REQUIRED'].includes(state);
+  const success = state === 'SUCCEEDED';
+  const active = ['PREPARING','SUBMITTING','RUNNING'].includes(state);
+  const tone = failed ? 'failed' : success ? 'success' : active ? 'active' : 'waiting';
+  const status = {WAITING:'等待准备',PREPARING:'自动准备中',PREPARE_FAILED:'准备失败',PREPARED:'准备就绪',SUBMITTING:'正在提交',CREATE_FAILED:'提交失败',PENDING:'排队中',RUNNING:'处理中',SUCCEEDED:workflow?.executionMode === 'DRY_RUN' ? '演练完成' : '已上传 · 待上架',FAILED:'上传失败',REVIEW_REQUIRED:'需要处理'}[state] || state;
+  const stage = {IMAGES:'图片检测与处理',APPROVE:'商品资料确认',PUBLISH:'上传到待上架'}[workflow?.currentStep] || '';
+  const images = workflow?.imageProcessing;
+  const measured = Number.isInteger(images?.totalImages) && images.totalImages > 0;
+  const done = measured ? Math.min(images.totalImages, Math.max(0, Number(images.processedImages) || 0)) : 0;
+  const percent = success ? 100 : measured ? Math.round(done / images.totalImages * 100) : null;
+  const progress = success ? '上传成功' : measured ? `图片 ${done} / ${images.totalImages}` : preview ? '选择店铺后自动准备' : stage || status;
+  const shopId = workflow?.shopId || item.payload?.shopId || item.shopId;
+  const shop = shops.find(candidate => String(candidate.id) === String(shopId));
+  const shopName = shop?.name || shop?.shopName || shop?.externalShopId || shopId || '';
+  const error = [workflow?.errorMessage || item.error, item.syncError].filter(Boolean).join(' · ');
+  const retries = item.retryMessage || (item.retryCount ? `已自动重试 ${item.retryCount} 次` : '');
+  const thumb = productBulkThumbnail(item);
+  return `<section class="bulk-product-card is-${tone}" ${preview ? `data-bulk-item="${escapeHtml(item.id)}"` : ''}>
+    <div class="bulk-product-visual"><span class="bulk-product-placeholder" aria-hidden="true">▧</span>${thumb ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}
+      <span class="bulk-product-badge">${success ? '✓' : failed ? '!' : active ? '◌' : '·'} ${escapeHtml(status)}</span>
+      <div class="bulk-product-overlay"><div><span>${escapeHtml(progress)}</span>${percent !== null && !failed ? `<b>${percent}%</b>` : ''}</div><div class="bulk-product-track ${active && percent === null ? 'is-indeterminate' : ''}"><span style="width:${percent === null ? 0 : percent}%"></span></div></div>
+    </div><div class="bulk-product-info"><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong>
+      ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : '<small>原价换汇 · 库存 999 · 自动匹配类目</small>'}
+      ${error ? `<details class="bulk-product-error"><summary>查看失败原因</summary><p>${escapeHtml(error)}</p></details>` : ''}
+      ${retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
+}
+
+function renderProductBulkProgress() {
+  const shops = crossPlatformPublishShops();
+  document.querySelector("#product-bulk-progress").innerHTML = productBulkItems.map(item => renderProductBulkCard(item, shops)).join('');
+  const selection = document.querySelector('.product-bulk-selection');
+  if (selection) selection.hidden = productBulkItems.length > 0;
+  const pending = productBulkItems.some(item => !item.workflow?.id);
+  const reconnect = productBulkItems.some(item => item.progressPaused || item.syncPaused);
+  const button = document.querySelector('#submit-product-bulk');
+  const changeable = productBulkItems.filter(ProductBulkUpload.canChangeShop);
+  document.querySelector('#product-bulk-settings').disabled = productBulkBusy || (productBulkItems.length > 0 && !changeable.length);
+  const shopHint = document.querySelector('#product-bulk-shop-hint');
+  if (shopHint) shopHint.textContent = changeable.length
+    ? `可切换店铺，${changeable.length} 件未提交商品将按新店铺重新准备。${changeable.length < productBulkItems.length ? '已提交商品保留原店铺。' : ''}` : '';
+  button.textContent = productBulkBusy ? '正在自动准备并提交…' : productBulkItems.length ? pending ? '重试未提交商品' : reconnect ? '重试进度同步' : '全部商品已提交' : '一键上传所选商品';
+  button.disabled = productBulkBusy || (productBulkItems.length > 0 && !pending && !reconnect) || !document.querySelector('#product-bulk-shop').value;
+}
+
+function productBulkSelectedShop() {
+  const item = productBulkItems.find(ProductBulkUpload.canChangeShop) || productBulkItems[0];
+  return item?.workflow?.shopId || item?.payload?.shopId || item?.shopId || '';
+}
+
+function changeProductBulkShop() {
+  const select = document.querySelector('#product-bulk-shop');
+  if (productBulkBusy || currentUser?.organizationId !== productBulkOrganization || !hasAnyPermission('product:publish')) {
+    if (productBulkItems.length) select.value = productBulkSelectedShop();
+    return;
+  }
+  if (!productBulkItems.length || !select.value) { renderProductBulkProgress(); return; }
+  try {
+    if (!crossPlatformPublishShops().some(shop => String(shop.id) === select.value)
+      && !(select.value === 'dry-run-shop' && !marketplaceIntegrationStatus.livePublishingEnabled)) throw Error('目标店铺当前不可发布，请检查店铺授权');
+    const nextItems = ProductBulkUpload.changeShop(productBulkItems, select.value, newProductIdempotencyKey());
+    if (nextItems !== productBulkItems) {
+      // Persist first so a storage failure cannot lose the original request/key.
+      saveProductBulkItems(nextItems);
+      stopProductBulkPolling();
+      productBulkItems = nextItems;
+      document.querySelector('#product-bulk-error').textContent = '';
+      void pollProductBulkProgress();
+    } else select.value = productBulkSelectedShop();
+  } catch (error) {
+    select.value = productBulkSelectedShop();
+    document.querySelector('#product-bulk-error').textContent = error.message;
+  }
+  renderProductBulkProgress();
+}
+
+async function pollProductBulkProgress() {
+  const org = productBulkOrganization, items = productBulkItems;
+  if (!document.querySelector('#product-bulk-dialog').open || currentUser?.organizationId !== org) return;
+  if (!productBulkPollSession || productBulkPollSession.items !== items || productBulkPollSession.org !== org) {
+    stopProductBulkPolling();
+    productBulkPollSession = {org, items, generation: productBulkPollGeneration,
+      controller: new AbortController(), polling: false, syncs: new Map(), pollErrors: new Map(), syncActive: 0, requested: false};
+    for (const item of items) { item.progressPaused = false; item.syncPaused = false; }
+  }
+  const session = productBulkPollSession;
+  if (session.polling) { session.requested = true; return; }
+  clearTimeout(productBulkPollTimer);
+  productBulkPollTimer = null;
+  session.polling = true;
+  session.requested = false;
+  const active = items.filter(item => item.workflow?.id && productPublishWorkflowIsActive(item.workflow)
+    && !item.progressPaused && !(session.pollErrors.get(item)?.retryAt > Date.now()));
+  let cursor = 0;
+  for (const item of items) syncProductBulkCapture(item, session);
+  try {
+    await Promise.all(Array.from({length: Math.min(3, active.length)}, async () => {
+      while (cursor < active.length && productBulkPollIsCurrent(session)) {
+        const item = active[cursor++];
+        const workflowId = item.workflow.id;
+        try {
+          const result = await productBulkApi(productPublishWorkflowPath(item.captureId, workflowId), {}, {
+            signal: session.controller.signal, timeoutMs: 30000, retry: false
+          });
+          if (!productBulkPollIsCurrent(session)) return;
+          if (result?.data?.id !== workflowId || result.data.captureId !== item.captureId) throw Error('上传进度响应不完整');
+          item.workflow = result.data; item.status = result.data.status; item.error = '';
+          item.retryMessage = ''; session.pollErrors.delete(item);
+          saveProductBulkItems();
+          renderProductBulkProgress();
+          syncProductBulkCapture(item, session);
+        } catch (error) {
+          if (!productBulkPollIsCurrent(session)) return;
+          if (error?.status === 401) { stopProductBulkPolling(); return; }
+          const attempts = (session.pollErrors.get(item)?.attempts || 0) + 1;
+          if (ProductBulkUpload.isRetryableReadError(error) && attempts < 3) {
+            const delayMs = attempts === 1 ? 2000 : 5000;
+            session.pollErrors.set(item, {attempts, retryAt: Date.now() + delayMs});
+            item.error = '进度读取暂时失败，后台任务仍会继续';
+            recordProductBulkRetry(item, '读取上传进度', {attempt: attempts + 1, maxAttempts: 3, delayMs});
+          } else {
+            item.progressPaused = true;
+            item.error = `进度读取失败，已尝试 ${attempts} 次；后台任务仍会继续，请点击重试进度同步`;
+          }
+          renderProductBulkProgress();
+        }
+      }
+    }));
+  } finally {
+    session.polling = false;
+    if (productBulkPollIsCurrent(session)) {
+      const needsSync = items.some(item => item.workflow?.id && !productPublishWorkflowIsActive(item.workflow)
+        && !session.syncs.get(item)?.done && !session.syncs.get(item)?.paused);
+      if (session.requested || productBulkBusy || needsSync || items.some(item => productPublishWorkflowIsActive(item.workflow) && !item.progressPaused)) {
+        const retryTimes = [...session.pollErrors.values(), ...session.syncs.values()]
+          .filter(state => state.retryAt > Date.now()).map(state => state.retryAt - Date.now());
+        scheduleProductBulkPolling(session, session.requested ? 0 : Math.min(3000, ...retryTimes));
+      }
+    }
+  }
+}
+
+async function openProductBulkUpload(historyKey) {
+  if (!hasAnyPermission("product:publish")) return;
+  if (typeof historyKey !== 'string') historyKey = '';
+  if (!historyKey && !productBulkSelectedIds.size) return;
+  const org = currentUser?.organizationId;
+  const view = ++productBulkViewGeneration;
+  let saved = historyKey ? ProductBulkHistory.list(localStorage, org).find(record => record.key === historyKey) : null;
+  if (historyKey && !saved) return;
+  const selectedIds = saved ? saved.items.map(item => item.captureId) : [...productBulkSelectedIds];
+  await loadMarketplaceShops({silent:true});
+  if (!org || currentUser?.organizationId !== org || view !== productBulkViewGeneration) return;
+  if (historyKey) {
+    saved = ProductBulkHistory.list(localStorage, org).find(record => record.key === historyKey);
+    if (!saved) return;
+  }
+  stopProductBulkPolling();
+  productBulkOrganization = org;
+  productBulkStorageKey = historyKey || ProductBulkHistory.storageKey(org, newProductIdempotencyKey());
+  const run = productBulkRuns.get(productBulkStorageKey);
+  productBulkItems = run?.items || saved?.items || [];
+  productBulkBusy = Boolean(run);
+  const shops = crossPlatformPublishShops();
+  const select = document.querySelector('#product-bulk-shop');
+  select.innerHTML = `<option value="">${shops.length ? '请选择目标店铺' : '没有可发布的授权店铺'}</option>` + shops.map(shop => `<option value="${escapeHtml(shop.id)}">${escapeHtml(shop.name || shop.shopName || shop.externalShopId)} · ${escapeHtml(shop.region || '')} · ${escapeHtml(shop.platform === 'TIKTOK_SHOP' ? 'TikTok Shop' : 'Shopee')}</option>`).join('');
+  if (shops.length === 1) select.value = shops[0].id;
+  if (!marketplaceIntegrationStatus.livePublishingEnabled && !shops.length) {
+    select.innerHTML = '<option value="dry-run-shop">发布演练（不连接店铺）</option>';
+  }
+  document.querySelector('#product-bulk-mode').textContent = marketplaceIntegrationStatus.livePublishingEnabled
+    ? '上传到店铺待上架目录，后续上架由你决定。'
+    : '当前为发布演练模式，不会在店铺创建商品。';
+  const selected = selectedIds.map(id => productCaptures.find(item => item.id === id) || productBulkSelectedCaptures.get(id)
+    || (saved && {id, title:saved.items.find(item => item.captureId === id)?.title})).filter(Boolean);
+  document.querySelector('#product-bulk-summary').textContent = `已选择 ${selected.length} 件商品`;
+  document.querySelector('#product-bulk-items').innerHTML = selected.map(item => renderProductBulkCard(item, [], true)).join('');
+  const restored = productBulkItems.length > 0;
+  if (restored) {
+    const shopId = productBulkSelectedShop();
+    if (![...select.options].some(option => option.value === shopId)) select.add(new Option('原任务店铺（保留上传记录）', shopId));
+    select.value = shopId;
+  }
+  document.querySelector('#product-bulk-error').textContent = shops.length || !marketplaceIntegrationStatus.livePublishingEnabled || restored ? '' : '请先在店铺管理中连接可发布的 Shopee 或 TikTok Shop 店铺。';
+  renderProductBulkProgress();
+  if (!document.querySelector('#product-bulk-dialog').open) document.querySelector('#product-bulk-dialog').showModal();
+  void pollProductBulkProgress();
+}
+
+async function submitProductBulkUpload(event) {
+  event.preventDefault();
+  if (productBulkBusy || !hasAnyPermission('product:publish')) return;
+  const org = productBulkOrganization;
+  const key = productBulkStorageKey;
+  if (currentUser?.organizationId !== org) return;
+  if (productBulkRuns.has(key)) return;
+  const reconnect = productBulkItems.some(item => item.progressPaused || item.syncPaused);
+  if (reconnect) {
+    stopProductBulkPolling();
+    for (const item of productBulkItems.filter(item => item.progressPaused || item.syncPaused)) {
+      item.error = ''; item.syncError = ''; item.retryMessage = '';
+    }
+  }
+  if (reconnect && productBulkItems.every(item => item.workflow?.id)) {
+    void pollProductBulkProgress();
+    renderProductBulkProgress();
+    return;
+  }
+  productBulkBusy = true;
+  document.querySelector('#product-bulk-error').textContent = '';
+  renderProductBulkProgress();
+  let run;
+  try {
+    if (!productBulkItems.length) {
+      const items = [...document.querySelectorAll('[data-bulk-item]')].map(row => ({id: row.dataset.bulkItem, title: row.querySelector('strong').textContent}));
+      productBulkItems = ProductBulkUpload.plan(items, document.querySelector('#product-bulk-shop').value, newProductIdempotencyKey());
+      for (const item of productBulkItems) item.thumbnailUrl = productBulkThumbnail(item);
+    }
+    const items = productBulkItems;
+    run = {items, org, key};
+    productBulkRuns.set(key, run);
+    const isCurrent = () => currentUser?.organizationId === org && productBulkRuns.get(key) === run;
+    const isVisible = () => productBulkItems === items && productBulkStorageKey === key;
+    const recordRetry = (item, label, details) => recordProductBulkRetry(item, label, details, run);
+    const shopOptions = new Map();
+    const readShopOptions = shopId => {
+      if (!shopOptions.has(shopId)) {
+        // Allow extra time for the official category and logistics reads while
+        // keeping a complete request/body deadline for an unresponsive service.
+        shopOptions.set(shopId, productBulkApi(`/api/v1/shops/${encodeURIComponent(shopId)}/publish-options`, {}, {
+          timeoutMs: 180000, isCurrent,
+          onRetry: details => {
+            for (const pending of items.filter(item => item.shopId === shopId && item.status === 'PREPARING')) recordRetry(pending, '读取店铺配置', details);
+          }
+        })
+          .then(result => {
+            if (!result?.data) throw Error('店铺类目与配送渠道响应不完整');
+            return result.data;
+          }));
+      }
+      return shopOptions.get(shopId);
+    };
+    const prepare = async item => {
+      item.retryMessage = '';
+      if (selectedProductCaptureId === item.captureId && (productEditorDirty || productCaptureSaveInFlightId)) {
+        throw Error('此商品有尚未保存的修改，请先保存后重试上传');
+      }
+      const captureRequest = (path, options) => productBulkCaptureApi(path, options, {
+        isCurrent, onRetry: details => recordRetry(item, '读取商品资料', details)
+      });
+      const result = await captureRequest(`/${encodeURIComponent(item.captureId)}`);
+      if (!isCurrent()) return;
+      let capture = productCapturePayload(result.data);
+      if (capture?.id !== item.captureId) throw Error('商品详情读取失败，请重试');
+      const targetShop = crossPlatformPublishShops().find(shop => String(shop.id) === item.shopId);
+      const platform = normalizedMarketplacePlatform(targetShop?.platform || item.payload?.destinationPlatform || 'SHOPEE');
+      const base = {confirmed: true, destinationPlatform: platform, shopId: item.shopId, idempotencyKey: item.idempotencyKey};
+      let payload = base;
+      if (marketplaceIntegrationStatus.livePublishingEnabled) {
+        if (!targetShop) throw Error('目标店铺当前不可发布，请检查店铺授权');
+        let shopOptions;
+        try {
+          shopOptions = await readShopOptions(item.shopId);
+          if (!isCurrent()) return;
+          if (platform === 'TIKTOK_SHOP') requireTikTokDraftCapability(targetShop, shopOptions);
+        } catch (error) {
+          throw Error(`${targetShop.name || targetShop.externalShopId || item.shopId}：${error.message}`);
+        }
+        const common = readPublishPreference(false, capture, item.shopId, platform, org);
+        const category = readPublishPreference(true, capture, item.shopId, platform, org);
+        let resolved;
+        try {
+          resolved = resolveDestinationPublishOptions(platform, capture, shopOptions, common, category);
+        } catch (error) {
+          throw Error(`${targetShop.name || targetShop.externalShopId || item.shopId}：${error.message}`);
+        }
+        if (!resolved.categoryId) throw Error(`原商品类目“${capture.categoryName || '未采集'}”无法匹配目标店铺类目，未提交此商品`);
+        if (platform === 'TIKTOK_SHOP' && !resolved.warehouseId) throw Error('目标店铺没有唯一或默认发货仓库，请在店铺后台设置默认仓库');
+        if (platform === 'SHOPEE' && !resolved.logisticInfo.length) throw Error('目标店铺未启用配送渠道，请在店铺管理中启用');
+        payload = {...base, ...automaticProductPublishDefaults(capture, common), categoryId: resolved.categoryId,
+          ...(platform === 'TIKTOK_SHOP' ? {warehouseId: resolved.warehouseId} : {logisticInfo: resolved.logisticInfo})};
+      }
+      capture = await normalizeProductCaptureForUpload(capture, isCurrent, captureRequest);
+      if (!isCurrent()) return;
+      if (capture?.id) updateProductCaptureInMemory(capture, {preserveSelectedEditor: productEditorDirty || Boolean(productCaptureSaveInFlightId)});
+      return payload;
+    };
+    await ProductBulkUpload.submit(items, {
+      save: () => saveProductBulkItems(items, key, org), prepare, isCurrent, concurrency: 3,
+      create: async (captureId, payload, key) => {
+        const item = items.find(candidate => candidate.captureId === captureId);
+        item.retryMessage = '';
+        const workflow = await createProductPublishWorkflow(captureId, payload, key, {
+          requestApi: (path, options) => productBulkApi(path, options, {isCurrent}),
+          allowTargetRecovery: false, maxAttempts: 3, isCurrent,
+          onRetry: details => recordRetry(item, '提交上传任务', details)
+        });
+        if (isCurrent()) item.retryMessage = '';
+        return workflow;
+      },
+      changed: () => {
+        if (isVisible()) {
+          renderProductBulkProgress();
+          void pollProductBulkProgress();
+        }
+        renderProductBulkHistory();
+      }
+    });
+    if (isCurrent() && isVisible()) void pollProductBulkProgress();
+  } catch (error) {
+    if (currentUser?.organizationId === org && productBulkStorageKey === key) document.querySelector('#product-bulk-error').textContent = error.message;
+  } finally {
+    if (productBulkRuns.get(key) === run) productBulkRuns.delete(key);
+    if (currentUser?.organizationId === org && productBulkStorageKey === key) {
+      productBulkBusy = false;
+      renderProductBulkProgress();
+    }
+    renderProductBulkHistory();
+  }
+}
+
+let productBulkHistorySession = null;
+
+function renderProductBulkHistory() {
+  const dialog = document.querySelector('#product-bulk-history-dialog');
+  if (!dialog?.open || !currentUser?.organizationId || typeof ProductBulkHistory === 'undefined') return;
+  document.querySelector('#product-bulk-history-list').innerHTML = ProductBulkHistory.render(
+    ProductBulkHistory.list(localStorage, currentUser.organizationId));
+}
+
+function stopProductBulkHistoryPolling() {
+  if (!productBulkHistorySession) return;
+  clearTimeout(productBulkHistorySession.timer);
+  productBulkHistorySession.controller.abort();
+  productBulkHistorySession = null;
+}
+
+async function pollProductBulkHistory(session) {
+  const current = () => productBulkHistorySession === session && !session.controller.signal.aborted
+    && currentUser?.organizationId === session.org && document.querySelector('#product-bulk-history-dialog').open;
+  if (!current()) return;
+  const records = ProductBulkHistory.list(localStorage, session.org);
+  const pending = records.flatMap(record => record.items.filter(item => item.workflow?.id && productPublishWorkflowIsActive(item.workflow))
+    .map(item => ({key:record.key, captureId:item.captureId, workflowId:item.workflow.id})));
+  let cursor = 0;
+  await Promise.all(Array.from({length:Math.min(3,pending.length)}, async () => {
+    while (current() && cursor < pending.length) {
+      const target = pending[cursor++];
+      try {
+        const result = await productBulkApi(productPublishWorkflowPath(target.captureId, target.workflowId), {},
+          {signal:session.controller.signal, timeoutMs:30000, retry:false});
+        if (!current()) return;
+        if (result?.data?.id !== target.workflowId || result.data.captureId !== target.captureId) throw Error('上传进度响应不完整');
+        // Merge into the latest batch so a late read cannot undo another item's submission.
+        const items = productBulkStorageKey === target.key && productBulkOrganization === session.org
+          ? productBulkItems : productBulkRuns.get(target.key)?.items
+            || ProductBulkHistory.list(localStorage, session.org).find(record => record.key === target.key)?.items;
+        const item = items?.find(item => item.captureId === target.captureId && item.workflow?.id === target.workflowId);
+        if (!item) continue;
+        item.workflow = result.data; item.status = result.data.status;
+        item.error = ''; item.historySyncError = '';
+        saveProductBulkItems(items, target.key, session.org);
+      } catch (error) {
+        if (!current()) return;
+        if (error?.status === 401) { stopProductBulkHistoryPolling(); return; }
+        // Keep the last confirmed outcome; a network error is not an upload failure.
+      }
+      renderProductBulkHistory();
+    }
+  }));
+  if (current()) session.timer = setTimeout(() => void pollProductBulkHistory(session), 3000);
+}
+
+function openProductBulkHistory() {
+  if (!hasAnyPermission('product:publish') || !currentUser?.organizationId) return;
+  stopProductBulkHistoryPolling();
+  const detail = document.querySelector('#product-bulk-dialog');
+  if (detail.open) detail.close();
+  const dialog = document.querySelector('#product-bulk-history-dialog');
+  if (!dialog.open) dialog.showModal();
+  renderProductBulkHistory();
+  const session = {org:currentUser.organizationId, controller:new AbortController(), timer:null};
+  productBulkHistorySession = session;
+  void pollProductBulkHistory(session);
+}
+
+document.querySelector('#open-product-bulk-upload').addEventListener('click', () => void openProductBulkUpload());
+document.querySelector('#open-product-bulk-history').addEventListener('click', openProductBulkHistory);
+document.querySelector('#open-product-bulk-history-from-detail').addEventListener('click', openProductBulkHistory);
+document.querySelector('#close-product-bulk-history').addEventListener('click', () => document.querySelector('#product-bulk-history-dialog').close());
+document.querySelector('#product-bulk-history-dialog').addEventListener('close', stopProductBulkHistoryPolling);
+document.querySelector('#product-bulk-history-list').addEventListener('click', event => {
+  const button = event.target.closest('[data-product-bulk-history-key]');
+  if (!button) return;
+  document.querySelector('#product-bulk-history-dialog').close();
+  void openProductBulkUpload(button.dataset.productBulkHistoryKey);
+});
+document.querySelector('#product-bulk-form').addEventListener('submit', submitProductBulkUpload);
+document.querySelector('#product-bulk-shop').addEventListener('change', changeProductBulkShop);
+document.querySelector('#close-product-bulk').addEventListener('click', () => document.querySelector('#product-bulk-dialog').close());
+document.querySelector('#product-bulk-dialog').addEventListener('close', stopProductBulkPolling);
 
 async function submitProductPublish(event) {
   event.preventDefault();
@@ -5991,6 +7254,7 @@ async function submitProductPublish(event) {
     renderProductUploadSteps(workingCapture);
     button.textContent = "正在创建后台一键上传任务…";
     const workflow = await createProductPublishWorkflow(captureId, payload, idempotencyKey);
+    rememberPublishPreferences();
     if (!currentUser || (currentUser.organizationId || "") !== organizationId) return;
     if (selectedProductCaptureId !== captureId) return;
     workflowAccepted = acceptProductPublishWorkflow(workflow, organizationId);
@@ -6150,11 +7414,48 @@ async function createExtensionPairingCode() {
   }
 }
 
+async function deleteProductCaptureFromList(button) {
+  const id = button.dataset.deleteCapture;
+  const capture = productCaptures.find(item => item.id === id);
+  if (!capture || !window.confirm(`确定删除采集商品“${capture.title || id}”？`)) return;
+  button.disabled = true;
+  button.textContent = "删除中…";
+  try {
+    await productCaptureApi(`/${encodeURIComponent(id)}`, {method:"DELETE"});
+    productBulkSelectedIds.delete(id);
+    productBulkSelectedCaptures.delete(id);
+    productLiveImageProgress.delete(id);
+    document.querySelector("#product-bulk-count").textContent = `已勾选 ${productBulkSelectedIds.size} 件`;
+    document.querySelector("#open-product-bulk-upload").disabled = !productBulkSelectedIds.size;
+    if (selectedProductCaptureId === id) await selectProductCapture(null);
+    await loadProductCaptures(null, {page: Math.max(0, productCapturePage), refreshDetail:false});
+  } catch (error) {
+    window.alert(error.message || "删除失败，请重试");
+    button.disabled = false;
+    button.textContent = "删除";
+  }
+}
+
 document.querySelector("#product-capture-list").addEventListener("click", event => {
+  const deleteButton = event.target.closest("[data-delete-capture]");
+  if (deleteButton) { void deleteProductCaptureFromList(deleteButton); return; }
+  const checkbox = event.target.closest("[data-product-bulk-id]");
+  if (checkbox) {
+    if (checkbox.checked) {
+      productBulkSelectedIds.add(checkbox.dataset.productBulkId);
+      productBulkSelectedCaptures.set(checkbox.dataset.productBulkId, productCaptures.find(item => item.id === checkbox.dataset.productBulkId));
+    } else {
+      productBulkSelectedIds.delete(checkbox.dataset.productBulkId);
+      productBulkSelectedCaptures.delete(checkbox.dataset.productBulkId);
+    }
+    document.querySelector("#product-bulk-count").textContent = `已勾选 ${productBulkSelectedIds.size} 件`;
+    document.querySelector("#open-product-bulk-upload").disabled = !productBulkSelectedIds.size;
+    return;
+  }
   const row = event.target.closest("[data-product-capture-id]");
   if (!row) return;
   productLastNotice = null;
-  selectProductCapture(row.dataset.productCaptureId);
+  window.location.hash = `product-capture?id=${encodeURIComponent(row.dataset.productCaptureId)}`;
 });
 
 document.querySelector("#product-status-filter").addEventListener("click", event => {
@@ -6168,7 +7469,7 @@ document.querySelector("#product-status-filter").addEventListener("click", event
     item.classList.toggle("active", active);
     item.setAttribute("aria-pressed", String(active));
   });
-  loadProductCaptures(selectedProductCaptureId, { silent: true, refreshDetail: false });
+  loadProductCaptures(selectedProductCaptureId, { page: 0, silent: true, refreshDetail: false });
 });
 
 document.querySelector("#product-capture-search").addEventListener("input", event => {
@@ -6177,12 +7478,20 @@ document.querySelector("#product-capture-search").addEventListener("input", even
   document.querySelector("#product-result-count").textContent = "正在准备搜索…";
   productCaptureSearchDebounceTimer = window.setTimeout(() => {
     productCaptureSearchDebounceTimer = null;
-    loadProductCaptures(selectedProductCaptureId, { silent: true, refreshDetail: false });
+    loadProductCaptures(selectedProductCaptureId, { page: 0, silent: true, refreshDetail: false });
   }, 300);
 });
 
-document.querySelector("#load-more-product-captures").addEventListener("click", () =>
-  loadProductCaptures(selectedProductCaptureId, { append: true, silent: true, refreshDetail: false }));
+function goToProductCapturePage(page) {
+  if (productCaptureListLoading) return;
+  loadProductCaptures(null, { page, silent: true, refreshDetail: false });
+}
+document.querySelector("#load-more-product-captures").addEventListener("click", () => goToProductCapturePage(productCapturePage + 1));
+document.querySelector("#previous-product-captures").addEventListener("click", () => goToProductCapturePage(productCapturePage - 1));
+document.querySelector("#product-page-numbers").addEventListener("click", event => {
+  const button = event.target.closest("[data-capture-page]");
+  if (button) goToProductCapturePage(Number(button.dataset.capturePage));
+});
 
 document.querySelector("#add-product-sku").addEventListener("click", addProductSku);
 document.querySelector("#product-sku-select").addEventListener("change", event => {
@@ -6305,13 +7614,15 @@ window.addEventListener("heyi:design-source-return",async event=>{
 });
 document.querySelector("#process-product-images").addEventListener("click", processProductImages);
 document.querySelector("#approve-product-capture").addEventListener("click", approveProductCapture);
-document.querySelector("#open-product-publish").addEventListener("click", openProductPublishDialog);
 document.querySelector("#product-publish-form").addEventListener("submit", submitProductPublish);
 document.querySelector("#product-publish-form").addEventListener("input", () => {
   document.querySelector("#product-publish-error").hidden = true;
 });
-document.querySelector("#publish-destination-platform").addEventListener("change", syncOfficialPublishFields);
-document.querySelector("#publish-shop-id").addEventListener("change", syncPublishShopContext);
+document.querySelector("#publish-destination-platform").addEventListener("change", () => { syncOfficialPublishFields(); void prepareSimpleProductPublish(); });
+document.querySelector("#publish-shop-id").addEventListener("change", () => { syncPublishShopContext(); void prepareSimpleProductPublish(); });
+document.querySelector('#publish-category-choice').addEventListener('change', event => { document.querySelector('#publish-category-id').value = event.target.value; });
+document.querySelector('#publish-logistic-choice').addEventListener('change', syncSimplePublishLogistics);
+document.querySelector('#product-publish-form').addEventListener('invalid', event => { document.querySelector('#product-official-publish-fields').open = true; if (event.target.closest('#publish-advanced')) document.querySelector('#publish-advanced').open = true; }, true);
 document.querySelector("#marketplace-shop-status-filter").addEventListener("change", event => {
   marketplaceShopStatusFilter = event.currentTarget.value;
   renderMarketplaceShopList();
@@ -6333,6 +7644,8 @@ document.querySelector("#marketplace-shop-panel").addEventListener("click", even
     refreshMarketplaceShop(refreshButton.dataset.refreshShop);
     return;
   }
+  const editButton = event.target.closest('[data-rename-shop], [data-delete-shop]');
+  if (editButton) { editMarketplaceShop(editButton.dataset.renameShop || editButton.dataset.deleteShop, !!editButton.dataset.deleteShop); return; }
   const disconnectButton = event.target.closest("[data-disconnect-shop]");
   if (disconnectButton) {
     disconnectMarketplaceShop(disconnectButton.dataset.disconnectShop);
@@ -7423,11 +8736,15 @@ function fillManualScriptDraft(draft) {
 }
 
 function prepareVideoScriptCreationDialog(mode) {
+  videoScriptProgressId = null;
   stopVideoScriptVisualProgress();
   videoScriptVisualProgress = 0;
   videoScriptVisualStatus = "";
-  paintVideoScriptProgress(0);
+  videoScriptVisualKey = "";
+  videoScriptVisualServerProgress = 0;
   document.querySelector("#script-active-analysis").hidden = true;
+  const outputHost = document.querySelector("#active-script-output");
+  if (outputHost) outputHost.hidden = true;
   document.querySelector(".script-create-switch").hidden = false;
   document.querySelector("#submit-video-script").hidden = false;
   document.querySelector("#retry-video-script").hidden = true;
@@ -7459,21 +8776,71 @@ const videoScriptPresentationNames = {
 
 const processingVideoScriptStatuses = new Set(["QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING"]);
 
-function paintVideoScriptProgress(value) {
-  const progress = Math.max(0, Math.min(100, value));
+function normalizeVideoScriptProgress(value, status = "") {
+  if (status === "READY") return 100;
+  const number = Number(value);
+  const ceiling = processingVideoScriptStatuses.has(status) ? 99 : 100;
+  return Number.isFinite(number) ? Math.max(0, Math.min(ceiling, number)) : 0;
+}
+
+function videoScriptDisplayProgress(script) {
+  const key = String(script?.id || "");
+  const progress = normalizeVideoScriptProgress(script?.progress, script?.status);
+  if (!key) return progress;
+  const runId = String(script.analysisRunId || "");
+  let state = videoScriptProgressStates.get(key);
+  if (state?.retiredRunIds.has(runId) || (state?.runId && !runId)) return state.progress;
+  if (!state || (runId && runId !== state.runId)) {
+    const retiredRunIds = new Set(state?.retiredRunIds || []);
+    if (state?.runId) retiredRunIds.add(state.runId);
+    state = { runId, progress, retiredRunIds };
+    videoScriptProgressStates.set(key, state);
+  } else {
+    // Every surface shares the latest observed checkpoint. A delayed list or
+    // detail response cannot lower it, and elapsed time never invents progress.
+    state.progress = Math.max(state.progress, progress);
+  }
+  return state.progress;
+}
+
+function resetVideoScriptTaskProgress(taskKey, runId = "") {
+  const key = String(taskKey || "");
+  if (!key) return;
+  const state = videoScriptProgressStates.get(key);
+  const normalizedRunId = String(runId || "");
+  // Polling may already have observed this accepted retry before its POST
+  // response arrives. Acknowledging that same run must not rewind it again.
+  if (normalizedRunId && (state?.runId === normalizedRunId || state?.retiredRunIds.has(normalizedRunId))) return;
+  const retiredRunIds = new Set(state?.retiredRunIds || []);
+  if (state?.runId && state.runId !== normalizedRunId) retiredRunIds.add(state.runId);
+  videoScriptProgressStates.set(key, { runId: normalizedRunId, progress: 0, retiredRunIds });
+  if (videoScriptVisualKey === key) {
+    videoScriptVisualProgress = 0;
+    videoScriptVisualServerProgress = 0;
+    videoScriptVisualStatus = "";
+  }
+}
+
+function paintVideoScriptProgress(value, taskKey = videoScriptVisualKey) {
+  const progress = normalizeVideoScriptProgress(value);
+  const key = String(taskKey || "");
+  if (!key) return;
+  const display = progress.toFixed(progress >= 100 ? 0 : 1);
   const number = document.querySelector("#active-script-progress-number");
   const bar = document.querySelector("#active-script-progress-bar");
-  if (number) number.innerHTML = `<strong>${progress.toFixed(progress >= 100 ? 0 : 1)}</strong><small>%</small>`;
-  if (bar) bar.style.width = `${progress}%`;
+  if (videoScriptProgressId === key) {
+    if (number) number.innerHTML = `<strong>${display}</strong><small>%</small>`;
+    if (bar) bar.style.width = `${progress}%`;
+  }
   const inlineNumber = document.querySelector("#storyboard-inline-progress-number");
   const inlineBar = document.querySelector("#storyboard-inline-progress-bar");
-  if (selectedVideoScriptId === videoScriptVisualKey) {
-    if (inlineNumber) inlineNumber.textContent = progress.toFixed(progress >= 100 ? 0 : 1);
+  if (selectedVideoScriptId === key) {
+    if (inlineNumber) inlineNumber.textContent = display;
     if (inlineBar) inlineBar.style.width = `${progress}%`;
   }
   document.querySelectorAll("[data-video-script-progress-live]").forEach(node => {
-    if (!videoScriptVisualKey || node.dataset.videoScriptProgressLive === videoScriptVisualKey) {
-      node.textContent = progress.toFixed(progress >= 100 ? 0 : 1);
+    if (node.dataset.videoScriptProgressLive === key) {
+      node.textContent = display;
     }
   });
 }
@@ -7484,61 +8851,20 @@ function stopVideoScriptVisualProgress() {
   videoScriptVisualProgressUpdatedAt = 0;
 }
 
-const videoScriptVisualStageConfig = {
-  QUEUED: { ceiling: 18, serverLead: 13 },
-  EXTRACTING_FRAMES: { ceiling: 52, serverLead: 12 },
-  AI_ANALYZING: { ceiling: 94, serverLead: 1.5 }
-};
-
-function startVideoScriptVisualProgress(status, serverProgress, taskKey = "") {
-  const normalizedServerProgress = Math.max(0, Math.min(100, Number(serverProgress || 0)));
+function startVideoScriptVisualProgress(status, serverProgress, taskKey = "", analysisRunId = "") {
   const normalizedTaskKey = String(taskKey || "");
-  const taskChanged = normalizedTaskKey && normalizedTaskKey !== videoScriptVisualKey;
-  const terminal = status === "READY" || status === "FAILED";
-  const taskRestarted = !terminal
-    && normalizedTaskKey === videoScriptVisualKey
-    && (["READY", "FAILED"].includes(videoScriptVisualStatus)
-      || normalizedServerProgress + 10 < videoScriptVisualServerProgress);
-  if (taskChanged || taskRestarted) {
-    stopVideoScriptVisualProgress();
-    videoScriptVisualProgress = normalizedServerProgress;
-  }
-
+  stopVideoScriptVisualProgress();
   videoScriptVisualKey = normalizedTaskKey;
   videoScriptVisualStatus = status;
-  videoScriptVisualServerProgress = normalizedServerProgress;
-
-  if (terminal) {
-    stopVideoScriptVisualProgress();
-    videoScriptVisualProgress = normalizedServerProgress;
-    paintVideoScriptProgress(videoScriptVisualProgress);
-    return;
-  }
-
-  paintVideoScriptProgress(videoScriptVisualProgress);
-  if (videoScriptVisualProgressTimer) return;
-
-  videoScriptVisualProgressUpdatedAt = performance.now();
-  videoScriptVisualProgressTimer = window.setInterval(() => {
-    const now = performance.now();
-    const elapsedSeconds = Math.min(2, Math.max(0.25, (now - videoScriptVisualProgressUpdatedAt) / 1000));
-    videoScriptVisualProgressUpdatedAt = now;
-    const stage = videoScriptVisualStageConfig[videoScriptVisualStatus]
-      || { ceiling: 98, serverLead: 1 };
-    const ceiling = Math.min(stage.ceiling, videoScriptVisualServerProgress + stage.serverLead);
-    const remaining = ceiling - videoScriptVisualProgress;
-    if (remaining <= 0.02) return;
-
-    // The backend owns the real stage checkpoints. Between checkpoints the UI
-    // advances asymptotically, so it stays visibly alive without reaching the
-    // next stage or claiming completion before the backend does.
-    const incrementPerSecond = Math.max(0.015, Math.min(0.9, remaining * 0.08));
-    videoScriptVisualProgress = Math.min(ceiling, videoScriptVisualProgress + incrementPerSecond * elapsedSeconds);
-    paintVideoScriptProgress(videoScriptVisualProgress);
-  }, 1000);
+  videoScriptVisualServerProgress = normalizeVideoScriptProgress(serverProgress, status);
+  videoScriptVisualProgress = videoScriptDisplayProgress({
+    id: normalizedTaskKey, status, progress: serverProgress, analysisRunId
+  });
+  paintVideoScriptProgress(videoScriptVisualProgress, normalizedTaskKey);
 }
 
 function renderVideoScriptProgress(script) {
+  videoScriptProgressId = script?.id || null;
   const activePanel = document.querySelector("#script-active-analysis");
   const createSwitch = document.querySelector(".script-create-switch");
   const presentationPicker = document.querySelector(".script-presentation-mode-picker");
@@ -7547,10 +8873,14 @@ function renderVideoScriptProgress(script) {
   const submit = document.querySelector("#submit-video-script");
   const retry = document.querySelector("#retry-video-script");
   const importButton = document.querySelector("#import-video-script");
+  const outputHost = document.querySelector("#active-script-output");
+  if (outputHost) outputHost.hidden = !script;
   if (!script) {
     stopVideoScriptVisualProgress();
     videoScriptVisualProgress = 0;
     videoScriptVisualStatus = "";
+    videoScriptVisualKey = "";
+    videoScriptVisualServerProgress = 0;
     activePanel.hidden = true;
     createSwitch.hidden = false;
     presentationPicker.hidden = false;
@@ -7562,7 +8892,7 @@ function renderVideoScriptProgress(script) {
   }
 
   const status = script.status || "QUEUED";
-  const progress = Math.max(0, Math.min(100, Number(script.progress || 0)));
+  const progress = videoScriptDisplayProgress(script);
   const failed = status === "FAILED";
   const ready = status === "READY";
   activePanel.hidden = false;
@@ -7572,23 +8902,24 @@ function renderVideoScriptProgress(script) {
   manualPanel.hidden = true;
   submit.hidden = true;
   retry.hidden = !failed;
-  importButton.textContent = ready ? "＋ 新建脚本" : "查看拆解进度";
+  importButton.textContent = "＋ 新建脚本";
   document.querySelector("#video-script-dialog-title").textContent = ready ? "视频拆解完成" : failed ? "视频拆解未完成" : "视频拆解处理中";
   document.querySelector("#video-script-dialog-copy").textContent = ready
     ? "分镜和生产 JSON 已经生成，可以关闭窗口查看结果。"
-    : failed ? "任务和原视频已保留，可以重试当前任务或删除后重新上传。" : "当前任务会在后台持续处理；你可以关闭窗口并继续创建其他脚本。";
+    : failed ? "任务和原视频已保留，可以重试当前任务或删除后重新上传。" : "当前任务会在后台持续处理；你可以关闭窗口并继续上传其他视频。";
   document.querySelector("#active-script-stage").textContent = videoScriptStatusNames[status] || status;
   document.querySelector("#active-script-name").textContent = script.name || script.sourceFileName || "视频拆解任务";
   document.querySelector("#active-script-message").textContent = failed
     ? (script.errorMessage || "模型没有生成有效分镜，请重试当前任务。")
     : ready ? "拆解成功，结果已经保存到视频脚本库。" : "AI 正在抽帧并理解视频画面，页面每 3 秒自动更新一次。";
-  startVideoScriptVisualProgress(status, progress, script.id);
+  startVideoScriptVisualProgress(status, progress, script.id, script.analysisRunId);
+  updateVideoScriptOutput(outputHost, script);
   const orbit = document.querySelector(".active-analysis-orbit");
   orbit.classList.toggle("failed", failed);
   orbit.classList.toggle("done", ready);
   document.querySelector("#video-script-prototype-note").textContent = failed
     ? "系统已保留失败原因和上传文件，不会静默丢失。"
-    : ready ? "当前任务已完成，现在可以创建新的视频拆解任务。" : "处理中请等待，无需重复点击或重新上传。";
+    : ready ? "当前任务已完成，现在可以创建新的视频拆解任务。" : "当前视频正在后台拆解，可关闭窗口继续新建脚本。";
 }
 
 function videoScriptStatusClass(status) {
@@ -7648,7 +8979,7 @@ function renderVideoScriptLibrary() {
     item.innerHTML = `
       <span class="script-source-badge ${manualScript ? "manual" : "ai"}" aria-hidden="true">${manualScript ? "手" : "AI"}</span>
       <div><strong>${escapeHtml(script.name || script.sourceFileName || "未命名脚本")}</strong>
-        <small>${escapeHtml(videoScriptPresentationNames[script.presentationMode] || "旧脚本兼容")} · ${manualScript ? "手动脚本" : escapeHtml(script.modelId || "等待驱动模型")} · <span data-video-script-progress-live="${escapeHtml(script.id)}">${script.id === videoScriptVisualKey ? videoScriptVisualProgress.toFixed(1) : Number(script.progress || 0)}</span>%</small></div>
+        <small>${escapeHtml(videoScriptPresentationNames[script.presentationMode] || "旧脚本兼容")} · ${manualScript ? "手动脚本" : escapeHtml(script.modelId || "等待驱动模型")} · <span data-video-script-progress-live="${escapeHtml(script.id)}">${videoScriptDisplayProgress(script).toFixed(script.status === "READY" ? 0 : 1)}</span>%</small></div>
       <em class="${videoScriptStatusClass(script.status)}">${escapeHtml(videoScriptStatusNames[script.status] || script.status)}</em>`;
     item.addEventListener("click", async () => {
       selectedVideoScriptId = script.id;
@@ -7663,6 +8994,8 @@ function renderVideoScriptLibrary() {
 function renderEmptyVideoScriptDetail() {
   selectedVideoScriptDetail = null;
   selectedVideoShot = null;
+  const history = document.querySelector("#script-analysis-history");
+  if (history) history.hidden = true;
   const detail = document.querySelector("#video-script-detail");
   if (!detail) return;
   detail.classList.remove("is-manual-script");
@@ -7684,7 +9017,14 @@ function resetVideoScriptState() {
   videoScriptLoadGeneration += 1;
   stopVideoScriptPolling();
   stopVideoScriptVisualProgress();
+  videoScriptProgressStates.clear();
+  videoScriptVisualProgress = 0;
+  videoScriptVisualStatus = "";
+  videoScriptVisualKey = "";
+  videoScriptVisualServerProgress = 0;
   activeVideoScript = null;
+  videoScriptProgressId = null;
+  videoScriptDetailGeneration += 1;
   selectedVideoScriptId = null;
   selectedVideoScriptDetail = null;
   selectedVideoShot = null;
@@ -7774,9 +9114,23 @@ function resetProductCaptureState() {
   productEditorDirty = false;
   productCaptureSaveInFlightId = null;
   productCaptures = [];
+  productBulkSelectedIds.clear();
+  productBulkSelectedCaptures.clear();
+  productLiveImageProgress.clear();
+  productBulkItems = [];
+  productBulkOrganization = "";
+  productBulkBusy = false;
+  productBulkRuns.clear();
+  productBulkViewGeneration++;
+  stopProductBulkPolling();
+  stopProductBulkHistoryPolling();
+  document.querySelector('#product-bulk-history-dialog')?.close();
+  document.querySelector("#product-bulk-dialog")?.close();
+  document.querySelector("#product-bulk-count").textContent = "已勾选 0 件";
+  document.querySelector("#open-product-bulk-upload").disabled = true;
   selectedProductCaptureId = null;
   selectedProductCaptureDetail = null;
-  productCaptureStatusFilter = "ALL";
+  productCaptureStatusFilter = "CAPTURED";
   productCaptureSearchQuery = "";
   productCapturePage = -1;
   productCaptureTotalElements = 0;
@@ -7790,7 +9144,7 @@ function resetProductCaptureState() {
   const search = document.querySelector("#product-capture-search");
   if (search) search.value = "";
   document.querySelectorAll("#product-status-filter [data-product-status]").forEach(button => {
-    const active = button.dataset.productStatus === "ALL";
+    const active = button.dataset.productStatus === "CAPTURED";
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
@@ -7819,31 +9173,67 @@ function resetCompanyScopedWorkspaceState() {
   resetProductCaptureState();
 }
 
-async function loadVideoScripts(preferredId = null) {
+function videoScriptRequestIsCurrent(generation, organizationId, pollingGeneration = null) {
+  return generation === videoScriptLoadGeneration
+    && currentUser?.organizationId === organizationId
+    && (pollingGeneration === null || pollingGeneration === videoScriptPollingGeneration);
+}
+
+function isVideoScriptProgressDialogOpen() {
+  return Boolean(videoScriptProgressId && document.querySelector("#video-script-dialog").open);
+}
+
+async function loadVideoScripts(preferredId = null, pollingGeneration = null) {
   const generation = ++videoScriptLoadGeneration;
   const organizationId = currentUser?.organizationId || "";
+  const selectionAtRequest = selectedVideoScriptId;
+  let refreshed = false;
   try {
     const result = await api("/api/v1/video-scripts");
-    if (generation !== videoScriptLoadGeneration || currentUser?.organizationId !== organizationId) return;
+    if (!videoScriptRequestIsCurrent(generation, organizationId, pollingGeneration)) return;
     videoScripts = (Array.isArray(result?.data) ? result.data : [])
       .filter(script => !script.organizationId || script.organizationId === organizationId);
     activeVideoScript = videoScripts.find(script => processingVideoScriptStatuses.has(script.status)) || null;
+    refreshed = true;
     document.querySelector("#import-video-script").textContent = "＋ 新建脚本";
     if (!videoScripts.length) {
       selectedVideoScriptId = null;
       renderVideoScriptLibrary();
       renderEmptyVideoScriptDetail();
       stopVideoScriptPolling();
+      stopVideoScriptVisualProgress();
       return;
     }
-    const selectedId = videoScripts.some(script => script.id === preferredId) ? preferredId : videoScripts[0].id;
+    // A selection made while the list request was pending belongs to the user.
+    const preferredSelection = selectedVideoScriptId !== selectionAtRequest
+      ? selectedVideoScriptId : preferredId || selectedVideoScriptId;
+    const selectedId = videoScripts.some(script => script.id === preferredSelection)
+      ? preferredSelection : videoScripts[0].id;
     selectedVideoScriptId = selectedId;
     renderVideoScriptLibrary();
-    await loadVideoScriptDetail(selectedId, generation, organizationId);
-    if (activeVideoScript && !videoScriptStatusTimer) startVideoScriptPolling();
-    if (!activeVideoScript && videoScriptStatusTimer) stopVideoScriptPolling();
+    if (isVideoScriptProgressDialogOpen()) {
+      const progressScript = videoScripts.find(script => script.id === videoScriptProgressId);
+      if (progressScript) renderVideoScriptProgress(progressScript);
+    }
+    await loadVideoScriptDetail(selectedId, generation, organizationId, pollingGeneration);
+    // A different task may be open in the dialog; list snapshots omit response text.
+    if (isVideoScriptProgressDialogOpen() && videoScriptProgressId !== selectedId) {
+      const progressId = videoScriptProgressId;
+      const progressDetail = await api(`/api/v1/video-scripts/${encodeURIComponent(progressId)}`);
+      if (videoScriptRequestIsCurrent(generation, organizationId, pollingGeneration)
+          && isVideoScriptProgressDialogOpen() && videoScriptProgressId === progressId
+          && progressDetail?.data?.script) renderVideoScriptProgress(progressDetail.data.script);
+    }
   } catch (error) {
-    document.querySelector("#video-script-prototype-note").textContent = error.message;
+    if (videoScriptRequestIsCurrent(generation, organizationId, pollingGeneration)) {
+      document.querySelector("#video-script-prototype-note").textContent = error.message;
+    }
+  } finally {
+    // Detail failures must not stop the other scripts from receiving updates.
+    if (refreshed && videoScriptRequestIsCurrent(generation, organizationId, pollingGeneration)) {
+      if (activeVideoScript) startVideoScriptPolling();
+      else stopVideoScriptPolling();
+    }
   }
 }
 
@@ -7859,26 +9249,19 @@ function videoShotPreviewUrl(scriptId, shotId) {
 }
 
 function renderStoryboardBuildingState(script) {
-  const status = script.status || "QUEUED";
-  const progress = Math.max(0, Math.min(100, Number(script.progress || 0)));
-  const stageName = videoScriptStatusNames[status] || "正在处理";
-  const slots = Array.from({ length: 9 }, (_, index) => {
-    const stage = index < 3 ? "hook" : index < 6 ? "solution" : "cta";
-    return `<span class="storyboard-build-slot ${stage}"><b>${String(index + 1).padStart(2, "0")}</b><i></i></span>`;
-  }).join("");
-  return `
-    <section class="storyboard-building" role="status" aria-live="polite">
-      <header>
-        <div class="storyboard-building-copy">
-          <strong>模型正在生成完整 9 个分镜</strong>
-          <span>后端阶段节点之间缓慢预估推进；模型返回完整结果后才会进入 100%</span>
-        </div>
-        <output class="storyboard-building-percent"><strong id="storyboard-inline-progress-number">${progress.toFixed(1)}</strong><span>%</span></output>
-      </header>
-      <div class="storyboard-building-meter"><span id="storyboard-inline-progress-bar" style="width:${progress}%"></span></div>
-      <div class="storyboard-build-reel" aria-hidden="true">${slots}</div>
-      <footer><span><i></i>${escapeHtml(stageName)}</span><small>后台持续运行，可以离开此页面</small></footer>
-    </section>`;
+  return '<div class="script-live-output"></div>';
+}
+
+function updateVideoScriptOutput(host, script) {
+  if (!host) return;
+  if (!script) { window.VideoScriptTerminal?.reset(host); return; }
+  const progress = videoScriptDisplayProgress(script);
+  const state = videoScriptProgressStates.get(String(script.id || ""));
+  const runId = String(script.analysisRunId || "");
+  // The list, detail and retry requests may finish in a different order. Use
+  // the same accepted run as the percentage before replacing visible text.
+  if (state?.retiredRunIds.has(runId) || (state?.runId && state.runId !== runId)) return;
+  window.VideoScriptTerminal?.update(host, script, progress);
 }
 
 function selectRenderedShot(button, shot, scriptId) {
@@ -7906,12 +9289,14 @@ function selectRenderedShot(button, shot, scriptId) {
 }
 
 async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGeneration,
-                                     expectedOrganizationId = currentUser?.organizationId || "") {
+                                     expectedOrganizationId = currentUser?.organizationId || "",
+                                     pollingGeneration = null) {
   if (!id) return;
+  const detailGeneration = ++videoScriptDetailGeneration;
   selectedVideoScriptId = id;
   const result = await api(`/api/v1/video-scripts/${encodeURIComponent(id)}`);
-  if (expectedGeneration !== videoScriptLoadGeneration
-      || currentUser?.organizationId !== expectedOrganizationId) return;
+  if (detailGeneration !== videoScriptDetailGeneration || selectedVideoScriptId !== id
+      || !videoScriptRequestIsCurrent(expectedGeneration, expectedOrganizationId, pollingGeneration)) return;
   const detail = result?.data;
   if (!detail?.script || (detail.script.organizationId
       && detail.script.organizationId !== expectedOrganizationId)) {
@@ -7920,6 +9305,7 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
   }
   selectedVideoScriptDetail = detail;
   const script = detail.script;
+  if (isVideoScriptProgressDialogOpen() && videoScriptProgressId === script.id) renderVideoScriptProgress(script);
   const shots = Array.isArray(detail.shots) ? detail.shots : [];
   const manualScript = script.sourceType === "MANUAL";
   ["#copy-video-script", "#delete-video-script", "#edit-video-script-tone"]
@@ -7941,8 +9327,8 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
   document.querySelector("#script-detail-title").textContent = script.name || "视频脚本分析中";
   document.querySelector("#script-detail-meta").innerHTML =
     `<span>${manualScript ? "手动编排" : "AI 视频反推"}</span><span>版本 v${Number(script.version || 1)}</span><span>${shots.length} 个分镜</span>`;
-  document.querySelector("#script-detail-source").textContent =
-    `来源：${manualScript ? "手动创建" : script.sourceFileName || "上传视频"} · ${videoScriptStatusNames[script.status] || script.status} · ${Number(script.progress || 0)}%`;
+  document.querySelector("#script-detail-source").innerHTML =
+    `来源：${escapeHtml(manualScript ? "手动创建" : script.sourceFileName || "上传视频")} · ${escapeHtml(videoScriptStatusNames[script.status] || script.status)} · <span data-video-script-progress-live="${escapeHtml(script.id)}">${videoScriptDisplayProgress(script).toFixed(script.status === "READY" ? 0 : 1)}</span>%`;
   document.querySelector("#script-detail-visual-tone").textContent = script.status === "FAILED"
     ? `拆解失败：${script.errorMessage || "模型未返回有效结果"}`
     : (script.visualTone || script.summary || "模型正在理解视频画面，请稍候…");
@@ -7966,13 +9352,15 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
   const canManageScripts = hasAnyPermission("video:script:manage");
   const canRetry = canManageScripts && script.status === "FAILED" && script.sourceType === "VIDEO_ANALYSIS";
   const canReanalyze = canManageScripts && script.status === "READY" && script.sourceType === "VIDEO_ANALYSIS";
-  reanalyzeButton.hidden = !canRetry && !canReanalyze;
-  reanalyzeButton.textContent = canRetry ? "重试拆解" : shots.length === 9 ? "重新精拆 9 镜" : "补足为 9 镜";
-  reanalyzeButton.title = canRetry
-    ? "重新提交这条失败的脚本拆解任务"
-    : shots.length === 9
-      ? "使用当前原视频重新生成完整 9 个分镜"
-      : `当前只有 ${shots.length} 个分镜，使用原视频重新精拆为 9 个`;
+  const canInspectAnalysis = canManageScripts && script.sourceType === "VIDEO_ANALYSIS"
+    && (processingVideoScriptStatuses.has(script.status) || script.status === "FAILED");
+  reanalyzeButton.hidden = !canReanalyze && !canInspectAnalysis;
+  reanalyzeButton.textContent = canInspectAnalysis
+    ? (script.status === "FAILED" ? "重试拆解" : "查看拆解进度")
+    : shots.length === 9 ? "重新精拆 9 镜" : "补足为 9 镜";
+  reanalyzeButton.title = canInspectAnalysis ? "查看当前脚本的拆解状态和失败原因"
+    : shots.length === 9 ? "使用当前原视频重新生成完整 9 个分镜"
+    : `当前只有 ${shots.length} 个分镜，使用原视频重新精拆为 9 个`;
   const deleteButton = document.querySelector("#delete-video-script");
   const copyButton = document.querySelector("#copy-video-script");
   const editToneButton = document.querySelector("#edit-video-script-tone");
@@ -7980,7 +9368,7 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
   copyButton.hidden = !canManageScripts;
   editToneButton.hidden = !canManageScripts;
   document.querySelector("#edit-video-shot").hidden = !canManageScripts;
-  const scriptIsProcessing = ["QUEUED", "EXTRACTING_FRAMES", "AI_ANALYZING"].includes(script.status);
+  const scriptIsProcessing = processingVideoScriptStatuses.has(script.status);
   deleteButton.disabled = scriptIsProcessing;
   copyButton.disabled = scriptIsProcessing || !["READY", "DRAFT"].includes(script.status);
   editToneButton.disabled = scriptIsProcessing;
@@ -7988,17 +9376,24 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
   copyButton.title = copyButton.disabled ? "脚本处理完成后才能复制" : "创建一个可独立编辑的脚本副本";
   editToneButton.title = editToneButton.disabled ? "视频拆解处理中，暂时不能编辑" : "编辑全局视觉基调";
 
+  if (!isVideoScriptProgressDialogOpen()) {
+    startVideoScriptVisualProgress(script.status, script.progress, script.id, script.analysisRunId);
+    if (!scriptIsProcessing) stopVideoScriptVisualProgress();
+  }
   const strip = document.querySelector("#script-film-strip");
   const shotEditor = document.querySelector("#script-storyboard-view .shot-editor-card");
-  if (!shots.length) {
+  const outputHistory = document.querySelector("#script-analysis-history");
+  if (outputHistory) {
+    outputHistory.hidden = scriptIsProcessing || !shots.length || !script.analysisOutput;
+    if (!outputHistory.hidden) updateVideoScriptOutput(document.querySelector("#script-saved-output"), script);
+  }
+  if (scriptIsProcessing || !shots.length) {
     selectedVideoShot = null;
     shotEditor.hidden = true;
     strip.classList.toggle("is-processing", script.status !== "FAILED");
     strip.classList.toggle("is-error", script.status === "FAILED");
-    strip.innerHTML = script.status === "FAILED"
-      ? `<section class="storyboard-build-error"><span>!</span><div><strong>这次拆解没有完成</strong><p>${escapeHtml(script.errorMessage || "模型没有生成有效分镜，可以重试当前任务。")}</p></div></section>`
-      : renderStoryboardBuildingState(script);
-    if (script.status !== "FAILED") startVideoScriptVisualProgress(script.status, script.progress, script.id);
+    if (!strip.querySelector(".script-live-output")) strip.innerHTML = renderStoryboardBuildingState(script);
+    updateVideoScriptOutput(strip.querySelector(".script-live-output"), script);
     return;
   }
   shotEditor.hidden = false;
@@ -8137,17 +9532,16 @@ document.querySelector("#video-script-tone-form").addEventListener("submit", asy
 });
 
 function startVideoScriptPolling() {
-  if (videoScriptStatusTimer) return;
+  if (videoScriptStatusTimer || document.querySelector("#video-scripts-page").hidden) return;
   const generation = ++videoScriptPollingGeneration;
   let polling = false;
   const timer = setInterval(async () => {
-    if (generation !== videoScriptPollingGeneration) return;
-    if (polling || document.hidden) return;
+    if (generation !== videoScriptPollingGeneration || polling || document.hidden) return;
     polling = true;
     try {
-      await loadVideoScripts(selectedVideoScriptId);
+      await loadVideoScripts(selectedVideoScriptId, generation);
     } catch {
-      // Keep all current tasks visible and retry on the next heartbeat.
+      // Keep all tasks visible and retry on the next heartbeat.
     } finally {
       polling = false;
     }
@@ -8159,6 +9553,12 @@ function stopVideoScriptPolling() {
   videoScriptPollingGeneration += 1;
   if (videoScriptStatusTimer) clearInterval(videoScriptStatusTimer);
   videoScriptStatusTimer = null;
+}
+
+function openVideoScriptProgress(script) {
+  renderVideoScriptProgress(script);
+  document.querySelector("#video-script-dialog").showModal();
+  if (processingVideoScriptStatuses.has(script.status)) startVideoScriptPolling();
 }
 
 document.querySelector("#import-video-script").addEventListener("click", async () => {
@@ -9055,16 +10455,10 @@ document.querySelector("#video-script-form").addEventListener("submit", async ev
     note.textContent = "视频上传完成，AI 正在后台拆解。";
     form.reset();
     clearVideoScriptClipEditor(true);
-    activeVideoScript = script;
+    selectedVideoScriptId = script.id;
     dialog.close();
     startVideoScriptPolling();
-    const refreshResults = await Promise.allSettled([
-      loadVideoScripts(script.id),
-      loadVideoScriptDetail(script.id)
-    ]);
-    if (refreshResults.some(result => result.status === "rejected")) {
-      console.warn("视频拆解任务已创建，但页面数据刷新未完全成功，将由轮询继续同步。", refreshResults);
-    }
+    await loadVideoScripts(script.id);
   } catch (error) {
     note.textContent = `创建失败：${error.message}`;
   } finally {
@@ -9075,22 +10469,30 @@ document.querySelector("#video-script-form").addEventListener("submit", async ev
 
 document.querySelector("#video-script-dialog").addEventListener("close", async () => {
   clearVideoScriptClipEditor(true);
+  videoScriptProgressId = null;
   await loadVideoScripts(selectedVideoScriptId);
 });
 
 document.querySelector("#retry-video-script").addEventListener("click", async () => {
-  if (!activeVideoScript?.id) return;
+  const scriptId = videoScriptProgressId;
+  const organizationId = currentUser?.organizationId || "";
   const retry = document.querySelector("#retry-video-script");
+  if (!scriptId || retry.disabled) return;
   retry.disabled = true;
   retry.textContent = "正在重新提交…";
   try {
-    const result = await api(`/api/v1/video-scripts/${encodeURIComponent(activeVideoScript.id)}/retry`, { method: "POST" });
-    activeVideoScript = result?.data || activeVideoScript;
-    renderVideoScriptProgress(activeVideoScript);
-    await loadVideoScripts(activeVideoScript.id);
+    const result = await api(`/api/v1/video-scripts/${encodeURIComponent(scriptId)}/retry`, { method: "POST" });
+    if (currentUser?.organizationId !== organizationId) return;
+    resetVideoScriptTaskProgress(scriptId, result?.data?.analysisRunId);
+    if (isVideoScriptProgressDialogOpen() && videoScriptProgressId === scriptId && result?.data) {
+      renderVideoScriptProgress(result.data);
+    }
     startVideoScriptPolling();
+    await loadVideoScripts(selectedVideoScriptId || scriptId);
   } catch (error) {
-    document.querySelector("#active-script-message").textContent = error.message;
+    if (currentUser?.organizationId === organizationId && videoScriptProgressId === scriptId) {
+      document.querySelector("#active-script-message").textContent = error.message;
+    }
   } finally {
     retry.disabled = false;
     retry.textContent = "重试当前任务";
@@ -9098,24 +10500,37 @@ document.querySelector("#retry-video-script").addEventListener("click", async ()
 });
 
 document.querySelector("#reanalyze-video-script").addEventListener("click", async () => {
-  if (!selectedVideoScriptId) return;
+  const script = selectedVideoScriptDetail?.script;
+  if (!script?.id || script.id !== selectedVideoScriptId) return;
+  if (processingVideoScriptStatuses.has(script.status) || script.status === "FAILED") {
+    openVideoScriptProgress(script);
+    return;
+  }
+  const scriptId = script.id;
+  const organizationId = currentUser?.organizationId || "";
   const button = document.querySelector("#reanalyze-video-script");
   const retryFailed = selectedVideoScriptDetail?.script?.status === "FAILED";
   if (!retryFailed && !window.confirm("将使用原视频重新精拆为完整 9 个分镜，成功后替换当前分镜。确认继续？")) return;
   button.disabled = true;
   button.textContent = "正在提交…";
   try {
-    const action = retryFailed ? "retry" : "reanalyze";
-    const result = await api(`/api/v1/video-scripts/${encodeURIComponent(selectedVideoScriptId)}/${action}`, { method: "POST" });
-    activeVideoScript = result?.data || null;
-    await loadVideoScripts(selectedVideoScriptId);
-    await loadVideoScriptDetail(selectedVideoScriptId);
+    const result = await api(`/api/v1/video-scripts/${encodeURIComponent(scriptId)}/reanalyze`, { method: "POST" });
+    if (currentUser?.organizationId !== organizationId) return;
+    resetVideoScriptTaskProgress(scriptId, result?.data?.analysisRunId);
+    if (selectedVideoScriptId === scriptId && result?.data
+        && !document.querySelector("#video-script-dialog").open) {
+      openVideoScriptProgress(result.data);
+    }
     startVideoScriptPolling();
+    await loadVideoScripts(selectedVideoScriptId || scriptId);
   } catch (error) {
-    window.alert(error.message);
+    if (currentUser?.organizationId === organizationId) window.alert(error.message);
   } finally {
     button.disabled = false;
-    button.textContent = retryFailed ? "重试拆解" : "重新精拆 9 镜";
+    if (selectedVideoScriptDetail?.script?.id === scriptId
+        && selectedVideoScriptDetail.script.status === "READY") {
+      button.textContent = (selectedVideoScriptDetail.shots || []).length === 9 ? "重新精拆 9 镜" : "补足为 9 镜";
+    }
   }
 });
 
@@ -9228,7 +10643,7 @@ function aiVideoImagePresentation(task, item, model, storyboard) {
   const gridStep = steps.STORYBOARD_GRID;
   const labels = { PREPARING: "准备参考图", ANALYSIS_QUEUED: "等待识别", ANALYZING: "商品识别中",
     ANALYSIS_RETRY_WAIT: "识别等待重试", GENERATION_QUEUED: "等待生图请求", GENERATING: "正在生图", DOWNLOADING: "下载图片中",
-    RESPONSE_RECEIVED: "已收到生图结果", PROCESSING_RESPONSE: "处理生图结果",
+    RESPONSE_RECEIVED: "已收到生图结果", PROCESSING_RESPONSE: "处理生图结果", SWITCHING_MODEL: "切换备用生图模型",
     VALIDATION_QUEUED: "等待校验", VALIDATING: "正在校验", VALIDATION_RETRY_WAIT: "校验等待重试",
     STORING: "保存图片中", RETRY_WAIT: "等待重试", FAILED: "生成失败", COMPLETED: "保存完成" };
   const retrying = /图片自动恢复等待重试：/.test(item.errorMessage || "")
@@ -11176,8 +12591,13 @@ document.querySelector("#garment-card-grid").addEventListener("click", async eve
   }
   const button = event.target.closest("[data-asset-preview]");
   if (!button) return;
+  openAssetPreview(button);
+});
+
+function openAssetPreview(button) {
   const previewCard = button.closest("[data-garment-card]");
-  const title = previewCard?.querySelector(".garment-card-copy strong")?.textContent || "生成图片";
+  const title = previewCard?.querySelector(".garment-card-copy strong")?.textContent
+    || (button.closest("#product-image-grid") ? document.querySelector("#product-detail-title").textContent : "生成图片");
   const previewImage = button.querySelector("img");
   const previewVideo = button.querySelector("video");
   const preview = previewVideo ? document.createElement("video") : button.cloneNode(true);
@@ -11232,6 +12652,11 @@ document.querySelector("#garment-card-grid").addEventListener("click", async eve
   previewDialog.classList.toggle("is-video", Boolean(previewVideo));
   previewBody.replaceChildren(preview);
   previewDialog.showModal();
+}
+
+document.querySelector("#product-image-grid").addEventListener("click", event => {
+  const button = event.target.closest("[data-asset-preview]");
+  if (button) openAssetPreview(button);
 });
 
 document.querySelector("#asset-preview-download").addEventListener("click", async event => {
@@ -11447,7 +12872,7 @@ function renderGeneralVideoReferences() {
       <div><strong>${escapeHtml(reference.file.name)}</strong><small>${(reference.file.size / 1024 / 1024).toFixed(1)} MB · 参考图 ${index + 1}</small></div>
       <button type="button" data-general-reference-remove aria-label="移除 ${escapeHtml(reference.file.name)}">×</button>
     </article>`).join("");
-  mentions.innerHTML = generalVideoReferences.map(reference => `<button type="button" data-general-mention="${escapeHtml(reference.file.name)}" title="插入 @${escapeHtml(reference.file.name)}">@${escapeHtml(reference.file.name)}</button>`).join("");
+  mentions.innerHTML = generalVideoReferences.map(reference => `<button type="button" data-general-mention="图片${generalVideoReferences.indexOf(reference) + 1}" title="${escapeHtml(reference.file.name)}">@图片${generalVideoReferences.indexOf(reference) + 1}</button>`).join("");
 }
 
 function syncGeneralVideoRouteResolution() {
@@ -11460,7 +12885,8 @@ function syncGeneralVideoRouteResolution() {
   resolution1080.disabled = speedSelected;
   resolution1080.parentElement.title = speedSelected ? "极速线路固定输出 768P；1080p 请使用质量线路" : "";
   qualityInput.parentElement.title = "";
-  speedInput.parentElement.title = "极速线路固定输出 768P";
+  speedInput.disabled = Boolean(generalVideoReference);
+  speedInput.parentElement.title = generalVideoReference ? "视频参考使用质量线路" : "极速线路固定输出 768P";
 }
 
 function addGeneralVideoReferences(files) {
@@ -11486,10 +12912,10 @@ function addGeneralVideoReferences(files) {
   }
   const existing = new Set(generalVideoReferences.map(reference => `${reference.file.name}:${reference.file.size}:${reference.file.lastModified}`));
   const unique = candidates.filter(file => !existing.has(`${file.name}:${file.size}:${file.lastModified}`));
-  const selectedBytes = generalVideoReferences.reduce((total, reference) => total + reference.file.size, 0);
+  const selectedBytes = generalVideoReferences.reduce((total, reference) => total + reference.file.size, generalVideoReference?.file.size || 0);
   const incomingBytes = unique.reduce((total, file) => total + file.size, 0);
   if (selectedBytes + incomingBytes > 90 * 1024 * 1024) {
-    error.textContent = "参考图片合计不能超过 90 MB。";
+    error.textContent = "参考素材合计不能超过 90 MB。";
     error.hidden = false;
     return;
   }
@@ -11507,6 +12933,9 @@ function addGeneralVideoReferences(files) {
 function clearGeneralVideoReferences() {
   generalVideoReferences.forEach(reference => URL.revokeObjectURL(reference.previewUrl));
   generalVideoReferences = [];
+  if (generalVideoReference) URL.revokeObjectURL(generalVideoReference.previewUrl);
+  generalVideoReference = null;
+  renderGeneralVideoReference();
   document.querySelector("#general-reference-input").value = "";
   renderGeneralVideoReferences();
 }
@@ -11514,8 +12943,11 @@ function clearGeneralVideoReferences() {
 function insertGeneralVideoMention(fileName) {
   const input = document.querySelector("#general-video-prompt");
   const mention = `@${fileName} `;
-  const start = input.selectionStart ?? input.value.length;
+  const start = generalMentionStart ?? input.selectionStart ?? input.value.length;
   const end = input.selectionEnd ?? start;
+  generalMentionStart = null;
+  document.querySelector("#general-mention-menu").hidden = true;
+  if (input.value.length - (end - start) + mention.length > 20000) return;
   input.setRangeText(mention, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.focus();
@@ -11535,7 +12967,7 @@ function generalVideoTaskCard(task) {
   const state = generalVideoStatusGroup(task.status);
   const detailTask = generalVideoTaskPayload(detail);
   const assets = generalVideoDetailAssets(detail);
-  const video = assets.find(asset => generalVideoAssetType(asset) === "VIDEO_RESULT" || String(asset.contentType || "").startsWith("video/"));
+  const video = assets.find(asset => generalVideoAssetType(asset) === "VIDEO_RESULT");
   const references = assets.filter(asset => asset !== video && String(asset.contentType || "").startsWith("image/"));
   const duration = task.durationSeconds || detailTask.durationSeconds || 5;
   const aspectRatio = task.aspectRatio || detailTask.aspectRatio || "—";
@@ -11546,6 +12978,7 @@ function generalVideoTaskCard(task) {
     <section class="general-task-expanded">
       ${detail.loadError ? `<div class="general-video-result-waiting"><span aria-hidden="true">!</span><strong>详情读取失败</strong><small>${escapeHtml(detail.loadError)}</small></div>` : video ? `<video src="${generalVideoAssetUrl(task.id, video)}" controls preload="metadata" playsinline></video>` : `<div class="general-video-result-waiting"><span aria-hidden="true">${state === "failed" ? "!" : "▶"}</span><strong>${state === "failed" ? escapeHtml(task.errorMessage || detailTask.errorMessage || "生成失败") : "视频尚未完成"}</strong><small>${state === "running" ? `后台生成中 · ${progress}%` : "任务进入线路后，成片会显示在这里"}</small></div>`}
       ${references.length ? `<div class="general-task-references"><span>本次参考</span><div>${references.slice(0, 9).map((asset, index) => `<button type="button" data-asset-preview="参考图 ${index + 1}" aria-label="放大查看参考图 ${index + 1}"><img src="${generalVideoAssetUrl(task.id, asset, true)}" data-full-src="${generalVideoAssetUrl(task.id, asset)}" alt="参考图 ${index + 1}" loading="lazy"></button>`).join("")}</div></div>` : ""}
+      ${assets.filter(asset => generalVideoAssetType(asset) === "VIDEO_REFERENCE_VIDEO").map(asset => `<div class="general-task-reference-video"><span>参考视频 · @视频1</span><video src="${generalVideoAssetUrl(task.id, asset)}" controls preload="metadata" playsinline></video></div>`).join("")}
       <div class="general-task-prompt"><span>生成描述</span><p>${escapeHtml(prompt || "未记录提示词")}</p></div>
       ${["DRAFT", "READY", "FAILED"].includes(task.status) && hasAnyPermission("video:task:manage") ? `<button class="general-task-start" type="button" data-general-task-start>${task.status === "FAILED" ? "重新生成" : "开始生成"} <span aria-hidden="true">→</span></button>` : ""}
     </section>`;
@@ -11631,6 +13064,12 @@ document.querySelector("#general-reference-list").addEventListener("click", even
   const index = generalVideoReferences.findIndex(reference => reference.id === card?.dataset.generalReferenceId);
   if (index < 0) return;
   URL.revokeObjectURL(generalVideoReferences[index].previewUrl);
+  const prompt = document.querySelector("#general-video-prompt");
+  prompt.value = prompt.value.replace(/@图片(\d+)(?!\d)/g, (token, number) => {
+    const n = Number(number);
+    return n === index + 1 ? "" : n > index + 1 ? `@图片${n - 1}` : token;
+  });
+  prompt.dispatchEvent(new Event("input", { bubbles: true }));
   generalVideoReferences.splice(index, 1);
   renderGeneralVideoReferences();
 });
@@ -11638,6 +13077,137 @@ document.querySelector("#general-reference-list").addEventListener("click", even
 document.querySelector("#general-reference-mentions").addEventListener("click", event => {
   const button = event.target.closest("[data-general-mention]");
   if (button) insertGeneralVideoMention(button.dataset.generalMention);
+});
+
+function renderGeneralVideoReference() {
+  const preview = document.querySelector("#general-video-reference-preview");
+  const input = document.querySelector("#general-video-reference-input");
+  input.disabled = Boolean(generalVideoReference) || !hasAnyPermission("video:task:manage");
+  document.querySelector("#general-video-reference-count").textContent = generalVideoReference ? "1 / 1" : "0 / 1";
+  preview.hidden = !generalVideoReference;
+  preview.innerHTML = generalVideoReference ? `<div class="general-clip-media"><video src="${generalVideoReference.previewUrl}" controls preload="metadata" playsinline></video></div><div class="general-clip-editor"><header><div><strong>${escapeHtml(generalVideoReference.file.name)}</strong><small>拖动首尾端点，选择最多 15 秒的视频参考</small></div><button type="button" data-general-video-remove aria-label="移除参考视频">×</button></header><div class="general-clip-range video-clip-range"><span class="video-clip-range-track"><i></i></span><input type="range" data-clip-start min="0" max="0" step="0.1" value="0" disabled aria-label="参考视频开始时间"><input type="range" data-clip-end min="0" max="0" step="0.1" value="0" disabled aria-label="参考视频结束时间"></div><div class="video-clip-endpoints"><label>开始 <output data-clip-start-time>00:00.0</output></label><label>结束 <output data-clip-end-time>--:--.-</output></label></div><footer><small data-clip-summary>正在读取视频时长…</small><button type="button" data-general-video-mention>@视频1</button><button type="button" data-clip-preview disabled>▶ 预览所选片段</button></footer></div>` : "";
+  if (generalVideoReference) {
+    const reference = generalVideoReference;
+    const video = preview.querySelector("video");
+    video.addEventListener("loadedmetadata", () => {
+      if (reference !== generalVideoReference) return;
+      if (!Number.isFinite(video.duration) || video.duration <= 0) { preview.querySelector('[data-clip-summary]').textContent = "无法读取视频时长，请更换文件"; return; }
+      reference.duration = video.duration;
+      reference.clipStart = 0;
+      reference.clipEnd = Math.min(15, video.duration);
+      preview.querySelectorAll('input[type="range"]').forEach(input => {input.max = String(video.duration);input.disabled = false;});
+      preview.querySelector('[data-clip-preview]').disabled = false;
+      paintGeneralVideoClip();
+    });
+    video.addEventListener("timeupdate", () => {
+      if (reference === generalVideoReference && reference.previewing && video.currentTime >= reference.clipEnd) {video.pause();reference.previewing = false;}
+    });
+    video.addEventListener("error", () => {if(reference === generalVideoReference) {reference.duration = null;preview.querySelector('[data-clip-summary]').textContent = "浏览器无法预览此视频，请转换成 MP4 后上传";}});
+  }
+  syncGeneralVideoRouteResolution();
+}
+
+function paintGeneralVideoClip() {
+  const r = generalVideoReference;
+  if (!r?.duration) return;
+  const root = document.querySelector("#general-video-reference-preview");
+  root.querySelector('[data-clip-start]').value = String(r.clipStart);
+  root.querySelector('[data-clip-end]').value = String(r.clipEnd);
+  root.querySelector('[data-clip-start-time]').textContent = formatVideoScriptClipTime(r.clipStart);
+  root.querySelector('[data-clip-end-time]').textContent = formatVideoScriptClipTime(r.clipEnd);
+  root.querySelector('[data-clip-start]').setAttribute('aria-valuetext', formatVideoScriptClipTime(r.clipStart));
+  root.querySelector('[data-clip-end]').setAttribute('aria-valuetext', formatVideoScriptClipTime(r.clipEnd));
+  root.querySelector('.video-clip-range-track i').style.cssText = `left:${r.clipStart / r.duration * 100}%;width:${(r.clipEnd-r.clipStart)/r.duration*100}%`;
+  root.querySelector('[data-clip-summary]').textContent = `已选 ${(r.clipEnd-r.clipStart).toFixed(1)} 秒 · 原视频 ${formatVideoScriptClipTime(r.duration)}`;
+}
+
+document.querySelector("#general-video-reference-preview").addEventListener("input", event => {
+  const r = generalVideoReference;
+  if (!r?.duration || !event.target.matches('input[type="range"]')) return;
+  const value = Number(event.target.value);
+  const gap = Math.min(.1, r.duration);
+  if (event.target.matches('[data-clip-start]')) {
+    r.clipStart = Math.max(0, Math.min(value, r.clipEnd-gap));
+    if (r.clipEnd-r.clipStart > 15) r.clipEnd = r.clipStart+15;
+  } else {
+    r.clipEnd = Math.min(r.duration, Math.max(value, r.clipStart+gap));
+    if (r.clipEnd-r.clipStart > 15) r.clipStart = r.clipEnd-15;
+  }
+  const video = event.currentTarget.querySelector('video');video.pause();r.previewing = false;
+  video.currentTime = event.target.matches('[data-clip-start]') ? r.clipStart : Math.max(r.clipStart,r.clipEnd-.1);
+  paintGeneralVideoClip();
+});
+
+document.querySelector("#general-video-reference-input").addEventListener("change", event => {
+  const files = [...event.currentTarget.files];
+  event.currentTarget.value = "";
+  const error = document.querySelector("#general-reference-error");
+  let message = "";
+  if (!hasAnyPermission("video:task:manage")) message = "没有创建任务权限。";
+  else if (files.length !== 1 || generalVideoReference) message = "参考视频最多 1 条，请先移除已有视频。";
+  else if (!/\.(mp4|mov|webm)$/i.test(files[0].name)) message = "视频支持 MP4、MOV、WebM。";
+  else if (generalVideoReferences.reduce((n, r) => n + r.file.size, files[0].size) > 90 * 1024 * 1024) message = "参考素材合计不能超过 90 MB。";
+  if (message) { error.textContent = message; error.hidden = false; return; }
+  generalVideoReference = {file: files[0], previewUrl: URL.createObjectURL(files[0])};
+  document.querySelector('#general-video-form input[name="videoRoute"][value="QUALITY"]').checked = true;
+  error.hidden = true;
+  renderGeneralVideoReference();
+});
+
+document.querySelector("#general-video-reference-preview").addEventListener("click", event => {
+  if (event.target.closest("[data-clip-preview]") && generalVideoReference?.duration) {
+    const video = event.currentTarget.querySelector('video');video.currentTime = generalVideoReference.clipStart;
+    generalVideoReference.previewing = true;
+    video.play().catch(() => {if(generalVideoReference) generalVideoReference.previewing = false;});
+  }
+  if (event.target.closest("[data-general-video-mention]")) insertGeneralVideoMention("视频1");
+  if (event.target.closest("[data-general-video-remove]")) {
+    URL.revokeObjectURL(generalVideoReference.previewUrl); generalVideoReference = null;
+    const input = document.querySelector("#general-video-prompt");
+    input.value = input.value.replace(/@视频1(?!\d)/g, "");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    renderGeneralVideoReference();
+  }
+});
+
+function updateGeneralMentionMenu() {
+  const input = document.querySelector("#general-video-prompt");
+  const menu = document.querySelector("#general-mention-menu");
+  const before = input.value.slice(0, input.selectionStart);
+  const match = before.match(/@([^@\s]*)$/);
+  if (!match) { menu.hidden = true; generalMentionStart = null; return; }
+  generalMentionStart = before.length - match[0].length;
+  const choices = generalVideoReferences.map((r, i) => ({label: `图片${i + 1}`, name:r.file.name}));
+  if (generalVideoReference) choices.push({label:"视频1",name:generalVideoReference.file.name});
+  const filtered = choices.filter(c => `${c.label} ${c.name}`.toLowerCase().includes(match[1].toLowerCase()));
+  menu.innerHTML = filtered.length ? filtered.map(c => `<button type="button" role="option" data-general-mention="${c.label}"><strong>@${c.label}</strong><span>${escapeHtml(c.name)}</span></button>`).join("") : '<span class="general-mention-empty">没有匹配素材，请先上传图片或视频</span>';
+  menu.hidden = false;
+}
+const generalMentionInput = document.querySelector("#general-video-prompt");
+generalMentionInput.addEventListener("input", updateGeneralMentionMenu);
+generalMentionInput.addEventListener("click", updateGeneralMentionMenu);
+generalMentionInput.addEventListener("keydown", event => {
+  const menu = document.querySelector("#general-mention-menu");
+  if (menu.hidden) return;
+  if (event.key === "Escape") { menu.hidden = true; generalMentionStart = null; event.preventDefault(); }
+  if (["ArrowDown", "Enter", "Tab"].includes(event.key)) {
+    const first = menu.querySelector("button");
+    if (first) { event.preventDefault(); if(event.key === "ArrowDown") first.focus(); else insertGeneralVideoMention(first.dataset.generalMention); }
+  }
+});
+document.querySelector("#general-mention-menu").addEventListener("click", event => {
+  const button = event.target.closest("[data-general-mention]");
+  if (button) insertGeneralVideoMention(button.dataset.generalMention);
+});
+document.querySelector("#general-mention-menu").addEventListener("keydown", event => {
+  const buttons = [...event.currentTarget.querySelectorAll("button")];
+  const index = buttons.indexOf(document.activeElement);
+  if (event.key === "Enter" && index >= 0) { event.preventDefault(); insertGeneralVideoMention(buttons[index].dataset.generalMention); }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); buttons[(index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length]?.focus(); }
+  if (event.key === "Escape") { event.currentTarget.hidden = true; generalMentionStart = null; generalMentionInput.focus(); }
+});
+document.addEventListener("click", event => {
+  if (!event.target.closest("#general-mention-menu, #general-video-prompt")) { document.querySelector("#general-mention-menu").hidden = true; generalMentionStart = null; }
 });
 
 const generalReferenceDrop = document.querySelector("#general-reference-drop");
@@ -11660,6 +13230,8 @@ document.querySelector("#general-video-form").addEventListener("change", event =
 });
 
 document.querySelector("#general-video-task-grid").addEventListener("click", async event => {
+  const previewButton = event.target.closest("[data-asset-preview]");
+  if (previewButton) { openAssetPreview(previewButton); return; }
   const startButton = event.target.closest("[data-general-task-start]");
   if (startButton) {
     const card = startButton.closest("[data-general-task-id]");
@@ -11707,11 +13279,12 @@ document.querySelector("#general-video-form").addEventListener("submit", async e
     status.className = "general-form-status is-error";
     return;
   }
-  if (!generalVideoReferences.length || generalVideoReferences.length > limit) {
-    status.textContent = generalVideoReferences.length ? `最多使用 ${limit} 张图片。` : "请至少上传 1 张参考图片。";
+  if ((!generalVideoReferences.length && !generalVideoReference) || generalVideoReferences.length > limit) {
+    status.textContent = generalVideoReferences.length ? `最多使用 ${limit} 张图片。` : "请至少上传 1 张图片或 1 条视频。";
     status.className = "general-form-status is-error";
     return;
   }
+  if (generalVideoReference && !generalVideoReference.duration) {status.textContent = "请等待视频时长读取完成，或更换可预览的 MP4 视频。";status.className = "general-form-status is-error";return;}
   const payload = new FormData();
   payload.append("prompt", prompt);
   payload.append("durationSeconds", String(formData.get("durationSeconds") || "5"));
@@ -11720,6 +13293,11 @@ document.querySelector("#general-video-form").addEventListener("submit", async e
   payload.append("videoRoute", String(formData.get("videoRoute") || "QUALITY"));
   payload.append("autoStart", String(formData.get("autoStart") === "on"));
   generalVideoReferences.forEach(reference => payload.append("files", reference.file, reference.file.name));
+  if (generalVideoReference) {
+    payload.append("files", generalVideoReference.file, generalVideoReference.file.name);
+    payload.append("videoClipStart", String(generalVideoReference.clipStart));
+    payload.append("videoClipEnd", String(generalVideoReference.clipEnd));
+  }
   button.disabled = true;
   button.innerHTML = `正在创建 <span class="button-spinner" aria-hidden="true"></span>`;
   status.textContent = "正在上传参考图并创建任务…";

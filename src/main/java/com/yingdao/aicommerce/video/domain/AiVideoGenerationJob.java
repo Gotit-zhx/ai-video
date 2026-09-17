@@ -118,6 +118,17 @@ public class AiVideoGenerationJob {
         this.updatedAt = this.completedAt;
     }
 
+    public void awaitingReview(String outputUrl, BigDecimal costAmount, String usageJson) {
+        this.status = "REVIEWING";
+        this.outputUrl = outputUrl;
+        this.costAmount = costAmount;
+        this.usageJson = usageJson;
+        this.nextPollAt = Instant.now().plusSeconds(900);
+        this.errorMessage = "视频已生成，正在审核第一帧";
+        this.completedAt = null;
+        this.updatedAt = Instant.now();
+    }
+
     public void failed(String requestState, String message) {
         this.status = "FAILED";
         this.requestState = requestState;

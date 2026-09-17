@@ -37,13 +37,71 @@
       shopId: request.shopId || null,
       generation: request.generation,
       nonce: request.nonce,
-      requestSequence: sameActivation ? active.requestSequence : 0,
+      // Sequence 1 is reserved for recovered page state. Actual network
+      // responses must always remain newer than this fallback.
+      requestSequence: sameActivation ? active.requestSequence : request.platform === "SHOPEE" ? 1 : 0,
+      shopeeStatePayload: sameActivation ? active.shopeeStatePayload : null,
+      shopeeStateScanAt: sameActivation ? active.shopeeStateScanAt : 0,
       tikTokSkuIds: sameActivation ? active.tikTokSkuIds : null,
       tikTokSkuSequence: sameActivation ? active.tikTokSkuSequence : 0,
       pendingTikTokPrices: sameActivation ? active.pendingTikTokPrices : [],
       expiresAt: Date.now() + 30_000
     };
+    if (!sameActivation || request.recoverState === true) recoverShopeePageState();
   });
+
+  function recoverShopeePageState() {
+    if (active?.platform !== "SHOPEE" || Date.now() - active.shopeeStateScanAt < 100) return;
+    active.shopeeStateScanAt = Date.now();
+    const activation = { ...active, sequence: 1 };
+    const renderedItems = renderedShopeeItems();
+    const roots = renderedItems.slice();
+    for (const name of ["__INITIAL_STATE__", "initialState", "__LOADED_DATA__", "__PRELOADED_STATE__", "__NEXT_DATA__", "__STORE__"]) {
+      // Read only known bootstrap data properties; never invoke bootstrap getters,
+      // evaluate scripts, or serialize unrelated account/session state.
+      const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+      if (descriptor && "value" in descriptor && descriptor.value && typeof descriptor.value === "object") {
+        roots.push(descriptor.value);
+      }
+    }
+    const candidate = findProduct(roots, activation);
+    if (!candidate || !activationStillCurrent(activation)) return;
+    let payload;
+    try { payload = JSON.stringify(candidate); } catch { return; }
+    const source = renderedItems.some(entry => entry.item === candidate.item) ? "SHOPEE_RENDERED_PDP" : "SHOPEE_PAGE_STATE";
+    const signature = `${source}:${payload}`;
+    if (!payload || payload.length > MAX_RESPONSE_BYTES || signature === active.shopeeStatePayload) return;
+    active.shopeeStatePayload = signature;
+    emitCandidate(candidate, activation, 1, source);
+  }
+
+  function renderedShopeeItems() {
+    const result = [];
+    // Shopee's rendered product heading has a React fiber whose nearby parent
+    // props carry the PDP item. This is the current page's existing data, useful
+    // when its request completed before extension authentication. Do not walk
+    // the whole React tree, state stores, sibling products or account props.
+    const headings = document.querySelectorAll?.("h1") || [];
+    for (const heading of Array.from(headings).slice(0, 6)) {
+      const fiberKey = Object.getOwnPropertyNames(heading).find(key => key.startsWith("__reactFiber$"));
+      let fiber = dataProperty(heading, fiberKey);
+      const seen = new Set();
+      for (let depth = 0; fiber && depth < 24 && !seen.has(fiber); depth += 1) {
+        seen.add(fiber);
+        const props = dataProperty(fiber, "memoizedProps");
+        const item = dataProperty(props, "item");
+        if (item && matchesShopeeItem(item, active)) result.push({ item });
+        fiber = dataProperty(fiber, "return");
+      }
+    }
+    return result;
+  }
+
+  function dataProperty(value, key) {
+    if (!value || typeof value !== "object" || !key) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  }
 
   const originalFetch = globalThis.fetch;
   if (typeof originalFetch === "function") {
@@ -144,7 +202,7 @@
     if (candidate) flushPendingTikTokPrices(activation);
   }
 
-  function emitCandidate(candidate, activation, sequence) {
+  function emitCandidate(candidate, activation, sequence, source = null) {
     let payload;
     try {
       payload = JSON.stringify(candidate);
@@ -160,6 +218,7 @@
         generation: activation.generation,
         nonce: activation.nonce,
         sequence,
+        source,
         payload
       })
     }));
@@ -191,6 +250,8 @@
   function findProduct(root, identity) {
     const stack = [{ value: root, depth: 0 }];
     let inspected = 0;
+    let shopeeCandidate = null;
+    let shopeeScore = -1;
     while (stack.length && inspected < MAX_NODES) {
       const { value, depth } = stack.pop();
       inspected += 1;
@@ -199,20 +260,46 @@
         if (identity.platform === "SHOPEE") {
           const nestedItem = value.item;
           if (nestedItem && matchesShopeeItem(nestedItem, identity)) {
-            return { item: nestedItem, shop_detailed: value.shop_detailed || value.shopDetailed || null };
+            const score = shopeeItemScore(nestedItem);
+            if (score > shopeeScore) {
+              shopeeCandidate = { item: nestedItem, shop_detailed: value.shop_detailed || value.shopDetailed || null };
+              shopeeScore = score;
+            }
           }
-          if (matchesShopeeItem(value, identity)) return { item: value };
+          if (matchesShopeeItem(value, identity)) {
+            const score = shopeeItemScore(value);
+            if (score > shopeeScore) {
+              shopeeCandidate = { item: value };
+              shopeeScore = score;
+            }
+          }
         }
-        const nestedProduct = value.product_model || value.productModel;
+        const productInfo = value.product_info || value.productInfo;
+        const productContext = productInfo && typeof productInfo === "object" && !Array.isArray(productInfo)
+          ? productInfo : value;
+        const nestedProduct = productContext.product_model || productContext.productModel;
         const nestedSkus = nestedProduct && skuArray(nestedProduct);
         const nestedId = nestedProduct?.product_id ?? nestedProduct?.productId;
         if (identity.platform === "TIKTOK_SHOP" && nestedSkus && String(nestedId ?? "") === identity.productId) {
           return {
             product_model: nestedProduct,
-            promotion_model: value.promotion_model || value.promotionModel || null,
-            seller_model: value.seller_model || value.sellerModel || null,
-            shop_model: value.shop_model || value.shopModel || null,
-            review_model: value.review_model || value.reviewModel || null
+            promotion_model: productContext.promotion_model || productContext.promotionModel || null,
+            seller_model: productContext.seller_model || productContext.sellerModel || null,
+            shop_model: productContext.shop_model || productContext.shopModel || null,
+            review_model: productContext.review_model || productContext.reviewModel || null,
+            category_model: productContext.category_model || productContext.categoryModel || null,
+            categories: productContext.categories || null,
+            category_path: productContext.category_path || productContext.categoryPath || null,
+            category_name: productContext.category_name || productContext.categoryName || null,
+            category_list: productContext.category_list || productContext.categoryList || null,
+            // category_info is a sibling of product_info on the actual PDP.
+            // The enclosing product_model ID has already been checked above.
+            category_info: productContext.category_info || productContext.categoryInfo
+              || value.category_info || value.categoryInfo || null,
+            product_properties: productContext.product_properties || productContext.productProperties || null,
+            product_attributes: productContext.product_attributes || productContext.productAttributes || null,
+            attributes: productContext.attributes || null,
+            category: productContext.category || null
           };
         }
         const skus = skuArray(value);
@@ -225,7 +312,17 @@
         if (child && typeof child === "object") stack.push({ value: child, depth: depth + 1 });
       }
     }
-    return null;
+    return shopeeCandidate;
+  }
+
+  function shopeeItemScore(item) {
+    const models = item.models.slice(0, 501);
+    return models.length * 10_000 + models.reduce((score, model) => score
+      + (model?.price !== null && model?.price !== undefined ? 2 : 0)
+      + (model?.price_before_discount !== null && model?.price_before_discount !== undefined ? 1 : 0), 0)
+      + (Array.isArray(item.tier_variations || item.tierVariations) ? 100 : 0)
+      + Math.min(Array.isArray(item.images) ? item.images.length : 0, 120)
+      + (item.description ? 10 : 0);
   }
 
   function rememberTikTokSkus(candidate, sequence) {

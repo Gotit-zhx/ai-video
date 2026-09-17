@@ -54,6 +54,8 @@ const context = vm.createContext({
   restrictStorageToExtensionPages: async () => {},
   writeSettings: async () => ({})
 });
+vm.runInContext(readFileSync(new URL("../src/shared/video-source.js", import.meta.url), "utf8"), context);
+context.deduplicateVideos = context.HeyiVideoSources.deduplicate;
 vm.runInContext(source, context);
 
 const {
@@ -171,6 +173,33 @@ assert.equal(sanitizedImages.imageCompleteness.source, "TIKTOK_PAGE_RESPONSE");
 assert.equal(sanitizedImages.imageCompleteness.roleCounts.VARIANT, 1);
 assert.equal(sanitizedImages.domData.imageCompleteness, sanitizedImages.imageCompleteness);
 
+const completeLargeCapture = sanitizeCapture({
+  sourceUrl: "https://shopee.ph/full-capture-i.123.456",
+  sourcePlatform: "SHOPEE",
+  sourceProductId: "456",
+  sourceShopId: "123",
+  title: "Gallery plus below-fold description images",
+  images: Array.from({ length: 120 }, (_, index) => ({
+    url: `https://down-ph.img.susercontent.com/file/capture-${index}.webp`,
+    role: index === 0 ? "MAIN" : index < 16 ? "VARIANT" : "DETAIL"
+  })),
+  imageCompleteness: { expectedCount: 120, capturedCount: 120, complete: true, issues: [] }
+}, "SHOPEE");
+assert.equal(completeLargeCapture.images.length, 120);
+assert.equal(completeLargeCapture.images.at(-1).role, "DETAIL");
+assert.equal(completeLargeCapture.imageCompleteness.complete, true);
+const oversizedCapture = sanitizeCapture({
+  sourceUrl: "https://shopee.ph/full-capture-i.123.456",
+  sourcePlatform: "SHOPEE",
+  sourceProductId: "456",
+  sourceShopId: "123",
+  title: "Oversized description images",
+  images: [...completeLargeCapture.images, { url: "https://down-ph.img.susercontent.com/file/extra.webp", role: "DETAIL" }],
+  imageCompleteness: { expectedCount: 121, capturedCount: 121, complete: true, issues: [] }
+}, "SHOPEE");
+assert.equal(oversizedCapture.images.length, 120);
+assert.equal(oversizedCapture.imageCompleteness.complete, false);
+
 const missingSkuImage = sanitizeImageCompleteness({
   expectedCount: 1,
   capturedCount: 1,
@@ -198,3 +227,12 @@ const keyWithShop = await idempotencyKey({
 assert.equal(keyWithoutShop, keyWithShop);
 
 console.log("Background sanitize tests passed");
+
+const renditionUrl = "https://down-aka-ph.vod.susercontent.com/api/v4/11110105/mms/ph-11110105-6v6xa-mqzwevrhc35wbd.16000081784791738.mp4";
+const previewUrl = "https://mms.vod.susercontent.com/api/v4/11110105/mms/ph-11110105-6v6xa-mqzwevrhc35wbd.default.mp4";
+const otherVideo = renditionUrl.replace("mqzwevrhc35wbd", "anotherasset123");
+const sanitizedVideos = sanitizeCapture({
+  sourceUrl:"https://shopee.ph/product-i.123.456",sourcePlatform:"SHOPEE",sourceProductId:"456",sourceShopId:"123",title:"Video fixture",
+  videos:[renditionUrl,previewUrl,previewUrl+"?v=2",previewUrl+"?v=3",previewUrl+"?v=4",otherVideo].map(url=>({url}))
+}, "SHOPEE");
+assert.deepEqual(Array.from(sanitizedVideos.domData.videos,video=>video.url),[renditionUrl,otherVideo]);

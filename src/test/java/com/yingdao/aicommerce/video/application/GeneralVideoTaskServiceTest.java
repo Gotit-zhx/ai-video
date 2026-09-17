@@ -44,6 +44,49 @@ class GeneralVideoTaskServiceTest {
     Path storageRoot;
 
     @Test
+    void validatesReferenceClipRangeAgainstOriginalVideoAndFifteenSecondLimit() {
+        assertEquals(3.0, AiVideoTaskService.generalVideoClipWindow(3.0, 8.0, 20)[0]);
+        assertEquals(8.0, AiVideoTaskService.generalVideoClipWindow(3.0, 8.0, 20)[1]);
+        for (Double[] range : List.of(new Double[]{-1.0,5.0}, new Double[]{0.0,16.0},
+                new Double[]{5.0,5.0},new Double[]{2.0,21.0},new Double[]{Double.NaN,5.0},
+                new Double[]{20.01,20.03},new Double[]{null,5.0})) {
+            assertThrows(BusinessException.class, () -> AiVideoTaskService.generalVideoClipWindow(range[0],range[1],20));
+        }
+    }
+
+    @Test
+    void acceptsNineImagesAndOneVideoAndRejectsASecondVideo() {
+        var files = new ArrayList<MultipartFile>();
+        for (int i = 0; i < 9; i++) files.add(image("image" + i + ".png"));
+        var video = new MockMultipartFile("files", "ref.mp4", "video/mp4", new byte[] {1});
+        files.add(video);
+        var media = AiVideoTaskService.generalReferences(files);
+        assertEquals(9, media.images().size());
+        assertEquals(1, media.videos().size());
+        files.add(video);
+        assertThrows(BusinessException.class, () -> AiVideoTaskService.generalReferences(files));
+        assertEquals(0, AiVideoTaskService.generalReferences(List.of(video)).images().size());
+    }
+
+    @Test
+    void rejectsVideoOnUnsupportedSpeedRouteBeforeCreatingTask() {
+        Fixture fixture = fixture();
+        var video = new MockMultipartFile("files", "ref.mp4", "video/mp4", new byte[] {1});
+        assertThrows(BusinessException.class, () -> fixture.service.createGeneral(
+                new AiVideoTaskService.GeneralCreateCommand(null, "@视频1", 5, "9:16", "720p", "SPEED", false), List.of(video), principal()));
+        verify(fixture.taskMapper, never()).insert(any(AiVideoTask.class));
+    }
+
+    @Test
+    void mentionNumbersMustResolveToUploadedMedia() {
+        AiVideoTaskService.validateGeneralMentions("让 @图片2 模仿 @视频1", 2, 1);
+        assertThrows(BusinessException.class, () -> AiVideoTaskService.validateGeneralMentions("@图片3", 2, 1));
+        assertThrows(BusinessException.class, () -> AiVideoTaskService.validateGeneralMentions("@视频2", 2, 1));
+        assertThrows(BusinessException.class, () -> AiVideoTaskService.validateGeneralMentions("@视频1", 2, 0));
+        assertTrue(AiVideoGenerationService.generalReferencePrompt("@图片1 模仿 @视频1").contains("唯一的视频素材"));
+    }
+
+    @Test
     void createsGeneralTaskWithOriginalPromptAndOneToNineReferences() {
         Fixture fixture = fixture();
         String prompt = "  保留首尾空格的用户提示词\n第二行  ";

@@ -39,6 +39,15 @@ class VideoReferenceLinkServiceTest {
         assertFalse(links.isValid("script-audio", "script-1", 1L, query.get("signature")));
     }
 
+    @Test void storyboardSignatureBindsBothAssetAndSequence() {
+        var q = query(URI.create(links.storyboardFrame("grid-1", 2)));
+        long expires = Long.parseLong(q.get("expires"));
+        assertTrue(links.isValid("storyboard-frame/2", "grid-1", expires, q.get("signature")));
+        assertFalse(links.isValid("storyboard-frame/3", "grid-1", expires, q.get("signature")));
+        assertFalse(links.isValid("storyboard-frame/2", "grid-2", expires, q.get("signature")));
+        assertFalse(links.isValid("storyboard-frame/2", "grid-1", 1, q.get("signature")));
+    }
+
     private Map<String, String> query(URI uri) {
         return Arrays.stream(uri.getRawQuery().split("&"))
                 .map(value -> value.split("=", 2))

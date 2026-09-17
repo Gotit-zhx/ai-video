@@ -157,6 +157,16 @@ assert.deepEqual(
   "the total byte ceiling must evict oldest cached responses"
 );
 
+emitPayload(third, 1, { item: { item_id: 456, shop_id: 123, models: [{ modelid: "rendered", stock: 10 }] } }, "SHOPEE_RENDERED_PDP");
+for (let sequence = 20; sequence <= 30; sequence += 1) {
+  emitPayload(third, sequence, { item: { item_id: 456, shop_id: 123, models: [{ modelid: "rendered", stock: null }] } });
+}
+const retainedRendered = await context.HeyiCaptureBridge.readEntries("456");
+assert.equal(retainedRendered.length, 8);
+assert.equal(retainedRendered[0].sequence, 30);
+assert.equal(retainedRendered.at(-1).source, "SHOPEE_RENDERED_PDP", "retain the current page inventory alongside the newest response");
+assert.equal(retainedRendered.at(-1).value.item.models[0].stock, 10);
+
 setTikTokLocation("/ph/pdp/model-12345678-red-1736046921727116747");
 await intervalCallback();
 await settle();
@@ -208,7 +218,7 @@ function latestInit() {
   return initEvents.at(-1);
 }
 
-function emitPayload(activation, sequence, value) {
+function emitPayload(activation, sequence, value, source = null) {
   const envelope = {
     platform: activation.platform,
     shopId: activation.shopId,
@@ -216,6 +226,7 @@ function emitPayload(activation, sequence, value) {
     generation: activation.generation,
     nonce: activation.nonce,
     sequence,
+    source,
     payload: JSON.stringify(value)
   };
   document.dispatchEvent(new CustomEvent(`heyi-collector-data-${activation.channel}`, {

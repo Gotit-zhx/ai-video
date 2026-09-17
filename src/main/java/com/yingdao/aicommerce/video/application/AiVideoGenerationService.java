@@ -53,14 +53,19 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 public class AiVideoGenerationService {
     private static final long MAX_VIDEO_BYTES = 500L * 1024 * 1024;
     private static final long DAYAN_SUBMISSION_INTERVAL_MILLIS = 500L;
     private static final int MAX_AUTOMATIC_TRANSIENT_RETRIES = 3;
+    private static final int MAX_GRID_REGENERATIONS = 2;
+    static final String GRID_REJECTED = "VIDEO_GRID_REJECTED: ";
+    static final String REVIEW_PAUSED = "VIDEO_REVIEW_PAUSED: ";
+    private static final String INTERRUPTED_NOT_SENT = "提交服务重启中断，厂商未返回任务 ID；系统已自动重新提交";
     private static final long[] AUTOMATIC_RETRY_DELAYS_SECONDS = {30L, 90L, 300L};
-    private static final List<String> ACTIVE_VIDEO_JOB_STATUSES = List.of("SUBMITTING", "QUEUED", "RUNNING");
+    private static final List<String> ACTIVE_VIDEO_JOB_STATUSES = List.of("SUBMITTING", "QUEUED", "RUNNING", "REVIEWING");
     private final AiVideoTaskMapper taskMapper;
     private final AiVideoTaskItemMapper itemMapper;
     private final AiVideoTaskAssetMapper assetMapper;
@@ -76,6 +81,9 @@ public class AiVideoGenerationService {
     private final int maxConcurrentVideoSubmissions;
     private final Instant serviceStartedAt = Instant.now();
     private final Set<String> queuedSubmissions = ConcurrentHashMap.newKeySet();
+    private final Set<String> pollingJobs = ConcurrentHashMap.newKeySet();
+    private VideoFirstFrameAuditService firstFrameAudit;
+    private VideoReviewFinalizer reviewFinalizer;
     private final Object dayanSubmissionPacingMonitor = new Object();
     private long nextDayanSubmissionAtMillis;
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -107,12 +115,23 @@ public class AiVideoGenerationService {
         this.maxConcurrentVideoSubmissions = Math.max(1, maxConcurrentVideoSubmissions);
     }
 
+    @Autowired
+    public void setFirstFrameAudit(VideoFirstFrameAuditService firstFrameAudit) {
+        this.firstFrameAudit = firstFrameAudit;
+    }
+
+    @Autowired
+    public void setReviewFinalizer(VideoReviewFinalizer reviewFinalizer) {
+        this.reviewFinalizer = reviewFinalizer;
+    }
+
     @Transactional
     public AiVideoTask start(AiVideoTask task) {
         List<RuntimeModelConnection> routes = videoRoutes(task);
         if (routes.isEmpty()) throw new IllegalStateException(missingRouteMessage(task));
         RuntimeModelConnection primary = routes.getFirst();
         if ("AUTO".equals(primary.provider())) throw new IllegalStateException("无法识别视频厂商，请编辑视频模型并选择厂商");
+        validateIndividualFrameRoute(task, primary);
         List<AiVideoTaskItem> allItems = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getTaskId, task.getId()).orderByAsc(AiVideoTaskItem::getCreatedAt));
         if (allItems.isEmpty()) throw new IllegalStateException("请先上传并生成商品图片");
@@ -213,13 +232,15 @@ public class AiVideoGenerationService {
                 .orderByAsc(AiVideoTaskItem::getUpdatedAt));
         for (AiVideoTaskItem item : stuck) {
             AiVideoTask task = taskMapper.selectById(item.getTaskId());
-            if (task == null || !"VIDEO_GENERATING".equals(task.getStatus()) || hasVideoResult(item.getId())) continue;
+            if (task == null || !"VIDEO_GENERATING".equals(task.getStatus()) || hasCurrentVideoResult(item.getId())) continue;
             if (!hasSubmissionCapacity(task.getOrganizationId())) continue;
             long activeJobs = jobMapper.selectCount(new LambdaQueryWrapper<AiVideoGenerationJob>()
                     .eq(AiVideoGenerationJob::getItemId, item.getId())
                     .in(AiVideoGenerationJob::getStatus, ACTIVE_VIDEO_JOB_STATUSES));
             if (activeJobs == 0) {
-                queueSubmission(UUID.randomUUID().toString(), task.getId(), item.getId());
+                AiVideoGenerationJob latest = latestJob(item.getId());
+                if (isGridRetryContinuation(latest)) queueGridRetry(latest);
+                else queueSubmission(UUID.randomUUID().toString(), task.getId(), item.getId());
             }
         }
     }
@@ -235,10 +256,10 @@ public class AiVideoGenerationService {
             AiVideoTask task = taskMapper.selectById(job.getTaskId());
             AiVideoTaskItem item = itemMapper.selectById(job.getItemId());
             if (task == null || item == null || !"VIDEO_GENERATING".equals(task.getStatus())
-                    || !"VIDEO_SUBMITTING".equals(item.getStatus()) || hasVideoResult(item.getId())) continue;
-            job.failed("NOT_SENT", "提交服务重启中断，厂商未返回任务 ID；系统已自动重新提交");
-            jobMapper.updateById(job);
+                    || !"VIDEO_SUBMITTING".equals(item.getStatus()) || hasCurrentVideoResult(item.getId())) continue;
             if (!hasSubmissionCapacity(task.getOrganizationId()) || !queuedSubmissions.add(item.getId())) continue;
+            job.failed("NOT_SENT", INTERRUPTED_NOT_SENT);
+            jobMapper.updateById(job);
             item.startVideo();
             itemMapper.updateById(item);
             executor.execute(() -> {
@@ -315,6 +336,7 @@ public class AiVideoGenerationService {
     }
 
     private boolean isTransientSubmitFailure(String message) {
+        if (message != null && (message.startsWith(GRID_REJECTED) || message.startsWith(REVIEW_PAUSED))) return false;
         return retryableVideoConcurrencyFailure(message);
     }
 
@@ -345,16 +367,88 @@ public class AiVideoGenerationService {
 
     private boolean hasAutomaticRetryPending(AiVideoTaskItem item) {
         AiVideoGenerationJob latest = latestJob(item.getId());
+        if (isGridRejection(latest)) return gridRejectionCount(latest.getRunId(), item.getId()) <= MAX_GRID_REGENERATIONS;
         if (latest == null || !"FAILED".equals(latest.getStatus())
                 || !isTransientSubmitFailure(latest.getErrorMessage())) return false;
         return transientFailureCount(latest.getRunId(), item.getId(), latest.getModelConfigId())
                 <= MAX_AUTOMATIC_TRANSIENT_RETRIES;
     }
 
+    private boolean isGridRejection(AiVideoGenerationJob job) {
+        return job != null && "FAILED".equals(job.getStatus()) && job.getErrorMessage() != null
+                && job.getErrorMessage().startsWith(GRID_REJECTED);
+    }
+
+    private boolean isGridRetryContinuation(AiVideoGenerationJob job) {
+        return isGridRejection(job) || job != null && "FAILED".equals(job.getStatus())
+                && "NOT_SENT".equals(job.getRequestState()) && INTERRUPTED_NOT_SENT.equals(job.getErrorMessage())
+                && gridRejectionCount(job.getRunId(), job.getItemId()) > 0;
+    }
+
+    private int gridRejectionCount(String runId, String itemId) {
+        return Math.toIntExact(jobMapper.selectCount(new LambdaQueryWrapper<AiVideoGenerationJob>()
+                .eq(AiVideoGenerationJob::getRunId, runId).eq(AiVideoGenerationJob::getItemId, itemId)
+                .eq(AiVideoGenerationJob::getStatus, "FAILED")
+                .likeRight(AiVideoGenerationJob::getErrorMessage, GRID_REJECTED)));
+    }
+
+    @Scheduled(initialDelay = 10_000, fixedDelay = 10_000)
+    public void retryGridRejectedVideos() {
+        for (AiVideoTaskItem item : itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
+                .eq(AiVideoTaskItem::getStatus, "VIDEO_FAILED"))) {
+            AiVideoGenerationJob latest = latestJob(item.getId());
+            if (isGridRejection(latest)) queueGridRetry(latest);
+        }
+    }
+
+    private void queueGridRetry(AiVideoGenerationJob rejected) {
+        if (gridRejectionCount(rejected.getRunId(), rejected.getItemId()) > MAX_GRID_REGENERATIONS) return;
+        AiVideoTask task = taskMapper.selectById(rejected.getTaskId());
+        if (task == null || !"VIDEO_GENERATING".equals(task.getStatus())
+                || !hasSubmissionCapacity(task.getOrganizationId()) || hasCurrentVideoResult(rejected.getItemId())) return;
+        if (jobMapper.selectCount(new LambdaQueryWrapper<AiVideoGenerationJob>()
+                .eq(AiVideoGenerationJob::getItemId, rejected.getItemId())
+                .in(AiVideoGenerationJob::getStatus, ACTIVE_VIDEO_JOB_STATUSES)) > 0) return;
+        if (videoRoutes(task).stream().noneMatch(route -> route.id().equals(rejected.getModelConfigId()))) {
+            rejected.failed("ACCEPTED", REVIEW_PAUSED + "首帧不合格，原视频线路已停用，未再次扣费生成");
+            jobMapper.updateById(rejected);
+            AiVideoTaskItem item = itemMapper.selectById(rejected.getItemId());
+            if (item != null) { item.videoFail(rejected.getErrorMessage()); itemMapper.updateById(item); }
+            refreshTask(rejected.getTaskId());
+            return;
+        }
+        if (!queuedSubmissions.add(rejected.getItemId())) return;
+        executor.execute(() -> {
+            try {
+                AiVideoGenerationJob latest = latestJob(rejected.getItemId());
+                if (latest != null && latest.getId().equals(rejected.getId()) && isGridRetryContinuation(latest)) {
+                    retrySameRoute(rejected.getRunId(), rejected.getTaskId(), rejected.getItemId(), rejected.getModelConfigId());
+                }
+            } finally { queuedSubmissions.remove(rejected.getItemId()); }
+        });
+    }
+
+    static String strengthenSingleScenePrompt(String prompt, int rejectionCount) {
+        if (rejectionCount <= 0) return prompt;
+        return "【首帧画面纠正｜第" + rejectionCount + "次自动重做】\n"
+                + "上次输出的第一帧出现多个画面，未通过审核。这次从第一帧开始只拍摄一个铺满画布的真实场景，"
+                + "画面中仅有同一位人物或同一件商品。第一张参考图定义唯一的起始场景，其他参考只提供随后发生的动作。"
+                + "所有动作按时间先后执行，任意时刻都只呈现其中一个场景，保持完整画幅。"
+                + "严禁把参考图集合、九宫格、拼图、格线、分屏或画中画拍进视频；不得先出现拼图再放大其中一格。"
+                + "镜头始终处于人物所在的真实空间内，不展示图片、纸张、屏幕或相册。原有动作时间轴、商品结构和声音要求继续执行。\n\n"
+                + (prompt == null ? "" : prompt);
+    }
+
     private boolean hasVideoResult(String itemId) {
         return assetMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, itemId)
                 .eq(AiVideoTaskAsset::getAssetType, "VIDEO_RESULT")) > 0;
+    }
+
+    private boolean hasCurrentVideoResult(String itemId) {
+        if (!hasVideoResult(itemId)) return false;
+        AiVideoGenerationJob latest = latestJob(itemId);
+        return latest == null || "SUCCEEDED".equals(latest.getStatus());
     }
 
     private boolean hasRequiredImages(String itemId) {
@@ -420,7 +514,8 @@ public class AiVideoGenerationService {
             refreshTask(taskId);
             return;
         }
-        int attempt = attempted.size() + 1;
+        int attempt = Math.toIntExact(jobMapper.selectCount(new LambdaQueryWrapper<AiVideoGenerationJob>()
+                .eq(AiVideoGenerationJob::getRunId, runId).eq(AiVideoGenerationJob::getItemId, itemId))) + 1;
         submitWithConnection(runId, task, item, connection, attempt);
     }
 
@@ -457,13 +552,15 @@ public class AiVideoGenerationService {
             itemMapper.updateById(item);
             return;
         }
+        boolean qualityRetry = gridRejectionCount(runId, itemId) > 0;
         try {
-            String prompt = task.isGeneral() ? item.getVideoPromptText()
+            String prompt = task.isGeneral() ? generalReferencePrompt(item.getVideoPromptText())
                     : task.isDirectReferenceVideo() ? directReferencePrompt(task, item) : item.getVideoPromptText();
             if (!task.isGeneral()) {
-                if (!task.isDirectReferenceVideo()) prompt = gridStoryboardSafetyPrompt(prompt, task.getAspectRatio());
+                if (!task.isDirectReferenceVideo()) prompt = usesIndividualFrames(task) ? individualFramesSafetyPrompt(prompt, task.getAspectRatio()) : gridStoryboardSafetyPrompt(prompt, task.getAspectRatio());
                 prompt = finalAudioPerformancePrompt(prompt, task, objectMapper);
             }
+            prompt = strengthenSingleScenePrompt(prompt, gridRejectionCount(runId, itemId));
             GenerationRequest request = new GenerationRequest(prompt, references(task, item, connection, provider),
                     duration, task.getAspectRatio(), resolution, audioReference(task));
             paceSubmission(connection.provider());
@@ -478,9 +575,12 @@ public class AiVideoGenerationService {
         } catch (VideoProviderException exception) {
             job.captureSubmitExchange(exception.getRequestJson(), exception.getResponseJson());
             if (exception.isSafeToFailover()) {
-                job.failed("REJECTED", exception.getMessage());
+                job.failed("REJECTED", qualityRetry ? REVIEW_PAUSED + "首帧重做提交失败：" + exception.getMessage()
+                        : exception.getMessage());
                 jobMapper.updateById(job);
-                submitNext(runId, taskId, itemId);
+                if (qualityRetry) {
+                    item.videoFail(job.getErrorMessage()); itemMapper.updateById(item); refreshTask(taskId);
+                } else submitNext(runId, taskId, itemId);
             } else {
                 job.unknown(exception.getMessage());
                 jobMapper.updateById(job);
@@ -489,10 +589,17 @@ public class AiVideoGenerationService {
                 refreshTask(taskId);
             }
         } catch (Exception exception) {
-            job.failed("NOT_SENT", readable(exception));
+            job.failed("NOT_SENT", qualityRetry ? REVIEW_PAUSED + "首帧重做准备失败，未切换线路：" + readable(exception)
+                    : readable(exception));
             jobMapper.updateById(job);
-            submitNext(runId, taskId, itemId);
+            if (qualityRetry) {
+                item.videoFail(job.getErrorMessage()); itemMapper.updateById(item); refreshTask(taskId);
+            } else submitNext(runId, taskId, itemId);
         }
+    }
+
+    static String generalReferencePrompt(String prompt) {
+        return String.valueOf(prompt) + "\n\n素材编号：@图片1、@图片2…按本请求中图片素材的顺序对应；@视频1对应唯一的视频素材。请按提示词指定的各素材用途生成，不把素材名称或编号画进成片。";
     }
 
     private void paceSubmission(String provider) {
@@ -549,7 +656,7 @@ public class AiVideoGenerationService {
     public Map<String, Instant> currentItemSubmittedAt(String taskId) {
         List<AiVideoGenerationJob> activeJobs = jobMapper.selectList(new LambdaQueryWrapper<AiVideoGenerationJob>()
                 .eq(AiVideoGenerationJob::getTaskId, taskId)
-                .in(AiVideoGenerationJob::getStatus, List.of("SUBMITTING", "QUEUED", "RUNNING"))
+                .in(AiVideoGenerationJob::getStatus, ACTIVE_VIDEO_JOB_STATUSES)
                 .orderByAsc(AiVideoGenerationJob::getCreatedAt));
         if (activeJobs.isEmpty()) return Map.of();
         Map<String, Instant> result = new LinkedHashMap<>();
@@ -627,6 +734,24 @@ public class AiVideoGenerationService {
                     .orElseThrow(() -> new VideoProviderException("当前视频线路不支持原视频定向替换，请更换支持参考视频的线路", true)));
             return List.copyOf(result);
         }
+        if (task.isGeneral()) {
+            List<AiVideoTaskAsset> media = assets.stream().filter(asset ->
+                    "VIDEO_REFERENCE_IMAGE".equals(asset.getAssetType()) || "VIDEO_REFERENCE_VIDEO".equals(asset.getAssetType()))
+                    .sorted(Comparator.comparing(asset -> asset.getShotSequence() == null ? Integer.MAX_VALUE : asset.getShotSequence())).toList();
+            long videoCount = media.stream().filter(asset -> "VIDEO_REFERENCE_VIDEO".equals(asset.getAssetType())).count();
+            if (videoCount > 1) throw new VideoProviderException("参考视频最多 1 条", true);
+            if (videoCount > 0 && !provider.supportsReferenceVideo(connection)) throw new VideoProviderException("当前线路不支持参考视频，请使用质量线路", true);
+            List<Reference> result = new ArrayList<>();
+            for (AiVideoTaskAsset asset : media) {
+                if (ossStorage != null) result.add("VIDEO_REFERENCE_VIDEO".equals(asset.getAssetType())
+                        ? ossReference(Path.of(asset.getFilePath()), asset.getContentType(), "video-references")
+                        : ossReference(asset, "video-references"));
+                else if (referenceLinks.isPubliclyReachable()) result.add(new Reference(referenceLinks.asset(asset.getId()), asset.getContentType()));
+                else if (requiresPublicReferences(connection.provider())) throw new VideoProviderException("当前线路需要公网素材地址", true);
+                else result.add(data(asset.getFilePath(), asset.getContentType()));
+            }
+            return List.copyOf(result);
+        }
         if (task.isDirectReferenceVideo()) {
             List<AiVideoTaskAsset> references = assets.stream()
                     .filter(asset -> "VIDEO_REFERENCE_IMAGE".equals(asset.getAssetType()))
@@ -651,6 +776,7 @@ public class AiVideoGenerationService {
             for (AiVideoTaskAsset reference : references) result.add(data(reference.getFilePath(), reference.getContentType()));
             return List.copyOf(result);
         }
+        if (usesIndividualFrames(task)) return individualFrameReferences(task, assets, connection);
         AiVideoTaskAsset first = requireAsset(assets, "STORYBOARD_FIRST_FRAME");
         AiVideoTaskAsset grid = requireAsset(assets, "STORYBOARD_GRID");
         if (ossStorage == null && !referenceLinks.isPubliclyReachable() && requiresPublicReferences(connection.provider())) {
@@ -676,6 +802,54 @@ public class AiVideoGenerationService {
         }
         return List.of(data(first.getFilePath(), first.getContentType()), data(grid.getFilePath(), grid.getContentType()),
                 data(item.getSourceFilePath(), item.getSourceContentType()));
+    }
+
+    static boolean usesIndividualFrames(AiVideoTask task) {
+        return !task.isDirectReferenceVideo() && "INDIVIDUAL_FRAMES".equals(task.getVideoReferenceMode());
+    }
+
+    static void validateIndividualFrameRoute(AiVideoTask task, RuntimeModelConnection connection) {
+        if (usesIndividualFrames(task) && !("DAYAN".equalsIgnoreCase(connection.provider())
+                && "minimax-h3".equalsIgnoreCase(connection.modelId()))) {
+            throw new IllegalStateException("九张独立分镜参考仅支持 DAYAN/minimax-h3，当前线路不支持；未提交视频请求");
+        }
+    }
+
+    private List<Reference> individualFrameReferences(AiVideoTask task, List<AiVideoTaskAsset> assets,
+                                                     RuntimeModelConnection connection) throws Exception {
+        validateIndividualFrameRoute(task, connection);
+        if (ossStorage == null && !referenceLinks.isPubliclyReachable()) throw new IllegalStateException("九张独立分镜参考需要配置公网签名素材地址或 OSS；未提交视频请求");
+        AiVideoTaskAsset grid = requireAsset(assets, "STORYBOARD_GRID");
+        byte[] original;
+        final int maximumBytes = 64 * 1024 * 1024;
+        if (ossStorage != null && ossStorage.isOssLocation(grid.getFilePath())) {
+            OssStorageService.Download download = ossStorage.download(grid.getFilePath());
+            if (download.size() > maximumBytes) throw new IllegalStateException("九宫格原图超过 64MB");
+            try (InputStream input = download.resource().getInputStream()) { original = input.readNBytes(maximumBytes + 1); }
+        } else {
+            Path source = Path.of(grid.getFilePath());
+            if (Files.size(source) > maximumBytes) throw new IllegalStateException("九宫格原图超过 64MB");
+            original = Files.readAllBytes(source);
+        }
+        if (original.length == 0 || original.length > maximumBytes) throw new IllegalStateException("九宫格原图大小无效");
+        List<VideoReferenceDeliveryService.Delivery> frames = referenceDelivery.prepareStoryboardFrames(original);
+        if (frames.size() != 9) throw new IllegalStateException("独立分镜参考必须恰好九张；未提交视频请求");
+        List<Reference> result = new ArrayList<>(9);
+        for (VideoReferenceDeliveryService.Delivery frame : frames) {
+            result.add(ossStorage != null
+                    ? ossReference(frame.path(), frame.contentType(), "video-storyboard-frames")
+                    : new Reference(referenceLinks.storyboardFrame(grid.getId(), result.size() + 1), frame.contentType()));
+        }
+        return List.copyOf(result);
+    }
+
+    static String individualFramesSafetyPrompt(String prompt, String aspectRatio) {
+        String ratio = aspectRatio == null || aspectRatio.isBlank() ? "请求画幅" : aspectRatio.trim();
+        return "【九张独立分镜参考协议】\n"
+                + "本次依次提供九张独立单画面，图01至图09分别对应后附完整时间轴的01至09姿态节点，编号只表示时间顺序。图01是完整首帧；图02至图09只提供对应时刻的动作、朝向、场景和机位，不能同时显示。\n"
+                + "从图01的单画面开始，依时间轴连续经过全部九个姿态。人物、商品身份与后附服装结构契约全程保持一致；每帧始终只有一个铺满" + ratio + "画布的场景。\n"
+                + "参考图不是需要逐张展示的照片，不生成拼贴、分屏、九宫格、缩略图、边框或编号。转场只服从时间轴明确的真实切点，同镜头内保持自然连续运动。\n\n"
+                + (prompt == null ? "" : prompt);
     }
 
     static String gridStoryboardSafetyPrompt(String prompt, String aspectRatio) {
@@ -708,6 +882,14 @@ public class AiVideoGenerationService {
     }
 
     private void validateDirectReferences(AiVideoTask task, String itemId) {
+        if (task.isGeneral()) {
+            List<AiVideoTaskAsset> all = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
+                    .eq(AiVideoTaskAsset::getItemId, itemId));
+            long images = all.stream().filter(a -> "VIDEO_REFERENCE_IMAGE".equals(a.getAssetType())).count();
+            long videos = all.stream().filter(a -> "VIDEO_REFERENCE_VIDEO".equals(a.getAssetType())).count();
+            if (images + videos == 0 || images > 9 || videos > 1) throw new IllegalStateException("请上传最多 9 张图片和 1 条视频参考");
+            return;
+        }
         List<AiVideoTaskAsset> references = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
                 .eq(AiVideoTaskAsset::getItemId, itemId)
                 .eq(AiVideoTaskAsset::getAssetType, "VIDEO_REFERENCE_IMAGE")
@@ -862,20 +1044,26 @@ public class AiVideoGenerationService {
     @Scheduled(fixedDelay = 5000)
     public void pollDueJobs() {
         List<AiVideoGenerationJob> jobs = jobMapper.selectList(new LambdaQueryWrapper<AiVideoGenerationJob>()
-                .in(AiVideoGenerationJob::getStatus, List.of("QUEUED", "RUNNING"))
+                .in(AiVideoGenerationJob::getStatus, List.of("QUEUED", "RUNNING", "REVIEWING"))
                 .le(AiVideoGenerationJob::getNextPollAt, Instant.now())
                 .orderByAsc(AiVideoGenerationJob::getNextPollAt));
         Instant now = Instant.now();
         jobs.forEach(job -> {
-            if (jobMapper.claimPoll(job.getId(), now, now.plusSeconds(90)) == 1) {
-                executor.execute(() -> poll(job.getId()));
+            if (pollingJobs.add(job.getId())) {
+                if (jobMapper.claimPoll(job.getId(), now, now.plusSeconds(900)) == 1) {
+                    executor.execute(() -> {
+                        try { poll(job.getId()); }
+                        finally { pollingJobs.remove(job.getId()); }
+                    });
+                } else pollingJobs.remove(job.getId());
             }
         });
     }
 
     private void poll(String jobId) {
         AiVideoGenerationJob job = jobMapper.selectById(jobId);
-        if (job == null || !List.of("QUEUED", "RUNNING").contains(job.getStatus())) return;
+        if (job == null || !List.of("QUEUED", "RUNNING", "REVIEWING").contains(job.getStatus())) return;
+        if ("REVIEWING".equals(job.getStatus())) { reviewSavedVideo(job); return; }
         RuntimeModelConnection connection = modelConfigs.connectionById(job.getOrganizationId(), job.getModelConfigId()).orElse(null);
         if (connection == null) return;
         boolean providerCompleted = false;
@@ -889,17 +1077,29 @@ public class AiVideoGenerationService {
                     jobMapper.updateById(job);
                     return;
                 }
-                GeneratedVideo output = download(job, connection, providers.require(job.getProvider()), result.outputUrl());
-                replaceVideoAsset(job, output);
-                job.succeeded(result.outputUrl(), result.cost(), json(result.usage()));
+                AiVideoTaskAsset candidate = reviewAsset(job, "VIDEO_REVIEW_CANDIDATE");
+                if (candidate == null) {
+                    GeneratedVideo output = download(job, connection, providers.require(job.getProvider()), result.outputUrl());
+                    candidate = new AiVideoTaskAsset(job.getOrganizationId(), job.getTaskId(), job.getItemId(),
+                            "VIDEO_REVIEW_CANDIDATE", null, output.location(), "video/mp4", output.size(),
+                            json(Map.of("jobId", job.getId())), job.getModelId());
+                    assetMapper.insert(candidate);
+                }
+                Map<String, Object> usage = new LinkedHashMap<>(result.usage() == null ? Map.of() : result.usage());
+                usage.put("reviewCandidateAssetId", candidate.getId());
+                job.awaitingReview(result.outputUrl(), result.cost(), json(usage));
                 jobMapper.updateById(job);
-                AiVideoTaskItem item = itemMapper.selectById(job.getItemId());
-                if (item != null) { item.videoComplete(); itemMapper.updateById(item); }
-                refreshTask(job.getTaskId());
+                reviewSavedVideo(job);
             } else if ("FAILED".equals(result.status())) {
-                job.failed("ACCEPTED", result.errorMessage() == null || result.errorMessage().isBlank() ? "厂商生成失败" : result.errorMessage());
+                boolean qualityRetry = gridRejectionCount(job.getRunId(), job.getItemId()) > 0;
+                String failure = result.errorMessage() == null || result.errorMessage().isBlank() ? "厂商生成失败" : result.errorMessage();
+                job.failed("ACCEPTED", qualityRetry ? REVIEW_PAUSED + "首帧重做生成失败：" + failure : failure);
                 jobMapper.updateById(job);
-                submitNext(job.getRunId(), job.getTaskId(), job.getItemId());
+                if (qualityRetry) {
+                    AiVideoTaskItem item = itemMapper.selectById(job.getItemId());
+                    if (item != null) { item.videoFail(job.getErrorMessage()); itemMapper.updateById(item); }
+                    refreshTask(job.getTaskId());
+                } else submitNext(job.getRunId(), job.getTaskId(), job.getItemId());
             } else {
                 job.running(result.status(), Instant.now().plusSeconds(pollSeconds(job.getProvider())));
                 jobMapper.updateById(job);
@@ -911,6 +1111,8 @@ public class AiVideoGenerationService {
                 refreshTask(job.getTaskId());
             }
         } catch (Exception exception) {
+            AiVideoGenerationJob persisted = jobMapper.selectById(job.getId());
+            if (persisted != null && "REVIEWING".equals(persisted.getStatus())) return;
             if (exception instanceof VideoProviderException providerException) {
                 job.captureQueryExchange(providerException.getRequestJson(), providerException.getResponseJson());
             }
@@ -928,6 +1130,86 @@ public class AiVideoGenerationService {
         if (value == null) return null;
         try { return new BigDecimal(String.valueOf(value)).intValue(); }
         catch (Exception ignored) { return null; }
+    }
+
+    private AiVideoTaskAsset reviewAsset(AiVideoGenerationJob job, String type) {
+        return assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
+                        .eq(AiVideoTaskAsset::getItemId, job.getItemId())
+                        .eq(AiVideoTaskAsset::getOrganizationId, job.getOrganizationId())
+                        .eq(AiVideoTaskAsset::getAssetType, type)).stream()
+                .filter(asset -> job.getId().equals(readMap(asset.getPromptText()).get("jobId")))
+                .findFirst().orElse(null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readMap(String value) {
+        try { return new LinkedHashMap<>(objectMapper.readValue(value, Map.class)); }
+        catch (Exception ignored) { return new LinkedHashMap<>(); }
+    }
+
+    private void reviewSavedVideo(AiVideoGenerationJob job) {
+        AiVideoTask task = taskMapper.selectById(job.getTaskId());
+        AiVideoTaskItem item = itemMapper.selectById(job.getItemId());
+        if (task == null || item == null) return;
+        AiVideoTaskAsset candidate = reviewAsset(job, "VIDEO_REVIEW_CANDIDATE");
+        Map<String, Object> usage = readMap(job.getUsageJson());
+        try {
+            if (candidate == null || firstFrameAudit == null || reviewFinalizer == null) {
+                throw new IllegalStateException("视频审核依赖或已保存候选不可用");
+            }
+            VideoFirstFrameAuditService.AuditResult audit = firstFrameAudit.audit(task, item,
+                    candidate.getFilePath(), job.getId());
+            Map<String, Object> evidence = new LinkedHashMap<>();
+            evidence.put("layout", audit.layout());
+            evidence.put("confidence", audit.confidence());
+            evidence.put("reason", audit.reason());
+            evidence.put("passed", audit.passed());
+            evidence.put("confirmedRejection", audit.rejected());
+            evidence.put("reviewedAt", Instant.now().toString());
+            if (audit.framePath() != null && Files.isRegularFile(audit.framePath()) && audit.frameSizeBytes() > 0) {
+                AiVideoTaskAsset frame = reviewAsset(job, "VIDEO_FIRST_FRAME");
+                if (frame == null) {
+                    String location = audit.framePath().toString();
+                    long size = audit.frameSizeBytes();
+                    if (ossStorage != null) {
+                        try (InputStream input = Files.newInputStream(audit.framePath())) {
+                            OssStorageService.StoredObject stored = ossStorage.store(input, size, size, "image/jpeg",
+                                    "video-audits/" + job.getOrganizationId() + "/" + job.getTaskId() + "/" + job.getId(),
+                                    "first-frame.jpg");
+                            location = stored.location(); size = stored.size();
+                        }
+                    }
+                    frame = new AiVideoTaskAsset(job.getOrganizationId(), job.getTaskId(), job.getItemId(),
+                            "VIDEO_FIRST_FRAME", null, location, "image/jpeg", size,
+                            json(Map.of("jobId", job.getId(), "audit", evidence)), job.getModelId());
+                    assetMapper.insert(frame);
+                }
+                evidence.put("frameAssetId", frame.getId());
+            }
+            usage.put("firstFrameAudit", evidence);
+            if (audit.passed()) {
+                job.succeeded(job.getOutputUrl(), job.getCostAmount(), json(usage));
+            } else {
+                int rejections = gridRejectionCount(job.getRunId(), job.getItemId()) + 1;
+                String message = audit.rejected()
+                        ? GRID_REJECTED + "首帧出现九宫格、分屏或拼贴：" + audit.reason()
+                            + (rejections <= MAX_GRID_REGENERATIONS
+                                ? "；已安排加强提示词后自动重做（" + rejections + "/" + MAX_GRID_REGENERATIONS + "）"
+                                : "；自动重做已达上限，视频和首帧已保留，请检查后手动处理")
+                        : REVIEW_PAUSED + "首帧审核未能确认通过：" + audit.reason() + "；视频和已截首帧已保留，未再次付费生成";
+                job.succeeded(job.getOutputUrl(), job.getCostAmount(), json(usage));
+                job.failed("ACCEPTED", message);
+            }
+            if (reviewFinalizer.finish(job, item, candidate, audit.passed())) refreshTask(job.getTaskId());
+        } catch (Exception exception) {
+            usage.put("firstFrameAudit", Map.of("layout", "UNKNOWN", "passed", false,
+                    "reason", "审核保存或处理失败", "reviewedAt", Instant.now().toString()));
+            job.succeeded(job.getOutputUrl(), job.getCostAmount(), json(usage));
+            job.failed("ACCEPTED", REVIEW_PAUSED + "首帧审核处理未完成，已保留视频候选，未再次付费生成");
+            if (reviewFinalizer != null) {
+                if (reviewFinalizer.finish(job, item, candidate, false)) refreshTask(job.getTaskId());
+            }
+        }
     }
 
     private GeneratedVideo download(AiVideoGenerationJob job, RuntimeModelConnection connection,
@@ -956,7 +1238,7 @@ public class AiVideoGenerationService {
         Path directory = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize().getParent();
         Files.createDirectories(directory);
         Path temporary = directory.resolve("video-" + job.getId() + ".part");
-        Path output = directory.resolve("video-result.mp4");
+        Path output = directory.resolve("video-" + job.getId() + ".mp4");
         try {
             try (InputStream input = response.body(); var target = Files.newOutputStream(temporary)) {
                 byte[] buffer = new byte[64 * 1024];
@@ -974,23 +1256,12 @@ public class AiVideoGenerationService {
         }
     }
 
-    private void replaceVideoAsset(AiVideoGenerationJob job, GeneratedVideo output) throws Exception {
-        List<AiVideoTaskAsset> previous = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
-                .eq(AiVideoTaskAsset::getItemId, job.getItemId()).eq(AiVideoTaskAsset::getAssetType, "VIDEO_RESULT"));
-        previous.forEach(asset -> {
-            assetMapper.deleteById(asset.getId());
-            if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) ossStorage.delete(asset.getFilePath());
-        });
-        assetMapper.insert(new AiVideoTaskAsset(job.getOrganizationId(), job.getTaskId(), job.getItemId(), "VIDEO_RESULT",
-                1, output.location(), "video/mp4", output.size(), null, job.getModelId()));
-    }
-
     private synchronized void refreshTask(String taskId) {
         AiVideoTask task = taskMapper.selectById(taskId);
         if (task == null || !"VIDEO_GENERATING".equals(task.getStatus())) return;
         List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, taskId));
         for (AiVideoTaskItem item : items) {
-            if (!"VIDEO_READY".equals(item.getStatus()) && hasVideoResult(item.getId())) {
+            if (!"VIDEO_READY".equals(item.getStatus()) && hasCurrentVideoResult(item.getId())) {
                 item.videoComplete();
                 itemMapper.updateById(item);
             }

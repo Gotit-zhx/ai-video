@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebGPU 轮廓评分 POC</title>
+<style>body{font:15px/1.65 system-ui;max-width:1000px;margin:40px auto;padding:0 24px;color:#222}button{padding:10px 18px;font:inherit}pre{font:12px/1.6 monospace;white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f4f1;padding:20px}p{max-width:850px}</style>
+<h1>WebGPU 轮廓评分 POC</h1>
+<p>实际候选网格 · 10 个固定方向 · 512×512。GPU 绘制、计算 IoU 与像素异或误差，只回读 320 字节分数。CPU 对同一 GPU 掩膜复核；不计算边界 P95，不执行拟合，也不替换原 CPU 评分。</p>
+<button id="run">运行短基准</button><p id="status" role="status">等待运行。需要支持 WebGPU 的浏览器和本地 HTTP/HTTPS。</p>
+<pre id="result"></pre><script type="module" src="./gpu-benchmark.js"></script></html>

@@ -9,8 +9,8 @@ import com.yingdao.aicommerce.product.mapper.ProductCaptureImageMapper;
 import com.yingdao.aicommerce.product.mapper.ProductCaptureSkuMapper;
 import com.yingdao.aicommerce.shop.application.MarketplaceAccess;
 import com.yingdao.aicommerce.shop.application.ShopAuthorizationService;
+import com.yingdao.aicommerce.shop.application.TikTokShopListingCapabilityResolver;
 import com.yingdao.aicommerce.shop.domain.MarketplacePlatform;
-import com.yingdao.aicommerce.shop.domain.Shop;
 import com.yingdao.aicommerce.shop.infrastructure.MarketplaceImageDownloader;
 import com.yingdao.aicommerce.shop.infrastructure.TikTokShopOfficialClient;
 import org.springframework.http.HttpStatus;
@@ -30,31 +30,43 @@ import java.util.Set;
 
 @Component
 public class TikTokShopOfficialPublishingProvider implements ProductPublishingProvider {
-    private static final int READBACK_MAX_ATTEMPTS = 3;
-    private static final long READBACK_RETRY_DELAY_MILLIS = 500;
+    private static final long[] READBACK_RETRY_DELAYS_MILLIS = {1000, 2000, 4000, 8000, 15000};
+    private static final int READBACK_MAX_ATTEMPTS = READBACK_RETRY_DELAYS_MILLIS.length + 1;
     private static final Set<String> LISTING_CHECK_UNSUPPORTED_CREATE_FIELDS = Set.of(
             "save_mode", "category_version", "is_not_for_sale", "idempotency_key");
     private static final Set<String> ACCEPTED_REMOTE_PRODUCT_STATUSES = Set.of(
-            "PENDING", "ACTIVATE");
+            "DRAFT");
     private final ShopAuthorizationService shopAuthorizationService;
     private final TikTokShopOfficialClient client;
     private final ProductCaptureSkuMapper skuMapper;
     private final ProductCaptureImageMapper imageMapper;
     private final MarketplaceImageDownloader imageDownloader;
     private final ObjectMapper objectMapper;
+    private final TikTokProductVideoUploader videoUploader;
+    private final TikTokProductDescription descriptionBuilder;
+    private final TikTokProductAttributeResolver attributeResolver;
+    private final TikTokProductSizeChart sizeChartBuilder;
+    private final TikTokShopListingCapabilityResolver listingCapabilityResolver;
 
     public TikTokShopOfficialPublishingProvider(ShopAuthorizationService shopAuthorizationService,
                                                 TikTokShopOfficialClient client,
                                                 ProductCaptureSkuMapper skuMapper,
                                                 ProductCaptureImageMapper imageMapper,
                                                 MarketplaceImageDownloader imageDownloader,
-                                                ObjectMapper objectMapper) {
+                                                ObjectMapper objectMapper,
+                                                TikTokProductVideoUploader videoUploader,
+                                                TikTokProductDescription descriptionBuilder) {
         this.shopAuthorizationService = shopAuthorizationService;
         this.client = client;
         this.skuMapper = skuMapper;
         this.imageMapper = imageMapper;
         this.imageDownloader = imageDownloader;
         this.objectMapper = objectMapper;
+        this.videoUploader = videoUploader;
+        this.descriptionBuilder = descriptionBuilder;
+        this.attributeResolver = new TikTokProductAttributeResolver(client, objectMapper);
+        this.sizeChartBuilder = new TikTokProductSizeChart(client, imageDownloader, objectMapper);
+        this.listingCapabilityResolver = new TikTokShopListingCapabilityResolver(client);
     }
 
     @Override public String code() { return "TIKTOK_SHOP_OFFICIAL_202309"; }
@@ -70,7 +82,9 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                                  ExternalCreateBoundary externalCreateBoundary) {
         MarketplaceAccess.Connection connection = shopAuthorizationService.connectionForPublishing(
                 capture.getOrganizationId(), shopId, MarketplacePlatform.TIKTOK_SHOP);
-        requireVerifiedLocalProductFlow(connection.shop());
+        // Recheck the authorized target when this queued upload actually runs. A client
+        // supplied mode or an earlier publish-options response is not execution authority.
+        var listingCapability = listingCapabilityResolver.resolve(connection);
         List<ProductCaptureSku> skus = skus(capture);
         List<ProductCaptureImage> images = images(capture);
         rejectDryRunImages(images);
@@ -79,6 +93,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 "TikTok Shop 发布前必须选择官方叶子类目");
         String warehouseId = requiredText(request, "warehouseId",
                 "TikTok Shop 发布前必须选择官方仓库");
+        Map<String, Object> inventoryRule = listingCapability.requireWarehouse(warehouseId);
         BigDecimal weightGrams = requiredPositiveDecimal(request, "weightGrams",
                 "TikTok Shop 发布前必须填写包裹重量");
         BigDecimal length = requiredPositiveDecimal(request, "packageLengthCm",
@@ -87,27 +102,45 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 "TikTok Shop 发布前必须填写包裹宽度");
         BigDecimal height = requiredPositiveDecimal(request, "packageHeightCm",
                 "TikTok Shop 发布前必须填写包裹高度");
-        String description = htmlDescription(capture.getDescription());
         buildSkus(capture, skus, request, warehouseId, stock, Map.of());
+        String categoryVersion = requiresCategoryVersionV2(connection.shop().getRegion()) ? "v2"
+                : fallback(text(request.get("categoryVersion")), "v1");
+        if ("LOCAL_REPLICATION".equals(listingCapability.listingMethod())) {
+            requireAvailableCrossBorderCategory(connection, categoryId, categoryVersion);
+        }
+        List<Map<String, Object>> productAttributes = attributeResolver.resolve(connection, capture,
+                categoryId, categoryVersion, request.get("productAttributes"));
+        Map<String, Object> categoryRules = client.apiGet(
+                "/product/" + client.apiVersion() + "/categories/" + categoryId + "/rules",
+                connection.tokens().accessToken(), connection.shop().getShopCipher(),
+                Map.of("category_version", categoryVersion));
+        TikTokProductSizeChart.PreparedSizeChart sizeChart = sizeChartBuilder.prepare(
+                capture, images, connection, categoryRules);
 
+        TikTokProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection, text(request.get("idempotencyKey")));
         UploadedImages uploaded = uploadImages(connection, images, skus);
         if (uploaded.mainImages().isEmpty()) {
             throw conflict("TikTok Shop 发布至少需要一张处理完成的商品图");
         }
 
+        TikTokProductDescription.PreparedDescription description = descriptionBuilder.prepare(capture, images, connection);
         Map<String, Object> body = mutableMap(request.get("tiktokShopPayload"));
-        body.put("save_mode", "LISTING");
+        body.remove("size_chart");
+        if (sizeChart.present()) body.put("size_chart", sizeChart.payload());
+        body.remove("video");
+        if (video.present()) body.put("video", Map.of("id", video.videoId()));
+        body.put("save_mode", "AS_DRAFT");
         body.put("title", capture.getTitle());
-        body.put("description", description);
+        body.put("description", description.html());
         body.put("category_id", categoryId);
-        body.put("category_version", requiresCategoryVersionV2(connection.shop().getRegion()) ? "v2"
-                : fallback(text(request.get("categoryVersion")), "v1"));
+        body.put("category_version", categoryVersion);
         body.put("main_images", uploaded.mainImages());
         body.put("package_weight", packageWeight(weightGrams));
         body.put("package_dimensions", packageDimensions(length, width, height));
         body.put("skus", buildSkus(capture, skus, request, warehouseId, stock,
                 uploaded.attributeImageBySkuKey()));
-        putOptional(body, "product_attributes", listValue(request.get("productAttributes")));
+        body.remove("product_attributes");
+        putOptional(body, "product_attributes", productAttributes);
         putOptional(body, "brand_id", text(request.get("brandId")));
         putOptional(body, "manufacturer_ids", listValue(request.get("manufacturerIds")));
         putOptional(body, "responsible_person_ids", listValue(request.get("responsiblePersonIds")));
@@ -135,11 +168,24 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
 
         Map<String, Object> receipt = new LinkedHashMap<>();
         receipt.put("platform", "TIKTOK_SHOP");
+        receipt.put("listingMethod", listingCapability.listingMethod());
+        if (listingCapability.requestId() != null) receipt.put("listingRulesRequestId", listingCapability.requestId());
+        if (!inventoryRule.isEmpty()) {
+            receipt.put("inventoryRules", listingCapability.inventoryRules());
+            receipt.put("inventoryWarehouseId", warehouseId);
+            receipt.put("inventoryAllocationMode", inventoryRule.get("allocation_mode"));
+        }
         receipt.put("apiVersion", client.apiVersion());
         receipt.put("externalShopId", connection.shop().getExternalShopId());
         receipt.put("productId", productId);
         receipt.put("imageCount", uploaded.uploadedCount());
         receipt.put("mainImageCount", uploaded.mainImages().size());
+        receipt.put("descriptionImageCount", description.imageCount());
+        if (sizeChart.present()) {
+            receipt.put("sizeChart", sizeChart.payload());
+            receipt.put("sizeChartSourceType", sizeChart.sourceType());
+            if (sizeChart.sourceImageId() != null) receipt.put("sizeChartSourceImageId", sizeChart.sourceImageId());
+        }
         receipt.put("attributeImageCount", uploaded.attributeImageBySkuKey().values().stream()
                 .distinct().count());
         receipt.put("skuCount", Math.max(1, skus.size()));
@@ -149,7 +195,59 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         receipt.put("verification", "CONFIRMED_BY_GET_PRODUCT");
         receipt.put("remoteStatus", verification.status());
         receipt.put("remoteSkuIds", verification.skuIdsBySellerSku());
+        if (video.present()) {
+            receipt.put("videoId", video.videoId());
+            receipt.put("sourceVideoId", video.sourceVideoId());
+            receipt.put("sourceVideoCount", video.sourceCount());
+            receipt.put("videoCount", 1);
+            receipt.put("videoVerification", "CONFIRMED_BY_GET_PRODUCT");
+        }
         return new PublishResult(productId, receipt);
+    }
+
+    void requireAvailableCrossBorderCategory(MarketplaceAccess.Connection connection,
+                                             String categoryId, String categoryVersion) {
+        Map<String, Object> response;
+        try {
+            response = client.apiGet("/product/" + client.apiVersion() + "/categories",
+                    connection.tokens().accessToken(), connection.shop().getShopCipher(),
+                    Map.of("locale", "en-US", "category_version", categoryVersion));
+        } catch (RuntimeException exception) {
+            BusinessException failure = new BusinessException(HttpStatus.BAD_GATEWAY,
+                    "读取目标跨境店铺类目权限失败，请稍后重试；尚未提交商品");
+            failure.initCause(exception);
+            throw failure;
+        }
+        Map<String, Map<String, Object>> categories = new LinkedHashMap<>();
+        for (Map<String, Object> category : objectList(objectValue(response == null ? null : response.get("data")).get("categories"))) {
+            String id = text(category.get("id"));
+            if (id != null && categories.putIfAbsent(id, category) != null) {
+                throw conflict("目标跨境店铺返回了重复类目信息，请重新读取类目后重试；尚未提交商品");
+            }
+        }
+        Map<String, Object> selected = categories.get(categoryId);
+        if (selected == null || !Boolean.TRUE.equals(selected.get("is_leaf"))) {
+            throw conflict("所选类目不是目标跨境店铺返回的有效叶子类目，请切换店铺或重新读取类目；尚未提交商品");
+        }
+        String currentId = categoryId;
+        Set<String> visited = new HashSet<>();
+        while (currentId != null && !"0".equals(currentId)) {
+            Map<String, Object> category = categories.get(currentId);
+            if (category == null || !visited.add(currentId)) {
+                throw conflict("目标跨境店铺类目层级信息不完整，请重新读取类目后重试；尚未提交商品");
+            }
+            Object rawStatuses = category.get("permission_statuses");
+            if (!(rawStatuses instanceof List<?> statuses) || statuses.isEmpty()
+                    || !statuses.stream().allMatch("AVAILABLE"::equals)) {
+                throw conflict("当前跨境店铺未开通或尚未确认所选商品类目“"
+                        + fallback(text(selected.get("local_name")), fallback(text(selected.get("name")), categoryId))
+                        + "”的发布权限，请切换已开通该类目的店铺，或开通后重试；尚未提交商品");
+            }
+            currentId = text(category.get("parent_id"));
+            if (currentId == null) {
+                throw conflict("目标跨境店铺类目层级信息不完整，请重新读取类目后重试；尚未提交商品");
+            }
+        }
     }
 
     ReadbackResult readbackWithRetry(MarketplaceAccess.Connection connection,
@@ -159,24 +257,28 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                                      Map<String, Object> createResponse,
                                      ReadbackSleeper sleeper) {
         Exception lastRetryableFailure = null;
+        // Ask explicitly for the version we just saved; the default returns the
+        // latest product information and may describe a different version.
+        Map<String, Object> query = "AS_DRAFT".equals(createPayload.get("save_mode"))
+                ? Map.of("return_draft_version", true) : Map.of();
         for (int attempt = 1; attempt <= READBACK_MAX_ATTEMPTS; attempt++) {
             try {
                 Map<String, Object> response = client.apiGet(productBasePath + "/" + productId,
-                        connection.tokens().accessToken(), connection.shop().getShopCipher(), Map.of());
+                        connection.tokens().accessToken(), connection.shop().getShopCipher(), query);
                 ReadbackVerification verification = verifyReadback(
                         productId, createPayload, createResponse, response);
                 return new ReadbackResult(response, verification);
             } catch (BusinessException mismatch) {
                 lastRetryableFailure = mismatch;
             } catch (Exception exception) {
-                if (!readbackNotFound(exception)) {
+                if (!readbackRetryable(exception) || Thread.currentThread().isInterrupted()) {
                     throw readbackFailure(productId, "官方 Get Product 请求失败：" + safeMessage(exception));
                 }
                 lastRetryableFailure = exception;
             }
             if (attempt < READBACK_MAX_ATTEMPTS) {
                 try {
-                    sleeper.sleep(READBACK_RETRY_DELAY_MILLIS);
+                    sleeper.sleep(READBACK_RETRY_DELAYS_MILLIS[attempt - 1]);
                 } catch (InterruptedException exception) {
                     Thread.currentThread().interrupt();
                     throw readbackFailure(productId, "等待远端数据一致时线程被中断");
@@ -187,17 +289,6 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 ? lastRetryableFailure.getMessage()
                 : "多次 Get Product 仍未找到商品：" + safeMessage(lastRetryableFailure);
         throw readbackFailure(productId, "共尝试 " + READBACK_MAX_ATTEMPTS + " 次仍无法确认：" + detail);
-    }
-
-    void requireVerifiedLocalProductFlow(Shop shop) {
-        String sellerType = text(shop == null ? null : shop.getSellerType());
-        if (sellerType != null && "LOCAL".equals(sellerType.toUpperCase(Locale.ROOT))) return;
-        if (sellerType != null && "CROSS_BORDER".equals(sellerType.toUpperCase(Locale.ROOT))) {
-            throw conflict("该 TikTok Shop 店铺是 CROSS_BORDER/Global Seller；系统尚未持久化并验证其 "
-                    + "local replication listing 模式，已禁止调用本地 Create Product，避免错发商品");
-        }
-        throw conflict("TikTok Shop 店铺 seller_type 缺失或不是官方 LOCAL；在确认不是未迁移的 "
-                + "Global Seller 前，已禁止调用本地 Create Product");
     }
 
     Map<String, Object> listingCheckPayload(Map<String, Object> createPayload) {
@@ -278,6 +369,10 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
             throw readbackFailure(productId, "Get Product 响应缺少 status/product_status");
         }
         verifyRemoteStatus(productId, status);
+        String expectedVideoId = nestedText(createPayload, "video", "id");
+        if (expectedVideoId != null && !expectedVideoId.equals(nestedText(data, "video", "id"))) {
+            throw readbackFailure(productId, "Get Product 未确认已提交的视频 ID，视频缺失或不一致；禁止盲目重试创建商品");
+        }
         return new ReadbackVerification(
                 status, Map.copyOf(skuIdsBySellerSku));
     }
@@ -372,9 +467,11 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                                          List<ProductCaptureImage> images,
                                          List<ProductCaptureSku> skus) {
         List<ProductCaptureImage> galleryCandidates = images.stream()
-                .filter(image -> !"VARIANT".equalsIgnoreCase(image.getRoleName()))
+                .filter(image -> !"VARIANT".equalsIgnoreCase(image.getRoleName())
+                        && !"DETAIL".equalsIgnoreCase(image.getRoleName()))
                 .toList();
-        if (galleryCandidates.isEmpty()) galleryCandidates = images;
+        if (galleryCandidates.isEmpty()) galleryCandidates = images.stream()
+                .filter(image -> !"DETAIL".equalsIgnoreCase(image.getRoleName())).toList();
         List<Map<String, Object>> mainImages = new ArrayList<>();
         Set<String> uploadedMainUrls = new HashSet<>();
         int[] index = {0};
@@ -382,7 +479,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
             if (mainImages.size() >= 9) break;
             String url = publishUrl(image);
             if (url == null || !uploadedMainUrls.add(url)) continue;
-            mainImages.add(Map.of("uri", uploadImage(connection, url, "MAIN_IMAGE", ++index[0])));
+            mainImages.add(Map.of("uri", uploadImage(connection, url, image, "MAIN_IMAGE", ++index[0])));
         }
 
         Map<String, ProductCaptureImage> captureImageBySourceUrl = new LinkedHashMap<>();
@@ -404,7 +501,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 if (processedUrl == null) continue;
                 String uri = attributeUriByProcessedUrl.get(processedUrl);
                 if (uri == null) {
-                    uri = uploadImage(connection, processedUrl, "ATTRIBUTE_IMAGE", ++index[0]);
+                    uri = uploadImage(connection, processedUrl, image, "ATTRIBUTE_IMAGE", ++index[0]);
                     attributeUriByProcessedUrl.put(processedUrl, uri);
                 }
                 attributeImageBySkuKey.put(sku.getSkuKey(), uri);
@@ -414,8 +511,8 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
     }
 
     private String uploadImage(MarketplaceAccess.Connection connection, String url,
-                               String useCase, int index) {
-        MarketplaceImageDownloader.ImageBinary binary = imageDownloader.download(url);
+                               ProductCaptureImage image, String useCase, int index) {
+        MarketplaceImageDownloader.ImageBinary binary = imageDownloader.downloadProductImage(url, image);
         String path = "/product/" + client.apiVersion() + "/images/upload";
         Map<String, Object> response = client.apiMultipart(path, connection,
                 Map.of(), "product-" + index + binary.extension(), binary.contentType(),
@@ -435,9 +532,11 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         Map<String, Integer> stockBySku = skuStockMap(request.get("skuStocks"), values);
         Map<String, Object> salesBySku = mutableMap(request.get("salesAttributesBySku"));
         List<List<Map<String, Object>>> salesMatrix = new ArrayList<>();
+        boolean hasExplicitSalesMapping = false;
         for (ProductCaptureSku sku : values) {
             List<?> supplied = listValue(salesBySku.get(sku.getSkuKey()));
             boolean explicitlyMapped = !supplied.isEmpty();
+            hasExplicitSalesMapping |= explicitlyMapped;
             if (!explicitlyMapped) supplied = sourceSalesAttributes(sku);
             List<Map<String, Object>> normalized = normalizeSalesAttributes(supplied);
             if (explicitlyMapped && normalized.isEmpty()) {
@@ -447,6 +546,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
             if (normalized.isEmpty()) normalized = customSalesAttributes(sku);
             salesMatrix.add(normalized);
         }
+        if (!hasExplicitSalesMapping) orderSourceSalesDimensions(salesMatrix);
         validateSalesAttributeMatrix(values, salesMatrix);
         attachAttributeImages(values, salesMatrix, attributeImageBySkuKey);
         List<Map<String, Object>> result = new ArrayList<>();
@@ -455,7 +555,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
             if (price == null || price.signum() <= 0) throw conflict("TikTok Shop 发布价格不能为空");
             result.add(Map.of(
                     "seller_sku", "capture-" + capture.getId().substring(0, 8),
-                    "price", Map.of("amount", price.toPlainString(), "currency", requiredCurrency(capture)),
+                    "price", Map.of("amount", com.yingdao.aicommerce.product.application.PublishExchangeRates.convert(price, request).toPlainString(), "currency", com.yingdao.aicommerce.product.application.PublishExchangeRates.targetCurrency(requiredCurrency(capture), request)),
                     "inventory", List.of(inventory(warehouseId, defaultStock))
             ));
             return result;
@@ -467,8 +567,8 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
             }
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("seller_sku", sellerSku(sku));
-            value.put("price", Map.of("amount", sku.getPrice().toPlainString(),
-                    "currency", requiredCurrency(capture)));
+            value.put("price", Map.of("amount", com.yingdao.aicommerce.product.application.PublishExchangeRates.convert(sku.getPrice(), request).toPlainString(),
+                    "currency", com.yingdao.aicommerce.product.application.PublishExchangeRates.targetCurrency(requiredCurrency(capture), request)));
             value.put("inventory", List.of(inventory(
                     warehouseId, stockBySku.getOrDefault(sku.getSkuKey(), defaultStock))));
             List<Map<String, Object>> sales = salesMatrix.get(index);
@@ -552,6 +652,26 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         } catch (Exception exception) {
             return List.of();
         }
+    }
+
+    private void orderSourceSalesDimensions(List<List<Map<String, Object>>> matrix) {
+        if (matrix.isEmpty() || matrix.getFirst().isEmpty()) return;
+        // MySQL JSON objects do not preserve the source variant order. TikTok attaches
+        // variant images to the first sales dimension, so color must precede size.
+        List<Map<String, Object>> primary = new ArrayList<>(matrix.getFirst());
+        primary.sort(java.util.Comparator.comparingInt(attribute -> isColorDimension(attribute) ? 0 : 1));
+        Map<String, Integer> order = new LinkedHashMap<>();
+        for (int index = 0; index < primary.size(); index++) order.put(salesAttributeIdentity(primary.get(index)), index);
+        for (List<Map<String, Object>> row : matrix) {
+            if (!row.isEmpty()) row.sort(java.util.Comparator.comparingInt(attribute -> order.getOrDefault(salesAttributeIdentity(attribute), Integer.MAX_VALUE)));
+        }
+    }
+
+    private boolean isColorDimension(Map<String, Object> attribute) {
+        String name = String.valueOf(attribute.getOrDefault("name", ""));
+        return Set.of("color", "colour", "colors", "colours", "warna", "颜色", "顏色", "色")
+                .contains(java.text.Normalizer.normalize(name, java.text.Normalizer.Form.NFKC)
+                        .trim().toLowerCase(Locale.ROOT));
     }
 
     private void validateSalesAttributeMatrix(List<ProductCaptureSku> skus,
@@ -844,6 +964,17 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 .replaceAll("(?i)(access_token|refresh_token|app_secret|x-tts-access-token)"
                         + "\\s*[:=]\\s*[^,}\\s]+", "$1=REDACTED");
         return truncate(cleaned, max);
+    }
+
+    private boolean readbackRetryable(Exception exception) {
+        if (readbackNotFound(exception)) return true;
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof InterruptedException) return false;
+            if (cause instanceof java.io.IOException) return true;
+            String message = String.valueOf(cause.getMessage());
+            if (message.matches("(?is).*(HTTP (408|425|429|5[0-9]{2})|36009003|timeout|timed out|network|connection reset|超时|连接中断).*") ) return true;
+        }
+        return false;
     }
 
     private boolean readbackNotFound(Exception exception) {

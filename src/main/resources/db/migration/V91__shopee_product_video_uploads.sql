@@ -1,0 +1,21 @@
+CREATE TABLE shopee_product_video_uploads (
+ id CHAR(64) PRIMARY KEY,
+ organization_id CHAR(36) NOT NULL,
+ shop_id CHAR(36) NOT NULL,
+ source_video_id CHAR(36) NOT NULL,
+ content_sha256 CHAR(64) NOT NULL,
+ destination_key CHAR(64) NOT NULL,
+ byte_length BIGINT NOT NULL,
+ status VARCHAR(20) NOT NULL,
+ video_upload_id VARCHAR(255) NULL,
+ init_attempts INT NOT NULL DEFAULT 0,
+ next_part INT NOT NULL DEFAULT 0,
+ result_json JSON NULL,
+ message VARCHAR(2000) NULL,
+ locked_by CHAR(36) NULL,
+ lease_until TIMESTAMP(6) NULL,
+ created_at TIMESTAMP(6) NOT NULL,
+ updated_at TIMESTAMP(6) NOT NULL,
+ UNIQUE KEY uk_shopee_video_content (organization_id,shop_id,content_sha256,destination_key),
+ KEY idx_shopee_video_source (organization_id,source_video_id)
+);

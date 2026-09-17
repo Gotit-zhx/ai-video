@@ -83,6 +83,10 @@ app:
       auto-enabled: false
     watermark:
       provider: ${APP_PRODUCT_WATERMARK_PROVIDER:DRY_RUN}
+      model-id: ${APP_PRODUCT_WATERMARK_MODEL_ID:grok-4.6}
+      local-enabled: ${APP_PRODUCT_WATERMARK_LOCAL_ENABLED:false}
+      local-url: ${APP_PRODUCT_WATERMARK_LOCAL_URL:http://watermark-detector:8091}
+      local-token: ${APP_PRODUCT_WATERMARK_LOCAL_TOKEN:}
     publishing:
       provider: ${APP_PRODUCT_PUBLISHING_PROVIDER:DRY_RUN}
   shop-auth:
@@ -94,6 +98,7 @@ app:
     token-refresh-skew: ${APP_SHOP_TOKEN_REFRESH_SKEW:5m}
     shopee:
       enabled: ${APP_SHOPEE_ENABLED:false}
+      sandbox-only: ${APP_SHOPEE_SANDBOX_ONLY:false}
       partner-id: ${APP_SHOPEE_PARTNER_ID:}
       partner-key: ${APP_SHOPEE_PARTNER_KEY:}
       auth-base-url: ${APP_SHOPEE_AUTH_BASE_URL:https://open.shopee.com}

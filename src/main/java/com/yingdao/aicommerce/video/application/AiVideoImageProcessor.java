@@ -63,7 +63,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Service
 public class AiVideoImageProcessor {
     private static final Logger log = LoggerFactory.getLogger(AiVideoImageProcessor.class);
-    static final int MAX_TOPOLOGY_REDRAWS = 3;
+    static final int MAX_TOPOLOGY_REDRAWS = 1;
     static final int MAX_TOPOLOGY_GENERATIONS = 1 + MAX_TOPOLOGY_REDRAWS;
     private static final double STORYBOARD_FIRST_CELL_SAFE_SCALE = 0.95d;
     private static final String CLOSE_FRAMING_GATE_VERSION = "CLOSE_FRAMING_GATE_V1";
@@ -235,13 +235,11 @@ public class AiVideoImageProcessor {
                         || hasRetryableTaskFailure;
                 boolean retryDelayElapsed = failedItems.stream()
                         .filter(item -> retryableImageTransientFailure(item.getErrorMessage()))
-                        .map(AiVideoTaskItem::getUpdatedAt)
-                        .filter(value -> value != null)
-                        .anyMatch(value -> !value.isAfter(retryBefore));
+                        .anyMatch(item -> imageRetryDue(item.getErrorMessage(), item.getUpdatedAt(), retryBefore));
                 if (hasRetryableTaskFailure) {
                     Instant updatedAt = task.getUpdatedAt();
                     retryDelayElapsed = retryDelayElapsed
-                            || updatedAt == null || !updatedAt.isAfter(retryBefore);
+                            || imageRetryDue(task.getErrorMessage(), updatedAt, retryBefore);
                 }
                 if (hasTerminalFailure && !hasRetryableFailure) {
                     if (task.isAutoStartVideoAfterImages()) {
@@ -273,6 +271,11 @@ public class AiVideoImageProcessor {
     }
 
 
+    static boolean imageRetryDue(String message, Instant updatedAt, Instant now) {
+        return updatedAt == null || !updatedAt.plusSeconds(
+                ProductFunctionAnalysisService.retryableStructureAnalysisFailure(message) ? 60 : 0).isAfter(now);
+    }
+
     static boolean retryableImageConcurrencyFailure(String message) {
         if (message == null || message.isBlank()) return false;
         String value = message.toLowerCase();
@@ -283,7 +286,10 @@ public class AiVideoImageProcessor {
     }
 
     static boolean retryableImageTransientFailure(String message) {
+        if (message != null && (message.startsWith("VIDEO_REVIEW_PAUSED:") || message.startsWith("VIDEO_GRID_REJECTED:"))) return false;
         if (message == null || message.isBlank()) return false;
+        if (ProductFunctionAnalysisService.isStructureAnalysisPaused(message))
+            return ProductFunctionAnalysisService.retryableStructureAnalysisFailure(message);
         String value = message.toLowerCase();
         // A validator outage is fail-open inside the bounded generation method and must never
         // re-enter the scheduled image pipeline, even if its nested cause mentions 429 or policy.
@@ -374,11 +380,10 @@ public class AiVideoImageProcessor {
                             || retryablePipelineImageFailure(item.getStatus(), item.getErrorMessage())
                             || (!item.getStatus().startsWith("VIDEO_") && !"FAILED".equals(item.getStatus())))
                     .toList();
-            // Apply eligibility per SKU. The scheduler tick is the only retry cadence; there is
-            // no additional per-item backoff that can starve older persisted downloads.
+            // Cool down structure analysis independently; persisted image downloads remain eligible.
             items = recoveryCandidates.stream()
                     .filter(item -> !retryablePipelineImageFailure(item.getStatus(), item.getErrorMessage())
-                            || item.getUpdatedAt() == null || !item.getUpdatedAt().isAfter(retryBefore))
+                            || imageRetryDue(item.getErrorMessage(), item.getUpdatedAt(), retryBefore))
                     .toList();
             if (items.isEmpty()) {
                 if (!recoveryCandidates.isEmpty()) return;
@@ -388,7 +393,12 @@ public class AiVideoImageProcessor {
                 return;
             }
         }
-        final List<AiVideoTaskItem> generationItems = items;
+        final List<AiVideoTaskItem> deferredItems = items.stream()
+                .filter(item -> !imageRetryDue(item.getErrorMessage(), item.getUpdatedAt(), Instant.now()))
+                .toList();
+        final List<AiVideoTaskItem> generationItems = items.stream()
+                .filter(item -> imageRetryDue(item.getErrorMessage(), item.getUpdatedAt(), Instant.now()))
+                .toList();
         try {
             ModelConfigService.RuntimeModelConnection model = modelConfigService.imageConnection(task.getOrganizationId())
                     .orElseThrow(() -> new IllegalStateException("图片模型连接已失效"));
@@ -454,8 +464,9 @@ public class AiVideoImageProcessor {
                     }, imageExecutor))
                     .toList();
             CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
-            List<String> failures = futures.stream()
-                    .map(CompletableFuture::join)
+            List<String> failures = java.util.stream.Stream.concat(
+                            futures.stream().map(CompletableFuture::join),
+                            deferredItems.stream().map(AiVideoTaskItem::getErrorMessage))
                     .filter(message -> message != null && !message.isBlank())
                     .toList();
             int completed = completedCount.get();
@@ -465,7 +476,8 @@ public class AiVideoImageProcessor {
                 for (AiVideoTaskItem candidate : generationItems) {
                     AiVideoTaskItem latest = itemMapper.selectById(candidate.getId());
                     if (latest != null && "FAILED".equals(latest.getStatus())) {
-                        if (hasPendingImageResult(latest.getId())) {
+                        if (hasPendingImageResult(latest.getId())
+                                || ProductFunctionAnalysisService.retryableStructureAnalysisFailure(latest.getErrorMessage())) {
                             waitingForPersistedDownload = true;
                             continue;
                         }
@@ -522,6 +534,7 @@ public class AiVideoImageProcessor {
                 throw interrupted;
             } catch (Exception failure) {
                 String message = readable(failure);
+                if (ProductFunctionAnalysisService.isStructureAnalysisPaused(message)) throw failure;
                 boolean malformed = message.contains("服装结构识别结果缺少必填字段");
                 // Incomplete model JSON may be sampled again, but never bypass the contract or
                 // turn a persistent schema problem into unlimited paid model calls.
@@ -540,6 +553,7 @@ public class AiVideoImageProcessor {
 
     private static boolean retryableImageException(Exception failure) {
         String message = readable(failure);
+        if (ProductFunctionAnalysisService.isStructureAnalysisPaused(message)) return false;
         if (message.contains("服装结构复核") || message.toLowerCase().contains("garment validation")) return false;
         if (retryableImageTransientFailure(message)) return true;
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
@@ -848,7 +862,7 @@ public class AiVideoImageProcessor {
                             continue;
                         }
                         if (state.canGenerate()) continue;
-                        throw new IllegalStateException("服装候选图已不可恢复；为避免超过四次生成上限，已停止继续重抽");
+                        throw new IllegalStateException("服装候选图已不可恢复；为避免超过自动生成上限，已停止继续重抽");
                     }
                     PiArtifact artifact;
                     try {
@@ -907,7 +921,9 @@ public class AiVideoImageProcessor {
                             assetType, item.getId(), validationFailure.getMessage());
                     return storeFinalTopologyCandidate(task, item, assetType, fallback);
                 }
-                if (validation.valid()) {
+                if (validation.valid() || isFramingOnlyValidation(validation)) {
+                    if (!validation.valid()) log.info("Keeping {} on item {} with framing-only findings: {}",
+                            assetType, item.getId(), validation.violations());
                     return storeFinalTopologyCandidate(task, item, assetType, candidate);
                 }
 
@@ -932,6 +948,16 @@ public class AiVideoImageProcessor {
             throw exception instanceof RuntimeException runtime ? runtime
                     : new IllegalStateException(exception.getMessage(), exception);
         }
+    }
+
+    // Only narrowly recognized framing findings can bypass automatic redraw.
+    // Mixed or unknown findings still use the bounded structural correction path.
+    static boolean isFramingOnlyValidation(ProductFunctionAnalysisService.GarmentValidation validation) {
+        if (validation == null || validation.valid() || validation.violations() == null
+                || validation.violations().isEmpty()
+                || validation.violationCount() > validation.violations().size()) return false;
+        return validation.violations().stream().allMatch(value -> value != null && value.matches(
+                "^(?:第?0?[1-9]格[：:、，\\s]*)?(?:膝盖以下入镜|双脚入镜|头顶被裁切|头顶被裁断|头顶未完整入镜)[。！!]*$"));
     }
 
     private void validateTopologyCandidateSize(byte[] bytes) {
@@ -1029,7 +1055,7 @@ public class AiVideoImageProcessor {
     }
 
     private String bestTopologyDataSuffix(int attemptNumber) {
-        if (attemptNumber < 1 || attemptNumber > MAX_TOPOLOGY_GENERATIONS) {
+        if (attemptNumber < 1 || attemptNumber > 4) {
             throw new IllegalStateException("历史最佳候选图轮次无效");
         }
         return ".best-" + attemptNumber + ".bin";
@@ -1079,7 +1105,7 @@ public class AiVideoImageProcessor {
                     readTopologyValidation(metadata.get("previousValidation"));
             return new TopologyRetryState(attempts, reservedPrompt, previous, legacyRecovery);
         } catch (Exception exception) {
-            log.warn("服装结构重抽状态损坏，按四次预算已用完保守恢复，taskId={}, itemId={}, assetType={}: {}",
+            log.warn("服装结构重抽状态损坏，按自动生成预算已用完保守恢复，taskId={}, itemId={}, assetType={}: {}",
                     task.getId(), item.getId(), assetType, exception.getMessage());
             return TopologyRetryState.initial(true, "");
         }
@@ -1601,8 +1627,7 @@ public class AiVideoImageProcessor {
         if (pending != null) return downloadPendingImage(model, prompt, pending);
 
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
-                "apiFormat", model.apiFormat(), "apiKey", model.apiKey()));
+        body.put("model", model.imageRequestModel());
         body.put("prompt", prompt);
         body.put("size", PORTRAIT_4K_SIZE);
         body.put("inputFidelity", references.isEmpty() ? "" : "high");
@@ -1631,11 +1656,21 @@ public class AiVideoImageProcessor {
 
     private PiArtifact downloadPendingImage(ModelConfigService.RuntimeModelConnection model, String prompt,
                                             AiVideoPendingImageResult pending) {
+        ModelConfigService.RuntimeModelConnection downloadModel = model;
+        boolean grokResult = "grok-imagine-image-2.0".equals(pending.getModelId());
+        if (!java.util.Objects.equals(model.modelId(), pending.getModelId())) {
+            downloadModel = model.copyrightFallbackModels().stream()
+                    .filter(candidate -> java.util.Objects.equals(candidate.modelId(), pending.getModelId()))
+                    .findFirst().orElse(grokResult ? null : model);
+        }
+        if (grokResult && (downloadModel == null || downloadModel.apiKey() == null || downloadModel.apiKey().isBlank())) {
+            throw new IllegalStateException("已生成的 grok-imagine-image-2.0 图片等待下载，但对应模型连接不可用；请恢复已启用的 Grok 备用模型及其 Key 后重试，原结果地址已保留");
+        }
         pending.downloadStarted();
         pendingImageResultMapper.updateById(pending);
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
-                "apiFormat", model.apiFormat(), "apiKey", model.apiKey()));
+        body.put("model", Map.of("baseUrl", downloadModel.baseUrl(), "modelId", downloadModel.modelId(),
+                "apiFormat", downloadModel.apiFormat(), "apiKey", downloadModel.apiKey()));
         body.put("resultUrl", pending.getResultUrl());
         body.put("mimeType", pending.getResultContentType());
         body.put("modelId", pending.getModelId());
@@ -2310,7 +2345,7 @@ public class AiVideoImageProcessor {
         String value = source.getMessage() == null ? "图片生成失败" : source.getMessage().replaceAll("\\s+", " ").trim();
         String marker = "\"message\":\"";
         int markerIndex = value.indexOf(marker);
-        if (markerIndex >= 0) {
+        if (markerIndex >= 0 && !ProductFunctionAnalysisService.isStructureAnalysisPaused(value)) {
             int messageStart = markerIndex + marker.length();
             int messageEnd = value.indexOf('"', messageStart);
             if (messageEnd > messageStart) value = value.substring(messageStart, messageEnd);

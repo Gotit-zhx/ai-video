@@ -1,0 +1,25 @@
+[Unit]
+Description=HomeCare private household checklist
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=homecare
+Group=homecare
+WorkingDirectory=/opt/household/current
+EnvironmentFile=/etc/household.env
+EnvironmentFile=-/etc/household-mail.env
+ExecStart=/opt/household/current/.venv/bin/gunicorn --workers 1 --threads 4 --bind 127.0.0.1:8787 --timeout 35 --access-logfile - --error-logfile - server:app
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/household
+MemoryMax=384M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+{
+  "id": "sukisilk-serif-sample-v1",
+  "width": 1024,
+  "height": 1024,
+  "sourceSha256": "9f4be1adfb3fd9902613416b1b6a30956770ea28569bf1851e82a3766495b4c0",
+  "overlayBox": [
+    0,
+    495,
+    1000,
+    90
+  ],
+  "fragments": [
+    {
+      "file": "sukisilk-l.png",
+      "x": 747,
+      "y": 500
+    },
+    {
+      "file": "sukisilk-k.png",
+      "x": 866,
+      "y": 498
+    }
+  ],
+  "limitations": "Calibrated from one labeled source; requires independent validation. Envelope is not an erase mask."
+}

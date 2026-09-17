@@ -43,4 +43,18 @@ class CommerceBatchDesignAssetServiceTest {
     @Test void approvalMustMatchImageHash(){setup();when(reviews.get("org","output")).thenReturn(new CommerceDesignReview("r","org","output","wrong","APPROVE","{}","notes","u",now));assertThrows(BusinessException.class,()->service.bind("batch",request(),user));verifyNoInteractions(archive);}
     @Test void foreignBatchDoesNotLeakExistence(){assertThrows(BusinessException.class,()->service.bind("batch",request(),user));verifyNoInteractions(designs,outputs,assets);}
     @Test void explicitConfirmationRequired(){assertThrows(BusinessException.class,()->service.bind("batch",new CommerceBatchDesignAssetService.Request("item","design",hash,1,false),user));verifyNoInteractions(batches);}
+    @Test void findsTargetsAndChoosesFirstFreePosition(){
+        setup();
+        when(assets.targets("org","capture",4,"STOCK_MARKETING","output")).thenReturn(List.of(new CommerceDesignBatchTarget("batch","name","item","shop",0)));
+        when(assets.list("org","batch")).thenReturn(List.of(new CommerceBatchDesignAsset("old","org","batch","item",1,"other","other-output",hash,"review","u",now)));
+        var targets=service.targets("design",user);assertEquals(1,targets.size());assertEquals(2,targets.getFirst().nextImagePosition());
+        verify(assets,never()).insert(any());verifyNoInteractions(archive);
+    }
+    @Test void fullTargetIsNotOffered(){
+        setup();when(assets.targets("org","capture",4,"STOCK_MARKETING","output")).thenReturn(List.of(new CommerceDesignBatchTarget("batch","name","item","shop",0)));
+        var occupied=new ArrayList<CommerceBatchDesignAsset>();for(int i=1;i<=9;i++)occupied.add(new CommerceBatchDesignAsset("a"+i,"org","batch","item",i,"other","o"+i,hash,"r","u",now));
+        when(assets.list("org","batch")).thenReturn(occupied);assertTrue(service.targets("design",user).isEmpty());
+    }
+    @Test void targetDiscoveryRejectsStaleSource(){setup();var capture=mock(ProductCapture.class);when(capture.getVersion()).thenReturn(5L);when(captures.get("capture",user)).thenReturn(new ProductCaptureService.CaptureDetail(capture,List.of(),List.of(),List.of(),Map.of(),Map.of()));assertThrows(BusinessException.class,()->service.targets("design",user));verifyNoInteractions(assets);}
+    @Test void targetDiscoveryRequiresMatchingApproval(){setup();when(reviews.get("org","output")).thenReturn(null);assertThrows(BusinessException.class,()->service.targets("design",user));verifyNoInteractions(assets);}
 }

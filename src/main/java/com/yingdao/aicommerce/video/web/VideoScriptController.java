@@ -237,6 +237,11 @@ public class VideoScriptController {
             boolean extractAudio,
             String status,
             int progress,
+            String analysisRunId,
+            String analysisStage,
+            String analysisOutput,
+            long analysisOutputCharacters,
+            Instant analysisOutputUpdatedAt,
             String summary,
             String visualTone,
             String modelId,
@@ -247,6 +252,10 @@ public class VideoScriptController {
             Instant completedAt
     ) {
         static VideoScriptSummaryResponse from(VideoScript script) {
+            return from(script, false);
+        }
+
+        static VideoScriptSummaryResponse from(VideoScript script, boolean includeOutput) {
             return new VideoScriptSummaryResponse(
                     script.getId(),
                     script.getOrganizationId(),
@@ -261,6 +270,11 @@ public class VideoScriptController {
                     script.isExtractAudio(),
                     script.getStatus(),
                     script.getProgress(),
+                    script.getAnalysisRunId(),
+                    script.getAnalysisStage(),
+                    includeOutput ? script.getAnalysisOutput() : null,
+                    script.getAnalysisOutputCharacters(),
+                    script.getAnalysisOutputUpdatedAt(),
                     script.getSummary(),
                     script.getVisualTone(),
                     script.getModelId(),
@@ -277,6 +291,11 @@ public class VideoScriptController {
             String id,
             String status,
             int progress,
+            String analysisRunId,
+            String analysisStage,
+            String analysisOutput,
+            long analysisOutputCharacters,
+            Instant analysisOutputUpdatedAt,
             String modelId,
             String errorMessage,
             Instant updatedAt,
@@ -285,6 +304,8 @@ public class VideoScriptController {
         static VideoScriptStatusResponse from(VideoScript script) {
             return new VideoScriptStatusResponse(
                     script.getId(), script.getStatus(), script.getProgress(),
+                    script.getAnalysisRunId(), script.getAnalysisStage(), script.getAnalysisOutput(),
+                    script.getAnalysisOutputCharacters(), script.getAnalysisOutputUpdatedAt(),
                     script.getModelId(), script.getErrorMessage(),
                     script.getUpdatedAt(), script.getCompletedAt()
             );
@@ -298,7 +319,7 @@ public class VideoScriptController {
     ) {
         static VideoScriptDetailResponse from(VideoScriptService.VideoScriptDetail detail) {
             return new VideoScriptDetailResponse(
-                    VideoScriptSummaryResponse.from(detail.script()),
+                    VideoScriptSummaryResponse.from(detail.script(), true),
                     detail.script().getScriptJson(),
                     detail.shots().stream().map(VideoScriptShotResponse::from).toList()
             );

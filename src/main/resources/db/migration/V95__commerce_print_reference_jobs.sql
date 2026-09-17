@@ -1,0 +1,40 @@
+CREATE TABLE commerce_print_reference_jobs (
+ id VARCHAR(36) PRIMARY KEY,
+ organization_id VARCHAR(36) NOT NULL,
+ created_by VARCHAR(36) NOT NULL,
+ request_id VARCHAR(80) NOT NULL,
+ original_image_id CHAR(64) NOT NULL,
+ already_plain BOOLEAN NOT NULL,
+ prompt_version VARCHAR(64) NOT NULL,
+ prompt TEXT NOT NULL,
+ model_config_id VARCHAR(36) NOT NULL,
+ model_id VARCHAR(160) NOT NULL,
+ status VARCHAR(32) NOT NULL,
+ stage VARCHAR(32) NOT NULL,
+ message VARCHAR(500) NOT NULL,
+ result_json MEDIUMTEXT NULL,
+ sheet_image_id CHAR(64) NULL,
+ base_images_json TEXT NULL,
+ lease_token VARCHAR(36) NULL,
+ lease_until TIMESTAMP(6) NULL,
+ submitted_at TIMESTAMP(6) NULL,
+ collect_attempts INT NOT NULL DEFAULT 0,
+ next_attempt_at TIMESTAMP(6) NULL,
+ created_at TIMESTAMP(6) NOT NULL,
+ updated_at TIMESTAMP(6) NOT NULL,
+ UNIQUE KEY uk_print_reference_request(organization_id,request_id),
+ UNIQUE KEY uk_print_reference_source(organization_id,original_image_id,prompt_version),
+ KEY idx_print_reference_pending(status,next_attempt_at,created_at),
+ KEY idx_print_reference_lease(status,lease_until)
+);
+
+CREATE TABLE commerce_print_reference_requests (
+ organization_id VARCHAR(36) NOT NULL,
+ request_id VARCHAR(80) NOT NULL,
+ job_id VARCHAR(36) NOT NULL,
+ original_image_id CHAR(64) NOT NULL,
+ already_plain BOOLEAN NOT NULL,
+ created_at TIMESTAMP(6) NOT NULL,
+ PRIMARY KEY(organization_id,request_id),
+ KEY idx_print_reference_request_job(organization_id,job_id)
+);

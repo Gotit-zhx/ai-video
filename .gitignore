@@ -28,3 +28,5 @@ automation-agent/release*/
 /*.zip
 automation-agent/*ui-check*.png
 /docs_work/
+
+.watermark.local.env

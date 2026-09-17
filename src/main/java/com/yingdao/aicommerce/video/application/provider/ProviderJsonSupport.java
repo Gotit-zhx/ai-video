@@ -9,16 +9,47 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.Map;
+import java.net.http.HttpClient;
+import java.time.Duration;
+import javax.net.ssl.SSLHandshakeException;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 
 abstract class ProviderJsonSupport {
     protected final ObjectMapper objectMapper;
 
-    protected ProviderJsonSupport(ObjectMapper objectMapper) { this.objectMapper = objectMapper; }
+    private final RestClient client;
+
+    protected ProviderJsonSupport(ObjectMapper objectMapper) {
+        this(objectMapper, providerClient());
+    }
+
+    ProviderJsonSupport(ObjectMapper objectMapper, RestClient client) {
+        this.objectMapper = objectMapper;
+        this.client = client;
+    }
+
+    private static RestClient providerClient() {
+        var http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(15)).build();
+        var factory = new JdkClientHttpRequestFactory(http);
+        factory.setReadTimeout(Duration.ofSeconds(120));
+        return RestClient.builder().requestFactory(factory).build();
+    }
+
+    static boolean failedBeforeRequest(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SSLHandshakeException
+                    || cause instanceof java.net.ConnectException
+                    || cause instanceof java.net.UnknownHostException
+                    || cause instanceof java.net.http.HttpConnectTimeoutException) return true;
+        }
+        return false;
+    }
 
     protected Map<String, Object> post(String url, String apiKey, Object body) {
         for (int attempt = 0; ; attempt++) {
             try {
-                String value = RestClient.create().post().uri(url)
+                String value = client.post().uri(url)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                         .contentType(MediaType.APPLICATION_JSON).body(body)
                         .retrieve().body(String.class);
@@ -31,6 +62,13 @@ abstract class ProviderJsonSupport {
                 throw new VideoProviderException(readable(exception), true, null,
                         rawJson(exception.getResponseBodyAsString()));
             } catch (ResourceAccessException exception) {
+                if (failedBeforeRequest(exception)) {
+                    if (attempt < 1) {
+                        waitBeforeRetry(attempt);
+                        continue;
+                    }
+                    throw new VideoProviderException("连接厂商失败，请求尚未发送：" + rootMessage(exception), true);
+                }
                 throw new VideoProviderException("连接厂商时网络结果未知：" + rootMessage(exception), false);
             }
         }
@@ -57,7 +95,7 @@ abstract class ProviderJsonSupport {
 
     protected Map<String, Object> get(String url, String apiKey) {
         try {
-            String value = RestClient.create().get().uri(url)
+            String value = client.get().uri(url)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                     .retrieve().body(String.class);
             return read(value);

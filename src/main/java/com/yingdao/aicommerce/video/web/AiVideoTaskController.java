@@ -6,6 +6,7 @@ import com.yingdao.aicommerce.video.application.AiVideoTaskService;
 import com.yingdao.aicommerce.video.domain.AiVideoTask;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskAsset;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -68,6 +69,13 @@ public class AiVideoTaskController {
     public ApiResponse<TaskDetailResponse> detail(@PathVariable String id,
                                                   @AuthenticationPrincipal PlatformPrincipal principal) {
         return ApiResponse.ok(TaskDetailResponse.from(service.detail(id, principal)));
+    }
+
+    @PatchMapping("/{id}/video-reference-mode")
+    public ApiResponse<TaskResponse> updateVideoReferenceMode(@PathVariable String id,
+                                                              @Valid @RequestBody UpdateVideoReferenceModeRequest request,
+                                                              @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.ok(TaskResponse.from(service.updateVideoReferenceMode(id, request.mode(), principal)));
     }
 
     @PostMapping(value = "/{id}/garments", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -204,7 +212,7 @@ public class AiVideoTaskController {
     }
 
     @GetMapping(value = "/{taskId}/video-results.zip", produces = "application/zip")
-    public ResponseEntity<?> downloadVideos(@PathVariable String taskId,
+    public ResponseEntity<StreamingResponseBody> downloadVideos(@PathVariable String taskId,
                                             @AuthenticationPrincipal PlatformPrincipal principal) {
         AiVideoTaskService.VideoBatch batch = service.videoBatch(taskId, principal);
         AiVideoTaskService.PreparedVideoBatch prepared = service.prepareVideoBatch(batch);
@@ -260,6 +268,7 @@ public class AiVideoTaskController {
                                  @Size(max = 160) String videoTitle) {}
 
     public record UpdateVideoPromptRequest(@NotBlank @Size(max = 20000) String prompt) {}
+    public record UpdateVideoReferenceModeRequest(@NotBlank @Pattern(regexp = "GRID|INDIVIDUAL_FRAMES") String mode) {}
     public record ReferenceUpdateRequest(@NotBlank String id, int order, @Size(max = 32) String role,
                                          @Size(max = 500) String instruction, Boolean primary) {}
 
@@ -267,7 +276,7 @@ public class AiVideoTaskController {
                                String scriptId, int scriptVersion, String scriptName,
                                String targetMarket, String generationMode, String productCategory, String sceneType,
                                String backgroundMode, String interactionType, boolean allowHand, String aspectRatio,
-                               String resolution, String videoRoute,
+                               String resolution, String videoRoute, String videoReferenceMode,
                                boolean useScriptReferenceVideo,
                                boolean directReferenceVideo, int referenceImageLimit,
                                String musicMode, String musicFileName, String musicContentType, long musicSizeBytes,
@@ -279,7 +288,7 @@ public class AiVideoTaskController {
                     task.getDurationSeconds(), task.getScriptId(), task.getScriptVersion(),
                     task.getScriptName(), task.getTargetMarket(), task.getGenerationMode(), task.getProductCategory(),
                     task.getSceneType(), task.getBackgroundMode(), task.getInteractionType(), task.isAllowHand(), task.getAspectRatio(),
-                    task.getResolution(), task.getVideoRoute(),
+                    task.getResolution(), task.getVideoRoute(), task.getVideoReferenceMode(),
                     task.isUseScriptReferenceVideo(),
                     task.isDirectReferenceVideo(), AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES,
                     task.getMusicMode(), task.getMusicFileName(), task.getMusicContentType(), task.getMusicSizeBytes(),

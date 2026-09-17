@@ -1,0 +1,16 @@
+(() => {
+  const get=id=>document.getElementById('material-'+id),list=get('slots-list');if(!list)return;
+  const detail=get('slot-detail'),status=get('slots-status');let page=0,revision=0,detailRevision=0;
+  const text=(tag,value,parent)=>{const node=document.createElement(tag);node.textContent=value;parent.append(node);return node;};
+  const image=(item,parent)=>{if(item.status==='NOT_GENERATED'){text('span',`V${item.variant} · 待生成`,parent);return;}const img=text('img','',parent);img.alt=`设计版本 ${item.variant}`;img.loading='lazy';img.src=`/api/v1/commerce-designs/${encodeURIComponent(item.designId)}/output/image`;};
+  async function open(id){const ticket=++detailRevision;detail.hidden=false;detail.replaceChildren();text('p','正在读取完整图集…',detail);
+    try{const r=await api('/api/v1/commerce-material-slots/'+encodeURIComponent(id));if(ticket!==detailRevision)return;detail.replaceChildren();text('h2','图集 '+r.data.id.slice(0,8),detail);text('p',r.data.brief,detail);const grid=text('div','',detail);grid.className='material-slots-images';r.data.images.forEach(item=>{const card=text('article','',grid);image(item,card);text('p',`V${item.variant} · ${item.status}`,card);if(item.status!=='NOT_GENERATED'){const link=text('a','查看原图 ↗',card);link.href=`/api/v1/commerce-designs/${encodeURIComponent(item.designId)}/output/image`;link.target='_blank';link.rel='noopener noreferrer';}});
+    }catch(e){if(ticket===detailRevision){detail.replaceChildren();text('p',e.message,detail);}}
+  }
+  async function load(target){const ticket=++revision;detailRevision++;detail.hidden=true;status.textContent='正在读取图集…';get('slots-refresh').disabled=get('slots-next').disabled=get('slots-previous').disabled=true;
+    try{const r=await api('/api/v1/commerce-material-slots?page='+target);if(ticket!==revision)return;page=r.data.page;list.replaceChildren();r.data.slots.forEach(slot=>{const card=text('article','',list);const preview=text('div','',card);preview.className='material-slot-cover';slot.images.slice(0,4).forEach(item=>image(item,preview));text('h3',`图集 ${slot.id.slice(0,8)}`,card);text('p',`${slot.images.length} 个版本 · ${slot.images.filter(i=>i.status!=='NOT_GENERATED').length} 张已归档`,card);text('small',`来源 ${slot.captureId.slice(0,8)} · v${slot.captureVersion} · ${slot.mode}`,card);const view=text('button','打开整套图集 →',card);view.type='button';view.addEventListener('click',()=>open(slot.id));});status.textContent=r.data.slots.length?`第 ${page+1} 页 · 每页最多 20 套`:'暂无图集，创建设计草稿后将按每次请求自动归组。';get('slots-next').disabled=!r.data.hasMore;get('slots-previous').disabled=page===0;
+    }catch(e){if(ticket===revision)status.textContent=e.message;}finally{if(ticket===revision)get('slots-refresh').disabled=false;}
+  }
+  get('slots-refresh').addEventListener('click',()=>load(0));get('slots-next').addEventListener('click',()=>load(page+1));get('slots-previous').addEventListener('click',()=>load(Math.max(0,page-1)));
+  window.addEventListener('heyi:company-reset',()=>{revision++;detailRevision++;list.replaceChildren();detail.replaceChildren();detail.hidden=true;status.textContent='请重新读取当前公司图集';page=0;get('slots-refresh').disabled=false;get('slots-next').disabled=get('slots-previous').disabled=true;});
+})();

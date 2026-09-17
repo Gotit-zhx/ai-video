@@ -51,10 +51,12 @@ public class GeneralVideoTaskController {
             @RequestParam(defaultValue = "QUALITY") @Pattern(regexp = "QUALITY|SPEED") String videoRoute,
             @RequestParam(defaultValue = "false") boolean autoStart,
             @RequestParam("files") List<MultipartFile> files,
+            @RequestParam(required = false) Double videoClipStart,
+            @RequestParam(required = false) Double videoClipEnd,
             @AuthenticationPrincipal PlatformPrincipal principal) {
         validateRouteResolution(videoRoute, resolution);
         var task = service.createGeneral(new AiVideoTaskService.GeneralCreateCommand(name, prompt,
-                durationSeconds, aspectRatio, resolution, videoRoute, autoStart), files, principal);
+                durationSeconds, aspectRatio, resolution, videoRoute, autoStart, videoClipStart, videoClipEnd), files, principal);
         return ApiResponse.created(AiVideoTaskController.TaskResponse.from(task));
     }
 

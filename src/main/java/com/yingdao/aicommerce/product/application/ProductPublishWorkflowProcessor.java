@@ -7,6 +7,7 @@ import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductImageProcessingJob;
 import com.yingdao.aicommerce.product.domain.ProductPublishAudit;
 import com.yingdao.aicommerce.product.domain.ProductPublishWorkflow;
+import com.yingdao.aicommerce.product.application.provider.VideoUploadPendingException;
 import com.yingdao.aicommerce.product.mapper.ProductImageProcessingJobMapper;
 import com.yingdao.aicommerce.product.mapper.ProductPublishAuditMapper;
 import com.yingdao.aicommerce.product.mapper.ProductPublishWorkflowMapper;
@@ -32,6 +33,7 @@ import java.util.concurrent.RejectedExecutionException;
 public class ProductPublishWorkflowProcessor {
     private static final Logger log = LoggerFactory.getLogger(ProductPublishWorkflowProcessor.class);
     private static final int MAX_AUTOMATIC_ATTEMPTS = 3;
+    private static final long MAX_MEDIA_WAIT_SECONDS = 30 * 60;
     private static final String EXPIRED_EXTERNAL_SUBMISSION_MESSAGE =
             "外部平台创建请求可能已经发出，但执行节点租约已过期；系统已停止自动重试，请先到目标店铺核查";
 
@@ -56,7 +58,7 @@ public class ProductPublishWorkflowProcessor {
             ProductPublishAttemptGuard publishAttemptGuard,
             @Qualifier("productPublishWorkflowExecutor") Executor executor,
             @Value("${app.product-publish-workflow.batch-size:10}") int configuredBatchSize,
-            @Value("${app.product-publish-workflow.lease-seconds:1800}") long configuredLeaseSeconds) {
+            @Value("${app.product-publish-workflow.lease-seconds:3600}") long configuredLeaseSeconds) {
         this.workflowMapper = workflowMapper;
         this.imageJobMapper = imageJobMapper;
         this.publishAuditMapper = publishAuditMapper;
@@ -117,6 +119,11 @@ public class ProductPublishWorkflowProcessor {
                 fail(workflow, worker, "商品草稿在一键上传执行期间已被修改，请重新确认后发起新流程");
                 return;
             }
+            if (Boolean.TRUE.equals(workflowService.request(workflow).get("visionWatermarkCheck"))
+                    && workflow.getImageJobId() == null && !"IMAGE_PROCESSING".equals(capture.getStatus())) {
+                processImages(workflow,worker,workflowPrincipal(workflow,"asset:watermark"),capture);
+                return;
+            }
             switch (capture.getStatus()) {
                 case "CAPTURED", "FAILED" -> processImages(workflow, worker,
                         workflowPrincipal(workflow, "asset:watermark"), capture);
@@ -160,7 +167,11 @@ public class ProductPublishWorkflowProcessor {
         owned(workflowMapper.markStep(workflow.getId(), worker, "IMAGES",
                 capture.getVersion(), Instant.now()));
         Map<String, Object> request = imageRequest(workflow);
-        String key = imageIdempotencyKey(workflow);
+        // A user retry can be explicitly bound to this workflow after the original
+        // image job failed. Resume that exact job instead of reopening the old key.
+        ProductImageProcessingJob boundJob = workflow.getImageJobId() == null
+                || workflow.getImageJobId().isBlank() ? null : ownImageJob(workflow);
+        String key = boundJob == null ? imageIdempotencyKey(workflow) : boundJob.getIdempotencyKey();
         ProductCaptureService.ImageProcessResult result = captureService.processImages(
                 workflow.getCaptureId(), request, key, principal);
         ProductCapture updated = result.capture().capture();
@@ -183,6 +194,10 @@ public class ProductPublishWorkflowProcessor {
     private void waitForImageProcessing(ProductPublishWorkflow workflow, String worker,
                                         ProductCapture capture) {
         ProductImageProcessingJob job = ownImageJob(workflow);
+        if (job != null && "AI_WATERMARK_V1".equals(job.getProvider()) && "RUNNING".equals(job.getStatus())) {
+            processImages(workflow,worker,workflowPrincipal(workflow,"asset:watermark"),capture);
+            return;
+        }
         if (job != null && "FAILED".equals(job.getStatus())) {
             fail(workflow, worker, firstNonBlank(job.getErrorMessage(), "商品图片处理失败"));
             return;
@@ -213,13 +228,30 @@ public class ProductPublishWorkflowProcessor {
         owned(workflowMapper.markStep(workflow.getId(), worker, "PUBLISH",
                 capture.getVersion(), Instant.now()));
         Map<String, Object> request = workflowService.request(workflow);
-        ProductCaptureService.PublishResult result = captureService.publish(
+        ProductCaptureService.PublishResult result;
+        try {
+            result = captureService.publish(
                 workflow.getCaptureId(), request, publishIdempotencyKey(workflow), principal, () -> {
                     if (!publishAttemptGuard.enterExternalCreateBoundary(workflow.getId(), worker)) {
                         throw new LostClaimException();
                     }
                     submission.externalCreateStarted();
                 });
+        } catch (VideoUploadPendingException pending) {
+            // A completed upload may still be transcoding or owned by another workflow.
+            // Persist a separate clock across restarts; ordinary transient failures retain
+            // their own retry budget. Never replay an uncertain product creation.
+            if (submission.externalCreateMayHaveStarted()) throw pending;
+            Instant now = Instant.now();
+            if (workflow.getMediaWaitStartedAt() != null
+                    && !now.isBefore(workflow.getMediaWaitStartedAt().plusSeconds(MAX_MEDIA_WAIT_SECONDS))) {
+                fail(workflow, worker, "视频处理等待超过 30 分钟，商品尚未创建；上传进度已保留，可稍后重试：" + pending.getMessage());
+            } else {
+                owned(workflowMapper.waitForMediaProgress(workflow.getId(), worker,
+                        capture.getVersion(), truncate(pending.getMessage()), now.plusSeconds(15), now));
+            }
+            return;
+        }
         ProductPublishAudit audit = result.audit();
         ProductCapture updated = result.capture().capture();
         switch (audit.getStatus()) {
@@ -264,6 +296,17 @@ public class ProductPublishWorkflowProcessor {
     }
 
     private ProductImageProcessingJob ownImageJob(ProductPublishWorkflow workflow) {
+        String boundId = workflow.getImageJobId();
+        if (boundId != null && !boundId.isBlank()) {
+            ProductImageProcessingJob bound = imageJobMapper.selectById(boundId);
+            if (bound == null || !boundId.equals(bound.getId())
+                    || !workflow.getOrganizationId().equals(bound.getOrganizationId())
+                    || !workflow.getCaptureId().equals(bound.getCaptureId())
+                    || bound.getIdempotencyKey() == null || bound.getIdempotencyKey().isBlank()) {
+                throw new BusinessException(HttpStatus.CONFLICT, "工作流绑定的图片任务不存在或不属于当前商品，已停止处理");
+            }
+            return bound;
+        }
         return imageJobMapper.selectOne(new LambdaQueryWrapper<ProductImageProcessingJob>()
                 .eq(ProductImageProcessingJob::getOrganizationId, workflow.getOrganizationId())
                 .eq(ProductImageProcessingJob::getCaptureId, workflow.getCaptureId())
@@ -310,7 +353,23 @@ public class ProductPublishWorkflowProcessor {
         owned(workflowMapper.fail(workflow.getId(), worker, truncate(message), Instant.now()));
     }
 
+    // Only an exact ADD_ITEM validation rejection is safe to release. Timeouts, transport
+    // failures, later variation errors and unknown API failures retain the duplicate guard.
+    static boolean isConfirmedBrandRejection(String detail) {
+        return "Shopee 官方接口 /api/v2/product/add_item 失败：Brand information required".equals(detail);
+    }
+
+    static boolean isConfirmedStockRejection(String detail) {
+        return "Shopee 官方接口 /api/v2/product/add_item 失败：Product Description : invalid field seller_stock, value must Not Null".equals(detail);
+    }
+
     private void failUncertain(ProductPublishWorkflow workflow, String worker, String detail) {
+        if (isConfirmedBrandRejection(detail) || isConfirmedStockRejection(detail)
+                || "Shopee 官方接口 /api/v2/product/add_item 失败：Parcel size is required. Please fill in it.".equals(detail)) {
+            owned(workflowMapper.failRejectedPublication(workflow.getId(), worker,
+                    "Shopee 已拒绝创建商品，请使用修正后的参数重新提交：" + detail, Instant.now()));
+            return;
+        }
         String message = "外部平台创建请求可能已经发出，系统已停止自动重试；请先到目标店铺核查："
                 + firstNonBlank(detail, "平台结果未知");
         owned(workflowMapper.failUncertainPublication(

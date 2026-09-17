@@ -10,8 +10,11 @@
     if (!validIdentity(identity)) return null;
     const candidates = [];
     const fetchPromise = fetchPdp(identity).catch(() => null);
+    const bridge = globalThis.HeyiCaptureBridge;
     const bridgePromise = Promise.resolve(
-      globalThis.HeyiCaptureBridge?.read?.(identity.productId, 1_500) || []
+      typeof bridge?.readEntries === "function" ? bridge.readEntries(identity.productId, 1_500)
+        : Promise.resolve(bridge?.read?.(identity.productId, 1_500) || []).then(values =>
+          (Array.isArray(values) ? values : []).map(value => ({ value })))
     ).catch(() => []);
 
     appendEmbeddedCandidates(candidates, identity, 0);
@@ -21,8 +24,10 @@
       const parsed = common.parseShopeeProductData(fetched, identity, "SHOPEE_PDP_API");
       if (parsed) candidates.push({ value: parsed, freshness: 2_000_000 });
     }
-    for (const [index, value] of (Array.isArray(bridgedValues) ? bridgedValues : []).slice(0, 8).entries()) {
-      const parsed = common.parseShopeeProductData(value, identity, "SHOPEE_PAGE_RESPONSE");
+    for (const [index, entry] of (Array.isArray(bridgedValues) ? bridgedValues : []).slice(0, 8).entries()) {
+      const source = ["SHOPEE_RENDERED_PDP", "SHOPEE_PAGE_STATE"].includes(entry?.source)
+        ? entry.source : "SHOPEE_PAGE_RESPONSE";
+      const parsed = common.parseShopeeProductData(entry?.value, identity, source);
       // The bridge returns the current SPA generation newest-first. Preserve
       // that order so a later stock/price response wins over an older peer.
       if (parsed) candidates.push({ value: parsed, freshness: 1_000_000 - index });
@@ -36,6 +41,17 @@
     }
     return selectCandidate(candidates);
   };
+
+  function collectItemVideoUrls(item) {
+    const urls=new Set();let visited=0;
+    const walk=(value,depth=0)=>{if(depth>8||++visited>1500||!value)return;
+      if(typeof value==='string'){if(/^https:\/\//i.test(value)&&(/\.mp4(?:[?#]|$)/i.test(value)||/\.vod\.shopee\.com\//i.test(value)))urls.add(value);return;}
+      if(Array.isArray(value)){value.slice(0,50).forEach(v=>walk(v,depth+1));return;}
+      if(typeof value==='object')Object.values(value).forEach(v=>walk(v,depth+1));
+    };
+    [item.video_info_list,item.video_info,item.video,item.videos].forEach(v=>walk(v));
+    return globalThis.HeyiVideoSources.deduplicate([...urls]);
+  }
 
   function appendEmbeddedCandidates(candidates, identity, scan) {
     for (const [index, documentValue] of embeddedDocuments(identity).entries()) {
@@ -123,6 +139,7 @@
         originalPrice,
         originalPriceSource,
         stock,
+        stockSource: stock !== null ? source : null,
         attributes: attributeResult.attributes,
         imageUrl: imageUrl || null,
         imageSource,
@@ -171,6 +188,7 @@
 
     return {
       source,
+      videos: collectItemVideoUrls(item),
       productId: String(item.item_id ?? item.itemid),
       shopId: String(item.shop_id ?? item.shopid),
       title: common.cleanText(item.name || item.title, 255),
@@ -180,6 +198,9 @@
       categoryName: common.cleanText(categories.map(category => category?.display_name || category?.name).filter(Boolean).join(" > "), 255),
       brandName: common.cleanText(typeof item.brand === "string" ? item.brand : item.brand?.name || item.brand_info?.name, 128),
       discountText: common.cleanText(item.discount || item.discount_text || item.raw_discount, 120),
+      ratingValue: normalizedRating(item.item_rating?.rating_star ?? item.itemRating?.ratingStar),
+      ratingCount: nonNegativeInteger(item.item_rating?.total_rating_count ?? item.itemRating?.totalRatingCount
+        ?? item.item_rating?.rating_count?.[0]),
       priceMin: minimum(priceValues) ?? itemPriceMin,
       priceMax: maximum(priceValues) ?? itemPriceMax ?? itemPriceMin,
       originalPriceMin: minimum(originalValues) ?? itemOriginalMin,
@@ -277,7 +298,7 @@
         // Some pages wrap the JSON in a JavaScript assignment.
       }
     }
-    const markers = ["__INITIAL_STATE__", "__LOADED_DATA__", "__NEXT_DATA__", "__PRELOADED_STATE__"];
+    const markers = ["__INITIAL_STATE__", "__LOADED_DATA__", "__NEXT_DATA__", "__PRELOADED_STATE__", "initialState"];
     for (const marker of markers) {
       const markerIndex = text.indexOf(marker);
       if (markerIndex < 0) continue;
@@ -296,18 +317,38 @@
   function findMatchingItem(root, identity) {
     const stack = [{ value: root, depth: 0 }];
     let inspected = 0;
+    let best = null;
+    let bestScore = -1;
     while (stack.length && inspected < 25_000) {
       const { value, depth } = stack.pop();
       inspected += 1;
       if (!value || typeof value !== "object" || depth > 14) continue;
-      if (!Array.isArray(value) && matchesItem(value, identity)) return { item: value };
+      if (!Array.isArray(value) && matchesItem(value, identity)) {
+        const score = matchingItemScore(value);
+        if (score > bestScore) {
+          best = { item: value };
+          bestScore = score;
+        }
+      }
       const children = Array.isArray(value) ? value.slice(0, 600) : Object.values(value).slice(0, 600);
       for (let index = children.length - 1; index >= 0; index -= 1) {
         const child = children[index];
         if (child && typeof child === "object") stack.push({ value: child, depth: depth + 1 });
       }
     }
-    return null;
+    return best;
+  }
+
+  function matchingItemScore(item) {
+    // Bootstrap stores can include a recommendation/summary for this item
+    // before its full PDP entry. Never stop at that first abbreviated object.
+    const models = Array.isArray(item.models) ? item.models.slice(0, MAX_SKUS + 1) : [];
+    return models.length * 10_000 + models.reduce((score, model) => score
+      + (model?.price !== null && model?.price !== undefined ? 2 : 0)
+      + (model?.price_before_discount !== null && model?.price_before_discount !== undefined ? 1 : 0), 0)
+      + (Array.isArray(item.tier_variations || item.tierVariations) ? 100 : 0)
+      + Math.min(Array.isArray(item.images) ? item.images.length : 0, 120)
+      + (item.description ? 10 : 0);
   }
 
   function matchesItem(value, identity) {
@@ -325,7 +366,25 @@
   function selectCandidate(candidates) {
     if (!Array.isArray(candidates) || candidates.length === 0) return null;
     candidates.sort((left, right) => compareCandidates(right, left));
-    return candidates[0].value;
+    const selected = candidates[0].value;
+    // Keep the selected response's promotion prices and every explicit stock
+    // value (including zero). Fill only absent inventory from the currently
+    // rendered, identity-matched PDP, joined by the platform's real model ID.
+    for (const { value: rendered } of candidates) {
+      if (rendered === selected || rendered.source !== "SHOPEE_RENDERED_PDP"
+        || rendered.productId !== selected.productId || rendered.shopId !== selected.shopId) continue;
+      const stocks = new Map(rendered.skus.filter(sku => sku.stock !== null)
+        .map(sku => [sku.externalSkuId, sku.stock]));
+      for (const sku of selected.skus) {
+        if (sku.stock !== null && sku.stock !== undefined) continue;
+        if (!stocks.has(sku.externalSkuId)) continue;
+        sku.stock = stocks.get(sku.externalSkuId);
+        sku.stockSource = "SHOPEE_RENDERED_PDP";
+      }
+      if (selected.ratingValue === null) selected.ratingValue = rendered.ratingValue;
+      if (selected.ratingCount === null) selected.ratingCount = rendered.ratingCount;
+    }
+    return selected;
   }
 
   function compareCandidates(left, right) {
@@ -438,8 +497,9 @@
       item.rich_text_description,
       item.richTextDescription,
       item.description_info,
-      item.descriptionInfo
-    ].filter(value => value && typeof value === "object");
+      item.descriptionInfo,
+      item.description
+    ].filter(value => value && (typeof value === "object" || typeof value === "string"));
     const raw = [];
     for (const container of containers) collectDescriptionImageValues(container, raw, false, 0);
     return [...new Set(raw.map(shopeeImageUrl).filter(Boolean))].slice(0, 120);
@@ -591,6 +651,12 @@
   function normalizedCurrency(value) {
     const currency = common.cleanText(value, 8).toUpperCase();
     return /^[A-Z]{3}$/.test(currency) ? currency : null;
+  }
+
+  function normalizedRating(value) {
+    if (value === null || value === undefined || value === "" || typeof value === "boolean") return null;
+    const rating = Number(value);
+    return Number.isFinite(rating) && rating >= 0 && rating <= 5 ? rating : null;
   }
 
   function cleanIdentifier(value) {

@@ -70,6 +70,9 @@ public final class MarketplaceAccess {
         MarketplacePlatform platform();
         boolean configured();
         String authorizationUrl(String callbackUrl, String state);
+        default String authorizationUrl(String callbackUrl, String state, String market) {
+            return authorizationUrl(callbackUrl, state);
+        }
         AuthorizationGrant exchangeAuthorizationCode(String code, Map<String, String> callbackParameters);
         TokenSet refresh(TokenSet current, Shop shop);
     }

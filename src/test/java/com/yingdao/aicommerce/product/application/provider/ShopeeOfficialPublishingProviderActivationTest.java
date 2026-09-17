@@ -138,7 +138,7 @@ class ShopeeOfficialPublishingProviderActivationTest {
         return new ShopeeOfficialPublishingProvider(
                 mock(ShopAuthorizationService.class), client,
                 mock(ProductCaptureSkuMapper.class), mock(ProductCaptureImageMapper.class),
-                mock(MarketplaceImageDownloader.class), new ObjectMapper());
+                mock(MarketplaceImageDownloader.class), new ObjectMapper(), mock(ShopeeProductVideoUploader.class));
     }
 
     private MarketplaceAccess.Connection connection() {

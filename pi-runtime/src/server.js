@@ -1,7 +1,7 @@
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -15,11 +15,21 @@ import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import { jsonrepair } from "jsonrepair";
 import { Type } from "typebox";
+import { runWatermarkAnalysis } from "./product-watermark-analysis.js";
+import { readWatermarkChatStream } from "./watermark-chat-stream.js";
+import { callImageModelWithCopyrightFallback } from "./image-model-fallback.js";
+import { supportsNativeTransparentPng } from "./image-output-capabilities.js";
+import { ImageOperationStore } from "./image-operation-store.js";
+import { imageLookup } from "./image-transport.js";
 import { Agent as UndiciAgent } from "undici";
 import {
   GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS,
   GARMENT_TOPOLOGY_VALIDATION_PROMPT
 } from "./garment-topology-validation.js";
+import { VIDEO_SCRIPT_REQUEST_TIMEOUT_MS } from "./video-script-session.js";
+import { requestChatCompletion } from "./chat-completion-transport.js";
+import { createWatchModelTransport } from "./watch-model-transport.js";
+import { auditVideoFrame } from "./video-frame-layout-audit.js";
 
 const PORT = Number(process.env.PORT || 8090);
 const INTERNAL_TOKEN = process.env.PI_RUNTIME_TOKEN || "heyi-pi-runtime-dev-token";
@@ -27,6 +37,7 @@ const execFileAsync = promisify(execFile);
 const WATCH_SKILLS_DIR = path.resolve(
   process.env.WATCH_SKILLS_DIR || path.join(process.cwd(), "skills")
 );
+const WATCH_PARALLEL_ANALYSIS = process.env.WATCH_PARALLEL_ANALYSIS !== "false";
 const WATCH_SCRIPT_PATH = path.join(WATCH_SKILLS_DIR, "watch", "scripts", "watch.py");
 const VIDEO_SCRIPT_STORAGE_ROOT = path.resolve(
   process.env.VIDEO_SCRIPT_STORAGE_ROOT || "/data/video-scripts"
@@ -44,12 +55,18 @@ const IMAGE_RESPONSE_TIMEOUT_MS = Math.max(
   Number.parseInt(process.env.IMAGE_RESPONSE_TIMEOUT_MS || "900000", 10) || 900_000
 );
 const IMAGE_FETCH_DISPATCHER = new UndiciAgent({
-  connect: { timeout: 60_000 },
+  connect: { timeout: 60_000, lookup: imageLookup },
   headersTimeout: IMAGE_RESPONSE_TIMEOUT_MS,
   bodyTimeout: IMAGE_RESPONSE_TIMEOUT_MS
 });
+const VIDEO_SCRIPT_DISPATCHER = new UndiciAgent({
+  connect: { timeout: 60_000 },
+  headersTimeout: VIDEO_SCRIPT_REQUEST_TIMEOUT_MS + 10_000,
+  bodyTimeout: VIDEO_SCRIPT_REQUEST_TIMEOUT_MS + 10_000
+});
 const IMAGE_CONCURRENCY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
 const IMAGE_NETWORK_RETRY_DELAYS_MS = [2_000, 5_000];
+const imageOperationStore = new ImageOperationStore(process.env.IMAGE_OPERATION_STORAGE_ROOT || "/data/image-operations");
 const IMAGE_POLICY_RETRY_DELAYS_MS = [500, 1_000, 2_000];
 const sessions = new Map();
 const automationSessions = new Map();
@@ -452,7 +469,7 @@ function pathIsInside(root, candidate) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function validatedSourceVideoPath(value) {
+async function validatedSourceVideoPath(value) {
   const candidate = path.resolve(String(value || "").trim());
   if (!String(value || "").trim()) throw new Error("视频原文件路径为空");
   if (!pathIsInside(VIDEO_SCRIPT_STORAGE_ROOT, candidate)) {
@@ -461,7 +478,9 @@ function validatedSourceVideoPath(value) {
   if (!/\.(mp4|mov|mkv|webm|m4v|avi)$/i.test(candidate)) {
     throw new Error("视频原文件格式不受支持");
   }
-  return candidate;
+  const [root, actual] = await Promise.all([realpath(VIDEO_SCRIPT_STORAGE_ROOT), realpath(candidate)]);
+  if (!pathIsInside(root, actual)) throw new Error("视频原文件链接指向未授权目录");
+  return actual;
 }
 
 async function getWatchSkill() {
@@ -478,7 +497,7 @@ async function getWatchSkill() {
   return watchSkillPromise;
 }
 
-function createRestrictedFrameReadTool(workDirectory) {
+function createRestrictedFrameReadTool(workDirectory, frames, readFrames, deadline) {
   const root = path.resolve(workDirectory);
   return {
     name: "read",
@@ -489,7 +508,9 @@ function createRestrictedFrameReadTool(workDirectory) {
     }),
     async execute(_toolCallId, input) {
       const candidate = path.resolve(root, String(input?.path || ""));
-      if (!pathIsInside(root, candidate)) {
+      if (Date.now() >= deadline) throw new Error("watch 视频分析已超时");
+      if (!pathIsInside(root, candidate) || !frames.some(frame => frame.path === candidate)
+          || !pathIsInside(await realpath(root), await realpath(candidate))) {
         throw new Error("拒绝读取当前视频任务目录之外的文件");
       }
       const info = await stat(candidate);
@@ -501,6 +522,7 @@ function createRestrictedFrameReadTool(workDirectory) {
         : extension === ".webp" ? "image/webp"
           : [".jpg", ".jpeg"].includes(extension) ? "image/jpeg" : null;
       if (mimeType) {
+        readFrames.add(candidate);
         return {
           content: [
             { type: "text", text: `已读取关键帧 ${path.basename(candidate)}` },
@@ -515,7 +537,7 @@ function createRestrictedFrameReadTool(workDirectory) {
   };
 }
 
-async function preprocessVideoWithWatch(sourceVideoPath, progressReporter) {
+async function preprocessVideoWithWatch(sourceVideoPath, progressReporter, deadline = Date.now() + 900_000) {
   const sourceInfo = await stat(sourceVideoPath);
   if (!sourceInfo.isFile() || sourceInfo.size <= 0) throw new Error("视频原文件不存在或为空");
   const workDirectory = await mkdtemp(path.join(os.tmpdir(), "heyi-watch-"));
@@ -524,16 +546,13 @@ async function preprocessVideoWithWatch(sourceVideoPath, progressReporter) {
     const { stdout, stderr } = await execFileAsync(
       "python3",
       [
+        path.join(process.cwd(), "src", "watch-runner.py"),
         WATCH_SCRIPT_PATH,
         sourceVideoPath,
-        "--detail", "balanced",
-        "--max-frames", "30",
-        "--resolution", "512",
-        "--no-whisper",
-        "--out-dir", workDirectory
+        workDirectory
       ],
       {
-        timeout: 120_000,
+        timeout: Math.max(1, Math.min(120_000, deadline - Date.now())),
         maxBuffer: 4 * 1024 * 1024,
         windowsHide: true
       }
@@ -542,57 +561,84 @@ async function preprocessVideoWithWatch(sourceVideoPath, progressReporter) {
     if (!report || !/\.(?:jpe?g|png|webp)\b/i.test(report)) {
       throw new Error(`watch Skill 没有返回可读取的关键帧${stderr ? `: ${String(stderr).slice(-500)}` : ""}`);
     }
-    const frameCount = (report.match(/\.(?:jpe?g|png|webp)\b/gi) || []).length;
+    const metadata = JSON.parse(await readFile(path.join(workDirectory, "watch-frames.json"), "utf8"));
+    const frames = (metadata.frames || []).map(frame => ({ path: path.resolve(frame.path),
+      timestampSeconds: Number(frame.timestamp_seconds), reason: String(frame.reason || "selected"), motion: frame.motion || null }));
+    if (!frames.length || frames.length > 30 || frames.some(frame => !pathIsInside(workDirectory, frame.path)
+        || !Number.isFinite(frame.timestampSeconds) || frame.timestampSeconds < 0)) {
+      throw new Error("watch 关键帧清单无效");
+    }
+    for (const frame of frames) {
+      if (frame.motion && (!pathIsInside(await realpath(workDirectory), await realpath(frame.motion.path))
+          || !Array.isArray(frame.motion.timestamps) || frame.motion.timestamps.some(t => !Number.isFinite(t)))) {
+        throw new Error("Invalid watch temporal frame manifest");
+      }
+      if (!pathIsInside(await realpath(workDirectory), await realpath(frame.path))) {
+        throw new Error("watch 关键帧路径超出任务目录");
+      }
+    }
     progressReporter?.publish(62, "WATCH_KEYFRAMES_READY");
-    return { workDirectory, report, frameCount };
+    return { workDirectory, report, frames, frameCount: frames.length, metadata };
   } catch (error) {
     await rm(workDirectory, { recursive: true, force: true });
     throw error;
   }
 }
 
-async function createWatchHarness(config, apiKey, workDirectory, progressReporter) {
+async function createWatchHarness(config, apiKey, workDirectory, progressReporter, frames, deadline, options = {}) {
   const watchSkill = await getWatchSkill();
   const sessionRepo = new InMemorySessionRepo();
   const session = await sessionRepo.create({ id: `watch-${randomUUID()}` });
   const state = { messages: [] };
-  const models = {
-    streamSimple(model, context, options = {}) {
-      return streamSimple(model, context, {
-        ...options,
-        apiKey,
-        maxTokens: 6500,
-        timeoutMs: Number(options.timeoutMs || 180_000),
-        maxRetries: Number(options.maxRetries ?? 2),
-        maxRetryDelayMs: 15_000
-      });
-    }
-  };
+  let failure;
+  const readFrames = new Set();
+  const models = createWatchModelTransport({ config, apiKey, deadline, maxTokens: options.maxTokens || 6500,
+    dispatcher: VIDEO_SCRIPT_DISPATCHER, onFailure: error => { failure = error; },
+    onActivity: activity => {
+      const stage = options.progressStage && (activity !== "TEXT_STREAMING" || options.progressStage === "WATCH_RECHECKING_EVIDENCE") ? options.progressStage : `WATCH_${activity}`;
+      if (progressReporter.state.stage !== stage) {
+        console.info(`[video-script] progressId=${progressReporter.state.progressId} stage=${stage} framesRead=${readFrames.size}/${frames.length}`);
+        progressReporter.publish(progressReporter.state.progress, stage);
+      }
+    } });
   const harness = new AgentHarness({
     session,
     models,
     model: modelFrom(config),
-    thinkingLevel: "medium",
-    systemPrompt: VIDEO_SCRIPT_ANALYSIS_PROMPT,
+    thinkingLevel: "off",
+    systemPrompt: options.systemPrompt || VIDEO_SCRIPT_ANALYSIS_PROMPT,
     resources: { skills: [watchSkill] },
-    tools: [createRestrictedFrameReadTool(workDirectory)],
+    tools: [createRestrictedFrameReadTool(workDirectory, frames, readFrames, deadline)],
     activeToolNames: ["read"],
     streamOptions: {
-      timeoutMs: 180_000,
-      maxRetries: 2,
-      maxRetryDelayMs: 15_000
+      maxRetries: 0
     }
   });
   harness.subscribe(event => {
+    if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+      progressReporter?.publish(progressReporter.state.progress, "WATCH_LOADING_IMAGES");
+    }
+    if (event.type === "message_start" && event.message?.role === "assistant") {
+      progressReporter?.beginPass(progressReporter.state.stage, progressReporter.state.progress,
+        progressReporter.state.passCeiling);
+    }
     progressReporter?.handleEvent(event);
     if (event.type === "message_end" && event.message?.role === "assistant") {
       state.messages.push(event.message);
     }
   });
+  const invoke = async action => {
+    failure = null;
+    const assistant = await action();
+    if (failure) throw failure;
+    if (assistant?.stopReason !== "stop") throw new Error(assistant?.errorMessage || "watch 模型响应没有完整结束");
+    return assistant;
+  };
   return {
     state,
-    prompt: (text) => harness.prompt(text),
-    skill: (name, instructions) => harness.skill(name, instructions)
+    missingFrames: () => frames.filter(frame => !readFrames.has(frame.path)),
+    prompt: (text) => invoke(() => harness.prompt(text)),
+    skill: (name, instructions) => invoke(() => harness.skill(name, instructions))
   };
 }
 
@@ -622,13 +668,15 @@ function recoverableStreamFailure(error) {
     .test(String(error?.message || error || ""));
 }
 async function requestNonStreamingChat(
-  config, apiKey, systemPrompt, prompt, frames, maxTokens = 6500, timeoutMs = 180_000) {
+  config, apiKey, systemPrompt, prompt, frames, maxTokens = 6500, timeoutMs = 180_000, stream = false) {
   const baseUrl = String(config.baseUrl || "").trim().replace(/\/+$/, "");
   const endpoint = /\/chat\/completions$/i.test(baseUrl)
     ? baseUrl
     : `${baseUrl}/chat/completions`;
   const modelId = String(config.modelId || "").trim();
-  const tokenOptions = /^gpt-5(?:\.|-|$)/i.test(modelId)
+  // This gateway's Grok vision route completes with its native defaults. Do not
+  // force GPT-specific reasoning/budget fields onto the watermark stream.
+  const tokenOptions = stream && modelId === "grok-4.6" ? {} : /^gpt-5(?:\.|-|$)/i.test(modelId)
     ? { max_completion_tokens: maxTokens, reasoning_effort: "low" }
     : { max_tokens: maxTokens };
   const response = await fetch(endpoint, {
@@ -639,7 +687,7 @@ async function requestNonStreamingChat(
     },
     body: JSON.stringify({
       model: modelId,
-      stream: false,
+      stream,
       ...tokenOptions,
       messages: [
         { role: "system", content: systemPrompt },
@@ -660,6 +708,7 @@ async function requestNonStreamingChat(
     dispatcher: PRODUCT_ANALYSIS_DISPATCHER,
     signal: AbortSignal.timeout(timeoutMs)
   });
+  if (response.ok && stream) return readWatermarkChatStream(response);
   const body = await response.text();
   if (!response.ok) {
     throw new Error(`非流式兜底请求失败 ${response.status}: ${body.slice(0, 500)}`);
@@ -676,6 +725,28 @@ async function requestNonStreamingChat(
     : String(content || "");
   if (!reply.trim()) throw new Error("非流式兜底没有返回有效结果");
   return reply.trim();
+}
+
+async function requestAnalysisChat(
+  config, apiKey, systemPrompt, prompt, frames, maxTokens = 6500, timeoutMs = 180_000) {
+  const { reply } = await requestChatCompletion({
+    config, apiKey, maxTokens, timeoutMs,
+    dispatcher: PRODUCT_ANALYSIS_DISPATCHER,
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          ...frames.map(frame => ({
+            type: "image_url",
+            image_url: { url: `data:${String(frame.mimeType)};base64,${String(frame.data)}` }
+          }))
+        ]
+      }
+    ]
+  });
+  return reply;
 }
 
 async function requestVideoScriptNonStreaming(config, apiKey, prompt, frames) {
@@ -848,27 +919,32 @@ function generatedAssistantCharacters(message) {
   if (!message || message.role !== "assistant") return 0;
   return (message.content || []).reduce((total, block) => {
     if (block.type === "text") return total + String(block.text || "").length;
-    if (block.type === "thinking") return total + String(block.thinking || "").length;
-    if (block.type === "toolCall") return total + String(block.arguments || block.partialJson || "").length;
     return total;
   }, 0);
 }
 
 function createVideoScriptProgressReporter(progressId) {
   const id = String(progressId || "").trim();
+  const previous = id ? videoScriptAnalysisProgress.get(id) : null;
   const state = {
     progressId: id,
     runId: randomUUID(),
-    progress: 56,
+    progress: Math.max(56, Number(previous?.progress || 0)),
     stage: "REQUEST_ACCEPTED",
-    outputCharacters: 0,
-    completedPassCharacters: 0,
+    outputCharacters: Number(previous?.outputCharacters || 0),
+    output: previous?.output || "",
+    outputUpdatedAt: previous?.outputUpdatedAt || null,
+    completedPassCharacters: Number(previous?.outputCharacters || 0),
     currentPassCharacters: 0,
     passBase: 56,
     passCeiling: 58,
     done: false,
     updatedAt: Date.now()
   };
+  let completedOutput = previous?.output ? `${previous.output}\n\n`.slice(-32_000) : "";
+  let currentOutput = "";
+  let currentOutputCharacters = 0;
+  const outputLimit = 32_000;
   if (id) videoScriptAnalysisProgress.set(id, { ...state });
 
   const publish = (progress, stage, done = false) => {
@@ -883,6 +959,12 @@ function createVideoScriptProgressReporter(progressId) {
   };
 
   const beginPass = (stage, base, ceiling) => {
+    if (currentOutput) {
+      completedOutput = (completedOutput + currentOutput + "\n\n").slice(-outputLimit);
+      state.completedPassCharacters += currentOutputCharacters;
+      currentOutput = "";
+      currentOutputCharacters = 0;
+    }
     state.currentPassCharacters = 0;
     state.passBase = Math.max(state.progress, Number(base || state.progress));
     state.passCeiling = Math.max(state.passBase, Number(ceiling || state.passBase));
@@ -890,14 +972,23 @@ function createVideoScriptProgressReporter(progressId) {
   };
 
   const completePass = (progress, stage) => {
-    state.completedPassCharacters += state.currentPassCharacters;
-    state.currentPassCharacters = 0;
-    state.outputCharacters = Math.max(state.outputCharacters, state.completedPassCharacters);
     publish(progress, stage);
   };
 
   const handleEvent = (event) => {
     if (event.type !== "message_update" && event.type !== "message_end") return;
+    const text = event.message?.role === "assistant" ? (event.message.content || [])
+      .filter(block => block.type === "text")
+      .map(block => String(block.text || "")).join("") : "";
+    // Events carry a cumulative snapshot for this response; message_end must
+    // not duplicate it. Only model-visible response text enters this buffer.
+    if (text.length > currentOutputCharacters) {
+      currentOutputCharacters = text.length;
+      currentOutput = text.slice(-outputLimit);
+      state.output = (completedOutput + currentOutput).slice(-outputLimit);
+      if (/^[\uDC00-\uDFFF]/.test(state.output)) state.output = state.output.slice(1);
+      state.outputUpdatedAt = Date.now();
+    }
     const characters = generatedAssistantCharacters(event.message);
     state.currentPassCharacters = Math.max(state.currentPassCharacters, characters);
     state.outputCharacters = Math.max(
@@ -1112,8 +1203,13 @@ function requestWasDefinitelyNotSent(error) {
 function isImageResponseTimeout(error) {
   const code = imageFailureCode(error);
   const details = `${String(error?.message || "")} ${String(error?.cause?.message || "")}`;
-  return /^(UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|ETIMEDOUT)$/i.test(code)
+  return /^(UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|ETIMEDOUT|IMAGE_GATEWAY_HTTP_504)$/i.test(code)
+    || error?.name === "TimeoutError" || error?.cause?.name === "TimeoutError"
     || /headers? timeout|body timeout|response timed out/i.test(details);
+}
+
+function isImageConnectionInterrupted(error) {
+  return /^(UND_ERR_SOCKET|ECONNRESET|ECONNABORTED|EPIPE|IMAGE_GATEWAY_HTTP_502|IMAGE_RESPONSE_INVALID_JSON)$/i.test(imageFailureCode(error));
 }
 
 function isExplicitFalse(value) {
@@ -1151,18 +1247,37 @@ function isImageConcurrencyRejection(status, message) {
     || /并发|限流|请求过于频繁|当前并发已满|concurrenc(?:y|t)|concurrency limit exceeded|too many concurrent|rate.?limit|too many requests|system_cpu_overloaded|overload/i.test(message);
 }
 
+function isImageGatewayTransportFailure(status, payload, message) {
+  if (status !== 502 && status !== 504) return false;
+  // A gateway error can hide a request already accepted by the model. Preserve
+  // explicit business refusals instead of mistaking them for a broken transport.
+  const businessCode = [payload, payload?.error].filter(value => value && typeof value === "object")
+    .some(value => [value.type, value.code].some(code => /(?:^|[._-])(?:invalid|unsupported|not_supported|authentication|authorization|permission|forbidden|content_policy|moderation|copyright|safety|rate_limit|concurrency)(?:[._-]|$)/i.test(String(code || ""))));
+  return !businessCode && !providerExplicitlyRejectedWithoutCharge(payload)
+    && !isExplicitImagePolicyRejection(status, message) && !isCopyrightImageMessage(message);
+}
+
 function annotateImageFailure(error, details) {
   Object.assign(error, details);
   return error;
 }
 
-async function requestImageModel(endpoint, headers, bodyFactory, onProgress = () => {}) {
-  const requestId = randomUUID();
+async function requestImageModel(endpoint, headers, bodyFactory, onProgress = () => {}, options = {}) {
+  const requestId = String(options.idempotencyKey || randomUUID());
   const requestHeaders = { ...headers, "Idempotency-Key": requestId };
-  let safeRetryCount = 0;
+  let networkRetryCount = Number.isSafeInteger(options.networkRetryCount) && options.networkRetryCount >= 0
+    ? options.networkRetryCount : 0;
+  // Keep the existing attempt counter for progress/API compatibility. Authorization
+  // to retry an interrupted request is separate from proof that it was not charged.
+  let safeRetryCount = networkRetryCount;
+  const networkRetryLimit = Number.isSafeInteger(options.maxNetworkRetries) && options.maxNetworkRetries >= 0
+    ? Math.min(options.maxNetworkRetries, IMAGE_NETWORK_RETRY_DELAYS_MS.length) : IMAGE_NETWORK_RETRY_DELAYS_MS.length;
+  const providerRetryLimit = Number.isSafeInteger(options.maxProviderRetries) && options.maxProviderRetries >= 0
+    ? options.maxProviderRetries : Infinity;
 
   while (true) {
-    let result;
+    await options.beforeAttempt?.({ requestId, networkRetryCount, attempt: safeRetryCount + 1 });
+    let result, responseText, payload;
     try {
       onProgress("GENERATING", safeRetryCount + 1);
       result = await fetch(endpoint, {
@@ -1172,36 +1287,56 @@ async function requestImageModel(endpoint, headers, bodyFactory, onProgress = ()
         dispatcher: IMAGE_FETCH_DISPATCHER,
         signal: AbortSignal.timeout(IMAGE_RESPONSE_TIMEOUT_MS)
       });
+      // A connection can drop after headers; an incomplete body is not a received
+      // generation result and follows the same bounded transport recovery path.
+      responseText = await result.text();
+      try {
+        payload = JSON.parse(responseText);
+      } catch (cause) {
+        if (result.ok) {
+          // Some gateways close a truncated JSON body with valid HTTP framing.
+          // It is not a usable received result and must never poison the result cache.
+          throw Object.assign(new Error("图片模型的 JSON 响应不完整或无法解析", { cause }), {
+            code: "IMAGE_RESPONSE_INVALID_JSON", providerStatus: result.status
+          });
+        }
+        payload = {};
+      }
+      const gatewayMessage = String(payload?.error?.message || payload?.message || responseText || `HTTP ${result.status}`);
+      if (isImageGatewayTransportFailure(result.status, payload, gatewayMessage)) {
+        throw Object.assign(new Error(`图片模型网关连接中断（HTTP ${result.status}）：${gatewayMessage.slice(0, 300)}`), {
+          code: `IMAGE_GATEWAY_HTTP_${result.status}`, providerStatus: result.status
+        });
+      }
     } catch (error) {
-      const definitelyNotSent = requestWasDefinitelyNotSent(error);
+      const definitelyNotSent = !result && requestWasDefinitelyNotSent(error);
       const responseTimeout = isImageResponseTimeout(error);
-      const retryableTransportFailure = definitelyNotSent || responseTimeout;
+      const retryableTransportFailure = definitelyNotSent || responseTimeout || isImageConnectionInterrupted(error);
       annotateImageFailure(error, {
         requestState: definitelyNotSent ? "NOT_SENT" : responseTimeout ? "RESPONSE_TIMEOUT" : "ACCEPTED_OR_UNKNOWN",
-        retrySafe: retryableTransportFailure,
+        retrySafe: definitelyNotSent,
+        retryAuthorized: retryableTransportFailure,
         safeRetryCount,
+        networkRetryCount,
+        requestId,
         failureCode: imageFailureCode(error),
         failureKind: responseTimeout ? "NETWORK_TIMEOUT" : "NETWORK"
       });
-      const retryLimit = responseTimeout ? IMAGE_NETWORK_RETRY_DELAYS_MS.length : 1;
-      if (retryableTransportFailure && safeRetryCount < retryLimit) {
+      if (retryableTransportFailure && networkRetryCount < networkRetryLimit) {
+        const nextCount = networkRetryCount + 1;
+        onProgress("RECOVERING_CONNECTION", safeRetryCount + 1);
+        // Persist the reservation before waiting or issuing another POST. A
+        // storage failure must stop here instead of spending an unrecorded retry.
+        await options.recordNetworkRetry?.(nextCount);
+        networkRetryCount = nextCount;
         safeRetryCount += 1;
-        const delay = responseTimeout ? IMAGE_NETWORK_RETRY_DELAYS_MS[safeRetryCount - 1] : 1_000;
         onProgress("RETRY_WAIT", safeRetryCount);
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await new Promise((resolve) => setTimeout(resolve, IMAGE_NETWORK_RETRY_DELAYS_MS[networkRetryCount - 1]));
         continue;
       }
-      error.safeRetryCount = safeRetryCount;
       throw error;
     }
 
-    const responseText = await result.text();
-    let payload;
-    try {
-      payload = responseText ? JSON.parse(responseText) : {};
-    } catch {
-      payload = {};
-    }
     if (!result.ok) {
       const message = payload?.error?.message || payload?.message || responseText || `HTTP ${result.status}`;
       const copyrightRejection = isCopyrightImageRejection(result.status, String(message));
@@ -1216,17 +1351,18 @@ async function requestImageModel(endpoint, headers, bodyFactory, onProgress = ()
           requestState: "REJECTED",
           retrySafe,
           safeRetryCount,
+          networkRetryCount,
+          requestId,
           providerStatus: result.status,
           failureKind: copyrightRejection ? "COPYRIGHT"
             : concurrencyRejection ? "CONCURRENCY"
               : explicitPolicyRejection ? "POLICY" : "PROVIDER"
         }
       );
-      const retryLimit = concurrencyRejection ? IMAGE_CONCURRENCY_RETRY_DELAYS_MS.length
-        : explicitPolicyRejection ? IMAGE_POLICY_RETRY_DELAYS_MS.length : 1;
+      const retryLimit = Math.min(providerRetryLimit, concurrencyRejection ? IMAGE_CONCURRENCY_RETRY_DELAYS_MS.length
+        : explicitPolicyRejection ? IMAGE_POLICY_RETRY_DELAYS_MS.length : 1);
       if (retrySafe && safeRetryCount < retryLimit) {
         safeRetryCount += 1;
-        if (explicitPolicyRejection || concurrencyRejection) requestHeaders["Idempotency-Key"] = randomUUID();
         const retryDelay = concurrencyRejection
           ? IMAGE_CONCURRENCY_RETRY_DELAYS_MS[safeRetryCount - 1]
           : explicitPolicyRejection
@@ -1238,11 +1374,42 @@ async function requestImageModel(endpoint, headers, bodyFactory, onProgress = ()
       }
       throw error;
     }
-    return { payload, safeRetryCount };
+    return { payload, safeRetryCount, networkRetryCount, requestId };
   }
 }
 
 async function callImageModel(config, params, inputImages) {
+  return callImageModelWithCopyrightFallback(config, params, inputImages, callSingleImageModel);
+}
+
+// Transparent PNG is an explicit artwork contract, never a setting for product photos.
+// Official Images API background support (2026-09-15); unknown/Grok routes must not
+// receive unsupported OpenAI-only fields. Strict output routing rejects them before
+// spending a call; a supported provider's returned bytes are still inspected.
+function transparentImageParameters(config, params) {
+  if (params.background !== "transparent") return {};
+  if (!supportsNativeTransparentPng(config)) return {};
+  return { background: "transparent", output_format: "png" };
+}
+
+// Both xAI image routes use the same quality and aspect-ratio vocabulary.
+function grokImageParameters(size, quality) {
+  const parameters = {};
+  const dimensions = /^(\d+)x(\d+)$/i.exec(size);
+  if (dimensions) {
+    const ratio = Number(dimensions[1]) / Number(dimensions[2]);
+    const supported = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20", "21:9", "5:2"];
+    const aspect = supported.find(value => { const [w, h] = value.split(":").map(Number); return Math.abs(w / h - ratio) < .000001; });
+    if (aspect) parameters.aspect_ratio = aspect;
+    if (Math.min(Number(dimensions[1]), Number(dimensions[2])) >= 2048) parameters.resolution = "2k";
+  }
+  // Medium is Grok 2.0's highest supported tier. Never send GPT size/input_fidelity.
+  if (["low", "medium", "auto"].includes(quality)) parameters.quality = quality;
+  else if (quality === "high") parameters.quality = "medium";
+  return parameters;
+}
+
+async function callSingleImageModel(config, params, inputImages) {
   if (!config?.apiKey || !config?.modelId || !config?.baseUrl) {
     throw new Error("请先在模型接入中配置并启用图片模型");
   }
@@ -1258,17 +1425,32 @@ async function callImageModel(config, params, inputImages) {
   const size = String(params.size || "auto").trim();
   const quality = String(params.quality || "").trim();
   const inputFidelity = String(params.inputFidelity || "").trim();
+  const transparentOutput = transparentImageParameters(config, params);
   const headers = { Authorization: `Bearer ${config.apiKey}` };
   let bodyFactory;
   if (mode === "edit") {
     const normalizedReferences = inputImages.map(normalizeReferenceImage);
-    bodyFactory = () => {
+    if (config.modelId === "grok-imagine-image-2.0") {
+      // xAI edits use JSON, not the OpenAI SDK's multipart image/image[] format.
+      // Keep all references in order: the product, view, and placement guide are
+      // separate contracts. Sending both singular/plural aliases is rejected.
+      const images = normalizedReferences.map(input => ({
+        type: "image_url", url: `data:${input.mimeType};base64,${input.bytes.toString("base64")}`
+      }));
+      const request = { model: String(config.modelId), prompt,
+        ...(images.length === 1 ? { image: images[0] } : { images }),
+        ...grokImageParameters(size, quality) };
+      headers["Content-Type"] = "application/json";
+      const jsonBody = JSON.stringify(request);
+      bodyFactory = () => jsonBody;
+    } else bodyFactory = () => {
       const form = new FormData();
       form.append("model", String(config.modelId));
       form.append("prompt", prompt);
       form.append("size", size);
       if (quality) form.append("quality", quality);
       if (inputFidelity) form.append("input_fidelity", inputFidelity);
+      for (const [key, value] of Object.entries(transparentOutput)) form.append(key, value);
       normalizedReferences.forEach((input) => {
         const field = inputImages.length === 1 ? "image" : "image[]";
         form.append(
@@ -1281,11 +1463,25 @@ async function callImageModel(config, params, inputImages) {
     };
   } else {
     headers["Content-Type"] = "application/json";
-    const jsonBody = JSON.stringify({ model: config.modelId, prompt, n: 1, size, ...(quality ? { quality } : {}) });
+    const parameters = config.modelId === "grok-imagine-image-2.0"
+      ? grokImageParameters(size, quality) : { size, ...(quality ? { quality } : {}), ...transparentOutput };
+    const jsonBody = JSON.stringify({ model: config.modelId, prompt, n: 1, ...parameters });
     bodyFactory = () => jsonBody;
   }
   const endpoint = imageEndpoint(config.baseUrl, mode);
-  const { payload, safeRetryCount } = await requestImageModel(endpoint, headers, bodyFactory, params.onProgress);
+  const recovery = params.operation ? await params.operation.forRoute(config, {maxNetworkRetries:params.maxNetworkRetries}) : {maxNetworkRetries:params.maxNetworkRetries};
+  let received = recovery.cachedResponse;
+  if (!received) {
+    try {
+      received = await requestImageModel(endpoint, headers, bodyFactory, params.onProgress,
+        { ...recovery, maxProviderRetries: params.maxProviderRetries });
+    } catch (error) {
+      await recovery.recordFailure?.(error);
+      throw error;
+    }
+    await recovery.recordResponse?.(received);
+  }
+  const { payload, safeRetryCount, networkRetryCount = 0, requestId } = received;
   const item = Array.isArray(payload.data) ? payload.data[0]
     : Array.isArray(payload.images) ? payload.images[0]
       : payload.output?.[0] || payload.image || null;
@@ -1301,7 +1497,7 @@ async function callImageModel(config, params, inputImages) {
         revisedPrompt: String(item?.revised_prompt || item?.revisedPrompt || "")
       },
       usage: imageApiUsage(payload),
-      requestMeta: { requestState: "COMPLETED_RESPONSE_RECEIVED", safeRetryCount }
+      requestMeta: { requestState: "COMPLETED_RESPONSE_RECEIVED", safeRetryCount, networkRetryCount, requestId }
     };
   }
   params.onProgress?.("PROCESSING_RESPONSE", safeRetryCount + 1);
@@ -1313,6 +1509,8 @@ async function callImageModel(config, params, inputImages) {
       requestState: "COMPLETED_RESPONSE_RECEIVED",
       retrySafe: false,
       safeRetryCount,
+      networkRetryCount,
+      requestId,
       resultDownloadRetryCount: Number(error?.resultDownloadRetryCount || 0)
     });
   }
@@ -1332,20 +1530,39 @@ async function callImageModel(config, params, inputImages) {
     usage: imageApiUsage(payload),
     requestMeta: {
       requestState: "COMPLETED",
-      safeRetryCount
+      safeRetryCount, networkRetryCount, requestId
     }
   };
 }
 
 function publicErrorMessage(error) {
+  if (error?.failureCode === "NATIVE_TRANSPARENT_PNG_UNSUPPORTED") {
+    return "当前图片模型未确认支持原生透明 PNG，无法满足无底图要求；未发起模型调用，请选择支持透明输出的图片模型";
+  }
+  if (error?.imageOutputRequirement?.code === "NATIVE_TRANSPARENT_PNG_REQUIRED") {
+    const { imageOutputRequirement, ...details } = error;
+    const base = publicErrorMessage({ ...details, message: error.message });
+    const skipped = imageOutputRequirement.fallbackSkipped
+      ? "本次必须生成原生透明 PNG，备用模型不支持，已跳过备用调用"
+      : "本次必须生成原生透明 PNG，未新增其他模型调用";
+    const uncertain = ["ACCEPTED_OR_UNKNOWN", "RESPONSE_TIMEOUT"].includes(error.requestState)
+      ? "；原请求结果仍未知，已保留请求记录，不会自动重新提交" : "";
+    return `${base}；${skipped}${uncertain}`;
+  }
+  if (error?.imageModelFallback) {
+    const { imageModelFallback, ...details } = error;
+    const reason = imageModelFallback.reason === 'NETWORK' ? '主模型连接中断后' : '主模型因版权原因拒绝后';
+    return `${reason}，已切换备用模型 ${imageModelFallback.toModelId}；${publicErrorMessage({ ...details, message: error.message })}`;
+  }
+  if (error?.chatTransport) return error.message;
   const message = String(error?.message || "");
   const causeCode = String(error?.cause?.code || error?.code || "");
   if (error?.failureKind === "COPYRIGHT" || isCopyrightImageMessage(message)) {
-    return `版权限制：素材或图案可能包含受版权、商标或角色授权保护的内容，图片模型已拒绝生成`;
+    return "版权限制：图片模型因版权相关限制拒绝本次请求，未生成图片，本轮处理已结束";
   }
   if (error?.failureKind === "POLICY" || isExplicitImagePolicyRejection(Number(error?.providerStatus || 502), message)) {
     const retries = Number(error?.safeRetryCount || 0);
-    return `内容策略可能误判：图片模型未产出图片${retries > 0 ? `，已快速重试 ${retries} 次` : ""}，系统将继续后台自动重试`;
+    return `内容策略拒绝：图片模型拒绝本次请求，未生成图片${retries > 0 ? `；本轮已重试 ${retries} 次` : ""}，本轮处理已结束`;
   }
   if (error?.failureKind === "CONCURRENCY" || isImageConcurrencyRejection(Number(error?.providerStatus || 0), message)) {
     const retries = Number(error?.safeRetryCount || 0);
@@ -1353,8 +1570,12 @@ function publicErrorMessage(error) {
   }
   if (error?.failureKind === "NETWORK_TIMEOUT" || error?.requestState === "RESPONSE_TIMEOUT"
       || /UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|headers? timeout|body timeout/i.test(`${message} ${causeCode}`)) {
-    const retries = Number(error?.safeRetryCount || 0);
-    return `网络超时：图片模型长时间未返回响应${retries > 0 ? `，已自动重试 ${retries} 次` : ""}，系统将继续后台重试`;
+    const retries = Number(error?.networkRetryCount || 0);
+    return `图片模型响应超时${retries > 0 ? `，已自动恢复 ${retries} 次` : ""}，已达到本轮恢复上限；已完成图片保留`;
+  }
+  if (error?.failureKind === 'NETWORK' && error?.requestState === 'ACCEPTED_OR_UNKNOWN') {
+    const retries = Number(error?.networkRetryCount || 0);
+    return `图片模型连接中途断开${retries > 0 ? `，已自动恢复 ${retries} 次仍未取得结果` : ''}；已保留请求记录和其他已完成图片`;
   }
   if (error?.requestState === "COMPLETED_RESPONSE_RECEIVED") {
     const retries = Number(error?.resultDownloadRetryCount || 0);
@@ -2256,7 +2477,7 @@ async function enforceVideoShotCount(runtimeAgent, parsed, desiredShotCount, pro
 7. 不得识别、转写或保留画面字幕、贴纸、字母、数字、水印和营销文案；只允许使用 context.audioTranscript 中的转写口播，没有音频转写时所有 narration 必须为空字符串；
 8. transitionDescription 必须保留真实镜头边界语义：首段为“无”，同一物理镜头内部为“同镜头连续，无转场”，只有真实切点才允许写硬切或具体转场；
 9. 补足或重整不得破坏主体状态账本。包装中、取出、折叠、展开、手持、穿上、已穿着、局部特写、离开画面等原片可见状态及其切换必须保留；尤其不得把后段“人物已穿着商品”改回“人物手持商品”，也不得把包装/展开/穿着等不同展示方式统一成同一姿势；
-10. 每个 imagePrompt 必须保留 sourceTimestampSeconds 与 sourceDurationSeconds。sourceTimestampSeconds 只能从最初 frameOrder 的真实时间戳中选择，九个时间点严格递增并覆盖原片开头到结尾；生产时间轴压缩不得覆盖或改写这两个原片证据字段；
+10. 每个 imagePrompt 必须保留 sourceTimestampSeconds 与 sourceDurationSeconds。sourceTimestampSeconds 只能从最初 frameOrder 的真实时间戳中选择；有至少九个实际关键帧时严格递增并覆盖首尾，不足九帧时允许连续复用同一真实帧但不得倒序或虚构额外动作；生产时间轴压缩不得覆盖或改写这两个原片证据字段；
 11. 不得使用 Markdown，不得输出 JSON 之外的文字。`);
   const adjustedAssistant = [...runtimeAgent.state.messages]
     .reverse()
@@ -2277,13 +2498,154 @@ async function enforceVideoShotCount(runtimeAgent, parsed, desiredShotCount, pro
   };
 }
 
+function watchStoryboardIssues(result, watch, context) {
+  const shots = Array.isArray(result?.shots) ? result.shots : [];
+  if (shots.length !== 9) return ["shots 必须恰好九个"];
+  const issues = [];
+  const timestamps = watch.frames.map(frame => frame.timestampSeconds);
+  const duration = Number(context.durationSeconds || 15);
+  const sourceDuration = Number(context.sourceDurationSeconds || watch.metadata.video?.duration || duration);
+  let boundary = 0, previous = -1;
+  for (const [index, shot] of shots.entries()) {
+    const start = Number(shot.startSecond), end = Number(shot.endSecond);
+    const timestamp = Number(shot.imagePrompt?.sourceTimestampSeconds);
+    if (Number(shot.sequence) !== index + 1 || !Number.isFinite(start) || !Number.isFinite(end)
+        || Math.abs(start - boundary) > 0.06 || end <= start || end > duration + 0.06) {
+      issues.push(`第 ${index + 1} 镜生产时间轴不连续或序号无效`);
+    }
+    if (!timestamps.includes(timestamp) || timestamp < previous
+        || (timestamps.length >= 9 && timestamp === previous)) issues.push(`第 ${index + 1} 镜原片时间不是按顺序选择的 watch 真实帧`);
+    if (Math.abs(Number(shot.imagePrompt?.sourceDurationSeconds) - sourceDuration) > 0.06
+        || !Number.isFinite(Number(shot.imagePrompt?.sourceDurationSeconds))) issues.push(`第 ${index + 1} 镜原片总时长无效`);
+    boundary = end;
+    previous = timestamp;
+  }
+  if (Math.abs(boundary - duration) > 0.06) issues.push("生产时间轴未覆盖目标时长");
+  if (Number(shots[0].imagePrompt?.sourceTimestampSeconds) !== timestamps[0]
+      || Number(shots.at(-1).imagePrompt?.sourceTimestampSeconds) !== timestamps.at(-1)) issues.push("原片证据未覆盖 watch 首尾关键帧");
+  if (!context.hasReliableAudioTranscript && shots.some(shot => String(shot.narration || "").trim())) issues.push("没有可靠音频转写时 narration 必须为空");
+  return issues;
+}
+
+function watchEvidenceBatches(frames) {
+  const size = Math.max(1, Math.ceil(frames.length / Math.min(3, frames.length)));
+  const batches = [];
+  for (let i = 0; i < frames.length; i += size) batches.push(frames.slice(Math.max(0, i - 1), Math.min(frames.length, i + size + 1)));
+  return batches;
+}
+
+function detailedWatchEvidenceInstructions() {
+  return `每帧输出 timestampSeconds、usableForStoryboard、observation（简短事实概述）、subjectCount（可判断的人数，否则null）、state（worn/held/flat/folded/transition/none/uncertain）、orientation（front/side/back/mixed/uncertain）、contact（哪只手接触哪里、抓握与支撑；看不清须注明）、action（上一相邻实拍帧→当前帧的可见动作路径，首帧只写姿态）、camera（景别、主体运动与相机运动分别说明）、cut（continuous/cut/uncertain，本片段首帧必须为uncertain）、uncertainty（看不清、遮挡或帧间缺失的细节，无则空字符串）。字符串用短句，observation/contact各最多45字，action/camera各最多65字，uncertainty最多45字。不要把左侧画面等同人物左手，不确定就写不确定；禁止猜测精确角度、抓握力度、速度或帧间未拍到的动作。镜头硬切不要求人物姿态连续，不能为了连续而补造穿衣、转身等过程。平台片尾界面标记不可用；带字幕的实拍仍可用但不抄字幕。只返回 {"frames":[...]}。`;
+}
+
+function validateDetailedWatchEvidence(evidence, frames) {
+  const states = ['worn', 'held', 'flat', 'folded', 'transition', 'none', 'uncertain'];
+  const orientations = ['front', 'side', 'back', 'mixed', 'uncertain'];
+  const cuts = ['continuous', 'cut', 'uncertain'];
+  if (!Array.isArray(evidence?.frames) || evidence.frames.length !== frames.length
+      || evidence.frames.some((item, i) => !item || item.timestampSeconds !== frames[i].timestampSeconds
+        || typeof item.usableForStoryboard !== 'boolean'
+        || !(item.subjectCount === null || (Number.isInteger(item.subjectCount) && item.subjectCount >= 0 && item.subjectCount <= 30))
+        || !states.includes(item.state) || !orientations.includes(item.orientation) || !cuts.includes(item.cut)
+        || ['observation', 'contact', 'action', 'camera', 'uncertainty'].some(key => typeof item[key] !== 'string'
+          || item[key].length > 220 || (key !== 'uncertainty' && !item[key].trim())))) {
+    throw new Error('watch 细致证据字段缺失、时间点错误或内容过长');
+  }
+  // A batch has no image preceding its first frame: continuity cannot be established there.
+  if (evidence.frames.length) evidence.frames[0].cut = "uncertain";
+  return evidence;
+}
+
+function watchEvidenceConflicts(batches) {
+  const grouped = new Map();
+  for (const item of batches.flatMap(batch => batch.frames)) {
+    const reports = grouped.get(item.timestampSeconds) || [];
+    reports.push(item); grouped.set(item.timestampSeconds, reports);
+  }
+  const known = value => value !== null && !['uncertain', 'mixed', 'transition'].includes(value);
+  return [...grouped].filter(([, reports]) => ['usableForStoryboard', 'subjectCount', 'state', 'orientation', 'cut']
+    .some(key => new Set(reports.map(item => item[key]).filter(known)).size > 1)).map(([time]) => time);
+}
+
+async function parallelWatchEvidence(config, apiKey, watch, reporter, deadline) {
+  const batches = watchEvidenceBatches(watch.frames.map(frame => frame.motion ? { ...frame, path: frame.motion.path } : frame));
+  reporter.beginPass("WATCH_PARALLEL_ANALYSIS", 62, 74);
+  let output = "";
+  const agents = [];
+  const settled = await Promise.allSettled(batches.map(async (frames, index) => {
+    const silent = { state: { progressId: `${reporter.state.progressId}:batch-${index + 1}`, progress: 62, stage: "WATCH_PARALLEL_ANALYSIS", passCeiling: 74 },
+      publish(progress, stage) { this.state.progress = progress; this.state.stage = stage; }, beginPass() {}, handleEvent() {} };
+    const agent = await createWatchHarness(config, apiKey, watch.workDirectory, silent, frames,
+      Math.min(deadline, Date.now() + 180_000), { maxTokens: Math.min(6500, 1600 + frames.length * 550),
+        systemPrompt: '你是 watch 视频画面观察员。只输出简短、可核对的画面证据，不策划分镜、不猜测不可见动作。把事实、动作路径、接触关系、镜头变化和不确定项分别记录，不强行填满细节。只返回 JSON。' });
+    agents[index] = agent;
+    const order = frames.map((f, i) => ({ imagePosition: i + 1, path: f.path, timestampSeconds: f.timestampSeconds, motionTimestamps: f.motion?.timestamps }));
+    const answer = await agent.skill("watch", `模式：Evidence batch。先用 read 读取清单每一张图。Temporal sheets: motionTimestamps labels tiles left-to-right. The first tile is the anchor; later tiles support camera motion only, not extra storyboard frames. Compare stable background features to distinguish camera from subject motion. Never interpret a cut as pan/zoom. Stable background supports fixed-camera; only report uncertainty with a specific evidence limitation. ${detailedWatchEvidenceInstructions()} 不要输出原人物身份、衣着和商品外观、文字。不要生成九镜。
+精确帧清单：
+${JSON.stringify(order)}`);
+    if (agent.missingFrames().length) throw new Error(`watch 第 ${index + 1} 路未读取全部证据帧`);
+    const raw = messageText(answer);
+    const evidence = validateDetailedWatchEvidence(extractJsonObject(raw), frames);
+    output += (output ? "\n\n" : "") + raw;
+    reporter.handleEvent({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: output }] } });
+    console.info(`[video-script] evidence batch=${index + 1}/${batches.length} frames=${frames.length} complete=true`);
+    return { batch: index + 1, frames: evidence.frames };
+  }));
+  const failure = settled.find(item => item.status === "rejected");
+  if (failure) throw failure.reason;
+  const results = settled.map(item => item.value);
+  const conflicts = watchEvidenceConflicts(results);
+  let reviewMessages = [];
+  if (conflicts.length) {
+    reporter.beginPass("WATCH_RECHECKING_EVIDENCE", 73, 75);
+    const reviewFrames = watch.frames.filter((frame, i) => conflicts.includes(frame.timestampSeconds)
+      || conflicts.includes(watch.frames[i - 1]?.timestampSeconds) || conflicts.includes(watch.frames[i + 1]?.timestampSeconds)).map(frame => frame.motion ? { ...frame, path: frame.motion.path } : frame);
+    const review = await createWatchHarness(config, apiKey, watch.workDirectory, reporter, reviewFrames,
+      Math.min(deadline, Date.now() + 150_000), { maxTokens: Math.min(6500, 1600 + reviewFrames.length * 550),
+        progressStage: "WATCH_RECHECKING_EVIDENCE", systemPrompt: '你是 watch 画面证据复核员。以原图为准；无法确定就明确保留 uncertain，不按多数票猜测。' });
+    const frameOrder = reviewFrames.map((frame, i) => ({ imagePosition: i + 1, path: frame.path, timestampSeconds: frame.timestampSeconds, motionTimestamps: frame.motion?.timestamps }));
+    const answer = await review.skill("watch", `模式：Evidence review。以下时间点的独立观察有冲突：${JSON.stringify(conflicts)}。读取全部复核图片，按时间返回证据，不生成分镜。${detailedWatchEvidenceInstructions()}\n旧观察仅供定位争议，不能代替图片：${JSON.stringify(results.flatMap(batch => batch.frames).filter(frame => conflicts.includes(frame.timestampSeconds)))}\n精确帧清单：\n${JSON.stringify(frameOrder)}`);
+    if (review.missingFrames().length) throw new Error('watch 冲突复核未读取全部指定画面');
+    const resolved = validateDetailedWatchEvidence(extractJsonObject(messageText(answer)), reviewFrames);
+    for (const batch of results) batch.frames = batch.frames.map(frame => conflicts.includes(frame.timestampSeconds)
+      ? resolved.frames.find(item => item.timestampSeconds === frame.timestampSeconds) : frame);
+    reviewMessages = review.state.messages;
+  }
+  return { batches: results, reviewedConflicts: conflicts.length, messages: [...agents.flatMap(agent => agent?.state.messages || []), ...reviewMessages] };
+}
+
+function groundWatchCutTransitions(result, evidence) {
+  if (!evidence) return 0;
+  let grounded = 0;
+  for (const shot of result.shots || []) {
+    const reports = evidence.batches.flatMap(batch => batch.frames)
+      .filter(frame => frame.timestampSeconds === shot.imagePrompt?.sourceTimestampSeconds);
+    const knownCuts = reports.filter(frame => frame.cut === 'cut');
+    if (!knownCuts.length || reports.some(frame => frame.cut === 'continuous')) continue;
+    const observed = knownCuts[0];
+    // A shot boundary does not establish the trajectory between the two poses.
+    // Keep the validated watch observations rather than a synthesized missing action.
+    shot.motionDescription = `切点后可见：${observed.observation} 接触关系：${observed.contact} 切点间过程未拍到，不补造过渡动作。`;
+    shot.transitionDescription = '硬切';
+    grounded++;
+  }
+  return grounded;
+}
+
+function conciseWatchStoryboardPrompt() {
+  const schema = VIDEO_SCRIPT_ANALYSIS_PROMPT.slice(VIDEO_SCRIPT_ANALYSIS_PROMPT.indexOf('{'), VIDEO_SCRIPT_ANALYSIS_PROMPT.indexOf('规则：')).replace('并注明脚步、转身角度和手臂高度', '仅在画面可证实时写脚步和手臂路径，不猜测精确角度');
+  return `你是 watch 视频分镜编排员。输出简洁中文 JSON，恰好 9 镜，不输出额外计划或自检文章。字段格式：\n${schema}\n每个字段只写必要信息，sceneDescription 不超过 70 字，motionDescription 不超过 100 字，imagePrompt.prompt 不超过 140 字。把证据中的接触位置、支撑关系、可见朝向及状态变化落实到动作和图片提示词；不能只写展示商品。uncertainty 中未解决的信息不得升级为确定事实：无法判定相机运动就写无法确定，不能假定固定机位；无法确定手别就写画面一侧的手。硬切可发生姿态跳变，不能补造未拍到的过渡动作。保留动作状态、手部接触、物体朝向、真实切点和运镜；同一物理镜头写“同镜头连续，无转场”。不得复制原人物身份、外貌、穿搭或原商品类别、颜色、设计、文字，统一使用当前任务人物/商品。不得抄录画面字幕。只用可靠音轨转写生成简短口播，否则 narration 留空。服从 presentationMode：MODEL_WEAR 为人物实际穿着，PRODUCT_ONLY 无完整人物且不穿着，CAST_PRODUCT 保留所需人物数量与互动。证据之间有差异时以图片为准，不得虚构填补。目标时间轴连续，原片时间点来自实际帧，二者不得混淆。`;
+}
+
 async function runVideoScriptAnalysis(body) {
   const config = body.model || {};
   const apiKey = String(config.apiKey || "");
   if (!apiKey) throw new Error("模型 API Key 不能为空");
-  const sourceVideoPath = validatedSourceVideoPath(body.sourceVideoPath);
+  const sourceVideoPath = await validatedSourceVideoPath(body.sourceVideoPath);
   const progressReporter = createVideoScriptProgressReporter(body.progressId);
   const startedAt = Date.now();
+  const parallel = typeof WATCH_PARALLEL_ANALYSIS !== "undefined" && WATCH_PARALLEL_ANALYSIS;
+  const deadline = startedAt + (parallel ? 600_000 : 900_000);
   const context = body.context && typeof body.context === "object" ? body.context : {};
   const hasAudioTranscript = Boolean(context.hasReliableAudioTranscript)
     && Array.isArray(context.audioTranscript?.segments)
@@ -2295,43 +2657,68 @@ async function runVideoScriptAnalysis(body) {
   const analysisContext = {
     ...context,
     desiredShotCount,
-    analysisMode: "PI_WATCH_SKILL_WITH_DAYAN_TRANSCRIPT",
-    note: "watch 报告中的图片按原视频时间顺序排列并附真实时间点。必须先读取全部关键帧，再选择九个覆盖动作状态变化的真实时间点，不得固定等分。只提取可复用的动作、人物数量、机位、运镜、场景、光线、节奏和微表情。必须保留手与商品的接触关系、商品朝向、抓握区域、支撑点和可见功能状态变化。逐帧建立主体状态账本，包装、取出、展开、手持、穿上、穿着展示和局部特写等状态不得压扁成同一姿势。不得带入原人物身份或原商品外观，不得抄录画面字幕。后续商品唯一来源是用户在 AI 视频任务中上传的商品图。运镜优先参考 cameraMotionEvidence；" + narrationInstruction
+    analysisMode: "PI_WATCH_SKILL",
+    note: "以下图片按视频时间先后顺序排列，并附原视频时间点；完整阅读全部帧后自行选择九个最能覆盖动作状态变化的真实时间点，不得固定等分。只提取可复用的动作、人物数量、机位、运镜、场景、光线、节奏和微表情。必须保留手与商品的接触关系、商品正面/斜侧/窄边/背面朝向、抓握区域、支撑点和可见功能状态变化，例如包装中、取出、折叠、展开、手持、穿上、已穿着、局部特写、倒立、翻转、露出底部、点火、回正和放置；这些是动作与主体状态而非商品外观。逐帧建立主体状态账本，原片中的正面→侧面→背面→回正、包装→展开→穿上→穿着展示等状态切换不得被压扁成全程手持或同一姿势。不得带入原人物身份、外貌、发型、妆容、饰品、穿搭，不得带入原视频商品类别、颜色、版型、印花、文字、Logo、卖点或搭配，不得抄录字幕。后续商品唯一来源是用户在 AI 视频任务中上传的商品图。运镜优先参考 cameraMotionEvidence；" + narrationInstruction
   };
-  let workDirectory = null;
+  let workDirectory;
   try {
-    const watch = await preprocessVideoWithWatch(sourceVideoPath, progressReporter);
+    const watch = await preprocessVideoWithWatch(sourceVideoPath, progressReporter, deadline);
     workDirectory = watch.workDirectory;
-    const runtimeAgent = await createWatchHarness(
-      config, apiKey, watch.workDirectory, progressReporter
-    );
-    progressReporter.beginPass("WATCH_READING_KEYFRAMES", 62, 84);
-    const skillInstructions = `watch 视频预处理已由平台后端完成，不要运行 Bash，不要重新抽帧，不要调用 Whisper。
-你必须使用 read 工具读取下面 watch 报告列出的每一张关键帧，尽量在同一轮并行发起全部 read；不得未看图就生成结果。
-
+    const preprocessingMs = Date.now() - startedAt;
+    const evidence = parallel ? await parallelWatchEvidence(config, apiKey, watch, progressReporter, deadline) : null;
+    const storyboardFrames = evidence ? watch.frames.filter(frame => {
+      const reports = evidence.batches.flatMap(batch => batch.frames).filter(item => item.timestampSeconds === frame.timestampSeconds);
+      return reports.length > 0 && reports.every(item => item.usableForStoryboard);
+    }) : watch.frames;
+    if (!storyboardFrames.length) throw new Error("watch 未找到可用于分镜的实拍画面，视频仅包含片尾界面或文字卡片");
+    const storyboardWatch = { ...watch, frames: storyboardFrames, frameCount: storyboardFrames.length };
+    const runtimeAgent = await createWatchHarness(config, apiKey, workDirectory, progressReporter, storyboardFrames,
+      parallel ? Math.min(deadline, Date.now() + 240_000) : deadline,
+      parallel ? { systemPrompt: conciseWatchStoryboardPrompt(), maxTokens: 6500, progressStage: "WATCH_SYNTHESIZING" } : {});
+    const frameOrder = storyboardFrames.map((frame, index) => ({ imagePosition: index + 1,
+      path: frame.path, timestampSeconds: frame.timestampSeconds, reason: frame.reason }));
+    progressReporter.beginPass(evidence ? "WATCH_SYNTHESIZING" : "WATCH_READING_KEYFRAMES", evidence ? 75 : 62, 84);
+    await runtimeAgent.skill("watch", `平台已使用 watch 自带的 balanced 场景选择与去重完成当前视频预处理（30 帧上限、512px），不要重新抽帧、安装软件、调用 Bash 或 Whisper。
+必须使用 read 工具读取下面清单中的每一张关键帧，尽量一轮并行读取；禁止未看全图就生成脚本。
 watch 报告：
-${watch.report}
+${evidence ? "原始 watch 已完成提取；以下分批证据包含重叠帧，请对照图片解决差异。usableForStoryboard=false 的平台片尾、搜索/关注界面、纯文字卡片禁止编入分镜或模仿其搜索框、Logo、二维码和文案；只从下方精确帧清单选择时间点。\n" + JSON.stringify(evidence.batches) : watch.report}
 
-平台分析上下文（大言 Qwen-Audio 转写已在 audioTranscript 中，这是唯一可用的口播来源）：
-${JSON.stringify(analysisContext)}
+精确帧清单（timestampSeconds 是实际采样时间，报告中 t= 的整秒显示仅供阅读）：
+${JSON.stringify(frameOrder)}
 
-阅读全部关键帧后，严格按系统提示输出一个完整合法 JSON 对象。shots 必须恰好 9 个。不得使用 Markdown，不得输出 JSON 之外的文字。`;
-    const skillAssistant = await runtimeAgent.skill("watch", skillInstructions);
-    const skillResult = completedReplyOrThrow(
-      skillAssistant, "watch Skill 没有返回有效视频脚本"
-    );
+平台分析上下文（可选 audioTranscript 是唯一口播事实来源）：
+${JSON.stringify(evidence ? { ...analysisContext, note: narrationInstruction } : analysisContext)}
+
+读完所有图片后由 watch 完成全部视频分析：动作、手和商品接触、正侧背方向及功能状态、人物数量、机位、运镜、真实切点和节奏。运镜完全根据 watch 图片序列判断。
+Preserve camera conclusions supported by the temporal-sheet evidence; the original single frame cannot negate observed stable background or motion.
+输出前逐帧自检；不要输出检查过程。只输出完整合法 JSON，shots 恰好 9 个，生产时间轴连续覆盖 0 到 ${Number(context.durationSeconds || 15)} 秒。
+每镜 imagePrompt.sourceTimestampSeconds 必须取自精确帧清单，sourceDurationSeconds=${Number(context.sourceDurationSeconds || watch.metadata.video?.duration || 15)}。
+${storyboardFrames.length >= 9 ? "九个源时间点必须严格递增并覆盖首尾；不得机械等分。" : "watch 去重后的证据不足九帧，允许连续分镜复用同一真实帧时间；源时间点不递减，不能虚构额外帧或动作。"}
+保留既有商品与人物外观排除规则。没有音频转写则 narration 全部为空。不得使用 Markdown。`);
+    if (runtimeAgent.missingFrames().length) {
+      await runtimeAgent.prompt(`你尚未读取全部 watch 图片，之前的结果不能接受。请用 read 读取以下所有缺失图片，然后完整重写九镜 JSON，不要猜测：\n${JSON.stringify(runtimeAgent.missingFrames())}`);
+    }
+    if (runtimeAgent.missingFrames().length) throw new Error("watch 未读取全部关键帧，拒绝返回未验证的视频分析");
+    const assistant = [...runtimeAgent.state.messages]
+      .reverse()
+      .find(message => message.role === "assistant");
+    if (!assistant || assistant.stopReason === "error") {
+      throw new Error(assistant?.errorMessage || "Pi Agent 没有返回有效视频脚本");
+    }
     progressReporter.completePass(85, "WATCH_ANALYSIS_RECEIVED");
+    const reply = messageText(assistant);
     const parsed = await enforceVideoShotCount(
       runtimeAgent,
-      await parseVideoScriptResult(runtimeAgent, skillResult.reply, progressReporter),
+      await parseVideoScriptResult(runtimeAgent, reply, progressReporter),
       desiredShotCount,
       progressReporter
     );
     let audited = parsed;
+    const actionStateAudited = false;
     let narrationSemanticallyCondensed = false;
     const narrationBudget = Math.max(1, Math.floor(Math.min(15, Number(context.durationSeconds || 15)) * 4));
     if (hasAudioTranscript && spokenNarrationLength(audited.result) > narrationBudget) {
-      progressReporter.publish(94, "CONDENSING_NARRATION");
+      progressReporter.beginPass("CONDENSING_NARRATION", 94, 94);
       await runtimeAgent.prompt(`下面 9 分镜的口播超过 ${Number(context.durationSeconds || 15)} 秒正常语速预算。请基于权威原始转写进行一次语义提炼，并返回完整合法 JSON：
 
 权威原始转写：
@@ -2364,28 +2751,47 @@ ${JSON.stringify(audited.result)}
       audited = condensed;
       narrationSemanticallyCondensed = true;
     }
+    let issues = watchStoryboardIssues(audited.result, storyboardWatch, context);
+    if (issues.length) {
+      progressReporter.beginPass("CORRECTING_WATCH_EVIDENCE", 94, 94);
+      const corrected = await runtimeAgent.prompt(`请在同一 watch 视频上下文修正以下结构/证据错误后返回完整九镜 JSON；禁止增加未读取的帧或动作：\n${issues.join("\n")}\n真实帧清单：${JSON.stringify(frameOrder)}`);
+      audited = await parseVideoScriptResult(runtimeAgent, messageText(corrected), progressReporter);
+      issues = watchStoryboardIssues(audited.result, storyboardWatch, context);
+      if (issues.length) throw new Error(`watch 视频脚本证据校验失败：${issues.join("；")}`);
+    }
+    const groundedCutTransitions = groundWatchCutTransitions(audited.result, evidence);
+    if (groundedCutTransitions) audited.reply = JSON.stringify(audited.result);
     progressReporter.publish(96, "RESULT_READY", true);
+    console.info(`[video-script] completed analysisMode=PI_WATCH_SKILL transport=streaming model=${String(config.modelId || "unknown")} watchFrameCount=${watch.frameCount} modelCalls=${(evidence?.messages.length || 0) + runtimeAgent.state.messages.length} parallelBatches=${evidence?.batches.length || 0} preprocessingMs=${preprocessingMs} elapsedMs=${Date.now() - startedAt} actionStateAudited=${actionStateAudited}`);
     return {
       result: audited.result,
       reply: audited.reply,
-      usage: tokenUsageFromMessages(runtimeAgent.state.messages),
+      analysisOutput: progressReporter.state.output,
+      analysisOutputCharacters: progressReporter.state.outputCharacters,
+      analysisOutputUpdatedAt: progressReporter.state.outputUpdatedAt,
+      usage: tokenUsageFromMessages([...(evidence?.messages || []), ...runtimeAgent.state.messages]),
+      parallelEvidenceBatches: evidence?.batches.length || 0,
+      reviewedEvidenceConflicts: evidence?.reviewedConflicts || 0,
+      groundedCutTransitions,
+      evidenceDetailVersion: evidence ? 2 : 1,
+      excludedWatchFrameTimestampsSeconds: watch.frames.filter(frame => !storyboardFrames.includes(frame)).map(frame => frame.timestampSeconds),
       latencyMs: Date.now() - startedAt,
       modelId: config.modelId,
-      analysisMode: "PI_WATCH_SKILL_WITH_DAYAN_TRANSCRIPT",
+      analysisMode: "PI_WATCH_SKILL",
       watchFrameCount: watch.frameCount,
+      watchFrameTimestampsSeconds: watch.frames.map(frame => frame.timestampSeconds),
+      integratedWatchValidation: true,
       repairedByModel: audited.repairedByModel,
       adjustedShotCount: audited.adjustedShotCount,
-      actionStateAudited: false,
       narrationSemanticallyCondensed,
-      recoveredMissingFinishReason: skillResult.recoveredMissingFinishReason
+      actionStateAudited
     };
   } catch (error) {
     progressReporter.publish(progressReporter.state.progress, "FAILED", true);
+    error.retryable = false;
     throw error;
   } finally {
-    if (workDirectory) {
-      await rm(workDirectory, { recursive: true, force: true });
-    }
+    if (workDirectory) await rm(workDirectory, { recursive: true, force: true });
   }
 }
 
@@ -2614,6 +3020,9 @@ async function runProductFunctionAnalysis(body) {
     throw new Error("没有可供分析的商品图片");
   }
   const analysisType = String(body?.context?.analysisType || "PRODUCT_FUNCTION_V1").trim();
+  if (["WATERMARK_DETECTION_V1", "WATERMARK_VALIDATION_V1"].includes(analysisType)) {
+    return runWatermarkAnalysis(body, (...args) => requestNonStreamingChat(...args, true), extractJsonObject);
+  }
   const systemPrompt = analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1"
     ? GARMENT_TOPOLOGY_VALIDATION_PROMPT
     : (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2")
@@ -2632,7 +3041,7 @@ async function runProductFunctionAnalysis(body) {
   const startedAt = Date.now();
   if (analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1") {
     try {
-      const reply = await requestNonStreamingChat(
+      const reply = await requestAnalysisChat(
         config,
         apiKey,
         systemPrompt,
@@ -2641,7 +3050,7 @@ async function runProductFunctionAnalysis(body) {
         GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS,
         PRODUCT_ANALYSIS_TIMEOUT_MS
       );
-      console.info(`[product-analysis] validation completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
+      console.info(`[product-analysis] validation completed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
       return {
         result: extractJsonObject(reply),
         usage: null,
@@ -2649,13 +3058,13 @@ async function runProductFunctionAnalysis(body) {
         modelId: config.modelId
       };
     } catch (error) {
-      console.warn(`[product-analysis] validation failed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
+      console.warn(`[product-analysis] validation failed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
       throw error;
     }
   }
   if (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2") {
     try {
-      const reply = await requestNonStreamingChat(
+      const reply = await requestAnalysisChat(
         config,
         apiKey,
         systemPrompt,
@@ -2664,7 +3073,7 @@ async function runProductFunctionAnalysis(body) {
         PRODUCT_ANALYSIS_MAX_TOKENS,
         PRODUCT_ANALYSIS_TIMEOUT_MS
       );
-      console.info(`[product-analysis] topology completed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
+      console.info(`[product-analysis] topology completed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}`);
       return {
         result: extractJsonObject(reply),
         reply,
@@ -2673,46 +3082,26 @@ async function runProductFunctionAnalysis(body) {
         modelId: config.modelId
       };
     } catch (error) {
-      console.warn(`[product-analysis] topology failed transport=non-streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
+      console.warn(`[product-analysis] topology failed transport=streaming model=${String(config.modelId || "unknown")} elapsedMs=${Date.now() - startedAt}: ${String(error?.message || error)}`);
       throw error;
     }
   }
-  const runtimeAgent = new Agent({
-    initialState: {
-      systemPrompt,
-      model: modelFrom(config),
-      thinkingLevel: "low",
-      messages: [],
-      tools: []
-    },
-    streamFn: (model, context, options) =>
-      streamSimple(model, context, {
-        ...options,
-        apiKey,
-        maxTokens: (analysisType === "GARMENT_TOPOLOGY_V1" || analysisType === "GARMENT_TOPOLOGY_V2") ? 2400
-          : analysisType === "GARMENT_TOPOLOGY_VALIDATION_V1" ? GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS : 1400,
-        timeoutMs: 120_000,
-        maxRetries: 2,
-        maxRetryDelayMs: 10_000
-      }),
-    convertToLlm: messages =>
-      messages.filter(message => ["user", "assistant"].includes(message.role))
+  const { reply, usage } = await requestChatCompletion({
+    config, apiKey, maxTokens: 1400, timeoutMs: 120_000,
+    dispatcher: PRODUCT_ANALYSIS_DISPATCHER,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: [
+        { type: "text", text: JSON.stringify(body.context || {}) },
+        ...attachments.map(image => ({
+          type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` }
+        }))
+      ] }
+    ]
   });
-  await runtimeAgent.prompt(
-    JSON.stringify(body.context || {}),
-    attachments
-  );
-  const assistant = [...runtimeAgent.state.messages]
-    .reverse()
-    .find(message => message.role === "assistant");
-  if (!assistant || assistant.stopReason === "error") {
-    throw new Error(assistant?.errorMessage || "模型没有返回有效的商品功能分析");
-  }
-  const reply = messageText(assistant);
   return {
-    result: extractJsonObject(reply),
-    reply,
-    usage: tokenUsageFromMessages(runtimeAgent.state.messages),
+    result: extractJsonObject(reply), reply,
+    usage: imageApiUsage({ usage }),
     latencyMs: Date.now() - startedAt,
     modelId: config.modelId
   };
@@ -2840,12 +3229,12 @@ async function handleAutomationAnalysis(request, response) {
 // Internal operational metadata only: never retain image bytes, prompts or credentials.
 const imageExecutionProgress = new Map();
 function beginImageProgress(requestId) {
-  if (!/^[a-f0-9-]{36}$/i.test(String(requestId || ""))) return () => {};
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(String(requestId || ""))) return () => {};
   for (const [key, entry] of imageExecutionProgress) {
     if (entry.updatedAt < Date.now() - 3_600_000) imageExecutionProgress.delete(key);
   }
   if (imageExecutionProgress.size >= 10_000) imageExecutionProgress.delete(imageExecutionProgress.keys().next().value);
-  const entry = { stage: "GENERATION_QUEUED", attempts: 0, updatedAt: Date.now() };
+  const entry = imageExecutionProgress.get(requestId) || { stage: "GENERATION_QUEUED", attempts: 0, updatedAt: Date.now() };
   imageExecutionProgress.set(requestId, entry);
   return (stage, attempts = entry.attempts) => {
     Object.assign(entry, { stage, attempts, updatedAt: Date.now() });
@@ -2872,18 +3261,28 @@ async function handlePlatformImageGeneration(request, response) {
     // AI-model identity, motion/scene guide, and per-cell product identity lock.
     // Dropping the fourth image silently disabled the product lock and let later cells drift.
     .slice(0, 4);
-  const onProgress = beginImageProgress(body.progressRequestId);
+  let onProgress = () => {};
   try {
-  const result = await callImageModel(body.model || {}, {
+  const generate = operation => {
+    onProgress = beginImageProgress(body.progressRequestId);
+    return callImageModel(body.model || {}, {
     mode: references.length ? "edit" : "generate",
     prompt: String(body.prompt || ""),
     size: String(body.size || "1024x1536"),
     quality: String(body.quality || ""),
     inputFidelity: String(body.inputFidelity || ""),
+    background: String(body.background || ""),
+    outputFormat: String(body.outputFormat || ""),
+    productMockup: body.productMockup === true,
     deferDownload: true,
-    onProgress
-  }, references);
+    onProgress, operation
+    }, references);
+  };
+  const result = body.progressRequestId
+    ? await imageOperationStore.execute(body.progressRequestId, body, generate)
+    : await generate(null);
   onProgress("RESPONSE_RECEIVED");
+  if (body.progressRequestId && !imageExecutionProgress.has(body.progressRequestId)) beginImageProgress(body.progressRequestId)("RESPONSE_RECEIVED");
   json(response, 200, result);
   } catch (error) {
     onProgress("FAILED");
@@ -2976,6 +3375,16 @@ const server = http.createServer(async (request, response) => {
       await handleProductFunctionAnalysis(request, response);
       return;
     }
+    if (request.method === "POST" && request.url === "/v1/video/frame-audit") {
+      if (request.headers["x-internal-token"] !== INTERNAL_TOKEN) {
+        json(response, 401, { message: "视频首帧审核服务认证失败" });
+        return;
+      }
+      json(response, 200, await auditVideoFrame(await readBody(request), {
+        dispatcher: PRODUCT_ANALYSIS_DISPATCHER
+      }));
+      return;
+    }
     if (request.method === "POST" && request.url === "/v1/images/generate") {
       await handlePlatformImageGeneration(request, response);
       return;
@@ -2992,13 +3401,23 @@ const server = http.createServer(async (request, response) => {
       payload.requestState = String(error.requestState);
       payload.retrySafe = Boolean(error.retrySafe);
       payload.safeRetryCount = Number(error.safeRetryCount || 0);
+      payload.networkRetryCount = Number(error.networkRetryCount || 0);
+      payload.retryAuthorized = Boolean(error.retryAuthorized);
+      if (error.requestId) payload.requestId = String(error.requestId);
     }
     if (error?.failureCode) payload.failureCode = String(error.failureCode);
+    if (error?.failureKind) payload.failureKind = String(error.failureKind);
+    if (Number.isInteger(error?.providerStatus) && error.providerStatus >= 400 && error.providerStatus <= 599) {
+      payload.providerStatus = error.providerStatus;
+    }
+    if (error?.imageModelFallback) payload.imageModelFallback = error.imageModelFallback;
+    if (error?.imageOutputRequirement) payload.imageOutputRequirement = error.imageOutputRequirement;
+    if (typeof error?.retryable === "boolean") payload.retryable = error.retryable;
     if (Number.isFinite(Number(error?.upstreamStatus))) {
       payload.upstreamStatus = Number(error.upstreamStatus);
     }
     if (error?.resultUrl) payload.resultUrl = String(error.resultUrl);
-    json(response, Number(error?.statusCode || 502), payload);
+    json(response, Number(error?.statusCode || error?.status || 502), payload);
   }
 });
 

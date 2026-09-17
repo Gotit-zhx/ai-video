@@ -1,0 +1,10 @@
+{
+  "entries": [
+    {
+      "sha256": "e5fe64057cd22d45f8bed68cadd2a126da45cf8f026cec17edade54e7af89026",
+      "basis": "USER_CONFIRMED_EXACT_IMAGE",
+      "confirmedAt": "2026-09-08",
+      "scope": "overlay watermark absence only; does not establish product preservation"
+    }
+  ]
+}

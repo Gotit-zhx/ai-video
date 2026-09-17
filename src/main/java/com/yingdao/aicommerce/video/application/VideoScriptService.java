@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.video.domain.VideoScript;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
 
 @Service
 public class VideoScriptService {
@@ -170,13 +172,12 @@ public class VideoScriptService {
         script.configureClip(sourceDuration, clipStart, clipEnd);
         try {
             scriptMapper.insert(script);
-            inserted = true;
-            processor.analyze(id);
-            return script;
         } catch (RuntimeException exception) {
-            if (!inserted) deleteQuietly(directory);
+            deleteQuietly(directory);
             throw exception;
         }
+        submitAnalysis(script);
+        return script;
     }
 
     @Transactional
@@ -252,9 +253,7 @@ public class VideoScriptService {
         if (!"FAILED".equals(script.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "只有拆解失败的任务可以重试");
         }
-        script.prepareRetry();
-        scriptMapper.updateById(script);
-        processor.analyze(script.getId());
+        queueExistingAnalysis(script, false);
         return script;
     }
 
@@ -263,10 +262,54 @@ public class VideoScriptService {
         if (!"READY".equals(script.getStatus()) || !"VIDEO_ANALYSIS".equals(script.getSourceType())) {
             throw new BusinessException(HttpStatus.CONFLICT, "只有已完成的视频拆解脚本可以重新精拆");
         }
-        script.prepareReanalysis();
-        scriptMapper.updateById(script);
-        processor.analyze(script.getId());
+        queueExistingAnalysis(script, true);
         return script;
+    }
+
+    private void queueExistingAnalysis(VideoScript script, boolean reanalysis) {
+        String previousStatus = script.getStatus();
+        Instant previousUpdatedAt = script.getUpdatedAt();
+        if (reanalysis) script.prepareReanalysis();
+        else script.prepareRetry();
+        int changed = scriptMapper.update(null, new LambdaUpdateWrapper<VideoScript>()
+                .eq(VideoScript::getId, script.getId())
+                .eq(VideoScript::getOrganizationId, script.getOrganizationId())
+                .eq(VideoScript::getCreatedBy, script.getCreatedBy())
+                .eq(VideoScript::getStatus, previousStatus)
+                .eq(VideoScript::getUpdatedAt, previousUpdatedAt)
+                .set(VideoScript::getStatus, script.getStatus())
+                .set(VideoScript::getProgress, script.getProgress())
+                .set(VideoScript::getAnalysisRunId, script.getAnalysisRunId())
+                .set(VideoScript::getAnalysisStage, script.getAnalysisStage())
+                .set(VideoScript::getAnalysisOutput, script.getAnalysisOutput())
+                .set(VideoScript::getAnalysisOutputCharacters, 0)
+                .set(VideoScript::getAnalysisOutputUpdatedAt, null)
+                .set(VideoScript::getErrorMessage, null)
+                .set(VideoScript::getCompletedAt, null)
+                .set(VideoScript::getUpdatedAt, script.getUpdatedAt())
+                .set(VideoScript::getVersion, script.getVersion()));
+        if (changed != 1) {
+            throw new BusinessException(HttpStatus.CONFLICT, "这条视频脚本状态已更新，请刷新后重试");
+        }
+        submitAnalysis(script);
+    }
+
+    private void submitAnalysis(VideoScript script) {
+        try {
+            processor.analyze(script.getId());
+        } catch (RejectedExecutionException exception) {
+            script.fail("视频拆解队列已满，任务和原视频已保存，请稍后重试当前任务");
+            // Rejection happens before an async worker starts; never leave an orphaned QUEUED row.
+            scriptMapper.update(null, new LambdaUpdateWrapper<VideoScript>()
+                    .eq(VideoScript::getId, script.getId())
+                    .eq(VideoScript::getStatus, "QUEUED")
+                    .set(VideoScript::getStatus, script.getStatus())
+                    .set(VideoScript::getProgress, script.getProgress())
+                    .set(VideoScript::getErrorMessage, script.getErrorMessage())
+                    .set(VideoScript::getCompletedAt, script.getCompletedAt())
+                    .set(VideoScript::getUpdatedAt, script.getUpdatedAt()));
+            throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, script.getErrorMessage());
+        }
     }
 
     @Transactional
@@ -407,6 +450,20 @@ public class VideoScriptService {
             throw new BusinessException(HttpStatus.NOT_FOUND, "该脚本没有视频抽帧预览");
         }
         Path source = Path.of(script.getSourceFilePath()).toAbsolutePath().normalize();
+        Path exactPreview = source.getParent() == null ? null : source.getParent().resolve("shot-previews")
+                .resolve(String.format(Locale.ROOT, "shot-%03d.jpg", shot.getSequenceNo())).normalize();
+        if (exactPreview != null && exactPreview.startsWith(storageRoot) && Files.isRegularFile(exactPreview)) {
+            try {
+                return new ShotPreview(exactPreview, Files.getLastModifiedTime(exactPreview).toInstant());
+            } catch (IOException exception) {
+                throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取分镜预览失败");
+            }
+        }
+        if (exactPreview != null && exactPreview.startsWith(storageRoot) && Files.isDirectory(exactPreview.getParent())) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "本次分镜预览尚未生成");
+        }
+        // Older scripts have uniformly sampled analysis frames instead of
+        // the dedicated, timestamp-matched previews generated after watch.
         Path frameDirectory = source.getParent() == null ? null : source.getParent().resolve("frames").normalize();
         if (frameDirectory == null || !frameDirectory.startsWith(storageRoot) || !Files.isDirectory(frameDirectory)) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "视频抽帧预览不存在");

@@ -21,6 +21,7 @@ public class Shop {
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String shopCipher;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String sellerType;
     private String name;
+    private String displayName;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String region;
     private String status;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String credentialsSecretRef;
@@ -144,6 +145,9 @@ public class Shop {
     public String getAuthorizationSubjectId() { return authorizationSubjectId; }
     public String getShopCipher() { return shopCipher; }
     public String getSellerType() { return sellerType; }
+    public String getDisplayName() { return displayName; }
+    public void rename(String name) { this.displayName = name; this.updatedAt = Instant.now(); }
+    public void deleted() { this.status = "DELETED"; this.updatedAt = Instant.now(); }
     public String getName() { return name; }
     public String getRegion() { return region; }
     public String getStatus() { return status; }

@@ -286,14 +286,14 @@ class OfficialPublishingPayloadTest {
         return new ShopeeOfficialPublishingProvider(
                 mock(ShopAuthorizationService.class), client,
                 mock(ProductCaptureSkuMapper.class), mock(ProductCaptureImageMapper.class),
-                downloader, new ObjectMapper());
+                downloader, new ObjectMapper(), mock(ShopeeProductVideoUploader.class));
     }
 
     private TikTokShopOfficialPublishingProvider tiktokProvider() {
         return new TikTokShopOfficialPublishingProvider(
                 mock(ShopAuthorizationService.class), mock(TikTokShopOfficialClient.class),
                 mock(ProductCaptureSkuMapper.class), mock(ProductCaptureImageMapper.class),
-                mock(MarketplaceImageDownloader.class), new ObjectMapper());
+                mock(MarketplaceImageDownloader.class), new ObjectMapper(), mock(TikTokProductVideoUploader.class), mock(TikTokProductDescription.class));
     }
 
     private MarketplaceAccess.Connection shopeeConnection() {

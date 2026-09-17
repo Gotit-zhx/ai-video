@@ -1,5 +1,6 @@
 package com.yingdao.aicommerce.saas.application;
 
+import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.saas.domain.ModelConfig;
@@ -9,10 +10,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @Service
 public class ModelConfigService {
+
+    private static final String COPYRIGHT_FALLBACK_MODEL_ID = "grok-imagine-image-2.0";
+    private static final List<String> IMG2_ARTWORK_MODEL_IDS = List.of("gpt-image-2", "gpt-image-2-2026-04-21");
+    private static final String IMG2_ARTWORK_UNAVAILABLE = "当前公司没有可用的 IMG2.0（gpt-image-2）图片模型；请在模型接入中配置并启用 IMG2.0 后重试，透明印花不会改用其他模型。";
 
     private final TenantContext tenantContext;
     private final ModelConfigMapper mapper;
@@ -58,7 +65,143 @@ public class ModelConfigService {
     }
 
     public Optional<RuntimeModelConnection> imageConnection(String organizationId) {
-        return modelConnection(organizationId, "IMAGE");
+        return modelConnection(organizationId, "IMAGE").map(primary -> {
+            if (COPYRIGHT_FALLBACK_MODEL_ID.equals(primary.modelId())) return primary;
+            List<RuntimeModelConnection> fallbacks = mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
+                            .eq(ModelConfig::getOrganizationId, organizationId)
+                            .eq(ModelConfig::getModelType, "IMAGE")
+                            .eq(ModelConfig::getStatus, "ACTIVE")
+                            .eq(ModelConfig::getBaseUrl, primary.baseUrl())
+                            .eq(ModelConfig::getModelId, COPYRIGHT_FALLBACK_MODEL_ID))
+                    .stream().map(candidate -> copyrightFallbackConnection(organizationId, primary, candidate))
+                    .flatMap(Optional::stream).toList();
+            return fallbacks.isEmpty() ? primary : new RuntimeModelConnection(primary.id(), primary.baseUrl(), primary.modelId(),
+                    primary.apiFormat(), primary.provider(), primary.apiKey(), fallbacks);
+        });
+    }
+
+    /** Select once for a new final product mockup; neither defaults nor artwork routes are changed. */
+    public Optional<RuntimeModelConnection> selectCommerceMockupRuntimeConnection(PlatformPrincipal user) {
+        if (user == null || user.organizationId() == null || user.organizationId().isBlank())
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "商品套版模型选择缺少公司信息");
+        String org = user.organizationId();
+        var preferred = mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
+                        .eq(ModelConfig::getOrganizationId, org).eq(ModelConfig::getModelType, "IMAGE")
+                        .eq(ModelConfig::getStatus, "ACTIVE").eq(ModelConfig::getModelId, COPYRIGHT_FALLBACK_MODEL_ID)
+                        .orderByDesc(ModelConfig::isDefaultModel).orderByDesc(ModelConfig::getUpdatedAt).orderByAsc(ModelConfig::getId))
+                .stream().filter(config -> config != null && COPYRIGHT_FALLBACK_MODEL_ID.equals(config.getModelId()))
+                .map(config -> commerceMockupRuntime(org, config)).flatMap(Optional::stream).findFirst();
+        if (preferred.isPresent()) return preferred;
+        var selected = mapper.selectOne(new LambdaQueryWrapper<ModelConfig>()
+                .eq(ModelConfig::getOrganizationId, org).eq(ModelConfig::getModelType, "IMAGE")
+                .eq(ModelConfig::getStatus, "ACTIVE").orderByDesc(ModelConfig::isDefaultModel)
+                .orderByDesc(ModelConfig::getUpdatedAt).last("LIMIT 1"));
+        return commerceMockupRuntime(org, selected);
+    }
+
+    /** A frozen attempt must resolve its original connection, never reselect a newly preferred model. */
+    public Optional<RuntimeModelConnection> commerceMockupConnectionById(String organizationId, String id) {
+        if (organizationId == null || organizationId.isBlank() || id == null || id.isBlank()) return Optional.empty();
+        var selected = mapper.selectOne(new LambdaQueryWrapper<ModelConfig>()
+                .eq(ModelConfig::getOrganizationId, organizationId).eq(ModelConfig::getId, id)
+                .eq(ModelConfig::getModelType, "IMAGE").eq(ModelConfig::getStatus, "ACTIVE"));
+        if (selected == null || !id.equals(selected.getId())) return Optional.empty();
+        return commerceMockupRuntime(organizationId, selected);
+    }
+
+    private Optional<RuntimeModelConnection> commerceMockupRuntime(String org, ModelConfig config) {
+        if (config == null || !org.equals(config.getOrganizationId()) || !"IMAGE".equals(config.getModelType())
+                || !"ACTIVE".equals(config.getStatus()) || !"OPENAI_COMPATIBLE".equals(config.getApiFormat())
+                || config.getId() == null || config.getId().isBlank() || config.getModelId() == null || config.getModelId().isBlank()
+                || config.getBaseUrl() == null || config.getBaseUrl().isBlank()) return Optional.empty();
+        try {
+            var connection = runtimeConnection(config);
+            // The fallback here is selection before submission, not a second provider POST.
+            return connection.apiKey() == null || connection.apiKey().isBlank() ? Optional.empty() : Optional.of(connection);
+        } catch (IllegalStateException unusableKey) {
+            return Optional.empty();
+        }
+    }
+
+    /** Uses a real tenant-owned IMG2.0 connection without borrowing keys or attaching alternate models. */
+    public Optional<RuntimeModelConnection> transparentArtworkConnection(String organizationId) {
+        if (organizationId == null || organizationId.isBlank())
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "透明印花模型选择缺少公司信息");
+        // Match imageConnection's primary selection exactly, without decrypting an unrelated default
+        // or reading its Grok routes. Existing IMG2.0 jobs keep their configured ID and fingerprint.
+        var selected = mapper.selectOne(new LambdaQueryWrapper<ModelConfig>()
+                .eq(ModelConfig::getOrganizationId, organizationId)
+                .eq(ModelConfig::getModelType, "IMAGE")
+                .eq(ModelConfig::getStatus, "ACTIVE")
+                .orderByDesc(ModelConfig::isDefaultModel)
+                .orderByDesc(ModelConfig::getUpdatedAt).last("LIMIT 1"));
+        var current = transparentArtworkRuntime(organizationId, selected);
+        if (current.isPresent()) return current;
+
+        return mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
+                        .eq(ModelConfig::getOrganizationId, organizationId)
+                        .eq(ModelConfig::getModelType, "IMAGE")
+                        .eq(ModelConfig::getStatus, "ACTIVE")
+                        .in(ModelConfig::getModelId, IMG2_ARTWORK_MODEL_IDS)
+                        .orderByDesc(ModelConfig::isDefaultModel)
+                        .orderByDesc(ModelConfig::getUpdatedAt)
+                        .orderByAsc(ModelConfig::getId))
+                .stream().filter(candidate -> candidate != null && (selected == null || !Objects.equals(selected.getId(), candidate.getId())))
+                .map(candidate -> transparentArtworkRuntime(organizationId, candidate))
+                .flatMap(Optional::stream).findFirst();
+    }
+
+    public RuntimeModelConnection requireTransparentArtworkConnection(String organizationId) {
+        return transparentArtworkConnection(organizationId)
+                .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT, IMG2_ARTWORK_UNAVAILABLE));
+    }
+
+    public static boolean isImg2ArtworkModel(String modelId) {
+        return modelId != null && IMG2_ARTWORK_MODEL_IDS.contains(modelId);
+    }
+
+    /** Defense at a submission boundary; a name substitution is not a configured IMG2.0 connection. */
+    public static void requireImg2ArtworkModel(RuntimeModelConnection connection) {
+        if (connection == null || !isImg2ArtworkModel(connection.modelId())
+                || !"OPENAI_COMPATIBLE".equals(connection.apiFormat())
+                || connection.id() == null || connection.id().isBlank()
+                || connection.baseUrl() == null || connection.baseUrl().isBlank()
+                || connection.apiKey() == null || connection.apiKey().isBlank()
+                || !connection.copyrightFallbackModels().isEmpty())
+            throw new BusinessException(HttpStatus.CONFLICT,
+                    "透明印花提取与裂变固定使用已配置的 IMG2.0（gpt-image-2），不允许使用其他模型或备用路由。");
+    }
+
+    private Optional<RuntimeModelConnection> transparentArtworkRuntime(String organizationId, ModelConfig config) {
+        if (config == null || !organizationId.equals(config.getOrganizationId())
+                || !"IMAGE".equals(config.getModelType()) || !"ACTIVE".equals(config.getStatus())
+                || !isImg2ArtworkModel(config.getModelId()) || !"OPENAI_COMPATIBLE".equals(config.getApiFormat())
+                || config.getId() == null || config.getId().isBlank()
+                || config.getBaseUrl() == null || config.getBaseUrl().isBlank()) return Optional.empty();
+        try {
+            var connection = runtimeConnection(config);
+            if (connection.apiKey() == null || connection.apiKey().isBlank()) return Optional.empty();
+            return Optional.of(connection);
+        } catch (IllegalStateException unusableKey) {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<RuntimeModelConnection> copyrightFallbackConnection(String organizationId, RuntimeModelConnection primary, ModelConfig candidate) {
+        if (!organizationId.equals(candidate.getOrganizationId())
+                || !"IMAGE".equals(candidate.getModelType())
+                || !"ACTIVE".equals(candidate.getStatus())
+                || !COPYRIGHT_FALLBACK_MODEL_ID.equals(candidate.getModelId())
+                || !Objects.equals(primary.baseUrl(), candidate.getBaseUrl())
+                || !Objects.equals(primary.apiFormat(), candidate.getApiFormat())
+                || !Objects.equals(primary.provider(), resolveProvider(candidate.getProvider(), candidate.getBaseUrl()))) return Optional.empty();
+        try {
+            RuntimeModelConnection fallback = runtimeConnection(candidate);
+            return fallback.apiKey() == null || fallback.apiKey().isBlank() ? Optional.empty() : Optional.of(fallback);
+        } catch (IllegalStateException exception) {
+            // An unusable backup must not prevent requests through the primary connection.
+            return Optional.empty();
+        }
     }
 
     public List<RuntimeModelConnection> videoConnections(String organizationId) {
@@ -333,7 +476,26 @@ public class ModelConfigService {
             String modelId,
             String apiFormat,
             String provider,
-            String apiKey
+            String apiKey,
+            List<RuntimeModelConnection> copyrightFallbackModels
     ) {
+        public RuntimeModelConnection {
+            copyrightFallbackModels = copyrightFallbackModels == null
+                    ? List.of() : List.copyOf(copyrightFallbackModels);
+        }
+
+        public RuntimeModelConnection(String id, String baseUrl, String modelId, String apiFormat, String provider, String apiKey) {
+            this(id, baseUrl, modelId, apiFormat, provider, apiKey, List.of());
+        }
+
+        public List<String> copyrightFallbackModelIds() {
+            return copyrightFallbackModels.stream().map(RuntimeModelConnection::modelId).toList();
+        }
+
+        /** Internal request body; contains credentials and must not be logged or returned to browsers. */
+        public Map<String, Object> imageRequestModel() {
+            return Map.of("baseUrl", baseUrl, "modelId", modelId, "apiFormat", apiFormat, "apiKey", apiKey,
+                    "copyrightFallbackModels", copyrightFallbackModels.stream().map(RuntimeModelConnection::imageRequestModel).toList());
+        }
     }
 }

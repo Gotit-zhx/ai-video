@@ -10,6 +10,7 @@ export const MESSAGE_TYPES = Object.freeze({
   GET_STATE: "HEYI_GET_STATE",
   SAVE_PLATFORM: "HEYI_SAVE_PLATFORM",
   PAIR: "HEYI_PAIR",
+  LOGIN: "HEYI_LOGIN",
   LOGOUT: "HEYI_LOGOUT",
   OPEN_PLATFORM: "HEYI_OPEN_PLATFORM",
   OPEN_PRODUCT_DETAIL: "HEYI_OPEN_PRODUCT_DETAIL",
@@ -62,7 +63,7 @@ export function safeAuthView(settings, auth) {
   const expiresAt = auth?.expiresAt || null;
   const expired = Boolean(expiresAt && Date.parse(expiresAt) <= now);
   return {
-    baseUrl: settings?.baseUrl || DEFAULT_PLATFORM_URL,
+    baseUrl: auth?.baseUrl || settings?.baseUrl || DEFAULT_PLATFORM_URL,
     authenticated: Boolean(auth?.accessToken) && !expired,
     expiresAt,
     user: auth?.user || null,

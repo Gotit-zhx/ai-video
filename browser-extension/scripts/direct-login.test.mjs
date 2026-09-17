@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import fs from 'node:fs';
+const s=fs.readFileSync(new URL('../src/background/service-worker.js',import.meta.url),'utf8');
+const snippet=s.slice(s.indexOf('let autoLoginFlight'),s.indexOf('async function loginDirect'));
+let calls=0;let exchanged=[];
+const c={Date,Set,URL,chrome:{storage:{local:{get:async()=>({})}},permissions:{contains:async()=>true},tabs:{query:async({url})=>url.includes('localhost')?[{id:7,url:'http://localhost:3000/#product-capture'},{id:8,url:'https://evil.example/'}]:[]},scripting:{executeScript:async({target})=>{assert.equal(target.tabId,7);calls++;return [{result:'internal-onetime'}];}}},originPattern:base=>base+'/*',exchangePairingCode:async(...args)=>{exchanged.push(args);return {baseUrl:args[0],accessToken:'private'};},writeSettings:async()=>{},setAuthBadge:async()=>{},defaultDeviceName:()=> 'test'};
+vm.createContext(c);vm.runInContext(snippet,c);
+const results=await Promise.all([c.autoLoginFromPlatform({baseUrl:'https://hoyee.org.cn'}),c.autoLoginFromPlatform({baseUrl:'https://hoyee.org.cn'})]);
+assert.equal(calls,1);assert.equal(exchanged[0][0],'http://localhost:3000');assert.equal(results[0].baseUrl,'http://localhost:3000');
+assert.equal(await c.autoLoginFromPlatform({baseUrl:'https://hoyee.org.cn'}),null);
+console.log('Automatic platform-session login: exact origin, single flight and throttle passed');

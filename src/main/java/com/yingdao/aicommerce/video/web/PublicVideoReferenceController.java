@@ -64,6 +64,26 @@ public class PublicVideoReferenceController {
         return file(prepared.path().toString(), prepared.contentType(), prepared.size());
     }
 
+    @GetMapping("/storyboard-frame/{sequence}/{id}")
+    public ResponseEntity<FileSystemResource> storyboardFrame(@PathVariable int sequence, @PathVariable String id,
+                                                               @RequestParam long expires, @RequestParam String signature) {
+        if (sequence < 1 || sequence > 9 || !referenceLinks.isValid("storyboard-frame/" + sequence, id, expires, signature)) {
+            return ResponseEntity.notFound().build();
+        }
+        AiVideoTaskAsset asset = assetMapper.selectById(id);
+        if (asset == null || !"STORYBOARD_GRID".equals(asset.getAssetType())) return ResponseEntity.notFound().build();
+        try {
+            Path source = Path.of(asset.getFilePath()).toAbsolutePath().normalize();
+            if (!source.startsWith(storageRoot) || !Files.isRegularFile(source) || Files.size(source) > 64L * 1024 * 1024) {
+                return ResponseEntity.notFound().build();
+            }
+            var frame = delivery.prepareStoryboardFrames(Files.readAllBytes(source)).get(sequence - 1);
+            return file(frame.path().toString(), frame.contentType(), frame.size());
+        } catch (java.io.IOException exception) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
     @GetMapping("/asset/{id}")
     public ResponseEntity<FileSystemResource> asset(@PathVariable String id,
                                                     @RequestParam long expires,

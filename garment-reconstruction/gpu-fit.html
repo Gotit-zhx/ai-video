@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPU 服装拟合</title>
+<style>body{font:15px/1.7 system-ui;max-width:980px;margin:36px auto;padding:0 24px;color:#222;background:#fafaf8}h1{font-size:27px}button{font:inherit;padding:10px 18px;border:1px solid #aaa;border-radius:5px;background:white}button:disabled{opacity:.5}pre{font:12px/1.6 monospace;white-space:pre-wrap;overflow-wrap:anywhere;padding:18px;background:#eee}a{color:#333}[hidden]{display:none!important}</style>
+<h1>GPU 服装拟合</h1>
+<p>浏览器在 GPU 上计算轮廓加权误差；本地服务生成候选、更新参数并保留最终 CPU 验收。数值改善不等于完整服装还原通过。</p>
+<button id="start" disabled>开始实际拟合</button>
+<p id="status" role="status">正在检查 WebGPU…</p>
+<p id="progress"></p><p><a id="result-link" hidden target="_blank" rel="noopener">查看拟合结果</a></p>
+<details><summary>设备与运行记录</summary><pre id="details"></pre></details>
+<script type="module" src="./gpu-fit-client.js"></script></html>

@@ -13,6 +13,7 @@ import com.yingdao.aicommerce.shop.mapper.ShopCredentialMapper;
 import com.yingdao.aicommerce.shop.mapper.ShopMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
@@ -63,6 +64,7 @@ public class ShopAuthorizationService {
                 ? null : MarketplacePlatform.parse(platform);
         LambdaQueryWrapper<Shop> query = new LambdaQueryWrapper<Shop>()
                 .eq(Shop::getOrganizationId, principal.organizationId())
+                .ne(Shop::getStatus, "DELETED")
                 .orderByAsc(Shop::getPlatform)
                 .orderByAsc(Shop::getName);
         if (requested != null) query.eq(Shop::getPlatform, requested.name());
@@ -85,7 +87,18 @@ public class ShopAuthorizationService {
 
     public AuthorizationStart start(String platformValue, String returnPath,
                                     PlatformPrincipal principal) {
+        return start(platformValue, returnPath, null, principal);
+    }
+
+    public AuthorizationStart start(String platformValue, String returnPath, String market,
+                                    PlatformPrincipal principal) {
         MarketplacePlatform platform = MarketplacePlatform.parse(platformValue);
+        String normalizedMarket = market == null || market.isBlank() ? null
+                : market.trim().toUpperCase(java.util.Locale.ROOT);
+        if (normalizedMarket != null && !normalizedMarket.equals("ROW")
+                && !normalizedMarket.matches("[A-Z]{2}")) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "授权市场必须为两位国家代码或 ROW");
+        }
         MarketplaceAccess.Client client = clients.require(platform);
         String state = state();
         String callbackUrl = settings.callbackBaseUrl()
@@ -94,8 +107,10 @@ public class ShopAuthorizationService {
         ShopAuthorizationSession session = new ShopAuthorizationSession(
                 principal.organizationId(), principal.userId(), platform, sha256(state),
                 callbackUrl, safeReturnPath, settings.stateTtl());
+        String authorizationUrl = normalizedMarket == null ? client.authorizationUrl(callbackUrl, state)
+                : client.authorizationUrl(callbackUrl, state, normalizedMarket);
         sessionMapper.insert(session);
-        return new AuthorizationStart(client.authorizationUrl(callbackUrl, state),
+        return new AuthorizationStart(authorizationUrl,
                 session.getExpiresAt(), platform.name());
     }
 
@@ -148,7 +163,18 @@ public class ShopAuthorizationService {
         sessionMapper.updateById(session);
     }
 
-    @Transactional
+    // Token-group row locks and refresh rotation must finish before a provider starts
+    // slow media/API requests. Joining the publication transaction holds these locks
+    // for the entire upload and makes one connection failure poison its audit commit.
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public MarketplaceAccess.Connection connectionForPublishing(String organizationId, String shopId) {
+        Shop shop = requireOwned(shopId, organizationId);
+        return connectionForPublishing(organizationId, shopId, MarketplacePlatform.parse(shop.getPlatform()));
+    }
+
+    // Both public overloads can be invoked through the proxy. The two-argument
+    // overload's internal call intentionally remains in its already-new transaction.
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public MarketplaceAccess.Connection connectionForPublishing(String organizationId,
                                                                  String shopId,
                                                                  MarketplacePlatform platform) {
@@ -157,7 +183,7 @@ public class ShopAuthorizationService {
                 .eq(Shop::getOrganizationId, organizationId)
                 .eq(Shop::getPlatform, platform.name())
                 .last("LIMIT 1"));
-        if (shop == null) throw new BusinessException(HttpStatus.NOT_FOUND, "目标授权店铺不存在");
+        if (shop == null || "DELETED".equals(shop.getStatus())) throw new BusinessException(HttpStatus.NOT_FOUND, "目标授权店铺不存在");
         if (!"ACTIVE".equals(shop.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "目标店铺授权已失效，请重新授权");
         }
@@ -191,6 +217,26 @@ public class ShopAuthorizationService {
                     "店铺授权状态已被其他请求更新，请重试");
         }
         return view(shop, stored);
+    }
+
+    @Transactional
+    public ShopView rename(String id, String name, PlatformPrincipal principal) {
+        if (name == null || name.isBlank() || name.trim().length() > 100)
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "店铺名称需为 1–100 个字符");
+        Shop shop = requireOwned(id, principal.organizationId());
+        shop.rename(name.trim());
+        if (shopMapper.updateById(shop) != 1)
+            throw new BusinessException(HttpStatus.CONFLICT, "店铺已更新，请重试");
+        return list(principal, null).stream().filter(item -> item.id().equals(id)).findFirst().orElseThrow();
+    }
+
+    @Transactional
+    public void delete(String id, PlatformPrincipal principal) {
+        disconnect(id, principal);
+        Shop shop = requireOwned(id, principal.organizationId());
+        shop.deleted();
+        if (shopMapper.updateById(shop) != 1)
+            throw new BusinessException(HttpStatus.CONFLICT, "店铺已更新，请重试");
     }
 
     @Transactional
@@ -295,7 +341,7 @@ public class ShopAuthorizationService {
                 .eq(Shop::getId, id)
                 .eq(Shop::getOrganizationId, organizationId)
                 .last("LIMIT 1"));
-        if (shop == null) throw new BusinessException(HttpStatus.NOT_FOUND, "店铺不存在");
+        if (shop == null || "DELETED".equals(shop.getStatus())) throw new BusinessException(HttpStatus.NOT_FOUND, "店铺不存在");
         return shop;
     }
 
@@ -324,13 +370,13 @@ public class ShopAuthorizationService {
                 && shop.getId().equals(credential.getShopId())
                 && shop.getOrganizationId().equals(credential.getOrganizationId());
         return new ShopView(shop.getId(), shop.getPlatform(), shop.getExternalShopId(),
-                shop.getName(), shop.getRegion(), shop.getSellerType(), shop.getStatus(),
+                shop.getDisplayName() == null || shop.getDisplayName().isBlank() ? shop.getName() : shop.getDisplayName(), shop.getRegion(), shop.getSellerType(), shop.getStatus(),
                 shop.getAuthorizationSubjectType(), shop.getAuthorizationSubjectId(),
                 readScopes(shop.getAuthorizedScopes()), shop.getAuthorizedBy(), shop.getAuthorizedAt(),
                 shop.getDisconnectedBy(), shop.getDisconnectedAt(),
                 ownedCredential ? credential.getAccessTokenExpiresAt() : null,
                 ownedCredential ? credential.getRefreshTokenExpiresAt() : null,
-                shop.getLastSyncedAt(), shop.getLastAuthError());
+                shop.getLastSyncedAt(), shop.getLastAuthError(), shop.getName());
     }
 
     private String state() {
@@ -381,7 +427,7 @@ public class ShopAuthorizationService {
                            String authorizedBy, Instant authorizedAt,
                            String disconnectedBy, Instant disconnectedAt,
                            Instant accessTokenExpiresAt, Instant refreshTokenExpiresAt,
-                           Instant lastSyncedAt, String lastAuthError) {}
+                           Instant lastSyncedAt, String lastAuthError, String actualName) {}
     public record PlatformStatus(boolean shopeeConfigured, boolean tiktokShopConfigured,
                                  boolean livePublishingEnabled, String publishingProvider) {}
     public record AuthorizationStart(String authorizationUrl, Instant expiresAt, String platform) {}

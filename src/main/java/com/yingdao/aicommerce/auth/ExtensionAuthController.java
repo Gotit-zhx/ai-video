@@ -14,10 +14,43 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/extension-auth")
 public class ExtensionAuthController {
     private final ExtensionAuthService authService;
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.security.authentication.AuthenticationManager authenticationManager;
+    @org.springframework.beans.factory.annotation.Value("${app.default-organization-code:heyi}")
+    private String defaultOrganizationCode;
 
     public ExtensionAuthController(ExtensionAuthService authService) {
         this.authService = authService;
     }
+
+    @PostMapping("/session")
+    public ApiResponse<ExtensionAuthService.ExchangeResult> session(@RequestBody DeviceRequest device,
+            @AuthenticationPrincipal PlatformPrincipal principal,HttpServletRequest request) {
+        String origin=request.getHeader("Origin");
+        if(device.extensionId()==null || !device.extensionId().matches("[a-p]{32}")
+                || !("chrome-extension://"+device.extensionId()).equals(origin))
+            throw new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.FORBIDDEN,"仅允许浏览器插件读取登录状态");
+        var code=authService.createPairingCode(principal);
+        return ApiResponse.ok(authService.exchange(new ExtensionAuthService.ExchangeRequest(code.code(),device.deviceName(),device.extensionId(),device.extensionVersion())));
+    }
+    public record DeviceRequest(String deviceName,String extensionId,String extensionVersion) {}
+
+    @PostMapping("/login")
+    public ApiResponse<ExtensionAuthService.ExchangeResult> login(@RequestBody DirectLogin request) {
+        if (request.account() == null || request.password() == null || request.account().isBlank())
+            throw new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.BAD_REQUEST,"账号格式为 企业代码/手机号");
+        org.springframework.security.core.Authentication authenticated;
+        try {
+            authenticated = authenticationManager.authenticate(
+                org.springframework.security.authentication.UsernamePasswordAuthenticationToken.unauthenticated((request.account().contains("/") ? request.account().trim() : defaultOrganizationCode + "/" + request.account().trim()),request.password()));
+        } catch (org.springframework.security.core.AuthenticationException e) {
+            throw new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.UNAUTHORIZED,"账号或密码不正确");
+        }
+        var principal = (PlatformPrincipal) authenticated.getPrincipal();
+        var code = authService.createPairingCode(principal);
+        return ApiResponse.ok(authService.exchange(new ExtensionAuthService.ExchangeRequest(code.code(),request.deviceName(),request.extensionId(),request.extensionVersion())));
+    }
+    public record DirectLogin(String account,String password,String deviceName,String extensionId,String extensionVersion) {}
 
     @PostMapping("/exchange")
     public ApiResponse<ExtensionAuthService.ExchangeResult> exchange(

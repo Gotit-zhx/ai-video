@@ -33,9 +33,16 @@
   <meta name="description" content="赫逸智能化 AI 平台——连接内容生成、智能编排与电商发布。">
   <title>赫逸智能化 AI 平台</title>
   <link rel="icon" href="/assets/hoyee-logo-transparent-white.png">
-  <link rel="stylesheet" href="/resend-theme.css?v=20260905-publish-flow-3">
+  <link rel="stylesheet" href="/resend-theme.css?v=general-clip-20260917-1">
+  <link rel="stylesheet" href="/video-script-terminal.css?v=watch-detailed-20260917-7">
   <link rel="stylesheet" href="/image-progress.css?v=20260904-test-merge-1">
-  <link rel="stylesheet" href="/commerce-planner.css?v=20260907-1">
+  <link rel="stylesheet" href="/commerce-planner.css?v=drape-reuse-20260916-1">
+  <link rel="stylesheet" href="/commerce-studio.css?v=photon-handoff-20260915-1">
+  <link rel="stylesheet" href="/commerce-reference-layout.css?v=local-photo-20260914-1">
+  <link rel="stylesheet" href="/commerce-template-studio.css?v=photo-layout-20260916-1">
+  <link rel="stylesheet" href="/commerce-artwork-library.css?v=artwork-library-20260916-1">
+  <link rel="stylesheet" href="/commerce-motion.css?v=drape-motion-20260917-1">
+  <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
 </head>
 <body>
   <main id="login-view" class="login-shell">
@@ -152,11 +159,12 @@
         <a href="#" id="nav-general-video" class="nav-item" data-nav-label="通用生成" title="通用生成"><span aria-hidden="true">◇</span><span class="nav-label">通用生成</span></a>
         </div></details>
         <details class="nav-group" data-nav-group="commerce"><summary title="商品运营"><span aria-hidden="true">◇</span><span class="nav-group-label">商品运营</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
-        <a href="#product-capture" id="nav-publish" class="nav-item" data-nav-label="商品资料库" title="商品资料库"><span aria-hidden="true">◇</span><span class="nav-label">商品资料库</span></a>
-        <a href="#commerce-designs" class="nav-item" data-commerce-route="commerce-designs" data-nav-label="图片设计" title="图片设计"><span aria-hidden="true">◈</span><span class="nav-label">图片设计</span></a>
-        <a href="#commerce-templates" class="nav-item" data-commerce-route="commerce-templates" data-nav-label="铺货模板" title="铺货模板"><span aria-hidden="true">▤</span><span class="nav-label">铺货模板</span></a>
+        <a href="#product-capture" id="nav-publish" class="nav-item" data-nav-label="采集链接" title="采集链接"><span aria-hidden="true">◇</span><span class="nav-label">采集链接</span></a>
+        <a href="#commerce-designs" class="nav-item" data-commerce-route="commerce-designs" data-nav-label="一键裂变" title="一键裂变"><span aria-hidden="true">◈</span><span class="nav-label">一键裂变</span></a>
+        <a href="#commerce-templates" class="nav-item" data-commerce-route="commerce-templates" data-nav-label="模板配置" title="模板配置"><span aria-hidden="true">▤</span><span class="nav-label">模板配置</span></a>
         <a href="#commerce-batches" class="nav-item" data-commerce-route="commerce-batches" data-nav-label="批次上架" title="批次上架"><span aria-hidden="true">▦</span><span class="nav-label">批次上架</span></a>
         <a href="#commerce-ads" class="nav-item" data-commerce-route="commerce-ads" data-nav-label="广告测款" title="广告测款"><span aria-hidden="true">↗</span><span class="nav-label">广告测款</span></a>
+        <a href="#commerce-assets" class="nav-item" data-commerce-route="commerce-assets" data-nav-label="素材管理" title="素材管理"><span aria-hidden="true">▧</span><span class="nav-label">素材管理</span></a>
         <a href="#shops" id="nav-shops" class="nav-item" data-nav-label="店铺管理" title="店铺管理"><span aria-hidden="true">▣</span><span class="nav-label">店铺管理</span></a>
         </div></details>
         <details class="nav-group" data-nav-group="automation"><summary title="自动化"><span aria-hidden="true">↯</span><span class="nav-group-label">自动化</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
@@ -414,6 +422,7 @@
                 <button class="film-frame cta" type="button" data-shot="8" data-shot-title="场景验证" data-shot-copy="自然光咖啡馆场景，达人坐下抬手，衣身依旧平整贴合。"><i>08</i><b>场景验证</b><small>生活跟拍</small></button>
                 <button class="film-frame cta" type="button" data-shot="9" data-shot-title="购买引导" data-shot-copy="达人面向镜头微笑并指向同款，保留干净画面供后续添加口播和商品信息。"><i>09</i><b>购买引导</b><small>低角仰拍</small></button>
               </div>
+              <details id="script-analysis-history" hidden><summary>查看模型输出原文</summary><div id="script-saved-output"></div></details>
               <div class="shot-editor-card">
                 <img id="selected-shot-preview" class="shot-editor-preview" alt="当前分镜原视频画面" hidden>
                 <div><span id="selected-shot-number">分镜 01 · Hook</span><h3 id="selected-shot-title">痛点开场</h3><p id="selected-shot-copy">达人站在镜子前，满脸沮丧地看着一件领口松垮、全是褶皱的旧衣服。</p></div>
@@ -452,7 +461,7 @@
         <section class="general-video-studio">
           <form id="general-video-form" class="general-video-composer" novalidate>
             <header class="general-composer-head">
-              <div><h2>创建视频</h2><p>描述画面，上传参考图。</p></div>
+              <div><h2>创建视频</h2><p>描述画面，输入 @ 引用图片或视频素材。</p></div>
               <span class="general-capability"><i></i>多模态线路 · 自动匹配</span>
             </header>
 
@@ -461,16 +470,22 @@
                 <div class="general-editor-box">
                   <label class="general-prompt-field" for="general-video-prompt">
                     <span>提示词</span>
-                    <textarea id="general-video-prompt" name="prompt" maxlength="20000" rows="8" placeholder="描述主体、动作、环境、镜头和光线。任务名称会自动从提示词中提取。" required></textarea>
+                    <textarea id="general-video-prompt" name="prompt" maxlength="20000" rows="8" placeholder="描述主体、动作、环境、镜头和光线。输入 @ 选择已上传素材，例如：让 @图片1 的人物模仿 @视频1 的动作。" required></textarea>
                   </label>
+                  <div id="general-mention-menu" class="general-mention-menu" role="listbox" aria-label="选择引用素材" hidden></div>
+                  <div id="general-video-reference-preview" class="general-video-reference-preview" hidden></div>
                   <div id="general-reference-list" class="general-reference-list" hidden></div>
                   <footer class="general-editor-meta">
                     <div id="general-reference-mentions" class="general-reference-mentions" aria-label="插入图片引用"></div>
                     <div class="general-editor-actions">
                       <em id="general-prompt-count">0 / 20,000</em>
+                      <label class="general-reference-drop general-video-reference-drop" title="最多 1 条视频；MP4、MOV、WebM；全部素材合计不超过 90 MB">
+                        <input id="general-video-reference-input" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm">
+                        <span aria-hidden="true">▷</span><strong>视频参考</strong><em id="general-video-reference-count">0 / 1</em>
+                      </label>
                       <label id="general-reference-drop" class="general-reference-drop" title="JPG、PNG、WEBP、GIF；1–9 张，单图 20 MB，合计 90 MB">
                         <input id="general-reference-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" multiple>
-                        <span aria-hidden="true">＋</span><strong>参考素材</strong><em id="general-reference-count">0 / 9</em>
+                        <span aria-hidden="true">＋</span><strong>图片参考</strong><em id="general-reference-count">0 / 9</em>
                       </label>
                     </div>
                   </footer>
@@ -666,7 +681,6 @@
                 <div><span>官方店铺</span><strong>多店铺授权与管理</strong></div>
                 <i id="marketplace-live-state">检查中</i>
               </header>
-              <p>这里只显示当前公司的店铺。OAuth Token 由服务端保管，插件和网页无法读取。</p>
               <div class="marketplace-shop-filters" aria-label="筛选授权店铺">
                 <div class="marketplace-shop-filter-row">
                   <span>平台</span>
@@ -699,41 +713,74 @@
             </section>
       </div>
       <div id="product-publish-page" class="workspace-body product-publish-page" hidden>
+        <section class="commerce-page-panel" data-commerce-panel="commerce-assets" hidden>
+          <header class="commerce-section-heading"><span>MATERIAL COLLECTIONS</span><h1>素材管理</h1><p>保存每次裂变的透明印花，下一次可直接选用。商品图集与历史结果一并保留。</p></header>
+          <section id="commerce-artwork-library" aria-label="透明印花素材"></section>
+          <h2 class="material-collection-title">商品图集</h2>
+          <div class="material-slot-toolbar"><button id="material-slots-refresh" type="button">读取图集</button><button id="material-slots-previous" type="button" disabled>上一页</button><button id="material-slots-next" type="button" disabled>下一页</button><span id="material-slots-status" role="status"></span></div>
+          <div id="material-slots-list" class="material-slots-grid"></div><section id="material-slot-detail" hidden></section>
+        </section>
+        <section class="commerce-batch-hub" aria-label="当前工作批次">
+          <header><div><h1>批次任务</h1></div><button id="workbench-batch-refresh" type="button" aria-label="刷新任务" title="刷新任务">↻</button><button id="workbench-batch-new" type="button">＋ 新建裂变上架</button></header>
+          <nav id="workbench-batch-list" aria-label="切换工作批次"></nav>
+          <div class="workbench-selection"><label>当前批次<select id="workbench-batch-select"><option value="">请选择批次</option></select></label><label>批次商品 / 店铺<select id="workbench-item-select"><option value="">先选择批次</option></select></label><button id="workbench-template" type="button">模板配置</button></div>
+          <p id="workbench-batch-status" role="status">点击读取批次，选择已有批次继续；或新建一个批次。</p>
+        </section>
+        <section class="studio-journey" aria-label="商品创作流程">
+          <div class="studio-journey-heading"><div><span>PRODUCT CREATION WORKSPACE</span><h2>从商品灵感，到下一批作品。</h2><p>采集、核对、设计与发布准备，在同一个工作空间继续。</p></div><a href="#commerce-templates" data-studio-route="commerce-templates">管理店铺模板 ↗</a></div>
+          <nav class="studio-steps" aria-label="创作步骤">
+            <button type="button" data-studio-route="product-capture" data-studio-step="capture"><span>01</span><b>采集<small>商品与来源资料</small></b></button>
+            <button type="button" data-studio-check data-studio-step="check" hidden><span>·</span><b>资料检查<small>自动前置校验</small></b></button>
+            <button type="button" data-studio-step="extract" title="独立印花提取"><span>01</span><b>提取印花<small>商品原图 → 独立图案</small></b></button>
+            <button type="button" data-studio-route="commerce-designs" data-studio-step="design"><span>02</span><b>印花裂变<small>只变化图案，不变化衣服</small></b></button>
+            <button type="button" data-studio-step="mockup"><span>03</span><b>商品套版<small>印花 → 商品模板指定位置</small></b></button>
+            <button type="button" data-studio-route="commerce-batches" data-studio-step="publish"><span>04</span><b>上架<small>规格价格 · 店铺发布</small></b></button>
+          </nav>
+          <p id="studio-journey-status" role="status" aria-live="polite">步骤导航不代表处理已完成，具体结果以商品与任务状态为准。</p>
+        </section>
         <section class="commerce-planner commerce-page-panel" data-commerce-panel="commerce-templates" hidden>
-          <header class="commerce-section-heading"><span>TEMPLATES / 02</span><h1>铺货模板</h1><p>配置每家店的刊登节奏，让批次沿用同一套标准。</p></header>
-          <p>预览素材数量、分店排期与预算。不会生成图片、发布商品或创建广告；只有点击保存模板才会保存配置。</p>
+          <header class="template-studio-heading">
+            <div><span class="template-eyebrow">商品运营 / 创作模板</span><h1>模板配置<span>Template studio</span></h1><p>上传商品图片，直接在四面图上设置印花。保存后，在一键裂变中选用。</p></div>
+            <div class="template-save-area"><span id="commerce-template-save-state">未保存</span><button type="button" id="commerce-template-save">保存模板 <span aria-hidden="true">↗</span></button></div>
+          </header>
           <div class="commerce-template-controls">
-            <label>本公司工作流模板<select id="commerce-template-select"><option value="">新模板</option></select></label>
-            <button type="button" id="commerce-template-refresh">刷新模板</button>
-            <label>模板名称<input id="commerce-template-name" maxlength="120" placeholder="例如：菲律宾女装7天测款"></label>
-            <button type="button" id="commerce-template-save">保存为新版本</button>
-            <button type="button" id="commerce-template-new">另建模板</button>
-            <span id="commerce-template-status" role="status" aria-live="polite"></span>
+            <div class="template-library-control"><label class="template-saved-picker">切换模板<select id="commerce-template-select"><option value="">新模板</option></select></label><button type="button" id="commerce-template-refresh" title="刷新模板列表" aria-label="刷新模板列表">↻</button></div>
+            <label class="template-name-field">模板名称<input id="commerce-template-name" maxlength="120" placeholder="给这套版型起个名字"></label>
+            <label class="template-inline-count">裂变款式<input form="commerce-plan-form" name="designsPerProduct" type="number" min="1" max="20" value="10" required><span>款 / 来源商品</span></label>
+            <button type="button" id="commerce-template-new">另存为新模板</button>
+            <span id="commerce-template-status" role="status" aria-live="polite">完成版型和印花设置后，点击右上角保存。</span>
           </div>
-          <form id="commerce-plan-form" class="commerce-plan-form">
-            <label>商品模式<select name="mode"><option value="STOCK_MARKETING">现货 · 营销素材裂变</option><option value="POD_DESIGN">POD · 可生产设计裂变</option></select></label>
-            <label>目标平台<select name="platform"><option value="TIKTOK_SHOP">TikTok Shop</option><option value="SHOPEE">Shopee</option><option value="SHEIN">SHEIN（仅规划）</option><option value="TEMU">TEMU（仅规划）</option><option value="AMAZON">Amazon（仅规划）</option><option value="ALIEXPRESS">AliExpress（仅规划）</option></select></label>
-            <label>目标市场<select name="market"><option value="PH">菲律宾 · PHP</option><option value="SG">新加坡 · SGD</option><option value="MY">马来西亚 · MYR</option><option value="TH">泰国 · THB</option><option value="VN">越南 · VND</option><option value="ID">印度尼西亚 · IDR</option></select></label>
-            <label>原始商品数<input name="sourceProducts" type="number" min="1" max="500" value="30" required></label>
-            <label>每款设计／营销版本<input name="designsPerProduct" type="number" min="1" max="20" value="10" required></label>
-            <label>每个版本图片数<input name="imagesPerDesign" type="number" min="1" max="20" value="1" required></label>
-            <label>规划店铺数（非授权选择）<input name="shopCount" type="number" min="1" max="50" value="6" required></label>
-            <label>每日每店最多刊登<input name="dailyListingsPerShop" type="number" min="1" max="500" value="50" required></label>
-            <label>每店每日广告总上限（所选市场币种）<input name="dailyBudgetPerShop" type="number" min="0" max="1000000000" step="0.01" value="1000" required></label>
+          <form id="commerce-plan-form" class="commerce-plan-form" hidden>
+            <fieldset class="template-config-group" hidden><legend>兼容规划参数</legend>
+            <label hidden>商品模式<select name="mode"><option value="STOCK_MARKETING">现货 · 营销素材裂变</option><option value="POD_DESIGN">POD · 可生产设计裂变</option></select></label>
+            <label hidden>目标平台<select name="platform"><option value="TIKTOK_SHOP">TikTok Shop</option><option value="SHOPEE">Shopee</option><option value="SHEIN">SHEIN（仅规划）</option><option value="TEMU">TEMU（仅规划）</option><option value="AMAZON">Amazon（仅规划）</option><option value="ALIEXPRESS">AliExpress（仅规划）</option></select></label>
+            <label hidden>目标市场<select name="market"><option value="PH">菲律宾 · PHP</option><option value="SG">新加坡 · SGD</option><option value="MY">马来西亚 · MYR</option><option value="TH">泰国 · THB</option><option value="VN">越南 · VND</option><option value="ID">印度尼西亚 · IDR</option></select></label>
+            </fieldset>
+            <fieldset class="template-config-group" hidden><legend>裂变设置</legend>
+            <label hidden>原始商品数<input name="sourceProducts" type="number" min="1" max="500" value="30" required></label>
+
+            <label hidden>每个版本图片数<input name="imagesPerDesign" type="number" min="1" max="20" value="1" required></label>
+            <label hidden>规划店铺数（占位）<input name="shopCount" type="number" min="1" max="50" value="1" required></label>
+            <label hidden>每日每店最多刊登<input name="dailyListingsPerShop" type="number" min="1" max="500" value="50" required></label>
+            </fieldset>
+            <fieldset class="template-config-group" hidden><legend>03 · 预算与目标</legend>
+            <label>每店每日广告总上限（所选市场币种）<input name="dailyBudgetPerShop" type="number" min="0" max="1000000000" step="0.01" value="0" required></label>
             <label>预算观察天数<input name="observationDays" type="number" min="1" max="90" value="7" required></label>
             <label>目标 ROI（非收益保证）<input name="targetRoi" type="number" min="0.01" max="1000" step="0.01" value="6.5" required></label>
-            <fieldset><legend>准备情况（仅自查，不代替发布审核）</legend>
+            </fieldset>
+            <fieldset class="template-readiness" hidden><legend>准备情况（仅自查，不代替发布审核）</legend>
               <label><input name="rightsConfirmed" type="checkbox">已确认素材与设计使用权</label>
               <label><input name="supplyConfirmed" type="checkbox">已确认供货与履约</label>
               <label><input name="productionFilesConfirmed" type="checkbox">POD生产文件已准备</label>
             </fieldset>
-            <button type="submit" class="primary-button">预览工作流 · 不执行</button>
+            <button type="submit" class="primary-button" hidden>预览工作流 · 不执行</button>
           </form>
+          <section class="print-template-editor" aria-label="商品版型与印花位置"><div id="commerce-print-editor"></div></section>
           <div id="commerce-plan-result" role="status" aria-live="polite"></div>
         </section>
         <section class="commerce-planner commerce-page-panel" id="commerce-design-panel" data-commerce-panel="commerce-designs" hidden>
           <header class="commerce-section-heading"><span>DESIGN STUDIO / 01</span><h1>图片设计</h1><p>从来源商品开始，建立营销图或 POD 设计草稿。</p></header>
-          <p>先固定来源商品和参考图。这里只保存草稿，不调用AI、不产生图片或发布商品。现货仅变营销展示；POD还需生产文件审核。</p>
+          <p>先固定来源商品和参考图，创建草稿不会调用 AI。真实生成须单独确认且由环境配置允许；POD 还需生产文件审核，质量通过不等于已发布。</p>
           <div id="commerce-design-workspace"></div>
         </section>
         <section class="commerce-planner commerce-page-panel" id="commerce-ad-panel" data-commerce-panel="commerce-ads" hidden>
@@ -744,22 +791,27 @@
         </section>
         <section class="commerce-planner commerce-page-panel" id="commerce-batch-panel" data-commerce-panel="commerce-batches" hidden>
           <header class="commerce-section-heading"><span>BATCH WORKSPACE / 03</span><h1>批次上架</h1><p>把商品、模板和目标店铺组织成可追踪的工作批次。</p></header>
-          <p>固定已保存的模板版本，将选中商品均分给匹配店铺。只保存草稿，不生成、不刊登、不投放。排期仅为本批次相对天数。</p>
+          <p>按所选模板版本，将商品分配给本次目标店铺，开始提取印花、裂变和套版。自动准备上传参数并计算模型调用上限，完成后上传店铺草稿。</p>
           <button type="button" id="commerce-batch-refresh">读取本公司模板、店铺与批次</button>
           <form id="commerce-batch-form">
             <div class="commerce-plan-form">
               <label>批次名称<input name="name" maxlength="120" required></label>
-              <label>模板版本<select name="snapshot" id="commerce-batch-template" required><option value="">先读取模板</option></select></label>
+              <label>选择模板<select name="snapshot" id="commerce-batch-template" required><option value="">先读取已保存模板</option></select><small>自动带入四面图、印花位置和裂变数量</small></label>
+              <label id="commerce-batch-render-policy-field" hidden>商品呈现<select id="commerce-batch-render-policy" aria-label="商品呈现方式"><option value="GROK_SCENE_V1">原有模式 · 商品背景复用</option><option value="GROK_DRAPE_REUSE_V1">自然搭放 · 母图复用（每商品1次）</option></select><small id="commerce-batch-render-policy-hint">符合条件的新批次默认自然搭放，也可手动选择原有模式。</small></label>
             </div>
-            <fieldset><legend>目标店铺（平台和站点须与模板一致）</legend><div id="commerce-batch-shops"></div></fieldset>
-            <fieldset><legend>实际商品</legend>
+            <div id="commerce-batch-template-summary" class="fission-template-summary" aria-live="polite"><strong>选择模板，带入裂变数量和印花位置</strong><small>自动准备售价、库存、包裹、类目和仓库，生成透明底印花并套版；完成后上传店铺草稿。</small></div>
+            <section id="commerce-batch-artwork-picker" aria-label="印花来源"></section>
+            <fieldset><legend>本次目标店铺 · 可多选 <span id="commerce-batch-shop-count">已选 0 / 50 家</span></legend><div id="commerce-batch-shops"></div></fieldset>
+            <fieldset class="fission-product-section"><legend>选择商品</legend>
+              <div class="fission-product-search">
               <input id="commerce-batch-query" type="search" placeholder="搜索已采集商品" aria-label="搜索已采集商品">
               <button id="commerce-batch-search" type="button">查询</button>
               <span id="commerce-batch-selected-count">已选 0 款</span>
+              </div>
               <div id="commerce-batch-products" class="commerce-batch-products"></div>
               <button id="commerce-batch-more" type="button" disabled>加载更多</button>
             </fieldset>
-            <button type="submit">保存批次草稿 · 不执行</button>
+            <button type="submit">创建并开始执行</button>
           </form>
           <p id="commerce-batch-status" role="status" aria-live="polite"></p>
           <div id="commerce-batch-list"></div>
@@ -789,46 +841,50 @@
 
         <section class="product-capture-workspace">
           <aside class="product-capture-rail">
+            <header class="capture-library-heading"><div><small>商品运营</small><h1>采集商品</h1><p>集中整理商品，完成图片处理后批量上传。</p></div></header>
+            <details class="capture-pairing-disclosure"><summary>浏览器插件 · 登录与采集</summary>
             <section id="extension-pairing-panel" class="extension-pairing-panel">
               <header>
-                <div><span>浏览器插件</span><strong>登录并绑定当前公司</strong></div>
-                <i id="extension-pairing-state">未生成</i>
+                <div><span>浏览器插件</span><strong>自动识别平台登录</strong></div>
+                <i id="extension-pairing-state" hidden>自动连接</i>
               </header>
-              <p>插件打开本页登录后，输入一次性绑定码即可采集；绑定码不会授予超出当前账号的权限。</p>
-              <div class="extension-pairing-actions">
+              <p>浏览器已登录本系统时，采集器自动连接；也可在插件里输入平台账号密码，无需绑定码。商品视频支持采集、播放和下载。</p>
+              <div class="extension-pairing-actions" hidden>
                 <output id="extension-pairing-code" aria-live="polite">— — — — — —</output>
                 <button id="copy-extension-pairing-code" type="button" disabled>复制</button>
               </div>
               <footer>
-                <small id="extension-pairing-expiry">登录后可生成 5 分钟有效的绑定码</small>
-                <button id="create-extension-pairing-code" type="button">生成绑定码</button>
+                <small hidden id="extension-pairing-expiry">登录后可生成 5 分钟有效的绑定码</small>
+                <button hidden id="create-extension-pairing-code" type="button">生成绑定码</button>
               </footer>
             </section>
 
-            <a href="#shops" class="quiet-button">管理店铺与授权 →</a>
+            </details>
 
             <label class="product-capture-search" for="product-capture-search">
               <span aria-hidden="true">⌕</span>
               <input id="product-capture-search" type="search" autocomplete="off" placeholder="商品名、店铺、SKU 或来源 ID" aria-label="搜索采集商品">
             </label>
             <div id="product-status-filter" class="product-status-filter" aria-label="筛选商品状态">
-              <button class="active" type="button" data-product-status="ALL" aria-pressed="true">全部</button>
-              <button type="button" data-product-status="DRAFT" aria-pressed="false">待整理</button>
+              <button class="active" type="button" data-product-status="CAPTURED" aria-pressed="true">未处理</button>
               <button type="button" data-product-status="PROCESSING" aria-pressed="false">处理中</button>
-              <button type="button" data-product-status="REVIEW" aria-pressed="false">待确认</button>
-              <button type="button" data-product-status="APPROVED" aria-pressed="false">可发布</button>
               <button type="button" data-product-status="PUBLISHED" aria-pressed="false">已提交平台</button>
               <button type="button" data-product-status="FAILED" aria-pressed="false">失败</button>
+              <button type="button" data-product-status="ALL" aria-pressed="false">全部</button>
             </div>
             <div class="product-result-caption"><span id="product-result-count" role="status" aria-live="polite">已显示 0 / 共 0 条</span><button id="refresh-product-captures" type="button" aria-controls="product-capture-list">刷新</button></div>
+            <div class="product-result-caption"><span id="product-bulk-count">已勾选 0 件</span><div class="product-bulk-toolbar-actions"><button id="open-product-bulk-history" type="button" aria-controls="product-bulk-history-dialog">批量任务</button><button id="open-product-bulk-upload" type="button" disabled>批量一键上传</button></div></div>
             <div id="product-capture-list" class="product-capture-list" aria-label="采集商品列表" aria-busy="true"><div class="product-empty">正在读取商品草稿…</div></div>
             <div id="product-capture-pagination" class="product-capture-pagination" hidden>
-              <button id="load-more-product-captures" type="button" aria-controls="product-capture-list">加载更多</button>
+              <button id="previous-product-captures" type="button" aria-controls="product-capture-list">← 上一页</button>
+              <nav id="product-page-numbers" aria-label="商品列表页码"></nav>
+              <button id="load-more-product-captures" type="button" aria-controls="product-capture-list">下一页 →</button>
               <span id="product-load-more-status" role="status" aria-live="polite"></span>
             </div>
           </aside>
 
           <section id="product-capture-detail" class="product-capture-detail">
+            <nav class="capture-detail-navigation"><a href="#product-capture">← 返回商品列表</a><span>采集商品 / 商品详情</span></nav>
             <div id="product-capture-empty" class="product-empty product-detail-empty">
               <span aria-hidden="true">◇</span>
               <strong>选择一条商品草稿</strong>
@@ -901,7 +957,8 @@
                   <div><span>03</span><h3>图片处理 / AI 去水印</h3></div>
                   <div class="product-image-progress"><strong id="product-image-progress-text">0 / 0</strong><i><b id="product-image-progress-bar"></b></i></div>
                 </header>
-                <p class="product-section-help">每张图同时保留来源原图与处理图。当前测试提供方只生成 Dry Run 占位图，不代表已经实际去除水印。</p>
+                <p class="product-section-help">先检测水印：明确无水印保留原图，有水印、判断不清或识别失败直接提交生图；生成后不再复核。超出 500 并发自动排队。</p>
+                <p id="product-image-queue-summary" class="product-section-help" role="status" aria-live="polite"></p>
                 <div id="product-image-grid" class="product-image-grid"><div class="product-empty">尚无图片</div></div>
               </section>
 
@@ -910,6 +967,7 @@
                 <ul id="product-readiness-list"><li>正在检查字段…</li></ul>
               </section>
 
+              <div id="product-upload-result" role="status" aria-live="polite" hidden></div>
               <footer class="product-action-dock">
                 <div><strong id="product-action-title">先核对采集结果</strong><span id="product-action-note">所有真实发布动作都必须由人员再次确认。</span></div>
                 <div class="product-action-buttons">
@@ -917,7 +975,6 @@
                   <button id="design-current-product" class="quiet-button" type="button">下一步 · 图片设计</button>
                   <button id="process-product-images" class="quiet-button" type="button">AI 去水印</button>
                   <button id="approve-product-capture" class="quiet-button" type="button">人工确认</button>
-                  <button id="open-product-publish" class="new-job-button" type="button">一键上传</button>
                 </div>
               </footer>
             </div>
@@ -1142,23 +1199,32 @@
         <label class="product-publish-shop-field"><span>已授权店铺 <em id="publish-shop-count">0 家可选</em></span><select id="publish-shop-id" name="shopId" required aria-describedby="publish-shop-context"><option value="">请先授权并选择店铺</option></select><small id="publish-shop-context">只显示目标平台下状态为“可发布”的店铺。</small></label>
       </div>
       <details id="product-official-publish-fields" class="product-official-publish-fields" hidden>
-        <summary><span>官方刊登参数</span><small id="product-official-publish-hint">类目、库存、包裹与平台必填项</small></summary>
+        <summary><span>上传设置</span><small id="product-official-publish-hint">类目、库存、包裹与平台必填项</small></summary>
         <div class="product-publish-targets">
-          <label>官方叶子类目 ID<input id="publish-category-id" inputmode="numeric" maxlength="80" autocomplete="off" placeholder="必填"></label>
-          <label>上架库存<input id="publish-stock" inputmode="numeric" min="0" max="999999" autocomplete="off" placeholder="发布时填写，不依赖采集库存"></label>
-          <label>包裹重量（克）<input id="publish-weight-grams" inputmode="decimal" min="0" autocomplete="off" placeholder="例如 350"></label>
+          <label>商品类目<select id="publish-category-choice"><option value="">正在准备类目…</option></select><input id="publish-category-id" inputmode="numeric" maxlength="80" autocomplete="off" placeholder="官方类目 ID（自动读取失败时填写）" hidden></label>
           <label data-tiktok-publish-field>TikTok 仓库 ID<input id="publish-warehouse-id" maxlength="120" autocomplete="off" placeholder="TikTok Shop 必填"></label>
           <label data-tiktok-publish-field>包裹长（cm）<input id="publish-package-length" inputmode="decimal" min="0" autocomplete="off"></label>
           <label data-tiktok-publish-field>包裹宽（cm）<input id="publish-package-width" inputmode="decimal" min="0" autocomplete="off"></label>
           <label data-tiktok-publish-field>包裹高（cm）<input id="publish-package-height" inputmode="decimal" min="0" autocomplete="off"></label>
         </div>
+        <div class="product-publish-targets">
+          <label data-shopee-publish-field>配送渠道<select id="publish-logistic-choice"><option value="">正在读取店铺物流…</option></select></label>
+          <label id="publish-price-field" hidden>目标店铺售价 <span id="publish-price-currency"></span><input id="publish-price" inputmode="decimal" placeholder="跨币种时填写目标币种售价"><small>此价格应用于所有 SKU，请核对后提交。</small></label>
+        </div>
+        <p id="publish-auto-summary" role="status">默认库存 999；重量沿用原商品，缺失时默认 250 克。常用设置会记在当前浏览器，按公司和店铺区分。</p>
+        <details id="publish-advanced"><summary>高级设置（通常无需填写）</summary>
+        <div class="product-publish-targets">
+          <label>上架库存<input id="publish-stock" inputmode="numeric" min="0" max="999999" autocomplete="off" placeholder="默认 999"></label>
+          <label>包裹重量（克）<input id="publish-weight-grams" inputmode="decimal" min="0" autocomplete="off" placeholder="沿用原商品，缺失时默认 250 克"></label>
+        </div>
         <div class="product-publish-json-grid">
           <label class="product-publish-json-field">SKU 库存映射 JSON（选填）<textarea id="publish-sku-stocks" rows="3" spellcheck="false" aria-describedby="publish-sku-stocks-help" placeholder='{"SKU_KEY": 20}'></textarea><small id="publish-sku-stocks-help">键必须使用当前商品的 SKU Key；库存范围会随目标平台切换，留空则全部使用上方“上架库存”。</small></label>
-          <label class="product-publish-json-field" data-shopee-publish-field>Shopee 官方物流渠道 JSON（必填）<textarea id="publish-logistic-info" rows="3" spellcheck="false" aria-describedby="publish-logistic-info-help" placeholder='[{"logistic_id": 123, "enabled": true}]'></textarea><small id="publish-logistic-info-help">必须填写至少一个渠道。请从目标店铺的 Shopee 官方物流渠道接口准备，当前页面不会自动拉取或猜测。</small></label>
+          <label class="product-publish-json-field" data-shopee-publish-field>Shopee 官方物流渠道 JSON（必填）<textarea id="publish-logistic-info" rows="3" spellcheck="false" aria-describedby="publish-logistic-info-help" placeholder='[{"logistic_id": 123, "enabled": true}]'></textarea><small id="publish-logistic-info-help">必须填写至少一个渠道。请从目标店铺的 Shopee 官方物流渠道接口准备，上方选择后自动填写，也可在此手动覆盖。</small></label>
           <label class="product-publish-json-field" data-shopee-publish-field>Shopee 类目属性 JSON（按类目要求）<textarea id="publish-product-attributes" rows="4" spellcheck="false" placeholder='[{"attribute_id": 100, "attribute_value_list": [{"value_id": 200}]}]'></textarea><small>请使用目标店铺与叶子类目的官方属性准备接口返回值；留空按空数组提交，不表示类目无需属性。</small></label>
           <label class="product-publish-json-field" data-shopee-publish-field>Shopee 条件必填补充参数 JSON<textarea id="publish-shopee-payload" rows="4" spellcheck="false" placeholder='{"brand": {"brand_id": 0}, "condition": "NEW"}'></textarea><small>用于透传品牌、尺寸、税务等当前类目要求的官方字段；留空按空对象提交，页面不会伪装成已经自动补全。</small></label>
           <label class="product-publish-json-field" data-tiktok-publish-field>TikTok 多规格映射 JSON（可选；留空则使用已采集规格名称）<textarea id="publish-sales-attributes" rows="4" spellcheck="false" placeholder='{"SKU_KEY": [{"id":"...","value_id":"..."}]}'></textarea></label>
         </div>
+        </details>
       </details>
       <div class="product-dry-run-notice">
         <span>DRY RUN</span>
@@ -1240,6 +1306,7 @@
           <div class="active-analysis-track"><span id="active-script-progress-bar"></span></div>
         </div>
       </section>
+      <div id="active-script-output" hidden></div>
       <section id="script-create-ai" class="script-create-panel">
         <label class="video-upload-drop">
           <input id="script-source-video" name="video" type="file" accept="video/*">
@@ -1772,11 +1839,47 @@
   </dialog>
   <script src="/vendor/sortable.min.js" defer></script>
   <script src="/vendor/qrcode.js" defer></script>
-  <script src="/app.js?v=20260905-publish-flow-3" defer></script>
-  <script src="/commerce-planner.js?v=20260907-1" defer></script>
-  <script src="/commerce-batches.js?v=20260907-1" defer></script>
+  <dialog id="product-bulk-dialog" class="product-bulk-dialog" aria-labelledby="product-bulk-title">
+    <form id="product-bulk-form">
+      <header><div><span class="bulk-dialog-eyebrow">PRODUCT UPLOAD</span><h2 id="product-bulk-title">批量一键上传</h2></div><div class="product-bulk-toolbar-actions"><button type="button" id="open-product-bulk-history-from-detail" aria-controls="product-bulk-history-dialog">批量任务</button><button type="button" id="close-product-bulk">关闭</button></div></header>
+      <p>只需选择店铺，其他设置自动完成。</p>
+      <fieldset id="product-bulk-settings">
+        <div class="product-bulk-fields">
+          <label>目标店铺<select id="product-bulk-shop" required></select></label>
+        </div>
+      </fieldset>
+      <p id="product-bulk-shop-hint" role="status"></p>
+      <p class="product-bulk-defaults">库存 999 · 沿用原重量，缺失时默认 250 克 · 默认无品牌<br>自动匹配原类目和物流 · 各规格原售价按最新汇率换算</p>
+      <p id="product-bulk-mode" role="status"></p>
+      <details class="product-bulk-selection" open><summary id="product-bulk-summary">已选择商品</summary><div id="product-bulk-items"></div></details>
+      <p id="product-bulk-error" role="alert"></p>
+      <div id="product-bulk-progress" aria-live="polite"></div>
+      <footer class="bulk-dialog-footer"><span>关闭窗口后，已提交任务继续运行</span><button id="submit-product-bulk" type="submit">一键上传所选商品</button></footer>
+    </form>
+  </dialog>
+  <dialog id="product-bulk-history-dialog" class="product-bulk-dialog" aria-labelledby="product-bulk-history-title">
+    <header><h2 id="product-bulk-history-title">批量任务</h2><button id="close-product-bulk-history" type="button">关闭</button></header>
+    <p class="product-bulk-history-copy">查看每批商品的上传进度。已有批次继续处理时，可以发起新的批量上传。</p>
+    <div id="product-bulk-history-list" role="list" aria-live="polite"><p class="product-bulk-history-empty">暂无批量任务。</p></div>
+  </dialog>
+  <script src="/product-bulk-upload.js?v=20260910-shop-switch-1" defer></script>
+  <script src="/product-bulk-history.js?v=20260910-bulk-history-1" defer></script>
+  <script src="/video-script-terminal.js?v=watch-detailed-20260917-7" defer></script>
+  <script src="/app.js?v=general-clip-20260917-1" defer></script>
+  <script src="/commerce-planner.js?v=photo-layout-20260916-1" defer></script>
+  <script src="/commerce-publication.js?v=publish-preparation-20260915-1" defer></script>
+  <script src="/commerce-artwork-library.js?v=artwork-library-20260916-1" defer></script>
+  <script src="/commerce-batches.js?v=drape-default-20260917-1" defer></script>
   <script src="/commerce-ad-evaluation.js?v=20260907-1" defer></script>
-  <script src="/commerce-designs.js?v=20260907-1" defer></script>
-  <script src="/shop-settings.js?v=20260907-1" defer></script>
+  <script src="/commerce-designs.js?v=20260907-2" defer></script>
+  <script src="/commerce-studio.js?v=photon-handoff-20260915-1" defer></script>
+  <script src="/commerce-motion.js?v=drape-motion-20260917-1" defer></script>
+  <script src="/commerce-workbench.js?v=drape-reuse-20260916-1" defer></script>
+  <script src="/commerce-creative-plan.js?v=drape-default-20260917-1" defer></script>
+  <script src="/commerce-batch-artifacts.js?v=drape-reuse-20260916-1" defer></script>
+  <script src="/commerce-material-slots.js?v=20260907-1" defer></script>
+  <script src="/commerce-print-surface.js?v=photo-layout-20260916-1" defer></script>
+  <script src="/commerce-print-editor.js?v=photo-layout-20260916-1" defer></script>
+  <script src="/shop-settings.js?v=shop-adapt-20260914-1" defer></script>
 </body>
 </html>

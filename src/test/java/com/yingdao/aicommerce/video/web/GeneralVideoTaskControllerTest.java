@@ -23,7 +23,7 @@ class GeneralVideoTaskControllerTest {
         var file = new MockMultipartFile("files", "reference.png", "image/png", new byte[]{1});
 
         assertThatThrownBy(() -> controller.create("task", "prompt", 6, "9:16",
-                resolution, "SPEED", false, List.of(file), null))
+                resolution, "SPEED", false, List.of(file), null, null, null))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("768P")
                 .satisfies(exception -> assertThat(((BusinessException) exception).getStatus().value()).isEqualTo(400));

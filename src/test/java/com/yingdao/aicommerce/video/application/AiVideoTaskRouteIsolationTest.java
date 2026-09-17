@@ -87,6 +87,24 @@ class AiVideoTaskRouteIsolationTest {
                 fixture.processor, fixture.videoGenerationService);
     }
 
+    @Test
+    void duplicateReferenceIdsReturnBadRequestBeforeAnyReferenceMutation() {
+        AiVideoTask task = new AiVideoTask("org-1", "参考任务", "script-1", 1,
+                "脚本", "{}", "PH", "MODEL_WEAR", "ORIGINAL", "服装", "室内", "展示",
+                false, "9:16", "720p", false, true, "{}", "{}", "user-1");
+        Fixture fixture = fixture(task);
+        var item = new com.yingdao.aicommerce.video.domain.AiVideoTaskItem("org-1", task.getId(), "服装", "QA", "a.png", "a.png", "image/png", 1);
+        when(fixture.itemMapper.selectOne(any())).thenReturn(item);
+        var a = com.yingdao.aicommerce.video.domain.AiVideoTaskAsset.videoReference("org-1", task.getId(), item.getId(), 1, "a.png", "image/png", 1, null, null, true);
+        var b = com.yingdao.aicommerce.video.domain.AiVideoTaskAsset.videoReference("org-1", task.getId(), item.getId(), 2, "b.png", "image/png", 1, null, null, false);
+        when(fixture.assetMapper.selectList(any())).thenReturn(List.of(a,b));
+        var error = assertThrows(BusinessException.class, () -> fixture.service.updateReferences(task.getId(), item.getId(), List.of(
+                new AiVideoTaskService.ReferenceUpdate(a.getId(),1,null,null,true),
+                new AiVideoTaskService.ReferenceUpdate(a.getId(),2,null,null,false)),principal()));
+        assertEquals(HttpStatus.BAD_REQUEST,error.getStatus());
+        org.mockito.Mockito.verify(fixture.assetMapper,org.mockito.Mockito.never()).updateById(org.mockito.ArgumentMatchers.any(com.yingdao.aicommerce.video.domain.AiVideoTaskAsset.class));
+    }
+
     private void assertProductTaskHidden(Executable operation) {
         BusinessException exception = assertThrows(BusinessException.class, operation);
         assertEquals(HttpStatus.NOT_FOUND, exception.getStatus());

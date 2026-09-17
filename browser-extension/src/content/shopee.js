@@ -79,7 +79,9 @@
         price.originalPriceMin = productData.originalPriceMin;
         price.originalPriceMax = productData.originalPriceMax ?? productData.originalPriceMin;
       }
-      const stats = common.extractStats(root, {
+      const titleElement = detail ? root.querySelector("h1") : null;
+      const statsRoot = titleElement?.closest("section") || root;
+      const stats = common.extractStats(statsRoot, {
         salesSelectors: [
           "[data-testid*='sold' i]", "[data-sqe*='sold' i]", "[class*='sold']", "[class*='sales']"
         ],
@@ -91,12 +93,30 @@
           "[class*='rating-count']", "[class*='review-count']"
         ]
       });
+      // The header renders the number and "Sold" in separate text nodes.
+      const headerSold = detail ? common.cleanText(statsRoot.innerText, 10_000)
+        .match(/([\d,.]+)\s*([kKmM]?)\s+Sold\b/i) : null;
+      if (headerSold) {
+        const amount = Number(headerSold[1].replaceAll(",", ""));
+        const multiplier = headerSold[2].toLowerCase() === "k" ? 1_000 : headerSold[2].toLowerCase() === "m" ? 1_000_000 : 1;
+        if (Number.isFinite(amount)) {
+          stats.salesCount = Math.round(amount * multiplier);
+          stats.salesText = headerSold[0];
+          stats.salesSelector = "product-header";
+        }
+      }
+      if (productData?.ratingValue != null) {
+        stats.ratingValue = productData.ratingValue;
+        stats.ratingText = String(productData.ratingValue);
+        stats.ratingSelector = "item_rating.rating_star";
+      }
+      if (productData?.ratingCount != null) stats.ratingCount = productData.ratingCount;
       if (stats.ratingValue === null && structured?.ratingValue != null) stats.ratingValue = structured.ratingValue;
       if (stats.ratingCount === null && structured?.ratingCount != null) stats.ratingCount = structured.ratingCount;
       const galleryImages = common.collectImages(
         root,
         [...(productData?.images || []), ...(structured?.images || [])],
-        detail ? 60 : 6,
+        detail ? 120 : 6,
         detail
           ? "img[alt^='Product image' i], [data-testid*='product-image' i] img, [class*='product-image'] img, [class*='product-gallery'] img, [class*='image-carousel'] img"
           : "picture img, img"
@@ -105,13 +125,13 @@
         root,
         "[data-testid*='product-description' i] img, [class*='product-description'] img, [class*='description-content'] img, [class*='extended-description'] img, [itemprop='description'] img",
         "DETAIL",
-        60
+        120
       ) : [];
       const imagePlan = common.planListingImages([
         ...(productData?.imageCandidates || []),
         ...galleryImages,
         ...detailDomImages
-      ], detail ? 30 : 3);
+      ], detail ? 120 : 3);
       const images = imagePlan.images;
       common.applyStructuredSkuImageFallback(productData, images);
       const domVariantHints = detail ? common.extractVariantHints(root, [
@@ -191,6 +211,7 @@
         ratingText: stats.ratingText,
         ratingValue: stats.ratingValue,
         ratingCount: stats.ratingCount,
+        videos: productData?.videos || [],
         images,
         imageCompleteness: imagePlan.completeness,
         skus,

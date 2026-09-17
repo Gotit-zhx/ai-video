@@ -2,9 +2,13 @@ package com.yingdao.aicommerce.video.domain;
 
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Objects;
+import java.util.UUID;
 
 @TableName("video_scripts")
 public class VideoScript {
@@ -27,6 +31,12 @@ public class VideoScript {
     private boolean extractAudio;
     private String status;
     private int progress;
+    private String analysisRunId;
+    private String analysisStage;
+    private String analysisOutput;
+    private long analysisOutputCharacters;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Instant analysisOutputUpdatedAt;
     private String summary;
     private String visualTone;
     private String scriptJson;
@@ -77,6 +87,7 @@ public class VideoScript {
 
     public void markExtracting() {
         this.status = "EXTRACTING_FRAMES";
+        this.analysisStage = "EXTRACTING_FRAMES";
         this.progress = 20;
         this.errorMessage = null;
         this.updatedAt = Instant.now();
@@ -87,6 +98,11 @@ public class VideoScript {
         this.progress = 55;
         this.modelConfigId = modelConfigId;
         this.modelId = modelId;
+        this.analysisRunId = UUID.randomUUID().toString();
+        this.analysisStage = "REQUEST_ACCEPTED";
+        this.analysisOutput = "";
+        this.analysisOutputCharacters = 0;
+        this.analysisOutputUpdatedAt = null;
         this.updatedAt = Instant.now();
     }
 
@@ -99,12 +115,38 @@ public class VideoScript {
         return true;
     }
 
+    public boolean receiveAnalysisOutput(String runId, String stage, String output,
+                                         Long characters, Instant outputUpdatedAt) {
+        if (!"AI_ANALYZING".equals(status) || !Objects.equals(analysisRunId, runId)) return false;
+        boolean changed = false;
+        if (stage != null && !Objects.equals(analysisStage, stage)) {
+            analysisStage = stage;
+            changed = true;
+        }
+        if (output != null && outputUpdatedAt != null
+                && (analysisOutputUpdatedAt == null || !outputUpdatedAt.isBefore(analysisOutputUpdatedAt))) {
+            int start = Math.max(0, output.length() - 32_000);
+            if (start < output.length() && Character.isLowSurrogate(output.charAt(start))) start++;
+            String bounded = output.substring(start);
+            long count = Math.max(0, characters == null ? output.length() : characters);
+            if (!Objects.equals(analysisOutput, bounded) || analysisOutputCharacters != count) {
+                analysisOutput = bounded;
+                analysisOutputCharacters = count;
+                analysisOutputUpdatedAt = outputUpdatedAt;
+                changed = true;
+            }
+        }
+        if (changed) updatedAt = Instant.now();
+        return changed;
+    }
+
     public void complete(String summary, String visualTone, String scriptJson) {
         this.summary = summary;
         this.visualTone = visualTone;
         this.scriptJson = scriptJson;
         this.status = "READY";
         this.progress = 100;
+        this.analysisStage = "RESULT_READY";
         this.errorMessage = null;
         this.completedAt = Instant.now();
         this.updatedAt = this.completedAt;
@@ -122,6 +164,7 @@ public class VideoScript {
     public void fail(String message) {
         this.status = "FAILED";
         this.progress = 100;
+        this.analysisStage = "FAILED";
         this.errorMessage = message == null ? "视频脚本拆解失败" : message.substring(0, Math.min(message.length(), 1800));
         this.completedAt = Instant.now();
         this.updatedAt = this.completedAt;
@@ -130,6 +173,11 @@ public class VideoScript {
     public void prepareRetry() {
         this.status = "QUEUED";
         this.progress = 5;
+        this.analysisRunId = "";
+        this.analysisStage = "QUEUED";
+        this.analysisOutput = "";
+        this.analysisOutputCharacters = 0;
+        this.analysisOutputUpdatedAt = null;
         this.errorMessage = null;
         this.completedAt = null;
         this.updatedAt = Instant.now();
@@ -187,6 +235,11 @@ public class VideoScript {
     public boolean isExtractAudio() { return extractAudio; }
     public String getStatus() { return status; }
     public int getProgress() { return progress; }
+    public String getAnalysisRunId() { return analysisRunId; }
+    public String getAnalysisStage() { return analysisStage; }
+    public String getAnalysisOutput() { return analysisOutput; }
+    public long getAnalysisOutputCharacters() { return analysisOutputCharacters; }
+    public Instant getAnalysisOutputUpdatedAt() { return analysisOutputUpdatedAt; }
     public String getSummary() { return summary; }
     public String getVisualTone() { return visualTone; }
     public String getScriptJson() { return scriptJson; }

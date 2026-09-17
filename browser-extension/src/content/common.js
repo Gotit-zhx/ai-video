@@ -213,13 +213,16 @@
     for (const image of images) {
       if (result.length >= limit || excludedListingImage(image)) continue;
       const rect = image.getBoundingClientRect();
-      if (!api.isVisible(image) || rect.width < 32 || rect.height < 32) continue;
-      const srcset = image.getAttribute("srcset") || "";
+      const isDetail = normalizeListingImageRole(role) === "DETAIL";
+      // Description images can have zero dimensions until lazy loading runs.
+      // Read their declared source without requiring a viewport intersection.
+      if (!isDetail && (!api.isVisible(image) || rect.width < 32 || rect.height < 32)) continue;
+      const srcset = image.getAttribute("data-srcset") || image.getAttribute("srcset") || "";
       const largest = srcset.split(",").map(part => part.trim().split(/\s+/)[0]).filter(Boolean).at(-1);
-      const url = api.absoluteUrl(
-        largest || image.currentSrc || image.getAttribute("data-src")
-        || image.getAttribute("data-original") || image.src
-      );
+      const url = [largest, image.getAttribute("data-src"), image.getAttribute("data-original"),
+        image.getAttribute("data-lazy-src"), image.currentSrc, image.src]
+        .map(value => value ? api.absoluteUrl(value) : "")
+        .find(Boolean);
       if (!url || seen.has(url)) continue;
       seen.add(url);
       result.push({
@@ -232,12 +235,11 @@
     return result;
   };
 
-  // Product publishing has a hard 30-image ceiling. Keep the choice deterministic:
-  // main image first, every distinct SKU/variation representative next, then the
-  // remaining gallery and rich-description images. Truncation is explicit so a
-  // caller can block review instead of silently losing publication assets.
-  api.planListingImages = function planListingImages(candidates, limit = 30) {
-    const safeLimit = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 30) : 30;
+  // Capture keeps up to 120 source assets; each marketplace applies its own
+  // publishing limit later. Keep main and SKU images first, and report any
+  // overflow explicitly instead of silently losing description assets.
+  api.planListingImages = function planListingImages(candidates, limit = 120) {
+    const safeLimit = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 120) : 120;
     const rolePriority = { MAIN: 0, VARIANT: 1, GALLERY: 2, DETAIL: 3 };
     const byUrl = new Map();
     for (const [index, raw] of (Array.isArray(candidates) ? candidates : []).entries()) {

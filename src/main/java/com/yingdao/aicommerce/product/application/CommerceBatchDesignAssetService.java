@@ -16,6 +16,25 @@ import java.security.*;
 public class CommerceBatchDesignAssetService {
     public record Request(String itemId,String designId,String contentSha256,int imagePosition,boolean confirmed){}
     public record Candidate(String designId,String outputId,String contentSha256,int variantIndex,String mode){}
+    public List<CommerceDesignBatchTarget> targets(String designId,PlatformPrincipal user){
+        access(user,true);
+        var design=designs.get(user.organizationId(),designId);
+        if(design==null||user.externallyRegistered()&&!user.userId().equals(design.createdBy()))throw error(HttpStatus.NOT_FOUND,"设计不存在");
+        if(captures.get(design.captureId(),user).capture().getVersion()!=design.captureVersion())throw error(HttpStatus.CONFLICT,"来源版本已变化，请重新准备设计与批次");
+        var output=outputs.byDesign(user.organizationId(),designId);
+        if(output==null||!"QUALITY_APPROVED".equals(output.status()))throw error(HttpStatus.CONFLICT,"请先完成图片质量审核");
+        var review=reviews.get(user.organizationId(),output.id());
+        if(review==null||!"APPROVE".equals(review.decision())||!output.contentSha256().equals(review.contentSha256()))throw error(HttpStatus.CONFLICT,"图片审核记录不匹配");
+        var result=new ArrayList<CommerceDesignBatchTarget>();
+        Map<String,List<CommerceBatchDesignAsset>> cache=new HashMap<>();
+        for(var target:assets.targets(user.organizationId(),design.captureId(),design.captureVersion(),design.mode(),output.id())){
+            var bound=cache.computeIfAbsent(target.batchId(),batch->assets.list(user.organizationId(),batch));
+            Set<Integer> used=new HashSet<>();for(var asset:bound)if(asset.itemId().equals(target.itemId()))used.add(asset.imagePosition());
+            int position=1;while(position<=9&&used.contains(position))position++;
+            if(position<=9)result.add(new CommerceDesignBatchTarget(target.batchId(),target.batchName(),target.itemId(),target.shopName(),position));
+        }
+        return List.copyOf(result);
+    }
     private final CommerceBatchMapper batches;
     private final CommerceBatchDesignAssetMapper assets;
     private final CommerceBatchReviewMapper batchReviews;

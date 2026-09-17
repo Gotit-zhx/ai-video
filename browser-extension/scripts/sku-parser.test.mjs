@@ -29,6 +29,7 @@ const context = vm.createContext({
   fetch: async () => { throw new Error("network disabled in parser tests"); },
   window: { setTimeout, clearTimeout }
 });
+vm.runInContext(readFileSync(new URL("../src/shared/video-source.js", import.meta.url), "utf8"), context);
 vm.runInContext(readFileSync(new URL("../src/content/shopee-data.js", import.meta.url), "utf8"), context);
 vm.runInContext(readFileSync(new URL("../src/content/tiktok-data.js", import.meta.url), "utf8"), context);
 
@@ -43,6 +44,9 @@ const models96 = colors.flatMap((color, colorIndex) => sizes.map((size, sizeInde
   price_before_discount: 31_800_000 + sizeIndex * 100_000,
   stock: colorIndex + sizeIndex
 })));
+const fullVideoUrl = "https://down-aka-ph.vod.susercontent.com/api/v4/11110105/mms/ph-11110105-6v6xa-mqzwevrhc35wbd.16000081784791738.mp4";
+const previewVideoUrl = "https://mms.vod.susercontent.com/api/v4/11110105/mms/ph-11110105-6v6xa-mqzwevrhc35wbd.default.mp4";
+const secondVideoUrl = fullVideoUrl.replace("mqzwevrhc35wbd", "differentasset123");
 const shopee96Fixture = {
   data: {
     shop_detailed: { name: "SukiSilk" },
@@ -50,6 +54,7 @@ const shopee96Fixture = {
       item_id: 456,
       shop_id: 123,
       name: "96 SKU Fixture",
+      video_info_list: [{video_url:fullVideoUrl,default_url:previewVideoUrl},{video_url:secondVideoUrl}],
       currency: "PHP",
       image: "ph-product-main-image-123456",
       images: ["ph-product-main-image-123456", "ph-product-second-image-12345"],
@@ -72,6 +77,7 @@ const shopee96Fixture = {
   }
 };
 const parsed96 = common.parseShopeeProductData(shopee96Fixture, { shopId: "123", productId: "456" }, "TEST");
+assert.deepEqual(Array.from(parsed96.videos, video=>video.url),[fullVideoUrl,secondVideoUrl]);
 assert.equal(parsed96.skuCompleteness.expectedCount, 96);
 assert.equal(parsed96.skuCompleteness.capturedCount, 96);
 assert.equal(parsed96.skuCompleteness.variantDimensionCount, 2);
@@ -90,6 +96,20 @@ assert.deepEqual(
   ]
 );
 assert.equal(parsed96.imageCandidates.some(image => image.url.includes("review-image")), false);
+
+const summaryBeforeFullItem = {
+  recommendation: { item_id: 456, shop_id: 123, name: "Summary", price: 15_900_000 },
+  cached: structuredClone(shopee96Fixture)
+};
+const parsedAfterSummary = common.parseShopeeProductData(summaryBeforeFullItem, { shopId: "123", productId: "456" }, "TEST");
+assert.equal(parsedAfterSummary.skuCompleteness.complete, true, "a matching summary must not hide the full PDP in the same bootstrap");
+assert.equal(parsedAfterSummary.skus.length, 96);
+assert.equal(parsedAfterSummary.title, "96 SKU Fixture");
+const ratedFixture = structuredClone(shopee96Fixture);
+ratedFixture.data.item.item_rating = { rating_star: 5, total_rating_count: 9, rating_count: [9, 0, 0, 0, 0, 9] };
+const ratedProduct = common.parseShopeeProductData(ratedFixture, { shopId: "123", productId: "456" }, "TEST");
+assert.equal(ratedProduct.ratingValue, 5);
+assert.equal(ratedProduct.ratingCount, 9);
 
 const shopeeSingleFixture = {
   data: {
@@ -265,6 +285,44 @@ const newestComplete = await common.loadShopeeProductData({ shopId: "123", produ
 assert.equal(newestComplete.title, "Newer complete response");
 assert.equal(newestComplete.skus[0].stock, 99);
 
+const latestWithoutStock = structuredClone(shopee96Fixture);
+latestWithoutStock.data.item.name = "Latest network prices";
+for (const model of latestWithoutStock.data.item.models) model.stock = null;
+latestWithoutStock.data.item.models[0].price = 16_900_000;
+latestWithoutStock.data.item.models[1].stock = 0;
+const currentRendered = structuredClone(ratedFixture);
+for (const model of currentRendered.data.item.models) model.stock = 10;
+currentRendered.data.item.models.at(-1).modelid = "unrelated-model-id";
+context.HeyiCaptureBridge = { readEntries: async () => [
+  { value: latestWithoutStock, sequence: 4 },
+  { value: currentRendered, sequence: 1, source: "SHOPEE_RENDERED_PDP" }
+] };
+const enrichedStock = await common.loadShopeeProductData({ shopId: "123", productId: "456" });
+assert.equal(enrichedStock.title, "Latest network prices");
+assert.equal(enrichedStock.source, "SHOPEE_PAGE_RESPONSE");
+assert.equal(enrichedStock.skus[0].price, 169, "current network price must survive stock enrichment");
+assert.equal(enrichedStock.skus[0].stock, 10);
+assert.equal(enrichedStock.skus[0].stockSource, "SHOPEE_RENDERED_PDP");
+assert.equal(enrichedStock.skus[1].stock, 0, "explicit sold-out stock must never be overwritten");
+assert.equal(enrichedStock.skus[1].stockSource, "SHOPEE_PAGE_RESPONSE");
+assert.equal(enrichedStock.skus.at(-1).stock, null, "a different model ID must not supply inventory");
+assert.equal(enrichedStock.ratingValue, 5);
+assert.equal(enrichedStock.ratingCount, 9);
+const foreignRendered = structuredClone(currentRendered);
+foreignRendered.data.item.shop_id = 999;
+context.HeyiCaptureBridge = { readEntries: async () => [
+  { value: latestWithoutStock, sequence: 4 },
+  { value: foreignRendered, sequence: 1, source: "SHOPEE_RENDERED_PDP" }
+] };
+const foreignStockRejected = await common.loadShopeeProductData({ shopId: "123", productId: "456" });
+assert.equal(foreignStockRejected.skus[0].stock, null, "same model ID from a different shop must not supply inventory");
+context.HeyiCaptureBridge = { readEntries: async () => [
+  { value: latestWithoutStock, sequence: 4 },
+  { value: currentRendered, sequence: 1, source: "SHOPEE_PAGE_STATE" }
+] };
+const staleBootstrapStockRejected = await common.loadShopeeProductData({ shopId: "123", productId: "456" });
+assert.equal(staleBootstrapStockRejected.skus[0].stock, null, "generic bootstrap state must not pretend to be current rendered inventory");
+
 const delayedBootstrap = {
   initialState: {
     DOMAIN_PDP: {
@@ -302,6 +360,11 @@ assert.equal(rescannedBootstrap.title, "Delayed bootstrap");
 assert.equal(rescannedBootstrap.skus.length, 96);
 assert.ok(rescannedBootstrap.skus.every(sku => sku.stock === 10));
 assert.equal(rescannedBootstrap.skuCompleteness.complete, true);
+context.document.querySelectorAll = () => [{ textContent: `window.initialState = ${JSON.stringify(delayedBootstrap.initialState)};` }];
+context.HeyiCaptureBridge = { read: async () => [] };
+const assignedInitialState = await common.loadShopeeProductData({ shopId: "123", productId: "456" });
+assert.equal(assignedInitialState.skus.length, 96, "Shopee's lower-case initialState assignment must be parsed without evaluating JavaScript");
+assert.equal(assignedInitialState.skuCompleteness.complete, true);
 context.document.querySelectorAll = () => [];
 
 const tiktokFixture = {
@@ -405,6 +468,10 @@ assert.equal(parsedTikTok.description, "Ready Stock\nPurchase Note\nCheck the si
 assert.equal(parsedTikTok.description.includes("ibyteimg.com"), false);
 assert.equal(parsedTikTok.description.split("Ready Stock").length - 1, 1);
 assert.deepEqual(Array.from(parsedTikTok.images), ["https://p16-oec-va.ibyteimg.com/product-main.webp"]);
+assert.deepEqual(Array.from(parsedTikTok.detailImages), [
+  "https://p16-oec-va.ibyteimg.com/detail-one.webp",
+  "https://p16-oec-va.ibyteimg.com/detail-two.webp"
+]);
 assert.equal(common.parseTikTokProductData(tiktokFixture, { productId: "7400000000000000000" }, "TEST"), null);
 
 const tiktokArrayDescriptionFixture = structuredClone(tiktokFixture);
@@ -420,6 +487,32 @@ const parsedTikTokArrayDescription = common.parseTikTokProductData(
   "TEST"
 );
 assert.equal(parsedTikTokArrayDescription.description, "Array block one\nArray block two");
+assert.deepEqual(Array.from(parsedTikTokArrayDescription.detailImages), ["https://p16-oec-va.ibyteimg.com/array-detail.webp"]);
+
+const scopedTikTokDescriptionFixture = structuredClone(tiktokFixture);
+const scopedDescriptionProduct = scopedTikTokDescriptionFixture.loaderData.productPage.component_data.product_info.product_model;
+scopedDescriptionProduct.description = { blocks: [
+  { type: "image", image: { url: "tos-storage-key-must-not-become-page-url", url_list: [
+    "https://p16-oec-va.ibyteimg.com/scoped-detail.webp", "https://p19-oec-va.ibyteimg.com/scoped-detail.webp"
+  ] } },
+  { field_type: "image", image_info: { image_url: "//p16-oec-va.ibyteimg.com/second-detail.webp" } },
+  { type: "image", url: "https://p16-oec-va.ibyteimg.com/scoped-detail.webp" },
+  { type: "image", image: { url: "javascript:alert(1)" } },
+  { type: "image", image: { url: "http://p16-oec-va.ibyteimg.com/insecure.webp" } },
+  { type: "image", image: { url: "tos-storage-key-only" } },
+  { type: "video", image: { url: "https://p16-oec-va.ibyteimg.com/video-poster.webp" } },
+  { type: "review", children: [{ type: "image", url: "https://example.com/review.webp" }] },
+  { type: "text", text: "https://example.com/plain-url-is-not-an-image.webp" }
+], reviews: [{ image: { url: "https://example.com/unrelated-review.webp" } }] };
+scopedDescriptionProduct.review_images = ["https://example.com/product-review.webp"];
+scopedTikTokDescriptionFixture.recommendations = [{
+  product_id: "7400000000000000000", description: [{ type: "image", url: "https://example.com/recommended-product.webp" }]
+}];
+const scopedTikTokDescription = common.parseTikTokProductData(scopedTikTokDescriptionFixture, { productId: "7499999999999999999" });
+assert.deepEqual(Array.from(scopedTikTokDescription.detailImages), [
+  "https://p16-oec-va.ibyteimg.com/scoped-detail.webp", "https://p16-oec-va.ibyteimg.com/second-detail.webp"
+]);
+assert.equal(scopedTikTokDescription.images[0], "https://p16-oec-va.ibyteimg.com/product-main.webp");
 
 const tiktokPlainDescriptionFixture = structuredClone(tiktokFixture);
 const plainDescriptionProduct = tiktokPlainDescriptionFixture.loaderData.productPage.component_data.product_info.product_model;
@@ -430,6 +523,7 @@ const parsedTikTokPlainDescription = common.parseTikTokProductData(
   "TEST"
 );
 assert.equal(parsedTikTokPlainDescription.description, "[Ready stock]\nLine  two");
+assert.deepEqual(Array.from(parsedTikTokPlainDescription.detailImages), []);
 
 const staleTikTokBootstrap = structuredClone(tiktokFixture);
 const staleTikTokProduct = staleTikTokBootstrap.loaderData.productPage.component_data.product_info.product_model;

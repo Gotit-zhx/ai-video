@@ -13,7 +13,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev --no-audit --no-fund --registry=https://registry.npmmirror.com
+RUN cp /app/skills/watch/SKILL.md /app/skills/watch/UPSTREAM.md
+COPY skills/watch/SKILL.md /app/skills/watch/SKILL.md
 COPY src src
+RUN mkdir -p /data/image-operations && chown node:node /data/image-operations
 USER node
 EXPOSE 8090
 CMD ["npm", "start"]

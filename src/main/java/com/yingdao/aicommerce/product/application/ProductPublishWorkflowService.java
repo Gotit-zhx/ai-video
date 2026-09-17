@@ -50,6 +50,12 @@ public class ProductPublishWorkflowService {
     private final ProductCaptureService captureService;
     private final ShopIntegrationSettings shopSettings;
     private final ObjectMapper objectMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private PublishExchangeRates exchangeRates;
+    @org.springframework.beans.factory.annotation.Value("${app.product-capture.watermark.provider:DRY_RUN}")
+    private String watermarkProvider = "DRY_RUN";
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate commerceDb;
 
     public ProductPublishWorkflowService(ProductPublishWorkflowMapper workflowMapper,
                                          ProductCaptureMapper captureMapper,
@@ -74,6 +80,7 @@ public class ProductPublishWorkflowService {
                                String idempotencyKey, PlatformPrincipal principal) {
         String key = requireIdempotencyKey(idempotencyKey);
         Map<String, Object> body = mutableMap(request);
+        body.remove("exchangeRateSnapshot"); // Server-owned immutable quote; never trust a browser rate.
         if (!confirmed(body.get("confirmed"))) {
             throw badRequest("一键上传前必须明确提交 confirmed=true");
         }
@@ -95,6 +102,10 @@ public class ProductPublishWorkflowService {
                 principal.organizationId(), key);
         if (sameKey != null) {
             body.put("executionMode", executionMode(sameKey));
+            var savedRequest = request(sameKey);
+            if (savedRequest.containsKey("exchangeRateSnapshot")) body.put("exchangeRateSnapshot", savedRequest.get("exchangeRateSnapshot"));
+            if (savedRequest.containsKey("visionWatermarkCheck")) body.put("visionWatermarkCheck",savedRequest.get("visionWatermarkCheck"));
+            else body.remove("visionWatermarkCheck");
             String fingerprint = fingerprint(captureId, sameKey.getCaptureVersion(), body);
             verifySameRequest(sameKey, captureId, fingerprint);
             return new CreateResult(view(sameKey), false, false);
@@ -107,10 +118,22 @@ public class ProductPublishWorkflowService {
         ProductCaptureService.CaptureDetail captureDetail = captureService.get(captureId, principal);
         ProductCapture capture = captureDetail.capture();
         String initialStep = initialStep(capture.getStatus());
+        boolean generated = commerceDb != null && commerceDb.queryForObject("SELECT COUNT(*) FROM commerce_batch_publications WHERE organization_id=? AND capture_id=?",Integer.class,principal.organizationId(),captureId)>0;
+        boolean watermarkCheck = "AI_WATERMARK_V1".equals(watermarkProvider) && !generated;
+        if (watermarkCheck && "PUBLISHED".equals(capture.getStatus())) {
+            throw badRequest("已发布商品请先建立独立的新草稿再进行水印复检上传");
+        }
+        body.put("visionWatermarkCheck", watermarkCheck);
+        if (watermarkCheck) initialStep = "IMAGES";
         requireStagePermissions(initialStep, principal);
         String storedShopId = storedShopId(requestedShopId, executionMode);
         if (storedShopId != null) {
             validateShop(principal.organizationId(), storedShopId, destination);
+        }
+        if (Boolean.TRUE.equals(body.get("autoConvertPrice")) && MODE_LIVE.equals(executionMode)) {
+            if (body.containsKey("publishPrice")) throw badRequest("自动换算不能同时指定统一售价");
+            var quote = exchangeRates.snapshot(capture.getCurrency(), shopMapper.selectById(storedShopId).getRegion());
+            body.put("exchangeRateSnapshot", quote);
         }
         String requestJson = writeJson(body);
         if (requestJson.length() > MAX_REQUEST_JSON_LENGTH) {
@@ -302,14 +325,14 @@ public class ProductPublishWorkflowService {
                 workflow.getCurrentStep(), workflow.getAttemptCount(), workflow.getRetryCount(),
                 workflow.isPublicationAttempted(),
                 stage(imageJob == null ? null : imageJob.getId(), imageJob == null ? null : imageJob.getStatus(),
-                        imageJob == null ? null : imageJob.getErrorMessage()),
+                        imageJob == null ? null : imageJob.getErrorMessage(), imageJob == null ? 0 : imageJob.getProcessedImages(), imageJob == null ? 0 : imageJob.getTotalImages()),
                 audit(audit), workflow.getErrorMessage(), workflow.getCreatedAt(), workflow.getUpdatedAt(),
                 workflow.getCompletedAt()
         );
     }
 
-    private StageView stage(String id, String status, String error) {
-        return id == null ? null : new StageView(id, status, error);
+    private StageView stage(String id, String status, String error, int processed, int total) {
+        return id == null ? null : new StageView(id, status, error, processed, total);
     }
 
     private PublishStageView audit(ProductPublishAudit audit) {
@@ -352,6 +375,7 @@ public class ProductPublishWorkflowService {
         // Excluding it lets the publication-target guard coalesce concurrent equivalent requests
         // even when a client regenerated its Idempotency-Key after losing the first response.
         request.remove("idempotencyKey");
+        request.remove("exchangeRateSnapshot"); // Derived server quote is retained by the winning request.
         Map<String, Object> envelope = new TreeMap<>();
         envelope.put("captureId", captureId);
         envelope.put("captureVersion", captureVersion);
@@ -485,7 +509,7 @@ public class ProductPublishWorkflowService {
                                String errorMessage, Instant createdAt, Instant updatedAt,
                                Instant completedAt) {}
 
-    public record StageView(String id, String status, String errorMessage) {}
+    public record StageView(String id, String status, String errorMessage, int processedImages, int totalImages) {}
 
     public record PublishStageView(String id, String status, boolean dryRun, String provider,
                                    String externalId, String remoteStatus, String errorMessage) {}

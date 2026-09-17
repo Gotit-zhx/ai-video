@@ -66,6 +66,28 @@ class ProductPublishWorkflowServiceTest {
     }
 
     @Test
+    void automaticQuoteIsServerOwnedAndIdempotentReplayDoesNotRefetch() {
+        when(shopSettings.publishingProvider()).thenReturn("OFFICIAL");
+        when(shopSettings.effectiveLivePublishing()).thenReturn(true);
+        var fx = mock(PublishExchangeRates.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "exchangeRates", fx);
+        var shop = mock(Shop.class);
+        when(shop.getRegion()).thenReturn("MY");
+        when(shopMapper.selectById("shop-1")).thenReturn(shop);
+        var quote = Map.<String,Object>of("sourceCurrency", "PHP", "targetCurrency", "MYR", "rate", "0.06");
+        when(fx.snapshot(any(), any())).thenReturn(quote);
+        var request = Map.<String,Object>of("confirmed",true,"destinationPlatform","SHOPEE","shopId","shop-1",
+                "autoConvertPrice",true,"exchangeRateSnapshot",Map.of("rate","999"));
+        service.create(capture.getId(),request,"fx-workflow-key-123",principal);
+        var inserted = ArgumentCaptor.forClass(ProductPublishWorkflow.class);
+        verify(workflowMapper).insert(inserted.capture());
+        assertEquals(quote,service.request(inserted.getValue()).get("exchangeRateSnapshot"));
+        when(workflowMapper.findByIdempotency("org-a","fx-workflow-key-123")).thenReturn(inserted.getValue());
+        service.create(capture.getId(),request,"fx-workflow-key-123",principal);
+        verify(fx,times(1)).snapshot(any(),any());
+    }
+
+    @Test
     void createsDurableWorkflowBoundToCaptureVersionAndNormalizedTarget() {
         Map<String, Object> request = Map.of(
                 "confirmed", true,
