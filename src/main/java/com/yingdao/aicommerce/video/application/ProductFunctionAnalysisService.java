@@ -106,12 +106,7 @@ public class ProductFunctionAnalysisService {
             ValidationImage analysisImage = compactForInitialAnalysis(
                     sourceBytes, item.getSourceContentType());
             Map<String, Object> request = new LinkedHashMap<>();
-            request.put("model", Map.of(
-                    "baseUrl", model.baseUrl(),
-                    "modelId", model.modelId(),
-                    "apiFormat", model.apiFormat(),
-                    "apiKey", model.apiKey()
-            ));
+            request.put("model", model.driverRequestModel());
             Map<String, Object> context = new LinkedHashMap<>();
             context.put("analysisType", garment ? GARMENT_TOPOLOGY_VERSION : "PRODUCT_FUNCTION_V1");
             context.put("productCategory", garment ? "服装" : "日用品");
@@ -209,8 +204,7 @@ public class ProductFunctionAnalysisService {
             selectedModelId = model.modelId();
             Path source = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize();
             Map<String, Object> request = new LinkedHashMap<>();
-            request.put("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
-                    "apiFormat", model.apiFormat(), "apiKey", model.apiKey()));
+            request.put("model", model.driverRequestModel());
             request.put("context", Map.of(
                     "analysisType", "GARMENT_TOPOLOGY_VALIDATION_V1",
                     "assetType", assetType,

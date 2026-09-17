@@ -450,7 +450,7 @@ public class VideoScriptService {
         }
         Path source = Path.of(script.getSourceFilePath()).toAbsolutePath().normalize();
         Path exactPreview = source.getParent() == null ? null : source.getParent().resolve("shot-previews")
-                .resolve(String.format(Locale.ROOT, "shot-%03d.jpg", shot.getSequenceNo())).normalize();
+                .resolve(String.format(Locale.ROOT, "shot-%03d.jpg", (int) sourceNumber(shot, "sourcePreviewSequence", shot.getSequenceNo()))).normalize();
         if (exactPreview != null && exactPreview.startsWith(storageRoot) && Files.isRegularFile(exactPreview)) {
             try {
                 return new ShotPreview(exactPreview, Files.getLastModifiedTime(exactPreview).toInstant());
@@ -493,7 +493,8 @@ public class VideoScriptService {
                 .mapToDouble(BigDecimal::doubleValue)
                 .max()
                 .orElse(0.0);
-        double midpoint = midpoint(shot);
+        timelineEnd = sourceNumber(shot, "sourceDurationSeconds", timelineEnd);
+        double midpoint = sourceNumber(shot, "sourceTimestampSeconds", midpoint(shot));
         int frameIndex;
         if (timelineEnd > 0.0 && midpoint >= 0.0) {
             frameIndex = (int) Math.round((midpoint / timelineEnd) * (frames.size() - 1));
@@ -516,6 +517,66 @@ public class VideoScriptService {
         } catch (IOException exception) {
             throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取分镜预览失败");
         }
+    }
+
+    @Transactional
+    public VideoScriptDetail deleteShot(String scriptId, String shotId, PlatformPrincipal principal) {
+        VideoScript script = scriptMapper.selectOne(new LambdaQueryWrapper<VideoScript>()
+                .eq(VideoScript::getId, scriptId).eq(VideoScript::getOrganizationId, principal.organizationId())
+                .last("FOR UPDATE"));
+        if (script == null) throw new BusinessException(HttpStatus.NOT_FOUND, "视频脚本不存在");
+        if (!Set.of("READY", "DRAFT").contains(script.getStatus()))
+            throw new BusinessException(HttpStatus.CONFLICT, "当前脚本尚未完成，暂时不能删除分镜");
+        List<VideoScriptShot> shots = shotMapper.selectList(new LambdaQueryWrapper<VideoScriptShot>()
+                .eq(VideoScriptShot::getScriptId, scriptId)
+                .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
+                .orderByAsc(VideoScriptShot::getSequenceNo));
+        VideoScriptShot removed = shots.stream().filter(shot -> shotId.equals(shot.getId())).findFirst()
+                .orElseThrow(() -> new BusinessException(HttpStatus.NOT_FOUND, "分镜不存在，可能已被删除"));
+        if (shots.size() <= 1) throw new BusinessException(HttpStatus.CONFLICT, "至少保留一个分镜");
+        if (shots.stream().anyMatch(shot -> shot.getEndSecond() == null || shot.getDurationSeconds() == null
+                || shot.getDurationSeconds().signum() <= 0))
+            throw new BusinessException(HttpStatus.CONFLICT, "分镜时长无效，请先修正脚本");
+        BigDecimal total = shots.stream().map(VideoScriptShot::getEndSecond).max(BigDecimal::compareTo).orElseThrow();
+        List<VideoScriptShot> remaining = shots.stream().filter(shot -> !shotId.equals(shot.getId())).toList();
+        BigDecimal weight = remaining.stream().map(VideoScriptShot::getDurationSeconds)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (weight.signum() <= 0 || total.signum() <= 0)
+            throw new BusinessException(HttpStatus.CONFLICT, "分镜时长无效，请先修正脚本");
+        shotMapper.deleteById(removed.getId());
+        BigDecimal elapsed = BigDecimal.ZERO, cumulative = BigDecimal.ZERO;
+        // Ascending compaction is safe for the unique (script_id, sequence_no) index after deletion.
+        for (int index = 0; index < remaining.size(); index++) {
+            VideoScriptShot shot = remaining.get(index);
+            Map<String, Object> prompt = new LinkedHashMap<>();
+            if (shot.getImagePromptJson() != null) {
+                try { prompt.putAll(objectMapper.readValue(shot.getImagePromptJson(), Map.class)); }
+                catch (Exception ignored) { prompt.put("prompt", shot.getSceneDescription()); }
+            }
+            prompt.putIfAbsent("sourcePreviewSequence", shot.getSequenceNo());
+            prompt.putIfAbsent("sourceTimestampSeconds", midpoint(shot));
+            prompt.putIfAbsent("sourceDurationSeconds", total);
+            cumulative = cumulative.add(shot.getDurationSeconds());
+            BigDecimal end = index == remaining.size() - 1 ? total
+                    : total.multiply(cumulative).divide(weight, 3, RoundingMode.HALF_UP);
+            if (end.compareTo(elapsed) <= 0)
+                throw new BusinessException(HttpStatus.CONFLICT, "脚本时长过短，无法重新分配");
+            try { shot.retime(index + 1, elapsed, end, objectMapper.writeValueAsString(prompt)); }
+            catch (BusinessException exception) { throw exception; }
+            catch (Exception exception) { throw new IllegalStateException("分镜时长保存失败", exception); }
+            shotMapper.updateById(shot);
+            elapsed = end;
+        }
+        script.saveEditedJson(rebuildScriptJson(script, remaining));
+        scriptMapper.updateById(script);
+        return new VideoScriptDetail(script, remaining);
+    }
+
+    private double sourceNumber(VideoScriptShot shot, String key, double fallback) {
+        try {
+            Object value = objectMapper.readValue(shot.getImagePromptJson(), Map.class).get(key);
+            return value instanceof Number number ? number.doubleValue() : fallback;
+        } catch (Exception ignored) { return fallback; }
     }
 
     @Transactional
@@ -851,6 +912,7 @@ public class VideoScriptService {
         for (VideoScriptShot shot : shots) {
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("sequence", shot.getSequenceNo());
+            value.put("sourceSequence", (int) sourceNumber(shot, "sourcePreviewSequence", shot.getSequenceNo()));
             value.put("stage", shot.getStage());
             value.put("title", shot.getTitle());
             value.put("startSecond", shot.getStartSecond());

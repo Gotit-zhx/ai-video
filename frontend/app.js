@@ -9269,7 +9269,7 @@ function selectRenderedShot(button, shot, scriptId) {
   document.querySelectorAll("#script-film-strip .film-frame").forEach(candidate => candidate.classList.remove("active"));
   button.classList.add("active");
   document.querySelector("#selected-shot-number").textContent =
-    `分镜 ${String(shot.sequence || 1).padStart(2, "0")} · ${shot.stage || "CONTENT"}`;
+    `分镜 ${String(shot.sequence || 1).padStart(2, "0")} · ${Number(shot.startSecond || 0).toFixed(2)}–${Number(shot.endSecond || 0).toFixed(2)} 秒 · 时长 ${Number(shot.durationSeconds || 0).toFixed(2)} 秒`;
   document.querySelector("#selected-shot-title").textContent = shot.title || `分镜 ${shot.sequence || 1}`;
   document.querySelector("#selected-shot-copy").textContent = shot.sceneDescription || "暂无画面描述";
   document.querySelector("#selected-shot-size").textContent = shot.shotSize || "未填写";
@@ -9370,6 +9370,10 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
   document.querySelector("#edit-video-shot").hidden = !canManageScripts;
   const scriptIsProcessing = processingVideoScriptStatuses.has(script.status);
   deleteButton.disabled = scriptIsProcessing;
+  const deleteShotButton = document.querySelector("#delete-video-shot");
+  deleteShotButton.hidden = !canManageScripts;
+  deleteShotButton.disabled = scriptIsProcessing || shots.length <= 1;
+  deleteShotButton.title = shots.length <= 1 ? "至少保留一个分镜" : "删除后自动分配剩余分镜时长，总时长不变";
   copyButton.disabled = scriptIsProcessing || !["READY", "DRAFT"].includes(script.status);
   editToneButton.disabled = scriptIsProcessing;
   deleteButton.title = deleteButton.disabled ? "视频拆解处理中，暂时不能删除" : "删除脚本及其服务器文件";
@@ -9408,12 +9412,36 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
     button.innerHTML = manualScript
       ? `<span class="manual-shot-kicker"><i>${String(shot.sequence || index + 1).padStart(2, "0")}</i><em>${escapeHtml(shot.stage || "CONTENT")}</em></span><b>${escapeHtml(shot.title || "未命名分镜")}</b><p>${escapeHtml(shot.sceneDescription || "暂未填写画面描述")}</p><small>${escapeHtml(shot.shotSize || "景别待定")} · ${escapeHtml(shot.cameraMovement || "运镜待定")}</small>`
       : `<img class="shot-frame-preview" src="${videoShotPreviewUrl(id, shot.id)}" alt="${escapeHtml(shot.title || `分镜 ${index + 1}`)}原视频画面"><i>${String(shot.sequence || index + 1).padStart(2, "0")}</i><b>${escapeHtml(shot.title || "未命名分镜")}</b><small>${escapeHtml(shot.cameraMovement || shot.shotSize || "镜头待定")}</small>`;
+    const timeLabel = document.createElement("span");
+    timeLabel.className = "shot-time";
+    timeLabel.textContent = `${Number(shot.durationSeconds || 0).toFixed(2)} 秒`;
+    button.append(timeLabel);
     if (!manualScript) button.querySelector("img").addEventListener("error", () => button.classList.remove("has-preview"));
     button.addEventListener("click", () => selectRenderedShot(button, shot, id));
     strip.append(button);
   });
   selectRenderedShot(strip.querySelectorAll(".film-frame")[selectedShotIndex], shots[selectedShotIndex], id);
 }
+
+document.querySelector("#delete-video-shot").addEventListener("click", async () => {
+  const shot = selectedVideoShot;
+  const scriptId = selectedVideoScriptDetail?.script?.id;
+  const button = document.querySelector("#delete-video-shot");
+  const status = document.querySelector("#shot-delete-status");
+  if (!shot?.id || !scriptId || button.disabled) return;
+  if (!window.confirm(`删除分镜「${shot.title || shot.sequence}」？剩余分镜将按原时长比例重新分配秒数，总时长不变。`)) return;
+  const organizationId = currentUser?.organizationId;
+  button.disabled = true;
+  status.textContent = "正在删除并调整时长…";
+  try {
+    await api(`/api/v1/video-scripts/${encodeURIComponent(scriptId)}/shots/${encodeURIComponent(shot.id)}`, {method: "DELETE"});
+    if (currentUser?.organizationId !== organizationId) return;
+    await loadVideoScripts(scriptId);
+    status.textContent = "已删除，剩余分镜时长已自动调整";
+  } catch (error) { status.textContent = error.message; }
+  finally { button.disabled = (selectedVideoScriptDetail?.shots?.length || 0) <= 1
+    || processingVideoScriptStatuses.has(selectedVideoScriptDetail?.script?.status); }
+});
 
 document.querySelector("#edit-video-shot").addEventListener("click", () => {
   if (!selectedVideoShot?.id || !selectedVideoShot?.scriptId) return;
@@ -12006,7 +12034,7 @@ async function loadAiVideoTaskScripts() {
     const readyScripts = (result.data || []).filter(script => script.status === "READY");
     const details = await Promise.all(readyScripts.map(script => api(`/api/v1/video-scripts/${encodeURIComponent(script.id)}`).catch(() => null)));
     aiVideoUsableScripts = details.filter(Boolean).map(result => result.data)
-      .filter(detail => detail?.shots?.length === 9);
+      .filter(detail => detail?.shots?.length >= 1 && detail.shots.length <= 9);
     renderAiVideoTaskScriptOptions();
     syncVideoTaskModeForm();
   } catch (error) {
@@ -12042,7 +12070,7 @@ function renderAiVideoTaskScriptOptions() {
         const replicaMode = scriptReplica ? ` · ${videoScriptPresentationNames[scriptMode] || "未知类型"}` : "";
         return `<option value="${escapeHtml(detail.script.id)}" data-source-type="${escapeHtml(detail.script.sourceType || "")}" data-presentation-mode="${escapeHtml(scriptMode)}" data-target-market="${escapeHtml(detail.script.targetMarket || "")}" data-has-narration="${hasNarration}">${escapeHtml(detail.script.name)} / v${Number(detail.script.version || 1)}${replicaMode}${legacy}${narration}</option>`;
       }).join("")}`
-    : `<option value="">暂无${modeName}的完整 9 分镜脚本</option>`;
+    : `<option value="">暂无${modeName}的可用脚本</option>`;
   if (matching.some(detail => detail.script.id === previous)) select.value = previous;
   submit.disabled = matching.length === 0;
   document.querySelector("#video-task-dialog-note").textContent = matching.length

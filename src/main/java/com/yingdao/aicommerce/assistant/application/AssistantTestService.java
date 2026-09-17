@@ -142,12 +142,7 @@ public class AssistantTestService {
                         .body(new PiRequest(
                                 sessionId,
                                 prompt,
-                                new PiModel(
-                                        model.baseUrl(),
-                                        model.modelId(),
-                                        model.apiKey(),
-                                        "openai-completions"
-                                ),
+                                model.driverRequestModel(),
                                 imageModel.map(connection -> new PiImageModel(
                                         connection.baseUrl(),
                                         connection.modelId(),
@@ -428,7 +423,7 @@ public class AssistantTestService {
     private record PiRequest(
             String sessionId,
             String prompt,
-            PiModel model,
+            Map<String, Object> model,
             PiImageModel imageModel,
             List<PiInputImage> inputImages
     ) {

@@ -3354,3 +3354,52 @@ html[data-theme="dark"] select { color-scheme: dark; }
 #system-rbac-panel .permission-group li em { font-size: 11px; color: var(--muted); }
 @media (max-width: 1100px) { #system-rbac-panel .permission-preview { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { #system-rbac-panel .rbac-layout { grid-template-columns: 1fr; } #system-rbac-panel .role-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } #system-rbac-panel .permission-editor-head { flex-wrap: wrap; } }
+
+/* Selected shot: explicit areas prevent action controls from covering the copy. */
+#video-scripts-page .shot-editor-card,
+#video-scripts-page .shot-editor-card:not(:has(.shot-editor-preview:not([hidden]))) {
+  grid-template-columns: minmax(0, 1fr) minmax(210px, .55fr);
+  grid-template-areas: "copy facts";
+  align-items: start; gap: 22px; padding: 18px; background: var(--surface);
+}
+#video-scripts-page .shot-editor-card:has(.shot-editor-preview:not([hidden])) {
+  grid-template-columns: 112px minmax(0, 1fr) minmax(210px, .55fr);
+  grid-template-areas: "preview copy facts";
+}
+#video-scripts-page .shot-editor-card:has(.shot-editor-preview:not([hidden])) .shot-editor-preview {
+  width: 112px; height: 150px; border-radius: 6px; box-shadow: none;
+}
+#video-scripts-page .shot-editor-card > .shot-detail-copy { grid-area: copy; align-self: start; display: grid; gap: 10px; }
+#video-scripts-page .shot-detail-heading { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+#video-scripts-page .shot-detail-heading h3 { margin: 0; font-size: 17px; line-height: 1.45; }
+#video-scripts-page .shot-edit-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
+#video-scripts-page .shot-edit-actions button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  width: auto; min-width: 0; min-height: 0; height: 30px; padding: 0 9px;
+  border: 1px solid transparent; border-radius: 5px; background: transparent;
+  color: var(--muted); font: 500 12px/1 var(--font-sans); white-space: nowrap;
+}
+#video-scripts-page .shot-edit-actions button:hover { background: var(--surface-soft); border-color: var(--line); color: var(--ink); }
+#video-scripts-page .shot-edit-actions #delete-video-shot:hover { color: #c43131; border-color: #f1cccc; background: #fff6f6; }
+#video-scripts-page .shot-edit-actions button:disabled { opacity: .4; cursor: not-allowed; }
+#video-scripts-page .shot-edit-actions button[hidden] { display: none; }
+#video-scripts-page .shot-edit-actions svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#video-scripts-page .shot-editor-card #shot-delete-status { color: var(--muted); font: 400 12px/1.5 var(--font-sans); letter-spacing: 0; }
+#shot-delete-status:empty { display: none; }
+#video-scripts-page .shot-editor-card dl { grid-area: facts; align-self: start; background: transparent; border: 0; border-left: 1px solid var(--line); border-radius: 0; gap: 15px 12px; padding-left: 20px; }
+#video-scripts-page .shot-editor-card dl div { padding: 0; text-align: left; border: 0; background: transparent; }
+#video-scripts-page .shot-editor-card dd { white-space: normal; font-size: 12px; font-weight: 500; line-height: 1.6; }
+.film-frame .shot-time { display:block; margin-top:5px; font-size:11px; color:#d4d4d4; }
+@media (max-width: 1180px) {
+  #video-scripts-page .shot-editor-card:has(.shot-editor-preview:not([hidden])) { grid-template-columns: 96px minmax(0, 1fr); grid-template-areas: "preview copy" "preview facts"; gap: 14px 18px; }
+  #video-scripts-page .shot-editor-card:has(.shot-editor-preview:not([hidden])) .shot-editor-preview { width: 96px; height: 132px; }
+  #video-scripts-page .shot-editor-card dl { border-left: 0; padding-left: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 680px) {
+  #video-scripts-page .shot-editor-card,
+  #video-scripts-page .shot-editor-card:not(:has(.shot-editor-preview:not([hidden]))) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "copy" "facts"; }
+  #video-scripts-page .shot-editor-card:has(.shot-editor-preview:not([hidden])) { grid-template-columns: 72px minmax(0, 1fr); grid-template-areas: "preview copy" "facts facts"; padding: 12px; gap: 12px; }
+  #video-scripts-page .shot-editor-card:has(.shot-editor-preview:not([hidden])) .shot-editor-preview { width: 72px; height: 100px; }
+  #video-scripts-page .shot-edit-actions { margin-left: 0; }
+  #video-scripts-page .shot-editor-card dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

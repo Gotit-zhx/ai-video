@@ -194,6 +194,12 @@ public class VideoScriptController {
                 .body(new FileSystemResource(preview.path()));
     }
 
+    @DeleteMapping("/{scriptId}/shots/{shotId}")
+    public ApiResponse<VideoScriptDetailResponse> deleteShot(@PathVariable String scriptId,
+            @PathVariable String shotId, @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.ok(VideoScriptDetailResponse.from(service.deleteShot(scriptId, shotId, principal)));
+    }
+
     @PatchMapping("/{scriptId}/shots/{shotId}")
     public ApiResponse<VideoScriptShotResponse> updateShot(
             @PathVariable String scriptId,

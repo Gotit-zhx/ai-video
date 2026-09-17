@@ -342,3 +342,37 @@ test('compatible clean EOF is accepted only after an explicit successful finish'
     else await assert.rejects(mock.request({allowMissingDone:true}));
   }
 });
+
+test('driver fallback keeps prompt and images, uses separate credentials and stays bounded', async () => {
+  const calls = [];
+  const config = { baseUrl: 'https://primary.test', modelId: 'primary', fallbackModels: [
+    { baseUrl: 'https://backup.test', modelId: 'grok-4.6', apiKey: 'backup-key' }
+  ] };
+  const result = await requestChatCompletion({ config, apiKey: 'primary-key', messages,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, auth: options.headers.Authorization, body: JSON.parse(options.body) });
+      return calls.length === 1 ? new Response('{"error":{"message":"maintenance"}}', { status: 403 })
+        : new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'OK' } }] }));
+    } });
+  assert.equal(result.reply, 'OK'); assert.equal(result.fallbackUsed, true);
+  assert.equal(calls.length, 2); assert.equal(calls[1].auth, 'Bearer backup-key');
+  assert.deepEqual(calls[1].body.messages, messages); assert.equal(calls[1].body.model, 'grok-4.6');
+});
+
+test('never switches on content filtering, caller cancellation, or already displayed partial text', async () => {
+  for (const mode of ['filter', 'cancel', 'partial']) {
+    let calls = 0;
+    const controller = new AbortController();
+    await assert.rejects(requestChatCompletion({
+      config: { baseUrl: 'https://primary.test', modelId: 'p', fallbackModels: [{ baseUrl: 'https://b.test', modelId: 'b', apiKey: 'b' }] },
+      apiKey: 'p', messages, signal: controller.signal, onTextDelta: () => {},
+      fetchImpl: async () => {
+        calls++;
+        if (mode === 'cancel') { controller.abort(); throw new DOMException('aborted', 'AbortError'); }
+        if (mode === 'partial') return new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+        return new Response(JSON.stringify({ choices: [{ finish_reason: 'content_filter', message: { content: '' } }] }));
+      }
+    }));
+    assert.equal(calls, 1, mode);
+  }
+});

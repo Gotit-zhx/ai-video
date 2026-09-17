@@ -105,8 +105,8 @@ public class AiVideoTaskService {
         }
         long shotCount = shotMapper.selectCount(new LambdaQueryWrapper<com.yingdao.aicommerce.video.domain.VideoScriptShot>()
                 .eq(com.yingdao.aicommerce.video.domain.VideoScriptShot::getScriptId, script.getId()));
-        if (shotCount != 9) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前脚本不是完整 9 个分镜，请先补足分镜");
+        if (shotCount < 1 || shotCount > 9) {
+            throw new BusinessException(HttpStatus.CONFLICT, "脚本需要保留 1 至 9 个分镜");
         }
         String name = normalize(command.name(), script.getName() + " · 视频任务", 160);
         String generationMode = normalizeGenerationMode(command.generationMode());
@@ -139,7 +139,8 @@ public class AiVideoTaskService {
         String videoTitle = normalizeNullable(command.videoTitle(), 160);
         String targetMarket = normalizeNullable(command.targetMarket(), 80);
         if (targetMarket == null) targetMarket = normalizeNullable(script.getTargetMarket(), 80);
-        String frozenScriptJson = script.getScriptJson();
+        String frozenScriptJson = shotCount == 9 ? script.getScriptJson()
+                : StoryboardShotPlan.forGeneration(script.getScriptJson(), objectMapper);
         String narrationLanguage = "";
         if ("SCRIPT".equals(voiceoverMode) && narrationLocalizationService.hasNarration(frozenScriptJson)) {
             NarrationLocalizationService.LocalizedScript localized = narrationLocalizationService.localize(

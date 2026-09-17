@@ -191,7 +191,7 @@ async function readCompletionResponse(response, onTextDelta, onActivity, require
   return { choices: [{ finish_reason: finishReason, message: { content: reply, tool_calls: toolCalls } }], usage };
 }
 
-export async function requestChatCompletion({ config, apiKey, messages, maxTokens = 6500,
+async function requestSingleChatCompletion({ config, apiKey, messages, maxTokens = 6500,
   timeoutMs = 180_000, dispatcher, fetchImpl = fetch, onTextDelta, onActivity, requireStreaming = false, allowMissingDone = false, reasoningEffort, tools, allowToolCalls = false, signal: externalSignal }) {
   const endpoint = chatCompletionEndpoint(config.baseUrl);
   const modelId = String(config.modelId || "").trim();
@@ -273,5 +273,43 @@ export async function requestChatCompletion({ config, apiKey, messages, maxToken
     compatibilityCache.set(key, { profile, expiresAt: Date.now() + CACHE_TTL_MS });
     return { reply, usage: parsed.usage || {}, toolCalls: isToolCall ? toolCalls : [],
       transport: "streaming", compatibilityRequests: attempt };
+  }
+}
+
+// Only driver connections carry fallbackModels. Never replay image generation or
+// switch providers to work around a content policy rejection.
+const FALLBACK_FAILURES = new Set([
+  "CHAT_AUTHENTICATION_FAILED", "CHAT_MODEL_UNAVAILABLE", "CHAT_RATE_LIMITED",
+  "CHAT_UPSTREAM_FAILED", "CHAT_TIMEOUT", "CHAT_NETWORK_INTERRUPTED",
+  "CHAT_INCOMPLETE_RESPONSE", "CHAT_EMPTY_RESPONSE", "CHAT_STREAM_REQUIRED"
+]);
+export async function requestChatCompletion(options) {
+  const { config, apiKey, signal, onTextDelta, onActivity } = options;
+  const seen = new Set([`${config.baseUrl}|${config.modelId}|${apiKey}`]);
+  const alternatives = (Array.isArray(config.fallbackModels) ? config.fallbackModels : [])
+    .filter(route => {
+      if (!route?.baseUrl || !route?.modelId || !route?.apiKey) return false;
+      const key = `${route.baseUrl}|${route.modelId}|${route.apiKey}`;
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    }).slice(0, 2);
+  if (!alternatives.length) return requestSingleChatCompletion(options);
+  const routes = [{ ...config, apiKey }, ...alternatives];
+  const deadline = Date.now() + (options.timeoutMs ?? 180_000);
+  let emittedText = false;
+  for (let index = 0; index < routes.length; index++) {
+    const remaining = deadline - Date.now();
+    if (signal?.aborted || remaining <= 0) throw new ChatCompletionError("模型请求超时", "CHAT_TIMEOUT", true);
+    const route = routes[index];
+    try {
+      const result = await requestSingleChatCompletion({ ...options, config: route, apiKey: route.apiKey,
+        timeoutMs: index < routes.length - 1 ? Math.min(60_000, remaining / (routes.length - index)) : remaining,
+        onTextDelta: onTextDelta ? delta => { emittedText = true; onTextDelta(delta); } : undefined });
+      if (index > 0) console.info(`[driver-fallback] completed model=${String(route.modelId)} attempt=${index + 1}`);
+      return { ...result, modelId: route.modelId, fallbackUsed: index > 0 };
+    } catch (error) {
+      if (index === routes.length - 1 || emittedText || signal?.aborted || !FALLBACK_FAILURES.has(error.failureCode)) throw error;
+      onActivity?.("SWITCHING_MODEL");
+    }
   }
 }

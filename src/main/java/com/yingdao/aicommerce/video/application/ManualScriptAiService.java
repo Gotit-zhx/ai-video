@@ -110,8 +110,7 @@ public class ManualScriptAiService {
                 .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT,
                         "请先在模型接入中配置并启用驱动模型"));
         Map<String, Object> request = new LinkedHashMap<>();
-        request.put("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
-                "apiFormat", model.apiFormat(), "apiKey", model.apiKey()));
+        request.put("model", model.driverRequestModel());
         request.put("context", context);
         if (productImages != null && !productImages.isEmpty()) request.put("images", productImages);
         try {

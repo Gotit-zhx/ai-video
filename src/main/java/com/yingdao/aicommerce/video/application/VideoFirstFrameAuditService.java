@@ -125,8 +125,7 @@ public class VideoFirstFrameAuditService {
                     writePrivate(started, "SENDING".getBytes(StandardCharsets.US_ASCII));
                     Object response = runtime.post().uri("/v1/video/frame-audit")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .body(Map.of("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
-                                            "apiFormat", model.apiFormat(), "apiKey", model.apiKey()),
+                            .body(Map.of("model", model.driverRequestModel(),
                                     "image", Map.of("mimeType", "image/jpeg", "data",
                                             Base64.getEncoder().encodeToString(Files.readAllBytes(frame)))))
                             .retrieve().body(Map.class);

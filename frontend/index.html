@@ -33,7 +33,7 @@
   <meta name="description" content="赫逸智能化 AI 平台——连接内容生成、智能编排与电商发布。">
   <title>赫逸智能化 AI 平台</title>
   <link rel="icon" href="/assets/hoyee-logo-transparent-white.png">
-  <link rel="stylesheet" href="/resend-theme.css?v=operator-release-20260917-1">
+  <link rel="stylesheet" href="/resend-theme.css?v=shot-detail-20260917-2">
   <link rel="stylesheet" href="/video-script-terminal.css?v=watch-detailed-20260917-7">
   <link rel="stylesheet" href="/image-progress.css?v=20260904-test-merge-1">
   <link rel="stylesheet" href="/commerce-planner.css?v=drape-reuse-20260916-1">
@@ -425,9 +425,19 @@
               <details id="script-analysis-history" hidden><summary>查看模型输出原文</summary><div id="script-saved-output"></div></details>
               <div class="shot-editor-card">
                 <img id="selected-shot-preview" class="shot-editor-preview" alt="当前分镜原视频画面" hidden>
-                <div><span id="selected-shot-number">分镜 01 · Hook</span><h3 id="selected-shot-title">痛点开场</h3><p id="selected-shot-copy">达人站在镜子前，满脸沮丧地看着一件领口松垮、全是褶皱的旧衣服。</p></div>
-              <dl><div><dt>景别</dt><dd id="selected-shot-size">中景</dd></div><div><dt>运镜</dt><dd id="selected-shot-camera">缓慢推镜</dd></div><div><dt>转场</dt><dd id="selected-shot-transition">无</dd></div><div><dt>情绪</dt><dd id="selected-shot-emotion">真实、沮丧</dd></div></dl>
-                <button id="edit-video-shot" class="quiet-button" type="button">编辑该分镜</button>
+                <div class="shot-detail-copy">
+                  <span id="selected-shot-number">分镜 01 · Hook</span>
+                  <div class="shot-detail-heading">
+                    <h3 id="selected-shot-title">痛点开场</h3>
+                    <div class="shot-edit-actions">
+                      <button id="edit-video-shot" type="button" title="编辑当前分镜"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 3 5 5-12 12H4v-5L16 3Z M13 6l5 5"/></svg>编辑</button>
+                      <button id="delete-video-shot" type="button" title="删除当前分镜并自动调整时长"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18 M9 6V3h6v3 M5 6l1 15h12l1-15 M10 10v7 M14 10v7"/></svg>删除</button>
+                    </div>
+                  </div>
+                  <p id="selected-shot-copy">达人站在镜子前，满脸沮丧地看着一件领口松垮、全是褶皱的旧衣服。</p>
+                  <span id="shot-delete-status" role="status"></span>
+                </div>
+                <dl><div><dt>景别</dt><dd id="selected-shot-size">中景</dd></div><div><dt>运镜</dt><dd id="selected-shot-camera">缓慢推镜</dd></div><div><dt>转场</dt><dd id="selected-shot-transition">无</dd></div><div><dt>情绪</dt><dd id="selected-shot-emotion">真实、沮丧</dd></div></dl>
               </div>
             </section>
 
@@ -1865,7 +1875,7 @@
   <script src="/product-bulk-upload.js?v=20260910-shop-switch-1" defer></script>
   <script src="/product-bulk-history.js?v=20260910-bulk-history-1" defer></script>
   <script src="/video-script-terminal.js?v=watch-detailed-20260917-7" defer></script>
-  <script src="/app.js?v=operator-release-20260917-1" defer></script>
+  <script src="/app.js?v=shot-detail-20260917-2" defer></script>
   <script src="/commerce-planner.js?v=photo-layout-20260916-1" defer></script>
   <script src="/commerce-publication.js?v=publish-preparation-20260915-1" defer></script>
   <script src="/commerce-artwork-library.js?v=artwork-library-20260916-1" defer></script>

@@ -138,12 +138,7 @@ public class VideoScriptAnalysisProcessor {
             request.put("sourceVideoPath", source.toString());
             String progressId = script.getAnalysisRunId();
             request.put("progressId", progressId);
-            request.put("model", Map.of(
-                    "baseUrl", model.baseUrl(),
-                    "modelId", model.modelId(),
-                    "apiFormat", model.apiFormat(),
-                    "apiKey", model.apiKey()
-            ));
+            request.put("model", model.driverRequestModel());
             Map<String, Object> context = new LinkedHashMap<>();
             context.put("requestedName", script.getName());
             context.put("sourceFileName", script.getSourceFileName());

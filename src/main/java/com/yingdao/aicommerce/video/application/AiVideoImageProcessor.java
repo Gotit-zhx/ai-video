@@ -1323,6 +1323,8 @@ public class AiVideoImageProcessor {
             double start = firstShot.getStartSecond() == null ? 0.0 : firstShot.getStartSecond().doubleValue();
             double end = firstShot.getEndSecond() == null ? start : firstShot.getEndSecond().doubleValue();
             double midpoint = Math.max(0.0, (start + Math.max(start, end)) / 2.0);
+            SourceFramePoint originalPoint = sourceFramePoint(firstShot);
+            if (originalPoint != null) { midpoint = originalPoint.timestampSeconds(); timelineEnd = originalPoint.durationSeconds(); }
             int frameIndex = timelineEnd > 0.0
                     ? (int) Math.round((midpoint / timelineEnd) * (frames.size() - 1))
                     : 0;
@@ -1358,7 +1360,25 @@ public class AiVideoImageProcessor {
                     .eq(VideoScriptShot::getOrganizationId, task.getOrganizationId())
                     .eq(VideoScriptShot::getScriptId, task.getScriptId())
                     .orderByAsc(VideoScriptShot::getSequenceNo));
-            if (scriptShots.size() != 9) return null;
+            if (scriptShots.size() != 9) {
+                Map<?, ?> frozen = objectMapper.readValue(task.getScriptJson(), Map.class);
+                if (!(frozen.get("shots") instanceof List<?> slots) || slots.size() != 9) return null;
+                List<VideoScriptShot> mapped = new ArrayList<>();
+                for (Object slot : slots) {
+                    if (!(slot instanceof Map<?, ?> values)) return null;
+                    int sourceSequence = number(values.get("sourceSequence"), -1);
+                    VideoScriptShot matching = null;
+                    for (VideoScriptShot retained : scriptShots) {
+                        Map<?, ?> prompt = objectMapper.readValue(retained.getImagePromptJson(), Map.class);
+                        if (number(prompt.get("sourcePreviewSequence"), retained.getSequenceNo()) == sourceSequence) {
+                            matching = retained; break;
+                        }
+                    }
+                    if (matching == null) return null;
+                    mapped.add(matching);
+                }
+                scriptShots = mapped;
+            }
             double timelineEnd = scriptShots.stream().map(VideoScriptShot::getEndSecond)
                     .filter(value -> value != null).mapToDouble(value -> value.doubleValue()).max().orElse(0.0);
             List<Path> selected = new ArrayList<>(9);

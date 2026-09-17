@@ -50,9 +50,7 @@ public class NarrationLocalizationService {
                 .orElseThrow(() -> new BusinessException(HttpStatus.CONFLICT,
                         "脚本包含旁白，请先在模型接入中配置并启用驱动模型以转换目标语言"));
         Map<String, Object> request = new LinkedHashMap<>();
-        request.put("model", Map.of(
-                "baseUrl", model.baseUrl(), "modelId", model.modelId(),
-                "apiFormat", model.apiFormat(), "apiKey", model.apiKey()));
+        request.put("model", model.driverRequestModel());
         request.put("context", Map.of(
                 "targetMarket", market,
                 "shots", sourceShots.stream().map(shot -> Map.of(

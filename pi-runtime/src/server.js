@@ -765,7 +765,7 @@ async function requestStreamingChat(
       tools: []
     },
     streamFn: (model, context, options) =>
-      streamSimple(model, context, {
+      driverStreamSimple(config, model, context, {
         ...options,
         apiKey,
         maxTokens,
@@ -1908,7 +1908,7 @@ function createSession(sessionId, config) {
       ]
     },
     streamFn: (model, context, options) =>
-      streamSimple(model, context, {
+      driverStreamSimple(config, model, context, {
         ...options,
         apiKey: runtime.apiKey,
         maxTokens: 2048,
@@ -2310,7 +2310,7 @@ function createAutomationSession(sessionId, config) {
       tools
     },
     streamFn: (model, context, options) =>
-      streamSimple(model, context, {
+      driverStreamSimple(config, model, context, {
         ...options,
         apiKey: runtime.apiKey,
         maxTokens: 3200,
@@ -2835,7 +2835,7 @@ async function runManualScriptAnalysis(body) {
       tools: []
     },
     streamFn: (model, context, options) =>
-      streamSimple(model, context, {
+      driverStreamSimple(config, model, context, {
         ...options,
         apiKey,
         maxTokens: 3200,
@@ -2963,7 +2963,7 @@ async function runNarrationLocalization(body) {
       tools: []
     },
     streamFn: (model, messages, options) =>
-      streamSimple(model, messages, {
+      driverStreamSimple(config, model, messages, {
         ...options,
         apiKey,
         maxTokens: 2400,
@@ -3188,7 +3188,7 @@ async function runAutomationAnalysis(body) {
       tools: []
     },
     streamFn: (model, context, options) =>
-      streamSimple(model, context, {
+      driverStreamSimple(config, model, context, {
         ...options,
         apiKey,
         maxTokens: 1600,
@@ -3424,3 +3424,11 @@ const server = http.createServer(async (request, response) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Heyi Pi runtime listening on ${PORT}`);
 });
+
+function driverStreamSimple(config, model, context, options) {
+  if (!config.fallbackModels?.length) return streamSimple(model, context, options);
+  return createWatchModelTransport({ config, apiKey: options.apiKey,
+    deadline: Date.now() + (options.timeoutMs || 180_000),
+    maxTokens: options.maxTokens, dispatcher: PRODUCT_ANALYSIS_DISPATCHER
+  }).streamSimple(model, context, options);
+}

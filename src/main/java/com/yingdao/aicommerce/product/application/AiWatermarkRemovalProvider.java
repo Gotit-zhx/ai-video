@@ -120,7 +120,7 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
  private void claim(String id,String org,String from,String to){if(!ledger.claim(id,org,from,to))throw new IllegalStateException("水印任务已由其他请求提交");}
  private ProcessedImage result(String id,Map<String,Object> row){return new ProcessedImage(ProductWatermarkAssets.PREFIX+id,Map.of("checkId",id,"status","READY","sourceSha256",row.get("source_sha256"),"detection",json.readValue((String)row.get("detection_json"),Map.class)));}
  private Map<String,Object> analyze(ModelConfigService.RuntimeModelConnection model,String modelId,CommerceDesignImageGateway.Reference source,List<Map<String,Object>> detectionViews,String pass){
-  var body=new LinkedHashMap<String,Object>();body.put("model",Map.of("baseUrl",model.baseUrl(),"modelId",modelId,"apiFormat",model.apiFormat(),"apiKey",model.apiKey()));body.put("context",Map.of("analysisType","WATERMARK_DETECTION_V1","detectionPass",pass));
+  var body=new LinkedHashMap<String,Object>();var driverRequest=new LinkedHashMap<String,Object>(model.driverRequestModel());driverRequest.put("modelId",modelId);body.put("model",driverRequest);body.put("context",Map.of("analysisType","WATERMARK_DETECTION_V1","detectionPass",pass));
   body.put("image",analysisCopy(source));if(!detectionViews.isEmpty())body.put("detectionViews",detectionViews);
   var response=vision.post().uri("/v1/product/analyze").contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(Map.class);
   if(response==null||!(response.get("result") instanceof Map<?,?>))throw new IllegalStateException("视觉模型未返回有效判定");return (Map<String,Object>)response.get("result");

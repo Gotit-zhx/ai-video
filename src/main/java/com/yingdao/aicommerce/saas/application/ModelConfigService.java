@@ -57,7 +57,23 @@ public class ModelConfigService {
     }
 
     public Optional<RuntimeModelConnection> driverConnection(String organizationId) {
-        return modelConnection(organizationId, "DRIVER");
+        return modelConnection(organizationId, "DRIVER").map(primary -> {
+            var fallbacks = mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
+                    .eq(ModelConfig::getOrganizationId, organizationId)
+                    .eq(ModelConfig::getModelType, "DRIVER")
+                    .eq(ModelConfig::getStatus, "ACTIVE")
+                    .ne(ModelConfig::getId, primary.id())
+                    .orderByDesc(ModelConfig::getUpdatedAt).orderByAsc(ModelConfig::getId))
+                    .stream().filter(candidate -> candidate != null && organizationId.equals(candidate.getOrganizationId())
+                            && "DRIVER".equals(candidate.getModelType()) && "ACTIVE".equals(candidate.getStatus())
+                            && !primary.id().equals(candidate.getId()))
+                    .flatMap(candidate -> {
+                        try { return java.util.stream.Stream.of(runtimeConnection(candidate)); }
+                        catch (IllegalStateException unusableKey) { return java.util.stream.Stream.empty(); }
+                    }).limit(2).toList();
+            return new RuntimeModelConnection(primary.id(), primary.baseUrl(), primary.modelId(),
+                    primary.apiFormat(), primary.provider(), primary.apiKey(), List.of(), fallbacks);
+        });
     }
 
     public Optional<RuntimeModelConnection> defaultImageConnection() {
@@ -477,15 +493,28 @@ public class ModelConfigService {
             String apiFormat,
             String provider,
             String apiKey,
-            List<RuntimeModelConnection> copyrightFallbackModels
+            List<RuntimeModelConnection> copyrightFallbackModels,
+            List<RuntimeModelConnection> fallbackModels
     ) {
         public RuntimeModelConnection {
+            fallbackModels = fallbackModels == null ? List.of() : List.copyOf(fallbackModels);
             copyrightFallbackModels = copyrightFallbackModels == null
                     ? List.of() : List.copyOf(copyrightFallbackModels);
         }
 
         public RuntimeModelConnection(String id, String baseUrl, String modelId, String apiFormat, String provider, String apiKey) {
             this(id, baseUrl, modelId, apiFormat, provider, apiKey, List.of());
+        }
+
+        public RuntimeModelConnection(String id, String baseUrl, String modelId, String apiFormat,
+                                      String provider, String apiKey, List<RuntimeModelConnection> copyrightFallbackModels) {
+            this(id, baseUrl, modelId, apiFormat, provider, apiKey, copyrightFallbackModels, List.of());
+        }
+
+        /** Internal only: credentials must never be returned to clients or logged. */
+        public Map<String, Object> driverRequestModel() {
+            return Map.of("baseUrl", baseUrl, "modelId", modelId, "apiFormat", apiFormat, "apiKey", apiKey,
+                    "fallbackModels", fallbackModels.stream().map(RuntimeModelConnection::driverRequestModel).toList());
         }
 
         public List<String> copyrightFallbackModelIds() {

@@ -84,6 +84,7 @@ export function createWatchModelTransport({ config, apiKey, deadline, dispatcher
               console.info(`[watch] retrying incomplete empty provider turn once code=${error.failureCode}`);
             }
           }
+          if (result.modelId) assistant.model = result.modelId;
           if (!assistant.content[0].text) assistant.content[0].text = result.reply;
           for (const call of result.toolCalls) {
             let args;
