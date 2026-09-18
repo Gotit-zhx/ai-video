@@ -54,7 +54,9 @@ public class VideoReviewFinalizer {
                     .eq(AiVideoTaskAsset::getTaskId, job.getTaskId())
                     .eq(AiVideoTaskAsset::getAssetType, "VIDEO_REVIEW_CANDIDATE")
                     .set(AiVideoTaskAsset::getAssetType, "VIDEO_RESULT")
-                    .set(AiVideoTaskAsset::getShotSequence, 1));
+                    .set(AiVideoTaskAsset::getShotSequence, 1)
+                    .set(AiVideoTaskAsset::getFilePath, candidate.getFilePath())
+                    .set(AiVideoTaskAsset::getSizeBytes, candidate.getSizeBytes()));
             if (changed != 1) throw new IllegalStateException("审核候选状态发生变化，未发布视频");
             item.videoComplete();
         } else item.videoFail(job.getErrorMessage());

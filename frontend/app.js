@@ -11370,7 +11370,7 @@ function renderDirectReferenceCard(detail, item, generating, canManageVideoTasks
           ${instructionEditor}
           <footer><span>${configurationLocked ? "视频已完成，参考图配置已锁定。" : "编号只用于模型引用，不会写进图片。"}</span><div class="direct-reference-card-actions">${references.length ? `<span class="reference-autosave-status ${configurationLocked ? "locked" : "saved"}" data-reference-save-status><i></i><b>${configurationLocked ? "已锁定" : "已自动保存"}</b></span>` : ""}${canEditReferences && references.length < Number(task.referenceImageLimit || 9) ? `<label class="append-reference-button"><input type="file" accept="image/*" multiple data-reference-append><span>＋ 追加参考图</span></label>` : ""}</div></footer>
         </section>
-        <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemAwaitingAcceptance ? "等待受理" : itemVideoWaiting ? "生成中" : "等待生成"}</span>${providerButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>已保存到平台，可下载</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemAwaitingAcceptance ? "正在提交，等待厂商受理" : itemVideoWaiting ? "视频正在后台生成" : "等待提交参考图生成视频"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemAwaitingAcceptance ? "厂商返回任务 ID 后才会进入视频生成" : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : "配置完成后直接调用视频模型，不经过图片模型"}</small></div><em${!itemAwaitingAcceptance && itemVideoWaiting && item.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(item.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemAwaitingAcceptance ? "待受理" : itemVideoWaiting ? formatAiVideoElapsed(item.videoSubmittedAt) : "--:--"}</em></button>`}</section>
+        <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemAwaitingAcceptance ? "等待受理" : itemVideoWaiting ? "生成中" : "等待生成"}</span>${providerButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>${video.temporaryDownload ? "厂商临时链接，请及时下载" : "已保存到平台，可下载"}</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemAwaitingAcceptance ? "正在提交，等待厂商受理" : itemVideoWaiting ? "视频正在后台生成" : "等待提交参考图生成视频"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemAwaitingAcceptance ? "厂商返回任务 ID 后才会进入视频生成" : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : "配置完成后直接调用视频模型，不经过图片模型"}</small></div><em${!itemAwaitingAcceptance && itemVideoWaiting && item.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(item.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemAwaitingAcceptance ? "待受理" : itemVideoWaiting ? formatAiVideoElapsed(item.videoSubmittedAt) : "--:--"}</em></button>`}</section>
       </div>
       <section class="garment-card-face garment-card-back" aria-hidden="${!flipped}">
         <header class="video-prompt-head"><div><strong>${escapeHtml(item.name)}</strong><small>最终发送：${replacementMode ? "对象替换映射 → 原视频复刻提示词" : "参考图职责协议 → 视频执行提示词"}</small></div><div class="video-prompt-head-actions">${renderAiVideoCardExpandButton(item, true)}<button type="button" data-card-flip ${activePromptEditing ? "disabled" : ""}><i>↻</i> 返回参考图</button></div></header>
@@ -11470,9 +11470,9 @@ function renderAiVideoTaskDetail(options = {}) {
   const failedVideoItems = detail.items.filter(item => item.status === "VIDEO_FAILED");
   const completedVideoCount = detail.items.filter(item => (assetsByItem.get(item.id) || []).some(asset => asset.assetType === "VIDEO_RESULT")).length;
   batchDownloadButton.disabled = completedVideoCount === 0;
-  batchDownloadButton.textContent = completedVideoCount > 0
-    ? `↓ 批量下载视频（${completedVideoCount}）`
-    : "↓ 暂无可下载视频";
+  batchDownloadButton.textContent = completedVideoCount === 1 ? "↓ 下载视频"
+    : completedVideoCount > 1 ? `↓ 打包下载视频（${completedVideoCount}）`
+      : "↓ 暂无可下载视频";
   const hasFailedVideos = failedVideoItems.length > 0;
   retryFailedButton.hidden = !canManageVideoTasks || !hasFailedVideos;
   retryFailedButton.disabled = generating;
@@ -11549,7 +11549,7 @@ function renderAiVideoTaskDetail(options = {}) {
       const stateClass = ["FAILED", "VIDEO_FAILED"].includes(item.status) && !pendingImageDownload ? "failed" : generating || pendingImageDownload ? "running" : "ready";
       const collapsedNote = item.errorMessage && !pendingImageDownload && !(model && storyboard)
         ? friendlyAiVideoError(item.errorMessage, item.status === "VIDEO_FAILED" ? "video" : "image")
-        : video ? "成片已保存到平台，展开后可预览和下载。"
+        : video ? (video.temporaryDownload ? "厂商临时链接，请及时下载。" : "成片已保存到平台，展开后可预览和下载。")
           : itemVideoWaiting ? "视频正在后台生成，展开卡片可查看等待时间和厂商任务。"
             : itemImagePreparing ? `正在准备${primaryAssetName}、首帧和九宫格。` : "展开后查看原图、AI 主图、九宫格和视频提示词。";
       return [item.id, `<article class="garment-card selected ${itemImagePreparing ? "is-image-processing" : ""} ${itemVideoWaiting ? "is-video-processing" : ""}" data-garment-card data-item-id="${escapeHtml(item.id)}">
@@ -11601,7 +11601,7 @@ function renderAiVideoTaskDetail(options = {}) {
             </div>
           </div>
           ${error}
-          <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemAwaitingAcceptance ? "等待受理" : itemVideoWaiting ? "生成中" : "等待生成"}</span>${providerTaskCopyButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>已保存到平台，可下载</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemAwaitingAcceptance ? "正在提交，等待厂商受理" : itemVideoWaiting ? "视频正在后台生成" : itemImagePreparing ? "正在自动准备视频素材" : "等待一键生成视频"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemAwaitingAcceptance ? "厂商返回任务 ID 后才会进入视频生成" : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : itemImagePreparing ? "图片正在生成或校验，无需重复点击" : "点击生成后会自动完成图片与视频两阶段"}</small></div><em${!itemAwaitingAcceptance && itemVideoWaiting && item.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(item.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemAwaitingAcceptance ? "待受理" : itemVideoWaiting ? formatAiVideoElapsed(item.videoSubmittedAt) : "--:--"}</em></button>`}</section>
+          <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemAwaitingAcceptance ? "等待受理" : itemVideoWaiting ? "生成中" : "等待生成"}</span>${providerTaskCopyButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>${video.temporaryDownload ? "厂商临时链接，请及时下载" : "已保存到平台，可下载"}</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemAwaitingAcceptance ? "正在提交，等待厂商受理" : itemVideoWaiting ? "视频正在后台生成" : itemImagePreparing ? "正在自动准备视频素材" : "等待一键生成视频"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemAwaitingAcceptance ? "厂商返回任务 ID 后才会进入视频生成" : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : itemImagePreparing ? "图片正在生成或校验，无需重复点击" : "点击生成后会自动完成图片与视频两阶段"}</small></div><em${!itemAwaitingAcceptance && itemVideoWaiting && item.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(item.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemAwaitingAcceptance ? "待受理" : itemVideoWaiting ? formatAiVideoElapsed(item.videoSubmittedAt) : "--:--"}</em></button>`}</section>
         </div>
         <section class="garment-card-face garment-card-back" aria-hidden="${!flipped}">
           <header class="video-prompt-head"><div><strong>${escapeHtml(item.name)}</strong><small>上传顺序：${isModelWear ? "单人首帧" : "商品首帧"} → 4K 九宫格 → 原始商品图</small></div><div class="video-prompt-head-actions">${renderAiVideoCardExpandButton(item, true)}<button class="copy-prompt-button" type="button" data-prompt-copy aria-label="一键复制本款视频提示词"><i aria-hidden="true">⧉</i><span>一键复制</span></button><button type="button" data-card-flip ${editingPrompt ? "disabled" : ""}><i>↻</i> 返回画面</button></div></header>
@@ -12354,15 +12354,25 @@ document.querySelector("#batch-garment-upload").addEventListener("change", async
   }
 });
 
-document.querySelector("#batch-download-videos").addEventListener("click", event => {
+document.querySelector("#batch-download-videos").addEventListener("click", async event => {
   const button = event.currentTarget;
   if (!selectedAiVideoTaskId || button.disabled) return;
+  const videos = (aiVideoTaskDetail?.assets || []).filter(asset => asset.assetType === "VIDEO_RESULT");
+  if (videos.length === 1) {
+    const video = videos[0];
+    await downloadImageAsset(button, aiVideoAssetUrl(selectedAiVideoTaskId, video.id, video.createdAt),
+      `${aiVideoTaskDetail?.task?.name || "AI 视频"}-成片`);
+    return;
+  }
+  if (!videos.length) return;
   const original = button.textContent;
   button.disabled = true;
   button.textContent = "正在准备 ZIP…";
   const link = document.createElement("a");
   link.href = `/api/v1/ai-video-tasks/${encodeURIComponent(selectedAiVideoTaskId)}/video-results.zip`;
   link.download = "";
+  link.target = "_blank";
+  link.rel = "noopener";
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -12738,10 +12748,18 @@ async function downloadImageAsset(button, url, requestedFilename) {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 80) || "赫逸图片";
-    const separator = url.includes("?") ? "&" : "?";
+    const parsedUrl = new URL(url, window.location.href);
+    const platformApi = parsedUrl.origin === window.location.origin && parsedUrl.pathname.startsWith("/api/");
+    if (platformApi) {
+      parsedUrl.searchParams.set("download", "true");
+      parsedUrl.searchParams.set("filename", filename);
+    }
     const anchor = document.createElement("a");
-    anchor.href = `${url}${separator}download=true&filename=${encodeURIComponent(filename)}`;
+    // Keep external signed URLs byte-for-byte intact; their host controls download headers.
+    anchor.href = platformApi ? parsedUrl.href : url;
     anchor.download = filename;
+    anchor.target = "_blank";
+    anchor.rel = "noopener";
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();

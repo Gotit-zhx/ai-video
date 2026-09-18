@@ -1122,6 +1122,10 @@ public class AiVideoTaskService {
                 .eq(AiVideoTaskAsset::getTaskId, task.getId())
                 .eq(AiVideoTaskAsset::getOrganizationId, task.getOrganizationId()));
         if (asset == null) throw new BusinessException(HttpStatus.NOT_FOUND, "生成图片不存在");
+        String providerUrl = providerVideoUrl(asset);
+        if (providerUrl != null) {
+            return new AssetFile(null, providerUrl, asset.getContentType(), asset.getSizeBytes());
+        }
         if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) {
             if (!ossStorage.exists(asset.getFilePath())) throw new BusinessException(HttpStatus.NOT_FOUND, "生成素材不存在");
             return new AssetFile(null, asset.getFilePath(), asset.getContentType(), asset.getSizeBytes());
@@ -1148,7 +1152,10 @@ public class AiVideoTaskService {
         for (AiVideoTaskAsset asset : assets) {
             Path path = null;
             String location = null;
-            if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) {
+            String providerUrl = providerVideoUrl(asset);
+            if (providerUrl != null) {
+                location = providerUrl;
+            } else if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) {
                 if (!ossStorage.exists(asset.getFilePath())) continue;
                 location = asset.getFilePath();
             } else {
@@ -1172,7 +1179,29 @@ public class AiVideoTaskService {
         return signedAssetUrl(location, false);
     }
 
+    private String providerVideoUrl(AiVideoTaskAsset asset) {
+        if (!asset.getAssetType().startsWith("VIDEO_")) return null;
+        if (isProviderVideoUrl(asset.getFilePath())) return asset.getFilePath();
+        if (asset.getFilePath() == null || !asset.getFilePath().startsWith("provider-video:")) return null;
+        try {
+            Map<?, ?> metadata = objectMapper.readValue(asset.getPromptText(), Map.class);
+            String jobId = String.valueOf(metadata.get("jobId"));
+            Object url = metadata.get("directDownloadUrl");
+            if (asset.getFilePath().equals("provider-video:" + jobId) && url instanceof String value && isProviderVideoUrl(value)) return value;
+        } catch (Exception invalid) { }
+        throw new BusinessException(HttpStatus.NOT_FOUND, "厂商视频下载地址不可用");
+    }
+
+    public static boolean isProviderVideoUrl(String location) {
+        if (location == null) return false;
+        try {
+            java.net.URI uri = java.net.URI.create(location);
+            return "https".equalsIgnoreCase(uri.getScheme()) && uri.getHost() != null && uri.getUserInfo() == null;
+        } catch (IllegalArgumentException invalid) { return false; }
+    }
+
     public String signedAssetUrl(String location, boolean preview) {
+        if (isProviderVideoUrl(location)) return location;
         if (ossStorage == null || !ossStorage.isOssLocation(location)) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "OSS 素材不存在");
         }
@@ -1180,6 +1209,12 @@ public class AiVideoTaskService {
     }
 
     public InputStream openVideoBatchFile(VideoBatchFile file) throws IOException {
+        if (isProviderVideoUrl(file.location())) {
+            var connection = java.net.URI.create(file.location()).toURL().openConnection();
+            connection.setConnectTimeout(15_000);
+            connection.setReadTimeout(120_000);
+            return connection.getInputStream();
+        }
         if (file.location() != null) return ossStorage.open(file.location());
         return Files.newInputStream(file.path());
     }

@@ -1091,7 +1091,8 @@ public class AiVideoGenerationService {
                     GeneratedVideo output = download(job, connection, providers.require(job.getProvider()), result.outputUrl());
                     candidate = new AiVideoTaskAsset(job.getOrganizationId(), job.getTaskId(), job.getItemId(),
                             "VIDEO_REVIEW_CANDIDATE", null, output.location(), "video/mp4", output.size(),
-                            json(Map.of("jobId", job.getId())), job.getModelId());
+                            json(output.directDownloadUrl() == null ? Map.of("jobId", job.getId())
+                                    : Map.of("jobId", job.getId(), "directDownloadUrl", output.directDownloadUrl())), job.getModelId());
                     assetMapper.insert(candidate);
                 }
                 Map<String, Object> usage = new LinkedHashMap<>(result.usage() == null ? Map.of() : result.usage());
@@ -1211,7 +1212,23 @@ public class AiVideoGenerationService {
                 job.succeeded(job.getOutputUrl(), job.getCostAmount(), json(usage));
                 job.failed("ACCEPTED", message);
             }
-            if (reviewFinalizer.finish(job, item, candidate, audit.passed())) refreshTask(job.getTaskId());
+            Path temporaryVideo = null;
+            Object direct = readMap(candidate.getPromptText()).get("directDownloadUrl");
+            if (audit.passed() && direct instanceof String url && AiVideoTaskService.isProviderVideoUrl(url)
+                    && !AiVideoTaskService.isProviderVideoUrl(candidate.getFilePath())
+                    && (ossStorage == null || !ossStorage.isOssLocation(candidate.getFilePath()))) {
+                temporaryVideo = Path.of(candidate.getFilePath());
+                candidate.relocate("provider-video:" + job.getId(), candidate.getSizeBytes());
+            }
+            if (reviewFinalizer.finish(job, item, candidate, audit.passed())) {
+                if (temporaryVideo != null) {
+                    try { Files.deleteIfExists(temporaryVideo); }
+                    catch (java.io.IOException cleanupFailure) {
+                        org.slf4j.LoggerFactory.getLogger(getClass()).warn("Unable to remove temporary reviewed video for job {}", job.getId());
+                    }
+                }
+                refreshTask(job.getTaskId());
+            }
         } catch (Exception exception) {
             usage.put("firstFrameAudit", Map.of("layout", "UNKNOWN", "passed", false,
                     "reason", "审核保存或处理失败", "reviewedAt", Instant.now().toString()));
@@ -1266,7 +1283,8 @@ public class AiVideoGenerationService {
                     org.slf4j.LoggerFactory.getLogger(getClass()).warn("OSS upload unavailable; retained complete local video for job {}", job.getId());
                 }
             }
-            return new GeneratedVideo(output.toString(), size);
+            return new GeneratedVideo(output.toString(), size, !provider.requiresAuthenticatedDownload()
+                    && AiVideoTaskService.isProviderVideoUrl(url) ? url : null);
         } finally {
             Files.deleteIfExists(temporary);
         }
@@ -1313,5 +1331,7 @@ public class AiVideoGenerationService {
     private boolean requiresPublicReferences(String provider) { return "DAYAN".equals(provider) || "FAST".equals(provider); }
     private String json(Object value) { try { return objectMapper.writeValueAsString(value == null ? Map.of() : value); } catch (Exception ignored) { return "{}"; } }
     private String readable(Throwable value) { return value.getMessage() == null ? value.getClass().getSimpleName() : value.getMessage(); }
-    private record GeneratedVideo(String location, long size) {}
+    private record GeneratedVideo(String location, long size, String directDownloadUrl) {
+        GeneratedVideo(String location, long size) { this(location, size, null); }
+    }
 }

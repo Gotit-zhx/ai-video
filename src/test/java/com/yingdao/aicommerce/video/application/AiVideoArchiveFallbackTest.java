@@ -36,4 +36,16 @@ class AiVideoArchiveFallbackTest {
   assertThrows(BusinessException.class,()->service(oss).prepareVideoBatch(batch));verifyNoInteractions(oss);
   try(var files=Files.list(root.resolve("_download-archives"))){assertEquals(0,files.count());}
  }
+ @Test void providerUrlIsResolvedFromMetadataWithoutTruncatingLongSignatures() throws Exception {
+  var oss=mock(OssStorageService.class);var service=service(oss);
+  String url="https://provider.example/video.mp4?token="+"x".repeat(1800);
+  String metadata=new ObjectMapper().writeValueAsString(Map.of("jobId","job","directDownloadUrl",url));
+  var asset=new com.yingdao.aicommerce.video.domain.AiVideoTaskAsset("org","task","item","VIDEO_RESULT",1,"provider-video:job","video/mp4",100,metadata,"model");
+  assertEquals(url,org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"providerVideoUrl",asset));
+  assertEquals(url,service.signedAssetUrl(url));verifyNoInteractions(oss);
+  assertFalse(AiVideoTaskService.isProviderVideoUrl("file:///private/video.mp4"));
+  assertFalse(AiVideoTaskService.isProviderVideoUrl("https://user:password@example.test/video"));
+ }
+
+
 }

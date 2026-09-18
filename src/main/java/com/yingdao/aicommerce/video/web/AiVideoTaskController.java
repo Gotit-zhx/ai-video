@@ -336,11 +336,13 @@ public class AiVideoTaskController {
     public record AssetResponse(String id, String itemId, String assetType, Integer shotSequence,
                                 String contentType, long sizeBytes, String modelId,
                                 String referenceRole, String referenceInstruction, boolean primaryReference,
-                                Instant createdAt) {
+                                Instant createdAt, boolean temporaryDownload) {
         static AssetResponse from(AiVideoTaskAsset asset) {
             return new AssetResponse(asset.getId(), asset.getItemId(), asset.getAssetType(), asset.getShotSequence(),
                     asset.getContentType(), asset.getSizeBytes(), asset.getModelId(), asset.getReferenceRole(),
-                    asset.getReferenceInstruction(), asset.isPrimaryReference(), asset.getCreatedAt());
+                    asset.getReferenceInstruction(), asset.isPrimaryReference(), asset.getCreatedAt(),
+                    AiVideoTaskService.isProviderVideoUrl(asset.getFilePath())
+                            || (asset.getFilePath() != null && asset.getFilePath().startsWith("provider-video:")));
         }
     }
 

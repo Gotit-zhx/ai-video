@@ -76,10 +76,9 @@ class VideoReviewFinalizerTest {
         assertThat(archive.getParamNameValuePairs().values()).contains("VIDEO_PREVIOUS_RESULT", previous.getId());
         assertThat(promote.getParamNameValuePairs().values()).contains(candidate.getId(), item.getId(),
                 "VIDEO_REVIEW_CANDIDATE", "VIDEO_RESULT", 1);
-        for (var update : updates.getAllValues()) {
-            assertThat(update.getSqlSet()).contains("asset_type=", "shot_sequence=")
-                    .doesNotContain("file_path", "size_bytes", "prompt_text");
-        }
+        assertThat(archive.getSqlSet()).doesNotContain("file_path", "size_bytes", "prompt_text");
+        assertThat(promote.getSqlSet()).contains("file_path=", "size_bytes=").doesNotContain("prompt_text");
+        assertThat(promote.getParamNameValuePairs().values()).contains(candidate.getFilePath(), candidate.getSizeBytes());
         verify(items).updateById(item);
     }
 
