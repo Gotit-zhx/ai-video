@@ -1207,8 +1207,9 @@ public class AiVideoTaskService {
                         Files.deleteIfExists(archive);
                         return new PreparedVideoBatch(null, stored.location(), stored.size());
                     } catch (Exception exception) {
-                        throw exception instanceof IOException io ? io
-                                : new IOException("上传临时视频压缩包到 OSS 失败", exception);
+                        // Archive bytes were fully checked before this upload. A storage outage
+                        // must not prevent streaming the verified local archive to its owner.
+                        return new PreparedVideoBatch(archive, null, size);
                     }
                 } catch (IOException exception) {
                     failure = exception;

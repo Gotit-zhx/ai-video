@@ -111,7 +111,7 @@ public class OssStorageService {
             }
             log.info("OSS storage verified for private bucket {}", bucket);
         } catch (RuntimeException exception) {
-            throw new IllegalStateException("OSS 访问校验失败", exception);
+            log.error("OSS startup verification failed; storage operations remain unavailable, but login and local-file services will stay online", exception);
         } finally {
             try {
                 internalClient.deleteObject(bucket, key);
