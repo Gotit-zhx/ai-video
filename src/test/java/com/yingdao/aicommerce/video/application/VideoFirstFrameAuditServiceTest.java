@@ -35,6 +35,19 @@ class VideoFirstFrameAuditServiceTest {
     private final AtomicInteger extractions = new AtomicInteger();
 
     @Test
+    void uncertainLayoutPassesAndStaysPassedAfterRestartWithoutAnotherModelCall() throws Exception {
+        HttpServer server = server(200, "{\"layout\":\"UNKNOWN\",\"confidence\":0.6,\"reason\":\"镜像和变形，未确认独立分屏\"}");
+        try {
+            String video = video("uncertain.mp4");
+            var result = service(server, this::frame).audit(task(), item(), video, "uncertain");
+            assertThat(result.passed()).isTrue();
+            assertThat(result.rejected()).isFalse();
+            assertThat(service(server, this::frame).audit(task(), item(), video, "uncertain")).isEqualTo(result);
+            assertThat(requests.get()).isEqualTo(1);
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void definitiveAuditAndScreenshotAreCachedAcrossRestartsAndConcurrentCallers() throws Exception {
         HttpServer server = server(200, "{\"layout\":\"SINGLE_SCENE\",\"confidence\":0.94,\"reason\":\"背景窗格属于同一场景\"}");
         try {
@@ -116,15 +129,15 @@ class VideoFirstFrameAuditServiceTest {
     }
 
     @Test
-    void unknownAndLowConfidencePauseWhileOnlyHighConfidenceMultiviewIsRejected() {
+    void onlyConfirmedMultiviewIsRejected() {
         for (String layout : List.of("GRID", "SPLIT_SCREEN", "COLLAGE")) {
             assertThat(result(layout, 0.8).rejected()).isTrue();
             assertThat(result(layout, 0.79).rejected()).isFalse();
             assertThat(result(layout, 1).passed()).isFalse();
         }
         assertThat(result("SINGLE_SCENE", 0.8).passed()).isTrue();
-        assertThat(result("SINGLE_SCENE", 0.79).passed()).isFalse();
-        assertThat(result("UNKNOWN", 1).passed()).isFalse();
+        assertThat(result("SINGLE_SCENE", 0.79).passed()).isTrue();
+        assertThat(result("UNKNOWN", 1).passed()).isTrue();
         assertThat(result("UNKNOWN", 1).rejected()).isFalse();
         assertThat(result("SINGLE_SCENE", Double.NaN).passed()).isFalse();
     }

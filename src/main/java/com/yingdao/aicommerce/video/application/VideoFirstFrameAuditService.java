@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** A failed or uncertain review retains its evidence and can never authorize a paid redraw. */
+/** Only confirmed multi-panel layouts reject a decoded video; technical review failures remain paused. */
 @Service
 public class VideoFirstFrameAuditService {
     private static final Set<String> LAYOUTS = Set.of("SINGLE_SCENE", "GRID", "SPLIT_SCREEN", "COLLAGE", "UNKNOWN");
@@ -110,7 +110,11 @@ public class VideoFirstFrameAuditService {
                         || !hash(Files.readAllBytes(frame)).equals(cached.get("frameSha256"))) {
                     return unknown("首帧审核缓存与截图不一致，已暂停", frame);
                 }
-                return parseResult(cached.get("result"), frame);
+                AuditResult parsed = parseResult(cached.get("result"), frame);
+                boolean evaluated = parsed.layoutEvaluated() && (Boolean.TRUE.equals(cached.get("layoutEvaluated"))
+                        || !"UNKNOWN".equals(parsed.layout()));
+                return new AuditResult(parsed.layout(), parsed.confidence(), parsed.reason(), frame,
+                        parsed.frameSizeBytes(), evaluated);
             }
 
             AuditResult result;
@@ -138,7 +142,7 @@ public class VideoFirstFrameAuditService {
             }
             // Also checkpoint UNKNOWN: restarting this job must not silently repeat a paid audit.
             writePrivate(resultFile, json.writeValueAsBytes(Map.of("version", "VIDEO_FRAME_LAYOUT_V1",
-                    "frameSha256", hash(Files.readAllBytes(frame)), "result", Map.of("layout", result.layout(),
+                    "frameSha256", hash(Files.readAllBytes(frame)), "layoutEvaluated", result.layoutEvaluated(), "result", Map.of("layout", result.layout(),
                             "confidence", result.confidence(), "reason", result.reason()))));
             return result;
         } catch (Exception exception) {
@@ -278,13 +282,20 @@ public class VideoFirstFrameAuditService {
     private static long size(Path path) {
         try { return path == null ? 0 : Files.size(path); } catch (Exception ignored) { return 0; }
     }
-    private static AuditResult unknown(String reason, Path frame) { return new AuditResult("UNKNOWN", 0, reason, frame, size(frame)); }
+    private static AuditResult unknown(String reason, Path frame) { return new AuditResult("UNKNOWN", 0, reason, frame, size(frame), false); }
 
     @FunctionalInterface
     interface FrameExtractor { void extract(Path input, Path output) throws Exception; }
 
-    public record AuditResult(String layout, double confidence, String reason, Path framePath, long frameSizeBytes) {
-        public boolean passed() { return confidence >= 0.8 && confidence <= 1 && "SINGLE_SCENE".equals(layout); }
+    public record AuditResult(String layout, double confidence, String reason, Path framePath, long frameSizeBytes,
+                              boolean layoutEvaluated) {
+        public AuditResult(String layout, double confidence, String reason, Path framePath, long frameSizeBytes) {
+            this(layout, confidence, reason, framePath, frameSizeBytes, true);
+        }
+        public boolean passed() {
+            return layoutEvaluated && LAYOUTS.contains(layout) && Double.isFinite(confidence)
+                    && confidence >= 0 && confidence <= 1 && !rejected();
+        }
         public boolean rejected() { return confidence >= 0.8 && confidence <= 1
                 && ("GRID".equals(layout) || "SPLIT_SCREEN".equals(layout) || "COLLAGE".equals(layout)); }
     }

@@ -1638,9 +1638,10 @@ public class AiVideoTaskService {
 
     static String voiceoverText(Object value) {
         if (value == null) return "";
-        return String.valueOf(value).replaceAll("\\s+", " ").trim()
+        String text = String.valueOf(value).replaceAll("\\s+", " ").trim()
                 .replaceFirst("(?i)^(?:对白|旁白|口播|台词|voice\\s*over|voiceover|dialogue|narration)\\s*[:：]\\s*", "")
                 .trim();
+        return text.matches("(?i)^(?:无|无旁白|无口播|无对白|无台词|纯音乐|纯器乐|仅BGM|无旁白[，, ]*仅BGM|none|null|n/a|no narration|no voiceover|no dialogue|instrumental only|—|-)[:：。.!！]?$") ? "" : text;
     }
 
     private String voiceoverLanguageDirective(AiVideoTask task) {

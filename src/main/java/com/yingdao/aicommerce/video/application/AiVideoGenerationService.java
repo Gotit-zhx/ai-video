@@ -600,7 +600,8 @@ public class AiVideoGenerationService {
     }
 
     static String generalReferencePrompt(String prompt) {
-        return String.valueOf(prompt) + "\n\n素材编号：@图片1、@图片2…按本请求中图片素材的顺序对应；@视频1对应唯一的视频素材。请按提示词指定的各素材用途生成，不把素材名称或编号画进成片。";
+        return String.valueOf(prompt) + "\n\n素材编号：@图片1、@图片2…按本请求中图片素材的顺序对应；@视频1对应唯一的视频素材。请按提示词指定的各素材用途生成，不把素材名称或编号画进成片。"
+                + "\n\n【音轨规则】用户没有明确指定口播、旁白或对白时，默认生成从0秒到结尾的轻快纯器乐BGM；禁止人声、说话、歌声、哼唱和自行编造台词。参考视频只参考视觉动作，不能因参考视频有人声或人物张嘴就自动生成说话声。用户明确指定口播时才按指定文案生成，不额外添加台词；用户明确指定静音或其他配乐时遵循其要求。";
     }
 
     private void paceSubmission(String provider) {
@@ -869,11 +870,11 @@ public class AiVideoGenerationService {
                 ? "脚本文案所用语言" : "目标市场“" + task.getTargetMarket().trim() + "”对应的本地语言";
         String music = "UPLOADED".equals(task.getMusicMode())
                 ? "已上传配乐是唯一BGM，必须从0秒贯穿结尾，完整保留清晰旋律和稳定节拍"
-                : "必须生成从0秒贯穿结尾、具有清晰可辨主旋律和稳定节拍的纯器乐伴奏；不得静音，也不得仅有无旋律环境底噪";
+                : "必须生成轻快、明亮的BGM，从0秒贯穿结尾，具有清晰可辨主旋律和稳定节拍的纯器乐伴奏；不得静音，也不得仅有无旋律环境底噪";
         String voice = hasVoiceover
                 ? "只允许按时间轴生成与画面人物分离的画外旁白。旁白使用" + market
                     + "，逐字朗读给定原文，发音自然清晰；禁止增删、改写、换语言、混入乱码、无意义音节、含糊拟声、歌声、哼唱或呢喃。旁白时只适度压低BGM，旁白结束立即恢复，伴奏不可消失"
-                : "时间轴没有旁白，因此全片禁止对白、旁白、口播、歌声、哼唱、呢喃、乱码或任何无意义人声；音轨只允许纯器乐BGM和必要的自然环境声";
+                : "本任务未指定口播，时间轴没有旁白，因此全片禁止对白、旁白、口播、歌声、哼唱、呢喃、乱码或任何无意义人声；音轨只允许纯器乐BGM和必要的自然环境声。忽略参考视频中的全部人声，不模仿原视频说话声，也不得根据商品、人物张嘴或画面动作自行编造台词。Audio: upbeat instrumental background music only, no speech, no dialogue, no vocals";
         String base = prompt == null ? "" : prompt.trim();
         return base + "\n\n【最终音画硬约束｜最高优先级并覆盖前文】\n"
                 + "所有出镜人物全程保持嘴唇自然闭合、下颌稳定，不说话、不口播、不唱歌、不念台词，也不做任何对口型动作。"
