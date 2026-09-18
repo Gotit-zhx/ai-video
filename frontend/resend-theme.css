@@ -3642,3 +3642,17 @@ html[data-theme="dark"] select { color-scheme: dark; }
 .portal-preview header { font-size: 14px; }
 .login-welcome { margin-bottom: 30px; }
 .login-install-guide { margin-top: 16px; font-size: 11px; }
+
+.login-header-tools { display: flex; align-items: center; gap: 20px; }
+.login-header-guide { position: relative; font-size: 12px; color: #666; }
+.login-header-guide summary { cursor: pointer; list-style: none; padding: 8px 0; }
+.login-header-guide summary::-webkit-details-marker { display: none; }
+.login-header-guide summary::after { content: "⌄"; margin-left: 6px; }
+.login-header-guide[open] summary { color: #111; }
+.login-guide-popover { position: absolute; z-index: 20; right: 0; top: calc(100% + 12px); width: min(330px, calc(100vw - 40px)); padding: 20px; box-sizing: border-box; border: 1px solid #e5e5e5; border-radius: 10px; background: #fff; box-shadow: 0 12px 40px #0000000d; color: #666; font-size: 12px; line-height: 1.8; }
+.login-guide-popover strong { display: block; color: #222; font-size: 14px; margin-bottom: 12px; }
+.login-guide-popover ol { margin: 0; padding-left: 18px; }
+.login-guide-popover li + li { margin-top: 10px; }
+.login-guide-popover code { overflow-wrap: anywhere; }
+.login-guide-popover p { margin: 14px 0 0; color: #999; font-size: 11px; }
+@media (max-width: 600px) { .login-header-tools { gap: 14px; } .login-home-brand span { display: none; } }
