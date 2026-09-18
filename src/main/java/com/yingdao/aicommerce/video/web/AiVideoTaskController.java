@@ -60,6 +60,16 @@ public class AiVideoTaskController {
                         request.voiceoverMode(), request.customVoiceover(), request.videoTitle()), principal)));
     }
 
+    public record CopyItemRequest(int copies) {}
+
+    @PostMapping("/{taskId}/items/{itemId}/copies")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<List<ItemResponse>> copyItem(@PathVariable String taskId, @PathVariable String itemId,
+            @RequestBody CopyItemRequest request, @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.created(service.copyItem(taskId, itemId, request.copies(), principal)
+                .stream().map(ItemResponse::from).toList());
+    }
+
     @GetMapping
     public ApiResponse<List<TaskResponse>> list(@AuthenticationPrincipal PlatformPrincipal principal) {
         return ApiResponse.ok(service.list(principal).stream().map(TaskResponse::from).toList());

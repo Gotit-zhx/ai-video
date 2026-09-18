@@ -129,6 +129,14 @@ public class AiVideoTask {
         this.updatedAt = Instant.now();
     }
 
+    public void addPendingCopies(int count) {
+        updateItemCount(count);
+        this.progress = 0;
+        this.errorMessage = null;
+        this.completedAt = null;
+        this.autoStartVideoAfterImages = false;
+    }
+
     public void syncItemCountPreservingResult(int count) {
         this.totalItems = Math.max(0, count);
         this.completedItems = Math.min(this.completedItems, this.totalItems);

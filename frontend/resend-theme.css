@@ -3656,3 +3656,23 @@ html[data-theme="dark"] select { color-scheme: dark; }
 .login-guide-popover code { overflow-wrap: anywhere; }
 .login-guide-popover p { margin: 14px 0 0; color: #999; font-size: 11px; }
 @media (max-width: 600px) { .login-header-tools { gap: 14px; } .login-home-brand span { display: none; } }
+
+/* Compact copy action beside video group details. */
+.garment-card-copy-button { margin-left: auto; padding: 8px 12px; border: 1px solid #d4d4d4; border-radius: 7px; background: #fff; color: #333; font: inherit; font-size: 12px; cursor: pointer; }
+.garment-card-copy-button:hover { background: #f5f5f5; border-color: #aaa; }
+.garment-card-copy-button:disabled { opacity: .4; cursor: default; }
+.video-group-copy-dialog { width: min(360px, calc(100vw - 32px)); box-sizing: border-box; padding: 26px; border: 1px solid #ddd; border-radius: 16px; color: #171717; background: #fff; box-shadow: 0 24px 80px #0002; }
+.video-group-copy-dialog::backdrop { background: #0005; }
+.video-group-copy-dialog h2 { margin: 0; font-size: 20px; }
+#video-group-copy-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #777; margin: 8px 0 24px; font-size: 13px; }
+.video-group-copy-dialog label { display: block; margin-bottom: 8px; font-size: 13px; }
+.video-group-copy-dialog input { width: 100%; box-sizing: border-box; border: 1px solid #ddd; border-radius: 8px; padding: 12px; font-size: 18px; }
+.video-group-copy-dialog small { display: block; margin-top: 8px; color: #888; font-size: 12px; }
+#video-group-copy-error { font-size: 13px; color: #b42318; }
+#video-group-copy-error:empty { display: none; }
+.video-group-copy-dialog footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.video-group-copy-dialog footer button { padding: 9px 20px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+#video-group-copy-submit { color: #fff; background: #171717; border-color: #171717; }
+.video-group-copy-dialog button:disabled { opacity: .5; cursor: wait; }
+
+#ai-video-tasks-page .garment-card-copy-button + .garment-card-expand { margin-left: 0; }

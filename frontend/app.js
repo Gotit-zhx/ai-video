@@ -11290,7 +11290,10 @@ function scheduleDirectReferenceAutoSave(card, delay = 500) {
 
 function renderAiVideoCardExpandButton(item, expanded) {
   const label = expanded ? "收起详情" : "展开详情";
-  return `<button class="garment-card-expand" type="button" data-card-expand aria-expanded="${expanded}" aria-label="${label}：${escapeHtml(item.name || "未命名商品")}"><span>${label}</span><i aria-hidden="true">${expanded ? "↑" : "↓"}</i></button>`;
+  const copyAllowed = hasAnyPermission("video:task:manage");
+  const copyBlocked = ["IMAGE_GENERATING", "VIDEO_GENERATING"].includes(aiVideoTaskDetail?.task?.status)
+    || (aiVideoTaskDetail?.items?.length || 0) >= 30;
+  return `${copyAllowed ? `<button class="garment-card-copy-button" type="button" data-item-copy ${copyBlocked ? 'disabled title="生成完成且不足 30 组时可复制"' : ''}>复制</button>` : ""}<button class="garment-card-expand" type="button" data-card-expand aria-expanded="${expanded}" aria-label="${label}：${escapeHtml(item.name || "未命名商品")}"><span>${label}</span><i aria-hidden="true">${expanded ? "↑" : "↓"}</i></button>`;
 }
 
 function renderDirectReferenceCard(detail, item, generating, canManageVideoTasks) {
@@ -12469,6 +12472,7 @@ document.querySelector("#garment-card-grid").addEventListener("wheel", event => 
 document.querySelector("#garment-card-grid").addEventListener("click", async event => {
   const card = event.target.closest("[data-garment-card]");
   const itemId = card?.dataset.itemId;
+  if (event.target.closest("[data-item-copy]") && itemId) { openVideoGroupCopy(itemId); return; }
   const cardExpand = event.target.closest("[data-card-expand]");
   if (cardExpand && card && itemId) {
     if (expandedAiVideoItemIds.has(itemId)) {
@@ -13386,3 +13390,64 @@ if (window.location.hash === "#product-capture") rememberProductCaptureRoute(tru
 loadSocialLoginProviders();
 handleSocialLoginReturn();
 restoreSession();
+
+let videoGroupCopyTarget = null;
+let videoGroupCopyBusy = false;
+function openVideoGroupCopy(itemId) {
+  const item = aiVideoTaskDetail?.items.find(item => item.id === itemId);
+  if (!item || videoGroupCopyBusy) return;
+  videoGroupCopyTarget = { taskId: selectedAiVideoTaskId, itemId };
+  const count = document.querySelector("#video-group-copy-count");
+  count.max = String(30 - aiVideoTaskDetail.items.length);
+  count.value = "1";
+  document.querySelector("#video-group-copy-name").textContent = item.name;
+  document.querySelector("#video-group-copy-note").textContent = `留在当前任务，最多可复制 ${count.max} 份`;
+  document.querySelector("#video-group-copy-error").textContent = "";
+  const submit = document.querySelector("#video-group-copy-submit");
+  submit.disabled = false;
+  submit.textContent = "复制";
+  document.querySelector("#video-group-copy-dialog").showModal();
+  count.select();
+}
+document.querySelector("#video-group-copy-cancel").addEventListener("click", () => {
+  if (!videoGroupCopyBusy) document.querySelector("#video-group-copy-dialog").close();
+});
+document.querySelector("#video-group-copy-dialog").addEventListener("cancel", event => {
+  if (videoGroupCopyBusy) event.preventDefault();
+});
+document.querySelector("#video-group-copy-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!videoGroupCopyTarget || videoGroupCopyBusy) return;
+  const input = document.querySelector("#video-group-copy-count");
+  const count = Number(input.value);
+  if (!Number.isInteger(count) || count < 1 || count > Number(input.max)) return;
+  const target = { ...videoGroupCopyTarget };
+  const errorNote = document.querySelector("#video-group-copy-error");
+  if (["pending", "saving", "failed"].includes(directReferenceAutoSaveStates.get(target.itemId))
+      || aiVideoPromptDrafts.has(target.itemId)) {
+    errorNote.textContent = "请先保存当前参考图设置和提示词，再复制。";
+    return;
+  }
+  const submit = document.querySelector("#video-group-copy-submit");
+  const cancel = document.querySelector("#video-group-copy-cancel");
+  videoGroupCopyBusy = true;
+  submit.disabled = cancel.disabled = input.disabled = true;
+  submit.textContent = "复制中…";
+  errorNote.textContent = "";
+  let created = false;
+  try {
+    await api(`/api/v1/ai-video-tasks/${encodeURIComponent(target.taskId)}/items/${encodeURIComponent(target.itemId)}/copies`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ copies: count }) });
+    created = true;
+    await loadAiVideoTasks(target.taskId);
+    document.querySelector("#video-group-copy-dialog").close();
+    document.querySelector("#video-task-action-note").textContent = `已复制 ${count} 份，可继续编辑或生成视频。`;
+  } catch (error) {
+    errorNote.textContent = created ? "副本已创建，请刷新任务查看。" : error.message;
+  } finally {
+    videoGroupCopyBusy = false;
+    cancel.disabled = input.disabled = false;
+    submit.disabled = created;
+    submit.textContent = created ? "已复制" : "复制";
+  }
+});

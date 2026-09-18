@@ -96,6 +96,102 @@ public class AiVideoTaskService {
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
     }
 
+    @Transactional
+    public List<AiVideoTaskItem> copyItem(String taskId, String itemId, int copies, PlatformPrincipal principal) {
+        if (copies < 1 || copies >= MAX_ITEMS) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "复制份数须为 1 至 29 的整数");
+        }
+        AiVideoTask authorized = requireProduct(taskId, principal);
+        AiVideoTask task = taskMapper.selectOne(new LambdaQueryWrapper<AiVideoTask>()
+                .eq(AiVideoTask::getId, authorized.getId())
+                .eq(AiVideoTask::getOrganizationId, principal.organizationId()).last("FOR UPDATE"));
+        if (task == null) throw new BusinessException(HttpStatus.NOT_FOUND, "任务不存在");
+        if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "请等待本任务生成完成后再复制");
+        }
+        AiVideoTaskItem original = itemMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskItem>()
+                .eq(AiVideoTaskItem::getId, itemId).eq(AiVideoTaskItem::getTaskId, taskId)
+                .eq(AiVideoTaskItem::getOrganizationId, principal.organizationId()));
+        if (original == null) throw new BusinessException(HttpStatus.NOT_FOUND, "视频组不存在");
+        long count = itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, taskId));
+        if (count + copies > MAX_ITEMS) throw new BusinessException(HttpStatus.BAD_REQUEST,
+                "每个任务最多 30 组，当前还可复制 " + Math.max(0, MAX_ITEMS - count) + " 份");
+        List<AiVideoTaskAsset> assets = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
+                .eq(AiVideoTaskAsset::getItemId, itemId).eq(AiVideoTaskAsset::getTaskId, taskId)
+                .eq(AiVideoTaskAsset::getOrganizationId, principal.organizationId()));
+        List<AiVideoTaskItem> result = new ArrayList<>();
+        try {
+            for (int number = 1; number <= copies; number++) {
+                String name = original.getName();
+                name = (name.length() > 130 ? name.substring(0, 130) : name) + " · 副本 " + (count + number);
+                String sourceSku = original.getSku() == null ? "REF" : original.getSku();
+                String copySku = sourceSku.substring(0, Math.min(40, sourceSku.length())) + "-COPY-" + java.util.UUID.randomUUID().toString().replace("-", "");
+                AiVideoTaskItem copy = new AiVideoTaskItem(task.getOrganizationId(), taskId, name, copySku,
+                        original.getSourceFileName(), null, original.getSourceContentType(), original.getSourceSizeBytes());
+                result.add(copy);
+                if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                        @Override public void afterCompletion(int status) {
+                            if (status != TransactionSynchronization.STATUS_COMMITTED) deleteItemDirectory(task, copy);
+                        }
+                    });
+                }
+                Map<String, String> files = new LinkedHashMap<>();
+                copy.attachSource(copyItemFile(original.getSourceFilePath(), task, copy, files));
+                copy.updateVideoPrompt(original.getVideoPromptText());
+                copy.updateProductFunctionAnalysis(original.getProductFunctionAnalysisJson());
+                itemMapper.insert(copy);
+                for (AiVideoTaskAsset asset : assets) {
+                    if (!copyableItemAsset(asset.getAssetType())) continue;
+                    AiVideoTaskAsset duplicate = new AiVideoTaskAsset(task.getOrganizationId(), taskId, copy.getId(),
+                            asset.getAssetType(), asset.getShotSequence(), copyItemFile(asset.getFilePath(), task, copy, files),
+                            asset.getContentType(), asset.getSizeBytes(), asset.getPromptText(), asset.getModelId());
+                    if ("VIDEO_REFERENCE_IMAGE".equals(asset.getAssetType())) duplicate.updateReference(
+                            asset.getShotSequence(), asset.getReferenceRole(), asset.getReferenceInstruction(), asset.isPrimaryReference());
+                    assetMapper.insert(duplicate);
+                }
+                if (!task.isDirectReferenceVideo() && assets.stream().anyMatch(a -> "STORYBOARD_GRID".equals(a.getAssetType()))) {
+                    copy.complete();
+                    itemMapper.updateById(copy);
+                }
+            }
+            task.addPendingCopies(Math.toIntExact(count + copies));
+            taskMapper.updateById(task);
+            return result;
+        } catch (IOException exception) {
+            result.forEach(item -> deleteItemDirectory(task, item));
+            throw new BusinessException(HttpStatus.CONFLICT, "素材复制失败，未创建副本，请确认原素材仍可读取");
+        } catch (RuntimeException exception) {
+            result.forEach(item -> deleteItemDirectory(task, item));
+            throw exception;
+        }
+    }
+
+    static boolean copyableItemAsset(String type) {
+        return List.of("VIDEO_REFERENCE_IMAGE", "VIDEO_REFERENCE_VIDEO", "MODEL_IMAGE", "PRODUCT_SCENE_IMAGE",
+                "STORYBOARD_GRID", "STORYBOARD_GUIDE", "STORYBOARD_FIRST_FRAME", "STORYBOARD_FRAME").contains(type);
+    }
+
+    private String copyItemFile(String source, AiVideoTask task, AiVideoTaskItem target,
+                                Map<String, String> copied) throws IOException {
+        if (source == null || source.isBlank()) throw new IOException("Missing source");
+        if (copied.containsKey(source)) return copied.get(source);
+        Path directory = itemDirectory(task, target);
+        Files.createDirectories(directory);
+        String extension = source.replaceFirst("^.*[.]", "");
+        if (!extension.matches("[a-zA-Z0-9]{1,8}")) extension = "bin";
+        Path destination = directory.resolve(java.util.UUID.randomUUID() + "." + extension);
+        if (ossStorage != null && ossStorage.isOssLocation(source)) {
+            try (InputStream input = ossStorage.open(source)) { Files.copy(input, destination); }
+        } else {
+            Path input = Path.of(source).toRealPath();
+            if (!input.startsWith(storageRoot.toRealPath()) || !Files.isRegularFile(input)) throw new IOException("Invalid source");
+            Files.copy(input, destination);
+        }
+        copied.put(source, destination.toString());
+        return destination.toString();
+    }
+
     public AiVideoTask create(CreateCommand command, PlatformPrincipal principal) {
         VideoScript script = scriptMapper.selectOne(new LambdaQueryWrapper<VideoScript>()
                 .eq(VideoScript::getId, command.scriptId())
