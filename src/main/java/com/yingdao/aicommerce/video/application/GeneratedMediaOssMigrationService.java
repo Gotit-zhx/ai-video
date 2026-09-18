@@ -24,7 +24,7 @@ public class GeneratedMediaOssMigrationService {
     private static final long MAX_MEDIA_BYTES = 500L * 1024 * 1024;
     private static final Set<String> GENERATED_TYPES = Set.of(
             "MODEL_IMAGE", "PRODUCT_SCENE_IMAGE", "STORYBOARD_GRID", "STORYBOARD_GUIDE",
-            "STORYBOARD_FIRST_FRAME", "VIDEO_RESULT");
+            "STORYBOARD_FIRST_FRAME");
 
     private final AiVideoTaskAssetMapper assetMapper;
     private final OssStorageService ossStorage;
@@ -48,6 +48,7 @@ public class GeneratedMediaOssMigrationService {
     }
 
     private void migrate(AiVideoTaskAsset asset) {
+        if (!GENERATED_TYPES.contains(asset.getAssetType())) return;
         Path source;
         try {
             source = Path.of(asset.getFilePath()).toAbsolutePath().normalize();

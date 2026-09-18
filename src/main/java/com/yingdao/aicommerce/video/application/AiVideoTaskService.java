@@ -1233,19 +1233,8 @@ public class AiVideoTaskService {
                 try {
                     writeVideoArchive(batch, archive);
                     long size = Files.size(archive);
-                    if (ossStorage == null) return new PreparedVideoBatch(archive, null, size);
-                    try (InputStream input = Files.newInputStream(archive)) {
-                        OssStorageService.StoredObject stored = ossStorage.store(input, size,
-                                MAX_VIDEO_ARCHIVE_BYTES, "application/zip",
-                                "temporary-downloads/" + batch.organizationId() + "/" + batch.taskId(),
-                                "video-results.zip");
-                        Files.deleteIfExists(archive);
-                        return new PreparedVideoBatch(null, stored.location(), stored.size());
-                    } catch (Exception exception) {
-                        // Archive bytes were fully checked before this upload. A storage outage
-                        // must not prevent streaming the verified local archive to its owner.
-                        return new PreparedVideoBatch(archive, null, size);
-                    }
+                    // Final-video archives are streamed locally and removed after download.
+                    return new PreparedVideoBatch(archive, null, size);
                 } catch (IOException exception) {
                     failure = exception;
                     if (attempt < VIDEO_ARCHIVE_ATTEMPTS) {

@@ -1273,16 +1273,6 @@ public class AiVideoGenerationService {
                 throw new IllegalStateException("厂商视频下载不完整，未保存成片");
             }
             Files.move(temporary, output, StandardCopyOption.REPLACE_EXISTING);
-            if (ossStorage != null) {
-                try (InputStream input = Files.newInputStream(output)) {
-                    OssStorageService.StoredObject stored = ossStorage.store(input, size, MAX_VIDEO_BYTES,
-                            "video/mp4", "generated-videos/" + job.getOrganizationId() + "/" + job.getTaskId()
-                                    + "/" + job.getItemId(), "video-result.mp4");
-                    return new GeneratedVideo(stored.location(), stored.size());
-                } catch (Exception failure) {
-                    org.slf4j.LoggerFactory.getLogger(getClass()).warn("OSS upload unavailable; retained complete local video for job {}", job.getId());
-                }
-            }
             return new GeneratedVideo(output.toString(), size, !provider.requiresAuthenticatedDownload()
                     && AiVideoTaskService.isProviderVideoUrl(url) ? url : null);
         } finally {

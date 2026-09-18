@@ -61,6 +61,8 @@ public class OssStorageService {
     private final OssReadOnlySigner readOnlySigner;
     private final boolean publicImages;
     private final URI publicEndpoint;
+    private final boolean disableImageProcessing;
+    private final OssStorageService legacyStorage;
 
     public OssStorageService(
             @Value("${app.oss.bucket}") String bucket,
@@ -70,31 +72,76 @@ public class OssStorageService {
             @Value("${app.oss.ecs-role-name}") String roleName,
             @Value("${app.oss.signed-url-ttl:2h}") Duration signedUrlTtl,
             @Value("${app.oss.public-images:${APP_OSS_PUBLIC_IMAGES:false}}") boolean publicImages,
-            OssReadOnlySigner readOnlySigner
+            OssReadOnlySigner readOnlySigner,
+            @Value("${app.oss.credentials-file:${APP_OSS_CREDENTIALS_FILE:}}") String credentialsFile,
+            @Value("${APP_DAYAN_OSS_BUCKET:}") String dayanBucket,
+            @Value("${APP_DAYAN_OSS_CREDENTIALS_FILE:}") String dayanCredentialsFile
     ) throws Exception {
+        if (dayanBucket != null && !dayanBucket.isBlank()) {
+            if (dayanBucket.trim().equals(bucket)) throw new IllegalArgumentException("新旧存储 Bucket 名称必须不同以保留历史素材路径");
+            if (dayanCredentialsFile == null || dayanCredentialsFile.isBlank()) throw new IllegalArgumentException("缺少大言云上传凭证文件");
+            this.legacyStorage = new OssStorageService(bucket, region, endpoint, publicEndpoint, roleName,
+                    signedUrlTtl, publicImages, readOnlySigner, credentialsFile, "", "");
+            bucket = dayanBucket;
+            region = "cn-chengdu";
+            endpoint = "https://oss.cloud.dayan.design";
+            publicEndpoint = endpoint;
+            credentialsFile = dayanCredentialsFile;
+            publicImages = false;
+            readOnlySigner = null;
+        } else {
+            this.legacyStorage = null;
+        }
         if (bucket == null || bucket.isBlank()) throw new IllegalArgumentException("OSS Bucket 不能为空");
-        if (roleName == null || roleName.isBlank()) throw new IllegalArgumentException("ECS RAM 角色名称不能为空");
+
         this.bucket = bucket.trim();
         this.signedUrlTtl = signedUrlTtl;
         this.readOnlySigner = readOnlySigner;
         this.publicImages = publicImages;
         this.publicEndpoint = URI.create(publicEndpoint);
+        this.disableImageProcessing = this.publicEndpoint.getHost().endsWith(".cloud.dayan.design");
 
-        com.aliyun.credentials.models.Config credentialsConfig = new com.aliyun.credentials.models.Config()
-                .setType("ecs_ram_role")
-                .setRoleName(roleName.trim());
-        com.aliyun.credentials.Client credentialsClient = new com.aliyun.credentials.Client(credentialsConfig);
-        CredentialsProvider provider = new CredentialsProvider() {
+        CredentialsProvider provider = credentialsProvider(roleName, credentialsFile);
+        ClientBuilderConfiguration clientConfig = new ClientBuilderConfiguration();
+        clientConfig.setSignatureVersion(disableImageProcessing ? SignVersion.V1 : SignVersion.V4);
+        clientConfig.setConnectionTimeout(10_000);
+        clientConfig.setSocketTimeout(30_000);
+        clientConfig.setMaxErrorRetry(2);
+        String proxyHost = System.getProperty("https.proxyHost", "");
+        if (!proxyHost.isBlank()) {
+            clientConfig.setProxyHost(proxyHost);
+            clientConfig.setProxyPort(Integer.parseInt(System.getProperty("https.proxyPort", "443")));
+        }
+        this.internalClient = client(endpoint, region, provider, clientConfig);
+        this.publicClient = client(publicEndpoint, region, provider, clientConfig);
+    }
+
+    static CredentialsProvider credentialsProvider(String roleName, String credentialsFile) throws Exception {
+        if (credentialsFile != null && !credentialsFile.isBlank()) {
+            java.util.Properties properties = new java.util.Properties();
+            try (var reader = Files.newBufferedReader(Path.of(credentialsFile), StandardCharsets.UTF_8)) {
+                properties.load(reader);
+            } catch (Exception exception) {
+                throw new IllegalStateException("无法读取 OSS 上传凭证文件");
+            }
+            String id = properties.getProperty("accessKeyId", "").trim();
+            String secret = properties.getProperty("accessKeySecret", "").trim();
+            if (id.isBlank() || secret.isBlank()) throw new IllegalArgumentException("OSS 上传凭证缺少 AccessKey ID 或 Secret");
+            return new CredentialsProvider() {
+                @Override public void setCredentials(Credentials credentials) { }
+                @Override public Credentials getCredentials() { return new DefaultCredentials(id, secret); }
+            };
+        }
+        if (roleName == null || roleName.isBlank()) throw new IllegalArgumentException("OSS 需要配置上传凭证文件或 ECS RAM 角色");
+        var config = new com.aliyun.credentials.models.Config().setType("ecs_ram_role").setRoleName(roleName.trim());
+        var client = new com.aliyun.credentials.Client(config);
+        return new CredentialsProvider() {
             @Override public void setCredentials(Credentials credentials) { }
             @Override public Credentials getCredentials() {
-                CredentialModel value = credentialsClient.getCredential();
+                CredentialModel value = client.getCredential();
                 return new DefaultCredentials(value.getAccessKeyId(), value.getAccessKeySecret(), value.getSecurityToken());
             }
         };
-        ClientBuilderConfiguration clientConfig = new ClientBuilderConfiguration();
-        clientConfig.setSignatureVersion(SignVersion.V4);
-        this.internalClient = client(endpoint, region, provider, clientConfig);
-        this.publicClient = client(publicEndpoint, region, provider, clientConfig);
     }
 
     @PostConstruct
@@ -207,10 +254,12 @@ public class OssStorageService {
     }
 
     public boolean isOssLocation(String value) {
-        return value != null && value.startsWith("oss://" + bucket + "/");
+        return value != null && (value.startsWith("oss://" + bucket + "/")
+                || (legacyStorage != null && legacyStorage.isOssLocation(value)));
     }
 
     public boolean exists(String location) {
+        if (legacyStorage != null && legacyStorage.isOssLocation(location)) return legacyStorage.exists(location);
         return internalClient.doesObjectExist(bucket, key(location));
     }
 
@@ -223,20 +272,23 @@ public class OssStorageService {
     }
 
     public InputStream open(String location) {
+        if (legacyStorage != null && legacyStorage.isOssLocation(location)) return legacyStorage.open(location);
         return internalClient.getObject(bucket, key(location)).getObjectContent();
     }
 
     public String signedUrl(String location) {
+        if (legacyStorage != null && legacyStorage.isOssLocation(location)) return legacyStorage.signedUrl(location);
         // Provider submissions must go straight to OSS, not through the app's
         // bandwidth-limited material gateway. Sign again on each submission.
         String objectKey = key(location);
         if (isPublicImage(objectKey)) return publicImageUrl(objectKey, null);
-        if (readOnlySigner.isEnabled()) return readOnlySigner.sign(bucket, objectKey);
+        if (readOnlySigner != null && readOnlySigner.isEnabled()) return readOnlySigner.sign(bucket, objectKey);
         return signedUrl(location, null);
     }
 
     /** Stream with current ECS credentials, not credentials captured in a URL. */
     public Download download(String location) {
+        if (legacyStorage != null && legacyStorage.isOssLocation(location)) return legacyStorage.download(location);
         String objectKey = key(location);
         ObjectMetadata metadata = internalClient.getObjectMetadata(bucket, objectKey);
         long size = metadata.getContentLength();
@@ -252,6 +304,8 @@ public class OssStorageService {
     public record Download(Resource resource, long size, String contentType) {}
 
     public String signedImagePreviewUrl(String location) {
+        if (legacyStorage != null && legacyStorage.isOssLocation(location)) return legacyStorage.signedImagePreviewUrl(location);
+        if (disableImageProcessing) return signedUrl(location);
         return signedUrl(location,
                 "image/resize,m_lfit,w_960,limit_1/format,webp/quality,q_82");
     }
@@ -266,6 +320,7 @@ public class OssStorageService {
     }
 
     public String signedDownloadUrl(String location, String fileName) {
+        if (legacyStorage != null && legacyStorage.isOssLocation(location)) return legacyStorage.signedDownloadUrl(location, fileName);
         String objectKey = key(location);
         if (isPublicImage(objectKey)) return publicImageUrl(objectKey, null);
         GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(bucket, objectKey, HttpMethod.GET);
@@ -327,6 +382,7 @@ public class OssStorageService {
     }
 
     public void delete(String location) {
+        if (legacyStorage != null && legacyStorage.isOssLocation(location)) { legacyStorage.delete(location); return; }
         if (isOssLocation(location)) internalClient.deleteObject(bucket, key(location));
     }
 
@@ -353,6 +409,7 @@ public class OssStorageService {
     public void close() {
         internalClient.shutdown();
         publicClient.shutdown();
+        if (legacyStorage != null) legacyStorage.close();
     }
 
     public record StoredObject(String location, long size) {}

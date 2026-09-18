@@ -34,17 +34,16 @@ class VideoStorageFallbackTest {
   when(links.isPubliclyReachable()).thenReturn(false);
   assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(service(),"ossReference",asset,"video-references")).hasMessageContaining("UserDisable");
  }
- @Test void completedDownloadSurvivesOssFailureWithExactBytes() throws Exception {
+ @Test void completedVideoNeverUploadsToOss() throws Exception {
   byte[] bytes=new byte[]{0,1,2,3,4,5};
   var http=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
   http.createContext("/video",exchange->{exchange.sendResponseHeaders(200,bytes.length);try(var out=exchange.getResponseBody()){out.write(bytes);}});http.start();
   try {
    var item=mock(AiVideoTaskItem.class);when(item.getSourceFilePath()).thenReturn(root.resolve("source.jpg").toString());when(items.selectById("item")).thenReturn(item);
    var job=mock(AiVideoGenerationJob.class);when(job.getId()).thenReturn("job");when(job.getItemId()).thenReturn("item");when(job.getOrganizationId()).thenReturn("org");when(job.getTaskId()).thenReturn("task");
-   when(oss.store(any(InputStream.class),anyLong(),anyLong(),eq("video/mp4"),anyString(),anyString())).thenThrow(new IllegalStateException("UserDisable"));
    Object result=ReflectionTestUtils.invokeMethod(service(),"download",job,null,mock(VideoGenerationProvider.class),"http://127.0.0.1:"+http.getAddress().getPort()+"/video");
    assertThat(result).isNotNull();assertThat(Files.readAllBytes(root.resolve("video-job.mp4"))).isEqualTo(bytes);
-   assertThat(root.resolve("video-job.part")).doesNotExist();
+   assertThat(root.resolve("video-job.part")).doesNotExist();verifyNoInteractions(oss);
   } finally {http.stop(0);}
  }
  @Test void audioFallbackPreservesValidLinkSignature() throws Exception {
