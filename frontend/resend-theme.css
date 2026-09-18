@@ -3523,3 +3523,113 @@ html[data-theme="dark"] select { color-scheme: dark; }
  .login-shell .login-panel { min-height: auto; padding: 28px 24px 20px; }
  .login-welcome { margin-bottom: 22px; }
 }
+
+/* Focused single-column direction, previewed locally before release. */
+.login-shell { display: flex; flex-direction: column; min-height: 100dvh; background: #fff; }
+.login-masthead { width: min(1120px, calc(100% - 64px)); margin: 0 auto; height: 76px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f0f0f2; }
+.login-home-brand { display: flex; align-items: center; gap: 12px; color: #222; font: 750 20px/1 -apple-system, sans-serif; letter-spacing: -.07em; text-decoration: none; }
+.login-home-brand span { font-size: 11px; color: #9b9b9e; font-weight: 400; letter-spacing: .1em; }
+.login-header-download { color: #66666c; font-size: 12px; text-decoration: none; }
+.login-header-download span { margin-left: 7px; color: #222; }
+.login-header-download:hover { color: #111; }
+.login-shell .login-panel { flex: 1; min-height: calc(100dvh - 76px); padding: 38px 24px 18px; }
+.login-shell .login-card { width: min(100%, 340px); margin: auto 0; padding: 0; }
+.login-welcome { text-align: center; margin-bottom: 30px; }
+.login-monogram { width: 54px; height: 54px; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; border-radius: 15px; color: #fff; background: #18181a; font: 700 43px/1 Georgia, serif; letter-spacing: -.05em; padding-bottom: 6px; }
+.login-monogram span { color: #a7b5ff; }
+.login-welcome h2 { margin: 0 0 10px; font-size: 27px; letter-spacing: -.04em; font-weight: 600; }
+.login-welcome p { color: #96969b; font-size: 12px; }
+.login-shell #login-form label { font-size: 11px; color: #75757b; margin-top: 6px; }
+.login-shell #login-form .field { min-height: 44px; border: 1px solid #e8e8ed; border-radius: 8px; background: #fcfcfd; }
+.login-shell #login-form .field svg { opacity: .55; }
+.login-shell #login-form .field:focus-within { border-color: #9398aa; box-shadow: 0 0 0 3px #f0f1f5; background: #fff; }
+.login-shell #login-button { min-height: 44px; background: #202023; border-radius: 8px; font-size: 13px; }
+.login-shell #login-button:hover { background: #3a3a40; }
+.login-assistant { position: relative; margin-top: 24px; padding: 20px 0 0; border: 0; border-top: 1px solid #ededf0; border-radius: 0; background: transparent; }
+.login-assistant-top { display: block; }
+.login-assistant-icon { display: none; }
+.login-assistant h3 { font-size: 12px; font-weight: 500; }
+.login-assistant-top p { margin-top: 6px; font-size: 10px; }
+.login-assistant-download { position: absolute; top: 14px; right: 0; min-height: 32px; margin: 0; gap: 10px; color: #5a6178; font-size: 11px; }
+.login-assistant-meta { margin-top: 12px; font-size: 9px; color: #a0a0a5; }
+.login-install-guide { margin-top: 12px; padding-top: 0; border: 0; font-size: 10px; }
+.login-shell .login-icp { margin-top: 38px; }
+@media (max-width: 600px) { .login-masthead { width: calc(100% - 40px); height: 62px; } .login-shell .login-panel { min-height: calc(100dvh - 62px); padding-top: 28px; } }
+
+.login-project-label { margin-bottom: 15px; color: #83838a; font: 600 10px/1.5 -apple-system, sans-serif; letter-spacing: .15em; }
+.login-welcome p span { padding: 0 6px; color: #c2c2c7; }
+.login-assistant-meta { margin-top: 8px; }
+/* Monochrome login palette. */
+.login-shell { --info: #171717; --ink: #171717; --muted: #737373; --quiet: #969696; --line: #e5e5e5; --surface-soft: #fafafa; }
+.login-shell .login-panel { background: #fff; }
+.login-masthead { border-color: #ededed; }
+.login-home-brand, .login-header-download:hover, .login-welcome h2 { color: #171717; }
+.login-home-brand span, .login-project-label, .login-welcome p { color: #858585; }
+.login-welcome p span { color: #bfbfbf; }
+.login-header-download, .login-shell #login-form label, .login-assistant-download, .login-install-guide { color: #666; }
+.login-shell #login-form .field { background: #fafafa; border-color: #e3e3e3; }
+.login-shell #login-form .field:focus-within { background: #fff; border-color: #555; box-shadow: 0 0 0 3px #eee; }
+.login-shell #toggle-password { color: #777; }
+.login-shell #login-button { background: #171717; }
+.login-shell #login-button:hover { background: #363636; }
+.login-assistant { border-color: #e5e5e5; }
+.login-assistant h3, .login-assistant-download:hover { color: #222; }
+.login-assistant-meta, .login-shell .login-icp, .login-shell .copyright { color: #999; }
+.login-assistant-download:focus-visible, .login-install-guide summary:focus-visible { outline-color: #222; }
+
+/* Public product portal. */
+.portal { color: #191919; background: #fff; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
+.portal-nav, .portal-hero, .portal-preview, .portal-capabilities, .portal-bottom, .portal-footer { width: min(1160px, calc(100% - 80px)); margin-inline: auto; }
+.portal-nav { height: 90px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e8e8e8; gap: 24px; }
+.portal-logo { display: flex; align-items: baseline; gap: 14px; font-size: 27px; font-weight: 750; letter-spacing: -.06em; text-decoration: none; }
+.portal-logo span { font-size: 12px; font-weight: 400; letter-spacing: .1em; color: #888; }
+.portal-nav nav { display: flex; align-items: center; gap: 30px; font-size: 12px; }
+.portal a { color: inherit; text-decoration: none; }
+.portal a:hover { opacity: .72; }
+.portal a:focus-visible { outline: 2px solid #555; outline-offset: 5px; }
+.portal .portal-button { display: inline-flex; align-items: center; justify-content: space-between; gap: 30px; padding: 13px 20px; border-radius: 5px; color: #fff; background: #171717; font-size: 13px; font-weight: 500; }
+.portal-hero { padding: 80px 0 0; }
+.portal-eyebrow { font-size: 12px; letter-spacing: .1em; color: #777; margin-bottom: 25px; }
+.portal-hero h1 { font-size: clamp(38px, 5.3vw, 72px); line-height: 1.18; font-weight: 600; letter-spacing: -.055em; margin: 0; }
+.portal-hero h1 span { color: #969696; }
+.portal-hero > p { margin-top: 26px; color: #777; font-size: 14px; line-height: 1.9; }
+.portal-hero-actions { display: flex; align-items: center; gap: 28px; margin-top: 28px; }
+.portal-text-link { font-size: 12px; }
+.portal-index { display: flex; gap: 32px; padding: 28px 0; margin-top: 46px; color: #898989; font-size: 11px; border-top: 1px solid #e8e8e8; }
+.portal-preview { background: #f6f6f6; border: 1px solid #eaeaea; border-radius: 10px; overflow: hidden; scroll-margin-top: 24px; }
+.portal-preview header, .portal-preview footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 22px; font-size: 12px; }
+.portal-preview header small { color: #888; font-size: 10px; }
+.portal-preview img { display: block; width: 100%; height: auto; max-height: 480px; object-fit: cover; object-position: center; }
+.portal-preview footer { background: #fff; color: #777; }
+.portal-preview footer a { color: #222; }
+.portal-capabilities { padding: 88px 0 80px; scroll-margin-top: 10px; }
+.portal-section-heading > span { color: #999; font-size: 11px; }
+.portal-section-heading h2 { margin: 15px 0 34px; font-size: 32px; font-weight: 550; letter-spacing: -.045em; }
+.portal-feature-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-top: 1px solid #222; }
+.portal-feature-grid article { padding: 28px 25px 0 0; }
+.portal-feature-grid article + article { padding-left: 25px; border-left: 1px solid #e8e8e8; }
+.portal-feature-index { font-size: 10px; color: #929292; }
+.portal-feature-grid h3 { margin: 22px 0 15px; font-size: 20px; font-weight: 550; line-height: 1.4; }
+.portal-feature-grid p { color: #888; font-size: 12px; line-height: 1.9; }
+.portal-feature-grid ul { list-style: none; padding: 0; margin: 24px 0 0; font-size: 11px; color: #555; line-height: 2; }
+.portal-bottom { padding: 40px; display: flex; align-items: center; justify-content: space-between; gap: 24px; background: #f5f5f5; border-radius: 8px; }
+.portal-bottom span { color: #999; font-size: 10px; letter-spacing: .12em; }
+.portal-bottom h2 { margin-top: 12px; font-size: 25px; font-weight: 550; }
+.portal-footer { padding: 44px 0 30px; display: flex; justify-content: space-between; gap: 25px; color: #999; font-size: 10px; }
+.portal-footer > div { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.portal-footer strong { color: #222; font-size: 18px; letter-spacing: -.04em; }
+@media (max-width: 800px) {
+ .portal-nav, .portal-hero, .portal-preview, .portal-capabilities, .portal-bottom, .portal-footer { width: calc(100% - 40px); }
+ .portal-nav { height: 74px; } .portal-nav nav { gap: 12px; } .portal-nav nav > a:not(.portal-button) { display: none; }
+ .portal-hero { padding-top: 50px; } .portal-index { gap: 18px; margin-top: 35px; font-size: 10px; }
+ .portal-preview header, .portal-preview footer { padding: 13px; flex-wrap: wrap; gap: 8px; }
+ .portal-preview img { max-height: none; }
+ .portal-capabilities { padding: 55px 0; } .portal-section-heading h2 { font-size: 27px; }
+ .portal-feature-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+ .portal-feature-grid article, .portal-feature-grid article + article { padding: 24px 14px 22px 0; border-left: 0; border-bottom: 1px solid #ddd; }
+ .portal-feature-grid article:nth-child(even) { padding-left: 14px; }
+ .portal-feature-grid h3 { font-size: 17px; }
+ .portal-bottom { padding: 25px; flex-direction: column; align-items: flex-start; } .portal-bottom h2 { font-size: 23px; }
+ .portal-footer { flex-direction: column; padding-top: 30px; }
+}
+.portal-preview img { filter: grayscale(1); }

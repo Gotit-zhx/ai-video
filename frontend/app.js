@@ -917,11 +917,14 @@ function showLogin({ message = "" } = {}) {
   passwordInput.value = "";
   resetCompanyScopedWorkspaceState();
   currentUser = null;
-  loginView.hidden = false;
+  const portalRoute = !window.location.hash || ["#home", "#platform-capabilities", "#platform-preview"].includes(window.location.hash);
+  const showPortal = portalRoute && !message;
+  document.querySelector("#portal-view").hidden = !showPortal;
+  loginView.hidden = showPortal;
   dashboardView.hidden = true;
   loginError.textContent = message;
   loginError.hidden = !message;
-  selectLoginMethod("wechat");
+  selectLoginMethod(socialProviderStatuses.get("wechat")?.enabled ? "wechat" : "password", { focus: false });
 }
 
 async function showDashboard(user) {
@@ -930,6 +933,7 @@ async function showDashboard(user) {
   }
   currentUser = user;
   sessionExpiryActive = false;
+  document.querySelector("#portal-view").hidden = true;
   loginView.hidden = true;
   dashboardView.hidden = false;
   loginError.hidden = true;
@@ -1385,6 +1389,13 @@ function switchWorkspace(page) {
 }
 
 window.addEventListener("hashchange", () => {
+  if (!currentUser && ["#login", "#home", "#platform-capabilities", "#platform-preview", ""].includes(window.location.hash)) {
+    showLogin();
+    if (["#login", "#home", ""].includes(window.location.hash)) window.scrollTo(0, 0);
+    else requestAnimationFrame(() => document.querySelector(window.location.hash)?.scrollIntoView());
+    return;
+  }
+
   if (window.location.hash === "#shops" && currentUser && hasAnyPermission("product:view", "product:publish")) {
     switchWorkspace("shops");
     loadMarketplaceShops();
