@@ -3633,3 +3633,12 @@ html[data-theme="dark"] select { color-scheme: dark; }
  .portal-footer { flex-direction: column; padding-top: 30px; }
 }
 .portal-preview img { filter: grayscale(1); }
+
+/* Keep secondary copy out of the primary reading path. */
+.portal-hero { padding-bottom: 56px; }
+.portal-feature-grid article, .portal-feature-grid article + article { padding-top: 18px; padding-bottom: 16px; }
+.portal-feature-grid h3 { margin: 8px 0 14px; }
+.portal-feature-grid p { font-size: 14px; line-height: 1.8; }
+.portal-preview header { font-size: 14px; }
+.login-welcome { margin-bottom: 30px; }
+.login-install-guide { margin-top: 16px; font-size: 11px; }
