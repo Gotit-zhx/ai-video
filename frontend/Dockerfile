@@ -30,3 +30,5 @@ EXPOSE 80 443
 COPY commerce-template-studio.css /usr/share/nginx/html/
 
 COPY commerce-artwork-library.css commerce-artwork-library.js commerce-publication.js /usr/share/nginx/html/
+
+COPY commerce-motion-demo.html commerce-motion-demo.js commerce-motion-demo.css /usr/share/nginx/html/
