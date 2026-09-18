@@ -17,6 +17,10 @@ public class LocalMaterialOssArchiveService {
     private static final Set<String> MEDIA=Set.of("png","jpg","jpeg","webp","gif","avif","bmp","heic","mp4","mov","webm","mkv","avi","m4v","mp3","wav","m4a","aac","ogg","flac","svg");
     private final OssStorageService storage;
     private final List<Path> roots;
+    private final java.util.concurrent.atomic.AtomicBoolean running=new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.ExecutorService worker=java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
+        Thread thread=new Thread(task,"oss-material-archive");thread.setDaemon(true);return thread;
+    });
     public LocalMaterialOssArchiveService(OssStorageService storage,
         @Value("${app.video-script-storage:/data/video-scripts}") String scripts,
         @Value("${app.ai-video-task-storage:/data/ai-video-tasks}") String tasks,
@@ -51,6 +55,14 @@ public class LocalMaterialOssArchiveService {
         return null;
     }
     @Scheduled(initialDelay=90_000,fixedDelay=60_000)
+    public void scheduleArchive() {
+        if(!running.compareAndSet(false,true))return;
+        try {worker.execute(() -> {try {archive();} finally {running.set(false);}});}
+        catch(java.util.concurrent.RejectedExecutionException stopped) {running.set(false);}
+    }
+    @jakarta.annotation.PreDestroy
+    public void close() {worker.shutdownNow();}
+
     public void archive() {
         int remaining=50;
         for(Path root:roots) {
