@@ -2539,7 +2539,38 @@ function detailedWatchEvidenceInstructions() {
   return `每帧输出 timestampSeconds、usableForStoryboard、observation（简短事实概述）、subjectCount（可判断的人数，否则null）、state（worn/held/flat/folded/transition/none/uncertain）、orientation（front/side/back/mixed/uncertain）、contact（哪只手接触哪里、抓握与支撑；看不清须注明）、action（上一相邻实拍帧→当前帧的可见动作路径，首帧只写姿态）、camera（景别、主体运动与相机运动分别说明）、cut（continuous/cut/uncertain，本片段首帧必须为uncertain）、uncertainty（看不清、遮挡或帧间缺失的细节，无则空字符串）。字符串用短句，observation/contact各最多45字，action/camera各最多65字，uncertainty最多45字。不要把左侧画面等同人物左手，不确定就写不确定；禁止猜测精确角度、抓握力度、速度或帧间未拍到的动作。镜头硬切不要求人物姿态连续，不能为了连续而补造穿衣、转身等过程。平台片尾界面标记不可用；带字幕的实拍仍可用但不抄字幕。只返回 {"frames":[...]}。`;
 }
 
+function normalizeWatchEvidence(evidence) {
+  if (!Array.isArray(evidence?.frames)) return evidence;
+  const enums = {
+    state: ['worn', 'held', 'flat', 'folded', 'transition', 'none', 'uncertain'],
+    orientation: ['front', 'side', 'back', 'mixed', 'uncertain'],
+    cut: ['continuous', 'cut', 'uncertain']
+  };
+  const aliases = { state: { transitioning: 'transition' }, orientation: {}, cut: { 'hard cut': 'cut' } };
+  for (const frame of evidence.frames) {
+    if (!frame || typeof frame !== 'object') continue;
+    for (const field of ['timestampSeconds', 'subjectCount']) {
+      if (typeof frame[field] === 'string' && frame[field].trim() && Number.isFinite(Number(frame[field]))) {
+        frame[field] = Number(frame[field]);
+      }
+    }
+    for (const [field, allowed] of Object.entries(enums)) {
+      if (typeof frame[field] !== 'string' || !frame[field].trim()) continue;
+      const original = frame[field];
+      const value = original.trim().toLowerCase();
+      if (allowed.includes(value)) frame[field] = value;
+      else if (aliases[field][value]) frame[field] = aliases[field][value];
+      else if (typeof frame.uncertainty === 'string') {
+        frame[field] = 'uncertain';
+        frame.uncertainty += `${frame.uncertainty ? '；' : ''}${field} 原始描述：${original}`;
+      }
+    }
+  }
+  return evidence;
+}
+
 function validateDetailedWatchEvidence(evidence, frames) {
+  normalizeWatchEvidence(evidence);
   const states = ['worn', 'held', 'flat', 'folded', 'transition', 'none', 'uncertain'];
   const orientations = ['front', 'side', 'back', 'mixed', 'uncertain'];
   const cuts = ['continuous', 'cut', 'uncertain'];
@@ -2558,6 +2589,7 @@ function validateDetailedWatchEvidence(evidence, frames) {
 }
 
 function validateWatchReview(evidence, frames, conflicts) {
+  normalizeWatchEvidence(evidence);
   const returned = new Set((Array.isArray(evidence?.frames) ? evidence.frames : []).map(item => item?.timestampSeconds));
   if (conflicts.some(timestamp => !returned.has(timestamp))) {
     throw new Error('watch 复核遗漏争议帧');

@@ -423,3 +423,18 @@ test('review rejects missing conflicts, invented times, duplicates and invalid f
   const invalid=detailedEvidence([frames[1]]); delete invalid.frames[0].contact;
   assert.throws(()=>p.c.validateWatchReview(invalid,frames,[1]),/字段/);
 });
+
+
+test('watch normalizes compatible model terms without inventing certainty', async t => {
+  const {root}=await fixture(t);const p=runtime(root);
+  const frames=[{timestampSeconds:1},{timestampSeconds:2}];
+  const evidence=detailedEvidence(frames);
+  Object.assign(evidence.frames[0], {timestampSeconds:'1.0',subjectCount:'1',state:'transitioning',orientation:'SIDE'});
+  Object.assign(evidence.frames[1], {state:'on surface',cut:'hard cut'});
+  const result=p.c.validateWatchReview(evidence,frames,[1,2]);
+  assert.equal(result.frames[0].state,'transition');assert.equal(result.frames[0].orientation,'side');
+  assert.equal(result.frames[0].subjectCount,1);assert.equal(result.frames[1].cut,'cut');
+  assert.equal(result.frames[1].state,'uncertain');assert.match(result.frames[1].uncertainty,/on surface/);
+  const wrong=detailedEvidence([{timestampSeconds:'1.1'}]);
+  assert.throws(()=>p.c.validateWatchReview(wrong,frames,[1]),/遗漏/);
+});
