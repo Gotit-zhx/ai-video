@@ -2557,6 +2557,19 @@ function validateDetailedWatchEvidence(evidence, frames) {
   return evidence;
 }
 
+function validateWatchReview(evidence, frames, conflicts) {
+  const returned = new Set((Array.isArray(evidence?.frames) ? evidence.frames : []).map(item => item?.timestampSeconds));
+  if (conflicts.some(timestamp => !returned.has(timestamp))) {
+    throw new Error('watch 复核遗漏争议帧');
+  }
+  // Neighbouring frames are visual context; only disputed frames require a repeated report.
+  const reportedFrames = frames.filter(frame => returned.has(frame.timestampSeconds));
+  const firstCut = evidence?.frames?.[0]?.cut;
+  const validated = validateDetailedWatchEvidence(evidence, reportedFrames);
+  if (reportedFrames[0]?.timestampSeconds !== frames[0]?.timestampSeconds) validated.frames[0].cut = firstCut;
+  return validated;
+}
+
 function watchEvidenceConflicts(batches) {
   const grouped = new Map();
   for (const item of batches.flatMap(batch => batch.frames)) {
@@ -2607,7 +2620,7 @@ ${JSON.stringify(order)}`);
     const frameOrder = reviewFrames.map((frame, i) => ({ imagePosition: i + 1, path: frame.path, timestampSeconds: frame.timestampSeconds, motionTimestamps: frame.motion?.timestamps }));
     const answer = await review.skill("watch", `模式：Evidence review。以下时间点的独立观察有冲突：${JSON.stringify(conflicts)}。读取全部复核图片，按时间返回证据，不生成分镜。${detailedWatchEvidenceInstructions()}\n旧观察仅供定位争议，不能代替图片：${JSON.stringify(results.flatMap(batch => batch.frames).filter(frame => conflicts.includes(frame.timestampSeconds)))}\n精确帧清单：\n${JSON.stringify(frameOrder)}`);
     if (review.missingFrames().length) throw new Error('watch 冲突复核未读取全部指定画面');
-    const resolved = validateDetailedWatchEvidence(extractJsonObject(messageText(answer)), reviewFrames);
+    const resolved = validateWatchReview(extractJsonObject(messageText(answer)), reviewFrames, conflicts);
     for (const batch of results) batch.frames = batch.frames.map(frame => conflicts.includes(frame.timestampSeconds)
       ? resolved.frames.find(item => item.timestampSeconds === frame.timestampSeconds) : frame);
     reviewMessages = review.state.messages;

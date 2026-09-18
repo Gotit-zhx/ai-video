@@ -368,7 +368,10 @@ test('only conflicting overlapping frames trigger one bounded image review befor
     if(text.includes('模式：Evidence batch。')){
       send(response,JSON.stringify(detailedEvidence(frames,{state:frames[0].timestampSeconds===0?'held':'worn'})));
     }else if(text.includes('模式：Evidence review。')){
-      reviews++;send(response,JSON.stringify(detailedEvidence(frames,{state:'uncertain',uncertainty:'遮挡，无法确认手持或穿着'})));
+      const conflicts=JSON.parse(text.match(/独立观察有冲突：(\[[^\]]*\])/)[1]);
+      const disputed=frames.filter(frame=>conflicts.includes(frame.timestampSeconds));
+      assert.ok(disputed.length<frames.length, 'context neighbours were read but need not be repeated');
+      reviews++;send(response,JSON.stringify(detailedEvidence(disputed,{state:'uncertain',uncertainty:'遮挡，无法确认手持或穿着'})));
     }else{
       assert.equal(reviews,1);assert.ok(text.includes('"state":"uncertain"'));
       send(response,result(frames));
@@ -406,4 +409,17 @@ test('hard-cut grounding preserves observed contact and removes fabricated inter
   assert.equal(result.shots[0].transitionDescription,'硬切');
   assert.equal(result.shots[1].motionDescription,'已观察的抬起动作');
   assert.deepEqual(Array.from(p.c.watchEvidenceConflicts([e,detailedEvidence([{timestampSeconds:2}],{cut:'continuous'})])),[2]);
+});
+
+
+test('review rejects missing conflicts, invented times, duplicates and invalid fields', async t => {
+  const {root}=await fixture(t); const p=runtime(root);
+  const frames=[0,1,2].map(timestampSeconds=>({timestampSeconds}));
+  const subset=detailedEvidence([frames[1]],{cut:'cut'});
+  assert.equal(p.c.validateWatchReview(subset,frames,[1]).frames[0].cut,'cut');
+  assert.throws(()=>p.c.validateWatchReview(detailedEvidence([frames[0]]),frames,[1]),/遗漏/);
+  assert.throws(()=>p.c.validateWatchReview(detailedEvidence([frames[1],{timestampSeconds:99}]),frames,[1]),/字段/);
+  assert.throws(()=>p.c.validateWatchReview(detailedEvidence([frames[1],frames[1]]),frames,[1]),/字段/);
+  const invalid=detailedEvidence([frames[1]]); delete invalid.frames[0].contact;
+  assert.throws(()=>p.c.validateWatchReview(invalid,frames,[1]),/字段/);
 });
