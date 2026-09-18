@@ -301,15 +301,26 @@ export async function requestChatCompletion(options) {
     const remaining = deadline - Date.now();
     if (signal?.aborted || remaining <= 0) throw new ChatCompletionError("模型请求超时", "CHAT_TIMEOUT", true);
     const route = routes[index];
+    const firstActivity = new AbortController();
+    const firstActivityTimer = index < routes.length - 1
+      ? setTimeout(() => firstActivity.abort(), Math.min(60_000, remaining / (routes.length - index))) : null;
+    const routeSignal = signal ? AbortSignal.any([signal, firstActivity.signal]) : firstActivity.signal;
     try {
       const result = await requestSingleChatCompletion({ ...options, config: route, apiKey: route.apiKey,
-        timeoutMs: index < routes.length - 1 ? Math.min(60_000, remaining / (routes.length - index)) : remaining,
-        onTextDelta: onTextDelta ? delta => { emittedText = true; onTextDelta(delta); } : undefined });
+        timeoutMs: remaining, signal: routeSignal,
+        onActivity: activity => {
+          if (["TEXT_STREAMING", "TOOL_STREAMING", "REASONING"].includes(activity)) clearTimeout(firstActivityTimer);
+          if (activity === "TOOL_STREAMING") emittedText = true;
+          onActivity?.(activity);
+        },
+        onTextDelta: delta => { clearTimeout(firstActivityTimer); emittedText = true; onTextDelta?.(delta); } });
       if (index > 0) console.info(`[driver-fallback] completed model=${String(route.modelId)} attempt=${index + 1}`);
       return { ...result, modelId: route.modelId, fallbackUsed: index > 0 };
     } catch (error) {
       if (index === routes.length - 1 || emittedText || signal?.aborted || !FALLBACK_FAILURES.has(error.failureCode)) throw error;
       onActivity?.("SWITCHING_MODEL");
+    } finally {
+      clearTimeout(firstActivityTimer);
     }
   }
 }

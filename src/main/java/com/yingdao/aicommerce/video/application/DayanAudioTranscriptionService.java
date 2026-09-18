@@ -151,13 +151,17 @@ public class DayanAudioTranscriptionService {
     private String sourceUrl(VideoScript script) throws Exception {
         Path audio = extractAudio(script);
         if (ossStorage != null) {
-            return ossStorage.publish(audio, "audio/mpeg",
-                    "script-transcription-inputs");
+            try {
+                return ossStorage.publish(audio, "audio/mpeg", "script-transcription-inputs");
+            } catch (Exception failure) {
+                if (!referenceLinks.isPubliclyReachable()) throw failure;
+                log.warn("OSS publication unavailable; using signed local transcription audio for script {}", script.getId());
+            }
         }
         if (!referenceLinks.isPubliclyReachable()) {
             throw new IllegalStateException("本地语音转写需要先启动公网隧道");
         }
-        return referenceLinks.scriptAudio(script.getId()) + "?attempt=" + Instant.now().toEpochMilli();
+        return referenceLinks.scriptAudio(script.getId()) + "&attempt=" + Instant.now().toEpochMilli();
     }
 
     private Path transcriptionResult(VideoScript script) {

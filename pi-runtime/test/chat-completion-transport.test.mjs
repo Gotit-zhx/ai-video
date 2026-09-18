@@ -376,3 +376,22 @@ test('never switches on content filtering, caller cancellation, or already displ
     assert.equal(calls, 1, mode);
   }
 });
+
+
+test('fallback startup deadline does not interrupt an actively streaming primary', async t => {
+  const primary=await upstream(t,response=>{
+    response.writeHead(200,{'Content-Type':'text/event-stream'});
+    response.write('data: {"choices":[{"delta":{"content":"start"}}]}\n\n');
+    setTimeout(()=>response.end('data: {"choices":[{"delta":{"content":" end"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'),650);
+  });
+  const backup=await upstream(t,response=>success(response));
+  const result=await primary.request({timeoutMs:1000,config:{...primary.config,fallbackModels:[{...backup.config,apiKey:'backup'}]}});
+  assert.equal(result.reply,'start end');assert.equal(primary.calls.length,1);assert.equal(backup.calls.length,0);
+});
+
+test('silent primary still switches to backup within the shared deadline', async t => {
+  const primary=await upstream(t,()=>{});
+  const backup=await upstream(t,response=>success(response));
+  const result=await primary.request({timeoutMs:1000,config:{...primary.config,fallbackModels:[{...backup.config,apiKey:'backup'}]}});
+  assert.equal(result.fallbackUsed,true);assert.equal(primary.calls.length,1);assert.equal(backup.calls.length,1);
+});

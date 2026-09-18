@@ -745,9 +745,7 @@ public class AiVideoGenerationService {
             if (videoCount > 0 && !provider.supportsReferenceVideo(connection)) throw new VideoProviderException("当前线路不支持参考视频，请使用质量线路", true);
             List<Reference> result = new ArrayList<>();
             for (AiVideoTaskAsset asset : media) {
-                if (ossStorage != null) result.add("VIDEO_REFERENCE_VIDEO".equals(asset.getAssetType())
-                        ? ossReference(Path.of(asset.getFilePath()), asset.getContentType(), "video-references")
-                        : ossReference(asset, "video-references"));
+                if (ossStorage != null) result.add(ossReference(asset, "video-references"));
                 else if (referenceLinks.isPubliclyReachable()) result.add(new Reference(referenceLinks.asset(asset.getId()), asset.getContentType()));
                 else if (requiresPublicReferences(connection.provider())) throw new VideoProviderException("当前线路需要公网素材地址", true);
                 else result.add(data(asset.getFilePath(), asset.getContentType()));
@@ -1017,8 +1015,17 @@ public class AiVideoGenerationService {
         if (ossStorage.isOssLocation(asset.getFilePath())) {
             return new Reference(ossStorage.signedUrl(asset.getFilePath()), asset.getContentType());
         }
-        VideoReferenceDeliveryService.Delivery prepared = referenceDelivery.prepare(asset);
-        return ossReference(prepared.path(), prepared.contentType(), category);
+        boolean video = "VIDEO_REFERENCE_VIDEO".equals(asset.getAssetType());
+        VideoReferenceDeliveryService.Delivery prepared = video ? null : referenceDelivery.prepare(asset);
+        Path path = video ? Path.of(asset.getFilePath()) : prepared.path();
+        String contentType = video ? asset.getContentType() : prepared.contentType();
+        try {
+            return ossReference(path, contentType, category);
+        } catch (Exception failure) {
+            if (referenceLinks == null || !referenceLinks.isPubliclyReachable() || !Files.isRegularFile(path)) throw failure;
+            org.slf4j.LoggerFactory.getLogger(getClass()).warn("OSS publication unavailable; using signed local reference for asset {}", asset.getId());
+            return new Reference(video ? referenceLinks.asset(asset.getId()) : referenceLinks.deliveryAsset(asset.getId()), contentType);
+        }
     }
 
     private String audioReference(AiVideoTask task) {
@@ -1179,6 +1186,8 @@ public class AiVideoGenerationService {
                                     "video-audits/" + job.getOrganizationId() + "/" + job.getTaskId() + "/" + job.getId(),
                                     "first-frame.jpg");
                             location = stored.location(); size = stored.size();
+                        } catch (Exception storageFailure) {
+                            org.slf4j.LoggerFactory.getLogger(getClass()).warn("OSS upload unavailable; retained local audit frame for job {}", job.getId());
                         }
                     }
                     frame = new AiVideoTaskAsset(job.getOrganizationId(), job.getTaskId(), job.getItemId(),
@@ -1228,15 +1237,6 @@ public class AiVideoGenerationService {
             throw new IllegalStateException("下载厂商视频失败：HTTP " + response.statusCode());
         }
         long declaredLength = response.headers().firstValueAsLong("content-length").orElse(-1L);
-        if (ossStorage != null) {
-            String category = "generated-videos/" + job.getOrganizationId() + "/" + job.getTaskId()
-                    + "/" + job.getItemId();
-            try (InputStream input = response.body()) {
-                OssStorageService.StoredObject stored = ossStorage.store(input, declaredLength, MAX_VIDEO_BYTES,
-                        "video/mp4", category, "video-result.mp4");
-                return new GeneratedVideo(stored.location(), stored.size());
-            }
-        }
         Path directory = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize().getParent();
         Files.createDirectories(directory);
         Path temporary = directory.resolve("video-" + job.getId() + ".part");
@@ -1251,8 +1251,22 @@ public class AiVideoGenerationService {
                     target.write(buffer, 0, read);
                 }
             }
+            long size = Files.size(temporary);
+            if (size == 0 || (declaredLength >= 0 && size != declaredLength)) {
+                throw new IllegalStateException("厂商视频下载不完整，未保存成片");
+            }
             Files.move(temporary, output, StandardCopyOption.REPLACE_EXISTING);
-            return new GeneratedVideo(output.toString(), Files.size(output));
+            if (ossStorage != null) {
+                try (InputStream input = Files.newInputStream(output)) {
+                    OssStorageService.StoredObject stored = ossStorage.store(input, size, MAX_VIDEO_BYTES,
+                            "video/mp4", "generated-videos/" + job.getOrganizationId() + "/" + job.getTaskId()
+                                    + "/" + job.getItemId(), "video-result.mp4");
+                    return new GeneratedVideo(stored.location(), stored.size());
+                } catch (Exception failure) {
+                    org.slf4j.LoggerFactory.getLogger(getClass()).warn("OSS upload unavailable; retained complete local video for job {}", job.getId());
+                }
+            }
+            return new GeneratedVideo(output.toString(), size);
         } finally {
             Files.deleteIfExists(temporary);
         }
