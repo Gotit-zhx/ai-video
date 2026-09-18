@@ -9858,7 +9858,7 @@ async function publicApi(path, options = {}) {
   return result;
 }
 
-function selectLoginMethod(method) {
+function selectLoginMethod(method, { focus = true } = {}) {
   const normalized = method === "password" ? "password" : "wechat";
   document.querySelector("#wechat-login-panel").hidden = normalized !== "wechat";
   document.querySelector("#password-login-panel").hidden = normalized !== "password";
@@ -9867,7 +9867,7 @@ function selectLoginMethod(method) {
     button.classList.toggle("active", selected);
     button.setAttribute("aria-selected", String(selected));
   });
-  if (normalized === "password") {
+  if (normalized === "password" && focus) {
     window.setTimeout(() => document.querySelector("#organization-code")?.focus(), 0);
   }
 }
@@ -9920,6 +9920,14 @@ async function loadSocialLoginProviders() {
     renderWechatQr(null);
     socialLoginStatus.textContent = "微信登录尚未配置";
   }
+  const wechatAvailable = Boolean(socialProviderStatuses.get("wechat")?.enabled);
+  const wechatTab = document.querySelector('[data-login-method="wechat"]');
+  if (wechatTab) wechatTab.hidden = !wechatAvailable;
+  document.querySelector(".login-method-switch").hidden = !wechatAvailable;
+  if (!wechatAvailable) selectLoginMethod("password", { focus: false });
+  const googleAvailable = Boolean(socialProviderStatuses.get("google")?.enabled);
+  document.querySelector("#social-login-options").hidden = !googleAvailable;
+  document.querySelector(".social-login-divider").hidden = !googleAvailable;
 }
 
 socialLoginButtons.forEach(button => {
