@@ -249,7 +249,10 @@ public class VideoScriptService {
     }
 
     public VideoScript retry(String id, PlatformPrincipal principal) {
-        VideoScript script = requireOwnedScript(id, principal);
+        VideoScript script = requireScript(id, principal.organizationId());
+        if (!principal.userId().equals(script.getCreatedBy()) && !principal.roleCodes().contains("ADMIN")) {
+            throw new BusinessException(HttpStatus.FORBIDDEN, "无权重试该视频拆解任务");
+        }
         if (!"FAILED".equals(script.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "只有拆解失败的任务可以重试");
         }

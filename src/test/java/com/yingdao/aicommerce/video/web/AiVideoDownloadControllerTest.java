@@ -28,6 +28,8 @@ class AiVideoDownloadControllerTest {
                 .setCustomArgumentResolvers(new AuthenticationPrincipalArgumentResolver()).build();
         var result = mvc.perform(get("/api/v1/ai-video-tasks/task/video-results.zip"))
                 .andExpect(request().asyncStarted()).andReturn();
+        org.assertj.core.api.Assertions.assertThat(result.getRequest().getAsyncContext().getTimeout())
+                .isEqualTo(java.time.Duration.ofMinutes(30).toMillis());
         mvc.perform(asyncDispatch(result)).andExpect(status().isOk())
                 .andExpect(content().bytes(bytes)).andExpect(header().string("Content-Length", "5"));
         verify(service).deletePreparedVideoBatch(prepared);

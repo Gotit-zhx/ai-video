@@ -223,6 +223,7 @@ public class AiVideoTaskController {
 
     @GetMapping(value = "/{taskId}/video-results.zip", produces = "application/zip")
     public ResponseEntity<StreamingResponseBody> downloadVideos(@PathVariable String taskId,
+                                            jakarta.servlet.http.HttpServletRequest request,
                                             @AuthenticationPrincipal PlatformPrincipal principal) {
         AiVideoTaskService.VideoBatch batch = service.videoBatch(taskId, principal);
         AiVideoTaskService.PreparedVideoBatch prepared = service.prepareVideoBatch(batch);
@@ -235,6 +236,9 @@ public class AiVideoTaskController {
                     .location(URI.create(service.signedVideoBatchUrl(prepared, archiveName)))
                     .cacheControl(CacheControl.noStore()).build();
         }
+        // Large archives can exceed the servlet default 30-second async timeout.
+        org.springframework.web.context.request.async.WebAsyncUtils.getAsyncManager(request)
+                .getAsyncWebRequest().setTimeout(java.time.Duration.ofMinutes(30).toMillis());
         StreamingResponseBody body = output -> {
             try (InputStream input = Files.newInputStream(prepared.path())) {
                 input.transferTo(output);
