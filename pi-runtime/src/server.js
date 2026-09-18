@@ -2577,7 +2577,7 @@ async function parallelWatchEvidence(config, apiKey, watch, reporter, deadline) 
     const silent = { state: { progressId: `${reporter.state.progressId}:batch-${index + 1}`, progress: 62, stage: "WATCH_PARALLEL_ANALYSIS", passCeiling: 74 },
       publish(progress, stage) { this.state.progress = progress; this.state.stage = stage; }, beginPass() {}, handleEvent() {} };
     const agent = await createWatchHarness(config, apiKey, watch.workDirectory, silent, frames,
-      Math.min(deadline, Date.now() + 180_000), { maxTokens: Math.min(6500, 1600 + frames.length * 550),
+      deadline, { maxTokens: Math.min(6500, 1600 + frames.length * 550),
         systemPrompt: '你是 watch 视频画面观察员。只输出简短、可核对的画面证据，不策划分镜、不猜测不可见动作。把事实、动作路径、接触关系、镜头变化和不确定项分别记录，不强行填满细节。只返回 JSON。' });
     agents[index] = agent;
     const order = frames.map((f, i) => ({ imagePosition: i + 1, path: f.path, timestampSeconds: f.timestampSeconds, motionTimestamps: f.motion?.timestamps }));
@@ -2602,7 +2602,7 @@ ${JSON.stringify(order)}`);
     const reviewFrames = watch.frames.filter((frame, i) => conflicts.includes(frame.timestampSeconds)
       || conflicts.includes(watch.frames[i - 1]?.timestampSeconds) || conflicts.includes(watch.frames[i + 1]?.timestampSeconds)).map(frame => frame.motion ? { ...frame, path: frame.motion.path } : frame);
     const review = await createWatchHarness(config, apiKey, watch.workDirectory, reporter, reviewFrames,
-      Math.min(deadline, Date.now() + 150_000), { maxTokens: Math.min(6500, 1600 + reviewFrames.length * 550),
+      deadline, { maxTokens: Math.min(6500, 1600 + reviewFrames.length * 550),
         progressStage: "WATCH_RECHECKING_EVIDENCE", systemPrompt: '你是 watch 画面证据复核员。以原图为准；无法确定就明确保留 uncertain，不按多数票猜测。' });
     const frameOrder = reviewFrames.map((frame, i) => ({ imagePosition: i + 1, path: frame.path, timestampSeconds: frame.timestampSeconds, motionTimestamps: frame.motion?.timestamps }));
     const answer = await review.skill("watch", `模式：Evidence review。以下时间点的独立观察有冲突：${JSON.stringify(conflicts)}。读取全部复核图片，按时间返回证据，不生成分镜。${detailedWatchEvidenceInstructions()}\n旧观察仅供定位争议，不能代替图片：${JSON.stringify(results.flatMap(batch => batch.frames).filter(frame => conflicts.includes(frame.timestampSeconds)))}\n精确帧清单：\n${JSON.stringify(frameOrder)}`);
@@ -2646,7 +2646,7 @@ async function runVideoScriptAnalysis(body) {
   const progressReporter = createVideoScriptProgressReporter(body.progressId);
   const startedAt = Date.now();
   const parallel = typeof WATCH_PARALLEL_ANALYSIS !== "undefined" && WATCH_PARALLEL_ANALYSIS;
-  const deadline = startedAt + (parallel ? 600_000 : 900_000);
+  const deadline = startedAt + 900_000;
   const context = body.context && typeof body.context === "object" ? body.context : {};
   const hasAudioTranscript = Boolean(context.hasReliableAudioTranscript)
     && Array.isArray(context.audioTranscript?.segments)
@@ -2674,7 +2674,7 @@ async function runVideoScriptAnalysis(body) {
     if (!storyboardFrames.length) throw new Error("watch 未找到可用于分镜的实拍画面，视频仅包含片尾界面或文字卡片");
     const storyboardWatch = { ...watch, frames: storyboardFrames, frameCount: storyboardFrames.length };
     const runtimeAgent = await createWatchHarness(config, apiKey, workDirectory, progressReporter, storyboardFrames,
-      parallel ? Math.min(deadline, Date.now() + 240_000) : deadline,
+      deadline,
       parallel ? { systemPrompt: conciseWatchStoryboardPrompt(), maxTokens: 6500, progressStage: "WATCH_SYNTHESIZING" } : {});
     const frameOrder = storyboardFrames.map((frame, index) => ({ imagePosition: index + 1,
       path: frame.path, timestampSeconds: frame.timestampSeconds, reason: frame.reason }));

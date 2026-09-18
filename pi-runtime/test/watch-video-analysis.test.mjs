@@ -306,9 +306,14 @@ test("parallel watch batches overlap, execute concurrently and synthesize from e
       send(response,result(frames));
     }
   });
-  const p=runtime(root,{WATCH_PARALLEL_ANALYSIS:true});
+  const budgets=[];
+  const p=runtime(root,{WATCH_PARALLEL_ANALYSIS:true,createWatchModelTransport: options => {
+    budgets.push(options.deadline-Date.now());
+    return createWatchModelTransport(options);
+  }});
   const answer=await p.c.runVideoScriptAnalysis({model:mock.config,sourceVideoPath:video,progressId:'parallel',context:{durationSeconds:10,sourceDurationSeconds:10}});
   assert.equal(peak,3);
+  assert.ok(budgets.at(-1)>600_000 && budgets.at(-1)<=900_000, "synthesis retains remaining global budget instead of a four-minute cutoff");
   assert.ok(answer.excludedWatchFrameTimestampsSeconds.length > 0);
   assert.ok(finalFrames.every(frame => frame.timestampSeconds < 8));
   assert.ok(answer.result.shots.every(shot => shot.imagePrompt.sourceTimestampSeconds < 8));
