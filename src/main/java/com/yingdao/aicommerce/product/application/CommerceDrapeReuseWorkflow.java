@@ -20,8 +20,8 @@ final class CommerceDrapeReuseWorkflow {
         var prints=config.photoPrints().stream().filter(p->"FRONT".equals(p.side())).toList();
         if(prints.size()!=1)throw new IllegalArgumentException("搭放母图复用目前需要一处正面胸前印花；背面和侧面仍按模板补图");
         var p=prints.getFirst();
-        if(p.width()*p.height()>.065||p.x()<.2||p.x()+p.width()>.8||p.y()<.12||p.y()+p.height()>.55)
-            throw new IllegalArgumentException("搭放母图复用目前支持小面积胸前印花；大花、袖口或下摆需独立校准，不会猜测位置或追加生图");
+        if(!Double.isFinite(p.x())||!Double.isFinite(p.y())||!Double.isFinite(p.width())||!Double.isFinite(p.height())||p.width()<=0||p.height()<=0||p.x()<0||p.x()+p.width()>1||p.y()<0||p.y()+p.height()>1)
+            throw new IllegalArgumentException("印花位置超出图片边界，请调整位置后继续");
         return p.id();
     }
     Result prepareGuide(CommerceBatchExecution run,CommerceBatchCreativePlanValidator.Selection source,CommercePrintTemplateService.Configuration config,List<Map<String,Object>> jobs) {

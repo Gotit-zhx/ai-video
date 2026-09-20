@@ -54,7 +54,7 @@
   const localPhoto=()=>['LOCAL_PHOTO_V1','GROK_SCENE_V1','GROK_DRAPE_REUSE_V1'].includes(view?.plan?.renderPolicy);
   const sceneBackground=()=>view?.plan?.renderPolicy==='GROK_SCENE_V1';
   const drapeReuse=()=>view?.plan?.renderPolicy==='GROK_DRAPE_REUSE_V1';
-  const drapeHint='先精确套版，再生成一次自然搭放母图，之后本地换色换花；需纯白服装模板 + 单处小面积正面胸花，背面、侧面补图沿用原有方式。每个来源商品额外 1 次 Grok 调用，所有款式与颜色共用。';
+  const drapeHint='先精确套版，再生成一次自然搭放母图，之后本地换色换花；需纯白服装模板 + 单处正面印花，背面、侧面补图沿用原有方式。每个来源商品额外 1 次 Grok 调用，所有款式与颜色共用。';
   const sceneHint=()=>drapeReuse()?drapeHint:sceneBackground()?'提取商品背景风格 · 同商品多款多色共用。Grok 根据所选商品图的场景氛围、配色、材质与光线重新设计背景。每个来源商品分别准备一次，已有相同来源背景可复用。':'';
   const outputCount=()=>view?.plan?.outputPolicy==='SOURCE_SKU_COLORS'?(view.plan.sources||[]).reduce((n,source)=>n+(source.colorTargets?.length||0),0)*view.plan.variantsPerPrint:null;
   const savedArtwork=()=>view?.plan?.artworkSource==='SAVED_ARTWORK';
@@ -67,7 +67,7 @@
     const front=config.photoPrints.filter(print=>print.side==='FRONT');
     if(front.length!==1)return '自然搭放需要单处正面胸花，当前模板有 '+front.length+' 处正面印花；背面和侧面位置可保留。';
     const p=front[0];
-    if(![p.x,p.y,p.width,p.height].every(Number.isFinite)||p.width<=0||p.height<=0||p.width*p.height>.065||p.x<.2||p.x+p.width>.8||p.y<.12||p.y+p.height>.55)return '自然搭放仅支持小面积正面胸花；当前印花过大或超出胸前范围，请使用原有模式或调整模板。';
+    if(![p.x,p.y,p.width,p.height].every(Number.isFinite)||p.width<=0||p.height<=0||p.x<0||p.x+p.width>1||p.y<0||p.y+p.height>1)return '印花位置超出图片边界，请调整位置后继续。';
     return null;
   }
   const announce = () => window.dispatchEvent(new CustomEvent('heyi:creative-plan-state', {
@@ -77,13 +77,13 @@
   function renderArtworkChoices() {
     const config=templateRows.find(row=>row.snapshotId===template.value)?.configuration;
     const photo=!!config?.photoPrints?.length,drapeIssue=drapeBlocker(config);
-    if(!view?.plan&&!renderPolicyEdited&&config)renderPolicySelect.value=photo&&!drapeIssue?'GROK_DRAPE_REUSE_V1':'GROK_SCENE_V1';
+    if(!view?.plan&&!renderPolicyEdited&&config)renderPolicySelect.value=photo?'GROK_DRAPE_REUSE_V1':'GROK_SCENE_V1';
     renderLabel.hidden=!photo&&renderPolicySelect.value!=='GROK_DRAPE_REUSE_V1';
     renderPolicySelect.children[1].disabled=!!drapeIssue;renderPolicySelect.children[1].title=drapeIssue||'';
     renderPolicySelect.children[2].hidden=view?.plan?.renderPolicy!=='LOCAL_PHOTO_V1';
     renderPolicySelect.disabled=busy||locked||savedArtwork()||renderLabel.hidden;
     const sourceCount=new Set((view?.sources||[]).map(source=>source.captureId)).size;
-    renderNote.textContent=config&&drapeIssue?drapeIssue+(renderPolicySelect.value==='GROK_DRAPE_REUSE_V1'?' 已保留自然搭放选择，请调整模板或手动选择原有模式后保存。':' 当前模板使用原有模式。'):renderPolicySelect.value==='GROK_DRAPE_REUSE_V1'?`需纯白服装模板 + 单处小面积正面胸花；背面、侧面补图沿用原有方式。母图生成前自动检查模板布色。每来源商品 1 次额外场景调用${sourceCount?'，本批最多 '+sourceCount+' 次':''}，不随款色数增加；透明印花仍按原调用规则。`:'保持已保存或手动选择的原有模式。符合条件且尚未保存创作配置的新批次默认自然搭放。';
+    renderNote.textContent=config&&drapeIssue?drapeIssue+(renderPolicySelect.value==='GROK_DRAPE_REUSE_V1'?' 已保留自然搭放选择，请调整模板或手动选择原有模式后保存。':' 当前模板使用原有模式。'):renderPolicySelect.value==='GROK_DRAPE_REUSE_V1'?`需纯白服装模板 + 单处正面印花；背面、侧面补图沿用原有方式。母图生成前自动检查模板布色。每来源商品 1 次额外场景调用${sourceCount?'，本批最多 '+sourceCount+' 次':''}，不随款色数增加；透明印花仍按原调用规则。`:'保持已保存或手动选择的原有模式。尚未保存创作配置的新批次默认自然搭放。';
     const positions=config?.photoPrints?.length?config.photoPrints:(config?.surfacePrints||[]);
     surfaceMode=!!(config?.sourceImageId||config?.referenceSetId||positions.length);
     artworkHint.hidden=!surfaceMode;

@@ -69,7 +69,7 @@ function harness(options={}) {
  const context=vm.createContext({window:{addEventListener:(type,fn)=>(windowEvents[type]||=[]).push(fn)},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
   document:{createElement:tag=>n(tag),getElementById:id=>nodes.find(n=>n.id===id)},Blob,File,
   FormData:class{constructor(){this.fields=new Map();this.filenames=new Map();}append(k,v,filename){this.fields.set(k,v);if(filename)this.filenames.set(k,filename);}},crypto:{randomUUID:()=>`request-${++uuid}`,subtle:{digest:async(algorithm,bytes)=>{digests.push({algorithm,bytes});return options.digest?options.digest(algorithm,bytes):webcrypto.subtle.digest(algorithm,bytes);}}},structuredClone,Date,api,
-  fetch:async(url,request={})=>{fetches.push({url,request});if(options.fetch){const response=await options.fetch(url,request);if(response!==undefined)return response;}const pattern=/\/assets\/print-patterns\/([a-z]+)\.png\?/.exec(url);if(pattern)return patternResponse(pattern[1]);return{ok:true,arrayBuffer:async()=>archivedImage.buffer.slice(archivedImage.byteOffset,archivedImage.byteOffset+archivedImage.byteLength)};},
+  fetch:async(url,request={})=>{fetches.push({url,request});if(options.fetch){const response=await options.fetch(url,request);if(response!==undefined)return response;}const pattern=/\/assets\/print-patterns\/([a-z-]+)\.png\?/.exec(url);if(pattern)return patternResponse(pattern[1]);return{ok:true,arrayBuffer:async()=>archivedImage.buffer.slice(archivedImage.byteOffset,archivedImage.byteOffset+archivedImage.byteLength)};},
   URL:{createObjectURL:file=>{const url='blob:test-source-'+(objectUrls.length+1);objectUrls.push({url,file});return url;},revokeObjectURL:url=>revokedUrls.push(url)},
   setTimeout:fn=>{timers.push(fn);return timers.length;}});
  new vm.Script(source,{filename:'commerce-print-surface.js'}).runInContext(context);
@@ -221,4 +221,16 @@ test('outer template POST lock prevents changes after rendering has finished',as
  let locked=false;const ui=harness({isLocked:()=>locked});locked=true;ui.surface.draw();const width=ui.input('宽度（图片 %）');assert.equal(width.disabled,true);width.value='80';await width.dispatchEvent({type:'change'});
  await ui.host.dispatchEvent({type:'print-photo-change',detail:{id:'print-first',print:{x:.9},commit:true}});assert.equal(ui.fields().photoPrints[0].width,.24);assert.equal(ui.fields().photoPrints[0].x,.3);assert.equal(ui.byId('print-test-pattern-use').disabled,true);
  locked=false;ui.surface.draw();assert.equal(width.disabled,false);assert.equal(ui.byId('print-test-pattern-use').disabled,false);
+});
+
+
+test('full checker replaces the selected padded marker without changing its frame and supports undo',async()=>{
+ const c=config();c.photoPrints[0].artworkId='fe522dfad98c24b65844a62978c6b9c1ccd48a0e4831aced03df6317a7e13a82';
+ const ui=harness({config:c});const before=clone(ui.fields().photoPrints);
+ await ui.byId('print-test-pattern-checker').click();await ui.byId('print-test-pattern-use').click();
+ const after=ui.fields().photoPrints;assert.equal(after.length,1);assert.equal(after[0].artworkId,hash('9'));
+ assert.deepEqual({...after[0],artworkId:before[0].artworkId},before[0]);
+ assert.ok(ui.fetches.some(f=>f.url.includes('checker-full.png')));
+ assert.match(ui.byId('print-surface-status').textContent,/铺满当前选框/);
+ await ui.byId('print-surface-undo').click();assert.deepEqual(ui.fields().photoPrints,before);
 });

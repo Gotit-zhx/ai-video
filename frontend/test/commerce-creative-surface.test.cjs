@@ -186,9 +186,9 @@ test('creative mode explains white-template requirement and keeps back and side 
 
 test('creative unsupported drape cannot be submitted and default scene remains available',async()=>{
  const front={id:'front',artworkId:hash('a'),side:'FRONT',x:.4,y:.25,width:.1,height:.1};
- for(const photoPrints of [[{...front,side:'BACK'}],[front,{...front,id:'front-two'}],[{...front,width:.4,height:.3}],[{...front,y:.55}]]){
+ for(const photoPrints of [[{...front,side:'BACK'}],[front,{...front,id:'front-two'}],[{...front,width:.9,height:.3}],[{...front,y:1}]]){
   const s=harness({photo:true,photoPrints,renderPolicy:'GROK_SCENE_V1'});await s.load();const mode=s.nodes.find(n=>n.tag==='select'&&n['aria-label']==='商品呈现方式');
-  assert.equal(mode.children[1].disabled,true);assert.equal(mode.disabled,false);assert.match(mode.parentElement.children.find(n=>n.tag==='small').textContent,/正面胸花/);
+  assert.equal(mode.children[1].disabled,true);assert.equal(mode.disabled,false);assert.match(mode.parentElement.children.find(n=>n.tag==='small').textContent,/正面胸花|图片边界/);
   mode.value='GROK_DRAPE_REUSE_V1';await s.submit();assert.equal(s.calls.filter(c=>c.request).length,0);
   mode.handlers.change[0]();assert.equal(mode.value,'GROK_DRAPE_REUSE_V1');assert.match(mode.parentElement.children.find(n=>n.tag==='small').textContent,/已保留自然搭放选择/);
  }
@@ -203,8 +203,8 @@ test('new creative plan defaults eligible templates to drape and preserves an ex
  manual.nodes.find(n=>n.type==='radio').checked=true;await manual.submit();assert.equal(JSON.parse(manual.calls.find(c=>c.request).request.body).renderPolicy,'GROK_SCENE_V1');
 });
 
-test('new unsupported creative templates default scene while saved scene plans stay unchanged',async()=>{
+test('new unsupported photo templates keep drape and block save while saved scene plans stay unchanged',async()=>{
  const s=harness({photo:true,noPlan:true,photoPrints:[{id:'back',artworkId:hash('a'),side:'BACK',x:.4,y:.25,width:.1,height:.1}]});await s.load();const template=s.nodes.find(n=>n.tag==='select'&&n.required),mode=s.nodes.find(n=>n.tag==='select'&&n['aria-label']==='商品呈现方式');
- template.value='snapshot';template.handlers.change[0]();assert.equal(mode.value,'GROK_SCENE_V1');assert.match(mode.parentElement.children.find(n=>n.tag==='small').textContent,/当前模板使用原有模式/);
+ template.value='snapshot';template.handlers.change[0]();assert.equal(mode.value,'GROK_DRAPE_REUSE_V1');assert.match(mode.parentElement.children.find(n=>n.tag==='small').textContent,/已保留自然搭放选择/);s.nodes.find(n=>n.type==='radio').checked=true;await s.submit();assert.equal(s.calls.filter(c=>c.request).length,0);
  const saved=harness({photo:true,renderPolicy:'GROK_SCENE_V1',savedRenderPolicy:'GROK_SCENE_V1'});await saved.load();const savedMode=saved.nodes.find(n=>n.tag==='select'&&n['aria-label']==='商品呈现方式');assert.equal(savedMode.value,'GROK_SCENE_V1');await saved.submit();assert.equal(JSON.parse(saved.calls.find(c=>c.request).request.body).renderPolicy,'GROK_SCENE_V1');
 });

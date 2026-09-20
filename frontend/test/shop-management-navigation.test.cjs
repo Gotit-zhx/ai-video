@@ -49,3 +49,16 @@ test('TikTok authorization sends selected market and prefers the saved shop mark
     assert.equal(redirect,'https://services.tiktokshop.com/open/authorize');
   }
 });
+
+test('copy authorization links never navigate and clipboard denial exposes a selectable link',async()=>{
+ const vm=require('node:vm');const source=app.slice(app.indexOf('async function startMarketplaceAuthorization('),app.indexOf('\nfunction consumeMarketplaceAuthorizationReturn('));
+ for(const copied of [true,false])for(const platform of ['SHOPEE','TIKTOK_SHOP']){
+  const url='https://example.com/authorize?state=one',note={textContent:'',append(input){this.input=input;}};let clipboard,requests=0;
+  const context={hasAnyPermission:()=>true,rememberProductCaptureRoute(){},safeProductUrl:x=>x,copyTextToClipboard:async x=>{clipboard=x;return copied;},
+   api:async()=>{requests++;return {data:{authorizationUrl:url}};},document:{querySelector:selector=>selector==='#marketplace-shop-note'?note:{value:'ROW'},createElement:()=>({style:{},setAttribute(){},focus(){},select(){this.selected=true;}})},window:{location:{assign(){throw new Error('must not navigate');}}}};
+  vm.createContext(context);vm.runInContext(source,context);const button={textContent:'复制授权链接',disabled:false,dataset:{authorizationCopy:'true'}};
+  const pending=context.startMarketplaceAuthorization(platform,button);await context.startMarketplaceAuthorization(platform,button);await pending;
+  assert.equal(requests,1);assert.equal(clipboard,url);assert.equal(button.disabled,false);assert.equal(button.textContent,'复制授权链接');assert.match(note.textContent,/请到对应的网络环境店铺进行授权/);
+  if(!copied){assert.equal(note.input.value,url);assert.equal(note.input.selected,true);}
+ }
+});

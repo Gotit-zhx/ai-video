@@ -17,7 +17,7 @@ def enc(pixels):
 def pixels(value, mode='RGB'):
     return np.asarray(Image.open(io.BytesIO(base64.b64decode(value))).convert(mode))
 
-def fixture():
+def fixture(large=False):
     garment = np.zeros((512, 512), np.uint8)
     cv2.fillPoly(garment, [np.array([[195, 35], [317, 35], [393, 83], [462, 248], [411, 271],
                                   [411, 466], [102, 466], [102, 271], [49, 248], [119, 83]])], 1)
@@ -32,14 +32,14 @@ def fixture():
         x, y = rng.integers(35, 218, 2); r = int(rng.integers(3, 11))
         draw.rectangle((int(x-r), int(y-r), int(x+r), int(y+r)), fill=tuple(map(int, rng.integers(20, 240, 3)))+(255,))
     art = np.asarray(art)
-    guide = image.copy(); x, y, size = 260, 142, 76
+    guide = image.copy(); x, y, size = (174, 150, 164) if large else (260, 142, 76)
     small = cv2.resize(art, (size, size), interpolation=cv2.INTER_AREA); alpha = small[:, :, 3:4]/255
     guide[y:y+size, x:x+size] = np.rint(guide[y:y+size, x:x+size]*(1-alpha)+small[:, :, :3]*alpha).astype(np.uint8)
     uv = np.zeros((512, 512, 4), np.uint8)
     for j in range(size):
         for i in range(size):
             uv[y+j, x+i] = (round(i/(size-1)*255), round((1-j/(size-1))*255), 1, 255)
-    h = cv2.getPerspectiveTransform(np.float32(d.UNIT), np.float32([[268, 148], [351, 143], [356, 228], [265, 232]]))
+    h = cv2.getPerspectiveTransform(np.float32(d.UNIT), np.float32([[168, 154], [337, 149], [341, 321], [166, 326]] if large else [[268, 148], [351, 143], [356, 228], [265, 232]]))
     warped = cv2.warpPerspective(art, h@np.diag([1/255, 1/255, 1]), (512, 512))
     a = warped[:, :, 3:4]/255
     master = np.rint(image*(1-a)+warped[:, :, :3]*a).astype(np.uint8)
@@ -72,6 +72,16 @@ class DrapeReuseTest(unittest.TestCase):
         result = d.render(self.render_request()); alpha = pixels(self.prepared['alpha'], 'L')
         np.testing.assert_array_equal(pixels(result['data'])[alpha == 0], self.master[alpha == 0])
         self.assertTrue(result['report']['passed']); self.assertEqual(0, result['report']['modelCalls'])
+
+    def test_large_front_artwork_tracks_cleans_and_renders_without_chest_limit(self):
+        body, mask, master = fixture(large=True)
+        with patch.object(d, 'u2net_mask', return_value=mask):
+            prepared = d.prepare(body)
+        result = d.render({'master': body['master'], 'blank': prepared['blank'], 'alpha': prepared['alpha'],
+                           'mapping': prepared['mapping'], 'artwork': body['artwork'], 'targetRgb': '#262626', 'originalColor': False})
+        self.assertTrue(result['report']['passed'])
+        alpha = pixels(prepared['alpha'], 'L')
+        np.testing.assert_array_equal(pixels(result['data'])[alpha == 0], master[alpha == 0])
 
     def test_jpeg_master_keeps_provider_bytes_and_renders_from_its_own_mapping(self):
         out = io.BytesIO(); Image.fromarray(self.master).save(out, format='JPEG', quality=95, subsampling=0)

@@ -156,7 +156,7 @@ test('changing the unified template changes its bound layout while retaining cho
  const second=setup(false,{}, {templates:[first,next],printTemplates});await second.choose(['s2','other-market']);const originalInputs=second.nodes.shops.querySelectorAll('input[type="checkbox"]');
  second.nodes.template.value='next';await second.nodes.template.handlers.change();assert.match(summary(second),/每组 9 款/);assert.match(summary(second),/四面图片 · 3处印花位置/);
  assert.equal(second.nodes.shops.querySelectorAll('input[type="checkbox"]')[0],originalInputs[0]);assert.deepEqual(second.nodes.shops.querySelectorAll('input[name="shop"]:checked').map(input=>input.value),['s2','other-market']);
- await submit(second);const body=JSON.parse(second.calls.find(call=>call.options).options.body);assert.equal(body.templateSnapshotId,'next');assert.equal(body.printTemplateSnapshotId,'print-next');
+ second.nodes['render-policy'].value='GROK_SCENE_V1';second.nodes['render-policy'].handlers.change();await submit(second);const body=JSON.parse(second.calls.find(call=>call.options).options.body);assert.equal(body.templateSnapshotId,'next');assert.equal(body.printTemplateSnapshotId,'print-next');
  assert.deepEqual(body.targets.map(target=>target.shopId),['s2','other-market','s2','other-market']);
 });
 
@@ -175,9 +175,9 @@ test('unlinked workflow must be completed in template configuration and never su
 
 test('unreadable binding blocks launch and can retry only its exact snapshot',async()=>{
  let attempts=0;const s=setup(false,{printTemplateSnapshotId:'unavailable'},{onCall:url=>{if(url.endsWith('/snapshots/unavailable')){if(++attempts===1)return Promise.reject(new Error('没有访问权限'));return {data:{snapshotId:'unavailable',configuration:{photoPrints:[{id:'p'}]}}};}}});
- await s.choose();assert.match(s.nodes.status.textContent,/读取失败.*重试.*模板配置/);await submit(s);assert.equal(s.calls.filter(call=>call.options).length,0);
+ await s.choose();assert.match(s.nodes.status.textContent,/读取失败.*重试.*模板配置/);s.nodes['render-policy'].value='GROK_SCENE_V1';s.nodes['render-policy'].handlers.change();await submit(s);assert.equal(s.calls.filter(call=>call.options).length,0);
  const retry=s.nodes['template-summary'].children.find(node=>node.textContent==='重试读取');assert.ok(retry);await retry.handlers.click();assert.match(summary(s),/四面图片 · 1处印花位置/);
- await submit(s);assert.equal(JSON.parse(s.calls.find(call=>call.options).options.body).printTemplateSnapshotId,'unavailable');assert.equal(attempts,2);
+ s.nodes['render-policy'].value='GROK_SCENE_V1';s.nodes['render-policy'].handlers.change();await submit(s);assert.equal(JSON.parse(s.calls.find(call=>call.options).options.body).printTemplateSnapshotId,'unavailable');assert.equal(attempts,2);
 });
 
 test('one to fifty shops are allowed independently of workflow planning and products cover every shop',async()=>{
@@ -196,7 +196,7 @@ test('one to fifty shops are allowed independently of workflow planning and prod
 test('changing the selected template after an unknown launch creates a new key for its bound layout',async()=>{
  const printTemplates=['first','second'].map(snapshotId=>({snapshotId,name:snapshotId,version:1,configuration:{photoPrints:[{id:'x'}]}}));
  const templates=['first','second'].map(value=>({snapshotId:'workflow-'+value,name:value,configuration:{printTemplateSnapshotId:value}}));
- const s=setup(true,{}, {templates,printTemplates});await s.choose();await submit(s);s.nodes.template.value='workflow-second';await s.nodes.template.handlers.change();await submit(s);
+ const s=setup(true,{}, {templates,printTemplates});await s.choose();s.nodes['render-policy'].value='GROK_SCENE_V1';s.nodes['render-policy'].handlers.change();await submit(s);s.nodes.template.value='workflow-second';await s.nodes.template.handlers.change();s.nodes['render-policy'].value='GROK_SCENE_V1';s.nodes['render-policy'].handlers.change();await submit(s);
  const writes=s.calls.filter(call=>call.options);assert.notEqual(writes[0].options.headers['Idempotency-Key'],writes[1].options.headers['Idempotency-Key']);assert.equal(JSON.parse(writes[1].options.body).printTemplateSnapshotId,'second');
 });
 
@@ -420,7 +420,7 @@ test('explicit backend pre-generation rejection refreshes configuration but unre
 
 test('photo placement count has priority over historical surface and area fields',async()=>{
  const printTemplates=[{snapshotId:'print-snapshot',configuration:{photoPrints:[{id:'a'},{id:'b'},{id:'c'}],surfacePrints:[{id:'legacy'}],areas:[{id:'old-one'},{id:'old-two'}]}}];
- const s=setup(false,{}, {printTemplates});await s.choose();assert.match(summary(s),/四面图片 · 3处印花位置/);await submit(s);assert.equal(s.calls.filter(call=>call.options).length,1);
+ const s=setup(false,{}, {printTemplates});await s.choose();assert.match(summary(s),/四面图片 · 3处印花位置/);s.nodes['render-policy'].value='GROK_SCENE_V1';s.nodes['render-policy'].handlers.change();await submit(s);assert.equal(s.calls.filter(call=>call.options).length,1);
 });
 
 test('zero positions in all layouts block launch before upload preparation',async()=>{
@@ -486,7 +486,7 @@ test('photo-template reuse distinguishes saved print reuse from shared scene gen
 test('eligible new photo templates default to natural drape with one scene call per source, not per variant or color',async()=>{
  const s=setup(false,{designsPerProduct:9});await s.choose(['s1'],['p1','p3']);
  assert.equal(s.nodes['render-policy'].value,'GROK_DRAPE_REUSE_V1');assert.equal(s.nodes['render-policy-field'].hidden,false);
- assert.match(s.nodes['render-policy-hint'].textContent,/单处小面积正面胸花/);
+ assert.match(s.nodes['render-policy-hint'].textContent,/单处正面印花/);
  assert.match(s.nodes['render-policy-hint'].textContent,/纯白服装模板/);assert.match(s.nodes['render-policy-hint'].textContent,/背面、侧面补图沿用原有方式/);
  const summary=s.nodes['template-summary'].children.map(n=>n.textContent).join(' ');
  assert.match(summary,/本次最多 2 次/);assert.match(summary,/不按款数或颜色数追加/);assert.doesNotMatch(summary,/最多 18 次/);
@@ -515,9 +515,9 @@ test('a pre-selector unknown default launch replays its original body and key ac
 
 test('unsupported drape layouts are disabled and rejected before upload preparation',async()=>{
  const front={id:'chest',artworkId:'a'.repeat(64),side:'FRONT',x:.4,y:.25,width:.1,height:.1};
- for(const prints of [[{...front,side:'BACK'}],[front,{...front,id:'second'}],[{...front,width:.4,height:.3}],[{...front,x:.1}],[{...front,y:.5}],[{...front,width:null}]]){
+ for(const prints of [[{...front,side:'BACK'}],[front,{...front,id:'second'}],[{...front,width:.9,height:.3}],[{...front,x:-.1}],[{...front,y:1}],[{...front,width:null}]]){
   let preparations=0;const s=setup(false,{}, {printTemplates:[{snapshotId:'print-snapshot',configuration:{photoPrints:prints}}],prepare:async()=>{preparations++;return[];}});await s.choose();
-  assert.equal(s.nodes['render-policy'].children[1].disabled,true);assert.match(s.nodes['render-policy-hint'].textContent,/正面胸花/);
+  assert.equal(s.nodes['render-policy'].children[1].disabled,true);assert.match(s.nodes['render-policy-hint'].textContent,/正面胸花|图片边界/);
   s.nodes['render-policy'].value='GROK_DRAPE_REUSE_V1';await submit(s);assert.equal(preparations,0);assert.equal(s.calls.filter(c=>c.options).length,0);
   s.nodes['render-policy'].handlers.change();assert.equal(s.nodes['render-policy'].value,'GROK_DRAPE_REUSE_V1');assert.match(s.nodes['render-policy-hint'].textContent,/已保留自然搭放选择/);
  }
@@ -554,9 +554,9 @@ test('explicit drape stays selected on unsupported photo or historical templates
  }
 });
 
-test('unselected unsupported templates explain the scene default and eligible templates restore the drape default',async()=>{
+test('unsupported photo templates keep the drape default and block launch instead of silently choosing scene',async()=>{
  const s=setup(false,{}, {templates:[workflowFor('unsupported-workflow','unsupported'),workflowFor('eligible-workflow','print-snapshot')],printTemplates:[{snapshotId:'unsupported',configuration:{photoPrints:[{id:'back',side:'BACK'}]}},eligiblePrint()]});
- await s.choose();assert.equal(s.nodes['render-policy'].value,'GROK_SCENE_V1');assert.match(s.nodes['render-policy-hint'].textContent,/当前模板使用原有模式/);
+ await s.choose();assert.equal(s.nodes['render-policy'].value,'GROK_DRAPE_REUSE_V1');assert.match(s.nodes['render-policy-hint'].textContent,/已保留自然搭放选择/);await submit(s);assert.equal(s.calls.filter(c=>c.options).length,0);
  s.nodes.template.value='eligible-workflow';await s.nodes.template.handlers.change();assert.equal(s.nodes['render-policy'].value,'GROK_DRAPE_REUSE_V1');
 });
 

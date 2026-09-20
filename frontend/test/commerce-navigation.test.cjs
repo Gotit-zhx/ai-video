@@ -11,11 +11,12 @@ test('commerce deep links select exactly one content panel and reject unknown ro
   const routes=['product-capture','commerce-designs','commerce-templates','commerce-batches','commerce-ads','commerce-assets'];
   const panels=routes.map(route=>({dataset:{commercePanel:route},hidden:false}));
   const links=routes.slice(1).map(route=>({dataset:{commerceRoute:route},classList:{toggle(){}},setAttribute(){},removeAttribute(){}}));
-  const context={URLSearchParams,window:{location:{hash:'',pathname:'/',search:''},history:{replaceState(){}}},document:{title:'test',querySelectorAll:s=>s==='[data-commerce-panel]'?panels:links,querySelector:()=>({classList:{toggle(){}},setAttribute(){},removeAttribute(){},textContent:''})}};
+  const entered=[];const context={CustomEvent:class{constructor(type,options){this.type=type;this.detail=options.detail;}},URLSearchParams,window:{dispatchEvent:event=>entered.push(event),location:{hash:'',pathname:'/',search:''},history:{replaceState(){}}},document:{title:'test',querySelectorAll:s=>s==='[data-commerce-panel]'?panels:links,querySelector:()=>({classList:{toggle(){}},setAttribute(){},removeAttribute(){},textContent:''})}};
   vm.createContext(context);
   vm.runInContext(app.slice(app.indexOf('const commerceSections ='),app.indexOf('document.querySelectorAll(".nav-group > summary")')),context);
   vm.runInContext(app.slice(app.indexOf('function syncProductCaptureView()'),app.indexOf('function syncProductCapturePagination(')),context);
   for(const route of routes){context.window.location.hash='#'+route;vm.runInContext('selectCommerceSection()',context);assert.deepEqual(panels.filter(p=>!p.hidden).map(p=>p.dataset.commercePanel),[route]);}
   context.window.location.hash='#product-capture?id=test-product';vm.runInContext('selectCommerceSection()',context);assert.equal(vm.runInContext('syncProductCaptureView()',context),'test-product');assert.deepEqual(panels.filter(p=>!p.hidden).map(p=>p.dataset.commercePanel),['product-capture']);
+  assert.ok(entered.some(e=>e.type==='heyi:commerce-section-entered'&&e.detail.route==='commerce-assets'));
   context.window.location.hash='#untrusted-route';assert.equal(vm.runInContext('commerceRouteFromHash()',context),null);
 });

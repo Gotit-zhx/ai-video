@@ -62,6 +62,7 @@ function selectCommerceSection() {
   document.querySelector(".topbar h2").textContent = `商品运营 / ${commerceSections[route]}`;
   window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${route}${route === "product-capture" ? window.location.hash.slice(1).replace(/^[^?]*/, "") : ""}`);
   syncProductCaptureView();
+  window.dispatchEvent(new CustomEvent("heyi:commerce-section-entered", {detail:{route}}));
 }
 document.querySelectorAll(".nav-group > summary").forEach(summary => {
   summary.addEventListener("click", () => { if (!sidebarExpanded) applySidebarExpanded(true); });
@@ -3460,7 +3461,7 @@ function renderMarketplaceShops() {
       ? marketplaceIntegrationStatus.shopeeConfigured
       : marketplaceIntegrationStatus.tiktokShopConfigured;
     button.disabled = !configured || !hasAnyPermission("product:publish");
-    button.title = configured ? "打开平台官方授权页" : "管理员尚未配置该平台 App Key/Secret";
+    button.title = configured ? (button.dataset.authorizationCopy === "true" ? "复制授权链接，在店铺对应网络环境中打开" : "打开平台官方授权页") : "管理员尚未配置该平台 App Key/Secret";
   });
   if (!marketplaceIntegrationStatus.shopeeConfigured && !marketplaceIntegrationStatus.tiktokShopConfigured) {
     note.textContent = "需先在服务端配置官方开发者应用；密钥不会发送到浏览器。";
@@ -3602,10 +3603,11 @@ async function reloadMarketplaceShops(button) {
 }
 
 async function startMarketplaceAuthorization(platform, button) {
-  if (!hasAnyPermission("product:publish")) return;
+  if (button.disabled || !hasAnyPermission("product:publish")) return;
+  const copyOnly = button.dataset.authorizationCopy === "true";
   const original = button.textContent;
   button.disabled = true;
-  button.textContent = "正在打开…";
+  button.textContent = copyOnly ? "正在生成链接…" : "正在打开…";
   try {
     rememberProductCaptureRoute(true);
     const result = await api(`/api/v1/shop-authorizations/${encodeURIComponent(platform)}/start`, {
@@ -3617,9 +3619,20 @@ async function startMarketplaceAuthorization(platform, button) {
     });
     const url = safeProductUrl(result.data?.authorizationUrl);
     if (!url) throw new ApiRequestError("平台没有返回有效的官方授权地址", 502, result);
-    window.location.assign(url);
+    if (copyOnly) {
+      const copied = await copyTextToClipboard(url);
+      const note = document.querySelector("#marketplace-shop-note");
+      note.textContent = copied ? "授权链接已复制。请到对应的网络环境店铺进行授权" : "未能自动复制，请复制下方链接。请到对应的网络环境店铺进行授权";
+      if (!copied) {
+        const input = document.createElement("input");
+        input.type = "text"; input.readOnly = true; input.value = url;
+        input.setAttribute("aria-label", "店铺授权链接");input.style.width = "100%";
+        note.append(input);input.focus();input.select();
+      }
+    } else window.location.assign(url);
   } catch (error) {
     document.querySelector("#marketplace-shop-note").textContent = error.message;
+  } finally {
     button.disabled = false;
     button.textContent = original;
   }

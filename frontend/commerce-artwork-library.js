@@ -16,7 +16,7 @@
   let hasMore=false;
   function controls(){search.disabled=query.disabled=busy||locked;previous.disabled=busy||locked||page===0;next.disabled=busy||locked||!hasMore;grid.querySelectorAll('button').forEach(node=>node.disabled=locked||busy);}
   async function load(target=0){
-   if(locked)return;const ticket=++revision;busy=true;controls();onBusy(true);message.textContent='正在读取已归档的透明印花…';
+   if(locked||busy)return;const ticket=++revision;busy=true;controls();onBusy(true);message.textContent='正在读取已归档的透明印花…';
    try{const result=await request('/api/v1/commerce-artwork-library?page='+target+'&query='+encodeURIComponent(query.value.trim()));if(ticket!==revision)return;
     const data=result.data;if(!data||!Array.isArray(data.items))throw new Error('印花列表暂不可用');
     loaded=true;page=data.page;hasMore=!!data.hasMore;grid.replaceChildren();
@@ -85,7 +85,8 @@
  const host=document.getElementById('commerce-artwork-library');
  if(host){make('h2','透明印花',host);const note=make('p','历次裂变的可用印花自动归档，可在“新建裂变上架”中重复使用。',host);note.className='artwork-library-description';const library=catalogue(host);
   const loadWhenVisible=()=>{if(globalThis.location?.hash==='#commerce-assets')library.load(0);};
-  globalThis.addEventListener('hashchange',loadWhenVisible);globalThis.addEventListener('heyi:company-reset',()=>library.reset());
-  Promise.resolve().then(loadWhenVisible);
+  globalThis.addEventListener('heyi:commerce-section-entered',event=>{if(event.detail?.route==='commerce-assets')library.load(0);});
+  globalThis.addEventListener('heyi:company-reset',()=>library.reset());
+  if(typeof currentUser!=='undefined'&&currentUser)Promise.resolve().then(loadWhenVisible);
  }
 })();

@@ -75,7 +75,7 @@
     const front=config.photoPrints.filter(print=>print.side==='FRONT');
     if(front.length!==1)return '自然搭放需要单处正面胸花，当前模板有 '+front.length+' 处正面印花；背面和侧面位置可保留。';
     const p=front[0];
-    if(![p.x,p.y,p.width,p.height].every(Number.isFinite)||p.width<=0||p.height<=0||p.width*p.height>.065||p.x<.2||p.x+p.width>.8||p.y<.12||p.y+p.height>.55)return '自然搭放仅支持小面积正面胸花；当前印花过大或超出胸前范围，请使用原有模式或调整模板。';
+    if(![p.x,p.y,p.width,p.height].every(Number.isFinite)||p.width<=0||p.height<=0||p.x<0||p.x+p.width>1||p.y<0||p.y+p.height>1)return '印花位置超出图片边界，请调整位置后继续。';
     return null;
   }
   function launchInput(reusedArtworks){
@@ -94,12 +94,12 @@
     if(renderSelector){
       if(explicitRenderPolicy)renderSelector.value=explicitRenderPolicy;
       else if(replay)renderSelector.value=requestPolicy(replay);
-      else if(print&&!printLoading&&!printLoadError)renderSelector.value=photo&&!drapeIssue?'GROK_DRAPE_REUSE_V1':'GROK_SCENE_V1';
+      else if(print&&!printLoading&&!printLoadError)renderSelector.value=photo?'GROK_DRAPE_REUSE_V1':'GROK_SCENE_V1';
       const option=Array.from(renderSelector.children).find(option=>option.value==='GROK_DRAPE_REUSE_V1');if(option){option.disabled=!!drapeIssue;option.title=drapeIssue||'';}
       renderSelector.disabled=!print||!photo&&!drapeReuse()||printLoading||submitting;
     }
     if(renderField)renderField.hidden=!photo&&!drapeReuse();
-    if(renderHint)renderHint.textContent=print&&drapeIssue?drapeIssue+(drapeReuse()?' 已保留自然搭放选择，请调整模板或手动选择原有模式后再开始。':' 当前模板使用原有模式。'):drapeReuse()?'已选择自然搭放：纯白服装模板 + 单处小面积正面胸花；背面、侧面补图沿用原有方式。母图生成前自动检查模板布色。':'当前使用原有模式，保持模板版型并复用商品背景。符合条件的新批次默认自然搭放，也可手动选择原有模式。';
+    if(renderHint)renderHint.textContent=print&&drapeIssue?drapeIssue+(drapeReuse()?' 已保留自然搭放选择，请调整模板或手动选择原有模式后再开始。':' 当前模板使用原有模式。'):drapeReuse()?'已选择自然搭放：纯白服装模板 + 单处正面印花；背面、侧面补图沿用原有方式。母图生成前自动检查模板布色。':'当前使用原有模式，保持模板版型并复用商品背景。新批次默认自然搭放，也可手动选择原有模式。';
     const workflowText=workflow?`${workflow.name} · 每组 ${artworkState?.reuse?(artworkState.count||0):(workflow.configuration.designsPerProduct||1)} 款`:"选择模板，带入商品图片、印花位置和裂变款数";
     const layout=print?.configuration?.photoPrints?.length?"四面图片":print?.configuration?.surfacePrints?.length?"历史印花布局":"图片印花布局";
     const printText=!workflow?"配置一次，裂变时直接使用":templateBlocker()||`${layout} · ${printPositionCount(print)}处印花位置`;

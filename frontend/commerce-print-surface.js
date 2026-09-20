@@ -2,7 +2,7 @@
 (() => {
  const emptyRenders=()=>({renderedViews:{},blankRenderedViews:{},surfaceUvViews:{},placementMasks:{},renderPrintIds:[],renderBinding:null});
  const assetUrl=id=>'/api/v1/commerce-print-templates/base-images/'+id;
- const testPatterns=[{id:'starburst',label:'星芒',sha256:'91ba0bee73369b694cea7345dc7269da99a99fb70b4b94db8de0b18efb17b9e7'},{id:'flower',label:'花瓣',sha256:'a640e3d7cd32283257eb2b9ead481de175247712e73f2597323ccb6d9a2000c0'},{id:'checker',label:'棋盘',sha256:'fe522dfad98c24b65844a62978c6b9c1ccd48a0e4831aced03df6317a7e13a82'}];
+ const testPatterns=[{id:'starburst',label:'星芒',sha256:'91ba0bee73369b694cea7345dc7269da99a99fb70b4b94db8de0b18efb17b9e7'},{id:'flower',label:'花瓣',sha256:'a640e3d7cd32283257eb2b9ead481de175247712e73f2597323ccb6d9a2000c0'},{id:'checker',label:'棋盘',file:'checker-full',sha256:'5a5230ba3abc10629ee66d39f0871cc5350f670ec60b900e5dc8c622149a25eb'}];
  function drawTestPattern(canvas,id){
   canvas.width=canvas.height=512;const g=canvas.getContext('2d');if(!g)throw new Error('当前浏览器无法生成测试花纹');
   g.clearRect(0,0,512,512);g.save();g.translate(256,256);
@@ -15,14 +15,14 @@
    for(let i=0;i<8;i++){g.save();g.rotate(i*Math.PI/4);g.beginPath();g.ellipse(0,-104,42,80,0,0,Math.PI*2);g.fill();g.restore();}
    g.fillStyle='#242424';g.beginPath();g.arc(0,0,52,0,Math.PI*2);g.fill();
   }else{
-   for(let y=0;y<5;y++)for(let x=0;x<5;x++){g.fillStyle=(x+y)%2?'#b2c9c1':'#345e68';g.fillRect(x*64-160,y*64-160,64,64);}
+   for(let y=0;y<5;y++)for(let x=0;x<5;x++){g.fillStyle=(x+y)%2?'#b2c9c1':'#345e68';g.fillRect(x*102.4-256,y*102.4-256,102.4,102.4);}
   }
   g.restore();return canvas;
  }
  async function testPatternPng(id){
   const pattern=testPatterns.find(pattern=>pattern.id===id);if(!pattern)throw new Error('测试花纹无效');
   // Fixed bytes keep one marker group stable across browsers and saved template versions.
-  const response=await fetch('/assets/print-patterns/'+id+'.png?v='+pattern.sha256,{cache:'force-cache'});
+  const response=await fetch('/assets/print-patterns/'+(pattern.file||id)+'.png?v='+pattern.sha256,{cache:'force-cache'});
   if(!response.ok)throw new Error('测试花纹读取失败，请重试');
   const bytes=await response.arrayBuffer(),digest=await crypto.subtle.digest('SHA-256',bytes);
   const actual=Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
@@ -162,9 +162,10 @@
   });
   remove.addEventListener('click',()=>{if(!current()||isLocked())return;const before=snapshot();prints=prints.filter(p=>p.id!==selected);selected=prints.at(-1)?.id||null;artworkId=current()?.artworkId||artworkId;changed(before);});
   for(const {pattern,button} of patternButtons)button.addEventListener('click',()=>{if(isLocked())return;testPattern=pattern.id;draw();});
-  async function chooseArtwork(imageFactory,{fileName,test=false}={}){
+  async function chooseArtwork(imageFactory,{fileName,test=false,fillSelected=false}={}){
    if(isLocked())return;const ticket=ctx.revision(),operation=++attempt,company=org();
    const active=()=>ticket===ctx.revision()&&operation===attempt&&company===org();
+   const fillId=fillSelected?current()?.id:null;
    working=true;artworkPreparing=test;draw();note.textContent=test?'正在读取并保存测试花纹…':'正在保存印花素材…';
    try{
     const image=await imageFactory();if(!active())return;
@@ -172,12 +173,13 @@
     const r=await request('/api/v1/commerce-print-templates/base-images',{method:'POST',body:form});
     if(!active())return;if(!/^[a-f0-9]{64}$/.test(r?.data?.id||''))throw new Error('印花素材没有保存成功，请重试');
     const renderer=await preview();if(!active())return;
+    if(fillId&&current()?.id===fillId){const before=snapshot();current().artworkId=r.data.id;artworkId=r.data.id;renderer?.setPlacementMode?.(false);changed(before);note.textContent='棋盘格已铺满当前选框，请保存模板。';return;}
     artworkId=r.data.id;selected=null;renderer?.setPlacementMode?.(true);
     note.textContent=test?'测试花纹已就绪，点击当前面图片放置；可继续选择其他花纹。':'点击当前面图片上的位置放置印花。PNG 的透明背景会保留。';
    }catch(e){if(active())note.textContent='印花准备未完成：'+e.message+'。可重新选择后重试。';}
    finally{if(operation===attempt){working=false;artworkPreparing=false;file.value='';draw();}}
   }
-  useTest.addEventListener('click',()=>{if(useTest.disabled)return;const pattern=testPattern;return chooseArtwork(()=>testPatternPng(pattern),{fileName:'test-pattern-'+pattern+'.png',test:true});});
+  useTest.addEventListener('click',()=>{if(useTest.disabled)return;const pattern=testPattern;return chooseArtwork(()=>testPatternPng(pattern),{fileName:'test-pattern-'+pattern+'.png',test:true,fillSelected:pattern==='checker'&&current()?.artworkId==='fe522dfad98c24b65844a62978c6b9c1ccd48a0e4831aced03df6317a7e13a82'});});
   file.addEventListener('change',async()=>{
    const image=file.files[0];if(!image||isLocked())return;if(image.size>8*1024*1024){note.textContent='印花图片不能超过8MiB';file.value='';return;}
    await chooseArtwork(()=>image);

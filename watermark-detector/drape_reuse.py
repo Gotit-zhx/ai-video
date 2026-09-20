@@ -151,8 +151,8 @@ def validate_quad(corners, shape):
             and (corners[:, 0] >= 3).all() and (corners[:, 0] < width-3).all()
             and (corners[:, 1] >= 3).all() and (corners[:, 1] < height-3).all(),
             'PRINT_GEOMETRY_UNCERTAIN', '印花映射翻转、越界或不连续，未猜测目标位置')
-    require(.001 <= area/(width*height) <= .05 and area <= 80000,
-            'PRINT_TOO_LARGE', '目前只支持小面积单处胸前印花，不支持大花或全幅换花')
+    require(.001 <= area/(width*height) <= .5,
+            'PRINT_TOO_LARGE', '印花映射覆盖大半画面，无法可靠确认商品位置')
     edges = np.linalg.norm(corners-np.roll(corners, 1, axis=0), axis=1)
     require(min(edges) >= 18 and max(edges)/min(edges) <= 3,
             'PRINT_GEOMETRY_UNCERTAIN', '印花区域过细或透视变形过大')
@@ -405,16 +405,14 @@ def prepare(body):
     h, w = master.shape[:2]; ah, aw = art.shape[:2]
     old_alpha = cv2.warpPerspective(art[:, :, 3], texture_h@np.diag([1/(aw-1), 1/(ah-1), 1]), (w, h))
     remove = cv2.dilate((old_alpha > 8).astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))) > 0
-    require(100 <= int(remove.sum()) <= min(50000, int(h*w*.04)), 'CLEANUP_TOO_LARGE', '旧印花去除范围过大，未修改衣服')
+    require(100 <= int(remove.sum()) <= int(h*w*.4), 'CLEANUP_TOO_LARGE', '旧印花覆盖范围无法可靠修复，未修改衣服')
     candidate = u2net_mask(master); check_time(started)
     reliable = cv2.erode(candidate.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
     require(not np.any(remove & ~reliable), 'PRINT_OUTSIDE_GARMENT', '追踪印花不完全位于可靠衣服内部')
-    # A small chest region only, never hidden hem/sleeve folds.
-    ys, xs = np.where(candidate)
-    top, bottom, left, right = ys.min(), ys.max(), xs.min(), xs.max()
-    require(corners[:, 1].min() > top+(bottom-top)*.12 and corners[:, 1].max() < top+(bottom-top)*.60
-            and corners[:, 0].min() > left+(right-left)*.15 and corners[:, 0].max() < right-(right-left)*.12,
-            'CHEST_REGION_REQUIRED', '当前仅支持可见胸前印花，不能自动处理袖子或折叠下摆')
+    # Use actual garment containment instead of an arbitrary chest rectangle.
+    # Keep enough observed cloth to reconstruct lighting and validate recoloring.
+    require(int(remove.sum()) < int(candidate.sum())*.6,
+            'CLEANUP_TOO_LARGE', '可参考的原始布料不足，无法可靠恢复印花覆盖处')
     blank, iterations = cleanup(master, remove, started)
     require(np.array_equal(blank[~remove], master[~remove]), 'PROTECTED_PIXELS_CHANGED', '局部去花修改了保护区域')
     mask, iou = garment_mask(blank, candidate)
@@ -487,7 +485,7 @@ def render(body):
     alpha = alpha_pixels.astype(np.float32)/255
     require(.10 < float((alpha > .5).mean()) < .85 and not (alpha[0].any() or alpha[-1].any() or alpha[:, 0].any() or alpha[:, -1].any()),
             'GARMENT_MASK_UNCERTAIN', '固定衣服遮罩面积或边界无效')
-    require(np.isin(remove, [0, 255]).all() and 100 <= int((remove > 0).sum()) <= min(50000, int(shape[0]*shape[1]*.04))
+    require(np.isin(remove, [0, 255]).all() and 100 <= int((remove > 0).sum()) <= min(int(shape[0]*shape[1]*.4), int((alpha >= .98).sum()*.6))
             and not np.any((remove > 0) & (alpha < .98)),
             'CLEANUP_MASK_INVALID', '固定去花遮罩超出可信衣服内部或面积范围')
     original = body.get('originalColor')
@@ -504,11 +502,11 @@ def render(body):
     left = max(0, int(np.floor(corners[:, 0].min()))-2); top = max(0, int(np.floor(corners[:, 1].min()))-2)
     right = min(width, int(np.ceil(corners[:, 0].max()))+3); bottom = min(height, int(np.ceil(corners[:, 1].max()))+3)
     rw, rh = right-left, bottom-top
-    require(rw*rh <= 110000, 'PRINT_TOO_LARGE', '局部印花渲染范围超过限制')
-    warp = np.diag([4, 4, 1])@np.array([[1, 0, -left], [0, 1, -top], [0, 0, 1.]])@h@np.diag([1/(aw-1), 1/(ah-1), 1])
+    supersample = max(1, min(4, int((1760000/max(1, rw*rh))**.5)))
+    warp = np.diag([supersample, supersample, 1])@np.array([[1, 0, -left], [0, 1, -top], [0, 0, 1.]])@h@np.diag([1/(aw-1), 1/(ah-1), 1])
     texture_alpha = art[:, :, 3].astype(np.float32)/255; premult = art[:, :, :3].astype(np.float32)*texture_alpha[:, :, None]
-    ink_alpha = cv2.resize(cv2.warpPerspective(texture_alpha, warp, (rw*4, rh*4)), (rw, rh), interpolation=cv2.INTER_AREA)
-    ink = cv2.resize(cv2.warpPerspective(premult, warp, (rw*4, rh*4)), (rw, rh), interpolation=cv2.INTER_AREA)
+    ink_alpha = cv2.resize(cv2.warpPerspective(texture_alpha, warp, (rw*supersample, rh*supersample)), (rw, rh), interpolation=cv2.INTER_AREA)
+    ink = cv2.resize(cv2.warpPerspective(premult, warp, (rw*supersample, rh*supersample)), (rw, rh), interpolation=cv2.INTER_AREA)
     garment = alpha[top:bottom, left:right]
     visible = ink_alpha > .1
     require(int(visible.sum()) >= 20, 'PRINT_NOT_VISIBLE', '新印花透明度过低或缩放后不可见，未继续套版')

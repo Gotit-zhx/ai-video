@@ -637,8 +637,25 @@ public class CommerceBatchArtworkService {
             db.update("UPDATE commerce_batch_artwork_jobs SET status='READY',storage_key=?,content_sha256=?,message=?,updated_at=NOW(6) WHERE id=? AND status='RESULT_RECEIVED'",stored.storageKey(),stored.sha256(),archiveMessage,job.get("id"));
             return Result.progress("已归档 "+job.get("kind")+" · 变体 "+job.get("variant_index")+(job.get("color_label")==null?"":" · "+job.get("color_label"))+"，继续处理下一张");
         } catch(RuntimeException failure) {
-            return new Result(false,"模型响应已保存，但图片归档未完成；恢复仅重试归档，不重复调用模型");
+            String reason=archiveFailureReason(failure);
+            String message="模型响应已保存，但图片归档未完成："+reason+"；系统最多自动恢复3次，仅重试归档，不重复调用模型";
+            db.update("UPDATE commerce_batch_artwork_jobs SET message=?,updated_at=NOW(6) WHERE id=? AND status='RESULT_RECEIVED'",message,job.get("id"));
+            org.slf4j.LoggerFactory.getLogger(getClass()).warn("Image archive pending for job {}: {}",job.get("id"),reason);
+            return new Result(false,message);
         }
+    }
+
+    static String archiveFailureReason(Throwable failure) {
+        for(Throwable cause=failure;cause!=null;cause=cause.getCause()) {
+            if(cause instanceof java.net.UnknownHostException)return "图片域名解析失败";
+            if(cause instanceof java.net.SocketTimeoutException)return "下载图片超时";
+            if(cause instanceof javax.net.ssl.SSLException)return "图片服务器 TLS 连接失败";
+            if(cause instanceof java.sql.SQLException sql)return "归档数据库写入失败（"+sql.getSQLState()+"/"+sql.getErrorCode()+"）";
+            if(cause instanceof java.nio.file.AccessDeniedException)return "本地图片目录不可写";
+        }
+        if(failure instanceof com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException)
+            return "模型图片下载失败";
+        return "归档处理失败（"+failure.getClass().getSimpleName()+"）";
     }
 
     private Result validateReadyPrints(CommerceBatchExecution run,List<Map<String,Object>> jobs,PlatformPrincipal user,boolean generatedExtraction) {
