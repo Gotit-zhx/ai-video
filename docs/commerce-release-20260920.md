@@ -12,3 +12,19 @@
 验证：121 项前端检查通过；归档、搭放、图像下载相关 Java 定向测试通过；23 项 Python 搭放测试通过，包括较大印花定位、去花、换色和背景不变检查。既有 commerce-print-surface.test.cjs 使用过期 surface harness，未列入通过清单，实际 photo 编辑器使用 commerce-photo-surface.test.cjs 验证。
 
 部署使用正式运行镜像为基底，仅叠加本次文件/编译类，保留原 Nginx、数据库、OSS、店铺 API 配置。图像处理服务仅在 Docker 内网提供接口，令牌保存在服务器受限配置文件，不能提交到仓库。模型图片验证不代表实拍视觉效果保证；映射不可靠时仍保留结果并停止错误套版。
+
+## 正式授权域名
+
+生产部署覆盖配置必须保留：
+
+```yaml
+APP_SHOP_AUTH_CALLBACK_BASE_URL: https://hoyee.org.cn
+APP_SHOP_AUTH_FRONTEND_BASE_URL: https://hoyee.org.cn
+```
+
+- 产品网址：https://hoyee.org.cn/
+- Shopee 测试和正式 Redirect URL Domain：https://hoyee.org.cn
+- Shopee 回调：https://hoyee.org.cn/api/v1/shop-authorizations/callback/shopee
+- TikTok Shop 回调：https://hoyee.org.cn/api/v1/shop-authorizations/callback/tiktok_shop
+
+TikTok 回调已在开发者平台保存；Shopee 域名已填写在 Go Live 表单中，尚未提交。申请仍需有效的独立审核账号和平台要求的截图等材料。应用密钥、令牌和审核密码不得放入文档或仓库。原有本地开发默认地址不变。
