@@ -18,6 +18,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class AiWatermarkLocalScreenTest {
+ @Test void sizeChartPreservesOriginalAndNeverCallsImageGeneration()throws Exception{run("SIZE_CHART");}
  @Test void presentWatermarkGenerates()throws Exception{run("PRESENT");}
  @Test void clearlyAbsentWatermarkKeepsOriginal()throws Exception{run("ABSENT");}
  @Test void confidence96DoesNotBypassGeneration()throws Exception{run("LOW_CONFIDENCE_ABSENT");}
@@ -52,6 +53,7 @@ class AiWatermarkLocalScreenTest {
    double confidence="LOW_CONFIDENCE_ABSENT".equals(decision)&&!confirmation?.96:confirmation&&"CONFIRM_LOW_CONFIDENCE".equals(decision)?.98:confirmation&&"CONFIRM_INVALID_CONFIDENCE".equals(decision)?1.1:.995;
    var result=new LinkedHashMap<String,Object>();result.put("decision",detected);result.put("confidence",confidence);
    if(!confirmation||!"CONFIRM_MISSING_REGIONS".equals(decision))result.put("regions",confirmation&&"CONFIRM_REGIONS".equals(decision)?List.of(Map.of("x",0,"y",0,"width",1,"height",.1)):List.of());
+   if("SIZE_CHART".equals(decision)){result.put("decision","UNCERTAIN");result.put("imageType","SIZE_CHART");result.put("sizeChart",Map.of("readable",false));}
    byte[] response=json.writeValueAsString(Map.of("result",result)).getBytes(StandardCharsets.UTF_8);
    exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders("DETECTION_FAILED".equals(decision)||confirmation&&"CONFIRM_FAILED".equals(decision)?500:200,response.length);exchange.getResponseBody().write(response);exchange.close();
   });server.start();
@@ -138,7 +140,7 @@ class AiWatermarkLocalScreenTest {
    boolean confirmed="ABSENT".equals(decision)||decision.startsWith("CONFIRM_")||"LOW_CONFIDENCE_ABSENT".equals(decision);
    assertEquals(Collections.nCopies(cached||"OLD_DETECTED".equals(decision)||decision.startsWith("SAVED_")?0:confirmed?2:1,"WATERMARK_DETECTION_V1"),requests);
    // The generation reference must be the exact archived original, never the enhanced pixels.
-   verify(generator,times(cached||"ABSENT".equals(decision)?0:"LEASE_TIMEOUT".equals(decision)?2:1)).generateArtwork(anyString(),anyString(),eq(model),eq(List.of(new CommerceDesignImageGateway.Reference("image/png",data))));
+   verify(generator,times(cached||"ABSENT".equals(decision)||"SIZE_CHART".equals(decision)?0:"LEASE_TIMEOUT".equals(decision)?2:1)).generateArtwork(anyString(),anyString(),eq(model),eq(List.of(new CommerceDesignImageGateway.Reference("image/png",data))));
    if(!requestBodies.isEmpty()){
     assertFalse(requestBodies.getFirst().containsKey("detectionViews"));
     assertFalse(requestBodies.getFirst().containsKey("candidateImage"));

@@ -22,7 +22,10 @@ public class CommerceDesignImageGateway implements AutoCloseable {
     public record Artifact(String dataBase64,String mimeType,String modelId,String mode,String revisedPrompt) {}
     public record PendingResult(String url,String mimeType,String modelId,String mode,String revisedPrompt) {}
     public record Response(Artifact artifact,PendingResult result) {}
+    public record Operation(String status,boolean active,long updatedAt,Response response,Map<String,Object> error) {}
     private final RestClient client;
+    private final RestClient operationClient;
+    private final java.net.http.HttpClient operationTransport;
     private final CommerceImageHttpTransport transport;
     @Autowired
     public CommerceDesignImageGateway(
@@ -32,11 +35,13 @@ public class CommerceDesignImageGateway implements AutoCloseable {
     CommerceDesignImageGateway(CommerceImageHttpTransport transport,String url,String token){
         this.transport=transport;
         this.client=RestClient.builder().requestFactory(transport.factory()).baseUrl(url).defaultHeader("X-Internal-Token",token).build();
+        this.operationTransport=operationTransport();this.operationClient=operationClient(client,operationTransport);
     }
     public CommerceDesignImageGateway(RestClient.Builder builder,
             @Value("${app.pi-runtime-url}")String url,@Value("${app.pi-runtime-token}")String token){
         this.transport=null;
         this.client=builder.clone().baseUrl(url).defaultHeader("X-Internal-Token",token).build();
+        this.operationTransport=operationTransport();this.operationClient=operationClient(client,operationTransport);
     }
     public Response generate(CommerceDesignDraft draft,List<Reference> references,String attemptId,ModelConfigService.RuntimeModelConnection model){
         if(model==null)throw bad("缺少已确认的图片模型配置");
@@ -89,18 +94,42 @@ public class CommerceDesignImageGateway implements AutoCloseable {
     public Response generateProductPreview(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references,boolean productMockup){
         return generateArtwork(prompt,attemptId,model,references,"low",false,productMockup);
     }
+    /** Four detail cells share one archived style sheet and one fixed product reference. */
+    public Response generateProductDetailGrid(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references){
+        if(references==null||references.size()!=2)throw bad("四格详情图须使用商品主图和已组合的详情风格图两张参考图");
+        return generateArtwork(prompt,attemptId,model,references,"medium",false,true,true);
+    }
+    /** Read the durable runtime outcome without submitting or retrying image generation. */
+    public Operation operation(String attemptId){
+        if(attemptId==null||!attemptId.matches("[A-Za-z0-9_-]{8,128}"))throw bad("缺少有效的图片任务编号");
+        try{return operationClient.get().uri("/v1/images/operations?requestId={id}",attemptId).retrieve().body(Operation.class);}
+        catch(RestClientResponseException failure){if(failure.getStatusCode().value()==404)return null;throw failure;}
+    }
+    private static java.net.http.HttpClient operationTransport(){
+        return java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(2))
+                .followRedirects(java.net.http.HttpClient.Redirect.NEVER).build();
+    }
+    private static RestClient operationClient(RestClient client,java.net.http.HttpClient transport){
+        var factory=new org.springframework.http.client.JdkClientHttpRequestFactory(transport);
+        factory.setReadTimeout(java.time.Duration.ofSeconds(8));
+        return client.mutate().requestFactory(factory).build();
+    }
     private Response generateArtwork(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references,String quality,boolean transparentArtwork){
         return generateArtwork(prompt,attemptId,model,references,quality,transparentArtwork,false);
     }
     private Response generateArtwork(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references,String quality,boolean transparentArtwork,boolean productMockup){
+        return generateArtwork(prompt,attemptId,model,references,quality,transparentArtwork,productMockup,false);
+    }
+    private Response generateArtwork(String prompt,String attemptId,ModelConfigService.RuntimeModelConnection model,List<Reference> references,String quality,boolean transparentArtwork,boolean productMockup,boolean detailGrid){
         if(model==null||attemptId==null||!attemptId.matches("[A-Za-z0-9_-]{8,128}"))throw bad("缺少示例任务或模型");
         var body=new LinkedHashMap<String,Object>();
         body.put("model",model.imageRequestModel());
         if(references==null||references.size()>4)throw bad("图片创作最多使用四张已归档参考图，不允许静默截断");
         for(var reference:references){if(reference==null||!Set.of("image/png","image/jpeg","image/webp").contains(Objects.toString(reference.mimeType(),""))||reference.dataBase64()==null||reference.dataBase64().isBlank()||reference.dataBase64().length()>12_000_000)throw bad("参考图编码或格式无效");try{Base64.getDecoder().decode(reference.dataBase64());}catch(IllegalArgumentException e){throw bad("参考图编码无效");}}
-        body.put("prompt",prompt);body.put("size","1024x1024");body.put("references",references);body.put("inputFidelity","high");body.put("progressRequestId",attemptId);
+        body.put("prompt",prompt);body.put("size",detailGrid?"2048x2048":"1024x1024");body.put("references",references);body.put("inputFidelity","high");body.put("progressRequestId",attemptId);
         if(quality!=null)body.put("quality",quality);
         if(productMockup)body.put("productMockup",true);
+        if(detailGrid)body.put("detailGrid",true);
         if(transparentArtwork){body.put("background","transparent");body.put("outputFormat","png");}
         var response=submit(body);
         if(response==null)throw new IllegalStateException("示例生成未返回结果");
@@ -167,5 +196,5 @@ public class CommerceDesignImageGateway implements AutoCloseable {
             return new CommerceImageRejectedException(message,kind,providerStatus);
         }catch(RuntimeException malformed){return null;}
     }
-    @Override @PreDestroy public void close()throws IOException{if(transport!=null)transport.close();}
+    @Override @PreDestroy public void close()throws IOException{try{if(transport!=null)transport.close();}finally{operationTransport.close();}}
 }

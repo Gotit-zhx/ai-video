@@ -17,6 +17,13 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PublicImageDnsResolverTest {
+    @Test void generatedImageHostUsesAuthenticatedDnsEvenForPoisonedPublicAnswer() throws Exception {
+        try(var resolver=new PublicImageDnsResolver(host->{fail("Do not use poisoned system DNS");return null;},
+                host->new PublicImageDnsResolver.DohAnswer(addresses("104.18.18.80"),60),()->0)) {
+            assertArrayEquals(addresses("104.18.18.80"),resolver.resolve("imgen.x.ai"));
+        }
+    }
+
     @Test void fakeIpAnswersAreReplacedByValidatedPublicAnswers() throws Exception {
         var calls = new AtomicInteger();
         try (var resolver = new PublicImageDnsResolver(host -> addresses("198.18.0.117", "198.19.255.254"), host -> {

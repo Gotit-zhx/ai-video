@@ -2,6 +2,7 @@ package com.yingdao.aicommerce.product.application.provider;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yingdao.aicommerce.common.exception.BusinessException;
+import com.yingdao.aicommerce.product.application.CommerceSourceColorResolver;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
 import com.yingdao.aicommerce.product.domain.ProductCaptureSku;
@@ -31,6 +32,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.LongConsumer;
 import java.util.regex.Pattern;
 
@@ -63,6 +65,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     private final MarketplaceImageDownloader imageDownloader;
     private final ObjectMapper objectMapper;
     private final ShopeeProductVideoUploader videoUploader;
+    private final ShopeeSizeChartExtractor sizeCharts;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ShopeeAttributeResolver attributeResolver;
 
     public ShopeeOfficialPublishingProvider(ShopAuthorizationService shopAuthorizationService,
                                             ShopeeOfficialClient client,
@@ -71,6 +76,14 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
                                             MarketplaceImageDownloader imageDownloader,
                                             ObjectMapper objectMapper,
                                             ShopeeProductVideoUploader videoUploader) {
+        this(shopAuthorizationService,client,skuMapper,imageMapper,imageDownloader,objectMapper,videoUploader,null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ShopeeOfficialPublishingProvider(ShopAuthorizationService shopAuthorizationService, ShopeeOfficialClient client,
+        ProductCaptureSkuMapper skuMapper, ProductCaptureImageMapper imageMapper, MarketplaceImageDownloader imageDownloader,
+        ObjectMapper objectMapper, ShopeeProductVideoUploader videoUploader, ShopeeSizeChartExtractor sizeCharts) {
+        this.sizeCharts=sizeCharts;
         this.shopAuthorizationService = shopAuthorizationService;
         this.client = client;
         this.skuMapper = skuMapper;
@@ -112,6 +125,17 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             ensureUniqueTierIndexes(modelList(preflight, "model"));
         }
 
+        List<BigDecimal> publishPrices = new ArrayList<>();
+        publishPrices.add(itemPrice);
+        for (ProductCaptureSku sku : skus) publishPrices.add(requiredPrice(
+                ShopeePublishPricing.price(ShopeePublishPricing.sourcePrice(sku), request), "SKU 缺少有效发布价格"));
+        String publishTitle = ShopeeProductTitle.prepare(capture, client, connection, categoryId, publishPrices);
+
+        List<?> publishAttributes = attributeResolver == null ? ShopeeMaterialDefaults.prepare(client, connection, categoryId, request)
+                : attributeResolver.prepare(capture, images, connection, categoryId, request);
+
+        Map<String,Object> sizeChart = sizeCharts == null ? Map.of() : sizeCharts.prepare(capture, images, connection, categoryId);
+
         // A still-transcoding video should not cause gallery images to be staged on every poll.
         ShopeeProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection);
         Map<String, String> uploadedByUrl = uploadImages(connection, images);
@@ -128,7 +152,8 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         Map<String, Object> addItem = mutableMap(request.get("shopeePayload"));
         addItem.putIfAbsent("brand", Map.of("brand_id", 0, "original_brand_name", "NoBrand"));
         addItem.put("category_id", categoryId);
-        addItem.put("item_name", capture.getTitle());
+        addItem.put("item_name", publishTitle);
+        if (!sizeChart.isEmpty()) addItem.put("size_chart_info", sizeChart);
         addItem.put("description", capture.getDescription());
         addItem.put("item_status", "UNLIST");
         addItem.put("condition", fallbackText(addItem.get("condition"), "NEW"));
@@ -143,7 +168,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         if (sellerSku != null) addItem.put("item_sku", sellerSku);
         putOptional(addItem, "dimension", dimension(request));
         addItem.put("logistic_info", logisticInfo);
-        putOptional(addItem, "attribute_list", listValue(request.get("productAttributes")));
+        putOptional(addItem, "attribute_list", publishAttributes);
         // Only the tenant's archived capture video can supply this media reference.
         addItem.remove("video_upload_id");
         if (video.present()) addItem.put("video_upload_id", List.of(video.uploadId()));
@@ -185,6 +210,10 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             receipt.put("apiVersion", "v2");
             receipt.put("externalShopId", connection.shop().getExternalShopId());
             receipt.put("itemId", itemId);
+            receipt.put("publishedTitle", publishTitle);
+            receipt.put("sizeChartUploaded", !sizeChart.isEmpty());
+            receipt.put("priceBasis", request.containsKey("publishPrice") ? "EXPLICIT_PRICE" : "SKU_ORIGINAL_PRICE_WITH_CURRENT_FALLBACK");
+            receipt.put("titleAdjusted", !publishTitle.equals(capture.getTitle()));
             receipt.put("imageCount", galleryImageIds.size());
             receipt.put("videoCount", video.present() ? 1 : 0);
             receipt.put("sourceVideoCount", video.sourceCount());
@@ -226,8 +255,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             if (url == null) continue;
             String imageId = result.get(url);
             if (imageId == null) {
-                MarketplaceImageDownloader.ImageBinary binary = url.startsWith(com.yingdao.aicommerce.product.application.ProductWatermarkAssets.PREFIX)
-                        ? imageDownloader.downloadProductImage(url,image) : imageDownloader.download(url);
+                MarketplaceImageDownloader.ImageBinary binary = imageDownloader.downloadProductImage(url, image);
                 Map<String, Object> response = uploadImageBinary(connection, binary, index, images.size(), sleeper);
                 imageId = nestedText(response, "response", "image_info", "image_id");
                 if (imageId == null) imageId = nestedText(response, "response", "image_id");
@@ -329,7 +357,11 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         if (dimensionNames.size() > 2) {
             throw conflict("Shopee 最多支持两层销售规格；请在发布前调整 SKU 规格");
         }
-        List<String> dimensions = List.copyOf(dimensionNames);
+        // Shopee displays the first tier as the outer group. Color must own its
+        // image and the sizes must sit beneath it regardless of JSON key order.
+        List<String> dimensions = new ArrayList<>(dimensionNames);
+        dimensions.sort(Comparator.comparingInt(name ->
+                CommerceSourceColorResolver.isColorDimension(name) ? 0 : 1));
         List<Map<String, Object>> tiers = new ArrayList<>();
         List<Map<String, Integer>> optionIndexes = new ArrayList<>();
         for (String dimension : dimensions) {
@@ -338,6 +370,8 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
                 String option = option(attributes.get(i), skus.get(i), dimension, dimensions.size());
                 if (!options.contains(option)) options.add(option);
             }
+            if (Set.of("size","sizes","尺码","尺碼","尺寸").contains(dimension.strip().toLowerCase(Locale.ROOT)))
+                options.sort(Comparator.comparingInt(ShopeeOfficialPublishingProvider::sizeOrder).thenComparing(String::compareTo));
             List<Map<String, Object>> optionList = new ArrayList<>();
             Map<String, Integer> indexes = new LinkedHashMap<>();
             for (int i = 0; i < options.size(); i++) {
@@ -373,7 +407,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
             Map<String, Object> model = new LinkedHashMap<>();
             model.put("tier_index", tierIndex);
             model.put("original_price", requiredPrice(
-                    ShopeePublishPricing.price(sku.getPrice() == null ? basePrice(null, skus) : sku.getPrice(), request),
+                    ShopeePublishPricing.price(ShopeePublishPricing.sourcePrice(sku), request),
                     "Shopee SKU “" + fallbackText(sku.getVariationName(), sku.getSkuKey())
                             + "” 的发布价格必须大于 0"));
             model.put("seller_stock", sellerStock(stockBySku.getOrDefault(sku.getSkuKey(), stock)));
@@ -383,6 +417,16 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         }
         validateStockKeys(stockBySku, skus);
         return Map.of("item_id", longNumber(itemId), "standardise_tier_variation", tiers, "model", models);
+    }
+
+    private static int sizeOrder(String name) {
+        var match=Pattern.compile("^(S|M|L|XL|XXL|XXXL|[2-9]XL)(?:\\b|\\()",
+                Pattern.CASE_INSENSITIVE).matcher(name);
+        if(!match.find())return 100;
+        return switch(match.group(1).toUpperCase(Locale.ROOT)){
+            case "S"->0;case "M"->1;case "L"->2;case "XL"->3;
+            case "XXL","2XL"->4;case "XXXL","3XL"->5;default->6;
+        };
     }
 
     VariationSubmission submitVariations(MarketplaceAccess.Connection connection,
@@ -396,15 +440,37 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         initPayload.put("model", List.copyOf(models.subList(0, firstBatchEnd)));
         Map<String, Object> initResponse = client.shopPost(INIT_VARIATION, connection, initPayload);
 
+        if (firstBatchEnd < models.size()) {
+            // Shopee acknowledges initialization before all downstream writers observe its tiers.
+            readPublishedModels(connection, String.valueOf(fullPayload.get("item_id")),
+                    models.subList(0, firstBatchEnd));
+        }
         List<Map<String, Object>> addModelResponses = new ArrayList<>();
         for (int offset = firstBatchEnd; offset < models.size(); offset += MODEL_BATCH_SIZE) {
             int end = Math.min(offset + MODEL_BATCH_SIZE, models.size());
             Map<String, Object> addModelPayload = Map.of(
                     "item_id", fullPayload.get("item_id"),
                     "model_list", List.copyOf(models.subList(offset, end)));
-            addModelResponses.add(client.shopPost(ADD_MODEL, connection, addModelPayload));
+            addModelResponses.add(appendModels(connection, addModelPayload));
         }
         return new VariationSubmission(initResponse, List.copyOf(addModelResponses));
+    }
+
+    Map<String,Object> appendModels(MarketplaceAccess.Connection connection, Map<String,Object> payload) {
+        for (int attempt=0;attempt<4;attempt++) {
+            try { return client.shopPost(ADD_MODEL, connection, payload); }
+            catch (MarketplaceApiException error) {
+                // Explicit validation rejection guarantees this batch was not accepted.
+                // Never retry timeouts/unknown errors after an external mutation.
+                if (attempt==3 || !confirmedTierNotReady(error.getMessage())) throw error;
+                pause(2000L*(attempt+1), "Shopee 规格同步等待已中断");
+            }
+        }
+        throw conflict("Shopee 规格同步未完成");
+    }
+
+    static boolean confirmedTierNotReady(String message) {
+        return "Shopee 官方接口 /api/v2/product/add_model 失败：Model tier_index error. : model in position []".equals(message);
     }
 
     @SuppressWarnings("unchecked")
@@ -709,7 +775,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     }
 
     private BigDecimal basePrice(ProductCapture capture, List<ProductCaptureSku> skus) {
-        return skus.stream().map(ProductCaptureSku::getPrice).filter(value -> value != null)
+        return skus.stream().map(ShopeePublishPricing::sourcePrice).filter(value -> value != null)
                 .min(BigDecimal::compareTo)
                 .orElseGet(() -> capture == null || capture.getPriceMin() == null
                         ? BigDecimal.ZERO : capture.getPriceMin());

@@ -10,6 +10,13 @@ function canonical(value) {
   return value;
 }
 const ERROR_FIELDS = ['requestState','retrySafe','retryAuthorized','safeRetryCount','networkRetryCount','failureCode','failureKind','providerStatus','requestId','imageModelFallback','imageOutputRequirement'];
+const LOOKUP_ERROR_FIELDS = Object.freeze({requestState:'string',retrySafe:'boolean',retryAuthorized:'boolean',
+  safeRetryCount:'number',networkRetryCount:'number',failureCode:'string',failureKind:'string',providerStatus:'number',requestId:'string'});
+function lookupError(error) {
+  if (!error || typeof error !== 'object') return null;
+  return Object.fromEntries(Object.entries(LOOKUP_ERROR_FIELDS).filter(([key,type]) => typeof error[key] === type
+    && (type !== 'number' || Number.isFinite(error[key]))).map(([key,type]) => [key,type === 'string' ? error[key].slice(0,128) : error[key]]));
+}
 function failure(message, code = 'IMAGE_RECOVERY_EXHAUSTED') {
   return Object.assign(new Error(message), {requestState:'ACCEPTED_OR_UNKNOWN',retrySafe:false,retryAuthorized:false,failureKind:'NETWORK',failureCode:code});
 }
@@ -39,6 +46,23 @@ export class ImageOperationStore {
     await writeFile(temporary, JSON.stringify(value), {mode:0o600});
     await rename(temporary, file);
   }
+  async lookup(requestId) {
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(requestId)) {
+      throw Object.assign(new Error('图片恢复任务缺少有效请求编号'), {status:400});
+    }
+    let record;
+    try { record = JSON.parse(await readFile(path.join(this.directory, `${hash(requestId)}.json`), 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const active = this.active.get(requestId);
+    if (active) return {status:'RUNNING',active:true,updatedAt:record?.updatedAt || active.updatedAt,response:null,error:null};
+    if (!record) return {status:'NOT_FOUND',active:false,updatedAt:0,response:null,error:null};
+    const error = record.status === 'RECOVERABLE'
+      ? {...lookupError(record.error),savedResponseAvailable:Object.values(record.routes || {}).some(route => route?.response != null)}
+      : record.status === 'FAILED' ? lookupError(record.error) : null;
+    return {status:record.status,active:false,updatedAt:Number.isFinite(record.updatedAt) ? record.updatedAt : 0,
+      response:record.status === 'COMPLETED' ? record.result ?? null : null,
+      error};
+  }
   execute(requestId, input, task) {
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(String(requestId || ''))) {
       return Promise.reject(Object.assign(new Error('图片恢复任务缺少有效请求编号'), {status:400}));
@@ -50,7 +74,7 @@ export class ImageOperationStore {
       return current.promise;
     }
     const promise = this.run(requestId, fingerprint, task);
-    this.active.set(requestId, {fingerprint,promise});
+    this.active.set(requestId, {fingerprint,promise,updatedAt:Date.now()});
     promise.finally(() => {if (this.active.get(requestId)?.promise === promise) this.active.delete(requestId);}).catch(() => {});
     return promise;
   }

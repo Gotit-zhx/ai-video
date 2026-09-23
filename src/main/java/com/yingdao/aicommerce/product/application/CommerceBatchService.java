@@ -113,11 +113,11 @@ public class CommerceBatchService {
             // The selected shop is authoritative for the destination, including cross-market templates.
             CommerceTemplateShopResolver.targetFor(c,shop,user.organizationId());
             var operating=operatingSettings.get(user.organizationId(),t.shopId());
-            if(operating==null || !Set.of("TEST","LIVE").contains(operating.environment()))
-                throw bad("请先在店铺管理确认各店铺的测试/正式标记");
-            environments.add(operating.environment());
+            // Manual operating labels are optional; credentials determine API routing.
+            if(operating!=null && ("TEST".equals(operating.environment()) || "LIVE".equals(operating.environment())))
+                environments.add(operating.environment());
             if(environments.size()>1)throw bad("同一批次不能混用测试店铺与正式店铺");
-            int dailyLimit=Math.min(c.dailyListingsPerShop(),operating.dailyListingLimit());
+            int dailyLimit=Math.min(c.dailyListingsPerShop(),operating==null?50:operating.dailyListingLimit());
             if(dailyLimit<1)throw bad("目标店铺每日刊登额度不可用，请更新店铺设置");
             int position=counts.merge(t.shopId(),1,Integer::sum);
             items.add(new CommerceBatchItem(UUID.randomUUID().toString(),user.organizationId(),id,

@@ -11,6 +11,9 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 
 class ProductWatermarkQueueWorkerTest {
+    @Test void generatedResultDownloadIsDeferredWithoutMarkingFailed() throws Exception {
+        run(new GeneratedImageDownloadPendingException("download pending",new SocketTimeoutException()),true);
+    }
     @Test void provenUnsentImageRequestUsesExistingDeferredQueue() throws Exception {
         run(new WatermarkRateLimitException("request was not sent"), true);
     }
@@ -29,7 +32,8 @@ class ProductWatermarkQueueWorkerTest {
         try {
             worker.run(work);
             if (deferred) {
-                verify(queue).defer(work, failure.getMessage());
+                if(failure instanceof GeneratedImageDownloadPendingException)verify(queue).deferDownload(work,failure.getMessage());
+                else verify(queue).defer(work, failure.getMessage());
                 verify(queue, never()).finish(any(), any(), any(), any());
             } else {
                 verify(queue, never()).defer(any(), anyString());

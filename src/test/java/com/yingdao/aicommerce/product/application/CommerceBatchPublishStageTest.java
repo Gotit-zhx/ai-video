@@ -96,6 +96,74 @@ class CommerceBatchPublishStageTest {
   h.execute();verify(h.workflows,times(2)).create(anyString(),anyMap(),anyString(),any());
  }
 
+ @Test void orderedModelDetailsArePackedOncePerVariantRegardlessOfColorCount(){
+  var h=new Harness(1,2,2);
+  try(var details=mockStatic(CommerceModelDetailWorkflow.class,CALLS_REAL_METHODS)){
+   for(int variant=1;variant<=2;variant++){
+    int selectedVariant=variant;
+    details.when(()->CommerceModelDetailWorkflow.requiredKeys(any(),eq(selectedVariant),anyList(),eq(h.db),any(),eq(h.archive),eq("org")))
+     .thenReturn(List.of("detail-v"+variant+"-first","detail-v"+variant+"-second"));
+   }
+   assertEquals("QUEUED",h.execute().pendingStatus());assertEquals("QUEUED",h.execute().pendingStatus());
+   for(int variant=1;variant<=2;variant++){
+    int selectedVariant=variant;
+    verify(h.drafts).prepare(eq("run"),eq(h.items.getFirst()),eq(variant),argThat(manifest->manifest.size()==2
+     &&List.of("detail-v"+selectedVariant+"-first","detail-v"+selectedVariant+"-second").equals(manifest.getFirst().get("detailKeys"))
+     &&!manifest.get(1).containsKey("detailKeys")
+     &&"black".equals(manifest.getFirst().get("colorKey"))&&"white".equals(manifest.get(1).get("colorKey"))),eq(h.user));
+    details.verify(()->CommerceModelDetailWorkflow.requiredKeys(argThat(source->"source-0".equals(source.captureId())),eq(selectedVariant),anyList(),eq(h.db),any(),eq(h.archive),eq("org")));
+   }
+  }
+ }
+
+ @Test void missingOrInvalidRequiredDetailStopsBeforeCapturePackingAndPlatformSubmission(){
+  for(String problem:List.of("缺少第 2 张详情图","详情图引用不匹配","详情图视觉检查未通过","详情图归档已缺失")){
+   var h=new Harness(1,1);
+   try(var details=mockStatic(CommerceModelDetailWorkflow.class,CALLS_REAL_METHODS)){
+    details.when(()->CommerceModelDetailWorkflow.requiredKeys(any(),eq(1),anyList(),eq(h.db),any(),eq(h.archive),eq("org"))).thenThrow(new IllegalArgumentException(problem));
+    var result=h.execute();assertEquals("WAITING_INPUT",result.pendingStatus());assertTrue(result.message().contains(problem));
+    verifyNoInteractions(h.drafts);verify(h.workflows,never()).create(anyString(),anyMap(),anyString(),any());
+   }
+  }
+ }
+
+ @Test void shopeeRetainsAllDetailsLocallyAndSubmitsEvenWhenGalleryCapacityIsExceeded(){
+  for(int count:List.of(8,9,12)){
+   var h=new Harness(1,1);var item=h.items.getFirst();var shop=h.shops.selectById(item.shopId());when(shop.getPlatform()).thenReturn("SHOPEE");
+   var options=new LinkedHashMap<String,Object>(h.options.forSubmission("org","batch",item));options.put("logisticInfo",List.of(Map.of("logistic_id",1,"enabled",true)));
+   when(h.options.forSubmission("org","batch",item)).thenReturn(options);
+   var keys=java.util.stream.IntStream.rangeClosed(1,count).mapToObj(i->"detail-"+i).toList();
+   try(var details=mockStatic(CommerceModelDetailWorkflow.class,CALLS_REAL_METHODS)){
+    details.when(()->CommerceModelDetailWorkflow.requiredKeys(any(),eq(1),anyList(),eq(h.db),any(),eq(h.archive),eq("org"))).thenReturn(keys);
+    var result=h.execute();
+    verify(h.drafts).prepare(eq("run"),eq(item),eq(1),argThat(manifest->keys.equals(manifest.getFirst().get("detailKeys"))),eq(h.user));
+    assertEquals("QUEUED",result.pendingStatus());
+    assertFalse(result.message().contains("主图库最多"));
+    verify(h.workflows).create(eq("draft-item-0-1"),argThat(body->"SHOPEE".equals(body.get("destinationPlatform"))),eq("commerce-publish-run-item-0-1"),eq(h.user));
+    // A later poll reuses the linked workflow, never creates a second external product.
+    assertEquals("QUEUED",h.execute().pendingStatus());
+    verify(h.workflows,times(1)).create(anyString(),anyMap(),anyString(),any());
+    verify(h.drafts,times(1)).prepare(anyString(),any(),anyInt(),anyList(),any());
+
+   }
+  }
+ }
+
+ @Test void tiktokCanSubmitNineDetailsWithoutApplyingShopeeGalleryLimit(){
+  var h=new Harness(1,1);var keys=java.util.stream.IntStream.rangeClosed(1,9).mapToObj(i->"detail-"+i).toList();
+  try(var details=mockStatic(CommerceModelDetailWorkflow.class,CALLS_REAL_METHODS)){
+   details.when(()->CommerceModelDetailWorkflow.requiredKeys(any(),eq(1),anyList(),eq(h.db),any(),eq(h.archive),eq("org"))).thenReturn(keys);
+   assertEquals("QUEUED",h.execute().pendingStatus());
+   verify(h.drafts).prepare(eq("run"),eq(h.items.getFirst()),eq(1),argThat(manifest->keys.equals(manifest.getFirst().get("detailKeys"))),eq(h.user));
+   verify(h.workflows).create(eq("draft-item-0-1"),anyMap(),eq("commerce-publish-run-item-0-1"),eq(h.user));
+  }
+ }
+
+ @Test void legacySelectionWithoutDetailsKeepsManifestFreeOfDetailRequirements(){
+  var h=new Harness(1,1);assertEquals("QUEUED",h.execute().pendingStatus());
+  verify(h.drafts).prepare(eq("run"),eq(h.items.getFirst()),eq(1),argThat(manifest->manifest.size()==1&&!manifest.getFirst().containsKey("detailKeys")),eq(h.user));
+ }
+
  @Test void frontOnlyTemplateDoesNotRequireBackAssets(){
   var h=new Harness(1,1);assertFalse(h.stage.hasBackPrints(new CommercePrintTemplateService.Configuration("T_SHIRT",List.of()),"org"));
   assertFalse(h.stage.hasBackPrints(surface(1,Map.of(),Map.of(),Map.of()),"org"));
@@ -155,18 +223,21 @@ class CommerceBatchPublishStageTest {
   final CommerceBatchPublishStage stage=new CommerceBatchPublishStage(batches,plans,templates,mock(ProductCaptureService.class),shops,db,new ObjectMapper(),backs,archive,drafts,workflows);
   final CommerceBatchExecution run=new CommerceBatchExecution("run","org","batch","user","PUBLISH","RUNNING","",null,null,Instant.now(),Instant.now());
   final List<CommerceBatchItem> items=new ArrayList<>();final Map<String,Map<String,Object>> records=new HashMap<>();
-  Harness(int count,int variants){
+  Harness(int count,int variants){this(count,variants,1);}
+  Harness(int count,int variants,int colors){
    ReflectionTestUtils.setField(stage,"publicationOptions",options);when(user.organizationId()).thenReturn("org");
    var json=new ObjectMapper();var sources=new ArrayList<CommerceBatchCreativePlanValidator.Selection>();var jobs=new ArrayList<Map<String,Object>>();
    for(int i=0;i<count;i++){
     String itemId="item-"+i,capture="source-"+i,shopId="shop-"+i;var item=new CommerceBatchItem(itemId,"org","batch",capture,1,shopId,"店铺"+i,0,"DRAFT",Instant.now());items.add(item);
     var shop=mock(Shop.class);when(shop.getOrganizationId()).thenReturn("org");when(shop.getPlatform()).thenReturn("TIKTOK_SHOP");when(shop.getStatus()).thenReturn("ACTIVE");when(shops.selectById(shopId)).thenReturn(shop);
     when(options.forSubmission("org","batch",item)).thenReturn(Map.of("categoryId","category-"+itemId,"publishStock",999,"autoConvertPrice",true,"weightGrams",250,"packageLengthCm",30,"packageWidthCm",25,"packageHeightCm",2,"warehouseId","warehouse"));
-    sources.add(new CommerceBatchCreativePlanValidator.Selection(capture,1,"image",List.of(),List.of(new CommerceSourceColorResolver.Color("black","Black",List.of("sku"),"image",true))));
+    var colorTargets=new ArrayList<CommerceSourceColorResolver.Color>();
+    for(String color:List.of("black","white").subList(0,colors))colorTargets.add(new CommerceSourceColorResolver.Color(color,color.equals("black")?"Black":"White",List.of(color+"-sku"),"image",true));
+    sources.add(new CommerceBatchCreativePlanValidator.Selection(capture,1,"image",List.of(),colorTargets));
     for(int v=1;v<=variants;v++){
      int variant=v;String key=itemId+":"+v,draft="draft-"+itemId+"-"+v;
      when(db.queryForList(PUBLICATIONS,"org","run",itemId,v)).thenAnswer(call->records.containsKey(key)?List.of(records.get(key)):List.of());
-     var front=new HashMap<String,Object>();front.put("id","front-"+key);front.put("capture_id",capture);front.put("kind","MOCKUP_FRONT");front.put("variant_index",v);front.put("color_key","black");front.put("storage_key","front-key-"+key);jobs.add(front);
+     for(var color:colorTargets){var front=new HashMap<String,Object>();front.put("id","front-"+key+(color.key().equals("black")?"":"-"+color.key()));front.put("capture_id",capture);front.put("capture_version",1L);front.put("status","READY");front.put("kind","MOCKUP_FRONT");front.put("variant_index",v);front.put("color_key",color.key());front.put("storage_key","front-key-"+key+(color.key().equals("black")?"":"-"+color.key()));jobs.add(front);}
      when(drafts.prepare(eq("run"),eq(item),eq(v),anyList(),eq(user))).thenReturn(draft);
      var pending=workflow("workflow-"+key,"PENDING",false,null,null);
      when(workflows.create(eq(draft),anyMap(),eq("commerce-publish-run-"+itemId+"-"+v),eq(user))).thenReturn(new ProductPublishWorkflowService.CreateResult(pending,true,false));

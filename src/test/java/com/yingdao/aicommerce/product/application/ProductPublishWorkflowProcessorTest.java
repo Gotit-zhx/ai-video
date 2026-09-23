@@ -355,6 +355,37 @@ class ProductPublishWorkflowProcessorTest {
     }
 
     @Test
+    void confirmedTitleRejectionReleasesDuplicateGuardButDoesNotAutoLoop() {
+        workflow = runningWorkflow("PUBLISH", 0);
+        String workflowId = workflow.getId();
+        when(workflowMapper.selectById(workflowId)).thenReturn(workflow);
+        capture.imagesReady();
+        capture.approve("reviewer");
+        when(captureService.get(eq(capture.getId()), any(PlatformPrincipal.class)))
+                .thenReturn(detail(capture));
+        when(workflowService.request(workflow)).thenReturn(Map.of(
+                "confirmed", true, "destinationPlatform", "SHOPEE", "shopId", "shop-1"));
+        when(publishAttemptGuard.enterExternalCreateBoundary(workflowId, "worker-1"))
+                .thenReturn(true);
+        when(captureService.publish(eq(capture.getId()), any(),
+                eq("wf-" + workflowId + "-publish"), any(PlatformPrincipal.class), any()))
+                .thenAnswer(invocation -> {
+                    ProductPublishingProvider.ExternalCreateBoundary boundary = invocation.getArgument(4);
+                    boundary.enter();
+                    throw new IllegalStateException("Shopee 官方接口 /api/v2/product/add_item 失败：Product name length must be between 20 and 100 characters. Please adjust it.");
+                });
+
+        when(workflowMapper.failRejectedPublication(any(), any(), any(), any())).thenReturn(1);
+        processor.process(workflowId, "worker-1");
+
+        verify(publishAttemptGuard).enterExternalCreateBoundary(workflowId, "worker-1");
+        verify(workflowMapper).failRejectedPublication(eq(workflowId), eq("worker-1"),
+                org.mockito.ArgumentMatchers.contains("拒绝创建商品"), any());
+        verify(workflowMapper, never()).retry(any(), any(), any(), any(), any());
+        verify(workflowMapper, never()).fail(any(), any(), any(), any());
+    }
+
+    @Test
     void externalCreateTimeoutIsQuarantinedAndNeverScheduledForRetry() {
         workflow = runningWorkflow("PUBLISH", 0);
         String workflowId = workflow.getId();

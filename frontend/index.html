@@ -5,7 +5,9 @@
   <script>
     // Credentials and other secrets must never remain in a browser URL.
     if (window.location.search) {
-      window.history.replaceState(null, document.title, window.location.pathname + window.location.hash);
+      const language = new URLSearchParams(window.location.search).get("lang");
+      const safeQuery = ["zh", "en", "ms", "id", "th", "vi", "fil"].includes(language) ? `?lang=${language}` : "";
+      window.history.replaceState(null, document.title, window.location.pathname + safeQuery + window.location.hash);
     }
 
     // Resolve the preferred theme before the render-blocking stylesheet loads.
@@ -33,16 +35,19 @@
   <meta name="description" content="赫逸智能化 AI 平台——连接内容生成、智能编排与电商发布。">
   <title>赫逸智能化 AI 平台</title>
   <link rel="icon" href="/assets/hoyee-logo-transparent-white.png">
-  <link rel="stylesheet" href="/resend-theme.css?v=group-copies-20260918-1">
+  <link rel="stylesheet" href="/resend-theme.css?v=preview-header-20260920-1">
   <link rel="stylesheet" href="/video-script-terminal.css?v=watch-detailed-20260917-7">
   <link rel="stylesheet" href="/image-progress.css?v=20260904-test-merge-1">
-  <link rel="stylesheet" href="/commerce-planner.css?v=drape-reuse-20260916-1">
+  <link rel="stylesheet" href="/commerce-planner.css?v=sidebar-scroll-20260920-1">
   <link rel="stylesheet" href="/commerce-studio.css?v=quiet-motion-20260918-1">
-  <link rel="stylesheet" href="/commerce-reference-layout.css?v=local-photo-20260914-1">
+  <link rel="stylesheet" href="/commerce-reference-layout.css?v=capture-back-20260920-1">
   <link rel="stylesheet" href="/commerce-template-studio.css?v=photo-layout-20260916-1">
   <link rel="stylesheet" href="/commerce-artwork-library.css?v=artwork-library-20260916-1">
   <link rel="stylesheet" href="/commerce-motion.css?v=split-batches-20260918-1">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
+  <link rel="stylesheet" href="/bd-workspace.css?v=20260920-1">
+  <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-2">
+  <link rel="stylesheet" href="/i18n.css?v=20260921-2">
 </head>
 <body>
   <main id="portal-view" class="portal">
@@ -189,6 +194,17 @@
         <a href="#commerce-assets" class="nav-item" data-commerce-route="commerce-assets" data-nav-label="素材管理" title="素材管理"><span aria-hidden="true">▧</span><span class="nav-label">素材管理</span></a>
         <a href="#shops" id="nav-shops" class="nav-item" data-nav-label="店铺管理" title="店铺管理"><span aria-hidden="true">▣</span><span class="nav-label">店铺管理</span></a>
         </div></details>
+        <details class="nav-group" data-nav-group="knowledge" translate="no"><summary title="知识库"><span aria-hidden="true">▣</span><span class="nav-group-label">知识库</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
+          <a href="#knowledge-shop" class="nav-item" data-knowledge-route="shop" data-nav-label="店铺运营手册" title="店铺运营手册"><span aria-hidden="true">▤</span><span class="nav-label">店铺运营手册</span></a>
+          <a href="#knowledge-influencer" class="nav-item" data-knowledge-route="influencer" data-nav-label="达人手册" title="达人手册"><span aria-hidden="true">▤</span><span class="nav-label">达人手册</span></a>
+          <a href="#knowledge-video" class="nav-item" data-knowledge-route="video" data-nav-label="短视频手册" title="短视频手册"><span aria-hidden="true">▤</span><span class="nav-label">短视频手册</span></a>
+          <a href="#knowledge-system" class="nav-item" data-knowledge-route="system" data-nav-label="系统使用手册" title="系统使用手册"><span aria-hidden="true">▤</span><span class="nav-label">系统使用手册</span></a>
+          <a href="#knowledge-faq" class="nav-item" data-knowledge-route="faq" data-nav-label="常见问题与解决方案" title="常见问题与解决方案"><span aria-hidden="true">▤</span><span class="nav-label">常见问题与解决方案</span></a>
+        </div></details>
+        <details class="nav-group" data-nav-group="bd"><summary title="BD 建联"><span aria-hidden="true">◎</span><span class="nav-group-label">BD 建联</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
+          <a href="#bd-influencers" class="nav-item" data-bd-route="bd-influencers" data-nav-label="达人总库" title="达人总库"><span aria-hidden="true">◎</span><span class="nav-label">达人总库</span></a>
+          <a href="#bd-collaborations" class="nav-item" data-bd-route="bd-collaborations" data-nav-label="合作记录" title="合作记录"><span aria-hidden="true">▤</span><span class="nav-label">合作记录</span></a>
+        </div></details>
         <details class="nav-group" data-nav-group="automation"><summary title="自动化"><span aria-hidden="true">↯</span><span class="nav-group-label">自动化</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
         <a href="#" id="nav-automations" class="nav-item" data-nav-label="自动化中心" title="自动化中心"><span aria-hidden="true">↯</span><span class="nav-label">自动化中心</span></a>
         <a href="#" id="nav-automation-admin" class="nav-item" data-nav-label="自动化管理" title="自动化管理"><span aria-hidden="true">⌘</span><span class="nav-label">自动化管理</span></a>
@@ -285,9 +301,9 @@
               </div>
               <div class="people-table-wrap">
                 <table class="people-table">
-                  <thead><tr><th>人员</th><th>部门 / 职位</th><th>角色</th><th>账号状态</th><th>管理操作</th></tr></thead>
+                  <thead><tr><th>人员</th><th>部门 / 职位</th><th>角色</th><th>知识库权限</th><th>账号状态</th><th>管理操作</th></tr></thead>
                   <tbody id="user-table-body">
-                    <tr><td colspan="5" class="table-empty">正在读取人员...</td></tr>
+                    <tr><td colspan="6" class="table-empty">正在读取人员...</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -692,6 +708,8 @@
         </section>
       </div>
 
+      <section id="knowledge-page" class="workspace-body" hidden></section>
+      <section id="bd-page" class="workspace-body" hidden></section>
       <div id="shop-management-page" class="workspace-body" hidden>
         <details class="commerce-planner">
           <summary>店铺运营配置</summary>
@@ -1891,10 +1909,15 @@
     <p class="product-bulk-history-copy">查看每批商品的上传进度。已有批次继续处理时，可以发起新的批量上传。</p>
     <div id="product-bulk-history-list" role="list" aria-live="polite"><p class="product-bulk-history-empty">暂无批量任务。</p></div>
   </dialog>
+  <script src="/i18n/catalog.js?v=20260921-2" defer></script>
+  <script src="/i18n.js?v=20260921-2" defer></script>
   <script src="/product-bulk-upload.js?v=20260910-shop-switch-1" defer></script>
   <script src="/product-bulk-history.js?v=20260910-bulk-history-1" defer></script>
-  <script src="/video-script-terminal.js?v=watch-detailed-20260917-7" defer></script>
-  <script src="/app.js?v=shop-auth-copy-20260920-1" defer></script>
+  <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
+  <script src="/app.js?v=knowledge-access-20260923-1" defer></script>
+  <script src="/vendor/exceljs.min.js" defer></script>
+  <script src="/bd-workspace.js?v=20260920-1" defer></script>
+  <script src="/knowledge-workspace.js?v=20260923-2" defer></script>
   <script src="/commerce-planner.js?v=photo-layout-20260916-1" defer></script>
   <script src="/commerce-publication.js?v=publish-preparation-20260915-1" defer></script>
   <script src="/commerce-artwork-library.js?v=assets-autoload-20260920-1" defer></script>
@@ -1910,5 +1933,5 @@
   <script src="/commerce-print-surface.js?v=full-checker-20260918-1" defer></script>
   <script src="/commerce-print-editor.js?v=photo-layout-20260916-1" defer></script>
   <script src="/shop-settings.js?v=shop-adapt-20260914-1" defer></script>
-</body>
+  </body>
 </html>

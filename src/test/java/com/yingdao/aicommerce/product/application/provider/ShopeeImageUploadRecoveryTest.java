@@ -41,7 +41,7 @@ class ShopeeImageUploadRecoveryTest {
         provider = new ShopeeOfficialPublishingProvider(mock(ShopAuthorizationService.class), client,
                 mock(ProductCaptureSkuMapper.class), mock(ProductCaptureImageMapper.class), downloader,
                 new ObjectMapper(), mock(ShopeeProductVideoUploader.class));
-        when(downloader.download(anyString())).thenReturn(
+        when(downloader.downloadProductImage(anyString(), any(ProductCaptureImage.class))).thenReturn(
                 new MarketplaceImageDownloader.ImageBinary(new byte[]{1, 2, 3}, "image/png", ".png"));
         delays = new ArrayList<>();
     }
@@ -66,8 +66,8 @@ class ShopeeImageUploadRecoveryTest {
                 .containsEntry("https://processed.invalid/2.png", "second-id");
         verify(client, times(1)).shopMultipart(eq(API), eq(connection), eq("product-1.png"), anyString(), any(byte[].class), anyMap());
         verify(client, times(2)).shopMultipart(eq(API), eq(connection), eq("product-2.png"), anyString(), any(byte[].class), anyMap());
-        verify(downloader, times(1)).download("https://processed.invalid/1.png");
-        verify(downloader, times(1)).download("https://processed.invalid/2.png");
+        verify(downloader, times(1)).downloadProductImage(eq("https://processed.invalid/1.png"), any(ProductCaptureImage.class));
+        verify(downloader, times(1)).downloadProductImage(eq("https://processed.invalid/2.png"), any(ProductCaptureImage.class));
         assertThat(delays).containsExactly(1_000L);
     }
 
@@ -84,7 +84,7 @@ class ShopeeImageUploadRecoveryTest {
                 .hasMessageNotContaining("https:").hasMessageNotContaining("secret")
                 .hasMessageNotContaining("signature").hasNoCause();
         verify(client, times(3)).shopMultipart(eq(API), eq(connection), anyString(), anyString(), any(byte[].class), anyMap());
-        verify(downloader, times(1)).download(anyString());
+        verify(downloader, times(1)).downloadProductImage(anyString(), any(ProductCaptureImage.class));
         assertThat(delays).containsExactly(1_000L, 2_000L);
     }
 
@@ -181,6 +181,36 @@ class ShopeeImageUploadRecoveryTest {
         assertThatThrownBy(() -> provider.uploadImages(connection, List.of(image(1)), delays::add))
                 .hasMessageContaining("尝试 1 次");
         verify(client, times(1)).shopMultipart(eq(API), eq(connection), anyString(), anyString(), any(byte[].class), anyMap());
+        assertThat(delays).isEmpty();
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"/api/v1/commerce-publish-images/", "/api/v1/product-watermark/assets/"})
+    void protectedImagesUseTheirCaptureIdentityAndKeepOriginalSkuAliases(String prefix) {
+        String url = prefix + "archived-image";
+        var image = new ProductCaptureImage("org-1", "capture-1", url + "?original",
+                "VARIANT", "Black", 0, "image/png", "{}");
+        image.processed(url);
+        when(client.shopMultipart(eq(API), eq(connection), anyString(), anyString(), any(byte[].class), anyMap()))
+                .thenReturn(uploaded("archived-image-id"));
+        var result = provider.uploadImages(connection, List.of(image, image), delays::add);
+        assertThat(result).containsEntry(url, "archived-image-id")
+                .containsEntry(image.getOriginalUrl(), "archived-image-id");
+        verify(downloader, times(1)).downloadProductImage(url, image);
+        verify(downloader, never()).download(anyString());
+        verify(client, times(1)).shopMultipart(eq(API), eq(connection), anyString(), anyString(), any(byte[].class), anyMap());
+    }
+
+    @Test void rejectedArchiveOwnershipStopsBeforeUploadingOrCreatingProduct() {
+        String url = "/api/v1/commerce-publish-images/foreign-image";
+        var image = new ProductCaptureImage("org-1", "capture-1", url + "?original",
+                "MAIN", "", 0, "image/png", "{}");
+        image.processed(url);
+        when(downloader.downloadProductImage(url, image))
+                .thenThrow(new MarketplaceApiException("发布图片不属于已固定的裂变商品"));
+        assertThatThrownBy(() -> provider.uploadImages(connection, List.of(image), delays::add))
+                .hasMessage("发布图片不属于已固定的裂变商品");
+        verifyNoInteractions(client);
+        verify(downloader, never()).download(anyString());
         assertThat(delays).isEmpty();
     }
 

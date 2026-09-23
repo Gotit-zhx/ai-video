@@ -55,3 +55,81 @@ test('startup verifies ledger writes and fails before accepting work on invalid 
  await writeFile(path.join(dir,'not-a-directory'),'occupied');
  await assert.rejects(new ImageOperationStore(path.join(dir,'not-a-directory','ledger')).initialize());
 });
+
+test('lookup reports missing IDs without writing or starting an operation',async t=>{
+ const {dir,store}=await fixture(t);
+ assert.deepEqual(await store.lookup('missing-operation'),{status:'NOT_FOUND',active:false,updatedAt:0,response:null,error:null});
+ for(const id of ['',null,'../private-file','short'])await assert.rejects(store.lookup(id),error=>error.status===400);
+ assert.deepEqual(await readdir(dir),[]);
+});
+
+test('lookup hides an active provider response then returns the durable completed result after restart',async t=>{
+ const {dir,store}=await fixture(t);let entered,release;
+ const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const expected={result:{url:'https://result.invalid/grid.png',mimeType:'image/png'}};
+ const pending=store.execute('detail-grid-lookup',{apiKey:'private-model-key',source:'original-image'},async op=>{
+  const route=await op.forRoute(config);await route.beforeAttempt();
+  await route.recordResponse({payload:{rawProviderValue:'provider-only',data:[{url:'raw-provider-url'}]}});
+  entered();await gate;return expected;
+ });
+ await ready;
+ try{
+  const live=await store.lookup('detail-grid-lookup');
+  assert.equal(live.status,'RUNNING');assert.equal(live.active,true);assert.equal(live.response,null);assert.equal(live.error,null);assert.ok(live.updatedAt>0);
+  assert.deepEqual(Object.keys(live).sort(),['active','error','response','status','updatedAt']);
+ }finally{release();}
+ await pending;
+ const restarted=new ImageOperationStore(dir),result=await restarted.lookup('detail-grid-lookup');
+ assert.equal(result.status,'COMPLETED');assert.equal(result.active,false);assert.deepEqual(result.response,expected);assert.equal(result.error,null);
+ const exposed=JSON.stringify(result);
+ for(const secret of ['routes','fingerprint','original-image','private-model-key','provider-only','raw-provider-url'])assert.ok(!exposed.includes(secret),secret);
+});
+
+test('lookup returns only allowlisted scalar failure metadata and never retries terminal failures',async t=>{
+ const {dir,store}=await fixture(t);let calls=0;
+ await assert.rejects(store.execute('failed-grid-lookup',{},async op=>{
+  calls++;const route=await op.forRoute(config);await route.beforeAttempt();
+  throw Object.assign(Error('provider message with private-key'),{requestState:'ACCEPTED_OR_UNKNOWN',failureKind:'NETWORK',failureCode:'SOCKET_LOST',
+   retrySafe:false,retryAuthorized:true,networkRetryCount:2,safeRetryCount:2,requestId:'stable-provider-id',apiKey:'private-key',
+   imageModelFallback:{apiKey:'nested-private-key'},providerStatus:503});
+ }),/private-key/);
+ const reader=new ImageOperationStore(dir);
+ const result=await reader.lookup('failed-grid-lookup');
+ assert.equal(result.status,'FAILED');assert.equal(result.active,false);assert.equal(result.response,null);
+ assert.deepEqual(result.error,{requestState:'ACCEPTED_OR_UNKNOWN',retrySafe:false,retryAuthorized:true,safeRetryCount:2,networkRetryCount:2,
+  failureCode:'SOCKET_LOST',failureKind:'NETWORK',providerStatus:503,requestId:'stable-provider-id'});
+ await reader.lookup('failed-grid-lookup');assert.equal(calls,1);
+ assert.ok(!JSON.stringify(result).includes('private-key'));assert.ok(!JSON.stringify(result).includes('message'));
+});
+
+test('lookup marks interrupted and recoverable operations without exposing raw routes or resubmitting',async t=>{
+ const {dir,store}=await fixture(t);
+ await assert.rejects(store.execute('recoverable-lookup',{},async op=>{
+  const route=await op.forRoute(config);await route.beforeAttempt();await route.recordResponse({payload:{data:[{url:'raw-only'}]}});
+  throw Object.assign(Error('decode failed'),{requestState:'COMPLETED_RESPONSE_RECEIVED'});
+ }),/decode failed/);
+ const recoverable=await new ImageOperationStore(dir).lookup('recoverable-lookup');
+ assert.equal(recoverable.status,'RECOVERABLE');assert.equal(recoverable.active,false);assert.equal(recoverable.response,null);
+ assert.equal(recoverable.error.requestState,'COMPLETED_RESPONSE_RECEIVED');assert.equal(recoverable.error.savedResponseAvailable,true);
+ assert.ok(!JSON.stringify(recoverable).includes('raw-only'));
+ const file=path.join(dir,(await readdir(dir))[0]),record=JSON.parse(await readFile(file,'utf8'));
+ record.status='RUNNING';await store.write(file,record);
+ const interrupted=await new ImageOperationStore(dir).lookup('recoverable-lookup');
+ assert.equal(interrupted.status,'RUNNING');assert.equal(interrupted.active,false);assert.equal(interrupted.response,null);assert.equal(interrupted.error,null);
+});
+
+test('recoverable lookup derives saved-response evidence only from durable route responses',async t=>{
+ const {dir,store}=await fixture(t);
+ await assert.rejects(store.execute('no-saved-response',{},async()=>{
+  throw Object.assign(Error('processing failed'),{requestState:'COMPLETED_RESPONSE_RECEIVED',savedResponseAvailable:true});
+ }));
+ const file=path.join(dir,(await readdir(dir))[0]),record=JSON.parse(await readFile(file,'utf8'));
+ record.error.savedResponseAvailable=true;record.result={artifact:{dataBase64:'not-route-evidence'}};
+ record.routes={missing:{},empty:{response:null}};await store.write(file,record);
+ const before=await readFile(file,'utf8');
+ const result=await new ImageOperationStore(dir).lookup('no-saved-response');
+ assert.equal(result.status,'RECOVERABLE');assert.equal(result.response,null);
+ assert.equal(result.error.savedResponseAvailable,false);
+ assert.equal(await readFile(file,'utf8'),before,'lookup must not mutate the durable operation');
+ assert.ok(!JSON.stringify(result).includes('not-route-evidence'));
+});

@@ -71,10 +71,15 @@ class CommerceBatchServiceTest {
         assertThrows(BusinessException.class,()->service.create(r,"batch-key-1",user));
         verify(batches,never()).insert(any());
     }
-    @Test void unconfirmedEnvironmentCannotCreateBatch() {
+    @Test void missingOperatingSettingsUseDefaultQuota() {
         var r=setup("org","org","PH");when(operating.get("org","shop")).thenReturn(null);
-        assertThrows(BusinessException.class,()->service.create(r,"batch-key-1",user));
-        verify(batches,never()).insert(any());
+        assertEquals(1,service.create(r,"batch-key-1",user).items().size());
+        verify(batches).insert(any());
+    }
+    @Test void unknownManualEnvironmentDoesNotBlockAuthorizedShop() {
+        var r=setup("org","org","PH");
+        when(operating.get("org","shop")).thenReturn(new ShopOperatingSettings("shop","org","","UNKNOWN",50,null,1,"u",Instant.now()));
+        assertEquals(1,service.create(r,"batch-key-1",user).items().size());
     }
     void selectedShops(List<String> ids) {
         var config=new CommerceBatchPlanner.Request(CommerceBatchPlanner.Mode.STOCK_MARKETING,

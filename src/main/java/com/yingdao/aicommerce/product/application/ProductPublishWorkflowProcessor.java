@@ -363,8 +363,12 @@ public class ProductPublishWorkflowProcessor {
         return "Shopee 官方接口 /api/v2/product/add_item 失败：Product Description : invalid field seller_stock, value must Not Null".equals(detail);
     }
 
+    static boolean isConfirmedTitleRejection(String detail) {
+        return detail != null && detail.matches("Shopee 官方接口 /api/v2/product/add_item 失败：Product name length must be between [0-9]{1,4} and [0-9]{1,4} characters[.] Please adjust it[.]");
+    }
+
     private void failUncertain(ProductPublishWorkflow workflow, String worker, String detail) {
-        if (isConfirmedBrandRejection(detail) || isConfirmedStockRejection(detail)
+        if (isConfirmedBrandRejection(detail) || isConfirmedStockRejection(detail) || isConfirmedTitleRejection(detail)
                 || "Shopee 官方接口 /api/v2/product/add_item 失败：Parcel size is required. Please fill in it.".equals(detail)) {
             owned(workflowMapper.failRejectedPublication(workflow.getId(), worker,
                     "Shopee 已拒绝创建商品，请使用修正后的参数重新提交：" + detail, Instant.now()));

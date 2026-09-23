@@ -14,6 +14,10 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import tools.jackson.databind.ObjectMapper;
 
 /** An explicit new attempt after a confirmed refusal or invalid output; unresolved submissions are never replayed. */
 @Service
@@ -64,6 +68,9 @@ public class CommerceBatchArtworkRetryService {
             return new Retried(run, (String) replacement.getFirst().get("id"));
         }
 
+        if ("READY".equals(job.get("status")) && CommerceDrapeReuseWorkflow.MASTER.equals(job.get("kind")))
+            return retryDrapeMaster(run, job, retryKey, user);
+
         if (!"FAILED".equals(run.status()) || !java.util.Set.of("REJECTED","TRANSPARENCY_REJECTED","INVALID_IMAGE_REJECTED").contains(job.get("status")))
             throw conflict("仅能重试已停止批次中被模型明确拒绝或透明背景不合格的图片");
         if (java.util.Set.of("TRANSPARENCY_REJECTED","INVALID_IMAGE_REJECTED").contains(job.get("status")) && !java.util.Set.of("EXTRACT","VARIATE").contains(run.stage()))
@@ -95,6 +102,82 @@ public class CommerceBatchArtworkRetryService {
         if (db.update("UPDATE commerce_batch_executions SET status='QUEUED',message=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND organization_id=? AND status='FAILED'",
                 message, Timestamp.from(now), run.id(), user.organizationId()) != 1)
             throw conflict("批次状态已变化，请刷新后重试");
+        db.update("INSERT INTO commerce_batch_execution_events(id,execution_id,stage,status,message,created_at) VALUES(?,?,?,'QUEUED',?,?)",
+                UUID.randomUUID().toString(), run.id(), run.stage(), message, Timestamp.from(now));
+        return new Retried(new CommerceBatchExecution(run.id(), run.organizationId(), run.batchId(), run.createdBy(),
+                run.stage(), "QUEUED", message, null, null, run.createdAt(), now), newId);
+    }
+
+    /** Replaces only a confirmed, archived pose master after an explicit user retry. */
+    private Retried retryDrapeMaster(CommerceBatchExecution run, Map<String,Object> master,
+                                    String retryKey, PlatformPrincipal user) {
+        if (!"MOCKUP".equals(run.stage()) || !Set.of("WAITING_INPUT", "PAUSED", "FAILED").contains(run.status()))
+            throw conflict("仅能在套版已停止时重新生成搭放母图");
+        if (run.leaseToken() != null || run.leaseUntil() != null)
+            throw conflict("批次仍有执行租约，不能替换在途母图");
+        if (!db.queryForList("SELECT item_id FROM commerce_batch_publications WHERE execution_id=? AND organization_id=? FOR UPDATE",
+                run.id(), user.organizationId()).isEmpty())
+            throw conflict("本批已固定发布素材，不能替换搭放母图；原商品和任务保留");
+        var jobs = db.queryForList("SELECT * FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND status<>'RETRIED' FOR UPDATE",
+                run.id(), user.organizationId());
+        if (jobs.stream().anyMatch(job -> Set.of("PREPARED", "PENDING", "QUEUED", "RUNNING", "SUBMITTING", "UNKNOWN", "RESULT_RECEIVED")
+                .contains(Objects.toString(job.get("status"), ""))))
+            throw conflict("该批次仍有未决模型任务或待归档结果，暂不能替换搭放母图");
+        if (jobs.stream().anyMatch(job -> Objects.equals(master.get("capture_id"), job.get("capture_id"))
+                && Set.of(CommerceDrapeReuseWorkflow.BLANK, CommerceDrapeReuseWorkflow.OUTPUT).contains(Objects.toString(job.get("kind"), ""))))
+            throw conflict("原母图已用于校准或搭放成品，不能直接替换；已有结果保持归档");
+        if (Objects.toString(master.get("storage_key"), "").isBlank())
+            throw conflict("搭放母图尚未完整归档，不能重复生成");
+
+        // The prompt upgrade changes only image order, never the frozen template/scene/artwork bytes.
+        var json = new ObjectMapper();
+        List<String> refs;
+        try {
+            refs = json.readValue(Objects.toString(master.get("reference_keys"), ""),
+                    json.getTypeFactory().constructCollectionType(List.class, String.class));
+        } catch (RuntimeException invalid) { throw conflict("原母图参考图记录不完整，不能安全替换"); }
+        if (refs == null || refs.size() != 3 || refs.stream().anyMatch(key -> key == null || key.isBlank()))
+            throw conflict("原母图缺少三张固定参考图，不能安全替换");
+        if (CommerceDrapeReuseWorkflow.LEGACY_PROMPT.equals(master.get("prompt")))
+            refs = List.of(refs.get(1), refs.get(0), refs.get(2));
+        else if (!CommerceDrapeReuseWorkflow.TEMPLATE_FIRST_PROMPT.equals(master.get("prompt"))
+                && !CommerceDrapeMasterRetry.supportedPrompt(Objects.toString(master.get("prompt"), "")))
+            throw conflict("原母图提示词版本无法识别，不能安全调整参考图顺序");
+        var guides = jobs.stream().filter(job -> CommerceDrapeReuseWorkflow.GUIDE.equals(job.get("kind"))
+                && "READY".equals(job.get("status"))
+                && Objects.equals(master.get("capture_id"), job.get("capture_id"))
+                && Objects.equals(master.get("capture_version"), job.get("capture_version"))).toList();
+        if (guides.size() != 1 || !refs.getFirst().equals(guides.getFirst().get("storage_key")))
+            throw conflict("母图与本批模板定位图绑定不一致，不能安全替换");
+        try {
+            List<String> guideRefs = json.readValue(Objects.toString(guides.getFirst().get("reference_keys"), ""),
+                    json.getTypeFactory().constructCollectionType(List.class, String.class));
+            if (guideRefs == null || guideRefs.size() != 3 || !refs.get(2).equals(guideRefs.get(2)))
+                throw conflict("母图与本批固定印花绑定不一致，不能安全替换");
+        } catch (BusinessException invalid) { throw invalid; }
+        catch (RuntimeException invalid) { throw conflict("模板定位图参考记录不完整，不能安全替换"); }
+
+        if (!limits.reserve(run.id(), user.organizationId(), retryKey, run.stage()))
+            throw conflict("原模型调用上限已用完，无法重试；已完成图片仍保留");
+        String newId = UUID.randomUUID().toString();
+        if (db.update("""
+                INSERT INTO commerce_batch_artwork_jobs
+                (id,organization_id,execution_id,capture_id,capture_version,kind,variant_index,color_key,color_label,request_key,
+                 status,prompt,model_config_id,model_fingerprint,reference_keys,message,created_at,updated_at)
+                SELECT ?,organization_id,execution_id,capture_id,capture_version,kind,variant_index,color_key,color_label,?,
+                       'PREPARED',?,model_config_id,model_fingerprint,?, ?,NOW(6),NOW(6)
+                FROM commerce_batch_artwork_jobs WHERE id=? AND execution_id=? AND organization_id=? AND kind='DRAPE_MASTER' AND status='READY'
+                """, newId, retryKey, CommerceDrapeReuseWorkflow.PROMPT, json.writeValueAsString(refs),
+                "已按模板优先规则重新准备母图；保留原母图、印花和全部精确套版", master.get("id"), run.id(), user.organizationId()) != 1)
+            throw conflict("母图状态已变化，请刷新后重试");
+        if (db.update("UPDATE commerce_batch_artwork_jobs SET status='RETRIED',updated_at=NOW(6) WHERE id=? AND execution_id=? AND organization_id=? AND kind='DRAPE_MASTER' AND status='READY'",
+                master.get("id"), run.id(), user.organizationId()) != 1)
+            throw conflict("母图状态已变化，请刷新后重试");
+        Instant now = Instant.now();
+        String message = "已安排重新生成搭放母图，沿用模板版型与印花位置，保留其他已完成结果；原任务 " + master.get("id") + "，新任务 " + newId;
+        if (db.update("UPDATE commerce_batch_executions SET status='QUEUED',message=?,updated_at=? WHERE id=? AND organization_id=? AND stage='MOCKUP' AND status IN ('WAITING_INPUT','PAUSED','FAILED') AND lease_token IS NULL AND lease_until IS NULL",
+                message, Timestamp.from(now), run.id(), user.organizationId()) != 1)
+            throw conflict("批次状态已变化，未启动母图重试");
         db.update("INSERT INTO commerce_batch_execution_events(id,execution_id,stage,status,message,created_at) VALUES(?,?,?,'QUEUED',?,?)",
                 UUID.randomUUID().toString(), run.id(), run.stage(), message, Timestamp.from(now));
         return new Retried(new CommerceBatchExecution(run.id(), run.organizationId(), run.batchId(), run.createdBy(),

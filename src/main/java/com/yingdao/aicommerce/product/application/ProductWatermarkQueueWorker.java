@@ -37,6 +37,8 @@ public class ProductWatermarkQueueWorker {
    var processed=provider.process(capture,image);
    if(processed.url()==null||!processed.url().matches("/api/v1/product-watermark/assets/[a-f0-9]{64}"))throw new IllegalStateException("图片处理未返回已验证归档");
    url=processed.url();result=processed.providerResponse();
+  }catch(GeneratedImageDownloadPendingException e){
+   try{queue.deferDownload(work,e.getMessage());}finally{active.remove(work.id());}return;
   }catch(WatermarkRateLimitException e){
    try{queue.defer(work,e.getMessage());}finally{active.remove(work.id());}return;
   }catch(Exception e){

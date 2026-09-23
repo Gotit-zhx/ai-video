@@ -264,8 +264,11 @@ public class ProductCaptureService {
                                 (first, ignored) -> first,
                                 LinkedHashMap::new
                         ));
+        Set<String> generatedCaptureIds = captureIds.isEmpty() ? Set.of()
+                : new HashSet<>(captureMapper.selectCommerceGeneratedCaptureIds(organizationId, captureIds));
         List<CaptureSummary> content = captures.getRecords().stream()
-                .map(capture -> new CaptureSummary(capture, thumbnails.get(capture.getId())))
+                .map(capture -> new CaptureSummary(capture, thumbnails.get(capture.getId()),
+                        generatedCaptureIds.contains(capture.getId()) ? "COMMERCE_GENERATED" : "CAPTURED"))
                 .toList();
         return new CapturePage(
                 content,
@@ -908,7 +911,9 @@ public class ProductCaptureService {
                         .eq(ProductCaptureFieldSource::getCaptureId, capture.getId())
                         .orderByAsc(ProductCaptureFieldSource::getCreatedAt));
         return new CaptureDetail(capture, skus, images, fields,
-                readMap(capture.getNormalizedData()), readMap(capture.getRawData()));
+                readMap(capture.getNormalizedData()), readMap(capture.getRawData()),
+                captureMapper.selectCommerceGeneratedCaptureIds(organizationId, List.of(capture.getId()))
+                        .contains(capture.getId()) ? "COMMERCE_GENERATED" : "CAPTURED");
     }
 
     private List<ProductCaptureImage> images(ProductCapture capture) {
@@ -1815,9 +1820,20 @@ public class ProductCaptureService {
                                 List<ProductCaptureImage> images,
                                 List<ProductCaptureFieldSource> fieldSources,
                                 Map<String, Object> normalizedData,
-                                Map<String, Object> rawData) {}
+                                Map<String, Object> rawData,
+                                String originType) {
+        public CaptureDetail(ProductCapture capture, List<ProductCaptureSku> skus,
+                             List<ProductCaptureImage> images, List<ProductCaptureFieldSource> fieldSources,
+                             Map<String, Object> normalizedData, Map<String, Object> rawData) {
+            this(capture, skus, images, fieldSources, normalizedData, rawData, "CAPTURED");
+        }
+    }
 
-    public record CaptureSummary(ProductCapture capture, ProductCaptureImage thumbnail) {}
+    public record CaptureSummary(ProductCapture capture, ProductCaptureImage thumbnail, String originType) {
+        public CaptureSummary(ProductCapture capture, ProductCaptureImage thumbnail) {
+            this(capture, thumbnail, "CAPTURED");
+        }
+    }
 
     public record CapturePage(List<CaptureSummary> content, int page, int size,
                               long totalElements, int totalPages,

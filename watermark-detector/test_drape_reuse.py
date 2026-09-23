@@ -17,7 +17,7 @@ def enc(pixels):
 def pixels(value, mode='RGB'):
     return np.asarray(Image.open(io.BytesIO(base64.b64decode(value))).convert(mode))
 
-def fixture(large=False):
+def fixture(large=False, source_size=None, target_corners=None):
     garment = np.zeros((512, 512), np.uint8)
     cv2.fillPoly(garment, [np.array([[195, 35], [317, 35], [393, 83], [462, 248], [411, 271],
                                   [411, 466], [102, 466], [102, 271], [49, 248], [119, 83]])], 1)
@@ -33,13 +33,16 @@ def fixture(large=False):
         draw.rectangle((int(x-r), int(y-r), int(x+r), int(y+r)), fill=tuple(map(int, rng.integers(20, 240, 3)))+(255,))
     art = np.asarray(art)
     guide = image.copy(); x, y, size = (174, 150, 164) if large else (260, 142, 76)
+    if source_size is not None:
+        size = source_size
     small = cv2.resize(art, (size, size), interpolation=cv2.INTER_AREA); alpha = small[:, :, 3:4]/255
     guide[y:y+size, x:x+size] = np.rint(guide[y:y+size, x:x+size]*(1-alpha)+small[:, :, :3]*alpha).astype(np.uint8)
     uv = np.zeros((512, 512, 4), np.uint8)
     for j in range(size):
         for i in range(size):
             uv[y+j, x+i] = (round(i/(size-1)*255), round((1-j/(size-1))*255), 1, 255)
-    h = cv2.getPerspectiveTransform(np.float32(d.UNIT), np.float32([[168, 154], [337, 149], [341, 321], [166, 326]] if large else [[268, 148], [351, 143], [356, 228], [265, 232]]))
+    corners = target_corners if target_corners is not None else ([[168, 154], [337, 149], [341, 321], [166, 326]] if large else [[268, 148], [351, 143], [356, 228], [265, 232]])
+    h = cv2.getPerspectiveTransform(np.float32(d.UNIT), np.float32(corners))
     warped = cv2.warpPerspective(art, h@np.diag([1/255, 1/255, 1]), (512, 512))
     a = warped[:, :, 3:4]/255
     master = np.rint(image*(1-a)+warped[:, :, :3]*a).astype(np.uint8)
@@ -65,6 +68,8 @@ class DrapeReuseTest(unittest.TestCase):
 
     def test_real_tracking_cleanup_and_recolor_keep_background_exact(self):
         self.assertTrue(self.prepared['report']['passed'])
+        self.assertEqual('U2NET_THREE_VIEW_V1', self.prepared['report']['maskRevision'])
+        self.assertEqual(self.prepared['report']['maskRevision'], self.prepared['mapping']['maskRevision'])
         self.assertGreaterEqual(self.prepared['report']['tracking']['agreeingScales'], 3)
         self.assertLess(self.prepared['report']['tracking']['medianErrorPx'], 2)
         blank = pixels(self.prepared['blank']); removal = pixels(self.prepared['mapping']['cleanupMask'], 'L')
@@ -82,6 +87,31 @@ class DrapeReuseTest(unittest.TestCase):
         self.assertTrue(result['report']['passed'])
         alpha = pixels(prepared['alpha'], 'L')
         np.testing.assert_array_equal(pixels(result['data'])[alpha == 0], master[alpha == 0])
+
+    def test_source_uv_over_twelve_percent_runs_real_tracking_cleanup_and_render(self):
+        corners = [[163, 144], [361, 142], [365, 342], [161, 346]]
+        body, mask, master = fixture(large=True, source_size=200, target_corners=corners)
+        uv = pixels(body['uv'], 'RGBA')
+        self.assertGreater(float((uv[:, :, 3] > 0).mean()), .12)
+        with patch.object(d, 'u2net_mask', return_value=mask):
+            prepared = d.prepare(body)
+        tracking = prepared['report']['tracking']
+        self.assertGreaterEqual(tracking['agreeingScales'], 3)
+        self.assertGreaterEqual(tracking['inliers'], 12)
+        actual = np.asarray(prepared['mapping']['targetCorners'], np.float64)
+        self.assertLess(float(np.linalg.norm(actual-np.asarray(corners), axis=1).max()), 4)
+        result = d.render({'master': body['master'], 'blank': prepared['blank'], 'alpha': prepared['alpha'],
+                           'mapping': prepared['mapping'], 'artwork': body['artwork'], 'targetRgb': '#262626', 'originalColor': False})
+        self.assertTrue(result['report']['passed']); self.assertEqual(0, result['report']['modelCalls'])
+        alpha = pixels(prepared['alpha'], 'L'); removal = pixels(prepared['mapping']['cleanupMask'], 'L')
+        np.testing.assert_array_equal(pixels(prepared['blank'])[removal == 0], master[removal == 0])
+        np.testing.assert_array_equal(pixels(result['data'])[alpha == 0], master[alpha == 0])
+
+    def test_larger_source_uv_still_rejects_real_matching_print_outside_garment(self):
+        body, mask, _ = fixture(large=True, source_size=200,
+                                target_corners=[[308, 24], [505, 24], [505, 223], [308, 223]])
+        with patch.object(d, 'u2net_mask', return_value=mask):
+            self.assert_error('PRINT_OUTSIDE_GARMENT', d.prepare, body)
 
     def test_jpeg_master_keeps_provider_bytes_and_renders_from_its_own_mapping(self):
         out = io.BytesIO(); Image.fromarray(self.master).save(out, format='JPEG', quality=95, subsampling=0)
@@ -171,6 +201,59 @@ class DrapeReuseTest(unittest.TestCase):
         with self.assertRaises(d.DrapeError) as caught:
             d.garment_mask(blank, cropped)
         self.assertEqual('GARMENT_CROPPED', caught.exception.code)
+
+    def test_two_aligned_views_recover_missing_sleeve_without_growing_into_white_wall(self):
+        blank = pixels(self.prepared['blank']).copy()
+        blank[:42, 236:279] = 238
+        incomplete = self.mask.copy(); incomplete[150:250, 70:145] = False
+        missing = self.mask & ~incomplete
+        self.assertGreater(int(missing.sum()), 2000)
+        rotated = self.mask.copy(); rotated[:42, 236:279] = True  # One model view leaks into a white wall.
+        candidate = d.garment_mask_consensus(incomplete, rotated, self.mask)
+        self.assertTrue(candidate[missing].all())
+        self.assertFalse(candidate[:20].any())
+        mask, _ = d.garment_mask(blank, candidate)
+        self.assertTrue(mask[missing].all())
+        alpha = d.edge_alpha(blank, mask).astype(np.float32)/255
+        black = d.recolor(blank, alpha, [38, 38, 38])
+        sleeve_core = (cv2.erode(missing.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0)
+        self.assertLess(float(black[sleeve_core].mean()), 100)
+        np.testing.assert_array_equal(blank[alpha == 0], black[alpha == 0])
+        np.testing.assert_array_equal(blank[:20], black[:20])
+
+    def test_large_consensus_expansion_is_rejected_instead_of_dilating_the_background(self):
+        much_larger = np.ones_like(self.mask)
+        with self.assertRaises(d.DrapeError) as caught:
+            d.garment_mask_consensus(self.mask, much_larger, much_larger)
+        self.assertEqual('GARMENT_MASK_UNCERTAIN', caught.exception.code)
+        # A single overconfident view has no authority to expand either.
+        result = d.garment_mask_consensus(self.mask, much_larger, self.mask)
+        np.testing.assert_array_equal(self.mask, result)
+
+    def test_u2net_views_are_unrotated_and_unpadded_before_combining(self):
+        incomplete = self.mask.copy(); incomplete[150:250, 70:145] = False
+        pad = round(min(self.master.shape[:2])*.10)
+        contextual = np.pad(self.mask, pad, mode='reflect')
+        with patch.object(d, 'u2net_view_mask', side_effect=[incomplete, self.mask[::-1, ::-1].copy(), contextual]) as model:
+            result = d.u2net_mask(self.master)
+        np.testing.assert_array_equal(self.mask, result)
+        self.assertEqual(3, model.call_count)
+        np.testing.assert_array_equal(self.master[::-1, ::-1], model.call_args_list[1].args[0])
+        self.assertEqual((512+2*pad, 512+2*pad, 3), model.call_args_list[2].args[0].shape)
+
+    def test_context_padding_remains_bounded_for_maximum_input_size(self):
+        rgb = np.zeros((d.MAX_SIDE, 1400, 3), np.uint8)
+        rgb[180:1300, 180:1200] = 235
+        shapes = []
+        def model(image):
+            shapes.append(image.shape)
+            return image[:, :, 0] > 160
+        with patch.object(d, 'u2net_view_mask', side_effect=model):
+            candidate = d.u2net_mask(rgb)
+        self.assertEqual(rgb.shape[:2], candidate.shape)
+        self.assertEqual(3, len(shapes))
+        self.assertTrue(all(max(shape[:2]) <= d.MAX_SIDE for shape in shapes))
+        self.assertGreater(float((candidate == (rgb[:, :, 0] > 160)).mean()), .999)
 
     def test_altered_source_bytes_cannot_reuse_mapping(self):
         request = self.render_request(); changed = self.master.copy(); changed[0, 0] = [1, 2, 3]; request['master'] = enc(changed)

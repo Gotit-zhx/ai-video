@@ -26,6 +26,10 @@ final class ShopeePublishPricing {
         }
         if (override) price(null, request);
     }
+    static BigDecimal sourcePrice(com.yingdao.aicommerce.product.domain.ProductCaptureSku sku) {
+        BigDecimal original = sku.getOriginalPrice();
+        return original != null && original.signum() > 0 ? original : sku.getPrice();
+    }
     static BigDecimal price(BigDecimal source, Map<String,Object> request) {
         if (request.containsKey("exchangeRateSnapshot")) return com.yingdao.aicommerce.product.application.PublishExchangeRates.convert(source, request);
         if (!request.containsKey("publishPrice")) return source;

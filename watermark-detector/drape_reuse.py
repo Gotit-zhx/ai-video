@@ -1,4 +1,4 @@
-"""Bounded, offline reuse of one AI photograph with one small, visible print.
+"""Bounded, offline reuse of one AI photograph with one visible print.
 
 The generated photograph is immutable. SIFT locates a print from its exact
 submitted guide or verified UV-bound native artwork; no placement is guessed.
@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 ALGORITHM = 'drape-reuse-v1'
+MASK_REVISION = 'U2NET_THREE_VIEW_V1'
 NUMBER_ENCODING = 'DECIMAL_STRING_V1'
 COORDINATE_FIELDS = {'sourceCanvasToMasterH': (3, 3), 'textureToSourceCanvasH': (3, 3),
                      'textureToMasterH': (3, 3), 'targetCorners': (4, 2)}
@@ -161,7 +162,7 @@ def visible_print_slot(uv, ids):
     # UV blue is a 1-based index into the full frozen renderPrintIds list.
     # Hidden back/side positions may precede the one visible front print.
     slots = np.unique(uv[:, :, 2][uv[:, :, 3] > 0])
-    require(len(slots) == 1, 'MULTIPLE_PRINTS_UNSUPPORTED', '目前只支持一个可见胸前印花位置')
+    require(len(slots) == 1, 'MULTIPLE_PRINTS_UNSUPPORTED', '目前只支持一个可见印花位置')
     slot = int(slots[0])
     require(1 <= slot <= len(ids), 'UV_SLOT_INVALID', '可见印花位置与固定印花列表不一致')
     return slot
@@ -272,8 +273,13 @@ def track(master, guide, uv, art, started):
            int(np.ceil((xs.max()+1)*sx)), int(np.ceil((ys.max()+1)*sy))]
     left, top, right, bottom = box
     crop = guide[top:bottom, left:right]
-    require(min(crop.shape[:2]) >= 20 and crop.shape[0]*crop.shape[1] <= guide.shape[0]*guide.shape[1]*.12,
-            'SOURCE_PRINT_UNSUITABLE', '来源印花过小或过大，无法可靠追踪单处胸花')
+    # The source UV rectangle describes the full artwork canvas, including
+    # transparent padding. Its fraction of the guide is not evidence that
+    # the actual ink cannot be tracked or safely removed. Validate the real
+    # target geometry and garment containment below instead; feature inputs
+    # remain bounded to 384px regardless of this source rectangle's size.
+    require(min(crop.shape[:2]) >= 20,
+            'SOURCE_PRINT_UNSUITABLE', '来源印花定位区域分辨率过低，无法可靠追踪')
     # Validate that the UV itself has one locally planar mapping. Quantized UV
     # pixels are fitted with subpixel source-canvas coordinates.
     step = max(1, len(xs)//1200)
@@ -283,7 +289,9 @@ def track(master, guide, uv, art, started):
     texture_to_guide = homography(texture_to_guide)
     uv_error = np.linalg.norm(project(texture_to_guide, texture)-source_points, axis=1)
     require(float(np.percentile(uv_error, 95)) <= 1.5, 'NON_PLANAR_UV', '现位置图不能用单一透视准确表示，已停止自动追踪')
-    detector = cv2.SIFT_create(nfeatures=7000, contrastThreshold=.012, edgeThreshold=15)
+    # Repetitive scene texture can consume 7k responses before the print is retained.
+    # Keep a bounded larger pool; all geometric and multi-scale checks still apply.
+    detector = cv2.SIFT_create(nfeatures=24000, contrastThreshold=.012, edgeThreshold=15)
     target_scale = min(1., 1024/max(master.shape[:2]))
     target = cv2.resize(master, None, fx=target_scale, fy=target_scale, interpolation=cv2.INTER_AREA) if target_scale < 1 else master
     target_k, target_d = detector.detectAndCompute(cv2.cvtColor(target, cv2.COLOR_RGB2GRAY), None)
@@ -309,7 +317,7 @@ def track(master, guide, uv, art, started):
             'agreeingScales': len(agreement), 'uvFitP95Px': float(np.percentile(uv_error, 95)),
             'reference': reference, 'guideArtworkBinding': binding}
 
-def u2net_mask(rgb):
+def u2net_view_mask(rgb):
     from garment_foreground import segment
     raw = png(rgb)
     result = segment({'data': encoded(raw)})
@@ -317,6 +325,44 @@ def u2net_mask(rgb):
     require(result.get('sourceSha256') == sha(raw) and rgba.shape[:2] == rgb.shape[:2]
             and np.array_equal(rgba[:, :, :3], rgb), 'SEGMENTATION_BINDING_INVALID', '服装分割与原图不一致')
     return rgba[:, :, 3] > 210
+
+def garment_mask_consensus(base, rotated, context):
+    """Recover omitted cloth only with agreement from two aligned model views.
+
+    This is not dilation or color-only flood fill. Large view disagreement is
+    rejected instead of allowing an unbounded neutral wall into the garment.
+    """
+    require(base.dtype == np.bool_ and rotated.dtype == np.bool_ and context.dtype == np.bool_
+            and base.ndim == 2 and base.shape == rotated.shape == context.shape,
+            'SEGMENTATION_BINDING_INVALID', '服装多视角遮罩尺寸不一致')
+    votes = base.astype(np.uint8) + rotated.astype(np.uint8) + context.astype(np.uint8)
+    consensus = largest(votes >= 2)
+    count = max(1, int(base.sum()))
+    added = int((consensus & ~base).sum())
+    removed = int((base & ~consensus).sum())
+    agreement = float((base & consensus).sum()/max(1, (base | consensus).sum()))
+    require(.10 < consensus.mean() < .85 and added <= count*.15 and removed <= count*.10 and agreement > .80,
+            'GARMENT_MASK_UNCERTAIN', '服装多视角分割差异过大，无法确认完整衣服边界，未扩大换色区域')
+    return consensus
+
+def u2net_mask(rgb):
+    # U2Net saliency can exclude bright sleeve patches in the original view.
+    # Rotate and change model context to gather separate alignment evidence;
+    # use the already installed model, never download another model at runtime.
+    base = u2net_view_mask(rgb)
+    rotated = u2net_view_mask(rgb[::-1, ::-1].copy())[::-1, ::-1]
+    height, width = rgb.shape[:2]
+    pad = max(2, round(min(height, width)*.10))
+    padded = cv2.copyMakeBorder(rgb, pad, pad, pad, pad, cv2.BORDER_REFLECT_101)
+    padded_shape = padded.shape[:2]
+    if max(padded_shape) > MAX_SIDE:
+        scale = MAX_SIDE/max(padded_shape)
+        padded = cv2.resize(padded, (round(padded_shape[1]*scale), round(padded_shape[0]*scale)), interpolation=cv2.INTER_AREA)
+    context = u2net_view_mask(padded)
+    if context.shape != padded_shape:
+        context = cv2.resize(context.astype(np.uint8), (padded_shape[1], padded_shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+    context = context[pad:pad+height, pad:pad+width]
+    return garment_mask_consensus(base, rotated, context)
 
 def garment_mask(rgb, candidate):
     ch = rgb.astype(np.int16)
@@ -422,7 +468,7 @@ def prepare(body):
     require(float(((values.max(1)-values.min(1)) > 35).mean()) < .005,
             'PRINT_RESIDUE_DETECTED', '去花后仍有明显彩色残留，保留母图并停止自动套版')
     matte = edge_alpha(blank, mask); blank_raw = png(blank); alpha_raw = png(matte); remove_raw = png(remove.astype(np.uint8)*255)
-    mapping = {'algorithm': ALGORITHM, 'width': w, 'height': h, 'printId': ids[slot-1], 'printSlot': slot,
+    mapping = {'algorithm': ALGORITHM, 'maskRevision': MASK_REVISION, 'width': w, 'height': h, 'printId': ids[slot-1], 'printSlot': slot,
                'sourceSha256': sha(master_raw), 'guideSha256': sha(guide_raw), 'uvSha256': sha(uv_raw), 'artworkSha256': sha(art_raw),
                'blankSha256': sha(blank_raw), 'alphaSha256': sha(alpha_raw), 'cleanupMaskSha256': sha(remove_raw),
                'cleanupMask': encoded(remove_raw), 'sourceUvBox': box, 'sourceGuideWidth': guide.shape[1], 'sourceGuideHeight': guide.shape[0],
@@ -431,10 +477,12 @@ def prepare(body):
     mapping = freeze_mapping_numbers(mapping)
     mapping['mappingSha256'] = mapping_checksum(mapping)
     report = {'method': ALGORITHM, 'status': 'LOCAL_DRAPE_PREPARED', 'tracking': tracking, 'garmentMaskAgreement': iou,
+              'maskRevision': MASK_REVISION, 'garmentMaskPixels': int(mask.sum()),
+              'garmentMaskCoverage': float(mask.mean()),
               'width': w, 'height': h, 'printId': ids[slot-1], 'printSlot': slot,
               'cleanupPixels': int(remove.sum()), 'cleanupIterations': iterations, 'outsideCleanupChangedPixels': 0,
               'modelCalls': 0, 'passed': True, 'productionReady': False,
-              'limitation': '仅验证单处小胸花；去花使用平滑光照重建，不能恢复未知织纹、隐藏褶皱或证明真实印刷尺寸。',
+              'limitation': '仅验证单处可追踪印花；去花使用平滑光照重建，不能恢复未知织纹、隐藏褶皱或证明真实印刷尺寸。',
               'elapsedMs': round((time.monotonic()-started)*1000)}
     check_time(started)
     return {'blank': encoded(blank_raw), 'alpha': encoded(alpha_raw), 'mapping': mapping, 'report': report,
@@ -525,5 +573,5 @@ def render(body):
             'width': width, 'height': height,
             'targetRgb': None if original else target.lower(), 'originalColor': original, 'modelCalls': 0,
             'outsideGarmentChangedPixels': 0, 'printSampling': 'PREMULTIPLIED_RGBA_4X', 'passed': True, 'productionReady': False,
-            'limitation': '单处近似平面胸花的本地透视套版；保留场景像素，不代表实物色号、织纹或印刷尺寸已验收。',
+            'limitation': '单处近似平面印花的本地透视套版；保留场景像素，不代表实物色号、织纹或印刷尺寸已验收。',
             'elapsedMs': round((time.monotonic()-started)*1000)}}

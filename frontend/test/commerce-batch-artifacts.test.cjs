@@ -459,3 +459,87 @@ test('natural drape front retains the existing backend back-image flip and an ol
  h.setPlan({...localPlan,renderPolicy:'GROK_SCENE_V1'});h.setRows([row('MOCKUP_FRONT')]);await h.load('historical');h.step('mockup');
  assert.equal(h.cards()[0].dataset.kind,'MOCKUP_FRONT');assert.equal(h.dispatched.filter(e=>e.type==='heyi:artifacts-updated').at(-1).detail.ready,1);
 });
+
+test('a stopped READY drape mother exposes explicit regeneration without offering it for ready SKU images',async()=>{
+ const h=harness([row('DRAPE_MASTER'),row('DRAPED_FRONT')]);
+ await h.load('batch',{batchId:'batch',status:'WAITING_INPUT',stage:'MOCKUP'});
+ const mother=h.cards().find(c=>c.querySelector('.artifact-retry'));
+ assert.ok(mother);assert.equal(mother.querySelector('.artifact-retry').textContent,'按模板重做母图');
+ assert.equal(h.cards().filter(c=>c.querySelector('.artifact-retry')).length,1);
+ assert.ok(h.requests.every(r=>!r.options?.method));
+});
+
+test('model detail photos display by source and variant in mockup and publication, not as process assets',async()=>{
+ const approved={...row('MODEL_DETAIL_1','a',2),check:{passed:true,reason:'Matches the new garment'}};
+ const pending={...row('MODEL_DETAIL_2','a',2),check:{status:'REVIEW_RETRY_PENDING'}};
+ const other={...row('MODEL_DETAIL_1','b',1),id:'other-detail',check:{passed:false,reason:'印花不一致'}};
+ const plan={...localPlan,renderPolicy:'GROK_DRAPE_REUSE_V1',sources:[{...localPlan.sources[0],detailImageIds:['detail-a','detail-b']}]};
+ const h=harness([row('DRAPED_FRONT'),approved,pending,other,row('DRAPE_MASTER','a',0)],plan);
+ await h.load('batch',{batchId:'batch',status:'RUNNING',stage:'MOCKUP'});
+ h.step('mockup');h.filterSource('a');
+ const visible=h.cards().filter(card=>!card.hidden);
+ assert.deepEqual(visible.map(card=>card.dataset.kind),['DRAPED_FRONT','MODEL_DETAIL_1','MODEL_DETAIL_2']);
+ assert.equal(visible[1].querySelector('h3').textContent,'模特实穿详情 · 第 1 张 · V2');
+ assert.equal(visible[1].querySelector('.batch-artifact-check').textContent,'模特实穿详情已检查 · 与当前新款一致');
+ assert.equal(visible[2].querySelector('.batch-artifact-check').textContent,'详情图已保存 · 商品一致性检查中');
+ visible[1].querySelector('.batch-artifact-open').handlers.click();
+ assert.equal(h.nodes.find(node=>node.tag==='dialog').querySelector('img').src,approved.imageUrl);
+ const materials=h.nodes.find(node=>node.className==='batch-position-guides batch-intermediate-assets');
+ assert.deepEqual(materials.querySelectorAll('article').map(card=>card.dataset.kind),['DRAPE_MASTER']);
+ h.step('publish');assert.equal(h.cards().filter(card=>!card.hidden).length,3);
+ h.filterSource('b');const b=h.cards().filter(card=>!card.hidden);assert.equal(b.length,1);
+ assert.match(b[0].querySelector('.batch-artifact-check').textContent,/详情图需纠正.*印花不一致/);
+ h.step('design');assert.equal(h.cards().filter(card=>!card.hidden).length,0);
+ assert.ok(h.requests.every(request=>!request.options?.method),'viewing details never submits a generation');
+});
+
+test('model detail totals use frozen detail count times variants independently of colors',async()=>{
+ const plan={...localPlan,renderPolicy:'GROK_DRAPE_REUSE_V1',sources:[{...localPlan.sources[0],detailImageIds:['d1','d2']}]};
+ const h=harness([row('DRAPED_FRONT'),{...row('MODEL_DETAIL_1'),check:{passed:true}},
+  {...row('MODEL_DETAIL_2'),status:'PREPARED',imageUrl:null},row('DRAPE_MASTER')],plan);
+ await h.load();h.step('mockup');
+ const count=h.dispatched.filter(event=>event.type==='heyi:artifacts-updated').at(-1).detail;
+ assert.equal(count.total,10,'6 color fronts + 4 model detail photos');assert.equal(count.ready,2);
+ const status=h.nodes.find(node=>node.className==='batch-artifact-panel').querySelector('p').textContent;
+ assert.match(status,/已归档 2 \/ 10 张主图与详情图/);
+ assert.match(status,/每款按原详情数量生成.*每组最多4张.*全部检查通过后进入待上架/);
+ assert.doesNotMatch(status,/每个来源商品 1 次额外 Grok 调用/);
+ h.setPlan(localPlan);h.setRows([row('MOCKUP_FRONT')]);await h.load('legacy');
+ assert.equal(h.dispatched.filter(event=>event.type==='heyi:artifacts-updated').at(-1).detail.total,6,'changing batches clears detail counts');
+});
+
+test('detail pass labels require a real boolean and do not invent success from a string',async()=>{
+ for(const passed of ['false','true',1,null]){
+  const h=harness([{...row('MODEL_DETAIL_1'),check:{passed}}],localPlan);
+  await h.load();h.step('mockup');
+  assert.equal(h.cards()[0].querySelector('.batch-artifact-check').textContent,'详情图已保存 · 商品一致性检查中');
+ }
+});
+
+test('pending detail resumes in the same card and its eventual pass renders without a second submit',async()=>{
+ const pending={...row('MODEL_DETAIL_1'),status:'RESULT_RECEIVED',imageUrl:null};
+ const h=harness([pending],localPlan);await h.load('batch',{batchId:'batch',status:'RUNNING',stage:'MOCKUP'});h.step('mockup');
+ const card=h.cards()[0];assert.equal(card.dataset.motion,'running');
+ h.setRows([{...pending,status:'READY',imageUrl:'/archived-detail',check:{passed:true}}]);await h.poll('RUNNING');
+ assert.equal(h.cards()[0],card);assert.equal(card.dataset.motion,'ready');
+ assert.equal(card.querySelector('img').src,'/archived-detail');
+ assert.equal(card.querySelector('.batch-artifact-check').textContent,'模特实穿详情已检查 · 与当前新款一致');
+ assert.ok(h.requests.every(request=>!request.options?.method));
+});
+
+
+test('grid originals are process materials and do not inflate independently split detail totals',async()=>{
+ const plan={renderPolicy:'GROK_DRAPE_REUSE_V1',variantsPerPrint:1,sources:[{captureId:'a',colorTargets:[{key:'pink'}],detailImageIds:['d1','d2','d3']}]};
+ const h=harness([{...row('MODEL_DETAIL_GRID_1'),check:{gridSplit:{status:'DONE',childCount:3}}},row('DRAPED_FRONT'),row('MODEL_DETAIL_1'),row('MODEL_DETAIL_2'),row('MODEL_DETAIL_3')],plan);
+ await h.load();h.step('mockup');
+ assert.match(h.nodes.find(n=>n.className==='batch-artifact-panel').children.find(n=>n.tag==='p').textContent,/已归档 4 \/ 4/);
+ const originals=h.nodes.find(n=>n.className==='batch-artifact-grid batch-intermediate-grid');
+ assert.ok(originals.children.some(card=>card.dataset.kind==='MODEL_DETAIL_GRID_1'));
+ assert.match(originals.children.find(card=>card.dataset.kind==='MODEL_DETAIL_GRID_1').textContent||originals.children.find(card=>card.dataset.kind==='MODEL_DETAIL_GRID_1').querySelector('h3').textContent,/四宫格/);
+});
+
+test('detail unknown states explain automatic recovery and stop implying it is running after exhaustion',async()=>{
+ const h=harness([{...row('MODEL_DETAIL_7'),status:'UNKNOWN',imageUrl:null}]);await h.load('batch',{batchId:'batch',status:'UNKNOWN'});
+ const card=h.cards()[0];assert.ok(card.querySelectorAll('p').some(n=>n.textContent==='正在自动核对与恢复'));
+ await h.poll('FAILED');assert.ok(card.querySelectorAll('p').some(n=>n.textContent==='恢复已停止 · 已保留请求'));
+});

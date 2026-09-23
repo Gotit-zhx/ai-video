@@ -40,11 +40,14 @@ class ShopeeProductVideoUploaderTest {
     List<Map<String, Object>> sources;
     String video;
     byte[] bytes;
+    ShopeeVideoPreprocessor preprocessor;
 
     @BeforeEach void setup() throws Exception {
         db = mock(JdbcTemplate.class); ledger = mock(ShopeeProductVideoUploadLedger.class);
         client = mock(ShopeeOfficialClient.class);
-        uploader = new ShopeeProductVideoUploader(db, ledger, client, new ObjectMapper(), storage.toString());
+        preprocessor = mock(ShopeeVideoPreprocessor.class);
+        when(preprocessor.prepare(any())).thenAnswer(call -> call.getArgument(0));
+        uploader = new ShopeeProductVideoUploader(db, ledger, client, new ObjectMapper(), storage.toString(), preprocessor);
         capture = new ProductCapture("org-1", "user-1", "key", "fingerprint", "SHOPEE", "https://example.invalid/product", "source-shop", "1",
                 "Product", "Description", "Category", null, "MYR", new BigDecimal("20"), new BigDecimal("20"), "{}", "{}");
         connection = connection("org-1");
@@ -144,6 +147,21 @@ class ShopeeProductVideoUploaderTest {
         verify(client, times(1)).shopPost(anyString(), any(), anyMap());
     }
 
+    @Test void normalizedContentEscapesOriginalFailureAndUsesActualSizeAndHash() {
+        byte[] normalized = new byte[128];
+        Arrays.fill(normalized, (byte) 42);
+        when(preprocessor.prepare(any())).thenReturn(normalized);
+        Map<String, Object> oldFailure = Map.of("status", "FAILED", "message", "Video is too short");
+        when(ledger.prepare(anyString(), anyString(), anyString(), anyString(), anyString(), anyString(), anyLong()))
+                .thenReturn(oldFailure, row);
+        assertThat(uploader.upload(capture, connection, ignored -> {}).present()).isTrue();
+        verify(ledger).prepare(anyString(), eq("org-1"), anyString(), eq(video),
+                eq(ShopeeProductVideoUploader.digest("SHA-256", normalized)), anyString(), eq(128L));
+        verify(client).shopPost(ShopeeProductVideoUploader.INIT, connection,
+                Map.of("file_md5", ShopeeProductVideoUploader.digest("MD5", normalized), "file_size", 128));
+        verify(client).uploadVideoPart(eq("sg-upload-123"), eq(0), anyString(), aryEq(normalized));
+    }
+
     @Test void organizationMismatchIsRejectedBeforeReadingOrUploadingVideo() {
         assertThatThrownBy(() -> uploader.upload(capture, connection("other-org"), ignored -> {})).hasMessageContaining("同一企业");
         verifyNoInteractions(db, client, ledger);
@@ -153,8 +171,8 @@ class ShopeeProductVideoUploaderTest {
         Files.write(storage.resolve("capture-videos").resolve(video), new byte[bytes.length]);
         assertThatThrownBy(() -> uploader.upload(capture, connection, ignored -> {})).hasMessageContaining("归档校验失败");
         verify(client, never()).shopPost(anyString(), any(), anyMap());
-        sources.getFirst().put("byte_length", ShopeeProductVideoUploader.MAX_VIDEO_BYTES + 1);
-        assertThatThrownBy(() -> uploader.upload(capture, connection, ignored -> {})).hasMessageContaining("30 MB");
+        sources.getFirst().put("byte_length", 200L * 1024 * 1024 + 1);
+        assertThatThrownBy(() -> uploader.upload(capture, connection, ignored -> {})).hasMessageContaining("200 MB");
         verify(client, never()).uploadVideoPart(anyString(), anyInt(), anyString(), any());
     }
 

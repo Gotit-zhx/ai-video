@@ -17,10 +17,10 @@ class CommerceDrapeMasterSubmissionTest {
         add(h,"MOCKUP_FRONT",1,"black",white,CommerceLocalPhotoWorkflow.POLICY);
         var guide=add(h,CommerceDrapeReuseWorkflow.GUIDE,0,null,white,CommerceLocalPhotoWorkflow.POLICY);guide.put("reference_keys",h.json.writeValueAsString(List.of(white,uv,h.a.storageKey())));
         var master=add(h,CommerceDrapeReuseWorkflow.MASTER,0,null,h.b.storageKey(),"grok");master.put("id","drape-mother");master.put("status",state);master.put("prompt",CommerceDrapeReuseWorkflow.PROMPT);
-        master.put("request_key","mother-request");master.put("model_fingerprint",CommerceBatchArtworkService.fingerprint(CommerceGrokSceneWorkflowTest.GROK));master.put("reference_keys",h.json.writeValueAsString(List.of(h.b.storageKey(),white,h.a.storageKey())));
+        master.put("request_key","mother-request");master.put("model_fingerprint",CommerceBatchArtworkService.fingerprint(CommerceGrokSceneWorkflowTest.GROK));master.put("reference_keys",h.json.writeValueAsString(List.of(white,h.b.storageKey(),h.a.storageKey())));
         return h;
     }
-    Map<String,Object> add(CommerceSavedArtworkTest.Harness h,String kind,int variant,String color,String key,String model){var j=new LinkedHashMap<String,Object>();j.put("id",kind+variant+color);j.put("capture_id","capture");j.put("kind",kind);j.put("variant_index",variant);j.put("color_key",color);j.put("status","READY");j.put("storage_key",key);j.put("content_sha256",key.substring(65));j.put("model_config_id",model);j.put("reference_keys","[]");h.jobs.add(j);return j;}
+    Map<String,Object> add(CommerceSavedArtworkTest.Harness h,String kind,int variant,String color,String key,String model){var j=new LinkedHashMap<String,Object>();j.put("id",kind+variant+color);j.put("capture_id","capture");j.put("capture_version",1L);j.put("kind",kind);j.put("variant_index",variant);j.put("color_key",color);j.put("status","READY");j.put("storage_key",key);j.put("content_sha256",key.substring(65));j.put("model_config_id",model);j.put("reference_keys","[]");h.jobs.add(j);return j;}
     @Test void unknownAndSubmittingMotherNeverStartAnotherPaidGeneration()throws Exception{
         for(String state:List.of("UNKNOWN","SUBMITTING")){
             var h=harness(state);var result=h.execute("MOCKUP");assertEquals("UNKNOWN",result.pendingStatus(),result.message());
@@ -42,17 +42,21 @@ class CommerceDrapeMasterSubmissionTest {
         assertEquals(1,h.jobs.stream().filter(j->CommerceDrapeReuseWorkflow.MASTER.equals(j.get("kind"))).count());
     }
     @Test void readyMotherWithRepeatedLocalTrackingFailureNeverReentersPaidSubmission()throws Exception{
-        var h=harness("READY");var processor=mock(CommerceDrapeImageProcessor.class);
+        var h=harness("READY");h.jobs.stream().filter(j->CommerceDrapeReuseWorkflow.MASTER.equals(j.get("kind"))).findFirst().orElseThrow().put("prompt",CommerceDrapeReuseWorkflow.TEMPLATE_FIRST_PROMPT);var processor=mock(CommerceDrapeImageProcessor.class);
         org.springframework.test.util.ReflectionTestUtils.setField(h.service,"drapeProcessor",processor);
         var report=Map.of("artworkKeys",Map.of("front",h.a.storageKey()));
         when(h.db.queryForList("SELECT result_json FROM commerce_batch_artwork_jobs WHERE id=?","MOCKUP_FRONT1black"))
                 .thenReturn(List.of(Map.of("result_json",h.json.writeValueAsString(report))));
-        when(processor.prepare(any(),any(),any(),any(),anyList())).thenThrow(new IllegalArgumentException("FEATURE_TRACKING_FAILED"));
+        var checks=new HashMap<String,String>();
+        when(h.db.queryForList(startsWith("SELECT c.report_json"),anyString(),anyString(),anyString())).thenAnswer(call->{String raw=checks.get(call.getArgument(1));return raw==null?List.of():List.of(Map.of("report_json",raw));});
+        doAnswer(call->{checks.put(call.getArgument(2),call.getArgument(1));return 1;}).when(h.db).update(startsWith("INSERT IGNORE INTO commerce_batch_artwork_checks"),any(Object[].class));
+        doAnswer(call->{checks.put(call.getArgument(2),call.getArgument(1));return 1;}).when(h.db).update(startsWith("UPDATE commerce_batch_artwork_checks"),any(Object[].class));
+        when(processor.prepare(any(),any(),any(),any(),anyList())).thenThrow(new CommerceDrapeImageProcessor.LocalProcessingException("FEATURE_TRACKING_FAILED",false,"印花定位失败",null));
         for(int attempt=0;attempt<2;attempt++){
-            var stopped=h.execute("MOCKUP");assertEquals("WAITING_INPUT",stopped.pendingStatus(),stopped.message());
-            assertTrue(stopped.message().contains("FEATURE_TRACKING_FAILED"));assertTrue(stopped.message().contains("不会追加生图"));
+            var stopped=h.execute("MOCKUP");assertEquals("FAILED",stopped.pendingStatus(),stopped.message());
+            assertTrue(stopped.message().contains("印花定位失败"));assertTrue(stopped.message().contains("不追加生图"));
         }
-        verify(processor,times(2)).prepare(any(),any(),any(),any(),anyList());
+        verify(processor,times(1)).prepare(any(),any(),any(),any(),anyList());
         verifyNoInteractions(h.models,h.gateway,h.ledger,h.sourceArchives);
         assertEquals(1,h.jobs.stream().filter(j->CommerceDrapeReuseWorkflow.MASTER.equals(j.get("kind"))).count());
         assertFalse(h.jobs.stream().anyMatch(j->CommerceDrapeReuseWorkflow.BLANK.equals(j.get("kind"))||CommerceDrapeReuseWorkflow.OUTPUT.equals(j.get("kind"))));

@@ -894,3 +894,15 @@
  #product-publish-page #workbench-batch-list { grid-template-columns:minmax(0,1fr); max-height:calc(100dvh - 260px); overflow-y:auto; overflow-x:hidden; scrollbar-width:thin; margin-top:14px; }
  #product-publish-page #workbench-batch-list button { padding:12px 10px; gap:6px; }
 }
+
+/* Status and help text own a full row; action buttons cannot squeeze it vertically. */
+#product-publish-page .studio-journey > .workbench-execution { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
+#product-publish-page .studio-journey > .workbench-execution > p,
+#product-publish-page .studio-journey > .workbench-execution > label,
+#product-publish-page .studio-journey > .workbench-execution > small { flex:0 0 100%; min-width:0; width:100%; box-sizing:border-box; overflow-wrap:anywhere; line-height:1.65; }
+#product-publish-page .studio-journey > .workbench-execution > button { flex:0 0 auto; }
+#product-publish-page .studio-journey > .workbench-execution [hidden] { display:none!important; }
+@media(min-width:901px) {
+ #product-publish-page:has([data-commerce-panel="commerce-designs"]:not([hidden])) { grid-template-columns:240px minmax(0,1fr); gap:20px; }
+ #product-publish-page #workbench-batch-list button { padding:14px 12px; }
+}

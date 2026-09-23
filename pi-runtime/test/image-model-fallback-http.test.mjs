@@ -81,7 +81,7 @@ test('dedicated product scene uses Grok low quality with ordered JSON references
     { mode: 'edit', prompt: 'Complete this empty background scene', size: '1024x1024', quality: 'low', inputFidelity: 'high', productMockup: true }, originals);
   assert.equal(h.calls.length, 1);
   const wire = h.calls[0].json;
-  assert.equal(wire.quality, 'low');assert.equal(wire.aspect_ratio, '1:1');assert.equal(wire.model, GROK);
+  assert.equal(wire.response_format, 'b64_json');assert.equal(wire.quality, 'low');assert.equal(wire.aspect_ratio, '1:1');assert.equal(wire.model, GROK);
   for (const key of ['size', 'input_fidelity', 'background', 'output_format', 'productMockup']) assert.equal(Object.hasOwn(wire, key), false);
   assert.equal(wire.images.length, 2);
   wire.images.forEach((image, i) => assert.equal(image.url.split(',')[1], originals[i].dataBase64));
@@ -142,6 +142,7 @@ for (const imageCount of [1, 2, 3, 4]) {
       assert.ok(image.url.startsWith("data:image/png;base64,"));
       assert.deepEqual(Buffer.from(image.url.split(",")[1], "base64"), Buffer.from(originals[index].dataBase64, "base64"));
     });
+    assert.equal(fallback.json.response_format, "b64_json");
     assert.equal(fallback.json.model, GROK);
     assert.equal(fallback.json.prompt, prompt);
     assert.equal(fallback.json.aspect_ratio, "1:1");
@@ -189,7 +190,7 @@ test("text-to-image fallback translates Grok parameters and sends one request to
     assert.equal(call.method, "POST");assert.equal(call.contentType, "application/json");
   }
   assert.deepEqual(h.calls[0].json, { model: PRIMARY, prompt, n: 1, size: "1024x1024", quality: "high" });
-  assert.deepEqual(h.calls[1].json, { model: GROK, prompt, n: 1, aspect_ratio: "1:1", quality: "medium" });
+  assert.deepEqual(h.calls[1].json, { model: GROK, prompt, n: 1, response_format: "b64_json", aspect_ratio: "1:1", quality: "medium" });
   assert.notEqual(h.calls[0].idempotencyKey, h.calls[1].idempotencyKey);
   assert.equal(config.modelId, PRIMARY);
   assert.equal(h.calls[1].authorization, "Bearer unit-fallback-key");

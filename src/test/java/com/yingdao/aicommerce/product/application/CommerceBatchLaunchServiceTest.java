@@ -212,6 +212,30 @@ class CommerceBatchLaunchServiceTest {
         verifyNoInteractions(archive);
     }
 
+    @Test void detailCallsMatchFrozenOriginalCountsPerVariantAndNeverMultiplyBySkuColors() throws Exception {
+        configure(1,2);
+        var base=colorPlan(3,"SOURCE_PRODUCT",1,4);
+        var sources=new ArrayList<CommerceBatchCreativePlanValidator.Selection>();
+        int index=0;
+        for(var source:base.sources())sources.add(new CommerceBatchCreativePlanValidator.Selection(source.captureId(),source.version(),source.imageId(),
+                source.cleanupAreas(),source.colorTargets(),index++==0?List.of("detail-a","detail-b"):List.of("detail-c","detail-d","detail-e")));
+        var withDetails=new CommerceBatchCreativePlanValidator.Plan(base.printTemplateSnapshotId(),sources,base.variantsPerPrint(),base.variationArtworkId(),base.artworkSource(),base.outputPolicy(),base.renderPolicy());
+        int original=service.requiredModelCalls(base,RepeatedSurfaceArtworkFixture.configuration(),"org");
+        assertEquals(original+30,service.requiredModelCalls(withDetails,RepeatedSurfaceArtworkFixture.configuration(),"org"),
+                "3 variants × (2 + 3) original details × at most 2 attempts; SKU color counts do not multiply details");
+    }
+
+    @Test void frozenDetailsShareTheTotalCallLimitAndCannotBeAppliedToNonGarments() {
+        var base=colorPlan(20,"SOURCE_PRODUCT",1);
+        var original=base.sources().getFirst();
+        var ids=java.util.stream.IntStream.range(0,30).mapToObj(i->"detail-"+i).toList();
+        var source=new CommerceBatchCreativePlanValidator.Selection(original.captureId(),original.version(),original.imageId(),List.of(),original.colorTargets(),ids);
+        var detailed=new CommerceBatchCreativePlanValidator.Plan(base.printTemplateSnapshotId(),List.of(source),20,null,"SOURCE_PRODUCT","SOURCE_SKU_COLORS");
+        assertTrue(assertThrows(BusinessException.class,()->service.requiredModelCalls(detailed,planar(true),"org")).getMessage().contains("超过单批1000次"));
+        var cushion=new CommercePrintTemplateService.Configuration("CUSHION",planar(true).areas(),planar(true).baseImages());
+        assertTrue(assertThrows(BusinessException.class,()->service.requiredModelCalls(detailed,cushion,"org")).getMessage().contains("仅适用于服装"));
+    }
+
     @Test void springTransactionRollsBackCreatedDraftWorkWhenStartingFails() throws Exception {
         configure(1,2);
         var dataSource=mock(DataSource.class);var connection=mock(Connection.class);

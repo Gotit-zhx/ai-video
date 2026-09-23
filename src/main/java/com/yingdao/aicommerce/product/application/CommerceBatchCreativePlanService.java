@@ -30,6 +30,8 @@ public class CommerceBatchCreativePlanService {
     }
     @org.springframework.beans.factory.annotation.Autowired
     private CommerceArtworkLibraryService artworkLibrary;
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate db;
     private final CommerceBatchMapper batches;
     private final CommerceBatchExecutionMapper runs;
     private final CommerceBatchCreativePlanMapper plans;
@@ -67,7 +69,10 @@ public class CommerceBatchCreativePlanService {
         int version=previous==null?0:previous.version();
         if (request==null||request.expectedVersion()!=version||version==Integer.MAX_VALUE)
             throw conflict("创作配置已变化，请重新读取后保存");
-        var validated=validatePlan(request.printTemplateSnapshotId(),request.sources(),request.variantsPerPrint(),request.variationArtworkId(),request.artworkSource(),null,options,user);
+        // Detail references are derived from owned source records, never from client-supplied IDs.
+        var requestedSources=request.sources()==null?null:request.sources().stream().map(source->source==null?null:
+                new Selection(source.captureId(),source.version(),source.imageId(),source.cleanupAreas(),source.colorTargets())).toList();
+        var validated=validatePlan(request.printTemplateSnapshotId(),requestedSources,request.variantsPerPrint(),request.variationArtworkId(),request.artworkSource(),null,options,user);
         // Client-supplied color targets are never authoritative. A draft save freezes
         // the current, access-checked SKU evidence for the batch's fixed source version.
         var plan=freezeColors(freezeReused(validated,request.reusedArtworks(),user),sourceState,user,request.renderPolicy());
@@ -87,7 +92,12 @@ public class CommerceBatchCreativePlanService {
         var plan=decode(row);
         try {validateRenderPolicy(plan.renderPolicy());}
         catch(IllegalArgumentException failure) {throw conflict(failure.getMessage());}
-        validatePlan(plan.printTemplateSnapshotId(),plan.sources(),plan.variantsPerPrint(),plan.variationArtworkId(),plan.artworkSource(),plan.outputPolicy(),sources(batch,user),user);
+        var sourceState=sourceState(batch,user);
+        validatePlan(plan.printTemplateSnapshotId(),plan.sources(),plan.variantsPerPrint(),plan.variationArtworkId(),plan.artworkSource(),plan.outputPolicy(),sourceState.options(),user);
+        for(var source:plan.sources())if(!source.detailImageIds().isEmpty()) {
+            var available=detailImageIds(sourceState.details().get(source.captureId()),user);
+            if(!available.containsAll(source.detailImageIds()))throw conflict("固定详情图已不可用或被识别为尺码表，请重新保存创作配置；尚未开始生成");
+        }
         var fixedTemplate=templates.snapshot(user.organizationId(),plan.printTemplateSnapshotId());
         var configuration=json.readValue(fixedTemplate.configJson(),CommercePrintTemplateService.Configuration.class);
         try {validateRenderTemplate(plan.renderPolicy(),configuration);}
@@ -187,13 +197,46 @@ public class CommerceBatchCreativePlanService {
                     var color=colors.getFirst();
                     colors=List.of(new CommerceSourceColorResolver.Color(color.key(),color.label(),color.skuKeys(),source.imageId(),true));
                 }
-                var frozen=new Selection(source.captureId(),source.version(),source.imageId(),source.cleanupAreas(),colors);
+                var frozen=new Selection(source.captureId(),source.version(),source.imageId(),source.cleanupAreas(),colors,
+                        modelDetailsSupported(template)?detailImageIds(detail,user):List.of());
                 var readable=state.options().stream().filter(option->option.captureId().equals(source.captureId())).findFirst().orElseThrow();
                 validateColorTargets(frozen,readable.images().stream().map(Image::id).toList());
                 selected.add(frozen);
             }
             return new Plan(plan.printTemplateSnapshotId(),selected,plan.variantsPerPrint(),plan.variationArtworkId(),plan.artworkSource(),"SOURCE_SKU_COLORS",policy,plan.reusedArtworks());
         } catch(IllegalArgumentException failure) {throw conflict(failure.getMessage());}
+    }
+
+    /** One generated detail per owned source detail. Keep chart evidence separate and unmodified. */
+    private List<String> detailImageIds(ProductCaptureService.CaptureDetail detail,PlatformPrincipal user) {
+        var charts=new HashSet<String>();
+        if(detail.normalizedData()!=null&&detail.normalizedData().get("sizeChartImageId") instanceof String id)charts.add(id);
+        if(db!=null&&detail.capture().getId()!=null) {
+            charts.addAll(db.queryForList("SELECT DISTINCT image_id FROM product_watermark_checks WHERE organization_id=? AND capture_id=? AND status='READY' AND JSON_UNQUOTE(JSON_EXTRACT(detection_json,'$.imageType'))='SIZE_CHART'",
+                    String.class,user.organizationId(),detail.capture().getId()));
+        }
+        var ids=new LinkedHashSet<String>();var assets=new HashSet<String>();
+        var candidates=detail.images().stream().filter(Objects::nonNull)
+                .filter(image->Objects.equals(detail.capture().getId(),image.getCaptureId())
+                        &&Objects.equals(detail.capture().getOrganizationId(),image.getOrganizationId()))
+                .sorted(Comparator.comparingInt(com.yingdao.aicommerce.product.domain.ProductCaptureImage::getSortOrder)).toList();
+        var chartAssets=new HashSet<String>();
+        for(var image:candidates)if(sizeChart(image,charts)&&image.getOriginalUrl()!=null)
+            chartAssets.add(ProductCaptureImagePlan.assetKey(image.getOriginalUrl()));
+        for(var image:candidates) {
+            String role=Objects.toString(image.getRoleName(),"").trim().toUpperCase(Locale.ROOT);
+            if(!Set.of("DETAIL","DESCRIPTION").contains(role)||sizeChart(image,charts))continue;
+            String url=image.getOriginalUrl();
+            if(image.getId()==null||image.getId().isBlank()||url==null||url.isBlank())continue;
+            String asset=ProductCaptureImagePlan.assetKey(url);
+            if(!chartAssets.contains(asset)&&assets.add(asset))ids.add(image.getId());
+        }
+        return List.copyOf(ids);
+    }
+    private static boolean sizeChart(com.yingdao.aicommerce.product.domain.ProductCaptureImage image,Set<String> detected){
+        if("SIZE_CHART".equalsIgnoreCase(image.getRoleName())||detected.contains(image.getId()))return true;
+        String label=Objects.toString(image.getAltText(),"").trim();
+        return label.length()<=60&&label.matches("(?i)^(?:size[ _-]*(?:chart|guide)|measurement[ _-]*chart|尺码表|尺碼表|尺寸表|尺码指南|尺碼指南)(?:\\s*[（(](?:cm|mm|inch|inches|厘米|英寸)[）)])?$");
     }
 
     private record SourceState(List<SourceOption> options,Map<String,ProductCaptureService.CaptureDetail> details) {}

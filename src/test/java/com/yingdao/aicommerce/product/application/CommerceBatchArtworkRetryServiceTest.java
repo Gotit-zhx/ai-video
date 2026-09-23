@@ -25,6 +25,8 @@ class CommerceBatchArtworkRetryServiceTest {
     static final String JOB_LOCK = "SELECT * FROM commerce_batch_artwork_jobs WHERE id=? AND execution_id=? AND organization_id=? FOR UPDATE";
     static final String PENDING_LOCK = "SELECT id,status FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND status IN ('SUBMITTING','UNKNOWN','RESULT_RECEIVED') FOR UPDATE";
     static final String REPLACEMENT_LOCK = "SELECT id FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND request_key=? FOR UPDATE";
+    static final String PUBLICATION_LOCK = "SELECT item_id FROM commerce_batch_publications WHERE execution_id=? AND organization_id=? FOR UPDATE";
+    static final String DRAPE_JOBS_LOCK = "SELECT * FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND status<>'RETRIED' FOR UPDATE";
     static final String KEY = CommerceImageArchive.sha("original-request:manual-retry".getBytes(StandardCharsets.UTF_8));
     final JdbcTemplate db = mock(JdbcTemplate.class);
     final CommerceBatchExecutionService executions = mock(CommerceBatchExecutionService.class);
@@ -171,6 +173,119 @@ class CommerceBatchArtworkRetryServiceTest {
         assertThrows(BusinessException.class, () -> service.retry("batch", "old", user));
         verifyNoInteractions(limits);
         verify(db, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test void explicitLegacyMotherRetryUpgradesReferenceOrderWithoutReplacingPreciseMockups() {
+        drapeFixture(CommerceDrapeReuseWorkflow.LEGACY_PROMPT, "[\"scene\",\"guide\",\"art\"]");
+        var result = service.retry("batch", "old", user);
+        assertEquals("QUEUED", result.execution().status());
+        assertEquals("MOCKUP", result.execution().stage());
+        verify(limits).reserve("run", "org", KEY, "MOCKUP");
+        verify(limits, never()).initialize(anyString(), anyString(), anyInt());
+        verify(db).update(startsWith("INSERT INTO commerce_batch_artwork_jobs"), eq(result.artifactId()), eq(KEY),
+                eq(CommerceDrapeReuseWorkflow.PROMPT), eq("[\"guide\",\"scene\",\"art\"]"), anyString(), eq("old"), eq("run"), eq("org"));
+        verify(db).update(contains("kind='DRAPE_MASTER' AND status='READY'"), eq("old"), eq("run"), eq("org"));
+        verify(db, times(4)).update(anyString(), any(Object[].class));
+        verify(db, never()).update(contains("storage_key="), any(Object[].class));
+    }
+
+    @Test void currentMotherKeepsReferenceOrderAndCanResumeEachStoppedStatus() {
+        for (String status : List.of("WAITING_INPUT", "PAUSED", "FAILED")) {
+            drapeFixture(CommerceDrapeReuseWorkflow.PROMPT, "[\"guide\",\"scene\",\"art\"]");
+            drapeRun("MOCKUP", status, null, null);
+            var result = service.retry("batch", "old", user);
+            verify(db).update(startsWith("INSERT INTO commerce_batch_artwork_jobs"), eq(result.artifactId()), eq(KEY),
+                    eq(CommerceDrapeReuseWorkflow.PROMPT), eq("[\"guide\",\"scene\",\"art\"]"), anyString(), eq("old"), eq("run"), eq("org"));
+        }
+    }
+
+    @Test void motherCannotBeReplacedDuringWorkOrWithAnUnclearedLease() {
+        drapeFixture(CommerceDrapeReuseWorkflow.PROMPT, "[\"guide\",\"scene\",\"art\"]");
+        for (String state : List.of("RUNNING", "QUEUED", "UNKNOWN", "COMPLETED")) {
+            drapeRun("MOCKUP", state, null, null);
+            assertThrows(BusinessException.class, () -> service.retry("batch", "old", user));
+        }
+        drapeRun("REVIEW", "PAUSED", null, null);
+        assertThrows(BusinessException.class, () -> service.retry("batch", "old", user));
+        drapeRun("MOCKUP", "WAITING_INPUT", "stale", null);
+        assertThrows(BusinessException.class, () -> service.retry("batch", "old", user));
+        drapeRun("MOCKUP", "WAITING_INPUT", null, Instant.now().minusSeconds(1));
+        assertThrows(BusinessException.class, () -> service.retry("batch", "old", user));
+        verifyNoInteractions(limits);
+        verify(db, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test void motherReplacementStopsBeforeReservationForPublicationsOrLocalDerivatives() {
+        drapeFixture(CommerceDrapeReuseWorkflow.PROMPT, "[\"guide\",\"scene\",\"art\"]");
+        when(db.queryForList(PUBLICATION_LOCK, "run", "org")).thenReturn(List.of(Map.of("item_id", "frozen-publication")));
+        assertThrows(BusinessException.class, () -> service.retry("batch", "old", user));
+        when(db.queryForList(PUBLICATION_LOCK, "run", "org")).thenReturn(List.of());
+        for (String kind : List.of("DRAPE_BLANK", "DRAPED_FRONT")) {
+            when(db.queryForList(DRAPE_JOBS_LOCK, "run", "org")).thenReturn(List.of(
+                    Map.of("kind", kind, "capture_id", "capture", "status", "READY")));
+            assertThrows(BusinessException.class, () -> service.retry("batch", "old", user));
+        }
+        verifyNoInteractions(limits);
+        verify(db, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test void unresolvedMotherBatchNeverGeneratesAnotherPaidAttempt() {
+        drapeFixture(CommerceDrapeReuseWorkflow.PROMPT, "[\"guide\",\"scene\",\"art\"]");
+        for (String state : List.of("PREPARED", "PENDING", "QUEUED", "RUNNING", "SUBMITTING", "UNKNOWN", "RESULT_RECEIVED")) {
+            when(db.queryForList(DRAPE_JOBS_LOCK, "run", "org")).thenReturn(List.of(Map.of("status", state)));
+            assertThrows(BusinessException.class, () -> service.retry("batch", "old", user), state);
+        }
+        verifyNoInteractions(limits);
+        verify(db, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test void missingOrUnrecognizedMotherReferenceBindingsFailBeforeReservation() {
+        for (var candidate : List.of(
+                List.of("unknown prompt", "[\"guide\",\"scene\",\"art\"]"),
+                List.of(CommerceDrapeReuseWorkflow.PROMPT, "[\"wrong-guide\",\"scene\",\"art\"]"),
+                List.of(CommerceDrapeReuseWorkflow.PROMPT, "[\"guide\",\"scene\",\"wrong-art\"]"),
+                List.of(CommerceDrapeReuseWorkflow.PROMPT, "[\"guide\",\"scene\"]"),
+                List.of(CommerceDrapeReuseWorkflow.PROMPT, "broken-json"))) {
+            drapeFixture(candidate.getFirst(), candidate.get(1));
+            assertThrows(BusinessException.class, () -> service.retry("batch", "old", user));
+        }
+        verifyNoInteractions(limits);
+        verify(db, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test void motherRetryConsumesOnlyOriginalBudgetAndReplayNeverRequeues() {
+        drapeFixture(CommerceDrapeReuseWorkflow.PROMPT, "[\"guide\",\"scene\",\"art\"]");
+        when(limits.reserve("run", "org", KEY, "MOCKUP")).thenReturn(false);
+        assertThrows(BusinessException.class, () -> service.retry("batch", "old", user));
+        verify(db, never()).update(anyString(), any(Object[].class));
+        job("RETRIED");
+        when(db.queryForList(REPLACEMENT_LOCK, "run", "org", KEY)).thenReturn(List.of(Map.of("id", "new-master")));
+        drapeRun("MOCKUP", "RUNNING", "active", Instant.now().plusSeconds(60));
+        assertEquals("new-master", service.retry("batch", "old", user).artifactId());
+        verify(limits, times(1)).reserve("run", "org", KEY, "MOCKUP");
+        verify(db, never()).update(anyString(), any(Object[].class));
+    }
+
+    private void drapeFixture(String prompt, String refs) {
+        drapeRun("MOCKUP", "WAITING_INPUT", null, null);
+        var master = Map.<String,Object>of("id", "old", "request_key", "original-request", "status", "READY",
+                "kind", "DRAPE_MASTER", "capture_id", "capture", "capture_version", 7L,
+                "storage_key", "archived-mother", "prompt", prompt, "reference_keys", refs);
+        when(db.queryForList(JOB_LOCK, "old", "run", "org")).thenReturn(List.of(master));
+        var jobs = new java.util.ArrayList<Map<String,Object>>();
+        jobs.add(master);
+        jobs.add(Map.of("kind", "DRAPE_GUIDE", "capture_id", "capture", "capture_version", 7L,
+                "storage_key", "guide", "status", "READY", "reference_keys", "[\"template\",\"uv\",\"art\"]"));
+        for (int i=0; i<20; i++) jobs.add(Map.of("id", "mockup-"+i, "kind", "MOCKUP_FRONT", "status", "READY"));
+        when(db.queryForList(DRAPE_JOBS_LOCK, "run", "org")).thenReturn(jobs);
+    }
+
+    private void drapeRun(String stage, String status, String token, Instant until) {
+        var prior = run(status, "u");
+        when(db.query(eq(RUN_LOCK), org.mockito.ArgumentMatchers.<RowMapper<CommerceBatchExecution>>any(),
+                eq("run"), eq("org"), eq("batch"))).thenReturn(List.of(new CommerceBatchExecution(
+                prior.id(), prior.organizationId(), prior.batchId(), prior.createdBy(), stage, status,
+                prior.message(), token, until, prior.createdAt(), prior.updatedAt())));
     }
 
     private void lockedRun(String status, String owner) {

@@ -91,6 +91,8 @@ class CommerceDesignImageGatewayHttpTest {
             var productMockup=new tools.jackson.databind.ObjectMapper().readTree(body.get());
             assertTrue(productMockup.path("productMockup").asBoolean());
             assertEquals("low",productMockup.path("quality").asText());
+            assertEquals("1024x1024",productMockup.path("size").asText());
+            assertFalse(productMockup.has("detailGrid"));
             assertFalse(productMockup.has("background"));
             gateway.generateArtwork("extract original print", "unchanged_artwork", MODEL, refs);
             assertFalse(new tools.jackson.databind.ObjectMapper().readTree(body.get()).has("quality"));
@@ -260,6 +262,68 @@ class CommerceDesignImageGatewayHttpTest {
         }); var gateway = new CommerceDesignImageGateway(server.url(), "unit-only")) {
             generate(gateway, "cookie_attempt_1"); generate(gateway, "cookie_attempt_2");
             assertEquals(2, requests.get()); assertNull(cookie.get());
+        }
+    }
+
+    @Test void operationLookupReadsCompletedFailedAndMissingResultsWithoutGenerating() throws Exception {
+        var posts=new AtomicInteger();var reads=new AtomicInteger();
+        var replyBody=new AtomicReference<>("{\"status\":\"COMPLETED\",\"active\":false,\"updatedAt\":1234,\"response\":"+RESULT+",\"error\":null}");
+        var code=new AtomicInteger(200);
+        try(var server=new Loopback(exchange->{posts.incrementAndGet();reply(exchange,500,"{}");});
+            var gateway=new CommerceDesignImageGateway(server.url(),"operation-auth")){
+            server.http.createContext("/v1/images/operations",exchange->{
+                assertEquals("GET",exchange.getRequestMethod());assertEquals("operation-auth",exchange.getRequestHeaders().getFirst("X-Internal-Token"));
+                assertEquals("requestId=detail_grid_1",exchange.getRequestURI().getRawQuery());
+                reads.incrementAndGet();reply(exchange,code.get(),replyBody.get());
+            });
+            var completed=gateway.operation("detail_grid_1");
+            assertEquals("COMPLETED",completed.status());assertFalse(completed.active());assertEquals(1234,completed.updatedAt());
+            assertEquals("aGVsbG8=",completed.response().artifact().dataBase64());assertNull(completed.error());
+            replyBody.set("{\"status\":\"FAILED\",\"active\":false,\"updatedAt\":2345,\"response\":null,\"error\":{\"requestState\":\"ACCEPTED_OR_UNKNOWN\",\"networkRetryCount\":2,\"retryAuthorized\":true}}");
+            var failed=gateway.operation("detail_grid_1");assertEquals("FAILED",failed.status());assertNull(failed.response());
+            assertEquals("ACCEPTED_OR_UNKNOWN",failed.error().get("requestState"));assertEquals(2,failed.error().get("networkRetryCount"));
+            code.set(404);replyBody.set("{\"status\":\"NOT_FOUND\",\"active\":false,\"updatedAt\":0,\"response\":null,\"error\":null}");
+            assertNull(gateway.operation("detail_grid_1"));
+            for(String invalid:List.of("", "short", "../detail_grid"))assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,()->gateway.operation(invalid));
+            assertEquals(3,reads.get());assertEquals(0,posts.get());
+        }
+    }
+
+    @Test void operationLookupDoesNotWaitForTheLongGenerationConnectionPool() throws Exception {
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var server=new Loopback(exchange->{exchange.getRequestBody().readAllBytes();entered.countDown();await(release);reply(exchange,200,RESULT);});
+            var gateway=new CommerceDesignImageGateway(new CommerceImageHttpTransport(1,Timeout.ofSeconds(8),Timeout.ofSeconds(15)),server.url(),"unit-only");
+            var executor=Executors.newVirtualThreadPerTaskExecutor()){
+            server.http.createContext("/v1/images/operations",exchange->reply(exchange,200,"{\"status\":\"RUNNING\",\"active\":true,\"updatedAt\":4567,\"response\":null,\"error\":null}"));
+            var generating=executor.submit(()->generate(gateway,"long_operation"));
+            try{
+                assertTrue(entered.await(3,TimeUnit.SECONDS));
+                var operation=assertTimeoutPreemptively(java.time.Duration.ofSeconds(3),()->gateway.operation("long_operation"));
+                assertTrue(operation.active());assertEquals("RUNNING",operation.status());assertNull(operation.response());
+            }finally{release.countDown();}
+            assertNotNull(generating.get(5,TimeUnit.SECONDS).artifact());
+        }
+    }
+
+    @Test void operationReadTimeoutIsUnderTenSecondsAndDoesNotRetryOrGenerate() throws Exception {
+        var requests=new AtomicInteger();var posts=new AtomicInteger();var release=new CountDownLatch(1);
+        try(var server=new Loopback(exchange->{posts.incrementAndGet();reply(exchange,200,RESULT);});
+            var gateway=new CommerceDesignImageGateway(server.url(),"unit-only")){
+            server.http.createContext("/v1/images/operations",exchange->{requests.incrementAndGet();await(release);exchange.close();});
+            try{
+                assertTimeoutPreemptively(java.time.Duration.ofSeconds(10),()->assertThrows(ResourceAccessException.class,()->gateway.operation("slow_operation")));
+                assertEquals(1,requests.get());assertEquals(0,posts.get());
+            }finally{release.countDown();}
+        }
+    }
+
+    @Test void operationLookupNeverFollowsRedirects() throws Exception {
+        var redirected=new AtomicInteger();
+        try(var server=new Loopback(exchange->reply(exchange,500,"{}"));var gateway=new CommerceDesignImageGateway(server.url(),"unit-only")){
+            server.http.createContext("/v1/images/operations",exchange->{exchange.getResponseHeaders().set("Location","/operation-redirect");reply(exchange,302,"{}");});
+            server.http.createContext("/operation-redirect",exchange->{redirected.incrementAndGet();reply(exchange,200,"{}");});
+            assertThrows(org.springframework.web.client.RestClientException.class,()->gateway.operation("redirect_operation"));
+            assertEquals(0,redirected.get());
         }
     }
 

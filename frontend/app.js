@@ -134,6 +134,7 @@ let departments = [];
 let roles = [];
 let permissions = [];
 let users = [];
+let knowledgeWriterAccess = {};
 let organization = null;
 let organizations = [];
 let modelConfigs = [];
@@ -849,7 +850,8 @@ async function api(path, options = {}) {
   } catch (_error) {
     throw new ApiRequestError("无法连接平台服务，请检查网络后重试", 0);
   }
-  const result = await response.json().catch(() => null);
+  let bodyReadFailed = false;
+  const result = await response.json().catch(() => { bodyReadFailed = true; return null; });
   if (options.signal?.aborted) throw options.signal.reason || new ApiRequestError('请求已取消', 0);
   if (response.status === 401 && path !== "/api/v1/auth/login") {
     handleSessionExpired();
@@ -860,6 +862,11 @@ async function api(path, options = {}) {
       ? "当前账号已登录，但没有执行此操作的权限"
       : "服务暂时不可用，请稍后重试";
     throw new ApiRequestError(result?.message || fallback, response.status, result);
+  }
+  // A successful HTTP header does not guarantee that the JSON body arrived.
+  // Only reads are classified for automatic recovery; mutation semantics stay unchanged.
+  if (bodyReadFailed && (options.method || 'GET').toUpperCase() === 'GET') {
+    throw new ApiRequestError('响应数据未完整接收，请稍后重试', 0);
   }
   return result;
 }
@@ -939,10 +946,18 @@ async function showDashboard(user) {
   dashboardView.hidden = false;
   loginError.hidden = true;
   loginError.textContent = "";
+  document.querySelector("#current-user").setAttribute("translate", "no");
   document.querySelector("#current-user").textContent = user.displayName || user.username;
+  document.querySelector("#current-organization").setAttribute("translate", "no");
   document.querySelector("#current-organization").textContent = `${user.organizationName || "企业工作空间"}${user.organizationCode ? ` · ${user.organizationCode}` : ""}`;
   document.querySelector("#current-permission-state").textContent = productPermissionLabel();
   applyFeatureAccess();
+  if (window.location.hash.startsWith('#knowledge-') && canAccessKnowledge()) {
+    switchWorkspace('knowledge'); globalThis.KnowledgeWorkspace?.enter(window.location.hash.slice(1)); return;
+  }
+  if (['#bd-influencers','#bd-collaborations'].includes(window.location.hash)) {
+    switchWorkspace('bd'); globalThis.BdWorkspace?.enter(window.location.hash.slice(1)); return;
+  }
   if ((window.location.hash === "#shops" || new URLSearchParams(window.location.search).get("view") === "shops")
       && hasAnyPermission("product:view", "product:publish")) {
     switchWorkspace("shops");
@@ -985,9 +1000,14 @@ async function showDashboard(user) {
   } else if (hasAnyPermission("system:model:view", "system:model:manage")) {
     switchWorkspace("models");
     await loadSystemData();
-  } else {
+  } else if (hasAnyPermission("system:organization:view", "system:organization:manage", "system:user:view", "system:user:manage", "system:permission:view", "system:role:manage")) {
     switchWorkspace("system");
     await loadSystemData();
+  } else {
+    // Every active company member can use the shared knowledge library.
+    history.replaceState(null, "", "#knowledge-shop");
+    switchWorkspace("knowledge");
+    globalThis.KnowledgeWorkspace?.enter("knowledge-shop");
   }
 }
 
@@ -995,6 +1015,10 @@ function hasAnyPermission(...codes) {
   const granted = new Set(currentUser?.permissions || []);
   const isAdmin = (currentUser?.roles || []).includes("ADMIN");
   return isAdmin || codes.some(code => granted.has(code));
+}
+
+function canAccessKnowledge() {
+  return !!currentUser;
 }
 
 function productAccessCapabilities() {
@@ -1053,6 +1077,7 @@ function applyFeatureAccess() {
   document.querySelector("#nav-system").hidden = !canOpenSystem;
   document.querySelector("#nav-assistant-test").hidden = !canViewAssistant;
   document.querySelectorAll("[data-commerce-route]").forEach(link => { link.hidden = !canAccessProductCenter(); });
+  document.querySelectorAll("[data-knowledge-route]").forEach(link => { link.hidden = !canAccessKnowledge(); });
   document.querySelectorAll(".nav-group").forEach(group => {
     group.hidden = ![...group.querySelectorAll(".nav-item")].some(link => !link.hidden);
   });
@@ -1312,6 +1337,12 @@ function switchWorkspace(page) {
   const isAiVideoMonitor = page === "aiVideoMonitor";
   const isProductPublish = page === "productPublish";
   const isShops = page === "shops";
+  const isKnowledge = page === 'knowledge';
+  document.querySelector('#knowledge-page').hidden = !isKnowledge;
+  document.querySelectorAll('[data-knowledge-route]').forEach(link => { link.classList.toggle('active',isKnowledge && link.hash===window.location.hash);if(!isKnowledge)link.removeAttribute('aria-current'); });
+  const isBd = page === 'bd';
+  document.querySelector('#bd-page').hidden = !isBd;
+  document.querySelectorAll('[data-bd-route]').forEach(a=>a.classList.toggle('active',isBd&&a.hash===window.location.hash));
   document.querySelector("#shop-management-page").hidden = !isShops;
   document.querySelector("#nav-shops").classList.toggle("active", isShops);
   document.querySelector("#dashboard-page").hidden = true;
@@ -1337,15 +1368,17 @@ function switchWorkspace(page) {
   document.querySelector("#nav-publish").classList.toggle("active", isProductPublish);
   document.querySelectorAll("[data-commerce-route]").forEach(link => { link.classList.remove("active"); link.removeAttribute("aria-current"); });
   document.querySelector(".topbar h2").textContent =
-    isShops ? "店铺管理" :
+    isKnowledge ? "知识库" : isBd ? "BD 建联" : isShops ? "店铺管理" :
     isVideoScripts ? "视频脚本管理" : isGeneralVideo ? "通用生成" : isAiVideoTasks ? "AI 视频任务" : isAiVideoMonitor ? "AI 任务监控" : isProductPublish ? "商品采集与发布" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
-  if (isShops) {
+  if (isKnowledge || isBd) {
+    rememberProductCaptureRoute(false);
+  } else if (isShops) {
     rememberProductCaptureRoute(false);
     window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#shops`);
   } else if (isProductPublish) {
     rememberProductCaptureRoute(true);
     selectCommerceSection();
-  } else if (commerceRouteFromHash() || window.location.hash === "#shops") {
+  } else if (commerceRouteFromHash() || window.location.hash === "#shops" || window.location.hash.startsWith("#knowledge-")) {
     rememberProductCaptureRoute(false);
     window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
   }
@@ -1397,6 +1430,12 @@ window.addEventListener("hashchange", () => {
     return;
   }
 
+  if (window.location.hash.startsWith('#knowledge-') && canAccessKnowledge()) {
+    switchWorkspace('knowledge'); globalThis.KnowledgeWorkspace?.enter(window.location.hash.slice(1)); return;
+  }
+  if (currentUser && ['#bd-influencers','#bd-collaborations'].includes(window.location.hash)) {
+    switchWorkspace('bd'); globalThis.BdWorkspace?.enter(window.location.hash.slice(1)); return;
+  }
   if (window.location.hash === "#shops" && currentUser && hasAnyPermission("product:view", "product:publish")) {
     switchWorkspace("shops");
     loadMarketplaceShops();
@@ -1683,7 +1722,7 @@ function commandTokenUsage(commands = [], selectedIds = null) {
 }
 
 function formatTokenCount(value) {
-  return new Intl.NumberFormat("zh-CN").format(Math.max(0, Number(value || 0)));
+  return new Intl.NumberFormat((globalThis.HoyeeLanguage?.locale || "zh-CN")).format(Math.max(0, Number(value || 0)));
 }
 
 function renderAssistantTokenMonitor(commands = assistantLastCommands) {
@@ -1737,7 +1776,7 @@ function renderPiTrace(trace = [], commands = []) {
   ];
   if (!items.length) return;
   list.innerHTML = items.map(item => `
-    <li class="${item.status}"><i></i><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.detail)}</p></div></li>
+    <li class="${item.status}"><i></i><div><strong translate="no">${escapeHtml(item.title)}</strong><p>${escapeHtml(item.detail)}</p></div></li>
   `).join("");
   document.querySelector("#assistant-trace-state").textContent =
     items.some(item => item.status === "running") ? "执行中" : "调度完成";
@@ -2110,7 +2149,7 @@ function renderManagedSkills(skills) {
   container.innerHTML = skills.map(skill => `
     <article class="managed-skill-row">
       <div>
-        <strong>${escapeHtml(skill.name)}</strong>
+        <strong translate="no">${escapeHtml(skill.name)}</strong>
         <span>${escapeHtml(skill.runnerType)} · ${escapeHtml(skill.sourceType)} · v${escapeHtml(skill.version)}</span>
       </div>
       <span class="job-status status-${String(skill.status).toLowerCase()}">${escapeHtml(skill.status)}</span>
@@ -2425,7 +2464,7 @@ function renderAutomationSkills() {
   const assistantReady = Boolean(localAutomationAssistant?.ready) && canExecute;
   container.innerHTML = automationSkills.map(skill => `
     <article class="automation-skill-card">
-      <header><div><h3>${escapeHtml(skill.name)}</h3><small>${escapeHtml(skill.runnerType)} · v${escapeHtml(skill.version)}</small></div><span class="job-status status-completed">已授权</span></header>
+      <header><div><h3 translate="no">${escapeHtml(skill.name)}</h3><small>${escapeHtml(skill.runnerType)} · v${escapeHtml(skill.version)}</small></div><span class="job-status status-completed">已授权</span></header>
       <p>${escapeHtml(skill.description || "本机自动化 Skill")}</p>
       <footer><span>${escapeHtml(skill.supportedOs)}</span><button class="new-job-button" data-run-skill="${escapeHtml(skill.code)}"
         ${assistantReady ? "" : `disabled title="${canExecute ? "请先启动并连接本机助手" : "当前角色只有查看权限"}"`}>${assistantReady ? "执行" : canExecute ? "助手未连接" : "仅可查看"}</button></footer>
@@ -2484,7 +2523,7 @@ async function openAutomationRun(code) {
     if (field.type === "checkbox") {
       return `<label class="${fieldClass} automation-checkbox-field">
         <input name="${escapeHtml(field.name)}" type="checkbox" ${required}>
-        <span>${escapeHtml(field.label || field.name)}</span>
+        <span translate="no">${escapeHtml(field.label || field.name)}</span>
       </label>`;
     }
     if (field.type === "localFile") {
@@ -2522,7 +2561,7 @@ async function openAutomationRun(code) {
         <label>
           <input type="checkbox" name="prerequisite" required>
           <span><b>${escapeHtml(item.label || item.title || "确认事项")}</b>
-          ${item.description ? `<small>${escapeHtml(item.description)}</small>` : ""}</span>
+          ${item.description ? `<small translate="no">${escapeHtml(item.description)}</small>` : ""}</span>
         </label>`).join("")}`
     : "";
   document.querySelector("#automation-start-button").disabled = fields.length === 0;
@@ -3055,7 +3094,7 @@ function automationSourceName(source) {
 
 function formatAutomationTime(value) {
   if (!value) return "";
-  return new Date(value).toLocaleTimeString("zh-CN", { hour12: false });
+  return new Date(value).toLocaleTimeString((globalThis.HoyeeLanguage?.locale || "zh-CN"), { hour12: false });
 }
 
 document.querySelector("#automation-run-dialog").addEventListener("close", stopAutomationRunPoll);
@@ -3253,7 +3292,7 @@ async function loadJobs() {
     list.innerHTML = jobs.map(job => `
       <article class="job-row">
         <div class="job-icon">${job.type === "IMAGE_TO_VIDEO" ? "▶" : "◇"}</div>
-        <div class="job-main"><strong>${escapeHtml(job.title)}</strong><span>${typeNames[job.type] || job.type} · ${escapeHtml(job.jobNo)}</span></div>
+        <div class="job-main"><strong translate="no">${escapeHtml(job.title)}</strong><span>${typeNames[job.type] || job.type} · ${escapeHtml(job.jobNo)}</span></div>
         <span class="job-status status-${job.status.toLowerCase()}">${statusNames[job.status] || job.status}</span>
         <time>${formatDate(job.createdAt)}</time>
       </article>
@@ -3271,7 +3310,7 @@ function escapeHtml(value = "") {
 
 function formatDate(value) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat((globalThis.HoyeeLanguage?.locale || "zh-CN"), {
     month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"
   }).format(new Date(value));
 }
@@ -3345,7 +3384,7 @@ function formatMarketplaceShopTime(value, fallback = "未返回") {
   if (!value) return fallback;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return fallback;
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat((globalThis.HoyeeLanguage?.locale || "zh-CN"), {
     year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"
   }).format(date);
 }
@@ -4121,6 +4160,17 @@ function syncProductCapturePagination(message = productCapturePaginationMessage)
   document.querySelector("#product-load-more-status").textContent = message;
 }
 
+function productCaptureCanUpload(capture) {
+  return hasAnyPermission("product:publish")
+    && ["CAPTURED", "DRAFT", "IMAGE_PROCESSING", "READY", "APPROVED", "FAILED", "PUBLISHED"].includes(capture?.status);
+}
+
+function productCaptureOrigin(capture) {
+  if (capture?.originType === "COMMERCE_GENERATED") return {label: "裂变商品", tone: "generated"};
+  if (capture?.originType === "CAPTURED") return {label: "原始采集", tone: "captured"};
+  return {label: "来源待确认", tone: "unknown"};
+}
+
 function renderProductCaptureList() {
   const list = document.querySelector("#product-capture-list");
   const filtered = filteredProductCaptures();
@@ -4141,12 +4191,14 @@ function renderProductCaptureList() {
     const thumbnailStatus = ["PROCESSING", "QUEUED", "FAILED"].includes(rawThumbnailStatus)
       ? rawThumbnailStatus.toLowerCase() : "";
     const selected = capture.id === selectedProductCaptureId;
-    const selectable = hasAnyPermission("product:publish") && ["CAPTURED", "READY", "APPROVED", "FAILED"].includes(capture.status);
+    const selectable = productCaptureCanUpload(capture);
+    const origin = productCaptureOrigin(capture);
     return `<div class="product-selectable-row"><input type="checkbox" data-product-bulk-id="${escapeHtml(capture.id)}" aria-label="勾选 ${escapeHtml(title)}" ${productBulkSelectedIds.has(capture.id) ? "checked" : ""} ${selectable ? "" : "disabled"}><button class="product-capture-row ${selected ? "active" : ""}" type="button" data-product-capture-id="${escapeHtml(capture.id)}"${selected ? ` aria-current="true"` : ""}>
       <span class="product-row-thumb ${escapeHtml(thumbnailStatus)}">${thumb ? `<span class="capture-thumbnail-placeholder">商品图片加载中</span><img src="${escapeHtml(thumb)}" alt="" loading="lazy" onload="this.previousElementSibling.hidden=true" onerror="this.hidden=true;this.previousElementSibling.textContent='图片暂不可用'">` : `<span class="capture-thumbnail-placeholder">暂无商品图片</span>`}</span>
-      <span class="product-row-copy"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(productSourcePlatformName(capture.sourcePlatform))} · ${escapeHtml(productPriceLabel(capture))}</small><em>${formatDate(capture.updatedAt || capture.createdAt)}</em></span>
+      <span class="product-origin-badge ${origin.tone}">${origin.label}</span>
+      <span class="product-row-copy"><strong translate="no">${escapeHtml(title)}</strong><small>${escapeHtml(productSourcePlatformName(capture.sourcePlatform))} · ${escapeHtml(productPriceLabel(capture))}</small><em>${formatDate(capture.updatedAt || capture.createdAt)}</em></span>
       <span class="product-row-status ${group}">${escapeHtml(productCaptureDisplayStatus(capture))}</span>
-    </button>${hasAnyPermission("product:edit") ? `<button type="button" class="capture-delete-button" data-delete-capture="${escapeHtml(capture.id)}" aria-label="删除 ${escapeHtml(title)}">删除</button>` : ""}</div>`;
+    </button><div class="capture-card-actions">${selectable ? `<button type="button" class="capture-upload-button" data-upload-capture="${escapeHtml(capture.id)}">${capture.status === "PUBLISHED" ? "选择店铺再次上传" : "选择店铺上传"}</button>` : ""}${hasAnyPermission("product:edit") ? `<button type="button" class="capture-delete-button" data-delete-capture="${escapeHtml(capture.id)}" aria-label="删除 ${escapeHtml(title)}">删除</button>` : ""}</div></div>`;
   }).join("");
 }
 
@@ -4657,10 +4709,12 @@ function renderProductCaptureDetail() {
   statusChip.textContent = productCaptureDisplayStatus(capture);
   statusChip.className = `product-status-chip ${productCaptureStatusGroup(capture.status).toLowerCase()}`;
   document.querySelector("#product-source-platform").textContent = productSourcePlatformName(capture.sourcePlatform);
-  document.querySelector("#product-capture-mode").textContent = capture.captureMode === "DIRECT_DOM" || !capture.captureMode
-    ? "页面直采 · 未调用付费 API"
-    : capture.captureMode;
+  const origin = productCaptureOrigin(capture);
+  const originBadge = document.querySelector("#product-capture-mode");
+  originBadge.textContent = origin.label;
+  originBadge.className = `product-origin-badge ${origin.tone}`;
   document.querySelector("#product-source-id").textContent = capture.sourceProductId || capture.id;
+  document.querySelector("#product-detail-title").setAttribute("translate", (capture.title) ? "no" : "yes");
   document.querySelector("#product-detail-title").textContent = capture.title || "未命名商品";
   document.querySelector("#product-updated-at").textContent = `更新于 ${formatDate(capture.updatedAt || capture.createdAt)}`;
   const sourceLink = document.querySelector("#product-source-link");
@@ -6614,6 +6668,7 @@ async function openProductPublishDialog({ background = false } = {}) {
     productPublishIdempotencyKey = newProductIdempotencyKey();
     productPublishIdempotencyCaptureId = capture.id;
   }
+  document.querySelector("#publish-product-title").setAttribute("translate", (capture.title) ? "no" : "yes");
   document.querySelector("#publish-product-title").textContent = capture.title || "未命名商品";
   document.querySelector("#publish-organization-name").textContent = currentUser?.organizationName || "当前公司";
   document.querySelector("#publish-image-count").textContent = `${completedImages} / ${images.length} 张`;
@@ -6751,7 +6806,7 @@ function syncProductBulkCapture(item, session) {
   }).then(result => {
     if (!productBulkPollIsCurrent(session)) return;
     const capture = productCapturePayload(result?.data);
-    if (capture?.id !== item.captureId) throw Error('商品状态同步响应不完整');
+    if (capture?.id !== item.captureId) throw new ApiRequestError('商品状态同步响应不完整', 502);
     updateProductCaptureInMemory(capture, {preserveSelectedEditor: productEditorDirty || Boolean(productCaptureSaveInFlightId)});
     sync.done = true;
     item.syncError = '';
@@ -6764,12 +6819,15 @@ function syncProductBulkCapture(item, session) {
     if (ProductBulkUpload.isRetryableReadError(error) && sync.attempts < 3) {
       const delayMs = sync.attempts === 1 ? 2000 : 5000;
       sync.retryAt = Date.now() + delayMs;
-      item.syncError = '商品状态同步暂时失败，正在自动重试';
+      item.syncError = item.workflow?.status === 'SUCCEEDED'
+        ? '上传已成功，状态刷新中，正在自动重试' : '商品状态同步暂时失败，正在自动重试';
       recordProductBulkRetry(item, '同步商品状态', {attempt: sync.attempts + 1, maxAttempts: 3, delayMs});
     } else {
       sync.paused = true;
       item.syncPaused = true;
-      item.syncError = `商品状态同步失败，已尝试 ${sync.attempts} 次；请点击重试进度同步`;
+      item.syncError = item.workflow?.status === 'SUCCEEDED'
+        ? `上传已成功，状态刷新暂未完成（已尝试 ${sync.attempts} 次）；可重试进度同步，无需重新上传`
+        : `商品状态同步失败，已尝试 ${sync.attempts} 次；请点击重试进度同步`;
     }
     renderProductBulkProgress();
   }).finally(() => {
@@ -6812,9 +6870,9 @@ function renderProductBulkCard(item, shops = [], preview = false) {
     <div class="bulk-product-visual"><span class="bulk-product-placeholder" aria-hidden="true">▧</span>${thumb ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}
       <span class="bulk-product-badge">${success ? '✓' : failed ? '!' : active ? '◌' : '·'} ${escapeHtml(status)}</span>
       <div class="bulk-product-overlay"><div><span>${escapeHtml(progress)}</span>${percent !== null && !failed ? `<b>${percent}%</b>` : ''}</div><div class="bulk-product-track ${active && percent === null ? 'is-indeterminate' : ''}"><span style="width:${percent === null ? 0 : percent}%"></span></div></div>
-    </div><div class="bulk-product-info"><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong>
+    </div><div class="bulk-product-info"><strong title="${escapeHtml(item.title)}" translate="no">${escapeHtml(item.title)}</strong>
       ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : '<small>原价换汇 · 库存 999 · 自动匹配类目</small>'}
-      ${error ? `<details class="bulk-product-error"><summary>查看失败原因</summary><p>${escapeHtml(error)}</p></details>` : ''}
+      ${error ? `<details class="bulk-product-error"><summary>${success ? '查看状态同步提示' : '查看失败原因'}</summary><p>${escapeHtml(error)}</p></details>` : ''}
       ${retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
 }
 
@@ -6932,15 +6990,17 @@ async function pollProductBulkProgress() {
   }
 }
 
-async function openProductBulkUpload(historyKey) {
+async function openProductBulkUpload(historyKey, captureId) {
   if (!hasAnyPermission("product:publish")) return;
   if (typeof historyKey !== 'string') historyKey = '';
-  if (!historyKey && !productBulkSelectedIds.size) return;
+  const directCapture = typeof captureId === 'string' ? productCaptures.find(item => item.id === captureId) : null;
+  if (captureId && !productCaptureCanUpload(directCapture)) return;
+  if (!historyKey && !directCapture && !productBulkSelectedIds.size) return;
   const org = currentUser?.organizationId;
   const view = ++productBulkViewGeneration;
   let saved = historyKey ? ProductBulkHistory.list(localStorage, org).find(record => record.key === historyKey) : null;
   if (historyKey && !saved) return;
-  const selectedIds = saved ? saved.items.map(item => item.captureId) : [...productBulkSelectedIds];
+  const selectedIds = saved ? saved.items.map(item => item.captureId) : directCapture ? [directCapture.id] : [...productBulkSelectedIds];
   await loadMarketplaceShops({silent:true});
   if (!org || currentUser?.organizationId !== org || view !== productBulkViewGeneration) return;
   if (historyKey) {
@@ -6956,15 +7016,17 @@ async function openProductBulkUpload(historyKey) {
   const shops = crossPlatformPublishShops();
   const select = document.querySelector('#product-bulk-shop');
   select.innerHTML = `<option value="">${shops.length ? '请选择目标店铺' : '没有可发布的授权店铺'}</option>` + shops.map(shop => `<option value="${escapeHtml(shop.id)}">${escapeHtml(shop.name || shop.shopName || shop.externalShopId)} · ${escapeHtml(shop.region || '')} · ${escapeHtml(shop.platform === 'TIKTOK_SHOP' ? 'TikTok Shop' : 'Shopee')}</option>`).join('');
-  if (shops.length === 1) select.value = shops[0].id;
+  const selected = selectedIds.map(id => productCaptures.find(item => item.id === id) || productBulkSelectedCaptures.get(id)
+    || (saved && {id, title:saved.items.find(item => item.captureId === id)?.title})).filter(Boolean);
+  const republishing = selected.some(item => item.status === 'PUBLISHED');
+  select.value = '';
+  if (shops.length === 1 && !republishing) select.value = shops[0].id;
   if (!marketplaceIntegrationStatus.livePublishingEnabled && !shops.length) {
     select.innerHTML = '<option value="dry-run-shop">发布演练（不连接店铺）</option>';
   }
   document.querySelector('#product-bulk-mode').textContent = marketplaceIntegrationStatus.livePublishingEnabled
-    ? '上传到店铺待上架目录，后续上架由你决定。'
+    ? republishing ? '请重新选择目标店铺；已提交商品复用现有图片，同店重复提交会核对已有记录。' : '上传到店铺待上架目录，后续上架由你决定。'
     : '当前为发布演练模式，不会在店铺创建商品。';
-  const selected = selectedIds.map(id => productCaptures.find(item => item.id === id) || productBulkSelectedCaptures.get(id)
-    || (saved && {id, title:saved.items.find(item => item.captureId === id)?.title})).filter(Boolean);
   document.querySelector('#product-bulk-summary').textContent = `已选择 ${selected.length} 件商品`;
   document.querySelector('#product-bulk-items').innerHTML = selected.map(item => renderProductBulkCard(item, [], true)).join('');
   const restored = productBulkItems.length > 0;
@@ -7019,16 +7081,33 @@ async function submitProductBulkUpload(event) {
       if (!shopOptions.has(shopId)) {
         // Allow extra time for the official category and logistics reads while
         // keeping a complete request/body deadline for an unresponsive service.
-        shopOptions.set(shopId, productBulkApi(`/api/v1/shops/${encodeURIComponent(shopId)}/publish-options`, {}, {
-          timeoutMs: 180000, isCurrent,
+        shopOptions.set(shopId, ProductBulkUpload.retryRead(async () => {
+          let result;
+          try {
+            result = await productBulkApi(`/api/v1/shops/${encodeURIComponent(shopId)}/publish-options`, {}, {
+              timeoutMs: 180000, isCurrent, retry: false
+            });
+          } catch (error) {
+            // This endpoint only reads official options. A backend 500 can wrap
+            // Shopee logistics.inner_error; retry reads, never workflow POSTs.
+            if (Number(error.status) === 500) throw new ApiRequestError(error.message, 503);
+            throw error;
+          }
+          if (!result?.data) throw new ApiRequestError('店铺类目与配送渠道响应不完整', 503);
+          const platform = normalizedMarketplacePlatform(crossPlatformPublishShops().find(shop => String(shop.id) === String(shopId))?.platform);
+          if (platform === 'SHOPEE') {
+            const channels = result.data.logistics?.logistics_channel_list;
+            if (!Array.isArray(channels) || channels.length === 0) {
+              throw new ApiRequestError('Shopee 暂未返回配送渠道，可能正在同步或接口暂时异常；请稍后重试。此提示不代表店铺未开启物流。', 503);
+            }
+          }
+          return result.data;
+        }, {
+          maxAttempts: 5, isCurrent,
           onRetry: details => {
             for (const pending of items.filter(item => item.shopId === shopId && item.status === 'PREPARING')) recordRetry(pending, '读取店铺配置', details);
           }
-        })
-          .then(result => {
-            if (!result?.data) throw Error('店铺类目与配送渠道响应不完整');
-            return result.data;
-          }));
+        }));
       }
       return shopOptions.get(shopId);
     };
@@ -7068,7 +7147,7 @@ async function submitProductBulkUpload(event) {
         }
         if (!resolved.categoryId) throw Error(`原商品类目“${capture.categoryName || '未采集'}”无法匹配目标店铺类目，未提交此商品`);
         if (platform === 'TIKTOK_SHOP' && !resolved.warehouseId) throw Error('目标店铺没有唯一或默认发货仓库，请在店铺后台设置默认仓库');
-        if (platform === 'SHOPEE' && !resolved.logisticInfo.length) throw Error('目标店铺未启用配送渠道，请在店铺管理中启用');
+        if (platform === 'SHOPEE' && !resolved.logisticInfo.length) throw Error('Shopee 返回的配送渠道均不可用，请核对卖家中心物流设置后重试');
         payload = {...base, ...automaticProductPublishDefaults(capture, common), categoryId: resolved.categoryId,
           ...(platform === 'TIKTOK_SHOP' ? {warehouseId: resolved.warehouseId} : {logisticInfo: resolved.logisticInfo})};
       }
@@ -7461,6 +7540,8 @@ async function deleteProductCaptureFromList(button) {
 }
 
 document.querySelector("#product-capture-list").addEventListener("click", event => {
+  const uploadButton = event.target.closest("[data-upload-capture]");
+  if (uploadButton) { void openProductBulkUpload('', uploadButton.dataset.uploadCapture); return; }
   const deleteButton = event.target.closest("[data-delete-capture]");
   if (deleteButton) { void deleteProductCaptureFromList(deleteButton); return; }
   const checkbox = event.target.closest("[data-product-bulk-id]");
@@ -7726,7 +7807,8 @@ async function loadSystemData() {
     roleResult,
     permissionResult,
     userResult,
-    modelResult
+    modelResult,
+    knowledgeAccessResult
   ] = await Promise.all([
     canReadPeople ? api(`/api/v1/system/departments${peopleOrganizationQuery}`) : Promise.resolve({ data: [] }),
     canReadRoles ? api(`/api/v1/system/roles${peopleOrganizationQuery}`) : Promise.resolve({ data: [] }),
@@ -7734,12 +7816,17 @@ async function loadSystemData() {
     canReadPeople ? api(`/api/v1/system/users${peopleOrganizationQuery}`) : Promise.resolve({ data: [] }),
     canReadModels
       ? api(`/api/v1/system/model-configs?organizationId=${encodeURIComponent(modelOrganizationId)}`)
-      : Promise.resolve({ data: [] })
+      : Promise.resolve({ data: [] }),
+    canReadPeople && (currentUser?.roles || []).some(role => ["ADMIN", "PLATFORM_ADMIN"].includes(role))
+      && selectedPeopleOrganizationId === currentUser?.organizationId
+      ? api("/api/v1/knowledge/access/users")
+      : Promise.resolve({ data: {} })
   ]);
   departments = departmentResult.data;
   roles = roleResult.data;
   permissions = permissionResult.data;
   users = userResult.data;
+  knowledgeWriterAccess = knowledgeAccessResult.data || {};
   modelConfigs = modelResult.data;
   if (!selectedRoleId || !roles.some(role => role.id === selectedRoleId)) {
     selectedRoleId = roles[0]?.id || "";
@@ -7904,6 +7991,7 @@ async function updateModelStatus(id, status) {
 
 function renderOrganization() {
   document.querySelector("#org-code").textContent = organization.code.toUpperCase();
+  document.querySelector("#org-name").setAttribute("translate", (organization.name) ? "no" : "yes");
   document.querySelector("#org-name").textContent = organization.name;
   document.querySelector("#org-description").textContent =
     organization.description || "补充企业简介，让团队清楚这个工作空间服务于什么业务。";
@@ -7917,7 +8005,7 @@ function renderOrganizationDirectory() {
   target.innerHTML = organizations.map(item => `
     <article class="organization-directory-item ${item.id === currentUser.organizationId ? "current" : ""}">
       <span class="organization-code-chip">${escapeHtml(item.code.toUpperCase())}</span>
-      <div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description || "尚未填写公司简介")}</small></div>
+      <div><strong translate="no">${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description || "尚未填写公司简介")}</small></div>
       <em>${item.status === "ACTIVE" ? "正常" : "已停用"}</em>
     </article>
   `).join("") || '<div class="model-empty compact">还没有可管理的公司。</div>';
@@ -7965,7 +8053,7 @@ function renderDepartments() {
     return `
       <div class="department-row">
         <button class="department-item ${selectedDepartmentId === department.id ? "active" : ""}" data-department-id="${department.id}">
-          <span><strong>${escapeHtml(department.name)}</strong><small>${count} 人 · ${escapeHtml(department.code)}</small></span>
+          <span><strong translate="no">${escapeHtml(department.name)}</strong><small>${count} 人 · ${escapeHtml(department.code)}</small></span>
         </button>
         ${hasAnyPermission("system:user:manage") ? `
           <button class="department-edit" data-department-edit="${department.id}" aria-label="编辑${escapeHtml(department.name)}" title="编辑部门">✎</button>
@@ -8034,7 +8122,7 @@ function renderRoles() {
   const list = document.querySelector("#role-list");
   list.innerHTML = roles.map(role => `
     <button class="role-config-item ${selectedRoleId === role.id ? "active" : ""}" data-role-id="${role.id}">
-      <span><strong>${escapeHtml(role.name)}</strong><small>${role.userCount} 人 · ${role.permissionIds.length} 项权限</small></span>
+      <span><strong translate="no">${escapeHtml(role.name)}</strong><small>${role.userCount} 人 · ${role.permissionIds.length} 项权限</small></span>
       ${role.builtIn ? '<em>内置</em>' : ""}
     </button>
   `).join("");
@@ -8070,7 +8158,7 @@ function renderSelectedRole() {
       <ul>${items.map(item => `
         <li class="${granted.has(item.id) ? "granted" : ""}">
           <i>${granted.has(item.id) ? "✓" : "—"}</i>
-          <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.code)}</small></span>
+          <span><strong translate="no">${escapeHtml(item.name)}</strong><small>${escapeHtml(item.code)}</small></span>
           <em>${permissionTypeName(item.resourceType)}</em>
         </li>
       `).join("")}</ul>
@@ -8087,7 +8175,7 @@ function renderUsers() {
   });
   const body = document.querySelector("#user-table-body");
   if (!filtered.length) {
-    body.innerHTML = '<tr><td colspan="5" class="table-empty">这个范围还没有人员。添加人员后，账号会出现在这里。</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="table-empty">这个范围还没有人员。添加人员后，账号会出现在这里。</td></tr>';
     return;
   }
   body.innerHTML = filtered.map(user => `
@@ -8095,6 +8183,12 @@ function renderUsers() {
       <td><div class="person-cell"><span><strong>${escapeHtml(user.displayName)}</strong><small>${escapeHtml(user.phone || user.username)}</small></span></div></td>
       <td><div class="stacked-cell"><strong>${escapeHtml(user.departmentName)}</strong><small>${escapeHtml(user.jobTitle || "未设置职位")}</small></div></td>
       <td><div class="role-tags">${user.roleNames.map(role => `<span>${escapeHtml(role)}</span>`).join("")}</div></td>
+      <td>${Object.hasOwn(knowledgeWriterAccess, user.id) ? `
+        <button class="row-action" data-knowledge-writer="${user.id}"
+          aria-label="${escapeHtml(user.displayName)}知识库写权限"
+          ${!hasAnyPermission("system:user:manage") || user.roleIds?.some(id => roles.some(role => role.id === id && ["ADMIN", "PLATFORM_ADMIN"].includes(role.code))) ? "disabled" : ""}>
+          ${knowledgeWriterAccess[user.id] ? "可新建 · 可编辑 · 可删除 · 可上传" : "可阅读 · 可新建 · 可上传"}
+        </button>` : "可阅读 · 可新建 · 可上传"}</td>
       <td><span class="account-status account-${user.status.toLowerCase()}"><i></i>${userStatusName(user.status)}</span></td>
       <td><div class="row-actions" ${hasAnyPermission("system:user:manage") ? "" : "hidden"}>
         <button class="row-action" data-user-action="edit" data-user-id="${user.id}">编辑</button>
@@ -8115,6 +8209,25 @@ function renderUsers() {
           user.id,
           button.dataset.userStatus === "ACTIVE" ? "DISABLED" : "ACTIVE"
         );
+      }
+    });
+  });
+  body.querySelectorAll("[data-knowledge-writer]").forEach(button => {
+    button.addEventListener("click", async () => {
+      const user = users.find(item => item.id === button.dataset.knowledgeWriter);
+      if (!user) return;
+      const enabled = knowledgeWriterAccess[user.id] === true;
+      if (!confirm(`确定${enabled ? "关闭" : "开启"}“${user.displayName}”的知识库写权限吗？${enabled ? "关闭后仍可阅读、新建和上传资料。" : "开启后还可编辑、删除文章及移除附件。"}`)) return;
+      button.disabled = true;
+      try {
+        const result = await api(`/api/v1/knowledge/access/users/${encodeURIComponent(user.id)}`, {
+          method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({canWrite: !enabled})
+        });
+        knowledgeWriterAccess[user.id] = result.data.canWrite;
+        await loadSystemData();
+      } catch (error) {
+        button.disabled = false;
+        alert(error.message);
       }
     });
   });
@@ -8143,7 +8256,7 @@ async function openAutomationAccess(user) {
           <label class="choice-item">
             <input type="checkbox" name="automationCodes" value="${escapeHtml(skill.code)}"
               ${granted.has(skill.code) ? "checked" : ""}>
-            <span><strong>${escapeHtml(skill.name)}</strong><small>${escapeHtml(skill.runnerType)}</small></span>
+            <span><strong translate="no">${escapeHtml(skill.name)}</strong><small>${escapeHtml(skill.runnerType)}</small></span>
           </label>
         `).join("") || '<div class="empty-state">暂无已启用的自动化。</div>';
     document.querySelector("#automation-access-dialog").showModal();
@@ -8190,7 +8303,7 @@ function renderRoleChoices(containerId, selectedIds, availableRoles = roles) {
     .map(role => `
       <label class="choice-item">
         <input type="checkbox" name="roleIds" value="${role.id}" ${selected.has(role.id) ? "checked" : ""}>
-        <span><strong>${escapeHtml(role.name)}</strong><small>${dataScopeName(role.dataScope)}</small></span>
+        <span><strong translate="no">${escapeHtml(role.name)}</strong><small>${dataScopeName(role.dataScope)}</small></span>
       </label>
     `).join("");
 }
@@ -8279,7 +8392,7 @@ function renderPermissionOptions(selectedIds, lockAll = false) {
           <label>
             <input type="checkbox" name="permissionIds" value="${item.id}"
               ${selected.has(item.id) ? "checked" : ""} ${lockAll ? "disabled" : ""}>
-            <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.code)}</small></span>
+            <span><strong translate="no">${escapeHtml(item.name)}</strong><small>${escapeHtml(item.code)}</small></span>
             <em>${permissionTypeName(item.resourceType)}</em>
           </label>
         `).join("")}
@@ -8932,6 +9045,7 @@ function renderVideoScriptProgress(script) {
     ? "分镜和生产 JSON 已经生成，可以关闭窗口查看结果。"
     : failed ? "任务和原视频已保留，可以重试当前任务或删除后重新上传。" : "当前任务会在后台持续处理；你可以关闭窗口并继续上传其他视频。";
   document.querySelector("#active-script-stage").textContent = videoScriptStatusNames[status] || status;
+  document.querySelector("#active-script-name").setAttribute("translate", (script.name) ? "no" : "yes");
   document.querySelector("#active-script-name").textContent = script.name || script.sourceFileName || "视频拆解任务";
   document.querySelector("#active-script-message").textContent = failed
     ? (script.errorMessage || "模型没有生成有效分镜，请重试当前任务。")
@@ -9024,8 +9138,10 @@ function renderEmptyVideoScriptDetail() {
   if (!detail) return;
   detail.classList.remove("is-manual-script");
   document.querySelector("#script-detail-meta").innerHTML = "<span>本公司脚本库</span>";
+  document.querySelector("#script-detail-title").setAttribute("translate", (false) ? "no" : "yes");
   document.querySelector("#script-detail-title").textContent = "还没有视频脚本";
   document.querySelector("#script-detail-source").textContent = "上传视频或手动创建后，脚本只会保存在登录账号所属公司。";
+  document.querySelector("#script-detail-visual-tone").setAttribute("translate", "yes");
   document.querySelector("#script-detail-visual-tone").textContent = "创建第一条脚本后，这里会展示视觉基调与分镜。";
   document.querySelector("#script-json-title").textContent = "生产 JSON";
   document.querySelector("#script-json-summary").textContent = "等待创建脚本";
@@ -9294,11 +9410,17 @@ function selectRenderedShot(button, shot, scriptId) {
   button.classList.add("active");
   document.querySelector("#selected-shot-number").textContent =
     `分镜 ${String(shot.sequence || 1).padStart(2, "0")} · ${Number(shot.startSecond || 0).toFixed(2)}–${Number(shot.endSecond || 0).toFixed(2)} 秒 · 时长 ${Number(shot.durationSeconds || 0).toFixed(2)} 秒`;
+  document.querySelector("#selected-shot-title").setAttribute("translate", (shot.title) ? "no" : "yes");
   document.querySelector("#selected-shot-title").textContent = shot.title || `分镜 ${shot.sequence || 1}`;
+  document.querySelector("#selected-shot-copy").setAttribute("translate", (shot.sceneDescription) ? "no" : "yes");
   document.querySelector("#selected-shot-copy").textContent = shot.sceneDescription || "暂无画面描述";
+  document.querySelector("#selected-shot-size").setAttribute("translate", (shot.shotSize) ? "no" : "yes");
   document.querySelector("#selected-shot-size").textContent = shot.shotSize || "未填写";
+  document.querySelector("#selected-shot-camera").setAttribute("translate", (shot.cameraMovement) ? "no" : "yes");
   document.querySelector("#selected-shot-camera").textContent = shot.cameraMovement || "未填写";
+  document.querySelector("#selected-shot-transition").setAttribute("translate", (shot.transitionDescription) ? "no" : "yes");
   document.querySelector("#selected-shot-transition").textContent = shot.transitionDescription || (Number(shot.sequence) === 1 ? "无" : "直接硬切");
+  document.querySelector("#selected-shot-emotion").setAttribute("translate", (shot.emotion) ? "no" : "yes");
   document.querySelector("#selected-shot-emotion").textContent = shot.emotion || "未填写";
   const preview = document.querySelector("#selected-shot-preview");
   const manualScript = selectedVideoScriptDetail?.script?.sourceType === "MANUAL";
@@ -9348,11 +9470,13 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
     document.querySelector("#script-storyboard-view").hidden = false;
     document.querySelector("#script-json-view").hidden = true;
   }
+  document.querySelector("#script-detail-title").setAttribute("translate", (script.name) ? "no" : "yes");
   document.querySelector("#script-detail-title").textContent = script.name || "视频脚本分析中";
   document.querySelector("#script-detail-meta").innerHTML =
     `<span>${manualScript ? "手动编排" : "AI 视频反推"}</span><span>版本 v${Number(script.version || 1)}</span><span>${shots.length} 个分镜</span>`;
   document.querySelector("#script-detail-source").innerHTML =
     `来源：${escapeHtml(manualScript ? "手动创建" : script.sourceFileName || "上传视频")} · ${escapeHtml(videoScriptStatusNames[script.status] || script.status)} · <span data-video-script-progress-live="${escapeHtml(script.id)}">${videoScriptDisplayProgress(script).toFixed(script.status === "READY" ? 0 : 1)}</span>%`;
+  document.querySelector("#script-detail-visual-tone").setAttribute("translate", (script.status !== "FAILED" && (script.visualTone || script.summary)) ? "no" : "yes");
   document.querySelector("#script-detail-visual-tone").textContent = script.status === "FAILED"
     ? `拆解失败：${script.errorMessage || "模型未返回有效结果"}`
     : (script.visualTone || script.summary || "模型正在理解视频画面，请稍候…");
@@ -10645,8 +10769,10 @@ document.querySelectorAll(".film-frame").forEach(frame => {
     const shot = Number(frame.dataset.shot || 1);
     const stage = shot <= 3 ? "Hook" : shot <= 6 ? "Solution" : "Trust & CTA";
     document.querySelector("#selected-shot-number").textContent = `分镜 ${String(shot).padStart(2, "0")} · ${stage}`;
-    document.querySelector("#selected-shot-title").textContent = frame.dataset.shotTitle;
-    document.querySelector("#selected-shot-copy").textContent = frame.dataset.shotCopy;
+    document.querySelector("#selected-shot-title").setAttribute("translate", (frame.dataset) ? "no" : "yes");
+  document.querySelector("#selected-shot-title").textContent = frame.dataset.shotTitle;
+    document.querySelector("#selected-shot-copy").setAttribute("translate", (frame.dataset) ? "no" : "yes");
+  document.querySelector("#selected-shot-copy").textContent = frame.dataset.shotCopy;
   });
 });
 
@@ -10735,7 +10861,7 @@ function aiVideoImageAttemptDetails(step) {
 
 function aiVideoImageAttemptMarkup(step) {
   if (!step) return "";
-  return `<div class="image-attempt-details" title="本轮已记录的真实请求次数，含线路内部重试；手动重做后重新计数；历史未记录次数不补算"><span>${escapeHtml(aiVideoImageAttemptDetails(step))}</span><small>步骤更新：${escapeHtml(new Date(step.updatedAt).toLocaleTimeString('zh-CN', { hour12: false }))}</small></div>`;
+  return `<div class="image-attempt-details" title="本轮已记录的真实请求次数，含线路内部重试；手动重做后重新计数；历史未记录次数不补算"><span>${escapeHtml(aiVideoImageAttemptDetails(step))}</span><small>步骤更新：${escapeHtml(new Date(step.updatedAt).toLocaleTimeString((globalThis.HoyeeLanguage?.locale || "zh-CN"), { hour12: false }))}</small></div>`;
 }
 
 function aiVideoImagePlaceholder(label, hint) {
@@ -11020,7 +11146,7 @@ function renderAiVideoTaskList() {
     const unit = task.directReferenceVideo ? "组视频" : "款商品";
     return `<button class="video-task-item ${active ? "active" : ""}" type="button" data-ai-video-task-id="${escapeHtml(task.id)}">
       <i class="${aiVideoTaskStatusClass(task.status)}"></i>
-      <div><strong>${escapeHtml(task.name)}</strong><small>${escapeHtml(task.resolution || "720p")} · ${escapeHtml(aiVideoGenerationModeNames[aiVideoMode(task)] || aiVideoMode(task))} · ${Number(task.totalItems || 0)} ${unit} · ${escapeHtml(status)}</small></div>
+      <div><strong translate="no">${escapeHtml(task.name)}</strong><small>${escapeHtml(task.resolution || "720p")} · ${escapeHtml(aiVideoGenerationModeNames[aiVideoMode(task)] || aiVideoMode(task))} · ${Number(task.totalItems || 0)} ${unit} · ${escapeHtml(status)}</small></div>
       <em>${escapeHtml(progress)}</em>
     </button>`;
   }).join("");
@@ -11328,7 +11454,7 @@ function renderDirectReferenceCard(detail, item, generating, canManageVideoTasks
         : itemAwaitingAcceptance ? "等待厂商受理" : itemVideoWaiting ? "后台生成中" : configured ? "已配置" : "待配置";
     const specifiedCount = references.filter(reference => reference.referenceRole).length;
     return `<article class="garment-card direct-reference-card selected ${itemVideoWaiting ? "is-video-processing" : ""} ${configurationLocked ? "is-reference-locked" : ""}" data-garment-card data-item-id="${escapeHtml(item.id)}">
-      <header class="garment-card-head"><div class="garment-card-copy"><div><strong>${escapeHtml(item.name)}</strong><small>${references.length} / ${Number(task.referenceImageLimit || 9)} 张${replacementMode ? "对象图" : "参考图"}</small></div><div class="garment-card-tools"><span class="garment-state ${stateClass}">${escapeHtml(stateLabel)}</span>${renderAiVideoCardExpandButton(item, false)}</div></div></header>
+      <header class="garment-card-head"><div class="garment-card-copy"><div><strong translate="no">${escapeHtml(item.name)}</strong><small>${references.length} / ${Number(task.referenceImageLimit || 9)} 张${replacementMode ? "对象图" : "参考图"}</small></div><div class="garment-card-tools"><span class="garment-state ${stateClass}">${escapeHtml(stateLabel)}</span>${renderAiVideoCardExpandButton(item, false)}</div></div></header>
       <div class="garment-card-collapsed">
         <div><span><small>素材</small><strong>${references.length} 张</strong></span><span><small>职责</small><strong>${specifiedCount} / ${references.length || 0}</strong></span><span><small>主参考</small><strong>${references.some(reference => reference.primaryReference) ? "已指定" : "未指定"}</strong></span><span><small>成片</small><strong>${video ? "已完成" : itemVideoWaiting ? "生成中" : "待生成"}</strong></span></div>
         <p>${configurationLocked ? "该组视频已完成，参考图配置已锁定。" : replacementMode ? "展开后指定每张图要替换的原视频对象。" : "展开后指定参考图职责、主参考与视频提示词。"}</p>
@@ -11376,7 +11502,7 @@ function renderDirectReferenceCard(detail, item, generating, canManageVideoTasks
   return `<article class="garment-card direct-reference-card selected is-expanded ${itemVideoWaiting ? "is-video-processing" : ""} ${configurationLocked ? "is-reference-locked" : ""} ${flipped ? "is-prompt-flipped" : ""}" data-garment-card data-item-id="${escapeHtml(item.id)}">
     <div class="garment-card-flip">
       <div class="garment-card-face garment-card-front" aria-hidden="${flipped}">
-        <header class="garment-card-head"><div class="garment-card-copy"><div><strong>${escapeHtml(item.name)}</strong><small>${references.length} / ${Number(task.referenceImageLimit || 9)} 张${replacementMode ? "对象图" : "参考图"}</small></div><div class="garment-card-tools"><button class="garment-prompt-flip" type="button" data-card-flip><i>↻</i><span>提示词</span></button><span class="garment-state ${configured ? "ready" : "running"}">${configured ? "已指定" : "待指定"}</span>${renderAiVideoCardExpandButton(item, true)}</div></div></header>
+        <header class="garment-card-head"><div class="garment-card-copy"><div><strong translate="no">${escapeHtml(item.name)}</strong><small>${references.length} / ${Number(task.referenceImageLimit || 9)} 张${replacementMode ? "对象图" : "参考图"}</small></div><div class="garment-card-tools"><button class="garment-prompt-flip" type="button" data-card-flip><i>↻</i><span>提示词</span></button><span class="garment-state ${configured ? "ready" : "running"}">${configured ? "已指定" : "待指定"}</span>${renderAiVideoCardExpandButton(item, true)}</div></div></header>
         <section class="direct-reference-workspace">
           <header><div><span>${replacementMode ? "替换对象轨道" : "参考图轨道"}</span><strong>${replacementMode ? "逐张指定原视频中的替换目标" : "编号就是视频模型的引用顺序"}</strong></div><em>${configurationLocked ? "🔒 已锁定" : configured ? "配置完整" : "请指定每张图"}</em></header>
           <div class="direct-reference-track">${track || `<div class="direct-reference-empty">上传 1–9 张${replacementMode ? "对象图" : "参考图"}开始配置</div>`}</div>
@@ -11386,7 +11512,7 @@ function renderDirectReferenceCard(detail, item, generating, canManageVideoTasks
         <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemAwaitingAcceptance ? "等待受理" : itemVideoWaiting ? "生成中" : "等待生成"}</span>${providerButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>${video.temporaryDownload ? "厂商临时链接，请及时下载" : "已保存到平台，可下载"}</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemAwaitingAcceptance ? "正在提交，等待厂商受理" : itemVideoWaiting ? "视频正在后台生成" : "等待提交参考图生成视频"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemAwaitingAcceptance ? "厂商返回任务 ID 后才会进入视频生成" : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : "配置完成后直接调用视频模型，不经过图片模型"}</small></div><em${!itemAwaitingAcceptance && itemVideoWaiting && item.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(item.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemAwaitingAcceptance ? "待受理" : itemVideoWaiting ? formatAiVideoElapsed(item.videoSubmittedAt) : "--:--"}</em></button>`}</section>
       </div>
       <section class="garment-card-face garment-card-back" aria-hidden="${!flipped}">
-        <header class="video-prompt-head"><div><strong>${escapeHtml(item.name)}</strong><small>最终发送：${replacementMode ? "对象替换映射 → 原视频复刻提示词" : "参考图职责协议 → 视频执行提示词"}</small></div><div class="video-prompt-head-actions">${renderAiVideoCardExpandButton(item, true)}<button type="button" data-card-flip ${activePromptEditing ? "disabled" : ""}><i>↻</i> 返回参考图</button></div></header>
+        <header class="video-prompt-head"><div><strong translate="no">${escapeHtml(item.name)}</strong><small>最终发送：${replacementMode ? "对象替换映射 → 原视频复刻提示词" : "参考图职责协议 → 视频执行提示词"}</small></div><div class="video-prompt-head-actions">${renderAiVideoCardExpandButton(item, true)}<button type="button" data-card-flip ${activePromptEditing ? "disabled" : ""}><i>↻</i> 返回参考图</button></div></header>
         <div class="video-prompt-body"><div class="direct-reference-contract"><span>系统自动附加·可预览</span><pre>${escapeHtml(directReferenceContractPreview(references))}</pre></div><div class="video-prompt-label"><span>视频执行提示词</span><em>${String(promptValue).length.toLocaleString()} / 20,000</em></div><textarea class="video-prompt-editor" data-video-prompt-editor maxlength="20000" spellcheck="false" ${activePromptEditing ? "" : "readonly"}>${escapeHtml(promptValue)}</textarea></div>
         <footer class="video-prompt-actions"><span>${configurationLocked ? "视频已完成，执行提示词仅供查看" : activePromptEditing ? "正在编辑视频动作与分镜提示" : "提交时会自动把上方职责协议放在提示词最前面"}</span><div>${!canEditReferences ? "" : activePromptEditing ? `<button class="quiet-prompt-button" type="button" data-prompt-cancel>取消</button><button class="save-prompt-button" type="button" data-prompt-save>保存修改</button>` : `<button class="edit-prompt-button" type="button" data-prompt-edit>编辑提示词</button>`}</div></footer>
       </section>
@@ -11407,7 +11533,8 @@ function renderAiVideoTaskDetail(options = {}) {
   if (!detail) {
     stopAiVideoElapsedTimer();
     document.querySelector("#ai-video-task-stage").textContent = "等待选择任务";
-    document.querySelector("#ai-video-task-title").textContent = "从左侧选择任务";
+    document.querySelector("#ai-video-task-title").setAttribute("translate", (false) ? "no" : "yes");
+  document.querySelector("#ai-video-task-title").textContent = "从左侧选择任务";
     document.querySelector("#ai-video-task-script").textContent = "新建任务后，脚本版本会冻结在本轮生产中。";
     const emptyTaskProgress = document.querySelector("#ai-video-task-progress");
     emptyTaskProgress.textContent = "0%";
@@ -11455,6 +11582,7 @@ function renderAiVideoTaskDetail(options = {}) {
     return types.has(primaryAssetType) && types.has("STORYBOARD_GRID") && types.has("STORYBOARD_FIRST_FRAME");
   });
   document.querySelector("#ai-video-task-stage").textContent = statusName;
+  document.querySelector("#ai-video-task-title").setAttribute("translate", (task.name) ? "no" : "yes");
   document.querySelector("#ai-video-task-title").textContent = task.name;
   const musicLabel = task.musicMode === "UPLOADED" ? `已上传配乐 · ${task.musicFileName || "音乐"}` : "AI 轻快旋律 BGM";
   const routeLabel = task.videoRoute === "SPEED" ? "低质量 · 高速度" : "高质量 · 低速度";
@@ -11566,7 +11694,7 @@ function renderAiVideoTaskDetail(options = {}) {
           : itemVideoWaiting ? "视频正在后台生成，展开卡片可查看等待时间和厂商任务。"
             : itemImagePreparing ? `正在准备${primaryAssetName}、首帧和九宫格。` : "展开后查看原图、AI 主图、九宫格和视频提示词。";
       return [item.id, `<article class="garment-card selected ${itemImagePreparing ? "is-image-processing" : ""} ${itemVideoWaiting ? "is-video-processing" : ""}" data-garment-card data-item-id="${escapeHtml(item.id)}">
-        <header class="garment-card-head"><div class="garment-card-copy"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.sku || item.sourceFileName)}</small></div><div class="garment-card-tools"><span class="garment-state ${stateClass}">${escapeHtml(itemStateLabel)}</span>${renderAiVideoCardExpandButton(item, false)}</div></div></header>
+        <header class="garment-card-head"><div class="garment-card-copy"><div><strong translate="no">${escapeHtml(item.name)}</strong><small translate="no">${escapeHtml(item.sku || item.sourceFileName)}</small></div><div class="garment-card-tools"><span class="garment-state ${stateClass}">${escapeHtml(itemStateLabel)}</span>${renderAiVideoCardExpandButton(item, false)}</div></div></header>
         <button class="garment-card-source-preview real-asset" type="button" data-asset-preview="原始商品图" title="点击放大商品原图" aria-label="放大查看 ${escapeHtml(item.name)} 原始商品图"><img src="${source}" alt="${escapeHtml(item.name)} 原始商品图" loading="lazy"><span>商品原图</span></button>
         <div class="garment-card-collapsed">
           <div><span><small>商品原图</small><strong>已上传</strong></span><span><small>${escapeHtml(primaryAssetName)}</small><strong>${model ? "已完成" : itemImagePreparing ? "生成中" : "待生成"}</strong></span><span><small>4K 九宫格</small><strong>${storyboard ? "已完成" : itemImagePreparing ? "生成中" : "待生成"}</strong></span><span><small>AI 成片</small><strong>${video ? "已完成" : itemVideoWaiting ? "生成中" : "待生成"}</strong></span></div>
@@ -11600,7 +11728,7 @@ function renderAiVideoTaskDetail(options = {}) {
       <div class="garment-card-flip">
         <div class="garment-card-face garment-card-front" aria-hidden="${flipped}">
           <header class="garment-card-head">
-            <div class="garment-card-copy"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.sku || item.sourceFileName)}</small></div><div class="garment-card-tools"><button class="garment-prompt-flip" type="button" data-card-flip aria-label="查看本款视频提示词"><i>↻</i><span>提示词</span></button><span class="garment-state ${imagePresentation.retrying ? "running" : ["FAILED", "VIDEO_FAILED"].includes(item.status) ? "failed" : itemImagePreparing || itemVideoWaiting ? "running" : "ready"}">${escapeHtml(itemStateLabel)}</span>${renderAiVideoCardExpandButton(item, true)}</div></div>
+            <div class="garment-card-copy"><div><strong translate="no">${escapeHtml(item.name)}</strong><small translate="no">${escapeHtml(item.sku || item.sourceFileName)}</small></div><div class="garment-card-tools"><button class="garment-prompt-flip" type="button" data-card-flip aria-label="查看本款视频提示词"><i>↻</i><span>提示词</span></button><span class="garment-state ${imagePresentation.retrying ? "running" : ["FAILED", "VIDEO_FAILED"].includes(item.status) ? "failed" : itemImagePreparing || itemVideoWaiting ? "running" : "ready"}">${escapeHtml(itemStateLabel)}</span>${renderAiVideoCardExpandButton(item, true)}</div></div>
           </header>
           <div class="garment-download-rail" aria-label="下载生成素材">
             <button type="button" data-download-asset data-url="${firstFrameUrl}" data-filename="${escapeHtml(item.name)}-分镜首帧" ${firstFrame ? "" : "disabled"}><i>↓</i><span>${firstFrame ? "下载首帧（第 01 格）" : "首帧裁切中"}</span></button>
@@ -11617,7 +11745,7 @@ function renderAiVideoTaskDetail(options = {}) {
           <section class="garment-video-output ${video ? "completed" : item.status === "VIDEO_FAILED" ? "failed" : itemVideoWaiting ? "processing" : "waiting"}" data-video-output><header><strong>AI 视频生成结果</strong><div class="garment-video-status-actions"><span>${video ? "已完成" : item.status === "VIDEO_FAILED" ? "视频未生成" : itemAwaitingAcceptance ? "等待受理" : itemVideoWaiting ? "生成中" : "等待生成"}</span>${providerTaskCopyButton}</div></header>${video ? `<button class="garment-video-canvas" type="button" data-asset-preview="AI 视频成片" aria-label="放大播放 AI 视频成片"><video src="${videoUrl}" preload="metadata" playsinline></video><i>▶</i><div><strong>点击预览成片</strong><small>${video.temporaryDownload ? "厂商临时链接，请及时下载" : "已保存到平台，可下载"}</small></div></button>` : `<button class="garment-video-canvas" type="button" disabled>${itemVideoWaiting ? `<img class="video-waiting-cat" src="/assets/waiting-cat.gif" alt="" aria-hidden="true">` : ""}<i aria-hidden="true">${item.status === "VIDEO_FAILED" ? "!" : itemVideoWaiting ? "" : "▶"}</i><div><strong>${item.status === "VIDEO_FAILED" ? escapeHtml(friendlyAiVideoError(item.errorMessage, "video")) : itemAwaitingAcceptance ? "正在提交，等待厂商受理" : itemVideoWaiting ? "视频正在后台生成" : itemImagePreparing ? "正在自动准备视频素材" : "等待一键生成视频"}</strong><small>${item.status === "VIDEO_FAILED" ? escapeHtml(aiVideoFailureDetail(item.errorMessage)) : itemAwaitingAcceptance ? "厂商返回任务 ID 后才会进入视频生成" : itemVideoWaiting ? "通常 20–40 分钟完成，完成后自动回显" : itemImagePreparing ? "图片正在生成或校验，无需重复点击" : "点击生成后会自动完成图片与视频两阶段"}</small></div><em${!itemAwaitingAcceptance && itemVideoWaiting && item.videoSubmittedAt ? ` class="video-elapsed-time" data-video-submitted-at="${escapeHtml(item.videoSubmittedAt)}"` : ""}>${item.status === "VIDEO_FAILED" ? "未生成" : itemAwaitingAcceptance ? "待受理" : itemVideoWaiting ? formatAiVideoElapsed(item.videoSubmittedAt) : "--:--"}</em></button>`}</section>
         </div>
         <section class="garment-card-face garment-card-back" aria-hidden="${!flipped}">
-          <header class="video-prompt-head"><div><strong>${escapeHtml(item.name)}</strong><small>上传顺序：${isModelWear ? "单人首帧" : "商品首帧"} → 4K 九宫格 → 原始商品图</small></div><div class="video-prompt-head-actions">${renderAiVideoCardExpandButton(item, true)}<button class="copy-prompt-button" type="button" data-prompt-copy aria-label="一键复制本款视频提示词"><i aria-hidden="true">⧉</i><span>一键复制</span></button><button type="button" data-card-flip ${editingPrompt ? "disabled" : ""}><i>↻</i> 返回画面</button></div></header>
+          <header class="video-prompt-head"><div><strong translate="no">${escapeHtml(item.name)}</strong><small>上传顺序：${isModelWear ? "单人首帧" : "商品首帧"} → 4K 九宫格 → 原始商品图</small></div><div class="video-prompt-head-actions">${renderAiVideoCardExpandButton(item, true)}<button class="copy-prompt-button" type="button" data-prompt-copy aria-label="一键复制本款视频提示词"><i aria-hidden="true">⧉</i><span>一键复制</span></button><button type="button" data-card-flip ${editingPrompt ? "disabled" : ""}><i>↻</i> 返回画面</button></div></header>
           <div class="video-prompt-body">
             <div class="video-prompt-label"><span>本段视频提示词</span><em>${promptCount.toLocaleString()} / 20,000</em></div>
             <textarea class="video-prompt-editor" data-video-prompt-editor maxlength="20000" spellcheck="false" ${editingPrompt ? "" : "readonly"} placeholder="还没有视频提示词，点击编辑后填写。">${escapeHtml(promptValue)}</textarea>
@@ -12962,7 +13090,7 @@ function renderGeneralVideoReferences() {
   list.innerHTML = generalVideoReferences.map((reference, index) => `
     <article class="general-reference-card" data-general-reference-id="${escapeHtml(reference.id)}">
       <img src="${reference.previewUrl}" alt="${escapeHtml(reference.file.name)}">
-      <div><strong>${escapeHtml(reference.file.name)}</strong><small>${(reference.file.size / 1024 / 1024).toFixed(1)} MB · 参考图 ${index + 1}</small></div>
+      <div><strong translate="no">${escapeHtml(reference.file.name)}</strong><small>${(reference.file.size / 1024 / 1024).toFixed(1)} MB · 参考图 ${index + 1}</small></div>
       <button type="button" data-general-reference-remove aria-label="移除 ${escapeHtml(reference.file.name)}">×</button>
     </article>`).join("");
   mentions.innerHTML = generalVideoReferences.map(reference => `<button type="button" data-general-mention="图片${generalVideoReferences.indexOf(reference) + 1}" title="${escapeHtml(reference.file.name)}">@图片${generalVideoReferences.indexOf(reference) + 1}</button>`).join("");
@@ -13178,7 +13306,7 @@ function renderGeneralVideoReference() {
   input.disabled = Boolean(generalVideoReference) || !hasAnyPermission("video:task:manage");
   document.querySelector("#general-video-reference-count").textContent = generalVideoReference ? "1 / 1" : "0 / 1";
   preview.hidden = !generalVideoReference;
-  preview.innerHTML = generalVideoReference ? `<div class="general-clip-media"><video src="${generalVideoReference.previewUrl}" controls preload="metadata" playsinline></video></div><div class="general-clip-editor"><header><div><strong>${escapeHtml(generalVideoReference.file.name)}</strong><small>拖动首尾端点，选择最多 15 秒的视频参考</small></div><button type="button" data-general-video-remove aria-label="移除参考视频">×</button></header><div class="general-clip-range video-clip-range"><span class="video-clip-range-track"><i></i></span><input type="range" data-clip-start min="0" max="0" step="0.1" value="0" disabled aria-label="参考视频开始时间"><input type="range" data-clip-end min="0" max="0" step="0.1" value="0" disabled aria-label="参考视频结束时间"></div><div class="video-clip-endpoints"><label>开始 <output data-clip-start-time>00:00.0</output></label><label>结束 <output data-clip-end-time>--:--.-</output></label></div><footer><small data-clip-summary>正在读取视频时长…</small><button type="button" data-general-video-mention>@视频1</button><button type="button" data-clip-preview disabled>▶ 预览所选片段</button></footer></div>` : "";
+  preview.innerHTML = generalVideoReference ? `<div class="general-clip-media"><video src="${generalVideoReference.previewUrl}" controls preload="metadata" playsinline></video></div><div class="general-clip-editor"><header><div><strong translate="no">${escapeHtml(generalVideoReference.file.name)}</strong><small>拖动首尾端点，选择最多 15 秒的视频参考</small></div><button type="button" data-general-video-remove aria-label="移除参考视频">×</button></header><div class="general-clip-range video-clip-range"><span class="video-clip-range-track"><i></i></span><input type="range" data-clip-start min="0" max="0" step="0.1" value="0" disabled aria-label="参考视频开始时间"><input type="range" data-clip-end min="0" max="0" step="0.1" value="0" disabled aria-label="参考视频结束时间"></div><div class="video-clip-endpoints"><label>开始 <output data-clip-start-time>00:00.0</output></label><label>结束 <output data-clip-end-time>--:--.-</output></label></div><footer><small data-clip-summary>正在读取视频时长…</small><button type="button" data-general-video-mention>@视频1</button><button type="button" data-clip-preview disabled>▶ 预览所选片段</button></footer></div>` : "";
   if (generalVideoReference) {
     const reference = generalVideoReference;
     const video = preview.querySelector("video");
@@ -13272,8 +13400,8 @@ function updateGeneralMentionMenu() {
   generalMentionStart = before.length - match[0].length;
   const choices = generalVideoReferences.map((r, i) => ({label: `图片${i + 1}`, name:r.file.name}));
   if (generalVideoReference) choices.push({label:"视频1",name:generalVideoReference.file.name});
-  const filtered = choices.filter(c => `${c.label} ${c.name}`.toLowerCase().includes(match[1].toLowerCase()));
-  menu.innerHTML = filtered.length ? filtered.map(c => `<button type="button" role="option" data-general-mention="${c.label}"><strong>@${c.label}</strong><span>${escapeHtml(c.name)}</span></button>`).join("") : '<span class="general-mention-empty">没有匹配素材，请先上传图片或视频</span>';
+  const filtered = choices.filter(c => `${c.label} ${window.HoyeeLanguage?.t(c.label) || c.label} ${c.name}`.toLowerCase().includes(match[1].toLowerCase()));
+  menu.innerHTML = filtered.length ? filtered.map(c => `<button type="button" role="option" data-general-mention="${c.label}"><strong>@${c.label}</strong><span translate="no">${escapeHtml(c.name)}</span></button>`).join("") : '<span class="general-mention-empty">没有匹配素材，请先上传图片或视频</span>';
   menu.hidden = false;
 }
 const generalMentionInput = document.querySelector("#general-video-prompt");
@@ -13431,6 +13559,7 @@ function openVideoGroupCopy(itemId) {
   const count = document.querySelector("#video-group-copy-count");
   count.max = String(30 - aiVideoTaskDetail.items.length);
   count.value = "1";
+  document.querySelector("#video-group-copy-name").setAttribute("translate", (item.name) ? "no" : "yes");
   document.querySelector("#video-group-copy-name").textContent = item.name;
   document.querySelector("#video-group-copy-note").textContent = `留在当前任务，最多可复制 ${count.max} 份`;
   document.querySelector("#video-group-copy-error").textContent = "";
@@ -13482,3 +13611,6 @@ document.querySelector("#video-group-copy-form").addEventListener("submit", asyn
     submit.textContent = created ? "已复制" : "复制";
   }
 });
+
+// BD links use the normal workspace lifecycle to stop other page polling.
+document.querySelectorAll("[data-bd-route]").forEach(link=>link.addEventListener("click",event=>{event.preventDefault();if(!currentUser)return;history.pushState(null,"",location.pathname+location.search+link.hash);switchWorkspace("bd");globalThis.BdWorkspace?.enter(link.dataset.bdRoute);}));

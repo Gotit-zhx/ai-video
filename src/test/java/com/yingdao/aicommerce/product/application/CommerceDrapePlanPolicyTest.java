@@ -36,22 +36,27 @@ class CommerceDrapePlanPolicyTest {
         assertDoesNotThrow(()->validateRenderTemplate(GROK_SCENE_POLICY,backOnly),"Existing scene workflow keeps back-only templates");
     }
 
-    @Test void twoDesignsThreeSkuColorsBudgetOneMotherAndNoPaidColorOutputs()throws Exception{
+    @Test void newDrapeRunBudgetsThreeMotherAttemptsPerSourceWithoutPaidColorOutputs()throws Exception{
         var h=new CommerceSavedArtworkTest.Harness();h.assets.put(CommerceSurfaceTemplateInputs.key("org","b".repeat(64)),DrapeTestFixture.white());var colors=List.of("black","white","pink").stream().map(c->new CommerceSourceColorResolver.Color(c,c,List.of(c+"-s",c+"-m"),"image-"+c,true)).toList();
         var source=new Selection("capture",1,"image",List.of(),colors);
         var p=new Plan("fixed-snapshot",List.of(source),2,null,"SOURCE_PRODUCT","SOURCE_SKU_COLORS",GROK_DRAPE_POLICY);
         var launch=new CommerceBatchLaunchService(mock(CommerceBatchService.class),mock(CommerceBatchCreativePlanService.class),mock(CommerceBatchExecutionService.class),h.archive);
-        assertEquals(16,launch.requiredModelCalls(p,DrapeTestFixture.configuration(),"org"),"(1 extraction + 2 designs × 2 groups) × 3 print attempts + 1 mother");
+        assertEquals(18,launch.requiredModelCalls(p,DrapeTestFixture.configuration(),"org"),"(1 extraction + 2 designs × 2 groups) × 3 print attempts + 3 mother attempts");
         assertEquals(15,launch.requiredModelCalls(withPolicy(p,LOCAL_PHOTO_POLICY),DrapeTestFixture.configuration(),"org"));
         var singleColor=new Plan(p.printTemplateSnapshotId(),List.of(new Selection("capture",1,"image",List.of(),List.of(colors.getFirst()))),2,null,p.artworkSource(),p.outputPolicy(),p.renderPolicy());
-        assertEquals(16,launch.requiredModelCalls(singleColor,DrapeTestFixture.configuration(),"org"));
+        assertEquals(18,launch.requiredModelCalls(singleColor,DrapeTestFixture.configuration(),"org"));
         var saved=new Plan(p.printTemplateSnapshotId(),p.sources(),2,null,"SAVED_ARTWORK",p.outputPolicy(),p.renderPolicy(),List.of(
                 new FrozenDesign(Map.of(SavedArtworkFixture.GROUP_A,h.a,SavedArtworkFixture.GROUP_B,h.b)),
                 new FrozenDesign(Map.of(SavedArtworkFixture.GROUP_A,h.b,SavedArtworkFixture.GROUP_B,h.a))));
-        assertEquals(1,launch.requiredModelCalls(saved,DrapeTestFixture.configuration(),"org"));
+        assertEquals(3,launch.requiredModelCalls(saved,DrapeTestFixture.configuration(),"org"));
         assertEquals(0,launch.requiredModelCalls(withPolicy(saved,LOCAL_PHOTO_POLICY),DrapeTestFixture.configuration(),"org"));
+        assertEquals(1,launch.requiredModelCalls(withPolicy(saved,GROK_SCENE_POLICY),DrapeTestFixture.configuration(),"org"));
         var twoSources=new Plan(saved.printTemplateSnapshotId(),List.of(source,new Selection("second",1,"image",List.of(),colors)),2,null,saved.artworkSource(),saved.outputPolicy(),saved.renderPolicy(),saved.reusedArtworks());
-        assertEquals(2,launch.requiredModelCalls(twoSources,DrapeTestFixture.configuration(),"org"));
+        assertEquals(6,launch.requiredModelCalls(twoSources,DrapeTestFixture.configuration(),"org"));
+        assertEquals(2,launch.requiredModelCalls(withPolicy(twoSources,GROK_SCENE_POLICY),DrapeTestFixture.configuration(),"org"));
+        var manySources=java.util.stream.IntStream.range(0,334).mapToObj(i->new Selection("source-"+i,1,"image",List.of(),colors)).toList();
+        var overLimit=new Plan(saved.printTemplateSnapshotId(),manySources,2,null,saved.artworkSource(),saved.outputPolicy(),saved.renderPolicy(),saved.reusedArtworks());
+        assertTrue(assertThrows(BusinessException.class,()->launch.requiredModelCalls(overLimit,DrapeTestFixture.configuration(),"org")).getMessage().contains("1002"));
     }
 
     @Test void explicitSaveFreezesDrapeAndPrepareStartDoesNotReplaceItWithDefault(){

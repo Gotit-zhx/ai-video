@@ -16,7 +16,7 @@
   const dialog=document.createElement('dialog');dialog.className='batch-artifact-lightbox';
   const close=document.createElement('button');close.type='button';close.textContent='关闭预览';close.addEventListener('click',()=>dialog.close());
   const preview=document.createElement('img');preview.alt='批次生成图片';dialog.append(close,preview);document.body.append(dialog);
-  let batch=null,revision=0,pending=false,refreshRequested=false,step='extract',sourceNames=new Map(),sourcesLoaded=false,execution=null,connectionAvailable=true,artifactsAvailable=true,repairSignature='',renderPolicy=null,expectedOutputs=null,colorSources=[];
+  let batch=null,revision=0,pending=false,refreshRequested=false,step='extract',sourceNames=new Map(),sourcesLoaded=false,execution=null,connectionAvailable=true,artifactsAvailable=true,repairSignature='',renderPolicy=null,expectedOutputs=null,expectedDetails=0,colorSources=[];
   const localPhoto=()=>['LOCAL_PHOTO_V1','GROK_SCENE_V1','GROK_DRAPE_REUSE_V1'].includes(renderPolicy);
   const sceneBackground=()=>renderPolicy==='GROK_SCENE_V1';
   const drapeReuse=()=>renderPolicy==='GROK_DRAPE_REUSE_V1';
@@ -30,24 +30,26 @@
   const matteGroup=kind=>/^MATTE_G([1-9][0-9]*)$/.exec(kind)?.[1];
   const isMatte=row=>row.kind==='MATTE'||!!matteGroup(row.kind);
   const stepKinds={extract:['EXTRACT'],design:['VARIATE'],mockup:['BLANK','MOCKUP','BLANK_REPAIRED','MOCKUP_REPAIRED','DRAPED_FRONT',...surfaceKinds],publish:['MOCKUP','MOCKUP_REPAIRED','DRAPED_FRONT',...surfaceKinds]};
+  const gridDetail=kind=>/^MODEL_DETAIL_GRID_([1-9][0-9]*)$/.exec(kind)?.[1];
+  const modelDetail=kind=>/^MODEL_DETAIL_([1-9][0-9]*)$/.exec(kind)?.[1];
   const isGuide=row=>row.kind.startsWith('PLACEMENT_GUIDE_');
   const isProduct=row=>drapeReuse()?row.kind==='DRAPED_FRONT':row.kind==='MOCKUP'||Object.keys(sides).some(side=>row.kind==='MOCKUP_'+side);
   const isDrapeMaterial=row=>drapeReuse()&&(row.kind.startsWith('DRAPE_')||row.kind.startsWith('MOCKUP'));
-  const isMaterial=row=>isScene(row)||isDrapeMaterial(row)||localPhoto()&&(isMatte(row)||['BASE_COLOR','BLANK','BLANK_REPAIRED'].includes(row.kind));
+  const isMaterial=row=>!!gridDetail(row.kind)||isScene(row)||isDrapeMaterial(row)||localPhoto()&&(isMatte(row)||['BASE_COLOR','BLANK','BLANK_REPAIRED'].includes(row.kind));
   function filter(){
     let visible=0,guideCount=0,materialCount=0;
     cards.forEach(({card,row})=>{
-      const belongs=(isScene(row)&&['extract','mockup'].includes(step))||(isDrapeMaterial(row)&&['mockup','publish'].includes(step))||(stepKinds[step]||[]).includes(row.kind)||(step==='design'&&!!variantGroup(row.kind))
+      const belongs=((modelDetail(row.kind)||gridDetail(row.kind))&&['mockup','publish'].includes(step))||(isScene(row)&&['extract','mockup'].includes(step))||(isDrapeMaterial(row)&&['mockup','publish'].includes(step))||(stepKinds[step]||[]).includes(row.kind)||(step==='design'&&!!variantGroup(row.kind))
         ||(localPhoto()&&((['design','mockup'].includes(step)&&isMatte(row))
           ||(['extract','mockup'].includes(step)&&['BASE_COLOR','BLANK','BLANK_REPAIRED'].includes(row.kind))));
       card.hidden=!belongs||!!(sourcePicker.value&&sourcePicker.value!==card.dataset.captureId);
       if(!card.hidden){if(isGuide(row))guideCount++;else if(isMaterial(row))materialCount++;else visible++;}
     });
     guides.hidden=!guideCount;guideHeading.textContent=`查看印花定位参考 · ${guideCount} 张`;
-    materials.hidden=!materialCount;materialHeading.textContent=`${drapeReuse()?'查看搭放母图与过程素材':'查看透明母版与复用底图'} · ${materialCount} 张`;
+    materials.hidden=!materialCount;materialHeading.textContent=`${drapeReuse()?'查看搭放母图与四宫格原图':'查看透明母版与复用底图'} · ${materialCount} 张`;
     materialNote.textContent=drapeReuse()?'精确套版图与搭放母图供各款各色共用；商品主图仅统计最终自然搭放结果。':'这些是套版过程素材。每款同组共用透明母版，每色复用一张底图，均不计入商品成品数量。';
     heading.textContent=({extract:'提取印花',design:'印花裂变',mockup:drapeReuse()?'自然搭放':localPhoto()?'本地套版':'商品套版',publish:'结果与检查'})[step]+' · 本批次图集';
-    const unit=localPhoto()?(['mockup','publish'].includes(step)?' 张商品主图':' 张印花素材 · 非商品成品'):' 张';
+    const unit=localPhoto()?(['mockup','publish'].includes(step)?' 张主图与详情图':' 张印花素材 · 非商品成品'):' 张';
     filteredStatus.textContent=visible?`当前显示 ${visible}${unit} · ${sourcePicker.value?'所选商品':'全部来源商品'}`:materialCount?'本环节已保存过程素材，可展开查看；商品主图以实际归档为准。':'当前环节还没有图片结果。';
   }
   sourcePicker.addEventListener('change',filter);
@@ -64,6 +66,7 @@
     return !disconnected()&&execution?.status==='RUNNING'&&['SUBMITTING','RESULT_RECEIVED'].includes(row.status)?'running':'waiting';
   }
   function stateText(row){
+    if(row.status==='UNKNOWN'&&(modelDetail(row.kind)||gridDetail(row.kind)))return execution?.status==='FAILED'?'恢复已停止 · 已保留请求':'正在自动核对与恢复';
     if(['READY','REJECTED','TRANSPARENCY_REJECTED','INVALID_IMAGE_REJECTED','FAILED','UNKNOWN'].includes(row.status))return states[row.status];
     if(stopped())return executionStates[execution.status]||'等待处理';
     if(disconnected())return '连接中断 · 等待状态更新';
@@ -79,11 +82,13 @@
     if(disconnected()||(stopped()&&execution.status!=='COMPLETED'))entry.card.classList.remove('is-revealing');
     syncRetry(entry);
   });}
-  const canRetry=entry=>execution?.status==='FAILED'&&['REJECTED','TRANSPARENCY_REJECTED','INVALID_IMAGE_REJECTED'].includes(entry.row.status)&&typeof entry.row.id==='string'&&!!entry.row.id&&cards.get(entry.row.id)===entry;
+  const canRetry=entry=>typeof entry.row.id==='string'&&!!entry.row.id&&cards.get(entry.row.id)===entry&&(
+    execution?.status==='FAILED'&&['REJECTED','TRANSPARENCY_REJECTED','INVALID_IMAGE_REJECTED'].includes(entry.row.status)
+    ||['WAITING_INPUT','PAUSED','FAILED'].includes(execution?.status)&&execution?.stage==='MOCKUP'&&entry.row.kind==='DRAPE_MASTER'&&entry.row.status==='READY');
   function syncRetry(entry){
     if(canRetry(entry)){
       if(!entry.retryButton){const button=document.createElement('button');button.type='button';button.className='artifact-retry';button.addEventListener('click',()=>retryArtifact(entry));entry.retryButton=button;}
-      entry.retryButton.textContent=entry.retryPending?'正在重试…':'重试这张';entry.retryButton.disabled=!!entry.retryPending;
+      entry.retryButton.textContent=entry.retryPending?'正在重试…':entry.row.kind==='DRAPE_MASTER'?'按模板重做母图':'重试这张';entry.retryButton.disabled=!!entry.retryPending;
       if(entry.retryButton.parentElement!==entry.card)entry.card.append(entry.retryButton);
     }else entry.retryButton?.remove();
     if(entry.retryMessage){
@@ -118,7 +123,7 @@
     entry.showingBack=false;entry.signature=next;entry.row=row;
     const card=entry.card;card.dataset.kind=row.kind;card.dataset.captureId=row.captureId;card.dataset.status=row.status;
     const title=document.createElement('h3');const group=variantGroup(row.kind),matte=matteGroup(row.kind);
-    const artifactLabel=drapeReuse()&&isProduct(row)?'商品主图 · 自然搭放':drapeReuse()&&row.kind==='MOCKUP_FRONT'?'精确套版 · 搭放前定位图':localPhoto()&&isProduct(row)?'商品主图 · 本地套版':matte?'透明母版 · 图案组 '+matte:group?(localPhoto()?'印花原稿 · 图案组 ':'图案组 ')+group:row.kind==='EXTRACT'&&row.message?.startsWith('模板上传')?'模板上传印花':localPhoto()&&row.kind==='VARIATE'?'独立印花原稿':labels[row.kind]||row.kind;
+    const artifactLabel=gridDetail(row.kind)?'四宫格详情处理 · 第 '+gridDetail(row.kind)+' 张起':modelDetail(row.kind)?'模特实穿详情 · 第 '+modelDetail(row.kind)+' 张':drapeReuse()&&isProduct(row)?'商品主图 · 自然搭放':drapeReuse()&&row.kind==='MOCKUP_FRONT'?'精确套版 · 搭放前定位图':localPhoto()&&isProduct(row)?'商品主图 · 本地套版':matte?'透明母版 · 图案组 '+matte:group?(localPhoto()?'印花原稿 · 图案组 ':'图案组 ')+group:row.kind==='EXTRACT'&&row.message?.startsWith('模板上传')?'模板上传印花':localPhoto()&&row.kind==='VARIATE'?'独立印花原稿':labels[row.kind]||row.kind;
     title.textContent=`${artifactLabel}${row.variant?' · V'+row.variant:''}${row.colorLabel?' · '+row.colorLabel:''}${row.message?.startsWith('边缘融合')?' · 边缘融合':''}`;
     const visual=document.createElement('div');visual.className='artifact-visual';entry.visual=visual;
     entry.placeholder=null;
@@ -165,7 +170,7 @@
       const check=document.createElement('p');check.className='batch-artifact-check';
       const localCheck=['PHOTO_COMPOSITED_REVIEW_REQUIRED','LOCAL_PHOTO_REVIEW_REQUIRED'].includes(row.check.status);
       const ratio=Number.isFinite(row.check.outsideChangedRatio)?`区域外变化 ${(row.check.outsideChangedRatio*100).toFixed(2)}% · `:'';
-      check.textContent=drapeReuse()&&isProduct(row)?'自然搭放结果 · 每色每款一张':isDrapeMaterial(row)?'搭放过程素材 · 不计入商品主图':isScene(row)?'场景底图 · 同商品多款多色共用':localCheck?'本地套版已归档 · '+ratio+'自动检查已完成':row.kind==='BASE_COLOR'?'颜色底图 · 布料颜色与保护区域需复核':isMatte(row)?'透明母版 · 背景分离与细节需复核':`${row.check.exactGuideAvailable?'三维定位核对：模型印区外':'位置检查：区域外'}${Number.isFinite(row.check.outsideChangedRatio)?'变化 '+(row.check.outsideChangedRatio*100).toFixed(2)+'% · ':''}需复核`;
+      check.textContent=gridDetail(row.kind)?(row.check.gridSplit?.status==='DONE'?'四宫格已切分 · '+row.check.gridSplit.childCount+' 张独立详情':'四宫格原图已保存，继续切分与检查'):modelDetail(row.kind)?(row.check.passed===true?'模特实穿详情已检查 · 与当前新款一致':row.check.reason?'详情图需纠正 · '+row.check.reason:'详情图已保存 · 商品一致性检查中'):drapeReuse()&&isProduct(row)?'自然搭放结果 · 每色每款一张':isDrapeMaterial(row)?'搭放过程素材 · 不计入商品主图':isScene(row)?'场景底图 · 同商品多款多色共用':localCheck?'本地套版已归档 · '+ratio+'自动检查已完成':row.kind==='BASE_COLOR'?'颜色底图 · 布料颜色与保护区域需复核':isMatte(row)?'透明母版 · 背景分离与细节需复核':`${row.check.exactGuideAvailable?'三维定位核对：模型印区外':'位置检查：区域外'}${Number.isFinite(row.check.outsideChangedRatio)?'变化 '+(row.check.outsideChangedRatio*100).toFixed(2)+'% · ':''}需复核`;
       if(row.check.limitation)check.title=row.check.limitation;card.append(check);
     }
     const source=document.createElement('small');
@@ -211,19 +216,22 @@
         sourceNames=new Map(plan.data.sources.map(source=>[source.captureId,source.title||source.captureId.slice(0,8)]));sourcesLoaded=true;sourcePicker.replaceChildren(new Option('全部来源商品',''));sourceNames.forEach((title,id)=>sourcePicker.add(new Option(title,id)));sourcePicker.hidden=sourceNames.size<2;
         renderPolicy=plan.data.plan?.renderPolicy||null;
         colorSources=(plan.data.plan?.sources||[]).map(source=>({captureId:source.captureId,colors:(source.colorTargets||[]).map(color=>({key:color.key,label:color.label}))}));
-        const count=(plan.data.plan?.sources||[]).reduce((n,source)=>n+(source.colorTargets?.length||0),0)*plan.data.plan?.variantsPerPrint;
-        expectedOutputs=Number.isSafeInteger(count)&&count>0?count:null;
+        const variants=plan.data.plan?.variantsPerPrint;
+        const count=(plan.data.plan?.sources||[]).reduce((n,source)=>n+(source.colorTargets?.length||0),0)*variants;
+        const details=(plan.data.plan?.sources||[]).reduce((n,source)=>n+(source.detailImageIds?.length||0),0)*variants;
+        expectedDetails=Number.isSafeInteger(details)&&details>0?details:0;
+        expectedOutputs=Number.isSafeInteger(count)&&count>0?count+expectedDetails:null;
       }
       artifactsAvailable=true;
-      const rows=response.data,outputs=rows.filter(row=>localPhoto()?isProduct(row):!isGuide(row)&&!isScene(row)),ready=outputs.filter(row=>row.status==='READY').length,total=localPhoto()?(expectedOutputs||outputs.length):outputs.length;
-      status.textContent=localPhoto()?`${drapeReuse()?'精确套版 → 一次搭放母图 → 本地换色换花 → 商品主图。每个来源商品 1 次额外 Grok 调用，所有款式与颜色共用。':sceneBackground()?'提取商品背景风格 · 同商品多款多色共用。Grok 根据所选商品图的场景氛围、配色、材质与光线重新设计背景。每个来源商品分别准备一次，已有相同来源背景可复用。':''}${drapeReuse()?'自然搭放':'固定底图 · 本地套版'} · 每色每款1张。已归档 ${ready}${total?' / '+total:''} 张商品主图；印花原稿、母图和定位底图不计入成品。`:outputs.length?`已归档 ${ready} / ${outputs.length} 张结果；候选仍需质量复核。定位参考已单独收起。`:'启动后，提取、裂变、底图和套版结果将陆续保存在这里。';
+      const rows=response.data,outputs=rows.filter(row=>localPhoto()?isProduct(row)||!!modelDetail(row.kind):!isGuide(row)&&!isScene(row)),ready=outputs.filter(row=>row.status==='READY').length,total=localPhoto()?(expectedOutputs||outputs.length):outputs.length;
+      status.textContent=localPhoto()?`${drapeReuse()?'精确套版 → 一次搭放母图 → 本地换色换花 → 商品主图。搭放母图由同一来源商品的款式与颜色共用。':sceneBackground()?'提取商品背景风格 · 同商品多款多色共用。Grok 根据所选商品图的场景氛围、配色、材质与光线重新设计背景。每个来源商品分别准备一次，已有相同来源背景可复用。':''}${drapeReuse()?'自然搭放':'固定底图 · 本地套版'} · 每色每款1张。已归档 ${ready}${total?' / '+total:''} 张${expectedDetails?'主图与详情图':'商品主图'}；${expectedDetails?'每款按原详情数量生成，每组最多4张合成四宫格后切分；同款不同颜色共用，失败自动恢复，全部检查通过后进入待上架。':''}印花原稿、母图和定位底图不计入成品。`:outputs.length?`已归档 ${ready} / ${outputs.length} 张结果；候选仍需质量复核。定位参考已单独收起。`:'启动后，提取、裂变、底图和套版结果将陆续保存在这里。';
       renderCards(rows);renderRepairs(rows);
       window.dispatchEvent(new CustomEvent('heyi:artifacts-updated',{detail:{batchId:id,ready,total,renderPolicy,colorSources,previews:rows.map(row=>({id:row.id,captureId:row.captureId,kind:row.kind,variant:row.variant,status:row.status,imageUrl:row.imageUrl,colorKey:row.colorKey,colorLabel:row.colorLabel,colorHex:row.kind==='BASE_COLOR'?row.check?.observedSourceRgb:null}))}}));
     }catch(error){if(ticket===revision){artifactsAvailable=false;syncMotion();status.textContent=`图集读取失败：${error.message}`;}}
     finally{if(ticket===revision){pending=false;if(refreshRequested)refresh();}}
   }
   function reset(){
-    revision++;batch=null;pending=false;refreshRequested=false;sourceNames=new Map();sourcesLoaded=false;execution=null;connectionAvailable=true;artifactsAvailable=true;repairSignature='';renderPolicy=null;expectedOutputs=null;colorSources=[];step='extract';cards.forEach(entry=>{if(entry.backObjectUrl)URL.revokeObjectURL(entry.backObjectUrl);});cards.clear();
+    revision++;batch=null;pending=false;refreshRequested=false;sourceNames=new Map();sourcesLoaded=false;execution=null;connectionAvailable=true;artifactsAvailable=true;repairSignature='';renderPolicy=null;expectedOutputs=null;expectedDetails=0;colorSources=[];step='extract';cards.forEach(entry=>{if(entry.backObjectUrl)URL.revokeObjectURL(entry.backObjectUrl);});cards.clear();
     sourcePicker.replaceChildren(new Option('全部来源商品',''));sourcePicker.value='';sourcePicker.hidden=true;grid.replaceChildren();guideGrid.replaceChildren();materialGrid.replaceChildren();guides.open=false;guides.hidden=true;materials.open=false;materials.hidden=true;panel.querySelector('.batch-repair-actions')?.remove();status.textContent='';filteredStatus.textContent='';dialog.close();preview.removeAttribute('src');
   }
   window.addEventListener('heyi:workbench-scope-reset',()=>{reset();visibility();});

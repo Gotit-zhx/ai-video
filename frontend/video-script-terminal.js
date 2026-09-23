@@ -90,10 +90,10 @@
     terminal.classList.toggle('has-output', Boolean(text));
     terminal.querySelector('.model-terminal-waiting strong').textContent = active ? (phase === 0 ? '画面准备好后，开始分析' : phase === 3 ? '正在检查分镜完整性' : /WAITING_RESPONSE|STREAM_CONNECTED/.test(script.analysisStage || '') ? '等待模型开始返回内容' : '正在看懂动作、运镜与节奏') : '本次任务未记录模型输出';
     terminal.querySelector('.model-terminal-waiting p').textContent = active ? (phase === 0 ? '正在提取视频中的关键画面' : '正文尚未返回 · 返回后将实时显示，无需等待全部完成') : '可以在分镜区查看已保存的分析结果';
-    terminal.querySelector('.model-terminal-count').textContent = state.count ? `${state.count.toLocaleString('zh-CN')} 字符${state.count > text.length ? ' · 显示最近片段' : ''}` : '尚未收到文字';
+    terminal.querySelector('.model-terminal-count').textContent = state.count ? `${state.count.toLocaleString((globalThis.HoyeeLanguage?.locale || "zh-CN"))} 字符${state.count > text.length ? ' · 显示最近片段' : ''}` : '尚未收到文字';
     const copy = terminal.querySelector('[data-terminal-copy]');
     copy.disabled = !text;
-    if (text !== state.text && copy.textContent === '已复制') copy.textContent = '复制文字';
+    if (text !== state.text && (window.HoyeeLanguage?.originalText(copy.firstChild) || copy.textContent) === '已复制') copy.textContent = '复制文字';
     if (!state.initialized || !active || reducedMotion() || !text.startsWith(state.text)) {
       if (state.frame) cancelAnimationFrame(state.frame);
       state.frame = 0;

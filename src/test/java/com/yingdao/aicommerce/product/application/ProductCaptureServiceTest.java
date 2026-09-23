@@ -44,6 +44,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -128,6 +129,64 @@ class ProductCaptureServiceTest {
         assertTrue(criteria.getValue().getParamNameValuePairs().containsValue("org-a"));
         assertTrue(criteria.getValue().getParamNameValuePairs().containsValue("CAPTURED"));
         assertTrue(criteria.getValue().getParamNameValuePairs().containsValue("model-42"));
+    }
+
+    @Test
+    void listResolvesMixedOriginsInOneOrganizationScopedBatchQuery() {
+        ProductCapture captured = capture("org-a");
+        ProductCapture generated = capture("org-a");
+        Page<ProductCapture> page = new Page<>(1, 30);
+        page.setTotal(2); page.setRecords(List.of(captured, generated));
+        when(captureMapper.selectPage(any(Page.class), any())).thenReturn(page);
+        when(captureMapper.selectCommerceGeneratedCaptureIds("org-a", List.of(captured.getId(), generated.getId())))
+                .thenReturn(List.of(generated.getId()));
+
+        var result = service.list("org-a", null, null, 0, 30);
+
+        assertEquals(List.of("CAPTURED", "COMMERCE_GENERATED"),
+                result.content().stream().map(ProductCaptureService.CaptureSummary::originType).toList());
+        assertEquals(captured.getTitle(), generated.getTitle());
+        assertEquals(captured.getSourceProductId(), generated.getSourceProductId());
+        verify(captureMapper, times(1)).selectCommerceGeneratedCaptureIds(anyString(), any());
+        verify(captureMapper).selectCommerceGeneratedCaptureIds("org-a", List.of(captured.getId(), generated.getId()));
+        verify(skuMapper, never()).selectList(any());
+        verify(fieldSourceMapper, never()).selectList(any());
+    }
+
+    @Test
+    void emptyPageSkipsOriginQuery() {
+        Page<ProductCapture> page = new Page<>(1, 30);
+        page.setRecords(List.of());
+        when(captureMapper.selectPage(any(Page.class), any())).thenReturn(page);
+
+        assertTrue(service.list("org-a", null, null, 0, 30).content().isEmpty());
+
+        verify(captureMapper, never()).selectCommerceGeneratedCaptureIds(anyString(), any());
+    }
+
+    @Test
+    void detailOriginComesFromSameOrganizationPublicationRatherThanCapturedClaims() {
+        ProductCapture capture = new ProductCapture(
+                "org-a", "user-1", "commerce-fake-origin", "fingerprint",
+                "SHOPEE", "https://shopee.ph/a-i.123.456", "123", "456",
+                "裂变生成商品 V1", "描述", null, null, "PHP",
+                BigDecimal.TEN, BigDecimal.TEN, "{\"originType\":\"COMMERCE_GENERATED\"}", "{}"
+        );
+        when(captureMapper.selectOne(any())).thenReturn(capture);
+        when(captureMapper.selectCommerceGeneratedCaptureIds("org-a", List.of(capture.getId())))
+                .thenReturn(List.of(), List.of(capture.getId()));
+
+        assertEquals("CAPTURED", service.get(capture.getId(), principal("org-a")).originType());
+        assertEquals("COMMERCE_GENERATED", service.get(capture.getId(), principal("org-a")).originType());
+
+        verify(captureMapper, times(2)).selectCommerceGeneratedCaptureIds("org-a", List.of(capture.getId()));
+    }
+
+    @Test
+    void unauthorizedCaptureDoesNotQueryOriginMetadata() {
+        when(captureMapper.selectOne(any())).thenReturn(null);
+        assertThrows(BusinessException.class, () -> service.get("foreign-capture", principal("org-a")));
+        verify(captureMapper, never()).selectCommerceGeneratedCaptureIds(anyString(), any());
     }
 
     @Test

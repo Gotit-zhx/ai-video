@@ -176,6 +176,8 @@ class ProductPublishWorkflowServiceTest {
 
     @Test
     void alreadyPublishedSameCaptureAndShopReturnsExistingWorkflowInsteadOfDuplicating() {
+        capture.published();
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "watermarkProvider", "AI_WATERMARK_V1");
         ProductPublishWorkflow existing = mock(ProductPublishWorkflow.class);
         when(existing.getId()).thenReturn("published-workflow");
         when(existing.getCaptureId()).thenReturn(capture.getId());
@@ -197,6 +199,55 @@ class ProductPublishWorkflowServiceTest {
         assertTrue(result.publicationReused());
         assertEquals("published-workflow", result.workflow().id());
         verify(workflowMapper, never()).insert(any(ProductPublishWorkflow.class));
+    }
+
+    @Test
+    void publishedCapturedProductCanSelectAnotherShopWithoutReprocessingApprovedImages() {
+        when(shopSettings.publishingProvider()).thenReturn("OFFICIAL");
+        when(shopSettings.effectiveLivePublishing()).thenReturn(true);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "watermarkProvider", "AI_WATERMARK_V1");
+        capture.startImageProcessing(); capture.imagesReady(); capture.approve("reviewer-1"); capture.published();
+        var publishedAt = capture.getPublishedAt(); var version = capture.getVersion();
+        var publishOnly = new PlatformPrincipal("user-1", "org-a", "tenant", "user", "User", "", true,
+                List.of(), List.of("product:publish"));
+        when(captureService.get(capture.getId(), publishOnly)).thenReturn(detail(capture));
+
+        var result = service.create(capture.getId(), Map.of("confirmed", true, "destinationPlatform", "SHOPEE",
+                "shopId", "shop-2", "visionWatermarkCheck", true), "published-second-shop", publishOnly);
+
+        assertTrue(result.created()); assertFalse(result.publicationReused());
+        assertEquals("shop-2", result.workflow().shopId()); assertEquals("PUBLISH", result.workflow().currentStep());
+        var inserted = ArgumentCaptor.forClass(ProductPublishWorkflow.class); verify(workflowMapper).insert(inserted.capture());
+        assertEquals(false, service.request(inserted.getValue()).get("visionWatermarkCheck"));
+        assertEquals(version, inserted.getValue().getCaptureVersion()); assertEquals("LIVE", result.workflow().executionMode());
+        assertEquals("PUBLISHED", capture.getStatus()); assertEquals(publishedAt, capture.getPublishedAt());
+        assertEquals(version, capture.getVersion()); verify(captureMapper, never()).updateById(any(ProductCapture.class));
+    }
+
+    @Test
+    void publishedGeneratedProductStillSelectsAnotherShopWithoutWatermarkProcessing() {
+        capture.published();
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "watermarkProvider", "AI_WATERMARK_V1");
+        var db = mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "commerceDb", db);
+        when(db.queryForObject("SELECT COUNT(*) FROM commerce_batch_publications WHERE organization_id=? AND capture_id=?",
+                Integer.class, "org-a", capture.getId())).thenReturn(1);
+        var result = service.create(capture.getId(), Map.of("confirmed", true, "destinationPlatform", "SHOPEE",
+                "shopId", "shop-2"), "generated-second-shop", principal);
+        assertTrue(result.created()); assertEquals("PUBLISH", result.workflow().currentStep());
+        var inserted = ArgumentCaptor.forClass(ProductPublishWorkflow.class); verify(workflowMapper).insert(inserted.capture());
+        assertEquals(false, service.request(inserted.getValue()).get("visionWatermarkCheck"));
+    }
+
+    @Test
+    void unpublishedCapturedProductStillRequiresTheConfiguredVisionWatermarkCheck() {
+        capture.startImageProcessing(); capture.imagesReady(); capture.approve("reviewer-1");
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "watermarkProvider", "AI_WATERMARK_V1");
+        var result = service.create(capture.getId(), Map.of("confirmed", true, "destinationPlatform", "SHOPEE",
+                "shopId", "shop-2", "visionWatermarkCheck", false), "approved-first-upload", principal);
+        assertTrue(result.created()); assertEquals("IMAGES", result.workflow().currentStep());
+        var inserted = ArgumentCaptor.forClass(ProductPublishWorkflow.class); verify(workflowMapper).insert(inserted.capture());
+        assertEquals(true, service.request(inserted.getValue()).get("visionWatermarkCheck"));
     }
 
     @Test

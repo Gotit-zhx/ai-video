@@ -133,6 +133,7 @@ function harness(captures = fixture()) {
   node('#product-bulk-shop').value = 'shop';
   vm.createContext(c);
   const fragments = [
+    slice('function productCaptureCanUpload(', 'function renderProductCaptureList('),
     slice('function productCapturePayload(', 'function productCaptureListPayload('),
     slice('function nullableProductValue(', 'function productSkuAttributesComplete('),
     slice('const PRODUCT_SKU_SERVER_FIELDS', 'function productSkuDrafts('),
@@ -396,20 +397,20 @@ test('batch request limits allow 180 seconds for shop options, 90 for submission
   h.c.stopProductBulkPolling();
 });
 
-test('a shared transient options failure gets three attempts for the whole batch, then a manual retry starts a new cycle', async () => {
+test('a shared transient options failure gets five attempts for the whole batch, then a manual retry starts a new cycle', async () => {
   const base=fixture()[0],h=harness(Array.from({length:8},(_,i)=>({...base,id:`item-${i}`})));
   h.state.onOptions=async()=>{throw new h.c.ApiRequestError('timeout',0);};
   await h.submit();
-  assert.equal(h.optionReads.length,3,'One shared promise owns the complete retry budget');
+  assert.equal(h.optionReads.length,5,'One shared promise owns the complete retry budget');
   assert.equal(h.posts.length,0);
   assert.ok(h.c.productBulkItems.every(item=>item.status==='PREPARE_FAILED'));
-  assert.equal(h.c.productBulkItems[0].retryCount,2);
-  assert.match(h.node('#product-bulk-progress').innerHTML,/第 3\/3 次尝试/);
+  assert.equal(h.c.productBulkItems[0].retryCount,4);
+  assert.match(h.node('#product-bulk-progress').innerHTML,/第 5\/5 次尝试/);
   h.state.onOptions=null;
   await h.submit();
-  assert.equal(h.optionReads.length,4);
+  assert.equal(h.optionReads.length,6);
   assert.equal(h.posts.length,8);
-  assert.equal(h.c.productBulkItems[0].retryCount,2,'Retry counts survive successful recovery');
+  assert.equal(h.c.productBulkItems[0].retryCount,4,'Retry counts survive successful recovery');
 });
 
 test('progress reads stop after three failed attempts and reconnecting never creates a new workflow', async () => {
@@ -694,6 +695,53 @@ test('reselecting identical products creates a fresh batch while history reopens
   } finally {gate.resolve();await first;h.c.stopProductBulkPolling();}
 });
 
+test('published originals and variants require an explicit shop and republish without editing source data',async()=>{
+  const captures=fixture().map((item,index)=>({...item,status:'PUBLISHED',originType:index?'COMMERCE_GENERATED':'CAPTURED'}));
+  const h=harness(captures);
+  h.c.activeMarketplaceShops=platform=>platform==='SHOPEE'?[{id:'other-shop',name:'Second shop',region:'PH',platform:'SHOPEE'}]:[];
+  await h.c.openProductBulkUpload();
+  const key=h.c.productBulkStorageKey;
+  assert.equal(h.node('#product-bulk-shop').value,'','Published products must not silently select the only shop');
+  assert.equal(h.node('#submit-product-bulk').disabled,true);
+  assert.match(h.node('#product-bulk-mode').textContent,/复用现有图片/);
+  h.node('#product-bulk-shop').value='other-shop';
+  await h.submit();
+  assert.equal(h.patches.length,0,'Republish must not rewrite published products');
+  assert.equal(h.posts.length,2);
+  assert.ok(h.posts.every(call=>call.body.shopId==='other-shop'));
+  const receipts=value=>JSON.parse(value).items.map(item=>({captureId:item.captureId,idempotencyKey:item.idempotencyKey,payload:item.payload,workflowId:item.workflow.id}));
+  const oldReceipts=receipts(h.storage.get(key));
+  await h.c.openProductBulkUpload();
+  assert.notEqual(h.c.productBulkStorageKey,key);
+  assert.equal(h.c.productBulkItems.length,0);
+  assert.equal(h.node('#product-bulk-shop').value,'');
+  assert.deepEqual(receipts(h.storage.get(key)),oldReceipts,'Starting another upload preserves previous records');
+  h.c.stopProductBulkPolling();
+});
+
+test('per-card upload selects only that product without disturbing bulk selections',async()=>{
+  const h=harness(fixture().map(item=>({...item,status:'PUBLISHED'})));
+  const selection=[...h.c.productBulkSelectedIds];
+  await h.c.openProductBulkUpload('', 'b');
+  assert.match(h.node('#product-bulk-summary').textContent,/1/);
+  assert.deepEqual([...h.c.productBulkSelectedIds],selection);
+  h.node('#product-bulk-shop').value='shop';
+  await h.submit();
+  assert.deepEqual(h.posts.map(call=>call.id),['b']);
+  assert.equal(h.patches.length,0);
+  h.c.stopProductBulkPolling();
+});
+
+test('per-card upload respects status and permission restrictions',async()=>{
+  const h=harness();
+  await h.c.openProductBulkUpload('', 'missing');
+  assert.equal(h.node('#product-bulk-dialog').open,false);
+  h.c.hasAnyPermission=()=>false;
+  await h.c.openProductBulkUpload('', 'a');
+  assert.equal(h.node('#product-bulk-dialog').open,false);
+  assert.equal(h.posts.length,0);
+});
+
 test('a late history status read merges into the latest saved batch without erasing another product receipt',async()=>{
   const h=harness(),gate=deferred(),historyKey=ProductBulkHistory.storageKey('org','history-merge');
   const items=ProductBulkUpload.plan(fixture(),'shop','history');
@@ -812,4 +860,47 @@ test('bulk retains the best garment category and blocks its actual cross-border 
   assert.equal(h.posts.length,1);
   assert.equal(h.posts[0].body.shopId,'local');assert.equal(h.posts[0].body.categoryId,'601302');
   assert.equal(h.posts[0].body.warehouseId,'wh-local');
+});
+
+test('empty logistics and upstream 500 recover with five bounded reads and one submission per item',async()=>{
+ const h=harness();let calls=0;
+ h.state.onOptions=()=>{calls++;if(calls===1)throw Object.assign(Error('upstream inner error'),{status:500});if(calls<5)return {data:{logistics:{logistics_channel_list:[]}}};};
+ await h.submit();assert.equal(h.optionReads.length,5);assert.equal(h.posts.length,2);assert.equal(new Set(h.posts.map(x=>x.key)).size,2);
+});
+test('persistently empty logistics stop after five reads without blaming shop or submitting products',async()=>{
+ const h=harness();h.state.onOptions=()=>({data:{logistics:{logistics_channel_list:[]}}});
+ await h.submit();assert.equal(h.optionReads.length,5);assert.equal(h.posts.length,0);assert.ok(h.c.productBulkItems.every(x=>x.error.includes('不代表店铺未开启物流')));
+});
+test('shop options authorization denial is not retried',async()=>{
+ const h=harness();h.state.onOptions=()=>{throw Object.assign(Error('Forbidden'),{status:403});};
+ await h.submit();assert.equal(h.optionReads.length,1);assert.equal(h.posts.length,0);
+});
+
+test('a truncated successful JSON read retries automatically without replaying a mutation', async () => {
+  const h=harness();let reads=0;
+  h.c.fetch=async()=>({status:200,ok:true,json:async()=>{
+    if(++reads===1)throw new SyntaxError('Unexpected end of JSON input');
+    return {data:{id:'a'}};
+  }});
+  vm.runInContext(slice('async function api(', 'const GENERAL_VIDEO_API_ROOT'),h.c);
+  const result=await h.c.productBulkApi('/detail');
+  assert.equal(result.data.id,'a');assert.equal(reads,2);assert.equal(h.posts.length,0);
+  h.c.fetch=async()=>({status:403,ok:false,json:async()=>{throw new SyntaxError('bad body');}});
+  await assert.rejects(h.c.api('/detail'),e=>e.status===403);
+});
+
+test('incomplete terminal detail automatically recovers and preserves upload success without creating again',async()=>{
+  const h=harness([fixture()[0]]);setWorkflows(h,'SUCCEEDED');h.state.now=Date.now();
+  let reads=0;
+  h.c.productCaptureApi=async()=>++reads===1?{data:null}:{data:{productCapture:fixture()[0]}};
+  await h.c.pollProductBulkProgress();await flush();
+  assert.equal(reads,1);assert.equal(h.c.productBulkItems[0].syncPaused,false);
+  assert.match(h.node('#product-bulk-progress').innerHTML,/上传已成功，状态刷新中/);
+  assert.doesNotMatch(h.node('#product-bulk-progress').innerHTML,/查看失败原因/);
+  h.state.now+=6000;
+  await h.c.pollProductBulkProgress();await flush();
+  assert.equal(reads,2);assert.equal(h.updates.length,1);
+  assert.equal(h.c.productBulkItems[0].syncError,'');
+  assert.equal(h.posts.length,0);assert.equal(h.workflowReads.length,0);
+  h.c.stopProductBulkPolling();
 });

@@ -59,6 +59,21 @@ public class ProductWatermarkQueue {
   if(db.update("UPDATE product_watermark_queue SET status='QUEUED',worker_token=NULL,lease_until=NULL,error_message=?,next_attempt_at=TIMESTAMPADD(SECOND,LEAST(300,30*POW(2,LEAST(throttle_count,4)))+MOD(CRC32(id),17),NOW(6)),throttle_count=throttle_count+1,updated_at=NOW(6) WHERE id=? AND worker_token=? AND status='RUNNING'",message,work.id(),work.token())==1)
    db.update("UPDATE product_capture_images SET status='PENDING',error_message=NULL,updated_at=NOW(6) WHERE id=? AND organization_id=?",work.imageId(),work.organizationId());
  }
+ @Transactional
+ public void deferDownload(Work work,String message){
+  db.queryForObject("SELECT id FROM product_image_processing_jobs WHERE id=? AND organization_id=? FOR UPDATE",String.class,work.jobId(),work.organizationId());
+  var rows=db.queryForList("SELECT throttle_count,error_message FROM product_watermark_queue WHERE id=? AND worker_token=? AND status='RUNNING' FOR UPDATE",work.id(),work.token());
+  if(rows.isEmpty())return;
+  var row=rows.getFirst();
+  int retries=Objects.toString(row.get("error_message"),"").startsWith("结果图片下载自动重试")
+    && row.get("throttle_count") instanceof Number n?n.intValue():0;
+  if(retries>=6){finish(work,null,null,message+"；自动下载已重试6次，原生图结果仍保留");return;}
+  String progress="结果图片下载自动重试 "+(retries+1)+"/6；仅下载已有结果："+message;
+  int delay=downloadRetryDelay(retries);
+  if(db.update("UPDATE product_watermark_queue SET status='QUEUED',worker_token=NULL,lease_until=NULL,error_message=?,throttle_count=?,next_attempt_at=TIMESTAMPADD(SECOND,?,NOW(6)),updated_at=NOW(6) WHERE id=? AND worker_token=? AND status='RUNNING'",progress,retries+1,delay,work.id(),work.token())==1)
+   db.update("UPDATE product_capture_images SET status='PENDING',error_message=?,updated_at=NOW(6) WHERE id=? AND organization_id=?",progress,work.imageId(),work.organizationId());
+ }
+ static int downloadRetryDelay(int retries){return new int[]{10,30,60,120,300,300}[Math.max(0,Math.min(5,retries))];}
  public void heartbeat(Work work){db.update("UPDATE product_watermark_queue SET lease_until=DATE_ADD(NOW(6),INTERVAL 1 HOUR) WHERE id=? AND worker_token=? AND status='RUNNING'",work.id(),work.token());}
  @Transactional
  public void finish(Work work,String url,Map<String,Object> result,String failure){

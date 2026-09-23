@@ -84,6 +84,33 @@ test("strict artwork overrides caller retry counts while ordinary photo options 
   });
 });
 
+test("only a detail grid opts into two network recoveries on the configured model",async()=>{
+ for(const [params,networkRetries] of [
+  [{productMockup:true,detailGrid:true,maxNetworkRetries:99,maxProviderRetries:99},2],
+  [{detailGrid:true},2],
+  [{productMockup:true},0],
+  [{productMockup:true,detailGrid:false},0],
+  [{productMockup:true,detailGrid:'true'},0],
+  [{productMockup:true,detailGrid:true,background:'transparent'},0]
+ ]){
+  let calls=0;const selected=config(),references=[];
+  await callImageModelWithCopyrightFallback(selected,params,references,async(actual,options,images)=>{
+   calls++;assert.equal(actual,selected);assert.equal(images,references);assert.equal(options.maxNetworkRetries,networkRetries);assert.equal(options.maxProviderRetries,0);return completed();
+  });assert.equal(calls,1);
+ }
+});
+
+for(const [name,details] of [
+ ['network',{failureKind:'NETWORK',requestState:'ACCEPTED_OR_UNKNOWN',retryAuthorized:true,networkRetryCount:2}],
+ ['copyright',{}]
+])test(`detail grid never switches model after ${name} failure`,async()=>{
+ let calls=0;const error=rejection(details);
+ await assert.rejects(callImageModelWithCopyrightFallback(config(),{productMockup:true,detailGrid:true},[],async(_,params)=>{
+  calls++;assert.equal(params.maxNetworkRetries,2);assert.equal(params.maxProviderRetries,0);throw error;
+ }),actual=>actual===error);
+ assert.equal(calls,1);assert.equal(error.imageModelFallback,undefined);
+});
+
 test("successful primary response is returned unchanged without fallback metadata", async () => {
   const primaryConfig = config();
   const expected = completed();

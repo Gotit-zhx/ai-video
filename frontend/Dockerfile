@@ -32,3 +32,10 @@ COPY commerce-template-studio.css /usr/share/nginx/html/
 COPY commerce-artwork-library.css commerce-artwork-library.js commerce-publication.js /usr/share/nginx/html/
 
 COPY commerce-motion-demo.html commerce-motion-demo.js commerce-motion-demo.css /usr/share/nginx/html/
+
+COPY i18n.js i18n.css /usr/share/nginx/html/
+COPY i18n /usr/share/nginx/html/i18n
+
+COPY bd-workspace.js bd-workspace.css /usr/share/nginx/html/
+
+COPY knowledge-workspace.js knowledge-workspace.css /usr/share/nginx/html/

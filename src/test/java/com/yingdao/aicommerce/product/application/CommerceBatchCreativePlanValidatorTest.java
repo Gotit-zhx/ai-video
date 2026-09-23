@@ -44,4 +44,23 @@ class CommerceBatchCreativePlanValidatorTest {
   assertDoesNotThrow(()->CommerceBatchCreativePlanValidator.validateOutputPolicy("SOURCE_SKU_COLORS"));
   assertThrows(IllegalArgumentException.class,()->CommerceBatchCreativePlanValidator.validateOutputPolicy("ALL_SKUS"));
  }
+ @Test void missingDetailFieldKeepsHistoricalPlansUnchangedAndNewListsAreImmutable(){
+  var json=new tools.jackson.databind.ObjectMapper();
+  String old="{\"captureId\":\"capture\",\"version\":2,\"imageId\":\"image-a\"}";
+  var decoded=json.readValue(old,CommerceBatchCreativePlanValidator.Selection.class);
+  assertTrue(decoded.detailImageIds().isEmpty());assertFalse(json.writeValueAsString(decoded).contains("detailImageIds"));
+  var ids=new ArrayList<>(List.of("image-b"));
+  var fixed=new CommerceBatchCreativePlanValidator.Selection("capture",2,"image-a",List.of(),List.of(),ids);
+  ids.clear();assertEquals(List.of("image-b"),fixed.detailImageIds());
+  assertThrows(UnsupportedOperationException.class,()->fixed.detailImageIds().clear());
+  assertEquals(fixed,json.readValue(json.writeValueAsString(fixed),CommerceBatchCreativePlanValidator.Selection.class));
+ }
+ @Test void frozenDetailIdsMustBeUniqueReadableImagesFromTheSameSource(){
+  for(var ids:List.of(List.of("foreign"),List.of("image-b","image-b"),List.of(" "))){
+   var fixed=new CommerceBatchCreativePlanValidator.Selection("capture",2,"image-a",List.of(),List.of(),ids);
+   assertThrows(IllegalArgumentException.class,()->CommerceBatchCreativePlanValidator.validate("snapshot","PRINT_LAYOUT",List.of(source),List.of(fixed),1));
+  }
+  var fixed=new CommerceBatchCreativePlanValidator.Selection("capture",2,"image-a",List.of(),List.of(),List.of("image-b"));
+  assertEquals(List.of("image-b"),CommerceBatchCreativePlanValidator.validate("snapshot","PRINT_LAYOUT",List.of(source),List.of(fixed),1).sources().getFirst().detailImageIds());
+ }
 }

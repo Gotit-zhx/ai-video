@@ -192,7 +192,8 @@ async function readCompletionResponse(response, onTextDelta, onActivity, require
 }
 
 async function requestSingleChatCompletion({ config, apiKey, messages, maxTokens = 6500,
-  timeoutMs = 180_000, dispatcher, fetchImpl = fetch, onTextDelta, onActivity, requireStreaming = false, allowMissingDone = false, reasoningEffort, tools, allowToolCalls = false, signal: externalSignal }) {
+  timeoutMs = 180_000, dispatcher, fetchImpl = fetch, onTextDelta, onActivity, requireStreaming = false, allowMissingDone = false, reasoningEffort, tools, allowToolCalls = false, signal: externalSignal,
+  idleTimeoutMs, activityTimeoutOnly = false }) {
   const endpoint = chatCompletionEndpoint(config.baseUrl);
   const modelId = String(config.modelId || "").trim();
   if (!modelId || !apiKey) {
@@ -206,8 +207,25 @@ async function requestSingleChatCompletion({ config, apiKey, messages, maxTokens
   // budgets. Only an explicit parameter rejection selects the alternative.
   let profile = cached?.expiresAt > Date.now() ? cached.profile : { tokenField: "max_tokens", reasoningEffort };
   const visited = new Set();
-  const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs)));
+  if (activityTimeoutOnly && !(Number.isFinite(idleTimeoutMs) && idleTimeoutMs > 0)) {
+    throw new ChatCompletionError("活动超时模式需要有效的空闲超时", "CHAT_INVALID_CONFIGURATION", false);
+  }
+  const idleController = activityTimeoutOnly ? new AbortController() : null;
+  let idleTimer;
+  const resetIdleTimeout = () => {
+    if (!idleController || idleController.signal.aborted) return;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => idleController.abort(), idleTimeoutMs);
+  };
+  const reportActivity = activity => {
+    // SSE comments, empty deltas and heartbeat frames are not model progress.
+    if (["REASONING", "TEXT_STREAMING", "TOOL_STREAMING"].includes(activity)) resetIdleTimeout();
+    onActivity?.(activity);
+  };
+  const timeoutSignal = idleController?.signal || AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs)));
   const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
+  resetIdleTimeout();
+  try {
   for (let attempt = 0; attempt < 2; attempt++) {
     visited.add(JSON.stringify(profile));
     let response;
@@ -225,8 +243,10 @@ async function requestSingleChatCompletion({ config, apiKey, messages, maxTokens
         }),
         ...(dispatcher ? { dispatcher } : {}), signal
       });
-      if (response.ok) parsed = await readCompletionResponse(response, onTextDelta, onActivity, requireStreaming, allowMissingDone);
-      else body = await response.text();
+      if (response.ok) {
+        parsed = await readCompletionResponse(response, onTextDelta, reportActivity, requireStreaming, allowMissingDone);
+        resetIdleTimeout();
+      } else body = await response.text();
     } catch (cause) {
       if (cause?.chatTransport) throw cause;
       if (signal.aborted || cause?.name === "TimeoutError" || cause?.name === "AbortError") {
@@ -274,6 +294,9 @@ async function requestSingleChatCompletion({ config, apiKey, messages, maxTokens
     return { reply, usage: parsed.usage || {}, toolCalls: isToolCall ? toolCalls : [],
       transport: "streaming", compatibilityRequests: attempt };
   }
+  } finally {
+    clearTimeout(idleTimer);
+  }
 }
 
 // Only driver connections carry fallbackModels. Never replay image generation or
@@ -293,31 +316,40 @@ export async function requestChatCompletion(options) {
       if (seen.has(key)) return false;
       seen.add(key); return true;
     }).slice(0, 2);
+  // No backup still uses the caller's opted-in idle timer, preventing silent hangs.
   if (!alternatives.length) return requestSingleChatCompletion(options);
   const routes = [{ ...config, apiKey }, ...alternatives];
-  const deadline = Date.now() + (options.timeoutMs ?? 180_000);
-  let emittedText = false;
+  const activityTimeoutOnly = options.activityTimeoutOnly === true;
+  const deadline = activityTimeoutOnly ? Infinity : Date.now() + (options.timeoutMs ?? 180_000);
+  const canDiscardInternalPartial = options.fallbackOnPartialResponse === true
+    && onTextDelta == null && !options.allowToolCalls;
+  let emittedText = false, emittedToolCalls = false;
   for (let index = 0; index < routes.length; index++) {
     const remaining = deadline - Date.now();
     if (signal?.aborted || remaining <= 0) throw new ChatCompletionError("模型请求超时", "CHAT_TIMEOUT", true);
     const route = routes[index];
     const firstActivity = new AbortController();
-    const firstActivityTimer = index < routes.length - 1
+    // Style analysis can wait for any actively progressing response to finish.
+    // Its idle timeout replaces both this startup timer and the fixed wall deadline.
+    const firstActivityTimer = !activityTimeoutOnly && index < routes.length - 1
       ? setTimeout(() => firstActivity.abort(), Math.min(60_000, remaining / (routes.length - index))) : null;
     const routeSignal = signal ? AbortSignal.any([signal, firstActivity.signal]) : firstActivity.signal;
     try {
       const result = await requestSingleChatCompletion({ ...options, config: route, apiKey: route.apiKey,
-        timeoutMs: remaining, signal: routeSignal,
+        ...(activityTimeoutOnly ? {} : { timeoutMs: remaining }),
+        idleTimeoutMs: index > 0 ? options.fallbackIdleTimeoutMs ?? options.idleTimeoutMs : options.idleTimeoutMs,
+        signal: routeSignal,
         onActivity: activity => {
           if (["TEXT_STREAMING", "TOOL_STREAMING", "REASONING"].includes(activity)) clearTimeout(firstActivityTimer);
-          if (activity === "TOOL_STREAMING") emittedText = true;
+          if (activity === "TOOL_STREAMING") emittedToolCalls = true;
           onActivity?.(activity);
         },
         onTextDelta: delta => { clearTimeout(firstActivityTimer); emittedText = true; onTextDelta?.(delta); } });
       if (index > 0) console.info(`[driver-fallback] completed model=${String(route.modelId)} attempt=${index + 1}`);
       return { ...result, modelId: route.modelId, fallbackUsed: index > 0 };
     } catch (error) {
-      if (index === routes.length - 1 || emittedText || signal?.aborted || !FALLBACK_FAILURES.has(error.failureCode)) throw error;
+      if (index === routes.length - 1 || emittedToolCalls || (emittedText && !canDiscardInternalPartial)
+          || signal?.aborted || !FALLBACK_FAILURES.has(error.failureCode)) throw error;
       onActivity?.("SWITCHING_MODEL");
     } finally {
       clearTimeout(firstActivityTimer);

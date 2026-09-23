@@ -99,12 +99,11 @@ public class CommerceBatchPreflightService {
                 try { CommerceTemplateShopResolver.targetFor(config,shop,user.organizationId()); }
                 catch(BusinessException e) { issues.add(e.getMessage()); }
                 var setting=operating.get(user.organizationId(),item.shopId());
-                if(setting==null || !Set.of("TEST","LIVE").contains(setting.environment()))issues.add("店铺环境尚未确认");
-                else{
+                // Missing manual labels must not block an already authorized shop.
+                if(setting!=null && ("TEST".equals(setting.environment()) || "LIVE".equals(setting.environment())))
                     environments.add(setting.environment());
-                    int cap=Math.min(setting.dailyListingLimit(),config.dailyListingsPerShop());
-                    if(dailyCounts.get(item.shopId()+":"+item.plannedDay())>cap)issues.add("店铺额度已调整，本批该日排期超额");
-                }
+                int cap=Math.min(setting==null?50:setting.dailyListingLimit(),config.dailyListingsPerShop());
+                if(dailyCounts.get(item.shopId()+":"+item.plannedDay())>cap)issues.add("店铺额度已调整，本批该日排期超额");
             }
             checks.add(new ItemCheck(item.id(),item.captureId(),item.shopId(),List.copyOf(issues)));
         }

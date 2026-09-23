@@ -86,6 +86,11 @@ function harness(dir, reply, store = new ImageOperationStore(dir)) {
       await context.handlePlatformImageGeneration({ headers: { "x-internal-token": "internal-unit-only" }, body }, response);
       return response;
     },
+    async lookup(id,token='internal-unit-only') {
+      const response={};
+      await context.handleImageOperationLookup({headers:{'x-internal-token':token}},response,new URL('http://runtime/v1/images/operations?requestId='+encodeURIComponent(id)));
+      return response;
+    },
     progress(id) { context.progressLookupId = id; return plain(vm.runInContext("imageExecutionProgress.get(progressLookupId)", context)); },
     eager(body) {
       return store.execute(body.progressRequestId, body, operation => context.callImageModel(body.model,
@@ -115,6 +120,61 @@ test('dedicated product scene successful result replays without generating again
   assert.deepEqual(plain(second.body), plain(first.body));assert.equal(h.calls.length, 1);
   const restarted = harness(dir, () => { throw Error('cached result must not submit'); });
   assert.deepEqual(plain((await restarted.platform(body)).body), plain(first.body));assert.equal(restarted.calls.length, 0);
+});
+
+test('detail grid recovers at most twice with one configured model and replays its persisted result',async t=>{
+ const dir=await fixture(t),body={...input('detail-grid-recovery'),productMockup:true,detailGrid:true,size:'2048x2048',quality:'medium',
+  model:{...model(),modelId:GROK}};
+ const h=harness(dir,(_,count)=>{if(count<3)throw disconnected();return generated('https://result.example.invalid/grid.png');});
+ const response=await h.platform(body);
+ assert.equal(response.status,200);assert.equal(h.calls.length,3);
+ assert.ok(h.calls.every(call=>call.fields.model===GROK&&call.fields.resolution==='2k'&&call.fields.quality==='medium'));
+ assert.deepEqual(h.calls.map(call=>call.persistedAttempts),[1,2,3]);
+ assert.equal(new Set(h.calls.map(call=>call.key)).size,1);
+ const record=await recordFor(dir,body.progressRequestId);assert.equal(Object.keys(record.routes).length,1);
+ assert.equal(Object.values(record.routes)[0].networkRetryCount,2);
+ const restarted=harness(dir,()=>{throw Error('must not generate on lookup or replay');});
+ const read=await restarted.lookup(body.progressRequestId);
+ assert.equal(read.status,200);assert.equal(read.body.status,'COMPLETED');assert.deepEqual(plain(read.body.response),plain(response.body));
+ assert.equal(restarted.calls.length,0);
+ assert.deepEqual(plain((await restarted.platform(body)).body),plain(response.body));assert.equal(restarted.calls.length,0);
+});
+
+test('detail grid exhausted network recovery is terminal and does not select a backup model',async t=>{
+ const dir=await fixture(t),body={...input('detail-grid-exhausted'),productMockup:true,detailGrid:true};
+ const h=harness(dir,()=>{throw disconnected();});
+ await assert.rejects(h.platform(body),error=>error.networkRetryCount===2&&error.requestState==='ACCEPTED_OR_UNKNOWN');
+ assert.equal(h.calls.length,3);assert.ok(h.calls.every(call=>call.fields.model===PRIMARY));
+ const restarted=harness(dir,()=>{throw Error('terminal lookup must not generate');});
+ const read=await restarted.lookup(body.progressRequestId);assert.equal(read.body.status,'FAILED');assert.equal(read.body.error.networkRetryCount,2);
+ await assert.rejects(restarted.platform(body));assert.equal(restarted.calls.length,0);
+});
+
+for(const interruptedStage of [1,2,3])test(`detail-grid restart after POST ${interruptedStage} retains its two-recovery limit`,async t=>{
+ const dir=await fixture(t),body={...input('detail-grid-interrupted'),productMockup:true,detailGrid:true};
+ const seed=new ImageOperationStore(dir);
+ await seed.execute(body.progressRequestId,body,async operation=>{
+  const route=await operation.forRoute(body.model,{maxNetworkRetries:2});
+  for(let count=0;count<interruptedStage;count++){
+   if(count)await route.recordNetworkRetry(count);
+   await route.beforeAttempt();
+  }
+  return {};
+ });
+ const record=await recordFor(dir,body.progressRequestId);record.status='RUNNING';delete record.result;await seed.write(recordPath(dir,body.progressRequestId),record);
+ const resumed=harness(dir,()=>{throw disconnected();});
+ await assert.rejects(resumed.platform(body));assert.equal(resumed.calls.length,3-interruptedStage);
+ assert.ok(resumed.calls.every(call=>call.fields.model===PRIMARY));
+ const restarted=harness(dir,()=>{throw Error('exhausted restart must not generate');});
+ await assert.rejects(restarted.platform(body));assert.equal(restarted.calls.length,0);
+});
+
+test('operation lookup is internally authenticated, bounded by valid IDs, and read-only',async t=>{
+ const dir=await fixture(t),h=harness(dir,()=>{throw Error('lookup cannot call provider');});
+ assert.equal((await h.lookup('missing-operation','wrong-token')).status,401);
+ const missing=await h.lookup('missing-operation');assert.equal(missing.status,404);assert.equal(missing.body.status,'NOT_FOUND');
+ await assert.rejects(h.lookup('../invalid'),error=>error.status===400);
+ assert.equal(h.calls.length,0);assert.deepEqual(await readdir(dir),[]);
 });
 
 test('dedicated product scene download recovery only retries saved result GET after restart', async t => {
@@ -369,9 +429,9 @@ test("failure to persist a Grok retry reservation prevents the third model POST"
   assert.deepEqual(h.calls.map(call => call.fields.model), [PRIMARY, GROK]);
 });
 
-test("a received response survives transient checkpoint failure and is recovered without another POST", async t => {
+for(const detailGrid of [false,true])test(`a received ${detailGrid ? 'detail grid' : 'image'} response survives checkpoint failure and lookup permits cached recovery without another POST`, async t => {
   const dir = await fixture(t);
-  const body = input();
+  const body = {...input(),...(detailGrid ? {detailGrid:true,productMockup:true,size:'2048x2048',quality:'medium'} : {})};
   const store = new ImageOperationStore(dir);
   const write = store.write.bind(store);
   let failed = false;
@@ -386,9 +446,16 @@ test("a received response survives transient checkpoint failure and is recovered
   assert.equal(h.calls.length, 1);
   assert.equal((await recordFor(dir, body.progressRequestId)).status, "RECOVERABLE");
   const restarted = harness(dir, () => { throw Error("received result must be reused"); });
+  const lookup=await restarted.lookup(body.progressRequestId);
+  assert.equal(lookup.body.status,'RECOVERABLE');assert.equal(lookup.body.response,null);
+  assert.equal(lookup.body.error.savedResponseAvailable,true);
+  assert.ok(!JSON.stringify(lookup.body).includes('saved.png'));
+  assert.equal(restarted.calls.length,0);
+  await assert.rejects(restarted.platform({...body,prompt:'changed immutable input'}),error=>error.status===409);
   const recovered = await restarted.platform(body);
   assert.equal(recovered.body.result.url, "https://results.example.invalid/saved.png");
   assert.equal(restarted.calls.length, 0);
+  assert.equal((await restarted.lookup(body.progressRequestId)).body.status,'COMPLETED');
 });
 
 for (const status of [502, 504]) {

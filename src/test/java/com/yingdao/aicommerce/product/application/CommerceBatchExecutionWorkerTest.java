@@ -24,6 +24,7 @@ class CommerceBatchExecutionWorkerTest {
     final PlatformUserMapper users = mock(PlatformUserMapper.class);
     final CommerceBatchStageHandler handler = mock(CommerceBatchStageHandler.class);
     final ScheduledExecutorService heartbeatExecutor = mock(ScheduledExecutorService.class);
+    final org.springframework.transaction.PlatformTransactionManager checkpointTransactions = mock(org.springframework.transaction.PlatformTransactionManager.class);
     final Map<String, CommerceBatchExecution> rows = new ConcurrentHashMap<>();
     final MutableClock clock = new MutableClock();
     final ControlledExecutor executor = new ControlledExecutor();
@@ -33,6 +34,7 @@ class CommerceBatchExecutionWorkerTest {
     Runnable scheduledHeartbeat;
 
     @BeforeEach void mapperFixture() {
+        when(checkpointTransactions.getTransaction(any())).thenAnswer(call -> new org.springframework.transaction.support.SimpleTransactionStatus());
         when(handler.stage()).thenReturn(CommerceBatchExecution.Stage.EXTRACT);
         when(handler.execute(any(), any())).thenAnswer(call -> body.apply(call.getArgument(0)));
         when(users.selectById(user.getId())).thenReturn(user);
@@ -94,7 +96,7 @@ class CommerceBatchExecutionWorkerTest {
 
     void start(int capacity, ExecutorService background) {
         worker = new CommerceBatchExecutionWorker(runs, users, List.of(handler),
-                new CommerceBatchExecutionCheckpoint(runs), clock, capacity, background, heartbeatExecutor);
+                new CommerceBatchExecutionCheckpoint(runs,checkpointTransactions), clock, capacity, background, heartbeatExecutor);
         worker.startHeartbeat();
         var callback = ArgumentCaptor.forClass(Runnable.class);
         verify(heartbeatExecutor).scheduleWithFixedDelay(callback.capture(), eq(30_000L), eq(30_000L), eq(TimeUnit.MILLISECONDS));
@@ -132,6 +134,25 @@ class CommerceBatchExecutionWorkerTest {
         assertEquals("VARIATE", rows.get("one").stage());
         verify(runs, times(14)).renew(eq("one"), anyString(), any(), any());
         verify(runs).event(anyString(), eq("one"), eq("EXTRACT"), eq("QUEUED"), eq("long result saved"), eq(clock.instant()));
+    }
+
+    @Test void checkpointDeadlockRetriesTheSavedStageResultWithoutRunningTheModelHandlerAgain() {
+        enqueue("one"); start(1, executor);
+        var snapshot = new java.util.concurrent.atomic.AtomicReference<CommerceBatchExecution>();
+        when(checkpointTransactions.getTransaction(any())).thenAnswer(call -> {
+            snapshot.set(rows.get("one"));
+            return new org.springframework.transaction.support.SimpleTransactionStatus();
+        });
+        doAnswer(call -> { rows.put("one", snapshot.get()); return null; }).when(checkpointTransactions).rollback(any());
+        when(runs.event(anyString(), eq("one"), eq("EXTRACT"), eq("QUEUED"), eq("saved"), any()))
+                .thenThrow(new org.springframework.dao.CannotAcquireLockException("audit deadlock")).thenReturn(1);
+        worker.poll(); executor.next();
+        assertEquals("QUEUED", rows.get("one").status());
+        assertEquals("VARIATE", rows.get("one").stage());
+        verify(handler, times(1)).execute(any(), any());
+        verify(runs, times(2)).finish(eq("one"), anyString(), eq("VARIATE"), eq("QUEUED"), eq("saved"), any());
+        verify(checkpointTransactions).rollback(any()); verify(checkpointTransactions).commit(any());
+        assertFalse(worker.hasInFlight("one"));
     }
 
     @Test void fullCapacityDoesNotClaimOrQueueAnotherBatch() {

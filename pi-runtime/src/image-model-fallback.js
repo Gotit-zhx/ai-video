@@ -28,7 +28,8 @@ function attemptCount(value) {
 
 export async function callImageModelWithCopyrightFallback(config, params, inputImages, callSingleImageModel) {
   const requiresNativeAlpha = params?.background === "transparent";
-  const productMockup = params?.productMockup === true;
+  const detailGrid = params?.detailGrid === true && !requiresNativeAlpha;
+  const productMockup = params?.productMockup === true || detailGrid;
   const singleSubmission = requiresNativeAlpha || productMockup;
   if (requiresNativeAlpha && !supportsNativeTransparentPng(config)) {
     throw Object.assign(new Error("当前图片模型未确认支持原生透明 PNG，尚未发起模型调用"), {
@@ -43,8 +44,8 @@ export async function callImageModelWithCopyrightFallback(config, params, inputI
   const paramsWithProgress = (offset, maxNetworkRetries) => ({
     ...params,
     ...(maxNetworkRetries !== undefined ? {maxNetworkRetries} : {}),
-    // Transparent artwork and final scene attempts are counted by the durable job ledger.
-    // A runtime operation must not spend additional POSTs inside that one attempt.
+    // Provider refusals are counted by the durable job ledger. Only the dedicated
+    // detail grid may recover its connection, within the persisted operation budget.
     ...(singleSubmission ? {maxProviderRetries: 0} : {}),
     onProgress: (stage, localAttempts) => {
       attempts = Math.max(attempts, offset + attemptCount(localAttempts));
@@ -55,9 +56,9 @@ export async function callImageModelWithCopyrightFallback(config, params, inputI
   let primaryError;
   let fallbackRoute;
   try {
-    // Artwork/scenes have one provider POST per durable job. Ordinary photos retain the
-    // configured primary/backup recovery path and its existing retry limits.
-    return await callSingleImageModel(config, paramsWithProgress(0, singleSubmission || hasBackup ? 0 : undefined), inputImages);
+    // Transparent artwork and product scenes keep one POST. The grid opts into
+    // two durable network recoveries on this model; it cannot use a backup.
+    return await callSingleImageModel(config, paramsWithProgress(0, detailGrid ? 2 : singleSubmission || hasBackup ? 0 : undefined), inputImages);
   } catch (error) {
     // Final commerce photos also own a durable budgeted attempt. A timeout or
     // refusal must not silently spend another POST or switch to another model.

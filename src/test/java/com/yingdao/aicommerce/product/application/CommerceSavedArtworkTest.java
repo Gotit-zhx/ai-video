@@ -39,6 +39,13 @@ class CommerceSavedArtworkTest {
   var h=new Harness();var launch=new CommerceBatchLaunchService(mock(CommerceBatchService.class),mock(CommerceBatchCreativePlanService.class),mock(CommerceBatchExecutionService.class),h.archive);
   assertEquals(0,launch.requiredModelCalls(h.plan,h.config,"org"));
  }
+ @Test void savedArtworkStillBudgetsEveryOriginalDetailForEveryVariant()throws Exception{
+  var h=new Harness();var launch=new CommerceBatchLaunchService(mock(CommerceBatchService.class),mock(CommerceBatchCreativePlanService.class),mock(CommerceBatchExecutionService.class),h.archive);
+  var prior=h.plan.sources().getFirst();
+  var source=new Selection(prior.captureId(),prior.version(),prior.imageId(),prior.cleanupAreas(),prior.colorTargets(),List.of("detail-1","detail-2","detail-3"));
+  var detailed=new Plan(h.plan.printTemplateSnapshotId(),List.of(source),h.plan.variantsPerPrint(),h.plan.variationArtworkId(),h.plan.artworkSource(),h.plan.outputPolicy(),h.plan.renderPolicy(),h.plan.reusedArtworks());
+  assertEquals(3*h.plan.variantsPerPrint()*CommerceBatchCreativePlanValidator.DETAIL_MAX_ATTEMPTS,launch.requiredModelCalls(detailed,h.config,"org"));
+ }
  @Test void savedArtworkExtractAndVariateAreLocalIdempotentReferencesWithNoProviderCalls()throws Exception{
   var h=new Harness();h.addBase();
   assertEquals("QUEUED",h.execute("EXTRACT").pendingStatus());assertTrue(h.execute("EXTRACT").complete());

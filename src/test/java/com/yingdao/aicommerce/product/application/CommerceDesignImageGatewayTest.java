@@ -109,4 +109,25 @@ class CommerceDesignImageGatewayTest {
         adapter.generateProductPreview("白底商品效果图","ordinary_preview",model,List.of());
         server.verify();
     }
+    @Test void detailGridHasItsOwnTwoReferenceHighResolutionContract(){
+        var builder=RestClient.builder();var server=MockRestServiceServer.bindTo(builder).build();
+        var adapter=new CommerceDesignImageGateway(builder,"http://runtime","internal-test");
+        var refs=List.of(new CommerceDesignImageGateway.Reference("image/png","cHJvZHVjdA=="),new CommerceDesignImageGateway.Reference("image/jpeg","Z3JpZA=="));
+        server.expect(requestTo("http://runtime/v1/images/generate"))
+            .andExpect(header("X-Internal-Token","internal-test"))
+            .andExpect(jsonPath("$.size").value("2048x2048"))
+            .andExpect(jsonPath("$.quality").value("medium"))
+            .andExpect(jsonPath("$.inputFidelity").value("high"))
+            .andExpect(jsonPath("$.productMockup").value(true))
+            .andExpect(jsonPath("$.detailGrid").value(true))
+            .andExpect(jsonPath("$.progressRequestId").value("detail_grid_1"))
+            .andExpect(jsonPath("$.references.length()").value(2))
+            .andExpect(jsonPath("$.references[0].dataBase64").value(refs.getFirst().dataBase64()))
+            .andExpect(jsonPath("$.references[1].dataBase64").value(refs.get(1).dataBase64()))
+            .andRespond(withSuccess("{\"result\":{\"url\":\"https://result.example/grid.png\"}}",MediaType.APPLICATION_JSON));
+        assertEquals("https://result.example/grid.png",adapter.generateProductDetailGrid("固定四格","detail_grid_1",model,refs).result().url());
+        for(int count:List.of(0,1,3,5))assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
+            ()->adapter.generateProductDetailGrid("invalid","detail_grid_2",model,Collections.nCopies(count,refs.getFirst())));
+        server.verify();
+    }
 }

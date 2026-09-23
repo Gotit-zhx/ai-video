@@ -46,10 +46,18 @@ public class ShopeeProductVideoUploader {
     private final ShopeeOfficialClient client;
     private final ObjectMapper json;
     private final Path root;
+    private final ShopeeVideoPreprocessor preprocessor;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public ShopeeProductVideoUploader(JdbcTemplate db, ShopeeProductVideoUploadLedger ledger,
                                       ShopeeOfficialClient client, ObjectMapper json,
                                       @Value("${app.ai-video-task-storage:/data/ai-video-tasks}") String storage) {
+        this(db, ledger, client, json, storage, new ShopeeVideoPreprocessor(Path.of(storage, "capture-videos")));
+    }
+
+    ShopeeProductVideoUploader(JdbcTemplate db, ShopeeProductVideoUploadLedger ledger,
+                               ShopeeOfficialClient client, ObjectMapper json, String storage, ShopeeVideoPreprocessor preprocessor) {
+        this.preprocessor = preprocessor;
         this.db = db; this.ledger = ledger; this.client = client; this.json = json;
         this.root = Path.of(storage, "capture-videos").toAbsolutePath().normalize();
     }
@@ -72,7 +80,7 @@ public class ShopeeProductVideoUploader {
         String video = String.valueOf(source.get("id")), hash = String.valueOf(source.get("content_sha256"));
         if (!video.matches("[a-f0-9-]{36}") || !hash.matches("[a-f0-9]{64}")) throw conflict("采集视频归档信息无效");
         long byteLength = ((Number) source.get("byte_length")).longValue();
-        if (byteLength < 12 || byteLength > MAX_VIDEO_BYTES) throw conflict("采集视频超过 Shopee 的 30 MB 限制，商品尚未提交");
+        if (byteLength < 12 || byteLength > 200L * 1024 * 1024) throw conflict("采集视频无效或超过 200 MB 预处理上限，商品尚未提交");
         String mime = String.valueOf(source.get("mime_type"));
         if (!List.of("video/mp4", "video/webm").contains(mime)) throw conflict("采集视频格式不受支持");
         String shop = connection.shop().getId();
@@ -80,13 +88,19 @@ public class ShopeeProductVideoUploader {
         String id = digest("SHA-256", (org + ":" + shop + ":" + hash + ":" + destination).getBytes(StandardCharsets.UTF_8));
         var row = ledger.prepare(id, org, shop, video, hash, destination, byteLength);
         if ("READY".equals(row.get("status"))) return uploaded(row, video, sources.size());
+        byte[] bytes = preprocessor.prepare(readArchive(video, hash, byteLength));
+        String preparedHash = digest("SHA-256", bytes);
+        if (!preparedHash.equals(hash)) {
+            id = digest("SHA-256", (org + ":" + shop + ":" + preparedHash + ":" + destination).getBytes(StandardCharsets.UTF_8));
+            row = ledger.prepare(id, org, shop, video, preparedHash, destination, bytes.length);
+            if ("READY".equals(row.get("status"))) return uploaded(row, video, sources.size());
+        }
         if ("FAILED".equals(row.get("status"))) throw conflict("Shopee 视频处理失败：" + row.get("message"));
         String worker = UUID.randomUUID().toString();
         if (!ledger.acquire(id, org, worker)) throw new VideoUploadPendingException("该视频正在上传到目标店铺，后台稍后会复用上传结果");
         try {
             row = ledger.get(id, org);
             if ("READY".equals(row.get("status"))) return uploaded(row, video, sources.size());
-            byte[] bytes = readArchive(video, hash, byteLength);
             String uploadId = text(row, "video_upload_id");
             String phase = text(row, "status");
             if (uploadId == null) {

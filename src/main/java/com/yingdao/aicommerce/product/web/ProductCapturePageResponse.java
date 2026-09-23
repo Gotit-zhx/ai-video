@@ -39,7 +39,8 @@ public record ProductCapturePageResponse(
             String thumbnailStatus,
             Instant createdAt,
             Instant updatedAt,
-            long version
+            long version,
+            String originType
     ) {
         static Summary from(ProductCaptureService.CaptureSummary summary) {
             ProductCapture capture = summary.capture();
@@ -53,7 +54,7 @@ public record ProductCapturePageResponse(
                     capture.getSourceProductId(), capture.getStatus(), capture.getTitle(),
                     capture.getCurrency(), capture.getPriceMin(), capture.getPriceMax(),
                     thumbnailUrl, thumbnail == null ? null : thumbnail.getStatus(),
-                    capture.getCreatedAt(), capture.getUpdatedAt(), capture.getVersion()
+                    capture.getCreatedAt(), capture.getUpdatedAt(), capture.getVersion(), summary.originType()
             );
         }
     }

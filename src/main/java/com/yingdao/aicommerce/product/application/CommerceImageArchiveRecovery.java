@@ -20,7 +20,7 @@ public class CommerceImageArchiveRecovery {
             SELECT e.id,e.stage FROM commerce_batch_executions e
             WHERE e.status='WAITING_INPUT'
               AND e.message LIKE '模型响应已保存，但图片归档未完成%'
-              AND EXISTS (SELECT 1 FROM commerce_batch_artwork_jobs j WHERE j.execution_id=e.id AND j.status='RESULT_RECEIVED')
+              AND EXISTS (SELECT 1 FROM commerce_batch_artwork_jobs j WHERE j.execution_id=e.id AND j.status='RESULT_RECEIVED' AND j.kind NOT REGEXP '^MODEL_DETAIL_(GRID_)?[1-9][0-9]*$')
               AND NOT EXISTS (SELECT 1 FROM commerce_batch_artwork_jobs j WHERE j.execution_id=e.id AND j.status IN ('SUBMITTING','UNKNOWN'))
               AND (SELECT COUNT(*) FROM commerce_batch_execution_events v WHERE v.execution_id=e.id AND v.message=?)<3
               AND TIMESTAMPDIFF(SECOND,e.updated_at,NOW())>=30*POW(2,

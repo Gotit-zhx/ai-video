@@ -73,10 +73,17 @@ public class CommerceBatchLaunchService {
         try{CommerceBatchCreativePlanValidator.validateFrozenArtworks(plan,configuration,organizationId);}
         catch(IllegalArgumentException failure){throw bad(failure.getMessage());}
         long sources=plan.sources().size(),variants=plan.variantsPerPrint(),calls,printCalls;
+        long detailCalls=0;
         long colorCount=0;
         try {
             CommerceBatchCreativePlanValidator.validateOutputPolicy(plan.outputPolicy());
             CommerceBatchCreativePlanValidator.validateRenderTemplate(plan.renderPolicy(),configuration);
+            for(var source:plan.sources()) {
+                CommerceBatchCreativePlanValidator.validateDetailImageIds(source,null);
+                if(!source.detailImageIds().isEmpty()&&!CommerceBatchCreativePlanValidator.modelDetailsSupported(configuration))
+                    throw new IllegalArgumentException("模特详情图仅适用于服装模板，请重新保存创作配置");
+                detailCalls+=(long)source.detailImageIds().size()*variants*CommerceBatchCreativePlanValidator.DETAIL_MAX_ATTEMPTS;
+            }
             if(CommerceBatchCreativePlanValidator.localPhotoOutput(plan)&&!CommerceBatchCreativePlanValidator.sourceColorOutput(plan))
                 throw new IllegalArgumentException("本地套版需要固定每色出图规则，请重新保存创作配置");
             if(CommerceBatchCreativePlanValidator.sourceColorOutput(plan))for(var source:plan.sources()) {
@@ -103,7 +110,9 @@ public class CommerceBatchLaunchService {
             }
             catch(BusinessException failure) {throw failure;}
             catch(RuntimeException failure) {throw bad("商品套版模板预检未通过："+failure.getMessage()+"；尚未启动图片生成");}
-            if(CommerceBatchCreativePlanValidator.savedArtwork(plan))return (CommerceBatchCreativePlanValidator.sceneOutput(plan)||CommerceBatchCreativePlanValidator.drapeOutput(plan))?plan.sources().size():0;
+            if(CommerceBatchCreativePlanValidator.savedArtwork(plan))return checkedModelCalls(detailCalls+(
+                    CommerceBatchCreativePlanValidator.drapeOutput(plan)?sources*CommerceDrapeMasterRetry.MAX_ATTEMPTS:
+                    CommerceBatchCreativePlanValidator.sceneOutput(plan)?sources:0));
             boolean sourceStyle=CommerceBatchCreativePlanValidator.sourceProductStyle(plan);
             int groups=sourceStyle?CommerceSurfaceTemplateInputs.artworkGroups(configuration).size():1;
             if(!sourceStyle)CommerceSurfaceTemplateInputs.variationArtwork(configuration,plan.variationArtworkId());
@@ -127,10 +136,15 @@ public class CommerceBatchLaunchService {
                     ?sources*(1+(configuration.baseImages().get("FRONT")==null?1:0))+variants*(sources+colorCount)
                     :sources*(1+2*variants+(configuration.baseImages().get("FRONT")==null?1:0));
         }
-        // Reserve room for at most three attempts per logical print. Product photos,
-        // blank garments and compositions retain their original single-call budget.
+        // New drape runs can correct a visually rejected master up to the bounded attempt limit.
+        // Other product photos, empty scenes, blanks and compositions retain their original budgets.
         calls+=2*printCalls;
-        if(CommerceBatchCreativePlanValidator.sceneOutput(plan)||CommerceBatchCreativePlanValidator.drapeOutput(plan))calls+=sources;
+        if(CommerceBatchCreativePlanValidator.drapeOutput(plan))calls+=sources*CommerceDrapeMasterRetry.MAX_ATTEMPTS;
+        else if(CommerceBatchCreativePlanValidator.sceneOutput(plan))calls+=sources;
+        return checkedModelCalls(calls+detailCalls);
+    }
+
+    private static int checkedModelCalls(long calls) {
         if(calls>1000)throw bad("本批含印花重试的调用上限为 "+calls+" 次，超过单批1000次上限；请减少商品或裂变款式数量后重试");
         return (int)calls;
     }

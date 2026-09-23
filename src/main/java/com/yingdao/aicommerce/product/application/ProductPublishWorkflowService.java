@@ -119,10 +119,10 @@ public class ProductPublishWorkflowService {
         ProductCapture capture = captureDetail.capture();
         String initialStep = initialStep(capture.getStatus());
         boolean generated = commerceDb != null && commerceDb.queryForObject("SELECT COUNT(*) FROM commerce_batch_publications WHERE organization_id=? AND capture_id=?",Integer.class,principal.organizationId(),captureId)>0;
-        boolean watermarkCheck = "AI_WATERMARK_V1".equals(watermarkProvider) && !generated;
-        if (watermarkCheck && "PUBLISHED".equals(capture.getStatus())) {
-            throw badRequest("已发布商品请先建立独立的新草稿再进行水印复检上传");
-        }
+        // A second shop reuses the approved published assets; reprocessing them would alter
+        // the local images referenced by the first shop's retained publication history.
+        boolean watermarkCheck = "AI_WATERMARK_V1".equals(watermarkProvider) && !generated
+                && !"PUBLISHED".equals(capture.getStatus());
         body.put("visionWatermarkCheck", watermarkCheck);
         if (watermarkCheck) initialStep = "IMAGES";
         requireStagePermissions(initialStep, principal);

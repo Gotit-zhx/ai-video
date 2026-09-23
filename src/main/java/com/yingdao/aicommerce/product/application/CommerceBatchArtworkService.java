@@ -45,6 +45,14 @@ public class CommerceBatchArtworkService {
     private final CommerceCaptureSourceArchiveService sourceArchives;
     @org.springframework.beans.factory.annotation.Autowired
     private CommerceTransparentArtworkRetry automaticArtworkRetry;
+    @org.springframework.beans.factory.annotation.Autowired
+    private CommerceDrapeStyleReview drapeStyleReviewer;
+    @org.springframework.beans.factory.annotation.Autowired
+    private CommerceDrapeMasterRetry drapeMasterRetry;
+    @org.springframework.beans.factory.annotation.Autowired
+    private CommerceModelDetailWorkflow modelDetails;
+    @org.springframework.beans.factory.annotation.Autowired
+    private CommerceModelDetailGridWorkflow modelDetailGrids;
 
     public CommerceBatchArtworkService(JdbcTemplate db,CommerceBatchCreativePlanMapper plans,CommerceTemplateMapper templates,
             ProductCaptureService captures,CommerceImageArchive archive,MarketplaceImageDownloader downloader,
@@ -113,7 +121,7 @@ public class CommerceBatchArtworkService {
         boolean localPhoto=CommerceBatchCreativePlanValidator.localPhotoOutput(plan);
         if(localPhoto&&!CommerceBatchCreativePlanValidator.sourceColorOutput(plan))return new Result(false,"本地套版缺少固定的每色出图规则，请重新保存新批次配置");
         var localWorkflow=localPhoto?new CommerceLocalPhotoWorkflow(db,archive,json,foreground):null;
-        var drapeWorkflow=CommerceBatchCreativePlanValidator.drapeOutput(plan)?new CommerceDrapeReuseWorkflow(db,archive,json,drapeProcessor,localWorkflow):null;
+        var drapeWorkflow=CommerceBatchCreativePlanValidator.drapeOutput(plan)?new CommerceDrapeReuseWorkflow(db,archive,json,drapeProcessor,localWorkflow,drapeStyleReviewer,drapeMasterRetry):null;
         var template=templates.snapshot(run.organizationId(),plan.printTemplateSnapshotId());
         if(template==null||!"PRINT_LAYOUT".equals(template.kind()))return new Result(false,"固定的套版模板不可用");
         var config=json.readValue(template.configJson(),CommercePrintTemplateService.Configuration.class);
@@ -201,6 +209,9 @@ public class CommerceBatchArtworkService {
             var reviewed=localWorkflow.review(run,plan,config,completed);
             if(reviewed!=null)return reviewed;
             if(drapeWorkflow!=null){var drapeReview=drapeWorkflow.review(run,plan,config,completed);if(drapeReview!=null)return drapeReview;}
+            try {for(var source:plan.sources())for(int v=1;v<=plan.variantsPerPrint();v++)
+                CommerceModelDetailWorkflow.requiredKeys(source,v,completed,db,json,archive,user.organizationId());}
+            catch(IllegalArgumentException incomplete){return new Result(false,incomplete.getMessage()+"；主图与详情齐全后才进入待上架");}
             boolean only=db.queryForObject("SELECT COUNT(*)>0 FROM commerce_batch_creation_modes WHERE batch_id=? AND organization_id=? AND mode='CREATIVE_ONLY'",Boolean.class,run.batchId(),run.organizationId());
             return new Result(true,only?"各款各色商品主图已合成归档；仅创作批次已完成。":"本地套版与保护区域自动检查通过，直接进入发布准备。");
         }
@@ -376,7 +387,36 @@ public class CommerceBatchArtworkService {
                 }
             } else throw error("不支持的自动创作阶段");
         }
+        if(run.stage().equals("MOCKUP")) {
+            if(modelDetailGrids!=null){
+                try {for(var source:plan.sources())for(int variant=1;variant<=plan.variantsPerPrint();variant++){
+                    final int v=variant;
+                    var result=modelDetailGrids.execute(run,source,v,completed,
+                            imageId->archiveSource(new CommerceBatchCreativePlanValidator.Selection(source.captureId(),source.version(),imageId),details.get(source.captureId()),user),
+                            (kind,prompt,refs,job)->advance(run,source,kind,v,prompt,()->refs,job,user));
+                    if(result!=null)return result;
+                }}catch(RuntimeException failure){return new Result(false,"详情处理未完成，已保存结果保留："+Objects.toString(failure.getMessage(),"素材处理异常"),"FAILED");}
+            }else {
+            try {for(var source:plan.sources())for(int variant=1;variant<=plan.variantsPerPrint();variant++)for(int index=1;index<=source.detailImageIds().size();index++) {
+                String kind=CommerceModelDetailPolicy.kind(index);
+                var job=find(completed,source.captureId(),kind,variant);
+                String product=CommerceModelDetailWorkflow.productKey(source,variant,completed);
+                String imageId=source.detailImageIds().get(index-1);
+                String style;
+                if(job==null)style=archiveSource(new CommerceBatchCreativePlanValidator.Selection(source.captureId(),source.version(),imageId),details.get(source.captureId()),user);
+                else {var frozen=referenceKeys(job);
+                    if(frozen.size()!=2||!product.equals(frozen.getFirst()))throw new IllegalArgumentException("模特详情图固定的新款参考不一致");
+                    style=frozen.get(1);}
+                if(!ready(job))return advance(run,source,kind,variant,CommerceModelDetailPolicy.prompt(index),()->List.of(product,style),job,user);
+                if(modelDetails==null)return new Result(false,"模特详情图检查服务不可用，已生成图片保留");
+                var checked=modelDetails.review(run,source,variant,index,job,product,style);if(checked!=null)return checked;
+            }} catch(RuntimeException failure){return new Result(false,"模特实穿详情图暂未完成："+Objects.toString(failure.getMessage(),"素材读取失败")+"；已归档图片保留，不重复提交未知请求");}
+            }
+        }
         if(run.stage().equals("REVIEW")) {
+            try {for(var source:plan.sources())for(int v=1;v<=plan.variantsPerPrint();v++)
+                CommerceModelDetailWorkflow.requiredKeys(source,v,completed,db,json,archive,user.organizationId());}
+            catch(IllegalArgumentException incomplete){return new Result(false,incomplete.getMessage()+"；主图与详情齐全后才进入待上架");}
             boolean only=db.queryForObject("SELECT COUNT(*)>0 FROM commerce_batch_creation_modes WHERE batch_id=? AND organization_id=? AND mode='CREATIVE_ONLY'",Boolean.class,run.batchId(),run.organizationId());
             return new Result(only,only?"仅创作流程已完成：提取、裂变、套版和位置检查均已归档。候选仍待业务质量复核，未执行上架。":"自动图片检查已保存，待业务质量复核与发布配置确认；不会自动批准上架");
         }
@@ -510,6 +550,12 @@ public class CommerceBatchArtworkService {
             List<String> refs;
             try { refs=inputs.get(); } catch(RuntimeException failure) {return new Result(false,"读取或归档参考图失败，未提交模型，可处理后恢复");}
             String key=requestKey(run.id(),source.captureId(),kind,variant,colorKey(color));
+            if(CommerceModelDetailGridPolicy.isKind(kind)){
+                Integer prior=db.queryForObject("SELECT COUNT(*) FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND capture_id=? AND capture_version=? AND kind=? AND variant_index=?",Integer.class,run.id(),run.organizationId(),source.captureId(),source.version(),kind,variant);
+                int generation=prior==null?0:prior;
+                if(!CommerceModelDetailGridPolicy.usesSourceStyle(prompt)&&generation>=CommerceModelDetailGridPolicy.MAX_ATTEMPTS)return new Result(false,"该详情组已达到自动恢复上限，已完成结果保留；当前请求已结束","FAILED");
+                key=CommerceImageArchive.sha((key+":grid-generation:"+generation).getBytes(StandardCharsets.UTF_8));
+            }
             if(color==null)db.update("""
                 INSERT IGNORE INTO commerce_batch_artwork_jobs
                 (id,organization_id,execution_id,capture_id,capture_version,kind,variant_index,request_key,status,prompt,model_config_id,model_fingerprint,reference_keys,created_at,updated_at)
@@ -540,14 +586,21 @@ public class CommerceBatchArtworkService {
         if(model==null||!Objects.equals(model.id(),job.get("model_config_id"))||!fingerprint(model).equals(job.get("model_fingerprint")))
             return new Result(false,"已固定的图片模型配置已变化，未提交调用；请恢复对应配置后继续");
         List<CommerceDesignImageGateway.Reference> references;
-        try { references=referenceKeys(job).stream().map(key->archive.read(user.organizationId(),key)).toList(); }
+        try { references=referenceKeys(job).stream().map(key->archive.read(user.organizationId(),key)).toList();
+            if(CommerceModelDetailGridPolicy.isKind(kind))references=gridReferences(references,(String)job.get("prompt"));
+            else if(CommerceModelDetailPolicy.isKind(kind)&&CommerceModelDetailGridPolicy.usesAmbience((String)job.get("prompt"))){
+                if(references.size()!=2)throw new IllegalArgumentException("详情纠正需要固定商品与风格参考");
+                references=List.of(references.getFirst(),imageReference(CommerceModelDetailGridComposer.styleAmbience(Base64.getDecoder().decode(references.get(1).dataBase64()))));
+            }}
         catch(RuntimeException failure) {return new Result(false,"固定参考图不可读，未提交模型，请检查归档后恢复");}
         String claim=ledger.claim(run,id,(String)job.get("request_key"));
         if(claim.equals("LIMIT_REACHED"))return new Result(false,"模型调用次数上限已到，保留已完成结果；不会继续付费生成");
         if(claim.equals("PAUSE_REQUESTED"))return new Result(false,"已暂停，未启动新的模型调用","PAUSED");
         if(!claim.equals("CLAIMED"))return Result.unknown("执行租约或图片提交状态已变化，停止当前调用");
         CommerceDesignImageGateway.Response result;
-        try { result=sceneModel(kind)
+        try { result=CommerceModelDetailGridPolicy.isKind(kind)
+                ?gateway.generateProductDetailGrid((String)job.get("prompt"),id,model,references)
+                :sceneModel(kind)
                 ?gateway.generateProductPreview((String)job.get("prompt"),id,model,references,true)
                 :kind.startsWith("MOCKUP")
                 ?gateway.generateProductPreview((String)job.get("prompt"),id,model,references)
@@ -564,12 +617,18 @@ public class CommerceBatchArtworkService {
             rejection.put("providerStatus",failure.providerStatus());
             db.update("UPDATE commerce_batch_artwork_jobs SET status='REJECTED',message=?,result_json=?,updated_at=NOW(6) WHERE id=? AND status='SUBMITTING'",
                     message,json.writeValueAsString(rejection),id);
+            if(CommerceModelDetailGridPolicy.isKind(kind)&&modelDetailGrids!=null
+                    &&CommerceDetailGenerationRecovery.retryable(rejection)){
+                modelDetailGrids.markFailure(run,job,"TEMPORARY_PROVIDER_REJECTION","四宫格服务暂时不可用，自动恢复该组");
+                return Result.progress("四宫格服务暂时繁忙，已记录失败，自动恢复该组");
+            }
             // A definitive provider refusal ends this attempt. Its reserved call remains part of the original ledger.
             return retryOrStop(run,job,new Result(false,message,"FAILED"));
         }
         catch(RuntimeException failure) {
-            db.update("UPDATE commerce_batch_artwork_jobs SET status='UNKNOWN',message='模型调用结果未知，禁止盲目重复提交',updated_at=NOW(6) WHERE id=? AND status='SUBMITTING'",id);
-            return Result.unknown("模型结果未知，请核查请求 "+id+"；不会自动重试");
+            boolean detail=CommerceModelDetailPolicy.isKind(kind)||CommerceModelDetailGridPolicy.isKind(kind);
+            db.update("UPDATE commerce_batch_artwork_jobs SET status='UNKNOWN',message=?,updated_at=NOW(6) WHERE id=? AND status='SUBMITTING'",detail?"详情请求连接中断，正在自动核对已保存结果并准备恢复":"模型调用结果未知，禁止盲目重复提交",id);
+            return Result.unknown(detail?"详情图连接中断，系统正在自动核对原请求并恢复；成功图片保留":"模型结果未知，请核查请求 "+id+"；不会自动重试");
         }
         // Persist a late response even if the worker lease expired: never lose a paid result.
         db.update("UPDATE commerce_batch_artwork_jobs SET status='RESULT_RECEIVED',result_json=?,message='模型结果已保存，等待图片归档',updated_at=NOW(6) WHERE id=? AND status='SUBMITTING'",json.writeValueAsString(result),id);
@@ -580,15 +639,18 @@ public class CommerceBatchArtworkService {
         try {
             if(!job.containsKey("result_json")||!job.containsKey("execution_id"))job=db.queryForMap("SELECT * FROM commerce_batch_artwork_jobs WHERE id=? AND organization_id=?",job.get("id"),user.organizationId());
             var response=json.readValue((String)job.get("result_json"),CommerceDesignImageGateway.Response.class);
+            boolean grid=CommerceModelDetailGridPolicy.isKind((String)job.get("kind"));
             byte[] bytes;
             if(response!=null&&response.artifact()!=null&&response.artifact().dataBase64()!=null) {
-                if(response.artifact().dataBase64().length()>12_000_000)throw error("图片过大");
+                if(response.artifact().dataBase64().length()>(grid?44_740_000:12_000_000))throw error("图片过大");
                 try {bytes=Base64.getDecoder().decode(response.artifact().dataBase64());}
                 catch(IllegalArgumentException invalid){return rejectInvalidImage(run,job,"返回的图片编码无效");}
             } else if(response!=null&&response.result()!=null&&response.result().url()!=null)bytes=downloader.download(response.result().url()).bytes();
             else return rejectInvalidImage(run,job,"模型已返回但没有图片内容");
-            try {CommerceMockupComposer.decode(bytes);}
-            catch(IllegalArgumentException invalid){return rejectInvalidImage(run,job,"模型返回的图片为空、损坏或无法解码");}
+            try {if(grid)bytes=CommerceModelDetailGridComposer.normalizeGenerated(bytes);else CommerceMockupComposer.decode(bytes);}
+            catch(IllegalArgumentException invalid){
+                if(grid&&modelDetailGrids!=null){modelDetailGrids.markFailure(run,job,"GRID_LAYOUT_INVALID","四宫格输出无法切分，已保存原响应并自动重试");return Result.progress("四宫格输出无效，自动恢复该组");}
+                return rejectInvalidImage(run,job,"模型返回的图片为空、损坏或无法解码");}
             // Keep the raw response archived before applying the immutable local-edit policy.
             archive.store(user.organizationId(),bytes);
             if("BLANK".equals(job.get("kind"))||("MOCKUP".equals(job.get("kind"))&&job.get("color_key")==null)) {
@@ -692,7 +754,28 @@ public class CommerceBatchArtworkService {
     }
 
     private static boolean isGeneratedPrint(String kind) {return "EXTRACT".equals(kind)||kind.startsWith("VARIATE");}
-    private static boolean sceneModel(String kind){return CommerceSceneBackgroundAssets.KIND.equals(kind)||CommerceDrapeReuseWorkflow.MASTER.equals(kind);}
+    private static boolean sceneModel(String kind){return CommerceSceneBackgroundAssets.KIND.equals(kind)||CommerceDrapeReuseWorkflow.MASTER.equals(kind)||CommerceModelDetailPolicy.isKind(kind)||CommerceModelDetailGridPolicy.isKind(kind);}
+    private static List<CommerceDesignImageGateway.Reference> gridReferences(List<CommerceDesignImageGateway.Reference> references,String prompt){
+        if(references.size()<2||references.size()>5)throw new IllegalArgumentException("四宫格需要新商品与1至4张原详情参考");
+        var styles=references.subList(1,references.size()).stream().map(r->Base64.getDecoder().decode(r.dataBase64())).toList();
+        if(CommerceModelDetailGridPolicy.usesSourceStyle(prompt)){
+            var guides=CommerceModelDetailGridPolicy.styles(prompt);
+            if(guides.size()!=styles.size())throw new IllegalArgumentException("原详情设计数量不一致");
+            for(int i=0;i<styles.size();i++)if(!CommerceImageArchive.sha(styles.get(i)).equals(guides.get(i).sourceSha256()))throw new IllegalArgumentException("原详情设计与参考图不一致");
+            return List.of(imageReference(CommerceModelDetailGridComposer.productGrid(Base64.getDecoder().decode(references.getFirst().dataBase64()),styles.size())),
+                    imageReference(CommerceModelDetailGridPolicy.requiresTemplateProduct(prompt)
+                            ? CommerceModelDetailGridComposer.poseOnlyStyleGrid(styles,guides.stream().map(CommerceModelDetailStyleGuide.Guide::regions).toList())
+                            : CommerceModelDetailGridComposer.selectiveStyleGrid(styles,guides.stream().map(CommerceModelDetailStyleGuide.Guide::regions).toList())));
+        }
+        if(CommerceModelDetailGridPolicy.usesAmbience(prompt))return List.of(
+                imageReference(CommerceModelDetailGridComposer.productGrid(Base64.getDecoder().decode(references.getFirst().dataBase64()),styles.size())),
+                imageReference(CommerceModelDetailGridComposer.styleAmbienceGrid(styles)));
+        byte[] grid=CommerceModelDetailGridComposer.compose(styles);
+        grid=CommerceModelDetailGridComposer.normalizeGenerated(grid);
+        String mime=grid[0]==(byte)0xff?"image/jpeg":"image/png";
+        return List.of(references.getFirst(),new CommerceDesignImageGateway.Reference(mime,Base64.getEncoder().encodeToString(grid)));
+    }
+    private static CommerceDesignImageGateway.Reference imageReference(byte[] bytes){return new CommerceDesignImageGateway.Reference(bytes[0]==(byte)0xff?"image/jpeg":"image/png",Base64.getEncoder().encodeToString(bytes));}
     private Optional<ModelConfigService.RuntimeModelConnection> artworkConnection(String kind,PlatformPrincipal user) {
         return sceneModel(kind)?models.selectCommerceMockupRuntimeConnection(user)
                 :isGeneratedPrint(kind)?models.transparentArtworkConnection(user.organizationId()):models.imageConnection(user.organizationId());
@@ -741,7 +824,7 @@ public class CommerceBatchArtworkService {
                                 ProductCaptureService.CaptureDetail detail,PlatformPrincipal user) {
         return archiveSource(new CommerceBatchCreativePlanValidator.Selection(source.captureId(),source.version(),color.imageId()),detail,user);
     }
-    private List<Map<String,Object>> rows(CommerceBatchExecution run) {return db.queryForList("SELECT id,capture_id,kind,variant_index,status,storage_key,content_sha256,message,reference_keys,prompt,model_config_id,model_fingerprint,request_key,color_key,color_label FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND status<>'RETRIED' ORDER BY created_at,id",run.id(),run.organizationId());}
+    private List<Map<String,Object>> rows(CommerceBatchExecution run) {return db.queryForList("SELECT id,capture_id,kind,variant_index,status,storage_key,content_sha256,message,reference_keys,prompt,model_config_id,model_fingerprint,request_key,color_key,color_label,capture_version,JSON_UNQUOTE(JSON_EXTRACT(result_json,'$.algorithm')) AS detail_algorithm,JSON_UNQUOTE(JSON_EXTRACT(result_json,'$.parentJobId')) AS detail_parent_job_id FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND status<>'RETRIED' ORDER BY created_at,id",run.id(),run.organizationId());}
     private List<String> referenceKeys(Map<String,Object> job) {return json.readValue((String)job.get("reference_keys"),json.getTypeFactory().constructCollectionType(List.class,String.class));}
     private Object checkFor(String job) {var checks=db.queryForList("SELECT report_json FROM commerce_batch_artwork_checks WHERE job_id=?",job);return checks.isEmpty()?null:json.readTree((String)checks.getFirst().get("report_json"));}
     private static Map<String,Object> find(List<Map<String,Object>> rows,String source,String kind,int variant) {return find(rows,source,kind,variant,null);}

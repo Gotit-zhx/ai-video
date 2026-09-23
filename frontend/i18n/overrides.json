@@ -1,0 +1,506 @@
+{
+  "一键裂变": [
+    "Create variants",
+    "Buat variasi",
+    "สร้างรูปแบบสินค้า",
+    "Tạo biến thể",
+    "Cipta variasi",
+    "Gumawa ng mga variant"
+  ],
+  "批次上架": [
+    "Batch publishing",
+    "Publikasi batch",
+    "ลงสินค้าตามแบตช์",
+    "Đăng sản phẩm theo lô",
+    "Penerbitan kelompok",
+    "Batch na pag-publish"
+  ],
+  "套版": [
+    "Apply template",
+    "Terapkan templat",
+    "ใช้เทมเพลต",
+    "Áp dụng mẫu",
+    "Gunakan templat",
+    "Ilapat ang template"
+  ],
+  "自然搭放": [
+    "Natural drape",
+    "Draperi alami",
+    "จัดวางแบบธรรมชาติ",
+    "Đặt rủ tự nhiên",
+    "Letakan semula jadi",
+    "Natural na pagkakalatag"
+  ],
+  "BD 建联": [
+    "Creator outreach",
+    "Hubungi kreator",
+    "ติดต่อครีเอเตอร์",
+    "Kết nối nhà sáng tạo",
+    "Hubungi pencipta kandungan",
+    "Makipag-ugnayan sa mga creator"
+  ],
+  "达人总库": [
+    "Creator directory",
+    "Direktori kreator",
+    "รายชื่อครีเอเตอร์",
+    "Danh sách nhà sáng tạo",
+    "Direktori pencipta kandungan",
+    "Direktoryo ng mga creator"
+  ],
+  "合作记录": [
+    "Collaboration records",
+    "Catatan kolaborasi",
+    "ประวัติความร่วมมือ",
+    "Lịch sử hợp tác",
+    "Rekod kerjasama",
+    "Mga rekord ng kolaborasyon"
+  ],
+  "复制链接授权": [
+    "Copy authorization link",
+    "Salin tautan otorisasi",
+    "คัดลอกลิงก์อนุญาต",
+    "Sao chép liên kết ủy quyền",
+    "Salin pautan kebenaran",
+    "Kopyahin ang link ng awtorisasyon"
+  ],
+  "商品运营": [
+    "Product operations",
+    "Operasional produk",
+    "จัดการสินค้า",
+    "Vận hành sản phẩm",
+    "Operasi produk",
+    "Pamamahala ng produkto"
+  ],
+  "视频工作台": [
+    "Video workspace",
+    "Ruang kerja video",
+    "พื้นที่ทำงานวิดีโอ",
+    "Không gian làm việc video",
+    "Ruang kerja video",
+    "Workspace ng video"
+  ],
+  "通用生成": [
+    "Video generator",
+    "Pembuat video",
+    "สร้างวิดีโอ",
+    "Tạo video",
+    "Penjana video",
+    "Gumawa ng video"
+  ],
+  "采集链接": [
+    "Import products",
+    "Impor produk",
+    "นำเข้าสินค้า",
+    "Nhập sản phẩm",
+    "Import produk",
+    "Mag-import ng produkto"
+  ],
+  "广告测款": [
+    "Ad performance testing",
+    "Uji performa iklan",
+    "ทดสอบประสิทธิภาพโฆษณา",
+    "Thử nghiệm hiệu quả quảng cáo",
+    "Ujian prestasi iklan",
+    "Pagsubok ng performance ng ad"
+  ],
+  "生图": [
+    "Generate images",
+    "Buat gambar",
+    "สร้างภาพ",
+    "Tạo ảnh",
+    "Jana imej",
+    "Gumawa ng mga larawan"
+  ],
+  "人工确认": [
+    "Manual confirmation",
+    "Konfirmasi manual",
+    "ยืนยันด้วยตนเอง",
+    "Xác nhận thủ công",
+    "Pengesahan manual",
+    "Manu-manong kumpirmasyon"
+  ],
+  "口播": [
+    "Voiceover",
+    "Narasi suara",
+    "เสียงบรรยาย",
+    "Lời thoại",
+    "Narasi suara",
+    "Voiceover"
+  ],
+  "印花": [
+    "Print design",
+    "Desain cetak",
+    "ลายพิมพ์",
+    "Họa tiết in",
+    "Reka bentuk cetakan",
+    "Disenyo ng print"
+  ],
+  "运镜": [
+    "Camera movement",
+    "Gerakan kamera",
+    "การเคลื่อนกล้อง",
+    "Chuyển động máy quay",
+    "Pergerakan kamera",
+    "Galaw ng camera"
+  ],
+  "首帧": [
+    "First frame",
+    "Bingkai pertama",
+    "เฟรมแรก",
+    "Khung hình đầu tiên",
+    "Bingkai pertama",
+    "Unang frame"
+  ],
+  "尾帧": [
+    "Last frame",
+    "Bingkai terakhir",
+    "เฟรมสุดท้าย",
+    "Khung hình cuối",
+    "Bingkai terakhir",
+    "Huling frame"
+  ],
+  "素材管理": [
+    "Media library",
+    "Pustaka media",
+    "คลังสื่อ",
+    "Thư viện tư liệu",
+    "Pustaka media",
+    "Library ng media"
+  ],
+  "模板配置": [
+    "Template settings",
+    "Pengaturan templat",
+    "ตั้งค่าเทมเพลต",
+    "Cài đặt mẫu",
+    "Tetapan templat",
+    "Mga setting ng template"
+  ],
+  "重试": [
+    "Retry",
+    "Coba lagi",
+    "ลองอีกครั้ง",
+    "Thử lại",
+    "Cuba semula",
+    "Subukan muli"
+  ],
+  "保存": [
+    "Save",
+    "Simpan",
+    "บันทึก",
+    "Lưu",
+    "Simpan",
+    "I-save"
+  ],
+  "取消": [
+    "Cancel",
+    "Batal",
+    "ยกเลิก",
+    "Hủy",
+    "Batal",
+    "Kanselahin"
+  ],
+  "确认": [
+    "Confirm",
+    "Konfirmasi",
+    "ยืนยัน",
+    "Xác nhận",
+    "Sahkan",
+    "Kumpirmahin"
+  ],
+  "登录": [
+    "Sign in",
+    "Masuk",
+    "เข้าสู่ระบบ",
+    "Đăng nhập",
+    "Log masuk",
+    "Mag-sign in"
+  ],
+  "退出登录": [
+    "Sign out",
+    "Keluar",
+    "ออกจากระบบ",
+    "Đăng xuất",
+    "Log keluar",
+    "Mag-sign out"
+  ],
+  "下载": [
+    "Download",
+    "Unduh",
+    "ดาวน์โหลด",
+    "Tải xuống",
+    "Muat turun",
+    "I-download"
+  ],
+  "上传": [
+    "Upload",
+    "Unggah",
+    "อัปโหลด",
+    "Tải lên",
+    "Muat naik",
+    "I-upload"
+  ],
+  "删除": [
+    "Delete",
+    "Hapus",
+    "ลบ",
+    "Xóa",
+    "Padam",
+    "Tanggalin"
+  ],
+  "授权": [
+    "Authorize",
+    "Otorisasi",
+    "อนุญาต",
+    "Ủy quyền",
+    "Beri kebenaran",
+    "Pahintulutan"
+  ],
+  "店铺管理": [
+    "Shop management",
+    "Manajemen toko",
+    "จัดการร้านค้า",
+    "Quản lý cửa hàng",
+    "Pengurusan kedai",
+    "Pamamahala ng tindahan"
+  ],
+  "批量上传": [
+    "Bulk upload",
+    "Unggah massal",
+    "อัปโหลดหลายรายการ",
+    "Tải lên hàng loạt",
+    "Muat naik pukal",
+    "Maramihang pag-upload"
+  ],
+  "商品标题": [
+    "Product title",
+    "Judul produk",
+    "ชื่อสินค้า",
+    "Tên sản phẩm",
+    "Tajuk produk",
+    "Pamagat ng produkto"
+  ],
+  "商品描述": [
+    "Product description",
+    "Deskripsi produk",
+    "รายละเอียดสินค้า",
+    "Mô tả sản phẩm",
+    "Penerangan produk",
+    "Paglalarawan ng produkto"
+  ],
+  "当前账号没有权限执行此操作": [
+    "Your account does not have permission to perform this action.",
+    "Akun Anda tidak memiliki izin untuk melakukan tindakan ini.",
+    "บัญชีของคุณไม่มีสิทธิ์ดำเนินการนี้",
+    "Tài khoản của bạn không có quyền thực hiện thao tác này.",
+    "Akaun anda tidak mempunyai kebenaran untuk melakukan tindakan ini.",
+    "Walang pahintulot ang iyong account para sa pagkilos na ito."
+  ],
+  "生图或生视频": [
+    "Image or video generation",
+    "Pembuatan gambar atau video",
+    "การสร้างภาพหรือวิดีโอ",
+    "Tạo ảnh hoặc video",
+    "Penjanaan imej atau video",
+    "Pagbuo ng larawan o video"
+  ],
+  "成功落盘资产": [
+    "Assets saved successfully",
+    "Aset berhasil disimpan",
+    "บันทึกสื่อสำเร็จ",
+    "Tư liệu đã lưu thành công",
+    "Aset berjaya disimpan",
+    "Mga asset na matagumpay na na-save"
+  ],
+  "含线路重试": [
+    "Includes provider retries",
+    "Termasuk percobaan ulang penyedia",
+    "รวมการลองใหม่กับผู้ให้บริการ",
+    "Bao gồm các lần thử lại nhà cung cấp",
+    "Termasuk percubaan semula penyedia",
+    "Kasama ang mga muling pagsubok sa provider"
+  ],
+  "这里会展示生图和生视频的完整请求轨迹。": [
+    "The complete history of image and video generation requests appears here.",
+    "Riwayat lengkap permintaan pembuatan gambar dan video ditampilkan di sini.",
+    "ประวัติคำขอสร้างภาพและวิดีโอทั้งหมดจะแสดงที่นี่",
+    "Lịch sử đầy đủ các yêu cầu tạo ảnh và video được hiển thị ở đây.",
+    "Sejarah lengkap permintaan penjanaan imej dan video dipaparkan di sini.",
+    "Dito makikita ang buong kasaysayan ng mga kahilingan sa pagbuo ng larawan at video."
+  ],
+  "赫逸智能化 AI 平台": [
+    "HOYEE AI Platform",
+    "Platform AI HOYEE",
+    "แพลตฟอร์ม AI HOYEE",
+    "Nền tảng AI HOYEE",
+    "Platform AI HOYEE",
+    "HOYEE AI Platform"
+  ],
+  "查看正面参考图": [
+    "View front reference",
+    "Lihat referensi depan",
+    "ดูภาพอ้างอิงด้านหน้า",
+    "Xem ảnh tham chiếu mặt trước",
+    "Lihat rujukan hadapan",
+    "Tingnan ang sanggunian sa harap"
+  ],
+  "查看背面参考图": [
+    "View back reference",
+    "Lihat referensi belakang",
+    "ดูภาพอ้างอิงด้านหลัง",
+    "Xem ảnh tham chiếu mặt sau",
+    "Lihat rujukan belakang",
+    "Tingnan ang sanggunian sa likod"
+  ],
+  "查看左侧参考图": [
+    "View left reference",
+    "Lihat referensi kiri",
+    "ดูภาพอ้างอิงด้านซ้าย",
+    "Xem ảnh tham chiếu bên trái",
+    "Lihat rujukan kiri",
+    "Tingnan ang sanggunian sa kaliwa"
+  ],
+  "查看右侧参考图": [
+    "View right reference",
+    "Lihat referensi kanan",
+    "ดูภาพอ้างอิงด้านขวา",
+    "Xem ảnh tham chiếu bên phải",
+    "Lihat rujukan kanan",
+    "Tingnan ang sanggunian sa kanan"
+  ],
+  "无素材查看权限": [
+    "You do not have permission to view media.",
+    "Anda tidak memiliki izin untuk melihat media.",
+    "คุณไม่มีสิทธิ์ดูสื่อ",
+    "Bạn không có quyền xem tư liệu.",
+    "Anda tidak mempunyai kebenaran untuk melihat media.",
+    "Wala kang pahintulot na tingnan ang media."
+  ],
+  "提示词": [
+    "Prompt",
+    "Prompt",
+    "คำสั่ง",
+    "Câu lệnh",
+    "Arahan",
+    "Prompt"
+  ],
+  "生成路线": [
+    "Generation provider",
+    "Penyedia pembuatan",
+    "ผู้ให้บริการสร้าง",
+    "Nhà cung cấp tạo nội dung",
+    "Penyedia penjanaan",
+    "Provider ng pagbuo"
+  ],
+  "多模型线路 · 自动匹配": [
+    "Automatic provider selection",
+    "Pemilihan penyedia otomatis",
+    "เลือกผู้ให้บริการอัตโนมัติ",
+    "Tự động chọn nhà cung cấp",
+    "Pemilihan penyedia automatik",
+    "Awtomatikong pagpili ng provider"
+  ],
+  "画幅": [
+    "Aspect ratio",
+    "Rasio aspek",
+    "อัตราส่วนภาพ",
+    "Tỷ lệ khung hình",
+    "Nisbah aspek",
+    "Aspect ratio"
+  ],
+  "刷新任务": [
+    "Refresh tasks",
+    "Perbarui tugas",
+    "รีเฟรชงาน",
+    "Làm mới tác vụ",
+    "Muat semula tugas",
+    "I-refresh ang mga gawain"
+  ],
+  "最近任务": [
+    "Recent tasks",
+    "Tugas terbaru",
+    "งานล่าสุด",
+    "Tác vụ gần đây",
+    "Tugas terkini",
+    "Mga kamakailang gawain"
+  ],
+  "暂无通用生成任务": [
+    "No video generation tasks yet",
+    "Belum ada tugas pembuatan video",
+    "ยังไม่มีงานสร้างวิดีโอ",
+    "Chưa có tác vụ tạo video",
+    "Belum ada tugas penjanaan video",
+    "Wala pang gawain sa pagbuo ng video"
+  ],
+  "描述主体、动作、环境、镜头和光线。输入 @ 选择已上传素材，例如：让 @图片1 的人物模仿 @视频1 的动作。": [
+    "Describe the subject, action, setting, camera and lighting. Type @ to select an uploaded image or video.",
+    "Jelaskan subjek, aksi, latar, kamera, dan pencahayaan. Ketik @ untuk memilih gambar atau video yang diunggah.",
+    "อธิบายตัวแบบ การเคลื่อนไหว ฉาก มุมกล้อง และแสง พิมพ์ @ เพื่อเลือกภาพหรือวิดีโอที่อัปโหลด",
+    "Mô tả chủ thể, hành động, bối cảnh, máy quay và ánh sáng. Nhập @ để chọn ảnh hoặc video đã tải lên.",
+    "Terangkan subjek, aksi, latar, kamera dan pencahayaan. Taip @ untuk memilih imej atau video yang dimuat naik.",
+    "Ilarawan ang paksa, kilos, tagpuan, camera at ilaw. I-type ang @ para pumili ng na-upload na larawan o video."
+  ],
+  "Shopee 暂未返回配送渠道，可能正在同步或接口暂时异常；请稍后重试。此提示不代表店铺未开启物流。": [
+    "Shopee returned no shipping channels. This may be a temporary API or synchronization issue. Try again later; it does not mean shipping is disabled.",
+    "Shopee belum mengembalikan kanal pengiriman. Mungkin terjadi gangguan API atau sinkronisasi. Coba lagi nanti; ini tidak berarti pengiriman dinonaktifkan.",
+    "Shopee ยังไม่ส่งคืนช่องทางขนส่ง อาจเกิดปัญหา API ชั่วคราว โปรดลองใหม่ ข้อความนี้ไม่ได้หมายความว่าปิดการขนส่ง",
+    "Shopee chưa trả về kênh vận chuyển. Có thể API tạm lỗi hoặc đang đồng bộ. Thử lại sau; không có nghĩa là vận chuyển bị tắt.",
+    "Shopee belum mengembalikan saluran penghantaran. Mungkin terdapat masalah API sementara atau penyegerakan. Cuba lagi kemudian; ini tidak bermaksud penghantaran dimatikan.",
+    "Walang shipping channel na ibinalik ang Shopee. Maaaring may pansamantalang API o sync issue. Subukan muli; hindi ibig sabihin na naka-off ang shipping."
+  ],
+  "Shopee 返回的配送渠道均不可用，请核对卖家中心物流设置后重试": [
+    "Shopee shipping channels are unavailable. Check Seller Center shipping settings and try again.",
+    "Kanal pengiriman Shopee tidak tersedia. Periksa pengaturan di Seller Center lalu coba lagi.",
+    "ช่องทางขนส่ง Shopee ใช้ไม่ได้ ตรวจสอบการตั้งค่าใน Seller Center แล้วลองใหม่",
+    "Kênh vận chuyển Shopee không khả dụng. Kiểm tra cài đặt Seller Center rồi thử lại.",
+    "Saluran penghantaran Shopee tidak tersedia. Semak tetapan Seller Center dan cuba lagi.",
+    "Hindi magagamit ang shipping channels ng Shopee. Suriin ang Seller Center settings at subukan muli."
+  ],
+  "原始采集": [
+    "Original capture",
+    "Produk hasil pengumpulan asli",
+    "สินค้าที่เก็บข้อมูลต้นฉบับ",
+    "Sản phẩm thu thập gốc",
+    "Produk dikumpul asal",
+    "Orihinal na nakolektang produkto"
+  ],
+  "裂变商品": [
+    "Generated variant",
+    "Produk variasi buatan",
+    "สินค้าที่สร้างเป็นรูปแบบใหม่",
+    "Sản phẩm biến thể được tạo",
+    "Produk variasi terjana",
+    "Nabuong variant ng produkto"
+  ],
+  "来源待确认": [
+    "Source pending confirmation",
+    "Sumber belum dikonfirmasi",
+    "รอยืนยันแหล่งที่มา",
+    "Nguồn đang chờ xác nhận",
+    "Sumber menunggu pengesahan",
+    "Pinagmulan na dapat kumpirmahin"
+  ],
+  "选择店铺上传": [
+    "Choose shop to upload",
+    "Pilih toko untuk mengunggah",
+    "เลือกร้านค้าเพื่ออัปโหลด",
+    "Chọn cửa hàng để tải lên",
+    "Pilih kedai untuk memuat naik",
+    "Pumili ng shop para mag-upload"
+  ],
+  "选择店铺再次上传": [
+    "Choose shop to upload again",
+    "Pilih toko untuk mengunggah ulang",
+    "เลือกร้านค้าเพื่ออัปโหลดอีกครั้ง",
+    "Chọn cửa hàng để tải lên lại",
+    "Pilih kedai untuk memuat naik semula",
+    "Pumili ng shop para mag-upload muli"
+  ],
+  "请重新选择目标店铺；已提交商品复用现有图片，同店重复提交会核对已有记录。": [
+    "Choose the destination shop again. Previously submitted products reuse existing images; repeated submissions to the same shop are checked against existing records.",
+    "Pilih kembali toko tujuan. Produk yang sudah dikirim menggunakan gambar yang ada; pengiriman ulang ke toko yang sama diperiksa dengan catatan yang ada.",
+    "เลือกร้านค้าปลายทางอีกครั้ง สินค้าที่ส่งแล้วจะใช้รูปภาพเดิม และจะตรวจสอบรายการเดิมก่อนส่งซ้ำไปยังร้านค้าเดียวกัน",
+    "Chọn lại cửa hàng đích. Sản phẩm đã gửi sẽ sử dụng lại hình ảnh hiện có; việc gửi lại đến cùng cửa hàng sẽ được đối chiếu với hồ sơ hiện có.",
+    "Pilih semula kedai destinasi. Produk yang telah dihantar menggunakan imej sedia ada; penghantaran berulang ke kedai yang sama disemak dengan rekod sedia ada.",
+    "Piliin muli ang destinasyong shop. Gagamitin ang kasalukuyang mga larawan para sa mga naipadalang produkto; susuriin ang umiiral na mga tala bago muling ipadala sa parehong shop."
+  ]
+}

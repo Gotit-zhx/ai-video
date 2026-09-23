@@ -181,7 +181,7 @@
       const budgets=p.budgetGroups?.length ? p.budgetGroups : [{currency:p.currency,shopCount:data.shopCount,dailyBudgetAllShops:p.dailyBudgetAllShops,observationBudgetCeiling:p.observationBudgetCeiling,budgetConfigured:p.dailyBudgetAllShops!=null}];
       budgets.forEach(group=>{
         if(!group.budgetConfigured||group.dailyBudgetAllShops==null||group.observationBudgetCeiling==null){line("p",`${group.currency} · ${group.shopCount} 家店铺：广告预算未配置。`);return;}
-        const money=amount=>new Intl.NumberFormat("zh-CN",{style:"currency",currency:group.currency}).format(amount);
+        const money=amount=>new Intl.NumberFormat((globalThis.HoyeeLanguage?.locale || "zh-CN"),{style:"currency",currency:group.currency}).format(amount);
         line("p", `${group.currency} · ${group.shopCount} 家店铺：每日预算上限 ${money(group.dailyBudgetAllShops)}；${data.observationDays} 天总上限 ${money(group.observationBudgetCeiling)}。`);
       });
       line("p", "不同币种分别计算，不含生成、生产、样品及物流费用。");

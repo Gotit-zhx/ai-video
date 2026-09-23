@@ -71,6 +71,9 @@ final class PublicImageDnsResolver extends SystemDefaultDnsResolver implements C
         try { host = IDN.toASCII(hostname).toLowerCase(Locale.ROOT); }
         catch (IllegalArgumentException exception) { throw new UnknownHostException("图片域名无效"); }
         if (host.length() > 253) throw new UnknownHostException("图片域名过长");
+        // This provider host is observed returning poisoned public addresses on the production resolver.
+        // Resolve through authenticated DoH before connecting; retain hostname/SNI and public-IP validation.
+        if ("imgen.x.ai".equals(host)) return resolveFakeIp(host);
         InetAddress[] addresses = system.resolve(host);
         if (addresses.length == 0 || !Arrays.stream(addresses).allMatch(PublicImageDnsResolver::isFakeIp)) {
             return MarketplaceImageDownloader.publicAddresses(addresses);
@@ -182,6 +185,7 @@ final class PublicImageDnsResolver extends SystemDefaultDnsResolver implements C
                         @Override public InetAddress[] resolve(String host) throws UnknownHostException {
                             return switch (host.toLowerCase(Locale.ROOT)) {
                                 case "cloudflare-dns.com" -> new InetAddress[]{InetAddress.getByAddress(new byte[]{1, 1, 1, 1}), InetAddress.getByAddress(new byte[]{1, 0, 0, 1})};
+                                case "doh.pub" -> new InetAddress[]{InetAddress.getByAddress(new byte[]{1, 12, 12, 12}), InetAddress.getByAddress(new byte[]{120, 53, 53, 53})};
                                 case "dns.google" -> new InetAddress[]{InetAddress.getByAddress(new byte[]{8, 8, 8, 8}), InetAddress.getByAddress(new byte[]{8, 8, 4, 4})};
                                 default -> throw new UnknownHostException("禁止连接未配置的公网 DNS 服务");
                             };
@@ -194,6 +198,7 @@ final class PublicImageDnsResolver extends SystemDefaultDnsResolver implements C
 
         private DohAnswer resolve(String host) throws IOException {
             byte[] response;
+            if ("imgen.x.ai".equals(host)) return parseAnswer(fetch("https://doh.pub/dns-query", host));
             try { response = fetch("https://cloudflare-dns.com/dns-query", host); }
             catch (IOException exception) {
                 if (!googleFallback) throw exception;

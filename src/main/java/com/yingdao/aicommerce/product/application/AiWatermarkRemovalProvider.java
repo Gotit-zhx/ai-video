@@ -58,7 +58,7 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
     var driver=models.driverConnection(org).orElseThrow(()->new IllegalStateException("检测模型未配置"));
     String detectorModel=visionModel.isBlank()?driver.modelId():visionModel;
     detection=analyze(driver,detectorModel,source,List.of(),"ORIGINAL");
-    if("ABSENT".equals(detection.get("decision"))){
+    if(!"SIZE_CHART".equals(detection.get("imageType")) && "ABSENT".equals(detection.get("decision"))){
      Map<String,Object> confirmation,background;
      try{
       background=WatermarkDetectionView.assessBackground(original);
@@ -82,6 +82,10 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
   }
   if("DETECTED".equals(row.get("status"))){
    var detection=json.readValue((String)row.get("detection_json"),Map.class);
+   if("SIZE_CHART".equals(detection.get("imageType"))){
+    // Preserve the source even when OCR is uncertain; never redraw numerical product information.
+    ledger.ready(id,org,"DETECTED",stored.storageKey(),"{\"method\":\"PRESERVED_SOURCE_SIZE_CHART\",\"requiresMeasurementValidation\":true,\"postValidationSkipped\":true}");return result(id,ledger.get(id,org));
+   }
    if(confirmedAbsent(detection)){
     ledger.ready(id,org,"DETECTED",stored.storageKey(),"{\"method\":\"UNCHANGED_ORIGINAL_DUAL_PRE_DETECTION\",\"postValidationSkipped\":true}");return result(id,ledger.get(id,org));
    }
@@ -105,7 +109,11 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
    if(response.artifact()!=null&&response.artifact().dataBase64()!=null)bytes=Base64.getDecoder().decode(response.artifact().dataBase64());
    else if(response.result()!=null){
     try{bytes=downloader.download(response.result().url()).bytes();}
-    catch(RuntimeException e){throw new IllegalStateException("生图已成功，下载结果图片失败："+Objects.toString(e.getMessage(),"未知错误")+"；结果已保存，重试只继续下载",e);}
+    catch(RuntimeException e){
+     String message="生图已成功，下载结果图片失败："+Objects.toString(e.getMessage(),"未知错误")+"；结果已保存，重试只继续下载";
+     if(GeneratedImageDownloadPendingException.retryable(e))throw new GeneratedImageDownloadPendingException(message,e);
+     throw new IllegalStateException(message,e);
+    }
    }
    else throw new IllegalStateException("图片编辑没有返回可归档结果");
    CommerceMockupComposer.decode(bytes);

@@ -395,3 +395,137 @@ test('silent primary still switches to backup within the shared deadline', async
   const result=await primary.request({timeoutMs:1000,config:{...primary.config,fallbackModels:[{...backup.config,apiKey:'backup'}]}});
   assert.equal(result.fallbackUsed,true);assert.equal(primary.calls.length,1);assert.equal(backup.calls.length,1);
 });
+
+const idleRouteConfig = { baseUrl: 'https://idle-primary.test', modelId: 'idle-primary', fallbackModels: [
+  { baseUrl: 'https://idle-backup.test', modelId: 'grok-4.6', apiKey: 'backup-only-test' }
+] };
+const idleRequest = overrides => requestChatCompletion({
+  config: idleRouteConfig, apiKey: 'primary-only-test', messages, timeoutMs: 40,
+  activityTimeoutOnly: true, idleTimeoutMs: 80, fallbackIdleTimeoutMs: 60,
+  fallbackOnPartialResponse: true, ...overrides
+});
+const sseDelta = delta => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`;
+const completeResponse = content => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content } }] }));
+function timedSse(signal, { initial = '', repeat = '', intervalMs = 15, completeMs, onCleanup } = {}) {
+  let interval, finish, abort, closed = false;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true; clearInterval(interval); clearTimeout(finish);
+    signal.removeEventListener('abort', abort); onCleanup?.();
+  };
+  return new Response(new ReadableStream({
+    start(controller) {
+      const send = value => { if (!closed) controller.enqueue(new TextEncoder().encode(value)); };
+      abort = () => { if (!closed) { cleanup(); controller.error(signal.reason); } };
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) { abort(); return; }
+      if (initial) send(initial);
+      if (repeat) interval = setInterval(() => send(repeat), intervalMs);
+      if (completeMs != null) finish = setTimeout(() => {
+        send('data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+        cleanup(); controller.close();
+      }, completeMs);
+    },
+    cancel() { cleanup(); }
+  }), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+test('style idle-only routing waits for active reasoning or text to finish beyond fixed wall budgets', async () => {
+  for (const delta of [{ reasoning_content: 'thinking' }, { content: 'part ' }]) {
+    let calls = 0, cleaned = 0;
+    const started = Date.now();
+    const result = await idleRequest({ fetchImpl: async (_url, { signal }) => {
+      calls++;
+      return timedSse(signal, { initial: sseDelta(delta), repeat: sseDelta(delta), completeMs: 240, onCleanup: () => cleaned++ });
+    } });
+    assert.ok(Date.now() - started >= 200, 'complete response, rather than an old hard deadline, decides completion');
+    assert.equal(calls, 1); assert.equal(cleaned, 1); assert.equal(result.fallbackUsed, false);
+    assert.ok(result.reply.endsWith('done'));
+  }
+});
+
+test('style idle routing discards stalled internal JSON and preserves full prompt and images for Grok', async () => {
+  const calls = [], activities = []; let cleaned = 0;
+  const result = await idleRequest({ onActivity: value => activities.push(value), fetchImpl: async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body), auth: options.headers.Authorization });
+    return calls.length === 1
+      ? timedSse(options.signal, { initial: sseDelta({ content: '{"unfinished":' }), onCleanup: () => cleaned++ })
+      : completeResponse('{"complete":true}');
+  } });
+  assert.equal(result.reply, '{"complete":true}'); assert.equal(result.modelId, 'grok-4.6');
+  assert.equal(result.fallbackUsed, true); assert.equal(calls.length, 2); assert.equal(cleaned, 1);
+  assert.deepEqual(calls[1].body.messages, messages); assert.equal(calls[1].auth, 'Bearer backup-only-test');
+  assert.ok(activities.includes('SWITCHING_MODEL'));
+});
+
+test('SSE keepalive comments and empty deltas never postpone the style idle timeout', async () => {
+  let calls = 0, cleaned = 0;
+  const result = await idleRequest({ fetchImpl: async (_url, { signal }) => ++calls === 1
+    ? timedSse(signal, { repeat: ': heartbeat\n\n' + sseDelta({}), onCleanup: () => cleaned++ })
+    : completeResponse('backup') });
+  assert.equal(result.reply, 'backup'); assert.equal(calls, 2); assert.equal(cleaned, 1);
+});
+
+test('style fallback never replays displayed text, tool-capable text, or emitted tool calls', async () => {
+  for (const mode of ['displayed', 'tool-capable-text', 'tool-output']) {
+    let calls = 0, cleaned = 0; const displayed = [];
+    const delta = mode === 'tool-output'
+      ? { tool_calls: [{ index: 0, id: 'read-1', type: 'function', function: { name: 'read', arguments: '{' } }] }
+      : { content: 'already started' };
+    await assert.rejects(idleRequest({
+      ...(mode === 'displayed' ? { onTextDelta: value => displayed.push(value) } : {}),
+      allowToolCalls: mode === 'tool-capable-text',
+      fetchImpl: async (_url, { signal }) => {
+        calls++; return timedSse(signal, { initial: sseDelta(delta), onCleanup: () => cleaned++ });
+      }
+    }), { failureCode: 'CHAT_TIMEOUT' });
+    assert.equal(calls, 1, mode); assert.equal(cleaned, 1, mode);
+    if (mode === 'displayed') assert.deepEqual(displayed, ['already started']);
+  }
+});
+
+test('backup uses its own idle window and can finish active output beyond the old overall deadline', async () => {
+  let calls = 0;
+  const result = await idleRequest({ fetchImpl: async (_url, { signal }) => ++calls === 1
+    ? new Response('{"error":{"message":"temporarily unavailable"}}', { status: 502 })
+    : timedSse(signal, { repeat: sseDelta({ reasoning: 'thinking' }), completeMs: 200 }) });
+  assert.equal(result.reply, 'done'); assert.equal(calls, 2); assert.equal(result.fallbackUsed, true);
+  calls = 0;
+  const started = Date.now();
+  await assert.rejects(idleRequest({ idleTimeoutMs: 600, fallbackIdleTimeoutMs: 70,
+    fetchImpl: async (_url, { signal }) => ++calls === 1
+      ? new Response('{"error":{"message":"temporarily unavailable"}}', { status: 502 })
+      : timedSse(signal) }), { failureCode: 'CHAT_TIMEOUT' });
+  assert.equal(calls, 2); assert.ok(Date.now() - started < 450, 'backup uses 70 ms rather than the primary 600 ms idle window');
+});
+
+test('without a backup style still waits for progress but terminates a silent connection', async () => {
+  const config = { ...idleRouteConfig, fallbackModels: [] };
+  const result = await idleRequest({ config, fetchImpl: async (_url, { signal }) =>
+    timedSse(signal, { repeat: sseDelta({ reasoning_content: 'thinking' }), completeMs: 200 }) });
+  assert.equal(result.reply, 'done');
+  await assert.rejects(idleRequest({ config, fetchImpl: async (_url, { signal }) => timedSse(signal) }), { failureCode: 'CHAT_TIMEOUT' });
+});
+
+test('style idle-only mode disables the default earlier first-activity cutoff', async () => {
+  let calls = 0;
+  const result = await idleRequest({ idleTimeoutMs: 200, fetchImpl: async (_url, { signal }) => {
+    calls++; return timedSse(signal, { completeMs: 110 });
+  } });
+  assert.equal(calls, 1); assert.equal(result.reply, 'done'); assert.equal(result.fallbackUsed, false);
+});
+
+test('style cancellation and content filtering remain terminal with no fallback', async () => {
+  for (const mode of ['cancel', 'filter']) {
+    let calls = 0;
+    const controller = new AbortController();
+    const operation = idleRequest({ signal: controller.signal, fetchImpl: async (_url, { signal }) => {
+      calls++;
+      return mode === 'cancel' ? timedSse(signal, { repeat: sseDelta({ reasoning_content: 'thinking' }) })
+        : new Response(JSON.stringify({ choices: [{ finish_reason: 'content_filter', message: { content: '' } }] }));
+    } });
+    if (mode === 'cancel') controller.abort();
+    await assert.rejects(operation, { failureCode: mode === 'cancel' ? 'CHAT_TIMEOUT' : 'CHAT_CONTENT_FILTERED' });
+    assert.equal(calls, 1);
+  }
+});

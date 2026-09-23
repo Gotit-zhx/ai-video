@@ -6,14 +6,20 @@ import java.util.*;
 public final class CommerceBatchCreativePlanValidator {
  public record Source(String captureId,long version,List<String> imageIds){}
  public record Selection(String captureId,long version,String imageId,List<CommerceArtworkLocalEdit.Region> cleanupAreas,
-                         List<CommerceSourceColorResolver.Color> colorTargets){
+                         List<CommerceSourceColorResolver.Color> colorTargets,
+                         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY) List<String> detailImageIds){
+  public Selection(String captureId,long version,String imageId,List<CommerceArtworkLocalEdit.Region> cleanupAreas,List<CommerceSourceColorResolver.Color> colorTargets){this(captureId,version,imageId,cleanupAreas,colorTargets,List.of());}
   public Selection(String captureId,long version,String imageId,List<CommerceArtworkLocalEdit.Region> cleanupAreas){this(captureId,version,imageId,cleanupAreas,List.of());}
   public Selection(String captureId,long version,String imageId){this(captureId,version,imageId,List.of(),List.of());}
-  public Selection {cleanupAreas=cleanupAreas==null?List.of():List.copyOf(cleanupAreas);colorTargets=colorTargets==null?List.of():List.copyOf(colorTargets);}
+  public Selection {cleanupAreas=cleanupAreas==null?List.of():List.copyOf(cleanupAreas);colorTargets=colorTargets==null?List.of():List.copyOf(colorTargets);detailImageIds=detailImageIds==null?List.of():List.copyOf(detailImageIds);}
  }
  public static final String LOCAL_PHOTO_POLICY="LOCAL_PHOTO_V1";
  public static final String GROK_SCENE_POLICY="GROK_SCENE_V1";
  public static final String GROK_DRAPE_POLICY="GROK_DRAPE_REUSE_V1";
+ public static final int DETAIL_MAX_ATTEMPTS=2;
+ public static boolean modelDetailsSupported(CommercePrintTemplateService.Configuration configuration){
+  return configuration!=null&&Set.of("T_SHIRT","LONG_SLEEVE","SWEATSHIRT","TANK","SHORTS","TROUSERS").contains(Objects.toString(configuration.product(),""));
+ }
  public record ReusedDesign(Map<String,String> groupArtifacts){
   public ReusedDesign {groupArtifacts=groupArtifacts==null?Map.of():Collections.unmodifiableMap(new TreeMap<>(groupArtifacts));}
  }
@@ -87,6 +93,12 @@ public final class CommerceBatchCreativePlanValidator {
     throw new IllegalArgumentException("颜色「"+color.label()+"」缺少本商品可读取的 SKU 色样图，请补齐对应颜色图片后重新保存；不会猜测颜色");
   }
  }
+ public static void validateDetailImageIds(Selection source,List<String> readableImages){
+  var seen=new HashSet<String>();
+  for(String id:source.detailImageIds())if(id==null||id.isBlank()||id.length()>100||!seen.add(id)
+    ||(readableImages!=null&&!readableImages.contains(id)))
+   throw new IllegalArgumentException("固定详情图不属于当前来源商品、已丢失或重复，请重新保存创作配置");
+ }
  public static void validateArtworkSource(String source){
   if(source!=null&&!Set.of("SOURCE_PRODUCT","TEMPLATE_ARTWORK","SAVED_ARTWORK").contains(source))throw new IllegalArgumentException("印花风格来源无效，请重新保存创作配置");
  }
@@ -108,6 +120,7 @@ public final class CommerceBatchCreativePlanValidator {
    var source=expected.get(selection.captureId());
    if(source==null||source.version()!=selection.version())throw new IllegalArgumentException("所选来源不属于当前批次固定版本");
    if(selection.imageId()==null||!source.imageIds().contains(selection.imageId()))throw new IllegalArgumentException("提取原图不属于所选来源商品，不能猜测或使用任意外部地址");
+   validateDetailImageIds(selection,source.imageIds());
   }
   if(!seen.equals(expected.keySet()))throw new IllegalArgumentException("请为每个来源商品选择提取原图；不会默认为第一张或推测背面");
   return new Plan(printSnapshot,List.copyOf(selected),variants);

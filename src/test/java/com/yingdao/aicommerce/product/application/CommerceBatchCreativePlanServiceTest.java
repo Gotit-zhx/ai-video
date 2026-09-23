@@ -293,4 +293,73 @@ class CommerceBatchCreativePlanServiceTest {
         assertTrue(assertThrows(BusinessException.class,()->service.prepareStart("b",2,user)).getMessage().contains("Black"));
         verify(plans,never()).insert(any());
     }
+
+    @Test void detailsFreezeAllOriginalDetailRolesInOrderAndExcludeChartsDuplicatesAndForeignAssets() {
+        surfaceDraft(SurfaceTemplateFixture.configuration());
+        var main=image("main","MAIN","https://example.com/main.png");
+        var first=image("first","DESCRIPTION","https://example.com/first.png");when(first.getSortOrder()).thenReturn(2);
+        var second=image("second","DETAIL","https://example.com/second.png");when(second.getSortOrder()).thenReturn(5);
+        var duplicate=image("duplicate","DETAIL",second.getOriginalUrl());when(duplicate.getSortOrder()).thenReturn(6);
+        var chart=image("chart","SIZE_CHART","https://example.com/chart.png");
+        var chartAlias=image("chart-alias","DETAIL",chart.getOriginalUrl());
+        var labelled=image("labelled","DETAIL","https://example.com/labelled.png");when(labelled.getAltText()).thenReturn("Size Chart (cm)");
+        var selected=image("selected-chart","DETAIL","https://example.com/selected.png");
+        var detected=image("detected-chart","DETAIL","https://example.com/detected.png");
+        var foreign=image("foreign","DETAIL","https://example.com/foreign.png");when(foreign.getOrganizationId()).thenReturn("other-org");
+        var unreadable=image("unreadable","DETAIL"," ");
+        sourceImages(List.of(main,second,duplicate,first,chart,chartAlias,labelled,selected,detected,foreign,unreadable,
+                image("variant","VARIANT","https://example.com/variant.png"),image("gallery","GALLERY","https://example.com/gallery.png")));
+        var current=captures.get("c",user);
+        when(captures.get("c",user)).thenReturn(new ProductCaptureService.CaptureDetail(current.capture(),current.skus(),current.images(),
+                current.fieldSources(),Map.of("sizeChartImageId","selected-chart"),Map.of()));
+        var db=mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"db",db);
+        when(db.queryForList(startsWith("SELECT DISTINCT image_id"),eq(String.class),eq("org"),eq("c"))).thenReturn(List.of("detected-chart"));
+        var forged=new CommerceBatchCreativePlanValidator.Selection("c",1,"main",List.of(),List.of(),List.of("foreign","main"));
+        var result=service.save("b",sourceRequest(0,List.of(forged)),user);
+        assertEquals(List.of("first","second"),result.plan().sources().getFirst().detailImageIds());
+        var inserted=org.mockito.ArgumentCaptor.forClass(CommerceBatchCreativePlanMapper.Row.class);verify(plans).insert(inserted.capture());
+        assertEquals(List.of("first","second"),json.readValue(inserted.getValue().planJson(),CommerceBatchCreativePlanValidator.Plan.class).sources().getFirst().detailImageIds());
+        verify(db).queryForList(startsWith("SELECT DISTINCT image_id"),eq(String.class),eq("org"),eq("c"));
+    }
+
+    @Test void noOriginalDetailsOrNonGarmentTemplateDoNotInventModelPhotos() {
+        surfaceDraft(SurfaceTemplateFixture.configuration());sourceImages(List.of(image("main","MAIN","https://example.com/main.png")));
+        assertTrue(service.initialize("b","surface-snapshot",2,user).plan().sources().getFirst().detailImageIds().isEmpty());
+        var cushion=new CommercePrintTemplateService.Configuration("CUSHION",List.of(
+                new CommercePrintTemplateService.Area("front","FRONT",.2,.2,.3,.3,200,200,300)),Map.of("FRONT",SurfaceTemplateFixture.hash('a')));
+        surfaceDraft(cushion);
+        sourceImages(List.of(image("main","MAIN","https://example.com/main.png"),image("detail","DETAIL","https://example.com/detail.png")));
+        assertTrue(service.initialize("b","surface-snapshot",2,user).plan().sources().getFirst().detailImageIds().isEmpty());
+    }
+
+    @Test void startingFrozenDetailsDoesNotAppendNewPhotosAndRejectsLostOrNewlyDetectedCharts() {
+        surfaceDraft(SurfaceTemplateFixture.configuration());
+        var main=image("main","MAIN","https://example.com/main.png");
+        var detail=image("detail","DETAIL","https://example.com/detail.png");
+        sourceImages(List.of(main,detail));
+        var saved=service.initialize("b","surface-snapshot",2,user);
+        assertEquals(List.of("detail"),saved.plan().sources().getFirst().detailImageIds());
+        var row=stored(saved.plan(),1);when(plans.latest("org","b")).thenReturn(row);
+        sourceImages(List.of(main,detail,image("new-detail","DETAIL","https://example.com/new.png")));
+        assertSame(row,service.prepareStart("b",1,user));
+        assertEquals(List.of("detail"),json.readValue(row.planJson(),CommerceBatchCreativePlanValidator.Plan.class).sources().getFirst().detailImageIds());
+        sourceImages(List.of(main));
+        assertTrue(assertThrows(BusinessException.class,()->service.prepareStart("b",1,user)).getMessage().contains("固定详情图"));
+        sourceImages(List.of(main,detail));
+        var db=mock(org.springframework.jdbc.core.JdbcTemplate.class);org.springframework.test.util.ReflectionTestUtils.setField(service,"db",db);
+        when(db.queryForList(startsWith("SELECT DISTINCT image_id"),eq(String.class),eq("org"),eq("c"))).thenReturn(List.of("detail"));
+        assertTrue(assertThrows(BusinessException.class,()->service.prepareStart("b",1,user)).getMessage().contains("尺码表"));
+        verify(plans,times(1)).insert(any());
+    }
+
+    @Test void originalDetailCountIsNotSilentlyCappedAtTwoOrAtTheMarketplaceGalleryLimit() {
+        surfaceDraft(SurfaceTemplateFixture.configuration());
+        var images=new ArrayList<ProductCaptureImage>();images.add(image("main","MAIN","https://example.com/main.png"));
+        for(int i=0;i<12;i++)images.add(image("detail-"+i,"DETAIL","https://example.com/detail-"+i+".png"));
+        sourceImages(images);
+        var result=service.initialize("b","surface-snapshot",3,user);
+        assertEquals(12,result.plan().sources().getFirst().detailImageIds().size());
+        assertEquals("detail-11",result.plan().sources().getFirst().detailImageIds().getLast());
+    }
 }

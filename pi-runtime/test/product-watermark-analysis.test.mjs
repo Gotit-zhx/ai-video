@@ -134,3 +134,9 @@ test('uncertain detection and broad suspected watermark regions direct the calle
   const weak=validateWatermarkResult('WATERMARK_DETECTION_V1',detection({decision:'PRESENT',confidence:.8,regions:[{x:0,y:0,width:.2,height:.2}]}));
   assert.equal(weak.decision,'UNCERTAIN');assert.match(weak.reason,/直接提交生图/);
 });
+test('size charts preserve semantic classification and original numerical data',()=>{
+ const chart={found:true,readable:true,sourceUnit:'cm',rows:[{size:'S',chest:76,length:53},{size:'M',chest:80,length:54}]};
+ const result=validateWatermarkResult('WATERMARK_DETECTION_V1',detection({imageType:'SIZE_CHART',sizeChart:chart}));
+ assert.equal(result.imageType,'SIZE_CHART');assert.deepEqual(result.sizeChart,chart);
+ assert.match(WATERMARK_DETECTION_PROMPT,/禁止建议擦除/);
+});

@@ -100,7 +100,11 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
       }
       manifest.add(row);
      }
+     var detailKeys=CommerceModelDetailWorkflow.requiredKeys(source,variant,jobs,db,json,archive,user.organizationId());
+     if(!detailKeys.isEmpty())manifest.getFirst().put("detailKeys",detailKeys);
      String capture=drafts.prepare(run.id(),item,variant,manifest,user);
+     // Preserve all reviewed details in the local product. The Shopee adapter selects
+     // its nine gallery images by sort order (MAIN, then details) and keeps SKU media separate.
      var body=new LinkedHashMap<String,Object>(options);body.put("confirmed",true);body.put("shopId",item.shopId());body.put("destinationPlatform",shop.getPlatform());
      // This key also recovers a workflow created just before a lost database response.
      var result=workflows.create(capture,body,"commerce-publish-"+run.id()+"-"+item.id()+"-"+variant,user);

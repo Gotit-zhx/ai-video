@@ -40,7 +40,7 @@ class CommerceBatchPreflightServiceTest {
     }
     @Test void changedProductAndUnreviewedStatusAreBothReported(){setup(2,"READY","TEST");var report=service.check("batch",user);assertEquals(2,report.items().getFirst().blockers().size());assertEquals(0,report.itemsWithoutDataBlockers());assertFalse(report.executable());}
     @Test void cleanItemDoesNotPretendProductionAndExecutionAreReady(){setup(1,"APPROVED","TEST");var report=service.check("batch",user);assertEquals(1,report.itemsWithoutDataBlockers());assertFalse(report.executable());assertTrue(report.batchBlockers().stream().anyMatch(s->s.contains("生产文件")));verify(captures,never()).approve(anyString(),any());}
-    @Test void changedEnvironmentMustBeConfirmedAgain(){setup(1,"APPROVED","UNKNOWN");var report=service.check("batch",user);assertTrue(report.items().getFirst().blockers().contains("店铺环境尚未确认"));}
+    @Test void unknownManualEnvironmentDoesNotBlock(){setup(1,"APPROVED","UNKNOWN");var report=service.check("batch",user);assertFalse(report.items().getFirst().blockers().contains("店铺环境尚未确认"));}
     @Test void sharedApprovalValidationIsUsed(){setup(1,"APPROVED","TEST");when(captures.approvalMissingFields(any(),anyList(),anyList())).thenReturn(List.of("SKU 图片"));assertTrue(service.check("batch",user).items().getFirst().blockers().contains("商品资料缺失：SKU 图片"));}
     void reserve(int count){
         var date=java.time.LocalDate.of(2026,9,8);
@@ -105,7 +105,7 @@ class CommerceBatchPreflightServiceTest {
         var report=currentService.check("batch",user);
         assertTrue(report.items().getFirst().blockers().contains("商品版本已变化，请重新建批次以固定新版本"));
         assertTrue(report.items().getFirst().blockers().contains("商品资料缺失：SKU 价格"));
-        assertTrue(report.items().getFirst().blockers().contains("店铺环境尚未确认"));
+        assertFalse(report.items().getFirst().blockers().contains("店铺环境尚未确认"));
         assertTrue(report.batchBlockers().stream().anyMatch(s->s.contains("额度预留")));
         assertFalse(report.items().getFirst().blockers().stream().anyMatch(s->s.contains("人工审核")));
     }

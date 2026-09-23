@@ -83,6 +83,18 @@ class CommerceDrapeImageProcessorTest {
             assertTrue(failure.getMessage().contains("不追加生图"));c.server.verify();
         }
     }
+    @Test void onlyNetworkRateLimitServerAndLocalTimeLimitAreRetryable()throws Exception{
+        var h=new CommerceDrapeReuseWorkflowTest.Harness();
+        for(var example:List.of(new Object[]{429,"",true},new Object[]{503,"",true},new Object[]{422,"LOCAL_TIME_LIMIT",true},new Object[]{422,"LOCAL_DRAPE_FAILED",true},new Object[]{422,"SOURCE_PRINT_UNSUITABLE",false},new Object[]{500,"MAPPING_CHECKSUM_INVALID",false},new Object[]{401,"",false},new Object[]{422,"",false})){
+            var c=client();c.server.expect(requestTo("http://local-only/drape-prepare"))
+                    .andRespond(withStatus(HttpStatus.valueOf((Integer)example[0])).contentType(MediaType.APPLICATION_JSON).body("{\"code\":\""+example[1]+"\"}"));
+            var error=assertThrows(CommerceDrapeImageProcessor.LocalProcessingException.class,()->c.processor.prepare(h.master,h.guide,h.uv,h.assets.get(h.inks.get(1)),List.of("front")));
+            assertEquals(example[2],error.retryable(),Arrays.toString(example));c.server.verify();
+        }
+        var network=client();network.server.expect(requestTo("http://local-only/drape-prepare")).andRespond(withException(new java.net.SocketTimeoutException("private transport details")));
+        var error=assertThrows(CommerceDrapeImageProcessor.LocalProcessingException.class,()->network.processor.prepare(h.master,h.guide,h.uv,h.assets.get(h.inks.get(1)),List.of("front")));
+        assertTrue(error.retryable());assertEquals("LOCAL_NETWORK",error.code());assertFalse(error.getMessage().contains("private transport"));network.server.verify();
+    }
     @Test void unavailableServiceAndMalformedImagesFailClosed()throws Exception{
         var h=new CommerceDrapeReuseWorkflowTest.Harness();var p=new CommerceDrapeImageProcessor("http://unused","");
         assertThrows(IllegalArgumentException.class,()->p.prepare(h.master,h.guide,h.uv,h.assets.get(h.inks.get(1)),List.of("front")));

@@ -6,6 +6,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.client.ResourceAccessException;
 import tools.jackson.databind.ObjectMapper;
 import java.util.*;
 
@@ -53,6 +54,11 @@ public class CommerceDrapeImageProcessor {
         sameDimensions(master,output);
         return result;
     }
+    static final class LocalProcessingException extends IllegalArgumentException {
+        private final String code;private final boolean retryable;
+        LocalProcessingException(String code,boolean retryable,String message,Throwable cause){super(message,cause);this.code=code;this.retryable=retryable;}
+        String code(){return code;}boolean retryable(){return retryable;}
+    }
     private Map<String,Object> post(String path,Map<String,Object> body) {
         if(!enabled)throw new IllegalArgumentException("本地搭放处理服务未配置；母图已保留，不会再次生图");
         try {
@@ -61,13 +67,24 @@ public class CommerceDrapeImageProcessor {
             if(result==null)throw new IllegalArgumentException("本地搭放处理没有返回结果");
             return result;
         } catch(RestClientResponseException error) {
-            String reason="本地搭放检查未通过";
-            try {var data=new ObjectMapper().readTree(error.getResponseBodyAsString());String code=data.path("code").asText("");reason=stopReason(code);}catch(RuntimeException ignored){}
-            throw new IllegalArgumentException(reason+"；保留母图与印花，恢复仅重做本地处理，不追加生图",error);
+            String code="";
+            try {var data=new ObjectMapper().readTree(error.getResponseBodyAsString());code=data.path("code").asText("");}catch(RuntimeException ignored){}
+            if(!code.matches("[A-Z_]{3,80}"))code="";
+            int status=error.getStatusCode().value();
+            // Structured validation failures remain terminal even if the service accidentally uses HTTP 5xx.
+            boolean retryable=Set.of("LOCAL_TIME_LIMIT","LOCAL_DRAPE_FAILED").contains(code)||((status==429||status>=500)&&!deterministic(code));
+            throw new LocalProcessingException(code.isEmpty()?"HTTP_"+status:code,retryable,
+                    stopReason(code)+"；保留母图与印花，恢复仅重做本地处理，不追加生图",error);
+        } catch(ResourceAccessException error) {
+            throw new LocalProcessingException("LOCAL_NETWORK",true,"本地搭放处理连接或读取超时；保留母图与印花，恢复仅重做本地处理，不追加生图",error);
         }
+    }
+    private static boolean deterministic(String code) {
+        return !code.isEmpty()&&!Set.of("LOCAL_TIME_LIMIT","LOCAL_DRAPE_FAILED","LOCAL_PROCESSING_ERROR","INTERNAL_ERROR","SERVICE_UNAVAILABLE","RATE_LIMITED").contains(code);
     }
     static String stopReason(String code) {
         return switch(Objects.toString(code,"")) {
+            case "SOURCE_PRINT_UNSUITABLE" -> "定位图中的印花区域不满足本地定位条件，需修复固定输入或本地算法";
             case "FEATURE_TRACKING_FAILED" -> "母图中的印花与参考图未能可靠匹配，暂时无法确定替换位置";
             case "GUIDE_ARTWORK_MISMATCH" -> "高清印花与已保存的位置参考不一致，已停止使用错误图案定位";
             case "MAPPING_CHECKSUM_INVALID" -> "已保存的印花定位数据未通过完整性检查，需修复本地映射后继续";
@@ -77,6 +94,7 @@ public class CommerceDrapeImageProcessor {
             case "WHITE_MASTER_REQUIRED" -> "搭放母图中的布料不符合中性白色条件，已停止不可靠换色";
             case "PRINT_OUTSIDE_GARMENT", "CHEST_REGION_REQUIRED" -> "印花位置越过可靠布料区域或胸前范围，已停止套版";
             case "PRINT_RESIDUE_DETECTED", "CLEANUP_NOT_CONVERGED" -> "原印花尚未清理干净，已保留母图等待本地修复";
+            case "LOCAL_DRAPE_FAILED" -> "本地搭放服务暂未完成处理，本次没有生成可用成品";
             case "LOCAL_TIME_LIMIT" -> "本地印花定位处理超时，本次尚未完成";
             default -> "本地搭放检查未通过"+(code!=null&&code.matches("[A-Z_]{3,80}")?"（"+code+"）":"");
         };
