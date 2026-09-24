@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import pathlib
+import tempfile
+import types
 import threading
 import unittest
 import urllib.error
@@ -33,6 +35,97 @@ class FakeAuth(BaseHTTPRequestHandler):
 
 
 class ConnectorTest(unittest.TestCase):
+    def test_scanned_qr_is_never_reloaded_or_clicked_again(self):
+        page = mock.MagicMock()
+        page.url = "https://www.zhipin.com/web/user/"
+        box = page.locator.return_value.first
+        box.inner_text.return_value = "已扫码，请在手机上确认"
+        context = mock.MagicMock()
+        context.cookies.return_value = []
+        context.pages = [page]
+        browser = mock.MagicMock()
+        browser.contexts = [context]
+        browser_api = mock.MagicMock()
+        browser_api.chromium.connect_over_cdp.return_value = browser
+        playwright = mock.MagicMock()
+        playwright.__enter__.return_value = browser_api
+        module = types.ModuleType("patchright.sync_api")
+        module.sync_playwright = mock.Mock(return_value=playwright)
+        with mock.patch.dict("sys.modules", {"patchright.sync_api": module}), \
+             mock.patch.dict(connector.LOGIN, {"phase": "qr"}):
+            with self.assertRaises(connector.ScanInProgress):
+                connector.qr_image()
+            self.assertEqual("scanned", connector.LOGIN["phase"])
+        page.reload.assert_not_called()
+        page.get_by_text.assert_not_called()
+
+    def test_expired_qr_uses_own_refresh_control(self):
+        page = mock.MagicMock()
+        page.url = "https://www.zhipin.com/web/user/"
+        box = page.locator.return_value.first
+        box.inner_text.return_value = "请重新刷新二维码"
+        control = mock.MagicMock()
+        control.count.return_value = 1
+        def locate(value):
+            if value == ".invalid-box button":
+                return control
+            if value == ".invalid-box":
+                return mock.MagicMock()
+            image = mock.MagicMock()
+            image.screenshot.return_value = b"\x89PNG\r\n\x1a\n" + b"sample"
+            return image
+        box.locator.side_effect = locate
+        context = mock.MagicMock()
+        context.cookies.return_value = []
+        context.pages = [page]
+        browser = mock.MagicMock()
+        browser.contexts = [context]
+        browser_api = mock.MagicMock()
+        browser_api.chromium.connect_over_cdp.return_value = browser
+        playwright = mock.MagicMock()
+        playwright.__enter__.return_value = browser_api
+        module = types.ModuleType("patchright.sync_api")
+        module.sync_playwright = mock.Mock(return_value=playwright)
+        with mock.patch.dict("sys.modules", {"patchright.sync_api": module}):
+            self.assertTrue(connector.qr_image().startswith(b"\x89PNG"))
+        control.click.assert_called_once()
+        page.reload.assert_not_called()
+
+    def test_delayed_resume_attachment_is_tracked_without_resending_request(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(connector, "RESUME_DB", pathlib.Path(folder) / "requests.sqlite3"), \
+             mock.patch.dict(connector.LOGIN, {"state": "complete"}):
+            before = {"ok": True, "data": {"messages": [{"mid": 10}]}}
+            sent = {"ok": True, "command": "recruiter-request-resume",
+                    "data": {"requested": True}}
+            with mock.patch.object(connector, "cli_json", side_effect=[before, sent]) as cli:
+                result = connector.request_resume("12345")
+                self.assertEqual("waiting", result["state"])
+                self.assertEqual(2, cli.call_count)
+            with mock.patch.object(connector, "cli_json") as cli:
+                with self.assertRaisesRegex(ValueError, "避免重复索取"):
+                    connector.request_resume("12345")
+                cli.assert_not_called()
+            later = {"ok": True, "data": {"messages": [
+                {"mid": 11, "from": {"uid": 12345, "source": 0},
+                 "body": {"hyperLink": {"hyperLinkType": 1}}},
+            ]}}
+            with mock.patch.object(connector, "cli_json", return_value=later):
+                connector.poll_resumes_once()
+            self.assertEqual("received", connector.tracked_resumes()[0]["state"])
+            self.assertEqual("11", connector.tracked_resumes()[0]["message_id"])
+
+    def test_resume_tracking_ignores_old_and_other_party_attachments(self):
+        history = {"data": {"messages": [
+            {"mid": 10, "from": {"uid": 123, "source": 0},
+             "body": {"hyperLink": {"hyperLinkType": 1}}},
+            {"mid": 11, "from": {"uid": 999, "source": 0},
+             "body": {"hyperLink": {"hyperLinkType": 1}}},
+            {"mid": 12, "from": {"uid": 123, "source": 1},
+             "body": {"hyperLink": {"hyperLinkType": 1}}},
+        ]}}
+        self.assertIsNone(connector.incoming_attachment(history, "123", 10))
+
     def test_unverified_saved_account_is_rejected_and_cleared(self):
         response = mock.Mock(stdout=json.dumps({
             "ok": True, "data": {"logged_in": True,

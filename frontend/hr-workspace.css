@@ -19,10 +19,10 @@
 .hr-qr{display:block;width:min(100%,246px);height:auto;aspect-ratio:1;object-fit:contain;box-sizing:border-box;padding:14px;border:1px solid rgba(87,109,143,.18);border-radius:17px;background:#fff;box-shadow:0 10px 27px rgba(41,71,101,.1)}
 .hr-login .hr-hint{max-width:290px;min-height:22px}
 .hr-login-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
-.hr-login button,.hr-actions button,.hr-form>button,.hr-pagination button{border:1px solid rgba(69,101,140,.27);border-radius:11px;background:#fff;padding:10px 15px;color:var(--hr-ink);cursor:pointer;font:inherit}
+.hr-login button,.hr-actions button,.hr-form>button,.hr-pagination button,.hr-resume-download{border:1px solid rgba(69,101,140,.27);border-radius:11px;background:#fff;padding:10px 15px;color:var(--hr-ink);cursor:pointer;font:inherit}
 .hr-login button{background:#244c65;border-color:#244c65;color:#fff}
-.hr-actions button.hr-primary,.hr-form>button.hr-primary{background:#244c65;color:#fff;border-color:#244c65}
-.hr-login button:hover,.hr-actions button:hover,.hr-form>button:hover,.hr-pagination button:hover{filter:brightness(.95)}
+.hr-actions button.hr-primary,.hr-form>button.hr-primary,.hr-resume-download.hr-primary{background:#244c65;color:#fff;border-color:#244c65}
+.hr-login button:hover,.hr-actions button:hover,.hr-form>button:hover,.hr-pagination button:hover,.hr-resume-download:hover{filter:brightness(.95)}
 .hr-login button:disabled,.hr-pagination button:disabled{opacity:.5;cursor:default}
 .hr-footnote{text-align:center;font-size:12px;color:var(--hr-muted);margin:16px 0 0}
 .hr-status-result{max-width:700px;margin:20px auto 0}

@@ -11,9 +11,12 @@ import subprocess
 import threading
 import datetime
 import http.server
+import contextlib
 import urllib.error
 import urllib.parse
 import urllib.request
+import sqlite3
+import uuid
 from pathlib import Path
 
 SOCKET = Path("/opt/heyi/boss-agent/bridge/connector.sock")
@@ -27,17 +30,19 @@ MAX_OUTPUT = 4 * 1024 * 1024
 LOCK = threading.Lock()
 ID = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_\-=]{0,179}$")
 SECRET_KEY = re.compile(r"(cookie|token|stoken|wt2|secret|authorization|password)", re.I)
-LOGIN_TIMEOUT = 180
+LOGIN_TIMEOUT = 300
 LOGIN_LOCK = threading.Lock()
 QR_LOCK = threading.Lock()
-QR_REFRESH_SECONDS = 40
-LOGIN = {"state": "idle", "started": 0.0, "qr_refreshed": 0.0, "error": ""}
+LOGIN = {"state": "idle", "phase": "", "started": 0.0, "error": ""}
 LOGIN_PROCESS = None
 LOGIN_CANCEL = threading.Event()
 ALLOWED_ORIGIN = os.environ.get("APP_HR_ALLOWED_ORIGIN", "https://hoyee.org.cn")
 CLI_ENV = {"HOME": "/opt/heyi/boss-agent",
            "PATH": "/opt/heyi/boss-agent/venv/bin:/usr/bin:/bin"}
 SYSTEMCTL = ["/usr/bin/sudo", "-n", "/usr/bin/systemctl"]
+RESUME_DIR = Path("/opt/heyi/boss-agent/runtime/resumes")
+RESUME_DB = Path("/opt/heyi/boss-agent/runtime/resume-requests.sqlite3")
+RESUME_POLL_SECONDS = 120
 
 
 def identifier(value):
@@ -45,6 +50,188 @@ def identifier(value):
     if not ID.fullmatch(text):
         raise ValueError("标识格式不正确")
     return text
+
+
+def positive_id(value):
+    text = str(value or "")
+    if not text.isdecimal() or not 1 <= len(text) <= 20 or int(text) <= 0:
+        raise ValueError("会话 ID 和消息 ID 必须为正整数")
+    return text
+
+
+@contextlib.contextmanager
+def resume_db():
+    RESUME_DB.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    connection = sqlite3.connect(RESUME_DB, timeout=5)
+    connection.row_factory = sqlite3.Row
+    connection.execute("""CREATE TABLE IF NOT EXISTS resume_requests (
+        friend_id TEXT PRIMARY KEY, requested_at INTEGER NOT NULL,
+        baseline_mid INTEGER NOT NULL, state TEXT NOT NULL,
+        message_id TEXT, updated_at INTEGER NOT NULL, error TEXT NOT NULL DEFAULT ''
+    )""")
+    os.chmod(RESUME_DB, 0o600)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
+def tracked_resumes():
+    with resume_db() as connection:
+        rows = connection.execute(
+            "SELECT friend_id, requested_at, state, message_id, updated_at, error "
+            "FROM resume_requests ORDER BY requested_at DESC LIMIT 50").fetchall()
+        return [dict(row) for row in rows]
+
+
+def resume_messages(envelope):
+    data = envelope.get("data") or {}
+    return data.get("messages", []) if isinstance(data, dict) else []
+
+
+def latest_message_id(envelope):
+    return max((int(str(item.get("mid"))) for item in resume_messages(envelope)
+                if isinstance(item, dict) and str(item.get("mid", "")).isdecimal()), default=0)
+
+
+def incoming_attachment(envelope, friend_id, baseline):
+    matches = []
+    for item in resume_messages(envelope):
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("mid", ""))
+        sender = item.get("from") or {}
+        body = item.get("body") or {}
+        link = body.get("hyperLink") if isinstance(body, dict) else None
+        if (mid.isdecimal() and int(mid) > baseline and isinstance(sender, dict)
+                and str(sender.get("uid")) == friend_id and sender.get("source", 0) == 0
+                and isinstance(link, dict) and link.get("hyperLinkType") in (1, 9)):
+            matches.append(mid)
+    return min(matches, key=int) if matches else None
+
+
+def resume_cli(*args, timeout=60):
+    result = cli_json(*args, timeout=timeout)
+    if result.get("ok") is not True:
+        raise RuntimeError((result.get("error") or {}).get("message") or "BOSS 请求未获成功确认")
+    return result
+
+
+def request_resume(friend_id):
+    friend_id = positive_id(friend_id)
+    with LOGIN_LOCK:
+        if LOGIN["state"] != "complete":
+            raise RuntimeError("请先连接招聘方账号")
+    if not LOCK.acquire(timeout=5):
+        raise RuntimeError("招聘账号正在处理另一项请求")
+    try:
+        with resume_db() as connection:
+            previous = connection.execute("SELECT state FROM resume_requests WHERE friend_id=?",
+                                          (friend_id,)).fetchone()
+        if previous and previous["state"] in ("waiting", "received", "uncertain"):
+            raise ValueError("该会话已有未完成的简历请求，请先核对消息，避免重复索取")
+        history = resume_cli("hr", "chatmsg", friend_id, "--count", "100")
+        baseline = latest_message_id(history)
+        try:
+            resume_cli("hr", "request-resume", friend_id, timeout=90)
+        except Exception:
+            # A lost write response is ambiguous. Never offer an automatic resend.
+            now = int(time.time())
+            with resume_db() as connection:
+                connection.execute(
+                    "INSERT OR REPLACE INTO resume_requests VALUES (?, ?, ?, 'uncertain', NULL, ?, ?)",
+                    (friend_id, now, baseline, now, "索取结果未确认；请在 BOSS 官方会话核对"))
+            raise RuntimeError("索取结果未确认，请在 BOSS 官方会话核对，不要重复发送")
+        now = int(time.time())
+        with resume_db() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO resume_requests VALUES (?, ?, ?, 'waiting', NULL, ?, '')",
+                (friend_id, now, baseline, now))
+        return {"friendId": friend_id, "state": "waiting"}
+    finally:
+        LOCK.release()
+
+
+def poll_resumes_once():
+    with resume_db() as connection:
+        pending = connection.execute(
+            "SELECT friend_id, baseline_mid FROM resume_requests WHERE state IN ('waiting','uncertain') "
+            "ORDER BY updated_at ASC LIMIT 20").fetchall()
+    if not pending:
+        return
+    with LOGIN_LOCK:
+        state = LOGIN["state"]
+    if state != "complete":
+        if state != "idle" or not LOCK.acquire(blocking=False):
+            return
+        try:
+            healthy = ((cli_json("status", timeout=20).get("data") or {})
+                       .get("auth_health") or {}).get("summary") == "healthy"
+            verified = healthy and verify_recruiter()
+            if verified:
+                with LOGIN_LOCK:
+                    if LOGIN["state"] == "idle":
+                        LOGIN["state"] = "complete"
+        finally:
+            LOCK.release()
+        if not verified:
+            return
+    for row in pending:
+        if not LOCK.acquire(timeout=1):
+            return
+        try:
+            result = cli_json("hr", "chatmsg", row["friend_id"], "--count", "100", timeout=45)
+        finally:
+            LOCK.release()
+        if result.get("ok") is not True:
+            # Leave the request waiting; a transient read must not erase it.
+            continue
+        mid = incoming_attachment(result, row["friend_id"], row["baseline_mid"])
+        if mid:
+            with resume_db() as connection:
+                connection.execute(
+                    "UPDATE resume_requests SET state='received', message_id=?, updated_at=? "
+                    "WHERE friend_id=? AND state IN ('waiting','uncertain')",
+                    (mid, int(time.time()), row["friend_id"]))
+
+
+def resume_poll_worker():
+    while True:
+        try:
+            poll_resumes_once()
+        except (OSError, sqlite3.Error, ValueError):
+            pass
+        time.sleep(RESUME_POLL_SECONDS)
+
+
+def download_resume(friend_id, message_id):
+    friend_id, message_id = positive_id(friend_id), positive_id(message_id)
+    with LOGIN_LOCK:
+        if LOGIN["state"] != "complete":
+            raise RuntimeError("请先连接招聘方账号")
+    with resume_db() as connection:
+        tracked = connection.execute(
+            "SELECT message_id, state FROM resume_requests WHERE friend_id=?", (friend_id,)).fetchone()
+    if not tracked or tracked["state"] != "received" or tracked["message_id"] != message_id:
+        raise ValueError("请先等待系统确认这条会话的附件消息")
+    RESUME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not LOCK.acquire(timeout=5):
+        raise RuntimeError("招聘账号正在处理另一项请求")
+    try:
+        for suffix in (".pdf", ".docx", ".doc", ".png", ".jpg"):
+            output = RESUME_DIR / f"{uuid.uuid4().hex}{suffix}"
+            result = cli_json("hr", "download-resume", friend_id, "--message-id",
+                              message_id, "--output", str(output), timeout=90)
+            if result.get("ok") is True and output.is_file():
+                return output
+            output.unlink(missing_ok=True)
+            error = result.get("error") or {}
+            if error.get("code") != "INVALID_PARAM" or "扩展名不符" not in error.get("message", ""):
+                raise RuntimeError(error.get("message") or "附件下载失败")
+        raise RuntimeError("附件格式不受支持")
+    finally:
+        LOCK.release()
 
 
 def sanitize(value):
@@ -243,7 +430,12 @@ def login_worker():
                 LOGIN_PROCESS = process
             if LOGIN_CANCEL.is_set():
                 process.terminate()
-            stdout, _ = process.communicate(timeout=LOGIN_TIMEOUT + 45)
+            try:
+                stdout, _ = process.communicate(timeout=LOGIN_TIMEOUT + 45)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise
             try:
                 envelope = json.loads(stdout)
                 ok = process.returncode == 0 and envelope.get("ok") is True
@@ -252,13 +444,18 @@ def login_worker():
             if LOGIN_CANCEL.is_set():
                 return
             if ok:
+                with LOGIN_LOCK:
+                    LOGIN["phase"] = "verifying"
                 ok = verify_recruiter()
             if not ok:
                 discard_login()
             with LOGIN_LOCK:
                 LOGIN["state"] = "complete" if ok else "failed"
+                LOGIN["phase"] = ""
                 LOGIN["error"] = "" if ok else (
-                    "未通过招聘方身份验证。求职账号不能接入，请切换 BOSS 招聘方账号重新扫码")
+                    "招聘方身份验证未通过，请确认扫码账号处于 BOSS 招聘端后重新扫码"
+                    if process.returncode == 0 else
+                    "未收到有效的登录凭据。请扫描当前二维码并在手机上确认；若二维码过期请刷新")
         except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
             try:
                 discard_login()
@@ -266,6 +463,7 @@ def login_worker():
                 pass
             with LOGIN_LOCK:
                 LOGIN["state"] = "failed"
+                LOGIN["phase"] = ""
                 LOGIN["error"] = "扫码未完成或登录超时，请重新获取二维码"
         finally:
             with LOGIN_LOCK:
@@ -280,8 +478,7 @@ def begin_login():
             raise RuntimeError("招聘账号正在处理查询，请稍后再试")
         LOCK.release()
         LOGIN_CANCEL.clear()
-        LOGIN.update(state="pending", started=time.monotonic(),
-                     qr_refreshed=time.monotonic(), error="")
+        LOGIN.update(state="pending", phase="qr", started=time.monotonic(), error="")
         threading.Thread(target=login_worker, daemon=True).start()
         return dict(LOGIN)
 
@@ -297,34 +494,58 @@ def logout_boss():
     try:
         discard_login()
         with LOGIN_LOCK:
-            LOGIN.update(state="idle", started=0.0, qr_refreshed=0.0, error="")
+            LOGIN.update(state="idle", phase="", started=0.0, error="")
     finally:
         LOCK.release()
 
 
+class ScanInProgress(Exception):
+    pass
+
+
 def qr_image(force_refresh=False):
-    """Capture only the QR element from the dedicated CDP login page."""
+    """Read the current QR without interrupting the server page's scan flow."""
     from patchright.sync_api import sync_playwright
     with QR_LOCK, sync_playwright() as playwright:
         browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=5000)
         try:
             for context in browser.contexts:
+                if any(cookie.get("name") == "wt2" and cookie.get("value")
+                       and cookie.get("domain", "").endswith("zhipin.com")
+                       for cookie in context.cookies()):
+                    with LOGIN_LOCK:
+                        LOGIN["phase"] = "verifying"
+                    raise ScanInProgress()
                 for page in reversed(context.pages):
                     if page.url != "https://www.zhipin.com/web/user/":
                         continue
-                    with LOGIN_LOCK:
-                        stale = time.monotonic() - LOGIN["qr_refreshed"] >= QR_REFRESH_SECONDS
-                    if force_refresh or stale:
-                        page.reload(wait_until="domcontentloaded", timeout=15000)
+                    box = page.locator(".qr-img-box").first
+                    text = box.inner_text(timeout=3000)
+                    if any(word in text for word in ("已扫码", "扫描成功", "扫码成功", "手机确认", "请确认")):
                         with LOGIN_LOCK:
-                            LOGIN["qr_refreshed"] = time.monotonic()
-                    qr = page.locator(".qr-img-box img")
+                            LOGIN["phase"] = "scanned"
+                        raise ScanInProgress()
+                    expired = any(word in text for word in ("已过期", "已失效", "重新扫描", "刷新二维码"))
+                    if expired and box.locator(".invalid-box button").count():
+                        box.locator(".invalid-box button").click(timeout=5000)
+                        box.locator(".invalid-box").wait_for(state="hidden", timeout=8000)
+                    elif force_refresh:
+                        page.reload(wait_until="domcontentloaded", timeout=15000)
+                        box = page.locator(".qr-img-box").first
+                    qr = box.locator("img")
                     try:
                         qr.wait_for(state="visible", timeout=5000)
                     except Exception:
-                        if page.get_by_text("APP扫码登录", exact=True).first.is_visible():
-                            page.get_by_text("APP扫码登录", exact=True).first.click(timeout=3000)
-                    qr.wait_for(state="visible", timeout=5000)
+                        # A scan can hide the QR while the phone is awaiting confirmation.
+                        # Never click the login tab here: that would invalidate the scanned QR.
+                        text = box.inner_text(timeout=3000)
+                        if any(word in text for word in ("已扫码", "扫描成功", "扫码成功", "手机确认", "请确认")):
+                            with LOGIN_LOCK:
+                                LOGIN["phase"] = "scanned"
+                            raise ScanInProgress()
+                        raise
+                    with LOGIN_LOCK:
+                        LOGIN["phase"] = "qr"
                     image = qr.screenshot(timeout=5000)
                     if not image.startswith(b"\x89PNG\r\n\x1a\n") or len(image) > 300_000:
                         raise ValueError("二维码图像无效")
@@ -378,6 +599,25 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(image)
 
+    def send_resume(self, output, friend_id, message_id):
+        media = {".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                 ".doc": "application/msword", ".png": "image/png", ".jpg": "image/jpeg"}
+        try:
+            size = output.stat().st_size
+            self.send_response(200)
+            self.send_header("Content-Type", media[output.suffix])
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="resume-{friend_id}-{message_id}{output.suffix}"')
+            self.send_header("Cache-Control", "private, no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            with output.open("rb") as stream:
+                while chunk := stream.read(65536):
+                    self.wfile.write(chunk)
+        finally:
+            output.unlink(missing_ok=True)
+
     def authorized(self):
         cookie = self.headers.get("Cookie", "")
         if not cookie or len(cookie) > 4096:
@@ -424,9 +664,30 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 return
             try:
                 self.send_image(qr_image())
+            except ScanInProgress:
+                with LOGIN_LOCK:
+                    phase = LOGIN["phase"]
+                self.send_json(202, {"success": True, "data": {"phase": phase}})
             except Exception:
                 # Only fixed text is exposed; CDP errors can contain sensitive URLs.
                 self.send_json(503, {"success": False, "message": "二维码正在生成，请稍后刷新"})
+            return
+        if route == "resumes":
+            self.send_json(200, {"success": True, "data": tracked_resumes()})
+            return
+        if route.startswith("resumes/") and route.endswith("/download"):
+            parts = route.split("/")
+            if len(parts) != 4:
+                self.send_json(404, {"success": False, "message": "没有这个招聘接口"})
+                return
+            try:
+                friend_id, message_id = positive_id(parts[1]), positive_id(parts[2])
+                output = download_resume(friend_id, message_id)
+                self.send_resume(output, friend_id, message_id)
+            except ValueError as error:
+                self.send_json(400, {"success": False, "message": str(error)})
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+                self.send_json(502, {"success": False, "message": str(error)})
             return
         try:
             query = urllib.parse.parse_qs(parsed.query, strict_parsing=False, max_num_fields=8)
@@ -456,7 +717,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path not in ("/api/v1/hr/login/start", "/api/v1/hr/login/refresh",
-                             "/api/v1/hr/login/logout"):
+                             "/api/v1/hr/login/logout", "/api/v1/hr/resumes/request"):
             self.send_json(405, {"success": False, "message": "此阶段仅支持扫码登录与只读操作"})
             return
         if self.headers.get("Origin") != ALLOWED_ORIGIN:
@@ -466,7 +727,29 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         if access != 200:
             self.send_json(access, {"success": False, "message": "招聘模块仅限指定平台管理员"})
             return
-        if int(self.headers.get("Content-Length", "0") or 0) != 0:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            content_length = -1
+        if self.path.endswith("/resumes/request"):
+            if (not 1 <= content_length <= 256
+                    or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
+                self.send_json(400, {"success": False, "message": "请求格式不正确"})
+                return
+            try:
+                body = json.loads(self.rfile.read(content_length))
+                if not isinstance(body, dict) or set(body) != {"friendId"}:
+                    raise ValueError("请选择指定候选人的会话")
+                result = request_resume(body["friendId"])
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                self.send_json(400, {"success": False, "message": str(error)})
+                return
+            except (RuntimeError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as error:
+                self.send_json(502, {"success": False, "message": str(error)})
+                return
+            self.send_json(200, {"success": True, "data": result})
+            return
+        if content_length != 0:
             self.send_json(400, {"success": False, "message": "扫码请求不能包含正文"})
             return
         if self.path.endswith("/logout"):
@@ -484,6 +767,10 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 return
             try:
                 qr_image(force_refresh=True)
+            except ScanInProgress:
+                self.send_json(409, {"success": False,
+                                     "message": "已扫码或正在校验，请等待手机确认和招聘方验证"})
+                return
             except Exception:
                 self.send_json(503, {"success": False, "message": "二维码刷新失败，请稍后重试"})
                 return
@@ -502,6 +789,8 @@ class HttpServer(http.server.ThreadingHTTPServer):
 
 
 def main():
+    with resume_db():
+        pass
     SOCKET.parent.mkdir(mode=0o710, parents=True, exist_ok=True)
     try:
         SOCKET.unlink()
@@ -512,6 +801,7 @@ def main():
         os.chmod(SOCKET, 0o660)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        threading.Thread(target=resume_poll_worker, daemon=True).start()
         with HttpServer((HTTP_BIND, HTTP_PORT), HttpHandler) as http:
             http.serve_forever()
 

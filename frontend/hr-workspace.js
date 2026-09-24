@@ -8,6 +8,8 @@
   const panels = new Map();
   let current = 'overview', sequence = 0, page = 1, talentAction = 'candidates';
   let loginTimer = null, qrRefresh = null, autoLoginAttempted = false;
+  let loginPendingSeen = false, loginCheckInFlight = false, qrRequestInFlight = false;
+  let resumeTimer = null;
 
   const element = (tag, text, parent, className) => {
     const node = document.createElement(tag);
@@ -76,8 +78,19 @@
     loginTimer = qrRefresh = null;
   }
   async function refreshQr() {
+    if (qrRequestInFlight) return;
+    qrRequestInFlight = true;
     try {
       const response = await fetch('/api/v1/hr/login/qr', {credentials:'same-origin',cache:'no-store'});
+      if (response.status === 202) {
+        const result = await response.json();
+        if (result.data?.phase === 'scanned' || result.data?.phase === 'verifying') {
+          qr.hidden = true;
+          loginMessage.textContent = result.data.phase === 'scanned'
+            ? '已扫码，请在手机上确认。' : '扫码已确认，正在验证招聘方账号…';
+        }
+        return;
+      }
       if (!response.ok) return;
       const blob = await response.blob();
       if (blob.type !== 'image/png') return;
@@ -89,6 +102,8 @@
       if (previous) URL.revokeObjectURL(previous);
     } catch (_) {
       loginMessage.textContent = '正在等待登录二维码，请稍后…';
+    } finally {
+      qrRequestInFlight = false;
     }
   }
   async function refreshLogin() {
@@ -108,16 +123,28 @@
   }
   async function checkLogin() {
     if (!allowed()) { stopLoginPolling(); return; }
+    if (loginCheckInFlight) return;
+    loginCheckInFlight = true;
     try {
       const result = await api('/api/v1/hr/login/status');
       const state = result.data || {};
       if (state.state === 'pending') {
+        loginPendingSeen = true;
         loginBox.hidden = false;
         loginButton.hidden = true;
-        refreshButton.hidden = false;
-        loginMessage.textContent = '请在 BOSS 直聘 App 扫码并确认；二维码会定期自动更新。';
-        if (!qrRefresh) qrRefresh = setInterval(refreshQr, 12000);
-        if (qr.hidden) refreshQr();
+        const waitingForPhone = state.phase === 'scanned' || state.phase === 'verifying';
+        refreshButton.hidden = waitingForPhone;
+        loginMessage.textContent = state.phase === 'scanned' ? '已扫码，请在手机上确认。'
+          : state.phase === 'verifying' ? '扫码已确认，正在验证招聘方账号…'
+          : '请在 BOSS 直聘 App 扫码并确认；二维码过期后会自动更新。';
+        if (waitingForPhone) {
+          qr.hidden = true;
+          clearInterval(qrRefresh);
+          qrRefresh = null;
+        } else {
+          if (!qrRefresh) qrRefresh = setInterval(refreshQr, 12000);
+          if (qr.hidden) refreshQr();
+        }
       } else {
         stopLoginPolling();
         loginBox.hidden = state.state === 'complete';
@@ -127,17 +154,30 @@
         loginButton.disabled = false;
         loginMessage.textContent = state.state === 'complete' ? '扫码成功，正在刷新账号状态…'
           : state.state === 'failed' ? (state.error || '扫码未完成，请重新获取二维码') : '';
-        if (state.state === 'complete') run('overview');
+        if (state.state === 'complete') {
+          if (loginPendingSeen) {
+            loginPendingSeen = false;
+            history.replaceState(null, '', `${location.pathname}${location.search}#hr-jobs`);
+            enter('jobs');
+          } else {
+            run('overview');
+          }
+        } else {
+          loginPendingSeen = false;
+        }
       }
     } catch (error) {
       stopLoginPolling();
       loginButton.disabled = false;
       loginMessage.textContent = error.message || '登录状态读取失败';
+    } finally {
+      loginCheckInFlight = false;
     }
   }
   async function startLogin() {
     if (!allowed()) return;
     autoLoginAttempted = true;
+    loginPendingSeen = true;
     loginButton.disabled = true;
     loginButton.hidden = true;
     loginBox.hidden = false;
@@ -204,8 +244,96 @@
   const chatsActions = element('div', '', chatsForm, 'hr-actions');
   button('查看沟通列表', chatsActions, () => {page=1;run('chats');}).className = 'hr-primary';
   button('查看指定会话消息', chatsActions, () => run('messages'));
+  button('向该候选人索取附件简历', chatsActions, requestAttachmentResume);
   chatsForm.addEventListener('submit', event => {event.preventDefault();run('chats');});
   const chatsResult = element('div', '', chats, 'hr-result');
+  element('h2', '附件简历跟进', chats);
+  element('p', '请求发出后会持续检查该会话；候选人晚些时候发送附件也会显示在这里。', chats, 'hr-hint');
+  const attachmentResult = element('div', '', chats, 'hr-result');
+
+  async function requestAttachmentResume() {
+    const id = friendId.value.trim();
+    if (!/^[1-9]\d{0,19}$/.test(id)) {
+      element('p', '请先填写数字格式的候选人会话 friend ID。', chatsResult, 'hr-error');
+      return;
+    }
+    if (!window.confirm(`确认向会话 ${id} 的候选人发送附件简历请求吗？平台会实际发送一条请求。`)) return;
+    try {
+      await api('/api/v1/hr/resumes/request', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({friendId:id})
+      });
+      chatsResult.replaceChildren();
+      element('p', `已向会话 ${id} 发起索取请求。等待候选人发送附件，系统会持续检查。`, chatsResult);
+      await loadTrackedResumes();
+    } catch (error) {
+      chatsResult.replaceChildren();
+      element('p', error.message || '索取结果未确认，请查看官方会话。', chatsResult, 'hr-error');
+      await loadTrackedResumes();
+    }
+  }
+
+  async function downloadAttachment(friend, mid, action) {
+    action.disabled = true;
+    try {
+      const response = await fetch(`/api/v1/hr/resumes/${friend}/${mid}/download`,
+        {credentials:'same-origin',cache:'no-store'});
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        if (response.status === 401) handleSessionExpired();
+        throw Error(error.message || '附件获取失败');
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const name = /filename="(resume-[\d-]+\.(?:pdf|docx|doc|png|jpg))"/i.exec(disposition)?.[1]
+        || `resume-${friend}-${mid}`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      element('p', error.message || '附件获取失败', attachmentResult, 'hr-error');
+    } finally {
+      action.disabled = false;
+    }
+  }
+
+  async function loadTrackedResumes() {
+    if (!allowed() || activeWorkspace !== 'hr') return;
+    try {
+      const result = await api('/api/v1/hr/resumes');
+      if (current !== 'chats') return;
+      attachmentResult.replaceChildren();
+      const items = result.data || [];
+      if (!items.length) {
+        element('p', '暂无附件简历请求。', attachmentResult, 'hr-empty');
+        return;
+      }
+      for (const item of items) {
+        const card = element('article', '', attachmentResult, 'hr-record');
+        element('strong', `会话 ${item.friend_id}`, card);
+        const state = item.state === 'received' ? '已收到附件'
+          : item.state === 'uncertain' ? '索取结果待核对'
+          : '等待候选人发送';
+        element('p', `${state} · ${new Date(item.updated_at * 1000).toLocaleString()}`, card);
+        if (item.error) element('p', item.error, card, 'hr-hint');
+        if (item.state === 'received' && /^\d+$/.test(item.message_id || '')) {
+          button('下载已收到的简历', card,
+            event => downloadAttachment(item.friend_id, item.message_id, event.currentTarget))
+            .className = 'hr-primary hr-resume-download';
+        }
+      }
+    } catch (error) {
+      if (current === 'chats') {
+        attachmentResult.replaceChildren();
+        element('p', error.message || '附件状态读取失败', attachmentResult, 'hr-error');
+      }
+    }
+  }
 
   const resume = section('resume');
   const resumeForm = element('form', '', resume, 'hr-form');
@@ -333,6 +461,8 @@
   function enter(route) {
     if (!allowed()) return;
     current = routes.has(route) ? route : 'overview';
+    clearInterval(resumeTimer);
+    resumeTimer = null;
     page = 1;
     ++sequence;
     panels.forEach((panel, key) => panel.hidden = key !== current);
@@ -343,7 +473,13 @@
     if (current === 'overview') {
       run();
       checkLogin();
-    } else if (current === 'jobs' || current === 'applications' || current === 'chats') run();
+    } else if (current === 'jobs' || current === 'applications' || current === 'chats') {
+      run();
+      if (current === 'chats') {
+        loadTrackedResumes();
+        resumeTimer = setInterval(loadTrackedResumes, 30000);
+      }
+    }
   }
   document.querySelectorAll('[data-hr-route]').forEach(link => link.addEventListener('click', event => {
     event.preventDefault();
@@ -355,7 +491,10 @@
   globalThis.HrWorkspace = {enter, allowed, reset(){
     ++sequence;
     stopLoginPolling();
+    clearInterval(resumeTimer);
+    resumeTimer = null;
     autoLoginAttempted = false;
+    loginPendingSeen = false;
     qr.hidden = true;
     logoutButton.hidden = true;
     if (qr.dataset.objectUrl) URL.revokeObjectURL(qr.dataset.objectUrl);
