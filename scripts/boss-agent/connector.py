@@ -800,6 +800,9 @@ class HttpServer(http.server.ThreadingHTTPServer):
 
 
 def main():
+    # A service restart kills its login worker but not the separate Chrome unit.
+    # Close that orphan before accepting a new QR session.
+    close_browser()
     with resume_db():
         pass
     SOCKET.parent.mkdir(mode=0o710, parents=True, exist_ok=True)
