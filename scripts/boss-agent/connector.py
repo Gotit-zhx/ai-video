@@ -190,12 +190,19 @@ def poll_resumes_once():
             LOCK.release()
         if result.get("ok") is not True:
             # Leave the request waiting; a transient read must not erase it.
+            code = (result.get("error") or {}).get("code")
+            if code in ("AUTH_REQUIRED", "AUTH_EXPIRED"):
+                with resume_db() as connection:
+                    connection.execute(
+                        "UPDATE resume_requests SET error=? WHERE friend_id=? "
+                        "AND state IN ('waiting','uncertain')",
+                        ("招聘账号登录已过期，重新登录后继续检测", row["friend_id"]))
             continue
         mid = incoming_attachment(result, row["friend_id"], row["baseline_mid"])
         if mid:
             with resume_db() as connection:
                 connection.execute(
-                    "UPDATE resume_requests SET state='received', message_id=?, updated_at=? "
+                    "UPDATE resume_requests SET state='received', message_id=?, updated_at=?, error='' "
                     "WHERE friend_id=? AND state IN ('waiting','uncertain')",
                     (mid, int(time.time()), row["friend_id"]))
 
@@ -204,7 +211,7 @@ def resume_poll_worker():
     while True:
         try:
             poll_resumes_once()
-        except (OSError, sqlite3.Error, ValueError):
+        except (OSError, sqlite3.Error, ValueError, RuntimeError, subprocess.TimeoutExpired):
             pass
         time.sleep(RESUME_POLL_SECONDS)
 
