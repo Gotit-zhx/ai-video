@@ -104,9 +104,13 @@ def incoming_attachment(envelope, friend_id, baseline):
         sender = item.get("from") or {}
         body = item.get("body") or {}
         link = body.get("hyperLink") if isinstance(body, dict) else None
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(
+            link.get("url", "") if isinstance(link, dict) else "").query)
+        attachment_id = query.get("id") or query.get("encryptId")
         if (mid.isdecimal() and int(mid) > baseline and isinstance(sender, dict)
                 and str(sender.get("uid")) == friend_id and sender.get("source", 0) == 0
-                and isinstance(link, dict) and link.get("hyperLinkType") in (1, 9)):
+                and isinstance(link, dict) and link.get("hyperLinkType") in (1, 9)
+                and attachment_id and len(attachment_id) == 1):
             matches.append(mid)
     return min(matches, key=int) if matches else None
 

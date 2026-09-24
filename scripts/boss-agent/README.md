@@ -49,15 +49,23 @@ connection to this Chrome was verified without an account login.
 The platform administrator `13800000000` opens the recruiter workspace and
 the QR appears automatically when no verified recruiter session exists. The
 connector sends only a cropped QR image from the BOSS login tab to that
-authenticated administrator. QR refresh reloads the actual server login page,
-and the page refreshes it automatically after 40 seconds. The account owner
+authenticated administrator. When a code expires, the connector uses the
+login page's own refresh control. Reading the QR never reloads the page or
+resets a scan awaiting phone confirmation. The account owner
 scans with the BOSS app and confirms on their phone. A successful QR scan is
 *not* enough to enable reads: the connector verifies healthy credentials and
 that the recruiter-only jobs endpoint succeeds. A job-seeker or otherwise
 unverified account is rejected, cleared, and warned in the UI. Logout clears
 both CLI storage and dedicated Chrome cookies, then stops Chrome and Xvfb.
-Recruiting reads remain gated by `/api/v1/auth/me` on every request, and
-recruiting writes are not enabled.
+Recruiting reads remain gated by `/api/v1/auth/me` on every request. The sole
+enabled write is an explicit attachment-resume request for a specified
+conversation, after browser confirmation. QR login and background polling
+never send messages. A private SQLite tracker under
+`runtime/resume-requests.sqlite3` checks pending conversations every two minutes,
+including after a connector restart; only an inbound attachment message newer
+than the request is marked received. The administrator can download that
+specific attachment through the authenticated bridge. The file is held briefly
+under the private runtime directory and removed after delivery.
 
 ### Production release
 

@@ -108,7 +108,8 @@ class ConnectorTest(unittest.TestCase):
                 cli.assert_not_called()
             later = {"ok": True, "data": {"messages": [
                 {"mid": 11, "from": {"uid": 12345, "source": 0},
-                 "body": {"hyperLink": {"hyperLinkType": 1}}},
+                 "body": {"hyperLink": {"hyperLinkType": 1,
+                                        "url": "https://www.zhipin.com/resume?id=one"}}},
             ]}}
             with mock.patch.object(connector, "cli_json", return_value=later):
                 connector.poll_resumes_once()
@@ -118,11 +119,14 @@ class ConnectorTest(unittest.TestCase):
     def test_resume_tracking_ignores_old_and_other_party_attachments(self):
         history = {"data": {"messages": [
             {"mid": 10, "from": {"uid": 123, "source": 0},
-             "body": {"hyperLink": {"hyperLinkType": 1}}},
+             "body": {"hyperLink": {"hyperLinkType": 1,
+                                    "url": "https://www.zhipin.com/resume?id=old"}}},
             {"mid": 11, "from": {"uid": 999, "source": 0},
-             "body": {"hyperLink": {"hyperLinkType": 1}}},
+             "body": {"hyperLink": {"hyperLinkType": 1,
+                                    "url": "https://www.zhipin.com/resume?id=other"}}},
             {"mid": 12, "from": {"uid": 123, "source": 1},
-             "body": {"hyperLink": {"hyperLinkType": 1}}},
+             "body": {"hyperLink": {"hyperLinkType": 1,
+                                    "url": "https://www.zhipin.com/resume?id=ours"}}},
         ]}}
         self.assertIsNone(connector.incoming_attachment(history, "123", 10))
 
