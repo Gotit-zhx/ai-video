@@ -1,0 +1,21 @@
+[Unit]
+Description=Local-only VNC for BOSS recruiter account enrollment
+Requires=heyi-boss-display.service
+After=heyi-boss-display.service
+
+[Service]
+Type=simple
+User=heyi-boss
+Group=heyi-boss
+WorkingDirectory=/opt/heyi/boss-agent
+Environment=HOME=/opt/heyi/boss-agent
+Environment=DISPLAY=:98
+Environment=XAUTHORITY=/opt/heyi/boss-agent/runtime/.Xauthority
+UMask=0077
+ExecStart=/usr/bin/x11vnc -display :98 -localhost -rfbport 5908 -rfbauth /opt/heyi/boss-agent/runtime/vnc.pass -forever -shared -noxdamage
+SuccessExitStatus=2
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

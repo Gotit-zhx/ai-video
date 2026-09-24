@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+export HOME=/opt/heyi/boss-agent
+export PATH=/opt/heyi/boss-agent/venv/bin:/usr/local/bin:/usr/bin:/bin
+exec /opt/heyi/boss-agent/venv/bin/boss \
+    --data-dir /opt/heyi/boss-agent/accounts/pilot/data \
+    --cdp-url http://127.0.0.1:9222 \
+    --browser-source stored-cookie \
+    --role recruiter \
+    "$@"

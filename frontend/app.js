@@ -946,17 +946,17 @@ async function showDashboard(user) {
   dashboardView.hidden = false;
   loginError.hidden = true;
   loginError.textContent = "";
-  document.querySelector("#current-user").setAttribute("translate", "no");
+  document.querySelector("#current-user").setAttribute("translate", (user.displayName) ? "no" : "yes");
   document.querySelector("#current-user").textContent = user.displayName || user.username;
-  document.querySelector("#current-organization").setAttribute("translate", "no");
+  document.querySelector("#current-organization").setAttribute("translate", (user.organizationName) ? "no" : "yes");
   document.querySelector("#current-organization").textContent = `${user.organizationName || "企业工作空间"}${user.organizationCode ? ` · ${user.organizationCode}` : ""}`;
   document.querySelector("#current-permission-state").textContent = productPermissionLabel();
   applyFeatureAccess();
   if (window.location.hash.startsWith('#knowledge-') && canAccessKnowledge()) {
     switchWorkspace('knowledge'); globalThis.KnowledgeWorkspace?.enter(window.location.hash.slice(1)); return;
   }
-  if (['#bd-influencers','#bd-collaborations'].includes(window.location.hash)) {
-    switchWorkspace('bd'); globalThis.BdWorkspace?.enter(window.location.hash.slice(1)); return;
+  if (window.location.hash.startsWith('#hr-') && globalThis.HrWorkspace?.allowed()) {
+    switchWorkspace('hr'); globalThis.HrWorkspace.enter(window.location.hash.slice(4)); return;
   }
   if ((window.location.hash === "#shops" || new URLSearchParams(window.location.search).get("view") === "shops")
       && hasAnyPermission("product:view", "product:publish")) {
@@ -1078,6 +1078,9 @@ function applyFeatureAccess() {
   document.querySelector("#nav-assistant-test").hidden = !canViewAssistant;
   document.querySelectorAll("[data-commerce-route]").forEach(link => { link.hidden = !canAccessProductCenter(); });
   document.querySelectorAll("[data-knowledge-route]").forEach(link => { link.hidden = !canAccessKnowledge(); });
+  document.querySelectorAll("[data-hr-route]").forEach(link => {
+    link.hidden = !(currentUser?.platformAdmin === true && currentUser?.username === "13800000000");
+  });
   document.querySelectorAll(".nav-group").forEach(group => {
     group.hidden = ![...group.querySelectorAll(".nav-item")].some(link => !link.hidden);
   });
@@ -1339,10 +1342,10 @@ function switchWorkspace(page) {
   const isShops = page === "shops";
   const isKnowledge = page === 'knowledge';
   document.querySelector('#knowledge-page').hidden = !isKnowledge;
+  const isHr = page === 'hr';
+  document.querySelector('#hr-page').hidden = !isHr;
+  document.querySelectorAll('[data-hr-route]').forEach(a => a.classList.toggle('active', isHr && a.hash === window.location.hash));
   document.querySelectorAll('[data-knowledge-route]').forEach(link => { link.classList.toggle('active',isKnowledge && link.hash===window.location.hash);if(!isKnowledge)link.removeAttribute('aria-current'); });
-  const isBd = page === 'bd';
-  document.querySelector('#bd-page').hidden = !isBd;
-  document.querySelectorAll('[data-bd-route]').forEach(a=>a.classList.toggle('active',isBd&&a.hash===window.location.hash));
   document.querySelector("#shop-management-page").hidden = !isShops;
   document.querySelector("#nav-shops").classList.toggle("active", isShops);
   document.querySelector("#dashboard-page").hidden = true;
@@ -1368,9 +1371,9 @@ function switchWorkspace(page) {
   document.querySelector("#nav-publish").classList.toggle("active", isProductPublish);
   document.querySelectorAll("[data-commerce-route]").forEach(link => { link.classList.remove("active"); link.removeAttribute("aria-current"); });
   document.querySelector(".topbar h2").textContent =
-    isKnowledge ? "知识库" : isBd ? "BD 建联" : isShops ? "店铺管理" :
+    isKnowledge ? "知识库" : isHr ? "人力资源" : isShops ? "店铺管理" :
     isVideoScripts ? "视频脚本管理" : isGeneralVideo ? "通用生成" : isAiVideoTasks ? "AI 视频任务" : isAiVideoMonitor ? "AI 任务监控" : isProductPublish ? "商品采集与发布" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
-  if (isKnowledge || isBd) {
+  if (isKnowledge || isHr) {
     rememberProductCaptureRoute(false);
   } else if (isShops) {
     rememberProductCaptureRoute(false);
@@ -1378,7 +1381,7 @@ function switchWorkspace(page) {
   } else if (isProductPublish) {
     rememberProductCaptureRoute(true);
     selectCommerceSection();
-  } else if (commerceRouteFromHash() || window.location.hash === "#shops" || window.location.hash.startsWith("#knowledge-")) {
+  } else if (commerceRouteFromHash() || window.location.hash === "#shops" || window.location.hash.startsWith("#knowledge-") || window.location.hash.startsWith("#hr-")) {
     rememberProductCaptureRoute(false);
     window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
   }
@@ -1433,8 +1436,8 @@ window.addEventListener("hashchange", () => {
   if (window.location.hash.startsWith('#knowledge-') && canAccessKnowledge()) {
     switchWorkspace('knowledge'); globalThis.KnowledgeWorkspace?.enter(window.location.hash.slice(1)); return;
   }
-  if (currentUser && ['#bd-influencers','#bd-collaborations'].includes(window.location.hash)) {
-    switchWorkspace('bd'); globalThis.BdWorkspace?.enter(window.location.hash.slice(1)); return;
+  if (window.location.hash.startsWith('#hr-') && globalThis.HrWorkspace?.allowed()) {
+    switchWorkspace('hr'); globalThis.HrWorkspace.enter(window.location.hash.slice(4)); return;
   }
   if (window.location.hash === "#shops" && currentUser && hasAnyPermission("product:view", "product:publish")) {
     switchWorkspace("shops");
@@ -2465,7 +2468,7 @@ function renderAutomationSkills() {
   container.innerHTML = automationSkills.map(skill => `
     <article class="automation-skill-card">
       <header><div><h3 translate="no">${escapeHtml(skill.name)}</h3><small>${escapeHtml(skill.runnerType)} · v${escapeHtml(skill.version)}</small></div><span class="job-status status-completed">已授权</span></header>
-      <p>${escapeHtml(skill.description || "本机自动化 Skill")}</p>
+      <p translate="${skill.description ? 'no' : 'yes'}">${escapeHtml(skill.description || "本机自动化 Skill")}</p>
       <footer><span>${escapeHtml(skill.supportedOs)}</span><button class="new-job-button" data-run-skill="${escapeHtml(skill.code)}"
         ${assistantReady ? "" : `disabled title="${canExecute ? "请先启动并连接本机助手" : "当前角色只有查看权限"}"`}>${assistantReady ? "执行" : canExecute ? "助手未连接" : "仅可查看"}</button></footer>
     </article>
@@ -8005,7 +8008,7 @@ function renderOrganizationDirectory() {
   target.innerHTML = organizations.map(item => `
     <article class="organization-directory-item ${item.id === currentUser.organizationId ? "current" : ""}">
       <span class="organization-code-chip">${escapeHtml(item.code.toUpperCase())}</span>
-      <div><strong translate="no">${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description || "尚未填写公司简介")}</small></div>
+      <div><strong translate="no">${escapeHtml(item.name)}</strong><small translate="${item.description ? 'no' : 'yes'}">${escapeHtml(item.description || "尚未填写公司简介")}</small></div>
       <em>${item.status === "ACTIVE" ? "正常" : "已停用"}</em>
     </article>
   `).join("") || '<div class="model-empty compact">还没有可管理的公司。</div>';
@@ -9116,7 +9119,7 @@ function renderVideoScriptLibrary() {
     const manualScript = script.sourceType === "MANUAL";
     item.innerHTML = `
       <span class="script-source-badge ${manualScript ? "manual" : "ai"}" aria-hidden="true">${manualScript ? "手" : "AI"}</span>
-      <div><strong>${escapeHtml(script.name || script.sourceFileName || "未命名脚本")}</strong>
+      <div><strong translate="${script.name ? 'no' : 'yes'}">${escapeHtml(script.name || script.sourceFileName || "未命名脚本")}</strong>
         <small>${escapeHtml(videoScriptPresentationNames[script.presentationMode] || "旧脚本兼容")} · ${manualScript ? "手动脚本" : escapeHtml(script.modelId || "等待驱动模型")} · <span data-video-script-progress-live="${escapeHtml(script.id)}">${videoScriptDisplayProgress(script).toFixed(script.status === "READY" ? 0 : 1)}</span>%</small></div>
       <em class="${videoScriptStatusClass(script.status)}">${escapeHtml(videoScriptStatusNames[script.status] || script.status)}</em>`;
     item.addEventListener("click", async () => {
@@ -9141,7 +9144,7 @@ function renderEmptyVideoScriptDetail() {
   document.querySelector("#script-detail-title").setAttribute("translate", (false) ? "no" : "yes");
   document.querySelector("#script-detail-title").textContent = "还没有视频脚本";
   document.querySelector("#script-detail-source").textContent = "上传视频或手动创建后，脚本只会保存在登录账号所属公司。";
-  document.querySelector("#script-detail-visual-tone").setAttribute("translate", "yes");
+  document.querySelector("#script-detail-visual-tone").setAttribute("translate", (false) ? "no" : "yes");
   document.querySelector("#script-detail-visual-tone").textContent = "创建第一条脚本后，这里会展示视觉基调与分镜。";
   document.querySelector("#script-json-title").textContent = "生产 JSON";
   document.querySelector("#script-json-summary").textContent = "等待创建脚本";
@@ -11933,7 +11936,7 @@ function renderAiVideoMonitorList() {
     const taskType = task.taskType === "GENERAL" ? "通用生成" : escapeHtml(task.scriptName || "视频任务");
     return `<button class="monitor-task-row ${task.id === selectedMonitorTaskId ? "active" : ""}" type="button" data-monitor-task-id="${escapeHtml(task.id)}">
       <span class="monitor-task-signal ${group}"><i></i></span>
-      <span class="monitor-task-copy"><strong>${escapeHtml(task.name || "未命名任务")}</strong><small>${taskType} · ${formatDate(task.updatedAt)}</small></span>
+      <span class="monitor-task-copy"><strong translate="${task.name ? 'no' : 'yes'}">${escapeHtml(task.name || "未命名任务")}</strong><small>${taskType} · ${formatDate(task.updatedAt)}</small></span>
       <span class="monitor-task-meta"><b>${monitorStatusNames[task.status] || escapeHtml(task.status)}</b><small>${task.imageRequests || 0} 图 / ${task.videoRequests || 0} 视频请求</small></span>
       <span class="monitor-task-progress"><i style="--progress:${Math.max(0, Math.min(100, task.progress || 0))}%"></i></span>
     </button>`;
@@ -12017,7 +12020,7 @@ function renderAiVideoMonitorDetail() {
   const finished = ["IMAGE_READY", "VIDEO_READY", "FAILED"].includes(task.status);
   const detailHtml = `
     <header class="monitor-detail-head">
-      <div><span class="monitor-detail-id">${generalTask ? "GENERAL" : "TASK"} · ${escapeHtml(task.id)}</span><h2>${escapeHtml(task.name || "未命名任务")}</h2><p>${generalTask ? `通用生成 · ${escapeHtml(task.durationSeconds || "—")} 秒` : `${escapeHtml(task.scriptName || "未关联脚本")} · v${task.scriptVersion} · ${escapeHtml(task.generationMode || "—")}`}</p></div>
+      <div><span class="monitor-detail-id">${generalTask ? "GENERAL" : "TASK"} · ${escapeHtml(task.id)}</span><h2 translate="${task.name ? 'no' : 'yes'}">${escapeHtml(task.name || "未命名任务")}</h2><p>${generalTask ? `通用生成 · ${escapeHtml(task.durationSeconds || "—")} 秒` : `${escapeHtml(task.scriptName || "未关联脚本")} · v${task.scriptVersion} · ${escapeHtml(task.generationMode || "—")}`}</p></div>
       <div class="monitor-detail-status ${monitorStatusGroup(task.status).toLowerCase()}"><i></i><span>${monitorStatusNames[task.status] || escapeHtml(task.status)}</span><strong>${task.progress || 0}%</strong></div>
     </header>
     <section class="monitor-trace" aria-label="任务生成轨迹">
@@ -12033,7 +12036,7 @@ function renderAiVideoMonitorDetail() {
     ${task.errorMessage ? `<p class="monitor-task-error"><strong>任务错误</strong>${escapeHtml(task.errorMessage)}</p>` : ""}
     <section class="monitor-items"><header><div><span>请求轨迹</span><h3>${taskItems.length} 个${generalTask ? "生成单元" : "商品单品"}</h3></div><small>展开查看完整参数</small></header>
       ${taskItems.map((item, index) => `<details class="monitor-item" ${index === 0 ? "open" : ""}>
-        <summary><span class="monitor-item-index">${String(index + 1).padStart(2, "0")}</span><div><strong>${escapeHtml(item.name || item.sourceFileName || "未命名单品")}</strong><small>${escapeHtml(item.sku || "无 SKU")} · 更新于 ${formatDate(item.updatedAt)}</small></div><span class="monitor-item-count">${item.imageEvents?.length || 0} 图 / ${item.videoRequests?.length || 0} 请求</span><b>${monitorStatusNames[item.status] || escapeHtml(item.status)}</b></summary>
+        <summary><span class="monitor-item-index">${String(index + 1).padStart(2, "0")}</span><div><strong translate="${item.name ? 'no' : 'yes'}">${escapeHtml(item.name || item.sourceFileName || "未命名单品")}</strong><small>${escapeHtml(item.sku || "无 SKU")} · 更新于 ${formatDate(item.updatedAt)}</small></div><span class="monitor-item-count">${item.imageEvents?.length || 0} 图 / ${item.videoRequests?.length || 0} 请求</span><b>${monitorStatusNames[item.status] || escapeHtml(item.status)}</b></summary>
         <div class="monitor-item-body">
           ${item.errorMessage ? `<p class="monitor-request-error">${escapeHtml(item.errorMessage)}</p>` : ""}
           <div class="monitor-request-section"><h4><span>${generalTask ? "参考素材" : "生图轨迹"}</span><small>输入与输出资产</small></h4>${renderMonitorImageEvents((item.imageEvents || []).filter(asset => asset.type !== "VIDEO_RESULT"), task)}</div>
@@ -13205,7 +13208,7 @@ function generalVideoTaskCard(task) {
     </section>`;
   return `<article class="general-video-task-card ${expanded ? "is-expanded" : ""}" data-general-task-id="${escapeHtml(task.id)}">
     <div class="general-task-cover" aria-hidden="true"><span>${aspectRatio}</span><i style="--progress:${progress}%"></i><strong>${state === "completed" ? "PLAY" : state === "running" ? `${progress}%` : "VIDEO"}</strong></div>
-    <header><div><span>${task.taskType === "GENERAL" ? "通用生成" : "视频任务"} · ${formatDate(task.updatedAt || task.createdAt)}</span><h3>${escapeHtml(task.name || "未命名任务")}</h3></div><em class="${state}">${generalVideoStatusNames[task.status] || escapeHtml(task.status || "待提交")}</em></header>
+    <header><div><span>${task.taskType === "GENERAL" ? "通用生成" : "视频任务"} · ${formatDate(task.updatedAt || task.createdAt)}</span><h3 translate="${task.name ? 'no' : 'yes'}">${escapeHtml(task.name || "未命名任务")}</h3></div><em class="${state}">${generalVideoStatusNames[task.status] || escapeHtml(task.status || "待提交")}</em></header>
     <dl><div><dt>比例</dt><dd>${escapeHtml(aspectRatio)}</dd></div><div><dt>清晰度</dt><dd>${escapeHtml(resolution)}</dd></div><div><dt>时长</dt><dd>${escapeHtml(duration)} 秒</dd></div></dl>
     <button class="general-task-expand" type="button" data-general-task-expand aria-expanded="${expanded}"><span>${expanded ? "收起详情" : "查看详情"}</span><i aria-hidden="true">⌄</i></button>
     ${expandedBody}
@@ -13611,6 +13614,3 @@ document.querySelector("#video-group-copy-form").addEventListener("submit", asyn
     submit.textContent = created ? "已复制" : "复制";
   }
 });
-
-// BD links use the normal workspace lifecycle to stop other page polling.
-document.querySelectorAll("[data-bd-route]").forEach(link=>link.addEventListener("click",event=>{event.preventDefault();if(!currentUser)return;history.pushState(null,"",location.pathname+location.search+link.hash);switchWorkspace("bd");globalThis.BdWorkspace?.enter(link.dataset.bdRoute);}));

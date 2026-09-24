@@ -1,0 +1,7 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+COPY app.js index.html hr-workspace.js hr-workspace.css /usr/share/nginx/html/
+COPY default.conf /etc/nginx/conf.d/default.conf
+
+LABEL org.hoyee.release="hr-boss-20260924"

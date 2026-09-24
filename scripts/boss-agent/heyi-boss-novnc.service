@@ -1,0 +1,18 @@
+[Unit]
+Description=Local-only noVNC for BOSS recruiter account enrollment
+Requires=heyi-boss-vnc.service
+After=heyi-boss-vnc.service
+
+[Service]
+Type=simple
+User=heyi-boss
+Group=heyi-boss
+WorkingDirectory=/opt/heyi/boss-agent
+Environment=HOME=/opt/heyi/boss-agent
+UMask=0077
+ExecStart=/usr/bin/websockify --web=/usr/share/novnc 127.0.0.1:6088 127.0.0.1:5908
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

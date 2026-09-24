@@ -895,6 +895,7 @@
  #product-publish-page #workbench-batch-list button { padding:12px 10px; gap:6px; }
 }
 
+
 /* Status and help text own a full row; action buttons cannot squeeze it vertically. */
 #product-publish-page .studio-journey > .workbench-execution { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
 #product-publish-page .studio-journey > .workbench-execution > p,

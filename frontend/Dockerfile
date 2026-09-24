@@ -39,3 +39,4 @@ COPY i18n /usr/share/nginx/html/i18n
 COPY bd-workspace.js bd-workspace.css /usr/share/nginx/html/
 
 COPY knowledge-workspace.js knowledge-workspace.css /usr/share/nginx/html/
+COPY hr-workspace.js hr-workspace.css /usr/share/nginx/html/
