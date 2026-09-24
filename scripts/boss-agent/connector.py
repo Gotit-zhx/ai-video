@@ -33,7 +33,7 @@ SECRET_KEY = re.compile(r"(cookie|token|stoken|wt2|secret|authorization|password
 LOGIN_TIMEOUT = 300
 LOGIN_LOCK = threading.Lock()
 QR_LOCK = threading.Lock()
-LOGIN = {"state": "idle", "phase": "", "started": 0.0, "error": ""}
+LOGIN = {"state": "idle", "phase": "", "started": 0.0, "error": "", "failure_code": ""}
 LOGIN_PROCESS = None
 LOGIN_CANCEL = threading.Event()
 ALLOWED_ORIGIN = os.environ.get("APP_HR_ALLOWED_ORIGIN", "https://hoyee.org.cn")
@@ -310,9 +310,9 @@ def execute(request):
     with LOGIN_LOCK:
         login_state = LOGIN["state"]
         verified = login_state == "complete"
-    if request.get("operation") == "status" and login_state == "pending":
+    if request.get("operation") == "status" and login_state in ("pending", "verification_pending"):
         return {"ok": True, "result": {"ok": False, "error": {
-            "code": "LOGIN_PENDING", "message": "正在等待扫码和招聘方身份验证"}}}
+            "code": "LOGIN_PENDING", "message": "正在等待招聘方身份验证"}}}
     if request.get("operation") != "status" and not verified:
         return {"ok": False, "error": {
             "code": "RECRUITER_REQUIRED",
@@ -334,25 +334,26 @@ def execute(request):
         except (UnicodeDecodeError, json.JSONDecodeError):
             return {"ok": False, "error": {"code": "CLI_OUTPUT", "message": "连接器返回格式异常"}}
         if request.get("operation") == "status" and envelope.get("ok") is True:
-            health = ((envelope.get("data") or {}).get("auth_health") or {}).get("summary")
-            if health == "healthy" and not verified:
-                if verify_recruiter():
+            if not verified:
+                confirmed, code = recruiter_probe()
+                if confirmed:
                     with LOGIN_LOCK:
                         LOGIN["state"] = "complete"
                 else:
-                    discard_login()
+                    if code == "ROLE_MISMATCH":
+                        discard_login()
+                        with LOGIN_LOCK:
+                            LOGIN.update(state="failed", failure_code=code,
+                                         error="平台明确拒绝招聘方身份，请检查登录账号")
+                        return {"ok": True, "result": {"ok": False, "error": {
+                            "code": "RECRUITER_REQUIRED",
+                            "message": "平台明确拒绝招聘方身份，请检查登录账号"}}}
                     with LOGIN_LOCK:
-                        LOGIN["state"] = "failed"
+                        LOGIN.update(state="verification_pending", failure_code=code,
+                                     error=verification_message(code))
                     return {"ok": True, "result": {"ok": False, "error": {
-                        "code": "RECRUITER_REQUIRED",
-                        "message": "当前账号未通过 BOSS 招聘方身份验证，请使用招聘账号扫码"}}}
-            elif health != "healthy":
-                discard_login()
-                with LOGIN_LOCK:
-                    LOGIN["state"] = "failed"
-                return {"ok": True, "result": {"ok": False, "error": {
-                    "code": "RECRUITER_REQUIRED",
-                    "message": "当前账号未通过招聘方身份验证；求职账号不能接入"}}}
+                        "code": "RECRUITER_VERIFICATION_PENDING",
+                        "message": verification_message(code)}}}
         return {"ok": True, "result": sanitize(envelope)}
     finally:
         LOCK.release()
@@ -406,13 +407,39 @@ def cli_json(*args, timeout=30):
         return {}
 
 
-def verify_recruiter():
+def recruiter_probe():
     status = cli_json("status", timeout=20)
-    health = (status.get("data") or {}).get("auth_health") or {}
-    if status.get("ok") is not True or health.get("summary") != "healthy":
-        return False
+    if status.get("ok") is not True:
+        return False, safe_error_code(status, "AUTH_UNAVAILABLE")
     jobs = cli_json("hr", "jobs", "list", timeout=45)
-    return jobs.get("ok") is True and jobs.get("command") == "recruiter-jobs-list"
+    if jobs.get("ok") is True and jobs.get("command") == "recruiter-jobs-list":
+        return True, ""
+    return False, safe_error_code(jobs, "JOBS_UNAVAILABLE")
+
+
+def safe_error_code(envelope, fallback):
+    code = (envelope.get("error") or {}).get("code")
+    return code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{2,40}", code) else fallback
+
+
+def verification_message(code):
+    return f"扫码凭据已保存，招聘方职位接口暂未核验成功（{code}）。登录态已保留，请重试验证。"
+
+
+def verify_recruiter():
+    return recruiter_probe()[0]
+
+
+def chrome_has_login_cookie():
+    from patchright.sync_api import sync_playwright
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=5000)
+        try:
+            return any(cookie.get("name") == "wt2" and cookie.get("value")
+                       and cookie.get("domain", "").endswith("zhipin.com")
+                       for context in browser.contexts for cookie in context.cookies())
+        finally:
+            browser.close()
 
 
 def discard_login():
@@ -451,34 +478,94 @@ def login_worker():
                 envelope = json.loads(stdout)
                 ok = process.returncode == 0 and envelope.get("ok") is True
             except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                envelope = {}
                 ok = False
             if LOGIN_CANCEL.is_set():
                 return
+            code = safe_error_code(envelope, "LOGIN_INCOMPLETE")
+            if not ok:
+                try:
+                    if chrome_has_login_cookie():
+                        recovered = cli_json("login", "--cdp", "--timeout", "45", timeout=65)
+                        ok = recovered.get("ok") is True
+                        code = safe_error_code(recovered, "LOGIN_INCOMPLETE") if not ok else ""
+                except (OSError, subprocess.TimeoutExpired):
+                    code = "LOGIN_RECOVERY_FAILED"
             if ok:
                 with LOGIN_LOCK:
                     LOGIN["phase"] = "verifying"
-                ok = verify_recruiter()
-            if not ok:
-                discard_login()
+                for attempt in range(3):
+                    try:
+                        confirmed, code = recruiter_probe()
+                    except (OSError, subprocess.TimeoutExpired):
+                        confirmed, code = False, "JOBS_TIMEOUT"
+                    if confirmed or code in ("ACCOUNT_RISK", "ENVIRONMENT_RISK"):
+                        break
+                    if attempt < 2:
+                        time.sleep(5 * (attempt + 1))
+                if not confirmed:
+                    if code == "ROLE_MISMATCH":
+                        discard_login()
+                    else:
+                        close_browser()
+            else:
+                # Only clear an incomplete CLI login, not a successfully scanned
+                # account whose recruiter endpoint could not be reached.
+                cli_json("logout", timeout=15)
+                close_browser()
             with LOGIN_LOCK:
-                LOGIN["state"] = "complete" if ok else "failed"
+                LOGIN["state"] = ("complete" if ok and confirmed else
+                                  "failed" if ok and code == "ROLE_MISMATCH" else
+                                  "verification_pending" if ok else "failed")
                 LOGIN["phase"] = ""
-                LOGIN["error"] = "" if ok else (
-                    "招聘方身份验证未通过，请确认扫码账号处于 BOSS 招聘端后重新扫码"
-                    if process.returncode == 0 else
-                    "未收到有效的登录凭据。请扫描当前二维码并在手机上确认；若二维码过期请刷新")
+                LOGIN["failure_code"] = "" if ok and confirmed else code
+                LOGIN["error"] = ("" if ok and confirmed else
+                                  "平台明确拒绝招聘方身份，请检查登录账号"
+                                  if ok and code == "ROLE_MISMATCH" else
+                                  verification_message(code) if ok else
+                                  f"登录凭据未建立（{code}）。请使用当前二维码扫码并在手机确认。")
         except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
             try:
-                discard_login()
+                close_browser()
             except Exception:
                 pass
             with LOGIN_LOCK:
                 LOGIN["state"] = "failed"
                 LOGIN["phase"] = ""
+                LOGIN["failure_code"] = "LOGIN_RUNTIME_ERROR"
                 LOGIN["error"] = "扫码未完成或登录超时，请重新获取二维码"
         finally:
             with LOGIN_LOCK:
                 LOGIN_PROCESS = None
+
+
+def verify_saved_login_worker():
+    with LOCK:
+        try:
+            browser_service("start", "heyi-boss-chrome.service")
+            wait_for_cdp()
+            confirmed, code = recruiter_probe()
+            if not confirmed and code == "ROLE_MISMATCH":
+                discard_login()
+            with LOGIN_LOCK:
+                LOGIN["state"] = ("complete" if confirmed else "failed"
+                                  if code == "ROLE_MISMATCH" else "verification_pending")
+                LOGIN["phase"] = ""
+                LOGIN["failure_code"] = "" if confirmed else code
+                LOGIN["error"] = ("" if confirmed else
+                                  "平台明确拒绝招聘方身份，请检查登录账号"
+                                  if code == "ROLE_MISMATCH" else verification_message(code))
+            if not confirmed and code != "ROLE_MISMATCH":
+                close_browser()
+        except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+            with LOGIN_LOCK:
+                LOGIN.update(state="verification_pending", phase="",
+                             failure_code="JOBS_TIMEOUT",
+                             error=verification_message("JOBS_TIMEOUT"))
+            try:
+                close_browser()
+            except Exception:
+                pass
 
 
 def begin_login():
@@ -489,8 +576,11 @@ def begin_login():
             raise RuntimeError("招聘账号正在处理查询，请稍后再试")
         LOCK.release()
         LOGIN_CANCEL.clear()
-        LOGIN.update(state="pending", phase="qr", started=time.monotonic(), error="")
-        threading.Thread(target=login_worker, daemon=True).start()
+        retry_verification = LOGIN["state"] == "verification_pending"
+        LOGIN.update(state="pending", phase="verifying" if retry_verification else "qr",
+                     started=time.monotonic(), error="", failure_code="")
+        threading.Thread(target=verify_saved_login_worker if retry_verification else login_worker,
+                         daemon=True).start()
         return dict(LOGIN)
 
 
@@ -505,7 +595,7 @@ def logout_boss():
     try:
         discard_login()
         with LOGIN_LOCK:
-            LOGIN.update(state="idle", phase="", started=0.0, error="")
+            LOGIN.update(state="idle", phase="", started=0.0, error="", failure_code="")
     finally:
         LOCK.release()
 

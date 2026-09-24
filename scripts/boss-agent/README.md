@@ -54,8 +54,10 @@ login page's own refresh control. Reading the QR never reloads the page or
 resets a scan awaiting phone confirmation. The account owner
 scans with the BOSS app and confirms on their phone. A successful QR scan is
 *not* enough to enable reads: the connector verifies healthy credentials and
-that the recruiter-only jobs endpoint succeeds. A job-seeker or otherwise
-unverified account is rejected, cleared, and warned in the UI. Logout clears
+that the recruiter-only jobs endpoint succeeds. An explicit role mismatch is
+rejected and cleared. An inconclusive jobs response keeps credentials but blocks
+all recruiter reads; the UI shows the upstream error code and offers a separate
+verification retry without making the user scan again. Logout clears
 both CLI storage and dedicated Chrome cookies, then stops Chrome and Xvfb.
 Recruiting reads remain gated by `/api/v1/auth/me` on every request. The sole
 enabled write is an explicit attachment-resume request for a specified

@@ -130,17 +130,20 @@ class ConnectorTest(unittest.TestCase):
         ]}}
         self.assertIsNone(connector.incoming_attachment(history, "123", 10))
 
-    def test_unverified_saved_account_is_rejected_and_cleared(self):
+    def test_inconclusive_recruiter_probe_preserves_saved_login(self):
         response = mock.Mock(stdout=json.dumps({
             "ok": True, "data": {"logged_in": True,
                                   "auth_health": {"summary": "degraded"}}}).encode())
         with mock.patch.dict(connector.LOGIN, {"state": "idle"}), \
              mock.patch.object(connector.subprocess, "run", return_value=response), \
+             mock.patch.object(connector, "recruiter_probe",
+                               return_value=(False, "JOBS_UNAVAILABLE")), \
              mock.patch.object(connector, "discard_login") as discard:
             result = connector.execute({"operation": "status"})
-            self.assertEqual("RECRUITER_REQUIRED", result["result"]["error"]["code"])
-            discard.assert_called_once()
-            self.assertEqual("failed", connector.LOGIN["state"])
+            self.assertEqual("RECRUITER_VERIFICATION_PENDING",
+                             result["result"]["error"]["code"])
+            discard.assert_not_called()
+            self.assertEqual("verification_pending", connector.LOGIN["state"])
 
     def test_recruiter_identity_is_required_after_qr_scan(self):
         healthy = {"ok": True, "data": {"auth_health": {"summary": "healthy"}}}
@@ -150,9 +153,50 @@ class ConnectorTest(unittest.TestCase):
         with mock.patch.object(connector, "cli_json", side_effect=[healthy, {
                 "ok": False, "error": {"code": "ROLE_MISMATCH"}}]):
             self.assertFalse(connector.verify_recruiter())
-        with mock.patch.object(connector, "cli_json", return_value={
-                "ok": True, "data": {"auth_health": {"summary": "degraded"}}}):
-            self.assertFalse(connector.verify_recruiter())
+        degraded = {"ok": True, "data": {"auth_health": {"summary": "degraded"}}}
+        with mock.patch.object(connector, "cli_json", side_effect=[degraded, jobs]):
+            self.assertTrue(connector.verify_recruiter())
+
+    def test_successful_scan_keeps_credentials_when_jobs_temporarily_fail(self):
+        process = mock.MagicMock()
+        process.communicate.return_value = (b'{"ok":true}', b"")
+        process.returncode = 0
+        with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "qr"}), \
+             mock.patch.object(connector, "browser_service"), \
+             mock.patch.object(connector, "wait_for_cdp"), \
+             mock.patch.object(connector.subprocess, "Popen", return_value=process), \
+             mock.patch.object(connector, "recruiter_probe",
+                               return_value=(False, "JOBS_UNAVAILABLE")) as probe, \
+             mock.patch.object(connector.time, "sleep"), \
+             mock.patch.object(connector, "close_browser"), \
+             mock.patch.object(connector, "discard_login") as discard, \
+             mock.patch.object(connector, "cli_json") as cli:
+            connector.LOGIN_CANCEL.clear()
+            connector.login_worker()
+            self.assertEqual(3, probe.call_count)
+            self.assertEqual("verification_pending", connector.LOGIN["state"])
+            self.assertEqual("JOBS_UNAVAILABLE", connector.LOGIN["failure_code"])
+            discard.assert_not_called()
+            cli.assert_not_called()
+
+    def test_saved_browser_cookie_recovers_after_cli_login_error(self):
+        process = mock.MagicMock()
+        process.communicate.return_value = (
+            b'{"ok":false,"error":{"code":"NETWORK_ERROR"}}', b"")
+        process.returncode = 1
+        with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "qr"}), \
+             mock.patch.object(connector, "browser_service"), \
+             mock.patch.object(connector, "wait_for_cdp"), \
+             mock.patch.object(connector.subprocess, "Popen", return_value=process), \
+             mock.patch.object(connector, "chrome_has_login_cookie", return_value=True), \
+             mock.patch.object(connector, "cli_json", return_value={"ok": True}) as cli, \
+             mock.patch.object(connector, "recruiter_probe", return_value=(True, "")), \
+             mock.patch.object(connector, "discard_login") as discard:
+            connector.LOGIN_CANCEL.clear()
+            connector.login_worker()
+            self.assertEqual("complete", connector.LOGIN["state"])
+            cli.assert_called_once_with("login", "--cdp", "--timeout", "45", timeout=65)
+            discard.assert_not_called()
 
     def test_allowlist_and_secret_redaction(self):
         self.assertEqual(["hr", "jobs", "list"], connector.command({"operation": "jobs"}))

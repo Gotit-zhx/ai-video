@@ -66,6 +66,8 @@
   loginButton.hidden = true;
   const refreshButton = button('刷新二维码', loginActions, refreshLogin);
   refreshButton.hidden = true;
+  const resetLoginButton = button('清除会话并重新扫码', loginActions, resetLogin);
+  resetLoginButton.hidden = true;
   const status = element('div', '正在读取账号状态…', overview, 'hr-result hr-status-result');
   const logoutButton = button('退出 BOSS 登录', overview, logoutBoss);
   logoutButton.className = 'hr-logout';
@@ -121,6 +123,20 @@
       refreshButton.disabled = false;
     }
   }
+  async function resetLogin() {
+    if (!allowed()) return;
+    resetLoginButton.disabled = true;
+    try {
+      await api('/api/v1/hr/login/logout', {method:'POST'});
+      resetLoginButton.hidden = true;
+      loginButton.textContent = '重新获取二维码';
+      await startLogin();
+    } catch (error) {
+      loginMessage.textContent = error.message || '清除会话失败';
+    } finally {
+      resetLoginButton.disabled = false;
+    }
+  }
   async function checkLogin() {
     if (!allowed()) { stopLoginPolling(); return; }
     if (loginCheckInFlight) return;
@@ -151,8 +167,12 @@
         qr.hidden = true;
         refreshButton.hidden = true;
         loginButton.hidden = state.state === 'complete';
+        resetLoginButton.hidden = state.state !== 'verification_pending';
+        loginButton.textContent = state.state === 'verification_pending'
+          ? '重试招聘方验证' : '重新获取二维码';
         loginButton.disabled = false;
         loginMessage.textContent = state.state === 'complete' ? '扫码成功，正在刷新账号状态…'
+          : state.state === 'verification_pending' ? (state.error || '已扫码，正在核对招聘方接口')
           : state.state === 'failed' ? (state.error || '扫码未完成，请重新获取二维码') : '';
         if (state.state === 'complete') {
           if (loginPendingSeen) {
@@ -181,7 +201,8 @@
     loginButton.disabled = true;
     loginButton.hidden = true;
     loginBox.hidden = false;
-    loginMessage.textContent = '正在打开 BOSS 登录页…';
+    loginMessage.textContent = loginButton.textContent.includes('验证')
+      ? '正在重试招聘方身份验证…' : '正在打开 BOSS 登录页…';
     try {
       await api('/api/v1/hr/login/start', {method:'POST'});
       stopLoginPolling();
@@ -203,6 +224,7 @@
       qr.hidden = true;
       loginBox.hidden = false;
       loginButton.hidden = false;
+      resetLoginButton.hidden = true;
       refreshButton.hidden = true;
       logoutButton.hidden = true;
       loginMessage.textContent = '已退出招聘账号，服务器浏览器资源已释放。需要时可重新获取二维码。';
