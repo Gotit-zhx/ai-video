@@ -42,6 +42,7 @@ CLI_ENV = {"HOME": "/opt/heyi/boss-agent",
 SYSTEMCTL = ["/usr/bin/sudo", "-n", "/usr/bin/systemctl"]
 RESUME_DIR = Path("/opt/heyi/boss-agent/runtime/resumes")
 RESUME_DB = Path("/opt/heyi/boss-agent/runtime/resume-requests.sqlite3")
+RISK_HOLD = Path("/opt/heyi/boss-agent/runtime/recruiter-ip-risk-hold")
 RESUME_POLL_SECONDS = 120
 
 
@@ -311,9 +312,21 @@ def execute(request):
         login_state = LOGIN["state"]
         verified = login_state == "complete"
     if request.get("operation") == "status" and login_state in ("pending", "verification_pending"):
+        with LOGIN_LOCK:
+            code = LOGIN["failure_code"]
         return {"ok": True, "result": {"ok": False, "error": {
-            "code": "LOGIN_PENDING", "message": "正在等待招聘方身份验证"}}}
+            "code": "RECRUITER_VERIFICATION_PENDING" if login_state == "verification_pending"
+                    else "LOGIN_PENDING",
+            "message": verification_message(code) if login_state == "verification_pending"
+                    else "正在等待招聘方身份验证"}}}
     if request.get("operation") != "status" and not verified:
+        if login_state == "verification_pending":
+            with LOGIN_LOCK:
+                code = LOGIN["failure_code"]
+            return {"ok": False, "error": {
+                "code": "IP_RESTRICTED" if code == "IP_RESTRICTED"
+                        else "RECRUITER_VERIFICATION_PENDING",
+                "message": verification_message(code)}}
         return {"ok": False, "error": {
             "code": "RECRUITER_REQUIRED",
             "message": "请先用 BOSS 招聘方账号扫码并通过身份验证"}}
@@ -354,6 +367,19 @@ def execute(request):
                     return {"ok": True, "result": {"ok": False, "error": {
                         "code": "RECRUITER_VERIFICATION_PENDING",
                         "message": verification_message(code)}}}
+        if envelope.get("ok") is False and recruiter_failure_code(envelope) == "IP_RESTRICTED":
+            RISK_HOLD.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            RISK_HOLD.touch(mode=0o600, exist_ok=True)
+            with LOGIN_LOCK:
+                LOGIN.update(state="verification_pending", failure_code="IP_RESTRICTED",
+                             error=verification_message("IP_RESTRICTED"))
+            envelope = dict(envelope)
+            envelope["error"] = {"code": "IP_RESTRICTED",
+                                 "message": verification_message("IP_RESTRICTED")}
+            try:
+                close_browser()
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
         return {"ok": True, "result": sanitize(envelope)}
     finally:
         LOCK.release()
@@ -413,8 +439,13 @@ def recruiter_probe():
         return False, safe_error_code(status, "AUTH_UNAVAILABLE")
     jobs = cli_json("hr", "jobs", "list", timeout=45)
     if jobs.get("ok") is True and jobs.get("command") == "recruiter-jobs-list":
+        RISK_HOLD.unlink(missing_ok=True)
         return True, ""
-    return False, safe_error_code(jobs, "JOBS_UNAVAILABLE")
+    code = recruiter_failure_code(jobs)
+    if code == "IP_RESTRICTED":
+        RISK_HOLD.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        RISK_HOLD.touch(mode=0o600, exist_ok=True)
+    return False, code
 
 
 def safe_error_code(envelope, fallback):
@@ -422,7 +453,18 @@ def safe_error_code(envelope, fallback):
     return code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{2,40}", code) else fallback
 
 
+def recruiter_failure_code(envelope):
+    error = envelope.get("error") or {}
+    message = str(error.get("message") or "")
+    if "IP地址存在异常行为" in message or "IP 地址存在异常行为" in message:
+        return "IP_RESTRICTED"
+    return safe_error_code(envelope, "JOBS_UNAVAILABLE")
+
+
 def verification_message(code):
+    if code == "IP_RESTRICTED":
+        return ("扫码凭据已保存，但 BOSS 平台提示当前服务器 IP 地址存在异常行为，"
+                "招聘接口暂不可用。请先在 BOSS 官方端检查安全提示；恢复后重试验证，无需反复扫码。")
     return f"扫码凭据已保存，招聘方职位接口暂未核验成功（{code}）。登录态已保留，请重试验证。"
 
 
@@ -462,7 +504,7 @@ def login_worker():
             if LOGIN_CANCEL.is_set():
                 return
             process = subprocess.Popen(
-                [BOSS, "--json", "login", "--cdp", "--force", "--timeout", str(LOGIN_TIMEOUT)],
+                [BOSS, "--json", "login", "--cdp", "--timeout", str(LOGIN_TIMEOUT)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=CLI_ENV)
             with LOGIN_LOCK:
                 LOGIN_PROCESS = process
@@ -499,7 +541,8 @@ def login_worker():
                         confirmed, code = recruiter_probe()
                     except (OSError, subprocess.TimeoutExpired):
                         confirmed, code = False, "JOBS_TIMEOUT"
-                    if confirmed or code in ("ACCOUNT_RISK", "ENVIRONMENT_RISK"):
+                    if confirmed or code in ("ACCOUNT_RISK", "ENVIRONMENT_RISK",
+                                              "IP_RESTRICTED"):
                         break
                     if attempt < 2:
                         time.sleep(5 * (attempt + 1))
@@ -594,6 +637,7 @@ def logout_boss():
         raise RuntimeError("正在结束扫码，请稍后重试退出")
     try:
         discard_login()
+        RISK_HOLD.unlink(missing_ok=True)
         with LOGIN_LOCK:
             LOGIN.update(state="idle", phase="", started=0.0, error="", failure_code="")
     finally:
@@ -893,6 +937,10 @@ def main():
     # A service restart kills its login worker but not the separate Chrome unit.
     # Close that orphan before accepting a new QR session.
     close_browser()
+    if RISK_HOLD.is_file():
+        with LOGIN_LOCK:
+            LOGIN.update(state="verification_pending", phase="", failure_code="IP_RESTRICTED",
+                         error=verification_message("IP_RESTRICTED"))
     with resume_db():
         pass
     SOCKET.parent.mkdir(mode=0o710, parents=True, exist_ok=True)

@@ -457,8 +457,9 @@
       if (ticket !== sequence || activeWorkspace !== 'hr') return;
       display(box, response.data);
       if (action === 'overview') {
-        const health = response.data?.data?.auth_health?.summary;
-        const recruiterReady = response.data?.ok === true && health === 'healthy';
+        // The connector only returns a successful status after its recruiter
+        // endpoint check; a missing secondary token alone is not a role failure.
+        const recruiterReady = response.data?.ok === true;
         logoutButton.hidden = !recruiterReady;
         if (recruiterReady) {
           loginBox.hidden = true;

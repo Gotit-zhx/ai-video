@@ -41,7 +41,8 @@ runuser -u heyi-boss -- /opt/heyi/boss-agent/bin/boss-pilot doctor
 
 `AUTH_REQUIRED` before account enrollment is expected. For login, follow the
 upstream `login --cdp` flow only after the actual recruiter authorizes that
-account; never use `--force` to switch another person's session.
+account. The connector does not pass `--force`; an explicit logout clears
+this isolated account before any switch.
 `doctor` also warns that patchright's bundled Chromium is absent; the selected
 CDP path uses the separately installed Google Chrome. A direct patchright CDP
 connection to this Chrome was verified without an account login.
@@ -53,12 +54,17 @@ authenticated administrator. When a code expires, the connector uses the
 login page's own refresh control. Reading the QR never reloads the page or
 resets a scan awaiting phone confirmation. The account owner
 scans with the BOSS app and confirms on their phone. A successful QR scan is
-*not* enough to enable reads: the connector verifies healthy credentials and
-that the recruiter-only jobs endpoint succeeds. An explicit role mismatch is
+*not* enough to enable reads: the connector requires the recruiter-only jobs
+endpoint to succeed. A degraded secondary token alone does not prove a role
+mismatch. An explicit role mismatch is
 rejected and cleared. An inconclusive jobs response keeps credentials but blocks
 all recruiter reads; the UI shows the upstream error code and offers a separate
 verification retry without making the user scan again. Logout clears
 both CLI storage and dedicated Chrome cookies, then stops Chrome and Xvfb.
+If BOSS reports abnormal server IP behavior, the connector preserves the
+session, stops automatic recruiter probes across service restarts, and displays
+the platform restriction. The account owner may retry verification after
+checking the warning through official BOSS channels.
 Recruiting reads remain gated by `/api/v1/auth/me` on every request. The sole
 enabled write is an explicit attachment-resume request for a specified
 conversation, after browser confirmation. QR login and background polling

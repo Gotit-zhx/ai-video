@@ -145,6 +145,59 @@ class ConnectorTest(unittest.TestCase):
             discard.assert_not_called()
             self.assertEqual("verification_pending", connector.LOGIN["state"])
 
+    def test_platform_ip_restriction_is_explicit_and_preserves_scan(self):
+        status = {"ok": True, "data": {"auth_health": {"summary": "degraded"}}}
+        jobs = {"ok": False, "command": "recruiter-jobs-list",
+                "error": {"code": "UNKNOWN", "message": "您的IP地址存在异常行为."}}
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(connector, "RISK_HOLD", pathlib.Path(folder) / "risk"), \
+             mock.patch.object(connector, "cli_json", side_effect=[status, jobs]):
+            self.assertEqual((False, "IP_RESTRICTED"), connector.recruiter_probe())
+            self.assertTrue(connector.RISK_HOLD.is_file())
+        with mock.patch.dict(connector.LOGIN, {"state": "verification_pending",
+                                               "failure_code": "IP_RESTRICTED"}), \
+             mock.patch.object(connector.subprocess, "run") as cli:
+            result = connector.execute({"operation": "status"})
+            self.assertEqual("RECRUITER_VERIFICATION_PENDING",
+                             result["result"]["error"]["code"])
+            self.assertIn("IP 地址存在异常行为", result["result"]["error"]["message"])
+            cli.assert_not_called()
+
+    def test_platform_ip_restriction_does_not_repeat_probe_or_clear_login(self):
+        process = mock.MagicMock()
+        process.communicate.return_value = (b'{"ok":true}', b"")
+        process.returncode = 0
+        with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "qr"}), \
+             mock.patch.object(connector, "browser_service"), \
+             mock.patch.object(connector, "wait_for_cdp"), \
+             mock.patch.object(connector.subprocess, "Popen", return_value=process), \
+             mock.patch.object(connector, "recruiter_probe",
+                               return_value=(False, "IP_RESTRICTED")) as probe, \
+             mock.patch.object(connector, "close_browser"), \
+             mock.patch.object(connector, "discard_login") as discard:
+            connector.LOGIN_CANCEL.clear()
+            connector.login_worker()
+            probe.assert_called_once()
+            self.assertEqual("verification_pending", connector.LOGIN["state"])
+            discard.assert_not_called()
+            self.assertNotIn("--force", connector.subprocess.Popen.call_args.args[0])
+
+    def test_runtime_ip_restriction_stops_later_reads(self):
+        response = mock.Mock(stdout=json.dumps({
+            "ok": False, "error": {"code": "UNKNOWN",
+                                    "message": "您的IP地址存在异常行为."}}).encode())
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(connector, "RISK_HOLD", pathlib.Path(folder) / "risk"), \
+             mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector.subprocess, "run", return_value=response) as cli, \
+             mock.patch.object(connector, "close_browser"):
+            first = connector.execute({"operation": "jobs"})
+            self.assertEqual("IP_RESTRICTED", first["result"]["error"]["code"])
+            self.assertTrue(connector.RISK_HOLD.is_file())
+            second = connector.execute({"operation": "jobs"})
+            self.assertEqual("IP_RESTRICTED", second["error"]["code"])
+            self.assertEqual(1, cli.call_count)
+
     def test_recruiter_identity_is_required_after_qr_scan(self):
         healthy = {"ok": True, "data": {"auth_health": {"summary": "healthy"}}}
         jobs = {"ok": True, "command": "recruiter-jobs-list", "data": {"items": []}}
