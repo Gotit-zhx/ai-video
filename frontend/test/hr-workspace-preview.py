@@ -38,7 +38,7 @@ async function api(url,options={}){
  }
  const loginState=sessionStorage.getItem('qaLogin')||new URLSearchParams(location.search).get('login');
  if(loginState){
-   if(url.endsWith('/login/status'))return {data:{state:loginState,phase:'verifying',error:'当前会话已过期（合成测试）'}};
+   if(url.endsWith('/login/status'))return {data:{state:loginState,phase:new URLSearchParams(location.search).get('phase')||'verifying',error:'当前会话已过期（合成测试）'}};
    if(url.endsWith('/status'))return {data:{ok:false,error:{code:loginState==='disconnected'?'SESSION_DISCONNECTED':'RECRUITER_VERIFICATION_PENDING',message:'合成测试：登录状态待核验'}}};
  }
  if(url.endsWith('/login/status'))return {data:{state:'complete'}};

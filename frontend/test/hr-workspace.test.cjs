@@ -37,6 +37,7 @@ function setup(overrides={}) {
     switchWorkspace(){},URLSearchParams,encodeURIComponent,Date,URL,
     setInterval(fn,ms){const id=++timerSequence;timers.set(id,{fn,ms});return id;},
     clearInterval(id){timers.delete(id);},setTimeout(){},addEventListener(){},confirm:()=>false,
+    fetch:overrides.fetch || (async()=>({ok:false,status:503})),
     api:async(url,options)=>{
       calls.push({url,options});
       if(overrides.api)return overrides.api(url,options);
@@ -56,27 +57,59 @@ function setup(overrides={}) {
 }
 
 test('reloading during phone confirmation resumes polling and opens jobs after login',async()=>{
-  let state='pending',failOnce=false;
+  let state='pending',phase='scanned',failOnce=false;
   const app=setup({api:async url=>{
     if(url.endsWith('/login/status')){
       if(failOnce){failOnce=false;throw Error('network unavailable');}
-      return {data:{state,phase:'scanned'}};
+      return {data:{state,phase}};
     }
     if(url.endsWith('/status'))return {data:{ok:false,error:{code:'LOGIN_PENDING'}}};
     return {data:fixtures.jobs};
   }});
   await app.enter('overview');
+  const progress=all(app.root).find(n=>n.className==='hr-login-progress');
+  const success=all(app.root).find(n=>n.className.includes('hr-login-success'));
+  assert.equal(progress.hidden,false);
+  assert.equal(progress.dataset.phase,'scanned');
+  assert.equal(success.hidden,true);
   assert.match(app.text(),/已扫码，请在手机上确认/);
   assert.doesNotMatch(app.text(),/错误代码：LOGIN_PENDING/);
-  assert.equal([...app.timers.values()].filter(t=>t.ms===3000).length,1);
+  assert.equal([...app.timers.values()].filter(t=>t.ms===3000).length,2);
   failOnce=true;
   await app.tick(3000);
   assert.match(app.text(),/正在重新读取登录状态/);
+  assert.equal(progress.dataset.phase,'reconnecting');
+  phase='verifying';
+  await app.tick(3000);
+  assert.equal(progress.dataset.phase,'verifying');
+  assert.equal(success.hidden,true,'phone confirmation is not a verified login yet');
   assert.equal([...app.timers.values()].filter(t=>t.ms===3000).length,1);
   state='complete';
   await app.tick(3000);
   assert.equal(app.env.location.hash,'#hr-jobs');
   assert.match(app.text(),/15–25K/);
+  assert.equal(progress.hidden,true);
+  assert.equal(success.hidden,false);
+  assert.match(success.textContent,/登录成功/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+
+test('phone confirmation updates loading state before the CLI finishes synchronizing',async()=>{
+  let phase='scanned';
+  const app=setup({api:async url=>({data:url.endsWith('/login/status')
+    ? {state:'pending',phase} : {ok:false,error:{code:'LOGIN_PENDING'}}}),
+    fetch:async()=>{
+      phase='verifying';
+      return {status:202,json:async()=>({data:{phase}})};
+    }});
+  await app.enter('overview');
+  await app.tick(3000);
+  const progress=all(app.root).find(n=>n.className==='hr-login-progress');
+  assert.equal(progress.hidden,false);
+  assert.equal(progress.dataset.phase,'verifying');
+  assert.match(progress.textContent,/正在确认登录/);
+  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
+  assert.equal(all(app.root).find(n=>n.className.includes('hr-login-success')).hidden,true);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
 });
 

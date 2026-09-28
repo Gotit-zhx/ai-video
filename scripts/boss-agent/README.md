@@ -71,7 +71,10 @@ before locating the QR. A platform page reload joins the ongoing scan and
 resumes status polling; transient read failures keep retrying. The account owner
 scans with the BOSS app and confirms on their phone. A successful QR scan is
 *not* enough to enable reads: the connector requires the recruiter-only jobs
-endpoint to succeed. A degraded secondary token alone does not prove a role
+endpoint to succeed. The monochrome loading indicator distinguishes phone
+confirmation from account verification, and the success notice appears only
+after verification, alongside the transition to the job list.
+A degraded secondary token alone does not prove a role
 mismatch. An explicit role mismatch is
 rejected and cleared. An inconclusive jobs response keeps credentials but blocks
 all recruiter reads; the UI shows the upstream error code and offers a separate

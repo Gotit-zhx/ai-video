@@ -5,7 +5,7 @@
 #hr-page .hr-panel button:disabled{opacity:.48;cursor:not-allowed}
 .hr-note{font-size:12px;color:var(--hr-muted);margin:0 2px 16px;line-height:1.6}
 .hr-panel{padding:clamp(18px,2vw,28px);border-radius:var(--radius-lg,14px);background:var(--surface,#fff);border:1px solid var(--hr-border)}
-.hr-panel[hidden],.hr-login[hidden],.hr-login button[hidden],.hr-qr[hidden],.hr-logout[hidden]{display:none}
+.hr-panel[hidden],.hr-login[hidden],.hr-login button[hidden],.hr-qr[hidden],.hr-logout[hidden],.hr-login-progress[hidden],.hr-login-success[hidden]{display:none}
 .hr-panel h2{font-size:19px;margin:0 0 9px;letter-spacing:-.02em}
 .hr-overview-intro{text-align:center;margin:0 auto 18px;max-width:560px}
 .hr-overview-intro h2{font-size:clamp(22px,2.2vw,29px);margin:12px 0}
@@ -15,6 +15,12 @@
 .hr-login-brand{padding:6px 11px;border:1px solid var(--hr-border);border-radius:6px;background:var(--surface,#fff);color:var(--hr-ink);font-size:11px;font-weight:700;letter-spacing:.06em}
 .hr-login-title{font-size:20px;letter-spacing:-.02em;color:var(--hr-ink)}
 .hr-qr{display:block;width:min(100%,246px);height:auto;aspect-ratio:1;object-fit:contain;padding:14px;border:1px solid #e6e6e6;border-radius:10px;background:#fff}
+.hr-login-progress{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;width:min(100%,246px);aspect-ratio:1;border:1px solid var(--hr-border);border-radius:10px;background:var(--surface,#fff);padding:20px}
+.hr-login-progress strong{font-size:16px;line-height:1.6;font-weight:600}
+.hr-login-spinner{width:44px;height:44px;border:3px solid var(--hr-border);border-top-color:var(--hr-ink);border-radius:50%;animation:hr-login-spin .85s linear infinite}
+.hr-login-success{margin:0 0 16px;font-weight:600}
+@keyframes hr-login-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.hr-login-spinner{animation:none}}
 .hr-login .hr-hint{max-width:290px;min-height:22px}
 .hr-login-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
 .hr-login button,.hr-actions button,.hr-form>button,.hr-pagination button,.hr-resume-download,.hr-secondary,.hr-logout{min-height:38px;border:1px solid var(--line-strong,#d4d4d4);border-radius:var(--radius-sm,6px);background:var(--surface,#fff);padding:8px 13px;color:var(--hr-ink);cursor:pointer;font:inherit;font-size:13px;font-weight:550;transition:background-color .15s ease,border-color .15s ease}
