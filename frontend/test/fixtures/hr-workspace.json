@@ -1,0 +1,25 @@
+{
+  "status": {"ok":true,"data":{"logged_in":true,"auth_health":{"summary":"degraded"}}},
+  "jobs": {"ok":true,"data":[
+    {"encryptJobId":"job-test-1","jobId":101,"jobName":"Java 后端开发工程师","salaryDesc":"15–25K","address":"厦门 · 思明区","jobOnlineStatus":1,"description":"负责业务系统开发和服务稳定性建设。\n熟悉 Java、Spring Boot 和 MySQL。"},
+    {"encryptJobId":"job-test-2","jobId":102,"jobName":"电商运营专员","salaryDesc":"8–12K","address":"厦门 · 湖里区","description":"负责商品运营、店铺数据跟进与跨团队协作。"}
+  ]},
+  "applications":{"ok":true,"data":{"result":[
+    {"friendId":12345,"encryptFriendId":"candidate-test-1","name":"测试候选人甲","updateTime":1790553600000},
+    {"friendId":12346,"encryptFriendId":"candidate-test-2","name":"测试候选人乙","updateTime":1790542800000}
+  ]}},
+  "recommendations":{"ok":true,"data":{"hasMore":false,"page":1,"geekList":[
+    {"encryptGeekId":"candidate-test-1","geekCard":{"geekName":"测试候选人甲","encGeekId":"candidate-test-1","encryptJobId":"job-test-1","securityId":"test-security-1","expectPositionName":"Java 后端工程师","salary":"18–25K","geekWorkYear":"5年","geekDegree":"本科","expectLocationName":"厦门","activeTimeDesc":"今日活跃","applyStatusDesc":"在职，考虑机会","geekDesc":{"content":"有电商订单和库存系统经验，关注服务稳定性与性能优化。"},"matches":["Java","Spring Boot","MySQL"],"geekWorks":[{"company":"示例科技公司","positionName":"后端开发工程师"}],"geekEdus":[{"school":"示例大学","major":"软件工程"}]}},
+    {"encryptGeekId":"candidate-test-2","geekCard":{"geekName":"测试候选人乙","encGeekId":"candidate-test-2","encryptJobId":"job-test-1","securityId":"test-security-2","expectPositionName":"高级开发工程师","salary":"20–30K","geekWorkYear":"7年","geekDegree":"硕士","expectLocationName":"厦门","activeTimeDesc":"近三日活跃","geekDesc":{"content":"参与多租户业务系统建设，有微服务和项目交付经验。"},"matches":["微服务","Redis","Docker"]}}
+  ]}},
+  "chats":{"ok":true,"data":{"hasMore":false,"result":[
+    {"friendId":12345,"encryptFriendId":"candidate-test-1","name":"测试候选人甲","updateTime":1790553600000,"unread":2,"last_msg":"您好，想进一步了解这个岗位。","last_time":"09-28 10:00"},
+    {"friendId":12346,"encryptFriendId":"candidate-test-2","name":"测试候选人乙","updateTime":1790542800000,"unread":0,"last_msg":"附件简历已发送，请查收。","last_time":"09-28 09:30"}
+  ]}},
+  "messages":{"ok":true,"data":{"hasMore":false,"messages":[
+    {"mid":3,"time":1790554800000,"from":{"uid":12345,"name":"测试候选人甲","source":0},"body":{"text":"您好，想进一步了解这个岗位的技术栈和团队情况。"}},
+    {"mid":1,"time":1790553600000,"from":{"uid":12345,"name":"测试候选人甲","source":0},"body":{"resume":{"user":{"name":"测试候选人甲"},"position":"Java 后端工程师","salary":"18–25K","workYear":"5年","education":"本科","city":"厦门","description":"有电商订单和库存系统开发经验。"}}},
+    {"mid":2,"time":1790554200000,"from":{"uid":98765,"name":"测试招聘方","source":1},"body":{"text":"你好，我们主要使用 Java 和 Spring Boot，可以先看看职位介绍。"}}
+  ]}},
+  "resume":{"ok":true,"data":{"basic":{"name":"测试候选人甲","degree":"本科","work_years":"5年","active_status":"今日活跃"},"expectation":{"position":"Java 后端工程师","salary":"18–25K","city":"厦门"},"work_experience":[{"company":"示例科技公司","position":"后端开发工程师","start":"2022.06","end":"至今","responsibility":"负责订单、商品和库存相关服务。\n参与接口性能优化及告警体系建设。","performance":"推动关键接口稳定性改进。","keywords":["Java","Spring Boot","MySQL"]}],"project_experience":[{"name":"电商订单管理系统","role":"核心开发","start":"2023.01","end":"2024.06","description":"建设订单流转和库存同步能力。","achievement":"支持多个业务渠道统一处理订单。"}],"education":[{"school":"示例大学","major":"软件工程","degree":"本科","start":"2016.09","end":"2020.06"}],"certifications":["示例专业资格证书"],"competitive_analysis":[]}}
+}
