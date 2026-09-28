@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'">
+<title>赫逸招聘助手</title><link rel="stylesheet" href="style.css">
+<header><div class="brand"><span class="mark">H</span><div><strong>HOYEE</strong><small>招聘助手</small></div></div>
+<nav><button data-action="home" class="selected">本机概览</button><button data-action="platform">招聘工作台</button><button data-action="boss">BOSS 浏览器</button></nav>
+<div class="device"><span></span><b id="platform">本机执行</b></div></header>
+<main>
+<div class="eyebrow">YOUR WORKSPACE, LOCALLY.</div>
+<h1>招聘工作，<br><span>在熟悉的地方继续。</span></h1>
+<p class="lead">业务留在赫逸，登录留在本机。独立浏览器与日常工作互不打扰，<br>每一步操作都有状态，遇到异常及时停下。</p>
+<div class="actions"><button class="primary" data-action="platform">进入招聘工作台 <span>↗</span></button><button data-action="connect">连接 BOSS 账号</button></div>
+<section class="grid">
+<article class="connection"><div class="card-head"><h2>本机连接</h2><span id="badge">未连接</span></div>
+<div class="connection-title" id="state-title">等待连接招聘账号</div><p id="state-description">先进入工作台登录赫逸账号，再由本人扫码连接 BOSS。应用不会自动发起登录。</p>
+<div class="card-actions"><button data-action="pause">暂停任务</button><button data-action="release">释放浏览器资源</button></div></article>
+<article><div class="card-head"><h2>运行记录</h2><span class="muted">仅记录操作状态</span></div><ul id="events"><li><span class="event-dot"></span>准备就绪，等待你的操作。</li></ul></article>
+</section>
+<section class="principles"><div><b>01</b><strong>独立会话</strong><span>专用浏览器，不接管日常标签页</span></div><div><b>02</b><strong>明确执行</strong><span>确认后操作，不确定结果不重发</span></div><div><b>03</b><strong>跨设备使用</strong><span>Mac / Windows，新设备本人扫码</span></div></section>
+<p class="notice" id="notice" hidden></p>
+</main>
+<footer><span>HOYEE DESKTOP <b id="version">0.1.0</b></span><span id="footer-status">本机执行 · 登录凭据不上传服务器</span></footer>
+<script src="renderer.cjs"></script>
+</html>

@@ -1414,6 +1414,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 or user.get("platformAdmin") is not True
                 or "ADMIN" not in user.get("roles", [])):
             return 403
+        self.desktop_user = user
         return 200
 
     def do_GET(self):
@@ -1426,6 +1427,12 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             return
         parsed = urllib.parse.urlsplit(self.path)
         route = parsed.path.removeprefix("/api/v1/hr/")
+        if route == "desktop/transport":
+            self.send_json(200, {"success": True, "data": {"mode": "local", "port": 17861}})
+            return
+        if os.environ.get("APP_HR_DESKTOP_ONLY") == "1":
+            self.send_json(409, {"success": False, "message": "招聘已切换到本机助手，请更新页面并连接助手"})
+            return
         if route == "login/status":
             self.send_json(200, {"success": True, "data": login_snapshot()})
             return
@@ -1496,6 +1503,12 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                              "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()})
 
     def do_POST(self):
+        if self.path.startswith("/api/v1/hr/desktop/"):
+            self.desktop_request()
+            return
+        if os.environ.get("APP_HR_DESKTOP_ONLY") == "1":
+            self.send_json(409, {"success": False, "message": "招聘已切换到本机助手，服务器未执行操作"})
+            return
         if self.path not in ("/api/v1/hr/login/start", "/api/v1/hr/login/refresh",
                              "/api/v1/hr/login/logout", "/api/v1/hr/resumes/request"):
             self.send_json(405, {"success": False, "message": "此阶段仅支持扫码登录与只读操作"})
@@ -1567,6 +1580,38 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(409, {"success": False, "message": str(error)})
                 return
             self.send_json(202, {"success": True, "data": {"state": state["state"]}})
+
+    def desktop_request(self):
+        import desktop_bridge
+        route = self.path.removeprefix("/api/v1/hr/desktop/")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 <= length <= 1024:
+                raise ValueError("连接请求过长")
+            if route == "pair":
+                if self.headers.get("Origin") != ALLOWED_ORIGIN or self.authorized() != 200:
+                    self.send_json(403, {"success": False, "message": "请先登录有招聘权限的管理员账号"})
+                    return
+                if length:
+                    raise ValueError("连接请求不能包含正文")
+                result = desktop_bridge.issue(self.desktop_user)
+            else:
+                if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                    raise ValueError("连接请求格式不正确")
+                body = json.loads(self.rfile.read(length))
+                if route == "redeem":
+                    result = desktop_bridge.redeem(body.get("ticket"), body.get("device"))
+                elif route == "lease":
+                    result = desktop_bridge.check(body.get("token"), body.get("device"))
+                elif route == "release":
+                    result = desktop_bridge.release(body.get("token"), body.get("device"))
+                else:
+                    raise ValueError("未知连接操作")
+            self.send_json(200, {"success": True, "data": result})
+        except (ValueError, TypeError, AttributeError):
+            self.send_json(409, {"success": False, "message": "连接凭证无效、已到期或已切换设备，请重新连接本机助手"})
+        except (OSError, sqlite3.Error):
+            self.send_json(503, {"success": False, "message": "连接服务暂时不可用，未执行招聘操作"})
 
 
 class HttpServer(http.server.ThreadingHTTPServer):

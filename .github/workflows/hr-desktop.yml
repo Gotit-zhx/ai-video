@@ -1,0 +1,69 @@
+name: HR desktop
+on:
+  workflow_dispatch:
+  push:
+    branches: ["codex/hr-desktop-*", "codex/test-current-20260831"]
+    paths: ["hr-desktop/**", "scripts/boss-agent/**", ".github/workflows/hr-desktop.yml"]
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: hr-desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "11.25.0"
+      - run: pnpm install --frozen-lockfile
+      - run: node node_modules/electron/install.js
+      - run: python runtime/install.py
+      - run: python runtime/build.py
+      - run: npm test
+      - run: python runtime/test_portable.py
+      - run: python -m unittest discover -s ../scripts/boss-agent -p test_desktop_bridge.py
+      - name: Offline embedded-browser smoke
+        shell: bash
+        run: |
+          export HEYI_TEST_USER_DATA="$RUNNER_TEMP/heyi-desktop-ci"
+          npm run smoke
+      - name: Package
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            npm run dist:win
+          else
+            npm run dist:mac
+          fi
+      - name: Packaged smoke on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:HEYI_TEST_USER_DATA="$env:RUNNER_TEMP\heyi-packaged-test"
+          $env:HEYI_TEST_OUTPUT="$PWD\test-results\packaged"
+          $process = Start-Process -FilePath "release\win-unpacked\赫逸招聘助手.exe" -ArgumentList "--self-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged smoke failed: $($process.ExitCode)" }
+          if (!(Test-Path "$env:HEYI_TEST_OUTPUT\smoke.json")) { throw "Missing packaged smoke result" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: heyi-recruiter-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            hr-desktop/release/*.exe
+            hr-desktop/release/*.dmg
+            hr-desktop/release/*.zip
+            hr-desktop/test-results/*
+          retention-days: 14

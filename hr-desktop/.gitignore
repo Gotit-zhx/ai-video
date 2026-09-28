@@ -1,0 +1,8 @@
+node_modules/
+release/
+runtime/.venv/
+runtime/build/
+runtime/dist/
+runtime/*.spec
+runtime/__pycache__/
+test-results/

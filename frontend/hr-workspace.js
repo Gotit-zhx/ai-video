@@ -2,6 +2,10 @@
 (() => {
   const root = document.getElementById('hr-page');
   if (!root) return;
+  const hrApi = (path, options) => globalThis.HeyiHrTransport
+    ? globalThis.HeyiHrTransport.api(path, options) : api(path, options);
+  const hrFetch = (path, options) => globalThis.HeyiHrTransport
+    ? globalThis.HeyiHrTransport.request(path, options) : fetch(path, options);
   const routes = new Set(['overview', 'jobs', 'talent', 'applications', 'chats', 'resume']);
   const panels = new Map();
   let current = 'overview', sequence = 0, page = 1, talentAction = 'candidates';
@@ -58,6 +62,20 @@
   };
   const note = element('p', 'BOSS 直聘连接状态正在检查…', root, 'hr-note');
   note.setAttribute('role', 'status');
+  if(globalThis.HeyiHrTransport){
+    const localBar=element('div','',root,'hr-local-assistant');
+    element('span','本机助手执行 · 登录保留在你的电脑',localBar);
+    const connectButton=button('连接本机助手',localBar,async()=>{
+      connectButton.disabled=true;
+      try{await globalThis.HeyiHrTransport.connect();note.textContent='本机助手已连接';await checkLogin();}
+      catch(error){note.textContent=error.message;}
+      finally{connectButton.disabled=false;}
+    });
+    const download=element('a','下载 Mac 应用',localBar);
+    download.href='/downloads/Heyi-Recruiter-mac-arm64.dmg';
+    const windows=element('a','下载 Windows 应用',localBar);
+    windows.href='/downloads/Heyi-Recruiter-windows-x64-Setup.exe';
+  }
   const loginSuccess = element('p', '✓  招聘账号登录成功', root, 'hr-success hr-login-success');
   loginSuccess.setAttribute('role', 'status');
   loginSuccess.hidden = true;
@@ -89,7 +107,7 @@
   const resetLoginButton = button('清除会话并重新扫码', loginActions, () => logoutBoss(true));
   resetLoginButton.hidden = true;
   const status = element('div', '正在读取账号状态…', overview, 'hr-result hr-status-result');
-  const logoutButton = button('断开服务器连接', overview, logoutBoss);
+  const logoutButton = button('断开本机连接', overview, logoutBoss);
   logoutButton.className = 'hr-logout';
   logoutButton.hidden = true;
   const loginFootnote = element('p', '二维码仅供当前管理员使用；扫码后还需在手机上确认。', overview, 'hr-footnote');
@@ -135,7 +153,7 @@
     qrRequestInFlight = true;
     const generation = loginGeneration;
     try {
-      const response = await fetch('/api/v1/hr/login/qr', {credentials:'same-origin',cache:'no-store'});
+      const response = await hrFetch('/api/v1/hr/login/qr', {credentials:'same-origin',cache:'no-store'});
       if (generation !== loginGeneration || !loginPendingSeen || !allowed()) return;
       if (response.status === 409) {
         await checkLogin();
@@ -183,7 +201,7 @@
     showLoginProgress('loading');
     loginMessage.textContent = '正在生成新的二维码…';
     try {
-      await api('/api/v1/hr/login/refresh', {method:'POST'});
+      await hrApi('/api/v1/hr/login/refresh', {method:'POST'});
       if (generation !== loginGeneration) return;
       qr.hidden = true;
       await refreshQr();
@@ -208,8 +226,8 @@
     qr.hidden = refreshButton.hidden = resetLoginButton.hidden = logoutButton.hidden = true;
     loginButton.hidden = false;
     loginButton.textContent = '扫码连接招聘账号';
-    loginMessage.textContent = '服务器连接已断开。需要时点击“扫码连接招聘账号”，再用手机确认。';
-    note.textContent = '已断开服务器连接';
+    loginMessage.textContent = '本机连接已断开。需要时点击“扫码连接招聘账号”，再用手机确认。';
+    note.textContent = '已断开本机连接';
     status.replaceChildren();
   }
   async function checkLogin() {
@@ -218,7 +236,7 @@
     loginCheckInFlight = true;
     const generation = loginGeneration;
     try {
-      const result = await api('/api/v1/hr/login/status');
+      const result = await hrApi('/api/v1/hr/login/status');
       if (generation !== loginGeneration || !allowed()) return;
       const state = result.data || {};
       if (state.state === 'disconnected') {showDisconnected();return;}
@@ -318,7 +336,7 @@
     loginMessage.textContent = loginButton.textContent.includes('验证')
       ? '正在同步浏览器登录并验证招聘方身份…' : '正在打开 BOSS 登录页…';
     try {
-      await api('/api/v1/hr/login/start', {method:'POST'});
+      await hrApi('/api/v1/hr/login/start', {method:'POST'});
       if (generation !== loginGeneration || !allowed()) return;
       stopLoginPolling();
       loginTimer = setInterval(checkLogin, 3000);
@@ -354,9 +372,9 @@
     showLoginProgress('loading');
     if (qr.dataset.objectUrl) URL.revokeObjectURL(qr.dataset.objectUrl);
     delete qr.dataset.objectUrl;
-    loginMessage.textContent = reconnect === true ? '正在清理本次连接并准备二维码…' : '正在断开服务器连接…';
+    loginMessage.textContent = reconnect === true ? '正在清理本次连接并准备二维码…' : '正在断开本机连接…';
     try {
-      await api('/api/v1/hr/login/logout', {method:'POST'});
+      await hrApi('/api/v1/hr/login/logout', {method:'POST'});
       if (generation !== loginGeneration || !allowed()) return;
       jobsRequest = null;
       conversations = [];
@@ -377,7 +395,7 @@
         loginButton.hidden = true;
         loginMessage.textContent = '正在生成登录二维码…';
         note.textContent = '正在准备扫码连接';
-        await api('/api/v1/hr/login/start', {method:'POST'});
+        await hrApi('/api/v1/hr/login/start', {method:'POST'});
         if (generation !== loginGeneration || !allowed()) return;
         loginTimer = setInterval(checkLogin, 3000);
         await checkLogin();
@@ -449,7 +467,7 @@
     updateResumeRequestButton();
     showAttachmentFeedback('正在准备 BOSS 沟通页面并发送请求，请稍候…');
     try {
-      const response = await api('/api/v1/hr/resumes/request', {
+      const response = await hrApi('/api/v1/hr/resumes/request', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({friendId:id, ...(retryUncertain ? {retryUncertain:true} : {})})
       });
@@ -504,7 +522,7 @@
   async function downloadAttachment(friend, mid, action) {
     action.disabled = true;
     try {
-      const response = await fetch(`/api/v1/hr/resumes/${friend}/${mid}/download`,
+      const response = await hrFetch(`/api/v1/hr/resumes/${friend}/${mid}/download`,
         {credentials:'same-origin',cache:'no-store'});
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -535,7 +553,7 @@
     const generation = sessionGeneration;
     const loadSequence = ++resumeLoadSequence;
     try {
-      const result = await api('/api/v1/hr/resumes');
+      const result = await hrApi('/api/v1/hr/resumes');
       if (generation !== sessionGeneration || loadSequence !== resumeLoadSequence || current !== 'chats'
           || !allowed() || activeWorkspace !== 'hr') return;
       if (!Array.isArray(result?.data)) throw Error('附件状态读取失败，请稍后重试。');
@@ -690,7 +708,7 @@
     const generation = sessionGeneration;
     jobsRequest = (async () => {
       try {
-        const response = await api('/api/v1/hr/jobs');
+        const response = await hrApi('/api/v1/hr/jobs');
         if (generation !== sessionGeneration || !allowed()) return;
         if (response.data?.ok) rememberJobs(findList(response.data.data) || []);
       } catch (_) {
@@ -1016,7 +1034,7 @@
         }
         path = '/api/v1/hr/resume?' + params({geekId:only(geekId.value),jobId:only(resumeJob.value),securityId:only(securityId.value)});
       } else return;
-      const response = await api(path);
+      const response = await hrApi(path);
       if (ticket !== sequence || activeWorkspace !== 'hr') return;
       if (action === 'overview' && response.data?.error?.code === 'SESSION_DISCONNECTED') {
         showDisconnected();
@@ -1094,6 +1112,7 @@
     enter(link.dataset.hrRoute);
   }));
   globalThis.HrWorkspace = {enter, allowed, reset(){
+    globalThis.HeyiHrTransport?.reset();
     ++sequence;
     ++sessionGeneration;
     ++loginGeneration;

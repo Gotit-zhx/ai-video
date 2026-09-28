@@ -477,8 +477,8 @@ test('ordinary disconnect never restarts QR and stays disconnected on refresh',a
     return {data:disconnected?{ok:false,error:{code:'SESSION_DISCONNECTED'}}:fixtures.status};
   }});
   await app.enter('overview');
-  await app.click('断开服务器连接');
-  assert.match(app.text(),/服务器连接已断开/);
+  await app.click('断开本机连接');
+  assert.match(app.text(),/本机连接已断开/);
   await app.enter('overview');
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
   assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
