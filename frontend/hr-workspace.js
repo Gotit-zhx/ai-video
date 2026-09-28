@@ -263,16 +263,15 @@
           : state.state === 'verification_pending' ? (state.error || '已扫码，正在核对招聘方接口')
           : state.state === 'failed' ? (state.error || '扫码未完成，请重新获取二维码') : '';
         loginTitle.textContent = state.failure_code === 'PC_LOGIN_RESTRICTED'
-          ? '电脑端登录暂受限' : '扫码连接招聘账号';
+          ? '重新连接招聘账号' : '扫码连接招聘账号';
         if (state.failure_code === 'PC_LOGIN_RESTRICTED') {
-          note.textContent = 'BOSS 暂停电脑端登录 · 本次连接已停止';
+          note.textContent = '上次连接未完成 · 可手动重新扫码';
           intro.hidden = loginFootnote.hidden = true;
           status.replaceChildren();
           resetLoginButton.hidden = true;
           loginButton.hidden = false;
-          loginButton.disabled = state.retry_allowed !== true;
-          loginButton.textContent = state.retry_allowed === true
-            ? '限制解除后重新扫码' : '等待官方解除限制';
+          loginButton.disabled = false;
+          loginButton.textContent = '重新扫码';
         }
         if (state.state === 'complete') {
           if (loginPendingSeen) {

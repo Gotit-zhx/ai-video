@@ -38,7 +38,6 @@ SECRET_KEY = re.compile(r"(cookie|token|stoken|wt2|secret|authorization|password
 LOGIN_TIMEOUT = 300
 LOGIN_ATTEMPTS_DB = Path("/opt/heyi/boss-agent/runtime/recruiter-login-attempts.sqlite3")
 LOGIN_ATTEMPT_WINDOW = 1800
-LOGIN_ATTEMPT_LIMIT = 3
 LOGIN_LOCK = threading.Lock()
 QR_LOCK = threading.Lock()
 LOGIN = {"state": "idle", "phase": "", "started": 0.0, "error": "", "failure_code": ""}
@@ -77,7 +76,7 @@ def start_recovery_scope():
 
 def cli_environment():
     environment = dict(CLI_ENV)
-    if getattr(RECOVERY, "active", False) and not pc_login_blocked():
+    if getattr(RECOVERY, "active", False):
         environment["HEYI_HR_RECOVERY_HOLD"] = getattr(RECOVERY, "hold_digest", "")
     return environment
 
@@ -99,33 +98,20 @@ def pc_login_retry_at():
         return ""
 
 
-def pc_login_blocked():
-    if held_code() != "PC_LOGIN_RESTRICTED":
-        return False
-    retry_at = pc_login_retry_at()
-    if not retry_at:
-        return True
-    # BOSS's Chinese login page displays its reopening time in China time.
-    until = datetime.datetime.strptime(retry_at, "%Y-%m-%d %H:%M:%S").replace(
-        tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
-    return time.time() < until.timestamp()
-
-
 def pause_requests(code, *, retry_at=""):
     """Persist only a fixed error code/time, never upstream personal data."""
     code = code if code in STOP_CODES else "MANUAL_REVIEW_REQUIRED"
     retry_at = valid_retry_at(retry_at)
     if held_code() == "PC_LOGIN_RESTRICTED" and code != "PC_LOGIN_RESTRICTED":
         code, retry_at = "PC_LOGIN_RESTRICTED", pc_login_retry_at()
-    if held_code() != code or (retry_at and pc_login_retry_at() != retry_at):
-        RISK_HOLD.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        temporary = RISK_HOLD.with_suffix(".tmp")
-        record = {"code": code, "since": int(time.time())}
-        if code == "PC_LOGIN_RESTRICTED" and retry_at:
-            record["retry_at"] = retry_at
-        temporary.write_text(json.dumps(record))
-        temporary.chmod(0o600)
-        temporary.replace(RISK_HOLD)
+    RISK_HOLD.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = RISK_HOLD.with_name(RISK_HOLD.name + "." + uuid.uuid4().hex + ".tmp")
+    record = {"code": code, "since": int(time.time()), "generation": uuid.uuid4().hex}
+    if code == "PC_LOGIN_RESTRICTED" and retry_at:
+        record["retry_at"] = retry_at
+    temporary.write_text(json.dumps(record))
+    temporary.chmod(0o600)
+    temporary.replace(RISK_HOLD)
     with LOGIN_LOCK:
         LOGIN.update(state="verification_pending", phase="", failure_code=code,
                      error=verification_message(code))
@@ -842,10 +828,9 @@ def verification_message(code):
         return "暂时无法核对服务器浏览器会话，已停止请求并保留记录。请先检查浏览器连接，再手动同步。"
     if code == "PC_LOGIN_RESTRICTED":
         retry_at = pc_login_retry_at()
-        return ("BOSS 官方暂时关闭了此账号的电脑端登录权限，已停止本次登录和自动请求。"
-                + (f"官方预计恢复时间：{retry_at}（北京时间）。" if retry_at else "")
-                + "请先在 BOSS App 中使用招聘功能；限制解除后刷新本页，再由本人重新扫码，"
-                "并按官方提示确保手机与电脑在同一地点。预计时间不代表限制一定解除。")
+        return ("上次 BOSS 官方提示此账号的电脑端登录权限暂受限，后台自动请求已暂停。"
+                + (f"当时预计恢复时间：{retry_at}（北京时间）。" if retry_at else "")
+                + "你仍可点击“重新扫码”发起一次新的登录，以官方本次返回结果为准。")
     if code == "IP_RESTRICTED":
         return ("上次招聘接口返回“IP 地址存在异常行为”，已暂停自动请求并保留登录态。"
                 "若远程浏览器已正常登录，请同步浏览器登录并验证；该提示不代表当前 IP 仍受限。")
@@ -967,7 +952,7 @@ def stop_login_process(process):
 def wait_for_login_process(process):
     deadline = time.monotonic() + LOGIN_TIMEOUT + 45
     while True:
-        if LOGIN_CANCEL.is_set() or pc_login_blocked():
+        if LOGIN_CANCEL.is_set():
             stop_login_process(process)
             return b""
         remaining = deadline - time.monotonic()
@@ -989,9 +974,9 @@ def wait_for_login_process(process):
 def login_snapshot():
     with LOGIN_LOCK:
         state = {key: value for key, value in LOGIN.items()
-                 if key not in ("started", "qr_refreshed")}
+                 if key not in ("started", "qr_refreshed", "qr_ready")}
     if state.get("failure_code") == "PC_LOGIN_RESTRICTED":
-        state.update(retry_at=pc_login_retry_at(), retry_allowed=not pc_login_blocked())
+        state.update(retry_at=pc_login_retry_at(), retry_allowed=True)
     return state
 
 
@@ -1015,16 +1000,22 @@ def login_worker():
                 envelope = sync_browser_login()
                 ok = envelope.get("ok") is True
             else:
+                prepared = subprocess.run(
+                    [sys.executable, str(Path(__file__).resolve()), "--prepare-new-scan"],
+                    capture_output=True, timeout=20, check=False, env=CLI_ENV)
+                if prepared.returncode != 0:
+                    raise RuntimeError("Unable to prepare a fresh login page")
                 process = subprocess.Popen(
                     [BOSS, "--json", "login", "--cdp", "--timeout", str(LOGIN_TIMEOUT)],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_environment(),
                     start_new_session=True)
                 with LOGIN_LOCK:
                     LOGIN_PROCESS = process
+                    LOGIN["qr_ready"] = True
                 if LOGIN_CANCEL.is_set():
                     process.terminate()
                 stdout = wait_for_login_process(process)
-                if pc_login_blocked():
+                if LOGIN_CANCEL.is_set():
                     return
                 try:
                     envelope = json.loads(stdout)
@@ -1070,7 +1061,7 @@ def login_worker():
                                   verification_message(code) if ok or had_browser_login else
                                   f"登录凭据未建立（{code}）。请使用当前二维码扫码并在手机确认。")
         except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            if LOGIN_CANCEL.is_set() or pc_login_blocked():
+            if LOGIN_CANCEL.is_set():
                 return
             with LOGIN_LOCK:
                 LOGIN["state"] = "failed"
@@ -1080,7 +1071,7 @@ def login_worker():
         except Exception:
             # CDP libraries can throw their own exception types. A dead worker
             # must not leave "pending" forever or expose sensitive exception text.
-            if not LOGIN_CANCEL.is_set() and not pc_login_blocked():
+            if not LOGIN_CANCEL.is_set():
                 with LOGIN_LOCK:
                     LOGIN.update(state="failed", phase="", failure_code="LOGIN_RUNTIME_ERROR",
                                  error="登录连接中断，当前浏览器已保留，请检查官方页面后再试")
@@ -1133,7 +1124,7 @@ def verify_saved_login_worker():
 
 
 def reserve_login_attempt():
-    """Bound explicit scans/syncs across clicks, local resets and restarts."""
+    """Record explicit attempts; historical counts no longer lock manual scans."""
     LOGIN_ATTEMPTS_DB.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with contextlib.closing(sqlite3.connect(LOGIN_ATTEMPTS_DB, timeout=5)) as db:
         db.execute("CREATE TABLE IF NOT EXISTS attempts (at REAL NOT NULL)")
@@ -1141,21 +1132,12 @@ def reserve_login_attempt():
         db.execute("BEGIN IMMEDIATE")
         now = time.time()
         db.execute("DELETE FROM attempts WHERE at <= ?", (now - LOGIN_ATTEMPT_WINDOW,))
-        count, first = db.execute("SELECT COUNT(*), MIN(at) FROM attempts").fetchone()
-        if count >= LOGIN_ATTEMPT_LIMIT:
-            db.rollback()
-            retry_at = datetime.datetime.fromtimestamp(
-                first + LOGIN_ATTEMPT_WINDOW,
-                datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
-            raise RuntimeError(f"30 分钟内已尝试连接 3 次，已暂停继续登录。"
-                               f"请先检查 BOSS 官方提示，最早 {retry_at}（北京时间）后再手动尝试。")
         db.execute("INSERT INTO attempts VALUES (?)", (now,))
+        db.execute("DELETE FROM attempts WHERE rowid <= (SELECT MAX(rowid)-1000 FROM attempts)")
         db.commit()
 
 
 def begin_login():
-    if pc_login_blocked():
-        raise RuntimeError(verification_message("PC_LOGIN_RESTRICTED"))
     with LOGIN_LOCK:
         if LOGIN["state"] == "pending":
             return dict(LOGIN)
@@ -1168,7 +1150,7 @@ def begin_login():
         retry_verification = (LOGIN["state"] == "verification_pending"
                               and LOGIN["failure_code"] != "PC_LOGIN_RESTRICTED")
         LOGIN.update(state="pending", phase="verifying" if retry_verification else "qr",
-                     started=time.monotonic(), error="", failure_code="")
+                     started=time.monotonic(), error="", failure_code="", qr_ready=False)
         print(json.dumps({"event": "recruiter_login_started",
                           "mode": "sync" if retry_verification else "scan",
                           "time": int(time.time())}), flush=True)
@@ -1205,6 +1187,33 @@ class ScanInProgress(Exception):
 
 class LoginRestricted(Exception):
     pass
+
+
+def prepare_new_scan():
+    """Discard only stale login tabs, never cookies, logged-in pages or Chrome."""
+    from patchright.sync_api import sync_playwright
+    with QR_LOCK, sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=5000)
+        try:
+            for context in browser.contexts:
+                # A manual login may have completed while this child started.
+                if any(cookie.get("name") == "wt2" and cookie.get("value")
+                       and (cookie.get("domain") == "zhipin.com"
+                            or cookie.get("domain", "").endswith(".zhipin.com"))
+                       for cookie in context.cookies()):
+                    continue
+                pages = list(context.pages)
+                old_login_pages = []
+                for page in pages:
+                    parsed = urllib.parse.urlsplit(page.url)
+                    if parsed.hostname == "www.zhipin.com" and parsed.path.rstrip("/") == "/web/user":
+                        old_login_pages.append(page)
+                if old_login_pages and len(old_login_pages) == len(pages):
+                    context.new_page()  # Keep Chrome alive when closing its last old login tab.
+                for page in old_login_pages:
+                    page.close(run_before_unload=False)
+        finally:
+            browser.close()
 
 
 def qr_image(force_refresh=False):
@@ -1376,8 +1385,12 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         if route == "login/qr":
             with LOGIN_LOCK:
                 pending = LOGIN["state"] == "pending"
+                ready = LOGIN.get("qr_ready", True)
             if not pending:
                 self.send_json(409, {"success": False, "message": "请先开始扫码登录"})
+                return
+            if not ready:
+                self.send_json(503, {"success": False, "message": "正在打开新的登录页"})
                 return
             try:
                 self.send_image(qr_image())
@@ -1550,7 +1563,12 @@ def main():
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--observe-login-page"]:
+    if sys.argv[1:] == ["--prepare-new-scan"]:
+        try:
+            prepare_new_scan()
+        except Exception:
+            raise SystemExit(1)
+    elif sys.argv[1:] == ["--observe-login-page"]:
         try:
             print(json.dumps(observe_login_page_result()))
         except Exception:

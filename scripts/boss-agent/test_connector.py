@@ -99,11 +99,12 @@ class ConnectorTest(unittest.TestCase):
             snapshot = connector.login_snapshot()
             self.assertEqual("verification_pending", snapshot["state"])
             self.assertEqual("2026-09-29 13:44:43", snapshot["retry_at"])
-            self.assertFalse(snapshot["retry_allowed"])
+            self.assertTrue(snapshot["retry_allowed"])
             self.assertIn("电脑端登录权限", snapshot["error"])
-            with self.assertRaisesRegex(RuntimeError, "电脑端登录权限"):
-                connector.begin_login()
             start.assert_not_called()
+            self.assertEqual("pending", connector.begin_login()["state"])
+            start.assert_called_once_with(target=connector.login_worker, daemon=True)
+            self.assertEqual("PC_LOGIN_RESTRICTED", connector.held_code())
 
     def test_pc_restriction_date_does_not_automatically_release_requests(self):
         with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "scanned"}), \
@@ -119,14 +120,15 @@ class ConnectorTest(unittest.TestCase):
             worker.assert_called_once_with(target=connector.login_worker, daemon=True)
             self.assertEqual("PC_LOGIN_RESTRICTED", connector.held_code())
 
-    def test_pc_restriction_without_valid_time_stays_blocked(self):
+    def test_pc_restriction_without_valid_time_keeps_manual_retry_available(self):
         for text in ("暂为您关闭PC端登录权限",
                      "暂为您关闭PC端登录权限\n预计开启时间：2026-99-99 24:99:99"):
             restriction = connector.login_restriction_from_text(text)
             self.assertEqual("", restriction["retry_at"])
             with mock.patch.dict(connector.LOGIN):
                 connector.pause_requests(restriction["code"], retry_at=restriction["retry_at"])
-                self.assertTrue(connector.pc_login_blocked())
+                self.assertTrue(connector.login_snapshot()["retry_allowed"])
+                self.assertEqual("PC_LOGIN_RESTRICTED", connector.held_code())
         self.assertIsNone(connector.login_restriction_from_text("扫描成功，请在App端确认登录"))
 
     def test_login_safety_page_is_distinguished_from_normal_sms_login(self):
@@ -183,12 +185,12 @@ class ConnectorTest(unittest.TestCase):
             self.assertEqual("PC_LOGIN_RESTRICTED", connector.held_code())
         connector.LOGIN_CANCEL.clear()
 
-    def test_explicit_login_budget_survives_new_connection_and_expires(self):
+    def test_manual_attempts_are_recorded_without_historical_count_lockout(self):
         with mock.patch.object(connector.time, "time", return_value=10000):
-            for _ in range(3):
+            for _ in range(5):
                 connector.reserve_login_attempt()
-            with self.assertRaisesRegex(RuntimeError, "30 分钟内已尝试连接 3 次"):
-                connector.reserve_login_attempt()
+            with contextlib.closing(sqlite3.connect(connector.LOGIN_ATTEMPTS_DB)) as db:
+                self.assertEqual(5, db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0])
         with mock.patch.object(connector.time, "time", return_value=11801):
             connector.reserve_login_attempt()
 
@@ -197,6 +199,26 @@ class ConnectorTest(unittest.TestCase):
              mock.patch.object(connector, "reserve_login_attempt") as reserve:
             self.assertEqual("pending", connector.begin_login()["state"])
             reserve.assert_not_called()
+
+    def test_new_identical_official_refusal_invalidates_manual_retry_permit(self):
+        with mock.patch.dict(connector.LOGIN):
+            connector.pause_requests("PC_LOGIN_RESTRICTED", retry_at="2026-09-29 13:44:43")
+            connector.start_recovery_scope()
+            try:
+                original = connector.cli_environment()["HEYI_HR_RECOVERY_HOLD"]
+                connector.pause_requests("PC_LOGIN_RESTRICTED", retry_at="2026-09-29 13:44:43")
+                self.assertNotEqual(original, connector.hashlib.sha256(connector.RISK_HOLD.read_bytes()).hexdigest())
+            finally:
+                connector.RECOVERY.active = False
+
+    def test_historical_restriction_does_not_kill_fresh_manual_login_process(self):
+        process = mock.Mock()
+        process.communicate.return_value = (b'{"ok":true}', b"")
+        with mock.patch.dict(connector.LOGIN), mock.patch.object(connector, "stop_login_process") as stop:
+            connector.pause_requests("PC_LOGIN_RESTRICTED", retry_at="2026-09-29 13:44:43")
+            connector.LOGIN_CANCEL.clear()
+            self.assertEqual(b'{"ok":true}', connector.wait_for_login_process(process))
+            stop.assert_not_called()
 
     def test_disconnect_is_local_and_remains_disconnected_after_restart(self):
         connector.AUTH_DIR.mkdir()
@@ -400,6 +422,31 @@ class ConnectorTest(unittest.TestCase):
             self.assertEqual("scanned", connector.LOGIN["phase"])
         page.reload.assert_not_called()
         page.get_by_text.assert_not_called()
+
+    def test_fresh_scan_closes_only_old_unauthenticated_login_tabs(self):
+        login = mock.MagicMock(url="https://www.zhipin.com/web/user/")
+        chat = mock.MagicMock(url="https://www.zhipin.com/web/chat/index")
+        external = mock.MagicMock(url="https://example.invalid/web/user/")
+        context = mock.MagicMock()
+        context.cookies.return_value = []
+        context.pages = [login, chat, external]
+        authenticated = mock.MagicMock()
+        authenticated.cookies.return_value = [{"name": "wt2", "value": "synthetic", "domain": ".zhipin.com"}]
+        authenticated.pages = [mock.MagicMock(url="https://www.zhipin.com/web/user/")]
+        browser = mock.MagicMock()
+        browser.contexts = [context, authenticated]
+        playwright = mock.MagicMock()
+        playwright.__enter__.return_value.chromium.connect_over_cdp.return_value = browser
+        module = types.ModuleType("patchright.sync_api")
+        module.sync_playwright = mock.Mock(return_value=playwright)
+        with mock.patch.dict("sys.modules", {"patchright.sync_api": module}):
+            connector.prepare_new_scan()
+        login.close.assert_called_once_with(run_before_unload=False)
+        chat.close.assert_not_called()
+        external.close.assert_not_called()
+        authenticated.pages[0].close.assert_not_called()
+        context.clear_cookies.assert_not_called()
+        context.new_page.assert_not_called()
 
     def test_qr_poll_reports_safety_dialog_before_scanned_text(self):
         page = mock.MagicMock()
@@ -746,6 +793,7 @@ class ConnectorTest(unittest.TestCase):
              mock.patch.object(connector, "browser_service"), \
              mock.patch.object(connector, "wait_for_cdp"), \
              mock.patch.object(connector, "chrome_has_login_cookie", return_value=False), \
+             mock.patch.object(connector.subprocess, "run", return_value=mock.Mock(returncode=0)), \
              mock.patch.object(connector.subprocess, "Popen", return_value=process), \
              mock.patch.object(connector, "recruiter_probe",
                                return_value=(False, "IP_RESTRICTED")) as probe, \
@@ -795,6 +843,7 @@ class ConnectorTest(unittest.TestCase):
              mock.patch.object(connector, "browser_service"), \
              mock.patch.object(connector, "wait_for_cdp"), \
              mock.patch.object(connector, "chrome_has_login_cookie", return_value=False), \
+             mock.patch.object(connector.subprocess, "run", return_value=mock.Mock(returncode=0)), \
              mock.patch.object(connector.subprocess, "Popen", return_value=process), \
              mock.patch.object(connector, "recruiter_probe",
                                return_value=(False, "JOBS_UNAVAILABLE")) as probe, \
@@ -920,6 +969,7 @@ class ConnectorTest(unittest.TestCase):
         with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "qr"}), \
              mock.patch.object(connector, "browser_service"), \
              mock.patch.object(connector, "wait_for_cdp"), \
+             mock.patch.object(connector.subprocess, "run", return_value=mock.Mock(returncode=0)), \
              mock.patch.object(connector.subprocess, "Popen", return_value=process), \
              mock.patch.object(connector, "chrome_has_login_cookie", side_effect=[False, True]), \
              mock.patch.object(connector, "sync_browser_login", return_value={"ok": True}) as sync, \
@@ -1104,7 +1154,7 @@ class ConnectorTest(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     opener.open(urllib.request.Request(qr_url, headers={"Cookie": "session=someone"}))
                 self.assertEqual(403, caught.exception.code)
-                with mock.patch.dict(connector.LOGIN, {"state": "pending"}), \
+                with mock.patch.dict(connector.LOGIN, {"state": "pending", "qr_ready": True}), \
                      mock.patch.object(connector, "qr_image", return_value=b"\x89PNG\r\n\x1a\nsample") as qr:
                     with opener.open(urllib.request.Request(qr_url, headers={"Cookie": "session=owner"})) as response:
                         self.assertEqual("image/png", response.headers.get("Content-Type"))

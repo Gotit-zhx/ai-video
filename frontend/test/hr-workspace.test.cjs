@@ -161,7 +161,7 @@ test('a stale scanned status cannot roll verification back or restart QR reads',
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
 });
 
-test('an official PC restriction ends the spinner and disables further scans',async()=>{
+test('an official PC restriction stops automatic polling but permits a manual scan',async()=>{
   let restricted=false;
   const app=setup({api:async url=>({data:url.endsWith('/login/status')
     ? restricted
@@ -179,11 +179,13 @@ test('an official PC restriction ends the spinner and disables further scans',as
   assert.equal(progress.hidden,true);
   assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
   assert.equal(app.timers.size,0);
-  const button=all(app.root).find(n=>n.textContent==='等待官方解除限制');
-  assert.equal(button.disabled,true);
+  const button=all(app.root).find(n=>n.textContent==='重新扫码');
+  assert.equal(button.disabled,false);
   assert.match(app.text(),/2026-09-29 13:44:43/);
   assert.equal(all(app.root).find(n=>n.textContent==='清除会话并重新扫码').hidden,true);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  await app.click('重新扫码');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/login/start')&&c.options?.method==='POST').length,1);
 });
 
 test('passing the estimated reopening time permits only an explicit attempt',async()=>{
@@ -192,7 +194,7 @@ test('passing the estimated reopening time permits only an explicit attempt',asy
       error:'预计恢复时间已到，仍需确认官方是否解除限制。'}
     : {ok:false,error:{code:'RECRUITER_VERIFICATION_PENDING'}}})});
   await app.enter('overview');
-  const button=all(app.root).find(n=>n.textContent==='限制解除后重新扫码');
+  const button=all(app.root).find(n=>n.textContent==='重新扫码');
   assert.equal(button.disabled,false);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
   assert.equal(app.timers.size,0);

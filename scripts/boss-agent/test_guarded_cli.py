@@ -76,7 +76,7 @@ class SessionTest(IsolatedTest):
             self.assertEqual("SESSION_UNAVAILABLE", error.exception.code)
             self.assertNotIn("secret-cookie", str(error.exception))
 
-    def test_recovery_is_scoped_to_exact_hold_and_not_early_pc_login(self):
+    def test_explicit_recovery_ignores_historical_date_but_remains_scoped(self):
         guard.RISK_HOLD.write_text('{"code":"ACCOUNT_RISK"}')
         digest = hashlib.sha256(guard.RISK_HOLD.read_bytes()).hexdigest()
         with mock.patch.dict(guard.os.environ, {guard.RECOVERY_ENV: digest}):
@@ -91,10 +91,13 @@ class SessionTest(IsolatedTest):
         digest = hashlib.sha256(guard.RISK_HOLD.read_bytes()).hexdigest()
         with mock.patch.dict(guard.os.environ, {guard.RECOVERY_ENV: digest}), \
              mock.patch.object(guard.time, "time", return_value=1790578000):
+            guard.assert_requests_allowed(recovery=True)
             with self.assertRaises(guard.SessionSafetyError):
-                guard.assert_requests_allowed(recovery=True)
+                guard.assert_requests_allowed()
             guard.persist_stop("SESSION_MISMATCH")
             self.assertEqual("PC_LOGIN_RESTRICTED", json.loads(guard.RISK_HOLD.read_text())["code"])
+            with self.assertRaises(guard.SessionSafetyError):
+                guard.assert_requests_allowed(recovery=True)
 
     def test_disconnect_blocks_even_explicit_recovery(self):
         guard.DISCONNECTED.touch()

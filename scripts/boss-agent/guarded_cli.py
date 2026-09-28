@@ -2,7 +2,6 @@
 """Restrict the pinned SDK without changing its installed files or risk checks."""
 
 import contextlib
-import datetime
 import fcntl
 import functools
 import hashlib
@@ -58,16 +57,9 @@ def assert_requests_allowed(*, recovery=False):
     # A recovery is explicit, tied to the exact paused record, and limited by
     # callers to CDP login/probe or the single recruiter-jobs verification.
     if recovery and os.environ.get(RECOVERY_ENV) == hashlib.sha256(raw).hexdigest():
-        try:
-            record = json.loads(raw)
-            if record.get("code") == "PC_LOGIN_RESTRICTED":
-                until = datetime.datetime.strptime(record["retry_at"], "%Y-%m-%d %H:%M:%S").replace(
-                    tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
-                if time.time() < until.timestamp():
-                    raise ValueError("restriction active")
-            return
-        except (ValueError, KeyError, TypeError, AttributeError):
-            pass
+        # A historical reopening date is informative, not a local ban on a new
+        # explicit scan. A fresh platform refusal changes the permit and stops.
+        return
     raise SessionSafetyError("REQUESTS_PAUSED", "招聘账号已暂停，未发起请求")
 
 
