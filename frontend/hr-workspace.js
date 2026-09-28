@@ -1001,11 +1001,8 @@
           note.textContent = '招聘方账号已连接 · BOSS 直聘';
         }
       }
-      if (action === 'overview'
-          && ['AUTH_REQUIRED','AUTH_EXPIRED','RECRUITER_REQUIRED'].includes(response.data?.error?.code)
-          && !autoLoginAttempted) {
-        startLogin();
-      }
+      // Authentication errors never authorize a new scan or verification.
+      // Recovery uses the existing explicit connect/sync control.
       pagination(box, action, response.data, rows);
       if (action !== 'overview' || logoutButton.hidden) {
         note.textContent = `最近读取：${new Date().toLocaleTimeString()} · 数据来自 BOSS 直聘`;

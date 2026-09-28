@@ -631,11 +631,113 @@ class ConnectorTest(unittest.TestCase):
              mock.patch.object(connector, "cli_json") as cli:
             connector.LOGIN_CANCEL.clear()
             connector.login_worker()
-            self.assertEqual(3, probe.call_count)
+            self.assertEqual(1, probe.call_count)
             self.assertEqual("verification_pending", connector.LOGIN["state"])
             self.assertEqual("JOBS_UNAVAILABLE", connector.LOGIN["failure_code"])
             discard.assert_not_called()
             cli.assert_not_called()
+
+    def test_all_auth_and_risk_failures_persist_stop_across_restart(self):
+        for code in connector.STOP_CODES:
+            with self.subTest(code=code), \
+                 mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+                 mock.patch.object(connector.subprocess, "run", return_value=mock.Mock(
+                     stdout=json.dumps({"ok": False, "error": {"code": code}}).encode())) as run, \
+                 mock.patch.object(connector, "discard_login") as clear:
+                connector.RISK_HOLD.unlink(missing_ok=True)
+                connector.execute({"operation": "jobs"})
+                self.assertEqual(code, connector.held_code())
+                connector.LOGIN["state"] = "idle"
+                connector.restore_login_state()
+                self.assertEqual("verification_pending", connector.LOGIN["state"])
+                connector.execute({"operation": "status"})
+                connector.execute({"operation": "jobs"})
+                connector.poll_resumes_once()
+                self.assertEqual(1, run.call_count)
+                clear.assert_not_called()
+
+    def test_passive_status_never_probes_platform(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "idle"}), \
+             mock.patch.object(connector.subprocess, "run", return_value=mock.Mock(
+                 stdout=b'{"ok":true,"data":{"logged_in":true}}')) as run, \
+             mock.patch.object(connector, "recruiter_probe") as probe:
+            connector.execute({"operation": "status"})
+            probe.assert_not_called()
+            self.assertEqual("status", run.call_args.args[0][-1])
+
+    def test_resume_poll_stops_entire_batch_on_first_risk(self):
+        now = int(connector.time.time())
+        with connector.resume_db() as db:
+            db.executemany("INSERT INTO resume_requests "
+                           "(friend_id,requested_at,baseline_mid,state,updated_at) "
+                           "VALUES (?,?,0,'waiting',?)", [("12345", now, now), ("12346", now, now)])
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "cli_json", return_value={
+                 "ok": False, "error": {"code": "ACCOUNT_RISK"}}) as cli:
+            connector.poll_resumes_once()
+            connector.poll_resumes_once()
+            cli.assert_called_once()
+            self.assertTrue(all(row["state"] == "waiting" for row in connector.tracked_resumes()))
+            self.assertEqual("ACCOUNT_RISK", connector.held_code())
+
+    def test_resume_poll_has_age_batch_and_interval_limits(self):
+        now = int(connector.time.time())
+        with connector.resume_db() as db:
+            db.executemany("INSERT INTO resume_requests "
+                           "(friend_id,requested_at,baseline_mid,state,updated_at) "
+                           "VALUES (?,?,0,'waiting',?)",
+                           [(str(100 + n), now, now) for n in range(5)]
+                           + [("999", now - connector.RESUME_POLL_MAX_AGE - 1, now)])
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "cli_json", return_value={"ok": True, "data": {}}) as cli:
+            connector.poll_resumes_once()
+            self.assertEqual(3, cli.call_count)
+            connector.poll_resumes_once()
+            self.assertEqual(5, cli.call_count)
+            connector.poll_resumes_once()
+            self.assertEqual(5, cli.call_count)
+            self.assertNotIn("999", [call.args[2] for call in cli.call_args_list])
+
+    def test_resume_poll_three_transport_failures_pause_without_losing_checkpoint(self):
+        now = int(connector.time.time())
+        with connector.resume_db() as db:
+            db.execute("INSERT INTO resume_requests "
+                       "(friend_id,requested_at,baseline_mid,state,updated_at) "
+                       "VALUES ('12345',?,10,'waiting',?)", (now, now))
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "cli_json", side_effect=subprocess.TimeoutExpired("mock", 1)) as cli:
+            for n in range(4):
+                with mock.patch.object(connector.time, "time", return_value=now + n * 301):
+                    connector.poll_resumes_once()
+            self.assertEqual(3, cli.call_count)
+            self.assertEqual("MANUAL_REVIEW_REQUIRED", connector.held_code())
+            self.assertEqual("waiting", connector.tracked_resumes()[0]["state"])
+
+    def test_hold_blocks_queued_cli_and_allows_only_explicit_recovery_scope(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector.subprocess, "run", return_value=mock.Mock(stdout=b'{"ok":true}')) as run:
+            connector.pause_requests("ACCOUNT_RISK")
+            connector.cli_json("hr", "jobs", "list")
+            run.assert_not_called()
+            connector.RECOVERY.active = True
+            try:
+                connector.cli_json("hr", "jobs", "list")
+            finally:
+                connector.RECOVERY.active = False
+            run.assert_called_once()
+            self.assertTrue(connector.RISK_HOLD.exists(), "a random success cannot release the hold")
+
+    def test_resume_write_risk_does_not_issue_reconciliation_reads(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "prepare_recruiter_chat"), \
+             mock.patch.object(connector, "cli_json", side_effect=[
+                 {"ok": True, "data": {"messages": []}},
+                 {"ok": False, "error": {"code": "ACCOUNT_RISK"}}]) as cli:
+            with self.assertRaisesRegex(RuntimeError, "ACCOUNT_RISK"):
+                connector.request_resume("12345")
+            self.assertEqual(2, cli.call_count)
+            self.assertEqual("uncertain", connector.tracked_resumes()[0]["state"])
+            self.assertEqual("ACCOUNT_RISK", connector.held_code())
 
     def test_saved_browser_cookie_recovers_after_cli_login_error(self):
         process = mock.MagicMock()

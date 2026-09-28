@@ -49,7 +49,66 @@ RISK_HOLD = Path("/opt/heyi/boss-agent/runtime/recruiter-ip-risk-hold")
 DISCONNECTED = Path("/opt/heyi/boss-agent/runtime/recruiter-disconnected")
 AUTH_DIR = Path("/opt/heyi/boss-agent/accounts/pilot/data/auth")
 CHROME_PROFILE = Path("/opt/heyi/boss-agent/accounts/pilot/chrome-profile")
-RESUME_POLL_SECONDS = 120
+RESUME_POLL_SECONDS = 300
+RESUME_POLL_LIMIT = 3
+RESUME_POLL_MAX_AGE = 7 * 86400
+RECOVERY = threading.local()
+STOP_CODES = {
+    "ACCOUNT_RISK", "ENVIRONMENT_RISK", "IP_RESTRICTED", "AUTH_REQUIRED",
+    "AUTH_EXPIRED", "TOKEN_REFRESH_FAILED", "RATE_LIMITED", "CAPTCHA_REQUIRED",
+    "SECURITY_VERIFICATION_REQUIRED", "REQUEST_BUDGET_EXHAUSTED",
+    "SESSION_POLICY_UNAVAILABLE", "MANUAL_REVIEW_REQUIRED",
+}
+
+
+def pause_requests(code):
+    """Persist only a fixed error code/time, never upstream personal data."""
+    code = code if code in STOP_CODES else "MANUAL_REVIEW_REQUIRED"
+    with LOGIN_LOCK:
+        LOGIN.update(state="verification_pending", phase="", failure_code=code,
+                     error=verification_message(code))
+    if held_code() == code:
+        return
+    RISK_HOLD.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = RISK_HOLD.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"code": code, "since": int(time.time())}))
+    temporary.chmod(0o600)
+    temporary.replace(RISK_HOLD)
+    print(json.dumps({"event": "recruiter_requests_paused", "code": code,
+                      "time": int(time.time())}), flush=True)
+
+
+def held_code():
+    if not RISK_HOLD.is_file():
+        return ""
+    try:
+        code = json.loads(RISK_HOLD.read_text()).get("code")
+        return code if code in STOP_CODES else "MANUAL_REVIEW_REQUIRED"
+    except (ValueError, AttributeError):
+        return "IP_RESTRICTED"  # Original empty marker.
+
+
+def observe_result(envelope):
+    if envelope.get("ok") is False:
+        code = recruiter_failure_code(envelope)
+        if code in STOP_CODES:
+            pause_requests(code)
+            return {**envelope, "error": {"code": code, "message": verification_message(code)}}
+    return envelope
+
+
+def record_cli_result(args, envelope, started):
+    # No IDs, parameters, URLs, messages, credentials or candidate data.
+    operation = args[1] if len(args) > 1 and args[0] == "hr" else args[0]
+    if operation == "status":
+        return
+    print(json.dumps({
+        "event": "recruiter_cli_result", "operation": operation,
+        "ok": envelope.get("ok") is True,
+        "code": "" if envelope.get("ok") is True else safe_error_code(envelope, "CLI_OUTPUT"),
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+        "time": int(time.time()),
+    }), flush=True)
 
 
 def identifier(value):
@@ -86,6 +145,10 @@ def resume_db():
         baseline_mid INTEGER NOT NULL, state TEXT NOT NULL,
         message_id TEXT, updated_at INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '',
         confirmed_at INTEGER
+    )""")
+    connection.execute("""CREATE TABLE IF NOT EXISTS resume_poll_state (
+        friend_id TEXT PRIMARY KEY, last_polled_at INTEGER NOT NULL,
+        failures INTEGER NOT NULL DEFAULT 0
     )""")
     os.chmod(RESUME_DB, 0o600)
     try:
@@ -225,7 +288,8 @@ def request_resume(friend_id, retry_uncertain=False):
             not_sent = code in {"RECRUITER_CHAT_TAB_REQUIRED", "CDP_UNAVAILABLE",
                                "BROWSER_SESSION_NOT_FOUND", "AUTH_REQUIRED", "AUTH_EXPIRED",
                                "INVALID_PARAM", "NOT_SUPPORTED", "ROLE_MISMATCH"}
-            if not not_sent:
+            observe_result(result)
+            if not not_sent and not held_code():
                 try:
                     history = cli_json("hr", "chatmsg", friend_id, "--count", "100", timeout=30)
                     if reconcile_resume_request(history, friend_id, baseline):
@@ -257,29 +321,28 @@ def request_resume(friend_id, retry_uncertain=False):
 
 
 def poll_resumes_once():
-    with resume_db() as connection:
-        pending = connection.execute(
-            "SELECT friend_id, baseline_mid FROM resume_requests WHERE state IN ('waiting','uncertain') "
-            "ORDER BY updated_at ASC LIMIT 20").fetchall()
-    if not pending:
+    if held_code() or DISCONNECTED.is_file():
         return
     with LOGIN_LOCK:
-        state = LOGIN["state"]
-    if state != "complete":
-        if state != "idle" or not LOCK.acquire(blocking=False):
+        if LOGIN["state"] != "complete":
+            # Startup/status reads cannot silently verify or restore a session.
             return
-        try:
-            healthy = ((cli_json("status", timeout=20).get("data") or {})
-                       .get("auth_health") or {}).get("summary") == "healthy"
-            verified = healthy and verify_recruiter()
-            if verified:
-                with LOGIN_LOCK:
-                    if LOGIN["state"] == "idle":
-                        LOGIN["state"] = "complete"
-        finally:
-            LOCK.release()
-        if not verified:
-            return
+    now = int(time.time())
+    with resume_db() as connection:
+        connection.execute(
+            "UPDATE resume_requests SET error=? WHERE state IN ('waiting','uncertain') "
+            "AND requested_at<?",
+            ("自动接收检查已到 7 天期限，记录已保留，请在官方会话查看后续附件。",
+             now - RESUME_POLL_MAX_AGE))
+        pending = connection.execute(
+            "SELECT r.friend_id, r.baseline_mid FROM resume_requests r "
+            "LEFT JOIN resume_poll_state p ON p.friend_id=r.friend_id "
+            "WHERE r.state IN ('waiting','uncertain') AND r.requested_at>=? "
+            "AND COALESCE(p.last_polled_at,0)<=? AND COALESCE(p.failures,0)<3 "
+            "ORDER BY COALESCE(p.last_polled_at,0) ASC LIMIT ?",
+            (now - RESUME_POLL_MAX_AGE, now - RESUME_POLL_SECONDS, RESUME_POLL_LIMIT)).fetchall()
+    if not pending:
+        return
     for row in pending:
         if not LOCK.acquire(timeout=1):
             return
@@ -287,18 +350,38 @@ def poll_resumes_once():
             with LOGIN_LOCK:
                 if LOGIN["state"] != "complete":
                     return
-            result = cli_json("hr", "chatmsg", row["friend_id"], "--count", "100", timeout=45)
+            if held_code():
+                return
+            try:
+                result = observe_result(cli_json(
+                    "hr", "chatmsg", row["friend_id"], "--count", "100", timeout=45))
+            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+                result = {"ok": False, "error": {"code": "NETWORK_ERROR"}}
+            with resume_db() as connection:
+                connection.execute(
+                    "INSERT INTO resume_poll_state VALUES (?,?,?) ON CONFLICT(friend_id) "
+                    "DO UPDATE SET last_polled_at=excluded.last_polled_at, "
+                    "failures=CASE WHEN excluded.failures=0 THEN 0 ELSE failures+1 END",
+                    (row["friend_id"], int(time.time()), 0 if result.get("ok") is True else 1))
         finally:
             LOCK.release()
         if result.get("ok") is not True:
             # Leave the request waiting; a transient read must not erase it.
             code = (result.get("error") or {}).get("code")
-            if code in ("AUTH_REQUIRED", "AUTH_EXPIRED"):
+            if code in STOP_CODES:
                 with resume_db() as connection:
                     connection.execute(
                         "UPDATE resume_requests SET error=? WHERE friend_id=? "
                         "AND state IN ('waiting','uncertain')",
-                        ("招聘账号登录已过期，重新登录后继续检测", row["friend_id"]))
+                        (verification_message(code), row["friend_id"]))
+                return
+            with resume_db() as connection:
+                failures = connection.execute(
+                    "SELECT failures FROM resume_poll_state WHERE friend_id=?",
+                    (row["friend_id"],)).fetchone()[0]
+            if failures >= 3:
+                pause_requests("MANUAL_REVIEW_REQUIRED")
+                return
             continue
         reconcile_resume_request(result, row["friend_id"], row["baseline_mid"])
         mid = incoming_attachment(result, row["friend_id"], row["baseline_mid"])
@@ -425,6 +508,9 @@ def execute(request):
         verified = login_state == "complete"
     if login_state == "disconnected":
         return disconnected_result(request.get("operation"))
+    if held_code() and login_state != "pending":
+        restore_login_state()
+        login_state, verified = "verification_pending", False
     if request.get("operation") == "status" and login_state in ("pending", "verification_pending"):
         with LOGIN_LOCK:
             code = LOGIN["failure_code"]
@@ -450,6 +536,10 @@ def execute(request):
         with LOGIN_LOCK:
             if LOGIN["state"] == "disconnected":
                 return disconnected_result(request.get("operation"))
+        if held_code():
+            error = {"code": held_code(), "message": verification_message(held_code())}
+            return {"ok": True, "result": {"ok": False, "error": error}}
+        started = time.monotonic()
         try:
             result = subprocess.run(
                 [BOSS, "--json", *args], capture_output=True, timeout=90,
@@ -463,36 +553,18 @@ def execute(request):
             envelope = json.loads(result.stdout)
         except (UnicodeDecodeError, json.JSONDecodeError):
             return {"ok": False, "error": {"code": "CLI_OUTPUT", "message": "连接器返回格式异常"}}
+        record_cli_result(args, envelope, started)
+        if request.get("operation") != "status":
+            envelope = observe_result(envelope)
         if request.get("operation") == "status" and envelope.get("ok") is True:
             if not verified:
-                confirmed, code = recruiter_probe()
-                if confirmed:
-                    with LOGIN_LOCK:
-                        LOGIN["state"] = "complete"
-                else:
-                    if code == "ROLE_MISMATCH":
-                        discard_login()
-                        with LOGIN_LOCK:
-                            LOGIN.update(state="failed", failure_code=code,
-                                         error="平台明确拒绝招聘方身份，请检查登录账号")
-                        return {"ok": True, "result": {"ok": False, "error": {
-                            "code": "RECRUITER_REQUIRED",
-                            "message": "平台明确拒绝招聘方身份，请检查登录账号"}}}
-                    with LOGIN_LOCK:
-                        LOGIN.update(state="verification_pending", failure_code=code,
-                                     error=verification_message(code))
-                    return {"ok": True, "result": {"ok": False, "error": {
-                        "code": "RECRUITER_VERIFICATION_PENDING",
-                        "message": verification_message(code)}}}
-        if envelope.get("ok") is False and recruiter_failure_code(envelope) == "IP_RESTRICTED":
-            RISK_HOLD.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            RISK_HOLD.touch(mode=0o600, exist_ok=True)
-            with LOGIN_LOCK:
-                LOGIN.update(state="verification_pending", failure_code="IP_RESTRICTED",
-                             error=verification_message("IP_RESTRICTED"))
-            envelope = dict(envelope)
-            envelope["error"] = {"code": "IP_RESTRICTED",
-                                 "message": verification_message("IP_RESTRICTED")}
+                # A passive status read must not become a live platform probe.
+                with LOGIN_LOCK:
+                    LOGIN.update(state="verification_pending", failure_code="MANUAL_REVIEW_REQUIRED",
+                                 error=verification_message("MANUAL_REVIEW_REQUIRED"))
+                return {"ok": True, "result": {"ok": False, "error": {
+                    "code": "RECRUITER_VERIFICATION_PENDING",
+                    "message": verification_message("MANUAL_REVIEW_REQUIRED")}}}
         return {"ok": True, "result": sanitize(envelope)}
     finally:
         LOCK.release()
@@ -597,12 +669,18 @@ def clear_stored_boss_cookies():
 
 
 def cli_json(*args, timeout=30):
+    code = held_code()
+    if code and not getattr(RECOVERY, "active", False) and args != ("status",):
+        return {"ok": False, "error": {"code": code, "message": verification_message(code)}}
+    started = time.monotonic()
     result = subprocess.run([BOSS, "--json", *args], capture_output=True,
                             timeout=timeout, check=False, env=CLI_ENV)
     if len(result.stdout) > MAX_OUTPUT:
         return {}
     try:
-        return json.loads(result.stdout)
+        envelope = json.loads(result.stdout)
+        record_cli_result(args, envelope, started)
+        return envelope if args == ("status",) else observe_result(envelope)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
@@ -665,11 +743,12 @@ def recruiter_probe():
     jobs = cli_json("hr", "jobs", "list", timeout=45)
     if jobs.get("ok") is True and jobs.get("command") == "recruiter-jobs-list":
         RISK_HOLD.unlink(missing_ok=True)
+        with resume_db() as connection:
+            connection.execute("DELETE FROM resume_poll_state")
         return True, ""
     code = recruiter_failure_code(jobs)
-    if code == "IP_RESTRICTED":
-        RISK_HOLD.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        RISK_HOLD.touch(mode=0o600, exist_ok=True)
+    if code in STOP_CODES:
+        pause_requests(code)
     return False, code
 
 
@@ -683,6 +762,8 @@ def recruiter_failure_code(envelope):
     message = str(error.get("message") or "")
     if "IP地址存在异常行为" in message or "IP 地址存在异常行为" in message:
         return "IP_RESTRICTED"
+    if any(word in message for word in ("安全验证", "验证码", "安全校验")):
+        return "SECURITY_VERIFICATION_REQUIRED"
     return safe_error_code(envelope, "JOBS_UNAVAILABLE")
 
 
@@ -691,7 +772,10 @@ def verification_message(code):
         return ("上次招聘接口返回“IP 地址存在异常行为”，已暂停自动请求并保留登录态。"
                 "若远程浏览器已正常登录，请同步浏览器登录并验证；该提示不代表当前 IP 仍受限。")
     if code in ("BROWSER_LOGIN_REQUIRED", "AUTH_REQUIRED", "AUTH_EXPIRED"):
-        return "浏览器登录尚未完成或已过期，请在 BOSS 页面完成登录后同步验证。当前会话已保留。"
+        return "登录尚未完成或已过期，自动请求已暂停。请在 BOSS 官方页面确认后，手动同步验证；当前会话已保留。"
+    if code in STOP_CODES:
+        return (f"招聘请求已暂停（{code}），当前会话和索取记录已保留。"
+                "请先在 BOSS 官方页面确认账号和安全提示，再手动同步验证；系统不会自动重登或继续重试。")
     return f"招聘方职位接口暂未核验成功（{code}）。当前会话已保留，请同步浏览器登录并验证。"
 
 
@@ -727,6 +811,7 @@ def discard_login():
 def login_worker():
     global LOGIN_PROCESS
     with LOCK:
+        RECOVERY.active = True  # Only this explicitly requested login worker.
         try:
             browser_service("start", "heyi-boss-chrome.service")
             wait_for_cdp()
@@ -759,7 +844,9 @@ def login_worker():
             if LOGIN_CANCEL.is_set():
                 return
             code = safe_error_code(envelope, "LOGIN_INCOMPLETE")
-            if not ok and not had_browser_login:
+            if not ok:
+                observe_result(envelope)
+            if not ok and not had_browser_login and code not in STOP_CODES:
                 try:
                     if chrome_has_login_cookie():
                         had_browser_login = True
@@ -773,23 +860,17 @@ def login_worker():
             if ok:
                 with LOGIN_LOCK:
                     LOGIN["phase"] = "verifying"
-                for attempt in range(3):
-                    try:
-                        confirmed, code = recruiter_probe()
-                    except (OSError, subprocess.TimeoutExpired):
-                        confirmed, code = False, "JOBS_TIMEOUT"
-                    if confirmed or code in ("ACCOUNT_RISK", "ENVIRONMENT_RISK",
-                                              "IP_RESTRICTED"):
-                        break
-                    if attempt < 2:
-                        time.sleep(5 * (attempt + 1))
+                try:
+                    confirmed, code = recruiter_probe()
+                except (OSError, subprocess.TimeoutExpired):
+                    confirmed, code = False, "JOBS_TIMEOUT"
                 if not confirmed:
                     if code == "ROLE_MISMATCH":
                         discard_login()
             with LOGIN_LOCK:
                 LOGIN["state"] = ("complete" if ok and confirmed else
                                   "failed" if ok and code == "ROLE_MISMATCH" else
-                                  "verification_pending" if ok or had_browser_login else "failed")
+                                  "verification_pending" if ok or had_browser_login or code in STOP_CODES else "failed")
                 LOGIN["phase"] = ""
                 LOGIN["failure_code"] = "" if ok and confirmed else code
                 LOGIN["error"] = ("" if ok and confirmed else
@@ -804,18 +885,21 @@ def login_worker():
                 LOGIN["failure_code"] = "LOGIN_RUNTIME_ERROR"
                 LOGIN["error"] = "扫码未完成或登录超时，请重新获取二维码"
         finally:
+            RECOVERY.active = False
             with LOGIN_LOCK:
                 LOGIN_PROCESS = None
 
 
 def verify_saved_login_worker():
     with LOCK:
+        RECOVERY.active = True
         try:
             browser_service("start", "heyi-boss-chrome.service")
             wait_for_cdp()
             if LOGIN_CANCEL.is_set():
                 return
             synced = sync_browser_login()
+            observe_result(synced)
             if LOGIN_CANCEL.is_set():
                 return
             confirmed, code = (recruiter_probe() if synced.get("ok") is True else
@@ -836,7 +920,9 @@ def verify_saved_login_worker():
             with LOGIN_LOCK:
                 LOGIN.update(state="verification_pending", phase="",
                              failure_code="JOBS_TIMEOUT",
-                             error=verification_message("JOBS_TIMEOUT"))
+                                     error=verification_message("JOBS_TIMEOUT"))
+        finally:
+            RECOVERY.active = False
 
 
 def begin_login():
@@ -1186,9 +1272,14 @@ def restore_login_state():
         with LOGIN_LOCK:
             LOGIN.update(state="disconnected", phase="", failure_code="", error="")
     elif RISK_HOLD.is_file():
+        code = held_code()
         with LOGIN_LOCK:
-            LOGIN.update(state="verification_pending", phase="", failure_code="IP_RESTRICTED",
-                         error=verification_message("IP_RESTRICTED"))
+            LOGIN.update(state="verification_pending", phase="", failure_code=code,
+                         error=verification_message(code))
+    elif (AUTH_DIR / "session.enc").is_file():
+        with LOGIN_LOCK:
+            LOGIN.update(state="verification_pending", phase="", failure_code="MANUAL_REVIEW_REQUIRED",
+                         error=verification_message("MANUAL_REVIEW_REQUIRED"))
 
 
 def main():

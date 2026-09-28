@@ -5,6 +5,12 @@ The production connector is isolated from the Hoyee containers. It uses
 Chrome CDP on `127.0.0.1:9222`. The Python virtual environment pins
 `boss-agent-cli==2.0.0`.
 
+The `boss-pilot` wrapper now launches `guarded_cli.py` before the upstream CLI.
+Install this file alongside the wrapper and connector. It enforces single-attempt
+requests, disables implicit token refresh and shares a persistent request budget.
+See [SESSION-SAFETY.md](SESSION-SAFETY.md) for the source review, current limits,
+incident evidence and explicit recovery procedure.
+
 Install the startup scripts and `boss-pilot` wrapper under
 `/opt/heyi/boss-agent/bin/`, and the service files under
 `/etc/systemd/system/`. The connector stays enabled; Chrome and Xvfb are
@@ -56,8 +62,9 @@ The bounded sync child returns only a result code, never cookies or fingerprints
 CDP path uses the separately installed Google Chrome. A direct patchright CDP
 connection to this Chrome was verified without an account login.
 
-The platform administrator `13800000000` opens the recruiter workspace and
-the QR appears automatically for an initial login. An explicit disconnect
+The platform administrator `13800000000` explicitly starts a connection in the
+recruiter workspace. Page loads and auth errors never initiate another login.
+An explicit disconnect
 persists across page reloads and service restarts. The separate
 “清除会话并重新扫码” action explicitly requests a single cleanup followed by
 one QR enrollment; its action lock prevents double-clicked or stale requests
@@ -115,9 +122,12 @@ it never resends. Unconfirmed responses are not labelled successful. The nullabl
 `confirmed_at` tracker column preserves confirmation independently of receipt.
 Receiving an attachment retains the original request time alongside receipt time.
 A private SQLite tracker under
-`runtime/resume-requests.sqlite3` checks pending conversations every two minutes,
-including after a connector restart; only an inbound attachment message newer
-than the request is marked received. The administrator can download that
+`runtime/resume-requests.sqlite3` checks up to three pending conversations every
+five minutes while the account is verified, for at most seven days per request.
+Risk/auth failures pause all requests immediately; three transport failures
+also pause them. A restart preserves the session but requires explicit verification
+before reads resume. Only an inbound attachment message newer than the request
+is marked received. The administrator can download that
 specific attachment through the authenticated bridge. The file is held briefly
 under the private runtime directory and removed after delivery.
 

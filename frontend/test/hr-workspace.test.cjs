@@ -7,6 +7,19 @@ const fixtures = require('./fixtures/hr-workspace.json');
 const source = fs.readFileSync(path.join(__dirname,'../hr-workspace.js'),'utf8');
 const flush = async () => { await new Promise(r=>setImmediate(r));await new Promise(r=>setImmediate(r)); };
 
+test('expired and risk-held sessions never automatically start login on page load', async()=>{
+  for(const code of ['AUTH_EXPIRED','AUTH_REQUIRED','ACCOUNT_RISK','RECRUITER_VERIFICATION_PENDING']) {
+    const app=setup({api:async url=>{
+      if(url.endsWith('/login/status'))return {data:{state:'verification_pending',error:'请求已暂停'}};
+      return {data:{ok:false,error:{code,message:'请求已暂停'}}};
+    }});
+    await app.enter('overview');
+    await app.tick(3000);
+    assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0,code);
+    assert.match(app.text(),/请求已暂停/);
+  }
+});
+
 class Node {
   constructor(tag='div') {
     this.tagName=tag;this.children=[];this.events={};this.dataset={};this.attributes={};
