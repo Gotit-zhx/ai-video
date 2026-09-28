@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import pathlib
+import subprocess
 import tempfile
 import types
 import threading
@@ -35,6 +36,19 @@ class FakeAuth(BaseHTTPRequestHandler):
 
 
 class ConnectorTest(unittest.TestCase):
+    def setUp(self):
+        # Tests may run under the production service account. Never touch its
+        # real hold marker, resume tracker or encrypted credential directory.
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = pathlib.Path(folder.name)
+        for name, path in (("RISK_HOLD", root / "risk"),
+                           ("RESUME_DB", root / "resumes.sqlite3"),
+                           ("AUTH_DIR", root / "auth")):
+            patch = mock.patch.object(connector, name, path)
+            patch.start()
+            self.addCleanup(patch.stop)
+
     def test_scanned_qr_is_never_reloaded_or_clicked_again(self):
         page = mock.MagicMock()
         page.url = "https://www.zhipin.com/web/user/"
@@ -170,16 +184,18 @@ class ConnectorTest(unittest.TestCase):
         with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "qr"}), \
              mock.patch.object(connector, "browser_service"), \
              mock.patch.object(connector, "wait_for_cdp"), \
+             mock.patch.object(connector, "chrome_has_login_cookie", return_value=False), \
              mock.patch.object(connector.subprocess, "Popen", return_value=process), \
              mock.patch.object(connector, "recruiter_probe",
                                return_value=(False, "IP_RESTRICTED")) as probe, \
-             mock.patch.object(connector, "close_browser"), \
+             mock.patch.object(connector, "close_browser") as close, \
              mock.patch.object(connector, "discard_login") as discard:
             connector.LOGIN_CANCEL.clear()
             connector.login_worker()
             probe.assert_called_once()
             self.assertEqual("verification_pending", connector.LOGIN["state"])
             discard.assert_not_called()
+            close.assert_not_called()
             self.assertNotIn("--force", connector.subprocess.Popen.call_args.args[0])
 
     def test_runtime_ip_restriction_stops_later_reads(self):
@@ -217,6 +233,7 @@ class ConnectorTest(unittest.TestCase):
         with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "qr"}), \
              mock.patch.object(connector, "browser_service"), \
              mock.patch.object(connector, "wait_for_cdp"), \
+             mock.patch.object(connector, "chrome_has_login_cookie", return_value=False), \
              mock.patch.object(connector.subprocess, "Popen", return_value=process), \
              mock.patch.object(connector, "recruiter_probe",
                                return_value=(False, "JOBS_UNAVAILABLE")) as probe, \
@@ -241,15 +258,134 @@ class ConnectorTest(unittest.TestCase):
              mock.patch.object(connector, "browser_service"), \
              mock.patch.object(connector, "wait_for_cdp"), \
              mock.patch.object(connector.subprocess, "Popen", return_value=process), \
-             mock.patch.object(connector, "chrome_has_login_cookie", return_value=True), \
-             mock.patch.object(connector, "cli_json", return_value={"ok": True}) as cli, \
+             mock.patch.object(connector, "chrome_has_login_cookie", side_effect=[False, True]), \
+             mock.patch.object(connector, "sync_browser_login", return_value={"ok": True}) as sync, \
+             mock.patch.object(connector, "cli_json") as cli, \
              mock.patch.object(connector, "recruiter_probe", return_value=(True, "")), \
              mock.patch.object(connector, "discard_login") as discard:
             connector.LOGIN_CANCEL.clear()
             connector.login_worker()
             self.assertEqual("complete", connector.LOGIN["state"])
-            cli.assert_called_once_with("login", "--cdp", "--timeout", "45", timeout=65)
+            sync.assert_called_once_with()
+            cli.assert_not_called()
             discard.assert_not_called()
+
+    def test_existing_browser_login_never_runs_cli_login(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "pending"}), \
+             mock.patch.object(connector, "browser_service"), \
+             mock.patch.object(connector, "wait_for_cdp"), \
+             mock.patch.object(connector, "chrome_has_login_cookie", return_value=True), \
+             mock.patch.object(connector, "sync_browser_login", return_value={"ok": True}), \
+             mock.patch.object(connector.subprocess, "Popen") as login, \
+             mock.patch.object(connector, "recruiter_probe", return_value=(True, "")):
+            connector.LOGIN_CANCEL.clear()
+            connector.login_worker()
+            self.assertEqual("complete", connector.LOGIN["state"])
+            login.assert_not_called()
+
+    def test_retry_syncs_current_browser_before_reading_recruiter_jobs(self):
+        order = []
+        with mock.patch.dict(connector.LOGIN, {"state": "pending"}), \
+             mock.patch.object(connector, "browser_service"), \
+             mock.patch.object(connector, "wait_for_cdp"), \
+             mock.patch.object(connector, "sync_browser_login",
+                               side_effect=lambda: (order.append("sync") or {"ok": True})), \
+             mock.patch.object(connector, "recruiter_probe",
+                               side_effect=lambda: (order.append("jobs") or (True, ""))), \
+             mock.patch.object(connector, "close_browser") as close:
+            connector.LOGIN_CANCEL.clear()
+            connector.verify_saved_login_worker()
+            self.assertEqual(["sync", "jobs"], order)
+            self.assertEqual("complete", connector.LOGIN["state"])
+            close.assert_not_called()
+
+    def test_sync_failure_preserves_browser_and_never_probes_old_credentials(self):
+        for code in ("AUTH_EXPIRED", "BROWSER_SYNC_TIMEOUT", "BROWSER_LOGIN_REQUIRED"):
+            with self.subTest(code=code), \
+                 mock.patch.dict(connector.LOGIN, {"state": "pending"}), \
+                 mock.patch.object(connector, "browser_service"), \
+                 mock.patch.object(connector, "wait_for_cdp"), \
+                 mock.patch.object(connector, "sync_browser_login",
+                                   return_value={"ok": False, "error": {"code": code}}), \
+                 mock.patch.object(connector, "recruiter_probe") as probe, \
+                 mock.patch.object(connector, "close_browser") as close, \
+                 mock.patch.object(connector, "discard_login") as discard:
+                connector.LOGIN_CANCEL.clear()
+                connector.verify_saved_login_worker()
+                self.assertEqual("verification_pending", connector.LOGIN["state"])
+                self.assertEqual(code, connector.LOGIN["failure_code"])
+                probe.assert_not_called()
+                close.assert_not_called()
+                discard.assert_not_called()
+
+    def test_sync_process_timeout_is_bounded_and_does_not_clear_browser(self):
+        with mock.patch.object(connector.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired("sync", 60)) as run, \
+             mock.patch.object(connector, "discard_login") as discard:
+            self.assertEqual("BROWSER_SYNC_TIMEOUT",
+                             connector.sync_browser_login()["error"]["code"])
+            self.assertEqual(60, run.call_args.kwargs["timeout"])
+            discard.assert_not_called()
+
+    def test_connector_restart_preserves_browser_and_historical_hold(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(connector, "RISK_HOLD", pathlib.Path(folder) / "risk"), \
+             mock.patch.dict(connector.LOGIN, {"state": "idle"}), \
+             mock.patch.object(connector, "close_browser") as close, \
+             mock.patch.object(connector, "recruiter_probe") as probe:
+            connector.RISK_HOLD.touch()
+            connector.restore_login_state()
+            self.assertEqual("verification_pending", connector.LOGIN["state"])
+            self.assertIn("上次", connector.LOGIN["error"])
+            close.assert_not_called()
+            probe.assert_not_called()
+
+    def test_safe_reuse_saves_only_after_upstream_success_without_force_fallback(self):
+        class StaleSession(RuntimeError):
+            pass
+        class AccountRisk(RuntimeError):
+            pass
+        class EnvironmentRisk(RuntimeError):
+            pass
+        browser = types.ModuleType("boss_agent_cli.auth.browser")
+        browser.ReusedSessionStaleError = StaleSession
+        browser.login_via_cdp = mock.Mock()
+        store = types.ModuleType("boss_agent_cli.auth.token_store")
+        store.TokenStore = mock.Mock()
+        errors = types.ModuleType("boss_agent_cli.api.client")
+        errors.AccountRiskError = AccountRisk
+        errors.EnvironmentRiskError = EnvironmentRisk
+        modules = {"boss_agent_cli.auth.browser": browser,
+                   "boss_agent_cli.auth.token_store": store,
+                   "boss_agent_cli.api.client": errors}
+        with mock.patch.dict("sys.modules", modules), \
+             mock.patch.object(connector, "chrome_has_login_cookie", return_value=True):
+            browser.login_via_cdp.side_effect = StaleSession("secret fingerprint")
+            self.assertEqual({"ok": False, "error": {"code": "AUTH_EXPIRED"}},
+                             connector.sync_browser_login_result())
+            browser.login_via_cdp.assert_called_once_with(
+                cdp_url="http://127.0.0.1:9222", timeout=30,
+                platform="zhipin", reuse_existing=True)
+            store.TokenStore.assert_not_called()
+            browser.login_via_cdp.side_effect = None
+            browser.login_via_cdp.return_value = {"cookies": {"wt2": "test-only"}}
+            self.assertEqual({"ok": True}, connector.sync_browser_login_result())
+            store.TokenStore.return_value.save.assert_called_once_with(
+                {"cookies": {"wt2": "test-only"}})
+
+    def test_successful_recruiter_read_clears_only_the_old_risk_hold(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(connector, "RISK_HOLD", pathlib.Path(folder) / "risk"):
+            connector.RISK_HOLD.touch()
+            status = {"ok": True}
+            with mock.patch.object(connector, "cli_json", side_effect=[
+                status, {"ok": False, "error": {"code": "NETWORK_ERROR"}}]):
+                self.assertFalse(connector.recruiter_probe()[0])
+                self.assertTrue(connector.RISK_HOLD.exists())
+            with mock.patch.object(connector, "cli_json", side_effect=[
+                status, {"ok": True, "command": "recruiter-jobs-list"}]):
+                self.assertTrue(connector.recruiter_probe()[0])
+                self.assertFalse(connector.RISK_HOLD.exists())
 
     def test_allowlist_and_secret_redaction(self):
         self.assertEqual(["hr", "jobs", "list"], connector.command({"operation": "jobs"}))

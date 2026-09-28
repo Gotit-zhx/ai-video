@@ -13,6 +13,7 @@ for _ in $(seq 1 30); do
             --no-first-run \
             --no-default-browser-check \
             --disable-dev-shm-usage \
+            --restore-last-session \
             about:blank
     fi
     sleep 1

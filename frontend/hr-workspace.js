@@ -169,7 +169,7 @@
         loginButton.hidden = state.state === 'complete';
         resetLoginButton.hidden = state.state !== 'verification_pending';
         loginButton.textContent = state.state === 'verification_pending'
-          ? '重试招聘方验证' : '重新获取二维码';
+          ? '同步浏览器登录并验证' : '重新获取二维码';
         loginButton.disabled = false;
         loginMessage.textContent = state.state === 'complete' ? '扫码成功，正在刷新账号状态…'
           : state.state === 'verification_pending' ? (state.error || '已扫码，正在核对招聘方接口')
@@ -202,7 +202,7 @@
     loginButton.hidden = true;
     loginBox.hidden = false;
     loginMessage.textContent = loginButton.textContent.includes('验证')
-      ? '正在重试招聘方身份验证…' : '正在打开 BOSS 登录页…';
+      ? '正在同步浏览器登录并验证招聘方身份…' : '正在打开 BOSS 登录页…';
     try {
       await api('/api/v1/hr/login/start', {method:'POST'});
       stopLoginPolling();

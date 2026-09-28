@@ -8,8 +8,10 @@ Chrome CDP on `127.0.0.1:9222`. The Python virtual environment pins
 Install the startup scripts and `boss-pilot` wrapper under
 `/opt/heyi/boss-agent/bin/`, and the service files under
 `/etc/systemd/system/`. The connector stays enabled; Chrome and Xvfb are
-disabled at boot and start only for QR enrollment. They stop on logout or
-failed recruiter verification. A narrow sudoers rule permits the unprivileged
+disabled at boot and start only for login or verification. They stop on logout or
+an explicit recruiter role rejection. Inconclusive verification and connector
+restarts preserve the browser, including a manually scanned session.
+A narrow sudoers rule permits the unprivileged
 connector account to start/stop only these BOSS services. VNC and noVNC
 services are deliberately disabled at boot; an administrator can start them
 temporarily for account enrollment. They listen only on loopback (`5908` and
@@ -43,6 +45,13 @@ runuser -u heyi-boss -- /opt/heyi/boss-agent/bin/boss-pilot doctor
 upstream `login --cdp` flow only after the actual recruiter authorizes that
 account. The connector does not pass `--force`; an explicit logout clears
 this isolated account before any switch.
+When Chrome already has a login, or the administrator retries verification,
+the connector first synchronizes the browser into the CLI's encrypted store
+using upstream `login_via_cdp(reuse_existing=True)`, then checks recruiter jobs.
+It intentionally bypasses `AuthManager.login` for reuse: upstream can fall back
+to a forced QR login after a stale-session probe. Sync failures preserve the
+browser and previous credentials; they never silently force another scan.
+The bounded sync child returns only a result code, never cookies or fingerprints.
 `doctor` also warns that patchright's bundled Chromium is absent; the selected
 CDP path uses the separately installed Google Chrome. A direct patchright CDP
 connection to this Chrome was verified without an account login.
@@ -65,6 +74,9 @@ If BOSS reports abnormal server IP behavior, the connector preserves the
 session, stops automatic recruiter probes across service restarts, and displays
 the platform restriction. The account owner may retry verification after
 checking the warning through official BOSS channels.
+That retained warning describes the previous response, not a permanent IP ban.
+An explicit verification retry imports the latest browser login before making
+one recruiter jobs check; successful verification removes the old hold.
 Recruiting reads remain gated by `/api/v1/auth/me` on every request. The sole
 enabled write is an explicit attachment-resume request for a specified
 conversation, after browser confirmation. QR login and background polling
@@ -75,7 +87,27 @@ than the request is marked received. The administrator can download that
 specific attachment through the authenticated bridge. The file is held briefly
 under the private runtime directory and removed after delivery.
 
+### Chinese text on the remote desktop
+
+Install the official distribution CJK fonts before starting Chrome:
+
+```sh
+apt-get install -y --no-install-recommends fonts-noto-cjk
+fc-cache -f
+runuser -u heyi-boss -- fc-match 'sans-serif:lang=zh-cn'
+```
+
+The match should be Noto Sans CJK SC. If Chrome was already running without
+these fonts, a page reload may retain the old fallback cache. Restart Chrome
+with the same dedicated profile and restore its tabs; never remove the profile
+or clear cookies to repair font rendering. Confirm Chinese text visually.
+
 ### Production release
+
+For the September 28 login-sync fix, use `release-login-sync.sh` with its staged
+manifest and documented baseline checks. It snapshots the running frontend,
+updates the connector and HR script together, and verifies that the running
+Chrome session and business containers survive the release.
 
 Use the **running frontend** as the source of truth. Capture its live
 `app.js`, `index.html`, and `default.conf`, patch just the HR entries with

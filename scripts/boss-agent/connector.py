@@ -2,8 +2,10 @@
 """Local-only, allowlisted JSON bridge for the Hoyee recruiter workspace."""
 
 import json
+import io
 import os
 import re
+import sys
 import time
 import grp
 import socketserver
@@ -43,6 +45,7 @@ SYSTEMCTL = ["/usr/bin/sudo", "-n", "/usr/bin/systemctl"]
 RESUME_DIR = Path("/opt/heyi/boss-agent/runtime/resumes")
 RESUME_DB = Path("/opt/heyi/boss-agent/runtime/resume-requests.sqlite3")
 RISK_HOLD = Path("/opt/heyi/boss-agent/runtime/recruiter-ip-risk-hold")
+AUTH_DIR = Path("/opt/heyi/boss-agent/accounts/pilot/data/auth")
 RESUME_POLL_SECONDS = 120
 
 
@@ -376,10 +379,6 @@ def execute(request):
             envelope = dict(envelope)
             envelope["error"] = {"code": "IP_RESTRICTED",
                                  "message": verification_message("IP_RESTRICTED")}
-            try:
-                close_browser()
-            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                pass
         return {"ok": True, "result": sanitize(envelope)}
     finally:
         LOCK.release()
@@ -433,6 +432,57 @@ def cli_json(*args, timeout=30):
         return {}
 
 
+def sync_browser_login_result():
+    """Reuse upstream CDP extraction without AuthManager's forced-login fallback."""
+    from boss_agent_cli.auth.browser import login_via_cdp, ReusedSessionStaleError
+    from boss_agent_cli.auth.token_store import TokenStore
+    from boss_agent_cli.api.client import AccountRiskError, EnvironmentRiskError
+
+    try:
+        # Do not turn a verification retry into a new QR enrollment.
+        if not chrome_has_login_cookie():
+            return {"ok": False, "error": {"code": "BROWSER_LOGIN_REQUIRED"}}
+        # Upstream diagnostics can include account fingerprints. Never forward them.
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            token = login_via_cdp(cdp_url="http://127.0.0.1:9222", timeout=30,
+                                  platform="zhipin", reuse_existing=True)
+        if not isinstance(token, dict) or not (token.get("cookies") or {}).get("wt2"):
+            return {"ok": False, "error": {"code": "AUTH_REQUIRED"}}
+        TokenStore(AUTH_DIR).save(token)
+        return {"ok": True}
+    except ReusedSessionStaleError:
+        code = "AUTH_EXPIRED"
+    except AccountRiskError:
+        code = "ACCOUNT_RISK"
+    except EnvironmentRiskError:
+        code = "ENVIRONMENT_RISK"
+    except TimeoutError:
+        code = "BROWSER_SYNC_TIMEOUT"
+    except Exception:
+        # Never serialize an upstream exception: it may contain credentials/URLs.
+        code = "BROWSER_SYNC_FAILED"
+    return {"ok": False, "error": {"code": code}}
+
+
+def sync_browser_login():
+    # CDP evaluations in upstream code may hang. Bound the child process while
+    # keeping the independent Chrome session and previous encrypted token intact.
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "--sync-browser-login"],
+            capture_output=True, timeout=60, check=False, env=CLI_ENV)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": {"code": "BROWSER_SYNC_TIMEOUT"}}
+    try:
+        envelope = json.loads(result.stdout) if len(result.stdout) <= 1024 else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        envelope = {}
+    if result.returncode == 0 and isinstance(envelope, dict) and envelope.get("ok") is True:
+        return {"ok": True}
+    code = safe_error_code(envelope if isinstance(envelope, dict) else {}, "BROWSER_SYNC_FAILED")
+    return {"ok": False, "error": {"code": code}}
+
+
 def recruiter_probe():
     status = cli_json("status", timeout=20)
     if status.get("ok") is not True:
@@ -463,9 +513,11 @@ def recruiter_failure_code(envelope):
 
 def verification_message(code):
     if code == "IP_RESTRICTED":
-        return ("扫码凭据已保存，但 BOSS 平台提示当前服务器 IP 地址存在异常行为，"
-                "招聘接口暂不可用。请先在 BOSS 官方端检查安全提示；恢复后重试验证，无需反复扫码。")
-    return f"扫码凭据已保存，招聘方职位接口暂未核验成功（{code}）。登录态已保留，请重试验证。"
+        return ("上次招聘接口返回“IP 地址存在异常行为”，已暂停自动请求并保留登录态。"
+                "若远程浏览器已正常登录，请同步浏览器登录并验证；该提示不代表当前 IP 仍受限。")
+    if code in ("BROWSER_LOGIN_REQUIRED", "AUTH_REQUIRED", "AUTH_EXPIRED"):
+        return "浏览器登录尚未完成或已过期，请在 BOSS 页面完成登录后同步验证。当前会话已保留。"
+    return f"招聘方职位接口暂未核验成功（{code}）。当前会话已保留，请同步浏览器登录并验证。"
 
 
 def verify_recruiter():
@@ -503,36 +555,44 @@ def login_worker():
             wait_for_cdp()
             if LOGIN_CANCEL.is_set():
                 return
-            process = subprocess.Popen(
-                [BOSS, "--json", "login", "--cdp", "--timeout", str(LOGIN_TIMEOUT)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=CLI_ENV)
-            with LOGIN_LOCK:
-                LOGIN_PROCESS = process
-            if LOGIN_CANCEL.is_set():
-                process.terminate()
-            try:
-                stdout, _ = process.communicate(timeout=LOGIN_TIMEOUT + 45)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate()
-                raise
-            try:
-                envelope = json.loads(stdout)
-                ok = process.returncode == 0 and envelope.get("ok") is True
-            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-                envelope = {}
-                ok = False
+            had_browser_login = chrome_has_login_cookie()
+            if had_browser_login:
+                envelope = sync_browser_login()
+                ok = envelope.get("ok") is True
+            else:
+                process = subprocess.Popen(
+                    [BOSS, "--json", "login", "--cdp", "--timeout", str(LOGIN_TIMEOUT)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=CLI_ENV)
+                with LOGIN_LOCK:
+                    LOGIN_PROCESS = process
+                if LOGIN_CANCEL.is_set():
+                    process.terminate()
+                try:
+                    stdout, _ = process.communicate(timeout=LOGIN_TIMEOUT + 45)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                    raise
+                try:
+                    envelope = json.loads(stdout)
+                    ok = process.returncode == 0 and envelope.get("ok") is True
+                except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                    envelope = {}
+                    ok = False
             if LOGIN_CANCEL.is_set():
                 return
             code = safe_error_code(envelope, "LOGIN_INCOMPLETE")
-            if not ok:
+            if not ok and not had_browser_login:
                 try:
                     if chrome_has_login_cookie():
-                        recovered = cli_json("login", "--cdp", "--timeout", "45", timeout=65)
+                        had_browser_login = True
+                        recovered = sync_browser_login()
                         ok = recovered.get("ok") is True
                         code = safe_error_code(recovered, "LOGIN_INCOMPLETE") if not ok else ""
                 except (OSError, subprocess.TimeoutExpired):
                     code = "LOGIN_RECOVERY_FAILED"
+            if LOGIN_CANCEL.is_set():
+                return
             if ok:
                 with LOGIN_LOCK:
                     LOGIN["phase"] = "verifying"
@@ -549,29 +609,18 @@ def login_worker():
                 if not confirmed:
                     if code == "ROLE_MISMATCH":
                         discard_login()
-                    else:
-                        close_browser()
-            else:
-                # Only clear an incomplete CLI login, not a successfully scanned
-                # account whose recruiter endpoint could not be reached.
-                cli_json("logout", timeout=15)
-                close_browser()
             with LOGIN_LOCK:
                 LOGIN["state"] = ("complete" if ok and confirmed else
                                   "failed" if ok and code == "ROLE_MISMATCH" else
-                                  "verification_pending" if ok else "failed")
+                                  "verification_pending" if ok or had_browser_login else "failed")
                 LOGIN["phase"] = ""
                 LOGIN["failure_code"] = "" if ok and confirmed else code
                 LOGIN["error"] = ("" if ok and confirmed else
                                   "平台明确拒绝招聘方身份，请检查登录账号"
                                   if ok and code == "ROLE_MISMATCH" else
-                                  verification_message(code) if ok else
+                                  verification_message(code) if ok or had_browser_login else
                                   f"登录凭据未建立（{code}）。请使用当前二维码扫码并在手机确认。")
         except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            try:
-                close_browser()
-            except Exception:
-                pass
             with LOGIN_LOCK:
                 LOGIN["state"] = "failed"
                 LOGIN["phase"] = ""
@@ -587,7 +636,15 @@ def verify_saved_login_worker():
         try:
             browser_service("start", "heyi-boss-chrome.service")
             wait_for_cdp()
-            confirmed, code = recruiter_probe()
+            if LOGIN_CANCEL.is_set():
+                return
+            synced = sync_browser_login()
+            if LOGIN_CANCEL.is_set():
+                return
+            confirmed, code = (recruiter_probe() if synced.get("ok") is True else
+                               (False, safe_error_code(synced, "BROWSER_SYNC_FAILED")))
+            if LOGIN_CANCEL.is_set():
+                return
             if not confirmed and code == "ROLE_MISMATCH":
                 discard_login()
             with LOGIN_LOCK:
@@ -598,17 +655,11 @@ def verify_saved_login_worker():
                 LOGIN["error"] = ("" if confirmed else
                                   "平台明确拒绝招聘方身份，请检查登录账号"
                                   if code == "ROLE_MISMATCH" else verification_message(code))
-            if not confirmed and code != "ROLE_MISMATCH":
-                close_browser()
         except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
             with LOGIN_LOCK:
                 LOGIN.update(state="verification_pending", phase="",
                              failure_code="JOBS_TIMEOUT",
                              error=verification_message("JOBS_TIMEOUT"))
-            try:
-                close_browser()
-            except Exception:
-                pass
 
 
 def begin_login():
@@ -933,14 +984,17 @@ class HttpServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
 
-def main():
-    # A service restart kills its login worker but not the separate Chrome unit.
-    # Close that orphan before accepting a new QR session.
-    close_browser()
+def restore_login_state():
+    # Chrome is independent: a connector restart must not close a user's
+    # manually scanned session. Restore the hold, then await explicit verification.
     if RISK_HOLD.is_file():
         with LOGIN_LOCK:
             LOGIN.update(state="verification_pending", phase="", failure_code="IP_RESTRICTED",
                          error=verification_message("IP_RESTRICTED"))
+
+
+def main():
+    restore_login_state()
     with resume_db():
         pass
     SOCKET.parent.mkdir(mode=0o710, parents=True, exist_ok=True)
@@ -959,4 +1013,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--sync-browser-login"]:
+        print(json.dumps(sync_browser_login_result()))
+    else:
+        main()
