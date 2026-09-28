@@ -49,6 +49,47 @@ class ConnectorTest(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
+    def test_resume_preserves_realistic_long_security_and_tilde_entity_ids(self):
+        security = "a" * 700 + "~" + "B" * 45 + "=="
+        args = connector.command({"operation": "resume", "geekId": "~geek-id~test",
+                                  "jobId": "job-test", "securityId": security})
+        self.assertEqual(["hr", "resume", "~geek-id~test", "--job-id", "job-test",
+                          "--security-id", security], args)
+        self.assertEqual(748, len(args[-1]))
+        self.assertEqual("~job-test", connector.identifier("~job-test"))
+
+    def test_security_id_remains_bounded_and_rejects_argument_injection(self):
+        for value in ("", "a" * 4097, "--help", "valid\nid", "id x", "id;whoami",
+                      "id$(whoami)", "id`whoami`", "id/../../", "汉字", "token\x00"):
+            with self.subTest(value_type=value[:12]), self.assertRaises(ValueError):
+                connector.security_identifier(value)
+        self.assertEqual("a" * 4096, connector.security_identifier("a" * 4096))
+        with self.assertRaises(ValueError):
+            connector.identifier("a" * 181)
+
+    def test_http_resume_preserves_long_query_and_keeps_request_limit(self):
+        security = "a" * 2300 + "~tail=="
+        handler = object.__new__(connector.HttpHandler)
+        handler.authorized = mock.Mock(return_value=200)
+        handler.send_json = mock.Mock()
+        handler.path = "/api/v1/hr/resume?" + urllib.parse.urlencode({
+            "geekId": "~geek-test", "jobId": "job-test", "securityId": security})
+        with mock.patch.object(connector, "execute", return_value={
+                "ok": True, "result": {"ok": True, "data": {}}}) as execute:
+            handler.do_GET()
+            request = execute.call_args.args[0]
+            self.assertEqual(security, request["securityId"])
+            self.assertEqual("~geek-test", request["geekId"])
+            self.assertEqual(200, handler.send_json.call_args.args[0])
+            self.assertEqual(security, connector.command(request)[-1])
+            execute.reset_mock()
+            handler.authorized.reset_mock()
+            handler.path = "/api/v1/hr/resume?" + "a" * connector.MAX_REQUEST
+            handler.do_GET()
+            self.assertEqual(414, handler.send_json.call_args.args[0])
+            handler.authorized.assert_not_called()
+            execute.assert_not_called()
+
     def test_scanned_qr_is_never_reloaded_or_clicked_again(self):
         page = mock.MagicMock()
         page.url = "https://www.zhipin.com/web/user/"

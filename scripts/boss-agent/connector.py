@@ -30,7 +30,8 @@ AUTH_URL = "http://127.0.0.1:8080/api/v1/auth/me"
 MAX_REQUEST = 8192
 MAX_OUTPUT = 4 * 1024 * 1024
 LOCK = threading.Lock()
-ID = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_\-=]{0,179}$")
+ID = re.compile(r"^[A-Za-z0-9_~][A-Za-z0-9_~\-=]{0,179}$")
+SECURITY_ID = re.compile(r"^[A-Za-z0-9_~][A-Za-z0-9_~\-=]{0,4095}$")
 SECRET_KEY = re.compile(r"(cookie|token|stoken|wt2|secret|authorization|password)", re.I)
 LOGIN_TIMEOUT = 300
 LOGIN_LOCK = threading.Lock()
@@ -53,6 +54,16 @@ def identifier(value):
     text = str(value or "").strip()
     if not ID.fullmatch(text):
         raise ValueError("标识格式不正确")
+    return text
+
+
+def security_identifier(value):
+    # BOSS recommendation cards carry ~750-character opaque security IDs.
+    # They are not short entity IDs. Preserve their full value without decoding,
+    # truncating or logging it; subprocess receives a single literal argument.
+    text = str(value or "")
+    if not SECURITY_ID.fullmatch(text):
+        raise ValueError("简历访问凭据格式不正确，请重新获取候选人后再试")
     return text
 
 
@@ -301,7 +312,7 @@ def command(request):
         args = ["hr", "resume", identifier(request.get("geekId")),
                 "--job-id", identifier(request.get("jobId"))]
         if request.get("securityId"):
-            args.extend(["--security-id", identifier(request["securityId"])])
+            args.extend(["--security-id", security_identifier(request["securityId"])])
         return args
     raise ValueError("不支持的只读操作")
 
@@ -837,7 +848,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         return 200
 
     def do_GET(self):
-        if len(self.path) > 2048:
+        if len(self.path) > MAX_REQUEST:
             self.send_json(414, {"success": False, "message": "查询条件过长"})
             return
         access = self.authorized()

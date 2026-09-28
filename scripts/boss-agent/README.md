@@ -104,6 +104,25 @@ or clear cookies to repair font rendering. Confirm Chinese text visually.
 
 ### Production release
 
+The September 28 resume/theme repair uses `release-resume-theme.sh`. Stage
+`connector.py`, `hr-workspace.css`, `test_connector.py`, and
+`compose.release.yaml` with their SHA-256 manifest. The script checks the
+previous visual release, keeps its live HTML and other assets, and changes
+only the HR stylesheet and its cache versions along with the connector.
+The stylesheet uses `resend-theme.css` tokens for both light and dark modes.
+Release scripts contain version-specific baseline hashes; do not reuse them
+unchanged for later deployments.
+
+Resume access credentials are opaque strings, not short entity IDs. Observed
+recommendations contain 744–748-character `securityId` values and `~` in some
+encrypted IDs. Preserve these exactly as single CLI arguments. The connector
+allows up to 4096 characters for the credential, keeps entity IDs at 180,
+and bounds HTTP queries at 8192 characters. Tests cover the real length/format,
+HTTP query round trips, and rejection of malformed or option-like arguments.
+For live verification, read a current recommended candidate's online resume
+and record only success and section counts, never the credential or resume
+content. Viewing an online resume must not send a greeting or request.
+
 For the September 28 login-sync fix, use `release-login-sync.sh` with its staged
 manifest and documented baseline checks. It snapshots the running frontend,
 updates the connector and HR script together, and verifies that the running

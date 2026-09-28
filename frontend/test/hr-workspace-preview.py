@@ -5,18 +5,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HTML = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>招聘工作台 · 本地界面验收</title><link rel="stylesheet" href="/hr-workspace.css">
+<title>招聘工作台 · 本地界面验收</title><link rel="stylesheet" href="/resend-theme.css"><link rel="stylesheet" href="/hr-workspace.css">
 <style>
-body{margin:0;background:#f4f6f9;color:#1d2c43;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+body{margin:0;background:var(--surface-soft);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
 *{box-sizing:border-box} .qa-shell{display:grid;grid-template-columns:205px minmax(0,1fr)}
-aside{padding:32px 20px;background:#fff;border-right:1px solid #e1e7ec;min-height:100vh}
+aside{padding:32px 20px;background:#0a0a0a;color:#fff;border-right:1px solid #242424;min-height:100vh}
 aside strong{display:block;font-size:25px;letter-spacing:.08em;margin-bottom:40px}
-nav a{display:block;text-decoration:none;color:#61728a;padding:13px 15px;font-size:14px;border-radius:10px;margin:4px 0}
-nav a.active{color:#255e70;background:#eaf1f4;font-weight:650}
-.qa-notice{margin:15px 30px 0;font-size:11px;color:#8b692c}
+nav a{display:block;text-decoration:none;color:#a5a5a5;padding:13px 15px;font-size:14px;border-radius:6px;margin:4px 0}
+nav a.active{color:#fff;background:#262626;font-weight:650}
+.qa-notice{margin:15px 30px 0;font-size:11px;color:var(--muted)}
 @media(max-width:700px){.qa-shell{display:block}aside{min-height:0;padding:15px}aside strong{margin:0 0 10px;font-size:20px}nav{display:flex;overflow:auto}nav a{flex:none;padding:10px}.qa-notice{margin:12px 18px}}
-[data-theme=dark] body{background:#101a25;color:#dce5ee;--surface:#1a2735;--text:#dce5ee}
-[data-theme=dark] aside{background:#15212d;border-color:#324556}
 </style><div class="qa-shell"><aside><strong>HOYEE</strong><nav>
 <a href="#hr-overview" data-hr-route="overview">招聘工作台</a>
 <a href="#hr-jobs" data-hr-route="jobs">职位管理</a>
@@ -53,6 +51,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         allowed = {"/hr-workspace.js": ("text/javascript", ROOT / "hr-workspace.js"),
+                   "/resend-theme.css": ("text/css", ROOT / "resend-theme.css"),
                    "/hr-workspace.css": ("text/css", ROOT / "hr-workspace.css"),
                    "/fixtures": ("application/json", ROOT / "test/fixtures/hr-workspace.json")}
         if path == "/":
