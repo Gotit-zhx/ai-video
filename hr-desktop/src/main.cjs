@@ -158,7 +158,7 @@ async function launch(){
       },
       inspect:inspectBoss,qr,
       refresh:async()=>{createBoss().webContents.reload();},
-      connected:()=>{show('platform');},
+      connected:()=>{show(platformView.webContents.getURL()?'platform':'home');},
       clear:async()=>{
         if(bossView){if(active==='boss')show('home');bossView.webContents.close();bossView=null;}
         // Electron profile is exclusive to this app. Never call remote logout.
@@ -222,7 +222,7 @@ async function launch(){
     {label:'编辑',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},
     {label:'窗口',submenu:[{role:'minimize'},{label:'显示主窗口',click:()=>main.show()}]},
   ]));
-  const icon=nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR42mNkYGD4z0ABYBw1YNSAUQNGDQAAHCAEHXifvoEAAAAASUVORK5CYII=');
+  const icon=nativeImage.createFromPath(path.join(__dirname,'../assets/icon.png')).resize({width:20,height:20});
   if(!selfTest){
     tray=new Tray(icon);tray.setToolTip('赫逸招聘助手');
     tray.setContextMenu(Menu.buildFromTemplate([

@@ -47,6 +47,18 @@ test('restriction visible in browser blocks sync and recruiter verification',asy
   assert.equal(engine.state.failure_code,'ACCOUNT_RISK');
   assert.equal(calls.length,0);
 });
+test('pausing while browser observation is in flight cannot continue login',async t=>{
+  const {engine,calls}=await fixture(t);
+  let resolve;
+  engine.browser.inspect=()=>new Promise(r=>{resolve=r;});
+  await engine.start();
+  const observed=engine.observe();
+  engine.pause();
+  resolve({text:'',token:{cookies:{wt2:'fixture-token'}}});
+  await observed;
+  assert.equal(calls.length,0);
+  assert.equal(engine.state.state,'verification_pending');
+});
 test('local pairing enforces Origin, Host, credentials and route allowlist',async t=>{
   const {engine,calls}=await fixture(t);
   const bridge=new LocalBridge({engine,authorize:async()=>user,pair:async()=>({expiresAt:Date.now()/1000+60})});

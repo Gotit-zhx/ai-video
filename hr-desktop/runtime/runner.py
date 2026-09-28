@@ -117,6 +117,9 @@ def main(request):
         return {"ok": True, "data": c.request_resume(request["friendId"], retry_uncertain=False)}
     if operation == "poll-resumes":
         c.poll_resumes_once()
+        if c.held_code():
+            return {"ok": False, "error": {"code": c.held_code(),
+                    "message": "平台会话已暂停，请在官方页面确认账号状态"}}
         return {"ok": True, "data": c.tracked_resumes()}
     if operation == "download-resume":
         output = c.download_resume(request["friendId"], request["messageId"])
@@ -135,7 +138,18 @@ if __name__ == "__main__":
         # Existing connector logging never reaches stdout/stderr of the app.
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = main(request)
-    except Exception:
-        result = {"ok": False, "error": {"code": "LOCAL_RUNTIME_ERROR",
-                  "message": "本机执行未完成，已停止；未自动重试或重新发送"}}
+    except Exception as error:
+        code = "LOCAL_RUNTIME_ERROR"
+        try:
+            import connector
+            code = connector.held_code() or code
+        except Exception:
+            pass
+        message = "本机执行未完成，已停止；未自动重试或重新发送"
+        # Only local fixed errors may be displayed. Provider exceptions can
+        # contain private URLs and must not cross the process boundary.
+        text = str(error)
+        if text.startswith(("请在应用的 BOSS 页面", "该会话已有未完成的简历请求")):
+            message = text
+        result = {"ok": False, "error": {"code": code, "message": message}}
     sys.stdout.write(json.dumps(result, ensure_ascii=False))

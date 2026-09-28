@@ -8,7 +8,7 @@ const ORIGIN = 'https://hoyee.org.cn';
 const STOP = new Set(['ACCOUNT_RISK','ENVIRONMENT_RISK','IP_RESTRICTED','AUTH_REQUIRED','AUTH_EXPIRED',
   'TOKEN_REFRESH_FAILED','RATE_LIMITED','CAPTCHA_REQUIRED','SECURITY_VERIFICATION_REQUIRED',
   'REQUEST_BUDGET_EXHAUSTED','SESSION_POLICY_UNAVAILABLE','MANUAL_REVIEW_REQUIRED',
-  'PC_LOGIN_RESTRICTED','LOGIN_RISK_CONTROL','SESSION_MISMATCH','SESSION_UNAVAILABLE']);
+  'PC_LOGIN_RESTRICTED','LOGIN_RISK_CONTROL','SESSION_MISMATCH','SESSION_UNAVAILABLE','REQUESTS_PAUSED']);
 function restriction(text) {
   const compact = text.replace(/\s+/g, '');
   if (/关闭了?(PC|电脑)端登录权限|(PC|电脑)端登录权限(已|被)?关闭/i.test(compact)) {
@@ -105,7 +105,7 @@ class Recruiter extends EventEmitter {
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
   pause(code='USER_PAUSED'){
     this.generation++;this.paused=true;clearInterval(this.loginTimer);this.loginTimer=null;
-    if(this.state.state==='pending')this.state={...this.state,state:'verification_pending',phase:'',
+    if(['pending','complete'].includes(this.state.state))this.state={...this.state,state:'verification_pending',phase:'',
       failure_code:'MANUAL_REVIEW_REQUIRED',error:'本机连接已暂停。需要时请手动连接。'};
     this.event(code);
   }
@@ -128,6 +128,7 @@ class Recruiter extends EventEmitter {
     return key;
   }
   async call(operation,extra={}) {
+    if(!['sync','clear','tracked','hold'].includes(operation))await this.checkOwner();
     if(this.busy) throw Error('本机正在处理另一项操作，请稍后再试');
     this.busy=true;this.emit('change',this.snapshot());
     try {
@@ -174,7 +175,7 @@ class Recruiter extends EventEmitter {
         this.event('LOGIN_TIMEOUT');return;
       }
       if(!sample.token?.cookies?.wt2){
-        this.state.phase=/扫描成功|请在App端确认|扫码成功/.test(sample.text||'')?'scanned':'qr';
+        this.state.phase=/已扫码|扫描成功|请在app端确认|请在手机上确认|扫码成功/i.test(sample.text||'')?'scanned':'qr';
         return;
       }
       clearInterval(this.loginTimer);this.loginTimer=null;
@@ -232,7 +233,7 @@ class Recruiter extends EventEmitter {
       const ok=data=>response({success:true,data});
       if(route.startsWith('desktop/'))return null;
       if(method==='GET'&&route==='login/status')return ok(this.state);
-      if(method==='GET'&&route==='status')return ok(this.state.state==='complete'
+      if(method==='GET'&&route==='status')return ok(this.state.state==='complete'&&!this.paused
         ? {ok:true,data:{authenticated:true,role:'recruiter',runtime:'local'}}
         : {ok:false,error:{code:this.state.state==='pending'?'LOGIN_PENDING':'RECRUITER_VERIFICATION_PENDING',message:this.state.error}});
       if(method==='POST'&&route==='login/start')return ok(await this.start());
