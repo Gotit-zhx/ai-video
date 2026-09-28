@@ -49,6 +49,7 @@ CLI_ENV = {"HOME": "/opt/heyi/boss-agent",
 SYSTEMCTL = ["/usr/bin/sudo", "-n", "/usr/bin/systemctl"]
 RESUME_DIR = Path("/opt/heyi/boss-agent/runtime/resumes")
 RESUME_DB = Path("/opt/heyi/boss-agent/runtime/resume-requests.sqlite3")
+RESUME_AUTO_PAUSE = Path("/opt/heyi/boss-agent/runtime/resume-auto-pause")
 RISK_HOLD = Path("/opt/heyi/boss-agent/runtime/recruiter-ip-risk-hold")
 DISCONNECTED = Path("/opt/heyi/boss-agent/runtime/recruiter-disconnected")
 AUTH_DIR = Path("/opt/heyi/boss-agent/accounts/pilot/data/auth")
@@ -364,7 +365,7 @@ def request_resume(friend_id, retry_uncertain=False):
 
 
 def poll_resumes_once():
-    if held_code() or DISCONNECTED.is_file():
+    if held_code() or DISCONNECTED.is_file() or RESUME_AUTO_PAUSE.exists():
         return
     with LOGIN_LOCK:
         if LOGIN["state"] != "complete":
@@ -393,7 +394,7 @@ def poll_resumes_once():
             with LOGIN_LOCK:
                 if LOGIN["state"] != "complete":
                     return
-            if held_code():
+            if held_code() or RESUME_AUTO_PAUSE.exists():
                 return
             try:
                 result = observe_result(cli_json(
@@ -637,6 +638,25 @@ def close_browser():
 
 
 def prepare_recruiter_chat_result():
+    """Include chat-page navigation in the same account gate/budget/audit."""
+    try:
+        from guarded_cli import (
+            install_policy, request_trace, assert_requests_allowed,
+            reserve_request, verify_session,
+        )
+        install_policy()
+        with request_trace("browser", "PREPARE_RECRUITER_CHAT", "NAVIGATE"):
+            assert_requests_allowed()
+            reserve_request()
+            assert_requests_allowed()
+            verify_session()
+            return prepare_recruiter_chat_page()
+    except Exception as error:
+        code = getattr(error, "code", "")
+        return {"ok": False, "code": code if code in STOP_CODES else "CHAT_PAGE_NOT_READY"}
+
+
+def prepare_recruiter_chat_page():
     """Open/reuse the authenticated chat tab without sending any messages."""
     from patchright.sync_api import sync_playwright
     try:
@@ -681,6 +701,9 @@ def prepare_recruiter_chat():
         envelope = {}
     if isinstance(envelope, dict) and envelope.get("ok") is True:
         return
+    if isinstance(envelope, dict) and envelope.get("code") in STOP_CODES:
+        pause_requests(envelope["code"])
+        raise RuntimeError(verification_message(envelope["code"]))
     if isinstance(envelope, dict) and envelope.get("code") == "BROWSER_LOGIN_REQUIRED":
         raise RuntimeError("BOSS 浏览器登录已过期，本次简历请求未发送，请先重新连接招聘账号")
     raise RuntimeError("BOSS 沟通页面准备失败，本次简历请求未发送，请稍后重试")

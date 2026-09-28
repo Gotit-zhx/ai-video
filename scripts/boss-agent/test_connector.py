@@ -47,6 +47,7 @@ class ConnectorTest(unittest.TestCase):
         for name, path in (("RISK_HOLD", root / "risk"),
                            ("DISCONNECTED", root / "disconnected"),
                            ("RESUME_DB", root / "resumes.sqlite3"),
+                           ("RESUME_AUTO_PAUSE", root / "resume-auto-pause"),
                            ("LOGIN_ATTEMPTS_DB", root / "login-attempts.sqlite3"),
                            ("AUTH_DIR", root / "auth"),
                            ("CHROME_PROFILE", root / "chrome-profile")):
@@ -73,6 +74,63 @@ class ConnectorTest(unittest.TestCase):
         with mock.patch.dict(connector.LOGIN), mock.patch.object(connector, "cli_json", side_effect=cli):
             self.assertEqual((False, "ACCOUNT_RISK"), connector.recruiter_probe())
             self.assertEqual("ACCOUNT_RISK", connector.held_code())
+
+    def test_observation_pause_prevents_old_account_resume_polling(self):
+        now = int(connector.time.time())
+        with connector.resume_db() as db:
+            db.execute("INSERT INTO resume_requests "
+                       "(friend_id,requested_at,baseline_mid,state,updated_at) "
+                       "VALUES ('12345',?,10,'waiting',?)", (now, now))
+        connector.RESUME_AUTO_PAUSE.touch()
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "cli_json") as cli:
+            connector.poll_resumes_once()
+        cli.assert_not_called()
+        self.assertEqual("waiting", connector.tracked_resumes()[0]["state"])
+
+    def test_chat_preparation_rechecks_hold_after_budget_before_navigation(self):
+        module = types.ModuleType("guarded_cli")
+        module.install_policy = mock.Mock()
+        module.request_trace = mock.MagicMock()
+        module.assert_requests_allowed = mock.Mock(side_effect=[None, RuntimeError("paused")])
+        module.reserve_request = mock.Mock()
+        module.verify_session = mock.Mock()
+        with mock.patch.dict("sys.modules", {"guarded_cli": module}), \
+             mock.patch.object(connector, "prepare_recruiter_chat_page") as navigate:
+            self.assertFalse(connector.prepare_recruiter_chat_result()["ok"])
+            navigate.assert_not_called()
+            module.verify_session.assert_not_called()
+            module.reserve_request.assert_called_once()
+
+    def test_chat_preparation_success_reserves_once_and_verifies_before_navigation(self):
+        module = types.ModuleType("guarded_cli")
+        module.install_policy = mock.Mock()
+        module.request_trace = mock.MagicMock()
+        module.assert_requests_allowed = mock.Mock()
+        module.reserve_request = mock.Mock()
+        module.verify_session = mock.Mock()
+        with mock.patch.dict("sys.modules", {"guarded_cli": module}), \
+             mock.patch.object(connector, "prepare_recruiter_chat_page",
+                               return_value={"ok": True}) as navigate:
+            self.assertTrue(connector.prepare_recruiter_chat_result()["ok"])
+            module.reserve_request.assert_called_once()
+            module.verify_session.assert_called_once()
+            navigate.assert_called_once()
+
+    def test_chat_preparation_budget_failure_stops_before_navigation(self):
+        from guarded_cli import BudgetExhausted
+        module = types.ModuleType("guarded_cli")
+        module.install_policy = mock.Mock()
+        module.request_trace = mock.MagicMock()
+        module.assert_requests_allowed = mock.Mock()
+        module.reserve_request = mock.Mock(side_effect=BudgetExhausted("budget"))
+        module.verify_session = mock.Mock()
+        with mock.patch.dict("sys.modules", {"guarded_cli": module}), \
+             mock.patch.object(connector, "prepare_recruiter_chat_page") as navigate:
+            self.assertEqual({"ok": False, "code": "REQUEST_BUDGET_EXHAUSTED"},
+                             connector.prepare_recruiter_chat_result())
+            navigate.assert_not_called()
+            module.verify_session.assert_not_called()
 
     def test_disconnect_preserves_all_risk_holds_and_session_checks(self):
         for code in ("ACCOUNT_RISK", "ENVIRONMENT_RISK", "SESSION_MISMATCH"):
@@ -719,7 +777,7 @@ class ConnectorTest(unittest.TestCase):
         module = types.ModuleType("patchright.sync_api")
         module.sync_playwright = mock.Mock(return_value=playwright)
         with mock.patch.dict("sys.modules", {"patchright.sync_api": module}):
-            self.assertEqual({"ok": True}, connector.prepare_recruiter_chat_result())
+            self.assertEqual({"ok": True}, connector.prepare_recruiter_chat_page())
             page.goto.assert_called_once_with("https://www.zhipin.com/web/chat/index",
                                               wait_until="domcontentloaded", timeout=25000)
             context.new_page.assert_not_called()
@@ -728,10 +786,10 @@ class ConnectorTest(unittest.TestCase):
             page.close.assert_not_called()
             page.goto.reset_mock()
             page.url = "https://www.zhipin.com/web/chat/index"
-            self.assertEqual({"ok": True}, connector.prepare_recruiter_chat_result())
+            self.assertEqual({"ok": True}, connector.prepare_recruiter_chat_page())
             page.goto.assert_not_called()
             context.cookies.return_value = []
-            self.assertEqual("BROWSER_LOGIN_REQUIRED", connector.prepare_recruiter_chat_result()["code"])
+            self.assertEqual("BROWSER_LOGIN_REQUIRED", connector.prepare_recruiter_chat_page()["code"])
 
     def test_chat_preparation_process_is_bounded_and_reports_unsent(self):
         with mock.patch.object(connector.subprocess, "run", side_effect=subprocess.TimeoutExpired("python", 50)):

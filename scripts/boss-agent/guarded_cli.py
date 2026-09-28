@@ -210,7 +210,7 @@ def request_trace(channel, endpoint, method, *, recovery=False):
 
 
 class BudgetExhausted(RuntimeError):
-    pass
+    code = "REQUEST_BUDGET_EXHAUSTED"
 
 
 def reserve_request():

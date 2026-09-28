@@ -114,6 +114,16 @@ class SessionTest(IsolatedTest):
             guard.audit("synthetic", "start", "http", "https://host/?cookie=secret", "GET")
         self.assertNotIn(b"secret", guard.AUDIT_DB.read_bytes())
 
+    def test_navigation_budget_exhaustion_is_audited_and_persisted(self):
+        with self.assertRaises(guard.BudgetExhausted):
+            with guard.request_trace("browser", "PREPARE_RECRUITER_CHAT", "NAVIGATE"):
+                raise guard.BudgetExhausted("budget")
+        self.assertEqual("REQUEST_BUDGET_EXHAUSTED",
+                         json.loads(guard.RISK_HOLD.read_text())["code"])
+        with contextlib.closing(sqlite3.connect(guard.AUDIT_DB)) as db:
+            outcome = db.execute("SELECT outcome FROM events WHERE event='finish'").fetchone()[0]
+        self.assertEqual("REQUEST_BUDGET_EXHAUSTED", outcome)
+
 
 class BudgetTest(unittest.TestCase):
     def setUp(self):
