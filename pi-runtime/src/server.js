@@ -3072,7 +3072,8 @@ async function runProductFunctionAnalysis(body) {
     throw new Error("没有可供分析的商品图片");
   }
   const analysisType = String(body?.context?.analysisType || "PRODUCT_FUNCTION_V1").trim();
-  if (analysisType === "COMMERCE_DRAPE_STYLE_V1") {
+  if (analysisType === "COMMERCE_DRAPE_STYLE_V1" || analysisType === "COMMERCE_DRAPE_STYLE_V2"
+      || analysisType === "COMMERCE_DRAPE_STYLE_V4") {
     return runCommerceDrapeStyleAnalysis(body, requestAnalysisChat, extractJsonObject);
   }
   if (analysisType === "COMMERCE_MODEL_DETAIL_V1") {
@@ -3354,14 +3355,21 @@ async function handlePlatformImageGeneration(request, response) {
     background: String(body.background || ""),
     outputFormat: String(body.outputFormat || ""),
     productMockup: body.productMockup === true,
+    singleProviderAttempt: body.singleProviderAttempt === true,
     ...(body.detailGrid === true ? {detailGrid:true} : {}),
     deferDownload: true,
     onProgress, operation
     }, references);
   };
-  const result = body.progressRequestId
-    ? await imageOperationStore.execute(body.progressRequestId, body, generate)
-    : await generate(null);
+  const pending = body.progressRequestId
+    ? imageOperationStore.execute(body.progressRequestId, body, generate)
+    : generate(null);
+  if (body.asyncResult === true && body.progressRequestId) {
+    pending.then(() => onProgress("RESPONSE_RECEIVED"), () => onProgress("FAILED"));
+    json(response, 202, { operationId: body.progressRequestId, status: "RUNNING" });
+    return;
+  }
+  const result = await pending;
   onProgress("RESPONSE_RECEIVED");
   if (body.progressRequestId && !imageExecutionProgress.has(body.progressRequestId)) beginImageProgress(body.progressRequestId)("RESPONSE_RECEIVED");
   json(response, 200, result);

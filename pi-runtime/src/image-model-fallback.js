@@ -30,7 +30,8 @@ export async function callImageModelWithCopyrightFallback(config, params, inputI
   const requiresNativeAlpha = params?.background === "transparent";
   const detailGrid = params?.detailGrid === true && !requiresNativeAlpha;
   const productMockup = params?.productMockup === true || detailGrid;
-  const singleSubmission = requiresNativeAlpha || productMockup;
+  const singleProviderAttempt = params?.singleProviderAttempt === true;
+  const singleSubmission = requiresNativeAlpha || productMockup || singleProviderAttempt;
   if (requiresNativeAlpha && !supportsNativeTransparentPng(config)) {
     throw Object.assign(new Error("当前图片模型未确认支持原生透明 PNG，尚未发起模型调用"), {
       requestState: "REJECTED", failureKind: "PROVIDER", failureCode: "NATIVE_TRANSPARENT_PNG_UNSUPPORTED",
@@ -58,11 +59,11 @@ export async function callImageModelWithCopyrightFallback(config, params, inputI
   try {
     // Transparent artwork and product scenes keep one POST. The grid opts into
     // two durable network recoveries on this model; it cannot use a backup.
-    return await callSingleImageModel(config, paramsWithProgress(0, detailGrid ? 2 : singleSubmission || hasBackup ? 0 : undefined), inputImages);
+    return await callSingleImageModel(config, paramsWithProgress(0, singleProviderAttempt ? 0 : detailGrid ? 2 : singleSubmission || hasBackup ? 0 : undefined), inputImages);
   } catch (error) {
     // Final commerce photos also own a durable budgeted attempt. A timeout or
     // refusal must not silently spend another POST or switch to another model.
-    if (productMockup && !requiresNativeAlpha) throw error;
+    if (singleProviderAttempt || productMockup && !requiresNativeAlpha) throw error;
     fallbackRoute = authorizedCopyrightFallback(config, error);
     if (requiresNativeAlpha) {
       // Retain the primary's exact refusal/unknown/download state. In particular,

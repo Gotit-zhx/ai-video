@@ -99,6 +99,39 @@ function harness(dir, reply, store = new ImageOperationStore(dir)) {
   };
 }
 
+test("video grid returns an acknowledgement while the original generation continues, then reuses its result", async t => {
+  const dir = await fixture(t);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const runtime = harness(dir, async () => { await gate; return generated(); });
+  const body = { ...input("video-grid-async"), asyncResult: true, singleProviderAttempt: true };
+  const acknowledgement = await runtime.platform(body);
+  assert.equal(acknowledgement.status, 202);
+  assert.equal((await runtime.lookup(body.progressRequestId)).body.status, "RUNNING");
+  const duplicate = await runtime.platform(body);
+  assert.equal(duplicate.status, 202);
+  release();
+  const saved = await runtime.store.active.get(body.progressRequestId).promise;
+  assert.equal(runtime.calls.length, 1);
+  assert.equal(saved.artifact.dataBase64, PNG);
+  const restarted = harness(dir, () => { throw Error("must not submit again"); });
+  await restarted.platform(body);
+  await restarted.store.active.get(body.progressRequestId).promise;
+  assert.equal(restarted.calls.length, 0);
+  assert.equal((await restarted.lookup(body.progressRequestId)).body.status, "COMPLETED");
+});
+
+test("video grid disables hidden transport retries and model fallback", async t => {
+  const dir = await fixture(t);
+  const runtime = harness(dir, () => { throw disconnected(); });
+  const body = { ...input("video-grid-budget"), singleProviderAttempt: true };
+  await assert.rejects(runtime.platform(body), /fetch failed/);
+  assert.equal(runtime.calls.length, 1);
+  const restarted = harness(dir, () => { throw Error("must not resubmit after restart"); });
+  await assert.rejects(restarted.platform(body), /fetch failed/);
+  assert.equal(restarted.calls.length, 0);
+});
+
 test('dedicated product scene unknown submission remains one paid POST through reattach and restart', async t => {
   const dir = await fixture(t);
   const body = { ...input('product-scene-unknown'), productMockup: true,

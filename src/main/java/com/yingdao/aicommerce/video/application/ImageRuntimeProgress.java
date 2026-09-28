@@ -21,8 +21,15 @@ final class ImageRuntimeProgress {
         this.client = client.mutate().requestFactory(factory).build();
     }
     String begin(String itemId, String assetType) {
-        String id = UUID.randomUUID().toString();
-        active.put(id, new TrackedRequest(itemId, assetType));
+        return begin(itemId, assetType, UUID.randomUUID().toString());
+    }
+    String begin(String itemId, String assetType, String id) {
+        return begin(itemId, assetType, id, 0);
+    }
+    String begin(String itemId, String assetType, String id, int previouslyObserved) {
+        TrackedRequest tracked = new TrackedRequest(itemId, assetType);
+        tracked.attempts = previouslyObserved;
+        active.put(id, tracked);
         ImageExecutionProgress.record(mapper, itemId, assetType, "GENERATION_QUEUED");
         return id;
     }

@@ -592,12 +592,17 @@ class AiVideoImageProcessorTest {
         processor.saveTopologyCandidate(task, item, "STORYBOARD_GRID",
                 new AiVideoImageProcessor.TopologyCandidate(
                         "image/png", new byte[] {1}, "model", "generate", "提示", ""));
+        Path directory = topologyDirectory(tempDirectory, task, item);
+        Files.writeString(directory.resolve("storyboard_grid.requests.json"), "paid-grid-receipt");
+        Files.writeString(directory.resolve("storyboard_guide.requests.json"), "paid-guide-receipt");
 
         processor.resetTopologyRetryState(task, item, java.util.List.of("STORYBOARD_GRID"));
 
         assertNull(processor.loadTopologyRetryState(task, item, "STORYBOARD_GRID"));
         assertNull(processor.loadTopologyCandidate(task, item, "STORYBOARD_GRID"));
-        verify(pendingMapper).delete(any());
+        assertFalse(Files.exists(directory.resolve("storyboard_grid.requests.json")));
+        assertFalse(Files.exists(directory.resolve("storyboard_guide.requests.json")));
+        verify(pendingMapper, times(2)).delete(any());
     }
 
     private static AiVideoTaskItem item() {

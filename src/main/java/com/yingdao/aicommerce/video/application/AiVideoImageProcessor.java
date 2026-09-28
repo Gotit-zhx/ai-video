@@ -138,6 +138,7 @@ public class AiVideoImageProcessor {
     private final ObjectMapper objectMapper;
     private final RestClient piClient;
     private final ImageRuntimeProgress imageRuntimeProgress;
+    private final AiVideoImageGateway imageGateway;
     private final Executor imageExecutor;
     private final Executor imageCoordinatorExecutor;
     private final Set<String> activeGenerationTaskIds = ConcurrentHashMap.newKeySet();
@@ -176,6 +177,7 @@ public class AiVideoImageProcessor {
         this.ossStorage = ossStorage.getIfAvailable();
         this.piClient = RestClient.builder().baseUrl(piRuntimeUrl).defaultHeader("X-Internal-Token", piRuntimeToken).build();
         this.imageRuntimeProgress = new ImageRuntimeProgress(itemMapper, piClient);
+        this.imageGateway = new AiVideoImageGateway(piClient, objectMapper);
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
         this.videoScriptStorageRoot = Path.of(videoScriptStorageRoot).toAbsolutePath().normalize();
     }
@@ -286,6 +288,8 @@ public class AiVideoImageProcessor {
     }
 
     static boolean retryableImageTransientFailure(String message) {
+        if (message != null && (message.contains("IMAGE_GENERATION_LIMIT:")
+                || message.contains("IMAGE_RESULT_UNKNOWN:"))) return false;
         if (message != null && (message.startsWith("VIDEO_REVIEW_PAUSED:") || message.startsWith("VIDEO_GRID_REJECTED:"))) return false;
         if (message == null || message.isBlank()) return false;
         if (ProductFunctionAnalysisService.isStructureAnalysisPaused(message))
@@ -856,7 +860,8 @@ public class AiVideoImageProcessor {
                         pending = null;
                     }
                     if (!state.mayProcessReservedAttempt(
-                            reservedInThisInvocation, pending != null)) {
+                            reservedInThisInvocation, pending != null
+                                    || Files.isRegularFile(topologyCandidatePath(task, item, assetType, ".requests.json")))) {
                         // The process stopped after reserving this slot but before persisting a
                         // recoverable result. Count the slot as consumed; never replay the POST.
                         state = state.abandonReservation();
@@ -877,6 +882,8 @@ public class AiVideoImageProcessor {
                                 ? call(task, item, assetType, model, state.reservedPrompt(), references)
                                 : downloadPendingImage(model, state.reservedPrompt(), pending);
                     } catch (Exception generationFailure) {
+                        if (readable(generationFailure).contains("IMAGE_GENERATION_LIMIT:") && best != null)
+                            return storeFinalTopologyCandidate(task, item, assetType, best.candidate());
                         // A failed request with no saved provider result produced no candidate and
                         // therefore does not consume one of the four candidate slots. A saved URL
                         // keeps the reservation so recovery only retries its download.
@@ -1217,11 +1224,15 @@ public class AiVideoImageProcessor {
     public void resetTopologyRetryState(AiVideoTask task, AiVideoTaskItem item,
                                         List<String> assetTypes) {
         if (task == null || item == null || assetTypes == null) return;
-        for (String assetType : assetTypes) {
+        var resetTypes = new java.util.LinkedHashSet<>(assetTypes);
+        if (resetTypes.contains("STORYBOARD_GRID")) resetTypes.add("STORYBOARD_GUIDE");
+        for (String assetType : resetTypes) {
             try { itemMapper.resetImageStep(item.getId(), assetType); }
             catch (RuntimeException exception) { log.warn("Could not reset image telemetry for item {}", item.getId()); }
             clearPendingImageResult(item.getId(), assetType);
             discardTopologyRetryState(task, item, assetType);
+            // Only explicit regeneration grants a fresh budget. Automatic retries never do.
+            deleteTopologyFiles(task, item, assetType, ".requests.json");
         }
     }
 
@@ -1659,15 +1670,14 @@ public class AiVideoImageProcessor {
         body.put("size", PORTRAIT_4K_SIZE);
         body.put("inputFidelity", references.isEmpty() ? "" : "high");
         body.put("references", references);
-        String progressId = imageRuntimeProgress.begin(item.getId(), assetType);
-        body.put("progressRequestId", progressId);
-        PiImageResponse response;
-        try {
-            response = piClient.post().uri("/v1/images/generate")
-                    .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(PiImageResponse.class);
-        } finally {
-            imageRuntimeProgress.finish(progressId);
-        }
+        AiVideoTaskItem latest = itemMapper.selectById(item.getId());
+        int historicalAttempts = historicalImageAttempts(latest, assetType);
+        String requestHash = sha256((model.modelId() + "\n" + model.baseUrl() + "\n" + promptHash)
+                .getBytes(StandardCharsets.UTF_8));
+        PiImageResponse response = objectMapper.convertValue(imageGateway.generate(
+                topologyCandidatePath(task, item, assetType, ".requests.json"),
+                requestHash, historicalAttempts, body, imageRuntimeProgress, item.getId(), assetType),
+                PiImageResponse.class);
         if (response != null && response.artifact() != null && response.artifact().dataBase64() != null) {
             return response.artifact();
         }
@@ -1679,6 +1689,16 @@ public class AiVideoImageProcessor {
                 promptHash, result.url(), result.mimeType(), result.modelId(), result.mode(), result.revisedPrompt());
         pendingImageResultMapper.insert(pending);
         return downloadPendingImage(model, prompt, pending);
+    }
+
+    private int historicalImageAttempts(AiVideoTaskItem item, String assetType) {
+        if (item == null || item.getImageProgressJson() == null) return 0;
+        try {
+            return Math.max(0, objectMapper.readTree(item.getImageProgressJson())
+                    .path(assetType).path("generationAttempts").asInt(0));
+        } catch (RuntimeException invalid) {
+            throw new IllegalStateException("IMAGE_GENERATION_LIMIT: 历史生图次数无法核对，已停止新增生图", invalid);
+        }
     }
 
     private PiArtifact downloadPendingImage(ModelConfigService.RuntimeModelConnection model, String prompt,
