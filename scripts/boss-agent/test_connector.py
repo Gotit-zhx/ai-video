@@ -187,6 +187,53 @@ class ConnectorTest(unittest.TestCase):
                 connector.pause_requests(restriction["code"], retry_at=restriction["retry_at"])
                 self.assertTrue(connector.login_snapshot()["retry_allowed"])
                 self.assertEqual("PC_LOGIN_RESTRICTED", connector.held_code())
+
+    def test_realname_linked_restriction_overrides_scanned_status(self):
+        restriction = connector.login_restriction_from_text(
+            "扫描成功\n请在App端确认登录\n安全提示\n"
+            "您好，由于您实名绑定的上一账号，关闭了PC端登录权限。"
+            "在上一账号PC端登录权限恢复正常前，您实名认证的当前账号也做同步限制。\n"
+            "预计开启时间：2026-09-29 13:44:05")
+        self.assertEqual({"code": "PC_LOGIN_RESTRICTED",
+                          "retry_at": "2026-09-29 13:44:05",
+                          "reason": "REALNAME_LINKED_ACCOUNT"}, restriction)
+        with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "scanned"}):
+            connector.pause_requests(**restriction)
+            state = connector.login_snapshot()
+            self.assertEqual("verification_pending", state["state"])
+            self.assertEqual("", state["phase"])
+            self.assertTrue(state["retry_allowed"])
+            self.assertIn("实名绑定的上一账号", state["error"])
+            self.assertIn("2026-09-29 13:44:05", state["error"])
+            # A subsequent local safety error must not erase the platform reason.
+            connector.pause_requests("SESSION_MISMATCH")
+            self.assertEqual("REALNAME_LINKED_ACCOUNT", connector.pc_login_restriction_reason())
+
+    def test_pc_restriction_recognizes_completed_and_reversed_wording(self):
+        for text in ("关闭了PC端登录权限", "关闭了电脑端登录权限",
+                     "PC端登录权限已关闭", "电脑端登录权限被关闭"):
+            with self.subTest(text=text):
+                self.assertEqual("PC_LOGIN_RESTRICTED",
+                                 connector.login_restriction_from_text(text)["code"])
+
+    def test_linked_restriction_stops_wait_without_next_platform_request(self):
+        process = mock.Mock()
+        process.communicate.side_effect = subprocess.TimeoutExpired("login", 5)
+        with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "scanned"}), \
+             mock.patch.object(connector, "observe_login_page", return_value={
+                 "code": "PC_LOGIN_RESTRICTED", "retry_at": "2026-09-29 13:44:05",
+                 "reason": "REALNAME_LINKED_ACCOUNT"}), \
+             mock.patch.object(connector, "stop_login_process") as stop, \
+             mock.patch.object(connector, "close_browser") as close, \
+             mock.patch.object(connector, "cli_json") as cli:
+            connector.LOGIN_CANCEL.clear()
+            self.addCleanup(connector.LOGIN_CANCEL.clear)
+            self.assertEqual(b"", connector.wait_for_login_process(process))
+            stop.assert_called_once_with(process)
+            close.assert_not_called()
+            cli.assert_not_called()
+            self.assertEqual("verification_pending", connector.LOGIN["state"])
+            self.assertEqual("REALNAME_LINKED_ACCOUNT", connector.pc_login_restriction_reason())
         self.assertIsNone(connector.login_restriction_from_text("扫描成功，请在App端确认登录"))
 
     def test_login_safety_page_is_distinguished_from_normal_sms_login(self):

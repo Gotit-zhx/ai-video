@@ -99,17 +99,28 @@ def pc_login_retry_at():
         return ""
 
 
-def pause_requests(code, *, retry_at=""):
+def pc_login_restriction_reason():
+    try:
+        value = json.loads(RISK_HOLD.read_text()).get("reason")
+        return value if value == "REALNAME_LINKED_ACCOUNT" else ""
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def pause_requests(code, *, retry_at="", reason=""):
     """Persist only a fixed error code/time, never upstream personal data."""
     code = code if code in STOP_CODES else "MANUAL_REVIEW_REQUIRED"
     retry_at = valid_retry_at(retry_at)
     if held_code() == "PC_LOGIN_RESTRICTED" and code != "PC_LOGIN_RESTRICTED":
         code, retry_at = "PC_LOGIN_RESTRICTED", pc_login_retry_at()
+        reason = pc_login_restriction_reason()
     RISK_HOLD.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = RISK_HOLD.with_name(RISK_HOLD.name + "." + uuid.uuid4().hex + ".tmp")
     record = {"code": code, "since": int(time.time()), "generation": uuid.uuid4().hex}
     if code == "PC_LOGIN_RESTRICTED" and retry_at:
         record["retry_at"] = retry_at
+    if code == "PC_LOGIN_RESTRICTED" and reason == "REALNAME_LINKED_ACCOUNT":
+        record["reason"] = reason
     temporary.write_text(json.dumps(record))
     temporary.chmod(0o600)
     temporary.replace(RISK_HOLD)
@@ -851,6 +862,10 @@ def verification_message(code):
         return "暂时无法核对服务器浏览器会话，已停止请求并保留记录。请先检查浏览器连接，再手动同步。"
     if code == "PC_LOGIN_RESTRICTED":
         retry_at = pc_login_retry_at()
+        if pc_login_restriction_reason() == "REALNAME_LINKED_ACCOUNT":
+            return ("BOSS 官方提示：实名绑定的上一账号电脑端登录受限，当前账号也被同步限制。"
+                    + (f"预计恢复时间：{retry_at}（北京时间）。" if retry_at else "")
+                    + "本次登录已停止，后台请求已暂停。请先在 BOSS 官方 App 确认限制状态；系统不会自动重新登录。")
         return ("上次 BOSS 官方提示此账号的电脑端登录权限暂受限，后台自动请求已暂停。"
                 + (f"当时预计恢复时间：{retry_at}（北京时间）。" if retry_at else "")
                 + "你仍可点击“重新扫码”发起一次新的登录，以官方本次返回结果为准。")
@@ -897,7 +912,8 @@ def discard_login():
 def login_restriction_from_text(text):
     """The safety dialog takes precedence over 'scan successful' beneath it."""
     compact = re.sub(r"\s+", "", text)
-    if not re.search(r"关闭(?:PC|电脑)端登录权限", compact, re.I):
+    if not re.search(r"(?:关闭(?:了)?(?:PC|电脑)端登录权限|"
+                     r"(?:PC|电脑)端登录权限(?:已|被)?关闭)", compact, re.I):
         for phrase, code in (("IP地址存在异常行为", "IP_RESTRICTED"),
                              ("安全验证", "SECURITY_VERIFICATION_REQUIRED"),
                              ("访问环境异常", "ENVIRONMENT_RISK"),
@@ -906,8 +922,11 @@ def login_restriction_from_text(text):
                 return {"code": code, "retry_at": ""}
         return None
     match = re.search(r"预计开启时间[：:]\s*(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)", text)
-    return {"code": "PC_LOGIN_RESTRICTED",
-            "retry_at": valid_retry_at(re.sub(r"\s+", " ", match[1])) if match else ""}
+    restriction = {"code": "PC_LOGIN_RESTRICTED",
+                   "retry_at": valid_retry_at(re.sub(r"\s+", " ", match[1])) if match else ""}
+    if "实名绑定的上一账号" in compact and "同步限制" in compact:
+        restriction["reason"] = "REALNAME_LINKED_ACCOUNT"
+    return restriction
 
 
 def observe_login_page_result():
@@ -950,8 +969,11 @@ def observe_login_page():
         envelope = json.loads(result.stdout) if len(result.stdout) <= 1024 else {}
         restriction = envelope.get("restriction") if isinstance(envelope, dict) else None
         if isinstance(restriction, dict) and restriction.get("code") in STOP_CODES:
-            return {"code": restriction["code"],
-                    "retry_at": valid_retry_at(restriction.get("retry_at"))}
+            result = {"code": restriction["code"],
+                      "retry_at": valid_retry_at(restriction.get("retry_at"))}
+            if restriction.get("reason") == "REALNAME_LINKED_ACCOUNT":
+                result["reason"] = restriction["reason"]
+            return result
     except (OSError, ValueError, subprocess.TimeoutExpired):
         pass
     return None
@@ -988,7 +1010,8 @@ def wait_for_login_process(process):
         except subprocess.TimeoutExpired:
             restriction = observe_login_page()
             if restriction:
-                pause_requests(restriction["code"], retry_at=restriction["retry_at"])
+                pause_requests(restriction["code"], retry_at=restriction["retry_at"],
+                               reason=restriction.get("reason", ""))
                 LOGIN_CANCEL.set()
                 stop_login_process(process)
                 return b""
@@ -1262,7 +1285,8 @@ def qr_image(force_refresh=False):
                     login_text = page.locator("body").inner_text(timeout=3000)
                     restriction = login_restriction_from_text(login_text)
                     if restriction:
-                        pause_requests(restriction["code"], retry_at=restriction["retry_at"])
+                        pause_requests(restriction["code"], retry_at=restriction["retry_at"],
+                                       reason=restriction.get("reason", ""))
                         LOGIN_CANCEL.set()
                         raise LoginRestricted()
                     if any(word in login_text for word in (
