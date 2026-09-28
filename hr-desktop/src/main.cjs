@@ -4,12 +4,16 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const {ORIGIN,Runtime,Recruiter}=require('./core.cjs');
 const {LocalBridge}=require('./bridge.cjs');
+const {DirectEgress}=require('./direct-network.cjs');
 
 const selfTest=process.argv.includes('--self-test');
 if(process.env.HEYI_TEST_USER_DATA)app.setPath('userData',process.env.HEYI_TEST_USER_DATA);
 app.commandLine.appendSwitch('remote-debugging-address','127.0.0.1');
 app.commandLine.appendSwitch('remote-debugging-port','0');
+// TCP/TLS takes the app's physical-interface route; QUIC/UDP must not escape it.
+app.commandLine.appendSwitch('disable-quic');
 let main,platformView,bossView,worker,engine,bridge,active='home',tray,quitting=false;
+let egress;
 let device='',lease=null,leaseChecked=0,leaseCheck=null;
 const viewOptions={nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true};
 const shellPath=path.join(__dirname,'index.html');
@@ -28,6 +32,7 @@ function resize(){
   for(const view of [platformView,bossView])view?.setBounds({x:0,y:76,width,height:Math.max(1,height-106)});
 }
 function browserBoundary(contents,host){
+  contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
   contents.setWindowOpenHandler(({url})=>{
     try {const u=new URL(url);if(u.protocol==='https:'&&(u.hostname===host||u.hostname.endsWith('.'+host)))contents.loadURL(url);}
     catch{}
@@ -99,7 +104,7 @@ async function authorized(){
 }
 async function cloud(route,body){
   if(selfTest)throw Error('Cloud access disabled in offline tests');
-  const reply=await platformView.webContents.session.fetch(ORIGIN+'/api/v1/hr/desktop/'+route,{
+  const reply=await egress.fetch(platformView.webContents.session,ORIGIN+'/api/v1/hr/desktop/'+route,{
     method:'POST',body:body?JSON.stringify(body):undefined,
     headers:{'Content-Type':'application/json',Origin:ORIGIN},
     bypassCustomProtocolHandlers:true,redirect:'error',signal:AbortSignal.timeout(8000),
@@ -134,6 +139,11 @@ async function launch(){
   main.on('resize',resize);
   main.on('close',event=>{if(!quitting&&!selfTest){event.preventDefault();main.hide();}});
   const platformSession=session.fromPartition('persist:hoyee-platform');
+  egress=new DirectEgress(executable());
+  await egress.start(selfTest&&!process.argv.includes('--check-direct-network'));
+  app.on('login',(event,_contents,_details,authInfo,callback)=>egress.authenticate(event,authInfo,callback));
+  await egress.configure(session.defaultSession);
+  await egress.configure(platformSession);
   platformView=new WebContentsView({webPreferences:{...viewOptions,session:platformSession}});
   browserBoundary(platformView.webContents,'hoyee.org.cn');
   if(selfTest){
@@ -146,7 +156,7 @@ async function launch(){
       });
     }
   }
-  worker=new Runtime(executable());
+  worker=new Runtime(executable(),egress.info.adapter);
   engine=new Recruiter({
     directory:path.join(app.getPath('userData'),'recruiter'),
     runtime:worker,authorize:authorized,
@@ -169,6 +179,7 @@ async function launch(){
     }
   });
   await engine.init(await localEndpoint());
+  egress.on('stopped',()=>{if(!quitting)engine.pause('DIRECT_NETWORK_UNAVAILABLE');});
   bridge=new LocalBridge({engine,pair,authorize:authorized});
   await bridge.start(selfTest?0:17861);
   engine.on('change',state=>{
@@ -188,7 +199,7 @@ async function launch(){
       const local=await engine.route(request);
       if(local)return local;
       if(selfTest)return new Response('offline test',{headers:{'Content-Type':'text/plain'}});
-      return platformSession.fetch(request,{bypassCustomProtocolHandlers:true});
+      return egress.fetch(platformSession,request);
     }catch{return new Response('请求未完成',{status:503});}
   });
   ipcMain.handle('desktop',async(event,action)=>{
@@ -235,18 +246,25 @@ async function launch(){
   powerMonitor.on('suspend',()=>{engine.pause('COMPUTER_SLEEP');});
   powerMonitor.on('resume',()=>{engine.pause('RECONNECT_REQUIRED');});
   app.on('activate',()=>main.show());
-  if(selfTest)await require('./self-test.cjs').run({app,main,platformView,createBoss,engine,worker,bridge,show,session});
+  if(selfTest)await require('./self-test.cjs').run({app,main,platformView,createBoss,engine,worker,bridge,show,session,egress});
 }
 let closing=false;
 app.on('before-quit',event=>{
   quitting=true;
   if(!closing&&engine){
     event.preventDefault();closing=true;
-    Promise.all([engine.close(),bridge?.close()]).finally(()=>app.quit());
+    Promise.all([engine.close(),bridge?.close(),egress?.close()]).finally(()=>app.quit());
   }
 });
 app.on('window-all-closed',()=>{if(quitting||selfTest)app.quit();});
 launch().catch(async error=>{
-  if(selfTest){console.error('DESKTOP_SELF_TEST_FAILED',error.stack);app.exit(1);return;}
-  await app.whenReady();dialog.showErrorBox('启动未完成','本机运行环境未就绪，请保留数据目录并重新安装应用。');app.quit();
+  if(selfTest){
+    console.error('DESKTOP_SELF_TEST_FAILED',error.stack);
+    await Promise.allSettled([engine?.close(),bridge?.close(),egress?.close()]);
+    app.exit(1);return;
+  }
+  await egress?.close();
+  await app.whenReady();dialog.showErrorBox('启动未完成',
+    error.message.startsWith('网卡')||error.message.startsWith('未找到可用的直连')?error.message:
+    '本机运行环境未就绪，请保留数据目录并重新安装应用。');app.quit();
 });

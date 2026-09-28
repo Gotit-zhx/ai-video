@@ -34,6 +34,18 @@ Mac（Apple Silicon）和 Windows x64 共用的招聘客户端。使用 Electron
 - CDP 仅监听本机随机端口。BOSS Cookie 经 stdin 交给本地子进程，不写入日志或上传。
 - 实际请求仍受原来的互斥、预算、账号限制保护；使用经过哈希审核的 SDK，不自动升级 SDK。
 
+## 网卡直连
+
+默认选择有默认网关的实际有线或 Wi-Fi 网卡。Mac 使用 `IP_BOUND_IF`，Windows 使用
+`IP_UNICAST_IF`，同时绑定该网卡的本地 IPv4 地址；DNS 查询也绑定相同网卡。
+不采用系统代理、环境代理或虚拟网卡的默认路由，不更改其他软件的网络设置。
+
+内置浏览器通过仅监听 loopback、有随机凭证的本机转发端口连接同一网卡；
+HTTPS 的 TLS 字节原样传递，不解密。CLI 接口和附件下载绑定同一网卡。
+QUIC 和非代理 WebRTC UDP 已关闭，避免旁路流量。绑定/DNS/连接失败时停止，
+不会切换到系统代理。没有 IPv4 实际网卡的网络暂不支持；换网卡后重新启动助手。
+这解决本应用的出口选择，不改变 BOSS 官方的账号或 PC 登录限制。
+
 ## 构建
 
 每个目标系统分别构建 Python 运行时，不交叉打包另一系统的可执行文件。
@@ -58,7 +70,7 @@ pnpm run dist:mac
 未使用的 Unix 服务类以及本机 CDP 端口。上游许可在 `vendor/BOSS-AGENT-CLI-LICENSE.txt`。
 
 `--self-test` 必须指定临时目录 `HEYI_TEST_USER_DATA`，阻断外网并使用合成 Cookie，
-验证嵌入浏览器、会话隔离、运行时完整性、CDP、配对和实际窗口渲染，不访问 BOSS。
+验证嵌入浏览器、会话隔离、运行时完整性、CDP、配对、直连路由和实际窗口渲染，不访问 BOSS。
 GitHub Actions 同时生成 Mac/Windows 安装包和测试记录。
 
 当前打包不含 Apple Developer ID 公证或 Windows 发布者证书。

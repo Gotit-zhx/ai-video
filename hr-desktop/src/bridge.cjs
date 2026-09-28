@@ -27,7 +27,7 @@ class LocalBridge {
     if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
     try{
       if(req.url==='/health'&&req.method==='GET'){
-        send(200,{success:true,data:{app:'heyi-recruiter',version:'0.1.0',protocol:1}});return;
+        send(200,{success:true,data:{app:'heyi-recruiter',version:require('../package.json').version,protocol:1}});return;
       }
       let raw='';
       for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>8192)throw Error('请求过长');}

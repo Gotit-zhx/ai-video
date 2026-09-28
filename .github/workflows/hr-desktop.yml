@@ -33,6 +33,7 @@ jobs:
       - run: python runtime/build.py
       - run: npm test
       - run: python runtime/test_portable.py
+      - run: python runtime/test_direct_network.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_desktop_bridge.py
       - name: Offline embedded-browser smoke
         shell: bash

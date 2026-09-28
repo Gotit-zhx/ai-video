@@ -51,6 +51,13 @@ def configure(root, cdp):
 
 
 def main(request):
+    # Must happen before importing HTTP clients: macOS/Windows system proxies
+    # otherwise override environment cleanup. Browser and CLI share one NIC.
+    if request.get("network"):
+        from direct_network import install_client
+        install_client(request["network"])
+    elif request.get("operation") not in ("health", "diagnose-local"):
+        raise RuntimeError("网卡直连未就绪，请重新启动助手")
     if request.get("operation") == "health":
         import importlib.metadata
         import guarded_cli
@@ -130,6 +137,15 @@ def main(request):
 
 
 if __name__ == "__main__":
+    if "--direct-network" in sys.argv or "--direct-network-test" in sys.argv:
+        import direct_network
+        if "--direct-network-test" in sys.argv:
+            if not os.environ.get("HEYI_TEST_USER_DATA"):
+                raise SystemExit("Disposable test profile required")
+            direct_network.discover = lambda: {"name": "offline", "label": "Offline",
+                "address": "127.0.0.1", "index": 0, "dns": []}
+        direct_network.serve()
+        raise SystemExit(0)
     try:
         payload = sys.stdin.buffer.read(1024 * 1024 + 1)
         if len(payload) > 1024 * 1024:

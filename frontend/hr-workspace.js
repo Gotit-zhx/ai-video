@@ -67,7 +67,7 @@
     element('span','本机助手执行 · 登录保留在你的电脑',localBar);
     const connectButton=button('连接本机助手',localBar,async()=>{
       connectButton.disabled=true;
-      try{await globalThis.HeyiHrTransport.connect();note.textContent='本机助手已连接';await checkLogin();}
+      try{await globalThis.HeyiHrTransport.connect();note.textContent='本机助手已连接';status.replaceChildren();await checkLogin();}
       catch(error){note.textContent=error.message;}
       finally{connectButton.disabled=false;}
     });

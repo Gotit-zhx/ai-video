@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {EventEmitter} = require('node:events');
 const {spawn, execFile} = require('node:child_process');
+const {directEnvironment} = require('./direct-network.cjs');
 
 const ORIGIN = 'https://hoyee.org.cn';
 const STOP = new Set(['ACCOUNT_RISK','ENVIRONMENT_RISK','IP_RESTRICTED','AUTH_REQUIRED','AUTH_EXPIRED',
@@ -44,13 +45,13 @@ function terminate(child) {
   }
 }
 class Runtime {
-  constructor(executable) {this.executable=executable; this.child=null;}
+  constructor(executable, network) {this.executable=executable; this.network=network; this.child=null;}
   async run(input, timeout=100000) {
     if (this.child) throw Error('本机正在执行另一项操作');
     return new Promise((resolve,reject)=>{
       const child=spawn(this.executable, [], {
         stdio:['pipe','pipe','ignore'], windowsHide:true, detached:process.platform!=='win32',
-        env:{...process.env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'},
+        env:directEnvironment(),
       });
       this.child=child;
       let output='', settled=false, failure=null;
@@ -72,7 +73,7 @@ class Runtime {
         catch {finish(Error('招聘运行时未返回完整结果，未自动重试'));}
       });
       child.stdin.on('error',()=>{});
-      child.stdin.end(JSON.stringify(input));
+      child.stdin.end(JSON.stringify({...input,network:this.network}));
     });
   }
   stop(){terminate(this.child);}
@@ -106,7 +107,9 @@ class Recruiter extends EventEmitter {
   pause(code='USER_PAUSED'){
     this.generation++;this.paused=true;clearInterval(this.loginTimer);this.loginTimer=null;
     if(['pending','complete'].includes(this.state.state))this.state={...this.state,state:'verification_pending',phase:'',
-      failure_code:'MANUAL_REVIEW_REQUIRED',error:'本机连接已暂停。需要时请手动连接。'};
+      failure_code:'MANUAL_REVIEW_REQUIRED',error:code==='DIRECT_NETWORK_UNAVAILABLE'
+        ?'网卡直连已中断，请检查有线或 Wi-Fi 网络后重新启动助手。'
+        :'本机连接已暂停。需要时请手动连接。'};
     this.event(code);
   }
   save(hold) {
