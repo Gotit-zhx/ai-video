@@ -15,6 +15,7 @@ import threading
 import datetime
 import http.server
 import contextlib
+import hashlib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -64,7 +65,21 @@ STOP_CODES = {
     "SESSION_POLICY_UNAVAILABLE", "MANUAL_REVIEW_REQUIRED",
     "PC_LOGIN_RESTRICTED",
     "LOGIN_RISK_CONTROL",
+    "SESSION_MISMATCH", "SESSION_UNAVAILABLE",
 }
+
+
+def start_recovery_scope():
+    RECOVERY.active = True
+    RECOVERY.hold_digest = (hashlib.sha256(RISK_HOLD.read_bytes()).hexdigest()
+                            if RISK_HOLD.exists() else "")
+
+
+def cli_environment():
+    environment = dict(CLI_ENV)
+    if getattr(RECOVERY, "active", False) and not pc_login_blocked():
+        environment["HEYI_HR_RECOVERY_HOLD"] = getattr(RECOVERY, "hold_digest", "")
+    return environment
 
 
 def valid_retry_at(value):
@@ -100,6 +115,8 @@ def pause_requests(code, *, retry_at=""):
     """Persist only a fixed error code/time, never upstream personal data."""
     code = code if code in STOP_CODES else "MANUAL_REVIEW_REQUIRED"
     retry_at = valid_retry_at(retry_at)
+    if held_code() == "PC_LOGIN_RESTRICTED" and code != "PC_LOGIN_RESTRICTED":
+        code, retry_at = "PC_LOGIN_RESTRICTED", pc_login_retry_at()
     if held_code() != code or (retry_at and pc_login_retry_at() != retry_at):
         RISK_HOLD.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = RISK_HOLD.with_suffix(".tmp")
@@ -714,7 +731,7 @@ def cli_json(*args, timeout=30):
         return {"ok": False, "error": {"code": code, "message": verification_message(code)}}
     started = time.monotonic()
     result = subprocess.run([BOSS, "--json", *args], capture_output=True,
-                            timeout=timeout, check=False, env=CLI_ENV)
+                            timeout=timeout, check=False, env=cli_environment())
     if len(result.stdout) > MAX_OUTPUT:
         return {}
     try:
@@ -759,8 +776,9 @@ def sync_browser_login_result():
 
 
 def install_session_policy():
-    from guarded_cli import install_policy
+    from guarded_cli import install_policy, assert_requests_allowed
     install_policy()
+    assert_requests_allowed(recovery=True)
 
 
 def sync_browser_login():
@@ -769,7 +787,7 @@ def sync_browser_login():
     try:
         result = subprocess.run(
             [sys.executable, str(Path(__file__).resolve()), "--sync-browser-login"],
-            capture_output=True, timeout=60, check=False, env=CLI_ENV)
+            capture_output=True, timeout=60, check=False, env=cli_environment())
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": {"code": "BROWSER_SYNC_TIMEOUT"}}
     try:
@@ -783,11 +801,15 @@ def sync_browser_login():
 
 
 def recruiter_probe():
+    previous_hold = RISK_HOLD.read_bytes() if RISK_HOLD.exists() else None
     status = cli_json("status", timeout=20)
     if status.get("ok") is not True:
         return False, safe_error_code(status, "AUTH_UNAVAILABLE")
     jobs = cli_json("hr", "jobs", "list", timeout=45)
     if jobs.get("ok") is True and jobs.get("command") == "recruiter-jobs-list":
+        current_hold = RISK_HOLD.read_bytes() if RISK_HOLD.exists() else None
+        if current_hold != previous_hold:
+            return False, held_code() or "MANUAL_REVIEW_REQUIRED"
         RISK_HOLD.unlink(missing_ok=True)
         with resume_db() as connection:
             connection.execute("DELETE FROM resume_poll_state")
@@ -814,6 +836,10 @@ def recruiter_failure_code(envelope):
 
 
 def verification_message(code):
+    if code == "SESSION_MISMATCH":
+        return "浏览器与保存的登录态不一致，已停止请求。请先检查官方页面，再手动同步；当前会话与索取记录已保留。"
+    if code == "SESSION_UNAVAILABLE":
+        return "暂时无法核对服务器浏览器会话，已停止请求并保留记录。请先检查浏览器连接，再手动同步。"
     if code == "PC_LOGIN_RESTRICTED":
         retry_at = pc_login_retry_at()
         return ("BOSS 官方暂时关闭了此账号的电脑端登录权限，已停止本次登录和自动请求。"
@@ -978,8 +1004,8 @@ def record_login_result():
 def login_worker():
     global LOGIN_PROCESS
     with LOCK:
-        RECOVERY.active = True  # Only this explicitly requested login worker.
         try:
+            start_recovery_scope()  # Only this explicitly requested login worker.
             browser_service("start", "heyi-boss-chrome.service")
             wait_for_cdp()
             if LOGIN_CANCEL.is_set():
@@ -991,7 +1017,7 @@ def login_worker():
             else:
                 process = subprocess.Popen(
                     [BOSS, "--json", "login", "--cdp", "--timeout", str(LOGIN_TIMEOUT)],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=CLI_ENV,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_environment(),
                     start_new_session=True)
                 with LOGIN_LOCK:
                     LOGIN_PROCESS = process
@@ -1067,8 +1093,8 @@ def login_worker():
 
 def verify_saved_login_worker():
     with LOCK:
-        RECOVERY.active = True
         try:
+            start_recovery_scope()
             browser_service("start", "heyi-boss-chrome.service")
             wait_for_cdp()
             if LOGIN_CANCEL.is_set():
@@ -1168,8 +1194,7 @@ def logout_boss():
             LOGIN.update(state="disconnected", phase="", started=0.0, error="", failure_code="")
         discard_login()
         # Clearing local cookies cannot lift a platform-imposed restriction.
-        if held_code() != "PC_LOGIN_RESTRICTED":
-            RISK_HOLD.unlink(missing_ok=True)
+        # A local reset cannot clear account/environment/session risk either.
     finally:
         LOCK.release()
 

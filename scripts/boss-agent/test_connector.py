@@ -54,6 +54,36 @@ class ConnectorTest(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
+    def test_recovery_permit_is_explicit_and_frozen_to_original_hold(self):
+        with mock.patch.dict(connector.LOGIN), mock.patch.object(connector.RECOVERY, "active", False, create=True):
+            connector.pause_requests("ACCOUNT_RISK")
+            self.assertNotIn("HEYI_HR_RECOVERY_HOLD", connector.cli_environment())
+            connector.start_recovery_scope()
+            original = connector.cli_environment()["HEYI_HR_RECOVERY_HOLD"]
+            connector.RISK_HOLD.write_text('{"code":"ENVIRONMENT_RISK"}')
+            self.assertEqual(original, connector.cli_environment()["HEYI_HR_RECOVERY_HOLD"])
+            connector.RECOVERY.active = False
+
+    def test_new_risk_during_successful_probe_is_not_cleared(self):
+        def cli(*args, **kwargs):
+            if args == ("status",):
+                return {"ok": True}
+            connector.pause_requests("ACCOUNT_RISK")
+            return {"ok": True, "command": "recruiter-jobs-list"}
+        with mock.patch.dict(connector.LOGIN), mock.patch.object(connector, "cli_json", side_effect=cli):
+            self.assertEqual((False, "ACCOUNT_RISK"), connector.recruiter_probe())
+            self.assertEqual("ACCOUNT_RISK", connector.held_code())
+
+    def test_disconnect_preserves_all_risk_holds_and_session_checks(self):
+        for code in ("ACCOUNT_RISK", "ENVIRONMENT_RISK", "SESSION_MISMATCH"):
+            with self.subTest(code=code), mock.patch.dict(connector.LOGIN), \
+                 mock.patch.object(connector, "LOGIN_PROCESS", None), \
+                 mock.patch.object(connector, "discard_login"):
+                connector.pause_requests(code)
+                connector.logout_boss()
+                self.assertEqual(code, connector.held_code())
+        connector.LOGIN_CANCEL.clear()
+
     def test_official_pc_restriction_precedes_scan_success_and_persists(self):
         text = ("扫描成功\n请在App端确认登录\n安全提示\n"
                 "暂为您关闭PC端登录权限\n预计开启时间：2026-09-29 13:44:43")
