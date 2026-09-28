@@ -7,6 +7,7 @@
   let current = 'overview', sequence = 0, page = 1, talentAction = 'candidates';
   let loginTimer = null, qrRefresh = null, autoLoginAttempted = false;
   let loginPendingSeen = false, loginCheckInFlight = false, qrRequestInFlight = false;
+  let loginActionInFlight = false, loginGeneration = 0;
   let resumeTimer = null;
   let jobRecords = [], jobsRequest = null, conversations = [], selectedConversation = null;
   let selectedCandidate = null, sessionGeneration = 0;
@@ -69,10 +70,10 @@
   loginButton.hidden = true;
   const refreshButton = button('刷新二维码', loginActions, refreshLogin);
   refreshButton.hidden = true;
-  const resetLoginButton = button('清除会话并重新扫码', loginActions, resetLogin);
+  const resetLoginButton = button('清除会话并重新扫码', loginActions, () => logoutBoss(true));
   resetLoginButton.hidden = true;
   const status = element('div', '正在读取账号状态…', overview, 'hr-result hr-status-result');
-  const logoutButton = button('退出 BOSS 登录', overview, logoutBoss);
+  const logoutButton = button('断开服务器连接', overview, logoutBoss);
   logoutButton.className = 'hr-logout';
   logoutButton.hidden = true;
   const loginFootnote = element('p', '二维码仅供当前管理员使用；扫码后还需在手机上确认。', overview, 'hr-footnote');
@@ -85,10 +86,13 @@
   async function refreshQr() {
     if (qrRequestInFlight) return;
     qrRequestInFlight = true;
+    const generation = loginGeneration;
     try {
       const response = await fetch('/api/v1/hr/login/qr', {credentials:'same-origin',cache:'no-store'});
+      if (generation !== loginGeneration || !allowed()) return;
       if (response.status === 202) {
         const result = await response.json();
+        if (generation !== loginGeneration) return;
         if (result.data?.phase === 'scanned' || result.data?.phase === 'verifying') {
           qr.hidden = true;
           loginMessage.textContent = result.data.phase === 'scanned'
@@ -98,6 +102,7 @@
       }
       if (!response.ok) return;
       const blob = await response.blob();
+      if (generation !== loginGeneration) return;
       if (blob.type !== 'image/png') return;
       const url = URL.createObjectURL(blob);
       const previous = qr.dataset.objectUrl;
@@ -106,51 +111,63 @@
       qr.hidden = false;
       if (previous) URL.revokeObjectURL(previous);
     } catch (_) {
-      loginMessage.textContent = '正在等待登录二维码，请稍后…';
+      if (generation === loginGeneration) loginMessage.textContent = '正在等待登录二维码，请稍后…';
     } finally {
       qrRequestInFlight = false;
     }
   }
   async function refreshLogin() {
-    if (!allowed()) return;
+    if (!allowed() || loginActionInFlight) return;
+    const generation = loginGeneration;
     refreshButton.disabled = true;
     loginMessage.textContent = '正在生成新的二维码…';
     try {
       await api('/api/v1/hr/login/refresh', {method:'POST'});
+      if (generation !== loginGeneration) return;
       qr.hidden = true;
       await refreshQr();
+      if (generation !== loginGeneration) return;
       loginMessage.textContent = '新二维码已生成，请使用 BOSS 直聘 App 扫码确认。';
     } catch (error) {
+      if (generation !== loginGeneration) return;
       loginMessage.textContent = error.message || '二维码刷新失败';
     } finally {
-      refreshButton.disabled = false;
+      if (generation === loginGeneration) refreshButton.disabled = false;
     }
   }
-  async function resetLogin() {
-    if (!allowed()) return;
-    resetLoginButton.disabled = true;
-    try {
-      await api('/api/v1/hr/login/logout', {method:'POST'});
-      resetLoginButton.hidden = true;
-      loginButton.textContent = '重新获取二维码';
-      await startLogin();
-    } catch (error) {
-      loginMessage.textContent = error.message || '清除会话失败';
-    } finally {
-      resetLoginButton.disabled = false;
-    }
+  function showDisconnected() {
+    autoLoginAttempted = true;
+    loginPendingSeen = false;
+    stopLoginPolling();
+    intro.hidden = loginFootnote.hidden = loginBox.hidden = false;
+    qr.hidden = refreshButton.hidden = resetLoginButton.hidden = logoutButton.hidden = true;
+    loginButton.hidden = false;
+    loginButton.textContent = '扫码连接招聘账号';
+    loginMessage.textContent = '服务器连接已断开。需要时点击“扫码连接招聘账号”，再用手机确认。';
+    note.textContent = '已断开服务器连接';
+    status.replaceChildren();
   }
   async function checkLogin() {
     if (!allowed()) { stopLoginPolling(); return; }
     if (loginCheckInFlight) return;
     loginCheckInFlight = true;
+    const generation = loginGeneration;
     try {
       const result = await api('/api/v1/hr/login/status');
+      if (generation !== loginGeneration || !allowed()) return;
       const state = result.data || {};
+      if (state.state === 'disconnected') {showDisconnected();return;}
       if (state.state === 'pending') {
+        // A page reload can join an existing server scan. It still needs to
+        // poll completion even though this page never called /login/start.
+        if (!loginTimer) loginTimer = setInterval(checkLogin, 3000);
         loginPendingSeen = true;
+        status.replaceChildren();
+        note.textContent = state.phase === 'scanned' ? '扫码已收到 · 等待手机确认'
+          : state.phase === 'verifying' ? '正在验证招聘方账号' : '等待扫码连接';
         loginBox.hidden = false;
         loginButton.hidden = true;
+        resetLoginButton.hidden = true;
         const waitingForPhone = state.phase === 'scanned' || state.phase === 'verifying';
         refreshButton.hidden = waitingForPhone;
         loginMessage.textContent = state.phase === 'scanned' ? '已扫码，请在手机上确认。'
@@ -190,17 +207,26 @@
         }
       }
     } catch (error) {
-      stopLoginPolling();
+      if (generation !== loginGeneration) return;
+      // A transient request failure must not permanently stop an active scan.
+      if (loginPendingSeen && !loginTimer) loginTimer = setInterval(checkLogin, 3000);
       loginButton.disabled = false;
-      loginMessage.textContent = error.message || '登录状态读取失败';
+      loginMessage.textContent = loginPendingSeen ? '连接短暂中断，正在重新读取登录状态…'
+        : error.message || '登录状态读取失败';
     } finally {
       loginCheckInFlight = false;
     }
   }
   async function startLogin() {
-    if (!allowed()) return;
+    if (!allowed() || loginActionInFlight) return;
+    loginActionInFlight = true;
+    const generation = ++loginGeneration;
+    ++sequence;
+    status.replaceChildren();
     autoLoginAttempted = true;
     loginPendingSeen = true;
+    stopLoginPolling();
+    resetLoginButton.disabled = logoutButton.disabled = true;
     loginButton.disabled = true;
     loginButton.hidden = true;
     loginBox.hidden = false;
@@ -208,34 +234,70 @@
       ? '正在同步浏览器登录并验证招聘方身份…' : '正在打开 BOSS 登录页…';
     try {
       await api('/api/v1/hr/login/start', {method:'POST'});
+      if (generation !== loginGeneration || !allowed()) return;
       stopLoginPolling();
       loginTimer = setInterval(checkLogin, 3000);
       await checkLogin();
     } catch (error) {
+      if (generation !== loginGeneration) return;
       loginButton.disabled = false;
       loginButton.hidden = false;
       loginMessage.textContent = error.message || '启动扫码失败';
+    } finally {
+      if (generation === loginGeneration) {
+        loginActionInFlight = false;
+        resetLoginButton.disabled = logoutButton.disabled = false;
+      }
     }
   }
-  async function logoutBoss() {
-    if (!allowed()) return;
-    logoutButton.disabled = true;
+  async function logoutBoss(reconnect = false) {
+    if (!allowed() || loginActionInFlight) return;
+    loginActionInFlight = true;
+    const generation = ++loginGeneration;
+    ++sequence;
+    ++sessionGeneration;
+    autoLoginAttempted = true;
+    loginPendingSeen = false;
+    stopLoginPolling();
+    clearInterval(resumeTimer);
+    resumeTimer = null;
+    loginButton.disabled = resetLoginButton.disabled = logoutButton.disabled = refreshButton.disabled = true;
+    qr.hidden = true;
+    if (qr.dataset.objectUrl) URL.revokeObjectURL(qr.dataset.objectUrl);
+    delete qr.dataset.objectUrl;
+    loginMessage.textContent = reconnect === true ? '正在清理本次连接并准备二维码…' : '正在断开服务器连接…';
     try {
       await api('/api/v1/hr/login/logout', {method:'POST'});
-      autoLoginAttempted = true;
-      stopLoginPolling();
-      qr.hidden = true;
-      loginBox.hidden = false;
-      loginButton.hidden = false;
-      resetLoginButton.hidden = true;
-      refreshButton.hidden = true;
-      logoutButton.hidden = true;
-      loginMessage.textContent = '已退出招聘账号，服务器浏览器资源已释放。需要时可重新获取二维码。';
-      await run('overview');
+      if (generation !== loginGeneration || !allowed()) return;
+      jobsRequest = null;
+      conversations = [];
+      selectedConversation = selectedCandidate = null;
+      friendId.value = geekId.value = resumeJob.value = securityId.value = '';
+      keyword.value = '';
+      rememberJobs([]);
+      root.querySelectorAll('.hr-result').forEach(box => box.replaceChildren());
+      showDisconnected();
+      if (reconnect === true) {
+        // This is one explicit reset action. Keep the action lock across both
+        // requests so double clicks cannot repeatedly clear or restart a scan.
+        loginPendingSeen = true;
+        loginButton.hidden = true;
+        loginMessage.textContent = '正在生成登录二维码…';
+        note.textContent = '正在准备扫码连接';
+        await api('/api/v1/hr/login/start', {method:'POST'});
+        if (generation !== loginGeneration || !allowed()) return;
+        loginTimer = setInterval(checkLogin, 3000);
+        await checkLogin();
+      }
     } catch (error) {
-      loginMessage.textContent = error.message || '退出失败，请稍后重试';
+      if (generation !== loginGeneration) return;
+      loginButton.hidden = false;
+      loginMessage.textContent = error.message || '操作未完成，请重试';
     } finally {
-      logoutButton.disabled = false;
+      if (generation === loginGeneration) {
+        loginActionInFlight = false;
+        loginButton.disabled = resetLoginButton.disabled = logoutButton.disabled = refreshButton.disabled = false;
+      }
     }
   }
 
@@ -765,6 +827,14 @@
       } else return;
       const response = await api(path);
       if (ticket !== sequence || activeWorkspace !== 'hr') return;
+      if (action === 'overview' && response.data?.error?.code === 'SESSION_DISCONNECTED') {
+        showDisconnected();
+        return;
+      }
+      if (action === 'overview' && response.data?.error?.code === 'LOGIN_PENDING') {
+        box.replaceChildren();
+        return;
+      }
       const rows = display(box, response.data, action);
       if (action === 'overview') {
         // The connector only returns a successful status after its recruiter
@@ -836,6 +906,8 @@
   globalThis.HrWorkspace = {enter, allowed, reset(){
     ++sequence;
     ++sessionGeneration;
+    ++loginGeneration;
+    loginActionInFlight = false;
     stopLoginPolling();
     clearInterval(resumeTimer);
     resumeTimer = null;

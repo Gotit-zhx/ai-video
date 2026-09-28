@@ -1,6 +1,8 @@
 import importlib.util
+import contextlib
 import json
 import pathlib
+import sqlite3
 import subprocess
 import tempfile
 import types
@@ -43,11 +45,149 @@ class ConnectorTest(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         root = pathlib.Path(folder.name)
         for name, path in (("RISK_HOLD", root / "risk"),
+                           ("DISCONNECTED", root / "disconnected"),
                            ("RESUME_DB", root / "resumes.sqlite3"),
-                           ("AUTH_DIR", root / "auth")):
+                           ("AUTH_DIR", root / "auth"),
+                           ("CHROME_PROFILE", root / "chrome-profile")):
             patch = mock.patch.object(connector, name, path)
             patch.start()
             self.addCleanup(patch.stop)
+
+    def test_disconnect_is_local_and_remains_disconnected_after_restart(self):
+        connector.AUTH_DIR.mkdir()
+        session = connector.AUTH_DIR / "session.enc"
+        salt = connector.AUTH_DIR / "salt"
+        session.write_bytes(b"synthetic-session")
+        salt.write_bytes(b"synthetic-salt")
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "LOGIN_PROCESS", None), \
+             mock.patch.object(connector, "close_browser") as close, \
+             mock.patch.object(connector, "cli_json") as cli, \
+             mock.patch.object(connector.subprocess, "run") as run:
+            connector.logout_boss()
+            self.assertFalse(session.exists())
+            self.assertEqual(b"synthetic-salt", salt.read_bytes())
+            self.assertTrue(connector.DISCONNECTED.is_file())
+            close.assert_called_once()
+            cli.assert_not_called()
+            connector.LOGIN["state"] = "idle"
+            connector.restore_login_state()
+            self.assertEqual("disconnected", connector.LOGIN["state"])
+            self.assertEqual("SESSION_DISCONNECTED",
+                             connector.execute({"operation": "status"})["result"]["error"]["code"])
+            self.assertFalse(connector.execute({"operation": "jobs"})["ok"])
+            run.assert_not_called()
+        connector.LOGIN_CANCEL.clear()
+
+    def test_explicit_connect_is_required_to_remove_disconnect_marker(self):
+        connector.DISCONNECTED.touch()
+        connector.RISK_HOLD.touch()
+        with mock.patch.dict(connector.LOGIN, {"state": "idle"}), \
+             mock.patch.object(connector.threading, "Thread") as worker:
+            connector.restore_login_state()
+            self.assertEqual("disconnected", connector.LOGIN["state"])
+            worker.assert_not_called()
+            result = connector.begin_login()
+            self.assertEqual("pending", result["state"])
+            self.assertEqual("qr", result["phase"])
+            self.assertFalse(connector.DISCONNECTED.exists())
+            worker.assert_called_once_with(target=connector.login_worker, daemon=True)
+            worker.return_value.start.assert_called_once()
+
+    def test_reset_removes_persisted_boss_cookies_after_browser_stops(self):
+        databases = [connector.CHROME_PROFILE / "Default/Cookies",
+                     connector.CHROME_PROFILE / "Profile 1/Network/Cookies"]
+        for database in databases:
+            database.parent.mkdir(parents=True)
+            with contextlib.closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute("CREATE TABLE cookies (host_key TEXT, name TEXT)")
+                connection.executemany("INSERT INTO cookies VALUES (?, ?)", [
+                    ("zhipin.com", "wt2"), (".zhipin.com", "wt2"),
+                    ("www.zhipin.com", "wt2"), ("sub.www.zhipin.com", "other"),
+                    ("other.example", "wt2"), ("notzhipin.com", "wt2"),
+                    ("zhipin.com.example", "wt2")])
+        events = []
+        clear_stored = connector.clear_stored_boss_cookies
+        def clear_after_stop():
+            self.assertEqual(["stop"], events)
+            events.append("disk")
+            clear_stored()
+        with mock.patch.object(connector, "close_browser", side_effect=lambda: events.append("stop")), \
+             mock.patch.object(connector, "clear_stored_boss_cookies", side_effect=clear_after_stop):
+            connector.discard_login()
+        for database in databases:
+            with contextlib.closing(sqlite3.connect(database)) as connection:
+                remaining = connection.execute("SELECT host_key FROM cookies").fetchall()
+            self.assertEqual([("other.example",), ("notzhipin.com",),
+                              ("zhipin.com.example",)], remaining)
+        self.assertEqual(["stop", "disk"], events)
+
+    def test_reset_fails_closed_if_persisted_cookie_cleanup_fails(self):
+        database = connector.CHROME_PROFILE / "Default/Cookies"
+        database.parent.mkdir(parents=True)
+        database.write_bytes(b"not a sqlite database")
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "LOGIN_PROCESS", None), \
+             mock.patch.object(connector, "close_browser"):
+            with self.assertRaisesRegex(OSError, "旧会话清理失败"):
+                connector.logout_boss()
+            self.assertTrue(connector.DISCONNECTED.is_file())
+            self.assertEqual("disconnected", connector.LOGIN["state"])
+        connector.LOGIN_CANCEL.clear()
+
+    def test_cookie_database_is_untouched_if_browser_cannot_stop(self):
+        with mock.patch.object(connector, "close_browser", side_effect=OSError("still running")), \
+             mock.patch.object(connector, "clear_stored_boss_cookies") as clear:
+            with self.assertRaises(OSError):
+                connector.discard_login()
+            clear.assert_not_called()
+
+    def test_cookie_cleanup_does_not_follow_profile_symlinks(self):
+        outside = connector.CHROME_PROFILE.parent / "outside"
+        outside.mkdir()
+        (outside / "Cookies").write_bytes(b"untouched")
+        connector.CHROME_PROFILE.mkdir()
+        (connector.CHROME_PROFILE / "Default").symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(OSError, "会话目录异常"):
+            connector.clear_stored_boss_cookies()
+        self.assertEqual(b"untouched", (outside / "Cookies").read_bytes())
+
+    def test_cookie_cleanup_does_not_create_missing_profile(self):
+        connector.clear_stored_boss_cookies()
+        self.assertFalse(connector.CHROME_PROFILE.exists())
+
+    def test_disconnected_resume_polling_does_not_contact_platform(self):
+        with connector.resume_db() as connection:
+            connection.execute("INSERT INTO resume_requests VALUES "
+                               "('12345', 1, 0, 'waiting', NULL, 1, '')")
+        with mock.patch.dict(connector.LOGIN, {"state": "disconnected"}), \
+             mock.patch.object(connector, "cli_json") as cli:
+            connector.poll_resumes_once()
+            cli.assert_not_called()
+            self.assertEqual("waiting", connector.tracked_resumes()[0]["state"])
+
+    def test_failed_disconnect_cleanup_does_not_enable_automatic_reconnect(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "LOGIN_PROCESS", None), \
+             mock.patch.object(connector, "discard_login", side_effect=OSError("cleanup failed")):
+            with self.assertRaises(OSError):
+                connector.logout_boss()
+            self.assertTrue(connector.DISCONNECTED.is_file())
+            self.assertEqual("disconnected", connector.LOGIN["state"])
+        connector.LOGIN_CANCEL.clear()
+
+    def test_queued_read_cannot_contact_platform_after_disconnect(self):
+        def acquired(**_kwargs):
+            connector.LOGIN["state"] = "disconnected"
+            return True
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "LOCK") as lock, \
+             mock.patch.object(connector.subprocess, "run") as run:
+            lock.acquire.side_effect = acquired
+            response = connector.execute({"operation": "jobs"})
+            self.assertEqual("SESSION_DISCONNECTED", response["error"]["code"])
+            run.assert_not_called()
+            lock.release.assert_called_once()
 
     def test_resume_preserves_realistic_long_security_and_tilde_entity_ids(self):
         security = "a" * 700 + "~" + "B" * 45 + "=="
@@ -94,6 +234,7 @@ class ConnectorTest(unittest.TestCase):
         page = mock.MagicMock()
         page.url = "https://www.zhipin.com/web/user/"
         box = page.locator.return_value.first
+        page.locator.return_value.inner_text.return_value = ""
         box.inner_text.return_value = "已扫码，请在手机上确认"
         context = mock.MagicMock()
         context.cookies.return_value = []
@@ -114,10 +255,38 @@ class ConnectorTest(unittest.TestCase):
         page.reload.assert_not_called()
         page.get_by_text.assert_not_called()
 
+    def test_scanned_page_is_detected_after_boss_removes_qr_container(self):
+        page = mock.MagicMock()
+        page.url = "https://www.zhipin.com/web/user/"
+        body = mock.Mock()
+        body.inner_text.return_value = "扫描成功\n请在App端确认登录"
+        def locate(selector):
+            self.assertEqual("body", selector, "must not wait for removed QR container")
+            return body
+        page.locator.side_effect = locate
+        context = mock.MagicMock()
+        context.cookies.return_value = []
+        context.pages = [page]
+        browser = mock.MagicMock()
+        browser.contexts = [context]
+        browser_api = mock.MagicMock()
+        browser_api.chromium.connect_over_cdp.return_value = browser
+        playwright = mock.MagicMock()
+        playwright.__enter__.return_value = browser_api
+        module = types.ModuleType("patchright.sync_api")
+        module.sync_playwright = mock.Mock(return_value=playwright)
+        with mock.patch.dict("sys.modules", {"patchright.sync_api": module}), \
+             mock.patch.dict(connector.LOGIN, {"phase": "qr"}):
+            with self.assertRaises(connector.ScanInProgress):
+                connector.qr_image(force_refresh=True)
+            self.assertEqual("scanned", connector.LOGIN["phase"])
+        page.reload.assert_not_called()
+
     def test_expired_qr_uses_own_refresh_control(self):
         page = mock.MagicMock()
         page.url = "https://www.zhipin.com/web/user/"
         box = page.locator.return_value.first
+        page.locator.return_value.inner_text.return_value = ""
         box.inner_text.return_value = "请重新刷新二维码"
         control = mock.MagicMock()
         control.count.return_value = 1
@@ -493,7 +662,7 @@ class ConnectorTest(unittest.TestCase):
                 logout_url = url.replace("/status", "/login/logout")
                 with opener.open(urllib.request.Request(logout_url, data=b"",
                     headers={"Cookie": "session=owner", "Origin": connector.ALLOWED_ORIGIN})) as response:
-                    self.assertEqual("idle", json.load(response)["data"]["state"])
+                    self.assertEqual("disconnected", json.load(response)["data"]["state"])
                 logout.assert_called_once()
             auth.shutdown()
             api.shutdown()

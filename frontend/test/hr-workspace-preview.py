@@ -31,7 +31,16 @@ const qaRequests=[];
 let fixture;
 async function api(url,options={}){
  qaRequests.push({url,method:options.method||'GET'});
- if(options.method==='POST')throw Error('本地验收禁止发送请求');
+ if(options.method==='POST'){
+   if(url.endsWith('/login/logout')){sessionStorage.setItem('qaLogin','disconnected');return {data:{state:'disconnected'}};}
+   if(url.endsWith('/login/start')){sessionStorage.setItem('qaLogin','pending');return {data:{state:'pending'}};}
+   throw Error('本地验收禁止发送请求');
+ }
+ const loginState=sessionStorage.getItem('qaLogin')||new URLSearchParams(location.search).get('login');
+ if(loginState){
+   if(url.endsWith('/login/status'))return {data:{state:loginState,phase:'verifying',error:'当前会话已过期（合成测试）'}};
+   if(url.endsWith('/status'))return {data:{ok:false,error:{code:loginState==='disconnected'?'SESSION_DISCONNECTED':'RECRUITER_VERIFICATION_PENDING',message:'合成测试：登录状态待核验'}}};
+ }
  if(url.endsWith('/login/status'))return {data:{state:'complete'}};
  if(url.endsWith('/resumes'))return {data:[]};
  const key=url.split('/hr/')[1].split(/[/?]/)[0];

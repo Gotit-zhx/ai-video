@@ -57,19 +57,34 @@ CDP path uses the separately installed Google Chrome. A direct patchright CDP
 connection to this Chrome was verified without an account login.
 
 The platform administrator `13800000000` opens the recruiter workspace and
-the QR appears automatically when no verified recruiter session exists. The
+the QR appears automatically for an initial login. An explicit disconnect
+persists across page reloads and service restarts. The separate
+“清除会话并重新扫码” action explicitly requests a single cleanup followed by
+one QR enrollment; its action lock prevents double-clicked or stale requests
+from restarting that scan. The
 connector sends only a cropped QR image from the BOSS login tab to that
 authenticated administrator. When a code expires, the connector uses the
 login page's own refresh control. Reading the QR never reloads the page or
-resets a scan awaiting phone confirmation. The account owner
+resets a scan awaiting phone confirmation. BOSS removes the QR container after
+scanning, so the connector checks the login page's visible confirmation state
+before locating the QR. A platform page reload joins the ongoing scan and
+resumes status polling; transient read failures keep retrying. The account owner
 scans with the BOSS app and confirms on their phone. A successful QR scan is
 *not* enough to enable reads: the connector requires the recruiter-only jobs
 endpoint to succeed. A degraded secondary token alone does not prove a role
 mismatch. An explicit role mismatch is
 rejected and cleared. An inconclusive jobs response keeps credentials but blocks
 all recruiter reads; the UI shows the upstream error code and offers a separate
-verification retry without making the user scan again. Logout clears
-both CLI storage and dedicated Chrome cookies, then stops Chrome and Xvfb.
+verification retry without making the user scan again. Disconnect deletes
+only the local CLI `session.enc`, then stops Chrome and Xvfb before deleting
+only `zhipin.com` and subdomain cookie rows from the isolated Chrome profile.
+Cleanup failure is returned to the UI; a failed clear cannot silently reuse
+the old login. Unrelated domains, profile files and the encryption salt are
+preserved. It never invokes a platform logout command. Ordinary disconnect
+does not start login; only the explicit reset-and-scan action does so.
+The private `runtime/recruiter-disconnected` marker also pauses reads
+and resume polling until the administrator explicitly reconnects. This bounds
+our own behavior; it does not establish why BOSS invalidated a phone session.
 If BOSS reports abnormal server IP behavior, the connector preserves the
 session, stops automatic recruiter probes across service restarts, and displays
 the platform restriction. The account owner may retry verification after
@@ -103,6 +118,13 @@ with the same dedicated profile and restore its tabs; never remove the profile
 or clear cookies to repair font rendering. Confirm Chinese text visually.
 
 ### Production release
+
+The September 28 disconnect repair uses `release-disconnect.sh`, staging
+`connector.py`, `hr-workspace.js`, `test_connector.py`, and
+`compose.release.yaml` with their manifest. It defers if a login/sync child
+is active and preserves the Chrome process. Validate disconnect/reconnect
+using synthetic fixtures and the isolated test suite; do not click logout
+on a live account just to smoke-test a deployment.
 
 The September 28 resume/theme repair uses `release-resume-theme.sh`. Stage
 `connector.py`, `hr-workspace.css`, `test_connector.py`, and

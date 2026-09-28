@@ -46,7 +46,9 @@ SYSTEMCTL = ["/usr/bin/sudo", "-n", "/usr/bin/systemctl"]
 RESUME_DIR = Path("/opt/heyi/boss-agent/runtime/resumes")
 RESUME_DB = Path("/opt/heyi/boss-agent/runtime/resume-requests.sqlite3")
 RISK_HOLD = Path("/opt/heyi/boss-agent/runtime/recruiter-ip-risk-hold")
+DISCONNECTED = Path("/opt/heyi/boss-agent/runtime/recruiter-disconnected")
 AUTH_DIR = Path("/opt/heyi/boss-agent/accounts/pilot/data/auth")
+CHROME_PROFILE = Path("/opt/heyi/boss-agent/accounts/pilot/chrome-profile")
 RESUME_POLL_SECONDS = 120
 
 
@@ -145,6 +147,9 @@ def request_resume(friend_id):
     if not LOCK.acquire(timeout=5):
         raise RuntimeError("招聘账号正在处理另一项请求")
     try:
+        with LOGIN_LOCK:
+            if LOGIN["state"] != "complete":
+                raise RuntimeError("招聘连接已断开，请先连接招聘方账号")
         with resume_db() as connection:
             previous = connection.execute("SELECT state FROM resume_requests WHERE friend_id=?",
                                           (friend_id,)).fetchone()
@@ -200,6 +205,9 @@ def poll_resumes_once():
         if not LOCK.acquire(timeout=1):
             return
         try:
+            with LOGIN_LOCK:
+                if LOGIN["state"] != "complete":
+                    return
             result = cli_json("hr", "chatmsg", row["friend_id"], "--count", "100", timeout=45)
         finally:
             LOCK.release()
@@ -245,6 +253,9 @@ def download_resume(friend_id, message_id):
     if not LOCK.acquire(timeout=5):
         raise RuntimeError("招聘账号正在处理另一项请求")
     try:
+        with LOGIN_LOCK:
+            if LOGIN["state"] != "complete":
+                raise RuntimeError("招聘连接已断开，请先连接招聘方账号")
         for suffix in (".pdf", ".docx", ".doc", ".png", ".jpg"):
             output = RESUME_DIR / f"{uuid.uuid4().hex}{suffix}"
             result = cli_json("hr", "download-resume", friend_id, "--message-id",
@@ -317,6 +328,13 @@ def command(request):
     raise ValueError("不支持的只读操作")
 
 
+def disconnected_result(operation):
+    error = {"code": "SESSION_DISCONNECTED",
+             "message": "已断开服务器连接，需要时请点击扫码连接招聘账号"}
+    return ({"ok": True, "result": {"ok": False, "error": error}}
+            if operation == "status" else {"ok": False, "error": error})
+
+
 def execute(request):
     try:
         args = command(request)
@@ -325,6 +343,8 @@ def execute(request):
     with LOGIN_LOCK:
         login_state = LOGIN["state"]
         verified = login_state == "complete"
+    if login_state == "disconnected":
+        return disconnected_result(request.get("operation"))
     if request.get("operation") == "status" and login_state in ("pending", "verification_pending"):
         with LOGIN_LOCK:
             code = LOGIN["failure_code"]
@@ -347,6 +367,9 @@ def execute(request):
     if not LOCK.acquire(timeout=5):
         return {"ok": False, "error": {"code": "BUSY", "message": "招聘账号正在处理另一项请求，请稍后重试"}}
     try:
+        with LOGIN_LOCK:
+            if LOGIN["state"] == "disconnected":
+                return disconnected_result(request.get("operation"))
         try:
             result = subprocess.run(
                 [BOSS, "--json", *args], capture_output=True, timeout=90,
@@ -418,18 +441,29 @@ def close_browser():
         browser_service("stop", service)
 
 
-def clear_boss_cookies():
-    from patchright.sync_api import sync_playwright
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=5000)
+def clear_stored_boss_cookies():
+    """Remove only BOSS cookies, after Chrome has completely stopped.
+
+    A failed CDP cleanup or a tab writing cookies during shutdown must not
+    resurrect a stale login on the next explicit clear-and-scan.
+    """
+    root = CHROME_PROFILE.resolve()
+    databases = [*root.glob("*/Cookies"), *root.glob("*/Network/Cookies")]
+    for database in databases:
+        if not database.is_file():
+            continue
+        if database.is_symlink() or not database.resolve().is_relative_to(root):
+            raise OSError("浏览器会话目录异常，未清除登录信息")
         try:
-            for context in browser.contexts:
-                context.clear_cookies(domain=re.compile(r"(^|\.)zhipin\.com$"))
-                for page in list(context.pages):
-                    if "zhipin.com" in page.url:
-                        page.close()
-        finally:
-            browser.close()
+            # mode=rw avoids creating an empty cookie database on a first login.
+            with contextlib.closing(sqlite3.connect(
+                    database.as_uri() + "?mode=rw", uri=True, timeout=5)) as connection:
+                with connection:
+                    connection.execute(
+                        "DELETE FROM cookies WHERE host_key = ? OR host_key LIKE ?",
+                        ("zhipin.com", "%.zhipin.com"))
+        except sqlite3.Error:
+            raise OSError("浏览器旧会话清理失败，请重试重新扫码") from None
 
 
 def cli_json(*args, timeout=30):
@@ -549,13 +583,15 @@ def chrome_has_login_cookie():
 
 def discard_login():
     try:
-        cli_json("logout", timeout=15)
+        # The pinned upstream TokenStore.clear() only removes session.enc.
+        # Keep this local: never invoke an upstream logout command or an
+        # account/session-revocation endpoint when disconnecting this server.
+        (AUTH_DIR / "session.enc").unlink(missing_ok=True)
     finally:
-        try:
-            clear_boss_cookies()
-        except Exception:
-            pass
         close_browser()
+        # Never report reset success if old persisted cookies could be reused.
+        # Stopping first also prevents open pages restoring a deleted cookie.
+        clear_stored_boss_cookies()
 
 
 def login_worker():
@@ -680,6 +716,7 @@ def begin_login():
         if not LOCK.acquire(blocking=False):
             raise RuntimeError("招聘账号正在处理查询，请稍后再试")
         LOCK.release()
+        DISCONNECTED.unlink(missing_ok=True)
         LOGIN_CANCEL.clear()
         retry_verification = LOGIN["state"] == "verification_pending"
         LOGIN.update(state="pending", phase="verifying" if retry_verification else "qr",
@@ -698,10 +735,14 @@ def logout_boss():
     if not LOCK.acquire(timeout=12):
         raise RuntimeError("正在结束扫码，请稍后重试退出")
     try:
+        # Persist before cleanup so refreshes, restarts and resume polling cannot
+        # reconnect an account that the user deliberately disconnected.
+        DISCONNECTED.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        DISCONNECTED.touch(mode=0o600, exist_ok=True)
+        with LOGIN_LOCK:
+            LOGIN.update(state="disconnected", phase="", started=0.0, error="", failure_code="")
         discard_login()
         RISK_HOLD.unlink(missing_ok=True)
-        with LOGIN_LOCK:
-            LOGIN.update(state="idle", phase="", started=0.0, error="", failure_code="")
     finally:
         LOCK.release()
 
@@ -726,6 +767,17 @@ def qr_image(force_refresh=False):
                 for page in reversed(context.pages):
                     if page.url != "https://www.zhipin.com/web/user/":
                         continue
+                    # After scanning, BOSS replaces the whole QR container.
+                    # Read the login page's visible state before locating it;
+                    # otherwise every poll times out while the phone awaits
+                    # confirmation and the platform keeps showing a stale QR.
+                    login_text = page.locator("body").inner_text(timeout=3000)
+                    if any(word in login_text for word in (
+                            "已扫码", "扫描成功", "扫码成功", "请在App端确认",
+                            "请在APP端确认", "请在手机上确认")):
+                        with LOGIN_LOCK:
+                            LOGIN["phase"] = "scanned"
+                        raise ScanInProgress()
                     box = page.locator(".qr-img-box").first
                     text = box.inner_text(timeout=3000)
                     if any(word in text for word in ("已扫码", "扫描成功", "扫码成功", "手机确认", "请确认")):
@@ -965,7 +1017,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             except (OSError, RuntimeError, subprocess.CalledProcessError):
                 self.send_json(503, {"success": False, "message": "退出失败，请稍后重试"})
                 return
-            self.send_json(200, {"success": True, "data": {"state": "idle"}})
+            self.send_json(200, {"success": True, "data": {"state": "disconnected"}})
         elif self.path.endswith("/refresh"):
             with LOGIN_LOCK:
                 pending = LOGIN["state"] == "pending"
@@ -998,7 +1050,10 @@ class HttpServer(http.server.ThreadingHTTPServer):
 def restore_login_state():
     # Chrome is independent: a connector restart must not close a user's
     # manually scanned session. Restore the hold, then await explicit verification.
-    if RISK_HOLD.is_file():
+    if DISCONNECTED.is_file():
+        with LOGIN_LOCK:
+            LOGIN.update(state="disconnected", phase="", failure_code="", error="")
+    elif RISK_HOLD.is_file():
         with LOGIN_LOCK:
             LOGIN.update(state="verification_pending", phase="", failure_code="IP_RESTRICTED",
                          error=verification_message("IP_RESTRICTED"))

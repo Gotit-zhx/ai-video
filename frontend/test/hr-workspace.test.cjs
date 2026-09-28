@@ -24,16 +24,19 @@ class Node {
 }
 const all = node => [node,...node.children.flatMap(all)];
 function setup(overrides={}) {
-  const root=new Node(),calls=[];
+  const root=new Node(),calls=[],timers=new Map();
+  let timerSequence = 0;
   const links=['overview','jobs','talent','applications','chats','resume'].map(route=>{
     const node=new Node('a');node.dataset.hrRoute=route;return node;
   });
   const env={document:{getElementById:()=>root,createElement:tag=>new Node(tag),
     querySelectorAll:()=>links},currentUser:{platformAdmin:true,username:'13800000000'},
     activeWorkspace:'hr',location:{pathname:'/',search:'',hash:''},
-    history:{pushState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));},replaceState(){}},
+    history:{pushState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));},
+      replaceState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));}},
     switchWorkspace(){},URLSearchParams,encodeURIComponent,Date,URL,
-    setInterval(){return 1;},clearInterval(){},setTimeout(){},addEventListener(){},confirm:()=>false,
+    setInterval(fn,ms){const id=++timerSequence;timers.set(id,{fn,ms});return id;},
+    clearInterval(id){timers.delete(id);},setTimeout(){},addEventListener(){},confirm:()=>false,
     api:async(url,options)=>{
       calls.push({url,options});
       if(overrides.api)return overrides.api(url,options);
@@ -48,8 +51,34 @@ function setup(overrides={}) {
     assert.ok(node,'button exists: '+text);await node.click();await flush();};
   const text=()=>root.children.filter(n=>!n.hidden).map(n=>n.textContent).join('\n');
   const enter=async route=>{env.HrWorkspace.enter(route);await flush();};
-  return {root,env,calls,click,text,enter,visible};
+  const tick=async(ms)=>{for(const timer of [...timers.values()])if(timer.ms===ms)await timer.fn();await flush();};
+  return {root,env,calls,click,text,enter,visible,timers,tick};
 }
+
+test('reloading during phone confirmation resumes polling and opens jobs after login',async()=>{
+  let state='pending',failOnce=false;
+  const app=setup({api:async url=>{
+    if(url.endsWith('/login/status')){
+      if(failOnce){failOnce=false;throw Error('network unavailable');}
+      return {data:{state,phase:'scanned'}};
+    }
+    if(url.endsWith('/status'))return {data:{ok:false,error:{code:'LOGIN_PENDING'}}};
+    return {data:fixtures.jobs};
+  }});
+  await app.enter('overview');
+  assert.match(app.text(),/已扫码，请在手机上确认/);
+  assert.doesNotMatch(app.text(),/错误代码：LOGIN_PENDING/);
+  assert.equal([...app.timers.values()].filter(t=>t.ms===3000).length,1);
+  failOnce=true;
+  await app.tick(3000);
+  assert.match(app.text(),/正在重新读取登录状态/);
+  assert.equal([...app.timers.values()].filter(t=>t.ms===3000).length,1);
+  state='complete';
+  await app.tick(3000);
+  assert.equal(app.env.location.hash,'#hr-jobs');
+  assert.match(app.text(),/15–25K/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
 
 test('jobs render business fields and job action passes encrypted ID automatically',async()=>{
   const app=setup();await app.enter('jobs');
@@ -140,4 +169,76 @@ test('position options finish before a candidate query uses the serialized conne
   assert.equal(app.calls.filter(c=>c.url.includes('/applications')).length,0);
   resolve({data:fixtures.jobs});await flush();
   assert.equal(app.calls.filter(c=>c.url.includes('/applications')).length,1);
+});
+
+test('explicit clear-and-scan starts exactly one QR flow after local cleanup',async()=>{
+  let state='verification_pending';
+  const app=setup({api:async(url,options)=>{
+    if(url.endsWith('/login/logout')) {state='disconnected';return {data:{state}};}
+    if(url.endsWith('/login/start')) {state='pending';return {data:{state}};}
+    if(url.endsWith('/login/status'))return {data:{state,phase:'verifying',error:'当前会话已过期'}};
+    return {data:{ok:false,error:{code:'RECRUITER_VERIFICATION_PENDING'}}};
+  }});
+  await app.enter('overview');
+  await app.click('清除会话并重新扫码');
+  assert.deepEqual(app.calls.filter(c=>c.options?.method==='POST').map(c=>c.url),
+    ['/api/v1/hr/login/logout','/api/v1/hr/login/start']);
+  assert.match(app.text(),/验证招聘方账号/);
+  assert.equal(all(app.root).find(n=>n.tagName==='button'&&n.textContent==='清除会话并重新扫码').hidden,true);
+});
+
+test('ordinary disconnect never restarts QR and stays disconnected on refresh',async()=>{
+  let disconnected=false;
+  const app=setup({api:async(url,options)=>{
+    if(url.endsWith('/login/logout')) {disconnected=true;return {data:{state:'disconnected'}};}
+    if(url.endsWith('/login/status'))return {data:{state:disconnected?'disconnected':'complete'}};
+    return {data:disconnected?{ok:false,error:{code:'SESSION_DISCONNECTED'}}:fixtures.status};
+  }});
+  await app.enter('overview');
+  await app.click('断开服务器连接');
+  assert.match(app.text(),/服务器连接已断开/);
+  await app.enter('overview');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
+  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
+});
+
+test('disconnected page reload stays idle until an explicit connect click',async()=>{
+  let started=false;
+  const app=setup({api:async url=>{
+    if(url.endsWith('/login/start')) {started=true;return {data:{state:'pending'}};}
+    if(url.endsWith('/login/status'))return {data:{state:started?'pending':'disconnected',phase:'verifying'}};
+    return {data:{ok:false,error:{code:'SESSION_DISCONNECTED'}}};
+  }});
+  await app.enter('overview');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  await app.click('扫码连接招聘账号');
+  assert.deepEqual(app.calls.filter(c=>c.options?.method==='POST').map(c=>c.url),
+    ['/api/v1/hr/login/start']);
+});
+
+test('reset rejects double clicks and ignores an old login status response',async()=>{
+  let readCount=0,lateStatus,finishLogout;
+  const app=setup({api:url=>{
+    if(url.endsWith('/login/status')){
+      if(++readCount===1)return Promise.resolve({data:{state:'verification_pending'}});
+      return new Promise(resolve=>lateStatus=resolve);
+    }
+    if(url.endsWith('/login/logout'))return new Promise(resolve=>finishLogout=resolve);
+    if(url.endsWith('/login/start'))return Promise.resolve({data:{state:'pending'}});
+    return Promise.resolve({data:{ok:false,error:{code:'RECRUITER_VERIFICATION_PENDING'}}});
+  }});
+  await app.enter('overview');
+  await app.enter('overview');
+  const disconnect=app.visible().find(n=>n.tagName==='button'&&n.textContent==='清除会话并重新扫码');
+  const first=disconnect.click();
+  disconnect.click();
+  finishLogout({data:{state:'disconnected'}});
+  await first;
+  lateStatus({data:{state:'verification_pending',error:'old response'}});
+  await flush();
+  assert.match(app.text(),/正在生成登录二维码/);
+  assert.doesNotMatch(app.text(),/old response/);
+  assert.deepEqual(app.calls.filter(c=>c.options?.method==='POST').map(c=>c.url),
+    ['/api/v1/hr/login/logout','/api/v1/hr/login/start']);
+  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
 });
