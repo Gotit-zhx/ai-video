@@ -47,11 +47,126 @@ class ConnectorTest(unittest.TestCase):
         for name, path in (("RISK_HOLD", root / "risk"),
                            ("DISCONNECTED", root / "disconnected"),
                            ("RESUME_DB", root / "resumes.sqlite3"),
+                           ("LOGIN_ATTEMPTS_DB", root / "login-attempts.sqlite3"),
                            ("AUTH_DIR", root / "auth"),
                            ("CHROME_PROFILE", root / "chrome-profile")):
             patch = mock.patch.object(connector, name, path)
             patch.start()
             self.addCleanup(patch.stop)
+
+    def test_official_pc_restriction_precedes_scan_success_and_persists(self):
+        text = ("扫描成功\n请在App端确认登录\n安全提示\n"
+                "暂为您关闭PC端登录权限\n预计开启时间：2026-09-29 13:44:43")
+        restriction = connector.login_restriction_from_text(text)
+        self.assertEqual({"code": "PC_LOGIN_RESTRICTED", "retry_at": "2026-09-29 13:44:43"},
+                         restriction)
+        with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "scanned"}), \
+             mock.patch.object(connector.time, "time", return_value=1790578000), \
+             mock.patch.object(connector.threading, "Thread") as start:
+            connector.pause_requests(restriction["code"], retry_at=restriction["retry_at"])
+            connector.LOGIN.update(state="idle", phase="")
+            connector.restore_login_state()
+            snapshot = connector.login_snapshot()
+            self.assertEqual("verification_pending", snapshot["state"])
+            self.assertEqual("2026-09-29 13:44:43", snapshot["retry_at"])
+            self.assertFalse(snapshot["retry_allowed"])
+            self.assertIn("电脑端登录权限", snapshot["error"])
+            with self.assertRaisesRegex(RuntimeError, "电脑端登录权限"):
+                connector.begin_login()
+            start.assert_not_called()
+
+    def test_pc_restriction_date_does_not_automatically_release_requests(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "scanned"}), \
+             mock.patch.object(connector.time, "time", return_value=1790740800), \
+             mock.patch.object(connector.subprocess, "run") as cli, \
+             mock.patch.object(connector.threading, "Thread") as worker:
+            connector.pause_requests("PC_LOGIN_RESTRICTED", retry_at="2026-09-29 13:44:43")
+            self.assertTrue(connector.login_snapshot()["retry_allowed"])
+            self.assertEqual("PC_LOGIN_RESTRICTED", connector.held_code())
+            self.assertFalse(connector.execute({"operation": "jobs"})["ok"])
+            cli.assert_not_called()
+            self.assertEqual("pending", connector.begin_login()["state"])
+            worker.assert_called_once_with(target=connector.login_worker, daemon=True)
+            self.assertEqual("PC_LOGIN_RESTRICTED", connector.held_code())
+
+    def test_pc_restriction_without_valid_time_stays_blocked(self):
+        for text in ("暂为您关闭PC端登录权限",
+                     "暂为您关闭PC端登录权限\n预计开启时间：2026-99-99 24:99:99"):
+            restriction = connector.login_restriction_from_text(text)
+            self.assertEqual("", restriction["retry_at"])
+            with mock.patch.dict(connector.LOGIN):
+                connector.pause_requests(restriction["code"], retry_at=restriction["retry_at"])
+                self.assertTrue(connector.pc_login_blocked())
+        self.assertIsNone(connector.login_restriction_from_text("扫描成功，请在App端确认登录"))
+
+    def test_login_safety_page_is_distinguished_from_normal_sms_login(self):
+        self.assertIsNone(connector.login_restriction_from_text("验证码登录/注册\n扫码登录"))
+        for text, code in (("扫描成功\n请完成安全验证", "SECURITY_VERIFICATION_REQUIRED"),
+                           ("您的IP地址存在异常行为", "IP_RESTRICTED"),
+                           ("访问环境异常", "ENVIRONMENT_RISK"),
+                           ("账号存在风险", "ACCOUNT_RISK")):
+            self.assertEqual(code, connector.login_restriction_from_text(text)["code"])
+
+    def test_pc_restriction_stops_cli_even_without_frontend_polling(self):
+        process = mock.Mock()
+        process.communicate.side_effect = subprocess.TimeoutExpired("login", 5)
+        with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "scanned"}), \
+             mock.patch.object(connector, "observe_login_page", return_value={
+                 "code": "PC_LOGIN_RESTRICTED", "retry_at": "2026-09-29 13:44:43"}), \
+             mock.patch.object(connector, "stop_login_process") as stop, \
+             mock.patch.object(connector, "close_browser") as close:
+            connector.LOGIN_CANCEL.clear()
+            self.addCleanup(connector.LOGIN_CANCEL.clear)
+            self.assertEqual(b"", connector.wait_for_login_process(process))
+            stop.assert_called_once_with(process)
+            close.assert_not_called()
+            self.assertEqual("verification_pending", connector.LOGIN["state"])
+            self.assertEqual("PC_LOGIN_RESTRICTED", connector.LOGIN["failure_code"])
+
+    def test_killing_cli_descendants_has_a_bounded_pipe_cleanup(self):
+        process = mock.Mock(pid=1234)
+        process.communicate.side_effect = subprocess.TimeoutExpired("login", 5)
+        with mock.patch.object(connector.os, "killpg") as kill:
+            connector.stop_login_process(process)
+        self.assertEqual(2, kill.call_count)
+        self.assertEqual([mock.call(timeout=5), mock.call(timeout=5)],
+                         process.communicate.call_args_list)
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+
+    def test_unexpected_cdp_failure_never_leaves_login_pending(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "qr"}), \
+             mock.patch.object(connector, "browser_service"), \
+             mock.patch.object(connector, "wait_for_cdp", side_effect=RuntimeError("secret")):
+            connector.LOGIN_CANCEL.clear()
+            connector.login_worker()
+            self.assertEqual("failed", connector.LOGIN["state"])
+            self.assertEqual("LOGIN_RUNTIME_ERROR", connector.LOGIN["failure_code"])
+            self.assertNotIn("secret", connector.LOGIN["error"])
+
+    def test_disconnect_cannot_erase_official_pc_restriction(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "verification_pending"}), \
+             mock.patch.object(connector, "LOGIN_PROCESS", None), \
+             mock.patch.object(connector, "discard_login"):
+            connector.pause_requests("PC_LOGIN_RESTRICTED", retry_at="2026-09-29 13:44:43")
+            connector.logout_boss()
+            self.assertEqual("PC_LOGIN_RESTRICTED", connector.held_code())
+        connector.LOGIN_CANCEL.clear()
+
+    def test_explicit_login_budget_survives_new_connection_and_expires(self):
+        with mock.patch.object(connector.time, "time", return_value=10000):
+            for _ in range(3):
+                connector.reserve_login_attempt()
+            with self.assertRaisesRegex(RuntimeError, "30 分钟内已尝试连接 3 次"):
+                connector.reserve_login_attempt()
+        with mock.patch.object(connector.time, "time", return_value=11801):
+            connector.reserve_login_attempt()
+
+    def test_duplicate_start_does_not_consume_another_login_attempt(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "pending"}), \
+             mock.patch.object(connector, "reserve_login_attempt") as reserve:
+            self.assertEqual("pending", connector.begin_login()["state"])
+            reserve.assert_not_called()
 
     def test_disconnect_is_local_and_remains_disconnected_after_restart(self):
         connector.AUTH_DIR.mkdir()
@@ -255,6 +370,34 @@ class ConnectorTest(unittest.TestCase):
             self.assertEqual("scanned", connector.LOGIN["phase"])
         page.reload.assert_not_called()
         page.get_by_text.assert_not_called()
+
+    def test_qr_poll_reports_safety_dialog_before_scanned_text(self):
+        page = mock.MagicMock()
+        page.url = "https://www.zhipin.com/web/user/"
+        page.locator.return_value.inner_text.return_value = (
+            "扫描成功\n请在App端确认登录\n安全提示\n暂为您关闭PC端登录权限\n"
+            "预计开启时间：2026-09-29 13:44:43")
+        context = mock.MagicMock()
+        context.cookies.return_value = []
+        context.pages = [page]
+        browser = mock.MagicMock()
+        browser.contexts = [context]
+        browser_api = mock.MagicMock()
+        browser_api.chromium.connect_over_cdp.return_value = browser
+        playwright = mock.MagicMock()
+        playwright.__enter__.return_value = browser_api
+        module = types.ModuleType("patchright.sync_api")
+        module.sync_playwright = mock.Mock(return_value=playwright)
+        with mock.patch.dict("sys.modules", {"patchright.sync_api": module}), \
+             mock.patch.dict(connector.LOGIN, {"state": "pending", "phase": "scanned"}):
+            self.addCleanup(connector.LOGIN_CANCEL.clear)
+            with self.assertRaises(connector.LoginRestricted):
+                connector.qr_image(force_refresh=True)
+            self.assertEqual("verification_pending", connector.LOGIN["state"])
+            self.assertEqual("PC_LOGIN_RESTRICTED", connector.LOGIN["failure_code"])
+            page.locator.assert_called_once_with("body")
+        page.reload.assert_not_called()
+        page.screenshot.assert_not_called()
 
     def test_scanned_page_is_detected_after_boss_removes_qr_container(self):
         page = mock.MagicMock()
@@ -849,6 +992,7 @@ class ConnectorTest(unittest.TestCase):
                    "boss_agent_cli.auth.token_store": store,
                    "boss_agent_cli.api.client": errors}
         with mock.patch.dict("sys.modules", modules), \
+             mock.patch.object(connector, "install_session_policy") as policy, \
              mock.patch.object(connector, "chrome_has_login_cookie", return_value=True):
             browser.login_via_cdp.side_effect = StaleSession("secret fingerprint")
             self.assertEqual({"ok": False, "error": {"code": "AUTH_EXPIRED"}},
@@ -862,6 +1006,7 @@ class ConnectorTest(unittest.TestCase):
             self.assertEqual({"ok": True}, connector.sync_browser_login_result())
             store.TokenStore.return_value.save.assert_called_once_with(
                 {"cookies": {"wt2": "test-only"}})
+            self.assertEqual(2, policy.call_count)
 
     def test_successful_recruiter_read_clears_only_the_old_risk_hold(self):
         with tempfile.TemporaryDirectory() as folder, \

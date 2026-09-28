@@ -10,6 +10,13 @@ Install this file alongside the wrapper and connector. It enforces single-attemp
 requests, disables implicit token refresh and shares a persistent request budget.
 See [SESSION-SAFETY.md](SESSION-SAFETY.md) for the source review, current limits,
 incident evidence and explicit recovery procedure.
+The subsequent [2026-09-28 review](RISK-REVIEW-20260928.md) records the official
+PC-login restriction, transport audit and additional protections. Login safety
+dialogs stop the worker; restriction holds survive a local disconnect and
+service restart. Explicit enrollment/synchronization is limited to three attempts
+per thirty minutes. An estimated reopening time never resumes work automatically.
+Raw-CDP recruiter actions and reused-session probes also share the request budget;
+the SDK cannot silently force a new login after rejecting a reused session.
 
 Install the startup scripts and `boss-pilot` wrapper under
 `/opt/heyi/boss-agent/bin/`, and the service files under

@@ -38,6 +38,11 @@ async function api(url,options={}){
  }
  const loginState=sessionStorage.getItem('qaLogin')||new URLSearchParams(location.search).get('login');
  if(loginState){
+   if(loginState==='restricted'){
+     const message='BOSS 官方暂时关闭了此账号的电脑端登录权限，已停止本次登录和自动请求。官方预计恢复时间：2026-09-29 13:44:43（北京时间）。请先在 BOSS App 中使用招聘功能；限制解除后刷新本页，再由本人重新扫码，并按官方提示确保手机与电脑在同一地点。预计时间不代表限制一定解除。';
+     if(url.endsWith('/login/status'))return {data:{state:'verification_pending',phase:'',failure_code:'PC_LOGIN_RESTRICTED',retry_allowed:false,error:message}};
+     return {data:{ok:false,error:{code:'RECRUITER_VERIFICATION_PENDING',message}}};
+   }
    if(url.endsWith('/login/status'))return {data:{state:loginState,phase:new URLSearchParams(location.search).get('phase')||'verifying',error:'当前会话已过期（合成测试）'}};
    if(url.endsWith('/status'))return {data:{ok:false,error:{code:loginState==='disconnected'?'SESSION_DISCONNECTED':'RECRUITER_VERIFICATION_PENDING',message:'合成测试：登录状态待核验'}}};
  }

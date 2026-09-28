@@ -9,6 +9,7 @@
   let qrPollMilliseconds = 0;
   let loginPendingSeen = false, loginCheckInFlight = false, qrRequestInFlight = false;
   let loginActionInFlight = false, loginGeneration = 0;
+  let loginPhase = '';
   let resumeTimer = null;
   let jobRecords = [], jobsRequest = null, conversations = [], selectedConversation = null;
   let selectedCandidate = null, sessionGeneration = 0;
@@ -68,7 +69,7 @@
   element('p', '使用 BOSS 直聘 App 扫码，确认后即可查看真实职位、投递和候选人数据。', intro, 'hr-hint');
   const loginBox = element('div', '', overview, 'hr-login');
   element('div', 'BOSS 直聘', loginBox, 'hr-login-brand');
-  element('strong', '扫码连接招聘账号', loginBox, 'hr-login-title');
+  const loginTitle = element('strong', '扫码连接招聘账号', loginBox, 'hr-login-title');
   const qr = element('img', '', loginBox, 'hr-qr');
   qr.alt = 'BOSS 直聘登录二维码';
   qr.hidden = true;
@@ -106,14 +107,28 @@
     qrRefresh = milliseconds ? setInterval(refreshQr, milliseconds) : null;
   }
   function showLoginProgress(phase = '') {
-    loginProgress.hidden = !phase;
-    loginProgress.dataset.phase = phase;
-    loginBox.setAttribute('aria-busy', phase ? 'true' : 'false');
+    // Keep the existing spinner mounted; identical polls do not restart it.
+    if (loginProgress.hidden !== !phase) loginProgress.hidden = !phase;
+    if (loginProgress.dataset.phase !== phase) {
+      loginProgress.dataset.phase = phase;
+      loginBox.setAttribute('aria-busy', phase ? 'true' : 'false');
+    }
     if (!phase) return;
     qr.hidden = true;
-    loginProgressTitle.textContent = phase === 'scanned' ? '已扫码，等待手机确认'
+    const title = phase === 'scanned' ? '正在同步登录结果'
       : phase === 'verifying' ? '正在确认登录'
       : phase === 'reconnecting' ? '正在恢复连接' : '正在准备连接';
+    if (loginProgressTitle.textContent !== title) loginProgressTitle.textContent = title;
+  }
+  function advanceLoginPhase(phase) {
+    const order = {qr:1,scanned:2,verifying:3};
+    if ((order[phase] || 0) > (order[loginPhase] || 0)) loginPhase = phase;
+    return loginPhase || 'qr';
+  }
+  function loginPhaseMessage(phase) {
+    return phase === 'scanned'
+      ? '请在 BOSS App 完成确认；如果已确认，正在等待 BOSS 返回登录结果，无需重复扫码。'
+      : '已收到登录结果，正在验证招聘方账号…';
   }
   async function refreshQr() {
     if (qrRequestInFlight || !loginPendingSeen) return;
@@ -122,20 +137,28 @@
     try {
       const response = await fetch('/api/v1/hr/login/qr', {credentials:'same-origin',cache:'no-store'});
       if (generation !== loginGeneration || !loginPendingSeen || !allowed()) return;
+      if (response.status === 409) {
+        await checkLogin();
+        return;
+      }
       if (response.status === 202) {
         const result = await response.json();
         if (generation !== loginGeneration || !loginPendingSeen) return;
         if (result.data?.phase === 'scanned' || result.data?.phase === 'verifying') {
-          showLoginProgress(result.data.phase);
+          const phase = advanceLoginPhase(result.data.phase);
+          showLoginProgress(phase);
           refreshButton.hidden = true;
-          loginMessage.textContent = result.data.phase === 'scanned'
-            ? '已扫码，请在手机上确认。' : '扫码已确认，正在验证招聘方账号…';
+          loginMessage.textContent = loginPhaseMessage(phase);
+          note.textContent = phase === 'scanned' ? '扫码已收到 · 正在同步登录结果' : '正在验证招聘方账号';
+          if (phase === 'verifying') pollQrEvery(0);
         }
         return;
       }
       if (!response.ok) return;
+      if (loginPhase === 'scanned' || loginPhase === 'verifying') return;
       const blob = await response.blob();
       if (generation !== loginGeneration || !loginPendingSeen) return;
+      if (loginPhase === 'scanned' || loginPhase === 'verifying') return;
       if (blob.type !== 'image/png') return;
       const url = URL.createObjectURL(blob);
       const previous = qr.dataset.objectUrl;
@@ -175,6 +198,7 @@
     }
   }
   function showDisconnected() {
+    loginPhase = '';
     autoLoginAttempted = true;
     loginPendingSeen = false;
     stopLoginPolling();
@@ -203,22 +227,22 @@
         // poll completion even though this page never called /login/start.
         if (!loginTimer) loginTimer = setInterval(checkLogin, 3000);
         loginPendingSeen = true;
+        const phase = advanceLoginPhase(state.phase || 'qr');
         status.replaceChildren();
-        note.textContent = state.phase === 'scanned' ? '扫码已收到 · 等待手机确认'
-          : state.phase === 'verifying' ? '正在验证招聘方账号' : '等待扫码连接';
+        note.textContent = phase === 'scanned' ? '扫码已收到 · 正在同步登录结果'
+          : phase === 'verifying' ? '正在验证招聘方账号' : '等待扫码连接';
         loginBox.hidden = false;
         loginButton.hidden = true;
         resetLoginButton.hidden = true;
-        const waitingForPhone = state.phase === 'scanned' || state.phase === 'verifying';
+        const waitingForPhone = phase === 'scanned' || phase === 'verifying';
         refreshButton.hidden = waitingForPhone;
-        loginMessage.textContent = state.phase === 'scanned' ? '已扫码，请在手机上确认。'
-          : state.phase === 'verifying' ? '扫码已确认，正在验证招聘方账号…'
+        loginMessage.textContent = waitingForPhone ? loginPhaseMessage(phase)
           : '请在 BOSS 直聘 App 扫码并确认；二维码过期后会自动更新。';
         if (waitingForPhone) {
-          showLoginProgress(state.phase);
+          showLoginProgress(phase);
           // Keep observing the browser after scanning so phone confirmation is
           // reflected while the CLI is still synchronizing account credentials.
-          pollQrEvery(state.phase === 'scanned' ? 3000 : 0);
+          pollQrEvery(phase === 'scanned' ? 3000 : 0);
         } else {
           showLoginProgress(qr.hidden ? 'loading' : '');
           pollQrEvery(12000);
@@ -238,6 +262,18 @@
         loginMessage.textContent = state.state === 'complete' ? '扫码成功，正在刷新账号状态…'
           : state.state === 'verification_pending' ? (state.error || '已扫码，正在核对招聘方接口')
           : state.state === 'failed' ? (state.error || '扫码未完成，请重新获取二维码') : '';
+        loginTitle.textContent = state.failure_code === 'PC_LOGIN_RESTRICTED'
+          ? '电脑端登录暂受限' : '扫码连接招聘账号';
+        if (state.failure_code === 'PC_LOGIN_RESTRICTED') {
+          note.textContent = 'BOSS 暂停电脑端登录 · 本次连接已停止';
+          intro.hidden = loginFootnote.hidden = true;
+          status.replaceChildren();
+          resetLoginButton.hidden = true;
+          loginButton.hidden = false;
+          loginButton.disabled = state.retry_allowed !== true;
+          loginButton.textContent = state.retry_allowed === true
+            ? '限制解除后重新扫码' : '等待官方解除限制';
+        }
         if (state.state === 'complete') {
           if (loginPendingSeen) {
             loginPendingSeen = false;
@@ -267,10 +303,12 @@
     if (!allowed() || loginActionInFlight) return;
     loginActionInFlight = true;
     const generation = ++loginGeneration;
+    loginPhase = '';
     ++sequence;
     status.replaceChildren();
     loginSuccess.hidden = true;
     showLoginProgress('loading');
+    loginTitle.textContent = '扫码连接招聘账号';
     autoLoginAttempted = true;
     loginPendingSeen = true;
     stopLoginPolling();
@@ -303,6 +341,7 @@
     if (!allowed() || loginActionInFlight) return;
     loginActionInFlight = true;
     const generation = ++loginGeneration;
+    loginPhase = '';
     ++sequence;
     ++sessionGeneration;
     autoLoginAttempted = true;
@@ -984,7 +1023,8 @@
         showDisconnected();
         return;
       }
-      if (action === 'overview' && response.data?.error?.code === 'LOGIN_PENDING') {
+      if (action === 'overview' && ['LOGIN_PENDING', 'RECRUITER_VERIFICATION_PENDING']
+          .includes(response.data?.error?.code)) {
         box.replaceChildren();
         return;
       }
@@ -1058,6 +1098,7 @@
     ++sequence;
     ++sessionGeneration;
     ++loginGeneration;
+    loginPhase = '';
     loginActionInFlight = false;
     stopLoginPolling();
     showLoginProgress();

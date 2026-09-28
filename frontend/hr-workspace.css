@@ -17,9 +17,9 @@
 .hr-qr{display:block;width:min(100%,246px);height:auto;aspect-ratio:1;object-fit:contain;padding:14px;border:1px solid #e6e6e6;border-radius:10px;background:#fff}
 .hr-login-progress{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;width:min(100%,246px);aspect-ratio:1;border:1px solid var(--hr-border);border-radius:10px;background:var(--surface,#fff);padding:20px}
 .hr-login-progress strong{font-size:16px;line-height:1.6;font-weight:600}
-.hr-login-spinner{width:44px;height:44px;border:3px solid var(--hr-border);border-top-color:var(--hr-ink);border-radius:50%;animation:hr-login-spin .85s linear infinite}
+.hr-login-spinner{display:block;flex:none;width:44px;height:44px;border:3px solid var(--hr-border);border-top-color:var(--hr-ink);border-radius:50%;will-change:transform;backface-visibility:hidden;animation:hr-login-spin 1s linear infinite}
 .hr-login-success{margin:0 0 16px;font-weight:600}
-@keyframes hr-login-spin{to{transform:rotate(360deg)}}
+@keyframes hr-login-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.hr-login-spinner{animation:none}}
 .hr-login .hr-hint{max-width:290px;min-height:22px}
 .hr-login-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}

@@ -85,7 +85,7 @@ test('reloading during phone confirmation resumes polling and opens jobs after l
   assert.equal(progress.hidden,false);
   assert.equal(progress.dataset.phase,'scanned');
   assert.equal(success.hidden,true);
-  assert.match(app.text(),/已扫码，请在手机上确认/);
+  assert.match(app.text(),/如果已确认，正在等待 BOSS 返回登录结果/);
   assert.doesNotMatch(app.text(),/错误代码：LOGIN_PENDING/);
   assert.equal([...app.timers.values()].filter(t=>t.ms===3000).length,2);
   failOnce=true;
@@ -124,6 +124,78 @@ test('phone confirmation updates loading state before the CLI finishes synchroni
   assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
   assert.equal(all(app.root).find(n=>n.className.includes('hr-login-success')).hidden,true);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+
+test('a late QR image cannot replace the scanned loading state',async()=>{
+  let phase='qr',resolveQr;
+  const reply=new Promise(resolve=>{resolveQr=resolve;});
+  const app=setup({api:async url=>({data:url.endsWith('/login/status')
+    ? {state:'pending',phase} : {ok:false,error:{code:'LOGIN_PENDING'}}}),
+    fetch:()=>reply});
+  await app.enter('overview');
+  phase='scanned';
+  await app.tick(3000);
+  resolveQr({ok:true,status:200,blob:async()=>new Blob(['synthetic'],{type:'image/png'})});
+  await flush();
+  const progress=all(app.root).find(n=>n.className==='hr-login-progress');
+  assert.equal(progress.hidden,false);
+  assert.equal(progress.dataset.phase,'scanned');
+  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
+});
+
+test('a stale scanned status cannot roll verification back or restart QR reads',async()=>{
+  let reads=0;
+  const app=setup({api:async url=>({data:url.endsWith('/login/status')
+    ? {state:'pending',phase:'scanned'} : {ok:false,error:{code:'LOGIN_PENDING'}}}),
+    fetch:async()=>{
+      reads++;
+      return reads===1 ? {status:202,json:async()=>({data:{phase:'verifying'}})}
+        : {ok:false,status:503};
+    }});
+  await app.enter('overview');
+  await app.tick(3000);
+  await app.tick(3000);
+  const progress=all(app.root).find(n=>n.className==='hr-login-progress');
+  assert.equal(progress.dataset.phase,'verifying');
+  assert.equal(reads,1);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+
+test('an official PC restriction ends the spinner and disables further scans',async()=>{
+  let restricted=false;
+  const app=setup({api:async url=>({data:url.endsWith('/login/status')
+    ? restricted
+      ? {state:'verification_pending',failure_code:'PC_LOGIN_RESTRICTED',retry_allowed:false,
+        error:'BOSS 暂时关闭电脑端登录权限。预计恢复时间：2026-09-29 13:44:43'}
+      : {state:'pending',phase:'scanned'}
+    : {ok:false,error:{code:'LOGIN_PENDING'}}}),
+    fetch:async()=>{
+      restricted=true;
+      return {status:409,ok:false};
+    }});
+  await app.enter('overview');
+  await app.tick(3000);
+  const progress=all(app.root).find(n=>n.className==='hr-login-progress');
+  assert.equal(progress.hidden,true);
+  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
+  assert.equal(app.timers.size,0);
+  const button=all(app.root).find(n=>n.textContent==='等待官方解除限制');
+  assert.equal(button.disabled,true);
+  assert.match(app.text(),/2026-09-29 13:44:43/);
+  assert.equal(all(app.root).find(n=>n.textContent==='清除会话并重新扫码').hidden,true);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+
+test('passing the estimated reopening time permits only an explicit attempt',async()=>{
+  const app=setup({api:async url=>({data:url.endsWith('/login/status')
+    ? {state:'verification_pending',failure_code:'PC_LOGIN_RESTRICTED',retry_allowed:true,
+      error:'预计恢复时间已到，仍需确认官方是否解除限制。'}
+    : {ok:false,error:{code:'RECRUITER_VERIFICATION_PENDING'}}})});
+  await app.enter('overview');
+  const button=all(app.root).find(n=>n.textContent==='限制解除后重新扫码');
+  assert.equal(button.disabled,false);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  assert.equal(app.timers.size,0);
 });
 
 test('jobs render business fields and job action passes encrypted ID automatically',async()=>{

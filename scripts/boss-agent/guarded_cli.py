@@ -67,6 +67,7 @@ def install_policy():
     )
     from boss_agent_cli.api.zhipin_errors import classify_code_37
     from boss_agent_cli.auth.manager import AuthManager, TokenRefreshFailed
+    from boss_agent_cli.auth import browser as auth_browser, manager as auth_manager
     import httpx
 
     if getattr(_BaseHttpClient._request, "_heyi_guarded", False):
@@ -127,6 +128,43 @@ def install_policy():
         return check_result(original_browser_request(self, *args, **kwargs))
 
     BrowserSession.request = browser_request
+
+    # Recruiter resume requests use these raw-CDP methods rather than request().
+    # Reserve once per explicitly dispatched action; the site's own internal
+    # network traffic is not represented as individually counted HTTP requests.
+    def guarded_browser_action(original):
+        @functools.wraps(original)
+        def action(self, *args, **kwargs):
+            before_request()
+            return original(self, *args, **kwargs)
+        return action
+
+    BrowserSession.evaluate_js = guarded_browser_action(BrowserSession.evaluate_js)
+    BrowserSession.evaluate_js_with_chat_events = guarded_browser_action(
+        BrowserSession.evaluate_js_with_chat_events)
+
+    original_probe = auth_browser._probe_reused_session
+
+    @functools.wraps(original_probe)
+    def budgeted_probe(page, *, platform):
+        if platform == "zhipin":
+            before_request()
+        return original_probe(page, platform=platform)
+
+    auth_browser._probe_reused_session = budgeted_probe
+
+    def single_cdp_login(self, *, cdp_url, timeout, reuse_existing):
+        # A stale-session result must not silently turn a reuse into --force.
+        # The connector has an explicit, separately confirmed local reset flow.
+        if not reuse_existing:
+            raise TokenRefreshFailed("请先由用户明确清理服务器会话，未强制重登")
+        try:
+            return auth_manager.login_via_cdp(
+                cdp_url=cdp_url, timeout=timeout, platform=self._platform, reuse_existing=True)
+        except auth_browser.ReusedSessionStaleError:
+            raise TokenRefreshFailed("已有会话失效，已保留浏览器，未自动清理或重登") from None
+
+    AuthManager._cdp_login = single_cdp_login
 
     def no_implicit_refresh(self, *args, **kwargs):
         raise TokenRefreshFailed("请由用户在官方页面确认后手动同步，未自动刷新")

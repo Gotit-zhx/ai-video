@@ -106,6 +106,51 @@ class PinnedSDKTest(unittest.TestCase):
         with self.assertRaises(TokenRefreshFailed):
             AuthManager.force_refresh(object(), cdp_url="http://example.invalid")
 
+    def test_stale_cdp_session_never_falls_back_to_forced_login(self):
+        from boss_agent_cli.auth import manager
+        from boss_agent_cli.auth.browser import ReusedSessionStaleError
+        auth = types.SimpleNamespace(_platform="zhipin")
+        with mock.patch.object(manager, "login_via_cdp",
+                               side_effect=ReusedSessionStaleError("synthetic")) as login:
+            with self.assertRaises(manager.TokenRefreshFailed):
+                manager.AuthManager._cdp_login(
+                    auth, cdp_url="http://example.invalid", timeout=30, reuse_existing=True)
+            login.assert_called_once_with(
+                cdp_url="http://example.invalid", timeout=30, platform="zhipin", reuse_existing=True)
+            with self.assertRaises(manager.TokenRefreshFailed):
+                manager.AuthManager._cdp_login(
+                    auth, cdp_url="http://example.invalid", timeout=30, reuse_existing=False)
+            self.assertEqual(1, login.call_count)
+
+    def test_reused_login_probe_participates_in_shared_request_budget(self):
+        from boss_agent_cli.auth import browser
+        page = mock.Mock()
+        page.evaluate.return_value = {"code": 0}
+        with mock.patch.object(guard, "reserve_request") as budget:
+            self.assertEqual("valid", browser._probe_reused_session(page, platform="zhipin"))
+        budget.assert_called_once()
+        page.evaluate.assert_called_once()
+
+    def test_raw_recruiter_action_is_budgeted_and_dispatched_only_once(self):
+        from boss_agent_cli.api import browser_client
+        browser = types.SimpleNamespace(
+            _is_bridge=False, _cdp_url="http://example.invalid", _require_cdp_source=mock.Mock())
+        with mock.patch.object(guard, "reserve_request") as budget, \
+             mock.patch.object(browser_client, "_cdp_evaluate_with_chat_events_in_chat_tab",
+                               return_value={"value": {"ok": True}, "events": []}) as dispatch:
+            browser_client.BrowserSession.evaluate_js_with_chat_events(browser, "synthetic", {})
+            budget.assert_called_once()
+            dispatch.assert_called_once()
+
+    def test_exhausted_budget_prevents_raw_recruiter_action(self):
+        from boss_agent_cli.api import browser_client
+        from boss_agent_cli.api.client import PlatformRiskError
+        with mock.patch.object(guard, "reserve_request", side_effect=guard.BudgetExhausted("budget")), \
+             mock.patch.object(browser_client, "_cdp_evaluate_with_chat_events_in_chat_tab") as dispatch:
+            with self.assertRaises(PlatformRiskError):
+                browser_client.BrowserSession.evaluate_js_with_chat_events(object(), "synthetic", {})
+            dispatch.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
