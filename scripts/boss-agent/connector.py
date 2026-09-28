@@ -84,11 +84,19 @@ def resume_db():
     connection.execute("""CREATE TABLE IF NOT EXISTS resume_requests (
         friend_id TEXT PRIMARY KEY, requested_at INTEGER NOT NULL,
         baseline_mid INTEGER NOT NULL, state TEXT NOT NULL,
-        message_id TEXT, updated_at INTEGER NOT NULL, error TEXT NOT NULL DEFAULT ''
+        message_id TEXT, updated_at INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '',
+        confirmed_at INTEGER
     )""")
     os.chmod(RESUME_DB, 0o600)
     try:
         with connection:
+            if "confirmed_at" not in {row[1] for row in connection.execute("PRAGMA table_info(resume_requests)")}:
+                try:
+                    connection.execute("ALTER TABLE resume_requests ADD COLUMN confirmed_at INTEGER")
+                except sqlite3.OperationalError:
+                    if "confirmed_at" not in {row[1] for row in connection.execute("PRAGMA table_info(resume_requests)")}:
+                        raise
+                connection.execute("UPDATE resume_requests SET confirmed_at=requested_at WHERE state='waiting'")
             yield connection
     finally:
         connection.close()
@@ -97,7 +105,7 @@ def resume_db():
 def tracked_resumes():
     with resume_db() as connection:
         rows = connection.execute(
-            "SELECT friend_id, requested_at, state, message_id, updated_at, error "
+            "SELECT friend_id, requested_at, state, message_id, updated_at, error, confirmed_at "
             "FROM resume_requests ORDER BY requested_at DESC LIMIT 50").fetchall()
         return [dict(row) for row in rows]
 
@@ -132,6 +140,39 @@ def incoming_attachment(envelope, friend_id, baseline):
     return min(matches, key=int) if matches else None
 
 
+def reconcile_resume_request(envelope, friend_id, baseline):
+    """Confirm an ambiguous write using the same conversation's persisted message."""
+    if envelope.get("ok") is not True:
+        return False
+    for item in resume_messages(envelope):
+        if not isinstance(item, dict):
+            continue
+        mid, sender, recipient, body = (str(item.get("mid", "")), item.get("from") or {},
+                                        item.get("to") or {}, item.get("body") or {})
+        if not all(isinstance(value, dict) for value in (sender, recipient, body)):
+            continue
+        # BOSS can label both endpoints source=0; UID direction is authoritative.
+        if (not mid.isdecimal() or int(mid) <= baseline
+                or not str(sender.get("uid", "")).isdecimal()
+                or str(sender.get("uid")) == friend_id or str(recipient.get("uid")) != friend_id
+                or body.get("type") != 1 or body.get("text") != "方便发一份简历过来吗？"):
+            continue
+        timestamp = item.get("time")
+        if not isinstance(timestamp, (int, float)) or timestamp <= 0:
+            continue
+        confirmed_at = int(timestamp / 1000 if timestamp >= 1e12 else timestamp)
+        with resume_db() as connection:
+            updated = connection.execute(
+                "UPDATE resume_requests SET confirmed_at=?, requested_at=?, "
+                "state=CASE WHEN state='uncertain' THEN 'waiting' ELSE state END, error='', "
+                "updated_at=CASE WHEN state='received' THEN updated_at ELSE ? END "
+                "WHERE friend_id=? AND baseline_mid=? AND confirmed_at IS NULL "
+                "AND state IN ('uncertain','waiting','received')",
+                (confirmed_at, confirmed_at, int(time.time()), friend_id, baseline)).rowcount
+        return bool(updated)
+    return False
+
+
 def resume_cli(*args, timeout=60):
     result = cli_json(*args, timeout=timeout)
     if result.get("ok") is not True:
@@ -139,7 +180,7 @@ def resume_cli(*args, timeout=60):
     return result
 
 
-def request_resume(friend_id):
+def request_resume(friend_id, retry_uncertain=False):
     friend_id = positive_id(friend_id)
     with LOGIN_LOCK:
         if LOGIN["state"] != "complete":
@@ -153,26 +194,64 @@ def request_resume(friend_id):
         with resume_db() as connection:
             previous = connection.execute("SELECT state FROM resume_requests WHERE friend_id=?",
                                           (friend_id,)).fetchone()
-        if previous and previous["state"] in ("waiting", "received", "uncertain"):
+        if previous and (previous["state"] in ("waiting", "received")
+                         or (previous["state"] == "uncertain" and retry_uncertain is not True)):
             raise ValueError("该会话已有未完成的简历请求，请先核对消息，避免重复索取")
+        # Upstream request-resume executes the recruiter's real Vue chat action.
+        # A saved cookie alone is insufficient: login closes its temporary tab.
+        # Prepare and verify the chat runtime before any write can be attempted.
+        prepare_recruiter_chat()
         history = resume_cli("hr", "chatmsg", friend_id, "--count", "100")
         baseline = latest_message_id(history)
+        now = int(time.time())
+        with resume_db() as connection:
+            # Persist before the external write so a service restart cannot lose
+            # the attempt and silently make a second request safe to send.
+            connection.execute(
+                "INSERT OR REPLACE INTO resume_requests "
+                "(friend_id, requested_at, baseline_mid, state, message_id, updated_at, error) "
+                "VALUES (?, ?, ?, 'uncertain', NULL, ?, ?)",
+                (friend_id, now, baseline, now, "索取请求正在核对结果，请勿重复发送"))
         try:
-            resume_cli("hr", "request-resume", friend_id, timeout=90)
+            result = cli_json("hr", "request-resume", friend_id, timeout=90)
         except Exception:
             # A lost write response is ambiguous. Never offer an automatic resend.
-            now = int(time.time())
+            result = {"ok": False, "error": {"code": "REQUEST_UNCONFIRMED"}}
+        data = result.get("data")
+        if (result.get("ok") is not True or not isinstance(data, dict)
+                or data.get("requested") is not True):
+            code = safe_error_code(result, "REQUEST_UNCONFIRMED")
+            # These upstream errors occur before the chat action is dispatched.
+            not_sent = code in {"RECRUITER_CHAT_TAB_REQUIRED", "CDP_UNAVAILABLE",
+                               "BROWSER_SESSION_NOT_FOUND", "AUTH_REQUIRED", "AUTH_EXPIRED",
+                               "INVALID_PARAM", "NOT_SUPPORTED", "ROLE_MISMATCH"}
+            if not not_sent:
+                try:
+                    history = cli_json("hr", "chatmsg", friend_id, "--count", "100", timeout=30)
+                    if reconcile_resume_request(history, friend_id, baseline):
+                        with resume_db() as connection:
+                            row = connection.execute(
+                                "SELECT state, requested_at, updated_at, confirmed_at FROM resume_requests WHERE friend_id=?",
+                                (friend_id,)).fetchone()
+                        return {"friendId": friend_id, **dict(row)}
+                except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.TimeoutExpired):
+                    pass
+            message = ("BOSS 沟通页面或登录状态未就绪，本次请求未发送，请重试"
+                       if not_sent else "索取结果未确认，请先核对 BOSS 官方会话")
+            message += f"（{code}）"
             with resume_db() as connection:
                 connection.execute(
-                    "INSERT OR REPLACE INTO resume_requests VALUES (?, ?, ?, 'uncertain', NULL, ?, ?)",
-                    (friend_id, now, baseline, now, "索取结果未确认；请在 BOSS 官方会话核对"))
-            raise RuntimeError("索取结果未确认，请在 BOSS 官方会话核对，不要重复发送")
+                    "UPDATE resume_requests SET state=?, updated_at=?, error=? WHERE friend_id=?",
+                    ("failed" if not_sent else "uncertain", int(time.time()), message, friend_id))
+            raise RuntimeError(message)
         now = int(time.time())
         with resume_db() as connection:
             connection.execute(
-                "INSERT OR REPLACE INTO resume_requests VALUES (?, ?, ?, 'waiting', NULL, ?, '')",
-                (friend_id, now, baseline, now))
-        return {"friendId": friend_id, "state": "waiting"}
+                "UPDATE resume_requests SET state='waiting', requested_at=?, confirmed_at=?, updated_at=?, error='' "
+                "WHERE friend_id=? AND baseline_mid=?",
+                (now, now, now, friend_id, baseline))
+        return {"friendId": friend_id, "state": "waiting", "requested_at": now,
+                "confirmed_at": now, "updated_at": now}
     finally:
         LOCK.release()
 
@@ -221,13 +300,14 @@ def poll_resumes_once():
                         "AND state IN ('waiting','uncertain')",
                         ("招聘账号登录已过期，重新登录后继续检测", row["friend_id"]))
             continue
+        reconcile_resume_request(result, row["friend_id"], row["baseline_mid"])
         mid = incoming_attachment(result, row["friend_id"], row["baseline_mid"])
         if mid:
             with resume_db() as connection:
                 connection.execute(
                     "UPDATE resume_requests SET state='received', message_id=?, updated_at=?, error='' "
-                    "WHERE friend_id=? AND state IN ('waiting','uncertain')",
-                    (mid, int(time.time()), row["friend_id"]))
+                    "WHERE friend_id=? AND baseline_mid=? AND state IN ('waiting','uncertain')",
+                    (mid, int(time.time()), row["friend_id"], row["baseline_mid"]))
 
 
 def resume_poll_worker():
@@ -439,6 +519,56 @@ def wait_for_cdp(timeout=35):
 def close_browser():
     for service in ("heyi-boss-chrome.service", "heyi-boss-display.service"):
         browser_service("stop", service)
+
+
+def prepare_recruiter_chat_result():
+    """Open/reuse the authenticated chat tab without sending any messages."""
+    from patchright.sync_api import sync_playwright
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=5000)
+            try:
+                context = next((context for context in browser.contexts
+                                if any(cookie.get("name") == "wt2" and cookie.get("value")
+                                       and (cookie.get("domain") == "zhipin.com"
+                                            or cookie.get("domain", "").endswith(".zhipin.com"))
+                                       for cookie in context.cookies())), None)
+                if context is None:
+                    return {"ok": False, "code": "BROWSER_LOGIN_REQUIRED"}
+                page = next((page for page in context.pages
+                             if urllib.parse.urlsplit(page.url).hostname == "www.zhipin.com"
+                             and urllib.parse.urlsplit(page.url).path.rstrip("/") == "/web/chat/index"), None)
+                if page is None:
+                    page = next((page for page in context.pages if page.url == "about:blank"), None)
+                    page = page or context.new_page()
+                    page.goto("https://www.zhipin.com/web/chat/index",
+                              wait_until="domcontentloaded", timeout=25000)
+                page.wait_for_function("""() => {
+                    const vm = document.querySelector('.chat-user')?.__vue__;
+                    return vm?.$options?.name === 'geek-list'
+                        && typeof vm.geekClick === 'function';
+                }""", timeout=15000)
+                return {"ok": True}
+            finally:
+                browser.close()
+    except Exception:
+        # Browser exceptions can include URLs and account identifiers.
+        return {"ok": False, "code": "CHAT_PAGE_NOT_READY"}
+
+
+def prepare_recruiter_chat():
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "--prepare-recruiter-chat"],
+            capture_output=True, timeout=50, check=False, env=CLI_ENV)
+        envelope = json.loads(result.stdout) if len(result.stdout) <= 1024 else {}
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError, json.JSONDecodeError):
+        envelope = {}
+    if isinstance(envelope, dict) and envelope.get("ok") is True:
+        return
+    if isinstance(envelope, dict) and envelope.get("code") == "BROWSER_LOGIN_REQUIRED":
+        raise RuntimeError("BOSS 浏览器登录已过期，本次简历请求未发送，请先重新连接招聘账号")
+    raise RuntimeError("BOSS 沟通页面准备失败，本次简历请求未发送，请稍后重试")
 
 
 def clear_stored_boss_cookies():
@@ -997,9 +1127,11 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 return
             try:
                 body = json.loads(self.rfile.read(content_length))
-                if not isinstance(body, dict) or set(body) != {"friendId"}:
+                if (not isinstance(body, dict) or "friendId" not in body
+                        or set(body) - {"friendId", "retryUncertain"}
+                        or ("retryUncertain" in body and type(body["retryUncertain"]) is not bool)):
                     raise ValueError("请选择指定候选人的会话")
-                result = request_resume(body["friendId"])
+                result = request_resume(body["friendId"], retry_uncertain=body.get("retryUncertain", False))
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 self.send_json(400, {"success": False, "message": str(error)})
                 return
@@ -1081,5 +1213,7 @@ def main():
 if __name__ == "__main__":
     if sys.argv[1:] == ["--sync-browser-login"]:
         print(json.dumps(sync_browser_login_result()))
+    elif sys.argv[1:] == ["--prepare-recruiter-chat"]:
+        print(json.dumps(prepare_recruiter_chat_result()))
     else:
         main()

@@ -36,7 +36,7 @@ function setup(overrides={}) {
       replaceState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));}},
     switchWorkspace(){},URLSearchParams,encodeURIComponent,Date,URL,
     setInterval(fn,ms){const id=++timerSequence;timers.set(id,{fn,ms});return id;},
-    clearInterval(id){timers.delete(id);},setTimeout(){},addEventListener(){},confirm:()=>false,
+    clearInterval(id){timers.delete(id);},setTimeout(){},addEventListener(){},confirm:overrides.confirm || (()=>false),
     fetch:overrides.fetch || (async()=>({ok:false,status:503})),
     api:async(url,options)=>{
       calls.push({url,options});
@@ -132,6 +132,44 @@ test('nested geekCard renders and resume follows exact IDs including required se
   assert.match(app.text(),/工作经历/);assert.match(app.text(),/教育经历/);assert.match(app.text(),/证书资质/);
   assert.doesNotMatch(app.text(),/test-security/);
 });
+test('masked resume name retains the selected candidate identity without inventing hidden names',async()=>{
+  for(const [detailName,listName,expected] of [
+    ['***','测试候选人甲','测试候选人甲'],
+    ['＊＊＊','张**','张**'],
+    ['', '李**','李**'],
+    ['***','***','姓名暂未公开'],
+    ['简历公开昵称','测试候选人甲','简历公开昵称'],
+  ]){
+    const recommendations=structuredClone(fixtures.recommendations);
+    recommendations.data.geekList[0].geekCard.geekName=listName;
+    const resume=structuredClone(fixtures.resume);
+    resume.data.basic.name=detailName;
+    const app=setup({api:async url=>({data:url.includes('/resume?') ? resume
+      : url.includes('/recommendations?') ? recommendations : fixtures.jobs})});
+    await app.enter('jobs');await app.click('推荐人才');await app.click('查看简历');
+    const sheet=all(app.root).find(n=>n.className==='hr-resume-sheet');
+    assert.equal(all(sheet).find(n=>n.tagName==='h3').textContent,expected);
+    assert.notEqual(all(sheet).find(n=>n.className==='hr-avatar').textContent,'*');
+    if(expected.includes('*')||expected==='姓名暂未公开'){
+      assert.match(sheet.textContent,/BOSS 暂未公开完整姓名/);
+    }
+    assert.doesNotMatch(sheet.textContent,/测试候选人乙/,'never borrow a different candidate name');
+  }
+});
+test('candidate name can fall back from masked nested name to the same row nickname',async()=>{
+  const recommendations=structuredClone(fixtures.recommendations);
+  recommendations.data.geekList[0].geekCard.geekName='***';
+  recommendations.data.geekList[0].nickname='已公开昵称';
+  const resume=structuredClone(fixtures.resume);
+  resume.data.basic.name='***';
+  const app=setup({api:async url=>({data:url.includes('/resume?') ? resume
+    : url.includes('/recommendations?') ? recommendations : fixtures.jobs})});
+  await app.enter('jobs');await app.click('推荐人才');
+  assert.match(app.text(),/已公开昵称/);
+  await app.click('查看简历');
+  const sheet=all(app.root).find(n=>n.className==='hr-resume-sheet');
+  assert.equal(all(sheet).find(n=>n.tagName==='h3').textContent,'已公开昵称');
+});
 test('application opens a conversation and messages render in time order without sending',async()=>{
   const app=setup();await app.enter('applications');await app.click('查看沟通');
   assert.ok(app.calls.some(c=>c.url==='/api/v1/hr/messages/12345'));
@@ -150,6 +188,130 @@ test('chat names, previews, unread state and selecting a conversation are visual
   assert.match(app.text(),/索取附件简历/);
   await app.click('索取附件简历');
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0,'cancelled confirmation never sends');
+});
+test('resume request shows progress, prevents double clicks and retains feedback after tracker refresh',async()=>{
+  let finish,records=[];
+  const app=setup({confirm:()=>true,api:async(url,options)=>{
+    if(options?.method==='POST')return new Promise(resolve=>{finish=()=>{
+      records=[{friend_id:'12345',state:'waiting',requested_at:1790568000,updated_at:1790568000}];
+      resolve({success:true,data:{...records[0],friendId:'12345'}});
+    };});
+    if(url.endsWith('/resumes'))return {data:records};
+    return {data:url.includes('/messages/')?fixtures.messages:url.endsWith('/jobs')?fixtures.jobs:fixtures.chats};
+  }});
+  await app.enter('chats');
+  await all(app.root).find(n=>n.className==='hr-conversation').click();await flush();
+  const action=all(app.root).find(n=>n.textContent==='索取附件简历'&&n.tagName==='button');
+  const pending=action.click();await flush();
+  assert.equal(action.disabled,true);
+  assert.equal(action.textContent,'正在索取…');
+  await action.click();
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
+  finish();await pending;await flush();
+  assert.match(app.text(),/附件简历请求已发出/);
+  assert.equal(action.textContent,'已索取，等待附件');
+  assert.equal(action.disabled,true);
+  const record=all(app.root).find(n=>n.className==='hr-record');
+  assert.match(record.textContent,/已索取 · 等待候选人发送/);
+  assert.match(record.textContent,/索取时间/);
+  assert.match(all(app.root).find(n=>n.className==='hr-conversation').textContent,/已索取/);
+});
+test('confirmed resume request remains recorded after page reload without sending again',async()=>{
+  const records=[{friend_id:'12345',state:'waiting',requested_at:1790568000,updated_at:1790568000}];
+  const app=setup({api:async url=>({data:url.endsWith('/resumes')?records:
+    url.includes('/messages/')?fixtures.messages:url.endsWith('/jobs')?fixtures.jobs:fixtures.chats})});
+  await app.enter('chats');
+  assert.match(app.text(),/已索取 · 等待候选人发送/);
+  assert.match(app.text(),/索取时间/);
+  await all(app.root).find(n=>n.className==='hr-conversation').click();await flush();
+  const action=all(app.root).find(n=>n.tagName==='button'&&n.textContent==='已索取，等待附件');
+  assert.equal(action.disabled,true);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+test('missing or mismatched resume response never claims success and preserves uncertainty if reads fail',async()=>{
+  for(const response of [null,{success:true,data:{}},
+    {success:true,data:{friendId:'99999',state:'waiting',requested_at:1790568000}}]){
+    let dispatched=false;
+    const app=setup({confirm:()=>true,api:async(url,options)=>{
+      if(options?.method==='POST'){dispatched=true;return response;}
+      if(url.endsWith('/resumes')){
+        if(dispatched)throw Error('network unavailable');
+        return {data:[]};
+      }
+      return {data:url.includes('/messages/')?fixtures.messages:url.endsWith('/jobs')?fixtures.jobs:fixtures.chats};
+    }});
+    await app.enter('chats');
+    await all(app.root).find(n=>n.className==='hr-conversation').click();await flush();
+    await app.click('索取附件简历');
+    assert.doesNotMatch(app.text(),/附件简历请求已发出|已索取/);
+    assert.match(app.text(),/索取结果待核对/);
+    assert.match(app.text(),/避免重复发送/);
+    assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
+  }
+});
+test('confirmed record and disabled button survive a failed tracker refresh',async()=>{
+  let dispatched=false;
+  const app=setup({confirm:()=>true,api:async(url,options)=>{
+    if(options?.method==='POST'){
+      dispatched=true;
+      return {success:true,data:{friendId:'12345',state:'waiting',requested_at:1790568000,updated_at:1790568000}};
+    }
+    if(url.endsWith('/resumes')){
+      if(dispatched)throw Error('network unavailable');
+      return {data:[]};
+    }
+    return {data:url.includes('/messages/')?fixtures.messages:url.endsWith('/jobs')?fixtures.jobs:fixtures.chats};
+  }});
+  await app.enter('chats');
+  await all(app.root).find(n=>n.className==='hr-conversation').click();await flush();
+  await app.click('索取附件简历');
+  assert.match(app.text(),/已索取 · 等待候选人发送/);
+  assert.match(app.text(),/索取时间/);
+  assert.match(app.text(),/已保留当前记录/);
+  assert.equal(all(app.root).find(n=>n.tagName==='button'&&n.textContent==='已索取，等待附件').disabled,true);
+});
+test('received attachment retains confirmed request status and time after refreshing',async()=>{
+  const app=setup({api:async url=>({data:url.endsWith('/resumes')?
+    [{friend_id:'12345',state:'received',requested_at:1790568000,confirmed_at:1790568000,
+      updated_at:1790569000,message_id:'12'}]:
+    url.includes('/messages/')?fixtures.messages:url.endsWith('/jobs')?fixtures.jobs:fixtures.chats})});
+  await app.enter('chats');
+  const record=all(app.root).find(n=>n.className==='hr-record');
+  assert.match(record.textContent,/已索取 · 已收到附件/);
+  assert.match(record.textContent,/索取时间/);
+  assert.match(record.textContent,/接收时间/);
+  assert.match(record.textContent,/下载已收到的简历/);
+});
+test('chat direction uses participant IDs when BOSS marks both sources as zero',async()=>{
+  const messages={ok:true,data:{messages:[
+    {time:1790568000,from:{uid:98765,source:0},to:{uid:12345,source:0},
+      body:{type:1,text:'方便发一份简历过来吗？'}},
+    {time:1790568001,from:{uid:12345,source:0},to:{uid:98765,source:0},
+      body:{type:1,text:'好的'}},
+  ]}};
+  const app=setup({api:async url=>({data:url.endsWith('/resumes')?[]:
+    url.includes('/messages/')?messages:url.endsWith('/jobs')?fixtures.jobs:fixtures.chats})});
+  await app.enter('chats');
+  await all(app.root).find(n=>n.className==='hr-conversation').click();await flush();
+  const bubbles=all(app.root).filter(n=>n.className.startsWith('hr-message '));
+  assert.match(bubbles[0].className,/is-own/);
+  assert.doesNotMatch(bubbles[1].className,/is-own/);
+});
+test('retrying an uncertain resume request requires a warning and preserves errors through refresh',async()=>{
+  const confirmations=[];
+  const app=setup({confirm:text=>{confirmations.push(text);return true;},api:async(url,options)=>{
+    if(options?.method==='POST')throw Error('沟通页面准备失败，本次请求未发送');
+    if(url.endsWith('/resumes'))return {data:[{friend_id:'12345',state:'uncertain',updated_at:1,error:'待核对'}]};
+    return {data:url.includes('/messages/')?fixtures.messages:url.endsWith('/jobs')?fixtures.jobs:fixtures.chats};
+  }});
+  await app.enter('chats');
+  await all(app.root).find(n=>n.className==='hr-conversation').click();await flush();
+  await app.click('重新索取附件简历');
+  assert.match(confirmations[0],/可能已经送达/);
+  const posts=app.calls.filter(c=>c.options?.method==='POST');
+  assert.equal(posts.length,1);
+  assert.deepEqual(JSON.parse(posts[0].options.body),{friendId:'12345',retryUncertain:true});
+  assert.match(app.text(),/沟通页面准备失败，本次请求未发送/);
 });
 test('explicit hasMore=false disables next; empty and failed pages are not paginated',async()=>{
   const app=setup();await app.enter('jobs');await app.click('推荐人才');

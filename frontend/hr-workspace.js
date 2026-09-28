@@ -12,6 +12,10 @@
   let resumeTimer = null;
   let jobRecords = [], jobsRequest = null, conversations = [], selectedConversation = null;
   let selectedCandidate = null, sessionGeneration = 0;
+  let trackedResumeRequests = new Map(), requestResumeButton = null;
+  let resumeLoadSequence = 0;
+  const resumeRequestBadges = new Map();
+  const resumeRequestsInFlight = new Set();
   const jobSelectors = [];
 
   const element = (tag, text, parent, className) => {
@@ -318,6 +322,9 @@
       if (generation !== loginGeneration || !allowed()) return;
       jobsRequest = null;
       conversations = [];
+      trackedResumeRequests.clear();
+      resumeRequestsInFlight.clear();
+      attachmentFeedback.hidden = true;
       selectedConversation = selectedCandidate = null;
       friendId.value = geekId.value = resumeJob.value = securityId.value = '';
       keyword.value = '';
@@ -380,6 +387,9 @@
   const chatsActions = element('div', '', chatsForm, 'hr-actions');
   button('查看沟通列表', chatsActions, () => {page=1;run('chats');}).className = 'hr-primary';
   chatsForm.addEventListener('submit', event => {event.preventDefault();run('chats');});
+  const attachmentFeedback = element('p', '', chats, 'hr-success');
+  attachmentFeedback.hidden = true;
+  attachmentFeedback.setAttribute('role', 'status');
   const chatsResult = element('div', '', chats, 'hr-result');
   element('h2', '附件简历跟进', chats);
   element('p', '请求发出后会持续检查该会话；候选人晚些时候发送附件也会显示在这里。', chats, 'hr-hint');
@@ -387,22 +397,70 @@
 
   async function requestAttachmentResume() {
     const id = friendId.value.trim();
+    if (resumeRequestsInFlight.has(id)) return;
     if (!/^[1-9]\d{0,19}$/.test(id)) {
       element('p', '请先从沟通列表中选择一位候选人。', chatsResult, 'hr-error');
       return;
     }
-    if (!window.confirm(`确认向「${personName(selectedConversation)}」发送附件简历请求吗？平台会实际发送一条请求。`)) return;
+    const retryUncertain = trackedResumeRequests.get(id)?.state === 'uncertain';
+    const warning = retryUncertain
+      ? '上次索取结果未确认，可能已经送达。请先核对 BOSS 会话，确定未发送后再重试。\n\n' : '';
+    if (!window.confirm(`${warning}确认向「${personName(selectedConversation)}」发送附件简历请求吗？平台会实际发送一条请求。`)) return;
+    const generation = sessionGeneration;
+    resumeRequestsInFlight.add(id);
+    updateResumeRequestButton();
+    showAttachmentFeedback('正在准备 BOSS 沟通页面并发送请求，请稍候…');
     try {
-      await api('/api/v1/hr/resumes/request', {
+      const response = await api('/api/v1/hr/resumes/request', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({friendId:id})
+        body:JSON.stringify({friendId:id, ...(retryUncertain ? {retryUncertain:true} : {})})
       });
-      element('p', '附件简历请求已发出，收到后将在下方显示。', attachmentResult, 'hr-success');
-      await loadTrackedResumes();
+      if (generation !== sessionGeneration) return;
+      if (response?.success !== true || response?.data?.state !== 'waiting'
+          || String(response.data.friendId) !== id || !(response.data.requested_at > 0)) {
+        throw Error('索取结果未确认，正在读取记录；请先核对 BOSS 会话，避免重复发送。');
+      }
+      ++resumeLoadSequence;
+      trackedResumeRequests.set(id, {...response.data, friend_id:id});
+      renderTrackedResumes();
+      if (friendId.value === id) showAttachmentFeedback('附件简历请求已发出，已记录为“已索取”，收到后将在下方显示。');
     } catch (error) {
-      element('p', error.message || '索取结果未确认，请查看官方会话。', attachmentResult, 'hr-error');
-      await loadTrackedResumes();
+      if (generation !== sessionGeneration) return;
+      if (!['waiting','received'].includes(trackedResumeRequests.get(id)?.state)) {
+        ++resumeLoadSequence;
+        trackedResumeRequests.set(id, {friend_id:id, state:'uncertain',
+          requested_at:Math.floor(Date.now()/1000)});
+        renderTrackedResumes();
+      }
+      if (friendId.value === id) showAttachmentFeedback(error.message || '索取结果未确认，请查看官方会话。', true);
+    } finally {
+      if (generation === sessionGeneration) {
+        resumeRequestsInFlight.delete(id);
+        await loadTrackedResumes();
+        updateResumeRequestButton();
+      }
     }
+  }
+  function showAttachmentFeedback(message, failed = false) {
+    attachmentFeedback.className = failed ? 'hr-error' : 'hr-success';
+    attachmentFeedback.textContent = message;
+    attachmentFeedback.hidden = false;
+  }
+  function updateResumeRequestButton() {
+    for (const [id, node] of resumeRequestBadges) {
+      const state = trackedResumeRequests.get(id)?.state;
+      node.textContent = state === 'waiting' ? '已索取' : state === 'received' ? '已收简历'
+        : state === 'uncertain' ? '索取待核对' : '';
+      node.hidden = !node.textContent;
+    }
+    if (!requestResumeButton || requestResumeButton.dataset.friendId !== friendId.value) return;
+    const pending = resumeRequestsInFlight.has(friendId.value);
+    const state = trackedResumeRequests.get(friendId.value)?.state;
+    requestResumeButton.disabled = pending || state === 'waiting' || state === 'received';
+    requestResumeButton.textContent = pending ? '正在索取…'
+      : state === 'waiting' ? '已索取，等待附件'
+      : state === 'received' ? '已收到附件'
+      : state === 'uncertain' ? '重新索取附件简历' : '索取附件简历';
   }
 
   async function downloadAttachment(friend, mid, action) {
@@ -437,36 +495,59 @@
   async function loadTrackedResumes() {
     if (!allowed() || activeWorkspace !== 'hr') return;
     const generation = sessionGeneration;
+    const loadSequence = ++resumeLoadSequence;
     try {
       const result = await api('/api/v1/hr/resumes');
-      if (generation !== sessionGeneration || current !== 'chats'
+      if (generation !== sessionGeneration || loadSequence !== resumeLoadSequence || current !== 'chats'
           || !allowed() || activeWorkspace !== 'hr') return;
-      attachmentResult.replaceChildren();
-      const items = result.data || [];
-      if (!items.length) {
-        element('p', '暂无附件简历请求。', attachmentResult, 'hr-empty');
-        return;
-      }
-      for (const item of items) {
-        const card = element('article', '', attachmentResult, 'hr-record');
-        const known = conversations.find(row => conversationId(row) === String(item.friend_id));
-        element('strong', known ? personName(known) : '候选人附件简历', card);
-        const state = item.state === 'received' ? '已收到附件'
-          : item.state === 'uncertain' ? '索取结果待核对'
-          : '等待候选人发送';
-        element('p', `${state} · ${new Date(item.updated_at * 1000).toLocaleString()}`, card);
-        if (item.error) element('p', item.error, card, 'hr-hint');
-        if (item.state === 'received' && /^\d+$/.test(item.message_id || '')) {
-          button('下载已收到的简历', card,
-            event => downloadAttachment(item.friend_id, item.message_id, event.currentTarget))
-            .className = 'hr-primary hr-resume-download';
-        }
+      if (!Array.isArray(result?.data)) throw Error('附件状态读取失败，请稍后重试。');
+      const items = result.data;
+      const previous = trackedResumeRequests.get(friendId.value);
+      trackedResumeRequests = new Map(items.map(item => [String(item.friend_id), item]));
+      renderTrackedResumes();
+      const selected = trackedResumeRequests.get(friendId.value);
+      if (previous?.state === 'uncertain' && (selected?.state === 'waiting' || selected?.confirmed_at > 0)) {
+        showAttachmentFeedback(`已核对 BOSS 会话，索取成功并已记录${selected.state === 'received' ? '，附件也已收到' : ''}。`);
       }
     } catch (error) {
-      if (generation === sessionGeneration && current === 'chats'
+      if (generation === sessionGeneration && loadSequence === resumeLoadSequence && current === 'chats'
           && allowed() && activeWorkspace === 'hr') {
-        attachmentResult.replaceChildren();
-        element('p', error.message || '附件状态读取失败', attachmentResult, 'hr-error');
+        renderTrackedResumes();
+        element('p', '附件状态暂时读取失败，已保留当前记录，将自动刷新。', attachmentResult, 'hr-error');
+      }
+    }
+  }
+  function renderTrackedResumes() {
+    attachmentResult.replaceChildren();
+    updateResumeRequestButton();
+    const items = [...trackedResumeRequests.values()].sort((a,b) => b.requested_at - a.requested_at);
+    if (!items.length) {
+      element('p', '暂无附件简历请求。', attachmentResult, 'hr-empty');
+      return;
+    }
+    for (const item of items) {
+      const card = element('article', '', attachmentResult, 'hr-record');
+      const known = conversations.find(row => conversationId(row) === String(item.friend_id))
+        || (conversationId(selectedConversation || {}) === String(item.friend_id) ? selectedConversation : null);
+      element('strong', known ? personName(known) : '候选人附件简历', card);
+      const confirmed = item.state === 'waiting' || item.confirmed_at > 0;
+      const state = item.state === 'waiting' ? '已索取 · 等待候选人发送'
+        : item.state === 'received' ? `${confirmed ? '已索取 · ' : ''}已收到附件`
+        : item.state === 'failed' ? '请求未发送，可重新索取'
+        : '索取结果待核对';
+      element('p', state, card);
+      if (item.requested_at > 0) {
+        element('p', `${confirmed ? '索取时间' : '发起时间'}：${formatTime(item.confirmed_at || item.requested_at)}`,
+          card, 'hr-hint');
+      }
+      if (item.state === 'received' && item.updated_at > 0) {
+        element('p', `接收时间：${formatTime(item.updated_at)}`, card, 'hr-hint');
+      }
+      if (item.error) element('p', item.error, card, 'hr-hint');
+      if (item.state === 'received' && /^\d+$/.test(item.message_id || '')) {
+        button('下载已收到的简历', card,
+          event => downloadAttachment(item.friend_id, item.message_id, event.currentTarget))
+          .className = 'hr-primary hr-resume-download';
       }
     }
   }
@@ -493,7 +574,12 @@
     return '';
   };
   const person = row => row?.geekCard || row?.geekInfo || row?.geekBaseInfo || row || {};
-  const personName = row => pick(person(row), 'geekName','name','nickname','user.name') || '候选人';
+  const visibleName = (...values) => values.map(value => scalar(value).trim())
+    .find(value => value && !/^[*＊﹡•●·\s_-]+$/u.test(value)
+      && !['[REDACTED]','姓名暂未公开'].includes(value)) || '';
+  const candidateName = row => visibleName(...[person(row), row].flatMap(info =>
+    ['geekName','name','nickname','user.name'].map(key => pick(info,key))));
+  const personName = row => candidateName(row) || '候选人';
   const jobId = row => pick(row, 'encryptJobId','encJobId','job_id','jobId');
   const conversationId = row => pick(row, 'friendId','friend_id');
   function formatTime(value) {
@@ -526,7 +612,7 @@
   }
   function identity(parent, name, subtitle = '') {
     const block = element('div', '', parent, 'hr-identity');
-    const avatar = element('span', [...name].slice(0,1).join(''), block, 'hr-avatar');
+    const avatar = element('span', name === '姓名暂未公开' ? '候' : [...name].slice(0,1).join(''), block, 'hr-avatar');
     avatar.setAttribute('aria-hidden', 'true');
     const content = element('div', '', block);
     element('h3', name, content);
@@ -581,6 +667,7 @@
     const id = conversationId(row);
     if (!/^[1-9]\d{0,19}$/.test(id)) return;
     selectedConversation = row;
+    attachmentFeedback.hidden = true;
     friendId.value = id;
     if (current !== 'chats') navigate('chats');
     else run('messages');
@@ -680,6 +767,7 @@
     }
   }
   function conversationLayout(box) {
+    resumeRequestBadges.clear();
     const layout = element('div', '', box, 'hr-chat-layout');
     const list = element('div', '', layout, 'hr-chat-list');
     list.setAttribute('aria-label', '候选人会话');
@@ -688,6 +776,8 @@
       action.className = 'hr-conversation';
       action.setAttribute('aria-pressed', String(conversationId(row) === friendId.value));
       element('strong', personName(row), action);
+      const requestBadge = element('span', '', action, 'hr-badge');
+      resumeRequestBadges.set(conversationId(row), requestBadge);
       const preview = pick(row,'last_msg','lastMsg','lastMsgInfo.showText');
       element('p', preview && preview !== '-' ? preview : '点击查看沟通记录', action, 'hr-chat-preview');
       element('small', formatTime(row.last_time || row.updateTime), action);
@@ -697,8 +787,12 @@
     if (selectedConversation) {
       const top = element('div', '', detail, 'hr-chat-header');
       identity(top, personName(selectedConversation), '沟通记录');
-      button('索取附件简历', top, requestAttachmentResume).className = 'hr-secondary';
+      requestResumeButton = button('索取附件简历', top, requestAttachmentResume);
+      requestResumeButton.className = 'hr-secondary';
+      requestResumeButton.dataset.friendId = friendId.value;
     }
+    updateResumeRequestButton();
+    renderTrackedResumes();
     return detail;
   }
   function renderMessages(box, data) {
@@ -709,7 +803,11 @@
     const messages = [...source].sort((a,b) => Number(a.time || 0)-Number(b.time || 0));
     for (const message of messages) {
       const sender = message.from || {};
-      const ours = Number(sender.source) === 1;
+      const recipientId = String(message.to?.uid || '');
+      const senderId = String(sender.uid || '');
+      const ours = senderId && recipientId
+        ? senderId !== friendId.value && recipientId === friendId.value
+        : Number(sender.source) === 1;
       const bubble = element('article', '', thread, `hr-message ${ours ? 'is-own' : ''}`);
       element('p', `${ours ? '招聘方' : pick(sender,'name') || personName(selectedConversation)}${
         formatTime(message.time) ? ' · '+formatTime(message.time) : ''}`, bubble, 'hr-message-meta');
@@ -756,8 +854,14 @@
   }
   function renderResume(box, data) {
     const sheet = element('article', '', box, 'hr-resume-sheet');
-    identity(sheet, pick(data,'basic.name') || personName(selectedCandidate),
+    // The resume endpoint can return "***" while the same candidate's list
+    // card still exposes a surname or nickname. Keep that visible identity.
+    const name = visibleName(pick(data,'basic.name'), candidateName(selectedCandidate));
+    const heading = identity(sheet, name || '姓名暂未公开',
       pick(data,'expectation.position'));
+    if (!name || /[*＊﹡•●]/u.test(name)) {
+      element('p', 'BOSS 暂未公开完整姓名，按平台可见信息展示。', heading, 'hr-hint');
+    }
     detailsGrid(sheet, [['工作经验',pick(data,'basic.work_years')],['学历',pick(data,'basic.degree')],
       ['期望薪资',pick(data,'expectation.salary')],['期望城市',pick(data,'expectation.city')],
       ['活跃状态',pick(data,'basic.active_status')]]);
@@ -967,6 +1071,9 @@
     loginPendingSeen = false;
     jobsRequest = null;
     conversations = [];
+    trackedResumeRequests.clear();
+    resumeRequestsInFlight.clear();
+    attachmentFeedback.hidden = true;
     selectedConversation = selectedCandidate = null;
     friendId.value = geekId.value = resumeJob.value = securityId.value = '';
     keyword.value = '';

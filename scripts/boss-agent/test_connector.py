@@ -158,7 +158,8 @@ class ConnectorTest(unittest.TestCase):
 
     def test_disconnected_resume_polling_does_not_contact_platform(self):
         with connector.resume_db() as connection:
-            connection.execute("INSERT INTO resume_requests VALUES "
+            connection.execute("INSERT INTO resume_requests "
+                               "(friend_id,requested_at,baseline_mid,state,message_id,updated_at,error) VALUES "
                                "('12345', 1, 0, 'waiting', NULL, 1, '')")
         with mock.patch.dict(connector.LOGIN, {"state": "disconnected"}), \
              mock.patch.object(connector, "cli_json") as cli:
@@ -322,10 +323,17 @@ class ConnectorTest(unittest.TestCase):
             before = {"ok": True, "data": {"messages": [{"mid": 10}]}}
             sent = {"ok": True, "command": "recruiter-request-resume",
                     "data": {"requested": True}}
-            with mock.patch.object(connector, "cli_json", side_effect=[before, sent]) as cli:
+            with mock.patch.object(connector, "cli_json", side_effect=[before, sent]) as cli, \
+                 mock.patch.object(connector, "prepare_recruiter_chat") as prepare:
                 result = connector.request_resume("12345")
                 self.assertEqual("waiting", result["state"])
+                requested_at = result["requested_at"]
+                self.assertGreater(requested_at, 0)
+                # Each read opens a fresh SQLite connection, as after a restart.
+                self.assertEqual(requested_at, connector.tracked_resumes()[0]["requested_at"])
+                self.assertEqual("waiting", connector.tracked_resumes()[0]["state"])
                 self.assertEqual(2, cli.call_count)
+                prepare.assert_called_once()
             with mock.patch.object(connector, "cli_json") as cli:
                 with self.assertRaisesRegex(ValueError, "避免重复索取"):
                     connector.request_resume("12345")
@@ -339,6 +347,176 @@ class ConnectorTest(unittest.TestCase):
                 connector.poll_resumes_once()
             self.assertEqual("received", connector.tracked_resumes()[0]["state"])
             self.assertEqual("11", connector.tracked_resumes()[0]["message_id"])
+            self.assertEqual(requested_at, connector.tracked_resumes()[0]["requested_at"])
+
+    def test_chat_preflight_failure_never_sends_or_creates_uncertain_request(self):
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "prepare_recruiter_chat", side_effect=RuntimeError("未发送")), \
+             mock.patch.object(connector, "cli_json") as cli:
+            with self.assertRaisesRegex(RuntimeError, "未发送"):
+                connector.request_resume("12345")
+            cli.assert_not_called()
+            self.assertEqual([], connector.tracked_resumes())
+
+    def test_request_records_attempt_before_send_and_preserves_real_failure_code(self):
+        before = {"ok": True, "data": {"messages": [{"mid": 10}]}}
+        def execute(*args, **kwargs):
+            if args[1] == "chatmsg":
+                return before
+            self.assertEqual("uncertain", connector.tracked_resumes()[0]["state"])
+            return {"ok": False, "error": {"code": "RECRUITER_CHAT_TAB_REQUIRED"}}
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "prepare_recruiter_chat"), \
+             mock.patch.object(connector, "cli_json", side_effect=execute):
+            with self.assertRaisesRegex(RuntimeError, "RECRUITER_CHAT_TAB_REQUIRED"):
+                connector.request_resume("12345")
+        self.assertEqual("failed", connector.tracked_resumes()[0]["state"])
+
+    def test_uncertain_request_requires_explicit_retry_and_is_sent_only_once(self):
+        with connector.resume_db() as connection:
+            connection.execute("INSERT INTO resume_requests "
+                               "(friend_id,requested_at,baseline_mid,state,message_id,updated_at,error) VALUES "
+                               "('12345', 1, 10, 'uncertain', NULL, 1, '')")
+        before = {"ok": True, "data": {"messages": [{"mid": 10}]}}
+        sent = {"ok": True, "data": {"requested": True}}
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "prepare_recruiter_chat") as prepare, \
+             mock.patch.object(connector, "cli_json", side_effect=[before, sent]) as cli:
+            with self.assertRaisesRegex(ValueError, "避免重复索取"):
+                connector.request_resume("12345")
+            cli.assert_not_called()
+            prepare.assert_not_called()
+            self.assertEqual("waiting", connector.request_resume("12345", retry_uncertain=True)["state"])
+            self.assertEqual(1, sum(call.args[1] == "request-resume" for call in cli.call_args_list))
+            with self.assertRaises(ValueError):
+                connector.request_resume("12345", retry_uncertain=True)
+
+    def test_ambiguous_resume_response_stays_uncertain_without_automatic_resend(self):
+        before = {"ok": True, "data": {"messages": []}}
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "prepare_recruiter_chat"), \
+             mock.patch.object(connector, "cli_json", side_effect=[
+                 before, {"ok": False, "error": {"code": "NETWORK_ERROR"}}, before]) as cli:
+            with self.assertRaisesRegex(RuntimeError, "NETWORK_ERROR"):
+                connector.request_resume("12345")
+            self.assertEqual("uncertain", connector.tracked_resumes()[0]["state"])
+            self.assertEqual(3, cli.call_count)
+
+    def test_resume_request_requires_explicit_dispatch_confirmation(self):
+        before = {"ok": True, "data": {"messages": []}}
+        for data in (None, {}, {"requested": False}, {"requested": "true"}):
+            with self.subTest(data=data), \
+                 mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+                 mock.patch.object(connector, "prepare_recruiter_chat"), \
+                 mock.patch.object(connector, "cli_json", side_effect=[
+                     before, {"ok": True, "data": data}, before]) as cli:
+                with self.assertRaisesRegex(RuntimeError, "REQUEST_UNCONFIRMED"):
+                    connector.request_resume("12345", retry_uncertain=True)
+                self.assertEqual("uncertain", connector.tracked_resumes()[0]["state"])
+                self.assertEqual(3, cli.call_count)
+
+    def test_ambiguous_write_is_confirmed_from_persisted_outbound_message_without_resending(self):
+        before = {"ok": True, "data": {"messages": [{"mid": 10}]}}
+        delivered = {"ok": True, "data": {"messages": [
+            {"mid": 11, "from": {"uid": 98765, "source": 0}, "to": {"uid": 12345, "source": 0},
+             "time": 1790567780586, "body": {"type": 1, "text": "方便发一份简历过来吗？"}}]}}
+        for failure in ({"ok": False, "error": {"code": "NETWORK_ERROR"}},
+                        subprocess.TimeoutExpired("boss", 90)):
+            with self.subTest(failure=type(failure).__name__), \
+                 mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+                 mock.patch.object(connector, "prepare_recruiter_chat"), \
+                 mock.patch.object(connector, "cli_json", side_effect=[before, failure, delivered]) as cli:
+                with connector.resume_db() as connection:
+                    connection.execute("DELETE FROM resume_requests")
+                result = connector.request_resume("12345")
+                self.assertEqual("waiting", result["state"])
+                self.assertEqual(1790567780, result["confirmed_at"])
+                self.assertEqual(1790567780, connector.tracked_resumes()[0]["requested_at"])
+                self.assertEqual(1, sum(call.args[1] == "request-resume" for call in cli.call_args_list))
+                with self.assertRaises(ValueError):
+                    connector.request_resume("12345")
+
+    def test_background_poll_confirms_delayed_send_and_receipt_preserving_request_time(self):
+        with connector.resume_db() as connection:
+            connection.execute("INSERT INTO resume_requests "
+                               "(friend_id,requested_at,baseline_mid,state,updated_at) "
+                               "VALUES ('12345',1790567785,10,'uncertain',1790567785)")
+        history = {"ok": True, "data": {"messages": [
+            {"mid": 11, "from": {"uid": 98765}, "to": {"uid": 12345}, "time": 1790567780586,
+             "body": {"type": 1, "text": "方便发一份简历过来吗？"}},
+            {"mid": 12, "from": {"uid": 12345, "source": 0},
+             "body": {"hyperLink": {"hyperLinkType": 1, "url": "https://www.zhipin.com/resume?id=test"}}},
+        ]}}
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "cli_json", return_value=history) as cli:
+            connector.poll_resumes_once()
+            self.assertEqual(1, cli.call_count)
+            self.assertEqual("chatmsg", cli.call_args.args[1])
+        record = connector.tracked_resumes()[0]
+        self.assertEqual("received", record["state"])
+        self.assertEqual(1790567780, record["confirmed_at"])
+        self.assertEqual(1790567780, record["requested_at"])
+
+    def test_reconciliation_rejects_old_incoming_other_recipient_and_unrelated_messages(self):
+        base = {"mid": 11, "from": {"uid": 98765}, "to": {"uid": 12345}, "time": 1790567780586,
+                "body": {"type": 1, "text": "方便发一份简历过来吗？"}}
+        with connector.resume_db() as connection:
+            connection.execute("INSERT INTO resume_requests "
+                               "(friend_id,requested_at,baseline_mid,state,updated_at) "
+                               "VALUES ('12345',1790567785,10,'uncertain',1790567785)")
+        for change in ({"mid": 10}, {"from": {"uid": 12345}}, {"to": {"uid": 54321}},
+                       {"body": {"type": 1, "text": "普通聊天"}}, {"time": None}):
+            history = {"ok": True, "data": {"messages": [{**base, **change}]}}
+            self.assertFalse(connector.reconcile_resume_request(history, "12345", 10))
+            self.assertEqual("uncertain", connector.tracked_resumes()[0]["state"])
+            self.assertIsNone(connector.tracked_resumes()[0]["confirmed_at"])
+
+    def test_existing_tracker_migration_preserves_records_and_only_backfills_confirmed_waiting(self):
+        connector.RESUME_DB.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(connector.RESUME_DB) as db:
+            db.execute("CREATE TABLE resume_requests (friend_id TEXT PRIMARY KEY, requested_at INTEGER NOT NULL,"
+                       "baseline_mid INTEGER NOT NULL, state TEXT NOT NULL, message_id TEXT,"
+                       "updated_at INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '')")
+            db.executemany("INSERT INTO resume_requests VALUES (?,1,0,?,NULL,1,'')",
+                           [("12345", "waiting"), ("54321", "uncertain")])
+        records = {row["friend_id"]: row for row in connector.tracked_resumes()}
+        self.assertEqual(1, records["12345"]["confirmed_at"])
+        self.assertIsNone(records["54321"]["confirmed_at"])
+        self.assertEqual(2, len(connector.tracked_resumes()))
+
+    def test_chat_preparation_reuses_blank_page_and_only_checks_runtime(self):
+        page = mock.MagicMock()
+        page.url = "about:blank"
+        context = mock.MagicMock()
+        context.cookies.return_value = [{"name": "wt2", "value": "synthetic", "domain": ".zhipin.com"}]
+        context.pages = [page]
+        browser = mock.MagicMock()
+        browser.contexts = [context]
+        runtime = mock.MagicMock()
+        runtime.chromium.connect_over_cdp.return_value = browser
+        playwright = mock.MagicMock()
+        playwright.__enter__.return_value = runtime
+        module = types.ModuleType("patchright.sync_api")
+        module.sync_playwright = mock.Mock(return_value=playwright)
+        with mock.patch.dict("sys.modules", {"patchright.sync_api": module}):
+            self.assertEqual({"ok": True}, connector.prepare_recruiter_chat_result())
+            page.goto.assert_called_once_with("https://www.zhipin.com/web/chat/index",
+                                              wait_until="domcontentloaded", timeout=25000)
+            context.new_page.assert_not_called()
+            page.click.assert_not_called()
+            page.evaluate.assert_not_called()
+            page.close.assert_not_called()
+            page.goto.reset_mock()
+            page.url = "https://www.zhipin.com/web/chat/index"
+            self.assertEqual({"ok": True}, connector.prepare_recruiter_chat_result())
+            page.goto.assert_not_called()
+            context.cookies.return_value = []
+            self.assertEqual("BROWSER_LOGIN_REQUIRED", connector.prepare_recruiter_chat_result()["code"])
+
+    def test_chat_preparation_process_is_bounded_and_reports_unsent(self):
+        with mock.patch.object(connector.subprocess, "run", side_effect=subprocess.TimeoutExpired("python", 50)):
+            with self.assertRaisesRegex(RuntimeError, "未发送"):
+                connector.prepare_recruiter_chat()
 
     def test_resume_tracking_ignores_old_and_other_party_attachments(self):
         history = {"data": {"messages": [

@@ -98,7 +98,23 @@ one recruiter jobs check; successful verification removes the old hold.
 Recruiting reads remain gated by `/api/v1/auth/me` on every request. The sole
 enabled write is an explicit attachment-resume request for a specified
 conversation, after browser confirmation. QR login and background polling
-never send messages. A private SQLite tracker under
+never send messages. Before requesting an attachment, a bounded read-only
+preflight opens/reuses `/web/chat/index` in the authenticated Chrome context
+and checks the `geek-list` runtime required by the upstream CLI. It never
+invokes the exchange action. The write attempt is recorded before dispatch;
+explicit pre-dispatch failures remain retryable, while uncertain outcomes
+require a separate, clearly warned user confirmation before another attempt.
+Request feedback stays visible independently of tracker refreshes.
+Confirmed requests persist as “已索取” with their confirmation time, remain
+visible after reload/restart, and disable duplicate requests. If the CLI misses
+its WebSocket acknowledgement, the connector only reads the same conversation:
+an exact outbound resume-request message newer than the saved baseline confirms
+delivery. Participant UIDs determine direction because BOSS can mark both
+endpoints `source=0`. Background polling also reconciles delayed acknowledgements;
+it never resends. Unconfirmed responses are not labelled successful. The nullable
+`confirmed_at` tracker column preserves confirmation independently of receipt.
+Receiving an attachment retains the original request time alongside receipt time.
+A private SQLite tracker under
 `runtime/resume-requests.sqlite3` checks pending conversations every two minutes,
 including after a connector restart; only an inbound attachment message newer
 than the request is marked received. The administrator can download that
@@ -121,6 +137,16 @@ with the same dedicated profile and restore its tabs; never remove the profile
 or clear cookies to repair font rendering. Confirm Chinese text visually.
 
 ### Production release
+
+`release-resume-flow.sh` deploys the resume identity fallback and request
+preflight together. It preserves Chrome and business workers, defers during
+scan/write operations, and changes only HR assets, the connector, and the
+HR proxy read timeout (240 seconds covers preparation plus the bounded CLI
+request). Test the live preparation and component readiness without invoking
+`handleExChange`; a real outbound request requires the user's confirmation.
+An all-masked resume name never overrides the selected candidate's visible
+list identity. If BOSS has not exposed a complete name, the UI states that
+instead of guessing missing characters.
 
 The September 28 disconnect repair uses `release-disconnect.sh`, staging
 `connector.py`, `hr-workspace.js`, `test_connector.py`, and
