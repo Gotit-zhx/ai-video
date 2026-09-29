@@ -197,7 +197,7 @@
         if(status.data.state!=='complete'||!status.data.capabilities?.includes('passive-resume')){
           note.textContent='连接新版招聘助手后可开启';return;
         }
-        const id=String(row.encryptJobId||row.jobId||row.id||'');
+        const id=String(row.encryptJobId||row.encJobId||row.job_id||row.jobId||row.id||'');
         rule=data.items.find(item=>item.jobId===id&&item.accountKey===accountKey);
         input.checked=rule?.enabled===true;input.disabled=false;
         note.textContent='默认关闭。开启后，仅在 HR 回复后索取简历。';
