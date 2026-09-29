@@ -22,7 +22,10 @@ module = Path('/opt/heyi/boss-agent/bin/passive_pool.py')
 
 
 def run(*args):
-    return subprocess.check_output(args, stderr=subprocess.STDOUT)
+    environment = os.environ.copy()
+    if args[:2] == ('docker', 'compose'):
+        environment['HR_FRONTEND_IMAGE'] = front['Config']['Image']
+    return subprocess.check_output(args, stderr=subprocess.STDOUT, env=environment)
 
 
 def inspect(name):
@@ -68,6 +71,7 @@ override = root / 'compose.reply.json'
 override.write_text(json.dumps({'services': {service: {'image': image}}}))
 rollback = root / 'compose.rollback.json'
 rollback.write_text(json.dumps({'services': {service: {'image': front['Config']['Image']}}}))
+run(*compose, '-f', str(override), 'config', '-q')
 owner = pwd.getpwnam('heyi-boss')
 try:
     temporary = module.with_suffix('.py.new')

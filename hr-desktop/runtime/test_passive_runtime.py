@@ -24,10 +24,11 @@ class WorkflowTest(unittest.TestCase):
         self.template={'id':'s1','version':1,'content':'{姓名}，可以沟通下{职位}。'}
         @contextlib.contextmanager
         def resume_db():
-            with sqlite3.connect(self.root/'resumes.sqlite3') as db:
+            with contextlib.closing(sqlite3.connect(self.root/'resumes.sqlite3')) as db:
                 db.row_factory=sqlite3.Row
-                db.execute('CREATE TABLE IF NOT EXISTS resume_requests(friend_id TEXT PRIMARY KEY,state TEXT,message_id TEXT)')
-                yield db
+                with db:
+                    db.execute('CREATE TABLE IF NOT EXISTS resume_requests(friend_id TEXT PRIMARY KEY,state TEXT,message_id TEXT)')
+                    yield db
         self.c.resume_db=resume_db
         self.now=1000
         patch=mock.patch.object(flow.time,'time',side_effect=lambda:self.now);patch.start();self.addCleanup(patch.stop)
