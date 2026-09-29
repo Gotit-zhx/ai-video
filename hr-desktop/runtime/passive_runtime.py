@@ -93,13 +93,19 @@ def incoming_trigger(messages, friend, since):
 
 def activity(item):
     # Used for queue priority only. Full message UIDs/timestamps authorize writes.
-    for key in ('lastTS', 'lastTime', 'time', 'timestamp'):
+    for key in ('lastTS', 'lastTime', 'updateTime', 'time', 'timestamp'):
         stamp = seconds(item.get(key))
         if stamp: return stamp
     value = item.get('last_time')
     if isinstance(value, str):
+        now = datetime.datetime.now()
+        if re.fullmatch(r'\d{1,2}:\d{2}', value):
+            try:
+                return datetime.datetime.combine(now.date(), datetime.datetime.strptime(value, '%H:%M').time()).timestamp()
+            except ValueError: return 0
+        if value == '昨天':
+            return datetime.datetime.combine(now.date()-datetime.timedelta(days=1), datetime.time()).timestamp()
         try:
-            now = datetime.datetime.now()
             result = datetime.datetime.strptime(f'{now.year}-{value}', '%Y-%m-%d %H:%M')
             if result > now+datetime.timedelta(days=1): result = result.replace(year=now.year-1)
             return result.timestamp()
@@ -140,7 +146,7 @@ def discover(c, db, rules):
     # first used to postpone fresh messages by hours.
     result = c.cli_json('hr', 'chat', '--job-id', rule['jobId'], '--page', '1')
     if result.get('ok') is not True: return result
-    for item in rows(result):
+    for position, item in enumerate(rows(result)):
         if not isinstance(item, dict): continue
         friend = str(item.get('friendId') or item.get('friend_id') or item.get('uid') or item.get('gid') or '')
         if not friend.isdecimal() or not 1 <= len(friend) <= 20: continue
@@ -157,10 +163,12 @@ def discover(c, db, rules):
                   'experience': first('geekWorkYear', 'workYearDesc', 'work_years', 'experience')[:100],
                   'city': first('expectLocationName', 'locationName', 'city')[:100],
                   'company': first('companyName', 'company')[:200], 'jobName': rule.get('jobName', ''),
-                  'enabledAt': rule['enabledAt'], 'activity': activity(item)}
+                  'enabledAt': rule['enabledAt'], 'activity': activity(item), 'position': position,
+                  'unread': bool(item.get('unread') or item.get('unreadMsgCount') or item.get('newMsgCount'))}
         # Persist only a digest of the message summary, never the chat content.
         detail['fingerprint'] = hashlib.sha256(json.dumps(
-            [item.get(k) for k in ('last_msg', 'last_time', 'lastTS', 'lastTime', 'unread')],
+            [item.get(k) for k in ('last_msg', 'last_time', 'lastTS', 'lastTime', 'updateTime',
+                                  'lastMsgInfo', 'lastMessageInfo', 'unread', 'unreadMsgCount', 'newMsgCount')],
             ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         old = db.execute('SELECT * FROM people WHERE friend=?', (friend,)).fetchone()
         old_detail = json.loads(old['body']) if old else {}
@@ -220,8 +228,12 @@ def step(c, db, request):
         return receive(c, db)
     pending = [r for r in db.execute("SELECT * FROM people WHERE state IN ('inspect','reply_ready','ready')")
                if r['rule'] in rules]
-    pending.sort(key=lambda r: (0 if r['state'] == 'ready' else 1 if r['state'] == 'reply_ready' else 2,
-                                -json.loads(r['body']).get('activity', 0), r['updated'], r['friend']))
+    def priority(row):
+        detail = json.loads(row['body'])
+        return (0 if row['state'] == 'ready' else 1 if row['state'] == 'reply_ready' else 2,
+                -detail.get('activity', 0), not detail.get('unread', False), detail.get('position', 999),
+                row['updated'], row['friend'])
+    pending.sort(key=priority)
     if not pending: return status(db, 'watching' if rules else 'disabled')
     person = pending[0]; friend = person['friend']; rule = rules[person['rule']]
     detail = json.loads(person['body'])

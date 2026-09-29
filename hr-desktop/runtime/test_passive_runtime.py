@@ -170,6 +170,16 @@ class WorkflowTest(unittest.TestCase):
         self.messages(self.message(sender='2'));self.step()
         self.c.cli_json.assert_called_once_with('hr','chatmsg','2','--count','100')
 
+    def test_update_time_and_unread_fallback_preserve_recent_chat_priority(self):
+        self.assertEqual(flow.activity({'updateTime':1790670000000}),1790670000)
+        today=flow.datetime.datetime.now()
+        self.assertEqual(flow.activity({'last_time':'16:01'}),today.replace(hour=16,minute=1,second=0,microsecond=0).timestamp())
+        self.assertLess(flow.activity({'last_time':'昨天'}),today.replace(hour=0,minute=0,second=0,microsecond=0).timestamp())
+        self.pending(friend='1',activity=0,position=0,unread=False)
+        self.pending(friend='2',activity=0,position=1,unread=True)
+        self.messages(self.message(sender='2'));self.step()
+        self.c.cli_json.assert_called_once_with('hr','chatmsg','2','--count','100')
+
     def test_background_budget_and_clock_gate_do_not_issue_requests(self):
         self.pending('reply_ready');self.c.passive_delay=lambda:60
         self.assertEqual(self.step()['data']['phase'],'budget_wait')
