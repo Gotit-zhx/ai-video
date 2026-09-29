@@ -39,7 +39,7 @@ function setup(overrides={}) {
       replaceState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));}},
     switchWorkspace(){},URLSearchParams,encodeURIComponent,Date,URL,crypto:require('node:crypto'),
     setInterval(fn,ms){const id=++timerSequence;timers.set(id,{fn,ms});return id;},
-    clearInterval(id){timers.delete(id);},setTimeout(){},addEventListener(){},confirm:overrides.confirm || (()=>false),
+    clearInterval(id){timers.delete(id);},setTimeout(){},clearTimeout(){},addEventListener(){},confirm:overrides.confirm || (()=>false),
     fetch:overrides.fetch || (async()=>({ok:false,status:503})),
     api:async(url,options)=>{
       calls.push({url,options});
@@ -54,6 +54,7 @@ function setup(overrides={}) {
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-pool.js'),'utf8'),env);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-demands.js'),'utf8'),env);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-departments.js'),'utf8'),env);
+  if(overrides.passive)vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-passive.js'),'utf8'),env);
   vm.runInContext(source,env);
   const visible=()=>{const visit=node=>node.hidden?[]:[node,...node.children.flatMap(visit)];return visit(root);};
   const click=async(text)=>{const node=visible().find(n=>n.tagName==='button'&&n.textContent===text);
@@ -67,6 +68,18 @@ const text=()=>visible().map(n=>n._text).join('\n');
 const poolResult=()=>({items:[{id:'talent-1',name:'测试人才',education:'本科',experience:'5年',stage:'first',
   projectId:'project-1',version:1,updatedAt:'2026-09-29T00:00:00Z'}],
   projects:[{id:'project-1',name:'电商项目组',version:1}],counts:{all:1,first:1},total:1,page:1,pages:1});
+test('resume pool shows queue and retry time using cached status only, and refreshes without BOSS actions',async()=>{
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')
+    ?{state:'complete',passive:{phase:'budget_wait',retryAt:Date.now()/1000+300,lastProgressAt:Date.now()/1000-600,
+      counts:{r1:{inspect:2,requested:3}}}}
+    :{items:[],total:0}})});
+  await app.enter('resume-pool');
+  assert.match(app.text(),/待处理 2/);assert.match(app.text(),/待接收 3/);
+  assert.match(app.text(),/预计 \d\d:\d\d 继续/);assert.match(app.text(),/上次进展/);
+  await app.tick(30000);
+  assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')||c.url.startsWith('/api/v1/hr/resume-pool')));
+  app.env.HrWorkspace.reset();assert.equal(app.timers.size,0);
+});
 test('workspace automatically reconnects helper and displays cached risk state without initiating BOSS work',async()=>{
   let listener,starts=0,stops=0;
   const app=setup({transport:{

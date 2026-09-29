@@ -17,7 +17,7 @@ class WorkflowTest(unittest.TestCase):
         self.c.held_code.return_value=''
         self.c.DISCONNECTED=self.root/'disconnected'
         self.c.RESUME_AUTO_PAUSE=self.root/'pause'
-        self.c.passive_delay=lambda:0
+        self.c.passive_delay=lambda **kwargs:0
         self.c.resume_messages=lambda result:result.get('data',{}).get('messages',[])
         self.c.cli_json.return_value={'ok':True,'data':{'sent':True}}
         self.rule={'id':'r1','jobId':'job1','jobName':'运营','enabled':True,'enabledAt':100}
@@ -172,9 +172,9 @@ class WorkflowTest(unittest.TestCase):
         self.step()  # Due list maintenance consumes this available slot.
         self.c.cli_json.assert_called_once_with('hr','chat','--job-id','job1','--page','1')
         self.c.cli_json.reset_mock()
-        self.now+=31;self.c.passive_delay=lambda:180
+        self.now+=31;self.c.passive_delay=lambda **kwargs:180
         self.assertEqual(self.step()['data']['phase'],'budget_wait')
-        self.now+=181;self.c.passive_delay=lambda:0
+        self.now+=181;self.c.passive_delay=lambda **kwargs:0
         self.c.cli_json.return_value={'ok':True,'data':{'sent':True}}
         self.assertEqual(self.step()['data']['phase'],'request_queued')
         self.c.cli_json.assert_called_once_with('hr','reply','1','王同学，可以沟通下运营。')
@@ -224,10 +224,36 @@ class WorkflowTest(unittest.TestCase):
         self.c.request_resume.assert_not_called()
 
     def test_background_budget_and_clock_gate_do_not_issue_requests(self):
-        self.pending('reply_ready');self.c.passive_delay=lambda:60
-        self.assertEqual(self.step()['data']['phase'],'budget_wait')
-        self.c.passive_delay=lambda:0;self.now+=31;self.step()
+        self.pending('reply_ready');self.c.passive_delay=lambda **kwargs:60
+        result=self.step()['data']
+        self.assertEqual(result['phase'],'budget_wait');self.assertEqual(result['retryAt'],1060)
+        self.now+=31;self.step()
         self.c.cli_json.assert_not_called();self.c.request_resume.assert_not_called()
+
+    def test_queued_work_uses_reserved_capacity_without_refresh_or_limit_reset(self):
+        self.pending('reply_ready')
+        with flow.database(self.root) as db:flow.put_state(db,'discoveredAt',0)
+        calls=[]
+        def delay(**options):
+            calls.append(options)
+            return 0 if options['queued'] else 300
+        self.c.passive_delay=delay
+        self.step()
+        self.c.cli_json.assert_called_once_with('hr','reply','1','王同学，可以沟通下运营。')
+        self.assertTrue(any(not c['queued'] for c in calls))
+        self.assertIn({'cost':3,'queued':True},calls)
+
+    def test_budget_accounts_for_complete_operation_and_actual_expiry(self):
+        path=self.root/'budget.sqlite3'
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE requests(at REAL)')
+            db.executemany('INSERT INTO requests VALUES(?)',[(500+i,) for i in range(96)])
+        self.assertEqual(flow.budget_delay(path,120,cost=3,queued=True),0)
+        # 96 + 5 requires one expiry to leave 20 interactive slots.
+        self.assertEqual(flow.budget_delay(path,120,cost=5,queued=True),3101)
+        # 96 + 2 - 82 = 16 expiries, rather than waking on the first one.
+        self.assertEqual(flow.budget_delay(path,120,cost=2),3116)
+        with sqlite3.connect(path) as db:self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],96)
 
     def test_chat_page_required_is_visible_without_marking_a_send_attempt(self):
         self.pending('reply_ready')

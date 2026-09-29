@@ -11,6 +11,23 @@ import uuid
 
 REQUEST_TEXT = '方便发一份简历过来吗？'
 
+def budget_delay(path, hard_limit, *, cost=1, queued=False):
+    """Allocate existing capacity; the shared HTTP/CDP hard guard still applies."""
+    if not Path(path).exists():
+        return 0
+    now = time.time()
+    with contextlib.closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as db:
+        times = [r[0] for r in db.execute('SELECT at FROM requests WHERE at>? ORDER BY at', (now-3600,))]
+    # Passive list/receipt refreshes use the smaller pool. Already-triggered
+    # conversations may use remaining capacity while retaining 20 for HR.
+    limit = max(0, min(hard_limit-20, hard_limit if queued else 82))
+    needed = len(times) + cost - limit
+    if needed <= 0:
+        return 0
+    if needed > len(times):
+        return 3600
+    return max(30, times[needed-1]+3601-now)
+
 
 @contextlib.contextmanager
 def database(root):
@@ -141,11 +158,14 @@ def event(db, code, detail):
     db.execute('INSERT INTO events VALUES(?,?,0)', (value['id'], json.dumps(value, ensure_ascii=False)))
 
 
-def status(db, phase):
+def status(db, phase, **extra):
     counts = {}
     for row in db.execute('SELECT rule,state,count(*) AS n FROM people GROUP BY rule,state'):
         counts.setdefault(row['rule'], {})[row['state']] = row['n']
-    value = {'phase': phase, 'checkedAt': int(time.time()), 'counts': counts}
+    last = db.execute("SELECT MAX(updated) FROM people WHERE state IN "
+                      "('reply_ready','ready','requested','export','stored')").fetchone()[0]
+    value = {'phase': phase, 'checkedAt': int(time.time()), 'counts': counts,
+             'lastProgressAt': last or 0, **extra}
     put_state(db, 'status', json.dumps(value))
     return {'ok': True, 'data': value}
 
@@ -224,13 +244,14 @@ def receive(c, db):
 def step(c, db, request):
     rules = {r['id']: r for r in request.get('rules', []) if r.get('enabled') is True}
     now = time.time()
-    if now < float(get_state(db, 'nextAt')):
-        return {'ok': True, 'data': json.loads(get_state(db, 'status', '{}'))}
+    previous = json.loads(get_state(db, 'status', '{}'))
+    if now < float(get_state(db, 'nextAt')) and previous.get('phase') != 'budget_wait':
+        return {'ok': True, 'data': previous}
     put_state(db, 'nextAt', now+30); db.commit()
-    delay = getattr(c, 'passive_delay', lambda: 0)()
-    if delay:
+    delay_for = getattr(c, 'passive_delay', lambda **kwargs: 0)
+    def wait_budget(delay):
         put_state(db, 'nextAt', now+delay)
-        return status(db, 'budget_wait')
+        return status(db, 'budget_wait', retryAt=int(now+delay))
     pending = [r for r in db.execute("SELECT * FROM people WHERE state IN ('inspect','reply_ready','ready')")
                if r['rule'] in rules]
     # A budget wait can make every maintenance deadline overdue. Always taking
@@ -250,9 +271,15 @@ def step(c, db, request):
         if waiting and now-received >= 120:
             due.append((received, 'receive'))
         if due:
-            put_state(db, 'lastLane', 'maintenance')
-            return discover(c, db, rules) if min(due)[1] == 'discover' else receive(c, db)
-    put_state(db, 'lastLane', 'work')
+            delays = []
+            for _, operation in sorted(due):
+                delay = delay_for(cost=2 if operation == 'discover' else 4, queued=False)
+                if not delay:
+                    put_state(db, 'lastLane', 'maintenance')
+                    return discover(c, db, rules) if operation == 'discover' else receive(c, db)
+                delays.append(delay)
+            if not pending:
+                return wait_budget(min(delays))
     def priority(row):
         detail = json.loads(row['body'])
         return (0 if row['state'] == 'ready' else 1 if row['state'] == 'reply_ready' else 2,
@@ -272,6 +299,10 @@ def step(c, db, request):
                  else 'request_uncertain' if existing['state'] == 'uncertain' else 'request_failed')
         db.execute("UPDATE people SET state=?,updated=? WHERE friend=?", (state, int(now), friend))
         return status(db, 'receiving' if state == 'requested' else 'needs_review')
+    delay = delay_for(cost={'inspect': 1, 'reply_ready': 3, 'ready': 5}[person['state']], queued=True)
+    if delay:
+        return wait_budget(delay)
+    put_state(db, 'lastLane', 'work')
     if person['state'] == 'inspect':
         result = c.cli_json('hr', 'chatmsg', friend, '--count', '100')
         if result.get('ok') is not True: return result

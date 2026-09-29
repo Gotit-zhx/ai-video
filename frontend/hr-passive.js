@@ -8,13 +8,28 @@
   const phases={watching:'正在等待新消息',reply_queued:'已发现主动消息，等待话术回复',
     request_queued:'已回复，等待索取简历',receiving:'已索取，等待接收简历',
     template_required:'请在话术管理中配置默认被动邀约回复',chat_required:'正在准备 BOSS 沟通页面',
-    budget_wait:'本轮请求额度已用完，稍后继续',send_wait:'正在按发送间隔排队',
+    budget_wait:'正在按请求频率排队，会自动继续',send_wait:'正在按发送间隔排队',
     needs_review:'有发送结果待核对，请查看 BOSS 会话',disabled:'被动邀约已关闭'};
   const eventLabels={INCOMING_DETECTED:'收到主动消息',AUTO_REPLY_SENT:'话术回复已发送',
     AUTO_REPLY_UNCERTAIN:'话术回复结果待核对',RESUME_REQUESTED:'已索取简历',
     RESUME_REQUEST_UNCERTAIN:'索取结果待核对',RESUME_RECEIVED:'已收到简历'};
+  function flowSummary(flow,ruleId){
+    const counts={};
+    for(const group of ruleId?[flow.counts?.[ruleId]||{}]:Object.values(flow.counts||{})){
+      for(const [key,value] of Object.entries(group))counts[key]=(counts[key]||0)+value;
+    }
+    const totals=[['inspect','待处理'],['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],['stored','已入池'],
+      ['reply_uncertain','回复待核对'],['request_uncertain','索取待核对'],['request_failed','索取未完成']]
+      .filter(([key])=>counts[key]).map(([key,label])=>`${label} ${counts[key]}`);
+    const clock=value=>new Date(value*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false});
+    if(flow.phase==='budget_wait'&&Number.isFinite(flow.retryAt)){
+      totals.push(flow.retryAt*1000>Date.now()?`预计 ${clock(flow.retryAt)} 继续`:'正在重新检查可用额度');
+    }
+    if(flow.lastProgressAt>0)totals.push(`上次进展 ${clock(flow.lastProgressAt)}`);
+    return [phases[flow.phase]||'已开启，等待助手检查',...totals].join(' · ');
+  }
   globalThis.createHrPassive=({root,section,element:el,button,allowed,navigate,hrApi})=>{
-    let active='',generation=0,items=[],page=1,filter='',selected=null,timer=null;
+    let active='',generation=0,items=[],page=1,filter='',selected=null,timer=null,poolTimer=null;
     const speechPanel=section('speeches'),resumePanel=section('resume-pool');
     const toolbar=(panel,title,subtitle)=>{
       const head=el('div','',panel,'hr-pool-toolbar'),intro=el('div','',head);
@@ -31,6 +46,8 @@
     statusSelect.setAttribute('aria-label','审批状态');
     statusSelect.onchange=()=>{filter=statusSelect.value;page=1;load();};
     button('刷新',resumeActions,load);
+    const poolActivity=el('p','',resumePanel,'hr-hint');
+    poolActivity.setAttribute('aria-live','polite');
     const resumeFeedback=el('p','',resumePanel,'hr-hint'),resumeRows=el('div','',resumePanel,'hr-result');
     const speechDialog=el('dialog','',root,'hr-pool-dialog'),speechForm=el('form','',speechDialog);
     const speechTitle=el('h2','新建话术',speechForm),fields=el('div','',speechForm,'hr-pool-fields');
@@ -71,6 +88,15 @@
     button('关闭',el('div','',detail,'hr-actions'),()=>{detail.close();selected=null;clearTimeout(timer);});
     detail.addEventListener('close',()=>{selected=null;clearTimeout(timer);});
     function link(parent,text,url){const a=el('a',text,parent,'hr-file-link');a.href=url;a.target='_blank';a.rel='noopener';return a;}
+    async function refreshPoolActivity(){
+      if(active!=='resume-pool'||!allowed())return;const ticket=generation;
+      try{
+        const status=await hrApi('/api/v1/hr/login/status');
+        if(ticket!==generation||active!=='resume-pool'||!allowed())return;
+        poolActivity.textContent=status.data.state==='complete'&&!status.data.paused
+          ?flowSummary(status.data.passive||{}):'助手未连接，自动邀约暂停';
+      }catch{if(ticket===generation&&active==='resume-pool')poolActivity.textContent='正在等待助手恢复连接';}
+    }
     async function load(){
       if(!active||!allowed())return;const ticket=++generation,mode=active;
       const feedback=mode==='speeches'?speechFeedback:resumeFeedback,box=mode==='speeches'?speechRows:resumeRows;
@@ -208,11 +234,7 @@
       const updateNote=status=>{
         if(!rule?.enabled){note.textContent='默认关闭。开启后，主动消息触发默认话术回复，再索取简历。';return;}
         if(status.data.state!=='complete'||status.data.paused){note.textContent='助手未连接，自动邀约暂停';return;}
-        const flow=status.data.passive||{},counts=flow.counts?.[rule.id]||{};
-        const totals=[['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],['stored','已入池'],
-          ['reply_uncertain','回复待核对'],['request_uncertain','索取待核对'],['request_failed','索取未完成']]
-          .filter(([key])=>counts[key]).map(([key,label])=>`${label} ${counts[key]}`);
-        note.textContent=[phases[flow.phase]||'已开启，等待助手检查',...totals].join(' · ');
+        note.textContent=flowSummary(status.data.passive||{},rule.id);
       };
       const refreshStatus=async()=>{
         if(!allowed()||!card.isConnected)return;
@@ -250,7 +272,17 @@
         };
       }catch(error){if(allowed()&&card.isConnected)note.textContent=error.message;}
     }
-    return {jobToggle,enter(route){active=route;load();},leave(){active='';++generation;clearTimeout(timer);detail.close();speechDialog.close();},
+    return {jobToggle,enter(route){
+      active=route;clearInterval(poolTimer);load();
+      if(route==='resume-pool'){
+        refreshPoolActivity();
+        poolTimer=setInterval(()=>{
+          if(active!=='resume-pool'||!allowed())return;
+          if(!detail.open)load();
+          refreshPoolActivity();
+        },30000);
+      }
+    },leave(){active='';++generation;clearTimeout(timer);clearInterval(poolTimer);poolActivity.textContent='';detail.close();speechDialog.close();},
       reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='';statusSelect.value='';speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
   };
 })();

@@ -108,18 +108,11 @@ def main(request):
         return c.observe_result(value)
 
     c.cli_json = invoke
-    def passive_delay():
-        # Keep room for HR's own clicks within the existing shared request cap.
-        # This is a local read; reaching it waits instead of causing a risk hold.
-        import sqlite3
-        if not g.BUDGET_DB.exists(): return 0
-        with sqlite3.connect(f'file:{g.BUDGET_DB}?mode=ro', uri=True) as db:
-            rows = [r[0] for r in db.execute('SELECT at FROM requests WHERE at>? ORDER BY at',
-                                            (time.time()-3600,))]
-        return max(30, rows[0]+3601-time.time()) if len(rows) >= 82 else 0
+    import passive_runtime
+    def passive_delay(**options):
+        return passive_runtime.budget_delay(g.BUDGET_DB, g.HOURLY_LIMIT, **options)
     c.passive_delay = passive_delay
     if operation in ('passive-local', 'passive-ack', 'passive-send', 'passive-step'):
-        import passive_runtime
         return passive_runtime.execute(c, request['root'], request)
     if operation == "verify":
         # Explicit user request only; bound to the existing hold generation.
