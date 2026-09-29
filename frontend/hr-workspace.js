@@ -607,7 +607,7 @@
   }
   function renderJobs(box, rows) {
     rememberJobs(rows);
-    const grid = element('div', '', box, 'hr-card-grid');
+    const grid = element('div', '', box, 'hr-card-grid hr-job-grid');
     for (const row of rows) {
       const card = element('article', '', grid, 'hr-job-card');
       const top = element('div', '', card, 'hr-card-heading');

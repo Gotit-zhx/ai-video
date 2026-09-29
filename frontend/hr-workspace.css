@@ -118,6 +118,17 @@
 .hr-field-group>.hr-facts{margin:8px 0}
 @media(max-width:1050px){.hr-card-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){.hr-form{display:block}.hr-field{min-width:0;margin-bottom:14px}.hr-actions{margin:12px 0}.hr-login{width:100%}.hr-card-heading{flex-wrap:wrap}.hr-job-card,.hr-person-card{padding:18px}.hr-chat-layout{grid-template-columns:minmax(0,1fr)}.hr-chat-list{max-height:230px;border-right:0;border-bottom:1px solid var(--hr-border)}.hr-chat-detail{padding:14px}.hr-chat-header{flex-wrap:wrap}.hr-resume-sheet{padding:18px}.hr-resume-sheet>.hr-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.hr-message{max-width:100%}.hr-chat-detail .hr-empty-state{margin-top:20px}}
+.hr-card-grid.hr-job-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.hr-job-grid .hr-job-card{display:flex;flex-direction:column;padding:16px}
+.hr-job-grid .hr-card-heading{flex-direction:column;gap:8px;min-height:76px}
+.hr-job-grid .hr-card-heading h3{font-size:16px}
+.hr-job-grid .hr-salary{font-size:18px}
+.hr-job-grid .hr-facts{gap:12px;margin:14px 0}
+.hr-job-grid .hr-description{margin-bottom:16px}
+.hr-job-grid .hr-job-card .hr-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin-top:auto;padding-top:14px}
+.hr-job-grid .hr-actions button{padding:8px 3px;font-size:11px;min-width:0}
+@media(max-width:1100px){.hr-card-grid.hr-job-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:650px){.hr-card-grid.hr-job-grid{grid-template-columns:minmax(0,1fr)}.hr-job-grid .hr-actions button{font-size:13px}}
 
 .hr-workspace-header{display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:28px}
 .hr-workspace-header h1{font-size:28px;letter-spacing:-.04em;line-height:1.35;margin:10px 0 9px;font-weight:650}
