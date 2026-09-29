@@ -69,11 +69,14 @@ const poolResult=()=>({items:[{id:'talent-1',name:'测试人才',education:'本�
   projectId:'project-1',version:1,updatedAt:'2026-09-29T00:00:00Z'}],
   projects:[{id:'project-1',name:'电商项目组',version:1}],counts:{all:1,first:1},total:1,page:1,pages:1});
 test('resume pool shows queue and retry time using cached status only, and refreshes without BOSS actions',async()=>{
-  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')
+  let reconnects=0;
+  const app=setup({passive:true,transport:{connection:()=>({paired:true}),startAutoConnect(){reconnects++;},reset(){}},
+    api:async url=>({data:url.endsWith('/login/status')
     ?{state:'complete',passive:{phase:'budget_wait',retryAt:Date.now()/1000+300,lastProgressAt:Date.now()/1000-600,
       counts:{r1:{inspect:2,requested:3}}}}
     :{items:[],total:0}})});
   await app.enter('resume-pool');
+  assert.equal(reconnects,1);
   assert.match(app.text(),/待处理 2/);assert.match(app.text(),/待接收 3/);
   assert.match(app.text(),/预计 \d\d:\d\d 继续/);assert.match(app.text(),/上次进展/);
   await app.tick(30000);

@@ -275,6 +275,7 @@
     return {jobToggle,enter(route){
       active=route;clearInterval(poolTimer);load();
       if(route==='resume-pool'){
+        globalThis.HeyiHrTransport?.startAutoConnect?.();
         refreshPoolActivity();
         poolTimer=setInterval(()=>{
           if(active!=='resume-pool'||!allowed())return;
