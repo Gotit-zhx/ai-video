@@ -228,7 +228,7 @@ class Recruiter extends EventEmitter {
     try{await this.checkOwner();await this.call('poll-resumes');}
     catch(error){
       if(error.code==='PLATFORM_UNAVAILABLE'){this.event('PLATFORM_UNAVAILABLE');return;}
-      this.paused=true;this.event('BACKGROUND_PAUSED');
+      this.pause('BACKGROUND_PAUSED');
     }
   }
   async clearCredentials(){

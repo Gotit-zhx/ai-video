@@ -147,6 +147,13 @@ test('platform outage blocks polling without destroying BOSS session or bypassin
   engine.authorize=async()=>user;await engine.poll();
   assert.equal(engine.paused,true);assert.equal(calls.length,0);
 });
+test('background failure makes paused status visible instead of reporting a ready account',async t=>{
+  const {engine}=await fixture(t);
+  engine.state={state:'complete'};engine.paused=false;
+  engine.runtime.run=async()=>{throw Error('unknown result');};
+  await engine.poll();
+  assert.equal(engine.paused,true);assert.equal(engine.state.state,'verification_pending');
+});
 test('logout cancels late login authorization and browser opening without starting a new observer',async t=>{
   const {engine}=await fixture(t);let authorize,open,opened=0;
   engine.authorize=()=>new Promise(resolve=>{authorize=resolve;});

@@ -42,7 +42,7 @@
         headers:automatic?{'X-Heyi-Auto-Connect':'1'}:{}},8000)));
       if(ticket!==epoch)throw Error('连接已取消');
       const paired=await data(await fetch(base+'/pair',timeout({method:'POST',credentials:'omit',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket:issued.ticket})},15000)));
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket:issued.ticket})},25000)));
       if(ticket!==epoch)throw Error('连接已取消');
       saved=paired;persist();reachable=true;repair=false;failures=0;
       channel?.postMessage({type:'paired',value:paired});notify('connected');
