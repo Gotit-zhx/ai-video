@@ -4,7 +4,7 @@
     return response.data;
   };
   const sendStates={queued:'等待助手发送',sending:'发送中',sent:'已发送',uncertain:'结果待核对，请查看 BOSS 会话',failed:'发送未完成',cancelled:'已取消发送'};
-  const statuses={pending:'待审批',approved:'已通过',rejected:'未通过'};
+  const statuses={pending:'待审批',approved:'通过',rejected:'不通过'};
   const phases={watching:'正在等待新消息',reply_queued:'已发现主动消息，等待话术回复',
     request_queued:'已回复，等待索取简历',receiving:'已索取，等待接收简历',
     template_required:'请在话术管理中配置默认被动邀约回复',chat_required:'正在准备 BOSS 沟通页面',
@@ -31,7 +31,9 @@
     return [phases[flow.phase]||'已开启，等待助手检查',...totals].join(' · ');
   }
   globalThis.createHrPassive=({root,section,element:el,button,allowed,navigate,hrApi})=>{
-    let active='',generation=0,items=[],page=1,filter='',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
+    let active='',generation=0,items=[],page=1,filter='pending',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
+    let logOpen=false,poolSnapshot='',previewId='',previewHost=null,disposePreview=null;
+    const clearPreview=()=>{disposePreview?.();disposePreview=null;previewHost=null;previewId='';};
     const speechPanel=section('speeches'),resumePanel=section('resume-pool');
     const toolbar=(panel,title,subtitle)=>{
       const head=el('div','',panel,'hr-pool-toolbar'),intro=el('div','',head);
@@ -42,15 +44,20 @@
     button('刷新',speechActions,load);
     button('新建话术',speechActions,()=>editSpeech()).className='hr-primary';
     const speechFeedback=el('p','',speechPanel,'hr-hint'),speechRows=el('div','',speechPanel,'hr-result');
-    const resumeActions=toolbar(resumePanel,'简历池','先看简历，再做决定。AI 辅助分析由 HR 自行选择，仅供参考。');
-    const statusSelect=el('select','',resumeActions);
-    for(const [value,label] of [['','全部'],...Object.entries(statuses)])el('option',label,statusSelect).value=value;
-    statusSelect.setAttribute('aria-label','审批状态');
-    statusSelect.onchange=()=>{filter=statusSelect.value;page=1;load();};
+    resumePanel.className+=' hr-resume-panel';
+    const resumeToolbar=el('div','',resumePanel,'hr-resume-toolbar');
+    const resumeFeedback=el('p','',resumeToolbar,'hr-resume-count');
+    const resumeActions=el('div','',resumeToolbar,'hr-actions');
     button('刷新',resumeActions,load);
-    const poolActivity=el('p','',resumePanel,'hr-hint');
+    const statusTabs=el('div','',resumePanel,'hr-pool-tabs hr-resume-tabs');
+    statusTabs.setAttribute('aria-label','简历审批分类');
+    const statusButtons=[['pending','待审批'],['approved','通过'],['rejected','不通过'],['','全部']].map(([value,label])=>{
+      const control=button(label,statusTabs,()=>{filter=value;page=1;load();});
+      control.setAttribute('aria-pressed',String(filter===value));return {value,label,control};
+    });
+    const poolActivity=el('p','',resumePanel,'hr-pool-activity');
     poolActivity.setAttribute('aria-live','polite');
-    const resumeFeedback=el('p','',resumePanel,'hr-hint'),resumeRows=el('div','',resumePanel,'hr-result');
+    const resumeRows=el('div','',resumePanel,'hr-result');
     const speechDialog=el('dialog','',root,'hr-pool-dialog'),speechForm=el('form','',speechDialog);
     const speechTitle=el('h2','新建话术',speechForm),fields=el('div','',speechForm,'hr-pool-fields');
     function field(parent,label,tag='input'){
@@ -86,10 +93,9 @@
       }catch(error){if(ticket===generation)speechError.textContent=error.message;}
       finally{saving=false;save.disabled=false;}
     };
-    const detail=el('dialog','',root,'hr-pool-dialog hr-resume-review'),detailBody=el('div','',detail);
-    button('关闭',el('div','',detail,'hr-actions'),()=>{detail.close();selected=null;clearTimeout(timer);});
-    detail.addEventListener('close',()=>{selected=null;clearTimeout(timer);});
-    function link(parent,text,url){const a=el('a',text,parent,'hr-file-link');a.href=url;a.target='_blank';a.rel='noopener';return a;}
+    const detail=el('dialog','',root,'hr-pool-dialog hr-resume-review'),detailBody=el('div','',detail,'hr-review-body');
+    button('关闭',el('div','',detail,'hr-review-close'),()=>{detail.close();selected=null;clearTimeout(timer);clearPreview();});
+    detail.addEventListener('close',()=>{selected=null;clearTimeout(timer);clearPreview();});
     async function refreshPoolActivity(){
       if(active!=='resume-pool'||!allowed())return;const ticket=generation;
       try{
@@ -99,29 +105,42 @@
           ?flowSummary(status.data.passive||{}):'助手未连接，自动邀约暂停';
       }catch{if(ticket===generation&&active==='resume-pool')poolActivity.textContent='正在等待助手恢复连接';}
     }
-    async function load(){
+    async function load(quiet=false){
       if(!active||!allowed())return;const ticket=++generation,mode=active;
       const feedback=mode==='speeches'?speechFeedback:resumeFeedback,box=mode==='speeches'?speechRows:resumeRows;
-      feedback.textContent='正在读取…';
+      if(!quiet)feedback.textContent='正在读取…';
       try{
         const data=await request(mode==='speeches'?'speeches':`resume-pool?page=${page}&status=${filter}`);
         if(ticket!==generation||mode!==active||!allowed())return;
-        items=data.items||[];box.replaceChildren();feedback.textContent=`共 ${data.total??items.length} 条`;
+        items=data.items||[];feedback.textContent=mode==='resume-pool'?`共 ${data.total??items.length} 份简历`:`共 ${data.total??items.length} 条`;
+        if(mode==='resume-pool')for(const tab of statusButtons){
+          const count=data.counts?.[tab.value||'all'];
+          tab.control.textContent=tab.label+(Number.isFinite(count)?` ${count}`:'');
+          tab.control.setAttribute('aria-pressed',String(tab.value===filter));
+        }
+        const signature=JSON.stringify([page,filter,data]);
+        if(mode==='resume-pool'&&quiet&&signature===poolSnapshot)return;
+        if(mode==='resume-pool')poolSnapshot=signature;
+        box.replaceChildren();
         if(!items.length)el('p',mode==='speeches'?'还没有话术，请配置默认被动邀约回复和默认婉拒话术。':'暂无简历。启用职位的被动邀约后，收到的简历会在这里归档。',box,'hr-pool-empty');
-        const grid=el('div','',box,'hr-card-grid');
+        const grid=el('div','',box,mode==='speeches'?'hr-card-grid':'hr-card-grid hr-resume-grid');
         for(const row of items){
           const card=el('article','',grid,'hr-person-card'),head=el('div','',card,'hr-card-heading');
-          el('h3',row.name||'姓名待补充',head);
+          const identity=mode==='speeches'?head:el('div','',head,'hr-identity');
+          if(mode!=='speeches')el('span',row.name?.slice(0,1)||'人',identity,'hr-avatar');
+          el('h3',row.name||'姓名待补充',identity);
           if(mode==='speeches'){
             el('span',row.isDefault?(row.kind==='passive_reply'?'默认被动回复':'默认婉拒'):row.active?'启用':'停用',head,'hr-badge');
             el('p',row.content,card,'hr-prose');
             button('编辑话术',el('div','',card,'hr-actions'),()=>editSpeech(row));
           }else{
             el('span',statuses[row.status]||row.status,head,'hr-badge');
-            el('p',row.jobName,card);el('p',[row.education,row.experience,row.city].filter(Boolean).join(' · ')||'详情见简历原件',card,'hr-hint');
+            el('p',row.jobName,card,'hr-resume-job');el('p',[row.education,row.experience,row.city].filter(Boolean).join(' · ')||'详情见简历原件',card,'hr-hint');
             if(row.rejection)el('p','婉拒：'+(sendStates[row.rejection.status]||row.rejection.status),card,'hr-hint');
             if(row.aiState==='complete')el('p',`AI 参考匹配度 ${row.aiResult.score} / 100`,card,'hr-hint');
-            button('查看与审批',el('div','',card,'hr-actions'),()=>openResume(row.id)).className='hr-primary';
+            const actions=el('div','',card,'hr-actions hr-resume-card-footer');
+            el('span',row.createdAt?new Date(row.createdAt).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' 收到':'',actions,'hr-hint');
+            button('查看与审批',actions,()=>openResume(row.id)).className='hr-primary';
           }
         }
         if(mode==='resume-pool'&&data.pages>1){
@@ -131,10 +150,16 @@
           button('下一页',pages,()=>{page++;load();}).disabled=data.page>=data.pages;
         }
         if(mode==='resume-pool'&&data.events?.length){
-          el('h3','被动邀约记录',box);
+          const log=el('details','',box,'hr-activity-log');log.open=logOpen;
+          log.addEventListener('toggle',()=>{logOpen=log.open;});
+          const summary=el('summary','',log);
+          el('strong','邀约记录',summary);el('span',`最近 ${data.events.length} 条`,summary,'hr-hint');
+          const entries=el('div','',log,'hr-activity-entries');
           for(const event of data.events){
             const label=eventLabels[event.code];if(!label)continue;
-            el('p',[event.name,event.jobName,label,new Date(event.createdAt).toLocaleString()].filter(Boolean).join(' · '),box,'hr-hint');
+            const entry=el('div','',entries,'hr-activity-entry');
+            el('span',event.name||event.jobName||'候选人',entry);el('span',label,entry,'hr-hint');
+            el('time',new Date(event.createdAt).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}),entry,'hr-hint');
           }
         }
       }catch(error){if(ticket===generation)feedback.textContent=error.message;}
@@ -150,22 +175,21 @@
       }catch(error){if(ticket===generation&&selected===id){detailBody.replaceChildren();el('p',error.message,detailBody,'hr-error');}}
     }
     function drawResume(row,template,projects){
+      if(previewId!==row.id)clearPreview();
       detailBody.replaceChildren();
-      el('h2',row.name||'候选人简历',detailBody);
-      el('p',`${row.jobName} · ${statuses[row.status]}`,detailBody,'hr-hint');
-      const files=el('div','',detailBody,'hr-actions');
-      link(files,['pdf','png','jpg','jpeg'].includes(row.extension)?'查看简历原件':'下载 Word 原件',row.fileUrl);
-      if(['pdf','png','jpg','jpeg'].includes(row.extension)){
-        const preview=el('details','',detailBody,'hr-description');
-        el('summary','展开原件预览',preview);
-        preview.addEventListener('toggle',()=>{
-          if(!preview.open||preview.children.length>1)return;
-          const asset=el(row.extension==='pdf'?'iframe':'img','',preview,'hr-resume-original');
-          asset.title='简历原件';asset.src=row.fileUrl;if(asset.tagName==='IMG')asset.alt='简历原件';
-        });
+      const header=el('header','',detailBody,'hr-review-header');
+      el('h2',row.name||'候选人简历',header);
+      el('p',[row.jobName,statuses[row.status],row.nameSource==='resume_text'?'姓名提取自简历':''].filter(Boolean).join(' · '),header,'hr-hint');
+      const layout=el('div','',detailBody,'hr-review-layout');
+      if(!previewHost){
+        previewId=row.id;previewHost=el('section','',layout,'hr-review-preview');
+        disposePreview=globalThis.createHrResumePreview?.({root:previewHost,element:el,button,row});
+      }else{
+        layout.append(previewHost);
       }
-      el('p',[row.education,row.experience,row.city,row.company].filter(Boolean).join(' · '),detailBody,'hr-hint');
-      const ai=el('section','',detailBody,'hr-review-ai');
+      const sidebar=el('aside','',layout,'hr-review-sidebar');
+      el('p',[row.education,row.experience,row.city,row.company].filter(Boolean).join(' · '),sidebar,'hr-hint');
+      const ai=el('section','',sidebar,'hr-review-ai');
       el('h3','AI 辅助分析匹配度',ai);el('p','可选，仅供参考。AI 不参与审批，也不会触发发送消息。',ai,'hr-hint');
       el('p',row.extractionNote||'',ai,'hr-hint');
       const textDetails=el('details','',ai);el('summary','查看或补充用于分析的简历文字',textDetails);
@@ -196,15 +220,15 @@
           const body=el('tbody','',table);for(const evidence of value.evidence){const tr=el('tr','',body);for(const key of ['requirement','evidence','assessment'])el('td',evidence[key],tr);}
         }
       }
-      const feedback=el('p','',detailBody,'hr-error');feedback.setAttribute('role','alert');
+      const feedback=el('p','',sidebar,'hr-error');feedback.setAttribute('role','alert');
       if(row.status==='pending'){
-        const group=field(detailBody,'通过后归属项目组','select');el('option','未分组',group).value='';
+        const group=field(sidebar,'通过后归属项目组','select');el('option','未分组',group).value='';
         for(const project of projects)el('option',project.name,group).value=project.id;group.value=row.projectId||'';
-        const rejection=el('section','',detailBody,'hr-review-ai');
+        const rejection=el('section','',sidebar,'hr-review-ai');
         el('h3','不通过时自动发送',rejection);
         el('p',template?template.content.replace(/\{(姓名|职位)\}/g,(_,key)=>key==='姓名'?(row.name||'您好'):row.jobName):'尚未配置默认婉拒话术，请先到话术管理设置。',rejection,'hr-prose');
         button('管理话术',el('div','',rejection,'hr-actions'),()=>navigate('speeches'));
-        const actions=el('div','',detailBody,'hr-actions');let reviewing=false;
+        const actions=el('div','',sidebar,'hr-actions hr-review-decisions');let reviewing=false;
         async function review(action){
           if(reviewing||!allowed())return;reviewing=true;approve.disabled=reject.disabled=true;
           try{
@@ -216,12 +240,12 @@
         const approve=button('通过，加入邀约',actions,()=>review('approve'));approve.className='hr-primary';
         const reject=button('不通过，自动婉拒',actions,()=>review('reject'));reject.disabled=!template;
       }else{
-        el('p',`审批人：${row.reviewedBy||'—'} · ${row.reviewedAt?new Date(row.reviewedAt).toLocaleString():''}`,detailBody,'hr-hint');
+        el('p',`审批人：${row.reviewedBy||'—'} · ${row.reviewedAt?new Date(row.reviewedAt).toLocaleString():''}`,sidebar,'hr-hint');
         if(row.rejection){
-          el('h3','婉拒发送记录',detailBody);el('p',sendStates[row.rejection.status]||row.rejection.status,detailBody,'hr-hint');
-          el('p',row.rejection.message,detailBody,'hr-prose');
-          el('p',`${row.rejection.templateName||'话术'} · 版本 ${row.rejection.templateVersion}`,detailBody,'hr-hint');
-          if(row.rejection.status==='queued')button('取消尚未发送的婉拒',el('div','',detailBody,'hr-actions'),async()=>{
+          el('h3','婉拒发送记录',sidebar);el('p',sendStates[row.rejection.status]||row.rejection.status,sidebar,'hr-hint');
+          el('p',row.rejection.message,sidebar,'hr-prose');
+          el('p',`${row.rejection.templateName||'话术'} · 版本 ${row.rejection.templateVersion}`,sidebar,'hr-hint');
+          if(row.rejection.status==='queued')button('取消尚未发送的婉拒',el('div','',sidebar,'hr-actions'),async()=>{
             try{await request('resume-pool/review',{id:row.id,action:'cancel-send'});if(selected===row.id)await openResume(row.id);}
             catch(error){if(selected===row.id)feedback.textContent=error.message;}
           });
@@ -283,12 +307,12 @@
           if(active!=='resume-pool'||!allowed()||document.hidden||poolRefreshing)return;
           poolRefreshing=true;
           try{
-            if(!detail.open)await load();
+            if(!detail.open)await load(true);
             await refreshPoolActivity();
           }finally{poolRefreshing=false;}
         },10000);
       }
-    },leave(){active='';++generation;clearTimeout(timer);clearInterval(poolTimer);poolActivity.textContent='';detail.close();speechDialog.close();},
-      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='';statusSelect.value='';speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
+    },leave(){active='';++generation;clearTimeout(timer);clearInterval(poolTimer);poolActivity.textContent='';detail.close();speechDialog.close();clearPreview();},
+      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';poolSnapshot='';logOpen=false;speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
   };
 })();

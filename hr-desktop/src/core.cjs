@@ -303,7 +303,7 @@ class Recruiter extends EventEmitter {
         if(!ready())return;
         await this.passiveCloud('passive-report',{accountKey,commandId:command.id,status:result.data?.status||'uncertain'});
         await this.call('passive-ack',{commandId:command.id});
-        this.event(result.data?.status==='sent'?'REJECTION_SENT':'REJECTION_UNCERTAIN');
+        this.event((command.kind==='invite'?'INVITATION_':'REJECTION_')+(result.data?.status==='sent'?'SENT':'UNCERTAIN'));
         return;
       }
       const hints=[...this.activity.values()];

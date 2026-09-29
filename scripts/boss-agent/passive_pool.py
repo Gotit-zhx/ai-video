@@ -49,6 +49,10 @@ def schema(db):
     CREATE TABLE IF NOT EXISTS hr_resume_commands(
       id TEXT PRIMARY KEY,owner TEXT NOT NULL,account TEXT NOT NULL,resume_id TEXT NOT NULL UNIQUE,
       friend_id TEXT NOT NULL,body TEXT NOT NULL,status TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS hr_talent_messages(
+      id TEXT PRIMARY KEY,owner TEXT NOT NULL,account TEXT NOT NULL,talent_id TEXT NOT NULL,
+      friend_id TEXT NOT NULL,body TEXT NOT NULL,status TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS hr_talent_message_queue ON hr_talent_messages(owner,account,status);
     CREATE TABLE IF NOT EXISTS hr_passive_events(
       id TEXT PRIMARY KEY,owner TEXT NOT NULL,account TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS hr_speech_defaults(
@@ -79,15 +83,34 @@ def resume(row, commands=None):
     return value
 
 
+def resume_identity(db, row, actor):
+    """Backfill old records from already-extracted text; no OSS/BOSS/AI request."""
+    import resume_storage
+    detail = json.loads(row['body'])
+    if detail.get('nameExtractionVersion') == 1 or detail.get('extension') not in {'pdf', 'docx'}:
+        return row
+    name = resume_storage.person_name(detail.get('resumeText', ''))
+    before = detail.get('name', '')
+    detail['nameExtractionVersion'] = 1
+    if name:
+        detail.update(name=name, nameSource='resume_text', fileName=f'{name}-简历.{detail["extension"]}')
+    db.execute('UPDATE hr_resume_pool SET body=?,version=version+1,updated_at=? WHERE id=? AND owner=?',
+               (dump(detail), now(), row['id'], row['owner']))
+    if name and name != before:
+        pool.event(db, row['owner'], actor, row['id'], 'resume.name-extract', {'name': before}, {'name': name})
+    return db.execute('SELECT * FROM hr_resume_pool WHERE id=? AND owner=?', (row['id'], row['owner'])).fetchone()
+
+
 def expire_commands(db):
     # A lease/claim response can be lost while the connector stays alive.
     # Never return these commands to the send queue automatically.
     cutoff = (datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=10)).isoformat()
     db.execute("UPDATE hr_resume_commands SET status='uncertain',updated_at=? WHERE status='sending' AND updated_at<?", (now(), cutoff))
+    db.execute("UPDATE hr_talent_messages SET status='uncertain',updated_at=? WHERE status='sending' AND updated_at<?", (now(), cutoff))
 
 
 def listing(user, kind, query):
-    owner, _ = pool.context(user)
+    owner, actor = pool.context(user)
     with pool.database() as db:
         schema(db)
         expire_commands(db)
@@ -112,10 +135,14 @@ def listing(user, kind, query):
         rows = list(db.execute('SELECT * FROM hr_resume_pool WHERE '+clause+' ORDER BY created_at DESC,id LIMIT 20 OFFSET ?', (*args, (page-1)*20)))
         commands = {r['resume_id']: {'id': r['id'], 'status': r['status'], 'updatedAt': r['updated_at'], **json.loads(r['body'])}
                     for r in db.execute('SELECT * FROM hr_resume_commands WHERE owner=?', (owner,))}
-        items = [resume(r, commands) for r in rows]
+        items = [resume(resume_identity(db, r, actor), commands) for r in rows]
         if not query.get('id'):
             for item in items: item.pop('resumeText', None)
-        return {'items': items, 'total': total, 'page': page, 'pages': pages,
+        counts = {state: 0 for state in ('pending', 'approved', 'rejected')}
+        counts.update({r['status']: r['n'] for r in db.execute(
+            'SELECT status,count(*) n FROM hr_resume_pool WHERE owner=? GROUP BY status', (owner,))})
+        counts['all'] = sum(counts.values())
+        return {'items': items, 'total': total, 'page': page, 'pages': pages, 'counts': counts,
                 'events': [json.loads(r['body']) | {'createdAt': r['created_at']} for r in db.execute('SELECT * FROM hr_passive_events WHERE owner=? ORDER BY created_at DESC LIMIT 30', (owner,))]}
 
 
@@ -181,10 +208,14 @@ def device_config(user, body):
         reply = db.execute('''SELECT s.* FROM hr_speeches s JOIN hr_passive_reply_defaults d
             ON d.speech_id=s.id AND d.owner=s.owner
             WHERE s.owner=? AND s.active=1 AND s.kind='passive_reply' ''', (owner,)).fetchone()
+        commands = [{**json.loads(r['body']), 'id': r['id'], 'friendId': r['friend_id'], 'queuedAt': r['updated_at']}
+                    for table in ('hr_resume_commands', 'hr_talent_messages')
+                    for r in db.execute(f"SELECT * FROM {table} WHERE owner=? AND account=? AND status='queued' ORDER BY updated_at LIMIT 1", (owner, key))]
+        commands.sort(key=lambda value: value['queuedAt'])
         return {'rules': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=? AND account=? AND enabled=1', (owner, key))],
                 'replyTemplate': ({'id': reply['id'], 'version': reply['version'], 'content': reply['content'],
                                    'name': reply['name']} if reply else None),
-                'commands': [{**json.loads(r['body']), 'id': r['id'], 'friendId': r['friend_id']} for r in db.execute("SELECT * FROM hr_resume_commands WHERE owner=? AND account=? AND status='queued' ORDER BY updated_at LIMIT 1", (owner, key))]}
+                'commands': commands[:1]}
 
 
 def ingest(user, body):
@@ -213,8 +244,12 @@ def ingest(user, body):
     location = resume_storage.store(owner, object_id, raw, extension)
     extracted, extraction_note = resume_storage.extract(raw, extension)
     clean = {k: pool.text(body.get(k, ''), limit) for k, limit in {'name': 100, 'education': 100, 'experience': 100, 'city': 100, 'company': 200}.items()}
+    extracted_name = resume_storage.person_name(extracted)
+    if extracted_name:
+        clean.update(name=extracted_name, nameSource='resume_text')
     clean.update(jobName=job['jobName'], jobDescription=job['description'], jobEducation=job['education'], jobExperience=job['experience'],
-                 projectId=job['projectId'], fileName=f'简历-{record[:8]}.{extension}', extension=extension,
+                 projectId=job['projectId'], fileName=f'{extracted_name}-简历.{extension}' if extracted_name else f'简历-{record[:8]}.{extension}', extension=extension,
+                 nameExtractionVersion=1,
                  resumeText=extracted, extractionNote=extraction_note, size=len(raw))
     with pool.database() as db:
         schema(db)
@@ -261,7 +296,7 @@ def review(user, body):
             talent_id = old['id'] if old else str(uuid.uuid4())
             value = json.loads(old['body']) if old else {k: '' for k in pool.FIELDS}
             value.update({k: detail.get(k, '') for k in ['name', 'education', 'experience', 'city', 'company']})
-            value.update(position=detail['jobName'], source='passive', sourceId=source, notes='简历池审批通过；原简历记录：'+record)
+            value.update(position=detail['jobName'], source='passive', sourceId=source, notes=value.get('notes') or '简历已通过审核，待安排邀约。')
             if old:
                 db.execute("UPDATE talents SET project=?,stage='invited',body=?,version=version+1,updated_at=? WHERE id=? AND owner=?", (project, dump(value), now(), talent_id, owner))
             else:
@@ -294,6 +329,13 @@ def claim_command(user, body):
     owner, _ = pool.context(user); key = account(body.get('accountKey')); record = uid(body.get('id'))
     with pool.database() as db:
         schema(db)
+        invitation = db.execute("SELECT * FROM hr_talent_messages WHERE id=? AND owner=? AND account=? AND status='queued'", (record, owner, key)).fetchone()
+        if invitation:
+            talent = db.execute("SELECT * FROM talents WHERE id=? AND owner=?", (invitation['talent_id'], owner)).fetchone()
+            if not talent or talent['stage'] != 'invited' or talent['source_id'] != f"passive:{key}:{invitation['friend_id']}":
+                db.execute("UPDATE hr_talent_messages SET status='cancelled',updated_at=? WHERE id=?", (now(), record))
+                return {'claimed': False}
+            return {'claimed': bool(db.execute("UPDATE hr_talent_messages SET status='sending',updated_at=? WHERE id=? AND status='queued'", (now(), record)).rowcount)}
         changed = db.execute("UPDATE hr_resume_commands SET status='sending',updated_at=? WHERE id=? AND owner=? AND account=? AND status='queued'", (now(), record, owner, key)).rowcount
         if not changed: return {'claimed': False}
         return {'claimed': True}
@@ -306,7 +348,8 @@ def device_report(user, body):
         if state not in {'sent', 'uncertain', 'failed'}: raise ValueError('发送状态不正确')
         with pool.database() as db:
             schema(db)
-            db.execute("UPDATE hr_resume_commands SET status=?,updated_at=? WHERE id=? AND owner=? AND account=? AND status IN ('sending','uncertain')", (state, now(), uid(body['commandId']), owner, key))
+            for table in ('hr_resume_commands', 'hr_talent_messages'):
+                db.execute(f"UPDATE {table} SET status=?,updated_at=? WHERE id=? AND owner=? AND account=? AND status IN ('sending','uncertain')", (state, now(), uid(body['commandId']), owner, key))
     event = body.get('event')
     if isinstance(event, dict):
         clean = {k: pool.text(event.get(k, ''), limit) for k, limit in {'id': 80, 'code': 80, 'name': 100, 'jobName': 200, 'message': 400}.items()}
@@ -316,6 +359,43 @@ def device_report(user, body):
                 db.execute('INSERT OR IGNORE INTO hr_passive_events VALUES(?,?,?,?,?)', (clean['id'], owner, key, dump(clean), now()))
     return {'recorded': True}
 
+
+def invitation_messages(user, body, write=False):
+    owner, actor = pool.context(user)
+    record = uid(body.get('talentId'))
+    with pool.database() as db:
+        schema(db); expire_commands(db)
+        talent = db.execute('SELECT * FROM talents WHERE id=? AND owner=?', (record, owner)).fetchone()
+        if not talent: raise ValueError('人才记录不存在')
+        source = re.fullmatch(r'passive:([a-f0-9]{64}):([1-9]\d{0,19})', talent['source_id'])
+        if write:
+            if talent['stage'] != 'invited' or not source:
+                raise ValueError('仅可向简历审批通过、处于邀约阶段的 BOSS 候选人发送')
+            key, friend = source.groups()
+            approved = db.execute("SELECT body FROM hr_resume_pool WHERE owner=? AND account=? AND friend_id=? AND status='approved'", (owner, key, friend)).fetchall()
+            if not any(json.loads(r['body']).get('talentId') == record for r in approved):
+                raise ValueError('未找到这位候选人的已通过简历，未创建发送任务')
+            message = pool.text(body.get('message'), 1000)
+            if not message: raise ValueError('请输入邀约消息')
+            try: request_id = str(uuid.UUID(body.get('requestId', '')))
+            except (ValueError, TypeError, AttributeError): raise ValueError('发送请求标识无效')
+            command = str(uuid.uuid5(uuid.NAMESPACE_URL, f'hr-invite:{owner}:{request_id}'))
+            old = db.execute('SELECT * FROM hr_talent_messages WHERE id=? AND owner=?', (command, owner)).fetchone()
+            if old:
+                if old['talent_id'] != record or json.loads(old['body'])['message'] != message:
+                    raise pool.Conflict('这次发送已提交，请刷新发送记录')
+                return {'id': command, 'status': old['status']}
+            if db.execute("SELECT 1 FROM hr_talent_messages WHERE owner=? AND talent_id=? AND status IN ('queued','sending','uncertain')", (owner, record)).fetchone():
+                raise pool.Conflict('这位候选人有消息待发送或待核对，请先查看发送记录')
+            detail = json.loads(talent['body'])
+            payload = {'kind': 'invite', 'message': message, 'name': detail.get('name', ''),
+                       'jobName': detail.get('position', ''), 'talentId': record, 'createdBy': actor}
+            db.execute('INSERT INTO hr_talent_messages VALUES(?,?,?,?,?,?,?,?)',
+                       (command, owner, key, record, friend, dump(payload), 'queued', now()))
+            pool.event(db, owner, actor, record, 'talent.invite-message', None, {'commandId': command, 'message': message})
+            return {'id': command, 'status': 'queued'}
+        return {'items': [{**json.loads(row['body']), 'id': row['id'], 'status': row['status'], 'updatedAt': row['updated_at']}
+                          for row in db.execute('SELECT * FROM hr_talent_messages WHERE owner=? AND talent_id=? ORDER BY updated_at DESC,id LIMIT 20', (owner, record))]}
 
 def analyze(user, body, cookie):
     owner, actor = pool.context(user); record = uid(body.get('id'))
@@ -361,3 +441,4 @@ def recover():
         schema(db)
         db.execute("UPDATE hr_resume_pool SET ai_state='failed',ai_error='服务已重启，请手动重新分析' WHERE ai_state='running'")
         db.execute("UPDATE hr_resume_commands SET status='uncertain' WHERE status='sending'")
+        db.execute("UPDATE hr_talent_messages SET status='uncertain' WHERE status='sending'")

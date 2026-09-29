@@ -3,6 +3,7 @@ import base64
 from pathlib import Path
 import tempfile
 import threading
+import uuid
 import unittest
 from unittest import mock
 
@@ -134,5 +135,57 @@ class PassiveTest(unittest.TestCase):
         row=feature.listing(USER,'resume-pool',{'id':first['id']})['items'][0]
         self.assertEqual(row['aiState'],'idle')
         self.assertEqual(row['status'],'pending')
+
+    def test_existing_pdf_identity_backfill_preserves_review_and_does_not_call_providers(self):
+        with pool.database() as db:
+            raw = json.loads(db.execute("SELECT body FROM hr_resume_pool WHERE id='r1'").fetchone()[0])
+            raw.update(name='',extension='pdf',resumeText='某学院 本科\n陈佳宁\n女 | 24岁\n教育经历')
+            db.execute("UPDATE hr_resume_pool SET body=? WHERE id='r1'", (json.dumps(raw),))
+        with mock.patch('resume_storage.download') as download, mock.patch.object(feature.threading,'Thread') as ai:
+            first=feature.listing(USER,'resume-pool',{})['items'][0]
+            second=feature.listing(USER,'resume-pool',{'id':'r1'})['items'][0]
+            self.assertEqual(first['name'],'陈佳宁')
+            self.assertEqual(first['nameSource'],'resume_text')
+            self.assertEqual(first['version'],second['version'])
+            self.assertEqual(first['status'],'pending')
+            self.assertEqual(first['fileName'],'陈佳宁-简历.pdf')
+            download.assert_not_called();ai.assert_not_called()
+
+    def test_approval_classification_and_invitation_are_human_controlled_and_account_bound(self):
+        approved=feature.review(USER,{'id':'r1','version':1,'action':'approve'})
+        self.assertEqual(feature.listing(USER,'resume-pool',{'status':'pending'})['total'],0)
+        self.assertEqual(feature.listing(USER,'resume-pool',{'status':'approved'})['total'],1)
+        self.assertEqual(pool.listing(USER,{'stage':'invited'})['items'][0]['id'],approved['talentId'])
+        self.assertFalse(feature.device_config(USER,{'accountKey':KEY})['commands'],'Approval alone sends nothing')
+        payload={'talentId':approved['talentId'],'requestId':str(uuid.uuid4()),'message':'您好，明天下午方便沟通吗？',
+                 'friendId':'999','accountKey':'b'*64}
+        first=feature.invitation_messages(USER,payload,write=True)
+        self.assertEqual(feature.invitation_messages(USER,payload,write=True),first)
+        with self.assertRaises(pool.Conflict):
+            feature.invitation_messages(USER,{**payload,'message':'changed'},write=True)
+        command=feature.device_config(USER,{'accountKey':KEY})['commands'][0]
+        self.assertEqual(command['friendId'],'123')
+        self.assertEqual(command['message'],payload['message'])
+        self.assertEqual(command['kind'],'invite')
+        self.assertFalse(feature.device_config(USER,{'accountKey':'b'*64})['commands'])
+        self.assertFalse(feature.claim_command(USER,{'id':first['id'],'accountKey':'b'*64})['claimed'])
+        self.assertTrue(feature.claim_command(USER,{'id':first['id'],'accountKey':KEY})['claimed'])
+        self.assertFalse(feature.claim_command(USER,{'id':first['id'],'accountKey':KEY})['claimed'])
+        feature.device_report(USER,{'commandId':first['id'],'accountKey':KEY,'status':'sent'})
+        self.assertEqual(feature.invitation_messages(USER,{'talentId':approved['talentId']})['items'][0]['status'],'sent')
+        self.assertFalse(feature.device_config(USER,{'accountKey':KEY})['commands'])
+
+    def test_invitation_cannot_send_to_forged_sources_or_after_stage_change(self):
+        approved=feature.review(USER,{'id':'r1','version':1,'action':'approve'})
+        payload={'talentId':approved['talentId'],'requestId':str(uuid.uuid4()),'message':'您好'}
+        command=feature.invitation_messages(USER,payload,write=True)
+        with pool.database() as db:
+            db.execute("UPDATE talents SET stage='first' WHERE id=?", (approved['talentId'],))
+        self.assertFalse(feature.claim_command(USER,{'id':command['id'],'accountKey':KEY})['claimed'])
+        with self.assertRaises(ValueError):feature.invitation_messages(USER,{**payload,'requestId':str(uuid.uuid4())},write=True)
+        with pool.database() as db:
+            db.execute("UPDATE talents SET stage='invited',source_id=? WHERE id=?", ('passive:'+KEY+':999',approved['talentId']))
+        with self.assertRaisesRegex(ValueError,'已通过简历'):
+            feature.invitation_messages(USER,{**payload,'requestId':str(uuid.uuid4())},write=True)
 
 if __name__=='__main__':unittest.main()

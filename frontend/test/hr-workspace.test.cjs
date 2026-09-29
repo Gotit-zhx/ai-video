@@ -79,9 +79,42 @@ test('resume pool shows queue and retry time using cached status only, and refre
   assert.equal(reconnects,1);
   assert.match(app.text(),/待处理 2/);assert.match(app.text(),/待接收 3/);
   assert.match(app.text(),/预计 \d\d:\d\d 继续/);assert.match(app.text(),/上次进展/);
-  await app.tick(30000);
+  await app.tick(10000);
   assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')||c.url.startsWith('/api/v1/hr/resume-pool')));
   app.env.HrWorkspace.reset();assert.equal(app.timers.size,0);
+});
+test('resume categories are explicit, history is collapsed, and review embeds the document without new-tab links',async()=>{
+  const row={id:'resume1',name:'张晓林',jobName:'秘书',status:'pending',extension:'pdf',fileUrl:'/api/v1/hr/resume-pool/file?id=resume1',aiState:'idle'};
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')?{state:'complete'}:
+    url.endsWith('/speeches')?{items:[]}:url.endsWith('/pool')?{projects:[]}:
+    {items:[row],total:1,counts:{pending:1,approved:0,rejected:0,all:1},events:[{code:'RESUME_RECEIVED',name:row.name,createdAt:'2026-09-29T10:00:00Z'}]}})});
+  let previews=0;
+  app.env.createHrResumePreview=({row:opened})=>{assert.equal(opened.id,'resume1');previews++;return ()=>{};};
+  await app.enter('resume-pool');
+  assert.match(app.text(),/待审批 1/);assert.match(app.text(),/不通过 0/);
+  const log=all(app.root).find(n=>n.className==='hr-activity-log');
+  assert.equal(log.open,false);
+  await app.click('查看与审批');assert.equal(previews,1);
+  assert.equal(all(app.root).some(n=>n.tagName==='a'&&n.target==='_blank'&&n.href===row.fileUrl),false);
+  assert.ok(all(app.root).some(n=>n.className==='hr-review-preview'));
+});
+test('invitation card opens an editable message and only an explicit send queues it',async()=>{
+  const talent={...poolResult().items[0],stage:'invited',source:'passive'};
+  const app=setup({api:async(url,options)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete'}};
+    if(url.includes('/pool/messages'))return {data:options?{id:'message1',status:'queued'}:{items:[]}};
+    return {data:{...poolResult(),items:[talent]}};
+  }});
+  await app.enter('pool');
+  await app.click('发送邀约');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/pool/messages')&&c.options).length,0);
+  const input=all(app.root).find(n=>n.tagName==='textarea'&&n.placeholder?.startsWith('例如'));
+  input.value='您好，明天下午方便参加面试吗？';
+  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-invite-dialog');
+  await all(dialog).find(n=>n.tagName==='button'&&n._text==='发送邀约').click();await flush();
+  const calls=app.calls.filter(c=>c.url.endsWith('/pool/messages')&&c.options);
+  assert.equal(calls.length,1);assert.equal(JSON.parse(calls[0].options.body).message,input.value||'您好，明天下午方便参加面试吗？');
+  assert.equal(JSON.parse(calls[0].options.body).talentId,talent.id);
 });
 test('workspace automatically reconnects helper and displays cached risk state without initiating BOSS work',async()=>{
   let listener,starts=0,stops=0;

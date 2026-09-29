@@ -8,11 +8,43 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import unicodedata
 import zipfile
 
 MAX_BYTES = 25*1024*1024
 TYPES = {'pdf': 'application/pdf', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
          'doc': 'application/msword', 'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg'}
+
+
+def person_name(text):
+    """Conservative header extraction; no AI call and no guessed filename name."""
+    text = unicodedata.normalize('NFKC', str(text or '')[:6000])
+    lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in text.splitlines() if line.strip()][:60]
+    invalid = {'个人简历', '求职简历', '基本信息', '联系方式', '工作经历', '教育经历', '项目经历',
+               '姓名', '真实姓名', '应聘岗位', '求职意向', '总经理', '总经理秘书', '未填写', '保密'}
+    def clean(value):
+        value = re.sub(r'\s+', '', value).strip(' :：|丨')
+        return value if re.fullmatch(r'[\u4e00-\u9fff]{2,4}', value) and value not in invalid else ''
+    explicit = []
+    for index, line in enumerate(lines):
+        match = re.match(r'^(?:姓\s*名|真实姓名)\s*[:：]?\s*([\u4e00-\u9fff ]{2,8}?)(?=\s{1,2}(?:性别|年龄|电话)|[|丨,，]|$)', line)
+        if match and clean(match[1]): explicit.append(clean(match[1]))
+        if re.fullmatch(r'姓\s*名\s*[:：]?', line) and index+1 < len(lines):
+            value = clean(lines[index+1])
+            if value: explicit.append(value)
+    if explicit:
+        return explicit[0] if len(set(explicit)) == 1 else ''
+    # BOSS PDF templates may extract columns before the heading. A name next to
+    # the header's gender/age row is stronger evidence than the first text line.
+    candidates = []
+    for index, line in enumerate(lines):
+        if re.fullmatch(r'(工作|项目|教育|实习)(经历|背景)|专业技能|个人优势', line): break
+        match = re.match(r'^([\u4e00-\u9fff ]{2,8}?)\s+(?:男|女)(?=\s|[|丨]|$)', line)
+        value = clean(match[1]) if match else ''
+        if not value and index+1 < len(lines) and re.match(r'^(?:男|女)(?=\s|[|丨]|$)', lines[index+1]):
+            value = clean(line)
+        if value: candidates.append(value)
+    return candidates[0] if len(set(candidates)) == 1 else ''
 
 
 def validate(raw, extension):

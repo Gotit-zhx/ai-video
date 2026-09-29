@@ -1441,7 +1441,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             return
         parsed = urllib.parse.urlsplit(self.path)
         route = parsed.path.removeprefix("/api/v1/hr/")
-        if route in ("passive", "speeches", "resume-pool", "resume-pool/file"):
+        if route in ("passive", "speeches", "resume-pool", "resume-pool/file", "pool/messages"):
             self.passive_request(parsed=parsed)
             return
         if route in ("pool", "demands", "departments"):
@@ -1524,7 +1524,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path in ("/api/v1/hr/passive/save", "/api/v1/hr/speeches/save",
-                         "/api/v1/hr/resume-pool/review", "/api/v1/hr/resume-pool/analyze"):
+                         "/api/v1/hr/resume-pool/review", "/api/v1/hr/resume-pool/analyze",
+                         "/api/v1/hr/pool/messages"):
             self.passive_request(write=True)
             return
         if self.path in ("/api/v1/hr/pool/talents", "/api/v1/hr/pool/projects",
@@ -1669,6 +1670,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 if self.path.endswith("/passive/save"): result = passive_pool.save_rule(self.desktop_user, body)
                 elif self.path.endswith("/speeches/save"): result = passive_pool.save_speech(self.desktop_user, body)
                 elif self.path.endswith("/review"): result = passive_pool.review(self.desktop_user, body)
+                elif self.path.endswith("/pool/messages"): result = passive_pool.invitation_messages(self.desktop_user, body, write=True)
                 else: result = passive_pool.analyze(self.desktop_user, body, self.headers.get("Cookie", ""))
             else:
                 kind = parsed.path.removeprefix("/api/v1/hr/")
@@ -1685,7 +1687,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(raw)
                     return
-                result = passive_pool.listing(self.desktop_user, kind, query)
+                result = (passive_pool.invitation_messages(self.desktop_user, query)
+                          if kind == "pool/messages" else passive_pool.listing(self.desktop_user, kind, query))
             self.send_json(200, {"success": True, "data": result})
         except talent_pool.Conflict as error:
             self.send_json(409, {"success": False, "message": str(error)})
