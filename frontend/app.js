@@ -1158,15 +1158,33 @@ document.querySelector("#toggle-password").addEventListener("click", (event) => 
   event.currentTarget.setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
 });
 
-document.querySelector("#logout-button").addEventListener("click", async () => {
+document.querySelector("#logout-button").addEventListener("click", async event => {
+  const button=event.currentTarget;
+  if(button.disabled)return;
+  button.disabled=true;button.textContent="正在退出…";
+  let message="";
+  // Explicit logout only: session expiry/navigation must not erase BOSS data.
+  if(globalThis.HrWorkspace?.allowed()&&globalThis.HeyiHrTransport){
+    globalThis.HrWorkspace.beginLogout?.();
+    try{
+      await globalThis.HeyiHrTransport.disconnect({ensureConnection:true});
+    }catch(_error){
+      message="已退出平台，但未能确认助手中的 BOSS 登录信息已清除。请更新并打开助手，右键悬浮球选择“退出 BOSS 登录”。";
+    }
+  }
   try {
     await api("/api/v1/auth/logout", { method: "POST" });
+  } catch (_error) {
+    message=message
+      ? "平台退出请求未确认，助手登录信息也未确认清除。请检查网络后重试。"
+      : "未能确认平台退出，请检查网络后重试。";
   } finally {
     sessionExpiryActive = false;
     pendingWorkspaceAfterLogin = "";
     pendingProductCaptureAfterLogin = "";
     loginForm.reset();
-    showLogin();
+    showLogin({message});
+    button.disabled=false;button.textContent="退出";
   }
 });
 

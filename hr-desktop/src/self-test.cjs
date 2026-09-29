@@ -142,12 +142,26 @@ exports.run=async({app,main,orb,platformSession,createBoss,engine,worker,bridge,
   assert.equal(main.isVisible(),false);
   assert.equal(main.contentView.children.length,0);
   assert.equal((await session.defaultSession.cookies.get({name:'wt2'}))[0].value,'offline-fixture-token','Release must retain local login data');
+  const savedAuth=path.join(root,'data','auth','session.enc');
+  await fs.mkdir(path.dirname(savedAuth),{recursive:true});
+  await fs.writeFile(savedAuth,'synthetic-saved-token');
+  // Expired authority can clear its own paired session, never read or execute.
+  bridge.expiry=Date.now()-1;
+  answer=await fetch(`http://127.0.0.1:${bridge.port}/api/v1/hr/login/logout`,{
+    method:'POST',headers:{Origin:ORIGIN,Authorization:'Bearer '+token},
+  });
+  assert.equal((await answer.json()).data.cleared,true);
+  assert.equal((await session.defaultSession.cookies.get({})).length,0);
+  assert.equal((await platformSession.cookies.get({name:'platform_fixture'})).length,1,'BOSS logout cannot clear the platform browser session');
+  await assert.rejects(()=>fs.access(savedAuth));
+  assert.equal(bridge.token,'');
   await fs.writeFile(path.join(output,'smoke.json'),JSON.stringify({
     ok:true,platform:process.platform,arch:process.arch,packaged:app.isPackaged,
     sdk:health.version,checks:['runtime-policy','cdp-cookie-isolation','user-agent-consistency',
       'local-routing','external-browser-pairing','no-cloud-fallback','physical-network-routing',
       'orb-only-startup','orb-toggle-and-drag','boss-only-window','no-page-reload-on-hide',
-      'busy-animation-start-stop','page-interaction-during-animation','release-retains-cookies','desktop-screenshot'],
+      'busy-animation-start-stop','page-interaction-during-animation','release-retains-cookies',
+      'expired-pairing-cleanup','boss-cookies-and-saved-auth-deleted','platform-session-preserved','desktop-screenshot'],
   },null,2));
   console.log('DESKTOP_SELF_TEST_PASSED');
   app.quit();

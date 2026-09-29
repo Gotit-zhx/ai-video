@@ -25,6 +25,9 @@ nav a.active{color:#fff;background:#262626;font-weight:650}
 </nav></aside><main><p class="qa-notice">本地界面验收 · 以下为合成测试数据，未连接线上账号</p><section id="hr-page"></section></main></div>
 <script>
 const currentUser={platformAdmin:true,username:'13800000000'};
+const qaParams=new URLSearchParams(location.search);
+if(qaParams.get('theme')==='dark')document.documentElement.dataset.theme='dark';
+let qaPaired=qaParams.get('helper')!=='offline';
 let activeWorkspace='hr';function switchWorkspace(){activeWorkspace='hr'}
 function handleSessionExpired(){}
 const qaRequests=[];
@@ -51,9 +54,15 @@ async function api(url,options={}){
  const key=url.split('/hr/')[1].split(/[/?]/)[0];
  return {data:structuredClone(fixture[key==='candidates'?'recommendations':key])};
 }
+window.HeyiHrTransport={
+ connection:()=>({paired:qaPaired}),api,
+ connect:async()=>{qaPaired=true;sessionStorage.setItem('qaLogin','idle');},
+ disconnect:async()=>{qaPaired=false;sessionStorage.setItem('qaLogin','disconnected');return {cleared:true};},
+ reset:()=>{qaPaired=false;}
+};
 </script><script src="/hr-workspace.js"></script><script>
 fetch('/fixtures').then(r=>r.json()).then(value=>{
- fixture=value;HrWorkspace.enter(location.hash.replace('#hr-','')||'jobs');
+ fixture=value;HrWorkspace.enter(location.hash.replace('#hr-','')||'overview');
 });
 </script></html>"""
 

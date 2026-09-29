@@ -44,3 +44,21 @@ test('logout reset discards local authority',async()=>{
   await transport.connect();transport.reset();
   await assert.rejects(transport.api('/api/v1/hr/jobs'),/连接本机助手/);
 });
+test('explicit disconnect needs confirmed local cleanup before dropping its credentials',async()=>{
+  const {transport,env,calls}=fixture();
+  await transport.connect();
+  env.fetch=async(url,options)=>{calls.push({url,options});return Response.json({success:true,data:{state:'disconnected',cleared:true}});};
+  assert.equal((await transport.disconnect()).cleared,true);
+  assert.equal(calls.at(-1).url,'http://127.0.0.1:17861/api/v1/hr/login/logout');
+  assert.equal(calls.at(-1).options.headers.Authorization,'Bearer local-token');
+  assert.equal(transport.connection().paired,false);
+});
+test('failed cleanup retains its retry capability and never claims success',async()=>{
+  const {transport,env}=fixture();await transport.connect();
+  env.fetch=async()=>Response.json({success:true,data:{state:'complete'}});
+  await assert.rejects(()=>transport.disconnect(),/没有确认/);
+  assert.equal(transport.connection().paired,true);
+  env.fetch=async()=>{throw new TypeError('offline');};
+  await assert.rejects(()=>transport.disconnect(),/offline/);
+  assert.equal(transport.connection().paired,true);
+});

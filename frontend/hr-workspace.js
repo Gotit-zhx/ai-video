@@ -9,9 +9,8 @@
   const routes = new Set(['overview', 'jobs', 'talent', 'applications', 'chats', 'resume']);
   const panels = new Map();
   let current = 'overview', sequence = 0, page = 1, talentAction = 'candidates';
-  let loginTimer = null, qrRefresh = null, autoLoginAttempted = false;
-  let qrPollMilliseconds = 0;
-  let loginPendingSeen = false, loginCheckInFlight = false, qrRequestInFlight = false;
+  let loginTimer = null;
+  let loginPendingSeen = false, loginCheckInFlight = null;
   let loginActionInFlight = false, loginGeneration = 0;
   let loginPhase = '';
   let resumeTimer = null;
@@ -60,358 +59,205 @@
     jobSelectors.push(select);
     return select;
   };
-  const note = element('p', 'BOSS 直聘连接状态正在检查…', root, 'hr-note');
-  note.setAttribute('role', 'status');
-  if(globalThis.HeyiHrTransport){
-    const localBar=element('div','',root,'hr-local-assistant');
-    element('span','本机助手执行 · 登录保留在你的电脑',localBar);
-    const connectButton=button('连接本机助手',localBar,async()=>{
-      connectButton.disabled=true;
-      try{await globalThis.HeyiHrTransport.connect();note.textContent='本机助手已连接';status.replaceChildren();await checkLogin();}
-      catch(error){note.textContent=error.message;}
-      finally{connectButton.disabled=false;}
-    });
-    const download=element('a','下载 Mac 应用',localBar);
-    download.href='/downloads/Heyi-Recruiter-mac-arm64.dmg';
-    const windows=element('a','下载 Windows 应用',localBar);
-    windows.href='/downloads/Heyi-Recruiter-windows-x64-Setup.exe';
+  const header = element('header', '', root, 'hr-workspace-header');
+  const heading = element('div', '', header);
+  element('span', 'HOYEE / RECRUITMENT', heading, 'hr-eyebrow');
+  const pageTitle = element('h1', '招聘工作台', heading);
+  const pageSubtitle = element('p', '从职位出发，让每一次沟通都有进展。', heading, 'hr-hint');
+  const headerActions = element('div', '', header, 'hr-header-actions');
+  const connectionBadge = element('span', '等待连接', headerActions, 'hr-device-badge');
+  button('连接设置', headerActions, () => navigate('overview')).className='hr-secondary';
+  const downloads = element('details', '', headerActions, 'hr-downloads');
+  element('summary', '下载桌面助手', downloads);
+  const downloadMenu = element('div', '', downloads, 'hr-download-menu');
+  for(const [label,file] of [['Mac · Apple 芯片','Heyi-Recruiter-mac-arm64.dmg'],['Windows · 64 位','Heyi-Recruiter-windows-x64-Setup.exe']]){
+    const link=element('a',label,downloadMenu);link.href='/downloads/'+file;
   }
-  const loginSuccess = element('p', '✓  招聘账号登录成功', root, 'hr-success hr-login-success');
-  loginSuccess.setAttribute('role', 'status');
-  loginSuccess.hidden = true;
+  const note = element('p', '', root, 'hr-note');
+  note.setAttribute('role', 'status');
+  const loginSuccess = element('p', '招聘账号已连接，可以开始工作。', root, 'hr-success hr-login-success');
+  loginSuccess.setAttribute('role', 'status');loginSuccess.hidden=true;
 
   const overview = section('overview');
-  const intro = element('div', '', overview, 'hr-overview-intro');
-  element('span', '●  安全连接', intro, 'hr-eyebrow');
-  element('h2', '连接你的招聘账号', intro);
-  element('p', '使用 BOSS 直聘 App 扫码，确认后即可查看真实职位、投递和候选人数据。', intro, 'hr-hint');
-  const loginBox = element('div', '', overview, 'hr-login');
-  element('div', 'BOSS 直聘', loginBox, 'hr-login-brand');
-  const loginTitle = element('strong', '扫码连接招聘账号', loginBox, 'hr-login-title');
-  const qr = element('img', '', loginBox, 'hr-qr');
-  qr.alt = 'BOSS 直聘登录二维码';
-  qr.hidden = true;
-  const loginProgress = element('div', '', loginBox, 'hr-login-progress');
-  loginProgress.hidden = true;
-  loginProgress.setAttribute('role', 'status');
-  loginProgress.setAttribute('aria-live', 'polite');
-  const loginSpinner = element('span', '', loginProgress, 'hr-login-spinner');
-  loginSpinner.setAttribute('aria-hidden', 'true');
-  const loginProgressTitle = element('strong', '', loginProgress);
-  const loginMessage = element('p', '正在准备专属二维码…', loginBox, 'hr-hint');
-  const loginActions = element('div', '', loginBox, 'hr-login-actions');
-  const loginButton = button('重新获取二维码', loginActions, startLogin);
-  loginButton.hidden = true;
-  const refreshButton = button('刷新二维码', loginActions, refreshLogin);
-  refreshButton.hidden = true;
-  const resetLoginButton = button('清除会话并重新扫码', loginActions, () => logoutBoss(true));
-  resetLoginButton.hidden = true;
-  const status = element('div', '正在读取账号状态…', overview, 'hr-result hr-status-result');
-  const logoutButton = button('断开本机连接', overview, logoutBoss);
-  logoutButton.className = 'hr-logout';
-  logoutButton.hidden = true;
-  const loginFootnote = element('p', '二维码仅供当前管理员使用；扫码后还需在手机上确认。', overview, 'hr-footnote');
-
-  function stopLoginPolling() {
-    clearInterval(loginTimer);
-    clearInterval(qrRefresh);
-    loginTimer = qrRefresh = null;
-    qrPollMilliseconds = 0;
+  overview.className='hr-panel hr-overview';
+  const connectionCard = element('div', '', overview, 'hr-connect-card');
+  const connectionArt = element('div', '', connectionCard, 'hr-connect-art');
+  connectionArt.setAttribute('aria-hidden','true');
+  const desktopIllustration=element('div','',connectionArt,'hr-desktop-illustration');
+  element('span','',desktopIllustration,'hr-illustration-toolbar');
+  element('span','',desktopIllustration,'hr-illustration-line');
+  element('span','',desktopIllustration,'hr-illustration-line is-short');
+  element('span','H',connectionArt,'hr-helper-orb');
+  const connectionBody=element('div','',connectionCard,'hr-connect-body');
+  const connectionPlatform=element('div','',connectionBody,'hr-connect-platform');
+  element('span','BOSS 直聘',connectionPlatform,'hr-platform-label');
+  const loginProgress=element('span','',connectionPlatform,'hr-login-progress');
+  loginProgress.hidden=true;loginProgress.setAttribute('role','status');
+  element('span','',loginProgress,'hr-login-spinner');
+  const loginProgressTitle=element('span','',loginProgress);
+  const loginTitle=element('h2','连接桌面助手，开始招聘',connectionBody);
+  const loginMessage=element('p','打开赫逸桌面悬浮球，再连接本机助手。BOSS 登录在助手内完成。',connectionBody,'hr-connect-description');
+  const loginActions=element('div','',connectionBody,'hr-actions');
+  const loginButton=button('连接本机助手',loginActions,primaryConnectionAction);loginButton.className='hr-primary';
+  const checkButton=button('检查连接',loginActions,()=>checkLogin());
+  const logoutButton=button('退出 BOSS 登录',loginActions,logoutBoss);logoutButton.className='hr-text-button';logoutButton.hidden=true;
+  const status=element('div','',connectionBody,'hr-result hr-status-result');
+  status.setAttribute('role','status');
+  const guide=element('div','',overview,'hr-connection-guide');
+  for(const [number,title,description] of [
+    ['01','打开桌面助手','悬浮球常驻桌面，点击即可展开。'],
+    ['02','登录 BOSS','在助手页面扫码，并在手机上确认。'],
+    ['03','回到这里工作','职位、人才和沟通统一在网页处理。'],
+  ]){
+    const step=element('div','',guide);element('span',number,step,'hr-step-number');
+    const copy=element('div','',step);element('strong',title,copy);element('p',description,copy);
   }
-  function pollQrEvery(milliseconds) {
-    if (qrPollMilliseconds === milliseconds && qrRefresh) return;
-    clearInterval(qrRefresh);
-    qrPollMilliseconds = milliseconds;
-    qrRefresh = milliseconds ? setInterval(refreshQr, milliseconds) : null;
+  const shortcuts=element('section','',overview,'hr-shortcuts');
+  const shortcutHeader=element('div','',shortcuts,'hr-section-heading');
+  element('h2','招聘工作',shortcutHeader);element('span','从需求到沟通，有序推进。',shortcutHeader);
+  const shortcutGrid=element('div','',shortcuts,'hr-shortcut-grid');
+  const shortcutEntries=[
+    ['jobs','职位管理','管理在招岗位，按职位跟进人才。','M4 7h16v13H4z M8 7V4h8v3 M4 12h16 M10 12v3h4v-3'],
+    ['talent','人才寻源','按岗位查看推荐，搜索合适的人。','M14 10a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M3 21v-2a5 5 0 0 1 10 0v2 M17 5v6 M14 8h6'],
+    ['applications','投递申请','查看主动投递，及时处理候选人。','M4 4h16v16H4z M7 9h10 M7 13h7 M7 17h4'],
+    ['chats','沟通与简历','跟进会话，索取并接收附件简历。','M4 4h16v13H9l-5 4z M8 9h8 M8 13h5'],
+    ['resume','在线简历','集中查看候选人的经历和详细资料。','M6 3h8l4 4v14H6z M14 3v5h4 M9 12h6 M9 16h6'],
+  ];
+  for(const [route,title,description,shape] of shortcutEntries){
+    const card=button('',shortcutGrid,()=>navigate(route));card.className='hr-shortcut';
+    const symbol=element('span','',card,'hr-shortcut-icon');
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',shape);svg.append(path);symbol.append(svg);
+    element('strong',title,card);element('span',description,card,'hr-shortcut-description');element('span','↗',card,'hr-shortcut-arrow');
   }
-  function showLoginProgress(phase = '') {
-    // Keep the existing spinner mounted; identical polls do not restart it.
-    if (loginProgress.hidden !== !phase) loginProgress.hidden = !phase;
-    if (loginProgress.dataset.phase !== phase) {
-      loginProgress.dataset.phase = phase;
-      loginBox.setAttribute('aria-busy', phase ? 'true' : 'false');
-    }
-    if (!phase) return;
-    qr.hidden = true;
-    const title = phase === 'scanned' ? '正在同步登录结果'
-      : phase === 'verifying' ? '正在确认登录'
-      : phase === 'reconnecting' ? '正在恢复连接' : '正在准备连接';
-    if (loginProgressTitle.textContent !== title) loginProgressTitle.textContent = title;
+  let helperConnected=!globalThis.HeyiHrTransport||globalThis.HeyiHrTransport.connection?.().paired===true;
+  let connectionState='idle',loginFailures=0;
+  function stopLoginPolling(){clearInterval(loginTimer);loginTimer=null;}
+  function showLoginProgress(phase=''){
+    loginProgress.hidden=!phase;loginProgress.dataset.phase=phase;
+    connectionCard.setAttribute('aria-busy',phase?'true':'false');
+    loginProgressTitle.textContent=phase==='scanned'?'已扫码':phase==='verifying'?'正在确认':phase==='reconnecting'?'重新检查中':'等待确认';
   }
-  function advanceLoginPhase(phase) {
-    const order = {qr:1,scanned:2,verifying:3};
-    if ((order[phase] || 0) > (order[loginPhase] || 0)) loginPhase = phase;
-    return loginPhase || 'qr';
+  function paintConnection(state={state:connectionState}){
+    connectionState=state.state||'idle';
+    const ready=helperConnected&&connectionState==='complete';
+    const pending=helperConnected&&connectionState==='pending';
+    guide.hidden=ready;
+    connectionBadge.textContent=!helperConnected?'助手未连接':ready?'招聘账号已连接':pending?'正在连接 BOSS':'助手已连接';
+    connectionBadge.dataset.connected=String(ready);
+    connectionArt.classList.toggle('is-connected',ready);
+    checkButton.hidden=!helperConnected;checkButton.disabled=loginActionInFlight;
+    logoutButton.hidden=!helperConnected||connectionState==='disconnected'||connectionState==='idle';
+    logoutButton.disabled=loginActionInFlight;
+    loginButton.disabled=loginActionInFlight||pending;
+    loginButton.textContent=!helperConnected?'连接本机助手':ready?'查看我的职位':pending?'请在桌面助手确认':'在助手中登录 BOSS';
+    loginTitle.textContent=!helperConnected?'连接桌面助手，开始招聘':ready?'招聘账号已就绪':pending
+      ?loginPhase==='scanned'?'请在手机上确认登录':loginPhase==='verifying'?'正在确认招聘账号':'在桌面助手完成登录'
+      :connectionState==='verification_pending'?'连接需要确认':'在桌面助手中登录 BOSS';
+    loginMessage.textContent=!helperConnected?'打开赫逸桌面悬浮球，再连接本机助手。BOSS 登录在助手内完成。':ready
+      ?'招聘方身份验证通过。选择一个职位，继续查看人才、投递和沟通。':pending
+      ?loginPhase==='scanned'?'已收到扫码结果，请在 BOSS App 确认；无需重复扫码。':loginPhase==='verifying'
+        ?'手机确认已收到，正在等待招聘方身份验证结果。':'点击桌面悬浮球，在 BOSS 页面扫码并用手机确认。这里会同步连接结果。'
+      :state.error||'登录页面将在桌面助手内打开。若已登录，将核对当前招聘账号。';
+    showLoginProgress(pending?loginPhase||'qr':'');
+    note.textContent='';
   }
-  function loginPhaseMessage(phase) {
-    return phase === 'scanned'
-      ? '请在 BOSS App 完成确认；如果已确认，正在等待 BOSS 返回登录结果，无需重复扫码。'
-      : '已收到登录结果，正在验证招聘方账号…';
+  async function primaryConnectionAction(){
+    if(loginActionInFlight)return;
+    if(helperConnected){if(connectionState==='complete')navigate('jobs');else await startLogin();return;}
+    loginActionInFlight=true;loginButton.disabled=true;loginButton.textContent='正在连接助手…';
+    const generation=++loginGeneration;loginPhase='';loginFailures=0;
+    try{
+      if(!globalThis.HeyiHrTransport)throw Error('请刷新页面后连接桌面助手');
+      await globalThis.HeyiHrTransport.connect();
+      if(generation!==loginGeneration||!allowed())return;
+      helperConnected=true;status.replaceChildren();await checkLogin();
+    }catch(error){if(generation===loginGeneration){status.replaceChildren();element('p',error.message,status,'hr-error');}}
+    finally{if(generation===loginGeneration){loginActionInFlight=false;paintConnection(lastLoginState);}}
   }
-  async function refreshQr() {
-    if (qrRequestInFlight || !loginPendingSeen) return;
-    qrRequestInFlight = true;
-    const generation = loginGeneration;
-    try {
-      const response = await hrFetch('/api/v1/hr/login/qr', {credentials:'same-origin',cache:'no-store'});
-      if (generation !== loginGeneration || !loginPendingSeen || !allowed()) return;
-      if (response.status === 409) {
-        await checkLogin();
-        return;
-      }
-      if (response.status === 202) {
-        const result = await response.json();
-        if (generation !== loginGeneration || !loginPendingSeen) return;
-        if (result.data?.phase === 'scanned' || result.data?.phase === 'verifying') {
-          const phase = advanceLoginPhase(result.data.phase);
-          showLoginProgress(phase);
-          refreshButton.hidden = true;
-          loginMessage.textContent = loginPhaseMessage(phase);
-          note.textContent = phase === 'scanned' ? '扫码已收到 · 正在同步登录结果' : '正在验证招聘方账号';
-          if (phase === 'verifying') pollQrEvery(0);
-        }
-        return;
-      }
-      if (!response.ok) return;
-      if (loginPhase === 'scanned' || loginPhase === 'verifying') return;
-      const blob = await response.blob();
-      if (generation !== loginGeneration || !loginPendingSeen) return;
-      if (loginPhase === 'scanned' || loginPhase === 'verifying') return;
-      if (blob.type !== 'image/png') return;
-      const url = URL.createObjectURL(blob);
-      const previous = qr.dataset.objectUrl;
-      qr.src = url;
-      qr.dataset.objectUrl = url;
-      showLoginProgress();
-      qr.hidden = false;
-      if (previous) URL.revokeObjectURL(previous);
-    } catch (_) {
-      if (generation === loginGeneration && loginPendingSeen) {
-        loginMessage.textContent = loginProgress.hidden ? '正在等待登录二维码，请稍后…'
-          : '正在读取登录状态，请稍候…';
-      }
-    } finally {
-      qrRequestInFlight = false;
-    }
+  let lastLoginState={state:'idle'};
+  function showDisconnected(){
+    loginPhase='';loginPendingSeen=false;stopLoginPolling();loginSuccess.hidden=true;
+    lastLoginState={state:'disconnected',error:'本机 BOSS Cookie 和保存的登录凭据已清除。再次使用时请重新登录。'};
+    paintConnection(lastLoginState);status.replaceChildren();
   }
-  async function refreshLogin() {
-    if (!allowed() || loginActionInFlight) return;
-    const generation = loginGeneration;
-    refreshButton.disabled = true;
-    showLoginProgress('loading');
-    loginMessage.textContent = '正在生成新的二维码…';
-    try {
-      await hrApi('/api/v1/hr/login/refresh', {method:'POST'});
-      if (generation !== loginGeneration) return;
-      qr.hidden = true;
-      await refreshQr();
-      if (generation !== loginGeneration) return;
-      loginMessage.textContent = '新二维码已生成，请使用 BOSS 直聘 App 扫码确认。';
-    } catch (error) {
-      if (generation !== loginGeneration) return;
-      showLoginProgress();
-      loginMessage.textContent = error.message || '二维码刷新失败';
-    } finally {
-      if (generation === loginGeneration) refreshButton.disabled = false;
-    }
-  }
-  function showDisconnected() {
-    loginPhase = '';
-    autoLoginAttempted = true;
-    loginPendingSeen = false;
-    stopLoginPolling();
-    showLoginProgress();
-    loginSuccess.hidden = true;
-    intro.hidden = loginFootnote.hidden = loginBox.hidden = false;
-    qr.hidden = refreshButton.hidden = resetLoginButton.hidden = logoutButton.hidden = true;
-    loginButton.hidden = false;
-    loginButton.textContent = '扫码连接招聘账号';
-    loginMessage.textContent = '本机连接已断开。需要时点击“扫码连接招聘账号”，再用手机确认。';
-    note.textContent = '已断开本机连接';
-    status.replaceChildren();
-  }
-  async function checkLogin() {
-    if (!allowed()) { stopLoginPolling(); return; }
-    if (loginCheckInFlight) return;
-    loginCheckInFlight = true;
-    const generation = loginGeneration;
-    try {
-      const result = await hrApi('/api/v1/hr/login/status');
-      if (generation !== loginGeneration || !allowed()) return;
-      const state = result.data || {};
-      if (state.state === 'disconnected') {showDisconnected();return;}
-      if (state.state === 'pending') {
-        // A page reload can join an existing server scan. It still needs to
-        // poll completion even though this page never called /login/start.
-        if (!loginTimer) loginTimer = setInterval(checkLogin, 3000);
-        loginPendingSeen = true;
-        const phase = advanceLoginPhase(state.phase || 'qr');
-        status.replaceChildren();
-        note.textContent = phase === 'scanned' ? '扫码已收到 · 正在同步登录结果'
-          : phase === 'verifying' ? '正在验证招聘方账号' : '等待扫码连接';
-        loginBox.hidden = false;
-        loginButton.hidden = true;
-        resetLoginButton.hidden = true;
-        const waitingForPhone = phase === 'scanned' || phase === 'verifying';
-        refreshButton.hidden = waitingForPhone;
-        loginMessage.textContent = waitingForPhone ? loginPhaseMessage(phase)
-          : '请在 BOSS 直聘 App 扫码并确认；二维码过期后会自动更新。';
-        if (waitingForPhone) {
-          showLoginProgress(phase);
-          // Keep observing the browser after scanning so phone confirmation is
-          // reflected while the CLI is still synchronizing account credentials.
-          pollQrEvery(phase === 'scanned' ? 3000 : 0);
-        } else {
-          showLoginProgress(qr.hidden ? 'loading' : '');
-          pollQrEvery(12000);
-          if (qr.hidden) refreshQr();
-        }
-      } else {
+  async function checkLogin(){
+    if(!allowed()){stopLoginPolling();return;}
+    if(!helperConnected){paintConnection();return;}
+    if(loginCheckInFlight?.generation===loginGeneration)return;
+    const generation=loginGeneration;
+    const read={generation};loginCheckInFlight=read;
+    try{
+      const result=await hrApi('/api/v1/hr/login/status');
+      if(generation!==loginGeneration||!allowed())return;
+      loginFailures=0;status.replaceChildren();
+      const state=result.data||{};lastLoginState=state;
+      if(state.state==='disconnected'){showDisconnected();return;}
+      if(state.state==='pending'){
+        loginPendingSeen=true;
+        const order={qr:1,scanned:2,verifying:3};
+        if((order[state.phase]||1)>(order[loginPhase]||0))loginPhase=state.phase||'qr';
+        if(!loginTimer)loginTimer=setInterval(checkLogin,3000);
+      }else{
         stopLoginPolling();
-        showLoginProgress();
-        loginBox.hidden = state.state === 'complete';
-        qr.hidden = true;
-        refreshButton.hidden = true;
-        loginButton.hidden = state.state === 'complete';
-        resetLoginButton.hidden = state.state !== 'verification_pending';
-        loginButton.textContent = state.state === 'verification_pending'
-          ? '同步浏览器登录并验证' : '重新获取二维码';
-        loginButton.disabled = false;
-        loginMessage.textContent = state.state === 'complete' ? '扫码成功，正在刷新账号状态…'
-          : state.state === 'verification_pending' ? (state.error || '已扫码，正在核对招聘方接口')
-          : state.state === 'failed' ? (state.error || '扫码未完成，请重新获取二维码') : '';
-        loginTitle.textContent = state.failure_code === 'PC_LOGIN_RESTRICTED'
-          ? '重新连接招聘账号' : '扫码连接招聘账号';
-        if (state.failure_code === 'PC_LOGIN_RESTRICTED') {
-          note.textContent = '上次连接未完成 · 可手动重新扫码';
-          intro.hidden = loginFootnote.hidden = true;
-          status.replaceChildren();
-          resetLoginButton.hidden = true;
-          loginButton.hidden = false;
-          loginButton.disabled = false;
-          loginButton.textContent = '重新扫码';
-        }
-        if (state.state === 'complete') {
-          if (loginPendingSeen) {
-            loginPendingSeen = false;
-            history.replaceState(null, '', `${location.pathname}${location.search}#hr-jobs`);
-            enter('jobs');
-            loginSuccess.hidden = false;
-          } else {
-            run('overview');
-          }
-        } else {
-          loginPendingSeen = false;
-        }
+        if(state.state==='complete'&&loginPendingSeen)loginSuccess.hidden=false;
+        loginPendingSeen=false;loginPhase='';
       }
-    } catch (error) {
-      if (generation !== loginGeneration) return;
-      // A transient request failure must not permanently stop an active scan.
-      if (loginPendingSeen && !loginTimer) loginTimer = setInterval(checkLogin, 3000);
-      if (loginPendingSeen) showLoginProgress('reconnecting');
-      loginButton.disabled = false;
-      loginMessage.textContent = loginPendingSeen ? '连接短暂中断，正在重新读取登录状态…'
-        : error.message || '登录状态读取失败';
-    } finally {
-      loginCheckInFlight = false;
-    }
+      paintConnection(state);
+    }catch(error){
+      if(generation!==loginGeneration)return;
+      status.replaceChildren();element('p',error.message||'连接状态读取失败',status,'hr-error');
+      if(loginPendingSeen&&++loginFailures<3){showLoginProgress('reconnecting');return;}
+      stopLoginPolling();helperConnected=false;loginPendingSeen=false;paintConnection();
+    }finally{if(loginCheckInFlight===read)loginCheckInFlight=null;}
   }
-  async function startLogin() {
-    if (!allowed() || loginActionInFlight) return;
-    loginActionInFlight = true;
-    const generation = ++loginGeneration;
-    loginPhase = '';
-    ++sequence;
-    status.replaceChildren();
-    loginSuccess.hidden = true;
-    showLoginProgress('loading');
-    loginTitle.textContent = '扫码连接招聘账号';
-    autoLoginAttempted = true;
-    loginPendingSeen = true;
-    stopLoginPolling();
-    resetLoginButton.disabled = logoutButton.disabled = true;
-    loginButton.disabled = true;
-    loginButton.hidden = true;
-    loginBox.hidden = false;
-    loginMessage.textContent = loginButton.textContent.includes('验证')
-      ? '正在同步浏览器登录并验证招聘方身份…' : '正在打开 BOSS 登录页…';
-    try {
-      await hrApi('/api/v1/hr/login/start', {method:'POST'});
-      if (generation !== loginGeneration || !allowed()) return;
-      stopLoginPolling();
-      loginTimer = setInterval(checkLogin, 3000);
-      await checkLogin();
-    } catch (error) {
-      if (generation !== loginGeneration) return;
-      showLoginProgress();
-      loginButton.disabled = false;
-      loginButton.hidden = false;
-      loginMessage.textContent = error.message || '启动扫码失败';
-    } finally {
-      if (generation === loginGeneration) {
-        loginActionInFlight = false;
-        resetLoginButton.disabled = logoutButton.disabled = false;
-      }
-    }
+  async function startLogin(){
+    if(!allowed()||loginActionInFlight)return;
+    loginActionInFlight=true;const generation=++loginGeneration;
+    loginPhase='';++sequence;status.replaceChildren();loginSuccess.hidden=true;
+    loginPendingSeen=false;stopLoginPolling();
+    loginButton.disabled=checkButton.disabled=logoutButton.disabled=true;
+    loginButton.textContent='正在打开桌面助手…';
+    try{
+      await hrApi('/api/v1/hr/login/start',{method:'POST'});
+      if(generation!==loginGeneration||!allowed())return;
+      loginPendingSeen=true;lastLoginState={state:'pending',phase:'qr'};paintConnection(lastLoginState);
+      loginTimer=setInterval(checkLogin,3000);await checkLogin();
+    }catch(error){
+      if(generation!==loginGeneration)return;
+      status.replaceChildren();element('p',error.message||'未能打开桌面助手',status,'hr-error');
+    }finally{if(generation===loginGeneration){loginActionInFlight=false;paintConnection(lastLoginState);}}
   }
-  async function logoutBoss(reconnect = false) {
-    if (!allowed() || loginActionInFlight) return;
-    loginActionInFlight = true;
-    const generation = ++loginGeneration;
-    loginPhase = '';
-    ++sequence;
-    ++sessionGeneration;
-    autoLoginAttempted = true;
-    loginPendingSeen = false;
-    stopLoginPolling();
-    clearInterval(resumeTimer);
-    resumeTimer = null;
-    loginButton.disabled = resetLoginButton.disabled = logoutButton.disabled = refreshButton.disabled = true;
-    qr.hidden = true;
-    loginSuccess.hidden = true;
-    showLoginProgress('loading');
-    if (qr.dataset.objectUrl) URL.revokeObjectURL(qr.dataset.objectUrl);
-    delete qr.dataset.objectUrl;
-    loginMessage.textContent = reconnect === true ? '正在清理本次连接并准备二维码…' : '正在断开本机连接…';
-    try {
-      await hrApi('/api/v1/hr/login/logout', {method:'POST'});
-      if (generation !== loginGeneration || !allowed()) return;
-      jobsRequest = null;
-      conversations = [];
-      trackedResumeRequests.clear();
-      resumeRequestsInFlight.clear();
-      attachmentFeedback.hidden = true;
-      selectedConversation = selectedCandidate = null;
-      friendId.value = geekId.value = resumeJob.value = securityId.value = '';
-      keyword.value = '';
-      rememberJobs([]);
-      root.querySelectorAll('.hr-result').forEach(box => box.replaceChildren());
-      showDisconnected();
-      if (reconnect === true) {
-        // This is one explicit reset action. Keep the action lock across both
-        // requests so double clicks cannot repeatedly clear or restart a scan.
-        loginPendingSeen = true;
-        showLoginProgress('loading');
-        loginButton.hidden = true;
-        loginMessage.textContent = '正在生成登录二维码…';
-        note.textContent = '正在准备扫码连接';
-        await hrApi('/api/v1/hr/login/start', {method:'POST'});
-        if (generation !== loginGeneration || !allowed()) return;
-        loginTimer = setInterval(checkLogin, 3000);
-        await checkLogin();
-      }
-    } catch (error) {
-      if (generation !== loginGeneration) return;
-      showLoginProgress();
-      loginButton.hidden = false;
-      loginMessage.textContent = error.message || '操作未完成，请重试';
-    } finally {
-      if (generation === loginGeneration) {
-        loginActionInFlight = false;
-        loginButton.disabled = resetLoginButton.disabled = logoutButton.disabled = refreshButton.disabled = false;
-      }
-    }
+  async function logoutBoss(){
+    if(!allowed()||loginActionInFlight)return;
+    loginActionInFlight=true;const generation=++loginGeneration;
+    ++sequence;++sessionGeneration;loginPhase='';loginPendingSeen=false;stopLoginPolling();
+    clearInterval(resumeTimer);resumeTimer=null;loginSuccess.hidden=true;
+    loginButton.disabled=checkButton.disabled=logoutButton.disabled=true;
+    logoutButton.textContent='正在清除登录信息…';status.replaceChildren();
+    try{
+      const response=globalThis.HeyiHrTransport
+        ?await globalThis.HeyiHrTransport.disconnect()
+        :await hrApi('/api/v1/hr/login/logout',{method:'POST'});
+      if(generation!==loginGeneration||!allowed())return;
+      if(response?.cleared!==true&&(response?.success!==true||response?.data?.state!=='disconnected'))throw Error('未确认 Cookie 已清除，请检查助手连接后重试');
+      clearRecruiterData();showDisconnected();
+      helperConnected=!globalThis.HeyiHrTransport;
+      loginSuccess.textContent='本机 BOSS Cookie 和保存的登录凭据已清除。';
+      loginSuccess.hidden=false;
+    }catch(error){
+      if(generation!==loginGeneration)return;
+      status.replaceChildren();element('p',error.message||'登录信息未能清除，请重试',status,'hr-error');
+      lastLoginState={state:'verification_pending',error:'未确认登录信息已清除，请检查助手后重试。'};
+    }finally{if(generation===loginGeneration){loginActionInFlight=false;logoutButton.textContent='退出 BOSS 登录';paintConnection(lastLoginState);}}
   }
+  function clearRecruiterData(){
+    jobsRequest=null;conversations=[];trackedResumeRequests.clear();resumeRequestsInFlight.clear();
+    attachmentFeedback.hidden=true;selectedConversation=selectedCandidate=null;
+    friendId.value=geekId.value=resumeJob.value=securityId.value='';keyword.value='';rememberJobs([]);
+    root.querySelectorAll('.hr-result').forEach(box=>box.replaceChildren());
+  }
+  paintConnection();
 
   const jobs = section('jobs');
   element('p', '选择职位，查看对应的推荐人才、投递和沟通进展。', jobs, 'hr-hint');
@@ -737,15 +583,7 @@
     navigate('resume');
   }
   function renderStatus(box, data) {
-    const card = element('div', '', box, 'hr-connection-card');
-    badge('已连接', card, 'is-success');
-    element('h3', 'BOSS 招聘账号已就绪', card);
-    element('p', '招聘方身份验证通过，可以查看平台开放的职位、人才和沟通记录。', card, 'hr-hint');
-    detailsGrid(card, [['连接平台','BOSS 直聘'],['账号',pick(data,'user_name')],
-      ['登录方式','扫码登录'],['验证状态','招聘接口验证通过']]);
-    const actions = element('div', '', card, 'hr-actions');
-    button('查看我的职位', actions, () => navigate('jobs')).className = 'hr-primary';
-    button('查看沟通', actions, () => navigate('chats'));
+    lastLoginState={state:'complete'};paintConnection(lastLoginState);
   }
   function renderJobs(box, rows) {
     rememberJobs(rows);
@@ -1046,18 +884,6 @@
         return;
       }
       const rows = display(box, response.data, action);
-      if (action === 'overview') {
-        // The connector only returns a successful status after its recruiter
-        // endpoint check; a missing secondary token alone is not a role failure.
-        const recruiterReady = response.data?.ok === true;
-        intro.hidden = recruiterReady;
-        loginFootnote.hidden = recruiterReady;
-        logoutButton.hidden = !recruiterReady;
-        if (recruiterReady) {
-          loginBox.hidden = true;
-          note.textContent = '招聘方账号已连接 · BOSS 直聘';
-        }
-      }
       // Authentication errors never authorize a new scan or verification.
       // Recovery uses the existing explicit connect/sync control.
       pagination(box, action, response.data, rows);
@@ -1085,8 +911,9 @@
       link.classList.toggle('active', link.dataset.hrRoute === current);
     });
     if (['talent','applications','chats'].includes(current) && !jobRecords.length) loadJobOptions();
+    const titles={overview:['招聘工作台','从职位出发，让每一次沟通都有进展。'],jobs:['职位管理','从在招职位开始，查看推荐人才和投递。'],talent:['人才寻源','找到适合岗位的人，再开始有价值的沟通。'],applications:['投递申请','及时查看主动投递，跟进合适的候选人。'],chats:['沟通与简历','每一次沟通、每一份简历，在这里继续。'],resume:['在线简历','查看工作、项目与教育经历，了解完整的人才画像。']};
+    pageTitle.textContent=titles[current][0];pageSubtitle.textContent=titles[current][1];
     if (current === 'overview') {
-      run();
       checkLogin();
     } else if (current === 'jobs' || current === 'applications' || current === 'chats') {
       run(current === 'chats' && selectedConversation ? 'messages' : current);
@@ -1111,7 +938,11 @@
     switchWorkspace('hr');
     enter(link.dataset.hrRoute);
   }));
-  globalThis.HrWorkspace = {enter, allowed, reset(){
+  globalThis.HrWorkspace = {enter, allowed, beginLogout(){
+    ++sequence;++sessionGeneration;++loginGeneration;
+    stopLoginPolling();clearInterval(resumeTimer);resumeTimer=null;
+    loginActionInFlight=true;
+  },reset(){
     globalThis.HeyiHrTransport?.reset();
     ++sequence;
     ++sessionGeneration;
@@ -1123,7 +954,7 @@
     loginSuccess.hidden = true;
     clearInterval(resumeTimer);
     resumeTimer = null;
-    autoLoginAttempted = false;
+    helperConnected=false;connectionState='idle';lastLoginState={state:'idle'};
     loginPendingSeen = false;
     jobsRequest = null;
     conversations = [];
@@ -1134,10 +965,7 @@
     friendId.value = geekId.value = resumeJob.value = securityId.value = '';
     keyword.value = '';
     rememberJobs([]);
-    qr.hidden = true;
-    logoutButton.hidden = true;
-    if (qr.dataset.objectUrl) URL.revokeObjectURL(qr.dataset.objectUrl);
-    delete qr.dataset.objectUrl;
+    logoutButton.hidden=true;paintConnection(lastLoginState);
     root.querySelectorAll('.hr-result').forEach(box => box.replaceChildren());
   }};
   window.addEventListener('heyi:company-reset', () => HrWorkspace.reset());

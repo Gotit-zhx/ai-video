@@ -4,8 +4,8 @@ const {ORIGIN}=require('./core.cjs');
 const PORT=17861;
 
 class LocalBridge {
-  constructor({engine,pair,authorize}) {
-    Object.assign(this,{engine,pair,authorize});
+  constructor({engine,pair,authorize,release=async()=>{}}) {
+    Object.assign(this,{engine,pair,authorize,release});
     this.token='';this.expiry=0;this.pairing=false;
   }
   async start(port=PORT){
@@ -32,7 +32,7 @@ class LocalBridge {
       let raw='';
       for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>8192)throw Error('请求过长');}
       if(req.url==='/pair'&&req.method==='POST'){
-        if(this.pairing||this.engine.busy)throw Error('助手正在处理另一项操作，请稍后再连接');
+        if(this.pairing||this.engine.busy||this.engine.disconnecting)throw Error('助手正在处理另一项操作，请稍后再连接');
         this.pairing=true;
         try{
           const value=JSON.parse(raw);
@@ -45,8 +45,15 @@ class LocalBridge {
         }finally{this.pairing=false;}
       }
       const expected=Buffer.from('Bearer '+this.token),actual=Buffer.from(req.headers.authorization||'');
-      if(!this.token||Date.now()>=this.expiry||actual.length!==expected.length||!crypto.timingSafeEqual(actual,expected)){
+      const logout=req.method==='POST'&&req.url==='/api/v1/hr/login/logout';
+      if(!this.token||(!logout&&Date.now()>=this.expiry)||actual.length!==expected.length||!crypto.timingSafeEqual(actual,expected)){
         send(428,{success:false,message:'请在网页连接本机助手'});return;
+      }
+      if(logout){
+        await this.engine.disconnect();
+        this.token='';this.expiry=0;
+        await this.release();
+        send(200,{success:true,data:{state:'disconnected',cleared:true}});return;
       }
       if(!/^\/api\/v1\/hr\/(?!desktop\/)[a-z0-9/?=&_%~-]+$/i.test(req.url))throw Error('不支持的本机接口');
       await this.authorize();

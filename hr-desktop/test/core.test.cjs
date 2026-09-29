@@ -76,3 +76,53 @@ test('local pairing enforces Origin, Host, credentials and route allowlist',asyn
   assert.equal((await fetch(url+'/api/v1/hr/desktop/redeem',{method:'POST',headers,body:'{}'})).status,409);
   assert.equal(calls.length,0);
 });
+test('logout waits for stopped work and deletes all stored credentials but retains records',async t=>{
+  const {engine,directory,calls}=await fixture(t);
+  const current=path.join(directory,'accounts','owner','current');
+  const previous=path.join(directory,'accounts','owner','previous');
+  for(const root of [current,previous]){
+    await fs.mkdir(path.join(root,'data','auth'),{recursive:true});
+    await fs.writeFile(path.join(root,'data','auth','session.enc'),'synthetic-credential');
+    await fs.writeFile(path.join(root,'resumes.sqlite3'),'retained-records');
+  }
+  engine.accountRoot=current;
+  let abort,clears=0,stops=0;
+  engine.runtime={run:()=>new Promise((_resolve,reject)=>{abort=reject;}),stop(){stops++;abort(Error('cancelled'));}};
+  engine.browser.clear=async()=>{clears++;};
+  const pending=engine.call('jobs');pending.catch(()=>{});
+  await new Promise(resolve=>setImmediate(resolve));
+  await Promise.all([engine.disconnect(),engine.disconnect()]);
+  await assert.rejects(pending,/cancelled/);
+  assert.equal(clears,1);assert.equal(stops,1);assert.equal(engine.state.state,'disconnected');
+  for(const root of [current,previous]){
+    await assert.rejects(()=>fs.access(path.join(root,'data','auth')));
+    assert.equal(await fs.readFile(path.join(root,'resumes.sqlite3'),'utf8'),'retained-records');
+  }
+  assert.equal(engine.accountRoot,'');assert.equal(engine.paused,true);
+  assert.equal(calls.length,0,'Cleanup must not invoke BOSS or SDK logout');
+});
+test('failed browser cleanup still erases saved tokens and cannot report disconnected',async t=>{
+  const {engine,directory}=await fixture(t);
+  const auth=path.join(directory,'accounts','owner','session','data','auth');
+  await fs.mkdir(auth,{recursive:true});await fs.writeFile(path.join(auth,'session.enc'),'synthetic');
+  engine.browser.clear=async()=>{throw Error('disk busy');};
+  await assert.rejects(()=>engine.disconnect(),/未完全清除/);
+  await assert.rejects(()=>fs.access(auth));
+  assert.equal(engine.state.failure_code,'LOCAL_CLEANUP_FAILED');
+});
+test('expired paired token authorizes cleanup only and is revoked after confirmation',async t=>{
+  const {engine}=await fixture(t);let clears=0,releases=0;
+  engine.browser.clear=async()=>{clears++;};
+  const bridge=new LocalBridge({engine,authorize:async()=>{throw Error('lease expired');},
+    release:async()=>{releases++;},pair:async()=>({expiresAt:Date.now()/1000+60})});
+  await bridge.start(0);t.after(()=>bridge.close());
+  bridge.token='valid-paired-capability';bridge.expiry=Date.now()-1;
+  const headers={Origin:ORIGIN,Authorization:'Bearer '+bridge.token};
+  const base=`http://127.0.0.1:${bridge.port}/api/v1/hr/`;
+  assert.equal((await fetch(base+'jobs',{headers})).status,428);
+  assert.equal((await fetch(base+'login/logout',{method:'POST',headers:{...headers,Authorization:'Bearer other'}})).status,428);
+  const response=await fetch(base+'login/logout',{method:'POST',headers});
+  assert.equal((await response.json()).data.cleared,true);
+  assert.equal(clears,1);assert.equal(releases,1);assert.equal(bridge.token,'');
+  assert.equal((await fetch(base+'login/status',{headers})).status,428);
+});

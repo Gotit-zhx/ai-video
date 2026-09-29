@@ -131,15 +131,21 @@ class Recruiter extends EventEmitter {
     return key;
   }
   async call(operation,extra={}) {
+    const generation=this.generation;
     if(!['sync','clear','tracked','hold'].includes(operation))await this.checkOwner();
+    if(this.disconnecting||generation!==this.generation)throw Error('连接状态已更改，本次操作未执行');
     if(this.busy) throw Error('本机正在处理另一项操作，请稍后再试');
     this.busy=true;this.emit('change',this.snapshot());
-    try {
-      const result=await this.runtime.run({operation,root:this.accountRoot,cdp:this.cdp,...extra});
-      const code=result?.error?.code;
-      if(STOP.has(code)) await this.hold({code});
-      return result;
-    } finally {this.busy=false;this.emit('change',this.snapshot());}
+    const pending=(async()=>{
+      try {
+        const result=await this.runtime.run({operation,root:this.accountRoot,cdp:this.cdp,...extra});
+        const code=result?.error?.code;
+        if(STOP.has(code)) await this.hold({code});
+        return result;
+      } finally {this.busy=false;this.emit('change',this.snapshot());}
+    })();
+    this.inFlight=pending;
+    try{return await pending;}finally{if(this.inFlight===pending)this.inFlight=null;}
   }
   async hold(hold){
     if(this.riskHold?.reason==='REALNAME_LINKED_ACCOUNT'&&!hold.reason)hold={...hold,...this.riskHold};
@@ -151,6 +157,7 @@ class Recruiter extends EventEmitter {
   }
   async start(){
     await this.checkOwner();
+    if(this.disconnecting)throw Error('正在清除本机登录信息，请稍候');
     if(this.state.state==='pending') return this.state;
     if(this.busy) throw Error('当前操作尚未结束，请稍后再连接');
     this.paused=true;
@@ -218,14 +225,40 @@ class Recruiter extends EventEmitter {
     try{await this.checkOwner();await this.call('poll-resumes');}
     catch{this.paused=true;this.event('BACKGROUND_PAUSED');}
   }
+  async clearCredentials(){
+    const accounts=path.join(this.directory,'accounts');
+    const directories=async folder=>{
+      try{return (await fs.readdir(folder,{withFileTypes:true})).filter(item=>item.isDirectory()&&!item.isSymbolicLink());}
+      catch(error){if(error.code==='ENOENT')return [];throw error;}
+    };
+    for(const owner of await directories(accounts)){
+      const ownerPath=path.join(accounts,owner.name);
+      for(const account of await directories(ownerPath)){
+        const data=path.join(ownerPath,account.name,'data');
+        let stat;try{stat=await fs.lstat(data);}catch(error){if(error.code==='ENOENT')continue;throw error;}
+        if(!stat.isDirectory()||stat.isSymbolicLink())throw Error('登录凭据目录异常，未确认清理');
+        // Remove only saved auth material, including old account sessions.
+        // Resume records, risk holds, budgets and audit trails remain intact.
+        await fs.rm(path.join(data,'auth'),{recursive:true,force:true});
+      }
+    }
+  }
   async disconnect(){
+    if(this.disconnecting)return this.disconnecting;
     this.pause();
-    if(this.busy){this.runtime.stop();throw Error('正在停止本机任务，请稍后再断开');}
-    if(this.accountRoot)await this.call('clear');
-    await this.browser.clear();
-    this.state={state:'disconnected',phase:'',error:'',failure_code:''};
-    // Retain risk holds and old records; never invoke BOSS's global logout.
-    await this.save();this.event('DISCONNECTED');
+    const cleanup=(async()=>{
+      if(this.inFlight){this.runtime.stop();await this.inFlight.catch(()=>{});}
+      const results=await Promise.allSettled([this.browser.clear(),this.clearCredentials()]);
+      if(results.some(result=>result.status==='rejected')){
+        this.state={state:'verification_pending',phase:'',error:'本机登录信息尚未完全清除，请重试',failure_code:'LOCAL_CLEANUP_FAILED'};
+        this.event('LOCAL_CLEANUP_FAILED');throw Error(this.state.error);
+      }
+      this.accountRoot='';
+      this.state={state:'disconnected',phase:'',error:'',failure_code:''};
+      await this.save();this.event('DISCONNECTED');
+    })();
+    this.disconnecting=cleanup;
+    try{await cleanup;}finally{if(this.disconnecting===cleanup)this.disconnecting=null;}
   }
   async route(request){
     const url=new URL(request.url);

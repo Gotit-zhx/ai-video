@@ -97,6 +97,7 @@ function menuItems(){
     {label:'重新加载 BOSS 页面',enabled:!!bossView&&!engine.busy,click:()=>perform('reload')},
     {type:'separator'},
     {label:'暂停本机任务',click:()=>perform('pause')},
+    {label:'退出 BOSS 登录',click:()=>perform('logout')},
     {label:'释放浏览器资源',enabled:!engine.busy,click:()=>perform('release')},
     {type:'separator'},{label:'退出助手',click:()=>perform('quit')},
   ];
@@ -116,6 +117,11 @@ async function actionFor(action){
     pageError='';bossView?.webContents.reload();
   }
   else if(action==='pause')engine.pause('USER_PAUSED');
+  else if(action==='logout'){
+    await engine.disconnect();
+    if(bridge){bridge.token='';bridge.expiry=0;}
+    await releaseLease();
+  }
   else if(action==='release')await releaseBrowser();
   else if(action==='quit'){quitting=true;app.quit();}
   else throw Error('不支持的应用操作');
@@ -217,6 +223,12 @@ async function pair(ticket){
   lease=connected;leaseChecked=0;
   engine.event('WORKSPACE_CONNECTED');return connected;
 }
+async function releaseLease(){
+  const previous=lease;lease=null;leaseChecked=0;
+  if(previous&&!selfTest){
+    try{await cloud('release',{token:previous.token,device});}catch{}
+  }
+}
 async function launch(){
   if(!app.requestSingleInstanceLock()){app.quit();return;}
   app.on('second-instance',()=>{orb?.showInactive();});
@@ -280,12 +292,15 @@ async function launch(){
         // The default session is dedicated to BOSS; the Hoyee session is separate.
         await session.defaultSession.clearStorageData();
         await session.defaultSession.clearCache();
+        await session.defaultSession.closeAllConnections();
+        await session.defaultSession.cookies.flushStore();
+        if((await session.defaultSession.cookies.get({})).length)throw Error('浏览器 Cookie 未完全清除');
       },
     }
   });
   await engine.init(await localEndpoint());
   egress.on('stopped',()=>{if(!quitting)engine.pause('DIRECT_NETWORK_UNAVAILABLE');});
-  bridge=new LocalBridge({engine,pair,authorize:authorized});
+  bridge=new LocalBridge({engine,pair,authorize:authorized,release:releaseLease});
   await bridge.start(selfTest?0:17861);
   engine.on('change',publish);
   ipcMain.handle('desktop',async(event,action)=>{

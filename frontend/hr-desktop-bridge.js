@@ -60,7 +60,24 @@
     if(!response.ok||result.success===false)throw Error(result.message||'本机操作未完成');
     return result;
   }
-  window.HeyiHrTransport={connect,request,api,reset(){
+  function reset(){
     saved=null;mode='';sessionStorage.removeItem(storage);
-  }};
+  }
+  async function disconnect({ensureConnection=false}={}){
+    // A manual platform logout may clear this assistant even after its lease
+    // expired. The existing device token authorizes cleanup only, never reads.
+    if(!saved&&mode!=='embedded'){
+      if(!ensureConnection)return {cleared:false,reason:'not-paired'};
+      await connect();
+    }
+    const response=mode==='embedded'
+      ?await fetch('/api/v1/hr/login/logout',timeout({method:'POST',credentials:'same-origin'},25000))
+      :await fetch(base+'/api/v1/hr/login/logout',timeout({method:'POST',credentials:'omit',
+        headers:{Authorization:'Bearer '+saved.token}},25000));
+    const result=await data(response);
+    if(result?.state!=='disconnected'||result?.cleared!==true)throw Error('助手没有确认完整清理，请更新桌面助手后重试');
+    reset();return {cleared:true};
+  }
+  window.HeyiHrTransport={connect,request,api,disconnect,
+    connection:()=>({paired:mode==='embedded'||!!saved&&saved.expiresAt>Date.now()}),reset};
 })();

@@ -7,19 +7,6 @@ const fixtures = require('./fixtures/hr-workspace.json');
 const source = fs.readFileSync(path.join(__dirname,'../hr-workspace.js'),'utf8');
 const flush = async () => { await new Promise(r=>setImmediate(r));await new Promise(r=>setImmediate(r)); };
 
-test('expired and risk-held sessions never automatically start login on page load', async()=>{
-  for(const code of ['AUTH_EXPIRED','AUTH_REQUIRED','ACCOUNT_RISK','RECRUITER_VERIFICATION_PENDING']) {
-    const app=setup({api:async url=>{
-      if(url.endsWith('/login/status'))return {data:{state:'verification_pending',error:'请求已暂停'}};
-      return {data:{ok:false,error:{code,message:'请求已暂停'}}};
-    }});
-    await app.enter('overview');
-    await app.tick(3000);
-    assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0,code);
-    assert.match(app.text(),/请求已暂停/);
-  }
-});
-
 class Node {
   constructor(tag='div') {
     this.tagName=tag;this.children=[];this.events={};this.dataset={};this.attributes={};
@@ -42,7 +29,7 @@ function setup(overrides={}) {
   const links=['overview','jobs','talent','applications','chats','resume'].map(route=>{
     const node=new Node('a');node.dataset.hrRoute=route;return node;
   });
-  const env={document:{getElementById:()=>root,createElement:tag=>new Node(tag),
+  const env={document:{getElementById:()=>root,createElement:tag=>new Node(tag),createElementNS:(_ns,tag)=>new Node(tag),
     querySelectorAll:()=>links},currentUser:{platformAdmin:true,username:'13800000000'},
     activeWorkspace:'hr',location:{pathname:'/',search:'',hash:''},
     history:{pushState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));},
@@ -59,145 +46,70 @@ function setup(overrides={}) {
       const key=url.split('/hr/')[1].split(/[/?]/)[0];
       return {data:structuredClone(fixtures[key==='candidates'?'recommendations':key])};
     }};
+  if(overrides.transport)env.HeyiHrTransport={api:env.api,...overrides.transport};
   env.window=env;vm.createContext(env);vm.runInContext(source,env);
-  const visible=()=>all(root).filter(n=>!n.hidden);
+  const visible=()=>{const visit=node=>node.hidden?[]:[node,...node.children.flatMap(visit)];return visit(root);};
   const click=async(text)=>{const node=visible().find(n=>n.tagName==='button'&&n.textContent===text);
     assert.ok(node,'button exists: '+text);await node.click();await flush();};
-  const text=()=>root.children.filter(n=>!n.hidden).map(n=>n.textContent).join('\n');
+  const text=()=>visible().map(n=>n._text).join('\n');
   const enter=async route=>{env.HrWorkspace.enter(route);await flush();};
   const tick=async(ms)=>{for(const timer of [...timers.values()])if(timer.ms===ms)await timer.fn();await flush();};
   return {root,env,calls,click,text,enter,visible,timers,tick};
 }
 
-test('reloading during phone confirmation resumes polling and opens jobs after login',async()=>{
-  let state='pending',phase='scanned',failOnce=false;
-  const app=setup({api:async url=>{
-    if(url.endsWith('/login/status')){
-      if(failOnce){failOnce=false;throw Error('network unavailable');}
-      return {data:{state,phase}};
-    }
-    if(url.endsWith('/status'))return {data:{ok:false,error:{code:'LOGIN_PENDING'}}};
-    return {data:fixtures.jobs};
-  }});
-  await app.enter('overview');
-  const progress=all(app.root).find(n=>n.className==='hr-login-progress');
-  const success=all(app.root).find(n=>n.className.includes('hr-login-success'));
-  assert.equal(progress.hidden,false);
-  assert.equal(progress.dataset.phase,'scanned');
-  assert.equal(success.hidden,true);
-  assert.match(app.text(),/如果已确认，正在等待 BOSS 返回登录结果/);
-  assert.doesNotMatch(app.text(),/错误代码：LOGIN_PENDING/);
-  assert.equal([...app.timers.values()].filter(t=>t.ms===3000).length,2);
-  failOnce=true;
-  await app.tick(3000);
-  assert.match(app.text(),/正在重新读取登录状态/);
-  assert.equal(progress.dataset.phase,'reconnecting');
-  phase='verifying';
-  await app.tick(3000);
-  assert.equal(progress.dataset.phase,'verifying');
-  assert.equal(success.hidden,true,'phone confirmation is not a verified login yet');
-  assert.equal([...app.timers.values()].filter(t=>t.ms===3000).length,1);
-  state='complete';
-  await app.tick(3000);
-  assert.equal(app.env.location.hash,'#hr-jobs');
-  assert.match(app.text(),/15–25K/);
-  assert.equal(progress.hidden,true);
-  assert.equal(success.hidden,false);
-  assert.match(success.textContent,/登录成功/);
+test('overview has useful entry points and no webpage QR or QR requests',async()=>{
+  const app=setup({api:async()=>({data:{state:'pending',phase:'qr'}})});
+  await app.enter('overview');await app.tick(3000);
+  assert.equal(all(app.root).filter(n=>n.tagName==='img').length,0);
+  assert.match(app.text(),/职位管理/);assert.match(app.text(),/人才寻源/);
+  assert.match(app.text(),/在桌面助手完成登录/);
+  assert.doesNotMatch(app.text(),/刷新二维码|清除会话并重新扫码/);
+  assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')));
+  assert.equal(app.timers.size,1);
+});
+test('unpaired overview is quiet; explicit pair does not automatically login',async()=>{
+  let pairs=0;
+  const app=setup({transport:{connection:()=>({paired:false}),connect:async()=>{pairs++;}},
+    api:async()=>({data:{state:'idle'}})});
+  await app.enter('overview');assert.equal(app.calls.length,0);
+  await app.click('连接本机助手');assert.equal(pairs,1);
+  assert.match(app.text(),/在桌面助手中登录 BOSS/);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  await app.click('在助手中登录 BOSS');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/login/start')).length,1);
 });
-
-test('phone confirmation updates loading state before the CLI finishes synchronizing',async()=>{
-  let phase='scanned';
-  const app=setup({api:async url=>({data:url.endsWith('/login/status')
-    ? {state:'pending',phase} : {ok:false,error:{code:'LOGIN_PENDING'}}}),
-    fetch:async()=>{
-      phase='verifying';
-      return {status:202,json:async()=>({data:{phase}})};
-    }});
+test('phone confirmation uses one status poll and stays in the overview when ready',async()=>{
+  let state='pending',phase='scanned';
+  const app=setup({api:async url=>({data:url.endsWith('/login/status')?{state,phase}:fixtures.jobs})});
   await app.enter('overview');
-  await app.tick(3000);
   const progress=all(app.root).find(n=>n.className==='hr-login-progress');
-  assert.equal(progress.hidden,false);
-  assert.equal(progress.dataset.phase,'verifying');
-  assert.match(progress.textContent,/正在确认登录/);
-  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
-  assert.equal(all(app.root).find(n=>n.className.includes('hr-login-success')).hidden,true);
-  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  assert.equal(progress.dataset.phase,'scanned');assert.equal(app.timers.size,1);
+  phase='verifying';await app.tick(3000);assert.equal(progress.dataset.phase,'verifying');
+  phase='scanned';await app.tick(3000);assert.equal(progress.dataset.phase,'verifying');
+  state='complete';await app.tick(3000);
+  assert.equal(progress.hidden,true);assert.equal(app.timers.size,0);
+  assert.match(app.text(),/招聘账号已就绪/);assert.equal(app.env.location.hash,'');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/jobs')).length,0);
+  await app.click('查看我的职位');assert.equal(app.env.location.hash,'#hr-jobs');
 });
-
-test('a late QR image cannot replace the scanned loading state',async()=>{
-  let phase='qr',resolveQr;
-  const reply=new Promise(resolve=>{resolveQr=resolve;});
-  const app=setup({api:async url=>({data:url.endsWith('/login/status')
-    ? {state:'pending',phase} : {ok:false,error:{code:'LOGIN_PENDING'}}}),
-    fetch:()=>reply});
-  await app.enter('overview');
-  phase='scanned';
-  await app.tick(3000);
-  resolveQr({ok:true,status:200,blob:async()=>new Blob(['synthetic'],{type:'image/png'})});
-  await flush();
-  const progress=all(app.root).find(n=>n.className==='hr-login-progress');
-  assert.equal(progress.hidden,false);
-  assert.equal(progress.dataset.phase,'scanned');
-  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
-});
-
-test('a stale scanned status cannot roll verification back or restart QR reads',async()=>{
-  let reads=0;
-  const app=setup({api:async url=>({data:url.endsWith('/login/status')
-    ? {state:'pending',phase:'scanned'} : {ok:false,error:{code:'LOGIN_PENDING'}}}),
-    fetch:async()=>{
-      reads++;
-      return reads===1 ? {status:202,json:async()=>({data:{phase:'verifying'}})}
-        : {ok:false,status:503};
-    }});
-  await app.enter('overview');
-  await app.tick(3000);
-  await app.tick(3000);
-  const progress=all(app.root).find(n=>n.className==='hr-login-progress');
-  assert.equal(progress.dataset.phase,'verifying');
-  assert.equal(reads,1);
-  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
-});
-
-test('an official PC restriction stops automatic polling but permits a manual scan',async()=>{
-  let restricted=false;
-  const app=setup({api:async url=>({data:url.endsWith('/login/status')
-    ? restricted
-      ? {state:'verification_pending',failure_code:'PC_LOGIN_RESTRICTED',retry_allowed:false,
-        error:'BOSS 暂时关闭电脑端登录权限。预计恢复时间：2026-09-29 13:44:43'}
-      : {state:'pending',phase:'scanned'}
-    : {ok:false,error:{code:'LOGIN_PENDING'}}}),
-    fetch:async()=>{
-      restricted=true;
-      return {status:409,ok:false};
-    }});
-  await app.enter('overview');
-  await app.tick(3000);
-  const progress=all(app.root).find(n=>n.className==='hr-login-progress');
-  assert.equal(progress.hidden,true);
-  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
+test('unreachable assistant stops its spinner after bounded local status failures',async()=>{
+  let failed=false;
+  const app=setup({api:async()=>{if(failed)throw Error('助手已断开');return {data:{state:'pending',phase:'scanned'}};}});
+  await app.enter('overview');failed=true;
+  await app.tick(3000);await app.tick(3000);await app.tick(3000);
   assert.equal(app.timers.size,0);
-  const button=all(app.root).find(n=>n.textContent==='重新扫码');
-  assert.equal(button.disabled,false);
-  assert.match(app.text(),/2026-09-29 13:44:43/);
-  assert.equal(all(app.root).find(n=>n.textContent==='清除会话并重新扫码').hidden,true);
+  assert.equal(all(app.root).find(n=>n.className==='hr-login-progress').hidden,true);
+  assert.match(app.text(),/助手已断开/);assert.match(app.text(),/助手未连接/);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
-  await app.click('重新扫码');
-  assert.equal(app.calls.filter(c=>c.url.endsWith('/login/start')&&c.options?.method==='POST').length,1);
 });
-
-test('passing the estimated reopening time permits only an explicit attempt',async()=>{
-  const app=setup({api:async url=>({data:url.endsWith('/login/status')
-    ? {state:'verification_pending',failure_code:'PC_LOGIN_RESTRICTED',retry_allowed:true,
-      error:'预计恢复时间已到，仍需确认官方是否解除限制。'}
-    : {ok:false,error:{code:'RECRUITER_VERIFICATION_PENDING'}}})});
-  await app.enter('overview');
-  const button=all(app.root).find(n=>n.textContent==='重新扫码');
-  assert.equal(button.disabled,false);
+test('risk-held sessions show the exact error and never trigger automatic login',async()=>{
+  const app=setup({api:async()=>({data:{state:'verification_pending',failure_code:'PC_LOGIN_RESTRICTED',
+    error:'电脑端受限，预计恢复时间：2026-09-29 13:44:43'}})});
+  await app.enter('overview');await app.tick(3000);
+  assert.match(app.text(),/2026-09-29 13:44:43/);assert.equal(app.timers.size,0);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
-  assert.equal(app.timers.size,0);
+  await app.click('在助手中登录 BOSS');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
 });
 
 test('jobs render business fields and job action passes encrypted ID automatically',async()=>{
@@ -453,74 +365,34 @@ test('position options finish before a candidate query uses the serialized conne
   assert.equal(app.calls.filter(c=>c.url.includes('/applications')).length,1);
 });
 
-test('explicit clear-and-scan starts exactly one QR flow after local cleanup',async()=>{
-  let state='verification_pending';
-  const app=setup({api:async(url,options)=>{
-    if(url.endsWith('/login/logout')) {state='disconnected';return {data:{state}};}
-    if(url.endsWith('/login/start')) {state='pending';return {data:{state}};}
-    if(url.endsWith('/login/status'))return {data:{state,phase:'verifying',error:'当前会话已过期'}};
-    return {data:{ok:false,error:{code:'RECRUITER_VERIFICATION_PENDING'}}};
-  }});
-  await app.enter('overview');
-  await app.click('清除会话并重新扫码');
-  assert.deepEqual(app.calls.filter(c=>c.options?.method==='POST').map(c=>c.url),
-    ['/api/v1/hr/login/logout','/api/v1/hr/login/start']);
-  assert.match(app.text(),/验证招聘方账号/);
-  assert.equal(all(app.root).find(n=>n.tagName==='button'&&n.textContent==='清除会话并重新扫码').hidden,true);
-});
-
-test('ordinary disconnect never restarts QR and stays disconnected on refresh',async()=>{
+test('explicit BOSS logout confirms cleanup without restarting login',async()=>{
   let disconnected=false;
   const app=setup({api:async(url,options)=>{
-    if(url.endsWith('/login/logout')) {disconnected=true;return {data:{state:'disconnected'}};}
-    if(url.endsWith('/login/status'))return {data:{state:disconnected?'disconnected':'complete'}};
-    return {data:disconnected?{ok:false,error:{code:'SESSION_DISCONNECTED'}}:fixtures.status};
+    if(url.endsWith('/login/logout')){disconnected=true;return {success:true,data:{state:'disconnected'}};}
+    return {data:{state:disconnected?'disconnected':'complete'}};
   }});
+  await app.enter('overview');await app.click('退出 BOSS 登录');
+  assert.match(app.text(),/Cookie 和保存的登录凭据已清除/);
   await app.enter('overview');
-  await app.click('断开本机连接');
-  assert.match(app.text(),/本机连接已断开/);
-  await app.enter('overview');
-  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
-  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
+  assert.deepEqual(app.calls.filter(c=>c.options?.method==='POST').map(c=>c.url),['/api/v1/hr/login/logout']);
 });
-
-test('disconnected page reload stays idle until an explicit connect click',async()=>{
-  let started=false;
-  const app=setup({api:async url=>{
-    if(url.endsWith('/login/start')) {started=true;return {data:{state:'pending'}};}
-    if(url.endsWith('/login/status'))return {data:{state:started?'pending':'disconnected',phase:'verifying'}};
-    return {data:{ok:false,error:{code:'SESSION_DISCONNECTED'}}};
-  }});
-  await app.enter('overview');
-  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
-  await app.click('扫码连接招聘账号');
-  assert.deepEqual(app.calls.filter(c=>c.options?.method==='POST').map(c=>c.url),
-    ['/api/v1/hr/login/start']);
+test('unconfirmed cleanup never claims cookies were removed',async()=>{
+  const app=setup({api:async url=>url.endsWith('/login/logout')?{success:true,data:{}}:{data:{state:'complete'}}});
+  await app.enter('overview');await app.click('退出 BOSS 登录');
+  assert.match(app.text(),/未确认 Cookie 已清除/);
+  assert.doesNotMatch(app.text(),/保存的登录凭据已清除/);
 });
-
-test('reset rejects double clicks and ignores an old login status response',async()=>{
-  let readCount=0,lateStatus,finishLogout;
+test('logout locks repeated clicks and discards a late login response',async()=>{
+  let reads=0,late,finish;
   const app=setup({api:url=>{
-    if(url.endsWith('/login/status')){
-      if(++readCount===1)return Promise.resolve({data:{state:'verification_pending'}});
-      return new Promise(resolve=>lateStatus=resolve);
-    }
-    if(url.endsWith('/login/logout'))return new Promise(resolve=>finishLogout=resolve);
-    if(url.endsWith('/login/start'))return Promise.resolve({data:{state:'pending'}});
-    return Promise.resolve({data:{ok:false,error:{code:'RECRUITER_VERIFICATION_PENDING'}}});
+    if(url.endsWith('/login/status'))return ++reads===1?Promise.resolve({data:{state:'complete'}}):new Promise(r=>{late=r;});
+    if(url.endsWith('/login/logout'))return new Promise(r=>{finish=r;});
   }});
-  await app.enter('overview');
-  await app.enter('overview');
-  const disconnect=app.visible().find(n=>n.tagName==='button'&&n.textContent==='清除会话并重新扫码');
-  const first=disconnect.click();
-  disconnect.click();
-  finishLogout({data:{state:'disconnected'}});
-  await first;
-  lateStatus({data:{state:'verification_pending',error:'old response'}});
-  await flush();
-  assert.match(app.text(),/正在生成登录二维码/);
-  assert.doesNotMatch(app.text(),/old response/);
-  assert.deepEqual(app.calls.filter(c=>c.options?.method==='POST').map(c=>c.url),
-    ['/api/v1/hr/login/logout','/api/v1/hr/login/start']);
-  assert.equal(all(app.root).find(n=>n.className==='hr-qr').hidden,true);
+  await app.enter('overview');app.env.HrWorkspace.enter('overview');await flush();
+  const button=app.visible().find(n=>n.tagName==='button'&&n.textContent==='退出 BOSS 登录');
+  const pending=button.click();button.click();
+  finish({success:true,data:{state:'disconnected'}});await pending;
+  late({data:{state:'complete'}});await flush();
+  assert.match(app.text(),/保存的登录凭据已清除/);assert.doesNotMatch(app.text(),/招聘账号已就绪/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
 });
