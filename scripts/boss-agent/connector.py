@@ -267,16 +267,26 @@ def reconcile_resume_request(envelope, friend_id, baseline):
                                         item.get("to") or {}, item.get("body") or {})
         if not all(isinstance(value, dict) for value in (sender, recipient, body)):
             continue
+        # Newer official chat renders the request as "简历请求已发送".
+        # The persisted event is a resume-exchange action, not a text message.
+        # Require its exact business/action types; a generic system notice or
+        # a candidate saying they sent a resume cannot confirm our write.
+        action = body.get("action")
+        resume_action = (item.get("bizType") == 21050025 and body.get("type") == 4
+                         and isinstance(action, dict) and action.get("aid") == 37)
+        resume_text = body.get("type") == 1 and body.get("text") == "方便发一份简历过来吗？"
         # BOSS can label both endpoints source=0; UID direction is authoritative.
         if (not mid.isdecimal() or int(mid) <= baseline
                 or not str(sender.get("uid", "")).isdecimal()
                 or str(sender.get("uid")) == friend_id or str(recipient.get("uid")) != friend_id
-                or body.get("type") != 1 or body.get("text") != "方便发一份简历过来吗？"):
+                or not (resume_action or resume_text)):
             continue
         timestamp = item.get("time")
-        if not isinstance(timestamp, (int, float)) or timestamp <= 0:
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or timestamp <= 0:
             continue
         confirmed_at = int(timestamp / 1000 if timestamp >= 1e12 else timestamp)
+        if confirmed_at > time.time() + 60:
+            continue
         with resume_db() as connection:
             updated = connection.execute(
                 "UPDATE resume_requests SET confirmed_at=?, requested_at=?, "

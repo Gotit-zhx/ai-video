@@ -782,6 +782,43 @@ class ConnectorTest(unittest.TestCase):
         self.assertEqual(1790567780, record["confirmed_at"])
         self.assertEqual(1790567780, record["requested_at"])
 
+    def test_official_resume_action_confirms_ambiguous_write_without_resending(self):
+        before = {"ok": True, "data": {"messages": [{"mid": 10}]}}
+        # Structural fixture from the official 2026-09 chat: the request is
+        # action 37 / bizType 21050025, without the legacy expected text.
+        delivered = {"ok": True, "data": {"messages": [
+            {"mid": 11, "bizType": 21050025, "from": {"uid": 98765, "source": 0},
+             "to": {"uid": 12345, "source": 0}, "time": 1790567780586,
+             "body": {"type": 4, "action": {"aid": 37, "extend": "{}"}}}]}}
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "prepare_recruiter_chat"), \
+             mock.patch.object(connector, "cli_json", side_effect=[
+                 before, {"ok": False, "error": {"code": "UNKNOWN"}}, delivered]) as cli:
+            result = connector.request_resume("12345")
+            self.assertEqual("waiting", result["state"])
+            self.assertEqual(1790567780, result["confirmed_at"])
+            with self.assertRaisesRegex(ValueError, "避免重复索取"):
+                connector.request_resume("12345")
+            self.assertEqual(1, sum(call.args[1] == "request-resume" for call in cli.call_args_list))
+
+    def test_resume_action_confirmation_rejects_other_exchange_and_wrong_direction(self):
+        base = {"mid": 11, "bizType": 21050025, "from": {"uid": 98765},
+                "to": {"uid": 12345}, "time": 1790567780586,
+                "body": {"type": 4, "action": {"aid": 37}}}
+        with connector.resume_db() as connection:
+            connection.execute("INSERT INTO resume_requests "
+                               "(friend_id,requested_at,baseline_mid,state,updated_at) "
+                               "VALUES ('12345',1790567785,10,'uncertain',1790567785)")
+        for change in ({"mid": 10}, {"from": {"uid": 12345}}, {"to": {"uid": 54321}},
+                       {"bizType": 21050070}, {"body": {"type": 4, "action": {"aid": 36}}},
+                       {"body": {"type": 4, "action": None}},
+                       {"body": {"type": 1, "text": "简历请求已发送"}},
+                       {"time": True}, {"time": connector.time.time() + 3600}):
+            with self.subTest(change=change):
+                history = {"ok": True, "data": {"messages": [{**base, **change}]}}
+                self.assertFalse(connector.reconcile_resume_request(history, "12345", 10))
+                self.assertEqual("uncertain", connector.tracked_resumes()[0]["state"])
+
     def test_reconciliation_rejects_old_incoming_other_recipient_and_unrelated_messages(self):
         base = {"mid": 11, "from": {"uid": 98765}, "to": {"uid": 12345}, "time": 1790567780586,
                 "body": {"type": 1, "text": "方便发一份简历过来吗？"}}

@@ -344,6 +344,8 @@ def execute(c, root, request):
                             state = ('requested' if saved['state'] in ('waiting', 'received')
                                      else 'request_uncertain' if saved['state'] == 'uncertain' else 'request_failed')
                             db.execute('UPDATE people SET state=? WHERE friend=?', (state, person['friend']))
+                            if state == 'requested':
+                                event(db, 'RESUME_REQUESTED', json.loads(person['body']))
             exports = [dict(row) for row in db.execute("SELECT * FROM people WHERE state='export' ORDER BY updated LIMIT 1")]
             reports = [dict(row) for row in db.execute("SELECT * FROM commands WHERE reported=0 ORDER BY rowid LIMIT 1")]
             events = [json.loads(row['body']) for row in db.execute('SELECT body FROM events WHERE reported=0 ORDER BY rowid LIMIT 10')]

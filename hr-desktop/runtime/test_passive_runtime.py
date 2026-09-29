@@ -219,7 +219,11 @@ class WorkflowTest(unittest.TestCase):
     def test_interrupted_request_recovers_only_local_ledger_and_never_resends(self):
         self.pending('request_uncertain')
         with self.c.resume_db() as db:db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
-        self.runop('passive-local');self.assertEqual(self.state(),'requested')
+        result=self.runop('passive-local');self.assertEqual(self.state(),'requested')
+        events=result['data']['events']
+        self.assertEqual([e['code'] for e in events],['RESUME_REQUESTED'])
+        self.runop('passive-ack',eventId=events[0]['id'])
+        self.assertFalse(self.runop('passive-local')['data']['events'])
         self.c.request_resume.assert_not_called();self.c.cli_json.assert_not_called()
 
 if __name__=='__main__':unittest.main()
