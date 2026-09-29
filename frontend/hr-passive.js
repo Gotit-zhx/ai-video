@@ -5,6 +5,14 @@
   };
   const sendStates={queued:'等待助手发送',sending:'发送中',sent:'已发送',uncertain:'结果待核对，请查看 BOSS 会话',failed:'发送未完成',cancelled:'已取消发送'};
   const statuses={pending:'待审批',approved:'已通过',rejected:'未通过'};
+  const phases={watching:'正在等待新消息',reply_queued:'已发现主动消息，等待话术回复',
+    request_queued:'已回复，等待索取简历',receiving:'已索取，等待接收简历',
+    template_required:'请在话术管理中配置默认被动邀约回复',chat_required:'正在准备 BOSS 沟通页面',
+    budget_wait:'本轮请求额度已用完，稍后继续',send_wait:'正在按发送间隔排队',
+    needs_review:'有发送结果待核对，请查看 BOSS 会话',disabled:'被动邀约已关闭'};
+  const eventLabels={INCOMING_DETECTED:'收到主动消息',AUTO_REPLY_SENT:'话术回复已发送',
+    AUTO_REPLY_UNCERTAIN:'话术回复结果待核对',RESUME_REQUESTED:'已索取简历',
+    RESUME_REQUEST_UNCERTAIN:'索取结果待核对',RESUME_RECEIVED:'已收到简历'};
   globalThis.createHrPassive=({root,section,element:el,button,allowed,navigate,hrApi})=>{
     let active='',generation=0,items=[],page=1,filter='',selected=null,timer=null;
     const speechPanel=section('speeches'),resumePanel=section('resume-pool');
@@ -13,7 +21,7 @@
       el('h2',title,intro);el('p',subtitle,intro,'hr-hint');
       return el('div','',head,'hr-actions');
     };
-    const speechActions=toolbar(speechPanel,'话术管理','统一维护沟通话术。点击简历“不通过”后，自动发送已配置的默认婉拒话术。');
+    const speechActions=toolbar(speechPanel,'话术管理','配置被动邀约的首次回复与审批后的婉拒话术。自动回复确认成功后，才会继续索取简历。');
     button('刷新',speechActions,load);
     button('新建话术',speechActions,()=>editSpeech()).className='hr-primary';
     const speechFeedback=el('p','',speechPanel,'hr-hint'),speechRows=el('div','',speechPanel,'hr-result');
@@ -31,12 +39,12 @@
     }
     const name=field(fields,'名称');name.required=true;name.maxLength=80;
     const kind=field(fields,'用途','select');
-    for(const [value,label] of [['reject','婉拒'],['invite','邀约'],['general','其他沟通']])el('option',label,kind).value=value;
+    for(const [value,label] of [['passive_reply','被动邀约回复'],['reject','婉拒'],['invite','面试邀约'],['general','其他沟通']])el('option',label,kind).value=value;
     const content=field(speechForm,'话术正文','textarea');content.required=true;content.maxLength=1000;content.rows=7;
-    el('p','支持 {姓名}、{职位}。索取简历使用 BOSS 官方“索取简历”操作，不额外发送自定义消息。',speechForm,'hr-hint');
+    el('p','支持 {姓名}、{职位}。被动邀约先发送默认回复话术，成功后再使用 BOSS 官方“索取简历”操作。',speechForm,'hr-hint');
     const enabled=field(speechForm,'启用');enabled.type='checkbox';
-    const isDefault=field(speechForm,'设为默认婉拒话术');isDefault.type='checkbox';
-    kind.onchange=()=>{isDefault.disabled=kind.value!=='reject';if(isDefault.disabled)isDefault.checked=false;};
+    const isDefault=field(speechForm,'设为该用途的默认话术');isDefault.type='checkbox';
+    kind.onchange=()=>{isDefault.disabled=!['reject','passive_reply'].includes(kind.value);if(isDefault.disabled)isDefault.checked=false;};
     const speechError=el('p','',speechForm,'hr-error');speechError.setAttribute('role','alert');
     const editActions=el('div','',speechForm,'hr-actions');
     button('取消',editActions,()=>speechDialog.close());
@@ -44,7 +52,7 @@
     let editing=null,saving=false;
     function editSpeech(row={}){
       editing=row;speechTitle.textContent=row.id?'编辑话术':'新建话术';
-      name.value=row.name||'';kind.value=row.kind||'reject';content.value=row.content||'';
+      name.value=row.name||'';kind.value=row.kind||'passive_reply';content.value=row.content||'';
       enabled.checked=row.active!==false;isDefault.checked=!!row.isDefault;kind.onchange();
       speechError.textContent='';speechDialog.showModal();
     }
@@ -71,13 +79,13 @@
         const data=await request(mode==='speeches'?'speeches':`resume-pool?page=${page}&status=${filter}`);
         if(ticket!==generation||mode!==active||!allowed())return;
         items=data.items||[];box.replaceChildren();feedback.textContent=`共 ${data.total??items.length} 条`;
-        if(!items.length)el('p',mode==='speeches'?'还没有话术，请先配置默认婉拒话术。':'暂无简历。启用职位的被动邀约后，收到的简历会在这里归档。',box,'hr-pool-empty');
+        if(!items.length)el('p',mode==='speeches'?'还没有话术，请配置默认被动邀约回复和默认婉拒话术。':'暂无简历。启用职位的被动邀约后，收到的简历会在这里归档。',box,'hr-pool-empty');
         const grid=el('div','',box,'hr-card-grid');
         for(const row of items){
           const card=el('article','',grid,'hr-person-card'),head=el('div','',card,'hr-card-heading');
           el('h3',row.name||'姓名待补充',head);
           if(mode==='speeches'){
-            el('span',row.isDefault?'默认婉拒':row.active?'启用':'停用',head,'hr-badge');
+            el('span',row.isDefault?(row.kind==='passive_reply'?'默认被动回复':'默认婉拒'):row.active?'启用':'停用',head,'hr-badge');
             el('p',row.content,card,'hr-prose');
             button('编辑话术',el('div','',card,'hr-actions'),()=>editSpeech(row));
           }else{
@@ -93,6 +101,13 @@
           button('上一页',pages,()=>{page--;load();}).disabled=data.page<=1;
           el('span',`${data.page} / ${data.pages}`,pages);
           button('下一页',pages,()=>{page++;load();}).disabled=data.page>=data.pages;
+        }
+        if(mode==='resume-pool'&&data.events?.length){
+          el('h3','被动邀约记录',box);
+          for(const event of data.events){
+            const label=eventLabels[event.code];if(!label)continue;
+            el('p',[event.name,event.jobName,label,new Date(event.createdAt).toLocaleString()].filter(Boolean).join(' · '),box,'hr-hint');
+          }
         }
       }catch(error){if(ticket===generation)feedback.textContent=error.message;}
     }
@@ -190,6 +205,26 @@
       input.type='checkbox';input.disabled=true;el('span','被动邀约',wrap);
       const note=el('p','正在读取配置…',card,'hr-hint');
       let accountKey='',rule;
+      const updateNote=status=>{
+        if(!rule?.enabled){note.textContent='默认关闭。开启后，主动消息触发默认话术回复，再索取简历。';return;}
+        if(status.data.state!=='complete'||status.data.paused){note.textContent='助手未连接，自动邀约暂停';return;}
+        const flow=status.data.passive||{},counts=flow.counts?.[rule.id]||{};
+        const totals=[['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],['stored','已入池'],
+          ['reply_uncertain','回复待核对'],['request_uncertain','索取待核对'],['request_failed','索取未完成']]
+          .filter(([key])=>counts[key]).map(([key,label])=>`${label} ${counts[key]}`);
+        note.textContent=[phases[flow.phase]||'已开启，等待助手检查',...totals].join(' · ');
+      };
+      const refreshStatus=async()=>{
+        if(!allowed()||!card.isConnected)return;
+        try{
+          const status=await hrApi('/api/v1/hr/login/status');
+          if(status.data.accountKey&&status.data.accountKey!==accountKey){
+            input.disabled=true;note.textContent='招聘账号已变化，请刷新职位配置';return;
+          }
+          updateNote(status);
+        }catch{note.textContent='正在等待助手恢复连接';}
+        if(allowed()&&card.isConnected)setTimeout(refreshStatus,30000);
+      };
       try{
         const [status,data]=await Promise.all([hrApi('/api/v1/hr/login/status'),request('passive')]);
         if(!allowed()||!card.isConnected)return;
@@ -200,7 +235,8 @@
         const id=String(row.encryptJobId||row.encJobId||row.job_id||row.jobId||row.id||'');
         rule=data.items.find(item=>item.jobId===id&&item.accountKey===accountKey);
         input.checked=rule?.enabled===true;input.disabled=false;
-        note.textContent='默认关闭。开启后，仅在 HR 回复后索取简历。';
+        updateNote(status);
+        setTimeout(refreshStatus,30000);
         input.onchange=async()=>{
           input.disabled=true;const desired=input.checked;
           try{
@@ -208,7 +244,7 @@
               jobName:String(row.jobName||row.name||row.title||''),description:String(row.description||row.jobDescription||''),
               education:String(row.degreeName||row.degreeDesc||row.education||''),experience:String(row.experienceName||row.experience||row.workYearDesc||''),
               projectId:rule?.projectId||''});
-            if(allowed()&&card.isConnected){input.checked=rule.enabled;note.textContent=rule.enabled?'已开启：新的 HR 回复触发索取，历史回复不补发。':'已关闭新的自动索取，已索取的简历继续接收。';}
+            if(allowed()&&card.isConnected){input.checked=rule.enabled;note.textContent=rule.enabled?'已开启：新主动消息触发默认话术回复，成功后索取简历。':'已关闭新的自动回复与索取，已索取的简历继续接收。';}
           }catch(error){if(allowed()&&card.isConnected){input.checked=!desired;note.textContent=error.message;}}
           finally{input.disabled=false;}
         };

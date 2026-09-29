@@ -32,6 +32,46 @@ test('disconnect during passive config fetch cannot claim or send a rejection',a
   };
   await engine.poll();assert.equal(calls.some(call=>call.operation==='passive-send'),false);
 });
+test('passive reply template and durable events reach the right account; status remains local',async t=>{
+  const {engine,calls,directory}=await fixture(t);
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
+  const sent=[],template={id:'s1',version:2,content:'可以沟通下'};
+  engine.passiveCloud=async(route,body)=>{
+    sent.push({route,body});
+    if(route==='passive-config')return {rules:[{id:'r1',enabled:true}],replyTemplate:template,commands:[]};
+    return {};
+  };
+  engine.runtime.run=async input=>{
+    calls.push(input);
+    return input.operation==='passive-local'
+      ?{ok:true,data:{events:[{id:'e1',code:'AUTO_REPLY_SENT'}]}}
+      :{ok:true,data:{phase:'request_queued',counts:{r1:{ready:1}}}};
+  };
+  await engine.poll();
+  assert.equal(sent.find(c=>c.route==='passive-report').body.accountKey,'a'.repeat(64));
+  assert.equal(calls.find(c=>c.operation==='passive-ack').eventId,'e1');
+  assert.deepEqual(calls.find(c=>c.operation==='passive-step').replyTemplate,template);
+  const previous=calls.length;
+  const status=await (await engine.route(new Request(ORIGIN+'/api/v1/hr/login/status'))).json();
+  assert.equal(status.data.passive.phase,'request_queued');
+  assert.equal(calls.length,previous,'status must not query BOSS');
+});
+test('chat preparation occurs only for ready opted-in work and never after pause',async t=>{
+  const {engine,directory}=await fixture(t);
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
+  engine.passiveCloud=async()=>({rules:[{id:'r1',enabled:true}]});
+  let navigations=0;
+  engine.browser.chat=async()=>{navigations++;};
+  engine.runtime.run=async input=>input.operation==='passive-step'
+    ?{ok:true,data:{phase:'chat_required',needsChat:true}}:{ok:true,data:{}};
+  await engine.poll();await engine.poll();assert.equal(navigations,1);
+  engine.chatPreparedAt=0;
+  engine.runtime.run=async input=>{
+    if(input.operation==='passive-step')engine.pause();
+    return {ok:true,data:{needsChat:true}};
+  };
+  await engine.poll();assert.equal(navigations,1);
+});
 async function fixture(t){
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'heyi-desktop-unit-'));
   const calls=[];

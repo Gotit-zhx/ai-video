@@ -1,18 +1,21 @@
-"""Publish the verified 0.1.5 installers without restarting any service or BOSS session."""
+"""Publish verified installers without restarting any service or BOSS session."""
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 
 root = Path(sys.argv[1]).resolve()
+version = sys.argv[2] if len(sys.argv) > 2 else '0.1.5'
+assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'Invalid version'
 downloads = Path("/opt/heyi/shared/hr-desktop-downloads")
 manifest = json.loads((root / "artifacts/heyi-passive-artifacts.json").read_text())
 sources = {
-    "Heyi-Recruiter-mac-arm64.dmg": "Heyi-Recruiter-0.1.5-mac-arm64.dmg",
-    "Heyi-Recruiter-windows-x64-Setup.exe": "Heyi-Recruiter-0.1.5-windows-x64-Setup.exe",
+    "Heyi-Recruiter-mac-arm64.dmg": f"Heyi-Recruiter-{version}-mac-arm64.dmg",
+    "Heyi-Recruiter-windows-x64-Setup.exe": f"Heyi-Recruiter-{version}-windows-x64-Setup.exe",
 }
 assert set(manifest) == set(sources)
 assert (root / "activation.json").exists(), "Publish matching platform features first"
@@ -69,5 +72,5 @@ except BaseException:
     shutil.copy2(backup / "checksums.json", downloads / "checksums.json")
     raise
 (root / "installers-activation.json").write_text(json.dumps({
-    "version": "0.1.5", "artifacts": manifest, "preservedProcesses": before}, indent=2))
-print("Mac and Windows 0.1.5 installers published; hashes and download headers verified; no service restart")
+    "version": version, "artifacts": manifest, "preservedProcesses": before}, indent=2))
+print(f"Mac and Windows {version} installers published; hashes and download headers verified; no service restart")

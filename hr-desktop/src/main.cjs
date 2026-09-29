@@ -304,6 +304,13 @@ async function launch(){
     },
     browser:{
       open:openBoss,
+      chat:async()=>{
+        const view=createBoss(),url=new URL(view.webContents.getURL()||'about:blank');
+        if(url.hostname==='www.zhipin.com'&&url.pathname.replace(/\/$/,'')==='/web/chat/index')return;
+        // One official navigation when an opted-in conversation needs the chat
+        // action. Reuse this account's view; never reload or create a login.
+        await view.webContents.loadURL('https://www.zhipin.com/web/chat/index');
+      },
       inspect:inspectBoss,qr,
       refresh:async()=>{createBoss().webContents.reload();},
       connected:publish,

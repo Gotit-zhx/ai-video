@@ -17,12 +17,46 @@ class WorkflowTest(unittest.TestCase):
         self.c.held_code.return_value=''
         self.c.DISCONNECTED=self.root/'disconnected'
         self.c.RESUME_AUTO_PAUSE=self.root/'pause'
+        self.c.passive_delay=lambda:0
+        self.c.resume_messages=lambda result:result.get('data',{}).get('messages',[])
         self.c.cli_json.return_value={'ok':True,'data':{'sent':True}}
+        self.rule={'id':'r1','jobId':'job1','jobName':'运营','enabled':True,'enabledAt':100}
+        self.template={'id':'s1','version':1,'content':'{姓名}，可以沟通下{职位}。'}
+        @contextlib.contextmanager
+        def resume_db():
+            with sqlite3.connect(self.root/'resumes.sqlite3') as db:
+                db.row_factory=sqlite3.Row
+                db.execute('CREATE TABLE IF NOT EXISTS resume_requests(friend_id TEXT PRIMARY KEY,state TEXT,message_id TEXT)')
+                yield db
+        self.c.resume_db=resume_db
+        self.now=1000
+        patch=mock.patch.object(flow.time,'time',side_effect=lambda:self.now);patch.start();self.addCleanup(patch.stop)
 
     def runop(self,op,**extra):
         return flow.execute(self.c,self.root,{'operation':op,**extra})
 
+    def step(self,**extra):
+        return self.runop('passive-step',rules=[self.rule],replyTemplate=self.template,**extra)
+
+    def pending(self,state='inspect',friend='1',**extra):
+        with flow.database(self.root) as db:
+            flow.put_state(db,'discoveredAt',self.now)
+            detail={'enabledAt':100,'name':'王同学','activity':900,**extra}
+            db.execute("INSERT OR REPLACE INTO people VALUES(?,'r1',?,?,0,'','')",
+                       (friend,json.dumps(detail),state))
+
+    def state(self,friend='1'):
+        with flow.database(self.root) as db:return db.execute('SELECT state FROM people WHERE friend=?',(friend,)).fetchone()[0]
+
+    def messages(self,*items):
+        self.c.cli_json.return_value={'ok':True,'data':{'messages':list(items)}}
+
+    def message(self,sender='1',target='9',at=900,text='您好，想了解这个岗位'):
+        return {'from':{'uid':sender},'to':{'uid':target},'time':at,
+                'body':{'type':1,'text':text},'mid':'123'}
+
     def test_uid_direction_timestamp_and_owned_messages(self):
+        self.now=1790669000
         now=time.time()
         def message(sender='9',recipient='1',text='你好，方便了解一下吗',timestamp=now):
             return {'from':{'uid':sender,'source':0},'to':{'uid':recipient,'source':0},'time':timestamp,
@@ -73,6 +107,91 @@ class WorkflowTest(unittest.TestCase):
             db.execute("INSERT INTO state VALUES('phase','0')")
             db.execute("INSERT INTO people VALUES('1','r1',?,'ready',0,'','')",(json.dumps({'enabledAt':1}),))
         self.runop('passive-step',rules=[])
+        self.c.request_resume.assert_not_called();self.c.cli_json.assert_not_called()
+
+    def test_incoming_sends_configured_reply_then_requests_once_after_confirmation(self):
+        self.pending();self.messages(self.message())
+        self.assertEqual(self.step()['data']['phase'],'reply_queued')
+        self.assertEqual(self.state(),'reply_ready');self.c.request_resume.assert_not_called()
+        self.now+=31;self.c.cli_json.return_value={'ok':True,'data':{'sent':True}}
+        self.assertEqual(self.step()['data']['phase'],'request_queued')
+        self.c.cli_json.assert_called_with('hr','reply','1','王同学，可以沟通下运营。')
+        self.assertEqual(self.state(),'ready')
+        self.now+=31;self.step();self.c.request_resume.assert_not_called()
+        self.now+=31;self.step();self.c.request_resume.assert_called_once_with('1',retry_uncertain=False)
+        self.assertEqual(self.state(),'requested')
+        self.now+=31;self.step();self.c.request_resume.assert_called_once()
+        codes={e['code'] for e in self.runop('passive-local')['data']['events']}
+        self.assertTrue({'INCOMING_DETECTED','AUTO_REPLY_SENT','RESUME_REQUESTED'}<=codes)
+
+    def test_only_incoming_after_enable_can_trigger_and_malformed_messages_are_ignored(self):
+        for items in [[self.message(at=99)],[self.message(sender='9',target='1')],[None,{},self.message(at=True)]]:
+            with self.subTest(items=items):
+                self.pending();self.messages(*items)
+                with flow.database(self.root) as db:flow.put_state(db,'nextAt',0)
+                self.step();self.assertEqual(self.state(),'seen')
+        self.c.request_resume.assert_not_called()
+
+    def test_existing_hr_reply_skips_automatic_reply(self):
+        self.pending();self.messages(self.message(),self.message(sender='9',target='1',at=910,text='可以沟通下'))
+        self.step();self.assertEqual(self.state(),'ready')
+        self.now+=31;self.step();self.c.request_resume.assert_called_once()
+        self.assertFalse(any(call.args[1]=='reply' for call in self.c.cli_json.call_args_list))
+
+    def test_uncertain_reply_never_resends_or_requests_even_after_restart(self):
+        self.pending('reply_ready');self.c.cli_json.side_effect=RuntimeError('lost response')
+        self.assertEqual(self.step()['data']['phase'],'needs_review')
+        self.assertEqual(self.state(),'reply_uncertain')
+        self.now+=31;self.step()
+        self.c.cli_json.assert_called_once();self.c.request_resume.assert_not_called()
+
+    def test_missing_template_cannot_implicitly_send_text(self):
+        self.pending('reply_ready')
+        result=self.runop('passive-step',rules=[self.rule],replyTemplate=None)
+        self.assertEqual(result['data']['phase'],'template_required')
+        self.c.cli_json.assert_not_called();self.c.request_resume.assert_not_called()
+
+    def test_later_incoming_requeues_seen_without_half_hour_delay(self):
+        self.pending('seen',fingerprint='old')
+        self.c.cli_json.return_value={'ok':True,'data':{'friendList':[{'friendId':'1','name':'王','lastTS':999000,'last_msg':'新消息'}]}}
+        with flow.database(self.root) as db:flow.put_state(db,'discoveredAt',0)
+        self.step();self.assertEqual(self.state(),'inspect')
+        self.c.cli_json.assert_called_once_with('hr','chat','--job-id','job1','--page','1')
+
+    def test_recent_discovery_not_starved_by_old_pending_queue(self):
+        for i in range(1,28):self.pending(friend=str(i))
+        with flow.database(self.root) as db:flow.put_state(db,'discoveredAt',0)
+        self.c.cli_json.return_value={'ok':True,'data':{'friendList':[]}}
+        self.step();self.c.cli_json.assert_called_once_with('hr','chat','--job-id','job1','--page','1')
+
+    def test_newest_activity_is_inspected_first(self):
+        self.pending(friend='1',activity=101);self.pending(friend='2',activity=990)
+        self.messages(self.message(sender='2'));self.step()
+        self.c.cli_json.assert_called_once_with('hr','chatmsg','2','--count','100')
+
+    def test_background_budget_and_clock_gate_do_not_issue_requests(self):
+        self.pending('reply_ready');self.c.passive_delay=lambda:60
+        self.assertEqual(self.step()['data']['phase'],'budget_wait')
+        self.c.passive_delay=lambda:0;self.now+=31;self.step()
+        self.c.cli_json.assert_not_called();self.c.request_resume.assert_not_called()
+
+    def test_chat_page_required_is_visible_without_marking_a_send_attempt(self):
+        self.pending('reply_ready')
+        self.c.prepare_recruiter_chat.side_effect=RuntimeError('请在应用的 BOSS 页面打开沟通会话后再索取，未发送请求')
+        self.assertTrue(self.step()['data']['needsChat'])
+        self.assertEqual(self.state(),'reply_ready');self.c.cli_json.assert_not_called()
+
+    def test_account_events_are_durable_and_acknowledged(self):
+        self.pending();self.messages(self.message());self.step()
+        event=self.runop('passive-local')['data']['events'][0]
+        self.assertNotIn('message',event)
+        self.runop('passive-ack',eventId=event['id'])
+        self.assertEqual(self.runop('passive-local')['data']['events'],[])
+
+    def test_interrupted_request_recovers_only_local_ledger_and_never_resends(self):
+        self.pending('request_uncertain')
+        with self.c.resume_db() as db:db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
+        self.runop('passive-local');self.assertEqual(self.state(),'requested')
         self.c.request_resume.assert_not_called();self.c.cli_json.assert_not_called()
 
 if __name__=='__main__':unittest.main()

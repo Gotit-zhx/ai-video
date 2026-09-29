@@ -99,10 +99,11 @@ class Recruiter extends EventEmitter {
         : {state:'verification_pending',phase:'',failure_code:'MANUAL_REVIEW_REQUIRED',
            error:'应用已重启，任务保持暂停。请手动连接并核对当前账号。'};
     } catch(error) {if(error.code!=='ENOENT') this.paused=true;}
-    this.pollTimer=setInterval(()=>this.poll(),this.passiveCloud?120000:300000);
+    this.pollTimer=setInterval(()=>this.poll(),this.passiveCloud?30000:300000);
     this.pollTimer.unref();
   }
   snapshot(){return {...this.state,paused:this.paused,busy:this.busy,runtime:'local',events:this.events.slice(-15),
+    passive:this.passiveStatus||{},
     accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
     capabilities:['passive-resume']};}
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
@@ -236,6 +237,12 @@ class Recruiter extends EventEmitter {
       if(!this.passiveCloud){await this.call('poll-resumes');return;}
       const accountKey=path.basename(accountRoot);
       const local=await this.call('passive-local');if(!local.ok||!ready())return;
+      if(local.data?.status)this.passiveStatus=local.data.status;
+      for(const event of local.data?.events||[]){
+        await this.passiveCloud('passive-report',{accountKey,event});
+        if(!ready())return;
+        await this.call('passive-ack',{eventId:event.id});
+      }
       for(const report of local.data?.reports||[]){
         await this.passiveCloud('passive-report',{accountKey,commandId:report.id,status:report.state});
         if(!ready())return;
@@ -266,7 +273,14 @@ class Recruiter extends EventEmitter {
         this.event(result.data?.status==='sent'?'REJECTION_SENT':'REJECTION_UNCERTAIN');
         return;
       }
-      const result=await this.call('passive-step',{rules:config.rules||[]});
+      const result=await this.call('passive-step',{rules:config.rules||[],replyTemplate:config.replyTemplate||null});
+      if(result.ok&&ready()){
+        this.passiveStatus=result.data||{};this.emit('change',this.snapshot());
+        if(result.data?.needsChat&&this.browser.chat&&this.clock()-(this.chatPreparedAt||0)>300000){
+          this.chatPreparedAt=this.clock();
+          try{await this.browser.chat();}catch{this.event('CHAT_PAGE_UNAVAILABLE');}
+        }
+      }
       if(!result.ok&&!STOP.has(result.error?.code))this.pause('BACKGROUND_PAUSED');
     }
     catch(error){
@@ -304,6 +318,7 @@ class Recruiter extends EventEmitter {
         this.event('LOCAL_CLEANUP_FAILED');throw Error(this.state.error);
       }
       this.accountRoot='';
+      this.passiveStatus={};
       this.state={state:'disconnected',phase:'',error:'',failure_code:''};
       await this.save();this.event('DISCONNECTED');
     })();

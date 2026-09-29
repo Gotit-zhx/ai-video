@@ -106,6 +106,20 @@ class PassiveTest(unittest.TestCase):
         self.assertEqual(len(feature.device_config(USER,{'accountKey':KEY})['rules']),1)
         with self.assertRaises(ValueError):feature.listing({**USER,'username':'other'},'resume-pool',{})
 
+    def test_passive_reply_default_is_separate_from_rejection_and_explicit(self):
+        reject=self.template()
+        self.assertIsNone(feature.device_config(USER,{'accountKey':KEY})['replyTemplate'])
+        reply=feature.save_speech(USER,{'name':'主动消息回复','kind':'passive_reply',
+            'content':'您好，可以沟通下{职位}。','isDefault':True})
+        config=feature.device_config(USER,{'accountKey':KEY})
+        self.assertEqual(config['replyTemplate']['id'],reply['id'])
+        defaults={s['id'] for s in feature.listing(USER,'speeches',{})['items'] if s['isDefault']}
+        self.assertEqual(defaults,{reply['id'],reject['id']})
+        feature.review(USER,{'id':'r1','version':1,'action':'reject'})
+        self.assertEqual(feature.device_config(USER,{'accountKey':KEY})['commands'][0]['templateId'],reject['id'])
+        feature.save_speech(USER,{**reply,'active':False,'isDefault':False})
+        self.assertIsNone(feature.device_config(USER,{'accountKey':KEY})['replyTemplate'])
+
     def test_private_resume_ingestion_is_idempotent_and_does_not_call_ai(self):
         rule=feature.save_rule(USER,{'accountKey':KEY,'jobId':'job1','jobName':'运营'})
         body={'accountKey':KEY,'ruleId':rule['id'],'friendId':'888','messageId':'999',

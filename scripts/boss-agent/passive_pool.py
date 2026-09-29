@@ -14,7 +14,7 @@ import talent_pool as pool
 
 AI_URL = 'http://127.0.0.1:8080/api/v1/recruitment-ai/resume-match'
 DEFAULT_REJECTION = '您好，感谢您对{职位}岗位的关注和耐心沟通。经过综合评估，您的经历与我们目前岗位的需求暂未完全匹配，本次先不安排后续面试。感谢您的理解，祝您求职顺利！'
-KINDS = {'reject', 'invite', 'general'}
+KINDS = {'reject', 'invite', 'general', 'passive_reply'}
 
 
 def now(): return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -52,6 +52,8 @@ def schema(db):
     CREATE TABLE IF NOT EXISTS hr_passive_events(
       id TEXT PRIMARY KEY,owner TEXT NOT NULL,account TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS hr_speech_defaults(
+      owner TEXT PRIMARY KEY,speech_id TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS hr_passive_reply_defaults(
       owner TEXT PRIMARY KEY,speech_id TEXT NOT NULL);
     ''')
     # executescript commits implicitly. Start a fresh transaction for every caller.
@@ -91,7 +93,9 @@ def listing(user, kind, query):
         expire_commands(db)
         if kind == 'speeches':
             selected = db.execute('SELECT speech_id FROM hr_speech_defaults WHERE owner=?', (owner,)).fetchone()
-            return {'items': [speech(r) | {'isDefault': bool(selected and selected['speech_id'] == r['id'])} for r in db.execute('SELECT * FROM hr_speeches WHERE owner=? ORDER BY updated_at DESC', (owner,))],
+            reply = db.execute('SELECT speech_id FROM hr_passive_reply_defaults WHERE owner=?', (owner,)).fetchone()
+            defaults = {r['speech_id'] for r in (selected, reply) if r}
+            return {'items': [speech(r) | {'isDefault': r['id'] in defaults} for r in db.execute('SELECT * FROM hr_speeches WHERE owner=? ORDER BY updated_at DESC', (owner,))],
                     'suggestedRejection': DEFAULT_REJECTION}
         if kind == 'passive':
             return {'items': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=?', (owner,))]}
@@ -128,19 +132,23 @@ def save_speech(user, body):
         if old and body.get('version') != old['version']: raise pool.Conflict('话术已修改，请刷新')
         version = old['version']+1 if old else 1
         active = body.get('active', True) is True
-        if body.get('isDefault') is True and (kind != 'reject' or not active):
-            raise ValueError('默认婉拒话术必须启用且类型为婉拒')
+        if body.get('isDefault') is True and (kind not in {'reject', 'passive_reply'} or not active):
+            raise ValueError('默认话术必须启用且用于婉拒或被动邀约回复')
         db.execute('INSERT OR REPLACE INTO hr_speeches VALUES(?,?,?,?,?,?,?,?)', (record, owner, name, kind, content, int(body.get('active', True) is True), version, now()))
-        previous = db.execute('SELECT speech_id FROM hr_speech_defaults WHERE owner=?', (owner,)).fetchone()
-        if body.get('isDefault') is True:
-            db.execute('INSERT OR REPLACE INTO hr_speech_defaults VALUES(?,?)', (owner, record))
-        elif (body.get('isDefault') is False or not active or kind != 'reject') and previous and previous['speech_id'] == record:
-            db.execute('DELETE FROM hr_speech_defaults WHERE owner=?', (owner,))
-        selected = db.execute('SELECT speech_id FROM hr_speech_defaults WHERE owner=?', (owner,)).fetchone()
-        if (previous['speech_id'] if previous else None) != (selected['speech_id'] if selected else None):
-            pool.event(db, owner, actor, record, 'speech.default', dict(previous) if previous else None, dict(selected) if selected else {})
+        defaults = set()
+        for purpose, table in [('reject', 'hr_speech_defaults'), ('passive_reply', 'hr_passive_reply_defaults')]:
+            previous = db.execute(f'SELECT speech_id FROM {table} WHERE owner=?', (owner,)).fetchone()
+            if body.get('isDefault') is True and kind == purpose:
+                db.execute(f'INSERT OR REPLACE INTO {table} VALUES(?,?)', (owner, record))
+            elif (body.get('isDefault') is False or not active or kind != purpose) and previous and previous['speech_id'] == record:
+                db.execute(f'DELETE FROM {table} WHERE owner=?', (owner,))
+            selected = db.execute(f'SELECT speech_id FROM {table} WHERE owner=?', (owner,)).fetchone()
+            if selected: defaults.add(selected['speech_id'])
+            if (previous['speech_id'] if previous else None) != (selected['speech_id'] if selected else None):
+                pool.event(db, owner, actor, record, 'speech.default', dict(previous) if previous else None,
+                           {'purpose': purpose, **(dict(selected) if selected else {})})
         result = speech(db.execute('SELECT * FROM hr_speeches WHERE id=?', (record,)).fetchone())
-        result['isDefault'] = bool(selected and selected['speech_id'] == record)
+        result['isDefault'] = record in defaults
         pool.event(db, owner, actor, record, 'speech.save', speech(old) if old else None, result)
         return result
 
@@ -170,7 +178,12 @@ def device_config(user, body):
     with pool.database() as db:
         schema(db)
         expire_commands(db)
+        reply = db.execute('''SELECT s.* FROM hr_speeches s JOIN hr_passive_reply_defaults d
+            ON d.speech_id=s.id AND d.owner=s.owner
+            WHERE s.owner=? AND s.active=1 AND s.kind='passive_reply' ''', (owner,)).fetchone()
         return {'rules': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=? AND account=? AND enabled=1', (owner, key))],
+                'replyTemplate': ({'id': reply['id'], 'version': reply['version'], 'content': reply['content'],
+                                   'name': reply['name']} if reply else None),
                 'commands': [{**json.loads(r['body']), 'id': r['id'], 'friendId': r['friend_id']} for r in db.execute("SELECT * FROM hr_resume_commands WHERE owner=? AND account=? AND status='queued' ORDER BY updated_at LIMIT 1", (owner, key))]}
 
 
