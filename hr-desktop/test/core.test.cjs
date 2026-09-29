@@ -126,3 +126,18 @@ test('expired paired token authorizes cleanup only and is revoked after confirma
   assert.equal(clears,1);assert.equal(releases,1);assert.equal(bridge.token,'');
   assert.equal((await fetch(base+'login/status',{headers})).status,428);
 });
+test('logout cancels late login authorization and browser opening without starting a new observer',async t=>{
+  const {engine}=await fixture(t);let authorize,open,opened=0;
+  engine.authorize=()=>new Promise(resolve=>{authorize=resolve;});
+  engine.browser.open=async()=>{opened++;};
+  const pending=engine.start();
+  await engine.disconnect();authorize(user);
+  await assert.rejects(pending,/连接状态已更改/);
+  assert.equal(opened,0);assert.equal(engine.state.state,'disconnected');
+  engine.authorize=async()=>user;
+  engine.browser.open=()=>new Promise(resolve=>{open=resolve;});
+  const opening=engine.start();await new Promise(resolve=>setImmediate(resolve));
+  await engine.disconnect();open();
+  await assert.rejects(opening,/连接已取消/);
+  assert.equal(engine.state.state,'disconnected');assert.equal(engine.loginTimer,null);
+});

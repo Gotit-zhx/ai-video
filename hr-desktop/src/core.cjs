@@ -156,16 +156,19 @@ class Recruiter extends EventEmitter {
     await this.save(hold);this.event(hold.code);
   }
   async start(){
+    const generation=this.generation;
     await this.checkOwner();
-    if(this.disconnecting)throw Error('正在清除本机登录信息，请稍候');
+    if(this.disconnecting||generation!==this.generation)throw Error('连接状态已更改，请重新发起连接');
     if(this.state.state==='pending') return this.state;
     if(this.busy) throw Error('当前操作尚未结束，请稍后再连接');
     this.paused=true;
     this.state={...this.state,state:'pending',phase:'qr',failure_code:'',error:''};
     try{await this.browser.open();}catch(error){
+      if(generation!==this.generation)throw error;
       this.state={...this.state,state:'failed',error:'BOSS 页面未打开，请检查本机网络',failure_code:'BROWSER_UNAVAILABLE'};
       this.event('BROWSER_UNAVAILABLE');throw error;
     }
+    if(generation!==this.generation)throw Error('连接已取消');
     this.started=this.clock();this.scanning=false;
     this.loginTimer=setInterval(()=>this.observe(),2000);
     this.event('LOGIN_OPENED');return this.state;
