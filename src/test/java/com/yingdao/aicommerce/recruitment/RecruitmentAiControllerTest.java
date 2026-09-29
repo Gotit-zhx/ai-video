@@ -19,6 +19,23 @@ class RecruitmentAiControllerTest {
     private final ObjectMapper json = new ObjectMapper();
     private final ModelConfigService models = mock(ModelConfigService.class);
     private final RedisConcurrencyGate gate = mock(RedisConcurrencyGate.class);
+    @Test void resumeMatchingIsReferenceOnlyAndDropsActionFields() {
+        var raw=new HashMap<String,Object>();
+        raw.put("score",75);raw.put("summary","具备相关工作经验，成果待面试核实");
+        for(String field:List.of("strengths","gaps","questions","limitations"))raw.put(field,List.of("待核实"));
+        raw.put("evidence",List.of(Map.of("requirement","运营经验","evidence","简历记录五年运营","assessment","经历相关")));
+        raw.put("decision","reject");raw.put("sendMessage",true);
+        var result=RecruitmentAiController.validateMatch(raw);
+        assertEquals(true,result.get("referenceOnly"));assertFalse(result.containsKey("decision"));assertFalse(result.containsKey("sendMessage"));
+        raw.put("score",Double.NaN);assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateMatch(raw));
+        raw.put("score",75);raw.put("evidence",List.of());assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateMatch(raw));
+    }
+    @Test void resumeMatchRequiresHumanProvidedInputsAndExistingHrAccess() {
+        var controller=new RecruitmentAiController(models,gate,json);
+        assertThrows(BusinessException.class,()->controller.resumeMatch(user("13900000000"),Map.of()));
+        assertThrows(BusinessException.class,()->controller.resumeMatch(user("13800000000"),Map.of("resumeText","too short")));
+        verifyNoInteractions(models,gate);
+    }
     private PlatformPrincipal user(String phone) {
         return new PlatformPrincipal("admin","org-1","heyi",phone,"管理员","",true,List.of("ADMIN"),List.of());
     }

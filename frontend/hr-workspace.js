@@ -6,7 +6,7 @@
     ? globalThis.HeyiHrTransport.api(path, options) : api(path, options);
   const hrFetch = (path, options) => globalThis.HeyiHrTransport
     ? globalThis.HeyiHrTransport.request(path, options) : fetch(path, options);
-  const routes = new Set(['overview', 'jobs', 'talent', 'applications', 'chats', 'resume', 'pool', 'demands', 'departments']);
+  const routes = new Set(['overview', 'jobs', 'talent', 'applications', 'chats', 'resume', 'pool', 'demands', 'departments', 'resume-pool', 'speeches']);
   const panels = new Map();
   let current = 'overview', sequence = 0, page = 1, talentAction = 'candidates';
   let loginTimer = null;
@@ -119,6 +119,8 @@
   const shortcutEntries=[
     ['demands','招聘需求池','明确岗位需求，用 AI 辅助画像与面试。','M5 3h14v18H5z M8 8h8 M8 12h8 M8 16h5'],
     ['departments','部门管理','统一维护部门和经理，保持组织信息一致。','M9 3h6v5H9z M3 16h6v5H3z M15 16h6v5h-6z M12 8v4 M6 16v-4h12v4'],
+    ['resume-pool','简历池','查看原件，由 HR 审批和选择 AI 辅助分析。','M6 3h12v18H6z M9 8h6 M9 12h6'],
+    ['speeches','话术管理','配置默认婉拒与常用沟通话术。','M4 4h16v13H9l-5 4z M8 9h8'],
     ['pool','储备人才库','按项目组沉淀人才，持续跟进招聘阶段。','M4 5h16v15H4z M4 10h16 M9 10v10'],
     ['jobs','职位管理','管理在招岗位，按职位跟进人才。','M4 7h16v13H4z M8 7V4h8v3 M4 12h16 M10 12v3h4v-3'],
     ['talent','人才寻源','按岗位查看推荐，搜索合适的人。','M14 10a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M3 21v-2a5 5 0 0 1 10 0v2 M17 5v6 M14 8h6'],
@@ -626,6 +628,7 @@
       }
       if (jobId(row)) {
         const actions = element('div', '', card, 'hr-actions');
+        passive?.jobToggle(card,row);
         button('推荐人才', actions, () => {
           talentJob.value = jobId(row);
           talentAction = 'recommendations';
@@ -932,14 +935,16 @@
   const pool=globalThis.createHrPool?.({root,section,element,button,allowed,navigate});
   const demands=globalThis.createHrDemands?.({root,section,element,button,allowed});
   const departmentManager=globalThis.createHrDepartments?.({root,section,element,button,allowed});
+  const passive=globalThis.createHrPassive?.({root,section,element,button,allowed,navigate,hrApi});
   function enter(route) {
     if (!allowed()) return;
     pool?.leave();
     demands?.leave();
     departmentManager?.leave();
+    passive?.leave();
     loginSuccess.hidden = true;
     current = routes.has(route) ? route : 'overview';
-    if(!['pool','demands','departments'].includes(current))globalThis.HeyiHrTransport?.startAutoConnect?.();
+    if(!['pool','demands','departments','resume-pool','speeches'].includes(current))globalThis.HeyiHrTransport?.startAutoConnect?.();
     clearInterval(resumeTimer);
     resumeTimer = null;
     page = 1;
@@ -953,8 +958,12 @@
     titles.pool=['储备人才库','以项目组归档人才，跟进每一个招聘阶段。'];
     titles.demands=['招聘需求池','梳理岗位需求，生成画像、胜任能力和结构化面试题。'];
     titles.departments=['部门管理','统一部门信息与负责人，供招聘需求直接选用。'];
+    titles['resume-pool']=['简历池','查看简历、人工审批，AI 分析仅供参考。'];
+    titles.speeches=['话术管理','统一配置婉拒和常用沟通话术。'];
     pageTitle.textContent=titles[current][0];pageSubtitle.textContent=titles[current][1];
-    if (current === 'departments') {
+    if (['resume-pool','speeches'].includes(current)) {
+      passive?.enter(current);
+    } else if (current === 'departments') {
       departmentManager?.enter();
     } else if (current === 'demands') {
       demands?.enter();
@@ -990,6 +999,7 @@
     pool?.reset();
     demands?.reset();
     departmentManager?.reset();
+    passive?.reset();
     ++sequence;++sessionGeneration;++loginGeneration;
     stopLoginPolling();clearInterval(resumeTimer);resumeTimer=null;
     loginActionInFlight=true;
@@ -997,6 +1007,7 @@
     pool?.reset();
     demands?.reset();
     departmentManager?.reset();
+    passive?.reset();
     globalThis.HeyiHrTransport?.reset();
     ++sequence;
     ++sessionGeneration;

@@ -224,7 +224,7 @@ async function cloud(route,body){
   try{reply=await egress.fetch(platformSession,ORIGIN+'/api/v1/hr/desktop/'+route,{
     method:'POST',body:body?JSON.stringify(body):undefined,
     headers:{'Content-Type':'application/json',Origin:ORIGIN},
-    bypassCustomProtocolHandlers:true,redirect:'error',signal:AbortSignal.timeout(8000),
+    bypassCustomProtocolHandlers:true,redirect:'error',signal:AbortSignal.timeout(route==='passive-ingest'?90000:8000),
   });}catch{const error=Error('平台连接暂时不可用，操作未执行，请等待自动恢复');error.code='PLATFORM_UNAVAILABLE';throw error;}
   let result;
   try{result=await reply.json();}catch{result={};}
@@ -297,6 +297,11 @@ async function launch(){
   engine=new Recruiter({
     directory:path.join(app.getPath('userData'),'recruiter'),
     runtime:worker,authorize:authorized,
+    passiveCloud:async(route,body)=>{
+      await authorized();
+      if(!lease)throw Error('请先连接平台');
+      return cloud(route,{...body,token:lease.token,device});
+    },
     browser:{
       open:openBoss,
       inspect:inspectBoss,qr,

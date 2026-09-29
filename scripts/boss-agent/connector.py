@@ -1427,6 +1427,9 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             return
         parsed = urllib.parse.urlsplit(self.path)
         route = parsed.path.removeprefix("/api/v1/hr/")
+        if route in ("passive", "speeches", "resume-pool", "resume-pool/file"):
+            self.passive_request(parsed=parsed)
+            return
         if route in ("pool", "demands", "departments"):
             self.pool_request(write=False, parsed=parsed)
             return
@@ -1506,6 +1509,10 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                              "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()})
 
     def do_POST(self):
+        if self.path in ("/api/v1/hr/passive/save", "/api/v1/hr/speeches/save",
+                         "/api/v1/hr/resume-pool/review", "/api/v1/hr/resume-pool/analyze"):
+            self.passive_request(write=True)
+            return
         if self.path in ("/api/v1/hr/pool/talents", "/api/v1/hr/pool/projects",
                          "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate", "/api/v1/hr/departments/save"):
             self.pool_request(write=True)
@@ -1633,11 +1640,62 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         except (OSError, sqlite3.Error):
             self.send_json(503, {"success": False, "message": "人才库暂时不可用，请稍后重试"})
 
+    def passive_request(self, write=False, parsed=None):
+        import passive_pool
+        import talent_pool
+        import resume_storage
+        try:
+            if write:
+                if self.headers.get("Origin") != ALLOWED_ORIGIN or self.authorized() != 200:
+                    self.send_json(403, {"success": False, "message": "请先登录有招聘权限的管理员账号"})
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 262144: raise ValueError("请求内容过长")
+                body = json.loads(self.rfile.read(length))
+                if self.path.endswith("/passive/save"): result = passive_pool.save_rule(self.desktop_user, body)
+                elif self.path.endswith("/speeches/save"): result = passive_pool.save_speech(self.desktop_user, body)
+                elif self.path.endswith("/review"): result = passive_pool.review(self.desktop_user, body)
+                else: result = passive_pool.analyze(self.desktop_user, body, self.headers.get("Cookie", ""))
+            else:
+                kind = parsed.path.removeprefix("/api/v1/hr/")
+                query = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
+                if kind == "resume-pool/file":
+                    raw, filename, extension = passive_pool.get_file(self.desktop_user, query.get("id"))
+                    self.send_response(200)
+                    self.send_header("Content-Type", resume_storage.TYPES[extension])
+                    self.send_header("Cache-Control", "private, no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    disposition = "inline" if extension in ("pdf", "png", "jpg", "jpeg") else "attachment"
+                    self.send_header("Content-Disposition", disposition + "; filename*=UTF-8''" + urllib.parse.quote(filename))
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                result = passive_pool.listing(self.desktop_user, kind, query)
+            self.send_json(200, {"success": True, "data": result})
+        except talent_pool.Conflict as error:
+            self.send_json(409, {"success": False, "message": str(error)})
+        except (ValueError, TypeError, AttributeError):
+            self.send_json(400, {"success": False, "message": "资料不完整或状态已变化，请刷新后核对"})
+        except Exception:
+            self.send_json(503, {"success": False, "message": "简历服务暂时不可用，请稍后重试；未发送 BOSS 消息"})
+
     def desktop_request(self):
         import desktop_bridge
         route = self.path.removeprefix("/api/v1/hr/desktop/")
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            if route in ("passive-config", "passive-ingest", "passive-report", "passive-claim"):
+                import passive_pool
+                if not 0 < length <= (36 * 1024 * 1024 if route == "passive-ingest" else 262144):
+                    raise ValueError("连接请求过长")
+                body = json.loads(self.rfile.read(length))
+                user = desktop_bridge.check(body.get("token"), body.get("device"))["user"]
+                handlers = {"passive-config": passive_pool.device_config, "passive-ingest": passive_pool.ingest,
+                            "passive-report": passive_pool.device_report, "passive-claim": passive_pool.claim_command}
+                result = handlers[route](user, body)
+                self.send_json(200, {"success": True, "data": result})
+                return
             if not 0 <= length <= 1024:
                 raise ValueError("连接请求过长")
             if route == "pair":
@@ -1668,6 +1726,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(409, {"success": False, "message": "连接凭证无效、已到期或已切换设备，请重新连接本机助手"})
         except (OSError, sqlite3.Error):
             self.send_json(503, {"success": False, "message": "连接服务暂时不可用，未执行招聘操作"})
+        except Exception:
+            self.send_json(503, {"success": False, "message": "简历同步暂未完成，本机记录已保留"})
 
 
 class HttpServer(http.server.ThreadingHTTPServer):
@@ -1693,7 +1753,9 @@ def restore_login_state():
 
 def main():
     import recruitment_demands
+    import passive_pool
     recruitment_demands.recover_interrupted()
+    passive_pool.recover()
     restore_login_state()
     with resume_db():
         pass

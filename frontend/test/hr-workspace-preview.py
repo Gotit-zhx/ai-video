@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT.parent / "scripts/boss-agent"))
 import talent_pool
 import recruitment_demands
 import hr_departments
+import passive_pool
 TEMP = tempfile.TemporaryDirectory(prefix="heyi-pool-preview-")
 talent_pool.DB = Path(TEMP.name) / "talents.sqlite3"
 TEST_USER = {"id": "qa", "username": "13800000000", "organizationCode": "heyi",
@@ -30,6 +31,8 @@ nav a.active{color:#fff;background:#262626;font-weight:650}
 </style><div class="qa-shell"><aside><strong>HOYEE</strong><nav>
 <a href="#hr-overview" data-hr-route="overview">招聘工作台</a>
 <a href="#hr-jobs" data-hr-route="jobs">职位管理</a>
+<a href="#hr-resume-pool" data-hr-route="resume-pool">简历池</a>
+<a href="#hr-speeches" data-hr-route="speeches">话术管理</a>
 <a href="#hr-pool" data-hr-route="pool">储备人才库</a>
 <a href="#hr-demands" data-hr-route="demands">招聘需求池</a>
 <a href="#hr-departments" data-hr-route="departments">部门管理</a>
@@ -48,7 +51,7 @@ function handleSessionExpired(){}
 const qaRequests=[];
 let fixture;
 async function api(url,options={}){
- if(url.startsWith('/api/v1/hr/pool')||url.startsWith('/api/v1/hr/demands')||url.startsWith('/api/v1/hr/departments')){
+ if(['passive','speeches','resume-pool','pool'].some(k=>url.startsWith('/api/v1/hr/'+k))||url.startsWith('/api/v1/hr/demands')||url.startsWith('/api/v1/hr/departments')){
    const response=await fetch(url,options);const data=await response.json();
    if(!response.ok)throw Error(data.message);return data;
  }
@@ -68,7 +71,7 @@ async function api(url,options={}){
    if(url.endsWith('/login/status'))return {data:{state:loginState,phase:new URLSearchParams(location.search).get('phase')||'verifying',error:'当前会话已过期（合成测试）'}};
    if(url.endsWith('/status'))return {data:{ok:false,error:{code:loginState==='disconnected'?'SESSION_DISCONNECTED':'RECRUITER_VERIFICATION_PENDING',message:'合成测试：登录状态待核验'}}};
  }
- if(url.endsWith('/login/status'))return {data:{state:'complete'}};
+ if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:'a'.repeat(64),capabilities:['passive-resume']}};
  if(url.endsWith('/resumes'))return {data:[]};
  const key=url.split('/hr/')[1].split(/[/?]/)[0];
  return {data:structuredClone(fixture[key==='candidates'?'recommendations':key])};
@@ -79,7 +82,7 @@ window.HeyiHrTransport={
  disconnect:async()=>{qaPaired=false;sessionStorage.setItem('qaLogin','disconnected');return {cleared:true};},
  reset:()=>{qaPaired=false;}
 };
-</script><script src="/hr-pool.js"></script><script src="/hr-demands.js"></script><script src="/hr-departments.js"></script><script src="/hr-workspace.js"></script><script>
+</script><script src="/hr-pool.js"></script><script src="/hr-demands.js"></script><script src="/hr-departments.js"></script><script src="/hr-passive.js"></script><script src="/hr-workspace.js"></script><script>
 fetch('/fixtures').then(r=>r.json()).then(value=>{
  fixture=value;HrWorkspace.enter(location.hash.replace('#hr-','')||'overview');
 });
@@ -92,13 +95,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path in ('/api/v1/hr/passive','/api/v1/hr/speeches','/api/v1/hr/resume-pool'):
+            query={k:v[-1] for k,v in urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).items()}
+            return self.json_response(200,{'data':passive_pool.listing(TEST_USER,path.rsplit('/',1)[-1],query)})
         if path == "/api/v1/hr/departments":
             return self.json_response(200,{"data":hr_departments.listing(TEST_USER)})
         if path in ("/api/v1/hr/pool","/api/v1/hr/demands"):
             query={key: values[-1] for key,values in urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True).items()}
             action=recruitment_demands.listing if path.endswith("demands") else talent_pool.listing
             return self.json_response(200, {"success": True, "data": action(TEST_USER,query)})
-        allowed = {"/hr-workspace.js": ("text/javascript", ROOT / "hr-workspace.js"),
+        allowed = {"/hr-passive.js": ("text/javascript", ROOT / "hr-passive.js"), "/hr-workspace.js": ("text/javascript", ROOT / "hr-workspace.js"),
                    "/hr-pool.js": ("text/javascript", ROOT / "hr-pool.js"),
                    "/hr-demands.js": ("text/javascript", ROOT / "hr-demands.js"),
                    "/hr-departments.js": ("text/javascript", ROOT / "hr-departments.js"),
@@ -130,12 +136,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.headers.get("Origin") != "http://127.0.0.1:18676":
             return self.json_response(403,{"message":"Local QA only"})
-        if self.path not in ("/api/v1/hr/pool/talents","/api/v1/hr/pool/projects","/api/v1/hr/demands/save","/api/v1/hr/demands/generate","/api/v1/hr/departments/save"):
+        if self.path not in ("/api/v1/hr/passive/save","/api/v1/hr/speeches/save","/api/v1/hr/resume-pool/review","/api/v1/hr/resume-pool/analyze","/api/v1/hr/pool/talents","/api/v1/hr/pool/projects","/api/v1/hr/demands/save","/api/v1/hr/demands/generate","/api/v1/hr/departments/save"):
             return self.json_response(404,{"message":"Unknown local fixture"})
         try:
             length=int(self.headers.get("Content-Length","0"))
             if not 0 < length <= 131072:raise ValueError("Invalid length")
             body=json.loads(self.rfile.read(length))
+            handler={'/api/v1/hr/passive/save':passive_pool.save_rule,'/api/v1/hr/speeches/save':passive_pool.save_speech,'/api/v1/hr/resume-pool/review':passive_pool.review}.get(self.path)
+            if handler:return self.json_response(200,{'data':handler(TEST_USER,body)})
+            if self.path.endswith('/resume-pool/analyze'):
+                return self.json_response(400,{'message':'本地验收不调用付费模型'})
             if self.path == "/api/v1/hr/departments/save":
                 row=hr_departments.save(TEST_USER,body)
                 return self.json_response(200,{"data":row})
@@ -164,5 +174,13 @@ if __name__ == "__main__":
             "interviewQuestions":[{"competency":"业务分析","question":f"问题 {i+1}：请描述一次你负责的业务改进项目。",
                 "followUps":["如何定义目标？","如何验证结果？"],"evaluationCriteria":"1分：无具体案例；3分：有行动和结果；5分：有证据和复盘",
                 "strongAnswerSignals":["以数据验证结果","主动说明个人贡献"]} for i in range(6)]}
+    with talent_pool.database() as db:
+        passive_pool.schema(db)
+        for number in range(2):
+            body={'name':['陈同学','林同学'][number],'jobName':'电商运营','education':'本科','experience':'5 年','city':'广州',
+                'jobDescription':'负责店铺运营与经营复盘','jobEducation':'本科','jobExperience':'3年','resumeText':'合成测试简历：五年运营工作经验，负责产品运营和转化分析。'*3,
+                'extension':'docx','extractionNote':'本地合成数据，未连接真实候选人。','projectId':''}
+            db.execute("INSERT INTO hr_resume_pool(id,owner,account,friend_id,rule_id,message_id,body,file_key,file_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (f'qa-{number}','heyi','a'*64,str(number+1),'qa-rule',str(number+100),json.dumps(body),'unused','hash',passive_pool.now(),passive_pool.now()))
     recruitment_demands.call_driver=fake_driver
     ThreadingHTTPServer(("127.0.0.1", 18676), Handler).serve_forever()

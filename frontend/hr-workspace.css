@@ -196,3 +196,16 @@
 @media(max-width:650px){.hr-connect-card{display:block;padding:25px}.hr-connect-art{display:none}.hr-workspace-header{margin-bottom:20px}.hr-workspace-header h1{font-size:25px}.hr-device-badge{font-size:11px}.hr-header-actions{gap:6px}.hr-connection-guide{grid-template-columns:1fr;gap:16px;padding:22px 4px}.hr-shortcut-grid{gap:10px}#hr-page .hr-shortcut{padding:18px 14px}.hr-shortcut-description{font-size:11px}.hr-shortcut:last-child{flex-wrap:wrap}.hr-shortcut:last-child .hr-shortcut-description{display:none}.hr-section-heading>span{display:none}.hr-connect-body>.hr-actions{gap:8px}}
 
 #hr-page [hidden]{display:none!important}
+
+.hr-passive-toggle{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;margin-top:16px}
+.hr-passive-toggle input{accent-color:var(--ink);width:17px;height:17px}
+.hr-resume-review{width:min(900px,94vw)}
+.hr-review-ai{border:1px solid var(--line,#ddd);border-radius:12px;padding:20px;margin:20px 0}
+.hr-review-ai h3{margin-top:0}.hr-review-ai textarea{width:100%}
+.hr-resume-original{width:100%;border:0;min-height:500px;object-fit:contain;margin:12px 0}
+img.hr-resume-original{min-height:0;height:auto}
+.hr-evidence-table{border-collapse:collapse;width:100%;font-size:13px;table-layout:fixed}
+.hr-evidence-table th,.hr-evidence-table td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line,#ddd);padding:12px 8px;overflow-wrap:anywhere}
+.hr-resume-review .hr-prose{white-space:pre-wrap;overflow-wrap:anywhere}
+
+.hr-pool-dialog .hr-error:empty{display:none}

@@ -6,6 +6,32 @@ const os=require('node:os');
 const {Recruiter,restriction,ORIGIN}=require('../src/core.cjs');
 const {LocalBridge}=require('../src/bridge.cjs');
 const user={username:'13800000000',id:'fixture',organizationCode:'heyi',roles:['ADMIN'],platformAdmin:true};
+test('passive outbox requires an atomic cloud claim and never retries lost sends',async t=>{
+  const {engine,calls,directory}=await fixture(t);
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
+  const cloudCalls=[];
+  engine.passiveCloud=async(route,body)=>{
+    cloudCalls.push(route);
+    if(route==='passive-config')return {rules:[],commands:[{id:'c1',friendId:'123',message:'default text'}]};
+    if(route==='passive-claim')return {claimed:false};
+    return {};
+  };
+  engine.runtime.run=async input=>{calls.push(input);return {ok:true,data:{reports:[],exports:[]}};};
+  await engine.poll();
+  assert.deepEqual(cloudCalls,['passive-config','passive-claim']);
+  assert.equal(calls.some(call=>call.operation==='passive-send'),false);
+  engine.paused=true;await engine.poll();assert.equal(cloudCalls.length,2);
+});
+test('disconnect during passive config fetch cannot claim or send a rejection',async t=>{
+  const {engine,calls,directory}=await fixture(t);
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
+  engine.runtime.run=async input=>{calls.push(input);return {ok:true,data:{reports:[],exports:[]}};};
+  engine.passiveCloud=async route=>{
+    assert.equal(route,'passive-config');engine.pause();
+    return {commands:[{id:'c1',friendId:'123',message:'text'}]};
+  };
+  await engine.poll();assert.equal(calls.some(call=>call.operation==='passive-send'),false);
+});
 async function fixture(t){
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'heyi-desktop-unit-'));
   const calls=[];

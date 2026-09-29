@@ -79,8 +79,8 @@ class Runtime {
   stop(){terminate(this.child);}
 }
 class Recruiter extends EventEmitter {
-  constructor({directory, runtime, browser, authorize, clock=()=>Date.now()}) {
-    super(); Object.assign(this,{directory,runtime,browser,authorize,clock});
+  constructor({directory, runtime, browser, authorize, passiveCloud, clock=()=>Date.now()}) {
+    super(); Object.assign(this,{directory,runtime,browser,authorize,passiveCloud,clock});
     this.state={state:'idle',phase:'',error:'',failure_code:''};
     this.paused=false;this.busy=false;this.inFlight=null;this.loginTimer=null;
     this.owner='';this.accountRoot='';this.cdp='';this.events=[];this.persist=Promise.resolve();this.riskHold=null;this.generation=0;
@@ -99,10 +99,12 @@ class Recruiter extends EventEmitter {
         : {state:'verification_pending',phase:'',failure_code:'MANUAL_REVIEW_REQUIRED',
            error:'应用已重启，任务保持暂停。请手动连接并核对当前账号。'};
     } catch(error) {if(error.code!=='ENOENT') this.paused=true;}
-    this.pollTimer=setInterval(()=>this.poll(),300000);
+    this.pollTimer=setInterval(()=>this.poll(),this.passiveCloud?120000:300000);
     this.pollTimer.unref();
   }
-  snapshot(){return {...this.state,paused:this.paused,busy:this.busy,runtime:'local',events:this.events.slice(-15)};}
+  snapshot(){return {...this.state,paused:this.paused,busy:this.busy,runtime:'local',events:this.events.slice(-15),
+    accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
+    capabilities:['passive-resume']};}
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
   pause(code='USER_PAUSED'){
     this.generation++;this.paused=true;clearInterval(this.loginTimer);this.loginTimer=null;
@@ -224,12 +226,54 @@ class Recruiter extends EventEmitter {
     }finally{this.scanning=false;this.emit('change',this.snapshot());}
   }
   async poll(){
-    if(this.state.state!=='complete'||this.paused||this.busy)return;
-    try{await this.checkOwner();await this.call('poll-resumes');}
+    if(this.state.state!=='complete'||this.paused||this.busy||this.polling)return;
+    this.polling=true;
+    const generation=this.generation,accountRoot=this.accountRoot;
+    const ready=()=>generation===this.generation&&accountRoot===this.accountRoot&&this.state.state==='complete'&&!this.paused&&!this.riskHold;
+    try{
+      await this.checkOwner();
+      if(!ready())return;
+      if(!this.passiveCloud){await this.call('poll-resumes');return;}
+      const accountKey=path.basename(accountRoot);
+      const local=await this.call('passive-local');if(!local.ok||!ready())return;
+      for(const report of local.data?.reports||[]){
+        await this.passiveCloud('passive-report',{accountKey,commandId:report.id,status:report.state});
+        if(!ready())return;
+        await this.call('passive-ack',{commandId:report.id});
+      }
+      for(const item of local.data?.exports||[]){
+        const file=await fs.realpath(item.file),prefix=await fs.realpath(path.join(accountRoot,'downloads'));
+        if(!file.startsWith(prefix+path.sep))throw Error('简历路径异常');
+        const stat=await fs.stat(file);if(!stat.isFile()||stat.size>25*1024*1024)throw Error('简历文件超过限制');
+        const raw=await fs.readFile(file);if(!ready())return;
+        const metadata=JSON.parse(item.body);
+        await this.passiveCloud('passive-ingest',{accountKey,friendId:item.friend,messageId:item.mid,ruleId:item.rule,
+          ...metadata,extension:path.extname(file).slice(1).toLowerCase(),fileBase64:raw.toString('base64')});
+        if(!ready())return;
+        await this.call('passive-ack',{friendId:item.friend,messageId:item.mid});
+        this.event('RESUME_ARCHIVED');
+      }
+      const config=await this.passiveCloud('passive-config',{accountKey});
+      if(!ready())return;
+      const command=config.commands?.[0];
+      if(command){
+        const claimed=await this.passiveCloud('passive-claim',{accountKey,id:command.id});
+        if(!claimed.claimed||!ready())return;
+        const result=await this.call('passive-send',{command});
+        if(!ready())return;
+        await this.passiveCloud('passive-report',{accountKey,commandId:command.id,status:result.data?.status||'uncertain'});
+        await this.call('passive-ack',{commandId:command.id});
+        this.event(result.data?.status==='sent'?'REJECTION_SENT':'REJECTION_UNCERTAIN');
+        return;
+      }
+      const result=await this.call('passive-step',{rules:config.rules||[]});
+      if(!result.ok&&!STOP.has(result.error?.code))this.pause('BACKGROUND_PAUSED');
+    }
     catch(error){
       if(error.code==='PLATFORM_UNAVAILABLE'){this.event('PLATFORM_UNAVAILABLE');return;}
       this.pause('BACKGROUND_PAUSED');
     }
+    finally{this.polling=false;}
   }
   async clearCredentials(){
     const accounts=path.join(this.directory,'accounts');
@@ -274,7 +318,7 @@ class Recruiter extends EventEmitter {
       const route=url.pathname.slice('/api/v1/hr/'.length),method=request.method;
       const ok=data=>response({success:true,data});
       if(route.startsWith('desktop/'))return null;
-      if(method==='GET'&&route==='login/status')return ok(this.state);
+      if(method==='GET'&&route==='login/status')return ok(this.snapshot());
       if(method==='GET'&&route==='status')return ok(this.state.state==='complete'&&!this.paused
         ? {ok:true,data:{authenticated:true,role:'recruiter',runtime:'local'}}
         : {ok:false,error:{code:this.state.state==='pending'?'LOGIN_PENDING':'RECRUITER_VERIFICATION_PENDING',message:this.state.error}});

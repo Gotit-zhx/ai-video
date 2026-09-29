@@ -43,8 +43,8 @@ def configure(root, cdp):
             pages = json.load(response)
         from urllib.parse import urlsplit
         if not any(urlsplit(p.get("url", "")).hostname == "www.zhipin.com"
-                   and "/web/boss" in urlsplit(p.get("url", "")).path
-                   and "chat" in p.get("url", "") for p in pages if p.get("type") == "page"):
+                   and urlsplit(p.get("url", "")).path.rstrip("/") == "/web/chat/index"
+                   for p in pages if p.get("type") == "page"):
             raise RuntimeError("请在应用的 BOSS 页面打开沟通会话后再索取，未发送请求")
     c.prepare_recruiter_chat = existing_chat
     return c, g
@@ -108,6 +108,9 @@ def main(request):
         return c.observe_result(value)
 
     c.cli_json = invoke
+    if operation in ('passive-local', 'passive-ack', 'passive-send', 'passive-step'):
+        import passive_runtime
+        return passive_runtime.execute(c, request['root'], request)
     if operation == "verify":
         # Explicit user request only; bound to the existing hold generation.
         c.DISCONNECTED.unlink(missing_ok=True)

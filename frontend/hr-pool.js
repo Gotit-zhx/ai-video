@@ -120,7 +120,7 @@
         el('span',stages.find(([key])=>key===row.stage)?.[1]||'未设置阶段',head,'hr-badge');
         const tags=el('div','',card,'hr-tags');
         el('span',projects.find(p=>p.id===row.projectId)?.name||'未分组',tags,'hr-badge');
-        el('span',row.source==='boss'?'BOSS 人才':'手动录入',tags,'hr-badge');
+        el('span',row.source==='boss'?'BOSS 人才':row.source==='passive'?'简历池审批':'手动录入',tags,'hr-badge');
         const facts=el('dl','',card,'hr-facts');
         for(const [label,value] of [['学历',row.education],['工作年限',row.experience],['城市',row.city],['最近公司',row.company]]){
           const item=el('div','',facts);el('dt',label,item);el('dd',value||'未填写',item);

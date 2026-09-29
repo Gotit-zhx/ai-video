@@ -1,6 +1,7 @@
 FROM nginx:1.29-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY downloads /usr/share/nginx/html/plugin-downloads
 COPY index.html /usr/share/nginx/html/index.html
 COPY resend-theme.css /usr/share/nginx/html/resend-theme.css
 COPY image-progress.css /usr/share/nginx/html/image-progress.css
@@ -39,4 +40,4 @@ COPY i18n /usr/share/nginx/html/i18n
 COPY bd-workspace.js bd-workspace.css /usr/share/nginx/html/
 
 COPY knowledge-workspace.js knowledge-workspace.css /usr/share/nginx/html/
-COPY hr-workspace.js hr-workspace.css hr-pool.js hr-demands.js hr-departments.js /usr/share/nginx/html/
+COPY hr-workspace.js hr-workspace.css hr-pool.js hr-demands.js hr-departments.js hr-passive.js /usr/share/nginx/html/
