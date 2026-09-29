@@ -1,8 +1,20 @@
 """Local-only visual QA with synthetic fixtures; never calls production APIs."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import json
+import sys
+import tempfile
+import urllib.parse
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT.parent / "scripts/boss-agent"))
+import talent_pool
+import recruitment_demands
+import hr_departments
+TEMP = tempfile.TemporaryDirectory(prefix="heyi-pool-preview-")
+talent_pool.DB = Path(TEMP.name) / "talents.sqlite3"
+TEST_USER = {"id": "qa", "username": "13800000000", "organizationCode": "heyi",
+             "platformAdmin": True, "roles": ["ADMIN"]}
 HTML = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>招聘工作台 · 本地界面验收</title><link rel="stylesheet" href="/resend-theme.css"><link rel="stylesheet" href="/hr-workspace.css">
@@ -18,6 +30,9 @@ nav a.active{color:#fff;background:#262626;font-weight:650}
 </style><div class="qa-shell"><aside><strong>HOYEE</strong><nav>
 <a href="#hr-overview" data-hr-route="overview">招聘工作台</a>
 <a href="#hr-jobs" data-hr-route="jobs">职位管理</a>
+<a href="#hr-pool" data-hr-route="pool">储备人才库</a>
+<a href="#hr-demands" data-hr-route="demands">招聘需求池</a>
+<a href="#hr-departments" data-hr-route="departments">部门管理</a>
 <a href="#hr-talent" data-hr-route="talent">人才寻源</a>
 <a href="#hr-applications" data-hr-route="applications">投递申请</a>
 <a href="#hr-chats" data-hr-route="chats">沟通记录</a>
@@ -33,6 +48,10 @@ function handleSessionExpired(){}
 const qaRequests=[];
 let fixture;
 async function api(url,options={}){
+ if(url.startsWith('/api/v1/hr/pool')||url.startsWith('/api/v1/hr/demands')||url.startsWith('/api/v1/hr/departments')){
+   const response=await fetch(url,options);const data=await response.json();
+   if(!response.ok)throw Error(data.message);return data;
+ }
  qaRequests.push({url,method:options.method||'GET'});
  if(options.method==='POST'){
    if(url.endsWith('/login/logout')){sessionStorage.setItem('qaLogin','disconnected');return {data:{state:'disconnected'}};}
@@ -60,7 +79,7 @@ window.HeyiHrTransport={
  disconnect:async()=>{qaPaired=false;sessionStorage.setItem('qaLogin','disconnected');return {cleared:true};},
  reset:()=>{qaPaired=false;}
 };
-</script><script src="/hr-workspace.js"></script><script>
+</script><script src="/hr-pool.js"></script><script src="/hr-demands.js"></script><script src="/hr-departments.js"></script><script src="/hr-workspace.js"></script><script>
 fetch('/fixtures').then(r=>r.json()).then(value=>{
  fixture=value;HrWorkspace.enter(location.hash.replace('#hr-','')||'overview');
 });
@@ -73,7 +92,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/api/v1/hr/departments":
+            return self.json_response(200,{"data":hr_departments.listing(TEST_USER)})
+        if path in ("/api/v1/hr/pool","/api/v1/hr/demands"):
+            query={key: values[-1] for key,values in urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True).items()}
+            action=recruitment_demands.listing if path.endswith("demands") else talent_pool.listing
+            return self.json_response(200, {"success": True, "data": action(TEST_USER,query)})
         allowed = {"/hr-workspace.js": ("text/javascript", ROOT / "hr-workspace.js"),
+                   "/hr-pool.js": ("text/javascript", ROOT / "hr-pool.js"),
+                   "/hr-demands.js": ("text/javascript", ROOT / "hr-demands.js"),
+                   "/hr-departments.js": ("text/javascript", ROOT / "hr-departments.js"),
                    "/resend-theme.css": ("text/css", ROOT / "resend-theme.css"),
                    "/hr-workspace.css": ("text/css", ROOT / "hr-workspace.css"),
                    "/fixtures": ("application/json", ROOT / "test/fixtures/hr-workspace.json")}
@@ -92,6 +120,49 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def json_response(self,status,body):
+        data=json.dumps(body,ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type","application/json; charset=utf-8")
+        self.send_header("Content-Length",str(len(data)))
+        self.end_headers();self.wfile.write(data)
+
+    def do_POST(self):
+        if self.headers.get("Origin") != "http://127.0.0.1:18676":
+            return self.json_response(403,{"message":"Local QA only"})
+        if self.path not in ("/api/v1/hr/pool/talents","/api/v1/hr/pool/projects","/api/v1/hr/demands/save","/api/v1/hr/demands/generate","/api/v1/hr/departments/save"):
+            return self.json_response(404,{"message":"Unknown local fixture"})
+        try:
+            length=int(self.headers.get("Content-Length","0"))
+            if not 0 < length <= 131072:raise ValueError("Invalid length")
+            body=json.loads(self.rfile.read(length))
+            if self.path == "/api/v1/hr/departments/save":
+                row=hr_departments.save(TEST_USER,body)
+                return self.json_response(200,{"data":row})
+            if self.path.endswith("generate"):
+                result=recruitment_demands.generate(TEST_USER,body,"local-test-only")
+                return self.json_response(200,{"success":True,"data":result})
+            if self.path.endswith("/save"):
+                data=recruitment_demands.save(TEST_USER,body,hr_departments.listing(TEST_USER)["items"])
+            else:
+                action=talent_pool.save_project if self.path.endswith("projects") else talent_pool.save
+                data=action(TEST_USER,body)
+            self.json_response(200,{"success":True,"data":data})
+        except ValueError as error:
+            self.json_response(400,{"message":str(error)})
+
 
 if __name__ == "__main__":
+    # Replace the provider boundary: local UI QA never calls a paid AI model.
+    def fake_driver(snapshot,_cookie):
+        return {"modelId":"测试驱动模型（合成结果）","portrait":{
+            "summary":snapshot["position"]+"岗位人才画像（合成测试）",
+            "mustHave":[snapshot["education"],"具备对应岗位的实操经验"],"niceToHave":["相关行业背景"],
+            "experience":["独立承担项目目标并复盘"],"evaluationFocus":["用具体案例验证业务能力"]},
+            "competencies":[{"name":name,"description":"能够独立完成岗位关键任务","level":"独立负责",
+                "evidence":"以真实项目结果和工作样本验证"} for name in ["业务分析","项目执行","跨部门协作","结果复盘"]],
+            "interviewQuestions":[{"competency":"业务分析","question":f"问题 {i+1}：请描述一次你负责的业务改进项目。",
+                "followUps":["如何定义目标？","如何验证结果？"],"evaluationCriteria":"1分：无具体案例；3分：有行动和结果；5分：有证据和复盘",
+                "strongAnswerSignals":["以数据验证结果","主动说明个人贡献"]} for i in range(6)]}
+    recruitment_demands.call_driver=fake_driver
     ThreadingHTTPServer(("127.0.0.1", 18676), Handler).serve_forever()

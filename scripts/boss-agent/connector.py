@@ -1427,6 +1427,9 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             return
         parsed = urllib.parse.urlsplit(self.path)
         route = parsed.path.removeprefix("/api/v1/hr/")
+        if route in ("pool", "demands", "departments"):
+            self.pool_request(write=False, parsed=parsed)
+            return
         if route == "desktop/transport":
             self.send_json(200, {"success": True, "data": {"mode": "local", "port": 17861}})
             return
@@ -1503,6 +1506,10 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                              "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()})
 
     def do_POST(self):
+        if self.path in ("/api/v1/hr/pool/talents", "/api/v1/hr/pool/projects",
+                         "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate", "/api/v1/hr/departments/save"):
+            self.pool_request(write=True)
+            return
         if self.path.startswith("/api/v1/hr/desktop/"):
             self.desktop_request()
             return
@@ -1581,6 +1588,51 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 return
             self.send_json(202, {"success": True, "data": {"state": state["state"]}})
 
+    def pool_request(self, write=False, parsed=None):
+        import talent_pool
+        import recruitment_demands
+        import hr_departments
+        if write:
+            if self.headers.get("Origin") != ALLOWED_ORIGIN:
+                self.send_json(403, {"success": False, "message": "请求来源不正确"})
+                return
+            access = self.authorized()
+            if access != 200:
+                self.send_json(access, {"success": False, "message": "招聘模块仅限指定平台管理员"})
+                return
+        try:
+            if write:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 131072:
+                    raise ValueError("资料内容过长或为空")
+                if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                    raise ValueError("请求格式不正确")
+                body = json.loads(self.rfile.read(length))
+                if self.path == "/api/v1/hr/demands/generate":
+                    result = recruitment_demands.generate(self.desktop_user, body, self.headers.get("Cookie", ""))
+                elif self.path == "/api/v1/hr/demands/save":
+                    result = recruitment_demands.save(self.desktop_user, body,
+                        hr_departments.listing(self.desktop_user)["items"])
+                elif self.path == "/api/v1/hr/departments/save":
+                    result = hr_departments.save(self.desktop_user, body)
+                else:
+                    action = talent_pool.save_project if self.path.endswith("/projects") else talent_pool.save
+                    result = action(self.desktop_user, body)
+            else:
+                query = {key: values[-1] for key, values in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
+                if parsed.path.endswith("/departments"):
+                    result = hr_departments.listing(self.desktop_user)
+                else:
+                    action = recruitment_demands.listing if parsed.path.endswith("/demands") else talent_pool.listing
+                    result = action(self.desktop_user, query)
+            self.send_json(200, {"success": True, "data": result})
+        except talent_pool.Conflict as error:
+            self.send_json(409, {"success": False, "message": str(error)})
+        except (ValueError, TypeError, UnicodeError) as error:
+            self.send_json(400, {"success": False, "message": str(error)})
+        except (OSError, sqlite3.Error):
+            self.send_json(503, {"success": False, "message": "人才库暂时不可用，请稍后重试"})
+
     def desktop_request(self):
         import desktop_bridge
         route = self.path.removeprefix("/api/v1/hr/desktop/")
@@ -1636,6 +1688,8 @@ def restore_login_state():
 
 
 def main():
+    import recruitment_demands
+    recruitment_demands.recover_interrupted()
     restore_login_state()
     with resume_db():
         pass

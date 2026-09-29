@@ -6,7 +6,7 @@
     ? globalThis.HeyiHrTransport.api(path, options) : api(path, options);
   const hrFetch = (path, options) => globalThis.HeyiHrTransport
     ? globalThis.HeyiHrTransport.request(path, options) : fetch(path, options);
-  const routes = new Set(['overview', 'jobs', 'talent', 'applications', 'chats', 'resume']);
+  const routes = new Set(['overview', 'jobs', 'talent', 'applications', 'chats', 'resume', 'pool', 'demands', 'departments']);
   const panels = new Map();
   let current = 'overview', sequence = 0, page = 1, talentAction = 'candidates';
   let loginTimer = null;
@@ -117,6 +117,9 @@
   element('h2','招聘工作',shortcutHeader);element('span','从需求到沟通，有序推进。',shortcutHeader);
   const shortcutGrid=element('div','',shortcuts,'hr-shortcut-grid');
   const shortcutEntries=[
+    ['demands','招聘需求池','明确岗位需求，用 AI 辅助画像与面试。','M5 3h14v18H5z M8 8h8 M8 12h8 M8 16h5'],
+    ['departments','部门管理','统一维护部门和经理，保持组织信息一致。','M9 3h6v5H9z M3 16h6v5H3z M15 16h6v5h-6z M12 8v4 M6 16v-4h12v4'],
+    ['pool','储备人才库','按项目组沉淀人才，持续跟进招聘阶段。','M4 5h16v15H4z M4 10h16 M9 10v10'],
     ['jobs','职位管理','管理在招岗位，按职位跟进人才。','M4 7h16v13H4z M8 7V4h8v3 M4 12h16 M10 12v3h4v-3'],
     ['talent','人才寻源','按岗位查看推荐，搜索合适的人。','M14 10a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M3 21v-2a5 5 0 0 1 10 0v2 M17 5v6 M14 8h6'],
     ['applications','投递申请','查看主动投递，及时处理候选人。','M4 4h16v16H4z M7 9h10 M7 13h7 M7 17h4'],
@@ -658,7 +661,18 @@
       if (canResume) button('查看简历', actions, () => openResume(row)).className = 'hr-primary';
       if (conversationId(row)) button('查看沟通', actions, () => openConversation(row)).className = 'hr-primary';
       if (!canResume && !conversationId(row)) element('span', '平台暂未开放详细资料入口', actions, 'hr-hint');
+      if(pool)button('加入储备人才库',actions,()=>reserveCandidate(row));
     }
+  }
+  function reserveCandidate(row){
+    const info=person(row);
+    const sourceId=pick(info,'encryptGeekId','encGeekId','geekId')||pick(row,'encryptGeekId','encGeekId','geekId')||conversationId(row);
+    pool?.add({name:candidateName(row)||'',position:pick(info,'expectPositionName','positionName','expectPosition','position'),
+      education:pick(info,'geekDegree','degreeName','degreeDesc'),
+      experience:pick(info,'geekWorkYear','workYearDesc','work_years','workYear'),
+      city:pick(info,'expectLocationName','locationName','city'),
+      company:pick((row.showWorks||info.geekWorks||[])[0],'company'),
+      source:'boss',sourceId:sourceId?String(sourceId):''});
   }
   function conversationLayout(box) {
     resumeRequestBadges.clear();
@@ -898,8 +912,14 @@
       if (ticket === sequence) box.setAttribute('aria-busy','false');
     }
   }
+  const pool=globalThis.createHrPool?.({root,section,element,button,allowed,navigate});
+  const demands=globalThis.createHrDemands?.({root,section,element,button,allowed});
+  const departmentManager=globalThis.createHrDepartments?.({root,section,element,button,allowed});
   function enter(route) {
     if (!allowed()) return;
+    pool?.leave();
+    demands?.leave();
+    departmentManager?.leave();
     loginSuccess.hidden = true;
     current = routes.has(route) ? route : 'overview';
     clearInterval(resumeTimer);
@@ -912,8 +932,17 @@
     });
     if (['talent','applications','chats'].includes(current) && !jobRecords.length) loadJobOptions();
     const titles={overview:['招聘工作台','从职位出发，让每一次沟通都有进展。'],jobs:['职位管理','从在招职位开始，查看推荐人才和投递。'],talent:['人才寻源','找到适合岗位的人，再开始有价值的沟通。'],applications:['投递申请','及时查看主动投递，跟进合适的候选人。'],chats:['沟通与简历','每一次沟通、每一份简历，在这里继续。'],resume:['在线简历','查看工作、项目与教育经历，了解完整的人才画像。']};
+    titles.pool=['储备人才库','以项目组归档人才，跟进每一个招聘阶段。'];
+    titles.demands=['招聘需求池','梳理岗位需求，生成画像、胜任能力和结构化面试题。'];
+    titles.departments=['部门管理','统一部门信息与负责人，供招聘需求直接选用。'];
     pageTitle.textContent=titles[current][0];pageSubtitle.textContent=titles[current][1];
-    if (current === 'overview') {
+    if (current === 'departments') {
+      departmentManager?.enter();
+    } else if (current === 'demands') {
+      demands?.enter();
+    } else if (current === 'pool') {
+      pool?.enter();
+    } else if (current === 'overview') {
       checkLogin();
     } else if (current === 'jobs' || current === 'applications' || current === 'chats') {
       run(current === 'chats' && selectedConversation ? 'messages' : current);
@@ -939,10 +968,16 @@
     enter(link.dataset.hrRoute);
   }));
   globalThis.HrWorkspace = {enter, allowed, beginLogout(){
+    pool?.reset();
+    demands?.reset();
+    departmentManager?.reset();
     ++sequence;++sessionGeneration;++loginGeneration;
     stopLoginPolling();clearInterval(resumeTimer);resumeTimer=null;
     loginActionInFlight=true;
   },reset(){
+    pool?.reset();
+    demands?.reset();
+    departmentManager?.reset();
     globalThis.HeyiHrTransport?.reset();
     ++sequence;
     ++sessionGeneration;

@@ -15,6 +15,37 @@
 .hr-form{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:13px 0 23px}
 .hr-field{display:flex;flex:1 1 210px;flex-direction:column;gap:7px;min-width:175px;font-size:13px;font-weight:600}
 .hr-field input,.hr-field select{width:100%;min-width:0;border:1px solid var(--line-strong,#d4d4d4);border-radius:var(--radius-sm,6px);background:var(--surface,#fff);padding:10px 12px;color:var(--hr-ink);font:inherit}
+.hr-pool-toolbar{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:26px}
+.hr-pool-toolbar h2{font-size:21px}
+.hr-pool-tabs{display:flex;gap:6px;border-bottom:1px solid var(--hr-border);padding-bottom:12px;margin-bottom:20px;overflow:auto}
+.hr-pool-tabs button{flex:none;cursor:pointer;border:0;border-radius:7px;background:transparent;color:var(--hr-muted);padding:10px 17px;font:inherit;font-size:13px}
+.hr-pool-tabs button[aria-pressed=true]{background:var(--solid,#111);color:var(--on-solid,#fff);font-weight:600}
+.hr-pool-empty{text-align:center;padding:58px 20px}
+.hr-pool-empty-icon{display:block;font-size:40px;color:var(--hr-muted);margin-bottom:18px}
+.hr-pool-dialog{color:var(--hr-ink);background:var(--surface,#fff);border:1px solid var(--hr-border);border-radius:16px;padding:28px;width:min(680px,calc(100vw - 32px));max-height:85vh;overflow:auto;box-shadow:0 24px 80px #0003}
+.hr-pool-dialog::backdrop{background:#0006;backdrop-filter:blur(3px)}
+.hr-pool-dialog h2{font-size:23px;margin:0 0 8px}
+.hr-pool-fields{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:24px 0 18px}
+.hr-pool-dialog .hr-field{min-width:0}
+.hr-pool-dialog .hr-actions{justify-content:flex-end;margin-top:22px}
+.hr-pool-dialog textarea{width:100%;resize:vertical;border:1px solid var(--line-strong,#d4d4d4);border-radius:6px;background:var(--surface,#fff);padding:10px 12px;color:var(--hr-ink);font:inherit}
+.hr-pool-project-dialog{max-width:460px}
+.hr-pool-project-dialog .hr-field{margin-top:18px}
+.hr-pool-note{white-space:pre-wrap;overflow-wrap:anywhere}
+.hr-demand-dialog{width:min(1000px,calc(100vw - 32px))}
+.hr-demand-dialog form>.hr-field{margin-top:18px}
+.hr-demand-dialog .hr-pool-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
+.hr-demand-ai{margin-top:30px;border-top:1px solid var(--hr-border);padding-top:24px}
+.hr-demand-ai .hr-pool-tabs{margin-top:20px}
+.hr-demand-ai h4{margin:12px 0 10px;font-size:15px}
+.hr-demand-ai p,.hr-demand-list{font-size:13px;line-height:1.85;overflow-wrap:anywhere;white-space:pre-wrap}
+.hr-demand-list{padding-left:20px;margin:10px 0}
+.hr-demand-list li{margin:6px 0}
+.hr-demand-summary{padding:18px;border:1px solid var(--hr-border);border-radius:10px;background:var(--surface-soft,#fafafa)}
+.hr-demand-ai .is-generating::before{content:"";width:13px;height:13px;border:2px solid var(--hr-border);border-top-color:var(--hr-ink);border-radius:50%;animation:hr-login-spin 1s linear infinite}
+@media(prefers-reduced-motion:reduce){.hr-demand-ai .is-generating::before{animation:none}}
+@media(max-width:650px){.hr-demand-dialog .hr-pool-fields{grid-template-columns:1fr}}
+@media(max-width:650px){.hr-pool-toolbar{align-items:flex-start;flex-direction:column}.hr-pool-fields{grid-template-columns:1fr}.hr-pool-dialog{padding:20px}.hr-pool-tabs button{padding:9px 12px}}
 .hr-field input:focus,.hr-field select:focus{border-color:var(--hr-ink);outline:1px solid var(--hr-ink);outline-offset:0;box-shadow:none}
 .hr-actions,.hr-pagination{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .hr-result{min-height:55px;line-height:1.55}

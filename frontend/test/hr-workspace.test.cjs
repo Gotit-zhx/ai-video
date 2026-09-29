@@ -21,6 +21,9 @@ class Node {
   addEventListener(key,callback) {this.events[key]=callback;}
   querySelectorAll(selector) {return all(this).filter(n=>selector==='.hr-result'&&n.className.split(' ').includes('hr-result'));}
   click() {if(!this.disabled)return this.events.click?.({currentTarget:this,preventDefault(){}});}
+  showModal(){this.open=true;this.hidden=false;}
+  close(){this.open=false;this.hidden=true;}
+  reportValidity(){return true;}
 }
 const all = node => [node,...node.children.flatMap(all)];
 function setup(overrides={}) {
@@ -34,7 +37,7 @@ function setup(overrides={}) {
     activeWorkspace:'hr',location:{pathname:'/',search:'',hash:''},
     history:{pushState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));},
       replaceState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));}},
-    switchWorkspace(){},URLSearchParams,encodeURIComponent,Date,URL,
+    switchWorkspace(){},URLSearchParams,encodeURIComponent,Date,URL,crypto:require('node:crypto'),
     setInterval(fn,ms){const id=++timerSequence;timers.set(id,{fn,ms});return id;},
     clearInterval(id){timers.delete(id);},setTimeout(){},addEventListener(){},confirm:overrides.confirm || (()=>false),
     fetch:overrides.fetch || (async()=>({ok:false,status:503})),
@@ -47,15 +50,101 @@ function setup(overrides={}) {
       return {data:structuredClone(fixtures[key==='candidates'?'recommendations':key])};
     }};
   if(overrides.transport)env.HeyiHrTransport={api:env.api,...overrides.transport};
-  env.window=env;vm.createContext(env);vm.runInContext(source,env);
+  env.window=env;vm.createContext(env);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-pool.js'),'utf8'),env);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-demands.js'),'utf8'),env);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-departments.js'),'utf8'),env);
+  vm.runInContext(source,env);
   const visible=()=>{const visit=node=>node.hidden?[]:[node,...node.children.flatMap(visit)];return visit(root);};
   const click=async(text)=>{const node=visible().find(n=>n.tagName==='button'&&n.textContent===text);
     assert.ok(node,'button exists: '+text);await node.click();await flush();};
-  const text=()=>visible().map(n=>n._text).join('\n');
+const text=()=>visible().map(n=>n._text).join('\n');
   const enter=async route=>{env.HrWorkspace.enter(route);await flush();};
   const tick=async(ms)=>{for(const timer of [...timers.values()])if(timer.ms===ms)await timer.fn();await flush();};
   return {root,env,calls,click,text,enter,visible,timers,tick};
 }
+
+const poolResult=()=>({items:[{id:'talent-1',name:'测试人才',education:'本科',experience:'5年',stage:'first',
+  projectId:'project-1',version:1,updatedAt:'2026-09-29T00:00:00Z'}],
+  projects:[{id:'project-1',name:'电商项目组',version:1}],counts:{all:1,first:1},total:1,page:1,pages:1});
+test('talent pool uses platform API without pairing and combines independent filters',async()=>{
+  const app=setup({transport:{connection:()=>({paired:false})},api:async()=>({data:poolResult()})});
+  app.env.HeyiHrTransport.api=async()=>{throw Error('Pool must not call BOSS');};
+  await app.enter('pool');
+  assert.match(app.text(),/测试人才/);assert.match(app.text(),/本科/);assert.match(app.text(),/电商项目组/);
+  assert.ok(app.calls.every(c=>c.url.startsWith('/api/v1/hr/pool')));
+  const select=app.visible().find(n=>n.tagName==='select'&&n.children.some(v=>v.textContent==='全部项目组'));
+  select.value='project-1';await select.events.change();await flush();
+  await app.click('一面 1');
+  assert.match(app.calls.at(-1).url,/stage=first&project=project-1/);
+  assert.equal(app.timers.size,0);
+});
+test('talent pool drops late responses after logout and clears personal data',async()=>{
+  let resolve;
+  const app=setup({api:()=>new Promise(r=>resolve=r)});
+  await app.enter('pool');app.env.HrWorkspace.reset();
+  resolve({data:poolResult()});await flush();
+  assert.doesNotMatch(app.text(),/测试人才/);
+});
+test('candidate reserve dialog saves normalized fields through platform only',async()=>{
+  const app=setup({api:async(url)=>({data:url.startsWith('/api/v1/hr/pool')?poolResult():fixtures.recommendations})});
+  await app.enter('talent');await app.click('搜索人才');
+  // A source detail fetch is not needed to save the information already rendered.
+  const add=app.visible().find(n=>n.tagName==='button'&&n.textContent==='加入储备人才库');
+  assert.ok(add);await add.click();await flush();
+  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog');
+  assert.equal(dialog.open,true);
+  const form=dialog.children[0];
+  await form.events.submit({preventDefault(){}});await flush();
+  const save=app.calls.find(c=>c.url.endsWith('/pool/talents'));
+  assert.ok(save);const body=JSON.parse(save.options.body);
+  assert.equal(body.source,'boss');assert.ok(body.name);assert.ok(body.sourceId);
+  assert.equal(body.securityId,undefined);
+});
+const demandDirectory=()=>({items:[{id:'dept-1',name:'电商组',manager:'测试经理',status:'ACTIVE',code:'ECOM',version:1}]});
+const demandRow=()=>({id:'d1',version:1,date:'2026-09-29',position:'电商运营',department:'电商组',departmentId:'dept-1',manager:'测试经理',
+  category:'运营',headcount:2,education:'本科',years:3,status:'recruiting',responsibilities:'店铺运营',
+  requirements:'电商经验',aiStatus:'idle',aiResult:{}});
+test('recruitment demands operate without the assistant and generate once via platform',async()=>{
+  let row=demandRow(),started=0;
+  const app=setup({transport:{connection:()=>({paired:false})},api:async(url,options)=>{
+    if(url==='/api/v1/hr/departments')return {data:demandDirectory()};
+    if(url.endsWith('/generate')){started++;row={...row,aiStatus:'running',aiJob:'j1'};return {data:row};}
+    if(url.includes('?id='))return {data:{item:row}};
+    return {data:{items:[row],counts:{all:1,recruiting:1},total:1,page:1,pages:1}};
+  }});
+  app.env.HeyiHrTransport.api=async()=>{throw Error('Demand must not call BOSS');};
+  await app.enter('demands');assert.match(app.text(),/电商运营/);
+  await app.click('查看 / 编辑');await app.click('一键 AI 生成');
+  assert.equal(started,1);assert.match(app.text(),/驱动模型生成中/);
+  await app.tick(2500);assert.equal(started,1);
+  row={...row,aiStatus:'failed',aiError:'模型不可用'};await app.tick(2500);
+  assert.match(app.text(),/模型不可用/);assert.equal(app.timers.size,0);
+  assert.ok(app.calls.every(c=>c.url.startsWith('/api/v1/hr/demands')||c.url==='/api/v1/hr/departments'));
+});
+test('late demand save response cannot repopulate personal data after logout',async()=>{
+  let resolve;
+  const app=setup({api:async(url)=>{
+    if(url==='/api/v1/hr/departments')return {data:demandDirectory()};
+    if(url.endsWith('/save'))return new Promise(r=>resolve=r);
+    return {data:{items:[],counts:{all:0},total:0,page:1,pages:1}};
+  }});
+  await app.enter('demands');await app.click('新建需求');
+  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-demand-dialog');
+  const form=dialog.children[0];const pending=form.events.submit({preventDefault(){}});
+  await flush();app.env.HrWorkspace.reset();resolve({data:demandRow()});await pending;await flush();
+  assert.doesNotMatch(app.text(),/测试经理|电商运营/);
+});
+test('department module uses its independent HR directory and does not touch system departments or BOSS',async()=>{
+  const app=setup({transport:{connection:()=>({paired:false})},api:async()=>({data:demandDirectory()})});
+  app.env.HeyiHrTransport.api=async()=>{throw Error('Must not use BOSS');};
+  await app.enter('departments');assert.match(app.text(),/电商组/);assert.match(app.text(),/测试经理/);
+  assert.ok(app.calls.every(c=>c.url==='/api/v1/hr/departments'));
+  await app.click('编辑部门');
+  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-department-dialog');
+  const code=all(dialog).find(n=>n.name==='code');
+  assert.equal(code.value,'ECOM');
+});
 
 test('overview has useful entry points and no webpage QR or QR requests',async()=>{
   const app=setup({api:async()=>({data:{state:'pending',phase:'qr'}})});
