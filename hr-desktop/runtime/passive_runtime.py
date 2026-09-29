@@ -231,16 +231,28 @@ def step(c, db, request):
     if delay:
         put_state(db, 'nextAt', now+delay)
         return status(db, 'budget_wait')
-    # Discovery has a bounded deadline even when older conversations are queued.
-    if rules and now-float(get_state(db, 'discoveredAt')) >= 120:
-        return discover(c, db, rules)
-    with c.resume_db() as tracked:
-        waiting = tracked.execute("SELECT 1 FROM resume_requests WHERE state IN ('waiting','uncertain') LIMIT 1").fetchone()
-    waiting = waiting or db.execute("SELECT 1 FROM people WHERE state IN ('requested','request_uncertain') LIMIT 1").fetchone()
-    if waiting and now-float(get_state(db, 'receivedAt')) >= 120:
-        return receive(c, db)
     pending = [r for r in db.execute("SELECT * FROM people WHERE state IN ('inspect','reply_ready','ready')")
                if r['rule'] in rules]
+    # A budget wait can make every maintenance deadline overdue. Always taking
+    # discovery first then consumes each newly available slot indefinitely.
+    # Alternate maintenance with queued work, persisting the turn across waits
+    # and process restarts. Oldest-due maintenance also keeps receipt polling
+    # from being starved by list refreshes.
+    if not pending or get_state(db, 'lastLane', 'work') != 'maintenance':
+        due = []
+        discovered = float(get_state(db, 'discoveredAt'))
+        if rules and now-discovered >= 120:
+            due.append((discovered, 'discover'))
+        with c.resume_db() as tracked:
+            waiting = tracked.execute("SELECT 1 FROM resume_requests WHERE state IN ('waiting','uncertain') LIMIT 1").fetchone()
+        waiting = waiting or db.execute("SELECT 1 FROM people WHERE state IN ('requested','request_uncertain') LIMIT 1").fetchone()
+        received = float(get_state(db, 'receivedAt'))
+        if waiting and now-received >= 120:
+            due.append((received, 'receive'))
+        if due:
+            put_state(db, 'lastLane', 'maintenance')
+            return discover(c, db, rules) if min(due)[1] == 'discover' else receive(c, db)
+    put_state(db, 'lastLane', 'work')
     def priority(row):
         detail = json.loads(row['body'])
         return (0 if row['state'] == 'ready' else 1 if row['state'] == 'reply_ready' else 2,

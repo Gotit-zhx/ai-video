@@ -165,6 +165,32 @@ class WorkflowTest(unittest.TestCase):
         self.c.cli_json.return_value={'ok':True,'data':{'friendList':[]}}
         self.step();self.c.cli_json.assert_called_once_with('hr','chat','--job-id','job1','--page','1')
 
+    def test_budget_recovery_cannot_starve_queued_reply_with_list_refreshes(self):
+        self.pending('reply_ready')
+        with flow.database(self.root) as db:flow.put_state(db,'discoveredAt',0)
+        self.c.cli_json.return_value={'ok':True,'data':{'friendList':[]}}
+        self.step()  # Due list maintenance consumes this available slot.
+        self.c.cli_json.assert_called_once_with('hr','chat','--job-id','job1','--page','1')
+        self.c.cli_json.reset_mock()
+        self.now+=31;self.c.passive_delay=lambda:180
+        self.assertEqual(self.step()['data']['phase'],'budget_wait')
+        self.now+=181;self.c.passive_delay=lambda:0
+        self.c.cli_json.return_value={'ok':True,'data':{'sent':True}}
+        self.assertEqual(self.step()['data']['phase'],'request_queued')
+        self.c.cli_json.assert_called_once_with('hr','reply','1','王同学，可以沟通下运营。')
+        self.c.request_resume.assert_not_called()
+
+    def test_oldest_maintenance_receives_before_overdue_discovery(self):
+        self.pending('requested')
+        with self.c.resume_db() as db:db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
+        with flow.database(self.root) as db:
+            flow.put_state(db,'discoveredAt',500);flow.put_state(db,'receivedAt',100)
+        self.step()
+        self.c.poll_resumes_once.assert_called_once()
+        self.c.cli_json.assert_not_called()
+        self.now+=31;self.step()
+        self.c.cli_json.assert_called_once_with('hr','chat','--job-id','job1','--page','1')
+
     def test_newest_activity_is_inspected_first(self):
         self.pending(friend='1',activity=101);self.pending(friend='2',activity=990)
         self.messages(self.message(sender='2'));self.step()
