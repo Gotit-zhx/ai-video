@@ -9,6 +9,7 @@ import vm from "node:vm";
 import { ImageOperationStore } from "../src/image-operation-store.js";
 import { callImageModelWithCopyrightFallback } from "../src/image-model-fallback.js";
 import { supportsNativeTransparentPng } from "../src/image-output-capabilities.js";
+import { readImageResponse } from "../src/image-stream-response.js";
 
 const source = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
 const helperStart = source.indexOf("function imageApiUsage(");
@@ -43,7 +44,9 @@ function harness(dir, reply, store = new ImageOperationStore(dir)) {
   const context = vm.createContext({
     Buffer, Blob, FormData, URL, randomUUID, callImageModelWithCopyrightFallback, supportsNativeTransparentPng,
     imageOperationStore: store, INTERNAL_TOKEN: "internal-unit-only",
-    AbortSignal: { timeout: () => undefined }, setTimeout: callback => callback(),
+    AbortController, DOMException, readImageResponse, clearTimeout,
+    AbortSignal: { timeout: () => undefined },
+    setTimeout: (callback, delay) => delay >= 900_000 ? setTimeout(callback, delay) : callback(),
     IMAGE_FETCH_DISPATCHER: {}, IMAGE_RESPONSE_TIMEOUT_MS: 900_000,
     IMAGE_CONCURRENCY_RETRY_DELAYS_MS: [0, 0, 0, 0], IMAGE_NETWORK_RETRY_DELAYS_MS: [0, 0], IMAGE_POLICY_RETRY_DELAYS_MS: [0, 0, 0],
     readBody: async request => request.body,
@@ -98,6 +101,42 @@ function harness(dir, reply, store = new ImageOperationStore(dir)) {
     }
   };
 }
+
+test("video streaming preserves all four references, requests zero previews and persists only final image", async t => {
+  const dir = await fixture(t);
+  const h = harness(dir, async call => {
+    assert.equal(call.fields.stream, "true");
+    assert.equal(call.fields.partial_images, "0");
+    assert.equal(call.fields.size, "2160x3840");
+    assert.equal(call.images.length, 4);
+    return new Response(`event: image_edit.completed\ndata: ${JSON.stringify({b64_json: PNG})}\n\n`,
+      {headers: {"content-type": "text/event-stream"}});
+  });
+  const body = input("stream-final-recovery-001");
+  body.model.baseUrl = "https://xbcl.link";
+  body.references = Array.from({length:4}, (_, i) => ({name:`ref${i}.png`,mimeType:"image/png",dataBase64:PNG}));
+  Object.assign(body, {size:"2160x3840", streamImages:true, singleProviderAttempt:true});
+  const first = await h.platform(body);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.artifact.dataBase64, PNG);
+  assert.deepEqual(plain((await h.platform(body)).body), plain(first.body));
+  assert.equal(h.calls.length, 1);
+});
+
+test("explicit streaming provider timeout is terminal for this POST and permits only the caller's budgeted recovery", async t => {
+  const dir = await fixture(t);
+  const h = harness(dir, async () => new Response(
+    'event: error\ndata: {"error":{"message":"The image did not finish before the timeout. Please try again."}}\n\n',
+    {headers: {"content-type":"text/event-stream"}}));
+  const body = input("stream-provider-timeout-001");
+  body.model.baseUrl = "https://xbcl.link";
+  Object.assign(body, {streamImages:true, singleProviderAttempt:true});
+  await assert.rejects(h.platform(body), error => error.failureKind === "PROVIDER_TIMEOUT"
+    && error.requestState === "REJECTED" && error.retryAuthorized === true && error.retrySafe === false);
+  assert.equal(h.calls.length, 1);
+  await assert.rejects(h.platform(body));
+  assert.equal(h.calls.length, 1);
+});
 
 test("video grid returns an acknowledgement while the original generation continues, then reuses its result", async t => {
   const dir = await fixture(t);

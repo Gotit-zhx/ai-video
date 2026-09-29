@@ -10,6 +10,21 @@ import static org.junit.jupiter.api.Assertions.*;
 class AiVideoImageAttemptsTest {
     @TempDir Path directory;
     final ObjectMapper mapper = new ObjectMapper();
+    @Test void legacyReceiptsKeepOriginalTransportAndOneAuthorizedRecoveryKeepsAllSpentCalls() throws Exception {
+        Path file = directory.resolve("recovery.json");
+        Files.writeString(file, """
+                {"spent":2,"attempts":[{"id":"original","inputHash":"hash","rejected":false}],
+                 "recoveryAllowance":1,"recoveryReason":"User requested one bounded recovery"}
+                """);
+        var ledger = new AiVideoImageAttempts(mapper);
+        assertFalse(Boolean.TRUE.equals(ledger.reserve(file, "hash", 0).attempt().stream()));
+        ledger.rejected(file, "original");
+        var next = ledger.reserve(file, "hash", 0);
+        assertTrue(next.attempt().stream());
+        ledger.rejected(file, next.attempt().id());
+        assertThrows(IllegalStateException.class, () -> ledger.reserve(file, "hash", 0));
+        assertEquals(3, mapper.readTree(Files.readString(file)).path("spent").asInt());
+    }
     @Test void timeoutsAndRestartsReuseReceiptWithoutRefundingBudget() {
         Path file = directory.resolve("requests.json");
         var first = new AiVideoImageAttempts(mapper).reserve(file, "prompt-a", 0);

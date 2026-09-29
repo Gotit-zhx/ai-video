@@ -15,8 +15,12 @@ final class AiVideoImageAttempts {
 
     AiVideoImageAttempts(ObjectMapper mapper) { this.mapper = mapper; }
 
-    record Attempt(String id, String inputHash, boolean rejected) {}
-    record State(int spent, List<Attempt> attempts) {}
+    record Attempt(String id, String inputHash, boolean rejected, Boolean stream) {}
+    record State(int spent, List<Attempt> attempts, Integer recoveryAllowance, String recoveryReason) {
+        State(int spent, List<Attempt> attempts) { this(spent, attempts, 0, null); }
+        int allowance() { return recoveryAllowance == null ? 0 : recoveryAllowance; }
+        int limit() { return LIMIT + allowance(); }
+    }
     record Reservation(Attempt attempt, boolean fresh) {}
 
     synchronized Reservation reserve(Path file, String inputHash, int historicalAttempts) {
@@ -26,19 +30,22 @@ final class AiVideoImageAttempts {
             if (attempt.inputHash().equals(inputHash) && !attempt.rejected())
                 return new Reservation(attempt, false);
         }
-        if (state.spent() >= LIMIT) throw new IllegalStateException(
-                "IMAGE_GENERATION_LIMIT: 此素材已达到最多 " + LIMIT + " 次生图上限；已停止新增生图，保留已有结果");
-        Attempt attempt = new Attempt(UUID.randomUUID().toString(), inputHash, false);
+        if (state.spent() >= state.limit()) throw new IllegalStateException(
+                "IMAGE_GENERATION_LIMIT: 此素材已达到最多 " + state.limit() + " 次生图上限；已停止新增生图，保留已有结果");
+        Attempt attempt = new Attempt(UUID.randomUUID().toString(), inputHash, false, true);
         var attempts = new ArrayList<>(state.attempts());
         attempts.add(attempt);
-        write(file, new State(state.spent() + 1, attempts));
+        write(file, new State(state.spent() + 1, attempts, state.recoveryAllowance(), state.recoveryReason()));
         return new Reservation(attempt, true);
     }
 
     synchronized void rejected(Path file, String id) {
         State state = read(file, 0);
+        // The legacy rejected flag means this terminal attempt will not be reused.
+        // A timeout is still spent: never refund it or infer that it was not billed.
         write(file, new State(state.spent(), state.attempts().stream()
-                .map(a -> a.id().equals(id) ? new Attempt(a.id(), a.inputHash(), true) : a).toList()));
+                .map(a -> a.id().equals(id) ? new Attempt(a.id(), a.inputHash(), true, a.stream()) : a).toList(),
+                state.recoveryAllowance(), state.recoveryReason()));
     }
 
     boolean hasRequest(Path file) { return Files.isRegularFile(file); }
@@ -49,6 +56,11 @@ final class AiVideoImageAttempts {
             State state = mapper.readValue(Files.readAllBytes(file), State.class);
             if (state.spent() < 0 || state.attempts() == null || state.spent() < state.attempts().size())
                 throw new IllegalStateException("invalid ledger");
+            // Only a separate, explicitly authorized recovery can add one slot.
+            // Normal retries and restarts never write an allowance.
+            if (state.allowance() < 0 || state.allowance() > 1
+                    || state.allowance() > 0 && (state.recoveryReason() == null || state.recoveryReason().isBlank()))
+                throw new IllegalStateException("invalid recovery authorization");
             return state;
         } catch (Exception error) {
             throw new IllegalStateException("IMAGE_GENERATION_LIMIT: 生图次数记录无法核对，已停止新增生图", error);

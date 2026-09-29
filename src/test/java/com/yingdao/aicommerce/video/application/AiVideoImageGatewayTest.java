@@ -16,6 +16,37 @@ import static org.mockito.Mockito.mock;
 
 class AiVideoImageGatewayTest {
     @TempDir Path directory;
+    @Test void completedTimeoutConsumesRemainingBudgetButNeverStartsAThirdAutomaticPost() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicInteger posts = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/images/generate", exchange -> {
+            exchange.getRequestBody().readAllBytes(); posts.incrementAndGet();
+            exchange.sendResponseHeaders(202, -1); exchange.close();
+        });
+        server.createContext("/v1/images/operations", exchange -> {
+            byte[] body = mapper.writeValueAsBytes(Map.of("status", "FAILED", "active", false, "updatedAt", 2,
+                    "error", Map.of("requestState","RESPONSE_TIMEOUT","failureKind","NETWORK_TIMEOUT",
+                            "retryAuthorized",true,"retrySafe",false)));
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.createContext("/v1/images/progress", exchange -> {exchange.sendResponseHeaders(404, -1); exchange.close();});
+        server.start();
+        try {
+            RestClient client = RestClient.create("http://127.0.0.1:" + server.getAddress().getPort());
+            var progress = new ImageRuntimeProgress(mock(AiVideoTaskItemMapper.class), client);
+            var gateway = new AiVideoImageGateway(client, new AiVideoImageAttempts(mapper), 1);
+            Path file = directory.resolve("timeout-budget.json");
+            var failure = assertThrows(IllegalStateException.class, () ->
+                    AiVideoImageProcessor.runWithImageRecovery(
+                            () -> gateway.generate(file,"hash",0,Map.of(),progress,"item","STORYBOARD_GRID"),
+                            ignored -> {}, () -> {}));
+            assertTrue(failure.getMessage().startsWith("IMAGE_GENERATION_LIMIT:"));
+            assertEquals(2, posts.get());
+        } finally { server.stop(0); }
+    }
     @Test void durableRuntimePayloadDecodesWithItsRequestMetadata() throws Exception {
         Class<?> response = Class.forName(AiVideoImageProcessor.class.getName() + "$PiImageResponse");
         assertNotNull(new ObjectMapper().convertValue(Map.of(

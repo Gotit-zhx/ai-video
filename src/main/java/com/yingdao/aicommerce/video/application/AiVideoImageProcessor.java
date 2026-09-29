@@ -219,6 +219,7 @@ public class AiVideoImageProcessor {
                 .orderByDesc(AiVideoTask::getUpdatedAt)
                 .last("LIMIT 100"));
         for (AiVideoTask task : recoverable) {
+            if (activeGenerationTaskIds.contains(task.getId())) continue;
             try {
                 List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                         .eq(AiVideoTaskItem::getTaskId, task.getId()));
@@ -264,12 +265,16 @@ public class AiVideoImageProcessor {
                         .le(AiVideoTask::getUpdatedAt, Instant.now().minus(Duration.ofSeconds(30)))
                         .orderByAsc(AiVideoTask::getUpdatedAt)
                         .last("LIMIT 100"));
-        for (AiVideoTask task : interruptedImageTasks) dispatchRecoveredGeneration(task.getId());
+        for (AiVideoTask task : interruptedImageTasks) {
+            if (!activeGenerationTaskIds.contains(task.getId())) dispatchRecoveredGeneration(task.getId());
+        }
         List<AiVideoTask> pipelined = taskMapper.selectList(new LambdaQueryWrapper<AiVideoTask>()
                 .eq(AiVideoTask::getStatus, "VIDEO_GENERATING")
                 .orderByDesc(AiVideoTask::getUpdatedAt)
                 .last("LIMIT 100"));
-        for (AiVideoTask task : pipelined) dispatchRecoveredGeneration(task.getId());
+        for (AiVideoTask task : pipelined) {
+            if (!activeGenerationTaskIds.contains(task.getId())) dispatchRecoveredGeneration(task.getId());
+        }
     }
 
 
@@ -289,7 +294,8 @@ public class AiVideoImageProcessor {
 
     static boolean retryableImageTransientFailure(String message) {
         if (message != null && (message.contains("IMAGE_GENERATION_LIMIT:")
-                || message.contains("IMAGE_RESULT_UNKNOWN:"))) return false;
+                || message.contains("IMAGE_RESULT_UNKNOWN:")
+                || message.contains("IMAGE_RECOVERY_PAUSED:"))) return false;
         if (message != null && (message.startsWith("VIDEO_REVIEW_PAUSED:") || message.startsWith("VIDEO_GRID_REJECTED:"))) return false;
         if (message == null || message.isBlank()) return false;
         if (ProductFunctionAnalysisService.isStructureAnalysisPaused(message))
@@ -535,6 +541,7 @@ public class AiVideoImageProcessor {
     static void runWithImageRecovery(ImageAttempt attempt, java.util.function.Consumer<String> onRetry,
                                      ImageRetryWait retryWait) throws Exception {
         int malformedResponses = 0;
+        int recoveryAttempts = 0;
         while (true) {
             if (Thread.currentThread().isInterrupted()) throw new InterruptedException("图片恢复已中断");
             try {
@@ -551,6 +558,9 @@ public class AiVideoImageProcessor {
                 // turn a persistent schema problem into unlimited paid model calls.
                 boolean retry = malformed ? ++malformedResponses <= 2 : retryableImageException(failure);
                 if (!retry) throw failure;
+                if (++recoveryAttempts > 6) throw new IllegalStateException(
+                        "IMAGE_RECOVERY_PAUSED: 图片步骤连续恢复失败，已暂停；成功素材和原请求均已保留，未重置生图次数。最后原因：" + message,
+                        failure);
                 onRetry.accept(message);
                 try {
                     retryWait.await();
@@ -2338,18 +2348,30 @@ public class AiVideoImageProcessor {
         if (asset == null || asset.getFilePath() == null) return false;
         try {
             if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) {
+                if (Files.isRegularFile(assetCachePath(asset.getFilePath()))) return true;
                 return ossStorage.exists(asset.getFilePath());
             }
             Path path = Path.of(asset.getFilePath()).toAbsolutePath().normalize();
             return path.startsWith(storageRoot) && Files.isRegularFile(path) && Files.size(path) > 0;
-        } catch (Exception ignored) {
-            return false;
+        } catch (Exception failure) {
+            // An unavailable object store is not proof that a paid image is missing.
+            // Returning false here would silently regenerate an already completed asset.
+            throw new IllegalStateException("参考图片读取失败：暂时无法核对已完成素材，已保留原图等待恢复", failure);
         }
     }
 
     private byte[] readAsset(String location) throws Exception {
         if (ossStorage != null && ossStorage.isOssLocation(location)) {
-            return ossStorage.readAllBytes(location, 64 * 1024 * 1024);
+            try {
+                Path cache = assetCachePath(location);
+                if (Files.isRegularFile(cache) && Files.size(cache) > 0
+                        && Files.size(cache) <= 64L * 1024 * 1024) return Files.readAllBytes(cache);
+                byte[] bytes = ossStorage.readAllBytes(location, 64 * 1024 * 1024);
+                cacheAsset(location, bytes);
+                return bytes;
+            } catch (Exception failure) {
+                throw new IllegalStateException("参考图片读取失败：素材存储连接中断或网络超时，将重读原素材，不重新生图", failure);
+            }
         }
         Path path = Path.of(location).toAbsolutePath().normalize();
         if (!path.startsWith(storageRoot) || !Files.isRegularFile(path)) {
@@ -2358,11 +2380,43 @@ public class AiVideoImageProcessor {
         return Files.readAllBytes(path);
     }
 
+    private Path assetCachePath(String location) {
+        return storageRoot.resolve(".asset-cache").resolve(sha256(location.getBytes(StandardCharsets.UTF_8)) + ".bin");
+    }
+
+    private void cacheAsset(String location, byte[] bytes) {
+        // Generated object keys are immutable UUIDs. Keep exact bytes so retries do
+        // not repeatedly download multi-megabyte 4K references from object storage.
+        Path file = assetCachePath(location);
+        Path temporary = file.resolveSibling(file.getFileName() + "." + java.util.UUID.randomUUID() + ".part");
+        try {
+            Files.createDirectories(file.getParent());
+            if (Files.getFileStore(file.getParent()).getUsableSpace() < 1024L * 1024 * 1024) return;
+            Files.write(temporary, bytes);
+            Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            try (var entries = Files.list(file.getParent())) {
+                var cached = entries.filter(path -> path.getFileName().toString().endsWith(".bin"))
+                        .sorted(Comparator.comparingLong(path -> path.toFile().lastModified())).toList();
+                long total = cached.stream().mapToLong(path -> path.toFile().length()).sum();
+                for (Path old : cached) {
+                    if (total <= 512L * 1024 * 1024) break;
+                    long size = Files.size(old);
+                    if (Files.deleteIfExists(old)) total -= size;
+                }
+            }
+        } catch (IOException failure) {
+            log.warn("Could not cache generated image locally; original stored asset remains available");
+        } finally {
+            try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
+        }
+    }
+
     private StoredMedia storeGenerated(AiVideoTask task, AiVideoTaskItem item, byte[] bytes,
                                        String contentType, String fileName) throws Exception {
         if (ossStorage != null) {
             String category = "generated-images/" + task.getOrganizationId() + "/" + task.getId() + "/" + item.getId();
             OssStorageService.StoredObject stored = ossStorage.store(bytes, contentType, category, fileName);
+            cacheAsset(stored.location(), bytes);
             return new StoredMedia(stored.location(), stored.size());
         }
         Path directory = storageRoot.resolve(task.getOrganizationId()).resolve(task.getId())

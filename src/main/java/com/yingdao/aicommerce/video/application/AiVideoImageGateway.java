@@ -40,6 +40,8 @@ final class AiVideoImageGateway {
         body.put("progressRequestId", id);
         body.put("asyncResult", true);
         body.put("singleProviderAttempt", true);
+        // Retain the original wire fingerprint when recovering a pre-stream request.
+        if (Boolean.TRUE.equals(reservation.attempt().stream())) body.put("streamImages", true);
         progress.begin(itemId, assetType, id, reservation.fresh() ? 0 : 1);
         try {
             if (reservation.fresh()) submit(body);
@@ -56,12 +58,22 @@ final class AiVideoImageGateway {
                     var error = operation.error() == null ? Map.<String,Object>of() : operation.error();
                     String state = String.valueOf(error.get("requestState"));
                     String kind = String.valueOf(error.get("failureKind"));
+                    if (!operation.active() && Boolean.TRUE.equals(error.get("retryAuthorized"))
+                            && ("NETWORK_TIMEOUT".equals(kind) || "PROVIDER_TIMEOUT".equals(kind))
+                            && ("RESPONSE_TIMEOUT".equals(state) || "REJECTED".equals(state))) {
+                        // Retry only after the runtime's request has fully ended. This consumes
+                        // another durable slot, including when the first call may have been billed.
+                        attempts.rejected(ledger, id);
+                        throw new IllegalStateException("图片通道响应超时，原请求已结束；将在剩余生图次数内恢复，已消耗次数不清零");
+                    }
                     if ("REJECTED".equals(state) || "NOT_SENT".equals(state)) {
                         attempts.rejected(ledger, id);
                         if ("CONCURRENCY".equals(kind) || "NOT_SENT".equals(state))
                             throw new IllegalStateException("图片服务暂不可用，网络超时或并发限制；将在剩余次数内恢复");
                     }
-                    throw new IllegalStateException("IMAGE_RESULT_UNKNOWN: 生图服务未返回可用图片（"
+                    throw new IllegalStateException("IMAGE_RESULT_UNKNOWN: "
+                            + ("RESPONSE_TIMEOUT".equals(state) ? "图片通道等待响应超时，未收到最终图片；" : "")
+                            + "生图服务未返回可用图片（"
                             + kind + " / " + String.valueOf(error.get("failureCode"))
                             + "）；已保留原请求，不会自动重复付费生成");
                 }

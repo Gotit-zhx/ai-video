@@ -20,6 +20,7 @@ import { readWatermarkChatStream } from "./watermark-chat-stream.js";
 import { callImageModelWithCopyrightFallback } from "./image-model-fallback.js";
 import { supportsNativeTransparentPng } from "./image-output-capabilities.js";
 import { ImageOperationStore } from "./image-operation-store.js";
+import { readImageResponse } from "./image-stream-response.js";
 import { imageLookup } from "./image-transport.js";
 import { Agent as UndiciAgent } from "undici";
 import {
@@ -1285,20 +1286,31 @@ async function requestImageModel(endpoint, headers, bodyFactory, onProgress = ()
   while (true) {
     await options.beforeAttempt?.({ requestId, networkRetryCount, attempt: safeRetryCount + 1 });
     let result, responseText, payload;
+    const controller = options.streamImages ? new AbortController() : null;
+    let idleTimer;
+    const activity = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(new DOMException(
+        "Image response inactive timeout", "TimeoutError")), IMAGE_RESPONSE_TIMEOUT_MS);
+      idleTimer.unref?.();
+    };
     try {
       onProgress("GENERATING", safeRetryCount + 1);
+      if (controller) activity();
       result = await fetch(endpoint, {
         method: "POST",
         headers: requestHeaders,
         body: bodyFactory(),
         dispatcher: IMAGE_FETCH_DISPATCHER,
-        signal: AbortSignal.timeout(IMAGE_RESPONSE_TIMEOUT_MS)
+        signal: controller ? controller.signal : AbortSignal.timeout(IMAGE_RESPONSE_TIMEOUT_MS)
       });
       // A connection can drop after headers; an incomplete body is not a received
       // generation result and follows the same bounded transport recovery path.
-      responseText = await result.text();
+      const received = options.streamImages ? await readImageResponse(result, {onActivity: activity})
+        : {text: await result.text()};
+      responseText = received.text || "";
       try {
-        payload = JSON.parse(responseText);
+        payload = received.payload || JSON.parse(responseText);
       } catch (cause) {
         if (result.ok) {
           // Some gateways close a truncated JSON body with valid HTTP framing.
@@ -1316,6 +1328,14 @@ async function requestImageModel(endpoint, headers, bodyFactory, onProgress = ()
         });
       }
     } catch (error) {
+      if (error.providerResponseError) {
+        const timeout = /image did not finish before the timeout|image generation timed out/i.test(String(error.message));
+        throw annotateImageFailure(error, {
+          requestState: "REJECTED", retrySafe: false, retryAuthorized: timeout,
+          safeRetryCount, networkRetryCount, requestId, failureCode: imageFailureCode(error),
+          failureKind: timeout ? "PROVIDER_TIMEOUT" : "PROVIDER"
+        });
+      }
       const definitelyNotSent = !result && requestWasDefinitelyNotSent(error);
       const responseTimeout = isImageResponseTimeout(error);
       const retryableTransportFailure = definitelyNotSent || responseTimeout || isImageConnectionInterrupted(error);
@@ -1342,12 +1362,15 @@ async function requestImageModel(endpoint, headers, bodyFactory, onProgress = ()
         continue;
       }
       throw error;
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
     }
 
     if (!result.ok) {
       const message = payload?.error?.message || payload?.message || responseText || `HTTP ${result.status}`;
       const copyrightRejection = isCopyrightImageRejection(result.status, String(message));
       const concurrencyRejection = isImageConcurrencyRejection(result.status, String(message));
+      const providerTimeout = /image did not finish before the timeout|image generation timed out/i.test(String(message));
       const explicitPolicyRejection = !copyrightRejection
         && isExplicitImagePolicyRejection(result.status, String(message));
       const retrySafe = !copyrightRejection
@@ -1357,13 +1380,14 @@ async function requestImageModel(endpoint, headers, bodyFactory, onProgress = ()
         {
           requestState: "REJECTED",
           retrySafe,
+          retryAuthorized: providerTimeout,
           safeRetryCount,
           networkRetryCount,
           requestId,
           providerStatus: result.status,
           failureKind: copyrightRejection ? "COPYRIGHT"
             : concurrencyRejection ? "CONCURRENCY"
-              : explicitPolicyRejection ? "POLICY" : "PROVIDER"
+              : explicitPolicyRejection ? "POLICY" : providerTimeout ? "PROVIDER_TIMEOUT" : "PROVIDER"
         }
       );
       const retryLimit = Math.min(providerRetryLimit, concurrencyRejection ? IMAGE_CONCURRENCY_RETRY_DELAYS_MS.length
@@ -1433,6 +1457,11 @@ async function callSingleImageModel(config, params, inputImages) {
   const quality = String(params.quality || "").trim();
   const inputFidelity = String(params.inputFidelity || "").trim();
   const transparentOutput = transparentImageParameters(config, params);
+  // This route's own Images client documents streaming. Do not send unverified
+  // parameters to other providers or to Grok. Zero previews avoids extra charges.
+  const streamImages = params.streamImages === true
+    && /^gpt-image-/.test(config.modelId)
+    && new URL(config.baseUrl).hostname === "xbcl.link";
   const headers = { Authorization: `Bearer ${config.apiKey}` };
   let bodyFactory;
   if (mode === "edit") {
@@ -1455,6 +1484,10 @@ async function callSingleImageModel(config, params, inputImages) {
       form.append("model", String(config.modelId));
       form.append("prompt", prompt);
       form.append("size", size);
+      if (streamImages) {
+        form.append("stream", "true");
+        form.append("partial_images", "0");
+      }
       if (quality) form.append("quality", quality);
       if (inputFidelity) form.append("input_fidelity", inputFidelity);
       for (const [key, value] of Object.entries(transparentOutput)) form.append(key, value);
@@ -1472,7 +1505,8 @@ async function callSingleImageModel(config, params, inputImages) {
     headers["Content-Type"] = "application/json";
     const parameters = config.modelId === "grok-imagine-image-2.0"
       ? grokImageParameters(size, quality) : { size, ...(quality ? { quality } : {}), ...transparentOutput };
-    const jsonBody = JSON.stringify({ model: config.modelId, prompt, n: 1, ...parameters });
+    const jsonBody = JSON.stringify({ model: config.modelId, prompt, n: 1, ...parameters,
+      ...(streamImages ? {stream:true,partial_images:0} : {}) });
     bodyFactory = () => jsonBody;
   }
   const endpoint = imageEndpoint(config.baseUrl, mode);
@@ -1481,7 +1515,7 @@ async function callSingleImageModel(config, params, inputImages) {
   if (!received) {
     try {
       received = await requestImageModel(endpoint, headers, bodyFactory, params.onProgress,
-        { ...recovery, maxProviderRetries: params.maxProviderRetries });
+        { ...recovery, maxProviderRetries: params.maxProviderRetries, streamImages });
     } catch (error) {
       await recovery.recordFailure?.(error);
       throw error;
@@ -3356,6 +3390,7 @@ async function handlePlatformImageGeneration(request, response) {
     outputFormat: String(body.outputFormat || ""),
     productMockup: body.productMockup === true,
     singleProviderAttempt: body.singleProviderAttempt === true,
+    streamImages: body.streamImages === true,
     ...(body.detailGrid === true ? {detailGrid:true} : {}),
     deferDownload: true,
     onProgress, operation

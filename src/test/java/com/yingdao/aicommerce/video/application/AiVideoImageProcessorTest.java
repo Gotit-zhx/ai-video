@@ -56,6 +56,55 @@ class AiVideoImageProcessorTest {
     Path tempDirectory;
 
     @Test
+    void temporaryOssFailureDoesNotTurnSuccessfulImageIntoMissingAsset() throws Exception {
+        var processor = processor(tempDirectory);
+        var oss = mock(com.yingdao.aicommerce.storage.OssStorageService.class);
+        Field field = AiVideoImageProcessor.class.getDeclaredField("ossStorage");
+        field.setAccessible(true); field.set(processor, oss);
+        String location = "oss://bucket/immutable-image.png";
+        when(oss.isOssLocation(location)).thenReturn(true);
+        when(oss.exists(location)).thenThrow(new IllegalStateException("Read timed out"));
+        var asset = new AiVideoTaskAsset("org","task","item","MODEL_IMAGE",null,location,"image/png",3,"prompt","model");
+        var method = AiVideoImageProcessor.class.getDeclaredMethod("assetReadable", AiVideoTaskAsset.class);
+        method.setAccessible(true);
+        var failure = assertThrows(java.lang.reflect.InvocationTargetException.class, () -> method.invoke(processor, asset));
+        assertTrue(failure.getCause().getMessage().contains("已保留原图"));
+    }
+
+    @Test
+    void successfulOssReadIsReusedByteForByteAfterProcessorRestart() throws Exception {
+        var oss = mock(com.yingdao.aicommerce.storage.OssStorageService.class);
+        String location = "oss://bucket/immutable-image.png";
+        when(oss.isOssLocation(location)).thenReturn(true);
+        byte[] original = {1,2,3,4,5};
+        when(oss.readAllBytes(location, 64 * 1024 * 1024)).thenReturn(original)
+                .thenThrow(new java.net.SocketTimeoutException("Read timed out"));
+        var method = AiVideoImageProcessor.class.getDeclaredMethod("readAsset", String.class);
+        method.setAccessible(true);
+        Field field = AiVideoImageProcessor.class.getDeclaredField("ossStorage");
+        field.setAccessible(true);
+        for (int i = 0; i < 2; i++) {
+            var processor = processor(tempDirectory);
+            field.set(processor, oss);
+            assertArrayEquals(original, (byte[]) method.invoke(processor, location));
+        }
+        verify(oss, times(1)).readAllBytes(location, 64 * 1024 * 1024);
+    }
+
+    @Test
+    void repeatedStorageRecoveryPausesInsteadOfLoopingForever() {
+        AtomicInteger attempts = new AtomicInteger();
+        var failure = assertThrows(IllegalStateException.class, () ->
+                AiVideoImageProcessor.runWithImageRecovery(() -> {
+                    attempts.incrementAndGet();
+                    throw new IllegalStateException("参考图片读取失败：网络超时");
+                }, ignored -> {}, () -> {}));
+        assertEquals(7, attempts.get());
+        assertTrue(failure.getMessage().startsWith("IMAGE_RECOVERY_PAUSED:"));
+        assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(failure.getMessage()));
+    }
+
+    @Test
     void retriesConnectionFailuresOnlyWhenProviderConfirmsRequestWasNotSent() {
         assertTrue(AiVideoGenerationService.retryableVideoConcurrencyFailure(
                 "连接厂商失败，请求尚未发送：HTTP connect timed out"));
