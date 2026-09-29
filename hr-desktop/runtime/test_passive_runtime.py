@@ -245,7 +245,7 @@ class WorkflowTest(unittest.TestCase):
 
     def test_budget_accounts_for_complete_operation_and_actual_expiry(self):
         path=self.root/'budget.sqlite3'
-        with sqlite3.connect(path) as db:
+        with contextlib.closing(sqlite3.connect(path)) as db, db:
             db.execute('CREATE TABLE requests(at REAL)')
             db.executemany('INSERT INTO requests VALUES(?)',[(500+i,) for i in range(96)])
         self.assertEqual(flow.budget_delay(path,120,cost=3,queued=True),0)
@@ -253,7 +253,8 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(flow.budget_delay(path,120,cost=5,queued=True),3101)
         # 96 + 2 - 82 = 16 expiries, rather than waking on the first one.
         self.assertEqual(flow.budget_delay(path,120,cost=2),3116)
-        with sqlite3.connect(path) as db:self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],96)
+        with contextlib.closing(sqlite3.connect(path)) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],96)
 
     def test_chat_page_required_is_visible_without_marking_a_send_attempt(self):
         self.pending('reply_ready')
