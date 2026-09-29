@@ -1646,7 +1646,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     return
                 if length:
                     raise ValueError("连接请求不能包含正文")
-                result = desktop_bridge.issue(self.desktop_user)
+                result = desktop_bridge.issue(self.desktop_user,
+                    automatic=self.headers.get("X-Heyi-Auto-Connect") == "1")
             else:
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     raise ValueError("连接请求格式不正确")
@@ -1660,6 +1661,9 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     raise ValueError("未知连接操作")
             self.send_json(200, {"success": True, "data": result})
+        except desktop_bridge.DeviceConflict:
+            self.send_json(409, {"success": False, "code": "DEVICE_IN_USE",
+                                "message": "另一台电脑正在使用助手，请手动确认切换设备"})
         except (ValueError, TypeError, AttributeError):
             self.send_json(409, {"success": False, "message": "连接凭证无效、已到期或已切换设备，请重新连接本机助手"})
         except (OSError, sqlite3.Error):

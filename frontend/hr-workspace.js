@@ -157,7 +157,7 @@
     loginTitle.textContent=!helperConnected?'连接桌面助手，开始招聘':ready?'招聘账号已就绪':pending
       ?loginPhase==='scanned'?'请在手机上确认登录':loginPhase==='verifying'?'正在确认招聘账号':'在桌面助手完成登录'
       :connectionState==='verification_pending'?'连接需要确认':'在桌面助手中登录 BOSS';
-    loginMessage.textContent=!helperConnected?'打开赫逸桌面悬浮球，再连接本机助手。BOSS 登录在助手内完成。':ready
+    loginMessage.textContent=!helperConnected?'打开赫逸桌面助手后会自动连接，断线会自动检查恢复。BOSS 登录需在助手内确认。':ready
       ?'招聘方身份验证通过。选择一个职位，继续查看人才、投递和沟通。':pending
       ?loginPhase==='scanned'?'已收到扫码结果，请在 BOSS App 确认；无需重复扫码。':loginPhase==='verifying'
         ?'手机确认已收到，正在等待招聘方身份验证结果。':'点击桌面悬浮球，在 BOSS 页面扫码并用手机确认。这里会同步连接结果。'
@@ -174,11 +174,28 @@
       if(!globalThis.HeyiHrTransport)throw Error('请刷新页面后连接桌面助手');
       await globalThis.HeyiHrTransport.connect();
       if(generation!==loginGeneration||!allowed())return;
+      globalThis.HeyiHrTransport.startAutoConnect?.();
       helperConnected=true;status.replaceChildren();await checkLogin();
     }catch(error){if(generation===loginGeneration){status.replaceChildren();element('p',error.message,status,'hr-error');}}
     finally{if(generation===loginGeneration){loginActionInFlight=false;paintConnection(lastLoginState);}}
   }
   let lastLoginState={state:'idle'};
+  globalThis.HeyiHrTransport?.subscribe?.(connection=>{
+    if(!allowed()||loginActionInFlight)return;
+    helperConnected=connection.paired;
+    if(connection.state&&helperConnected){
+      lastLoginState=connection.state;
+      loginPhase=connection.state.phase||'';
+    }
+    paintConnection(lastLoginState);
+    if(!helperConnected&&connection.phase==='reconnecting'){
+      connectionBadge.textContent='助手自动重连中';
+      loginMessage.textContent=connection.message||'正在检查本机助手，连接恢复后会自动更新。';
+    }else if(['unauthorized','device-in-use'].includes(connection.phase)){
+      connectionBadge.textContent='连接需要确认';
+      loginMessage.textContent=connection.message;
+    }
+  });
   function showDisconnected(){
     loginPhase='';loginPendingSeen=false;stopLoginPolling();loginSuccess.hidden=true;
     lastLoginState={state:'disconnected',error:'本机 BOSS Cookie 和保存的登录凭据已清除。再次使用时请重新登录。'};
@@ -922,6 +939,7 @@
     departmentManager?.leave();
     loginSuccess.hidden = true;
     current = routes.has(route) ? route : 'overview';
+    if(!['pool','demands','departments'].includes(current))globalThis.HeyiHrTransport?.startAutoConnect?.();
     clearInterval(resumeTimer);
     resumeTimer = null;
     page = 1;
@@ -968,6 +986,7 @@
     enter(link.dataset.hrRoute);
   }));
   globalThis.HrWorkspace = {enter, allowed, beginLogout(){
+    globalThis.HeyiHrTransport?.stopAutoConnect?.();
     pool?.reset();
     demands?.reset();
     departmentManager?.reset();

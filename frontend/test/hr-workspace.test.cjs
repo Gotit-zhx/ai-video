@@ -67,6 +67,22 @@ const text=()=>visible().map(n=>n._text).join('\n');
 const poolResult=()=>({items:[{id:'talent-1',name:'测试人才',education:'本科',experience:'5年',stage:'first',
   projectId:'project-1',version:1,updatedAt:'2026-09-29T00:00:00Z'}],
   projects:[{id:'project-1',name:'电商项目组',version:1}],counts:{all:1,first:1},total:1,page:1,pages:1});
+test('workspace automatically reconnects helper and displays cached risk state without initiating BOSS work',async()=>{
+  let listener,starts=0,stops=0;
+  const app=setup({transport:{
+    connection:()=>({paired:false}),
+    subscribe(fn){listener=fn;},
+    startAutoConnect(){starts++;},
+    stopAutoConnect(){stops++;},
+  }});
+  await app.enter('overview');assert.equal(starts,1);
+  listener({paired:false,phase:'reconnecting',message:'助手暂时离线，正在自动重连'});
+  assert.match(app.text(),/助手自动重连中/);
+  listener({paired:true,phase:'connected',state:{state:'verification_pending',error:'需要完成安全验证'}});
+  assert.match(app.text(),/需要完成安全验证/);
+  assert.equal(app.calls.length,0,'UI recovery must not call jobs, verify, or login/start');
+  app.env.HrWorkspace.beginLogout();assert.equal(stops,1);
+});
 test('talent pool uses platform API without pairing and combines independent filters',async()=>{
   const app=setup({transport:{connection:()=>({paired:false})},api:async()=>({data:poolResult()})});
   app.env.HeyiHrTransport.api=async()=>{throw Error('Pool must not call BOSS');};

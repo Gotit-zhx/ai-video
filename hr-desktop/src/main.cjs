@@ -199,9 +199,20 @@ async function authorized(){
   if(selfTest)return {username:'13800000000',id:'offline-test',organizationCode:'heyi',roles:['ADMIN'],platformAdmin:true};
   if(lease && lease.expiresAt*1000>Date.now()){
     if(Date.now()-leaseChecked<15000)return lease.user;
-    if(!leaseCheck)leaseCheck=cloud('lease',{token:lease.token,device})
-      .then(result=>{leaseChecked=Date.now();return result.user;})
-      .catch(error=>{lease=null;engine.pause('DEVICE_DISCONNECTED');throw error;})
+    const checkedLease=lease;
+    if(!leaseCheck)leaseCheck=cloud('lease',{token:checkedLease.token,device})
+      .then(result=>{
+        if(lease!==checkedLease)throw Error('连接已更新，请重新检查');
+        leaseChecked=Date.now();return result.user;
+      })
+      .catch(error=>{
+        // A temporary platform network failure blocks this operation, but does
+        // not erase a valid lease or turn a healthy BOSS session into a logout.
+        if(lease===checkedLease&&error.code==='AUTHORITY_INVALID'){
+          lease=null;engine.pause('DEVICE_DISCONNECTED');
+        }
+        throw error;
+      })
       .finally(()=>{leaseCheck=null;});
     return leaseCheck;
   }
@@ -209,13 +220,20 @@ async function authorized(){
 }
 async function cloud(route,body){
   if(selfTest)throw Error('Cloud access disabled in offline tests');
-  const reply=await egress.fetch(platformSession,ORIGIN+'/api/v1/hr/desktop/'+route,{
+  let reply;
+  try{reply=await egress.fetch(platformSession,ORIGIN+'/api/v1/hr/desktop/'+route,{
     method:'POST',body:body?JSON.stringify(body):undefined,
     headers:{'Content-Type':'application/json',Origin:ORIGIN},
     bypassCustomProtocolHandlers:true,redirect:'error',signal:AbortSignal.timeout(8000),
-  });
-  const result=await reply.json();
-  if(!reply.ok||!result.success)throw Error(result.message||'请先登录赫逸平台，再连接本机助手');
+  });}catch{const error=Error('平台连接暂时不可用，操作未执行，请等待自动恢复');error.code='PLATFORM_UNAVAILABLE';throw error;}
+  let result;
+  try{result=await reply.json();}catch{result={};}
+  if(!reply.ok||!result.success){
+    const error=Error(result.message||'平台连接暂时不可用，请稍后再试');
+    error.code=result.code==='DEVICE_IN_USE'?'DEVICE_IN_USE'
+      :[401,403,409].includes(reply.status)?'AUTHORITY_INVALID':'PLATFORM_UNAVAILABLE';
+    throw error;
+  }
   return result.data;
 }
 async function pair(ticket){

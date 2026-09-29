@@ -226,7 +226,10 @@ class Recruiter extends EventEmitter {
   async poll(){
     if(this.state.state!=='complete'||this.paused||this.busy)return;
     try{await this.checkOwner();await this.call('poll-resumes');}
-    catch{this.paused=true;this.event('BACKGROUND_PAUSED');}
+    catch(error){
+      if(error.code==='PLATFORM_UNAVAILABLE'){this.event('PLATFORM_UNAVAILABLE');return;}
+      this.paused=true;this.event('BACKGROUND_PAUSED');
+    }
   }
   async clearCredentials(){
     const accounts=path.join(this.directory,'accounts');

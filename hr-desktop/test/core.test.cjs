@@ -126,6 +126,27 @@ test('expired paired token authorizes cleanup only and is revoked after confirma
   assert.equal(clears,1);assert.equal(releases,1);assert.equal(bridge.token,'');
   assert.equal((await fetch(base+'login/status',{headers})).status,428);
 });
+test('renewing same-owner pairing keeps other browser tabs authorized and never calls SDK',async t=>{
+  const {engine,calls}=await fixture(t);
+  const bridge=new LocalBridge({engine,authorize:async()=>user,pair:async()=>({expiresAt:Date.now()/1000+1800})});
+  await bridge.start(0);t.after(()=>bridge.close());
+  const base=`http://127.0.0.1:${bridge.port}`,headers={Origin:ORIGIN,'Content-Type':'application/json'};
+  const pair=async()=> (await (await fetch(base+'/pair',{method:'POST',headers,body:JSON.stringify({ticket:'a'.repeat(43)})})).json()).data;
+  const first=await pair(),second=await pair();
+  assert.equal(first.token,second.token);
+  assert.equal((await fetch(base+'/api/v1/hr/login/status',{headers:{...headers,Authorization:'Bearer '+first.token}})).status,200);
+  assert.equal(calls.length,0);
+});
+test('platform outage blocks polling without destroying BOSS session or bypassing risk pause',async t=>{
+  const {engine,calls}=await fixture(t);
+  engine.state={state:'complete'};engine.paused=false;
+  engine.authorize=async()=>{throw Object.assign(Error('network'),{code:'PLATFORM_UNAVAILABLE'});};
+  await engine.poll();
+  assert.equal(engine.paused,false);assert.equal(calls.length,0);
+  await engine.hold({code:'RATE_LIMITED'});
+  engine.authorize=async()=>user;await engine.poll();
+  assert.equal(engine.paused,true);assert.equal(calls.length,0);
+});
 test('logout cancels late login authorization and browser opening without starting a new observer',async t=>{
   const {engine}=await fixture(t);let authorize,open,opened=0;
   engine.authorize=()=>new Promise(resolve=>{authorize=resolve;});

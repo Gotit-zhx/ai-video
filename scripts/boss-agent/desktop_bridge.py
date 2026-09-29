@@ -14,6 +14,10 @@ DEVICE = re.compile(r"^[a-f0-9-]{36}$")
 LEASE_SECONDS = 1800
 
 
+class DeviceConflict(ValueError):
+    pass
+
+
 def digest(value):
     if not isinstance(value, str) or not TOKEN.fullmatch(value):
         raise ValueError("连接凭证无效，请重新连接本机助手")
@@ -48,8 +52,10 @@ def identity(user):
             ("username", "id", "userId", "organizationCode", "platformAdmin", "roles")}
 
 
-def issue(user):
+def issue(user, automatic=False):
     user = identity(user)
+    if automatic:
+        user["_automatic"] = True
     ticket = secrets.token_urlsafe(32)
     with database() as db:
         # Only a handful of unconsumed browser tickets are useful.
@@ -67,8 +73,12 @@ def redeem(ticket, device):
         row = db.execute("SELECT * FROM tickets WHERE hash = ?", (digest(ticket),)).fetchone()
         if not row:
             raise ValueError("连接凭证已过期或已使用，请重新连接本机助手")
-        user = identity(json.loads(row["user"]))
+        stored_user = json.loads(row["user"])
+        user = identity(stored_user)
         owner = f'{user["organizationCode"]}:{user.get("id") or user.get("userId") or user["username"]}'
+        current = db.execute("SELECT device FROM leases WHERE owner = ?", (owner,)).fetchone()
+        if stored_user.get("_automatic") and current and current["device"] != device:
+            raise DeviceConflict("另一台电脑正在使用助手，请手动确认切换设备")
         expires = time.time() + LEASE_SECONDS
         db.execute("DELETE FROM tickets WHERE hash = ?", (row["hash"],))
         db.execute("INSERT OR REPLACE INTO leases VALUES (?, ?, ?, ?, ?)",

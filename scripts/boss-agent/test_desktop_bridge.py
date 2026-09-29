@@ -44,6 +44,15 @@ class PairingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bridge.check(pair["token"], self.device)
 
+    def test_auto_renewal_cannot_take_another_devices_live_lease(self):
+        first = bridge.redeem(bridge.issue(USER)["ticket"], self.device)
+        another_device = str(uuid.uuid4())
+        with self.assertRaises(bridge.DeviceConflict):
+            bridge.redeem(bridge.issue(USER, automatic=True)["ticket"], another_device)
+        self.assertEqual(bridge.check(first["token"], self.device)["user"]["id"], "test-user")
+        renewed = bridge.redeem(bridge.issue(USER, automatic=True)["ticket"], self.device)
+        self.assertEqual(bridge.check(renewed["token"], self.device)["user"]["id"], "test-user")
+
     def test_wrong_role_and_untrusted_fields_denied(self):
         with self.assertRaises(ValueError):
             bridge.issue({**USER, "platformAdmin": False})

@@ -39,7 +39,8 @@ class LocalBridge {
           if(typeof value.ticket!=='string'||!value.ticket.match(/^[\w-]{43}$/))throw Error('连接凭证格式不正确');
           const paired=await this.pair(value.ticket);
           await this.engine.checkOwner();
-          this.token=crypto.randomBytes(32).toString('base64url');
+          // Same platform owner: renewal must not invalidate other open tabs.
+          this.token=this.token||crypto.randomBytes(32).toString('base64url');
           this.expiry=paired.expiresAt*1000;
           send(200,{success:true,data:{token:this.token,expiresAt:this.expiry}});return;
         }finally{this.pairing=false;}
@@ -64,7 +65,8 @@ class LocalBridge {
       if(!reply)throw Error('不支持的本机接口');
       res.writeHead(reply.status,Object.fromEntries(reply.headers));
       res.end(Buffer.from(await reply.arrayBuffer()));
-    }catch(error){if(!res.headersSent)send(409,{success:false,message:error.message||'本机操作未完成'});}
+    }catch(error){if(!res.headersSent)send(409,{success:false,
+      code:error.code==='DEVICE_IN_USE'?'DEVICE_IN_USE':undefined,message:error.message||'本机操作未完成'});}
   }
   close(){this.token='';this.server?.closeAllConnections();return new Promise(resolve=>this.server?this.server.close(resolve):resolve());}
 }
