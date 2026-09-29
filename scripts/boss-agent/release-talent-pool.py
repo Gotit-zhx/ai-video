@@ -41,6 +41,19 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def public_get(path):
+    # Container replacement can briefly interrupt TLS before nginx is ready.
+    # Retry only idempotent deployment health reads, never business operations.
+    for attempt in range(15):
+        try:
+            return run("curl", "--noproxy", "*", "-fsS", "--max-time", "5", "--resolve",
+                       "hoyee.org.cn:443:127.0.0.1", "https://hoyee.org.cn/" + path)
+        except subprocess.CalledProcessError:
+            if attempt == 14:
+                raise
+            time.sleep(1)
+
+
 def processes():
     return {name: {"id": inspect(name)["Id"], "started": inspect(name)["State"]["StartedAt"]}
             for name in ["heyi-pi-runtime", "heyi-commerce-image-processor"]}
@@ -186,8 +199,7 @@ try:
     frontend_changed = True
     run(*compose, "-f", str(override), "up", "-d", "--no-deps", "--no-build", "--pull", "never", service, env=env)
     for name in files:
-        served = run("curl", "--noproxy", "*", "-fsS", "--max-time", "15", "--resolve",
-                     "hoyee.org.cn:443:127.0.0.1", "https://hoyee.org.cn/" + name)
+        served = public_get(name)
         assert sha(served) == manifest["frontend/" + name], "Public asset mismatch: " + name
     assert processes() == preserved, "Unrelated runtime process changed"
     assert any(m["Source"] == "/opt/heyi/shared/hr-desktop-downloads"
