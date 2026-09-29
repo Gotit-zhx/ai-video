@@ -35,7 +35,7 @@ jobs:
       - run: python runtime/test_portable.py
       - run: python runtime/test_direct_network.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_desktop_bridge.py
-      - name: Offline embedded-browser smoke
+      - name: Offline floating-orb and BOSS-window smoke
         shell: bash
         run: |
           export HEYI_TEST_USER_DATA="$RUNNER_TEMP/heyi-desktop-ci"
