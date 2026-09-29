@@ -180,6 +180,23 @@ class WorkflowTest(unittest.TestCase):
         self.messages(self.message(sender='2'));self.step()
         self.c.cli_json.assert_called_once_with('hr','chatmsg','2','--count','100')
 
+    def test_explicit_recovery_is_candidate_rule_and_enable_window_scoped(self):
+        self.pending();self.messages(self.message(at=90))
+        with flow.database(self.root) as db:
+            db.execute("INSERT INTO recovery_windows VALUES('1','r1',100,80,1000,'user approved limited recovery')")
+            self.assertEqual(flow.trigger_since(db,'1',self.rule),80)
+            self.assertEqual(flow.trigger_since(db,'2',self.rule),100)
+            self.assertEqual(flow.trigger_since(db,'1',{**self.rule,'enabledAt':200}),200)
+        self.step();self.assertEqual(self.state(),'reply_ready')
+        self.c.request_resume.assert_not_called()
+
+    def test_recovery_still_requires_candidate_message_after_authorized_cutoff(self):
+        self.pending();self.messages(self.message(at=79),self.message(sender='9',target='1',at=90))
+        with flow.database(self.root) as db:
+            db.execute("INSERT INTO recovery_windows VALUES('1','r1',100,80,1000,'user approved limited recovery')")
+        self.step();self.assertEqual(self.state(),'seen')
+        self.c.request_resume.assert_not_called()
+
     def test_background_budget_and_clock_gate_do_not_issue_requests(self):
         self.pending('reply_ready');self.c.passive_delay=lambda:60
         self.assertEqual(self.step()['data']['phase'],'budget_wait')

@@ -24,6 +24,9 @@ def database(root):
           CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,friend TEXT NOT NULL,message TEXT NOT NULL,
             state TEXT NOT NULL,reported INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,body TEXT NOT NULL,reported INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS recovery_windows(
+            friend TEXT PRIMARY KEY,rule TEXT NOT NULL,enabled_at INTEGER NOT NULL,
+            since INTEGER NOT NULL,authorized_at INTEGER NOT NULL,reason TEXT NOT NULL);
         ''')
         path.chmod(0o600)
         with db:
@@ -122,6 +125,16 @@ def put_state(db, key, value):
     db.execute('INSERT OR REPLACE INTO state VALUES(?,?)', (key, str(value)))
 
 
+def trigger_since(db, friend, rule):
+    # Only an explicitly recorded, candidate-specific recovery can look back
+    # before opt-in. Account isolation comes from this session's database path.
+    row = db.execute('SELECT * FROM recovery_windows WHERE friend=? AND rule=? AND enabled_at=?',
+                     (friend, rule['id'], rule['enabledAt'])).fetchone()
+    if row and row['reason'] and 0 < row['since'] <= row['authorized_at'] <= time.time()+60:
+        return min(rule['enabledAt'], row['since'])
+    return rule['enabledAt']
+
+
 def event(db, code, detail):
     value = {'id': uuid.uuid4().hex, 'code': code,
              'name': detail.get('name', ''), 'jobName': detail.get('jobName', '')}
@@ -172,7 +185,7 @@ def discover(c, db, rules):
             ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         old = db.execute('SELECT * FROM people WHERE friend=?', (friend,)).fetchone()
         old_detail = json.loads(old['body']) if old else {}
-        fresh = not detail['activity'] or detail['activity'] >= rule['enabledAt']-60
+        fresh = not detail['activity'] or detail['activity'] >= trigger_since(db, friend, rule)-60
         if not old:
             db.execute("INSERT INTO people(friend,rule,body,state,updated) VALUES(?,?,?,?,?)",
                        (friend, rule['id'], json.dumps(detail, ensure_ascii=False), 'inspect' if fresh else 'seen', int(time.time())))
@@ -251,11 +264,12 @@ def step(c, db, request):
         result = c.cli_json('hr', 'chatmsg', friend, '--count', '100')
         if result.get('ok') is not True: return result
         messages = c.resume_messages(result)
-        trigger = incoming_trigger(messages, friend, rule['enabledAt'])
+        since = trigger_since(db, friend, rule)
+        trigger = incoming_trigger(messages, friend, since)
         excluded = {r[0] for r in db.execute('SELECT message FROM commands WHERE friend=?', (friend,))}
         state = 'seen'
         if trigger:
-            state = 'ready' if human_reply(messages, friend, rule['enabledAt'], excluded) else 'reply_ready'
+            state = 'ready' if human_reply(messages, friend, since, excluded) else 'reply_ready'
             detail['triggerAt'] = trigger
             event(db, 'INCOMING_DETECTED', detail)
         db.execute("UPDATE people SET state=?,body=?,updated=? WHERE friend=?",
