@@ -63,9 +63,9 @@
     monitoring=true;const ticket=epoch;
     try{
       if(await transportMode()==='embedded')return;
-      // Only the visible tab performs automatic pairing. Other tabs receive
-      // its renewed capability; hidden tabs recover when brought forward.
-      if(globalThis.document?.visibilityState==='hidden')return;
+      // Do not initiate first-time local permission from a hidden tab. Once
+      // paired, keep its lease alive even while the HR page is in background.
+      if(globalThis.document?.visibilityState==='hidden'&&!saved)return;
       const inspect=async()=>{
         if(!active||ticket!==epoch)return;
         await health();
@@ -90,7 +90,8 @@
       else notify('reconnecting',error instanceof TypeError?'助手暂时离线，正在自动重连':error.message);
     }finally{
       monitoring=false;
-      if(ticket===epoch&&active)schedule(failures?Math.min(60000,2000*2**Math.min(failures-1,5))*(.85+Math.random()*.3):25000+Math.random()*10000);
+      if(ticket===epoch&&active)schedule(failures?Math.min(60000,2000*2**Math.min(failures-1,5))*(.85+Math.random()*.3)
+        :globalThis.document?.visibilityState==='hidden'?60000+Math.random()*30000:25000+Math.random()*10000);
     }
   }
   async function request(path,options={}){

@@ -79,11 +79,15 @@ test('other-device authority stops automatic recovery, never steals the lease',a
   transport.startAutoConnect();await tick();
   assert.equal(transport.connection().phase,'device-in-use');assert.equal(timers.size,0);
 });
-test('hidden tabs do not renew; focus resumes checks',async()=>{
+test('hidden tabs defer first permission; paired background tabs still renew before expiry',async()=>{
   const {transport,env,calls,tick,events}=fixture();env.document.visibilityState='hidden';
   transport.startAutoConnect();await tick();
   assert.ok(!calls.some(x=>x.url.endsWith('/pair')));
   env.document.visibilityState='visible';events.focus();await tick();
+  assert.equal(transport.connection().paired,true);
+  env.document.visibilityState='hidden';
+  const now=Date.now();env.Date={now:()=>now+29*60000};await tick();
+  assert.equal(calls.filter(x=>x.url==='/api/v1/hr/desktop/pair').length,2);
   assert.equal(transport.connection().paired,true);
 });
 test('one pairing exchange for concurrent connect; business requests only loopback',async()=>{
