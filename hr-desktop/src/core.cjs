@@ -83,6 +83,7 @@ class Recruiter extends EventEmitter {
     super(); Object.assign(this,{directory,runtime,browser,authorize,passiveCloud,clock});
     this.state={state:'idle',phase:'',error:'',failure_code:''};
     this.paused=false;this.busy=false;this.inFlight=null;this.loginTimer=null;
+    this.activity=new Map();this.activityTimer=null;this.lastActivityPoll=0;
     this.owner='';this.accountRoot='';this.cdp='';this.events=[];this.persist=Promise.resolve();this.riskHold=null;this.generation=0;
   }
   async init(cdp) {
@@ -109,6 +110,7 @@ class Recruiter extends EventEmitter {
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
   pause(code='USER_PAUSED'){
     this.generation++;this.paused=true;clearInterval(this.loginTimer);this.loginTimer=null;
+    this.clearActivity();
     if(['pending','complete'].includes(this.state.state))this.state={...this.state,state:'verification_pending',phase:'',
       failure_code:'MANUAL_REVIEW_REQUIRED',error:code==='DIRECT_NETWORK_UNAVAILABLE'
         ?'网卡直连已中断，请检查有线或 Wi-Fi 网络后重新启动助手。'
@@ -145,7 +147,7 @@ class Recruiter extends EventEmitter {
         const code=result?.error?.code;
         if(STOP.has(code)) await this.hold({code});
         return result;
-      } finally {this.busy=false;this.emit('change',this.snapshot());}
+      } finally {this.busy=false;this.emit('change',this.snapshot());this.scheduleActivityPoll();}
     })();
     this.inFlight=pending;
     try{return await pending;}finally{if(this.inFlight===pending)this.inFlight=null;}
@@ -154,6 +156,7 @@ class Recruiter extends EventEmitter {
     if(this.riskHold?.reason==='REALNAME_LINKED_ACCOUNT'&&!hold.reason)hold={...hold,...this.riskHold};
     this.riskHold=hold;
     clearInterval(this.loginTimer);this.loginTimer=null;this.paused=true;
+    this.clearActivity();
     this.state={state:'verification_pending',phase:'',failure_code:hold.code,
       error:restrictionMessage(hold),hold,...hold};
     await this.save(hold);this.event(hold.code);
@@ -164,6 +167,8 @@ class Recruiter extends EventEmitter {
     if(this.disconnecting||generation!==this.generation)throw Error('连接状态已更改，请重新发起连接');
     if(this.state.state==='pending') return this.state;
     if(this.busy) throw Error('当前操作尚未结束，请稍后再连接');
+    this.clearActivity();
+    this.passiveStatus={};
     this.paused=true;
     this.state={...this.state,state:'pending',phase:'qr',failure_code:'',error:''};
     try{await this.browser.open();}catch(error){
@@ -226,9 +231,37 @@ class Recruiter extends EventEmitter {
       }
     }finally{this.scanning=false;this.emit('change',this.snapshot());}
   }
+  clearActivity(){
+    clearTimeout(this.activityTimer);this.activityTimer=null;this.activity.clear();
+    this.activityObservedAt=0;
+  }
+  notifyActivity(hints){
+    if(this.state.state!=='complete'||this.paused||this.riskHold||!this.passiveCloud)return;
+    for(const hint of hints){
+      if(!/^[1-9]\d{0,19}$/.test(hint.friend)||!/^[1-9]\d{0,29}$/.test(hint.mid))continue;
+      const previous=this.activity.get(hint.friend);
+      if(previous&&BigInt(previous.mid)>=BigInt(hint.mid))continue;
+      this.activity.set(hint.friend,hint);
+      if(this.activity.size>200)this.activity.delete(this.activity.keys().next().value);
+    }
+    this.scheduleActivityPoll();
+  }
+  scheduleActivityPoll(){
+    if(this.activityTimer||this.polling||this.busy||this.paused||this.riskHold
+      ||this.state.state!=='complete'||!this.passiveCloud)return;
+    const status=this.passiveStatus||{};
+    if(!this.activity.size&&!status.activityPending&&!status.exportsPending)return;
+    const due=this.activity.size||status.exportsPending?0:Number(status.activityRetryAt||0)*1000;
+    const delay=Math.max(1000,this.lastActivityPoll+10000-this.clock(),due-this.clock());
+    this.activityTimer=setTimeout(()=>{
+      this.activityTimer=null;this.poll();
+    },delay);
+    this.activityTimer.unref();
+  }
   async poll(){
     if(this.state.state!=='complete'||this.paused||this.busy||this.polling)return;
     this.polling=true;
+    clearTimeout(this.activityTimer);this.activityTimer=null;this.lastActivityPoll=this.clock();
     const generation=this.generation,accountRoot=this.accountRoot;
     const ready=()=>generation===this.generation&&accountRoot===this.accountRoot&&this.state.state==='complete'&&!this.paused&&!this.riskHold;
     try{
@@ -273,8 +306,12 @@ class Recruiter extends EventEmitter {
         this.event(result.data?.status==='sent'?'REJECTION_SENT':'REJECTION_UNCERTAIN');
         return;
       }
-      const result=await this.call('passive-step',{rules:config.rules||[],replyTemplate:config.replyTemplate||null});
+      const hints=[...this.activity.values()];
+      const result=await this.call('passive-step',{rules:config.rules||[],replyTemplate:config.replyTemplate||null,
+        activityHints:hints,activityWatching:this.clock()-(this.activityObservedAt||0)<6000});
       if(result.ok&&ready()){
+        // A newer signal received during this operation must survive its ack.
+        for(const hint of hints)if(this.activity.get(hint.friend)===hint)this.activity.delete(hint.friend);
         this.passiveStatus=result.data||{};this.emit('change',this.snapshot());
         if(result.data?.needsChat&&this.browser.chat&&this.clock()-(this.chatPreparedAt||0)>300000){
           this.chatPreparedAt=this.clock();
@@ -287,7 +324,7 @@ class Recruiter extends EventEmitter {
       if(error.code==='PLATFORM_UNAVAILABLE'){this.event('PLATFORM_UNAVAILABLE');return;}
       this.pause('BACKGROUND_PAUSED');
     }
-    finally{this.polling=false;}
+    finally{this.polling=false;this.scheduleActivityPoll();}
   }
   async clearCredentials(){
     const accounts=path.join(this.directory,'accounts');

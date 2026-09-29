@@ -385,7 +385,7 @@ def request_resume(friend_id, retry_uncertain=False):
         LOCK.release()
 
 
-def poll_resumes_once():
+def poll_resumes_once(friend_id=None):
     if held_code() or DISCONNECTED.is_file() or RESUME_AUTO_PAUSE.exists():
         return
     with LOGIN_LOCK:
@@ -393,6 +393,8 @@ def poll_resumes_once():
             # Startup/status reads cannot silently verify or restore a session.
             return
     now = int(time.time())
+    if friend_id is not None:
+        friend_id = positive_id(friend_id)
     with resume_db() as connection:
         connection.execute(
             "UPDATE resume_requests SET error=? WHERE state IN ('waiting','uncertain') "
@@ -404,8 +406,10 @@ def poll_resumes_once():
             "LEFT JOIN resume_poll_state p ON p.friend_id=r.friend_id "
             "WHERE r.state IN ('waiting','uncertain') AND r.requested_at>=? "
             "AND COALESCE(p.last_polled_at,0)<=? AND COALESCE(p.failures,0)<3 "
+            "AND (? IS NULL OR r.friend_id=?) "
             "ORDER BY COALESCE(p.last_polled_at,0) ASC LIMIT ?",
-            (now - RESUME_POLL_MAX_AGE, now - RESUME_POLL_SECONDS, RESUME_POLL_LIMIT)).fetchall()
+            (now - RESUME_POLL_MAX_AGE, now - (30 if friend_id else RESUME_POLL_SECONDS),
+             friend_id, friend_id, 1 if friend_id else RESUME_POLL_LIMIT)).fetchall()
     if not pending:
         return
     for row in pending:

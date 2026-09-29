@@ -7,6 +7,7 @@ const {LocalBridge}=require('./bridge.cjs');
 const {DirectEgress}=require('./direct-network.cjs');
 const {ORB_SIZE,orbBounds,bossBounds}=require('./window-layout.cjs');
 const {pathToFileURL}=require('node:url');
+const {sampleChatActivity,ChatActivityTracker}=require('./chat-activity.cjs');
 
 const selfTest=process.argv.includes('--self-test');
 if(process.env.HEYI_TEST_USER_DATA)app.setPath('userData',process.env.HEYI_TEST_USER_DATA);
@@ -18,6 +19,8 @@ let main,orb,platformSession,bossView,worker,engine,bridge,tray,quitting=false;
 let egress;
 let pageError='',bossLoad=null,drag=null,positionSave=Promise.resolve();
 let device='',lease=null,leaseChecked=0,leaseCheck=null;
+const activityTracker=new ChatActivityTracker();
+let activityTimer,activityReading=false,activityScope='';
 const viewOptions={nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true};
 const shellPath=path.join(__dirname,'index.html');
 const orbPath=path.join(__dirname,'orb.html');
@@ -172,6 +175,27 @@ function createBoss(){
     pageError='BOSS 页面已关闭，请右键重新加载';engine.pause('BROWSER_UNAVAILABLE');publish();
   });
   return bossView;
+}
+async function observeChatActivity(){
+  const contents=bossView?.webContents;
+  const scope=engine&&!engine.paused&&!engine.riskHold&&engine.state.state==='complete'
+    ?`${engine.generation}:${engine.accountRoot}`:'';
+  if(!scope||!contents||contents.isDestroyed()){
+    activityTracker.reset();activityScope='';return;
+  }
+  if(scope!==activityScope){activityTracker.reset();activityScope=scope;}
+  if(activityReading)return;
+  const url=new URL(contents.getURL()||'about:blank');
+  if(url.origin!=='https://www.zhipin.com'||url.pathname.replace(/\/$/,'')!=='/web/chat/index')return;
+  activityReading=true;
+  try{
+    const rows=await contents.executeJavaScript(`(${sampleChatActivity.toString()})()`,false);
+    if(scope!==`${engine.generation}:${engine.accountRoot}`||engine.paused
+      ||contents!==bossView?.webContents||contents.isDestroyed())return;
+    if(rows.length)engine.activityObservedAt=Date.now();
+    engine.notifyActivity(activityTracker.update(rows));
+  }catch{/* A changing/loading page is covered by the regular bounded discovery. */}
+  finally{activityReading=false;}
 }
 async function inspectBoss(){
   if(!bossView||bossView.webContents.isDestroyed())return {text:'',token:null};
@@ -329,6 +353,9 @@ async function launch(){
     }
   });
   await engine.init(await localEndpoint());
+  // Local page-state sampling continues while the runtime is busy. It does not
+  // make a BOSS request; only the serialized, budgeted runtime consumes hints.
+  activityTimer=setInterval(observeChatActivity,2000);activityTimer.unref();
   egress.on('stopped',()=>{if(!quitting)engine.pause('DIRECT_NETWORK_UNAVAILABLE');});
   bridge=new LocalBridge({engine,pair,authorize:authorized,release:releaseLease});
   await bridge.start(selfTest?0:17861);
@@ -376,6 +403,7 @@ app.on('before-quit',event=>{
   quitting=true;
   if(!closing&&engine){
     event.preventDefault();closing=true;
+    clearInterval(activityTimer);
     if(drag)endDrag();
     Promise.allSettled([engine.close(),bridge?.close(),egress?.close(),positionSave]).finally(()=>app.quit());
   }

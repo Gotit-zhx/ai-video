@@ -18,18 +18,20 @@
     for(const group of ruleId?[flow.counts?.[ruleId]||{}]:Object.values(flow.counts||{})){
       for(const [key,value] of Object.entries(group))counts[key]=(counts[key]||0)+value;
     }
-    const totals=[['inspect','待处理'],['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],['stored','已入池'],
+    const totals=[['inspect','待处理'],['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],
+      ['export','正在入池'],['stored','已入池'],
       ['reply_uncertain','回复待核对'],['request_uncertain','索取待核对'],['request_failed','索取未完成']]
       .filter(([key])=>counts[key]).map(([key,label])=>`${label} ${counts[key]}`);
     const clock=value=>new Date(value*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false});
     if(flow.phase==='budget_wait'&&Number.isFinite(flow.retryAt)){
       totals.push(flow.retryAt*1000>Date.now()?`预计 ${clock(flow.retryAt)} 继续`:'正在重新检查可用额度');
     }
+    if(flow.activityPending>0)totals.push(`新消息待检查 ${flow.activityPending}`);
     if(flow.lastProgressAt>0)totals.push(`上次进展 ${clock(flow.lastProgressAt)}`);
     return [phases[flow.phase]||'已开启，等待助手检查',...totals].join(' · ');
   }
   globalThis.createHrPassive=({root,section,element:el,button,allowed,navigate,hrApi})=>{
-    let active='',generation=0,items=[],page=1,filter='',selected=null,timer=null,poolTimer=null;
+    let active='',generation=0,items=[],page=1,filter='',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
     const speechPanel=section('speeches'),resumePanel=section('resume-pool');
     const toolbar=(panel,title,subtitle)=>{
       const head=el('div','',panel,'hr-pool-toolbar'),intro=el('div','',head);
@@ -277,11 +279,14 @@
       if(route==='resume-pool'){
         globalThis.HeyiHrTransport?.startAutoConnect?.();
         refreshPoolActivity();
-        poolTimer=setInterval(()=>{
-          if(active!=='resume-pool'||!allowed())return;
-          if(!detail.open)load();
-          refreshPoolActivity();
-        },30000);
+        poolTimer=setInterval(async()=>{
+          if(active!=='resume-pool'||!allowed()||document.hidden||poolRefreshing)return;
+          poolRefreshing=true;
+          try{
+            if(!detail.open)await load();
+            await refreshPoolActivity();
+          }finally{poolRefreshing=false;}
+        },10000);
       }
     },leave(){active='';++generation;clearTimeout(timer);clearInterval(poolTimer);poolActivity.textContent='';detail.close();speechDialog.close();},
       reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='';statusSelect.value='';speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};

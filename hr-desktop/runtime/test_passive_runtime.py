@@ -28,6 +28,7 @@ class WorkflowTest(unittest.TestCase):
                 db.row_factory=sqlite3.Row
                 with db:
                     db.execute('CREATE TABLE IF NOT EXISTS resume_requests(friend_id TEXT PRIMARY KEY,state TEXT,message_id TEXT)')
+                    db.execute('CREATE TABLE IF NOT EXISTS resume_poll_state(friend_id TEXT PRIMARY KEY,last_polled_at INTEGER,failures INTEGER)')
                     yield db
         self.c.resume_db=resume_db
         self.now=1000
@@ -55,6 +56,72 @@ class WorkflowTest(unittest.TestCase):
     def message(self,sender='1',target='9',at=900,text='您好，想了解这个岗位'):
         return {'from':{'uid':sender},'to':{'uid':target},'time':at,
                 'body':{'type':1,'text':text},'mid':'123'}
+
+    def hint(self,friend='1',mid='200'):
+        return {'friend':friend,'mid':mid,'job':'job1','at':self.now}
+
+    def test_incoming_during_queue_is_discovered_without_waiting_for_periodic_scan(self):
+        self.pending('ready')
+        with flow.database(self.root) as db:
+            flow.put_state(db,'nextAt',self.now+30)
+            flow.put_state(db,'lastLane','maintenance')
+        self.c.cli_json.return_value={'ok':True,'data':[{'friendId':'2','name':'新候选人','lastTS':1000}]}
+        self.step(activityHints=[self.hint('2')])
+        self.c.cli_json.assert_called_once_with('hr','chat','--job-id','job1','--page','1')
+        self.assertEqual(self.state('2'),'inspect')
+        self.c.request_resume.assert_not_called()
+        self.step(activityHints=[self.hint('2')])
+        self.assertEqual(self.c.cli_json.call_count,1,'The same incoming MID is durable and not re-read')
+
+    def test_new_resume_targets_its_own_conversation_before_other_queued_work(self):
+        self.pending('requested')
+        self.pending('ready',friend='2')
+        with self.c.resume_db() as db:
+            db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
+        self.c.download_resume.return_value=self.root/'received.pdf'
+        def received(**kwargs):
+            self.assertEqual(kwargs,{'friend_id':'1'})
+            with self.c.resume_db() as db:
+                db.execute("UPDATE resume_requests SET state='received',message_id='201' WHERE friend_id='1'")
+        self.c.poll_resumes_once.side_effect=received
+        result=self.step(activityHints=[self.hint()])
+        self.c.poll_resumes_once.assert_called_once_with(friend_id='1')
+        self.c.download_resume.assert_called_once_with('1','201')
+        self.c.request_resume.assert_not_called()
+        self.assertEqual(self.state(),'export')
+        self.assertEqual(result['data']['exportsPending'],1)
+        self.assertEqual(result['data']['activityPending'],0)
+
+    def test_incoming_resume_waits_for_short_read_interval_without_losing_signal(self):
+        self.pending('requested')
+        with self.c.resume_db() as db:
+            db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
+            db.execute("INSERT INTO resume_poll_state VALUES('1',990,0)")
+        with flow.database(self.root) as db:flow.put_state(db,'receivedAt',self.now)
+        result=self.step(activityHints=[self.hint()])
+        self.assertEqual(result['data']['activityPending'],1)
+        self.assertEqual(result['data']['activityRetryAt'],1020)
+        self.c.poll_resumes_once.assert_not_called()
+        self.now=1020;self.step()
+        self.c.poll_resumes_once.assert_called_once_with(friend_id='1')
+
+    def test_activity_budget_hold_and_disabled_rules_never_trigger_a_write(self):
+        self.c.passive_delay=lambda **kwargs:60
+        result=self.step(activityHints=[self.hint()])
+        self.assertEqual(result['data']['activityPending'],1)
+        self.c.cli_json.assert_not_called()
+        self.now+=61
+        self.runop('passive-step',rules=[])
+        self.c.cli_json.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_local_observation_reduces_sweeps_and_restores_fallback_when_unavailable(self):
+        with flow.database(self.root) as db:flow.put_state(db,'discoveredAt',850)
+        self.step(activityWatching=True)
+        self.c.cli_json.assert_not_called()
+        self.now+=31
+        self.step(activityWatching=False)
+        self.c.cli_json.assert_called_once_with('hr','chat','--job-id','job1','--page','1')
 
     def test_uid_direction_timestamp_and_owned_messages(self):
         self.now=1790669000

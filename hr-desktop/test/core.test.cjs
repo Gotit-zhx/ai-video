@@ -6,6 +6,41 @@ const os=require('node:os');
 const {Recruiter,restriction,ORIGIN}=require('../src/core.cjs');
 const {LocalBridge}=require('../src/bridge.cjs');
 const user={username:'13800000000',id:'fixture',organizationCode:'heyi',roles:['ADMIN'],platformAdmin:true};
+test('incoming while a runtime operation runs is retained, coalesced, and isolated on pause',async t=>{
+  const {engine,calls,directory}=await fixture(t);
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};
+  engine.passiveCloud=async()=>({rules:[]});
+  const first={friend:'123',mid:'10',job:'j',at:Date.now()/1000};
+  const newer={...first,mid:'11'};
+  let release,started;
+  const start=new Promise(resolve=>{started=resolve;});
+  engine.runtime.run=async input=>{
+    calls.push(input);
+    if(input.operation==='passive-step'){started();await new Promise(resolve=>{release=resolve;});}
+    return {ok:true,data:{}};
+  };
+  engine.notifyActivity([first]);engine.notifyActivity([first]);
+  assert.equal(engine.activity.size,1);
+  const pending=engine.poll();await start;
+  engine.notifyActivity([newer]);await engine.poll();
+  assert.equal(calls.filter(c=>c.operation==='passive-step').length,1);
+  release();await pending;
+  assert.equal(engine.activity.get('123').mid,'11','In-flight ack must not discard a newer incoming message');
+  assert.ok(engine.activityTimer,'Work resumes after the running operation finishes');
+  engine.pause();
+  assert.equal(engine.activity.size,0);assert.equal(engine.activityTimer,null);
+  engine.notifyActivity([newer]);assert.equal(engine.activity.size,0);
+});
+test('persisted activity and downloaded exports schedule a follow-up without waiting for the batch',async t=>{
+  const {engine,directory}=await fixture(t);
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};
+  engine.passiveCloud=async()=>({rules:[]});
+  engine.runtime.run=async()=>({ok:true,data:{activityPending:1,activityRetryAt:Date.now()/1000+40,exportsPending:1}});
+  await engine.poll();
+  assert.ok(engine.activityTimer);
+  await engine.hold({code:'ACCOUNT_RISK'});
+  assert.equal(engine.activityTimer,null);
+});
 test('passive outbox requires an atomic cloud claim and never retries lost sends',async t=>{
   const {engine,calls,directory}=await fixture(t);
   engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;

@@ -1062,6 +1062,22 @@ class ConnectorTest(unittest.TestCase):
             self.assertEqual(5, cli.call_count)
             self.assertNotIn("999", [call.args[2] for call in cli.call_args_list])
 
+    def test_new_message_checks_only_that_resume_with_a_bounded_short_interval(self):
+        now = int(connector.time.time())
+        with connector.resume_db() as db:
+            db.executemany("INSERT INTO resume_requests "
+                           "(friend_id,requested_at,baseline_mid,state,updated_at) VALUES (?,?,0,'waiting',?)",
+                           [('123',now,now),('456',now,now)])
+            db.execute("INSERT INTO resume_poll_state VALUES('123',?,0)", (now-31,))
+        with mock.patch.dict(connector.LOGIN, {"state":"complete"}), \
+             mock.patch.object(connector, "cli_json", return_value={"ok":True,"data":{}}) as cli:
+            connector.poll_resumes_once(friend_id='123')
+            connector.poll_resumes_once(friend_id='123')
+            self.assertEqual(cli.call_count,1)
+            self.assertEqual(cli.call_args.args[2],'123')
+            connector.poll_resumes_once(friend_id='789')
+            self.assertEqual(cli.call_count,1,'Untracked friends cannot cause a resume read')
+
     def test_resume_poll_three_transport_failures_pause_without_losing_checkpoint(self):
         now = int(connector.time.time())
         with connector.resume_db() as db:

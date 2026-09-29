@@ -44,6 +44,9 @@ def database(root):
           CREATE TABLE IF NOT EXISTS recovery_windows(
             friend TEXT PRIMARY KEY,rule TEXT NOT NULL,enabled_at INTEGER NOT NULL,
             since INTEGER NOT NULL,authorized_at INTEGER NOT NULL,reason TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS activity(
+            friend TEXT PRIMARY KEY,job TEXT NOT NULL,mid TEXT NOT NULL,at REAL NOT NULL,
+            retry_at REAL NOT NULL DEFAULT 0,done INTEGER NOT NULL DEFAULT 0);
         ''')
         path.chmod(0o600)
         with db:
@@ -170,10 +173,11 @@ def status(db, phase, **extra):
     return {'ok': True, 'data': value}
 
 
-def discover(c, db, rules):
-    index = int(get_state(db, 'rule-index'))
-    ordered = sorted(rules); rule = rules[ordered[index % len(ordered)]]
-    put_state(db, 'rule-index', index+1)
+def discover(c, db, rules, rule=None):
+    if rule is None:
+        index = int(get_state(db, 'rule-index'))
+        ordered = sorted(rules); rule = rules[ordered[index % len(ordered)]]
+        put_state(db, 'rule-index', index+1)
     put_state(db, 'discoveredAt', time.time()); db.commit()
     # Always revisit recent conversations; draining an entire historical queue
     # first used to postpone fresh messages by hours.
@@ -223,14 +227,19 @@ def discover(c, db, rules):
     return status(db, 'watching')
 
 
-def receive(c, db):
+def receive(c, db, friend=None):
     put_state(db, 'receivedAt', time.time()); db.commit()
     c.RESUME_POLL_LIMIT = 1
-    c.poll_resumes_once()
+    if friend:
+        c.poll_resumes_once(friend_id=friend)
+    else:
+        c.poll_resumes_once()
     if c.held_code(): return {'ok': False, 'error': {'code': c.held_code()}}
     with c.resume_db() as tracked:
         received = {r['friend_id']: dict(r) for r in tracked.execute("SELECT * FROM resume_requests WHERE state='received'")}
-    candidate = next((r for r in db.execute("SELECT * FROM people WHERE state IN ('requested','request_uncertain') ORDER BY updated")
+    candidate = next((r for r in db.execute(
+                      "SELECT * FROM people WHERE state IN ('requested','request_uncertain') "
+                      "ORDER BY CASE WHEN friend=? THEN 0 ELSE 1 END,updated", (friend,))
                       if r['friend'] in received), None)
     if candidate:
         mid = received[candidate['friend']]['message_id']
@@ -241,14 +250,103 @@ def receive(c, db):
     return status(db, 'receiving')
 
 
+def remember_activity(db, hints):
+    for hint in hints[:200] if isinstance(hints, list) else []:
+        if not isinstance(hint, dict): continue
+        friend, mid, job = hint.get('friend', ''), hint.get('mid', ''), hint.get('job', '')
+        at = seconds(hint.get('at'))
+        if (not isinstance(friend, str) or not re.fullmatch(r'[1-9]\d{0,19}', friend)
+                or not isinstance(mid, str) or not re.fullmatch(r'[1-9]\d{0,29}', mid)
+                or not isinstance(job, str) or len(job) > 180
+                or not time.time()-180 <= at <= time.time()+60):
+            continue
+        old = db.execute('SELECT mid FROM activity WHERE friend=?', (friend,)).fetchone()
+        if old and int(old['mid']) >= int(mid): continue
+        db.execute('INSERT OR REPLACE INTO activity VALUES(?,?,?,?,0,0)', (friend, job, mid, at))
+    db.execute('DELETE FROM activity WHERE done=1 AND at<?', (time.time()-7*86400,))
+    db.commit()
+
+
+def activity_step(c, db, rules, delay_for):
+    """Hints schedule reads only. The official message checks still authorize writes."""
+    now = time.time()
+    candidates = list(db.execute(
+        "SELECT a.* FROM activity a LEFT JOIN people p ON p.friend=a.friend "
+        "WHERE a.done=0 AND a.retry_at<=? ORDER BY "
+        "CASE WHEN p.state IN ('requested','request_uncertain') THEN 0 ELSE 1 END,a.at", (now,)))
+    for hint in candidates:
+        friend = hint['friend']
+        person = db.execute('SELECT * FROM people WHERE friend=?', (friend,)).fetchone()
+        with c.resume_db() as tracked:
+            saved = tracked.execute('SELECT state FROM resume_requests WHERE friend_id=?', (friend,)).fetchone()
+        if person and person['state'] in ('requested', 'request_uncertain') and saved and saved['state'] in ('waiting', 'uncertain', 'received'):
+            with c.resume_db() as tracked:
+                last = tracked.execute('SELECT last_polled_at FROM resume_poll_state WHERE friend_id=?', (friend,)).fetchone()
+            interval = max(0, last[0]+30-now) if last and saved['state'] != 'received' else 0
+            delay = max(interval, delay_for(cost=4, queued=True))
+            if delay:
+                db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+delay, friend))
+                continue
+            result = receive(c, db, friend)
+        else:
+            rule = rules.get(person['rule']) if person else next(
+                (rule for rule in rules.values() if rule['jobId'] == hint['job']), None)
+            if not rule or (person and person['state'] not in ('seen', 'inspect')):
+                db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
+                continue
+            if person:
+                # Wake an already known conversation without another friend-list
+                # fetch. A later chatmsg read rechecks sender, opt-in and direction.
+                detail = json.loads(person['body'])
+                if detail.get('enabledAt') == rule['enabledAt']:
+                    detail['activity'] = hint['at']
+                    db.execute("UPDATE people SET state='inspect',body=? WHERE friend=?",
+                               (json.dumps(detail, ensure_ascii=False), friend))
+                    db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
+                    continue
+            delay = delay_for(cost=2, queued=True)
+            if delay:
+                db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+delay, friend))
+                continue
+            result = discover(c, db, rules, rule=rule)
+            # One official list read covers a burst of incoming candidates for
+            # the same job. New signals arriving during the call stay in JS.
+            if result.get('ok') is True:
+                db.execute('UPDATE activity SET done=1 WHERE job=?', (rule['jobId'],))
+        if result.get('ok') is True:
+            db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
+        put_state(db, 'activityStreak', int(get_state(db, 'activityStreak'))+1)
+        put_state(db, 'nextAt', now+10)
+        return result
+    return None
+
+
+def activity_status(db, result):
+    if result.get('ok') is not True: return result
+    pending = db.execute('SELECT count(*),min(retry_at) FROM activity WHERE done=0').fetchone()
+    exports = db.execute("SELECT count(*) FROM people WHERE state='export'").fetchone()[0]
+    value = result.setdefault('data', {})
+    value.update(activityPending=pending[0], activityRetryAt=pending[1] or 0, exportsPending=exports)
+    put_state(db, 'status', json.dumps(value))
+    return result
+
+
 def step(c, db, request):
     rules = {r['id']: r for r in request.get('rules', []) if r.get('enabled') is True}
     now = time.time()
+    delay_for = getattr(c, 'passive_delay', lambda **kwargs: 0)
+    remember_activity(db, request.get('activityHints', []))
+    queued = any(row['rule'] in rules for row in db.execute(
+        "SELECT rule FROM people WHERE state IN ('inspect','reply_ready','ready')"))
+    # Continuous incoming traffic may not starve conversations already admitted.
+    result = activity_step(c, db, rules, delay_for) if (
+        not queued or int(get_state(db, 'activityStreak')) < 2) else None
+    if result is not None: return result
     previous = json.loads(get_state(db, 'status', '{}'))
     if now < float(get_state(db, 'nextAt')) and previous.get('phase') != 'budget_wait':
         return {'ok': True, 'data': previous}
     put_state(db, 'nextAt', now+30); db.commit()
-    delay_for = getattr(c, 'passive_delay', lambda **kwargs: 0)
+    put_state(db, 'activityStreak', 0)
     def wait_budget(delay):
         put_state(db, 'nextAt', now+delay)
         return status(db, 'budget_wait', retryAt=int(now+delay))
@@ -261,14 +359,18 @@ def step(c, db, request):
     # from being starved by list refreshes.
     if not pending or get_state(db, 'lastLane', 'work') != 'maintenance':
         due = []
+        # Active local observation needs no remote polling. Keep a slower safety
+        # sweep, and automatically restore the shorter sweep when the chat page
+        # is unavailable, filtered, empty or no longer observed.
+        sweep = 300 if request.get('activityWatching') is True else 120
         discovered = float(get_state(db, 'discoveredAt'))
-        if rules and now-discovered >= 120:
+        if rules and now-discovered >= sweep:
             due.append((discovered, 'discover'))
         with c.resume_db() as tracked:
             waiting = tracked.execute("SELECT 1 FROM resume_requests WHERE state IN ('waiting','uncertain') LIMIT 1").fetchone()
         waiting = waiting or db.execute("SELECT 1 FROM people WHERE state IN ('requested','request_uncertain') LIMIT 1").fetchone()
         received = float(get_state(db, 'receivedAt'))
-        if waiting and now-received >= 120:
+        if waiting and now-received >= sweep:
             due.append((received, 'receive'))
         if due:
             delays = []
@@ -421,4 +523,4 @@ def execute(c, root, request):
             db.execute('UPDATE commands SET state=? WHERE id=?', (status, cid))
             return {'ok': True, 'data': {'status': status}}
         if operation != 'passive-step': raise ValueError('unsupported passive operation')
-        return step(c, db, request)
+        return activity_status(db, step(c, db, request))
