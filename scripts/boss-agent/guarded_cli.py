@@ -141,6 +141,8 @@ def verify_session(token=None):
 
 def endpoint_label(url):
     # Never store URLs, query strings, identifiers, headers, or response bodies.
+    if url == "https://www.zhipin.com/wapi/zpjob/job/data/list":
+        return "BOSS_MANAGED_JOB_LIST_URL"
     from boss_agent_cli.api import endpoints, recruiter_endpoints
     for module in (recruiter_endpoints, endpoints):
         for name, value in vars(module).items():

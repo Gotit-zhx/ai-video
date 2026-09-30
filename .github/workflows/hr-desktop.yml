@@ -54,6 +54,7 @@ jobs:
       - run: python -m unittest discover -s runtime -p test_active_sourcing.py
       - run: python -m unittest discover -s runtime -p test_account_history.py
       - run: python -m unittest discover -s runtime -p test_local_session.py
+      - run: python -m unittest discover -s runtime -p test_managed_jobs.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_recruitment_demands.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_passive_pool.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_hr_sourcing.py

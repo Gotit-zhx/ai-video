@@ -298,6 +298,8 @@
 
   const jobs = section('jobs');
   element('p', '选择职位，查看对应的推荐人才、投递和沟通进展。', jobs, 'hr-hint');
+  const jobsRefresh = button('刷新职位', jobs, () => run('jobs'));
+  jobsRefresh.className = 'hr-secondary';
   const jobsResult = element('div', '', jobs, 'hr-result');
 
   const talent = section('talent');
@@ -892,6 +894,8 @@
   }
   async function run(action = current, recovered = false) {
     if (!allowed()) return;
+    if(action==='jobs'&&jobsRefresh.disabled)return;
+    if(action==='jobs')jobsRefresh.disabled=true;
     if (action === 'talent') action = talentAction;
     if (action === 'candidates' || action === 'recommendations') talentAction = action;
     if (action === 'chats') {selectedConversation=null;friendId.value='';}
@@ -963,6 +967,7 @@
       readNotices.set(box,element('p', error.message || '读取失败', box, 'hr-error'));
       if(path&&!recovered)recoveryRead={section:current,action};
     } finally {
+      if(action==='jobs')jobsRefresh.disabled=false;
       if (ticket === sequence) box.setAttribute('aria-busy','false');
     }
   }

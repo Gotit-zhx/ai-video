@@ -647,6 +647,33 @@ test('risk-held sessions show the exact error and never trigger automatic login'
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
 });
 
+test('refreshing managed jobs includes a new unchatted job and preserves the list on failure',async()=>{
+  let reads=0,finish;
+  const initial={ok:true,data:{jobs:[{encryptJobId:'old',jobName:'秘书',statusDesc:'开放中'}]}};
+  const app=setup({api:async url=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete'}};
+    if(url.endsWith('/jobs')){
+      reads++;
+      if(reads===1)return {data:initial};
+      if(reads===2){
+        await new Promise(resolve=>{finish=resolve;});
+        return {data:{ok:true,data:{jobs:[...initial.data.jobs,
+          {encryptJobId:'new',jobName:'图像算法',statusDesc:'开放中'},
+          {encryptJobId:'expired',jobName:'验证工程师',statusDesc:'已失效'}]}}};
+      }
+      throw Error('列表暂时不可用');
+    }
+    throw Error('unexpected '+url);
+  }});
+  await app.enter('jobs');assert.equal(reads,1);
+  const refresh=app.visible().find(n=>n._text==='刷新职位');
+  const pending=refresh.click();await flush();await refresh.click();assert.equal(reads,2);
+  finish();await pending;await flush();
+  assert.match(app.text(),/图像算法/);assert.match(app.text(),/已失效/);
+  await app.click('刷新职位');
+  assert.match(app.text(),/图像算法/);assert.match(app.text(),/列表暂时不可用/);
+  assert.ok(app.calls.every(c=>!c.options?.method||c.options.method==='GET'));
+});
 test('jobs render business fields and job action passes encrypted ID automatically',async()=>{
   const app=setup();await app.enter('jobs');
   assert.match(app.text(),/15–25K/);assert.match(app.text(),/厦门 · 思明区/);

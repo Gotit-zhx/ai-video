@@ -165,6 +165,13 @@ def main(request):
     if operation == "download-resume":
         output = c.download_resume(request["friendId"], request["messageId"])
         return {"ok": True, "file": str(output)}
+    if operation == "jobs" and not request.get("jobId"):
+        from boss_agent_cli.api.recruiter_client import BossRecruiterClient
+        from boss_agent_cli.auth.manager import AuthManager
+        import managed_jobs
+        auth = AuthManager(c.AUTH_DIR.parent, platform="zhipin")
+        with BossRecruiterClient(auth, cdp_url=request["cdp"], browser_source="stored-cookie") as client:
+            return c.sanitize(c.observe_result(managed_jobs.listing(client)))
     args = c.command(request)
     result = invoke(*args)
     return c.sanitize(result)
