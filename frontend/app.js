@@ -4192,6 +4192,39 @@ function productCaptureOrigin(capture) {
   return {label: "来源待确认", tone: "unknown"};
 }
 
+function syncProductBulkSelection() {
+  const checkboxes = [...document.querySelectorAll("#product-capture-list [data-product-bulk-id]:not(:disabled)")];
+  const allSelected = checkboxes.length > 0
+    && checkboxes.every(checkbox => productBulkSelectedIds.has(checkbox.dataset.productBulkId));
+  document.querySelector("#product-bulk-count").textContent = `已勾选 ${productBulkSelectedIds.size} 件`;
+  document.querySelector("#open-product-bulk-upload").disabled = !productBulkSelectedIds.size;
+  const toggle = document.querySelector("#toggle-product-bulk-selection");
+  toggle.disabled = productCaptureListLoading || !checkboxes.length || !hasAnyPermission("product:publish");
+  toggle.textContent = allSelected ? "取消全选" : "全部勾选";
+  toggle.title = allSelected ? "取消当前页全部商品的勾选" : "勾选当前页全部可上传商品";
+  toggle.setAttribute("aria-pressed", String(allSelected));
+}
+
+function toggleProductBulkPageSelection() {
+  if (productCaptureListLoading || !hasAnyPermission("product:publish")) return;
+  const checkboxes = [...document.querySelectorAll("#product-capture-list [data-product-bulk-id]:not(:disabled)")];
+  const selectAll = !checkboxes.every(checkbox => productBulkSelectedIds.has(checkbox.dataset.productBulkId));
+  for (const checkbox of checkboxes) {
+    const id = checkbox.dataset.productBulkId;
+    const capture = productCaptures.find(item => item.id === id);
+    if (!productCaptureCanUpload(capture)) continue;
+    if (selectAll) {
+      productBulkSelectedIds.add(id);
+      productBulkSelectedCaptures.set(id, capture);
+    } else {
+      productBulkSelectedIds.delete(id);
+      productBulkSelectedCaptures.delete(id);
+    }
+    checkbox.checked = selectAll;
+  }
+  syncProductBulkSelection();
+}
+
 function renderProductCaptureList() {
   const list = document.querySelector("#product-capture-list");
   const filtered = filteredProductCaptures();
@@ -4201,6 +4234,7 @@ function renderProductCaptureList() {
     list.innerHTML = hasCriteria
       ? `<div class="product-empty"><strong>没有匹配商品</strong><span>调整状态筛选或搜索关键词。</span></div>`
       : `<div class="product-empty"><strong>还没有采集商品</strong><span>安装并登录浏览器插件，在商品详情页点击“采集商品”。</span></div>`;
+    syncProductBulkSelection();
     return;
   }
   list.innerHTML = filtered.map(capture => {
@@ -4221,6 +4255,7 @@ function renderProductCaptureList() {
       <span class="product-row-status ${group}">${escapeHtml(productCaptureDisplayStatus(capture))}</span>
     </button><div class="capture-card-actions">${selectable ? `<button type="button" class="capture-upload-button" data-upload-capture="${escapeHtml(capture.id)}">${capture.status === "PUBLISHED" ? "选择店铺再次上传" : "选择店铺上传"}</button>` : ""}${hasAnyPermission("product:edit") ? `<button type="button" class="capture-delete-button" data-delete-capture="${escapeHtml(capture.id)}" aria-label="删除 ${escapeHtml(title)}">删除</button>` : ""}</div></div>`;
   }).join("");
+  syncProductBulkSelection();
 }
 
 function renderProductCaptureEmpty(title = "选择一条商品草稿", note = "插件完成采集后，商品资料、SKU 和图片处理结果会显示在这里。", loading = false) {
@@ -4896,6 +4931,7 @@ async function loadProductCaptures(preferredId = null, {
   } else {
     syncProductCapturePagination();
   }
+  syncProductBulkSelection();
   try {
     const results = await Promise.all(requestedPages.map(requested =>
       productCaptureApi(productCaptureListPath(requested))));
@@ -4977,6 +5013,7 @@ async function loadProductCaptures(preferredId = null, {
       document.querySelector("#product-result-count").textContent = "读取失败";
       document.querySelector("#product-capture-pagination").hidden = true;
     }
+    syncProductBulkSelection();
   }
 }
 
@@ -7549,8 +7586,7 @@ async function deleteProductCaptureFromList(button) {
     productBulkSelectedIds.delete(id);
     productBulkSelectedCaptures.delete(id);
     productLiveImageProgress.delete(id);
-    document.querySelector("#product-bulk-count").textContent = `已勾选 ${productBulkSelectedIds.size} 件`;
-    document.querySelector("#open-product-bulk-upload").disabled = !productBulkSelectedIds.size;
+    syncProductBulkSelection();
     if (selectedProductCaptureId === id) await selectProductCapture(null);
     await loadProductCaptures(null, {page: Math.max(0, productCapturePage), refreshDetail:false});
   } catch (error) {
@@ -7559,6 +7595,8 @@ async function deleteProductCaptureFromList(button) {
     button.textContent = "删除";
   }
 }
+
+document.querySelector("#toggle-product-bulk-selection").addEventListener("click", toggleProductBulkPageSelection);
 
 document.querySelector("#product-capture-list").addEventListener("click", event => {
   const uploadButton = event.target.closest("[data-upload-capture]");
@@ -7574,8 +7612,7 @@ document.querySelector("#product-capture-list").addEventListener("click", event 
       productBulkSelectedIds.delete(checkbox.dataset.productBulkId);
       productBulkSelectedCaptures.delete(checkbox.dataset.productBulkId);
     }
-    document.querySelector("#product-bulk-count").textContent = `已勾选 ${productBulkSelectedIds.size} 件`;
-    document.querySelector("#open-product-bulk-upload").disabled = !productBulkSelectedIds.size;
+    syncProductBulkSelection();
     return;
   }
   const row = event.target.closest("[data-product-capture-id]");
@@ -9287,8 +9324,6 @@ function resetProductCaptureState() {
   stopProductBulkHistoryPolling();
   document.querySelector('#product-bulk-history-dialog')?.close();
   document.querySelector("#product-bulk-dialog")?.close();
-  document.querySelector("#product-bulk-count").textContent = "已勾选 0 件";
-  document.querySelector("#open-product-bulk-upload").disabled = true;
   selectedProductCaptureId = null;
   selectedProductCaptureDetail = null;
   productCaptureStatusFilter = "CAPTURED";
@@ -9300,6 +9335,7 @@ function resetProductCaptureState() {
   productCaptureStatusCountsKnown = false;
   productCaptureLegacyListResponse = false;
   productCaptureListLoading = false;
+  syncProductBulkSelection();
   productCaptureAppendLoading = false;
   productCapturePaginationMessage = "";
   const search = document.querySelector("#product-capture-search");
