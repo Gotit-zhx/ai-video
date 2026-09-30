@@ -894,6 +894,13 @@ class ConnectorTest(unittest.TestCase):
         ]}}
         self.assertIsNone(connector.incoming_attachment(history, "123", 10))
 
+    def test_original_filename_only_from_matching_incoming_attachment(self):
+        history={'data':{'messages':[{'mid':20,'from':{'uid':123,'source':0},'body':{'hyperLink':{
+            'hyperLinkType':1,'url':'https://www.zhipin.com/resume?id=received','text':'李云跃_纯图版.pdf'}}}]}}
+        self.assertEqual(connector.attachment_filename(history,'123','20'),'李云跃_纯图版.pdf')
+        self.assertEqual(connector.attachment_filename(history,'999','20'),'')
+        self.assertEqual(connector.attachment_filename(history,'123','19'),'')
+
     def test_inconclusive_recruiter_probe_preserves_saved_login(self):
         response = mock.Mock(stdout=json.dumps({
             "ok": True, "data": {"logged_in": True,

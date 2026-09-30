@@ -28,7 +28,6 @@ class IsolatedTest(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
 
-
 class SessionTest(IsolatedTest):
     def test_snapshot_uses_only_local_read_commands_and_exact_cookie_domains(self):
         websocket = mock.MagicMock()
@@ -171,6 +170,17 @@ class PinnedSDKTest(IsolatedTest):
         guard.install_policy()
         cls.httpx, cls.base, cls.auth_error = httpx, _BaseHttpClient, AuthError
         cls.classify = staticmethod(classify_code_37)
+
+    def test_download_keeps_display_name_but_never_uses_it_as_output_path(self):
+        from boss_agent_cli.api import recruiter_client
+        with tempfile.TemporaryDirectory() as folder:
+            output=pathlib.Path(folder)/'random.pdf'
+            response=self.httpx.Response(200,content=b'%PDF-test',
+                headers={'Content-Disposition':"attachment; filename*=UTF-8''..%2F%E8%8B%8F%E7%90%AA%E7%AE%80%E5%8E%86.pdf"})
+            result=recruiter_client.save_resume(response,output)
+            self.assertEqual(result['originalFileName'],'苏琪简历.pdf')
+            self.assertEqual(output.read_bytes(),b'%PDF-test')
+            self.assertEqual(list(pathlib.Path(folder).iterdir()),[output])
 
     def setUp(self):
         super().setUp()

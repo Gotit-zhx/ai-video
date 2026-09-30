@@ -1,5 +1,6 @@
 """Private OSS resume objects and bounded text extraction. Never accepts remote URLs."""
 import base64
+import csv
 import hashlib
 import io
 import json
@@ -8,23 +9,110 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import unicodedata
 import zipfile
 
 MAX_BYTES = 25*1024*1024
+NAME_VERSION = 2
 TYPES = {'pdf': 'application/pdf', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
          'doc': 'application/msword', 'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg'}
+NON_NAMES = {'个人简历', '求职简历', '中文简历', '我的简历', '应聘简历', '附件简历', '基本信息', '联系方式',
+             '工作经历', '教育经历', '项目经历', '姓名', '真实姓名', '应聘岗位', '求职意向', '总经理',
+             '总经理秘书', '行政管理', '行政助理', '行政前台', '销售代表', '人事专员', '工作经验',
+             '工作年限', '资格证书', '求职信息', '个人优势', '未填写', '保密', '简历', '本科', '大专',
+             '更新', '最新', '版本', '最终版', '秘书', '运营', '销售', '附件', '厦门', '福建'}
+
+
+def clean_name(value):
+    value = re.sub(r'\s+', '', value).strip(' :：|丨')
+    return value if re.fullmatch(r'[\u4e00-\u9fff]{2,4}', value) and value not in NON_NAMES else ''
+
+
+def original_filename(value):
+    """Display metadata only; never use an attachment name as a filesystem path."""
+    value = unicodedata.normalize('NFKC', str(value or ''))
+    value = re.sub(r'[\x00-\x1f\x7f]', '', value).replace('\\', '/').rsplit('/', 1)[-1].strip()
+    return value[:240]
+
+
+def filename_name(value):
+    value = original_filename(value)
+    if not re.search(r'\.(pdf|docx?|png|jpe?g)$', value, re.I):
+        return ''
+    stem = re.sub(r'\.(pdf|docx?|png|jpe?g)$', '', value, flags=re.I)
+    # Remove common resume labels, copy counters and dates, not arbitrary job words.
+    stem = re.sub(r'的?(?:个人|求职|中文|应聘|附件|我的)?简历|RESUME|CV', ' ', stem, flags=re.I)
+    stem = re.sub(r'[\d]+(?:年|月|日|岁|届|版)?', ' ', stem)
+    stem = re.sub(r'(?:最新版|最终版|更新版|更新|副本|新版)', ' ', stem)
+    parts = re.split(r'[_\-—–+|丨·,，;；()（）\[\]【】\s]+', stem)
+    surnames = set('赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻柏水窦章'
+                   '云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常'
+                   '乐于傅皮卞齐康伍余元顾孟平黄和穆萧尹姚邵汪祁毛禹狄米贝明臧计伏成戴宋茅庞熊纪'
+                   '舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍'
+                   '虞万支柯管卢莫房缪解应宗丁宣邓郁单杭洪包左石崔吉龚程嵇邢裴陆荣翁荀羊惠甄曲家'
+                   '封储靳段富巫焦巴弓牧山谷车侯宓蓬全班仰秋仲伊宫宁仇栾甘厉祖武符刘景詹束龙叶幸'
+                   '司韶黎乔苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦雍郤璩桑桂濮牛寿通边扈燕冀郏浦尚'
+                   '农温别庄晏柴瞿阎连习艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧'
+                   '沃利蔚越夔隆师巩厍聂晁勾敖融冷訾辛阚那简饶曾沙鞠须丰巢关蒯相查后荆红游竺权盖'
+                   '益桓公仉督晋楚闫岳帅缑亢况郜有商牟佘佴伯赏墨哈谯笪年爱阳佟言福南火铁迟漆赫')
+    names = {clean_name(part) for part in parts if clean_name(part) and part[0] in surnames
+             and not re.search(r'经理|助理|秘书|工程|设计|运营|专员|管理|销售|客服|市场|本科|大专|硕士', part)}
+    return next(iter(names)) if len(names) == 1 else ''
+
+
+def identity(filename, text):
+    name = filename_name(filename)
+    if name:
+        return name, 'resume_filename'
+    name = person_name(text)
+    return name, 'resume_text' if name else ''
+
+
+def ocr_name(raw, extension):
+    """Last resort on the first page; low-confidence names remain unresolved."""
+    if extension not in {'pdf', 'png', 'jpg', 'jpeg'}:
+        return ''
+    try:
+        with tempfile.TemporaryDirectory(prefix='heyi-resume-ocr-') as folder:
+            source = Path(folder) / ('source.' + extension)
+            source.write_bytes(raw)
+            image = source
+            if extension == 'pdf':
+                prefix = Path(folder) / 'page'
+                subprocess.run(['pdftoppm', '-f', '1', '-l', '1', '-singlefile', '-scale-to', '2400',
+                                '-png', str(source), str(prefix)], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=8, check=True)
+                image = prefix.with_suffix('.png')
+            result = subprocess.run(['tesseract', str(image), 'stdout', '-l', 'chi_sim', '--psm', '11', 'tsv'],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=12, check=True,
+                                    env={**os.environ, 'OMP_THREAD_LIMIT': '1'})
+            return ocr_identity(result.stdout.decode('utf-8'))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ''
+
+
+def ocr_identity(tsv):
+    lines = {}
+    for row in csv.DictReader(io.StringIO(tsv), delimiter='\t'):
+        text = (row.get('text') or '').strip()
+        if not text or row.get('level') != '5':
+            continue
+        key = tuple(row.get(k) for k in ('page_num', 'block_num', 'par_num', 'line_num'))
+        lines.setdefault(key, []).append((text, float(row.get('conf', '-1'))))
+    header = [' '.join(t for t, _ in words) for words in lines.values()]
+    name = person_name('\n'.join(header))
+    confidence = [c for words in lines.values() if clean_name(''.join(t for t, _ in words)) == name
+                  for _, c in words]
+    return name if name and confidence and min(confidence) >= 88 else ''
 
 
 def person_name(text):
     """Conservative header extraction; no AI call and no guessed filename name."""
-    text = unicodedata.normalize('NFKC', str(text or '')[:6000])
+    text = unicodedata.normalize('NFKC', str(text or '')[:60000])
+    text = re.sub(r'[A-Za-z0-9_-]{24,}~*', '', text)[:6000]
     lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in text.splitlines() if line.strip()][:60]
-    invalid = {'个人简历', '求职简历', '基本信息', '联系方式', '工作经历', '教育经历', '项目经历',
-               '姓名', '真实姓名', '应聘岗位', '求职意向', '总经理', '总经理秘书', '未填写', '保密'}
-    def clean(value):
-        value = re.sub(r'\s+', '', value).strip(' :：|丨')
-        return value if re.fullmatch(r'[\u4e00-\u9fff]{2,4}', value) and value not in invalid else ''
+    clean = clean_name
     explicit = []
     for index, line in enumerate(lines):
         match = re.match(r'^(?:姓\s*名|真实姓名)\s*[:：]?\s*([\u4e00-\u9fff ]{2,8}?)(?=\s{1,2}(?:性别|年龄|电话)|[|丨,，]|$)', line)
@@ -41,9 +129,16 @@ def person_name(text):
         if re.fullmatch(r'(工作|项目|教育|实习)(经历|背景)|专业技能|个人优势', line): break
         match = re.match(r'^([\u4e00-\u9fff ]{2,8}?)\s+(?:男|女)(?=\s|[|丨]|$)', line)
         value = clean(match[1]) if match else ''
-        if not value and index+1 < len(lines) and re.match(r'^(?:男|女)(?=\s|[|丨]|$)', lines[index+1]):
+        if not value and index+1 < len(lines) and re.match(r'^(?:性别\s*[:：]?\s*)?(?:男|女)(?=\s|[|丨]|$)', lines[index+1]):
             value = clean(line)
         if value: candidates.append(value)
+        # Designed resumes often place an unlabelled name next to RESUME or
+        # contact details. Require that context and a unique short header name.
+        if not value and index < 18 and clean(line):
+            adjacent = lines[max(0, index-1):index] + lines[index+1:index+3]
+            if any(re.fullmatch(r'(?:PERSONAL\s*)?R\s*E\s*S\s*U\s*M\s*E|个人简历|求职简历', s, re.I)
+                   or re.match(r'^(?:电话|手机|邮箱|联系方式)\s*[:：]', s) for s in adjacent):
+                candidates.append(clean(line))
     return candidates[0] if len(set(candidates)) == 1 else ''
 
 

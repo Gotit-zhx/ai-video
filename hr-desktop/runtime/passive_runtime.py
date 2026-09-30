@@ -67,6 +67,18 @@ def rows(result):
     return []
 
 
+def discovery_complete(result):
+    data = result.get('data', {})
+    if not isinstance(data, dict):
+        return False
+    if 'hasMore' in data:
+        return data['hasMore'] is False or data['hasMore'] == 0
+    # Pinned SDK's filterByLabel endpoint returns the complete matching UID
+    # index as {"result": [...]}, even when passed page=2. Verified against the
+    # official page's allList$. Do not apply this to unknown/paginated shapes.
+    return set(data) == {'result'} and isinstance(data['result'], list)
+
+
 def human_reply(messages, friend, since, excluded=()):
     """UID direction is authoritative. No heuristic on source=0 vs source=1."""
     incoming = []
@@ -238,8 +250,7 @@ def discover(c, db, rules, rule=None, page=1, capture=None):
         since = max(rule['enabledAt'], float(get_state(db, 'discovery-complete:'+rule['id'], str(rule['enabledAt'])))-60)
         entries = rows(result)
         stamps = [activity(item) for item in entries if isinstance(item, dict)]
-        metadata = result.get('data', {})
-        complete = not entries or (isinstance(metadata, dict) and metadata.get('hasMore') in (False, 0))
+        complete = not entries or discovery_complete(result)
         complete = complete or bool(stamps and all(stamps) and min(stamps) < since)
         pending = db.execute("SELECT 1 FROM catchup WHERE kind='job' AND target=? AND done=0", (rule['id'],)).fetchone()
         if not pending:
@@ -276,9 +287,15 @@ def receive(c, db, friend=None, reconnect=False):
     if candidate:
         mid = received[candidate['friend']]['message_id']
         file = str(c.download_resume(candidate['friend'], mid))
-        db.execute("UPDATE people SET state='export',file=?,mid=?,updated=? WHERE friend=?",
-                   (file, mid, int(time.time()), candidate['friend']))
-        event(db, 'RESUME_RECEIVED', json.loads(candidate['body']))
+        detail = json.loads(candidate['body'])
+        with c.resume_db() as tracked:
+            original = tracked.execute('SELECT original_name FROM resume_files WHERE friend_id=? AND message_id=?',
+                                       (candidate['friend'], mid)).fetchone()
+        if original:
+            detail['originalFileName'] = original['original_name']
+        db.execute("UPDATE people SET state='export',body=?,file=?,mid=?,updated=? WHERE friend=?",
+                   (json.dumps(detail, ensure_ascii=False), file, mid, int(time.time()), candidate['friend']))
+        event(db, 'RESUME_RECEIVED', detail)
     return status(db, 'receiving', receiptChecked=outcome.get('checked', False) if isinstance(outcome, dict) else True,
                   receiptMore=outcome.get('more', False) if isinstance(outcome, dict) else False)
 
@@ -350,8 +367,7 @@ def catchup_step(c, db, rules, delay_for):
                 fingerprints = [str(row.get('friendId') or row.get('uid') or row.get('gid') or '') for row in entries]
                 fingerprint = hashlib.sha256(json.dumps(fingerprints).encode()).hexdigest()
                 old_page = bool(entries) and all(activity(row) and activity(row) < task['since'] for row in entries)
-                metadata = captured['result'].get('data', {})
-                explicit_end = isinstance(metadata, dict) and (metadata.get('hasMore') is False or metadata.get('hasMore') == 0)
+                explicit_end = discovery_complete(captured['result'])
                 complete = not entries or old_page or explicit_end
                 if fingerprint == task['fingerprint'] and entries and not complete:
                     # A provider repeating the same page is not a completed sync.

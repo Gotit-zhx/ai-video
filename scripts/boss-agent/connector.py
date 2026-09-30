@@ -206,6 +206,10 @@ def resume_db():
     connection.execute("""CREATE TABLE IF NOT EXISTS resume_history_cursor (
         friend_id TEXT PRIMARY KEY, before_mid TEXT NOT NULL
     )""")
+    connection.execute("""CREATE TABLE IF NOT EXISTS resume_files (
+        friend_id TEXT NOT NULL,message_id TEXT NOT NULL,original_name TEXT NOT NULL,
+        PRIMARY KEY(friend_id,message_id)
+    )""")
     os.chmod(RESUME_DB, 0o600)
     try:
         with connection:
@@ -259,6 +263,30 @@ def incoming_attachment(envelope, friend_id, baseline):
     return min(matches, key=int) if matches else None
 
 
+def attachment_filename(envelope, friend_id, message_id):
+    """Read only the verified received attachment's display name, never its URL."""
+    if incoming_attachment(envelope, friend_id, int(message_id)-1) != str(message_id):
+        return ''
+    for item in resume_messages(envelope):
+        if str(item.get('mid', '')) != str(message_id):
+            continue
+        body = item.get('body') or {}
+        link = body.get('hyperLink') or {}
+        for source in (link, body):
+            for key in ('fileName', 'filename', 'title', 'text'):
+                value = source.get(key)
+                if isinstance(value, str) and re.search(r'\.(pdf|docx?|png|jpe?g)$', value.strip(), re.I):
+                    return re.sub(r'[\x00-\x1f\x7f]', '', value).replace('\\', '/').rsplit('/', 1)[-1][:240]
+    return ''
+
+
+def remember_attachment_name(envelope, friend_id, message_id):
+    name = attachment_filename(envelope, friend_id, message_id)
+    if name:
+        with resume_db() as db:
+            db.execute('INSERT OR REPLACE INTO resume_files VALUES(?,?,?)', (friend_id, str(message_id), name))
+
+
 def adopt_received_resume(envelope, friend_id, since):
     """Record a candidate-supplied attachment; never send a redundant request."""
     if envelope.get('ok') is not True:
@@ -277,6 +305,7 @@ def adopt_received_resume(envelope, friend_id, since):
     mid = incoming_attachment({'data': {'messages': eligible}}, friend_id, 0)
     if not mid:
         return False
+    remember_attachment_name(envelope, friend_id, mid)
     with resume_db() as db:
         changed = db.execute(
             "INSERT OR IGNORE INTO resume_requests "
@@ -504,6 +533,7 @@ def poll_resumes_once(friend_id=None, *, reconnect=False):
                 connection.execute("DELETE FROM resume_history_cursor WHERE friend_id=?", (row['friend_id'],))
         outcome['more'] = more
         if mid:
+            remember_attachment_name(result, row["friend_id"], mid)
             with resume_db() as connection:
                 connection.execute(
                     "UPDATE resume_requests SET state='received', message_id=?, updated_at=?, error='' "
@@ -543,6 +573,11 @@ def download_resume(friend_id, message_id):
             result = cli_json("hr", "download-resume", friend_id, "--message-id",
                               message_id, "--output", str(output), timeout=90)
             if result.get("ok") is True and output.is_file():
+                original = (result.get('data') or {}).get('originalFileName')
+                if isinstance(original, str) and original:
+                    with resume_db() as db:
+                        db.execute('INSERT OR REPLACE INTO resume_files VALUES(?,?,?)',
+                                   (friend_id, message_id, original[:240]))
                 return output
             output.unlink(missing_ok=True)
             error = result.get("error") or {}

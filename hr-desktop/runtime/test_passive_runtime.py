@@ -29,6 +29,7 @@ class WorkflowTest(unittest.TestCase):
                 with db:
                     db.execute('CREATE TABLE IF NOT EXISTS resume_requests(friend_id TEXT PRIMARY KEY,state TEXT,message_id TEXT)')
                     db.execute('CREATE TABLE IF NOT EXISTS resume_poll_state(friend_id TEXT PRIMARY KEY,last_polled_at INTEGER,failures INTEGER)')
+                    db.execute('CREATE TABLE IF NOT EXISTS resume_files(friend_id TEXT,message_id TEXT,original_name TEXT)')
                     yield db
         self.c.resume_db=resume_db
         self.now=1000
@@ -123,6 +124,17 @@ class WorkflowTest(unittest.TestCase):
         self.now+=121;self.c.passive_delay=lambda **kw:0
         self.runop('passive-step',reconnectId='login-1',rules=[])
         self.c.cli_json.assert_not_called()
+
+    def test_full_filter_index_finishes_without_requesting_the_same_page_again(self):
+        self.c.cli_json.return_value={'ok':True,'data':{'result':[
+            {'uid':'1','lastTS':950}, {'uid':'2','lastTS':940}]}}
+        self.step(reconnectId='full-index')
+        with flow.database(self.root) as db:
+            self.assertEqual(db.execute("SELECT done FROM catchup WHERE kind='job'").fetchone()[0],1)
+        self.assertFalse(flow.discovery_complete({'data':{'friendList':[{'uid':'1'}]}}))
+        self.assertFalse(flow.discovery_complete({'data':{'result':[{'uid':'1'}],'hasMore':True}}))
+        self.assertFalse(flow.discovery_complete({'data':{'result':[{'uid':'1'}],'page':1}}))
+        self.c.request_resume.assert_not_called()
 
     def test_local_realtime_horizon_does_not_limit_reconnect_history(self):
         self.c.cli_json.return_value={'ok':True,'data':{'friendList':[

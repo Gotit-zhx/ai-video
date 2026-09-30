@@ -338,6 +338,27 @@ def install_policy():
     single_request._heyi_guarded = True
     _BaseHttpClient._request = single_request
 
+    # Preserve the original display filename after the SDK validates/saves the
+    # bytes under its random local filename. No extra network request or path use.
+    from boss_agent_cli.api import recruiter_client
+    from email.message import Message
+    original_save_resume = recruiter_client.save_resume
+
+    @functools.wraps(original_save_resume)
+    def save_resume_metadata(response, output):
+        result = original_save_resume(response, output)
+        header = Message()
+        header['Content-Disposition'] = response.headers.get('Content-Disposition', '')[:4096]
+        name = header.get_filename()
+        if isinstance(name, str):
+            name = urllib.parse.unquote(name)
+            name = re.sub(r'[\x00-\x1f\x7f]', '', name).replace('\\', '/').rsplit('/', 1)[-1][:240]
+            if name:
+                result['originalFileName'] = name
+        return result
+
+    recruiter_client.save_resume = save_resume_metadata
+
     original_browser_request = BrowserSession.request
 
     @functools.wraps(original_browser_request)

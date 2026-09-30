@@ -87,17 +87,28 @@ def resume_identity(db, row, actor):
     """Backfill old records from already-extracted text; no OSS/BOSS/AI request."""
     import resume_storage
     detail = json.loads(row['body'])
-    if detail.get('nameExtractionVersion') == 1 or detail.get('extension') not in {'pdf', 'docx'}:
+    if detail.get('nameExtractionVersion') == resume_storage.NAME_VERSION:
         return row
-    name = resume_storage.person_name(detail.get('resumeText', ''))
+    name, source = resume_storage.identity(detail.get('originalFileName', ''), detail.get('resumeText', ''))
     before = detail.get('name', '')
-    detail['nameExtractionVersion'] = 1
-    if name:
-        detail.update(name=name, nameSource='resume_text', fileName=f'{name}-简历.{detail["extension"]}')
+    detail['nameExtractionVersion'] = resume_storage.NAME_VERSION
+    # A human edit is authoritative; automatic migration never overwrites it.
+    if name and detail.get('nameSource') != 'manual':
+        detail.update(name=name, nameSource=source,
+                      fileName=detail.get('originalFileName') or f'{name}-简历.{detail.get("extension", "pdf")}')
+    name = detail.get('name', '')
     db.execute('UPDATE hr_resume_pool SET body=?,version=version+1,updated_at=? WHERE id=? AND owner=?',
                (dump(detail), now(), row['id'], row['owner']))
     if name and name != before:
         pool.event(db, row['owner'], actor, row['id'], 'resume.name-extract', {'name': before}, {'name': name})
+        source_id = f"passive:{row['account']}:{row['friend_id']}"
+        talent = db.execute('SELECT * FROM talents WHERE owner=? AND source_id=?', (row['owner'], source_id)).fetchone()
+        if talent:
+            value = json.loads(talent['body'])
+            if value.get('name', '') in ('', before):
+                value['name'] = detail['name']
+                db.execute('UPDATE talents SET body=?,version=version+1,updated_at=? WHERE id=? AND owner=?',
+                           (dump(value), now(), talent['id'], row['owner']))
     return db.execute('SELECT * FROM hr_resume_pool WHERE id=? AND owner=?', (row['id'], row['owner'])).fetchone()
 
 
@@ -262,12 +273,17 @@ def ingest(user, body):
     location = resume_storage.store(owner, object_id, raw, extension)
     extracted, extraction_note = resume_storage.extract(raw, extension)
     clean = {k: pool.text(body.get(k, ''), limit) for k, limit in {'name': 100, 'education': 100, 'experience': 100, 'city': 100, 'company': 200}.items()}
-    extracted_name = resume_storage.person_name(extracted)
+    original = resume_storage.original_filename(body.get('originalFileName', ''))
+    extracted_name, name_source = resume_storage.identity(original, extracted)
+    if not extracted_name and not clean.get('name'):
+        extracted_name = resume_storage.ocr_name(raw, extension)
+        if extracted_name: name_source = 'resume_ocr'
     if extracted_name:
-        clean.update(name=extracted_name, nameSource='resume_text')
+        clean.update(name=extracted_name, nameSource=name_source)
     clean.update(jobName=job['jobName'], jobDescription=job['description'], jobEducation=job['education'], jobExperience=job['experience'],
-                 projectId=job['projectId'], fileName=f'{extracted_name}-简历.{extension}' if extracted_name else f'简历-{record[:8]}.{extension}', extension=extension,
-                 nameExtractionVersion=1,
+                 projectId=job['projectId'], originalFileName=original,
+                 fileName=original or (f'{extracted_name}-简历.{extension}' if extracted_name else f'简历-{record[:8]}.{extension}'), extension=extension,
+                 nameExtractionVersion=resume_storage.NAME_VERSION,
                  resumeText=extracted, extractionNote=extraction_note, size=len(raw))
     with pool.database() as db:
         schema(db)

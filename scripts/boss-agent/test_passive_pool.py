@@ -36,6 +36,25 @@ class PassiveTest(unittest.TestCase):
             feature.review(USER,{'id':'r1','version':1,'action':'reject','message':'client supplied'})
         self.assertEqual(feature.listing(USER,'resume-pool',{})['items'][0]['status'],'pending')
 
+    def test_filename_backfill_preserves_review_ai_and_manual_edits(self):
+        with pool.database() as db:
+            feature.schema(db)
+            detail=json.loads(db.execute("SELECT body FROM hr_resume_pool WHERE id='r1'").fetchone()[0])
+            detail.update(name='',extension='pdf',nameExtractionVersion=1,
+                          originalFileName='苏琪简历.pdf',resumeText='姓名：张晓林')
+            db.execute("UPDATE hr_resume_pool SET body=?,status='approved',ai_state='complete' WHERE id='r1'",(json.dumps(detail),))
+        item=feature.listing(USER,'resume-pool',{})['items'][0]
+        self.assertEqual(item['name'],'苏琪');self.assertEqual(item['nameSource'],'resume_filename')
+        self.assertEqual(item['fileName'],'苏琪简历.pdf')
+        self.assertEqual(item['status'],'approved');self.assertEqual(item['aiState'],'complete')
+        again=feature.listing(USER,'resume-pool',{})['items'][0]
+        self.assertEqual(again['version'],item['version'])
+        with pool.database() as db:
+            feature.schema(db)
+            detail.update(name='手动姓名',nameSource='manual',nameExtractionVersion=1)
+            db.execute("UPDATE hr_resume_pool SET body=? WHERE id='r1'",(json.dumps(detail),))
+        self.assertEqual(feature.listing(USER,'resume-pool',{})['items'][0]['name'],'手动姓名')
+
     def test_job_and_review_filters_share_scoped_counts_and_cannot_cross_organizations(self):
         with pool.database() as db:
             feature.schema(db)
