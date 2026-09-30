@@ -122,7 +122,7 @@ class Recruiter extends EventEmitter {
     passive:this.passiveStatus||{},reconnecting:this.paused&&this.autoReconnect&&!!this.accountRoot
       &&(!this.riskHold||TEMPORARY.has(this.riskHold.code)),
     accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
-    capabilities:['passive-resume','job-jd','active-sourcing']};}
+    capabilities:['passive-resume','job-jd','active-sourcing','sourcing-credentials-v2']};}
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
   pause(code='USER_PAUSED'){
     if(code==='USER_PAUSED')this.autoReconnect=false;
@@ -407,7 +407,7 @@ class Recruiter extends EventEmitter {
         await call('passive-ack',{friendId:item.friend,messageId:item.mid});
         this.event('RESUME_ARCHIVED');
       }
-      const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing']});
+      const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing','sourcing-credentials-v2']});
       if(!ready())return;
       const command=config.commands?.[0];
       if(command){

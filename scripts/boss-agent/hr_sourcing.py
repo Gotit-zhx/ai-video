@@ -18,6 +18,9 @@ from passive_pool import account, dump, now, uid
 
 AI_BASE = 'http://127.0.0.1:8080/api/v1/recruitment-ai/'
 MAX_UPLOAD = 10 * 1024 * 1024
+# Opaque BOSS access credentials use the same bound as connector.security_identifier.
+# They routinely exceed 600 characters and must remain intact outside model input.
+SECURITY_ID = re.compile(r"^[A-Za-z0-9_~][A-Za-z0-9_~\-=]{0,4095}$")
 
 
 def schema(db):
@@ -223,7 +226,9 @@ def candidate(raw, job_id):
     identifiers = {name: first(*keys) for name, keys in {
         'geekId': ('encryptGeekId', 'encGeekId'), 'expectId': ('expectId',),
         'lid': ('lid',), 'securityId': ('securityId',), 'suid': ('suid',)}.items()}
-    if any(len(value)>600 for value in identifiers.values()): return None
+    if any(len(value) > (4096 if key == 'securityId' else 600)
+           for key, value in identifiers.items()): return None
+    if identifiers['securityId'] and not SECURITY_ID.fullmatch(identifiers['securityId']): return None
     # Only explicitly job-related fields enter the model; identifiers and names
     # stay outside it. Education/school, age and other personal attributes are omitted.
     evidence = []
@@ -269,7 +274,7 @@ def search(user, body, cookie):
             if not value: continue
             cid = str(uuid.uuid5(uuid.NAMESPACE_URL, f'hr-source-candidate:{owner}:{job["id"]}:{value["geekId"]}'))
             value['id'] = cid; parsed[cid] = value
-        if not parsed: raise ValueError('未获取到属于该职位的可用候选人，本次未调用 AI')
+        if not parsed: raise ValueError('已读取候选人，但卡片的职位或访问参数校验未通过，本次未调用 AI。请刷新获取候选人后重试')
         for cid, value in parsed.items():
             db.execute('INSERT OR REPLACE INTO hr_sourcing_candidates VALUES(?,?,?,?,?,?)',
                        (cid, owner, job['id'], value['geekId'], dump(value), time.time()))

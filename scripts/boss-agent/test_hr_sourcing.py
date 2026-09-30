@@ -107,6 +107,38 @@ class SourcingTest(unittest.TestCase):
         self.assertNotIn('名校', value['evidenceText']); self.assertNotIn('测试人才', value['evidenceText'])
         self.assertIsNone(s.candidate(self.card(encryptJobId='another-job'), 'job1'))
 
+    def test_realistic_long_credentials_survive_analysis_and_greeting_without_entering_ai(self):
+        self.ready()
+        security = 'a'*700+'~'+'B'*45+'=='
+        self.assertEqual(len(security), 748)
+        card = self.card(securityId=security)
+        with mock.patch.object(s.threading, 'Thread') as worker:
+            self.job = s.search(USER, {**self.params(), 'count': 5, 'requestId': str(uuid.uuid4()),
+                                      'candidates': [card]}, 'fixture')
+            worker.assert_called_once()
+            snapshot = worker.call_args.kwargs['args'][2]
+        self.assertNotIn(security, json.dumps(snapshot))
+        cid = snapshot['candidates'][0]['id']
+        with mock.patch.object(s, 'driver', return_value={'candidates': [
+                {'id': cid, 'score': 80, 'summary': '技能相关', 'evidence': ['Java'], 'gaps': []}]}):
+            s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
+        self.job = s.listing(USER, self.params())
+        self.assertTrue(self.job['run']['candidates'][0]['canGreet'])
+        contact = s.greet(USER, {**self.params(), 'candidateId': cid, 'message': '测试话术', 'confirmed': True})
+        old = passive.device_config(USER, {'accountKey': KEY, 'capabilities': ['active-sourcing']})
+        self.assertEqual(old['commands'], [], 'Old clients must not claim long-credential writes')
+        current = passive.device_config(USER, {'accountKey': KEY, 'capabilities': ['active-sourcing', 'sourcing-credentials-v2']})
+        self.assertEqual(current['commands'][0]['id'], contact['id'])
+        self.assertEqual(current['commands'][0]['identifiers']['securityId'], security)
+
+    def test_credential_bounds_and_job_scope_remain_enforced(self):
+        self.assertIsNotNone(s.candidate(self.card(securityId='a'*4096), 'job1'))
+        for value in ['a'*4097, '--help', 'valid\ninvalid', 'id x', 'id;whoami', 'id$(whoami)', 'id/../../', 'id\x00']:
+            with self.subTest(length=len(value)):
+                self.assertIsNone(s.candidate(self.card(securityId=value), 'job1'))
+        self.assertIsNone(s.candidate(self.card(encryptJobId='other-job', securityId='a'*748), 'job1'))
+        self.assertFalse(s.candidate(self.card(securityId=''), 'job1')['canGreet'])
+
     def test_bounded_search_runs_once_and_rejects_invented_candidates(self):
         self.ready(); request = {**self.params(), 'count': 20, 'requestId': str(uuid.uuid4()), 'candidates': [self.card()]}
         with mock.patch.object(s.threading, 'Thread') as worker:

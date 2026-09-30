@@ -79,7 +79,7 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
   let saved=null;
   const app=setup({sourcing:true,api:async(url,options)=>{
     const body=options?.body?JSON.parse(options.body):{};
-    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing','sourcing-credentials-v2']}};
     if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
     if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:'job-test-1',jobName:'Java 后端开发工程师',postDescription:'负责系统开发与测试'}}}};
     if(url.startsWith('/api/v1/hr/sourcing?'))return {data:saved};
@@ -135,6 +135,43 @@ test('sourcing route without selected job never reads BOSS or creates a new scop
   await app.enter('talent');
   assert.match(app.text(),/请返回职位管理/);
   assert.equal(app.calls.length,0);
+});
+test('sourcing visibly reports progress and rejected cards next to the action without repeating reads or model submission',async()=>{
+  const key='a'.repeat(64),security='a'.repeat(700)+'~'+'B'.repeat(45)+'==';
+  const saved={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'工程师',version:2,profileState:'complete',
+    references:[{id:'ref1',filename:'参考.pdf',characters:300}],profile:{},run:null};
+  let finish;
+  const app=setup({sourcing:true,api:async(url,options)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:saved.jobId,jobName:saved.jobName,postDescription:'系统开发与测试'}}}};
+    if(url.startsWith('/api/v1/hr/sourcing?')||url.endsWith('/sourcing/save'))return {data:saved};
+    if(url.includes('/recommendations?'))return {data:{ok:true,data:{hasMore:false,geekList:[
+      {encryptGeekId:'geek1',encryptJobId:saved.jobId,securityId:security,geekCard:{geekName:'测试候选人'}}]}}};
+    if(url.endsWith('/sourcing/search')){
+      assert.equal(JSON.parse(options.body).candidates[0].securityId,security);
+      await new Promise(resolve=>{finish=resolve;});
+      throw Error('候选人卡片校验未通过，本次未调用 AI');
+    }
+    throw Error('unexpected '+url);
+  }});
+  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  app.visible().find(n=>n.attributes['aria-label']==='获取人数').value='5';
+  const button=app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取');
+  const action=button.click();await flush();
+  assert.equal(button._text,'正在获取…');assert.equal(button.disabled,true);
+  assert.equal(button.attributes['aria-busy'],'true');
+  await button.click();
+  const card=app.visible().find(n=>n.className==='hr-sourcing-card'&&n.textContent.includes('02 / 人才寻源'));
+  const status=all(card).find(n=>n.attributes.role==='status');
+  assert.match(status.textContent,/已读取 1 位候选人/);
+  finish();await action;await flush();
+  assert.equal(button._text,'一键 AI 获取');assert.equal(button.disabled,false);
+  assert.equal(button.attributes['aria-busy'],'false');
+  assert.match(status.textContent,/校验未通过/);assert.equal(status.className,'hr-error');
+  assert.equal(app.calls.filter(c=>c.url.includes('/recommendations?')).length,1);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/search')).length,1);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,0);
 });
 test('replacement uploads and profile generation survive helper recovery; obsolete runs do not lock controls',async()=>{
   const key='a'.repeat(64);let online=true,finishUpload;

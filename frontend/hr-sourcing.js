@@ -14,6 +14,7 @@
   globalThis.createHrSourcing=({root,panel,element:el,button,allowed,navigate,hrApi})=>{
     let selected=null,record=null,active=false,generation=0,busy=false,timer=null,polling=false,pollErrors=0;
     let pendingUploads=[],uploading=false;
+    let finding=false,searchError='';
     const painted=new WeakMap();
     function changed(node,value){
       const signature=JSON.stringify(value);
@@ -56,6 +57,7 @@
     const findButton=button('一键 AI 获取',controls,findPeople);findButton.className='hr-primary';
     const refresh=button('刷新结果',controls,()=>reload());refresh.className='hr-secondary';
     const searchStatus=el('p','',find,'hr-hint');
+    searchStatus.setAttribute('role','status');searchStatus.setAttribute('aria-live','polite');
     const results=el('div','',find,'hr-sourcing-results');
     const dialog=el('dialog','',root,'hr-pool-dialog hr-sourcing-greeting');
     const greetingTitle=el('h2','打招呼',dialog);
@@ -89,6 +91,9 @@
       files.disabled=profileButton.disabled=locked;
       profileButton.disabled ||= !record.references.length||record.profileState==='complete';
       findButton.disabled=locked||record.profileState!=='complete';
+      const analyzing=record.run?.version===record.version&&record.run?.state==='running';
+      findButton.textContent=finding?'正在获取…':analyzing?'AI 分析中…':'一键 AI 获取';
+      findButton.setAttribute('aria-busy',String(finding||analyzing));
       refresh.disabled=busy;count.disabled=locked;
       profileButton.textContent=record.profileState==='running'?'正在提炼…':record.profileState==='complete'?'画像已就绪':'AI 提炼 JD 与人才画像';
       profileStatus.textContent=!record.references.length?'尚无已上传的参考简历，请先选择文件并等待上传成功。':record.profileState==='running'
@@ -122,6 +127,8 @@
         :run?.state==='failed'?run.error:run?.state==='complete'
         ?`已分析 ${run.examined} 人，展示 ${run.candidates.length} 人 / 目标 ${run.wanted} 人。匹配度仅供参考。`:'选择人数后开始获取。';
       if(run&&run.version!==record.version)searchStatus.textContent+=' 这是旧版画像结果，请重新获取后再联系。';
+      searchStatus.className=searchError?'hr-error':'hr-hint';
+      if(searchError)searchStatus.textContent=searchError;
       if(changed(results,[run?.candidates,run?.version,record.version,locked]))for(const item of run?.candidates||[]){
         const card=el('article','',results,'hr-person-card');
         const head=el('div','',card,'hr-card-heading');el('h3',item.name,head);
@@ -194,7 +201,9 @@
     async function generateProfile(){if(record)await mutate('sourcing/profile',params());}
     async function findPeople(){
       if(!record||busy||running()||record.profileState!=='complete'||!allowed())return;
-      const ticket=generation,snapshot=params(),jobId=record.jobId;busy=true;render();
+      const ticket=generation,snapshot=params(),jobId=record.jobId;busy=finding=true;searchError='';render();
+      const progress=text=>{feedback.textContent=searchStatus.textContent=text;};
+      progress('正在确认招聘账号和岗位…');
       const candidates=[],seen=new Set(),desired=Number(count.value);
       try{
         const account=await accountCheck(snapshot.accountKey);
@@ -203,7 +212,7 @@
         for(let page=1;page<=2&&candidates.length<Math.min(40,desired*2);page++){
           await accountCheck(snapshot.accountKey);
           if(!valid(ticket))return;
-          feedback.textContent=`正在读取本职位推荐 · 第 ${page} 页`;
+          progress(`正在读取本职位推荐 · 第 ${page} 页`);
           const result=(await hrApi('/api/v1/hr/recommendations?'+new URLSearchParams({jobId,page}))).data;
           if(result?.ok!==true)throw Error(result?.error?.message||'候选人读取失败，请稍后手动重试');
           for(const item of rows(result)){
@@ -216,11 +225,11 @@
         await accountCheck(snapshot.accountKey);
         if(!valid(ticket))return;
         if(!candidates.length)throw Error('BOSS 本次没有返回可用候选人，没有调用 AI');
-        feedback.textContent='候选人已读取，正在提交驱动模型分析…';
+        progress(`已读取 ${candidates.length} 位候选人，正在提交驱动模型分析…`);
         const value=await request('sourcing/search',{...snapshot,count:desired,candidates,requestId:crypto.randomUUID()});
         if(valid(ticket)){record=value;feedback.textContent='已提交分析，完成后会显示候选人。';}
-      }catch(error){if(valid(ticket))feedback.textContent=error.message;}
-      finally{if(valid(ticket)){busy=false;render();void uploadPending();}}
+      }catch(error){if(valid(ticket))searchError=feedback.textContent=error.message;}
+      finally{if(valid(ticket)){busy=finding=false;render();void uploadPending();}}
     }
     function fillTemplate(){
       const text=speeches.find(row=>row.id===templates.value)?.content||'您好，我们正在招聘{职位}，看到您的相关经历，希望与您进一步沟通。如果您感兴趣，欢迎回复。';
@@ -231,7 +240,7 @@
       const ticket=generation;
       try{
         const state=await accountCheck(record.accountKey);
-        if(!state.capabilities?.includes('active-sourcing'))throw Error('请更新招聘助手到 0.1.10 或以上版本');
+        if(!state.capabilities?.includes('sourcing-credentials-v2'))throw Error('请更新招聘助手到 0.1.12 或以上版本后再打招呼');
         if(!valid(ticket))return;
         const data=await request('speeches');if(!valid(ticket))return;
         candidate=item;speeches=(data.items||[]).filter(row=>row.active&&['active_greet','general'].includes(row.kind));
@@ -276,10 +285,11 @@
       }catch(error){if(valid(ticket)){record=null;feedback.textContent=error.message;}}
       finally{if(valid(ticket)){busy=false;render();void uploadPending();}}
     }
-    function leave(){active=false;generation++;stop();busy=uploading=false;pendingUploads=[];dialog.close();}
+    function leave(){active=false;generation++;stop();busy=uploading=finding=false;pendingUploads=[];dialog.close();}
     return {select(row){selected={id:String(row.encryptJobId||row.encJobId||row.encryptId||row.jobId||row.id),
-      name:row.jobName||row.name||'',refresh:true};record=null;},
+      name:row.jobName||row.name||'',refresh:true};record=null;searchError='';},
       enter,leave,reset(){leave();selected=record=candidate=null;speeches=[];
+        searchError='';
         referenceRows.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();
         for(const node of [referenceRows,profileOutput,results])painted.delete(node);
         files.value=message.value='';greetingError.textContent=greetingHint.textContent='';

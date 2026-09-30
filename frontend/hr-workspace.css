@@ -336,6 +336,9 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-sourcing-results h3 { font-size:17px; }
 .hr-sourcing-results .hr-prose { font-size:13px; line-height:1.75; }
 .hr-sourcing-results .hr-actions { margin-top:16px; }
+.hr-sourcing-card button[aria-busy="true"]::before { content:""; display:inline-block; width:11px; height:11px; margin-right:7px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; vertical-align:-2px; animation:hr-sourcing-spin .8s linear infinite; }
+@keyframes hr-sourcing-spin { to { transform:rotate(360deg); } }
+@media(prefers-reduced-motion:reduce) { .hr-sourcing-card button[aria-busy="true"]::before { animation:none; } }
 .hr-sourcing-greeting .hr-field { display:grid; gap:8px; margin:18px 0; }
 .hr-sourcing-greeting textarea { width:100%; box-sizing:border-box; }
 @media(max-width:1150px) { .hr-sourcing-layout { grid-template-columns:1fr; } }

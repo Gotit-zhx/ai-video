@@ -43,6 +43,25 @@ class ActiveSourcingTest(unittest.TestCase):
         with flow.database(self.root) as db:
             self.assertEqual(db.execute('SELECT state FROM active_contacts').fetchone()[0], 'uncertain')
 
+    def test_long_security_credential_is_a_single_unchanged_cli_argument(self):
+        security = 'a'*700+'~'+'B'*45+'=='
+        command = self.command();command['identifiers']['securityId'] = security
+        self.c.cli_json.return_value = {'ok': True, 'data': {'sent': True}}
+        self.assertEqual(self.runop('sourcing-send', command=command)['data']['status'], 'sent')
+        args = self.c.cli_json.call_args.args
+        self.assertEqual(args[args.index('--security-id')+1], security)
+        self.assertEqual(self.runop('sourcing-send', command=command)['data']['status'], 'sent')
+        self.c.cli_json.assert_called_once()
+
+    def test_bad_or_oversized_security_credential_never_reaches_cli(self):
+        for security in ['a'*4097, '--help', 'id x', 'id\nx', 'id;whoami', 'id$(whoami)', 'id/../../', 'id\x00']:
+            command = self.command();command['identifiers']['securityId'] = security
+            with self.subTest(length=len(security)), self.assertRaises(ValueError):
+                self.runop('sourcing-send', command=command)
+        self.c.cli_json.assert_not_called()
+        with flow.database(self.root) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM commands').fetchone()[0], 0)
+
     def test_shared_budget_cooldown_risk_and_stale_cards_prevent_sending(self):
         self.c.passive_delay = lambda **kw: 120
         self.assertFalse(self.runop('sourcing-ready')['data']['allowed'])

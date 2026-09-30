@@ -262,7 +262,9 @@ def device_config(user, body):
         active = hr_sourcing.device_contacts(db, owner, key)
         # Old desktops must never claim an operation they do not understand.
         if 'active-sourcing' in body.get('capabilities', []):
-            commands += [{**row, 'queuedAt': row['enabledAt']} for row in active if row['status'] == 'queued']
+            commands += [{**row, 'queuedAt': row['enabledAt']} for row in active if row['status'] == 'queued'
+                         and (len(row.get('identifiers', {}).get('securityId', '')) <= 600
+                              or 'sourcing-credentials-v2' in body.get('capabilities', []))]
         return {'rules': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=? AND account=? AND enabled=1', (owner, key))],
                 'replyTemplate': ({'id': reply['id'], 'version': reply['version'], 'content': reply['content'],
                                    'name': reply['name']} if reply else None),

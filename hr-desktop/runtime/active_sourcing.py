@@ -26,9 +26,13 @@ def send(c, db, command):
     previous = db.execute('SELECT state FROM commands WHERE id=?', (cid,)).fetchone()
     if previous: return {'ok': True, 'data': {'status': previous['state']}}
     identifiers = command.get('identifiers', {})
-    if not all(isinstance(identifiers.get(k), str) and 1 <= len(identifiers[k]) <= 600
+    if not all(isinstance(identifiers.get(k), str) and 1 <= len(identifiers[k]) <= (4096 if k == 'securityId' else 600)
                for k in ('geekId', 'expectId', 'lid', 'securityId')):
         raise ValueError('missing recruiter greeting parameters')
+    # Match connector.security_identifier: long opaque credentials are literal
+    # arguments, never truncated, decoded, interpolated into a shell, or logged.
+    if not re.fullmatch(r"[A-Za-z0-9_~][A-Za-z0-9_~\-=]{0,4095}", identifiers['securityId']):
+        raise ValueError('invalid recruiter access credential')
     if not re.fullmatch(r'[\w~-]{1,180}', command.get('jobId', '')): raise ValueError('invalid job')
     # If a claimed command expires while waiting for execution, do not send.
     if (time.time()-command.get('readAt', 0)>1800 or not readiness(c, db)['data']['allowed']
