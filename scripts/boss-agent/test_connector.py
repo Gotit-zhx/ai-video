@@ -1306,6 +1306,10 @@ class ConnectorTest(unittest.TestCase):
 
     def test_allowlist_and_secret_redaction(self):
         self.assertEqual(["hr", "jobs", "list"], connector.command({"operation": "jobs"}))
+        self.assertEqual(["hr", "jobs", "detail", "exact-position-1"],
+                         connector.command({"operation": "jobs", "jobId": "exact-position-1"}))
+        with self.assertRaises(ValueError):
+            connector.command({"operation": "jobs", "jobId": "--help"})
         self.assertEqual({"data": {"name": "ok"}},
                          connector.sanitize({"token": "secret", "data": {"Cookie": "secret", "name": "ok"}}))
         for request in ({"operation": "greet"}, {"operation": "messages", "friendId": "1;id"},

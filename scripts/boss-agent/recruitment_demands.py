@@ -1,6 +1,8 @@
 """Recruitment planning and bounded, explicit AI generation. No BOSS operations."""
 import datetime
+import hashlib
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -11,7 +13,10 @@ import talent_pool as pool
 
 STATES = ("draft", "recruiting", "paused", "filled", "cancelled")
 FIELDS = {"date": 10, "position": 200, "department": 120, "manager": 120, "departmentId": 36,
-          "category": 100, "education": 50, "responsibilities": 10000, "requirements": 10000}
+          "category": 100, "education": 50, "responsibilities": 10000, "requirements": 10000,
+          "jobId": 180, "jobAccountKey": 64, "jobDescription": 8000, "jobFetchedAt": 40}
+DRIVER_FIELDS = ("date", "position", "department", "manager", "category", "education",
+                 "responsibilities", "requirements", "headcount", "years")
 AI_URL = "http://127.0.0.1:8080/api/v1/recruitment-ai/generate"
 
 
@@ -85,6 +90,18 @@ def save(user, body, departments=None):
     if not isinstance(body, dict):
         raise ValueError("需求格式不正确")
     clean = {key: pool.text(body.get(key, ""), limit) for key, limit in FIELDS.items()}
+    if (not re.fullmatch(r'[A-Za-z0-9_-]{1,180}', clean['jobId'])
+            or not re.fullmatch(r'[a-f0-9]{64}', clean['jobAccountKey'])):
+        raise ValueError("请选择当前招聘账号的具体职位")
+    if not clean['jobDescription']:
+        raise ValueError("尚未获取关联职位的 JD，请重新选择职位")
+    if len(str(body.get('jobDescription', ''))) > FIELDS['jobDescription']:
+        raise ValueError("职位 JD 超过 8000 字，请精简岗位内容后重新读取")
+    try:
+        datetime.datetime.fromisoformat(clean['jobFetchedAt'].replace('Z', '+00:00')).timestamp()
+    except (ValueError, TypeError):
+        raise ValueError("职位 JD 获取时间无效，请重新读取")
+    clean['jobDescriptionHash'] = hashlib.sha256(clean['jobDescription'].encode()).hexdigest()
     if departments is not None:
         selected=next((row for row in departments if row["id"]==clean["departmentId"]),None)
         if not selected:
@@ -143,8 +160,20 @@ def save(user, body, departments=None):
         return result
 
 
+def driver_input(snapshot):
+    """Adapt the linked JD to the already-running DRIVER API contract."""
+    values = {key: snapshot.get(key, '') for key in DRIVER_FIELDS}
+    values['responsibilities'] = ('【关联职位】' + snapshot['position'] + '\n【职位 JD 原文】\n'
+                                  + snapshot['jobDescription']
+                                  + ('\n【HR 补充岗位职责】\n' + snapshot['responsibilities'] if snapshot['responsibilities'] else ''))
+    values['requirements'] = snapshot['requirements'] or '按上述关联职位 JD 中的任职要求分析；未提到的条件标注待确认。'
+    if any(len(str(value)) > 10000 for value in values.values()):
+        raise ValueError("JD 与补充职责合计超过模型输入上限，请精简补充内容后重试")
+    return values
+
+
 def call_driver(snapshot, cookie):
-    payload = json.dumps({key: snapshot[key] for key in (*FIELDS, "headcount", "years")}, ensure_ascii=False).encode()
+    payload = json.dumps(driver_input(snapshot), ensure_ascii=False).encode()
     request = urllib.request.Request(AI_URL, data=payload, headers={
         "Cookie": cookie, "Content-Type": "application/json", "Accept": "application/json"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -175,7 +204,11 @@ def finish(user, record, job, result=None, error=""):
             return
         state = "complete" if result is not None else "failed"
         if result is not None:
-            result = {**result, "sourceVersion": row["ai_version"]}
+            snapshot = json.loads(row['body'])
+            result = {**result, "sourceVersion": row["ai_version"], "sourceJobId": snapshot.get('jobId', ''),
+                      "sourceJobAccountKey": snapshot.get('jobAccountKey', ''),
+                      "sourceJobDescriptionHash": snapshot.get('jobDescriptionHash', ''),
+                      "sourceJobFetchedAt": snapshot.get('jobFetchedAt', '')}
         db.execute("""UPDATE recruitment_demands SET ai_status=?,ai_result=?,ai_error=?,updated_at=?
             WHERE owner=? AND id=?""", (state, json.dumps(result, ensure_ascii=False) if result is not None else row["ai_result"],
                                        error, datetime.datetime.now(datetime.timezone.utc).isoformat(), owner, record))
@@ -213,8 +246,15 @@ def generate(user, body, cookie):
         if db.execute("SELECT 1 FROM recruitment_demands WHERE owner=? AND ai_status='running'", (owner,)).fetchone():
             raise pool.Conflict("已有招聘需求正在生成，请等待完成")
         snapshot = view(row)
-        if not snapshot["responsibilities"] or not snapshot["requirements"]:
-            raise ValueError("请先填写岗位职责和任职要求")
+        if not snapshot.get('jobId') or not snapshot.get('jobAccountKey') or not snapshot.get('jobDescription'):
+            raise ValueError("请先关联具体职位并读取该岗位的 JD")
+        try:
+            fetched = datetime.datetime.fromisoformat(snapshot['jobFetchedAt'].replace('Z', '+00:00')).timestamp()
+            if not -60 <= time.time()-fetched <= 600:
+                raise ValueError()
+        except (KeyError, ValueError, TypeError):
+            raise ValueError("职位 JD 已过期，请重新读取后再生成")
+        driver_input(snapshot)  # Validate before claiming a billable model call.
         job = str(uuid.uuid4())
         db.execute("""UPDATE recruitment_demands SET ai_status='running',ai_job=?,ai_version=version,
             ai_error='',ai_started=? WHERE owner=? AND id=?""", (job, time.time(), owner, record))

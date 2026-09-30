@@ -35,6 +35,7 @@ function setup(overrides={}) {
   const env={document:{getElementById:()=>root,createElement:tag=>new Node(tag),createElementNS:(_ns,tag)=>new Node(tag),
     querySelectorAll:()=>links},currentUser:{platformAdmin:true,username:'13800000000'},
     activeWorkspace:'hr',location:{pathname:'/',search:'',hash:''},
+    DOMParser:class{parseFromString(text){return {body:{textContent:text},querySelectorAll:()=>[]};}},
     history:{pushState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));},
       replaceState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));}},
     switchWorkspace(){},URLSearchParams,encodeURIComponent,Date,URL,crypto:require('node:crypto'),
@@ -183,36 +184,83 @@ test('candidate reserve dialog saves normalized fields through platform only',as
 const demandDirectory=()=>({items:[{id:'dept-1',name:'电商组',manager:'测试经理',status:'ACTIVE',code:'ECOM',version:1}]});
 const demandRow=()=>({id:'d1',version:1,date:'2026-09-29',position:'电商运营',department:'电商组',departmentId:'dept-1',manager:'测试经理',
   category:'运营',headcount:2,education:'本科',years:3,status:'recruiting',responsibilities:'店铺运营',
-  requirements:'电商经验',aiStatus:'idle',aiResult:{}});
-test('recruitment demands operate without the assistant and generate once via platform',async()=>{
+  requirements:'电商经验',aiStatus:'idle',aiResult:{},jobId:'job-test-2',jobAccountKey:'a'.repeat(64),
+  jobDescription:'已保存旧 JD',jobFetchedAt:'2026-09-29T00:00:00Z'});
+const demandStatus=()=>({state:'complete',accountKey:'a'.repeat(64),capabilities:['job-jd']});
+const demandDetail=(id='job-test-2')=>({ok:true,data:{job:{encryptId:id,jobName:'电商运营',postDescription:'当前岗位 JD：负责直播策划与内容运营。'}}});
+test('demand generation refreshes the exact local job JD then saves before a single DRIVER call',async()=>{
   let row=demandRow(),started=0;
-  const app=setup({transport:{connection:()=>({paired:false})},api:async(url,options)=>{
+  const app=setup({api:async(url,options)=>{
+    if(url.endsWith('/login/status'))return {data:demandStatus()};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:demandDetail()};
     if(url==='/api/v1/hr/departments')return {data:demandDirectory()};
+    if(url.endsWith('/save')){row={...JSON.parse(options.body),version:2};return {data:row};}
     if(url.endsWith('/generate')){started++;row={...row,aiStatus:'running',aiJob:'j1'};return {data:row};}
     if(url.includes('?id='))return {data:{item:row}};
     return {data:{items:[row],counts:{all:1,recruiting:1},total:1,page:1,pages:1}};
   }});
-  app.env.HeyiHrTransport.api=async()=>{throw Error('Demand must not call BOSS');};
   await app.enter('demands');assert.match(app.text(),/电商运营/);
-  await app.click('查看 / 编辑');await app.click('一键 AI 生成');
+  assert.ok(app.calls.every(c=>c.url.startsWith('/api/v1/hr/demands')),'Listing is cloud-only');
+  await app.click('查看 / 编辑');assert.equal(started,0);
+  await app.click('一键 AI 生成');
   assert.equal(started,1);assert.match(app.text(),/驱动模型生成中/);
+  assert.ok(app.calls.find(c=>c.url==='/api/v1/hr/jobs?jobId=job-test-2'));
+  assert.match(row.jobDescription,/直播策划/);assert.equal(row.jobAccountKey,'a'.repeat(64));
+  assert.ok(app.calls.findIndex(c=>c.url.includes('/jobs?'))<app.calls.findIndex(c=>c.url.endsWith('/save')));
+  assert.ok(app.calls.findIndex(c=>c.url.endsWith('/save'))<app.calls.findIndex(c=>c.url.endsWith('/generate')));
   await app.tick(2500);assert.equal(started,1);
   row={...row,aiStatus:'failed',aiError:'模型不可用'};await app.tick(2500);
   assert.match(app.text(),/模型不可用/);assert.equal(app.timers.size,0);
-  assert.ok(app.calls.every(c=>c.url.startsWith('/api/v1/hr/demands')||c.url==='/api/v1/hr/departments'));
+  assert.ok(!app.calls.some(c=>/resumes\/request|login\/start|messages/.test(c.url)));
+});
+test('missing JD, mismatched position, failed read or changed account cannot start AI',async()=>{
+  for(const failure of ['empty','wrong-job','failed','account-switch']){
+    let switched=false;
+    const app=setup({api:async(url)=>{
+      if(url.endsWith('/login/status'))return {data:{...demandStatus(),accountKey:switched?'b'.repeat(64):'a'.repeat(64)}};
+      if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+      if(url.startsWith('/api/v1/hr/jobs?')){
+        switched=failure==='account-switch';
+        return {data:failure==='empty'?{ok:true,data:{job:{encryptId:'job-test-2'}}}:failure==='failed'
+          ?{ok:false,error:{message:'读取失败'}}:demandDetail(failure==='wrong-job'?'job-test-1':'job-test-2')};
+      }
+      if(url==='/api/v1/hr/departments')return {data:demandDirectory()};
+      return {data:{items:[demandRow()],counts:{all:1},total:1,page:1,pages:1}};
+    }});
+    await app.enter('demands');await app.click('查看 / 编辑');await app.click('一键 AI 生成');
+    assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0,failure);
+  }
 });
 test('late demand save response cannot repopulate personal data after logout',async()=>{
   let resolve;
   const app=setup({api:async(url)=>{
+    if(url.endsWith('/login/status'))return {data:demandStatus()};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
     if(url==='/api/v1/hr/departments')return {data:demandDirectory()};
     if(url.endsWith('/save'))return new Promise(r=>resolve=r);
-    return {data:{items:[],counts:{all:0},total:0,page:1,pages:1}};
+    return {data:{items:[demandRow()],counts:{all:1},total:1,page:1,pages:1}};
   }});
-  await app.enter('demands');await app.click('新建需求');
+  await app.enter('demands');await app.click('查看 / 编辑');
   const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-demand-dialog');
+  all(dialog).find(n=>n.name==='requirements').value='修改后的补充条件';
   const form=dialog.children[0];const pending=form.events.submit({preventDefault(){}});
   await flush();app.env.HrWorkspace.reset();resolve({data:demandRow()});await pending;await flush();
   assert.doesNotMatch(app.text(),/测试经理|电商运营/);
+});
+test('helper restores an interrupted read once without replaying writes or starting login',async()=>{
+  let listener,reads=0;
+  const app=setup({transport:{connection:()=>({paired:true}),subscribe(fn){listener=fn;}},
+    api:async(url)=>{
+      if(url.endsWith('/jobs')){if(++reads===1)throw Error('助手暂时不可用');return {data:fixtures.jobs};}
+      return {data:{}};
+    }});
+  await app.enter('jobs');assert.match(app.text(),/助手暂时不可用/);
+  listener({paired:true,state:{state:'complete',paused:false,busy:false}});await flush();
+  assert.equal(reads,2);assert.match(app.text(),/Java 后端开发/);
+  listener({paired:true,state:{state:'complete',paused:false,busy:false}});await flush();
+  assert.equal(reads,2);
+  assert.ok(app.calls.every(c=>!c.options?.method||c.options.method==='GET'));
 });
 test('department module uses its independent HR directory and does not touch system departments or BOSS',async()=>{
   const app=setup({transport:{connection:()=>({paired:false})},api:async()=>({data:demandDirectory()})});

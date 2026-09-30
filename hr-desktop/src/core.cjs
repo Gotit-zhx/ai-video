@@ -11,6 +11,7 @@ const STOP = new Set(['ACCOUNT_RISK','ENVIRONMENT_RISK','IP_RESTRICTED','AUTH_RE
   'TOKEN_REFRESH_FAILED','RATE_LIMITED','CAPTCHA_REQUIRED','SECURITY_VERIFICATION_REQUIRED',
   'REQUEST_BUDGET_EXHAUSTED','SESSION_POLICY_UNAVAILABLE','MANUAL_REVIEW_REQUIRED',
   'PC_LOGIN_RESTRICTED','LOGIN_RISK_CONTROL','SESSION_MISMATCH','SESSION_UNAVAILABLE','REQUESTS_PAUSED']);
+const TEMPORARY = new Set(['SESSION_UNAVAILABLE','REQUEST_BUDGET_EXHAUSTED']);
 function restriction(text) {
   const compact = text.replace(/\s+/g, '');
   if (/关闭了?(PC|电脑)端登录权限|(PC|电脑)端登录权限(已|被)?关闭/i.test(compact)) {
@@ -26,6 +27,10 @@ function restriction(text) {
   return null;
 }
 function restrictionMessage(hold) {
+  if(['AUTH_REQUIRED','AUTH_EXPIRED'].includes(hold.code))return 'BOSS 登录已失效，请在助手中重新扫码。已有处理记录已保留。';
+  if(TEMPORARY.has(hold.code))return hold.code==='REQUEST_BUDGET_EXHAUSTED'
+    ?'当前读取额度已用完，稍后自动恢复；登录态和处理进度已保留。'
+    :'本机会话暂时不可用，正在自动检查并恢复连接；登录态已保留。';
   return (hold.reason === 'REALNAME_LINKED_ACCOUNT'
     ? 'BOSS 提示实名关联的上一账号电脑端登录受限，当前账号同步受限。'
     : 'BOSS 连接已暂停，请在官方页面确认账号状态。')
@@ -86,6 +91,7 @@ class Recruiter extends EventEmitter {
     this.paused=false;this.busy=false;this.inFlight=null;this.loginTimer=null;
     this.activity=new Map();this.activityTimer=null;this.lastActivityPoll=0;
     this.owner='';this.accountRoot='';this.cdp='';this.events=[];this.persist=Promise.resolve();this.riskHold=null;this.generation=0;
+    this.autoReconnect=true;this.recovering=false;this.recoveryAt=0;this.recoveryFailures=0;this.closed=false;
   }
   async init(cdp) {
     this.cdp=cdp;
@@ -94,32 +100,37 @@ class Recruiter extends EventEmitter {
       const saved=JSON.parse(await fs.readFile(path.join(this.directory,'state.json'),'utf8'));
       this.owner=saved.owner||'';this.accountRoot=saved.accountRoot||'';
       this.riskHold=saved.hold||null;
+      this.autoReconnect=saved.autoReconnect!==false;
       if(this.accountRoot && !this.accountRoot.startsWith(this.directory+path.sep)) throw Error('path');
       this.paused=true;
       this.state=saved.hold
         ? {state:'verification_pending',phase:'',failure_code:saved.hold.code,error:restrictionMessage(saved.hold),hold:saved.hold,...saved.hold}
-        : {state:'verification_pending',phase:'',failure_code:'MANUAL_REVIEW_REQUIRED',
-           error:'应用已重启，任务保持暂停。请手动连接并核对当前账号。'};
+        : !this.accountRoot ? {state:'disconnected',phase:'',failure_code:'',error:''}
+        : {state:'verification_pending',phase:'',failure_code:this.autoReconnect?'LOCAL_RECONNECTING':'MANUAL_REVIEW_REQUIRED',
+           error:this.autoReconnect?'正在恢复已登录的本机助手…':'本机任务已手动暂停。'};
     } catch(error) {if(error.code!=='ENOENT') this.paused=true;}
-    this.pollTimer=setInterval(()=>this.poll(),this.passiveCloud?30000:300000);
+    this.closed=false;
+    this.pollTimer=setInterval(()=>this.paused?this.reconnect():this.poll(),30000);
     this.pollTimer.unref();
   }
   snapshot(){return {...this.state,paused:this.paused,busy:this.busy,runtime:'local',events:this.events.slice(-15),
-    passive:this.passiveStatus||{},
+    passive:this.passiveStatus||{},reconnecting:this.paused&&this.autoReconnect&&!!this.accountRoot
+      &&(!this.riskHold||TEMPORARY.has(this.riskHold.code)),
     accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
-    capabilities:['passive-resume']};}
+    capabilities:['passive-resume','job-jd']};}
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
   pause(code='USER_PAUSED'){
+    if(code==='USER_PAUSED')this.autoReconnect=false;
     this.generation++;this.paused=true;clearInterval(this.loginTimer);this.loginTimer=null;
     this.clearActivity();
     if(['pending','complete'].includes(this.state.state))this.state={...this.state,state:'verification_pending',phase:'',
-      failure_code:'MANUAL_REVIEW_REQUIRED',error:code==='DIRECT_NETWORK_UNAVAILABLE'
-        ?'网卡直连已中断，请检查有线或 Wi-Fi 网络后重新启动助手。'
-        :'本机连接已暂停。需要时请手动连接。'};
+      failure_code:this.autoReconnect?'LOCAL_RECONNECTING':'MANUAL_REVIEW_REQUIRED',
+      error:this.autoReconnect?'本机连接暂时中断，网络就绪后将自动恢复。':'本机任务已手动暂停。'};
+    if(code==='USER_PAUSED')this.save();
     this.event(code);
   }
   save(hold) {
-    const record={owner:this.owner,accountRoot:this.accountRoot,hold:hold||this.riskHold};
+    const record={owner:this.owner,accountRoot:this.accountRoot,hold:hold||this.riskHold,autoReconnect:this.autoReconnect};
     this.persist=this.persist.catch(()=>{}).then(async()=>{
       const target=path.join(this.directory,'state.json');
       await fs.writeFile(target+'.tmp',JSON.stringify(record),{mode:0o600});
@@ -168,6 +179,7 @@ class Recruiter extends EventEmitter {
     if(this.disconnecting||generation!==this.generation)throw Error('连接状态已更改，请重新发起连接');
     if(this.state.state==='pending') return this.state;
     if(this.busy) throw Error('当前操作尚未结束，请稍后再连接');
+    this.autoReconnect=true;this.recoveryAt=0;
     this.clearActivity();
     this.passiveStatus={};
     this.paused=true;
@@ -257,6 +269,51 @@ class Recruiter extends EventEmitter {
   clearActivity(){
     clearTimeout(this.activityTimer);this.activityTimer=null;this.activity.clear();
     this.activityObservedAt=0;
+  }
+  async reconnect(){
+    if(this.closed||this.recovering||this.busy||this.polling||this.disconnecting||!this.autoReconnect||!this.accountRoot
+      ||this.state.state==='pending'||this.state.state==='complete'&&!this.paused
+      ||this.riskHold&&!TEMPORARY.has(this.riskHold.code)||this.clock()<this.recoveryAt)return;
+    this.recovering=true;
+    const generation=this.generation,root=this.accountRoot;
+    const current=()=>!this.closed&&this.autoReconnect&&generation===this.generation&&root===this.accountRoot
+      &&(!this.riskHold||TEMPORARY.has(this.riskHold.code));
+    try{
+      await this.browser.prepare?.();
+      if(!current())return;
+      await this.checkOwner();
+      if(!current())return;
+      await this.browser.restore?.();
+      if(!current())return;
+      const sample=await this.browser.inspect();
+      if(!current())return;
+      const stop=restriction(sample.text||'');
+      if(stop){await this.hold(stop);return;}
+      if(!sample.token?.cookies?.wt2){
+        if(sample.loginRequired)await this.hold({code:'AUTH_REQUIRED'});
+        return;
+      }
+      if(!sample.accountId)return;
+      const account=await resolveAccount(this.directory,this.owner,sample.accountId,
+        crypto.createHash('sha256').update(this.owner+sample.token.cookies.wt2).digest('hex'));
+      if(!current())return;
+      if(!account.bound||account.root!==root){await this.hold({code:'SESSION_MISMATCH'});return;}
+      const checked=await this.call('resume-local');
+      if(!current()||!checked.ok)return;
+      this.riskHold=null;this.paused=false;this.recoveryFailures=0;
+      this.state={state:'complete',phase:'',error:'',failure_code:''};
+      this.reconnectId=crypto.randomUUID();
+      await this.save();
+      if(!current())return;
+      this.event('CONNECTION_RESTORED');this.browser.connected();
+      this.passiveStatus={...this.passiveStatus,phase:'catching_up',catchupPending:1};
+      this.scheduleActivityPoll();
+    }catch{/* Keep cookies and ledgers; retry only local checks after backoff. */}
+    finally{
+      this.recovering=false;
+      if(this.paused)this.recoveryAt=this.clock()+Math.min(60000,5000*2**Math.min(this.recoveryFailures++,4));
+      this.emit('change',this.snapshot());
+    }
   }
   notifyActivity(hints){
     if(this.state.state!=='complete'||this.paused||this.riskHold||!this.passiveCloud)return;
@@ -448,6 +505,6 @@ class Recruiter extends EventEmitter {
       return response({success:false,message:'不支持的招聘操作'},405);
     }catch(error){return response({success:false,message:error.message||'本机操作未完成'},409);}
   }
-  async close(){this.pause();clearInterval(this.pollTimer);this.runtime.stop();await this.persist;}
+  async close(){this.closed=true;this.pause('APP_CLOSING');clearInterval(this.pollTimer);this.runtime.stop();await this.persist;}
 }
 module.exports={ORIGIN,Runtime,Recruiter,restriction,restrictionMessage,terminate};

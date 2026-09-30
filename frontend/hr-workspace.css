@@ -35,6 +35,9 @@
 .hr-demand-dialog{width:min(1000px,calc(100vw - 32px))}
 .hr-demand-dialog form>.hr-field{margin-top:18px}
 .hr-demand-dialog .hr-pool-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
+.hr-demand-jd{margin-top:20px;padding:14px 16px;border:1px solid var(--hr-border);border-radius:8px;background:var(--surface-soft,#fafafa)}
+.hr-demand-jd summary{cursor:pointer;font-size:13px;font-weight:600}
+.hr-demand-jd .hr-prose{max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px;line-height:1.8;margin-bottom:0}
 .hr-demand-ai{margin-top:30px;border-top:1px solid var(--hr-border);padding-top:24px}
 .hr-demand-ai .hr-pool-tabs{margin-top:20px}
 .hr-demand-ai h4{margin:12px 0 10px;font-size:15px}

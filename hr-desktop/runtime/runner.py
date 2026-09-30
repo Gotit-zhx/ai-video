@@ -83,6 +83,9 @@ def main(request):
         store.clear()
         c.DISCONNECTED.touch(mode=0o600)
         return {"ok": True}
+    if operation == "resume-local":
+        import local_session
+        return local_session.resume(c, g)
     if operation == "hold":
         c.pause_requests(request.get("code"), retry_at=request.get("retry_at", ""),
                          reason=request.get("reason", ""))

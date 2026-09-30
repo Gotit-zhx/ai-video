@@ -18,6 +18,10 @@ import time
 root = Path(sys.argv[1]).resolve()
 modules = ('connector.py', 'passive_pool.py', 'resume_storage.py')
 assets = ('hr-passive.js', 'hr-pool.js', 'hr-workspace.css', 'hr-resume-preview.js')
+if (root / 'job-jd-release.json').exists():
+    assert json.loads((root / 'job-jd-release.json').read_text()) == {'enabled': True}
+    modules += ('recruitment_demands.py',)
+    assets += ('hr-demands.js', 'hr-workspace.js', 'hr-desktop-bridge.js')
 expected = json.loads((root / 'expected-baseline.json').read_text())
 assert not (root / 'activation.json').exists(), 'Already activated'
 backup = root / 'rollback'

@@ -137,7 +137,9 @@ class TalentPoolTest(unittest.TestCase):
             self.assertEqual(department[0],200)
             self.assertEqual(request(scope="departments")[1]["data"]["items"][0]["manager"],"经理")
             self.assertEqual(request("/save",{"date":"2026-09-29","position":"运营","departmentId":department[1]["data"]["id"],
-                "department":"伪造部门","manager":"伪造经理","headcount":1,"years":0},scope="demands")[0],200)
+                "department":"伪造部门","manager":"伪造经理","headcount":1,"years":0,
+                "jobId":"job1","jobAccountKey":"a"*64,"jobDescription":"原始岗位职责",
+                "jobFetchedAt":"2020-01-01T00:00:00Z"},scope="demands")[0],200)
             demand=request(scope="demands")[1]["data"]["items"][0]
             self.assertEqual(demand["department"],"独立招聘部");self.assertEqual(demand["manager"],"经理")
             self.assertEqual(request("/generate",{"id":demand["id"],"version":demand["version"]},scope="demands")[0],400)

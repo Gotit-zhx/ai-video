@@ -609,6 +609,8 @@ def command(request):
     if operation == "status":
         return ["status"]
     if operation == "jobs":
+        if request.get("jobId"):
+            return ["hr", "jobs", "detail", identifier(request["jobId"])]
         return ["hr", "jobs", "list"]
     if operation == "applications":
         args = ["hr", "applications", "--page", page(request.get("page"))]

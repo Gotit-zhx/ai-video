@@ -42,6 +42,8 @@ class LocalBridge {
           // Same platform owner: renewal must not invalidate other open tabs.
           this.token=this.token||crypto.randomBytes(32).toString('base64url');
           this.expiry=paired.expiresAt*1000;
+          this.engine.recoveryAt=0;
+          void this.engine.reconnect?.();
           send(200,{success:true,data:{token:this.token,expiresAt:this.expiry}});return;
         }finally{this.pairing=false;}
       }

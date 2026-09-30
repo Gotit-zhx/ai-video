@@ -39,7 +39,6 @@ nav a.active{color:#fff;background:#262626;font-weight:650}
 <a href="#hr-talent" data-hr-route="talent">人才寻源</a>
 <a href="#hr-applications" data-hr-route="applications">投递申请</a>
 <a href="#hr-chats" data-hr-route="chats">沟通记录</a>
-<a href="#hr-resume" data-hr-route="resume">在线简历</a>
 </nav></aside><main><p class="qa-notice">本地界面验收 · 以下为合成测试数据，未连接线上账号</p><section id="hr-page"></section></main></div>
 <script>
 const currentUser={platformAdmin:true,username:'13800000000'};
@@ -71,7 +70,12 @@ async function api(url,options={}){
    if(url.endsWith('/login/status'))return {data:{state:loginState,phase:new URLSearchParams(location.search).get('phase')||'verifying',error:'当前会话已过期（合成测试）'}};
    if(url.endsWith('/status'))return {data:{ok:false,error:{code:loginState==='disconnected'?'SESSION_DISCONNECTED':'RECRUITER_VERIFICATION_PENDING',message:'合成测试：登录状态待核验'}}};
  }
- if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:'a'.repeat(64),capabilities:['passive-resume']}};
+ if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:'a'.repeat(64),capabilities:['passive-resume','job-jd']}};
+ if(url.startsWith('/api/v1/hr/jobs?')){
+   const id=new URL(url,location.origin).searchParams.get('jobId');
+   const selected=fixture.jobs.data.find(row=>row.encryptJobId===id);
+   return {data:{ok:true,data:{job:{encryptId:id,jobName:selected.jobName,postDescription:selected.description}}}};
+ }
  if(url.endsWith('/resumes'))return {data:[]};
  const key=url.split('/hr/')[1].split(/[/?]/)[0];
  return {data:structuredClone(fixture[key==='candidates'?'recommendations':key])};

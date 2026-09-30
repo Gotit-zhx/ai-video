@@ -142,6 +142,55 @@ async function fixture(t){
   t.after(async()=>{await engine.close();await fs.rm(directory,{recursive:true,force:true});});
   return {engine,directory,calls};
 }
+async function loggedIn(t){
+  const value=await fixture(t);
+  value.engine.browser.inspect=async()=>({text:'',accountId:'123',token:{cookies:{wt2:'saved-session'},user_agent:'fixture'}});
+  await value.engine.start();await value.engine.observe();
+  assert.equal(value.engine.state.state,'complete');
+  value.calls.length=0;
+  return value;
+}
+test('restart and sleep resume the same verified local account without login, sync or BOSS probes',async t=>{
+  const {engine,calls}=await loggedIn(t);
+  const account=engine.accountRoot;
+  await engine.close();await engine.init(engine.cdp);await engine.reconnect();
+  assert.equal(engine.state.state,'complete');assert.equal(engine.paused,false);
+  assert.equal(engine.accountRoot,account);
+  assert.deepEqual(calls.map(c=>c.operation),['resume-local']);
+  calls.length=0;engine.pause('COMPUTER_SLEEP');engine.recoveryAt=0;await engine.reconnect();
+  assert.equal(engine.state.state,'complete');
+  assert.deepEqual(calls.map(c=>c.operation),['resume-local']);
+});
+test('temporary session loss auto-recovers; actual restrictions and explicit pause remain stopped',async t=>{
+  const {engine,calls}=await loggedIn(t);
+  await engine.hold({code:'SESSION_UNAVAILABLE'});await engine.reconnect();
+  assert.equal(engine.riskHold,null);assert.equal(engine.state.state,'complete');
+  calls.length=0;
+  await engine.hold({code:'ACCOUNT_RISK'});await engine.reconnect();
+  assert.equal(engine.riskHold.code,'ACCOUNT_RISK');assert.equal(calls.length,0);
+  engine.riskHold=null;engine.pause();await engine.save();
+  await engine.close();await engine.init(engine.cdp);await engine.reconnect();
+  assert.equal(engine.autoReconnect,false);assert.equal(calls.length,0);
+});
+test('recovery never adopts a changed recruiter or resumes after logout',async t=>{
+  const {engine,calls}=await loggedIn(t);
+  engine.pause('COMPUTER_SLEEP');
+  engine.browser.inspect=async()=>({text:'',accountId:'456',token:{cookies:{wt2:'other-session'}}});
+  await engine.reconnect();
+  assert.equal(engine.riskHold.code,'SESSION_MISMATCH');
+  assert.equal(calls.length,0);
+  await engine.disconnect();calls.length=0;engine.recoveryAt=0;await engine.reconnect();
+  assert.equal(engine.state.state,'disconnected');assert.equal(calls.length,0);
+});
+test('manual pause during a local reconnect discards late recovery without a runtime request',async t=>{
+  const {engine,calls}=await loggedIn(t);
+  engine.pause('COMPUTER_SLEEP');
+  let release;engine.browser.restore=()=>new Promise(resolve=>{release=resolve;});
+  const recovering=engine.reconnect();
+  while(!release)await new Promise(resolve=>setImmediate(resolve));
+  engine.pause();release();await recovering;
+  assert.equal(engine.paused,true);assert.equal(calls.length,0);
+});
 test('official linked-account restriction preserves exact date',()=>{
   assert.deepEqual(restriction('实名绑定的上一账号关闭了 PC 端登录权限，当前实名认证账号也同步限制。预计开启时间：2026-09-29 13:44:05'),
     {code:'PC_LOGIN_RESTRICTED',reason:'REALNAME_LINKED_ACCOUNT',retry_at:'2026-09-29 13:44:05'});
@@ -165,6 +214,16 @@ test('paused or unconnected route cannot invoke SDK; non-HR route untouched',asy
   assert.equal(await engine.route(new Request(ORIGIN+'/api/v1/auth/me')),null);
   engine.authorize=async()=>({...user,platformAdmin:false});
   assert.equal((await engine.route(new Request(ORIGIN+'/api/v1/hr/login/status'))).status,409);
+});
+test('JD read stays on the local runtime and passes the selected position ID',async t=>{
+  const {engine,calls,directory}=await fixture(t);
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
+  const status=await (await engine.route(new Request(ORIGIN+'/api/v1/hr/login/status'))).json();
+  assert.ok(status.data.capabilities.includes('job-jd'));
+  assert.equal(calls.length,0,'Status is local only');
+  const result=await engine.route(new Request(ORIGIN+'/api/v1/hr/jobs?jobId=selected-job-2'));
+  assert.equal(result.status,200);
+  assert.equal(calls.at(-1).operation,'jobs');assert.equal(calls.at(-1).jobId,'selected-job-2');
 });
 test('restriction visible in browser blocks sync and recruiter verification',async t=>{
   const {engine,calls}=await fixture(t);

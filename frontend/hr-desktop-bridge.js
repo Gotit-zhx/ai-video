@@ -91,6 +91,7 @@
     }finally{
       monitoring=false;
       if(ticket===epoch&&active)schedule(failures?Math.min(60000,2000*2**Math.min(failures-1,5))*(.85+Math.random()*.3)
+        :lastState?.reconnecting?2500+Math.random()*1500
         :globalThis.document?.visibilityState==='hidden'?60000+Math.random()*30000:25000+Math.random()*10000);
     }
   }

@@ -15,6 +15,7 @@
   let loginPhase = '';
   let resumeTimer = null;
   let jobRecords = [], jobsRequest = null, conversations = [], selectedConversation = null;
+  let recoveryRead = null;
   let selectedCandidate = null, sessionGeneration = 0;
   let trackedResumeRequests = new Map(), requestResumeButton = null;
   let resumeLoadSequence = 0;
@@ -126,7 +127,6 @@
     ['talent','人才寻源','按岗位查看推荐，搜索合适的人。','M14 10a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M3 21v-2a5 5 0 0 1 10 0v2 M17 5v6 M14 8h6'],
     ['applications','投递申请','查看主动投递，及时处理候选人。','M4 4h16v16H4z M7 9h10 M7 13h7 M7 17h4'],
     ['chats','沟通与简历','跟进会话，索取并接收附件简历。','M4 4h16v13H9l-5 4z M8 9h8 M8 13h5'],
-    ['resume','在线简历','集中查看候选人的经历和详细资料。','M6 3h8l4 4v14H6z M14 3v5h4 M9 12h6 M9 16h6'],
   ];
   for(const [route,title,description,shape] of shortcutEntries){
     const card=button('',shortcutGrid,()=>navigate(route));card.className='hr-shortcut';
@@ -165,6 +165,10 @@
         ?'手机确认已收到，正在等待招聘方身份验证结果。':'点击桌面悬浮球，在 BOSS 页面扫码并用手机确认。这里会同步连接结果。'
       :state.error||'登录页面将在桌面助手内打开。若已登录，将核对当前招聘账号。';
     showLoginProgress(pending?loginPhase||'qr':'');
+    if(state.reconnecting){
+      connectionBadge.textContent='助手自动恢复中';loginTitle.textContent='正在恢复本机连接';
+      loginButton.textContent='自动恢复中…';loginButton.disabled=true;showLoginProgress('reconnecting');
+    }
     note.textContent='';
   }
   async function primaryConnectionAction(){
@@ -190,6 +194,10 @@
       loginPhase=connection.state.phase||'';
     }
     paintConnection(lastLoginState);
+    if(helperConnected&&connection.state?.state==='complete'&&!connection.state.paused
+      &&!connection.state.busy&&activeWorkspace==='hr'&&recoveryRead?.section===current){
+      const pending=recoveryRead;recoveryRead=null;void run(pending.action,true);
+    }
     if(!helperConnected&&connection.phase==='reconnecting'){
       connectionBadge.textContent='助手自动重连中';
       loginMessage.textContent=connection.message||'正在检查本机助手，连接恢复后会自动更新。';
@@ -874,7 +882,7 @@
     next.disabled = page >= 20 || rows.length === 0 || envelope.data?.hasMore === false
       || envelope.data?.has_more === false;
   }
-  async function run(action = current) {
+  async function run(action = current, recovered = false) {
     if (!allowed()) return;
     if (action === 'talent') action = talentAction;
     if (action === 'candidates' || action === 'recommendations') talentAction = action;
@@ -918,8 +926,8 @@
         return;
       }
       const rows = display(box, response.data, action);
-      // Authentication errors never authorize a new scan or verification.
-      // Recovery uses the existing explicit connect/sync control.
+      if(response.data?.ok===false&&!recovered)recoveryRead={section:current,action};
+      else recoveryRead=null;
       pagination(box, action, response.data, rows);
       if (action !== 'overview' || logoutButton.hidden) {
         note.textContent = `最近读取：${new Date().toLocaleTimeString()} · 数据来自 BOSS 直聘`;
@@ -928,12 +936,13 @@
       if (ticket !== sequence) return;
       box.replaceChildren();
       element('p', error.message || '读取失败', box, 'hr-error');
+      if(path&&!recovered)recoveryRead={section:current,action};
     } finally {
       if (ticket === sequence) box.setAttribute('aria-busy','false');
     }
   }
   const pool=globalThis.createHrPool?.({root,section,element,button,allowed,navigate});
-  const demands=globalThis.createHrDemands?.({root,section,element,button,allowed});
+  const demands=globalThis.createHrDemands?.({root,section,element,button,allowed,hrApi});
   const departmentManager=globalThis.createHrDepartments?.({root,section,element,button,allowed});
   const passive=globalThis.createHrPassive?.({root,section,element,button,allowed,navigate,hrApi});
   function enter(route) {
@@ -944,7 +953,8 @@
     passive?.leave();
     loginSuccess.hidden = true;
     current = routes.has(route) ? route : 'overview';
-    if(!['pool','demands','departments','resume-pool','speeches'].includes(current))globalThis.HeyiHrTransport?.startAutoConnect?.();
+    if(!['resume-pool','speeches'].includes(current))globalThis.HeyiHrTransport?.startAutoConnect?.();
+    recoveryRead=null;
     clearInterval(resumeTimer);
     resumeTimer = null;
     page = 1;
@@ -1022,6 +1032,7 @@
     helperConnected=false;connectionState='idle';lastLoginState={state:'idle'};
     loginPendingSeen = false;
     jobsRequest = null;
+    recoveryRead = null;
     conversations = [];
     trackedResumeRequests.clear();
     resumeRequestsInFlight.clear();

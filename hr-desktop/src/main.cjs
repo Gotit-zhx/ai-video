@@ -17,6 +17,7 @@ app.commandLine.appendSwitch('remote-debugging-port','0');
 app.commandLine.appendSwitch('disable-quic');
 let main,orb,platformSession,bossView,worker,engine,bridge,tray,quitting=false;
 let egress;
+let networkRepair=null,lastBrowserRestore=0;
 let pageError='',bossLoad=null,drag=null,positionSave=Promise.resolve();
 let device='',lease=null,leaseChecked=0,leaseCheck=null;
 const activityTracker=new ChatActivityTracker();
@@ -210,8 +211,37 @@ async function inspectBoss(){
   }
   const sample=await bossView.webContents.executeJavaScript(
     `(${require('./account-identity.cjs').sampleAccountIdentity.toString()})()`,false);
-  return {text,accountId:sample?.session===cookies.wt2?sample.id:'',
+  const loginRequired=!cookies.wt2&&await bossView.webContents.executeJavaScript("!!document.querySelector('.qr-img-box img')",false);
+  return {text,loginRequired,accountId:sample?.session===cookies.wt2?sample.id:'',
     token:{cookies,stoken:cookies.__zp_stoken__||'',user_agent:bossView.webContents.getUserAgent()}};
+}
+async function ensureDirectNetwork(){
+  if(selfTest)return;
+  const present=Object.values(require('node:os').networkInterfaces()).flat()
+    .some(item=>item?.address===egress?.info?.adapter?.address);
+  if(egress?.child?.exitCode===null&&!egress.child.killed&&present)return;
+  if(networkRepair)return networkRepair;
+  if(engine?.busy)throw Error('当前操作结束后自动恢复网卡连接');
+  networkRepair=(async()=>{
+    await egress.close();await egress.start();
+    await egress.configure(session.defaultSession);await egress.configure(platformSession);
+    worker.network=egress.info.adapter;
+  })();
+  try{await networkRepair;}finally{networkRepair=null;}
+}
+async function restoreBoss(){
+  const cookies=await session.defaultSession.cookies.get({name:'wt2'});
+  if(!cookies.some(cookie=>/(^|\.)zhipin\.com$/.test(cookie.domain.replace(/^\./,''))&&cookie.value))return;
+  const view=createBoss();
+  const url=view.webContents.getURL();
+  if(!pageError&&url&&url!=='about:blank')return;
+  if(bossLoad||Date.now()-lastBrowserRestore<60000)return;
+  lastBrowserRestore=Date.now();
+  // Restore the existing profile in the hidden view. Never open a login flow,
+  // clear storage, foreground the window or navigate an already-loaded page.
+  const loading=view.webContents.loadURL('https://www.zhipin.com/web/chat/index');
+  bossLoad=loading;
+  try{await loading;}finally{if(bossLoad===loading)bossLoad=null;}
 }
 async function qr(){
   if(!bossView)throw Error('请在应用的 BOSS 页面扫码');
@@ -248,7 +278,7 @@ async function authorized(){
 async function cloud(route,body){
   if(selfTest)throw Error('Cloud access disabled in offline tests');
   let reply;
-  try{reply=await egress.fetch(platformSession,ORIGIN+'/api/v1/hr/desktop/'+route,{
+  try{await ensureDirectNetwork();reply=await egress.fetch(platformSession,ORIGIN+'/api/v1/hr/desktop/'+route,{
     method:'POST',body:body?JSON.stringify(body):undefined,
     headers:{'Content-Type':'application/json',Origin:ORIGIN},
     bypassCustomProtocolHandlers:true,redirect:'error',signal:AbortSignal.timeout(route==='passive-ingest'?90000:8000),
@@ -331,6 +361,8 @@ async function launch(){
     },
     browser:{
       open:openBoss,
+      prepare:ensureDirectNetwork,
+      restore:restoreBoss,
       chat:async()=>{
         const view=createBoss(),url=new URL(view.webContents.getURL()||'about:blank');
         if(url.hostname==='www.zhipin.com'&&url.pathname.replace(/\/$/,'')==='/web/chat/index')return;
@@ -359,7 +391,7 @@ async function launch(){
   // Local page-state sampling continues while the runtime is busy. It does not
   // make a BOSS request; only the serialized, budgeted runtime consumes hints.
   activityTimer=setInterval(observeChatActivity,2000);activityTimer.unref();
-  egress.on('stopped',()=>{if(!quitting)engine.pause('DIRECT_NETWORK_UNAVAILABLE');});
+  egress.on('stopped',()=>{if(!quitting&&!networkRepair)engine.pause('DIRECT_NETWORK_UNAVAILABLE');});
   bridge=new LocalBridge({engine,pair,authorize:authorized,release:releaseLease});
   await bridge.start(selfTest?0:17861);
   engine.on('change',publish);
@@ -397,7 +429,7 @@ async function launch(){
     tray.on('click',()=>Menu.buildFromTemplate(menuItems()).popup());
   }
   powerMonitor.on('suspend',()=>{engine.pause('COMPUTER_SLEEP');});
-  powerMonitor.on('resume',()=>{engine.pause('RECONNECT_REQUIRED');});
+  powerMonitor.on('resume',()=>{engine.pause('RECONNECT_REQUIRED');engine.recoveryAt=0;void engine.reconnect();});
   app.on('activate',()=>orb.showInactive());
   if(selfTest)await require('./self-test.cjs').run({app,main,orb,platformSession,createBoss,engine,worker,bridge,session,egress,snapshot});
 }
