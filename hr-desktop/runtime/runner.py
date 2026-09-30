@@ -112,6 +112,18 @@ def main(request):
     def passive_delay(**options):
         return passive_runtime.budget_delay(g.BUDGET_DB, g.HOURLY_LIMIT, **options)
     c.passive_delay = passive_delay
+    if operation == 'recover-account':
+        import account_history
+        return account_history.recover(c, request['root'], request.get('recruiterId'))
+    if operation == 'resume-session':
+        if c.held_code():
+            return {'ok': False, 'error': {'code': c.held_code()}}
+        # Only reached after explicit successful recruiter verification. Retain
+        # read timestamps and write ledgers; permit transient failed reads again.
+        c.DISCONNECTED.unlink(missing_ok=True)
+        with c.resume_db() as db:
+            db.execute('UPDATE resume_poll_state SET failures=0')
+        return {'ok': True}
     if operation in ('passive-local', 'passive-ack', 'passive-send', 'passive-step'):
         return passive_runtime.execute(c, request['root'], request)
     if operation == "verify":

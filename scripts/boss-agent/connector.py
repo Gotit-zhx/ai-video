@@ -203,6 +203,9 @@ def resume_db():
         friend_id TEXT PRIMARY KEY, last_polled_at INTEGER NOT NULL,
         failures INTEGER NOT NULL DEFAULT 0
     )""")
+    connection.execute("""CREATE TABLE IF NOT EXISTS resume_history_cursor (
+        friend_id TEXT PRIMARY KEY, before_mid TEXT NOT NULL
+    )""")
     os.chmod(RESUME_DB, 0o600)
     try:
         with connection:
@@ -254,6 +257,32 @@ def incoming_attachment(envelope, friend_id, baseline):
                 and attachment_id and len(attachment_id) == 1):
             matches.append(mid)
     return min(matches, key=int) if matches else None
+
+
+def adopt_received_resume(envelope, friend_id, since):
+    """Record a candidate-supplied attachment; never send a redundant request."""
+    if envelope.get('ok') is not True:
+        return False
+    now = int(time.time())
+    eligible = []
+    for message in resume_messages(envelope):
+        if not isinstance(message, dict):
+            continue
+        stamp = message.get('time')
+        if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+            continue
+        stamp = stamp / 1000 if stamp >= 1e12 else stamp
+        if since < stamp <= now+60:
+            eligible.append(message)
+    mid = incoming_attachment({'data': {'messages': eligible}}, friend_id, 0)
+    if not mid:
+        return False
+    with resume_db() as db:
+        changed = db.execute(
+            "INSERT OR IGNORE INTO resume_requests "
+            "(friend_id,requested_at,baseline_mid,state,message_id,updated_at,error) VALUES(?,?,0,'received',?,?,'')",
+            (friend_id, now, mid, now)).rowcount
+    return bool(changed)
 
 
 def reconcile_resume_request(envelope, friend_id, baseline):
@@ -385,16 +414,19 @@ def request_resume(friend_id, retry_uncertain=False):
         LOCK.release()
 
 
-def poll_resumes_once(friend_id=None):
+def poll_resumes_once(friend_id=None, *, reconnect=False):
+    outcome = {'checked': False, 'more': False}
     if held_code() or DISCONNECTED.is_file() or RESUME_AUTO_PAUSE.exists():
-        return
+        return outcome
     with LOGIN_LOCK:
         if LOGIN["state"] != "complete":
             # Startup/status reads cannot silently verify or restore a session.
-            return
+            return outcome
     now = int(time.time())
     if friend_id is not None:
         friend_id = positive_id(friend_id)
+    if reconnect and friend_id is None:
+        raise ValueError("Reconnect receipt checks require one tracked conversation")
     with resume_db() as connection:
         connection.execute(
             "UPDATE resume_requests SET error=? WHERE state IN ('waiting','uncertain') "
@@ -402,28 +434,31 @@ def poll_resumes_once(friend_id=None):
             ("自动接收检查已到 7 天期限，记录已保留，请在官方会话查看后续附件。",
              now - RESUME_POLL_MAX_AGE))
         pending = connection.execute(
-            "SELECT r.friend_id, r.baseline_mid FROM resume_requests r "
+            "SELECT r.friend_id, r.baseline_mid, h.before_mid FROM resume_requests r "
             "LEFT JOIN resume_poll_state p ON p.friend_id=r.friend_id "
-            "WHERE r.state IN ('waiting','uncertain') AND r.requested_at>=? "
+            "LEFT JOIN resume_history_cursor h ON h.friend_id=r.friend_id "
+            "WHERE r.state IN ('waiting','uncertain') AND (r.requested_at>=? OR ?) "
             "AND COALESCE(p.last_polled_at,0)<=? AND COALESCE(p.failures,0)<3 "
             "AND (? IS NULL OR r.friend_id=?) "
             "ORDER BY COALESCE(p.last_polled_at,0) ASC LIMIT ?",
-            (now - RESUME_POLL_MAX_AGE, now - (30 if friend_id else RESUME_POLL_SECONDS),
+            (now - RESUME_POLL_MAX_AGE, bool(reconnect), now - (30 if friend_id else RESUME_POLL_SECONDS),
              friend_id, friend_id, 1 if friend_id else RESUME_POLL_LIMIT)).fetchall()
     if not pending:
-        return
+        return outcome
     for row in pending:
         if not LOCK.acquire(timeout=1):
-            return
+            return outcome
         try:
             with LOGIN_LOCK:
                 if LOGIN["state"] != "complete":
-                    return
+                    return outcome
             if held_code() or RESUME_AUTO_PAUSE.exists():
-                return
+                return outcome
             try:
-                result = observe_result(cli_json(
-                    "hr", "chatmsg", row["friend_id"], "--count", "100", timeout=45))
+                args = ["hr", "chatmsg", row["friend_id"], "--count", "100"]
+                if row["before_mid"]:
+                    args += ["--max-msg-id", row["before_mid"]]
+                result = observe_result(cli_json(*args, timeout=45))
             except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
                 result = {"ok": False, "error": {"code": "NETWORK_ERROR"}}
             with resume_db() as connection:
@@ -443,23 +478,38 @@ def poll_resumes_once(friend_id=None):
                         "UPDATE resume_requests SET error=? WHERE friend_id=? "
                         "AND state IN ('waiting','uncertain')",
                         (verification_message(code), row["friend_id"]))
-                return
+                return outcome
             with resume_db() as connection:
                 failures = connection.execute(
                     "SELECT failures FROM resume_poll_state WHERE friend_id=?",
                     (row["friend_id"],)).fetchone()[0]
             if failures >= 3:
                 pause_requests("MANUAL_REVIEW_REQUIRED")
-                return
+                return outcome
             continue
         reconcile_resume_request(result, row["friend_id"], row["baseline_mid"])
         mid = incoming_attachment(result, row["friend_id"], row["baseline_mid"])
+        outcome['checked'] = True
+        messages = resume_messages(result)
+        mids = [int(str(item.get('mid'))) for item in messages
+                if isinstance(item, dict) and str(item.get('mid', '')).isdecimal()]
+        before = min(mids)-1 if mids else 0
+        more = (not mid and len(messages) >= 100 and before > row['baseline_mid']
+                and (not row['before_mid'] or before < int(row['before_mid'])))
+        with resume_db() as connection:
+            if more:
+                connection.execute("INSERT OR REPLACE INTO resume_history_cursor VALUES(?,?)",
+                                   (row['friend_id'], str(before)))
+            else:
+                connection.execute("DELETE FROM resume_history_cursor WHERE friend_id=?", (row['friend_id'],))
+        outcome['more'] = more
         if mid:
             with resume_db() as connection:
                 connection.execute(
                     "UPDATE resume_requests SET state='received', message_id=?, updated_at=?, error='' "
                     "WHERE friend_id=? AND baseline_mid=? AND state IN ('waiting','uncertain')",
                     (mid, int(time.time()), row["friend_id"], row["baseline_mid"]))
+    return outcome
 
 
 def resume_poll_worker():

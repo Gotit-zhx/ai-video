@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const {EventEmitter} = require('node:events');
 const {spawn, execFile} = require('node:child_process');
 const {directEnvironment} = require('./direct-network.cjs');
+const {resolveAccount,bindAccount,validKey}=require('./account-identity.cjs');
 
 const ORIGIN = 'https://hoyee.org.cn';
 const STOP = new Set(['ACCOUNT_RISK','ENVIRONMENT_RISK','IP_RESTRICTED','AUTH_REQUIRED','AUTH_EXPIRED',
@@ -199,12 +200,15 @@ class Recruiter extends EventEmitter {
         this.state.phase=/已扫码|扫描成功|请在app端确认|请在手机上确认|扫码成功/i.test(sample.text||'')?'scanned':'qr';
         return;
       }
+      if(!sample.accountId){this.state.phase='verifying';return;}
       clearInterval(this.loginTimer);this.loginTimer=null;
       this.state.phase='verifying';this.event('LOGIN_VERIFICATION');
-      // Reuse records only for the exact same browser session. A new login never
-      // inherits another account's pending requests. Store no plaintext token.
+      // Account records survive cookie rotation and logout. Resolve only from
+      // the current official profile, then verify before binding any history.
       const sessionKey=crypto.createHash('sha256').update(this.owner+sample.token.cookies.wt2).digest('hex');
-      this.accountRoot=path.join(this.directory,'accounts',this.owner,sessionKey);
+      const account=await resolveAccount(this.directory,this.owner,sample.accountId,sessionKey);
+      if(generation!==this.generation)return;
+      this.accountRoot=account.root;
       await fs.mkdir(this.accountRoot,{recursive:true,mode:0o700});
       await this.save();
       const synced=await this.call('sync',{token:sample.token});
@@ -219,9 +223,28 @@ class Recruiter extends EventEmitter {
         if(!STOP.has(verified.error?.code)) await this.hold({code:'MANUAL_REVIEW_REQUIRED'});
         return;
       }
+      if(!account.bound){
+        const recovered=await this.call('recover-account',{recruiterId:sample.accountId});
+        if(generation!==this.generation)return;
+        if(!recovered.ok)throw Error('历史账号尚未核对');
+        if(recovered.data?.accountKey){
+          if(!validKey(recovered.data.accountKey))throw Error('历史账号标识无效');
+          this.accountRoot=path.join(this.directory,'accounts',this.owner,recovered.data.accountKey);
+          const restored=await this.call('sync',{token:sample.token});
+          if(generation!==this.generation)return;
+          if(!restored.ok)throw Error('历史账号连接未建立');
+        }
+        await bindAccount(this.accountRoot,account.identity);
+        if(generation!==this.generation)return;
+      }
+      const resumed=await this.call('resume-session');
+      if(generation!==this.generation)return;
+      if(!resumed.ok)throw Error('历史接收进度未能恢复');
+      this.reconnectId=crypto.randomUUID();
       this.riskHold=null;this.state={state:'complete',phase:'',error:'',failure_code:''};
       this.paused=false;await this.save();this.event('CONNECTED');
       this.browser.connected();
+      this.passiveStatus={phase:'catching_up',catchupPending:1};this.scheduleActivityPoll();
     }catch{
       if(this.state.state==='pending'){
         clearInterval(this.loginTimer);this.loginTimer=null;
@@ -250,8 +273,9 @@ class Recruiter extends EventEmitter {
     if(this.activityTimer||this.polling||this.busy||this.paused||this.riskHold
       ||this.state.state!=='complete'||!this.passiveCloud)return;
     const status=this.passiveStatus||{};
-    if(!this.activity.size&&!status.activityPending&&!status.exportsPending)return;
-    const due=this.activity.size||status.exportsPending?0:Number(status.activityRetryAt||0)*1000;
+    if(!this.activity.size&&!status.activityPending&&!status.exportsPending&&!status.catchupPending)return;
+    const due=this.activity.size||status.exportsPending?0:status.catchupPending
+      ?Number(status.catchupRetryAt||0)*1000:Number(status.activityRetryAt||0)*1000;
     const delay=Math.max(1000,this.lastActivityPoll+10000-this.clock(),due-this.clock());
     this.activityTimer=setTimeout(()=>{
       this.activityTimer=null;this.poll();
@@ -308,7 +332,8 @@ class Recruiter extends EventEmitter {
       }
       const hints=[...this.activity.values()];
       const result=await this.call('passive-step',{rules:config.rules||[],replyTemplate:config.replyTemplate||null,
-        activityHints:hints,activityWatching:this.clock()-(this.activityObservedAt||0)<6000});
+        activityHints:hints,activityWatching:this.clock()-(this.activityObservedAt||0)<6000,
+        reconnectId:this.reconnectId||''});
       if(result.ok&&ready()){
         // A newer signal received during this operation must survive its ack.
         for(const hint of hints)if(this.activity.get(hint.friend)===hint)this.activity.delete(hint.friend);

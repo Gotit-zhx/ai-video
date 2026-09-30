@@ -208,7 +208,10 @@ async function inspectBoss(){
     const domain=cookie.domain.replace(/^\./,'');
     if(domain==='zhipin.com'||domain.endsWith('.zhipin.com'))cookies[cookie.name]=cookie.value;
   }
-  return {text,token:{cookies,stoken:cookies.__zp_stoken__||'',user_agent:bossView.webContents.getUserAgent()}};
+  const sample=await bossView.webContents.executeJavaScript(
+    `(${require('./account-identity.cjs').sampleAccountIdentity.toString()})()`,false);
+  return {text,accountId:sample?.session===cookies.wt2?sample.id:'',
+    token:{cookies,stoken:cookies.__zp_stoken__||'',user_agent:bossView.webContents.getUserAgent()}};
 }
 async function qr(){
   if(!bossView)throw Error('请在应用的 BOSS 页面扫码');

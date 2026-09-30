@@ -73,6 +73,73 @@ class WorkflowTest(unittest.TestCase):
         self.step(activityHints=[self.hint('2')])
         self.assertEqual(self.c.cli_json.call_count,1,'The same incoming MID is durable and not re-read')
 
+    def test_reconnect_receives_offline_attachment_without_resending_request(self):
+        self.pending('requested')
+        with self.c.resume_db() as db:
+            db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
+        def receive(**options):
+            self.assertEqual(options,{'friend_id':'1','reconnect':True})
+            with self.c.resume_db() as db:
+                db.execute("UPDATE resume_requests SET state='received',message_id='900'")
+            return {'checked':True,'more':False}
+        self.c.poll_resumes_once.side_effect=receive
+        self.c.download_resume.return_value=self.root/'received.pdf'
+        result=self.step(reconnectId='login-1')
+        self.assertEqual(self.state(),'export')
+        self.assertEqual(result['data']['exportsPending'],1)
+        self.c.request_resume.assert_not_called()
+        self.c.cli_json.assert_not_called()
+        self.runop('passive-ack',friendId='1',messageId='900')
+        self.now+=31;self.step(reconnectId='login-2')
+        self.assertEqual(self.c.poll_resumes_once.call_count,1,'Already stored resumes are not fetched again after relogin')
+
+    def test_reconnect_pages_through_read_greetings_and_preserves_cursor(self):
+        self.pending('stored',friend='9')
+        pages=[
+            {'ok':True,'data':{'friendList':[{'friendId':'1','lastTS':950,'unread':0},
+                                            {'friendId':'9','lastTS':940,'unread':0}], 'hasMore':True}},
+            {'ok':True,'data':{'friendList':[{'friendId':'2','lastTS':900,'unread':0}], 'hasMore':False}},
+        ]
+        self.c.cli_json.side_effect=pages
+        self.step(reconnectId='login-1')
+        self.assertEqual(self.state('1'),'inspect')
+        self.assertEqual(self.state('9'),'stored')
+        with flow.database(self.root) as db:
+            flow.prepare_catchup(self.c,db,{'reconnectId':'login-1'},{'r1':self.rule})
+            self.assertEqual(db.execute("SELECT page FROM catchup WHERE kind='job'").fetchone()[0],2)
+            self.now+=31
+            flow.catchup_step(self.c,db,{'r1':self.rule},lambda **kw:0)
+            self.assertEqual(db.execute("SELECT done FROM catchup WHERE kind='job'").fetchone()[0],1)
+            self.assertEqual(flow.get_state(db,'discovery-complete:r1'),'1000.0')
+        self.assertEqual(self.state('2'),'inspect','Read-on-phone greetings are still discovered')
+        self.assertEqual([call.args[-1] for call in self.c.cli_json.call_args_list],['1','2'])
+        self.c.request_resume.assert_not_called()
+
+    def test_catchup_budget_wait_keeps_queue_and_disabled_jobs_are_not_read(self):
+        self.c.passive_delay=lambda **kw:120
+        result=self.step(reconnectId='login-1')
+        self.assertEqual(result['data']['catchupPending'],1)
+        self.c.cli_json.assert_not_called()
+        self.now+=121;self.c.passive_delay=lambda **kw:0
+        self.runop('passive-step',reconnectId='login-1',rules=[])
+        self.c.cli_json.assert_not_called()
+
+    def test_local_realtime_horizon_does_not_limit_reconnect_history(self):
+        self.c.cli_json.return_value={'ok':True,'data':{'friendList':[
+            {'friendId':'1','lastTS':500,'unread':0}], 'hasMore':False}}
+        self.step(reconnectId='login-1',activityWatching=True)
+        self.assertEqual(self.state('1'),'inspect')
+        self.c.request_resume.assert_not_called()
+
+    def test_candidate_already_sent_resume_during_disconnect_does_not_get_another_request(self):
+        self.pending('inspect')
+        self.c.adopt_received_resume.return_value=True
+        result=self.step()
+        self.assertEqual(self.state(),'requested')
+        self.assertEqual(result['data']['catchupPending'],1)
+        self.c.request_resume.assert_not_called()
+        self.c.cli_json.assert_called_once_with('hr','chatmsg','1','--count','100')
+
     def test_new_resume_targets_its_own_conversation_before_other_queued_work(self):
         self.pending('requested')
         self.pending('ready',friend='2')

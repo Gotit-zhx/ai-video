@@ -36,6 +36,23 @@ class PassiveTest(unittest.TestCase):
             feature.review(USER,{'id':'r1','version':1,'action':'reject','message':'client supplied'})
         self.assertEqual(feature.listing(USER,'resume-pool',{})['items'][0]['status'],'pending')
 
+    def test_job_and_review_filters_share_scoped_counts_and_cannot_cross_organizations(self):
+        with pool.database() as db:
+            feature.schema(db)
+            for rule,job,name,owner in [('rule1','job1','运营','heyi'),('rule2','job2','秘书','heyi'),
+                                        ('foreign','job1','其他组织','other')]:
+                db.execute('INSERT INTO hr_passive_rules VALUES(?,?,?,?,?,1,100,1,?)',
+                           (rule,owner,KEY,job,json.dumps({'jobName':name}),feature.now()))
+            db.execute("INSERT INTO hr_resume_pool SELECT 'r2',owner,account,'234','rule2','567',body,file_key,file_hash,"
+                       "'approved',version,ai_state,ai_result,ai_error,ai_job,ai_at,created_at,updated_at FROM hr_resume_pool WHERE id='r1'")
+        first=feature.listing(USER,'resume-pool',{'jobId':'job1','status':'pending'})
+        self.assertEqual([r['id'] for r in first['items']],['r1'])
+        self.assertEqual(first['counts'],{'pending':1,'approved':0,'rejected':0,'all':1})
+        second=feature.listing(USER,'resume-pool',{'jobId':'job2','status':'pending'})
+        self.assertEqual(second['total'],0);self.assertEqual(second['counts']['approved'],1)
+        self.assertEqual({j['name'] for j in second['jobs']},{'运营','秘书'})
+        self.assertEqual(feature.listing(USER,'resume-pool',{'jobId':'unknown'})['counts']['all'],0)
+
     def test_reject_uses_configured_snapshot_without_second_confirmation(self):
         template=self.template()
         result=feature.review(USER,{'id':'r1','version':1,'action':'reject','message':'must ignore','templateVersion':999})

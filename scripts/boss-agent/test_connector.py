@@ -1078,6 +1078,43 @@ class ConnectorTest(unittest.TestCase):
             connector.poll_resumes_once(friend_id='789')
             self.assertEqual(cli.call_count,1,'Untracked friends cannot cause a resume read')
 
+    def test_reconnect_checks_old_waiting_receipt_once_and_pages_without_resetting_send_ledger(self):
+        now=int(connector.time.time())
+        with connector.resume_db() as db:
+            db.execute("INSERT INTO resume_requests (friend_id,requested_at,baseline_mid,state,updated_at) "
+                       "VALUES('123',?,10,'waiting',?)",(now-connector.RESUME_POLL_MAX_AGE-10,now))
+        first={'ok':True,'data':{'messages':[{'mid':str(300+i),'from':{'uid':123},'body':{}} for i in range(100)]}}
+        attachment={'mid':'200','from':{'uid':123,'source':0},
+                    'body':{'hyperLink':{'hyperLinkType':1,'url':'https://www.zhipin.com/resume?id=fixture'}}}
+        with mock.patch.dict(connector.LOGIN,{'state':'complete'}), \
+             mock.patch.object(connector,'cli_json',side_effect=[first,{'ok':True,'data':{'messages':[attachment]}}]) as cli:
+            connector.poll_resumes_once()
+            cli.assert_not_called()
+            result=connector.poll_resumes_once(friend_id='123',reconnect=True)
+            self.assertTrue(result['more'])
+            with mock.patch.object(connector.time,'time',return_value=now+31):
+                result=connector.poll_resumes_once(friend_id='123',reconnect=True)
+            self.assertFalse(result['more'])
+            self.assertEqual(cli.call_args.args,('hr','chatmsg','123','--count','100','--max-msg-id','299'))
+            self.assertEqual(connector.tracked_resumes()[0]['message_id'],'200')
+            self.assertEqual(connector.tracked_resumes()[0]['state'],'received')
+            with mock.patch.object(connector.time,'time',return_value=now+62):
+                connector.poll_resumes_once(friend_id='123',reconnect=True)
+            self.assertEqual(cli.call_count,2)
+
+    def test_offline_candidate_attachment_is_recorded_without_a_new_request(self):
+        now=int(connector.time.time())
+        message={'mid':'200','time':now,'from':{'uid':123,'source':0},
+                 'body':{'hyperLink':{'hyperLinkType':1,'url':'https://www.zhipin.com/resume?id=fixture'}}}
+        result={'ok':True,'data':{'messages':[message]}}
+        with mock.patch.object(connector,'cli_json') as cli:
+            self.assertFalse(connector.adopt_received_resume(result,'123',now+1))
+            self.assertFalse(connector.adopt_received_resume(result,'999',now-60))
+            self.assertTrue(connector.adopt_received_resume(result,'123',now-60))
+            self.assertFalse(connector.adopt_received_resume(result,'123',now-60))
+            cli.assert_not_called()
+        self.assertEqual(connector.tracked_resumes()[0]['state'],'received')
+
     def test_resume_poll_three_transport_failures_pause_without_losing_checkpoint(self):
         now = int(connector.time.time())
         with connector.resume_db() as db:

@@ -6,6 +6,31 @@ const os=require('node:os');
 const {Recruiter,restriction,ORIGIN}=require('../src/core.cjs');
 const {LocalBridge}=require('../src/bridge.cjs');
 const user={username:'13800000000',id:'fixture',organizationCode:'heyi',roles:['ADMIN'],platformAdmin:true};
+test('verified same recruiter retains cloud account and catches up after a fresh cookie login',async t=>{
+  const {engine,calls,directory}=await fixture(t);
+  engine.passiveCloud=async()=>({rules:[]});
+  engine.runtime.run=async input=>{calls.push(input);return {ok:true,data:{}};};
+  engine.browser.inspect=async()=>({text:'',accountId:'123',token:{cookies:{wt2:'first'},user_agent:'fixture'}});
+  await engine.start();await engine.observe();
+  assert.equal(engine.state.state,'complete');
+  const first=engine.accountRoot;
+  assert.ok(engine.reconnectId);assert.ok(engine.activityTimer);
+  await engine.disconnect();
+  engine.browser.inspect=async()=>({text:'',accountId:'123',token:{cookies:{wt2:'second'},user_agent:'fixture'}});
+  await engine.start();await engine.observe();
+  assert.equal(engine.accountRoot,first);
+  assert.equal(calls.filter(call=>call.operation==='recover-account').length,1,'Bound accounts need no historical probe');
+  await engine.disconnect();
+  engine.browser.inspect=async()=>({text:'',accountId:'456',token:{cookies:{wt2:'third'},user_agent:'fixture'}});
+  await engine.start();await engine.observe();
+  assert.notEqual(engine.accountRoot,first,'A different recruiter cannot consume the old account queue');
+});
+test('cookie alone cannot select account history or start verification',async t=>{
+  const {engine,calls}=await fixture(t);
+  engine.browser.inspect=async()=>({text:'',token:{cookies:{wt2:'cookie-only'}}});
+  await engine.start();await engine.observe();
+  assert.equal(engine.state.state,'pending');assert.equal(calls.length,0);
+});
 test('incoming while a runtime operation runs is retained, coalesced, and isolated on pause',async t=>{
   const {engine,calls,directory}=await fixture(t);
   engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};

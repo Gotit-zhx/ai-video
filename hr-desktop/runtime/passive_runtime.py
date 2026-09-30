@@ -47,6 +47,11 @@ def database(root):
           CREATE TABLE IF NOT EXISTS activity(
             friend TEXT PRIMARY KEY,job TEXT NOT NULL,mid TEXT NOT NULL,at REAL NOT NULL,
             retry_at REAL NOT NULL DEFAULT 0,done INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS catchup(
+            kind TEXT NOT NULL,target TEXT NOT NULL,page INTEGER NOT NULL DEFAULT 1,
+            since REAL NOT NULL DEFAULT 0,started REAL NOT NULL,
+            done INTEGER NOT NULL DEFAULT 0,retry_at REAL NOT NULL DEFAULT 0,
+            fingerprint TEXT NOT NULL DEFAULT '',PRIMARY KEY(kind,target));
         ''')
         path.chmod(0o600)
         with db:
@@ -157,7 +162,8 @@ def trigger_since(db, friend, rule):
 
 def event(db, code, detail):
     value = {'id': uuid.uuid4().hex, 'code': code,
-             'name': detail.get('name', ''), 'jobName': detail.get('jobName', '')}
+             'name': detail.get('name', ''), 'jobName': detail.get('jobName', ''),
+             'jobId': detail.get('jobId', ''), 'ruleId': detail.get('ruleId', '')}
     db.execute('INSERT INTO events VALUES(?,?,0)', (value['id'], json.dumps(value, ensure_ascii=False)))
 
 
@@ -173,16 +179,19 @@ def status(db, phase, **extra):
     return {'ok': True, 'data': value}
 
 
-def discover(c, db, rules, rule=None):
+def discover(c, db, rules, rule=None, page=1, capture=None):
     if rule is None:
         index = int(get_state(db, 'rule-index'))
         ordered = sorted(rules); rule = rules[ordered[index % len(ordered)]]
         put_state(db, 'rule-index', index+1)
-    put_state(db, 'discoveredAt', time.time()); db.commit()
+    started = time.time()
+    put_state(db, 'discoveredAt', started); db.commit()
     # Always revisit recent conversations; draining an entire historical queue
     # first used to postpone fresh messages by hours.
-    result = c.cli_json('hr', 'chat', '--job-id', rule['jobId'], '--page', '1')
+    result = c.cli_json('hr', 'chat', '--job-id', rule['jobId'], '--page', str(page))
     if result.get('ok') is not True: return result
+    if capture is not None:
+        capture.update(result=result)
     for position, item in enumerate(rows(result)):
         if not isinstance(item, dict): continue
         friend = str(item.get('friendId') or item.get('friend_id') or item.get('uid') or item.get('gid') or '')
@@ -200,6 +209,7 @@ def discover(c, db, rules, rule=None):
                   'experience': first('geekWorkYear', 'workYearDesc', 'work_years', 'experience')[:100],
                   'city': first('expectLocationName', 'locationName', 'city')[:100],
                   'company': first('companyName', 'company')[:200], 'jobName': rule.get('jobName', ''),
+                  'jobId': rule['jobId'], 'ruleId': rule['id'],
                   'enabledAt': rule['enabledAt'], 'activity': activity(item), 'position': position,
                   'unread': bool(item.get('unread') or item.get('unreadMsgCount') or item.get('newMsgCount'))}
         # Persist only a digest of the message summary, never the chat content.
@@ -224,16 +234,38 @@ def discover(c, db, rules, rule=None):
                        (json.dumps(detail, ensure_ascii=False),
                         'inspect' if fresh and (changed or old['state'] == 'inspect') else 'seen',
                         int(time.time()), friend))
+    if capture is None:
+        since = max(rule['enabledAt'], float(get_state(db, 'discovery-complete:'+rule['id'], str(rule['enabledAt'])))-60)
+        entries = rows(result)
+        stamps = [activity(item) for item in entries if isinstance(item, dict)]
+        metadata = result.get('data', {})
+        complete = not entries or (isinstance(metadata, dict) and metadata.get('hasMore') in (False, 0))
+        complete = complete or bool(stamps and all(stamps) and min(stamps) < since)
+        pending = db.execute("SELECT 1 FROM catchup WHERE kind='job' AND target=? AND done=0", (rule['id'],)).fetchone()
+        if not pending:
+            if complete:
+                put_state(db, 'discovery-complete:'+rule['id'], started)
+            elif get_state(db, 'reconnectId', ''):
+                # A burst can fill page one even while connected. Continue the
+                # unread/previously-read backlog rather than advance past it.
+                db.execute("INSERT OR REPLACE INTO catchup(kind,target,page,since,started) VALUES('job',?,2,?,?)",
+                           (rule['id'], since, started))
     return status(db, 'watching')
 
 
-def receive(c, db, friend=None):
+def receive(c, db, friend=None, reconnect=False):
     put_state(db, 'receivedAt', time.time()); db.commit()
     c.RESUME_POLL_LIMIT = 1
-    if friend:
-        c.poll_resumes_once(friend_id=friend)
-    else:
-        c.poll_resumes_once()
+    with c.resume_db() as tracked:
+        saved = tracked.execute("SELECT state FROM resume_requests WHERE friend_id=?", (friend,)).fetchone() if friend else None
+    outcome = {'checked': True, 'more': False}
+    if not saved or saved['state'] != 'received':
+        if friend:
+            options = {'friend_id': friend}
+            if reconnect: options['reconnect'] = True
+            outcome = c.poll_resumes_once(**options)
+        else:
+            outcome = c.poll_resumes_once()
     if c.held_code(): return {'ok': False, 'error': {'code': c.held_code()}}
     with c.resume_db() as tracked:
         received = {r['friend_id']: dict(r) for r in tracked.execute("SELECT * FROM resume_requests WHERE state='received'")}
@@ -247,7 +279,93 @@ def receive(c, db, friend=None):
         db.execute("UPDATE people SET state='export',file=?,mid=?,updated=? WHERE friend=?",
                    (file, mid, int(time.time()), candidate['friend']))
         event(db, 'RESUME_RECEIVED', json.loads(candidate['body']))
-    return status(db, 'receiving')
+    return status(db, 'receiving', receiptChecked=outcome.get('checked', False) if isinstance(outcome, dict) else True,
+                  receiptMore=outcome.get('more', False) if isinstance(outcome, dict) else False)
+
+
+def prepare_catchup(c, db, request, rules):
+    token = request.get('reconnectId')
+    if not isinstance(token, str) or not re.fullmatch(r'[a-zA-Z0-9-]{1,80}', token):
+        return
+    if get_state(db, 'reconnectId', '') == token:
+        return
+    now = time.time()
+    # No sent/requested/exported ledger is reset. Reconnection only queues reads.
+    db.execute('DELETE FROM catchup')
+    with c.resume_db() as tracked:
+        receipts = list(tracked.execute("SELECT friend_id FROM resume_requests WHERE state IN ('waiting','uncertain','received')"))
+    for item in receipts:
+        person = db.execute('SELECT state FROM people WHERE friend=?', (item['friend_id'],)).fetchone()
+        if person and person['state'] in ('requested', 'request_uncertain'):
+            db.execute("INSERT INTO catchup(kind,target,started) VALUES('receipt',?,?)", (item['friend_id'], now))
+    for rule in rules.values():
+        since = max(rule['enabledAt'], float(get_state(db, 'discovery-complete:'+rule['id'], str(rule['enabledAt'])))-60)
+        db.execute("INSERT INTO catchup(kind,target,since,started) VALUES('job',?,?,?)", (rule['id'], since, now))
+    put_state(db, 'reconnectId', token)
+    put_state(db, 'catchupTurn', 'receipt')
+    db.commit()
+
+
+def catchup_step(c, db, rules, delay_for):
+    """A durable, serialized pass over missed receipts and paginated greetings."""
+    now = time.time()
+    turn = get_state(db, 'catchupTurn', 'receipt')
+    work = list(db.execute("SELECT * FROM catchup WHERE done=0 AND retry_at<=? "
+                           "ORDER BY CASE WHEN kind=? THEN 0 ELSE 1 END,started,target", (now, turn)))
+    for task in work:
+        friend = task['target']
+        if task['kind'] == 'receipt':
+            person = db.execute('SELECT state FROM people WHERE friend=?', (friend,)).fetchone()
+            with c.resume_db() as tracked:
+                receipt = tracked.execute('SELECT state FROM resume_requests WHERE friend_id=?', (friend,)).fetchone()
+                last = tracked.execute('SELECT last_polled_at FROM resume_poll_state WHERE friend_id=?', (friend,)).fetchone()
+            if not person or person['state'] not in ('requested', 'request_uncertain') or not receipt:
+                db.execute("UPDATE catchup SET done=1 WHERE kind='receipt' AND target=?", (friend,))
+                continue
+            interval = max(0, last[0]+30-now) if last and receipt['state'] != 'received' else 0
+            delay = max(interval, delay_for(cost=4, queued=True))
+            if delay:
+                db.execute("UPDATE catchup SET retry_at=? WHERE kind='receipt' AND target=?", (now+delay, friend))
+                continue
+            result = receive(c, db, friend, reconnect=True)
+            if result.get('ok') is True:
+                value = result.get('data', {})
+                done = value.get('receiptChecked') is True and not value.get('receiptMore')
+                db.execute("UPDATE catchup SET done=?,retry_at=? WHERE kind='receipt' AND target=?", (done, now+30, friend))
+        else:
+            rule = rules.get(task['target'])
+            if not rule:
+                db.execute("UPDATE catchup SET done=1 WHERE kind='job' AND target=?", (task['target'],))
+                continue
+            delay = delay_for(cost=2, queued=True)
+            if delay:
+                db.execute("UPDATE catchup SET retry_at=? WHERE kind='job' AND target=?", (now+delay, rule['id']))
+                continue
+            captured = {}
+            result = discover(c, db, rules, rule, page=task['page'], capture=captured)
+            if result.get('ok') is True:
+                entries = rows(captured['result'])
+                # Never rely on unread badges: another client can mark a missed
+                # greeting read. Message UIDs and opt-in time still gate writes.
+                fingerprints = [str(row.get('friendId') or row.get('uid') or row.get('gid') or '') for row in entries]
+                fingerprint = hashlib.sha256(json.dumps(fingerprints).encode()).hexdigest()
+                old_page = bool(entries) and all(activity(row) and activity(row) < task['since'] for row in entries)
+                metadata = captured['result'].get('data', {})
+                explicit_end = isinstance(metadata, dict) and (metadata.get('hasMore') is False or metadata.get('hasMore') == 0)
+                complete = not entries or old_page or explicit_end
+                if fingerprint == task['fingerprint'] and entries and not complete:
+                    # A provider repeating the same page is not a completed sync.
+                    # Retain its cursor and back off rather than loop or skip it.
+                    db.execute("UPDATE catchup SET retry_at=? WHERE kind='job' AND target=?", (now+300, rule['id']))
+                else:
+                    db.execute("UPDATE catchup SET page=page+1,done=?,fingerprint=?,retry_at=? WHERE kind='job' AND target=?",
+                               (complete, fingerprint, now+10, rule['id']))
+                    if complete:
+                        put_state(db, 'discovery-complete:'+rule['id'], task['started'])
+        put_state(db, 'catchupTurn', 'job' if task['kind'] == 'receipt' else 'receipt')
+        put_state(db, 'nextAt', now+10)
+        return result
+    return None
 
 
 def remember_activity(db, hints):
@@ -325,8 +443,12 @@ def activity_status(db, result):
     if result.get('ok') is not True: return result
     pending = db.execute('SELECT count(*),min(retry_at) FROM activity WHERE done=0').fetchone()
     exports = db.execute("SELECT count(*) FROM people WHERE state='export'").fetchone()[0]
+    catchup = db.execute('SELECT count(*),min(retry_at) FROM catchup WHERE done=0').fetchone()
     value = result.setdefault('data', {})
-    value.update(activityPending=pending[0], activityRetryAt=pending[1] or 0, exportsPending=exports)
+    value.update(activityPending=pending[0], activityRetryAt=pending[1] or 0, exportsPending=exports,
+                 catchupPending=catchup[0], catchupRetryAt=catchup[1] or 0)
+    if catchup[0] and value.get('phase') in ('watching', 'receiving', 'disabled'):
+        value['phase'] = 'catching_up'
     put_state(db, 'status', json.dumps(value))
     return result
 
@@ -335,6 +457,7 @@ def step(c, db, request):
     rules = {r['id']: r for r in request.get('rules', []) if r.get('enabled') is True}
     now = time.time()
     delay_for = getattr(c, 'passive_delay', lambda **kwargs: 0)
+    prepare_catchup(c, db, request, rules)
     remember_activity(db, request.get('activityHints', []))
     queued = any(row['rule'] in rules for row in db.execute(
         "SELECT rule FROM people WHERE state IN ('inspect','reply_ready','ready')"))
@@ -342,6 +465,13 @@ def step(c, db, request):
     result = activity_step(c, db, rules, delay_for) if (
         not queued or int(get_state(db, 'activityStreak')) < 2) else None
     if result is not None: return result
+    # Alternate recovery reads with admitted work. Neither an offline backlog
+    # nor a continuous stream of new arrivals can starve the other lane.
+    if not queued or get_state(db, 'lastLane', 'work') != 'maintenance':
+        result = catchup_step(c, db, rules, delay_for)
+        if result is not None:
+            put_state(db, 'lastLane', 'maintenance')
+            return result
     previous = json.loads(get_state(db, 'status', '{}'))
     if now < float(get_state(db, 'nextAt')) and previous.get('phase') != 'budget_wait':
         return {'ok': True, 'data': previous}
@@ -410,6 +540,10 @@ def step(c, db, request):
         if result.get('ok') is not True: return result
         messages = c.resume_messages(result)
         since = trigger_since(db, friend, rule)
+        if c.adopt_received_resume(result, friend, since) is True:
+            db.execute("UPDATE people SET state='requested',updated=? WHERE friend=?", (int(now), friend))
+            db.execute("INSERT OR REPLACE INTO catchup(kind,target,started) VALUES('receipt',?,?)", (friend, now))
+            return status(db, 'receiving')
         trigger = incoming_trigger(messages, friend, since)
         excluded = {r[0] for r in db.execute('SELECT message FROM commands WHERE friend=?', (friend,))}
         state = 'seen'

@@ -53,7 +53,7 @@ for name in modules:
     assert sha((module_root / name).read_bytes()) == expected[name], 'Production drift: ' + name
     shutil.copy2(module_root / name, backup / name)
     run('/opt/heyi/boss-agent/venv/bin/python', '-m', 'py_compile', str(root / name))
-for name in ('index.html', *assets[:-1]):
+for name in ('index.html', *(name for name in assets if name in expected)):
     data = run('docker', 'exec', 'ai-commerce-frontend', 'cat', '/usr/share/nginx/html/' + name)
     assert sha(data) == expected[name], 'Production drift: ' + name
     (backup / name).write_bytes(data)
@@ -62,13 +62,16 @@ with sqlite3.connect('file:' + db + '?mode=ro', uri=True) as source, sqlite3.con
     source.backup(dest)
 (backup / 'talent-pool.sqlite3').chmod(0o600)
 index = (backup / 'index.html').read_text()
-for old, new in (
+patches = (
     ('/hr-workspace.css?v=20260929-passive-1', '/hr-workspace.css?v=20260929-resume-review-1'),
     ('/hr-pool.js?v=20260929-passive-1', '/hr-pool.js?v=20260929-resume-review-1'),
     ('<script src="/hr-passive.js?v=20260929-passive-realtime-1" defer></script>',
      '<script src="/hr-resume-preview.js?v=20260929-resume-review-1" defer></script>\n'
      '  <script src="/hr-passive.js?v=20260929-resume-review-1" defer></script>'),
-):
+)
+if (root / 'index-patches.json').exists():
+    patches = json.loads((root / 'index-patches.json').read_text())
+for old, new in patches:
     assert index.count(old) == 1, 'Review current cache version: ' + old
     index = index.replace(old, new)
 (root / 'index.html').write_text(index)

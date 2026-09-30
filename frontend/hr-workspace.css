@@ -213,10 +213,12 @@ img.hr-resume-original{min-height:0;height:auto}
 /* Resume review keeps the document and HR's decision together. */
 #hr-page{width:100%;min-width:0;box-sizing:border-box}
 #hr-page .hr-resume-panel{padding:20px;min-width:0}
-.hr-resume-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}
+.hr-resume-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}
 .hr-resume-count{margin:0;font-size:14px;font-weight:600}
 .hr-resume-toolbar select{min-width:112px;height:34px;border:1px solid var(--hr-border);border-radius:6px;background:var(--surface,#fff);color:var(--hr-ink);padding:0 10px;font:inherit;font-size:12px}
 .hr-resume-toolbar .hr-actions{margin:0;flex-wrap:nowrap}
+.hr-resume-job-filter{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--hr-muted);min-width:0}
+.hr-resume-job-filter select{max-width:260px;min-width:160px}
 .hr-resume-toolbar button{min-height:34px;padding:6px 12px;font-size:12px}
 .hr-resume-tabs{margin:0 0 14px;padding-bottom:10px;gap:5px}
 .hr-resume-tabs button{padding:8px 14px;font-size:12px}

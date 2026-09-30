@@ -123,7 +123,12 @@ def listing(user, kind, query):
         if kind == 'passive':
             return {'items': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=?', (owner,))]}
         db.execute("UPDATE hr_resume_pool SET ai_state='failed',ai_error='分析等待超时，请手动重试' WHERE owner=? AND ai_state='running' AND ai_at<?", (owner, int(time.time())-360))
-        clause, args = 'owner=?', [owner]
+        scope, scope_args = 'owner=?', [owner]
+        selected_job = pool.text(query.get('jobId', ''), 180)
+        if selected_job and not query.get('id'):
+            scope += ' AND rule_id IN (SELECT id FROM hr_passive_rules WHERE owner=? AND job_id=?)'
+            scope_args += [owner, selected_job]
+        clause, args = scope, list(scope_args)
         if query.get('id'):
             clause += ' AND id=?'; args.append(uid(query['id']))
         elif query.get('status'):
@@ -140,10 +145,23 @@ def listing(user, kind, query):
             for item in items: item.pop('resumeText', None)
         counts = {state: 0 for state in ('pending', 'approved', 'rejected')}
         counts.update({r['status']: r['n'] for r in db.execute(
-            'SELECT status,count(*) n FROM hr_resume_pool WHERE owner=? GROUP BY status', (owner,))})
+            'SELECT status,count(*) n FROM hr_resume_pool WHERE '+scope+' GROUP BY status', scope_args)})
         counts['all'] = sum(counts.values())
+        jobs = {}
+        for row in db.execute('''SELECT r.job_id,r.id,r.body,COUNT(p.id) n FROM hr_passive_rules r
+            LEFT JOIN hr_resume_pool p ON p.rule_id=r.id AND p.owner=r.owner
+            WHERE r.owner=? GROUP BY r.id ORDER BY r.updated_at DESC''', (owner,)):
+            entry = jobs.setdefault(row['job_id'], {'id': row['job_id'], 'name': json.loads(row['body']).get('jobName') or '未命名职位', 'count': 0, 'ruleIds': []})
+            entry['count'] += row['n']; entry['ruleIds'].append(row['id'])
+        events = [json.loads(r['body']) | {'createdAt': r['created_at']} for r in
+                  db.execute('SELECT * FROM hr_passive_events WHERE owner=? ORDER BY created_at DESC LIMIT 100', (owner,))]
+        if selected_job:
+            selected = jobs.get(selected_job, {})
+            unique_name = sum(j['name'] == selected.get('name') for j in jobs.values()) == 1
+            events = [event for event in events if event.get('jobId') == selected_job or (
+                not event.get('jobId') and unique_name and event.get('jobName') == selected.get('name'))]
         return {'items': items, 'total': total, 'page': page, 'pages': pages, 'counts': counts,
-                'events': [json.loads(r['body']) | {'createdAt': r['created_at']} for r in db.execute('SELECT * FROM hr_passive_events WHERE owner=? ORDER BY created_at DESC LIMIT 30', (owner,))]}
+                'jobs': list(jobs.values()), 'events': events[:30]}
 
 
 def save_speech(user, body):
@@ -352,7 +370,7 @@ def device_report(user, body):
                 db.execute(f"UPDATE {table} SET status=?,updated_at=? WHERE id=? AND owner=? AND account=? AND status IN ('sending','uncertain')", (state, now(), uid(body['commandId']), owner, key))
     event = body.get('event')
     if isinstance(event, dict):
-        clean = {k: pool.text(event.get(k, ''), limit) for k, limit in {'id': 80, 'code': 80, 'name': 100, 'jobName': 200, 'message': 400}.items()}
+        clean = {k: pool.text(event.get(k, ''), limit) for k, limit in {'id': 80, 'code': 80, 'name': 100, 'jobName': 200, 'jobId': 180, 'ruleId': 80, 'message': 400}.items()}
         if clean['id']:
             with pool.database() as db:
                 schema(db)

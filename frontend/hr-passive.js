@@ -9,13 +9,14 @@
     request_queued:'已回复，等待索取简历',receiving:'已索取，等待接收简历',
     template_required:'请在话术管理中配置默认被动邀约回复',chat_required:'正在准备 BOSS 沟通页面',
     budget_wait:'正在按请求频率排队，会自动继续',send_wait:'正在按发送间隔排队',
+    catching_up:'正在补收断开期间的新招呼和简历',
     needs_review:'有发送结果待核对，请查看 BOSS 会话',disabled:'被动邀约已关闭'};
   const eventLabels={INCOMING_DETECTED:'收到主动消息',AUTO_REPLY_SENT:'话术回复已发送',
     AUTO_REPLY_UNCERTAIN:'话术回复结果待核对',RESUME_REQUESTED:'已索取简历',
     RESUME_REQUEST_UNCERTAIN:'索取结果待核对',RESUME_RECEIVED:'已收到简历'};
   function flowSummary(flow,ruleId){
     const counts={};
-    for(const group of ruleId?[flow.counts?.[ruleId]||{}]:Object.values(flow.counts||{})){
+    for(const group of ruleId?(Array.isArray(ruleId)?ruleId:[ruleId]).map(id=>flow.counts?.[id]||{}):Object.values(flow.counts||{})){
       for(const [key,value] of Object.entries(group))counts[key]=(counts[key]||0)+value;
     }
     const totals=[['inspect','待处理'],['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],
@@ -27,11 +28,13 @@
       totals.push(flow.retryAt*1000>Date.now()?`预计 ${clock(flow.retryAt)} 继续`:'正在重新检查可用额度');
     }
     if(flow.activityPending>0)totals.push(`新消息待检查 ${flow.activityPending}`);
+    if(flow.catchupPending>0)totals.push(`补收检查剩余 ${flow.catchupPending} 项`);
     if(flow.lastProgressAt>0)totals.push(`上次进展 ${clock(flow.lastProgressAt)}`);
     return [phases[flow.phase]||'已开启，等待助手检查',...totals].join(' · ');
   }
   globalThis.createHrPassive=({root,section,element:el,button,allowed,navigate,hrApi})=>{
     let active='',generation=0,items=[],page=1,filter='pending',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
+    let jobFilter='',jobOptions=[],jobSignature='';
     let logOpen=false,poolSnapshot='',previewId='',previewHost=null,disposePreview=null;
     const clearPreview=()=>{disposePreview?.();disposePreview=null;previewHost=null;previewId='';};
     const speechPanel=section('speeches'),resumePanel=section('resume-pool');
@@ -48,6 +51,11 @@
     const resumeToolbar=el('div','',resumePanel,'hr-resume-toolbar');
     const resumeFeedback=el('p','',resumeToolbar,'hr-resume-count');
     const resumeActions=el('div','',resumeToolbar,'hr-actions');
+    const jobLabel=el('label','',resumeActions,'hr-resume-job-filter');
+    el('span','职位',jobLabel);
+    const jobSelect=el('select','',jobLabel);jobSelect.setAttribute('aria-label','按职位筛选简历');
+    el('option','全部职位',jobSelect).value='';
+    jobSelect.onchange=()=>{jobFilter=jobSelect.value;page=1;poolSnapshot='';load();};
     button('刷新',resumeActions,load);
     const statusTabs=el('div','',resumePanel,'hr-pool-tabs hr-resume-tabs');
     statusTabs.setAttribute('aria-label','简历审批分类');
@@ -102,7 +110,7 @@
         const status=await hrApi('/api/v1/hr/login/status');
         if(ticket!==generation||active!=='resume-pool'||!allowed())return;
         poolActivity.textContent=status.data.state==='complete'&&!status.data.paused
-          ?flowSummary(status.data.passive||{}):'助手未连接，自动邀约暂停';
+          ?flowSummary(status.data.passive||{},jobFilter?jobOptions.find(job=>job.id===jobFilter)?.ruleIds||[]:null):'助手未连接，自动邀约暂停';
       }catch{if(ticket===generation&&active==='resume-pool')poolActivity.textContent='正在等待助手恢复连接';}
     }
     async function load(quiet=false){
@@ -110,15 +118,25 @@
       const feedback=mode==='speeches'?speechFeedback:resumeFeedback,box=mode==='speeches'?speechRows:resumeRows;
       if(!quiet)feedback.textContent='正在读取…';
       try{
-        const data=await request(mode==='speeches'?'speeches':`resume-pool?page=${page}&status=${filter}`);
+        const data=await request(mode==='speeches'?'speeches':`resume-pool?page=${page}&status=${filter}&jobId=${encodeURIComponent(jobFilter)}`);
         if(ticket!==generation||mode!==active||!allowed())return;
         items=data.items||[];feedback.textContent=mode==='resume-pool'?`共 ${data.total??items.length} 份简历`:`共 ${data.total??items.length} 条`;
+        if(mode==='resume-pool'){
+          jobOptions=data.jobs||[];
+          const signature=JSON.stringify(jobOptions);
+          if(signature!==jobSignature){
+            jobSignature=signature;jobSelect.replaceChildren();
+            el('option','全部职位',jobSelect).value='';
+            for(const job of jobOptions)el('option',`${job.name}（${job.count}）`,jobSelect).value=job.id;
+            jobSelect.value=jobFilter;
+          }
+        }
         if(mode==='resume-pool')for(const tab of statusButtons){
           const count=data.counts?.[tab.value||'all'];
           tab.control.textContent=tab.label+(Number.isFinite(count)?` ${count}`:'');
           tab.control.setAttribute('aria-pressed',String(tab.value===filter));
         }
-        const signature=JSON.stringify([page,filter,data]);
+        const signature=JSON.stringify([page,filter,jobFilter,data]);
         if(mode==='resume-pool'&&quiet&&signature===poolSnapshot)return;
         if(mode==='resume-pool')poolSnapshot=signature;
         box.replaceChildren();
@@ -313,6 +331,6 @@
         },10000);
       }
     },leave(){active='';++generation;clearTimeout(timer);clearInterval(poolTimer);poolActivity.textContent='';detail.close();speechDialog.close();clearPreview();},
-      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';poolSnapshot='';logOpen=false;speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
+      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';jobFilter='';jobOptions=[];jobSignature='';jobSelect.replaceChildren();el('option','全部职位',jobSelect).value='';poolSnapshot='';logOpen=false;speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
   };
 })();

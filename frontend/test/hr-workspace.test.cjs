@@ -98,6 +98,20 @@ test('resume categories are explicit, history is collapsed, and review embeds th
   assert.equal(all(app.root).some(n=>n.tagName==='a'&&n.target==='_blank'&&n.href===row.fileUrl),false);
   assert.ok(all(app.root).some(n=>n.className==='hr-review-preview'));
 });
+test('resume job filter combines with review state and reports reconnect progress without a BOSS fetch',async()=>{
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')
+    ?{state:'complete',passive:{phase:'catching_up',catchupPending:3,counts:{r1:{requested:2},r2:{requested:4}}}}
+    :{items:[],total:0,counts:{pending:0,approved:1,rejected:0,all:1},
+      jobs:[{id:'job1',name:'运营',count:1,ruleIds:['r1']},{id:'job2',name:'秘书',count:2,ruleIds:['r2']}]}})});
+  await app.enter('resume-pool');
+  assert.match(app.text(),/补收断开期间/);
+  const filter=all(app.root).find(n=>n.attributes['aria-label']==='按职位筛选简历');
+  assert.ok(filter);filter.value='job2';filter.onchange();await flush();
+  assert.ok(app.calls.some(c=>c.url.includes('status=pending&jobId=job2')));
+  await app.click('通过 1');
+  assert.ok(app.calls.some(c=>c.url.includes('status=approved&jobId=job2')));
+  assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')||c.url.startsWith('/api/v1/hr/resume-pool')));
+});
 test('invitation card opens an editable message and only an explicit send queues it',async()=>{
   const talent={...poolResult().items[0],stage:'invited',source:'passive'};
   const app=setup({api:async(url,options)=>{
