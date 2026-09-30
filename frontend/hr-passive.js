@@ -58,11 +58,24 @@
       const control=button(label,statusTabs,()=>{filter=value;page=1;load();});
       control.setAttribute('aria-pressed',String(filter===value));return {value,label,control};
     });
-    const jobLabel=el('label','',resumePanel,'hr-resume-job-filter');
+    const jobLabel=el('div','',resumePanel,'hr-resume-job-filter');
     el('span','职位',jobLabel);
-    const jobSelect=el('select','',jobLabel);jobSelect.setAttribute('aria-label','按职位筛选简历');
-    el('option','全部职位',jobSelect).value='';
-    jobSelect.onchange=()=>{jobFilter=jobSelect.value;page=1;poolSnapshot='';load();};
+    const jobTabs=el('div','',jobLabel,'hr-pool-tabs hr-resume-tabs hr-resume-job-tabs');
+    jobTabs.setAttribute('aria-label','按职位筛选简历');jobTabs.setAttribute('role','group');
+    let jobButtons=[];
+    function renderJobTabs(){
+      jobTabs.replaceChildren();
+      jobButtons=[{id:'',name:'全部职位'},...jobOptions].map(job=>{
+        const control=button(job.name+(job.id&&Number.isFinite(job.count)?` ${job.count}`:''),jobTabs,()=>{
+          jobFilter=job.id;page=1;poolSnapshot='';
+          for(const tab of jobButtons)tab.control.setAttribute('aria-pressed',String(tab.id===jobFilter));
+          load();
+        });
+        control.setAttribute('aria-pressed',String(job.id===jobFilter));
+        return {id:job.id,control};
+      });
+    }
+    renderJobTabs();
     const poolActivity=el('p','',resumePanel,'hr-pool-activity');
     poolActivity.setAttribute('aria-live','polite');
     const resumeRows=el('div','',resumePanel,'hr-result');
@@ -125,10 +138,7 @@
           jobOptions=data.jobs||[];
           const signature=JSON.stringify(jobOptions);
           if(signature!==jobSignature){
-            jobSignature=signature;jobSelect.replaceChildren();
-            el('option','全部职位',jobSelect).value='';
-            for(const job of jobOptions)el('option',`${job.name}（${job.count}）`,jobSelect).value=job.id;
-            jobSelect.value=jobFilter;
+            jobSignature=signature;renderJobTabs();
           }
         }
         if(mode==='resume-pool')for(const tab of statusButtons){
@@ -331,6 +341,6 @@
         },10000);
       }
     },leave(){active='';++generation;clearTimeout(timer);clearInterval(poolTimer);poolActivity.textContent='';detail.close();speechDialog.close();clearPreview();},
-      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';jobFilter='';jobOptions=[];jobSignature='';jobSelect.replaceChildren();el('option','全部职位',jobSelect).value='';poolSnapshot='';logOpen=false;speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
+      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';jobFilter='';jobOptions=[];jobSignature='';renderJobTabs();poolSnapshot='';logOpen=false;speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
   };
 })();

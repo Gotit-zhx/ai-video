@@ -107,8 +107,9 @@ test('resume job filter combines with review state and reports reconnect progres
   await app.enter('resume-pool');
   assert.match(app.text(),/补收断开期间/);
   const filter=all(app.root).find(n=>n.attributes['aria-label']==='按职位筛选简历');
-  assert.ok(filter);filter.value='job2';filter.onchange();await flush();
+  assert.ok(filter);await app.click('秘书 2');
   assert.ok(app.calls.some(c=>c.url.includes('status=pending&jobId=job2')));
+  assert.equal(all(filter).find(n=>n._text==='秘书 2').attributes['aria-pressed'],'true');
   await app.click('通过 1');
   assert.ok(app.calls.some(c=>c.url.includes('status=approved&jobId=job2')));
   assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')||c.url.startsWith('/api/v1/hr/resume-pool')));

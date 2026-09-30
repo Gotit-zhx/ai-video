@@ -218,14 +218,14 @@ img.hr-resume-original{min-height:0;height:auto}
 #hr-page .hr-resume-panel{padding:20px;min-width:0}
 .hr-resume-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}
 .hr-resume-count{margin:0;font-size:14px;font-weight:600}
-.hr-resume-job-filter select{height:34px;border:1px solid var(--hr-border);border-radius:6px;background:var(--surface,#fff);color:var(--hr-ink);padding:0 10px;font:inherit;font-size:12px}
 .hr-resume-toolbar .hr-actions{margin:0;flex-wrap:nowrap}
-.hr-resume-job-filter{display:flex;align-items:center;gap:10px;width:fit-content;max-width:100%;margin:0 0 14px;font-size:12px;color:var(--hr-muted);min-width:0}
-.hr-resume-job-filter>span{flex:none;white-space:nowrap}
-.hr-resume-job-filter select{width:240px;max-width:100%;min-width:0}
+.hr-resume-job-filter{display:flex;align-items:flex-start;gap:12px;max-width:100%;margin:0 0 14px;font-size:12px;color:var(--hr-muted);min-width:0}
+.hr-resume-job-filter>span{flex:none;white-space:nowrap;line-height:35px}
 .hr-resume-toolbar button{min-height:34px;padding:6px 12px;font-size:12px}
 .hr-resume-tabs{margin:0 0 14px;padding-bottom:10px;gap:5px}
 .hr-resume-tabs button{padding:8px 14px;font-size:12px}
+.hr-resume-job-tabs{flex:1;min-width:0;margin:0;padding:0;border:0}
+.hr-resume-job-tabs button{max-width:100%;white-space:normal;overflow-wrap:anywhere;text-align:left}
 .hr-pool-activity{font-size:12px;line-height:1.7;color:var(--hr-muted);padding:10px 12px;margin:0 0 18px;background:var(--surface-soft,#fafafa);border:1px solid var(--hr-border);border-radius:7px;overflow-wrap:anywhere}
 .hr-pool-activity:empty{display:none}
 .hr-card-grid.hr-resume-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,290px),1fr));gap:14px}
@@ -301,7 +301,6 @@ img.hr-resume-original{min-height:0;height:auto}
   .hr-resume-toolbar{gap:10px}
   .hr-resume-count{font-size:12px}
   .hr-resume-job-filter{width:100%}
-  .hr-resume-job-filter select{width:240px;flex:0 1 240px}
   .hr-activity-entry{grid-template-columns:1fr auto;gap:4px 10px}
   .hr-activity-entry time{grid-column:2;grid-row:1 / 3;font-size:11px}
   .hr-resume-review{height:94vh;max-height:94vh}
