@@ -127,19 +127,22 @@ public class RecruitmentAiController {
             payload.put("model",model.modelId());
             payload.put("messages",List.of(Map.of("role","system","content",prompt),
                     Map.of("role","user","content",json.writeValueAsString(clean))));
-            payload.put("stream",false);
-            payload.put(model.modelId().matches("(?i)^(gpt-5|o[134]).*")?"max_completion_tokens":"max_tokens",10000);
+            // Compatible gateways can accept a short buffered response but fail
+            // a full analysis before generation completes. Keep the upstream
+            // connection streaming; publish only a complete, validated result.
+            payload.put("stream",true);
+            payload.put("max_tokens",10000);
             HttpRequest request=HttpRequest.newBuilder(URI.create(endpoint)).timeout(Duration.ofMinutes(5))
                     .header("Authorization","Bearer "+model.apiKey()).header("Content-Type","application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(payload))).build();
             HttpResponse<String> response=http.send(request,HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode()!=200 || response.body().length()>512000)
-                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型未成功返回，请检查模型服务后重试");
-            var envelope=json.readTree(response.body());
-            var choice=envelope.path("choices").path(0);
-            if ("length".equals(choice.path("finish_reason").asText()))
-                throw new BusinessException(HttpStatus.BAD_GATEWAY,"生成结果不完整，请精简需求后重新生成");
-            String content=choice.path("message").path("content").asText("").trim();
+            if (response.statusCode()!=200)
+                throw new BusinessException(HttpStatus.BAD_GATEWAY,
+                        "驱动模型服务返回错误（HTTP "+response.statusCode()+"），本次未自动重复调用");
+            if (response.body().length()>512000)
+                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回内容过长，请精简岗位内容后重试");
+            String content=completionContent(response.body(),
+                    response.headers().firstValue("Content-Type").orElse(""));
             if (content.startsWith("```")) content=content.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
             Map<?,?> raw=json.readValue(content,Map.class);
             Map<String,Object> result=match?validateMatch(raw):validateResult(raw);
@@ -158,6 +161,48 @@ public class RecruitmentAiController {
             // Provider bodies may contain credentials or internal URLs; never echo them.
             throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回格式不完整或服务不可用，请手动重试");
         }
+    }
+
+    String completionContent(String body, String contentType) {
+        if (!contentType.toLowerCase(Locale.ROOT).contains("text/event-stream")
+                && !body.stripLeading().startsWith("data:")) {
+            var choice=json.readTree(body).path("choices").path(0);
+            requireComplete(choice.path("finish_reason").asText(""));
+            if (choice.path("message").has("tool_calls"))
+                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回了不支持的工具调用");
+            return choice.path("message").path("content").asText("").trim();
+        }
+        StringBuilder content=new StringBuilder();
+        String finish="";
+        boolean done=false;
+        for (String frame:body.split("\\r?\\n\\r?\\n")) {
+            String data=frame.lines().filter(line->line.startsWith("data:"))
+                    .map(line->line.substring(5).stripLeading()).reduce((a,b)->a+"\n"+b).orElse("");
+            if (data.isBlank()) continue;
+            if ("[DONE]".equals(data.trim())) { done=true;break; }
+            var chunk=json.readTree(data);
+            if (chunk.has("error"))
+                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型响应中断，请手动重试");
+            var choice=chunk.path("choices").path(0);
+            if (choice.path("delta").has("tool_calls"))
+                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回了不支持的工具调用");
+            content.append(choice.path("delta").path("content").asText(""));
+            String reason=choice.path("finish_reason").asText("");
+            if (!reason.isBlank()) finish=reason;
+        }
+        requireComplete(finish);
+        if (!done || content.toString().isBlank())
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型响应中断，请手动重试");
+        return content.toString().trim();
+    }
+
+    private static void requireComplete(String finish) {
+        if ("length".equals(finish))
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,"生成结果不完整，请精简需求后重新生成");
+        if ("content_filter".equals(finish))
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,"模型服务未接受本次内容，请调整岗位描述后重试");
+        if (!"stop".equals(finish))
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型响应中断，请手动重试");
     }
 
     static Map<String,Object> validateMatch(Map<?,?> raw) {

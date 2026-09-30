@@ -1,6 +1,7 @@
 import tempfile
 import datetime
 import hashlib
+import io
 import json
 import unittest
 import uuid
@@ -59,6 +60,21 @@ class DemandsTest(unittest.TestCase):
                 with self.assertRaises(ValueError):demands.generate(USER,{"id":row["id"],"version":1},"fixture")
                 thread.assert_not_called()
                 self.assertEqual(demands.listing(USER,{"id":row["id"]})["item"]["aiStatus"],"idle")
+
+    def test_driver_error_reports_only_safe_controller_diagnostics_without_retry(self):
+        for message, expected in [
+            ("驱动模型服务返回错误（HTTP 500），本次未自动重复调用", "HTTP 500"),
+            ("驱动模型响应中断，请手动重试", "响应中断"),
+            ("secret-provider-key", "未返回有效"),
+        ]:
+            failure=demands.urllib.error.HTTPError("http://private",502,"failure",{},
+                io.BytesIO(json.dumps({"message":message}).encode()))
+            with mock.patch.object(demands.urllib.request,"build_opener") as opener:
+                opener.return_value.open.side_effect=failure
+                with self.assertRaisesRegex(ValueError,expected) as raised:
+                    demands.call_driver(demands.save(USER,{**self.body,"createId":str(uuid.uuid4())}),"private-cookie")
+                opener.return_value.open.assert_called_once()
+                self.assertNotIn("secret-provider-key",str(raised.exception))
 
     def test_fields_filters_updates_and_create_retry(self):
         row=demands.save(USER,self.body)

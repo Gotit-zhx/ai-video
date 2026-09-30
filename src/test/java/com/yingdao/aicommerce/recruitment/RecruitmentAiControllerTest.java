@@ -86,12 +86,56 @@ class RecruitmentAiControllerTest {
             var permit=mock(RedisConcurrencyGate.Permit.class);when(gate.tryAcquireModelCall()).thenReturn(permit);
             Object reply=new RecruitmentAiController(models,gate,json).generate(user("13800000000"),demand());
             assertEquals(1,calls.get());assertEquals("gpt-5.5",payload.get().get("model"));
-            assertFalse(payload.get().containsKey("tools"));assertFalse((Boolean)payload.get().get("stream"));
-            assertEquals(10000,payload.get().get("max_completion_tokens"));
+            assertFalse(payload.get().containsKey("tools"));assertTrue((Boolean)payload.get().get("stream"));
+            assertEquals(10000,payload.get().get("max_tokens"));
             String serialized=json.writeValueAsString(reply);
             assertTrue(serialized.contains("\"modelType\":\"DRIVER\""));assertFalse(serialized.contains("secret"));
             verify(permit).close();
         }finally{server.stop(0);}
+    }
+    @Test void streamedAnalysisCollectsTextAndValidatesAllThreeSections() throws Exception {
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        var calls=new AtomicInteger();
+        String content=json.writeValueAsString(generated());
+        String chunks=": heartbeat\n\n"
+                + frame(Map.of("delta",Map.of("reasoning_content","internal reasoning")))
+                + frame(Map.of("delta",Map.of("content",content.substring(0,content.length()/2))))
+                + frame(Map.of("delta",Map.of("content",content.substring(content.length()/2))))
+                + frame(Map.of("delta",Map.of(),"finish_reason","stop"))
+                + "data: [DONE]\n\n";
+        server.createContext("/v1/chat/completions",exchange->{
+            calls.incrementAndGet();
+            Map payload=json.readValue(exchange.getRequestBody().readAllBytes(),Map.class);
+            assertEquals(true,payload.get("stream"));
+            byte[] response=chunks.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type","text/event-stream");
+            exchange.sendResponseHeaders(200,0);exchange.getResponseBody().write(response);exchange.close();
+        });server.start();
+        try {
+            when(models.driverConnection("org-1")).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection(
+                    "driver","http://127.0.0.1:"+server.getAddress().getPort()+"/v1","gpt-5.5","OPENAI_COMPATIBLE","test","secret")));
+            when(gate.tryAcquireModelCall()).thenReturn(mock(RedisConcurrencyGate.Permit.class));
+            String reply=json.writeValueAsString(new RecruitmentAiController(models,gate,json).generate(user("13800000000"),demand()));
+            assertEquals(1,calls.get());assertTrue(reply.contains("interviewQuestions"));
+            assertFalse(reply.contains("internal reasoning"));assertTrue(reply.contains("负责增长"));
+        } finally { server.stop(0); }
+    }
+    private String frame(Map<String,Object> choice) {
+        return "data: "+json.writeValueAsString(Map.of("choices",List.of(choice)))+"\n\n";
+    }
+    @Test void interruptedTruncatedFilteredAndErrorStreamsAreNeverPublishedAsSuccess() {
+        var controller=new RecruitmentAiController(models,gate,json);
+        String content=frame(Map.of("delta",Map.of("content","{}")));
+        for(String body:List.of(
+                content,
+                content+frame(Map.of("finish_reason","stop")),
+                content+frame(Map.of("finish_reason","length"))+"data: [DONE]\n\n",
+                content+frame(Map.of("finish_reason","content_filter"))+"data: [DONE]\n\n",
+                content+"data: {\"error\":{\"message\":\"private-key\"}}\n\n",
+                content+frame(Map.of("delta",Map.of("tool_calls",List.of(Map.of("name","send"))))))) {
+            var error=assertThrows(BusinessException.class,()->controller.completionContent(body,"text/event-stream"));
+            assertFalse(error.getMessage().contains("private-key"));
+        }
     }
     @Test void providerFailureIsRedactedAndNeverAutomaticallyRetried() throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);

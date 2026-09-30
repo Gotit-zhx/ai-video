@@ -34,7 +34,8 @@ def view(row):
     return {**json.loads(row["body"]), "id": row["id"], "version": row["version"],
             "status": row["status"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
             "aiStatus": row["ai_status"], "aiVersion": row["ai_version"], "aiError": row["ai_error"],
-            "aiResult": json.loads(row["ai_result"]), "aiJob": row["ai_job"]}
+            "aiResult": json.loads(row["ai_result"]), "aiJob": row["ai_job"],
+            "aiStartedAt": row["ai_started"]}
 
 
 def expire_jobs(db):
@@ -188,8 +189,28 @@ def call_driver(snapshot, cookie):
         messages = {401: "平台登录已过期，请重新登录后生成", 403: "当前账号没有招聘 AI 权限",
                     409: "请在系统模型接入中配置并启用驱动模型",
                     429: "当前模型调用较多，请稍后手动重试",
+                    502: "驱动模型未返回有效的岗位分析，请检查模型服务；本次未自动重复调用",
                     504: "驱动模型响应超时，请检查模型服务后手动重试"}
-        raise ValueError(messages.get(error.code, "驱动模型生成失败，请检查模型服务后手动重试")) from None
+        message = messages.get(error.code, "驱动模型生成失败，请检查模型服务后手动重试")
+        if error.code == 502:
+            # Only messages constructed by our controller may cross this boundary.
+            # Unknown provider bodies and credentials must never become UI text.
+            try:
+                candidate = json.loads(error.read(4096)).get("message", "")
+                safe = {
+                    "驱动模型返回内容过长，请精简岗位内容后重试",
+                    "生成结果不完整，请精简需求后重新生成",
+                    "模型服务未接受本次内容，请调整岗位描述后重试",
+                    "驱动模型响应中断，请手动重试",
+                    "驱动模型返回了不支持的工具调用",
+                    "驱动模型返回格式不完整或服务不可用，请手动重试",
+                }
+                if candidate in safe or re.fullmatch(
+                        r"驱动模型服务返回错误（HTTP [45][0-9]{2}），本次未自动重复调用", candidate):
+                    message = candidate
+            except (ValueError, TypeError, AttributeError):
+                pass
+        raise ValueError(message) from None
     if not isinstance(result, dict) or not isinstance(result.get("portrait"), dict) or not result.get("competencies") or not result.get("interviewQuestions"):
         raise ValueError("驱动模型返回不完整，请手动重试")
     return result

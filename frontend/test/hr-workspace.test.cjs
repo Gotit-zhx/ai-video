@@ -197,7 +197,7 @@ test('demand generation refreshes the exact local job JD then saves before a sin
     if(url.startsWith('/api/v1/hr/jobs?'))return {data:demandDetail()};
     if(url==='/api/v1/hr/departments')return {data:demandDirectory()};
     if(url.endsWith('/save')){row={...JSON.parse(options.body),version:2};return {data:row};}
-    if(url.endsWith('/generate')){started++;row={...row,aiStatus:'running',aiJob:'j1'};return {data:row};}
+    if(url.endsWith('/generate')){started++;row={...row,aiStatus:'running',aiJob:'j1',aiStartedAt:Date.now()/1000-12};return {data:row};}
     if(url.includes('?id='))return {data:{item:row}};
     return {data:{items:[row],counts:{all:1,recruiting:1},total:1,page:1,pages:1}};
   }});
@@ -206,6 +206,8 @@ test('demand generation refreshes the exact local job JD then saves before a sin
   await app.click('查看 / 编辑');assert.equal(started,0);
   await app.click('一键 AI 生成');
   assert.equal(started,1);assert.match(app.text(),/驱动模型生成中/);
+  assert.match(app.text(),/已等待 12 秒/);assert.match(app.text(),/结果返回后将在这里显示/);
+  assert.doesNotMatch(app.text(),/关联具体职位后即可生成/);
   assert.ok(app.calls.find(c=>c.url==='/api/v1/hr/jobs?jobId=job-test-2'));
   assert.match(row.jobDescription,/直播策划/);assert.equal(row.jobAccountKey,'a'.repeat(64));
   assert.ok(app.calls.findIndex(c=>c.url.includes('/jobs?'))<app.calls.findIndex(c=>c.url.endsWith('/save')));
@@ -213,6 +215,7 @@ test('demand generation refreshes the exact local job JD then saves before a sin
   await app.tick(2500);assert.equal(started,1);
   row={...row,aiStatus:'failed',aiError:'模型不可用'};await app.tick(2500);
   assert.match(app.text(),/模型不可用/);assert.equal(app.timers.size,0);
+  assert.match(app.text(),/需求和关联 JD 已保留/);
   assert.ok(!app.calls.some(c=>/resumes\/request|login\/start|messages/.test(c.url)));
 });
 test('missing JD, mismatched position, failed read or changed account cannot start AI',async()=>{

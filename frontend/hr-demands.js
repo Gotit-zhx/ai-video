@@ -29,7 +29,7 @@
   globalThis.createHrDemands=({root,section,element:el,button,allowed,hrApi})=>{
     const panel=section('demands');
     let active=false,generation=0,page=1,status='all',editing=null,saving=false,timer=null,pollBusy=false,pollErrors=0,outputTab='portrait',departments=[],directoryReady=false;
-    let jobs=[],jobAccount='',jobsReady=false,jdLoading=false,jdGeneration=0,jobSnapshot=null;
+    let jobs=[],jobAccount='',jobsReady=false,jdLoading=false,jdGeneration=0,jobSnapshot=null,submitPhase='';
     const header=el('div','',panel,'hr-pool-toolbar'),intro=el('div','',header);
     el('h2','招聘需求池',intro);el('p','明确岗位需求，让寻源与面试有据可依。',intro,'hr-hint');
     const actions=el('div','',header,'hr-actions');
@@ -109,10 +109,11 @@
       inputs.departmentId.disabled ||= !directoryReady;
       saveButton.disabled=generateButton.disabled=saving||running||jdLoading||!directoryReady||!jobsReady;
       close.disabled=saving;
-      generateButton.textContent=saving?'正在提交…':running?'驱动模型生成中…':editing?.aiResult?.portrait?'重新 AI 生成':'一键 AI 生成';
-      aiStatus.textContent=running?'驱动模型正在生成':editing?.aiStatus==='complete'?`已生成 · ${editing.aiResult.modelId||'驱动模型'}`
+      const elapsed=running&&editing.aiStartedAt?Math.max(0,Math.floor(Date.now()/1000-editing.aiStartedAt)):0;
+      generateButton.textContent=saving?(submitPhase||'正在提交…'):running?'驱动模型生成中…':editing?.aiResult?.portrait?'重新 AI 生成':'一键 AI 生成';
+      aiStatus.textContent=running?`驱动模型正在生成 · 已等待 ${elapsed} 秒`:editing?.aiStatus==='complete'?`已生成 · ${editing.aiResult.modelId||'驱动模型'}`
         :editing?.aiStatus==='failed'?'生成失败':editing?.aiStatus==='stale'?'需求已更新':'尚未生成';
-      aiMessage.textContent=running?'正在生成画像、胜任能力和面试题。可以关闭窗口，结果会自动保存。'
+      aiMessage.textContent=running?'请求已提交，正在等待驱动模型返回画像、胜任能力和面试题。完成后会自动显示；可以关闭窗口，结果仍会保存。'
         :editing?.aiStatus==='failed'?editing.aiError:editing?.aiStatus==='stale'?'下面是旧版需求的分析，请根据最新信息重新生成。'
         :'生成前读取所选职位的最新 JD，结合补充信息生成，结果供招聘团队审核和完善。';
       aiHeader.classList.toggle('is-generating',running);
@@ -124,7 +125,11 @@
       output.replaceChildren();
       outputButtons.forEach((b,i)=>b.setAttribute('aria-pressed',String(['portrait','competencies','interviewQuestions'][i]===outputTab)));
       const data=editing?.aiResult;
-      if(!data?.portrait){el('p','关联具体职位后即可生成；岗位职责和任职要求可额外补充。',output,'hr-hint');return;}
+      if(!data?.portrait){
+        el('p',editing?.aiStatus==='running'?'结果返回后将在这里显示。'
+          :editing?.aiStatus==='failed'?'需求和关联 JD 已保留，本次没有生成结果。'
+          :'关联具体职位后即可生成；岗位职责和任职要求可额外补充。',output,'hr-hint');return;
+      }
       const list=(label,items,parent)=>{
         el('h4',label,parent);const ul=el('ul','',parent,'hr-demand-list');
         for(const item of items||[])el('li',String(item),ul);
@@ -289,19 +294,21 @@
     async function generate(){
       if(saving||jdLoading||!directoryReady||!jobsReady||editing?.aiStatus==='running'||!allowed()||!form.reportValidity())return;
       if(editing?.aiResult?.portrait&&!confirm('重新生成会再次调用驱动模型，成功后替换现有分析。继续吗？'))return;
-      saving=true;paintState();error.hidden=true;const ticket=generation;
+      saving=true;submitPhase='正在读取最新 JD…';paintState();error.hidden=true;const ticket=generation;
       try{
         await readSelectedJob();
         if(ticket!==generation||!dialog.open||!allowed())return;
+        submitPhase='正在保存需求…';paintState();
         const saved=await saveSnapshot();
         if(ticket!==generation||!allowed())return;
         editing=saved;
+        submitPhase='正在提交模型请求…';paintState();
         const generated=await request('/generate',{id:saved.id,version:saved.version,regenerate:!!saved.aiResult?.portrait});
         if(ticket!==generation||!allowed())return;
         editing=generated;
         saveNote.textContent='需求已保存，生成结果将自动关联到此需求';pollErrors=0;startPoll();
       }catch(err){if(ticket===generation){error.textContent=err.message;error.hidden=false;}}
-      finally{if(ticket===generation){saving=false;paintState();}}
+      finally{if(ticket===generation){saving=false;submitPhase='';paintState();}}
     }
     function startPoll(){stopPoll();timer=setInterval(poll,2500);}
     async function poll(){
