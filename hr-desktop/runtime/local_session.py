@@ -1,4 +1,5 @@
 """Restore an existing local session without logging in or making BOSS requests."""
+import contextlib
 import json
 import os
 import re
@@ -25,7 +26,7 @@ def resume(connector, guard, store=None):
             if code not in TEMPORARY:
                 return {"ok": False, "error": {"code": code or "REQUESTS_PAUSED"}}
             if code == "REQUEST_BUDGET_EXHAUSTED" and guard.BUDGET_DB.exists():
-                with sqlite3.connect("file:" + str(guard.BUDGET_DB) + "?mode=ro", uri=True) as db:
+                with contextlib.closing(sqlite3.connect(guard.BUDGET_DB.resolve().as_uri() + "?mode=ro", uri=True)) as db:
                     count = db.execute("SELECT COUNT(*) FROM requests WHERE at>?", (time.time()-3600,)).fetchone()[0]
                 if count >= guard.HOURLY_LIMIT:
                     return {"ok": False, "error": {"code": code}}

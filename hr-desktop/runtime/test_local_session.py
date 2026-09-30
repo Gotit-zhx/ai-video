@@ -1,3 +1,4 @@
+import contextlib
 import json
 from pathlib import Path
 import sqlite3
@@ -38,14 +39,14 @@ class LocalSessionTest(unittest.TestCase):
 
     def test_budget_resumes_only_after_expiry_and_never_resets_the_ledger(self):
         self.hold("REQUEST_BUDGET_EXHAUSTED")
-        with sqlite3.connect(self.g.BUDGET_DB) as db:
+        with contextlib.closing(sqlite3.connect(self.g.BUDGET_DB)) as db, db:
             db.execute("CREATE TABLE requests(at REAL)")
             db.executemany("INSERT INTO requests VALUES(?)",[(time.time(),),(time.time(),)])
         self.assertFalse(local_session.resume(self.c,self.g)["ok"])
         self.g.verify_session.assert_not_called()
         with mock.patch.object(local_session.time,"time",return_value=time.time()+3601):
             self.assertTrue(local_session.resume(self.c,self.g)["ok"])
-        with sqlite3.connect(self.g.BUDGET_DB) as db:
+        with contextlib.closing(sqlite3.connect(self.g.BUDGET_DB)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM requests").fetchone()[0],2)
 
     def test_failed_or_changed_session_cannot_remove_a_hold(self):

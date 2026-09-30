@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest import mock
 import talent_pool as pool
 import recruitment_demands as demands
-from test_talent_pool import USER
+USER = {"id": "admin-1", "username": "13800000000", "organizationCode": "heyi",
+        "platformAdmin": True, "roles": ["ADMIN"]}
 
 
 class DemandsTest(unittest.TestCase):
