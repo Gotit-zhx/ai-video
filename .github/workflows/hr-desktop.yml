@@ -58,6 +58,17 @@ jobs:
           else
             npm run dist:mac
           fi
+      - name: Verify and smoke packaged macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="release/mac-arm64/赫逸招聘助手.app"
+          codesign --verify --deep --strict "$app"
+          export HEYI_TEST_USER_DATA="$RUNNER_TEMP/heyi-packaged-test"
+          export HEYI_TEST_OUTPUT="$PWD/test-results/packaged"
+          "$app/Contents/MacOS/赫逸招聘助手" --self-test
+          test -f "$HEYI_TEST_OUTPUT/smoke.json"
       - name: Packaged smoke on Windows
         if: runner.os == 'Windows'
         shell: pwsh
