@@ -263,6 +263,9 @@
     function leave(){active=false;generation++;stop();busy=false;dialog.close();}
     return {select(row){selected={id:String(row.encryptJobId||row.encJobId||row.encryptId||row.jobId||row.id),
       name:row.jobName||row.name||'',refresh:true};record=null;},
-      enter,leave,reset(){leave();selected=record=null;render();}};
+      enter,leave,reset(){leave();selected=record=candidate=null;speeches=[];
+        referenceRows.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();
+        files.value=message.value='';greetingError.textContent=greetingHint.textContent='';
+        greetingTitle.textContent='打招呼';feedback.textContent='请从职位管理选择具体职位。';render();}};
   };
 })();

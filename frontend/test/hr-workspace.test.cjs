@@ -123,6 +123,8 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
   const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
   assert.doesNotMatch(html,/data-hr-route="talent"/);
   assert.match(html,/hr-sourcing\.js/);
+  app.env.HrWorkspace.reset();
+  assert.doesNotMatch(all(app.root).map(n=>n._text).join(' '),/参考.pdf|向 测试候选人甲 打招呼/);
 });
 test('sourcing route without selected job never reads BOSS or creates a new scope',async()=>{
   const app=setup({sourcing:true,api:async()=>{throw Error('No request expected');}});
