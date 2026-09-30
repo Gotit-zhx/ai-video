@@ -58,6 +58,26 @@ class LocalSessionTest(unittest.TestCase):
         self.assertFalse(local_session.resume(self.c,self.g)["ok"])
         self.assertEqual(json.loads(self.g.RISK_HOLD.read_text())["code"],"ACCOUNT_RISK")
 
+    def test_app_only_upgrade_updates_metadata_without_changing_credentials(self):
+        store=mock.Mock()
+        original={"cookies":{"wt2":"same-session","other":"preserved"},"user_agent":"Chrome/150 heyi-recruiter/0.1.8 Electron/44","stoken":"unchanged"}
+        store.load.return_value=original
+        agent="Chrome/150 heyi-recruiter/0.1.9 Electron/44"
+        self.g.browser_session_snapshot.return_value=({"same-session"},agent)
+        self.assertTrue(local_session.resume(self.c,self.g,store)["ok"])
+        store.save.assert_called_once_with({**original,"user_agent":agent})
+        self.g.verify_session.assert_called_once_with({**original,"user_agent":agent})
+        self.assertEqual(original["user_agent"],"Chrome/150 heyi-recruiter/0.1.8 Electron/44")
+
+    def test_changed_cookie_or_browser_environment_never_rewrites_saved_token(self):
+        for values,agent in [({"different"},"Chrome/150 heyi-recruiter/0.1.9 Electron/44"),
+                              ({"same"},"Chrome/151 heyi-recruiter/0.1.9 Electron/44")]:
+            store=mock.Mock();store.load.return_value={"cookies":{"wt2":"same"},"user_agent":"Chrome/150 heyi-recruiter/0.1.8 Electron/44"}
+            self.g.browser_session_snapshot.return_value=(values,agent)
+            self.g.verify_session.side_effect=RuntimeError("not equal")
+            self.assertFalse(local_session.resume(self.c,self.g,store)["ok"])
+            store.save.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

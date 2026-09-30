@@ -1,6 +1,7 @@
 """Restore an existing local session without logging in or making BOSS requests."""
 import json
 import os
+import re
 import sqlite3
 import time
 
@@ -9,7 +10,7 @@ import portable_lock
 TEMPORARY = {"SESSION_UNAVAILABLE", "REQUEST_BUDGET_EXHAUSTED"}
 
 
-def resume(connector, guard):
+def resume(connector, guard, store=None):
     lock = os.open(guard.REQUEST_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
@@ -28,11 +29,28 @@ def resume(connector, guard):
                     count = db.execute("SELECT COUNT(*) FROM requests WHERE at>?", (time.time()-3600,)).fetchone()[0]
                 if count >= guard.HOURLY_LIMIT:
                     return {"ok": False, "error": {"code": code}}
-        # Local CDP and token comparison only; never sync/replace credentials.
-        guard.verify_session()
+        # An app-only version bump changes Electron's default user agent.
+        # Preserve every cookie and require an otherwise identical browser
+        # environment before updating that local metadata.
+        metadata = None
+        if store is not None:
+            token = store.load() or {}
+            values, agent = guard.browser_session_snapshot()
+            old_agent = token.get("user_agent", "")
+            version = r"heyi-recruiter/\d+\.\d+\.\d+"
+            if (values == {token.get("cookies", {}).get("wt2")} and agent != old_agent
+                    and re.search(version, old_agent) and re.search(version, agent)
+                    and re.sub(version, "heyi-recruiter/APP", old_agent) == re.sub(version, "heyi-recruiter/APP", agent)):
+                metadata = {**token, "user_agent": agent}
+        if metadata is None:
+            guard.verify_session()
+        else:
+            guard.verify_session(metadata)
         current = guard.RISK_HOLD.read_bytes() if guard.RISK_HOLD.exists() else None
         if current != before:
             return {"ok": False, "error": {"code": "REQUESTS_PAUSED"}}
+        if metadata is not None:
+            store.save(metadata)
         if before is not None:
             guard.RISK_HOLD.unlink()
         return {"ok": True}

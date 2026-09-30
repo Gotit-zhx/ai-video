@@ -85,7 +85,7 @@ def main(request):
         return {"ok": True}
     if operation == "resume-local":
         import local_session
-        return local_session.resume(c, g)
+        return local_session.resume(c, g, store)
     if operation == "hold":
         c.pause_requests(request.get("code"), retry_at=request.get("retry_at", ""),
                          reason=request.get("reason", ""))
