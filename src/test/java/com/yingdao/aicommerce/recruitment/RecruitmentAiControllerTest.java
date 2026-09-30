@@ -19,6 +19,25 @@ class RecruitmentAiControllerTest {
     private final ObjectMapper json = new ObjectMapper();
     private final ModelConfigService models = mock(ModelConfigService.class);
     private final RedisConcurrencyGate gate = mock(RedisConcurrencyGate.class);
+    @Test void sourcingRejectsUntrustedCandidateIdsDuplicatesAndNonfiniteScores() {
+        var input=Map.<String,Object>of("candidates",List.of(Map.of("id","a"),Map.of("id","b")));
+        var a=Map.<String,Object>of("id","a","score",75,"summary","经历相关","evidence",List.of("开发记录"),"gaps",List.of("需核实"));
+        var b=new HashMap<>(a);b.put("id","b");
+        var raw=new HashMap<String,Object>();raw.put("candidates",List.of(a,b));raw.put("limitations",List.of("仅供参考"));
+        assertEquals(true,RecruitmentAiController.validateSourcing(raw,input).get("referenceOnly"));
+        b.put("id","invented");assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateSourcing(raw,input));
+        b.put("id","a");assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateSourcing(raw,input));
+        b.put("id","b");b.put("score",Double.NaN);assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateSourcing(raw,input));
+    }
+    @Test void sourcingRequiresAuthorizedUserAndBoundedReferenceInputsBeforeModelCall() {
+        var controller=new RecruitmentAiController(models,gate,json);
+        assertThrows(BusinessException.class,()->controller.sourcingProfile(user("13900000000"),Map.of()));
+        assertThrows(BusinessException.class,()->controller.sourcingProfile(user("13800000000"),
+                Map.of("jobName","工程师","jobDescription","岗位职责","references",List.of())));
+        assertThrows(BusinessException.class,()->controller.sourcingMatch(user("13800000000"),
+                Map.of("jobDescription","岗位职责","profile","画像","candidates",Collections.nCopies(41,Map.of("id","a","evidence","资料")))));
+        verifyNoInteractions(models,gate);
+    }
     @Test void resumeMatchingIsReferenceOnlyAndDropsActionFields() {
         var raw=new HashMap<String,Object>();
         raw.put("score",75);raw.put("summary","具备相关工作经验，成果待面试核实");

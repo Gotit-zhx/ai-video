@@ -124,7 +124,6 @@
     ['speeches','话术管理','配置默认婉拒与常用沟通话术。','M4 4h16v13H9l-5 4z M8 9h8'],
     ['pool','储备人才库','按项目组沉淀人才，持续跟进招聘阶段。','M4 5h16v15H4z M4 10h16 M9 10v10'],
     ['jobs','职位管理','管理在招岗位，按职位跟进人才。','M4 7h16v13H4z M8 7V4h8v3 M4 12h16 M10 12v3h4v-3'],
-    ['talent','人才寻源','按岗位查看推荐，搜索合适的人。','M14 10a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M3 21v-2a5 5 0 0 1 10 0v2 M17 5v6 M14 8h6'],
     ['applications','投递申请','查看主动投递，及时处理候选人。','M4 4h16v16H4z M7 9h10 M7 13h7 M7 17h4'],
     ['chats','沟通与简历','跟进会话，索取并接收附件简历。','M4 4h16v13H9l-5 4z M8 9h8 M8 13h5'],
   ];
@@ -301,7 +300,7 @@
   button('搜索人才', talentActions, () => {page=1;run('candidates');}).className = 'hr-primary';
   button('按职位看推荐', talentActions, () => {page=1;run('recommendations');});
   talentForm.addEventListener('submit', event => {event.preventDefault(); page=1;run('candidates');});
-  element('p', '选择职位后查看推荐，或输入岗位关键词搜索。点击候选人可查看平台开放的简历信息。', talent, 'hr-hint');
+  const legacyTalentHint=element('p', '选择职位后查看推荐，或输入岗位关键词搜索。点击候选人可查看平台开放的简历信息。', talent, 'hr-hint');
   const talentResult = element('div', '', talent, 'hr-result');
 
   const applications = section('applications');
@@ -637,7 +636,8 @@
       if (jobId(row)) {
         const actions = element('div', '', card, 'hr-actions');
         passive?.jobToggle(card,row);
-        button('推荐人才', actions, () => {
+        button(globalThis.createHrSourcing?'上传简历 / AI 寻源':'推荐人才', actions, () => {
+          if(sourcing){sourcing.select(row);navigate('talent');return;}
           talentJob.value = jobId(row);
           talentAction = 'recommendations';
           navigate('talent');
@@ -945,12 +945,15 @@
   const demands=globalThis.createHrDemands?.({root,section,element,button,allowed,hrApi});
   const departmentManager=globalThis.createHrDepartments?.({root,section,element,button,allowed});
   const passive=globalThis.createHrPassive?.({root,section,element,button,allowed,navigate,hrApi});
+  const sourcing=globalThis.createHrSourcing?.({root,panel:talent,element,button,allowed,navigate,hrApi});
+  if(sourcing){talentForm.hidden=legacyTalentHint.hidden=talentResult.hidden=true;}
   function enter(route) {
     if (!allowed()) return;
     pool?.leave();
     demands?.leave();
     departmentManager?.leave();
     passive?.leave();
+    sourcing?.leave();
     loginSuccess.hidden = true;
     current = routes.has(route) ? route : 'overview';
     if(!['resume-pool','speeches'].includes(current))globalThis.HeyiHrTransport?.startAutoConnect?.();
@@ -961,9 +964,9 @@
     ++sequence;
     panels.forEach((panel, key) => panel.hidden = key !== current);
     document.querySelectorAll('[data-hr-route]').forEach(link => {
-      link.classList.toggle('active', link.dataset.hrRoute === current);
+      link.classList.toggle('active', link.dataset.hrRoute === (current==='talent'?'jobs':current));
     });
-    if (['talent','applications','chats'].includes(current) && !jobRecords.length) loadJobOptions();
+    if (['applications','chats',...(!sourcing?['talent']:[])].includes(current) && !jobRecords.length) loadJobOptions();
     const titles={overview:['招聘工作台','从职位出发，让每一次沟通都有进展。'],jobs:['职位管理','从在招职位开始，查看推荐人才和投递。'],talent:['人才寻源','找到适合岗位的人，再开始有价值的沟通。'],applications:['投递申请','及时查看主动投递，跟进合适的候选人。'],chats:['沟通与简历','每一次沟通、每一份简历，在这里继续。'],resume:['在线简历','查看工作、项目与教育经历，了解完整的人才画像。']};
     titles.pool=['储备人才库','以项目组归档人才，跟进每一个招聘阶段。'];
     titles.demands=['招聘需求池','梳理岗位需求，生成画像、胜任能力和结构化面试题。'];
@@ -993,6 +996,8 @@
         resumeResult.replaceChildren();
         empty(resumeResult,'先选择一位候选人','在人才列表中点击“查看简历”，这里会展示工作、项目和教育经历。');
       }
+    } else if (current === 'talent' && sourcing) {
+      sourcing.enter();
     } else if (current === 'talent' && !talentResult.children.length) {
       empty(talentResult,'找到适合岗位的人才','选择招聘职位查看推荐，或输入关键词开始搜索。');
     }
@@ -1010,6 +1015,7 @@
     demands?.reset();
     departmentManager?.reset();
     passive?.reset();
+    sourcing?.reset();
     ++sequence;++sessionGeneration;++loginGeneration;
     stopLoginPolling();clearInterval(resumeTimer);resumeTimer=null;
     loginActionInFlight=true;
@@ -1018,6 +1024,7 @@
     demands?.reset();
     departmentManager?.reset();
     passive?.reset();
+    sourcing?.reset();
     globalThis.HeyiHrTransport?.reset();
     ++sequence;
     ++sessionGeneration;

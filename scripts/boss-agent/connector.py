@@ -1528,6 +1528,9 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             return
         parsed = urllib.parse.urlsplit(self.path)
         route = parsed.path.removeprefix("/api/v1/hr/")
+        if route == "sourcing":
+            self.sourcing_request(parsed=parsed)
+            return
         if route in ("passive", "speeches", "resume-pool", "resume-pool/file", "pool/messages"):
             self.passive_request(parsed=parsed)
             return
@@ -1610,6 +1613,10 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                              "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()})
 
     def do_POST(self):
+        if self.path in {"/api/v1/hr/sourcing/"+name for name in
+                         ("save", "upload", "remove", "profile", "search", "greet")}:
+            self.sourcing_request(write=True)
+            return
         if self.path in ("/api/v1/hr/passive/save", "/api/v1/hr/speeches/save",
                          "/api/v1/hr/resume-pool/review", "/api/v1/hr/resume-pool/analyze",
                          "/api/v1/hr/pool/messages"):
@@ -1742,6 +1749,38 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         except (OSError, sqlite3.Error):
             self.send_json(503, {"success": False, "message": "人才库暂时不可用，请稍后重试"})
 
+    def sourcing_request(self, write=False, parsed=None):
+        import hr_sourcing
+        import talent_pool
+        try:
+            if write:
+                if self.headers.get("Origin") != ALLOWED_ORIGIN or self.authorized() != 200:
+                    self.send_json(403, {"success": False, "message": "请先登录有招聘权限的管理员账号"})
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                limit = 14*1024*1024 if self.path.endswith("/upload") else 512000
+                if not 0 < length <= limit or self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                    raise ValueError("请求格式不正确或文件过大")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict): raise ValueError("请求格式不正确")
+                action = self.path.rsplit("/", 1)[-1]
+                if action in {"profile", "search"}:
+                    result = getattr(hr_sourcing, action)(self.desktop_user, body, self.headers.get("Cookie", ""))
+                elif action in {"upload", "remove"}:
+                    result = hr_sourcing.references(self.desktop_user, body, remove=action == "remove")
+                else:
+                    result = getattr(hr_sourcing, action)(self.desktop_user, body)
+            else:
+                query = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query, max_num_fields=5).items()}
+                result = hr_sourcing.listing(self.desktop_user, query)
+            self.send_json(200, {"success": True, "data": result})
+        except talent_pool.Conflict as error:
+            self.send_json(409, {"success": False, "message": str(error)})
+        except (ValueError, TypeError, AttributeError) as error:
+            self.send_json(400, {"success": False, "message": str(error) if isinstance(error, ValueError) else "寻源资料格式不正确"})
+        except Exception:
+            self.send_json(503, {"success": False, "message": "寻源服务暂时不可用；没有自动重发招呼"})
+
     def passive_request(self, write=False, parsed=None):
         import passive_pool
         import talent_pool
@@ -1858,8 +1897,10 @@ def restore_login_state():
 def main():
     import recruitment_demands
     import passive_pool
+    import hr_sourcing
     recruitment_demands.recover_interrupted()
     passive_pool.recover()
+    hr_sourcing.recover()
     restore_login_state()
     with resume_db():
         pass

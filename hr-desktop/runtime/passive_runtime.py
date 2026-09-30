@@ -208,6 +208,10 @@ def discover(c, db, rules, rule=None, page=1, capture=None):
         if not isinstance(item, dict): continue
         friend = str(item.get('friendId') or item.get('friend_id') or item.get('uid') or item.get('gid') or '')
         if not friend.isdecimal() or not 1 <= len(friend) <= 20: continue
+        if rule.get('activeFriend') and friend != rule['activeFriend']: continue
+        existing_person = db.execute('SELECT rule FROM people WHERE friend=?', (friend,)).fetchone()
+        if existing_person and existing_person['rule'].startswith('active-') and existing_person['rule'] != rule['id']:
+            continue
         info = item.get('geekCard') or item.get('geekInfo') or item.get('geekBaseInfo') or item
         if not isinstance(info, dict): info = item
         def first(*keys):
@@ -224,6 +228,10 @@ def discover(c, db, rules, rule=None, page=1, capture=None):
                   'jobId': rule['jobId'], 'ruleId': rule['id'],
                   'enabledAt': rule['enabledAt'], 'activity': activity(item), 'position': position,
                   'unread': bool(item.get('unread') or item.get('unreadMsgCount') or item.get('newMsgCount'))}
+        if rule.get('activeFriend'):
+            previous = db.execute('SELECT body FROM people WHERE friend=?', (friend,)).fetchone()
+            if previous:
+                detail = {**json.loads(previous['body']), **detail}
         # Persist only a digest of the message summary, never the chat content.
         detail['fingerprint'] = hashlib.sha256(json.dumps(
             [item.get(k) for k in ('last_msg', 'last_time', 'lastTS', 'lastTime', 'updateTime',
@@ -471,6 +479,11 @@ def activity_status(db, result):
 
 def step(c, db, request):
     rules = {r['id']: r for r in request.get('rules', []) if r.get('enabled') is True}
+    if request.get('activeContacts'):
+        import active_sourcing
+        active_rules, failure = active_sourcing.rules(c, db, request['activeContacts'])
+        if failure: return failure
+        rules.update(active_rules)
     now = time.time()
     delay_for = getattr(c, 'passive_delay', lambda **kwargs: 0)
     prepare_catchup(c, db, request, rules)
@@ -564,7 +577,7 @@ def step(c, db, request):
         excluded = {r[0] for r in db.execute('SELECT message FROM commands WHERE friend=?', (friend,))}
         state = 'seen'
         if trigger:
-            state = 'ready' if human_reply(messages, friend, since, excluded) else 'reply_ready'
+            state = 'ready' if rule.get('activeFriend') or human_reply(messages, friend, since, excluded) else 'reply_ready'
             detail['triggerAt'] = trigger
             event(db, 'INCOMING_DETECTED', detail)
         db.execute("UPDATE people SET state=?,body=?,updated=? WHERE friend=?",
@@ -624,6 +637,7 @@ def render_reply(content, detail, rule):
 
 
 def execute(c, root, request):
+    import active_sourcing
     operation = request['operation']
     with database(root) as db:
         if operation == 'passive-local':
@@ -644,9 +658,12 @@ def execute(c, root, request):
             exports = [dict(row) for row in db.execute("SELECT * FROM people WHERE state='export' ORDER BY updated LIMIT 1")]
             reports = [dict(row) for row in db.execute("SELECT * FROM commands WHERE reported=0 ORDER BY rowid LIMIT 1")]
             events = [json.loads(row['body']) for row in db.execute('SELECT body FROM events WHERE reported=0 ORDER BY rowid LIMIT 10')]
-            return {'ok': True, 'data': {'exports': exports, 'reports': reports, 'events': events,
+            return {'ok': True, 'data': {'exports': exports, 'reports': reports, 'events': events, 'bindings': active_sourcing.local(db),
                                          'status': json.loads(get_state(db, 'status', '{}'))}}
         if operation == 'passive-ack':
+            if request.get('contactId'):
+                active_sourcing.schema(db)
+                db.execute('UPDATE active_contacts SET bound=1 WHERE id=? AND friend=?', (request['contactId'], request.get('friendId')))
             if request.get('friendId'):
                 db.execute("UPDATE people SET state='stored' WHERE friend=? AND mid=? AND state='export'",
                            (request['friendId'], request.get('messageId')))
@@ -657,6 +674,8 @@ def execute(c, root, request):
             return {'ok': True}
         if c.held_code() or c.DISCONNECTED.exists() or c.RESUME_AUTO_PAUSE.exists():
             return {'ok': False, 'error': {'code': c.held_code() or 'REQUESTS_PAUSED', 'message': '自动任务保持暂停'}}
+        if operation == 'sourcing-ready': return active_sourcing.readiness(c, db, request.get('command'))
+        if operation == 'sourcing-send': return active_sourcing.send(c, db, request['command'])
         if operation == 'passive-send':
             command = request['command']; cid = command['id']; friend = c.positive_id(command['friendId'])
             previous = db.execute('SELECT * FROM commands WHERE id=?', (cid,)).fetchone()

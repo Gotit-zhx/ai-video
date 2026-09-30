@@ -111,6 +111,19 @@ def main(request):
         return c.observe_result(value)
 
     c.cli_json = invoke
+    def sourcing_friend_details(ids):
+        from boss_agent_cli.api.recruiter_client import BossRecruiterClient
+        from boss_agent_cli.auth.manager import AuthManager
+        if not ids or len(ids)>40 or any(not str(value).isdecimal() for value in ids):
+            raise ValueError('invalid friend IDs')
+        auth = AuthManager(c.AUTH_DIR.parent, platform="zhipin")
+        with BossRecruiterClient(auth, cdp_url=request['cdp'], browser_source="stored-cookie") as client:
+            result = client.friend_detail([int(value) for value in ids], retry=False)
+        observed = c.observe_result(result)
+        if result.get('code') == 0:
+            return {'ok': True, 'data': result.get('zpData') or {}}
+        return {'ok': False, 'error': {'code': c.held_code() or 'FRIEND_DETAIL_FAILED', 'message': '会话关联未确认，已停止'}}
+    c.sourcing_friend_details = sourcing_friend_details
     import passive_runtime
     def passive_delay(**options):
         return passive_runtime.budget_delay(g.BUDGET_DB, g.HOURLY_LIMIT, **options)
@@ -127,7 +140,7 @@ def main(request):
         with c.resume_db() as db:
             db.execute('UPDATE resume_poll_state SET failures=0')
         return {'ok': True}
-    if operation in ('passive-local', 'passive-ack', 'passive-send', 'passive-step'):
+    if operation in ('passive-local', 'passive-ack', 'passive-send', 'passive-step', 'sourcing-ready', 'sourcing-send'):
         return passive_runtime.execute(c, request['root'], request)
     if operation == "verify":
         # Explicit user request only; bound to the existing hold generation.

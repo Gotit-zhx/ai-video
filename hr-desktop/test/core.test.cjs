@@ -6,6 +6,31 @@ const os=require('node:os');
 const {Recruiter,restriction,ORIGIN}=require('../src/core.cjs');
 const {LocalBridge}=require('../src/bridge.cjs');
 const user={username:'13800000000',id:'fixture',organizationCode:'heyi',roles:['ADMIN'],platformAdmin:true};
+test('active greeting checks budget before claim and uses its own operation with account-scoped binding reports',async t=>{
+  const {engine,calls,directory}=await fixture(t);
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
+  const cloud=[];let available=false;
+  engine.runtime.run=async input=>{
+    calls.push(input);
+    if(input.operation==='sourcing-ready')return {ok:true,data:{allowed:available}};
+    if(input.operation==='sourcing-send')return {ok:true,data:{status:'sent'}};
+    return {ok:true,data:{bindings:[{contactId:'c1',friendId:'123'}]}};
+  };
+  engine.passiveCloud=async(route,body)=>{
+    cloud.push({route,body});
+    if(route==='passive-config')return {commands:[{id:'c1',kind:'active_greet',message:'已确认话术'}]};
+    if(route==='passive-claim')return {claimed:true};
+    return {};
+  };
+  await engine.poll();
+  assert.equal(cloud.some(x=>x.route==='passive-claim'),false);
+  assert.ok(calls.some(x=>x.operation==='passive-step'),'Waiting greetings must not block existing resume follow-up');
+  assert.ok(cloud.some(x=>x.route==='passive-report'&&x.body.contactId==='c1'&&x.body.accountKey==='a'.repeat(64)));
+  available=true;await engine.poll();
+  assert.equal(calls.filter(x=>x.operation==='sourcing-send').length,1);
+  assert.equal(calls.filter(x=>x.operation==='passive-send').length,0);
+  assert.ok(cloud.some(x=>x.route==='passive-report'&&x.body.commandId==='c1'&&x.body.status==='sent'));
+});
 test('verified same recruiter retains cloud account and catches up after a fresh cookie login',async t=>{
   const {engine,calls,directory}=await fixture(t);
   engine.passiveCloud=async()=>({rules:[]});

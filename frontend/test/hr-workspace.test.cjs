@@ -56,6 +56,7 @@ function setup(overrides={}) {
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-demands.js'),'utf8'),env);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-departments.js'),'utf8'),env);
   if(overrides.passive)vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-passive.js'),'utf8'),env);
+  if(overrides.sourcing)vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-sourcing.js'),'utf8'),env);
   vm.runInContext(source,env);
   const visible=()=>{const visit=node=>node.hidden?[]:[node,...node.children.flatMap(visit)];return visit(root);};
   const click=async(text)=>{const node=visible().find(n=>n.tagName==='button'&&n.textContent===text);
@@ -69,6 +70,68 @@ const text=()=>visible().map(n=>n._text).join('\n');
 const poolResult=()=>({items:[{id:'talent-1',name:'测试人才',education:'本科',experience:'5年',stage:'first',
   projectId:'project-1',version:1,updatedAt:'2026-09-29T00:00:00Z'}],
   projects:[{id:'project-1',name:'电商项目组',version:1}],counts:{all:1,first:1},total:1,page:1,pages:1});
+test('job card owns sourcing; bounded candidate reads and AI do not send until HR confirms the individual greeting',async()=>{
+  const key='a'.repeat(64);
+  let saved=null;
+  const app=setup({sourcing:true,api:async(url,options)=>{
+    const body=options?.body?JSON.parse(options.body):{};
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:'job-test-1',jobName:'Java 后端开发工程师',postDescription:'负责系统开发与测试'}}}};
+    if(url.startsWith('/api/v1/hr/sourcing?'))return {data:saved};
+    if(url.endsWith('/sourcing/save')){
+      saved={...body,id:'source1',version:1,profileState:'complete',
+        profile:{summary:'后端工程师',skills:['Java'],suggestedJd:'负责开发测试'},
+        references:[{id:'ref1',filename:'参考.pdf',characters:300}],run:null};
+      return {data:saved};
+    }
+    if(url.includes('/recommendations?'))return {data:fixtures.recommendations};
+    if(url.endsWith('/sourcing/search')){
+      assert.equal(body.id,'source1');assert.equal(body.accountKey,key);assert.equal(body.count,5);
+      assert.equal(body.candidates.length,2,'Repeated pages are deduplicated');
+      saved={...saved,run:{state:'complete',version:1,wanted:5,examined:2,candidates:[
+        {id:'c1',name:'测试候选人甲',score:80,summary:'经验相关',evidence:['有 Java 经验'],gaps:[],canGreet:true}]}};
+      return {data:saved};
+    }
+    if(url.endsWith('/speeches'))return {data:{items:[{id:'speech1',name:'主动联系',kind:'active_greet',active:true,content:'{姓名}，想和您沟通{职位}。'}]}};
+    if(url.endsWith('/sourcing/greet')){
+      assert.equal(body.candidateId,'c1');assert.equal(body.confirmed,true);
+      assert.match(body.message,/测试候选人甲.*Java 后端开发工程师/);
+      saved.run.candidates[0].contact={status:'queued'};
+      return {data:{id:'contact1',status:'queued'}};
+    }
+    throw Error('unexpected '+url);
+  }});
+  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  assert.match(app.text(),/Java 后端开发工程师/);
+  assert.match(app.text(),/参考.pdf/);
+  assert.equal(app.calls.some(c=>c.url.includes('/recommendations?')),false);
+  const count=app.visible().find(n=>n.tagName==='select'&&n.attributes['aria-label']==='获取人数');count.value='5';
+  await app.click('一键 AI 获取');
+  assert.equal(app.calls.filter(c=>c.url.includes('/recommendations?')).length,1,'Explicit end of results prevents another BOSS read');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/search')).length,1);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,0);
+  await app.click('打招呼');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,0);
+  await app.click('确认向该候选人发送');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,1);
+  assert.match(app.text(),/等待助手发送/);
+  const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
+  assert.doesNotMatch(html,/data-hr-route="talent"/);
+  assert.match(html,/hr-sourcing\.js/);
+});
+test('sourcing route without selected job never reads BOSS or creates a new scope',async()=>{
+  const app=setup({sourcing:true,api:async()=>{throw Error('No request expected');}});
+  await app.enter('talent');
+  assert.match(app.text(),/请返回职位管理/);
+  assert.equal(app.calls.length,0);
+});
+test('origin filter composes with selected job and review status',async()=>{
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')?{state:'complete'}:
+    {items:[],jobs:[{id:'job1',name:'工程师',count:2}],counts:{pending:1,approved:1,rejected:0,all:2},total:0}})});
+  await app.enter('resume-pool');await app.click('工程师 2');await app.click('主动邀约');await app.click('通过 1');
+  assert.ok(app.calls.some(c=>c.url.includes('status=approved&jobId=job1&origin=active')));
+});
 test('resume pool shows queue and retry time using cached status only, and refreshes without BOSS actions',async()=>{
   let reconnects=0;
   const app=setup({passive:true,transport:{connection:()=>({paired:true}),startAutoConnect(){reconnects++;},reset(){}},
@@ -281,7 +344,7 @@ test('overview has useful entry points and no webpage QR or QR requests',async()
   const app=setup({api:async()=>({data:{state:'pending',phase:'qr'}})});
   await app.enter('overview');await app.tick(3000);
   assert.equal(all(app.root).filter(n=>n.tagName==='img').length,0);
-  assert.match(app.text(),/职位管理/);assert.match(app.text(),/人才寻源/);
+  assert.match(app.text(),/职位管理/);assert.doesNotMatch(app.text(),/人才寻源/);
   assert.match(app.text(),/在桌面助手完成登录/);
   assert.doesNotMatch(app.text(),/刷新二维码|清除会话并重新扫码/);
   assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')));

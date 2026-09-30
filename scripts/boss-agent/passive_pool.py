@@ -14,7 +14,7 @@ import talent_pool as pool
 
 AI_URL = 'http://127.0.0.1:8080/api/v1/recruitment-ai/resume-match'
 DEFAULT_REJECTION = '您好，感谢您对{职位}岗位的关注和耐心沟通。经过综合评估，您的经历与我们目前岗位的需求暂未完全匹配，本次先不安排后续面试。感谢您的理解，祝您求职顺利！'
-KINDS = {'reject', 'invite', 'general', 'passive_reply'}
+KINDS = {'reject', 'invite', 'general', 'passive_reply', 'active_greet'}
 
 
 def now(): return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -74,7 +74,7 @@ def rule(row):
 
 
 def resume(row, commands=None):
-    value = {**json.loads(row['body']), 'id': row['id'], 'status': row['status'], 'version': row['version'],
+    value = {'origin': 'passive', **json.loads(row['body']), 'id': row['id'], 'status': row['status'], 'version': row['version'],
              'accountKey': row['account'], 'friendId': row['friend_id'], 'createdAt': row['created_at'],
              'aiState': row['ai_state'], 'aiResult': json.loads(row['ai_result']), 'aiError': row['ai_error'],
              'fileUrl': '/api/v1/hr/resume-pool/file?id=' + row['id']}
@@ -135,10 +135,15 @@ def listing(user, kind, query):
             return {'items': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=?', (owner,))]}
         db.execute("UPDATE hr_resume_pool SET ai_state='failed',ai_error='分析等待超时，请手动重试' WHERE owner=? AND ai_state='running' AND ai_at<?", (owner, int(time.time())-360))
         scope, scope_args = 'owner=?', [owner]
+        origin = query.get('origin', '')
+        if origin not in {'', 'active', 'passive'}: raise ValueError('邀约来源不正确')
+        if origin and not query.get('id'):
+            scope += " AND COALESCE(json_extract(body,'$.origin'),'passive')=?"
+            scope_args.append(origin)
         selected_job = pool.text(query.get('jobId', ''), 180)
         if selected_job and not query.get('id'):
-            scope += ' AND rule_id IN (SELECT id FROM hr_passive_rules WHERE owner=? AND job_id=?)'
-            scope_args += [owner, selected_job]
+            scope += " AND (json_extract(body,'$.jobId')=? OR rule_id IN (SELECT id FROM hr_passive_rules WHERE owner=? AND job_id=?))"
+            scope_args += [selected_job, owner, selected_job]
         clause, args = scope, list(scope_args)
         if query.get('id'):
             clause += ' AND id=?'; args.append(uid(query['id']))
@@ -164,6 +169,18 @@ def listing(user, kind, query):
             WHERE r.owner=? GROUP BY r.id ORDER BY r.updated_at DESC''', (owner,)):
             entry = jobs.setdefault(row['job_id'], {'id': row['job_id'], 'name': json.loads(row['body']).get('jobName') or '未命名职位', 'count': 0, 'ruleIds': []})
             entry['count'] += row['n']; entry['ruleIds'].append(row['id'])
+        for row in db.execute("""SELECT rule_id,body,COUNT(*) n FROM hr_resume_pool
+                WHERE owner=? AND json_extract(body,'$.origin')='active' GROUP BY rule_id""", (owner,)):
+            detail = json.loads(row['body'])
+            entry = jobs.setdefault(detail['jobId'], {'id': detail['jobId'], 'name': detail['jobName'], 'count': 0, 'ruleIds': []})
+            entry['count'] += row['n']; entry['ruleIds'].append(row['rule_id'])
+        # Job counts honor the selected origin and include legacy passive rows.
+        for item in jobs.values():
+            item['count'] = db.execute("""SELECT count(*) FROM hr_resume_pool WHERE owner=?
+                AND (json_extract(body,'$.jobId')=? OR rule_id IN
+                (SELECT id FROM hr_passive_rules WHERE owner=? AND job_id=?))
+                AND (?='' OR COALESCE(json_extract(body,'$.origin'),'passive')=?)""",
+                (owner, item['id'], owner, item['id'], origin, origin)).fetchone()[0]
         events = [json.loads(r['body']) | {'createdAt': r['created_at']} for r in
                   db.execute('SELECT * FROM hr_passive_events WHERE owner=? ORDER BY created_at DESC LIMIT 100', (owner,))]
         if selected_job:
@@ -230,6 +247,7 @@ def save_rule(user, body):
 
 
 def device_config(user, body):
+    import hr_sourcing
     owner, _ = pool.context(user); key = account(body.get('accountKey'))
     with pool.database() as db:
         schema(db)
@@ -241,14 +259,19 @@ def device_config(user, body):
                     for table in ('hr_resume_commands', 'hr_talent_messages')
                     for r in db.execute(f"SELECT * FROM {table} WHERE owner=? AND account=? AND status='queued' ORDER BY updated_at LIMIT 1", (owner, key))]
         commands.sort(key=lambda value: value['queuedAt'])
+        active = hr_sourcing.device_contacts(db, owner, key)
+        # Old desktops must never claim an operation they do not understand.
+        if 'active-sourcing' in body.get('capabilities', []):
+            commands += [{**row, 'queuedAt': row['enabledAt']} for row in active if row['status'] == 'queued']
         return {'rules': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=? AND account=? AND enabled=1', (owner, key))],
                 'replyTemplate': ({'id': reply['id'], 'version': reply['version'], 'content': reply['content'],
                                    'name': reply['name']} if reply else None),
-                'commands': commands[:1]}
+                'commands': commands[:1], 'activeContacts': [row for row in active if row['status'] == 'sent']}
 
 
 def ingest(user, body):
     import resume_storage
+    import hr_sourcing
     owner, actor = pool.context(user); key = account(body.get('accountKey'))
     friend, mid, rule_id = str(body.get('friendId', '')), str(body.get('messageId', '')), uid(body.get('ruleId'))
     if not all(re.fullmatch(r'[1-9]\d{0,19}', x) for x in [friend, mid]): raise ValueError('简历会话标识无效')
@@ -263,9 +286,11 @@ def ingest(user, body):
         if existing:
             if existing['file_hash'] != digest: raise pool.Conflict('同一简历消息的文件内容发生变化')
             return {'id': record, 'stored': True}
-        source = db.execute('SELECT * FROM hr_passive_rules WHERE id=? AND owner=? AND account=?', (rule_id, owner, key)).fetchone()
-        if not source: raise ValueError('简历未关联当前账号的招聘职位')
-        job = rule(source)
+        job = hr_sourcing.received_job(db, owner, key, rule_id, friend)
+        if not job:
+            source = db.execute('SELECT * FROM hr_passive_rules WHERE id=? AND owner=? AND account=?', (rule_id, owner, key)).fetchone()
+            if not source: raise ValueError('简历未关联当前账号的招聘职位')
+            job = rule(source)
     # Retry-safe object key, private ACL. No arbitrary URLs accepted from clients.
     # Different bytes for the same message must never overwrite the object
     # referenced by a concurrent successful ingestion.
@@ -281,6 +306,7 @@ def ingest(user, body):
     if extracted_name:
         clean.update(name=extracted_name, nameSource=name_source)
     clean.update(jobName=job['jobName'], jobDescription=job['description'], jobEducation=job['education'], jobExperience=job['experience'],
+                 jobId=job['jobId'], origin=job.get('origin', 'passive'),
                  projectId=job['projectId'], originalFileName=original,
                  fileName=original or (f'{extracted_name}-简历.{extension}' if extracted_name else f'简历-{record[:8]}.{extension}'), extension=extension,
                  nameExtractionVersion=resume_storage.NAME_VERSION,
@@ -330,7 +356,7 @@ def review(user, body):
             talent_id = old['id'] if old else str(uuid.uuid4())
             value = json.loads(old['body']) if old else {k: '' for k in pool.FIELDS}
             value.update({k: detail.get(k, '') for k in ['name', 'education', 'experience', 'city', 'company']})
-            value.update(position=detail['jobName'], source='passive', sourceId=source, notes=value.get('notes') or '简历已通过审核，待安排邀约。')
+            value.update(position=detail['jobName'], source=detail.get('origin', 'passive'), sourceId=source, notes=value.get('notes') or '简历已通过审核，待安排邀约。')
             if old:
                 db.execute("UPDATE talents SET project=?,stage='invited',body=?,version=version+1,updated_at=? WHERE id=? AND owner=?", (project, dump(value), now(), talent_id, owner))
             else:
@@ -360,9 +386,12 @@ def review(user, body):
 
 
 def claim_command(user, body):
+    import hr_sourcing
     owner, _ = pool.context(user); key = account(body.get('accountKey')); record = uid(body.get('id'))
     with pool.database() as db:
         schema(db)
+        active = hr_sourcing.claim(db, owner, key, record)
+        if active is not None: return active
         invitation = db.execute("SELECT * FROM hr_talent_messages WHERE id=? AND owner=? AND account=? AND status='queued'", (record, owner, key)).fetchone()
         if invitation:
             talent = db.execute("SELECT * FROM talents WHERE id=? AND owner=?", (invitation['talent_id'], owner)).fetchone()
@@ -376,14 +405,20 @@ def claim_command(user, body):
 
 
 def device_report(user, body):
+    import hr_sourcing
     owner, _ = pool.context(user); key = account(body.get('accountKey'))
     if body.get('commandId'):
         state = body.get('status')
         if state not in {'sent', 'uncertain', 'failed'}: raise ValueError('发送状态不正确')
         with pool.database() as db:
             schema(db)
+            hr_sourcing.report(db, owner, key, body)
             for table in ('hr_resume_commands', 'hr_talent_messages'):
                 db.execute(f"UPDATE {table} SET status=?,updated_at=? WHERE id=? AND owner=? AND account=? AND status IN ('sending','uncertain')", (state, now(), uid(body['commandId']), owner, key))
+    if body.get('contactId'):
+        with pool.database() as db:
+            schema(db)
+            hr_sourcing.report(db, owner, key, body)
     event = body.get('event')
     if isinstance(event, dict):
         clean = {k: pool.text(event.get(k, ''), limit) for k, limit in {'id': 80, 'code': 80, 'name': 100, 'jobName': 200, 'jobId': 180, 'ruleId': 80, 'message': 400}.items()}

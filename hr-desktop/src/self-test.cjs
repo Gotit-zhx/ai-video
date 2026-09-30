@@ -9,9 +9,22 @@ const {nativeImage}=require('electron');
 // Electron captures a WebContentsView separately from its parent. Assemble the
 // two real renderer captures at the native view bounds for the QA artifact.
 async function captureWindow(window,view){
-  const shell=await window.capturePage();
-  const page=await view.webContents.capturePage();
+  const shell=await window.webContents.capturePage();
+  let page;
+  try{page=await view.webContents.capturePage();}
+  catch(error){
+    if(!String(error.message).includes('display surface'))throw error;
+    // Some macOS compositors cannot expose a reattached native child surface.
+    // Capture that same real renderer through CDP; never substitute fixture art.
+    const debug=view.webContents.debugger;
+    debug.attach('1.3');
+    try{
+      const result=await debug.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:false});
+      page=nativeImage.createFromBuffer(Buffer.from(result.data,'base64'));
+    }finally{debug.detach();}
+  }
   const size=shell.getSize(),pageSize=page.getSize(),bounds=view.getBounds();
+  assert.ok(size.width>0&&size.height>0&&pageSize.width>0&&pageSize.height>0,'Renderer captures must contain real pixels');
   const bitmap=shell.toBitmap({scaleFactor:1}),pixels=page.toBitmap({scaleFactor:1});
   for(let row=0;row<pageSize.height;row++){
     pixels.copy(bitmap,((bounds.y+row)*size.width+bounds.x)*4,row*pageSize.width*4,(row+1)*pageSize.width*4);

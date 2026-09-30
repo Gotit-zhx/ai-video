@@ -117,7 +117,7 @@ class Recruiter extends EventEmitter {
     passive:this.passiveStatus||{},reconnecting:this.paused&&this.autoReconnect&&!!this.accountRoot
       &&(!this.riskHold||TEMPORARY.has(this.riskHold.code)),
     accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
-    capabilities:['passive-resume','job-jd']};}
+    capabilities:['passive-resume','job-jd','active-sourcing']};}
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
   pause(code='USER_PAUSED'){
     if(code==='USER_PAUSED')this.autoReconnect=false;
@@ -362,6 +362,11 @@ class Recruiter extends EventEmitter {
         if(!ready())return;
         await this.call('passive-ack',{commandId:report.id});
       }
+      for(const binding of local.data?.bindings||[]){
+        await this.passiveCloud('passive-report',{accountKey,...binding});
+        if(!ready())return;
+        await this.call('passive-ack',binding);
+      }
       for(const item of local.data?.exports||[]){
         const file=await fs.realpath(item.file),prefix=await fs.realpath(path.join(accountRoot,'downloads'));
         if(!file.startsWith(prefix+path.sep))throw Error('简历路径异常');
@@ -374,21 +379,31 @@ class Recruiter extends EventEmitter {
         await this.call('passive-ack',{friendId:item.friend,messageId:item.mid});
         this.event('RESUME_ARCHIVED');
       }
-      const config=await this.passiveCloud('passive-config',{accountKey});
+      const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing']});
       if(!ready())return;
       const command=config.commands?.[0];
       if(command){
+        const active=command.kind==='active_greet';
+        let canSend=true;
+        if(active){
+          const check=await this.call('sourcing-ready',{command});
+          if(!check.ok||!ready())return;
+          canSend=check.data?.allowed===true;
+        }
+        if(canSend){
         const claimed=await this.passiveCloud('passive-claim',{accountKey,id:command.id});
         if(!claimed.claimed||!ready())return;
-        const result=await this.call('passive-send',{command});
+        const result=await this.call(active?'sourcing-send':'passive-send',{command});
         if(!ready())return;
         await this.passiveCloud('passive-report',{accountKey,commandId:command.id,status:result.data?.status||'uncertain'});
         await this.call('passive-ack',{commandId:command.id});
-        this.event((command.kind==='invite'?'INVITATION_':'REJECTION_')+(result.data?.status==='sent'?'SENT':'UNCERTAIN'));
+        this.event((active?'ACTIVE_GREETING_':command.kind==='invite'?'INVITATION_':'REJECTION_')+(result.data?.status==='sent'?'SENT':'UNCERTAIN'));
         return;
+        }
       }
       const hints=[...this.activity.values()];
       const result=await this.call('passive-step',{rules:config.rules||[],replyTemplate:config.replyTemplate||null,
+        activeContacts:config.activeContacts||[],
         activityHints:hints,activityWatching:this.clock()-(this.activityObservedAt||0)<6000,
         reconnectId:this.reconnectId||''});
       if(result.ok&&ready()){

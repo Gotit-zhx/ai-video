@@ -34,7 +34,7 @@
   }
   globalThis.createHrPassive=({root,section,element:el,button,allowed,navigate,hrApi})=>{
     let active='',generation=0,items=[],page=1,filter='pending',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
-    let jobFilter='',jobOptions=[],jobSignature='';
+    let jobFilter='',jobOptions=[],jobSignature='',originFilter='';
     let logOpen=false,poolSnapshot='',previewId='',previewHost=null,disposePreview=null;
     const clearPreview=()=>{disposePreview?.();disposePreview=null;previewHost=null;previewId='';};
     const speechPanel=section('speeches'),resumePanel=section('resume-pool');
@@ -76,6 +76,19 @@
       });
     }
     renderJobTabs();
+    const originLabel=el('div','',resumePanel,'hr-resume-job-filter');
+    el('span','来源',originLabel);
+    const originTabs=el('div','',originLabel,'hr-pool-tabs hr-resume-tabs hr-resume-job-tabs');
+    originTabs.setAttribute('aria-label','按邀约来源筛选简历');
+    const originButtons=[['','全部来源'],['active','主动邀约'],['passive','被动邀约']].map(([value,label])=>{
+      const control=button(label,originTabs,()=>{
+        originFilter=value;page=1;poolSnapshot='';
+        for(const tab of originButtons)tab.control.setAttribute('aria-pressed',String(tab.value===value));
+        load();
+      });
+      control.setAttribute('aria-pressed',String(value===originFilter));
+      return {value,control};
+    });
     const poolActivity=el('p','',resumePanel,'hr-pool-activity');
     poolActivity.setAttribute('aria-live','polite');
     const resumeRows=el('div','',resumePanel,'hr-result');
@@ -86,7 +99,7 @@
     }
     const name=field(fields,'名称');name.required=true;name.maxLength=80;
     const kind=field(fields,'用途','select');
-    for(const [value,label] of [['passive_reply','被动邀约回复'],['reject','婉拒'],['invite','面试邀约'],['general','其他沟通']])el('option',label,kind).value=value;
+    for(const [value,label] of [['passive_reply','被动邀约回复'],['active_greet','主动打招呼'],['reject','婉拒'],['invite','面试邀约'],['general','其他沟通']])el('option',label,kind).value=value;
     const content=field(speechForm,'话术正文','textarea');content.required=true;content.maxLength=1000;content.rows=7;
     el('p','支持 {姓名}、{职位}。被动邀约先发送默认回复话术，成功后再使用 BOSS 官方“索取简历”操作。',speechForm,'hr-hint');
     const enabled=field(speechForm,'启用');enabled.type='checkbox';
@@ -131,7 +144,7 @@
       const feedback=mode==='speeches'?speechFeedback:resumeFeedback,box=mode==='speeches'?speechRows:resumeRows;
       if(!quiet)feedback.textContent='正在读取…';
       try{
-        const data=await request(mode==='speeches'?'speeches':`resume-pool?page=${page}&status=${filter}&jobId=${encodeURIComponent(jobFilter)}`);
+        const data=await request(mode==='speeches'?'speeches':`resume-pool?page=${page}&status=${filter}&jobId=${encodeURIComponent(jobFilter)}&origin=${originFilter}`);
         if(ticket!==generation||mode!==active||!allowed())return;
         items=data.items||[];feedback.textContent=mode==='resume-pool'?`共 ${data.total??items.length} 份简历`:`共 ${data.total??items.length} 条`;
         if(mode==='resume-pool'){
@@ -146,11 +159,11 @@
           tab.control.textContent=tab.label+(Number.isFinite(count)?` ${count}`:'');
           tab.control.setAttribute('aria-pressed',String(tab.value===filter));
         }
-        const signature=JSON.stringify([page,filter,jobFilter,data]);
+        const signature=JSON.stringify([page,filter,jobFilter,originFilter,data]);
         if(mode==='resume-pool'&&quiet&&signature===poolSnapshot)return;
         if(mode==='resume-pool')poolSnapshot=signature;
         box.replaceChildren();
-        if(!items.length)el('p',mode==='speeches'?'还没有话术，请配置默认被动邀约回复和默认婉拒话术。':'暂无简历。启用职位的被动邀约后，收到的简历会在这里归档。',box,'hr-pool-empty');
+        if(!items.length)el('p',mode==='speeches'?'还没有话术，请配置默认被动邀约回复和默认婉拒话术。':'当前分类暂无简历。主动联系或被动邀约收到的简历会在这里归档。',box,'hr-pool-empty');
         const grid=el('div','',box,mode==='speeches'?'hr-card-grid':'hr-card-grid hr-resume-grid');
         for(const row of items){
           const card=el('article','',grid,'hr-person-card'),head=el('div','',card,'hr-card-heading');
@@ -163,6 +176,7 @@
             button('编辑话术',el('div','',card,'hr-actions'),()=>editSpeech(row));
           }else{
             el('span',statuses[row.status]||row.status,head,'hr-badge');
+            el('span',row.origin==='active'?'主动邀约':'被动邀约',card,'hr-eyebrow');
             el('p',row.jobName,card,'hr-resume-job');el('p',[row.education,row.experience,row.city].filter(Boolean).join(' · ')||'详情见简历原件',card,'hr-hint');
             if(row.rejection)el('p','婉拒：'+(sendStates[row.rejection.status]||row.rejection.status),card,'hr-hint');
             if(row.aiState==='complete')el('p',`AI 参考匹配度 ${row.aiResult.score} / 100`,card,'hr-hint');
@@ -341,6 +355,8 @@
         },10000);
       }
     },leave(){active='';++generation;clearTimeout(timer);clearInterval(poolTimer);poolActivity.textContent='';detail.close();speechDialog.close();clearPreview();},
-      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';jobFilter='';jobOptions=[];jobSignature='';renderJobTabs();poolSnapshot='';logOpen=false;speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
+      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';jobFilter='';originFilter='';
+        for(const tab of originButtons)tab.control.setAttribute('aria-pressed',String(tab.value===''));
+        jobOptions=[];jobSignature='';renderJobTabs();poolSnapshot='';logOpen=false;speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
   };
 })();
