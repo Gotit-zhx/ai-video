@@ -121,15 +121,18 @@
         for(const evidence of item.evidence||[])el('p',evidence,card,'hr-hint');
         if(item.gaps?.length)el('p','待核实：'+item.gaps.join('；'),card,'hr-hint');
         const actions=el('div','',card,'hr-actions');
-        if(item.contact)el('span',sendStates[item.contact.status]||item.contact.status,actions,'hr-hint');
+        if(item.contact)el('span',item.contact.status==='sent'&&!item.contact.friend_id
+          ?'已打招呼 · 正在关联对应会话':sendStates[item.contact.status]||item.contact.status,actions,'hr-hint');
         else{
           const greet=button('打招呼',actions,()=>openGreeting(item));greet.className='hr-primary';
           greet.disabled=locked||run.version!==record.version||!item.canGreet;
           if(!item.canGreet)el('span','平台未提供首次打招呼参数',actions,'hr-hint');
         }
       }
-      if(running()&&!timer){pollErrors=0;timer=setInterval(()=>reload(true),4000);}
-      if(!running())stop();
+      const pendingContact=run?.candidates?.some(item=>item.contact&&(
+        ['queued','sending'].includes(item.contact.status)||(item.contact.status==='sent'&&!item.contact.friend_id)));
+      if((running()||pendingContact)&&!timer){pollErrors=0;timer=setInterval(()=>reload(true),running()?4000:10000);}
+      if(!running()&&!pendingContact)stop();
     }
     async function reload(quiet=false){
       if(!active||!record||polling||busy||!allowed())return;

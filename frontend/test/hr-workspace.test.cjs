@@ -116,6 +116,10 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
   await app.click('确认向该候选人发送');
   assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,1);
   assert.match(app.text(),/等待助手发送/);
+  saved.run.candidates[0].contact={status:'sent',friend_id:'123'};
+  await app.tick(10000);
+  assert.match(app.text(),/已打招呼 · 等待对方回复/);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,1,'Status polling never sends again');
   const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
   assert.doesNotMatch(html,/data-hr-route="talent"/);
   assert.match(html,/hr-sourcing\.js/);
