@@ -3,6 +3,7 @@
   const base='http://127.0.0.1:17861', storage='heyi.hr.desktop.connection.v1';
   let mode='',connecting=null,saved=null,epoch=0,active=false,timer=null,monitoring=false;
   let failures=0,repair=false,reachable=false,phase='idle',message='',lastState=null;
+  let recoverySince=0,wasReady=false;
   const listeners=new Set();
   try{saved=JSON.parse(sessionStorage.getItem(storage)||'null');}catch{}
   const channel=typeof BroadcastChannel==='function'?new BroadcastChannel(storage):null;
@@ -10,7 +11,13 @@
   const valid=()=>saved&&saved.expiresAt>Date.now();
   function persist(){if(saved)sessionStorage.setItem(storage,JSON.stringify(saved));else sessionStorage.removeItem(storage);}
   function snapshot(){return {paired:mode==='embedded'||!!valid()&&reachable,phase,message,state:lastState};}
-  function notify(next,text=''){phase=next;message=text;for(const listener of listeners)listener(snapshot());}
+  function notify(next,text=''){
+    if(next==='reconnecting'&&wasReady){
+      if(!recoverySince)recoverySince=Date.now();
+      if(Date.now()-recoverySince<15000)next='recovering';
+    }else if(next==='connected'&&!lastState?.reconnecting)recoverySince=0;
+    phase=next;message=text;for(const listener of listeners)listener(snapshot());
+  }
   async function data(response){
     const result=await response.json();
     if(!response.ok||result.success===false){const error=Error(result.message||'本机连接未完成');error.status=response.status;error.code=result.code;throw error;}
@@ -78,7 +85,10 @@
         if(response.status===428||response.status===409)repair=true;
         const state=await data(response);
         if(ticket!==epoch||!active)return;
-        lastState=state;reachable=true;failures=0;notify('connected');
+        lastState=state;reachable=true;failures=0;
+        if(state.state==='complete'&&!state.paused)wasReady=true;
+        if(state.state==='disconnected'||state.paused&&!state.reconnecting)wasReady=false;
+        notify(state.reconnecting?'reconnecting':'connected');
       };
       if(globalThis.navigator?.locks)await navigator.locks.request('heyi-hr-pairing',{ifAvailable:true},lock=>lock?inspect():undefined);
       else await inspect();
@@ -121,11 +131,14 @@
   }
   async function api(path,options={}){
     const response=await request(path,options),result=await response.json();
-    if(!response.ok||result.success===false)throw Error(result.message||'本机操作未完成');
+    if(!response.ok||result.success===false){
+      const error=Error(result.message||'本机操作未完成');error.status=response.status;error.code=result.code;throw error;
+    }
     return result;
   }
   function stopAutoConnect(){active=false;epoch++;clearTimeout(timer);timer=null;}
-  function reset(){stopAutoConnect();saved=null;mode='';repair=false;reachable=false;lastState=null;persist();notify('idle');}
+  function reset(){stopAutoConnect();saved=null;mode='';repair=false;reachable=false;lastState=null;
+    recoverySince=0;wasReady=false;persist();notify('idle');}
   async function disconnect({ensureConnection=false}={}){
     stopAutoConnect();
     // Retain cleanup capability through failed cleanup and expired leases.

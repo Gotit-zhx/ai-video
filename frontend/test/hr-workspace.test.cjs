@@ -15,8 +15,9 @@ class Node {
   }
   set textContent(value) {this._text=String(value);this.children=[];}
   get textContent() {return this._text+this.children.map(n=>n.textContent).join(' ');}
-  append(...nodes) {this.children.push(...nodes);}
-  replaceChildren(...nodes) {this._text='';this.children=nodes;}
+  append(...nodes) {nodes.forEach(n=>{n.parent=this;});this.children.push(...nodes);}
+  replaceChildren(...nodes) {this._text='';this.children.forEach(n=>{n.parent=null;});this.children=[];this.append(...nodes);}
+  remove(){if(this.parent){this.parent.children=this.parent.children.filter(n=>n!==this);this.parent=null;}}
   setAttribute(key,value) {this.attributes[key]=value;}
   addEventListener(key,callback) {this.events[key]=callback;}
   querySelectorAll(selector) {return all(this).filter(n=>selector==='.hr-result'&&n.className.split(' ').includes('hr-result'));}
@@ -39,6 +40,9 @@ function setup(overrides={}) {
     history:{pushState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));},
       replaceState(_a,_b,url){env.location.hash=url.slice(url.indexOf('#'));}},
     switchWorkspace(){},URLSearchParams,encodeURIComponent,Date,URL,crypto:require('node:crypto'),
+    FileReader:class{
+      readAsDataURL(file){this.result='data:application/pdf;base64,'+Buffer.from(file.name).toString('base64');this.onload();}
+    },
     setInterval(fn,ms){const id=++timerSequence;timers.set(id,{fn,ms});return id;},
     clearInterval(id){timers.delete(id);},setTimeout(){},clearTimeout(){},addEventListener(){},confirm:overrides.confirm || (()=>false),
     fetch:overrides.fetch || (async()=>({ok:false,status:503})),
@@ -131,6 +135,83 @@ test('sourcing route without selected job never reads BOSS or creates a new scop
   await app.enter('talent');
   assert.match(app.text(),/请返回职位管理/);
   assert.equal(app.calls.length,0);
+});
+test('replacement uploads and profile generation survive helper recovery; obsolete runs do not lock controls',async()=>{
+  const key='a'.repeat(64);let online=true,finishUpload;
+  let saved={id:'source1',accountKey:key,jobId:'job-test-1',jobName:'Java 后端开发工程师',version:3,
+    references:[],profileState:'stale',profile:{summary:'旧画像'},run:{version:1,state:'running',candidates:[]}};
+  const app=setup({sourcing:true,api:async(url,options)=>{
+    const body=options?.body&&JSON.parse(options.body);
+    if(url.endsWith('/login/status'))return {data:online?{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}:{state:'verification_pending',paused:true}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:'job-test-1',jobName:saved.jobName,postDescription:'负责系统开发与测试'}}}};
+    if(url.startsWith('/api/v1/hr/sourcing?')||url.endsWith('/sourcing/save'))return {data:structuredClone(saved)};
+    if(url.endsWith('/sourcing/upload')){
+      assert.ok(body.fileBase64);
+      if(body.filename==='替换.pdf')await new Promise(resolve=>{finishUpload=resolve;});
+      if(body.filename==='无文字.pdf')throw Error('该简历未提取到足够正文');
+      saved={...saved,version:saved.version+1,references:[...saved.references,{id:body.filename,filename:body.filename,characters:400}]};
+      return {data:structuredClone(saved)};
+    }
+    if(url.endsWith('/sourcing/profile')){
+      saved={...saved,profileState:'running',profileStartedAt:Date.now()/1000};
+      return {data:structuredClone(saved)};
+    }
+    throw Error('unexpected '+url);
+  }});
+  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  assert.match(app.text(),/尚无已上传/);assert.doesNotMatch(app.text(),/旧画像/);
+  const profile=()=>app.visible().find(n=>n.tagName==='button'&&/AI 提炼|正在提炼|画像已就绪/.test(n._text));
+  const find=()=>app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取');
+  const input=app.visible().find(n=>n.type==='file');
+  assert.equal(profile().disabled,true);assert.equal(input.disabled,false,'Old-version analysis must not lock new references');
+  online=false;
+  const before=app.calls.filter(c=>c.url.endsWith('/login/status')).length;
+  input.files=[{name:'替换.pdf',size:100}];const upload=input.events.change();
+  await flush();assert.match(app.text(),/正在上传并提取/);assert.equal(profile().disabled,true);
+  input.files=[{name:'补充.pdf',size:100}];await input.events.change();
+  assert.match(app.text(),/当前操作完成后自动上传/);
+  finishUpload();await upload;await flush();
+  assert.equal(saved.references.length,2);assert.equal(profile().disabled,false);
+  input.files=[{name:'无文字.pdf',size:100}];await input.events.change();
+  assert.match(app.text(),/未提取到足够正文/);assert.equal(profile().disabled,false);
+  await app.click('AI 提炼 JD 与人才画像');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/login/status')).length,before,'Cloud storage and AI need no local BOSS health check');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/profile')).length,1);
+  saved={...saved,profileState:'complete',profile:{summary:'新版画像',suggestedJd:'系统开发',skills:['Java']}};
+  await app.tick(4000);assert.equal(find().disabled,false);
+  const details=app.visible().find(n=>n.tagName==='details'&&n.textContent.includes('查看建议'));
+  details.open=true;
+  await app.click('刷新结果');
+  assert.ok(app.visible().includes(details));assert.equal(details.open,true,'Polling retains expanded profile');
+  await app.click('一键 AI 获取');
+  assert.match(app.text(),/请先连接并登录/);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/search')||c.url.includes('/recommendations?')).length,0,'Candidate reads still require the actual active recruiter');
+});
+test('job refresh keeps cards during recovery, removes repeated errors, and reset renders fresh cards',async()=>{
+  let fail=false,release;
+  const app=setup({api:async url=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete'}};
+    if(url.endsWith('/jobs')){
+      if(fail)await new Promise(resolve=>{release=resolve;});
+      if(fail)throw Error('网络暂时中断');
+      return {data:structuredClone(fixtures.jobs)};
+    }
+    throw Error('unexpected '+url);
+  }});
+  await app.enter('jobs');
+  const card=app.visible().find(n=>n.className==='hr-job-card');
+  assert.ok(card);
+  fail=true;await app.enter('jobs');
+  assert.ok(app.visible().includes(card),'Existing cards stay visible while reloading');
+  release();await flush();assert.ok(app.visible().includes(card));
+  await app.enter('jobs');release();await flush();
+  assert.equal(app.visible().filter(n=>n._text==='网络暂时中断').length,1);
+  fail=false;await app.enter('jobs');assert.ok(app.visible().includes(card));
+  assert.equal(app.visible().filter(n=>n._text==='网络暂时中断').length,0);
+  app.env.HrWorkspace.reset();await app.enter('jobs');
+  const fresh=app.visible().find(n=>n.className==='hr-job-card');
+  assert.ok(fresh);assert.notEqual(fresh,card);
 });
 test('origin filter composes with selected job and review status',async()=>{
   const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')?{state:'complete'}:

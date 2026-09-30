@@ -32,7 +32,7 @@ class LocalBridge {
       let raw='';
       for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>8192)throw Error('请求过长');}
       if(req.url==='/pair'&&req.method==='POST'){
-        if(this.pairing||this.engine.busy||this.engine.disconnecting)throw Error('助手正在处理另一项操作，请稍后再连接');
+        if(this.pairing||this.engine.disconnecting)throw Error('助手正在更新连接，请稍后再连接');
         this.pairing=true;
         try{
           const value=JSON.parse(raw);
@@ -60,10 +60,16 @@ class LocalBridge {
       }
       if(!/^\/api\/v1\/hr\/(?!desktop\/)[a-z0-9/?=&_%~-]+$/i.test(req.url))throw Error('不支持的本机接口');
       await this.authorize();
-      const reply=await this.engine.route(new Request(ORIGIN+req.url,{
-        method:req.method,headers:{'Content-Type':'application/json'},
-        ...(req.method==='POST'?{body:raw||undefined}:{}),
-      }));
+      const controller=new AbortController();
+      const disconnected=()=>{if(!res.writableEnded)controller.abort();};
+      res.once('close',disconnected);
+      let reply;
+      try{reply=await this.engine.route(new Request(ORIGIN+req.url,{
+          method:req.method,headers:{'Content-Type':'application/json'},signal:controller.signal,
+          ...(req.method==='POST'?{body:raw||undefined}:{}),
+        }));
+      }finally{res.removeListener('close',disconnected);}
+      if(res.destroyed)return;
       if(!reply)throw Error('不支持的本机接口');
       res.writeHead(reply.status,Object.fromEntries(reply.headers));
       res.end(Buffer.from(await reply.arrayBuffer()));

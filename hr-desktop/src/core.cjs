@@ -5,6 +5,8 @@ const {EventEmitter} = require('node:events');
 const {spawn, execFile} = require('node:child_process');
 const {directEnvironment} = require('./direct-network.cjs');
 const {resolveAccount,bindAccount,validKey}=require('./account-identity.cjs');
+const {OperationQueue}=require('./operation-queue.cjs');
+const SHARED_READS=new Set(['jobs','applications','candidates','recommendations','chats','resume','messages','tracked']);
 
 const ORIGIN = 'https://hoyee.org.cn';
 const STOP = new Set(['ACCOUNT_RISK','ENVIRONMENT_RISK','IP_RESTRICTED','AUTH_REQUIRED','AUTH_EXPIRED',
@@ -89,6 +91,8 @@ class Recruiter extends EventEmitter {
     super(); Object.assign(this,{directory,runtime,browser,authorize,passiveCloud,clock});
     this.state={state:'idle',phase:'',error:'',failure_code:''};
     this.paused=false;this.busy=false;this.inFlight=null;this.loginTimer=null;
+    this.operations=new OperationQueue();
+    this.backgroundRetryAt=0;this.backgroundFailures=0;
     this.activity=new Map();this.activityTimer=null;this.lastActivityPoll=0;
     this.owner='';this.accountRoot='';this.cdp='';this.events=[];this.persist=Promise.resolve();this.riskHold=null;this.generation=0;
     this.autoReconnect=true;this.recovering=false;this.recoveryAt=0;this.recoveryFailures=0;this.closed=false;
@@ -114,6 +118,7 @@ class Recruiter extends EventEmitter {
     this.pollTimer.unref();
   }
   snapshot(){return {...this.state,paused:this.paused,busy:this.busy,runtime:'local',events:this.events.slice(-15),
+    queuedOperations:this.operations.pending,operation:this.operation||'',
     passive:this.passiveStatus||{},reconnecting:this.paused&&this.autoReconnect&&!!this.accountRoot
       &&(!this.riskHold||TEMPORARY.has(this.riskHold.code)),
     accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
@@ -122,6 +127,7 @@ class Recruiter extends EventEmitter {
   pause(code='USER_PAUSED'){
     if(code==='USER_PAUSED')this.autoReconnect=false;
     this.generation++;this.paused=true;clearInterval(this.loginTimer);this.loginTimer=null;
+    this.operations.cancelPending();
     this.clearActivity();
     if(['pending','complete'].includes(this.state.state))this.state={...this.state,state:'verification_pending',phase:'',
       failure_code:this.autoReconnect?'LOCAL_RECONNECTING':'MANUAL_REVIEW_REQUIRED',
@@ -147,26 +153,40 @@ class Recruiter extends EventEmitter {
     this.owner=key;
     return key;
   }
-  async call(operation,extra={}) {
-    const generation=this.generation;
-    if(!['sync','clear','tracked','hold'].includes(operation))await this.checkOwner();
-    if(this.disconnecting||generation!==this.generation)throw Error('连接状态已更改，本次操作未执行');
-    if(this.busy) throw Error('本机正在处理另一项操作，请稍后再试');
-    this.busy=true;this.emit('change',this.snapshot());
-    const pending=(async()=>{
-      try {
-        const result=await this.runtime.run({operation,root:this.accountRoot,cdp:this.cdp,...extra});
-        const code=result?.error?.code;
-        if(STOP.has(code)) await this.hold({code});
-        return result;
-      } finally {this.busy=false;this.emit('change',this.snapshot());this.scheduleActivityPoll();}
-    })();
-    this.inFlight=pending;
-    try{return await pending;}finally{if(this.inFlight===pending)this.inFlight=null;}
+  call(operation,extra={},options={}) {
+    const generation=this.generation,root=this.accountRoot,hold=this.riskHold;
+    const current=()=>{
+      if(this.closed||this.disconnecting||generation!==this.generation||root!==this.accountRoot||hold!==this.riskHold)
+        throw Object.assign(Error('连接状态已更改，本次操作未执行'),{code:'OPERATION_CANCELLED'});
+    };
+    const key=SHARED_READS.has(operation)?JSON.stringify([generation,root,operation,extra]):'';
+    return this.operations.add(wanted=>{
+      const pending=(async()=>{
+        current();
+        if(!['sync','clear','tracked','hold'].includes(operation))await this.checkOwner();
+        current();
+        if(!wanted())throw this.operations.cancelled();
+        this.busy=true;this.operation=operation;this.emit('change',this.snapshot());
+        try {
+          const result=await this.runtime.run({operation,root,cdp:this.cdp,...extra});
+          current();
+          const code=result?.error?.code;
+          if(STOP.has(code))await this.hold({code});
+          return result;
+        }finally{this.busy=false;this.operation='';this.emit('change',this.snapshot());}
+      })();
+      this.inFlight=pending;
+      return pending.finally(()=>{
+        if(this.inFlight===pending)this.inFlight=null;
+        // The queue drains before the next activity scheduling turn.
+        queueMicrotask(()=>this.scheduleActivityPoll());
+      });
+    },{...options,key});
   }
   async hold(hold){
     if(this.riskHold?.reason==='REALNAME_LINKED_ACCOUNT'&&!hold.reason)hold={...hold,...this.riskHold};
     this.riskHold=hold;
+    this.operations.cancelPending();
     clearInterval(this.loginTimer);this.loginTimer=null;this.paused=true;
     this.clearActivity();
     this.state={state:'verification_pending',phase:'',failure_code:hold.code,
@@ -271,7 +291,7 @@ class Recruiter extends EventEmitter {
     this.activityObservedAt=0;
   }
   async reconnect(){
-    if(this.closed||this.recovering||this.busy||this.polling||this.disconnecting||!this.autoReconnect||!this.accountRoot
+    if(this.closed||this.recovering||this.busy||this.operations.active||this.polling||this.disconnecting||!this.autoReconnect||!this.accountRoot
       ||this.state.state==='pending'||this.state.state==='complete'&&!this.paused
       ||this.riskHold&&!TEMPORARY.has(this.riskHold.code)||this.clock()<this.recoveryAt)return;
     this.recovering=true;
@@ -327,45 +347,53 @@ class Recruiter extends EventEmitter {
     this.scheduleActivityPoll();
   }
   scheduleActivityPoll(){
-    if(this.activityTimer||this.polling||this.busy||this.paused||this.riskHold
+    if(this.activityTimer||this.polling||this.busy||this.operations.pending||this.paused||this.riskHold
       ||this.state.state!=='complete'||!this.passiveCloud)return;
     const status=this.passiveStatus||{};
     if(!this.activity.size&&!status.activityPending&&!status.exportsPending&&!status.catchupPending)return;
     const due=this.activity.size||status.exportsPending?0:status.catchupPending
       ?Number(status.catchupRetryAt||0)*1000:Number(status.activityRetryAt||0)*1000;
-    const delay=Math.max(1000,this.lastActivityPoll+10000-this.clock(),due-this.clock());
+    const delay=Math.max(1000,this.lastActivityPoll+10000-this.clock(),due-this.clock(),this.backgroundRetryAt-this.clock());
     this.activityTimer=setTimeout(()=>{
       this.activityTimer=null;this.poll();
     },delay);
     this.activityTimer.unref();
   }
   async poll(){
-    if(this.state.state!=='complete'||this.paused||this.busy||this.polling)return;
+    if(this.state.state!=='complete'||this.paused||this.busy||this.operations.active||this.polling
+      ||this.clock()<this.backgroundRetryAt)return;
     this.polling=true;
     clearTimeout(this.activityTimer);this.activityTimer=null;this.lastActivityPoll=this.clock();
     const generation=this.generation,accountRoot=this.accountRoot;
+    const call=(operation,extra)=>this.call(operation,extra,{background:true});
     const ready=()=>generation===this.generation&&accountRoot===this.accountRoot&&this.state.state==='complete'&&!this.paused&&!this.riskHold;
     try{
       await this.checkOwner();
       if(!ready())return;
-      if(!this.passiveCloud){await this.call('poll-resumes');return;}
+      if(!this.passiveCloud){
+        const result=await call('poll-resumes');
+        if(result.ok)this.backgroundRecovered();else this.backgroundFailed(result.error?.code);
+        return;
+      }
       const accountKey=path.basename(accountRoot);
-      const local=await this.call('passive-local');if(!local.ok||!ready())return;
+      const local=await call('passive-local');
+      if(!ready())return;
+      if(!local.ok){this.backgroundFailed(local.error?.code);return;}
       if(local.data?.status)this.passiveStatus=local.data.status;
       for(const event of local.data?.events||[]){
         await this.passiveCloud('passive-report',{accountKey,event});
         if(!ready())return;
-        await this.call('passive-ack',{eventId:event.id});
+        await call('passive-ack',{eventId:event.id});
       }
       for(const report of local.data?.reports||[]){
         await this.passiveCloud('passive-report',{accountKey,commandId:report.id,status:report.state});
         if(!ready())return;
-        await this.call('passive-ack',{commandId:report.id});
+        await call('passive-ack',{commandId:report.id});
       }
       for(const binding of local.data?.bindings||[]){
         await this.passiveCloud('passive-report',{accountKey,...binding});
         if(!ready())return;
-        await this.call('passive-ack',binding);
+        await call('passive-ack',binding);
       }
       for(const item of local.data?.exports||[]){
         const file=await fs.realpath(item.file),prefix=await fs.realpath(path.join(accountRoot,'downloads'));
@@ -376,7 +404,7 @@ class Recruiter extends EventEmitter {
         await this.passiveCloud('passive-ingest',{accountKey,friendId:item.friend,messageId:item.mid,ruleId:item.rule,
           ...metadata,extension:path.extname(file).slice(1).toLowerCase(),fileBase64:raw.toString('base64')});
         if(!ready())return;
-        await this.call('passive-ack',{friendId:item.friend,messageId:item.mid});
+        await call('passive-ack',{friendId:item.friend,messageId:item.mid});
         this.event('RESUME_ARCHIVED');
       }
       const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing']});
@@ -386,23 +414,24 @@ class Recruiter extends EventEmitter {
         const active=command.kind==='active_greet';
         let canSend=true;
         if(active){
-          const check=await this.call('sourcing-ready',{command});
+          const check=await call('sourcing-ready',{command});
           if(!check.ok||!ready())return;
           canSend=check.data?.allowed===true;
         }
         if(canSend){
         const claimed=await this.passiveCloud('passive-claim',{accountKey,id:command.id});
         if(!claimed.claimed||!ready())return;
-        const result=await this.call(active?'sourcing-send':'passive-send',{command});
+        const result=await call(active?'sourcing-send':'passive-send',{command});
         if(!ready())return;
         await this.passiveCloud('passive-report',{accountKey,commandId:command.id,status:result.data?.status||'uncertain'});
-        await this.call('passive-ack',{commandId:command.id});
+        await call('passive-ack',{commandId:command.id});
         this.event((active?'ACTIVE_GREETING_':command.kind==='invite'?'INVITATION_':'REJECTION_')+(result.data?.status==='sent'?'SENT':'UNCERTAIN'));
+        this.backgroundRecovered();
         return;
         }
       }
       const hints=[...this.activity.values()];
-      const result=await this.call('passive-step',{rules:config.rules||[],replyTemplate:config.replyTemplate||null,
+      const result=await call('passive-step',{rules:config.rules||[],replyTemplate:config.replyTemplate||null,
         activeContacts:config.activeContacts||[],
         activityHints:hints,activityWatching:this.clock()-(this.activityObservedAt||0)<6000,
         reconnectId:this.reconnectId||''});
@@ -415,14 +444,26 @@ class Recruiter extends EventEmitter {
           try{await this.browser.chat();}catch{this.event('CHAT_PAGE_UNAVAILABLE');}
         }
       }
-      if(!result.ok&&!STOP.has(result.error?.code))this.pause('BACKGROUND_PAUSED');
+      if(!result.ok&&!STOP.has(result.error?.code))this.backgroundFailed(result.error?.code);
+      else if(result.ok)this.backgroundRecovered();
     }
     catch(error){
-      if(error.code==='PLATFORM_UNAVAILABLE'){this.event('PLATFORM_UNAVAILABLE');return;}
-      this.pause('BACKGROUND_PAUSED');
+      if(error.code==='OPERATION_CANCELLED'||!ready())return;
+      this.backgroundFailed(error.code);
     }
     finally{this.polling=false;this.scheduleActivityPoll();}
   }
+  backgroundFailed(code){
+    if(this.paused||this.state.state!=='complete')return;
+    const delay=Math.min(300000,30000*2**Math.min(this.backgroundFailures++,4));
+    this.backgroundRetryAt=this.clock()+delay;
+    this.passiveStatus={...this.passiveStatus,phase:'retry_wait',retryAt:this.backgroundRetryAt/1000,
+      errorCode:/^[A-Z_]{1,60}$/.test(code||'')?code:'LOCAL_OPERATION_FAILED'};
+    // Transport/task failures do not invalidate the verified BOSS session or
+    // recreate catch-up cursors. Every write still uses its persistent ledger.
+    this.event('BACKGROUND_RETRY');
+  }
+  backgroundRecovered(){this.backgroundFailures=0;this.backgroundRetryAt=0;}
   async clearCredentials(){
     const accounts=path.join(this.directory,'accounts');
     const directories=async folder=>{
@@ -485,20 +526,20 @@ class Recruiter extends EventEmitter {
       }
       if(method==='GET'&&route==='resumes'){
         if(!this.accountRoot)return ok([]);
-        const tracked=await this.call('tracked');return ok(tracked.data||[]);
+        const tracked=await this.call('tracked',{}, {signal:request.signal});return ok(tracked.data||[]);
       }
       if(this.state.state!=='complete'||this.paused)throw Error(this.state.error||'本机任务已暂停，请先连接招聘账号');
       if(method==='POST'&&route==='resumes/request'){
         const input=await request.json();
         if(!/^[1-9]\d{0,19}$/.test(String(input.friendId)))throw Error('会话标识格式不正确');
         // The existing workspace asks for explicit confirmation before POST.
-        const result=await this.call('request-resume',{friendId:String(input.friendId)});
+        const result=await this.call('request-resume',{friendId:String(input.friendId)},{signal:request.signal});
         if(!result.ok)throw Error(result.error?.message||'未确认索取结果，请勿重复发送');
         return ok(result.data);
       }
       const download=route.match(/^resumes\/([1-9]\d{0,19})\/([1-9]\d{0,19})\/download$/);
       if(method==='GET'&&download){
-        const result=await this.call('download-resume',{friendId:download[1],messageId:download[2]});
+        const result=await this.call('download-resume',{friendId:download[1],messageId:download[2]},{signal:request.signal});
         if(!result.ok)throw Error('附件未能下载，记录已保留');
         const file=path.resolve(result.file),prefix=path.join(this.accountRoot,'downloads')+path.sep;
         if(!file.startsWith(prefix))throw Error('附件路径异常');
@@ -514,7 +555,7 @@ class Recruiter extends EventEmitter {
         const input={};
         for(const name of ['page','jobId','keyword','geekId','securityId'])input[name]=url.searchParams.get(name)||'';
         if(message)input.friendId=message[1];
-        const result=await this.call(message?'messages':route,input);
+        const result=await this.call(message?'messages':route,input,{signal:request.signal});
         return ok(result);
       }
       return response({success:false,message:'不支持的招聘操作'},405);

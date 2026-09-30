@@ -39,6 +39,24 @@ test('automatic checks pair once then read only local cached login state',async(
   assert.ok(calls.every(x=>!x.url.endsWith('/login/start')&&!x.url.endsWith('/jobs')));
   assert.equal(transport.connection().paired,true);
 });
+test('brief recovery is quiet, persistent failure is visible, and real account holds are immediate',async()=>{
+  const {transport,env,tick}=fixture();
+  const fetch=env.fetch;let offline=false,restricted=false;
+  env.fetch=async(url,options)=>{
+    if(offline&&url.endsWith('/health'))throw new TypeError('offline');
+    if(url.endsWith('/login/status'))return Response.json({success:true,data:restricted
+      ?{state:'verification_pending',paused:true,reconnecting:false,failure_code:'ACCOUNT_RISK'}
+      :{state:'complete',paused:false}});
+    return fetch(url,options);
+  };
+  let now=Date.now();env.Date={now:()=>now};
+  transport.startAutoConnect();await tick();
+  offline=true;await tick();assert.equal(transport.connection().phase,'recovering');
+  now+=16000;await tick();assert.equal(transport.connection().phase,'reconnecting');
+  offline=false;await tick();assert.equal(transport.connection().phase,'connected');
+  restricted=true;await tick();assert.equal(transport.connection().state.failure_code,'ACCOUNT_RISK');
+  assert.equal(transport.connection().state.paused,true);
+});
 test('lease renews before expiry without opening BOSS or replaying work',async()=>{
   const {transport,calls,tick,env}=fixture();
   transport.startAutoConnect();await tick();

@@ -10,6 +10,7 @@
     template_required:'请在话术管理中配置默认被动邀约回复',chat_required:'正在准备 BOSS 沟通页面',
     budget_wait:'正在按请求频率排队，会自动继续',send_wait:'正在按发送间隔排队',
     catching_up:'正在补收断开期间的新招呼和简历',
+    retry_wait:'后台连接暂缓，进度已保留，将自动继续',
     needs_review:'有发送结果待核对，请查看 BOSS 会话',disabled:'被动邀约已关闭'};
   const eventLabels={INCOMING_DETECTED:'收到主动消息',AUTO_REPLY_SENT:'话术回复已发送',
     AUTO_REPLY_UNCERTAIN:'话术回复结果待核对',RESUME_REQUESTED:'已索取简历',

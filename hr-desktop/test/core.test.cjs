@@ -357,12 +357,100 @@ test('platform outage blocks polling without destroying BOSS session or bypassin
   engine.authorize=async()=>user;await engine.poll();
   assert.equal(engine.paused,true);assert.equal(calls.length,0);
 });
-test('background failure makes paused status visible instead of reporting a ready account',async t=>{
+test('background failure backs off without invalidating login or rebuilding catch-up; real risk still pauses',async t=>{
   const {engine}=await fixture(t);
   engine.state={state:'complete'};engine.paused=false;
-  engine.runtime.run=async()=>{throw Error('unknown result');};
+  let now=Date.now(),runs=0;engine.clock=()=>now;engine.reconnectId='original-cursor';
+  engine.runtime.run=async()=>{runs++;throw Error('unknown result');};
   await engine.poll();
-  assert.equal(engine.paused,true);assert.equal(engine.state.state,'verification_pending');
+  assert.equal(engine.paused,false);assert.equal(engine.state.state,'complete');
+  assert.equal(engine.passiveStatus.phase,'retry_wait');assert.equal(engine.backgroundRetryAt,now+30000);
+  assert.equal(engine.reconnectId,'original-cursor');
+  await engine.poll();assert.equal(runs,1,'No tight retry loop');
+  now+=30000;await engine.poll();assert.equal(engine.backgroundRetryAt,now+60000);
+  assert.equal(engine.events.some(e=>e.code==='CONNECTION_RESTORED'),false);
+  now+=60000;engine.runtime.run=async()=>({ok:false,error:{code:'ACCOUNT_RISK'}});
+  await engine.poll();assert.equal(engine.paused,true);assert.equal(engine.riskHold.code,'ACCOUNT_RISK');
+});
+test('foreground read waits for current background operation and does not pause either workflow',async t=>{
+  const {engine,calls}=await fixture(t);
+  engine.state={state:'complete'};
+  let finish;engine.runtime.run=async input=>{
+    calls.push(input);if(input.operation==='poll-resumes')await new Promise(resolve=>{finish=resolve;});
+    return {ok:true,data:[]};
+  };
+  const background=engine.poll();while(!finish)await new Promise(r=>setImmediate(r));
+  const read=engine.route(new Request(ORIGIN+'/api/v1/hr/jobs'));
+  await new Promise(r=>setImmediate(r));assert.equal(calls.length,1);assert.equal(engine.operations.pending,1);
+  finish();await background;
+  assert.equal((await read).status,200);
+  assert.deepEqual(calls.map(x=>x.operation),['poll-resumes','jobs']);
+  assert.equal(engine.paused,false);assert.equal(engine.state.state,'complete');
+});
+test('identical concurrent reads share one result; queued foreground reads go before background work',async t=>{
+  const {engine,calls}=await fixture(t);
+  let finish;engine.runtime.run=async input=>{
+    calls.push(input);if(input.operation==='tracked')await new Promise(resolve=>{finish=resolve;});
+    return {ok:true,data:{operation:input.operation}};
+  };
+  const first=engine.call('tracked');
+  while(!finish)await new Promise(r=>setImmediate(r));
+  const background=engine.call('passive-local',{}, {background:true});
+  const a=engine.call('jobs',{jobId:'same'}),b=engine.call('jobs',{jobId:'same'});
+  finish();const results=await Promise.all([first,background,a,b]);
+  assert.deepEqual(calls.map(x=>x.operation),['tracked','jobs','passive-local']);
+  assert.deepEqual(results[2],results[3]);assert.equal(engine.busy,false);
+});
+test('cancelling one shared reader preserves the other; all cancelled queued writes never start',async t=>{
+  const {engine,calls}=await fixture(t);
+  let finish;engine.runtime.run=async input=>{
+    calls.push(input);if(input.operation==='tracked')await new Promise(resolve=>{finish=resolve;});
+    return {ok:true,data:[]};
+  };
+  const running=engine.call('tracked');while(!finish)await new Promise(r=>setImmediate(r));
+  const aborted=new AbortController(),writeAbort=new AbortController();
+  const cancelled=engine.call('jobs',{}, {signal:aborted.signal});
+  const kept=engine.call('jobs');
+  const write=engine.call('request-resume',{friendId:'123'},{signal:writeAbort.signal});
+  const checks=[assert.rejects(cancelled,/取消/),assert.rejects(write,/取消/)];
+  aborted.abort();writeAbort.abort();finish();await Promise.all([running,kept,...checks]);
+  assert.deepEqual(calls.map(x=>x.operation),['tracked','jobs']);
+});
+test('pause invalidates queued writes without replaying the current operation',async t=>{
+  const {engine,calls}=await fixture(t);
+  let finish;engine.runtime.run=async input=>{calls.push(input);return new Promise(resolve=>{finish=resolve;});};
+  const running=engine.call('tracked');while(!finish)await new Promise(r=>setImmediate(r));
+  const write=engine.call('request-resume',{friendId:'123'});
+  const checks=[assert.rejects(running,/连接状态已更改/),assert.rejects(write,/取消/)];
+  engine.pause();finish({ok:true});await Promise.all(checks);
+  assert.equal(calls.length,1);assert.equal(engine.busy,false);
+});
+test('a returned safety hold cancels waiting requests before they reach the runtime',async t=>{
+  const {engine,calls}=await fixture(t);
+  let finish;engine.runtime.run=async input=>{calls.push(input);return new Promise(resolve=>{finish=resolve;});};
+  const running=engine.call('jobs');while(!finish)await new Promise(r=>setImmediate(r));
+  const queued=engine.call('request-resume',{friendId:'123'});
+  const check=assert.rejects(queued,/取消/);
+  finish({ok:false,error:{code:'SECURITY_VERIFICATION_REQUIRED'}});
+  await running;await check;
+  assert.equal(calls.length,1);assert.equal(engine.paused,true);
+});
+test('same-owner lease renewal works while the SDK is busy without interrupting or calling it',async t=>{
+  const {engine,calls}=await fixture(t);engine.busy=true;
+  const bridge=new LocalBridge({engine,authorize:async()=>user,pair:async()=>({expiresAt:Date.now()/1000+1800})});
+  await bridge.start(0);t.after(()=>bridge.close());
+  const reply=await fetch(`http://127.0.0.1:${bridge.port}/pair`,{method:'POST',
+    headers:{Origin:ORIGIN,'Content-Type':'application/json'},body:JSON.stringify({ticket:'a'.repeat(43)})});
+  assert.equal(reply.status,200);assert.equal(engine.busy,true);assert.equal(calls.length,0);
+});
+test('safety hold arriving during authorization prevents runtime dispatch',async t=>{
+  const {engine,calls}=await fixture(t);
+  let authorize;engine.authorize=()=>new Promise(resolve=>{authorize=resolve;});
+  const pending=engine.call('request-resume',{friendId:'123'});
+  while(!authorize)await new Promise(r=>setImmediate(r));
+  const check=assert.rejects(pending,/连接状态已更改/);
+  await engine.hold({code:'ACCOUNT_RISK'});authorize(user);await check;
+  assert.equal(calls.length,0);
 });
 test('logout cancels late login authorization and browser opening without starting a new observer',async t=>{
   const {engine}=await fixture(t);let authorize,open,opened=0;

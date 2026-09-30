@@ -16,6 +16,7 @@
   let resumeTimer = null;
   let jobRecords = [], jobsRequest = null, conversations = [], selectedConversation = null;
   let recoveryRead = null;
+  const readNotices = new WeakMap();
   let selectedCandidate = null, sessionGeneration = 0;
   let trackedResumeRequests = new Map(), requestResumeButton = null;
   let resumeLoadSequence = 0;
@@ -188,6 +189,13 @@
   globalThis.HeyiHrTransport?.subscribe?.(connection=>{
     if(!allowed()||loginActionInFlight)return;
     helperConnected=connection.paired;
+    const recovering=['recovering','reconnecting'].includes(connection.phase)||connection.state?.reconnecting;
+    if(recovering&&lastLoginState.state==='complete'){
+      // Keep the current cards, selection and layout during a transient outage.
+      // Only the small status text changes after the recovery grace period.
+      if(connection.phase!=='recovering')connectionBadge.textContent='助手后台恢复中';
+      return;
+    }
     if(connection.state&&helperConnected){
       lastLoginState=connection.state;
       loginPhase=connection.state.phase||'';
@@ -888,10 +896,8 @@
     if (action === 'candidates' || action === 'recommendations') talentAction = action;
     if (action === 'chats') {selectedConversation=null;friendId.value='';}
     const box = resultBoxes[current], ticket = ++sequence;
-    box.replaceChildren();
     box.setAttribute('aria-busy','true');
-    element('p', '正在读取平台数据…', box, 'hr-loading');
-    let path;
+    let path,loading;
     try {
       // One recruiter account is serialized by the connector. Load the small
       // position picker first instead of racing it against a candidate request.
@@ -914,6 +920,12 @@
         }
         path = '/api/v1/hr/resume?' + params({geekId:only(geekId.value),jobId:only(resumeJob.value),securityId:only(securityId.value)});
       } else return;
+      readNotices.get(box)?.remove();
+      const retained=box.dataset.hrPath===path&&!!box.dataset.hrSnapshot&&box.children.length>0;
+      if(!retained)box.replaceChildren();
+      loading=element('p',retained?'正在更新…':'正在读取平台数据…',box,'hr-loading');
+      readNotices.set(box,loading);
+      loading.setAttribute('role','status');
       const response = await hrApi(path);
       if (ticket !== sequence || activeWorkspace !== 'hr') return;
       if (action === 'overview' && response.data?.error?.code === 'SESSION_DISCONNECTED') {
@@ -925,7 +937,18 @@
         box.replaceChildren();
         return;
       }
+      const signature=JSON.stringify([action,page,response.data]);
+      if(retained&&box.dataset.hrSnapshot===signature){
+        loading?.remove();recoveryRead=null;return;
+      }
+      if(response.data?.ok===false&&retained){
+        loading.textContent='本次更新未完成，已保留当前内容。';
+        if(!recovered)recoveryRead={section:current,action};
+        return;
+      }
       const rows = display(box, response.data, action);
+      if(response.data?.ok!==false){box.dataset.hrPath=path;box.dataset.hrSnapshot=signature;}
+      else{delete box.dataset.hrPath;delete box.dataset.hrSnapshot;}
       if(response.data?.ok===false&&!recovered)recoveryRead={section:current,action};
       else recoveryRead=null;
       pagination(box, action, response.data, rows);
@@ -934,8 +957,10 @@
       }
     } catch (error) {
       if (ticket !== sequence) return;
-      box.replaceChildren();
-      element('p', error.message || '读取失败', box, 'hr-error');
+      if(box.dataset.hrPath!==path||!box.dataset.hrSnapshot)box.replaceChildren();
+      else loading?.remove();
+      readNotices.get(box)?.remove();
+      readNotices.set(box,element('p', error.message || '读取失败', box, 'hr-error'));
       if(path&&!recovered)recoveryRead={section:current,action};
     } finally {
       if (ticket === sequence) box.setAttribute('aria-busy','false');
@@ -1049,7 +1074,9 @@
     keyword.value = '';
     rememberJobs([]);
     logoutButton.hidden=true;paintConnection(lastLoginState);
-    root.querySelectorAll('.hr-result').forEach(box => box.replaceChildren());
+    root.querySelectorAll('.hr-result').forEach(box => {
+      box.replaceChildren();delete box.dataset.hrPath;delete box.dataset.hrSnapshot;readNotices.delete(box);
+    });
   }};
   window.addEventListener('heyi:company-reset', () => HrWorkspace.reset());
 })();

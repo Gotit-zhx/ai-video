@@ -259,7 +259,7 @@ async function authorized(){
     const checkedLease=lease;
     if(!leaseCheck)leaseCheck=cloud('lease',{token:checkedLease.token,device})
       .then(result=>{
-        if(lease!==checkedLease)throw Error('连接已更新，请重新检查');
+        if(lease!==checkedLease)throw Object.assign(Error('连接凭证已续期，正在后台接续'),{code:'PLATFORM_UNAVAILABLE'});
         leaseChecked=Date.now();return result.user;
       })
       .catch(error=>{
