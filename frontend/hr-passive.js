@@ -51,11 +51,6 @@
     const resumeToolbar=el('div','',resumePanel,'hr-resume-toolbar');
     const resumeFeedback=el('p','',resumeToolbar,'hr-resume-count');
     const resumeActions=el('div','',resumeToolbar,'hr-actions');
-    const jobLabel=el('label','',resumeActions,'hr-resume-job-filter');
-    el('span','职位',jobLabel);
-    const jobSelect=el('select','',jobLabel);jobSelect.setAttribute('aria-label','按职位筛选简历');
-    el('option','全部职位',jobSelect).value='';
-    jobSelect.onchange=()=>{jobFilter=jobSelect.value;page=1;poolSnapshot='';load();};
     button('刷新',resumeActions,load);
     const statusTabs=el('div','',resumePanel,'hr-pool-tabs hr-resume-tabs');
     statusTabs.setAttribute('aria-label','简历审批分类');
@@ -63,6 +58,11 @@
       const control=button(label,statusTabs,()=>{filter=value;page=1;load();});
       control.setAttribute('aria-pressed',String(filter===value));return {value,label,control};
     });
+    const jobLabel=el('label','',resumePanel,'hr-resume-job-filter');
+    el('span','职位',jobLabel);
+    const jobSelect=el('select','',jobLabel);jobSelect.setAttribute('aria-label','按职位筛选简历');
+    el('option','全部职位',jobSelect).value='';
+    jobSelect.onchange=()=>{jobFilter=jobSelect.value;page=1;poolSnapshot='';load();};
     const poolActivity=el('p','',resumePanel,'hr-pool-activity');
     poolActivity.setAttribute('aria-live','polite');
     const resumeRows=el('div','',resumePanel,'hr-result');
