@@ -136,7 +136,8 @@ test('sourcing route without selected job never reads BOSS or creates a new scop
   assert.match(app.text(),/请返回职位管理/);
   assert.equal(app.calls.length,0);
 });
-test('continuous sourcing reaches page 22, waits on budget and never sends automatically',async()=>{
+for(const temporaryCode of ['REQUEST_BUDGET_EXHAUSTED','SESSION_UNAVAILABLE'])
+test(`continuous sourcing reaches page 22, waits on ${temporaryCode} and never sends automatically`,async()=>{
   const key='a'.repeat(64);
   let saved={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'工程师',version:1,
     profileState:'complete',references:[],profile:{},run:null};
@@ -146,7 +147,7 @@ test('continuous sourcing reaches page 22, waits on budget and never sends autom
     if(url.endsWith('/login/status')){
       statusReads++;
       if(budget&&!recovered){recovered=true;return {data:{paused:true,reconnecting:true,
-        hold:{code:'REQUEST_BUDGET_EXHAUSTED'}}};}
+        hold:{code:temporaryCode}}};}
       return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing','continuous-sourcing']}};
     }
     if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};

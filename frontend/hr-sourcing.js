@@ -276,8 +276,8 @@
             try{result=(await hrApi('/api/v1/hr/recommendations?'+new URLSearchParams({jobId,page:nextPage}))).data;}
             catch(error){
               const status=(await hrApi('/api/v1/hr/login/status')).data;
-              if(status?.hold?.code==='REQUEST_BUDGET_EXHAUSTED'&&status.reconnecting){
-                progress('读取额度已用完，等待助手恢复后继续当前页');await wait();continue;
+              if(['REQUEST_BUDGET_EXHAUSTED','SESSION_UNAVAILABLE'].includes(status?.hold?.code)&&status.reconnecting){
+                progress('等待助手恢复后继续当前页，已找到的人选保留');await wait();continue;
               }
               throw error;
             }
