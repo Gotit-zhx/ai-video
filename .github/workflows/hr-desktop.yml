@@ -5,7 +5,7 @@ on:
     branches: ["codex/hr-desktop-*", "codex/test-current-20260831"]
     paths: ["hr-desktop/**", "scripts/boss-agent/**", ".github/workflows/hr-desktop.yml"]
 permissions:
-  contents: read
+  contents: write
 jobs:
   desktop:
     strategy:
@@ -67,12 +67,36 @@ jobs:
           $process = Start-Process -FilePath "release\win-unpacked\赫逸招聘助手.exe" -ArgumentList "--self-test" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Packaged smoke failed: $($process.ExitCode)" }
           if (!(Test-Path "$env:HEYI_TEST_OUTPUT\smoke.json")) { throw "Missing packaged smoke result" }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: heyi-recruiter-${{ runner.os }}-${{ runner.arch }}
-          path: |
-            hr-desktop/release/*.exe
-            hr-desktop/release/*.dmg
-            hr-desktop/release/*.zip
-            hr-desktop/test-results/*
-          retention-days: 14
+      - name: Save verified installers in an unpublished draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="hr-desktop-v${version}-${GITHUB_SHA:0:8}"
+          if ! gh release view "$tag" --json isDraft >/dev/null 2>&1; then
+            gh release create "$tag" --draft --target "$GITHUB_SHA" \
+              --title "HR desktop ${version} (${GITHUB_SHA:0:8})" \
+              --notes "Verified desktop installers and offline QA. Draft retained for coordinated platform deployment." \
+              || gh release view "$tag" --json isDraft >/dev/null
+          fi
+          test "$(gh release view "$tag" --json isDraft --jq '.isDraft')" = true
+          python - <<'PY'
+          import hashlib,json,os,pathlib,zipfile
+          root=pathlib.Path("release")
+          files=[p for p in root.iterdir() if p.suffix in {".exe",".dmg",".zip"}]
+          assert files,"No installer was produced"
+          manifest={"commit":os.environ["GITHUB_SHA"],"os":os.environ["RUNNER_OS"],
+            "arch":os.environ["RUNNER_ARCH"],"artifacts":{}}
+          for p in files:
+              manifest["artifacts"][p.name]={"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"size":p.stat().st_size}
+          prefix=root/("verified-"+os.environ["RUNNER_OS"])
+          prefix.with_suffix(".json").write_text(json.dumps(manifest,indent=2),encoding="utf-8")
+          with zipfile.ZipFile(str(prefix)+"-qa.zip","w",zipfile.ZIP_DEFLATED) as archive:
+              for p in pathlib.Path("test-results").rglob("*"):
+                  if p.is_file():archive.write(p,p.relative_to("test-results"))
+          PY
+          for asset in release/*.exe release/*.dmg release/*.zip release/verified-*.json; do
+            if [ -f "$asset" ]; then gh release upload "$tag" "$asset" --clobber; fi
+          done
