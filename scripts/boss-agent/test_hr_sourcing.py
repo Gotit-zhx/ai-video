@@ -1,5 +1,6 @@
 import base64
 import json
+import io
 from pathlib import Path
 import tempfile
 import time
@@ -17,6 +18,22 @@ KEY = 'a'*64
 
 
 class SourcingTest(unittest.TestCase):
+    def test_driver_reports_known_failure_codes_without_exposing_response_details_or_retrying(self):
+        for body, expected in [
+            ({'message': 'private response [HR_AI_OUTPUT_LIMIT]'}, '输出达到长度上限'),
+            ({'message': 'private response [HR_AI_INVALID_RESULT]'}, '未完整返回候选人'),
+            ({'message': 'private response [UNKNOWN]'}, '返回不完整或服务异常'),
+            (['private response'], '返回不完整或服务异常'),
+        ]:
+            error = s.urllib.error.HTTPError('http://private', 502, 'bad gateway', {},
+                                            io.BytesIO(json.dumps(body).encode()))
+            with mock.patch.object(s.urllib.request, 'build_opener') as opener:
+                opener.return_value.open.side_effect = error
+                with self.assertRaisesRegex(ValueError, expected) as raised:
+                    s.driver('sourcing-match', {}, 'private-cookie')
+                self.assertNotIn('private', str(raised.exception))
+                opener.return_value.open.assert_called_once()
+
     def setUp(self):
         folder = tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
         patch = mock.patch.object(pool, 'DB', Path(folder.name)/'test.db')
@@ -197,7 +214,7 @@ class SourcingTest(unittest.TestCase):
     def test_continuous_search_over_twenty_pages_and_sixty_candidates(self):
         self.ready()
         token = str(uuid.uuid4())
-        for batch in range(1, 8):
+        for batch in range(1, 13):
             request = {**self.params(), 'count': 20, 'requestId': token,
                        'batchIndex': batch, 'page': batch * 5,
                        'candidates': [self.card(f'geek{batch}_{i}') for i in range(10)]}
@@ -214,15 +231,46 @@ class SourcingTest(unittest.TestCase):
             with mock.patch.object(s, 'driver', side_effect=scores):
                 s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
         result = s.listing(USER, self.params())['run']
-        self.assertEqual(result['pagesRead'], 35)
-        self.assertEqual(result['examined'], 70)
-        self.assertEqual(len(result['candidates']), 7)
+        self.assertEqual(result['pagesRead'], 60)
+        self.assertEqual(result['examined'], 120)
+        self.assertEqual(len(result['candidates']), 12)
+        self.assertNotIn('stopReason', result)
         self.assertTrue(all(c['score'] >= 80 for c in result['candidates']))
         with pool.database() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM hr_sourcing_seen').fetchone()[0], 70)
+            self.assertEqual(db.execute('SELECT count(*) FROM hr_sourcing_seen').fetchone()[0], 120)
             self.assertEqual(len(json.loads(db.execute('SELECT body FROM hr_sourcing_runs').fetchone()[0])), 10)
         with self.assertRaises(pool.Conflict):
-            s.search(USER, {**request, 'batchIndex': 8, 'count': 5}, 'fixture')
+            s.search(USER, {**request, 'batchIndex': 13, 'count': 5}, 'fixture')
+
+    def test_zero_matches_stops_at_one_hundred_and_preserves_condition_advice(self):
+        self.ready()
+        token = str(uuid.uuid4())
+        for batch in range(1, 21):
+            request = {**self.params(), 'count': 5, 'requestId': token, 'batchIndex': batch, 'page': batch,
+                       'candidates': [self.card(f'none{batch}_{i}') for i in range(8 if batch == 20 else 5)]}
+            with mock.patch.object(s.threading, 'Thread') as worker:
+                self.job = s.search(USER, request, 'fixture')
+                snapshot = worker.call_args.kwargs['args'][2]
+            def missing(kind, model, cookie):
+                candidates = []
+                for candidate in model['candidates']:
+                    row = self.scored(candidate['id'], 0)
+                    row['matchState'] = 'needs_info'
+                    for check in row['checks']: check['status'] = 'unknown'
+                    candidates.append(row)
+                return {'candidates': candidates}
+            with mock.patch.object(s, 'driver', side_effect=missing):
+                s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
+        result = s.listing(USER, self.params())['run']
+        self.assertEqual(result['examined'], 100)
+        self.assertEqual(result['stopReason'], 'no_matches_100')
+        self.assertEqual(result['conditionStats']['k1']['unknown'], 100)
+        self.assertTrue(any('100 人的卡片未说明' in item for item in result['suggestions']))
+        with mock.patch.object(s.threading, 'Thread') as worker:
+            with self.assertRaisesRegex(pool.Conflict, '调整并保存匹配条件'):
+                s.search(USER, {**request, 'batchIndex': 21}, 'fixture')
+            worker.assert_not_called()
+        self.assertEqual(s.search(USER, request, 'fixture')['run']['examined'], 100)
 
     def test_later_failed_batch_preserves_matches(self):
         self.searched()

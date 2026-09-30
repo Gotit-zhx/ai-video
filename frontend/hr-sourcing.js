@@ -95,6 +95,7 @@
     const refresh=button('刷新结果',controls,()=>reload());refresh.className='hr-secondary';
     const searchStatus=el('p','',find,'hr-hint');
     searchStatus.setAttribute('role','status');searchStatus.setAttribute('aria-live','polite');
+    const suggestions=el('div','',find,'hr-sourcing-suggestions');
     const results=el('div','',find,'hr-sourcing-results');
     const diagnostics=el('details','',find,'hr-sourcing-diagnostics');
     el('summary','查看未收录原因',diagnostics);
@@ -214,6 +215,10 @@
         :run?.state==='failed'?run.error:run?.state==='complete'
         ?`已读取 ${run.pagesRead||1} 页 · 分析 ${run.examined||0} 人 · 初步匹配 ${run.candidates?.length||0} / ${run.wanted} 人 · 资料不足 ${run.needsInfo||0} 人 · 条件未达标 ${run.belowThreshold||0} 人${run.error?' · '+run.error:''}`:'确认条件并选择人数后开始获取。';
       if(run&&run.version!==record.version)searchStatus.textContent+=' 这是旧版画像结果，请重新获取后再联系。';
+      if(run?.version===record.version&&run?.stopReason==='no_matches_100')searchStatus.textContent='已分析 100 人，仍无匹配，已停止寻找。请调整并保存匹配条件。';
+      suggestions.hidden=run?.version!==record.version||run?.stopReason!=='no_matches_100';
+      if(changed(suggestions,run?.suggestions))for(const item of run?.suggestions||[])
+        el('p',item,suggestions,'hr-hint');
       searchStatus.className=searchError?'hr-error':'hr-hint';
       if(searchError)searchStatus.textContent=searchError;
       else if(finding&&searchProgress)searchStatus.textContent=searchProgress;
@@ -326,7 +331,7 @@
       const desired=Number(count.value);
       if(!searchSession||searchSession.id!==record.id||searchSession.version!==record.version
         ||searchSession.desired!==desired)searchSession={id:record.id,version:record.version,
-          desired,requestId:crypto.randomUUID(),candidates:[],seen:new Set(),page:0,batch:1,ended:false,qualified:0};
+          desired,requestId:crypto.randomUUID(),candidates:[],seen:new Set(),page:0,batch:1,ended:false,qualified:0,examined:0};
       const session=searchSession,{candidates,seen,requestId}=session;
       let {page,ended,qualified}=session;
       const wait=()=>new Promise(resolve=>setTimeout(resolve,3000));
@@ -348,7 +353,8 @@
         // repeat pages; desktop budgets and risk holds still guard every read.
         for(;qualified<desired&&!pausedSearch;session.batch++){
           const batch=session.batch;
-          const target=Math.min(20,Math.max(10,(desired-qualified)*2));
+          if(!qualified&&session.examined>=100){searchSession=null;break;}
+          const target=Math.min(5,desired-qualified,qualified?5:100-session.examined);
           while(candidates.length<target&&!ended&&!pausedSearch){
             if(!await connected()||!valid(ticket))return;
             const nextPage=page+1;
@@ -385,7 +391,7 @@
           if(pausedSearch)break;
           if(!candidates.length)break;
           if(!await connected()||!valid(ticket))return;
-          const current=candidates.slice(0,20);
+          const current=candidates.slice(0,target);
           progress(`已读取 ${current.length} 位候选人 · 第 ${batch} 批 AI 分析 · 已匹配 ${qualified} / ${desired} 人`);
           let value=await request('sourcing/search',{...snapshot,count:desired,candidates:current,requestId,batchIndex:batch,page});
           if(!valid(ticket))return;
@@ -398,10 +404,18 @@
             throw Error(value.run.error||'本批分析未完成，本轮已停止');
           }
           candidates.splice(0,current.length);
+          session.examined=value.run?.examined??session.examined+current.length;
+          if(value.run?.stopReason==='no_matches_100'||!qualified&&session.examined>=100){
+            searchSession=null;
+            record.run={...record.run,stopReason:'no_matches_100',suggestions:record.run?.suggestions||[
+              '建议保留 2–3 条核心工作能力，将相近岗位经历和可替代技能写清楚，调整后确认保存。']};
+            break;
+          }
           if(ended&&!candidates.length){session.batch++;break;}
         }
         if(!seen.size)throw Error('BOSS 本次没有返回可用候选人，没有调用 AI');
-        feedback.textContent=qualified>=desired?`已获取 ${qualified} 位初步匹配人选（已知条件 ≥ 80 分）。`
+        feedback.textContent=record.run?.stopReason==='no_matches_100'?'已分析 100 人，仍无匹配，已停止寻找。请调整并保存匹配条件。'
+          :qualified>=desired?`已获取 ${qualified} 位初步匹配人选（已知条件 ≥ 80 分）。`
           :`已获取 ${qualified} / ${desired} 人。${pausedSearch?'已暂停，可以继续寻找。':'本职位推荐已读完。'}`;
         if(qualified>=desired||ended&&!candidates.length)searchSession=null;
       }catch(error){if(valid(ticket))searchError=feedback.textContent=(record?.run?.candidates?.length

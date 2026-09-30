@@ -9,6 +9,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -24,6 +27,7 @@ import java.util.*;
 @RestController
 @RequestMapping("/api/v1/recruitment-ai")
 public class RecruitmentAiController {
+    private static final Logger log = LoggerFactory.getLogger(RecruitmentAiController.class);
     private final ModelConfigService models;
     private final RedisConcurrencyGate gate;
     private final ObjectMapper json;
@@ -195,7 +199,7 @@ public class RecruitmentAiController {
             不输出综合分数，系统会按 HR 确认的权重计算。必须返回所有候选人和每位的全部条件 id，各一次。
             只输出完整 JSON：
             {"candidates":[{"id":"输入 id","summary":"最多120字的岗位相关概述",
-              "checks":[{"criterionId":"条件 id","status":"matched|partial|unmatched|unknown","evidence":"具体原文事实或待核实原因"}]}],
+              "checks":[{"criterionId":"条件 id","status":"matched|partial|unmatched|unknown","evidence":"80字以内的具体原文事实或待核实原因"}]}],
              "limitations":["仅依据卡片，HR 需核实完整简历"]}
             """;
         return execute(user,clean,prompt,"sourcing");
@@ -220,6 +224,8 @@ public class RecruitmentAiController {
             throw new BusinessException(HttpStatus.CONFLICT,"当前驱动模型协议暂不支持岗位分析");
         var permit=gate.tryAcquireModelCall();
         if (permit==null) throw new BusinessException(HttpStatus.TOO_MANY_REQUESTS,"当前模型调用较多，请稍后再试");
+        String stage="transport";
+        long started=System.nanoTime();
         try (permit) {
             String base=model.baseUrl().replaceAll("/+$","");
             String endpoint=base.endsWith("/chat/completions")?base:base+"/chat/completions";
@@ -238,13 +244,16 @@ public class RecruitmentAiController {
             HttpResponse<String> response=http.send(request,HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode()!=200)
                 throw new BusinessException(HttpStatus.BAD_GATEWAY,
-                        "驱动模型服务返回错误（HTTP "+response.statusCode()+"），本次未自动重复调用");
+                        "驱动模型服务返回错误（HTTP "+response.statusCode()+"），本次未自动重复调用 [HR_AI_UPSTREAM_HTTP]");
             if (response.body().length()>512000)
-                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回内容过长，请精简岗位内容后重试");
+                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回内容过长，请精简岗位内容后重试 [HR_AI_OVERSIZED]");
+            stage="stream";
             String content=completionContent(response.body(),
                     response.headers().firstValue("Content-Type").orElse(""));
             if (content.startsWith("```")) content=content.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
+            stage="json";
             Map<?,?> raw=json.readValue(content,Map.class);
+            stage="validation";
             Map<String,Object> result=switch(mode) {
                 case "match" -> validateMatch(raw);
                 case "profile" -> validateProfile(raw);
@@ -256,6 +265,8 @@ public class RecruitmentAiController {
             result.put("generatedAt",Instant.now().toString());
             return ApiResponse.ok(result);
         } catch (BusinessException error) {
+            log.warn("Recruitment AI rejected mode={} stage={} elapsedMs={} status={}",
+                    mode,stage,(System.nanoTime()-started)/1_000_000,error.getStatus().value());
             throw error;
         } catch (HttpTimeoutException error) {
             throw new BusinessException(HttpStatus.GATEWAY_TIMEOUT,"驱动模型响应超时，请手动重试");
@@ -264,7 +275,16 @@ public class RecruitmentAiController {
             throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE,"生成已中断，请手动重试");
         } catch (Exception error) {
             // Provider bodies may contain credentials or internal URLs; never echo them.
-            throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回格式不完整或服务不可用，请手动重试");
+            log.warn("Recruitment AI failed mode={} stage={} elapsedMs={} type={}",
+                    mode,stage,(System.nanoTime()-started)/1_000_000,error.getClass().getSimpleName());
+            String code=switch(stage) {
+                case "validation" -> "HR_AI_INVALID_RESULT";
+                case "json" -> "HR_AI_INVALID_JSON";
+                case "stream" -> "HR_AI_INVALID_STREAM";
+                default -> "HR_AI_CONNECTION";
+            };
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,
+                    "驱动模型返回格式不完整或服务不可用，请手动重试 ["+code+"]");
         }
     }
 
@@ -350,8 +370,8 @@ public class RecruitmentAiController {
                 && !body.stripLeading().startsWith("data:")) {
             var choice=json.readTree(body).path("choices").path(0);
             requireComplete(choice.path("finish_reason").asText(""));
-            if (choice.path("message").has("tool_calls"))
-                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回了不支持的工具调用");
+            if (hasToolCall(choice.path("message")))
+                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回了不支持的工具调用 [HR_AI_TOOL_CALL]");
             return choice.path("message").path("content").asText("").trim();
         }
         StringBuilder content=new StringBuilder();
@@ -363,28 +383,34 @@ public class RecruitmentAiController {
             if (data.isBlank()) continue;
             if ("[DONE]".equals(data.trim())) { done=true;break; }
             var chunk=json.readTree(data);
-            if (chunk.has("error"))
-                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型响应中断，请手动重试");
+            if (chunk.hasNonNull("error"))
+                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型响应中断，请手动重试 [HR_AI_STREAM_INTERRUPTED]");
             var choice=chunk.path("choices").path(0);
-            if (choice.path("delta").has("tool_calls"))
-                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回了不支持的工具调用");
+            if (hasToolCall(choice.path("delta")))
+                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回了不支持的工具调用 [HR_AI_TOOL_CALL]");
             content.append(choice.path("delta").path("content").asText(""));
             String reason=choice.path("finish_reason").asText("");
             if (!reason.isBlank()) finish=reason;
         }
         requireComplete(finish);
         if (!done || content.toString().isBlank())
-            throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型响应中断，请手动重试");
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型响应中断，请手动重试 [HR_AI_STREAM_INTERRUPTED]");
         return content.toString().trim();
+    }
+
+    private static boolean hasToolCall(JsonNode message) {
+        var calls=message.path("tool_calls");
+        return (!calls.isMissingNode()&&!calls.isNull()&&!(calls.isArray()&&calls.isEmpty()))
+                || message.hasNonNull("function_call");
     }
 
     private static void requireComplete(String finish) {
         if ("length".equals(finish))
-            throw new BusinessException(HttpStatus.BAD_GATEWAY,"生成结果不完整，请精简需求后重新生成");
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,"生成结果不完整，请精简需求后重新生成 [HR_AI_OUTPUT_LIMIT]");
         if ("content_filter".equals(finish))
-            throw new BusinessException(HttpStatus.BAD_GATEWAY,"模型服务未接受本次内容，请调整岗位描述后重试");
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,"模型服务未接受本次内容，请调整岗位描述后重试 [HR_AI_CONTENT_FILTER]");
         if (!"stop".equals(finish))
-            throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型响应中断，请手动重试");
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型响应中断，请手动重试 [HR_AI_STREAM_INTERRUPTED]");
     }
 
     static Map<String,Object> validateMatch(Map<?,?> raw) {

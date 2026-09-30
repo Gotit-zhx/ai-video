@@ -225,8 +225,8 @@ def driver(kind, snapshot, cookie):
         with opener.open(request, timeout=320) as response:
             raw = response.read(512001)
     except urllib.error.HTTPError as error:
-        # Only status codes leave this boundary; provider bodies and URLs can
-        # contain private data. Do not repeat a paid request after failure.
+        # Only locally defined error codes leave this boundary; never echo an
+        # upstream body, URL, credential, or candidate detail.
         messages = {401: '平台登录已失效，请重新登录赫逸平台后再分析',
                     403: '当前账号没有岗位分析权限',
                     409: '驱动模型未就绪，请检查模型配置',
@@ -234,6 +234,26 @@ def driver(kind, snapshot, cookie):
                     502: '驱动模型返回不完整或服务异常，本轮已停止，没有自动重复调用',
                     503: '驱动模型服务暂不可用，本轮已停止',
                     504: '驱动模型分析超时，本轮已停止'}
+        known = {
+            'HR_AI_UPSTREAM_HTTP': '驱动模型供应商返回服务错误，本轮已停止',
+            'HR_AI_OUTPUT_LIMIT': '驱动模型输出达到长度上限，本批结果不完整，已停止',
+            'HR_AI_STREAM_INTERRUPTED': '驱动模型响应流中断，本轮已停止',
+            'HR_AI_CONTENT_FILTER': '驱动模型未接受本次内容，请调整岗位描述',
+            'HR_AI_TOOL_CALL': '驱动模型返回了工具调用，未执行任何工具，本轮已停止',
+            'HR_AI_INVALID_JSON': '驱动模型返回的分析不是完整 JSON，本轮已停止',
+            'HR_AI_INVALID_RESULT': '驱动模型未完整返回候选人或匹配条件，本轮已停止',
+            'HR_AI_INVALID_STREAM': '驱动模型响应流格式不正确，本轮已停止',
+            'HR_AI_CONNECTION': '驱动模型连接中断，本轮已停止',
+            'HR_AI_OVERSIZED': '驱动模型返回内容超过大小限制，本轮已停止',
+        }
+        try:
+            detail = json.loads(error.read(8193)).get('message', '')
+        except (ValueError, AttributeError, UnicodeDecodeError, OSError):
+            detail = ''
+        if isinstance(detail, str):
+            for code, message in known.items():
+                if detail.endswith('['+code+']'):
+                    raise ValueError(message+'；没有自动重复调用 ['+code+']') from None
         raise ValueError(messages.get(error.code, f'岗位分析服务返回 HTTP {error.code}，本轮已停止')) from None
     if len(raw) > 512000: raise ValueError('模型结果过长')
     result = json.loads(raw).get('data')
@@ -344,6 +364,9 @@ def search(user, body, cookie):
                 raise pool.Conflict('寻源岗位、画像或目标人数已变化，请重新获取')
             if old['state'] != 'complete' or old['error']:
                 raise pool.Conflict('上一批尚未完成或已停止，不会重复提交 AI')
+            if previous.get('stopReason') == 'no_matches_100' or (
+                    previous.get('examined', 0) >= 100 and not previous.get('qualified', 0)):
+                raise pool.Conflict('已分析 100 人仍无匹配，请先调整并保存匹配条件')
             if batch != completed_batches + 1:
                 raise ValueError('寻源分析批次不连续')
             source = {value['id']: value for value in json.loads(old['body'])}
@@ -371,6 +394,8 @@ def search(user, body, cookie):
         if not parsed and source:
             return view(db, job, record)
         if not parsed: raise ValueError('已读取候选人，但卡片的职位或访问参数校验未通过，本次未调用 AI。请刷新获取候选人后重试')
+        if not previous.get('qualified', 0):
+            parsed = dict(list(parsed.items())[:max(0, 100 - previous.get('examined', 0))])
         for cid, value in parsed.items():
             db.execute('INSERT OR REPLACE INTO hr_sourcing_candidates VALUES(?,?,?,?,?,?)',
                        (cid, owner, job['id'], value['geekId'], dump(value), time.time()))
@@ -391,6 +416,21 @@ def search(user, body, cookie):
                    {'job': job['id'], 'count': wanted, 'examined': len(parsed), 'batch': batch, 'page': page})
     threading.Thread(target=search_worker, args=(owner, record, snapshot, cookie), daemon=True).start()
     return listing(user, {**body, 'runId': record})
+
+
+def no_match_suggestions(conditions, stats):
+    suggestions = []
+    for condition in sorted(conditions, key=lambda c: stats.get(c['id'], {}).get('unknown', 0), reverse=True):
+        counts = stats.get(condition['id'], {})
+        unknown, unmatched = counts.get('unknown', 0), counts.get('unmatched', 0)
+        if unknown:
+            suggestions.append(f'“{condition["text"]}”有 {unknown} 人的卡片未说明。建议改为卡片中可验证的工作经历或具体技能，细节留待简历核实。')
+        elif unmatched:
+            suggestions.append(f'“{condition["text"]}”有 {unmatched} 人明确不符。请核对是否确为必要条件；相近岗位或可迁移经历可写入条件。')
+        if len(suggestions) == 2:
+            break
+    suggestions.append('建议保留 2–3 条核心工作能力，可替代技能明确写“满足其中一项即可”，并核对当前关联职位及 JD。修改后需由 HR 确认保存再寻找。')
+    return suggestions
 
 
 def search_worker(owner, record, snapshot, cookie):
@@ -445,7 +485,13 @@ def search_worker(owner, record, snapshot, cookie):
                     matched[item['id']] = {**item, 'name': source[item['id']]['name'],
                                            'canGreet': source[item['id']]['canGreet']}
             ranked = sorted(matched.values(), key=lambda row: -row['score'])
+            condition_stats = previous.get('conditionStats', {})
+            for item in rows:
+                for check in item.get('checks', []):
+                    counts = condition_stats.setdefault(check['criterionId'], {})
+                    counts[check['status']] = counts.get(check['status'], 0) + 1
             result = {**previous, 'matched': ranked[:run['wanted']], 'candidates': ranked[:run['wanted']],
+                      'conditionStats': condition_stats,
                       'examined': previous.get('examined', 0) + len(snapshot['candidates']),
                       'qualified': previous.get('qualified', 0) + sum(r['score'] >= MATCH_THRESHOLD and r.get('matchState', 'matched') == 'matched' for r in rows),
                       'needsInfo': previous.get('needsInfo', 0) + sum(r.get('matchState') == 'needs_info' for r in rows),
@@ -453,6 +499,9 @@ def search_worker(owner, record, snapshot, cookie):
                       'reviewExamples': [{**r, 'name': source[r['id']]['name']} for r in
                         sorted((r for r in rows if r.get('matchState') != 'matched'), key=lambda r: -r['score'])[:3]],
                       'referenceOnly': True}
+            if result['examined'] >= 100 and result['qualified'] == 0:
+                result.update(stopped=True, stopReason='no_matches_100',
+                              suggestions=no_match_suggestions(snapshot.get('criteria', []), condition_stats))
         else:
             result = {**previous, 'partial': bool(previous.get('candidates')), 'stopped': True}
         db.execute('UPDATE hr_sourcing_runs SET state=?,result=?,error=?,updated_at=? WHERE id=?',

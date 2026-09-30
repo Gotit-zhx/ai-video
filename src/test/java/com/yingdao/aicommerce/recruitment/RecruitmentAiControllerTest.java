@@ -187,6 +187,54 @@ class RecruitmentAiControllerTest {
     private String frame(Map<String,Object> choice) {
         return "data: "+json.writeValueAsString(Map.of("choices",List.of(choice)))+"\n\n";
     }
+    @Test void compatibleGatewayNullAndEmptyToolFieldsAreNotToolCalls() {
+        var controller=new RecruitmentAiController(models,gate,json);
+        for(String tools:List.of("null","[]")) {
+            String streamed="data: {\"error\":null,\"choices\":[{\"delta\":{\"content\":\"{}\",\"tool_calls\":"
+                +tools+"},\"finish_reason\":null}]}\n\n"
+                +frame(Map.of("delta",Map.of(),"finish_reason","stop"))
+                +"data: {\"choices\":[],\"usage\":{\"completion_tokens\":2}}\n\n"
+                +"data: [DONE]\n\n";
+            assertEquals("{}",controller.completionContent(streamed,"text/event-stream"));
+            String buffered="{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{}\",\"tool_calls\":"
+                +tools+"}}]}";
+            assertEquals("{}",controller.completionContent(buffered,"application/json"));
+        }
+    }
+    @Test void serializedConditionBatchUsesGatewayStreamAndComputesScoresWithoutRetry() throws Exception {
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        var calls=new AtomicInteger();
+        server.createContext("/chat/completions",exchange->{
+            calls.incrementAndGet();
+            Map payload=json.readValue(exchange.getRequestBody().readAllBytes(),Map.class);
+            var messages=(List<?>)payload.get("messages");
+            var input=json.readValue((String)((Map<?,?>)messages.get(1)).get("content"),Map.class);
+            var output=new ArrayList<Map<String,Object>>();
+            for(Object item:(List<?>)input.get("candidates")) {
+                var candidate=new HashMap<>(conditionCandidate("matched","unknown","matched"));
+                candidate.put("id",((Map<?,?>)item).get("id"));output.add(candidate);
+            }
+            String content=json.writeValueAsString(Map.of("candidates",output,"limitations",List.of("仅供参考")));
+            var delta=new LinkedHashMap<String,Object>();delta.put("content",content);delta.put("tool_calls",null);
+            var choice=new LinkedHashMap<String,Object>();choice.put("delta",delta);choice.put("finish_reason",null);
+            String response=frame(choice)+frame(Map.of("delta",Map.of("tool_calls",List.of()),"finish_reason","stop"))
+                +"data: {\"choices\":[],\"usage\":{}}\n\ndata: [DONE]\n\n";
+            exchange.getResponseHeaders().set("Content-Type","text/event-stream");
+            exchange.sendResponseHeaders(200,0);exchange.getResponseBody().write(response.getBytes(StandardCharsets.UTF_8));exchange.close();
+        });server.start();
+        try {
+            when(models.driverConnection("org-1")).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection(
+                    "driver","http://127.0.0.1:"+server.getAddress().getPort(),"model","OPENAI_COMPATIBLE","test","secret")));
+            when(gate.tryAcquireModelCall()).thenReturn(mock(RedisConcurrencyGate.Permit.class));
+            var candidates=new ArrayList<Map<String,String>>();
+            for(int i=1;i<=5;i++)candidates.add(Map.of("id","c"+i,"evidence","前台接待及办公事务经验"));
+            Map input=json.readValue(json.writeValueAsString(Map.of("jobDescription","接待与协调","profile","已确认工作条件",
+                    "criteria",sourcingConditions(),"candidates",candidates)),Map.class);
+            String reply=json.writeValueAsString(new RecruitmentAiController(models,gate,json).sourcingMatch(user("13800000000"),input));
+            assertEquals(1,calls.get());assertTrue(reply.contains("\"score\":100.0"));
+            assertTrue(reply.contains("\"id\":\"c5\""));assertTrue(reply.contains("\"scoreBasis\":\"known_conditions\""));
+        } finally {server.stop(0);}
+    }
     @Test void interruptedTruncatedFilteredAndErrorStreamsAreNeverPublishedAsSuccess() {
         var controller=new RecruitmentAiController(models,gate,json);
         String content=frame(Map.of("delta",Map.of("content","{}")));

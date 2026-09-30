@@ -202,8 +202,9 @@ test(`continuous sourcing reaches page 22, waits on ${temporaryCode} and never s
     if(url.endsWith('/sourcing/search')){
       const body=JSON.parse(options.body);batches.push(body);
       saved={...saved,run:{id:'run1',state:'complete',version:1,wanted:5,pagesRead:body.page,
-        examined:body.batchIndex*10,candidates:body.page===22?Array.from({length:5},(_,i)=>({
-          id:'c'+i,name:'人才',score:80,canGreet:true})):[]}};
+        examined:batches.reduce((sum,b)=>sum+b.candidates.length,0),
+        candidates:Array.from({length:body.page===22?5:1},(_,i)=>({
+          id:'c'+i,name:'人才',score:80,canGreet:true}))}};
       return {data:saved};
     }
     throw Error('unexpected '+url);
@@ -214,7 +215,12 @@ test(`continuous sourcing reaches page 22, waits on ${temporaryCode} and never s
   await flush();await app.click('暂停寻找');finishPage();await action;await flush();
   assert.match(app.text(),/已暂停寻找/);
   await app.click('继续寻找');
-  assert.equal(batches.length,22);
+  assert.ok(batches.length>22);
+  assert.ok(batches.every(batch=>batch.candidates.length<=5),'AI batches stay small while pages continue');
+  const submitted=batches.flatMap(batch=>batch.candidates.map(row=>row.encryptGeekId));
+  assert.equal(new Set(submitted).size,submitted.length,'Queued cards are analyzed only once');
+  for(let page=1;page<=21;page++)for(let i=0;i<10;i++)
+    assert.ok(submitted.includes(`geek${page}_${i}`),'Every queued card on prior pages was analyzed');
   assert.equal(new Set(batches.map(b=>b.requestId)).size,1);
   assert.equal(pages.filter(p=>p===7).length,2,'Budget failure resumes the same unconsumed page');
   assert.equal(pages.at(-1),22);
@@ -222,6 +228,41 @@ test(`continuous sourcing reaches page 22, waits on ${temporaryCode} and never s
   assert.match(app.text(),/已获取 5 位初步匹配人选/);
   assert.equal(app.calls.some(c=>c.url.endsWith('/sourcing/greet')),false);
   assert.ok(statusReads>22);
+});
+test('zero matches stops at 100 analyzed people without requesting another page or paid batch',async()=>{
+  const key='a'.repeat(64),pages=[],batches=[];
+  let examined=0;
+  let saved={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'工程师',version:1,
+    profileState:'complete',references:[],profile:{},run:null};
+  const app=setup({sourcing:true,api:async(url,options)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,
+      capabilities:['job-jd','active-sourcing','continuous-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{
+      encryptId:saved.jobId,jobName:saved.jobName,postDescription:'开发'}}}};
+    if(url.startsWith('/api/v1/hr/sourcing?')||url.endsWith('/sourcing/save'))return {data:saved};
+    if(url.includes('/recommendations?')){
+      const page=Number(new URL('https://local'+url).searchParams.get('page'));pages.push(page);
+      return {data:{ok:true,data:{hasMore:true,geekList:Array.from({length:7},(_,i)=>({
+        encryptGeekId:`geek${page}_${i}`,encryptJobId:saved.jobId,geekCard:{geekName:'人才'}}))}}};
+    }
+    if(url.endsWith('/sourcing/search')){
+      const body=JSON.parse(options.body);batches.push(body);examined+=body.candidates.length;
+      saved={...saved,run:{id:'run1',state:'complete',version:1,wanted:5,examined,candidates:[],
+        ...(examined===100?{stopReason:'no_matches_100',suggestions:['条件“办公经验”有 100 人未说明，建议核对工作经历。']}: {})}};
+      return {data:saved};
+    }
+    throw Error('unexpected '+url);
+  }});
+  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  app.visible().find(n=>n.attributes['aria-label']==='获取人数').value='5';
+  await app.click('一键 AI 获取');
+  assert.equal(examined,100);assert.equal(batches.length,20);assert.equal(pages.at(-1),15);
+  assert.equal(new Set(pages).size,pages.length);
+  assert.match(app.text(),/已分析 100 人，仍无匹配，已停止寻找/);
+  assert.match(app.text(),/办公经验.*100 人未说明/);
+  assert.equal(app.calls.some(c=>c.url.endsWith('/sourcing/greet')),false);
+  const before=app.calls.length;await flush();assert.equal(app.calls.length,before);
 });
 test('sourcing visibly reports progress and rejected cards next to the action without repeating reads or model submission',async()=>{
   const key='a'.repeat(64),security='a'.repeat(700)+'~'+'B'.repeat(45)+'==';
