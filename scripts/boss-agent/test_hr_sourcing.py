@@ -45,6 +45,7 @@ class SourcingTest(unittest.TestCase):
                      'skills': ['Java'], 'evidence': [{'requirement': '开发', 'evidence': '参考简历有交付经历'}]}):
             s.profile_worker('heyi', self.job['id'], row['profile_token'], {}, 'fixture')
         self.job = s.listing(USER, self.params())
+        self.job = s.criteria(USER, {**self.params(), 'conditions': self.job['criteria']['conditions']})
 
     def card(self, geek='geek1', **extra):
         return {'encryptGeekId': geek, 'encryptJobId': 'job1', 'expectId': 'expect1',
@@ -53,6 +54,14 @@ class SourcingTest(unittest.TestCase):
                   'geekWorks': [{'positionName': '后端开发', 'description': '交付库存系统'}],
                   'age': 28, 'gender': '女', 'geekEdus': [{'school': '名校'}]}, **extra}
 
+    def scored(self, identity, score=80):
+        return {'id': identity, 'score': score, 'summary': '工作经历相关', 'evidence': ['Java 工作经历'],
+                'gaps': ['待看完整简历'], 'scoreBasis': 'known_conditions',
+                'matchState': 'matched' if score >= 80 else 'below_threshold',
+                'matchedConditions': 1, 'pendingConditions': 2,
+                'checks': [{'criterionId': f'k{i+1}', 'status': 'matched' if i == 0 else 'unknown',
+                            'evidence': '实际工作经历' if i == 0 else '待核实'} for i in range(3)]}
+
     def searched(self):
         self.ready()
         with mock.patch.object(s.threading, 'Thread') as worker:
@@ -60,8 +69,7 @@ class SourcingTest(unittest.TestCase):
                                       'requestId': str(uuid.uuid4())}, 'fixture')
             snapshot = worker.call_args.kwargs['args'][2]
         cid = snapshot['candidates'][0]['id']
-        with mock.patch.object(s, 'driver', return_value={'candidates': [{'id': 'c1', 'score': 86,
-                                'summary': '工作经历相关', 'evidence': ['有 Java 经验'], 'gaps': ['待看完整简历']}]}):
+        with mock.patch.object(s, 'driver', return_value={'candidates': [self.scored('c1', 86)]}):
             s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
         self.job = s.listing(USER, self.params())
         return cid
@@ -107,6 +115,43 @@ class SourcingTest(unittest.TestCase):
         self.assertNotIn('名校', value['evidenceText']); self.assertNotIn('测试人才', value['evidenceText'])
         self.assertIsNone(s.candidate(self.card(encryptJobId='another-job'), 'job1'))
 
+    def test_confirmed_conditions_are_scoped_and_reference_changes_require_confirmation(self):
+        self.ready()
+        self.assertTrue(self.job['criteria']['confirmed'])
+        version = self.job['version']
+        conditions = [{'text': '具备 Java 开发经验', 'weight': 70, 'required': True},
+                      {'text': '有接口或数据库经验，具备其中一项即可', 'weight': 30, 'required': False}]
+        self.job = s.criteria(USER, {**self.params(), 'conditions': conditions})
+        self.assertEqual(self.job['version'], version+1)
+        self.assertEqual(self.job['criteria']['conditions'][0]['id'], 'k1')
+        with self.assertRaises(ValueError):
+            s.criteria(USER, {**self.params(), 'accountKey': 'b'*64, 'conditions': conditions})
+        with self.assertRaisesRegex(ValueError, '个人属性'):
+            s.criteria(USER, {**self.params(), 'conditions': [{'text': '需要女生', 'weight': 100}]})
+        self.upload(b'%PDF-1.4 new reference')
+        self.assertFalse(self.job['criteria']['confirmed'])
+        self.assertEqual(self.job['profileState'], 'stale')
+
+    def test_missing_information_is_visible_and_does_not_become_a_match(self):
+        self.ready()
+        with mock.patch.object(s.threading, 'Thread') as worker:
+            self.job = s.search(USER, {**self.params(), 'count': 5, 'candidates': [self.card()],
+                                      'requestId': str(uuid.uuid4())}, 'fixture')
+            snapshot = worker.call_args.kwargs['args'][2]
+        unknown = self.scored('c1', 0)
+        unknown.update(matchState='needs_info', matchedConditions=0, pendingConditions=3)
+        for check in unknown['checks']: check['status'] = 'unknown'
+        with mock.patch.object(s, 'driver', return_value={'candidates': [unknown]}) as driver:
+            s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
+            self.assertEqual(driver.call_args.args[1]['criteria'], self.job['criteria']['conditions'])
+            self.assertNotIn('suggestedJd', driver.call_args.args[1]['profile'])
+        result = s.listing(USER, self.params())['run']
+        self.assertEqual(result['state'], 'complete')
+        self.assertEqual(result['candidates'], [])
+        self.assertEqual(result['needsInfo'], 1)
+        self.assertEqual(result['belowThreshold'], 0)
+        self.assertEqual(result['reviewExamples'][0]['name'], '测试人才')
+
     def test_realistic_long_credentials_survive_analysis_and_greeting_without_entering_ai(self):
         self.ready()
         security = 'a'*700+'~'+'B'*45+'=='
@@ -119,8 +164,7 @@ class SourcingTest(unittest.TestCase):
             snapshot = worker.call_args.kwargs['args'][2]
         self.assertNotIn(security, json.dumps(snapshot))
         cid = snapshot['candidates'][0]['id']
-        with mock.patch.object(s, 'driver', return_value={'candidates': [
-                {'id': 'c1', 'score': 80, 'summary': '技能相关', 'evidence': ['Java'], 'gaps': []}]}):
+        with mock.patch.object(s, 'driver', return_value={'candidates': [self.scored('c1')]}):
             s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
         self.job = s.listing(USER, self.params())
         self.assertTrue(self.job['run']['candidates'][0]['canGreet'])
@@ -165,7 +209,7 @@ class SourcingTest(unittest.TestCase):
             def scores(kind, model, cookie):
                 self.assertNotIn('security1', json.dumps(model))
                 self.assertEqual([v['id'] for v in model['candidates']], [f'c{i+1}' for i in range(10)])
-                return {'candidates': [{'id': v['id'], 'score': 80 if i == 0 else 79.9}
+                return {'candidates': [self.scored(v['id'], 80 if i == 0 else 79.9)
                                        for i, v in enumerate(model['candidates'])]}
             with mock.patch.object(s, 'driver', side_effect=scores):
                 s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
@@ -192,7 +236,7 @@ class SourcingTest(unittest.TestCase):
                     'batchIndex': batch, 'page': batch, 'candidates': [self.card(f'new{batch}')]}, 'fixture')
                 snapshot = worker.call_args.kwargs['args'][2]
             with mock.patch.object(s, 'driver', return_value={'candidates': [
-                    {'id': 'c1' if batch == 1 else 'invented', 'score': 90}]}):
+                    self.scored('c1' if batch == 1 else 'invented', 90)]}):
                 s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
         result = s.listing(USER, self.params())['run']
         self.assertEqual(result['state'], 'complete')

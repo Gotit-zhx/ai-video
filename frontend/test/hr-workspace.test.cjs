@@ -136,6 +136,44 @@ test('sourcing route without selected job never reads BOSS or creates a new scop
   assert.match(app.text(),/请返回职位管理/);
   assert.equal(app.calls.length,0);
 });
+test('sourcing requires confirmed conditions and never uses unsaved edits',async()=>{
+  const key='a'.repeat(64);
+  let saved={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'总经理秘书',version:1,
+    profileState:'complete',references:[{id:'r1',filename:'参考.pdf',characters:500}],profile:{summary:'参考画像'},
+    criteria:{confirmed:false,conditions:[
+      {id:'k1',text:'相关或可迁移工作经验',weight:50,required:false},
+      {id:'k2',text:'办公事务、会议或文件整理，其中一项即可',weight:30,required:false},
+      {id:'k3',text:'接待或沟通协调，其中一项即可',weight:20,required:false}]},run:null};
+  const app=setup({sourcing:true,api:async(url,options)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:saved.jobId,
+      jobName:saved.jobName,postDescription:'支持日常办公及接待事务'}}}};
+    if(url.startsWith('/api/v1/hr/sourcing?')||url.endsWith('/sourcing/save'))return {data:saved};
+    if(url.endsWith('/sourcing/criteria')){
+      const body=JSON.parse(options.body);
+      assert.equal(body.version,saved.version);
+      assert.equal(body.conditions.length,3);
+      saved={...saved,version:saved.version+1,criteria:{confirmed:true,conditions:body.conditions}};
+      return {data:saved};
+    }
+    throw Error('No BOSS reads or model calls expected: '+url);
+  }});
+  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  const find=()=>app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取');
+  assert.equal(find().disabled,true);
+  assert.match(app.text(),/匹配条件/);
+  await app.click('确认并保存条件');
+  assert.equal(find().disabled,false);
+  const field=app.visible().find(n=>n.attributes['aria-label']==='匹配条件 1');
+  field.value='有行政或接待经验';field.events.input();
+  assert.equal(find().disabled,true);
+  assert.match(app.text(),/条件已修改/);
+  await app.click('确认并保存条件');
+  assert.equal(saved.criteria.conditions[0].text,'有行政或接待经验');
+  assert.equal(find().disabled,false);
+  assert.equal(app.calls.some(c=>c.url.includes('/recommendations?')||c.url.endsWith('/sourcing/search')),false);
+});
 for(const temporaryCode of ['REQUEST_BUDGET_EXHAUSTED','SESSION_UNAVAILABLE'])
 test(`continuous sourcing reaches page 22, waits on ${temporaryCode} and never sends automatically`,async()=>{
   const key='a'.repeat(64);
@@ -181,7 +219,7 @@ test(`continuous sourcing reaches page 22, waits on ${temporaryCode} and never s
   assert.equal(pages.filter(p=>p===7).length,2,'Budget failure resumes the same unconsumed page');
   assert.equal(pages.at(-1),22);
   assert.equal(pages.filter(p=>p===3).length,1,'Pause retains queued cards and the cursor');
-  assert.match(app.text(),/已获取 5 位 80 分以上/);
+  assert.match(app.text(),/已获取 5 位初步匹配人选/);
   assert.equal(app.calls.some(c=>c.url.endsWith('/sourcing/greet')),false);
   assert.ok(statusReads>22);
 });

@@ -1614,7 +1614,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path in {"/api/v1/hr/sourcing/"+name for name in
-                         ("save", "upload", "remove", "profile", "search", "greet")}:
+                         ("save", "upload", "remove", "profile", "criteria", "search", "greet")}:
             self.sourcing_request(write=True)
             return
         if self.path in ("/api/v1/hr/passive/save", "/api/v1/hr/speeches/save",

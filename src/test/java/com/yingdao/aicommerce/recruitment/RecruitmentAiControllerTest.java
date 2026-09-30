@@ -19,6 +19,51 @@ class RecruitmentAiControllerTest {
     private final ObjectMapper json = new ObjectMapper();
     private final ModelConfigService models = mock(ModelConfigService.class);
     private final RedisConcurrencyGate gate = mock(RedisConcurrencyGate.class);
+    private List<Map<String,Object>> sourcingConditions() {
+        return List.of(Map.of("id","k1","text","相关或可迁移工作经历","weight",50,"required",false),
+            Map.of("id","k2","text","文件整理或办公事务","weight",30,"required",false),
+            Map.of("id","k3","text","商务接待或协调","weight",20,"required",false));
+    }
+    private Map<String,Object> conditionCandidate(String a,String b,String c) {
+        return Map.of("id","c1","summary","有前台接待和对账经验，文件工作需核实","checks",List.of(
+            Map.of("criterionId","k1","status",a,"evidence","担任前台并处理收银对账"),
+            Map.of("criterionId","k2","status",b,"evidence","卡片未说明文件整理"),
+            Map.of("criterionId","k3","status",c,"evidence","负责顾客接待引导")));
+    }
+    @Test void conditionScoringSeparatesMissingDetailsFromContradictoryEvidence() {
+        var partial=RecruitmentAiController.validateConditions(conditionCandidate("matched","unknown","matched"),sourcingConditions());
+        assertEquals(100d,partial.get("score"));
+        assertEquals("matched",partial.get("matchState"));
+        assertEquals(2,partial.get("matchedConditions"));assertEquals(1,partial.get("pendingConditions"));
+        assertEquals(70d,partial.get("knownWeight"));assertEquals(100,partial.get("totalWeight"));
+        var unknown=RecruitmentAiController.validateConditions(conditionCandidate("unknown","unknown","unknown"),sourcingConditions());
+        assertEquals("needs_info",unknown.get("matchState"));assertEquals(0d,unknown.get("score"));
+        var lower=RecruitmentAiController.validateConditions(conditionCandidate("unmatched","unknown","matched"),sourcingConditions());
+        assertEquals("below_threshold",lower.get("matchState"));
+        assertEquals(28.6,lower.get("score"));
+    }
+    @Test void requiredContradictionBlocksEvenAHighKnownScoreAndInvalidChecksFail() {
+        var conditions=List.<Map<String,Object>>of(
+            Map.of("id","k1","text","相关工作经历","weight",90,"required",false),
+            Map.of("id","k2","text","有实际驾驶经验","weight",5,"required",true),
+            Map.of("id","k3","text","接待经验","weight",5,"required",false));
+        var result=RecruitmentAiController.validateConditions(conditionCandidate("matched","unmatched","matched"),conditions);
+        assertEquals(95d,result.get("score"));assertEquals("required_mismatch",result.get("matchState"));
+        var wrong=new HashMap<>(conditionCandidate("matched","unknown","matched"));
+        wrong.put("checks",List.of(Map.of("criterionId","k1","status","matched","evidence","经历"),
+            Map.of("criterionId","k1","status","matched","evidence","重复"),
+            Map.of("criterionId","k3","status","matched","evidence","经历")));
+        assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateConditions(wrong,conditions));
+        assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateConditions(conditionCandidate("yes","unknown","matched"),conditions));
+    }
+    @Test void conditionContractsKeepExactCandidateBindingAndDropModelMadeUpScores() {
+        var input=Map.<String,Object>of("criteria",sourcingConditions(),"candidates",List.of(Map.of("id","c1")));
+        var row=new HashMap<>(conditionCandidate("matched","unknown","matched"));row.put("score",1);
+        var result=RecruitmentAiController.validateSourcing(Map.of("candidates",List.of(row),"limitations",List.of("仅依据卡片")),input);
+        assertTrue(json.writeValueAsString(result).contains("\"score\":100.0"));
+        row.put("id","invented");
+        assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateSourcing(Map.of("candidates",List.of(row)),input));
+    }
     @Test void sourcingRejectsUntrustedCandidateIdsDuplicatesAndNonfiniteScores() {
         var input=Map.<String,Object>of("candidates",List.of(Map.of("id","a"),Map.of("id","b")));
         var a=Map.<String,Object>of("id","a","score",75,"summary","经历相关","evidence",List.of("开发记录"),"gaps",List.of("需核实"));

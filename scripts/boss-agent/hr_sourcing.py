@@ -54,6 +54,52 @@ def schema(db):
           UNIQUE(owner,account,job,candidate))''',
     ):
         db.execute(sql)
+    if 'criteria' not in {row[1] for row in db.execute('PRAGMA table_info(hr_sourcing_jobs)')}:
+        db.execute("ALTER TABLE hr_sourcing_jobs ADD COLUMN criteria TEXT NOT NULL DEFAULT '{}'")
+
+
+PERSONAL_CRITERION = re.compile(r'性别|男生|女生|男性|女性|年龄|身高|婚育|民族|宗教|残障|外貌|颜值|长相|气质|形象好')
+
+
+def matching_criteria(job):
+    saved = json.loads(job['criteria'])
+    if saved.get('conditions'): return saved
+    profile = json.loads(job['profile'])
+    skills = [v[:50] for v in profile.get('skills', []) if isinstance(v, str) and not PERSONAL_CRITERION.search(v)]
+    return {'confirmed': False, 'conditions': [
+        {'id': 'k1', 'text': '具有本岗位相关或可迁移的工作经验，相近岗位经历也可匹配', 'weight': 50, 'required': False},
+        {'id': 'k2', 'text': ('；'.join(skills[:3]) or '能够完成本岗位的核心日常工作')+'（具备其中一项即可）', 'weight': 30, 'required': False},
+        {'id': 'k3', 'text': ('；'.join(skills[3:6]) or '有工作任务交付、沟通或协作的实际经历')+'（具备其中一项即可）', 'weight': 20, 'required': False}],
+        'scoreBasis': 'known_conditions', 'threshold': MATCH_THRESHOLD}
+
+
+def criteria(user, body):
+    owner, actor = pool.context(user)
+    rows = body.get('conditions')
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 5:
+        raise ValueError('请设置 1–5 条岗位匹配条件')
+    clean = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict): raise ValueError('匹配条件格式不正确')
+        text = pool.text(row.get('text'), 250)
+        weight = row.get('weight')
+        if not text or type(weight) is not int or not 1 <= weight <= 100:
+            raise ValueError('请填写条件与 1–100 的权重')
+        if PERSONAL_CRITERION.search(text):
+            raise ValueError('匹配条件应填写工作能力或经验，不能使用性别、年龄、外貌等个人属性')
+        clean.append({'id': f'k{index+1}', 'text': text, 'weight': weight, 'required': row.get('required') is True})
+    with pool.database() as db:
+        schema(db); expire(db); job = get_job(db, owner, body)
+        if job['version'] != body.get('version'): raise pool.Conflict('岗位条件已变化，请刷新核对')
+        if job['profile_state'] != 'complete': raise ValueError('请先完成岗位画像')
+        if db.execute("SELECT 1 FROM hr_sourcing_runs WHERE owner=? AND job=? AND state='running'",
+                      (owner, job['id'])).fetchone(): raise pool.Conflict('请先暂停寻找并等待当前分析结束，再修改条件')
+        value = {'confirmed': True, 'conditions': clean, 'scoreBasis': 'known_conditions', 'threshold': MATCH_THRESHOLD}
+        if json.loads(job['criteria']) != value:
+            db.execute('UPDATE hr_sourcing_jobs SET criteria=?,version=version+1,updated_at=? WHERE id=?',
+                       (dump(value), now(), job['id']))
+            pool.event(db, owner, actor, job['id'], 'sourcing.criteria', None, value)
+        return view(db, get_job(db, owner, body))
 
 
 def expire(db):
@@ -91,7 +137,8 @@ def view(db, row, run_id=None):
             item['contact'] = dict(contact) if contact else None
     return {**json.loads(row['body']), 'id': row['id'], 'jobId': row['job_id'], 'accountKey': row['account'],
             'version': row['version'], 'profileState': row['profile_state'], 'profile': json.loads(row['profile']),
-            'profileError': row['profile_error'], 'profileStartedAt': row['profile_at'], 'references': refs, 'run': run}
+            'profileError': row['profile_error'], 'profileStartedAt': row['profile_at'],
+            'criteria': matching_criteria(row), 'references': refs, 'run': run}
 
 
 def listing(user, query):
@@ -119,7 +166,7 @@ def save(user, body):
         if old:
             if json.loads(old['body']) != clean:
                 if old['profile_state'] == 'running': raise pool.Conflict('画像正在生成，请完成后更新 JD')
-                db.execute("UPDATE hr_sourcing_jobs SET body=?,version=version+1,profile_state='stale',updated_at=? WHERE id=?",
+                db.execute("UPDATE hr_sourcing_jobs SET body=?,version=version+1,profile_state='stale',criteria='{}',updated_at=? WHERE id=?",
                            (dump(clean), now(), old['id']))
             record = old['id']
         else:
@@ -140,7 +187,7 @@ def references(user, body, remove=False):
             changed = db.execute('DELETE FROM hr_sourcing_refs WHERE id=? AND owner=? AND job=?',
                                  (uid(body.get('referenceId')), owner, job['id'])).rowcount
             if not changed: raise ValueError('参考简历不存在')
-            db.execute("UPDATE hr_sourcing_jobs SET version=version+1,profile_state='stale' WHERE id=?", (job['id'],))
+            db.execute("UPDATE hr_sourcing_jobs SET version=version+1,profile_state='stale',criteria='{}' WHERE id=?", (job['id'],))
             return view(db, get_job(db, owner, body))
     raw = base64.b64decode(body.get('fileBase64', ''), validate=True)
     filename = storage.original_filename(body.get('filename'))
@@ -165,7 +212,7 @@ def references(user, body, remove=False):
         inserted = db.execute('INSERT OR IGNORE INTO hr_sourcing_refs VALUES(?,?,?,?,?,?,?,?)',
                               (record, owner, job['id'], digest, filename, dump({'text': text[:60000], 'note': note}), location, now()))
         if inserted.rowcount:
-            db.execute("UPDATE hr_sourcing_jobs SET version=version+1,profile_state='stale',updated_at=? WHERE id=?", (now(), job['id']))
+            db.execute("UPDATE hr_sourcing_jobs SET version=version+1,profile_state='stale',criteria='{}',updated_at=? WHERE id=?", (now(), job['id']))
             pool.event(db, owner, actor, record, 'sourcing.reference', None, {'job': job['id'], 'digest': digest})
         return view(db, get_job(db, owner, body))
 
@@ -308,6 +355,8 @@ def search(user, body, cookie):
             raise ValueError('请先开始第一批寻源分析')
         if job['profile_state'] != 'complete' or job['version'] != body.get('version'):
             raise ValueError('请先生成当前职位的寻源画像')
+        rules = matching_criteria(job)
+        if not rules['confirmed']: raise ValueError('请先确认并保存匹配条件，再开始寻找')
         if db.execute("SELECT 1 FROM hr_sourcing_runs WHERE owner=? AND state='running'", (owner,)).fetchone():
             raise pool.Conflict('已有寻源分析在执行，请等待完成')
         parsed = {}
@@ -326,7 +375,8 @@ def search(user, body, cookie):
             db.execute('INSERT OR REPLACE INTO hr_sourcing_candidates VALUES(?,?,?,?,?,?)',
                        (cid, owner, job['id'], value['geekId'], dump(value), time.time()))
             db.execute('INSERT OR IGNORE INTO hr_sourcing_seen VALUES(?,?)', (record, cid))
-        snapshot = {'jobDescription': json.loads(job['body'])['description'], 'profile': job['profile'], 'batchIndex': batch,
+        snapshot = {'jobDescription': json.loads(job['body'])['description'], 'profile': dump({'conditions': rules['conditions']}),
+                    'criteria': rules['conditions'], 'batchIndex': batch,
                     'candidates': [{'id': cid, 'evidence': value['evidenceText']} for cid, value in parsed.items()]}
         progress = {**previous, 'batches': batch, 'pagesRead': max(page, previous.get('pagesRead', 0)),
                     'threshold': MATCH_THRESHOLD, 'referenceOnly': True}
@@ -349,6 +399,7 @@ def search_worker(owner, record, snapshot, cookie):
         # exposing BOSS identifiers or weakening exact candidate binding.
         aliases = {f'c{index + 1}': value['id'] for index, value in enumerate(snapshot['candidates'])}
         model_input = {key: snapshot[key] for key in ('jobDescription', 'profile')}
+        if snapshot.get('criteria'): model_input['criteria'] = snapshot['criteria']
         model_input['candidates'] = [
             {'id': alias, 'evidence': value['evidence']}
             for alias, value in zip(aliases, snapshot['candidates'])]
@@ -360,6 +411,17 @@ def search_worker(owner, record, snapshot, cookie):
             raise ValueError('AI 返回的人选标识不完整，本轮已停止；已匹配人选仍保留')
         if any(type(r.get('score')) not in (int, float) or not math.isfinite(r['score']) or not 0 <= r['score'] <= 100 for r in rows):
             raise ValueError('AI 返回的匹配分格式不正确，本轮已停止')
+        if snapshot.get('criteria'):
+            expected_conditions = {c['id'] for c in snapshot['criteria']}
+            for row in rows:
+                checks = row.get('checks')
+                if row.get('scoreBasis') != 'known_conditions' or row.get('matchState') not in {
+                        'matched', 'below_threshold', 'needs_info', 'required_mismatch'} \
+                        or not isinstance(checks, list) or len(checks) != len(expected_conditions) \
+                        or any(not isinstance(c, dict) or c.get('status') not in {
+                            'matched', 'partial', 'unmatched', 'unknown'} for c in checks) \
+                        or {c.get('criterionId') for c in checks} != expected_conditions:
+                    raise ValueError('AI 返回的逐条条件分析不完整，本轮已停止；没有自动重复调用')
         for row in rows:
             row['id'] = aliases[row['id']]
         error = ''
@@ -379,13 +441,17 @@ def search_worker(owner, record, snapshot, cookie):
             source = {v['id']: v for v in json.loads(run['body'])}
             matched = {item['id']: item for item in previous.get('matched', previous.get('candidates', []))}
             for item in result['candidates']:
-                if item['score'] >= MATCH_THRESHOLD:
+                if item['score'] >= MATCH_THRESHOLD and item.get('matchState', 'matched') == 'matched':
                     matched[item['id']] = {**item, 'name': source[item['id']]['name'],
                                            'canGreet': source[item['id']]['canGreet']}
             ranked = sorted(matched.values(), key=lambda row: -row['score'])
             result = {**previous, 'matched': ranked[:run['wanted']], 'candidates': ranked[:run['wanted']],
                       'examined': previous.get('examined', 0) + len(snapshot['candidates']),
-                      'qualified': previous.get('qualified', 0) + sum(r['score'] >= MATCH_THRESHOLD for r in rows),
+                      'qualified': previous.get('qualified', 0) + sum(r['score'] >= MATCH_THRESHOLD and r.get('matchState', 'matched') == 'matched' for r in rows),
+                      'needsInfo': previous.get('needsInfo', 0) + sum(r.get('matchState') == 'needs_info' for r in rows),
+                      'belowThreshold': previous.get('belowThreshold', 0) + sum(r.get('matchState') in ('below_threshold', 'required_mismatch') for r in rows),
+                      'reviewExamples': [{**r, 'name': source[r['id']]['name']} for r in
+                        sorted((r for r in rows if r.get('matchState') != 'matched'), key=lambda r: -r['score'])[:3]],
                       'referenceOnly': True}
         else:
             result = {**previous, 'partial': bool(previous.get('candidates')), 'stopped': True}

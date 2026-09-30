@@ -337,6 +337,24 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-sourcing-profile .hr-description { padding-top:12px; border-top:1px solid #eee; }
 .hr-sourcing-profile .hr-description summary { cursor:pointer; font-size:13px; }
 .hr-sourcing-threshold { white-space:nowrap; }
+.hr-sourcing-reference-tools { margin-top:15px; font-size:13px; }
+.hr-sourcing-reference-tools > summary { cursor:pointer; color:var(--hr-muted); }
+.hr-sourcing-reference-tools[open] > summary { margin-bottom:12px; }
+.hr-sourcing-criteria { margin-top:20px; border-top:1px solid var(--hr-border); padding-top:20px; }
+.hr-sourcing-criteria h4 { font-size:15px; margin:0 0 8px; }
+.hr-sourcing-criteria-rows { display:grid; gap:12px; margin:14px 0; }
+.hr-sourcing-condition { padding:12px; background:var(--surface-soft,#fafafa); border:1px solid var(--hr-border); border-radius:8px; }
+.hr-sourcing-condition textarea { width:100%; box-sizing:border-box; resize:vertical; border:1px solid var(--hr-border); background:var(--surface,#fff); color:inherit; border-radius:5px; padding:9px; font:inherit; font-size:13px; line-height:1.5; }
+.hr-sourcing-condition-options { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-top:9px; font-size:12px; }
+.hr-sourcing-condition-options label { display:flex; align-items:center; gap:5px; }
+.hr-sourcing-condition-options input[type=number] { width:55px; padding:5px; border:1px solid var(--hr-border); border-radius:4px; background:var(--surface,#fff); color:inherit; }
+.hr-sourcing-condition-options .hr-text-button { margin-left:auto; }
+.hr-sourcing-diagnostics { margin-top:18px; border-top:1px solid var(--hr-border); padding-top:14px; }
+.hr-sourcing-diagnostics summary { cursor:pointer; font-size:13px; }
+.hr-sourcing-diagnostics strong { display:block; margin-top:12px; font-size:13px; }
+.hr-sourcing-checks { margin-top:10px; font-size:12px; }
+.hr-sourcing-checks summary { cursor:pointer; color:var(--hr-muted); }
+.hr-sourcing-checks strong { display:block; margin-top:10px; }
 .hr-sourcing-results { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-top:20px; }
 .hr-sourcing-results .hr-person-card { padding:18px; border-radius:8px; background:#fafafa; box-shadow:none; }
 .hr-sourcing-results .hr-card-heading { flex-wrap:wrap; }
