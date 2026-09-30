@@ -38,6 +38,13 @@ class FakeAuth(BaseHTTPRequestHandler):
 
 
 class ConnectorTest(unittest.TestCase):
+    def test_recommendation_pages_have_no_search_ceiling(self):
+        for page in (1, 6, 21, 1000):
+            self.assertEqual(connector.command({'operation': 'recommendations', 'jobId': 'job1', 'page': page}),
+                             ['hr', 'recommendations', '--job-id', 'job1', '--page', str(page)])
+        with self.assertRaises(ValueError):
+            connector.page(-1)
+
     def setUp(self):
         # Tests may run under the production service account. Never touch its
         # real hold marker, resume tracker or encrypted credential directory.

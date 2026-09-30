@@ -60,7 +60,7 @@ class SourcingTest(unittest.TestCase):
                                       'requestId': str(uuid.uuid4())}, 'fixture')
             snapshot = worker.call_args.kwargs['args'][2]
         cid = snapshot['candidates'][0]['id']
-        with mock.patch.object(s, 'driver', return_value={'candidates': [{'id': cid, 'score': 76,
+        with mock.patch.object(s, 'driver', return_value={'candidates': [{'id': 'c1', 'score': 86,
                                 'summary': '工作经历相关', 'evidence': ['有 Java 经验'], 'gaps': ['待看完整简历']}]}):
             s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
         self.job = s.listing(USER, self.params())
@@ -120,7 +120,7 @@ class SourcingTest(unittest.TestCase):
         self.assertNotIn(security, json.dumps(snapshot))
         cid = snapshot['candidates'][0]['id']
         with mock.patch.object(s, 'driver', return_value={'candidates': [
-                {'id': cid, 'score': 80, 'summary': '技能相关', 'evidence': ['Java'], 'gaps': []}]}):
+                {'id': 'c1', 'score': 80, 'summary': '技能相关', 'evidence': ['Java'], 'gaps': []}]}):
             s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
         self.job = s.listing(USER, self.params())
         self.assertTrue(self.job['run']['candidates'][0]['canGreet'])
@@ -149,6 +149,56 @@ class SourcingTest(unittest.TestCase):
         with mock.patch.object(s, 'driver', return_value={'candidates': [{'id': 'invented', 'score': 100}]}):
             s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
         self.assertEqual(s.listing(USER, self.params())['run']['state'], 'failed')
+
+    def test_continuous_search_over_twenty_pages_and_sixty_candidates(self):
+        self.ready()
+        token = str(uuid.uuid4())
+        for batch in range(1, 8):
+            request = {**self.params(), 'count': 20, 'requestId': token,
+                       'batchIndex': batch, 'page': batch * 5,
+                       'candidates': [self.card(f'geek{batch}_{i}') for i in range(10)]}
+            with mock.patch.object(s.threading, 'Thread') as worker:
+                self.job = s.search(USER, request, 'fixture')
+                s.search(USER, request, 'fixture')
+                worker.assert_called_once()
+                snapshot = worker.call_args.kwargs['args'][2]
+            def scores(kind, model, cookie):
+                self.assertNotIn('security1', json.dumps(model))
+                self.assertEqual([v['id'] for v in model['candidates']], [f'c{i+1}' for i in range(10)])
+                return {'candidates': [{'id': v['id'], 'score': 80 if i == 0 else 79.9}
+                                       for i, v in enumerate(model['candidates'])]}
+            with mock.patch.object(s, 'driver', side_effect=scores):
+                s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
+        result = s.listing(USER, self.params())['run']
+        self.assertEqual(result['pagesRead'], 35)
+        self.assertEqual(result['examined'], 70)
+        self.assertEqual(len(result['candidates']), 7)
+        self.assertTrue(all(c['score'] >= 80 for c in result['candidates']))
+        with pool.database() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM hr_sourcing_seen').fetchone()[0], 70)
+            self.assertEqual(len(json.loads(db.execute('SELECT body FROM hr_sourcing_runs').fetchone()[0])), 10)
+        with self.assertRaises(pool.Conflict):
+            s.search(USER, {**request, 'batchIndex': 8, 'count': 5}, 'fixture')
+
+    def test_later_failed_batch_preserves_matches(self):
+        self.searched()
+        with pool.database() as db:
+            run = db.execute('SELECT id FROM hr_sourcing_runs').fetchone()[0]
+        token = str(uuid.uuid4())
+        # Create a new session and finish its first batch.
+        for batch in (1, 2):
+            with mock.patch.object(s.threading, 'Thread') as worker:
+                self.job = s.search(USER, {**self.params(), 'count': 5, 'requestId': token,
+                    'batchIndex': batch, 'page': batch, 'candidates': [self.card(f'new{batch}')]}, 'fixture')
+                snapshot = worker.call_args.kwargs['args'][2]
+            with mock.patch.object(s, 'driver', return_value={'candidates': [
+                    {'id': 'c1' if batch == 1 else 'invented', 'score': 90}]}):
+                s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
+        result = s.listing(USER, self.params())['run']
+        self.assertEqual(result['state'], 'complete')
+        self.assertEqual(len(result['candidates']), 1)
+        self.assertTrue(result['partial'])
+        self.assertIn('标识不完整', result['error'])
 
     def test_greeting_requires_confirmation_capable_desktop_and_exact_account(self):
         cid = self.searched()

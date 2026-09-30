@@ -44,7 +44,7 @@ function setup(overrides={}) {
       readAsDataURL(file){this.result='data:application/pdf;base64,'+Buffer.from(file.name).toString('base64');this.onload();}
     },
     setInterval(fn,ms){const id=++timerSequence;timers.set(id,{fn,ms});return id;},
-    clearInterval(id){timers.delete(id);},setTimeout(){},clearTimeout(){},addEventListener(){},confirm:overrides.confirm || (()=>false),
+    clearInterval(id){timers.delete(id);},setTimeout:overrides.setTimeout||(()=>{}),clearTimeout(){},addEventListener(){},confirm:overrides.confirm || (()=>false),
     fetch:overrides.fetch || (async()=>({ok:false,status:503})),
     api:async(url,options)=>{
       calls.push({url,options});
@@ -136,6 +136,54 @@ test('sourcing route without selected job never reads BOSS or creates a new scop
   assert.match(app.text(),/请返回职位管理/);
   assert.equal(app.calls.length,0);
 });
+test('continuous sourcing reaches page 22, waits on budget and never sends automatically',async()=>{
+  const key='a'.repeat(64);
+  let saved={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'工程师',version:1,
+    profileState:'complete',references:[],profile:{},run:null};
+  const pages=[],batches=[];
+  let budget=false,recovered=false,statusReads=0,finishPage;
+  const app=setup({sourcing:true,setTimeout:fn=>{queueMicrotask(fn);return 1;},api:async(url,options)=>{
+    if(url.endsWith('/login/status')){
+      statusReads++;
+      if(budget&&!recovered){recovered=true;return {data:{paused:true,reconnecting:true,
+        hold:{code:'REQUEST_BUDGET_EXHAUSTED'}}};}
+      return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing','continuous-sourcing']}};
+    }
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{
+      encryptId:saved.jobId,jobName:saved.jobName,postDescription:'系统开发'}}}};
+    if(url.startsWith('/api/v1/hr/sourcing?')||url.endsWith('/sourcing/save'))return {data:saved};
+    if(url.includes('/recommendations?')){
+      const page=Number(new URL('https://local'+url).searchParams.get('page'));pages.push(page);
+      if(page===3)await new Promise(resolve=>{finishPage=resolve;});
+      if(page===7&&!budget){budget=true;throw Error('额度不足');}
+      return {data:{ok:true,data:{hasMore:true,geekList:Array.from({length:10},(_,i)=>({
+        encryptGeekId:`geek${page}_${i}`,encryptJobId:saved.jobId,geekCard:{geekName:'人才'}}))}}};
+    }
+    if(url.endsWith('/sourcing/search')){
+      const body=JSON.parse(options.body);batches.push(body);
+      saved={...saved,run:{id:'run1',state:'complete',version:1,wanted:5,pagesRead:body.page,
+        examined:body.batchIndex*10,candidates:body.page===22?Array.from({length:5},(_,i)=>({
+          id:'c'+i,name:'人才',score:80,canGreet:true})):[]}};
+      return {data:saved};
+    }
+    throw Error('unexpected '+url);
+  }});
+  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  app.visible().find(n=>n.attributes['aria-label']==='获取人数').value='5';
+  const action=app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取').click();
+  await flush();await app.click('暂停寻找');finishPage();await action;await flush();
+  assert.match(app.text(),/已暂停寻找/);
+  await app.click('继续寻找');
+  assert.equal(batches.length,22);
+  assert.equal(new Set(batches.map(b=>b.requestId)).size,1);
+  assert.equal(pages.filter(p=>p===7).length,2,'Budget failure resumes the same unconsumed page');
+  assert.equal(pages.at(-1),22);
+  assert.equal(pages.filter(p=>p===3).length,1,'Pause retains queued cards and the cursor');
+  assert.match(app.text(),/已获取 5 位 80 分以上/);
+  assert.equal(app.calls.some(c=>c.url.endsWith('/sourcing/greet')),false);
+  assert.ok(statusReads>22);
+});
 test('sourcing visibly reports progress and rejected cards next to the action without repeating reads or model submission',async()=>{
   const key='a'.repeat(64),security='a'.repeat(700)+'~'+'B'.repeat(45)+'==';
   const saved={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'工程师',version:2,profileState:'complete',
@@ -166,7 +214,7 @@ test('sourcing visibly reports progress and rejected cards next to the action wi
   const status=all(card).find(n=>n.attributes.role==='status');
   assert.match(status.textContent,/已读取 1 位候选人/);
   finish();await action;await flush();
-  assert.equal(button._text,'一键 AI 获取');assert.equal(button.disabled,false);
+  assert.equal(button._text,'继续寻找');assert.equal(button.disabled,false);
   assert.equal(button.attributes['aria-busy'],'false');
   assert.match(status.textContent,/校验未通过/);assert.equal(status.className,'hr-error');
   assert.equal(app.calls.filter(c=>c.url.includes('/recommendations?')).length,1);
@@ -217,7 +265,7 @@ test('replacement uploads and profile generation survive helper recovery; obsole
   assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/profile')).length,1);
   saved={...saved,profileState:'complete',profile:{summary:'新版画像',suggestedJd:'系统开发',skills:['Java']}};
   await app.tick(4000);assert.equal(find().disabled,false);
-  const details=app.visible().find(n=>n.tagName==='details'&&n.textContent.includes('查看建议'));
+  const details=app.visible().find(n=>n.tagName==='details'&&n.textContent.includes('查看完整画像与建议'));
   details.open=true;
   await app.click('刷新结果');
   assert.ok(app.visible().includes(details));assert.equal(details.open,true,'Polling retains expanded profile');

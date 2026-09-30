@@ -10,11 +10,22 @@
     }
     return [];
   }
+  function hasMore(value,depth=0){
+    if(depth>6||!value||Array.isArray(value)||typeof value!=='object')return null;
+    for(const key of ['hasMore','hasNext','hasNextPage']){
+      if([false,0,'0','false'].includes(value[key]))return false;
+      if([true,1,'1','true'].includes(value[key]))return true;
+    }
+    for(const key of ['data','result','zpData']){
+      const found=hasMore(value[key],depth+1);if(found!==null)return found;
+    }
+    return null;
+  }
   globalThis.HeyiHrSourcing={rows};
   globalThis.createHrSourcing=({root,panel,element:el,button,allowed,navigate,hrApi})=>{
     let selected=null,record=null,active=false,generation=0,busy=false,timer=null,polling=false,pollErrors=0;
     let pendingUploads=[],uploading=false;
-    let finding=false,searchError='';
+    let finding=false,searchError='',searchProgress='',searchSession=null,pausedSearch=false;
     const painted=new WeakMap();
     function changed(node,value){
       const signature=JSON.stringify(value);
@@ -49,12 +60,15 @@
     const find=el('section','',layout,'hr-sourcing-card');
     el('span','02 / 人才寻源',find,'hr-eyebrow');
     el('h3','按岗位画像获取人才',find);
-    el('p','从 BOSS 本职位推荐中读取候选人，AI 依据岗位相关经历提供匹配参考。由 HR 选择联系对象。',find,'hr-hint');
+    el('p','持续翻页寻找，直到达到所选人数或推荐结束。AI 匹配参考分达到 80 分即可收录，由 HR 决定联系对象。',find,'hr-hint');
     const controls=el('div','',find,'hr-actions');
     const countLabel=el('label','',controls,'hr-field');el('span','获取人数',countLabel);
     const count=el('select','',countLabel);count.setAttribute('aria-label','获取人数');
     for(const n of [5,10,15,20])el('option',n+' 人',count).value=String(n);
+    el('span','匹配参考分 ≥ 80',controls,'hr-badge hr-sourcing-threshold');
     const findButton=button('一键 AI 获取',controls,findPeople);findButton.className='hr-primary';
+    const pauseButton=button('暂停寻找',controls,()=>{pausedSearch=true;pauseButton.disabled=true;});
+    pauseButton.className='hr-secondary';pauseButton.hidden=true;
     const refresh=button('刷新结果',controls,()=>reload());refresh.className='hr-secondary';
     const searchStatus=el('p','',find,'hr-hint');
     searchStatus.setAttribute('role','status');searchStatus.setAttribute('aria-live','polite');
@@ -78,7 +92,7 @@
     async function accountCheck(expected){
       const value=(await hrApi('/api/v1/hr/login/status')).data;
       if(value?.state!=='complete'||value.paused||!/^[a-f0-9]{64}$/.test(value.accountKey||''))
-        throw Error('请先连接并登录本机招聘助手');
+        throw Error(value?.error||'请先连接并登录本机招聘助手');
       if(expected&&expected!==value.accountKey)throw Error('当前招聘账号已变化，请从职位管理重新进入');
       return value;
     }
@@ -92,7 +106,8 @@
       profileButton.disabled ||= !record.references.length||record.profileState==='complete';
       findButton.disabled=locked||record.profileState!=='complete';
       const analyzing=record.run?.version===record.version&&record.run?.state==='running';
-      findButton.textContent=finding?'正在获取…':analyzing?'AI 分析中…':'一键 AI 获取';
+      findButton.textContent=finding?'正在获取…':analyzing?'AI 分析中…':searchSession?'继续寻找':'一键 AI 获取';
+      pauseButton.hidden=!finding;pauseButton.disabled=pausedSearch;
       findButton.setAttribute('aria-busy',String(finding||analyzing));
       refresh.disabled=busy;count.disabled=locked;
       profileButton.textContent=record.profileState==='running'?'正在提炼…':record.profileState==='complete'?'画像已就绪':'AI 提炼 JD 与人才画像';
@@ -110,11 +125,16 @@
       if(changed(profileOutput,[record.references.length>0,record.profileState,record.profile])
           &&record.references.length&&record.profile?.summary){
         if(record.profileState!=='complete')el('p','以下为旧版画像，重新提炼完成后才可用于寻源。',profileOutput,'hr-hint');
-        el('p',record.profile.summary,profileOutput,'hr-prose');
+        el('h4','人才画像',profileOutput);
+        el('p',record.profile.summary,profileOutput,'hr-prose hr-sourcing-summary');
         const tags=el('div','',profileOutput,'hr-tags');
-        for(const skill of record.profile.skills||[])el('span',skill,tags,'hr-badge');
-        const details=el('details','',profileOutput,'hr-description');el('summary','查看建议 JD 与依据',details);
-        el('p','建议内容供 HR 审核，不会自动修改 BOSS 已发布职位。',details,'hr-hint');
+        for(const skill of (record.profile.skills||[]).slice(0,6))el('span',skill,tags,'hr-badge');
+        if(record.profile.experience?.length){
+          const experience=el('ul','',profileOutput,'hr-sourcing-experience');
+          for(const item of record.profile.experience.slice(0,3))el('li',item,experience);
+        }
+        const details=el('details','',profileOutput,'hr-description');el('summary','查看完整画像与建议 JD',details);
+        el('p',record.profile.summary,details,'hr-prose');
         el('p',record.profile.suggestedJd,details,'hr-prose');
         for(const item of record.profile.evidence||[]){
           el('strong',item.requirement,details);el('p',item.evidence,details,'hr-hint');
@@ -125,10 +145,11 @@
       searchStatus.textContent=run?.state==='running'
         ?`正在分析候选人 · 已等待 ${Math.max(0,Math.floor(Date.now()/1000-run.startedAt))} 秒`
         :run?.state==='failed'?run.error:run?.state==='complete'
-        ?`已分析 ${run.examined} 人，展示 ${run.candidates.length} 人 / 目标 ${run.wanted} 人。匹配度仅供参考。`:'选择人数后开始获取。';
+        ?`已读取 ${run.pagesRead||1} 页 · 分析 ${run.examined||0} 人 · 80 分以上 ${run.candidates?.length||0} / ${run.wanted} 人${run.error?' · '+run.error:''}`:'选择人数后开始获取。';
       if(run&&run.version!==record.version)searchStatus.textContent+=' 这是旧版画像结果，请重新获取后再联系。';
       searchStatus.className=searchError?'hr-error':'hr-hint';
       if(searchError)searchStatus.textContent=searchError;
+      else if(finding&&searchProgress)searchStatus.textContent=searchProgress;
       if(changed(results,[run?.candidates,run?.version,record.version,locked]))for(const item of run?.candidates||[]){
         const card=el('article','',results,'hr-person-card');
         const head=el('div','',card,'hr-card-heading');el('h3',item.name,head);
@@ -199,37 +220,113 @@
       }}
     }
     async function generateProfile(){if(record)await mutate('sourcing/profile',params());}
+    async function waitForAnalysis(ticket,snapshot,value){
+      const id=value.run?.id,started=Date.now();
+      while(value.run?.state==='running'){
+        if(!valid(ticket))return null;
+        if(Date.now()-started>360000)throw Error('分析仍未完成，可刷新查看进度；本轮没有重新提交 AI');
+        await new Promise(resolve=>setTimeout(resolve,1500));
+        if(!valid(ticket))return null;
+        value=await request('sourcing?'+new URLSearchParams({...snapshot,runId:id}));
+        if(!valid(ticket))return null;
+        if(value?.run?.id!==id)throw Error('寻源结果已变化，请刷新核对；本轮已停止');
+        record=value;render();
+      }
+      return value;
+    }
     async function findPeople(){
       if(!record||busy||running()||record.profileState!=='complete'||!allowed())return;
-      const ticket=generation,snapshot=params(),jobId=record.jobId;busy=finding=true;searchError='';render();
-      const progress=text=>{feedback.textContent=searchStatus.textContent=text;};
+      const ticket=generation,snapshot=params(),jobId=record.jobId;busy=finding=true;searchError='';searchProgress='';render();
+      const progress=text=>{searchProgress=text;feedback.textContent=searchStatus.textContent=text;};
       progress('正在确认招聘账号和岗位…');
-      const candidates=[],seen=new Set(),desired=Number(count.value);
-      try{
-        const account=await accountCheck(snapshot.accountKey);
-        if(!account.capabilities?.includes('active-sourcing'))throw Error('请更新招聘助手到 0.1.10 或以上版本');
-        // At most two official reads / 40 cards and one paid model call per click.
-        for(let page=1;page<=2&&candidates.length<Math.min(40,desired*2);page++){
-          await accountCheck(snapshot.accountKey);
-          if(!valid(ticket))return;
-          progress(`正在读取本职位推荐 · 第 ${page} 页`);
-          const result=(await hrApi('/api/v1/hr/recommendations?'+new URLSearchParams({jobId,page}))).data;
-          if(result?.ok!==true)throw Error(result?.error?.message||'候选人读取失败，请稍后手动重试');
-          for(const item of rows(result)){
-            const info=item.geekCard||item.geekInfo||item.geekBaseInfo||item;
-            const id=String(info.encryptGeekId||info.encGeekId||item.encryptGeekId||'');
-            if(id&&!seen.has(id)){seen.add(id);candidates.push(item);if(candidates.length>=40)break;}
+      pausedSearch=false;pauseButton.disabled=false;
+      const desired=Number(count.value);
+      if(!searchSession||searchSession.id!==record.id||searchSession.version!==record.version
+        ||searchSession.desired!==desired)searchSession={id:record.id,version:record.version,
+          desired,requestId:crypto.randomUUID(),candidates:[],seen:new Set(),page:0,batch:1,ended:false,qualified:0};
+      const session=searchSession,{candidates,seen,requestId}=session;
+      let {page,ended,qualified}=session;
+      const wait=()=>new Promise(resolve=>setTimeout(resolve,3000));
+      async function connected(){
+        while(valid(ticket)&&!pausedSearch){
+          const value=(await hrApi('/api/v1/hr/login/status')).data;
+          const code=value?.hold?.code||value?.failure_code;
+          if(value?.paused&&value.reconnecting&&['REQUEST_BUDGET_EXHAUSTED','SESSION_UNAVAILABLE'].includes(code)){
+            progress('助手正在等待额度或连接恢复 · 已找到的人选保留');await wait();continue;
           }
-          if(!rows(result).length||result.data?.hasMore===false||result.data?.hasMore===0)break;
+          return accountCheck(snapshot.accountKey);
         }
-        await accountCheck(snapshot.accountKey);
-        if(!valid(ticket))return;
-        if(!candidates.length)throw Error('BOSS 本次没有返回可用候选人，没有调用 AI');
-        progress(`已读取 ${candidates.length} 位候选人，正在提交驱动模型分析…`);
-        const value=await request('sourcing/search',{...snapshot,count:desired,candidates,requestId:crypto.randomUUID()});
-        if(valid(ticket)){record=value;feedback.textContent='已提交分析，完成后会显示候选人。';}
-      }catch(error){if(valid(ticket))searchError=feedback.textContent=error.message;}
-      finally{if(valid(ticket)){busy=finding=false;render();void uploadPending();}}
+        return null;
+      }
+      try{
+        const account=await connected();if(!account)return;
+        if(!account.capabilities?.includes('active-sourcing'))throw Error('请更新招聘助手到 0.1.10 或以上版本');
+        // Continue only after a completed batch. Never retry failed AI calls or
+        // repeat pages; desktop budgets and risk holds still guard every read.
+        for(;qualified<desired&&!pausedSearch;session.batch++){
+          const batch=session.batch;
+          const target=Math.min(20,Math.max(10,(desired-qualified)*2));
+          while(candidates.length<target&&!ended&&!pausedSearch){
+            if(!await connected()||!valid(ticket))return;
+            const nextPage=page+1;
+            if(nextPage>20&&!account.capabilities?.includes('continuous-sourcing'))
+              throw Error('请更新招聘助手到 0.1.13，旧版助手限制了推荐页码；当前结果和进度已保留');
+            progress(`正在读取本职位推荐 · 第 ${nextPage} 页 · 已匹配 ${qualified} / ${desired} 人`);
+            let result;
+            try{result=(await hrApi('/api/v1/hr/recommendations?'+new URLSearchParams({jobId,page:nextPage}))).data;}
+            catch(error){
+              const status=(await hrApi('/api/v1/hr/login/status')).data;
+              if(status?.hold?.code==='REQUEST_BUDGET_EXHAUSTED'&&status.reconnecting){
+                progress('读取额度已用完，等待助手恢复后继续当前页');await wait();continue;
+              }
+              throw error;
+            }
+            if(!valid(ticket))return;
+            if(result?.ok!==true){
+              if(result?.error?.code==='REQUEST_BUDGET_EXHAUSTED'){
+                progress('读取额度已用完，等待助手恢复后继续当前页');await wait();continue;
+              }
+              throw Error(result?.error?.message||'候选人读取失败，本轮已停止');
+            }
+            page=nextPage;session.page=page;
+            let fresh=0;
+            for(const item of rows(result).slice(0,40)){
+              const info=item.geekCard||item.geekInfo||item.geekBaseInfo||item;
+              const id=String(info.encryptGeekId||info.encGeekId||item.encryptGeekId||'');
+              if(id&&!seen.has(id)){seen.add(id);candidates.push(item);fresh++;}
+            }
+            if(!fresh&&hasMore(result)!==false&&rows(result).length)
+              throw Error('平台重复返回已读取的人选，已暂停；可继续寻找核对下一页');
+            if(!fresh||hasMore(result)===false)ended=session.ended=true;
+          }
+          if(pausedSearch)break;
+          if(!candidates.length)break;
+          if(!await connected()||!valid(ticket))return;
+          const current=candidates.slice(0,20);
+          progress(`已读取 ${current.length} 位候选人 · 第 ${batch} 批 AI 分析 · 已匹配 ${qualified} / ${desired} 人`);
+          let value=await request('sourcing/search',{...snapshot,count:desired,candidates:current,requestId,batchIndex:batch,page});
+          if(!valid(ticket))return;
+          record=value;render();
+          value=await waitForAnalysis(ticket,snapshot,value);
+          if(!value||!valid(ticket))return;
+          record=value;qualified=session.qualified=value.run?.candidates?.length||0;
+          if(value.run?.error||value.run?.state==='failed'){
+            searchSession=null;
+            throw Error(value.run.error||'本批分析未完成，本轮已停止');
+          }
+          candidates.splice(0,current.length);
+          if(ended&&!candidates.length){session.batch++;break;}
+        }
+        if(!seen.size)throw Error('BOSS 本次没有返回可用候选人，没有调用 AI');
+        feedback.textContent=qualified>=desired?`已获取 ${qualified} 位 80 分以上的人选。`
+          :`已获取 ${qualified} / ${desired} 人。${pausedSearch?'已暂停，可以继续寻找。':'本职位推荐已读完。'}`;
+        if(qualified>=desired||ended&&!candidates.length)searchSession=null;
+      }catch(error){if(valid(ticket))searchError=feedback.textContent=(record?.run?.candidates?.length
+        ?`已保留 ${record.run.candidates.length} 位匹配人选 · `:'')+error.message;}
+      finally{if(valid(ticket)){
+        if(pausedSearch)feedback.textContent='已暂停寻找，当前进度保留，可点击继续寻找。';
+        busy=finding=false;searchProgress='';render();void uploadPending();
+      }}
     }
     function fillTemplate(){
       const text=speeches.find(row=>row.id===templates.value)?.content||'您好，我们正在招聘{职位}，看到您的相关经历，希望与您进一步沟通。如果您感兴趣，欢迎回复。';
@@ -285,10 +382,10 @@
       }catch(error){if(valid(ticket)){record=null;feedback.textContent=error.message;}}
       finally{if(valid(ticket)){busy=false;render();void uploadPending();}}
     }
-    function leave(){active=false;generation++;stop();busy=uploading=finding=false;pendingUploads=[];dialog.close();}
+    function leave(){active=false;generation++;stop();busy=uploading=finding=false;searchProgress='';pendingUploads=[];dialog.close();}
     return {select(row){selected={id:String(row.encryptJobId||row.encJobId||row.encryptId||row.jobId||row.id),
       name:row.jobName||row.name||'',refresh:true};record=null;searchError='';},
-      enter,leave,reset(){leave();selected=record=candidate=null;speeches=[];
+      enter,leave,reset(){leave();selected=record=candidate=null;searchSession=null;speeches=[];
         searchError='';
         referenceRows.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();
         for(const node of [referenceRows,profileOutput,results])painted.delete(node);

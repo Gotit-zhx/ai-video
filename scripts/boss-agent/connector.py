@@ -597,10 +597,10 @@ def sanitize(value):
     return value
 
 
-def page(value):
+def page(value, *, continuous=False):
     number = int(value or 1)
-    if number < 1 or number > 20:
-        raise ValueError("页码应在 1–20 之间")
+    if number < 1 or (not continuous and number > 20):
+        raise ValueError("页码必须为正整数")
     return str(number)
 
 
@@ -627,7 +627,7 @@ def command(request):
         return args
     if operation == "recommendations":
         return ["hr", "recommendations", "--job-id", identifier(request.get("jobId")),
-                "--page", page(request.get("page"))]
+                "--page", page(request.get("page"), continuous=True)]
     if operation == "chats":
         args = ["hr", "chat", "--page", page(request.get("page"))]
         if request.get("jobId"):

@@ -317,7 +317,7 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-sourcing-nav .hr-text-button:hover,.hr-sourcing-reference .hr-text-button:hover { color:#111; text-decoration:underline; }
 .hr-sourcing-layout { display:grid; grid-template-columns:minmax(280px,.85fr) minmax(420px,1.4fr); gap:22px; align-items:start; }
 .hr-sourcing-layout[hidden] { display:none; }
-.hr-sourcing-card { padding:26px; background:#fff; border:1px solid #e5e5e5; border-radius:20px; min-width:0; }
+.hr-sourcing-card { padding:22px; background:#fff; border:1px solid #e5e5e5; border-radius:8px; min-width:0; }
 .hr-sourcing-card h3 { margin:12px 0; font-size:19px; letter-spacing:-.3px; }
 .hr-sourcing-card .hr-hint { line-height:1.7; }
 .hr-sourcing-upload { display:grid; gap:14px; padding:20px; margin:20px 0; background:#f8f8f8; border:1px dashed #c9c9c9; border-radius:12px; }
@@ -330,8 +330,15 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-sourcing-profile { margin-top:20px; }
 .hr-sourcing-profile:empty { display:none; }
 .hr-sourcing-profile .hr-prose { font-size:13px; line-height:1.9; white-space:pre-wrap; }
+.hr-sourcing-profile h4 { margin:0 0 10px; font-size:14px; letter-spacing:0; }
+.hr-sourcing-profile .hr-sourcing-summary { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; margin:0 0 12px; }
+.hr-sourcing-profile .hr-tags { margin:0 0 12px; }
+.hr-sourcing-experience { margin:0 0 14px; padding-left:18px; font-size:13px; line-height:1.7; color:#555; }
+.hr-sourcing-profile .hr-description { padding-top:12px; border-top:1px solid #eee; }
+.hr-sourcing-profile .hr-description summary { cursor:pointer; font-size:13px; }
+.hr-sourcing-threshold { white-space:nowrap; }
 .hr-sourcing-results { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-top:20px; }
-.hr-sourcing-results .hr-person-card { padding:20px; border-radius:14px; background:#fafafa; box-shadow:none; }
+.hr-sourcing-results .hr-person-card { padding:18px; border-radius:8px; background:#fafafa; box-shadow:none; }
 .hr-sourcing-results .hr-card-heading { flex-wrap:wrap; }
 .hr-sourcing-results h3 { font-size:17px; }
 .hr-sourcing-results .hr-prose { font-size:13px; line-height:1.75; }

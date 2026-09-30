@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import urllib.request
+import urllib.error
 import uuid
 
 import talent_pool as pool
@@ -18,6 +19,7 @@ from passive_pool import account, dump, now, uid
 
 AI_BASE = 'http://127.0.0.1:8080/api/v1/recruitment-ai/'
 MAX_UPLOAD = 10 * 1024 * 1024
+MATCH_THRESHOLD = 80
 # Opaque BOSS access credentials use the same bound as connector.security_identifier.
 # They routinely exceed 600 characters and must remain intact outside model input.
 SECURITY_ID = re.compile(r"^[A-Za-z0-9_~][A-Za-z0-9_~\-=]{0,4095}$")
@@ -43,6 +45,8 @@ def schema(db):
         '''CREATE TABLE IF NOT EXISTS hr_sourcing_candidates(
           id TEXT PRIMARY KEY,owner TEXT NOT NULL,job TEXT NOT NULL,geek TEXT NOT NULL,
           body TEXT NOT NULL,read_at REAL NOT NULL,UNIQUE(owner,job,geek))''',
+        '''CREATE TABLE IF NOT EXISTS hr_sourcing_seen(
+          run TEXT NOT NULL,candidate TEXT NOT NULL,PRIMARY KEY(run,candidate))''',
         '''CREATE TABLE IF NOT EXISTS hr_sourcing_contacts(
           id TEXT PRIMARY KEY,owner TEXT NOT NULL,account TEXT NOT NULL,job TEXT NOT NULL,
           candidate TEXT NOT NULL,body TEXT NOT NULL,status TEXT NOT NULL,
@@ -67,17 +71,20 @@ def get_job(db, owner, body):
     return row
 
 
-def view(db, row):
+def view(db, row, run_id=None):
     refs = [dict(r) for r in db.execute('SELECT id,filename,body,created_at FROM hr_sourcing_refs WHERE owner=? AND job=? ORDER BY created_at,id', (row['owner'], row['id']))]
     for item in refs:
         data = json.loads(item.pop('body'))
         item.update(characters=len(data['text']), note=data.get('note', ''))
-    runs = list(db.execute('SELECT * FROM hr_sourcing_runs WHERE owner=? AND job=? ORDER BY started DESC,id LIMIT 1', (row['owner'], row['id'])))
+    runs = list(db.execute('SELECT * FROM hr_sourcing_runs WHERE owner=? AND job=?'
+                          + (' AND id=?' if run_id else '') + ' ORDER BY started DESC,id LIMIT 1',
+                          (row['owner'], row['id'], uid(run_id)) if run_id else (row['owner'], row['id'])))
     run = None
     if runs:
         r = runs[0]
         run = {'id': r['id'], 'state': r['state'], 'error': r['error'], 'startedAt': r['started'],
                'wanted': r['wanted'], 'version': r['version'], **json.loads(r['result'])}
+        run.pop('matched', None)
         for item in run.get('candidates', []):
             contact = db.execute('SELECT id,status,friend_id FROM hr_sourcing_contacts WHERE owner=? AND job=? AND candidate=?',
                                  (row['owner'], row['id'], item['id'])).fetchone()
@@ -92,7 +99,7 @@ def listing(user, query):
     with pool.database() as db:
         schema(db); expire(db)
         if query.get('id'):
-            return view(db, get_job(db, owner, query))
+            return view(db, get_job(db, owner, query), query.get('runId'))
         key = account(query.get('accountKey'))
         row = db.execute('SELECT * FROM hr_sourcing_jobs WHERE owner=? AND account=? AND job_id=?',
                          (owner, key, pool.text(query.get('jobId'), 180))).fetchone()
@@ -167,8 +174,20 @@ def driver(kind, snapshot, cookie):
     request = urllib.request.Request(AI_BASE+kind, data=dump(snapshot).encode(),
                                      headers={'Content-Type': 'application/json', 'Cookie': cookie})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(request, timeout=320) as response:
-        raw = response.read(512001)
+    try:
+        with opener.open(request, timeout=320) as response:
+            raw = response.read(512001)
+    except urllib.error.HTTPError as error:
+        # Only status codes leave this boundary; provider bodies and URLs can
+        # contain private data. Do not repeat a paid request after failure.
+        messages = {401: '平台登录已失效，请重新登录赫逸平台后再分析',
+                    403: '当前账号没有岗位分析权限',
+                    409: '驱动模型未就绪，请检查模型配置',
+                    429: '驱动模型当前调用较多，请稍后再分析',
+                    502: '驱动模型返回不完整或服务异常，本轮已停止，没有自动重复调用',
+                    503: '驱动模型服务暂不可用，本轮已停止',
+                    504: '驱动模型分析超时，本轮已停止'}
+        raise ValueError(messages.get(error.code, f'岗位分析服务返回 HTTP {error.code}，本轮已停止')) from None
     if len(raw) > 512000: raise ValueError('模型结果过长')
     result = json.loads(raw).get('data')
     if not isinstance(result, dict): raise ValueError('模型返回不完整')
@@ -258,12 +277,35 @@ def search(user, body, cookie):
     try: token = str(uuid.UUID(body.get('requestId', '')))
     except (ValueError, TypeError, AttributeError): raise ValueError('寻源请求标识无效')
     record = str(uuid.uuid5(uuid.NAMESPACE_URL, f'hr-sourcing-search:{owner}:{token}'))
+    batch = body.get('batchIndex', 1)
+    page = body.get('page', 1)
+    if type(batch) is not int or batch < 1:
+        raise ValueError('分析批次必须为正整数')
+    if type(page) is not int or page < 1:
+        raise ValueError('页码必须为正整数')
     with pool.database() as db:
         schema(db); expire(db); job = get_job(db, owner, body)
         old = db.execute('SELECT * FROM hr_sourcing_runs WHERE id=? AND owner=?', (record, owner)).fetchone()
+        previous, source = {}, {}
         if old:
             if old['job'] != job['id']: raise pool.Conflict('该请求已用于其他职位')
-            return view(db, job)
+            previous = json.loads(old['result'])
+            completed_batches = previous.get('batches', 1)
+            if batch <= completed_batches:
+                return view(db, job, record)
+            if old['version'] != job['version'] or old['wanted'] != wanted:
+                raise pool.Conflict('寻源岗位、画像或目标人数已变化，请重新获取')
+            if old['state'] != 'complete' or old['error']:
+                raise pool.Conflict('上一批尚未完成或已停止，不会重复提交 AI')
+            if batch != completed_batches + 1:
+                raise ValueError('寻源分析批次不连续')
+            source = {value['id']: value for value in json.loads(old['body'])}
+            # Upgrade earlier runs lazily. Full card data stays in the candidate
+            # table; the session dedup index grows without rewriting all cards.
+            for cid in source:
+                db.execute('INSERT OR IGNORE INTO hr_sourcing_seen VALUES(?,?)', (record, cid))
+        elif batch != 1:
+            raise ValueError('请先开始第一批寻源分析')
         if job['profile_state'] != 'complete' or job['version'] != body.get('version'):
             raise ValueError('请先生成当前职位的寻源画像')
         if db.execute("SELECT 1 FROM hr_sourcing_runs WHERE owner=? AND state='running'", (owner,)).fetchone():
@@ -273,43 +315,82 @@ def search(user, body, cookie):
             value = candidate(entry, job['job_id'])
             if not value: continue
             cid = str(uuid.uuid5(uuid.NAMESPACE_URL, f'hr-source-candidate:{owner}:{job["id"]}:{value["geekId"]}'))
-            value['id'] = cid; parsed[cid] = value
+            value['id'] = cid
+            if not db.execute('SELECT 1 FROM hr_sourcing_seen WHERE run=? AND candidate=?',
+                              (record, cid)).fetchone():
+                parsed[cid] = value
+        if not parsed and source:
+            return view(db, job, record)
         if not parsed: raise ValueError('已读取候选人，但卡片的职位或访问参数校验未通过，本次未调用 AI。请刷新获取候选人后重试')
         for cid, value in parsed.items():
             db.execute('INSERT OR REPLACE INTO hr_sourcing_candidates VALUES(?,?,?,?,?,?)',
                        (cid, owner, job['id'], value['geekId'], dump(value), time.time()))
-        snapshot = {'jobDescription': json.loads(job['body'])['description'], 'profile': job['profile'],
+            db.execute('INSERT OR IGNORE INTO hr_sourcing_seen VALUES(?,?)', (record, cid))
+        snapshot = {'jobDescription': json.loads(job['body'])['description'], 'profile': job['profile'], 'batchIndex': batch,
                     'candidates': [{'id': cid, 'evidence': value['evidenceText']} for cid, value in parsed.items()]}
-        db.execute('INSERT INTO hr_sourcing_runs(id,owner,job,version,wanted,state,body,started,updated_at) VALUES(?,?,?,?,?,\'running\',?,?,?)',
-                   (record, owner, job['id'], job['version'], wanted, dump(list(parsed.values())), time.time(), now()))
-        pool.event(db, owner, actor, record, 'sourcing.search-request', None, {'job': job['id'], 'count': wanted, 'examined': len(parsed)})
+        progress = {**previous, 'batches': batch, 'pagesRead': max(page, previous.get('pagesRead', 0)),
+                    'threshold': MATCH_THRESHOLD, 'referenceOnly': True}
+        if old:
+            db.execute("UPDATE hr_sourcing_runs SET state='running',body=?,result=?,started=?,updated_at=? WHERE id=?",
+                       (dump(list(parsed.values())), dump(progress), time.time(), now(), record))
+        else:
+            db.execute('INSERT INTO hr_sourcing_runs(id,owner,job,version,wanted,state,body,result,started,updated_at) VALUES(?,?,?,?,?,\'running\',?,?,?,?)',
+                       (record, owner, job['id'], job['version'], wanted, dump(list(parsed.values())),
+                        dump(progress), time.time(), now()))
+        pool.event(db, owner, actor, record, 'sourcing.search-request', None,
+                   {'job': job['id'], 'count': wanted, 'examined': len(parsed), 'batch': batch, 'page': page})
     threading.Thread(target=search_worker, args=(owner, record, snapshot, cookie), daemon=True).start()
-    return listing(user, body)
+    return listing(user, {**body, 'runId': record})
 
 
 def search_worker(owner, record, snapshot, cookie):
     try:
-        result = driver('sourcing-match', snapshot, cookie)
+        # Short, request-local aliases reduce model copying errors without
+        # exposing BOSS identifiers or weakening exact candidate binding.
+        aliases = {f'c{index + 1}': value['id'] for index, value in enumerate(snapshot['candidates'])}
+        model_input = {key: snapshot[key] for key in ('jobDescription', 'profile')}
+        model_input['candidates'] = [
+            {'id': alias, 'evidence': value['evidence']}
+            for alias, value in zip(aliases, snapshot['candidates'])]
+        result = driver('sourcing-match', model_input, cookie)
         rows = result.get('candidates')
-        expected = {item['id'] for item in snapshot['candidates']}
-        if not isinstance(rows, list) or len(rows) != len(expected) or {r.get('id') for r in rows} != expected:
-            raise ValueError('candidate mismatch')
+        expected = set(aliases)
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows) \
+                or len(rows) != len(expected) or {r.get('id') for r in rows} != expected:
+            raise ValueError('AI 返回的人选标识不完整，本轮已停止；已匹配人选仍保留')
         if any(type(r.get('score')) not in (int, float) or not math.isfinite(r['score']) or not 0 <= r['score'] <= 100 for r in rows):
-            raise ValueError('invalid score')
+            raise ValueError('AI 返回的匹配分格式不正确，本轮已停止')
+        for row in rows:
+            row['id'] = aliases[row['id']]
         error = ''
+    except ValueError as problem:
+        safe = str(problem)
+        error = safe if safe.startswith(('AI 返回', '驱动模型', '平台登录', '当前账号', '岗位分析')) else 'AI 寻源分析未完成，本轮已停止；未发送任何招呼'
+        result = {}
     except Exception:
-        result, error = {}, 'AI 寻源分析未完成，请手动重试；未发送任何招呼'
+        result, error = {}, 'AI 寻源分析未完成，本轮已停止；未发送任何招呼'
     with pool.database() as db:
         schema(db)
         run = db.execute('SELECT * FROM hr_sourcing_runs WHERE id=? AND owner=?', (record, owner)).fetchone()
         if not run or run['state'] != 'running': return
+        previous = json.loads(run['result'])
+        if previous.get('batches', 1) != snapshot.get('batchIndex', 1): return
         if not error:
             source = {v['id']: v for v in json.loads(run['body'])}
-            ranked = sorted(result['candidates'], key=lambda r: -r['score'])[:run['wanted']]
-            result['candidates'] = [{**r, 'name': source[r['id']]['name'], 'canGreet': source[r['id']]['canGreet']} for r in ranked]
-            result['examined'] = len(source); result['referenceOnly'] = True
+            matched = {item['id']: item for item in previous.get('matched', previous.get('candidates', []))}
+            for item in result['candidates']:
+                if item['score'] >= MATCH_THRESHOLD:
+                    matched[item['id']] = {**item, 'name': source[item['id']]['name'],
+                                           'canGreet': source[item['id']]['canGreet']}
+            ranked = sorted(matched.values(), key=lambda row: -row['score'])
+            result = {**previous, 'matched': ranked[:run['wanted']], 'candidates': ranked[:run['wanted']],
+                      'examined': previous.get('examined', 0) + len(snapshot['candidates']),
+                      'qualified': previous.get('qualified', 0) + sum(r['score'] >= MATCH_THRESHOLD for r in rows),
+                      'referenceOnly': True}
+        else:
+            result = {**previous, 'partial': bool(previous.get('candidates')), 'stopped': True}
         db.execute('UPDATE hr_sourcing_runs SET state=?,result=?,error=?,updated_at=? WHERE id=?',
-                   ('failed' if error else 'complete', dump(result), error, now(), record))
+                   ('failed' if error and not result.get('candidates') else 'complete', dump(result), error, now(), record))
 
 
 def greet(user, body):
