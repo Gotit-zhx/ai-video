@@ -1,9 +1,26 @@
 name: HR desktop
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: "仅构建所需安装包"
+        type: choice
+        required: true
+        default: windows
+        options:
+          - windows
+          - macos
+          - all
+  # Code uploads are free of build side effects. An explicit build tag also
+  # works before this workflow has been merged into the default branch.
   push:
-    branches: ["codex/hr-desktop-*", "codex/test-current-20260831"]
-    paths: ["hr-desktop/**", "scripts/boss-agent/**", ".github/workflows/hr-desktop.yml"]
+    tags:
+      - "hr-desktop-build-windows-v*"
+      - "hr-desktop-build-macos-v*"
+      - "hr-desktop-build-all-v*"
+concurrency:
+  group: hr-desktop-${{ github.ref }}-${{ inputs.platform || 'tag' }}
+  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
@@ -11,8 +28,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: ${{ fromJSON((inputs.platform == 'all' || startsWith(github.ref_name, 'hr-desktop-build-all-')) && '["windows-latest","macos-latest"]' || (inputs.platform == 'macos' || startsWith(github.ref_name, 'hr-desktop-build-macos-')) && '["macos-latest"]' || '["windows-latest"]') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: hr-desktop

@@ -134,7 +134,27 @@ pnpm run dist:mac
 
 `--self-test` 必须指定临时目录 `HEYI_TEST_USER_DATA`，阻断外网并使用合成 Cookie，
 验证嵌入浏览器、会话隔离、运行时完整性、CDP、配对、直连路由和实际窗口渲染，不访问 BOSS。
-GitHub Actions 同时生成 Mac/Windows 安装包和测试记录。
+普通分支推送只同步代码，不触发 GitHub Actions 打包。需要安装包时显式选择 Windows、
+Mac 或两者，避免同一提交在开发分支和测试分支重复消耗构建额度。
+Mac 可在本机完成相同构建和离线整包测试，缺少 Windows 环境时仅申请 Windows 构建。
+
+默认分支包含工作流后，可在 Actions → HR desktop → Run workflow 选择 `platform`，
+默认为 `windows`。在默认分支尚未包含该工作流时，使用显式构建标签：
+
+```sh
+# 先确认 HEAD 是已经验证、推送的目标提交；下列命令会申请 GitHub 构建资源。
+version="$(node -p "require('./hr-desktop/package.json').version")"
+tag="hr-desktop-build-windows-v${version}-$(git rev-parse --short HEAD)"
+git tag "$tag"
+git push origin "$tag"
+# 如确需 Mac 或双平台构建，将 windows 分别替换为 macos 或 all。
+```
+
+每个任务最多运行 35 分钟，同一构建请求的新任务取消旧任务。测试通过后安装包和 QA
+记录只上传到未公开的 Release 草稿，平台下载地址仍须单独核对版本、校验和后再更新。
+GitHub 额度或账单限制发生时，不自动重跑、不提高付费预算、不将私有仓库公开。
+在额度恢复或拥有实际 Windows 构建机后才能生成并验证新的 Windows 包；不能将 Mac
+Python 运行时复制进 Windows 安装包。已有安装包继续保留，未验证的新包不得替换下载地址。
 
 当前打包不含 Apple Developer ID 公证或 Windows 发布者证书。
 对外分发前可配置组织的签名证书；现有版本可能出现操作系统的未知发布者提示。
