@@ -114,6 +114,79 @@ def matching_criteria(job):
             'scoreBasis': 'known_conditions', 'threshold': MATCH_THRESHOLD, "policyVersion": CRITERIA_POLICY}
 
 
+DEGREES = {'中专': 1, '高中': 1, '大专': 2, '专科': 2, '本科': 3, '学士': 3,
+           '硕士': 4, '研究生': 4, '博士': 5}
+DEGREE_LABELS = {1: '高中 / 中专', 2: '大专', 3: '本科', 4: '硕士', 5: '博士'}
+
+
+def degree_level(value):
+    if not isinstance(value, str) or re.search(r'在读|未毕业|肄业|不限|未知', value):
+        return None
+    levels = {level for name, level in DEGREES.items() if name in value}
+    # "博士研究生" is one degree; otherwise ambiguous alternatives stay unknown.
+    if '博士' in value:
+        levels.discard(4)
+    return next(iter(levels)) if len(levels) == 1 else None
+
+
+def year_range(value):
+    if not isinstance(value, str) or re.search(r'不限|未知', value):
+        return None
+    if re.fullmatch(r'(?:应届(?:生|毕业生)?|在校生|无(?:工作)?经验)', value.strip()):
+        return (0, 0)
+    match = re.search(r'(?<![\d.])(\d+(?:\.\d+)?)\s*(?:[-–—~～至到]\s*(\d+(?:\.\d+)?))?\s*年', value)
+    if not match:
+        return None
+    lower = float(match[1])
+    upper = float(match[2]) if match[2] else float('inf') if re.search(r'以上|至少|不少于', value) else lower
+    return (lower, upper) if 0 <= lower <= upper and lower <= 60 else None
+
+
+def basic_requirements(data):
+    """Only explicit job minimums; no age, school prestige or inferred tenure."""
+    jd = data.get('description', '')
+    education = data.get('education', '')
+    experience = data.get('experience', '')
+    if not education:
+        found = re.search(r'(博士|硕士|研究生|本科|学士|大专|专科|高中|中专)\s*(?:及以上|以上)?\s*(?:学历|学位)', jd)
+        education = found[0] if found else ''
+    if not experience:
+        found = re.search(r'\d+(?:\.\d+)?\s*(?:[-–—~～至到]\s*\d+(?:\.\d+)?)?\s*年\s*(?:以上)?\s*(?:的)?\s*(?:相关)?\s*(?:工作|开发|行业|项目)?经验', jd)
+        experience = found[0] if found else ''
+    result = []
+    level, years = degree_level(education), year_range(experience)
+    if level is not None:
+        result.append({'id': 'education', 'label': '学历', 'minimum': level,
+                       'text': '最低学历：'+DEGREE_LABELS[level]})
+    if years is not None and years[0] > 0:
+        result.append({'id': 'years', 'label': '工作年限', 'minimum': years[0],
+                       'text': f'最低工作年限：{years[0]:g} 年'})
+    return result
+
+
+def basic_checks(value, requirements):
+    facts = value.get('basicFacts', {})
+    checks = []
+    for requirement in requirements:
+        status, evidence = 'unknown', '卡片未提供可核实的'+requirement['label']
+        if requirement['id'] == 'education' and facts.get('education') is not None:
+            level = facts['education']
+            status = 'matched' if level >= requirement['minimum'] else 'unmatched'
+            evidence = '卡片学历：'+DEGREE_LABELS[level]
+        elif requirement['id'] == 'years' and facts.get('years') is not None:
+            lower, upper = facts['years']
+            # A range straddling the minimum is not a confirmed match or failure.
+            status = 'matched' if lower >= requirement['minimum'] else 'unmatched' if upper is not None and upper < requirement['minimum'] else 'unknown'
+            evidence = '卡片工作年限：'+facts['yearsText']
+        checks.append({**requirement, 'status': status, 'evidence': evidence})
+    return checks
+
+
+def current_basic_checks(checks, requirements):
+    return all(any(check.get('id') == requirement['id'] and check.get('minimum') == requirement['minimum']
+                   and check.get('status') == 'matched' for check in checks) for requirement in requirements)
+
+
 def criteria(user, body):
     owner, actor = pool.context(user)
     rows = body.get('conditions')
@@ -184,6 +257,7 @@ def refresh_demand_source(db, job):
 
 
 def view(db, row, run_id=None):
+    requirements = basic_requirements(json.loads(row['body']))
     refs = [dict(r) for r in db.execute('SELECT id,filename,body,created_at FROM hr_sourcing_refs WHERE owner=? AND job=? ORDER BY created_at,id', (row['owner'], row['id']))]
     for item in refs:
         data = json.loads(item.pop('body'))
@@ -198,6 +272,9 @@ def view(db, row, run_id=None):
                'wanted': r['wanted'], 'version': r['version'], **json.loads(r['result'])}
         run.pop('matched', None)
         for item in run.get('candidates', []):
+            item['basicRequirementsPending'] = not current_basic_checks(item.get('basicChecks', []), requirements)
+            if item['basicRequirementsPending']:
+                item['canGreet'] = False
             contact = db.execute('SELECT id,status,friend_id,body FROM hr_sourcing_contacts WHERE owner=? AND job=? AND candidate=?',
                                  (row['owner'], row['id'], item['id'])).fetchone()
             item['contact'] = dict(contact) if contact else None
@@ -207,6 +284,7 @@ def view(db, row, run_id=None):
             'version': row['version'], 'profileState': row['profile_state'], 'profile': json.loads(row['profile']),
             'profileError': row['profile_error'], 'profileStartedAt': row['profile_at'],
             'criteria': matching_criteria(row), 'references': refs, 'run': run,
+            'basicRequirements': requirements,
             'sourceDemand': json.loads(row['demand_source'])}
 
 
@@ -283,10 +361,17 @@ def save(user, body):
         schema(db); expire(db)
         old = db.execute('SELECT * FROM hr_sourcing_jobs WHERE owner=? AND account=? AND job_id=?', (owner, key, job_id)).fetchone()
         if old:
-            if json.loads(old['body']) != clean:
+            previous = json.loads(old['body'])
+            if previous != clean:
                 if old['profile_state'] == 'running': raise pool.Conflict('画像正在生成，请完成后更新 JD')
-                db.execute("UPDATE hr_sourcing_jobs SET body=?,version=version+1,profile_state='stale',criteria='{}',updated_at=? WHERE id=?",
-                           (dump(clean), now(), old['id']))
+                if any(previous.get(key) != clean[key] for key in ('jobName', 'description')):
+                    db.execute("UPDATE hr_sourcing_jobs SET body=?,version=version+1,profile_state='stale',criteria='{}',updated_at=? WHERE id=?",
+                               (dump(clean), now(), old['id']))
+                else:
+                    # Restoring official degree/tenure labels invalidates old matches,
+                    # but does not require paying to regenerate an unchanged JD profile.
+                    db.execute("UPDATE hr_sourcing_jobs SET body=?,version=version+1,updated_at=? WHERE id=?",
+                               (dump(clean), now(), old['id']))
             record = old['id']
         else:
             record = str(uuid.uuid4())
@@ -452,8 +537,27 @@ def candidate(raw, job_id):
             for work in (source.get(key) or [])[:3] if isinstance(source.get(key), list) else []:
                 if isinstance(work, dict):
                     evidence.extend(safe_text(work.get(k), 400) for k in ('positionName', 'position', 'responsibility', 'description', 'workDesc') if work.get(k))
+    # Standard degree level and explicit tenure are checked locally. School names,
+    # graduation dates, age and gender never enter this check or model input.
+    degree = degree_level(first('degreeName', 'degreeDesc', 'educationName', 'geekDegree', 'degree', 'education'))
+    tenure = first('workYearDesc', 'geekWorkYearDesc', 'experienceDesc', 'geekWorkYear', 'workYears', 'work_years', 'experience')
+    years = year_range(tenure)
+    if degree is None:
+        levels = []
+        for source in (info, raw):
+            for key in ('geekEdus', 'educationList', 'eduList'):
+                for edu in source.get(key, []) if isinstance(source.get(key), list) else []:
+                    if isinstance(edu, dict):
+                        parsed = degree_level(next((edu[k] for k in ('degreeName', 'educationName', 'degree', 'education')
+                                                   if isinstance(edu.get(k), str)), ''))
+                        if parsed is not None:
+                            levels.append(parsed)
+        degree = max(levels) if levels else None
+    facts = {'education': degree, 'years': [years[0], None if math.isinf(years[1]) else years[1]] if years else None,
+             'yearsText': tenure[:100] if years else ''}
     return {'geekId': geek, 'name': first('geekName', 'name', 'nickname')[:100] or '候选人',
             'evidenceText': '\n'.join(evidence)[:2000] or '未提供可核实的岗位相关资料',
+            'basicFacts': facts,
             'identifiers': identifiers, 'canGreet': all(identifiers.get(k) for k in ('geekId', 'expectId', 'lid', 'securityId'))}
 
 
@@ -474,11 +578,14 @@ def search(user, body, cookie):
         raise ValueError('页码必须为正整数')
     with pool.database() as db:
         schema(db); expire(db); job = get_job(db, owner, body)
+        requirements = basic_requirements(json.loads(job['body']))
         old = db.execute('SELECT * FROM hr_sourcing_runs WHERE id=? AND owner=?', (record, owner)).fetchone()
         previous, source = {}, {}
         if old:
             if old['job'] != job['id']: raise pool.Conflict('该请求已用于其他职位')
             previous = json.loads(old['result'])
+            if previous.get('basicRequirements', []) != requirements:
+                raise pool.Conflict('岗位学历、年限核验已更新，请重新开始获取；不会自动重跑旧分析')
             completed_batches = previous.get('batches', 1)
             if batch <= completed_batches:
                 return view(db, job, record)
@@ -508,6 +615,7 @@ def search(user, body, cookie):
         for entry in raw:
             value = candidate(entry, job['job_id'])
             if not value: continue
+            value['basicChecks'] = basic_checks(value, requirements)
             cid = str(uuid.uuid5(uuid.NAMESPACE_URL, f'hr-source-candidate:{owner}:{job["id"]}:{value["geekId"]}'))
             value['id'] = cid
             if not db.execute('SELECT 1 FROM hr_sourcing_seen WHERE run=? AND candidate=?',
@@ -524,8 +632,10 @@ def search(user, body, cookie):
             db.execute('INSERT OR IGNORE INTO hr_sourcing_seen VALUES(?,?)', (record, cid))
         snapshot = {'jobDescription': json.loads(job['body'])['description'], 'profile': dump({'conditions': rules['conditions']}),
                     'criteria': rules['conditions'], 'batchIndex': batch,
-                    'candidates': [{'id': cid, 'evidence': value['evidenceText']} for cid, value in parsed.items()]}
+                    'candidates': [{'id': cid, 'evidence': value['evidenceText'], 'basicChecks': value['basicChecks']}
+                                   for cid, value in parsed.items()]}
         progress = {**previous, 'batches': batch, 'pagesRead': max(page, previous.get('pagesRead', 0)),
+                    'basicRequirements': requirements,
                     'threshold': MATCH_THRESHOLD, 'referenceOnly': True}
         if old:
             db.execute("UPDATE hr_sourcing_runs SET state='running',body=?,result=?,started=?,updated_at=? WHERE id=?",
@@ -546,9 +656,13 @@ def no_match_suggestions(conditions, stats):
         counts = stats.get(condition['id'], {})
         unknown, unmatched = counts.get('unknown', 0), counts.get('unmatched', 0)
         if unknown:
-            suggestions.append(f'“{condition["text"]}”有 {unknown} 人的卡片未说明。建议改为卡片中可验证的工作经历或具体技能，细节留待简历核实。')
+            suggestions.append(f'“{condition["text"]}”有 {unknown} 人的卡片未说明。'
+                               + ('建议核对候选人资料与岗位最低要求，资料缺失不能视为符合。' if condition.get('basic')
+                                  else '建议改为卡片中可验证的工作经历或具体技能，细节留待简历核实。'))
         elif unmatched:
-            suggestions.append(f'“{condition["text"]}”有 {unmatched} 人明确不符。请核对是否确为必要条件；相近岗位或可迁移经历可写入条件。')
+            suggestions.append(f'“{condition["text"]}”有 {unmatched} 人明确不符。'
+                               + ('请核对岗位 JD 的最低要求；不会自动降低学历或年限门槛。' if condition.get('basic')
+                                  else '请核对是否确为必要条件；相近岗位或可迁移经历可写入条件。'))
         if len(suggestions) == 2:
             break
     suggestions.append('建议保留 2–3 条核心工作能力，可替代技能明确写“满足其中一项即可”，并核对当前关联职位及 JD。修改后需由 HR 确认保存再寻找。')
@@ -556,6 +670,8 @@ def no_match_suggestions(conditions, stats):
 
 
 def qualified_match(row, conditions):
+    if any(check['status'] != 'matched' for check in row.get('basicChecks', [])):
+        return False
     if row["score"] < MATCH_THRESHOLD or row.get("matchState", "matched") != "matched":
         return False
     if not conditions:
@@ -609,6 +725,12 @@ def search_worker(owner, record, snapshot, cookie):
                 elif row['score'] < MATCH_THRESHOLD:
                     row['matchState'] = 'below_threshold'
         for row in rows:
+            checks = next(value.get('basicChecks', []) for value in snapshot['candidates'] if value['id'] == aliases[row['id']])
+            row['basicChecks'] = checks
+            if any(check['status'] == 'unmatched' for check in checks):
+                row['matchState'] = 'required_mismatch'
+            elif any(check['status'] == 'unknown' for check in checks) and row.get('matchState') != 'required_mismatch':
+                row['matchState'] = 'needs_info'
             row['id'] = aliases[row['id']]
         error = ''
     except ValueError as problem:
@@ -636,6 +758,9 @@ def search_worker(owner, record, snapshot, cookie):
                 for check in item.get('checks', []):
                     counts = condition_stats.setdefault(check['criterionId'], {})
                     counts[check['status']] = counts.get(check['status'], 0) + 1
+                for check in item.get('basicChecks', []):
+                    counts = condition_stats.setdefault('basic:'+check['id'], {})
+                    counts[check['status']] = counts.get(check['status'], 0) + 1
             result = {**previous, 'matched': ranked[:run['wanted']], 'candidates': ranked[:run['wanted']],
                       'conditionStats': condition_stats,
                       'examined': previous.get('examined', 0) + len(snapshot['candidates']),
@@ -646,8 +771,10 @@ def search_worker(owner, record, snapshot, cookie):
                         sorted((r for r in rows if r.get('matchState') != 'matched'), key=lambda r: -r['score'])[:3]],
                       'referenceOnly': True}
             if result['examined'] >= 100 and result['qualified'] == 0:
+                basic = [{**check, 'id': 'basic:'+check['id'], 'basic': True}
+                         for check in snapshot['candidates'][0].get('basicChecks', [])]
                 result.update(stopped=True, stopReason='no_matches_100',
-                              suggestions=no_match_suggestions(snapshot.get('criteria', []), condition_stats))
+                              suggestions=no_match_suggestions(basic+snapshot.get('criteria', []), condition_stats))
         else:
             result = {**previous, 'partial': bool(previous.get('candidates')), 'stopped': True}
         db.execute('UPDATE hr_sourcing_runs SET state=?,result=?,error=?,updated_at=? WHERE id=?',
@@ -669,6 +796,8 @@ def greet(user, body):
         selected = db.execute('SELECT * FROM hr_sourcing_candidates WHERE id=? AND owner=? AND job=?', (cid, owner, job['id'])).fetchone()
         if not selected or time.time()-selected['read_at']>1800: raise ValueError('候选人卡片已过期，请重新获取后再联系')
         detail = json.loads(selected['body'])
+        if not current_basic_checks(detail.get('basicChecks', []), basic_requirements(json.loads(job['body']))):
+            raise ValueError('学历、工作年限尚未通过当前岗位要求核验，请重新获取后再联系')
         if not detail['canGreet']: raise ValueError('该卡片缺少平台首次打招呼参数，请通过官方页面联系')
         current_run = db.execute('SELECT * FROM hr_sourcing_runs WHERE owner=? AND job=? ORDER BY started DESC,id LIMIT 1', (owner, job['id'])).fetchone()
         if not current_run or current_run['state'] != 'complete' or current_run['version'] != job['version'] or cid not in {

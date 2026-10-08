@@ -17,6 +17,9 @@
     const coverage=Number(item.totalWeight)>0?Number(item.knownWeight||0)/Number(item.totalWeight):1;
     return Math.round(Math.max(0,Math.min(100,score*coverage)));
   }
+  function requirementLabel(...values){
+    return values.map(value=>String(value??'').trim()).find(value=>value&&!/^\d+$/.test(value))||'';
+  }
   function rows(value,depth=0){
     if(depth>6||!value)return [];
     if(Array.isArray(value))return value;
@@ -78,12 +81,13 @@
       if(criteriaDraft.length>=5)return;
       criteriaDraft.push({text:'',weight:20,required:false,kind:'custom'});dirtyCriteria();renderCriteria(true);
     });addCriterion.className='hr-secondary';
-    const criteriaActions=el('div','',criteriaOutput,'hr-actions');
-    const resetCriteria=button('使用 JD 建议',criteriaActions,()=>{
+    const resetCriteria=button('恢复 JD 建议',advancedActions,()=>{
       if(busy||running()||!record?.criteria?.suggestedConditions?.length)return;
       criteriaDraft=record.criteria.suggestedConditions.map(row=>({...row}));
       dirtyCriteria();renderCriteria(true);
     });resetCriteria.className='hr-text-button';
+    const basicRequirements=el('p','',criteriaOutput,'hr-hint');
+    const criteriaActions=el('div','',criteriaOutput,'hr-actions');
     const saveCriteria=button('确认并保存条件',criteriaActions,async()=>{
       const version=record.version;
       const saved=await mutate('sourcing/criteria',{...params(),conditions:criteriaDraft.map(row=>({...row}))});
@@ -177,8 +181,8 @@
       saveCriteria.disabled=locked||record?.profileState!=='complete';
       criteriaStatus.textContent=criteriaDirty?'条件已修改，请确认并保存后再寻找。':record?.criteria?.confirmed
         ?'条件已确认。核心条件需有原文依据，已核实的信息权重须覆盖至少 60%。'
-        :record?.criteria?.needsReview?'匹配规则已优化。可使用 JD 建议，核对并保存后再寻找；旧结果需重新评估。'
-        :'确认这三条即可开始。建议先核对核心方向，再调整技能和经历。';
+        :record?.criteria?.needsReview?'匹配规则已优化，请核对并保存后再寻找；旧结果需重新评估。'
+        :'已自动带入 JD 建议，核对并保存后即可开始寻找。';
     }
     function render(){
       title.textContent=record?.jobName||selected?.name||'从职位开始寻源';
@@ -198,8 +202,14 @@
         :record.profileState==='complete'?'当前保留已有画像，可选择需求池分析替换。':'请先在招聘需求池生成岗位分析，再选择使用。';
       const scope=JSON.stringify([record.id,record.version,record.criteria]);
       if(scope!==criteriaScope){
-        criteriaScope=scope;criteriaDirty=false;criteriaDraft=(record.criteria?.conditions||[]).map(row=>({...row}));
+        criteriaScope=scope;criteriaDirty=false;
+        const initial=record.criteria?.confirmed===false&&!record.criteria?.needsReview
+          &&record.criteria?.suggestedConditions?.length?record.criteria.suggestedConditions:record.criteria?.conditions||[];
+        criteriaDraft=initial.map(row=>({...row}));
       }
+      basicRequirements.textContent=(record.basicRequirements||[]).length
+        ?'岗位要求 · '+record.basicRequirements.map(row=>row.text).join(' · ')+'；资料缺失标为待核实。'
+        :'学历、年限按岗位明确要求核验；不限时不额外设置门槛。';
       criteriaOutput.hidden=record.profileState!=='complete';renderCriteria();
       if(changed(profileOutput,[record.profileState,record.profile])&&record.profile?.summary){
         if(record.profileState!=='complete')el('p','以下为旧版画像，重新提炼完成后才可用于寻源。',profileOutput,'hr-hint');
@@ -242,6 +252,9 @@
         el('p','按已核实条件权重计算 · AI 辅助参考',scoreBox,'hr-hint');
         if(item.checks)el('p',`信息覆盖 ${item.coverage??Math.round((item.knownWeight||0)/(item.totalWeight||1)*100)}% · ${item.pendingConditions} 条待核实`,card,'hr-hint');
         el('p',item.summary,card,'hr-prose');
+        for(const check of item.basicChecks||[])el('p',check.label+'：'+(
+          {matched:'符合',unmatched:'不符合',unknown:'待核实'}[check.status]||'待核实')+' · '+check.evidence,card,'hr-hint');
+        if(item.basicRequirementsPending)el('p','历史结果尚未核验学历、年限，请重新获取后再联系。',card,'hr-hint');
         for(const evidence of (item.evidence||[]).slice(0,2))el('p',String(evidence).slice(0,160),card,'hr-hint');
         if(item.checks?.length){
           const details=el('details','',card,'hr-sourcing-checks');
@@ -261,13 +274,15 @@
         else{
           const greet=button('打招呼',actions,()=>openGreeting(item));greet.className='hr-primary';
           greet.disabled=locked||record.criteria?.confirmed===false||run.version!==record.version||!item.canGreet;
-          if(!item.canGreet)el('span','平台未提供首次打招呼参数',actions,'hr-hint');
+          if(!item.canGreet&&!item.basicRequirementsPending)el('span','平台未提供首次打招呼参数',actions,'hr-hint');
         }
       }
       diagnostics.hidden=!run?.reviewExamples?.length;
       if(changed(diagnosticRows,run?.reviewExamples))for(const item of run?.reviewExamples||[]){
         el('strong',`${item.name} · ${item.matchState==='needs_info'?'资料不足，需核实':item.score+' 分，未达已确认条件'}`,diagnosticRows);
         for(const check of item.checks||[])el('p',check.text+'：'+check.evidence,diagnosticRows,'hr-hint');
+        for(const check of item.basicChecks||[])el('p',check.text+'：'+(
+          {matched:'符合',unmatched:'不符合',unknown:'待核实'}[check.status]||'待核实')+' · '+check.evidence,diagnosticRows,'hr-hint');
       }
       const pendingContact=run?.candidates?.some(item=>item.contact&&(
         ['queued','sending'].includes(item.contact.status)||(item.contact.status==='sent'&&!item.contact.friend_id)));
@@ -494,7 +509,8 @@
           await accountCheck(state.accountKey);
           if(!valid(ticket))return;
           value=await request('sourcing/save',{accountKey:state.accountKey,jobId:selected.id,jobName:jd.name||selected.name,
-            description:jd.description,education:jd.education,experience:jd.experience});
+            description:jd.description,education:requirementLabel(jd.education,selected.education),
+            experience:requirementLabel(jd.experience,selected.experience)});
         }
         if(valid(ticket)){record=value;selected.refresh=false;feedback.textContent='已关联 '+record.jobName+'，请选择招聘需求池的岗位分析。';await loadDemands();}
       }catch(error){if(valid(ticket)){record=null;feedback.textContent=error.message;}}
@@ -502,7 +518,8 @@
     }
     function leave(){active=false;generation++;stop();busy=finding=demandLoading=false;searchProgress='';dialog.close();}
     return {select(row){selected={id:String(row.encryptJobId||row.encJobId||row.encryptId||row.jobId||row.id),
-      name:row.jobName||row.name||'',refresh:true};record=null;searchError='';},
+      name:row.jobName||row.name||'',education:requirementLabel(row.degreeName,row.degreeDesc,row.education),
+      experience:requirementLabel(row.experienceName,row.workYearDesc,row.experience),refresh:true};record=null;searchError='';},
       enter,leave,reset(){leave();selected=record=candidate=null;searchSession=null;criteriaDraft=[];criteriaScope='';criteriaDirty=false;demands=[];speeches=[];
         searchError='';
         demandSelect.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();

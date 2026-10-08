@@ -143,6 +143,87 @@ class SourcingTest(unittest.TestCase):
         self.assertFalse(value['confirmed'])
         self.assertEqual(len(value['suggestedConditions']), 3)
 
+    def test_explicit_job_minimums_and_ambiguous_ranges_are_not_guessed(self):
+        requirements = s.basic_requirements({'education': '本科', 'experience': '3-5年', 'description': ''})
+        self.assertEqual([r['minimum'] for r in requirements], [3, 3])
+        self.assertEqual(s.basic_requirements({'education': '学历不限', 'experience': '经验不限',
+                                             'description': '参与本科学生项目，有3年工作经验'}), [])
+        self.assertEqual([r['minimum'] for r in s.basic_requirements({'description': '本科及以上学历，3年以上工作经验'})], [3, 3])
+        for value, expected in [('1-3年', 'unknown'), ('1-2年', 'unmatched'), ('3-5年', 'matched'),
+                                ('5年以上', 'matched'), ('应届生', 'unmatched'), ('2020年毕业', 'unknown')]:
+            # Graduation dates are not read as experience: no tenure field given.
+            facts = {} if '毕业' in value else {'years': list(s.year_range(value)), 'yearsText': value}
+            if facts.get('years') and facts['years'][1] == float('inf'):
+                facts['years'][1] = None
+            with self.subTest(value=value):
+                self.assertEqual(s.basic_checks({'basicFacts': facts}, requirements)[1]['status'], expected)
+        self.assertIsNone(s.degree_level('本科在读'))
+        self.assertIsNone(s.degree_level('本科 / 硕士'))
+        self.assertEqual(s.degree_level('博士研究生'), 5)
+
+    def test_restoring_job_requirement_labels_preserves_profile_and_approved_core_conditions(self):
+        self.ready()
+        previous = self.job
+        with mock.patch.object(s, 'driver') as driver:
+            restored = s.save(USER, {**previous, 'education': '本科', 'experience': '经验不限'})
+            driver.assert_not_called()
+        self.assertEqual(restored['version'], previous['version']+1)
+        self.assertEqual(restored['profileState'], 'complete')
+        self.assertEqual(restored['profile'], previous['profile'])
+        self.assertEqual(restored['criteria'], previous['criteria'])
+        self.assertEqual([row['id'] for row in restored['basicRequirements']], ['education'])
+
+    def test_degree_and_tenure_fields_are_normalized_without_age_or_school_inference(self):
+        value = s.candidate(self.card(geekCard={'geekName': '人才', 'degreeName': '硕士', 'workYearDesc': '5年以上',
+            'age': 30, 'school': '名校', 'gender': '女'}), 'job1')
+        self.assertEqual(value['basicFacts'], {'education': 4, 'years': [5, None], 'yearsText': '5年以上'})
+        self.assertNotIn('硕士', value['evidenceText'], 'Degree checks stay outside model input')
+        missing = s.candidate(self.card(geekCard={'age': 35, 'geekWorkYear': 104,
+            'geekEdus': [{'school': '大学', 'graduationYear': '2020'}]}), 'job1')
+        self.assertIsNone(missing['basicFacts']['education'])
+        self.assertIsNone(missing['basicFacts']['years'])
+
+    def test_high_ai_score_cannot_override_degree_or_tenure_and_legacy_greet_is_blocked(self):
+        self.job = s.save(USER, {'accountKey': KEY, 'jobId': 'job1', 'jobName': '开发工程师',
+                                'description': '开发业务系统，熟悉 Java 并有实际工程交付经验。',
+                                'education': '本科', 'experience': '3-5年'})
+        self.ready()
+        cards = [self.card('degree-low', geekCard={'degreeName': '大专', 'workYearDesc': '5年'}),
+                 self.card('years-low', geekCard={'degreeName': '硕士', 'workYearDesc': '1-2年'}),
+                 self.card('years-unknown', geekCard={'degreeName': '本科', 'workYearDesc': '1-3年'}),
+                 self.card('degree-unknown', geekCard={'workYearDesc': '5年'}),
+                 self.card('match', geekCard={'degreeName': '硕士', 'workYearDesc': '5年'})]
+        request_id = str(uuid.uuid4())
+        with mock.patch.object(s.threading, 'Thread') as worker:
+            started = s.search(USER, {**self.params(), 'count': 5, 'candidates': cards,
+                                     'requestId': request_id}, 'fixture')
+            snapshot = worker.call_args.kwargs['args'][2]
+        scored = [self.scored('c'+str(i+1), 100) for i in range(5)]
+        with mock.patch.object(s, 'driver', return_value={'candidates': scored}) as driver:
+            s.search_worker('heyi', started['run']['id'], snapshot, 'fixture')
+            self.assertNotIn('basicChecks', driver.call_args.args[1]['candidates'][0])
+        run = s.listing(USER, self.params())['run']
+        self.assertEqual(len(run['candidates']), 1)
+        self.assertEqual(run['needsInfo'], 2)
+        self.assertEqual(run['belowThreshold'], 2)
+        self.assertTrue(all(check['status'] == 'matched' for check in run['candidates'][0]['basicChecks']))
+        candidate_id = run['candidates'][0]['id']
+        with pool.database() as db:
+            row = db.execute('SELECT body FROM hr_sourcing_candidates WHERE id=?', (candidate_id,)).fetchone()
+            detail = json.loads(row['body']); detail.pop('basicChecks')
+            db.execute('UPDATE hr_sourcing_candidates SET body=? WHERE id=?', (json.dumps(detail), candidate_id))
+        with self.assertRaisesRegex(ValueError, '学历、工作年限'):
+            s.greet(USER, {**self.params(), 'candidateId': candidate_id, 'message': '你好', 'confirmed': True})
+        with pool.database() as db:
+            result = json.loads(db.execute('SELECT result FROM hr_sourcing_runs WHERE id=?', (run['id'],)).fetchone()[0])
+            result.pop('basicRequirements')
+            db.execute('UPDATE hr_sourcing_runs SET result=? WHERE id=?', (json.dumps(result), run['id']))
+        with mock.patch.object(s.threading, 'Thread') as worker, self.assertRaisesRegex(pool.Conflict, '重新开始获取'):
+            s.search(USER, {**self.params(), 'count': 5, 'candidates': [self.card('next-page')],
+                'requestId': request_id,
+                'batchIndex': 2, 'page': 2}, 'fixture')
+        worker.assert_not_called()
+
     def test_high_score_with_insufficient_or_required_unknown_evidence_is_not_collected(self):
         self.ready()
         for statuses in [('matched', 'unknown', 'unknown'), ('unknown', 'matched', 'matched'),

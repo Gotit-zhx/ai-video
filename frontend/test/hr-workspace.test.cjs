@@ -227,6 +227,42 @@ test('HR match score includes missing information instead of showing a sparse kn
   assert.equal(score({score:0,knownWeight:0,totalWeight:100}),0);
   assert.equal(app.calls.length,0,'Displaying match scores never calls a model or BOSS');
 });
+test('job minimums and candidate checks are visible; unverified historical results cannot greet',async()=>{
+  const key='a'.repeat(64),record={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'总经理秘书',version:1,
+    profileState:'complete',profile:{},criteria:{confirmed:true,conditions:[]},
+    basicRequirements:[{id:'education',text:'最低学历：本科'},{id:'years',text:'最低工作年限：3 年'}],
+    run:{id:'run1',version:1,state:'complete',wanted:5,candidates:[
+      {id:'checked',name:'已核验人才',score:100,summary:'符合核心能力',canGreet:true,basicChecks:[
+        {label:'学历',status:'matched',evidence:'卡片学历：硕士'},
+        {label:'工作年限',status:'matched',evidence:'卡片工作年限：5年'}]},
+      {id:'legacy',name:'历史人才',score:100,summary:'旧分析',canGreet:false,basicRequirementsPending:true}]}};
+  const app=setup({sourcing:true,api:async(url,options)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:{ok:true,data:[{...fixtures.jobs.data[0],
+      degreeName:'本科',experienceName:'3-5年'}]}};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:record.jobId,
+      jobName:record.jobName,postDescription:'办公事务',experience:104}}}};
+    if(url.endsWith('/sourcing/save')){
+      const body=JSON.parse(options.body);
+      assert.equal(body.education,'本科','Missing JD degree falls back to the exact selected job list label');
+      assert.equal(body.experience,'3-5年','Opaque JD experience code never replaces the readable official label');
+      return {data:record};
+    }
+    if(url.startsWith('/api/v1/hr/sourcing?'))return {data:record};
+    if(url.startsWith('/api/v1/hr/demands?'))return {data:{items:[],pages:1}};
+    throw Error('No extra model or BOSS request expected: '+url);
+  }});
+  await app.enter('jobs');await app.click('AI 寻源');
+  assert.match(app.text(),/最低学历：本科.*最低工作年限：3 年/);
+  assert.match(app.text(),/学历：符合 · 卡片学历：硕士/);
+  assert.match(app.text(),/工作年限：符合 · 卡片工作年限：5年/);
+  const cards=app.visible().filter(n=>n.tagName==='article'&&n.className==='hr-person-card');
+  assert.equal(all(cards[0]).find(n=>n.tagName==='button'&&n._text==='打招呼').disabled,false);
+  assert.equal(all(cards[1]).find(n=>n.tagName==='button'&&n._text==='打招呼').disabled,true);
+  assert.match(cards[1].textContent,/历史结果尚未核验学历、年限/);
+  assert.doesNotMatch(cards[1].textContent,/未提供首次打招呼参数/);
+  assert.equal(app.calls.some(c=>c.url.endsWith('/sourcing/search')||c.url.endsWith('/sourcing/greet')),false);
+});
 test('sourcing requires confirmed conditions and never uses unsaved edits',async()=>{
   const key='a'.repeat(64);
   let saved={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'总经理秘书',version:1,
@@ -258,9 +294,7 @@ test('sourcing requires confirmed conditions and never uses unsaved edits',async
   const find=()=>app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取');
   assert.equal(find().disabled,true);
   assert.match(app.text(),/匹配条件/);
-  const beforeSuggestions=app.calls.length;
-  await app.click('使用 JD 建议');
-  assert.equal(app.calls.length,beforeSuggestions,'JD suggestions use existing data without paid AI or BOSS reads');
+  assert.equal(app.visible().some(n=>n.tagName==='button'&&n._text==='使用 JD 建议'),false);
   assert.equal(find().disabled,true);
   assert.equal(saved.criteria.confirmed,false,'Suggestions do not confirm conditions for HR');
   assert.equal(app.visible().find(n=>n.attributes['aria-label']==='匹配条件 1').value,'行政或秘书实际工作经历');
@@ -270,12 +304,17 @@ test('sourcing requires confirmed conditions and never uses unsaved edits',async
   assert.equal(app.visible().find(n=>n.tagName==='details'&&n.className==='hr-sourcing-advanced').open,undefined);
   await app.click('确认并保存条件');
   assert.equal(find().disabled,false);
+  await app.click('刷新结果');
+  assert.equal(app.visible().find(n=>n.attributes['aria-label']==='匹配条件 1').value,'行政或秘书实际工作经历');
   const field=app.visible().find(n=>n.attributes['aria-label']==='匹配条件 1');
   field.value='有行政或接待经验';field.events.input();
   assert.equal(find().disabled,true);
   assert.match(app.text(),/条件已修改/);
   await app.click('确认并保存条件');
   assert.equal(saved.criteria.conditions[0].text,'有行政或接待经验');
+  await app.click('刷新结果');
+  assert.equal(app.visible().find(n=>n.attributes['aria-label']==='匹配条件 1').value,'有行政或接待经验',
+    'Refreshing preserves HR-approved conditions instead of replacing them with JD suggestions');
   assert.equal(find().disabled,false);
   assert.equal(app.calls.some(c=>c.url.includes('/recommendations?')||c.url.endsWith('/sourcing/search')),false);
 });
