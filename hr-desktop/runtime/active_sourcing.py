@@ -14,7 +14,12 @@ def readiness(c, db, command=None):
     from passive_runtime import get_state
     delay = max(getattr(c, 'passive_delay', lambda **kw: 0)(cost=3, queued=True),
                 float(get_state(db, 'nextWriteAt'))-time.time())
-    return {'ok': True, 'data': {'allowed': delay <= 0, 'retryAt': int(time.time()+max(0, delay))}}
+    opened = True
+    if command:
+        opened = c.managed_job_statuses()['statuses'].get(command.get('jobId')) == '开放中'
+    return {'ok': True, 'data': {'allowed': opened and not c.held_code() and delay <= 0,
+                               'retryAt': int(time.time()+max(0, delay)),
+                               'reason': '' if opened else '仅开放中的职位可操作'}}
 
 
 def send(c, db, command):
@@ -35,7 +40,7 @@ def send(c, db, command):
         raise ValueError('invalid recruiter access credential')
     if not re.fullmatch(r'[\w~-]{1,180}', command.get('jobId', '')): raise ValueError('invalid job')
     # If a claimed command expires while waiting for execution, do not send.
-    if (time.time()-command.get('readAt', 0)>1800 or not readiness(c, db)['data']['allowed']
+    if (time.time()-command.get('readAt', 0)>1800 or not readiness(c, db, command)['data']['allowed']
             or time.time()<float(get_state(db, 'greetQuota:'+command['jobId']))):
         db.execute("INSERT INTO commands VALUES(?,?,?,'failed',0)", (cid, '', text))
         return {'ok': True, 'data': {'status': 'failed'}}

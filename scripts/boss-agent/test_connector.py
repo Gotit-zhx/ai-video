@@ -732,6 +732,19 @@ class ConnectorTest(unittest.TestCase):
                 connector.request_resume("12345")
         self.assertEqual("failed", connector.tracked_resumes()[0]["state"])
 
+    def test_job_scope_rejection_is_not_a_sent_or_ambiguous_resume_request(self):
+        before = {"ok": True, "data": {"messages": [{"mid": 10}]}}
+        with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector, "prepare_recruiter_chat"), \
+             mock.patch.object(connector, "cli_json", side_effect=[
+                 before, {"ok": False, "error": {"code": "JOB_CONVERSATION_MISMATCH"}}]) as cli:
+            with self.assertRaisesRegex(RuntimeError, "JOB_CONVERSATION_MISMATCH"):
+                connector.request_resume("12345")
+            self.assertEqual(cli.call_count, 2, "No ambiguous-send reconciliation or follow-up request")
+        record = connector.tracked_resumes()[0]
+        self.assertEqual(record["state"], "failed")
+        self.assertFalse(record.get("confirmed_at"))
+
     def test_uncertain_request_requires_explicit_retry_and_is_sent_only_once(self):
         with connector.resume_db() as connection:
             connection.execute("INSERT INTO resume_requests "

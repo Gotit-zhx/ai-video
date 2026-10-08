@@ -94,6 +94,11 @@ def main(request):
         return {"ok": True, "data": c.tracked_resumes()}
     g.install_policy()
     from boss_agent_cli.main import cli
+    from boss_agent_cli.api.recruiter_client import BossRecruiterClient
+    import conversation_scope
+    scope = conversation_scope.ConversationScope(BossRecruiterClient)
+    c.conversation_scope = scope.expect
+    c.conversation_scope_error = lambda: scope.violation
 
     def invoke(*args, timeout=90):
         output = io.StringIO()
@@ -104,6 +109,10 @@ def main(request):
                                "--role", "recruiter", "--json", *args], standalone_mode=False)
             except SystemExit:
                 pass
+            except conversation_scope.ScopeError:
+                return scope.failure()
+        if scope.expected is not None and scope.violation:
+            return scope.failure()
         try:
             value = json.loads(output.getvalue())
         except ValueError:
@@ -128,6 +137,18 @@ def main(request):
     def passive_delay(**options):
         return passive_runtime.budget_delay(g.BUDGET_DB, g.HOURLY_LIMIT, **options)
     c.passive_delay = passive_delay
+    import managed_jobs
+    def read_managed_jobs():
+        from boss_agent_cli.api.recruiter_client import BossRecruiterClient
+        from boss_agent_cli.auth.manager import AuthManager
+        managed_jobs.save_statuses(request["root"], {"ok": False})
+        auth = AuthManager(c.AUTH_DIR.parent, platform="zhipin")
+        with BossRecruiterClient(auth, cdp_url=request["cdp"], browser_source="stored-cookie") as client:
+            result = c.observe_result(managed_jobs.listing(client))
+        managed_jobs.save_statuses(request["root"], result)
+        return result
+    c.read_managed_jobs = read_managed_jobs
+    c.managed_job_statuses = lambda: managed_jobs.availability(c, request["root"])
     if operation == 'recover-account':
         import account_history
         return account_history.recover(c, request['root'], request.get('recruiterId'))
@@ -166,12 +187,14 @@ def main(request):
         output = c.download_resume(request["friendId"], request["messageId"])
         return {"ok": True, "file": str(output)}
     if operation == "jobs" and not request.get("jobId"):
-        from boss_agent_cli.api.recruiter_client import BossRecruiterClient
-        from boss_agent_cli.auth.manager import AuthManager
-        import managed_jobs
-        auth = AuthManager(c.AUTH_DIR.parent, platform="zhipin")
-        with BossRecruiterClient(auth, cdp_url=request["cdp"], browser_source="stored-cookie") as client:
-            return c.sanitize(c.observe_result(managed_jobs.listing(client)))
+        return c.sanitize(read_managed_jobs())
+    if request.get("jobId") and operation in ("jobs", "recommendations", "applications", "chats", "candidates"):
+        availability = c.managed_job_statuses()
+        if c.held_code():
+            return {"ok": False, "error": {"code": c.held_code()}}
+        if availability["statuses"].get(request["jobId"]) != "开放中":
+            return {"ok": False, "error": {"code": "JOB_NOT_OPEN",
+                    "message": "仅开放中的职位可操作；当前职位未开放或状态尚未确认"}}
     args = c.command(request)
     result = invoke(*args)
     return c.sanitize(result)

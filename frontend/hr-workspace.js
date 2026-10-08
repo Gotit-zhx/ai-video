@@ -631,10 +631,12 @@
     rememberJobs(rows);
     const grid = element('div', '', box, 'hr-card-grid hr-job-grid');
     for (const row of rows) {
-      const card = element('article', '', grid, 'hr-job-card');
+      const available = pick(row,'statusDesc','jobStatusDesc') === '开放中';
+      const card = element('article', '', grid, 'hr-job-card' + (available ? '' : ' is-unavailable'));
+      card.setAttribute('aria-disabled', String(!available));
       const top = element('div', '', card, 'hr-card-heading');
       element('h3', pick(row,'jobName','name','title') || '未命名职位', top);
-      badge(pick(row,'statusDesc','jobStatusDesc') || '已同步', top);
+      badge(pick(row,'statusDesc','jobStatusDesc') || '状态待确认', top);
       const salary = pick(row,'salaryDesc','salary','salaryText');
       if (salary) element('p', salary, card, 'hr-salary');
       detailsGrid(card, [['工作地点',pick(row,'address','cityName','locationName')],
@@ -647,19 +649,30 @@
         element('p', description, detail, 'hr-prose');
       }
       if (jobId(row)) {
-        const actions = element('div', '', card, 'hr-actions');
-        passive?.jobToggle(card,row);
-        button(globalThis.createHrSourcing?'上传简历 / AI 寻源':'推荐人才', actions, () => {
+        const footer = element('div', '', card, 'hr-job-footer');
+        const actions = element('div', '', footer, 'hr-actions hr-job-actions');
+        const source = button(globalThis.createHrSourcing?'AI 寻源':'推荐人才', actions, () => {
+          if (!available) return;
           if(sourcing){sourcing.select(row);navigate('talent');return;}
           talentJob.value = jobId(row);
           talentAction = 'recommendations';
           navigate('talent');
           run('recommendations');
-        }).className = 'hr-primary';
-        button('查看投递', actions, () => {applicationsJob.value=jobId(row);navigate('applications');});
-        button('沟通记录', actions, () => {
+        });
+        source.className = 'hr-primary';
+        const applications = button('查看投递', actions, () => {
+          if (!available) return;
+          applicationsJob.value=jobId(row);navigate('applications');
+        });
+        const chats = button('沟通记录', actions, () => {
+          if (!available) return;
           chatsJob.value=jobId(row);selectedConversation=null;navigate('chats');
         });
+        for (const action of [source, applications, chats]) {
+          action.disabled = !available;
+          if (!available) action.title = '仅开放中的职位可操作';
+        }
+        passive?.jobToggle(footer,row);
       }
     }
   }

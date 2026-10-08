@@ -130,6 +130,17 @@ class ActiveSourcingTest(unittest.TestCase):
             self.assertEqual(rules, {})
         self.c.cli_json.assert_not_called()
 
+    def test_closed_or_unknown_jobs_cannot_greet_or_start_followup(self):
+        for index, status in enumerate(('待开放', '已失效', '已关闭', None)):
+            self.c.managed_job_statuses.return_value = {'statuses': {'job1': status} if status else {}}
+            command = {**self.command(), 'id': f'closed-{index}'}
+            self.assertFalse(self.runop('sourcing-ready', command=command)['data']['allowed'])
+            self.assertEqual(self.runop('sourcing-send', command=command)['data']['status'], 'failed')
+            self.runop('passive-step', rules=[], activeContacts=[command])
+        self.c.cli_json.assert_not_called()
+        self.c.sourcing_friend_details.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
     def test_exhausted_greeting_rights_stop_other_queued_candidates_for_same_job(self):
         self.c.cli_json.return_value = {'ok': False, 'error': {'code': 'GREET_LIMIT'}}
         self.assertEqual(self.runop('sourcing-send', command=self.command())['data']['status'], 'failed')

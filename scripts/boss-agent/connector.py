@@ -411,7 +411,8 @@ def request_resume(friend_id, retry_uncertain=False):
             # These upstream errors occur before the chat action is dispatched.
             not_sent = code in {"RECRUITER_CHAT_TAB_REQUIRED", "CDP_UNAVAILABLE",
                                "BROWSER_SESSION_NOT_FOUND", "AUTH_REQUIRED", "AUTH_EXPIRED",
-                               "INVALID_PARAM", "NOT_SUPPORTED", "ROLE_MISMATCH"}
+                               "INVALID_PARAM", "NOT_SUPPORTED", "ROLE_MISMATCH",
+                               "JOB_CONVERSATION_MISMATCH"}
             observe_result(result)
             if not not_sent and not held_code():
                 try:

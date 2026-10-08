@@ -11,9 +11,13 @@
     budget_wait:'正在按请求频率排队，会自动继续',send_wait:'正在按发送间隔排队',
     catching_up:'正在补收断开期间的新招呼和简历',
     retry_wait:'后台连接暂缓，进度已保留，将自动继续',
+    conversation_review:'持续接收新消息，部分会话待核对',
+    job_review:'会话职位未核实，已暂停发送',
+    jobs_paused:'职位未开放或状态待确认，新的邀约已暂停',
     needs_review:'有发送结果待核对，请查看 BOSS 会话',disabled:'被动邀约已关闭'};
   const eventLabels={INCOMING_DETECTED:'收到主动消息',AUTO_REPLY_SENT:'话术回复已发送',
-    AUTO_REPLY_UNCERTAIN:'话术回复结果待核对',RESUME_REQUESTED:'已索取简历',
+    AUTO_REPLY_UNCERTAIN:'话术回复结果待核对',CHAT_READ_UNAVAILABLE:'会话暂不可读取，已单独保留待核对',RESUME_REQUESTED:'已索取简历',
+    JOB_CONVERSATION_MISMATCH:'会话与职位未对应，已阻止发送',
     RESUME_REQUEST_UNCERTAIN:'索取结果待核对',RESUME_RECEIVED:'已收到简历'};
   function flowSummary(flow,ruleId){
     const counts={};
@@ -22,16 +26,27 @@
     }
     const totals=[['inspect','待处理'],['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],
       ['export','正在入池'],['stored','已入池'],
-      ['reply_uncertain','回复待核对'],['request_uncertain','索取待核对'],['request_failed','索取未完成']]
+      ['inspect_review','会话待核对'],['job_review','职位待核对'],['reply_uncertain','回复待核对'],['request_uncertain','索取待核对'],['request_failed','索取未完成']]
       .filter(([key])=>counts[key]).map(([key,label])=>`${label} ${counts[key]}`);
+    let phase=flow.phase;
+    const jobPhases=['watching','reply_queued','request_queued','receiving',
+      'conversation_review','job_review','needs_review'];
+    if(ruleId&&jobPhases.includes(phase)){
+      phase=counts.export||counts.requested?'receiving':
+        counts.ready?'request_queued':counts.reply_ready?'reply_queued':
+        counts.job_review?'job_review':counts.reply_uncertain||counts.request_uncertain||counts.request_failed?'needs_review':
+        counts.inspect_review?'conversation_review':'watching';
+    }
     const clock=value=>new Date(value*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false});
-    if(flow.phase==='budget_wait'&&Number.isFinite(flow.retryAt)){
+    if(['budget_wait','retry_wait'].includes(flow.phase)&&Number.isFinite(flow.retryAt)){
       totals.push(flow.retryAt*1000>Date.now()?`预计 ${clock(flow.retryAt)} 继续`:'正在重新检查可用额度');
     }
-    if(flow.activityPending>0)totals.push(`新消息待检查 ${flow.activityPending}`);
-    if(flow.catchupPending>0)totals.push(`补收检查剩余 ${flow.catchupPending} 项`);
-    if(flow.lastProgressAt>0)totals.push(`上次进展 ${clock(flow.lastProgressAt)}`);
-    return [phases[flow.phase]||'已开启，等待助手检查',...totals].join(' · ');
+    if(!ruleId&&flow.activityPending>0)totals.push(`新消息待检查 ${flow.activityPending}`);
+    if(!ruleId&&flow.catchupPending>0)totals.push(`补收检查剩余 ${flow.catchupPending} 项`);
+    const progress=ruleId?Math.max(0,...(Array.isArray(ruleId)?ruleId:[ruleId])
+      .map(id=>Number(flow.progressByRule?.[id])||0)):flow.lastProgressAt;
+    if(progress>0)totals.push(`上次进展 ${clock(progress)}`);
+    return [phases[phase]||'已开启，等待助手检查',...totals].join(' · ');
   }
   globalThis.createHrPassive=({root,section,element:el,button,allowed,navigate,hrApi})=>{
     let active='',generation=0,items=[],page=1,filter='pending',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
@@ -296,14 +311,20 @@
       }
     }
     async function jobToggle(card,row){
-      const wrap=el('label','',card,'hr-passive-toggle'),input=el('input','',wrap);
+      const panel=el('div','',card,'hr-job-passive');
+      const wrap=el('label','',panel,'hr-passive-toggle'),input=el('input','',wrap);
       input.type='checkbox';input.disabled=true;el('span','被动邀约',wrap);
-      const note=el('p','正在读取配置…',card,'hr-hint');
+      const note=el('p','正在读取配置…',panel,'hr-hint hr-passive-note');
+      if(String(row.statusDesc||row.jobStatusDesc||'')!=='开放中'){
+        note.textContent='仅开放中的职位可操作，新的自动回复与索取已暂停。';
+        return;
+      }
       let accountKey='',rule;
       const updateNote=status=>{
-        if(!rule?.enabled){note.textContent='默认关闭。开启后，主动消息触发默认话术回复，再索取简历。';return;}
+        if(!rule?.enabled){note.textContent='默认关闭。开启后，新主动消息触发默认话术回复，再发送官方附件简历请求。';return;}
         if(status.data.state!=='complete'||status.data.paused){note.textContent='助手未连接，自动邀约暂停';return;}
         note.textContent=flowSummary(status.data.passive||{},rule.id);
+        panel.dataset.enabled=String(input.checked);
       };
       const refreshStatus=async()=>{
         if(!allowed()||!card.isConnected)return;
@@ -335,7 +356,7 @@
               jobName:String(row.jobName||row.name||row.title||''),description:String(row.description||row.jobDescription||''),
               education:String(row.degreeName||row.degreeDesc||row.education||''),experience:String(row.experienceName||row.experience||row.workYearDesc||''),
               projectId:rule?.projectId||''});
-            if(allowed()&&card.isConnected){input.checked=rule.enabled;note.textContent=rule.enabled?'已开启：新主动消息触发默认话术回复，成功后索取简历。':'已关闭新的自动回复与索取，已索取的简历继续接收。';}
+            if(allowed()&&card.isConnected){input.checked=rule.enabled;note.textContent=rule.enabled?'已开启：新主动消息触发默认话术回复，成功后发送官方附件简历请求。':'已关闭新的自动回复与索取，已索取的简历继续接收。';}
           }catch(error){if(allowed()&&card.isConnected){input.checked=!desired;note.textContent=error.message;}}
           finally{input.disabled=false;}
         };

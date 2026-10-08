@@ -18,6 +18,9 @@ class WorkflowTest(unittest.TestCase):
         self.c.DISCONNECTED=self.root/'disconnected'
         self.c.RESUME_AUTO_PAUSE=self.root/'pause'
         self.c.passive_delay=lambda **kwargs:0
+        self.c.managed_job_statuses.return_value={'statuses':{'job1':'开放中'}}
+        self.c.conversation_scope=lambda friend,job:contextlib.nullcontext()
+        self.c.conversation_scope_error.return_value=False
         self.c.resume_messages=lambda result:result.get('data',{}).get('messages',[])
         self.c.cli_json.return_value={'ok':True,'data':{'sent':True}}
         self.rule={'id':'r1','jobId':'job1','jobName':'运营','enabled':True,'enabledAt':100}
@@ -44,7 +47,7 @@ class WorkflowTest(unittest.TestCase):
     def pending(self,state='inspect',friend='1',**extra):
         with flow.database(self.root) as db:
             flow.put_state(db,'discoveredAt',self.now)
-            detail={'enabledAt':100,'name':'王同学','activity':900,**extra}
+            detail={'enabledAt':100,'jobId':'job1','name':'王同学','activity':900,**extra}
             db.execute("INSERT OR REPLACE INTO people VALUES(?,'r1',?,?,0,'','')",
                        (friend,json.dumps(detail),state))
 
@@ -60,6 +63,127 @@ class WorkflowTest(unittest.TestCase):
 
     def hint(self,friend='1',mid='200'):
         return {'friend':friend,'mid':mid,'job':'job1','at':self.now}
+
+    def test_only_official_open_jobs_can_inspect_reply_or_request(self):
+        for status in ('待开放', '已失效', '已关闭', '审核中', '免费曝光中', '状态待确认', None):
+            for state in ('inspect', 'reply_ready', 'ready'):
+                with self.subTest(status=status, state=state):
+                    self.pending(state)
+                    self.now += 31
+                    self.c.managed_job_statuses.return_value = {'statuses': {'job1': status} if status else {}}
+                    self.step(activityHints=[self.hint(mid=str(int(self.now)))])
+                    self.assertEqual(self.state(), state, 'Keep the opted-in queue for reopening')
+        self.c.cli_json.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_receipts_for_closed_jobs_continue_without_new_writes(self):
+        self.c.managed_job_statuses.return_value = {'statuses': {'job1': '已关闭'}}
+        self.pending('requested')
+        with self.c.resume_db() as db:
+            db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
+        def received(**kwargs):
+            with self.c.resume_db() as db:
+                db.execute("UPDATE resume_requests SET state='received',message_id='201' WHERE friend_id='1'")
+        self.c.poll_resumes_once.side_effect = received
+        self.c.download_resume.return_value = self.root / 'received.pdf'
+        self.step(activityHints=[self.hint()])
+        self.assertEqual(self.state(), 'export')
+        self.c.cli_json.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_reopening_preserves_request_ledger_and_does_not_request_twice(self):
+        self.pending('ready')
+        with self.c.resume_db() as db:
+            db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
+        self.c.managed_job_statuses.return_value = {'statuses': {'job1': '待开放'}}
+        self.step()
+        self.assertEqual(self.state(), 'ready')
+        self.now += 31
+        self.c.managed_job_statuses.return_value = {'statuses': {'job1': '开放中'}}
+        self.step()
+        self.assertEqual(self.state(), 'requested')
+        self.c.request_resume.assert_not_called()
+        self.c.cli_json.assert_not_called()
+
+    def test_job_refresh_risk_stops_receipt_and_all_writes(self):
+        self.pending('ready')
+        def refresh():
+            self.c.held_code.return_value = 'ACCOUNT_RISK'
+            return {'statuses': {}}
+        self.c.managed_job_statuses.side_effect = refresh
+        self.assertEqual(self.step()['error']['code'], 'ACCOUNT_RISK')
+        self.c.cli_json.assert_not_called()
+        self.c.poll_resumes_once.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_progress_is_scoped_to_the_job_that_actually_requested(self):
+        self.pending('requested',friend='1')
+        self.pending('seen',friend='2')
+        with flow.database(self.root) as db:
+            db.execute("UPDATE people SET rule='other',updated=900 WHERE friend='1'")
+            value=flow.status(db,'receiving')['data']
+        self.assertEqual(value['progressByRule'],{'other':900})
+        self.assertEqual(value['counts']['r1'],{'seen':1})
+
+    def test_discovery_does_not_relabel_another_jobs_row_or_existing_queue(self):
+        self.pending('ready', friend='1', replyAt=900)
+        self.c.cli_json.return_value={'ok':True,'data':{'result':[
+            {'uid':'1','encryptJobId':'job2'},
+            {'uid':'2','encryptJobId':'job1'}]}}
+        other={**self.rule,'id':'r2','jobId':'job2'}
+        with flow.database(self.root) as db:
+            flow.discover(self.c,db,{'r2':other},rule=other)
+            saved=db.execute('SELECT * FROM people WHERE friend=?',('1',)).fetchone()
+            self.assertEqual(saved['rule'],'r1')
+            self.assertEqual(json.loads(saved['body'])['jobId'],'job1')
+            self.assertEqual(saved['state'],'ready')
+            self.assertIsNone(db.execute("SELECT 1 FROM people WHERE friend='2'").fetchone())
+        self.c.request_resume.assert_not_called()
+
+    def test_wrong_job_activity_cannot_wake_an_existing_conversation(self):
+        self.pending('seen')
+        self.step(activityHints=[{**self.hint(),'job':'job2'}])
+        self.assertEqual(self.state(),'seen')
+        self.c.cli_json.assert_not_called()
+        self.c.request_resume.assert_not_called()
+        with flow.database(self.root) as db:
+            self.assertEqual(db.execute('SELECT done FROM activity').fetchone()[0],1)
+
+    def test_pending_with_wrong_job_is_quarantined_before_any_platform_operation(self):
+        self.pending('reply_ready',jobId='other')
+        self.assertEqual(self.step()['data']['phase'],'job_review')
+        self.assertEqual(self.state(),'job_review')
+        self.c.cli_json.assert_not_called()
+        self.c.prepare_recruiter_chat.assert_not_called()
+        self.c.request_resume.assert_not_called()
+        self.now+=31
+        self.assertEqual(self.step()['data']['phase'],'job_review')
+
+    def test_official_friend_detail_scope_blocks_reply_and_resume_and_never_replays(self):
+        import conversation_scope
+        for stage in ('reply_ready','ready'):
+            with self.subTest(stage=stage):
+                self.pending(stage)
+                @contextlib.contextmanager
+                def scope(friend,job):
+                    self.assertEqual((friend,job),('1','job1'))
+                    self.c.conversation_scope_error.return_value=True
+                    raise conversation_scope.ScopeError('different official job')
+                    yield
+                self.c.conversation_scope=scope
+                self.now+=61
+                self.assertEqual(self.step()['data']['phase'],'job_review')
+                self.assertEqual(self.state(),'job_review')
+                self.c.cli_json.assert_not_called()
+                self.c.request_resume.assert_not_called()
+                self.now+=31
+                self.step()
+                self.c.cli_json.assert_not_called()
+                self.c.request_resume.assert_not_called()
+        codes={e['code'] for e in self.runop('passive-local')['data']['events']}
+        self.assertIn('JOB_CONVERSATION_MISMATCH',codes)
+        self.assertNotIn('AUTO_REPLY_SENT',codes)
+        self.assertNotIn('RESUME_REQUESTED',codes)
 
     def test_incoming_during_queue_is_discovered_without_waiting_for_periodic_scan(self):
         self.pending('ready')
@@ -341,6 +465,61 @@ class WorkflowTest(unittest.TestCase):
         self.pending(friend='1',activity=101);self.pending(friend='2',activity=990)
         self.messages(self.message(sender='2'));self.step()
         self.c.cli_json.assert_called_once_with('hr','chatmsg','2','--count','100')
+
+    def test_unreadable_history_is_isolated_without_sending_or_blocking_next_contact(self):
+        self.pending(friend='1', activity=990)
+        self.pending(friend='2', activity=900)
+        self.c.cli_json.return_value = {'ok': False, 'error': {'code': 'UNKNOWN'}}
+        first = self.step()
+        self.assertTrue(first['ok'])
+        self.assertEqual(first['data']['phase'], 'conversation_review')
+        self.assertEqual(self.state('1'), 'inspect_review')
+        self.c.request_resume.assert_not_called()
+        self.now += 31
+        self.messages(self.message(sender='2'))
+        self.c.adopt_received_resume.return_value = False
+        self.step()
+        self.assertEqual(self.c.cli_json.call_args.args[2], '2')
+        self.assertEqual(self.state('2'), 'reply_ready')
+        self.assertEqual(self.state('1'), 'inspect_review')
+        self.assertEqual(self.c.cli_json.call_count, 2)
+
+    def test_rejected_history_is_not_retried_by_unchanged_list_refresh(self):
+        self.pending(friend='1', activity=900, fingerprint='old')
+        self.c.cli_json.return_value = {'ok': False, 'error': {'code': 'UNKNOWN'}}
+        self.step()
+        self.c.cli_json.return_value = {'ok': True, 'data': {'friendList': [
+            {'friendId': '1', 'lastTS': 900, 'unread': True}]}}
+        with flow.database(self.root) as db:
+            flow.discover(self.c, db, {'r1': self.rule}, rule=self.rule)
+        self.assertEqual(self.state(), 'inspect_review')
+        self.now += 31
+        self.step()
+        self.assertFalse(any(call.args[1] == 'chatmsg' for call in self.c.cli_json.call_args_list[1:]))
+        self.c.request_resume.assert_not_called()
+
+    def test_a_fresh_incoming_hint_can_recheck_the_review_contact_once(self):
+        self.pending()
+        self.c.cli_json.return_value = {'ok': False, 'error': {'code': 'UNKNOWN'}}
+        self.step()
+        self.now += 31
+        self.messages(self.message(at=self.now))
+        self.c.adopt_received_resume.return_value = False
+        self.step(activityHints=[self.hint()])
+        self.assertEqual(self.state(), 'reply_ready')
+        self.assertEqual(self.c.cli_json.call_count, 2)
+        self.c.request_resume.assert_not_called()
+
+    def test_platform_risk_and_network_failures_keep_the_existing_stop_and_backoff(self):
+        for code in ('ACCOUNT_RISK', 'NETWORK_ERROR', 'RATE_LIMITED'):
+            self.pending()
+            failure = {'ok': False, 'error': {'code': code}}
+            self.c.cli_json.return_value = failure
+            self.now += 31
+            result = self.step()
+            self.assertEqual(result, failure)
+            self.assertEqual(self.state(), 'inspect')
+        self.c.request_resume.assert_not_called()
 
     def test_update_time_and_unread_fallback_preserve_recent_chat_priority(self):
         self.assertEqual(flow.activity({'updateTime':1790670000000}),1790670000)

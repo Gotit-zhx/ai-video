@@ -1,8 +1,8 @@
 {
   "status": {"ok":true,"data":{"logged_in":true,"auth_health":{"summary":"degraded"}}},
   "jobs": {"ok":true,"data":[
-    {"encryptJobId":"job-test-1","jobId":101,"jobName":"Java 后端开发工程师","salaryDesc":"15–25K","address":"厦门 · 思明区","jobOnlineStatus":1,"description":"负责业务系统开发和服务稳定性建设。\n熟悉 Java、Spring Boot 和 MySQL。"},
-    {"encryptJobId":"job-test-2","jobId":102,"jobName":"电商运营专员","salaryDesc":"8–12K","address":"厦门 · 湖里区","description":"负责商品运营、店铺数据跟进与跨团队协作。"}
+    {"encryptJobId":"job-test-1","jobId":101,"jobName":"Java 后端开发工程师","statusDesc":"开放中","salaryDesc":"15–25K","address":"厦门 · 思明区","jobOnlineStatus":1,"description":"负责业务系统开发和服务稳定性建设。\n熟悉 Java、Spring Boot 和 MySQL。"},
+    {"encryptJobId":"job-test-2","jobId":102,"jobName":"电商运营专员","statusDesc":"开放中","salaryDesc":"8–12K","address":"厦门 · 湖里区","description":"负责商品运营、店铺数据跟进与跨团队协作。"}
   ]},
   "applications":{"ok":true,"data":{"result":[
     {"friendId":12345,"encryptFriendId":"candidate-test-1","name":"测试候选人甲","updateTime":1790553600000},

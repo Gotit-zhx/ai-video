@@ -15,6 +15,7 @@ class Node {
   }
   set textContent(value) {this._text=String(value);this.children=[];}
   get textContent() {return this._text+this.children.map(n=>n.textContent).join(' ');}
+  get isConnected() {return this._connected===true||!!this.parent?.isConnected;}
   append(...nodes) {nodes.forEach(n=>{n.parent=this;});this.children.push(...nodes);}
   replaceChildren(...nodes) {this._text='';this.children.forEach(n=>{n.parent=null;});this.children=[];this.append(...nodes);}
   remove(){if(this.parent){this.parent.children=this.parent.children.filter(n=>n!==this);this.parent=null;}}
@@ -29,6 +30,7 @@ class Node {
 const all = node => [node,...node.children.flatMap(all)];
 function setup(overrides={}) {
   const root=new Node(),calls=[],timers=new Map();
+  root._connected=true;
   let timerSequence = 0;
   const links=['overview','jobs','talent','applications','chats','resume'].map(route=>{
     const node=new Node('a');node.dataset.hrRoute=route;return node;
@@ -74,6 +76,57 @@ const text=()=>visible().map(n=>n._text).join('\n');
 const poolResult=()=>({items:[{id:'talent-1',name:'测试人才',education:'本科',experience:'5年',stage:'first',
   projectId:'project-1',version:1,updatedAt:'2026-09-29T00:00:00Z'}],
   projects:[{id:'project-1',name:'电商项目组',version:1}],counts:{all:1,first:1},total:1,page:1,pages:1});
+test('only open job cards enable actions and passive invitation; closed and unknown cards cannot navigate or save',async()=>{
+  const statuses=['开放中','待开放','已失效','已关闭','审核中','免费曝光中',null];
+  const rows=statuses.map((status,index)=>({...fixtures.jobs.data[0],encryptJobId:'job-'+index,statusDesc:status}));
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')
+    ?{state:'complete',accountKey:'a'.repeat(64),capabilities:['passive-resume']}
+    :url.endsWith('/jobs')?{ok:true,data:rows}:{items:[]}})});
+  await app.enter('jobs');
+  const cards=all(app.root).filter(n=>n.tagName==='article'&&n.className.includes('hr-job-card'));
+  assert.equal(cards.length,statuses.length);
+  for(const [index,card] of cards.entries()){
+    const actions=all(card).filter(n=>n.tagName==='button');
+    assert.equal(actions.length,3);
+    assert.ok(actions.every(n=>n.disabled===(index!==0)));
+    const input=all(card).find(n=>n.tagName==='input'&&n.type==='checkbox');
+    assert.equal(input.disabled,index!==0);
+    if(index>0){
+      assert.ok(card.className.includes('is-unavailable'));
+      assert.match(card.textContent,/仅开放中的职位可操作/);
+      for(const action of actions)await action.events.click({preventDefault(){}});
+    }
+  }
+  assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')||c.url.endsWith('/jobs')||c.url.endsWith('/passive')));
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/passive')).length,1,'Unavailable cards never load or change rules');
+});
+test('an enabled job never claims another position sent a request or made progress',async()=>{
+  const key='a'.repeat(64);
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')
+    ?{state:'complete',accountKey:key,capabilities:['passive-resume'],
+      passive:{phase:'receiving',counts:{closed:{requested:2},open:{seen:8}},
+        lastProgressAt:1791423063,progressByRule:{closed:1791423063}}}
+    :url.endsWith('/jobs')?{ok:true,data:[fixtures.jobs.data[0]]}
+    :{items:[{id:'open',jobId:'job-test-1',accountKey:key,enabled:true}]}})});
+  await app.enter('jobs');
+  const note=all(app.root).find(n=>n.className==='hr-hint hr-passive-note');
+  assert.match(note.textContent,/正在等待新消息/);
+  assert.doesNotMatch(note.textContent,/已索取|待接收|上次进展/);
+});
+test('job queue phase uses its own pending work even when another job is receiving',async()=>{
+  const key='a'.repeat(64);
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')
+    ?{state:'complete',accountKey:key,capabilities:['passive-resume'],
+      passive:{phase:'receiving',counts:{closed:{requested:2},open:{ready:1}},
+        activityPending:7,catchupPending:4,lastProgressAt:1791423063,progressByRule:{closed:1791423063}}}
+    :url.endsWith('/jobs')?{ok:true,data:[fixtures.jobs.data[0]]}
+    :{items:[{id:'open',jobId:'job-test-1',accountKey:key,enabled:true}]}})});
+  await app.enter('jobs');
+  const note=all(app.root).find(n=>n.className==='hr-hint hr-passive-note');
+  assert.match(note.textContent,/已回复，等待索取简历/);
+  assert.match(note.textContent,/待索取 1/);
+  assert.doesNotMatch(note.textContent,/已索取|待接收|上次进展|新消息待检查 7|补收检查剩余 4/);
+});
 test('job card owns sourcing; bounded candidate reads and AI do not send until HR confirms the individual greeting',async()=>{
   const key='a'.repeat(64);
   let saved=null;
@@ -106,7 +159,7 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
     }
     throw Error('unexpected '+url);
   }});
-  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  await app.enter('jobs');await app.click('AI 寻源');
   assert.match(app.text(),/Java 后端开发工程师/);
   assert.match(app.text(),/参考.pdf/);
   assert.equal(app.calls.some(c=>c.url.includes('/recommendations?')),false);
@@ -159,7 +212,7 @@ test('sourcing requires confirmed conditions and never uses unsaved edits',async
     }
     throw Error('No BOSS reads or model calls expected: '+url);
   }});
-  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  await app.enter('jobs');await app.click('AI 寻源');
   const find=()=>app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取');
   assert.equal(find().disabled,true);
   assert.match(app.text(),/匹配条件/);
@@ -209,7 +262,7 @@ test(`continuous sourcing reaches page 22, waits on ${temporaryCode} and never s
     }
     throw Error('unexpected '+url);
   }});
-  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  await app.enter('jobs');await app.click('AI 寻源');
   app.visible().find(n=>n.attributes['aria-label']==='获取人数').value='5';
   const action=app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取').click();
   await flush();await app.click('暂停寻找');finishPage();await action;await flush();
@@ -254,7 +307,7 @@ test('zero matches stops at 100 analyzed people without requesting another page 
     }
     throw Error('unexpected '+url);
   }});
-  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  await app.enter('jobs');await app.click('AI 寻源');
   app.visible().find(n=>n.attributes['aria-label']==='获取人数').value='5';
   await app.click('一键 AI 获取');
   assert.equal(examined,100);assert.equal(batches.length,20);assert.equal(pages.at(-1),15);
@@ -283,7 +336,7 @@ test('sourcing visibly reports progress and rejected cards next to the action wi
     }
     throw Error('unexpected '+url);
   }});
-  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  await app.enter('jobs');await app.click('AI 寻源');
   app.visible().find(n=>n.attributes['aria-label']==='获取人数').value='5';
   const button=app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取');
   const action=button.click();await flush();
@@ -324,7 +377,7 @@ test('replacement uploads and profile generation survive helper recovery; obsole
     }
     throw Error('unexpected '+url);
   }});
-  await app.enter('jobs');await app.click('上传简历 / AI 寻源');
+  await app.enter('jobs');await app.click('AI 寻源');
   assert.match(app.text(),/尚无已上传/);assert.doesNotMatch(app.text(),/旧画像/);
   const profile=()=>app.visible().find(n=>n.tagName==='button'&&/AI 提炼|正在提炼|画像已就绪/.test(n._text));
   const find=()=>app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取');

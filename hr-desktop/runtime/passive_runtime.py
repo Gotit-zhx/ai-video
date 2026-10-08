@@ -183,10 +183,18 @@ def status(db, phase, **extra):
     counts = {}
     for row in db.execute('SELECT rule,state,count(*) AS n FROM people GROUP BY rule,state'):
         counts.setdefault(row['rule'], {})[row['state']] = row['n']
+    if phase == 'watching':
+        if any(group.get('job_review') for group in counts.values()):
+            phase = 'job_review'
+        elif any(group.get('inspect_review') for group in counts.values()):
+            phase = 'conversation_review'
     last = db.execute("SELECT MAX(updated) FROM people WHERE state IN "
                       "('reply_ready','ready','requested','export','stored')").fetchone()[0]
+    progress = {row['rule']: row['last'] for row in db.execute(
+        "SELECT rule,MAX(updated) AS last FROM people WHERE state IN "
+        "('reply_ready','ready','requested','export','stored') GROUP BY rule")}
     value = {'phase': phase, 'checkedAt': int(time.time()), 'counts': counts,
-             'lastProgressAt': last or 0, **extra}
+             'lastProgressAt': last or 0, 'progressByRule': progress, **extra}
     put_state(db, 'status', json.dumps(value))
     return {'ok': True, 'data': value}
 
@@ -209,8 +217,11 @@ def discover(c, db, rules, rule=None, page=1, capture=None):
         friend = str(item.get('friendId') or item.get('friend_id') or item.get('uid') or item.get('gid') or '')
         if not friend.isdecimal() or not 1 <= len(friend) <= 20: continue
         if rule.get('activeFriend') and friend != rule['activeFriend']: continue
-        existing_person = db.execute('SELECT rule FROM people WHERE friend=?', (friend,)).fetchone()
-        if existing_person and existing_person['rule'].startswith('active-') and existing_person['rule'] != rule['id']:
+        existing_person = db.execute('SELECT rule,body FROM people WHERE friend=?', (friend,)).fetchone()
+        if existing_person and (existing_person['rule'] != rule['id']
+                                or json.loads(existing_person['body']).get('jobId') != rule['jobId']):
+            # A friend ID is account-wide. Never move an existing conversation
+            # or its reply/request ledger into another job's queue.
             continue
         info = item.get('geekCard') or item.get('geekInfo') or item.get('geekBaseInfo') or item
         if not isinstance(info, dict): info = item
@@ -220,6 +231,11 @@ def discover(c, db, rules, rule=None, page=1, capture=None):
                     value = source.get(key)
                     if isinstance(value, str) and value.strip(): return value.strip()
             return ''
+        # The filter endpoint can return UID-only rows. When it does return
+        # an encrypted position ID, never relabel another job's conversation.
+        actual_job = first('encryptJobId', 'encJobId')
+        if actual_job and actual_job != rule['jobId']:
+            continue
         detail = {'name': first('geekName', 'name', 'nickname')[:100],
                   'education': first('geekDegree', 'degreeName', 'degreeDesc', 'education')[:100],
                   'experience': first('geekWorkYear', 'workYearDesc', 'work_years', 'experience')[:100],
@@ -243,13 +259,19 @@ def discover(c, db, rules, rule=None, page=1, capture=None):
         if not old:
             db.execute("INSERT INTO people(friend,rule,body,state,updated) VALUES(?,?,?,?,?)",
                        (friend, rule['id'], json.dumps(detail, ensure_ascii=False), 'inspect' if fresh else 'seen', int(time.time())))
-        elif old['state'] in ('seen', 'inspect', 'reply_ready', 'ready') and (
-                old_detail.get('enabledAt') != rule['enabledAt'] or old['rule'] != rule['id']):
-            # Do not carry readiness across a disable/re-enable or another job.
+        elif old['state'] in ('seen', 'inspect', 'inspect_review', 'reply_ready', 'ready') and (
+                old_detail.get('enabledAt') != rule['enabledAt']):
+            # Do not carry readiness across a disable/re-enable.
             db.execute("UPDATE people SET rule=?,body=?,state=?,updated=? WHERE friend=?",
                        (rule['id'], json.dumps(detail, ensure_ascii=False), 'inspect' if fresh else 'seen', int(time.time()), friend))
-        elif old['rule'] == rule['id'] and old['state'] in ('seen', 'inspect'):
+        elif old['rule'] == rule['id'] and old['state'] in ('seen', 'inspect', 'inspect_review'):
             changed = detail['fingerprint'] != old_detail.get('fingerprint')
+            if old['state'] == 'inspect_review':
+                # An index refresh/unread toggle is not a reason to repeat a
+                # rejected history request. Only newer activity reopens reads.
+                if detail['activity'] <= max(old_detail.get('activity', 0),
+                                             old_detail.get('inspectionFailedAt', 0)):
+                    continue
             db.execute("UPDATE people SET body=?,state=?,updated=? WHERE friend=?",
                        (json.dumps(detail, ensure_ascii=False),
                         'inspect' if fresh and (changed or old['state'] == 'inspect') else 'seen',
@@ -419,6 +441,10 @@ def activity_step(c, db, rules, delay_for):
     for hint in candidates:
         friend = hint['friend']
         person = db.execute('SELECT * FROM people WHERE friend=?', (friend,)).fetchone()
+        if person and hint['job'] and json.loads(person['body']).get('jobId') != hint['job']:
+            # A signal from another position must not wake the old position.
+            db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
+            continue
         with c.resume_db() as tracked:
             saved = tracked.execute('SELECT state FROM resume_requests WHERE friend_id=?', (friend,)).fetchone()
         if person and person['state'] in ('requested', 'request_uncertain') and saved and saved['state'] in ('waiting', 'uncertain', 'received'):
@@ -433,7 +459,7 @@ def activity_step(c, db, rules, delay_for):
         else:
             rule = rules.get(person['rule']) if person else next(
                 (rule for rule in rules.values() if rule['jobId'] == hint['job']), None)
-            if not rule or (person and person['state'] not in ('seen', 'inspect')):
+            if not rule or (person and person['state'] not in ('seen', 'inspect', 'inspect_review')):
                 db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
                 continue
             if person:
@@ -441,7 +467,12 @@ def activity_step(c, db, rules, delay_for):
                 # fetch. A later chatmsg read rechecks sender, opt-in and direction.
                 detail = json.loads(person['body'])
                 if detail.get('enabledAt') == rule['enabledAt']:
+                    if person['state'] == 'inspect_review' and hint['at'] <= detail.get('inspectionFailedAt', 0):
+                        db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
+                        continue
                     detail['activity'] = hint['at']
+                    detail.pop('inspectionFailedAt', None)
+                    detail.pop('inspectionErrorCode', None)
                     db.execute("UPDATE people SET state='inspect',body=? WHERE friend=?",
                                (json.dumps(detail, ensure_ascii=False), friend))
                     db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
@@ -478,10 +509,18 @@ def activity_status(db, result):
 
 
 def step(c, db, request):
-    rules = {r['id']: r for r in request.get('rules', []) if r.get('enabled') is True}
-    if request.get('activeContacts'):
+    configured = [r for r in request.get('rules', []) if r.get('enabled') is True]
+    contacts = request.get('activeContacts', [])
+    availability = c.managed_job_statuses() if configured or contacts else {'statuses': {}}
+    if c.held_code():
+        return {'ok': False, 'error': {'code': c.held_code()}}
+    states = availability['statuses']
+    rules = {r['id']: r for r in configured if states.get(r['jobId']) == '开放中'}
+    contacts = [r for r in contacts if states.get(r.get('jobId')) == '开放中']
+    jobs_paused = bool(configured or request.get('activeContacts')) and not (rules or contacts)
+    if contacts:
         import active_sourcing
-        active_rules, failure = active_sourcing.rules(c, db, request['activeContacts'])
+        active_rules, failure = active_sourcing.rules(c, db, contacts)
         if failure: return failure
         rules.update(active_rules)
     now = time.time()
@@ -547,9 +586,13 @@ def step(c, db, request):
                 -detail.get('activity', 0), not detail.get('unread', False), detail.get('position', 999),
                 row['updated'], row['friend'])
     pending.sort(key=priority)
-    if not pending: return status(db, 'watching' if rules else 'disabled')
+    if not pending: return status(db, 'watching' if rules else 'jobs_paused' if jobs_paused else 'disabled')
     person = pending[0]; friend = person['friend']; rule = rules[person['rule']]
     detail = json.loads(person['body'])
+    if detail.get('jobId') != rule['jobId']:
+        db.execute("UPDATE people SET state='job_review' WHERE friend=?", (friend,))
+        event(db, 'JOB_CONVERSATION_MISMATCH', detail)
+        return status(db, 'job_review')
     if detail.get('enabledAt') != rule['enabledAt']:
         db.execute("UPDATE people SET state='seen' WHERE friend=?", (friend,))
         return status(db, 'watching')
@@ -566,7 +609,17 @@ def step(c, db, request):
     put_state(db, 'lastLane', 'work')
     if person['state'] == 'inspect':
         result = c.cli_json('hr', 'chatmsg', friend, '--count', '100')
-        if result.get('ok') is not True: return result
+        if result.get('ok') is not True:
+            if (result.get('error') or {}).get('code') == 'UNKNOWN' and not c.held_code():
+                # This conversation has not been verified. Do not send, and do
+                # not let the same rejected read starve other opted-in work.
+                detail['inspectionFailedAt'] = now
+                detail['inspectionErrorCode'] = 'UNKNOWN'
+                db.execute("UPDATE people SET state='inspect_review',body=?,updated=? WHERE friend=?",
+                           (json.dumps(detail, ensure_ascii=False), int(now), friend))
+                event(db, 'CHAT_READ_UNAVAILABLE', detail)
+                return status(db, 'conversation_review')
+            return result
         messages = c.resume_messages(result)
         since = trigger_since(db, friend, rule)
         if c.adopt_received_resume(result, friend, since) is True:
@@ -605,9 +658,14 @@ def step(c, db, request):
         db.execute("UPDATE people SET state='reply_uncertain',body=?,updated=? WHERE friend=?",
                    (json.dumps(detail, ensure_ascii=False), int(now), friend)); db.commit()
         try:
-            result = c.cli_json('hr', 'reply', friend, message)
+            with c.conversation_scope(friend, rule['jobId']):
+                result = c.cli_json('hr', 'reply', friend, message)
         except Exception:
             result = {'ok': False}
+        if c.conversation_scope_error():
+            db.execute("UPDATE people SET state='job_review' WHERE friend=?", (friend,))
+            event(db, 'JOB_CONVERSATION_MISMATCH', detail)
+            return status(db, 'job_review')
         sent = result.get('ok') is True and (result.get('data') or {}).get('sent') is True
         if sent:
             detail['replyAt'] = int(time.time())
@@ -619,8 +677,13 @@ def step(c, db, request):
     put_state(db, 'nextWriteAt', now+60)
     db.execute("UPDATE people SET state='request_uncertain',updated=? WHERE friend=?", (int(now), friend)); db.commit()
     try:
-        c.request_resume(friend, retry_uncertain=False)
+        with c.conversation_scope(friend, rule['jobId']):
+            c.request_resume(friend, retry_uncertain=False)
     except Exception:
+        if c.conversation_scope_error():
+            db.execute("UPDATE people SET state='job_review' WHERE friend=?", (friend,))
+            event(db, 'JOB_CONVERSATION_MISMATCH', detail)
+            return status(db, 'job_review')
         event(db, 'RESUME_REQUEST_UNCERTAIN', detail)
         if c.held_code(): return {'ok': False, 'error': {'code': c.held_code()}}
         return status(db, 'needs_review')

@@ -128,8 +128,18 @@
 .hr-job-grid .hr-salary{font-size:18px}
 .hr-job-grid .hr-facts{gap:12px;margin:14px 0}
 .hr-job-grid .hr-description{margin-bottom:16px}
-.hr-job-grid .hr-job-card .hr-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin-top:auto;padding-top:14px}
-.hr-job-grid .hr-actions button{padding:8px 3px;font-size:11px;min-width:0}
+.hr-job-footer{margin-top:auto;padding-top:18px}
+.hr-job-grid .hr-job-card .hr-job-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:0;padding-top:16px}
+.hr-job-grid .hr-job-actions button{height:36px;padding:0 4px;font-size:11px;line-height:1;min-width:0;white-space:nowrap;border-radius:7px}
+.hr-job-passive{margin-top:14px;padding:12px;background:var(--surface-soft,#fafafa);border:1px solid var(--hr-border);border-radius:8px;min-height:92px}
+.hr-job-passive .hr-passive-toggle{margin:0;gap:8px;line-height:20px}
+.hr-job-passive .hr-passive-note{margin:7px 0 0;font-size:11px;line-height:1.7;color:var(--hr-muted);overflow-wrap:anywhere}
+.hr-job-grid .hr-job-card.is-unavailable{background:var(--surface-soft,#fafafa);color:var(--hr-muted);border-color:var(--hr-border)}
+.hr-job-grid .hr-job-card.is-unavailable:hover{border-color:var(--hr-border)}
+.hr-job-card.is-unavailable h3,.hr-job-card.is-unavailable .hr-salary,.hr-job-card.is-unavailable .hr-facts dd{color:var(--hr-muted)}
+.hr-job-card.is-unavailable .hr-badge{color:var(--hr-muted);background:var(--surface-muted,#f0f0f0)}
+#hr-page .hr-job-card.is-unavailable button:disabled{background:var(--surface-muted,#f0f0f0);border-color:var(--hr-border);color:var(--hr-muted);opacity:1}
+.hr-job-card.is-unavailable .hr-passive-toggle{color:var(--hr-muted);cursor:not-allowed}
 @media(max-width:1100px){.hr-card-grid.hr-job-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.hr-card-grid.hr-job-grid{grid-template-columns:minmax(0,1fr)}.hr-job-grid .hr-actions button{font-size:13px}}
 

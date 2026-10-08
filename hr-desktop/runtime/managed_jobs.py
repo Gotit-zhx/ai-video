@@ -1,7 +1,60 @@
 """Read the official job-management list, including jobs with no conversations."""
+import json
+import os
+from pathlib import Path
+import tempfile
+import time
 
 URL = "https://www.zhipin.com/wapi/zpjob/job/data/list"
 REFERER = "https://www.zhipin.com/web/frame/job_v2/list"
+STATUS_TTL = 300
+
+
+def save_statuses(root, result):
+    """Account-local, complete official snapshots only; never trust UI rules."""
+    path = Path(root) / "managed-job-statuses.json"
+    now = time.time()
+    valid = result.get("ok") is True
+    rows = result.get("data", {}).get("jobs") if valid else None
+    valid = valid and isinstance(rows, list) and result["data"].get("hasMore") is False
+    values = {row["encryptJobId"]: row["statusDesc"] for row in rows} if valid else {}
+    snapshot = {"statuses": values, "checkedAt": now,
+                "validUntil": now + STATUS_TTL if valid else 0, "retryAt": now + STATUS_TTL}
+    # Publish atomically; failed or incomplete reads invalidate older evidence.
+    fd, temp = tempfile.mkstemp(prefix=".managed-jobs-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as output:
+            json.dump(snapshot, output, ensure_ascii=False)
+        os.replace(temp, path)
+    finally:
+        Path(temp).unlink(missing_ok=True)
+    return snapshot
+
+
+def availability(c, root):
+    """One budgeted refresh per five minutes, fail closed without tight retries."""
+    now = time.time()
+    try:
+        snapshot = json.loads((Path(root) / "managed-job-statuses.json").read_text())
+        fresh = snapshot["checkedAt"] <= now < snapshot["validUntil"]
+        if fresh:
+            return {"statuses": snapshot["statuses"], "retryAt": snapshot["validUntil"]}
+        if now < snapshot["retryAt"]:
+            return {"statuses": {}, "retryAt": snapshot["retryAt"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    delay = c.passive_delay(cost=2, queued=False)
+    if delay:
+        return {"statuses": {}, "retryAt": now + delay}
+    # Reserve the refresh cooldown before network I/O, including process death.
+    save_statuses(root, {"ok": False})
+    try:
+        snapshot = save_statuses(root, c.read_managed_jobs())
+    except Exception:
+        # Existing SDK risk/session holds remain authoritative. The caller
+        # checks them before any receipt read or write. No fallback or replay.
+        return {"statuses": {}, "retryAt": now + STATUS_TTL}
+    return {"statuses": snapshot["statuses"], "retryAt": snapshot["retryAt"]}
 
 
 def status(row):
