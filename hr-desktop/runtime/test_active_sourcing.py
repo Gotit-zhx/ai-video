@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import unittest
 from unittest import mock
 
@@ -42,6 +43,46 @@ class ActiveSourcingTest(unittest.TestCase):
         self.c.cli_json.assert_called_once()
         with flow.database(self.root) as db:
             self.assertEqual(db.execute('SELECT state FROM active_contacts').fetchone()[0], 'uncertain')
+            self.assertEqual(active.daily_usage(db, self.now)['used'], 1)
+
+    def test_explicit_greeting_uses_reserved_capacity_but_never_exceeds_hard_budget(self):
+        path = self.root/'budget.sqlite3'
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE requests(at REAL)')
+            db.executemany('INSERT INTO requests VALUES(?)', [(900,)]*101)
+        self.assertGreater(flow.budget_delay(path,120,cost=5,queued=True),0)
+        self.assertEqual(flow.budget_delay(path,120,cost=5,queued=True,user_initiated=True),0)
+        with sqlite3.connect(path) as db:
+            db.executemany('INSERT INTO requests VALUES(?)', [(900,)]*15)
+        self.assertGreater(flow.budget_delay(path,120,cost=5,queued=True,user_initiated=True),0)
+
+    def test_daily_150_attempts_persist_and_resume_next_beijing_day(self):
+        with flow.database(self.root) as db:
+            active.schema(db)
+            day=active.daily_usage(db,self.now)['day']
+            db.executemany('INSERT INTO active_greeting_attempts VALUES(?,?,?)',
+                           [(f'previous-{i}',day,self.now) for i in range(150)])
+        status=self.runop('sourcing-ready',command=self.command())['data']
+        self.assertFalse(status['allowed'])
+        self.assertEqual(status['reasonCode'],'DAILY_GREETING_LIMIT')
+        self.assertEqual(status['dailyGreeting']['used'],150)
+        self.assertEqual(self.runop('sourcing-send',command=self.command())['data']['status'],'failed')
+        self.c.cli_json.assert_not_called()
+        self.now=status['dailyGreeting']['resetAt']+1
+        new={**self.command(),'id':'next-day','readAt':self.now}
+        status=self.runop('sourcing-ready',command=new)['data']
+        self.assertTrue(status['allowed'])
+        self.assertEqual(status['dailyGreeting']['remaining'],150)
+
+    def test_readiness_reports_wait_without_refreshing_jobs_during_budget_or_risk_hold(self):
+        self.c.passive_delay=lambda **kw:120
+        value=self.runop('sourcing-ready',command=self.command())['data']
+        self.assertEqual(value['reasonCode'],'REQUEST_BUDGET_WAIT')
+        self.assertEqual(value['retryAt'],1120)
+        self.c.managed_job_statuses.assert_not_called()
+        self.c.held_code.return_value='ACCOUNT_RISK'
+        value=self.runop('sourcing-ready',command=self.command())
+        self.assertEqual(value['error']['code'],'ACCOUNT_RISK')
 
     def test_long_security_credential_is_a_single_unchanged_cli_argument(self):
         security = 'a'*700+'~'+'B'*45+'=='

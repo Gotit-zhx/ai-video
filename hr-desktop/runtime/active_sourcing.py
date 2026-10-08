@@ -2,24 +2,69 @@
 import json
 import re
 import time
+import datetime
+
+DAILY_GREETING_LIMIT = 150
+CHINA_TIME = datetime.timezone(datetime.timedelta(hours=8))
 
 
 def schema(db):
     db.execute('''CREATE TABLE IF NOT EXISTS active_contacts(
       id TEXT PRIMARY KEY,body TEXT NOT NULL,state TEXT NOT NULL,friend TEXT NOT NULL DEFAULT '',
       bound INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,cursor INTEGER NOT NULL DEFAULT 0)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS active_greeting_attempts(
+      contact TEXT PRIMARY KEY,day TEXT NOT NULL,attempted_at REAL NOT NULL)''')
+
+
+def daily_usage(db, now):
+    schema(db)
+    day = datetime.datetime.fromtimestamp(now, CHINA_TIME)
+    reset = (day+datetime.timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
+    used = db.execute('SELECT count(*) FROM active_greeting_attempts WHERE day=?', (day.date().isoformat(),)).fetchone()[0]
+    # Older uncertain/sent ledgers predate the counter. Include them once using
+    # their durable approval time; never reset a day's usage on an app upgrade.
+    for row in db.execute("SELECT id,body FROM active_contacts WHERE id NOT IN (SELECT contact FROM active_greeting_attempts) AND state IN ('uncertain','sent','existing_flow')"):
+        approved = json.loads(row['body']).get('enabledAt', 0)
+        if approved > 0:
+            stamp = datetime.datetime.fromtimestamp(approved, CHINA_TIME).date().isoformat()
+            db.execute('INSERT OR IGNORE INTO active_greeting_attempts VALUES(?,?,?)',(row['id'],stamp,approved))
+            if stamp == day.date().isoformat(): used += 1
+    return {'used':used,'limit':DAILY_GREETING_LIMIT,'remaining':max(0,DAILY_GREETING_LIMIT-used),
+            'day':day.date().isoformat(),'resetAt':int(reset.timestamp())}
 
 
 def readiness(c, db, command=None):
     from passive_runtime import get_state
-    delay = max(getattr(c, 'passive_delay', lambda **kw: 0)(cost=3, queued=True),
-                float(get_state(db, 'nextWriteAt'))-time.time())
-    opened = True
+    now = time.time()
+    usage = daily_usage(db, now)
+    def waiting(code, delay=0):
+        return {'ok': True, 'data': {'allowed': False, 'retryAt': int(now+max(0, delay)),
+                                   'reasonCode': code, 'dailyGreeting': usage}}
+    if c.held_code():
+        return waiting('RISK_PAUSED')
+    if usage['remaining'] == 0:
+        return waiting('DAILY_GREETING_LIMIT', usage['resetAt']-now)
     if command:
-        opened = c.managed_job_statuses()['statuses'].get(command.get('jobId')) == '开放中'
-    return {'ok': True, 'data': {'allowed': opened and not c.held_code() and delay <= 0,
-                               'retryAt': int(time.time()+max(0, delay)),
-                               'reason': '' if opened else '仅开放中的职位可操作'}}
+        if now-command.get('readAt', 0)>1800:
+            return waiting('CARD_EXPIRED')
+        quota = float(get_state(db, 'greetQuota:'+command.get('jobId', '')))
+        if quota > now:
+            return waiting('GREET_QUOTA', quota-now)
+    # This command was individually approved by HR. Use the capacity reserved
+    # for manual actions, while every SDK request retains the same hard guard.
+    delay = getattr(c, 'passive_delay', lambda **kw: 0)(cost=5, queued=True, user_initiated=True)
+    if delay > 0:
+        return waiting('REQUEST_BUDGET_WAIT', delay)
+    delay = float(get_state(db, 'nextWriteAt'))-now
+    if delay > 0:
+        return waiting('SEND_INTERVAL', delay)
+    if command:
+        jobs = c.managed_job_statuses(user_initiated=True)
+        status = jobs['statuses'].get(command.get('jobId'))
+        if status != '开放中':
+            return waiting('JOB_STATUS_WAIT' if status is None else 'JOB_NOT_OPEN',
+                           max(30, jobs.get('retryAt', now+300)-now))
+    return {'ok': True, 'data': {'allowed': True, 'retryAt': 0, 'reasonCode': '', 'dailyGreeting': usage}}
 
 
 def send(c, db, command):
@@ -44,8 +89,11 @@ def send(c, db, command):
             or time.time()<float(get_state(db, 'greetQuota:'+command['jobId']))):
         db.execute("INSERT INTO commands VALUES(?,?,?,'failed',0)", (cid, '', text))
         return {'ok': True, 'data': {'status': 'failed'}}
+    usage = daily_usage(db, time.time())
     db.execute("INSERT INTO commands VALUES(?,?,?,'uncertain',0)", (cid, '', text))
     db.execute("INSERT INTO active_contacts(id,body,state) VALUES(?,?,'uncertain')", (cid, json.dumps(command, ensure_ascii=False)))
+    db.execute('INSERT OR IGNORE INTO active_greeting_attempts VALUES(?,?,?)',
+               (cid,usage['day'],time.time()))
     put_state(db, 'nextWriteAt', time.time()+60)
     db.commit()
     args = ['hr', 'greet', '--geek-id', identifiers['geekId'], '--job-id', command['jobId'],

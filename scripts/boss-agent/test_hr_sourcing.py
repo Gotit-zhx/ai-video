@@ -390,6 +390,39 @@ class SourcingTest(unittest.TestCase):
         passive.device_report(USER, {'accountKey': KEY, 'commandId': command['id'], 'status': 'uncertain'})
         self.assertFalse(passive.device_config(USER, {'accountKey': KEY, 'capabilities': ['active-sourcing']})['commands'])
 
+    def test_wait_reason_is_account_scoped_and_expired_queue_does_not_block_new_contacts(self):
+        cid = self.searched()
+        command = s.greet(USER, {**self.params(), 'candidateId': cid, 'message': '你好', 'confirmed': True})
+        body = {'accountKey':KEY,'waitingContactId':command['id'],'reasonCode':'SEND_INTERVAL',
+                'retryAt':int(time.time()+60)}
+        passive.device_report(USER,{**body,'accountKey':'b'*64})
+        self.assertEqual(s.listing(USER,self.params())['run']['candidates'][0]['contact']['waitInfo'],{})
+        passive.device_report(USER,body)
+        contact=s.listing(USER,self.params())['run']['candidates'][0]['contact']
+        self.assertEqual(contact['waitInfo']['reasonCode'],'SEND_INTERVAL')
+        self.assertNotIn('body',contact)
+        with pool.database() as db:
+            old=json.loads(db.execute('SELECT body FROM hr_sourcing_contacts WHERE id=?',(command['id'],)).fetchone()[0])
+            old['readAt']=time.time()-1801
+            db.execute('UPDATE hr_sourcing_contacts SET body=? WHERE id=?',(json.dumps(old),command['id']))
+        self.assertEqual(s.listing(USER,self.params())['run']['candidates'][0]['contact']['status'],'expired')
+        self.assertEqual(passive.device_config(USER,{'accountKey':KEY,'capabilities':['active-sourcing']})['commands'],[])
+
+    def test_daily_150_claims_are_shared_across_desktops_and_uncertain_attempts_count(self):
+        cid=self.searched()
+        command=s.greet(USER,{**self.params(),'candidateId':cid,'message':'你好','confirmed':True})
+        with pool.database() as db:
+            row=db.execute('SELECT * FROM hr_sourcing_contacts WHERE id=?',(command['id'],)).fetchone()
+            payload=json.loads(row['body']);payload['attemptedAt']=time.time()
+            db.executemany("INSERT INTO hr_sourcing_contacts(id,owner,account,job,candidate,body,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'uncertain',?,?)",
+                           [(str(uuid.uuid4()),row['owner'],row['account'],row['job'],str(uuid.uuid4()),
+                             json.dumps(payload),s.now(),s.now()) for _ in range(150)])
+        result=passive.claim_command(USER,{'accountKey':KEY,'id':command['id']})
+        self.assertFalse(result['claimed'])
+        self.assertEqual(result['reasonCode'],'DAILY_GREETING_LIMIT')
+        self.assertEqual(s.listing(USER,self.params())['run']['candidates'][0]['contact']['waitInfo']['reasonCode'],
+                         'DAILY_GREETING_LIMIT')
+
     def test_active_receipt_joins_same_review_flow_and_filters_by_origin_and_job(self):
         cid = self.searched()
         command = s.greet(USER, {**self.params(), 'candidateId': cid, 'message': '你好', 'confirmed': True})

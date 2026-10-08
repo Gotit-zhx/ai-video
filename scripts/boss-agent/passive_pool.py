@@ -417,7 +417,7 @@ def device_report(user, body):
             hr_sourcing.report(db, owner, key, body)
             for table in ('hr_resume_commands', 'hr_talent_messages'):
                 db.execute(f"UPDATE {table} SET status=?,updated_at=? WHERE id=? AND owner=? AND account=? AND status IN ('sending','uncertain')", (state, now(), uid(body['commandId']), owner, key))
-    if body.get('contactId'):
+    if body.get('contactId') or body.get('waitingContactId'):
         with pool.database() as db:
             schema(db)
             hr_sourcing.report(db, owner, key, body)

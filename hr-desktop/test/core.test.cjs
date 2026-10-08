@@ -12,7 +12,7 @@ test('active greeting checks budget before claim and uses its own operation with
   const cloud=[];let available=false;
   engine.runtime.run=async input=>{
     calls.push(input);
-    if(input.operation==='sourcing-ready')return {ok:true,data:{allowed:available}};
+    if(input.operation==='sourcing-ready')return {ok:true,data:{allowed:available,reasonCode:'REQUEST_BUDGET_WAIT',retryAt:12345}};
     if(input.operation==='sourcing-send')return {ok:true,data:{status:'sent'}};
     return {ok:true,data:{bindings:[{contactId:'c1',friendId:'123'}]}};
   };
@@ -24,6 +24,8 @@ test('active greeting checks budget before claim and uses its own operation with
   };
   await engine.poll();
   assert.equal(cloud.some(x=>x.route==='passive-claim'),false);
+  assert.ok(cloud.some(x=>x.route==='passive-report'&&x.body.waitingContactId==='c1'
+    &&x.body.reasonCode==='REQUEST_BUDGET_WAIT'&&x.body.retryAt===12345));
   assert.ok(calls.some(x=>x.operation==='passive-step'),'Waiting greetings must not block existing resume follow-up');
   assert.ok(cloud.some(x=>x.route==='passive-report'&&x.body.contactId==='c1'&&x.body.accountKey==='a'.repeat(64)));
   available=true;await engine.poll();

@@ -148,7 +148,7 @@ def main(request):
         managed_jobs.save_statuses(request["root"], result)
         return result
     c.read_managed_jobs = read_managed_jobs
-    c.managed_job_statuses = lambda: managed_jobs.availability(c, request["root"])
+    c.managed_job_statuses = lambda **options: managed_jobs.availability(c, request["root"], **options)
     if operation == 'recover-account':
         import account_history
         return account_history.recover(c, request['root'], request.get('recruiterId'))

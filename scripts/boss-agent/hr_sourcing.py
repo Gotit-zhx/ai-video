@@ -154,6 +154,8 @@ def expire(db):
     db.execute("UPDATE hr_sourcing_runs SET state='failed',error='寻源分析未完成，请手动重新获取' WHERE state='running' AND started<?", (cutoff,))
     db.execute("UPDATE hr_sourcing_contacts SET status='uncertain',updated_at=? WHERE status='sending' AND updated_at<?",
                (now(), datetime.datetime.fromtimestamp(time.time()-600, datetime.timezone.utc).isoformat()))
+    db.execute("UPDATE hr_sourcing_contacts SET status='expired',updated_at=? WHERE status='queued' AND json_extract(body,'$.readAt')<?",
+               (now(), time.time()-1800))
 
 
 def get_job(db, owner, body):
@@ -196,9 +198,11 @@ def view(db, row, run_id=None):
                'wanted': r['wanted'], 'version': r['version'], **json.loads(r['result'])}
         run.pop('matched', None)
         for item in run.get('candidates', []):
-            contact = db.execute('SELECT id,status,friend_id FROM hr_sourcing_contacts WHERE owner=? AND job=? AND candidate=?',
+            contact = db.execute('SELECT id,status,friend_id,body FROM hr_sourcing_contacts WHERE owner=? AND job=? AND candidate=?',
                                  (row['owner'], row['id'], item['id'])).fetchone()
             item['contact'] = dict(contact) if contact else None
+            if contact:
+                item['contact']['waitInfo'] = json.loads(item['contact'].pop('body')).get('waitInfo', {})
     return {**json.loads(row['body']), 'id': row['id'], 'jobId': row['job_id'], 'accountKey': row['account'],
             'version': row['version'], 'profileState': row['profile_state'], 'profile': json.loads(row['profile']),
             'profileError': row['profile_error'], 'profileStartedAt': row['profile_at'],
@@ -695,12 +699,43 @@ def claim(db, owner, key, record):
     if time.time()-json.loads(row['body'])['readAt']>1800:
         db.execute("UPDATE hr_sourcing_contacts SET status='expired',updated_at=? WHERE id=?", (now(), record))
         return {'claimed': False}
-    db.execute("UPDATE hr_sourcing_contacts SET status='sending',updated_at=? WHERE id=?", (now(), record))
+    timezone = datetime.timezone(datetime.timedelta(hours=8))
+    stamp = datetime.datetime.fromtimestamp(time.time(), timezone)
+    midnight = stamp.replace(hour=0,minute=0,second=0,microsecond=0)
+    used = 0
+    for previous in db.execute('SELECT body,status,created_at FROM hr_sourcing_contacts WHERE owner=? AND account=?', (owner,key)):
+        payload = json.loads(previous['body'])
+        attempted = payload.get('attemptedAt')
+        if attempted is None and previous['status'] in {'sending','sent','uncertain'}:
+            attempted = datetime.datetime.fromisoformat(previous['created_at']).timestamp()
+        if type(attempted) in (int,float) and midnight.timestamp() <= attempted < midnight.timestamp()+86400:
+            used += 1
+    payload = json.loads(row['body'])
+    if used >= 150:
+        payload['waitInfo'] = {'reasonCode':'DAILY_GREETING_LIMIT','retryAt':int(midnight.timestamp()+86400)}
+        db.execute('UPDATE hr_sourcing_contacts SET body=?,updated_at=? WHERE id=?',(dump(payload),now(),record))
+        return {'claimed':False,'reasonCode':'DAILY_GREETING_LIMIT','used':used,'limit':150}
+    payload['attemptedAt'] = time.time()
+    # Claim and daily accounting share this transaction across all desktops.
+    db.execute("UPDATE hr_sourcing_contacts SET status='sending',body=?,updated_at=? WHERE id=?", (dump(payload),now(),record))
     return {'claimed': True}
 
 
 def report(db, owner, key, body):
     schema(db)
+    if body.get('waitingContactId'):
+        reason = body.get('reasonCode')
+        retry = body.get('retryAt', 0)
+        if reason not in {'REQUEST_BUDGET_WAIT','SEND_INTERVAL','JOB_STATUS_WAIT','JOB_NOT_OPEN','RISK_PAUSED','GREET_QUOTA','CARD_EXPIRED','DAILY_GREETING_LIMIT'} \
+                or type(retry) not in (int,float) or not math.isfinite(retry) or not 0 <= retry <= time.time()+86410:
+            raise ValueError('等待状态不正确')
+        row = db.execute("SELECT id,body FROM hr_sourcing_contacts WHERE id=? AND owner=? AND account=? AND status='queued'",
+                         (uid(body['waitingContactId']), owner, key)).fetchone()
+        if row:
+            payload = json.loads(row['body'])
+            payload['waitInfo'] = {'reasonCode': reason, 'retryAt': retry}
+            db.execute('UPDATE hr_sourcing_contacts SET body=?,updated_at=? WHERE id=?',
+                       (dump(payload), now(), row['id']))
     if body.get('commandId'):
         db.execute("UPDATE hr_sourcing_contacts SET status=?,updated_at=? WHERE id=? AND owner=? AND account=? AND status IN ('sending','uncertain')",
                    (body['status'], now(), uid(body['commandId']), owner, key))

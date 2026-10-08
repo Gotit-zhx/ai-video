@@ -11,7 +11,7 @@ import uuid
 
 REQUEST_TEXT = '方便发一份简历过来吗？'
 
-def budget_delay(path, hard_limit, *, cost=1, queued=False):
+def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False):
     """Allocate existing capacity; the shared HTTP/CDP hard guard still applies."""
     if not Path(path).exists():
         return 0
@@ -20,7 +20,7 @@ def budget_delay(path, hard_limit, *, cost=1, queued=False):
         times = [r[0] for r in db.execute('SELECT at FROM requests WHERE at>? ORDER BY at', (now-3600,))]
     # Passive list/receipt refreshes use the smaller pool. Already-triggered
     # conversations may use remaining capacity while retaining 20 for HR.
-    limit = max(0, min(hard_limit-20, hard_limit if queued else 82))
+    limit = hard_limit if user_initiated else max(0, min(hard_limit-20, hard_limit if queued else 82))
     needed = len(times) + cost - limit
     if needed <= 0:
         return 0
@@ -815,7 +815,8 @@ def execute(c, root, request):
             reports = [dict(row) for row in db.execute("SELECT * FROM commands WHERE reported=0 ORDER BY rowid LIMIT 1")]
             events = [json.loads(row['body']) for row in db.execute('SELECT body FROM events WHERE reported=0 ORDER BY rowid LIMIT 10')]
             return {'ok': True, 'data': {'exports': exports, 'reports': reports, 'events': events, 'bindings': active_sourcing.local(db),
-                                         'status': json.loads(get_state(db, 'status', '{}'))}}
+                                         'status': json.loads(get_state(db, 'status', '{}')),
+                                         'dailyGreeting': active_sourcing.daily_usage(db, time.time())}}
         if operation == 'passive-ack':
             if request.get('contactId'):
                 active_sourcing.schema(db)

@@ -2,6 +2,15 @@
 (() => {
   const sendStates={queued:'等待助手发送',sending:'发送中',sent:'已打招呼 · 等待对方回复',
     uncertain:'发送结果待核对',failed:'未发送，请核对助手状态',expired:'卡片已过期，本次未发送'};
+  function contactStatus(contact){
+    if(contact.status!=='queued'||!contact.waitInfo?.reasonCode)return sendStates[contact.status]||contact.status;
+    const reasons={REQUEST_BUDGET_WAIT:'请求额度等待',SEND_INTERVAL:'等待发送间隔',JOB_STATUS_WAIT:'等待核实职位开放状态',
+      JOB_NOT_OPEN:'职位未开放，暂停发送',RISK_PAUSED:'平台要求暂停，未发送',GREET_QUOTA:'今日招呼额度不足',
+      CARD_EXPIRED:'候选人卡片已过期，未发送',DAILY_GREETING_LIMIT:'已达每日 150 次上限，本次未发送'};
+    const retry=Number(contact.waitInfo.retryAt)||0;
+    return (reasons[contact.waitInfo.reasonCode]||'等待助手发送')+(retry>Date.now()/1000
+      ?` · 预计 ${new Date(retry*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})} 继续`:'');
+  }
   function rows(value,depth=0){
     if(depth>6||!value)return [];
     if(Array.isArray(value))return value;
@@ -230,7 +239,7 @@
         else if(item.gaps?.length)el('p','待核实：'+item.gaps.join('；'),card,'hr-hint');
         const actions=el('div','',card,'hr-actions');
         if(item.contact)el('span',item.contact.status==='sent'&&!item.contact.friend_id
-          ?'已打招呼 · 正在关联对应会话':sendStates[item.contact.status]||item.contact.status,actions,'hr-hint');
+          ?'已打招呼 · 正在关联对应会话':contactStatus(item.contact),actions,'hr-hint');
         else{
           const greet=button('打招呼',actions,()=>openGreeting(item));greet.className='hr-primary';
           greet.disabled=locked||record.criteria?.confirmed===false||run.version!==record.version||!item.canGreet;
@@ -421,19 +430,24 @@
     templates.addEventListener('change',fillTemplate);
     async function openGreeting(item){
       const ticket=generation;
+      candidate=item;message.value='';greetingTitle.textContent='向 '+item.name+' 打招呼';
+      greetingHint.textContent='正在确认助手连接并加载话术…';greetingError.textContent='';
+      send.disabled=true;dialog.showModal();
       try{
         const state=await accountCheck(record.accountKey);
         if(!state.capabilities?.includes('sourcing-credentials-v2'))throw Error('请更新招聘助手到 0.1.12 或以上版本后再打招呼');
-        if(!valid(ticket))return;
-        const data=await request('speeches');if(!valid(ticket))return;
+        if(!valid(ticket)||!dialog.open)return;
+        const data=await request('speeches');if(!valid(ticket)||!dialog.open)return;
         candidate=item;speeches=(data.items||[]).filter(row=>row.active&&['active_greet','general'].includes(row.kind));
         templates.replaceChildren();el('option','自定义话术',templates).value='';
         for(const row of speeches)el('option',row.name,templates).value=row.id;
         templates.value=speeches[0]?.id||'';fillTemplate();
         greetingTitle.textContent='向 '+item.name+' 打招呼';
-        greetingHint.textContent=record.jobName+' · 发送成功后跟进对方回复和简历，并归入主动邀约。';
-        greetingError.textContent='';dialog.showModal();
-      }catch(error){if(valid(ticket))feedback.textContent=error.message;}
+        const daily=state.dailyGreeting;
+        greetingHint.textContent=record.jobName+' · 每日最多 150 次'+(Number.isInteger(daily?.used)
+          ?`，今日已用 ${daily.used} 次`:'')+'。发送成功后跟进回复和简历，归入主动邀约。';
+        greetingError.textContent='';send.disabled=false;
+      }catch(error){if(valid(ticket)&&dialog.open){greetingHint.textContent='尚未发送';greetingError.textContent=error.message;}}
     }
     async function sendGreeting(){
       if(sending||!candidate||!message.value.trim()||!allowed())return;

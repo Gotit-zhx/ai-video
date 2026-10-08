@@ -195,6 +195,12 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
   await app.click('确认向该候选人发送');
   assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,1);
   assert.match(app.text(),/等待助手发送/);
+  saved.run.candidates[0].contact={status:'queued',waitInfo:{reasonCode:'SEND_INTERVAL',retryAt:Date.now()/1000+60}};
+  await app.tick(10000);
+  assert.match(app.text(),/等待发送间隔 · 预计/);
+  saved.run.candidates[0].contact={status:'queued',waitInfo:{reasonCode:'DAILY_GREETING_LIMIT',retryAt:Date.now()/1000+600}};
+  await app.tick(10000);
+  assert.match(app.text(),/已达每日 150 次上限/);
   saved.run.candidates[0].contact={status:'sent',friend_id:'123'};
   await app.tick(10000);
   assert.match(app.text(),/已打招呼 · 等待对方回复/);

@@ -119,7 +119,7 @@ class Recruiter extends EventEmitter {
   }
   snapshot(){return {...this.state,paused:this.paused,busy:this.busy,runtime:'local',events:this.events.slice(-15),
     queuedOperations:this.operations.pending,operation:this.operation||'',
-    passive:this.passiveStatus||{},reconnecting:this.paused&&this.autoReconnect&&!!this.accountRoot
+    passive:this.passiveStatus||{},dailyGreeting:this.dailyGreeting||{},reconnecting:this.paused&&this.autoReconnect&&!!this.accountRoot
       &&(!this.riskHold||TEMPORARY.has(this.riskHold.code)),
     accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
     capabilities:['passive-resume','job-jd','active-sourcing','sourcing-credentials-v2','continuous-sourcing','managed-jobs']};}
@@ -201,7 +201,7 @@ class Recruiter extends EventEmitter {
     if(this.busy) throw Error('当前操作尚未结束，请稍后再连接');
     this.autoReconnect=true;this.recoveryAt=0;
     this.clearActivity();
-    this.passiveStatus={};
+    this.passiveStatus={};this.dailyGreeting={};
     this.paused=true;
     this.state={...this.state,state:'pending',phase:'qr',failure_code:'',error:''};
     try{await this.browser.open();}catch(error){
@@ -380,6 +380,7 @@ class Recruiter extends EventEmitter {
       if(!ready())return;
       if(!local.ok){this.backgroundFailed(local.error?.code);return;}
       if(local.data?.status)this.passiveStatus=local.data.status;
+      if(local.data?.dailyGreeting)this.dailyGreeting=local.data.dailyGreeting;
       for(const event of local.data?.events||[]){
         await this.passiveCloud('passive-report',{accountKey,event});
         if(!ready())return;
@@ -417,6 +418,11 @@ class Recruiter extends EventEmitter {
           const check=await call('sourcing-ready',{command});
           if(!check.ok||!ready())return;
           canSend=check.data?.allowed===true;
+          if(!canSend){
+            await this.passiveCloud('passive-report',{accountKey,waitingContactId:command.id,
+              reasonCode:check.data?.reasonCode||'JOB_STATUS_WAIT',retryAt:check.data?.retryAt||0});
+            if(!ready())return;
+          }
         }
         if(canSend){
         const claimed=await this.passiveCloud('passive-claim',{accountKey,id:command.id});
@@ -493,7 +499,7 @@ class Recruiter extends EventEmitter {
         this.event('LOCAL_CLEANUP_FAILED');throw Error(this.state.error);
       }
       this.accountRoot='';
-      this.passiveStatus={};
+      this.passiveStatus={};this.dailyGreeting={};
       this.state={state:'disconnected',phase:'',error:'',failure_code:''};
       await this.save();this.event('DISCONNECTED');
     })();
