@@ -45,6 +45,78 @@ class ActiveSourcingTest(unittest.TestCase):
             self.assertEqual(db.execute('SELECT state FROM active_contacts').fetchone()[0], 'uncertain')
             self.assertEqual(active.daily_usage(db, self.now)['used'], 1)
 
+    def test_confirmed_sdk_send_with_failed_cache_write_is_still_sent_for_exact_identifiers(self):
+        self.c.cli_json.return_value = {'ok': False, 'error': {'code': 'GREET_RESULT_UNKNOWN',
+            'details': {'sent': True, 'geek_id': 'geek1', 'job_id': 'job1'}}}
+        self.assertEqual(self.runop('sourcing-send', command=self.command())['data']['status'], 'sent')
+        self.now += 61
+        self.c.cli_json.return_value['error']['details']['job_id'] = 'wrong-job'
+        self.assertEqual(self.runop('sourcing-send', command={**self.command(), 'id': 'other'})['data']['status'], 'uncertain')
+
+    def uncertain(self):
+        command = {**self.command(), 'status': 'uncertain', 'attemptedAt': 900}
+        with flow.database(self.root) as db:
+            active.schema(db)
+            db.execute("INSERT INTO active_contacts(id,body,state) VALUES(?,?,'uncertain')", (command['id'], json.dumps(command)))
+            db.execute("INSERT INTO commands VALUES(?,'',?,'uncertain',1)", (command['id'], command['message']))
+            db.execute("INSERT INTO active_greeting_attempts VALUES(?,'1970-01-01',900)", (command['id'],))
+        self.c.sourcing_friend_details.return_value = {'ok': True, 'data': {'friendList': [
+            {'uid': '1', 'encryptUid': 'geek1', 'encryptJobId': 'job1'}]}}
+        self.c.cli_json.side_effect = lambda *args: {'ok': True, 'data': {'result': [{'uid': '1'}]}} if args[1] == 'chat' else {
+            'ok': True, 'data': {'messages': [self.message(sender='9', target='1', at=950, text=command['message'])]}}
+        return command
+
+    def test_uncertain_greeting_is_confirmed_by_exact_outgoing_receipt_without_resending(self):
+        command = self.uncertain()
+        with flow.database(self.root) as db:
+            rules, failure = active.rules(self.c, db, [command])
+            self.assertIsNone(failure)
+            self.assertEqual(rules[command['ruleId']]['activeFriend'], '1')
+            row = db.execute('SELECT state,friend,body FROM active_contacts').fetchone()
+            self.assertEqual((row['state'], row['friend']), ('sent', '1'))
+            self.assertEqual(json.loads(row['body'])['receipt']['messageId'], '123')
+        local = self.runop('passive-local')['data']
+        self.assertEqual(local['reports'][0]['state'], 'sent')
+        self.assertEqual(local['reports'][0]['reported'], 0, 'An earlier uncertain acknowledgement cannot hide the new success')
+        self.assertEqual(local['bindings'], [{'contactId': command['id'], 'friendId': '1'}])
+        self.c.request_resume.assert_not_called()
+        self.assertTrue(all(call.args[1] in {'chat', 'chatmsg'} for call in self.c.cli_json.call_args_list))
+        count = self.c.cli_json.call_count
+        with flow.database(self.root) as db:
+            active.rules(self.c, db, [command])
+        self.assertEqual(self.c.cli_json.call_count, count, 'A verified receipt is durable across later polls')
+
+    def test_wrong_direction_text_time_candidate_or_message_id_never_confirms(self):
+        command = self.command()
+        wrong = [self.message(sender='1', target='9', at=950, text=command['message']),
+                 self.message(sender='9', target='2', at=950, text=command['message']),
+                 self.message(sender='9', target='1', at=800, text=command['message']),
+                 self.message(sender='9', target='1', at=950, text='别的话术'),
+                 {**self.message(sender='9', target='1', at=950, text=command['message']), 'mid': ''}]
+        for message in wrong:
+            self.assertIsNone(active.greeting_receipt([message], '1', command, 900))
+        self.uncertain()
+        self.c.sourcing_friend_details.return_value['data']['friendList'][0]['encryptJobId'] = 'wrong-job'
+        with flow.database(self.root) as db:
+            self.assertEqual(active.rules(self.c, db, [{**command, 'status': 'uncertain'}])[0], {})
+            self.assertEqual(db.execute('SELECT state FROM active_contacts').fetchone()[0], 'uncertain')
+        self.assertEqual(self.c.cli_json.call_count, 1, 'A mismatched job must not read messages or send')
+
+    def test_receipt_reads_respect_budget_cooldown_and_daily_attempts_are_not_incremented(self):
+        command = self.uncertain()
+        self.c.passive_delay = lambda **kwargs: 120
+        with flow.database(self.root) as db:
+            active.rules(self.c, db, [command])
+        self.c.cli_json.assert_not_called()
+        self.c.passive_delay = lambda **kwargs: 0
+        self.c.cli_json.side_effect = lambda *args: {'ok': True, 'data': {'result': [{'uid': '1'}]}} if args[1] == 'chat' else {
+            'ok': True, 'data': {'messages': []}}
+        with flow.database(self.root) as db:
+            active.rules(self.c, db, [command]); active.rules(self.c, db, [command])
+            self.assertEqual(db.execute('SELECT count(*) FROM active_greeting_attempts').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT state FROM active_contacts').fetchone()[0], 'uncertain')
+        self.assertEqual(self.c.cli_json.call_count, 2)
+
     def test_explicit_greeting_uses_reserved_capacity_but_never_exceeds_hard_budget(self):
         path = self.root/'budget.sqlite3'
         with sqlite3.connect(path) as db:

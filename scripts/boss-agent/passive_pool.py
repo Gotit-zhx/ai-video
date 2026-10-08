@@ -268,7 +268,8 @@ def device_config(user, body):
         return {'rules': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=? AND account=? AND enabled=1', (owner, key))],
                 'replyTemplate': ({'id': reply['id'], 'version': reply['version'], 'content': reply['content'],
                                    'name': reply['name']} if reply else None),
-                'commands': commands[:1], 'activeContacts': [row for row in active if row['status'] == 'sent']}
+                'commands': commands[:1], 'activeContacts': [row for row in active if row['status'] == 'sent'
+                    or (row['status'] == 'uncertain' and 'greeting-receipts-v1' in body.get('capabilities', []))]}
 
 
 def ingest(user, body):

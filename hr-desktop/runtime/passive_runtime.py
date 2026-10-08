@@ -796,6 +796,7 @@ def execute(c, root, request):
     import active_sourcing
     operation = request['operation']
     with database(root) as db:
+        active_sourcing.schema(db)
         if operation == 'passive-local':
             # Recover only from the existing local request ledger after a crash;
             # never dispatch an unconfirmed write again.
@@ -849,4 +850,9 @@ def execute(c, root, request):
             db.execute('UPDATE commands SET state=? WHERE id=?', (status, cid))
             return {'ok': True, 'data': {'status': status}}
         if operation != 'passive-step': raise ValueError('unsupported passive operation')
-        return activity_status(db, step(c, db, request))
+        result = activity_status(db, step(c, db, request))
+        if result.get('ok') is True and db.execute(
+                "SELECT 1 FROM commands c JOIN active_contacts a ON a.id=c.id "
+                "WHERE c.state='sent' AND c.reported=0 LIMIT 1").fetchone():
+            result.setdefault('data', {})['greetingReceiptReady'] = True
+        return result

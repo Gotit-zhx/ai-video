@@ -196,13 +196,13 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
   assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,1);
   assert.match(app.text(),/等待助手发送/);
   saved.run.candidates[0].contact={status:'queued',waitInfo:{reasonCode:'SEND_INTERVAL',retryAt:Date.now()/1000+60}};
-  await app.tick(10000);
+  await app.tick(5000);
   assert.match(app.text(),/等待发送间隔 · 预计/);
   saved.run.candidates[0].contact={status:'queued',waitInfo:{reasonCode:'DAILY_GREETING_LIMIT',retryAt:Date.now()/1000+600}};
-  await app.tick(10000);
+  await app.tick(5000);
   assert.match(app.text(),/已达每日 150 次上限/);
   saved.run.candidates[0].contact={status:'sent',friend_id:'123'};
-  await app.tick(10000);
+  await app.tick(5000);
   assert.match(app.text(),/已打招呼 · 等待对方回复/);
   assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,1,'Status polling never sends again');
   const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
@@ -226,6 +226,31 @@ test('HR match score includes missing information instead of showing a sparse kn
   assert.equal(score({score:100,verifiedMatch:66}),66);
   assert.equal(score({score:0,knownWeight:0,totalWeight:100}),0);
   assert.equal(app.calls.length,0,'Displaying match scores never calls a model or BOSS');
+});
+test('an uncertain greeting refreshes from cloud and displays success without another send',async()=>{
+  const key='a'.repeat(64),contact={id:'contact1',status:'uncertain',friend_id:''};
+  const record={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'工程师',version:1,
+    profileState:'complete',profile:{},criteria:{confirmed:true,conditions:[]},
+    run:{id:'run1',version:1,state:'complete',wanted:5,candidates:[
+      {id:'candidate1',name:'已发送人才',score:100,summary:'符合',canGreet:true,contact}]}};
+  const app=setup({sourcing:true,api:async url=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:record.jobId,
+      jobName:record.jobName,postDescription:'岗位职责'}}}};
+    if(url.startsWith('/api/v1/hr/sourcing?')||url.endsWith('/sourcing/save'))return {data:structuredClone(record)};
+    if(url.startsWith('/api/v1/hr/demands?'))return {data:{items:[],pages:1}};
+    throw Error('No extra model call or sending expected: '+url);
+  }});
+  await app.enter('jobs');await app.click('AI 寻源');
+  assert.match(app.text(),/发送结果待核对/);
+  assert.ok([...app.timers.values()].some(timer=>timer.ms===5000));
+  contact.status='sent';contact.friend_id='123';
+  await app.tick(5000);
+  assert.match(app.text(),/已打招呼 · 等待对方回复/);
+  assert.doesNotMatch(app.text(),/发送结果待核对/);
+  assert.equal([...app.timers.values()].some(timer=>timer.ms===5000),false);
+  assert.equal(app.calls.some(c=>c.url.endsWith('/sourcing/greet')||c.url.endsWith('/sourcing/search')),false);
 });
 test('job minimums and candidate checks are visible; unverified historical results cannot greet',async()=>{
   const key='a'.repeat(64),record={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'总经理秘书',version:1,

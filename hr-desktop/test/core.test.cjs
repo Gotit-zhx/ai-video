@@ -6,6 +6,32 @@ const os=require('node:os');
 const {Recruiter,restriction,ORIGIN}=require('../src/core.cjs');
 const {LocalBridge}=require('../src/bridge.cjs');
 const user={username:'13800000000',id:'fixture',organizationCode:'heyi',roles:['ADMIN'],platformAdmin:true};
+test('a greeting receipt is reported and bound in the same poll before the next timer turn',async t=>{
+  const {engine,calls,directory}=await fixture(t);
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
+  const cloud=[];let reconciled=false;
+  engine.runtime.run=async input=>{
+    calls.push(input);
+    if(input.operation==='passive-step'){reconciled=true;return {ok:true,data:{greetingReceiptReady:true}};}
+    if(input.operation==='passive-local'&&reconciled)return {ok:true,data:{
+      reports:[{id:'c1',state:'sent'}],bindings:[{contactId:'c1',friendId:'123'}]}};
+    return {ok:true,data:{}};
+  };
+  engine.passiveCloud=async(route,body)=>{
+    cloud.push({route,body});
+    if(route==='passive-config'){
+      assert.ok(body.capabilities.includes('greeting-receipts-v1'));
+      return {commands:[],activeContacts:[{id:'c1',status:'uncertain'}]};
+    }
+    return {};
+  };
+  await engine.poll();
+  const sent=cloud.findIndex(x=>x.route==='passive-report'&&x.body.commandId==='c1'&&x.body.status==='sent');
+  const bound=cloud.findIndex(x=>x.route==='passive-report'&&x.body.contactId==='c1'&&x.body.friendId==='123');
+  assert.ok(sent>=0&&bound>sent,'Publish confirmed status before the account-scoped binding');
+  assert.equal(calls.filter(x=>x.operation==='passive-step').length,1);
+  assert.equal(calls.some(x=>['sourcing-send','passive-send'].includes(x.operation)),false);
+});
 test('active greeting checks budget before claim and uses its own operation with account-scoped binding reports',async t=>{
   const {engine,calls,directory}=await fixture(t);
   engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;

@@ -122,7 +122,7 @@ class Recruiter extends EventEmitter {
     passive:this.passiveStatus||{},dailyGreeting:this.dailyGreeting||{},reconnecting:this.paused&&this.autoReconnect&&!!this.accountRoot
       &&(!this.riskHold||TEMPORARY.has(this.riskHold.code)),
     accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
-    capabilities:['passive-resume','job-jd','active-sourcing','sourcing-credentials-v2','continuous-sourcing','managed-jobs']};}
+    capabilities:['passive-resume','job-jd','active-sourcing','sourcing-credentials-v2','continuous-sourcing','managed-jobs','greeting-receipts-v1']};}
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
   pause(code='USER_PAUSED'){
     if(code==='USER_PAUSED')this.autoReconnect=false;
@@ -408,7 +408,7 @@ class Recruiter extends EventEmitter {
         await call('passive-ack',{friendId:item.friend,messageId:item.mid});
         this.event('RESUME_ARCHIVED');
       }
-      const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing','sourcing-credentials-v2']});
+      const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing','sourcing-credentials-v2','greeting-receipts-v1']});
       if(!ready())return;
       const command=config.commands?.[0];
       if(command){
@@ -442,6 +442,23 @@ class Recruiter extends EventEmitter {
         activityHints:hints,activityWatching:this.clock()-(this.activityObservedAt||0)<6000,
         reconnectId:this.reconnectId||''});
       if(result.ok&&ready()){
+        // Publish newly verified receipts during this turn, before another poll.
+        if(result.data?.greetingReceiptReady){
+          const receipts=await call('passive-local');
+          if(!ready())return;
+          if(receipts.ok){
+            for(const report of receipts.data?.reports||[]){
+              await this.passiveCloud('passive-report',{accountKey,commandId:report.id,status:report.state});
+              if(!ready())return;
+              await call('passive-ack',{commandId:report.id});
+            }
+            for(const binding of receipts.data?.bindings||[]){
+              await this.passiveCloud('passive-report',{accountKey,...binding});
+              if(!ready())return;
+              await call('passive-ack',binding);
+            }
+          }
+        }
         // A newer signal received during this operation must survive its ack.
         for(const hint of hints)if(this.activity.get(hint.friend)===hint)this.activity.delete(hint.friend);
         this.passiveStatus=result.data||{};this.emit('change',this.snapshot());

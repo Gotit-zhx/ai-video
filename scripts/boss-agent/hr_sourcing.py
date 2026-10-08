@@ -818,7 +818,7 @@ def greet(user, body):
 def device_contacts(db, owner, key):
     schema(db); expire(db)
     return [{**json.loads(r['body']), 'id': r['id'], 'status': r['status'], 'friendId': r['friend_id']}
-            for r in db.execute("SELECT * FROM hr_sourcing_contacts WHERE owner=? AND account=? AND status IN ('queued','sent') ORDER BY created_at", (owner, key))]
+            for r in db.execute("SELECT * FROM hr_sourcing_contacts WHERE owner=? AND account=? AND status IN ('queued','sent','uncertain') ORDER BY created_at", (owner, key))]
 
 
 def claim(db, owner, key, record):

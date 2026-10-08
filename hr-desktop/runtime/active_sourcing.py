@@ -90,6 +90,7 @@ def send(c, db, command):
         db.execute("INSERT INTO commands VALUES(?,?,?,'failed',0)", (cid, '', text))
         return {'ok': True, 'data': {'status': 'failed'}}
     usage = daily_usage(db, time.time())
+    command = {**command, 'attemptedAt': time.time()}
     db.execute("INSERT INTO commands VALUES(?,?,?,'uncertain',0)", (cid, '', text))
     db.execute("INSERT INTO active_contacts(id,body,state) VALUES(?,?,'uncertain')", (cid, json.dumps(command, ensure_ascii=False)))
     db.execute('INSERT OR IGNORE INTO active_greeting_attempts VALUES(?,?,?)',
@@ -105,6 +106,14 @@ def send(c, db, command):
     except Exception:
         result = {'ok': False}
     state = 'sent' if result.get('ok') is True and (result.get('data') or {}).get('sent') is True else 'uncertain'
+    error = result.get('error') or {}
+    details = error.get('details') or {}
+    if (error.get('code') in {'ALREADY_GREETED', 'GREET_RESULT_UNKNOWN'}
+            and isinstance(details, dict) and details.get('sent') is True
+            and details.get('geek_id') == identifiers['geekId']
+            and details.get('job_id') == command['jobId']):
+        # A confirmed business send can coexist with a failed SDK cache write.
+        state = 'sent'
     if (result.get('error') or {}).get('code') == 'GREET_LIMIT':
         # Do not spend remaining requests repeatedly probing exhausted rights.
         # Queued cards expire within 30 minutes and are never replayed tomorrow.
@@ -121,27 +130,72 @@ def send(c, db, command):
 def local(db):
     schema(db)
     return [{'contactId': r['id'], 'friendId': r['friend']} for r in db.execute(
-        "SELECT * FROM active_contacts WHERE state='sent' AND friend<>'' AND bound=0 LIMIT 5")]
+        "SELECT * FROM active_contacts WHERE state IN ('sent','existing_flow') AND friend<>'' AND bound=0 LIMIT 5")]
+
+
+def greeting_receipt(messages, friend, command, attempted):
+    """Exact outgoing text, candidate UID, message ID and attempt window."""
+    from passive_runtime import seconds
+    receipts = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        sender, target, body = item.get('from') or {}, item.get('to') or {}, item.get('body') or {}
+        if not all(isinstance(value, dict) for value in (sender, target, body)):
+            continue
+        stamp, mid = seconds(item.get('time')), str(item.get('mid', ''))
+        if (str(target.get('uid')) == friend and str(sender.get('uid', '')).isdecimal()
+                and str(sender['uid']) != friend and body.get('type') == 1
+                and body.get('text') == command['message'] and mid.isdecimal() and int(mid) > 0
+                and attempted-5 <= stamp <= time.time()+60):
+            receipts.append({'friendId': friend, 'messageId': mid, 'sentAt': stamp, 'source': 'chat_history'})
+    return min(receipts, key=lambda value: value['sentAt']) if receipts else None
 
 
 def rules(c, db, contacts):
     """One bounded reconciliation read per interval; no name-based associations."""
-    from passive_runtime import rows, event
+    from passive_runtime import rows, event, get_state, put_state
     schema(db)
     approved = {}
-    for value in contacts[:200]:
-        if not isinstance(value, dict) or value.get('status') != 'sent': continue
+    recent = sorted((value for value in contacts if isinstance(value, dict)),
+                    key=lambda value: (value.get('status') != 'uncertain', -value.get('attemptedAt', value.get('enabledAt', 0))))
+    for value in recent[:200]:
+        if not isinstance(value, dict) or value.get('status') not in {'sent', 'uncertain'}: continue
         cid = value.get('id', '')
         if not re.fullmatch(r'[a-zA-Z0-9-]{1,80}', cid): continue
         approved[cid] = value
-        db.execute("INSERT OR IGNORE INTO active_contacts(id,body,state) VALUES(?,?,'sent')",
-                   (cid, json.dumps(value, ensure_ascii=False)))
-    pending = [r for r in db.execute("SELECT * FROM active_contacts WHERE state='sent' AND friend='' AND next_at<=? ORDER BY next_at,id", (time.time(),))
-               if r['id'] in approved]
-    if pending and not getattr(c, 'passive_delay', lambda **kw: 0)(cost=3, queued=False):
+        db.execute("INSERT OR IGNORE INTO active_contacts(id,body,state) VALUES(?,?,?)",
+                   (cid, json.dumps(value, ensure_ascii=False), value['status']))
+    now = time.time()
+    pending = []
+    for row in db.execute("SELECT * FROM active_contacts WHERE state IN ('sent','uncertain') AND friend='' AND next_at<=? ORDER BY next_at,id", (now,)):
+        if row['id'] not in approved:
+            continue
+        if row['state'] == 'uncertain':
+            attempt = db.execute('SELECT attempted_at FROM active_greeting_attempts WHERE contact=?', (row['id'],)).fetchone()
+            attempted = attempt[0] if attempt else json.loads(row['body']).get('attemptedAt', 0)
+            if not attempted or now-attempted > 86400:
+                continue
+        pending.append(row)
+    pending.sort(key=lambda row: (row['state'] != 'uncertain', -json.loads(row['body']).get('attemptedAt', json.loads(row['body']).get('enabledAt', 0))))
+    if pending:
         item = pending[0]; detail = json.loads(item['body'])
+        uncertain = item['state'] == 'uncertain'
+        if uncertain:
+            attempt = db.execute('SELECT attempted_at FROM active_greeting_attempts WHERE contact=?', (item['id'],)).fetchone()
+            attempted = attempt[0] if attempt else detail.get('attemptedAt', 0)
+            if now < float(get_state(db, 'greetingReceiptNextAt')):
+                pending = []
+        delay = getattr(c, 'passive_delay', lambda **kw: 0)(
+            cost=4 if uncertain else 3, queued=uncertain, **({'user_initiated': True} if uncertain else {}))
+        if delay or c.held_code():
+            pending = []
+    if pending:
         # Reserve the cooldown before reads so a failure cannot create a tight loop.
-        db.execute('UPDATE active_contacts SET next_at=? WHERE id=?', (time.time()+300, item['id'])); db.commit()
+        db.execute('UPDATE active_contacts SET next_at=? WHERE id=?', (now+300, item['id']))
+        if uncertain:
+            put_state(db, 'greetingReceiptNextAt', now+30)
+        db.commit()
         result = c.cli_json('hr', 'chat', '--job-id', detail['jobId'], '--page', '1')
         if result.get('ok') is not True: return {}, result
         ids = []
@@ -164,10 +218,24 @@ def rules(c, db, contacts):
                 matches.append(friend)
         if len(set(matches)) == 1:
             friend = matches[0]
+            if uncertain:
+                history = c.cli_json('hr', 'chatmsg', friend, '--count', '100')
+                if history.get('ok') is not True:
+                    return {}, history
+                receipt = greeting_receipt(c.resume_messages(history), friend, detail, attempted)
+                if not receipt:
+                    return {}, None
+                detail['receipt'] = receipt
+                db.execute("UPDATE active_contacts SET state='sent',body=? WHERE id=?",
+                           (json.dumps(detail, ensure_ascii=False), item['id']))
+                db.execute("INSERT INTO commands(id,friend,message,state,reported) VALUES(?,?,?,'sent',0) "
+                           "ON CONFLICT(id) DO UPDATE SET friend=excluded.friend,state='sent',reported=0",
+                           (item['id'], friend, detail['message']))
+                event(db, 'ACTIVE_GREETING_CONFIRMED', detail)
+            db.execute('UPDATE active_contacts SET friend=? WHERE id=?', (friend, item['id']))
             old = db.execute('SELECT rule FROM people WHERE friend=?', (friend,)).fetchone()
             if not old or old['rule'] == detail['ruleId']:
                 detail.update(replyAt=detail['enabledAt'], origin='active', activeContactId=item['id'])
-                db.execute('UPDATE active_contacts SET friend=? WHERE id=?', (friend, item['id']))
                 db.execute("INSERT OR IGNORE INTO people(friend,rule,body,state,updated) VALUES(?,?,?,'inspect',?)",
                            (friend, detail['ruleId'], json.dumps(detail, ensure_ascii=False), int(time.time())))
                 event(db, 'ACTIVE_CONTACT_LINKED', detail)

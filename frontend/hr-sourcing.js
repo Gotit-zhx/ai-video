@@ -285,8 +285,8 @@
           {matched:'符合',unmatched:'不符合',unknown:'待核实'}[check.status]||'待核实')+' · '+check.evidence,diagnosticRows,'hr-hint');
       }
       const pendingContact=run?.candidates?.some(item=>item.contact&&(
-        ['queued','sending'].includes(item.contact.status)||(item.contact.status==='sent'&&!item.contact.friend_id)));
-      if((running()||pendingContact)&&!timer){pollErrors=0;timer=setInterval(()=>reload(true),running()?4000:10000);}
+        ['queued','sending','uncertain'].includes(item.contact.status)||(item.contact.status==='sent'&&!item.contact.friend_id)));
+      if((running()||pendingContact)&&!timer){pollErrors=0;timer=setInterval(()=>reload(true),running()?4000:5000);}
       if(!running()&&!pendingContact)stop();
     }
     async function reload(quiet=false){

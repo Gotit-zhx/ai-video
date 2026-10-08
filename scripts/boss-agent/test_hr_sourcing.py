@@ -470,6 +470,17 @@ class SourcingTest(unittest.TestCase):
         self.assertFalse(passive.claim_command(USER, {'accountKey': KEY, 'id': command['id']})['claimed'])
         passive.device_report(USER, {'accountKey': KEY, 'commandId': command['id'], 'status': 'uncertain'})
         self.assertFalse(passive.device_config(USER, {'accountKey': KEY, 'capabilities': ['active-sourcing']})['commands'])
+        self.assertEqual(passive.device_config(USER, {'accountKey': KEY, 'capabilities': ['active-sourcing']})['activeContacts'], [])
+        receipts = passive.device_config(USER, {'accountKey': KEY, 'capabilities': ['active-sourcing', 'greeting-receipts-v1']})
+        self.assertEqual(receipts['activeContacts'][0]['id'], command['id'])
+        self.assertEqual(receipts['activeContacts'][0]['status'], 'uncertain')
+        self.assertEqual(passive.device_config(USER, {'accountKey': 'b'*64,
+            'capabilities': ['greeting-receipts-v1']})['activeContacts'], [])
+        passive.device_report(USER, {'accountKey': KEY, 'commandId': command['id'], 'status': 'sent'})
+        passive.device_report(USER, {'accountKey': KEY, 'commandId': command['id'], 'status': 'uncertain'})
+        self.assertEqual(passive.device_config(USER, {'accountKey': KEY,
+            'capabilities': ['greeting-receipts-v1']})['activeContacts'][0]['status'], 'sent',
+            'A late uncertain acknowledgement cannot undo an already confirmed send')
 
     def test_wait_reason_is_account_scoped_and_expired_queue_does_not_block_new_contacts(self):
         cid = self.searched()
