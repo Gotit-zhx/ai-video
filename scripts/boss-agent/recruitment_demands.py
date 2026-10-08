@@ -28,6 +28,9 @@ def schema(db):
         ai_status TEXT NOT NULL DEFAULT 'idle', ai_job TEXT NOT NULL DEFAULT '',
         ai_version INTEGER NOT NULL DEFAULT 0, ai_result TEXT NOT NULL DEFAULT '{}',
         ai_error TEXT NOT NULL DEFAULT '', ai_started REAL NOT NULL DEFAULT 0)""")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(recruitment_demands)")}
+    if "ai_progress" not in columns:
+        db.execute("ALTER TABLE recruitment_demands ADD COLUMN ai_progress TEXT NOT NULL DEFAULT '{}'")
     db.execute("CREATE INDEX IF NOT EXISTS demands_owner ON recruitment_demands(owner,status,updated_at)")
     db.execute("""CREATE TABLE IF NOT EXISTS hr_demand_references(
         id TEXT PRIMARY KEY,owner TEXT NOT NULL,demand TEXT NOT NULL,digest TEXT NOT NULL,
@@ -43,7 +46,7 @@ def view(row, db=None):
             "status": row["status"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
             "aiStatus": row["ai_status"], "aiVersion": row["ai_version"], "aiError": row["ai_error"],
             "aiResult": json.loads(row["ai_result"]), "aiJob": row["ai_job"],
-            "aiStartedAt": row["ai_started"]}
+            "aiStartedAt": row["ai_started"], "aiProgress": json.loads(row["ai_progress"])}
 
 
 def expire_jobs(db):
@@ -249,44 +252,112 @@ def driver_input(snapshot):
     return values
 
 
-def call_driver(snapshot, cookie):
+def safe_driver_error(candidate, status=502):
+    defaults = {401: "平台登录已过期，请重新登录后生成", 403: "当前账号没有招聘 AI 权限",
+                409: "请在系统模型接入中配置并启用驱动模型",
+                429: "当前模型调用较多，请稍后手动重试",
+                504: "驱动模型响应超时，请检查模型服务后手动重试"}
+    safe = {
+        "驱动模型返回内容过长，请精简岗位内容后重试",
+        "生成结果不完整，请精简需求后重新生成",
+        "模型服务未接受本次内容，请调整岗位描述后重试",
+        "驱动模型响应中断，请手动重试",
+        "驱动模型返回了不支持的工具调用",
+        "驱动模型返回格式不完整或服务不可用，请手动重试",
+        "驱动模型连接失败，请检查模型服务；本次未自动重复调用",
+        "驱动模型未返回有效 JSON，请检查模型服务后手动重试",
+        "驱动模型响应超时，请检查模型服务后手动重试",
+        "生成已中断，请手动重试",
+    }
+    candidate = candidate if isinstance(candidate, str) else ""
+    candidate = re.sub(r" \[HR_AI_[A-Z_]+\]$", "", candidate)
+    if candidate in safe or re.fullmatch(
+            r"驱动模型服务返回错误（HTTP [45][0-9]{2}），本次未自动重复调用", candidate):
+        return candidate
+    return defaults.get(status, "驱动模型未返回有效的岗位分析，请检查模型服务；本次未自动重复调用")
+
+
+def read_driver_events(response, progress):
+    """Bounded SSE; a disconnected stream never becomes a completed job."""
+    event, lines, total, result, terminal = "", [], 0, None, False
+    while True:
+        raw = response.readline(512001)
+        if not raw:
+            break
+        total += len(raw)
+        if total > 512000 or len(raw) > 512000:
+            raise ValueError("模型返回内容过长，请精简职责和要求后重试")
+        line = raw.decode("utf-8").rstrip("\r\n")
+        if line == "":
+            if not lines:
+                event = ""; continue
+            if terminal:
+                raise ValueError("驱动模型响应中断，请手动重试")
+            data = json.loads("\n".join(lines))
+            if event == "progress" and isinstance(data, dict):
+                progress(data)
+            elif event == "error":
+                raise ValueError(safe_driver_error(data.get("message"), data.get("status", 502)))
+            elif event == "result":
+                result = data.get("data"); terminal = True
+            else:
+                raise ValueError("驱动模型响应中断，请手动重试")
+            event, lines = "", []
+        elif line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            lines.append(line[5:].lstrip())
+    if not terminal or lines:
+        raise ValueError("驱动模型响应中断，请手动重试")
+    return result
+
+
+def update_progress(user, record, job, progress):
+    phase = progress.get("phase")
+    if phase not in {"connecting", "generating", "validating"}:
+        return
+    try:
+        chars = max(0, min(200000, int(progress.get("receivedChars", 0))))
+    except (ValueError, TypeError):
+        return
+    owner, _ = pool.context(user)
+    with pool.database() as db:
+        schema(db)
+        row = db.execute("SELECT ai_progress FROM recruitment_demands WHERE owner=? AND id=? AND ai_job=? AND ai_status='running'",
+                         (owner, record, job)).fetchone()
+        if not row:
+            return
+        prior = json.loads(row["ai_progress"])
+        rank = {"connecting": 0, "generating": 1, "validating": 2}
+        if rank[phase] < rank.get(prior.get("phase"), -1):
+            return
+        db.execute("UPDATE recruitment_demands SET ai_progress=? WHERE owner=? AND id=? AND ai_job=? AND ai_status='running'",
+                   (json.dumps({"phase": phase, "receivedChars": max(chars, prior.get("receivedChars", 0)),
+                                "updatedAt": time.time()}), owner, record, job))
+
+
+def call_driver(snapshot, cookie, progress=lambda _: None):
     payload = json.dumps(driver_input(snapshot), ensure_ascii=False).encode()
     request = urllib.request.Request(AI_URL, data=payload, headers={
-        "Cookie": cookie, "Content-Type": "application/json", "Accept": "application/json"})
+        "Cookie": cookie, "Content-Type": "application/json", "Accept": "text/event-stream"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with opener.open(request, timeout=320) as response:
-            raw = response.read(512001)
-            if len(raw) > 512000:
-                raise ValueError("模型返回内容过长，请精简职责和要求后重试")
-            result = json.loads(raw).get("data")
+            if response.headers.get("Content-Type", "").startswith("text/event-stream"):
+                result = read_driver_events(response, progress)
+            else:
+                # Read legacy JSON in the same response, never issue another call.
+                raw = response.read(512001)
+                if len(raw) > 512000:
+                    raise ValueError("模型返回内容过长，请精简职责和要求后重试")
+                result = json.loads(raw).get("data")
     except urllib.error.HTTPError as error:
         # Never echo provider response bodies, cookies or keys into saved job errors.
-        messages = {401: "平台登录已过期，请重新登录后生成", 403: "当前账号没有招聘 AI 权限",
-                    409: "请在系统模型接入中配置并启用驱动模型",
-                    429: "当前模型调用较多，请稍后手动重试",
-                    502: "驱动模型未返回有效的岗位分析，请检查模型服务；本次未自动重复调用",
-                    504: "驱动模型响应超时，请检查模型服务后手动重试"}
-        message = messages.get(error.code, "驱动模型生成失败，请检查模型服务后手动重试")
-        if error.code == 502:
-            # Only messages constructed by our controller may cross this boundary.
-            # Unknown provider bodies and credentials must never become UI text.
-            try:
-                candidate = json.loads(error.read(4096)).get("message", "")
-                safe = {
-                    "驱动模型返回内容过长，请精简岗位内容后重试",
-                    "生成结果不完整，请精简需求后重新生成",
-                    "模型服务未接受本次内容，请调整岗位描述后重试",
-                    "驱动模型响应中断，请手动重试",
-                    "驱动模型返回了不支持的工具调用",
-                    "驱动模型返回格式不完整或服务不可用，请手动重试",
-                }
-                if candidate in safe or re.fullmatch(
-                        r"驱动模型服务返回错误（HTTP [45][0-9]{2}），本次未自动重复调用", candidate):
-                    message = candidate
-            except (ValueError, TypeError, AttributeError):
-                pass
-        raise ValueError(message) from None
+        try:
+            candidate = json.loads(error.read(4096)).get("message", "")
+        except (ValueError, TypeError, AttributeError):
+            candidate = ""
+        raise ValueError(safe_driver_error(candidate, error.code)) from None
     if not isinstance(result, dict) or not isinstance(result.get("portrait"), dict) or not result.get("competencies") or not result.get("interviewQuestions"):
         raise ValueError("驱动模型返回不完整，请手动重试")
     return result
@@ -306,16 +377,17 @@ def finish(user, record, job, result=None, error=""):
                       "sourceJobAccountKey": snapshot.get('jobAccountKey', ''),
                       "sourceJobDescriptionHash": snapshot.get('jobDescriptionHash', ''),
                       "sourceJobFetchedAt": snapshot.get('jobFetchedAt', '')}
-        db.execute("""UPDATE recruitment_demands SET ai_status=?,ai_result=?,ai_error=?,updated_at=?
+        db.execute("""UPDATE recruitment_demands SET ai_status=?,ai_result=?,ai_error=?,updated_at=?,ai_progress=?
             WHERE owner=? AND id=?""", (state, json.dumps(result, ensure_ascii=False) if result is not None else row["ai_result"],
-                                       error, datetime.datetime.now(datetime.timezone.utc).isoformat(), owner, record))
+                                       error, datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                       json.dumps({**json.loads(row["ai_progress"]), "phase": state}), owner, record))
         pool.event(db, owner, actor, record, "demand.ai."+state, None,
                    {"job": job, "version": row["ai_version"], "modelId": (result or {}).get("modelId", ""), "error": error})
 
 
 def worker(user, record, job, snapshot, cookie):
     try:
-        result = call_driver(snapshot, cookie)
+        result = call_driver(snapshot, cookie, lambda value: update_progress(user, record, job, value))
         finish(user, record, job, result=result)
     except ValueError as error:
         finish(user, record, job, error=str(error))
@@ -358,7 +430,7 @@ def generate(user, body, cookie):
         driver_input(snapshot)  # Validate before claiming a billable model call.
         job = str(uuid.uuid4())
         db.execute("""UPDATE recruitment_demands SET ai_status='running',ai_job=?,ai_version=version,
-            ai_error='',ai_started=? WHERE owner=? AND id=?""", (job, time.time(), owner, record))
+            ai_error='',ai_started=?,ai_progress='{"phase":"connecting","receivedChars":0}' WHERE owner=? AND id=?""", (job, time.time(), owner, record))
         pool.event(db, owner, actor, record, "demand.ai.start", None, {"job": job, "version": row["version"]})
         result = view(db.execute("SELECT * FROM recruitment_demands WHERE id=?", (record,)).fetchone(), db)
     try:

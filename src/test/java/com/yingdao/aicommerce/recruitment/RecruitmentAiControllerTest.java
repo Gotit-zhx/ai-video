@@ -136,11 +136,11 @@ class RecruitmentAiControllerTest {
     @Test void callsConfiguredTenantDriverExactlyOnceWithoutToolsAndClosesPermit() throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         var calls=new AtomicInteger();var payload=new AtomicReference<Map>();
-        server.createContext("/v1/chat/completions",exchange->{
+        server.createContext("/v1/recruitment/analyze",exchange->{
             calls.incrementAndGet();
+            assertEquals("internal-fixture",exchange.getRequestHeaders().getFirst("X-Internal-Token"));
             payload.set(json.readValue(exchange.getRequestBody().readAllBytes(),Map.class));
-            byte[] response=json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop",
-                    "message",Map.of("content",json.writeValueAsString(generated()))))));
+            byte[] response=(json.writeValueAsString(Map.of("event","result","data",generated()))+"\n").getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200,response.length);exchange.getResponseBody().write(response);exchange.close();
         });
         server.start();
@@ -150,10 +150,10 @@ class RecruitmentAiControllerTest {
             var permit=mock(RedisConcurrencyGate.Permit.class);when(gate.tryAcquireModelCall()).thenReturn(permit);
             var withReferences=new HashMap<String,Object>(demand());
             withReferences.put("referenceResumes",List.of("参考员工：负责工程交付与团队协调。"));
-            Object reply=new RecruitmentAiController(models,gate,json).generate(user("13800000000"),withReferences);
-            assertEquals(1,calls.get());assertEquals("gpt-5.5",payload.get().get("model"));
-            assertFalse(payload.get().containsKey("tools"));assertTrue((Boolean)payload.get().get("stream"));
-            assertEquals(10000,payload.get().get("max_tokens"));
+            Object reply=runtimeController(server).generate(user("13800000000"),withReferences);
+            assertEquals(1,calls.get());assertEquals("gpt-5.5",((Map)payload.get().get("model")).get("modelId"));
+            assertFalse(payload.get().containsKey("tools"));assertFalse(((Map)payload.get().get("model")).containsKey("fallbackModels"));
+            assertFalse(payload.get().containsKey("max_tokens"));assertEquals("demand",payload.get().get("mode"));
             assertTrue(json.writeValueAsString(payload.get()).contains("参考员工：负责工程交付与团队协调"));
             String serialized=json.writeValueAsString(reply);
             assertTrue(serialized.contains("\"modelType\":\"DRIVER\""));assertFalse(serialized.contains("secret"));
@@ -163,29 +163,30 @@ class RecruitmentAiControllerTest {
     @Test void streamedAnalysisCollectsTextAndValidatesAllThreeSections() throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         var calls=new AtomicInteger();
-        String content=json.writeValueAsString(generated());
-        String chunks=": heartbeat\n\n"
-                + frame(Map.of("delta",Map.of("reasoning_content","internal reasoning")))
-                + frame(Map.of("delta",Map.of("content",content.substring(0,content.length()/2))))
-                + frame(Map.of("delta",Map.of("content",content.substring(content.length()/2))))
-                + frame(Map.of("delta",Map.of(),"finish_reason","stop"))
-                + "data: [DONE]\n\n";
-        server.createContext("/v1/chat/completions",exchange->{
+        String chunks=json.writeValueAsString(Map.of("event","progress","data",Map.of("phase","generating","receivedChars",200)))+"\n"
+                +json.writeValueAsString(Map.of("event","result","data",generated()))+"\n";
+        server.createContext("/v1/recruitment/analyze",exchange->{
             calls.incrementAndGet();
             Map payload=json.readValue(exchange.getRequestBody().readAllBytes(),Map.class);
-            assertEquals(true,payload.get("stream"));
+            assertEquals("demand",payload.get("mode"));
             byte[] response=chunks.getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type","text/event-stream");
+            exchange.getResponseHeaders().set("Content-Type","application/x-ndjson");
             exchange.sendResponseHeaders(200,0);exchange.getResponseBody().write(response);exchange.close();
         });server.start();
         try {
             when(models.driverConnection("org-1")).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection(
                     "driver","http://127.0.0.1:"+server.getAddress().getPort()+"/v1","gpt-5.5","OPENAI_COMPATIBLE","test","secret")));
             when(gate.tryAcquireModelCall()).thenReturn(mock(RedisConcurrencyGate.Permit.class));
-            String reply=json.writeValueAsString(new RecruitmentAiController(models,gate,json).generate(user("13800000000"),demand()));
+            var events=new ArrayList<Map<String,Object>>();
+            runtimeController(server).streamDemand(user("13800000000"),demand(),events::add);
+            String reply=json.writeValueAsString(events);
             assertEquals(1,calls.get());assertTrue(reply.contains("interviewQuestions"));
             assertFalse(reply.contains("internal reasoning"));assertTrue(reply.contains("负责增长"));
+            assertTrue(reply.contains("\"receivedChars\":200"));assertEquals("result",events.getLast().get("event"));
         } finally { server.stop(0); }
+    }
+    private RecruitmentAiController runtimeController(HttpServer server) {
+        return new RecruitmentAiController(models,gate,json,"http://127.0.0.1:"+server.getAddress().getPort(),"internal-fixture");
     }
     private String frame(Map<String,Object> choice) {
         return "data: "+json.writeValueAsString(Map.of("choices",List.of(choice)))+"\n\n";
@@ -207,22 +208,18 @@ class RecruitmentAiControllerTest {
     @Test void serializedConditionBatchUsesGatewayStreamAndComputesScoresWithoutRetry() throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         var calls=new AtomicInteger();
-        server.createContext("/chat/completions",exchange->{
+        server.createContext("/v1/recruitment/analyze",exchange->{
             calls.incrementAndGet();
             Map payload=json.readValue(exchange.getRequestBody().readAllBytes(),Map.class);
-            var messages=(List<?>)payload.get("messages");
-            var input=json.readValue((String)((Map<?,?>)messages.get(1)).get("content"),Map.class);
+            assertEquals("sourcing",payload.get("mode"));
+            var input=(Map)payload.get("input");
             var output=new ArrayList<Map<String,Object>>();
             for(Object item:(List<?>)input.get("candidates")) {
                 var candidate=new HashMap<>(conditionCandidate("matched","unknown","matched"));
                 candidate.put("id",((Map<?,?>)item).get("id"));output.add(candidate);
             }
-            String content=json.writeValueAsString(Map.of("candidates",output,"limitations",List.of("仅供参考")));
-            var delta=new LinkedHashMap<String,Object>();delta.put("content",content);delta.put("tool_calls",null);
-            var choice=new LinkedHashMap<String,Object>();choice.put("delta",delta);choice.put("finish_reason",null);
-            String response=frame(choice)+frame(Map.of("delta",Map.of("tool_calls",List.of()),"finish_reason","stop"))
-                +"data: {\"choices\":[],\"usage\":{}}\n\ndata: [DONE]\n\n";
-            exchange.getResponseHeaders().set("Content-Type","text/event-stream");
+            String response=json.writeValueAsString(Map.of("event","result","data",Map.of("candidates",output,"limitations",List.of("仅供参考"))))+"\n";
+            exchange.getResponseHeaders().set("Content-Type","application/x-ndjson");
             exchange.sendResponseHeaders(200,0);exchange.getResponseBody().write(response.getBytes(StandardCharsets.UTF_8));exchange.close();
         });server.start();
         try {
@@ -233,7 +230,7 @@ class RecruitmentAiControllerTest {
             for(int i=1;i<=5;i++)candidates.add(Map.of("id","c"+i,"evidence","前台接待及办公事务经验"));
             Map input=json.readValue(json.writeValueAsString(Map.of("jobDescription","接待与协调","profile","已确认工作条件",
                     "criteria",sourcingConditions(),"candidates",candidates)),Map.class);
-            String reply=json.writeValueAsString(new RecruitmentAiController(models,gate,json).sourcingMatch(user("13800000000"),input));
+            String reply=json.writeValueAsString(runtimeController(server).sourcingMatch(user("13800000000"),input));
             assertEquals(1,calls.get());assertTrue(reply.contains("\"score\":100.0"));
             assertTrue(reply.contains("\"id\":\"c5\""));assertTrue(reply.contains("\"scoreBasis\":\"known_conditions\""));
         } finally {server.stop(0);}
@@ -255,17 +252,19 @@ class RecruitmentAiControllerTest {
     @Test void providerFailureIsRedactedAndNeverAutomaticallyRetried() throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         var calls=new AtomicInteger();
-        server.createContext("/chat/completions",exchange->{
+        server.createContext("/v1/recruitment/analyze",exchange->{
             calls.incrementAndGet();exchange.getRequestBody().readAllBytes();
-            byte[] text="sensitive-provider-key".getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(502,text.length);exchange.getResponseBody().write(text);exchange.close();
+            byte[] text=(json.writeValueAsString(Map.of("event","error","data",Map.of("code","HR_AI_UPSTREAM_HTTP",
+                    "upstreamStatus",502,"message","sensitive-provider-key")))+"\n").getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200,text.length);exchange.getResponseBody().write(text);exchange.close();
         });server.start();
         try{
             when(models.driverConnection("org-1")).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection(
                     "driver","http://127.0.0.1:"+server.getAddress().getPort(),"model","OPENAI_COMPATIBLE","test","secret")));
             when(gate.tryAcquireModelCall()).thenReturn(mock(RedisConcurrencyGate.Permit.class));
-            var failure=assertThrows(BusinessException.class,()->new RecruitmentAiController(models,gate,json).generate(user("13800000000"),demand()));
+            var failure=assertThrows(BusinessException.class,()->runtimeController(server).generate(user("13800000000"),demand()));
             assertFalse(failure.getMessage().contains("sensitive"));assertEquals(1,calls.get());
+            assertTrue(failure.getMessage().contains("HTTP 502"));
         }finally{server.stop(0);}
     }
 }

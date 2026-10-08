@@ -91,6 +91,12 @@
     const aiArea=el('section','',dialog,'hr-demand-ai');
     const aiHeader=el('div','',aiArea,'hr-section-heading');el('h3','AI 岗位分析',aiHeader);
     const aiStatus=el('span','尚未生成',aiHeader,'hr-hint');aiStatus.setAttribute('role','status');
+    const aiProgress=el('div','',aiArea,'hr-demand-progress');
+    const progressTrack=el('div','',aiProgress,'hr-demand-progress-track');
+    progressTrack.setAttribute('role','progressbar');progressTrack.setAttribute('aria-label','岗位分析生成进度');
+    const progressFill=el('div','',progressTrack,'hr-demand-progress-fill');
+    const progressSteps=el('div','',aiProgress,'hr-demand-progress-steps');
+    const stepNodes=['提交需求','模型生成','结构校验','完成'].map(label=>el('span',label,progressSteps));
     const aiMessage=el('p','',aiArea,'hr-hint');
     const referenceArea=el('div','',aiArea,'hr-demand-references');
     const referenceHeader=el('div','',referenceArea,'hr-section-heading');
@@ -134,6 +140,23 @@
         :editing?.aiStatus==='failed'?editing.aiError:editing?.aiStatus==='stale'?'下面是旧版需求的分析，请根据最新信息重新生成。'
         :'生成前读取所选职位的最新 JD，结合补充信息生成，结果供招聘团队审核和完善。';
       aiHeader.classList.toggle('is-generating',running);
+      const phase=editing?.aiProgress?.phase||'connecting';
+      const step=editing?.aiStatus==='complete'?3:phase==='validating'?2:phase==='generating'?1:0;
+      aiProgress.hidden=!(saving||running||editing?.aiStatus==='failed'||editing?.aiStatus==='complete');
+      aiProgress.classList.toggle('is-failed',editing?.aiStatus==='failed');
+      aiProgress.classList.toggle('is-running',saving||running);
+      progressFill.style.width=`${[12,45,80,100][step]}%`;
+      // Generation has no known total. The bar represents stages, not a guessed percentage.
+      progressTrack.removeAttribute('aria-valuenow');
+      progressTrack.setAttribute('aria-valuetext',editing?.aiStatus==='failed'?'生成失败':saving?submitPhase||'提交需求':stepNodes[step].textContent);
+      stepNodes.forEach((node,index)=>node.classList.toggle('is-current',index===step));
+      if(running){
+        const received=Number(editing.aiProgress?.receivedChars||0);
+        aiStatus.textContent=`${['正在连接驱动模型','驱动模型生成中','正在校验分析结构'][Math.min(step,2)]} · 已等待 ${elapsed} 秒`;
+        aiMessage.textContent=step===2?'模型已返回，正在校验画像、胜任能力和面试题。'
+          :received>0?`已接收 ${received.toLocaleString()} 字，完成校验后自动显示。可以关闭窗口，进度和结果仍会保存。`
+          :'请求已提交，正在等待模型响应。可以关闭窗口，进度和结果仍会保存。';
+      }
       const oldResult=editing?.aiResult?.sourceVersion&&editing.aiResult.sourceVersion!==editing.version;
       if(oldResult&&editing?.aiStatus!=='stale')aiMessage.textContent+=' 下方保留的是旧版需求的结果。';
       renderOutput();

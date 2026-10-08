@@ -6,6 +6,10 @@ import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import com.yingdao.aicommerce.workflow.application.RedisConcurrencyGate;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import tools.jackson.databind.ObjectMapper;
@@ -18,10 +22,17 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /** Uses the tenant's configured DRIVER. No tools, command queue, or BOSS access. */
 @RestController
@@ -31,6 +42,8 @@ public class RecruitmentAiController {
     private final ModelConfigService models;
     private final RedisConcurrencyGate gate;
     private final ObjectMapper json;
+    private final String runtimeUrl;
+    private final String runtimeToken;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
     private static final Set<String> FIELDS = Set.of("date", "position", "department", "manager", "category",
             "education", "responsibilities", "requirements", "headcount", "years");
@@ -64,11 +77,55 @@ public class RecruitmentAiController {
         """;
 
     public RecruitmentAiController(ModelConfigService models, RedisConcurrencyGate gate, ObjectMapper json) {
-        this.models=models; this.gate=gate; this.json=json;
+        this(models,gate,json,"http://pi-runtime:8090","heyi-pi-runtime-dev-token");
     }
 
-    @PostMapping("/generate")
+    @Autowired
+    public RecruitmentAiController(ModelConfigService models, RedisConcurrencyGate gate, ObjectMapper json,
+            @Value("${app.pi-runtime-url}") String runtimeUrl,
+            @Value("${app.pi-runtime-token}") String runtimeToken) {
+        this.models=models; this.gate=gate; this.json=json;
+        this.runtimeUrl=runtimeUrl; this.runtimeToken=runtimeToken;
+    }
+
+    @PostMapping(value="/generate", produces=MediaType.APPLICATION_JSON_VALUE)
     public Object generate(@AuthenticationPrincipal PlatformPrincipal user, @RequestBody Map<String,Object> body) {
+        return execute(user, demandInput(user, body), PROMPT, "demand");
+    }
+
+    @PostMapping(value="/generate", produces=MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter generateStream(@AuthenticationPrincipal PlatformPrincipal user, @RequestBody Map<String,Object> body) {
+        var clean=demandInput(user,body);
+        var emitter=new SseEmitter(330000L);
+        Thread worker=Thread.ofVirtual().unstarted(()->{
+            try {
+                streamDemand(user,clean,event->{
+                    try {emitter.send(SseEmitter.event().name((String)event.get("event"))
+                            .data(event.get("data"),MediaType.APPLICATION_JSON));}
+                    catch(IOException error){throw new UncheckedIOException(error);}
+                });
+                emitter.complete();
+            } catch(Exception error) {emitter.completeWithError(error);}
+        });
+        emitter.onTimeout(worker::interrupt);
+        emitter.onError(ignored->worker.interrupt());
+        emitter.onCompletion(worker::interrupt);
+        worker.start();
+        return emitter;
+    }
+
+    void streamDemand(PlatformPrincipal user, Map<String,Object> clean, Consumer<Map<String,Object>> sink) {
+        try {
+            var result=execute(user,clean,PROMPT,"demand",
+                    progress->sink.accept(Map.of("event","progress","data",progress)));
+            sink.accept(Map.of("event","result","data",result));
+        } catch(BusinessException error) {
+            sink.accept(Map.of("event","error","data",Map.of(
+                    "message",error.getMessage(),"status",error.getStatus().value())));
+        }
+    }
+
+    private Map<String,Object> demandInput(PlatformPrincipal user, Map<String,Object> body) {
         if (user == null || !user.isEnabled() || !"heyi".equals(user.organizationCode())
                 || !"13800000000".equals(user.actualUsername()) || !user.roleCodes().contains("ADMIN")) {
             throw new BusinessException(HttpStatus.FORBIDDEN, "招聘模块仅限指定平台管理员");
@@ -91,7 +148,7 @@ public class RecruitmentAiController {
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "每项需求最多 10 份参考简历");
             clean.put("referenceResumes", refs.stream().map(value -> bounded(value, 8000)).toList());
         }
-        return execute(user, clean, PROMPT, "demand");
+        return clean;
     }
 
     @PostMapping("/resume-match")
@@ -227,6 +284,11 @@ public class RecruitmentAiController {
     }
 
     private Object execute(PlatformPrincipal user, Map<String,Object> clean, String prompt, String mode) {
+        return execute(user,clean,prompt,mode,ignored->{});
+    }
+
+    private Object execute(PlatformPrincipal user, Map<String,Object> clean, String prompt, String mode,
+                           Consumer<Map<String,Object>> progress) {
         var model=models.driverConnection(user.organizationId())
                 .orElseThrow(()->new BusinessException(HttpStatus.CONFLICT,"请先配置并启用驱动模型"));
         if (!"OPENAI_COMPATIBLE".equals(model.apiFormat()))
@@ -236,32 +298,32 @@ public class RecruitmentAiController {
         String stage="transport";
         long started=System.nanoTime();
         try (permit) {
-            String base=model.baseUrl().replaceAll("/+$","");
-            String endpoint=base.endsWith("/chat/completions")?base:base+"/chat/completions";
+            progress.accept(Map.of("phase","connecting","receivedBytes",0));
+            String endpoint=runtimeUrl.replaceAll("/+$","")+"/v1/recruitment/analyze";
             Map<String,Object> payload=new LinkedHashMap<>();
-            payload.put("model",model.modelId());
-            payload.put("messages",List.of(Map.of("role","system","content",prompt),
-                    Map.of("role","user","content",json.writeValueAsString(clean))));
-            // Compatible gateways can accept a short buffered response but fail
-            // a full analysis before generation completes. Keep the upstream
-            // connection streaming; publish only a complete, validated result.
-            payload.put("stream",true);
-            payload.put("max_tokens",10000);
+            var selected=new LinkedHashMap<>(model.driverRequestModel());
+            selected.remove("fallbackModels");
+            payload.put("model",selected);
+            payload.put("systemPrompt",prompt);
+            payload.put("input",clean);
+            payload.put("mode",mode);
             HttpRequest request=HttpRequest.newBuilder(URI.create(endpoint)).timeout(Duration.ofMinutes(5))
-                    .header("Authorization","Bearer "+model.apiKey()).header("Content-Type","application/json")
+                    .header("X-Internal-Token",runtimeToken).header("Content-Type","application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(payload))).build();
-            HttpResponse<String> response=http.send(request,HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode()!=200)
-                throw new BusinessException(HttpStatus.BAD_GATEWAY,
-                        "驱动模型服务返回错误（HTTP "+response.statusCode()+"），本次未自动重复调用 [HR_AI_UPSTREAM_HTTP]");
-            if (response.body().length()>512000)
-                throw new BusinessException(HttpStatus.BAD_GATEWAY,"驱动模型返回内容过长，请精简岗位内容后重试 [HR_AI_OVERSIZED]");
-            stage="stream";
-            String content=completionContent(response.body(),
-                    response.headers().firstValue("Content-Type").orElse(""));
-            if (content.startsWith("```")) content=content.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
+            HttpResponse<InputStream> response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
+            String body;
+            try(InputStream input=response.body()) {
+                if (response.statusCode()!=200) {
+                    log.warn("Recruitment AI upstream rejected mode={} httpStatus={} elapsedMs={}",
+                            mode,response.statusCode(),(System.nanoTime()-started)/1_000_000);
+                    throw new BusinessException(HttpStatus.BAD_GATEWAY,
+                            "驱动模型服务返回错误（HTTP "+response.statusCode()+"），本次未自动重复调用 [HR_AI_UPSTREAM_HTTP]");
+                }
+                body=readResponse(input,started,progress);
+            }
             stage="json";
-            Map<?,?> raw=json.readValue(content,Map.class);
+            progress.accept(Map.of("phase","validating","receivedChars",body.length()));
+            Map<?,?> raw=json.readValue(body,Map.class);
             stage="validation";
             Map<String,Object> result=switch(mode) {
                 case "match" -> validateMatch(raw);
@@ -295,6 +357,79 @@ public class RecruitmentAiController {
             throw new BusinessException(HttpStatus.BAD_GATEWAY,
                     "驱动模型返回格式不完整或服务不可用，请手动重试 ["+code+"]");
         }
+    }
+
+    private String readResponse(InputStream input,long started,Consumer<Map<String,Object>> progress) throws Exception {
+        var expired=new AtomicBoolean(false);
+        Thread deadline=Thread.startVirtualThread(()->{
+            try {
+                long remaining=300000-(System.nanoTime()-started)/1_000_000;
+                if(remaining>0)Thread.sleep(remaining);
+                expired.set(true);input.close();
+            } catch(InterruptedException ignored) {Thread.currentThread().interrupt();}
+            catch(IOException ignored) {}
+        });
+        try {
+            var reader=new BufferedReader(new InputStreamReader(input,StandardCharsets.UTF_8));
+            String result=null; int total=0;
+            for(String line;(line=reader.readLine())!=null;) {
+                if(Thread.currentThread().isInterrupted())throw new InterruptedException();
+                total+=line.length();
+                if(total>512000)
+                    throw new BusinessException(HttpStatus.BAD_GATEWAY,
+                            "驱动模型返回内容过长，请精简岗位内容后重试 [HR_AI_OVERSIZED]");
+                if(line.isBlank())continue;
+                var event=json.readTree(line);
+                String type=event.path("event").asText();
+                var data=event.path("data");
+                if(result!=null)throw new IOException("Event after terminal result");
+                if(type.equals("progress")) {
+                    String phase=data.path("phase").asText();
+                    if(Set.of("connecting","generating","validating").contains(phase))
+                        progress.accept(Map.of("phase",phase,"receivedChars",
+                            Math.max(0,Math.min(200000,data.path("receivedChars").asInt()))));
+                } else if(type.equals("result")&&data.isObject()) {
+                    result=json.writeValueAsString(data);
+                } else if(type.equals("error")) {
+                    throw runtimeFailure(data);
+                } else {
+                    throw new IOException("Unknown runtime event");
+                }
+            }
+            if(expired.get())throw new HttpTimeoutException("Recruitment response deadline");
+            if(result==null)throw new BusinessException(HttpStatus.BAD_GATEWAY,
+                    "驱动模型响应中断，请手动重试 [HR_AI_INVALID_STREAM]");
+            return result;
+        } catch(IOException error) {
+            if(expired.get())throw new HttpTimeoutException("Recruitment response deadline");
+            throw error;
+        } finally {deadline.interrupt();}
+    }
+
+    private BusinessException runtimeFailure(JsonNode data) {
+        String code=data.path("code").asText();
+        if(!Set.of("HR_AI_TIMEOUT","HR_AI_TRUNCATED","HR_AI_TOOLS","HR_AI_INVALID_JSON",
+                "HR_AI_OVERSIZED","HR_AI_INVALID_STREAM","HR_AI_UPSTREAM_HTTP").contains(code))
+            code="HR_AI_CONNECTION";
+        int status=data.path("upstreamStatus").asInt();
+        String message=switch(code) {
+            case "HR_AI_TIMEOUT" -> "驱动模型响应超时，请检查模型服务后手动重试";
+            case "HR_AI_TRUNCATED" -> "生成结果不完整，请精简需求后重新生成";
+            case "HR_AI_TOOLS" -> "驱动模型返回了不支持的工具调用";
+            case "HR_AI_INVALID_JSON" -> "驱动模型未返回有效 JSON，请检查模型服务后手动重试";
+            case "HR_AI_OVERSIZED" -> "驱动模型返回内容过长，请精简岗位内容后重试";
+            case "HR_AI_INVALID_STREAM" -> "驱动模型响应中断，请手动重试";
+            case "HR_AI_UPSTREAM_HTTP" -> status>=400&&status<=599?
+                    "驱动模型服务返回错误（HTTP "+status+"），本次未自动重复调用":
+                    "驱动模型连接失败，请检查模型服务；本次未自动重复调用";
+            default -> "驱动模型连接失败，请检查模型服务；本次未自动重复调用";
+        };
+        log.warn("Recruitment pi failure code={} upstreamStatus={}",
+                Set.of("HR_AI_TIMEOUT","HR_AI_TRUNCATED","HR_AI_TOOLS","HR_AI_INVALID_JSON",
+                    "HR_AI_OVERSIZED","HR_AI_INVALID_STREAM","HR_AI_UPSTREAM_HTTP").contains(code)?code:"HR_AI_CONNECTION",
+                status>=400&&status<=599?status:0);
+        return new BusinessException(code.equals("HR_AI_TIMEOUT")?HttpStatus.GATEWAY_TIMEOUT:HttpStatus.BAD_GATEWAY,
+                message+" ["+code+"]");
     }
 
     static Map<String,Object> validateProfile(Map<?,?> raw) {

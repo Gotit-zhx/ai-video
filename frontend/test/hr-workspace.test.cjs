@@ -9,7 +9,7 @@ const flush = async () => { await new Promise(r=>setImmediate(r));await new Prom
 
 class Node {
   constructor(tag='div') {
-    this.tagName=tag;this.children=[];this.events={};this.dataset={};this.attributes={};
+    this.tagName=tag;this.children=[];this.events={};this.dataset={};this.attributes={};this.style={};
     this.value='';this._text='';this.hidden=false;this.disabled=false;this.className='';
     this.classList={toggle:()=>{}};
   }
@@ -20,11 +20,12 @@ class Node {
   replaceChildren(...nodes) {this._text='';this.children.forEach(n=>{n.parent=null;});this.children=[];this.append(...nodes);}
   remove(){if(this.parent){this.parent.children=this.parent.children.filter(n=>n!==this);this.parent=null;}}
   setAttribute(key,value) {this.attributes[key]=value;}
+  removeAttribute(key) {delete this.attributes[key];}
   addEventListener(key,callback) {this.events[key]=callback;}
   querySelectorAll(selector) {return all(this).filter(n=>selector==='.hr-result'&&n.className.split(' ').includes('hr-result'));}
   click() {if(!this.disabled)return this.events.click?.({currentTarget:this,preventDefault(){}});}
   showModal(){this.open=true;this.hidden=false;}
-  close(){this.open=false;this.hidden=true;}
+  close(){const wasOpen=this.open;this.open=false;this.hidden=true;if(wasOpen)this.events.close?.();}
   reportValidity(){return true;}
 }
 const all = node => [node,...node.children.flatMap(all)];
@@ -620,6 +621,17 @@ test('demand generation refreshes the exact local job JD then saves before a sin
   assert.ok(app.calls.findIndex(c=>c.url.includes('/jobs?'))<app.calls.findIndex(c=>c.url.endsWith('/save')));
   assert.ok(app.calls.findIndex(c=>c.url.endsWith('/save'))<app.calls.findIndex(c=>c.url.endsWith('/generate')));
   await app.tick(2500);assert.equal(started,1);
+  row={...row,aiProgress:{phase:'generating',receivedChars:640}};await app.tick(2500);
+  assert.match(app.text(),/已接收 640 字/);
+  let track=all(app.root).find(n=>n.className==='hr-demand-progress-track');
+  assert.equal(track.attributes.role,'progressbar');assert.equal(track.attributes['aria-valuenow'],undefined);
+  assert.equal(track.attributes['aria-valuetext'],'模型生成');
+  await app.click('关闭');await app.click('查看 / 编辑');
+  assert.match(app.text(),/已接收 640 字/);assert.equal(started,1);
+  row={...row,aiProgress:{phase:'validating',receivedChars:1000}};await app.tick(2500);
+  assert.match(app.text(),/正在校验/);
+  track=all(app.root).find(n=>n.className==='hr-demand-progress-track');
+  assert.equal(track.attributes['aria-valuetext'],'结构校验');
   row={...row,aiStatus:'failed',aiError:'模型不可用'};await app.tick(2500);
   assert.match(app.text(),/模型不可用/);assert.equal(app.timers.size,0);
   assert.match(app.text(),/需求和关联 JD 已保留/);

@@ -52,6 +52,15 @@
 .hr-demand-list li{margin:6px 0}
 .hr-demand-summary{padding:18px;border:1px solid var(--hr-border);border-radius:10px;background:var(--surface-soft,#fafafa)}
 .hr-demand-ai .is-generating::before{content:"";width:13px;height:13px;border:2px solid var(--hr-border);border-top-color:var(--hr-ink);border-radius:50%;animation:hr-login-spin 1s linear infinite}
+.hr-demand-progress{margin:16px 0 20px}.hr-demand-progress[hidden]{display:none}
+.hr-demand-progress-track{height:5px;border-radius:6px;background:var(--hr-border);overflow:hidden}
+.hr-demand-progress-fill{height:100%;background:var(--hr-ink);border-radius:6px;transition:width .3s ease}
+.hr-demand-progress.is-running .hr-demand-progress-fill{background:linear-gradient(90deg,var(--hr-ink),#a3a3a3,var(--hr-ink));background-size:200% 100%;animation:hr-demand-flow 2s linear infinite}
+.hr-demand-progress-steps{display:flex;justify-content:space-between;gap:8px;margin-top:9px;font-size:12px;color:var(--hr-muted)}
+.hr-demand-progress-steps .is-current{color:var(--hr-ink);font-weight:600}
+.hr-demand-progress.is-failed .hr-demand-progress-fill{opacity:.4}
+@keyframes hr-demand-flow{to{background-position:-200% 0}}
+@media(prefers-reduced-motion:reduce){.hr-demand-progress-fill{animation:none!important;transition:none}}
 @media(prefers-reduced-motion:reduce){.hr-demand-ai .is-generating::before{animation:none}}
 @media(max-width:650px){.hr-demand-dialog .hr-pool-fields{grid-template-columns:1fr}}
 @media(max-width:650px){.hr-pool-toolbar{align-items:flex-start;flex-direction:column}.hr-pool-fields{grid-template-columns:1fr}.hr-pool-dialog{padding:20px}.hr-pool-tabs button{padding:9px 12px}}

@@ -1,4 +1,5 @@
 import http from "node:http";
+import { handleRecruitment } from "./recruitment-analysis.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, realpath } from "node:fs/promises";
@@ -3458,6 +3459,14 @@ async function handlePlatformImageDownload(request, response) {
 const server = http.createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+    if (request.method === "POST" && requestUrl.pathname === "/v1/recruitment/analyze") {
+      if (request.headers["x-internal-token"] !== INTERNAL_TOKEN) {
+        json(response, 401, { message: "招聘分析服务认证失败" });
+        return;
+      }
+      await handleRecruitment(request, response, await readBody(request));
+      return;
+    }
     if (request.method === "GET" && requestUrl.pathname === "/health") {
       json(response, 200, {
         status: "UP",

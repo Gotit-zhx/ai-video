@@ -14,6 +14,29 @@ USER = {"id": "admin-1", "username": "13800000000", "organizationCode": "heyi",
 
 
 class DemandsTest(unittest.TestCase):
+    def test_stream_progress_is_persisted_job_scoped_and_never_completes_without_result(self):
+        row = demands.save(USER, self.body)
+        with mock.patch.object(demands.threading, "Thread"):
+            running = demands.generate(USER, {"id": row["id"], "version": row["version"]}, "fixture")
+        job = running["aiJob"]
+        demands.update_progress(USER, row["id"], "wrong-job", {"phase": "generating", "receivedChars": 99})
+        self.assertEqual(demands.listing(USER, {"id": row["id"]})["item"]["aiProgress"]["phase"], "connecting")
+        demands.update_progress(USER, row["id"], job, {"phase": "generating", "receivedChars": 100})
+        demands.update_progress(USER, row["id"], job, {"phase": "connecting", "receivedChars": 0})
+        self.assertEqual(demands.listing(USER, {"id": row["id"]})["item"]["aiProgress"]["receivedChars"], 100)
+        result = {"portrait": {"summary": "fixture"}, "competencies": [{}], "interviewQuestions": [{}]}
+        stream = io.BytesIO(("event: progress\ndata: {\"phase\":\"validating\",\"receivedChars\":100}\n\n"
+                            "event: result\ndata: " + json.dumps({"data": result}) + "\n\n").encode())
+        self.assertEqual(demands.read_driver_events(stream, lambda value: demands.update_progress(USER, row["id"], job, value)), result)
+        self.assertEqual(demands.listing(USER, {"id": row["id"]})["item"]["aiStatus"], "running")
+        demands.finish(USER, row["id"], job, result=result)
+        demands.update_progress(USER, row["id"], job, {"phase": "generating", "receivedChars": 200})
+        self.assertEqual(demands.listing(USER, {"id": row["id"]})["item"]["aiProgress"]["phase"], "complete")
+        with self.assertRaisesRegex(ValueError, "响应中断"):
+            demands.read_driver_events(io.BytesIO(b'event: progress\ndata: {"phase":"generating"}\n\n'), lambda _: None)
+        with self.assertRaisesRegex(ValueError, "未返回有效"):
+            demands.read_driver_events(io.BytesIO(b'event: error\ndata: {"message":"secret-key","status":502}\n\n'), lambda _: None)
+
     def test_optional_references_are_offline_deduplicated_versioned_and_added_only_when_present(self):
         import base64
         import resume_storage as storage
@@ -69,6 +92,7 @@ class DemandsTest(unittest.TestCase):
         self.assertEqual(set(values),set(demands.DRIVER_FIELDS))
         self.assertNotIn("jobAccountKey",values)
         with mock.patch.object(demands.urllib.request,"build_opener") as build:
+            build.return_value.open.return_value.__enter__.return_value.headers = {"Content-Type": "application/json"}
             build.return_value.open.return_value.__enter__.return_value.read.return_value=json.dumps({
                 "data":{"portrait":{"summary":"fixture"},"competencies":[{}],"interviewQuestions":[{}]}}).encode()
             demands.call_driver(demands.save(USER,self.body),"fixture")
@@ -92,6 +116,7 @@ class DemandsTest(unittest.TestCase):
         for message, expected in [
             ("驱动模型服务返回错误（HTTP 500），本次未自动重复调用", "HTTP 500"),
             ("驱动模型响应中断，请手动重试", "响应中断"),
+            ("驱动模型服务返回错误（HTTP 502），本次未自动重复调用 [HR_AI_UPSTREAM_HTTP]", "HTTP 502"),
             ("secret-provider-key", "未返回有效"),
         ]:
             failure=demands.urllib.error.HTTPError("http://private",502,"failure",{},

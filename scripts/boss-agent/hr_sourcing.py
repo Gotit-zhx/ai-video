@@ -317,6 +317,9 @@ def driver(kind, snapshot, cookie):
             'HR_AI_INVALID_STREAM': '驱动模型响应流格式不正确，本轮已停止',
             'HR_AI_CONNECTION': '驱动模型连接中断，本轮已停止',
             'HR_AI_OVERSIZED': '驱动模型返回内容超过大小限制，本轮已停止',
+            'HR_AI_TRUNCATED': '驱动模型输出达到长度上限，本批结果不完整，已停止',
+            'HR_AI_TOOLS': '驱动模型返回了工具调用，未执行任何工具，本轮已停止',
+            'HR_AI_TIMEOUT': '驱动模型分析超时，本轮已停止',
         }
         try:
             detail = json.loads(error.read(8193)).get('message', '')
