@@ -1,6 +1,7 @@
 (() => {
   const request=async(path,body)=>{
     const response=await api('/api/v1/hr/'+path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
+    if(!response||response.success===false||!Object.hasOwn(response,'data'))throw Error(response?.message||'响应未完整接收，请刷新查看保存结果');
     return response.data;
   };
   const sendStates={queued:'等待助手发送',sending:'发送中',sent:'已发送',uncertain:'结果待核对，请查看 BOSS 会话',failed:'发送未完成',cancelled:'已取消发送'};
@@ -234,10 +235,11 @@
         const [data,speeches,projects]=await Promise.all([request('resume-pool?id='+encodeURIComponent(id)),request('speeches'),request('pool')]);
         if(ticket!==generation||selected!==id||!allowed()||!detail.open)return;
         const row=data.items[0];if(!row)throw Error('简历不存在');
-        drawResume(row,speeches.items.find(s=>s.isDefault&&s.active&&s.kind==='reject'),projects.projects||[]);
+        drawResume(row,speeches.items||[],projects.projects||[]);
       }catch(error){if(ticket===generation&&selected===id){detailBody.replaceChildren();el('p',error.message,detailBody,'hr-error');}}
     }
-    function drawResume(row,template,projects){
+    function drawResume(row,speeches,projects){
+      const template=speeches.find(s=>s.isDefault&&s.active&&s.kind==='reject');
       if(previewId!==row.id)clearPreview();
       detailBody.replaceChildren();
       const header=el('header','',detailBody,'hr-review-header');
@@ -287,10 +289,10 @@
       if(row.status==='pending'){
         const group=field(sidebar,'通过后归属项目组','select');el('option','未分组',group).value='';
         for(const project of projects)el('option',project.name,group).value=project.id;group.value=row.projectId||'';
-        const rejection=el('section','',sidebar,'hr-review-ai');
-        el('h3','不通过时自动发送',rejection);
-        el('p',template?template.content.replace(/\{(姓名|职位)\}/g,(_,key)=>key==='姓名'?(row.name||'您好'):row.jobName):'尚未配置默认婉拒话术，请先到话术管理设置。',rejection,'hr-prose');
-        button('管理话术',el('div','',rejection,'hr-actions'),()=>navigate('speeches'));
+        if(!template){
+          feedback.textContent='请在话术管理中启用并设置默认婉拒话术。';
+          button('前往话术管理',el('div','',sidebar,'hr-actions'),()=>{detail.close();navigate('speeches');});
+        }
         const actions=el('div','',sidebar,'hr-actions hr-review-decisions');let reviewing=false;
         async function review(action){
           if(reviewing||!allowed())return;reviewing=true;approve.disabled=reject.disabled=true;

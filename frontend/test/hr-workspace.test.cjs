@@ -575,6 +575,63 @@ test('resume categories are explicit, history is collapsed, and review embeds th
   assert.equal(all(app.root).some(n=>n.tagName==='a'&&n.target==='_blank'&&n.href===row.fileUrl),false);
   assert.ok(all(app.root).some(n=>n.className==='hr-review-preview'));
 });
+test('resume rejection uses the managed default directly without a speech selector or an extra confirmation',async()=>{
+  const row={id:'resume1',version:2,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle',resumeText:'原简历文字'};
+  const speech={id:'reject1',version:3,name:'婉拒话术',content:'{姓名}，感谢关注{职位}。',kind:'reject',active:true,isDefault:true};
+  const app=setup({passive:true,api:async(url,options)=>({data:
+    url.endsWith('/login/status')?{state:'complete'}:
+    url.endsWith('/resume-pool/review')?{id:row.id,status:'rejected',rejectionStatus:'queued'}:
+    url.endsWith('/speeches')?{items:[speech,{...speech,id:'inactive',active:false},{...speech,id:'invite',kind:'invite'}]}:
+    url.endsWith('/pool')?{projects:[]}:{items:[row],total:1}})});
+  let previews=0;app.env.createHrResumePreview=()=>{previews++;return ()=>{};};
+  await app.enter('resume-pool');await app.click('查看与审批');
+  const reject=all(app.root).find(n=>n.tagName==='button'&&n._text==='不通过，自动婉拒');
+  assert.equal(reject.disabled,false);assert.equal(previews,1);
+  assert.equal(all(app.root).some(n=>n.attributes['aria-label']==='默认婉拒话术'),false);
+  assert.doesNotMatch(app.text(),/不通过时自动发送|管理话术|感谢关注算法工程师/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  await app.click('不通过，自动婉拒');
+  const writes=app.calls.filter(c=>c.options?.method==='POST');
+  assert.equal(writes.length,1);assert.match(writes[0].url,/resume-pool\/review$/);
+  assert.deepEqual(JSON.parse(writes[0].options.body),{id:row.id,version:row.version,action:'reject',projectId:''});
+  assert.ok(app.calls.every(c=>!c.url.includes('/speeches/save')&&!c.url.includes('/analyze')));
+});
+test('missing managed default keeps rejection disabled and guides HR to speech management',async()=>{
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle'};
+  const speech={id:'reject1',version:1,name:'婉拒',kind:'reject',active:true,content:'感谢关注',isDefault:false};
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')?{state:'complete'}:
+    url.endsWith('/speeches')?{items:[speech,{...speech,id:'inactive',active:false,isDefault:true},
+      {...speech,id:'invite',kind:'invite',isDefault:true}]}:
+    url.endsWith('/pool')?{projects:[]}:{items:[row],total:1}})});
+  await app.enter('resume-pool');await app.click('查看与审批');
+  assert.equal(all(app.root).find(n=>n._text==='不通过，自动婉拒').disabled,true);
+  assert.equal(all(app.root).find(n=>n._text==='通过，加入邀约').disabled,false);
+  assert.match(app.text(),/请在话术管理中启用并设置默认婉拒话术/);
+  assert.ok(app.calls.every(c=>!c.options?.method||c.options.method!=='POST'));
+});
+test('a failed review response remains visible and never claims approval or retries sending',async()=>{
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle'};
+  const app=setup({passive:true,api:async url=>url.endsWith('/resume-pool/review')
+    ?{success:false,message:'默认话术已停用，请重新配置',data:null}:{data:url.endsWith('/login/status')?{state:'complete'}:
+      url.endsWith('/speeches')?{items:[{id:'speech1',kind:'reject',active:true,isDefault:true}]}:
+      url.endsWith('/pool')?{projects:[]}:{items:[row],total:1}}});
+  await app.enter('resume-pool');await app.click('查看与审批');await app.click('不通过，自动婉拒');
+  assert.match(app.text(),/默认话术已停用，请重新配置/);
+  assert.ok(all(app.root).find(n=>n.className.includes('hr-resume-review')).open);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
+});
+test('managing rejection speech closes the resume dialog and leaves the speech editor accessible',async()=>{
+  const row={id:'resume1',name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle'};
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')?{state:'complete'}:
+    url.endsWith('/speeches')?{items:[]}:url.endsWith('/pool')?{projects:[]}:{items:[row],total:1}})});
+  await app.enter('resume-pool');await app.click('查看与审批');
+  const detail=all(app.root).find(n=>n.className.includes('hr-resume-review'));
+  assert.equal(detail.open,true);await app.click('前往话术管理');
+  assert.equal(detail.open,false);assert.equal(app.env.location.hash,'#hr-speeches');
+  await app.click('新建话术');
+  assert.ok(all(app.root).some(n=>n.tagName==='dialog'&&n.open));
+  assert.ok(app.calls.every(c=>!c.url.includes('/review')));
+});
 test('resume job filter combines with review state and reports reconnect progress without a BOSS fetch',async()=>{
   const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')
     ?{state:'complete',passive:{phase:'catching_up',catchupPending:3,counts:{r1:{requested:2},r2:{requested:4}}}}
