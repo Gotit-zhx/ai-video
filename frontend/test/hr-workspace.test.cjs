@@ -667,7 +667,7 @@ test('late demand save response cannot repopulate personal data after logout',as
   await app.enter('demands');await app.click('查看 / 编辑');
   const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-demand-dialog');
   all(dialog).find(n=>n.name==='requirements').value='修改后的补充条件';
-  const form=dialog.children[0];const pending=form.events.submit({preventDefault(){}});
+  const form=all(dialog).find(n=>n.tagName==='form');const pending=form.events.submit({preventDefault(){}});
   await flush();app.env.HrWorkspace.reset();resolve({data:demandRow()});await pending;await flush();
   assert.doesNotMatch(app.text(),/测试经理|电商运营/);
 });

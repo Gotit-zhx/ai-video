@@ -53,8 +53,15 @@
     const next=button('下一页',pager,()=>{page++;load();});
     pager.hidden=true;previous.disabled=next.disabled=true;
     const dialog=el('dialog','',root,'hr-pool-dialog hr-demand-dialog');
-    const form=el('form','',dialog),title=el('h2','新建招聘需求',form);
-    el('p','保存岗位信息，一键生成三份招聘参考资料。',form,'hr-hint');
+    const dialogHeader=el('div','',dialog,'hr-demand-dialog-header');
+    const heading=el('div','',dialogHeader),title=el('h2','新建招聘需求',heading);
+    el('p','保存岗位信息，一键生成三份招聘参考资料。',heading,'hr-hint');
+    const dismiss=()=>{if(saving||uploading)return;stopPoll();dialog.close();};
+    const cornerClose=button('×',dialogHeader,dismiss);
+    cornerClose.className='hr-demand-dialog-close';
+    cornerClose.setAttribute('aria-label','关闭招聘需求窗口');cornerClose.title='关闭';
+    const content=el('div','',dialog,'hr-demand-dialog-content');
+    const form=el('form','',content);
     const grid=el('div','',form,'hr-pool-fields'),inputs={};
     for(const [key,label,type,limit] of [['date','需求日期','date',10],['jobId','招聘岗位','select',180],['departmentId','归属部门','select',36],
       ['manager','部门经理','text',120],['category','岗位类别','text',100],
@@ -84,11 +91,11 @@
     const error=el('p','',form,'hr-error');error.hidden=true;error.setAttribute('role','alert');
     const saveNote=el('p','',form,'hr-hint');saveNote.setAttribute('role','status');
     const formActions=el('div','',form,'hr-actions');
-    const close=button('关闭',formActions,()=>{stopPoll();dialog.close();});
+    const close=button('关闭',formActions,dismiss);
     dialog.addEventListener('close',()=>{jdGeneration++;jdLoading=false;});
     const saveButton=el('button','保存需求',formActions);saveButton.type='submit';
     const generateButton=button('一键 AI 生成',formActions,generate);generateButton.className='hr-primary';
-    const aiArea=el('section','',dialog,'hr-demand-ai');
+    const aiArea=el('section','',content,'hr-demand-ai');
     const aiHeader=el('div','',aiArea,'hr-section-heading');el('h3','AI 岗位分析',aiHeader);
     const aiStatus=el('span','尚未生成',aiHeader,'hr-hint');aiStatus.setAttribute('role','status');
     const aiProgress=el('div','',aiArea,'hr-demand-progress');
@@ -123,7 +130,7 @@
       inputs.jobId.disabled ||= !jobsReady;
       inputs.departmentId.disabled ||= !directoryReady;
       saveButton.disabled=generateButton.disabled=saving||uploading||running||jdLoading||!directoryReady||!jobsReady;
-      close.disabled=saving||uploading;
+      close.disabled=cornerClose.disabled=saving||uploading;
       referenceFiles.disabled=saving||uploading||running||jdLoading||!directoryReady||!jobsReady;
       referenceRows.replaceChildren();
       for(const item of editing?.references||[]){

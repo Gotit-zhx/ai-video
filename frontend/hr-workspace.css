@@ -33,6 +33,13 @@
 .hr-pool-project-dialog .hr-field{margin-top:18px}
 .hr-pool-note{white-space:pre-wrap;overflow-wrap:anywhere}
 .hr-demand-dialog{width:min(1000px,calc(100vw - 32px))}
+.hr-pool-dialog.hr-demand-dialog{padding:0}
+.hr-demand-dialog-header{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:24px 28px 18px;background:var(--surface,#fff);border-bottom:1px solid var(--hr-border)}
+.hr-demand-dialog-header h2{margin:0 0 6px}.hr-demand-dialog-header p{margin:0}
+.hr-demand-dialog .hr-demand-dialog-close{flex:none;width:36px;height:36px;padding:0;border:1px solid var(--hr-border);border-radius:50%;background:var(--surface,#fff);color:var(--hr-ink);font-size:26px;line-height:1;cursor:pointer}
+.hr-demand-dialog .hr-demand-dialog-close:hover{background:var(--surface-soft,#f5f5f5)}
+.hr-demand-dialog-content{padding:24px 28px 28px}
+@media(max-width:650px){.hr-demand-dialog-header{padding:18px 20px 14px}.hr-demand-dialog-content{padding:20px}}
 .hr-demand-dialog form>.hr-field{margin-top:18px}
 .hr-demand-dialog .hr-pool-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
 .hr-demand-jd{margin-top:20px;padding:14px 16px;border:1px solid var(--hr-border);border-radius:8px;background:var(--surface-soft,#fafafa)}
