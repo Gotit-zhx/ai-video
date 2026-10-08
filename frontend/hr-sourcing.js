@@ -11,6 +11,12 @@
     return (reasons[contact.waitInfo.reasonCode]||'等待助手发送')+(retry>Date.now()/1000
       ?` · 预计 ${new Date(retry*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})} 继续`:'');
   }
+  function matchingScore(item){
+    if(Number.isFinite(item.verifiedMatch))return Math.round(Math.max(0,Math.min(100,item.verifiedMatch)));
+    const score=Number(item.score)||0;
+    const coverage=Number(item.totalWeight)>0?Number(item.knownWeight||0)/Number(item.totalWeight):1;
+    return Math.round(Math.max(0,Math.min(100,score*coverage)));
+  }
   function rows(value,depth=0){
     if(depth>6||!value)return [];
     if(Array.isArray(value))return value;
@@ -30,7 +36,7 @@
     }
     return null;
   }
-  globalThis.HeyiHrSourcing={rows};
+  globalThis.HeyiHrSourcing={rows,matchingScore};
   globalThis.createHrSourcing=({root,panel,element:el,button,allowed,navigate,hrApi})=>{
     let selected=null,record=null,active=false,generation=0,busy=false,timer=null,polling=false,pollErrors=0;
     let demands=[],demandLoading=false;
@@ -223,12 +229,24 @@
         const head=el('div','',card,'hr-card-heading');el('h3',item.name,head);
         el('span',record.criteria?.confirmed===false?'旧条件结果':item.checks
           ?`满足 ${item.checks.filter(check=>check.status==='matched').length} / ${item.checks.length} 条`:`${item.score} · AI 参考`,head,'hr-badge');
-        if(item.checks)el('p',`已知条件参考分 ${item.score} · 信息覆盖 ${item.coverage??Math.round((item.knownWeight||0)/(item.totalWeight||1)*100)}% · ${item.pendingConditions} 条待核实`,card,'hr-hint');
+        const score=matchingScore(item);
+        const scoreBox=el('div','',card,'hr-sourcing-score');
+        const scoreHeading=el('div','',scoreBox,'hr-sourcing-score-heading');
+        el('span',record.criteria?.confirmed===false||run.version!==record.version?'历史条件评分':'岗位匹配度',scoreHeading);
+        const scoreValue=el('div','',scoreHeading,'hr-sourcing-score-value');
+        el('strong',String(score),scoreValue);el('span','/ 100',scoreValue);
+        const track=el('div','',scoreBox,'hr-sourcing-score-track');
+        track.setAttribute('role','meter');track.setAttribute('aria-label','岗位匹配度');
+        track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','100');track.setAttribute('aria-valuenow',String(score));
+        el('span','',track).style.width=score+'%';
+        el('p','按已核实条件权重计算 · AI 辅助参考',scoreBox,'hr-hint');
+        if(item.checks)el('p',`信息覆盖 ${item.coverage??Math.round((item.knownWeight||0)/(item.totalWeight||1)*100)}% · ${item.pendingConditions} 条待核实`,card,'hr-hint');
         el('p',item.summary,card,'hr-prose');
         for(const evidence of (item.evidence||[]).slice(0,2))el('p',String(evidence).slice(0,160),card,'hr-hint');
         if(item.checks?.length){
           const details=el('details','',card,'hr-sourcing-checks');
           el('summary','逐条匹配依据',details);
+          el('p',`已知条件参考分 ${item.score}。匹配度按全部条件权重计算，待核实部分尚未计入。`,details,'hr-hint');
           for(const [index,check] of item.checks.entries()){
             const labels={matched:'匹配',partial:'部分匹配',unmatched:'明确不符',unknown:'待核实'};
             el('strong',`条件 ${index+1} · ${labels[check.status]||check.status}`,details);

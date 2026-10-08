@@ -217,6 +217,16 @@ test('sourcing route without selected job never reads BOSS or creates a new scop
   assert.match(app.text(),/请返回职位管理/);
   assert.equal(app.calls.length,0);
 });
+test('HR match score includes missing information instead of showing a sparse known score as 100',()=>{
+  const app=setup({sourcing:true});
+  const score=app.env.HeyiHrSourcing.matchingScore;
+  assert.equal(score({score:100,knownWeight:50,totalWeight:100}),50);
+  assert.equal(score({score:94.3,knownWeight:70,totalWeight:100}),66);
+  assert.equal(score({score:100,knownWeight:100,totalWeight:100,verifiedMatch:100}),100);
+  assert.equal(score({score:100,verifiedMatch:66}),66);
+  assert.equal(score({score:0,knownWeight:0,totalWeight:100}),0);
+  assert.equal(app.calls.length,0,'Displaying match scores never calls a model or BOSS');
+});
 test('sourcing requires confirmed conditions and never uses unsaved edits',async()=>{
   const key='a'.repeat(64);
   let saved={id:'scope1',accountKey:key,jobId:'job-test-1',jobName:'总经理秘书',version:1,
