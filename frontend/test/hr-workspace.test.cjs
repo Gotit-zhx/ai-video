@@ -647,23 +647,84 @@ test('resume job filter combines with review state and reports reconnect progres
   assert.ok(app.calls.some(c=>c.url.includes('status=approved&jobId=job2')));
   assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')||c.url.startsWith('/api/v1/hr/resume-pool')));
 });
-test('invitation card opens an editable message and only an explicit send queues it',async()=>{
-  const talent={...poolResult().items[0],stage:'invited',source:'passive'};
+const interviewPreview=(talent)=>({talentId:talent.id,name:talent.name,version:1,stage:'invited',
+  config:{verified:true,version:1},resumes:[{id:'r1',filename:'测试人才.pdf',jobName:'算法'}],
+  demands:[{id:'d1',position:'算法',department:'研发',version:1,resumeIds:['r1'],questionsReady:true,
+    questionCount:6,recipientReady:true,recipient:'面试负责人',recipientId:'manager1'}],handoff:null});
+test('start first interview sends exact linked packet once without BOSS message and shows progress',async()=>{
+  const talent={...poolResult().items[0],stage:'invited',source:'active'};
+  let handoff=null;
   const app=setup({api:async(url,options)=>{
     if(url.endsWith('/login/status'))return {data:{state:'complete'}};
-    if(url.includes('/pool/messages'))return {data:options?{id:'message1',status:'queued'}:{items:[]}};
+    if(url.endsWith('/interview/start')){handoff={id:'i1',status:'preparing'};return {data:handoff};}
+    if(url.includes('/pool/interview?'))return {data:{...interviewPreview(talent),handoff}};
     return {data:{...poolResult(),items:[talent]}};
   }});
   await app.enter('pool');
-  await app.click('发送邀约');
-  assert.equal(app.calls.filter(c=>c.url.endsWith('/pool/messages')&&c.options).length,0);
-  const input=all(app.root).find(n=>n.tagName==='textarea'&&n.placeholder?.startsWith('例如'));
-  input.value='您好，明天下午方便参加面试吗？';
-  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-invite-dialog');
-  await all(dialog).find(n=>n.tagName==='button'&&n._text==='发送邀约').click();await flush();
-  const calls=app.calls.filter(c=>c.url.endsWith('/pool/messages')&&c.options);
-  assert.equal(calls.length,1);assert.equal(JSON.parse(calls[0].options.body).message,input.value||'您好，明天下午方便参加面试吗？');
-  assert.equal(JSON.parse(calls[0].options.body).talentId,talent.id);
+  await app.click('开始一面');
+  const calls=app.calls.filter(c=>c.url.endsWith('/interview/start')&&c.options);
+  assert.equal(calls.length,1);
+  const body=JSON.parse(calls[0].options.body);
+  assert.equal(body.talentId,talent.id);assert.equal(body.demandId,'d1');assert.equal(body.recipientId,'manager1');
+  assert.match(app.text(),/正在准备一面资料包/);
+  assert.ok(app.calls.every(c=>!c.url.includes('/pool/messages')));
+  const send=all(app.root).find(n=>n._text==='发送一面资料');
+  assert.equal(send.disabled,true);
+});
+test('missing DingTalk configuration explains setup and never queues an interview',async()=>{
+  const talent={...poolResult().items[0],stage:'invited',source:'passive'};
+  const app=setup({api:async url=>({data:url.includes('/pool/interview?')
+    ?{...interviewPreview(talent),config:{verified:false},demands:[]}
+    :{...poolResult(),items:[talent]}})});
+  await app.enter('pool');await app.click('开始一面');
+  assert.match(app.text(),/请先配置钉钉企业内部应用/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+test('DingTalk setup guides personal employee mapping and does not echo saved secret',async()=>{
+  const app=setup({api:async url=>({data:url.endsWith('/dingtalk')
+    ?{config:{verified:true,appKey:'ding-test',agentId:'123',hasSecret:true,version:1},demands:[]}
+    :poolResult()})});
+  await app.enter('pool');await app.click('钉钉设置');
+  assert.match(app.text(),/成员信息读权限/);assert.match(app.text(),/UserID/);
+  const secret=all(app.root).find(n=>n.type==='password');
+  assert.equal(secret.value,'');assert.match(secret.placeholder,/留空保留/);
+  assert.ok(app.calls.every(c=>c.options?.method!=='POST'),'Opening setup never sends any notification');
+});
+test('unknown interview receipt blocks resending and does not falsely advance stage',async()=>{
+  const talent={...poolResult().items[0],stage:'invited',source:'passive'};
+  const app=setup({api:async url=>({data:url.includes('/interview?')
+    ?{...interviewPreview(talent),handoff:{id:'i1',status:'uncertain',error:'结果待核对'}}
+    :{...poolResult(),items:[talent]}})});
+  await app.enter('pool');await app.click('开始一面');
+  assert.match(app.text(),/不会自动重发/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  assert.equal(all(app.root).find(n=>n._text==='发送一面资料').disabled,true);
+});
+test('explicit failed interview retry carries the existing record and preserves visible errors',async()=>{
+  const talent={...poolResult().items[0],stage:'invited',source:'passive'};
+  const app=setup({api:async url=>{
+    if(url.endsWith('/interview/start'))return {success:false,message:'负责人配置已更新，请刷新'};
+    return {data:url.includes('/interview?')
+      ?{...interviewPreview(talent),handoff:{id:'i1',status:'failed',error:'上次未发送'}}
+      :{...poolResult(),items:[talent]}};
+  }});
+  await app.enter('pool');await app.click('开始一面');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  await app.click('手动重试');
+  assert.equal(JSON.parse(app.calls.find(c=>c.options?.method==='POST').options.body).retryId,'i1');
+  assert.match(app.text(),/负责人配置已更新，请刷新/);
+});
+test('late DingTalk settings response cannot restore employee details after logout',async()=>{
+  let resolve;
+  const app=setup({api:async url=>url.endsWith('/dingtalk')?new Promise(r=>resolve=r):{data:poolResult()}});
+  await app.enter('pool');
+  const pending=app.click('钉钉设置');await flush();
+  app.env.HrWorkspace.reset();
+  resolve({data:{config:{appKey:'private-app',agentId:'123',verified:true,version:1},
+    demands:[{id:'d1',position:'秘密职位',department:'研发',recipient:{userId:'private-id',name:'秘密姓名',valid:true}}]}});
+  await pending;
+  assert.doesNotMatch(app.text(),/秘密姓名|秘密职位/);
+  assert.ok(all(app.root).filter(n=>n.tagName==='input').every(n=>!['private-app','private-id'].includes(n.value)));
 });
 test('workspace automatically reconnects helper and displays cached risk state without initiating BOSS work',async()=>{
   let listener,starts=0,stops=0;

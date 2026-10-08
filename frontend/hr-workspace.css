@@ -324,6 +324,22 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-invite-record{padding:12px;border:1px solid var(--hr-border);border-radius:8px;margin:8px 0}
 .hr-invite-record .hr-prose{margin:0 0 8px}
 .hr-invite-record .hr-hint{font-size:11px}
+.hr-dingtalk-heading{display:flex;align-items:center;justify-content:space-between;gap:20px}
+.hr-dingtalk-heading button{flex:none}
+.hr-dingtalk-guide{margin:20px 0;padding:18px 18px 18px 38px;background:var(--surface-muted,#f6f6f6);border:1px solid var(--hr-border);border-radius:12px;font-size:13px;line-height:1.75}
+.hr-dingtalk-guide li+li{margin-top:10px}
+.hr-dingtalk-dialog .hr-actions a{color:var(--hr-ink);font-size:13px;text-decoration:underline;text-underline-offset:4px}
+.hr-dingtalk-dialog form{margin-top:24px}
+.hr-dingtalk-recipient{border-top:1px solid var(--hr-border);padding-top:20px}
+.hr-interview-dialog>.hr-pool-fields{margin-top:20px}
+.hr-interview-summary{padding:14px 16px;border:1px solid var(--hr-border);border-radius:10px;font-size:13px;line-height:1.8}
+.hr-interview-summary:empty{display:none}
+.hr-interview-progress{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:24px 0 12px}
+.hr-interview-step{border-top:3px solid var(--hr-border);padding-top:10px;color:var(--hr-muted,#888);font-size:12px;text-align:center}
+.hr-interview-step.is-current{border-color:var(--hr-ink);color:var(--hr-ink)}
+.hr-interview-step.is-running{animation:hr-interview-pulse 1.5s ease-in-out infinite}
+@keyframes hr-interview-pulse{50%{opacity:.4}}
+@media(prefers-reduced-motion:reduce){.hr-interview-step.is-running{animation:none}}
 @media(max-width:900px){
   .hr-review-layout{grid-template-columns:minmax(0,1fr) 310px}
   .hr-review-sidebar{padding:14px}

@@ -1,5 +1,6 @@
 oss2==2.19.1
 pypdf==6.19.0
 defusedxml==0.7.1
+cryptography==50.0.1
 # Optional bounded OCR fallback on Linux:
 # apt-get install --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim poppler-utils

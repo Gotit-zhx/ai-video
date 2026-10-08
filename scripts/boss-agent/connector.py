@@ -1573,7 +1573,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         if route in ("passive", "speeches", "resume-pool", "resume-pool/file", "pool/messages"):
             self.passive_request(parsed=parsed)
             return
-        if route in ("pool", "demands", "departments"):
+        if route in ("pool", "pool/interview", "pool/dingtalk", "demands", "departments"):
             self.pool_request(write=False, parsed=parsed)
             return
         if route == "desktop/transport":
@@ -1662,6 +1662,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             self.passive_request(write=True)
             return
         if self.path in ("/api/v1/hr/pool/talents", "/api/v1/hr/pool/projects",
+                         "/api/v1/hr/pool/interview/start", "/api/v1/hr/pool/dingtalk/save",
+                         "/api/v1/hr/pool/dingtalk/recipient",
                          "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate",
                          "/api/v1/hr/demands/upload", "/api/v1/hr/demands/remove", "/api/v1/hr/departments/save"):
             self.pool_request(write=True)
@@ -1748,6 +1750,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         import talent_pool
         import recruitment_demands
         import hr_departments
+        import dingtalk_interviews
         if write:
             if self.headers.get("Origin") != ALLOWED_ORIGIN:
                 self.send_json(403, {"success": False, "message": "请求来源不正确"})
@@ -1764,7 +1767,15 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     raise ValueError("请求格式不正确")
                 body = json.loads(self.rfile.read(length))
-                if self.path == "/api/v1/hr/demands/generate":
+                if not isinstance(body, dict):
+                    raise ValueError("资料格式不正确")
+                if self.path == "/api/v1/hr/pool/interview/start":
+                    result = dingtalk_interviews.start(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/pool/dingtalk/save":
+                    result = dingtalk_interviews.save_config(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/pool/dingtalk/recipient":
+                    result = dingtalk_interviews.save_recipient(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/demands/generate":
                     result = recruitment_demands.generate(self.desktop_user, body, self.headers.get("Cookie", ""))
                 elif self.path == "/api/v1/hr/demands/save":
                     result = recruitment_demands.save(self.desktop_user, body,
@@ -1779,7 +1790,11 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     result = action(self.desktop_user, body)
             else:
                 query = {key: values[-1] for key, values in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
-                if parsed.path.endswith("/departments"):
+                if parsed.path.endswith("/pool/interview"):
+                    result = dingtalk_interviews.preview(self.desktop_user, query)
+                elif parsed.path.endswith("/pool/dingtalk"):
+                    result = dingtalk_interviews.settings(self.desktop_user)
+                elif parsed.path.endswith("/departments"):
                     result = hr_departments.listing(self.desktop_user)
                 else:
                     action = recruitment_demands.listing if parsed.path.endswith("/demands") else talent_pool.listing
@@ -1791,6 +1806,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, {"success": False, "message": str(error)})
         except (OSError, sqlite3.Error):
             self.send_json(503, {"success": False, "message": "人才库暂时不可用，请稍后重试"})
+        except Exception:
+            self.send_json(503, {"success": False, "message": "钉钉配置或资料暂时不可用，请稍后手动重试"})
 
     def sourcing_request(self, write=False, parsed=None):
         import hr_sourcing
@@ -1951,6 +1968,9 @@ def main():
     import recruitment_demands
     import passive_pool
     import hr_sourcing
+    import dingtalk_interviews
+    dingtalk_interviews.recover()
+    threading.Thread(target=dingtalk_interviews.receipt_worker, daemon=True).start()
     recruitment_demands.recover_interrupted()
     passive_pool.recover()
     hr_sourcing.recover()
