@@ -613,6 +613,27 @@ test('unpaired overview is quiet; explicit pair does not automatically login',as
   await app.click('在助手中登录 BOSS');
   assert.equal(app.calls.filter(c=>c.url.endsWith('/login/start')).length,1);
 });
+test('automatic recovery clears a stale pairing error without replaying operations',async()=>{
+  let listener;
+  const app=setup({transport:{connection:()=>({paired:false}),subscribe(fn){listener=fn;},
+    connect:async()=>{throw Error('连接服务暂时不可用，未执行招聘操作');}}});
+  await app.enter('overview');await app.click('连接本机助手');
+  assert.match(app.text(),/连接服务暂时不可用/);
+  listener({paired:true,phase:'connected',state:{state:'complete',paused:false,busy:false}});
+  await flush();
+  assert.match(app.text(),/招聘账号已就绪/);
+  assert.doesNotMatch(app.text(),/连接服务暂时不可用/);
+  assert.equal(app.calls.length,0);
+});
+test('healthy connection updates retain an unconfirmed logout error',async()=>{
+  let listener;
+  const app=setup({transport:{connection:()=>({paired:true}),subscribe(fn){listener=fn;},
+    disconnect:async()=>{throw Error('登录信息未能清除，请重试');}}});
+  await app.enter('overview');await app.click('退出 BOSS 登录');
+  listener({paired:true,phase:'connected',state:{state:'complete',paused:false,busy:false}});
+  await flush();
+  assert.match(app.text(),/登录信息未能清除，请重试/);
+});
 test('phone confirmation uses one status poll and stays in the overview when ready',async()=>{
   let state='pending',phase='scanned';
   const app=setup({api:async url=>({data:url.endsWith('/login/status')?{state,phase}:fixtures.jobs})});

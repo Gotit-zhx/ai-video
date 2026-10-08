@@ -3,6 +3,7 @@
 
 import json
 import io
+import errno
 import os
 import re
 import signal
@@ -1867,8 +1868,18 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                                 "message": "另一台电脑正在使用助手，请手动确认切换设备"})
         except (ValueError, TypeError, AttributeError):
             self.send_json(409, {"success": False, "message": "连接凭证无效、已到期或已切换设备，请重新连接本机助手"})
-        except (OSError, sqlite3.Error):
-            self.send_json(503, {"success": False, "message": "连接服务暂时不可用，未执行招聘操作"})
+        except (OSError, sqlite3.Error) as error:
+            sqlite_code = getattr(error, "sqlite_errorcode", None)
+            os_code = getattr(error, "errno", None)
+            full = (isinstance(sqlite_code, int) and sqlite_code & 255 == sqlite3.SQLITE_FULL
+                    or os_code in (errno.ENOSPC, errno.EDQUOT))
+            code = "STORAGE_FULL" if full else "STORAGE_UNAVAILABLE"
+            # Log only error codes; exception text can contain paths or user data.
+            print(json.dumps({"event": "desktop_storage_failure", "code": code,
+                              "sqlite_code": sqlite_code, "errno": os_code}), flush=True)
+            self.send_json(503, {"success": False, "code": code,
+                                "message": ("服务器存储空间不足，助手连接暂未完成；请联系管理员清理空间"
+                                            if full else "连接服务暂时不可用，未执行招聘操作")})
         except Exception:
             self.send_json(503, {"success": False, "message": "简历同步暂未完成，本机记录已保留"})
 

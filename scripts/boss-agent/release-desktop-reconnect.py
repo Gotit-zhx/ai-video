@@ -16,6 +16,9 @@ back = ['desktop_bridge.py', 'connector.py']
 bin_dir = Path('/opt/heyi/boss-agent/bin')
 rollback = root / 'rollback'
 assert not (root / 'activation.json').exists(), 'Already activated'
+assert shutil.disk_usage(root).free >= 2 * 1024 ** 3, (
+    'At least 2 GiB available storage is required before publishing. '
+    'Inspect archived artifacts with deduplicate-release-artifacts.py first.')
 rollback.mkdir(exist_ok=True)
 
 def run(*args, **kwargs):

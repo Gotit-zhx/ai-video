@@ -1,5 +1,7 @@
 import importlib.util
 import contextlib
+import errno
+import io
 import json
 import pathlib
 import sqlite3
@@ -38,6 +40,32 @@ class FakeAuth(BaseHTTPRequestHandler):
 
 
 class ConnectorTest(unittest.TestCase):
+    def test_desktop_storage_failures_are_precise_without_logging_credentials(self):
+        import desktop_bridge
+        full = sqlite3.OperationalError("sensitive-cookie-and-path")
+        full.sqlite_errorcode = sqlite3.SQLITE_FULL
+        for error, code in ((full, "STORAGE_FULL"),
+                            (OSError(errno.ENOSPC, "sensitive-cookie-and-path"), "STORAGE_FULL"),
+                            (OSError(errno.EDQUOT, "sensitive-cookie-and-path"), "STORAGE_FULL"),
+                            (sqlite3.OperationalError("sensitive-cookie-and-path"), "STORAGE_UNAVAILABLE")):
+            with self.subTest(code=code, error=type(error).__name__):
+                handler = object.__new__(connector.HttpHandler)
+                handler.path = "/api/v1/hr/desktop/pair"
+                handler.headers = {"Content-Length": "0", "Origin": connector.ALLOWED_ORIGIN}
+                handler.desktop_user = {}
+                handler.authorized = mock.Mock(return_value=200)
+                handler.send_json = mock.Mock()
+                output = io.StringIO()
+                with mock.patch.object(desktop_bridge, "issue", side_effect=error), \
+                     contextlib.redirect_stdout(output), mock.patch.object(connector, "execute") as execute:
+                    handler.desktop_request()
+                status, response = handler.send_json.call_args.args
+                self.assertEqual(status, 503)
+                self.assertEqual(response["code"], code)
+                self.assertEqual(json.loads(output.getvalue())["code"], code)
+                self.assertNotIn("sensitive", output.getvalue() + json.dumps(response))
+                execute.assert_not_called()
+
     def test_recommendation_pages_have_no_search_ceiling(self):
         for page in (1, 6, 21, 1000):
             self.assertEqual(connector.command({'operation': 'recommendations', 'jobId': 'job1', 'page': page}),
@@ -780,6 +808,7 @@ class ConnectorTest(unittest.TestCase):
              "body": {"hyperLink": {"hyperLinkType": 1, "url": "https://www.zhipin.com/resume?id=test"}}},
         ]}}
         with mock.patch.dict(connector.LOGIN, {"state": "complete"}), \
+             mock.patch.object(connector.time, "time", return_value=1790567885), \
              mock.patch.object(connector, "cli_json", return_value=history) as cli:
             connector.poll_resumes_once()
             self.assertEqual(1, cli.call_count)

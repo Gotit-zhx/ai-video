@@ -182,7 +182,7 @@
       if(generation!==loginGeneration||!allowed())return;
       globalThis.HeyiHrTransport.startAutoConnect?.();
       helperConnected=true;status.replaceChildren();await checkLogin();
-    }catch(error){if(generation===loginGeneration){status.replaceChildren();element('p',error.message,status,'hr-error');}}
+    }catch(error){if(generation===loginGeneration){status.replaceChildren();status.dataset.connectionError='true';element('p',error.message,status,'hr-error');}}
     finally{if(generation===loginGeneration){loginActionInFlight=false;paintConnection(lastLoginState);}}
   }
   let lastLoginState={state:'idle'};
@@ -197,6 +197,9 @@
       return;
     }
     if(connection.state&&helperConnected){
+      if(status.dataset.connectionError==='true'){
+        status.replaceChildren();delete status.dataset.connectionError;
+      }
       lastLoginState=connection.state;
       loginPhase=connection.state.phase||'';
     }
@@ -243,7 +246,7 @@
       paintConnection(state);
     }catch(error){
       if(generation!==loginGeneration)return;
-      status.replaceChildren();element('p',error.message||'连接状态读取失败',status,'hr-error');
+      status.replaceChildren();status.dataset.connectionError='true';element('p',error.message||'连接状态读取失败',status,'hr-error');
       if(loginPendingSeen&&++loginFailures<3){showLoginProgress('reconnecting');return;}
       stopLoginPolling();helperConnected=false;loginPendingSeen=false;paintConnection();
     }finally{if(loginCheckInFlight===read)loginCheckInFlight=null;}
@@ -251,7 +254,7 @@
   async function startLogin(){
     if(!allowed()||loginActionInFlight)return;
     loginActionInFlight=true;const generation=++loginGeneration;
-    loginPhase='';++sequence;status.replaceChildren();loginSuccess.hidden=true;
+    loginPhase='';++sequence;status.replaceChildren();delete status.dataset.connectionError;loginSuccess.hidden=true;
     loginPendingSeen=false;stopLoginPolling();
     loginButton.disabled=checkButton.disabled=logoutButton.disabled=true;
     loginButton.textContent='正在打开桌面助手…';
@@ -271,7 +274,7 @@
     ++sequence;++sessionGeneration;loginPhase='';loginPendingSeen=false;stopLoginPolling();
     clearInterval(resumeTimer);resumeTimer=null;loginSuccess.hidden=true;
     loginButton.disabled=checkButton.disabled=logoutButton.disabled=true;
-    logoutButton.textContent='正在清除登录信息…';status.replaceChildren();
+    logoutButton.textContent='正在清除登录信息…';status.replaceChildren();delete status.dataset.connectionError;
     try{
       const response=globalThis.HeyiHrTransport
         ?await globalThis.HeyiHrTransport.disconnect()
