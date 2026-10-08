@@ -44,8 +44,6 @@ import java.util.concurrent.TimeUnit;
 @RestController
 @RequestMapping("/api/v1/ai-video-tasks")
 public class AiVideoTaskController {
-    @org.springframework.beans.factory.annotation.Autowired(required=false)
-    private com.yingdao.aicommerce.storage.LocalMaterialOssArchiveService materialArchive;
     private final AiVideoTaskService service;
 
     public AiVideoTaskController(AiVideoTaskService service) { this.service = service; }
@@ -205,9 +203,6 @@ public class AiVideoTaskController {
                                    @RequestParam(required = false) String filename,
                                    @AuthenticationPrincipal PlatformPrincipal principal) {
         AiVideoTaskService.AssetFile file = service.asset(taskId, assetId, principal);
-        String archived = materialArchive == null ? null : materialArchive.archivedUrl(file.path());
-        if (archived != null) return ResponseEntity.status(HttpStatus.TEMPORARY_REDIRECT)
-                .location(java.net.URI.create(archived)).cacheControl(CacheControl.maxAge(1, TimeUnit.HOURS).cachePrivate()).build();
         if (file.location() != null) {
             boolean imagePreview = preview && !download && file.contentType() != null
                     && file.contentType().startsWith("image/");

@@ -63,6 +63,7 @@ public class OssStorageService {
     private final URI publicEndpoint;
     private final boolean disableImageProcessing;
     private final OssStorageService legacyStorage;
+    private volatile Thread startupVerification;
 
     public OssStorageService(
             @Value("${app.oss.bucket}") String bucket,
@@ -146,6 +147,15 @@ public class OssStorageService {
 
     @PostConstruct
     void verifyAccess() {
+        // Remote storage can be unavailable for several SDK retry intervals.
+        // Its diagnostic probe must not block login and local-file services.
+        Thread worker = new Thread(this::verifyStorageAccess, "oss-startup-verification");
+        worker.setDaemon(true);
+        startupVerification = worker;
+        worker.start();
+    }
+
+    void verifyStorageAccess() {
         String key = "heyi/_health/startup-" + UUID.randomUUID() + ".txt";
         byte[] payload = "ok".getBytes(StandardCharsets.UTF_8);
         try {
@@ -407,6 +417,8 @@ public class OssStorageService {
 
     @PreDestroy
     public void close() {
+        Thread worker = startupVerification;
+        if (worker != null) worker.interrupt();
         internalClient.shutdown();
         publicClient.shutdown();
         if (legacyStorage != null) legacyStorage.close();

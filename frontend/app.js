@@ -880,8 +880,20 @@ function generalVideoApi(path = "", options = {}) {
 function generalVideoAssetUrl(taskId, asset, preview = false) {
   if (!asset) return "";
   const responseUrl = preview ? asset.previewUrl || asset.thumbnailUrl : asset.url || asset.downloadUrl;
-  if (responseUrl) return responseUrl;
-  const suffix = preview ? "?preview=true" : "";
+  if (responseUrl) {
+    // Server-provided local URLs must also bypass cached OSS redirects.
+    // Preserve external signed URLs exactly, including their signatures.
+    try {
+      const url = new URL(responseUrl, window.location.href);
+      if (url.origin === window.location.origin
+          && /^\/api\/v1\/general-video-tasks\/[^/]+\/assets\/[^/]+$/.test(url.pathname)) {
+        url.searchParams.set("cache", "20261008-local");
+        return url.pathname + url.search + url.hash;
+      }
+    } catch (_error) {}
+    return responseUrl;
+  }
+  const suffix = preview ? "?preview=true&cache=20261008-local" : "?cache=20261008-local";
   return `${GENERAL_VIDEO_API_ROOT}/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(asset.id)}${suffix}`;
 }
 
@@ -9442,7 +9454,8 @@ function scriptStageClass(stage = "") {
 }
 
 function videoShotPreviewUrl(scriptId, shotId) {
-  return `/api/v1/video-scripts/${encodeURIComponent(scriptId)}/shots/${encodeURIComponent(shotId)}/preview`;
+  // Separate local previews from previously cached OSS redirects.
+  return `/api/v1/video-scripts/${encodeURIComponent(scriptId)}/shots/${encodeURIComponent(shotId)}/preview?v=20261008-local`;
 }
 
 function renderStoryboardBuildingState(script) {
@@ -9621,7 +9634,10 @@ async function loadVideoScriptDetail(id, expectedGeneration = videoScriptLoadGen
     timeLabel.className = "shot-time";
     timeLabel.textContent = `${Number(shot.durationSeconds || 0).toFixed(2)} 秒`;
     button.append(timeLabel);
-    if (!manualScript) button.querySelector("img").addEventListener("error", () => button.classList.remove("has-preview"));
+    if (!manualScript) button.querySelector("img").addEventListener("error", event => {
+      button.classList.remove("has-preview");
+      event.currentTarget.remove();
+    });
     button.addEventListener("click", () => selectRenderedShot(button, shot, id));
     strip.append(button);
   });
@@ -11042,7 +11058,7 @@ function aiVideoTaskStatusClass(status) {
 
 function aiVideoAssetUrl(taskId, assetId, version = "", preview = false) {
   const suffix = preview ? "&preview=true" : "";
-  return `/api/v1/ai-video-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(assetId)}?v=${encodeURIComponent(version || "1")}${suffix}`;
+  return `/api/v1/ai-video-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(assetId)}?v=${encodeURIComponent(version || "1")}&cache=20261008-local${suffix}`;
 }
 
 function reusableMediaKey(node) {

@@ -12,6 +12,22 @@ function between(start, end) {
   assert.ok(limit > offset, `Missing ${end}`);
   return source.slice(offset, limit);
 }
+test('general previews bypass old local redirects even with server-provided URLs and preserve external signatures', () => {
+  const context={URL,GENERAL_VIDEO_API_ROOT:'/api/v1/general-video-tasks',
+    window:{location:new URL('https://hoyee.org.cn/?lang=zh')}};
+  vm.createContext(context);
+  vm.runInContext(between('function generalVideoAssetUrl(', 'function uploadFormData('),context);
+  for(const path of ['/api/v1/general-video-tasks/t/assets/a?preview=true',
+      'https://hoyee.org.cn/api/v1/general-video-tasks/t/assets/a?preview=true']){
+    const url=new URL(context.generalVideoAssetUrl('t',{previewUrl:path},true),'https://hoyee.org.cn');
+    assert.equal(url.searchParams.get('cache'),'20261008-local');
+    assert.equal(url.searchParams.get('preview'),'true');
+  }
+  const signed='https://storage.example/asset.jpg?X-Signature=a%2Fb%2Bc&token=one+two';
+  assert.equal(context.generalVideoAssetUrl('t',{previewUrl:signed},true),signed);
+  assert.equal(context.generalVideoAssetUrl('t',{url:'/other/file.jpg?token=a%2Fb'}),'/other/file.jpg?token=a%2Fb');
+  assert.match(context.generalVideoAssetUrl('t',{id:'a'},true),/preview=true&cache=20261008-local/);
+});
 function harness(assets = []) {
   const links = [];
   const timers = [];

@@ -35,9 +35,6 @@ import java.util.concurrent.TimeUnit;
 @RestController
 @RequestMapping("/api/v1/video-scripts")
 public class VideoScriptController {
-    @org.springframework.beans.factory.annotation.Autowired(required=false)
-    private com.yingdao.aicommerce.storage.LocalMaterialOssArchiveService materialArchive;
-
     private final VideoScriptService service;
     private final ManualScriptAiService manualScriptAiService;
 
@@ -189,9 +186,8 @@ public class VideoScriptController {
             @AuthenticationPrincipal PlatformPrincipal principal
     ) {
         VideoScriptService.ShotPreview preview = service.shotPreview(scriptId, shotId, principal);
-        String archived = materialArchive == null ? null : materialArchive.archivedUrl(preview.path());
-        if (archived != null) return ResponseEntity.status(HttpStatus.TEMPORARY_REDIRECT)
-                .location(java.net.URI.create(archived)).cacheControl(CacheControl.maxAge(1, TimeUnit.HOURS).cachePrivate()).build();
+        // Preview files remain local after archival. Serving this small JPEG
+        // avoids making the storyboard depend on an external storage request.
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.maxAge(1, TimeUnit.HOURS).cachePrivate())
                 .lastModified(preview.lastModified())
