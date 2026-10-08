@@ -62,18 +62,56 @@ def schema(db):
 
 
 PERSONAL_CRITERION = re.compile(r'性别|男生|女生|男性|女性|年龄|身高|婚育|民族|宗教|残障|外貌|颜值|长相|气质|形象好')
+CRITERIA_POLICY = 2
+DOMAIN_GROUPS = [
+    ("图像处理 / 计算机视觉", ("图像", "计算机视觉", "机器视觉", "目标检测", "图像分割", "视觉算法", "OCR", "OpenCV", "computer vision")),
+    ("后端开发", ("后端", "服务端", "Java", "Spring", "接口开发", "API开发")),
+    ("前端开发", ("前端", "React", "Vue", "网页开发")),
+    ("人力资源", ("人力资源", "招聘", "人事", "HR")),
+    ("行政 / 接待", ("秘书", "行政", "接待", "办公事务")),
+    ("大模型 / NLP", ("大模型", "LLM", "NLP", "自然语言", "RAG")),
+]
+
+
+def direction_terms(text):
+    for label, terms in DOMAIN_GROUPS:
+        if any(re.search((r"(?<![A-Za-z])" + re.escape(term) + r"(?![A-Za-z])")
+                         if re.fullmatch(r"[A-Za-z ]+", term) else re.escape(term), text, re.I) for term in terms):
+            return label, list(terms)
+    return "", []
+
+
+def suggested_criteria(job):
+    data, profile = json.loads(job["body"]), json.loads(job["profile"])
+    name = data.get("jobName", "")
+    jd = data.get("description", "")
+    direction, _ = direction_terms(name)
+    if not direction:
+        direction, _ = direction_terms(jd)
+    core = f"有{direction or name}相关项目或实际工作经历，需有具体任务依据"
+    # Only suggest tools explicitly present in the formal JD.
+    tools = [term for term in ("C++", "Python", "Java", "Spring", "OpenCV", "PyTorch", "TensorFlow",
+                              "React", "Vue", "SQL", "MySQL", "Excel", "RAG")
+             if re.search(r"(?<![A-Za-z])" + re.escape(term) + r"(?![A-Za-z])", jd, re.I)]
+    skills = [value for value in profile.get("skills", []) if isinstance(value, str) and not PERSONAL_CRITERION.search(value)]
+    skill = ("实际使用过 " + " / ".join(tools[:5]) + " 中至少一项完成工作")
+    if not tools:
+        skill = next(iter(profile.get("requirements", []) or skills), "具备岗位 JD 写明的核心工作技能")
+    experience = next(iter(profile.get("experience", [])), f"有完成{direction or name}相关工作任务或项目交付的实际经历")
+    values = [(core, 50, True, "direction"), (skill, 30, False, "skills"), (experience, 20, False, "experience")]
+    return [{"id": f"k{i+1}", "text": text[:250], "weight": weight, "required": required, "kind": kind,
+             "terms": direction_terms(text)[1] if kind == "direction" else []}
+            for i, (text, weight, required, kind) in enumerate(values)]
 
 
 def matching_criteria(job):
     saved = json.loads(job['criteria'])
-    if saved.get('conditions'): return saved
-    profile = json.loads(job['profile'])
-    skills = [v[:50] for v in profile.get('skills', []) if isinstance(v, str) and not PERSONAL_CRITERION.search(v)]
-    return {'confirmed': False, 'conditions': [
-        {'id': 'k1', 'text': '具有本岗位相关或可迁移的工作经验，相近岗位经历也可匹配', 'weight': 50, 'required': False},
-        {'id': 'k2', 'text': ('；'.join(skills[:3]) or '能够完成本岗位的核心日常工作')+'（具备其中一项即可）', 'weight': 30, 'required': False},
-        {'id': 'k3', 'text': ('；'.join(skills[3:6]) or '有工作任务交付、沟通或协作的实际经历')+'（具备其中一项即可）', 'weight': 20, 'required': False}],
-        'scoreBasis': 'known_conditions', 'threshold': MATCH_THRESHOLD}
+    suggestions = suggested_criteria(job)
+    if saved.get('conditions'):
+        return {**saved, "confirmed": saved.get("confirmed") is True and saved.get("policyVersion") == CRITERIA_POLICY,
+                "needsReview": saved.get("policyVersion") != CRITERIA_POLICY, "suggestedConditions": suggestions}
+    return {'confirmed': False, 'conditions': suggestions, "suggestedConditions": suggestions,
+            'scoreBasis': 'known_conditions', 'threshold': MATCH_THRESHOLD, "policyVersion": CRITERIA_POLICY}
 
 
 def criteria(user, body):
@@ -90,14 +128,19 @@ def criteria(user, body):
             raise ValueError('请填写条件与 1–100 的权重')
         if PERSONAL_CRITERION.search(text):
             raise ValueError('匹配条件应填写工作能力或经验，不能使用性别、年龄、外貌等个人属性')
-        clean.append({'id': f'k{index+1}', 'text': text, 'weight': weight, 'required': row.get('required') is True})
+        kind = row.get("kind", "custom")
+        if kind not in {"direction", "skills", "experience", "custom"}:
+            raise ValueError("匹配条件类型不正确")
+        clean.append({'id': f'k{index+1}', 'text': text, 'weight': weight, 'required': row.get('required') is True,
+                      "kind": kind, "terms": direction_terms(text)[1] if kind == "direction" else []})
     with pool.database() as db:
         schema(db); expire(db); job = get_job(db, owner, body)
         if job['version'] != body.get('version'): raise pool.Conflict('岗位条件已变化，请刷新核对')
         if job['profile_state'] != 'complete': raise ValueError('请先完成岗位画像')
         if db.execute("SELECT 1 FROM hr_sourcing_runs WHERE owner=? AND job=? AND state='running'",
                       (owner, job['id'])).fetchone(): raise pool.Conflict('请先暂停寻找并等待当前分析结束，再修改条件')
-        value = {'confirmed': True, 'conditions': clean, 'scoreBasis': 'known_conditions', 'threshold': MATCH_THRESHOLD}
+        value = {'confirmed': True, 'conditions': clean, 'scoreBasis': 'known_conditions', 'threshold': MATCH_THRESHOLD,
+                 "policyVersion": CRITERIA_POLICY}
         if json.loads(job['criteria']) != value:
             db.execute('UPDATE hr_sourcing_jobs SET criteria=?,version=version+1,updated_at=? WHERE id=?',
                        (dump(value), now(), job['id']))
@@ -210,7 +253,7 @@ def demand(user, body):
         skills += [str(item) for item in portrait.get('mustHave', [])]
         skills = list(dict.fromkeys(value for value in skills if value and not PERSONAL_CRITERION.search(value)))[:10]
         profile = {'summary': portrait.get('summary', ''), 'suggestedJd': snapshot['jobDescription'],
-                   'skills': skills, 'experience': portrait.get('experience', []),
+                   'skills': skills, 'requirements': portrait.get('mustHave', []), 'experience': portrait.get('experience', []),
                    'evidence': [{'requirement': item.get('name', ''), 'evidence': item.get('evidence', '')}
                                 for item in result.get('competencies', [])],
                    'questions': portrait.get('evaluationFocus', []),
@@ -508,6 +551,18 @@ def no_match_suggestions(conditions, stats):
     return suggestions
 
 
+def qualified_match(row, conditions):
+    if row["score"] < MATCH_THRESHOLD or row.get("matchState", "matched") != "matched":
+        return False
+    if not conditions:
+        return True
+    states = {check["criterionId"]: check["status"] for check in row["checks"]}
+    total = sum(condition["weight"] for condition in conditions)
+    known = sum(condition["weight"] for condition in conditions if states[condition["id"]] != "unknown")
+    return known >= total * .6 and all(
+        not condition["required"] or states[condition["id"]] == "matched" for condition in conditions)
+
+
 def search_worker(owner, record, snapshot, cookie):
     try:
         # Short, request-local aliases reduce model copying errors without
@@ -537,6 +592,18 @@ def search_worker(owner, record, snapshot, cookie):
                             'matched', 'partial', 'unmatched', 'unknown'} for c in checks) \
                         or {c.get('criterionId') for c in checks} != expected_conditions:
                     raise ValueError('AI 返回的逐条条件分析不完整，本轮已停止；没有自动重复调用')
+                conditions = snapshot['criteria']
+                states = {check['criterionId']: check['status'] for check in checks}
+                total = sum(condition['weight'] for condition in conditions)
+                known = sum(condition['weight'] for condition in conditions if states[condition['id']] != 'unknown')
+                row['coverage'] = round(known / total * 100, 1)
+                if any(condition['required'] and states[condition['id']] == 'unmatched' for condition in conditions):
+                    row['matchState'] = 'required_mismatch'
+                elif known < total * .6 or any(
+                        condition['required'] and states[condition['id']] != 'matched' for condition in conditions):
+                    row['matchState'] = 'needs_info'
+                elif row['score'] < MATCH_THRESHOLD:
+                    row['matchState'] = 'below_threshold'
         for row in rows:
             row['id'] = aliases[row['id']]
         error = ''
@@ -556,7 +623,7 @@ def search_worker(owner, record, snapshot, cookie):
             source = {v['id']: v for v in json.loads(run['body'])}
             matched = {item['id']: item for item in previous.get('matched', previous.get('candidates', []))}
             for item in result['candidates']:
-                if item['score'] >= MATCH_THRESHOLD and item.get('matchState', 'matched') == 'matched':
+                if qualified_match(item, snapshot.get("criteria", [])):
                     matched[item['id']] = {**item, 'name': source[item['id']]['name'],
                                            'canGreet': source[item['id']]['canGreet']}
             ranked = sorted(matched.values(), key=lambda row: -row['score'])
@@ -568,7 +635,7 @@ def search_worker(owner, record, snapshot, cookie):
             result = {**previous, 'matched': ranked[:run['wanted']], 'candidates': ranked[:run['wanted']],
                       'conditionStats': condition_stats,
                       'examined': previous.get('examined', 0) + len(snapshot['candidates']),
-                      'qualified': previous.get('qualified', 0) + sum(r['score'] >= MATCH_THRESHOLD and r.get('matchState', 'matched') == 'matched' for r in rows),
+                      'qualified': previous.get('qualified', 0) + sum(qualified_match(r, snapshot.get("criteria", [])) for r in rows),
                       'needsInfo': previous.get('needsInfo', 0) + sum(r.get('matchState') == 'needs_info' for r in rows),
                       'belowThreshold': previous.get('belowThreshold', 0) + sum(r.get('matchState') in ('below_threshold', 'required_mismatch') for r in rows),
                       'reviewExamples': [{**r, 'name': source[r['id']]['name']} for r in
@@ -593,6 +660,8 @@ def greet(user, body):
         old = db.execute('SELECT * FROM hr_sourcing_contacts WHERE owner=? AND account=? AND job=? AND candidate=?',
                          (owner, job['account'], job['id'], cid)).fetchone()
         if old: return {'id': old['id'], 'status': old['status']}
+        if not matching_criteria(job)["confirmed"]:
+            raise ValueError("匹配规则已更新，请确认条件并重新评估后再联系")
         selected = db.execute('SELECT * FROM hr_sourcing_candidates WHERE id=? AND owner=? AND job=?', (cid, owner, job['id'])).fetchone()
         if not selected or time.time()-selected['read_at']>1800: raise ValueError('候选人卡片已过期，请重新获取后再联系')
         detail = json.loads(selected['body'])

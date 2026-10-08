@@ -53,13 +53,22 @@
     const profileStatus=el('p','',reference,'hr-hint');
     const criteriaOutput=el('div','',reference,'hr-sourcing-criteria');
     el('h4','匹配条件',criteriaOutput);
-    el('p','先确认几条工作条件。相近经历可匹配，卡片未说明的项目保留为待核实。',criteriaOutput,'hr-hint');
+    el('p','确认核心方向、关键技能和实战经历。修改文字即可，权重等选项在高级设置中。',criteriaOutput,'hr-hint');
     const criteriaRows=el('div','',criteriaOutput,'hr-sourcing-criteria-rows');
-    const criteriaActions=el('div','',criteriaOutput,'hr-actions');
-    const addCriterion=button('添加条件',criteriaActions,()=>{
+    const advanced=el('details','',criteriaOutput,'hr-sourcing-advanced');
+    el('summary','高级设置 · 权重与必需项',advanced);
+    const advancedRows=el('div','',advanced,'hr-sourcing-advanced-rows');
+    const advancedActions=el('div','',advanced,'hr-actions');
+    const addCriterion=button('添加条件',advancedActions,()=>{
       if(criteriaDraft.length>=5)return;
-      criteriaDraft.push({text:'',weight:20,required:false});dirtyCriteria();renderCriteria(true);
+      criteriaDraft.push({text:'',weight:20,required:false,kind:'custom'});dirtyCriteria();renderCriteria(true);
     });addCriterion.className='hr-secondary';
+    const criteriaActions=el('div','',criteriaOutput,'hr-actions');
+    const resetCriteria=button('使用 JD 建议',criteriaActions,()=>{
+      if(busy||running()||!record?.criteria?.suggestedConditions?.length)return;
+      criteriaDraft=record.criteria.suggestedConditions.map(row=>({...row}));
+      dirtyCriteria();renderCriteria(true);
+    });resetCriteria.className='hr-text-button';
     const saveCriteria=button('确认并保存条件',criteriaActions,async()=>{
       const version=record.version;
       const saved=await mutate('sourcing/criteria',{...params(),conditions:criteriaDraft.map(row=>({...row}))});
@@ -74,12 +83,12 @@
     const find=el('section','',layout,'hr-sourcing-card');
     el('span','02 / 人才寻源',find,'hr-eyebrow');
     el('h3','按已确认条件寻找人才',find);
-    el('p','按已确认条件持续寻找。只对有事实依据的条件计算匹配分；待核实项另列，由 HR 审核完整简历。',find,'hr-hint');
+    el('p','先核对岗位方向与原文依据。关键条件未确认、或信息覆盖不足时保留为待核实，结果供 HR 参考。',find,'hr-hint');
     const controls=el('div','',find,'hr-actions');
     const countLabel=el('label','',controls,'hr-field');el('span','获取人数',countLabel);
     const count=el('select','',countLabel);count.setAttribute('aria-label','获取人数');
     for(const n of [5,10,15,20])el('option',n+' 人',count).value=String(n);
-    el('span','已知条件匹配 ≥ 80',controls,'hr-badge hr-sourcing-threshold');
+    el('span','匹配 ≥ 80 · 核心条件需核实',controls,'hr-badge hr-sourcing-threshold');
     const findButton=button('一键 AI 获取',controls,findPeople);findButton.className='hr-primary';
     const pauseButton=button('暂停寻找',controls,()=>{pausedSearch=true;pauseButton.disabled=true;});
     pauseButton.className='hr-secondary';pauseButton.hidden=true;
@@ -122,37 +131,39 @@
     function renderCriteria(force=false){
       const locked=busy||running();
       if(!force&&!changed(criteriaRows,[criteriaScope,locked]))return;
-      criteriaRows.replaceChildren();
-      const total=criteriaDraft.reduce((sum,row)=>sum+Number(row.weight||0),0);
-      const percentages=[];
+      criteriaRows.replaceChildren();advancedRows.replaceChildren();
       criteriaDraft.forEach((row,index)=>{
         const node=el('div','',criteriaRows,'hr-sourcing-condition');
+        const heading=el('div','',node,'hr-sourcing-condition-heading');
+        const names={direction:'核心方向',skills:'关键技能',experience:'实战经历',custom:'补充条件'};
+        el('strong',`${index+1}. ${names[row.kind]||['核心方向','关键技能','实战经历'][index]||'补充条件'}`,heading);
+        const importance=el('span',row.required?'必需':'参考',heading,'hr-badge');
         const text=el('textarea','',node);text.rows=2;text.maxLength=250;text.value=row.text;
         text.setAttribute('aria-label',`匹配条件 ${index+1}`);text.disabled=locked;
         text.addEventListener('input',()=>{row.text=text.value;dirtyCriteria();});
-        const options=el('div','',node,'hr-sourcing-condition-options');
+        const options=el('div','',advancedRows,'hr-sourcing-condition-options');
+        el('span',`条件 ${index+1}`,options,'hr-hint');
         const label=el('label','权重 ',options);
         const weight=el('input','',label);weight.type='number';weight.min='1';weight.max='100';weight.value=String(row.weight);
         weight.setAttribute('aria-label',`条件 ${index+1} 权重`);weight.disabled=locked;
         weight.addEventListener('input',()=>{
           row.weight=Number(weight.value);dirtyCriteria();
-          const sum=criteriaDraft.reduce((value,item)=>value+Number(item.weight||0),0);
-          for(const item of percentages)item.node.textContent=sum?`${Math.round(item.row.weight/sum*100)}%`:'';
         });
-        percentages.push({row,node:el('small',total?`${Math.round(row.weight/total*100)}%`:'',options,'hr-hint')});
         const requiredLabel=el('label','',options);
         const required=el('input','',requiredLabel);required.type='checkbox';required.checked=row.required;required.disabled=locked;
         required.setAttribute('aria-label',`条件 ${index+1} 必须满足`);
-        required.addEventListener('change',()=>{row.required=required.checked;dirtyCriteria();});
+        required.addEventListener('change',()=>{row.required=required.checked;importance.textContent=row.required?'必需':'参考';dirtyCriteria();});
         el('span','必须满足',requiredLabel);
         const remove=button('移除',options,()=>{criteriaDraft.splice(index,1);dirtyCriteria();renderCriteria(true);});
         remove.className='hr-text-button';remove.disabled=locked||criteriaDraft.length===1;
       });
       addCriterion.disabled=locked||criteriaDraft.length>=5;
+      resetCriteria.disabled=locked||!record?.criteria?.suggestedConditions?.length;
       saveCriteria.disabled=locked||record?.profileState!=='complete';
       criteriaStatus.textContent=criteriaDirty?'条件已修改，请确认并保存后再寻找。':record?.criteria?.confirmed
-        ?'条件已确认。未说明不等于不符合；至少有一条真实匹配依据才收录。'
-        :'请编辑确认后保存条件，再开始寻找。';
+        ?'条件已确认。核心条件需有原文依据，已核实的信息权重须覆盖至少 60%。'
+        :record?.criteria?.needsReview?'匹配规则已优化。可使用 JD 建议，核对并保存后再寻找；旧结果需重新评估。'
+        :'确认这三条即可开始。建议先核对核心方向，再调整技能和经历。';
     }
     function render(){
       title.textContent=record?.jobName||selected?.name||'从职位开始寻源';
@@ -201,8 +212,9 @@
       if(changed(results,[run?.candidates,run?.version,record.version,locked]))for(const item of run?.candidates||[]){
         const card=el('article','',results,'hr-person-card');
         const head=el('div','',card,'hr-card-heading');el('h3',item.name,head);
-        el('span',`${item.score} / 100 · ${item.scoreBasis==='known_conditions'?'已知条件匹配':'AI 参考'}`,head,'hr-badge');
-        if(item.checks)el('p',`${item.matchedConditions} / ${item.checks.length} 条有匹配依据 · ${item.pendingConditions} 条待核实`,card,'hr-hint');
+        el('span',record.criteria?.confirmed===false?'旧条件结果':item.checks
+          ?`满足 ${item.checks.filter(check=>check.status==='matched').length} / ${item.checks.length} 条`:`${item.score} · AI 参考`,head,'hr-badge');
+        if(item.checks)el('p',`已知条件参考分 ${item.score} · 信息覆盖 ${item.coverage??Math.round((item.knownWeight||0)/(item.totalWeight||1)*100)}% · ${item.pendingConditions} 条待核实`,card,'hr-hint');
         el('p',item.summary,card,'hr-prose');
         for(const evidence of (item.evidence||[]).slice(0,2))el('p',String(evidence).slice(0,160),card,'hr-hint');
         if(item.checks?.length){
@@ -212,6 +224,7 @@
             const labels={matched:'匹配',partial:'部分匹配',unmatched:'明确不符',unknown:'待核实'};
             el('strong',`条件 ${index+1} · ${labels[check.status]||check.status}`,details);
             el('p',check.text+'：'+check.evidence,details,'hr-hint');
+            if(check.quote)el('p','原文：'+check.quote,details,'hr-hint');
           }
         }
         else if(item.gaps?.length)el('p','待核实：'+item.gaps.join('；'),card,'hr-hint');
@@ -220,7 +233,7 @@
           ?'已打招呼 · 正在关联对应会话':sendStates[item.contact.status]||item.contact.status,actions,'hr-hint');
         else{
           const greet=button('打招呼',actions,()=>openGreeting(item));greet.className='hr-primary';
-          greet.disabled=locked||run.version!==record.version||!item.canGreet;
+          greet.disabled=locked||record.criteria?.confirmed===false||run.version!==record.version||!item.canGreet;
           if(!item.canGreet)el('span','平台未提供首次打招呼参数',actions,'hr-hint');
         }
       }
@@ -461,7 +474,7 @@
       enter,leave,reset(){leave();selected=record=candidate=null;searchSession=null;criteriaDraft=[];criteriaScope='';criteriaDirty=false;demands=[];speeches=[];
         searchError='';
         demandSelect.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();
-        criteriaRows.replaceChildren();diagnosticRows.replaceChildren();
+        criteriaRows.replaceChildren();advancedRows.replaceChildren();diagnosticRows.replaceChildren();
         for(const node of [profileOutput,results,criteriaRows,diagnosticRows])painted.delete(node);
         message.value='';greetingError.textContent=greetingHint.textContent='';
         greetingTitle.textContent='打招呼';feedback.textContent='请从职位管理选择具体职位。';render();}};

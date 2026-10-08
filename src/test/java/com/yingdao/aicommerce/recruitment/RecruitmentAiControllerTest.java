@@ -26,9 +26,9 @@ class RecruitmentAiControllerTest {
     }
     private Map<String,Object> conditionCandidate(String a,String b,String c) {
         return Map.of("id","c1","summary","有前台接待和对账经验，文件工作需核实","checks",List.of(
-            Map.of("criterionId","k1","status",a,"evidence","担任前台并处理收银对账"),
+            Map.of("criterionId","k1","status",a,"evidence","担任前台并处理收银对账","quote","担任前台并处理收银对账"),
             Map.of("criterionId","k2","status",b,"evidence","卡片未说明文件整理"),
-            Map.of("criterionId","k3","status",c,"evidence","负责顾客接待引导")));
+            Map.of("criterionId","k3","status",c,"evidence","负责顾客接待引导","quote","负责顾客接待引导")));
     }
     @Test void conditionScoringSeparatesMissingDetailsFromContradictoryEvidence() {
         var partial=RecruitmentAiController.validateConditions(conditionCandidate("matched","unknown","matched"),sourcingConditions());
@@ -56,8 +56,37 @@ class RecruitmentAiControllerTest {
         assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateConditions(wrong,conditions));
         assertThrows(IllegalArgumentException.class,()->RecruitmentAiController.validateConditions(conditionCandidate("yes","unknown","matched"),conditions));
     }
+    @Test void insufficientCoverageOrUnverifiedRequiredConditionNeverQualifies() {
+        var sparse=RecruitmentAiController.validateConditions(conditionCandidate("matched","unknown","unknown"),sourcingConditions());
+        assertEquals(100d,sparse.get("score"));
+        assertEquals(50d,sparse.get("coverage"));
+        assertEquals("needs_info",sparse.get("matchState"));
+        var conditions=new ArrayList<>(sourcingConditions());
+        var core=new HashMap<>(conditions.get(0));core.put("required",true);conditions.set(0,core);
+        for(String status:List.of("unknown","partial")) {
+            var result=RecruitmentAiController.validateConditions(conditionCandidate(status,"matched","matched"),conditions);
+            assertEquals("needs_info",result.get("matchState"));
+        }
+    }
+    @Test void coreDirectionMustHaveSameCandidateVerbatimDomainEvidence() {
+        var conditions=List.<Map<String,Object>>of(Map.of("id","k1","text","计算机视觉项目经历",
+            "weight",100,"required",true,"kind","direction","terms",List.of("计算机视觉","OpenCV","目标检测")));
+        String card="使用 OpenCV 完成目标检测；另有 LLM 和 RAG 应用开发经验。";
+        for(String quote:List.of("LLM 和 RAG 应用开发经验","使用计算机视觉完成未在卡片列出的项目","没有目标检测经验")) {
+            String source=quote.startsWith("没有")?quote:card;
+            var row=Map.of("id","c1","summary","方向判断","checks",List.of(
+                Map.of("criterionId","k1","status","matched","evidence","模型判断相关","quote",quote)));
+            var result=RecruitmentAiController.validateConditions(row,conditions,source);
+            assertEquals("needs_info",result.get("matchState"));
+            assertEquals(0d,result.get("score"));
+        }
+        var row=Map.of("id","c1","summary","视觉项目经验","checks",List.of(
+            Map.of("criterionId","k1","status","matched","evidence","实际目标检测项目","quote","使用 OpenCV 完成目标检测")));
+        assertEquals("matched",RecruitmentAiController.validateConditions(row,conditions,card).get("matchState"));
+    }
     @Test void conditionContractsKeepExactCandidateBindingAndDropModelMadeUpScores() {
-        var input=Map.<String,Object>of("criteria",sourcingConditions(),"candidates",List.of(Map.of("id","c1")));
+        var input=Map.<String,Object>of("criteria",sourcingConditions(),"candidates",List.of(
+            Map.of("id","c1","evidence","担任前台并处理收银对账，负责顾客接待引导")));
         var row=new HashMap<>(conditionCandidate("matched","unknown","matched"));row.put("score",1);
         var result=RecruitmentAiController.validateSourcing(Map.of("candidates",List.of(row),"limitations",List.of("仅依据卡片")),input);
         assertTrue(json.writeValueAsString(result).contains("\"score\":100.0"));
@@ -227,7 +256,7 @@ class RecruitmentAiControllerTest {
                     "driver","http://127.0.0.1:"+server.getAddress().getPort(),"model","OPENAI_COMPATIBLE","test","secret")));
             when(gate.tryAcquireModelCall()).thenReturn(mock(RedisConcurrencyGate.Permit.class));
             var candidates=new ArrayList<Map<String,String>>();
-            for(int i=1;i<=5;i++)candidates.add(Map.of("id","c"+i,"evidence","前台接待及办公事务经验"));
+            for(int i=1;i<=5;i++)candidates.add(Map.of("id","c"+i,"evidence","担任前台并处理收银对账，负责顾客接待引导"));
             Map input=json.readValue(json.writeValueAsString(Map.of("jobDescription","接待与协调","profile","已确认工作条件",
                     "criteria",sourcingConditions(),"candidates",candidates)),Map.class);
             String reply=json.writeValueAsString(runtimeController(server).sourcingMatch(user("13800000000"),input));

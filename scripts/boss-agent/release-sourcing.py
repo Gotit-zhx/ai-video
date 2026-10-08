@@ -78,7 +78,9 @@ def require_idle():
     assert not any(int(value) for value in result.split()), "Wait for active business jobs before restarting app"
     with sqlite3.connect("/opt/heyi/boss-agent/runtime/talent-pool.sqlite3") as db:
         for table,column,state in [("recruitment_demands","ai_status","running"),("hr_resume_pool","ai_state","running"),
-                ("hr_resume_commands","status","sending"),("hr_talent_messages","status","sending")]:
+                ("hr_resume_commands","status","sending"),("hr_talent_messages","status","sending"),
+                ("hr_sourcing_jobs","profile_state","running"),("hr_sourcing_runs","state","running"),
+                ("hr_sourcing_contacts","status","sending")]:
             assert db.execute(f"SELECT count(*) FROM {table} WHERE {column}=?",(state,)).fetchone()[0]==0,"Wait for HR work: "+table
 
 

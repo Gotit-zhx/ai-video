@@ -113,9 +113,53 @@ class SourcingTest(unittest.TestCase):
         return {'id': identity, 'score': score, 'summary': '工作经历相关', 'evidence': ['Java 工作经历'],
                 'gaps': ['待看完整简历'], 'scoreBasis': 'known_conditions',
                 'matchState': 'matched' if score >= 80 else 'below_threshold',
-                'matchedConditions': 1, 'pendingConditions': 2,
-                'checks': [{'criterionId': f'k{i+1}', 'status': 'matched' if i == 0 else 'unknown',
-                            'evidence': '实际工作经历' if i == 0 else '待核实'} for i in range(3)]}
+                'matchedConditions': 2, 'pendingConditions': 1,
+                'checks': [{'criterionId': f'k{i+1}', 'status': 'matched' if i < 2 else 'unknown',
+                            'evidence': '实际工作经历' if i < 2 else '待核实'} for i in range(3)]}
+
+    def test_jd_suggestions_are_domain_specific_without_extra_model_calls(self):
+        self.job = s.save(USER, {'accountKey': KEY, 'jobId': 'vision', 'jobName': '图像算法工程师',
+                                'description': '计算机视觉、目标检测，使用 Python 和 OpenCV 交付项目。'})
+        with mock.patch.object(s, 'driver') as driver:
+            value = s.listing(USER, self.params())['criteria']
+            driver.assert_not_called()
+        self.assertEqual(len(value['conditions']), 3)
+        self.assertFalse(value['confirmed'])
+        self.assertTrue(value['conditions'][0]['required'])
+        self.assertIn('计算机视觉', value['conditions'][0]['text'])
+        self.assertIn('OpenCV', value['conditions'][1]['text'])
+        self.assertNotIn('Java', value['conditions'][1]['text'])
+        self.assertEqual(s.direction_terms('JavaScript React 开发')[0], '前端开发')
+
+    def test_legacy_criteria_keep_hr_text_but_require_review(self):
+        self.ready()
+        original = self.job['criteria']['conditions']
+        with pool.database() as db:
+            db.execute('UPDATE hr_sourcing_jobs SET criteria=? WHERE id=?',
+                       (json.dumps({'confirmed': True, 'conditions': original}), self.job['id']))
+        value = s.listing(USER, self.params())['criteria']
+        self.assertEqual(value['conditions'], original)
+        self.assertTrue(value['needsReview'])
+        self.assertFalse(value['confirmed'])
+        self.assertEqual(len(value['suggestedConditions']), 3)
+
+    def test_high_score_with_insufficient_or_required_unknown_evidence_is_not_collected(self):
+        self.ready()
+        for statuses in [('matched', 'unknown', 'unknown'), ('unknown', 'matched', 'matched'),
+                         ('partial', 'matched', 'matched')]:
+            with self.subTest(statuses=statuses):
+                with mock.patch.object(s.threading, 'Thread') as worker:
+                    self.job = s.search(USER, {**self.params(), 'count': 5, 'candidates': [self.card()],
+                                              'requestId': str(uuid.uuid4())}, 'fixture')
+                    snapshot = worker.call_args.kwargs['args'][2]
+                row = self.scored('c1', 100)
+                for check, status in zip(row['checks'], statuses): check['status'] = status
+                with mock.patch.object(s, 'driver', return_value={'candidates': [row]}):
+                    s.search_worker('heyi', self.job['run']['id'], snapshot, 'fixture')
+                result = s.listing(USER, self.params())['run']
+                self.assertEqual(result['candidates'], [])
+                self.assertEqual(result['needsInfo'], 1)
+                self.assertEqual(result['reviewExamples'][0]['matchState'], 'needs_info')
 
     def searched(self):
         self.ready()

@@ -218,7 +218,11 @@ test('sourcing requires confirmed conditions and never uses unsaved edits',async
     criteria:{confirmed:false,conditions:[
       {id:'k1',text:'相关或可迁移工作经验',weight:50,required:false},
       {id:'k2',text:'办公事务、会议或文件整理，其中一项即可',weight:30,required:false},
-      {id:'k3',text:'接待或沟通协调，其中一项即可',weight:20,required:false}]},run:null};
+      {id:'k3',text:'接待或沟通协调，其中一项即可',weight:20,required:false}],
+      suggestedConditions:[
+        {id:'k1',text:'行政或秘书实际工作经历',weight:50,required:true,kind:'direction'},
+        {id:'k2',text:'有文件或会议管理经验',weight:30,required:false,kind:'skills'},
+        {id:'k3',text:'实际完成日常办公事务',weight:20,required:false,kind:'experience'}]},run:null};
   const app=setup({sourcing:true,api:async(url,options)=>{
     if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
     if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
@@ -238,6 +242,16 @@ test('sourcing requires confirmed conditions and never uses unsaved edits',async
   const find=()=>app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取');
   assert.equal(find().disabled,true);
   assert.match(app.text(),/匹配条件/);
+  const beforeSuggestions=app.calls.length;
+  await app.click('使用 JD 建议');
+  assert.equal(app.calls.length,beforeSuggestions,'JD suggestions use existing data without paid AI or BOSS reads');
+  assert.equal(find().disabled,true);
+  assert.equal(saved.criteria.confirmed,false,'Suggestions do not confirm conditions for HR');
+  assert.equal(app.visible().find(n=>n.attributes['aria-label']==='匹配条件 1').value,'行政或秘书实际工作经历');
+  assert.match(app.text(),/核心方向/);
+  assert.match(app.text(),/关键技能/);
+  assert.match(app.text(),/实战经历/);
+  assert.equal(app.visible().find(n=>n.tagName==='details'&&n.className==='hr-sourcing-advanced').open,undefined);
   await app.click('确认并保存条件');
   assert.equal(find().disabled,false);
   const field=app.visible().find(n=>n.attributes['aria-label']==='匹配条件 1');
