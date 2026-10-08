@@ -745,6 +745,29 @@ class ConnectorTest(unittest.TestCase):
         self.assertEqual(record["state"], "failed")
         self.assertFalse(record.get("confirmed_at"))
 
+    def test_adopt_historical_official_request_is_exact_idempotent_and_preserves_received_state(self):
+        import time
+        stamp=int(time.time())-86400
+        message={'mid':'123','time':stamp,'bizType':21050025,
+                 'from':{'uid':'999'},'to':{'uid':'12345'},'body':{'type':4,'action':{'aid':37}}}
+        for wrong in ({**message,'to':{'uid':'other'}},
+                      {**message,'from':{'uid':'12345'}},
+                      {**message,'bizType':1},
+                      {**message,'body':{'type':4,'action':{'aid':38}}}):
+            self.assertFalse(connector.adopt_resume_request({'ok':True,'data':{'messages':[wrong]}},'12345',1))
+        envelope={'ok':True,'data':{'messages':[message]}}
+        self.assertFalse(connector.adopt_resume_request(envelope,'12345',stamp+1))
+        with mock.patch.object(connector,'cli_json') as cli:
+            self.assertTrue(connector.adopt_resume_request(envelope,'12345',1))
+            self.assertFalse(connector.adopt_resume_request(envelope,'12345',1))
+            cli.assert_not_called()
+        record=connector.tracked_resumes()[0]
+        self.assertEqual((record['state'],record['confirmed_at']),('waiting',stamp))
+        with connector.resume_db() as db:
+            db.execute("UPDATE resume_requests SET state='received',message_id='456' WHERE friend_id='12345'")
+        self.assertFalse(connector.adopt_resume_request(envelope,'12345',1))
+        self.assertEqual(connector.tracked_resumes()[0]['state'],'received')
+
     def test_uncertain_request_requires_explicit_retry_and_is_sent_only_once(self):
         with connector.resume_db() as connection:
             connection.execute("INSERT INTO resume_requests "

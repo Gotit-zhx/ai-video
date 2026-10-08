@@ -22,8 +22,12 @@ class WorkflowTest(unittest.TestCase):
         self.c.conversation_scope=lambda friend,job:contextlib.nullcontext()
         self.c.conversation_scope_error.return_value=False
         self.c.resume_messages=lambda result:result.get('data',{}).get('messages',[])
+        self.c.adopt_resume_request.return_value=False
+        self.c.sourcing_friend_details.return_value={'ok':True,'data':{
+            'friendList':[{'uid':'1','encryptJobId':'job1'}]}}
         self.c.cli_json.return_value={'ok':True,'data':{'sent':True}}
-        self.rule={'id':'r1','jobId':'job1','jobName':'运营','enabled':True,'enabledAt':100}
+        self.rule={'id':'r1','jobId':'job1','jobName':'运营','enabled':True,'enabledAt':100,
+                   'historyBackfill':False}
         self.template={'id':'s1','version':1,'content':'{姓名}，可以沟通下{职位}。'}
         @contextlib.contextmanager
         def resume_db():
@@ -547,6 +551,103 @@ class WorkflowTest(unittest.TestCase):
             db.execute("INSERT INTO recovery_windows VALUES('1','r1',100,80,1000,'user approved limited recovery')")
         self.step();self.assertEqual(self.state(),'seen')
         self.c.request_resume.assert_not_called()
+
+    def test_enabled_open_job_admits_historical_contacts_once_without_resetting_ledgers(self):
+        self.rule.pop('historyBackfill')
+        self.pending('seen',friend='1',activity=90)
+        self.pending('requested',friend='2',activity=90)
+        self.pending('reply_uncertain',friend='3',activity=90)
+        with flow.database(self.root) as db:
+            flow.prepare_history(db,{'r1':self.rule})
+            self.assertEqual(flow.trigger_since(db,'1',self.rule),1)
+            self.assertEqual(db.execute("SELECT state FROM people WHERE friend='1'").fetchone()[0],'inspect')
+            self.assertEqual(db.execute("SELECT state FROM people WHERE friend='2'").fetchone()[0],'requested')
+            self.assertEqual(db.execute("SELECT state FROM people WHERE friend='3'").fetchone()[0],'reply_uncertain')
+            db.execute("UPDATE people SET state='seen' WHERE friend='1'")
+            flow.prepare_history(db,{'r1':self.rule})
+            self.assertEqual(db.execute("SELECT state FROM people WHERE friend='1'").fetchone()[0],'seen')
+            self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0],1)
+        self.c.cli_json.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_history_discovery_pages_past_enable_time_and_restores_cursor_after_reconnect(self):
+        self.rule.pop('historyBackfill')
+        self.c.cli_json.return_value={'ok':True,'data':{'friendList':[
+            {'uid':'1','encryptJobId':'job1','lastTS':90}],'hasMore':True}}
+        self.step(reconnectId='first')
+        self.assertEqual(self.state(),'inspect')
+        with flow.database(self.root) as db:
+            task=db.execute("SELECT * FROM catchup WHERE kind='job'").fetchone()
+            self.assertEqual((task['page'],task['since'],task['done']),(2,1,0))
+            flow.prepare_catchup(self.c,db,{'reconnectId':'second'},{'r1':self.rule})
+            task=db.execute("SELECT * FROM catchup WHERE kind='job'").fetchone()
+            self.assertEqual((task['page'],task['since'],task['done']),(2,1,0))
+            self.assertEqual(flow.trigger_since(db,'1',self.rule),1)
+        self.c.request_resume.assert_not_called()
+
+    def test_historical_job_is_officially_verified_before_message_read_or_adoption(self):
+        self.pending('inspect',activity=90)
+        with flow.database(self.root) as db:
+            flow.admit_history(db,'1',{**self.rule,'historyBackfill':True})
+        self.c.sourcing_friend_details.return_value={'ok':True,'data':{
+            'friendList':[{'uid':'1','encryptJobId':'other-job'}]}}
+        self.c.sourcing_friend_details.side_effect=None
+        self.assertEqual(self.step()['data']['phase'],'job_review')
+        self.c.cli_json.assert_not_called()
+        self.c.adopt_received_resume.assert_not_called()
+        self.c.adopt_resume_request.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_existing_official_resume_request_is_restored_without_reply_or_another_request(self):
+        self.pending('inspect',activity=90)
+        with flow.database(self.root) as db:
+            flow.admit_history(db,'1',{**self.rule,'historyBackfill':True})
+        self.messages(self.message(at=90))
+        self.c.adopt_received_resume.return_value=False
+        self.c.adopt_resume_request.return_value=True
+        self.assertEqual(self.step()['data']['phase'],'catching_up')
+        self.assertEqual(self.state(),'requested')
+        self.c.adopt_resume_request.assert_called_once_with(self.c.cli_json.return_value,'1',1)
+        self.c.request_resume.assert_not_called()
+        self.assertEqual(self.c.cli_json.call_args.args,('hr','chatmsg','1','--count','100'))
+
+    def test_closed_or_disabled_jobs_cannot_admit_history(self):
+        self.rule.pop('historyBackfill')
+        self.pending('seen',activity=90)
+        self.c.managed_job_statuses.return_value={'statuses':{'job1':'待开放'}}
+        self.step()
+        self.assertEqual(self.state(),'seen')
+        with flow.database(self.root) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM recovery_windows').fetchone()[0],0)
+        self.rule['enabled']=False
+        self.c.managed_job_statuses.return_value={'statuses':{'job1':'开放中'}}
+        self.now+=31
+        self.step()
+        self.assertEqual(self.state(),'seen')
+        self.c.cli_json.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_unverifiable_historical_job_is_isolated_without_repeated_reads_or_writes(self):
+        self.pending('inspect',activity=90)
+        with flow.database(self.root) as db:
+            flow.admit_history(db,'1',{**self.rule,'historyBackfill':True})
+        self.c.sourcing_friend_details.side_effect=None
+        self.c.sourcing_friend_details.return_value={'ok':False,'error':{'code':'FRIEND_DETAIL_FAILED'}}
+        self.assertEqual(self.step()['data']['phase'],'job_review')
+        self.now+=31;self.step()
+        self.c.sourcing_friend_details.assert_called_once_with(['1'])
+        self.c.cli_json.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_history_verification_and_message_read_share_the_existing_budget(self):
+        self.pending('inspect',activity=90)
+        with flow.database(self.root) as db:
+            flow.admit_history(db,'1',{**self.rule,'historyBackfill':True})
+        self.c.passive_delay=mock.Mock(return_value=60)
+        self.assertEqual(self.step()['data']['phase'],'budget_wait')
+        self.c.passive_delay.assert_called_once_with(cost=2,queued=True)
+        self.c.sourcing_friend_details.assert_not_called()
+        self.c.cli_json.assert_not_called()
 
     def test_background_budget_and_clock_gate_do_not_issue_requests(self):
         self.pending('reply_ready');self.c.passive_delay=lambda **kwargs:60

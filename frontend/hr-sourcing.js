@@ -24,9 +24,9 @@
   globalThis.HeyiHrSourcing={rows};
   globalThis.createHrSourcing=({root,panel,element:el,button,allowed,navigate,hrApi})=>{
     let selected=null,record=null,active=false,generation=0,busy=false,timer=null,polling=false,pollErrors=0;
-    let pendingUploads=[],uploading=false;
+    let demands=[],demandLoading=false;
     let finding=false,searchError='',searchProgress='',searchSession=null,pausedSearch=false;
-    let criteriaDraft=[],criteriaScope='',criteriaDirty=false,referenceScope='';
+    let criteriaDraft=[],criteriaScope='',criteriaDirty=false;
     const painted=new WeakMap();
     function changed(node,value){
       const signature=JSON.stringify(value);
@@ -41,25 +41,16 @@
     const nav=el('div','',panel,'hr-sourcing-nav');
     button('← 返回职位管理',nav,()=>navigate('jobs')).className='hr-text-button';
     const title=el('h2','从职位开始寻源',nav);
-    const feedback=el('p','请选择职位卡片里的“上传简历 / AI 寻源”。',panel,'hr-hint');
+    const feedback=el('p','请选择职位卡片里的“AI 寻源”。',panel,'hr-hint');
     feedback.setAttribute('role','status');
     const layout=el('div','',panel,'hr-sourcing-layout');
     const reference=el('section','',layout,'hr-sourcing-card');
     el('span','01 / 寻找条件',reference,'hr-eyebrow');
     el('h3','先确定匹配条件',reference);
-    el('p','确认几条关键工作能力，再开始寻找。参考简历提供方向，不要求候选人的经历完全相同。',reference,'hr-hint');
-    const referenceTools=el('details','',reference,'hr-sourcing-reference-tools');
-    const referenceToolsTitle=el('summary','参考简历与画像',referenceTools);
-    el('p','支持多份 PDF、Word，每份不超过 10 MB，最多 10 份。上传后结合本职位 JD 提炼画像。',referenceTools,'hr-hint');
-    const uploadLabel=el('label','',referenceTools,'hr-sourcing-upload');
-    el('strong','选择参考简历',uploadLabel);
-    const files=el('input','',uploadLabel);files.type='file';files.multiple=true;
-    files.accept='.pdf,.docx';files.setAttribute('aria-label','上传多份优秀员工参考简历');
-    const uploadStatus=el('p','',referenceTools,'hr-hint');uploadStatus.setAttribute('role','status');
-    const referenceRows=el('div','',referenceTools,'hr-sourcing-references');
-    const profileButton=button('AI 提炼 JD 与人才画像',el('div','',referenceTools,'hr-actions'),generateProfile);
-    profileButton.className='hr-primary';
-    const profileStatus=el('p','',referenceTools,'hr-hint');
+    el('p','使用招聘需求池的岗位分析，确认几条关键工作能力，再开始寻找。参考简历可在需求池选填上传。',reference,'hr-hint');
+    const demandLabel=el('label','',reference,'hr-field');el('span','招聘需求',demandLabel);
+    const demandSelect=el('select','',demandLabel);demandSelect.setAttribute('aria-label','选择本职位招聘需求');
+    const profileStatus=el('p','',reference,'hr-hint');
     const criteriaOutput=el('div','',reference,'hr-sourcing-criteria');
     el('h4','匹配条件',criteriaOutput);
     el('p','先确认几条工作条件。相近经历可匹配，卡片未说明的项目保留为待核实。',criteriaOutput,'hr-hint');
@@ -79,7 +70,7 @@
       }
     });saveCriteria.className='hr-primary';
     const criteriaStatus=el('p','',criteriaOutput,'hr-hint');
-    const profileOutput=el('div','',referenceTools,'hr-sourcing-profile');
+    const profileOutput=el('div','',reference,'hr-sourcing-profile');
     const find=el('section','',layout,'hr-sourcing-card');
     el('span','02 / 人才寻源',find,'hr-eyebrow');
     el('h3','按已确认条件寻找人才',find);
@@ -167,39 +158,24 @@
       title.textContent=record?.jobName||selected?.name||'从职位开始寻源';
       layout.hidden=!record;
       if(!record)return;
-      const referenceState=record.id+':'+record.profileState;
-      if(referenceState!==referenceScope){
-        referenceScope=referenceState;referenceTools.open=record.profileState!=='complete';
-      }
-      referenceToolsTitle.textContent=`参考简历与画像 · 已保存 ${record.references.length} 份`;
       const locked=busy||running();
-      files.disabled=profileButton.disabled=locked;
-      profileButton.disabled ||= !record.references.length||record.profileState==='complete';
+      demandSelect.disabled=locked||demandLoading;
       findButton.disabled=locked||record.profileState!=='complete'||record.criteria?.confirmed===false||criteriaDirty;
       const analyzing=record.run?.version===record.version&&record.run?.state==='running';
       findButton.textContent=finding?'正在获取…':analyzing?'AI 分析中…':searchSession?'继续寻找':'一键 AI 获取';
       pauseButton.hidden=!finding;pauseButton.disabled=pausedSearch;
       findButton.setAttribute('aria-busy',String(finding||analyzing));
       refresh.disabled=busy;count.disabled=locked;
-      profileButton.textContent=record.profileState==='running'?'正在提炼…':record.profileState==='complete'?'画像已就绪':'AI 提炼 JD 与人才画像';
-      profileStatus.textContent=!record.references.length?'尚无已上传的参考简历，请先选择文件并等待上传成功。':record.profileState==='running'
-        ?`驱动模型正在分析 · 已等待 ${Math.max(0,Math.floor(Date.now()/1000-record.profileStartedAt))} 秒`
-        :record.profileState==='failed'?record.profileError:record.profileState==='stale'?'参考简历或 JD 已更新，请重新提炼。'
-        :record.profileState==='complete'?'依据当前职位 JD 与参考简历生成，供 HR 审核。':'上传后可开始提炼。';
-      if(!uploading&&!pendingUploads.length)uploadStatus.textContent=record.references.length?`已保存 ${record.references.length} 份参考简历`:'文件上传成功后会显示在下方列表。';
+      profileStatus.textContent=record.sourceDemand?.id
+        ?record.profileState==='complete'?`来源：${record.sourceDemand.position} · 需求第 ${record.sourceDemand.version} 版 · ${record.sourceDemand.referenceCount||0} 份参考简历`
+          :'需求或 JD 已更新，请在需求池重新生成，再使用最新岗位分析。'
+        :record.profileState==='complete'?'当前保留已有画像，可选择需求池分析替换。':'请先在招聘需求池生成岗位分析，再选择使用。';
       const scope=JSON.stringify([record.id,record.version,record.criteria]);
       if(scope!==criteriaScope){
         criteriaScope=scope;criteriaDirty=false;criteriaDraft=(record.criteria?.conditions||[]).map(row=>({...row}));
       }
       criteriaOutput.hidden=record.profileState!=='complete';renderCriteria();
-      if(changed(referenceRows,[record.references,locked]))for(const item of record.references){
-        const row=el('div','',referenceRows,'hr-sourcing-reference');
-        const text=el('div','',row);el('strong',item.filename,text);el('small',`已提取 ${item.characters} 字`,text,'hr-hint');
-        const remove=button('移除',row,()=>mutate('sourcing/remove',{...params(),referenceId:item.id}));
-        remove.disabled=locked;remove.className='hr-text-button';
-      }
-      if(changed(profileOutput,[record.references.length>0,record.profileState,record.profile])
-          &&record.references.length&&record.profile?.summary){
+      if(changed(profileOutput,[record.profileState,record.profile])&&record.profile?.summary){
         if(record.profileState!=='complete')el('p','以下为旧版画像，重新提炼完成后才可用于寻源。',profileOutput,'hr-hint');
         const details=el('details','',profileOutput,'hr-description');el('summary','查看完整画像与建议 JD',details);
         el('p',record.profile.summary,details,'hr-prose');
@@ -263,7 +239,7 @@
       const ticket=generation,query=params();polling=true;
       try{
         const value=await request('sourcing?'+new URLSearchParams(query));
-        if(valid(ticket)){record=value;pollErrors=0;render();void uploadPending();}
+        if(valid(ticket)){record=value;pollErrors=0;render();}
       }catch(error){if(valid(ticket)){feedback.textContent=error.message;if(quiet&&++pollErrors>=3)stop();}}
       finally{polling=false;}
     }
@@ -274,40 +250,40 @@
         const value=await request(path,body);
         if(valid(ticket)){record=value;feedback.textContent='已保存';return true;}
       }catch(error){if(valid(ticket))feedback.textContent=error.message;}
-      finally{if(valid(ticket)){busy=false;render();void uploadPending();}}
+      finally{if(valid(ticket)){busy=false;render();}}
       return false;
     }
-    files.addEventListener('change',async()=>{
-      const list=[...(files.files||[])];files.value='';
-      if(!list.length||!record||!active||!allowed())return;
-      if(list.length+pendingUploads.length+record.references.length>10){feedback.textContent='每个职位最多 10 份参考简历';return;}
-      pendingUploads.push(...list);
-      if(busy||running())uploadStatus.textContent=`已选择 ${pendingUploads.length} 份，当前操作完成后自动上传。`;
-      await uploadPending();
+    demandSelect.addEventListener('change',async()=>{
+      if(busy||running()||demandLoading||!allowed()||!record)return;
+      if(demandSelect.value==='__manage__'){navigate('demands');return;}
+      const selectedDemand=demands.find(row=>row.id===demandSelect.value);
+      if(!selectedDemand)return;
+      if(selectedDemand.aiStatus!=='complete'){
+        feedback.textContent='该需求尚未生成最新岗位分析，请在下拉栏选择“新建 / 更新招聘需求”。';return;
+      }
+      const applied=await mutate('sourcing/demand',{...params(),demandId:selectedDemand.id});
+      if(applied){searchSession=null;feedback.textContent='已载入招聘需求池分析，请确认匹配条件。';}
     });
-    async function uploadPending(){
-      if(!pendingUploads.length||busy||running()||!active||!record||!allowed())return;
-      const list=pendingUploads;pendingUploads=[];
-      const ticket=generation;busy=uploading=true;render();let completed=0;
+    async function loadDemands(){
+      if(!record||!active||!allowed()||demandLoading)return;
+      const ticket=generation,id=record.id;demandLoading=true;render();
       try{
-        for(const file of list){
+        const items=[];let page=1;
+        do{
+          const value=await request('demands?'+new URLSearchParams({jobId:record.jobId,jobAccountKey:record.accountKey,page}));
           if(!valid(ticket))return;
-          if(!/\.(pdf|docx)$/i.test(file.name))throw Error(`${file.name}：仅支持 PDF、DOCX`);
-          if(file.size>10*1024*1024)throw Error(`${file.name} 超过 10 MB`);
-          uploadStatus.textContent=feedback.textContent=`正在上传并提取 ${completed+1} / ${list.length}：${file.name}`;
-          const base64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(Error('文件读取失败'));reader.readAsDataURL(file);});
-          if(!valid(ticket))return;
-          const value=await request('sourcing/upload',{...params(),filename:file.name,fileBase64:base64});
-          if(!valid(ticket))return;record=value;completed++;
-          render();
-        }
-        feedback.textContent=`已上传 ${completed} 份参考简历，可以提炼 JD 与人才画像。`;
-      }catch(error){if(valid(ticket))feedback.textContent=`本次已保存 ${completed} / ${list.length} 份。${error.message}。未保存的文件请重新选择上传。`;}
-      finally{if(valid(ticket)){
-        busy=false;render();uploadStatus.textContent=feedback.textContent;uploading=false;void uploadPending();
-      }}
+          if(record.id!==id)return;
+          items.push(...(value.items||[]));if(page>=Number(value.pages||1))break;page++;
+        }while(valid(ticket));
+        demands=items;
+        demandSelect.replaceChildren();el('option',items.length?'请选择招聘需求':'本职位暂无招聘需求',demandSelect).value='';
+        for(const row of items)el('option',`${row.position} · ${row.date} · ${row.aiStatus==='complete'?'分析已就绪':'待生成最新分析'}`,demandSelect).value=row.id;
+        el('option','＋ 新建 / 更新招聘需求',demandSelect).value='__manage__';
+        demandSelect.value=record.profileState==='complete'&&items.some(row=>row.id===record.sourceDemand?.id
+          &&row.version===record.sourceDemand.version&&row.aiStatus==='complete')?record.sourceDemand.id:'';
+      }catch(error){if(valid(ticket))feedback.textContent='招聘需求读取失败：'+error.message;}
+      finally{if(valid(ticket)){demandLoading=false;render();}}
     }
-    async function generateProfile(){if(record)await mutate('sourcing/profile',params());}
     async function waitForAnalysis(ticket,snapshot,value){
       const id=value.run?.id,started=Date.now();
       while(value.run?.state==='running'){
@@ -422,7 +398,7 @@
         ?`已保留 ${record.run.candidates.length} 位匹配人选 · `:'')+error.message;}
       finally{if(valid(ticket)){
         if(pausedSearch)feedback.textContent='已暂停寻找，当前进度保留，可点击继续寻找。';
-        busy=finding=false;searchProgress='';render();void uploadPending();
+        busy=finding=false;searchProgress='';render();
       }}
     }
     function fillTemplate(){
@@ -459,7 +435,7 @@
     }
     async function enter(){
       active=true;const ticket=++generation;busy=!!selected;render();
-      if(!selected){feedback.textContent='请返回职位管理，选择职位卡片里的“上传简历 / AI 寻源”。';return;}
+      if(!selected){feedback.textContent='请返回职位管理，选择职位卡片里的“AI 寻源”。';return;}
       feedback.textContent='正在确认招聘账号和职位…';
       try{
         const state=await accountCheck();
@@ -475,19 +451,19 @@
           value=await request('sourcing/save',{accountKey:state.accountKey,jobId:selected.id,jobName:jd.name||selected.name,
             description:jd.description,education:jd.education,experience:jd.experience});
         }
-        if(valid(ticket)){record=value;selected.refresh=false;feedback.textContent='已关联 '+record.jobName+'，可以上传参考简历或查看寻源结果。';}
+        if(valid(ticket)){record=value;selected.refresh=false;feedback.textContent='已关联 '+record.jobName+'，请选择招聘需求池的岗位分析。';await loadDemands();}
       }catch(error){if(valid(ticket)){record=null;feedback.textContent=error.message;}}
-      finally{if(valid(ticket)){busy=false;render();void uploadPending();}}
+      finally{if(valid(ticket)){busy=false;render();}}
     }
-    function leave(){active=false;generation++;stop();busy=uploading=finding=false;searchProgress='';pendingUploads=[];dialog.close();}
+    function leave(){active=false;generation++;stop();busy=finding=demandLoading=false;searchProgress='';dialog.close();}
     return {select(row){selected={id:String(row.encryptJobId||row.encJobId||row.encryptId||row.jobId||row.id),
       name:row.jobName||row.name||'',refresh:true};record=null;searchError='';},
-      enter,leave,reset(){leave();selected=record=candidate=null;searchSession=null;criteriaDraft=[];criteriaScope='';criteriaDirty=false;referenceScope='';speeches=[];
+      enter,leave,reset(){leave();selected=record=candidate=null;searchSession=null;criteriaDraft=[];criteriaScope='';criteriaDirty=false;demands=[];speeches=[];
         searchError='';
-        referenceRows.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();
+        demandSelect.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();
         criteriaRows.replaceChildren();diagnosticRows.replaceChildren();
-        for(const node of [referenceRows,profileOutput,results,criteriaRows,diagnosticRows])painted.delete(node);
-        files.value=message.value='';greetingError.textContent=greetingHint.textContent='';
+        for(const node of [profileOutput,results,criteriaRows,diagnosticRows])painted.delete(node);
+        message.value='';greetingError.textContent=greetingHint.textContent='';
         greetingTitle.textContent='打招呼';feedback.textContent='请从职位管理选择具体职位。';render();}};
   };
 })();

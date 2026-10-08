@@ -127,6 +127,26 @@ test('job queue phase uses its own pending work even when another job is receivi
   assert.match(note.textContent,/待索取 1/);
   assert.doesNotMatch(note.textContent,/已索取|待接收|上次进展|新消息待检查 7|补收检查剩余 4/);
 });
+test('history backfill status and cursor belong only to the selected job',async()=>{
+  const key='a'.repeat(64);
+  const timeouts=[];
+  let histories={closed:{complete:false,page:5},open:{complete:false,page:2}};
+  const app=setup({passive:true,setTimeout(fn,ms){timeouts.push({fn,ms});return timeouts.length;},
+    api:async url=>({data:url.endsWith('/login/status')
+    ?{state:'complete',accountKey:key,capabilities:['passive-resume'],
+      passive:{phase:'catching_up',counts:{open:{inspect:8}},historyByRule:histories}}
+    :url.endsWith('/jobs')?{ok:true,data:[fixtures.jobs.data[0]]}
+    :{items:[{id:'open',jobId:'job-test-1',accountKey:key,enabled:true}]}})});
+  await app.enter('jobs');
+  let note=all(app.root).find(n=>n.className==='hr-hint hr-passive-note');
+  assert.match(note.textContent,/正在补处理本职位历史招呼和简历/);
+  assert.match(note.textContent,/待处理 8/);
+  histories={closed:{complete:false,page:5},open:{complete:true,page:3}};
+  await timeouts.find(timer=>timer.ms===30000).fn();
+  await flush();
+  note=all(app.root).find(n=>n.className==='hr-hint hr-passive-note');
+  assert.doesNotMatch(note.textContent,/正在补处理本职位/);
+});
 test('job card owns sourcing; bounded candidate reads and AI do not send until HR confirms the individual greeting',async()=>{
   const key='a'.repeat(64);
   let saved=null;
@@ -161,7 +181,8 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
   }});
   await app.enter('jobs');await app.click('AI 寻源');
   assert.match(app.text(),/Java 后端开发工程师/);
-  assert.match(app.text(),/参考.pdf/);
+  assert.match(app.text(),/招聘需求池/);
+  assert.equal(app.visible().some(n=>n.type==='file'),false);
   assert.equal(app.calls.some(c=>c.url.includes('/recommendations?')),false);
   const count=app.visible().find(n=>n.tagName==='select'&&n.attributes['aria-label']==='获取人数');count.value='5';
   await app.click('一键 AI 获取');
@@ -354,8 +375,8 @@ test('sourcing visibly reports progress and rejected cards next to the action wi
   assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/search')).length,1);
   assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,0);
 });
-test('replacement uploads and profile generation survive helper recovery; obsolete runs do not lock controls',async()=>{
-  const key='a'.repeat(64);let online=true,finishUpload;
+test('sourcing reuses exact job demand analysis without uploading or regenerating; obsolete runs do not lock controls',async()=>{
+  const key='a'.repeat(64);let online=true;
   let saved={id:'source1',accountKey:key,jobId:'job-test-1',jobName:'Java 后端开发工程师',version:3,
     references:[],profileState:'stale',profile:{summary:'旧画像'},run:{version:1,state:'running',candidates:[]}};
   const app=setup({sourcing:true,api:async(url,options)=>{
@@ -364,40 +385,32 @@ test('replacement uploads and profile generation survive helper recovery; obsole
     if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
     if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:'job-test-1',jobName:saved.jobName,postDescription:'负责系统开发与测试'}}}};
     if(url.startsWith('/api/v1/hr/sourcing?')||url.endsWith('/sourcing/save'))return {data:structuredClone(saved)};
-    if(url.endsWith('/sourcing/upload')){
-      assert.ok(body.fileBase64);
-      if(body.filename==='替换.pdf')await new Promise(resolve=>{finishUpload=resolve;});
-      if(body.filename==='无文字.pdf')throw Error('该简历未提取到足够正文');
-      saved={...saved,version:saved.version+1,references:[...saved.references,{id:body.filename,filename:body.filename,characters:400}]};
-      return {data:structuredClone(saved)};
+    if(url.startsWith('/api/v1/hr/demands?')){
+      assert.equal(new URLSearchParams(url.split('?')[1]).get('jobId'),'job-test-1');
+      assert.equal(new URLSearchParams(url.split('?')[1]).get('jobAccountKey'),key);
+      return {data:{items:[{id:'d1',position:saved.jobName,date:'2026-10-08',aiStatus:'complete'}],pages:1}};
     }
-    if(url.endsWith('/sourcing/profile')){
-      saved={...saved,profileState:'running',profileStartedAt:Date.now()/1000};
+    if(url.endsWith('/sourcing/demand')){
+      assert.equal(body.demandId,'d1');
+      saved={...saved,version:saved.version+1,profileState:'complete',profile:{summary:'需求池画像',suggestedJd:'系统开发',skills:['Java']},
+        sourceDemand:{id:'d1',position:saved.jobName,version:2,referenceCount:0}};
       return {data:structuredClone(saved)};
     }
     throw Error('unexpected '+url);
   }});
   await app.enter('jobs');await app.click('AI 寻源');
-  assert.match(app.text(),/尚无已上传/);assert.doesNotMatch(app.text(),/旧画像/);
-  const profile=()=>app.visible().find(n=>n.tagName==='button'&&/AI 提炼|正在提炼|画像已就绪/.test(n._text));
+  assert.match(app.text(),/招聘需求池/);
   const find=()=>app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取');
-  const input=app.visible().find(n=>n.type==='file');
-  assert.equal(profile().disabled,true);assert.equal(input.disabled,false,'Old-version analysis must not lock new references');
+  const select=app.visible().find(n=>n.attributes['aria-label']==='选择本职位招聘需求');
+  assert.equal(app.visible().some(n=>n.type==='file'),false,'References belong in demand analysis');
+  assert.equal(app.visible().some(n=>['使用岗位分析','刷新需求','前往招聘需求池'].includes(n._text)),false);
+  assert.equal(select.disabled,false);
   online=false;
   const before=app.calls.filter(c=>c.url.endsWith('/login/status')).length;
-  input.files=[{name:'替换.pdf',size:100}];const upload=input.events.change();
-  await flush();assert.match(app.text(),/正在上传并提取/);assert.equal(profile().disabled,true);
-  input.files=[{name:'补充.pdf',size:100}];await input.events.change();
-  assert.match(app.text(),/当前操作完成后自动上传/);
-  finishUpload();await upload;await flush();
-  assert.equal(saved.references.length,2);assert.equal(profile().disabled,false);
-  input.files=[{name:'无文字.pdf',size:100}];await input.events.change();
-  assert.match(app.text(),/未提取到足够正文/);assert.equal(profile().disabled,false);
-  await app.click('AI 提炼 JD 与人才画像');
-  assert.equal(app.calls.filter(c=>c.url.endsWith('/login/status')).length,before,'Cloud storage and AI need no local BOSS health check');
-  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/profile')).length,1);
-  saved={...saved,profileState:'complete',profile:{summary:'新版画像',suggestedJd:'系统开发',skills:['Java']}};
-  await app.tick(4000);assert.equal(find().disabled,false);
+  select.value='d1';await select.events.change();await flush();
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/login/status')).length,before,'Reusing cloud analysis needs no BOSS call');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/profile')).length,0);
+  assert.equal(find().disabled,false);
   const details=app.visible().find(n=>n.tagName==='details'&&n.textContent.includes('查看完整画像与建议'));
   details.open=true;
   await app.click('刷新结果');
@@ -557,6 +570,32 @@ const demandRow=()=>({id:'d1',version:1,date:'2026-09-29',position:'电商运营
   jobDescription:'已保存旧 JD',jobFetchedAt:'2026-09-29T00:00:00Z'});
 const demandStatus=()=>({state:'complete',accountKey:'a'.repeat(64),capabilities:['job-jd']});
 const demandDetail=(id='job-test-2')=>({ok:true,data:{job:{encryptId:id,jobName:'电商运营',postDescription:'当前岗位 JD：负责直播策划与内容运营。'}}});
+test('optional demand references upload offline in AI area and generation still uses one DRIVER request',async()=>{
+  let row={...demandRow(),references:[]},generations=0;
+  const app=setup({confirm:()=>true,api:async(url,options)=>{
+    const body=options?.body&&JSON.parse(options.body);
+    if(url.endsWith('/login/status'))return {data:demandStatus()};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:demandDetail()};
+    if(url==='/api/v1/hr/departments')return {data:demandDirectory()};
+    if(url.endsWith('/save')){row={...row,...body,version:row.version+1};return {data:row};}
+    if(url.endsWith('/upload')){
+      assert.equal(body.id,row.id);assert.equal(body.version,row.version);assert.ok(body.fileBase64);
+      row={...row,version:row.version+1,references:[{id:'ref1',filename:body.filename}],aiStatus:'stale'};
+      return {data:row};
+    }
+    if(url.endsWith('/generate')){generations++;row={...row,aiStatus:'running'};return {data:row};}
+    return {data:{items:[row],counts:{all:1},total:1,page:1,pages:1}};
+  }});
+  await app.enter('demands');await app.click('查看 / 编辑');
+  const input=app.visible().find(n=>n.attributes['aria-label']==='上传岗位分析参考简历');
+  assert.ok(input);assert.match(input.parent.parent.parent.className,/hr-demand-references/);
+  input.files=[{name:'优秀员工.pdf',size:100}];input.events.change();await flush();
+  assert.equal(row.references.length,1);assert.equal(generations,0);
+  assert.match(app.text(),/优秀员工.pdf/);assert.match(app.text(),/未上传时，仍按岗位 JD/);
+  await app.click('一键 AI 生成');
+  assert.equal(generations,1);assert.equal(input.disabled,true);
+});
 test('demand generation refreshes the exact local job JD then saves before a single DRIVER call',async()=>{
   let row=demandRow(),started=0;
   const app=setup({api:async(url,options)=>{

@@ -148,10 +148,13 @@ class RecruitmentAiControllerTest {
             when(models.driverConnection("org-1")).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection(
                     "driver","http://127.0.0.1:"+server.getAddress().getPort()+"/v1","gpt-5.5","OPENAI_COMPATIBLE","test","secret")));
             var permit=mock(RedisConcurrencyGate.Permit.class);when(gate.tryAcquireModelCall()).thenReturn(permit);
-            Object reply=new RecruitmentAiController(models,gate,json).generate(user("13800000000"),demand());
+            var withReferences=new HashMap<String,Object>(demand());
+            withReferences.put("referenceResumes",List.of("参考员工：负责工程交付与团队协调。"));
+            Object reply=new RecruitmentAiController(models,gate,json).generate(user("13800000000"),withReferences);
             assertEquals(1,calls.get());assertEquals("gpt-5.5",payload.get().get("model"));
             assertFalse(payload.get().containsKey("tools"));assertTrue((Boolean)payload.get().get("stream"));
             assertEquals(10000,payload.get().get("max_tokens"));
+            assertTrue(json.writeValueAsString(payload.get()).contains("参考员工：负责工程交付与团队协调"));
             String serialized=json.writeValueAsString(reply);
             assertTrue(serialized.contains("\"modelType\":\"DRIVER\""));assertFalse(serialized.contains("secret"));
             verify(permit).close();

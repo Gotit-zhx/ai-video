@@ -40,6 +40,9 @@ public class RecruitmentAiController {
         只能分析岗位，不对真实候选人作录用决定；仅使用与岗位工作有关的能力和经历，
         不推断或建议性别、年龄、婚育、民族、宗教等条件。未填写的信息标注待确认，不虚构公司业务和薪资。
         明确区分硬性要求与优先条件，不能擅自提高用户填写的最低学历和工作年限。
+        若提供参考简历，结合其中与岗位相关的技能、经历和成果完善分析；正式职位 JD 为准。
+        参考简历仅提供可选的验证方向，不能将某个人的全部经历变成岗位硬性要求，也不复制联系方式。
+        若未提供参考简历，按岗位需求正常生成，不能要求用户必须上传。
         每个胜任能力要可观察可验证；面试问题需覆盖不同核心能力，使用行为/情景题，
         每题附追问、评分标准及好答案信号。避免重复空泛问题。
         只输出一个完整 JSON 对象，不要 markdown，不要调用工具，格式必须如下：
@@ -81,6 +84,12 @@ public class RecruitmentAiController {
         for (String field : List.of("position","department","responsibilities","requirements")) {
             if (String.valueOf(clean.get(field)).isBlank())
                 throw new BusinessException(HttpStatus.BAD_REQUEST, "请填写岗位、部门、职责和任职要求");
+        }
+        Object references = body.get("referenceResumes");
+        if (references != null) {
+            if (!(references instanceof List<?> refs) || refs.size() > 10)
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "每项需求最多 10 份参考简历");
+            clean.put("referenceResumes", refs.stream().map(value -> bounded(value, 8000)).toList());
         }
         return execute(user, clean, PROMPT, "demand");
     }

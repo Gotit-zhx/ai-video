@@ -14,6 +14,33 @@ USER = {"id": "admin-1", "username": "13800000000", "organizationCode": "heyi",
 
 
 class DemandsTest(unittest.TestCase):
+    def test_optional_references_are_offline_deduplicated_versioned_and_added_only_when_present(self):
+        import base64
+        import resume_storage as storage
+        row = demands.save(USER, self.body)
+        self.assertEqual(row["references"], [])
+        self.assertNotIn("referenceResumes", demands.driver_input(self.body))
+        with mock.patch.object(storage, "extract", return_value=("实际项目交付与跨团队协调经历。" * 5, "正文")), \
+                mock.patch.object(storage, "store", return_value="private/file") as store, \
+                mock.patch.object(demands, "call_driver") as driver:
+            upload = {"id": row["id"], "version": row["version"], "filename": "员工.pdf",
+                      "fileBase64": base64.b64encode(b"%PDF-1.4 fixture").decode()}
+            row = demands.references(USER, upload)
+            self.assertEqual(row["version"], 2)
+            self.assertEqual(len(row["references"]), 1)
+            self.assertNotIn("body", row["references"][0])
+            duplicate = demands.references(USER, {**upload, "version": 2})
+            self.assertEqual(duplicate["version"], 2)
+            self.assertEqual(store.call_count, 1)
+            driver.assert_not_called()
+            with self.assertRaises(pool.Conflict): demands.references(USER, upload)
+        with mock.patch.object(demands.threading, "Thread") as worker:
+            demands.generate(USER, {"id": row["id"], "version": 2}, "fixture")
+            snapshot = worker.call_args.kwargs["args"][3]
+            self.assertIn("实际项目交付", demands.driver_input(snapshot)["referenceResumes"][0])
+        with self.assertRaises(pool.Conflict):
+            demands.references(USER, {"id": row["id"], "version": 2, "referenceId": row["references"][0]["id"]}, remove=True)
+
     def setUp(self):
         folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
         patch=mock.patch.object(pool,"DB",Path(folder.name)/"pool.sqlite3");patch.start();self.addCleanup(patch.stop)

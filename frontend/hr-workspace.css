@@ -39,6 +39,12 @@
 .hr-demand-jd summary{cursor:pointer;font-size:13px;font-weight:600}
 .hr-demand-jd .hr-prose{max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px;line-height:1.8;margin-bottom:0}
 .hr-demand-ai{margin-top:30px;border-top:1px solid var(--hr-border);padding-top:24px}
+.hr-demand-references{margin:18px 0;padding:18px;border:1px solid var(--hr-border);border-radius:12px;background:var(--hr-surface,#fff)}
+.hr-demand-reference-upload{display:flex;flex-wrap:wrap;align-items:center;gap:14px;font-size:13px;max-width:100%}
+.hr-demand-reference-upload input{max-width:100%;font-size:12px;color:var(--hr-muted)}
+.hr-demand-reference-upload input::file-selector-button{padding:8px 14px;margin-right:12px;border:1px solid var(--hr-border);border-radius:8px;background:var(--hr-ink,#111);color:#fff;cursor:pointer}
+.hr-demand-references .hr-sourcing-reference{padding:10px 0;gap:14px;border-bottom:1px solid var(--hr-border)}
+.hr-demand-references .hr-sourcing-reference strong{overflow-wrap:anywhere;min-width:0}
 .hr-demand-ai .hr-pool-tabs{margin-top:20px}
 .hr-demand-ai h4{margin:12px 0 10px;font-size:15px}
 .hr-demand-ai p,.hr-demand-list{font-size:13px;line-height:1.85;overflow-wrap:anywhere;white-space:pre-wrap}

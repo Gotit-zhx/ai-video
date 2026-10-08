@@ -14,6 +14,9 @@ manifest = json.loads((root / "manifest.json").read_text())
 files = ("index.html", "hr-workspace.js", "hr-workspace.css", "hr-passive.js")
 if "app.js" in manifest:
     files += ("app.js",)
+for optional in ("hr-demands.js", "hr-sourcing.js"):
+    if optional in manifest:
+        files += (optional,)
 assert not (root / "activation.json").exists()
 assert shutil.disk_usage(root).free >= 2 * 1024**3
 backup = root / "rollback"
@@ -93,4 +96,8 @@ except BaseException:
     raise
 (root / "activation.json").write_text(json.dumps(
     {"frontendImage": image, "sha256": manifest, "preservedContainers": preserved}, indent=2))
+shutil.rmtree(image_directory)
+archive = Path("/tmp") / (root.name + ".tar.gz")
+if archive.is_file() and not archive.is_symlink():
+    archive.unlink()
 print("HR cards published; frontend hashes verified; application and BOSS services preserved")

@@ -10,6 +10,7 @@
     template_required:'请在话术管理中配置默认被动邀约回复',chat_required:'正在准备 BOSS 沟通页面',
     budget_wait:'正在按请求频率排队，会自动继续',send_wait:'正在按发送间隔排队',
     catching_up:'正在补收断开期间的新招呼和简历',
+    history_backfill:'正在补处理本职位历史招呼和简历',
     retry_wait:'后台连接暂缓，进度已保留，将自动继续',
     conversation_review:'持续接收新消息，部分会话待核对',
     job_review:'会话职位未核实，已暂停发送',
@@ -18,6 +19,8 @@
   const eventLabels={INCOMING_DETECTED:'收到主动消息',AUTO_REPLY_SENT:'话术回复已发送',
     AUTO_REPLY_UNCERTAIN:'话术回复结果待核对',CHAT_READ_UNAVAILABLE:'会话暂不可读取，已单独保留待核对',RESUME_REQUESTED:'已索取简历',
     JOB_CONVERSATION_MISMATCH:'会话与职位未对应，已阻止发送',
+    HISTORY_BACKFILL_QUEUED:'历史联系人已加入补处理',RESUME_REQUEST_RESTORED:'已恢复历史简历索取记录',
+    JOB_BINDING_UNAVAILABLE:'官方会话职位暂不可核实，已暂停该会话发送',
     RESUME_REQUEST_UNCERTAIN:'索取结果待核对',RESUME_RECEIVED:'已收到简历'};
   function flowSummary(flow,ruleId){
     const counts={};
@@ -29,13 +32,15 @@
       ['inspect_review','会话待核对'],['job_review','职位待核对'],['reply_uncertain','回复待核对'],['request_uncertain','索取待核对'],['request_failed','索取未完成']]
       .filter(([key])=>counts[key]).map(([key,label])=>`${label} ${counts[key]}`);
     let phase=flow.phase;
-    const jobPhases=['watching','reply_queued','request_queued','receiving',
-      'conversation_review','job_review','needs_review'];
+    const jobPhases=['watching','reply_queued','request_queued','receiving','catching_up',
+      'conversation_review','job_review','needs_review','history_backfill'];
+    const historyPending=ruleId&&(Array.isArray(ruleId)?ruleId:[ruleId])
+      .some(id=>flow.historyByRule?.[id]?.complete===false);
     if(ruleId&&jobPhases.includes(phase)){
       phase=counts.export||counts.requested?'receiving':
         counts.ready?'request_queued':counts.reply_ready?'reply_queued':
         counts.job_review?'job_review':counts.reply_uncertain||counts.request_uncertain||counts.request_failed?'needs_review':
-        counts.inspect_review?'conversation_review':'watching';
+        counts.inspect_review?'conversation_review':historyPending?'history_backfill':'watching';
     }
     const clock=value=>new Date(value*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false});
     if(['budget_wait','retry_wait'].includes(flow.phase)&&Number.isFinite(flow.retryAt)){
@@ -321,7 +326,7 @@
       }
       let accountKey='',rule;
       const updateNote=status=>{
-        if(!rule?.enabled){note.textContent='默认关闭。开启后，新主动消息触发默认话术回复，再发送官方附件简历请求。';return;}
+        if(!rule?.enabled){note.textContent='默认关闭。开启后先补处理本职位历史招呼和简历，再持续接收新消息；已回复、已索取的不重复发送。';return;}
         if(status.data.state!=='complete'||status.data.paused){note.textContent='助手未连接，自动邀约暂停';return;}
         note.textContent=flowSummary(status.data.passive||{},rule.id);
         panel.dataset.enabled=String(input.checked);
@@ -356,7 +361,7 @@
               jobName:String(row.jobName||row.name||row.title||''),description:String(row.description||row.jobDescription||''),
               education:String(row.degreeName||row.degreeDesc||row.education||''),experience:String(row.experienceName||row.experience||row.workYearDesc||''),
               projectId:rule?.projectId||''});
-            if(allowed()&&card.isConnected){input.checked=rule.enabled;note.textContent=rule.enabled?'已开启：新主动消息触发默认话术回复，成功后发送官方附件简历请求。':'已关闭新的自动回复与索取，已索取的简历继续接收。';}
+            if(allowed()&&card.isConnected){input.checked=rule.enabled;note.textContent=rule.enabled?'已开启：先补处理本职位历史招呼和简历，再持续跟进新消息；已处理记录不会重复发送。':'已关闭新的自动回复与索取，已索取的简历继续接收。';}
           }catch(error){if(allowed()&&card.isConnected){input.checked=!desired;note.textContent=error.message;}}
           finally{input.disabled=false;}
         };

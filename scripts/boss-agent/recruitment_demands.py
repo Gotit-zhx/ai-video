@@ -1,5 +1,6 @@
 """Recruitment planning and bounded, explicit AI generation. No BOSS operations."""
 import datetime
+import base64
 import hashlib
 import json
 import re
@@ -28,10 +29,17 @@ def schema(db):
         ai_version INTEGER NOT NULL DEFAULT 0, ai_result TEXT NOT NULL DEFAULT '{}',
         ai_error TEXT NOT NULL DEFAULT '', ai_started REAL NOT NULL DEFAULT 0)""")
     db.execute("CREATE INDEX IF NOT EXISTS demands_owner ON recruitment_demands(owner,status,updated_at)")
+    db.execute("""CREATE TABLE IF NOT EXISTS hr_demand_references(
+        id TEXT PRIMARY KEY,owner TEXT NOT NULL,demand TEXT NOT NULL,digest TEXT NOT NULL,
+        filename TEXT NOT NULL,body TEXT NOT NULL,file_key TEXT NOT NULL,created_at TEXT NOT NULL,
+        UNIQUE(owner,demand,digest))""")
 
 
-def view(row):
-    return {**json.loads(row["body"]), "id": row["id"], "version": row["version"],
+def view(row, db=None):
+    refs = [] if db is None else [dict(item) for item in db.execute(
+        "SELECT id,filename,created_at FROM hr_demand_references WHERE owner=? AND demand=? ORDER BY created_at,id",
+        (row["owner"], row["id"]))]
+    return {**json.loads(row["body"]), "id": row["id"], "version": row["version"], "references": refs,
             "status": row["status"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
             "aiStatus": row["ai_status"], "aiVersion": row["ai_version"], "aiError": row["ai_error"],
             "aiResult": json.loads(row["ai_result"]), "aiJob": row["ai_job"],
@@ -62,6 +70,12 @@ def listing(user, query):
     if q:
         where.append("body LIKE ? ESCAPE '\\'")
         args.append("%"+q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")+"%")
+    if query.get("jobId"):
+        key, job = pool.text(query.get("jobAccountKey"), 64), pool.text(query["jobId"], 180)
+        if not re.fullmatch(r'[a-f0-9]{64}', key) or not re.fullmatch(r'[\w~-]{1,180}', job):
+            raise ValueError("职位与招聘账号不正确")
+        where.extend(["json_extract(body,'$.jobId')=?", "json_extract(body,'$.jobAccountKey')=?"])
+        args.extend([job, key])
     with pool.database() as db:
         schema(db)
         expire_jobs(db)
@@ -70,7 +84,7 @@ def listing(user, query):
             row = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?", (owner, record)).fetchone()
             if not row:
                 raise ValueError("需求不存在")
-            return {"item": view(row)}
+            return {"item": view(row, db)}
         counts = {s: 0 for s in STATES}
         counts.update({r["status"]: r["n"] for r in db.execute(
             "SELECT status,COUNT(*) n FROM recruitment_demands WHERE "+" AND ".join(where)+" GROUP BY status", args)})
@@ -83,7 +97,7 @@ def listing(user, query):
         page = min(page, pages)
         rows = db.execute("SELECT * FROM recruitment_demands WHERE "+" AND ".join(where)
                           +" ORDER BY updated_at DESC,id LIMIT 20 OFFSET ?", [*args, (page-1)*20]).fetchall()
-        return {"items": [view(row) for row in rows], "counts": counts, "total": total, "page": page, "pages": pages}
+        return {"items": [view(row, db) for row in rows], "counts": counts, "total": total, "page": page, "pages": pages}
 
 
 def save(user, body, departments=None):
@@ -141,7 +155,7 @@ def save(user, body, departments=None):
             raise ValueError("停用部门不能关联新的招聘需求")
         if creating and old:
             if json.loads(old["body"]) == clean and old["status"] == status:
-                return view(old)
+                return view(old, db)
             raise pool.Conflict("该新建请求已保存，请刷新后编辑")
         if old and old["ai_status"] == "running":
             raise pool.Conflict("正在生成岗位分析，请等待本次生成结束后再修改")
@@ -156,9 +170,69 @@ def save(user, body, departments=None):
         else:
             db.execute("""INSERT INTO recruitment_demands(id,owner,body,status,version,created_at,updated_at)
                 VALUES(?,?,?,?,1,?,?)""", (record, owner, json.dumps(clean, ensure_ascii=False), status, now, now))
-        result = view(db.execute("SELECT * FROM recruitment_demands WHERE id=?", (record,)).fetchone())
+        result = view(db.execute("SELECT * FROM recruitment_demands WHERE id=?", (record,)).fetchone(), db)
         pool.event(db, owner, actor, record, "demand.update" if old else "demand.create", view(old) if old else None, result)
         return result
+
+
+def references(user, body, remove=False):
+    """Optional, demand-owned uploads. Extraction never starts a model call."""
+    import resume_storage as storage
+    owner, actor = pool.context(user)
+    record = pool.text(body.get("id"), 100)
+    with pool.database() as db:
+        schema(db); expire_jobs(db)
+        row = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?", (owner, record)).fetchone()
+        if not row:
+            raise ValueError("请先保存招聘需求，再上传参考简历")
+        if row["version"] != body.get("version"):
+            raise pool.Conflict("招聘需求已更新，请刷新后上传")
+        if row["ai_status"] == "running":
+            raise pool.Conflict("岗位分析正在生成，请等待完成后修改参考简历")
+        if remove:
+            changed = db.execute("DELETE FROM hr_demand_references WHERE id=? AND owner=? AND demand=?",
+                                 (pool.text(body.get("referenceId"), 100), owner, record)).rowcount
+            if not changed:
+                raise ValueError("参考简历不存在")
+            db.execute("UPDATE recruitment_demands SET version=version+1,ai_status=CASE WHEN ai_result='{}' THEN 'idle' ELSE 'stale' END,updated_at=? WHERE id=?",
+                       (datetime.datetime.now(datetime.timezone.utc).isoformat(), record))
+            return view(db.execute("SELECT * FROM recruitment_demands WHERE id=?", (record,)).fetchone(), db)
+    raw = base64.b64decode(body.get("fileBase64", ""), validate=True)
+    filename = storage.original_filename(body.get("filename"))
+    extension = filename.rsplit(".", 1)[-1].lower()
+    if not raw or len(raw) > 10*1024*1024 or extension not in {"pdf", "docx"}:
+        raise ValueError("支持 PDF、DOCX，每份不超过 10 MB")
+    storage.validate(raw, extension)
+    digest = hashlib.sha256(raw).hexdigest()
+    ref = str(uuid.uuid5(uuid.NAMESPACE_URL, f"hr-demand-reference:{owner}:{record}:{digest}"))
+    with pool.database() as db:
+        schema(db)
+        current = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?", (owner, record)).fetchone()
+        if not current or current["version"] != body.get("version") or current["ai_status"] == "running":
+            raise pool.Conflict("需求或生成状态已变化，请刷新后上传")
+        if db.execute("SELECT 1 FROM hr_demand_references WHERE id=? AND owner=? AND demand=?", (ref, owner, record)).fetchone():
+            return view(current, db)
+        if db.execute("SELECT count(*) FROM hr_demand_references WHERE owner=? AND demand=?", (owner, record)).fetchone()[0] >= 10:
+            raise ValueError("每项需求最多 10 份参考简历")
+    text, note = storage.extract(raw, extension)
+    if len(text.strip()) < 30:
+        raise ValueError("简历正文不足，请上传含文字层的 PDF 或 Word 文件")
+    location = storage.store(owner, ref, raw, extension)
+    with pool.database() as db:
+        schema(db)
+        current = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?", (owner, record)).fetchone()
+        if not current or current["version"] != body.get("version") or current["ai_status"] == "running":
+            raise pool.Conflict("需求或生成状态已变化，请刷新后上传")
+        if db.execute("SELECT count(*) FROM hr_demand_references WHERE owner=? AND demand=?", (owner, record)).fetchone()[0] >= 10:
+            raise ValueError("每项需求最多 10 份参考简历")
+        db.execute("INSERT INTO hr_demand_references VALUES(?,?,?,?,?,?,?,?)",
+                   (ref, owner, record, digest, filename,
+                    json.dumps({"text": text[:60000], "note": note}, ensure_ascii=False), location,
+                    datetime.datetime.now(datetime.timezone.utc).isoformat()))
+        db.execute("UPDATE recruitment_demands SET version=version+1,ai_status=CASE WHEN ai_result='{}' THEN 'idle' ELSE 'stale' END,updated_at=? WHERE id=?",
+                   (datetime.datetime.now(datetime.timezone.utc).isoformat(), record))
+        pool.event(db, owner, actor, ref, "demand.reference", None, {"demand": record, "digest": digest})
+        return view(db.execute("SELECT * FROM recruitment_demands WHERE id=?", (record,)).fetchone(), db)
 
 
 def driver_input(snapshot):
@@ -170,6 +244,8 @@ def driver_input(snapshot):
     values['requirements'] = snapshot['requirements'] or '按上述关联职位 JD 中的任职要求分析；未提到的条件标注待确认。'
     if any(len(str(value)) > 10000 for value in values.values()):
         raise ValueError("JD 与补充职责合计超过模型输入上限，请精简补充内容后重试")
+    if snapshot.get("referenceTexts"):
+        values["referenceResumes"] = snapshot["referenceTexts"]
     return values
 
 
@@ -259,14 +335,18 @@ def generate(user, body, cookie):
         if not row:
             raise ValueError("请先保存招聘需求")
         if row["ai_status"] == "running":
-            return view(row)
+            return view(row, db)
         if body.get("version") != row["version"]:
             raise pool.Conflict("需求已经更新，请刷新后再生成")
         if row["ai_status"] == "complete" and body.get("regenerate") is not True:
-            return view(row)
+            return view(row, db)
         if db.execute("SELECT 1 FROM recruitment_demands WHERE owner=? AND ai_status='running'", (owner,)).fetchone():
             raise pool.Conflict("已有招聘需求正在生成，请等待完成")
-        snapshot = view(row)
+        snapshot = view(row, db)
+        snapshot["referenceTexts"] = [
+            (ref["filename"] + "\n" + json.loads(ref["body"])["text"])[:8000]
+            for ref in db.execute("SELECT filename,body FROM hr_demand_references WHERE owner=? AND demand=? ORDER BY created_at,id",
+                                  (owner, record))]
         if not snapshot.get('jobId') or not snapshot.get('jobAccountKey') or not snapshot.get('jobDescription'):
             raise ValueError("请先关联具体职位并读取该岗位的 JD")
         try:
@@ -280,7 +360,7 @@ def generate(user, body, cookie):
         db.execute("""UPDATE recruitment_demands SET ai_status='running',ai_job=?,ai_version=version,
             ai_error='',ai_started=? WHERE owner=? AND id=?""", (job, time.time(), owner, record))
         pool.event(db, owner, actor, record, "demand.ai.start", None, {"job": job, "version": row["version"]})
-        result = view(db.execute("SELECT * FROM recruitment_demands WHERE id=?", (record,)).fetchone())
+        result = view(db.execute("SELECT * FROM recruitment_demands WHERE id=?", (record,)).fetchone(), db)
     try:
         threading.Thread(target=worker, args=(user, record, job, snapshot, cookie), daemon=True).start()
     except Exception:

@@ -21,6 +21,12 @@ expected = json.loads((root / "expected-baseline.json").read_text())
 manifest = json.loads((root / "manifest.json").read_text())
 files = ["index.html", "hr-workspace.js", "hr-workspace.css", "hr-passive.js", "hr-sourcing.js"]
 connector_files = ["connector.py", "passive_pool.py", "hr_sourcing.py"]
+for name in ("hr-demands.js",):
+    if "frontend/"+name in manifest:
+        files.append(name)
+for name in ("recruitment_demands.py", "resume_storage.py"):
+    if "connector/"+name in manifest:
+        connector_files.append(name)
 container = "ai-commerce-frontend"
 bin_dir = Path("/opt/heyi/boss-agent/bin")
 backup = root / "rollback"
@@ -243,4 +249,18 @@ except BaseException:
     "preservedServices": preserved, "files": manifest,
     "dataFile": str(db_path), "bossOperations": False
 }, indent=2))
+cleanup = []
+for artifact in (app_dir / "app.jar", root / "baseline.jar"):
+    if artifact.is_file():
+        if artifact.name == "baseline.jar":
+            assert sha(artifact.read_bytes()) == expected["app.jar"]
+        cleanup.append({"path": str(artifact), "bytes": artifact.stat().st_size})
+        artifact.unlink()
+# Keep the rollback JAR; generated image input and transfer archives are redundant
+# once the current container, source hashes and rollback copy are verified.
+archive = Path("/tmp") / (root.name + ".tar.gz")
+if archive.is_file() and not archive.is_symlink():
+    cleanup.append({"path": str(archive), "bytes": archive.stat().st_size})
+    archive.unlink()
+(root / "cleanup.json").write_text(json.dumps(cleanup, indent=2))
 print("Recruitment stream fix activated; frontend verified; app/connector healthy; unrelated JAR entries and image/video runtime processes preserved")

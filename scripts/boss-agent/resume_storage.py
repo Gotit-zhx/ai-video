@@ -1,4 +1,4 @@
-"""Private OSS resume objects and bounded text extraction. Never accepts remote URLs."""
+"""Private local resume objects, legacy OSS reads and bounded text extraction."""
 import base64
 import csv
 import hashlib
@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import shutil
 import sys
 import tempfile
 import unicodedata
@@ -172,15 +173,50 @@ def bucket():
 
 
 def store(owner, record, raw, extension):
+    validate(raw, extension)
     key = prefix(owner) + record + '.' + extension
-    client = bucket()
-    client.put_object(key, raw, headers={'Content-Type': TYPES[extension], 'x-oss-object-acl': 'private', 'Content-Disposition': 'attachment'})
+    target = local_path(owner, key)
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if target.exists():
+        if hashlib.sha256(target.read_bytes()).digest() != hashlib.sha256(raw).digest():
+            raise ValueError('同一简历存储标识的内容不一致')
+    else:
+        if shutil.disk_usage(target.parent).free < len(raw) + 2*1024**3:
+            raise ValueError('简历存储空间不足，请先释放空间')
+        fd, temporary = tempfile.mkstemp(prefix='.resume-', dir=target.parent)
+        try:
+            with os.fdopen(fd, 'wb') as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    # New HR documents must remain available after the user stops OSS.
+    # Existing remote records retain their original keys and download fallback.
+    if os.environ.get('APP_HR_OSS_WRITE_ENABLED') == '1':
+        bucket().put_object(key, raw, headers={'Content-Type': TYPES[extension],
+            'x-oss-object-acl': 'private', 'Content-Disposition': 'attachment'})
     return key
 
 
-def download(owner, key):
+def local_path(owner, key):
     if not key.startswith(prefix(owner)) or not re.fullmatch(re.escape(prefix(owner))+r'[a-f0-9-]{36}\.(pdf|docx|doc|png|jpe?g)', key):
         raise ValueError('简历存储记录无效')
+    root = Path(os.environ.get('APP_HR_LOCAL_RESUME_DIR',
+                '/opt/heyi/boss-agent/runtime/resume-files')).resolve()
+    target = root / key
+    if not target.resolve().is_relative_to(root):
+        raise ValueError('简历存储路径无效')
+    return target
+
+
+def download(owner, key):
+    local = local_path(owner, key)
+    if local.is_file():
+        if local.stat().st_size > MAX_BYTES:
+            raise ValueError('简历文件过大')
+        return local.read_bytes()
     response = bucket().get_object(key)
     try:
         raw = response.read(MAX_BYTES+1)

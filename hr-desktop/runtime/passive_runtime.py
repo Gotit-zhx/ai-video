@@ -172,6 +172,53 @@ def trigger_since(db, friend, rule):
     return rule['enabledAt']
 
 
+def history_enabled(rule):
+    # Opening a job alone is never consent. Only an enabled passive rule for an
+    # officially open job reaches this path. Active follow-up has its own scope.
+    return rule.get('historyBackfill', True) is True and not rule.get('activeFriend')
+
+
+def admit_history(db, friend, rule):
+    """Durable, candidate/rule/enable-scoped permission to inspect retained history."""
+    if not history_enabled(rule):
+        return
+    db.execute('''INSERT INTO recovery_windows VALUES(?,?,?,?,?,?)
+      ON CONFLICT(friend) DO UPDATE SET rule=excluded.rule,enabled_at=excluded.enabled_at,
+        since=excluded.since,authorized_at=excluded.authorized_at,reason=excluded.reason
+      WHERE recovery_windows.rule=excluded.rule
+        AND recovery_windows.enabled_at!=excluded.enabled_at''',
+      (friend, rule['id'], rule['enabledAt'], 1, int(time.time()),
+       '用户开启本职位被动邀约：补处理历史招呼及附件，保留防重复记录'))
+
+
+def prepare_history(db, rules):
+    """Admit each opted-in job once; retain cursors and all send/receipt ledgers."""
+    for rule in rules.values():
+        if not history_enabled(rule):
+            continue
+        token = str(rule['enabledAt'])
+        started = 'history-started:' + rule['id']
+        complete = 'history-complete:' + rule['id']
+        if get_state(db, started, '') != token:
+            put_state(db, started, token)
+            db.execute('''INSERT OR REPLACE INTO catchup(kind,target,since,started)
+              VALUES('job',?,1,?)''', (rule['id'], time.time()))
+            for person in db.execute('SELECT * FROM people WHERE rule=?', (rule['id'],)).fetchall():
+                detail = json.loads(person['body'])
+                if (person['state'] != 'seen' or detail.get('jobId') != rule['jobId']
+                        or detail.get('enabledAt') != rule['enabledAt']):
+                    continue
+                admit_history(db, person['friend'], rule)
+                db.execute("UPDATE people SET state='inspect',updated=? WHERE friend=?",
+                           (int(time.time()), person['friend']))
+                event(db, 'HISTORY_BACKFILL_QUEUED', detail)
+        elif get_state(db, complete, '') != token:
+            # A closed job may have suspended its task. Reopen its saved cursor
+            # without making any earlier confirmed operation eligible again.
+            db.execute("UPDATE catchup SET done=0 WHERE kind='job' AND target=? AND since=1",
+                       (rule['id'],))
+
+
 def event(db, code, detail):
     value = {'id': uuid.uuid4().hex, 'code': code,
              'name': detail.get('name', ''), 'jobName': detail.get('jobName', ''),
@@ -193,8 +240,14 @@ def status(db, phase, **extra):
     progress = {row['rule']: row['last'] for row in db.execute(
         "SELECT rule,MAX(updated) AS last FROM people WHERE state IN "
         "('reply_ready','ready','requested','export','stored') GROUP BY rule")}
+    histories = {}
+    for row in db.execute("SELECT key,value FROM state WHERE key LIKE 'history-started:%'"):
+        rule_id = row['key'].split(':', 1)[1]
+        task = db.execute("SELECT page FROM catchup WHERE kind='job' AND target=?", (rule_id,)).fetchone()
+        histories[rule_id] = {'complete': get_state(db, 'history-complete:'+rule_id, '') == row['value'],
+                              'page': task['page'] if task else 1}
     value = {'phase': phase, 'checkedAt': int(time.time()), 'counts': counts,
-             'lastProgressAt': last or 0, 'progressByRule': progress, **extra}
+             'lastProgressAt': last or 0, 'progressByRule': progress, 'historyByRule': histories, **extra}
     put_state(db, 'status', json.dumps(value))
     return {'ok': True, 'data': value}
 
@@ -236,6 +289,7 @@ def discover(c, db, rules, rule=None, page=1, capture=None):
         actual_job = first('encryptJobId', 'encJobId')
         if actual_job and actual_job != rule['jobId']:
             continue
+        admit_history(db, friend, rule)
         detail = {'name': first('geekName', 'name', 'nickname')[:100],
                   'education': first('geekDegree', 'degreeName', 'degreeDesc', 'education')[:100],
                   'experience': first('geekWorkYear', 'workYearDesc', 'work_years', 'experience')[:100],
@@ -338,6 +392,8 @@ def prepare_catchup(c, db, request, rules):
         return
     now = time.time()
     # No sent/requested/exported ledger is reset. Reconnection only queues reads.
+    unfinished_history = {row['target']: dict(row) for row in db.execute(
+        "SELECT * FROM catchup WHERE kind='job' AND since=1 AND done=0")}
     db.execute('DELETE FROM catchup')
     with c.resume_db() as tracked:
         receipts = list(tracked.execute("SELECT friend_id FROM resume_requests WHERE state IN ('waiting','uncertain','received')"))
@@ -347,7 +403,12 @@ def prepare_catchup(c, db, request, rules):
             db.execute("INSERT INTO catchup(kind,target,started) VALUES('receipt',?,?)", (item['friend_id'], now))
     for rule in rules.values():
         since = max(rule['enabledAt'], float(get_state(db, 'discovery-complete:'+rule['id'], str(rule['enabledAt'])))-60)
-        db.execute("INSERT INTO catchup(kind,target,since,started) VALUES('job',?,?,?)", (rule['id'], since, now))
+        history_pending = (history_enabled(rule) and
+                           get_state(db, 'history-complete:'+rule['id'], '') != str(rule['enabledAt']))
+        prior = unfinished_history.get(rule['id'], {}) if history_pending else {}
+        db.execute("INSERT INTO catchup(kind,target,page,since,started,fingerprint) VALUES('job',?,?,?,?,?)",
+                   (rule['id'], prior.get('page', 1), 1 if history_pending else since,
+                    prior.get('started', now), prior.get('fingerprint', '')))
     put_state(db, 'reconnectId', token)
     put_state(db, 'catchupTurn', 'receipt')
     db.commit()
@@ -408,6 +469,8 @@ def catchup_step(c, db, rules, delay_for):
                                (complete, fingerprint, now+10, rule['id']))
                     if complete:
                         put_state(db, 'discovery-complete:'+rule['id'], task['started'])
+                        if task['since'] == 1:
+                            put_state(db, 'history-complete:'+rule['id'], rule['enabledAt'])
         put_state(db, 'catchupTurn', 'job' if task['kind'] == 'receipt' else 'receipt')
         put_state(db, 'nextAt', now+10)
         return result
@@ -526,6 +589,7 @@ def step(c, db, request):
     now = time.time()
     delay_for = getattr(c, 'passive_delay', lambda **kwargs: 0)
     prepare_catchup(c, db, request, rules)
+    prepare_history(db, rules)
     remember_activity(db, request.get('activityHints', []))
     queued = any(row['rule'] in rules for row in db.execute(
         "SELECT rule FROM people WHERE state IN ('inspect','reply_ready','ready')"))
@@ -603,11 +667,35 @@ def step(c, db, request):
                  else 'request_uncertain' if existing['state'] == 'uncertain' else 'request_failed')
         db.execute("UPDATE people SET state=?,updated=? WHERE friend=?", (state, int(now), friend))
         return status(db, 'receiving' if state == 'requested' else 'needs_review')
-    delay = delay_for(cost={'inspect': 1, 'reply_ready': 3, 'ready': 5}[person['state']], queued=True)
+    recovering = trigger_since(db, friend, rule) < rule['enabledAt']
+    verification = {'jobId': rule['jobId'], 'enabledAt': rule['enabledAt']}
+    verify_history_job = (person['state'] == 'inspect' and recovering
+                          and detail.get('historyJobVerified') != verification)
+    delay = delay_for(cost=2 if verify_history_job else
+                     {'inspect': 1, 'reply_ready': 3, 'ready': 5}[person['state']], queued=True)
     if delay:
         return wait_budget(delay)
     put_state(db, 'lastLane', 'work')
     if person['state'] == 'inspect':
+        if verify_history_job:
+            verified = c.sourcing_friend_details([friend])
+            if verified.get('ok') is not True:
+                if (verified.get('error') or {}).get('code') == 'FRIEND_DETAIL_FAILED' and not c.held_code():
+                    db.execute("UPDATE people SET state='job_review' WHERE friend=?", (friend,))
+                    event(db, 'JOB_BINDING_UNAVAILABLE', detail)
+                    return status(db, 'job_review')
+                return verified
+            official = (verified.get('data') or {}).get('friendList') or []
+            binding = next((row for row in official if isinstance(row, dict)
+                            and str(row.get('friendId') or row.get('uid')) == friend), {})
+            if str(binding.get('encryptJobId') or binding.get('encJobId') or '') != rule['jobId']:
+                db.execute("UPDATE people SET state='job_review' WHERE friend=?", (friend,))
+                event(db, 'JOB_CONVERSATION_MISMATCH', detail)
+                return status(db, 'job_review')
+            detail['historyJobVerified'] = verification
+            db.execute('UPDATE people SET body=? WHERE friend=?',
+                       (json.dumps(detail, ensure_ascii=False), friend))
+            db.commit()
         result = c.cli_json('hr', 'chatmsg', friend, '--count', '100')
         if result.get('ok') is not True:
             if (result.get('error') or {}).get('code') == 'UNKNOWN' and not c.held_code():
@@ -625,6 +713,11 @@ def step(c, db, request):
         if c.adopt_received_resume(result, friend, since) is True:
             db.execute("UPDATE people SET state='requested',updated=? WHERE friend=?", (int(now), friend))
             db.execute("INSERT OR REPLACE INTO catchup(kind,target,started) VALUES('receipt',?,?)", (friend, now))
+            return status(db, 'receiving')
+        if c.adopt_resume_request(result, friend, since) is True:
+            db.execute("UPDATE people SET state='requested',updated=? WHERE friend=?", (int(now), friend))
+            db.execute("INSERT OR REPLACE INTO catchup(kind,target,started) VALUES('receipt',?,?)", (friend, now))
+            event(db, 'RESUME_REQUEST_RESTORED', detail)
             return status(db, 'receiving')
         trigger = incoming_trigger(messages, friend, since)
         excluded = {r[0] for r in db.execute('SELECT message FROM commands WHERE friend=?', (friend,))}

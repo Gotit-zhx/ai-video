@@ -358,6 +358,43 @@ def reconcile_resume_request(envelope, friend_id, baseline):
     return False
 
 
+def adopt_resume_request(envelope, friend_id, since):
+    """Recover an existing official outbound request without another send."""
+    if envelope.get("ok") is not True:
+        return False
+    candidates = []
+    for item in resume_messages(envelope):
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("mid", ""))
+        sender, recipient, body = item.get("from") or {}, item.get("to") or {}, item.get("body") or {}
+        if not all(isinstance(value, dict) for value in (sender, recipient, body)):
+            continue
+        action = body.get("action")
+        requested = ((item.get("bizType") == 21050025 and body.get("type") == 4
+                      and isinstance(action, dict) and action.get("aid") == 37)
+                     or (body.get("type") == 1 and body.get("text") == "方便发一份简历过来吗？"))
+        stamp = item.get("time")
+        if (not mid.isdecimal() or not requested or isinstance(stamp, bool)
+                or not isinstance(stamp, (int, float))
+                or not str(sender.get("uid", "")).isdecimal()
+                or str(sender.get("uid")) == friend_id or str(recipient.get("uid")) != friend_id):
+            continue
+        stamp = int(stamp / 1000 if stamp >= 1e12 else stamp)
+        if since < stamp <= time.time()+60:
+            candidates.append((stamp, int(mid)))
+    if not candidates:
+        return False
+    stamp, mid = max(candidates)
+    with resume_db() as connection:
+        changed = connection.execute(
+            "INSERT OR IGNORE INTO resume_requests "
+            "(friend_id,requested_at,baseline_mid,state,message_id,updated_at,error,confirmed_at) "
+            "VALUES(?,?,?,'waiting',NULL,?,'',?)",
+            (friend_id, stamp, mid, int(time.time()), stamp)).rowcount
+    return bool(changed)
+
+
 def resume_cli(*args, timeout=60):
     result = cli_json(*args, timeout=timeout)
     if result.get("ok") is not True:
@@ -1616,7 +1653,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path in {"/api/v1/hr/sourcing/"+name for name in
-                         ("save", "upload", "remove", "profile", "criteria", "search", "greet")}:
+                         ("save", "upload", "remove", "profile", "criteria", "search", "greet", "demand")}:
             self.sourcing_request(write=True)
             return
         if self.path in ("/api/v1/hr/passive/save", "/api/v1/hr/speeches/save",
@@ -1625,7 +1662,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             self.passive_request(write=True)
             return
         if self.path in ("/api/v1/hr/pool/talents", "/api/v1/hr/pool/projects",
-                         "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate", "/api/v1/hr/departments/save"):
+                         "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate",
+                         "/api/v1/hr/demands/upload", "/api/v1/hr/demands/remove", "/api/v1/hr/departments/save"):
             self.pool_request(write=True)
             return
         if self.path.startswith("/api/v1/hr/desktop/"):
@@ -1721,7 +1759,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         try:
             if write:
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 131072:
+                if not 0 < length <= (14*1024*1024 if self.path == "/api/v1/hr/demands/upload" else 131072):
                     raise ValueError("资料内容过长或为空")
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     raise ValueError("请求格式不正确")
@@ -1731,6 +1769,9 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 elif self.path == "/api/v1/hr/demands/save":
                     result = recruitment_demands.save(self.desktop_user, body,
                         hr_departments.listing(self.desktop_user)["items"])
+                elif self.path in {"/api/v1/hr/demands/upload", "/api/v1/hr/demands/remove"}:
+                    result = recruitment_demands.references(self.desktop_user, body,
+                        remove=self.path.endswith("/remove"))
                 elif self.path == "/api/v1/hr/departments/save":
                     result = hr_departments.save(self.desktop_user, body)
                 else:

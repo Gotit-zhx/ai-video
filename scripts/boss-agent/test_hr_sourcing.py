@@ -18,6 +18,44 @@ KEY = 'a'*64
 
 
 class SourcingTest(unittest.TestCase):
+    def test_demand_analysis_is_exact_job_scoped_reused_without_ai_and_invalidated_on_edit(self):
+        import datetime
+        import recruitment_demands as demands
+        row = demands.save(USER, {"createId": str(uuid.uuid4()), "date": "2026-10-08",
+            "position": self.job["jobName"], "department": "技术", "headcount": 1, "years": 0,
+            "responsibilities": "", "requirements": "", "jobId": self.job["jobId"],
+            "jobAccountKey": KEY, "jobDescription": self.job["description"],
+            "jobFetchedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        result = {"portrait": {"summary": "业务开发", "mustHave": ["Java 开发"], "experience": ["项目交付"]},
+                  "competencies": [{"name": "工程交付", "evidence": "上线记录"}],
+                  "sourceVersion": row["version"], "sourceJobId": self.job["jobId"],
+                  "sourceJobAccountKey": KEY, "modelId": "fixture"}
+        with pool.database() as db:
+            db.execute("UPDATE recruitment_demands SET ai_status='complete',ai_version=version,ai_result=? WHERE id=?",
+                       (json.dumps(result), row["id"]))
+        with mock.patch.object(s, "driver") as driver:
+            value = s.demand(USER, {**self.params(), "demandId": row["id"]})
+            self.assertEqual(value["profileState"], "complete")
+            self.assertEqual(value["sourceDemand"]["referenceCount"], 0)
+            self.assertFalse(value["criteria"]["confirmed"])
+            driver.assert_not_called()
+        self.job = value
+        self.assertEqual(s.demand(USER, {**self.params(), "demandId": row["id"]})["version"], value["version"])
+        with self.assertRaises(ValueError):
+            s.demand(USER, {**self.params(), "accountKey": "b"*64, "demandId": row["id"]})
+        with pool.database() as db:
+            db.execute("UPDATE recruitment_demands SET ai_job='new-generation' WHERE id=?", (row["id"],))
+        stale = s.listing(USER, self.params())
+        self.assertEqual(stale["profileState"], "stale", "A new analysis at the same demand version invalidates sourcing")
+        self.job = s.demand(USER, {**self.params(), "version": stale["version"], "demandId": row["id"]})
+        value = self.job
+        demands.save(USER, {**row, "headcount": 2})
+        changed = s.listing(USER, self.params())
+        self.assertEqual(changed["profileState"], "stale")
+        self.assertEqual(changed["version"], value["version"]+1)
+        with self.assertRaises(ValueError):
+            s.demand(USER, {**self.params(), "version": changed["version"], "demandId": row["id"]})
+
     def test_driver_reports_known_failure_codes_without_exposing_response_details_or_retrying(self):
         for body, expected in [
             ({'message': 'private response [HR_AI_OUTPUT_LIMIT]'}, '输出达到长度上限'),

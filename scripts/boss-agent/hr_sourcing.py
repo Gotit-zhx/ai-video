@@ -5,6 +5,7 @@ This module never connects to BOSS. Writes are leased to the account's desktop.
 import base64
 import datetime
 import hashlib
+import html
 import json
 import math
 import re
@@ -56,6 +57,8 @@ def schema(db):
         db.execute(sql)
     if 'criteria' not in {row[1] for row in db.execute('PRAGMA table_info(hr_sourcing_jobs)')}:
         db.execute("ALTER TABLE hr_sourcing_jobs ADD COLUMN criteria TEXT NOT NULL DEFAULT '{}'")
+    if 'demand_source' not in {row[1] for row in db.execute('PRAGMA table_info(hr_sourcing_jobs)')}:
+        db.execute("ALTER TABLE hr_sourcing_jobs ADD COLUMN demand_source TEXT NOT NULL DEFAULT '{}'")
 
 
 PERSONAL_CRITERION = re.compile(r'性别|男生|女生|男性|女性|年龄|身高|婚育|民族|宗教|残障|外貌|颜值|长相|气质|形象好')
@@ -114,7 +117,25 @@ def get_job(db, owner, body):
     row = db.execute('SELECT * FROM hr_sourcing_jobs WHERE id=? AND owner=?', (uid(body.get('id')), owner)).fetchone()
     if not row or row['account'] != account(body.get('accountKey')):
         raise ValueError('职位与当前招聘账号不一致，请从职位管理重新进入')
-    return row
+    return refresh_demand_source(db, row)
+
+
+def refresh_demand_source(db, job):
+    source = json.loads(job['demand_source'])
+    if not source.get('id'):
+        return job
+    import recruitment_demands as demands
+    demands.schema(db)
+    demand = db.execute('SELECT * FROM recruitment_demands WHERE id=? AND owner=?',
+                        (source['id'], job['owner'])).fetchone()
+    current = (demand and demand['version'] == source.get('version')
+               and demand['ai_status'] == 'complete' and demand['ai_version'] == demand['version']
+               and demand['ai_job'] == source.get('analysisId'))
+    if not current and job['profile_state'] == 'complete':
+        db.execute("UPDATE hr_sourcing_jobs SET profile_state='stale',profile_error='关联招聘需求已变化，请重新使用最新岗位分析',criteria='{}',version=version+1 WHERE id=?",
+                   (job['id'],))
+        return db.execute('SELECT * FROM hr_sourcing_jobs WHERE id=?', (job['id'],)).fetchone()
+    return job
 
 
 def view(db, row, run_id=None):
@@ -138,7 +159,8 @@ def view(db, row, run_id=None):
     return {**json.loads(row['body']), 'id': row['id'], 'jobId': row['job_id'], 'accountKey': row['account'],
             'version': row['version'], 'profileState': row['profile_state'], 'profile': json.loads(row['profile']),
             'profileError': row['profile_error'], 'profileStartedAt': row['profile_at'],
-            'criteria': matching_criteria(row), 'references': refs, 'run': run}
+            'criteria': matching_criteria(row), 'references': refs, 'run': run,
+            'sourceDemand': json.loads(row['demand_source'])}
 
 
 def listing(user, query):
@@ -150,7 +172,57 @@ def listing(user, query):
         key = account(query.get('accountKey'))
         row = db.execute('SELECT * FROM hr_sourcing_jobs WHERE owner=? AND account=? AND job_id=?',
                          (owner, key, pool.text(query.get('jobId'), 180))).fetchone()
-        return view(db, row) if row else None
+        return view(db, refresh_demand_source(db, row)) if row else None
+
+
+def demand(user, body):
+    """Use an existing demand analysis for this exact job. No model or BOSS call."""
+    import recruitment_demands as demands
+    owner, actor = pool.context(user)
+    with pool.database() as db:
+        schema(db); expire(db); demands.schema(db)
+        job = get_job(db, owner, body)
+        if job['version'] != body.get('version'):
+            raise pool.Conflict('寻源条件已变化，请刷新后选择招聘需求')
+        row = db.execute('SELECT * FROM recruitment_demands WHERE id=? AND owner=?',
+                         (uid(body.get('demandId')), owner)).fetchone()
+        if not row:
+            raise ValueError('招聘需求不存在')
+        snapshot = demands.view(row, db)
+        if snapshot.get('jobId') != job['job_id'] or snapshot.get('jobAccountKey') != job['account']:
+            raise ValueError('招聘需求与当前职位或账号不一致，不能套用')
+        result = snapshot.get('aiResult', {})
+        if (row['ai_status'] != 'complete' or row['ai_version'] != row['version']
+                or result.get('sourceVersion') != row['version']
+                or result.get('sourceJobId') != job['job_id']
+                or result.get('sourceJobAccountKey') != job['account']):
+            raise ValueError('请先在招聘需求池生成该职位的最新 AI 岗位分析')
+        canonical = lambda text: re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]*>', ' ', text))).strip()
+        current = json.loads(job['body'])
+        if canonical(snapshot['jobDescription']) != canonical(current['description']):
+            raise ValueError('关联岗位 JD 已变化，请在招聘需求池重新生成后再使用')
+        if job['profile_state'] == 'running' or db.execute(
+                "SELECT 1 FROM hr_sourcing_runs WHERE owner=? AND job=? AND state='running'",
+                (owner, job['id'])).fetchone():
+            raise pool.Conflict('请等待当前分析结束后再更换招聘需求')
+        portrait = result['portrait']
+        skills = [str(item.get('name', '')) for item in result.get('competencies', [])]
+        skills += [str(item) for item in portrait.get('mustHave', [])]
+        skills = list(dict.fromkeys(value for value in skills if value and not PERSONAL_CRITERION.search(value)))[:10]
+        profile = {'summary': portrait.get('summary', ''), 'suggestedJd': snapshot['jobDescription'],
+                   'skills': skills, 'experience': portrait.get('experience', []),
+                   'evidence': [{'requirement': item.get('name', ''), 'evidence': item.get('evidence', '')}
+                                for item in result.get('competencies', [])],
+                   'questions': portrait.get('evaluationFocus', []),
+                   'limitations': ['招聘需求池岗位分析，仅供 HR 确认匹配条件。']}
+        source = {'id': row['id'], 'version': row['version'], 'position': snapshot['position'],
+                  'referenceCount': len(snapshot['references']), 'modelId': result.get('modelId', ''),
+                  'analysisId': row['ai_job']}
+        if json.loads(job['demand_source']) != source or job['profile_state'] != 'complete':
+            db.execute("UPDATE hr_sourcing_jobs SET profile=?,profile_state='complete',profile_error='',criteria='{}',demand_source=?,version=version+1,updated_at=? WHERE id=?",
+                       (dump(profile), dump(source), now(), job['id']))
+            pool.event(db, owner, actor, job['id'], 'sourcing.demand', None, source)
+        return view(db, db.execute('SELECT * FROM hr_sourcing_jobs WHERE id=?', (job['id'],)).fetchone())
 
 
 def save(user, body):
