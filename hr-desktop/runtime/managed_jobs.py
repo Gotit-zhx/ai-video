@@ -23,7 +23,7 @@ def save_statuses(root, result):
     # Publish atomically; failed or incomplete reads invalidate older evidence.
     fd, temp = tempfile.mkstemp(prefix=".managed-jobs-", dir=path.parent)
     try:
-        with os.fdopen(fd, "w") as output:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
             json.dump(snapshot, output, ensure_ascii=False)
         os.replace(temp, path)
     finally:
@@ -35,7 +35,7 @@ def availability(c, root, *, user_initiated=False):
     """One budgeted refresh per five minutes, fail closed without tight retries."""
     now = time.time()
     try:
-        snapshot = json.loads((Path(root) / "managed-job-statuses.json").read_text())
+        snapshot = json.loads((Path(root) / "managed-job-statuses.json").read_text(encoding="utf-8"))
         fresh = snapshot["checkedAt"] <= now < snapshot["validUntil"]
         if fresh:
             return {"statuses": snapshot["statuses"], "retryAt": snapshot["validUntil"]}

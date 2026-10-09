@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest import mock
 import tempfile
@@ -75,7 +76,24 @@ class ManagedJobsTest(unittest.TestCase):
             self.assertEqual(jobs.availability(client, root)['statuses'], {})
             self.assertEqual(jobs.availability(client, root)['statuses'], {})
             self.assertEqual(client.read_managed_jobs.call_count, 2, 'A rejected list is not retried each poll')
-            self.assertEqual((root / 'managed-job-statuses.json').stat().st_mode & 0o777, 0o600)
+            if os.name != 'nt':
+                self.assertEqual((root / 'managed-job-statuses.json').stat().st_mode & 0o777, 0o600)
+
+    def test_chinese_status_snapshot_works_with_non_utf8_system_default(self):
+        fdopen, read_text = os.fdopen, Path.read_text
+        def ansi_fdopen(fd, mode, **kwargs):
+            return fdopen(fd, mode, encoding=kwargs.get('encoding', 'cp1252'))
+        def ansi_read_text(path, encoding=None, errors=None):
+            return read_text(path, encoding=encoding or 'cp1252', errors=errors)
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(jobs.os, 'fdopen', side_effect=ansi_fdopen), \
+                mock.patch.object(Path, 'read_text', ansi_read_text):
+            root = Path(directory)
+            client = mock.Mock()
+            result = {'ok': True, 'data': {'jobs': [{'encryptJobId': 'a', 'statusDesc': '开放中'}], 'hasMore': False}}
+            jobs.save_statuses(root, result)
+            self.assertEqual(jobs.availability(client, root)['statuses'], {'a': '开放中'})
+            client.read_managed_jobs.assert_not_called()
 
     def test_budget_and_guard_failure_never_allow_old_open_evidence(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(jobs.time, 'time', return_value=1000) as clock:
