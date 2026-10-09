@@ -377,6 +377,89 @@
     const reviewActions=el('div','',reviewDialog,'hr-actions');
     const reviewReject=button('不通过',reviewActions,()=>saveReview('failed'));
     const reviewApprove=button('通过',reviewActions,()=>saveReview('passed'));reviewApprove.className='hr-primary';
+    const inviteDialog=el('dialog','',root,'hr-pool-dialog hr-invite-dialog');
+    const inviteHead=el('div','',inviteDialog,'hr-dingtalk-heading');
+    const inviteTitle=el('h2','发送邀约',inviteHead);
+    button('关闭',inviteHead,()=>inviteDialog.close());
+    const invitePerson=el('p','',inviteDialog,'hr-hint');
+    const inviteTemplate=makeField('邀约话术',inviteDialog,'select');
+    const inviteMessage=makeField('发送给候选人的内容',inviteDialog,'textarea');inviteMessage.rows=6;inviteMessage.maxLength=1000;
+    const inviteFeedback=el('p','',inviteDialog,'hr-hint');inviteFeedback.setAttribute('role','status');
+    const inviteHistory=el('details','',inviteDialog,'hr-invite-history');
+    el('summary','最近邀约记录',inviteHistory);const inviteRecords=el('div','',inviteHistory);
+    const inviteActions=el('div','',inviteDialog,'hr-actions');
+    button('话术管理',inviteActions,()=>{inviteDialog.close();navigate('speeches');});
+    const inviteRefresh=button('刷新发送状态',inviteActions,()=>refreshInvitation());
+    const inviteSend=button('发送邀约到 BOSS',inviteActions,sendInvitation);inviteSend.className='hr-primary';
+    let inviting=null,inviteTemplates=[],inviteEpoch=0,inviteTimer=null,inviteBusy=false,inviteReady=false,inviteAttempted=false,inviteRequest='';
+    const inviteStates={queued:'等待助手发送',sending:'正在发送',sent:'已发送',uncertain:'发送结果待核对',failed:'发送未完成',cancelled:'已取消'};
+    function syncInvitation(){
+      inviteSend.disabled=!inviteReady||inviteBusy||inviteAttempted||!inviteMessage.value.trim();
+      inviteTemplate.disabled=inviteMessage.disabled=inviteBusy||inviteAttempted;
+    }
+    function useInvitationTemplate(){
+      const template=inviteTemplates.find(row=>row.id===inviteTemplate.value);
+      inviteMessage.value=template?.content.replace(/\{(姓名|职位)\}/g,(_,key)=>key==='姓名'?inviting.name:inviting.position||'该岗位')||'';
+      syncInvitation();
+    }
+    inviteTemplate.addEventListener('change',useInvitationTemplate);
+    inviteMessage.addEventListener('input',syncInvitation);
+    inviteDialog.addEventListener('close',()=>{++inviteEpoch;clearTimeout(inviteTimer);inviting=null;inviteReady=false;
+      inviteTemplates=[];inviteTemplate.replaceChildren();inviteMessage.value='';inviteRecords.replaceChildren();inviteFeedback.textContent='';});
+    inviteDialog.addEventListener('cancel',event=>{if(inviteBusy)event.preventDefault();});
+    async function refreshInvitation(epoch=inviteEpoch){
+      clearTimeout(inviteTimer);
+      if(!inviting||!inviteDialog.open||!active||!allowed())return;
+      const id=inviting.id;
+      try{
+        const data=await request('/messages?talentId='+encodeURIComponent(id));
+        if(epoch!==inviteEpoch||inviting?.id!==id||!inviteDialog.open||!allowed())return;
+        const records=data.items||[],pending=records.some(row=>['queued','sending','uncertain'].includes(row.status));
+        inviteRecords.replaceChildren();
+        for(const row of records.slice(0,5)){
+          const item=el('article','',inviteRecords,'hr-invite-record');
+          el('span',inviteStates[row.status]||row.status,item,'hr-badge');
+          el('p',row.message,item,'hr-prose');
+        }
+        inviteHistory.hidden=!records.length;
+        inviteReady=inviteTemplates.length>0&&!pending;
+        if(pending||inviteAttempted)inviteFeedback.textContent=records.length
+          ?'最近邀约：'+(inviteStates[records[0].status]||records[0].status)
+          :'本次发送尚未确认，请刷新记录核对。';
+        syncInvitation();
+        if(records.some(row=>['queued','sending'].includes(row.status)))inviteTimer=setTimeout(()=>refreshInvitation(epoch),5000);
+      }catch(error){if(epoch===inviteEpoch){inviteReady=false;inviteFeedback.textContent=error.message;syncInvitation();}}
+    }
+    async function openInvitation(row){
+      if(!allowed()||inviteBusy||row.stage!=='invited'||row.source!=='passive')return;
+      const epoch=++inviteEpoch;inviting=row;inviteAttempted=false;inviteReady=false;inviteTemplates=[];inviteRequest=crypto.randomUUID();
+      inviteTitle.textContent='邀约对话 · '+row.name;invitePerson.textContent='对应岗位：'+(row.position||'岗位待补充');
+      inviteTemplate.replaceChildren();inviteMessage.value='';inviteRecords.replaceChildren();inviteHistory.hidden=true;
+      inviteFeedback.textContent='正在读取邀约话术与发送记录…';syncInvitation();inviteDialog.showModal();
+      try{
+        const data=await api('/api/v1/hr/speeches');
+        if(epoch!==inviteEpoch||!inviteDialog.open||!allowed())return;
+        if(data.success===false||!Array.isArray(data.data?.items))throw Error(data.message||'读取邀约话术失败');
+        inviteTemplates=data.data.items.filter(template=>template.active&&template.kind==='invite');
+        for(const template of inviteTemplates)el('option',template.name,inviteTemplate).value=template.id;
+        inviteTemplate.value=inviteTemplates[0]?.id||'';
+        useInvitationTemplate();
+        inviteFeedback.textContent=inviteTemplates.length?'可修改话术后发送，消息只发给这位候选人。':'请在话术管理中新增并启用“邀约对话”话术。';
+        await refreshInvitation(epoch);
+      }catch(error){if(epoch===inviteEpoch){inviteReady=false;inviteFeedback.textContent=error.message;syncInvitation();}}
+    }
+    async function sendInvitation(){
+      if(!inviting||!allowed()||inviteSend.disabled||inviteBusy)return;
+      const row=inviting,epoch=inviteEpoch,message=inviteMessage.value.trim();
+      inviteBusy=true;inviteAttempted=true;syncInvitation();inviteFeedback.textContent='正在提交邀约…';
+      try{
+        const data=await request('/messages',{talentId:row.id,message,requestId:inviteRequest});
+        if(epoch!==inviteEpoch||inviting?.id!==row.id||!inviteDialog.open||!allowed())return;
+        inviteFeedback.textContent=inviteStates[data.status]||'已提交，正在核对发送状态';
+        await refreshInvitation(epoch);
+      }catch(error){if(epoch===inviteEpoch&&inviteDialog.open)inviteFeedback.textContent=error.message+'。请刷新发送记录核对，系统不会自动重发。';}
+      finally{inviteBusy=false;if(epoch===inviteEpoch)syncInvitation();}
+    }
     let reviewing=null,reviewRequest='',reviewEpoch=0,reviewSaving=false;
     function syncReviewActions(){
       const completed=!!reviewing?.interviewReviews?.[reviewing.round];
@@ -519,7 +602,11 @@
         }
         if(row.notes)el('p',row.notes,card,'hr-excerpt hr-pool-note');
         const footer=el('div','',card,'hr-actions');
-        if(canInvite)button('开始一面',footer,()=>openInterview(row,true)).className='hr-primary';
+        if(canInvite){
+          const invite=button('发送邀约',footer,()=>openInvitation(row));invite.disabled=row.source!=='passive';
+          if(invite.disabled)invite.title='需要关联已审批通过的 BOSS 简历';
+          button('开始一面',footer,()=>openInterview(row,true)).className='hr-primary';
+        }
         if(row.stage==='second'&&reviewRound==='second'&&!reviewResult)
           button('发送二面资料',footer,()=>openInterview(row,false,'second'));
         if(reviewRound&&(row.stage===reviewRound||reviewResult)){
@@ -565,10 +652,10 @@
         }
         active=true;load();
       },
-      leave(){active=false;++generation;dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);},
+      leave(){active=false;++generation;dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();inviteDialog.close();clearTimeout(interviewTimer);},
       add:openEditor,
       reset(){active=false;++generation;departments=[];rows=[];editing=null;stage='invited';outcome='all';department='';page=1;departmentDirectory='';syncDepartments();syncOutcomes();
-        query.value='';dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);
+        query.value='';dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();inviteDialog.close();clearTimeout(interviewTimer);
         interviewing=null;interviewData=null;settingsData=null;appKey.value=agentId.value=appSecret.value='';
         ++directoryEpoch;clearTimeout(directoryTimer);directoryData=null;directoryBusy=false;interviewerProof=null;
         directoryQuery.value=interviewerMobile.value='';directoryDepartment.replaceChildren();directoryResults.replaceChildren();

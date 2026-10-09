@@ -16,6 +16,7 @@ class Node {
   set textContent(value) {this._text=String(value);this.children=[];}
   get textContent() {return this._text+this.children.map(n=>n.textContent).join(' ');}
   get isConnected() {return this._connected===true||!!this.parent?.isConnected;}
+  get parentElement() {return this.parent||null;}
   append(...nodes) {nodes.forEach(n=>{n.parent=this;});this.children.push(...nodes);}
   replaceChildren(...nodes) {this._text='';this.children.forEach(n=>{n.parent=null;});this.children=[];this.append(...nodes);}
   remove(){if(this.parent){this.parent.children=this.parent.children.filter(n=>n!==this);this.parent=null;}}
@@ -699,6 +700,65 @@ const interviewPreview=(talent)=>({talentId:talent.id,name:talent.name,version:1
   packageReady:true,config:{verified:true,version:1},resumes:[{id:'r1',filename:'测试人才.pdf',jobName:'算法'}],
   demands:[{id:'d1',position:'算法',department:'研发',version:1,resumeIds:['r1'],questionsReady:true,
     questionCount:6,recipientReady:true,recipient:'面试负责人',recipientId:'manager1'}],handoff:null});
+test('invitation uses an active template and sends edited text once to the exact talent',async()=>{
+  const talent={...poolResult().items[0],source:'passive',stage:'invited',position:'算法工程师'};
+  let messages=[];
+  const app=setup({api:async(url,options)=>{
+    if(url.endsWith('/speeches'))return {data:{items:[
+      {id:'invite1',kind:'invite',active:true,name:'面试邀约',content:'您好，{姓名}，想约您交流{职位}。'},
+      {id:'disabled',kind:'invite',active:false,content:'不可使用'},
+      {id:'reject',kind:'reject',active:true,content:'不可使用'}]}};
+    if(url.includes('/pool/messages')){
+      if(options?.method==='POST'){messages=[{id:'m1',status:'queued',message:JSON.parse(options.body).message}];return {data:messages[0]};}
+      return {data:{items:messages}};
+    }
+    return {data:{...poolResult(),items:[talent]}};
+  }});
+  await app.enter('pool');await app.click('发送邀约');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-invite-dialog'));
+  const content=all(dialog).find(n=>n.tagName==='textarea');
+  assert.equal(content.value,'您好，测试人才，想约您交流算法工程师。');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  content.value='请问周三下午方便参加算法工程师岗位面试吗？';content.events.input();
+  await app.click('发送邀约到 BOSS');await app.click('发送邀约到 BOSS');
+  const writes=app.calls.filter(c=>c.options?.method==='POST');assert.equal(writes.length,1);
+  const payload=JSON.parse(writes[0].options.body);assert.equal(payload.talentId,talent.id);
+  assert.equal(payload.message,content.value);assert.match(payload.requestId,/^[a-f0-9-]{36}$/);
+  assert.match(dialog.textContent,/等待助手发送/);
+  assert.equal(all(dialog).find(n=>n._text==='发送邀约到 BOSS').disabled,true);
+  assert.ok(app.calls.every(c=>!c.url.endsWith('/interview/start')));
+});
+test('uncertain invitation blocks another send and lost write responses are never replayed',async()=>{
+  const talent={...poolResult().items[0],source:'passive',stage:'invited'};
+  for(const uncertain of [true,false]){
+    const app=setup({api:async(url,options)=>{
+      if(url.endsWith('/speeches'))return {data:{items:[{id:'i1',kind:'invite',active:true,name:'邀约',content:'邀请{姓名}面试'}]}};
+      if(url.includes('/pool/messages')){
+        if(options?.method==='POST')throw Error('响应丢失');
+        return {data:{items:uncertain?[{status:'uncertain',message:'待核对'}]:[]}};
+      }
+      return {data:{...poolResult(),items:[talent]}};
+    }});
+    await app.enter('pool');await app.click('发送邀约');await app.click('发送邀约到 BOSS');
+    const dialog=all(app.root).find(n=>n.className.includes('hr-invite-dialog'));
+    assert.equal(all(dialog).find(n=>n._text==='发送邀约到 BOSS').disabled,true);
+    assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,uncertain?0:1);
+    if(!uncertain)assert.match(dialog.textContent,/不会自动重发/);
+  }
+});
+test('speech management exposes four used purposes and supplies an editable invitation draft',async()=>{
+  const app=setup({passive:true,api:async url=>({data:url.endsWith('/speeches')?{items:[
+    {id:'i1',kind:'invite',active:true,name:'邀请交流',content:'邀请{姓名}面试'},
+    {id:'unused',kind:'general',active:true,name:'未接入话术',content:'旧内容'}]}:{items:[]}})});
+  await app.enter('speeches');assert.doesNotMatch(app.text(),/未接入话术|其他沟通/);
+  await app.click('邀约对话 1');assert.match(app.text(),/邀请交流/);
+  await app.click('新建话术');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-speech-dialog'));
+  assert.equal(all(dialog).find(n=>n.tagName==='select').value,'invite');
+  assert.match(all(dialog).find(n=>n.tagName==='textarea').value,/参加面试/);
+  assert.equal(all(dialog).find(n=>n.tagName==='select').children.length,4);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
 test('confirmed first handoff opens first pending and closes its dialog without a duplicate send',async()=>{
   let talent={...poolResult().items[0],stage:'invited'},handoff=null;
   const app=setup({api:async(url,options)=>{

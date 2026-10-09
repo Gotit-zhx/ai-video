@@ -597,3 +597,19 @@ img.hr-resume-original{min-height:0;height:auto}
 @media(max-width:1179px){.hr-department-grid.hr-card-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:899px){.hr-department-grid.hr-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:620px){.hr-department-grid.hr-card-grid{grid-template-columns:minmax(0,1fr)}}
+.hr-speech-grid.hr-card-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.hr-speech-card{display:flex;flex-direction:column;padding:18px!important;min-width:0;border-radius:14px!important}
+.hr-speech-card .hr-card-heading{align-items:center;gap:10px;margin-bottom:12px}
+.hr-speech-card h3{font-size:15px;margin:0;line-height:1.5}
+.hr-speech-content{background:var(--surface-muted,#f6f7f9);border-radius:10px;padding:14px;margin:0 0 14px;line-height:1.85!important;font-size:13px!important;white-space:pre-wrap;overflow-wrap:anywhere}
+.hr-speech-footer{margin-top:auto!important;padding-top:12px;border-top:1px solid var(--hr-border)}
+.hr-speech-footer .hr-hint{margin-right:auto;font-size:11px}
+.hr-speech-dialog .hr-field,.hr-invite-dialog .hr-field{display:grid;gap:8px;margin:16px 0}
+.hr-speech-dialog textarea,.hr-invite-dialog textarea{width:100%;box-sizing:border-box;font-size:14px;line-height:1.8;padding:14px;resize:vertical}
+.hr-invite-history{padding:12px 14px;margin:14px 0;border:1px solid var(--hr-border);border-radius:10px}
+.hr-invite-history summary{font-size:12px;cursor:pointer}
+.hr-invite-history>div{max-height:180px;overflow:auto}
+.hr-invite-record{padding:10px 0;border-bottom:1px solid var(--hr-border)}
+.hr-invite-record:last-child{border-bottom:0}
+.hr-invite-record .hr-prose{font-size:12px;line-height:1.7;margin:7px 0}
+@media(max-width:700px){.hr-speech-grid.hr-card-grid{grid-template-columns:minmax(0,1fr)}}

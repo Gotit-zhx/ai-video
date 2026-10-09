@@ -6,6 +6,12 @@
   };
   const sendStates={queued:'等待助手发送',sending:'发送中',sent:'已发送',uncertain:'结果待核对，请查看 BOSS 会话',failed:'发送未完成',cancelled:'已取消发送'};
   const statuses={pending:'待审批',approved:'通过',rejected:'不通过'};
+  const speechKinds=[
+    ['passive_reply','招呼回复','候选人主动联系后的回复','您好，{姓名}！感谢您关注我们的{职位}岗位。方便发送一份最新简历吗？我们会认真查看，合适的话进一步沟通。'],
+    ['active_greet','主动打招呼','AI 寻源后主动联系候选人','您好，{姓名}！看到您的经历与我们的{职位}岗位比较契合，想和您进一步交流。如果您有兴趣，方便聊聊近期的求职意向吗？'],
+    ['invite','邀约对话','简历通过后沟通面试安排','您好，{姓名}！我们已认真查看您的简历，期待就{职位}岗位与您进一步交流。想邀请您参加面试，请问近期哪些时间方便？确认后我们会同步具体安排。'],
+    ['reject','婉拒回复','简历未通过时发送说明','您好，{姓名}！感谢您关注我们的{职位}岗位，也感谢您分享个人经历。结合当前岗位需求，我们暂时未能继续推进。祝您求职顺利，也期待未来有合适的机会再次交流。']
+  ];
   const phases={watching:'正在等待新消息',reply_queued:'已发现主动消息，等待话术回复',
     request_queued:'已回复，等待索取简历',receiving:'已索取，等待接收简历',
     template_required:'请在话术管理中配置默认被动邀约回复',chat_required:'正在准备 BOSS 沟通页面',
@@ -55,7 +61,7 @@
     return [phases[phase]||'已开启，等待助手检查',...totals].join(' · ');
   }
   globalThis.createHrPassive=({root,section,element:el,button,allowed,navigate,hrApi})=>{
-    let active='',generation=0,items=[],page=1,filter='pending',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
+    let active='',generation=0,items=[],page=1,filter='pending',speechFilter='passive_reply',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
     let jobFilter='',jobOptions=[],jobSignature='',originFilter='';
     let logOpen=false,poolSnapshot='',previewId='',previewHost=null,disposePreview=null;
     const clearPreview=()=>{disposePreview?.();disposePreview=null;previewHost=null;previewId='';};
@@ -65,10 +71,16 @@
       el('h2',title,intro);el('p',subtitle,intro,'hr-hint');
       return el('div','',head,'hr-actions');
     };
-    const speechActions=toolbar(speechPanel,'话术管理','配置被动邀约的首次回复与审批后的婉拒话术。自动回复确认成功后，才会继续索取简历。');
+    const speechActions=toolbar(speechPanel,'话术管理','从第一声招呼到面试邀约，让每次沟通都自然、得体。');
     button('刷新',speechActions,load);
     button('新建话术',speechActions,()=>editSpeech()).className='hr-primary';
-    const speechFeedback=el('p','',speechPanel,'hr-hint'),speechRows=el('div','',speechPanel,'hr-result');
+    const speechFeedback=el('p','',speechPanel,'hr-hint');
+    const speechTabs=el('div','',speechPanel,'hr-pool-tabs hr-speech-tabs');speechTabs.setAttribute('aria-label','话术用途');
+    const speechButtons=speechKinds.map(([key,label])=>{
+      const control=button(label,speechTabs,()=>{speechFilter=key;load();});
+      control.setAttribute('aria-pressed',String(speechFilter===key));return {key,label,control};
+    });
+    const speechRows=el('div','',speechPanel,'hr-result');
     resumePanel.className+=' hr-resume-panel';
     const resumeToolbar=el('div','',resumePanel,'hr-resume-toolbar');
     const resumeFeedback=el('p','',resumeToolbar,'hr-resume-count');
@@ -114,19 +126,27 @@
     const poolActivity=el('p','',resumePanel,'hr-pool-activity');
     poolActivity.setAttribute('aria-live','polite');
     const resumeRows=el('div','',resumePanel,'hr-result');
-    const speechDialog=el('dialog','',root,'hr-pool-dialog'),speechForm=el('form','',speechDialog);
+    const speechDialog=el('dialog','',root,'hr-pool-dialog hr-speech-dialog'),speechForm=el('form','',speechDialog);
     const speechTitle=el('h2','新建话术',speechForm),fields=el('div','',speechForm,'hr-pool-fields');
     function field(parent,label,tag='input'){
       const wrap=el('label','',parent,'hr-field');el('span',label,wrap);return el(tag,'',wrap);
     }
     const name=field(fields,'名称');name.required=true;name.maxLength=80;
     const kind=field(fields,'用途','select');
-    for(const [value,label] of [['passive_reply','被动邀约回复'],['active_greet','主动打招呼'],['reject','婉拒'],['invite','面试邀约'],['general','其他沟通']])el('option',label,kind).value=value;
+    for(const [value,label] of speechKinds)el('option',label,kind).value=value;
     const content=field(speechForm,'话术正文','textarea');content.required=true;content.maxLength=1000;content.rows=7;
-    el('p','支持 {姓名}、{职位}。被动邀约先发送默认回复话术，成功后再使用 BOSS 官方“索取简历”操作。',speechForm,'hr-hint');
+    el('p','{姓名}、{职位} 会替换成对应候选人和岗位；发送前可在邀约对话中调整内容。',speechForm,'hr-hint');
+    button('使用推荐话术',el('div','',speechForm,'hr-actions'),()=>{
+      content.value=speechKinds.find(([key])=>key===kind.value)?.[3]||'';
+    });
     const enabled=field(speechForm,'启用');enabled.type='checkbox';
     const isDefault=field(speechForm,'设为该用途的默认话术');isDefault.type='checkbox';
-    kind.onchange=()=>{isDefault.disabled=!['reject','passive_reply'].includes(kind.value);if(isDefault.disabled)isDefault.checked=false;};
+    kind.onchange=()=>{
+      isDefault.disabled=!['reject','passive_reply'].includes(kind.value);isDefault.parentElement.hidden=isDefault.disabled;
+      if(isDefault.disabled)isDefault.checked=false;
+      if(!editing?.id&&(!content.value||speechKinds.some(row=>row[3]===content.value)))
+        content.value=speechKinds.find(([key])=>key===kind.value)?.[3]||'';
+    };
     const speechError=el('p','',speechForm,'hr-error');speechError.setAttribute('role','alert');
     const editActions=el('div','',speechForm,'hr-actions');
     button('取消',editActions,()=>speechDialog.close());
@@ -134,7 +154,7 @@
     let editing=null,saving=false;
     function editSpeech(row={}){
       editing=row;speechTitle.textContent=row.id?'编辑话术':'新建话术';
-      name.value=row.name||'';kind.value=row.kind||'passive_reply';content.value=row.content||'';
+      name.value=row.name||'';kind.value=row.kind||speechFilter;content.value=row.content||speechKinds.find(([key])=>key===kind.value)?.[3]||'';
       enabled.checked=row.active!==false;isDefault.checked=!!row.isDefault;kind.onchange();
       speechError.textContent='';speechDialog.showModal();
     }
@@ -168,7 +188,16 @@
       try{
         const data=await request(mode==='speeches'?'speeches':`resume-pool?page=${page}&status=${filter}&jobId=${encodeURIComponent(jobFilter)}&origin=${originFilter}`);
         if(ticket!==generation||mode!==active||!allowed())return;
-        items=data.items||[];feedback.textContent=mode==='resume-pool'?`共 ${data.total??items.length} 份简历`:`共 ${data.total??items.length} 条`;
+        items=data.items||[];
+        if(mode==='speeches'){
+          items=items.filter(row=>speechKinds.some(([key])=>key===row.kind));
+          for(const tab of speechButtons){
+            tab.control.textContent=tab.label+' '+items.filter(row=>row.kind===tab.key).length;
+            tab.control.setAttribute('aria-pressed',String(tab.key===speechFilter));
+          }
+          items=items.filter(row=>row.kind===speechFilter);
+        }
+        feedback.textContent=mode==='resume-pool'?`共 ${data.total??items.length} 份简历`:`${speechKinds.find(([key])=>key===speechFilter)?.[2]} · ${items.length} 条话术`;
         if(mode==='resume-pool'){
           jobOptions=data.jobs||[];
           const signature=JSON.stringify(jobOptions);
@@ -185,17 +214,19 @@
         if(mode==='resume-pool'&&quiet&&signature===poolSnapshot)return;
         if(mode==='resume-pool')poolSnapshot=signature;
         box.replaceChildren();
-        if(!items.length)el('p',mode==='speeches'?'还没有话术，请配置默认被动邀约回复和默认婉拒话术。':'当前分类暂无简历。主动联系或被动邀约收到的简历会在这里归档。',box,'hr-pool-empty');
-        const grid=el('div','',box,mode==='speeches'?'hr-card-grid':'hr-card-grid hr-resume-grid');
+        if(!items.length)el('p',mode==='speeches'?'该用途暂无话术，点击“新建话术”可直接使用推荐内容。':'当前分类暂无简历。主动联系或被动邀约收到的简历会在这里归档。',box,'hr-pool-empty');
+        const grid=el('div','',box,mode==='speeches'?'hr-card-grid hr-speech-grid':'hr-card-grid hr-resume-grid');
         for(const row of items){
-          const card=el('article','',grid,'hr-person-card'),head=el('div','',card,'hr-card-heading');
+          const card=el('article','',grid,mode==='speeches'?'hr-person-card hr-speech-card':'hr-person-card'),head=el('div','',card,'hr-card-heading');
           const identity=mode==='speeches'?head:el('div','',head,'hr-identity');
           if(mode!=='speeches')el('span',row.name?.slice(0,1)||'人',identity,'hr-avatar');
           el('h3',row.name||'姓名待补充',identity);
           if(mode==='speeches'){
-            el('span',row.isDefault?(row.kind==='passive_reply'?'默认被动回复':'默认婉拒'):row.active?'启用':'停用',head,'hr-badge');
-            el('p',row.content,card,'hr-prose');
-            button('编辑话术',el('div','',card,'hr-actions'),()=>editSpeech(row));
+            el('span',row.isDefault?'默认话术':row.active?'已启用':'已停用',head,'hr-badge');
+            el('p',row.content,card,'hr-prose hr-speech-content');
+            const footer=el('div','',card,'hr-actions hr-speech-footer');
+            el('span',speechKinds.find(([key])=>key===row.kind)?.[1]||'',footer,'hr-hint');
+            button('编辑话术',footer,()=>editSpeech(row));
           }else{
             el('span',statuses[row.status]||row.status,head,'hr-badge');
             el('span',row.origin==='active'?'主动邀约':'被动邀约',card,'hr-eyebrow');
@@ -390,7 +421,7 @@
         },10000);
       }
     },leave(){active='';++generation;clearTimeout(timer);clearInterval(poolTimer);poolActivity.textContent='';detail.close();speechDialog.close();clearPreview();},
-      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';jobFilter='';originFilter='';
+      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';speechFilter='passive_reply';jobFilter='';originFilter='';
         for(const tab of originButtons)tab.control.setAttribute('aria-pressed',String(tab.value===''));
         jobOptions=[];jobSignature='';renderJobTabs();poolSnapshot='';logOpen=false;speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
   };

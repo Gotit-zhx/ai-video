@@ -1,0 +1,33 @@
+version: 2.1
+
+# Ordinary pushes never allocate a VM. Trigger explicitly when Actions is
+# unavailable; keep the repository private and use the CircleCI Free plan.
+parameters:
+  desktop_build:
+    type: boolean
+    default: false
+
+jobs:
+  windows-desktop:
+    resource_class: windows.medium
+    machine:
+      image: windows-server-2022-gui:current
+      shell: powershell.exe -ExecutionPolicy Bypass
+    steps:
+      - checkout
+      - run:
+          name: Native Windows packaging and offline verification
+          command: powershell.exe -ExecutionPolicy Bypass -File scripts/ci/windows-desktop.ps1
+          no_output_timeout: 15m
+      - store_artifacts:
+          path: hr-desktop/release
+          destination: installers
+      - store_artifacts:
+          path: hr-desktop/test-results
+          destination: verification
+
+workflows:
+  desktop-backup:
+    when: << pipeline.parameters.desktop_build >>
+    jobs:
+      - windows-desktop
