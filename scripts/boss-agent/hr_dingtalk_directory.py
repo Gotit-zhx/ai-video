@@ -106,19 +106,12 @@ def launch(key, config, entry):
                      name="dingtalk-directory").start()
 
 
-def listing(user, query):
+def snapshot(user, query):
+    """Internal full snapshot for department sync; no employee pages are skipped."""
     owner, _ = pool.context(user)
     config = dt.read_config(owner)
     if str(config["version"]) != str(query.get("configVersion", "")):
-        raise pool.Conflict("钉钉应用已更新，请重新打开二面资料")
-    keyword = pool.text(query.get("q", ""), 100).casefold()
-    department = pool.text(query.get("departmentId", ""), 30)
-    try:
-        page = int(query.get("page", 1))
-    except (ValueError, TypeError):
-        raise ValueError("通讯录页码不正确") from None
-    if not 1 <= page <= 100000:
-        raise ValueError("通讯录页码不正确")
+        raise pool.Conflict("钉钉应用已更新，请刷新后重试")
     key = key_for(owner, config)
     with LOCK:
         entry = CACHE.get(key)
@@ -140,11 +133,24 @@ def listing(user, query):
         value = dict(entry)
     # Reject stale credentials even if the configuration changed during a read.
     if key_for(owner, dt.read_config(owner)) != key:
-        raise pool.Conflict("钉钉应用已更新，请重新打开二面资料")
+        raise pool.Conflict("钉钉应用已更新，请刷新后重试")
+    return {**value, "configVersion": config["version"], "appKey": config["app_key"]}
+
+
+def listing(user, query):
+    keyword = pool.text(query.get("q", ""), 100).casefold()
+    department = pool.text(query.get("departmentId", ""), 30)
+    try:
+        page = int(query.get("page", 1))
+    except (ValueError, TypeError):
+        raise ValueError("通讯录页码不正确") from None
+    if not 1 <= page <= 100000:
+        raise ValueError("通讯录页码不正确")
+    value = snapshot(user, query)
     matches = [p for p in value["items"] if (not department or department in p["departmentIds"])
                and (not keyword or keyword in p["name"].casefold() or keyword in p["department"].casefold())]
     pages = max(1, math.ceil(len(matches) / 20))
     page = min(page, pages)
     return {**{k: value[k] for k in ("state", "error", "syncedAt", "departmentCount", "employeeCount")},
-            "configVersion": config["version"], "departments": value["departments"],
+            "configVersion": value["configVersion"], "departments": value["departments"],
             "items": matches[(page-1)*20:page*20], "total": len(matches), "page": page, "pages": pages}

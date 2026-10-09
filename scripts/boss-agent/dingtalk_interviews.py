@@ -314,11 +314,23 @@ def save_config(user, body):
                                     "version": version, "verified": 1})}
 
 
-def employee(config, user_id):
+def employee_details(config, user_id):
     result = api("topapi/v2/user/get", {"userid": user_id, "language": "zh_CN"}, token(config)).get("result", {})
     if not isinstance(result, dict) or result.get("userid") != user_id or not result.get("name"):
         raise ValueError("无法核对负责人，请确认该员工属于当前企业且在应用通讯录权限范围内")
-    return pool.text(result["name"], 100)
+    return {"userid":user_id,"name":pool.text(result["name"],100),"dept_id_list":result.get("dept_id_list")}
+
+
+def employee(config, user_id):
+    return employee_details(config, user_id)["name"]
+
+
+def department_member(config, user_id, source_id):
+    result=employee_details(config,user_id)
+    departments=result.get("dept_id_list")
+    if (not isinstance(departments,list) or source_id not in [str(d) for d in departments]):
+        raise ValueError("该人员不属于当前钉钉部门，请刷新后从部门成员中重新选择")
+    return result["name"]
 
 
 def department_identity(user, body):
@@ -326,9 +338,13 @@ def department_identity(user, body):
     owner, _ = pool.context(user)
     record = pool.text(body.get("id", ""), 36)
     mobile = re.sub(r"[\s()-]", "", pool.text(body.get("mobile", ""), 30))
+    selected_uid = pool.text(body.get("userId", ""), 100)
     if mobile.startswith("+86"):
         mobile = mobile[3:]
-    if not re.fullmatch(r"1[3-9]\d{9}", mobile):
+    if selected_uid:
+        if mobile or not re.fullmatch(r"[\w@.+~-]{1,100}",selected_uid):
+            raise ValueError("请选择有效的部门成员")
+    elif not re.fullmatch(r"1[3-9]\d{9}", mobile):
         raise ValueError("请填写负责人在企业钉钉通讯录中的 11 位手机号")
     config = read_config(owner)
     if config["version"] != body.get("configVersion"):
@@ -340,15 +356,28 @@ def department_identity(user, body):
             raise ValueError("请先保存并启用该部门")
         if department["version"] != body.get("version"):
             raise pool.Conflict("部门已经更新，请刷新后重新识别")
-    result = api("topapi/v2/user/getbymobile", {"mobile": mobile}, token(config)).get("result", {})
-    user_id = result.get("userid", "") if isinstance(result, dict) else ""
+        source=hr_departments.source_for(db,owner,record,config)
+        has_source=db.execute("SELECT 1 FROM hr_department_sources WHERE owner=? AND department_id=?", (owner,record)).fetchone()
+        if has_source and not source:
+            raise pool.Conflict("钉钉应用已更新，请先重新同步部门")
+    if selected_uid and not source:
+        raise ValueError("请先从钉钉同步该部门")
+    if selected_uid:
+        user_id=selected_uid
+    else:
+        result = api("topapi/v2/user/getbymobile", {"mobile": mobile}, token(config)).get("result", {})
+        user_id = result.get("userid", "") if isinstance(result, dict) else ""
     if not isinstance(user_id, str) or not re.fullmatch(r"[\w@.+~-]{1,100}", user_id):
         raise ValueError("未识别到当前企业的在职员工，请核对手机号和应用通讯录权限")
-    name = employee(config, user_id)
-    mask = mobile[:3] + "****" + mobile[-4:]
+    name = department_member(config,user_id,source["source_id"]) if source else employee(config, user_id)
+    if read_config(owner)["version"]!=config["version"]:
+        raise pool.Conflict("钉钉应用已更新，请刷新后重新选择")
+    mask = mobile[:3] + "****" + mobile[-4:] if mobile else ""
     proof = {"owner": owner, "departmentId": record, "departmentVersion": department["version"],
              "configVersion": config["version"], "userId": user_id, "name": name,
              "mobileMasked": mask, "issuedAt": time.time()}
+    if source:
+        proof.update(sourceDepartmentId=source["source_id"],appKey=source["app_key"])
     return {"name": name, "mobileMasked": mask,
             "identityProof": cipher().encrypt(json.dumps(proof, ensure_ascii=False).encode()).decode()}
 
@@ -359,10 +388,17 @@ def bind_department(user, body):
     try:
         proof = json.loads(cipher().decrypt(pool.text(body.get("identityProof", ""), 4000).encode(), ttl=300))
     except (InvalidToken, ValueError, TypeError):
-        raise ValueError("身份识别结果已失效，请重新输入手机号识别") from None
+        raise ValueError("身份识别结果已失效，请重新选择负责人") from None
     if (not isinstance(proof, dict) or proof.get("owner") != owner
             or proof.get("departmentId") != body.get("id")):
         raise ValueError("身份识别结果与当前部门不一致，请重新识别")
+    if proof.get("sourceDepartmentId"):
+        config=read_config(owner)
+        if config["version"]!=proof["configVersion"] or config["app_key"]!=proof.get("appKey"):
+            raise pool.Conflict("钉钉应用已更新，请重新选择负责人")
+        current_name=department_member(config,proof["userId"],proof["sourceDepartmentId"])
+        if current_name!=proof["name"]:
+            raise pool.Conflict("员工信息已更新，请重新选择负责人")
     with pool.database() as db:
         schema(db)
         department = db.execute("SELECT * FROM hr_departments WHERE owner=? AND id=?",
@@ -373,6 +409,11 @@ def bind_department(user, body):
         if (not department or department["status"] != "ACTIVE"
                 or department["version"] != proof["departmentVersion"]):
             raise pool.Conflict("部门已经更新，请刷新后重新识别负责人")
+        source=hr_departments.source_for(db,owner,department["id"],config)
+        if proof.get("sourceDepartmentId") and not source:
+            raise ValueError("部门来源已更新，请重新同步后选择负责人")
+        if source and (proof.get("sourceDepartmentId")!=source["source_id"] or proof.get("appKey")!=source["app_key"]):
+            raise ValueError("部门成员身份不匹配，请重新选择负责人")
         db.execute("INSERT OR REPLACE INTO hr_department_dingtalk VALUES(?,?,?,?,?,?)",
                    (owner, department["id"], proof["userId"], proof["name"], proof["mobileMasked"], config["version"]))
         db.execute("UPDATE hr_departments SET manager=?,version=version+1 WHERE owner=? AND id=?",

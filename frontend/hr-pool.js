@@ -312,9 +312,9 @@
     for(const text of [
       '请企业钉钉管理员登录开发者后台，在应用开发中创建企业内部应用，建议命名“赫逸招聘助手”。',
       '在“凭证与基础信息”复制 Client ID（AppKey）、Client Secret（AppSecret）和 AgentId，填写下方；密钥留空会保留已保存值。',
-      '权限管理中开通“成员信息读权限”和“根据手机号获取成员基本信息权限”，通讯录范围覆盖面试负责人；仍需核对工作通知与媒体上传权限。',
+      '权限管理中开通“成员信息读权限”、部门列表和部门人员详情接口权限，通讯录范围覆盖招聘部门；手机号备用识别需开通“根据手机号获取成员基本信息权限”。仍需核对工作通知与媒体上传权限。',
       '发布应用，将可使用范围包含面试负责人；如启用服务器出口 IP 白名单，添加 8.163.34.81，并以实际出口为准。',
-      '先保存并校验应用，再到部门管理输入负责人在企业通讯录中的手机号，识别并核对姓名后确认绑定。系统自动保存企业 UserID，无需手工填写。',
+      '先保存并校验应用，再到部门管理同步钉钉部门，从对应部门成员中选择负责人并确认。系统自动保存企业 UserID，无需手工填写。',
       '招聘需求选择已绑定的归属部门，关联岗位自动使用该部门负责人；更换钉钉应用后需要重新绑定。识别和绑定不会发送测试消息。'
     ])el('li',text,guide);
     const guideLinks=el('div','',settingsDialog,'hr-actions');
@@ -331,7 +331,7 @@
     const configSave=el('button','保存并校验应用',el('div','',settingsForm,'hr-actions'),'hr-primary');configSave.type='submit';
     const recipientSection=el('div','',settingsDialog,'hr-dingtalk-recipient');
     el('h3','部门负责人',recipientSection);
-    el('p','在部门管理中用手机号识别、核对姓名并绑定，关联岗位自动使用。',recipientSection,'hr-hint');
+    el('p','在部门管理中同步钉钉部门，从组内成员选择负责人，关联岗位自动使用。',recipientSection,'hr-hint');
     button('前往部门管理',el('div','',recipientSection,'hr-actions'),()=>{settingsDialog.close();location.hash='hr-departments';});
     async function loadSettings(epoch=settingsEpoch){
       const data=await request('/dingtalk');

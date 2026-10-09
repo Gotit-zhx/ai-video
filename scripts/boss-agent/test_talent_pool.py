@@ -309,7 +309,7 @@ class TalentPoolTest(unittest.TestCase):
             self.assertEqual(request("/dingtalk/save", {})[0], 400)
             self.assertEqual(request("/dingtalk/recipient", {})[0], 400)
             self.assertEqual(request(scope="departments",cookie=False)[0],401)
-            for endpoint in ("/identity", "/bind"):
+            for endpoint in ("/identity", "/bind", "/sync"):
                 self.assertEqual(request(endpoint, {}, scope="departments", cookie=False)[0],401)
                 self.assertEqual(request(endpoint, {}, scope="departments", origin="https://evil.example")[0],403)
             with mock.patch("dingtalk_interviews.department_identity", return_value={"name":"识别负责人"}) as identify, \
@@ -319,9 +319,20 @@ class TalentPoolTest(unittest.TestCase):
                 identify.assert_called_once_with(USER, {"id":"department"})
                 bind.assert_called_once_with(USER, {"id":"department"})
             department=request("/save",{"name":"独立招聘部","code":"HR","manager":"经理","status":"ACTIVE"},scope="departments")
-            self.assertEqual(department[0],200)
+            self.assertEqual(department[0],400)
+            self.assertIn("由钉钉同步",department[1]["message"])
+            self.assertEqual(request(scope="departments")[1]["data"]["items"],[])
+            import hr_departments
+            seeded=hr_departments.save(USER,{"name":"独立招聘部","code":"HR","manager":"经理","status":"ACTIVE"})
+            self.assertEqual(request("/members?id=x&configVersion=1",scope="departments",cookie=False)[0],401)
+            with mock.patch("hr_departments.synchronize",return_value={"state":"running"}) as sync, \
+                 mock.patch("hr_departments.members",return_value={"items":[]}) as members:
+                self.assertEqual(request("/sync",{"configVersion":1},scope="departments")[1]["data"]["state"],"running")
+                self.assertEqual(request("/members?id=dept&configVersion=1",scope="departments")[1]["data"]["items"],[])
+                sync.assert_called_once_with(USER,{"configVersion":1})
+                members.assert_called_once_with(USER,{"id":"dept","configVersion":"1"})
             self.assertEqual(request(scope="departments")[1]["data"]["items"][0]["manager"],"经理")
-            self.assertEqual(request("/save",{"date":"2026-09-29","position":"运营","departmentId":department[1]["data"]["id"],
+            self.assertEqual(request("/save",{"date":"2026-09-29","position":"运营","departmentId":seeded["id"],
                 "department":"伪造部门","manager":"伪造经理","headcount":1,"years":0,
                 "jobId":"job1","jobAccountKey":"a"*64,"jobDescription":"原始岗位职责",
                 "jobFetchedAt":"2020-01-01T00:00:00Z"},scope="demands")[0],200)

@@ -1573,7 +1573,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         if route in ("passive", "speeches", "resume-pool", "resume-pool/file", "pool/messages"):
             self.passive_request(parsed=parsed)
             return
-        if route in ("pool", "pool/interview", "pool/interview/package", "pool/dingtalk", "pool/dingtalk/directory", "demands", "departments",
+        if route in ("pool", "pool/interview", "pool/interview/package", "pool/dingtalk", "pool/dingtalk/directory", "demands", "departments", "departments/members",
                      "onboarding", "onboarding/recipients", "bi", "bi/export"):
             self.pool_request(write=False, parsed=parsed)
             return
@@ -1668,7 +1668,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                          "/api/v1/hr/pool/dingtalk/recipient",
                          "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate",
                          "/api/v1/hr/demands/upload", "/api/v1/hr/demands/remove", "/api/v1/hr/departments/save",
-                         "/api/v1/hr/departments/identity", "/api/v1/hr/departments/bind"):
+                         "/api/v1/hr/departments/identity", "/api/v1/hr/departments/bind", "/api/v1/hr/departments/sync"):
             self.pool_request(write=True)
             return
         if self.path in ("/api/v1/hr/onboarding/save", "/api/v1/hr/onboarding/identity", "/api/v1/hr/onboarding/send"):
@@ -1803,7 +1803,9 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     result = recruitment_demands.references(self.desktop_user, body,
                         remove=self.path.endswith("/remove"))
                 elif self.path == "/api/v1/hr/departments/save":
-                    result = hr_departments.save(self.desktop_user, body)
+                    raise ValueError("部门由钉钉同步维护，请使用“同步钉钉部门”")
+                elif self.path == "/api/v1/hr/departments/sync":
+                    result = hr_departments.synchronize(self.desktop_user, body)
                 elif self.path == "/api/v1/hr/departments/identity":
                     result = dingtalk_interviews.department_identity(self.desktop_user, body)
                 elif self.path == "/api/v1/hr/departments/bind":
@@ -1847,6 +1849,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     result = hr_dingtalk_directory.listing(self.desktop_user, query)
                 elif parsed.path.endswith("/pool/dingtalk"):
                     result = dingtalk_interviews.settings(self.desktop_user)
+                elif parsed.path.endswith("/departments/members"):
+                    result = hr_departments.members(self.desktop_user, query)
                 elif parsed.path.endswith("/departments"):
                     result = hr_departments.listing(self.desktop_user)
                 else:

@@ -1363,69 +1363,135 @@ test('helper restores an interrupted read once without replaying writes or start
   assert.equal(reads,2);
   assert.ok(app.calls.every(c=>!c.options?.method||c.options.method==='GET'));
 });
-test('department module uses its independent HR directory and does not touch system departments or BOSS',async()=>{
-  const app=setup({transport:{connection:()=>({paired:false})},api:async()=>({data:demandDirectory()})});
+const syncedDepartmentDirectory=()=>({...demandDirectory(),items:demandDirectory().items.map(d=>({...d,synced:true,memberCount:2,source:'dingtalk'})),
+  dingtalkConfig:{verified:true,version:1}});
+const syncedDepartments=()=>({state:'complete',departmentCount:1,employeeCount:2,items:syncedDepartmentDirectory().items});
+const departmentMembers=()=>({...directoryResult(),items:[{userId:'employee1',name:'钉钉经理'}],total:1,page:1,pages:1});
+test('department module imports DingTalk departments without manual creation or BOSS operations',async()=>{
+  const app=setup({transport:{connection:()=>({paired:false})},api:async url=>({data:url.endsWith('/sync')?syncedDepartments():syncedDepartmentDirectory()})});
   app.env.HeyiHrTransport.api=async()=>{throw Error('Must not use BOSS');};
-  await app.enter('departments');assert.match(app.text(),/电商组/);assert.match(app.text(),/测试经理/);
-  assert.ok(app.calls.every(c=>c.url==='/api/v1/hr/departments'));
-  await app.click('编辑部门');
-  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-department-dialog');
-  const code=all(dialog).find(n=>n.name==='code');
-  assert.equal(code.value,'ECOM');
+  await app.enter('departments');assert.match(app.text(),/电商组/);
+  assert.ok(app.calls.every(c=>c.url.startsWith('/api/v1/hr/departments')));
+  assert.equal(JSON.parse(app.calls.find(c=>c.url.endsWith('/sync')).options.body).refresh,false);
+  assert.ok(!app.visible().some(n=>['新建部门','编辑部门'].includes(n._text)));
+  const b=app.visible().find(n=>n._text==='选择负责人');assert.equal(b.disabled,false);
+  await app.click('同步钉钉部门');
+  assert.equal(JSON.parse(app.calls.filter(c=>c.url.endsWith('/sync')).at(-1).options.body).refresh,true);
 });
-test('department phone lookup shows identity before binding and never sends notifications',async()=>{
-  const directory={...demandDirectory(),dingtalkConfig:{verified:true,version:1}};
+test('department member selection verifies identity before binding and never sends notifications',async()=>{
   const app=setup({api:async(url,options)=>{
-    if(url.endsWith('/identity'))return {data:{name:'钉钉经理',mobileMasked:'139****0001',identityProof:'synthetic-proof'}};
-    if(url.endsWith('/bind'))return {data:{name:'钉钉经理',mobileMasked:'139****0001'}};
-    return {data:directory};
+    if(url.endsWith('/identity'))return {data:{name:'钉钉经理',identityProof:'synthetic-proof'}};
+    if(url.endsWith('/bind'))return {data:{name:'钉钉经理'}};
+    return {data:url.endsWith('/sync')?syncedDepartments():url.includes('/members?')?departmentMembers():syncedDepartmentDirectory()};
   }});
-  await app.enter('departments');await app.click('绑定钉钉负责人');
+  await app.enter('departments');await app.click('选择负责人');
   const dialog=all(app.root).find(n=>n.className.includes('hr-department-binding'));
-  const form=all(dialog).find(n=>n.tagName==='form'),mobile=all(dialog).find(n=>n.type==='tel');
-  mobile.value='13900000001';
-  await form.events.submit({preventDefault(){}});await flush();
-  assert.match(app.text(),/识别到：钉钉经理/);
+  const select=all(dialog).find(n=>n.tagName==='select');select.value='employee1';
+  await select.events.change();await flush();
+  assert.match(app.text(),/已核对：钉钉经理/);
   assert.equal(app.calls.filter(c=>c.url.endsWith('/bind')).length,0);
-  await app.click('确认绑定');
+  await app.click('确认负责人');
   const writes=app.calls.filter(c=>c.options?.method==='POST');
-  assert.deepEqual(writes.map(c=>c.url),['/api/v1/hr/departments/identity','/api/v1/hr/departments/bind']);
-  assert.equal(JSON.parse(writes[1].options.body).identityProof,'synthetic-proof');
+  assert.deepEqual(writes.map(c=>c.url),['/api/v1/hr/departments/sync','/api/v1/hr/departments/identity','/api/v1/hr/departments/bind']);
+  assert.equal(JSON.parse(writes[1].options.body).userId,'employee1');
+  assert.equal(JSON.parse(writes[2].options.body).identityProof,'synthetic-proof');
   assert.equal(JSON.parse(writes[1].options.body).mobile,undefined);
-  assert.equal(mobile.value,'');
-  assert.match(app.text(),/已绑定 钉钉经理/);
+  assert.equal(select.value,'');assert.equal(dialog.open,false);
+  assert.match(app.text(),/已设置负责人：钉钉经理/);
 });
-test('phone changes invalidate unconfirmed identity and missing app configuration cannot look up',async()=>{
+test('department search invalidates unconfirmed identity and missing app config cannot sync',async()=>{
   const app=setup({api:async url=>({data:url.endsWith('/identity')
-    ?{name:'钉钉经理',mobileMasked:'139****0001',identityProof:'synthetic-proof'}
-    :{...demandDirectory(),dingtalkConfig:{verified:true,version:1}}})});
-  await app.enter('departments');await app.click('绑定钉钉负责人');
+    ?{name:'钉钉经理',identityProof:'synthetic-proof'}
+    :url.endsWith('/sync')?syncedDepartments():url.includes('/members?')?departmentMembers():syncedDepartmentDirectory()})});
+  await app.enter('departments');await app.click('选择负责人');
   const dialog=all(app.root).find(n=>n.className.includes('hr-department-binding'));
-  const form=all(dialog).find(n=>n.tagName==='form'),mobile=all(dialog).find(n=>n.type==='tel');
-  mobile.value='13900000001';await form.events.submit({preventDefault(){}});await flush();
-  mobile.value='13900000002';mobile.events.input();
-  assert.ok(all(dialog).find(n=>n._text==='确认绑定').hidden);
+  const select=all(dialog).find(n=>n.tagName==='select');select.value='employee1';await select.events.change();await flush();
+  const query=all(dialog).find(n=>n.tagName==='input');query.value='另一人';query.events.input();
+  assert.ok(all(dialog).find(n=>n._text==='确认负责人').disabled);
   assert.equal(app.calls.filter(c=>c.url.endsWith('/bind')).length,0);
   const unconfigured=setup({api:async()=>({data:demandDirectory()})});
-  await unconfigured.enter('departments');await unconfigured.click('绑定钉钉负责人');
-  assert.match(unconfigured.text(),/先到储备人才库/);
-  assert.equal(all(unconfigured.root).find(n=>n._text==='识别钉钉身份').disabled,true);
+  await unconfigured.enter('departments');
+  assert.match(unconfigured.text(),/请先在储备人才库/);
+  assert.equal(all(unconfigured.root).find(n=>n._text==='同步钉钉部门').disabled,true);
   assert.ok(unconfigured.calls.every(c=>c.options?.method!=='POST'));
 });
 test('late department identity response cannot repopulate data after logout',async()=>{
   let resolve;
   const app=setup({api:async url=>url.endsWith('/identity')?new Promise(r=>resolve=r)
-    :{data:{...demandDirectory(),dingtalkConfig:{verified:true,version:1}}}});
-  await app.enter('departments');await app.click('绑定钉钉负责人');
+    :{data:url.endsWith('/sync')?syncedDepartments():url.includes('/members?')?departmentMembers():syncedDepartmentDirectory()}});
+  await app.enter('departments');await app.click('选择负责人');
   const dialog=all(app.root).find(n=>n.className.includes('hr-department-binding'));
-  const mobile=all(dialog).find(n=>n.type==='tel');mobile.value='13900000001';
-  const pending=all(dialog).find(n=>n.tagName==='form').events.submit({preventDefault(){}});
+  const select=all(dialog).find(n=>n.tagName==='select');select.value='employee1';
+  const pending=select.events.change();
   app.env.HrWorkspace.reset();
-  resolve({data:{name:'私密姓名',mobileMasked:'139****0001',identityProof:'private-proof'}});
+  resolve({data:{name:'私密姓名',identityProof:'private-proof'}});
   await pending;
-  assert.equal(mobile.value,'');
+  assert.equal(select.children.length,0);
   assert.doesNotMatch(app.text(),/私密姓名|private-proof/);
   assert.equal(app.calls.filter(c=>c.url.endsWith('/bind')).length,0);
+});
+test('department synchronization polls without repeating force refresh and stops after leaving',async()=>{
+  const timeouts=[];let phase='running';
+  const app=setup({setTimeout(fn,ms){timeouts.push({fn,ms});return timeouts.length;},api:async url=>({data:url.endsWith('/sync')
+    ?{...syncedDepartments(),state:phase}:syncedDepartmentDirectory()})});
+  await app.enter('departments');assert.match(app.text(),/正在同步/);
+  assert.equal(app.visible().find(n=>n._text==='选择负责人').disabled,true);
+  phase='complete';await timeouts.find(t=>t.ms===1500).fn();await flush();
+  assert.equal(app.visible().find(n=>n._text==='选择负责人').disabled,false);
+  assert.ok(app.calls.filter(c=>c.url.endsWith('/sync')).every(c=>JSON.parse(c.options.body).refresh===false));
+  phase='running';await app.click('同步钉钉部门');
+  const pending=timeouts.at(-1);await app.enter('pool');const count=app.calls.length;
+  await pending.fn();assert.equal(app.calls.length,count);
+});
+test('department member pagination keeps department id and query and late responses cannot restore a closed picker',async()=>{
+  let resolve,hold=false;
+  const app=setup({api:async url=>{
+    if(url.includes('/members?')){
+      if(hold)return new Promise(r=>resolve=r);
+      const query=new URL(url,'https://platform.test').searchParams;
+      return {data:{...departmentMembers(),page:Number(query.get('page')),pages:2,total:21}};
+    }
+    return {data:url.endsWith('/sync')?syncedDepartments():syncedDepartmentDirectory()};
+  }});
+  await app.enter('departments');await app.click('选择负责人');
+  const dialog=app.visible().find(n=>n.className.includes('hr-department-binding'));
+  const q=all(dialog).find(n=>n.tagName==='input');q.value='经理';
+  await q.events.keydown({key:'Enter',preventDefault(){}});await flush();
+  await all(dialog).find(n=>n._text==='下一页').click();await flush();
+  const params=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(params.get('id'),'dept-1');assert.equal(params.get('q'),'经理');assert.equal(params.get('page'),'2');
+  hold=true;const pending=all(dialog).find(n=>n._text==='重新读取成员').click();await flush();
+  await app.click('关闭');resolve({data:departmentMembers()});await pending;await flush();
+  assert.equal(all(dialog).find(n=>n.tagName==='select').children.length,0);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/identity')||c.url.endsWith('/bind')).length,0);
+});
+test('failed department synchronization retains existing departments and no late sync can restore data after logout',async()=>{
+  const failed=setup({api:async url=>({data:url.endsWith('/sync')?{state:'failed',error:'部门权限不足'}:syncedDepartmentDirectory()})});
+  await failed.enter('departments');assert.match(failed.text(),/部门权限不足/);assert.match(failed.text(),/电商组/);
+  assert.equal(failed.calls.some(c=>c.url.endsWith('/save')),false);
+  let resolve;
+  const app=setup({api:async url=>url.endsWith('/sync')?new Promise(r=>resolve=r):{data:syncedDepartmentDirectory()}});
+  await app.enter('departments');app.env.HrWorkspace.reset();
+  resolve({data:syncedDepartments()});await flush();
+  assert.doesNotMatch(app.text(),/电商组|测试经理/);
+});
+test('department cards paginate twelve at a time and search resets and resync clamps the page',async()=>{
+  let rows=Array.from({length:27},(_,i)=>({...syncedDepartmentDirectory().items[0],
+    id:'dept-'+i,name:'部门 '+String(i+1).padStart(2,'0')}));
+  const app=setup({api:async url=>({data:url.endsWith('/sync')
+    ?{...syncedDepartments(),departmentCount:rows.length,items:rows}:{...syncedDepartmentDirectory(),items:rows}})});
+  const cards=()=>app.visible().filter(n=>n.tagName==='article'&&n.className==='hr-person-card');
+  await app.enter('departments');assert.equal(cards().length,12);
+  const calls=app.calls.length;
+  await app.click('2');assert.equal(cards().length,12);assert.match(cards()[0].textContent,/部门 13/);
+  await app.click('3');assert.equal(cards().length,3);assert.match(app.text(),/第 3 \/ 3 页 · 共 27 个部门 · 每页 12 个/);
+  assert.equal(app.calls.length,calls,'Paging the saved directory never reads BOSS or DingTalk again');
+  const query=app.visible().find(n=>n.tagName==='input');query.value='部门 01';query.events.input();
+  assert.equal(cards().length,1);assert.match(app.text(),/第 1 \/ 1 页/);
+  query.value='';query.events.input();await app.click('3');
+  rows=rows.slice(0,13);await app.click('同步钉钉部门');
+  assert.equal(cards().length,1);assert.match(app.text(),/第 2 \/ 2 页 · 共 13 个部门/);
+  app.env.HrWorkspace.reset();assert.ok(!app.visible().some(n=>n.attributes['aria-label']==='部门列表分页'));
 });
 
 test('overview has useful entry points and no webpage QR or QR requests',async()=>{

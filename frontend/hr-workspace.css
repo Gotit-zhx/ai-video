@@ -584,3 +584,16 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-directory-person small{grid-column:2;grid-row:1;font-size:10px;opacity:.5}
 .hr-directory-person[aria-pressed="true"]{border-color:#3b82f6!important;background:rgba(59,130,246,.09)!important}
 @media(max-width:640px){.hr-directory-filters{grid-template-columns:1fr}.hr-directory-results{grid-template-columns:1fr}}
+.hr-department-grid.hr-card-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.hr-department-grid .hr-person-card{padding:14px;min-width:0}
+.hr-department-grid .hr-card-heading{gap:8px;align-items:center}
+.hr-department-grid .hr-card-heading h3{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:1.5}
+.hr-department-grid .hr-badge{flex:none;font-size:10px;padding:3px 6px}
+.hr-department-grid .hr-facts{gap:8px;margin:10px 0 0;font-size:12px}
+.hr-department-grid .hr-facts dt{font-size:10px;margin-bottom:3px}
+.hr-department-grid .hr-facts dd{font-size:12px;line-height:1.5;margin:0}
+.hr-department-grid .hr-actions{padding-top:9px;margin-top:10px}
+.hr-department-grid .hr-actions button{font-size:12px;min-height:28px;padding:5px 9px}
+@media(max-width:1179px){.hr-department-grid.hr-card-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:899px){.hr-department-grid.hr-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){.hr-department-grid.hr-card-grid{grid-template-columns:minmax(0,1fr)}}
