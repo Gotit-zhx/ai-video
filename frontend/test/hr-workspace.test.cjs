@@ -36,7 +36,8 @@ function setup(overrides={}) {
   const links=['overview','jobs','talent','applications','chats','resume'].map(route=>{
     const node=new Node('a');node.dataset.hrRoute=route;return node;
   });
-  const env={document:{getElementById:()=>root,createElement:tag=>new Node(tag),createElementNS:(_ns,tag)=>new Node(tag),
+  const env={echarts:overrides.echarts,document:{documentElement:{dataset:{theme:'light'}},
+    getElementById:()=>root,createElement:tag=>new Node(tag),createElementNS:(_ns,tag)=>new Node(tag),
     querySelectorAll:()=>links},currentUser:{platformAdmin:true,username:'13800000000'},
     activeWorkspace:'hr',location:{pathname:'/',search:'',hash:''},
     DOMParser:class{parseFromString(text){return {body:{textContent:text},querySelectorAll:()=>[]};}},
@@ -769,10 +770,94 @@ test('BI renders six K periods and export follows the applied scope without BOSS
   assert.equal(select.children.length,6);select.value='quarter';await select.events.change();await flush();
   assert.ok(app.calls.some(c=>c.url.includes('granularity=quarter')));
   assert.match(app.text(),/季度 K · 招聘进展/);
-  const link=all(app.root).find(n=>n._text==='导出 Excel 汇总与明细');
+  const link=all(app.root).find(n=>n.tagName==='a'&&n.textContent.includes('导出 Excel 汇总与明细'));
   assert.equal(new URL(link.href,'https://platform.test').searchParams.get('granularity'),'quarter');
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
   assert.ok(app.calls.every(c=>c.url.includes('/bi?')||c.url.endsWith('/login/status')));
+});
+const biFixture=params=>({filters:Object.fromEntries(params),metrics:{resumes:10,pending:5,approved:4,rejected:1,
+  talents:3,joined:1,examined:20,qualified:6,greetings:2,aiComplete:2,averageScore:88,
+  resumeApprovalRate:80,firstPassRate:50,secondPassRate:null},
+  options:{departments:[],jobs:[]},
+  departments:[{name:'研发部',resumes:10,approved:4}],jobs:[{name:'工程师',resumes:10,pending:5,approved:4,firstReviews:2,secondReviews:0,joined:1}],
+  sources:[{name:'主动邀约',count:3},{name:'被动邀约',count:7}],
+  stages:[{name:'一面',count:2},{name:'已入职',count:1}],aging:[{name:'0–3 天',count:5}],
+  trend:[{date:'2026-10-08',resumes:4,firstReviews:1,secondReviews:0},{date:'2026-10-09',resumes:6,firstReviews:1,secondReviews:0}],
+  generatedAt:'2026-10-09T12:00:00+08:00',definitions:['平台记录口径']});
+function chartMock(){
+  const records=[];
+  return {records,library:{init(node,_theme,settings){
+    const record={node,settings,disposed:false,options:null,updates:0};records.push(record);
+    return {setOption(options){record.options=options;record.updates++;},on(){},resize(){},dispose(){record.disposed=true;}};
+  }}};
+}
+test('BI creates nine real-data charts and preserves chart mode and series across K changes',async()=>{
+  const mock=chartMock();
+  const app=setup({bi:true,echarts:mock.library,api:async url=>({data:url.endsWith('/login/status')?{state:'complete'}:
+    biFixture(new URL(url,'https://platform.test').searchParams)})});
+  await app.enter('overview');assert.equal(mock.records.length,9);
+  assert.ok(mock.records.every(r=>r.settings.renderer==='svg'&&r.options.tooltip.renderMode==='richText'));
+  const trend=mock.records.find(r=>r.node.dataset.chart==='招聘周期趋势');
+  assert.deepEqual(Array.from(trend.options.series[0].data),[4,6]);
+  const ring=mock.records.find(r=>r.node.dataset.chart==='邀约来源环形图');
+  assert.deepEqual(Array.from(ring.options.series[0].data,r=>r.value),[3,7]);
+  const heat=mock.records.find(r=>r.node.dataset.chart==='职位进展热力图');
+  assert.deepEqual(Array.from(heat.options.series[0].data,r=>r[2]),[10,5,4,2,0,1]);
+  await app.click('柱状');assert.equal(trend.options.series[0].type,'bar');
+  const series=all(app.root).find(n=>n.attributes['aria-label']==='趋势指标');
+  series.value='AI 寻源与主动联系';await series.events.change();await flush();
+  assert.equal(trend.options.series[0].name,'评估人次');
+  await app.click('半年 K');assert.ok(mock.records.slice(0,9).every(r=>r.disposed));
+  const updated=mock.records.slice(9).find(r=>r.node.dataset.chart==='招聘周期趋势');
+  assert.equal(updated.options.series[0].type,'bar');assert.equal(updated.options.series[0].name,'评估人次');
+  assert.match(app.text(),/半年 K · 招聘进展/);
+  assert.equal(all(app.root).filter(n=>n.className.includes('hr-bi-metric')&&n.tagName==='button').length,24);
+  await app.enter('onboarding');assert.ok(mock.records.every(r=>r.disposed));
+});
+test('BI clears stale data and export on failed scope changes and ignores older overlapping responses',async()=>{
+  const mock=chartMock(),pending=[];
+  const app=setup({bi:true,echarts:mock.library,api:async url=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete'}};
+    const params=new URL(url,'https://platform.test').searchParams;
+    if(params.get('granularity')==='month')throw Error('读取失败');
+    if(['week','year'].includes(params.get('granularity')))return new Promise(resolve=>pending.push({resolve,params}));
+    return {data:biFixture(params)};
+  }});
+  await app.enter('overview');await app.click('月 K');assert.match(app.text(),/读取失败/);
+  assert.equal(mock.records.every(r=>r.disposed),true);
+  assert.equal(all(app.root).filter(n=>n.className==='hr-bi-plot').length,0);
+  assert.equal(all(app.root).find(n=>n.tagName==='a'&&n.textContent.includes('导出 Excel')).hidden,true);
+  // Recover with the persistent refresh action, then overlap two user-selected scopes.
+  const cycle=all(app.root).find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='halfyear'));
+  cycle.value='day';await app.visible().find(n=>n.className==='hr-bi-refresh').click();await flush();
+  cycle.value='week';const older=cycle.events.change();
+  cycle.value='year';const newer=cycle.events.change();await flush();
+  pending[1].resolve({data:biFixture(pending[1].params)});await newer;await flush();
+  pending[0].resolve({data:biFixture(pending[0].params)});await older;await flush();
+  assert.match(app.text(),/年 K · 招聘进展/);assert.doesNotMatch(app.text(),/周 K · 招聘进展/);
+  const link=all(app.root).find(n=>n.tagName==='a'&&n.textContent.includes('导出 Excel'));
+  assert.equal(new URL(link.href,'https://platform.test').searchParams.get('granularity'),'year');
+});
+test('empty BI shows zero counts and missing rates without inventing a successful cohort',async()=>{
+  const mock=chartMock();
+  const app=setup({bi:true,echarts:mock.library,api:async url=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete'}};
+    const data=biFixture(new URL(url,'https://platform.test').searchParams);
+    data.metrics={resumes:0,pending:0,talents:0,joined:0,resumeApprovalRate:null,averageScore:null};
+    data.sources=[{name:'主动邀约',count:0},{name:'被动邀约',count:0}];
+    data.departments=[];data.jobs=[];data.stages=[];data.aging=[];data.trend=[];
+    return {data};
+  }});
+  await app.enter('overview');assert.equal(mock.records.length,9);
+  const ring=mock.records.find(r=>r.node.dataset.chart==='邀约来源环形图');
+  assert.equal(ring.options.series[0].silent,true);
+  assert.equal(ring.options.graphic[0].style.text,'0');
+  assert.equal(ring.options.series[0].data[0].tooltip.show,false);
+  const rates=mock.records.find(r=>r.node.dataset.chart==='审批和面试通过率图');
+  assert.equal(rates.options.tooltip.formatter({dataIndex:0}),'简历：暂无已处理记录');
+  assert.equal(rates.options.series[0].label.formatter({dataIndex:0,value:0}),'—');
+  assert.ok(app.text().includes('所选范围暂无数据'));
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
 });
 test('resume analysis uses resolved job JD and reports preflight errors immediately',async()=>{
   const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle',

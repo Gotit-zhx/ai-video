@@ -146,6 +146,7 @@
     connectionState=state.state||'idle';
     const ready=helperConnected&&connectionState==='complete';
     const pending=helperConnected&&connectionState==='pending';
+    connectionCard.classList.toggle('is-ready',ready);
     guide.hidden=ready;
     connectionBadge.textContent=!helperConnected?'助手未连接':ready?'招聘账号已连接':pending?'正在连接 BOSS':'助手已连接';
     connectionBadge.dataset.connected=String(ready);

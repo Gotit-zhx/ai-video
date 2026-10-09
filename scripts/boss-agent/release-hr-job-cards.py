@@ -15,7 +15,8 @@ files = ("index.html", "hr-workspace.js", "hr-workspace.css", "hr-passive.js")
 if "app.js" in manifest:
     files += ("app.js",)
 for optional in ("hr-demands.js", "hr-sourcing.js", "hr-pool.js", "hr-departments.js", "hr-resume-preview.js",
-                 "hr-onboarding.js", "hr-bi.js"):
+                 "hr-onboarding.js", "hr-bi.js", "vendor/echarts/echarts.min.js",
+                 "vendor/echarts/LICENSE", "vendor/echarts/NOTICE"):
     if optional in manifest:
         files += (optional,)
 assert not (root / "activation.json").exists()
@@ -53,13 +54,16 @@ for name in files:
         live = None
     assert (sha(live) if live is not None else None) == expected[name], "Live frontend changed: " + name
     if live is not None:
+        (backup / name).parent.mkdir(parents=True, exist_ok=True)
         (backup / name).write_bytes(live)
     staged = root / "staged" / name
     assert sha(staged.read_bytes()) == manifest[name], "Staged mismatch: " + name
+    (image_directory / name).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(staged, image_directory / name)
 image = "ai-commerce-frontend:" + root.name
 (image_directory / "Dockerfile").write_text(
-    "FROM " + before["Image"] + "\nCOPY " + " ".join(files) + " /usr/share/nginx/html/\n"
+    "FROM " + before["Image"] + "\n" +
+    "".join("COPY " + name + " /usr/share/nginx/html/" + name + "\n" for name in files)
 )
 run("docker", "build", "-t", image, str(image_directory))
 labels = before["Config"]["Labels"]
