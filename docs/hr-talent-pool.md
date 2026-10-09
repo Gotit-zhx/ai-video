@@ -81,6 +81,8 @@ Java `/api/v1/recruitment-ai/generate` 使用 `ModelConfigService.driverConnecti
 
 ## 发布
 
+2026-10-09 需求池紧凑布局先发布至 `/opt/heyi/releases/hr-demands-compact-20261009`；需求状态移除、删除及员工离职更新发布至 `/opt/heyi/releases/hr-demands-onboarding-actions-20261009`，279 项后端、123 项相关前端及传输检查通过。线上确认需求卡片宽屏三列、约 221px 高，无状态筛选或徽标，保留删除及单页分页；入职筛选按全部、已入职、已离职排列，默认全部，编辑及员工离职入口正确显示，已离职筛选读取成功。未删除真实需求、未标记真实员工离职、未发送 BOSS 或钉钉消息；保留生产回滚，清理本次临时传输文件。
+
 2026-10-09 钉钉部门同步发布至 `/opt/heyi/releases/hr-dingtalk-departments-20261009`，紧凑布局及分页发布至 `/opt/heyi/releases/hr-departments-compact-20261009`。205 项后端、99 项前端检查通过。真实通讯录同步 27 个部门、60 位员工，原有部门 ID 和人才、岗位需求的部门关联保留。部门由通讯录维护，负责人从本部门成员查询和选择；列表桌面四列、每页 12 个部门，搜索回到第一页。验收未确认真实负责人绑定、未发送钉钉或 BOSS 通知。清理临时传输包，保留生产回滚资料。
 
 `scripts/boss-agent/release-talent-pool.py <release-dir>` 同时发布前端资源和服务端模块：
