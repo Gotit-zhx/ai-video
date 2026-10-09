@@ -40,6 +40,19 @@ class FakeAuth(BaseHTTPRequestHandler):
 
 
 class ConnectorTest(unittest.TestCase):
+    def test_company_directory_dispatch_passes_scoped_user_and_query_without_boss(self):
+        import hr_dingtalk_directory
+        handler = object.__new__(connector.HttpHandler)
+        handler.desktop_user = {"organizationCode": "heyi"}
+        handler.send_json = mock.Mock()
+        parsed = urllib.parse.urlparse("/api/v1/hr/pool/dingtalk/directory?configVersion=1&q=research&page=2")
+        with mock.patch.object(hr_dingtalk_directory, "listing", return_value={"items": [], "state": "complete"}) as listing, \
+             mock.patch.object(connector, "execute") as execute:
+            handler.pool_request(parsed=parsed)
+        listing.assert_called_once_with(handler.desktop_user, {"configVersion": "1", "q": "research", "page": "2"})
+        self.assertEqual(handler.send_json.call_args.args[0], 200)
+        execute.assert_not_called()
+
     def test_desktop_storage_failures_are_precise_without_logging_credentials(self):
         import desktop_bridge
         full = sqlite3.OperationalError("sensitive-cookie-and-path")

@@ -705,6 +705,77 @@ test('second interview opinions are available directly without choosing or sendi
   assert.equal(app.calls.some(c=>c.url.includes('/interview?')||c.url.endsWith('/interview/start')),false);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
 });
+const directoryResult=()=>({state:'complete',configVersion:1,employeeCount:45,departmentCount:2,
+  departments:[{id:'2',name:'研发'}],items:[{userId:'employee-2',name:'测试老师',department:'研发'}],
+  total:45,page:1,pages:3});
+test('second interview queries company directory and verifies selected identity without sending',async()=>{
+  const talent={...poolResult().items[0],stage:'second'};
+  const app=setup({api:async(url,options)=>{
+    if(url.includes('/dingtalk/directory?')){
+      const params=new URL(url,'https://platform.test').searchParams;
+      return {data:{...directoryResult(),page:Number(params.get('page'))}};
+    }
+    if(url.endsWith('/interview/identity'))return {data:{userId:'employee-2',name:'测试老师',
+      bindingKey:'identity',identityProof:'verified-proof'}};
+    if(url.includes('/interview?'))return {data:{...interviewPreview(talent),stage:'second'}};
+    return {data:{...poolResult(),items:[talent]}};
+  }});
+  await app.enter('pool');await app.click('发送二面资料');await flush();
+  assert.match(app.text(),/可查询 45 人/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  const directory=app.visible().find(n=>n.className==='hr-directory');
+  const q=all(directory).find(n=>n.tagName==='input');
+  q.value='研发';await q.events.keydown({key:'Enter',preventDefault(){}});await flush();
+  const dept=all(directory).find(n=>n.tagName==='select');dept.value='2';await dept.events.change();await flush();
+  const next=all(directory).find(n=>n._text==='下一页');await next.click();await flush();
+  const params=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(params.get('q'),'研发');assert.equal(params.get('departmentId'),'2');assert.equal(params.get('page'),'2');
+  const person=all(directory).find(n=>n.dataset.userId==='employee-2');
+  await person.click();await flush();
+  const writes=app.calls.filter(c=>c.options?.method==='POST');
+  assert.equal(writes.length,1);assert.ok(writes[0].url.endsWith('/interview/identity'));
+  assert.equal(JSON.parse(writes[0].options.body).userId,'employee-2');
+  assert.match(app.text(),/已识别：测试老师/);
+  const dialog=app.visible().find(n=>n.className.includes('hr-interview-dialog'));
+  assert.equal(all(dialog).find(n=>n._text==='发送二面资料').disabled,false);
+  assert.equal(app.calls.some(c=>c.url.endsWith('/interview/start')),false);
+  app.env.HrWorkspace.reset();
+  assert.doesNotMatch(app.text(),/测试老师/);assert.equal(all(directory).some(n=>n.dataset.userId),false);
+});
+test('late directory response is discarded after closing and reopening for another candidate',async()=>{
+  let resolve,count=0;
+  const talent={...poolResult().items[0],stage:'second'};
+  const app=setup({api:async url=>{
+    if(url.includes('/dingtalk/directory?')){
+      if(++count===1)return new Promise(r=>resolve=r);
+      return {data:{...directoryResult(),items:[],total:0}};
+    }
+    return {data:url.includes('/interview?')?{...interviewPreview(talent),stage:'second'}:
+      {...poolResult(),items:[talent]}};
+  }});
+  await app.enter('pool');await app.click('发送二面资料');
+  await app.click('关闭');await app.click('发送二面资料');
+  resolve({data:directoryResult()});await flush();
+  assert.doesNotMatch(app.text(),/测试老师/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+test('directory permission failure keeps optional interview opinion and phone fallback available',async()=>{
+  const talent={...poolResult().items[0],stage:'second'};
+  const app=setup({api:async url=>({data:url.includes('/dingtalk/directory?')
+    ?{...directoryResult(),state:'failed',error:'通讯录权限不足，请授权',items:[]}
+    :url.includes('/interview?')?{...interviewPreview(talent),stage:'second'}:
+    {...poolResult(),items:[talent]}})});
+  await app.enter('pool');await app.click('发送二面资料');await flush();
+  assert.match(app.text(),/通讯录权限不足/);
+  const select=app.visible().find(n=>n.tagName==='select'&&n.children.some(c=>c.value==='mobile'));
+  select.value='mobile';select.events.change();
+  assert.ok(app.visible().some(n=>n._text==='识别面试人员'));
+  select.value='';select.events.change();
+  const dialog=app.visible().find(n=>n.className.includes('hr-interview-dialog'));
+  assert.equal(all(dialog).find(n=>n._text==='发送二面资料').disabled,true);
+  await app.click('关闭');await app.click('二面意见');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
 const onboardingValues=()=>({name:'测试人才',startDate:'2026-10-20',position:'算法工程师',supervisor:'主管',
   department:'研发',company:'测试公司',fixedSalary:'22000',performanceSalary:'0',commission:'无',mentorName:'导师',joined:false});
 test('second approval opens arrangements first and submits opinion and onboarding atomically',async()=>{
@@ -929,7 +1000,7 @@ test('delivered first interview hides setup and send actions and retains the clo
   assert.ok(!app.visible().some(n=>n.tagName==='button'&&n._text==='一面资料'));
   await app.click(talent.name);
   const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-interview-dialog');
-  const buttons=all(dialog).filter(n=>n.tagName==='button'&&!n.hidden);
+  const buttons=app.visible().filter(n=>all(dialog).includes(n)&&n.tagName==='button');
   assert.deepEqual(buttons.map(n=>n.textContent),['关闭']);
   assert.match(dialog.textContent,/人才详情/);
   assert.match(dialog.textContent,/已送达负责人/);

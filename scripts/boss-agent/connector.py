@@ -1573,7 +1573,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         if route in ("passive", "speeches", "resume-pool", "resume-pool/file", "pool/messages"):
             self.passive_request(parsed=parsed)
             return
-        if route in ("pool", "pool/interview", "pool/interview/package", "pool/dingtalk", "demands", "departments",
+        if route in ("pool", "pool/interview", "pool/interview/package", "pool/dingtalk", "pool/dingtalk/directory", "demands", "departments",
                      "onboarding", "onboarding/recipients", "bi", "bi/export"):
             self.pool_request(write=False, parsed=parsed)
             return
@@ -1759,6 +1759,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         import dingtalk_interviews
         import hr_onboarding
         import hr_bi
+        import hr_dingtalk_directory
         if write:
             if self.headers.get("Origin") != ALLOWED_ORIGIN:
                 self.send_json(403, {"success": False, "message": "请求来源不正确"})
@@ -1842,6 +1843,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     return
                 elif parsed.path.endswith("/pool/interview"):
                     result = dingtalk_interviews.preview(self.desktop_user, query)
+                elif parsed.path.endswith("/pool/dingtalk/directory"):
+                    result = hr_dingtalk_directory.listing(self.desktop_user, query)
                 elif parsed.path.endswith("/pool/dingtalk"):
                     result = dingtalk_interviews.settings(self.desktop_user)
                 elif parsed.path.endswith("/departments"):

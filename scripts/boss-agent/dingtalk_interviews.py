@@ -88,10 +88,14 @@ def interview_identity(user, body):
     """Verify an optional second interviewer without changing department routing."""
     owner, _ = pool.context(user)
     record = pool.text(body.get("talentId", ""), 100)
+    uid = pool.text(body.get("userId", ""), 100)
     mobile = re.sub(r"[\s()-]", "", pool.text(body.get("mobile", ""), 30))
     if mobile.startswith("+86"):
         mobile = mobile[3:]
-    if not re.fullmatch(r"1[3-9]\d{9}", mobile):
+    if uid:
+        if not re.fullmatch(r"[\w@.+~-]{1,100}", uid) or mobile:
+            raise ValueError("请选择有效的公司人员")
+    elif not re.fullmatch(r"1[3-9]\d{9}", mobile):
         raise ValueError("请填写面试人员在企业钉钉通讯录中的 11 位手机号")
     config = read_config(owner)
     if config["version"] != body.get("configVersion"):
@@ -103,11 +107,14 @@ def interview_identity(user, body):
         if db.execute("SELECT 1 FROM hr_interview_reviews WHERE owner=? AND talent_id=? AND round='second'",
                       (owner, record)).fetchone():
             raise pool.Conflict("二面意见已提交")
-    result = api("topapi/v2/user/getbymobile", {"mobile": mobile}, token(config)).get("result", {})
-    uid = result.get("userid", "") if isinstance(result, dict) else ""
+    if not uid:
+        result = api("topapi/v2/user/getbymobile", {"mobile": mobile}, token(config)).get("result", {})
+        uid = result.get("userid", "") if isinstance(result, dict) else ""
     if not isinstance(uid, str) or not re.fullmatch(r"[\w@.+~-]{1,100}", uid):
         raise ValueError("未识别到当前企业员工，请核对手机号和通讯录权限")
     name = employee(config, uid)
+    if read_config(owner)["version"] != config["version"]:
+        raise pool.Conflict("钉钉应用已更新，请重新选择人员")
     proof = {"owner": owner, "talentId": record, "round": "second", "configVersion": config["version"],
              "userId": uid, "name": name}
     return {"name": name, "userId": uid, "bindingKey": "identity",
@@ -209,9 +216,15 @@ def api(path, data, token="", content_type="application/json", sending=False):
             if path == "topapi/v2/user/getbymobile":
                 raise DingError("手机号识别失败：钉钉应用缺少“根据手机号获取成员基本信息权限”。"
                                 "请在钉钉开发者后台“权限管理”开通，按后台提示发布更新后重新识别" + suffix)
+            if path in ("topapi/v2/department/listsub", "topapi/v2/user/list"):
+                raise DingError("公司通讯录读取失败，请在钉钉开发者后台“权限管理”为部门列表和部门人员详情接口授权，"
+                                "将通讯录可见范围包含需要查询的部门与员工，按后台提示发布更新后点击刷新通讯录" + suffix)
             raise DingError("钉钉应用缺少当前接口的调用权限，请在开发者后台“权限管理”完成授权后手动重试" + suffix)
         if path == "topapi/v2/user/getbymobile":
             raise DingError("手机号识别失败，请核对企业在职员工手机号，并开通“根据手机号获取成员基本信息权限”及对应通讯录范围" + suffix)
+        if path in ("topapi/v2/department/listsub", "topapi/v2/user/list"):
+            raise DingError("公司通讯录读取失败，请在钉钉开发者后台“权限管理”为部门列表和部门人员详情接口授权，"
+                            "将通讯录可见范围包含需要查询的部门与员工，按后台提示发布更新后点击刷新通讯录" + suffix)
         raise DingError("钉钉未接受请求，请检查权限、可见范围、UserID 和发送限额" + suffix)
     return result
 

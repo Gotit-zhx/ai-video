@@ -8,6 +8,7 @@
     let departmentButtons=[],departmentDirectory='',pageButtons=[];
     let interviewing=null,interviewData=null,interviewRequest='',interviewTimer=null,interviewSending=false,settingsData=null,settingsSaving=false,settingsEpoch=0,interviewEpoch=0;
     let interviewRound='first',interviewerProof=null,identifying=false;
+    let directoryData=null,directoryPage=1,directoryBusy=false,directoryEpoch=0,directoryTimer=null;
     const toolbar=el('div','',panel,'hr-pool-toolbar');
     const intro=el('div','',toolbar);
     el('h2','让合适的人，始终在视野里',intro);
@@ -68,8 +69,23 @@
     const interviewFields=el('div','',interviewDialog,'hr-pool-fields');
     const resumeSelect=makeField('候选人简历',interviewFields,'select');
     const demandSelect=makeField('对应招聘需求',interviewFields,'select');
-    const recipientFields=el('div','',interviewDialog,'hr-pool-fields');recipientFields.hidden=true;
+    const recipientFields=el('div','',interviewDialog,'hr-pool-fields hr-interview-recipient');recipientFields.hidden=true;
     const recipientSelect=makeField('二面钉钉面试人员（可选）',recipientFields,'select');
+    const directoryFields=el('div','',interviewDialog,'hr-directory');directoryFields.hidden=true;
+    const directoryFilters=el('div','',directoryFields,'hr-directory-filters');
+    const directoryQuery=makeField('查询公司人员',directoryFilters);directoryQuery.maxLength=100;
+    directoryQuery.placeholder='输入姓名或部门';
+    const directoryDepartment=makeField('钉钉部门',directoryFilters,'select');
+    el('option','所有可见部门',directoryDepartment).value='';
+    const directoryRefresh=button('刷新通讯录',directoryFilters,()=>{directoryPage=1;loadDirectory(true);});
+    directoryRefresh.className='hr-secondary';
+    const directoryStatus=el('p','',directoryFields,'hr-hint');directoryStatus.setAttribute('role','status');
+    const directoryResults=el('div','',directoryFields,'hr-directory-results');
+    directoryResults.setAttribute('aria-label','公司人员查询结果');
+    const directoryPager=el('div','',directoryFields,'hr-actions');
+    const directoryPrevious=button('上一页',directoryPager,()=>{directoryPage--;loadDirectory();});
+    const directoryNext=button('下一页',directoryPager,()=>{directoryPage++;loadDirectory();});
+    const directoryPageLabel=el('span','',directoryPager,'hr-hint');directoryPager.hidden=true;
     const mobileFields=el('div','',interviewDialog,'hr-pool-fields');mobileFields.hidden=true;
     const interviewerMobile=makeField('面试人员手机号',mobileFields);interviewerMobile.inputMode='tel';interviewerMobile.maxLength=30;
     const identifyButton=button('识别面试人员',mobileFields,identifyInterviewer);
@@ -84,11 +100,12 @@
     interviewDownload.hidden=true;interviewDownload.download='';
     const interviewSettings=button('钉钉设置',interviewActions,()=>{interviewDialog.close();openSettings();});
     const interviewSend=button('发送一面资料',interviewActions,sendInterview);interviewSend.className='hr-primary';
-    interviewDialog.addEventListener('close',()=>{++interviewEpoch;interviewing=null;interviewData=null;clearTimeout(interviewTimer);});
+    interviewDialog.addEventListener('close',()=>{++interviewEpoch;++directoryEpoch;interviewing=null;interviewData=null;
+      clearTimeout(interviewTimer);clearTimeout(directoryTimer);});
     const states={preparing:'正在准备一面资料包',sending:'正在发送到钉钉',submitted:'钉钉已接受，正在确认送达',
       sent:'一面资料已送达负责人',uncertain:'发送结果待人工核对，不会自动重发',failed:'发送未完成，可核对后手动重试'};
     const selectedDemand=()=>interviewData?.demands?.find(d=>d.id===demandSelect.value);
-    const selectedRecipient=()=>recipientSelect.value==='mobile'?interviewerProof:
+    const selectedRecipient=()=>['mobile','directory'].includes(recipientSelect.value)?interviewerProof:
       interviewData?.recipients?.find(r=>r.bindingKey===recipientSelect.value);
     function renderInterview(){
       const data=interviewData,demand=selectedDemand(),handoff=data?.handoff;
@@ -103,8 +120,9 @@
       }
       interviewSettings.hidden=interviewSend.hidden=delivered||data?.reviewed||(!second&&data?.stage!=='invited');
       recipientFields.hidden=!second;mobileFields.hidden=!second||recipientSelect.value!=='mobile'||(!!handoff&&handoff.status!=='failed');
+      directoryFields.hidden=!second||recipientSelect.value!=='directory'||(!!handoff&&handoff.status!=='failed')||data?.reviewed;
       identifyButton.hidden=mobileFields.hidden;
-      identityFeedback.hidden=mobileFields.hidden;
+      identityFeedback.hidden=mobileFields.hidden&&directoryFields.hidden;
       interviewProgress.setAttribute('aria-label',label+'资料发送进度');
       interviewIntro.textContent=delivered?'简历、岗位 JD 和面试题库已作为 ZIP 资料包送达负责人，可解压查看和打印题库。':
         second?'可选择钉钉面试人员发送简历、岗位 JD 和面试题库，也可以关闭此窗口直接填写二面意见。':
@@ -134,39 +152,99 @@
       resumeSelect.disabled=demandSelect.disabled=interviewSending||pending;
       recipientSelect.disabled=interviewerMobile.disabled=interviewSending||pending||identifying||data?.reviewed;
       identifyButton.disabled=interviewSending||pending||identifying||data?.reviewed;
+      const locked=interviewSending||pending||identifying||data?.reviewed;
+      directoryQuery.disabled=directoryDepartment.disabled=locked;
+      directoryRefresh.disabled=locked||directoryBusy;
+      directoryPrevious.disabled=locked||directoryBusy||directoryPage<=1;
+      directoryNext.disabled=locked||directoryBusy||directoryPage>=(directoryData?.pages||1);
+      for(const b of directoryResults.children)b.disabled=locked||directoryBusy;
       return missing.length===0&&!handoff&&data?.stage==='invited';
     }
     function fillInterview(data){
       const oldResume=resumeSelect.value,oldDemand=demandSelect.value;
-      const oldRecipient=recipientSelect.value;
+      const oldRecipient=recipientSelect.value,hadData=!!interviewData;
+      if(interviewData?.config?.version!==data.config?.version){
+        interviewerProof=null;directoryData=null;directoryBusy=false;++directoryEpoch;clearTimeout(directoryTimer);
+        directoryResults.replaceChildren();identityFeedback.textContent='';
+      }
       interviewData=data;resumeSelect.replaceChildren();demandSelect.replaceChildren();
       recipientSelect.replaceChildren();el('option','不发送，可直接填写二面意见',recipientSelect).value='';
+      el('option','从公司通讯录选择（支持查询）',recipientSelect).value='directory';
       for(const person of data.recipients||[])el('option',person.name+(person.department?' · '+person.department:''),recipientSelect).value=person.bindingKey;
       el('option','其他钉钉人员（用手机号识别）',recipientSelect).value='mobile';
-      recipientSelect.value=oldRecipient==='mobile'||data.recipients?.some(r=>r.bindingKey===oldRecipient)?oldRecipient:'';
+      recipientSelect.value=['mobile','directory'].includes(oldRecipient)||data.recipients?.some(r=>r.bindingKey===oldRecipient)?oldRecipient:
+        !hadData&&interviewRound==='second'&&!data.handoff&&!data.reviewed?'directory':'';
       for(const resume of data.resumes||[])el('option',`${resume.filename} · ${resume.jobName}`,resumeSelect).value=resume.id;
       resumeSelect.value=data.resumes?.some(r=>r.id===oldResume)?oldResume:data.resumes?.[0]?.id||'';
       const matches=(data.demands||[]).filter(d=>d.resumeIds.includes(resumeSelect.value));
       el('option',matches.length>1?'请选择对应招聘需求':'暂无对应招聘需求',demandSelect).value='';
       for(const demand of matches)el('option',`${demand.position} · ${demand.department}`,demandSelect).value=demand.id;
       demandSelect.value=matches.some(d=>d.id===oldDemand)?oldDemand:matches.length===1?matches[0].id:'';
-      return renderInterview();
+      const ready=renderInterview();
+      if(!directoryFields.hidden&&!directoryData&&!directoryBusy)loadDirectory();
+      return ready;
     }
     resumeSelect.addEventListener('change',()=>fillInterview(interviewData));
     demandSelect.addEventListener('change',()=>renderInterview());
-    recipientSelect.addEventListener('change',()=>{interviewerProof=null;identityFeedback.textContent='';renderInterview();});
+    recipientSelect.addEventListener('change',()=>{interviewerProof=null;identityFeedback.textContent='';++directoryEpoch;
+      directoryBusy=false;clearTimeout(directoryTimer);renderInterview();
+      if(!directoryFields.hidden)loadDirectory();});
     interviewerMobile.addEventListener('input',()=>{interviewerProof=null;identityFeedback.textContent='';renderInterview();});
-    async function identifyInterviewer(){
+    directoryQuery.addEventListener('input',()=>{directoryPage=1;++directoryEpoch;clearTimeout(directoryTimer);
+      directoryTimer=setTimeout(()=>loadDirectory(),300);});
+    directoryQuery.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();directoryPage=1;loadDirectory();}});
+    directoryDepartment.addEventListener('change',()=>{directoryPage=1;loadDirectory();});
+    async function loadDirectory(refresh=false){
+      clearTimeout(directoryTimer);
+      if(!interviewing||!interviewDialog.open||directoryFields.hidden||!allowed()||!interviewData?.config?.verified)return;
+      const epoch=interviewEpoch,id=interviewing.id,serial=++directoryEpoch,version=interviewData.config.version;
+      directoryBusy=true;renderInterview();directoryStatus.textContent='正在查询公司通讯录…';
+      try{
+        const params=new URLSearchParams({configVersion:version,q:directoryQuery.value,
+          departmentId:directoryDepartment.value,page:directoryPage});
+        if(refresh)params.set('refresh','1');
+        const data=await request('/dingtalk/directory?'+params);
+        if(epoch!==interviewEpoch||serial!==directoryEpoch||interviewing?.id!==id||!allowed()||
+          interviewData?.config?.version!==version||directoryFields.hidden)return;
+        directoryData=data;directoryPage=data.page;
+        const dept=directoryDepartment.value;
+        directoryDepartment.replaceChildren();el('option','所有可见部门',directoryDepartment).value='';
+        for(const row of data.departments||[])el('option',row.name,directoryDepartment).value=row.id;
+        directoryDepartment.value=data.departments?.some(d=>d.id===dept)?dept:'';
+        directoryResults.replaceChildren();
+        for(const person of data.items||[]){
+          const b=button('',directoryResults,()=>identifyInterviewer(person.userId));b.className='hr-directory-person';
+          b.dataset.userId=person.userId;
+          b.setAttribute('aria-pressed',String(interviewerProof?.userId===person.userId));
+          el('strong',person.name,b);el('span',person.department||'直属人员',b);
+          el('small','ID 尾号 '+person.userId.slice(-4),b);
+        }
+        directoryStatus.className=data.state==='failed'?'hr-error':'hr-hint';
+        directoryStatus.textContent=data.state==='running'?`正在读取通讯录 · 已读取 ${data.departmentCount} 个部门、${data.employeeCount} 人…`:
+          data.state==='failed'?data.error:`可查询 ${data.employeeCount} 人 · 当前找到 ${data.total} 人`+
+            (!data.total?'，试试其他姓名或部门':'');
+        directoryPager.hidden=data.state!=='complete'||data.pages<=1;
+        directoryPageLabel.textContent=`第 ${data.page} / ${data.pages} 页`;
+        if(data.state==='running')directoryTimer=setTimeout(()=>loadDirectory(),1500);
+      }catch(error){
+        if(epoch===interviewEpoch&&serial===directoryEpoch){directoryStatus.className='hr-error';directoryStatus.textContent=error.message;}
+      }finally{
+        if(epoch===interviewEpoch&&serial===directoryEpoch){directoryBusy=false;renderInterview();}
+      }
+    }
+    async function identifyInterviewer(userId){
       if(!interviewing||identifying||!allowed()||!interviewData?.config?.verified)return;
       const id=interviewing.id,epoch=interviewEpoch;
-      identifying=true;renderInterview();identityFeedback.textContent='正在识别钉钉员工…';
+      const chosenId=typeof userId==='string'?userId:'';
+      interviewerProof=null;identifying=true;renderInterview();identityFeedback.textContent='正在核对钉钉员工身份…';
       try{
-        const person=await request('/interview/identity',{talentId:id,mobile:interviewerMobile.value,
+        const person=await request('/interview/identity',{talentId:id,...(chosenId?{userId:chosenId}:{mobile:interviewerMobile.value}),
           configVersion:interviewData.config.version});
         if(epoch!==interviewEpoch||interviewing?.id!==id||!allowed())return;
         interviewerProof=person;identityFeedback.textContent='已识别：'+person.name+'。请核对后点击发送二面资料。';
+        for(const b of directoryResults.children)b.setAttribute('aria-pressed',String(b.dataset.userId===person.userId));
       }catch(error){if(epoch===interviewEpoch)identityFeedback.textContent=error.message;}
-      finally{identifying=false;if(epoch===interviewEpoch)renderInterview();}
+      finally{if(epoch===interviewEpoch){identifying=false;renderInterview();}}
     }
     async function refreshInterview(){
       clearTimeout(interviewTimer);
@@ -184,6 +262,8 @@
       if(!allowed()||interviewSending)return;
       const epoch=++interviewEpoch;
       interviewing=row;interviewData=null;interviewRequest=crypto.randomUUID();interviewRound=round;
+      ++directoryEpoch;clearTimeout(directoryTimer);directoryData=null;directoryPage=1;directoryBusy=false;identifying=false;
+      directoryQuery.value='';directoryDepartment.value='';directoryResults.replaceChildren();directoryStatus.textContent='';
       interviewerProof=null;interviewerMobile.value='';recipientSelect.replaceChildren();identityFeedback.textContent='';
       interviewDownload.hidden=true;interviewDownload.removeAttribute('href');
       interviewTitle.textContent=(round==='second'?'二面资料 · ':autoStart?'开始一面 · ':'人才详情 · ')+row.name;interviewFeedback.textContent='正在读取岗位、简历和发送记录…';
@@ -479,6 +559,9 @@
       reset(){active=false;++generation;departments=[];rows=[];editing=null;stage='invited';outcome='all';department='';page=1;departmentDirectory='';syncDepartments();syncOutcomes();
         query.value='';dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);
         interviewing=null;interviewData=null;settingsData=null;appKey.value=agentId.value=appSecret.value='';
+        ++directoryEpoch;clearTimeout(directoryTimer);directoryData=null;directoryBusy=false;interviewerProof=null;
+        directoryQuery.value=interviewerMobile.value='';directoryDepartment.replaceChildren();directoryResults.replaceChildren();
+        directoryStatus.textContent=identityFeedback.textContent='';recipientSelect.replaceChildren();
         interviewDownload.hidden=true;interviewDownload.removeAttribute('href');
         Object.values(inputs).forEach(input=>input.value='');
         departmentInput.replaceChildren();

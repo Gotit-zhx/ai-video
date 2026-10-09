@@ -133,6 +133,35 @@ class DingTalkInterviewTest(unittest.TestCase):
                                     "recipientBindingKey": "identity"})
         self.assertEqual(job["recipient"], "二面老师")
 
+    def test_directory_selection_verifies_current_employee_and_binds_short_lived_proof(self):
+        self.second_body()
+        body = {"talentId": self.talent["id"], "userId": "employee2", "configVersion": 1, "name": "不可信姓名"}
+        with mock.patch.object(dt, "employee", return_value="公司老师") as employee, mock.patch.object(dt, "api") as api:
+            person = dt.interview_identity(USER, body)
+        employee.assert_called_once()
+        api.assert_not_called()
+        dt.launch.assert_not_called()
+        self.assertEqual(person["name"], "公司老师")
+        config = dt.read_config("heyi")
+        with pool.database() as db:
+            send = {"recipientId": "employee2", "identityProof": person["identityProof"]}
+            self.assertEqual(dt.second_recipient(db, "heyi", self.talent["id"], config, send)["name"], "公司老师")
+            for owner, record, version in [("other", self.talent["id"], 1), ("heyi", "other", 1),
+                                          ("heyi", self.talent["id"], 2)]:
+                with self.assertRaises(ValueError):
+                    dt.second_recipient(db, owner, record, {"version": version}, send)
+            proof = dt.cipher().decrypt(person["identityProof"].encode())
+            expired = dt.cipher().encrypt_at_time(proof, int(dt.time.time())-301).decode()
+            with self.assertRaises(ValueError):
+                dt.second_recipient(db, "heyi", self.talent["id"], {"version": 1}, send | {"identityProof": expired})
+        with mock.patch.object(dt, "employee", side_effect=ValueError("不在通讯录范围")):
+            with self.assertRaises(ValueError):
+                dt.interview_identity(USER, body)
+        with mock.patch.object(dt, "employee") as employee:
+            with self.assertRaises(ValueError):
+                dt.interview_identity(USER, body | {"mobile": "13800000001"})
+            employee.assert_not_called()
+
     def test_submitted_second_opinion_prevents_new_or_preparing_send(self):
         body = self.second_body()
         job = dt.start(USER, body)
