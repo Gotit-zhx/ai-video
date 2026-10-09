@@ -12,7 +12,6 @@
     const actions=el('div','',toolbar,'hr-actions');
     button('钉钉设置',actions,openSettings);
     button('管理项目组',actions,()=>openProject());
-    button('新建人才',actions,()=>openEditor()).className='hr-primary';
     const filters=el('form','',panel,'hr-form');
     const makeField=(label,parent,tag='input')=>{
       const wrap=el('label','',parent,'hr-field');el('span',label,wrap);return el(tag,'',wrap);
@@ -37,7 +36,7 @@
     previous.disabled=next.disabled=true;pager.hidden=true;
     const dialog=el('dialog','',root,'hr-pool-dialog');
     const form=el('form','',dialog);
-    const editorTitle=el('h2','新建人才',form);
+    const editorTitle=el('h2','编辑人才',form);
     el('p','资料保存在平台，阶段仅作内部跟进记录。',form,'hr-hint');
     const fields=el('div','',form,'hr-pool-fields'), inputs={};
     for(const [key,label,limit] of [['name','姓名',100],['position','意向职位',200],['education','学历',100],
@@ -304,7 +303,7 @@
       if(!rows.length){
         const empty=el('div','',result,'hr-pool-empty');
         el('span','◎',empty,'hr-pool-empty-icon');el('h3','这里还没有人才记录',empty);
-        el('p','新建人才，或从人才寻源中加入储备库；也可以调整筛选条件。',empty,'hr-hint');return;
+        el('p','简历审批通过后进入储备库，也可从 AI 寻源中加入候选人；可以调整筛选条件查看。',empty,'hr-hint');return;
       }
       const grid=el('div','',result,'hr-card-grid');
       for(const row of rows){
@@ -339,7 +338,7 @@
     }
     async function openEditor(row={}){
       if(!allowed())return;
-      editing={...row,...(!row.id?{createId:crypto.randomUUID()}: {})};editorTitle.textContent=row.id?'编辑人才':'新建人才';
+      editing={...row,...(!row.id?{createId:crypto.randomUUID()}: {})};editorTitle.textContent=row.id?'编辑人才':'加入储备人才库';
       Object.entries(inputs).forEach(([key,input])=>input.value=row[key]||'');
       stageInput.value=row.stage||'';fillProjects(projectInput,'未分组',row.projectId||'');
       editorError.hidden=true;saveButton.disabled=true;cancel.disabled=false;
