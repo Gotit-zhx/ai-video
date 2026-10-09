@@ -3,6 +3,7 @@
     const panel=section('onboarding');
     let active=false,epoch=0,page=1,status='all',editing=null,saving=false,source=null,completed=null,departing=false;
     let notifying=null,noticeData=null,proof=null,noticeRequest='',noticeBusy=false,noticeEpoch=0,timer=null;
+    let directoryPage=1,directorySerial=0,directoryTimer=null;
     const labels=[['name','姓名'],['startDate','确认入职时间'],['position','入职岗位'],['supervisor','归属主管'],
       ['department','归属部门'],['company','归属公司'],['fixedSalary','固定薪资'],['performanceSalary','绩效薪资'],
       ['commission','提成'],['mentorName','导师名称'],['joined','是否入职']];
@@ -84,13 +85,27 @@
     const notifyTitle=el('h2','发送导师提醒',notifyDialog);
     const noticeMessage=el('p','',notifyDialog,'hr-prose');
     const recipient=field('导师钉钉身份',notifyDialog,'select');
+    const directory=el('div','',notifyDialog,'hr-directory');directory.hidden=true;
+    const directoryFilters=el('div','',directory,'hr-directory-filters');
+    const directoryQuery=field('查询钉钉人员',directoryFilters);
+    directoryQuery.placeholder='输入姓名或部门';directoryQuery.maxLength=100;
+    const directoryDepartment=field('部门',directoryFilters,'select');
+    el('option','所有可见部门',directoryDepartment).value='';
+    button('刷新通讯录',directoryFilters,()=>{directoryPage=1;loadDirectory(true);});
+    const directoryStatus=el('p','',directory,'hr-hint');
+    const directoryResults=el('div','',directory,'hr-directory-results');
+    const directoryPager=el('div','',directory,'hr-actions');
+    const directoryPrevious=button('上一页',directoryPager,()=>{directoryPage--;loadDirectory();});
+    const directoryLabel=el('span','',directoryPager);
+    const directoryNext=button('下一页',directoryPager,()=>{directoryPage++;loadDirectory();});
     const phoneWrap=el('div','',notifyDialog,'hr-pool-fields'),mobile=field('导师手机号',phoneWrap);
     mobile.inputMode='tel';mobile.maxLength=30;
     const identify=button('识别导师',phoneWrap,async()=>{
       if(noticeBusy||!notifying||!allowed())return;
       const ticket=noticeEpoch;noticeBusy=true;syncNotice();noticeFeedback.textContent='正在核对导师姓名…';
       try{
-        const value=await request('onboarding/identity',{talentId:notifying.talentId,version:notifying.version,mobile:mobile.value});
+        const value=await request('onboarding/identity',{talentId:notifying.talentId,version:notifying.version,
+          configVersion:noticeData.config.version,mobile:mobile.value});
         if(ticket===noticeEpoch&&allowed()){proof=value;noticeFeedback.textContent='已识别：'+value.name+'，请核对后发送。';}
       }catch(e){if(ticket===noticeEpoch)noticeFeedback.textContent=e.message;}
       finally{noticeBusy=false;if(ticket===noticeEpoch)syncNotice();}
@@ -101,37 +116,97 @@
     const send=button('发送导师提醒',noticeActions,sendNotice);send.className='hr-primary';
     function syncNotice(){
       phoneWrap.hidden=recipient.value!=='mobile';identify.hidden=phoneWrap.hidden;
+      directory.hidden=recipient.value!=='directory';
       recipient.disabled=mobile.disabled=identify.disabled=noticeBusy;noticeClose.disabled=noticeBusy;
-      send.disabled=noticeBusy||!noticeData?.config?.verified||!(recipient.value==='mobile'?proof:recipient.value);
+      send.disabled=noticeBusy||!noticeData?.config?.verified||!(['mobile','directory'].includes(recipient.value)?proof:recipient.value);
     }
-    recipient.addEventListener('change',()=>{proof=null;noticeFeedback.textContent='';syncNotice();});
+    recipient.addEventListener('change',()=>{proof=null;noticeFeedback.textContent='';++directorySerial;clearTimeout(directoryTimer);
+      syncNotice();if(recipient.value==='directory')loadDirectory();});
     mobile.addEventListener('input',()=>{proof=null;syncNotice();});
-    notifyDialog.addEventListener('close',()=>{++noticeEpoch;notifying=noticeData=proof=null;mobile.value='';noticeFeedback.textContent='';});
+    notifyDialog.addEventListener('close',()=>{++noticeEpoch;++directorySerial;clearTimeout(directoryTimer);
+      notifying=noticeData=proof=null;mobile.value='';noticeFeedback.textContent='';directoryResults.replaceChildren();});
     notifyDialog.addEventListener('cancel',e=>{if(noticeBusy)e.preventDefault();});
+    directoryQuery.addEventListener('input',()=>{directoryPage=1;++directorySerial;clearTimeout(directoryTimer);
+      directoryTimer=setTimeout(loadDirectory,300);});
+    directoryQuery.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();directoryPage=1;loadDirectory();}});
+    directoryDepartment.addEventListener('change',()=>{directoryPage=1;loadDirectory();});
+    async function loadDirectory(refresh=false){
+      clearTimeout(directoryTimer);
+      if(!notifying||!notifyDialog.open||recipient.value!=='directory'||!allowed()||!noticeData?.config?.verified)return;
+      const ticket=noticeEpoch,serial=++directorySerial;
+      directoryStatus.textContent='正在读取钉钉人员…';
+      try{
+        const params=new URLSearchParams({configVersion:noticeData.config.version,q:directoryQuery.value,
+          departmentId:directoryDepartment.value,page:directoryPage});
+        if(refresh)params.set('refresh','1');
+        const data=await request('dingtalk/directory?'+params);
+        if(ticket!==noticeEpoch||serial!==directorySerial||!allowed()||recipient.value!=='directory')return;
+        const dept=directoryDepartment.value;directoryDepartment.replaceChildren();
+        el('option','所有可见部门',directoryDepartment).value='';
+        for(const item of data.departments||[])el('option',item.name,directoryDepartment).value=item.id;
+        directoryDepartment.value=data.departments?.some(d=>d.id===dept)?dept:'';
+        directoryResults.replaceChildren();directoryPage=data.page;
+        for(const person of data.items||[]){
+          const control=button('',directoryResults,()=>chooseMentor(person.userId));control.className='hr-directory-person';
+          control.dataset.userId=person.userId;control.disabled=noticeBusy;
+          control.setAttribute('aria-pressed',String(proof?.userId===person.userId));
+          el('strong',person.name,control);el('span',person.department||'直属人员',control);
+          el('small','ID 尾号 '+person.userId.slice(-4),control);
+        }
+        directoryStatus.textContent=data.state==='failed'?data.error:data.state==='running'?
+          `正在读取通讯录 · 已读取 ${data.employeeCount} 人…`:`找到 ${data.total} 人`;
+        directoryPager.hidden=data.state!=='complete'||data.pages<=1;
+        directoryLabel.textContent=`第 ${data.page} / ${data.pages} 页`;
+        directoryPrevious.disabled=data.page<=1;directoryNext.disabled=data.page>=data.pages;
+        if(data.state==='running')directoryTimer=setTimeout(loadDirectory,1500);
+      }catch(e){if(ticket===noticeEpoch&&serial===directorySerial)directoryStatus.textContent=e.message;}
+    }
+    async function chooseMentor(userId){
+      if(noticeBusy||!notifying||!allowed())return;
+      const ticket=noticeEpoch;noticeBusy=true;proof=null;syncNotice();
+      noticeFeedback.textContent='正在核对导师身份…';
+      try{
+        const person=await request('onboarding/identity',{talentId:notifying.talentId,version:notifying.version,
+          configVersion:noticeData.config.version,userId});
+        if(ticket!==noticeEpoch||!allowed())return;
+        proof=person;noticeFeedback.textContent=`已选择导师：${person.name}。发送时将同步保存导师。`;
+        for(const node of directoryResults.children)node.setAttribute('aria-pressed',String(node.dataset.userId===person.userId));
+      }catch(e){if(ticket===noticeEpoch)noticeFeedback.textContent=e.message;}
+      finally{noticeBusy=false;if(ticket===noticeEpoch)syncNotice();}
+    }
     async function openNotice(row){
       if(!allowed()||noticeBusy)return;
       const ticket=++noticeEpoch;notifying=row;proof=null;noticeData=null;noticeRequest=crypto.randomUUID();mobile.value='';
       notifyTitle.textContent='发送导师提醒 · '+row.mentorName;
       noticeMessage.textContent=`${row.name} 已经入职，请准备好 ${row.name} 的带教计划。`;
-      recipient.replaceChildren();send.disabled=true;noticeFeedback.textContent='正在读取已验证的钉钉人员…';notifyDialog.showModal();
+      directoryPage=1;directoryQuery.value='';directoryDepartment.value='';directoryResults.replaceChildren();
+      recipient.replaceChildren();recipient.value='';syncNotice();send.disabled=true;
+      noticeFeedback.textContent='正在读取已验证的钉钉人员…';notifyDialog.showModal();
       try{
-        const data=await request('onboarding/recipients');
+        const data=await request('onboarding/recipients?talentId='+encodeURIComponent(row.talentId));
         if(ticket!==noticeEpoch||!allowed())return;
         noticeData=data;el('option','请选择导师身份',recipient).value='';
-        for(const person of data.items.filter(p=>p.name===row.mentorName))el('option',person.name,recipient).value=person.bindingKey;
-        el('option','使用手机号识别导师',recipient).value='mobile';recipient.value='';
-        noticeFeedback.textContent=data.config.verified?'姓名须与入职资料中的导师一致。':'请先在储备人才库的“钉钉设置”配置企业应用。';
+        for(const person of data.items)el('option',person.name+(person.bindingKey===data.defaultRecipient?.bindingKey?' · 部门组长':''),recipient).value=person.bindingKey;
+        el('option','从钉钉人员列表选择',recipient).value='directory';
+        el('option','使用手机号识别导师',recipient).value='mobile';
+        recipient.value=data.defaultRecipient?.bindingKey||'directory';
+        notifyTitle.textContent='发送导师提醒';
+        noticeFeedback.textContent=data.config.verified?'默认归属部门组长，也可改选其他人员；发送时同步保存导师。':'请先在储备人才库的“钉钉设置”配置企业应用。';
         syncNotice();
+        if(recipient.value==='directory'){
+          loadDirectory();
+          if(data.defaultRecipient)await chooseMentor(data.defaultRecipient.userId);
+        }
       }catch(e){if(ticket===noticeEpoch)noticeFeedback.textContent=e.message;}
     }
     async function sendNotice(){
       if(send.disabled||noticeBusy||!notifying||!allowed())return;
-      const ticket=noticeEpoch,row=notifying,person=recipient.value==='mobile'?proof:noticeData.items.find(p=>p.bindingKey===recipient.value);
+      const ticket=noticeEpoch,row=notifying,person=['mobile','directory'].includes(recipient.value)?proof:noticeData.items.find(p=>p.bindingKey===recipient.value);
       noticeBusy=true;syncNotice();noticeFeedback.textContent='正在提交导师通知…';
       try{
         await request('onboarding/send',{talentId:row.talentId,version:row.version,requestId:noticeRequest,
           configVersion:noticeData.config.version,recipientId:person.userId,bindingKey:person.bindingKey,
-          identityProof:person.identityProof,retryId:row.notice?.status==='failed'?row.notice.id:undefined});
+          identityProof:person.identityProof,updateMentor:true,retryId:row.notice?.status==='failed'?row.notice.id:undefined});
         if(ticket===noticeEpoch&&allowed()){notifyDialog.close();await load();}
       }catch(e){if(ticket===noticeEpoch)noticeFeedback.textContent=e.message;}
       finally{noticeBusy=false;if(ticket===noticeEpoch)syncNotice();}

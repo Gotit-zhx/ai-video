@@ -173,3 +173,58 @@ class OnboardingTest(unittest.TestCase):
             onboard.schema(db);onboard.backfill(db,"heyi");api.assert_not_called()
         rows=onboard.listing(USER,{"status":"pending"})["items"]
         self.assertEqual(len(rows),1);self.assertEqual(rows[0]["company"],"")
+
+    def test_default_mentor_is_exact_department_leader_without_writing(self):
+        with pool.database() as db:
+            talent=db.execute("SELECT * FROM talents WHERE id=?",(self.talent["id"],)).fetchone()
+            value=json.loads(talent["body"]);value["departmentId"]="dept"
+            db.execute("UPDATE talents SET body=? WHERE id=?",(json.dumps(value),self.talent["id"]))
+            self.assertEqual(onboard.defaults(db,db.execute("SELECT * FROM talents WHERE id=?",(self.talent["id"],)).fetchone())["mentorName"],"导师")
+        _,row=self.enrolled(True)
+        result=onboard.recipients(USER,{"talentId":row["talentId"]})
+        self.assertEqual(result["defaultRecipient"]["userId"],"mentor-id")
+        self.assertEqual(onboard.listing(USER,{})["items"][0]["version"],row["version"])
+        with self.assertRaises(ValueError):onboard.recipients(USER|{"organizationCode":"other"},{"talentId":row["talentId"]})
+        with pool.database() as db:
+            db.execute("UPDATE hr_dingtalk_config SET version=2")
+        self.assertIsNone(onboard.recipients(USER,{"talentId":row["talentId"]})["defaultRecipient"])
+
+    def test_other_directory_mentor_is_verified_saved_atomically_and_delivery_uses_new_version(self):
+        _,row=self.enrolled(True)
+        with mock.patch.object(ding,"employee",return_value="其他老师"):
+            person=onboard.identity(USER,{"talentId":row["talentId"],"version":row["version"],
+                                        "configVersion":1,"userId":"other-id"})
+        body=self.send_body(row)|{"recipientId":"other-id","identityProof":person["identityProof"],"updateMentor":True}
+        with mock.patch.object(onboard.threading,"Thread") as thread:
+            notice=onboard.send(USER,body)
+            onboard.send(USER,body)
+            thread.assert_called_once()
+        updated=onboard.listing(USER,{})["items"][0]
+        self.assertEqual(updated["mentorName"],"其他老师")
+        self.assertEqual(updated["mentorUserId"],"other-id")
+        self.assertEqual(updated["version"],row["version"]+1)
+        with pool.database() as db:
+            snapshot=json.loads(db.execute("SELECT body FROM hr_onboarding_notices").fetchone()[0])
+            self.assertEqual(snapshot["version"],updated["version"])
+        def api(path,data,*args,**kwargs):
+            if path.endswith("asyncsend_v2"):
+                self.assertEqual(data["userid_list"],"other-id")
+                return {"task_id":123}
+            return {"send_result":{"unread_user_id_list":["other-id"]}}
+        with mock.patch.object(ding,"token",return_value="synthetic"),mock.patch.object(ding,"employee",return_value="其他老师"),mock.patch.object(ding,"api",side_effect=api):
+            onboard.deliver("heyi",notice["id"])
+        updated=onboard.listing(USER,{})["items"][0]
+        self.assertEqual(updated["notice"]["status"],"sent")
+        onboard.save(USER,updated|{"company":"更新"})
+        self.assertEqual(onboard.listing(USER,{})["items"][0]["mentorUserId"],"other-id")
+
+    def test_changed_config_or_record_cannot_change_mentor_or_create_notice(self):
+        _,row=self.enrolled(True)
+        with mock.patch.object(ding,"employee",return_value="其他老师"):
+            person=onboard.identity(USER,{"talentId":row["talentId"],"version":row["version"],"configVersion":1,"userId":"other-id"})
+        body=self.send_body(row)|{"recipientId":"other-id","identityProof":person["identityProof"],"updateMentor":True}
+        with self.assertRaises(pool.Conflict):onboard.send(USER,body|{"version":99})
+        with pool.database() as db:db.execute("UPDATE hr_dingtalk_config SET version=2")
+        with self.assertRaises(ValueError):onboard.send(USER,body|{"configVersion":2})
+        updated=onboard.listing(USER,{})["items"][0]
+        self.assertEqual(updated["mentorName"],"导师");self.assertIsNone(updated["notice"])

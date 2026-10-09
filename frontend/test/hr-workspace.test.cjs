@@ -959,6 +959,51 @@ test('onboarding defaults to all and explicit departure selects departed without
   const dialog=all(app.root).find(n=>n.className.includes('hr-onboarding-dialog'));
   assert.equal(all(dialog).find(n=>n.tagName==='select').disabled,true);
 });
+test('mentor defaults to department leader and company directory allows another verified person',async()=>{
+  const row={...onboardingValues(),talentId:'t1',version:1,joined:true};
+  const leader={userId:'leader',name:'部门组长',bindingKey:'department:dept:1'};
+  const app=setup({onboarding:true,api:async(url,options)=>{
+    if(url.includes('/onboarding/recipients?')){
+      assert.match(url,/talentId=t1/);
+      return {data:{config:{verified:true,version:1},items:[leader],defaultRecipient:leader}};
+    }
+    if(url.includes('/dingtalk/directory?'))return {data:directoryResult()};
+    if(url.endsWith('/onboarding/identity'))return {data:{userId:'employee-2',name:'测试老师',bindingKey:'identity',identityProof:'verified-proof'}};
+    if(url.endsWith('/onboarding/send'))return {data:{status:'preparing'}};
+    return {data:{items:[row],total:1,page:1,pages:1}};
+  }});
+  await app.enter('onboarding');await app.click('通知导师');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-mentor-dialog'));
+  const recipient=all(dialog).find(n=>n.tagName==='select');
+  assert.equal(recipient.value,leader.bindingKey);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  recipient.value='directory';await recipient.events.change();await flush();
+  const directory=all(dialog).find(n=>n.className==='hr-directory');
+  const person=all(directory).find(n=>n.dataset.userId==='employee-2');
+  await person.click();await flush();
+  assert.equal(app.calls.some(c=>c.url.endsWith('/onboarding/send')),false);
+  assert.match(app.text(),/已选择导师：测试老师/);
+  await app.click('发送导师提醒');
+  const body=JSON.parse(app.calls.find(c=>c.url.endsWith('/onboarding/send')).options.body);
+  assert.equal(body.recipientId,'employee-2');assert.equal(body.updateMentor,true);
+  assert.equal(body.identityProof,'verified-proof');
+});
+test('closing mentor directory discards a late personnel response and sends nothing',async()=>{
+  const row={...onboardingValues(),talentId:'t1',version:1,joined:true};
+  let resolve;
+  const app=setup({onboarding:true,api:async url=>{
+    if(url.includes('/onboarding/recipients?'))return {data:{config:{verified:true,version:1},items:[],defaultRecipient:null}};
+    if(url.includes('/dingtalk/directory?'))return new Promise(r=>{resolve=r;});
+    return {data:{items:[row],total:1,page:1,pages:1}};
+  }});
+  await app.enter('onboarding');await app.click('通知导师');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-mentor-dialog'));
+  assert.equal(all(dialog).find(n=>n.tagName==='button'&&n._text==='发送导师提醒').disabled,true);
+  await all(dialog).find(n=>n._text==='关闭').click();
+  resolve({data:directoryResult()});await flush();
+  assert.equal(all(dialog).some(n=>n.dataset.userId),false);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
 test('BI renders six K periods and export follows the applied scope without BOSS actions',async()=>{
   const app=setup({bi:true,api:async url=>{
     if(url.endsWith('/login/status'))return {data:{state:'complete'}};

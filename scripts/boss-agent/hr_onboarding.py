@@ -39,7 +39,8 @@ def defaults(db, talent):
     return {"name": value["name"], "position": value.get("position", ""),
             "department": dept["name"] if dept else "", "supervisor": dept["manager"] if dept else "",
             "company": "", "startDate": "", "fixedSalary": "", "performanceSalary": "0",
-            "commission": "无", "mentorName": "", "joined": talent["stage"] == "hired"}
+            "commission": "无", "mentorName": dept["manager"] if dept else "",
+            "joined": talent["stage"] == "hired"}
 
 
 def validate(body):
@@ -151,6 +152,10 @@ def save(user, body):
         notice = db.execute("SELECT status FROM hr_onboarding_notices WHERE owner=? AND talent_id=?",
                              (owner, row["talent_id"])).fetchone()
         before = json.loads(row["body"])
+        if value["mentorName"] == before["mentorName"]:
+            for key in ("mentorUserId", "mentorConfigVersion"):
+                if key in before:
+                    value[key] = before[key]
         if before.get("departed"):
             if not value["joined"]:
                 raise pool.Conflict("已离职记录保留原入职事实，请勿改为未入职")
@@ -218,7 +223,26 @@ def recipients(user, query):
         schema(db)
         config = db.execute("SELECT * FROM hr_dingtalk_config WHERE owner=?", (owner,)).fetchone()
         people = dt.second_recipients(db, owner, config)
+        default = None
+        if query.get("talentId"):
+            row = db.execute("SELECT * FROM hr_onboarding_records WHERE owner=? AND talent_id=?",
+                             (owner, pool.text(query["talentId"], 100))).fetchone()
+            if not row:
+                raise ValueError("入职安排不存在")
+            value = json.loads(row["body"])
+            talent = db.execute("SELECT * FROM talents WHERE owner=? AND id=?", (owner, row["talent_id"])).fetchone()
+            department_id = json.loads(talent["body"]).get("departmentId", "") if talent else ""
+            if not department_id:
+                departments = db.execute("SELECT id FROM hr_departments WHERE owner=? AND name=? AND status='ACTIVE'",
+                                         (owner, value["department"])).fetchall()
+                if len(departments) == 1:
+                    department_id = departments[0]["id"]
+            default = next((p for p in people if p["bindingKey"].startswith(f"department:{department_id}:")), None) if department_id else None
+            if value.get("mentorUserId") and value.get("mentorConfigVersion") == (config["version"] if config else None):
+                default = {"user_id": value["mentorUserId"], "name": value["mentorName"], "bindingKey": "directory"}
         return {"config": dt.public_config(config),
+                "defaultRecipient": {"userId": default["user_id"], "name": default["name"],
+                                     "bindingKey": default["bindingKey"]} if default else None,
                 "items": [{"userId": r["user_id"], "name": r["name"], "bindingKey": r["bindingKey"]}
                           for r in people]}
 
@@ -227,8 +251,14 @@ def identity(user, body):
     owner, _ = pool.context(user)
     record = pool.text(body.get("talentId", ""), 100)
     config = dt.read_config(owner)
+    if body.get("configVersion") is not None and body["configVersion"] != config["version"]:
+        raise pool.Conflict("钉钉应用已更新，请重新选择导师")
+    uid = pool.text(body.get("userId", ""), 100)
     mobile = re.sub(r"[\s()-]", "", pool.text(body.get("mobile", ""), 30)).removeprefix("+86")
-    if not re.fullmatch(r"1[3-9]\d{9}", mobile):
+    if uid:
+        if not re.fullmatch(r"[\w@.+~-]{1,100}", uid) or mobile:
+            raise ValueError("请选择有效的钉钉人员")
+    elif not re.fullmatch(r"1[3-9]\d{9}", mobile):
         raise ValueError("请填写导师在企业钉钉通讯录中的手机号")
     with pool.database() as db:
         schema(db)
@@ -236,16 +266,17 @@ def identity(user, body):
         if (not row or row["version"] != body.get("version") or not json.loads(row["body"])["joined"]
                 or json.loads(row["body"]).get("departed")):
             raise pool.Conflict("请先保存已入职状态，再识别导师")
-    result = dt.api("topapi/v2/user/getbymobile", {"mobile": mobile}, dt.token(config)).get("result", {})
-    uid = result.get("userid", "") if isinstance(result, dict) else ""
+    if not uid:
+        result = dt.api("topapi/v2/user/getbymobile", {"mobile": mobile}, dt.token(config)).get("result", {})
+        uid = result.get("userid", "") if isinstance(result, dict) else ""
     if not isinstance(uid, str) or not re.fullmatch(r"[\w@.+~-]{1,100}", uid):
         raise ValueError("未识别到企业员工，请核对手机号和通讯录权限")
     name = dt.employee(config, uid)
-    if name != json.loads(row["body"])["mentorName"]:
-        raise ValueError("识别姓名与填写的导师名称不一致，请核对导师资料")
+    if dt.read_config(owner)["version"] != config["version"]:
+        raise pool.Conflict("钉钉应用已更新，请重新选择导师")
     proof = {"owner": owner, "talentId": record, "version": row["version"], "configVersion": config["version"],
              "userId": uid, "name": name}
-    return {"name": name, "userId": uid,
+    return {"name": name, "userId": uid, "bindingKey": "identity",
             "identityProof": dt.cipher().encrypt(json.dumps(proof, ensure_ascii=False).encode()).decode()}
 
 
@@ -288,10 +319,20 @@ def send(user, body):
         else:
             person = next((p for p in dt.second_recipients(db, owner, config)
                            if p["user_id"] == body.get("recipientId") and p["bindingKey"] == body.get("bindingKey")), None)
-        if not person or person["name"] != value["mentorName"]:
+        if not person:
+            raise ValueError("请选择已验证的钉钉员工")
+        version = row["version"]
+        if body.get("updateMentor") is True:
+            before = dict(value)
+            value.update(mentorName=person["name"], mentorUserId=person["user_id"], mentorConfigVersion=config["version"])
+            version += 1
+            db.execute("UPDATE hr_onboarding_records SET body=?,version=?,updated_at=? WHERE owner=? AND talent_id=?",
+                       (json.dumps(value, ensure_ascii=False), version, now(), owner, record))
+            pool.event(db, owner, actor, record, "onboarding.mentor", before, value)
+        elif person["name"] != value["mentorName"] or value.get("mentorUserId") not in (None, person["user_id"]):
             raise ValueError("请选择已验证且姓名与导师名称一致的钉钉员工")
         snapshot = {"recipientId": person["user_id"], "recipientName": person["name"],
-                    "configVersion": config["version"], "agentId": config["agent_id"], "version": row["version"],
+                    "configVersion": config["version"], "agentId": config["agent_id"], "version": version,
                     "message": f'{value["name"]} 已经入职，请准备好 {value["name"]} 的带教计划。'}
         job_id = old["id"] if old else str(uuid.uuid4())
         db.execute("""INSERT OR REPLACE INTO hr_onboarding_notices
