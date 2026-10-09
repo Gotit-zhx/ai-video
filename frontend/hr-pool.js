@@ -90,7 +90,7 @@
       if(!demand)missing.push('请在招聘需求池关联这份简历的具体职位');
       else{
         if(!demand.questionsReady)missing.push('请在招聘需求池生成当前版本的面试题库');
-        if(!demand.recipientReady)missing.push('请在钉钉设置中绑定并校验该岗位负责人');
+        if(!demand.recipientReady)missing.push('请在部门管理中绑定并校验该岗位的钉钉负责人');
         if(!demand.resumeIds.includes(resumeSelect.value))missing.push('所选简历与招聘需求职位不一致');
       }
       interviewSummary.textContent=demand?`${demand.position} · ${demand.department||'部门待补充'} · 负责人：${demand.recipient||'未配置'} · ${demand.questionCount} 道面试题`:'';
@@ -152,7 +152,8 @@
       try{
         const handoff=await request('/interview/start',{talentId:id,requestId:interviewRequest,
           version:data.version,resumeId:resumeSelect.value,demandId:demand.id,demandVersion:demand.version,
-          recipientId:demand.recipientId,configVersion:data.config.version,retryId:data.handoff?.status==='failed'?data.handoff.id:undefined});
+          recipientId:demand.recipientId,recipientBindingKey:demand.recipientBindingKey||'',
+          configVersion:data.config.version,retryId:data.handoff?.status==='failed'?data.handoff.id:undefined});
         if(epoch!==interviewEpoch||interviewing?.id!==id||!allowed())return;
         interviewData.handoff=handoff;renderInterview();await refreshInterview();
       }catch(error){
@@ -179,10 +180,10 @@
     for(const text of [
       '请企业钉钉管理员登录开发者后台，在应用开发中创建企业内部应用，建议命名“赫逸招聘助手”。',
       '在“凭证与基础信息”复制 Client ID（AppKey）、Client Secret（AppSecret）和 AgentId，填写下方；密钥留空会保留已保存值。',
-      '权限管理中开通“成员信息读权限”，通讯录范围只需覆盖面试负责人；工作通知与媒体上传权限通常默认开通，仍需核对应用权限。',
+      '权限管理中开通“成员信息读权限”和“根据手机号获取成员基本信息权限”，通讯录范围覆盖面试负责人；仍需核对工作通知与媒体上传权限。',
       '发布应用，将可使用范围包含面试负责人；如启用服务器出口 IP 白名单，添加 8.163.34.81，并以实际出口为准。',
-      '从企业通讯录员工详情获取负责人的 UserID；如后台未展示，由管理员使用钉钉 API Explorer“根据手机号查询用户”取得。',
-      '先保存并校验应用，再选择招聘需求、填写负责人 UserID 并绑定。系统会读取钉钉姓名供你核对，不会发送测试消息。'
+      '先保存并校验应用，再到部门管理输入负责人在企业通讯录中的手机号，识别并核对姓名后确认绑定。系统自动保存企业 UserID，无需手工填写。',
+      '招聘需求选择已绑定的归属部门，关联岗位自动使用该部门负责人；更换钉钉应用后需要重新绑定。识别和绑定不会发送测试消息。'
     ])el('li',text,guide);
     const guideLinks=el('div','',settingsDialog,'hr-actions');
     for(const [label,url] of [['打开钉钉开发者后台','https://open-dev.dingtalk.com/'],
@@ -196,37 +197,22 @@
     const appSecret=makeField('Client Secret / AppSecret',settingsForm);appSecret.type='password';appSecret.maxLength=500;appSecret.autocomplete='new-password';
     const settingsFeedback=el('p','',settingsForm,'hr-hint');settingsFeedback.setAttribute('role','status');
     const configSave=el('button','保存并校验应用',el('div','',settingsForm,'hr-actions'),'hr-primary');configSave.type='submit';
-    const recipientForm=el('form','',settingsDialog,'hr-dingtalk-recipient');
-    el('h3','岗位负责人',recipientForm);
-    const recipientFields=el('div','',recipientForm,'hr-pool-fields');
-    const recipientDemand=makeField('招聘需求',recipientFields,'select');
-    const recipientId=makeField('负责人 UserID',recipientFields);recipientId.maxLength=100;recipientId.autocomplete='off';
-    const recipientName=el('p','',recipientForm,'hr-hint');
-    const recipientSave=el('button','校验并绑定负责人',el('div','',recipientForm,'hr-actions'),'hr-primary');recipientSave.type='submit';
-    const recipientFeedback=el('p','',recipientForm,'hr-hint');recipientFeedback.setAttribute('role','status');
-    function showRecipient(){
-      const demand=settingsData?.demands?.find(d=>d.id===recipientDemand.value);
-      recipientId.value=demand?.recipient?.userId||'';
-      recipientName.textContent=demand?.recipient?`已绑定：${demand.recipient.name}${demand.recipient.valid?'':' · 应用已更换，请重新校验'}`:
-        demand?`部门：${demand.department} · 部门经理：${demand.manager||'未设置'} · 尚未绑定钉钉负责人`:'请先在招聘需求池建立关联职位的需求';
-      recipientSave.disabled=!settingsData?.config?.verified||!demand||settingsSaving;
-    }
-    recipientDemand.addEventListener('change',showRecipient);
+    const recipientSection=el('div','',settingsDialog,'hr-dingtalk-recipient');
+    el('h3','部门负责人',recipientSection);
+    el('p','在部门管理中用手机号识别、核对姓名并绑定，关联岗位自动使用。',recipientSection,'hr-hint');
+    button('前往部门管理',el('div','',recipientSection,'hr-actions'),()=>{settingsDialog.close();location.hash='hr-departments';});
     async function loadSettings(epoch=settingsEpoch){
       const data=await request('/dingtalk');
       if(epoch!==settingsEpoch||!settingsDialog.open||!allowed()||!active)return;
       settingsData=data;appKey.value=data.config.appKey;agentId.value=data.config.agentId;
       appSecret.value='';appSecret.placeholder=data.config.hasSecret?'已保存；留空保留':'请输入应用密钥';
       settingsFeedback.textContent=data.config.verified?'应用凭证已校验。还需核对 AgentId、发布状态和负责人可见范围。':'尚未配置钉钉应用';
-      recipientDemand.replaceChildren();el('option','请选择招聘需求',recipientDemand).value='';
-      for(const demand of data.demands||[])el('option',`${demand.position} · ${demand.department}`,recipientDemand).value=demand.id;
-      showRecipient();
     }
     async function openSettings(){
       if(!allowed())return;
       const epoch=++settingsEpoch;
       settingsData=null;appSecret.value='';settingsFeedback.textContent='正在读取配置…';
-      configSave.disabled=recipientSave.disabled=true;recipientFeedback.textContent='';
+      configSave.disabled=true;
       settingsDialog.showModal();
       try{await loadSettings(epoch);}catch(error){if(epoch===settingsEpoch&&settingsDialog.open)settingsFeedback.textContent=error.message;}
       finally{if(epoch===settingsEpoch)configSave.disabled=false;}
@@ -239,22 +225,7 @@
         await request('/dingtalk/save',{appKey:appKey.value.trim(),agentId:agentId.value.trim(),appSecret:appSecret.value.trim(),version:settingsData.config.version});
         if(epoch===settingsEpoch&&settingsDialog.open&&allowed())await loadSettings(epoch);
       }catch(error){if(epoch===settingsEpoch&&settingsDialog.open&&allowed())settingsFeedback.textContent=error.message;}
-      finally{settingsSaving=false;configSave.disabled=false;appSecret.value='';showRecipient();}
-    });
-    recipientForm.addEventListener('submit',async event=>{
-      event.preventDefault();if(settingsSaving||!settingsData||recipientSave.disabled||!allowed())return;
-      const epoch=settingsEpoch;
-      settingsSaving=true;recipientSave.disabled=true;recipientFeedback.textContent='正在核对钉钉负责人…';
-      const demand=recipientDemand.value;
-      try{
-        const result=await request('/dingtalk/recipient',{demandId:demand,userId:recipientId.value.trim(),configVersion:settingsData.config.version});
-        if(epoch===settingsEpoch&&settingsDialog.open&&allowed()){
-          await loadSettings(epoch);if(epoch!==settingsEpoch)return;
-          recipientDemand.value=demand;showRecipient();
-          recipientFeedback.textContent=`已绑定 ${result.name}，请确认是该岗位的一面负责人。`;
-        }
-      }catch(error){if(epoch===settingsEpoch&&settingsDialog.open&&allowed())recipientFeedback.textContent=error.message;}
-      finally{settingsSaving=false;showRecipient();}
+      finally{settingsSaving=false;configSave.disabled=false;appSecret.value='';}
     });
     settingsDialog.addEventListener('close',()=>{++settingsEpoch;appSecret.value='';settingsData=null;});
 
@@ -393,7 +364,7 @@
       add:openEditor,
       reset(){active=false;++generation;projects=[];rows=[];editing=null;stage='all';page=1;
         query.value='';projectFilter.value='';dialog.close();projectDialog.close();interviewDialog.close();settingsDialog.close();clearTimeout(interviewTimer);
-        interviewing=null;interviewData=null;settingsData=null;appKey.value=agentId.value=appSecret.value=recipientId.value='';recipientDemand.replaceChildren();
+        interviewing=null;interviewData=null;settingsData=null;appKey.value=agentId.value=appSecret.value='';
         Object.values(inputs).forEach(input=>input.value='');projectName.value='';
         [projectFilter,projectInput,projectSelect].forEach(select=>select.replaceChildren());
         editorError.textContent=projectError.textContent='';

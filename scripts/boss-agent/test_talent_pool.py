@@ -142,6 +142,15 @@ class TalentPoolTest(unittest.TestCase):
             self.assertEqual(request("/dingtalk/save", {})[0], 400)
             self.assertEqual(request("/dingtalk/recipient", {})[0], 400)
             self.assertEqual(request(scope="departments",cookie=False)[0],401)
+            for endpoint in ("/identity", "/bind"):
+                self.assertEqual(request(endpoint, {}, scope="departments", cookie=False)[0],401)
+                self.assertEqual(request(endpoint, {}, scope="departments", origin="https://evil.example")[0],403)
+            with mock.patch("dingtalk_interviews.department_identity", return_value={"name":"识别负责人"}) as identify, \
+                 mock.patch("dingtalk_interviews.bind_department", return_value={"name":"绑定负责人"}) as bind:
+                self.assertEqual(request("/identity", {"id":"department"}, scope="departments")[1]["data"]["name"],"识别负责人")
+                self.assertEqual(request("/bind", {"id":"department"}, scope="departments")[1]["data"]["name"],"绑定负责人")
+                identify.assert_called_once_with(USER, {"id":"department"})
+                bind.assert_called_once_with(USER, {"id":"department"})
             department=request("/save",{"name":"独立招聘部","code":"HR","manager":"经理","status":"ACTIVE"},scope="departments")
             self.assertEqual(department[0],200)
             self.assertEqual(request(scope="departments")[1]["data"]["items"][0]["manager"],"经理")

@@ -907,6 +907,60 @@ test('department module uses its independent HR directory and does not touch sys
   const code=all(dialog).find(n=>n.name==='code');
   assert.equal(code.value,'ECOM');
 });
+test('department phone lookup shows identity before binding and never sends notifications',async()=>{
+  const directory={...demandDirectory(),dingtalkConfig:{verified:true,version:1}};
+  const app=setup({api:async(url,options)=>{
+    if(url.endsWith('/identity'))return {data:{name:'钉钉经理',mobileMasked:'139****0001',identityProof:'synthetic-proof'}};
+    if(url.endsWith('/bind'))return {data:{name:'钉钉经理',mobileMasked:'139****0001'}};
+    return {data:directory};
+  }});
+  await app.enter('departments');await app.click('绑定钉钉负责人');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-department-binding'));
+  const form=all(dialog).find(n=>n.tagName==='form'),mobile=all(dialog).find(n=>n.type==='tel');
+  mobile.value='13900000001';
+  await form.events.submit({preventDefault(){}});await flush();
+  assert.match(app.text(),/识别到：钉钉经理/);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/bind')).length,0);
+  await app.click('确认绑定');
+  const writes=app.calls.filter(c=>c.options?.method==='POST');
+  assert.deepEqual(writes.map(c=>c.url),['/api/v1/hr/departments/identity','/api/v1/hr/departments/bind']);
+  assert.equal(JSON.parse(writes[1].options.body).identityProof,'synthetic-proof');
+  assert.equal(JSON.parse(writes[1].options.body).mobile,undefined);
+  assert.equal(mobile.value,'');
+  assert.match(app.text(),/已绑定 钉钉经理/);
+});
+test('phone changes invalidate unconfirmed identity and missing app configuration cannot look up',async()=>{
+  const app=setup({api:async url=>({data:url.endsWith('/identity')
+    ?{name:'钉钉经理',mobileMasked:'139****0001',identityProof:'synthetic-proof'}
+    :{...demandDirectory(),dingtalkConfig:{verified:true,version:1}}})});
+  await app.enter('departments');await app.click('绑定钉钉负责人');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-department-binding'));
+  const form=all(dialog).find(n=>n.tagName==='form'),mobile=all(dialog).find(n=>n.type==='tel');
+  mobile.value='13900000001';await form.events.submit({preventDefault(){}});await flush();
+  mobile.value='13900000002';mobile.events.input();
+  assert.ok(all(dialog).find(n=>n._text==='确认绑定').hidden);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/bind')).length,0);
+  const unconfigured=setup({api:async()=>({data:demandDirectory()})});
+  await unconfigured.enter('departments');await unconfigured.click('绑定钉钉负责人');
+  assert.match(unconfigured.text(),/先到储备人才库/);
+  assert.equal(all(unconfigured.root).find(n=>n._text==='识别钉钉身份').disabled,true);
+  assert.ok(unconfigured.calls.every(c=>c.options?.method!=='POST'));
+});
+test('late department identity response cannot repopulate data after logout',async()=>{
+  let resolve;
+  const app=setup({api:async url=>url.endsWith('/identity')?new Promise(r=>resolve=r)
+    :{data:{...demandDirectory(),dingtalkConfig:{verified:true,version:1}}}});
+  await app.enter('departments');await app.click('绑定钉钉负责人');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-department-binding'));
+  const mobile=all(dialog).find(n=>n.type==='tel');mobile.value='13900000001';
+  const pending=all(dialog).find(n=>n.tagName==='form').events.submit({preventDefault(){}});
+  app.env.HrWorkspace.reset();
+  resolve({data:{name:'私密姓名',mobileMasked:'139****0001',identityProof:'private-proof'}});
+  await pending;
+  assert.equal(mobile.value,'');
+  assert.doesNotMatch(app.text(),/私密姓名|private-proof/);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/bind')).length,0);
+});
 
 test('overview has useful entry points and no webpage QR or QR requests',async()=>{
   const app=setup({api:async()=>({data:{state:'pending',phase:'qr'}})});

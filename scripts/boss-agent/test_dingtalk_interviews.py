@@ -9,6 +9,7 @@ import uuid
 import zipfile
 
 import dingtalk_interviews as dt
+import hr_departments
 import passive_pool
 import recruitment_demands
 import talent_pool as pool
@@ -206,6 +207,136 @@ class DingTalkInterviewTest(unittest.TestCase):
                 dt.token(dt.read_config("heyi"))
         self.assertNotIn("private-provider-value", str(error.exception))
 
+    def department(self):
+        return hr_departments.save(USER, {"name": "研发", "code": "RD", "manager": "旧经理", "status": "ACTIVE"})
+
+    def identity(self, department):
+        def call(path, data, *args, **kwargs):
+            if path == "topapi/v2/user/getbymobile":
+                self.assertEqual(data, {"mobile": "13900000001"})
+                return {"errcode": 0, "result": {"userid": "employee2"}}
+            if path == "topapi/v2/user/get":
+                self.assertEqual(data["userid"], "employee2")
+                return {"errcode": 0, "result": {"userid": "employee2", "name": "新负责人"}}
+            raise AssertionError("Identity must not send: "+path)
+        with mock.patch.object(dt, "api", side_effect=call):
+            return dt.department_identity(USER, {"id": department["id"], "version": department["version"],
+                                               "mobile": "+86 139-0000-0001", "configVersion": 1})
+
+    def link_department(self, department):
+        with pool.database() as db:
+            db.execute("UPDATE recruitment_demands SET body=json_set(body,'$.departmentId',?) WHERE id=?",
+                       (department["id"], self.demand))
+
+    def test_phone_lookup_requires_name_confirmation_and_keeps_only_masked_phone(self):
+        department = self.department()
+        identity = self.identity(department)
+        self.assertEqual(identity["name"], "新负责人")
+        self.assertEqual(identity["mobileMasked"], "139****0001")
+        self.assertIsNone(hr_departments.listing(USER)["items"][0]["dingtalk"])
+        dt.bind_department(USER, {"id": department["id"], "identityProof": identity["identityProof"]})
+        result = hr_departments.listing(USER)["items"][0]
+        self.assertEqual(result["manager"], "新负责人")
+        self.assertEqual(result["version"], 2)
+        self.assertTrue(result["dingtalk"]["valid"])
+        with pool.database() as db:
+            data = str([tuple(row) for row in db.execute("SELECT * FROM hr_department_dingtalk")])
+            data += str([tuple(row) for row in db.execute("SELECT * FROM talent_events")])
+        self.assertNotIn("13900000001", data)
+        self.assertNotIn(identity["identityProof"], data)
+        with self.assertRaises(pool.Conflict):
+            dt.bind_department(USER, {"id": department["id"], "identityProof": identity["identityProof"]})
+
+    def test_department_binding_routes_all_exact_linked_jobs_over_legacy_mappings(self):
+        department = self.department()
+        identity = self.identity(department)
+        dt.bind_department(USER, {"id": department["id"], "identityProof": identity["identityProof"]})
+        self.link_department(department)
+        preview = dt.preview(USER, {"talentId": self.talent["id"]})
+        recipient = preview["demands"][0]
+        self.assertEqual(recipient["recipientId"], "employee2", "Must not keep old job-specific employee1")
+        self.assertTrue(recipient["recipientReady"])
+        with pool.database() as db:
+            db.execute("""INSERT INTO recruitment_demands(id,owner,body,status,version,created_at,updated_at)
+                VALUES('another','heyi',?,'draft',1,'now','now')""",
+                       (json.dumps({"position": "另一个岗位", "departmentId": department["id"]}),))
+        self.assertEqual([item["recipient"]["userId"] for item in dt.settings(USER)["demands"]],
+                         ["employee2", "employee2"])
+        with self.assertRaisesRegex(ValueError, "负责人映射"):
+            dt.start(USER, self.body())
+        body = self.body() | {"recipientId": "employee2", "recipientBindingKey": recipient["recipientBindingKey"]}
+        dt.start(USER, body)
+        value = json.loads(self.job()["body"])
+        self.assertEqual(value["recipientId"], "employee2")
+
+    def test_unbound_changed_or_disabled_department_never_falls_back_to_old_recipient(self):
+        department = self.department()
+        self.link_department(department)
+        self.assertFalse(dt.preview(USER, {"talentId": self.talent["id"]})["demands"][0]["recipientReady"])
+        identity = self.identity(department)
+        dt.bind_department(USER, {"id": department["id"], "identityProof": identity["identityProof"]})
+        current = hr_departments.listing(USER)["items"][0]
+        disabled = hr_departments.save(USER, current | {"status": "DISABLED"})
+        self.assertFalse(dt.preview(USER, {"talentId": self.talent["id"]})["demands"][0]["recipientReady"])
+        hr_departments.save(USER, disabled | {"status": "ACTIVE", "manager": "换人了"})
+        self.assertIsNone(hr_departments.listing(USER)["items"][0]["dingtalk"])
+        self.assertFalse(dt.preview(USER, {"talentId": self.talent["id"]})["demands"][0]["recipientReady"])
+        with self.assertRaisesRegex(ValueError, "负责人映射"):
+            dt.start(USER, self.body())
+
+    def test_expired_wrong_department_changed_app_or_changed_department_proof_cannot_bind(self):
+        department = self.department()
+        identity = self.identity(department)
+        with self.assertRaisesRegex(ValueError, "不一致"):
+            dt.bind_department(USER, {"id": "wrong", "identityProof": identity["identityProof"]})
+        proof = dt.cipher().decrypt(identity["identityProof"].encode())
+        expired = dt.cipher().encrypt_at_time(proof, int(dt.time.time())-301).decode()
+        with self.assertRaisesRegex(ValueError, "失效"):
+            dt.bind_department(USER, {"id": department["id"], "identityProof": expired})
+        with self.assertRaises(ValueError):
+            dt.bind_department(USER, {"id": department["id"], "identityProof": "tampered"})
+        hr_departments.save(USER, department | {"manager": "另一经理"})
+        with self.assertRaises(pool.Conflict):
+            dt.bind_department(USER, {"id": department["id"], "identityProof": identity["identityProof"]})
+        current = hr_departments.listing(USER)["items"][0]
+        identity = self.identity(current)
+        with pool.database() as db:
+            db.execute("UPDATE hr_dingtalk_config SET version=2")
+        with self.assertRaises(pool.Conflict):
+            dt.bind_department(USER, {"id": department["id"], "identityProof": identity["identityProof"]})
+        self.assertIsNone(hr_departments.listing(USER)["items"][0]["dingtalk"])
+
+    def test_invalid_phone_and_lookup_failure_do_not_create_a_binding(self):
+        department = self.department()
+        body = {"id": department["id"], "version": 1, "configVersion": 1}
+        with mock.patch.object(dt, "api") as api:
+            for mobile in ["", "139****0001", "123", "13900000001junk"]:
+                with self.assertRaises(ValueError):
+                    dt.department_identity(USER, body | {"mobile": mobile})
+            api.assert_not_called()
+        with mock.patch.object(dt, "api", return_value={"errcode": 0, "result": {}}):
+            with self.assertRaisesRegex(ValueError, "未识别"):
+                dt.department_identity(USER, body | {"mobile": "13900000001"})
+        self.assertIsNone(hr_departments.listing(USER)["items"][0]["dingtalk"])
+
+    def test_department_changes_during_package_upload_stop_before_any_notification(self):
+        department = self.department()
+        identity = self.identity(department)
+        dt.bind_department(USER, {"id": department["id"], "identityProof": identity["identityProof"]})
+        self.link_department(department)
+        recipient = dt.preview(USER, {"talentId": self.talent["id"]})["demands"][0]
+        dt.start(USER, self.body() | {"recipientId": "employee2", "recipientBindingKey": recipient["recipientBindingKey"]})
+        def upload(*args):
+            current = hr_departments.listing(USER)["items"][0]
+            hr_departments.save(USER, current | {"manager": "更换负责人"})
+            return "synthetic-media"
+        with mock.patch.object(dt, "employee", return_value="新负责人"), \
+             mock.patch.object(dt.resume_storage, "download", return_value=RAW), \
+             mock.patch.object(dt, "upload", side_effect=upload), mock.patch.object(dt, "api") as upstream:
+            dt.deliver("heyi", self.job()["id"])
+            upstream.assert_not_called()
+        self.assertEqual(self.job()["status"], "failed")
+        self.assertEqual(pool.listing(USER, {})["items"][0]["stage"], "invited")
 
 if __name__ == "__main__":
     unittest.main()

@@ -1665,7 +1665,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                          "/api/v1/hr/pool/interview/start", "/api/v1/hr/pool/dingtalk/save",
                          "/api/v1/hr/pool/dingtalk/recipient",
                          "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate",
-                         "/api/v1/hr/demands/upload", "/api/v1/hr/demands/remove", "/api/v1/hr/departments/save"):
+                         "/api/v1/hr/demands/upload", "/api/v1/hr/demands/remove", "/api/v1/hr/departments/save",
+                         "/api/v1/hr/departments/identity", "/api/v1/hr/departments/bind"):
             self.pool_request(write=True)
             return
         if self.path.startswith("/api/v1/hr/desktop/"):
@@ -1785,6 +1786,10 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                         remove=self.path.endswith("/remove"))
                 elif self.path == "/api/v1/hr/departments/save":
                     result = hr_departments.save(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/departments/identity":
+                    result = dingtalk_interviews.department_identity(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/departments/bind":
+                    result = dingtalk_interviews.bind_department(self.desktop_user, body)
                 else:
                     action = talent_pool.save_project if self.path.endswith("/projects") else talent_pool.save
                     result = action(self.desktop_user, body)

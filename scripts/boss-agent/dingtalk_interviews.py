@@ -18,6 +18,7 @@ import talent_pool as pool
 import passive_pool
 import recruitment_demands as demands
 import resume_storage
+import hr_departments
 
 KEY_FILE = Path("/opt/heyi/boss-agent/runtime/private/dingtalk.key")
 MAX_PACKAGE = 20 * 1024 * 1024
@@ -38,6 +39,7 @@ class UnknownSend(DingError):
 
 
 def schema(db):
+    hr_departments.schema(db)
     db.execute("""CREATE TABLE IF NOT EXISTS hr_dingtalk_config(
       owner TEXT PRIMARY KEY,app_key TEXT NOT NULL,secret TEXT NOT NULL,
       agent_id TEXT NOT NULL,version INTEGER NOT NULL,verified INTEGER NOT NULL DEFAULT 0)""")
@@ -104,6 +106,8 @@ def api(path, data, token="", content_type="application/json", sending=False):
         if sending and not re.fullmatch(r"-?\d{1,10}", code):
             raise UnknownSend("钉钉未返回明确结果，系统不会自动重发")
         suffix = f"（错误码 {code}）" if re.fullmatch(r"-?\d{1,10}", code) else ""
+        if path == "topapi/v2/user/getbymobile":
+            raise DingError("手机号识别失败，请核对企业在职员工手机号，并开通“根据手机号获取成员基本信息权限”及对应通讯录范围" + suffix)
         raise DingError("钉钉未接受请求，请检查权限、可见范围、UserID 和发送限额" + suffix)
     return result
 
@@ -150,13 +154,12 @@ def settings(user):
         choices = []
         for demand in db.execute("SELECT * FROM recruitment_demands WHERE owner=? ORDER BY updated_at DESC", (owner,)):
             value = json.loads(demand["body"])
-            recipient = db.execute("SELECT * FROM hr_dingtalk_recipients WHERE owner=? AND demand_id=?",
-                                   (owner, demand["id"])).fetchone()
+            recipient = recipient_for_demand(db, owner, demand["id"], value, row)
             choices.append({"id": demand["id"], "position": value["position"],
                             "department": value.get("department", ""), "manager": value.get("manager", ""),
                             "jobId": value.get("jobId", ""),
                             "recipient": {"userId": recipient["user_id"], "name": recipient["name"],
-                                          "valid": bool(row and recipient["config_version"] == row["version"])}
+                                          "valid": recipient["valid"], "source": recipient["source"]}
                             if recipient else None})
         return {"config": public_config(row), "demands": choices}
 
@@ -201,6 +204,90 @@ def employee(config, user_id):
     return pool.text(result["name"], 100)
 
 
+def department_identity(user, body):
+    """Read one employee, return a short-lived proof; never store the full phone."""
+    owner, _ = pool.context(user)
+    record = pool.text(body.get("id", ""), 36)
+    mobile = re.sub(r"[\s()-]", "", pool.text(body.get("mobile", ""), 30))
+    if mobile.startswith("+86"):
+        mobile = mobile[3:]
+    if not re.fullmatch(r"1[3-9]\d{9}", mobile):
+        raise ValueError("请填写负责人在企业钉钉通讯录中的 11 位手机号")
+    config = read_config(owner)
+    if config["version"] != body.get("configVersion"):
+        raise pool.Conflict("钉钉应用已更新，请刷新部门后重新识别")
+    with pool.database() as db:
+        schema(db)
+        department = db.execute("SELECT * FROM hr_departments WHERE owner=? AND id=?", (owner, record)).fetchone()
+        if not department or department["status"] != "ACTIVE":
+            raise ValueError("请先保存并启用该部门")
+        if department["version"] != body.get("version"):
+            raise pool.Conflict("部门已经更新，请刷新后重新识别")
+    result = api("topapi/v2/user/getbymobile", {"mobile": mobile}, token(config)).get("result", {})
+    user_id = result.get("userid", "") if isinstance(result, dict) else ""
+    if not isinstance(user_id, str) or not re.fullmatch(r"[\w@.+~-]{1,100}", user_id):
+        raise ValueError("未识别到当前企业的在职员工，请核对手机号和应用通讯录权限")
+    name = employee(config, user_id)
+    mask = mobile[:3] + "****" + mobile[-4:]
+    proof = {"owner": owner, "departmentId": record, "departmentVersion": department["version"],
+             "configVersion": config["version"], "userId": user_id, "name": name,
+             "mobileMasked": mask, "issuedAt": time.time()}
+    return {"name": name, "mobileMasked": mask,
+            "identityProof": cipher().encrypt(json.dumps(proof, ensure_ascii=False).encode()).decode()}
+
+
+def bind_department(user, body):
+    owner, actor = pool.context(user)
+    from cryptography.fernet import InvalidToken
+    try:
+        proof = json.loads(cipher().decrypt(pool.text(body.get("identityProof", ""), 4000).encode(), ttl=300))
+    except (InvalidToken, ValueError, TypeError):
+        raise ValueError("身份识别结果已失效，请重新输入手机号识别") from None
+    if (not isinstance(proof, dict) or proof.get("owner") != owner
+            or proof.get("departmentId") != body.get("id")):
+        raise ValueError("身份识别结果与当前部门不一致，请重新识别")
+    with pool.database() as db:
+        schema(db)
+        department = db.execute("SELECT * FROM hr_departments WHERE owner=? AND id=?",
+                                (owner, proof["departmentId"])).fetchone()
+        config = db.execute("SELECT * FROM hr_dingtalk_config WHERE owner=?", (owner,)).fetchone()
+        if not config or not config["verified"] or config["version"] != proof["configVersion"]:
+            raise pool.Conflict("钉钉应用已更新，请重新识别负责人")
+        if (not department or department["status"] != "ACTIVE"
+                or department["version"] != proof["departmentVersion"]):
+            raise pool.Conflict("部门已经更新，请刷新后重新识别负责人")
+        db.execute("INSERT OR REPLACE INTO hr_department_dingtalk VALUES(?,?,?,?,?,?)",
+                   (owner, department["id"], proof["userId"], proof["name"], proof["mobileMasked"], config["version"]))
+        db.execute("UPDATE hr_departments SET manager=?,version=version+1 WHERE owner=? AND id=?",
+                   (proof["name"], owner, department["id"]))
+        pool.event(db, owner, actor, department["id"], "hr_department.dingtalk_bind", None,
+                   {"name": proof["name"], "mobileMasked": proof["mobileMasked"], "configVersion": config["version"]})
+    return {"name": proof["name"], "mobileMasked": proof["mobileMasked"]}
+
+
+def recipient_for_demand(db, owner, demand_id, value, config):
+    """An exact department link owns routing. Never fall back to a different person."""
+    department_id = value.get("departmentId", "")
+    if department_id:
+        department = db.execute("SELECT * FROM hr_departments WHERE owner=? AND id=?",
+                                (owner, department_id)).fetchone()
+        row = db.execute("SELECT * FROM hr_department_dingtalk WHERE owner=? AND department_id=?",
+                         (owner, department_id)).fetchone()
+        if not department or not row:
+            return None
+        valid = department["status"] == "ACTIVE" and department["manager"] == row["name"]
+        source, binding_key = "department", f"department:{department_id}:{department['version']}"
+    else:
+        row = db.execute("SELECT * FROM hr_dingtalk_recipients WHERE owner=? AND demand_id=?",
+                         (owner, demand_id)).fetchone()
+        if not row:
+            return None
+        valid = True
+        source, binding_key = "demand", ""
+    return {**dict(row), "source": source, "bindingKey": binding_key,
+            "valid": bool(valid and config and config["verified"] and row["config_version"] == config["version"])}
+
+
 def save_recipient(user, body):
     owner, actor = pool.context(user)
     record = pool.text(body.get("demandId", ""), 100)
@@ -210,6 +297,13 @@ def save_recipient(user, body):
     config = read_config(owner)
     if body.get("configVersion") != config["version"]:
         raise pool.Conflict("钉钉应用已更新，请刷新设置")
+    with pool.database() as db:
+        schema(db); demands.schema(db)
+        demand = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?", (owner, record)).fetchone()
+        if not demand:
+            raise ValueError("招聘需求不存在，请先在招聘需求池关联具体职位")
+        if json.loads(demand["body"]).get("departmentId"):
+            raise ValueError("该岗位使用归属部门的负责人，请到部门管理通过手机号绑定")
     name = employee(config, user_id)
     with pool.database() as db:
         schema(db); demands.schema(db)
@@ -259,8 +353,7 @@ def preview(user, query):
             matches = [r["id"] for r in resumes if r["jobId"] == value.get("jobId") and r["account"] == value.get("jobAccountKey")]
             if not matches:
                 continue
-            recipient = db.execute("SELECT * FROM hr_dingtalk_recipients WHERE owner=? AND demand_id=?",
-                                   (owner, row["id"])).fetchone()
+            recipient = recipient_for_demand(db, owner, row["id"], value, config)
             questions = json.loads(row["ai_result"]).get("interviewQuestions", [])
             ready = row["ai_status"] == "complete" and row["ai_version"] == row["version"] and bool(questions)
             choices.append({"id": row["id"], "version": row["version"], "position": value["position"],
@@ -268,7 +361,8 @@ def preview(user, query):
                             "questionCount": len(questions), "questionsReady": ready,
                             "recipient": recipient["name"] if recipient else "",
                             "recipientId": recipient["user_id"] if recipient else "",
-                            "recipientReady": bool(config and recipient and recipient["config_version"] == config["version"])})
+                            "recipientBindingKey": recipient["bindingKey"] if recipient else "",
+                            "recipientReady": bool(recipient and recipient["valid"])})
         job = db.execute("SELECT * FROM hr_interview_handoffs WHERE owner=? AND talent_id=?", (owner, record)).fetchone()
     if job and job["status"] == "submitted":
         reconcile(owner, job["id"])
@@ -300,13 +394,12 @@ def start(user, body):
         demand = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?",
                             (owner, pool.text(body.get("demandId", ""), 100))).fetchone()
         config = db.execute("SELECT * FROM hr_dingtalk_config WHERE owner=?", (owner,)).fetchone()
-        recipient = db.execute("SELECT * FROM hr_dingtalk_recipients WHERE owner=? AND demand_id=?",
-                               (owner, body.get("demandId", ""))).fetchone()
         if not talent or talent["stage"] != "invited" or talent["version"] != body.get("version"):
             raise pool.Conflict("人才阶段或资料已更新，请刷新人才卡片")
         if not resume or json.loads(resume["body"]).get("talentId") != record:
             raise ValueError("请选择该候选人已审批通过的简历")
         detail, jd = json.loads(resume["body"]), json.loads(demand["body"]) if demand else {}
+        recipient = recipient_for_demand(db, owner, demand["id"], jd, config) if demand else None
         if not demand or detail.get("jobId") != jd.get("jobId") or resume["account"] != jd.get("jobAccountKey"):
             raise ValueError("简历与招聘需求必须属于同一账号的同一具体职位")
         questions = json.loads(demand["ai_result"]).get("interviewQuestions", [])
@@ -314,8 +407,9 @@ def start(user, body):
             raise ValueError("请先在招聘需求池生成当前岗位的面试题库")
         if not config or not config["verified"] or config["version"] != body.get("configVersion"):
             raise ValueError("请先配置并校验钉钉应用，或刷新最新配置")
-        if not recipient or recipient["config_version"] != config["version"] or recipient["user_id"] != body.get("recipientId"):
-            raise ValueError("负责人映射已变更或未配置，请重新核对钉钉设置")
+        if (not recipient or not recipient["valid"] or recipient["user_id"] != body.get("recipientId")
+                or recipient["bindingKey"] != body.get("recipientBindingKey", "")):
+            raise ValueError("负责人映射已变更或未配置，请在部门管理中重新核对钉钉绑定")
         snapshot = {"name": pool.view(talent)["name"], "position": jd["position"],
                     "department": jd.get("department", ""), "resumeId": resume["id"],
                     "resumeKey": resume["file_key"], "resumeHash": resume["file_hash"],
@@ -323,6 +417,7 @@ def start(user, body):
                     "jd": jd.get("jobDescription", ""), "questions": questions,
                     "demandId": demand["id"], "demandVersion": demand["version"],
                     "recipientId": recipient["user_id"], "recipientName": recipient["name"],
+                    "recipientBindingKey": recipient["bindingKey"],
                     "configVersion": config["version"], "agentId": config["agent_id"],
                     "talentVersion": talent["version"]}
         job_id = old["id"] if old else str(uuid.uuid4())
@@ -422,13 +517,15 @@ def deliver(owner, job_id):
                 if not talent or talent["stage"] != "invited" or talent["version"] != value["talentVersion"]:
                     raise ValueError("人才资料已变化，未发送；请刷新后重试")
                 current_config = db.execute("SELECT version FROM hr_dingtalk_config WHERE owner=?", (owner,)).fetchone()
-                current_demand = db.execute("SELECT version FROM recruitment_demands WHERE owner=? AND id=?",
+                current_demand = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?",
                                             (owner, value["demandId"])).fetchone()
-                recipient = db.execute("SELECT * FROM hr_dingtalk_recipients WHERE owner=? AND demand_id=?",
-                                       (owner, value["demandId"])).fetchone()
+                recipient = recipient_for_demand(db, owner, value["demandId"], json.loads(current_demand["body"]),
+                                                config) if current_demand else None
                 if (not current_config or current_config["version"] != value["configVersion"] or not current_demand
                         or current_demand["version"] != value["demandVersion"] or not recipient
-                        or recipient["config_version"] != value["configVersion"] or recipient["user_id"] != value["recipientId"]):
+                        or not recipient["valid"] or recipient["user_id"] != value["recipientId"]
+                        or recipient["name"] != value["recipientName"]
+                        or recipient["bindingKey"] != value.get("recipientBindingKey", "")):
                     raise ValueError("岗位或负责人配置已变化，未发送；请刷新后重试")
                 changed = db.execute("UPDATE hr_interview_handoffs SET status='sending',updated_at=? WHERE id=? AND status='preparing'",
                                      (time.time(), job_id)).rowcount

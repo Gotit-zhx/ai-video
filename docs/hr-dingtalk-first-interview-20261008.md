@@ -8,11 +8,11 @@
 
 1. 企业钉钉管理员进入 [开发者后台](https://open-dev.dingtalk.com/)，创建企业内部应用，命名例如“赫逸招聘助手”。此接入使用应用给员工发送个人工作通知，群机器人 Webhook 不适用。
 2. 在“凭证与基础信息”取得 Client ID / AppKey、Client Secret / AppSecret、AgentId。
-3. 开通“成员信息读权限”，通讯录范围覆盖面试负责人；工作通知、媒体上传权限通常默认开通。核对发布状态和应用可使用范围，包含收件负责人。
+3. 开通“成员信息读权限”和“根据手机号获取成员基本信息权限”，通讯录范围覆盖面试负责人；工作通知、媒体上传权限通常默认开通。核对发布状态和应用可使用范围，包含收件负责人。
 4. 如果启用服务器出口 IP 白名单，使用实际服务器出口；当前部署服务器地址为 `8.163.34.81`。
-5. 获取该企业内负责人的 UserID。员工详情如不展示，可由管理员用 API Explorer 的“根据手机号查询用户”获取，仅用于确定 UserID；本系统不保存或批量读取钉钉手机号。
-6. 进入“储备人才库 → 钉钉设置”，填写三项应用信息并“保存并校验应用”。该步骤只校验凭证，不发测试消息，也不验证 AgentId 对应关系，需管理员核对。
-7. 在同一设置窗选择对应招聘需求、填写负责人 UserID，“校验并绑定负责人”。系统读取这个员工的姓名，显示姓名供 HR 核对。
+5. 进入“储备人才库 → 钉钉设置”，填写三项应用信息并“保存并校验应用”。该步骤只校验凭证，不发测试消息，也不验证 AgentId 对应关系，需管理员核对。
+6. 进入“部门管理”，保存并启用部门，点击“绑定钉钉负责人”，填写负责人在当前企业通讯录中的手机号，点击“识别钉钉身份”。系统调用官方接口查询在职员工的 UserID，并查询姓名供 HR 核对；不会发通知。
+7. 核对姓名后点击“确认绑定”。部门经理同步为该姓名，所有以部门 ID 关联的招聘需求自动使用该负责人。服务端只保存 UserID、姓名和脱敏手机号，不保存完整手机号；识别凭据五分钟失效，不可跨部门使用。修改经理姓名后必须重新绑定，停用部门或更换钉钉应用后不可使用旧绑定。
 8. 招聘需求池中关联准确职位并生成当前版本面试题库。回到邀约卡片点击“开始一面”，即可交接资料。
 
 应用密钥在服务器使用 Fernet 加密存储，独立 0600 密钥文件为 `/opt/heyi/boss-agent/runtime/private/dingtalk.key`；备份数据库时也需独立安全备份该文件。接口只返回 `hasSecret`，不回传密钥，配置审计不含凭证。更换应用会使既有负责人映射失效，需重新校验绑定。密钥不应发在聊天或进入 Git。
@@ -27,10 +27,11 @@
 
 本功能不调用 BOSS，不发送候选人聊天、不触碰 BOSS Cookie 或助手会话。
 
-## 官方接口依据（2026-10-08 核对）
+## 官方接口依据（2026-10-09 核对）
 
 - [企业内部应用 accessToken](https://open.dingtalk.com/document/orgapp/obtain-the-access_token-of-an-internal-app)：新版 POST `api.dingtalk.com/v1.0/oauth2/accessToken`，按应用缓存 token。
 - [查询用户详情](https://open.dingtalk.com/document/orgapp/query-user-details)：`topapi/v2/user/get`，成员信息读权限；只保留核对后的姓名与 UserID。
+- [根据手机号查询用户](https://open.dingtalk.com/document/orgapp/query-users-by-phone-number)：`topapi/v2/user/getbymobile`，企业内部应用需开通“根据手机号获取成员基本信息权限”；仅能查询当前企业在职员工，不是全网手机号身份查询。
 - [上传媒体文件](https://open.dingtalk.com/document/orgapp/upload-media-files)：multipart `media/upload`，ZIP 文件最大 20MB。
 - [发送工作通知](https://open.dingtalk.com/document/orgapp/asynchronous-sending-of-enterprise-session-messages)：`asyncsend_v2`，只指定单个 userid_list，to_all_user=false。接口成功仍可能因重复或限额无法送达。
 - [获取发送结果](https://open.dingtalk.com/document/orgapp/gets-the-result-of-sending-messages-asynchronously-to-the-enterprise)：仅支持 24 小时内任务，本实现 23 小时后转为人工核对。
@@ -40,3 +41,7 @@
 发布目录：`/opt/heyi/releases/hr-dingtalk-interviews-20261008`。前端文件与连接器逐项校验后发布，应用、模型和图片容器保持原实例。70 项前端检查、12 项钉钉交接检查，以及 122 项连接器/人才库/简历池/招聘需求回归检查通过（共 204 项）。生产连接器 active，主应用健康 UP，临时上传包已删除。
 
 线上只读验证：卡片已显示“开始一面”，钉钉设置正常读取，两项招聘需求可选择。截图候选人的原简历本地可用且 SHA-256 与入库记录一致，关联的图像算法需求已有 7 道有效面试题；当前缺应用凭证及负责人绑定。验证后交接记录数仍为 0，未上传到钉钉或发送消息。真实凭证的授权范围、AgentId 与通知送达仍需管理员完成配置后验证，不能将模拟检查视为真实送达测试。
+
+2026-10-09 更新：岗位逐一手填 UserID 的入口已改为部门手机号绑定。按部门 ID 路由，已关联部门的需求不会回退到旧岗位收件人；提交及实际发送前均核对绑定、部门与应用版本，发送期间换人会阻止发送。旧版本未关联部门的需求保留原映射兼容。真实手机号识别及送达仍需要已授权的企业应用。
+
+本次发布目录为 `/opt/heyi/releases/hr-department-phone-20261009`，142 项后端与 73 项前端检查通过。线上储备人才库已去掉手动新建入口，部门绑定入口与配置缺项提示已核对；平台尚未保存企业应用凭证，未执行真实手机号查询、员工绑定或通知发送。上传临时包已删除，保留当前发布回滚资料。

@@ -10,6 +10,10 @@ def schema(db):
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, code TEXT NOT NULL,
         parent_id TEXT NOT NULL, manager TEXT NOT NULL, status TEXT NOT NULL,
         version INTEGER NOT NULL, UNIQUE(owner,name), UNIQUE(owner,code))""")
+    db.execute("""CREATE TABLE IF NOT EXISTS hr_department_dingtalk (
+        owner TEXT NOT NULL,department_id TEXT NOT NULL,user_id TEXT NOT NULL,name TEXT NOT NULL,
+        mobile_mask TEXT NOT NULL,config_version INTEGER NOT NULL,
+        PRIMARY KEY(owner,department_id))""")
 
 
 def view(row):
@@ -18,11 +22,21 @@ def view(row):
 
 
 def listing(user):
+    import dingtalk_interviews as dt
     owner,_=pool.context(user)
     with pool.database() as db:
-        schema(db)
-        return {"items":[view(row) for row in db.execute(
-            "SELECT * FROM hr_departments WHERE owner=? ORDER BY name,id",(owner,))]}
+        schema(db);dt.schema(db)
+        config=db.execute("SELECT * FROM hr_dingtalk_config WHERE owner=?",(owner,)).fetchone()
+        items=[]
+        for row in db.execute("SELECT * FROM hr_departments WHERE owner=? ORDER BY name,id",(owner,)):
+            binding=db.execute("SELECT * FROM hr_department_dingtalk WHERE owner=? AND department_id=?",
+                               (owner,row["id"])).fetchone()
+            items.append({**view(row),"dingtalk": {
+                "name":binding["name"],"mobileMasked":binding["mobile_mask"],
+                "valid":bool(config and config["verified"] and binding["config_version"]==config["version"]
+                             and row["status"]=="ACTIVE" and row["manager"]==binding["name"])
+            } if binding else None})
+        return {"items":items,"dingtalkConfig":dt.public_config(config)}
 
 
 def save(user,body):
@@ -56,6 +70,8 @@ def save(user,body):
         if old:
             db.execute("""UPDATE hr_departments SET name=?,code=?,parent_id=?,manager=?,status=?,version=version+1
                 WHERE owner=? AND id=?""",(clean["name"],clean["code"],clean["parentId"],clean["manager"],clean["status"],owner,record))
+            if old["manager"]!=clean["manager"]:
+                db.execute("DELETE FROM hr_department_dingtalk WHERE owner=? AND department_id=?",(owner,record))
         else:
             db.execute("INSERT INTO hr_departments VALUES(?,?,?,?,?,?,?,1)",
                        (record,owner,clean["name"],clean["code"],clean["parentId"],clean["manager"],clean["status"]))
