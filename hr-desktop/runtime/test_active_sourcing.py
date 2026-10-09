@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import sqlite3
 import unittest
@@ -119,12 +120,12 @@ class ActiveSourcingTest(unittest.TestCase):
 
     def test_explicit_greeting_uses_reserved_capacity_but_never_exceeds_hard_budget(self):
         path = self.root/'budget.sqlite3'
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db, db:
             db.execute('CREATE TABLE requests(at REAL)')
             db.executemany('INSERT INTO requests VALUES(?)', [(900,)]*101)
         self.assertGreater(flow.budget_delay(path,120,cost=5,queued=True),0)
         self.assertEqual(flow.budget_delay(path,120,cost=5,queued=True,user_initiated=True),0)
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db, db:
             db.executemany('INSERT INTO requests VALUES(?)', [(900,)]*15)
         self.assertGreater(flow.budget_delay(path,120,cost=5,queued=True,user_initiated=True),0)
 
