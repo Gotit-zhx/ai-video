@@ -74,6 +74,23 @@ exports.run=async({app,main,orb,platformSession,createBoss,engine,worker,bridge,
   assert.equal(diagnosis.ok,true,JSON.stringify(diagnosis));
   assert.equal(diagnosis.sessionCount,1);
   assert.equal(diagnosis.userAgent,boss.webContents.getUserAgent(),'CDP and page user agents must match without spoofing');
+  const now=Date.now()/1000;
+  const statuses={'offline-职位经理🚀':'开放中','offline-closed':'已关闭'};
+  await fs.writeFile(path.join(root,'managed-job-statuses.json'),JSON.stringify({
+    statuses,checkedAt:now,validUntil:now+300,retryAt:now+300,
+  }),'utf8');
+  const jobStatuses=await worker.run({operation:'job-statuses',root,cdp:engine.cdp});
+  assert.equal(jobStatuses.ok,true,JSON.stringify(jobStatuses));
+  assert.deepEqual(jobStatuses.data.statuses,statuses,'Frozen Python must preserve Chinese and emoji through the real pipe');
+  const hrUser=await engine.authorize();
+  assert.equal(hrUser.platformAdmin,false);
+  assert.ok(hrUser.permissions.includes('hr:access'));
+  const originalOwner=engine.owner,originalAuthorize=engine.authorize;
+  try{
+    assert.ok(await engine.checkOwner(),'Ordinary HR permission must authorize packaged assistants');
+    engine.authorize=async()=>({...hrUser,permissions:[]});
+    await assert.rejects(()=>engine.checkOwner(),/人力资源权限/);
+  }finally{engine.owner=originalOwner;engine.authorize=originalAuthorize;}
   let answer=await engine.route(new Request(ORIGIN+'/api/v1/hr/login/status'));
   assert.equal(answer.status,200);
   assert.notEqual((await answer.json()).data.state,'complete');
@@ -170,7 +187,8 @@ exports.run=async({app,main,orb,platformSession,createBoss,engine,worker,bridge,
   assert.equal(bridge.token,'');
   await fs.writeFile(path.join(output,'smoke.json'),JSON.stringify({
     ok:true,platform:process.platform,arch:process.arch,packaged:app.isPackaged,
-    sdk:health.version,checks:['runtime-policy','cdp-cookie-isolation','user-agent-consistency',
+    version:app.getVersion(),sdk:health.version,checks:['runtime-policy','cdp-cookie-isolation','user-agent-consistency',
+      'frozen-unicode-job-status-pipe','hr-permission-without-admin',
       'local-routing','external-browser-pairing','no-cloud-fallback','physical-network-routing',
       'orb-only-startup','orb-toggle-and-drag','boss-only-window','no-page-reload-on-hide',
       'busy-animation-start-stop','page-interaction-during-animation','release-retains-cookies',

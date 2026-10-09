@@ -234,4 +234,5 @@ if __name__ == "__main__":
         if text.startswith(("请在应用的 BOSS 页面", "该会话已有未完成的简历请求")):
             message = text
         result = {"ok": False, "error": {"code": code, "message": message}}
-    sys.stdout.write(json.dumps(result, ensure_ascii=False))
+    from wire_output import write_result
+    write_result(result)

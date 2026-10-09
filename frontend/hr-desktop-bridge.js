@@ -3,7 +3,7 @@
   const base='http://127.0.0.1:17861', storage='heyi.hr.desktop.connection.v1';
   let mode='',connecting=null,saved=null,epoch=0,active=false,timer=null,monitoring=false;
   let failures=0,repair=false,reachable=false,phase='idle',message='',lastState=null;
-  let recoverySince=0,wasReady=false;
+  let recoverySince=0,wasReady=false,versionError=null;
   const listeners=new Set();
   try{saved=JSON.parse(sessionStorage.getItem(storage)||'null');}catch{}
   const channel=typeof BroadcastChannel==='function'?new BroadcastChannel(storage):null;
@@ -63,6 +63,15 @@
   async function health({interactive=false}={}){
     const value=await data(await connectionFetch(base+'/health',timeout({cache:'no-store',credentials:'omit'},interactive?30000:4000)));
     if(value.app!=='heyi-recruiter'||value.protocol!==1)throw Error('请安装新版赫逸招聘助手');
+    const parts=typeof value.version==='string'&&/^\d+\.\d+\.\d+$/.test(value.version)?value.version.split('.').map(Number):[];
+    const minimum=[0,1,17],different=parts.findIndex((part,index)=>part!==minimum[index]);
+    const recent=parts.length===3&&(different===-1||parts[different]>minimum[different]);
+    if(!recent){
+      versionError=Object.assign(Error('当前运行的是旧版助手'+(parts.length?' '+value.version:'')
+        +'，请完全退出旧助手，再从“下载助手”覆盖安装 0.1.17 或更新版本。无需退出 BOSS 登录。'),{code:'ASSISTANT_UPDATE_REQUIRED'});
+      throw versionError;
+    }
+    versionError=null;
     return value;
   }
   async function diagnose(){
@@ -137,7 +146,8 @@
     }catch(error){
       if(ticket!==epoch||!active)return;
       failures++;reachable=false;
-      if(error.code==='DEVICE_IN_USE'||error.message?.includes('另一台电脑正在使用助手')){active=false;notify('device-in-use',error.message);}
+      if(error.code==='ASSISTANT_UPDATE_REQUIRED'){active=false;notify('update-required',error.message);}
+      else if(error.code==='DEVICE_IN_USE'||error.message?.includes('另一台电脑正在使用助手')){active=false;notify('device-in-use',error.message);}
       else if(error.status===401||error.status===403){active=false;notify('unauthorized','平台登录已失效，请重新登录');}
       else notify('reconnecting',error instanceof TypeError?'助手暂时离线，正在自动重连':error.message);
     }finally{
@@ -150,6 +160,7 @@
   async function request(path,options={}){
     if(!path.startsWith('/api/v1/hr/')||path.includes('..'))throw Error('不支持的招聘接口');
     if(await transportMode()==='embedded')return fetch(path,timeout({...options,credentials:'same-origin'},145000));
+    if(versionError)throw versionError;
     if(!valid()){
       if(!active)throw Error('请点击“连接本机助手”；BOSS 请求将在你的电脑上执行。');
       await connect({automatic:true});
@@ -179,7 +190,7 @@
     return result;
   }
   function stopAutoConnect(){active=false;epoch++;clearTimeout(timer);timer=null;}
-  function reset(){stopAutoConnect();saved=null;mode='';repair=false;reachable=false;lastState=null;
+  function reset(){stopAutoConnect();saved=null;mode='';repair=false;reachable=false;lastState=null;versionError=null;
     recoverySince=0;wasReady=false;persist();notify('idle');}
   async function disconnect({ensureConnection=false}={}){
     stopAutoConnect();

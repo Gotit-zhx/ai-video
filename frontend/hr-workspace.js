@@ -73,8 +73,8 @@
   element('summary', '下载桌面助手', downloads);
   const downloadMenu = element('div', '', downloads, 'hr-download-menu');
   for(const [label,file] of [['Mac · Apple 芯片','Heyi-Recruiter-mac-arm64.dmg'],['Windows · 64 位','Heyi-Recruiter-windows-x64-Setup.exe']]){
-    const link=element('a',label,downloadMenu);link.href='/downloads/'+file+'?v=0.1.16';
-    link.title='赫逸招聘助手 0.1.16';
+    const link=element('a',label,downloadMenu);link.href='/downloads/'+file+'?v=0.1.17';
+    link.title='赫逸招聘助手 0.1.17';
   }
   const note = element('p', '', root, 'hr-note');
   note.setAttribute('role', 'status');
@@ -230,8 +230,8 @@
     if(!helperConnected&&connection.phase==='reconnecting'){
       connectionBadge.textContent='助手自动重连中';
       loginMessage.textContent=connection.message||'正在检查本机助手，连接恢复后会自动更新。';
-    }else if(['unauthorized','device-in-use'].includes(connection.phase)){
-      connectionBadge.textContent='连接需要确认';
+    }else if(['unauthorized','device-in-use','update-required'].includes(connection.phase)){
+      connectionBadge.textContent=connection.phase==='update-required'?'助手需要更新':'连接需要确认';
       loginMessage.textContent=connection.message;
     }
   });

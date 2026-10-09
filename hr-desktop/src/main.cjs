@@ -253,7 +253,8 @@ async function qr(){
   return (await bossView.webContents.capturePage(rect)).toPNG();
 }
 async function authorized(){
-  if(selfTest)return {username:'13800000000',id:'offline-test',organizationCode:'heyi',roles:['ADMIN'],platformAdmin:true};
+  if(selfTest)return {username:'offline-hr',id:'offline-test',organizationCode:'heyi',
+    roles:['HR_DEPARTMENT'],permissions:['hr:access'],platformAdmin:false};
   if(lease && lease.expiresAt*1000>Date.now()){
     if(Date.now()-leaseChecked<15000)return lease.user;
     const checkedLease=lease;

@@ -12,7 +12,7 @@ function fixture(mode='local'){
       calls.push({url,options});
       const json=data=>Response.json({success:true,data});
       if(url.endsWith('/transport'))return json({mode});
-      if(url.endsWith('/health'))return json({app:'heyi-recruiter',protocol:1});
+      if(url.endsWith('/health'))return json({app:'heyi-recruiter',protocol:1,version:'0.1.17'});
       if(url==='/api/v1/hr/desktop/pair')return json({ticket:'a'.repeat(43)});
       if(url==='http://127.0.0.1:17861/pair')return json({token:'local-token',expiresAt:env.Date.now()+1800000});
       return json({state:'idle'});
@@ -28,6 +28,39 @@ test('unpaired online workspace never falls back to server HR execution',async()
   const {transport,calls}=fixture();
   await assert.rejects(transport.api('/api/v1/hr/jobs'),/连接本机助手/);
   assert.deepEqual(calls.map(x=>x.url),['/api/v1/hr/desktop/transport']);
+});
+test('outdated or unidentified assistants stop before pairing and clearly request a process restart and upgrade',async()=>{
+  for(const version of ['0.1.15','0.1.16',undefined,'unknown']){
+    const {transport,env,calls,tick,timers}=fixture();const original=env.fetch;
+    env.fetch=async(url,options)=>url.endsWith('/health')
+      ?Response.json({success:true,data:{app:'heyi-recruiter',protocol:1,version}}):original(url,options);
+    const result=await transport.diagnose();
+    assert.equal(result.code,'ASSISTANT_UPDATE_REQUIRED');
+    assert.match(result.message,/完全退出旧助手.*0\.1\.17/);
+    await assert.rejects(transport.connect(),{code:'ASSISTANT_UPDATE_REQUIRED'});
+    transport.startAutoConnect();await tick();
+    assert.equal(transport.connection().phase,'update-required');assert.equal(timers.size,0);
+    assert.ok(!calls.some(call=>call.url.endsWith('/pair')||call.url.includes('/login/')));
+  }
+});
+test('newer assistant versions remain compatible',async()=>{
+  for(const version of ['0.1.17','0.1.18','0.2.0','1.0.0']){
+    const {transport,env}=fixture();const original=env.fetch;
+    env.fetch=async(url,options)=>url.endsWith('/health')
+      ?Response.json({success:true,data:{app:'heyi-recruiter',protocol:1,version}}):original(url,options);
+    assert.equal((await transport.diagnose()).ok,true);
+  }
+});
+test('cached pairing cannot execute jobs after an older running assistant is detected',async()=>{
+  const {transport,env,calls,tick}=fixture();
+  await transport.connect();const original=env.fetch;
+  env.fetch=async(url,options)=>url.endsWith('/health')
+    ?Response.json({success:true,data:{app:'heyi-recruiter',protocol:1,version:'0.1.15'}}):original(url,options);
+  transport.startAutoConnect();await tick();
+  await assert.rejects(transport.api('/api/v1/hr/jobs'),{code:'ASSISTANT_UPDATE_REQUIRED'});
+  assert.ok(!calls.some(call=>call.url.endsWith('/jobs')));
+  env.fetch=original;await transport.connect();
+  assert.equal(transport.connection().paired,true);
 });
 test('first local permission failure explains the connection without exposing raw fetch errors or issuing a ticket',async()=>{
   const {transport,env,calls}=fixture();
