@@ -263,8 +263,9 @@ def recipients(user, query):
                 if len(departments) == 1:
                     department_id = departments[0]["id"]
             default = next((p for p in people if p["bindingKey"].startswith(f"department:{department_id}:")), None) if department_id else None
-            if value.get("mentorUserId") and value.get("mentorConfigVersion") == (config["version"] if config else None):
-                default = {"user_id": value["mentorUserId"], "name": value["mentorName"], "bindingKey": "directory"}
+            if value.get("mentorUserId"):
+                default = ({"user_id": value["mentorUserId"], "name": value["mentorName"], "bindingKey": "directory"}
+                           if value.get("mentorConfigVersion") == (config["version"] if config else None) else None)
         return {"config": dt.public_config(config),
                 "defaultRecipient": {"userId": default["user_id"], "name": default["name"],
                                      "bindingKey": default["bindingKey"]} if default else None,

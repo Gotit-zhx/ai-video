@@ -241,6 +241,10 @@ class OnboardingTest(unittest.TestCase):
         with mock.patch.object(ding,"employee",return_value="选定老师"):
             onboard.save(USER,row|{"joined":True})
         self.assertEqual(onboard.listing(USER,{})["items"][0]["mentorUserId"],"chosen-id")
+        with pool.database() as db:
+            db.execute("UPDATE hr_dingtalk_config SET version=2")
+            db.execute("UPDATE hr_department_dingtalk SET config_version=2")
+        self.assertIsNone(onboard.recipients(USER,{"talentId":row["talentId"]})["defaultRecipient"])
 
     def test_wrong_directory_name_or_stale_config_does_not_save_second_pass(self):
         arrangement=ARRANGEMENT|{"mentorName":"选定老师","mentorUserId":"chosen-id","mentorConfigVersion":1}
