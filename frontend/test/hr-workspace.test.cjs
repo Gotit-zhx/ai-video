@@ -1004,6 +1004,29 @@ test('closing mentor directory discards a late personnel response and sends noth
   assert.equal(all(dialog).some(n=>n.dataset.userId),false);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
 });
+test('second approval chooses a mentor from DingTalk and saves their unique identity with arrangements',async()=>{
+  const talent={...poolResult().items[0],stage:'second'};
+  const app=setup({onboarding:true,api:async url=>({data:
+    url.endsWith('/pool/dingtalk')?{config:{verified:true,version:1}}:
+    url.includes('/pool/dingtalk/directory?')?directoryResult():
+    url.includes('/onboarding?talentId=')?{defaults:{...onboardingValues(),mentorName:'部门组长'}}:
+    url.includes('/onboarding?')?{items:[],total:0,page:1,pages:1}:
+    url.endsWith('/interview/review')?{stage:'onboarding'}:{...poolResult(),items:[talent]}})});
+  await app.enter('pool');await app.click('审核');
+  const opinion=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
+  const text=all(opinion).find(n=>n.tagName==='textarea');text.value='符合要求';text.events.input();
+  await app.click('通过');
+  await app.click('选择钉钉导师');
+  const picker=all(app.root).find(n=>n.className.includes('hr-mentor-picker'));
+  await all(picker).find(n=>n.dataset.userId==='employee-2').click();
+  assert.equal(app.calls.some(c=>c.options?.method==='POST'),false);
+  const dialog=all(app.root).find(n=>n.className.includes('hr-onboarding-dialog'));
+  await all(dialog).find(n=>n.tagName==='form').events.submit({preventDefault(){}});await flush();
+  const body=JSON.parse(app.calls.find(c=>c.url.endsWith('/interview/review')).options.body);
+  assert.equal(body.onboarding.mentorName,'测试老师');assert.equal(body.onboarding.mentorUserId,'employee-2');
+  assert.equal(body.onboarding.mentorConfigVersion,1);
+  assert.equal(app.calls.some(c=>c.url.endsWith('/onboarding/send')),false);
+});
 test('BI renders six K periods and export follows the applied scope without BOSS actions',async()=>{
   const app=setup({bi:true,api:async url=>{
     if(url.endsWith('/login/status'))return {data:{state:'complete'}};

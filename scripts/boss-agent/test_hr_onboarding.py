@@ -228,3 +228,25 @@ class OnboardingTest(unittest.TestCase):
         with self.assertRaises(ValueError):onboard.send(USER,body|{"configVersion":2})
         updated=onboard.listing(USER,{})["items"][0]
         self.assertEqual(updated["mentorName"],"导师");self.assertIsNone(updated["notice"])
+
+    def test_second_pass_persists_selected_directory_mentor_and_prefers_them_over_leader(self):
+        arrangement=ARRANGEMENT|{"mentorName":"选定老师","mentorUserId":"chosen-id","mentorConfigVersion":1}
+        with mock.patch.object(ding,"employee",return_value="选定老师"),mock.patch.object(onboard.threading,"Thread") as thread:
+            body=self.review(arrangement)
+            pool.review_interview(USER,body);pool.review_interview(USER,body)
+            thread.assert_not_called()
+        row=onboard.listing(USER,{})["items"][0]
+        self.assertEqual(row["mentorUserId"],"chosen-id")
+        self.assertEqual(onboard.recipients(USER,{"talentId":row["talentId"]})["defaultRecipient"]["userId"],"chosen-id")
+        with mock.patch.object(ding,"employee",return_value="选定老师"):
+            onboard.save(USER,row|{"joined":True})
+        self.assertEqual(onboard.listing(USER,{})["items"][0]["mentorUserId"],"chosen-id")
+
+    def test_wrong_directory_name_or_stale_config_does_not_save_second_pass(self):
+        arrangement=ARRANGEMENT|{"mentorName":"选定老师","mentorUserId":"chosen-id","mentorConfigVersion":1}
+        with mock.patch.object(ding,"employee",return_value="同名其他人"):
+            with self.assertRaisesRegex(ValueError,"身份已变化"):pool.review_interview(USER,self.review(arrangement))
+        with self.assertRaises(pool.Conflict):pool.review_interview(USER,self.review(arrangement|{"mentorConfigVersion":9}))
+        with pool.database() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM hr_interview_reviews").fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT count(*) FROM hr_onboarding_records").fetchone()[0],0)

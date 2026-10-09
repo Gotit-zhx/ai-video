@@ -4,6 +4,7 @@
     let active=false,epoch=0,page=1,status='all',editing=null,saving=false,source=null,completed=null,departing=false;
     let notifying=null,noticeData=null,proof=null,noticeRequest='',noticeBusy=false,noticeEpoch=0,timer=null;
     let directoryPage=1,directorySerial=0,directoryTimer=null;
+    let mentorChoice=null,mentorConfig=null,mentorPage=1,mentorSerial=0,mentorTimer=null;
     const labels=[['name','姓名'],['startDate','确认入职时间'],['position','入职岗位'],['supervisor','归属主管'],
       ['department','归属部门'],['company','归属公司'],['fixedSalary','固定薪资'],['performanceSalary','绩效薪资'],
       ['commission','提成'],['mentorName','导师名称'],['joined','是否入职']];
@@ -34,11 +35,14 @@
       if(key.includes('Salary')){input.type='number';input.min='0';input.step='0.01';}
     }
     inputs.commission.placeholder='如：无，或按业绩的 3%';
+    button('选择钉钉导师',inputs.mentorName.parentElement,openMentorPicker);
+    inputs.mentorName.addEventListener('input',()=>{mentorChoice=null;});
     const error=el('p','',form,'hr-error');error.setAttribute('role','alert');
     const actions=el('div','',form,'hr-actions'),cancel=button('取消',actions,()=>dialog.close());
     const submit=el('button','确认二面通过并流转',actions,'hr-primary');submit.type='submit';
     dialog.addEventListener('cancel',e=>{if(saving)e.preventDefault();});
-    dialog.addEventListener('close',()=>{++epoch;editing=source=completed=null;Object.values(inputs).forEach(n=>n.value='');error.textContent='';});
+    dialog.addEventListener('close',()=>{++epoch;mentorPicker.close();mentorChoice=null;
+      editing=source=completed=null;Object.values(inputs).forEach(n=>n.value='');error.textContent='';});
     async function request(path,body){
       const response=await hrApi('/api/v1/hr/'+path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
       if(response.success===false||!response.data)throw Error(response.message||'读取入职安排失败');
@@ -47,6 +51,7 @@
     function populate(value){
       for(const [key] of labels)inputs[key].value=key==='joined'?String(!!value[key]):value[key]||'';
       inputs.joined.disabled=!!value.departed;
+      mentorChoice=value.mentorUserId?{userId:value.mentorUserId,configVersion:value.mentorConfigVersion}:null;
     }
     async function openPass(row,payload,onDone){
       if(!allowed()||saving)return;
@@ -71,6 +76,7 @@
     form.addEventListener('submit',async event=>{
       event.preventDefault();if(!editing||saving||!allowed()||!form.reportValidity())return;
       const ticket=epoch,value=Object.fromEntries(labels.filter(([k])=>k!=='name').map(([k])=>[k,k==='joined'?inputs[k].value==='true':inputs[k].value.trim()]));
+      if(mentorChoice)Object.assign(value,{mentorUserId:mentorChoice.userId,mentorConfigVersion:mentorChoice.configVersion});
       saving=true;submit.disabled=cancel.disabled=true;error.textContent='正在保存…';
       try{
         if(source)await request('pool/interview/review',{...source,onboarding:value});
@@ -81,6 +87,65 @@
       }catch(e){if(ticket===epoch)error.textContent=e.message;}
       finally{saving=false;submit.disabled=cancel.disabled=false;}
     });
+    const mentorPicker=el('dialog','',root,'hr-pool-dialog hr-mentor-picker');
+    el('h2','选择导师 · 钉钉公司人员',mentorPicker);
+    const mentorFilters=el('div','',mentorPicker,'hr-directory-filters');
+    const mentorQuery=field('查询姓名或部门',mentorFilters);mentorQuery.maxLength=100;
+    const mentorDepartment=field('部门',mentorFilters,'select');
+    el('option','所有可见部门',mentorDepartment).value='';
+    button('刷新通讯录',mentorFilters,()=>{mentorPage=1;loadMentors(true);});
+    const mentorStatus=el('p','',mentorPicker,'hr-hint');
+    const mentorResults=el('div','',mentorPicker,'hr-directory-results');
+    const mentorPager=el('div','',mentorPicker,'hr-actions');
+    const mentorPrevious=button('上一页',mentorPager,()=>{mentorPage--;loadMentors();});
+    const mentorPageLabel=el('span','',mentorPager);
+    const mentorNext=button('下一页',mentorPager,()=>{mentorPage++;loadMentors();});
+    button('关闭',mentorPicker,()=>mentorPicker.close());
+    mentorPicker.addEventListener('close',()=>{++mentorSerial;clearTimeout(mentorTimer);mentorResults.replaceChildren();});
+    mentorQuery.addEventListener('input',()=>{++mentorSerial;mentorPage=1;clearTimeout(mentorTimer);mentorTimer=setTimeout(loadMentors,300);});
+    mentorQuery.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();mentorPage=1;loadMentors();}});
+    mentorDepartment.addEventListener('change',()=>{mentorPage=1;loadMentors();});
+    async function openMentorPicker(){
+      if(saving||!editing||!allowed())return;
+      const ticket=epoch,serial=++mentorSerial;mentorPage=1;mentorQuery.value='';mentorDepartment.value='';
+      mentorConfig=null;mentorResults.replaceChildren();mentorPager.hidden=true;mentorStatus.textContent='正在读取钉钉配置…';mentorPicker.showModal();
+      try{
+        const data=await request('pool/dingtalk');
+        if(ticket!==epoch||serial!==mentorSerial||!mentorPicker.open||!allowed())return;
+        mentorConfig=data.config;
+        if(!mentorConfig?.verified){mentorStatus.textContent='请先在钉钉设置校验企业应用。';return;}
+        await loadMentors();
+      }catch(e){if(ticket===epoch&&serial===mentorSerial)mentorStatus.textContent=e.message;}
+    }
+    async function loadMentors(refresh=false){
+      clearTimeout(mentorTimer);
+      if(!mentorPicker.open||!dialog.open||!allowed()||!mentorConfig?.verified)return;
+      const ticket=epoch,serial=++mentorSerial;
+      mentorStatus.textContent='正在查询钉钉人员…';
+      try{
+        const params=new URLSearchParams({configVersion:mentorConfig.version,q:mentorQuery.value,departmentId:mentorDepartment.value,page:mentorPage});
+        if(refresh)params.set('refresh','1');
+        const data=await request('pool/dingtalk/directory?'+params);
+        if(ticket!==epoch||serial!==mentorSerial||!mentorPicker.open||!allowed())return;
+        const dept=mentorDepartment.value;mentorDepartment.replaceChildren();el('option','所有可见部门',mentorDepartment).value='';
+        for(const item of data.departments||[])el('option',item.name,mentorDepartment).value=item.id;
+        mentorDepartment.value=data.departments?.some(d=>d.id===dept)?dept:'';
+        mentorResults.replaceChildren();mentorPage=data.page;
+        for(const person of data.items||[]){
+          const control=button('',mentorResults,()=>{
+            if(!allowed()||!dialog.open||saving)return;
+            inputs.mentorName.value=person.name;mentorChoice={userId:person.userId,configVersion:mentorConfig.version};mentorPicker.close();
+          });
+          control.className='hr-directory-person';control.dataset.userId=person.userId;
+          control.setAttribute('aria-pressed',String(mentorChoice?.userId===person.userId));
+          el('strong',person.name,control);el('span',person.department||'直属人员',control);el('small','ID 尾号 '+person.userId.slice(-4),control);
+        }
+        mentorStatus.textContent=data.state==='failed'?data.error:data.state==='running'?`正在同步 · 已读取 ${data.employeeCount} 人…`:`找到 ${data.total} 人，点击选择导师。`;
+        mentorPager.hidden=data.state!=='complete'||data.pages<=1;mentorPageLabel.textContent=`第 ${data.page} / ${data.pages} 页`;
+        mentorPrevious.disabled=data.page<=1;mentorNext.disabled=data.page>=data.pages;
+        if(data.state==='running')mentorTimer=setTimeout(loadMentors,1500);
+      }catch(e){if(ticket===epoch&&serial===mentorSerial)mentorStatus.textContent=e.message;}
+    }
     const notifyDialog=el('dialog','',root,'hr-pool-dialog hr-mentor-dialog');
     const notifyTitle=el('h2','发送导师提醒',notifyDialog);
     const noticeMessage=el('p','',notifyDialog,'hr-prose');
@@ -139,7 +204,7 @@
         const params=new URLSearchParams({configVersion:noticeData.config.version,q:directoryQuery.value,
           departmentId:directoryDepartment.value,page:directoryPage});
         if(refresh)params.set('refresh','1');
-        const data=await request('dingtalk/directory?'+params);
+        const data=await request('pool/dingtalk/directory?'+params);
         if(ticket!==noticeEpoch||serial!==directorySerial||!allowed()||recipient.value!=='directory')return;
         const dept=directoryDepartment.value;directoryDepartment.replaceChildren();
         el('option','所有可见部门',directoryDepartment).value='';

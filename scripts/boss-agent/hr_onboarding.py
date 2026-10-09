@@ -36,11 +36,16 @@ def defaults(db, talent):
     value = json.loads(talent["body"])
     dept = db.execute("SELECT * FROM hr_departments WHERE owner=? AND id=?",
                       (talent["owner"], value.get("departmentId", ""))).fetchone()
-    return {"name": value["name"], "position": value.get("position", ""),
+    result = {"name": value["name"], "position": value.get("position", ""),
             "department": dept["name"] if dept else "", "supervisor": dept["manager"] if dept else "",
             "company": "", "startDate": "", "fixedSalary": "", "performanceSalary": "0",
             "commission": "无", "mentorName": dept["manager"] if dept else "",
             "joined": talent["stage"] == "hired"}
+    config = db.execute("SELECT * FROM hr_dingtalk_config WHERE owner=?", (talent["owner"],)).fetchone()
+    leader = dt.recipient_for_demand(db, talent["owner"], "", value, config)
+    if leader and leader["valid"]:
+        result.update(mentorUserId=leader["user_id"], mentorConfigVersion=config["version"])
+    return result
 
 
 def validate(body):
@@ -65,12 +70,29 @@ def validate(body):
     if type(body.get("joined")) is not bool:
         raise ValueError("请选择是否入职")
     value["joined"] = body["joined"]
+    if body.get("mentorUserId"):
+        uid = pool.text(body["mentorUserId"], 100)
+        if not re.fullmatch(r"[\w@.+~-]{1,100}", uid) or type(body.get("mentorConfigVersion")) is not int:
+            raise ValueError("请选择有效的钉钉导师")
+        value.update(mentorUserId=uid, mentorConfigVersion=body["mentorConfigVersion"])
     return value
+
+
+def verify_mentor(db, owner, value):
+    if not value.get("mentorUserId"):
+        return
+    row = db.execute("SELECT * FROM hr_dingtalk_config WHERE owner=?", (owner,)).fetchone()
+    if not row or not row["verified"] or row["version"] != value["mentorConfigVersion"]:
+        raise pool.Conflict("钉钉应用已更新，请重新选择导师")
+    config = dict(row)
+    if dt.employee(config, value["mentorUserId"]) != value["mentorName"]:
+        raise ValueError("钉钉导师身份已变化，请重新选择")
 
 
 def create(db, talent, body):
     schema(db)
     value = validate(body) | {"name": json.loads(talent["body"])["name"]}
+    verify_mentor(db, talent["owner"], value)
     db.execute("""INSERT INTO hr_onboarding_records(talent_id,owner,body,updated_at)
       VALUES(?,?,?,?)""", (talent["id"], talent["owner"], json.dumps(value, ensure_ascii=False), now()))
     return value
@@ -152,17 +174,20 @@ def save(user, body):
         notice = db.execute("SELECT status FROM hr_onboarding_notices WHERE owner=? AND talent_id=?",
                              (owner, row["talent_id"])).fetchone()
         before = json.loads(row["body"])
-        if value["mentorName"] == before["mentorName"]:
+        if not value.get("mentorUserId") and value["mentorName"] == before["mentorName"]:
             for key in ("mentorUserId", "mentorConfigVersion"):
                 if key in before:
                     value[key] = before[key]
+        if any(value.get(k) != before.get(k) for k in ("mentorName", "mentorUserId", "mentorConfigVersion")):
+            verify_mentor(db, owner, value)
         if before.get("departed"):
             if not value["joined"]:
                 raise pool.Conflict("已离职记录保留原入职事实，请勿改为未入职")
             value.update(departed=True, departedAt=before["departedAt"])
         if notice and notice["status"] in ("preparing", "sending", "submitted", "uncertain"):
             raise pool.Conflict("导师通知正在发送或待核对，请先确认结果后再修改")
-        if notice and notice["status"] == "sent" and (not value["joined"] or value["mentorName"] != before["mentorName"]):
+        if notice and notice["status"] == "sent" and (not value["joined"] or value["mentorName"] != before["mentorName"]
+                                                   or value.get("mentorUserId") != before.get("mentorUserId")):
             raise pool.Conflict("导师已收到入职通知，请保留已入职状态和导师身份")
         value["name"] = before["name"]
         db.execute("UPDATE hr_onboarding_records SET body=?,version=version+1,updated_at=? WHERE owner=? AND talent_id=?",
