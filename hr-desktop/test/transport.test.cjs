@@ -38,6 +38,7 @@ test('outdated or unidentified assistants stop before pairing and clearly reques
     assert.equal(result.code,'ASSISTANT_UPDATE_REQUIRED');
     assert.match(result.message,/完全退出旧助手.*0\.1\.17/);
     await assert.rejects(transport.connect(),{code:'ASSISTANT_UPDATE_REQUIRED'});
+    assert.equal(transport.connection().phase,'update-required');
     transport.startAutoConnect();await tick();
     assert.equal(transport.connection().phase,'update-required');assert.equal(timers.size,0);
     assert.ok(!calls.some(call=>call.url.endsWith('/pair')||call.url.includes('/login/')));

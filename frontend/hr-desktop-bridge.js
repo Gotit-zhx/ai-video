@@ -105,8 +105,13 @@
       saved=paired;persist();reachable=true;repair=false;failures=0;
       channel?.postMessage({type:'paired',value:paired});notify('connected');
     })().catch(error=>{
-      if(ticket===epoch){reachable=false;notify('reconnecting',error instanceof TypeError
-        ?'正在等待本机助手，请打开应用并允许此网站连接本地网络。':error.message);}
+      if(ticket===epoch){
+        reachable=false;
+        if(error.code==='ASSISTANT_UPDATE_REQUIRED'){
+          active=false;clearTimeout(timer);timer=null;notify('update-required',error.message);
+        }else notify('reconnecting',error instanceof TypeError
+          ?'正在等待本机助手，请打开应用并允许此网站连接本地网络。':error.message);
+      }
       throw error;
     }).finally(()=>{if(connecting===pending)connecting=null;});
     connecting=pending;return pending;
