@@ -14,7 +14,8 @@ manifest = json.loads((root / "manifest.json").read_text())
 files = ("index.html", "hr-workspace.js", "hr-workspace.css", "hr-passive.js")
 if "app.js" in manifest:
     files += ("app.js",)
-for optional in ("hr-demands.js", "hr-sourcing.js", "hr-pool.js", "hr-departments.js", "hr-resume-preview.js"):
+for optional in ("hr-demands.js", "hr-sourcing.js", "hr-pool.js", "hr-departments.js", "hr-resume-preview.js",
+                 "hr-onboarding.js", "hr-bi.js"):
     if optional in manifest:
         files += (optional,)
 assert not (root / "activation.json").exists()
@@ -44,9 +45,15 @@ preserved = {
 image_directory = root / "frontend-image"
 image_directory.mkdir(exist_ok=True)
 for name in files:
-    live = run("docker", "exec", "ai-commerce-frontend", "cat", "/usr/share/nginx/html/" + name)
-    assert sha(live) == expected[name], "Live frontend changed: " + name
-    (backup / name).write_bytes(live)
+    try:
+        live = run("docker", "exec", "ai-commerce-frontend", "cat", "/usr/share/nginx/html/" + name)
+    except subprocess.CalledProcessError:
+        if expected[name] is not None:
+            raise
+        live = None
+    assert (sha(live) if live is not None else None) == expected[name], "Live frontend changed: " + name
+    if live is not None:
+        (backup / name).write_bytes(live)
     staged = root / "staged" / name
     assert sha(staged.read_bytes()) == manifest[name], "Staged mismatch: " + name
     shutil.copy2(staged, image_directory / name)

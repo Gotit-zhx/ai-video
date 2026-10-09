@@ -1573,7 +1573,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         if route in ("passive", "speeches", "resume-pool", "resume-pool/file", "pool/messages"):
             self.passive_request(parsed=parsed)
             return
-        if route in ("pool", "pool/interview", "pool/interview/package", "pool/dingtalk", "demands", "departments"):
+        if route in ("pool", "pool/interview", "pool/interview/package", "pool/dingtalk", "demands", "departments",
+                     "onboarding", "onboarding/recipients", "bi", "bi/export"):
             self.pool_request(write=False, parsed=parsed)
             return
         if route == "desktop/transport":
@@ -1670,6 +1671,9 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                          "/api/v1/hr/departments/identity", "/api/v1/hr/departments/bind"):
             self.pool_request(write=True)
             return
+        if self.path in ("/api/v1/hr/onboarding/save", "/api/v1/hr/onboarding/identity", "/api/v1/hr/onboarding/send"):
+            self.pool_request(write=True)
+            return
         if self.path.startswith("/api/v1/hr/desktop/"):
             self.desktop_request()
             return
@@ -1753,6 +1757,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         import recruitment_demands
         import hr_departments
         import dingtalk_interviews
+        import hr_onboarding
+        import hr_bi
         if write:
             if self.headers.get("Origin") != ALLOWED_ORIGIN:
                 self.send_json(403, {"success": False, "message": "请求来源不正确"})
@@ -1771,7 +1777,13 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("资料格式不正确")
-                if self.path == "/api/v1/hr/pool/interview/start":
+                if self.path == "/api/v1/hr/onboarding/save":
+                    result = hr_onboarding.save(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/onboarding/identity":
+                    result = hr_onboarding.identity(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/onboarding/send":
+                    result = hr_onboarding.send(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/pool/interview/start":
                     result = dingtalk_interviews.start(self.desktop_user, body)
                 elif self.path == "/api/v1/hr/pool/interview/identity":
                     result = dingtalk_interviews.interview_identity(self.desktop_user, body)
@@ -1800,7 +1812,24 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     result = action(self.desktop_user, body)
             else:
                 query = {key: values[-1] for key, values in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
-                if parsed.path.endswith("/pool/interview/package"):
+                if parsed.path.endswith("/bi/export"):
+                    raw, filename = hr_bi.export(self.desktop_user, query)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    self.send_header("Cache-Control", "private, no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(filename))
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                elif parsed.path.endswith("/bi"):
+                    result = hr_bi.dashboard(self.desktop_user, query)
+                elif parsed.path.endswith("/onboarding/recipients"):
+                    result = hr_onboarding.recipients(self.desktop_user, query)
+                elif parsed.path.endswith("/onboarding"):
+                    result = hr_onboarding.listing(self.desktop_user, query)
+                elif parsed.path.endswith("/pool/interview/package"):
                     raw, filename = dingtalk_interviews.download_package(self.desktop_user, query)
                     self.send_response(200)
                     self.send_header("Content-Type", "application/zip")
@@ -1990,8 +2019,11 @@ def main():
     import passive_pool
     import hr_sourcing
     import dingtalk_interviews
+    import hr_onboarding
     dingtalk_interviews.recover()
     threading.Thread(target=dingtalk_interviews.receipt_worker, daemon=True).start()
+    hr_onboarding.recover()
+    threading.Thread(target=hr_onboarding.receipt_worker, daemon=True).start()
     recruitment_demands.recover_interrupted()
     passive_pool.recover()
     hr_sourcing.recover()

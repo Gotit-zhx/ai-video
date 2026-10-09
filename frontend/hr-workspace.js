@@ -6,7 +6,7 @@
     ? globalThis.HeyiHrTransport.api(path, options) : api(path, options);
   const hrFetch = (path, options) => globalThis.HeyiHrTransport
     ? globalThis.HeyiHrTransport.request(path, options) : fetch(path, options);
-  const routes = new Set(['overview', 'jobs', 'talent', 'applications', 'chats', 'resume', 'pool', 'demands', 'departments', 'resume-pool', 'speeches']);
+  const routes = new Set(['overview', 'jobs', 'talent', 'applications', 'chats', 'resume', 'pool', 'demands', 'departments', 'onboarding', 'resume-pool', 'speeches']);
   const panels = new Map();
   let current = 'overview', sequence = 0, page = 1, talentAction = 'candidates';
   let loginTimer = null;
@@ -125,8 +125,7 @@
     ['speeches','话术管理','配置默认婉拒与常用沟通话术。','M4 4h16v13H9l-5 4z M8 9h8'],
     ['pool','储备人才库','按部门归档人才，持续跟进招聘阶段。','M4 5h16v15H4z M4 10h16 M9 10v10'],
     ['jobs','职位管理','管理在招岗位，按职位跟进人才。','M4 7h16v13H4z M8 7V4h8v3 M4 12h16 M10 12v3h4v-3'],
-    ['applications','投递申请','查看主动投递，及时处理候选人。','M4 4h16v16H4z M7 9h10 M7 13h7 M7 17h4'],
-    ['chats','沟通与简历','跟进会话，索取并接收附件简历。','M4 4h16v13H9l-5 4z M8 9h8 M8 13h5'],
+    ['onboarding','入职安排及跟进','确认入职安排，提醒导师准备带教。','M4 4h16v16H4z M7 9h10 M7 13h7 M7 17h4'],
   ];
   for(const [route,title,description,shape] of shortcutEntries){
     const card=button('',shortcutGrid,()=>navigate(route));card.className='hr-shortcut';
@@ -987,15 +986,20 @@
       if (ticket === sequence) box.setAttribute('aria-busy','false');
     }
   }
-  const pool=globalThis.createHrPool?.({root,section,element,button,allowed,navigate});
+  const onboarding=globalThis.createHrOnboarding?.({root,section,element,button,allowed,hrApi:api,navigate});
+  const pool=globalThis.createHrPool?.({root,section,element,button,allowed,navigate,
+    beginOnboarding:(row,payload,done)=>onboarding?.openPass(row,payload,done)});
   const demands=globalThis.createHrDemands?.({root,section,element,button,allowed,hrApi});
   const departmentManager=globalThis.createHrDepartments?.({root,section,element,button,allowed});
   const passive=globalThis.createHrPassive?.({root,section,element,button,allowed,navigate,hrApi});
   const sourcing=globalThis.createHrSourcing?.({root,panel:talent,element,button,allowed,navigate,hrApi});
+  const bi=globalThis.createHrBi?.({root:shortcuts,element,button,allowed,hrApi:api,navigate});
+  if(bi){shortcutHeader.hidden=shortcutGrid.hidden=true;}
   if(sourcing){talentForm.hidden=legacyTalentHint.hidden=talentResult.hidden=true;}
   function enter(route) {
     if (!allowed()) return;
     pool?.leave();
+    onboarding?.leave();bi?.leave();
     demands?.leave();
     departmentManager?.leave();
     passive?.leave();
@@ -1017,6 +1021,7 @@
     titles.pool=['储备人才库','按部门归档人才，跟进每一个招聘阶段。'];
     titles.demands=['招聘需求池','梳理岗位需求，生成画像、胜任能力和结构化面试题。'];
     titles.departments=['部门管理','统一部门信息与负责人，供招聘需求直接选用。'];
+    titles.onboarding=['入职安排及跟进','安排入职、确认到岗，让导师及时准备带教。'];
     titles['resume-pool']=['简历池','查看简历、人工审批，AI 分析仅供参考。'];
     titles.speeches=['话术管理','统一配置婉拒和常用沟通话术。'];
     pageTitle.textContent=titles[current][0];pageSubtitle.textContent=titles[current][1];
@@ -1028,7 +1033,10 @@
       demands?.enter();
     } else if (current === 'pool') {
       pool?.enter();
+    } else if (current === 'onboarding') {
+      onboarding?.enter();
     } else if (current === 'overview') {
+      bi?.enter();
       checkLogin();
     } else if (current === 'jobs' || current === 'applications' || current === 'chats') {
       run(current === 'chats' && selectedConversation ? 'messages' : current);
@@ -1058,6 +1066,7 @@
   globalThis.HrWorkspace = {enter, allowed, beginLogout(){
     globalThis.HeyiHrTransport?.stopAutoConnect?.();
     pool?.reset();
+    onboarding?.reset();bi?.reset();
     demands?.reset();
     departmentManager?.reset();
     passive?.reset();
@@ -1067,6 +1076,7 @@
     loginActionInFlight=true;
   },reset(){
     pool?.reset();
+    onboarding?.reset();bi?.reset();
     demands?.reset();
     departmentManager?.reset();
     passive?.reset();

@@ -31,11 +31,11 @@ class TalentPoolTest(unittest.TestCase):
         pool.save(USER, {"name": "另一个人", "stage": "hired"})
         result = pool.listing(USER, {"project": group["id"], "stage": "hired"})
         self.assertEqual(result["total"], 1)
-        self.assertEqual(result["counts"]["all"], 5)
+        self.assertEqual(result["counts"]["all"], len(pool.STAGES))
         self.assertEqual(result["counts"]["first"], 1)
         self.assertEqual(pool.listing(USER, {"project": "unassigned"})["total"], 1)
         self.assertEqual(pool.listing(USER, {"q": "%"})["total"], 0)
-        self.assertEqual(pool.listing(USER, {"q": "张三"})["total"], 5)
+        self.assertEqual(pool.listing(USER, {"q": "张三"})["total"], len(pool.STAGES))
 
     def test_save_persists_and_updates_audit_and_rejects_lost_updates(self):
         record = pool.save(USER, {"name": "陈同学", "education": "本科", "experience": "5年"})
@@ -171,8 +171,13 @@ class TalentPoolTest(unittest.TestCase):
             pool.save(USER,{"name":"未知","departmentId":"missing"})
 
     def review_body(self, talent, outcome="passed", round="first"):
-        return {"talentId":talent["id"],"version":talent["version"],"round":round,
+        value = {"talentId":talent["id"],"version":talent["version"],"round":round,
                 "outcome":outcome,"opinion":"具备项目经验，沟通清晰。","requestId":str(uuid.uuid4())}
+        if round == "second" and outcome == "passed":
+            value["onboarding"] = {"startDate":"2026-10-20","position":"研发","supervisor":"主管","department":"研发",
+                                  "company":"测试公司","fixedSalary":"20000","performanceSalary":"0",
+                                  "commission":"无","mentorName":"导师","joined":False}
+        return value
 
     def test_first_approval_advances_atomically_and_keeps_first_round_history(self):
         group=pool.save_project(USER,{"name":"研发"})
@@ -204,7 +209,7 @@ class TalentPoolTest(unittest.TestCase):
         for decision in ("passed","failed"):
             second=pool.save(USER,{"name":decision,"stage":"second"})
             result=pool.review_interview(USER,self.review_body(second,decision,"second"))
-            self.assertEqual(result["stage"],"second")
+            self.assertEqual(result["stage"],"onboarding" if decision == "passed" else "second")
             self.assertEqual(pool.listing(USER,{"stage":"second","outcome":decision})["total"],1)
         self.assertEqual(pool.listing(USER,{})["pendingCounts"]["first"],0)
         self.assertEqual(pool.listing(USER,{})["pendingCounts"]["second"],0)

@@ -9,7 +9,7 @@ from pathlib import Path
 from desktop_bridge import identity
 
 DB = Path("/opt/heyi/boss-agent/runtime/talent-pool.sqlite3")
-STAGES = ("", "invited", "first", "second", "hired")
+STAGES = ("", "invited", "first", "second", "onboarding", "hired")
 FIELDS = {"name": 100, "position": 200, "education": 100, "experience": 100,
           "phone": 100, "city": 100, "company": 200, "notes": 5000,
           "sourceId": 180, "source": 30, "departmentId": 36}
@@ -242,6 +242,14 @@ def review_interview(user, body):
                          (owner, record, interview_round)).fetchone()
         if old:
             if old["request_id"] == request_id and old["opinion"] == opinion and old["outcome"] == outcome:
+                if interview_round == "second" and outcome == "passed":
+                    import hr_onboarding
+                    hr_onboarding.schema(db)
+                    arrangement = db.execute("SELECT body FROM hr_onboarding_records WHERE owner=? AND talent_id=?",
+                                              (owner, record)).fetchone()
+                    submitted = hr_onboarding.validate(body.get("onboarding"))
+                    if not arrangement or any(json.loads(arrangement["body"]).get(k) != v for k,v in submitted.items()):
+                        raise Conflict("二面通过及入职安排已经保存，请到入职安排及跟进修改资料")
                 return view(row, db)
             raise Conflict("该轮面试已记录结果，请刷新后查看意见")
         if row["stage"] != interview_round or row["version"] != body.get("version"):
@@ -249,6 +257,10 @@ def review_interview(user, body):
         before = view(row, db)
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         next_stage = "second" if interview_round == "first" and outcome == "passed" else interview_round
+        if interview_round == "second" and outcome == "passed":
+            import hr_onboarding
+            arrangement = hr_onboarding.create(db, row, body.get("onboarding"))
+            next_stage = "hired" if arrangement["joined"] else "onboarding"
         db.execute("INSERT INTO hr_interview_reviews VALUES(?,?,?,?,?,?,?,?)",
                    (owner, record, interview_round, outcome, opinion, request_id, actor, now))
         db.execute("UPDATE talents SET stage=?,version=version+1,updated_at=? WHERE owner=? AND id=?",

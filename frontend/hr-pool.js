@@ -2,7 +2,7 @@
 (() => {
   const stages = [['invited','邀约'],['first','一面'],['second','二面'],['hired','已录取']];
   const defaultOutcome=stage=>['first','second'].includes(stage)?'pending':'all';
-  globalThis.createHrPool = ({root, section, element:el, button, allowed, navigate}) => {
+  globalThis.createHrPool = ({root, section, element:el, button, allowed, navigate,beginOnboarding}) => {
     const panel=section('pool');
     let stage='invited',outcome='all',department='',page=1,generation=0,active=false,departments=[],rows=[],editing=null,saving=false;
     let departmentButtons=[],departmentDirectory='',pageButtons=[];
@@ -180,7 +180,7 @@
         if(['preparing','sending','submitted'].includes(data.handoff?.status))interviewTimer=setTimeout(refreshInterview,5000);
       }catch(error){if(epoch===interviewEpoch&&interviewing?.id===id)interviewFeedback.textContent=error.message;}
     }
-    async function openInterview(row,autoStart=false,round=row.stage==='second'?'second':'first'){
+    async function openInterview(row,autoStart=false,round=row.stage==='second'||row.interviewReviews?.second?'second':'first'){
       if(!allowed()||interviewSending)return;
       const epoch=++interviewEpoch;
       interviewing=row;interviewData=null;interviewRequest=crypto.randomUUID();interviewRound=round;
@@ -309,12 +309,18 @@
       const label=round==='first'?'一面':'二面',saved=row.interviewReviews?.[round];
       reviewTitle.textContent=`${label}意见 · ${row.name}`;
       reviewIntro.textContent=saved?`${label}结果：${saved.outcome==='passed'?'通过':'未通过'} · ${new Date(saved.createdAt).toLocaleString('zh-CN')}`:
-        round==='first'?'填写一面意见后选择结果，通过后自动进入二面。':'填写二面意见并记录结果，录取阶段可由 HR 在人才资料中设置。';
+        round==='first'?'填写一面意见后选择结果，通过后自动进入二面。':'通过后填写入职安排，并流转到入职安排及跟进。';
       reviewOpinion.value=saved?.opinion||'';reviewOpinion.readOnly=!!saved;reviewFeedback.textContent='';
       syncReviewActions();reviewDialog.showModal();
     }
     async function saveReview(decision){
       if(reviewSaving||!reviewing||!allowed()||!reviewOpinion.value.trim()||reviewing.interviewReviews?.[reviewing.round])return;
+      if(reviewing.round==='second'&&decision==='passed'){
+        if(!beginOnboarding){reviewFeedback.textContent='请更新页面以填写入职安排';return;}
+        beginOnboarding(reviewing,{talentId:reviewing.id,version:reviewing.version,round:'second',outcome:'passed',
+          opinion:reviewOpinion.value.trim(),requestId:reviewRequest},()=>{reviewDialog.close();navigate('onboarding');});
+        return;
+      }
       const epoch=reviewEpoch,row=reviewing;reviewSaving=true;syncReviewActions();reviewFeedback.textContent='正在保存面试意见…';
       try{
         await request('/interview/review',{talentId:row.id,version:row.version,round:row.round,outcome:decision,
@@ -415,7 +421,7 @@
         const name=button(row.name,heading,()=>openInterview(row));name.className='hr-pool-name-link';
         name.title=`查看${row.name}的详情`;
         el('p',row.position||'职位待补充',copy,'hr-hint');
-        el('span',stages.find(([key])=>key===row.stage)?.[1]||'未设置阶段',head,'hr-badge');
+        el('span',row.stage==='onboarding'?'待入职':stages.find(([key])=>key===row.stage)?.[1]||'未设置阶段',head,'hr-badge');
         const tags=el('div','',card,'hr-tags');
         el('span',departments.find(d=>d.id===row.departmentId)?.name||'待关联部门',tags,'hr-badge');
         el('span',row.source==='boss'?'BOSS 人才':row.source==='passive'?'简历池审批':'手动录入',tags,'hr-badge');

@@ -88,8 +88,10 @@ class DingTalkInterviewTest(unittest.TestCase):
             db.execute("DELETE FROM hr_dingtalk_config")
         result = pool.review_interview(USER, {"talentId": self.talent["id"], "round": "second",
             "version": 2, "opinion": "技术能力符合岗位要求，待讨论下一步。", "outcome": "passed",
-            "requestId": str(uuid.uuid4())})
-        self.assertEqual(result["stage"], "second")
+            "requestId": str(uuid.uuid4()), "onboarding": {"startDate":"2026-10-20","position":"研发",
+              "supervisor":"主管","department":"研发","company":"测试公司","fixedSalary":"20000",
+              "performanceSalary":"0","commission":"无","mentorName":"导师","joined":False}})
+        self.assertEqual(result["stage"], "onboarding")
         with pool.database() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM hr_interview_handoffs").fetchone()[0], 0)
         dt.launch.assert_not_called()

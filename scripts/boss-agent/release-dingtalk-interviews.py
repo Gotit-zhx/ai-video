@@ -46,8 +46,9 @@ with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as db:
         ("hr_sourcing_runs", "state='running'"), ("hr_sourcing_jobs", "profile_state='running'"),
         ("hr_sourcing_contacts", "status='sending'"), ("hr_talent_messages", "status='sending'"),
         ("hr_resume_commands", "status='sending'"),
-        ("hr_interview_handoffs", "status IN ('preparing','sending')")]:
-        if table == "hr_interview_handoffs" and not db.execute(
+        ("hr_interview_handoffs", "status IN ('preparing','sending')"),
+        ("hr_onboarding_notices", "status IN ('preparing','sending')")]:
+        if table in ("hr_interview_handoffs", "hr_onboarding_notices") and not db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
             continue
         assert db.execute(f"SELECT COUNT(*) FROM {table} WHERE {condition}").fetchone()[0] == 0, "Active HR operation: "+table

@@ -62,6 +62,8 @@ function setup(overrides={}) {
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-pool.js'),'utf8'),env);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-demands.js'),'utf8'),env);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-departments.js'),'utf8'),env);
+  if(overrides.onboarding)vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-onboarding.js'),'utf8'),env);
+  if(overrides.bi)vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-bi.js'),'utf8'),env);
   if(overrides.passive)vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-passive.js'),'utf8'),env);
   if(overrides.sourcing)vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-sourcing.js'),'utf8'),env);
   vm.runInContext(source,env);
@@ -698,9 +700,79 @@ test('second interview opinions are available directly without choosing or sendi
   const talent={...poolResult().items[0],stage:'second'};
   const app=setup({api:async()=>({data:{...poolResult(),items:[talent]}})});
   await app.enter('pool');await app.click('二面意见');
-  assert.match(app.text(),/填写二面意见/);
+  assert.match(app.text(),/填写入职安排/);
   assert.equal(app.calls.some(c=>c.url.includes('/interview?')||c.url.endsWith('/interview/start')),false);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+const onboardingValues=()=>({name:'测试人才',startDate:'2026-10-20',position:'算法工程师',supervisor:'主管',
+  department:'研发',company:'测试公司',fixedSalary:'22000',performanceSalary:'0',commission:'无',mentorName:'导师',joined:false});
+test('second approval opens arrangements first and submits opinion and onboarding atomically',async()=>{
+  const talent={...poolResult().items[0],stage:'second'};
+  const app=setup({onboarding:true,api:async(url,options)=>({data:
+    url.includes('/onboarding?talentId=')?{defaults:onboardingValues()}:
+    url.includes('/onboarding?')?{items:[],total:0,page:1,pages:1}:
+    url.endsWith('/interview/review')?{stage:'onboarding'}:{...poolResult(),items:[talent]}})});
+  await app.enter('pool');await app.click('二面意见');
+  const review=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
+  const opinion=all(review).find(n=>n.tagName==='textarea');opinion.value='建议通过，进入入职安排';opinion.events.input();
+  await app.click('通过');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-onboarding-dialog');
+  assert.equal(dialog.open,true);assert.match(dialog.textContent,/归属公司|固定薪资|导师名称/);
+  const form=all(dialog).find(n=>n.tagName==='form');
+  await form.events.submit({preventDefault(){}});await flush();
+  const writes=app.calls.filter(c=>c.options?.method==='POST');
+  assert.equal(writes.length,1);assert.ok(writes[0].url.endsWith('/interview/review'));
+  const data=JSON.parse(writes[0].options.body);
+  assert.equal(data.round,'second');assert.equal(data.onboarding.fixedSalary,'22000');
+  assert.equal(data.onboarding.joined,false);
+  assert.match(app.env.location.hash,/hr-onboarding/);
+  assert.equal(app.calls.some(c=>c.url.endsWith('/onboarding/send')),false);
+});
+test('cancelling arrangements preserves second opinion and does not mark approval',async()=>{
+  const talent={...poolResult().items[0],stage:'second'};
+  const app=setup({onboarding:true,api:async url=>({data:url.includes('/onboarding?talentId=')
+    ?{defaults:onboardingValues()}:{...poolResult(),items:[talent]}})});
+  await app.enter('pool');await app.click('二面意见');
+  const review=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
+  const opinion=all(review).find(n=>n.tagName==='textarea');opinion.value='保留这条意见';opinion.events.input();
+  await app.click('通过');await app.click('取消');
+  assert.equal(opinion.value,'保留这条意见');assert.equal(review.open,true);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+test('onboarding can update joining independently and mentor notification stays explicit',async()=>{
+  const row={...onboardingValues(),talentId:'t1',version:1};
+  const app=setup({onboarding:true,api:async url=>({data:url.endsWith('/onboarding/save')?{saved:true}:
+    {items:[row],total:1,page:1,pages:1}})});
+  await app.enter('onboarding');
+  assert.equal(app.visible().find(n=>n._text==='通知导师').disabled,true);
+  await app.click('入职安排');
+  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-onboarding-dialog');
+  const joined=all(dialog).find(n=>n.tagName==='select');joined.value='true';
+  await all(dialog).find(n=>n.tagName==='form').events.submit({preventDefault(){}});await flush();
+  const writes=app.calls.filter(c=>c.options?.method==='POST');
+  assert.equal(writes.length,1);assert.ok(writes[0].url.endsWith('/onboarding/save'));
+  assert.equal(JSON.parse(writes[0].options.body).joined,true);
+  assert.equal(app.calls.some(c=>c.url.endsWith('/onboarding/send')),false);
+});
+test('BI renders six K periods and export follows the applied scope without BOSS actions',async()=>{
+  const app=setup({bi:true,api:async url=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete'}};
+    const params=new URL(url,'https://platform.test').searchParams;
+    return {data:{filters:Object.fromEntries(params),metrics:{resumes:5,pending:2,averageScore:88},
+      options:{departments:[],jobs:[]},departments:[],jobs:[],sources:[],stages:[],
+      trend:[{date:'2026-10',resumes:5,firstReviews:2,secondReviews:1}],
+      generatedAt:'2026-10-09T12:00:00+08:00',definitions:['平台记录口径']}};
+  }});
+  await app.enter('overview');assert.match(app.text(),/招聘经营看板/);
+  const select=all(app.root).find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='halfyear'));
+  assert.equal(select.children.length,6);select.value='quarter';await select.events.change();await flush();
+  assert.ok(app.calls.some(c=>c.url.includes('granularity=quarter')));
+  assert.match(app.text(),/季度 K · 招聘进展/);
+  const link=all(app.root).find(n=>n._text==='导出 Excel 汇总与明细');
+  assert.equal(new URL(link.href,'https://platform.test').searchParams.get('granularity'),'quarter');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  assert.ok(app.calls.every(c=>c.url.includes('/bi?')||c.url.endsWith('/login/status')));
 });
 test('resume analysis uses resolved job JD and reports preflight errors immediately',async()=>{
   const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle',
