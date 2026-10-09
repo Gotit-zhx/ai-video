@@ -23,10 +23,12 @@ class PassiveTest(unittest.TestCase):
     def seed(self):
         with pool.database() as db:
             feature.schema(db)
-            body={'name':'王同学','jobName':'运营','jobDescription':'负责岗位运营工作','jobEducation':'本科',
+            body={'name':'王同学','jobId':'job1','jobName':'运营','jobDescription':'负责岗位运营工作','jobEducation':'本科',
                   'jobExperience':'3年','resumeText':'工作经验与岗位相关。'*10,'fileName':'resume.pdf','projectId':''}
             db.execute('''INSERT INTO hr_resume_pool(id,owner,account,friend_id,rule_id,message_id,body,file_key,file_hash,created_at,updated_at)
                 VALUES('r1','heyi',?,'123','rule1','456',?,'key','hash',?,?)''',(KEY,json.dumps(body),feature.now(),feature.now()))
+        feature.sync_jobs(USER,{'accountKey':KEY,'snapshot':{'source':'job-management','hasMore':False,
+            'jobs':[{'encryptJobId':identity,'jobStatus':2,'jobAuditStatus':1,'statusDesc':'开放中'} for identity in ('job1','job-1')]}})
 
     def template(self,**extra):
         return feature.save_speech(USER,{'name':'默认婉拒','kind':'reject','content':'{姓名}，感谢关注{职位}，本次暂不合适。','isDefault':True,**extra})
@@ -64,6 +66,7 @@ class PassiveTest(unittest.TestCase):
                            (rule,owner,KEY,job,json.dumps({'jobName':name}),feature.now()))
             db.execute("INSERT INTO hr_resume_pool SELECT 'r2',owner,account,'234','rule2','567',body,file_key,file_hash,"
                        "'approved',version,ai_state,ai_result,ai_error,ai_job,ai_at,created_at,updated_at FROM hr_resume_pool WHERE id='r1'")
+            db.execute("UPDATE hr_resume_pool SET body=json_set(body,'$.jobId','job2') WHERE id='r2'")
         first=feature.listing(USER,'resume-pool',{'jobId':'job1','status':'pending'})
         self.assertEqual([r['id'] for r in first['items']],['r1'])
         self.assertEqual(first['counts'],{'pending':1,'approved':0,'rejected':0,'all':1})
@@ -102,6 +105,55 @@ class PassiveTest(unittest.TestCase):
         self.assertEqual(pool.listing(USER,{})['items'][0]['stage'],'invited')
         self.assertFalse(feature.device_config(USER,{'accountKey':KEY})['commands'])
         self.assertEqual(result['status'],'approved')
+
+    def test_only_open_exact_account_job_can_be_reviewed_or_analyzed(self):
+        self.template()
+        for state,audit,label in [(1,1,'已关闭'),(3,1,'待开放'),(2,6,'审核中'),(2,1,'免费曝光中')]:
+            with self.subTest(label=label):
+                feature.sync_jobs(USER,{'accountKey':KEY,'snapshot':{'source':'job-management','hasMore':False,
+                    'jobs':[{'encryptJobId':'job1','jobStatus':state,'jobAuditStatus':audit,'statusDesc':label}]}})
+                row=feature.listing(USER,'resume-pool',{'id':'r1'})['items'][0]
+                self.assertFalse(row['canReview']);self.assertEqual(row['jobStatus'],label)
+                for action in ('approve','reject'):
+                    with self.assertRaisesRegex(pool.Conflict,'仅可查看'):feature.review(USER,{'id':'r1','version':row['version'],'action':action})
+                with mock.patch.object(feature.threading,'Thread') as thread:
+                    with self.assertRaises(pool.Conflict):feature.analyze(USER,{'id':'r1'},'session')
+                    thread.assert_not_called()
+        with pool.database() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM talents').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM hr_resume_commands').fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT status FROM hr_resume_pool WHERE id='r1'").fetchone()[0],'pending')
+
+    def test_missing_stale_or_other_account_snapshot_does_not_enable_decisions(self):
+        feature.sync_jobs(USER,{'accountKey':KEY,'invalid':True})
+        for key in ('b'*64,):
+            feature.sync_jobs(USER,{'accountKey':key,'snapshot':{'source':'job-management','hasMore':False,
+                'jobs':[{'encryptJobId':'job1','jobStatus':2,'jobAuditStatus':1,'statusDesc':'开放中'}]}})
+        self.assertFalse(feature.listing(USER,'resume-pool',{})['items'][0]['canReview'])
+        self.seed_status()
+        with pool.database() as db:db.execute("UPDATE hr_job_availability SET checked_at=? WHERE account=?",(feature.time.time()-301,KEY))
+        with self.assertRaises(pool.Conflict):feature.review(USER,{'id':'r1','version':1,'action':'approve'})
+        with self.assertRaises(ValueError):feature.sync_jobs(USER,{'accountKey':KEY,'snapshot':{'source':'job-management','hasMore':True,'jobs':[]}})
+
+    def seed_status(self):
+        feature.sync_jobs(USER,{'accountKey':KEY,'snapshot':{'source':'job-management','hasMore':False,
+            'jobs':[{'encryptJobId':'job1','jobStatus':2,'jobAuditStatus':1,'statusDesc':'开放中'}]}})
+
+    def test_queued_rejection_cannot_be_claimed_after_job_closes_and_can_be_cancelled(self):
+        self.template();feature.review(USER,{'id':'r1','version':1,'action':'reject'})
+        command=feature.device_config(USER,{'accountKey':KEY})['commands'][0]
+        feature.sync_jobs(USER,{'accountKey':KEY,'snapshot':{'source':'job-management','hasMore':False,'jobs':[]}})
+        self.assertFalse(feature.claim_command(USER,{'accountKey':KEY,'id':command['id']})['claimed'])
+        self.assertTrue(feature.review(USER,{'id':'r1','action':'cancel-send'})['cancelled'])
+
+    def test_device_status_report_preserves_cache_remaining_lifetime_and_account_scope(self):
+        feature.device_report(USER,{'accountKey':KEY,'jobStatuses':{'job1':'开放中'},'validFor':60})
+        self.assertTrue(feature.listing(USER,'resume-pool',{})['items'][0]['canReview'])
+        future=feature.time.time()+61
+        with mock.patch.object(feature.time,'time',return_value=future):
+            self.assertFalse(feature.listing(USER,'resume-pool',{})['items'][0]['canReview'])
+        with self.assertRaises(ValueError):
+            feature.device_report(USER,{'accountKey':KEY,'jobStatuses':{'job1':'开放中'},'validFor':301})
 
     def test_approval_reads_candidate_facts_without_using_job_requirements(self):
         with pool.database() as db:

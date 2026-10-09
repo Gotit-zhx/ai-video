@@ -6,7 +6,7 @@ const {spawn, execFile} = require('node:child_process');
 const {directEnvironment} = require('./direct-network.cjs');
 const {resolveAccount,bindAccount,validKey}=require('./account-identity.cjs');
 const {OperationQueue}=require('./operation-queue.cjs');
-const SHARED_READS=new Set(['jobs','applications','candidates','recommendations','chats','resume','messages','tracked']);
+const SHARED_READS=new Set(['jobs','job-statuses','applications','candidates','recommendations','chats','resume','messages','tracked']);
 
 const ORIGIN = 'https://hoyee.org.cn';
 const STOP = new Set(['ACCOUNT_RISK','ENVIRONMENT_RISK','IP_RESTRICTED','AUTH_REQUIRED','AUTH_EXPIRED',
@@ -146,8 +146,10 @@ class Recruiter extends EventEmitter {
   }
   async checkOwner(){
     const user=await this.authorize();
-    if(!user || user.platformAdmin!==true || user.organizationCode!=='heyi'
-      || user.username!=='13800000000' || !user.roles?.includes('ADMIN')) throw Error('请先登录有招聘权限的赫逸管理员账号');
+    const legacy=user?.platformAdmin===true&&user.organizationCode==='heyi'
+      &&user.username==='13800000000'&&user.roles?.includes('ADMIN');
+    if(!legacy&&(!user?.permissions?.includes('hr:access')||!user.organizationCode||!(user.id||user.userId)))
+      throw Error('请先登录已开通人力资源权限的账号');
     const key=crypto.createHash('sha256').update(`${user.organizationCode}:${user.id||user.userId||user.username}`).digest('hex');
     if(this.owner && this.owner!==key) throw Error('本机已绑定另一位用户，请先断开原招聘连接');
     this.owner=key;
@@ -376,6 +378,16 @@ class Recruiter extends EventEmitter {
         return;
       }
       const accountKey=path.basename(accountRoot);
+      if(!this.jobStatusSyncAt||this.clock()-this.jobStatusSyncAt>=60000){
+        const availability=await call('job-statuses');
+        if(!ready())return;
+        if(availability.ok&&availability.data?.statuses){
+          await this.passiveCloud('passive-report',{accountKey,jobStatuses:availability.data.statuses,
+            validFor:Math.max(0,Math.min(300,(availability.data.retryAt||0)-this.clock()/1000))});
+          if(!ready())return;
+          this.jobStatusSyncAt=this.clock();
+        }
+      }
       const local=await call('passive-local');
       if(!ready())return;
       if(!local.ok){this.backgroundFailed(local.error?.code);return;}

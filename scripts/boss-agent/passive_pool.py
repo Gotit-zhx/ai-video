@@ -59,6 +59,9 @@ def schema(db):
       owner TEXT PRIMARY KEY,speech_id TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS hr_passive_reply_defaults(
       owner TEXT PRIMARY KEY,speech_id TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS hr_job_availability(
+      owner TEXT NOT NULL,account TEXT NOT NULL,body TEXT NOT NULL,checked_at REAL NOT NULL,
+      PRIMARY KEY(owner,account));
     ''')
     # executescript commits implicitly. Start a fresh transaction for every caller.
     db.execute('BEGIN IMMEDIATE')
@@ -81,6 +84,60 @@ def resume(row, commands=None):
     if commands:
         value['rejection'] = commands.get(row['id'])
     return value
+
+
+def sync_jobs(user, body):
+    """Persist a complete official desktop job snapshot, scoped to this account."""
+    owner, _ = pool.context(user)
+    key = account(body.get('accountKey'))
+    with pool.database() as db:
+        schema(db)
+        if body.get('invalid') is True:
+            db.execute('DELETE FROM hr_job_availability WHERE owner=? AND account=?', (owner, key))
+            return {'synced': False}
+        snapshot = body.get('snapshot')
+        if (not isinstance(snapshot, dict) or snapshot.get('hasMore') is not False
+                or snapshot.get('source') != 'job-management' or not isinstance(snapshot.get('jobs'), list)
+                or len(snapshot['jobs']) > 1000):
+            raise ValueError('职位列表未完整读取，不能更新操作权限')
+        states = {}
+        for job in snapshot['jobs']:
+            if not isinstance(job, dict):
+                raise ValueError('职位状态格式不正确')
+            identity = pool.text(job.get('encryptJobId'), 180)
+            if not identity or identity in states:
+                raise ValueError('职位标识缺失或重复')
+            # Use the official numeric fields, never the caller's "canReview".
+            audit, state = job.get('jobAuditStatus'), job.get('jobStatus')
+            opened = (type(audit) is int and type(state) is int and audit != 6
+                      and not (state == 0 and audit == 0) and state in (0, 2)
+                      and audit in (0, 1, 3, 4) and job.get('statusDesc') == '开放中')
+            states[identity] = {'open': opened, 'status': pool.text(job.get('statusDesc'), 40) or '状态待确认'}
+        db.execute('INSERT OR REPLACE INTO hr_job_availability VALUES(?,?,?,?)',
+                   (owner, key, dump(states), time.time()))
+    return {'synced': True}
+
+
+def job_availability(db, row):
+    detail = json.loads(row['body'])
+    job_id = detail.get('jobId', '')
+    if not job_id:
+        linked = db.execute('SELECT job_id FROM hr_passive_rules WHERE owner=? AND account=? AND id=?',
+                            (row['owner'], row['account'], row['rule_id'])).fetchone()
+        job_id = linked['job_id'] if linked else ''
+    snapshot = db.execute('SELECT * FROM hr_job_availability WHERE owner=? AND account=?',
+                          (row['owner'], row['account'])).fetchone()
+    fresh = snapshot and 0 <= time.time()-snapshot['checked_at'] < 300
+    state = json.loads(snapshot['body']).get(job_id, {}) if fresh else {}
+    opened = bool(state.get('open'))
+    return {'canReview': opened, 'jobStatus': state.get('status', '状态待确认'),
+            'jobRestriction': '' if opened else '该职位未开放或状态尚未确认，仅可查看，不能通过或拒绝邀约。'}
+
+
+def require_open_job(db, row):
+    state = job_availability(db, row)
+    if not state['canReview']:
+        raise pool.Conflict(state['jobRestriction'])
 
 
 def analysis_job(db, row):
@@ -193,7 +250,7 @@ def listing(user, kind, query):
         rows = list(db.execute('SELECT * FROM hr_resume_pool WHERE '+clause+' ORDER BY created_at DESC,id LIMIT 20 OFFSET ?', (*args, (page-1)*20)))
         commands = {r['resume_id']: {'id': r['id'], 'status': r['status'], 'updatedAt': r['updated_at'], **json.loads(r['body'])}
                     for r in db.execute('SELECT * FROM hr_resume_commands WHERE owner=?', (owner,))}
-        items = [resume(resume_identity(db, r, actor), commands) for r in rows]
+        items = [resume(resume_identity(db, r, actor), commands) | job_availability(db, r) for r in rows]
         if query.get('id'):
             items = [item | {k: v for k, v in analysis_job(db, row).items()
                             if k in ('jobId', 'jobDescription', 'jobEducation', 'jobExperience', 'jobSource', 'jobLinkError')}
@@ -394,6 +451,7 @@ def review(user, body):
             return {'cancelled': True}
         if row['status'] != 'pending': raise pool.Conflict('该简历已审批，请刷新查看结果')
         if row['version'] != body.get('version'): raise pool.Conflict('简历已更新，请刷新后审批')
+        require_open_job(db, row)
         detail = json.loads(row['body']); detail['reviewedBy'] = actor; detail['reviewedAt'] = now()
         if action == 'approve':
             import resume_storage
@@ -461,6 +519,13 @@ def claim_command(user, body):
                 db.execute("UPDATE hr_talent_messages SET status='cancelled',updated_at=? WHERE id=?", (now(), record))
                 return {'claimed': False}
             return {'claimed': bool(db.execute("UPDATE hr_talent_messages SET status='sending',updated_at=? WHERE id=? AND status='queued'", (now(), record)).rowcount)}
+        command = db.execute("SELECT * FROM hr_resume_commands WHERE id=? AND owner=? AND account=? AND status='queued'",
+                             (record, owner, key)).fetchone()
+        if command:
+            row = db.execute('SELECT * FROM hr_resume_pool WHERE id=? AND owner=? AND account=?',
+                             (command['resume_id'], owner, key)).fetchone()
+            if not row or not job_availability(db, row)['canReview']:
+                return {'claimed': False}
         changed = db.execute("UPDATE hr_resume_commands SET status='sending',updated_at=? WHERE id=? AND owner=? AND account=? AND status='queued'", (now(), record, owner, key)).rowcount
         if not changed: return {'claimed': False}
         return {'claimed': True}
@@ -469,6 +534,17 @@ def claim_command(user, body):
 def device_report(user, body):
     import hr_sourcing
     owner, _ = pool.context(user); key = account(body.get('accountKey'))
+    if 'jobStatuses' in body:
+        states, valid_for = body['jobStatuses'], body.get('validFor', 0)
+        if (not isinstance(states, dict) or len(states) > 1000 or type(valid_for) not in (int, float)
+                or not 0 <= valid_for <= 300 or any(not isinstance(k, str) or not k or len(k) > 180
+                or not isinstance(v, str) or len(v) > 40 for k,v in states.items())):
+            raise ValueError('本机职位状态不完整')
+        with pool.database() as db:
+            schema(db)
+            values = {k:{'open':v=='开放中','status':v} for k,v in states.items()}
+            db.execute('INSERT OR REPLACE INTO hr_job_availability VALUES(?,?,?,?)',
+                       (owner, key, dump(values), time.time()-300+valid_for))
     if body.get('commandId'):
         state = body.get('status')
         if state not in {'sent', 'uncertain', 'failed'}: raise ValueError('发送状态不正确')
@@ -534,6 +610,7 @@ def analyze(user, body, cookie):
         schema(db)
         row = db.execute('SELECT * FROM hr_resume_pool WHERE owner=? AND id=?', (owner, record)).fetchone()
         if not row: raise ValueError('简历不存在')
+        require_open_job(db, row)
         if row['ai_state'] == 'running': return {'id': record, 'aiState': 'running'}
         if row['ai_state'] == 'complete' and body.get('regenerate') is not True: return resume(row)
         if db.execute("SELECT 1 FROM hr_resume_pool WHERE owner=? AND ai_state='running' AND ai_at>?", (owner, int(time.time())-360)).fetchone(): raise pool.Conflict('已有简历正在分析，请稍后')

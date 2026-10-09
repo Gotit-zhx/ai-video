@@ -129,6 +129,17 @@ class RecruitmentAiControllerTest {
         assertThrows(BusinessException.class,()->controller.resumeMatch(user("13800000000"),Map.of("resumeText","too short")));
         verifyNoInteractions(models,gate);
     }
+    @Test void hrPermissionAllowsNonAdministratorButRoleNameAloneDoesNotGrantAiAccess() {
+        var controller=new RecruitmentAiController(models,gate,json);
+        var hr=new PlatformPrincipal("hr-a","org-1","heyi","15800000001","人力资源部","",true,
+                List.of("HR_DEPARTMENT"),List.of("hr:access"));
+        var invalid=assertThrows(BusinessException.class,()->controller.resumeMatch(hr,Map.of("resumeText","too short")));
+        assertEquals(400,invalid.getStatus().value());
+        var denied=new PlatformPrincipal("hr-b","org-1","heyi","15800000002","无权限","",true,
+                List.of("HR_DEPARTMENT"),List.of());
+        assertEquals(403,assertThrows(BusinessException.class,()->controller.resumeMatch(denied,Map.of())).getStatus().value());
+        verifyNoInteractions(models,gate);
+    }
     private PlatformPrincipal user(String phone) {
         return new PlatformPrincipal("admin","org-1","heyi",phone,"管理员","",true,List.of("ADMIN"),List.of());
     }

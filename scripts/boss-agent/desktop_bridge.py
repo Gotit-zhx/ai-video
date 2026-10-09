@@ -45,11 +45,13 @@ def database():
 
 
 def identity(user):
-    if (user.get("username") != "13800000000" or user.get("platformAdmin") is not True
-            or user.get("organizationCode") != "heyi" or "ADMIN" not in user.get("roles", [])):
-        raise ValueError("招聘模块仅限指定平台管理员")
+    legacy = (user.get("username") == "13800000000" and user.get("platformAdmin") is True
+              and user.get("organizationCode") == "heyi" and "ADMIN" in user.get("roles", []))
+    if not legacy and ("hr:access" not in user.get("permissions", [])
+                       or not user.get("organizationCode") or not (user.get("id") or user.get("userId"))):
+        raise ValueError("账号未开通人力资源权限")
     return {key: user.get(key) for key in
-            ("username", "id", "userId", "organizationCode", "platformAdmin", "roles")}
+            ("username", "id", "userId", "organizationCode", "platformAdmin", "roles", "permissions")}
 
 
 def issue(user, automatic=False):

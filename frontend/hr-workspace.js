@@ -37,8 +37,8 @@
     node.addEventListener('click', handler);
     return node;
   };
-  const allowed = () => currentUser?.platformAdmin === true
-    && currentUser?.username === '13800000000';
+  const allowed = () => (currentUser?.platformAdmin === true && currentUser?.username === '13800000000')
+    || currentUser?.permissions?.includes('hr:access') === true;
   const section = (key) => {
     const panel = element('section', '', root, 'hr-panel');
     panel.hidden = key !== 'overview';
@@ -73,8 +73,8 @@
   element('summary', '下载桌面助手', downloads);
   const downloadMenu = element('div', '', downloads, 'hr-download-menu');
   for(const [label,file] of [['Mac · Apple 芯片','Heyi-Recruiter-mac-arm64.dmg'],['Windows · 64 位','Heyi-Recruiter-windows-x64-Setup.exe']]){
-    const link=element('a',label,downloadMenu);link.href='/downloads/'+file+'?v=0.1.15';
-    link.title='赫逸招聘助手 0.1.15';
+    const link=element('a',label,downloadMenu);link.href='/downloads/'+file+'?v=0.1.16';
+    link.title='赫逸招聘助手 0.1.16';
   }
   const note = element('p', '', root, 'hr-note');
   note.setAttribute('role', 'status');

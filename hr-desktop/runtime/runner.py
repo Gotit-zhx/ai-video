@@ -188,6 +188,8 @@ def main(request):
         return {"ok": True, "file": str(output)}
     if operation == "jobs" and not request.get("jobId"):
         return c.sanitize(read_managed_jobs())
+    if operation == "job-statuses":
+        return {"ok": True, "data": c.managed_job_statuses()}
     if request.get("jobId") and operation in ("jobs", "recommendations", "applications", "chats", "candidates"):
         availability = c.managed_job_statuses()
         if c.held_code():

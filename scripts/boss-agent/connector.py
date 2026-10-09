@@ -1549,10 +1549,10 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             return 401 if error.code == 401 else 503
         except (OSError, ValueError, KeyError):
             return 503
-        if (user.get("username") != AUTHORIZED_PHONE
-                or user.get("organizationCode") != "heyi"
-                or user.get("platformAdmin") is not True
-                or "ADMIN" not in user.get("roles", [])):
+        try:
+            import desktop_bridge
+            desktop_bridge.identity(user)
+        except ValueError:
             return 403
         self.desktop_user = user
         return 200
@@ -1659,6 +1659,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             return
         if self.path in ("/api/v1/hr/passive/save", "/api/v1/hr/speeches/save",
                          "/api/v1/hr/resume-pool/review", "/api/v1/hr/resume-pool/analyze",
+                         "/api/v1/hr/resume-pool/jobs",
                          "/api/v1/hr/pool/messages"):
             self.passive_request(write=True)
             return
@@ -1918,6 +1919,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 if self.path.endswith("/passive/save"): result = passive_pool.save_rule(self.desktop_user, body)
                 elif self.path.endswith("/speeches/save"): result = passive_pool.save_speech(self.desktop_user, body)
                 elif self.path.endswith("/review"): result = passive_pool.review(self.desktop_user, body)
+                elif self.path.endswith("/resume-pool/jobs"): result = passive_pool.sync_jobs(self.desktop_user, body)
                 elif self.path.endswith("/pool/messages"): result = passive_pool.invitation_messages(self.desktop_user, body, write=True)
                 else: result = passive_pool.analyze(self.desktop_user, body, self.headers.get("Cookie", ""))
             else:

@@ -64,6 +64,7 @@
     let active='',generation=0,items=[],page=1,filter='pending',speechFilter='passive_reply',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
     let jobFilter='',jobOptions=[],jobSignature='',originFilter='';
     let logOpen=false,poolSnapshot='',previewId='',previewHost=null,disposePreview=null;
+    const jobSyncs=new Map();
     const clearPreview=()=>{disposePreview?.();disposePreview=null;previewHost=null;previewId='';};
     const speechPanel=section('speeches'),resumePanel=section('resume-pool');
     const toolbar=(panel,title,subtitle)=>{
@@ -265,12 +266,46 @@
       try{
         const [data,speeches,directory]=await Promise.all([request('resume-pool?id='+encodeURIComponent(id)),request('speeches'),request('pool')]);
         if(ticket!==generation||selected!==id||!allowed()||!detail.open)return;
-        const row=data.items[0];if(!row)throw Error('简历不存在');
+        let row=data.items[0];if(!row)throw Error('简历不存在');
         drawResume(row,speeches.items||[],directory.departments||[]);
+        if(row.accountKey){
+          const available=await syncJobAvailability(row.accountKey);
+          if(ticket!==generation||selected!==id||!allowed()||!detail.open)return;
+          if(available){
+            const latest=await request('resume-pool?id='+encodeURIComponent(id));
+            if(ticket!==generation||selected!==id||!allowed()||!detail.open)return;
+            row=latest.items[0]||row;
+          }else row={...row,canReview:false,jobRestriction:'职位状态暂未确认，仅可查看；请连接对应招聘账号后重试。'};
+          drawResume(row,speeches.items||[],directory.departments||[]);
+        }
       }catch(error){if(ticket===generation&&selected===id){detailBody.replaceChildren();el('p',error.message,detailBody,'hr-error');}}
+    }
+    async function syncJobAvailability(accountKey,force=false){
+      if(!allowed())return false;
+      const ticket=generation;
+      try{
+        const before=(await hrApi('/api/v1/hr/login/status')).data;
+        if(before.state!=='complete'||before.paused||before.accountKey!==accountKey)return false;
+        const cached=jobSyncs.get(accountKey);
+        if(!force&&cached&&Date.now()<cached.until)return cached.ok;
+        const reply=(await hrApi('/api/v1/hr/jobs')).data;
+        const after=(await hrApi('/api/v1/hr/login/status')).data;
+        if(ticket!==generation||!allowed()||after.state!=='complete'||after.paused||after.accountKey!==accountKey)return false;
+        if(reply?.ok!==true)throw Error('职位列表未完整读取');
+        await request('resume-pool/jobs',{accountKey,snapshot:reply.data});
+        if(ticket!==generation||!allowed())return false;
+        jobSyncs.set(accountKey,{ok:true,until:Date.now()+240000});return true;
+      }catch{
+        if(ticket===generation&&allowed()){
+          jobSyncs.set(accountKey,{ok:false,until:Date.now()+60000});
+          await request('resume-pool/jobs',{accountKey,invalid:true}).catch(()=>{});
+        }
+        return false;
+      }
     }
     function drawResume(row,speeches,departments){
       const template=speeches.find(s=>s.isDefault&&s.active&&s.kind==='reject');
+      const canReview=row.canReview===true;
       if(previewId!==row.id)clearPreview();
       detailBody.replaceChildren();
       const header=el('header','',detailBody,'hr-review-header');
@@ -284,6 +319,7 @@
         layout.append(previewHost);
       }
       const sidebar=el('aside','',layout,'hr-review-sidebar');
+      if(!canReview)el('p',row.jobRestriction||'该职位未开放或状态尚未确认，仅可查看，不能通过或拒绝邀约。',sidebar,'hr-hint');
       el('p',[row.education,row.experience,row.city,row.company].filter(Boolean).join(' · '),sidebar,'hr-hint');
       const ai=el('section','',sidebar,'hr-review-ai');
       el('h3','AI 辅助分析匹配度',ai);el('p','可选，仅供参考。AI 不参与审批，也不会触发发送消息。',ai,'hr-hint');
@@ -296,14 +332,15 @@
       if(row.jobSource)el('p','分析岗位：'+row.jobName+' · JD 来自'+row.jobSource,ai,'hr-hint');
       if(row.jobLinkError)aiFeedback.textContent=row.jobLinkError;
       const analyze=button(row.aiState==='running'?'分析中…':row.aiState==='complete'?'重新分析':'AI 辅助分析',aiActions,async()=>{
-        if(!allowed())return;
+        if(!allowed()||!canReview)return;
         analyze.disabled=true;analyze.textContent='正在提交…';aiFeedback.textContent='正在读取简历和对应岗位 JD…';
         try{
           await request('resume-pool/analyze',{id:row.id,resumeText:resumeText.value,jobDescription:jobText.value,regenerate:row.aiState==='complete'});
           if(selected===row.id&&allowed())await openResume(row.id);
         }catch(error){if(selected===row.id){aiFeedback.textContent=error.message;aiFeedback.className='hr-error';analyze.textContent='AI 辅助分析';}analyze.disabled=false;}
       });
-      analyze.disabled=row.aiState==='running';
+      analyze.disabled=row.aiState==='running'||!canReview;
+      resumeText.readOnly=jobText.readOnly=!canReview;
       if(row.aiState==='running'){
         aiFeedback.textContent='正在使用驱动模型分析，您仍可直接审批简历。';
         clearTimeout(timer);timer=setTimeout(()=>{if(selected===row.id&&active==='resume-pool')openResume(row.id);},5000);
@@ -328,19 +365,25 @@
         }
         const actions=el('div','',sidebar,'hr-actions hr-review-decisions');let reviewing=false;
         async function review(action){
-          if(reviewing||!allowed())return;reviewing=true;approve.disabled=reject.disabled=true;
+          if(reviewing||!allowed()||!canReview)return;reviewing=true;approve.disabled=reject.disabled=true;
           try{
+            if(row.accountKey){
+              if(!await syncJobAvailability(row.accountKey,true))throw Error('职位状态未确认，仅可查看，不能审批。');
+              if(selected!==row.id||!allowed())return;
+            }
             await request('resume-pool/review',{id:row.id,version:row.version,action});
             if(selected===row.id&&allowed()){
               detail.close();
               if(action==='approve')navigate('pool',{stage:'invited'});
               else{filter='rejected';page=1;await load();}
             }
-          }catch(error){if(selected===row.id)feedback.textContent=error.message;}
-          finally{reviewing=false;approve.disabled=false;reject.disabled=!template;}
+          }catch(error){if(selected===row.id){feedback.textContent=error.message;
+            if(row.accountKey){row.canReview=false;approve.disabled=reject.disabled=true;}}}
+          finally{reviewing=false;approve.disabled=row.canReview!==true;reject.disabled=!template||row.canReview!==true;}
         }
         const approve=button('通过，加入邀约',actions,()=>review('approve'));approve.className='hr-primary';
-        const reject=button('不通过，自动婉拒',actions,()=>review('reject'));reject.disabled=!template;
+        const reject=button('不通过，自动婉拒',actions,()=>review('reject'));reject.disabled=!template||!canReview;
+        approve.disabled=!canReview;
       }else{
         el('p',`审批人：${row.reviewedBy||'—'} · ${row.reviewedAt?new Date(row.reviewedAt).toLocaleString():''}`,sidebar,'hr-hint');
         if(row.rejection){
@@ -421,7 +464,7 @@
         },10000);
       }
     },leave(){active='';++generation;clearTimeout(timer);clearInterval(poolTimer);poolActivity.textContent='';detail.close();speechDialog.close();clearPreview();},
-      reset(){this.leave();items=[];selected=null;editing=null;page=1;filter='pending';speechFilter='passive_reply';jobFilter='';originFilter='';
+      reset(){this.leave();jobSyncs.clear();items=[];selected=null;editing=null;page=1;filter='pending';speechFilter='passive_reply';jobFilter='';originFilter='';
         for(const tab of originButtons)tab.control.setAttribute('aria-pressed',String(tab.value===''));
         jobOptions=[];jobSignature='';renderJobTabs();poolSnapshot='';logOpen=false;speechRows.replaceChildren();resumeRows.replaceChildren();detailBody.replaceChildren();content.value=name.value='';speechError.textContent='';}};
   };

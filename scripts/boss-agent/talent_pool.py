@@ -59,7 +59,10 @@ def database():
 
 def context(user):
     checked = identity(user)
-    return checked["organizationCode"], str(checked.get("id") or checked.get("userId") or checked["username"])
+    actor = str(checked.get("id") or checked.get("userId") or checked["username"])
+    legacy = checked["organizationCode"] == "heyi" and checked["username"] == "13800000000" and "ADMIN" in (checked["roles"] or [])
+    owner = checked["organizationCode"] if legacy else f'{checked["organizationCode"]}:user:{actor}'
+    return owner, actor
 
 
 def text(value, limit):

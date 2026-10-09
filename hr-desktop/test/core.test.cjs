@@ -6,6 +6,32 @@ const os=require('node:os');
 const {Recruiter,restriction,ORIGIN}=require('../src/core.cjs');
 const {LocalBridge}=require('../src/bridge.cjs');
 const user={username:'13800000000',id:'fixture',organizationCode:'heyi',roles:['ADMIN'],platformAdmin:true};
+test('HR permission authorizes a private desktop owner without allowing another user to reuse it',async t=>{
+  const {engine}=await fixture(t);
+  const hr={username:'15800000001',userId:'hr-a',organizationCode:'heyi',roles:['HR_DEPARTMENT'],
+    platformAdmin:false,permissions:['hr:access']};
+  engine.authorize=async()=>hr;
+  const owner=await engine.checkOwner();assert.match(owner,/^[a-f0-9]{64}$/);
+  engine.authorize=async()=>({...hr,userId:'hr-b'});
+  await assert.rejects(engine.checkOwner(),/另一位用户/);
+  engine.authorize=async()=>({...hr,permissions:[]});
+  await assert.rejects(engine.checkOwner(),/人力资源权限/);
+});
+test('official job availability is synchronized before cloud commands and reused within one minute',async t=>{
+  const {engine,directory}=await fixture(t),sent=[];
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
+  let reads=0;
+  engine.runtime.run=async input=>{
+    if(input.operation==='job-statuses'){reads++;return {ok:true,data:{statuses:{job1:'开放中',job2:'已关闭'},retryAt:Date.now()/1000+200}};}
+    return {ok:true,data:{}};
+  };
+  engine.passiveCloud=async(route,body)=>{sent.push({route,body});return route==='passive-config'?{commands:[]} :{};};
+  await engine.poll();await engine.poll();
+  assert.equal(reads,1);
+  assert.deepEqual(sent[0].body.jobStatuses,{job1:'开放中',job2:'已关闭'});
+  assert.ok(sent[0].body.validFor>0&&sent[0].body.validFor<=200);
+  assert.ok(sent.findIndex(x=>x.route==='passive-config')>0);
+});
 test('a greeting receipt is reported and bound in the same poll before the next timer turn',async t=>{
   const {engine,calls,directory}=await fixture(t);
   engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;

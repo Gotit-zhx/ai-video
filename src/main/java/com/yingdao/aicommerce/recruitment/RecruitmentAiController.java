@@ -126,10 +126,7 @@ public class RecruitmentAiController {
     }
 
     private Map<String,Object> demandInput(PlatformPrincipal user, Map<String,Object> body) {
-        if (user == null || !user.isEnabled() || !"heyi".equals(user.organizationCode())
-                || !"13800000000".equals(user.actualUsername()) || !user.roleCodes().contains("ADMIN")) {
-            throw new BusinessException(HttpStatus.FORBIDDEN, "招聘模块仅限指定平台管理员");
-        }
+        requireRecruiter(user);
         Map<String,Object> clean = new LinkedHashMap<>();
         for (String field : FIELDS) {
             Object value=body.getOrDefault(field, "");
@@ -153,9 +150,7 @@ public class RecruitmentAiController {
 
     @PostMapping("/resume-match")
     public Object resumeMatch(@AuthenticationPrincipal PlatformPrincipal user, @RequestBody Map<String,Object> body) {
-        if (user == null || !user.isEnabled() || !"heyi".equals(user.organizationCode())
-                || !"13800000000".equals(user.actualUsername()) || !user.roleCodes().contains("ADMIN"))
-            throw new BusinessException(HttpStatus.FORBIDDEN, "招聘模块仅限指定平台管理员");
+        requireRecruiter(user);
         Map<String,Object> clean=new LinkedHashMap<>();
         for(String field:List.of("resumeText","jobName","jobDescription","education","experience")) {
             Object value=body.getOrDefault(field,"");
@@ -288,9 +283,10 @@ public class RecruitmentAiController {
     }
 
     private static void requireRecruiter(PlatformPrincipal user) {
-        if (user == null || !user.isEnabled() || !"heyi".equals(user.organizationCode())
-                || !"13800000000".equals(user.actualUsername()) || !user.roleCodes().contains("ADMIN"))
-            throw new BusinessException(HttpStatus.FORBIDDEN,"招聘模块仅限指定平台管理员");
+        boolean legacy = user != null && "heyi".equals(user.organizationCode())
+                && "13800000000".equals(user.actualUsername()) && user.roleCodes().contains("ADMIN");
+        if (user == null || !user.isEnabled() || !(legacy || user.permissionCodes().contains("hr:access")))
+            throw new BusinessException(HttpStatus.FORBIDDEN,"账号未开通人力资源权限");
     }
 
     private static String bounded(Object value,int limit) {

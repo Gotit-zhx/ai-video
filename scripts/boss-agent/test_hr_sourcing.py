@@ -532,6 +532,8 @@ class SourcingTest(unittest.TestCase):
         self.assertEqual(active['items'][0]['origin'], 'active')
         self.assertEqual(passive.listing(USER, 'resume-pool', {'origin': 'passive'})['total'], 0)
         self.assertEqual(passive.listing(USER, 'resume-pool', {'jobId': 'other', 'origin': 'active'})['total'], 0)
+        passive.sync_jobs(USER, {'accountKey': KEY, 'snapshot': {'source':'job-management','hasMore':False,
+            'jobs':[{'encryptJobId':'job1','jobStatus':2,'jobAuditStatus':1,'statusDesc':'开放中'}]}})
         approved = passive.review(USER, {'id': result['id'], 'action': 'approve', 'version': active['items'][0]['version']})
         talent = pool.listing(USER, {})['items'][0]
         self.assertEqual(talent['stage'], 'invited'); self.assertEqual(talent['source'], 'active')

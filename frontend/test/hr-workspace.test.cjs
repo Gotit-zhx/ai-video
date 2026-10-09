@@ -30,6 +30,13 @@ class Node {
   reportValidity(){return true;}
 }
 const all = node => [node,...node.children.flatMap(all)];
+test('HR access comes from the granted permission rather than a role label or administrator-only phone',()=>{
+  const app=setup();
+  app.env.currentUser={userId:'hr-a',username:'15800000001',platformAdmin:false,roles:['HR_DEPARTMENT'],permissions:['hr:access']};
+  assert.equal(app.env.HrWorkspace.allowed(),true);
+  app.env.currentUser.permissions=[];
+  assert.equal(app.env.HrWorkspace.allowed(),false);
+});
 function setup(overrides={}) {
   const root=new Node(),calls=[],timers=new Map();
   root._connected=true;
@@ -586,7 +593,7 @@ test('resume categories are explicit, history is collapsed, and review embeds th
   assert.ok(all(app.root).some(n=>n.className==='hr-review-preview'));
 });
 test('resume rejection uses the managed default directly without a speech selector or an extra confirmation',async()=>{
-  const row={id:'resume1',version:2,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle',resumeText:'原简历文字'};
+  const row={id:'resume1',version:2,name:'测试人才',jobName:'算法工程师',canReview:true,status:'pending',aiState:'idle',resumeText:'原简历文字'};
   const speech={id:'reject1',version:3,name:'婉拒话术',content:'{姓名}，感谢关注{职位}。',kind:'reject',active:true,isDefault:true};
   const app=setup({passive:true,api:async(url,options)=>({data:
     url.endsWith('/login/status')?{state:'complete'}:
@@ -607,7 +614,7 @@ test('resume rejection uses the managed default directly without a speech select
   assert.ok(app.calls.every(c=>!c.url.includes('/speeches/save')&&!c.url.includes('/analyze')));
 });
 test('resume approval automatically attributes the job department without a manual selector',async()=>{
-  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle'};
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',canReview:true,status:'pending',aiState:'idle'};
   const app=setup({passive:true,api:async url=>({data:
     url.endsWith('/login/status')?{state:'complete'}:
     url.endsWith('/pool')?{departments:[{id:'dept-one',name:'研发部',status:'ACTIVE'},
@@ -630,7 +637,7 @@ test('resume approval automatically attributes the job department without a manu
   assert.equal(destination.get('q'),'');assert.equal(destination.get('page'),'1');
 });
 test('missing managed default keeps rejection disabled and guides HR to speech management',async()=>{
-  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle'};
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',canReview:true,status:'pending',aiState:'idle'};
   const speech={id:'reject1',version:1,name:'婉拒',kind:'reject',active:true,content:'感谢关注',isDefault:false};
   const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')?{state:'complete'}:
     url.endsWith('/speeches')?{items:[speech,{...speech,id:'inactive',active:false,isDefault:true},
@@ -642,9 +649,24 @@ test('missing managed default keeps rejection disabled and guides HR to speech m
   assert.match(app.text(),/请在话术管理中启用并设置默认婉拒话术/);
   assert.ok(app.calls.every(c=>!c.options?.method||c.options.method!=='POST'));
 });
+test('closed or unconfirmed job keeps its resume viewable but disables both decisions and new AI analysis',async()=>{
+  for(const jobStatus of ['已关闭','待开放','审核中','状态待确认']){
+    const row={id:'r1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle',jobStatus,canReview:false};
+    const app=setup({passive:true,api:async url=>({data:url.endsWith('/login/status')?{state:'complete'}:
+      url.endsWith('/speeches')?{items:[{id:'s1',kind:'reject',active:true,isDefault:true}]}:{items:[row],total:1}})});
+    await app.enter('resume-pool');await app.click('查看与审批');
+    for(const label of ['通过，加入邀约','不通过，自动婉拒','AI 辅助分析']){
+      const control=app.visible().find(n=>n.tagName==='button'&&n._text===label);
+      assert.equal(control.disabled,true);await control.events.click();
+    }
+    assert.match(app.text(),/仅可查看/);
+    assert.equal(app.calls.some(c=>c.options?.method==='POST'),false);
+    assert.ok(app.visible().some(n=>n.className==='hr-review-preview'));
+  }
+});
 test('a late resume approval never returns HR from a different menu',async()=>{
   let finish;
-  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle'};
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',canReview:true,status:'pending',aiState:'idle'};
   const app=setup({passive:true,api:async url=>{
     if(url.endsWith('/resume-pool/review'))return new Promise(resolve=>{finish=resolve;});
     return {data:url.endsWith('/login/status')?{state:'complete'}:url.endsWith('/speeches')?{items:[]}:{items:[row],total:1}};
@@ -659,7 +681,7 @@ test('a late resume approval never returns HR from a different menu',async()=>{
   assert.ok(app.calls.every(c=>!c.url.startsWith('/api/v1/hr/pool?')));
 });
 test('a failed review response remains visible and never claims approval or retries sending',async()=>{
-  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle'};
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',canReview:true,status:'pending',aiState:'idle'};
   const app=setup({passive:true,api:async url=>url.endsWith('/resume-pool/review')
     ?{success:false,message:'默认话术已停用，请重新配置',data:null}:{data:url.endsWith('/login/status')?{state:'complete'}:
       url.endsWith('/speeches')?{items:[{id:'speech1',kind:'reject',active:true,isDefault:true}]}:
@@ -1131,7 +1153,7 @@ test('empty BI shows zero counts and missing rates without inventing a successfu
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
 });
 test('resume analysis uses resolved job JD and reports preflight errors immediately',async()=>{
-  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle',
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',canReview:true,status:'pending',aiState:'idle',
     resumeText:'提取的简历正文'.repeat(10),jobDescription:'对应岗位的职责和任职要求',jobSource:'招聘需求池'};
   const app=setup({passive:true,api:async(url,options)=>{
     if(url.endsWith('/analyze'))throw Error('驱动模型连接失败，请核对配置');

@@ -948,7 +948,8 @@ function showLogin({ message = "" } = {}) {
 }
 
 async function showDashboard(user) {
-  if (currentUser?.organizationId && currentUser.organizationId !== user?.organizationId) {
+  if (currentUser?.organizationId && (currentUser.organizationId !== user?.organizationId
+      || currentUser.userId !== user?.userId)) {
     resetCompanyScopedWorkspaceState();
   }
   currentUser = user;
@@ -993,6 +994,10 @@ async function showDashboard(user) {
     return;
   }
   if (returnToProducts) rememberProductCaptureRoute(false);
+  if (user.permissions?.includes('hr:access') && !user.platformAdmin && globalThis.HrWorkspace?.allowed()) {
+    history.replaceState(null, "", "#hr-overview");
+    switchWorkspace('hr'); globalThis.HrWorkspace.enter('overview'); return;
+  }
   if (hasAnyPermission("video:monitor:view")) {
     switchWorkspace("aiVideoMonitor");
     await loadAiVideoMonitor();
@@ -1091,7 +1096,8 @@ function applyFeatureAccess() {
   document.querySelectorAll("[data-commerce-route]").forEach(link => { link.hidden = !canAccessProductCenter(); });
   document.querySelectorAll("[data-knowledge-route]").forEach(link => { link.hidden = !canAccessKnowledge(); });
   document.querySelectorAll("[data-hr-route]").forEach(link => {
-    link.hidden = !(currentUser?.platformAdmin === true && currentUser?.username === "13800000000");
+    link.hidden = !((currentUser?.platformAdmin === true && currentUser?.username === "13800000000")
+      || currentUser?.permissions?.includes('hr:access') === true);
   });
   document.querySelectorAll(".nav-group").forEach(group => {
     group.hidden = ![...group.querySelectorAll(".nav-item")].some(link => !link.hidden);
