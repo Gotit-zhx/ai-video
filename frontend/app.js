@@ -1061,6 +1061,7 @@ function productPermissionLabel() {
   if (access.publish) abilities.push("发布");
   if (abilities.length) return `商品权限 · 可${abilities.join("、")}`;
   if (access.view) return "商品权限 · 仅查看";
+  if (currentUser?.permissions?.includes("hr:access")) return "人力资源 · 全部功能";
   return "未授予商品权限";
 }
 
