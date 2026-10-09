@@ -4,6 +4,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -102,6 +103,82 @@ class TalentPoolTest(unittest.TestCase):
         self.assertEqual((len(first["items"]), len(last["items"]), last["page"]), (20, 5, 2))
         self.assertFalse({r["id"] for r in first["items"]} & {r["id"] for r in last["items"]})
 
+    def review_body(self, talent, outcome="passed", round="first"):
+        return {"talentId":talent["id"],"version":talent["version"],"round":round,
+                "outcome":outcome,"opinion":"具备项目经验，沟通清晰。","requestId":str(uuid.uuid4())}
+
+    def test_first_approval_advances_atomically_and_keeps_first_round_history(self):
+        group=pool.save_project(USER,{"name":"研发"})
+        talent=pool.save(USER,{"name":"王同学","stage":"first","projectId":group["id"]})
+        result=pool.review_interview(USER,self.review_body(talent))
+        self.assertEqual(result["stage"],"second")
+        self.assertEqual(result["version"],2)
+        self.assertEqual(result["interviewReviews"]["first"]["outcome"],"passed")
+        history=pool.listing(USER,{"stage":"first","outcome":"passed","project":group["id"],"q":"王"})
+        self.assertEqual([item["id"] for item in history["items"]],[talent["id"]])
+        self.assertEqual(history["counts"]["all"],1)
+        self.assertEqual(history["counts"]["first"],1)
+        self.assertEqual(history["counts"]["second"],1)
+        self.assertEqual(history["outcomeCounts"],{"all":1,"pending":0,"passed":1,"failed":0})
+        self.assertEqual(pool.listing(USER,{"stage":"second","outcome":"pending"})["total"],1)
+        with pool.database() as db:
+            audit=db.execute("SELECT before_json,after_json FROM talent_events WHERE action='interview.review'").fetchone()
+        self.assertEqual(json.loads(audit["before_json"])["interviewReviews"],{})
+        self.assertEqual(json.loads(audit["after_json"])["stage"],"second")
+
+    def test_first_rejection_stays_in_first_and_second_decisions_do_not_automatically_hire(self):
+        first=pool.save(USER,{"name":"一面候选人","stage":"first"})
+        rejected=pool.review_interview(USER,self.review_body(first,"failed"))
+        self.assertEqual(rejected["stage"],"first")
+        self.assertEqual(pool.listing(USER,{"stage":"first","outcome":"failed"})["total"],1)
+        self.assertEqual(pool.listing(USER,{"stage":"second"})["total"],0)
+        for decision in ("passed","failed"):
+            second=pool.save(USER,{"name":decision,"stage":"second"})
+            result=pool.review_interview(USER,self.review_body(second,decision,"second"))
+            self.assertEqual(result["stage"],"second")
+            self.assertEqual(pool.listing(USER,{"stage":"second","outcome":decision})["total"],1)
+        self.assertEqual(pool.listing(USER,{"stage":"hired"})["total"],0)
+
+    def test_review_duplicate_response_loss_and_stale_edit_do_not_overwrite_a_decision(self):
+        talent=pool.save(USER,{"name":"候选人","stage":"first"})
+        body=self.review_body(talent)
+        result=pool.review_interview(USER,body)
+        self.assertEqual(pool.review_interview(USER,body),result)
+        for changes in ({"requestId":str(uuid.uuid4())},{"outcome":"failed"},{"opinion":"修改意见"}):
+            with self.assertRaises(pool.Conflict):pool.review_interview(USER,body|changes)
+        with pool.database() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM hr_interview_reviews").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM talent_events WHERE action='interview.review'").fetchone()[0],1)
+        changed=pool.save(USER,{**result,"company":"新公司"})
+        self.assertEqual(changed["interviewReviews"],result["interviewReviews"])
+        self.assertEqual(pool.listing(USER,{})["items"][0]["interviewReviews"],result["interviewReviews"])
+        with self.assertRaises(pool.Conflict):
+            pool.review_interview(USER,self.review_body(result,"passed","second"))
+
+    def test_review_rejects_empty_opinion_wrong_round_and_cross_organization(self):
+        talent=pool.save(USER,{"name":"候选人","stage":"first"})
+        body=self.review_body(talent)
+        for changes in ({"opinion":"   "},{"opinion":"a"*5001},{"round":"invited"},{"outcome":"other"},
+                        {"requestId":"bad"},{"talentId":"missing"}):
+            with self.assertRaises(ValueError):pool.review_interview(USER,body|changes)
+        with self.assertRaises(pool.Conflict):pool.review_interview(USER,body|{"round":"second"})
+        with self.assertRaises(ValueError):
+            pool.review_interview(USER|{"organizationCode":"other"},body)
+        with self.assertRaises(ValueError):pool.listing(USER,{"stage":"all","outcome":"passed"})
+        self.assertEqual(pool.listing(USER,{"stage":"first","outcome":"pending"})["total"],1)
+
+    def test_passed_first_round_history_preserves_pagination(self):
+        for number in range(21):
+            talent=pool.save(USER,{"name":f"通过候选人{number}","stage":"first"})
+            pool.review_interview(USER,self.review_body(talent))
+        pending=pool.save(USER,{"name":"待面试","stage":"first"})
+        one=pool.listing(USER,{"stage":"first","outcome":"passed"})
+        two=pool.listing(USER,{"stage":"first","outcome":"passed","page":"2"})
+        self.assertEqual((len(one["items"]),len(two["items"]),two["total"],two["pages"]),(20,1,21,2))
+        self.assertFalse({row["id"] for row in one["items"]}&{row["id"] for row in two["items"]})
+        self.assertEqual(pool.listing(USER,{"stage":"first","outcome":"pending"})["items"][0]["id"],pending["id"])
+        self.assertEqual(pool.listing(USER,{})["total"],22)
+
     def test_http_works_without_desktop_and_never_executes_boss(self):
         class Handler(connector.HttpHandler):
             def authorized(self):
@@ -139,6 +216,9 @@ class TalentPoolTest(unittest.TestCase):
             self.assertEqual(request("/dingtalk/recipient", {}, origin="https://evil.example")[0], 403)
             self.assertEqual(request("/dingtalk")[1]["data"]["config"]["verified"], False)
             self.assertEqual(request("/interview/start", {})[0], 400)
+            self.assertEqual(request("/interview/review", {}, cookie=False)[0],401)
+            self.assertEqual(request("/interview/review", {}, origin="https://evil.example")[0],403)
+            self.assertEqual(request("/interview/review", {})[0],400)
             self.assertEqual(request("/dingtalk/save", {})[0], 400)
             self.assertEqual(request("/dingtalk/recipient", {})[0], 400)
             self.assertEqual(request(scope="departments",cookie=False)[0],401)

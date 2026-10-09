@@ -680,6 +680,87 @@ test('missing DingTalk configuration explains setup and never queues an intervie
   assert.match(app.text(),/请先配置钉钉企业内部应用/);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
 });
+test('delivered first interview hides setup and send actions and retains the close button',async()=>{
+  const talent={...poolResult().items[0],stage:'first',source:'passive'};
+  const app=setup({api:async url=>({data:url.includes('/pool/interview?')
+    ?{...interviewPreview(talent),stage:'first',handoff:{id:'i1',status:'sent'}}
+    :{...poolResult(),items:[talent]}})});
+  await app.enter('pool');await app.click('一面资料');
+  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-interview-dialog');
+  const buttons=all(dialog).filter(n=>n.tagName==='button'&&!n.hidden);
+  assert.deepEqual(buttons.map(n=>n.textContent),['关闭']);
+  assert.match(dialog.textContent,/已送达负责人/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+test('first opinion requires text and approval advances to second pending with one explicit save',async()=>{
+  let talent={...poolResult().items[0],stage:'first',source:'passive',interviewReviews:{}};
+  const app=setup({api:async(url,options)=>{
+    if(url.endsWith('/interview/review')){
+      const body=JSON.parse(options.body);talent={...talent,stage:'second',version:2,
+        interviewReviews:{first:{outcome:body.outcome,opinion:body.opinion,createdAt:'2026-10-09T00:00:00Z'}}};
+      return {data:talent};
+    }
+    return {data:{...poolResult(),items:[talent],counts:{all:1,first:1,second:1},
+      outcomeCounts:{all:1,pending:1,passed:0,failed:0}}};
+  }});
+  await app.enter('pool');await app.click('一面意见');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
+  const opinion=all(dialog).find(n=>n.tagName==='textarea');
+  assert.equal(all(dialog).find(n=>n._text==='通过').disabled,true);
+  await app.click('通过');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  opinion.value='基础扎实，建议进入二面';opinion.events.input();await app.click('通过');
+  const writes=app.calls.filter(c=>c.options?.method==='POST');
+  assert.equal(writes.length,1);assert.equal(writes[0].url,'/api/v1/hr/pool/interview/review');
+  const body=JSON.parse(writes[0].options.body);
+  assert.equal(body.round,'first');assert.equal(body.outcome,'passed');
+  const selected=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(selected.get('stage'),'second');assert.equal(selected.get('outcome'),'pending');
+  assert.match(app.text(),/二面意见/);assert.equal(opinion.value,'');
+  assert.ok(app.calls.every(c=>!c.url.endsWith('/interview/start')&&!c.url.includes('/pool/messages')));
+});
+test('interview result filter composes with project and completed opinions open without decision buttons',async()=>{
+  const talent={...poolResult().items[0],stage:'second',interviewReviews:{
+    first:{outcome:'passed',opinion:'面试表现良好',createdAt:'2026-10-09T00:00:00Z'}}};
+  const app=setup({api:async()=>({data:{...poolResult(),items:[talent],counts:{all:1,first:1,second:1},
+    outcomeCounts:{all:1,pending:0,passed:1,failed:0}}})});
+  await app.enter('pool');await app.click('一面 1');
+  const project=all(app.root).find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='project-1'));
+  project.value='project-1';await project.events.change();await flush();
+  const select=all(app.root).find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='passed'));
+  assert.ok(select);select.value='passed';await select.events.change();await flush();
+  const params=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(params.get('stage'),'first');assert.equal(params.get('outcome'),'passed');
+  assert.equal(params.get('project'),'project-1');
+  await app.click('一面意见');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
+  const opinion=all(dialog).find(n=>n.tagName==='textarea');
+  assert.equal(opinion.value,'面试表现良好');assert.equal(opinion.readOnly,true);
+  assert.ok(all(dialog).filter(n=>n._text==='通过'||n._text==='不通过').every(n=>n.hidden));
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+test('failed opinion save preserves visible error and logout drops a late success',async()=>{
+  let resolve;
+  const talent={...poolResult().items[0],stage:'first'};
+  const app=setup({api:async url=>url.endsWith('/interview/review')?new Promise(r=>resolve=r)
+    :{data:{...poolResult(),items:[talent]}}});
+  await app.enter('pool');await app.click('一面意见');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
+  const opinion=all(dialog).find(n=>n.tagName==='textarea');
+  opinion.value='内部面试意见';opinion.events.input();
+  const pending=app.click('不通过');await flush();app.env.HrWorkspace.reset();
+  resolve({data:{...talent,interviewReviews:{first:{opinion:'内部面试意见',outcome:'failed'}}}});
+  await pending;
+  assert.equal(opinion.value,'');assert.doesNotMatch(dialog.textContent,/内部面试意见|测试人才/);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
+  const failed=setup({api:async url=>url.endsWith('/interview/review')
+    ?{success:false,message:'人才资料已更新，请刷新'}:{data:{...poolResult(),items:[talent]}}});
+  await failed.enter('pool');await failed.click('一面意见');
+  const failedDialog=all(failed.root).find(n=>n.className.includes('hr-interview-review-dialog'));
+  const failedOpinion=all(failedDialog).find(n=>n.tagName==='textarea');
+  failedOpinion.value='待复核';failedOpinion.events.input();await failed.click('不通过');
+  assert.match(failed.text(),/人才资料已更新，请刷新/);assert.equal(failedDialog.open,true);
+});
 test('DingTalk setup guides personal employee mapping and does not echo saved secret',async()=>{
   const app=setup({api:async url=>({data:url.endsWith('/dingtalk')
     ?{config:{verified:true,appKey:'ding-test',agentId:'123',hasSecret:true,version:1},demands:[]}
@@ -751,7 +832,8 @@ test('talent pool uses platform API without pairing and combines independent fil
   const select=app.visible().find(n=>n.tagName==='select'&&n.children.some(v=>v.textContent==='全部项目组'));
   select.value='project-1';await select.events.change();await flush();
   await app.click('一面 1');
-  assert.match(app.calls.at(-1).url,/stage=first&project=project-1/);
+  const selected=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(selected.get('stage'),'first');assert.equal(selected.get('project'),'project-1');
   assert.equal(app.timers.size,0);
 });
 test('talent pool drops late responses after logout and clears personal data',async()=>{

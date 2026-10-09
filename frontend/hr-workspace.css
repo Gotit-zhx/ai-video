@@ -332,6 +332,10 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-dingtalk-dialog form{margin-top:24px}
 .hr-dingtalk-recipient{border-top:1px solid var(--hr-border);padding-top:20px}
 .hr-interview-dialog>.hr-pool-fields{margin-top:20px}
+.hr-pool-outcomes{display:flex;align-items:center;margin:-4px 0 20px}
+.hr-pool-outcomes[hidden]{display:none}
+.hr-pool-outcomes>.hr-field{width:min(100%,260px)}
+.hr-interview-review-dialog>.hr-field{margin-top:20px}
 .hr-interview-summary{padding:14px 16px;border:1px solid var(--hr-border);border-radius:10px;font-size:13px;line-height:1.8}
 .hr-interview-summary:empty{display:none}
 .hr-interview-progress{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:24px 0 12px}

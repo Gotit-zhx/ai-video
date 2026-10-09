@@ -39,6 +39,13 @@ def database():
             id INTEGER PRIMARY KEY, owner TEXT NOT NULL, actor TEXT NOT NULL,
             record_id TEXT NOT NULL, action TEXT NOT NULL, before_json TEXT,
             after_json TEXT NOT NULL, created_at TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS hr_interview_reviews (
+            owner TEXT NOT NULL,talent_id TEXT NOT NULL,round TEXT NOT NULL,
+            outcome TEXT NOT NULL,opinion TEXT NOT NULL,request_id TEXT NOT NULL,
+            actor TEXT NOT NULL,created_at TEXT NOT NULL,
+            PRIMARY KEY(owner,talent_id,round));
+          CREATE INDEX IF NOT EXISTS interview_review_filter
+            ON hr_interview_reviews(owner,round,outcome,talent_id);
         """)
         DB.chmod(0o600)
         db.execute("BEGIN IMMEDIATE")
@@ -61,10 +68,15 @@ def text(value, limit):
     return value.strip()
 
 
-def view(row):
+def view(row, db=None):
+    reviews = {} if db is None else {
+        review["round"]: {"outcome": review["outcome"], "opinion": review["opinion"],
+                          "createdAt": review["created_at"]}
+        for review in db.execute("SELECT * FROM hr_interview_reviews WHERE owner=? AND talent_id=?",
+                                 (row["owner"], row["id"]))}
     return {**json.loads(row["body"]), "id": row["id"], "projectId": row["project"],
             "stage": row["stage"], "version": row["version"],
-            "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"], "interviewReviews": reviews}
 
 
 def event(db, owner, actor, record, action, before, after):
@@ -77,9 +89,12 @@ def listing(user, query):
     owner, _ = context(user)
     project = text(query.get("project", ""), 100)
     stage = text(query.get("stage", "all"), 20)
+    outcome = text(query.get("outcome", "all"), 20)
     q = text(query.get("q", ""), 100)
     if stage not in (*STAGES, "all"):
         raise ValueError("招聘阶段不正确")
+    if outcome not in ("all", "pending", "passed", "failed") or (outcome != "all" and stage not in ("first", "second")):
+        raise ValueError("面试结果筛选不正确")
     try:
         page = max(1, int(query.get("page", "1")))
     except (ValueError, TypeError):
@@ -97,18 +112,85 @@ def listing(user, query):
         counts.update({r["stage"]: r["n"] for r in db.execute(
             "SELECT stage,COUNT(*) n FROM talents WHERE " + clause + " GROUP BY stage", args)})
         counts["all"] = sum(counts.values())
-        if stage != "all":
+        round_clause = """(stage=? OR EXISTS(SELECT 1 FROM hr_interview_reviews r
+            WHERE r.owner=talents.owner AND r.talent_id=talents.id AND r.round=?))"""
+        for interview_round in ("first", "second"):
+            counts[interview_round] = db.execute(
+                "SELECT COUNT(*) FROM talents WHERE " + clause + " AND " + round_clause,
+                [*args, interview_round, interview_round]).fetchone()[0]
+        outcome_counts = {"all": counts[stage], "pending": 0, "passed": 0, "failed": 0}
+        if stage in ("first", "second"):
+            where.append(round_clause)
+            args.extend([stage, stage])
+            scoped = " AND ".join(where)
+            pending_clause = """stage=? AND NOT EXISTS(SELECT 1 FROM hr_interview_reviews r
+                WHERE r.owner=talents.owner AND r.talent_id=talents.id AND r.round=?)"""
+            reviewed_clause = """EXISTS(SELECT 1 FROM hr_interview_reviews r
+                WHERE r.owner=talents.owner AND r.talent_id=talents.id AND r.round=? AND r.outcome=?)"""
+            outcome_counts["pending"] = db.execute("SELECT COUNT(*) FROM talents WHERE " + scoped +
+                " AND " + pending_clause, [*args, stage, stage]).fetchone()[0]
+            for value in ("passed", "failed"):
+                outcome_counts[value] = db.execute("SELECT COUNT(*) FROM talents WHERE " + scoped +
+                    " AND " + reviewed_clause, [*args, stage, value]).fetchone()[0]
+            if outcome == "pending":
+                where.append(pending_clause); args.extend([stage, stage])
+            elif outcome != "all":
+                where.append(reviewed_clause); args.extend([stage, outcome])
+        elif stage != "all":
             where.append("stage=?")
             args.append(stage)
-        total = counts[stage]
+        total = outcome_counts[outcome]
         pages = max(1, (total + 19) // 20)
         page = min(page, pages)
         rows = db.execute("SELECT * FROM talents WHERE " + " AND ".join(where)
                           + " ORDER BY updated_at DESC,id LIMIT 20 OFFSET ?", [*args, (page-1)*20])
-        items = [view(row) for row in rows]
+        items = [view(row, db) for row in rows]
         projects = [dict(row) for row in db.execute(
             "SELECT id,name,version FROM projects WHERE owner=? ORDER BY name,id", (owner,))]
-    return {"items": items, "projects": projects, "counts": counts, "total": total, "page": page, "pages": pages}
+    return {"items": items, "projects": projects, "counts": counts, "outcomeCounts": outcome_counts,
+            "total": total, "page": page, "pages": pages}
+
+
+def review_interview(user, body):
+    """Record an HR decision once. First-round approval advances to round two."""
+    owner, actor = context(user)
+    if not isinstance(body, dict):
+        raise ValueError("面试意见格式不正确")
+    record = text(body.get("talentId", ""), 100)
+    interview_round = text(body.get("round", ""), 20)
+    outcome = text(body.get("outcome", ""), 20)
+    opinion = text(body.get("opinion", ""), 5000)
+    if interview_round not in ("first", "second") or outcome not in ("passed", "failed"):
+        raise ValueError("请选择有效的面试轮次和结果")
+    if not opinion:
+        raise ValueError("请填写面试意见后选择通过或不通过")
+    try:
+        request_id = str(uuid.UUID(body.get("requestId", "")))
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("操作标识不正确")
+    with database() as db:
+        row = db.execute("SELECT * FROM talents WHERE owner=? AND id=?", (owner, record)).fetchone()
+        if not row:
+            raise ValueError("人才记录不存在")
+        old = db.execute("SELECT * FROM hr_interview_reviews WHERE owner=? AND talent_id=? AND round=?",
+                         (owner, record, interview_round)).fetchone()
+        if old:
+            if old["request_id"] == request_id and old["opinion"] == opinion and old["outcome"] == outcome:
+                return view(row, db)
+            raise Conflict("该轮面试已记录结果，请刷新后查看意见")
+        if row["stage"] != interview_round or row["version"] != body.get("version"):
+            raise Conflict("人才阶段或资料已更新，请刷新后填写对应轮次意见")
+        before = view(row, db)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        next_stage = "second" if interview_round == "first" and outcome == "passed" else interview_round
+        db.execute("INSERT INTO hr_interview_reviews VALUES(?,?,?,?,?,?,?,?)",
+                   (owner, record, interview_round, outcome, opinion, request_id, actor, now))
+        db.execute("UPDATE talents SET stage=?,version=version+1,updated_at=? WHERE owner=? AND id=?",
+                   (next_stage, now, owner, record))
+        result = view(db.execute("SELECT * FROM talents WHERE owner=? AND id=?", (owner, record)).fetchone(), db)
+        event(db, owner, actor, record, "interview.review", before,
+              {"round": interview_round, "outcome": outcome, "opinion": opinion, "stage": next_stage})
+    return result
 
 
 def save_project(user, body):
@@ -166,7 +248,7 @@ def save(user, body):
         if creating and old:
             # A lost HTTP response can be retried without creating another person.
             if json.loads(old["body"]) == clean and old["stage"] == stage and old["project"] == project:
-                return view(old)
+                return view(old, db)
             raise Conflict("该新建请求已经保存，请刷新人才库后编辑已有记录")
         if old and body.get("version") != old["version"]:
             raise Conflict("这份人才资料已被更新，请关闭编辑并刷新后再修改")
@@ -186,6 +268,6 @@ def save(user, body):
         else:
             db.execute("INSERT INTO talents VALUES(?,?,?,?,?,?,?,?,?)",
                        (record, owner, project, stage, source_id, payload, version, now, now))
-        result = view(db.execute("SELECT * FROM talents WHERE id=?", (record,)).fetchone())
+        result = view(db.execute("SELECT * FROM talents WHERE id=?", (record,)).fetchone(), db)
         event(db, owner, actor, record, "talent.update" if old else "talent.create", view(old) if old else None, result)
     return result

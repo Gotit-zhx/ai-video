@@ -105,7 +105,33 @@ def api(path, data, token="", content_type="application/json", sending=False):
         code = str(result.get("errcode", ""))
         if sending and not re.fullmatch(r"-?\d{1,10}", code):
             raise UnknownSend("钉钉未返回明确结果，系统不会自动重发")
-        suffix = f"（错误码 {code}）" if re.fullmatch(r"-?\d{1,10}", code) else ""
+        sub_code = str(result.get("sub_code", ""))
+        safe_code = code if re.fullmatch(r"-?\d{1,10}", code) else ""
+        safe_sub = sub_code if re.fullmatch(r"-?\d{1,10}", sub_code) else ""
+        suffix = f"（错误码 {safe_code}{' / ' + safe_sub if safe_sub else ''}）" if safe_code else ""
+        missing_member_read = (code == "88" and sub_code == "60011" and
+                               (path == "topapi/v2/user/get" or "qyapi_get_member" in
+                                str(result.get("sub_msg", "")).split()))
+        print(json.dumps({"event": "dingtalk_api_rejected",
+                          "interface": path if re.fullmatch(r"[A-Za-z0-9/_-]{1,100}", path) else "unknown",
+                          "code": safe_code, "subCode": safe_sub,
+                          "missingPermission": "qyapi_get_member" if missing_member_read else ""},
+                         ensure_ascii=False), flush=True)
+        if code == "88" and sub_code == "60011":
+            # Permission changes may require a new token. Refresh only on the next
+            # explicit action; never retry this request or replay a notification.
+            with TOKEN_LOCK:
+                for digest, cached in list(TOKENS.items()):
+                    if cached[0] == token:
+                        TOKENS.pop(digest)
+            if missing_member_read:
+                raise DingError("读取负责人姓名失败：钉钉应用缺少“成员信息读权限”（qyapi_get_member）。"
+                                "请在钉钉开发者后台“权限管理”开通，将通讯录范围包含负责人，"
+                                "按后台提示发布更新后重新识别" + suffix)
+            if path == "topapi/v2/user/getbymobile":
+                raise DingError("手机号识别失败：钉钉应用缺少“根据手机号获取成员基本信息权限”。"
+                                "请在钉钉开发者后台“权限管理”开通，按后台提示发布更新后重新识别" + suffix)
+            raise DingError("钉钉应用缺少当前接口的调用权限，请在开发者后台“权限管理”完成授权后手动重试" + suffix)
         if path == "topapi/v2/user/getbymobile":
             raise DingError("手机号识别失败，请核对企业在职员工手机号，并开通“根据手机号获取成员基本信息权限”及对应通讯录范围" + suffix)
         raise DingError("钉钉未接受请求，请检查权限、可见范围、UserID 和发送限额" + suffix)

@@ -3,7 +3,7 @@
   const stages = [['all','全部'],['invited','邀约'],['first','一面'],['second','二面'],['hired','已录取']];
   globalThis.createHrPool = ({root, section, element:el, button, allowed, navigate}) => {
     const panel=section('pool');
-    let stage='all',page=1,generation=0,active=false,projects=[],rows=[],editing=null,saving=false;
+    let stage='all',outcome='all',page=1,generation=0,active=false,projects=[],rows=[],editing=null,saving=false;
     let interviewing=null,interviewData=null,interviewRequest='',interviewTimer=null,interviewSending=false,settingsData=null,settingsSaving=false,settingsEpoch=0,interviewEpoch=0;
     const toolbar=el('div','',panel,'hr-pool-toolbar');
     const intro=el('div','',toolbar);
@@ -24,9 +24,15 @@
     projectFilter.addEventListener('change',()=>{page=1;load();});
     const tabs=el('div','',panel,'hr-pool-tabs');tabs.setAttribute('aria-label','招聘阶段');
     const tabButtons=stages.map(([key,label])=>{
-      const b=button(label,tabs,()=>{stage=key;page=1;load();});
+      const b=button(label,tabs,()=>{stage=key;outcome='all';page=1;load();});
       b.dataset.stage=key;return b;
     });
+    const outcomeBar=el('div','',panel,'hr-pool-outcomes');outcomeBar.hidden=true;
+    const outcomeFilter=makeField('面试结果',outcomeBar,'select');
+    const outcomeOptions=[['all','全部结果'],['pending','待填写意见'],['passed','通过'],['failed','未通过']].map(([key,label])=>{
+      const option=el('option',label,outcomeFilter);option.value=key;return {option,key,label};
+    });
+    outcomeFilter.value='all';outcomeFilter.addEventListener('change',()=>{outcome=outcomeFilter.value;page=1;load();});
     const feedback=el('p','',panel,'hr-hint');feedback.setAttribute('role','status');
     const result=el('div','',panel,'hr-result');
     const pager=el('div','',panel,'hr-pagination');
@@ -66,7 +72,7 @@
     projectSelect.addEventListener('change',()=>{projectName.value=projects.find(p=>p.id===projectSelect.value)?.name||'';});
     const interviewDialog=el('dialog','',root,'hr-pool-dialog hr-interview-dialog');
     const interviewTitle=el('h2','开始一面',interviewDialog);
-    el('p','简历、岗位 JD 和面试题库将作为一份 ZIP 资料包发给负责人，可解压查看和打印题库。',interviewDialog,'hr-hint');
+    const interviewIntro=el('p','简历、岗位 JD 和面试题库将作为一份 ZIP 资料包发给负责人，可解压查看和打印题库。',interviewDialog,'hr-hint');
     const interviewFields=el('div','',interviewDialog,'hr-pool-fields');
     const resumeSelect=makeField('候选人简历',interviewFields,'select');
     const demandSelect=makeField('对应招聘需求',interviewFields,'select');
@@ -76,7 +82,7 @@
     const interviewFeedback=el('p','',interviewDialog,'hr-hint');interviewFeedback.setAttribute('role','status');
     const interviewActions=el('div','',interviewDialog,'hr-actions');
     button('关闭',interviewActions,()=>interviewDialog.close());
-    button('钉钉设置',interviewActions,()=>{interviewDialog.close();openSettings();});
+    const interviewSettings=button('钉钉设置',interviewActions,()=>{interviewDialog.close();openSettings();});
     const interviewSend=button('发送一面资料',interviewActions,sendInterview);interviewSend.className='hr-primary';
     interviewDialog.addEventListener('close',()=>{++interviewEpoch;interviewing=null;interviewData=null;clearTimeout(interviewTimer);});
     const states={preparing:'正在准备一面资料包',sending:'正在发送到钉钉',submitted:'钉钉已接受，正在确认送达',
@@ -84,6 +90,10 @@
     const selectedDemand=()=>interviewData?.demands?.find(d=>d.id===demandSelect.value);
     function renderInterview(){
       const data=interviewData,demand=selectedDemand(),handoff=data?.handoff;
+      const delivered=handoff?.status==='sent';
+      interviewSettings.hidden=interviewSend.hidden=delivered;
+      interviewIntro.textContent=delivered?'简历、岗位 JD 和面试题库已作为 ZIP 资料包送达负责人，可解压查看和打印题库。':
+        '简历、岗位 JD 和面试题库将作为一份 ZIP 资料包发给负责人，可解压查看和打印题库。';
       const missing=[];
       if(!data?.config?.verified)missing.push('请先配置钉钉企业内部应用');
       if(!data?.resumes?.length)missing.push('候选人还没有审批通过的简历');
@@ -95,7 +105,7 @@
       }
       interviewSummary.textContent=demand?`${demand.position} · ${demand.department||'部门待补充'} · 负责人：${demand.recipient||'未配置'} · ${demand.questionCount} 道面试题`:'';
       interviewFeedback.textContent=handoff?(states[handoff.status]||'正在核对发送记录')+(handoff.error?'。'+handoff.error:''):missing.join('；');
-      interviewFeedback.className=missing.length||handoff?.status==='failed'?'hr-error':'hr-hint';
+      interviewFeedback.className=(!handoff&&missing.length)||handoff?.status==='failed'?'hr-error':'hr-hint';
       interviewProgress.replaceChildren();
       const phase={preparing:0,sending:1,submitted:2,sent:3}[handoff?.status]??-1;
       ['准备资料','发送钉钉','核对回执','进入一面'].forEach((label,index)=>{
@@ -139,7 +149,7 @@
       interviewing=row;interviewData=null;interviewRequest=crypto.randomUUID();
       interviewTitle.textContent='一面 · '+row.name;interviewFeedback.textContent='正在读取岗位、简历和发送记录…';
       resumeSelect.replaceChildren();demandSelect.replaceChildren();interviewSummary.textContent='';interviewProgress.replaceChildren();
-      interviewSend.disabled=true;interviewDialog.showModal();
+      interviewSend.disabled=true;interviewSettings.hidden=interviewSend.hidden=row.stage!=='invited';interviewDialog.showModal();
       await refreshInterview();
       if(epoch===interviewEpoch&&interviewing?.id===row.id&&autoStart&&renderInterview())await sendInterview();
     }
@@ -229,6 +239,52 @@
     });
     settingsDialog.addEventListener('close',()=>{++settingsEpoch;appSecret.value='';settingsData=null;});
 
+    const reviewDialog=el('dialog','',root,'hr-pool-dialog hr-interview-review-dialog');
+    const reviewHead=el('div','',reviewDialog,'hr-dingtalk-heading');
+    const reviewTitle=el('h2','一面意见',reviewHead);
+    const reviewClose=button('关闭',reviewHead,()=>reviewDialog.close());
+    const reviewIntro=el('p','',reviewDialog,'hr-hint');
+    const reviewOpinion=makeField('面试意见',reviewDialog,'textarea');reviewOpinion.rows=6;reviewOpinion.maxLength=5000;
+    reviewOpinion.placeholder='记录候选人的能力表现、优势、疑虑及判断依据';
+    const reviewFeedback=el('p','',reviewDialog,'hr-hint');reviewFeedback.setAttribute('role','status');
+    const reviewActions=el('div','',reviewDialog,'hr-actions');
+    const reviewReject=button('不通过',reviewActions,()=>saveReview('failed'));
+    const reviewApprove=button('通过',reviewActions,()=>saveReview('passed'));reviewApprove.className='hr-primary';
+    let reviewing=null,reviewRequest='',reviewEpoch=0,reviewSaving=false;
+    function syncReviewActions(){
+      const completed=!!reviewing?.interviewReviews?.[reviewing.round];
+      reviewApprove.hidden=reviewReject.hidden=completed;
+      reviewApprove.disabled=reviewReject.disabled=reviewSaving||!reviewOpinion.value.trim();
+      reviewClose.disabled=reviewSaving;
+    }
+    reviewOpinion.addEventListener('input',syncReviewActions);
+    reviewDialog.addEventListener('close',()=>{++reviewEpoch;reviewing=null;reviewOpinion.value='';reviewFeedback.textContent='';
+      reviewTitle.textContent='面试意见';reviewIntro.textContent='';});
+    reviewDialog.addEventListener('cancel',event=>{if(reviewSaving)event.preventDefault();});
+    function openReview(row,round){
+      if(!allowed()||reviewSaving)return;
+      ++reviewEpoch;reviewing={...row,round};reviewRequest=crypto.randomUUID();
+      const label=round==='first'?'一面':'二面',saved=row.interviewReviews?.[round];
+      reviewTitle.textContent=`${label}意见 · ${row.name}`;
+      reviewIntro.textContent=saved?`${label}结果：${saved.outcome==='passed'?'通过':'未通过'} · ${new Date(saved.createdAt).toLocaleString('zh-CN')}`:
+        round==='first'?'填写一面意见后选择结果，通过后自动进入二面。':'填写二面意见并记录结果，录取阶段可由 HR 在人才资料中设置。';
+      reviewOpinion.value=saved?.opinion||'';reviewOpinion.readOnly=!!saved;reviewFeedback.textContent='';
+      syncReviewActions();reviewDialog.showModal();
+    }
+    async function saveReview(decision){
+      if(reviewSaving||!reviewing||!allowed()||!reviewOpinion.value.trim()||reviewing.interviewReviews?.[reviewing.round])return;
+      const epoch=reviewEpoch,row=reviewing;reviewSaving=true;syncReviewActions();reviewFeedback.textContent='正在保存面试意见…';
+      try{
+        await request('/interview/review',{talentId:row.id,version:row.version,round:row.round,outcome:decision,
+          opinion:reviewOpinion.value.trim(),requestId:reviewRequest});
+        if(epoch!==reviewEpoch||!active||!allowed())return;
+        reviewDialog.close();stage=row.round==='first'&&decision==='passed'?'second':row.round;
+        outcome=row.round==='first'&&decision==='passed'?'pending':decision;page=1;
+        await load();
+      }catch(error){if(epoch===reviewEpoch&&active&&allowed())reviewFeedback.textContent=error.message;}
+      finally{reviewSaving=false;syncReviewActions();}
+    }
+
     async function request(path,body){
       const response=await api('/api/v1/hr/pool'+path,body?{
         method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
@@ -253,10 +309,13 @@
       result.setAttribute('aria-busy','true');feedback.textContent='正在读取人才库…';
       previous.disabled=next.disabled=true;
       tabButtons.forEach((b,i)=>b.setAttribute('aria-pressed',String(stages[i][0]===stage)));
+      outcomeBar.hidden=!['first','second'].includes(stage);outcomeFilter.value=outcome;
       try{
-        const data=await request('?'+new URLSearchParams({stage,project:projectFilter.value,q:query.value.trim(),page:String(page)}));
+        const data=await request('?'+new URLSearchParams({stage,outcome,project:projectFilter.value,q:query.value.trim(),page:String(page)}));
         if(ticket!==generation||!active||!allowed())return;
         projects=data.projects;rows=data.items;page=data.page;syncProjects();
+        outcomeBar.hidden=!['first','second'].includes(stage);outcomeFilter.value=outcome;
+        outcomeOptions.forEach(({option,key,label})=>{option.textContent=`${label}${data.outcomeCounts?' '+(data.outcomeCounts[key]||0):''}`;});
         tabButtons.forEach((b,i)=>{const [key,label]=stages[i];b.textContent=`${label} ${data.counts[key]||0}`;});
         render();
         feedback.textContent=`共 ${data.total} 位人才`;
@@ -295,6 +354,9 @@
         const tags=el('div','',card,'hr-tags');
         el('span',projects.find(p=>p.id===row.projectId)?.name||'未分组',tags,'hr-badge');
         el('span',row.source==='boss'?'BOSS 人才':row.source==='passive'?'简历池审批':'手动录入',tags,'hr-badge');
+        const reviewRound=['first','second'].includes(stage)?stage:['first','second'].includes(row.stage)?row.stage:null;
+        const reviewResult=reviewRound&&row.interviewReviews?.[reviewRound];
+        if(reviewRound)el('span',`${reviewRound==='first'?'一面':'二面'} · ${reviewResult?(reviewResult.outcome==='passed'?'通过':'未通过'):'待填写意见'}`,tags,'hr-badge');
         const facts=el('dl','',card,'hr-facts');
         for(const [label,value] of [['学历',row.education],['工作年限',row.experience],['城市',row.city],['最近公司',row.company]]){
           const item=el('div','',facts);el('dt',label,item);el('dd',value||'未填写',item);
@@ -303,8 +365,10 @@
         const footer=el('div','',card,'hr-actions');
         button('查看 / 编辑',footer,()=>openEditor(row));
         if(canInvite)button('开始一面',footer,()=>openInterview(row,true)).className='hr-primary';
-        if(row.stage==='first')button('一面资料',footer,()=>openInterview(row)).className='hr-primary';
-        el('span',`更新于 ${new Date(row.updatedAt).toLocaleDateString('zh-CN')}`,footer,'hr-hint');
+        if(['first','second'].includes(row.stage)||reviewRound)button('一面资料',footer,()=>openInterview(row));
+        if(reviewRound&&(row.stage===reviewRound||reviewResult)){
+          button(reviewRound==='first'?'一面意见':'二面意见',footer,()=>openReview(row,reviewRound)).className='hr-primary';
+        }
       }
     }
     async function openEditor(row={}){
@@ -331,7 +395,7 @@
       try{
         await request('/talents',body);
         if(ticket!==generation||!allowed())return;
-        dialog.close();stage=body.stage||'all';query.value='';page=1;
+        dialog.close();stage=body.stage||'all';outcome='all';query.value='';page=1;
         projectFilter.value=body.projectId||'';navigate('pool');
       }catch(error){if(ticket===generation){editorError.textContent=error.message;editorError.hidden=false;}}
       finally{saving=false;saveButton.disabled=cancel.disabled=false;saveButton.textContent='保存人才';}
@@ -360,10 +424,10 @@
     dialog.addEventListener('cancel',event=>{if(saving)event.preventDefault();});
     return {
       enter(){active=true;load();},
-      leave(){active=false;++generation;dialog.close();projectDialog.close();interviewDialog.close();settingsDialog.close();clearTimeout(interviewTimer);},
+      leave(){active=false;++generation;dialog.close();projectDialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);},
       add:openEditor,
-      reset(){active=false;++generation;projects=[];rows=[];editing=null;stage='all';page=1;
-        query.value='';projectFilter.value='';dialog.close();projectDialog.close();interviewDialog.close();settingsDialog.close();clearTimeout(interviewTimer);
+      reset(){active=false;++generation;projects=[];rows=[];editing=null;stage='all';outcome='all';page=1;outcomeBar.hidden=true;outcomeFilter.value='all';
+        query.value='';projectFilter.value='';dialog.close();projectDialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);
         interviewing=null;interviewData=null;settingsData=null;appKey.value=agentId.value=appSecret.value='';
         Object.values(inputs).forEach(input=>input.value='');projectName.value='';
         [projectFilter,projectInput,projectSelect].forEach(select=>select.replaceChildren());

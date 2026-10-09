@@ -207,6 +207,37 @@ class DingTalkInterviewTest(unittest.TestCase):
                 dt.token(dt.read_config("heyi"))
         self.assertNotIn("private-provider-value", str(error.exception))
 
+    def test_permission_88_identifies_member_read_without_echoing_upstream_or_replaying(self):
+        result = {"errcode": 88, "errmsg": "private-app-token",
+                  "sub_code": "60011", "sub_msg": "permission qyapi_get_member private-phone-value"}
+        fake = mock.MagicMock()
+        fake.open.return_value.__enter__.return_value.read.return_value = json.dumps(result).encode()
+        dt.TOKENS["current"] = ("synthetic-token", dt.time.time()+7200)
+        dt.TOKENS["other"] = ("other-token", dt.time.time()+7200)
+        with mock.patch.object(dt.urllib.request, "build_opener", return_value=fake), \
+             mock.patch("builtins.print") as output:
+            with self.assertRaisesRegex(dt.DingError, "成员信息读权限") as error:
+                dt.api("topapi/v2/user/get", {"userid": "employee1"}, "synthetic-token")
+        self.assertIn("88 / 60011", str(error.exception))
+        self.assertNotIn("current", dt.TOKENS)
+        self.assertIn("other", dt.TOKENS)
+        self.assertEqual(fake.open.call_count, 1)
+        logs = str(output.call_args_list)
+        self.assertIn("qyapi_get_member", logs)
+        for private in ("private-app-token", "private-phone-value", "synthetic-token", "employee1"):
+            self.assertNotIn(private, str(error.exception)+logs)
+
+    def test_phone_query_permission_is_distinct_and_definite_send_rejection_stays_retryable(self):
+        fake = mock.MagicMock()
+        fake.open.return_value.__enter__.return_value.read.return_value = b'{"errcode":88,"sub_code":"60011"}'
+        with mock.patch.object(dt.urllib.request, "build_opener", return_value=fake), mock.patch("builtins.print"):
+            with self.assertRaisesRegex(dt.DingError, "根据手机号获取成员基本信息权限"):
+                dt.api("topapi/v2/user/getbymobile", {"mobile": "13900000001"}, "synthetic-token")
+            with self.assertRaises(dt.DingError) as error:
+                dt.api("topapi/message/corpconversation/asyncsend_v2", {}, "synthetic-token", sending=True)
+            self.assertNotIsInstance(error.exception, dt.UnknownSend)
+        self.assertEqual(fake.open.call_count, 2, "One upstream call per explicit operation, no retry")
+
     def department(self):
         return hr_departments.save(USER, {"name": "研发", "code": "RD", "manager": "旧经理", "status": "ACTIVE"})
 
