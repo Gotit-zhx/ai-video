@@ -54,3 +54,13 @@ Java：`/opt/heyi/releases/hr-access-java-20261009`。`release-hr-user-access.py
 旧助手 0.1.15 不支持普通 HR 授权，需要覆盖安装新包。发布时校验安装包大小、公开下载响应及 nginx 挂载中的 SHA256，保留之前安装包回滚，不重启服务。
 
 两个公开下载别名已发布 0.1.16，服务器 SHA256、响应大小及服务实例核对通过。用户反馈 Windows 选择“为所有用户安装”后可以正常启动；尚未复现仅当前用户安装时的失败，不把安装范围认定为网卡错误的根因。
+
+## Windows 网页连接诊断
+
+用户随后反馈登录后显示 `Failed to fetch`。源码中手动首次配对仅等待四秒，并把网络 TypeError 原样显示，无法区分平台请求、本机端口和浏览器拒绝权限。首次手动检查改为三十秒；后台检查仍为四秒，保持原有退避和恢复流程。
+
+平台连接失败显示 `PLATFORM_NETWORK_UNAVAILABLE`；本机不可达显示 `LOCAL_CONNECTION_UNAVAILABLE`；超时显示 `LOCAL_CONNECTION_TIMEOUT`。仅当浏览器权限 API 明确返回 denied 才显示 `LOCAL_NETWORK_PERMISSION_DENIED`，不支持权限名不能推断为拒绝。
+
+未配对时也能点击“检查连接”，只读取平台模式和本机 health，不申请凭证、不查询 BOSS、不清理登录、不重放业务请求。仍需用户在实际 Windows 浏览器确认本地网络权限，具体电脑的连接原因以此诊断结果为准。
+
+包含首次权限失败、明确拒绝权限、首次等待、平台不可达、只读诊断和页面入口的 183 项桌面及网页检查通过；安装包源码无需改动。

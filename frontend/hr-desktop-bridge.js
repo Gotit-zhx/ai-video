@@ -23,18 +23,60 @@
     if(!response.ok||result.success===false){const error=Error(result.message||'本机连接未完成');error.status=response.status;error.code=result.code;throw error;}
     return result.data;
   }
+  async function connectionFetch(path,options){
+    try{return await fetch(path,options);}
+    catch(error){
+      if(!(error instanceof TypeError)&&!['TimeoutError','AbortError'].includes(error.name))throw error;
+      const local=path.startsWith(base+'/');
+      let code=local?'LOCAL_CONNECTION_UNAVAILABLE':'PLATFORM_NETWORK_UNAVAILABLE';
+      let text=local
+        ?'网页无法连接本机助手。请确认网页与助手在同一台电脑，并在浏览器的网站设置中允许本地网络访问；仍失败时检查安全软件是否拦截助手。'
+        :'平台请求未完成，请检查本机能否打开本网站后重试。';
+      if(local){
+        for(const name of ['loopback-network','local-network-access']){
+          try{
+            const permission=await globalThis.navigator?.permissions?.query({name});
+            if(permission?.state==='denied'){
+              code='LOCAL_NETWORK_PERMISSION_DENIED';
+              text='浏览器已禁止此网站访问本机助手。请打开地址栏左侧的网站设置，将本地网络访问设为允许，再点击“检查连接”。';
+              break;
+            }
+          }catch{/* Unsupported permission names provide no evidence of denial. */}
+        }
+        if(code!=='LOCAL_NETWORK_PERMISSION_DENIED'&&['TimeoutError','AbortError'].includes(error.name)){
+          code='LOCAL_CONNECTION_TIMEOUT';
+          text='连接本机助手超时。若浏览器弹出本地网络访问提示，请先选择允许，再点击“检查连接”；无需退出 BOSS 登录。';
+        }
+      }
+      throw Object.assign(Error(text+' ['+code+']'),{code});
+    }
+  }
   async function transportMode(){
     if(!mode){
       const ticket=epoch;
-      const result=await data(await fetch('/api/v1/hr/desktop/transport',timeout({credentials:'same-origin',cache:'no-store'},8000)));
+      const result=await data(await connectionFetch('/api/v1/hr/desktop/transport',timeout({credentials:'same-origin',cache:'no-store'},8000)));
       if(ticket!==epoch)throw Error('连接已取消');
       mode=result.mode;
     }
     return mode;
   }
-  async function health(){
-    const value=await data(await fetch(base+'/health',timeout({cache:'no-store',credentials:'omit'},4000)));
+  async function health({interactive=false}={}){
+    const value=await data(await connectionFetch(base+'/health',timeout({cache:'no-store',credentials:'omit'},interactive?30000:4000)));
     if(value.app!=='heyi-recruiter'||value.protocol!==1)throw Error('请安装新版赫逸招聘助手');
+    return value;
+  }
+  async function diagnose(){
+    const ticket=epoch;let stage='platform';
+    try{
+      if(await transportMode()==='embedded')return {ok:true,stage,message:'已连接助手内的平台工作台。'};
+      stage='local';
+      const value=await health({interactive:true});
+      if(ticket!==epoch)return {ok:false,stage,message:'连接检查已取消。'};
+      const version=typeof value.version==='string'&&/^\d+\.\d+\.\d+$/.test(value.version)?value.version:'';
+      return {ok:true,stage,version,message:'网页可以连接本机助手'+(version?'（'+version+'）':'')+'。如尚未绑定，请点击“连接本机助手”。'};
+    }catch(error){
+      return {ok:false,stage,code:error.code,message:error.message};
+    }
   }
   async function connect({automatic=false}={}){
     if(connecting)return connecting;
@@ -43,12 +85,12 @@
       if(await transportMode()==='embedded'){
         await data(await fetch('/api/v1/hr/desktop/connect',timeout({method:'POST',credentials:'same-origin'},20000)));return;
       }
-      await health();
+      await health({interactive:!automatic});
       if(ticket!==epoch)throw Error('连接已取消');
-      const issued=await data(await fetch('/api/v1/hr/desktop/pair',timeout({method:'POST',credentials:'same-origin',
+      const issued=await data(await connectionFetch('/api/v1/hr/desktop/pair',timeout({method:'POST',credentials:'same-origin',
         headers:automatic?{'X-Heyi-Auto-Connect':'1'}:{}},8000)));
       if(ticket!==epoch)throw Error('连接已取消');
-      const paired=await data(await fetch(base+'/pair',timeout({method:'POST',credentials:'omit',
+      const paired=await data(await connectionFetch(base+'/pair',timeout({method:'POST',credentials:'omit',
         headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket:issued.ticket})},25000)));
       if(ticket!==epoch)throw Error('连接已取消');
       saved=paired;persist();reachable=true;repair=false;failures=0;
@@ -80,7 +122,7 @@
         if(!valid()||saved.expiresAt-Date.now()<120000||repair)await connect({automatic:true});
         if(!active||ticket!==epoch)return;
         // This endpoint returns cached local state. It does not inspect or call BOSS.
-        const response=await fetch(base+'/api/v1/hr/login/status',timeout({credentials:'omit',cache:'no-store',
+        const response=await connectionFetch(base+'/api/v1/hr/login/status',timeout({credentials:'omit',cache:'no-store',
           headers:{Authorization:'Bearer '+saved.token}},12000));
         if(response.status===428||response.status===409)repair=true;
         const state=await data(response);
@@ -165,6 +207,6 @@
       saved=value.value;persist();reachable=true;repair=false;schedule(0);
     }
   };
-  window.HeyiHrTransport={connect,request,api,disconnect,startAutoConnect,stopAutoConnect,
+  window.HeyiHrTransport={connect,diagnose,request,api,disconnect,startAutoConnect,stopAutoConnect,
     subscribe(listener){listeners.add(listener);return ()=>listeners.delete(listener);},connection:snapshot,reset};
 })();

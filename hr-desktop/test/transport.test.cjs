@@ -29,6 +29,60 @@ test('unpaired online workspace never falls back to server HR execution',async()
   await assert.rejects(transport.api('/api/v1/hr/jobs'),/连接本机助手/);
   assert.deepEqual(calls.map(x=>x.url),['/api/v1/hr/desktop/transport']);
 });
+test('first local permission failure explains the connection without exposing raw fetch errors or issuing a ticket',async()=>{
+  const {transport,env,calls}=fixture();
+  const original=env.fetch;
+  env.fetch=async(url,options)=>{
+    if(url.endsWith('/health'))throw new TypeError('Failed to fetch');
+    return original(url,options);
+  };
+  await assert.rejects(transport.connect(),error=>{
+    assert.equal(error.code,'LOCAL_CONNECTION_UNAVAILABLE');
+    assert.match(error.message,/同一台电脑.*本地网络/);
+    assert.doesNotMatch(error.message,/Failed to fetch/);
+    return true;
+  });
+  assert.ok(!calls.some(call=>call.url.endsWith('/pair')||call.url.includes('/login/')));
+});
+test('denied loopback permission is distinct from an unavailable assistant; unsupported names do not imply denial',async()=>{
+  const {transport,env}=fixture();const original=env.fetch;
+  env.navigator={permissions:{query:async({name})=>{
+    if(name==='loopback-network')throw new TypeError('Unsupported name');
+    return {state:'denied'};
+  }}};
+  env.fetch=async(url,options)=>{
+    if(url.endsWith('/health'))throw new TypeError('Failed to fetch');
+    return original(url,options);
+  };
+  const result=await transport.diagnose();
+  assert.equal(result.ok,false);assert.equal(result.stage,'local');
+  assert.equal(result.code,'LOCAL_NETWORK_PERMISSION_DENIED');
+  assert.match(result.message,/浏览器已禁止.*网站设置/);
+});
+test('manual first health check allows time for the permission prompt; background checks remain bounded',async()=>{
+  const {transport,env,calls,tick}=fixture();
+  env.AbortSignal={timeout:ms=>({deadline:ms})};
+  await transport.connect();
+  assert.equal(calls.find(call=>call.url.endsWith('/health')).options.signal.deadline,30000);
+  calls.length=0;transport.startAutoConnect();await tick();
+  assert.equal(calls.find(call=>call.url.endsWith('/health')).options.signal.deadline,4000);
+});
+test('connection diagnosis only reads platform mode and local health, never pairs, logs out or requests BOSS data',async()=>{
+  const {transport,calls}=fixture();
+  const result=await transport.diagnose();
+  assert.equal(result.ok,true);
+  assert.deepEqual(calls.map(call=>call.url),['/api/v1/hr/desktop/transport','http://127.0.0.1:17861/health']);
+  assert.ok(calls.every(call=>!call.options.method||call.options.method==='GET'));
+  assert.equal(transport.connection().paired,false);
+});
+test('platform network failure is not reported as a local network permission denial',async()=>{
+  const {transport,env}=fixture();
+  env.fetch=async()=>{throw new TypeError('Failed to fetch');};
+  const result=await transport.diagnose();
+  assert.equal(result.ok,false);assert.equal(result.stage,'platform');
+  assert.equal(result.code,'PLATFORM_NETWORK_UNAVAILABLE');
+  assert.match(result.message,/平台请求未完成/);
+});
 test('automatic checks pair once then read only local cached login state',async()=>{
   const {transport,calls,tick,timers}=fixture();
   transport.startAutoConnect();await tick();await tick();

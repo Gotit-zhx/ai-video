@@ -102,7 +102,7 @@
   const loginMessage=element('p','打开赫逸桌面悬浮球，再连接本机助手。BOSS 登录在助手内完成。',connectionBody,'hr-connect-description');
   const loginActions=element('div','',connectionBody,'hr-actions');
   const loginButton=button('连接本机助手',loginActions,primaryConnectionAction);loginButton.className='hr-primary';
-  const checkButton=button('检查连接',loginActions,()=>checkLogin());
+  const checkButton=button('检查连接',loginActions,()=>checkConnection());
   const logoutButton=button('退出 BOSS 登录',loginActions,logoutBoss);logoutButton.className='hr-text-button';logoutButton.hidden=true;
   const status=element('div','',connectionBody,'hr-result hr-status-result');
   status.setAttribute('role','status');
@@ -152,7 +152,7 @@
     connectionBadge.textContent=!helperConnected?'助手未连接':ready?'招聘账号已连接':pending?'正在连接 BOSS':'助手已连接';
     connectionBadge.dataset.connected=String(ready);
     connectionArt.classList.toggle('is-connected',ready);
-    checkButton.hidden=!helperConnected;checkButton.disabled=loginActionInFlight;
+    checkButton.hidden=false;checkButton.disabled=loginActionInFlight;
     logoutButton.hidden=!helperConnected||connectionState==='disconnected'||connectionState==='idle';
     logoutButton.disabled=loginActionInFlight;
     loginButton.disabled=loginActionInFlight||pending;
@@ -187,6 +187,24 @@
     finally{if(generation===loginGeneration){loginActionInFlight=false;paintConnection(lastLoginState);}}
   }
   let lastLoginState={state:'idle'};
+  async function checkConnection(){
+    if(helperConnected){await checkLogin();return;}
+    if(!allowed()||loginActionInFlight)return;
+    loginActionInFlight=true;const generation=++loginGeneration;
+    status.replaceChildren();element('p','正在检查平台与本机助手连接…',status,'hr-hint');
+    paintConnection(lastLoginState);
+    try{
+      if(!globalThis.HeyiHrTransport?.diagnose)throw Error('请刷新页面后检查连接。');
+      const result=await globalThis.HeyiHrTransport.diagnose();
+      if(generation!==loginGeneration||!allowed()||current!=='overview')return;
+      status.replaceChildren();status.dataset.connectionError=String(!result.ok);
+      element('p',result.message,status,result.ok?'hr-hint':'hr-error');
+    }catch(error){
+      if(generation===loginGeneration&&allowed()&&current==='overview'){
+        status.replaceChildren();status.dataset.connectionError='true';element('p',error.message,status,'hr-error');
+      }
+    }finally{if(generation===loginGeneration){loginActionInFlight=false;paintConnection(lastLoginState);}}
+  }
   globalThis.HeyiHrTransport?.subscribe?.(connection=>{
     if(!allowed()||loginActionInFlight)return;
     helperConnected=connection.paired;

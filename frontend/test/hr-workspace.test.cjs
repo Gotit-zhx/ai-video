@@ -37,6 +37,18 @@ test('HR access comes from the granted permission rather than a role label or ad
   app.env.currentUser.permissions=[];
   assert.equal(app.env.HrWorkspace.allowed(),false);
 });
+test('an unpaired HR user can inspect the local connection without restarting BOSS login or clearing it',async()=>{
+  let reads=0;
+  const app=setup({transport:{
+    connection:()=>({paired:false}),
+    diagnose:async()=>{reads++;return {ok:false,message:'浏览器已禁止本地网络访问，请在网站设置中允许。'};},
+  }});
+  await app.enter('overview');
+  await app.click('检查连接');
+  assert.equal(reads,1);
+  assert.match(app.text(),/浏览器已禁止本地网络访问/);
+  assert.equal(app.calls.length,0);
+});
 function setup(overrides={}) {
   const root=new Node(),calls=[],timers=new Map();
   root._connected=true;
