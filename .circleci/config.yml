@@ -17,7 +17,23 @@ jobs:
       - checkout
       - run:
           name: Native Windows packaging and offline verification
-          command: powershell.exe -ExecutionPolicy Bypass -File scripts/ci/windows-desktop.ps1
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $scriptPath = Join-Path $PWD 'scripts\ci\windows-desktop.ps1'
+            $job = Start-Job -ScriptBlock { param($path) & $path } -ArgumentList $scriptPath
+            $deadline = (Get-Date).AddMinutes(35)
+            try {
+              while ($job.State -in @('NotStarted', 'Running')) {
+                Receive-Job $job -ErrorAction Stop
+                if ((Get-Date) -gt $deadline) { throw 'Backup build exceeded 35 minutes' }
+                Wait-Job $job -Timeout 1 | Out-Null
+              }
+              Receive-Job $job -ErrorAction Stop
+              if ($job.State -ne 'Completed') { throw "Backup build failed: $($job.State)" }
+            } finally {
+              if ($job.State -in @('NotStarted', 'Running')) { Stop-Job $job }
+              Remove-Job $job -Force
+            }
           no_output_timeout: 15m
       - store_artifacts:
           path: hr-desktop/release

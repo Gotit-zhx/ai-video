@@ -16,6 +16,6 @@ GitHub Actions 仍是主构建环境。额度、排队或平台故障导致 Wind
 4. 推送要构建的源码后，执行 `python3 scripts/ci/trigger-backup.py --branch codex/test-current-20260831`，或在 CircleCI 手动运行 pipeline，设置 `desktop_build=true`。
 5. 查看 pipeline 的 `installers`、`verification` 产物。下载后校验 `verified-Windows.json` 的源码提交、SHA256 和大小，再按现有双平台协调发布流程上线。
 
-触发只发一次请求；超时或响应丢失时先在控制台检查，不自动重复启动虚拟机。免费额度不足时停止并提示，不自动升级付费计划。
+触发只发一次请求；超时或响应丢失时先在控制台检查，不自动重复启动虚拟机。单次打包限制 35 分钟，连续 15 分钟没有输出则停止。免费额度不足时停止并提示，不自动升级付费计划。
 
-当前状态：配置与触发程序已准备；接入需要账号登录及仓库授权。备用 Windows 流程尚未在 CircleCI 实际运行，不能当作已经启用的自动切换。本批 0.1.15 Windows 安装包已由 GitHub 原生环境成功构建和自检，不依赖备用接入。
+当前状态：配置通过 CircleCI 官方 CLI 校验，6 项触发与产物验证检查通过；接入需要账号登录及仓库授权。备用 Windows 流程尚未在 CircleCI 实际运行，不能当作已经启用的自动切换。本批 0.1.15 Windows 安装包已由 GitHub 原生环境成功构建和自检，不依赖备用接入。
