@@ -28,6 +28,7 @@
   globalThis.HeyiHrJobJD={jobRows,jobDetail};
   globalThis.createHrDemands=({root,section,element:el,button,allowed,hrApi})=>{
     const panel=section('demands');
+    panel.className+=' hr-demands-panel';
     let active=false,generation=0,page=1,status='all',editing=null,saving=false,timer=null,pollBusy=false,pollErrors=0,outputTab='portrait',departments=[],directoryReady=false;
     let jobs=[],jobAccount='',jobsReady=false,jdLoading=false,jdGeneration=0,jobSnapshot=null,submitPhase='',uploading=false;
     const header=el('div','',panel,'hr-pool-toolbar'),intro=el('div','',header);
@@ -35,16 +36,20 @@
     const actions=el('div','',header,'hr-actions');
     button('刷新',actions,()=>load());
     button('新建需求',actions,()=>open()).className='hr-primary';
-    const search=el('form','',panel,'hr-form');
+    const search=el('form','',panel,'hr-form hr-demand-filters');
     const field=(name,label,parent,tag='input')=>{
       const wrap=el('label','',parent,'hr-field');el('span',label,wrap);
       const input=el(tag,'',wrap);input.name=name;return input;
     };
     const q=field('demand-search','搜索招聘需求',search);q.placeholder='岗位、部门或经理';q.maxLength=100;
+    const statusFilter=field('demand-status','需求状态',search,'select');
+    const statusOptions=statuses.map(([key,label])=>{
+      const option=el('option',label,statusFilter);option.value=key;return option;
+    });
+    statusFilter.value=status;
+    statusFilter.addEventListener('change',()=>{status=statusFilter.value;page=1;load();});
     button('搜索',search,()=>{page=1;load();});
     search.addEventListener('submit',event=>{event.preventDefault();page=1;load();});
-    const tabs=el('div','',panel,'hr-pool-tabs');tabs.setAttribute('aria-label','需求状态');
-    const statusButtons=statuses.map(([key,label])=>button(label,tabs,()=>{status=key;page=1;load();}));
     const feedback=el('p','',panel,'hr-hint');feedback.setAttribute('role','status');
     const results=el('div','',panel,'hr-result');
     const pager=el('div','',panel,'hr-pagination');
@@ -208,11 +213,14 @@
         const data=await request('?'+new URLSearchParams({status,q:q.value.trim(),page:String(page)}));
         if(ticket!==generation||!active||!allowed())return;
         results.replaceChildren();page=data.page;
-        statusButtons.forEach((b,i)=>{const [key,label]=statuses[i];b.textContent=`${label} ${data.counts[key]||0}`;b.setAttribute('aria-pressed',String(key===status));});
+        statusOptions.forEach((option,i)=>{
+          const [key,label]=statuses[i],count=data.counts?.[key];
+          option.textContent=label+(Number.isFinite(count)?`（${count}）`:'');
+        });
         feedback.textContent=`共 ${data.total} 项需求`;pageLabel.textContent=`${page} / ${data.pages}`;
         pager.hidden=data.pages<=1;previous.disabled=page<=1;next.disabled=page>=data.pages;
         if(!data.items.length){el('p','暂无招聘需求，点击“新建需求”开始。',results,'hr-pool-empty');return;}
-        const cards=el('div','',results,'hr-card-grid');
+        const cards=el('div','',results,'hr-card-grid hr-demand-cards');
         for(const row of data.items){
           const card=el('article','',cards,'hr-person-card'),head=el('div','',card,'hr-card-heading');
           el('h3',row.position,head);el('span',statuses.find(([k])=>k===row.status)?.[1],head,'hr-badge');
@@ -223,7 +231,7 @@
             const item=el('div','',facts);el('dt',label,item);el('dd',value,item);
           }
           const actions=el('div','',card,'hr-actions');button('查看 / 编辑',actions,()=>open(row));
-          el('span',row.aiStatus==='running'?'AI 生成中':row.aiStatus==='complete'?'AI 分析已就绪':row.aiStatus==='stale'?'AI 结果待更新':row.aiStatus==='failed'?'AI 生成失败':'待生成 AI 分析',actions,'hr-hint');
+          el('span',row.aiStatus==='running'?'AI 生成中':row.aiStatus==='complete'?'AI 已分析':row.aiStatus==='stale'?'AI 待更新':row.aiStatus==='failed'?'AI 生成失败':'AI 未分析',actions,'hr-hint');
         }
       }catch(err){if(ticket===generation){feedback.textContent='读取失败';results.replaceChildren();el('p',err.message,results,'hr-error');}}
     }
@@ -411,6 +419,7 @@
       enter(){active=true;load();},
       leave(){active=false;++generation;stopPoll();dialog.close();},
       reset(){active=false;++generation;stopPoll();dialog.close();editing=null;saving=uploading=false;page=1;status='all';
+        statusFilter.value=status;statusOptions.forEach((option,index)=>{option.textContent=statuses[index][1];});
         departments=[];directoryReady=false;jobs=[];jobAccount='';jobsReady=false;jobSnapshot=null;inputs.departmentId.replaceChildren();
         inputs.jobId.replaceChildren();jdText.textContent='';jdNote.textContent='';
         q.value='';Object.values(inputs).forEach(input=>input.value='');results.replaceChildren();output.replaceChildren();
