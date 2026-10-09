@@ -173,7 +173,13 @@ def listing(user, query):
         counts["all"] = sum(counts.values())
         round_clause = """(stage=? OR EXISTS(SELECT 1 FROM hr_interview_reviews r
             WHERE r.owner=talents.owner AND r.talent_id=talents.id AND r.round=?))"""
+        pending_clause = """stage=? AND NOT EXISTS(SELECT 1 FROM hr_interview_reviews r
+            WHERE r.owner=talents.owner AND r.talent_id=talents.id AND r.round=?)"""
+        pending_counts = {"invited": counts["invited"], "hired": counts["hired"]}
         for interview_round in ("first", "second"):
+            pending_counts[interview_round] = db.execute(
+                "SELECT COUNT(*) FROM talents WHERE " + clause + " AND " + pending_clause,
+                [*args, interview_round, interview_round]).fetchone()[0]
             counts[interview_round] = db.execute(
                 "SELECT COUNT(*) FROM talents WHERE " + clause + " AND " + round_clause,
                 [*args, interview_round, interview_round]).fetchone()[0]
@@ -182,8 +188,6 @@ def listing(user, query):
             where.append(round_clause)
             args.extend([stage, stage])
             scoped = " AND ".join(where)
-            pending_clause = """stage=? AND NOT EXISTS(SELECT 1 FROM hr_interview_reviews r
-                WHERE r.owner=talents.owner AND r.talent_id=talents.id AND r.round=?)"""
             reviewed_clause = """EXISTS(SELECT 1 FROM hr_interview_reviews r
                 WHERE r.owner=talents.owner AND r.talent_id=talents.id AND r.round=? AND r.outcome=?)"""
             outcome_counts["pending"] = db.execute("SELECT COUNT(*) FROM talents WHERE " + scoped +
@@ -208,7 +212,8 @@ def listing(user, query):
             "SELECT id,name,version FROM projects WHERE owner=? ORDER BY name,id", (owner,))]
         departments = [dict(row) for row in db.execute(
             "SELECT id,name,status FROM hr_departments WHERE owner=? ORDER BY name,id", (owner,))]
-    return {"items": items, "projects": projects, "departments": departments, "counts": counts, "outcomeCounts": outcome_counts,
+    return {"items": items, "projects": projects, "departments": departments, "counts": counts,
+            "pendingCounts": pending_counts, "outcomeCounts": outcome_counts,
             "total": total, "page": page, "pages": pages}
 
 

@@ -186,6 +186,8 @@ class TalentPoolTest(unittest.TestCase):
         self.assertEqual(history["counts"]["all"],1)
         self.assertEqual(history["counts"]["first"],1)
         self.assertEqual(history["counts"]["second"],1)
+        self.assertEqual(history["pendingCounts"]["first"],0)
+        self.assertEqual(history["pendingCounts"]["second"],1)
         self.assertEqual(history["outcomeCounts"],{"all":1,"pending":0,"passed":1,"failed":0})
         self.assertEqual(pool.listing(USER,{"stage":"second","outcome":"pending"})["total"],1)
         with pool.database() as db:
@@ -204,6 +206,8 @@ class TalentPoolTest(unittest.TestCase):
             result=pool.review_interview(USER,self.review_body(second,decision,"second"))
             self.assertEqual(result["stage"],"second")
             self.assertEqual(pool.listing(USER,{"stage":"second","outcome":decision})["total"],1)
+        self.assertEqual(pool.listing(USER,{})["pendingCounts"]["first"],0)
+        self.assertEqual(pool.listing(USER,{})["pendingCounts"]["second"],0)
         self.assertEqual(pool.listing(USER,{"stage":"hired"})["total"],0)
 
     def test_review_duplicate_response_loss_and_stale_edit_do_not_overwrite_a_decision(self):
@@ -278,6 +282,17 @@ class TalentPoolTest(unittest.TestCase):
             self.assertEqual(request("/talents", [1, 2])[0], 400)
             self.assertEqual(request("/dingtalk", cookie=False)[0], 401)
             self.assertEqual(request("/interview?talentId=missing", cookie=False)[0], 401)
+            self.assertEqual(request("/interview/package?talentId=missing", cookie=False)[0],401)
+            with mock.patch("dingtalk_interviews.download_package", return_value=(b"PK-test-zip", "面试资料.zip")) as package:
+                req=urllib.request.Request(base+"/interview/package?talentId=synthetic",
+                                           headers={"Cookie":"session=test"})
+                with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req,timeout=5) as response:
+                    self.assertEqual(response.headers["Content-Type"],"application/zip")
+                    self.assertEqual(response.headers["Cache-Control"],"private, no-store")
+                    self.assertEqual(response.headers["X-Content-Type-Options"],"nosniff")
+                    self.assertTrue(response.headers["Content-Disposition"].startswith("attachment; filename*=UTF-8''"))
+                    self.assertEqual(response.read(),b"PK-test-zip")
+                package.assert_called_once_with(USER,{"talentId":"synthetic"})
             self.assertEqual(request("/interview/start", {}, cookie=False)[0], 401)
             self.assertEqual(request("/dingtalk/save", {}, origin="https://evil.example")[0], 403)
             self.assertEqual(request("/dingtalk/recipient", {}, origin="https://evil.example")[0], 403)

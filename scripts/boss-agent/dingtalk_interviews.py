@@ -397,7 +397,47 @@ def preview(user, query):
             job = db.execute("SELECT * FROM hr_interview_handoffs WHERE owner=? AND talent_id=?", (owner, record)).fetchone()
     return {"talentId": record, "name": pool.view(talent)["name"], "version": talent["version"],
             "stage": talent["stage"], "resumes": resumes, "demands": choices,
-            "config": public_config(config), "handoff": handoff_view(job)}
+            "config": public_config(config), "handoff": handoff_view(job),
+            "packageReady": bool(job or any(d["questionsReady"] for d in choices))}
+
+
+def download_package(user, query):
+    """Build a private ZIP from the handoff snapshot or an exact current job link."""
+    owner, _ = pool.context(user)
+    record = pool.text(query.get("talentId", ""), 100)
+    with pool.database() as db:
+        passive_pool.schema(db); schema(db); demands.schema(db)
+        talent = db.execute("SELECT * FROM talents WHERE owner=? AND id=?", (owner, record)).fetchone()
+        if not talent:
+            raise ValueError("人才不存在")
+        handoff = db.execute("SELECT body FROM hr_interview_handoffs WHERE owner=? AND talent_id=?",
+                             (owner, record)).fetchone()
+        if handoff:
+            value = json.loads(handoff["body"])
+            resume_id = value["resumeId"]
+        else:
+            resume_id = pool.text(query.get("resumeId", ""), 100)
+        resume = db.execute("SELECT * FROM hr_resume_pool WHERE owner=? AND id=? AND status='approved'",
+                            (owner, resume_id)).fetchone()
+        if not resume or json.loads(resume["body"]).get("talentId") != record:
+            raise ValueError("请选择该候选人已审批通过的简历")
+        if not handoff:
+            demand = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?",
+                                (owner, pool.text(query.get("demandId", ""), 100))).fetchone()
+            detail = json.loads(resume["body"])
+            jd = json.loads(demand["body"]) if demand else {}
+            if (not demand or not detail.get("jobId") or detail["jobId"] != jd.get("jobId")
+                    or resume["account"] != jd.get("jobAccountKey")):
+                raise ValueError("简历与招聘需求必须属于同一账号的同一具体职位")
+            questions = json.loads(demand["ai_result"]).get("interviewQuestions", [])
+            if demand["ai_status"] != "complete" or demand["ai_version"] != demand["version"] or not questions:
+                raise ValueError("请先在招聘需求池生成当前岗位的面试题库")
+            value = {"name": pool.view(talent)["name"], "position": jd["position"],
+                     "resumeKey": resume["file_key"], "resumeHash": resume["file_hash"],
+                     "extension": detail["extension"], "jd": jd.get("jobDescription", ""),
+                     "questions": questions, "recipientName": jd.get("manager") or "待指定"}
+    content = package(value, resume_storage.download(owner, value["resumeKey"]))
+    return content, package_filename(value)
 
 
 def start(user, body):
@@ -491,9 +531,13 @@ def package(value, raw):
     return content
 
 
+def package_filename(value):
+    return re.sub(r'[^\w\u4e00-\u9fff.-]', "_", value["name"] + "-" + value["position"])[:90] + "-一面资料.zip"
+
+
 def upload(config, value, content):
     boundary = "heyi" + uuid.uuid4().hex
-    filename = re.sub(r'[^\w\u4e00-\u9fff.-]', "_", value["name"] + "-" + value["position"])[:90] + "-一面资料.zip"
+    filename = package_filename(value)
     body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\nfile\r\n"
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"media\"; filename=\"{filename}\"\r\n"
             "Content-Type: application/zip\r\n\r\n").encode() + content + f"\r\n--{boundary}--\r\n".encode()

@@ -666,7 +666,7 @@ test('resume job filter combines with review state and reports reconnect progres
   assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')||c.url.startsWith('/api/v1/hr/resume-pool')));
 });
 const interviewPreview=(talent)=>({talentId:talent.id,name:talent.name,version:1,stage:'invited',
-  config:{verified:true,version:1},resumes:[{id:'r1',filename:'测试人才.pdf',jobName:'算法'}],
+  packageReady:true,config:{verified:true,version:1},resumes:[{id:'r1',filename:'测试人才.pdf',jobName:'算法'}],
   demands:[{id:'d1',position:'算法',department:'研发',version:1,resumeIds:['r1'],questionsReady:true,
     questionCount:6,recipientReady:true,recipient:'面试负责人',recipientId:'manager1'}],handoff:null});
 test('start first interview sends exact linked packet once without BOSS message and shows progress',async()=>{
@@ -703,12 +703,38 @@ test('delivered first interview hides setup and send actions and retains the clo
   const app=setup({api:async url=>({data:url.includes('/pool/interview?')
     ?{...interviewPreview(talent),stage:'first',handoff:{id:'i1',status:'sent'}}
     :{...poolResult(),items:[talent]}})});
-  await app.enter('pool');await app.click('一面资料');
+  await app.enter('pool');
+  assert.ok(!app.visible().some(n=>n.tagName==='button'&&n._text==='一面资料'));
+  await app.click(talent.name);
   const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-interview-dialog');
   const buttons=all(dialog).filter(n=>n.tagName==='button'&&!n.hidden);
   assert.deepEqual(buttons.map(n=>n.textContent),['关闭']);
+  assert.match(dialog.textContent,/人才详情/);
   assert.match(dialog.textContent,/已送达负责人/);
+  const download=all(dialog).find(n=>n.tagName==='a'&&n._text==='下载资料 ZIP');
+  assert.equal(download.hidden,false);
+  assert.equal(new URL(download.href,'https://platform.test').searchParams.get('talentId'),talent.id);
+  assert.ok(download.href.startsWith('/api/v1/hr/pool/interview/package?'));
+  await app.click('关闭');await app.click(talent.name.slice(0,1));
+  assert.equal(dialog.open,true);
+  assert.equal(app.visible().find(n=>n.className==='hr-person-card').events.click,undefined);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+test('interview stage badges show pending opinions while processed records remain accessible',async()=>{
+  const app=setup({api:async url=>{
+    const query=new URL(url,'https://platform.test').searchParams;
+    const processed=query.get('outcome')==='passed';
+    return {data:{...poolResult(),items:processed?poolResult().items:[],total:processed?7:0,
+      counts:{invited:0,first:7,second:3,hired:0},pendingCounts:{invited:0,first:0,second:1,hired:0},
+      outcomeCounts:{pending:0,passed:7,failed:0}}};
+  }});
+  await app.enter('pool');await app.click('一面 0');
+  assert.equal(new URL(app.calls.at(-1).url,'https://platform.test').searchParams.get('outcome'),'pending');
+  assert.equal(app.visible().find(n=>n.dataset.stage==='second')._text,'二面 1');
+  await app.click('通过 7');
+  assert.match(app.text(),/测试人才/);
+  assert.equal(app.visible().find(n=>n.dataset.stage==='first')._text,'一面 0');
+  assert.ok(app.calls.every(c=>!c.options?.method||c.options.method!=='POST'));
 });
 test('first opinion requires text and approval advances to second pending with one explicit save',async()=>{
   let talent={...poolResult().items[0],stage:'first',source:'passive',interviewReviews:{}};
@@ -743,6 +769,9 @@ test('interview result pills compose with department and completed opinions open
   const app=setup({api:async()=>({data:{...poolResult(),items:[talent],counts:{all:1,first:1,second:1},
     outcomeCounts:{all:1,pending:0,passed:1,failed:0}}})});
   await app.enter('pool');await app.click('一面 1');
+  assert.equal(new URL(app.calls.at(-1).url,'https://platform.test').searchParams.get('outcome'),'pending');
+  assert.equal(app.visible().find(n=>n.dataset.outcome==='pending').attributes['aria-pressed'],'true');
+  assert.ok(!app.visible().some(n=>n.dataset.outcome==='all'));
   await app.click('电商部');
   await app.click('通过 1');
   const pill=app.visible().find(n=>n.dataset.outcome==='passed');
@@ -751,6 +780,12 @@ test('interview result pills compose with department and completed opinions open
   const params=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
   assert.equal(params.get('stage'),'first');assert.equal(params.get('outcome'),'passed');
   assert.equal(params.get('department'),'department-1');
+  await app.click('二面 1');
+  assert.equal(new URL(app.calls.at(-1).url,'https://platform.test').searchParams.get('outcome'),'pending');
+  assert.equal(app.visible().find(n=>n.dataset.outcome==='pending').attributes['aria-pressed'],'true');
+  await app.click('一面 1');
+  assert.equal(new URL(app.calls.at(-1).url,'https://platform.test').searchParams.get('outcome'),'pending');
+  await app.click('通过 1');
   await app.click('一面意见');
   const dialog=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
   const opinion=all(dialog).find(n=>n.tagName==='textarea');
@@ -848,6 +883,8 @@ test('talent pool uses platform API without pairing and combines independent fil
   await app.enter('pool');
   assert.match(app.text(),/测试人才/);assert.match(app.text(),/本科/);assert.match(app.text(),/电商部/);
   assert.ok(!app.visible().some(n=>['管理项目组','查看 / 编辑','新建人才'].includes(n._text)));
+  assert.ok(!app.visible().some(n=>n.dataset.stage==='all'));
+  assert.equal(new URL(app.calls.at(-1).url,'https://platform.test').searchParams.get('stage'),'invited');
   assert.ok(app.calls.every(c=>c.url.startsWith('/api/v1/hr/pool')));
   assert.ok(!app.visible().some(n=>n.tagName==='select'&&n.children.some(v=>v.textContent==='全部部门')));
   const departmentButton=app.visible().find(n=>n.dataset.department==='department-1');
@@ -909,6 +946,7 @@ test('candidate reserve dialog saves normalized fields through platform only',as
   const save=app.calls.find(c=>c.url.endsWith('/pool/talents'));
   assert.ok(save);const body=JSON.parse(save.options.body);
   assert.equal(body.source,'boss');assert.ok(body.name);assert.ok(body.sourceId);
+  assert.equal(body.stage,'invited');
   assert.equal(body.securityId,undefined);
 });
 const demandDirectory=()=>({items:[{id:'dept-1',name:'电商组',manager:'测试经理',status:'ACTIVE',code:'ECOM',version:1}]});

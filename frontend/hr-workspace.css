@@ -315,8 +315,6 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-review-sidebar .hr-actions button{font-size:12px;min-height:34px;padding:7px 10px}
 .hr-review-sidebar .hr-review-decisions{display:flex;flex-direction:column;align-items:stretch;border-top:1px solid var(--hr-border);padding-top:16px}
 .hr-preview-stage [hidden],.hr-preview-toolbar [hidden]{display:none!important}
-.hr-invitable-card{cursor:pointer}
-.hr-invitable-card:focus-visible{outline:2px solid var(--hr-ink);outline-offset:3px}
 .hr-invite-dialog>.hr-field{margin-top:20px}
 .hr-invite-dialog textarea{min-height:140px;line-height:1.8}
 .hr-invite-dialog>h3.hr-invite-record-title{font-size:13px;border-top:1px solid var(--hr-border);padding-top:20px;margin:22px 0 10px}
@@ -332,6 +330,8 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-dingtalk-dialog form{margin-top:24px}
 .hr-dingtalk-recipient{border-top:1px solid var(--hr-border);padding-top:20px}
 .hr-interview-dialog>.hr-pool-fields{margin-top:20px}
+.hr-interview-download{text-decoration:none}
+.hr-interview-download[hidden]{display:none}
 .hr-pool-outcomes{margin:-4px 0 20px}
 .hr-pool-outcomes[hidden]{display:none}
 .hr-card-grid.hr-pool-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr));gap:12px}
@@ -340,11 +340,16 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-pool-grid .hr-identity{gap:9px}
 .hr-pool-grid .hr-identity h3{font-size:16px}
 .hr-pool-grid .hr-avatar{width:36px;height:36px;font-size:16px}
+.hr-pool-grid .hr-pool-profile-link{padding:0;cursor:pointer}
+.hr-pool-grid .hr-pool-profile-link:hover{border-color:var(--hr-ink)}
+.hr-pool-name-link{display:inline-block;max-width:100%;border:0;background:transparent;padding:0;color:inherit;font:inherit;text-align:left;cursor:pointer;overflow-wrap:anywhere}
+.hr-pool-name-link:hover{text-decoration:underline;text-underline-offset:3px}
 .hr-pool-grid .hr-tags{gap:5px;margin:10px 0 0}
 .hr-pool-grid .hr-facts{gap:8px 12px;margin:12px 0}
 .hr-pool-grid .hr-facts dd{font-size:12px;line-height:1.5}
 .hr-pool-grid .hr-pool-note{margin:0 0 12px;font-size:12px;line-height:1.6;-webkit-line-clamp:2}
 .hr-pool-grid .hr-actions{padding-top:12px;margin-top:auto;gap:6px}
+.hr-pool-grid .hr-actions:empty{display:none}
 .hr-pool-grid .hr-actions button{min-height:32px;font-size:12px;padding:6px 9px}
 .hr-pool-pagination{padding-top:16px;border-top:1px solid var(--hr-border);gap:8px}
 .hr-pool-pagination[hidden]{display:none}

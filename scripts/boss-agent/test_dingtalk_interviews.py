@@ -130,6 +130,55 @@ class DingTalkInterviewTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "校验"):
             dt.package(value, RAW+b"changed")
 
+    def test_download_uses_saved_snapshot_and_does_not_contact_dingtalk_or_start_another_send(self):
+        dt.start(USER,self.body())
+        with pool.database() as db:
+            db.execute("UPDATE recruitment_demands SET body=json_set(body,'$.jobDescription','新版岗位'),version=2")
+        with mock.patch.object(dt.resume_storage,"download",return_value=RAW) as stored, \
+             mock.patch.object(dt,"api") as remote:
+            content,filename=dt.download_package(USER,{"talentId":self.talent["id"]})
+            stored.assert_called_once_with("heyi","synthetic-key")
+            remote.assert_not_called()
+        self.assertTrue(filename.endswith(".zip"))
+        with zipfile.ZipFile(io.BytesIO(content)) as packet:
+            self.assertEqual(packet.read("候选人简历.pdf"),RAW)
+            self.assertEqual(packet.read("岗位JD.txt").decode(),"岗位JD")
+            self.assertIn("解释模型评估",packet.read("一面面试题库.html").decode())
+        self.assertEqual(self.job()["status"],"preparing")
+        self.assertEqual(dt.launch.call_count,1)
+
+    def test_download_before_send_needs_only_ready_exact_job_documents_not_dingtalk_configuration(self):
+        with pool.database() as db:
+            db.execute("DELETE FROM hr_dingtalk_config")
+        self.assertTrue(dt.preview(USER,{"talentId":self.talent["id"]})["packageReady"])
+        with mock.patch.object(dt.resume_storage,"download",return_value=RAW),mock.patch.object(dt,"api") as remote:
+            content,_=dt.download_package(USER,{"talentId":self.talent["id"],
+                                               "resumeId":self.resume,"demandId":self.demand})
+            remote.assert_not_called()
+        self.assertTrue(zipfile.is_zipfile(io.BytesIO(content)))
+        dt.launch.assert_not_called()
+        with pool.database() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM hr_interview_handoffs").fetchone()[0],0)
+
+    def test_download_rejects_cross_candidate_job_account_owner_and_changed_file(self):
+        query={"talentId":self.talent["id"],"resumeId":self.resume,"demandId":self.demand}
+        for change in ({"talentId":"foreign"},{"resumeId":"foreign"},{"demandId":"foreign"}):
+            with mock.patch.object(dt.resume_storage,"download") as stored:
+                with self.assertRaises(ValueError):
+                    dt.download_package(USER,query|change)
+                stored.assert_not_called()
+        with self.assertRaises(ValueError):
+            dt.download_package(USER|{"organizationCode":"other"},query)
+        with pool.database() as db:
+            db.execute("UPDATE recruitment_demands SET body=json_set(body,'$.jobAccountKey',?)",("b"*64,))
+        with self.assertRaisesRegex(ValueError,"同一账号"):
+            dt.download_package(USER,query)
+        with pool.database() as db:
+            db.execute("UPDATE recruitment_demands SET body=json_set(body,'$.jobAccountKey',?)",("a"*64,))
+        with mock.patch.object(dt.resume_storage,"download",return_value=RAW+b"changed"):
+            with self.assertRaisesRegex(ValueError,"校验不一致"):
+                dt.download_package(USER,query)
+
     def test_unknown_send_never_retry_even_after_reload_and_restart(self):
         dt.start(USER, self.body())
         self.deliver(error=dt.UnknownSend("结果待核对"))

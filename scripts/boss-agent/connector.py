@@ -1573,7 +1573,7 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
         if route in ("passive", "speeches", "resume-pool", "resume-pool/file", "pool/messages"):
             self.passive_request(parsed=parsed)
             return
-        if route in ("pool", "pool/interview", "pool/dingtalk", "demands", "departments"):
+        if route in ("pool", "pool/interview", "pool/interview/package", "pool/dingtalk", "demands", "departments"):
             self.pool_request(write=False, parsed=parsed)
             return
         if route == "desktop/transport":
@@ -1797,7 +1797,18 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     result = action(self.desktop_user, body)
             else:
                 query = {key: values[-1] for key, values in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
-                if parsed.path.endswith("/pool/interview"):
+                if parsed.path.endswith("/pool/interview/package"):
+                    raw, filename = dingtalk_interviews.download_package(self.desktop_user, query)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header("Cache-Control", "private, no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(filename))
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                elif parsed.path.endswith("/pool/interview"):
                     result = dingtalk_interviews.preview(self.desktop_user, query)
                 elif parsed.path.endswith("/pool/dingtalk"):
                     result = dingtalk_interviews.settings(self.desktop_user)

@@ -1,9 +1,10 @@
 /* Platform talent records and explicit interview handoff; no direct BOSS call. */
 (() => {
-  const stages = [['all','全部'],['invited','邀约'],['first','一面'],['second','二面'],['hired','已录取']];
+  const stages = [['invited','邀约'],['first','一面'],['second','二面'],['hired','已录取']];
+  const defaultOutcome=stage=>['first','second'].includes(stage)?'pending':'all';
   globalThis.createHrPool = ({root, section, element:el, button, allowed, navigate}) => {
     const panel=section('pool');
-    let stage='all',outcome='all',department='',page=1,generation=0,active=false,departments=[],rows=[],editing=null,saving=false;
+    let stage='invited',outcome='all',department='',page=1,generation=0,active=false,departments=[],rows=[],editing=null,saving=false;
     let departmentButtons=[],departmentDirectory='',pageButtons=[];
     let interviewing=null,interviewData=null,interviewRequest='',interviewTimer=null,interviewSending=false,settingsData=null,settingsSaving=false,settingsEpoch=0,interviewEpoch=0;
     const toolbar=el('div','',panel,'hr-pool-toolbar');
@@ -24,12 +25,12 @@
     departmentBar.setAttribute('aria-label','部门');
     const tabs=el('div','',panel,'hr-pool-tabs');tabs.setAttribute('aria-label','招聘阶段');
     const tabButtons=stages.map(([key,label])=>{
-      const b=button(label,tabs,()=>{stage=key;outcome='all';page=1;load();});
+      const b=button(label,tabs,()=>{stage=key;outcome=defaultOutcome(stage);page=1;load();});
       b.dataset.stage=key;return b;
     });
     const outcomeBar=el('div','',panel,'hr-pool-tabs hr-pool-outcomes');outcomeBar.hidden=true;
     outcomeBar.setAttribute('aria-label','面试结果');
-    const outcomeOptions=[['all','全部结果'],['pending','待填写意见'],['passed','通过'],['failed','未通过']].map(([key,label])=>{
+    const outcomeOptions=[['pending','待填写意见'],['passed','通过'],['failed','未通过']].map(([key,label])=>{
       const option=button(label,outcomeBar,()=>{outcome=key;page=1;load();});
       option.dataset.outcome=key;return {option,key,label};
     });
@@ -53,8 +54,7 @@
       input.name=key;input.autocomplete='off';input.required=key==='name';
     }
     const stageInput=makeField('招聘阶段',fields,'select');
-    el('option','未设置阶段',stageInput).value='';
-    stages.slice(1).forEach(([key,label])=>el('option',label,stageInput).value=key);
+    stages.forEach(([key,label])=>el('option',label,stageInput).value=key);
     const departmentInput=makeField('所属部门',fields,'select');
     const notes=inputs.notes=makeField('跟进备注',form,'textarea');notes.maxLength=5000;notes.rows=4;
     const editorError=el('p','',form,'hr-error');editorError.hidden=true;editorError.setAttribute('role','alert');
@@ -73,6 +73,8 @@
     const interviewFeedback=el('p','',interviewDialog,'hr-hint');interviewFeedback.setAttribute('role','status');
     const interviewActions=el('div','',interviewDialog,'hr-actions');
     button('关闭',interviewActions,()=>interviewDialog.close());
+    const interviewDownload=el('a','下载资料 ZIP',interviewActions,'hr-secondary hr-interview-download');
+    interviewDownload.hidden=true;interviewDownload.download='';
     const interviewSettings=button('钉钉设置',interviewActions,()=>{interviewDialog.close();openSettings();});
     const interviewSend=button('发送一面资料',interviewActions,sendInterview);interviewSend.className='hr-primary';
     interviewDialog.addEventListener('close',()=>{++interviewEpoch;interviewing=null;interviewData=null;clearTimeout(interviewTimer);});
@@ -82,6 +84,13 @@
     function renderInterview(){
       const data=interviewData,demand=selectedDemand(),handoff=data?.handoff;
       const delivered=handoff?.status==='sent';
+      interviewDownload.hidden=!(data?.packageReady&&(handoff||(resumeSelect.value&&demand?.questionsReady)));
+      interviewDownload.removeAttribute('href');
+      if(!interviewDownload.hidden){
+        const query=new URLSearchParams({talentId:interviewing.id});
+        if(!handoff){query.set('resumeId',resumeSelect.value);query.set('demandId',demand.id);}
+        interviewDownload.href='/api/v1/hr/pool/interview/package?'+query;
+      }
       interviewSettings.hidden=interviewSend.hidden=delivered;
       interviewIntro.textContent=delivered?'简历、岗位 JD 和面试题库已作为 ZIP 资料包送达负责人，可解压查看和打印题库。':
         '简历、岗位 JD 和面试题库将作为一份 ZIP 资料包发给负责人，可解压查看和打印题库。';
@@ -138,7 +147,8 @@
       if(!allowed()||interviewSending)return;
       const epoch=++interviewEpoch;
       interviewing=row;interviewData=null;interviewRequest=crypto.randomUUID();
-      interviewTitle.textContent='一面 · '+row.name;interviewFeedback.textContent='正在读取岗位、简历和发送记录…';
+      interviewDownload.hidden=true;interviewDownload.removeAttribute('href');
+      interviewTitle.textContent=(autoStart?'开始一面 · ':'人才详情 · ')+row.name;interviewFeedback.textContent='正在读取岗位、简历和发送记录…';
       resumeSelect.replaceChildren();demandSelect.replaceChildren();interviewSummary.textContent='';interviewProgress.replaceChildren();
       interviewSend.disabled=true;interviewSettings.hidden=interviewSend.hidden=row.stage!=='invited';interviewDialog.showModal();
       await refreshInterview();
@@ -334,7 +344,7 @@
         if(ticket!==generation||!active||!allowed())return;
         departments=data.departments||[];rows=data.items;page=data.page;syncDepartments();
         syncOutcomes(data.outcomeCounts);
-        tabButtons.forEach((b,i)=>{const [key,label]=stages[i];b.textContent=`${label} ${data.counts[key]||0}`;});
+        tabButtons.forEach((b,i)=>{const [key,label]=stages[i];b.textContent=`${label} ${(data.pendingCounts||data.counts)[key]||0}`;});
         render();
         feedback.textContent=`共 ${data.total} 位人才`;
         renderPagination(data);
@@ -356,17 +366,14 @@
       for(const row of rows){
         const card=el('article','',grid,'hr-person-card');
         const canInvite=row.stage==='invited';
-        if(canInvite){
-          card.className+=' hr-invitable-card';card.tabIndex=0;card.setAttribute('role','button');
-          card.setAttribute('aria-label','查看'+row.name+'的一面资料');
-          card.addEventListener('click',event=>{if(!event.target?.closest?.('button,a,input,select,textarea'))openInterview(row);});
-          card.addEventListener('keydown',event=>{
-            if(event.target===card&&['Enter',' '].includes(event.key)){event.preventDefault();openInterview(row);}
-          });
-        }
         const head=el('div','',card,'hr-card-heading');
-        const identity=el('div','',head,'hr-identity');el('span',row.name.slice(0,1),identity,'hr-avatar');
-        const copy=el('div','',identity);el('h3',row.name,copy);el('p',row.position||'职位待补充',copy,'hr-hint');
+        const identity=el('div','',head,'hr-identity');
+        const avatar=button(row.name.slice(0,1),identity,()=>openInterview(row));
+        avatar.className='hr-avatar hr-pool-profile-link';avatar.setAttribute('aria-label',`查看${row.name}的详情`);
+        const copy=el('div','',identity),heading=el('h3','',copy);
+        const name=button(row.name,heading,()=>openInterview(row));name.className='hr-pool-name-link';
+        name.title=`查看${row.name}的详情`;
+        el('p',row.position||'职位待补充',copy,'hr-hint');
         el('span',stages.find(([key])=>key===row.stage)?.[1]||'未设置阶段',head,'hr-badge');
         const tags=el('div','',card,'hr-tags');
         el('span',departments.find(d=>d.id===row.departmentId)?.name||'待关联部门',tags,'hr-badge');
@@ -381,7 +388,6 @@
         if(row.notes)el('p',row.notes,card,'hr-excerpt hr-pool-note');
         const footer=el('div','',card,'hr-actions');
         if(canInvite)button('开始一面',footer,()=>openInterview(row,true)).className='hr-primary';
-        if(['first','second'].includes(row.stage)||reviewRound)button('一面资料',footer,()=>openInterview(row));
         if(reviewRound&&(row.stage===reviewRound||reviewResult)){
           button(reviewRound==='first'?'一面意见':'二面意见',footer,()=>openReview(row,reviewRound)).className='hr-primary';
         }
@@ -391,7 +397,7 @@
       if(!allowed())return;
       editing={...row,...(!row.id?{createId:crypto.randomUUID()}: {})};editorTitle.textContent=row.id?'编辑人才':'加入储备人才库';
       Object.entries(inputs).forEach(([key,input])=>input.value=row[key]||'');
-      stageInput.value=row.stage||'';fillDepartments(departmentInput,'待关联部门',row.departmentId||'');
+      stageInput.value=row.stage||'invited';fillDepartments(departmentInput,'待关联部门',row.departmentId||'');
       editorError.hidden=true;saveButton.disabled=true;cancel.disabled=false;
       dialog.showModal();
       const ticket=generation;
@@ -411,7 +417,7 @@
       try{
         await request('/talents',body);
         if(ticket!==generation||!allowed())return;
-        dialog.close();stage=body.stage||'all';outcome='all';query.value='';page=1;
+        dialog.close();stage=body.stage||'invited';outcome=defaultOutcome(stage);query.value='';page=1;
         department=body.departmentId||'';navigate('pool');
       }catch(error){if(ticket===generation){editorError.textContent=error.message;editorError.hidden=false;}}
       finally{saving=false;saveButton.disabled=cancel.disabled=false;saveButton.textContent='保存人才';}
@@ -421,9 +427,10 @@
       enter(){active=true;load();},
       leave(){active=false;++generation;dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);},
       add:openEditor,
-      reset(){active=false;++generation;departments=[];rows=[];editing=null;stage='all';outcome='all';department='';page=1;departmentDirectory='';syncDepartments();syncOutcomes();
+      reset(){active=false;++generation;departments=[];rows=[];editing=null;stage='invited';outcome='all';department='';page=1;departmentDirectory='';syncDepartments();syncOutcomes();
         query.value='';dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);
         interviewing=null;interviewData=null;settingsData=null;appKey.value=agentId.value=appSecret.value='';
+        interviewDownload.hidden=true;interviewDownload.removeAttribute('href');
         Object.values(inputs).forEach(input=>input.value='');
         departmentInput.replaceChildren();
         pageButtons=[];pageNumbers.replaceChildren();pageLabel.textContent='';pager.hidden=true;
