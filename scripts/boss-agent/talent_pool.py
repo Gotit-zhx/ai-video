@@ -93,7 +93,7 @@ def department_for_resumes(db, owner, resumes, talent_id=""):
     demands = {r["id"]: json.loads(r["body"]) for r in db.execute(
         "SELECT id,body FROM recruitment_demands WHERE owner=?", (owner,))}
     if talent_id and "hr_interview_handoffs" in tables:
-        sent = db.execute("SELECT body FROM hr_interview_handoffs WHERE owner=? AND talent_id=? AND status='sent'",
+        sent = db.execute("SELECT body FROM hr_interview_handoffs WHERE owner=? AND talent_id=? AND status='sent' ORDER BY created_at ASC",
                           (owner, talent_id)).fetchone()
         if sent:
             return demands.get(json.loads(sent["body"]).get("demandId"), {}).get("departmentId", "")

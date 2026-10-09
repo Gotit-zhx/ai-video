@@ -594,10 +594,10 @@ test('resume rejection uses the managed default directly without a speech select
   await app.click('不通过，自动婉拒');
   const writes=app.calls.filter(c=>c.options?.method==='POST');
   assert.equal(writes.length,1);assert.match(writes[0].url,/resume-pool\/review$/);
-  assert.deepEqual(JSON.parse(writes[0].options.body),{id:row.id,version:row.version,action:'reject',departmentId:''});
+  assert.deepEqual(JSON.parse(writes[0].options.body),{id:row.id,version:row.version,action:'reject'});
   assert.ok(app.calls.every(c=>!c.url.includes('/speeches/save')&&!c.url.includes('/analyze')));
 });
-test('resume approval reuses the department directory and defaults to exact job attribution',async()=>{
+test('resume approval automatically attributes the job department without a manual selector',async()=>{
   const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle'};
   const app=setup({passive:true,api:async url=>({data:
     url.endsWith('/login/status')?{state:'complete'}:
@@ -606,13 +606,12 @@ test('resume approval reuses the department directory and defaults to exact job 
     url.endsWith('/speeches')?{items:[]}:
     {items:[row],total:1}})});
   await app.enter('resume-pool');await app.click('查看与审批');
-  assert.match(app.text(),/通过后归属部门/);assert.doesNotMatch(app.text(),/归属项目组|停用部/);
-  const select=app.visible().find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='dept-one'));
-  assert.equal(select.value,'');select.value='dept-one';
+  assert.doesNotMatch(app.text(),/通过后归属部门|归属项目组|停用部/);
+  assert.equal(app.visible().some(n=>n.tagName==='select'&&n.children.some(o=>o.value==='dept-one')),false);
   await app.click('通过，加入邀约');
   const writes=app.calls.filter(c=>c.options?.method==='POST');
   assert.equal(writes.length,1);
-  assert.deepEqual(JSON.parse(writes[0].options.body),{id:row.id,version:1,action:'approve',departmentId:'dept-one'});
+  assert.deepEqual(JSON.parse(writes[0].options.body),{id:row.id,version:1,action:'approve'});
 });
 test('missing managed default keeps rejection disabled and guides HR to speech management',async()=>{
   const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle'};
@@ -669,6 +668,72 @@ const interviewPreview=(talent)=>({talentId:talent.id,name:talent.name,version:1
   packageReady:true,config:{verified:true,version:1},resumes:[{id:'r1',filename:'测试人才.pdf',jobName:'算法'}],
   demands:[{id:'d1',position:'算法',department:'研发',version:1,resumeIds:['r1'],questionsReady:true,
     questionCount:6,recipientReady:true,recipient:'面试负责人',recipientId:'manager1'}],handoff:null});
+test('optional second interview selects a verified person and sends only after explicit click',async()=>{
+  const talent={...poolResult().items[0],stage:'second'};
+  const preview={...interviewPreview(talent),round:'second',stage:'second',
+    recipients:[{userId:'manager2',name:'二面老师',department:'研发',bindingKey:'department:dept2:1'}]};
+  let handoff=null;
+  const app=setup({api:async(url,options)=>{
+    if(url.endsWith('/interview/start')){handoff={id:'second-send',status:'preparing',round:'second'};return {data:handoff};}
+    if(url.includes('/pool/interview?'))return {data:{...preview,handoff}};
+    return {data:{...poolResult(),items:[talent]}};
+  }});
+  await app.enter('pool');await app.click('发送二面资料');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+  assert.ok(app.calls.some(c=>c.url.includes('round=second')));
+  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-interview-dialog');
+  const send=all(dialog).find(n=>n.tagName==='button'&&n._text==='发送二面资料');
+  assert.equal(send.disabled,true);
+  const select=all(dialog).find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='department:dept2:1'));
+  select.value='department:dept2:1';select.events.change();
+  assert.equal(send.disabled,false);
+  await send.click();await flush();
+  const writes=app.calls.filter(c=>c.options?.method==='POST');
+  assert.equal(writes.length,1);
+  const body=JSON.parse(writes[0].options.body);
+  assert.equal(body.round,'second');assert.equal(body.recipientId,'manager2');
+  assert.match(dialog.textContent,/正在准备二面资料包/);
+});
+test('second interview opinions are available directly without choosing or sending DingTalk materials',async()=>{
+  const talent={...poolResult().items[0],stage:'second'};
+  const app=setup({api:async()=>({data:{...poolResult(),items:[talent]}})});
+  await app.enter('pool');await app.click('二面意见');
+  assert.match(app.text(),/填写二面意见/);
+  assert.equal(app.calls.some(c=>c.url.includes('/interview?')||c.url.endsWith('/interview/start')),false);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
+});
+test('resume analysis uses resolved job JD and reports preflight errors immediately',async()=>{
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle',
+    resumeText:'提取的简历正文'.repeat(10),jobDescription:'对应岗位的职责和任职要求',jobSource:'招聘需求池'};
+  const app=setup({passive:true,api:async(url,options)=>{
+    if(url.endsWith('/analyze'))throw Error('驱动模型连接失败，请核对配置');
+    return {data:url.endsWith('/login/status')?{state:'complete'}:
+      url.endsWith('/speeches')?{items:[]}:
+      url.endsWith('/pool')?{departments:[]}:{items:[row],total:1}};
+  }});
+  await app.enter('resume-pool');await app.click('查看与审批');
+  assert.match(app.text(),/JD 来自招聘需求池/);
+  await app.click('AI 辅助分析');
+  const request=app.calls.find(c=>c.url.endsWith('/analyze'));
+  assert.equal(JSON.parse(request.options.body).jobDescription,row.jobDescription);
+  assert.match(app.text(),/驱动模型连接失败/);
+  assert.equal(app.visible().find(n=>n._text==='AI 辅助分析').disabled,false);
+});
+test('a stalled resume download times out with a retry instead of remaining on loading',async()=>{
+  const timeouts=[];
+  const app=setup({setTimeout:(fn,ms)=>{timeouts.push({fn,ms});return timeouts.length;},
+    fetch:(_url,options)=>new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(Error('aborted'))))});
+  app.env.AbortController=AbortController;
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../hr-resume-preview.js'),'utf8'),app.env);
+  const root=new Node(),el=(tag,text,parent,className)=>{const node=new Node(tag);node.textContent=text;node.className=className||'';parent.append(node);return node;};
+  const button=(text,parent,action)=>{const node=el('button',text,parent);node.addEventListener('click',action);return node;};
+  const dispose=app.env.createHrResumePreview({root,element:el,button,row:{extension:'pdf',fileUrl:'/private-resume',fileName:'简历.pdf'}});
+  await flush();
+  timeouts.find(t=>t.ms===45000).fn();await flush();
+  assert.match(root.textContent,/简历加载超时/);
+  assert.equal(all(root).find(n=>n._text==='重新加载').hidden,false);
+  dispose();
+});
 test('start first interview sends exact linked packet once without BOSS message and shows progress',async()=>{
   const talent={...poolResult().items[0],stage:'invited',source:'active'};
   let handoff=null;

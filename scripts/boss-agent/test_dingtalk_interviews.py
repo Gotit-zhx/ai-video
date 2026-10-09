@@ -63,6 +63,109 @@ class DingTalkInterviewTest(unittest.TestCase):
         with pool.database() as db:
             return dict(db.execute("SELECT * FROM hr_interview_handoffs").fetchone())
 
+    def second_body(self):
+        with pool.database() as db:
+            db.execute("UPDATE talents SET stage='second',version=2 WHERE id=?", (self.talent["id"],))
+        return self.body() | {"round": "second", "version": 2,
+                             "recipientBindingKey": "demand:" + self.demand}
+
+    def test_second_interview_is_optional_and_independent_of_first_delivery(self):
+        first = dt.start(USER, self.body())
+        body = self.second_body()
+        second = dt.start(USER, body)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(second["round"], "second")
+        self.assertEqual(dt.start(USER, body)["id"], second["id"])
+        with pool.database() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM hr_interview_handoffs").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT stage FROM talents WHERE id=?", (self.talent["id"],)).fetchone()[0], "second")
+        self.assertEqual(dt.preview(USER, {"talentId": self.talent["id"], "round": "second"})["handoff"]["id"], second["id"])
+        self.assertEqual(dt.preview(USER, {"talentId": self.talent["id"]})["handoff"]["id"], first["id"])
+
+    def test_second_opinion_needs_no_dingtalk_send_or_config(self):
+        self.second_body()
+        with pool.database() as db:
+            db.execute("DELETE FROM hr_dingtalk_config")
+        result = pool.review_interview(USER, {"talentId": self.talent["id"], "round": "second",
+            "version": 2, "opinion": "技术能力符合岗位要求，待讨论下一步。", "outcome": "passed",
+            "requestId": str(uuid.uuid4())})
+        self.assertEqual(result["stage"], "second")
+        with pool.database() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM hr_interview_handoffs").fetchone()[0], 0)
+        dt.launch.assert_not_called()
+
+    def test_second_delivery_does_not_advance_stage_and_package_uses_round(self):
+        body = self.second_body()
+        job = dt.start(USER, body)
+        def call(path, *args, **kwargs):
+            if path.endswith("asyncsend_v2"):
+                self.assertEqual(args[0]["userid_list"], "employee1")
+                return {"errcode": 0, "task_id": 12345}
+            return {"errcode": 0, "send_result": {"unread_user_id_list": ["employee1"]}}
+        with mock.patch.object(dt, "employee", return_value="负责人"), \
+             mock.patch.object(dt.resume_storage, "download", return_value=RAW), \
+             mock.patch.object(dt, "upload", return_value="synthetic-media"), \
+             mock.patch.object(dt, "api", side_effect=call):
+            dt.deliver("heyi", job["id"])
+        with pool.database() as db:
+            self.assertEqual(db.execute("SELECT stage,version FROM talents WHERE id=?", (self.talent["id"],)).fetchone()[:], ("second", 2))
+        with mock.patch.object(dt.resume_storage, "download", return_value=RAW):
+            raw, name = dt.download_package(USER, {"talentId": self.talent["id"], "round": "second"})
+        self.assertIn("二面资料", name)
+        with zipfile.ZipFile(io.BytesIO(raw)) as packet:
+            self.assertIn("二面面试题库.html", packet.namelist())
+
+    def test_second_recipient_selection_and_phone_proof_are_owner_scoped(self):
+        body = self.second_body()
+        with self.assertRaises(ValueError):
+            dt.start(USER, body | {"recipientId": "foreign", "recipientBindingKey": "demand:foreign"})
+        with mock.patch.object(dt, "api", return_value={"result": {"userid": "employee2"}}) as api, \
+             mock.patch.object(dt, "employee", return_value="二面老师"):
+            person = dt.interview_identity(USER, {"talentId": self.talent["id"], "mobile": "13800000001", "configVersion": 1})
+        self.assertEqual(api.call_args.args[0], "topapi/v2/user/getbymobile")
+        dt.launch.assert_not_called()
+        with self.assertRaises(ValueError):
+            dt.start(USER, body | {"talentId": "other", "recipientId": "employee2",
+                                  "identityProof": person["identityProof"], "recipientBindingKey": "identity"})
+        job = dt.start(USER, body | {"recipientId": "employee2", "identityProof": person["identityProof"],
+                                    "recipientBindingKey": "identity"})
+        self.assertEqual(job["recipient"], "二面老师")
+
+    def test_submitted_second_opinion_prevents_new_or_preparing_send(self):
+        body = self.second_body()
+        job = dt.start(USER, body)
+        pool.review_interview(USER, {"talentId": self.talent["id"], "round": "second", "version": 2,
+            "opinion": "已完成面试。", "outcome": "failed", "requestId": str(uuid.uuid4())})
+        with mock.patch.object(dt, "employee", return_value="负责人"), \
+             mock.patch.object(dt.resume_storage, "download", return_value=RAW), \
+             mock.patch.object(dt, "upload", return_value="synthetic-media"), mock.patch.object(dt, "api") as api:
+            dt.deliver("heyi", job["id"])
+            api.assert_not_called()
+        self.assertEqual(self.job()["status"], "failed")
+        with self.assertRaises(pool.Conflict):
+            dt.start(USER, body | {"requestId": str(uuid.uuid4()), "retryId": job["id"], "version": 3})
+
+    def test_legacy_handoff_migration_preserves_first_id_status_and_snapshot(self):
+        job = dt.start(USER, self.body())
+        before = self.job()
+        with pool.database() as db:
+            db.execute("ALTER TABLE hr_interview_handoffs RENAME TO round_jobs")
+            db.execute("""CREATE TABLE hr_interview_handoffs(
+              id TEXT PRIMARY KEY,owner TEXT NOT NULL,talent_id TEXT NOT NULL UNIQUE,
+              request_id TEXT NOT NULL,body TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',
+              task_id TEXT NOT NULL DEFAULT '',created_at REAL NOT NULL,updated_at REAL NOT NULL,
+              checked_at REAL NOT NULL DEFAULT 0,attempt INTEGER NOT NULL DEFAULT 1)""")
+            columns = ",".join(k for k in before if k != "round")
+            db.execute(f"INSERT INTO hr_interview_handoffs SELECT {columns} FROM round_jobs")
+            db.execute("DROP TABLE round_jobs")
+            dt.schema(db)
+        after = self.job()
+        self.assertEqual(after["id"], job["id"])
+        self.assertEqual(after["body"], before["body"])
+        self.assertEqual(after["status"], before["status"])
+        self.assertEqual(after["round"], "first")
+        dt.start(USER, self.second_body())
+
     def deliver(self, result=None, error=None):
         def call(path, *args, **kwargs):
             if path.endswith("asyncsend_v2"):

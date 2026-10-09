@@ -261,12 +261,16 @@
       const resumeText=field(textDetails,'简历正文','textarea');resumeText.value=row.resumeText||'';resumeText.rows=6;resumeText.maxLength=60000;
       const jobText=field(textDetails,'岗位职责与要求','textarea');jobText.value=row.jobDescription||'';jobText.rows=4;jobText.maxLength=10000;
       const aiFeedback=el('p',row.aiError||'',ai,'hr-hint'),aiActions=el('div','',ai,'hr-actions');
+      aiFeedback.setAttribute('role','status');
+      if(row.jobSource)el('p','分析岗位：'+row.jobName+' · JD 来自'+row.jobSource,ai,'hr-hint');
+      if(row.jobLinkError)aiFeedback.textContent=row.jobLinkError;
       const analyze=button(row.aiState==='running'?'分析中…':row.aiState==='complete'?'重新分析':'AI 辅助分析',aiActions,async()=>{
-        analyze.disabled=true;
+        if(!allowed())return;
+        analyze.disabled=true;analyze.textContent='正在提交…';aiFeedback.textContent='正在读取简历和对应岗位 JD…';
         try{
           await request('resume-pool/analyze',{id:row.id,resumeText:resumeText.value,jobDescription:jobText.value,regenerate:row.aiState==='complete'});
           if(selected===row.id&&allowed())await openResume(row.id);
-        }catch(error){if(selected===row.id)aiFeedback.textContent=error.message;analyze.disabled=false;}
+        }catch(error){if(selected===row.id){aiFeedback.textContent=error.message;aiFeedback.className='hr-error';analyze.textContent='AI 辅助分析';}analyze.disabled=false;}
       });
       analyze.disabled=row.aiState==='running';
       if(row.aiState==='running'){
@@ -287,9 +291,6 @@
       }
       const feedback=el('p','',sidebar,'hr-error');feedback.setAttribute('role','alert');
       if(row.status==='pending'){
-        const group=field(sidebar,'通过后归属部门','select');el('option','按职位自动关联部门',group).value='';
-        for(const department of departments.filter(d=>d.status==='ACTIVE'))el('option',department.name,group).value=department.id;
-        group.value=row.departmentId||'';
         if(!template){
           feedback.textContent='请在话术管理中启用并设置默认婉拒话术。';
           button('前往话术管理',el('div','',sidebar,'hr-actions'),()=>{detail.close();navigate('speeches');});
@@ -298,7 +299,7 @@
         async function review(action){
           if(reviewing||!allowed())return;reviewing=true;approve.disabled=reject.disabled=true;
           try{
-            await request('resume-pool/review',{id:row.id,version:row.version,action,departmentId:group.value});
+            await request('resume-pool/review',{id:row.id,version:row.version,action});
             if(selected===row.id&&allowed()){detail.close();await load();}
           }catch(error){if(selected===row.id)feedback.textContent=error.message;}
           finally{reviewing=false;approve.disabled=false;reject.disabled=!template;}

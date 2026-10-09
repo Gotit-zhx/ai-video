@@ -7,6 +7,7 @@
     let stage='invited',outcome='all',department='',page=1,generation=0,active=false,departments=[],rows=[],editing=null,saving=false;
     let departmentButtons=[],departmentDirectory='',pageButtons=[];
     let interviewing=null,interviewData=null,interviewRequest='',interviewTimer=null,interviewSending=false,settingsData=null,settingsSaving=false,settingsEpoch=0,interviewEpoch=0;
+    let interviewRound='first',interviewerProof=null,identifying=false;
     const toolbar=el('div','',panel,'hr-pool-toolbar');
     const intro=el('div','',toolbar);
     el('h2','让合适的人，始终在视野里',intro);
@@ -67,6 +68,12 @@
     const interviewFields=el('div','',interviewDialog,'hr-pool-fields');
     const resumeSelect=makeField('候选人简历',interviewFields,'select');
     const demandSelect=makeField('对应招聘需求',interviewFields,'select');
+    const recipientFields=el('div','',interviewDialog,'hr-pool-fields');recipientFields.hidden=true;
+    const recipientSelect=makeField('二面钉钉面试人员（可选）',recipientFields,'select');
+    const mobileFields=el('div','',interviewDialog,'hr-pool-fields');mobileFields.hidden=true;
+    const interviewerMobile=makeField('面试人员手机号',mobileFields);interviewerMobile.inputMode='tel';interviewerMobile.maxLength=30;
+    const identifyButton=button('识别面试人员',mobileFields,identifyInterviewer);
+    const identityFeedback=el('p','',interviewDialog,'hr-hint');identityFeedback.hidden=true;
     const interviewSummary=el('p','',interviewDialog,'hr-interview-summary');
     const interviewProgress=el('div','',interviewDialog,'hr-interview-progress');
     interviewProgress.setAttribute('aria-label','一面资料发送进度');
@@ -81,46 +88,62 @@
     const states={preparing:'正在准备一面资料包',sending:'正在发送到钉钉',submitted:'钉钉已接受，正在确认送达',
       sent:'一面资料已送达负责人',uncertain:'发送结果待人工核对，不会自动重发',failed:'发送未完成，可核对后手动重试'};
     const selectedDemand=()=>interviewData?.demands?.find(d=>d.id===demandSelect.value);
+    const selectedRecipient=()=>recipientSelect.value==='mobile'?interviewerProof:
+      interviewData?.recipients?.find(r=>r.bindingKey===recipientSelect.value);
     function renderInterview(){
       const data=interviewData,demand=selectedDemand(),handoff=data?.handoff;
+      const second=interviewRound==='second',label=second?'二面':'一面',person=second?selectedRecipient():null;
       const delivered=handoff?.status==='sent';
       interviewDownload.hidden=!(data?.packageReady&&(handoff||(resumeSelect.value&&demand?.questionsReady)));
       interviewDownload.removeAttribute('href');
       if(!interviewDownload.hidden){
-        const query=new URLSearchParams({talentId:interviewing.id});
+        const query=new URLSearchParams({talentId:interviewing.id,round:interviewRound});
         if(!handoff){query.set('resumeId',resumeSelect.value);query.set('demandId',demand.id);}
         interviewDownload.href='/api/v1/hr/pool/interview/package?'+query;
       }
-      interviewSettings.hidden=interviewSend.hidden=delivered;
+      interviewSettings.hidden=interviewSend.hidden=delivered||data?.reviewed||(!second&&data?.stage!=='invited');
+      recipientFields.hidden=!second;mobileFields.hidden=!second||recipientSelect.value!=='mobile'||(!!handoff&&handoff.status!=='failed');
+      identifyButton.hidden=mobileFields.hidden;
+      identityFeedback.hidden=mobileFields.hidden;
+      interviewProgress.setAttribute('aria-label',label+'资料发送进度');
       interviewIntro.textContent=delivered?'简历、岗位 JD 和面试题库已作为 ZIP 资料包送达负责人，可解压查看和打印题库。':
-        '简历、岗位 JD 和面试题库将作为一份 ZIP 资料包发给负责人，可解压查看和打印题库。';
+        second?'可选择钉钉面试人员发送简历、岗位 JD 和面试题库，也可以关闭此窗口直接填写二面意见。':
+          '简历、岗位 JD 和面试题库将作为一份 ZIP 资料包发给负责人，可解压查看和打印题库。';
       const missing=[];
       if(!data?.config?.verified)missing.push('请先配置钉钉企业内部应用');
       if(!data?.resumes?.length)missing.push('候选人还没有审批通过的简历');
       if(!demand)missing.push('请在招聘需求池关联这份简历的具体职位');
       else{
         if(!demand.questionsReady)missing.push('请在招聘需求池生成当前版本的面试题库');
-        if(!demand.recipientReady)missing.push('请在部门管理中绑定并校验该岗位的钉钉负责人');
+        if(!second&&!demand.recipientReady)missing.push('请在部门管理中绑定并校验该岗位的钉钉负责人');
         if(!demand.resumeIds.includes(resumeSelect.value))missing.push('所选简历与招聘需求职位不一致');
       }
-      interviewSummary.textContent=demand?`${demand.position} · ${demand.department||'部门待补充'} · 负责人：${demand.recipient||'未配置'} · ${demand.questionCount} 道面试题`:'';
-      interviewFeedback.textContent=handoff?(states[handoff.status]||'正在核对发送记录')+(handoff.error?'。'+handoff.error:''):missing.join('；');
+      if(second&&!person)missing.push('发送资料前请选择或识别二面面试人员');
+      interviewSummary.textContent=demand?`${demand.position} · ${demand.department||'部门待补充'} · 面试人员：${handoff?.recipient||(second?person?.name:demand.recipient)||'未选择'} · ${demand.questionCount} 道面试题`:'';
+      interviewFeedback.textContent=handoff?(states[handoff.status]||'正在核对发送记录').replaceAll('一面',label)+(handoff.error?'。'+handoff.error:''):missing.join('；');
       interviewFeedback.className=(!handoff&&missing.length)||handoff?.status==='failed'?'hr-error':'hr-hint';
       interviewProgress.replaceChildren();
       const phase={preparing:0,sending:1,submitted:2,sent:3}[handoff?.status]??-1;
-      ['准备资料','发送钉钉','核对回执','进入一面'].forEach((label,index)=>{
+      ['准备资料','发送钉钉','核对回执',second?'资料送达':'进入一面'].forEach((label,index)=>{
         const node=el('span',label,interviewProgress,'hr-interview-step'+(index<=phase?' is-current':''));
         if(index===phase&&phase<3)node.className+=' is-running';
       });
       const pending=!!handoff&&handoff.status!=='failed';
-      interviewSend.textContent=handoff?.status==='failed'?'手动重试':'发送一面资料';
-      interviewSend.disabled=interviewSending||pending||missing.length>0||data?.stage!=='invited';
+      interviewSend.textContent=handoff?.status==='failed'?'手动重试':'发送'+label+'资料';
+      interviewSend.disabled=interviewSending||identifying||pending||missing.length>0||data?.reviewed||data?.stage!==(second?'second':'invited');
       resumeSelect.disabled=demandSelect.disabled=interviewSending||pending;
+      recipientSelect.disabled=interviewerMobile.disabled=interviewSending||pending||identifying||data?.reviewed;
+      identifyButton.disabled=interviewSending||pending||identifying||data?.reviewed;
       return missing.length===0&&!handoff&&data?.stage==='invited';
     }
     function fillInterview(data){
       const oldResume=resumeSelect.value,oldDemand=demandSelect.value;
+      const oldRecipient=recipientSelect.value;
       interviewData=data;resumeSelect.replaceChildren();demandSelect.replaceChildren();
+      recipientSelect.replaceChildren();el('option','不发送，可直接填写二面意见',recipientSelect).value='';
+      for(const person of data.recipients||[])el('option',person.name+(person.department?' · '+person.department:''),recipientSelect).value=person.bindingKey;
+      el('option','其他钉钉人员（用手机号识别）',recipientSelect).value='mobile';
+      recipientSelect.value=oldRecipient==='mobile'||data.recipients?.some(r=>r.bindingKey===oldRecipient)?oldRecipient:'';
       for(const resume of data.resumes||[])el('option',`${resume.filename} · ${resume.jobName}`,resumeSelect).value=resume.id;
       resumeSelect.value=data.resumes?.some(r=>r.id===oldResume)?oldResume:data.resumes?.[0]?.id||'';
       const matches=(data.demands||[]).filter(d=>d.resumeIds.includes(resumeSelect.value));
@@ -131,24 +154,39 @@
     }
     resumeSelect.addEventListener('change',()=>fillInterview(interviewData));
     demandSelect.addEventListener('change',()=>renderInterview());
+    recipientSelect.addEventListener('change',()=>{interviewerProof=null;identityFeedback.textContent='';renderInterview();});
+    interviewerMobile.addEventListener('input',()=>{interviewerProof=null;identityFeedback.textContent='';renderInterview();});
+    async function identifyInterviewer(){
+      if(!interviewing||identifying||!allowed()||!interviewData?.config?.verified)return;
+      const id=interviewing.id,epoch=interviewEpoch;
+      identifying=true;renderInterview();identityFeedback.textContent='正在识别钉钉员工…';
+      try{
+        const person=await request('/interview/identity',{talentId:id,mobile:interviewerMobile.value,
+          configVersion:interviewData.config.version});
+        if(epoch!==interviewEpoch||interviewing?.id!==id||!allowed())return;
+        interviewerProof=person;identityFeedback.textContent='已识别：'+person.name+'。请核对后点击发送二面资料。';
+      }catch(error){if(epoch===interviewEpoch)identityFeedback.textContent=error.message;}
+      finally{identifying=false;if(epoch===interviewEpoch)renderInterview();}
+    }
     async function refreshInterview(){
       clearTimeout(interviewTimer);
       if(!interviewing||!interviewDialog.open||!active||!allowed())return;
       const id=interviewing.id,epoch=interviewEpoch;
       try{
-        const data=await request('/interview?talentId='+encodeURIComponent(id));
+        const data=await request('/interview?talentId='+encodeURIComponent(id)+'&round='+interviewRound);
         if(epoch!==interviewEpoch||interviewing?.id!==id||!interviewDialog.open||!allowed())return;
         fillInterview(data);
         if(data.handoff?.status==='sent')load();
         if(['preparing','sending','submitted'].includes(data.handoff?.status))interviewTimer=setTimeout(refreshInterview,5000);
       }catch(error){if(epoch===interviewEpoch&&interviewing?.id===id)interviewFeedback.textContent=error.message;}
     }
-    async function openInterview(row,autoStart=false){
+    async function openInterview(row,autoStart=false,round=row.stage==='second'?'second':'first'){
       if(!allowed()||interviewSending)return;
       const epoch=++interviewEpoch;
-      interviewing=row;interviewData=null;interviewRequest=crypto.randomUUID();
+      interviewing=row;interviewData=null;interviewRequest=crypto.randomUUID();interviewRound=round;
+      interviewerProof=null;interviewerMobile.value='';recipientSelect.replaceChildren();identityFeedback.textContent='';
       interviewDownload.hidden=true;interviewDownload.removeAttribute('href');
-      interviewTitle.textContent=(autoStart?'开始一面 · ':'人才详情 · ')+row.name;interviewFeedback.textContent='正在读取岗位、简历和发送记录…';
+      interviewTitle.textContent=(round==='second'?'二面资料 · ':autoStart?'开始一面 · ':'人才详情 · ')+row.name;interviewFeedback.textContent='正在读取岗位、简历和发送记录…';
       resumeSelect.replaceChildren();demandSelect.replaceChildren();interviewSummary.textContent='';interviewProgress.replaceChildren();
       interviewSend.disabled=true;interviewSettings.hidden=interviewSend.hidden=row.stage!=='invited';interviewDialog.showModal();
       await refreshInterview();
@@ -159,11 +197,14 @@
       const id=interviewing.id,data=interviewData,demand=selectedDemand(),epoch=interviewEpoch;
       let failure='';
       interviewSending=true;interviewSend.disabled=true;resumeSelect.disabled=demandSelect.disabled=true;
-      interviewFeedback.textContent='正在提交一面资料…';
+      interviewFeedback.textContent='正在提交'+(interviewRound==='second'?'二面':'一面')+'资料…';
       try{
+        const person=interviewRound==='second'?selectedRecipient():null;
         const handoff=await request('/interview/start',{talentId:id,requestId:interviewRequest,
+          round:interviewRound,
           version:data.version,resumeId:resumeSelect.value,demandId:demand.id,demandVersion:demand.version,
-          recipientId:demand.recipientId,recipientBindingKey:demand.recipientBindingKey||'',
+          recipientId:person?.userId||demand.recipientId,recipientBindingKey:person?.bindingKey||demand.recipientBindingKey||'',
+          identityProof:person?.identityProof,
           configVersion:data.config.version,retryId:data.handoff?.status==='failed'?data.handoff.id:undefined});
         if(epoch!==interviewEpoch||interviewing?.id!==id||!allowed())return;
         interviewData.handoff=handoff;renderInterview();await refreshInterview();
@@ -388,6 +429,8 @@
         if(row.notes)el('p',row.notes,card,'hr-excerpt hr-pool-note');
         const footer=el('div','',card,'hr-actions');
         if(canInvite)button('开始一面',footer,()=>openInterview(row,true)).className='hr-primary';
+        if(row.stage==='second'&&reviewRound==='second'&&!reviewResult)
+          button('发送二面资料',footer,()=>openInterview(row,false,'second'));
         if(reviewRound&&(row.stage===reviewRound||reviewResult)){
           button(reviewRound==='first'?'一面意见':'二面意见',footer,()=>openReview(row,reviewRound)).className='hr-primary';
         }

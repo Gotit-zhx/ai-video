@@ -1662,7 +1662,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
             self.passive_request(write=True)
             return
         if self.path in ("/api/v1/hr/pool/talents", "/api/v1/hr/pool/projects",
-                         "/api/v1/hr/pool/interview/start", "/api/v1/hr/pool/interview/review", "/api/v1/hr/pool/dingtalk/save",
+                         "/api/v1/hr/pool/interview/start", "/api/v1/hr/pool/interview/identity",
+                         "/api/v1/hr/pool/interview/review", "/api/v1/hr/pool/dingtalk/save",
                          "/api/v1/hr/pool/dingtalk/recipient",
                          "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate",
                          "/api/v1/hr/demands/upload", "/api/v1/hr/demands/remove", "/api/v1/hr/departments/save",
@@ -1772,6 +1773,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("资料格式不正确")
                 if self.path == "/api/v1/hr/pool/interview/start":
                     result = dingtalk_interviews.start(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/pool/interview/identity":
+                    result = dingtalk_interviews.interview_identity(self.desktop_user, body)
                 elif self.path == "/api/v1/hr/pool/interview/review":
                     result = talent_pool.review_interview(self.desktop_user, body)
                 elif self.path == "/api/v1/hr/pool/dingtalk/save":

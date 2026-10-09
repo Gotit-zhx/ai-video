@@ -2,7 +2,7 @@
   let pdfModule;
   globalThis.createHrResumePreview=({root,element:el,button,row})=>{
     let stopped=false,pdf=null,loading=null,rendering=null,page=1,revision=0,resizeTimer,image=null;
-    const controller=new AbortController();
+    let controller=new AbortController(),loadTimer;
     const top=el('div','',root,'hr-preview-toolbar');
     el('strong','简历原件',top);
     const controls=el('div','',top,'hr-preview-controls');
@@ -42,6 +42,13 @@
     }
     async function load(){
       retry.hidden=true;status.hidden=false;
+      clearTimeout(loadTimer);controller.abort();controller=new AbortController();
+      const currentController=controller;
+      loadTimer=setTimeout(()=>{
+        if(stopped||controller!==currentController)return;
+        currentController.abort();loading?.destroy().catch(()=>{});
+        status.textContent='简历加载超时，请重新加载或下载原件查看。';status.hidden=false;retry.hidden=false;
+      },45000);
       try{
         ++revision;rendering?.cancel();
         await loading?.destroy().catch(()=>{});await pdf?.destroy().catch(()=>{});
@@ -49,28 +56,30 @@
         if(['png','jpg','jpeg'].includes(row.extension)){
           controls.hidden=true;canvas.hidden=true;
           image?.remove();image=el('img','',stage,'hr-preview-image');image.alt='简历原件';
-          image.onload=()=>{if(!stopped)status.hidden=true;};
-          image.onerror=()=>{if(!stopped){status.textContent='图片未能显示，请重新加载。';retry.hidden=false;}};
+          image.onload=()=>{if(!stopped){clearTimeout(loadTimer);status.hidden=true;}};
+          image.onerror=()=>{if(!stopped){clearTimeout(loadTimer);status.textContent='图片未能显示，请重新加载。';retry.hidden=false;}};
           image.src=row.fileUrl;return;
         }
         if(row.extension!=='pdf'){
-          controls.hidden=true;canvas.hidden=true;status.textContent='此 Word 文件可下载查看；右侧可查看已提取的正文。';return;
+          clearTimeout(loadTimer);controls.hidden=true;canvas.hidden=true;status.textContent='此 Word 文件可下载查看；右侧可查看已提取的正文。';return;
         }
-        const response=await fetch(row.fileUrl,{credentials:'same-origin',cache:'no-store',signal:controller.signal});
+        const response=await fetch(row.fileUrl,{credentials:'same-origin',cache:'no-store',signal:currentController.signal});
         if(!response.ok||!/^application\/pdf(?:;|$)/i.test(response.headers.get('Content-Type')||''))throw Error('pdf');
         const bytes=new Uint8Array(await response.arrayBuffer());
-        if(stopped)return;
+        if(stopped||currentController.signal.aborted)return;
         if(bytes.length>25*1024*1024||String.fromCharCode(...bytes.slice(0,5))!=='%PDF-')throw Error('pdf');
         if(!pdfModule)pdfModule=import('/vendor/pdfjs/pdf.js').catch(error=>{pdfModule=null;throw error;});
-        const library=await pdfModule;if(stopped)return;
+        const library=await pdfModule;if(stopped||currentController.signal.aborted)return;
         library.GlobalWorkerOptions.workerSrc='/vendor/pdfjs/pdf.worker.js';
         loading=library.getDocument({data:bytes,isEvalSupported:false});
         const document=await loading.promise;
-        if(stopped){document.destroy().catch(()=>{});return;}
+        if(stopped||currentController.signal.aborted){document.destroy().catch(()=>{});return;}
         pdf=document;loading=null;await render(page);
       }catch(error){
-        if(stopped||controller.signal.aborted)return;
+        if(stopped||controller!==currentController||currentController.signal.aborted)return;
         status.textContent='简历预览未能加载，请重试。';retry.hidden=false;
+      }finally{
+        if(!image&&controller===currentController)clearTimeout(loadTimer);
       }
     }
     const resize=typeof ResizeObserver==='function'?new ResizeObserver(()=>{
@@ -78,7 +87,7 @@
     }):null;
     resize?.observe(stage);load();
     return ()=>{
-      stopped=true;++revision;clearTimeout(resizeTimer);controller.abort();resize?.disconnect();rendering?.cancel();
+      stopped=true;++revision;clearTimeout(resizeTimer);clearTimeout(loadTimer);controller.abort();resize?.disconnect();rendering?.cancel();
       loading?.destroy().catch(()=>{});pdf?.destroy().catch(()=>{});
     };
   };

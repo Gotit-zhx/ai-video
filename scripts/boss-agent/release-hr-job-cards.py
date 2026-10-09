@@ -14,7 +14,7 @@ manifest = json.loads((root / "manifest.json").read_text())
 files = ("index.html", "hr-workspace.js", "hr-workspace.css", "hr-passive.js")
 if "app.js" in manifest:
     files += ("app.js",)
-for optional in ("hr-demands.js", "hr-sourcing.js", "hr-pool.js", "hr-departments.js"):
+for optional in ("hr-demands.js", "hr-sourcing.js", "hr-pool.js", "hr-departments.js", "hr-resume-preview.js"):
     if optional in manifest:
         files += (optional,)
 assert not (root / "activation.json").exists()

@@ -154,6 +154,61 @@ class PassiveTest(unittest.TestCase):
             feature.analyze(USER,{'id':'r1'},'test-session');worker.assert_called_once()
         self.assertEqual(feature.listing(USER,'resume-pool',{'id':'r1'})['items'][0]['status'],'pending')
 
+    def test_analysis_resolves_current_exact_job_jd_before_model_call(self):
+        import recruitment_demands as demands
+        with pool.database() as db:
+            demands.schema(db)
+            detail=json.loads(db.execute("SELECT body FROM hr_resume_pool WHERE id='r1'").fetchone()[0])
+            detail.update(jobId='job-1',jobDescription='')
+            db.execute("UPDATE hr_resume_pool SET body=? WHERE id='r1'",(json.dumps(detail),))
+            for record,owner,key,jd in [('valid','heyi',KEY,'正确岗位职责'),
+                                      ('other-account','heyi','b'*64,'其他账号岗位'),
+                                      ('other-owner','other',KEY,'其他租户岗位')]:
+                db.execute("""INSERT INTO recruitment_demands(id,owner,body,status,version,created_at,updated_at)
+                  VALUES(?,?,?,'recruiting',1,?,?)""",(record,owner,json.dumps({
+                    'jobId':'job-1','jobAccountKey':key,'jobDescription':jd,'education':'本科','years':3}),
+                    feature.now(),feature.now()))
+        row=feature.listing(USER,'resume-pool',{'id':'r1'})['items'][0]
+        self.assertEqual(row['jobDescription'],'正确岗位职责')
+        self.assertEqual(row['jobSource'],'招聘需求池')
+        with mock.patch.object(feature.threading,'Thread') as thread:
+            feature.analyze(USER,{'id':'r1','jobDescription':''},'session')
+        snapshot=thread.call_args.kwargs['args'][3]
+        self.assertEqual(snapshot['jobDescription'],'正确岗位职责')
+        self.assertEqual(snapshot['experience'],'3')
+        self.assertEqual(feature.listing(USER,'resume-pool',{'id':'r1'})['items'][0]['status'],'pending')
+
+    def test_ambiguous_job_jd_is_reported_without_calling_model(self):
+        import recruitment_demands as demands
+        with pool.database() as db:
+            demands.schema(db)
+            db.execute("UPDATE hr_resume_pool SET body=json_set(body,'$.jobId','job-1') WHERE id='r1'")
+            for i in range(2):
+                db.execute("""INSERT INTO recruitment_demands(id,owner,body,status,version,created_at,updated_at)
+                  VALUES(?,'heyi',?,'recruiting',1,?,?)""",(str(i),json.dumps({
+                    'jobId':'job-1','jobAccountKey':KEY,'jobDescription':f'岗位职责{i}'}),
+                    feature.now(),feature.now()))
+        with mock.patch.object(feature.threading,'Thread') as thread:
+            with self.assertRaisesRegex(ValueError,'不同 JD'):
+                feature.analyze(USER,{'id':'r1'},'session')
+            thread.assert_not_called()
+
+    def test_pi_failure_code_is_shown_without_echoing_provider_secrets(self):
+        import io
+        import urllib.error
+        with pool.database() as db:
+            db.execute("UPDATE hr_resume_pool SET ai_state='running',ai_job='job1' WHERE id='r1'")
+        failure=urllib.error.HTTPError(feature.AI_URL,502,'failed',{},io.BytesIO(json.dumps({
+            'message':'private-provider-token [HR_AI_INVALID_JSON]'}).encode()))
+        with mock.patch.object(feature.urllib.request,'build_opener') as opener:
+            opener.return_value.open.side_effect=failure
+            feature.analyze_worker('heyi','r1','job1',{'resumeText':'text'},'session')
+        row=feature.listing(USER,'resume-pool',{'id':'r1'})['items'][0]
+        self.assertEqual(row['aiState'],'failed')
+        self.assertIn('有效分析格式',row['aiError'])
+        self.assertNotIn('private-provider-token',row['aiError'])
+        self.assertEqual(row['status'],'pending')
+
     def test_rule_default_off_reenable_ignores_previous_history(self):
         body={'accountKey':KEY,'jobId':'job-1','jobName':'运营'}
         first=feature.save_rule(USER,body);self.assertFalse(first['enabled'])

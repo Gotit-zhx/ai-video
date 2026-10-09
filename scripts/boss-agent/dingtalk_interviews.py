@@ -1,4 +1,4 @@
-"""Explicit first-interview handoff to one employee. Never contacts BOSS."""
+"""Explicit per-round interview handoff to one employee. Never contacts BOSS."""
 import hashlib
 import html
 import io
@@ -47,10 +47,88 @@ def schema(db):
       owner TEXT NOT NULL,demand_id TEXT NOT NULL,user_id TEXT NOT NULL,name TEXT NOT NULL,
       config_version INTEGER NOT NULL,PRIMARY KEY(owner,demand_id))""")
     db.execute("""CREATE TABLE IF NOT EXISTS hr_interview_handoffs(
-      id TEXT PRIMARY KEY,owner TEXT NOT NULL,talent_id TEXT NOT NULL UNIQUE,
+      id TEXT PRIMARY KEY,owner TEXT NOT NULL,talent_id TEXT NOT NULL,
       request_id TEXT NOT NULL,body TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',
       task_id TEXT NOT NULL DEFAULT '',created_at REAL NOT NULL,updated_at REAL NOT NULL,
-      checked_at REAL NOT NULL DEFAULT 0,attempt INTEGER NOT NULL DEFAULT 1)""")
+      checked_at REAL NOT NULL DEFAULT 0,attempt INTEGER NOT NULL DEFAULT 1,
+      round TEXT NOT NULL DEFAULT 'first',UNIQUE(owner,talent_id,round))""")
+    if "round" not in {r["name"] for r in db.execute("PRAGMA table_info(hr_interview_handoffs)")}:
+        db.execute("ALTER TABLE hr_interview_handoffs RENAME TO hr_interview_handoffs_legacy")
+        schema(db)
+        db.execute("""INSERT INTO hr_interview_handoffs
+          (id,owner,talent_id,request_id,body,status,error,task_id,created_at,updated_at,checked_at,attempt)
+          SELECT id,owner,talent_id,request_id,body,status,error,task_id,created_at,updated_at,checked_at,attempt
+          FROM hr_interview_handoffs_legacy""")
+        db.execute("DROP TABLE hr_interview_handoffs_legacy")
+
+
+def interview_round(data):
+    value = data.get("round", "first")
+    if value not in ("first", "second"):
+        raise ValueError("面试轮次不正确")
+    return value
+
+
+def second_recipients(db, owner, config):
+    choices = []
+    if not config or not config["verified"]:
+        return choices
+    for row in db.execute("SELECT * FROM hr_departments WHERE owner=? AND status='ACTIVE' ORDER BY name", (owner,)):
+        person = recipient_for_demand(db, owner, "", {"departmentId": row["id"]}, config)
+        if person and person["valid"]:
+            choices.append({**person, "department": row["name"]})
+    for row in db.execute("SELECT * FROM hr_dingtalk_recipients WHERE owner=? AND config_version=?",
+                          (owner, config["version"])):
+        choices.append({**dict(row), "department": "", "valid": True,
+                        "bindingKey": "demand:" + row["demand_id"]})
+    return choices
+
+
+def interview_identity(user, body):
+    """Verify an optional second interviewer without changing department routing."""
+    owner, _ = pool.context(user)
+    record = pool.text(body.get("talentId", ""), 100)
+    mobile = re.sub(r"[\s()-]", "", pool.text(body.get("mobile", ""), 30))
+    if mobile.startswith("+86"):
+        mobile = mobile[3:]
+    if not re.fullmatch(r"1[3-9]\d{9}", mobile):
+        raise ValueError("请填写面试人员在企业钉钉通讯录中的 11 位手机号")
+    config = read_config(owner)
+    if config["version"] != body.get("configVersion"):
+        raise pool.Conflict("钉钉应用已更新，请重新识别")
+    with pool.database() as db:
+        talent = db.execute("SELECT * FROM talents WHERE owner=? AND id=?", (owner, record)).fetchone()
+        if not talent or talent["stage"] != "second":
+            raise pool.Conflict("候选人当前不在二面，请刷新")
+        if db.execute("SELECT 1 FROM hr_interview_reviews WHERE owner=? AND talent_id=? AND round='second'",
+                      (owner, record)).fetchone():
+            raise pool.Conflict("二面意见已提交")
+    result = api("topapi/v2/user/getbymobile", {"mobile": mobile}, token(config)).get("result", {})
+    uid = result.get("userid", "") if isinstance(result, dict) else ""
+    if not isinstance(uid, str) or not re.fullmatch(r"[\w@.+~-]{1,100}", uid):
+        raise ValueError("未识别到当前企业员工，请核对手机号和通讯录权限")
+    name = employee(config, uid)
+    proof = {"owner": owner, "talentId": record, "round": "second", "configVersion": config["version"],
+             "userId": uid, "name": name}
+    return {"name": name, "userId": uid, "bindingKey": "identity",
+            "identityProof": cipher().encrypt(json.dumps(proof, ensure_ascii=False).encode()).decode()}
+
+
+def second_recipient(db, owner, record, config, body):
+    if body.get("identityProof"):
+        from cryptography.fernet import InvalidToken
+        try:
+            proof = json.loads(cipher().decrypt(pool.text(body["identityProof"], 4000).encode(), ttl=300))
+        except (InvalidToken, ValueError, TypeError):
+            raise ValueError("面试人员识别结果已过期，请重新识别") from None
+        if (not isinstance(proof, dict) or proof.get("owner") != owner or proof.get("talentId") != record
+                or proof.get("round") != "second" or proof.get("configVersion") != config["version"]
+                or proof.get("userId") != body.get("recipientId")):
+            raise ValueError("面试人员识别结果不匹配，请重新识别")
+        return {"user_id": proof["userId"], "name": proof["name"], "valid": True, "bindingKey": "identity"}
+    return next((r for r in second_recipients(db, owner, config)
+                 if r["user_id"] == body.get("recipientId")
+                 and r["bindingKey"] == body.get("recipientBindingKey")), None)
 
 
 def cipher():
@@ -349,12 +427,14 @@ def handoff_view(row):
         return None
     value = json.loads(row["body"])
     return {"id": row["id"], "status": row["status"], "error": row["error"],
+            "round": row["round"],
             "recipient": value["recipientName"], "position": value["position"],
             "updatedAt": row["updated_at"], "attempt": row["attempt"]}
 
 
 def preview(user, query):
     owner, _ = pool.context(user)
+    round_name = interview_round(query)
     record = pool.text(query.get("talentId", ""), 100)
     with pool.database() as db:
         passive_pool.schema(db); schema(db); demands.schema(db)
@@ -389,29 +469,38 @@ def preview(user, query):
                             "recipientId": recipient["user_id"] if recipient else "",
                             "recipientBindingKey": recipient["bindingKey"] if recipient else "",
                             "recipientReady": bool(recipient and recipient["valid"])})
-        job = db.execute("SELECT * FROM hr_interview_handoffs WHERE owner=? AND talent_id=?", (owner, record)).fetchone()
+        people = second_recipients(db, owner, config) if round_name == "second" else []
+        reviewed = bool(db.execute("SELECT 1 FROM hr_interview_reviews WHERE owner=? AND talent_id=? AND round=?",
+                                   (owner, record, round_name)).fetchone())
+        job = db.execute("SELECT * FROM hr_interview_handoffs WHERE owner=? AND talent_id=? AND round=?",
+                         (owner, record, round_name)).fetchone()
     if job and job["status"] == "submitted":
         reconcile(owner, job["id"])
         with pool.database() as db:
             schema(db)
-            job = db.execute("SELECT * FROM hr_interview_handoffs WHERE owner=? AND talent_id=?", (owner, record)).fetchone()
+            job = db.execute("SELECT * FROM hr_interview_handoffs WHERE owner=? AND talent_id=? AND round=?",
+                             (owner, record, round_name)).fetchone()
     return {"talentId": record, "name": pool.view(talent)["name"], "version": talent["version"],
             "stage": talent["stage"], "resumes": resumes, "demands": choices,
             "config": public_config(config), "handoff": handoff_view(job),
+            "round": round_name, "reviewed": reviewed,
+            "recipients": [{"userId": r["user_id"], "name": r["name"], "department": r["department"],
+                            "bindingKey": r["bindingKey"]} for r in people],
             "packageReady": bool(job or any(d["questionsReady"] for d in choices))}
 
 
 def download_package(user, query):
     """Build a private ZIP from the handoff snapshot or an exact current job link."""
     owner, _ = pool.context(user)
+    round_name = interview_round(query)
     record = pool.text(query.get("talentId", ""), 100)
     with pool.database() as db:
         passive_pool.schema(db); schema(db); demands.schema(db)
         talent = db.execute("SELECT * FROM talents WHERE owner=? AND id=?", (owner, record)).fetchone()
         if not talent:
             raise ValueError("人才不存在")
-        handoff = db.execute("SELECT body FROM hr_interview_handoffs WHERE owner=? AND talent_id=?",
-                             (owner, record)).fetchone()
+        handoff = db.execute("SELECT body FROM hr_interview_handoffs WHERE owner=? AND talent_id=? AND round=?",
+                             (owner, record, round_name)).fetchone()
         if handoff:
             value = json.loads(handoff["body"])
             resume_id = value["resumeId"]
@@ -432,7 +521,7 @@ def download_package(user, query):
             questions = json.loads(demand["ai_result"]).get("interviewQuestions", [])
             if demand["ai_status"] != "complete" or demand["ai_version"] != demand["version"] or not questions:
                 raise ValueError("请先在招聘需求池生成当前岗位的面试题库")
-            value = {"name": pool.view(talent)["name"], "position": jd["position"],
+            value = {"round": round_name, "name": pool.view(talent)["name"], "position": jd["position"],
                      "resumeKey": resume["file_key"], "resumeHash": resume["file_hash"],
                      "extension": detail["extension"], "jd": jd.get("jobDescription", ""),
                      "questions": questions, "recipientName": jd.get("manager") or "待指定"}
@@ -442,6 +531,7 @@ def download_package(user, query):
 
 def start(user, body):
     owner, actor = pool.context(user)
+    round_name = interview_round(body)
     record = pool.text(body.get("talentId", ""), 100)
     try:
         request_id = str(uuid.UUID(body.get("requestId", "")))
@@ -449,7 +539,8 @@ def start(user, body):
         raise ValueError("操作标识不正确")
     with pool.database() as db:
         passive_pool.schema(db); schema(db); demands.schema(db)
-        old = db.execute("SELECT * FROM hr_interview_handoffs WHERE owner=? AND talent_id=?", (owner, record)).fetchone()
+        old = db.execute("SELECT * FROM hr_interview_handoffs WHERE owner=? AND talent_id=? AND round=?",
+                         (owner, record, round_name)).fetchone()
         if old and (old["request_id"] == request_id or old["status"] != "failed"):
             return handoff_view(old)
         if old and body.get("retryId") != old["id"]:
@@ -460,8 +551,12 @@ def start(user, body):
         demand = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?",
                             (owner, pool.text(body.get("demandId", ""), 100))).fetchone()
         config = db.execute("SELECT * FROM hr_dingtalk_config WHERE owner=?", (owner,)).fetchone()
-        if not talent or talent["stage"] != "invited" or talent["version"] != body.get("version"):
+        if not talent or talent["stage"] != ("second" if round_name == "second" else "invited") or talent["version"] != body.get("version"):
             raise pool.Conflict("人才阶段或资料已更新，请刷新人才卡片")
+        if round_name == "second" and db.execute(
+                "SELECT 1 FROM hr_interview_reviews WHERE owner=? AND talent_id=? AND round='second'",
+                (owner, record)).fetchone():
+            raise pool.Conflict("二面意见已提交，无需再发送面试资料")
         if not resume or json.loads(resume["body"]).get("talentId") != record:
             raise ValueError("请选择该候选人已审批通过的简历")
         detail, jd = json.loads(resume["body"]), json.loads(demand["body"]) if demand else {}
@@ -473,10 +568,12 @@ def start(user, body):
             raise ValueError("请先在招聘需求池生成当前岗位的面试题库")
         if not config or not config["verified"] or config["version"] != body.get("configVersion"):
             raise ValueError("请先配置并校验钉钉应用，或刷新最新配置")
+        if round_name == "second":
+            recipient = second_recipient(db, owner, record, config, body)
         if (not recipient or not recipient["valid"] or recipient["user_id"] != body.get("recipientId")
                 or recipient["bindingKey"] != body.get("recipientBindingKey", "")):
             raise ValueError("负责人映射已变更或未配置，请在部门管理中重新核对钉钉绑定")
-        snapshot = {"name": pool.view(talent)["name"], "position": jd["position"],
+        snapshot = {"round": round_name, "name": pool.view(talent)["name"], "position": jd["position"],
                     "department": jd.get("department", ""), "resumeId": resume["id"],
                     "resumeKey": resume["file_key"], "resumeHash": resume["file_hash"],
                     "resumeFilename": detail["fileName"], "extension": detail["extension"],
@@ -490,17 +587,18 @@ def start(user, body):
         attempt = old["attempt"] + 1 if old else 1
         now = time.time()
         db.execute("""INSERT OR REPLACE INTO hr_interview_handoffs
-          (id,owner,talent_id,request_id,body,status,created_at,updated_at,attempt)
-          VALUES(?,?,?,?,?,'preparing',?,?,?)""",
-                   (job_id, owner, record, request_id, json.dumps(snapshot, ensure_ascii=False), now, now, attempt))
+          (id,owner,talent_id,request_id,body,status,created_at,updated_at,attempt,round)
+          VALUES(?,?,?,?,?,'preparing',?,?,?,?)""",
+                   (job_id, owner, record, request_id, json.dumps(snapshot, ensure_ascii=False), now, now, attempt, round_name))
         pool.event(db, owner, actor, record, "interview.start", None,
-                   {"handoffId": job_id, "recipient": recipient["name"], "demandId": demand["id"]})
+                   {"handoffId": job_id, "round": round_name, "recipient": recipient["name"], "demandId": demand["id"]})
         result = handoff_view(db.execute("SELECT * FROM hr_interview_handoffs WHERE id=?", (job_id,)).fetchone())
     launch(owner, job_id)
     return result
 
 
 def package(value, raw):
+    label = "二面" if value.get("round") == "second" else "一面"
     resume_storage.validate(raw, value["extension"])
     if hashlib.sha256(raw).hexdigest() != value["resumeHash"]:
         raise ValueError("简历内容校验不一致，未发送")
@@ -515,24 +613,25 @@ def package(value, raw):
                       f'</ul><h3>评分标准</h3><p>{esc(question.get("evaluationCriteria", ""))}</p>'
                       '<h3>优秀答案信号</h3><ul>' +
                       "".join(f"<li>{esc(x)}</li>" for x in question.get("strongAnswerSignals", [])) + '</ul></section>')
-    document = ('<!doctype html><html lang="zh"><meta charset="utf-8"><title>一面面试题库</title>'
+    document = (f'<!doctype html><html lang="zh"><meta charset="utf-8"><title>{label}面试题库</title>'
                 '<style>body{max-width:880px;margin:40px auto;padding:24px;font:16px/1.8 sans-serif;'
                 'color:#171717}section{border-top:1px solid #ddd;padding:16px 0}h2{font-size:20px}</style>'
-                f'<h1>{esc(value["position"])} · 一面面试题库</h1><p>候选人：{esc(value["name"])}'
+                f'<h1>{esc(value["position"])} · {label}面试题库</h1><p>候选人：{esc(value["name"])}'
                 f' · 负责人：{esc(value["recipientName"])}</p>' + "".join(blocks) + '</html>')
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("候选人简历." + value["extension"], raw)
-        z.writestr("一面面试题库.html", document.encode())
+        z.writestr(label + "面试题库.html", document.encode())
         z.writestr("岗位JD.txt", value["jd"].encode())
     content = buf.getvalue()
     if len(content) > MAX_PACKAGE:
-        raise ValueError("一面资料包超过钉钉 20MB 上限，请压缩简历后重试")
+        raise ValueError("面试资料包超过钉钉 20MB 上限，请压缩简历后重试")
     return content
 
 
 def package_filename(value):
-    return re.sub(r'[^\w\u4e00-\u9fff.-]', "_", value["name"] + "-" + value["position"])[:90] + "-一面资料.zip"
+    label = "二面" if value.get("round") == "second" else "一面"
+    return re.sub(r'[^\w\u4e00-\u9fff.-]', "_", value["name"] + "-" + value["position"])[:90] + "-" + label + "资料.zip"
 
 
 def upload(config, value, content):
@@ -584,13 +683,25 @@ def deliver(owner, job_id):
             with pool.database() as db:
                 schema(db); demands.schema(db)
                 talent = db.execute("SELECT * FROM talents WHERE owner=? AND id=?", (owner, row["talent_id"])).fetchone()
-                if not talent or talent["stage"] != "invited" or talent["version"] != value["talentVersion"]:
+                second = value.get("round") == "second"
+                if not talent or talent["stage"] != ("second" if second else "invited") or talent["version"] != value["talentVersion"]:
                     raise ValueError("人才资料已变化，未发送；请刷新后重试")
+                if second and db.execute(
+                        "SELECT 1 FROM hr_interview_reviews WHERE owner=? AND talent_id=? AND round='second'",
+                        (owner, row["talent_id"])).fetchone():
+                    raise ValueError("二面意见已提交，未发送资料")
                 current_config = db.execute("SELECT version FROM hr_dingtalk_config WHERE owner=?", (owner,)).fetchone()
                 current_demand = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?",
                                             (owner, value["demandId"])).fetchone()
                 recipient = recipient_for_demand(db, owner, value["demandId"], json.loads(current_demand["body"]),
                                                 config) if current_demand else None
+                if second:
+                    recipient = ({"user_id": value["recipientId"], "name": value["recipientName"],
+                                  "valid": True, "bindingKey": "identity"}
+                                 if value.get("recipientBindingKey") == "identity" else
+                                 next((r for r in second_recipients(db, owner, config)
+                                       if r["user_id"] == value["recipientId"]
+                                       and r["bindingKey"] == value.get("recipientBindingKey")), None))
                 if (not current_config or current_config["version"] != value["configVersion"] or not current_demand
                         or current_demand["version"] != value["demandVersion"] or not recipient
                         or not recipient["valid"] or recipient["user_id"] != value["recipientId"]
@@ -663,11 +774,11 @@ def reconcile(owner, job_id):
                  time.time(), owner, job_id)).rowcount
             if changed and success and not (failed or forbidden):
                 talent = db.execute("SELECT * FROM talents WHERE owner=? AND id=?", (owner, row["talent_id"])).fetchone()
-                if talent and talent["stage"] == "invited" and talent["version"] == value["talentVersion"]:
+                if value.get("round", "first") == "first" and talent and talent["stage"] == "invited" and talent["version"] == value["talentVersion"]:
                     db.execute("UPDATE talents SET stage='first',version=version+1,updated_at=? WHERE owner=? AND id=?",
                                (pool.datetime.datetime.now(pool.datetime.timezone.utc).isoformat(), owner, row["talent_id"]))
                 pool.event(db, owner, "dingtalk-receipt", row["talent_id"], "interview.delivered", None,
-                           {"handoffId": job_id, "recipient": value["recipientName"]})
+                           {"handoffId": job_id, "round": value.get("round", "first"), "recipient": value["recipientName"]})
     except Exception:
         pass  # Receipt failures never resend or erase the known task ID.
 

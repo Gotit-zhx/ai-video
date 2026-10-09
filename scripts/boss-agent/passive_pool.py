@@ -83,6 +83,43 @@ def resume(row, commands=None):
     return value
 
 
+def analysis_job(db, row):
+    """Read current saved JD by exact tenant/account/job; no BOSS request."""
+    detail = dict(json.loads(row['body']))
+    job_id = detail.get('jobId', '')
+    if not job_id:
+        rule_row = db.execute("SELECT job_id FROM hr_passive_rules WHERE owner=? AND account=? AND id=?",
+                              (row['owner'], row['account'], row['rule_id'])).fetchone()
+        job_id = rule_row['job_id'] if rule_row else ''
+    if not job_id:
+        return detail
+    detail['jobId'] = job_id
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'recruitment_demands' in tables:
+        choices = [json.loads(r['body']) for r in db.execute(
+            """SELECT body FROM recruitment_demands WHERE owner=?
+              AND json_extract(body,'$.jobAccountKey')=? AND json_extract(body,'$.jobId')=?
+              ORDER BY updated_at DESC""", (row['owner'], row['account'], job_id))]
+        choices = [c for c in choices if c.get('jobDescription', '').strip()]
+        if len({c['jobDescription'].strip() for c in choices}) > 1:
+            detail['jobDescription'] = ''
+            detail['jobLinkError'] = '同一职位关联了不同 JD，请在招聘需求池确认并保留正确的职位资料'
+            return detail
+        if choices:
+            value = choices[0]
+            detail.update(jobDescription=value['jobDescription'], jobEducation=value.get('education', detail.get('jobEducation', '')),
+                          jobExperience=str(value.get('years', detail.get('jobExperience', ''))), jobSource='招聘需求池')
+            return detail
+    if 'hr_sourcing_jobs' in tables:
+        source = db.execute("SELECT body FROM hr_sourcing_jobs WHERE owner=? AND account=? AND job_id=?",
+                            (row['owner'], row['account'], job_id)).fetchone()
+        value = json.loads(source['body']) if source else {}
+        if value.get('description', '').strip():
+            detail.update(jobDescription=value['description'], jobEducation=value.get('education', ''),
+                          jobExperience=value.get('experience', ''), jobSource='对应职位 JD')
+    return detail
+
+
 def resume_identity(db, row, actor):
     """Backfill old records from already-extracted text; no OSS/BOSS/AI request."""
     import resume_storage
@@ -157,6 +194,10 @@ def listing(user, kind, query):
         commands = {r['resume_id']: {'id': r['id'], 'status': r['status'], 'updatedAt': r['updated_at'], **json.loads(r['body'])}
                     for r in db.execute('SELECT * FROM hr_resume_commands WHERE owner=?', (owner,))}
         items = [resume(resume_identity(db, r, actor), commands) for r in rows]
+        if query.get('id'):
+            items = [item | {k: v for k, v in analysis_job(db, row).items()
+                            if k in ('jobId', 'jobDescription', 'jobEducation', 'jobExperience', 'jobSource', 'jobLinkError')}
+                     for item, row in zip(items, rows)]
         if not query.get('id'):
             for item in items: item.pop('resumeText', None)
         counts = {state: 0 for state in ('pending', 'approved', 'rejected')}
@@ -496,12 +537,14 @@ def analyze(user, body, cookie):
         if row['ai_state'] == 'running': return {'id': record, 'aiState': 'running'}
         if row['ai_state'] == 'complete' and body.get('regenerate') is not True: return resume(row)
         if db.execute("SELECT 1 FROM hr_resume_pool WHERE owner=? AND ai_state='running' AND ai_at>?", (owner, int(time.time())-360)).fetchone(): raise pool.Conflict('已有简历正在分析，请稍后')
-        detail = json.loads(row['body'])
+        detail = analysis_job(db, row)
+        if detail.get('jobLinkError'):
+            raise ValueError(detail['jobLinkError'])
         text = pool.text(body.get('resumeText', detail.get('resumeText', '')), 60000)
         if len(text) < 30: raise ValueError('未提取到足够正文，请查看原件并补充简历文字后分析')
-        description = pool.text(body.get('jobDescription', detail.get('jobDescription', '')), 10000)
+        description = pool.text(body.get('jobDescription', '') or detail.get('jobDescription', ''), 10000)
         if not description: raise ValueError('该职位缺少岗位职责，请补充职位资料后分析')
-        job = str(uuid.uuid4()); snapshot = {'resumeText': text, 'jobName': detail['jobName'], 'jobDescription': description, 'education': detail['jobEducation'], 'experience': detail['jobExperience']}
+        job = str(uuid.uuid4()); snapshot = {'resumeText': text, 'jobName': detail.get('jobName', ''), 'jobDescription': description, 'education': detail.get('jobEducation', ''), 'experience': detail.get('jobExperience', '')}
         db.execute("UPDATE hr_resume_pool SET ai_state='running',ai_job=?,ai_at=?,ai_error='' WHERE owner=? AND id=?", (job, int(time.time()), owner, record))
         pool.event(db, owner, actor, record, 'resume.ai-request', None, {'jobId': job})
     threading.Thread(target=analyze_worker, args=(owner, record, job, snapshot, cookie), daemon=True).start()
@@ -519,6 +562,27 @@ def analyze_worker(owner, record, job, snapshot, cookie):
             value = json.loads(raw)['data']
         if not isinstance(value.get('score'), (int, float)) or not 0 <= value['score'] <= 100: raise ValueError('invalid result')
         state = 'complete'
+    except urllib.error.HTTPError as failure:
+        messages = {
+            'HR_AI_TIMEOUT': '驱动模型响应超时，请稍后手动重试',
+            'HR_AI_TRUNCATED': '驱动模型返回内容不完整，请精简资料后重试',
+            'HR_AI_INVALID_STREAM': '驱动模型响应中断，请稍后手动重试',
+            'HR_AI_INVALID_JSON': '驱动模型未返回有效分析格式，请检查驱动模型后重试',
+            'HR_AI_INVALID_RESULT': '驱动模型的匹配结果字段不完整，请手动重试',
+            'HR_AI_UPSTREAM_HTTP': '驱动模型服务返回错误，请检查模型服务后重试',
+            'HR_AI_CONNECTION': '驱动模型连接失败，请检查驱动模型配置',
+        }
+        error = 'AI 分析未完成，请检查驱动模型配置后手动重试；审批不受影响'
+        if failure.code in (401, 403):
+            error = '平台登录已失效或没有分析权限，请重新登录后手动分析'
+        else:
+            try:
+                payload = json.loads(failure.read(8192))
+                match = re.search(r'\[(HR_AI_[A-Z_]+)\]', str(payload.get('message', '')))
+                if match and match[1] in messages:
+                    error = messages[match[1]] + '；本次未自动重复调用'
+            except (ValueError, TypeError, OSError):
+                pass
     except Exception:
         error = 'AI 分析未完成，请检查驱动模型配置或稍后手动重试；审批不受影响'
     with pool.database() as db:
