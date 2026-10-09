@@ -1,6 +1,5 @@
 /* Recruitment planning uses platform APIs and the configured DRIVER model only. */
 (() => {
-  const statuses=[['all','全部'],['draft','待启动'],['recruiting','招聘中'],['paused','暂停'],['filled','已完成'],['cancelled','已取消']];
   const jobId=row=>String(row?.encryptJobId||row?.encJobId||row?.encryptId||row?.jobId||row?.job_id||row?.id||'');
   function jobRows(value,depth=0){
     if(depth>5||!value)return [];
@@ -29,7 +28,8 @@
   globalThis.createHrDemands=({root,section,element:el,button,allowed,hrApi})=>{
     const panel=section('demands');
     panel.className+=' hr-demands-panel';
-    let active=false,generation=0,page=1,status='all',editing=null,saving=false,timer=null,pollBusy=false,pollErrors=0,outputTab='portrait',departments=[],directoryReady=false;
+    let active=false,generation=0,page=1,editing=null,saving=false,timer=null,pollBusy=false,pollErrors=0,outputTab='portrait',departments=[],directoryReady=false;
+    let deleting=false,deleteControls=[];
     let jobs=[],jobAccount='',jobsReady=false,jdLoading=false,jdGeneration=0,jobSnapshot=null,submitPhase='',uploading=false;
     const header=el('div','',panel,'hr-pool-toolbar'),intro=el('div','',header);
     el('h2','招聘需求池',intro);el('p','明确岗位需求，让寻源与面试有据可依。',intro,'hr-hint');
@@ -42,21 +42,15 @@
       const input=el(tag,'',wrap);input.name=name;return input;
     };
     const q=field('demand-search','搜索招聘需求',search);q.placeholder='岗位、部门或经理';q.maxLength=100;
-    const statusFilter=field('demand-status','需求状态',search,'select');
-    const statusOptions=statuses.map(([key,label])=>{
-      const option=el('option',label,statusFilter);option.value=key;return option;
-    });
-    statusFilter.value=status;
-    statusFilter.addEventListener('change',()=>{status=statusFilter.value;page=1;load();});
     button('搜索',search,()=>{page=1;load();});
     search.addEventListener('submit',event=>{event.preventDefault();page=1;load();});
     const feedback=el('p','',panel,'hr-hint');feedback.setAttribute('role','status');
     const results=el('div','',panel,'hr-result');
-    const pager=el('div','',panel,'hr-pagination');
-    const previous=button('上一页',pager,()=>{page--;load();});
+    const pager=el('div','',panel,'hr-pagination hr-demand-pagination');
+    const previous=button('上一页',pager,()=>{if(page>1){page--;load();}});
     const pageLabel=el('span','',pager,'hr-hint');
     const next=button('下一页',pager,()=>{page++;load();});
-    pager.hidden=true;previous.disabled=next.disabled=true;
+    pager.hidden=false;previous.disabled=next.disabled=true;
     const dialog=el('dialog','',root,'hr-pool-dialog hr-demand-dialog');
     const dialogHeader=el('div','',dialog,'hr-demand-dialog-header');
     const heading=el('div','',dialogHeader),title=el('h2','新建招聘需求',heading);
@@ -81,8 +75,6 @@
     inputs.departmentId.addEventListener('change',()=>{
       inputs.manager.value=departments.find(d=>d.id===inputs.departmentId.value)?.manager||'';
     });
-    inputs.status=field('status','需求状态',grid,'select');
-    statuses.slice(1).forEach(([key,label])=>el('option',label,inputs.status).value=key);
     inputs.education=field('education','最低学历',grid,'select');
     ['不限','高中 / 中专','大专','本科','硕士','博士'].forEach(label=>el('option',label,inputs.education).value=label);
     const jdArea=el('details','',form,'hr-demand-jd');
@@ -210,20 +202,17 @@
       if(!active||!allowed())return;const ticket=++generation;
       feedback.textContent='正在读取招聘需求…';previous.disabled=next.disabled=true;
       try{
-        const data=await request('?'+new URLSearchParams({status,q:q.value.trim(),page:String(page)}));
+        const data=await request('?'+new URLSearchParams({q:q.value.trim(),page:String(page)}));
         if(ticket!==generation||!active||!allowed())return;
-        results.replaceChildren();page=data.page;
-        statusOptions.forEach((option,i)=>{
-          const [key,label]=statuses[i],count=data.counts?.[key];
-          option.textContent=label+(Number.isFinite(count)?`（${count}）`:'');
-        });
-        feedback.textContent=`共 ${data.total} 项需求`;pageLabel.textContent=`${page} / ${data.pages}`;
-        pager.hidden=data.pages<=1;previous.disabled=page<=1;next.disabled=page>=data.pages;
+        results.replaceChildren();deleteControls=[];page=data.page||1;
+        feedback.textContent=`共 ${data.total??data.items.length} 项需求`;
+        pageLabel.textContent=`第 ${page} / ${data.pages||1} 页 · 共 ${data.total??data.items.length} 项 · 每页 20 项`;
+        pager.hidden=false;previous.disabled=page<=1;next.disabled=page>=(data.pages||1);
         if(!data.items.length){el('p','暂无招聘需求，点击“新建需求”开始。',results,'hr-pool-empty');return;}
         const cards=el('div','',results,'hr-card-grid hr-demand-cards');
         for(const row of data.items){
           const card=el('article','',cards,'hr-person-card'),head=el('div','',card,'hr-card-heading');
-          el('h3',row.position,head);el('span',statuses.find(([k])=>k===row.status)?.[1],head,'hr-badge');
+          el('h3',row.position,head);
           el('p',`${row.department} · ${row.category||'类别未填写'}`,card,'hr-hint');
           const facts=el('dl','',card,'hr-facts');
           for(const [label,value] of [['需求日期',row.date],['编制人数',`${row.headcount} 人`],['部门经理',row.manager||'未填写'],
@@ -231,9 +220,24 @@
             const item=el('div','',facts);el('dt',label,item);el('dd',value,item);
           }
           const actions=el('div','',card,'hr-actions');button('查看 / 编辑',actions,()=>open(row));
+          const remove=button('删除',actions,()=>deleteDemand(row));remove.className='hr-demand-delete';
+          remove.disabled=deleting||row.aiStatus==='running';
+          deleteControls.push({control:remove,blocked:row.aiStatus==='running'});
+          if(row.aiStatus==='running')remove.title='岗位分析完成后可删除';
           el('span',row.aiStatus==='running'?'AI 生成中':row.aiStatus==='complete'?'AI 已分析':row.aiStatus==='stale'?'AI 待更新':row.aiStatus==='failed'?'AI 生成失败':'AI 未分析',actions,'hr-hint');
         }
       }catch(err){if(ticket===generation){feedback.textContent='读取失败';results.replaceChildren();el('p',err.message,results,'hr-error');}}
+    }
+    async function deleteDemand(row){
+      if(deleting||!allowed()||row.aiStatus==='running')return;
+      if(!confirm(`确定删除“${row.position}”这项招聘需求吗？`))return;
+      deleting=true;deleteControls.forEach(item=>{item.control.disabled=true;});const ticket=generation;
+      try{
+        await request('/delete',{id:row.id,version:row.version,requestId:crypto.randomUUID()});
+        if(ticket===generation&&active&&allowed())await load();
+      }catch(err){
+        if(ticket===generation&&active&&allowed())feedback.textContent=err.message+'，请刷新核对。';
+      }finally{deleting=false;deleteControls.forEach(item=>{item.control.disabled=item.blocked;});}
     }
     async function readJobs(){
       const status=(await hrApi('/api/v1/hr/login/status')).data;
@@ -418,8 +422,8 @@
     return {
       enter(){active=true;load();},
       leave(){active=false;++generation;stopPoll();dialog.close();},
-      reset(){active=false;++generation;stopPoll();dialog.close();editing=null;saving=uploading=false;page=1;status='all';
-        statusFilter.value=status;statusOptions.forEach((option,index)=>{option.textContent=statuses[index][1];});
+      reset(){active=false;++generation;stopPoll();dialog.close();editing=null;saving=uploading=false;page=1;
+        deleteControls=[];
         departments=[];directoryReady=false;jobs=[];jobAccount='';jobsReady=false;jobSnapshot=null;inputs.departmentId.replaceChildren();
         inputs.jobId.replaceChildren();jdText.textContent='';jdNote.textContent='';
         q.value='';Object.values(inputs).forEach(input=>input.value='');results.replaceChildren();output.replaceChildren();

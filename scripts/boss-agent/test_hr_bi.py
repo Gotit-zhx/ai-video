@@ -51,6 +51,23 @@ class HrBiTest(unittest.TestCase):
         self.assertEqual(data["sources"][0]["count"],1)
         self.assertEqual(sum(x["resumes"] for x in data["departments"]),3)
 
+    def test_departed_employee_is_not_counted_as_active_joined_and_export_keeps_history(self):
+        import hr_onboarding
+        value={"name":"fixture","startDate":"2026-10-01","position":"算法","supervisor":"主管","department":"研发",
+               "company":"fixture","fixedSalary":"1","performanceSalary":"0","commission":"无","mentorName":"导师",
+               "joined":True,"departed":True,"departedAt":"2026-10-09T00:00:00Z"}
+        with pool.database() as db:
+            hr_onboarding.schema(db)
+            db.execute("INSERT INTO talents VALUES('talent','heyi','','departed','',?,1,'2026-10-01','2026-10-09')",
+                       (json.dumps({"name":"fixture","departmentId":"dept"}),))
+            db.execute("INSERT INTO hr_onboarding_records VALUES('talent','heyi',?,1,'2026-10-09')",(json.dumps(value),))
+        data=bi.dashboard(USER,self.query)
+        self.assertEqual(data["metrics"]["joined"],0)
+        self.assertEqual(data["metrics"]["onboarding"],0)
+        self.assertEqual(next(s["count"] for s in data["stages"] if s["name"]=="已离职"),1)
+        _,datasets=bi.report(USER,self.query)
+        self.assertEqual(datasets["入职安排"][0]["是否入职"],"已离职")
+
     def test_exact_department_job_account_and_date_filters_are_shared_with_export(self):
         scoped=self.query|{"job":"a"*64+":job1","department":"dept"}
         data,datasets=bi.report(USER,scoped)

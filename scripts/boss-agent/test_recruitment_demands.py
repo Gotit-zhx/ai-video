@@ -72,6 +72,70 @@ class DemandsTest(unittest.TestCase):
                    "jobId":"job-1","jobAccountKey":"a"*64,"jobDescription":"负责内容运营，要求有直播项目经验。",
                    "jobFetchedAt":datetime.datetime.now(datetime.timezone.utc).isoformat()}
 
+    def test_delete_is_versioned_owner_scoped_idempotent_and_preserves_audit(self):
+        row = demands.save(USER, self.body)
+        other = demands.save(USER, {**self.body, "createId": str(uuid.uuid4()), "jobId": "job-2"})
+        body = {"id": row["id"], "version": row["version"], "requestId": str(uuid.uuid4())}
+        with self.assertRaises(ValueError):
+            demands.delete({**USER, "organizationCode": "another-org"}, body)
+        with self.assertRaises(pool.Conflict):
+            demands.delete(USER, {**body, "version": row["version"]+1})
+        with pool.database() as db:
+            db.execute("INSERT INTO hr_demand_references VALUES(?,?,?,?,?,?,?,?)",
+                       ("ref1", "heyi", row["id"], "digest", "fixture.pdf", '{"text":"fixture"}', "shared-key", "now"))
+        result = demands.delete(USER, body)
+        self.assertEqual(result, {"id": row["id"], "deleted": True})
+        self.assertEqual(demands.delete(USER, body), result)
+        self.assertEqual(demands.listing(USER, {})["items"][0]["id"], other["id"])
+        with self.assertRaises(ValueError):
+            demands.listing(USER, {"id": row["id"]})
+        with self.assertRaises(pool.Conflict):
+            demands.delete(USER, {**body, "id": other["id"]})
+        with self.assertRaises(pool.Conflict):
+            demands.save(USER, self.body)  # Replaying creation cannot resurrect a deleted demand.
+        with pool.database() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM hr_demand_references").fetchone()[0], 0)
+            events = db.execute("SELECT before_json FROM talent_events WHERE action='demand.delete'").fetchall()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(json.loads(events[0][0])["jobId"], row["jobId"])
+
+    def test_running_ai_cannot_be_deleted_and_invalid_request_has_no_effect(self):
+        row = demands.save(USER, self.body)
+        body = {"id": row["id"], "version": row["version"], "requestId": str(uuid.uuid4())}
+        for invalid in ({**body, "requestId": "bad"}, {**body, "version": True}):
+            with self.assertRaises(ValueError):
+                demands.delete(USER, invalid)
+        with mock.patch.object(demands.threading, "Thread"):
+            demands.generate(USER, {"id": row["id"], "version": row["version"]}, "fixture")
+        with self.assertRaises(pool.Conflict):
+            demands.delete(USER, body)
+        self.assertEqual(demands.listing(USER, {})["total"], 1)
+
+    def test_delete_blocks_unconfirmed_handoff_and_retains_delivered_snapshot(self):
+        row = demands.save(USER, self.body)
+        body = {"id": row["id"], "version": row["version"], "requestId": str(uuid.uuid4())}
+        snapshot = json.dumps({"demandId": row["id"], "questions": ["fixture"]})
+        with pool.database() as db:
+            db.execute("CREATE TABLE hr_interview_handoffs(owner TEXT,body TEXT,status TEXT)")
+            db.execute("INSERT INTO hr_interview_handoffs VALUES(?,?,?)", ("heyi", snapshot, "uncertain"))
+        with self.assertRaises(pool.Conflict):
+            demands.delete(USER, body)
+        with pool.database() as db:
+            db.execute("UPDATE hr_interview_handoffs SET status='sent'")
+        demands.delete(USER, body)
+        with pool.database() as db:
+            self.assertEqual(db.execute("SELECT body FROM hr_interview_handoffs").fetchone()[0], snapshot)
+
+    def test_active_sourcing_using_demand_cannot_be_deleted(self):
+        row = demands.save(USER, self.body)
+        with pool.database() as db:
+            db.execute("CREATE TABLE hr_sourcing_jobs(id TEXT,owner TEXT,demand_source TEXT)")
+            db.execute("CREATE TABLE hr_sourcing_runs(job TEXT,owner TEXT,state TEXT)")
+            db.execute("INSERT INTO hr_sourcing_jobs VALUES(?,?,?)", ("job", "heyi", json.dumps({"id": row["id"]})))
+            db.execute("INSERT INTO hr_sourcing_runs VALUES(?,?,?)", ("job", "heyi", "running"))
+        with self.assertRaises(pool.Conflict):
+            demands.delete(USER, {"id": row["id"], "version": row["version"], "requestId": str(uuid.uuid4())})
+
     def test_specific_position_and_full_jd_are_required_without_ai_side_effects(self):
         for fields in [{"jobId":""},{"jobAccountKey":""},{"jobDescription":""},{"jobFetchedAt":"bad"},
                        {"jobId":"../../job"},{"jobDescription":"a"*8001}]:

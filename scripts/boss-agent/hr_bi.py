@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import talent_pool as pool
 
 TZ = ZoneInfo("Asia/Shanghai")
-STAGES = {"invited": "邀约", "first": "一面", "second": "二面", "onboarding": "待入职", "hired": "已入职"}
+STAGES = {"invited": "邀约", "first": "一面", "second": "二面", "onboarding": "待入职", "hired": "已入职", "departed": "已离职"}
 STATUS = {"pending": "待审批", "approved": "通过", "rejected": "不通过", "sent": "已送达",
           "queued": "待发送", "preparing": "准备中", "sending": "发送中", "submitted": "等待回执",
           "uncertain": "待人工核对", "failed": "失败", "cancelled": "已取消", "complete": "完成",
@@ -180,12 +180,15 @@ def report(user, query):
         department, key = talent_scope(row["talent_id"]); value = body(row)
         if not scope(row["updated_at"], department, key):
             continue
-        aggregate(department, key, "joined" if value["joined"] else "onboarding")
-        trends[day(row["updated_at"])]["joined" if value["joined"] else "onboarding"] += 1
+        if not value.get("departed"):
+            aggregate(department, key, "joined" if value["joined"] else "onboarding")
+            trends[day(row["updated_at"])]["joined" if value["joined"] else "onboarding"] += 1
         onboardings.append({"姓名": value["name"], "确认入职时间": value["startDate"], "入职岗位": value["position"],
             "归属主管": value["supervisor"], "归属部门": value["department"], "归属公司": value["company"],
             "固定薪资": value["fixedSalary"], "绩效薪资": value["performanceSalary"], "提成": value["commission"],
-            "导师名称": value["mentorName"], "是否入职": "已入职" if value["joined"] else "未入职", "更新日期": day(row["updated_at"])})
+            "导师名称": value["mentorName"],
+            "是否入职": "已离职" if value.get("departed") else "已入职" if value["joined"] else "未入职",
+            "离职时间": day(value.get("departedAt")), "更新日期": day(row["updated_at"])})
     datasets["入职安排"] = onboardings
     runs = []
     for row in raw["hr_sourcing_runs"]:

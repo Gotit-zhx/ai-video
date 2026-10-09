@@ -78,6 +78,41 @@ class OnboardingTest(unittest.TestCase):
         result,row=self.enrolled(True)
         self.assertEqual(result["stage"],"hired");self.assertTrue(row["joined"])
 
+    def test_departure_is_scoped_versioned_idempotent_and_has_no_notifications(self):
+        _,row=self.enrolled(True)
+        body={"talentId":row["talentId"],"version":row["version"],"requestId":str(uuid.uuid4())}
+        with self.assertRaises(ValueError):onboard.depart(USER|{"organizationCode":"other"},body)
+        with self.assertRaises(pool.Conflict):onboard.depart(USER,body|{"version":9})
+        with mock.patch.object(onboard.threading,"Thread") as thread,mock.patch.object(ding,"api") as api:
+            self.assertTrue(onboard.depart(USER,body)["departed"])
+            self.assertTrue(onboard.depart(USER,body)["departed"])
+            thread.assert_not_called();api.assert_not_called()
+        self.assertEqual(onboard.listing(USER,{"status":"joined"})["total"],0)
+        departed=onboard.listing(USER,{"status":"departed"})["items"][0]
+        self.assertTrue(departed["joined"]);self.assertTrue(departed["departed"]);self.assertTrue(departed["departedAt"])
+        self.assertEqual(onboard.listing(USER,{})["total"],1)
+        self.assertEqual(pool.listing(USER,{"stage":"departed"})["total"],1)
+        onboard.save(USER,departed|{"company":"资料更新"})
+        self.assertEqual(onboard.listing(USER,{"status":"departed"})["total"],1)
+        updated=onboard.listing(USER,{"status":"departed"})["items"][0]
+        with self.assertRaisesRegex(ValueError,"已离职"):onboard.send(USER,self.send_body(updated))
+        with self.assertRaises(pool.Conflict):onboard.save(USER,updated|{"joined":False})
+        with pool.database() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM talent_events WHERE action='onboarding.depart'").fetchone()[0],1)
+
+    def test_unjoined_employee_and_ambiguous_notice_cannot_be_marked_departed(self):
+        _,row=self.enrolled()
+        body={"talentId":row["talentId"],"version":row["version"],"requestId":str(uuid.uuid4())}
+        with self.assertRaisesRegex(ValueError,"尚未入职"):onboard.depart(USER,body)
+        onboard.save(USER,row|{"joined":True})
+        row=onboard.listing(USER,{"status":"joined"})["items"][0]
+        with mock.patch.object(onboard.threading,"Thread"):notice=onboard.send(USER,self.send_body(row))
+        with pool.database() as db:db.execute("UPDATE hr_onboarding_notices SET status='uncertain'")
+        with self.assertRaises(pool.Conflict):onboard.depart(USER,body|{"version":row["version"]})
+        with pool.database() as db:db.execute("UPDATE hr_onboarding_notices SET status='sent'")
+        onboard.depart(USER,body|{"version":row["version"]})
+        self.assertEqual(onboard.listing(USER,{"status":"departed"})["items"][0]["notice"]["id"],notice["id"])
+
     def test_mentor_send_requires_actual_joining_and_exact_verified_name(self):
         _,row=self.enrolled()
         with self.assertRaisesRegex(ValueError,"已入职"):onboard.send(USER,self.send_body(row))

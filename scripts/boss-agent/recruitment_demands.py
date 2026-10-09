@@ -36,6 +36,10 @@ def schema(db):
         id TEXT PRIMARY KEY,owner TEXT NOT NULL,demand TEXT NOT NULL,digest TEXT NOT NULL,
         filename TEXT NOT NULL,body TEXT NOT NULL,file_key TEXT NOT NULL,created_at TEXT NOT NULL,
         UNIQUE(owner,demand,digest))""")
+    db.execute("""CREATE TABLE IF NOT EXISTS hr_demand_deletions(
+        owner TEXT NOT NULL,request_id TEXT NOT NULL,demand TEXT NOT NULL,
+        version INTEGER NOT NULL,deleted_at TEXT NOT NULL,
+        PRIMARY KEY(owner,request_id),UNIQUE(owner,demand))""")
 
 
 def view(row, db=None):
@@ -150,6 +154,9 @@ def save(user, body, departments=None):
     with pool.database() as db:
         schema(db)
         expire_jobs(db)
+        if db.execute("SELECT 1 FROM hr_demand_deletions WHERE owner=? AND demand=?",
+                      (owner, record)).fetchone():
+            raise pool.Conflict("该招聘需求已删除，请刷新后新建")
         old = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?", (owner, record)).fetchone()
         if not creating and not old:
             raise ValueError("需求不存在")
@@ -176,6 +183,55 @@ def save(user, body, departments=None):
         result = view(db.execute("SELECT * FROM recruitment_demands WHERE id=?", (record,)).fetchone(), db)
         pool.event(db, owner, actor, record, "demand.update" if old else "demand.create", view(old) if old else None, result)
         return result
+
+
+def delete(user, body):
+    """Delete one versioned demand; retain audit and delivered packet snapshots."""
+    owner, actor = pool.context(user)
+    if not isinstance(body, dict):
+        raise ValueError("删除请求不正确")
+    record = pool.text(body.get("id"), 100)
+    version = body.get("version")
+    try:
+        request_id = str(uuid.UUID(body.get("requestId", "")))
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("删除请求标识不正确") from None
+    if not record or type(version) is not int or version < 1:
+        raise ValueError("请选择有效的招聘需求并刷新版本")
+    with pool.database() as db:
+        schema(db)
+        expire_jobs(db)
+        replay = db.execute("SELECT demand,version FROM hr_demand_deletions WHERE owner=? AND request_id=?",
+                            (owner, request_id)).fetchone()
+        if replay:
+            if replay["demand"] != record or replay["version"] != version:
+                raise pool.Conflict("删除请求已用于另一项操作")
+            return {"id": record, "deleted": True}
+        row = db.execute("SELECT * FROM recruitment_demands WHERE owner=? AND id=?", (owner, record)).fetchone()
+        if not row:
+            raise ValueError("招聘需求不存在或已删除，请刷新")
+        if row["version"] != version:
+            raise pool.Conflict("招聘需求已更新，请刷新后删除")
+        if row["ai_status"] == "running":
+            raise pool.Conflict("岗位分析正在生成，请完成后再删除")
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "hr_interview_handoffs" in tables and db.execute("""
+                SELECT 1 FROM hr_interview_handoffs WHERE owner=?
+                AND json_extract(body,'$.demandId')=? AND status IN ('preparing','sending','uncertain')""",
+                (owner, record)).fetchone():
+            raise pool.Conflict("该需求的面试资料正在发送或待核对，请处理后再删除")
+        if {"hr_sourcing_runs", "hr_sourcing_jobs"} <= tables and db.execute("""
+                SELECT 1 FROM hr_sourcing_runs r JOIN hr_sourcing_jobs j ON r.job=j.id AND r.owner=j.owner
+                WHERE r.owner=? AND r.state='running' AND json_extract(j.demand_source,'$.id')=?""",
+                (owner, record)).fetchone():
+            raise pool.Conflict("该需求正在用于 AI 寻源，请停止寻源后再删除")
+        snapshot = view(row, db)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        db.execute("INSERT INTO hr_demand_deletions VALUES(?,?,?,?,?)", (owner, request_id, record, version, now))
+        db.execute("DELETE FROM hr_demand_references WHERE owner=? AND demand=?", (owner, record))
+        db.execute("DELETE FROM recruitment_demands WHERE owner=? AND id=?", (owner, record))
+        pool.event(db, owner, actor, record, "demand.delete", snapshot, {"deleted": True, "requestId": request_id})
+    return {"id": record, "deleted": True}
 
 
 def references(user, body, remove=False):

@@ -1666,12 +1666,13 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                          "/api/v1/hr/pool/interview/start", "/api/v1/hr/pool/interview/identity",
                          "/api/v1/hr/pool/interview/review", "/api/v1/hr/pool/dingtalk/save",
                          "/api/v1/hr/pool/dingtalk/recipient",
-                         "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate",
+                         "/api/v1/hr/demands/save", "/api/v1/hr/demands/generate", "/api/v1/hr/demands/delete",
                          "/api/v1/hr/demands/upload", "/api/v1/hr/demands/remove", "/api/v1/hr/departments/save",
                          "/api/v1/hr/departments/identity", "/api/v1/hr/departments/bind", "/api/v1/hr/departments/sync"):
             self.pool_request(write=True)
             return
-        if self.path in ("/api/v1/hr/onboarding/save", "/api/v1/hr/onboarding/identity", "/api/v1/hr/onboarding/send"):
+        if self.path in ("/api/v1/hr/onboarding/save", "/api/v1/hr/onboarding/depart",
+                         "/api/v1/hr/onboarding/identity", "/api/v1/hr/onboarding/send"):
             self.pool_request(write=True)
             return
         if self.path.startswith("/api/v1/hr/desktop/"):
@@ -1780,6 +1781,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("资料格式不正确")
                 if self.path == "/api/v1/hr/onboarding/save":
                     result = hr_onboarding.save(self.desktop_user, body)
+                elif self.path == "/api/v1/hr/onboarding/depart":
+                    result = hr_onboarding.depart(self.desktop_user, body)
                 elif self.path == "/api/v1/hr/onboarding/identity":
                     result = hr_onboarding.identity(self.desktop_user, body)
                 elif self.path == "/api/v1/hr/onboarding/send":
@@ -1799,6 +1802,8 @@ class HttpHandler(http.server.BaseHTTPRequestHandler):
                 elif self.path == "/api/v1/hr/demands/save":
                     result = recruitment_demands.save(self.desktop_user, body,
                         hr_departments.listing(self.desktop_user)["items"])
+                elif self.path == "/api/v1/hr/demands/delete":
+                    result = recruitment_demands.delete(self.desktop_user, body)
                 elif self.path in {"/api/v1/hr/demands/upload", "/api/v1/hr/demands/remove"}:
                     result = recruitment_demands.references(self.desktop_user, body,
                         remove=self.path.endswith("/remove"))

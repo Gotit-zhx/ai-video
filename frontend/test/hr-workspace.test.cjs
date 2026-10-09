@@ -927,7 +927,7 @@ test('onboarding can update joining independently and mentor notification stays 
     {items:[row],total:1,page:1,pages:1}})});
   await app.enter('onboarding');
   assert.equal(app.visible().find(n=>n._text==='通知导师').disabled,true);
-  await app.click('入职安排');
+  await app.click('编辑');
   const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-onboarding-dialog');
   const joined=all(dialog).find(n=>n.tagName==='select');joined.value='true';
   await all(dialog).find(n=>n.tagName==='form').events.submit({preventDefault(){}});await flush();
@@ -935,6 +935,29 @@ test('onboarding can update joining independently and mentor notification stays 
   assert.equal(writes.length,1);assert.ok(writes[0].url.endsWith('/onboarding/save'));
   assert.equal(JSON.parse(writes[0].options.body).joined,true);
   assert.equal(app.calls.some(c=>c.url.endsWith('/onboarding/send')),false);
+});
+test('onboarding defaults to all and explicit departure selects departed without sending',async()=>{
+  let row={...onboardingValues(),talentId:'t1',version:1,joined:true};
+  const app=setup({onboarding:true,confirm:()=>true,api:async(url,options)=>{
+    if(url.endsWith('/onboarding/depart')){
+      const body=JSON.parse(options.body);assert.equal(body.talentId,'t1');assert.equal(body.version,1);
+      row={...row,departed:true,version:2};return {data:{saved:true,departed:true}};
+    }
+    return {data:{items:[row],total:1,page:1,pages:1}};
+  }});
+  await app.enter('onboarding');
+  assert.equal(new URL(app.calls.at(-1).url,'https://platform.test').searchParams.get('status'),'all');
+  const tabs=app.visible().find(n=>n.className==='hr-pool-tabs');
+  assert.deepEqual(tabs.children.map(n=>n._text),['全部','已入职','已离职']);
+  assert.ok(!app.visible().some(n=>n._text==='入职安排'));
+  await app.click('员工离职');
+  assert.equal(new URL(app.calls.at(-1).url,'https://platform.test').searchParams.get('status'),'departed');
+  assert.equal(app.visible().find(n=>n._text==='通知导师').disabled,true);
+  assert.equal(app.visible().find(n=>n._text==='员工离职').disabled,true);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
+  await app.click('编辑');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-onboarding-dialog'));
+  assert.equal(all(dialog).find(n=>n.tagName==='select').disabled,true);
 });
 test('BI renders six K periods and export follows the applied scope without BOSS actions',async()=>{
   const app=setup({bi:true,api:async url=>{
@@ -1360,6 +1383,45 @@ const demandRow=()=>({id:'d1',version:1,date:'2026-09-29',position:'电商运营
   jobDescription:'已保存旧 JD',jobFetchedAt:'2026-09-29T00:00:00Z'});
 const demandStatus=()=>({state:'complete',accountKey:'a'.repeat(64),capabilities:['job-jd']});
 const demandDetail=(id='job-test-2')=>({ok:true,data:{job:{encryptId:id,jobName:'电商运营',postDescription:'当前岗位 JD：负责直播策划与内容运营。'}}});
+test('demands remove status controls and preserve query through pagination including a single page',async()=>{
+  const app=setup({api:async url=>{
+    const params=new URL(url,'https://platform.test').searchParams;
+    return {data:{items:[demandRow()],total:41,page:Number(params.get('page')||1),pages:3}};
+  }});
+  await app.enter('demands');
+  assert.ok(!app.visible().some(n=>n._text==='需求状态'));
+  assert.ok(!app.visible().some(n=>n._text==='招聘中'));
+  const query=app.visible().find(n=>n.name==='demand-search');query.value='电商';
+  await app.click('搜索');await app.click('下一页');
+  const params=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(params.get('page'),'2');assert.equal(params.get('q'),'电商');assert.equal(params.has('status'),false);
+  assert.match(app.text(),/第 2 \/ 3 页 · 共 41 项 · 每页 20 项/);
+  await app.click('搜索');
+  assert.equal(new URL(app.calls.at(-1).url,'https://platform.test').searchParams.get('page'),'1');
+  const single=setup({api:async()=>({data:{items:[demandRow()],total:1,page:1,pages:1}})});
+  await single.enter('demands');
+  assert.ok(single.visible().find(n=>n.className.includes('hr-demand-pagination')));
+  assert.equal(single.visible().find(n=>n._text==='下一页').disabled,true);
+});
+test('demand deletion is explicit once and refreshes the clamped last page',async()=>{
+  let removed=false;
+  const app=setup({confirm:()=>true,api:async(url,options)=>{
+    if(url.endsWith('/delete')){
+      const body=JSON.parse(options.body);assert.equal(body.id,'d1');assert.equal(body.version,1);
+      assert.match(body.requestId,/^[a-f0-9-]{36}$/);removed=true;return {data:{deleted:true,id:'d1'}};
+    }
+    return {data:{items:removed?[]:[demandRow()],total:removed?0:1,page:1,pages:1}};
+  }});
+  await app.enter('demands');await app.click('删除');
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/delete')).length,1);
+  assert.doesNotMatch(app.text(),/电商运营/);assert.match(app.text(),/共 0 项/);
+  const running=setup({confirm:()=>true,api:async()=>({data:{items:[{...demandRow(),aiStatus:'running'}],total:1,page:1,pages:1}})});
+  await running.enter('demands');await running.click('删除');
+  assert.equal(running.calls.filter(c=>c.options?.method==='POST').length,0);
+  const cancelled=setup({confirm:()=>false,api:async()=>({data:{items:[demandRow()],total:1,page:1,pages:1}})});
+  await cancelled.enter('demands');await cancelled.click('删除');
+  assert.equal(cancelled.calls.filter(c=>c.options?.method==='POST').length,0);
+});
 test('optional demand references upload offline in AI area and generation still uses one DRIVER request',async()=>{
   let row={...demandRow(),references:[]},generations=0;
   const app=setup({confirm:()=>true,api:async(url,options)=>{

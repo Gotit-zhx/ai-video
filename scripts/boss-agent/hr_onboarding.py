@@ -24,6 +24,10 @@ def schema(db):
       id TEXT PRIMARY KEY,owner TEXT NOT NULL,talent_id TEXT NOT NULL UNIQUE,request_id TEXT NOT NULL,
       body TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',task_id TEXT NOT NULL DEFAULT '',
       created_at REAL NOT NULL,updated_at REAL NOT NULL,checked_at REAL NOT NULL DEFAULT 0)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS hr_onboarding_departures(
+      owner TEXT NOT NULL,talent_id TEXT NOT NULL,request_id TEXT NOT NULL,
+      version INTEGER NOT NULL,created_at TEXT NOT NULL,
+      PRIMARY KEY(owner,talent_id),UNIQUE(owner,request_id))""")
 
 
 def defaults(db, talent):
@@ -107,11 +111,14 @@ def listing(user, query):
                 raise ValueError("人才不存在")
             return {"defaults": defaults(db, talent)}
         clause, args = "owner=?", [owner]
-        status = query.get("status", "pending")
-        if status not in ("pending", "joined", "all"):
+        status = query.get("status", "all")
+        if status not in ("pending", "joined", "departed", "all"):
             raise ValueError("入职状态不正确")
-        if status != "all":
-            clause += " AND json_extract(body,'$.joined')=?"; args.append(status == "joined")
+        if status == "departed":
+            clause += " AND json_extract(body,'$.departed')=1"
+        elif status != "all":
+            clause += " AND COALESCE(json_extract(body,'$.departed'),0)=0 AND json_extract(body,'$.joined')=?"
+            args.append(status == "joined")
         q = pool.text(query.get("q", ""), 100)
         if q:
             clause += " AND body LIKE ? ESCAPE '\\'"
@@ -144,6 +151,10 @@ def save(user, body):
         notice = db.execute("SELECT status FROM hr_onboarding_notices WHERE owner=? AND talent_id=?",
                              (owner, row["talent_id"])).fetchone()
         before = json.loads(row["body"])
+        if before.get("departed"):
+            if not value["joined"]:
+                raise pool.Conflict("已离职记录保留原入职事实，请勿改为未入职")
+            value.update(departed=True, departedAt=before["departedAt"])
         if notice and notice["status"] in ("preparing", "sending", "submitted", "uncertain"):
             raise pool.Conflict("导师通知正在发送或待核对，请先确认结果后再修改")
         if notice and notice["status"] == "sent" and (not value["joined"] or value["mentorName"] != before["mentorName"]):
@@ -152,9 +163,53 @@ def save(user, body):
         db.execute("UPDATE hr_onboarding_records SET body=?,version=version+1,updated_at=? WHERE owner=? AND talent_id=?",
                    (json.dumps(value, ensure_ascii=False), now(), owner, row["talent_id"]))
         db.execute("UPDATE talents SET stage=?,version=version+1,updated_at=? WHERE owner=? AND id=?",
-                   ("hired" if value["joined"] else "onboarding", now(), owner, row["talent_id"]))
+                   ("departed" if value.get("departed") else "hired" if value["joined"] else "onboarding",
+                    now(), owner, row["talent_id"]))
         pool.event(db, owner, actor, row["talent_id"], "onboarding.update", before, value)
     return {"saved": True}
+
+
+def depart(user, body):
+    owner, actor = pool.context(user)
+    if not isinstance(body, dict):
+        raise ValueError("离职请求不正确")
+    record = pool.text(body.get("talentId"), 100)
+    version = body.get("version")
+    try:
+        request_id = str(uuid.UUID(body.get("requestId", "")))
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("离职请求标识不正确") from None
+    if not record or type(version) is not int or version < 1:
+        raise ValueError("请选择有效员工并刷新版本")
+    with pool.database() as db:
+        schema(db)
+        replay = db.execute("SELECT * FROM hr_onboarding_departures WHERE owner=? AND request_id=?",
+                            (owner, request_id)).fetchone()
+        if replay:
+            if replay["talent_id"] != record or replay["version"] != version:
+                raise pool.Conflict("离职请求已用于另一项操作")
+            return {"saved": True, "departed": True}
+        row = db.execute("SELECT * FROM hr_onboarding_records WHERE owner=? AND talent_id=?", (owner, record)).fetchone()
+        if not row or row["version"] != version:
+            raise pool.Conflict("员工资料已更新，请刷新后再操作")
+        before = json.loads(row["body"])
+        if before.get("departed"):
+            return {"saved": True, "departed": True}
+        if not before["joined"]:
+            raise ValueError("员工尚未入职，不能标记离职")
+        notice = db.execute("SELECT status FROM hr_onboarding_notices WHERE owner=? AND talent_id=?",
+                            (owner, record)).fetchone()
+        if notice and notice["status"] in ("preparing", "sending", "submitted", "uncertain"):
+            raise pool.Conflict("导师通知正在发送或待核对，请处理后再标记离职")
+        value = before | {"departed": True, "departedAt": now()}
+        db.execute("UPDATE hr_onboarding_records SET body=?,version=version+1,updated_at=? WHERE owner=? AND talent_id=?",
+                   (json.dumps(value, ensure_ascii=False), value["departedAt"], owner, record))
+        db.execute("UPDATE talents SET stage='departed',version=version+1,updated_at=? WHERE owner=? AND id=?",
+                   (value["departedAt"], owner, record))
+        db.execute("INSERT INTO hr_onboarding_departures VALUES(?,?,?,?,?)",
+                   (owner, record, request_id, version, value["departedAt"]))
+        pool.event(db, owner, actor, record, "onboarding.depart", before, value)
+    return {"saved": True, "departed": True}
 
 
 def recipients(user, query):
@@ -178,7 +233,8 @@ def identity(user, body):
     with pool.database() as db:
         schema(db)
         row = db.execute("SELECT * FROM hr_onboarding_records WHERE owner=? AND talent_id=?", (owner, record)).fetchone()
-        if not row or row["version"] != body.get("version") or not json.loads(row["body"])["joined"]:
+        if (not row or row["version"] != body.get("version") or not json.loads(row["body"])["joined"]
+                or json.loads(row["body"]).get("departed")):
             raise pool.Conflict("请先保存已入职状态，再识别导师")
     result = dt.api("topapi/v2/user/getbymobile", {"mobile": mobile}, dt.token(config)).get("result", {})
     uid = result.get("userid", "") if isinstance(result, dict) else ""
@@ -211,6 +267,8 @@ def send(user, body):
         if not row or row["version"] != body.get("version"):
             raise pool.Conflict("入职资料已变化，请刷新")
         value = json.loads(row["body"])
+        if value.get("departed"):
+            raise ValueError("员工已离职，不再发送入职带教提醒")
         if not value["joined"]:
             raise ValueError("请先确认并保存已入职状态")
         config = db.execute("SELECT * FROM hr_dingtalk_config WHERE owner=?", (owner,)).fetchone()
@@ -266,6 +324,7 @@ def deliver(owner, job_id):
                                       (owner, row["talent_id"])).fetchone()
                 current_config = db.execute("SELECT version FROM hr_dingtalk_config WHERE owner=?", (owner,)).fetchone()
                 if (not current or current["version"] != value["version"] or not json.loads(current["body"])["joined"]
+                        or json.loads(current["body"]).get("departed")
                         or not current_config or current_config["version"] != value["configVersion"]):
                     raise ValueError("入职资料或应用已变化，未发送")
                 if not db.execute("UPDATE hr_onboarding_notices SET status='sending',updated_at=? WHERE id=? AND status='preparing'",

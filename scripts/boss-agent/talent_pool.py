@@ -9,7 +9,7 @@ from pathlib import Path
 from desktop_bridge import identity
 
 DB = Path("/opt/heyi/boss-agent/runtime/talent-pool.sqlite3")
-STAGES = ("", "invited", "first", "second", "onboarding", "hired")
+STAGES = ("", "invited", "first", "second", "onboarding", "hired", "departed")
 FIELDS = {"name": 100, "position": 200, "education": 100, "experience": 100,
           "phone": 100, "city": 100, "company": 200, "notes": 5000,
           "sourceId": 180, "source": 30, "departmentId": 36}

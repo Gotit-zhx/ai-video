@@ -1,7 +1,7 @@
 (() => {
   globalThis.createHrOnboarding=({root,section,element:el,button,allowed,hrApi,navigate})=>{
     const panel=section('onboarding');
-    let active=false,epoch=0,page=1,status='pending',editing=null,saving=false,source=null,completed=null;
+    let active=false,epoch=0,page=1,status='all',editing=null,saving=false,source=null,completed=null,departing=false;
     let notifying=null,noticeData=null,proof=null,noticeRequest='',noticeBusy=false,noticeEpoch=0,timer=null;
     const labels=[['name','姓名'],['startDate','确认入职时间'],['position','入职岗位'],['supervisor','归属主管'],
       ['department','归属部门'],['company','归属公司'],['fixedSalary','固定薪资'],['performanceSalary','绩效薪资'],
@@ -11,7 +11,7 @@
     el('h2','从确认入职，到有人带教',intro);el('p','二面通过时填写安排，入职后由 HR 发送导师提醒。',intro,'hr-hint');
     button('刷新',head,load);
     const tabs=el('div','',panel,'hr-pool-tabs');
-    const options=[['pending','待入职'],['joined','已入职'],['all','全部']].map(([key,label])=>{
+    const options=[['all','全部'],['joined','已入职'],['departed','已离职']].map(([key,label])=>{
       const node=button(label,tabs,()=>{status=key;page=1;load();});return {key,node};});
     const searchForm=el('form','',panel,'hr-form'),search=field('搜索姓名、岗位、部门或导师',searchForm);
     search.maxLength=100;button('搜索',searchForm,()=>{page=1;load();});
@@ -43,7 +43,10 @@
       if(response.success===false||!response.data)throw Error(response.message||'读取入职安排失败');
       return response.data;
     }
-    function populate(value){for(const [key] of labels)inputs[key].value=key==='joined'?String(!!value[key]):value[key]||'';}
+    function populate(value){
+      for(const [key] of labels)inputs[key].value=key==='joined'?String(!!value[key]):value[key]||'';
+      inputs.joined.disabled=!!value.departed;
+    }
     async function openPass(row,payload,onDone){
       if(!allowed()||saving)return;
       const ticket=++epoch;editing={talentId:row.id};source=payload;completed=onDone;
@@ -60,8 +63,9 @@
     function openEdit(row){
       if(!allowed()||saving)return;
       ++epoch;clearTimeout(timer);editing=row;source=completed=null;populate(row);error.textContent='';
-      title.textContent='入职安排 · '+row.name;hint.textContent='更新入职信息；导师提醒需要另外点击发送。';
-      submit.textContent='保存入职安排';submit.disabled=false;dialog.showModal();
+      title.textContent='编辑 · '+row.name;
+      hint.textContent=row.departed?'已离职，保留入职记录；可更新资料。':'更新入职信息；导师提醒需要另外点击发送。';
+      submit.textContent='保存';submit.disabled=false;dialog.showModal();
     }
     form.addEventListener('submit',async event=>{
       event.preventDefault();if(!editing||saving||!allowed()||!form.reportValidity())return;
@@ -133,6 +137,16 @@
       finally{noticeBusy=false;if(ticket===noticeEpoch)syncNotice();}
     }
     const noticeStates={preparing:'准备中',sending:'发送中',submitted:'等待钉钉回执',sent:'已送达导师',failed:'发送未完成',uncertain:'发送待人工核对'};
+    async function depart(row,control){
+      if(departing||!allowed()||!row.joined||row.departed)return;
+      if(!confirm(`确认将 ${row.name} 标记为已离职吗？`))return;
+      const ticket=epoch;departing=true;control.disabled=true;
+      try{
+        await request('onboarding/depart',{talentId:row.talentId,version:row.version,requestId:crypto.randomUUID()});
+        if(ticket===epoch&&active&&allowed()){departing=false;status='departed';page=1;await load();}
+      }catch(e){if(ticket===epoch&&active&&allowed())feedback.textContent=e.message+'，请刷新核对。';}
+      finally{departing=false;if(control.isConnected)control.disabled=!row.joined||!!row.departed;}
+    }
     async function load(){
       if(!active||!allowed()||dialog.open)return;
       const ticket=++epoch;feedback.textContent='正在读取入职安排…';clearTimeout(timer);
@@ -147,13 +161,15 @@
           for(const [,label] of [...labels,['notice','导师提醒'],['actions','操作']])el('th',label,thead);
           for(const row of data.items){
             const tr=el('tr','',body);
-            for(const [key] of labels)el('td',key==='joined'?(row.joined?'已入职':'未入职'):row[key]||'待填写',tr);
+            for(const [key] of labels)el('td',key==='joined'?(row.departed?'已离职':row.joined?'已入职':'未入职'):row[key]||'待填写',tr);
             const notice=el('td',row.notice?noticeStates[row.notice.status]:'未发送',tr);
             if(row.notice?.error)el('p',row.notice.error,notice,'hr-error');
             const controls=el('div','',el('td','',tr),'hr-actions');
-            button('入职安排',controls,()=>openEdit(row));
+            button('编辑',controls,()=>openEdit(row));
+            const departure=button('员工离职',controls,()=>depart(row,departure));
+            departure.disabled=departing||!row.joined||!!row.departed;
             const sendButton=button(row.notice?.status==='failed'?'重试导师提醒':'通知导师',controls,()=>openNotice(row));
-            sendButton.disabled=!row.joined||!!row.notice&&row.notice.status!=='failed';
+            sendButton.disabled=!row.joined||!!row.departed||!!row.notice&&row.notice.status!=='failed';
           }
         }
         pager.hidden=false;page=data.page;pageLabel.textContent=`第 ${data.page} / ${data.pages} 页 · 每页 20 人`;
@@ -162,7 +178,7 @@
       }catch(e){if(ticket===epoch)feedback.textContent=e.message;}
     }
     function leave(){active=false;++epoch;clearTimeout(timer);}
-    function reset(){leave();dialog.close();notifyDialog.close();page=1;status='pending';search.value='';results.replaceChildren();}
+    function reset(){leave();dialog.close();notifyDialog.close();page=1;status='all';search.value='';results.replaceChildren();}
     return {enter(){active=true;load();},leave,reset,openPass};
   };
 })();
