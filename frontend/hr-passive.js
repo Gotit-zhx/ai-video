@@ -300,7 +300,11 @@
           if(reviewing||!allowed())return;reviewing=true;approve.disabled=reject.disabled=true;
           try{
             await request('resume-pool/review',{id:row.id,version:row.version,action});
-            if(selected===row.id&&allowed()){detail.close();await load();}
+            if(selected===row.id&&allowed()){
+              detail.close();
+              if(action==='approve')navigate('pool',{stage:'invited'});
+              else{filter='rejected';page=1;await load();}
+            }
           }catch(error){if(selected===row.id)feedback.textContent=error.message;}
           finally{reviewing=false;approve.disabled=false;reject.disabled=!template;}
         }

@@ -73,7 +73,8 @@
   element('summary', '下载桌面助手', downloads);
   const downloadMenu = element('div', '', downloads, 'hr-download-menu');
   for(const [label,file] of [['Mac · Apple 芯片','Heyi-Recruiter-mac-arm64.dmg'],['Windows · 64 位','Heyi-Recruiter-windows-x64-Setup.exe']]){
-    const link=element('a',label,downloadMenu);link.href='/downloads/'+file;
+    const link=element('a',label,downloadMenu);link.href='/downloads/'+file+'?v=0.1.15';
+    link.title='赫逸招聘助手 0.1.15';
   }
   const note = element('p', '', root, 'hr-note');
   note.setAttribute('role', 'status');
@@ -574,9 +575,11 @@
     }
     return null;
   }
-  function navigate(route) {
+  function navigate(route, context) {
+    if(!allowed())return;
     history.pushState(null, '', `${location.pathname}${location.search}#hr-${route}`);
-    enter(route);
+    switchWorkspace('hr');
+    enter(route, context);
   }
   function rememberJobs(rows) {
     jobRecords = rows.filter(row => row && typeof row === 'object' && jobId(row));
@@ -997,7 +1000,7 @@
   const bi=globalThis.createHrBi?.({root:shortcuts,element,button,allowed,hrApi:api,navigate});
   if(bi){shortcutHeader.hidden=shortcutGrid.hidden=true;}
   if(sourcing){talentForm.hidden=legacyTalentHint.hidden=talentResult.hidden=true;}
-  function enter(route) {
+  function enter(route, context) {
     if (!allowed()) return;
     pool?.leave();
     onboarding?.leave();bi?.leave();
@@ -1015,7 +1018,10 @@
     ++sequence;
     panels.forEach((panel, key) => panel.hidden = key !== current);
     document.querySelectorAll('[data-hr-route]').forEach(link => {
-      link.classList.toggle('active', link.dataset.hrRoute === (current==='talent'?'jobs':current));
+      const selected=link.dataset.hrRoute === (current==='talent'?'jobs':current);
+      link.classList.toggle('active', selected);
+      if(selected)link.setAttribute('aria-current','page');
+      else link.removeAttribute('aria-current');
     });
     if (['applications','chats',...(!sourcing?['talent']:[])].includes(current) && !jobRecords.length) loadJobOptions();
     const titles={overview:['招聘工作台','从职位出发，让每一次沟通都有进展。'],jobs:['职位管理','从在招职位开始，查看推荐人才和投递。'],talent:['人才寻源','找到适合岗位的人，再开始有价值的沟通。'],applications:['投递申请','及时查看主动投递，跟进合适的候选人。'],chats:['沟通与简历','每一次沟通、每一份简历，在这里继续。'],resume:['在线简历','查看工作、项目与教育经历，了解完整的人才画像。']};
@@ -1033,7 +1039,7 @@
     } else if (current === 'demands') {
       demands?.enter();
     } else if (current === 'pool') {
-      pool?.enter();
+      pool?.enter(context);
     } else if (current === 'onboarding') {
       onboarding?.enter();
     } else if (current === 'overview') {

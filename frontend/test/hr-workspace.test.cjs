@@ -33,7 +33,7 @@ function setup(overrides={}) {
   const root=new Node(),calls=[],timers=new Map();
   root._connected=true;
   let timerSequence = 0;
-  const links=['overview','jobs','talent','applications','chats','resume'].map(route=>{
+  const links=['overview','demands','jobs','resume-pool','pool','onboarding','speeches','departments','talent','applications','chats','resume'].map(route=>{
     const node=new Node('a');node.dataset.hrRoute=route;return node;
   });
   const env={echarts:overrides.echarts,document:{documentElement:{dataset:{theme:'light'}},
@@ -74,13 +74,18 @@ function setup(overrides={}) {
 const text=()=>visible().map(n=>n._text).join('\n');
   const enter=async route=>{env.HrWorkspace.enter(route);await flush();};
   const tick=async(ms)=>{for(const timer of [...timers.values()])if(timer.ms===ms)await timer.fn();await flush();};
-  return {root,env,calls,click,text,enter,visible,timers,tick};
+  return {root,env,calls,click,text,enter,visible,timers,tick,links};
 }
 
 const poolResult=()=>({items:[{id:'talent-1',name:'测试人才',education:'本科',experience:'5年',stage:'first',
   departmentId:'department-1',version:1,updatedAt:'2026-09-29T00:00:00Z'}],
   departments:[{id:'department-1',name:'电商部',status:'ACTIVE'}],
   projects:[],counts:{all:1,first:1},total:1,page:1,pages:1});
+test('HR navigation follows recruitment workflow before configuration pages',()=>{
+  const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
+  assert.deepEqual([...html.matchAll(/data-hr-route="([^"]+)"/g)].map(match=>match[1]),
+    ['overview','demands','jobs','resume-pool','pool','onboarding','speeches','departments']);
+});
 test('only open job cards enable actions and passive invitation; closed and unknown cards cannot navigate or save',async()=>{
   const statuses=['开放中','待开放','已失效','已关闭','审核中','免费曝光中',null];
   const rows=statuses.map((status,index)=>({...fixtures.jobs.data[0],encryptJobId:'job-'+index,statusDesc:status}));
@@ -607,7 +612,9 @@ test('resume approval automatically attributes the job department without a manu
     url.endsWith('/pool')?{departments:[{id:'dept-one',name:'研发部',status:'ACTIVE'},
       {id:'dept-disabled',name:'停用部',status:'DISABLED'}]}:
     url.endsWith('/speeches')?{items:[]}:
+    url.startsWith('/api/v1/hr/pool?')?{...poolResult(),items:[{...poolResult().items[0],stage:'invited'}]}:
     {items:[row],total:1}})});
+  await app.enter('pool');await app.click('二面 0');
   await app.enter('resume-pool');await app.click('查看与审批');
   assert.doesNotMatch(app.text(),/通过后归属部门|归属项目组|停用部/);
   assert.equal(app.visible().some(n=>n.tagName==='select'&&n.children.some(o=>o.value==='dept-one')),false);
@@ -615,6 +622,11 @@ test('resume approval automatically attributes the job department without a manu
   const writes=app.calls.filter(c=>c.options?.method==='POST');
   assert.equal(writes.length,1);
   assert.deepEqual(JSON.parse(writes[0].options.body),{id:row.id,version:1,action:'approve'});
+  assert.equal(app.env.location.hash,'#hr-pool');
+  assert.equal(app.links.find(n=>n.dataset.hrRoute==='pool').attributes['aria-current'],'page');
+  const destination=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(destination.get('stage'),'invited');
+  assert.equal(destination.get('q'),'');assert.equal(destination.get('page'),'1');
 });
 test('missing managed default keeps rejection disabled and guides HR to speech management',async()=>{
   const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle'};
@@ -628,6 +640,22 @@ test('missing managed default keeps rejection disabled and guides HR to speech m
   assert.equal(all(app.root).find(n=>n._text==='通过，加入邀约').disabled,false);
   assert.match(app.text(),/请在话术管理中启用并设置默认婉拒话术/);
   assert.ok(app.calls.every(c=>!c.options?.method||c.options.method!=='POST'));
+});
+test('a late resume approval never returns HR from a different menu',async()=>{
+  let finish;
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle'};
+  const app=setup({passive:true,api:async url=>{
+    if(url.endsWith('/resume-pool/review'))return new Promise(resolve=>{finish=resolve;});
+    return {data:url.endsWith('/login/status')?{state:'complete'}:url.endsWith('/speeches')?{items:[]}:{items:[row],total:1}};
+  }});
+  await app.enter('resume-pool');await app.click('查看与审批');
+  const pending=app.visible().find(n=>n._text==='通过，加入邀约').click();
+  await flush();await app.enter('speeches');
+  finish({data:{status:'approved'}});await pending;await flush();
+  assert.equal(app.links.find(n=>n.dataset.hrRoute==='speeches').attributes['aria-current'],'page');
+  assert.equal(app.links.find(n=>n.dataset.hrRoute==='pool').attributes['aria-current'],undefined);
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
+  assert.ok(app.calls.every(c=>!c.url.startsWith('/api/v1/hr/pool?')));
 });
 test('a failed review response remains visible and never claims approval or retries sending',async()=>{
   const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle'};
@@ -671,6 +699,25 @@ const interviewPreview=(talent)=>({talentId:talent.id,name:talent.name,version:1
   packageReady:true,config:{verified:true,version:1},resumes:[{id:'r1',filename:'测试人才.pdf',jobName:'算法'}],
   demands:[{id:'d1',position:'算法',department:'研发',version:1,resumeIds:['r1'],questionsReady:true,
     questionCount:6,recipientReady:true,recipient:'面试负责人',recipientId:'manager1'}],handoff:null});
+test('confirmed first handoff opens first pending and closes its dialog without a duplicate send',async()=>{
+  let talent={...poolResult().items[0],stage:'invited'},handoff=null;
+  const app=setup({api:async(url,options)=>{
+    if(url.endsWith('/interview/start')){
+      handoff={id:'handoff1',status:'sent'};talent={...talent,stage:'first',version:2};
+      return {data:handoff};
+    }
+    if(url.includes('/interview?'))return {data:{...interviewPreview(talent),stage:talent.stage,handoff}};
+    return {data:{...poolResult(),items:[talent]}};
+  }});
+  await app.enter('pool');await app.click('开始一面');
+  const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-interview-dialog');
+  assert.equal(dialog.open,false);
+  const destination=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(destination.get('stage'),'first');assert.equal(destination.get('outcome'),'pending');
+  assert.equal(app.env.location.hash,'#hr-pool');
+  assert.equal(app.links.find(n=>n.dataset.hrRoute==='pool').attributes['aria-current'],'page');
+  assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,1);
+});
 test('optional second interview selects a verified person and sends only after explicit click',async()=>{
   const talent={...poolResult().items[0],stage:'second'};
   const preview={...interviewPreview(talent),round:'second',stage:'second',
@@ -799,6 +846,8 @@ test('second approval opens arrangements first and submits opinion and onboardin
   assert.equal(data.round,'second');assert.equal(data.onboarding.fixedSalary,'22000');
   assert.equal(data.onboarding.joined,false);
   assert.match(app.env.location.hash,/hr-onboarding/);
+  assert.equal(app.links.find(n=>n.dataset.hrRoute==='onboarding').attributes['aria-current'],'page');
+  assert.equal(app.links.find(n=>n.dataset.hrRoute==='pool').attributes['aria-current'],undefined);
   assert.equal(app.calls.some(c=>c.url.endsWith('/onboarding/send')),false);
 });
 test('cancelling arrangements preserves second opinion and does not mark approval',async()=>{
@@ -1053,6 +1102,8 @@ test('first opinion requires text and approval advances to second pending with o
   assert.equal(body.round,'first');assert.equal(body.outcome,'passed');
   const selected=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
   assert.equal(selected.get('stage'),'second');assert.equal(selected.get('outcome'),'pending');
+  assert.equal(app.env.location.hash,'#hr-pool');
+  assert.equal(app.links.find(n=>n.dataset.hrRoute==='pool').attributes['aria-current'],'page');
   assert.match(app.text(),/审核/);assert.equal(opinion.value,'');
   assert.ok(app.calls.every(c=>!c.url.endsWith('/interview/start')&&!c.url.includes('/pool/messages')));
 });

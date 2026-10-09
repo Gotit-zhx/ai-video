@@ -7,7 +7,7 @@
     let stage='invited',outcome='all',department='',page=1,generation=0,active=false,departments=[],rows=[],editing=null,saving=false;
     let departmentButtons=[],departmentDirectory='',pageButtons=[];
     let interviewing=null,interviewData=null,interviewRequest='',interviewTimer=null,interviewSending=false,settingsData=null,settingsSaving=false,settingsEpoch=0,interviewEpoch=0;
-    let interviewRound='first',interviewerProof=null,identifying=false;
+    let interviewRound='first',interviewerProof=null,identifying=false,advanceToFirst=false;
     let directoryData=null,directoryPage=1,directoryBusy=false,directoryEpoch=0,directoryTimer=null;
     const toolbar=el('div','',panel,'hr-pool-toolbar');
     const intro=el('div','',toolbar);
@@ -100,7 +100,7 @@
     interviewDownload.hidden=true;interviewDownload.download='';
     const interviewSettings=button('钉钉设置',interviewActions,()=>{interviewDialog.close();openSettings();});
     const interviewSend=button('发送一面资料',interviewActions,sendInterview);interviewSend.className='hr-primary';
-    interviewDialog.addEventListener('close',()=>{++interviewEpoch;++directoryEpoch;interviewing=null;interviewData=null;
+    interviewDialog.addEventListener('close',()=>{++interviewEpoch;++directoryEpoch;interviewing=null;interviewData=null;advanceToFirst=false;
       clearTimeout(interviewTimer);clearTimeout(directoryTimer);});
     const states={preparing:'正在准备一面资料包',sending:'正在发送到钉钉',submitted:'钉钉已接受，正在确认送达',
       sent:'一面资料已送达负责人',uncertain:'发送结果待人工核对，不会自动重发',failed:'发送未完成，可核对后手动重试'};
@@ -254,6 +254,9 @@
         const data=await request('/interview?talentId='+encodeURIComponent(id)+'&round='+interviewRound);
         if(epoch!==interviewEpoch||interviewing?.id!==id||!interviewDialog.open||!allowed())return;
         fillInterview(data);
+        if(advanceToFirst&&interviewRound==='first'&&data.handoff?.status==='sent'&&data.stage==='first'){
+          interviewDialog.close();navigate('pool',{stage:'first'});return;
+        }
         if(data.handoff?.status==='sent')load();
         if(['preparing','sending','submitted'].includes(data.handoff?.status))interviewTimer=setTimeout(refreshInterview,5000);
       }catch(error){if(epoch===interviewEpoch&&interviewing?.id===id)interviewFeedback.textContent=error.message;}
@@ -262,6 +265,7 @@
       if(!allowed()||interviewSending)return;
       const epoch=++interviewEpoch;
       interviewing=row;interviewData=null;interviewRequest=crypto.randomUUID();interviewRound=round;
+      advanceToFirst=autoStart&&round==='first'&&row.stage==='invited';
       ++directoryEpoch;clearTimeout(directoryTimer);directoryData=null;directoryPage=1;directoryBusy=false;identifying=false;
       directoryQuery.value='';directoryDepartment.value='';directoryResults.replaceChildren();directoryStatus.textContent='';
       interviewerProof=null;interviewerMobile.value='';recipientSelect.replaceChildren();identityFeedback.textContent='';
@@ -275,6 +279,7 @@
     async function sendInterview(){
       if(!interviewing||interviewSending||interviewSend.disabled||!allowed())return;
       const id=interviewing.id,data=interviewData,demand=selectedDemand(),epoch=interviewEpoch;
+      if(interviewRound==='first'&&data.stage==='invited')advanceToFirst=true;
       let failure='';
       interviewSending=true;interviewSend.disabled=true;resumeSelect.disabled=demandSelect.disabled=true;
       interviewFeedback.textContent='正在提交'+(interviewRound==='second'?'二面':'一面')+'资料…';
@@ -406,9 +411,9 @@
         await request('/interview/review',{talentId:row.id,version:row.version,round:row.round,outcome:decision,
           opinion:reviewOpinion.value.trim(),requestId:reviewRequest});
         if(epoch!==reviewEpoch||!active||!allowed())return;
-        reviewDialog.close();stage=row.round==='first'&&decision==='passed'?'second':row.round;
-        outcome=row.round==='first'&&decision==='passed'?'pending':decision;page=1;
-        await load();
+        reviewDialog.close();
+        navigate('pool',{stage:row.round==='first'&&decision==='passed'?'second':row.round,
+          outcome:row.round==='first'&&decision==='passed'?'pending':decision});
       }catch(error){if(epoch===reviewEpoch&&active&&allowed())reviewFeedback.textContent=error.message;}
       finally{reviewSaving=false;syncReviewActions();}
     }
@@ -553,7 +558,13 @@
     });
     dialog.addEventListener('cancel',event=>{if(saving)event.preventDefault();});
     return {
-      enter(){active=true;load();},
+      enter(context){
+        if(stages.some(([key])=>key===context?.stage)){
+          stage=context.stage;outcome=['pending','passed','failed'].includes(context.outcome)?context.outcome:defaultOutcome(stage);
+          page=1;department='';query.value='';
+        }
+        active=true;load();
+      },
       leave(){active=false;++generation;dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);},
       add:openEditor,
       reset(){active=false;++generation;departments=[];rows=[];editing=null;stage='invited';outcome='all';department='';page=1;departmentDirectory='';syncDepartments();syncOutcomes();
