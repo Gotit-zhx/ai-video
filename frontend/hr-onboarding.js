@@ -56,7 +56,7 @@
     async function openPass(row,payload,onDone){
       if(!allowed()||saving)return;
       const ticket=++epoch;editing={talentId:row.id};source=payload;completed=onDone;
-      title.textContent='二面通过 · 填写入职安排';hint.textContent='填写后确认通过，候选人将流转到“入职安排及跟进”。';
+      title.textContent='二面通过 · 填写入职安排';hint.textContent='导师默认部门组长，可从钉钉人员中改选；确认通过后，将沿用所选导师跟进入职。';
       submit.textContent='确认二面通过并流转';error.textContent='正在读取岗位和部门…';
       populate({name:row.name,position:row.position,performanceSalary:'0',commission:'无'});submit.disabled=true;dialog.showModal();
       try{
@@ -256,7 +256,9 @@
         el('option','使用手机号识别导师',recipient).value='mobile';
         recipient.value=data.defaultRecipient?.bindingKey||'directory';
         notifyTitle.textContent='发送导师提醒';
-        noticeFeedback.textContent=data.config.verified?'默认归属部门组长，也可改选其他人员；发送时同步保存导师。':'请先在储备人才库的“钉钉设置”配置企业应用。';
+        noticeFeedback.textContent=data.config.verified?
+          (data.defaultRecipient?.bindingKey==='directory'?'沿用入职资料中选择的导师，也可改选其他人员；发送时同步保存导师。':
+            '默认归属部门组长，也可改选其他人员；发送时同步保存导师。'):'请先在储备人才库的“钉钉设置”配置企业应用。';
         syncNotice();
         if(recipient.value==='directory'){
           loadDirectory();
