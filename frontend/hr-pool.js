@@ -518,7 +518,7 @@
         if(row.stage==='second'&&reviewRound==='second'&&!reviewResult)
           button('发送二面资料',footer,()=>openInterview(row,false,'second'));
         if(reviewRound&&(row.stage===reviewRound||reviewResult)){
-          button(reviewRound==='first'?'一面意见':'二面意见',footer,()=>openReview(row,reviewRound)).className='hr-primary';
+          button(reviewRound==='first'?'一面意见':'审核',footer,()=>openReview(row,reviewRound)).className='hr-primary';
         }
       }
     }

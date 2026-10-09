@@ -700,7 +700,7 @@ test('optional second interview selects a verified person and sends only after e
 test('second interview opinions are available directly without choosing or sending DingTalk materials',async()=>{
   const talent={...poolResult().items[0],stage:'second'};
   const app=setup({api:async()=>({data:{...poolResult(),items:[talent]}})});
-  await app.enter('pool');await app.click('二面意见');
+  await app.enter('pool');await app.click('审核');
   assert.match(app.text(),/填写入职安排/);
   assert.equal(app.calls.some(c=>c.url.includes('/interview?')||c.url.endsWith('/interview/start')),false);
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
@@ -773,7 +773,7 @@ test('directory permission failure keeps optional interview opinion and phone fa
   select.value='';select.events.change();
   const dialog=app.visible().find(n=>n.className.includes('hr-interview-dialog'));
   assert.equal(all(dialog).find(n=>n._text==='发送二面资料').disabled,true);
-  await app.click('关闭');await app.click('二面意见');
+  await app.click('关闭');await app.click('审核');
   assert.equal(app.calls.filter(c=>c.options?.method==='POST').length,0);
 });
 const onboardingValues=()=>({name:'测试人才',startDate:'2026-10-20',position:'算法工程师',supervisor:'主管',
@@ -784,7 +784,7 @@ test('second approval opens arrangements first and submits opinion and onboardin
     url.includes('/onboarding?talentId=')?{defaults:onboardingValues()}:
     url.includes('/onboarding?')?{items:[],total:0,page:1,pages:1}:
     url.endsWith('/interview/review')?{stage:'onboarding'}:{...poolResult(),items:[talent]}})});
-  await app.enter('pool');await app.click('二面意见');
+  await app.enter('pool');await app.click('审核');
   const review=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
   const opinion=all(review).find(n=>n.tagName==='textarea');opinion.value='建议通过，进入入职安排';opinion.events.input();
   await app.click('通过');
@@ -805,7 +805,7 @@ test('cancelling arrangements preserves second opinion and does not mark approva
   const talent={...poolResult().items[0],stage:'second'};
   const app=setup({onboarding:true,api:async url=>({data:url.includes('/onboarding?talentId=')
     ?{defaults:onboardingValues()}:{...poolResult(),items:[talent]}})});
-  await app.enter('pool');await app.click('二面意见');
+  await app.enter('pool');await app.click('审核');
   const review=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
   const opinion=all(review).find(n=>n.tagName==='textarea');opinion.value='保留这条意见';opinion.events.input();
   await app.click('通过');await app.click('取消');
@@ -1053,7 +1053,7 @@ test('first opinion requires text and approval advances to second pending with o
   assert.equal(body.round,'first');assert.equal(body.outcome,'passed');
   const selected=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
   assert.equal(selected.get('stage'),'second');assert.equal(selected.get('outcome'),'pending');
-  assert.match(app.text(),/二面意见/);assert.equal(opinion.value,'');
+  assert.match(app.text(),/审核/);assert.equal(opinion.value,'');
   assert.ok(app.calls.every(c=>!c.url.endsWith('/interview/start')&&!c.url.includes('/pool/messages')));
 });
 test('interview result pills compose with department and completed opinions open without decision buttons',async()=>{
