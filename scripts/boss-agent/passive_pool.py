@@ -301,6 +301,9 @@ def ingest(user, body):
     location = resume_storage.store(owner, object_id, raw, extension)
     extracted, extraction_note = resume_storage.extract(raw, extension)
     clean = {k: pool.text(body.get(k, ''), limit) for k, limit in {'name': 100, 'education': 100, 'experience': 100, 'city': 100, 'company': 200}.items()}
+    for field, value in resume_storage.facts(extracted).items():
+        if not clean.get(field):
+            clean[field] = value
     original = resume_storage.original_filename(body.get('originalFileName', ''))
     extracted_name, name_source = resume_storage.identity(original, extracted)
     if not extracted_name and not clean.get('name'):
@@ -352,14 +355,29 @@ def review(user, body):
         if row['version'] != body.get('version'): raise pool.Conflict('简历已更新，请刷新后审批')
         detail = json.loads(row['body']); detail['reviewedBy'] = actor; detail['reviewedAt'] = now()
         if action == 'approve':
+            import resume_storage
+            for field, value in resume_storage.facts(detail.get('resumeText', '')).items():
+                if not detail.get(field):
+                    detail[field] = value
             project = pool.text(body.get('projectId', detail.get('projectId', '')), 80)
             if project and not db.execute('SELECT 1 FROM projects WHERE owner=? AND id=?', (owner, project)).fetchone(): raise ValueError('项目组不存在')
             source = f"passive:{row['account']}:{row['friend_id']}"
             old = db.execute('SELECT * FROM talents WHERE owner=? AND source_id=?', (owner, source)).fetchone()
             talent_id = old['id'] if old else str(uuid.uuid4())
             value = json.loads(old['body']) if old else {k: '' for k in pool.FIELDS}
-            value.update({k: detail.get(k, '') for k in ['name', 'education', 'experience', 'city', 'company']})
+            value.update({k: detail.get(k) or value.get(k, '') for k in ['name', 'education', 'experience', 'city', 'company']})
             value.update(position=detail['jobName'], source=detail.get('origin', 'passive'), sourceId=source, notes=value.get('notes') or '简历已通过审核，待安排邀约。')
+            department = pool.text(body.get('departmentId', ''), 36)
+            if department:
+                import hr_departments
+                hr_departments.schema(db)
+                if not db.execute("SELECT 1 FROM hr_departments WHERE owner=? AND id=? AND status='ACTIVE'",
+                                  (owner, department)).fetchone():
+                    raise ValueError('所选部门不存在或已停用，请刷新后重试')
+                value['departmentId'] = department
+            elif not value.get('departmentId'):
+                value['departmentId'] = pool.department_for_resumes(db, owner, [(row['account'], detail)])
+            detail['departmentId'] = value.get('departmentId', '')
             if old:
                 db.execute("UPDATE talents SET project=?,stage='invited',body=?,version=version+1,updated_at=? WHERE id=? AND owner=?", (project, dump(value), now(), talent_id, owner))
             else:

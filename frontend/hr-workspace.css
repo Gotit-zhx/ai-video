@@ -332,9 +332,27 @@ img.hr-resume-original{min-height:0;height:auto}
 .hr-dingtalk-dialog form{margin-top:24px}
 .hr-dingtalk-recipient{border-top:1px solid var(--hr-border);padding-top:20px}
 .hr-interview-dialog>.hr-pool-fields{margin-top:20px}
-.hr-pool-outcomes{display:flex;align-items:center;margin:-4px 0 20px}
+.hr-pool-outcomes{margin:-4px 0 20px}
 .hr-pool-outcomes[hidden]{display:none}
-.hr-pool-outcomes>.hr-field{width:min(100%,260px)}
+.hr-card-grid.hr-pool-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr));gap:12px}
+.hr-pool-grid .hr-person-card{padding:16px;display:flex;flex-direction:column}
+.hr-pool-grid .hr-card-heading{gap:8px}
+.hr-pool-grid .hr-identity{gap:9px}
+.hr-pool-grid .hr-identity h3{font-size:16px}
+.hr-pool-grid .hr-avatar{width:36px;height:36px;font-size:16px}
+.hr-pool-grid .hr-tags{gap:5px;margin:10px 0 0}
+.hr-pool-grid .hr-facts{gap:8px 12px;margin:12px 0}
+.hr-pool-grid .hr-facts dd{font-size:12px;line-height:1.5}
+.hr-pool-grid .hr-pool-note{margin:0 0 12px;font-size:12px;line-height:1.6;-webkit-line-clamp:2}
+.hr-pool-grid .hr-actions{padding-top:12px;margin-top:auto;gap:6px}
+.hr-pool-grid .hr-actions button{min-height:32px;font-size:12px;padding:6px 9px}
+.hr-pool-pagination{padding-top:16px;border-top:1px solid var(--hr-border);gap:8px}
+.hr-pool-pagination[hidden]{display:none}
+.hr-pool-page-numbers{display:flex;align-items:center;gap:5px}
+.hr-pool-page-numbers button{min-width:34px}
+.hr-pool-page-numbers button[aria-current=page]{background:var(--solid,#111);color:var(--on-solid,#fff);border-color:var(--solid,#111)}
+.hr-pool-pagination>.hr-hint{margin-left:auto;font-size:12px}
+@media(max-width:650px){.hr-pool-pagination>.hr-hint{width:100%;margin-left:0}}
 .hr-interview-review-dialog>.hr-field{margin-top:20px}
 .hr-interview-summary{padding:14px 16px;border:1px solid var(--hr-border);border-radius:10px;font-size:13px;line-height:1.8}
 .hr-interview-summary:empty{display:none}

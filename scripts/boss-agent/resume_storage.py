@@ -25,6 +25,56 @@ NON_NAMES = {'个人简历', '求职简历', '中文简历', '我的简历', '�
              '更新', '最新', '版本', '最终版', '秘书', '运营', '销售', '附件', '厦门', '福建'}
 
 
+def facts(text):
+    """Conservative local extraction. Never substitutes the job's requirements."""
+    text = str(text or "")
+    lines = [re.sub(r"[ \t\u3000]+", " ", line).strip() for line in text.splitlines()]
+    compact = re.sub(r"[ \t\u3000]+", "", text)
+    result = {}
+    education = re.search(r"(?:最高学历|学历)[：:]?([^\n，,；;]{1,25})", compact)
+    degrees = ("博士", "硕士", "本科", "大专", "专科", "高中", "中专")
+    scope = education[1] if education else compact
+    for degree in degrees:
+        if degree in scope:
+            result["education"] = degree
+            break
+    experience = re.search(r"(?:工作年限|工作经验|工作经历)[：:]?(\d{1,2}(?:\.\d+)?年(?:以上|以下)?)", compact)
+    if not experience:
+        experience = re.search(r"(?<!\d)(\d{1,2}(?:\.\d+)?年)(?:的)?工作(?:经验|经历)", compact)
+    if experience:
+        result["experience"] = experience[1]
+    elif "一年的工作经历" in compact or "一年工作经验" in compact:
+        result["experience"] = "1年"
+    city = re.search(r"(?:现居住地|现居城市|现居地|现居|所在城市|居住地|当前城市)[：:]([^\n，,；;|]{2,40})", compact)
+    if city:
+        result["city"] = city[1]
+    company = re.search(r"(?:最近公司|目前公司|现任公司|当前公司)[：:]([^\n，,；;|]{2,100})", compact)
+    if company:
+        result["company"] = company[1]
+    else:
+        # Prefer a current employment entry; otherwise the latest dated company.
+        candidates = []
+        for line in lines:
+            date = re.search(r"(?:19|20)\d{2}[./年-]\d{1,2}", line)
+            if not date:
+                continue
+            # Strip a full date range before looking for an employer name.
+            entry = re.sub(r"^.*?(?:19|20)\d{2}[./年-]\d{1,2}(?:[./月-]\d{1,2}日?)?"
+                           r"\s*[-—–~至]\s*(?:(?:19|20)\d{2}[./年-]\d{1,2}(?:[./月-]\d{1,2}日?)?|至今|今)\s*", "", line)
+            match = re.search(r"([\u4e00-\u9fffA-Za-z0-9（）()·]{2,70}(?:有限公司|集团|教育机构|研究院))", entry)
+            stamp = tuple(int(n) for n in re.findall(r"\d+", date[0]))
+            if match:
+                employer = re.sub(r"^(?:并于|并在|于|在)", "", match[1])
+                if employer == "教育机构":
+                    employer = "教育机构（简历未注明名称）"
+                candidates.append(("至今" in line, stamp, employer))
+            elif "至今" in line and "教育机构" in line:
+                candidates.append((True, stamp, "教育机构（简历未注明名称）"))
+        if candidates:
+            result["company"] = max(candidates)[2]
+    return result
+
+
 def clean_name(value):
     value = re.sub(r'\s+', '', value).strip(' :：|丨')
     return value if re.fullmatch(r'[\u4e00-\u9fff]{2,4}', value) and value not in NON_NAMES else ''

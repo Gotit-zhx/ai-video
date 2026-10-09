@@ -103,6 +103,26 @@ class PassiveTest(unittest.TestCase):
         self.assertFalse(feature.device_config(USER,{'accountKey':KEY})['commands'])
         self.assertEqual(result['status'],'approved')
 
+    def test_approval_reads_candidate_facts_without_using_job_requirements(self):
+        with pool.database() as db:
+            feature.schema(db)
+            detail=json.loads(db.execute("SELECT body FROM hr_resume_pool WHERE id='r1'").fetchone()[0])
+            detail.update(resumeText='学历：大专\n工作年限：2年\n现居城市：广州\n最近公司：示例有限公司')
+            db.execute("UPDATE hr_resume_pool SET body=? WHERE id='r1'",(json.dumps(detail),))
+        feature.review(USER,{'id':'r1','version':1,'action':'approve'})
+        item=pool.listing(USER,{})['items'][0]
+        self.assertEqual((item['education'],item['experience'],item['city'],item['company']),
+                         ('大专','2年','广州','示例有限公司'))
+
+    def test_approval_accepts_only_active_owned_department_and_persists_selection(self):
+        import hr_departments
+        department=hr_departments.save(USER,{'name':'研发部','code':'DEV','status':'ACTIVE'})
+        with self.assertRaises(ValueError):
+            feature.review(USER,{'id':'r1','version':1,'action':'approve','departmentId':'missing'})
+        feature.review(USER,{'id':'r1','version':1,'action':'approve','departmentId':department['id']})
+        self.assertEqual(pool.listing(USER,{'department':department['id']})['total'],1)
+        self.assertEqual(feature.listing(USER,'resume-pool',{})['items'][0]['departmentId'],department['id'])
+
     def test_atomic_claim_and_cancel_then_uncertain_never_requeues(self):
         self.template();feature.review(USER,{'id':'r1','version':1,'action':'reject'})
         command=feature.device_config(USER,{'accountKey':KEY})['commands'][0]

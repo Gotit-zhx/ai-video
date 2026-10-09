@@ -3,42 +3,44 @@
   const stages = [['all','全部'],['invited','邀约'],['first','一面'],['second','二面'],['hired','已录取']];
   globalThis.createHrPool = ({root, section, element:el, button, allowed, navigate}) => {
     const panel=section('pool');
-    let stage='all',outcome='all',page=1,generation=0,active=false,projects=[],rows=[],editing=null,saving=false;
+    let stage='all',outcome='all',department='',page=1,generation=0,active=false,departments=[],rows=[],editing=null,saving=false;
+    let departmentButtons=[],departmentDirectory='',pageButtons=[];
     let interviewing=null,interviewData=null,interviewRequest='',interviewTimer=null,interviewSending=false,settingsData=null,settingsSaving=false,settingsEpoch=0,interviewEpoch=0;
     const toolbar=el('div','',panel,'hr-pool-toolbar');
     const intro=el('div','',toolbar);
     el('h2','让合适的人，始终在视野里',intro);
-    el('p','按项目组沉淀人才，按招聘阶段持续跟进。',intro,'hr-hint');
+    el('p','按部门归档人才，按招聘阶段持续跟进。',intro,'hr-hint');
     const actions=el('div','',toolbar,'hr-actions');
     button('钉钉设置',actions,openSettings);
-    button('管理项目组',actions,()=>openProject());
     const filters=el('form','',panel,'hr-form');
     const makeField=(label,parent,tag='input')=>{
       const wrap=el('label','',parent,'hr-field');el('span',label,wrap);return el(tag,'',wrap);
     };
-    const projectFilter=makeField('项目组',filters,'select');
     const query=makeField('搜索人才',filters);
     query.placeholder='姓名、职位、公司或备注';query.maxLength=100;
     button('搜索',filters,()=>{page=1;load();});
     filters.addEventListener('submit',event=>{event.preventDefault();page=1;load();});
-    projectFilter.addEventListener('change',()=>{page=1;load();});
+    const departmentBar=el('div','',panel,'hr-pool-tabs hr-pool-departments');
+    departmentBar.setAttribute('aria-label','部门');
     const tabs=el('div','',panel,'hr-pool-tabs');tabs.setAttribute('aria-label','招聘阶段');
     const tabButtons=stages.map(([key,label])=>{
       const b=button(label,tabs,()=>{stage=key;outcome='all';page=1;load();});
       b.dataset.stage=key;return b;
     });
-    const outcomeBar=el('div','',panel,'hr-pool-outcomes');outcomeBar.hidden=true;
-    const outcomeFilter=makeField('面试结果',outcomeBar,'select');
+    const outcomeBar=el('div','',panel,'hr-pool-tabs hr-pool-outcomes');outcomeBar.hidden=true;
+    outcomeBar.setAttribute('aria-label','面试结果');
     const outcomeOptions=[['all','全部结果'],['pending','待填写意见'],['passed','通过'],['failed','未通过']].map(([key,label])=>{
-      const option=el('option',label,outcomeFilter);option.value=key;return {option,key,label};
+      const option=button(label,outcomeBar,()=>{outcome=key;page=1;load();});
+      option.dataset.outcome=key;return {option,key,label};
     });
-    outcomeFilter.value='all';outcomeFilter.addEventListener('change',()=>{outcome=outcomeFilter.value;page=1;load();});
     const feedback=el('p','',panel,'hr-hint');feedback.setAttribute('role','status');
     const result=el('div','',panel,'hr-result');
-    const pager=el('div','',panel,'hr-pagination');
+    const pager=el('div','',panel,'hr-pagination hr-pool-pagination');
+    pager.setAttribute('role','navigation');pager.setAttribute('aria-label','人才列表分页');
     const previous=button('上一页',pager,()=>{page--;load();});
-    const pageLabel=el('span','',pager,'hr-hint');
+    const pageNumbers=el('div','',pager,'hr-pool-page-numbers');
     const next=button('下一页',pager,()=>{page++;load();});
+    const pageLabel=el('span','',pager,'hr-hint');
     previous.disabled=next.disabled=true;pager.hidden=true;
     const dialog=el('dialog','',root,'hr-pool-dialog');
     const form=el('form','',dialog);
@@ -53,23 +55,12 @@
     const stageInput=makeField('招聘阶段',fields,'select');
     el('option','未设置阶段',stageInput).value='';
     stages.slice(1).forEach(([key,label])=>el('option',label,stageInput).value=key);
-    const projectInput=makeField('所属项目组',fields,'select');
+    const departmentInput=makeField('所属部门',fields,'select');
     const notes=inputs.notes=makeField('跟进备注',form,'textarea');notes.maxLength=5000;notes.rows=4;
     const editorError=el('p','',form,'hr-error');editorError.hidden=true;editorError.setAttribute('role','alert');
     const editorActions=el('div','',form,'hr-actions');
     const cancel=button('取消',editorActions,()=>dialog.close());
     const saveButton=el('button','保存人才',editorActions,'hr-primary');saveButton.type='submit';
-    const projectDialog=el('dialog','',root,'hr-pool-dialog hr-pool-project-dialog');
-    const projectForm=el('form','',projectDialog);
-    el('h2','管理项目组',projectForm);
-    el('p','人才按项目组分类，可新建或重命名。',projectForm,'hr-hint');
-    const projectSelect=makeField('选择项目组',projectForm,'select');
-    const projectName=makeField('项目组名称',projectForm);projectName.required=true;projectName.maxLength=80;
-    const projectError=el('p','',projectForm,'hr-error');projectError.hidden=true;
-    const projectActions=el('div','',projectForm,'hr-actions');
-    button('关闭',projectActions,()=>projectDialog.close());
-    const saveProject=el('button','保存项目组',projectActions,'hr-primary');saveProject.type='submit';
-    projectSelect.addEventListener('change',()=>{projectName.value=projects.find(p=>p.id===projectSelect.value)?.name||'';});
     const interviewDialog=el('dialog','',root,'hr-pool-dialog hr-interview-dialog');
     const interviewTitle=el('h2','开始一面',interviewDialog);
     const interviewIntro=el('p','简历、岗位 JD 和面试题库将作为一份 ZIP 资料包发给负责人，可解压查看和打印题库。',interviewDialog,'hr-hint');
@@ -292,35 +283,61 @@
       if(response.success===false||!response.data||typeof response.data!=='object')throw Error(response.message||'读取人才库失败');
       return response.data;
     }
-    function fillProjects(select,first,selected=''){
+    function fillDepartments(select,first,selected=''){
       select.replaceChildren();el('option',first,select).value='';
-      for(const project of projects)el('option',project.name,select).value=project.id;
+      for(const department of departments)el('option',department.name,select).value=department.id;
       select.value=selected;
     }
-    function syncProjects(){
-      const selected=projectFilter.value;
-      fillProjects(projectFilter,'全部项目组',selected);
-      el('option','未分组',projectFilter).value='unassigned';
-      projectFilter.value=selected;
+    function syncDepartments(){
+      const options=[['','全部部门'],...departments.map(d=>[d.id,d.name]),['unassigned','待关联部门']];
+      const directory=JSON.stringify(options);
+      if(directory!==departmentDirectory){
+        departmentDirectory=directory;departmentBar.replaceChildren();
+        departmentButtons=options.map(([key,label])=>{
+          const b=button(label,departmentBar,()=>{department=key;page=1;load();});
+          b.dataset.department=key;return {b,key};
+        });
+      }
+      departmentButtons.forEach(({b,key})=>b.setAttribute('aria-pressed',String(key===department)));
+    }
+    function syncOutcomes(counts){
+      outcomeBar.hidden=!['first','second'].includes(stage);
+      outcomeOptions.forEach(({option,key,label})=>{
+        option.setAttribute('aria-pressed',String(key===outcome));
+        if(counts)option.textContent=`${label} ${counts[key]||0}`;
+      });
+    }
+    function renderPagination(data){
+      previous.disabled=page<=1;next.disabled=page>=data.pages;
+      pageNumbers.replaceChildren();pageButtons=[];
+      const pages=[...new Set([1,page-1,page,page+1,data.pages])].filter(n=>n>=1&&n<=data.pages).sort((a,b)=>a-b);
+      pages.forEach((number,index)=>{
+        if(index&&number-pages[index-1]>1)el('span','…',pageNumbers,'hr-hint');
+        const b=button(String(number),pageNumbers,()=>{if(page!==number){page=number;load();}});
+        b.setAttribute('aria-label',`第 ${number} 页`);
+        if(number===page)b.setAttribute('aria-current','page');
+        pageButtons.push(b);
+      });
+      pageLabel.textContent=`第 ${page} / ${data.pages} 页 · 共 ${data.total} 人 · 每页 20 人`;
+      pager.hidden=false;
     }
     async function load(){
       if(!allowed()||!active)return;
       const ticket=++generation;
       result.setAttribute('aria-busy','true');feedback.textContent='正在读取人才库…';
       previous.disabled=next.disabled=true;
+      pageButtons.forEach(b=>b.disabled=true);
       tabButtons.forEach((b,i)=>b.setAttribute('aria-pressed',String(stages[i][0]===stage)));
-      outcomeBar.hidden=!['first','second'].includes(stage);outcomeFilter.value=outcome;
+      syncDepartments();syncOutcomes();
       try{
-        const data=await request('?'+new URLSearchParams({stage,outcome,project:projectFilter.value,q:query.value.trim(),page:String(page)}));
+        const data=await request('?'+new URLSearchParams({stage,outcome,department,q:query.value.trim(),page:String(page)}));
         if(ticket!==generation||!active||!allowed())return;
-        projects=data.projects;rows=data.items;page=data.page;syncProjects();
-        outcomeBar.hidden=!['first','second'].includes(stage);outcomeFilter.value=outcome;
-        outcomeOptions.forEach(({option,key,label})=>{option.textContent=`${label}${data.outcomeCounts?' '+(data.outcomeCounts[key]||0):''}`;});
+        departments=data.departments||[];rows=data.items;page=data.page;syncDepartments();
+        syncOutcomes(data.outcomeCounts);
         tabButtons.forEach((b,i)=>{const [key,label]=stages[i];b.textContent=`${label} ${data.counts[key]||0}`;});
         render();
         feedback.textContent=`共 ${data.total} 位人才`;
-        previous.disabled=page<=1;next.disabled=page>=data.pages;
-        pageLabel.textContent=`${page} / ${data.pages}`;pager.hidden=data.pages<=1;
+        renderPagination(data);
       }catch(error){
         if(ticket!==generation||!active)return;
         rows=[];result.replaceChildren();el('p',error.message,result,'hr-error');
@@ -335,7 +352,7 @@
         el('span','◎',empty,'hr-pool-empty-icon');el('h3','这里还没有人才记录',empty);
         el('p','简历审批通过后进入储备库，也可从 AI 寻源中加入候选人；可以调整筛选条件查看。',empty,'hr-hint');return;
       }
-      const grid=el('div','',result,'hr-card-grid');
+      const grid=el('div','',result,'hr-card-grid hr-pool-grid');
       for(const row of rows){
         const card=el('article','',grid,'hr-person-card');
         const canInvite=row.stage==='invited';
@@ -352,18 +369,17 @@
         const copy=el('div','',identity);el('h3',row.name,copy);el('p',row.position||'职位待补充',copy,'hr-hint');
         el('span',stages.find(([key])=>key===row.stage)?.[1]||'未设置阶段',head,'hr-badge');
         const tags=el('div','',card,'hr-tags');
-        el('span',projects.find(p=>p.id===row.projectId)?.name||'未分组',tags,'hr-badge');
+        el('span',departments.find(d=>d.id===row.departmentId)?.name||'待关联部门',tags,'hr-badge');
         el('span',row.source==='boss'?'BOSS 人才':row.source==='passive'?'简历池审批':'手动录入',tags,'hr-badge');
         const reviewRound=['first','second'].includes(stage)?stage:['first','second'].includes(row.stage)?row.stage:null;
         const reviewResult=reviewRound&&row.interviewReviews?.[reviewRound];
         if(reviewRound)el('span',`${reviewRound==='first'?'一面':'二面'} · ${reviewResult?(reviewResult.outcome==='passed'?'通过':'未通过'):'待填写意见'}`,tags,'hr-badge');
         const facts=el('dl','',card,'hr-facts');
         for(const [label,value] of [['学历',row.education],['工作年限',row.experience],['城市',row.city],['最近公司',row.company]]){
-          const item=el('div','',facts);el('dt',label,item);el('dd',value||'未填写',item);
+          const item=el('div','',facts);el('dt',label,item);el('dd',value||'简历未提供',item);
         }
         if(row.notes)el('p',row.notes,card,'hr-excerpt hr-pool-note');
         const footer=el('div','',card,'hr-actions');
-        button('查看 / 编辑',footer,()=>openEditor(row));
         if(canInvite)button('开始一面',footer,()=>openInterview(row,true)).className='hr-primary';
         if(['first','second'].includes(row.stage)||reviewRound)button('一面资料',footer,()=>openInterview(row));
         if(reviewRound&&(row.stage===reviewRound||reviewResult)){
@@ -375,14 +391,14 @@
       if(!allowed())return;
       editing={...row,...(!row.id?{createId:crypto.randomUUID()}: {})};editorTitle.textContent=row.id?'编辑人才':'加入储备人才库';
       Object.entries(inputs).forEach(([key,input])=>input.value=row[key]||'');
-      stageInput.value=row.stage||'';fillProjects(projectInput,'未分组',row.projectId||'');
+      stageInput.value=row.stage||'';fillDepartments(departmentInput,'待关联部门',row.departmentId||'');
       editorError.hidden=true;saveButton.disabled=true;cancel.disabled=false;
       dialog.showModal();
       const ticket=generation;
       try{
         const data=await request('?page=1');
         if(ticket!==generation||!dialog.open)return;
-        projects=data.projects;fillProjects(projectInput,'未分组',row.projectId||'');
+        departments=data.departments||[];fillDepartments(departmentInput,'待关联部门',row.departmentId||'');
         saveButton.disabled=false;
       }catch(error){if(dialog.open){editorError.textContent=error.message;editorError.hidden=false;}}
     }
@@ -391,47 +407,27 @@
       saving=true;saveButton.disabled=cancel.disabled=true;saveButton.textContent='正在保存…';
       editorError.hidden=true;const ticket=generation;
       const body={...editing,...Object.fromEntries(Object.entries(inputs).map(([k,v])=>[k,v.value.trim()])),
-        stage:stageInput.value,projectId:projectInput.value,source:editing.source||'manual'};
+        stage:stageInput.value,departmentId:departmentInput.value,source:editing.source||'manual'};
       try{
         await request('/talents',body);
         if(ticket!==generation||!allowed())return;
         dialog.close();stage=body.stage||'all';outcome='all';query.value='';page=1;
-        projectFilter.value=body.projectId||'';navigate('pool');
+        department=body.departmentId||'';navigate('pool');
       }catch(error){if(ticket===generation){editorError.textContent=error.message;editorError.hidden=false;}}
       finally{saving=false;saveButton.disabled=cancel.disabled=false;saveButton.textContent='保存人才';}
-    });
-    async function openProject(){
-      if(!allowed())return;
-      projectName.value='';projectError.hidden=true;saveProject.disabled=true;
-      fillProjects(projectSelect,'新建项目组');projectDialog.showModal();const ticket=generation;
-      try{
-        const data=await request('?page=1');
-        if(ticket!==generation||!projectDialog.open)return;
-        projects=data.projects;fillProjects(projectSelect,'新建项目组');saveProject.disabled=false;
-      }catch(error){if(projectDialog.open){projectError.textContent=error.message;projectError.hidden=false;}}
-    }
-    projectForm.addEventListener('submit',async event=>{
-      event.preventDefault();if(saveProject.disabled||!allowed())return;
-      saveProject.disabled=true;projectError.hidden=true;const ticket=generation;
-      const old=projects.find(p=>p.id===projectSelect.value);
-      try{
-        await request('/projects',{id:old?.id||'',version:old?.version,name:projectName.value.trim()});
-        if(ticket!==generation||!allowed())return;
-        projectDialog.close();load();
-      }catch(error){if(ticket===generation){projectError.textContent=error.message;projectError.hidden=false;}}
-      finally{saveProject.disabled=false;}
     });
     dialog.addEventListener('cancel',event=>{if(saving)event.preventDefault();});
     return {
       enter(){active=true;load();},
-      leave(){active=false;++generation;dialog.close();projectDialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);},
+      leave(){active=false;++generation;dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);},
       add:openEditor,
-      reset(){active=false;++generation;projects=[];rows=[];editing=null;stage='all';outcome='all';page=1;outcomeBar.hidden=true;outcomeFilter.value='all';
-        query.value='';projectFilter.value='';dialog.close();projectDialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);
+      reset(){active=false;++generation;departments=[];rows=[];editing=null;stage='all';outcome='all';department='';page=1;departmentDirectory='';syncDepartments();syncOutcomes();
+        query.value='';dialog.close();interviewDialog.close();settingsDialog.close();reviewDialog.close();clearTimeout(interviewTimer);
         interviewing=null;interviewData=null;settingsData=null;appKey.value=agentId.value=appSecret.value='';
-        Object.values(inputs).forEach(input=>input.value='');projectName.value='';
-        [projectFilter,projectInput,projectSelect].forEach(select=>select.replaceChildren());
-        editorError.textContent=projectError.textContent='';
+        Object.values(inputs).forEach(input=>input.value='');
+        departmentInput.replaceChildren();
+        pageButtons=[];pageNumbers.replaceChildren();pageLabel.textContent='';pager.hidden=true;
+        editorError.textContent='';
         result.replaceChildren();feedback.textContent='';}
     };
   };

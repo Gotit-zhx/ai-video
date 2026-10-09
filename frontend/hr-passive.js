@@ -232,13 +232,13 @@
       const ticket=generation;selected=id;detailBody.replaceChildren();el('p','正在读取简历…',detailBody,'hr-hint');
       if(!detail.open)detail.showModal();
       try{
-        const [data,speeches,projects]=await Promise.all([request('resume-pool?id='+encodeURIComponent(id)),request('speeches'),request('pool')]);
+        const [data,speeches,directory]=await Promise.all([request('resume-pool?id='+encodeURIComponent(id)),request('speeches'),request('pool')]);
         if(ticket!==generation||selected!==id||!allowed()||!detail.open)return;
         const row=data.items[0];if(!row)throw Error('简历不存在');
-        drawResume(row,speeches.items||[],projects.projects||[]);
+        drawResume(row,speeches.items||[],directory.departments||[]);
       }catch(error){if(ticket===generation&&selected===id){detailBody.replaceChildren();el('p',error.message,detailBody,'hr-error');}}
     }
-    function drawResume(row,speeches,projects){
+    function drawResume(row,speeches,departments){
       const template=speeches.find(s=>s.isDefault&&s.active&&s.kind==='reject');
       if(previewId!==row.id)clearPreview();
       detailBody.replaceChildren();
@@ -287,8 +287,9 @@
       }
       const feedback=el('p','',sidebar,'hr-error');feedback.setAttribute('role','alert');
       if(row.status==='pending'){
-        const group=field(sidebar,'通过后归属项目组','select');el('option','未分组',group).value='';
-        for(const project of projects)el('option',project.name,group).value=project.id;group.value=row.projectId||'';
+        const group=field(sidebar,'通过后归属部门','select');el('option','按职位自动关联部门',group).value='';
+        for(const department of departments.filter(d=>d.status==='ACTIVE'))el('option',department.name,group).value=department.id;
+        group.value=row.departmentId||'';
         if(!template){
           feedback.textContent='请在话术管理中启用并设置默认婉拒话术。';
           button('前往话术管理',el('div','',sidebar,'hr-actions'),()=>{detail.close();navigate('speeches');});
@@ -297,7 +298,7 @@
         async function review(action){
           if(reviewing||!allowed())return;reviewing=true;approve.disabled=reject.disabled=true;
           try{
-            await request('resume-pool/review',{id:row.id,version:row.version,action,projectId:group.value});
+            await request('resume-pool/review',{id:row.id,version:row.version,action,departmentId:group.value});
             if(selected===row.id&&allowed()){detail.close();await load();}
           }catch(error){if(selected===row.id)feedback.textContent=error.message;}
           finally{reviewing=false;approve.disabled=false;reject.disabled=!template;}

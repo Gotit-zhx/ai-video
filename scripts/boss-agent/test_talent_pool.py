@@ -103,6 +103,73 @@ class TalentPoolTest(unittest.TestCase):
         self.assertEqual((len(first["items"]), len(last["items"]), last["page"]), (20, 5, 2))
         self.assertFalse({r["id"] for r in first["items"]} & {r["id"] for r in last["items"]})
 
+    def seed_source(self, talent, *, department="dept-one", account="a"*64, job="job-one", **facts):
+        import hr_departments
+        import passive_pool
+        import recruitment_demands
+        with pool.database() as db:
+            passive_pool.schema(db)
+            hr_departments.schema(db)
+            recruitment_demands.schema(db)
+            db.execute("INSERT OR IGNORE INTO hr_departments VALUES(?,?,?,?,'','','ACTIVE',1)",
+                       (department, "heyi", department, department))
+            db.execute("INSERT OR REPLACE INTO recruitment_demands(id,owner,body,status,version,created_at,updated_at)"
+                       " VALUES(?,?,?,'OPEN',1,'','')",
+                       ("demand-"+department, "heyi", json.dumps({"departmentId":department,"jobId":job,"jobAccountKey":account})))
+            detail = {"talentId":talent["id"],"jobId":"job-one","resumeText":
+                      "学历：硕士\n工作经验：5年\n现居城市：厦门\n最近公司：示例科技有限公司", **facts}
+            db.execute("INSERT INTO hr_resume_pool(id,owner,account,friend_id,rule_id,message_id,body,file_key,"
+                       "file_hash,status,created_at,updated_at) VALUES(?,?,?,'friend','rule',? ,?,'','', 'approved','','')",
+                       (str(uuid.uuid4()),"heyi","a"*64,str(uuid.uuid4()),json.dumps(detail)))
+
+    def test_source_backfill_fills_facts_and_exact_department_once_without_changing_stage_or_date(self):
+        talent=pool.save(USER,{"name":"候选人","stage":"first","education":"本科"})
+        self.seed_source(talent)
+        first=pool.listing(USER,{"department":"dept-one","stage":"first"})["items"][0]
+        self.assertEqual([first[k] for k in ("education","experience","city","company")],
+                         ["本科","5年","厦门","示例科技有限公司"])
+        self.assertEqual(first["stage"],"first")
+        self.assertEqual(first["updatedAt"],talent["updatedAt"])
+        self.assertEqual(first["version"],talent["version"]+1)
+        self.assertEqual(pool.listing(USER,{})["items"][0]["version"],first["version"])
+        self.assertEqual(pool.listing(USER,{"department":"unassigned"})["total"],0)
+
+    def test_department_resolution_does_not_guess_by_title_or_cross_account(self):
+        talent=pool.save(USER,{"name":"候选人"})
+        self.seed_source(talent,account="b"*64)
+        item=pool.listing(USER,{})["items"][0]
+        self.assertFalse(item.get("departmentId"))
+        self.assertEqual(pool.listing(USER,{"department":"dept-one"})["total"],0)
+        self.assertEqual(pool.listing(USER,{"department":"unassigned"})["total"],1)
+
+    def test_ambiguous_job_departments_stay_unassigned_until_confirmed_interview_link(self):
+        import dingtalk_interviews
+        talent=pool.save(USER,{"name":"候选人","stage":"first"})
+        self.seed_source(talent)
+        self.seed_source(talent,department="dept-two")
+        self.assertFalse(pool.listing(USER,{})["items"][0].get("departmentId"))
+        with pool.database() as db:
+            dingtalk_interviews.schema(db)
+            db.execute("INSERT INTO hr_interview_handoffs(id,owner,talent_id,request_id,body,status,created_at,updated_at)"
+                       " VALUES('handoff','heyi',?,'request',?,'sent',0,0)",
+                       (talent["id"],json.dumps({"demandId":"demand-dept-two"})))
+        self.assertEqual(pool.listing(USER,{"department":"dept-two"})["total"],1)
+
+    def test_explicit_department_is_preserved_and_department_result_pagination_compose(self):
+        talent=pool.save(USER,{"name":"候选人","stage":"first"})
+        self.seed_source(talent)
+        self.seed_source(talent,department="dept-two")
+        updated=pool.save(USER,{**talent,"departmentId":"dept-two"})
+        pool.review_interview(USER,self.review_body(updated))
+        for i in range(22):
+            pool.save(USER,{"name":str(i),"departmentId":"dept-two","stage":"second"})
+        self.assertEqual(pool.listing(USER,{"department":"dept-two","stage":"first","outcome":"passed"})["total"],1)
+        last=pool.listing(USER,{"department":"dept-two","stage":"second","page":"2"})
+        self.assertEqual((last["total"],len(last["items"]),last["pages"]),(23,3,2))
+        self.assertEqual(pool.listing(USER,{"department":"dept-one"})["total"],0)
+        with self.assertRaises(ValueError):
+            pool.save(USER,{"name":"未知","departmentId":"missing"})
+
     def review_body(self, talent, outcome="passed", round="first"):
         return {"talentId":talent["id"],"version":talent["version"],"round":round,
                 "outcome":outcome,"opinion":"具备项目经验，沟通清晰。","requestId":str(uuid.uuid4())}

@@ -75,8 +75,9 @@ const text=()=>visible().map(n=>n._text).join('\n');
 }
 
 const poolResult=()=>({items:[{id:'talent-1',name:'测试人才',education:'本科',experience:'5年',stage:'first',
-  projectId:'project-1',version:1,updatedAt:'2026-09-29T00:00:00Z'}],
-  projects:[{id:'project-1',name:'电商项目组',version:1}],counts:{all:1,first:1},total:1,page:1,pages:1});
+  departmentId:'department-1',version:1,updatedAt:'2026-09-29T00:00:00Z'}],
+  departments:[{id:'department-1',name:'电商部',status:'ACTIVE'}],
+  projects:[],counts:{all:1,first:1},total:1,page:1,pages:1});
 test('only open job cards enable actions and passive invitation; closed and unknown cards cannot navigate or save',async()=>{
   const statuses=['开放中','待开放','已失效','已关闭','审核中','免费曝光中',null];
   const rows=statuses.map((status,index)=>({...fixtures.jobs.data[0],encryptJobId:'job-'+index,statusDesc:status}));
@@ -593,8 +594,25 @@ test('resume rejection uses the managed default directly without a speech select
   await app.click('不通过，自动婉拒');
   const writes=app.calls.filter(c=>c.options?.method==='POST');
   assert.equal(writes.length,1);assert.match(writes[0].url,/resume-pool\/review$/);
-  assert.deepEqual(JSON.parse(writes[0].options.body),{id:row.id,version:row.version,action:'reject',projectId:''});
+  assert.deepEqual(JSON.parse(writes[0].options.body),{id:row.id,version:row.version,action:'reject',departmentId:''});
   assert.ok(app.calls.every(c=>!c.url.includes('/speeches/save')&&!c.url.includes('/analyze')));
+});
+test('resume approval reuses the department directory and defaults to exact job attribution',async()=>{
+  const row={id:'resume1',version:1,name:'测试人才',jobName:'算法',status:'pending',aiState:'idle'};
+  const app=setup({passive:true,api:async url=>({data:
+    url.endsWith('/login/status')?{state:'complete'}:
+    url.endsWith('/pool')?{departments:[{id:'dept-one',name:'研发部',status:'ACTIVE'},
+      {id:'dept-disabled',name:'停用部',status:'DISABLED'}]}:
+    url.endsWith('/speeches')?{items:[]}:
+    {items:[row],total:1}})});
+  await app.enter('resume-pool');await app.click('查看与审批');
+  assert.match(app.text(),/通过后归属部门/);assert.doesNotMatch(app.text(),/归属项目组|停用部/);
+  const select=app.visible().find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='dept-one'));
+  assert.equal(select.value,'');select.value='dept-one';
+  await app.click('通过，加入邀约');
+  const writes=app.calls.filter(c=>c.options?.method==='POST');
+  assert.equal(writes.length,1);
+  assert.deepEqual(JSON.parse(writes[0].options.body),{id:row.id,version:1,action:'approve',departmentId:'dept-one'});
 });
 test('missing managed default keeps rejection disabled and guides HR to speech management',async()=>{
   const row={id:'resume1',version:1,name:'测试人才',jobName:'算法工程师',status:'pending',aiState:'idle'};
@@ -719,19 +737,20 @@ test('first opinion requires text and approval advances to second pending with o
   assert.match(app.text(),/二面意见/);assert.equal(opinion.value,'');
   assert.ok(app.calls.every(c=>!c.url.endsWith('/interview/start')&&!c.url.includes('/pool/messages')));
 });
-test('interview result filter composes with project and completed opinions open without decision buttons',async()=>{
+test('interview result pills compose with department and completed opinions open without decision buttons',async()=>{
   const talent={...poolResult().items[0],stage:'second',interviewReviews:{
     first:{outcome:'passed',opinion:'面试表现良好',createdAt:'2026-10-09T00:00:00Z'}}};
   const app=setup({api:async()=>({data:{...poolResult(),items:[talent],counts:{all:1,first:1,second:1},
     outcomeCounts:{all:1,pending:0,passed:1,failed:0}}})});
   await app.enter('pool');await app.click('一面 1');
-  const project=all(app.root).find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='project-1'));
-  project.value='project-1';await project.events.change();await flush();
-  const select=all(app.root).find(n=>n.tagName==='select'&&n.children.some(o=>o.value==='passed'));
-  assert.ok(select);select.value='passed';await select.events.change();await flush();
+  await app.click('电商部');
+  await app.click('通过 1');
+  const pill=app.visible().find(n=>n.dataset.outcome==='passed');
+  assert.equal(pill.attributes['aria-pressed'],'true');
+  assert.ok(app.visible().find(n=>n.className.includes('hr-pool-outcomes')).className.includes('hr-pool-tabs'));
   const params=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
   assert.equal(params.get('stage'),'first');assert.equal(params.get('outcome'),'passed');
-  assert.equal(params.get('project'),'project-1');
+  assert.equal(params.get('department'),'department-1');
   await app.click('一面意见');
   const dialog=all(app.root).find(n=>n.className.includes('hr-interview-review-dialog'));
   const opinion=all(dialog).find(n=>n.tagName==='textarea');
@@ -827,13 +846,17 @@ test('talent pool uses platform API without pairing and combines independent fil
   const app=setup({transport:{connection:()=>({paired:false})},api:async()=>({data:poolResult()})});
   app.env.HeyiHrTransport.api=async()=>{throw Error('Pool must not call BOSS');};
   await app.enter('pool');
-  assert.match(app.text(),/测试人才/);assert.match(app.text(),/本科/);assert.match(app.text(),/电商项目组/);
+  assert.match(app.text(),/测试人才/);assert.match(app.text(),/本科/);assert.match(app.text(),/电商部/);
+  assert.ok(!app.visible().some(n=>['管理项目组','查看 / 编辑','新建人才'].includes(n._text)));
   assert.ok(app.calls.every(c=>c.url.startsWith('/api/v1/hr/pool')));
-  const select=app.visible().find(n=>n.tagName==='select'&&n.children.some(v=>v.textContent==='全部项目组'));
-  select.value='project-1';await select.events.change();await flush();
+  assert.ok(!app.visible().some(n=>n.tagName==='select'&&n.children.some(v=>v.textContent==='全部部门')));
+  const departmentButton=app.visible().find(n=>n.dataset.department==='department-1');
+  await app.click('电商部');
+  assert.equal(departmentButton.attributes['aria-pressed'],'true');
+  assert.equal(app.visible().find(n=>n.dataset.department==='department-1'),departmentButton);
   await app.click('一面 1');
   const selected=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
-  assert.equal(selected.get('stage'),'first');assert.equal(selected.get('project'),'project-1');
+  assert.equal(selected.get('stage'),'first');assert.equal(selected.get('department'),'department-1');
   assert.equal(app.timers.size,0);
 });
 test('talent pool drops late responses after logout and clears personal data',async()=>{
@@ -842,6 +865,36 @@ test('talent pool drops late responses after logout and clears personal data',as
   await app.enter('pool');app.env.HrWorkspace.reset();
   resolve({data:poolResult()});await flush();
   assert.doesNotMatch(app.text(),/测试人才/);
+});
+test('talent pool page buttons preserve department and stage filters and reset when filters change',async()=>{
+  const app=setup({api:async url=>{
+    const params=new URL(url,'https://platform.test').searchParams;
+    return {data:{...poolResult(),total:45,pages:3,page:Number(params.get('page')||1)}};
+  }});
+  await app.enter('pool');await app.click('电商部');await app.click('一面 1');
+  await app.click('2');
+  let params=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(params.get('page'),'2');assert.equal(params.get('department'),'department-1');
+  assert.equal(params.get('stage'),'first');
+  assert.match(app.text(),/第 2 \/ 3 页 · 共 45 人 · 每页 20 人/);
+  await app.click('下一页');
+  assert.equal(new URL(app.calls.at(-1).url,'https://platform.test').searchParams.get('page'),'3');
+  assert.equal(app.visible().find(n=>n._text==='下一页').disabled,true);
+  await app.click('全部部门');
+  params=new URL(app.calls.at(-1).url,'https://platform.test').searchParams;
+  assert.equal(params.get('page'),'1');assert.equal(params.get('department'),'');
+  assert.ok(app.calls.every(c=>!c.options?.method||c.options.method!=='POST'));
+});
+test('talent pool always shows single-page and empty pagination without allowing out-of-range navigation',async()=>{
+  for(const empty of [false,true]){
+    const app=setup({api:async()=>({data:{...poolResult(),...(empty?{items:[],total:0,counts:{all:0}}:{})}})});
+    await app.enter('pool');
+    const pager=app.visible().find(n=>n.className.includes('hr-pool-pagination'));
+    assert.ok(pager);assert.equal(pager.hidden,false);
+    assert.equal(app.visible().find(n=>n._text==='上一页').disabled,true);
+    assert.equal(app.visible().find(n=>n._text==='下一页').disabled,true);
+    assert.match(app.text(),new RegExp(`第 1 / 1 页 · 共 ${empty?0:1} 人`));
+  }
 });
 test('candidate reserve dialog saves normalized fields through platform only',async()=>{
   const app=setup({api:async(url)=>({data:url.startsWith('/api/v1/hr/pool')?poolResult():fixtures.recommendations})});

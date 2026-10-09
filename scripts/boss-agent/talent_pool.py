@@ -12,7 +12,7 @@ DB = Path("/opt/heyi/boss-agent/runtime/talent-pool.sqlite3")
 STAGES = ("", "invited", "first", "second", "hired")
 FIELDS = {"name": 100, "position": 200, "education": 100, "experience": 100,
           "phone": 100, "city": 100, "company": 200, "notes": 5000,
-          "sourceId": 180, "source": 30}
+          "sourceId": 180, "source": 30, "departmentId": 36}
 
 
 class Conflict(ValueError):
@@ -85,9 +85,64 @@ def event(db, owner, actor, record, action, before, after):
                 json.dumps(after, ensure_ascii=False), datetime.datetime.now(datetime.timezone.utc).isoformat()))
 
 
+def department_for_resumes(db, owner, resumes, talent_id=""):
+    """Resolve exact job/account links, or a confirmed interview demand."""
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "recruitment_demands" not in tables:
+        return ""
+    demands = {r["id"]: json.loads(r["body"]) for r in db.execute(
+        "SELECT id,body FROM recruitment_demands WHERE owner=?", (owner,))}
+    if talent_id and "hr_interview_handoffs" in tables:
+        sent = db.execute("SELECT body FROM hr_interview_handoffs WHERE owner=? AND talent_id=? AND status='sent'",
+                          (owner, talent_id)).fetchone()
+        if sent:
+            return demands.get(json.loads(sent["body"]).get("demandId"), {}).get("departmentId", "")
+    matches = set()
+    for account, detail in resumes:
+        if not account or not detail.get("jobId"):
+            continue
+        for demand in demands.values():
+            if demand.get("jobAccountKey") == account and demand.get("jobId") == detail["jobId"]:
+                matches.add(demand.get("departmentId", ""))
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
+def backfill(db, owner):
+    """Fill stored source records locally; no BOSS, OSS or model requests."""
+    import hr_departments
+    import resume_storage
+    hr_departments.schema(db)
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "hr_resume_pool" not in tables:
+        return
+    linked = {}
+    for row in db.execute("SELECT * FROM hr_resume_pool WHERE owner=? AND status='approved' ORDER BY updated_at DESC,id", (owner,)):
+        detail = json.loads(row["body"])
+        if detail.get("talentId"):
+            linked.setdefault(detail["talentId"], []).append((row["account"], detail))
+    for row in db.execute("SELECT * FROM talents WHERE owner=?", (owner,)).fetchall():
+        values = json.loads(row["body"])
+        before = dict(values)
+        resumes = linked.get(row["id"], [])
+        for _, detail in resumes:
+            facts = resume_storage.facts(detail.get("resumeText", ""))
+            for field in ("education", "experience", "city", "company"):
+                if not values.get(field):
+                    values[field] = detail.get(field) or facts.get(field, "")
+        if not values.get("departmentId"):
+            department = department_for_resumes(db, owner, resumes, row["id"])
+            if department and db.execute("SELECT 1 FROM hr_departments WHERE owner=? AND id=?", (owner, department)).fetchone():
+                values["departmentId"] = department
+        if values != before:
+            db.execute("UPDATE talents SET body=?,version=version+1 WHERE owner=? AND id=?",
+                       (json.dumps(values, ensure_ascii=False), owner, row["id"]))
+            event(db, owner, "source-backfill", row["id"], "talent.source-backfill", before, values)
+
+
 def listing(user, query):
     owner, _ = context(user)
     project = text(query.get("project", ""), 100)
+    department = text(query.get("department", ""), 100)
     stage = text(query.get("stage", "all"), 20)
     outcome = text(query.get("outcome", "all"), 20)
     q = text(query.get("q", ""), 100)
@@ -103,10 +158,14 @@ def listing(user, query):
     if project:
         where.append("project=?")
         args.append("" if project == "unassigned" else project)
+    if department:
+        where.append("COALESCE(json_extract(body,'$.departmentId'),'')=?")
+        args.append("" if department == "unassigned" else department)
     if q:
         where.append("body LIKE ? ESCAPE '\\'")
         args.append("%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
     with database() as db:
+        backfill(db, owner)
         clause = " AND ".join(where)
         counts = {s: 0 for s in STAGES}
         counts.update({r["stage"]: r["n"] for r in db.execute(
@@ -147,7 +206,9 @@ def listing(user, query):
         items = [view(row, db) for row in rows]
         projects = [dict(row) for row in db.execute(
             "SELECT id,name,version FROM projects WHERE owner=? ORDER BY name,id", (owner,))]
-    return {"items": items, "projects": projects, "counts": counts, "outcomeCounts": outcome_counts,
+        departments = [dict(row) for row in db.execute(
+            "SELECT id,name,status FROM hr_departments WHERE owner=? ORDER BY name,id", (owner,))]
+    return {"items": items, "projects": projects, "departments": departments, "counts": counts, "outcomeCounts": outcome_counts,
             "total": total, "page": page, "pages": pages}
 
 
@@ -240,6 +301,11 @@ def save(user, body):
     if stage not in STAGES:
         raise ValueError("招聘阶段不正确")
     with database() as db:
+        import hr_departments
+        hr_departments.schema(db)
+        if clean["departmentId"] and not db.execute(
+                "SELECT 1 FROM hr_departments WHERE owner=? AND id=?", (owner, clean["departmentId"])).fetchone():
+            raise ValueError("所选部门不存在，请刷新后重试")
         if project and not db.execute("SELECT 1 FROM projects WHERE owner=? AND id=?", (owner, project)).fetchone():
             raise ValueError("所选项目组不存在，请刷新后重试")
         old = db.execute("SELECT * FROM talents WHERE owner=? AND id=?", (owner, record)).fetchone()
