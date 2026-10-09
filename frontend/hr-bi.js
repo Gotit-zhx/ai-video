@@ -197,7 +197,7 @@
               colorStops:[{offset:0,color:colors[index]+'35'},{offset:1,color:colors[index]+'02'}]}}:undefined}))
         };
       };
-      chart(trend.card,'招聘周期趋势',trendBuilder,310);
+      chart(trend.card,'招聘周期趋势',trendBuilder,250);
       function updateTrend(){
         kindButtons.forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.kind===chartKind)));
         charts.find(r=>r.node.dataset.chart==='招聘周期趋势')?.instance?.setOption({...baseOptions(),...trendBuilder()},true);
@@ -214,7 +214,7 @@
             [{name:'暂无简历',value:1,itemStyle:{color:theme().grid},tooltip:{show:false}}],silent:!sourceTotal}],
         graphic:[{type:'text',left:'center',top:'39%',style:{text:number(sourceTotal),fill:theme().ink,font:'600 34px sans-serif'}},
           {type:'text',left:'center',top:'59%',style:{text:'收到简历 / 份',fill:theme().muted,font:'12px sans-serif'}}]
-      }),210,true);
+      }),180,true);
       const sourceLegend=el('div','',source.card,'hr-bi-source-legend');
       for(const [index,row] of sourceRows.entries()){
         const line=el('div','',sourceLegend),dot=el('i','',line);dot.style.backgroundColor=colors[index%colors.length];
@@ -227,7 +227,7 @@
         series:[{type:'bar',barWidth:14,showBackground:true,backgroundStyle:{color:theme().grid,borderRadius:5},
           label:{show:true,position:'right',color:theme().ink,fontSize:11},
           data:stageRows.map((r,i)=>({value:r.count,itemStyle:{color:colors[i%colors.length],borderRadius:5}}))}]
-      }),220,stageRows.some(r=>r.count>0));
+      }),175,stageRows.some(r=>r.count>0));
       const approvals=chartCard(grid,'简历审批分布','待审批、通过与未通过的份数','hr-bi-third');
       const approvalValues=[data.metrics.pending||0,data.metrics.approved||0,data.metrics.rejected||0];
       chart(approvals.card,'简历审批堆叠柱形图',()=>({
@@ -235,14 +235,14 @@
         grid:{left:5,right:5,top:12,bottom:45,containLabel:true},xAxis:{...axis('category'),data:['简历池']},yAxis:axis(),
         series:['待审批','通过','未通过'].map((name,i)=>({name,type:'bar',stack:'total',barWidth:50,
           itemStyle:{color:[colors[3],colors[1],colors[4]][i]},data:[approvalValues[i]]}))
-      }),220,approvalValues.some(v=>v>0));
+      }),175,approvalValues.some(v=>v>0));
       const aging=chartCard(grid,'待审批等待时长','按收到简历至今天的天数统计','hr-bi-third'),ageRows=data.aging||[];
       chart(aging.card,'待审批时长柱形图',()=>({
         grid:{left:4,right:5,top:22,bottom:5,containLabel:true},
         xAxis:{...axis('category'),data:ageRows.map(r=>r.name),axisLabel:{...axis().axisLabel,fontSize:10}},yAxis:axis(),
         series:[{name:'待审批',type:'bar',barMaxWidth:33,label:{show:true,position:'top',color:theme().muted},
           data:ageRows.map((r,i)=>({value:r.count,itemStyle:{color:[colors[0],colors[2],colors[3],colors[4]][i],borderRadius:[5,5,0,0]}}))}]
-      }),220,ageRows.some(r=>r.count>0));
+      }),175,ageRows.some(r=>r.count>0));
       const ranking=chartCard(grid,'部门招聘表现','按收到简历数排列 · 展示前 8 个部门','hr-bi-half');
       const ranked=[...(data.departments||[])].sort((a,b)=>b.resumes-a.resumes).slice(0,8);
       chart(ranking.card,'部门招聘横向排名图',()=>({
@@ -251,7 +251,7 @@
         yAxis:{...axis('category'),inverse:true,data:ranked.map(r=>r.name),axisLabel:{...axis().axisLabel,width:90,overflow:'truncate'}},
         series:[['resumes','收到简历',colors[0]],['approved','审批通过',colors[1]]].map(([key,name,color])=>({
           name,type:'bar',barMaxWidth:12,itemStyle:{color,borderRadius:[0,4,4,0]},data:ranked.map(r=>r[key]||0)}))
-      }),260,ranked.some(r=>r.resumes>0));
+      }),210,ranked.some(r=>r.resumes>0));
       const heat=chartCard(grid,'职位进展热力图','每格为实际数量 · 展示简历最多的前 8 个职位','hr-bi-half');
       const jobRows=[...(data.jobs||[])].sort((a,b)=>b.resumes-a.resumes).slice(0,8);
       const dimensions=[['resumes','收到简历'],['pending','待审批'],['approved','审批通过'],['firstReviews','一面意见'],['secondReviews','二面意见'],['joined','已入职']];
@@ -265,7 +265,7 @@
         visualMap:{min:0,max:maximum,show:false,inRange:{color:theme().dark?['#26314d','#4263eb']:['#f0f3ff','#c3d0ff','#4263eb']}},
         series:[{type:'heatmap',data:cells,label:{show:true,fontSize:11},
           itemStyle:{borderColor:theme().surface,borderWidth:5,borderRadius:4},emphasis:{itemStyle:{borderColor:colors[1],borderWidth:2}}}]
-      }),260,jobRows.length>0);
+      }),210,jobRows.length>0);
       const efficiency=chartCard(grid,'寻源与分析','用真实数量观察执行情况','hr-bi-half');
       chart(efficiency.card,'寻源与分析柱形图',()=>({
         grid:{left:5,right:5,top:30,bottom:5,containLabel:true},
@@ -273,7 +273,7 @@
         series:[{name:'数量',type:'bar',barMaxWidth:38,label:{show:true,position:'top',color:theme().ink},
           data:['examined','qualified','greetings','aiComplete'].map((key,i)=>({value:data.metrics[key]||0,
             itemStyle:{color:colors[i],borderRadius:[5,5,0,0]}}))}]
-      }),235,['examined','qualified','greetings','aiComplete'].some(key=>data.metrics[key]>0));
+      }),185,['examined','qualified','greetings','aiComplete'].some(key=>data.metrics[key]>0));
       const quality=chartCard(grid,'审批与面试通过率','仅统计已处理记录，不包含待处理','hr-bi-half');
       const rateItems=[['resumeApprovalRate','简历'],['firstPassRate','一面'],['secondPassRate','二面']];
       chart(quality.card,'审批和面试通过率图',()=>({
@@ -288,7 +288,7 @@
           label:{show:true,position:'right',color:theme().ink,
             formatter:params=>data.metrics[rateItems[params.dataIndex][0]]==null?'—':params.value+'%'},
           data:rateItems.map(([key],i)=>({value:data.metrics[key]??0,itemStyle:{color:colors[i],borderRadius:6}}))}]
-      }),235,rateItems.some(([key])=>data.metrics[key]!=null));
+      }),185,rateItems.some(([key])=>data.metrics[key]!=null));
       const additional=el('details','',detail,'hr-bi-all-metrics');el('summary','查看全部 24 项指标',additional);
       for(const [title,items] of groups){
         const group=el('section','',additional,'hr-bi-metric-group');el('h3',title,group);
