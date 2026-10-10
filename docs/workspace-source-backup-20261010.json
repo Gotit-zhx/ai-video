@@ -7045,6 +7045,11 @@
       "path": "src/test/java/com/yingdao/aicommerce/workflow/application/WorkflowJobServiceTest.java",
       "sha256": "b4aea6b1db9924d318d3cad2bed7bf288adc0b3a12dc9103a9437956bb1834dd",
       "bytes": 3304
+    },
+    {
+      "path": "frontend/test/fixtures/knowledge-preview.pdf",
+      "sha256": "71483a709fa0bfa5c88c00b0b3fe68dae1831a9d1dc20cff632139e223f27703",
+      "bytes": 601
     }
   ]
 }
