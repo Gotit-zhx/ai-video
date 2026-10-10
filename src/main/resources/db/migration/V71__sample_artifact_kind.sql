@@ -1,0 +1,1 @@
+ALTER TABLE commerce_sample_previews ADD COLUMN asset_kind VARCHAR(32) NOT NULL DEFAULT 'PRODUCT_IMAGE';

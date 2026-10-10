@@ -6,6 +6,7 @@ import com.yingdao.aicommerce.video.application.AiVideoTaskService;
 import com.yingdao.aicommerce.video.domain.AiVideoTask;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskAsset;
 import com.yingdao.aicommerce.video.domain.AiVideoTaskItem;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -43,6 +44,8 @@ import java.util.concurrent.TimeUnit;
 @RestController
 @RequestMapping("/api/v1/ai-video-tasks")
 public class AiVideoTaskController {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.yingdao.aicommerce.storage.LocalMaterialOssArchiveService materialArchive;
     private final AiVideoTaskService service;
 
     public AiVideoTaskController(AiVideoTaskService service) { this.service = service; }
@@ -59,6 +62,16 @@ public class AiVideoTaskController {
                         request.voiceoverMode(), request.customVoiceover(), request.videoTitle()), principal)));
     }
 
+    public record CopyItemRequest(int copies) {}
+
+    @PostMapping("/{taskId}/items/{itemId}/copies")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<List<ItemResponse>> copyItem(@PathVariable String taskId, @PathVariable String itemId,
+            @RequestBody CopyItemRequest request, @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.created(service.copyItem(taskId, itemId, request.copies(), principal)
+                .stream().map(ItemResponse::from).toList());
+    }
+
     @GetMapping
     public ApiResponse<List<TaskResponse>> list(@AuthenticationPrincipal PlatformPrincipal principal) {
         return ApiResponse.ok(service.list(principal).stream().map(TaskResponse::from).toList());
@@ -68,6 +81,13 @@ public class AiVideoTaskController {
     public ApiResponse<TaskDetailResponse> detail(@PathVariable String id,
                                                   @AuthenticationPrincipal PlatformPrincipal principal) {
         return ApiResponse.ok(TaskDetailResponse.from(service.detail(id, principal)));
+    }
+
+    @PatchMapping("/{id}/video-reference-mode")
+    public ApiResponse<TaskResponse> updateVideoReferenceMode(@PathVariable String id,
+                                                              @Valid @RequestBody UpdateVideoReferenceModeRequest request,
+                                                              @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.ok(TaskResponse.from(service.updateVideoReferenceMode(id, request.mode(), principal)));
     }
 
     @PostMapping(value = "/{id}/garments", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -185,6 +205,9 @@ public class AiVideoTaskController {
                                    @RequestParam(required = false) String filename,
                                    @AuthenticationPrincipal PlatformPrincipal principal) {
         AiVideoTaskService.AssetFile file = service.asset(taskId, assetId, principal);
+        String archived = materialArchive == null ? null : materialArchive.archivedUrl(file.path());
+        if (archived != null) return ResponseEntity.status(HttpStatus.TEMPORARY_REDIRECT)
+                .location(java.net.URI.create(archived)).cacheControl(CacheControl.maxAge(1, TimeUnit.HOURS).cachePrivate()).build();
         if (file.location() != null) {
             boolean imagePreview = preview && !download && file.contentType() != null
                     && file.contentType().startsWith("image/");
@@ -204,7 +227,8 @@ public class AiVideoTaskController {
     }
 
     @GetMapping(value = "/{taskId}/video-results.zip", produces = "application/zip")
-    public ResponseEntity<?> downloadVideos(@PathVariable String taskId,
+    public ResponseEntity<StreamingResponseBody> downloadVideos(@PathVariable String taskId,
+                                            jakarta.servlet.http.HttpServletRequest request,
                                             @AuthenticationPrincipal PlatformPrincipal principal) {
         AiVideoTaskService.VideoBatch batch = service.videoBatch(taskId, principal);
         AiVideoTaskService.PreparedVideoBatch prepared = service.prepareVideoBatch(batch);
@@ -217,6 +241,9 @@ public class AiVideoTaskController {
                     .location(URI.create(service.signedVideoBatchUrl(prepared, archiveName)))
                     .cacheControl(CacheControl.noStore()).build();
         }
+        // Large archives can exceed the servlet default 30-second async timeout.
+        org.springframework.web.context.request.async.WebAsyncUtils.getAsyncManager(request)
+                .getAsyncWebRequest().setTimeout(java.time.Duration.ofMinutes(30).toMillis());
         StreamingResponseBody body = output -> {
             try (InputStream input = Files.newInputStream(prepared.path())) {
                 input.transferTo(output);
@@ -260,6 +287,7 @@ public class AiVideoTaskController {
                                  @Size(max = 160) String videoTitle) {}
 
     public record UpdateVideoPromptRequest(@NotBlank @Size(max = 20000) String prompt) {}
+    public record UpdateVideoReferenceModeRequest(@NotBlank @Pattern(regexp = "GRID|INDIVIDUAL_FRAMES") String mode) {}
     public record ReferenceUpdateRequest(@NotBlank String id, int order, @Size(max = 32) String role,
                                          @Size(max = 500) String instruction, Boolean primary) {}
 
@@ -267,7 +295,7 @@ public class AiVideoTaskController {
                                String scriptId, int scriptVersion, String scriptName,
                                String targetMarket, String generationMode, String productCategory, String sceneType,
                                String backgroundMode, String interactionType, boolean allowHand, String aspectRatio,
-                               String resolution, String videoRoute,
+                               String resolution, String videoRoute, String videoReferenceMode,
                                boolean useScriptReferenceVideo,
                                boolean directReferenceVideo, int referenceImageLimit,
                                String musicMode, String musicFileName, String musicContentType, long musicSizeBytes,
@@ -279,7 +307,7 @@ public class AiVideoTaskController {
                     task.getDurationSeconds(), task.getScriptId(), task.getScriptVersion(),
                     task.getScriptName(), task.getTargetMarket(), task.getGenerationMode(), task.getProductCategory(),
                     task.getSceneType(), task.getBackgroundMode(), task.getInteractionType(), task.isAllowHand(), task.getAspectRatio(),
-                    task.getResolution(), task.getVideoRoute(),
+                    task.getResolution(), task.getVideoRoute(), task.getVideoReferenceMode(),
                     task.isUseScriptReferenceVideo(),
                     task.isDirectReferenceVideo(), AiVideoTaskService.MAX_VIDEO_REFERENCE_IMAGES,
                     task.getMusicMode(), task.getMusicFileName(), task.getMusicContentType(), task.getMusicSizeBytes(),
@@ -313,11 +341,13 @@ public class AiVideoTaskController {
     public record AssetResponse(String id, String itemId, String assetType, Integer shotSequence,
                                 String contentType, long sizeBytes, String modelId,
                                 String referenceRole, String referenceInstruction, boolean primaryReference,
-                                Instant createdAt) {
+                                Instant createdAt, boolean temporaryDownload) {
         static AssetResponse from(AiVideoTaskAsset asset) {
             return new AssetResponse(asset.getId(), asset.getItemId(), asset.getAssetType(), asset.getShotSequence(),
                     asset.getContentType(), asset.getSizeBytes(), asset.getModelId(), asset.getReferenceRole(),
-                    asset.getReferenceInstruction(), asset.isPrimaryReference(), asset.getCreatedAt());
+                    asset.getReferenceInstruction(), asset.isPrimaryReference(), asset.getCreatedAt(),
+                    AiVideoTaskService.isProviderVideoUrl(asset.getFilePath())
+                            || (asset.getFilePath() != null && asset.getFilePath().startsWith("provider-video:")));
         }
     }
 

@@ -20,6 +20,31 @@ class ProductCaptureResponseTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void listAndDetailExposeTheSameAuthoritativeOriginAtTopLevel() {
+        ProductCapture capture = new ProductCapture(
+                "org-a", "user-1", "capture-origin-response", "fingerprint",
+                "SHOPEE", "https://shopee.ph/a-i.123.456", "123", "456",
+                "商品", "描述", null, null, "PHP", BigDecimal.TEN, BigDecimal.TEN, "{}", "{}"
+        );
+        for (String origin : List.of("CAPTURED", "COMMERCE_GENERATED")) {
+            var detail = ProductCaptureResponse.from(new ProductCaptureService.CaptureDetail(
+                    capture, List.of(), List.of(), List.of(), Map.of(), Map.of(), origin), objectMapper);
+            var page = ProductCapturePageResponse.from(new ProductCaptureService.CapturePage(
+                    List.of(new ProductCaptureService.CaptureSummary(capture, null, origin)),
+                    0, 30, 1, 1, Map.of()));
+
+            assertEquals(origin, detail.originType());
+            assertEquals(origin, page.content().getFirst().originType());
+            assertEquals(origin, objectMapper.valueToTree(detail).path("originType").asText());
+            assertEquals(origin, objectMapper.valueToTree(page).path("content").get(0).path("originType").asText());
+            assertFalse(objectMapper.valueToTree(page).path("content").get(0).has("rawData"));
+        }
+        assertEquals("CAPTURED", new ProductCaptureService.CaptureDetail(
+                capture, List.of(), List.of(), List.of(), Map.of(), Map.of()).originType());
+        assertEquals("CAPTURED", new ProductCaptureService.CaptureSummary(capture, null).originType());
+    }
+
+    @Test
     void inconsistentSkuCountsRemainIncompleteInStableResponse() {
         ProductCaptureResponse response = response(2, 1, true);
 

@@ -5,6 +5,7 @@ import com.yingdao.aicommerce.shop.domain.*;
 import com.yingdao.aicommerce.shop.mapper.*;
 import com.yingdao.aicommerce.product.mapper.CommerceTemplateMapper;
 import com.yingdao.aicommerce.product.application.CommerceBatchPlanner;
+import com.yingdao.aicommerce.product.application.CommerceTemplateShopResolver;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.http.HttpStatus;
@@ -50,8 +51,7 @@ public class ShopOperatingSettingsService {
             if(snapshot==null)throw new BusinessException(HttpStatus.NOT_FOUND,"默认模板不存在");
             if(!"WORKFLOW".equals(snapshot.kind()))throw new BusinessException(HttpStatus.BAD_REQUEST,"店铺默认上架模板必须为铺货工作流类型");
             var config=json.readValue(snapshot.configJson(),CommerceBatchPlanner.Request.class);
-            if(!config.platform().name().equals(shop.getPlatform()) || !config.market().equalsIgnoreCase(shop.getRegion()))
-                throw new BusinessException(HttpStatus.BAD_REQUEST,"默认模板平台与站点不匹配");
+            CommerceTemplateShopResolver.targetFor(config,shop,user.organizationId());
         }
         var saved=new ShopOperatingSettings(id,user.organizationId(),r.groupName().trim(),r.environment(),
                 r.dailyListingLimit(),template,r.expectedVersion()+1,user.userId(),Instant.now());

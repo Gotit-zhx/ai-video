@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yingdao.aicommerce.saas.application.ModelConfigService;
 import com.yingdao.aicommerce.video.domain.VideoScript;
 import com.yingdao.aicommerce.video.domain.VideoScriptShot;
@@ -25,11 +26,11 @@ import java.math.RoundingMode;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 
@@ -40,6 +41,7 @@ public class VideoScriptAnalysisProcessor {
     private static final int REQUIRED_SHOT_COUNT = 9;
     private static final BigDecimal MAX_SCRIPT_DURATION_SECONDS = new BigDecimal("15.0");
     private static final long[] ANALYSIS_RETRY_DELAYS_MILLIS = {1_000L, 3_000L};
+    private static final Duration ANALYSIS_READ_TIMEOUT = Duration.ofSeconds(960);
 
     private final VideoScriptMapper scriptMapper;
     private final VideoScriptShotMapper shotMapper;
@@ -72,9 +74,14 @@ public class VideoScriptAnalysisProcessor {
         this.audioTranscriptionService = audioTranscriptionService;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
+        JdkClientHttpRequestFactory analysisRequestFactory = new JdkClientHttpRequestFactory(
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
+        );
+        analysisRequestFactory.setReadTimeout(ANALYSIS_READ_TIMEOUT);
         this.piClient = RestClient.builder()
                 .baseUrl(piRuntimeUrl)
                 .defaultHeader("X-Internal-Token", piRuntimeToken)
+                .requestFactory(analysisRequestFactory)
                 .build();
         JdkClientHttpRequestFactory progressRequestFactory = new JdkClientHttpRequestFactory(
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
@@ -90,20 +97,24 @@ public class VideoScriptAnalysisProcessor {
     @Async("videoScriptAnalysisExecutor")
     public void analyze(String scriptId) {
         VideoScript script = scriptMapper.selectById(scriptId);
-        if (script == null) return;
+        if (script == null || !"QUEUED".equals(script.getStatus())) return;
+        Instant queuedAt = script.getUpdatedAt();
+        script.markExtracting();
+        int claimed = scriptMapper.update(null, new LambdaUpdateWrapper<VideoScript>()
+                .eq(VideoScript::getId, scriptId)
+                .eq(VideoScript::getStatus, "QUEUED")
+                .eq(VideoScript::getUpdatedAt, queuedAt)
+                .set(VideoScript::getStatus, script.getStatus())
+                .set(VideoScript::getProgress, script.getProgress())
+                .set(VideoScript::getAnalysisStage, script.getAnalysisStage())
+                .set(VideoScript::getErrorMessage, null)
+                .set(VideoScript::getUpdatedAt, script.getUpdatedAt()));
+        if (claimed != 1) return;
         try {
-            script.markExtracting();
-            scriptMapper.updateById(script);
             Path source = Path.of(script.getSourceFilePath()).toAbsolutePath().normalize();
-            VideoFrameExtractor.ExtractedFrames frames = frameExtractor.extract(
-                    source,
-                    source.getParent().resolve("frames")
-            );
-            VideoCameraMotionAnalyzer.MotionAnalysis cameraMotion = analyzeCameraMotion(
-                    source,
-                    source.getParent().resolve("motion-frames"),
-                    frames.durationSeconds()
-            );
+            // Watch owns all visual sampling and interpretation. Java only
+            // probes timing and passes the shared-volume source to the skill.
+            double sourceDurationSeconds = frameExtractor.probeDuration(source);
             DayanAudioTranscriptionService.Transcript transcript = DayanAudioTranscriptionService.Transcript.empty();
             String audioExtractionStatus = script.isExtractAudio() ? "REQUESTED" : "NOT_REQUESTED";
             if (script.isExtractAudio()) {
@@ -124,28 +135,22 @@ public class VideoScriptAnalysisProcessor {
 
             Map<String, Object> request = new LinkedHashMap<>();
             request.put("sessionId", "video-script:" + script.getId());
-            String progressId = UUID.randomUUID().toString();
+            request.put("sourceVideoPath", source.toString());
+            String progressId = script.getAnalysisRunId();
             request.put("progressId", progressId);
-            request.put("model", Map.of(
-                    "baseUrl", model.baseUrl(),
-                    "modelId", model.modelId(),
-                    "apiFormat", model.apiFormat(),
-                    "apiKey", model.apiKey()
-            ));
+            request.put("model", model.driverRequestModel());
             Map<String, Object> context = new LinkedHashMap<>();
             context.put("requestedName", script.getName());
             context.put("sourceFileName", script.getSourceFileName());
             context.put("targetMarket", script.getTargetMarket() == null ? "" : script.getTargetMarket());
             context.put("requirements", script.getRequirements() == null ? "" : script.getRequirements());
             context.put("presentationMode", script.getPresentationMode());
-            double targetDurationSeconds = Math.min(frames.durationSeconds(), MAX_SCRIPT_DURATION_SECONDS.doubleValue());
-            context.put("sourceDurationSeconds", frames.durationSeconds());
+            double targetDurationSeconds = Math.min(sourceDurationSeconds, MAX_SCRIPT_DURATION_SECONDS.doubleValue());
+            context.put("sourceDurationSeconds", sourceDurationSeconds);
             context.put("durationSeconds", targetDurationSeconds);
             context.put("targetDurationSeconds", targetDurationSeconds);
-            context.put("normalizeLongVideoToTargetDuration", frames.durationSeconds() > targetDurationSeconds);
-            context.put("frameCount", frames.files().size());
-            context.put("semanticSamplingFps", frames.samplingFps());
-            context.put("analysisMode", "DENSE_KEYFRAMES_WITH_MOTION_PATH_AND_BACKGROUND_FLOW");
+            context.put("normalizeLongVideoToTargetDuration", sourceDurationSeconds > targetDurationSeconds);
+            context.put("analysisMode", "PI_WATCH_SKILL");
             context.put("desiredShotCount", REQUIRED_SHOT_COUNT);
             context.put("contentExtractionPolicy", Map.of(
                     "extractOnlyReusableMotionCameraSceneTiming", true,
@@ -156,7 +161,6 @@ public class VideoScriptAnalysisProcessor {
                     "preserveVisibleFunctionalActions", true,
                     "productionProductSource", "USER_UPLOADED_TASK_PRODUCT_IMAGE_ONLY"
             ));
-            context.put("cameraMotionEvidence", cameraMotion);
             context.put("hasReliableAudioTranscript", transcript.available());
             context.put("audioExtractionStatus", audioExtractionStatus);
             context.put("audioTranscript", Map.of(
@@ -169,24 +173,32 @@ public class VideoScriptAnalysisProcessor {
                     )).toList()
             ));
             request.put("context", context);
-            request.put("sourceVideoPath", source.toString());
-
             PiAnalysisResponse response = requestAnalysisWithProgress(scriptId, progressId, request);
             if (response == null || response.result() == null) {
                 throw new IllegalStateException("Pi Agent 没有返回视频脚本");
             }
+            persistAnalysisSnapshot(scriptId, progressId, new PiProgressResponse(
+                    94, "RESULT_READY", response.analysisOutputCharacters(), true,
+                    response.analysisOutput(), response.analysisOutputUpdatedAt()));
             VideoScriptAnalysisResult result = objectMapper.convertValue(
                     response.result(),
                     VideoScriptAnalysisResult.class
             );
             validateResult(result);
             persistAnalysisProgress(scriptId, 95);
-            result = normalizeLongVideoTimeline(result, frames.durationSeconds());
-            result = applyCameraMotionEvidence(result, cameraMotion, frames.durationSeconds());
-            result = applyAudioTranscript(result, transcript, frames.durationSeconds());
-            persistResult(script, result);
+            result = normalizeLongVideoTimeline(result, sourceDurationSeconds);
+            prepareShotPreviews(source, result, sourceDurationSeconds);
+            // Polling writes output snapshots on separately loaded entities.
+            // Complete the latest entity so the final write retains that text.
+            VideoScript latest = scriptMapper.selectById(scriptId);
+            persistResult(latest == null ? script : latest, result);
         } catch (Exception exception) {
             String message = readableMessage(exception);
+            if (script.getModelId() != null) {
+                PiRuntimeFailure.Details failure = PiRuntimeFailure.from(exception);
+                message = "模型「" + script.getModelId() + "」拆解失败 [" + failure.failureCode() + "]："
+                        + (failure.message() == null ? message : failure.message());
+            }
             log.error("Video script analysis failed for {}: {}", scriptId, message, exception);
             VideoScript failed = scriptMapper.selectById(scriptId);
             if (failed != null) {
@@ -218,6 +230,7 @@ public class VideoScriptAnalysisProcessor {
             if (cause instanceof RuntimeException runtimeException) throw runtimeException;
             throw new IllegalStateException("视频拆解服务调用失败", cause);
         } finally {
+            pollAnalysisProgress(scriptId, progressId);
             if (!analysis.isDone()) {
                 analysis.cancel(true);
                 worker.interrupt();
@@ -234,9 +247,7 @@ public class VideoScriptAnalysisProcessor {
                             .build())
                     .retrieve()
                     .body(PiProgressResponse.class);
-            if (progress != null && progress.progress() != null) {
-                persistAnalysisProgress(scriptId, progress.progress());
-            }
+            if (progress != null) persistAnalysisSnapshot(scriptId, progressId, progress);
         } catch (RestClientResponseException exception) {
             if (exception.getStatusCode().value() != 404) {
                 log.debug("Unable to read Pi analysis progress for {}: {}", scriptId, exception.getMessage());
@@ -246,6 +257,16 @@ public class VideoScriptAnalysisProcessor {
         } catch (RestClientException exception) {
             log.debug("Pi analysis progress response is temporarily unreadable for {}: {}", scriptId, exception.getMessage());
         }
+    }
+
+    private void persistAnalysisSnapshot(String scriptId, String runId, PiProgressResponse snapshot) {
+        VideoScript current = scriptMapper.selectById(scriptId);
+        if (current == null || !java.util.Objects.equals(current.getAnalysisRunId(), runId)) return;
+        boolean changed = snapshot.progress() != null && current.advanceAnalysisProgress(snapshot.progress());
+        changed |= current.receiveAnalysisOutput(runId, snapshot.stage(), snapshot.output(),
+                snapshot.outputCharacters(), snapshot.outputUpdatedAt() == null
+                        ? null : Instant.ofEpochMilli(snapshot.outputUpdatedAt()));
+        if (changed) scriptMapper.updateById(current);
     }
 
     private void persistAnalysisProgress(String scriptId, int progress) {
@@ -283,6 +304,7 @@ public class VideoScriptAnalysisProcessor {
     }
 
     static boolean retryablePiFailure(int statusCode, String responseBody) {
+        if (PiRuntimeFailure.parse(responseBody).explicitlyNonRetryable()) return false;
         if (statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode >= 500) return true;
         String message = responseBody == null ? "" : responseBody.toLowerCase();
         return message.contains("stream ended without finish_reason")
@@ -429,8 +451,66 @@ public class VideoScriptAnalysisProcessor {
                 .divide(BigDecimal.valueOf(shotCount), 1, RoundingMode.HALF_UP);
     }
 
-    private void persistResult(VideoScript script, VideoScriptAnalysisResult result) {
-        transactionTemplate.executeWithoutResult(status -> {
+    private void prepareShotPreviews(Path source, VideoScriptAnalysisResult result, double sourceDurationSeconds) {
+        try {
+            frameExtractor.extractShotPreviews(source, source.getParent().resolve("shot-previews"),
+                    shotPreviewTimestamps(result, sourceDurationSeconds));
+        } catch (Exception exception) {
+            // Preview JPEGs are display assets, never inputs to analysis. Do not
+            // lose a completed model result because a thumbnail cannot be made.
+            log.warn("Unable to prepare script preview images for {}: {}", source, readableMessage(exception));
+        }
+    }
+
+    static Map<Integer, Double> shotPreviewTimestamps(VideoScriptAnalysisResult result, double sourceDurationSeconds) {
+        Map<Integer, Double> timestamps = new LinkedHashMap<>();
+        double targetDuration = result.durationSeconds() == null
+                ? sourceDurationSeconds : result.durationSeconds().doubleValue();
+        if (!Double.isFinite(targetDuration) || targetDuration <= 0) targetDuration = sourceDurationSeconds;
+        int fallbackSequence = 1;
+        for (int index = 0; index < result.shots().size(); index++) {
+            VideoScriptAnalysisResult.Shot shot = result.shots().get(index);
+            int sequence = shot.sequence() == null ? fallbackSequence : shot.sequence();
+            fallbackSequence = sequence + 1;
+            double timestamp = Double.NaN;
+            Object evidence = shot.imagePrompt() == null ? null : shot.imagePrompt().get("sourceTimestampSeconds");
+            if (evidence != null) {
+                try { timestamp = Double.parseDouble(evidence.toString()); }
+                catch (NumberFormatException ignored) { /* Fall back to the shot's source-time midpoint. */ }
+            }
+            if (!Double.isFinite(timestamp) || timestamp < 0 || timestamp >= sourceDurationSeconds) {
+                timestamp = shot.startSecond() != null && shot.endSecond() != null
+                        ? (shot.startSecond().doubleValue() + shot.endSecond().doubleValue()) / 2
+                            * sourceDurationSeconds / targetDuration
+                        : (index + 0.5) * sourceDurationSeconds / result.shots().size();
+            }
+            timestamps.put(sequence, Math.max(0, Math.min(sourceDurationSeconds - 0.001, timestamp)));
+        }
+        return timestamps;
+    }
+
+    void persistResult(VideoScript script, VideoScriptAnalysisResult result) {
+        // Deleting an empty per-script range at MySQL REPEATABLE READ takes gap
+        // locks shared with unrelated new scripts. Their inserts then deadlock.
+        // Keep this short, atomic result write at READ COMMITTED, without changing
+        // the shared template or rerunning any paid analysis on a lock conflict.
+        TransactionTemplate resultTransaction = new TransactionTemplate(
+                java.util.Objects.requireNonNull(transactionTemplate.getTransactionManager()));
+        resultTransaction.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_READ_COMMITTED);
+        resultTransaction.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        for (int attempt = 1; ; attempt++) {
+            try {
+                persistResultOnce(script, result, resultTransaction);
+                return;
+            } catch (org.springframework.dao.PessimisticLockingFailureException conflict) {
+                if (attempt >= 3) throw conflict;
+                log.warn("Retrying completed script result persistence after lock conflict: script={}, attempt={}", script.getId(), attempt);
+            }
+        }
+    }
+
+    private void persistResultOnce(VideoScript script, VideoScriptAnalysisResult result, TransactionTemplate resultTransaction) {
+        resultTransaction.executeWithoutResult(status -> {
             shotMapper.delete(
                     new LambdaQueryWrapper<VideoScriptShot>()
                             .eq(VideoScriptShot::getScriptId, script.getId())
@@ -510,7 +590,10 @@ public class VideoScriptAnalysisProcessor {
             Map<String, Object> result,
             Map<String, Object> usage,
             Long latencyMs,
-            String modelId
+            String modelId,
+            String analysisOutput,
+            Long analysisOutputCharacters,
+            Long analysisOutputUpdatedAt
     ) {
     }
 
@@ -518,7 +601,9 @@ public class VideoScriptAnalysisProcessor {
             Integer progress,
             String stage,
             Long outputCharacters,
-            Boolean done
+            Boolean done,
+            String output,
+            Long outputUpdatedAt
     ) {
     }
 }

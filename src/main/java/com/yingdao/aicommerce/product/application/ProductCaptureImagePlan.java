@@ -1,8 +1,10 @@
 package com.yingdao.aicommerce.product.application;
 
 import com.yingdao.aicommerce.common.exception.BusinessException;
+import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
 import org.springframework.http.HttpStatus;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -11,15 +13,114 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
-/** Builds the exact, bounded image set that watermark processing and publishing use. */
+/** Preserves source capture assets independently of marketplace publishing limits. */
 final class ProductCaptureImagePlan {
-    static final int MAX_IMAGES = 30;
+    static final int MAX_IMAGES = 120;
     private static final Map<String, Integer> PRIORITY = Map.of(
             "MAIN", 0, "VARIANT", 1, "GALLERY", 2, "DETAIL", 3
     );
+    private static final Pattern BYTEDANCE_ASSET = Pattern.compile(
+            "/(tos-[^/]+/[A-Za-z0-9_-]{16,})(?:~|$)", Pattern.CASE_INSENSITIVE);
 
     private ProductCaptureImagePlan() {}
+
+    /** Adds missing description assets without rebuilding or changing persisted images. */
+    static DetailSupplement supplementalDetails(List<ProductCaptureImage> existing, Object rawImages,
+                                                List<Map<String, Object>> skus,
+                                                SafeProductImageUrl safeImageUrl) {
+        if (rawImages != null && !(rawImages instanceof List<?>)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "图片必须是数组");
+        }
+        List<Map<String, Object>> merged = new ArrayList<>();
+        Set<String> assets = new LinkedHashSet<>();
+        long nextPosition = 0;
+        for (ProductCaptureImage image : existing) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("url", image.getOriginalUrl());
+            value.put("originalUrl", image.getOriginalUrl());
+            value.put("role", image.getRoleName());
+            value.put("position", image.getSortOrder());
+            value.put("sortOrder", image.getSortOrder());
+            value.put("alt", image.getAltText());
+            value.put("mimeType", image.getMimeType());
+            merged.add(value);
+            assets.add(assetKey(image.getOriginalUrl()));
+            nextPosition = Math.max(nextPosition, (long) image.getSortOrder() + 1);
+        }
+        if (merged.size() > MAX_IMAGES) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "补齐详情图后图片总数不能超过 " + MAX_IMAGES + " 张");
+        }
+        List<Map<String, Object>> additions = new ArrayList<>();
+        boolean requestedDetails = false;
+        List<?> supplied = rawImages instanceof List<?> list ? list : List.of();
+        for (Object raw : supplied) {
+            if (!(raw instanceof Map<?, ?>)) continue;
+            Map<String, Object> source = imageMap(raw);
+            String requestedRole = text(source, "role", "type");
+            if (!"DETAIL".equalsIgnoreCase(requestedRole)
+                    && !"DESCRIPTION".equalsIgnoreCase(requestedRole)) continue;
+            requestedDetails = true;
+            String url = safeImageUrl.validate(text(source, "url", "originalUrl", "src", "imageUrl"));
+            if (!assets.add(assetKey(url))) continue;
+            if (merged.size() >= MAX_IMAGES || nextPosition > Integer.MAX_VALUE) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "补齐详情图后图片总数或排序超出限制");
+            }
+            Map<String, Object> value = new LinkedHashMap<>(source);
+            value.put("url", url);
+            value.put("originalUrl", url);
+            value.put("role", "DETAIL");
+            value.put("position", (int) nextPosition);
+            value.put("sortOrder", (int) nextPosition++);
+            additions.add(value);
+            merged.add(value);
+        }
+
+        Set<String> requiredSkuAssets = new LinkedHashSet<>();
+        for (Map<String, Object> sku : skus) {
+            String url = text(sku, "imageUrl", "skuImage", "image");
+            if (url != null && !url.isBlank()) {
+                requiredSkuAssets.add(assetKey(safeImageUrl.validate(url)));
+            }
+        }
+        long coveredSkuImages = requiredSkuAssets.stream().filter(assets::contains).count();
+        Map<String, Integer> roleCounts = zeroCounts();
+        for (Map<String, Object> image : merged) {
+            roleCounts.compute(role(text(image, "role"), "GALLERY"), (ignored, count) -> count + 1);
+        }
+        List<String> issues = new ArrayList<>();
+        if (merged.isEmpty()) issues.add("IMAGES_MISSING");
+        if (coveredSkuImages != requiredSkuAssets.size()) issues.add("VARIANT_IMAGE_COVERAGE_TRUNCATED");
+        Map<String, Object> completeness = new LinkedHashMap<>();
+        completeness.put("expectedCount", merged.size());
+        completeness.put("capturedCount", merged.size());
+        completeness.put("requiredSkuImageCount", requiredSkuAssets.size());
+        completeness.put("coveredSkuImageCount", coveredSkuImages);
+        completeness.put("complete", issues.isEmpty());
+        completeness.put("roleCounts", Map.copyOf(roleCounts));
+        completeness.put("selectedRoleCounts", Map.copyOf(roleCounts));
+        completeness.put("issues", List.copyOf(issues));
+        return new DetailSupplement(List.copyOf(additions), List.copyOf(merged),
+                Map.copyOf(completeness), requestedDetails);
+    }
+
+    /** Mirrors the collector's listingImageAssetKey CDN alias matching. */
+    static String assetKey(String value) {
+        if (value == null) return "";
+        try {
+            URI uri = URI.create(value);
+            String host = uri.getHost();
+            if (host == null) return value;
+            host = host.toLowerCase(Locale.ROOT);
+            if (!host.equals("ibyteimg.com") && !host.endsWith(".ibyteimg.com")
+                    && !host.equals("byteimg.com") && !host.endsWith(".byteimg.com")) return value;
+            var match = BYTEDANCE_ASSET.matcher(uri.getRawPath() == null ? "" : uri.getRawPath());
+            return match.find() ? "bytedance:" + match.group(1) : value;
+        } catch (IllegalArgumentException exception) {
+            return value;
+        }
+    }
 
     static Plan prepare(Object rawImages, List<Map<String, Object>> skus,
                         SafeProductImageUrl safeImageUrl) {
@@ -173,6 +274,9 @@ final class ProductCaptureImagePlan {
     }
 
     record Plan(List<Map<String, Object>> images, Map<String, Object> completeness) {}
+
+    record DetailSupplement(List<Map<String, Object>> additions, List<Map<String, Object>> images,
+                            Map<String, Object> completeness, boolean requestedDetails) {}
 
     private static final class Candidate {
         private final Map<String, Object> source;

@@ -22,8 +22,10 @@ public class CommerceTemplateService {
     private final CommerceTemplateMapper mapper;
     private final CommerceBatchPlanner planner;
     private final ObjectMapper json;
-    public CommerceTemplateService(CommerceTemplateMapper mapper, CommerceBatchPlanner planner, ObjectMapper json) {
-        this.mapper=mapper; this.planner=planner; this.json=json;
+    private final CommerceTemplateShopResolver shops;
+    public CommerceTemplateService(CommerceTemplateMapper mapper, CommerceBatchPlanner planner, ObjectMapper json,
+                                   CommerceTemplateShopResolver shops) {
+        this.mapper=mapper; this.planner=planner; this.json=json; this.shops=shops;
     }
     public List<View> list(PlatformPrincipal user) {
         readAccess(user);
@@ -40,12 +42,16 @@ public class CommerceTemplateService {
             throw new BusinessException(HttpStatus.FORBIDDEN,"保存模板需要商品编辑权限");
         if (r==null || r.name()==null || r.name().isBlank() || r.name().trim().length()>120
                 || r.expectedVersion()<0) throw bad("模板名称须为1至120字，版本不能为负数");
-        planner.preview(r.configuration());
+        var c=shops.forTemplate(r.configuration());
+        planner.preview(c);
+        if(c.printTemplateSnapshotId()!=null) {
+            var print=mapper.snapshot(user.organizationId(),c.printTemplateSnapshotId());
+            if(print==null||!"PRINT_LAYOUT".equals(print.kind()))throw bad("关联的商品与印花模板不存在或不可访问");
+        }
         // Readiness declarations are per batch, not reusable evidence in a template.
-        var c=r.configuration();
         var clean=new CommerceBatchPlanner.Request(c.mode(),c.platform(),c.market(),c.sourceProducts(),
                 c.designsPerProduct(),c.imagesPerDesign(),c.shopCount(),c.dailyListingsPerShop(),
-                false,false,false,c.dailyBudgetPerShop(),c.observationDays(),c.targetRoi());
+                false,false,false,c.dailyBudgetPerShop(),c.observationDays(),c.targetRoi(),List.of(),List.of(),c.budgetCurrency(),c.printTemplateSnapshotId());
         String id=r.templateId()==null ? UUID.randomUUID().toString() : validId(r.templateId());
         if (r.expectedVersion()>0) {
             if (mapper.lockRoot(user.organizationId(),id)==null)

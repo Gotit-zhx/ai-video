@@ -8,10 +8,12 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 @Component
@@ -146,6 +148,51 @@ public class VideoFrameExtractor {
             return duration;
         } catch (NumberFormatException exception) {
             throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "视频时长无效或超过 10 分钟");
+        }
+    }
+
+    public void extractShotPreviews(Path video, Path previewDirectory, Map<Integer, Double> sourceTimestamps) {
+        if (!Files.isRegularFile(video)) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "上传的视频文件不存在");
+        }
+        Path staging = null;
+        try {
+            // A reanalysis may assign different evidence times to each shot.
+            // An empty directory marks this generation even if rendering fails,
+            // so readers cannot reuse previous exact or legacy thumbnails.
+            resetDirectory(previewDirectory);
+            staging = Files.createTempDirectory(previewDirectory.getParent(), "shot-preview-");
+            for (var entry : sourceTimestamps.entrySet()) {
+                double timestamp = entry.getValue();
+                if (!Double.isFinite(timestamp) || timestamp < 0) {
+                    throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "分镜预览时间无效");
+                }
+                Path image = staging.resolve(String.format(Locale.ROOT, "shot-%03d.jpg", entry.getKey()));
+                ProcessResult result = run(List.of(
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                        "-ss", String.format(Locale.ROOT, "%.3f", timestamp), "-i", video.toString(),
+                        "-frames:v", "1", "-vf", "scale=768:-2:force_original_aspect_ratio=decrease",
+                        "-q:v", "4", image.toString()), Duration.ofSeconds(30));
+                if (result.exitCode() != 0 || !Files.isRegularFile(image) || Files.size(image) == 0) {
+                    throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY,
+                            "分镜预览生成失败：" + concise(result.output()));
+                }
+            }
+            Files.createDirectories(previewDirectory);
+            try (var images = Files.list(staging)) {
+                for (Path image : images.toList()) {
+                    Files.move(image, previewDirectory.resolve(image.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        } catch (IOException exception) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "分镜预览保存失败");
+        } finally {
+            if (staging != null) {
+                try (var files = Files.list(staging)) {
+                    for (Path file : files.toList()) Files.deleteIfExists(file);
+                    Files.deleteIfExists(staging);
+                } catch (IOException ignored) { /* Best-effort removal of incomplete preview staging files. */ }
+            }
         }
     }
 

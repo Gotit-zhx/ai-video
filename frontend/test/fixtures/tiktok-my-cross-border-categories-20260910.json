@@ -1,0 +1,82 @@
+{
+  "source": "TikTok Shop MY CROSS_BORDER Get Categories, 2026-09-10",
+  "totalCategories": 2444,
+  "permissionCounts": {
+    "AVAILABLE": 144,
+    "NON_MAIN_CATEGORY": 2300
+  },
+  "categories": [
+    {
+      "id": "600001",
+      "is_leaf": false,
+      "local_name": "Home Supplies",
+      "parent_id": "0",
+      "permission_statuses": [
+        "AVAILABLE"
+      ]
+    },
+    {
+      "id": "601152",
+      "is_leaf": false,
+      "local_name": "Womenswear & Underwear",
+      "parent_id": "0",
+      "permission_statuses": [
+        "NON_MAIN_CATEGORY"
+      ]
+    },
+    {
+      "id": "842248",
+      "is_leaf": false,
+      "local_name": "Women's Tops",
+      "parent_id": "601152",
+      "permission_statuses": [
+        "NON_MAIN_CATEGORY"
+      ]
+    },
+    {
+      "id": "852104",
+      "is_leaf": false,
+      "local_name": "Home Decor",
+      "parent_id": "600001",
+      "permission_statuses": [
+        "AVAILABLE"
+      ]
+    },
+    {
+      "id": "852488",
+      "is_leaf": false,
+      "local_name": "Festive & Party Supplies",
+      "parent_id": "600001",
+      "permission_statuses": [
+        "AVAILABLE"
+      ]
+    },
+    {
+      "id": "600017",
+      "is_leaf": true,
+      "local_name": "Balloons",
+      "parent_id": "852488",
+      "permission_statuses": [
+        "AVAILABLE"
+      ]
+    },
+    {
+      "id": "600321",
+      "is_leaf": true,
+      "local_name": "Clocks",
+      "parent_id": "852104",
+      "permission_statuses": [
+        "AVAILABLE"
+      ]
+    },
+    {
+      "id": "601302",
+      "is_leaf": true,
+      "local_name": "Women's T-shirts",
+      "parent_id": "842248",
+      "permission_statuses": [
+        "NON_MAIN_CATEGORY"
+      ]
+    }
+  ]
+}

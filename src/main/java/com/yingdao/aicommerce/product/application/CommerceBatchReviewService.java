@@ -40,6 +40,7 @@ public class CommerceBatchReviewService {
         var items=batches.items(user.organizationId(),id);
         var snapshot=templates.snapshot(user.organizationId(),batch.templateSnapshotId());
         if(snapshot==null)throw error(HttpStatus.CONFLICT,"模板快照不可用");
+        if(!"WORKFLOW".equals(snapshot.kind()))throw error(HttpStatus.CONFLICT,"仅创作批次不接受发布审批");
         boolean pod=json.readValue(snapshot.configJson(),CommerceBatchPlanner.Request.class).mode()==CommerceBatchPlanner.Mode.POD_DESIGN;
         Map<String,Evidence> evidence=new TreeMap<>();
         for(var e:request.items()){

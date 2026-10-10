@@ -9,6 +9,9 @@ services:
     container_name: ai-commerce-app
     environment:
       APP_PORT: 8080
+      APP_PRODUCT_WATERMARK_MODEL_ID: ${APP_PRODUCT_WATERMARK_MODEL_ID:-grok-4.6}
+      APP_PRODUCT_WATERMARK_PROVIDER: ${APP_PRODUCT_WATERMARK_PROVIDER:-DRY_RUN}
+      APP_SHOPEE_SANDBOX_ONLY: ${APP_SHOPEE_SANDBOX_ONLY:-false}
       DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-ai_commerce}?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false
       DB_USERNAME: ${MYSQL_USER:-ai_commerce}
       DB_PASSWORD: ${MYSQL_PASSWORD:-ai_commerce_dev}
@@ -97,10 +100,12 @@ services:
       PI_RUNTIME_TOKEN: ${APP_PI_RUNTIME_TOKEN:?APP_PI_RUNTIME_TOKEN must be set}
       WATCH_SKILLS_DIR: /app/skills
       VIDEO_SCRIPT_STORAGE_ROOT: /data/video-scripts
+      IMAGE_OPERATION_STORAGE_ROOT: /data/image-operations
     ports:
       - "8090:8090"
     volumes:
       - video_script_data:/data/video-scripts:ro
+      - image_operation_data:/data/image-operations
     restart: unless-stopped
 
   frontend:
@@ -165,3 +170,4 @@ volumes:
   automation_attachment_data:
   video_script_data:
   ai_video_task_data:
+  image_operation_data:

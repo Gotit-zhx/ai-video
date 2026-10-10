@@ -4,12 +4,14 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableField;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.util.UUID;
 
 @TableName("ai_video_tasks")
 public class AiVideoTask {
+    private static final ObjectMapper GENERATION_RULES_MAPPER = new ObjectMapper();
     @TableId private String id;
     private String organizationId;
     private String name;
@@ -127,6 +129,14 @@ public class AiVideoTask {
         this.updatedAt = Instant.now();
     }
 
+    public void addPendingCopies(int count) {
+        updateItemCount(count);
+        this.progress = 0;
+        this.errorMessage = null;
+        this.completedAt = null;
+        this.autoStartVideoAfterImages = false;
+    }
+
     public void syncItemCountPreservingResult(int count) {
         this.totalItems = Math.max(0, count);
         this.completedItems = Math.min(this.completedItems, this.totalItems);
@@ -154,6 +164,11 @@ public class AiVideoTask {
         this.scriptVersion = script.getVersion();
         this.scriptName = script.getName();
         this.scriptJson = script.getScriptJson();
+        this.updatedAt = Instant.now();
+    }
+
+    public void updateGenerationRulesJson(String generationRulesJson) {
+        this.generationRulesJson = generationRulesJson;
         this.updatedAt = Instant.now();
     }
 
@@ -249,6 +264,15 @@ public class AiVideoTask {
     public boolean isUseScriptReferenceVideo() { return useScriptReferenceVideo; }
     public boolean isDirectReferenceVideo() { return directReferenceVideo; }
     public String getGenerationRulesJson() { return generationRulesJson; }
+    public String getVideoReferenceMode() {
+        if (generationRulesJson == null || generationRulesJson.isBlank()) return "GRID";
+        try {
+            String mode = GENERATION_RULES_MAPPER.readTree(generationRulesJson).path("videoReferenceMode").asText();
+            return "INDIVIDUAL_FRAMES".equals(mode) ? mode : "GRID";
+        } catch (Exception ignored) {
+            return "GRID";
+        }
+    }
     public String getVideoRoute() {
         return generationRulesJson != null && generationRulesJson.contains("\"videoRoute\":\"SPEED\"")
                 ? "SPEED" : "QUALITY";

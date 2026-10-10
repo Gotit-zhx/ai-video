@@ -41,6 +41,7 @@ const chrome = {
     getURL: value => `chrome-extension://revocation-worker-test/${value}`
   },
   storage: {
+    local: {get:async()=>({}),set:async()=>{}},
     session: {
       setAccessLevel: async () => {},
       get: async () => ({}),

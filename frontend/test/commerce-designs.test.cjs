@@ -1,5 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
-function setup(withOutput=false,generationState={status:'NOT_STARTED',generationEnabled:false,message:'disabled',referenceImageIds:[]}){
+function setup(withOutput=false,generationState={status:'NOT_STARTED',generationEnabled:false,message:'disabled',referenceImageIds:[]},approved=false){
   const nodes=[],calls=[],events={};let fail=true;
   function node(tag){const n={tag,children:[],handlers:{},style:{},value:'',append(e){this.children.push(e);if(this.tag==='select'&&!this.value)this.value='STOCK_MARKETING';},replaceChildren(){this.children=[];},addEventListener(k,f){this.handlers[k]=f;}};nodes.push(n);return n;}
   const root=node('div');vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../commerce-designs.js'),'utf8'),{
@@ -9,7 +9,8 @@ function setup(withOutput=false,generationState={status:'NOT_STARTED',generation
       if(url.includes('?page='))return {data:{page:0,totalPages:1,content:[{id:'p1',title:'商品1',sourcePlatform:'SHOPEE'}]}};
       if(url.endsWith('/p1'))return {data:{id:'p1',version:7,images:[{}]}};
       if(url.endsWith('/generation'))return {data:generationState};
-      if(withOutput&&url.endsWith('/output'))return {data:{contentSha256:'hash',status:'PENDING_REVIEW',review:null}};
+      if(url.endsWith('/batch-targets'))return {data:[{batchId:'batch',batchName:'批次',itemId:'item',shopName:'店铺',nextImagePosition:2}]};
+      if(withOutput&&url.endsWith('/output'))return {data:{contentSha256:'hash',status:approved?'QUALITY_APPROVED':'PENDING_REVIEW',review:approved?{decision:'APPROVE'}:null}};
       if(withOutput&&url==='/api/v1/commerce-designs')return {data:[{id:'d1',captureId:'p1',captureVersion:7,status:'DRAFT',mode:'STOCK_MARKETING',variantIndex:1,brief:'brief',sourceImagesJson:'[{"imageId":"i1","role":"MAIN"}]'}]};
       return {data:[]};}
   });
@@ -17,11 +18,40 @@ function setup(withOutput=false,generationState={status:'NOT_STARTED',generation
 }
 test('source handoff verifies expected version without searching or generating',async()=>{
   const s=setup();await s.events['heyi:design-source-selected']({detail:{captureId:'p1',captureVersion:7}});
-  assert.equal(s.calls.length,1);assert.equal(s.calls[0].url,'/api/v1/product-captures/p1');
+  assert.equal(s.calls.length,2);assert.equal(s.calls[0].url,'/api/v1/product-captures/p1');
+  assert.equal(s.calls[1].url,'/api/v1/commerce-designs');
   assert.equal(s.button('回看来源商品').hidden,false);
   s.nodes.filter(n=>n.tag==='textarea').forEach(n=>n.value='record');
   await s.nodes.find(n=>n.tag==='form').handlers.submit({preventDefault(){}});
   assert.equal(JSON.parse(s.calls.find(c=>c.options).options.body).captureVersion,7);
+});
+test('archived generation automatically opens output review without another generation request',async()=>{
+  const s=setup(true,{status:'OUTPUT_ARCHIVED',generationEnabled:false,message:'archived',referenceImageIds:[]});
+  await s.button('刷新设计草稿').handlers.click();
+  await s.button('生成图片 / 查看进度').handlers.click();
+  assert.ok(s.calls.some(c=>c.url==='/api/v1/commerce-designs/d1/output'));
+  assert.equal(s.calls.filter(c=>c.options).length,0);
+  assert.equal(s.button('确认质量通过').disabled,true);
+});
+test('version cards automatically read real archived previews without generating',async()=>{
+  const s=setup(true);await s.button('刷新设计草稿').handlers.click();
+  const preview=s.nodes.find(n=>n.className==='studio-real-preview');
+  assert.equal(preview.style.backgroundImage,'url("/api/v1/commerce-designs/d1/output/image")');
+  assert.ok(s.calls.some(c=>c.url.endsWith('/output')));
+  assert.equal(s.calls.filter(c=>c.options).length,0);
+});
+test('approved result discovers targets and requires viewed image plus confirmation to bind',async()=>{
+  const s=setup(true,undefined,true);await s.button('刷新设计草稿').handlers.click();await s.button('查看结果 / 质量审核').handlers.click();
+  assert.ok(s.calls.some(c=>c.url.endsWith('/batch-targets')));
+  const bind=s.button('确认绑定并继续');assert.equal(bind.disabled,true);
+  await bind.handlers.click();assert.equal(s.calls.filter(c=>c.options).length,0);
+  s.nodes.find(n=>n.tag==='img').handlers.load();
+  const check=s.nodes.find(n=>n.type==='checkbox');check.checked=true;check.handlers.change();assert.equal(bind.disabled,false);
+  await bind.handlers.click();await bind.handlers.click();
+  const writes=s.calls.filter(c=>c.options);assert.equal(writes.length,2);
+  assert.equal(writes[0].url,'/api/v1/commerce-batches/batch/design-assets');
+  assert.deepEqual(JSON.parse(writes[0].options.body),{itemId:'item',designId:'d1',contentSha256:'hash',imagePosition:2,confirmed:true});
+  assert.equal(bind.disabled,true);assert.equal(bind.textContent,'已绑定');
 });
 test('stale handoff blocks design creation',async()=>{
   const s=setup();await s.events['heyi:design-source-selected']({detail:{captureId:'p1',captureVersion:6}});

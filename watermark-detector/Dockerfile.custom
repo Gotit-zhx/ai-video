@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install --no-cache-dir numpy==2.2.6 Pillow==11.2.1 opencv-python-headless==4.12.0.88 onnxruntime==1.22.1
+COPY local_overlay.py reference_overlay.py server.py local_composite.py garment_foreground.py drape_reuse.py drape_detail_guard.py ./
+COPY references ./references
+ADD --checksum=sha256:309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8 https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx /models/u2netp.onnx
+RUN chmod 644 /models/u2netp.onnx
+RUN useradd --system --uid 10002 detector
+USER detector
+ENV WATERMARK_DETECTOR_ENGINE=local-overlay
+EXPOSE 8091
+CMD ["python", "server.py"]

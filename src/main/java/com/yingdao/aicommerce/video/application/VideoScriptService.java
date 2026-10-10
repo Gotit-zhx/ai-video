@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.video.domain.VideoScript;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
 
 @Service
 public class VideoScriptService {
@@ -170,13 +172,12 @@ public class VideoScriptService {
         script.configureClip(sourceDuration, clipStart, clipEnd);
         try {
             scriptMapper.insert(script);
-            inserted = true;
-            processor.analyze(id);
-            return script;
         } catch (RuntimeException exception) {
-            if (!inserted) deleteQuietly(directory);
+            deleteQuietly(directory);
             throw exception;
         }
+        submitAnalysis(script);
+        return script;
     }
 
     @Transactional
@@ -248,13 +249,14 @@ public class VideoScriptService {
     }
 
     public VideoScript retry(String id, PlatformPrincipal principal) {
-        VideoScript script = requireOwnedScript(id, principal);
+        VideoScript script = requireScript(id, principal.organizationId());
+        if (!principal.userId().equals(script.getCreatedBy()) && !principal.roleCodes().contains("ADMIN")) {
+            throw new BusinessException(HttpStatus.FORBIDDEN, "无权重试该视频拆解任务");
+        }
         if (!"FAILED".equals(script.getStatus())) {
             throw new BusinessException(HttpStatus.CONFLICT, "只有拆解失败的任务可以重试");
         }
-        script.prepareRetry();
-        scriptMapper.updateById(script);
-        processor.analyze(script.getId());
+        queueExistingAnalysis(script, false);
         return script;
     }
 
@@ -263,10 +265,54 @@ public class VideoScriptService {
         if (!"READY".equals(script.getStatus()) || !"VIDEO_ANALYSIS".equals(script.getSourceType())) {
             throw new BusinessException(HttpStatus.CONFLICT, "只有已完成的视频拆解脚本可以重新精拆");
         }
-        script.prepareReanalysis();
-        scriptMapper.updateById(script);
-        processor.analyze(script.getId());
+        queueExistingAnalysis(script, true);
         return script;
+    }
+
+    private void queueExistingAnalysis(VideoScript script, boolean reanalysis) {
+        String previousStatus = script.getStatus();
+        Instant previousUpdatedAt = script.getUpdatedAt();
+        if (reanalysis) script.prepareReanalysis();
+        else script.prepareRetry();
+        int changed = scriptMapper.update(null, new LambdaUpdateWrapper<VideoScript>()
+                .eq(VideoScript::getId, script.getId())
+                .eq(VideoScript::getOrganizationId, script.getOrganizationId())
+                .eq(VideoScript::getCreatedBy, script.getCreatedBy())
+                .eq(VideoScript::getStatus, previousStatus)
+                .eq(VideoScript::getUpdatedAt, previousUpdatedAt)
+                .set(VideoScript::getStatus, script.getStatus())
+                .set(VideoScript::getProgress, script.getProgress())
+                .set(VideoScript::getAnalysisRunId, script.getAnalysisRunId())
+                .set(VideoScript::getAnalysisStage, script.getAnalysisStage())
+                .set(VideoScript::getAnalysisOutput, script.getAnalysisOutput())
+                .set(VideoScript::getAnalysisOutputCharacters, 0)
+                .set(VideoScript::getAnalysisOutputUpdatedAt, null)
+                .set(VideoScript::getErrorMessage, null)
+                .set(VideoScript::getCompletedAt, null)
+                .set(VideoScript::getUpdatedAt, script.getUpdatedAt())
+                .set(VideoScript::getVersion, script.getVersion()));
+        if (changed != 1) {
+            throw new BusinessException(HttpStatus.CONFLICT, "这条视频脚本状态已更新，请刷新后重试");
+        }
+        submitAnalysis(script);
+    }
+
+    private void submitAnalysis(VideoScript script) {
+        try {
+            processor.analyze(script.getId());
+        } catch (RejectedExecutionException exception) {
+            script.fail("视频拆解队列已满，任务和原视频已保存，请稍后重试当前任务");
+            // Rejection happens before an async worker starts; never leave an orphaned QUEUED row.
+            scriptMapper.update(null, new LambdaUpdateWrapper<VideoScript>()
+                    .eq(VideoScript::getId, script.getId())
+                    .eq(VideoScript::getStatus, "QUEUED")
+                    .set(VideoScript::getStatus, script.getStatus())
+                    .set(VideoScript::getProgress, script.getProgress())
+                    .set(VideoScript::getErrorMessage, script.getErrorMessage())
+                    .set(VideoScript::getCompletedAt, script.getCompletedAt())
+                    .set(VideoScript::getUpdatedAt, script.getUpdatedAt()));
+            throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, script.getErrorMessage());
+        }
     }
 
     @Transactional
@@ -374,7 +420,6 @@ public class VideoScriptService {
         return scriptMapper.selectList(
                 new LambdaQueryWrapper<VideoScript>()
                         .eq(VideoScript::getOrganizationId, principal.organizationId())
-                        .eq(principal.externallyRegistered(), VideoScript::getCreatedBy, principal.userId())
                         .orderByDesc(VideoScript::getUpdatedAt)
                         .last("LIMIT 100")
         );
@@ -407,6 +452,20 @@ public class VideoScriptService {
             throw new BusinessException(HttpStatus.NOT_FOUND, "该脚本没有视频抽帧预览");
         }
         Path source = Path.of(script.getSourceFilePath()).toAbsolutePath().normalize();
+        Path exactPreview = source.getParent() == null ? null : source.getParent().resolve("shot-previews")
+                .resolve(String.format(Locale.ROOT, "shot-%03d.jpg", (int) sourceNumber(shot, "sourcePreviewSequence", shot.getSequenceNo()))).normalize();
+        if (exactPreview != null && exactPreview.startsWith(storageRoot) && Files.isRegularFile(exactPreview)) {
+            try {
+                return new ShotPreview(exactPreview, Files.getLastModifiedTime(exactPreview).toInstant());
+            } catch (IOException exception) {
+                throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取分镜预览失败");
+            }
+        }
+        if (exactPreview != null && exactPreview.startsWith(storageRoot) && Files.isDirectory(exactPreview.getParent())) {
+            throw new BusinessException(HttpStatus.NOT_FOUND, "本次分镜预览尚未生成");
+        }
+        // Older scripts have uniformly sampled analysis frames instead of
+        // the dedicated, timestamp-matched previews generated after watch.
         Path frameDirectory = source.getParent() == null ? null : source.getParent().resolve("frames").normalize();
         if (frameDirectory == null || !frameDirectory.startsWith(storageRoot) || !Files.isDirectory(frameDirectory)) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "视频抽帧预览不存在");
@@ -437,7 +496,8 @@ public class VideoScriptService {
                 .mapToDouble(BigDecimal::doubleValue)
                 .max()
                 .orElse(0.0);
-        double midpoint = midpoint(shot);
+        timelineEnd = sourceNumber(shot, "sourceDurationSeconds", timelineEnd);
+        double midpoint = sourceNumber(shot, "sourceTimestampSeconds", midpoint(shot));
         int frameIndex;
         if (timelineEnd > 0.0 && midpoint >= 0.0) {
             frameIndex = (int) Math.round((midpoint / timelineEnd) * (frames.size() - 1));
@@ -460,6 +520,66 @@ public class VideoScriptService {
         } catch (IOException exception) {
             throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "读取分镜预览失败");
         }
+    }
+
+    @Transactional
+    public VideoScriptDetail deleteShot(String scriptId, String shotId, PlatformPrincipal principal) {
+        VideoScript script = scriptMapper.selectOne(new LambdaQueryWrapper<VideoScript>()
+                .eq(VideoScript::getId, scriptId).eq(VideoScript::getOrganizationId, principal.organizationId())
+                .last("FOR UPDATE"));
+        if (script == null) throw new BusinessException(HttpStatus.NOT_FOUND, "视频脚本不存在");
+        if (!Set.of("READY", "DRAFT").contains(script.getStatus()))
+            throw new BusinessException(HttpStatus.CONFLICT, "当前脚本尚未完成，暂时不能删除分镜");
+        List<VideoScriptShot> shots = shotMapper.selectList(new LambdaQueryWrapper<VideoScriptShot>()
+                .eq(VideoScriptShot::getScriptId, scriptId)
+                .eq(VideoScriptShot::getOrganizationId, principal.organizationId())
+                .orderByAsc(VideoScriptShot::getSequenceNo));
+        VideoScriptShot removed = shots.stream().filter(shot -> shotId.equals(shot.getId())).findFirst()
+                .orElseThrow(() -> new BusinessException(HttpStatus.NOT_FOUND, "分镜不存在，可能已被删除"));
+        if (shots.size() <= 1) throw new BusinessException(HttpStatus.CONFLICT, "至少保留一个分镜");
+        if (shots.stream().anyMatch(shot -> shot.getEndSecond() == null || shot.getDurationSeconds() == null
+                || shot.getDurationSeconds().signum() <= 0))
+            throw new BusinessException(HttpStatus.CONFLICT, "分镜时长无效，请先修正脚本");
+        BigDecimal total = shots.stream().map(VideoScriptShot::getEndSecond).max(BigDecimal::compareTo).orElseThrow();
+        List<VideoScriptShot> remaining = shots.stream().filter(shot -> !shotId.equals(shot.getId())).toList();
+        BigDecimal weight = remaining.stream().map(VideoScriptShot::getDurationSeconds)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (weight.signum() <= 0 || total.signum() <= 0)
+            throw new BusinessException(HttpStatus.CONFLICT, "分镜时长无效，请先修正脚本");
+        shotMapper.deleteById(removed.getId());
+        BigDecimal elapsed = BigDecimal.ZERO, cumulative = BigDecimal.ZERO;
+        // Ascending compaction is safe for the unique (script_id, sequence_no) index after deletion.
+        for (int index = 0; index < remaining.size(); index++) {
+            VideoScriptShot shot = remaining.get(index);
+            Map<String, Object> prompt = new LinkedHashMap<>();
+            if (shot.getImagePromptJson() != null) {
+                try { prompt.putAll(objectMapper.readValue(shot.getImagePromptJson(), Map.class)); }
+                catch (Exception ignored) { prompt.put("prompt", shot.getSceneDescription()); }
+            }
+            prompt.putIfAbsent("sourcePreviewSequence", shot.getSequenceNo());
+            prompt.putIfAbsent("sourceTimestampSeconds", midpoint(shot));
+            prompt.putIfAbsent("sourceDurationSeconds", total);
+            cumulative = cumulative.add(shot.getDurationSeconds());
+            BigDecimal end = index == remaining.size() - 1 ? total
+                    : total.multiply(cumulative).divide(weight, 3, RoundingMode.HALF_UP);
+            if (end.compareTo(elapsed) <= 0)
+                throw new BusinessException(HttpStatus.CONFLICT, "脚本时长过短，无法重新分配");
+            try { shot.retime(index + 1, elapsed, end, objectMapper.writeValueAsString(prompt)); }
+            catch (BusinessException exception) { throw exception; }
+            catch (Exception exception) { throw new IllegalStateException("分镜时长保存失败", exception); }
+            shotMapper.updateById(shot);
+            elapsed = end;
+        }
+        script.saveEditedJson(rebuildScriptJson(script, remaining));
+        scriptMapper.updateById(script);
+        return new VideoScriptDetail(script, remaining);
+    }
+
+    private double sourceNumber(VideoScriptShot shot, String key, double fallback) {
+        try {
+            Object value = objectMapper.readValue(shot.getImagePromptJson(), Map.class).get(key);
+            return value instanceof Number number ? number.doubleValue() : fallback;
+        } catch (Exception ignored) { return fallback; }
     }
 
     @Transactional
@@ -517,11 +637,7 @@ public class VideoScriptService {
     }
 
     private VideoScript requireAccessibleScript(String id, PlatformPrincipal principal) {
-        VideoScript script = requireScript(id, principal.organizationId());
-        if (principal.externallyRegistered() && !principal.userId().equals(script.getCreatedBy())) {
-            throw new BusinessException(HttpStatus.NOT_FOUND, "视频脚本不存在");
-        }
-        return script;
+        return requireScript(id, principal.organizationId());
     }
 
     private VideoScript requireScript(String id, String organizationId) {
@@ -799,6 +915,7 @@ public class VideoScriptService {
         for (VideoScriptShot shot : shots) {
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("sequence", shot.getSequenceNo());
+            value.put("sourceSequence", (int) sourceNumber(shot, "sourcePreviewSequence", shot.getSequenceNo()));
             value.put("stage", shot.getStage());
             value.put("title", shot.getTitle());
             value.put("startSecond", shot.getStartSecond());

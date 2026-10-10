@@ -1,0 +1,40 @@
+# Optional overlay: docker compose -f compose.yaml -f compose.document-preview.yaml up -d
+# Supply DOCUMENT_PREVIEW_TOKEN through a private environment file before use.
+services:
+  app:
+    environment:
+      APP_KNOWLEDGE_PREVIEW_URL: http://heyi-document-preview:8092
+      APP_KNOWLEDGE_PREVIEW_TOKEN: ${DOCUMENT_PREVIEW_TOKEN:?Set a private preview token of at least 32 characters}
+    networks:
+      default:
+        priority: 100
+      knowledge-preview:
+        priority: 0
+  document-preview:
+    build: ./document-preview
+    image: heyi-document-preview:local
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=536870912,mode=1777
+    environment:
+      DOCUMENT_PREVIEW_TOKEN: ${DOCUMENT_PREVIEW_TOKEN:?Set a private preview token of at least 32 characters}
+    networks:
+      knowledge-preview:
+        aliases:
+          - heyi-document-preview
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+networks:
+  knowledge-preview:
+    internal: true

@@ -1,0 +1,17 @@
+# Offline foreground/color evidence, reuses the existing private watermark service.
+services:
+  watermark-detector:
+    image: heyi-watermark-custom:local
+    build:
+      context: ./watermark-detector
+      dockerfile: Dockerfile.custom
+    container_name: web_sdk_-watermark-detector-1
+    env_file: ${HEYI_WATERMARK_ENV_FILE:-.watermark.local.env}
+    restart: unless-stopped
+    networks:
+      default:
+        aliases: [watermark-detector]
+networks:
+  default:
+    external: true
+    name: web_sdk__default

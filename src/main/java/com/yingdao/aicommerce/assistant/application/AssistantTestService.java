@@ -142,17 +142,14 @@ public class AssistantTestService {
                         .body(new PiRequest(
                                 sessionId,
                                 prompt,
-                                new PiModel(
-                                        model.baseUrl(),
-                                        model.modelId(),
-                                        model.apiKey(),
-                                        "openai-completions"
-                                ),
+                                model.driverRequestModel(),
                                 imageModel.map(connection -> new PiImageModel(
                                         connection.baseUrl(),
                                         connection.modelId(),
                                         connection.apiKey(),
-                                        connection.apiFormat()
+                                        connection.apiFormat(),
+                                        connection.copyrightFallbackModels().stream()
+                                                .map(ModelConfigService.RuntimeModelConnection::imageRequestModel).toList()
                                 )).orElse(null),
                                 inputImages
                         ))
@@ -426,7 +423,7 @@ public class AssistantTestService {
     private record PiRequest(
             String sessionId,
             String prompt,
-            PiModel model,
+            Map<String, Object> model,
             PiImageModel imageModel,
             List<PiInputImage> inputImages
     ) {
@@ -435,7 +432,8 @@ public class AssistantTestService {
     private record PiModel(String baseUrl, String modelId, String apiKey, String apiFormat) {
     }
 
-    private record PiImageModel(String baseUrl, String modelId, String apiKey, String apiFormat) {
+    private record PiImageModel(String baseUrl, String modelId, String apiKey, String apiFormat,
+                                List<Map<String, Object>> copyrightFallbackModels) {
     }
 
     private record PiInputImage(String name, String mimeType, String dataBase64) {

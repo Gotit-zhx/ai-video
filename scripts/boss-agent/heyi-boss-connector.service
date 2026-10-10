@@ -1,0 +1,20 @@
+[Unit]
+Description=Private Hoyee to BOSS recruiter CLI connector
+After=network.target
+
+[Service]
+Type=simple
+User=heyi-boss
+Group=heyi-boss
+SupplementaryGroups=heyi-boss-client
+WorkingDirectory=/opt/heyi/boss-agent
+Environment=HOME=/opt/heyi/boss-agent
+Environment=APP_HR_BIND=172.18.0.1
+Environment=APP_HR_ADMIN_PHONE=13800000000
+UMask=0007
+ExecStart=/opt/heyi/boss-agent/venv/bin/python /opt/heyi/boss-agent/bin/connector.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

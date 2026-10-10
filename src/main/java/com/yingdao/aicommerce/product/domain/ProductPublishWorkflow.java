@@ -30,6 +30,7 @@ public class ProductPublishWorkflow {
     private int attemptCount;
     private int retryCount;
     private Instant nextAttemptAt;
+    private Instant mediaWaitStartedAt;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String lockedBy;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private Instant lockedUntil;
     @TableField(updateStrategy = FieldStrategy.ALWAYS) private String errorMessage;
@@ -83,6 +84,7 @@ public class ProductPublishWorkflow {
     public int getAttemptCount() { return attemptCount; }
     public int getRetryCount() { return retryCount; }
     public Instant getNextAttemptAt() { return nextAttemptAt; }
+    public Instant getMediaWaitStartedAt() { return mediaWaitStartedAt; }
     public String getLockedBy() { return lockedBy; }
     public Instant getLockedUntil() { return lockedUntil; }
     public String getErrorMessage() { return errorMessage; }

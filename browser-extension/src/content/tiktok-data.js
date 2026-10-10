@@ -155,7 +155,7 @@
         || productContext?.seller_model?.shop_name || productContext?.seller_model?.name
         || productContext?.sellerModel?.shopName || productContext?.sellerModel?.name
         || productContext?.shop_model?.name || productContext?.shopModel?.name, 160),
-      categoryName: common.cleanText(categoryText(product), 255),
+      categoryName: common.cleanText(categoryText(product, productContext), 255),
       brandName: common.cleanText(product.brand_name || product.brandName || product.brand?.name, 128),
       discountText: common.cleanText(product.discount || product.discount_text || product.discountText, 120),
       salesCount: nonNegativeNumber(product.sold_count ?? product.soldCount),
@@ -172,7 +172,8 @@
       originalPriceMin: originals.length ? Math.min(...originals) : null,
       originalPriceMax: originals.length ? Math.max(...originals) : null,
       images: allProductImages,
-      attributes: productAttributes(product),
+      detailImages: productDetailImages(product),
+      attributes: productAttributes(product, productContext),
       variantHints: definitions.map(group => ({ name: group.name, values: group.values.map(value => value.name) })),
       skus,
       skuCompleteness: {
@@ -216,10 +217,20 @@
       inspected += 1;
       if (!value || typeof value !== "object" || depth > 16) continue;
       if (!Array.isArray(value)) {
-        const nestedProduct = value.product_model || value.productModel;
+        const productInfo = value.product_info || value.productInfo;
+        const productContext = productInfo && typeof productInfo === "object" && !Array.isArray(productInfo)
+          ? productInfo : value;
+        const nestedProduct = productContext.product_model || productContext.productModel;
         const nestedId = nestedProduct?.product_id ?? nestedProduct?.productId;
         if (nestedProduct && productSkuArray(nestedProduct) && String(nestedId ?? "") === productId) {
-          return { product: nestedProduct, context: value };
+          // TikTok's PDP component puts its category breadcrumb alongside
+          // product_info. Carry that sibling only after its product ID matches.
+          const context = productContext === value ? value : {
+            ...productContext,
+            category_info: productContext.category_info || productContext.categoryInfo
+              || value.category_info || value.categoryInfo || null
+          };
+          return { product: nestedProduct, context };
         }
         const candidateId = value.product_id ?? value.productId ?? (productSkuArray(value) ? value.id : null);
         if (String(candidateId ?? "") === productId) {
@@ -486,18 +497,58 @@
     const candidates = [product.main_image, product.mainImage, product.images, product.product_images, product.productImages];
     const result = [];
     for (const candidate of candidates) collectImageUrls(candidate, result);
-    return [...new Set(result)].slice(0, 30);
+    return [...new Set(result)].slice(0, 120);
+  }
+
+  function productDetailImages(product) {
+    let value = product.description ?? product.product_description ?? product.productDescription;
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (text.length > MAX_DOCUMENT_BYTES || (!text.startsWith("[") && !text.startsWith("{"))) return [];
+      try { value = JSON.parse(text); } catch { return []; }
+    }
+    const state = { images: [], nodes: 0, seen: new WeakSet() };
+    collectDescriptionImages(value, state, 0);
+    return [...new Set(state.images)].slice(0, 120);
+  }
+
+  function collectDescriptionImages(value, state, depth) {
+    if (!value || typeof value !== "object" || state.images.length >= 120
+      || state.nodes >= MAX_DESCRIPTION_NODES || depth > 20 || state.seen.has(value)) return;
+    state.seen.add(value);
+    state.nodes += 1;
+    if (Array.isArray(value)) {
+      for (const child of value.slice(0, MAX_DESCRIPTION_NODES)) collectDescriptionImages(child, state, depth + 1);
+      return;
+    }
+    const type = String(value.type ?? value.field_type ?? value.fieldType ?? value.kind ?? "").toLowerCase();
+    if (/(?:^|[_-])(?:video|review|recommendation)(?:$|[_-])/.test(type)) return;
+    const imageNode = /(?:^|[_-])(?:image|img|photo|picture)(?:$|[_-])/.test(type);
+    if (imageNode) collectImageUrls(value, state.images);
+    for (const key of ["image", "images", "image_info", "imageInfo", "picture", "photo"]) {
+      const image = value[key];
+      collectImageUrls(image, state.images);
+      if (image && typeof image === "object" && !Array.isArray(image)) {
+        collectImageUrls(image.image_url ?? image.imageUrl ?? image.src, state.images);
+      }
+    }
+    if (imageNode) collectImageUrls(value.image_url ?? value.imageUrl ?? value.src, state.images);
+    // Stay inside the matched product's rich description. Arbitrary object
+    // traversal can pick up review/recommendation pictures or video posters.
+    for (const key of ["content", "contents", "children", "nodes", "blocks", "items", "sub", "paragraphs", "sections", "body", "description"]) {
+      collectDescriptionImages(value[key], state, depth + 1);
+    }
   }
 
   function collectImageUrls(value, result, depth = 0) {
-    if (result.length >= 30 || depth > 4 || !value) return;
+    if (result.length >= 120 || depth > 4 || !value) return;
     if (typeof value === "string") {
       const url = absoluteTikTokImageUrl(value);
       if (url) result.push(url);
       return;
     }
     if (Array.isArray(value)) {
-      for (const entry of value.slice(0, 50)) collectImageUrls(entry, result, depth + 1);
+      for (const entry of value.slice(0, 120)) collectImageUrls(entry, result, depth + 1);
       return;
     }
     if (typeof value === "object") {
@@ -575,29 +626,70 @@
       && (price[key] === null || price[key] === "" || Number(price[key]) === 0));
   }
 
-  function categoryText(product) {
-    const value = product.categories || product.category_path || product.categoryPath || product.category;
-    if (Array.isArray(value)) return value.map(entry => typeof entry === "string" ? entry : entry?.name).filter(Boolean).join(" > ");
-    return typeof value === "object" ? value?.name : value;
+  function categoryText(product, context) {
+    // Only inspect category fields belonging to the matched product envelope;
+    // never walk recommendation categories elsewhere in the page response.
+    const sources = [product, product?.category_info, product?.categoryInfo,
+      context?.category_model, context?.categoryModel, context?.category_info, context?.categoryInfo, context];
+    for (const source of sources) {
+      if (!source || typeof source !== "object" || Array.isArray(source)) continue;
+      const fields = [source.categories, source.category_path, source.categoryPath,
+        source.category_list, source.categoryList, source.category, source.category_info, source.categoryInfo,
+        source.category_name, source.categoryName, source.recommended_categories, source.recommendedCategories];
+      // category_model itself may be a single category descriptor.
+      if (source === context?.category_model || source === context?.categoryModel) fields.push(source);
+      for (const value of fields) {
+        const text = categoryValueText(value);
+        if (text) return text;
+      }
+    }
+    return "";
   }
 
-  function productAttributes(product) {
-    const source = product.product_properties || product.productProperties
-      || product.product_attributes || product.productAttributes || product.attributes;
+  function categoryValueText(value) {
+    const values = Array.isArray(value) ? value.slice(0, 12) : [value];
+    return values.map(entry => {
+      const label = typeof entry === "string" ? entry
+        : entry?.category_name || entry?.categoryName || entry?.name;
+      return typeof label === "string" ? common.cleanText(label, 255) : "";
+    }).filter(Boolean).join(" > ");
+  }
+
+  function productAttributes(product, context) {
     const result = {};
-    if (!Array.isArray(source)) return result;
-    for (const entry of source.slice(0, 50)) {
-      const key = common.cleanText(entry?.property_name || entry?.name || entry?.attribute_name || entry?.key, 100);
-      const rawValue = entry?.property_value ?? entry?.property_values ?? entry?.value_name
-        ?? entry?.attribute_value ?? entry?.value;
-      const displayValue = Array.isArray(rawValue)
-        ? rawValue.map(value => typeof value === "string" ? value : value?.property_value_name || value?.name || value?.value)
-          .filter(Boolean).join(", ")
-        : typeof rawValue === "object" ? rawValue?.property_value_name || rawValue?.name || rawValue?.value : rawValue;
-      const value = common.cleanText(displayValue, 500);
-      if (key && value) result[key] = value;
+    for (const owner of [product, context]) {
+      if (!owner || typeof owner !== "object") continue;
+      const sources = [owner.product_properties, owner.productProperties,
+        owner.product_attributes, owner.productAttributes, owner.attributes];
+      for (const source of sources) {
+        if (!source || typeof source !== "object") continue;
+        const entries = Array.isArray(source) ? source.slice(0, 50)
+          : Object.entries(source).slice(0, 50).map(([key, value]) => ({ key, value }));
+        for (const entry of entries) {
+          const key = common.cleanText(entry?.property_name || entry?.propertyName || entry?.name
+            || entry?.attribute_name || entry?.attributeName || entry?.key, 100);
+          const rawValue = entry?.property_value ?? entry?.propertyValue ?? entry?.property_values
+            ?? entry?.propertyValues ?? entry?.value_name ?? entry?.valueName ?? entry?.attribute_value
+            ?? entry?.attributeValue ?? entry?.values ?? entry?.value;
+          const value = attributeValueText(rawValue);
+          if (!key || !value || ["__proto__", "constructor", "prototype"].includes(key)
+            || Object.prototype.hasOwnProperty.call(result, key) || Object.keys(result).length >= 50) continue;
+          result[key] = value;
+        }
+      }
     }
     return result;
+  }
+
+  function attributeValueText(raw) {
+    const values = Array.isArray(raw) ? raw.slice(0, 50) : [raw];
+    return common.cleanText(values.map(value => {
+      const label = value && typeof value === "object"
+        ? value.property_value_name ?? value.propertyValueName ?? value.value_name ?? value.valueName
+          ?? value.name ?? value.value
+        : value;
+      return ["string", "number", "boolean"].includes(typeof label) ? String(label) : "";
+    }).filter(Boolean).join(", "), 500);
   }
 
   function promotionPriceFragments(root, productId) {
@@ -741,7 +833,26 @@
   function selectCandidate(candidates) {
     if (!Array.isArray(candidates) || candidates.length === 0) return null;
     candidates.sort((left, right) => compareCandidates(right, left));
-    return candidates[0].value;
+    const selected = candidates[0].value;
+    const result = { ...selected, attributes: { ...selected.attributes } };
+    for (const { value: candidate } of candidates.slice(1)) {
+      if (candidate.productId !== selected.productId || !sameSkuIdentity(selected, candidate)
+        || (selected.shopId && candidate.shopId && selected.shopId !== candidate.shopId)) continue;
+      // Detail responses may omit static metadata that was in bootstrap. Fill
+      // only those fields; keep SKU dimensions, prices and stock as one snapshot.
+      for (const key of ["categoryName", "brandName"]) {
+        if (!result[key] && candidate[key]) result[key] = candidate[key];
+      }
+      if (!result.description && !result.detailImages?.length) {
+        result.description = candidate.description;
+        result.detailImages = candidate.detailImages;
+      }
+      for (const [key, value] of Object.entries(candidate.attributes || {})) {
+        if (!Object.prototype.hasOwnProperty.call(result.attributes, key)
+          && Object.keys(result.attributes).length < 50) result.attributes[key] = value;
+      }
+    }
+    return result;
   }
 
   function compareCandidates(left, right) {

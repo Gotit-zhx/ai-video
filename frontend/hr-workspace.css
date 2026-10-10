@@ -1,0 +1,107 @@
+/* Share the platform palette, including its light/dark theme. */
+#hr-page{--hr-ink:var(--ink,#0a0a0a);--hr-muted:var(--muted,#666);--hr-border:var(--line,#e6e6e6);padding:clamp(18px,3vw,40px);max-width:1500px;margin:0 auto;color:var(--hr-ink)}
+#hr-page *{box-sizing:border-box}
+#hr-page button:focus-visible,#hr-page summary:focus-visible{outline:2px solid var(--hr-ink);outline-offset:3px}
+#hr-page .hr-panel button:disabled{opacity:.48;cursor:not-allowed}
+.hr-note{font-size:12px;color:var(--hr-muted);margin:0 2px 16px;line-height:1.6}
+.hr-panel{padding:clamp(18px,2vw,28px);border-radius:var(--radius-lg,14px);background:var(--surface,#fff);border:1px solid var(--hr-border)}
+.hr-panel[hidden],.hr-login[hidden],.hr-login button[hidden],.hr-qr[hidden],.hr-logout[hidden],.hr-login-progress[hidden],.hr-login-success[hidden]{display:none}
+.hr-panel h2{font-size:19px;margin:0 0 9px;letter-spacing:-.02em}
+.hr-overview-intro{text-align:center;margin:0 auto 18px;max-width:560px}
+.hr-overview-intro h2{font-size:clamp(22px,2.2vw,29px);margin:12px 0}
+.hr-eyebrow{display:inline-flex;border:1px solid var(--hr-border);border-radius:999px;background:var(--surface-soft,#fafafa);color:var(--hr-muted);padding:6px 10px;font-size:11px;font-weight:600;letter-spacing:.04em}
+.hr-hint{font-size:13px;line-height:1.7;color:var(--hr-muted);margin:0}
+.hr-login{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;width:min(100%,420px);margin:0 auto;padding:clamp(20px,2.2vw,28px);border:1px solid var(--hr-border);border-radius:var(--radius-lg,14px);background:var(--surface-soft,#fafafa)}
+.hr-login-brand{padding:6px 11px;border:1px solid var(--hr-border);border-radius:6px;background:var(--surface,#fff);color:var(--hr-ink);font-size:11px;font-weight:700;letter-spacing:.06em}
+.hr-login-title{font-size:20px;letter-spacing:-.02em;color:var(--hr-ink)}
+.hr-qr{display:block;width:min(100%,246px);height:auto;aspect-ratio:1;object-fit:contain;padding:14px;border:1px solid #e6e6e6;border-radius:10px;background:#fff}
+.hr-login-progress{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;width:min(100%,246px);aspect-ratio:1;border:1px solid var(--hr-border);border-radius:10px;background:var(--surface,#fff);padding:20px}
+.hr-login-progress strong{font-size:16px;line-height:1.6;font-weight:600}
+.hr-login-spinner{display:block;flex:none;width:44px;height:44px;border:3px solid var(--hr-border);border-top-color:var(--hr-ink);border-radius:50%;will-change:transform;backface-visibility:hidden;animation:hr-login-spin 1s linear infinite}
+.hr-login-success{margin:0 0 16px;font-weight:600}
+@keyframes hr-login-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.hr-login-spinner{animation:none}}
+.hr-login .hr-hint{max-width:290px;min-height:22px}
+.hr-login-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
+.hr-login button,.hr-actions button,.hr-form>button,.hr-pagination button,.hr-resume-download,.hr-secondary,.hr-logout{min-height:38px;border:1px solid var(--line-strong,#d4d4d4);border-radius:var(--radius-sm,6px);background:var(--surface,#fff);padding:8px 13px;color:var(--hr-ink);cursor:pointer;font:inherit;font-size:13px;font-weight:550;transition:background-color .15s ease,border-color .15s ease}
+.hr-login button:hover,.hr-actions button:hover,.hr-form>button:hover,.hr-pagination button:hover,.hr-resume-download:hover,.hr-secondary:hover,.hr-logout:hover{background:var(--surface-muted,#f5f5f5);border-color:var(--hr-muted)}
+.hr-login button,.hr-actions button.hr-primary,.hr-form>button.hr-primary,.hr-resume-download.hr-primary{background:var(--solid,#0a0a0a);color:var(--on-solid,#fff);border-color:var(--solid,#0a0a0a)}
+.hr-login button:hover,.hr-actions button.hr-primary:hover,.hr-form>button.hr-primary:hover,.hr-resume-download.hr-primary:hover{background:var(--solid-hover,#2b2b2b);border-color:var(--solid-hover,#2b2b2b)}
+.hr-footnote{text-align:center;font-size:12px;color:var(--hr-muted);margin:16px 0 0}
+.hr-status-result{max-width:700px;margin:20px auto 0}
+.hr-logout{display:block;margin:8px auto 0;color:var(--hr-muted)}
+.hr-form{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:13px 0 23px}
+.hr-field{display:flex;flex:1 1 210px;flex-direction:column;gap:7px;min-width:175px;font-size:13px;font-weight:600}
+.hr-field input,.hr-field select{width:100%;min-width:0;border:1px solid var(--line-strong,#d4d4d4);border-radius:var(--radius-sm,6px);background:var(--surface,#fff);padding:10px 12px;color:var(--hr-ink);font:inherit}
+.hr-field input:focus,.hr-field select:focus{border-color:var(--hr-ink);outline:1px solid var(--hr-ink);outline-offset:0;box-shadow:none}
+.hr-actions,.hr-pagination{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.hr-result{min-height:55px;line-height:1.55}
+.hr-error{color:var(--danger,#c5221f);background:var(--danger-soft,#fff7f7);border:1px solid color-mix(in srgb,var(--danger,#c5221f) 20%,var(--hr-border));border-radius:8px;padding:14px;font-size:13px;overflow-wrap:anywhere}
+.hr-empty{color:var(--hr-muted)}
+.hr-record{margin:12px 0;border:1px solid var(--hr-border);border-radius:10px;padding:16px;background:var(--surface-soft,#fafafa)}
+.hr-record strong{display:block;margin-bottom:7px}
+.hr-record summary,.hr-result summary{cursor:pointer;font-size:13px;color:var(--hr-muted)}
+.hr-pagination{margin-top:20px}
+.hr-count{font-size:12px;color:var(--hr-muted);margin:18px 0 15px}
+.hr-card-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.hr-job-card,.hr-person-card{border:1px solid var(--hr-border);border-radius:var(--radius-md,10px);padding:22px;min-width:0;background:var(--surface,#fff);transition:border-color .15s ease}
+.hr-job-card:hover,.hr-person-card:hover{border-color:var(--line-strong,#d4d4d4)}
+.hr-card-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
+.hr-card-heading h3,.hr-identity h3{font-size:18px;line-height:1.5;margin:0;font-weight:650;letter-spacing:-.015em;overflow-wrap:anywhere}
+.hr-identity{display:flex;align-items:center;gap:13px;min-width:0}
+.hr-identity>div{min-width:0}
+.hr-avatar{display:grid;place-items:center;flex:none;width:44px;height:44px;border-radius:50%;border:1px solid var(--hr-border);background:var(--surface-muted,#f5f5f5);color:var(--hr-ink);font-size:18px;font-weight:600}
+.hr-salary{color:var(--hr-ink);font-size:20px;font-weight:650;letter-spacing:-.025em;white-space:nowrap;margin:13px 0}
+.hr-card-heading .hr-salary{font-size:16px;margin:5px 0 0}
+.hr-badge{display:inline-flex;align-items:center;border:1px solid var(--hr-border);border-radius:5px;padding:3px 7px;background:var(--surface-soft,#fafafa);color:var(--hr-muted);font-size:11px;font-weight:550;line-height:1.5;overflow-wrap:anywhere}
+.hr-badge.is-success{color:var(--hr-ink);background:var(--surface-muted,#f5f5f5)}
+.hr-badge.is-attention{color:var(--on-solid,#fff);background:var(--solid,#0a0a0a);border-color:var(--solid,#0a0a0a)}
+.hr-tags{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:12px 0}
+.hr-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 20px;margin:19px 0}
+.hr-facts>div{min-width:0}
+.hr-facts dt{font-size:11px;color:var(--hr-muted);margin-bottom:3px}
+.hr-facts dd{font-size:13px;margin:0;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+.hr-career-line{font-size:13px;font-weight:600;margin:14px 0 5px;overflow-wrap:anywhere}
+.hr-excerpt{font-size:13px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--hr-muted)}
+.hr-job-card .hr-actions,.hr-person-card .hr-actions{padding-top:16px;margin-top:18px;border-top:1px solid var(--hr-border)}
+.hr-description{border-top:1px solid var(--hr-border);padding-top:13px;margin-top:16px}
+.hr-description summary,.hr-field-group summary{font-size:13px;color:var(--hr-muted);cursor:pointer}
+.hr-prose{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.9}
+.hr-empty-state{padding:54px 20px;text-align:center;border:1px dashed var(--line-strong,#d4d4d4);border-radius:10px;margin:16px 0;background:var(--surface-soft,#fafafa)}
+.hr-empty-state strong{display:block;font-size:16px;font-weight:600;margin-bottom:8px}
+.hr-loading{color:var(--hr-muted);padding:30px 10px;text-align:center;font-size:13px}
+.hr-connection-card{border:1px solid var(--hr-border);border-radius:10px;padding:24px;background:var(--surface-soft,#fafafa)}
+.hr-connection-card h3{font-size:22px;margin:14px 0 8px;letter-spacing:-.02em}
+.hr-connection-card .hr-actions{margin-top:22px}
+.hr-success{color:var(--hr-ink);background:var(--surface-muted,#f5f5f5);border:1px solid var(--hr-border);padding:12px;border-radius:8px;font-size:13px}
+.hr-chat-layout{display:grid;grid-template-columns:minmax(210px,30%) minmax(0,1fr);border:1px solid var(--hr-border);border-radius:10px;overflow:hidden;min-height:440px;margin-top:15px}
+.hr-chat-list{background:var(--surface-soft,#fafafa);border-right:1px solid var(--hr-border);max-height:650px;overflow:auto;padding:8px}
+.hr-conversation{position:relative;display:block;width:100%;border:1px solid transparent;border-radius:6px;padding:15px;text-align:left;background:transparent;font:inherit;color:inherit;cursor:pointer;margin-bottom:4px}
+.hr-conversation:hover{background:var(--surface-muted,#f5f5f5)}
+.hr-conversation[aria-pressed=true]{border-color:var(--line-strong,#d4d4d4);background:var(--surface,#fff);box-shadow:inset 3px 0 0 var(--solid,#0a0a0a)}
+.hr-conversation strong{font-size:14px}
+.hr-conversation small{font-size:11px;color:var(--hr-muted)}
+.hr-conversation .hr-badge{margin-left:7px}
+.hr-chat-preview{font-size:12px;color:var(--hr-muted);margin:6px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hr-chat-detail{padding:20px;min-width:0}
+.hr-chat-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:18px;border-bottom:1px solid var(--hr-border)}
+.hr-chat-detail .hr-empty-state{border:0;margin-top:70px}
+.hr-message-list{display:flex;flex-direction:column;align-items:flex-start;gap:16px;padding-top:22px;max-height:540px;overflow:auto}
+.hr-message{max-width:92%;min-width:110px;padding:12px 15px;border-radius:3px 10px 10px 10px;background:var(--surface-soft,#fafafa);border:1px solid var(--hr-border)}
+.hr-message.is-own{align-self:flex-end;background:var(--surface-muted,#f5f5f5);border-color:var(--line-strong,#d4d4d4);border-radius:10px 3px 10px 10px}
+.hr-message-meta{font-size:11px;color:var(--hr-muted);margin:0 0 8px}
+.hr-message-text{font-size:14px;line-height:1.8;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.hr-message-card{font-size:13px;padding:7px 0}
+.hr-message-card .hr-facts{margin:12px 0}
+.hr-resume-sheet{max-width:900px;margin:24px auto;padding:28px;border:1px solid var(--hr-border);border-radius:10px;background:var(--surface,#fff)}
+.hr-resume-sheet>.hr-identity h3{font-size:26px}
+.hr-resume-sheet>.hr-facts{grid-template-columns:repeat(3,minmax(0,1fr));padding:20px 0}
+.hr-resume-section{padding-top:25px;border-top:1px solid var(--hr-border);margin-top:20px}
+.hr-resume-section>h3{font-size:17px;margin:0 0 20px;letter-spacing:-.015em}
+.hr-resume-section li{font-size:13px;line-height:1.9;overflow-wrap:anywhere}
+.hr-timeline-item{border-left:2px solid var(--line-strong,#d4d4d4);padding:0 0 18px 20px;margin-left:5px}
+.hr-timeline-item h4{font-size:15px;margin:0 0 7px}
+.hr-field-group{border:1px solid var(--hr-border);padding:13px;border-radius:6px;margin:10px 0}
+.hr-field-group>.hr-facts{margin:8px 0}
+@media(max-width:1050px){.hr-card-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:700px){.hr-form{display:block}.hr-field{min-width:0;margin-bottom:14px}.hr-actions{margin:12px 0}.hr-login{width:100%}.hr-card-heading{flex-wrap:wrap}.hr-job-card,.hr-person-card{padding:18px}.hr-chat-layout{grid-template-columns:minmax(0,1fr)}.hr-chat-list{max-height:230px;border-right:0;border-bottom:1px solid var(--hr-border)}.hr-chat-detail{padding:14px}.hr-chat-header{flex-wrap:wrap}.hr-resume-sheet{padding:18px}.hr-resume-sheet>.hr-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.hr-message{max-width:100%}.hr-chat-detail .hr-empty-state{margin-top:20px}}

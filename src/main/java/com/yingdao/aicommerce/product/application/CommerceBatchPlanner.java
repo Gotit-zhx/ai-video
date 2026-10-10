@@ -7,32 +7,66 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /** Pure planning: never creates products, authorizations, AI jobs or advertisements. */
 @Service
 public class CommerceBatchPlanner {
     public enum Mode { STOCK_MARKETING, POD_DESIGN }
     public enum Platform { SHOPEE, TIKTOK_SHOP, SHEIN, TEMU, AMAZON, ALIEXPRESS }
+    public record ShopTarget(String shopId, Platform platform, String market, String currency) {}
     public record Request(Mode mode, Platform platform, String market, int sourceProducts,
                           int designsPerProduct, int imagesPerDesign, int shopCount,
                           int dailyListingsPerShop, boolean rightsConfirmed,
                           boolean supplyConfirmed, boolean productionFilesConfirmed,
                           BigDecimal dailyBudgetPerShop, int observationDays,
-                          BigDecimal targetRoi) {}
+                          BigDecimal targetRoi, List<String> shopIds, List<ShopTarget> shopTargets,
+                          String budgetCurrency, String printTemplateSnapshotId) {
+        public Request(Mode mode, Platform platform, String market, int sourceProducts,
+                       int designsPerProduct, int imagesPerDesign, int shopCount,
+                       int dailyListingsPerShop, boolean rightsConfirmed, boolean supplyConfirmed,
+                       boolean productionFilesConfirmed, BigDecimal dailyBudgetPerShop,
+                       int observationDays, BigDecimal targetRoi, List<String> shopIds,
+                       List<ShopTarget> shopTargets, String budgetCurrency) {
+            this(mode,platform,market,sourceProducts,designsPerProduct,imagesPerDesign,shopCount,
+                 dailyListingsPerShop,rightsConfirmed,supplyConfirmed,productionFilesConfirmed,
+                 dailyBudgetPerShop,observationDays,targetRoi,shopIds,shopTargets,budgetCurrency,null);
+        }
+        public Request(Mode mode, Platform platform, String market, int sourceProducts,
+                       int designsPerProduct, int imagesPerDesign, int shopCount,
+                       int dailyListingsPerShop, boolean rightsConfirmed, boolean supplyConfirmed,
+                       boolean productionFilesConfirmed, BigDecimal dailyBudgetPerShop,
+                       int observationDays, BigDecimal targetRoi, List<String> shopIds) {
+            this(mode, platform, market, sourceProducts, designsPerProduct, imagesPerDesign,
+                 shopCount, dailyListingsPerShop, rightsConfirmed, supplyConfirmed,
+                 productionFilesConfirmed, dailyBudgetPerShop, observationDays, targetRoi,
+                 shopIds, List.of(), null);
+        }
+        public Request(Mode mode, Platform platform, String market, int sourceProducts,
+                       int designsPerProduct, int imagesPerDesign, int shopCount,
+                       int dailyListingsPerShop, boolean rightsConfirmed, boolean supplyConfirmed,
+                       boolean productionFilesConfirmed, BigDecimal dailyBudgetPerShop,
+                       int observationDays, BigDecimal targetRoi) {
+            this(mode, platform, market, sourceProducts, designsPerProduct, imagesPerDesign,
+                 shopCount, dailyListingsPerShop, rightsConfirmed, supplyConfirmed,
+                 productionFilesConfirmed, dailyBudgetPerShop, observationDays, targetRoi, List.of());
+        }
+    }
     public record DayAllocation(int day, List<Integer> listingsPerShop) {}
+    public record BudgetGroup(String currency, int shopCount, BigDecimal dailyBudgetPerShop,
+                              BigDecimal dailyBudgetAllShops, BigDecimal observationBudgetCeiling,
+                              boolean budgetConfigured) {}
     public record Plan(String status, String templateVersion, String currency,
                        int designVersions, int materialImages, int listingDrafts,
                        int minimumPublishingDays, List<DayAllocation> schedule,
                        BigDecimal dailyBudgetAllShops, BigDecimal observationBudgetCeiling,
-                       List<String> blockers, List<String> warnings, List<String> stages) {}
+                       List<String> blockers, List<String> warnings, List<String> stages,
+                       List<ShopTarget> shopTargets, List<BudgetGroup> budgetGroups) {}
 
     public Plan preview(Request r) {
         if (r == null || r.mode() == null || r.platform() == null) fail("请选择商品模式和平台");
-        String currency = switch (r.market() == null ? "" : r.market()) {
-            case "PH" -> "PHP"; case "SG" -> "SGD"; case "MY" -> "MYR";
-            case "TH" -> "THB"; case "VN" -> "VND"; case "ID" -> "IDR";
-            default -> throw new BusinessException(HttpStatus.BAD_REQUEST, "当前规划器仅支持六个东南亚市场");
-        };
+        String currency = currencyForMarket(r.market());
         range(r.sourceProducts(), 1, 500, "原始商品数");
         range(r.designsPerProduct(), 1, 20, "每款设计数");
         range(r.imagesPerDesign(), 1, 20, "每个设计的图片数");
@@ -71,7 +105,9 @@ public class CommerceBatchPlanner {
         if (r.dailyBudgetPerShop().signum() > 0)
             blockers.add("广告仅为预算预估；尚未验证广告账户权限、GMV Max商品覆盖及API能力");
         List<String> warnings = new ArrayList<>();
-        warnings.add("店铺数为规划占位，不代表已授权店铺；当前不会保存或执行任务");
+        boolean hasTargets=r.shopTargets()!=null && !r.shopTargets().isEmpty();
+        warnings.add(hasTargets ? "目标店铺已按各自平台、站点和币种适配；此预览不会执行任务"
+                : "店铺数为规划占位，不代表已授权店铺；当前不会保存或执行任务");
         warnings.add("跨店分配不复制每个商品到所有店铺；排期是质量与平台审核通过后的理论最短时间");
         warnings.add("预算口径为每店每日总上限，不能为每日新增计划重复叠加；不是实际花费预测");
         warnings.add("观察周期从实际投放开始；ROI不代表利润，样本不足不能自动判失败");
@@ -79,12 +115,46 @@ public class CommerceBatchPlanner {
             warnings.add("现货裂变仅生成营销素材，不新增实物款式；不自动生成背面印花或重复刊登");
         if (r.platform() != Platform.SHOPEE && r.platform() != Platform.TIKTOK_SHOP)
             warnings.add("该平台当前仅支持规划，采集、刊登与广告适配尚未接入本工作流");
-        BigDecimal daily = r.dailyBudgetPerShop().multiply(BigDecimal.valueOf(r.shopCount()));
-        return new Plan("PREVIEW_ONLY", "commerce-plan-v1", currency, versions, images, drafts,
-                days, List.copyOf(schedule), daily, daily.multiply(BigDecimal.valueOf(r.observationDays())),
+        Map<String,Integer> currencyCounts=new LinkedHashMap<>();
+        if(hasTargets) {
+            if(r.shopTargets().size()!=r.shopCount())fail("目标店铺数与适配配置不一致");
+            for(var target:r.shopTargets()) {
+                if(target==null || target.shopId()==null || target.platform()==null)fail("目标店铺适配配置无效");
+                String actualCurrency=currencyForMarket(target.market());
+                if(!actualCurrency.equals(target.currency()))fail("目标店铺币种与站点不一致");
+                currencyCounts.merge(actualCurrency,1,Integer::sum);
+            }
+        } else currencyCounts.put(currency,r.shopCount());
+        String budgetCurrency=r.budgetCurrency()==null || r.budgetCurrency().isBlank() ? currency : r.budgetCurrency();
+        if(!List.of("PHP","SGD","MYR","THB","VND","IDR").contains(budgetCurrency))fail("预算币种无效");
+        List<BudgetGroup> budgets=new ArrayList<>();
+        for(var group:currencyCounts.entrySet()) {
+            boolean configured=r.dailyBudgetPerShop().signum()==0 || group.getKey().equals(budgetCurrency);
+            BigDecimal perShop=configured ? r.dailyBudgetPerShop() : null;
+            BigDecimal daily=configured ? perShop.multiply(BigDecimal.valueOf(group.getValue())) : null;
+            budgets.add(new BudgetGroup(group.getKey(),group.getValue(),perShop,daily,
+                    configured ? daily.multiply(BigDecimal.valueOf(r.observationDays())) : null,configured));
+        }
+        if(currencyCounts.size()>1)warnings.add("不同币种预算分别显示，不跨币种相加，也不自动兑换");
+        if(budgets.stream().anyMatch(b->!b.budgetConfigured()))
+            warnings.add("原预算仅适用于"+budgetCurrency+"店铺，其他币种广告预算未配置；不影响商品模板适配");
+        boolean singleCurrency=budgets.size()==1;
+        BigDecimal daily=singleCurrency ? budgets.getFirst().dailyBudgetAllShops() : null;
+        BigDecimal total=singleCurrency ? budgets.getFirst().observationBudgetCeiling() : null;
+        return new Plan("PREVIEW_ONLY", "commerce-plan-v2", singleCurrency ? budgets.getFirst().currency() : null, versions, images, drafts,
+                days, List.copyOf(schedule), daily, total,
                 List.copyOf(blockers), List.copyOf(warnings), List.of("选品采集", "资料与权利检查",
                 "模板与供货匹配", "素材生成", "质量复核", "分店刊登审批", "发布与状态核对",
-                "广告权限与预算审批", "测款观察", "优化或暂停下架"));
+                "广告权限与预算审批", "测款观察", "优化或暂停下架"),
+                hasTargets ? List.copyOf(r.shopTargets()) : List.of(),List.copyOf(budgets));
+    }
+
+    public static String currencyForMarket(String market) {
+        return switch(market==null ? "" : market) {
+            case "PH" -> "PHP"; case "SG" -> "SGD"; case "MY" -> "MYR";
+            case "TH" -> "THB"; case "VN" -> "VND"; case "ID" -> "IDR";
+            default -> throw new BusinessException(HttpStatus.BAD_REQUEST,"当前规划器仅支持六个东南亚市场");
+        };
     }
 
     private static void range(int value, int min, int max, String label) {

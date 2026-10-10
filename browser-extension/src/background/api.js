@@ -1,3 +1,4 @@
+import "../shared/video-source.js";
 import { API_PATHS, joinPlatformUrl } from "../shared/constants.js";
 import {
   clearAuth,
@@ -10,6 +11,8 @@ import {
   updateAuthProfile,
   writeAuth
 } from "./storage.js";
+
+export const deduplicateVideos = globalThis.HeyiVideoSources.deduplicate;
 
 const REVOCATION_RETRY_INTERVAL_MS = 30_000;
 
@@ -36,7 +39,7 @@ async function fetchJson(baseUrl, path, options = {}) {
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       cache: "no-store",
-      credentials: "omit",
+      credentials: options.credentials || "omit",
       redirect: "error",
       referrerPolicy: "no-referrer"
     });
@@ -80,6 +83,20 @@ export async function exchangePairingCode(baseUrl, code, deviceName) {
     permissions: data?.permissions || data?.permissionCodes
       || data?.user?.permissions || data?.user?.permissionCodes
   });
+}
+
+export async function connectBrowserSession(baseUrl,deviceName) {
+ const data=await fetchJson(baseUrl,'/api/v1/extension-auth/session',{method:'POST',credentials:'include',body:{deviceName,extensionId:chrome.runtime.id,extensionVersion:chrome.runtime.getManifest().version}});
+ if(!data?.accessToken)throw new ApiError('浏览器尚未登录',401);
+ return writeAuth({baseUrl,accessToken:data.accessToken,expiresAt:data.expiresAt,user:data.user,permissions:data.permissions});
+}
+
+export async function loginWithPassword(baseUrl, account, password, deviceName) {
+  const data = await fetchJson(baseUrl, '/api/v1/extension-auth/login', {
+    method:'POST', body:{account,password,deviceName,extensionId:chrome.runtime.id,extensionVersion:chrome.runtime.getManifest().version}
+  });
+  if (!data?.accessToken) throw new ApiError('登录没有返回凭证',502);
+  return writeAuth({baseUrl,accessToken:data.accessToken,expiresAt:data.expiresAt,user:data.user,permissions:data.permissions});
 }
 
 export async function refreshCurrentUser() {
@@ -227,4 +244,30 @@ function defaultMessage(status) {
   if (status === 413) return "商品数据过大，无法提交";
   if (status === 429) return "操作过于频繁，请稍后重试";
   return "平台暂时无法处理请求";
+}
+
+function allowedVideoUrl(raw) {
+  try {const u=new URL(raw);return u.protocol==='https:'&&!u.username&&!u.password&&(!u.port||u.port==='443')&&['shopee.com','shopee.com.my','shopee.ph','shopeemobile.com','susercontent.com','shopee.sg','shopee.vn','tiktok.com','tiktokcdn.com','tiktokcdn-us.com','ibytedtos.com','byteoversea.com'].some(h=>u.hostname===h||u.hostname.endsWith('.'+h));}catch{return false;}
+}
+export async function archiveCaptureVideos(captureId, videos) {
+  videos = deduplicateVideos(videos);
+  if(!videos.length)return {savedCount:0,totalCount:0,failedCount:0,complete:true,message:''};
+  if(!captureId)return {savedCount:0,totalCount:videos.length,failedCount:videos.length,complete:false,message:'商品已采集，未取得草稿 ID，视频未保存，请重试'};
+  const auth=await requireAuth();let saved=0;const errors=[];
+  for(const video of videos){
+    try {
+      if(!allowedVideoUrl(video.url))throw Error('视频域名尚未支持');
+      const response=await fetch(video.url,{credentials:'omit',signal:AbortSignal.timeout(60000)});
+      if(!response.ok||!allowedVideoUrl(response.url))throw Error('视频下载失败或来源域名不受支持');
+      const reader=response.body.getReader(),chunks=[];let size=0;
+      while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>64*1024*1024){await reader.cancel();throw Error('视频超过64MiB');}chunks.push(value);}
+      const form=new FormData();form.append('sourceUrl',video.url);form.append('file',new Blob(chunks,{type:response.headers.get('content-type')||'video/mp4'}),'source-video.mp4');
+      const r=await fetch(joinPlatformUrl(auth.baseUrl,`/api/v1/product-captures/${encodeURIComponent(captureId)}/videos`),{method:'POST',headers:{Authorization:`Bearer ${auth.accessToken}`},body:form,credentials:'omit',redirect:'error',signal:AbortSignal.timeout(90000)});
+      if(!r.ok)throw Error((await r.json().catch(()=>({}))).message||'视频归档失败');saved++;
+    }catch(error){errors.push(error.message);}
+  }
+  return {
+    savedCount:saved,totalCount:videos.length,failedCount:videos.length-saved,complete:saved===videos.length,
+    message:`商品已采集，视频已保存 ${saved}/${videos.length}${errors.length?'；'+errors[0]+'；点击重试补采视频':''}`
+  };
 }

@@ -13,6 +13,8 @@ import java.util.UUID;
 @TableName("product_captures")
 public class ProductCapture {
     @TableId private String id;
+    @com.baomidou.mybatisplus.annotation.TableLogic(value = "null", delval = "now()")
+    private Instant deletedAt;
     private String organizationId;
     private String createdBy;
     private String idempotencyKey;
@@ -92,6 +94,17 @@ public class ProductCapture {
         updateDraft(title, description, categoryName, brandName, currency, priceMin, priceMax,
                 normalizedData);
         this.rawData = rawData;
+    }
+
+    public void supplementCategory(String categoryName, String normalizedData) {
+        this.categoryName = categoryName;
+        this.normalizedData = normalizedData;
+        this.updatedAt = Instant.now();
+    }
+
+    public void supplementCapturedDetails(String categoryName, String normalizedData, boolean newImages) {
+        supplementCategory(categoryName, normalizedData);
+        if (newImages && "READY".equals(this.status)) this.status = "CAPTURED";
     }
 
     public void startImageProcessing() {

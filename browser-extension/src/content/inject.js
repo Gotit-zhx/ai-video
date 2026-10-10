@@ -147,12 +147,13 @@
           error: "采集失败 · 重试",
           auth: "请先登录",
           permission: "无采集权限",
-          incomplete: "SKU待确认 · 重试"
+          incomplete: "SKU待确认 · 重试",
+          media_incomplete: "视频待补采 · 重试"
         };
         button.textContent = labels[state] || labels.idle;
-        button.dataset.state = state === "permission" ? "error" : state;
+        button.dataset.state = state === "permission" ? "error" : state === "media_incomplete" ? "incomplete" : state;
         button.disabled = state === "loading" || state === "success" || state === "permission";
-        button.title = message || (state === "auth" ? "请点击浏览器工具栏中的赫逸插件完成登录配对" : "采集当前商品到赫逸平台");
+        button.title = message || (state === "auth" ? "请点击浏览器工具栏中的赫逸插件完成登录" : "采集当前商品到赫逸平台");
       }
     };
     registerControl(control);
@@ -176,7 +177,7 @@
       return;
     }
     if (!(await ensureAuthenticated())) {
-      setUrlState(control.productUrl, "auth", "请先点击浏览器工具栏中的赫逸插件完成登录配对");
+      setUrlState(control.productUrl, "auth", "请先点击浏览器工具栏中的赫逸插件完成登录");
       return;
     }
     setUrlState(control.productUrl, "loading");
@@ -196,6 +197,11 @@
         ? document.querySelector("main") || document.body
         : root;
       payload = await adapter.extract(extractionRoot, control.productUrl, control.pageType);
+      const videoNodes=[...document.querySelectorAll('video')];
+      const candidates=[...(payload.videos||[]).map(v=>v.url),...videoNodes.flatMap(v=>[v.currentSrc,v.src,...[...v.querySelectorAll('source')].map(s=>s.src)])];
+      document.querySelectorAll('meta[property="og:video"],meta[property="og:video:url"],meta[property="og:video:secure_url"]').forEach(m=>candidates.push(m.content));
+      if(videoNodes.some(v=>String(v.currentSrc).startsWith('blob:')))performance.getEntriesByType('resource').filter(r=>/\.mp4(?:[?#]|$)/i.test(r.name)).forEach(r=>candidates.push(r.name));
+      payload.videos=globalThis.HeyiVideoSources.deduplicate(candidates);
       if (!payload?.title) throw new Error("未识别到商品标题，请进入商品详情页后重试");
       const response = await chrome.runtime.sendMessage({ type: MESSAGE_CAPTURE, payload });
       if (!response?.ok) {
@@ -213,6 +219,11 @@
           "incomplete",
           skuIncompleteMessage(response.data?.skuCompleteness || payload.skuCompleteness, response.data?.message)
         );
+      } else if (payload.sourcePlatform === "TIKTOK_SHOP" && !payload.categoryName?.trim()) {
+        setUrlState(control.productUrl, "incomplete",
+          "商品已保存，但商品类目尚未加载；请展开完整商品详情后点击重试补采");
+      } else if (response.data?.videoCompleteness?.complete === false) {
+        setUrlState(control.productUrl, "media_incomplete", response.data?.message || "商品已采集，视频保存失败；点击重试补采视频");
       } else {
         setUrlState(control.productUrl, "success", response.data?.message || "商品已提交到平台");
       }
@@ -226,7 +237,7 @@
         }
       } else if (details.kind === "AUTH" || details.status === 401) {
         authenticated = false;
-        setUrlState(control.productUrl, "auth", details.message || "请先在插件中登录并配对");
+        setUrlState(control.productUrl, "auth", details.message || "请先在插件中登录");
       } else if (details.kind === "PERMISSION" || details.status === 403) {
         setUrlState(control.productUrl, "permission", details.message || "当前账号没有商品采集权限");
       } else {

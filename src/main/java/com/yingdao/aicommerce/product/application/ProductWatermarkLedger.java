@@ -1,0 +1,64 @@
+package com.yingdao.aicommerce.product.application;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.*;
+
+/** Commits each paid-call intent outside the surrounding capture transaction. */
+@Service
+@Transactional(propagation=Propagation.REQUIRES_NEW)
+public class ProductWatermarkLedger {
+ private final JdbcTemplate db;
+ public ProductWatermarkLedger(JdbcTemplate db){this.db=db;}
+ public Map<String,Object> prepare(String id,String org,String capture,String image,String sha,String key){
+  db.update("INSERT IGNORE INTO product_watermark_checks(id,organization_id,capture_id,image_id,source_sha256,source_key,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'PREPARED',NOW(6),NOW(6))",id,org,capture,image,sha,key);
+  return get(id,org);
+ }
+ /** A new local policy may recompose a received artifact, but never reuse its old approval. */
+ public boolean reuseReceivedGeneration(String id,String org,String capture,String image,String sourceHash){
+  var prior=db.queryForList("SELECT id,detection_json,generation_json,local_detection_json FROM product_watermark_checks WHERE organization_id=? AND capture_id=? AND image_id=? AND source_sha256=? AND id<>? AND generation_json IS NOT NULL AND detection_json IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(detection_json, '$.decision'))='PRESENT' ORDER BY created_at DESC LIMIT 1",org,capture,image,sourceHash,id);
+  if(prior.isEmpty())return false;
+  var row=prior.getFirst();
+  return db.update("UPDATE product_watermark_checks SET status='RESULT_RECEIVED',detection_json=JSON_SET(?, '$.reusedFromCheckId', ?),generation_json=?,local_detection_json=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='PREPARED'",row.get("detection_json"),row.get("id"),row.get("generation_json"),row.get("local_detection_json"),id,org)==1;
+ }
+ public Map<String,Object> get(String id,String org){
+  var rows=db.queryForList("SELECT * FROM product_watermark_checks WHERE id=? AND organization_id=?",id,org);
+  if(rows.isEmpty())throw new IllegalArgumentException("水印处理记录不存在");return rows.getFirst();
+ }
+ public boolean claim(String id,String org,String expected,String next){
+  return db.update("UPDATE product_watermark_checks SET status=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=?",next,id,org,expected)==1;
+ }
+ public void directEdit(String id,String org){
+  update("UPDATE product_watermark_checks SET detection_json='{\"method\":\"DIRECT_IMAGE_EDIT\",\"preDetectionSkipped\":true}',status='EDITING',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='PREPARED'",id,org);
+ }
+ public List<Map<String,Object>> progress(String org,String capture){
+  return db.queryForList("SELECT image_id AS imageId,status,message,updated_at AS updatedAt FROM (SELECT image_id,status,message,updated_at,ROW_NUMBER() OVER(PARTITION BY image_id ORDER BY created_at DESC,id DESC) AS rn FROM product_watermark_checks WHERE organization_id=? AND capture_id=?) latest WHERE rn=1",org,capture);
+ }
+ public void detection(String id,String org,String json){
+  update("UPDATE product_watermark_checks SET detection_json=?,status='DETECTED',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='DETECTING'",json,id,org);
+ }
+ public void screened(String id,String org,String json){
+  update("UPDATE product_watermark_checks SET local_detection_json=?,status='SCREENED',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='SCREENING'",json,id,org);
+ }
+ public void noLocalCandidate(String id,String org,String key){
+  update("UPDATE product_watermark_checks SET output_key=?,detection_json=local_detection_json,validation_json='{\"method\":\"UNCHANGED_ORIGINAL_USER_CONFIRMED_SHA256\"}',status='READY',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='SCREENED'",key,id,org);
+ }
+ public void edited(String id,String org,String key){
+  update("UPDATE product_watermark_checks SET candidate_key=?,status='EDITED',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='RESULT_RECEIVED'",key,id,org);
+ }
+ public void generated(String id,String org,String json){
+  update("UPDATE product_watermark_checks SET generation_json=?,status='RESULT_RECEIVED',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='EDITING'",json,id,org);
+ }
+ public void ready(String id,String org,String expected,String key,String validation){
+  update("UPDATE product_watermark_checks SET output_key=?,validation_json=?,status='READY',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=?",key,validation,id,org,expected);
+ }
+ public void hold(String id,String org,String expected,String message){
+  update("UPDATE product_watermark_checks SET status='REVIEW_REQUIRED',message=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=?",message,id,org,expected);
+ }
+ public void rejectValidation(String id,String org,String validation){
+  update("UPDATE product_watermark_checks SET status='REVIEW_REQUIRED',validation_json=?,message='去水印复检未通过，禁止上传',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='VALIDATING'",validation,id,org);
+ }
+ private void update(String sql,Object...args){if(db.update(sql,args)!=1)throw new IllegalStateException("水印任务状态已变化，停止当前操作");}
+}

@@ -611,10 +611,7 @@ public class AutomationModelService {
                             mode,
                             sessionId,
                             context,
-                            new PiModel(
-                                    model.baseUrl(), model.modelId(),
-                                    model.apiKey(), "openai-completions"
-                            )
+                            model.driverRequestModel()
                     ))
                     .retrieve()
                     .body(PiAnalysisResponse.class);
@@ -738,7 +735,7 @@ public class AutomationModelService {
             String mode,
             String sessionId,
             Map<String, Object> context,
-            PiModel model
+            Map<String, Object> model
     ) {
     }
 

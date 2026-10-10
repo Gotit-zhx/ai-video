@@ -134,6 +134,21 @@ public interface ProductPublishWorkflowMapper extends BaseMapper<ProductPublishW
 
     @Update("""
             UPDATE product_publish_workflows
+               SET status = 'PENDING', current_step = 'PUBLISH',
+                   expected_capture_version = #{captureVersion}, next_attempt_at = #{nextAttemptAt},
+                   media_wait_started_at = COALESCE(media_wait_started_at, #{now}),
+                   locked_by = NULL, locked_until = NULL, error_message = #{message}, updated_at = #{now}
+             WHERE id = #{id} AND status = 'RUNNING' AND locked_by = #{worker}
+               AND publication_attempted = FALSE
+            """)
+    int waitForMediaProgress(@Param("id") String id, @Param("worker") String worker,
+                             @Param("captureVersion") long captureVersion,
+                             @Param("message") String message,
+                             @Param("nextAttemptAt") Instant nextAttemptAt,
+                             @Param("now") Instant now);
+
+    @Update("""
+            UPDATE product_publish_workflows
                SET status = 'SUCCEEDED', current_step = 'COMPLETED',
                    publish_audit_id = #{publishAuditId}, expected_capture_version = #{captureVersion},
                    publication_target_key = CASE WHEN #{realPublication} THEN publication_target_key ELSE NULL END,
@@ -171,6 +186,16 @@ public interface ProductPublishWorkflowMapper extends BaseMapper<ProductPublishW
             """)
     int fail(@Param("id") String id, @Param("worker") String worker,
              @Param("message") String message, @Param("now") Instant now);
+
+    @Update("""
+            UPDATE product_publish_workflows
+               SET status = 'FAILED', error_message = #{message},
+                   publication_attempted = FALSE, publication_target_key = NULL,
+                   locked_by = NULL, locked_until = NULL, completed_at = #{now}, updated_at = #{now}
+             WHERE id = #{id} AND status = 'RUNNING' AND locked_by = #{worker}
+            """)
+    int failRejectedPublication(@Param("id") String id, @Param("worker") String worker,
+                                @Param("message") String message, @Param("now") Instant now);
 
     @Update("""
             UPDATE product_publish_workflows

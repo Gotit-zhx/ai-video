@@ -12,6 +12,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 
 @RestController
 @RequestMapping("/api/v1/shops")
@@ -32,6 +35,21 @@ public class ShopController {
     @GetMapping("/integration-status")
     public ApiResponse<ShopAuthorizationService.PlatformStatus> integrationStatus() {
         return ApiResponse.ok(service.status());
+    }
+
+    public record RenameRequest(String name) {}
+
+    @PatchMapping("/{id}")
+    public ApiResponse<ShopAuthorizationService.ShopView> rename(@PathVariable String id,
+            @RequestBody RenameRequest request, @AuthenticationPrincipal PlatformPrincipal principal) {
+        return ApiResponse.ok(service.rename(id, request.name(), principal));
+    }
+
+    @DeleteMapping("/{id}")
+    public ApiResponse<String> delete(@PathVariable String id,
+            @AuthenticationPrincipal PlatformPrincipal principal) {
+        service.delete(id, principal);
+        return ApiResponse.ok("已删除");
     }
 
     @PostMapping("/{id}/refresh")

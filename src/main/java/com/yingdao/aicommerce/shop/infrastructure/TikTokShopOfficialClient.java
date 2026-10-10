@@ -55,11 +55,26 @@ public class TikTokShopOfficialClient implements MarketplaceAccess.Client {
 
     @Override
     public String authorizationUrl(String callbackUrl, String state) {
+        return authorizationUrl(callbackUrl, state, authorizationBaseUrl.startsWith("https://services.us.tiktokshop.com") ? "US" : "ROW");
+    }
+
+    @Override
+    public String authorizationUrl(String callbackUrl, String state, String market) {
         requireConfigured();
+        String normalized = market == null || market.isBlank() ? "ROW"
+                : market.trim().toUpperCase(java.util.Locale.ROOT);
+        if (!normalized.equals("ROW") && !normalized.matches("[A-Z]{2}")) {
+            throw new MarketplaceApiException("TikTok Shop 授权市场必须为两位国家代码或 ROW");
+        }
+        String base = authorizationBaseUrl;
+        if (base.matches("https://services(?:\\.us)?\\.tiktokshop\\.com/?")) {
+            base = normalized.equals("US") ? "https://services.us.tiktokshop.com"
+                    : "https://services.tiktokshop.com";
+        }
         Map<String, Object> query = new LinkedHashMap<>();
         query.put("service_id", serviceId);
         query.put("state", state);
-        return MarketplaceHttp.uri(authorizationBaseUrl, "/open/authorize", query).toString();
+        return MarketplaceHttp.uri(base, "/open/authorize", query).toString();
     }
 
     @Override

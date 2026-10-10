@@ -1,0 +1,37 @@
+name: hoyee_erp
+services:
+  erphoyee:
+    build: .
+    image: hoyee-erphoyee:20260908
+    container_name: hoyee-erphoyee
+    restart: unless-stopped
+    env_file: /opt/heyi/erphoyee/shared/.env
+    volumes:
+      - /opt/heyi/erphoyee/shared/data:/data
+    networks:
+      existing:
+        aliases:
+          - erphoyee
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8137/erphoyee/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+networks:
+  existing:
+    external: true
+    name: web_sdk__default

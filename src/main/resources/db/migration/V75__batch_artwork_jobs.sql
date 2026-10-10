@@ -1,0 +1,23 @@
+CREATE TABLE commerce_batch_artwork_jobs (
+ id VARCHAR(36) PRIMARY KEY,
+ organization_id VARCHAR(36) NOT NULL,
+ execution_id VARCHAR(36) NOT NULL,
+ capture_id VARCHAR(36) NOT NULL,
+ capture_version BIGINT NOT NULL,
+ kind VARCHAR(24) NOT NULL,
+ variant_index INT NOT NULL,
+ request_key VARCHAR(64) NOT NULL,
+ status VARCHAR(24) NOT NULL,
+ prompt TEXT NOT NULL,
+ model_config_id VARCHAR(100) NOT NULL,
+ model_fingerprint VARCHAR(64) NOT NULL,
+ reference_keys JSON NOT NULL,
+ result_json MEDIUMTEXT NULL,
+ storage_key VARCHAR(160) NULL,
+ content_sha256 VARCHAR(64) NULL,
+ message VARCHAR(1000) NULL,
+ created_at TIMESTAMP(6) NOT NULL,
+ updated_at TIMESTAMP(6) NOT NULL,
+ UNIQUE KEY uk_batch_artwork_request (execution_id, request_key),
+ KEY ix_batch_artwork_sources (organization_id, execution_id, capture_id, kind, variant_index)
+);

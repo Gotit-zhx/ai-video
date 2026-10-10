@@ -43,6 +43,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST,"/api/v1/commerce-batches/*/quota-reservations", "/api/v1/commerce-batches/*/quota-reservations/**").hasAuthority("product:publish")
                         .requestMatchers(HttpMethod.POST,"/api/v1/commerce-batches/**").hasAuthority("product:edit")
                         .requestMatchers("/api/v1/commerce-batches/**").hasAnyAuthority("product:view","product:publish")
+                        .requestMatchers("/api/v1/commerce-artwork-library", "/api/v1/commerce-artwork-library/**").hasAnyAuthority("product:view","product:publish")
                         .requestMatchers(HttpMethod.POST, "/api/v1/commerce-templates/**").hasAuthority("product:edit")
                         .requestMatchers("/api/v1/commerce-templates/**").hasAnyAuthority("product:view", "product:publish")
                         .requestMatchers(HttpMethod.POST,"/api/v1/commerce-designs/**").hasAuthority("product:edit")
@@ -60,7 +61,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/automation-agent/**").permitAll()
                         .requestMatchers(HttpMethod.OPTIONS,
                                 "/api/v1/product-captures/**", "/api/v1/extension-auth/**").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/api/v1/extension-auth/exchange").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/extension-auth/exchange", "/api/v1/extension-auth/login").permitAll()
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/product-captures/extension/pairing-code")
                             .hasAuthority("product:collect")
@@ -84,10 +85,15 @@ public class SecurityConfig {
                             .hasAnyAuthority("product:view", "product:publish")
                         .requestMatchers("/api/v1/shops/**", "/api/v1/shop-authorizations/**")
                             .hasAuthority("product:publish")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/product-captures/*/videos").hasAuthority("product:collect")
                         .requestMatchers(HttpMethod.POST, "/api/v1/product-captures")
                             .hasAuthority("product:collect")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/product-captures/**")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/product-captures/**", "/api/v1/product-watermark/assets/**")
                             .hasAuthority("product:view")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/product-captures/*/images/*/source-file")
+                            .hasAuthority("product:edit")
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/product-captures/*")
+                            .hasAuthority("product:edit")
                         .requestMatchers(HttpMethod.PATCH, "/api/v1/product-captures/*")
                             .hasAuthority("product:edit")
                         .requestMatchers("/api/v1/product-captures/**").denyAll()
@@ -237,6 +243,9 @@ public class SecurityConfig {
         configuration.setAllowCredentials(false);
         configuration.setMaxAge(3600L);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        CorsConfiguration sessionCors = new CorsConfiguration(configuration);
+        sessionCors.setAllowCredentials(true);
+        source.registerCorsConfiguration("/api/v1/extension-auth/session", sessionCors);
         source.registerCorsConfiguration("/api/v1/product-captures/**", configuration);
         source.registerCorsConfiguration("/api/v1/extension-auth/**", configuration);
         return source;

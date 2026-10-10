@@ -170,6 +170,24 @@ class AiVideoTaskServiceTest {
     }
 
     @Test
+    void noVoicePlaceholdersDoNotEnableNarration() {
+        for (String text : List.of("无", "旁白：无", "无口播", "none", "纯音乐")) {
+            assertEquals("", AiVideoTaskService.voiceoverText(text));
+        }
+        assertEquals("无论何时都可以使用", AiVideoTaskService.voiceoverText("无论何时都可以使用"));
+        AiVideoTask task = mock(AiVideoTask.class);
+        when(task.getGenerationRulesJson()).thenReturn("{\"voiceoverMode\":\"NONE\"}");
+        when(task.getScriptJson()).thenReturn("{\"shots\":[{\"narration\":\"旧台词\"}]}");
+        String prompt = AiVideoGenerationService.finalAudioPerformancePrompt("参考视频里有人说话", task, new ObjectMapper());
+        assertTrue(prompt.contains("轻快、明亮"));
+        assertTrue(prompt.contains("忽略参考视频中的全部人声"));
+        assertTrue(prompt.contains("no speech, no dialogue, no vocals"));
+        String general = AiVideoGenerationService.generalReferencePrompt("产品展示");
+        assertTrue(general.contains("轻快纯器乐BGM"));
+        assertTrue(general.contains("用户明确指定口播时才按指定文案生成"));
+    }
+
+    @Test
     void explicitVoiceoverRulesOverrideLegacyScriptNarration() {
         AiVideoTask task = mock(AiVideoTask.class);
         ObjectMapper mapper = new ObjectMapper();

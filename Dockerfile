@@ -9,7 +9,7 @@ FROM eclipse-temurin:21-jre
 WORKDIR /app
 RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 spring \
     && mkdir -p /data/automation-skills /data/automation-attachments /data/video-scripts \

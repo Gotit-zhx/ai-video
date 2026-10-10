@@ -11,6 +11,8 @@ const files = [
   "scripts/image-planner.test.mjs",
   "scripts/observer-generation.test.mjs",
   "src/shared/constants.js",
+  "src/shared/video-source.js",
+  "scripts/video-source.test.mjs",
   "src/background/storage.js",
   "src/background/api.js",
   "src/background/service-worker.js",
@@ -65,3 +67,17 @@ const imagePlannerTests = spawnSync(process.execPath, ["scripts/image-planner.te
 if (imagePlannerTests.status !== 0) process.exit(imagePlannerTests.status || 1);
 
 console.log(`Checked ${files.length} JavaScript files plus page-guard, price, SKU, image-planner, background-sanitize, pending-revocation storage/API/worker, observer identity/generation, and inject-click tests.`);
+
+const directLoginTests = spawnSync(process.execPath, ["scripts/direct-login.test.mjs"], { stdio: "inherit" });
+if (directLoginTests.status !== 0) process.exit(directLoginTests.status || 1);
+
+const mediaArchiveTests = spawnSync(process.execPath, ["scripts/media-archive.test.mjs"], { stdio: "inherit" });
+if (mediaArchiveTests.status !== 0) process.exit(mediaArchiveTests.status || 1);
+
+const videoSourceTests = spawnSync(process.execPath, ["scripts/video-source.test.mjs"], { stdio: "inherit" });
+if (videoSourceTests.status !== 0) process.exit(videoSourceTests.status || 1);
+
+for (const name of ["tiktok-metadata.test.mjs", "tiktok-category-dom.test.mjs"]) {
+  const result = spawnSync(process.execPath, [`scripts/${name}`], { stdio: "inherit" });
+  if (result.status !== 0) process.exit(result.status || 1);
+}

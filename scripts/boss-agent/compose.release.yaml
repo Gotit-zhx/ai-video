@@ -1,0 +1,18 @@
+services:
+  frontend:
+    image: ${HR_FRONTEND_IMAGE:?Set HR_FRONTEND_IMAGE to the built release tag}
+    container_name: ai-commerce-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /opt/heyi/shared/certbot-webroot:/var/www/certbot:ro
+    networks:
+      - default
+
+networks:
+  default:
+    name: web_sdk__default
+    external: true

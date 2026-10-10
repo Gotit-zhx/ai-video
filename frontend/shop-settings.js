@@ -16,9 +16,12 @@
       form.elements.namedItem("environment").value=config.environment;
       form.elements.namedItem("dailyListingLimit").value=config.dailyListingLimit;
       templateSelect.replaceChildren();option("","无默认模板",templateSelect);
-      templates.filter(t=>t.configuration.platform===shop.platform && t.configuration.market===shop.region)
-        .forEach(t=>option(t.snapshotId,`${t.name} · v${t.version}`,templateSelect));
-      if(config.defaultTemplateSnapshotId && !templates.some(t=>t.snapshotId===config.defaultTemplateSnapshotId))
+      const eligible=templates.filter(t=>shop.status==="ACTIVE"
+        && ["SHOPEE","TIKTOK_SHOP"].includes(shop.platform)
+        && ["PH","SG","MY","TH","VN","ID"].includes(String(shop.region || "").trim().toUpperCase())
+        && (!t.configuration.shopIds?.length || t.configuration.shopIds.includes(shop.id)));
+      eligible.forEach(t=>option(t.snapshotId,`${t.name} · v${t.version}`,templateSelect));
+      if(config.defaultTemplateSnapshotId && !eligible.some(t=>t.snapshotId===config.defaultTemplateSnapshotId))
         option(config.defaultTemplateSnapshotId,"当前固定的历史模板版本",templateSelect);
       templateSelect.value=config.defaultTemplateSnapshotId||"";
       status.textContent=`已读取 ${shop.name}，配置版本 ${version}。`;

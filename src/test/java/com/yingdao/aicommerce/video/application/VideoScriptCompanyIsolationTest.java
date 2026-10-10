@@ -42,7 +42,7 @@ class VideoScriptCompanyIsolationTest {
     }
 
     @Test
-    void externallyRegisteredUserCanOnlyReadOwnScript() {
+    void externallyRegisteredUserCanReadCompanyScripts() {
         VideoScript script = new VideoScript(
                 "script-1", "org-a", "其他人的脚本", "MANUAL", "MODEL_WEAR",
                 null, null, null, null, "中国", null, "user-a"
@@ -50,9 +50,7 @@ class VideoScriptCompanyIsolationTest {
         when(scriptMapper.selectById("script-1")).thenReturn(script);
 
         assertThat(service.status("script-1", externalPrincipal("user-a"))).isSameAs(script);
-        assertThatThrownBy(() -> service.status("script-1", externalPrincipal("user-b")))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("视频脚本不存在");
+        assertThat(service.status("script-1", externalPrincipal("user-b"))).isSameAs(script);
     }
 
     private PlatformPrincipal principal(String organizationId, String organizationCode) {

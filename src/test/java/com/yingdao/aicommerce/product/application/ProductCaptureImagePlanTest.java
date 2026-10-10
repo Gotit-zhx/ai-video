@@ -40,14 +40,14 @@ class ProductCaptureImagePlanTest {
     }
 
     @Test
-    void overThirtyImagesRetainsMaximumVariantCoverageAndBlocksReview() {
+    void overflowRetainsMaximumVariantCoverageAndReportsTruncation() {
         List<Map<String, Object>> images = List.of(
                 image("main", "MAIN"),
                 image("gallery", "GALLERY"),
                 image("detail", "DETAIL")
         );
         List<Map<String, Object>> skus = new ArrayList<>();
-        for (int index = 0; index < 31; index++) {
+        for (int index = 0; index < 121; index++) {
             skus.add(sku("color-" + index,
                     "https://cdn.example.com/color-" + index + ".webp", "MODEL", false));
         }
@@ -56,9 +56,9 @@ class ProductCaptureImagePlanTest {
                 images, skus, safeImageUrl
         );
 
-        assertEquals(30, plan.images().size());
+        assertEquals(120, plan.images().size());
         assertEquals("MAIN", plan.images().getFirst().get("role"));
-        assertEquals(29, plan.images().stream().filter(image -> "VARIANT".equals(image.get("role"))).count());
+        assertEquals(119, plan.images().stream().filter(image -> "VARIANT".equals(image.get("role"))).count());
         assertFalse((Boolean) plan.completeness().get("complete"));
         @SuppressWarnings("unchecked")
         List<String> issues = (List<String>) plan.completeness().get("issues");
@@ -66,8 +66,24 @@ class ProductCaptureImagePlanTest {
         assertTrue(issues.contains("VARIANT_IMAGE_COVERAGE_TRUNCATED"));
         assertTrue(issues.contains("GALLERY_IMAGE_COVERAGE_TRUNCATED"));
         assertTrue(issues.contains("DETAIL_IMAGE_COVERAGE_TRUNCATED"));
-        assertEquals(31, plan.completeness().get("requiredSkuImageCount"));
-        assertEquals(29L, plan.completeness().get("coveredSkuImageCount"));
+        assertEquals(121, plan.completeness().get("requiredSkuImageCount"));
+        assertEquals(119L, plan.completeness().get("coveredSkuImageCount"));
+    }
+
+    @Test
+    void capturesFullGalleryAndDescriptionBeyondOldThirtyImageCeiling() {
+        List<Map<String, Object>> images = new ArrayList<>();
+        images.add(image("main", "MAIN"));
+        for (int index = 0; index < 15; index++) images.add(image("variant-" + index, "VARIANT"));
+        for (int index = 0; index < 24; index++) images.add(image("gallery-" + index, "GALLERY"));
+        for (int index = 0; index < 80; index++) images.add(image("detail-" + index, "DETAIL"));
+
+        ProductCaptureImagePlan.Plan plan = ProductCaptureImagePlan.prepare(images, List.of(), safeImageUrl);
+
+        assertEquals(120, plan.images().size());
+        assertEquals(true, plan.completeness().get("complete"));
+        assertEquals(80, plan.images().stream().filter(image -> "DETAIL".equals(image.get("role"))).count());
+        assertEquals(List.of(), plan.completeness().get("issues"));
     }
 
     private Map<String, Object> image(String name, String role) {

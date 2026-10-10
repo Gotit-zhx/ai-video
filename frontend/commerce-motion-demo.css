@@ -1,0 +1,6 @@
+*{box-sizing:border-box}
+body{margin:0;background:transparent;font-family:Arial,"PingFang SC",sans-serif;color:#777}
+#product-publish-page .studio-live-stage{margin:0;border-radius:18px}
+.demo-progress{display:flex;justify-content:space-between;gap:12px;padding:12px 3px;font-size:11px;line-height:1.6}
+#demo-phase{color:#777;font-weight:500}
+@media(max-width:540px){.demo-progress{font-size:10px;flex-wrap:wrap}}

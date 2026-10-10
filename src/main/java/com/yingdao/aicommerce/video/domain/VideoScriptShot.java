@@ -101,6 +101,15 @@ public class VideoScriptShot {
         this.updatedAt = Instant.now();
     }
 
+    public void retime(int sequence, BigDecimal start, BigDecimal end, String promptJson) {
+        this.sequenceNo = sequence;
+        this.startSecond = start;
+        this.endSecond = end;
+        this.durationSeconds = end.subtract(start);
+        this.imagePromptJson = promptJson;
+        this.updatedAt = Instant.now();
+    }
+
     public String getId() { return id; }
     public String getOrganizationId() { return organizationId; }
     public String getScriptId() { return scriptId; }

@@ -1,0 +1,19 @@
+{
+  "url": "https://38.54.88.139/chores/",
+  "server": "38.54.88.139",
+  "service": "household.service",
+  "release": "20260914T094402624053Z",
+  "timezone": "Asia/Shanghai",
+  "eveningTime": "20:30",
+  "followupTime": "23:00",
+  "emailEnabled": true,
+  "emailTest": "SMTP accepted; live API 200",
+  "validation": [
+    "32 unit tests",
+    "HTTP workflow smoke",
+    "320px and 390px browser layout",
+    "HTTPS login and settings",
+    "service worker active at /chores/"
+  ],
+  "credentialFilesExcluded": true
+}

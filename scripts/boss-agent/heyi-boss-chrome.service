@@ -1,0 +1,20 @@
+[Unit]
+Description=Isolated BOSS recruiter Chrome CDP
+Requires=heyi-boss-display.service
+After=heyi-boss-display.service
+
+[Service]
+Type=simple
+User=heyi-boss
+Group=heyi-boss
+WorkingDirectory=/opt/heyi/boss-agent
+Environment=HOME=/opt/heyi/boss-agent
+Environment=DISPLAY=:98
+Environment=XAUTHORITY=/opt/heyi/boss-agent/runtime/.Xauthority
+UMask=0077
+ExecStart=/opt/heyi/boss-agent/bin/start-chrome.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

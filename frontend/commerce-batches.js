@@ -2,28 +2,153 @@
   const form=document.getElementById("commerce-batch-form");
   if(!form) return;
   const get=id=>document.getElementById(`commerce-batch-${id}`);
-  const status=get("status"), selector=get("template"), shopBox=get("shops"), products=get("products");
-  let templates=[],shops=[], selectedProducts=new Set(), page=0, query="", pages=0;
-  let pendingRequest=null, generation=0, loading=false, detailGeneration=0;
+  const status=get("status"), selector=get("template"), summary=get("template-summary"), shopBox=get("shops"), products=get("products");
+  const renderSelector=get("render-policy"),renderField=get("render-policy-field"),renderHint=get("render-policy-hint");
+  if(renderSelector)renderSelector.value='GROK_SCENE_V1';
+  let explicitRenderPolicy=null;
+  let templates=[],printTemplates=[],shops=[], selectedProducts=new Set(), page=0, query="", pages=0;
+  let artworkPicker=null,pickerWorkflowId=null,pickerSnapshotId=null;
+  let pendingRequest=null,pendingStorageKey="",launchController=null, generation=0, loading=false, refreshing=false, submitting=false, detailGeneration=0, printSelectionGeneration=0, printLoading=false,printLoadError=false;
   const text=(tag,value,parent)=>{const e=document.createElement(tag);e.textContent=value;parent.append(e);return e;};
-  const invalidate=()=>{pendingRequest=null;};
+  function clearPendingRequest(){
+    if(pendingStorageKey)try{globalThis.sessionStorage?.removeItem(pendingStorageKey);}catch(_){}
+    pendingRequest=null;pendingStorageKey="";
+  }
+  function readPendingRequest(){
+    const organizationId=typeof currentUser!=="undefined"?currentUser?.organizationId:"";
+    const storageKey=organizationId?`heyi:commerce-batch-launch:v1:${encodeURIComponent(organizationId)}`:"";
+    if(storageKey!==pendingStorageKey){
+      pendingRequest=null;pendingStorageKey=storageKey;
+      if(storageKey)try{
+        const stored=JSON.parse(globalThis.sessionStorage?.getItem(storageKey)||"null");
+        if(typeof stored?.key==="string"&&/^[a-zA-Z0-9_-]{1,128}$/.test(stored.key)&&typeof stored.body==="string"&&stored.body.length<=2000000)pendingRequest={key:stored.key,body:stored.body};
+      }catch(_){}
+    }
+    return pendingRequest;
+  }
+  function preparedRequest(body){
+    const previous=readPendingRequest();
+    if(!previous)return null;
+    try{
+      const {publicationRequests,...input}=JSON.parse(previous.body);
+      // An unconfirmed launch may already be executing. Reuse its frozen
+      // preparation as well as its key, even if live shop metadata has changed.
+      const comparable={...body};
+      // A changed application default is not a user request to launch again.
+      if(!explicitRenderPolicy){delete input.renderPolicy;delete comparable.renderPolicy;}
+      else if(!Object.hasOwn(input,'renderPolicy')&&comparable.renderPolicy==='GROK_SCENE_V1')delete comparable.renderPolicy;
+      return Array.isArray(publicationRequests)&&publicationRequests.length===body.targets.length
+        &&JSON.stringify(input)===JSON.stringify(comparable)?previous:null;
+    }catch(_){return null;}
+  }
+  function launchRequest(body){
+    readPendingRequest();
+    // Search, template changes and reopening the dialog are not proof that an
+    // earlier request failed. Only a different final payload receives a new key.
+    const serialized=JSON.stringify(body);
+    if(!pendingRequest||pendingRequest.body!==serialized)pendingRequest={key:crypto.randomUUID(),body:serialized};
+    if(pendingStorageKey)try{globalThis.sessionStorage?.setItem(pendingStorageKey,JSON.stringify(pendingRequest));}catch(_){}
+    return pendingRequest;
+  }
   globalThis.addEventListener?.("heyi:company-reset",()=>{
-    generation++; templates=[];shops=[];selectedProducts.clear();pendingRequest=null;page=0;pages=0;
+    generation++;printSelectionGeneration++;templates=[];printTemplates=[];shops=[];selectedProducts.clear();clearPendingRequest();page=0;pages=0;loading=false;refreshing=false;submitting=false;printLoading=false;printLoadError=false;
+    launchController?.abort();launchController=null;artworkPicker?.reset();artworkPicker?.setLocked(false);pickerWorkflowId=null;pickerSnapshotId=null;
     [products,shopBox,selector,get("list"),get("detail")].forEach(e=>e.replaceChildren());
     status.textContent="";get("selected-count").textContent="已选 0 款";form.reset();
+    explicitRenderPolicy=null;if(renderSelector)renderSelector.value='GROK_SCENE_V1';
+    form.querySelectorAll("input,select,button").forEach(control=>control.disabled=false);get("more").disabled=true;get("refresh").disabled=false;renderTemplateSummary();
   });
   function selectedTemplate(){return templates.find(t=>t.snapshotId===selector.value);}
+  function selectedPrintTemplate(){const bound=selectedTemplate()?.configuration?.printTemplateSnapshotId;return bound?printTemplates.find(t=>t.snapshotId===bound):null;}
+  const printPositionCount=template=>{const config=template?.configuration||{};return config.photoPrints?.length||config.surfacePrints?.length||config.areas?.length||0;};
+  function templateBlocker(){
+    if(!selectedTemplate()?.configuration?.printTemplateSnapshotId)return "此模板尚未绑定印花位置，请到模板配置完成并保存。";
+    if(printLoading)return "正在读取模板的印花位置，请稍后开始。";
+    if(printLoadError||!selectedPrintTemplate())return "模板印花位置读取失败，请重试；仍失败时请到模板配置重新保存。";
+    if(!printPositionCount(selectedPrintTemplate()))return "此模板没有印花位置，请到模板配置添加印花并保存。";
+    return null;
+  }
+  const selectedShopIds=()=>Array.from(form.querySelectorAll('input[name="shop"]:checked')).map(input=>input.value);
+  const drapeReuse=()=>renderSelector?.value==='GROK_DRAPE_REUSE_V1';
+  function drapeBlocker(config){
+    if(!config?.photoPrints?.length)return '自然搭放需要已保存的图片印花模板。';
+    const front=config.photoPrints.filter(print=>print.side==='FRONT');
+    if(front.length!==1)return '自然搭放需要单处正面胸花，当前模板有 '+front.length+' 处正面印花；背面和侧面位置可保留。';
+    const p=front[0];
+    if(![p.x,p.y,p.width,p.height].every(Number.isFinite)||p.width<=0||p.height<=0||p.x<0||p.x+p.width>1||p.y<0||p.y+p.height>1)return '印花位置超出图片边界，请调整位置后继续。';
+    return null;
+  }
+  function launchInput(reusedArtworks){
+    const targets=selectedShopIds();
+    return {name:form.elements.namedItem('name').value.trim(),templateSnapshotId:selectedTemplate()?.snapshotId,
+      targets:Array.from(selectedProducts).map((captureId,i)=>({captureId,shopId:targets[i%targets.length]})),printTemplateSnapshotId:selectedPrintTemplate()?.snapshotId,confirmed:true,...(reusedArtworks?{reusedArtworks}:{})};
+  }
+  const requestPolicy=request=>JSON.parse(request.body).renderPolicy==='GROK_DRAPE_REUSE_V1'?'GROK_DRAPE_REUSE_V1':'GROK_SCENE_V1';
+  function pendingForSelection(){
+    if(explicitRenderPolicy||!selectedTemplate()||!selectedPrintTemplate()||!selectedProducts.size||!selectedShopIds().length)return null;
+    try{return preparedRequest(launchInput(artworkPicker?.getSelection()||null));}catch(_){return null;}
+  }
+  function renderTemplateSummary(){
+    const workflow=selectedTemplate(),print=selectedPrintTemplate(),artworkState=artworkPicker?.getState();
+    const photo=!!print?.configuration?.photoPrints?.length,drapeIssue=drapeBlocker(print?.configuration),replay=pendingForSelection();
+    if(renderSelector){
+      if(explicitRenderPolicy)renderSelector.value=explicitRenderPolicy;
+      else if(replay)renderSelector.value=requestPolicy(replay);
+      else if(print&&!printLoading&&!printLoadError)renderSelector.value=photo?'GROK_DRAPE_REUSE_V1':'GROK_SCENE_V1';
+      const option=Array.from(renderSelector.children).find(option=>option.value==='GROK_DRAPE_REUSE_V1');if(option){option.disabled=!!drapeIssue;option.title=drapeIssue||'';}
+      renderSelector.disabled=!print||!photo&&!drapeReuse()||printLoading||submitting;
+    }
+    if(renderField)renderField.hidden=!photo&&!drapeReuse();
+    if(renderHint)renderHint.textContent=print&&drapeIssue?drapeIssue+(drapeReuse()?' 已保留自然搭放选择，请调整模板或手动选择原有模式后再开始。':' 当前模板使用原有模式。'):drapeReuse()?'已选择自然搭放：纯白服装模板 + 单处正面印花；背面、侧面补图沿用原有方式。母图生成前自动检查模板布色。':'当前使用原有模式，保持模板版型并复用商品背景。新批次默认自然搭放，也可手动选择原有模式。';
+    const workflowText=workflow?`${workflow.name} · 每组 ${artworkState?.reuse?(artworkState.count||0):(workflow.configuration.designsPerProduct||1)} 款`:"选择模板，带入商品图片、印花位置和裂变款数";
+    const layout=print?.configuration?.photoPrints?.length?"四面图片":print?.configuration?.surfacePrints?.length?"历史印花布局":"图片印花布局";
+    const printText=!workflow?"配置一次，裂变时直接使用":templateBlocker()||`${layout} · ${printPositionCount(print)}处印花位置`;
+    summary.replaceChildren();text("strong",workflowText,summary);text("span",printText,summary);
+    if(replay)text('small',`继续上次未确认的请求，沿用${requestPolicy(replay)==='GROK_DRAPE_REUSE_V1'?'自然搭放':'原有模式'}及原请求标识，避免重复创建批次。`,summary);
+    if(printLoadError&&!printLoading){const retry=text("button","重试读取",summary);retry.type="button";retry.addEventListener("click",()=>{if(submitting||refreshing)return;status.textContent="";return syncPrintTemplate();});}
+    if(artworkState?.reuse)text("small",`已选择 ${artworkState.count||0} 款已有印花，本次复用选定素材。`,summary);
+    text("small",artworkState?.reuse?"先自动匹配店铺类目、仓库和包裹参数，再复用选定印花完成套版；自动检查通过后上传到店铺草稿。":"先自动匹配店铺类目、仓库和包裹参数，再按模板提取印花、裂变和套版；自动检查通过后上传到店铺草稿。",summary);
+    if(photo)text("small",drapeReuse()?`先精确套版，再生成一次自然搭放母图，之后本地换色换花。每个来源商品额外 1 次 Grok 调用${selectedProducts.size?'，本次最多 '+selectedProducts.size+' 次':''}；同商品所有款式与颜色共用，不按款数或颜色数追加场景调用。`:"提取商品背景风格 · 同商品多款多色共用。Grok 根据所选商品图的场景氛围、配色、材质与光线重新设计背景。每个来源商品分别准备一次，已有相同来源背景可复用。背景准备与印花生成分别计入实际调用。",summary);
+    text("small",artworkState?.reuse?"已有印花直接用于套版，不再生成新印花；商品底图准备与草稿上传仍按流程处理。":"透明印花统一使用 IMG2.0，每张最多 3 次尝试，成功即停止；仅透明检查失败或明确的临时服务故障会自动重试，计入本批次调用上限。",summary);
+    get("shop-count").textContent=`已选 ${selectedShopIds().length} / 50 家`;
+  }
+  function syncArtworkTemplate(print){
+    if(!artworkPicker||!print||pickerSnapshotId===print.snapshotId)return;
+    artworkPicker.setTemplate(print.configuration);pickerSnapshotId=print.snapshotId;
+  }
+  async function syncPrintTemplate(){
+    const ticket=generation,selectionTicket=++printSelectionGeneration;
+    const current=()=>ticket===generation&&selectionTicket===printSelectionGeneration;
+    const workflowId=selector.value,snapshotId=selectedTemplate()?.configuration?.printTemplateSnapshotId;
+    if(pickerWorkflowId!==workflowId){pickerWorkflowId=workflowId;pickerSnapshotId=null;artworkPicker?.reset();}
+    printLoading=false;printLoadError=false;
+    renderTemplateSummary();
+    if(!snapshotId)return;
+    if(selectedPrintTemplate()){syncArtworkTemplate(selectedPrintTemplate());renderTemplateSummary();return;}
+    printLoading=true;renderTemplateSummary();
+    try{
+      const response=await api(`/api/v1/commerce-print-templates/snapshots/${encodeURIComponent(snapshotId)}`);
+      if(!current())return;
+      if(response.data?.snapshotId!==snapshotId||!response.data.configuration)throw new Error("模板绑定版本不可用");
+      if(!printTemplates.some(template=>template.snapshotId===snapshotId))printTemplates.push(response.data);
+      syncArtworkTemplate(response.data);
+    }catch(error){if(current()){printLoadError=true;status.textContent="模板印花位置读取失败，请重试；仍失败时请到模板配置重新保存。";}}
+    finally{if(current()){printLoading=false;renderTemplateSummary();}}
+  }
   function renderShops(){
+    const selected=new Set(selectedShopIds());
     shopBox.replaceChildren();
-    const config=selectedTemplate()?.configuration;
-    const matches=shops.filter(s=>s.status==="ACTIVE" && s.platform===config?.platform && s.region===config?.market);
+    const matches=shops.filter(s=>s.status==="ACTIVE"
+      && ["SHOPEE","TIKTOK_SHOP"].includes(s.platform)
+      && ["PH","SG","MY","TH","VN","ID"].includes(String(s.region || "").toUpperCase()));
     matches.forEach(s=>{
       const label=text("label","",shopBox), input=document.createElement("input");
-      input.type="checkbox";input.name="shop";input.value=s.id;label.append(input);
+      input.type="checkbox";input.name="shop";input.value=s.id;input.checked=selected.has(s.id);label.append(input);
       text("span",`${s.name} · ${s.platform} / ${s.region}`,label);
+      input.addEventListener("change",renderTemplateSummary);
     });
-    if(!matches.length) text("p","没有匹配的已授权店铺，请选择模板或先完成店铺授权。",shopBox);
-    invalidate();
+    if(!matches.length) text("p","暂无可用的已授权店铺，请先完成店铺授权。",shopBox);
+    renderTemplateSummary();
   }
   async function loadProducts(reset){
     if(loading) return;
@@ -38,15 +163,31 @@
       r.data.content.forEach(p=>{
         const label=text("label","",products), input=document.createElement("input");
         input.type="checkbox";input.value=p.id;input.checked=selectedProducts.has(p.id);label.append(input);
-        text("span",`${p.title} · ${p.sourcePlatform} · ${p.status}`,label);
+        label.className="batch-source-card";
+        const visual=text("div","",label);visual.className="batch-source-visual";
+        const fallback=text("span","暂无主图",visual);fallback.className="batch-source-placeholder";
+        if(p.thumbnailUrl){
+          try {
+            const url=new URL(p.thumbnailUrl,globalThis.location?.origin || 'http://localhost');
+            if(['http:','https:'].includes(url.protocol)){
+              const img=document.createElement('img');img.alt=p.title || '商品主图';img.loading='lazy';img.referrerPolicy='no-referrer';img.src=url.href;
+              img.addEventListener('error',()=>{img.remove();});visual.append(img);
+            }
+          }catch(_){}
+        }
+        const info=text('div','',label);info.className='batch-source-info';
+        text('strong',p.title || '未命名商品',info);
+        text('small',`${p.sourcePlatform || '商品'}${p.currency ? ' · '+p.currency : ''}${p.priceMin != null ? ' '+p.priceMin : ''}`,info);
+
         input.addEventListener("change",()=>{
           if(input.checked)selectedProducts.add(p.id);else selectedProducts.delete(p.id);
-          get("selected-count").textContent=`已选 ${selectedProducts.size} 款（含其他搜索页）`;invalidate();
+          get("selected-count").textContent=`已选 ${selectedProducts.size} 款（含其他搜索页）`;
+          renderTemplateSummary();
         });
       });
       if(!r.data.content.length && reset)text("p","未找到商品。请先用采集插件导入。",products);
-    }catch(e){status.textContent=e.message;}
-    finally{loading=false;get("more").disabled=page+1>=pages;get("search").disabled=false;}
+    }catch(e){if(ticket===generation)status.textContent=e.message;}
+    finally{if(ticket===generation){loading=false;get("more").disabled=page+1>=pages;get("search").disabled=false;}}
   }
   async function showBatch(id){
     const ticket=generation;
@@ -197,55 +338,105 @@
           });
         }
       }catch(e){if(current())reviewStatus.textContent=`审核记录读取失败：${e.message}。请重新打开批次后重试。`;}
-    }catch(e){status.textContent=e.message;}
+    }catch(e){if(current())status.textContent=e.message;}
   }
+  globalThis.addEventListener?.('heyi:workbench-batch-selected',event=>{if(typeof event.detail?.batchId==='string')return showBatch(event.detail.batchId);});
   function renderBatches(batches){
     get("list").replaceChildren();
     batches.forEach(b=>{const button=text("button",`${b.name} · ${b.status}`,get("list"));button.type="button";button.addEventListener("click",()=>showBatch(b.id));});
   }
   get("refresh").addEventListener("click",async()=>{
-    if(loading)return;
-    const ticket=++generation;get("refresh").disabled=true;selectedProducts.clear();pendingRequest=null;
+    if(loading||refreshing||submitting)return;
+    const ticket=++generation;printSelectionGeneration++;refreshing=true;printLoading=false;printLoadError=false;get("refresh").disabled=true;selectedProducts.clear();
     products.replaceChildren();get("detail").replaceChildren();get("list").replaceChildren();shopBox.replaceChildren();selector.replaceChildren();
-    get("selected-count").textContent="已选 0 款";templates=[];shops=[];
+    get("selected-count").textContent="已选 0 款";templates=[];printTemplates=[];shops=[];renderTemplateSummary();
     try{
       const [t,s,b]=await Promise.all([api("/api/v1/commerce-templates"),api("/api/v1/shops"),api("/api/v1/commerce-batches")]);
       if(ticket!==generation)return;
       templates=t.data;shops=s.data;
       templates.forEach(v=>{const option=text("option",`${v.name} · v${v.version}`,selector);option.value=v.snapshotId;});
+      selector.value=templates[0]?.snapshotId||"";
       renderShops();renderBatches(b.data);
       status.textContent="已读取当前公司数据。商品每款只分配给一家选中店铺，不自动复制到所有店铺。";
-      await loadProducts(true);
-    }catch(e){status.textContent=e.message;}
-    finally{get("refresh").disabled=false;}
+      await Promise.all([syncPrintTemplate(),loadProducts(true)]);
+    }catch(e){if(ticket===generation)status.textContent=e.message;}
+    finally{if(ticket===generation){refreshing=false;get("refresh").disabled=false;}}
   });
-  selector.addEventListener("change",renderShops);
-  form.addEventListener("input",invalidate);
+  selector.addEventListener("change",()=>{status.textContent="";return syncPrintTemplate();});
+  renderSelector?.addEventListener('change',()=>{explicitRenderPolicy=renderSelector.value;status.textContent='';renderTemplateSummary();});
+  form.addEventListener('input',event=>{if(event.target===form.elements.namedItem('name'))renderTemplateSummary();});
   get("search").addEventListener("click",()=>loadProducts(true));
   get("more").addEventListener("click",()=>loadProducts(false));
   form.addEventListener("submit",async event=>{
     event.preventDefault();
-    const template=selectedTemplate();
-    const targets=Array.from(form.querySelectorAll('input[name="shop"]:checked')).map(s=>s.value);
-    if(!template || !selectedProducts.size || selectedProducts.size>500 || targets.length!==template.configuration.shopCount){
-      status.textContent="请选择1至500款商品，且选中店铺数须与模板规划一致。";return;
-    }
+    if(submitting||refreshing)return;
+    const template=selectedTemplate(),printTemplate=selectedPrintTemplate(),targets=selectedShopIds();
+    if(!template){status.textContent="请选择模板。";return;}
+    const blocker=templateBlocker();if(blocker){status.textContent=blocker;return;}
+    if(!selectedProducts.size||selectedProducts.size>500){status.textContent="请选择1至500款商品。";return;}
+    if(!targets.length||targets.length>50){status.textContent="请选择1至50家已授权目标店铺。";return;}
     if(selectedProducts.size<targets.length){status.textContent="商品数量不能少于选中店铺数。";return;}
-    const body={name:form.elements.namedItem("name").value.trim(),templateSnapshotId:template.snapshotId,
-      targets:Array.from(selectedProducts).map((captureId,i)=>({captureId,shopId:targets[i%targets.length]}))};
-    if(!pendingRequest || pendingRequest.body!==JSON.stringify(body))pendingRequest={key:crypto.randomUUID(),body:JSON.stringify(body)};
-    const request=pendingRequest;
+    let reusedArtworks=null;
+    try{
+      const artworkState=artworkPicker?.getState();
+      if(artworkState?.busy)throw new Error("正在读取已有印花素材，请稍后开始。");
+      if(artworkState?.reuse&&artworkState.error)throw new Error(artworkState.error);
+      reusedArtworks=artworkPicker?.getSelection()||null;
+      if(reusedArtworks)reusedArtworks=JSON.parse(JSON.stringify(reusedArtworks));
+      if(artworkState?.reuse&&(!Array.isArray(reusedArtworks)||reusedArtworks.length<1||reusedArtworks.length>20))throw new Error("请选择 1 至 20 款完整的已有印花素材，再开始裂变。");
+    }catch(error){status.textContent=error.message;return;}
+    const body={...launchInput(reusedArtworks),...(printTemplate.configuration?.photoPrints?.length?{renderPolicy:drapeReuse()?'GROK_DRAPE_REUSE_V1':'GROK_SCENE_V1'}:{})};
+    const replay=preparedRequest(body);
+    if(replay){if(renderSelector)renderSelector.value=requestPolicy(replay);renderTemplateSummary();}
+    else if(drapeReuse()){const issue=drapeBlocker(printTemplate?.configuration);if(issue){status.textContent=issue;return;}}
     const ticket=generation;
     const controls=Array.from(form.querySelectorAll("input,select,button"));
-    const disabled=controls.map(c=>c.disabled);controls.forEach(c=>c.disabled=true);get("refresh").disabled=true;
+    const disabled=controls.map(c=>c.disabled);submitting=true;controls.forEach(c=>c.disabled=true);artworkPicker?.setLocked(true);get("refresh").disabled=true;
+    status.textContent="正在检查全部商品与店铺的上传配置…";
+    const controller=new AbortController();launchController=controller;let timedOut=false,onAbort,deadline;
+    const interrupted=new Promise((_,reject)=>{
+      onAbort=()=>reject(new Error(timedOut?"尚未确认启动结果，重试会核对原批次":"启动请求等待已中断"));
+      controller.signal.addEventListener("abort",onAbort,{once:true});
+    });
     try{
-      const r=await api("/api/v1/commerce-batches",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":request.key},body:request.body});
+      let request=replay;
+      if(!request){
+        if(!globalThis.CommercePublication)throw new Error("上传准备组件未加载，请刷新页面");
+        const publicationRequests=await Promise.race([globalThis.CommercePublication.prepare(body.targets,{shops,isCurrent:()=>ticket===generation,
+          onProgress:(done,total)=>{if(ticket===generation)status.textContent=`正在检查上传配置 ${done} / ${total}…`;}}),interrupted]);
+        if(ticket!==generation)return;
+        request=launchRequest({...body,publicationRequests});
+      }
       if(ticket!==generation)return;
-      status.textContent=`已保存草稿 ${r.data.name}，未执行发布。`;pendingRequest=null;
+      status.textContent="上传配置已就绪，正在启动提取、裂变、套版和草稿上传…";
+      deadline=setTimeout(()=>{timedOut=true;controller.abort();},60000);
+      // Abort only this client's wait. The server may already have started;
+      // retaining the same body/key lets a retry recover that persisted run.
+      const r=await Promise.race([api("/api/v1/commerce-batches/create-and-start",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":request.key},body:request.body,signal:controller.signal}),interrupted]);
+      if(ticket!==generation)return;
+      const {batch,execution,maxModelCalls}=r.data||{};
+      if(!batch?.id||!execution?.id||execution.batchId!==batch.id||typeof execution.status!=="string"||!execution.status
+        ||!Number.isInteger(maxModelCalls)||maxModelCalls<0||maxModelCalls>1000)throw new Error("创建与启动结果尚未确认，请使用原配置重试以恢复已有批次");
+      const runStatus={QUEUED:"已排队，等待执行提取、裂变和套版",RUNNING:"正在执行提取、裂变和套版",PAUSING:"正在等待暂停",PAUSED:"执行已暂停",WAITING_INPUT:"执行等待补充资料",WAITING_CAPABILITY:"执行等待所需功能就绪",UNKNOWN:"执行结果待核查",FAILED:"执行遇到问题，请查看进度",COMPLETED:execution.stage==='PUBLISH'?"已上传草稿":"创作已完成"}[execution.status]||`执行状态：${execution.status}`;
+      status.textContent=`${batch.name}：${runStatus}。本批次模型调用上限 ${maxModelCalls} 次，含透明印花每张最多 3 次尝试；${requestPolicy(request)==='GROK_DRAPE_REUSE_V1'?'自然搭放按每个来源商品 1 次计入，不按款色重复调用；':''}成功即停止，不会为用满上限补生成。自动检查后上传草稿。`;clearPendingRequest();
       selectedProducts.clear();products.querySelectorAll('input[type="checkbox"]').forEach(c=>c.checked=false);
       get("selected-count").textContent="已选 0 款";
-      await showBatch(r.data.id);
-    }catch(e){status.textContent=`${e.message}；内容不变时重试将使用相同幂等键。`;}
-    finally{controls.forEach((c,i)=>c.disabled=disabled[i]);get("refresh").disabled=false;}
+      // The workbench selects this persisted run and starts polling. Do not
+      // hold the launch response behind unrelated legacy review/detail reads.
+      globalThis.dispatchEvent?.(new CustomEvent('heyi:batch-created',{detail:{batchId:batch.id,batch,execution,maxModelCalls}}));
+    }catch(e){if(ticket===generation){
+      // Only these explicit pre-generation validation responses prove no run
+      // was started. Network/unknown failures retain the original frozen key.
+      const preparationRejected=e.status===409&&/^(?:发布配置缺失|自动准备发布参数未完成)[:：]/.test(e.message||'');
+      const templateRejected=e.status===400&&/^(?:商品套版模板预检未通过[:：]|模型或印花位置已变化|印花渲染顺序已变化|请先保存当前模型的完整印花效果)/.test(e.message||'');
+      if(preparationRejected||templateRejected)clearPendingRequest();
+      status.textContent=timedOut?"等待响应已超过60秒，尚未确认启动结果，重试会核对原批次。请保留当前配置重试。":e.preparationFailed?e.message:
+        preparationRejected?`${e.message}；尚未启动生图，重试将重新准备上传配置。`:templateRejected?`${e.message}。本次未启动裂变；修复模板后可重新提交。`:`${e.message}；保留当前配置重试会核对原批次。`;
+    }}
+    finally{
+      clearTimeout(deadline);controller.signal.removeEventListener("abort",onAbort);if(launchController===controller)launchController=null;
+      if(ticket===generation){submitting=false;controls.forEach((c,i)=>c.disabled=disabled[i]);artworkPicker?.setLocked(false);get("refresh").disabled=false;}
+    }
   });
+  const artworkHost=get("artwork-picker");if(artworkHost&&globalThis.CommerceArtworkPicker)artworkPicker=globalThis.CommerceArtworkPicker.mount({host:artworkHost,api,onChange:renderTemplateSummary});
 })();

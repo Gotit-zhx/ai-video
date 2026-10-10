@@ -56,6 +56,41 @@ class AiVideoImageProcessorTest {
     Path tempDirectory;
 
     @Test
+    void retriesConnectionFailuresOnlyWhenProviderConfirmsRequestWasNotSent() {
+        assertTrue(AiVideoGenerationService.retryableVideoConcurrencyFailure(
+                "连接厂商失败，请求尚未发送：HTTP connect timed out"));
+        assertFalse(AiVideoGenerationService.retryableVideoConcurrencyFailure(
+                "连接厂商时网络结果未知：HTTP read timed out"));
+        assertFalse(AiVideoGenerationService.retryableVideoConcurrencyFailure("HTTP connect timed out"));
+    }
+
+    @Test
+    void recoveredImagesContinueRunningVideoPipelineAfterAutoStartFlagWasConsumed() throws Exception {
+        var processor = processor(tempDirectory,
+                mock(ProductFunctionAnalysisService.class),
+                mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class));
+        Field field = AiVideoImageProcessor.class.getDeclaredField("videoGenerationService");
+        field.setAccessible(true);
+        var videos = (AiVideoGenerationService) field.get(processor);
+        var task = new AiVideoTask("org", "task", "script", 1, "script", "{}", "菲律宾", "MODEL_WEAR",
+                "AI_DESIGNED", "服装", "按分镜", "按分镜", false, "9:16", "720p",
+                false, false, "{}", "{}", "user");
+        task.start("image-config", "image-model");
+        processor.continueVideoAfterImages(task, "images-only");
+        org.mockito.Mockito.verifyNoInteractions(videos);
+        task.requestAutoStartVideo();
+        processor.continueVideoAfterImages(task, "first-item");
+        verify(videos).startReadyItemDuringImages(task.getId(), "first-item");
+        task.startVideos("video-config", "video-model");
+        task.consumeAutoStartVideo();
+        processor.continueVideoAfterImages(task, "recovered-item");
+        verify(videos).startReadyItemDuringImages(task.getId(), "recovered-item");
+        task.completeVideos(2, null);
+        processor.continueVideoAfterImages(task, "finished-item");
+        org.mockito.Mockito.verifyNoMoreInteractions(videos);
+    }
+
+    @Test
     void failedImageRecoversWhileAnotherItemIsStillBlocked() throws Exception {
         CountDownLatch slowStarted = new CountDownLatch(1);
         CountDownLatch releaseSlow = new CountDownLatch(1);
@@ -270,9 +305,19 @@ class AiVideoImageProcessorTest {
                     modelConfig, new ObjectMapper(),
                     "http://127.0.0.1:" + server.getAddress().getPort(), "test-token");
 
-            String result = service.ensureAnalysis(dailyUseTask, item);
-
-            assertNull(result);
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> service.ensureAnalysis(dailyUseTask, item));
+            assertTrue(failure.getMessage().contains("STRUCTURE_ANALYSIS_PAUSED"));
+            assertTrue(failure.getMessage().contains("gpt-5.4"));
+            assertTrue(failure.getMessage().contains("UPSTREAM_HTTP_502"));
+            AtomicInteger outerAttempts = new AtomicInteger();
+            assertThrows(IllegalStateException.class, () -> AiVideoImageProcessor.runWithImageRecovery(() -> {
+                outerAttempts.incrementAndGet();
+                throw failure;
+            }, ignored -> {}, () -> {}));
+            assertEquals(1, outerAttempts.get());
+            assertTrue(AiVideoImageProcessor.retryableImageTransientFailure(failure.getMessage()));
+            assertTrue(AiVideoImageProcessor.retryableImageTransientFailure("图片自动恢复等待重试：" + failure.getMessage()));
             assertArrayEquals(untouched, original);
             assertEquals(2, calls.get());
             assertArrayEquals(requestBodies.get(0), requestBodies.get(1));
@@ -460,7 +505,7 @@ class AiVideoImageProcessorTest {
         for (int attempt = 1; attempt <= AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS; attempt++) {
             fresh = fresh.reserve("提示 " + attempt).reject(validation);
         }
-        assertEquals(4, fresh.attemptsReserved());
+        assertEquals(AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS, fresh.attemptsReserved());
         assertFalse(fresh.canGenerate());
 
         var reservedFourth = new AiVideoImageProcessor.TopologyRetryState(
@@ -511,7 +556,7 @@ class AiVideoImageProcessorTest {
         var recovered = processor.loadTopologyRetryState(task, item, "MODEL_IMAGE");
 
         assertNotNull(recovered);
-        assertEquals(4, recovered.attemptsReserved());
+        assertEquals(AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS, recovered.attemptsReserved());
         assertTrue(recovered.legacyRecovery());
         assertFalse(recovered.canGenerate());
     }
@@ -918,6 +963,14 @@ class AiVideoImageProcessorTest {
         assertTrue(normalized.contains("\"visibleSleeveCount\":2"));
         assertTrue(normalized.contains("低侧短袖与高侧短袖始终同时存在"));
         assertTrue(normalized.contains("不得把低侧短袖删除成无袖"));
+        source.put("wearingMethod", "头穿过斜领口，双臂分别穿过两只袖口");
+        assertTrue(service.normalizeGarmentAnalysis(source).contains("头穿过斜领口"));
+        source.remove("wearingMethod");
+        String uncertain = service.normalizeGarmentAnalysis(source);
+        assertTrue(uncertain.contains("不推断隐藏穿法"));
+        assertTrue(uncertain.contains("\"confidence\":0.75"));
+        assertTrue(uncertain.contains("低侧短袖与高侧短袖始终同时存在"));
+
     }
 
     @Test
@@ -991,9 +1044,23 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
-    void topologyRedrawsAreBoundedToThreeBeforeContinuing() {
-        assertEquals(3, AiVideoImageProcessor.MAX_TOPOLOGY_REDRAWS);
-        assertEquals(4, AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS);
+    void framingOnlyFindingsDoNotRedrawButMixedAndUnknownFindingsStillDo() {
+        assertTrue(AiVideoImageProcessor.isFramingOnlyValidation(
+                new ProductFunctionAnalysisService.GarmentValidation(false, "", List.of(
+                        "07格：膝盖以下入镜", "07格：双脚入镜", "09格：头顶被裁切"), 0.99, 3)));
+        assertFalse(AiVideoImageProcessor.isFramingOnlyValidation(
+                new ProductFunctionAnalysisService.GarmentValidation(false, "", List.of(
+                        "07格：双脚入镜", "09格：衣袖缺失"), 0.99, 2)));
+        assertFalse(AiVideoImageProcessor.isFramingOnlyValidation(
+                new ProductFunctionAnalysisService.GarmentValidation(false, "", List.of("构图异常"), 0.99, 1)));
+        assertFalse(AiVideoImageProcessor.isFramingOnlyValidation(
+                new ProductFunctionAnalysisService.GarmentValidation(false, "", List.of("双脚入镜"), 0.99, 2)));
+    }
+
+    @Test
+    void topologyRedrawsAreBoundedToOneBeforeContinuing() {
+        assertEquals(1, AiVideoImageProcessor.MAX_TOPOLOGY_REDRAWS);
+        assertEquals(2, AiVideoImageProcessor.MAX_TOPOLOGY_GENERATIONS);
     }
 
     @Test
@@ -1238,6 +1305,85 @@ class AiVideoImageProcessorTest {
         pending.downloadStarted();
         pending.downloadFailed("RESULT_DOWNLOAD_HTTP_502 [upstream=502]");
         assertFalse(AiVideoImageProcessor.replaceUnavailablePendingImage(pending));
+    }
+
+    @Test
+    void pendingDownloadsUseTheResultModelsKeyAndPreserveLegacyCompatibility() throws Exception {
+        String grok = "grok-imagine-image-2.0";
+        var backup = new ModelConfigService.RuntimeModelConnection("backup", "https://model.example", grok,
+                "OPENAI_COMPATIBLE", "AUTO", "backup-test-key");
+        var primary = new ModelConfigService.RuntimeModelConnection("primary", "https://model.example", "gpt-image-2",
+                "OPENAI_COMPATIBLE", "AUTO", "primary-test-key", List.of(backup));
+        var legacy = new ModelConfigService.RuntimeModelConnection("primary", "https://model.example", "gpt-image-2",
+                "OPENAI_COMPATIBLE", "AUTO", "primary-test-key");
+        var connections = List.of(primary, backup, legacy);
+        var resultModels = List.of(grok, grok, "legacy-image-model");
+        var requestModels = List.of(grok, grok, "gpt-image-2");
+        var requestKeys = List.of("backup-test-key", "backup-test-key", "primary-test-key");
+        for (int index = 0; index < connections.size(); index++) {
+            var pendingMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class);
+            var processor = processor(tempDirectory, pendingMapper);
+            var builder = org.springframework.web.client.RestClient.builder();
+            var server = org.springframework.test.web.client.MockRestServiceServer.bindTo(builder).build();
+            Field client = AiVideoImageProcessor.class.getDeclaredField("piClient");
+            client.setAccessible(true);
+            client.set(processor, builder.baseUrl("http://runtime.test").build());
+            String resultModel = resultModels.get(index);
+            var pending = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                    "org", "task", "item", "MODEL_IMAGE", "hash", "https://result.example/saved.png",
+                    "image/png", resultModel, "edit", "");
+            server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo("http://runtime.test/v1/images/download"))
+                    .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.model.apiKey").value(requestKeys.get(index)))
+                    .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.model.modelId").value(requestModels.get(index)))
+                    .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.modelId").value(resultModel))
+                    .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.resultUrl").value(pending.getResultUrl()))
+                    .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(
+                            "{\"artifact\":{\"dataBase64\":\"aGVsbG8=\",\"mimeType\":\"image/png\",\"modelId\":\"" + resultModel + "\"}}",
+                            org.springframework.http.MediaType.APPLICATION_JSON));
+            Object artifact = invokePendingDownload(processor, connections.get(index), pending);
+            assertTrue(new ObjectMapper().writeValueAsString(artifact).contains("\"modelId\":\"" + resultModel + "\""));
+            assertEquals(1, pending.getDownloadAttempts());
+            verify(pendingMapper).updateById(pending);
+            server.verify();
+        }
+    }
+
+    @Test
+    void missingGrokDownloadConfigurationPreservesSavedResultWithoutUsingPrimaryKey() throws Exception {
+        var primary = new ModelConfigService.RuntimeModelConnection("primary", "https://model.example", "gpt-image-2",
+                "OPENAI_COMPATIBLE", "AUTO", "primary-test-key");
+        var emptyBackup = new ModelConfigService.RuntimeModelConnection("backup", "https://model.example", "grok-imagine-image-2.0",
+                "OPENAI_COMPATIBLE", "AUTO", "");
+        var withEmptyBackup = new ModelConfigService.RuntimeModelConnection(primary.id(), primary.baseUrl(), primary.modelId(),
+                primary.apiFormat(), primary.provider(), primary.apiKey(), List.of(emptyBackup));
+        for (var connection : List.of(primary, withEmptyBackup)) {
+            var pendingMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class);
+            var processor = processor(tempDirectory, pendingMapper);
+            var builder = org.springframework.web.client.RestClient.builder();
+            var server = org.springframework.test.web.client.MockRestServiceServer.bindTo(builder).build();
+            Field client = AiVideoImageProcessor.class.getDeclaredField("piClient");
+            client.setAccessible(true);
+            client.set(processor, builder.baseUrl("http://runtime.test").build());
+            var pending = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                    "org", "task", "item", "MODEL_IMAGE", "hash", "https://result.example/saved.png",
+                    "image/png", "grok-imagine-image-2.0", "edit", "");
+            var error = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> invokePendingDownload(processor, connection, pending));
+            assertTrue(error.getCause() instanceof IllegalStateException);
+            assertTrue(error.getCause().getMessage().contains("请恢复已启用的 Grok 备用模型及其 Key"));
+            assertEquals("https://result.example/saved.png", pending.getResultUrl());
+            assertEquals(0, pending.getDownloadAttempts());
+            org.mockito.Mockito.verifyNoInteractions(pendingMapper);
+            server.verify();
+        }
+    }
+
+    private static Object invokePendingDownload(AiVideoImageProcessor processor, ModelConfigService.RuntimeModelConnection model,
+                                               com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult pending) throws Exception {
+        var method = AiVideoImageProcessor.class.getDeclaredMethod("downloadPendingImage", ModelConfigService.RuntimeModelConnection.class,
+                String.class, com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult.class);
+        method.setAccessible(true);
+        return method.invoke(processor, model, "original prompt", pending);
     }
 
     @Test

@@ -411,8 +411,8 @@ TikTok 的版本号按接口固定选择：
 US 与 SEA 店铺调用 Create Product 时必须传 `category_version=v2`；其他地区按官方返回
 选择，不能只由来源商品地区推断。商品内容语言必须符合目标市场语言。
 
-`save_mode` 可为 `AS_DRAFT` 或 `LISTING`。平台采用
-`listing_check -> LISTING` 作为可自动化发布路径。不要假设创建为 `AS_DRAFT` 后可直接用
+`save_mode` 可为 `AS_DRAFT` 或 `LISTING`。平台当前采用
+`listing_check -> AS_DRAFT` 上传到待上架草稿，不自动提交审核或上线。不要假设创建为 `AS_DRAFT` 后可直接用
 `products/activate` 发布，因为 Activate 官方定义仅适用于已处于 Seller/Platform
 deactivated 状态的商品。
 
@@ -587,7 +587,9 @@ Token Host 与 Open API Host 同样独立配置。TikTok API 版本按接口写�
 
 ### 10.2 Shopee Sandbox
 
-Sandbox API Host：`https://partner.test-stable.shopeemobile.com`。
+2026-09-08 Sandbox v2 实测：使用 Developing 应用的测试凭证和下方新 API Host，已完成 `/auth` 授权、`/api/v2/auth/token/get` Token 交换、`/api/v2/shop/get_shop_info` 店铺读取及本地绑定（MY，Shop ID 227892738）。同一凭证在旧 API Host 上返回 `error_sign / Wrong sign`，换新 Host 后成功；此次无需修改 HMAC-SHA256 实现。以下完整清单尚未全部验证，上架仍保持关闭。
+
+Sandbox v2 API Host：`https://openplatform.sandbox.test-stable.shopee.sg`（全球）或 `https://openplatform.sandbox.test-stable.shopee.cn`（中国大陆）。2026-09-08 按官方 [API calls](https://open.shopee.com/developer-guide/16) 核对；旧 `partner.test-stable.shopeemobile.com` 不用于本次 Sandbox v2 联调。
 
 - [ ] 新 `/auth` 链接的 region、参数名、URL 编码和回调字段均与官方一致。
 - [ ] Public、Shop、Merchant 三类签名各有固定向量测试；时间偏差超过五分钟会失败。

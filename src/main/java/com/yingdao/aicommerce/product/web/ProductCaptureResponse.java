@@ -50,7 +50,8 @@ public record ProductCaptureResponse(
         String createdBy,
         Instant createdAt,
         Instant updatedAt,
-        long version
+        long version,
+        String originType
 ) {
     private static final Pattern OPTIONAL_STOCK_ISSUE = Pattern.compile(
             "(?:STOCK_MISSING|SKU_\\d+_STOCK_MISSING)"
@@ -81,7 +82,7 @@ public record ProductCaptureResponse(
                         .map(source -> FieldSourceResponse.from(source, objectMapper)).toList(),
                 capture.getApprovedBy(), capture.getApprovedAt(), capture.getPublishedAt(),
                 capture.getCreatedBy(), capture.getCreatedAt(), capture.getUpdatedAt(),
-                capture.getVersion()
+                capture.getVersion(), detail.originType()
         );
     }
 

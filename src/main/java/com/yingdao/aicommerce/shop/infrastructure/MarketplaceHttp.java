@@ -11,12 +11,17 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 
 @Component
@@ -57,7 +62,7 @@ public class MarketplaceHttp {
 
     public Map<String, Object> get(URI uri, Map<String, String> headers) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-                .timeout(Duration.ofSeconds(45)).GET();
+                .timeout(Duration.ofSeconds(90)).GET();
         headers.forEach(builder::header);
         return sendJson(builder.build());
     }
@@ -105,10 +110,18 @@ public class MarketplaceHttp {
         return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
     }
 
-    private Map<String, Object> sendJson(HttpRequest request) {
+    Map<String, Object> sendJson(HttpRequest request) {
+        CompletableFuture<HttpResponse<String>> pending = null;
         try {
-            HttpResponse<String> response = client.send(request,
+            long timeoutNanos = request.timeout().orElse(Duration.ofSeconds(60)).toNanos();
+            long started = System.nanoTime();
+            pending = client.sendAsync(request,
                     HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            // JDK HttpRequest.timeout can expire only up to response headers. Bound the
+            // entire body as well, and cancel its real exchange when the deadline elapses.
+            long remaining = timeoutNanos - (System.nanoTime() - started);
+            if (remaining <= 0) throw new TimeoutException("Marketplace response deadline exceeded");
+            HttpResponse<String> response = pending.get(remaining, TimeUnit.NANOSECONDS);
             String body = response.body() == null ? "" : response.body();
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new MarketplaceApiException("店铺官方接口 HTTP " + response.statusCode()
@@ -118,9 +131,23 @@ public class MarketplaceHttp {
             return objectMapper.readValue(body, new TypeReference<>() {});
         } catch (MarketplaceApiException exception) {
             throw exception;
+        } catch (TimeoutException exception) {
+            if (pending != null) pending.cancel(true);
+            var timeout = new HttpTimeoutException("店铺官方接口完整响应超时");
+            timeout.initCause(exception);
+            throw new MarketplaceApiException("店铺官方接口完整响应超时，请稍后重试", timeout);
         } catch (InterruptedException exception) {
+            if (pending != null) pending.cancel(true);
             Thread.currentThread().interrupt();
             throw new MarketplaceApiException("店铺官方接口请求被中断", exception);
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+            for (int depth = 0; cause instanceof java.util.concurrent.CompletionException
+                    && cause.getCause() != null && depth < 16; depth++) cause = cause.getCause();
+            if (cause instanceof MarketplaceApiException marketplace) throw marketplace;
+            // Keep the underlying IOException/HttpTimeoutException available to media-only
+            // retry policy. This common transport never automatically repeats a POST.
+            throw new MarketplaceApiException("店铺官方接口请求失败", cause);
         } catch (Exception exception) {
             throw new MarketplaceApiException("店铺官方接口请求失败", exception);
         }

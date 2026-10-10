@@ -46,6 +46,7 @@ public class ProductImageProcessingJob {
 
     public void start() { this.status = "RUNNING"; this.updatedAt = Instant.now(); }
     public void incrementProcessed() { this.processedImages++; this.updatedAt = Instant.now(); }
+    public void progress(String responseJson) { this.responseJson=responseJson; this.updatedAt=Instant.now(); }
     public void succeed(String responseJson) {
         this.status = "SUCCEEDED";
         this.responseJson = responseJson;

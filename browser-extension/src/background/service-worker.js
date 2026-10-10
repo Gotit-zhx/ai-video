@@ -8,6 +8,10 @@ import {
   ApiError,
   createCapture,
   exchangePairingCode,
+  loginWithPassword,
+  connectBrowserSession,
+  archiveCaptureVideos,
+  deduplicateVideos,
   logoutCurrentDevice,
   retryPendingRevocations,
   refreshCurrentUser
@@ -63,6 +67,9 @@ async function dispatchMessage(message, sender) {
     case MESSAGE_TYPES.OPEN_PLATFORM:
       requirePopup(sender);
       return openPlatform(message.baseUrl);
+    case MESSAGE_TYPES.LOGIN:
+      requirePopup(sender);
+      return loginDirect(message);
     case MESSAGE_TYPES.PAIR:
       requirePopup(sender);
       return pair(message);
@@ -84,7 +91,7 @@ async function dispatchMessage(message, sender) {
 }
 
 async function prepareProductDetail(rawProductUrl, sender) {
-  if (!(await readAuth())) throw new ApiError("请先在插件中登录并配对", 401, "AUTH_REQUIRED");
+  if (!(await readAuth())) throw new ApiError("请先登录赫逸平台账号", 401, "AUTH_REQUIRED");
   if (!Number.isInteger(sender.tab?.id)) throw new ApiError("无法确认当前标签页", 403, "TAB_REQUIRED");
   const platform = platformForPageUrl(sender.tab.url);
   const url = safeMarketplaceUrl(rawProductUrl, platform);
@@ -125,6 +132,7 @@ async function currentState(refresh, sender) {
   }
   const settings = await readSettings();
   let auth = await readAuth();
+  if (!auth) auth = await autoLoginFromPlatform(settings).catch(() => null);
   if (auth && !(await chrome.permissions.contains({ origins: [originPattern(auth.baseUrl)] }))) {
     await logoutCurrentDevice({ deferOnFailure: true, reason: "REPAIR" });
     await setAuthBadge(false);
@@ -168,10 +176,48 @@ async function savePlatform(rawBaseUrl, rawDeviceName) {
 }
 
 async function openPlatform(rawBaseUrl) {
+  await chrome.storage.local.set({heyiAutoLoginPaused:false});
   retryRevocationsInBackground().catch(() => {});
   const baseUrl = normalizePlatformUrl(rawBaseUrl);
   await chrome.tabs.create({ url: `${baseUrl}/#product-capture`, active: true });
   return { opened: true };
+}
+
+let autoLoginFlight = null;
+let autoLoginLastAttempt = 0;
+async function autoLoginFromPlatform(settings) {
+  if ((await chrome.storage.local.get("heyiAutoLoginPaused")).heyiAutoLoginPaused) return null;
+  if (autoLoginFlight) return autoLoginFlight;
+  if (Date.now()-autoLoginLastAttempt < 10000) return null;
+  autoLoginLastAttempt=Date.now();
+  autoLoginFlight=(async()=>{
+    for (const baseUrl of [...new Set([settings.baseUrl,'http://localhost:3000','https://hoyee.org.cn'])]) {
+    if (!(await chrome.permissions.contains({origins:[originPattern(baseUrl)]}))) continue;
+    try {const auth=await connectBrowserSession(baseUrl,settings.deviceName||defaultDeviceName());await writeSettings({...settings,baseUrl});await setAuthBadge(true);return auth;} catch {}
+    const tabs=await chrome.tabs.query({url:originPattern(baseUrl)});
+    for (const tab of tabs) {
+      if (!tab.id || new URL(tab.url).origin !== new URL(baseUrl).origin) continue;
+      const results=await chrome.scripting.executeScript({target:{tabId:tab.id},func:async()=>{
+        const r=await fetch('/api/v1/product-captures/extension/pairing-code',{method:'POST',credentials:'same-origin'});
+        if(!r.ok)return null;return (await r.json())?.data?.code || null;
+      }});
+      const code=results?.[0]?.result;
+      if(code) {const auth=await exchangePairingCode(baseUrl,code,settings.deviceName||defaultDeviceName());await writeSettings({...settings,baseUrl});await setAuthBadge(true);return auth;}
+    }
+    }
+    return null;
+  })();
+  try {return await autoLoginFlight;} finally {autoLoginFlight=null;}
+}
+async function loginDirect(message) {
+  const baseUrl=normalizePlatformUrl(message.baseUrl);
+  await requireOriginPermission(baseUrl);
+  await logoutCurrentDevice({deferOnFailure:true,reason:'SWITCH'});
+  const settings=await writeSettings({baseUrl,deviceName:cleanText(message.deviceName,80)||defaultDeviceName()});
+  const auth=await loginWithPassword(baseUrl,String(message.account||'').trim(),String(message.password||''),settings.deviceName);
+  await chrome.storage.local.set({heyiAutoLoginPaused:false});
+  await setAuthBadge(true);
+  return popupState(safeAuthView(settings,auth));
 }
 
 async function pair(message) {
@@ -212,6 +258,7 @@ async function pair(message) {
 }
 
 async function logoutAndRevokePermission() {
+  await chrome.storage.local.set({heyiAutoLoginPaused:true});
   const auth = await readAuth();
   const settings = await readSettings();
   const baseUrl = auth?.baseUrl || settings.baseUrl;
@@ -239,6 +286,7 @@ async function captureProduct(rawPayload, senderUrl) {
   const key = await idempotencyKey(payload);
   try {
     const result = await createCapture(payload, key);
+    const videoResult = await archiveCaptureVideos(result?.id || result?.captureId, payload.domData.videos || []);
     retryRevocationsInBackground().catch(() => {});
     await setAuthBadge(true);
     return {
@@ -247,8 +295,9 @@ async function captureProduct(rawPayload, senderUrl) {
       status: result?.status || "CAPTURED",
       completeness: result?.completeness || null,
       skuCompleteness: result?.skuCompleteness || null,
+      videoCompleteness: videoResult && typeof videoResult === "object" ? videoResult : null,
       missingFields: Array.isArray(result?.missingFields) ? result.missingFields.slice(0, 50) : [],
-      message: result?.message || (result?.completeness === "NEEDS_ENRICHMENT" ? "已采集，部分字段待补充" : "已提交到平台")
+      message: videoResult?.message || (typeof videoResult === "string" ? videoResult : "") || result?.message || (result?.completeness === "NEEDS_ENRICHMENT" ? "已采集，部分字段待补充" : "已提交到平台")
     };
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
@@ -354,6 +403,7 @@ function sanitizeCapture(raw, senderPlatform) {
     fieldSources,
     enrichmentProvider: null,
     domData: {
+      videos: deduplicateVideos(raw.videos),
       pageType: raw.pageType === "CARD" ? "CARD" : "DETAIL",
       pageUrl: cleanText(raw.pageUrl, 4_000),
       canonicalUrl: cleanText(raw.canonicalUrl, 4_000),
@@ -383,7 +433,7 @@ function sanitizeImages(values) {
   if (!Array.isArray(values)) return [];
   const seen = new Set();
   const result = [];
-  for (const value of values.slice(0, 60)) {
+  for (const value of values.slice(0, 240)) {
     const candidate = typeof value === "string" ? { url: value } : value;
     let url;
     try {
@@ -402,7 +452,7 @@ function sanitizeImages(values) {
       position: result.length,
       role: cleanText(candidate?.role, 32) || (result.length === 0 ? "MAIN" : "GALLERY")
     });
-    if (result.length >= 30) break;
+    if (result.length >= 120) break;
   }
   return result;
 }
@@ -429,6 +479,7 @@ function sanitizeSkus(values) {
       originalPrice: safeNumber(value.originalPrice),
       originalPriceSource: cleanText(value.originalPriceSource, 60) || null,
       stock,
+      stockSource: cleanText(value.stockSource, 60) || null,
       attributes,
       imageUrl: safeHttpsUrl(value.imageUrl || value.image || value.skuImage),
       imageSource: cleanText(value.imageSource, 60) || null,

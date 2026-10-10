@@ -37,6 +37,24 @@ public class ShopeeOfficialClient implements MarketplaceAccess.Client {
     private final String authBaseUrl;
     private final String apiBaseUrl;
     private final ImageUploadSignScope imageUploadSignScope;
+    @Value("${app.shop-auth.shopee.sandbox-only:false}")
+    private boolean sandboxOnly;
+
+    public boolean isSandboxEnvironment() {
+        return "openplatform.sandbox.test-stable.shopee.sg".equals(java.net.URI.create(apiBaseUrl).getHost());
+    }
+
+    private void requireWriteDestination() {
+        if (!sandboxOnly) return;
+        var uri = java.net.URI.create(apiBaseUrl);
+        if (!"https".equals(uri.getScheme())
+                || !"openplatform.sandbox.test-stable.shopee.sg".equals(uri.getHost())
+                || uri.getUserInfo() != null || uri.getPort() != -1
+                || (uri.getPath() != null && !uri.getPath().isEmpty() && !"/".equals(uri.getPath()))
+                || uri.getQuery() != null || uri.getFragment() != null) {
+            throw new MarketplaceApiException("当前仅允许 Shopee 沙箱写入，请检查沙箱 API 地址");
+        }
+    }
 
     public ShopeeOfficialClient(MarketplaceHttp http,
             @Value("${app.shop-auth.shopee.enabled:false}") boolean enabled,
@@ -176,6 +194,7 @@ public class ShopeeOfficialClient implements MarketplaceAccess.Client {
 
     public Map<String, Object> shopPost(String path, MarketplaceAccess.Connection connection,
                                         Map<String, ?> body) {
+        requireWriteDestination();
         Shop shop = connection.shop();
         long timestamp = Instant.now().getEpochSecond();
         Map<String, Object> query = shopQuery(path, timestamp, connection.tokens().accessToken(),
@@ -186,6 +205,7 @@ public class ShopeeOfficialClient implements MarketplaceAccess.Client {
     public Map<String, Object> shopMultipart(String path, MarketplaceAccess.Connection connection,
                                              String filename, String contentType, byte[] bytes,
                                              Map<String, String> fields) {
+        requireWriteDestination();
         Shop shop = connection.shop();
         long timestamp = Instant.now().getEpochSecond();
         Map<String, Object> query = imageUploadSignScope == ImageUploadSignScope.PUBLIC
@@ -193,6 +213,32 @@ public class ShopeeOfficialClient implements MarketplaceAccess.Client {
                 : shopQuery(path, timestamp, connection.tokens().accessToken(), shop.getExternalShopId());
         return checked(http.postMultipart(MarketplaceHttp.uri(apiBaseUrl, path, query), Map.of(),
                 "image", filename, contentType, bytes, fields == null ? Map.of() : fields), path);
+    }
+
+    /** MediaSpace video parts use Public signing and the binary part_content field. */
+    public Map<String, Object> uploadVideoPart(String uploadId, int sequence,
+                                               String contentMd5, byte[] bytes) {
+        requireWriteDestination();
+        String path = "/api/v2/media_space/upload_video_part";
+        return checked(http.postMultipart(MarketplaceHttp.uri(apiBaseUrl, path,
+                        publicQuery(path, Instant.now().getEpochSecond())), Map.of(),
+                "part_content", "part-" + sequence + ".bin", "application/octet-stream", bytes,
+                Map.of("video_upload_id", uploadId, "part_seq", String.valueOf(sequence),
+                        "content_md5", contentMd5)), path);
+    }
+
+    /** Completing a MediaSpace upload is also a Public API; init/result are Shop APIs. */
+    public Map<String, Object> completeVideoUpload(String uploadId, List<Integer> sequences,
+                                                  long uploadCostMillis) {
+        requireWriteDestination();
+        return publicPost("/api/v2/media_space/complete_video_upload", Map.of(
+                "video_upload_id", uploadId, "part_seq_list", sequences,
+                "report_data", Map.of("upload_cost", Math.max(0L, uploadCostMillis))));
+    }
+
+    /** An archived media ID must never cross API environments or developer applications. */
+    public String videoUploadScope() {
+        return apiBaseUrl.replaceAll("/+$", "") + ":" + partnerId;
     }
 
     String signPublic(String path, long timestamp) {

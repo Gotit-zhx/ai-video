@@ -33,6 +33,58 @@ import static org.mockito.Mockito.when;
 class ShopAuthorizationServiceTest {
 
     @Test
+    void renamePreservesOfficialNameAndSurvivesReauthorization() {
+        Fixture fixture = fixture();
+        Shop target = shop("alias-test", "owner");
+        when(fixture.shopMapper.selectOne(any(Wrapper.class))).thenReturn(target);
+        when(fixture.shopMapper.updateById(target)).thenReturn(1);
+        when(fixture.shopMapper.selectList(any(Wrapper.class))).thenReturn(List.of(target));
+        var result = fixture.service.rename(target.getId(), " 我的店铺 ", principal("owner", "org-1"));
+        assertThat(result.name()).isEqualTo("我的店铺");
+        assertThat(result.actualName()).isEqualTo("Shop alias-test");
+        target.authorized("m", "c", "LOCAL", "Updated official", "MY", "[]");
+        assertThat(target.getDisplayName()).isEqualTo("我的店铺");
+        assertThat(target.getName()).isEqualTo("Updated official");
+    }
+
+    @Test
+    void deletedShopIsRetainedForHistoryButCannotBeUsed() {
+        Fixture fixture = fixture();
+        Shop target = shop("delete-test", "owner");
+        when(fixture.shopMapper.selectOne(any(Wrapper.class))).thenReturn(target);
+        when(fixture.shopMapper.updateById(target)).thenReturn(1);
+        fixture.service.delete(target.getId(), principal("owner", "org-1"));
+        assertThat(target.getStatus()).isEqualTo("DELETED");
+        verify(fixture.shopMapper, never()).deleteById(any(String.class));
+        assertThatThrownBy(() -> fixture.service.refresh(target.getId(), principal("owner", "org-1")))
+            .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void marketIsValidatedBeforeCreatingAnAuthorizationSession() {
+        Fixture fixture = fixture();
+        assertThatThrownBy(() -> fixture.service.start("TIKTOK_SHOP", "/?view=shops",
+                "https://evil.test", principal("user-1", "org-1")))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("国家代码");
+        verify(fixture.sessionMapper, never()).insert(any(ShopAuthorizationSession.class));
+    }
+
+    @Test
+    void marketSelectionUsesFreshStateAndPersistsTheOwningOrganization() {
+        Fixture fixture = fixture();
+        MarketplaceAccess.Client client = mock(MarketplaceAccess.Client.class);
+        when(fixture.clients.require(MarketplacePlatform.TIKTOK_SHOP)).thenReturn(client);
+        when(client.authorizationUrl(any(), any(), eq("US"))).thenReturn("https://services.us.tiktokshop.com/open/authorize?state=opaque");
+        var result = fixture.service.start("TIKTOK_SHOP", "/?view=shops", " us ", principal("user-1", "org-1"));
+        assertThat(result.authorizationUrl()).startsWith("https://services.us.tiktokshop.com/");
+        var inserted = org.mockito.ArgumentCaptor.forClass(ShopAuthorizationSession.class);
+        verify(fixture.sessionMapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getOrganizationId()).isEqualTo("org-1");
+        assertThat(inserted.getValue().getStateHash()).hasSize(64);
+        verify(client).authorizationUrl(any(), any(), eq("US"));
+    }
+
+    @Test
     void successfulStateCanOnlyBeConsumedOnce() {
         Fixture fixture = fixture();
         MarketplaceAccess.Client client = mock(MarketplaceAccess.Client.class);
@@ -109,6 +161,87 @@ class ShopAuthorizationServiceTest {
                 "org-1", sibling.getId())).isEqualTo("new-refresh");
         verify(client, times(1)).refresh(any(MarketplaceAccess.TokenSet.class), eq(target));
         verify(fixture.credentialMapper, times(2)).updateById(any(ShopCredential.class));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void bothPublishingLookupEntrypointsCommitCredentialLocksBeforeTheOuterPublishFinishes() throws Exception {
+        for (boolean platformExplicit : List.of(false, true)) {
+            Fixture fixture = fixture();
+            Shop target = shop("shop-a", "user-1");
+            when(fixture.shopMapper.selectOne(any(Wrapper.class))).thenReturn(target);
+            when(fixture.credentialMapper.selectTokenGroupForUpdate("org-1", target.getId()))
+                    .thenReturn(List.of(credential(fixture, target, "group", "access", "refresh", Instant.now().plusSeconds(3600))));
+            JdbcTransactions transactions = transactions();
+            ShopAuthorizationService proxy = transactional(fixture.service, transactions.manager);
+            new org.springframework.transaction.support.TransactionTemplate(transactions.manager).executeWithoutResult(outer -> {
+                MarketplaceAccess.Connection connection = platformExplicit
+                        ? proxy.connectionForPublishing("org-1", target.getId(), MarketplacePlatform.TIKTOK_SHOP)
+                        : proxy.connectionForPublishing("org-1", target.getId());
+                assertThat(connection.shop()).isSameAs(target);
+                try {
+                    // Media/API work starts after this return; its credential locks must
+                    // already be released even though the audit transaction is still open.
+                    verify(transactions.inner).commit();
+                    verify(transactions.outer, never()).commit();
+                } catch (java.sql.SQLException exception) { throw new AssertionError(exception); }
+                outer.setRollbackOnly();
+            });
+            verify(transactions.outer).rollback();
+            verify(transactions.inner, never()).rollback();
+            verify(transactions.dataSource, times(2)).getConnection();
+            verify(fixture.credentialMapper, times(1)).selectTokenGroupForUpdate("org-1", target.getId());
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void failedCredentialLookupDoesNotMarkThePublishAuditTransactionRollbackOnly() throws Exception {
+        for (boolean platformExplicit : List.of(false, true)) {
+            Fixture fixture = fixture();
+            Shop target = shop("shop-a", "user-1");
+            when(fixture.shopMapper.selectOne(any(Wrapper.class))).thenReturn(target);
+            when(fixture.credentialMapper.selectTokenGroupForUpdate("org-1", target.getId()))
+                    .thenThrow(new org.springframework.dao.CannotAcquireLockException("credential lock timeout"));
+            JdbcTransactions transactions = transactions();
+            ShopAuthorizationService proxy = transactional(fixture.service, transactions.manager);
+            new org.springframework.transaction.support.TransactionTemplate(transactions.manager).executeWithoutResult(outer -> {
+                assertThatThrownBy(() -> {
+                    if (platformExplicit) proxy.connectionForPublishing("org-1", target.getId(), MarketplacePlatform.TIKTOK_SHOP);
+                    else proxy.connectionForPublishing("org-1", target.getId());
+                }).isInstanceOf(org.springframework.dao.CannotAcquireLockException.class).hasMessageContaining("credential lock timeout");
+                assertThat(outer.isRollbackOnly()).isFalse();
+            });
+            verify(transactions.inner).rollback();
+            verify(transactions.outer).commit();
+            verify(transactions.dataSource, times(2)).getConnection();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aSuccessfulRefreshCommitsBeforeALaterPublicationRollback() throws Exception {
+        Fixture fixture = fixture();
+        Shop target = shop("shop-a", "user-1");
+        ShopCredential stored = credential(fixture, target, "group", "old-access", "old-refresh", Instant.now().minusSeconds(1));
+        when(fixture.shopMapper.selectOne(any(Wrapper.class))).thenReturn(target);
+        when(fixture.credentialMapper.selectTokenGroupForUpdate("org-1", target.getId())).thenReturn(List.of(stored));
+        when(fixture.credentialMapper.updateById(any(ShopCredential.class))).thenReturn(1);
+        MarketplaceAccess.Client client = mock(MarketplaceAccess.Client.class);
+        when(fixture.clients.require(MarketplacePlatform.TIKTOK_SHOP)).thenReturn(client);
+        when(client.refresh(any(), eq(target))).thenReturn(new MarketplaceAccess.TokenSet(
+                "new-access", "new-refresh", Instant.now().plusSeconds(7200), Instant.now().plusSeconds(86_400), List.of()));
+        JdbcTransactions transactions = transactions();
+        ShopAuthorizationService proxy = transactional(fixture.service, transactions.manager);
+        new org.springframework.transaction.support.TransactionTemplate(transactions.manager).executeWithoutResult(outer -> {
+            proxy.connectionForPublishing("org-1", target.getId(), MarketplacePlatform.TIKTOK_SHOP);
+            outer.setRollbackOnly();
+        });
+        var order = org.mockito.Mockito.inOrder(fixture.credentialMapper, transactions.inner, transactions.outer);
+        order.verify(fixture.credentialMapper).updateById(stored);
+        order.verify(transactions.inner).commit();
+        order.verify(transactions.outer).rollback();
+        verify(transactions.inner, never()).rollback();
     }
 
     @Test
@@ -223,6 +356,28 @@ class ShopAuthorizationServiceTest {
         return new PlatformPrincipal(userId, organizationId, "company", "tester", "Tester",
                 "password", true, List.of("ADMIN"), List.of("product:publish"));
     }
+
+    private JdbcTransactions transactions() throws Exception {
+        var dataSource = mock(javax.sql.DataSource.class);
+        var outer = mock(java.sql.Connection.class);
+        var inner = mock(java.sql.Connection.class);
+        when(outer.getAutoCommit()).thenReturn(true);
+        when(inner.getAutoCommit()).thenReturn(true);
+        when(dataSource.getConnection()).thenReturn(outer, inner);
+        return new JdbcTransactions(dataSource, new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource), outer, inner);
+    }
+
+    private ShopAuthorizationService transactional(ShopAuthorizationService target,
+                                                   org.springframework.transaction.PlatformTransactionManager manager) {
+        var factory = new org.springframework.aop.framework.ProxyFactory(target);
+        factory.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager,
+                new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+        return (ShopAuthorizationService) factory.getProxy();
+    }
+
+    private record JdbcTransactions(javax.sql.DataSource dataSource,
+                                    org.springframework.jdbc.datasource.DataSourceTransactionManager manager,
+                                    java.sql.Connection outer, java.sql.Connection inner) {}
 
     private record Fixture(ShopAuthorizationService service, MarketplaceClientRegistry clients,
                            ShopMapper shopMapper, ShopCredentialMapper credentialMapper,

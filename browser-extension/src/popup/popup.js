@@ -15,7 +15,8 @@ const elements = {
   pairingPanel: document.querySelector("#pairing-panel"),
   accountPanel: document.querySelector("#account-panel"),
   pairingForm: document.querySelector("#pairing-form"),
-  pairingCode: document.querySelector("#pairing-code"),
+  loginAccount: document.querySelector("#login-account"),
+  loginPassword: document.querySelector("#login-password"),
   deviceName: document.querySelector("#device-name"),
   pairButton: document.querySelector("#pair-button"),
   openPlatform: document.querySelector("#open-platform"),
@@ -50,26 +51,28 @@ elements.pairingForm.addEventListener("submit", async event => {
   event.preventDefault();
   clearNotice();
   elements.pairButton.disabled = true;
-  elements.pairButton.textContent = "正在配对…";
+  elements.pairButton.textContent = "正在登录…";
   try {
     const baseUrl = normalizePlatformUrl(elements.platformUrl.value);
     await requestPlatformPermission(baseUrl);
     const state = await callBackground({
-      type: MESSAGE_TYPES.PAIR,
+      type: MESSAGE_TYPES.LOGIN,
       baseUrl,
-      code: elements.pairingCode.value,
+      account: elements.loginAccount.value,
+      password: elements.loginPassword.value,
       deviceName: elements.deviceName.value
     });
-    elements.pairingCode.value = "";
+    elements.loginPassword.value = "";
     renderState(state);
     showNotice(state.revocationPending
-      ? "配对成功；旧平台凭证仍在后台等待撤销"
-      : "配对成功，可以开始采集商品", true);
+      ? "登录成功；旧平台凭证仍在后台等待撤销"
+      : "登录成功，可以开始采集商品", true);
   } catch (error) {
     showNotice(error.message);
   } finally {
+    elements.loginPassword.value = "";
     elements.pairButton.disabled = false;
-    elements.pairButton.textContent = "配对登录";
+    elements.pairButton.textContent = "登录";
   }
 });
 
@@ -145,7 +148,7 @@ function renderPermissions(permissions) {
 }
 
 async function requestPlatformPermission(baseUrl) {
-  const origins = [originPattern(baseUrl)];
+  const origins = [originPattern(baseUrl), ...["shopee.com","shopeemobile.com","susercontent.com","tiktokcdn.com","tiktokcdn-us.com","ibytedtos.com","byteoversea.com"].map(h=>`https://*.${h}/*`)];
   if (await chrome.permissions.contains({ origins })) return;
   const granted = await chrome.permissions.request({ origins });
   if (!granted) throw new Error("未获得平台域名访问权限，无法登录或提交商品");

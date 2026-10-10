@@ -30,7 +30,7 @@
 
     async readEntries(productId, waitMs = 0) {
       if (!(await this.activate())) return [];
-      synchronizeLocation(true);
+      synchronizeLocation(true, true);
       if (productId !== activeIdentity?.productId) return [];
       const key = activationKey(activeIdentity);
       const existing = cachedEntries(key);
@@ -70,7 +70,9 @@
       const parsed = JSON.parse(envelope.payload);
       const key = activationKey(activeIdentity);
       const kind = isCurrentProductBase(parsed, activeIdentity) ? "PRODUCT" : "FRAGMENT";
-      storeValue(key, parsed, payloadBytes, envelope.sequence, kind);
+      const source = activeIdentity.platform === "SHOPEE"
+        && ["SHOPEE_RENDERED_PDP", "SHOPEE_PAGE_STATE"].includes(envelope.source) ? envelope.source : null;
+      storeValue(key, parsed, payloadBytes, envelope.sequence, kind, source);
       for (const resolve of waiters.get(key) || []) resolve();
       waiters.delete(key);
     } catch {
@@ -90,7 +92,7 @@
     window.setTimeout(() => synchronizeLocation(true), 0);
   });
 
-  function synchronizeLocation(refreshMain) {
+  function synchronizeLocation(refreshMain, recoverState = false) {
     if (!authenticated) return;
     const identity = productIdentityFromLocation();
     const href = String(location.href || "");
@@ -103,7 +105,7 @@
       activateForLocation(identity, href);
       return;
     }
-    if (refreshMain) announceActivation(activeIdentity, [0]);
+    if (refreshMain) announceActivation(activeIdentity, [0], recoverState);
   }
 
   function activateForLocation(identity, href) {
@@ -116,20 +118,25 @@
       nonce: crypto.randomUUID()
     };
     ensureCacheKey(activationKey(activeIdentity));
-    announceActivation(activeIdentity, [0, 120, 600]);
+    announceActivation(activeIdentity, [0, 120, 600], true);
   }
 
-  function announceActivation(identity, delays) {
+  function announceActivation(identity, delays, recoverState = false) {
     const detail = JSON.stringify({
       channel,
       platform: identity.platform,
       shopId: identity.shopId || null,
       productId: identity.productId,
       generation: identity.generation,
-      nonce: identity.nonce
+      nonce: identity.nonce,
+      recoverState
     });
     for (const delay of delays) {
-      window.setTimeout(() => document.dispatchEvent(new CustomEvent(INIT_EVENT, { detail })), delay);
+      const announce = () => document.dispatchEvent(new CustomEvent(INIT_EVENT, { detail }));
+      // A collection read must see synchronously recovered page state before
+      // returning an already cached, incomplete network response.
+      if (delay === 0) announce();
+      else window.setTimeout(announce, delay);
     }
   }
 
@@ -202,7 +209,8 @@
       value: entry.value,
       sequence: entry.sequence,
       arrival: entry.arrival,
-      kind: entry.kind
+      kind: entry.kind,
+      source: entry.source
     }));
   }
 
@@ -212,10 +220,10 @@
     enforceCacheLimits(key);
   }
 
-  function storeValue(key, value, bytes, sequence, kind) {
+  function storeValue(key, value, bytes, sequence, kind, source) {
     ensureCacheKey(key);
     const stored = values.get(key);
-    stored.push({ value, bytes, sequence, arrival: Date.now(), kind });
+    stored.push({ value, bytes, sequence, arrival: Date.now(), kind, source });
     cachedBytes += bytes;
     stored.sort((left, right) => right.sequence - left.sequence || right.arrival - left.arrival);
     while (stored.length > MAX_VALUES_PER_KEY) {
@@ -244,8 +252,9 @@
   function removeOldestEntry(stored) {
     if (!stored.length) return null;
     const protectedProduct = stored.findIndex(entry => entry.kind === "PRODUCT");
+    const protectedRendered = stored.findIndex(entry => entry.kind === "PRODUCT" && entry.source === "SHOPEE_RENDERED_PDP");
     for (let index = stored.length - 1; index >= 0; index -= 1) {
-      if (index === protectedProduct) continue;
+      if (index === protectedProduct || index === protectedRendered) continue;
       return stored.splice(index, 1)[0];
     }
     return null;

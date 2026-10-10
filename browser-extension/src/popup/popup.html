@@ -38,25 +38,19 @@
 
     <section id="pairing-panel" class="pairing-card" aria-labelledby="pairing-title">
       <div class="section-heading">
-        <h2 id="pairing-title">登录并配对</h2>
-        <span>一次性绑定码</span>
+        <h2 id="pairing-title">登录赫逸平台</h2>
+        <span>账号登录</span>
       </div>
-      <ol class="steps">
-        <li>打开平台并完成登录</li>
-        <li>进入“商品采集/发布”页生成绑定码</li>
-        <li>把绑定码粘贴到下方完成配对</li>
-      </ol>
-      <button id="open-platform" class="secondary-button" type="button">打开平台生成绑定码</button>
+      <p>浏览器已登录赫逸平台时自动连接；也可直接输入平台账号密码。</p>
+      <button id="open-platform" class="secondary-button" type="button">打开赫逸平台登录</button>
       <form id="pairing-form">
-        <label class="field">
-          <span>绑定码</span>
-          <input id="pairing-code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" minlength="6" maxlength="160" required placeholder="输入一次性绑定码">
-        </label>
+        <label class="field"><span>平台账号</span><input id="login-account" autocomplete="username" required placeholder="手机号（或企业代码/手机号）"></label>
+        <label class="field"><span>密码</span><input id="login-password" type="password" autocomplete="current-password" required></label>
         <label class="field">
           <span>设备名称</span>
           <input id="device-name" type="text" autocomplete="off" maxlength="80" required>
         </label>
-        <button id="pair-button" class="primary-button" type="submit">配对登录</button>
+        <button id="pair-button" class="primary-button" type="submit">登录</button>
       </form>
       <p class="privacy-note">插件不会保存平台密码，也不会接收 ReefAPI、AI 或店铺 API Key。</p>
     </section>
@@ -64,7 +58,7 @@
     <section id="account-panel" class="account-card" aria-labelledby="account-title" hidden>
       <div class="section-heading">
         <h2 id="account-title">当前账号</h2>
-        <span class="status-ok">已配对</span>
+        <span class="status-ok">已登录</span>
       </div>
       <dl class="identity-list">
         <div><dt>用户</dt><dd id="current-user">—</dd></div>

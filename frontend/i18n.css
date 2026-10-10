@@ -1,0 +1,29 @@
+.language-picker{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;border:1px solid var(--line,#dedede);border-radius:8px;background:var(--surface,#fff);color:var(--ink,#171717);padding:0 9px;min-height:36px;font-size:13px}
+.language-picker select{width:auto;max-width:160px;min-height:34px;margin:0;padding:4px 22px 4px 2px;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer}
+.language-picker:focus-within{outline:2px solid var(--ink,#171717);outline-offset:2px}
+html:not([lang="zh-CN"]) .portal-hero h1{font-size:clamp(38px,5.4vw,78px);line-height:1.13;letter-spacing:-.045em}
+html[lang="th"] .portal-hero h1{line-height:1.4;letter-spacing:0}
+html:not([lang="zh-CN"]) .nav-item{white-space:normal;height:auto;min-height:36px}
+html:not([lang="zh-CN"]) .portal-feature-grid p{line-height:1.7}
+@media(max-width:760px){.portal-nav nav,.login-header-tools,.topbar .user-area{flex-wrap:wrap}.language-picker select{max-width:130px}.portal-nav{gap:16px;align-items:flex-start}html:not([lang="zh-CN"]) .portal-hero h1{font-size:38px}}
+html:not([lang="zh-CN"]) .topbar-context{min-width:160px}
+html:not([lang="zh-CN"]) .topbar .status-pill,html:not([lang="zh-CN"]) #logout-button{white-space:nowrap;flex-shrink:0}
+html:not([lang="zh-CN"]) .topbar-identity{max-width:260px}
+/* Leave room for translated labels and Thai combining marks. */
+html:not([lang="zh-CN"]) button{overflow-wrap:break-word}
+html:not([lang="zh-CN"]) .form-actions button,html:not([lang="zh-CN"]) .dialog-actions button{white-space:normal}
+html:not([lang="zh-CN"]) .sidebar .nav-item{line-height:1.45;overflow-wrap:anywhere;padding-block:9px}
+html:not([lang="zh-CN"]) .sidebar .nav-item span{min-width:0}
+html[lang="th"] body{line-height:1.65}
+html[lang="th"] button,html[lang="th"] input,html[lang="th"] select{line-height:1.6}
+html:not([lang="zh-CN"]) label{overflow-wrap:anywhere}
+.language-picker select{overflow-wrap:normal;white-space:nowrap}
+html:not([lang="zh-CN"]) .dashboard.sidebar-expanded .nav-label{white-space:normal;overflow:visible;line-height:1.45;overflow-wrap:break-word}
+html:not([lang="zh-CN"]) .dashboard.sidebar-expanded .nav-item{height:auto;padding-block:8px}
+html:not([lang="zh-CN"]) .portal-logo > span,html:not([lang="zh-CN"]) .login-home-brand > span{display:none}
+
+.localized-file-control{position:relative;display:flex;align-items:center;gap:10px;min-width:0;max-width:100%;min-height:38px;overflow:hidden}
+.localized-file-action{flex-shrink:0;border:1px solid var(--line,#dedede);border-radius:7px;padding:7px 10px;font-size:13px;background:var(--surface,#fff)}
+.localized-file-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--muted,#666)}
+.localized-file-control>.localized-file-input{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;opacity:0!important;cursor:pointer;margin:0!important}
+.localized-file-control:focus-within{outline:2px solid currentColor;outline-offset:2px;border-radius:7px}

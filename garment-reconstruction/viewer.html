@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>服装几何 · 方法验证</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; color: #222; background: #f3f3f1; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button, select { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #858585; outline-offset: 3px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 24px 30px; background: #fff; border-bottom: 1px solid #dededb; }
+    .eyebrow { font-size: 10px; letter-spacing: 2px; color: #777; margin: 0 0 7px; }
+    h1 { font-size: 21px; font-weight: 600; margin: 0; letter-spacing: -.5px; }
+    .notice { margin: 0; padding: 10px 13px; border: 1px solid #bbb; font-size: 12px; line-height: 1.5; background: #f7f7f5; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 18px; padding: 22px 30px; max-width: 1700px; margin: auto; }
+    .workspace { min-width: 0; }
+    .versionbar { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; font-size: 11px; }
+    .versionbar a { padding: 7px 10px; color: #666; border: 1px solid #d5d5d1; border-radius: 4px; text-decoration: none; }
+    .versionbar a[aria-current="page"] { color: #fff; background: #252525; border-color: #252525; }
+    #version-note { color: #777; margin-left: auto; text-align: right; }
+    .controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    [hidden] { display: none !important; }
+    .detail-controls { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; align-items: center; }
+    .detail-controls span { color: #777; font-size: 11px; margin-right: 5px; }
+    .detail-controls button { border: 1px solid #cececa; border-radius: 4px; background: #fff; color: #555; font-size: 11px; padding: 7px 10px; }
+    .detail-controls button[aria-pressed="true"] { background: #333; color: #fff; border-color: #333; }
+    .field { display: flex; align-items: center; gap: 9px; }
+    .field label { font-size: 12px; color: #666; }
+    .gpu-entry { display: inline-flex; align-items: center; min-height: 36px; padding: 0 13px; border-radius: 4px; background: #252525; color: white; font-size: 12px; text-decoration: none; }
+    select { height: 36px; padding: 0 30px 0 10px; border: 1px solid #cececa; background: #fff; border-radius: 4px; color: #222; font-size: 12px; }
+    .segmented { display: inline-flex; padding: 3px; border: 1px solid #cececa; border-radius: 5px; background: #e9e9e6; gap: 2px; }
+    .segmented button { border: 0; border-radius: 3px; background: transparent; padding: 6px 12px; color: #666; font-size: 12px; }
+    .segmented button[aria-pressed="true"] { color: #222; background: #fff; box-shadow: 0 1px 2px #0001; }
+    #stage { position: relative; height: clamp(450px, calc(100vh - 292px), 850px); min-height: 450px; overflow: hidden; background: #1c1d20; border-radius: 6px; border: 1px solid #292a2c; }
+    #stage canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+    .stage-top { position: absolute; top: 20px; left: 22px; right: 22px; display: flex; justify-content: space-between; gap: 16px; pointer-events: none; color: #d5d5d5; font-size: 11px; }
+    #model-name { font-weight: 500; color: #eee; }
+    #view-name { display: block; color: #a4a5a8; font-size: 10px; margin-top: 6px; }
+    .stage-hint { color: #949598; }
+    #overlay { position: absolute; inset: 70px 25px; display: grid; place-content: center; text-align: center; line-height: 1.8; color: #ccc; font-size: 13px; padding: 20px; overflow-wrap: anywhere; pointer-events: none; }
+    #overlay[hidden] { display: none; }
+    #overlay.error { color: #eee; }
+    .viewbar { position: absolute; bottom: 20px; left: 15px; right: 15px; display: grid; justify-items: center; gap: 8px; }
+    .view-group { display: flex; align-items: center; gap: 10px; }
+    .view-group-label { color: #888a8e; width: 65px; text-align: right; font-size: 10px; }
+    .view-buttons { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(48px, 1fr); gap: 5px; }
+    .viewbar button { padding: 7px 12px; border-radius: 4px; border: 1px solid #555; background: #292a2eee; color: #c5c5c6; font-size: 11px; }
+    .viewbar button:hover { border-color: #aaa; color: #fff; }
+    .viewbar button[aria-pressed="true"] { background: #eee; border-color: #eee; color: #222; }
+    .stage-footer { display: flex; justify-content: space-between; gap: 15px; margin-top: 12px; min-height: 25px; font-size: 11px; line-height: 1.8; color: #777; }
+    #mesh-info { font-variant-numeric: tabular-nums; }
+    #openings-control { white-space: nowrap; display: flex; align-items: flex-start; gap: 4px; }
+    #openings-toggle { accent-color: #444; }
+    aside { padding: 20px; border: 1px solid #dededb; background: #fff; border-radius: 6px; align-self: start; max-height: calc(100vh - 142px); overflow-y: auto; }
+    h2 { font-size: 13px; font-weight: 600; margin: 0 0 7px; }
+    .caption { color: #888; font-size: 11px; line-height: 1.8; margin: 0 0 16px; }
+    .references { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    figure { margin: 0; min-width: 0; }
+    figure a { display: block; border: 1px solid #e8e8e5; background: #f5f5f2; border-radius: 3px; overflow: hidden; }
+    figure img { width: 100%; height: 150px; display: block; object-fit: contain; }
+    figcaption { color: #777; font-size: 10px; margin-top: 7px; text-align: center; }
+    .section { border-top: 1px solid #e8e8e5; padding-top: 19px; margin-top: 22px; }
+    .section p { font-size: 11px; line-height: 1.9; margin: 0; color: #777; }
+    #summary-status { margin-bottom: 9px; }
+    #summary-content h3 { font-size: 11px; font-weight: 600; margin: 18px 0 6px; }
+    #summary-content table { width: 100%; border-collapse: collapse; font-size: 10px; font-variant-numeric: tabular-nums; }
+    #summary-content th { font-weight: 400; color: #888; }
+    #summary-content th, #summary-content td { text-align: right; padding: 6px 2px; border-bottom: 1px solid #eeeeeb; }
+    #summary-content th:first-child, #summary-content td:first-child { text-align: left; }
+    #summary-content .defect { margin: 9px 0; font-size: 10px; }
+    #summary-content .defect strong { display: block; font-weight: 500; color: #444; }
+    #summary-content .limits { margin-top: 14px; padding: 9px; border-left: 2px solid #aaa; background: #f5f5f3; font-size: 10px; }
+    details { margin-top: 12px; }
+    summary { cursor: pointer; font-size: 11px; color: #555; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.6 ui-monospace, monospace; color: #666; background: #f5f5f3; padding: 10px; max-height: 340px; overflow-y: auto; }
+    .source-link { color: #555; font-size: 10px; display: inline-block; margin-top: 10px; text-underline-offset: 3px; }
+    #model-source { overflow-wrap: anywhere; }
+    .outline-card { margin: 12px 0 0; }
+    .outline-card img { height: 140px; }
+    .outline-card figcaption { text-align: left; line-height: 1.7; }
+    .outline-card a[aria-disabled="true"] { min-height: 55px; display: grid; place-items: center; color: #888; padding: 12px; font-size: 11px; }
+    .section-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 7px; }
+    .section-heading h2 { margin: 0; }
+    #multiview-refresh { border: 1px solid #d6d6d3; padding: 4px 7px; border-radius: 3px; background: #fafaf8; color: #666; font-size: 10px; }
+    #multiview-status { font-weight: 500; color: #555; }
+    #multiview-context { margin-top: 5px; }
+    #multiview-content { margin-top: 12px; }
+    .multiview-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    .multiview-table th { color: #888; font-weight: 400; text-align: left; }
+    .multiview-table th, .multiview-table td { padding: 7px 3px; border-bottom: 1px solid #e9e9e6; }
+    .multiview-table tr[aria-current="true"] { background: #efefec; }
+    .multiview-table button { border: 0; background: transparent; padding: 0; font: inherit; color: #333; text-align: left; text-decoration: underline; text-underline-offset: 3px; }
+    .multiview-table .unassessed { color: #8b8b8b; }
+    .multiview-table .failed { font-weight: 600; }
+    #multiview-content h3 { font-size: 11px; margin: 16px 0 7px; font-weight: 600; }
+    #multiview-content .report-note { font-size: 10px; margin: 10px 0; line-height: 1.8; }
+    #multiview-detail .references { margin-top: 10px; }
+    #multiview-detail figure img { height: 130px; }
+    .report-links { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 10px; }
+    #multiview-context.mismatch { color: #222; border-left: 2px solid #777; padding-left: 8px; }
+    @media (max-width: 900px) { header { padding: 19px 20px; } main { padding: 18px 20px; grid-template-columns: minmax(0,1fr) 240px; gap: 12px; } aside { padding: 15px; } figure img { height: 120px; } .stage-hint { display: none; } }
+    @media (max-width: 700px) { header { align-items: flex-start; flex-direction: column; gap: 13px; } main { display: block; padding: 16px; } h1 { font-size: 19px; } .notice { width: 100%; } #stage { height: 62vh; min-height: 410px; } aside { margin-top: 18px; max-height: none; } figure img { height: 210px; } .stage-footer { flex-wrap: wrap; gap: 3px; } .versionbar { flex-wrap: wrap; } #version-note { margin-left: 0; } .view-group { width: 100%; display: grid; gap: 5px; } .view-group-label { width: auto; text-align: left; } .view-buttons { width: 100%; grid-auto-columns: minmax(0, 1fr); } .viewbar button { padding: 7px 4px; font-size: 10px; } }
+  </style>
+  <script type="importmap">{"imports":{"three":"../output/shirt-four-view-20260911/three/build/three.module.js","three/":"../output/shirt-four-view-20260911/three/"}}</script>
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">GARMENT / GEOMETRY STUDY</p><h1>服装几何 · 方法验证</h1></div>
+    <p class="notice">方法验证原型，未完成还原验收</p>
+  </header>
+  <main>
+    <section class="workspace" aria-label="网格查看器">
+      <nav class="versionbar" aria-label="验证版本"><a href="?version=1" data-version="1">上一轮 v1</a><a href="?version=2" data-version="2" aria-current="page">升级 v2</a><span id="version-note">v2 · 固定显示尺度</span></nav>
+      <div class="controls">
+        <div class="field"><label for="model-select">查看产物</label><select id="model-select">
+          <option value="real-before">上一轮拟合基线</option>
+          <option value="real-after" selected>升级拟合</option>
+        </select></div>
+        <a id="gpu-fit-entry" class="gpu-entry" href="http://127.0.0.1:8768/garment-reconstruction/gpu-fit.html" target="_blank" rel="noopener">GPU 重新拟合</a>
+        <div class="segmented" aria-label="显示模式"><button data-mode="gray" aria-pressed="true">灰模</button><button data-mode="wire" aria-pressed="false">白线框</button></div>
+      </div>
+      <nav class="detail-controls" id="detail-controls" aria-label="袖子局部观察" hidden><span>候选近景 · 按服装自身左右</span><button data-detail="left-cuff" aria-pressed="false">左袖口内侧</button><button data-detail="right-cuff" aria-pressed="false">右袖口内侧</button><button data-detail="left-root" aria-pressed="false">左袖根</button><button data-detail="right-root" aria-pressed="false">右袖根</button><button data-detail="left-inner" aria-pressed="false">左内缝交点</button><button data-detail="right-inner" aria-pressed="false">右内缝交点</button><button data-detail="whole" aria-pressed="false">恢复整件</button></nav>
+      <div id="stage">
+        <div class="stage-top"><div><span id="model-name">升级 v2 · 升级拟合</span><span id="view-name">前右斜视 · 俯仰 12°</span></div><span class="stage-hint">拖动旋转 · 滚轮缩放 · 右键平移</span></div>
+        <div id="overlay" role="status">正在加载网格…</div>
+        <nav class="viewbar" aria-label="观察视角">
+          <div class="view-group"><span class="view-group-label">正向 / 上下</span><div class="view-buttons">
+            <button data-view="front" aria-pressed="false">正面</button>
+            <button data-view="back" aria-pressed="false">背面</button>
+            <button data-view="right" aria-pressed="false">右侧</button>
+            <button data-view="left" aria-pressed="false">左侧</button>
+            <button data-view="top" aria-pressed="false">俯视</button>
+            <button data-view="bottom" aria-pressed="false">仰视</button>
+          </div></div>
+          <div class="view-group"><span class="view-group-label">四斜角</span><div class="view-buttons">
+            <button data-view="front-right" aria-pressed="true">前右</button>
+            <button data-view="back-right" aria-pressed="false">后右</button>
+            <button data-view="back-left" aria-pressed="false">后左</button>
+            <button data-view="front-left" aria-pressed="false">前左</button>
+          </div></div>
+        </nav>
+      </div>
+      <div class="stage-footer"><span id="mesh-info" aria-live="polite">网格尚未加载</span><label id="openings-control"><input type="checkbox" id="openings-toggle">显示声明的开口索引环</label></div>
+    </section>
+    <aside>
+      <h2>拟合参考</h2>
+      <p class="caption">AI 生成目标图 · 非实拍</p>
+      <div class="references">
+        <figure><a href="../output/shirt-four-view-20260911/front.png" target="_blank" rel="noopener"><img src="../output/shirt-four-view-20260911/front.png" alt="AI 生成的服装正面目标图"></a><figcaption>正面目标</figcaption></figure>
+        <figure><a href="../output/shirt-four-view-20260911/right.png" target="_blank" rel="noopener"><img src="../output/shirt-four-view-20260911/right.png" alt="AI 生成的服装右侧目标图"></a><figcaption>右侧目标</figcaption></figure>
+      </div>
+      <div class="section" id="multiview-section"><div class="section-heading"><h2 id="multiview-title">10 方位校验</h2><button id="multiview-refresh">重新读取</button></div><p id="multiview-status" role="status">正在读取本轮报告…</p><p id="multiview-context">本轮报告对应 v2 升级网格，独立于下方原拟合摘要。</p><div id="multiview-content" hidden></div><a id="multiview-source" class="source-link" href="../output/garment-multiview-20260911/summary.json" target="_blank" rel="noopener">查看全方位报告来源</a></div>
+      <div class="section"><h2>比较方式</h2><p>新旧网格共用显示中心与尺度，切换模型保留当前相机。灰模观察外形，白线框检查连接；视觉预览不能替代几何验收。</p></div>
+      <div class="section"><h2 id="summary-title">v2 运行摘要</h2><p id="summary-status">正在读取升级运行摘要…</p><div id="summary-content" hidden></div><a id="summary-source" class="source-link" href="../output/garment-upgrade-20260911/summary.json" target="_blank" rel="noopener">查看来源 summary.json</a></div>
+      <div class="section" id="outline-section"><h2>轮廓投影对照</h2><p>点击图片查看完整叠图；每组标题说明比较范围。</p><div id="outline-comparisons"></div></div>
+      <div class="section"><h2>数据来源</h2><p id="model-source">garment-upgrade-20260911/real-after.json</p><p>此页只显示所选版本的验证产物；缺失或无效文件会显示加载错误。</p></div>
+    </aside>
+  </main>
+  <script type="module" src="./viewer.js"></script>
+</body>
+</html>

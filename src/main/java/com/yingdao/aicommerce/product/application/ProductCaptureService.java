@@ -11,6 +11,7 @@ import com.yingdao.aicommerce.product.application.provider.ProductEnrichmentProv
 import com.yingdao.aicommerce.product.application.provider.ProductEnrichmentRegistry;
 import com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider;
 import com.yingdao.aicommerce.product.application.provider.ProductPublishingRegistry;
+import com.yingdao.aicommerce.product.application.provider.VideoUploadPendingException;
 import com.yingdao.aicommerce.product.application.provider.WatermarkRemovalProvider;
 import com.yingdao.aicommerce.product.application.provider.WatermarkRemovalRegistry;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
@@ -28,7 +29,9 @@ import com.yingdao.aicommerce.product.mapper.ProductPublishAuditMapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.NoTransactionException;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
@@ -45,6 +48,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
@@ -53,7 +57,7 @@ import java.util.regex.Pattern;
 public class ProductCaptureService {
     private static final int MAX_RAW_JSON_LENGTH = 2_000_000;
     private static final int MAX_SKUS = 500;
-    private static final int MAX_IMAGES = 30;
+    private static final int MAX_IMAGES = ProductCaptureImagePlan.MAX_IMAGES;
     private static final Pattern OPTIONAL_STOCK_ISSUE = Pattern.compile(
             "(?:STOCK_MISSING|SKU_\\d+_STOCK_MISSING)"
     );
@@ -76,6 +80,8 @@ public class ProductCaptureService {
     private final WatermarkRemovalRegistry watermarkRegistry;
     private final ProductPublishingRegistry publishingRegistry;
     private final ObjectMapper objectMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductWatermarkQueue watermarkQueue;
 
     public ProductCaptureService(
             ProductCaptureMapper captureMapper,
@@ -128,6 +134,7 @@ public class ProductCaptureService {
         ProductCapture existing = findByIdempotency(principal.organizationId(), idempotencyKey);
         if (existing != null) {
             verifyFingerprint(existing, fingerprint);
+            if (supplementMissingCaptureDetails(existing, body, principal)) return detail(existing);
             ensureRecaptureAllowed(existing, principal);
         }
 
@@ -156,6 +163,10 @@ public class ProductCaptureService {
                 imagePlan.completeness(), declaredImageCompleteness(body, normalized)
         ));
         normalizeSkuCompleteness(body, normalized, capturedSkus, false, false, Map.of());
+        if (existing != null && !validatedSkuCompleteness(normalized, capturedSkus)
+                && validatedSkuCompleteness(readMap(existing.getNormalizedData()), skuEntityMaps(existing))) {
+            throw conflict("本次未取得完整 SKU，已保留之前完整的商品数据；请等待商品规格加载完成后重试");
+        }
 
         String title = bounded(requiredText(normalized, "title", "name", "productName"), 500);
         String description = boundedNullable(text(normalized, "description", "productDescription"), 100_000);
@@ -253,8 +264,11 @@ public class ProductCaptureService {
                                 (first, ignored) -> first,
                                 LinkedHashMap::new
                         ));
+        Set<String> generatedCaptureIds = captureIds.isEmpty() ? Set.of()
+                : new HashSet<>(captureMapper.selectCommerceGeneratedCaptureIds(organizationId, captureIds));
         List<CaptureSummary> content = captures.getRecords().stream()
-                .map(capture -> new CaptureSummary(capture, thumbnails.get(capture.getId())))
+                .map(capture -> new CaptureSummary(capture, thumbnails.get(capture.getId()),
+                        generatedCaptureIds.contains(capture.getId()) ? "COMMERCE_GENERATED" : "CAPTURED"))
                 .toList();
         return new CapturePage(
                 content,
@@ -407,7 +421,10 @@ public class ProductCaptureService {
     public ImageProcessResult processImages(String id, Map<String, Object> request,
                                             String headerIdempotencyKey, PlatformPrincipal principal) {
         ProductCapture capture = requireCapture(id, principal.organizationId());
-        if (!EDITABLE_STATUSES.contains(capture.getStatus())) {
+        WatermarkRemovalProvider provider = watermarkRegistry.current();
+        if ("AI_WATERMARK_V1".equals(provider.code())) return processAiImageStep(capture,request,headerIdempotencyKey,principal,provider);
+        if (!EDITABLE_STATUSES.contains(capture.getStatus())
+                && !("AI_WATERMARK_V1".equals(provider.code()) && "APPROVED".equals(capture.getStatus()))) {
             throw conflict("当前商品草稿状态不能处理图片");
         }
         List<ProductCaptureImage> images = images(capture);
@@ -425,7 +442,6 @@ public class ProductCaptureService {
                     dryRunProvider(existing.getProvider()), existing.getProvider());
         }
 
-        WatermarkRemovalProvider provider = watermarkRegistry.current();
         ProductImageProcessingJob job = new ProductImageProcessingJob(
                 principal.organizationId(), capture.getId(), principal.userId(), key,
                 provider.code(), images.size(), writeJson(body)
@@ -450,7 +466,7 @@ public class ProductCaptureService {
         List<Map<String, Object>> results = new ArrayList<>();
         String firstError = null;
         for (ProductCaptureImage image : images) {
-            if ("PROCESSED".equals(image.getStatus())
+            if (!"AI_WATERMARK_V1".equals(provider.code()) && "PROCESSED".equals(image.getStatus())
                     && image.getProcessedUrl() != null && !image.getProcessedUrl().isBlank()) {
                 // A new workflow may retry only the failed portion of an earlier image job.
                 // Preserve successful paid work and keep the replacement job's progress truthful.
@@ -466,7 +482,9 @@ public class ProductCaptureService {
             imageMapper.updateById(image);
             try {
                 WatermarkRemovalProvider.ProcessedImage result = provider.process(capture, image);
-                String processedUrl = safeImageUrl.validate(result.url());
+                String processedUrl = "AI_WATERMARK_V1".equals(provider.code()) && result.url() != null
+                        && result.url().matches("/api/v1/product-watermark/assets/[a-f0-9]{64}")
+                        ? result.url() : safeImageUrl.validate(result.url());
                 image.processed(processedUrl);
                 imageMapper.updateById(image);
                 job.incrementProcessed();
@@ -481,6 +499,7 @@ public class ProductCaptureService {
                 if (firstError == null) firstError = message;
                 image.failed(message);
                 imageMapper.updateById(image);
+                if ("AI_WATERMARK_V1".equals(provider.code())) break;
             }
         }
         if (firstError == null) {
@@ -493,6 +512,24 @@ public class ProductCaptureService {
         imageJobMapper.updateById(job);
         updateCapture(capture);
         return new ImageProcessResult(job, detail(capture), provider.dryRun(), provider.code());
+    }
+
+    private ImageProcessResult processAiImageStep(ProductCapture capture,Map<String,Object> request,String headerKey,
+                                                PlatformPrincipal principal,WatermarkRemovalProvider provider) {
+        if (!Set.of("CAPTURED","READY","APPROVED","FAILED","IMAGE_PROCESSING").contains(capture.getStatus())) throw conflict("当前商品不能进行水印处理");
+        var body=mutableMap(request);String key=idempotencyKey(headerKey,text(body,"idempotencyKey"),"images-"+capture.getId());
+        var job=imageJobMapper.selectOne(new LambdaQueryWrapper<ProductImageProcessingJob>()
+                .eq(ProductImageProcessingJob::getOrganizationId,principal.organizationId())
+                .eq(ProductImageProcessingJob::getIdempotencyKey,key).last("FOR UPDATE"));
+        var all=images(capture);if(all.isEmpty())throw conflict("商品没有可处理图片");
+        if(job==null){
+            if("IMAGE_PROCESSING".equals(capture.getStatus()))throw conflict("另一项图片任务正在处理此商品");
+            job=new ProductImageProcessingJob(principal.organizationId(),capture.getId(),principal.userId(),key,provider.code(),all.size(),writeJson(body));
+            imageJobMapper.insert(job);job.start();capture.startImageProcessing();updateCapture(capture);
+        }else if(!capture.getId().equals(job.getCaptureId())||!provider.code().equals(job.getProvider()))throw idempotencyConflict();
+        if(!"RUNNING".equals(job.getStatus()))return new ImageProcessResult(job,detail(capture),false,provider.code());
+        watermarkQueue.enqueue(job,all);
+        return new ImageProcessResult(job,detail(capture),false,provider.code());
     }
 
     @Transactional
@@ -570,22 +607,78 @@ public class ProductCaptureService {
         }
         audit.publishing();
         publishAuditMapper.updateById(audit);
+        boolean[] externalCreationEntered = {false};
         try {
+            // Providers also use the resolved key for durable media retries. Keep the
+            // caller/audit body unchanged so header-only requests retain their fingerprint.
+            Map<String, Object> providerRequest = mutableMap(body);
+            providerRequest.put("idempotencyKey", key);
             ProductPublishingProvider.PublishResult result = provider.publish(
-                    capture, destination, shopId, body, externalCreateBoundary);
+                    capture, destination, shopId, providerRequest, () -> {
+                        externalCreationEntered[0] = true;
+                        externalCreateBoundary.enter();
+                    });
             Map<String, Object> providerResponse = new LinkedHashMap<>();
             if (result.providerResponse() != null) providerResponse.putAll(result.providerResponse());
             providerResponse.put("dryRun", provider.dryRun());
             audit.completed(provider.dryRun() ? null : result.externalId(), writeJson(providerResponse));
-            if (!provider.dryRun()) {
-                capture.published();
-                updateCapture(capture);
-            }
         } catch (Exception exception) {
+            // A durable media checkpoint may still be uploading/transcoding. Roll back
+            // this provisional audit so the workflow can resume with its existing key.
+            // The same exception after ADD_ITEM intent must never enable a create retry.
+            if (exception instanceof VideoUploadPendingException pending && !externalCreationEntered[0]) throw pending;
+            // Transport failures during media preparation are safe to resume. Roll back
+            // the provisional audit, otherwise its FAILED result poisons the same key.
+            if (!externalCreationEntered[0] && isRetryableMarketplaceTransport(exception)) {
+                throw (RuntimeException) exception;
+            }
+            // A participating transaction may already have failed. Returning a failed
+            // audit cannot commit in that state and would replace the real error with
+            // UnexpectedRollbackException. The workflow's separate create boundary
+            // remains durable and still quarantines errors after marketplace creation.
+            if (publishTransactionRollbackOnly()) {
+                if (exception instanceof RuntimeException runtime) throw runtime;
+                throw new IllegalStateException(readable(exception, "商品发布失败"), exception);
+            }
             audit.failed(readable(exception, "商品发布失败"), writeJson(Map.of("dryRun", provider.dryRun())));
+        }
+        if ("PUBLISHED".equals(audit.getStatus())) {
+            // The confirmed marketplace receipt is independent of this redundant draft
+            // status. A second shop publication or user edit can advance its version
+            // while the API runs; never replace their changes or erase the receipt.
+            // Real database failures still escape and roll back the audit transaction.
+            capture.published();
+            if (captureMapper.updateById(capture) == 0) {
+                capture = currentCaptureAfterPublicationConflict(capture);
+            }
         }
         publishAuditMapper.updateById(audit);
         return new PublishResult(audit, detail(capture));
+    }
+
+    static boolean isRetryableMarketplaceTransport(Exception failure) {
+        if (!(failure instanceof com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException)) return false;
+        Throwable cause = failure.getCause();
+        for (int depth = 0; cause != null && depth < 12; depth++, cause = cause.getCause()) {
+            if (cause instanceof java.io.IOException) return true;
+        }
+        return false;
+    }
+
+    private ProductCapture currentCaptureAfterPublicationConflict(ProductCapture capture) {
+        // A plain SELECT could return the old MySQL REPEATABLE READ snapshot. This
+        // current read happens only after all marketplace calls, and is held to commit.
+        ProductCapture current = captureMapper.selectOne(new QueryWrapper<ProductCapture>()
+                .eq("id", capture.getId())
+                .eq("organization_id", capture.getOrganizationId())
+                .last("FOR SHARE"));
+        if (current == null) throw new BusinessException(HttpStatus.NOT_FOUND, "商品采集草稿不存在");
+        return current;
+    }
+
+    private boolean publishTransactionRollbackOnly() {
+        try { return TransactionAspectSupport.currentTransactionStatus().isRollbackOnly(); }
+        catch (NoTransactionException ignored) { return false; }
     }
 
     private void verifyPublishIdempotency(ProductPublishAudit existing, ProductCapture capture,
@@ -629,14 +722,123 @@ public class ProductCaptureService {
     }
 
     private void ensureRecaptureAllowed(ProductCapture existing, PlatformPrincipal principal) {
-        if (!principal.userId().equals(existing.getCreatedBy())
+        if (!principal.organizationId().equals(existing.getOrganizationId())
+                || !principal.userId().equals(existing.getCreatedBy())
                 || !"CAPTURED".equals(existing.getStatus())
                 || existing.getApprovedBy() != null
                 || existing.getApprovedAt() != null
                 || existing.getPublishedAt() != null
-                || hasUserEdits(existing)) {
+                || hasUserEdits(existing)
+                || hasProcessedImages(images(existing))) {
             throw conflict("当前商品草稿已被编辑或进入人工处理流程，不能被插件重采覆盖");
         }
+    }
+
+    private boolean supplementMissingCaptureDetails(ProductCapture existing, Map<String, Object> body,
+                                                     PlatformPrincipal principal) {
+        if (!principal.organizationId().equals(existing.getOrganizationId())
+                || !principal.userId().equals(existing.getCreatedBy())
+                || !EDITABLE_STATUSES.contains(existing.getStatus())
+                || existing.getApprovedBy() != null
+                || existing.getApprovedAt() != null
+                || existing.getPublishedAt() != null) {
+            return false;
+        }
+        boolean userEdits = hasUserEdits(existing);
+        List<ProductCaptureImage> currentImages = userEdits ? List.of() : images(existing);
+        // An untouched draft still supports full recapture, including newly available SKU and media.
+        // A draft reset after a supplemental capture must retain its earlier image processing results.
+        if ("CAPTURED".equals(existing.getStatus()) && !userEdits && !hasProcessedImages(currentImages)) {
+            return false;
+        }
+        String category = firstNonBlank(text(body, "categoryName", "category"),
+                text(mapValue(body, "domData", "dom", "fields"), "categoryName", "category"));
+        if (existing.getCategoryName() != null && !existing.getCategoryName().isBlank()) category = null;
+        if (category != null) {
+            Long userCategoryEdits = fieldSourceMapper.selectCount(
+                    new LambdaQueryWrapper<ProductCaptureFieldSource>()
+                            .eq(ProductCaptureFieldSource::getOrganizationId, existing.getOrganizationId())
+                            .eq(ProductCaptureFieldSource::getCaptureId, existing.getId())
+                            .eq(ProductCaptureFieldSource::getSourceType, "USER")
+                            .eq(ProductCaptureFieldSource::getFieldName, "categoryName"));
+            category = userCategoryEdits != null && userCategoryEdits > 0 ? null : bounded(category, 255);
+        }
+        ProductCaptureImagePlan.DetailSupplement imageSupplement = null;
+        if (!userEdits) {
+            Object rawImages = firstNonNull(value(body, "images", "imageUrls"),
+                    firstNonNull(value(mapValue(body, "domData", "dom", "fields"), "images", "imageUrls"),
+                            value(mapValue(body, "normalizedData", "normalized"), "images", "imageUrls")));
+            imageSupplement = ProductCaptureImagePlan.supplementalDetails(
+                    currentImages, rawImages, skuEntityMaps(existing), safeImageUrl);
+        }
+        boolean newImages = imageSupplement != null && !imageSupplement.additions().isEmpty();
+        if (category == null && !newImages) {
+            // A repeated supplemental request is a no-op, never a full replacement of processed media.
+            return imageSupplement != null && imageSupplement.requestedDetails();
+        }
+
+        ProductCaptureFieldSource categoryProvenance = category == null ? null
+                : categorySupplementSource(existing, body, category);
+        Map<String, Object> normalized = readMap(existing.getNormalizedData());
+        if (category != null) normalized.put("categoryName", category);
+        if (newImages) {
+            normalized.put("images", imageSupplement.images());
+            normalized.put("imageCompleteness", supplementImageCompleteness(
+                    imageSupplement.completeness(), mapValue(normalized, "imageCompleteness"),
+                    declaredImageCompleteness(body, Map.of())));
+        }
+        existing.supplementCapturedDetails(category == null ? existing.getCategoryName() : category,
+                writeJson(normalized), newImages);
+        updateCapture(existing);
+        if (categoryProvenance != null) fieldSourceMapper.insert(categoryProvenance);
+        if (newImages) {
+            insertImages(existing, imageSupplement.additions());
+            fieldSourceMapper.insert(new ProductCaptureFieldSource(existing.getOrganizationId(), existing.getId(),
+                    "images", "DERIVED", "$.detailImageSupplement", writeJson(imageSupplement.additions()), BigDecimal.ONE));
+        }
+        return true;
+    }
+
+    private boolean hasProcessedImages(List<ProductCaptureImage> images) {
+        return images.stream().anyMatch(image -> !"PENDING".equals(image.getStatus()));
+    }
+
+    private Map<String, Object> supplementImageCompleteness(Map<String, Object> server, Map<String, Object> previous,
+                                                            List<Map<String, Object>> declarations) {
+        Map<String, Object> result = new LinkedHashMap<>(server);
+        int expected = requiredImageCount(server, "expectedCount", "预期图片数量");
+        int captured = requiredImageCount(server, "capturedCount", "已采集图片数量");
+        Set<String> issues = new LinkedHashSet<>(skuIssues(server.get("issues")));
+        // Keep a previously known target, but recompute old deficits from the now-persisted assets.
+        // Carrying an old complete=false flag would leave a repaired capture permanently blocked.
+        Integer previousExpected = nonNegativeInteger(previous.get("expectedCount"), "之前预期图片数量");
+        if (previousExpected != null) expected = Math.max(expected, previousExpected);
+        for (Map<String, Object> declaration : declarations) {
+            Integer declaredExpected = nonNegativeInteger(declaration.get("expectedCount"), "预期图片数量");
+            if (declaredExpected != null) expected = Math.max(expected, declaredExpected);
+            issues.addAll(skuIssues(declaration.get("issues")));
+            if (Boolean.FALSE.equals(booleanValue(declaration.get("complete")))) issues.add("SOURCE_IMAGES_INCOMPLETE");
+        }
+        if (expected > captured) issues.add("IMAGE_CAPTURE_INCOMPLETE");
+        result.put("expectedCount", expected);
+        result.put("issues", List.copyOf(issues));
+        result.put("complete", Boolean.TRUE.equals(server.get("complete")) && issues.isEmpty() && expected == captured);
+        return Map.copyOf(result);
+    }
+
+    private ProductCaptureFieldSource categorySupplementSource(ProductCapture capture,
+                                                                Map<String, Object> body, String category) {
+        for (Map<String, Object> source : mapList(value(body, "fieldSources"), "字段来源")) {
+            if (!"categoryName".equals(text(source, "field", "fieldName"))) continue;
+            String sourceType = normalizeFieldSource(text(source, "source", "sourceType"));
+            // A collector can describe DOM/structured evidence, but cannot create USER edit history.
+            if (!"DOM".equals(sourceType)) sourceType = "DERIVED";
+            return new ProductCaptureFieldSource(capture.getOrganizationId(), capture.getId(),
+                    "categoryName", sourceType, boundedNullable(text(source, "path", "sourcePath"), 500),
+                    writeJson(category), confidence(value(source, "confidence")));
+        }
+        return new ProductCaptureFieldSource(capture.getOrganizationId(), capture.getId(),
+                "categoryName", "DOM", "$.categoryName", writeJson(category), BigDecimal.ONE);
     }
 
     private boolean hasUserEdits(ProductCapture capture) {
@@ -709,7 +911,9 @@ public class ProductCaptureService {
                         .eq(ProductCaptureFieldSource::getCaptureId, capture.getId())
                         .orderByAsc(ProductCaptureFieldSource::getCreatedAt));
         return new CaptureDetail(capture, skus, images, fields,
-                readMap(capture.getNormalizedData()), readMap(capture.getRawData()));
+                readMap(capture.getNormalizedData()), readMap(capture.getRawData()),
+                captureMapper.selectCommerceGeneratedCaptureIds(organizationId, List.of(capture.getId()))
+                        .contains(capture.getId()) ? "COMMERCE_GENERATED" : "CAPTURED");
     }
 
     private List<ProductCaptureImage> images(ProductCapture capture) {
@@ -1144,7 +1348,7 @@ public class ProductCaptureService {
 
     private void insertImages(ProductCapture capture, Object raw) {
         List<Object> values = objectList(raw, "图片");
-        if (values.size() > MAX_IMAGES) throw badRequest("单个商品最多保存 30 张图片");
+        if (values.size() > MAX_IMAGES) throw badRequest("单个商品最多保存 " + MAX_IMAGES + " 张图片");
         Set<String> urls = new HashSet<>();
         int order = 0;
         for (Object value : values) {
@@ -1616,9 +1820,20 @@ public class ProductCaptureService {
                                 List<ProductCaptureImage> images,
                                 List<ProductCaptureFieldSource> fieldSources,
                                 Map<String, Object> normalizedData,
-                                Map<String, Object> rawData) {}
+                                Map<String, Object> rawData,
+                                String originType) {
+        public CaptureDetail(ProductCapture capture, List<ProductCaptureSku> skus,
+                             List<ProductCaptureImage> images, List<ProductCaptureFieldSource> fieldSources,
+                             Map<String, Object> normalizedData, Map<String, Object> rawData) {
+            this(capture, skus, images, fieldSources, normalizedData, rawData, "CAPTURED");
+        }
+    }
 
-    public record CaptureSummary(ProductCapture capture, ProductCaptureImage thumbnail) {}
+    public record CaptureSummary(ProductCapture capture, ProductCaptureImage thumbnail, String originType) {
+        public CaptureSummary(ProductCapture capture, ProductCaptureImage thumbnail) {
+            this(capture, thumbnail, "CAPTURED");
+        }
+    }
 
     public record CapturePage(List<CaptureSummary> content, int page, int size,
                               long totalElements, int totalPages,

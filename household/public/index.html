@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f4ed">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="拾间">
+  <meta name="description" content="把家务拆成小步骤，每天给家一点照顾。">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <title>拾间 · 每天照顾好一点</title>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div id="app"><div class="boot"><img src="icons/icon.svg" width="56" height="56" alt="拾间"><p>正在打开你的家务清单…</p></div></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="task-dialog" aria-labelledby="task-dialog-title"></dialog>
+  <dialog id="help-dialog" aria-labelledby="help-dialog-title"></dialog>
+  <noscript><p class="noscript">请开启 JavaScript，使用家务清单和提醒功能。</p></noscript>
+</body>
+</html>

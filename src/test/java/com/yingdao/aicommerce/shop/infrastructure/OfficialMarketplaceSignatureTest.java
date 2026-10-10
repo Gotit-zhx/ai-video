@@ -215,6 +215,33 @@ class OfficialMarketplaceSignatureTest {
     }
 
     @Test
+    void tiktokMarketsChooseOfficialDomainsAndKeepOpaqueState() {
+        TikTokShopOfficialClient client = new TikTokShopOfficialClient(http, true,
+                "service-1", "test-app", "secret", "https://services.tiktokshop.com",
+                "https://auth.tiktok-shops.com", "https://open-api.tiktokglobalshop.com");
+        for (String market : List.of("US", " us ", "PH", "MY", "SG", "TH", "VN", "ID",
+                "GB", "DE", "FR", "IT", "ES", "JP", "BR", "MX", "ROW")) {
+            URI url = URI.create(client.authorizationUrl("https://app.example/callback", "a+b&c", market));
+            assertEquals(market.trim().equalsIgnoreCase("US")
+                    ? "services.us.tiktokshop.com" : "services.tiktokshop.com", url.getHost());
+            assertEquals("/open/authorize", url.getPath());
+            assertTrue(url.getRawQuery().contains("state=a%2Bb%26c"));
+            assertFalse(url.getRawQuery().contains("app_secret"));
+        }
+        assertThatThrownBy(() -> client.authorizationUrl("https://app.example/callback", "state", "https://evil.test"))
+                .hasMessageContaining("国家代码");
+    }
+
+    @Test
+    void tiktokExplicitUsConfigurationRetainsLegacyDefaultButCanAuthorizeRow() {
+        TikTokShopOfficialClient client = new TikTokShopOfficialClient(http, true,
+                "service-1", "test-app", "secret", "https://services.us.tiktokshop.com",
+                "https://auth.tiktok-shops.com", "https://open-api.tiktokglobalshop.com");
+        assertEquals("services.us.tiktokshop.com", URI.create(client.authorizationUrl("https://app.example/callback", "state")).getHost());
+        assertEquals("services.tiktokshop.com", URI.create(client.authorizationUrl("https://app.example/callback", "state", "PH")).getHost());
+    }
+
+    @Test
     void shopeeRedactsSecretsEchoedInsideSuccessfulHttpErrorEnvelope() {
         MarketplaceHttp transport = mock(MarketplaceHttp.class);
         when(transport.safeBody(any())).thenCallRealMethod();

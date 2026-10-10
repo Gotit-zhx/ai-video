@@ -51,6 +51,23 @@ assert.deepEqual(
   JSON.parse(JSON.stringify(planned))
 );
 
+const fullCapture = common.planListingImages([
+  { url: "https://cdn.example.com/main.webp", role: "MAIN" },
+  ...Array.from({ length: 15 }, (_, index) => ({ url: `https://cdn.example.com/variant-${index}.webp`, role: "VARIANT" })),
+  ...Array.from({ length: 24 }, (_, index) => ({ url: `https://cdn.example.com/gallery-${index}.webp`, role: "GALLERY" })),
+  ...Array.from({ length: 80 }, (_, index) => ({ url: `https://cdn.example.com/detail-${index}.webp`, role: "DETAIL" }))
+]);
+assert.equal(fullCapture.images.length, 120);
+assert.equal(fullCapture.images.filter(image => image.role === "DETAIL").length, 80);
+assert.equal(fullCapture.completeness.complete, true);
+const captureOverflow = common.planListingImages([
+  ...fullCapture.images,
+  { url: "https://cdn.example.com/extra-detail.webp", role: "DETAIL" }
+]);
+assert.equal(captureOverflow.images.length, 120);
+assert.equal(captureOverflow.completeness.expectedCount, 121);
+assert.ok(captureOverflow.completeness.issues.includes("DETAIL_IMAGE_COVERAGE_TRUNCATED"));
+
 const duplicateRole = common.planListingImages([
   { url: "https://cdn.example.com/main.webp", role: "MAIN" },
   { url: "https://cdn.example.com/color.webp", role: "GALLERY" },
@@ -136,6 +153,12 @@ common.loadTikTokProductData = async () => ({
   priceMin: 10,
   priceMax: 10,
   images: tiktokProductImages,
+  detailImages: [
+    "https://p16-oec-va.ibyteimg.com/description-one.webp",
+    "https://p16-oec-va.ibyteimg.com/description-two.webp",
+    "https://p16-oec-va.ibyteimg.com/description-one.webp",
+    tiktokProductImages[0]
+  ],
   skus: [{
     externalSkuId: "sku-1",
     variationName: "Black",
@@ -181,9 +204,15 @@ const tiktokCapture = await tiktokAdapter.extract(
   "https://shop.tiktok.com/view/product/1736046921727116747?region=PH",
   "DETAIL"
 );
-assert.equal(tiktokCapture.images.length, 27);
-assert.equal(tiktokCapture.imageCompleteness.expectedCount, 27);
-assert.equal(tiktokCapture.imageCompleteness.capturedCount, 27);
+assert.equal(tiktokCapture.images.length, 29);
+assert.equal(tiktokCapture.imageCompleteness.expectedCount, 29);
+assert.equal(tiktokCapture.imageCompleteness.capturedCount, 29);
+assert.equal(tiktokCapture.images[0].url, tiktokProductImages[0]);
+assert.equal(tiktokCapture.images[0].role, "MAIN", "description images must not replace the product main image");
+assert.deepEqual(Array.from(tiktokCapture.images.filter(image => image.role === "DETAIL"), image => image.url), [
+  "https://p16-oec-va.ibyteimg.com/description-one.webp",
+  "https://p16-oec-va.ibyteimg.com/description-two.webp"
+]);
 assert.equal(tiktokCapture.imageCompleteness.requiredSkuImageCount, 1);
 assert.equal(tiktokCapture.imageCompleteness.coveredSkuImageCount, 1);
 assert.equal(tiktokCapture.imageCompleteness.complete, true);
@@ -252,9 +281,29 @@ const shopeeCapture = await shopeeAdapter.extract(
 assert.equal(shopeeCapture.skus.length, 96);
 assert.equal(shopeeCapture.skuCompleteness.complete, true);
 assert.deepEqual(Array.from(shopeeCapture.skuCompleteness.issues), []);
-assert.equal(shopeeCapture.imageCompleteness.complete, false);
-assert.ok(shopeeCapture.imageCompleteness.issues.includes("GALLERY_IMAGE_COVERAGE_TRUNCATED"));
-assert.ok(shopeeCapture.imageCompleteness.issues.includes("DETAIL_IMAGE_COVERAGE_TRUNCATED"));
+assert.equal(shopeeCapture.imageCompleteness.complete, true);
+assert.equal(shopeeCapture.images.length, 38);
+assert.equal(shopeeCapture.images.filter(image => image.role === "DETAIL").length, 5);
+assert.deepEqual(Array.from(shopeeCapture.imageCompleteness.issues), []);
 assert.equal(shopeeCapture.imageCompleteness.issues.includes("VARIANT_IMAGE_COVERAGE_TRUNCATED"), false);
 
 console.log("Listing image planner tests passed");
+
+// Below-fold description images must survive a zero-sized lazy placeholder.
+const lazyImage = (attributes, currentSrc = "https://cdn.example.com/placeholder.gif") => ({
+  alt: "Product description", currentSrc, src: currentSrc,
+  closest: () => null,
+  getBoundingClientRect: () => ({width: 0, height: 0}),
+  getAttribute: name => attributes[name] || null
+});
+const lazyDetails = common.collectTypedDomImages({querySelectorAll: () => [
+  lazyImage({"data-src": "https://cdn.example.com/detail-lazy.webp"}),
+  lazyImage({"data-original": "https://cdn.example.com/detail-original.webp"}, "data:image/gif;base64,AAAA"),
+  lazyImage({"data-src": "https://cdn.example.com/detail-lazy.webp"}),
+  lazyImage({"data-src": "javascript:alert(1)"}, "data:image/gif;base64,AAAA")
+]}, "img", "DETAIL");
+assert.deepEqual(Array.from(lazyDetails, image => image.url), [
+  "https://cdn.example.com/detail-lazy.webp", "https://cdn.example.com/detail-original.webp"
+]);
+assert.ok(lazyDetails.every(image => image.role === "DETAIL"));
+console.log("Lazy description image regression passed.");

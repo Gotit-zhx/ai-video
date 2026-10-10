@@ -5,13 +5,37 @@ COPY index.html /usr/share/nginx/html/index.html
 COPY resend-theme.css /usr/share/nginx/html/resend-theme.css
 COPY image-progress.css /usr/share/nginx/html/image-progress.css
 COPY app.js /usr/share/nginx/html/app.js
+COPY video-script-terminal.js video-script-terminal.css /usr/share/nginx/html/
+COPY product-bulk-upload.js /usr/share/nginx/html/product-bulk-upload.js
+COPY product-bulk-history.js product-bulk-history.css /usr/share/nginx/html/
 COPY commerce-planner.js commerce-planner.css /usr/share/nginx/html/
 COPY commerce-batches.js /usr/share/nginx/html/
 COPY commerce-ad-evaluation.js /usr/share/nginx/html/
 COPY commerce-designs.js /usr/share/nginx/html/
+COPY commerce-studio.js commerce-studio.css /usr/share/nginx/html/
+COPY commerce-motion.js commerce-motion.css /usr/share/nginx/html/
+COPY commerce-reference-layout.css /usr/share/nginx/html/
+COPY commerce-workbench.js /usr/share/nginx/html/
+COPY commerce-creative-plan.js /usr/share/nginx/html/
+COPY commerce-batch-artifacts.js /usr/share/nginx/html/
+COPY commerce-material-slots.js /usr/share/nginx/html/
+COPY commerce-print-editor.js commerce-print-surface.js /usr/share/nginx/html/
 COPY shop-settings.js /usr/share/nginx/html/
 COPY logo.svg /usr/share/nginx/html/logo.svg
 COPY assets /usr/share/nginx/html/assets
 COPY vendor /usr/share/nginx/html/vendor
 
 EXPOSE 80 443
+
+COPY commerce-template-studio.css /usr/share/nginx/html/
+
+COPY commerce-artwork-library.css commerce-artwork-library.js commerce-publication.js /usr/share/nginx/html/
+
+COPY commerce-motion-demo.html commerce-motion-demo.js commerce-motion-demo.css /usr/share/nginx/html/
+
+COPY i18n.js i18n.css /usr/share/nginx/html/
+COPY i18n /usr/share/nginx/html/i18n
+
+COPY bd-workspace.js bd-workspace.css /usr/share/nginx/html/
+
+COPY knowledge-workspace.js knowledge-workspace.css /usr/share/nginx/html/

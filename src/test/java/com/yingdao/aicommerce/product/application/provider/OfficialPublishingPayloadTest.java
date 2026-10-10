@@ -34,6 +34,47 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class OfficialPublishingPayloadTest {
+    @Test
+    void shopeeGroupsColorBeforeSizeEvenWhenCapturedAttributesStartWithSize() {
+        var provider = shopeeProvider(mock(ShopeeOfficialClient.class), mock(MarketplaceImageDownloader.class));
+        var skus = List.of(
+            sku("pink-m", "PINK-M", "Pink / M", "19.90", "https://img.example/pink.jpg",
+                    "{\"Size\":\"M(40-55KG)\",\"Color\":\"Pink\"}", 0),
+            sku("black-s", "BLACK-S", "Black / S", "19.90", "https://img.example/black.jpg",
+                    "{\"Size\":\"S(35-40KG)\",\"Color\":\"Black\"}", 1),
+            sku("pink-s", "PINK-S", "Pink / S", "19.90", "https://img.example/pink.jpg",
+                    "{\"Size\":\"S(35-40KG)\",\"Color\":\"Pink\"}", 2)
+        );
+        var payload = provider.variationPayload("12345", skus, 10,
+                Map.of("https://img.example/pink.jpg","image-pink","https://img.example/black.jpg","image-black"),
+                Map.of());
+        @SuppressWarnings("unchecked")
+        var tiers = (List<Map<String,Object>>) payload.get("standardise_tier_variation");
+        assertThat(tiers).extracting(tier -> tier.get("variation_name")).containsExactly("Color","Size");
+        @SuppressWarnings("unchecked")
+        var colors = (List<Map<String,Object>>) tiers.getFirst().get("variation_option_list");
+        @SuppressWarnings("unchecked")
+        var sizes = (List<Map<String,Object>>) tiers.get(1).get("variation_option_list");
+        assertThat(colors).extracting(option -> option.get("variation_option_name")).containsExactly("Pink","Black");
+        assertThat(sizes).extracting(option -> option.get("variation_option_name"))
+                .containsExactly("S(35-40KG)","M(40-55KG)");
+        @SuppressWarnings("unchecked")
+        var models = (List<Map<String,Object>>) payload.get("model");
+        assertThat(models).extracting(model -> model.get("tier_index"))
+                .containsExactly(List.of(0,1),List.of(1,0),List.of(0,0));
+    }
+
+    @Test void shopeeVariantPricesUseEachSkuOriginalInsteadOfPromotionalPrice() {
+        var provider = shopeeProvider(mock(ShopeeOfficialClient.class), mock(MarketplaceImageDownloader.class));
+        var skus = List.of(
+            new ProductCaptureSku("org-1", "capture-1", "black", "1", "black", "Black", new BigDecimal("0.01"), new BigDecimal("15.80"), 9, "https://img.example/black.jpg", "MODEL", "{\"Color\":\"Black\"}", "{}", 0),
+            new ProductCaptureSku("org-1", "capture-1", "white", "2", "white", "White", new BigDecimal("0.01"), new BigDecimal("17.80"), 9, "https://img.example/white.jpg", "MODEL", "{\"Color\":\"White\"}", "{}", 1));
+        var result = provider.variationPayload("12345", skus, 9, Map.of("https://img.example/black.jpg", "black-image", "https://img.example/white.jpg", "white-image"),
+            Map.of("exchangeRateSnapshot", Map.of("targetCurrency", "PHP", "rate", "15.395109")));
+        var models = (List<Map<String,Object>>) result.get("model");
+        assertThat(models.get(0).get("original_price")).isEqualTo(new BigDecimal("243.24"));
+        assertThat(models.get(1).get("original_price")).isEqualTo(new BigDecimal("274.03"));
+    }
 
     @Test
     void shopeeUsesStandardisedVariationsAndSellerStock() throws Exception {
@@ -92,6 +133,12 @@ class OfficialPublishingPayloadTest {
                 "model", models);
         when(client.shopPost(anyString(), eq(connection), any()))
                 .thenReturn(Map.of("response", Map.of()));
+        List<Map<String, Object>> initializedModels = IntStream.range(0, 50)
+                .mapToObj(index -> Map.<String, Object>of("model_id", 9000L + index,
+                        "model_sku", "SKU-" + index, "tier_index", List.of(index)))
+                .toList();
+        when(client.shopGet("/api/v2/product/get_model_list", connection, Map.of("item_id", 12345L)))
+                .thenReturn(Map.of("response", Map.of("model", initializedModels)));
 
         ShopeeOfficialPublishingProvider.VariationSubmission submission =
                 provider.submitVariations(connection, payload);
@@ -101,6 +148,7 @@ class OfficialPublishingPayloadTest {
                 eq(connection), initPayload.capture());
         assertThat((List<?>) initPayload.getValue().get("model")).hasSize(50);
         assertThat(initPayload.getValue()).doesNotContainKey("model_list");
+        verify(client).shopGet("/api/v2/product/get_model_list", connection, Map.of("item_id", 12345L));
 
         ArgumentCaptor<Map<String, ?>> addPayload = ArgumentCaptor.forClass(Map.class);
         verify(client, times(1)).shopPost(eq("/api/v2/product/add_model"),
@@ -211,7 +259,7 @@ class OfficialPublishingPayloadTest {
                 "org-1", "capture-1", "https://source.example/original.jpg",
                 "MAIN", null, 0, "image/jpeg", "{}");
         image.processed("https://cdn.example/processed.jpg");
-        when(downloader.download("https://cdn.example/processed.jpg"))
+        when(downloader.downloadProductImage("https://cdn.example/processed.jpg", image))
                 .thenReturn(new MarketplaceImageDownloader.ImageBinary(
                         new byte[]{1, 2, 3}, "image/jpeg", ".jpg"));
         when(client.shopMultipart(anyString(), eq(connection), anyString(), anyString(),
@@ -286,14 +334,14 @@ class OfficialPublishingPayloadTest {
         return new ShopeeOfficialPublishingProvider(
                 mock(ShopAuthorizationService.class), client,
                 mock(ProductCaptureSkuMapper.class), mock(ProductCaptureImageMapper.class),
-                downloader, new ObjectMapper());
+                downloader, new ObjectMapper(), mock(ShopeeProductVideoUploader.class));
     }
 
     private TikTokShopOfficialPublishingProvider tiktokProvider() {
         return new TikTokShopOfficialPublishingProvider(
                 mock(ShopAuthorizationService.class), mock(TikTokShopOfficialClient.class),
                 mock(ProductCaptureSkuMapper.class), mock(ProductCaptureImageMapper.class),
-                mock(MarketplaceImageDownloader.class), new ObjectMapper());
+                mock(MarketplaceImageDownloader.class), new ObjectMapper(), mock(TikTokProductVideoUploader.class), mock(TikTokProductDescription.class));
     }
 
     private MarketplaceAccess.Connection shopeeConnection() {

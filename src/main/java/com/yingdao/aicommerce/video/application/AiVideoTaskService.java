@@ -1,6 +1,7 @@
 package com.yingdao.aicommerce.video.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.storage.OssStorageService;
@@ -39,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
@@ -94,18 +96,113 @@ public class AiVideoTaskService {
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
     }
 
+    @Transactional
+    public List<AiVideoTaskItem> copyItem(String taskId, String itemId, int copies, PlatformPrincipal principal) {
+        if (copies < 1 || copies >= MAX_ITEMS) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "复制份数须为 1 至 29 的整数");
+        }
+        AiVideoTask authorized = requireProduct(taskId, principal);
+        AiVideoTask task = taskMapper.selectOne(new LambdaQueryWrapper<AiVideoTask>()
+                .eq(AiVideoTask::getId, authorized.getId())
+                .eq(AiVideoTask::getOrganizationId, principal.organizationId()).last("FOR UPDATE"));
+        if (task == null) throw new BusinessException(HttpStatus.NOT_FOUND, "任务不存在");
+        if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "请等待本任务生成完成后再复制");
+        }
+        AiVideoTaskItem original = itemMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskItem>()
+                .eq(AiVideoTaskItem::getId, itemId).eq(AiVideoTaskItem::getTaskId, taskId)
+                .eq(AiVideoTaskItem::getOrganizationId, principal.organizationId()));
+        if (original == null) throw new BusinessException(HttpStatus.NOT_FOUND, "视频组不存在");
+        long count = itemMapper.selectCount(new LambdaQueryWrapper<AiVideoTaskItem>().eq(AiVideoTaskItem::getTaskId, taskId));
+        if (count + copies > MAX_ITEMS) throw new BusinessException(HttpStatus.BAD_REQUEST,
+                "每个任务最多 30 组，当前还可复制 " + Math.max(0, MAX_ITEMS - count) + " 份");
+        List<AiVideoTaskAsset> assets = assetMapper.selectList(new LambdaQueryWrapper<AiVideoTaskAsset>()
+                .eq(AiVideoTaskAsset::getItemId, itemId).eq(AiVideoTaskAsset::getTaskId, taskId)
+                .eq(AiVideoTaskAsset::getOrganizationId, principal.organizationId()));
+        List<AiVideoTaskItem> result = new ArrayList<>();
+        try {
+            for (int number = 1; number <= copies; number++) {
+                String name = original.getName();
+                name = (name.length() > 130 ? name.substring(0, 130) : name) + " · 副本 " + (count + number);
+                String sourceSku = original.getSku() == null ? "REF" : original.getSku();
+                String copySku = sourceSku.substring(0, Math.min(40, sourceSku.length())) + "-COPY-" + java.util.UUID.randomUUID().toString().replace("-", "");
+                AiVideoTaskItem copy = new AiVideoTaskItem(task.getOrganizationId(), taskId, name, copySku,
+                        original.getSourceFileName(), null, original.getSourceContentType(), original.getSourceSizeBytes());
+                result.add(copy);
+                if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                        @Override public void afterCompletion(int status) {
+                            if (status != TransactionSynchronization.STATUS_COMMITTED) deleteItemDirectory(task, copy);
+                        }
+                    });
+                }
+                Map<String, String> files = new LinkedHashMap<>();
+                copy.attachSource(copyItemFile(original.getSourceFilePath(), task, copy, files));
+                copy.updateVideoPrompt(original.getVideoPromptText());
+                copy.updateProductFunctionAnalysis(original.getProductFunctionAnalysisJson());
+                itemMapper.insert(copy);
+                for (AiVideoTaskAsset asset : assets) {
+                    if (!copyableItemAsset(asset.getAssetType())) continue;
+                    AiVideoTaskAsset duplicate = new AiVideoTaskAsset(task.getOrganizationId(), taskId, copy.getId(),
+                            asset.getAssetType(), asset.getShotSequence(), copyItemFile(asset.getFilePath(), task, copy, files),
+                            asset.getContentType(), asset.getSizeBytes(), asset.getPromptText(), asset.getModelId());
+                    if ("VIDEO_REFERENCE_IMAGE".equals(asset.getAssetType())) duplicate.updateReference(
+                            asset.getShotSequence(), asset.getReferenceRole(), asset.getReferenceInstruction(), asset.isPrimaryReference());
+                    assetMapper.insert(duplicate);
+                }
+                if (!task.isDirectReferenceVideo() && assets.stream().anyMatch(a -> "STORYBOARD_GRID".equals(a.getAssetType()))) {
+                    copy.complete();
+                    itemMapper.updateById(copy);
+                }
+            }
+            task.addPendingCopies(Math.toIntExact(count + copies));
+            taskMapper.updateById(task);
+            return result;
+        } catch (IOException exception) {
+            result.forEach(item -> deleteItemDirectory(task, item));
+            throw new BusinessException(HttpStatus.CONFLICT, "素材复制失败，未创建副本，请确认原素材仍可读取");
+        } catch (RuntimeException exception) {
+            result.forEach(item -> deleteItemDirectory(task, item));
+            throw exception;
+        }
+    }
+
+    static boolean copyableItemAsset(String type) {
+        return List.of("VIDEO_REFERENCE_IMAGE", "VIDEO_REFERENCE_VIDEO", "MODEL_IMAGE", "PRODUCT_SCENE_IMAGE",
+                "STORYBOARD_GRID", "STORYBOARD_GUIDE", "STORYBOARD_FIRST_FRAME", "STORYBOARD_FRAME").contains(type);
+    }
+
+    private String copyItemFile(String source, AiVideoTask task, AiVideoTaskItem target,
+                                Map<String, String> copied) throws IOException {
+        if (source == null || source.isBlank()) throw new IOException("Missing source");
+        if (copied.containsKey(source)) return copied.get(source);
+        Path directory = itemDirectory(task, target);
+        Files.createDirectories(directory);
+        String extension = source.replaceFirst("^.*[.]", "");
+        if (!extension.matches("[a-zA-Z0-9]{1,8}")) extension = "bin";
+        Path destination = directory.resolve(java.util.UUID.randomUUID() + "." + extension);
+        if (ossStorage != null && ossStorage.isOssLocation(source)) {
+            try (InputStream input = ossStorage.open(source)) { Files.copy(input, destination); }
+        } else {
+            Path input = Path.of(source).toRealPath();
+            if (!input.startsWith(storageRoot.toRealPath()) || !Files.isRegularFile(input)) throw new IOException("Invalid source");
+            Files.copy(input, destination);
+        }
+        copied.put(source, destination.toString());
+        return destination.toString();
+    }
+
     public AiVideoTask create(CreateCommand command, PlatformPrincipal principal) {
         VideoScript script = scriptMapper.selectOne(new LambdaQueryWrapper<VideoScript>()
                 .eq(VideoScript::getId, command.scriptId())
-                .eq(VideoScript::getOrganizationId, principal.organizationId())
-                .eq(principal.externallyRegistered(), VideoScript::getCreatedBy, principal.userId()));
+                .eq(VideoScript::getOrganizationId, principal.organizationId()));
         if (script == null || !"READY".equals(script.getStatus()) || script.getScriptJson() == null) {
             throw new BusinessException(HttpStatus.CONFLICT, "请选择已经完成拆解的视频脚本");
         }
         long shotCount = shotMapper.selectCount(new LambdaQueryWrapper<com.yingdao.aicommerce.video.domain.VideoScriptShot>()
                 .eq(com.yingdao.aicommerce.video.domain.VideoScriptShot::getScriptId, script.getId()));
-        if (shotCount != 9) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前脚本不是完整 9 个分镜，请先补足分镜");
+        if (shotCount < 1 || shotCount > 9) {
+            throw new BusinessException(HttpStatus.CONFLICT, "脚本需要保留 1 至 9 个分镜");
         }
         String name = normalize(command.name(), script.getName() + " · 视频任务", 160);
         String generationMode = normalizeGenerationMode(command.generationMode());
@@ -138,7 +235,8 @@ public class AiVideoTaskService {
         String videoTitle = normalizeNullable(command.videoTitle(), 160);
         String targetMarket = normalizeNullable(command.targetMarket(), 80);
         if (targetMarket == null) targetMarket = normalizeNullable(script.getTargetMarket(), 80);
-        String frozenScriptJson = script.getScriptJson();
+        String frozenScriptJson = shotCount == 9 ? script.getScriptJson()
+                : StoryboardShotPlan.forGeneration(script.getScriptJson(), objectMapper);
         String narrationLanguage = "";
         if ("SCRIPT".equals(voiceoverMode) && narrationLocalizationService.hasNarration(frozenScriptJson)) {
             NarrationLocalizationService.LocalizedScript localized = narrationLocalizationService.localize(
@@ -183,14 +281,13 @@ public class AiVideoTaskService {
         if (prompt.length() > 20000) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "视频提示词不能超过 20000 个字符");
         }
-        if (files == null || files.isEmpty()) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "请上传至少 1 张参考图");
+        GeneralReferences references = generalReferences(files);
+        validateGeneralReferenceBatch(references.images());
+        validateGeneralMentions(prompt, references.images().size(), references.videos().size());
+        if (references.videos().isEmpty() && (command.videoClipStart() != null || command.videoClipEnd() != null)) throw new BusinessException(HttpStatus.BAD_REQUEST, "未上传视频，不能指定截取范围");
+        if (!references.videos().isEmpty() && "SPEED".equals(command.videoRoute())) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频参考请使用质量线路");
         }
-        if (files.size() > MAX_VIDEO_REFERENCE_IMAGES) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST,
-                    "参考图最多上传 " + MAX_VIDEO_REFERENCE_IMAGES + " 张");
-        }
-        validateGeneralReferenceBatch(files);
         int durationSeconds = normalizeDurationSeconds(command.durationSeconds());
         String aspectRatio = normalizeAspectRatio(command.aspectRatio());
         String resolution = normalizeResolution(command.resolution());
@@ -208,7 +305,10 @@ public class AiVideoTaskService {
         taskMapper.insert(task);
         registerRollbackFileCleanup(task);
         try {
-            AiVideoTaskItem item = uploadDirectReferences(task, files, null).getFirst();
+            AiVideoTaskItem item = references.images().isEmpty()
+                    ? createGeneralVideoItem(task, references.videos().getFirst())
+                    : uploadDirectReferences(task, references.images(), null).getFirst();
+            if (!references.videos().isEmpty()) storeGeneralReferenceVideo(task, item, references.videos().getFirst(), command);
             item.updateVideoPrompt(prompt);
             itemMapper.updateById(item);
             if (command.autoStart()) return startVideos(task);
@@ -216,6 +316,112 @@ public class AiVideoTaskService {
         } catch (RuntimeException | Error failure) {
             deleteTaskDirectory(task);
             throw failure;
+        }
+    }
+
+    record GeneralReferences(List<MultipartFile> images, List<MultipartFile> videos) {}
+
+    static GeneralReferences generalReferences(List<MultipartFile> files) {
+        if (files == null || files.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "请上传参考图片或视频");
+        List<MultipartFile> images = new ArrayList<>(), videos = new ArrayList<>();
+        long totalBytes = 0;
+        for (MultipartFile file : files) {
+            if (file == null || file.isEmpty()) throw new BusinessException(HttpStatus.BAD_REQUEST, "参考素材不能为空");
+            totalBytes += file.getSize();
+            if (totalBytes > MAX_GENERAL_REFERENCE_BYTES) throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "参考素材合计不能超过 90 MB");
+            String name = String.valueOf(file.getOriginalFilename()).toLowerCase(java.util.Locale.ROOT);
+            if (String.valueOf(file.getContentType()).startsWith("video/") || name.matches(".*\\.(mp4|mov|webm)$")) {
+                if (!name.matches(".*\\.(mp4|mov|webm)$")) throw new BusinessException(HttpStatus.BAD_REQUEST, "视频仅支持 MP4、MOV、WebM");
+                if (file.getSize() > 90L * 1024 * 1024) throw new BusinessException(HttpStatus.PAYLOAD_TOO_LARGE, "参考视频不能超过 90 MB");
+                videos.add(file);
+            } else images.add(file);
+        }
+        if (images.size() > MAX_VIDEO_REFERENCE_IMAGES) throw new BusinessException(HttpStatus.BAD_REQUEST, "参考图片最多 9 张");
+        if (videos.size() > 1) throw new BusinessException(HttpStatus.BAD_REQUEST, "参考视频最多 1 条");
+        return new GeneralReferences(List.copyOf(images), List.copyOf(videos));
+    }
+
+    static void validateGeneralMentions(String prompt, int images, int videos) {
+        var matcher = java.util.regex.Pattern.compile("@(图片|视频)([0-9]+)").matcher(prompt);
+        while (matcher.find()) {
+            int index;
+            try { index = Integer.parseInt(matcher.group(2)); }
+            catch (NumberFormatException invalid) { throw new BusinessException(HttpStatus.BAD_REQUEST, "素材引用编号无效"); }
+            int limit = "图片".equals(matcher.group(1)) ? images : videos;
+            if (index < 1 || index > limit) throw new BusinessException(HttpStatus.BAD_REQUEST, matcher.group() + " 没有对应的上传素材");
+        }
+    }
+
+    private AiVideoTaskItem createGeneralVideoItem(AiVideoTask task, MultipartFile video) {
+        AiVideoTaskItem item = new AiVideoTaskItem(task.getOrganizationId(), task.getId(), task.getName(),
+                "REF-001", safeFileName(video.getOriginalFilename()), "pending", generalVideoMime(video), video.getSize());
+        itemMapper.insert(item);
+        task.updateItemCount(1);
+        taskMapper.updateById(task);
+        return item;
+    }
+
+    private static String generalVideoMime(MultipartFile video) {
+        String name = String.valueOf(video.getOriginalFilename()).toLowerCase(java.util.Locale.ROOT);
+        return name.endsWith(".webm") ? "video/webm" : name.endsWith(".mov") ? "video/quicktime" : "video/mp4";
+    }
+
+    static double[] generalVideoClipWindow(Double start, Double end, double duration) {
+        if (start == null || end == null || !Double.isFinite(start) || !Double.isFinite(end)
+                || !Double.isFinite(duration) || duration <= 0 || start < 0 || start >= duration || end <= start
+                || end - start > 15.001 || end > duration + 0.05) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "请选择视频内不超过 15 秒的有效片段");
+        }
+        return new double[] {start, Math.min(end, duration)};
+    }
+
+    private void storeGeneralReferenceVideo(AiVideoTask task, AiVideoTaskItem item, MultipartFile video, GeneralCreateCommand command) {
+        Path directory = itemDirectory(task, item).resolve("references");
+        String mime = generalVideoMime(video);
+        Path output = directory.resolve("reference-video." + (mime.equals("video/webm") ? "webm" : mime.equals("video/quicktime") ? "mov" : "mp4"));
+        try {
+            Files.createDirectories(directory);
+            try (var input = video.getInputStream()) { Files.copy(input, output); }
+            Process probe = new ProcessBuilder("ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe", "-select_streams", "v:0",
+                    "-show_entries", "stream=codec_type:format=format_name,duration", "-of", "json", output.toString())
+                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            if (!probe.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)) {
+                probe.destroyForcibly();
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "参考视频读取超时，请检查文件");
+            }
+            String probeOutput = new String(probe.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            if (probe.exitValue() != 0) throw new BusinessException(HttpStatus.BAD_REQUEST, "参考文件中没有可读取的视频画面");
+            var details = objectMapper.readTree(probeOutput);
+            String container = details.path("format").path("format_name").asText("");
+            boolean containerMatches = mime.equals("video/webm") ? container.contains("webm") : container.contains("mov") || container.contains("mp4");
+            if (!containerMatches || !"video".equals(details.path("streams").path(0).path("codec_type").asText(""))) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "请上传真实的 MP4、MOV 或 WebM 视频文件");
+            }
+            String clipNote = "@视频1";
+            if (command.videoClipStart() != null || command.videoClipEnd() != null) {
+                double duration = details.path("format").path("duration").asDouble(0);
+                double[] window = generalVideoClipWindow(command.videoClipStart(), command.videoClipEnd(), duration);
+                Path clipped = directory.resolve("reference-clip.mp4");
+                Process trim = new ProcessBuilder("ffmpeg", "-v", "error", "-y", "-ss", Double.toString(window[0]),
+                        "-i", output.toString(), "-t", Double.toString(window[1] - window[0]),
+                        "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                        "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                        "-c:a", "aac", "-movflags", "+faststart", clipped.toString())
+                        .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
+                if (!trim.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) { trim.destroyForcibly(); throw new BusinessException(HttpStatus.BAD_REQUEST, "参考视频截取超时"); }
+                if (trim.exitValue() != 0 || !Files.isRegularFile(clipped) || Files.size(clipped) == 0) throw new BusinessException(HttpStatus.BAD_REQUEST, "参考视频截取失败，请检查文件");
+                output = clipped;
+                mime = "video/mp4";
+                clipNote += " · 原视频 " + window[0] + "–" + window[1] + " 秒";
+            }
+            assetMapper.insert(new AiVideoTaskAsset(task.getOrganizationId(), task.getId(), item.getId(),
+                    "VIDEO_REFERENCE_VIDEO", 10, output.toString(), mime, Files.size(output), clipNote, ""));
+            if ("pending".equals(item.getSourceFilePath())) { item.attachSource(output.toString()); itemMapper.updateById(item); }
+        } catch (IOException exception) {
+            throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "参考视频保存失败");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException(HttpStatus.SERVICE_UNAVAILABLE, "参考视频读取中断");
         }
     }
 
@@ -459,7 +665,12 @@ public class AiVideoTaskService {
         if (updates == null || updates.size() != references.size()) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "请完整保存全部参考图设置");
         }
-        Map<String, ReferenceUpdate> byId = updates.stream().collect(java.util.stream.Collectors.toMap(ReferenceUpdate::id, value -> value));
+        Map<String, ReferenceUpdate> byId = new java.util.HashMap<>();
+        for (ReferenceUpdate update : updates) {
+            if (update == null || update.id() == null || byId.putIfAbsent(update.id(), update) != null) {
+                throw new BusinessException(HttpStatus.BAD_REQUEST, "参考图编号缺失或重复，请刷新后重试");
+            }
+        }
         if (byId.size() != references.size() || references.stream().anyMatch(value -> !byId.containsKey(value.getId()))) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "参考图列表已变化，请刷新后重试");
         }
@@ -637,6 +848,42 @@ public class AiVideoTaskService {
         return item;
     }
 
+    @SuppressWarnings("unchecked")
+    public AiVideoTask updateVideoReferenceMode(String taskId, String mode, PlatformPrincipal principal) {
+        if (!"GRID".equals(mode) && !"INDIVIDUAL_FRAMES".equals(mode)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频参考模式只能是 GRID 或 INDIVIDUAL_FRAMES");
+        }
+        AiVideoTask task = requireOwned(taskId, principal);
+        if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "任务正在生成，暂时不能修改视频参考模式");
+        }
+        if (task.isDirectReferenceVideo() && "INDIVIDUAL_FRAMES".equals(mode)) {
+            throw new BusinessException(HttpStatus.CONFLICT, "独立分镜参考仅适用于已有九宫格的脚本视频任务");
+        }
+        Map<String, Object> rules;
+        try {
+            rules = task.getGenerationRulesJson() == null || task.getGenerationRulesJson().isBlank()
+                    ? new LinkedHashMap<>()
+                    : new LinkedHashMap<>(objectMapper.readValue(task.getGenerationRulesJson(), Map.class));
+        } catch (Exception exception) {
+            throw new BusinessException(HttpStatus.CONFLICT, "任务规则无法读取，未修改现有规则");
+        }
+        rules.put("videoReferenceMode", mode);
+        java.time.Instant previousUpdatedAt = task.getUpdatedAt();
+        task.updateGenerationRulesJson(json(rules));
+        int changed = taskMapper.update(null, new LambdaUpdateWrapper<AiVideoTask>()
+                .eq(AiVideoTask::getId, taskId)
+                .eq(AiVideoTask::getOrganizationId, principal.organizationId())
+                .eq(AiVideoTask::getUpdatedAt, previousUpdatedAt)
+                .notIn(AiVideoTask::getStatus, List.of("IMAGE_GENERATING", "VIDEO_GENERATING"))
+                .set(AiVideoTask::getGenerationRulesJson, task.getGenerationRulesJson())
+                .set(AiVideoTask::getUpdatedAt, task.getUpdatedAt()));
+        if (changed != 1) {
+            throw new BusinessException(HttpStatus.CONFLICT, "任务状态已变化，请刷新后重试");
+        }
+        return task;
+    }
+
     private AiVideoTaskItem requireEditableDirectReferenceItem(String taskId, String itemId, PlatformPrincipal principal) {
         AiVideoTaskItem item = itemMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getId, itemId)
@@ -708,8 +955,8 @@ public class AiVideoTaskService {
         }
         List<AiVideoTaskItem> items = itemMapper.selectList(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getTaskId, id));
-        if (!task.isGeneral()) {
-            for (AiVideoTaskItem item : items) {
+        for (AiVideoTaskItem item : items) {
+            if (!task.isGeneral() && (item.getVideoPromptText() == null || item.getVideoPromptText().isBlank())) {
                 item.updateVideoPrompt(defaultVideoPrompt(task, item));
                 itemMapper.updateById(item);
             }
@@ -740,7 +987,7 @@ public class AiVideoTaskService {
         if (videos.isEmpty()) {
             throw new BusinessException(HttpStatus.CONFLICT, "当前商品没有需要替换的旧视频");
         }
-        if (!task.isGeneral()) {
+        if (!task.isGeneral() && (item.getVideoPromptText() == null || item.getVideoPromptText().isBlank())) {
             item.updateVideoPrompt(defaultVideoPrompt(task, item));
             itemMapper.updateById(item);
         }
@@ -784,8 +1031,8 @@ public class AiVideoTaskService {
     public AiVideoTask regenerateStoryboard(String taskId, String itemId, PlatformPrincipal principal) {
         AiVideoTask task = requireProduct(taskId, principal);
         requireCompatibleScriptMode(task);
-        if ("IMAGE_GENERATING".equals(task.getStatus())) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前有图片正在生成，请完成后再重建九宫格");
+        if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前有图片或视频正在生成，请完成后再重建九宫格");
         }
         AiVideoTaskItem item = itemMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getId, itemId)
@@ -811,8 +1058,8 @@ public class AiVideoTaskService {
     public AiVideoTask regenerateFirstFrame(String taskId, String itemId, PlatformPrincipal principal) {
         AiVideoTask task = requireProduct(taskId, principal);
         requireCompatibleScriptMode(task);
-        if ("IMAGE_GENERATING".equals(task.getStatus())) {
-            throw new BusinessException(HttpStatus.CONFLICT, "当前有图片正在生成，请完成后再重做首帧");
+        if (List.of("IMAGE_GENERATING", "VIDEO_GENERATING").contains(task.getStatus())) {
+            throw new BusinessException(HttpStatus.CONFLICT, "当前有图片或视频正在生成，请完成后再重做首帧");
         }
         AiVideoTaskItem item = itemMapper.selectOne(new LambdaQueryWrapper<AiVideoTaskItem>()
                 .eq(AiVideoTaskItem::getId, itemId)
@@ -875,6 +1122,10 @@ public class AiVideoTaskService {
                 .eq(AiVideoTaskAsset::getTaskId, task.getId())
                 .eq(AiVideoTaskAsset::getOrganizationId, task.getOrganizationId()));
         if (asset == null) throw new BusinessException(HttpStatus.NOT_FOUND, "生成图片不存在");
+        String providerUrl = providerVideoUrl(asset);
+        if (providerUrl != null) {
+            return new AssetFile(null, providerUrl, asset.getContentType(), asset.getSizeBytes());
+        }
         if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) {
             if (!ossStorage.exists(asset.getFilePath())) throw new BusinessException(HttpStatus.NOT_FOUND, "生成素材不存在");
             return new AssetFile(null, asset.getFilePath(), asset.getContentType(), asset.getSizeBytes());
@@ -901,7 +1152,10 @@ public class AiVideoTaskService {
         for (AiVideoTaskAsset asset : assets) {
             Path path = null;
             String location = null;
-            if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) {
+            String providerUrl = providerVideoUrl(asset);
+            if (providerUrl != null) {
+                location = providerUrl;
+            } else if (ossStorage != null && ossStorage.isOssLocation(asset.getFilePath())) {
                 if (!ossStorage.exists(asset.getFilePath())) continue;
                 location = asset.getFilePath();
             } else {
@@ -925,7 +1179,29 @@ public class AiVideoTaskService {
         return signedAssetUrl(location, false);
     }
 
+    private String providerVideoUrl(AiVideoTaskAsset asset) {
+        if (!asset.getAssetType().startsWith("VIDEO_")) return null;
+        if (isProviderVideoUrl(asset.getFilePath())) return asset.getFilePath();
+        if (asset.getFilePath() == null || !asset.getFilePath().startsWith("provider-video:")) return null;
+        try {
+            Map<?, ?> metadata = objectMapper.readValue(asset.getPromptText(), Map.class);
+            String jobId = String.valueOf(metadata.get("jobId"));
+            Object url = metadata.get("directDownloadUrl");
+            if (asset.getFilePath().equals("provider-video:" + jobId) && url instanceof String value && isProviderVideoUrl(value)) return value;
+        } catch (Exception invalid) { }
+        throw new BusinessException(HttpStatus.NOT_FOUND, "厂商视频下载地址不可用");
+    }
+
+    public static boolean isProviderVideoUrl(String location) {
+        if (location == null) return false;
+        try {
+            java.net.URI uri = java.net.URI.create(location);
+            return "https".equalsIgnoreCase(uri.getScheme()) && uri.getHost() != null && uri.getUserInfo() == null;
+        } catch (IllegalArgumentException invalid) { return false; }
+    }
+
     public String signedAssetUrl(String location, boolean preview) {
+        if (isProviderVideoUrl(location)) return location;
         if (ossStorage == null || !ossStorage.isOssLocation(location)) {
             throw new BusinessException(HttpStatus.NOT_FOUND, "OSS 素材不存在");
         }
@@ -933,6 +1209,12 @@ public class AiVideoTaskService {
     }
 
     public InputStream openVideoBatchFile(VideoBatchFile file) throws IOException {
+        if (isProviderVideoUrl(file.location())) {
+            var connection = java.net.URI.create(file.location()).toURL().openConnection();
+            connection.setConnectTimeout(15_000);
+            connection.setReadTimeout(120_000);
+            return connection.getInputStream();
+        }
         if (file.location() != null) return ossStorage.open(file.location());
         return Files.newInputStream(file.path());
     }
@@ -951,18 +1233,8 @@ public class AiVideoTaskService {
                 try {
                     writeVideoArchive(batch, archive);
                     long size = Files.size(archive);
-                    if (ossStorage == null) return new PreparedVideoBatch(archive, null, size);
-                    try (InputStream input = Files.newInputStream(archive)) {
-                        OssStorageService.StoredObject stored = ossStorage.store(input, size,
-                                MAX_VIDEO_ARCHIVE_BYTES, "application/zip",
-                                "temporary-downloads/" + batch.organizationId() + "/" + batch.taskId(),
-                                "video-results.zip");
-                        Files.deleteIfExists(archive);
-                        return new PreparedVideoBatch(null, stored.location(), stored.size());
-                    } catch (Exception exception) {
-                        throw exception instanceof IOException io ? io
-                                : new IOException("上传临时视频压缩包到 OSS 失败", exception);
-                    }
+                    // Final-video archives are streamed locally and removed after download.
+                    return new PreparedVideoBatch(archive, null, size);
                 } catch (IOException exception) {
                     failure = exception;
                     if (attempt < VIDEO_ARCHIVE_ATTEMPTS) {
@@ -1487,9 +1759,10 @@ public class AiVideoTaskService {
 
     static String voiceoverText(Object value) {
         if (value == null) return "";
-        return String.valueOf(value).replaceAll("\\s+", " ").trim()
+        String text = String.valueOf(value).replaceAll("\\s+", " ").trim()
                 .replaceFirst("(?i)^(?:对白|旁白|口播|台词|voice\\s*over|voiceover|dialogue|narration)\\s*[:：]\\s*", "")
                 .trim();
+        return text.matches("(?i)^(?:无|无旁白|无口播|无对白|无台词|纯音乐|纯器乐|仅BGM|无旁白[，, ]*仅BGM|none|null|n/a|no narration|no voiceover|no dialogue|instrumental only|—|-)[:：。.!！]?$") ? "" : text;
     }
 
     private String voiceoverLanguageDirective(AiVideoTask task) {
@@ -1910,7 +2183,12 @@ public class AiVideoTaskService {
                                 String videoRoute, String voiceoverMode, String customVoiceover, String videoTitle) {}
     public record GeneralCreateCommand(String name, String prompt, Integer durationSeconds,
                                        String aspectRatio, String resolution, String videoRoute,
-                                       boolean autoStart) {}
+                                       boolean autoStart, Double videoClipStart, Double videoClipEnd) {
+        public GeneralCreateCommand(String name, String prompt, Integer durationSeconds, String aspectRatio,
+                                    String resolution, String videoRoute, boolean autoStart) {
+            this(name, prompt, durationSeconds, aspectRatio, resolution, videoRoute, autoStart, null, null);
+        }
+    }
     public record ReferenceUpdate(String id, int order, String role, String instruction, boolean primary) {}
     public record PendingImageDownload(String assetType, int attempts, String lastError,
                                        java.time.Instant updatedAt) {}

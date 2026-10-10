@@ -35,6 +35,10 @@ public class VideoReferenceLinkService {
 
     public String asset(String assetId) { return link("asset", assetId); }
     public String deliveryAsset(String assetId) { return link("delivery-asset", assetId); }
+    public String storyboardFrame(String assetId, int sequence) {
+        if (sequence < 1 || sequence > 9) throw new IllegalArgumentException("分镜序号必须为 1 至 9");
+        return link("storyboard-frame/" + sequence, assetId);
+    }
     public String source(String itemId) { return link("source", itemId); }
     public String scriptSource(String scriptId) { return link("script-source", scriptId); }
     public String scriptAudio(String scriptId) {

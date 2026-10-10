@@ -35,7 +35,8 @@ public class ShopAuthorizationController {
             @RequestBody(required = false) StartRequest request,
             @AuthenticationPrincipal PlatformPrincipal principal) {
         return ApiResponse.ok(service.start(platform,
-                request == null ? null : request.returnPath(), principal));
+                request == null ? null : request.returnPath(),
+                request == null ? null : request.market(), principal));
     }
 
     @GetMapping("/callback/{platform}")
@@ -73,5 +74,7 @@ public class ShopAuthorizationController {
         return null;
     }
 
-    public record StartRequest(String returnPath) {}
+    public record StartRequest(String returnPath, String market) {
+        public StartRequest(String returnPath) { this(returnPath, null); }
+    }
 }

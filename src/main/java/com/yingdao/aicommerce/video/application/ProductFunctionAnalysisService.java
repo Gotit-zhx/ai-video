@@ -49,6 +49,7 @@ public class ProductFunctionAnalysisService {
     static final int MAX_INITIAL_ANALYSIS_ATTEMPTS = 2;
     static final int MAX_VALIDATION_ATTEMPTS = 2;
     static final int MAX_CONCURRENT_VISION_ANALYSES = 50;
+    static final String STRUCTURE_ANALYSIS_PAUSED = "STRUCTURE_ANALYSIS_PAUSED";
     // Runtime allows 1000 seconds; leave time for transfer and error serialization.
     static final int VISION_READ_TIMEOUT_MS = 1_020_000;
     private static final String GARMENT_TOPOLOGY_VERSION = "GARMENT_TOPOLOGY_V2";
@@ -86,13 +87,17 @@ public class ProductFunctionAnalysisService {
             return item.getProductFunctionAnalysisJson();
         }
         Exception lastFailure = null;
+        String selectedModelId = "未配置";
+        int attemptsPerformed = 0;
         boolean analysisSlotAcquired = false;
+        Map<String, Object> analysisResult = null;
         try {
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId()).orElse(null);
             if (model == null) {
                 throw new IllegalStateException("没有可用的结构识别模型");
             }
+            selectedModelId = model.modelId();
             Path source = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize();
             if (!Files.isRegularFile(source) || Files.size(source) <= 0 || Files.size(source) > MAX_SOURCE_BYTES) {
                 throw new IllegalStateException("商品原图不可用于结构识别");
@@ -101,12 +106,7 @@ public class ProductFunctionAnalysisService {
             ValidationImage analysisImage = compactForInitialAnalysis(
                     sourceBytes, item.getSourceContentType());
             Map<String, Object> request = new LinkedHashMap<>();
-            request.put("model", Map.of(
-                    "baseUrl", model.baseUrl(),
-                    "modelId", model.modelId(),
-                    "apiFormat", model.apiFormat(),
-                    "apiKey", model.apiKey()
-            ));
+            request.put("model", model.driverRequestModel());
             Map<String, Object> context = new LinkedHashMap<>();
             context.put("analysisType", garment ? GARMENT_TOPOLOGY_VERSION : "PRODUCT_FUNCTION_V1");
             context.put("productCategory", garment ? "服装" : "日用品");
@@ -121,12 +121,12 @@ public class ProductFunctionAnalysisService {
             ));
             log.info("Product structure analysis payload compacted for item {}: source {} -> {} bytes",
                     item.getId(), sourceBytes.length, analysisImage.bytes().length);
-            Map<String, Object> analysisResult = null;
             String progressAssetType = garment ? "MODEL_IMAGE" : "PRODUCT_SCENE_IMAGE";
             ImageExecutionProgress.record(itemMapper, item, progressAssetType, "ANALYSIS_QUEUED");
             visionAnalysisSlots.acquire();
             analysisSlotAcquired = true;
             for (int attempt = 1; attempt <= MAX_INITIAL_ANALYSIS_ATTEMPTS; attempt++) {
+                attemptsPerformed = attempt;
                 try {
                     ImageExecutionProgress.record(itemMapper, item, progressAssetType, "ANALYZING");
                     PiProductAnalysisResponse response = piClient.post().uri("/v1/product/analyze")
@@ -144,7 +144,8 @@ public class ProductFunctionAnalysisService {
                     String failure = readable(exception);
                     log.warn("Product function analysis unavailable for item {} (attempt {}/{}): {}",
                             item.getId(), attempt, MAX_INITIAL_ANALYSIS_ATTEMPTS, failure);
-                    if (!shouldRetryInitialAnalysisFailure(attempt, failure)) break;
+                    if (PiRuntimeFailure.from(exception).explicitlyNonRetryable()
+                            || !shouldRetryInitialAnalysisFailure(attempt, failure)) break;
                     ImageExecutionProgress.record(itemMapper, item, progressAssetType, "ANALYSIS_RETRY_WAIT");
                     try {
                         Thread.sleep(750L * attempt);
@@ -174,11 +175,15 @@ public class ProductFunctionAnalysisService {
         } finally {
             if (analysisSlotAcquired) visionAnalysisSlots.release();
         }
-        if (garment) {
-            throw new IllegalStateException("服装结构识别暂时失败，已阻止无结构契约的错误生图："
-                    + readable(lastFailure == null ? new IllegalStateException("未知错误") : lastFailure), lastFailure);
-        }
-        return null;
+        PiRuntimeFailure.Details failure = PiRuntimeFailure.from(lastFailure);
+        boolean retryable = analysisResult == null && !failure.explicitlyNonRetryable()
+                && (Boolean.TRUE.equals(failure.retryable()) || isTransientValidationFailure(readable(lastFailure)));
+        throw new IllegalStateException("[" + STRUCTURE_ANALYSIS_PAUSED + "] "
+                + (retryable ? "[STRUCTURE_ANALYSIS_RETRYABLE] " : "") + "模型「" + selectedModelId
+                + "」的" + (garment ? "服装" : "商品") + "结构识别失败 [" + failure.failureCode() + "]，已尝试 "
+                + attemptsPerformed + (retryable ? " 次；临时故障，冷却 60 秒后自动重试，原图已保留。"
+                        : " 次并停止自动重试；原图已保留，请检查模型连接后重试。")
+                + safe(failure.message(), 600), lastFailure);
     }
 
     public GarmentValidation validateGenerated(AiVideoTask task, AiVideoTaskItem item,
@@ -188,6 +193,7 @@ public class ProductFunctionAnalysisService {
             return new GarmentValidation(true, "", List.of(), 1.0);
         }
         boolean validationSlotAcquired = false;
+        String selectedModelId = "未配置";
         try {
             ImageExecutionProgress.record(itemMapper, item, assetType, "VALIDATION_QUEUED");
             visionAnalysisSlots.acquire();
@@ -195,10 +201,10 @@ public class ProductFunctionAnalysisService {
             ModelConfigService.RuntimeModelConnection model = modelConfigService
                     .driverConnection(task.getOrganizationId())
                     .orElseThrow(() -> new IllegalStateException("没有可用的结构复核模型"));
+            selectedModelId = model.modelId();
             Path source = Path.of(item.getSourceFilePath()).toAbsolutePath().normalize();
             Map<String, Object> request = new LinkedHashMap<>();
-            request.put("model", Map.of("baseUrl", model.baseUrl(), "modelId", model.modelId(),
-                    "apiFormat", model.apiFormat(), "apiKey", model.apiKey()));
+            request.put("model", model.driverRequestModel());
             request.put("context", Map.of(
                     "analysisType", "GARMENT_TOPOLOGY_VALIDATION_V1",
                     "assetType", assetType,
@@ -240,7 +246,8 @@ public class ProductFunctionAnalysisService {
                 } catch (Exception exception) {
                     lastFailure = exception;
                     String failure = readable(exception);
-                    if (!shouldRetryValidationFailure(attempt, failure)) break;
+                    if (PiRuntimeFailure.from(exception).explicitlyNonRetryable()
+                            || !shouldRetryValidationFailure(attempt, failure)) break;
                     ImageExecutionProgress.record(itemMapper, item, assetType, "VALIDATION_RETRY_WAIT");
                     log.warn("Garment validation transport unavailable for item {} asset {} "
                                     + "(attempt {}/{}); retrying the same private candidate: {}",
@@ -261,8 +268,10 @@ public class ProductFunctionAnalysisService {
             if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
             log.warn("Garment validation unavailable for item {}; the private candidate will be rechecked: {}",
                     item.getId(), readable(exception));
-            throw new IllegalStateException("服装结构复核暂时失败，已私有保存本次候选图并将在后台继续复核："
-                    + readable(exception), exception);
+            PiRuntimeFailure.Details failure = PiRuntimeFailure.from(exception);
+            throw new IllegalStateException("服装结构复核暂时失败，模型「" + selectedModelId + "」["
+                    + failure.failureCode() + "]，已私有保存本次候选图："
+                    + safe(failure.message(), 600), exception);
         } finally {
             if (validationSlotAcquired) visionAnalysisSlots.release();
         }
@@ -280,6 +289,8 @@ public class ProductFunctionAnalysisService {
 
     static boolean isTransientValidationFailure(String message) {
         if (message == null || message.isBlank()) return false;
+        PiRuntimeFailure.Details failure = PiRuntimeFailure.parse(message);
+        if (failure.retryable() != null) return Boolean.TRUE.equals(failure.retryable());
         String value = message.toLowerCase();
         return value.contains("stream ended without finish_reason")
                 || value.contains("stream ended") || value.contains("unexpected end")
@@ -290,7 +301,25 @@ public class ProductFunctionAnalysisService {
                 || value.contains("other side closed") || value.contains("terminated")
                 || value.contains("eof") || value.contains("timeout") || value.contains("timed out")
                 || value.contains("temporarily unavailable") || value.contains("没有返回结果")
+                || value.contains("429") || value.contains("限流") || value.contains("rate limit")
+                || value.contains("too many requests")
                 || value.contains("502") || value.contains("503") || value.contains("504");
+    }
+
+    static boolean isStructureAnalysisPaused(String message) {
+        return message != null && message.contains(STRUCTURE_ANALYSIS_PAUSED);
+    }
+
+    static boolean retryableStructureAnalysisFailure(String message) {
+        if (!isStructureAnalysisPaused(message)) return false;
+        if (message.contains("[STRUCTURE_ANALYSIS_RETRYABLE]")) return true;
+        // Old persisted failures lost the retryable flag. Recover only known transport codes.
+        return message.contains("[UPSTREAM_HTTP_429]")
+                || message.contains("[CHAT_RATE_LIMITED]")
+                || message.contains("[CHAT_INCOMPLETE_RESPONSE]")
+                || message.contains("[CHAT_TIMEOUT]")
+                || message.contains("[CHAT_NETWORK_INTERRUPTED]")
+                || message.contains("[CHAT_EMPTY_RESPONSE]");
     }
 
     static boolean shouldRetryValidationFailure(int failedAttempt, String message) {
@@ -306,7 +335,7 @@ public class ProductFunctionAnalysisService {
                 sourceBytes, sourceMimeType, INITIAL_ANALYSIS_MAX_BYTES);
     }
 
-    static ValidationImage compactForValidation(byte[] sourceBytes, String sourceMimeType) {
+    public static ValidationImage compactForValidation(byte[] sourceBytes, String sourceMimeType) {
         return compactForVisionAnalysis(sourceBytes, sourceMimeType, VALIDATION_MAX_BYTES);
     }
 
@@ -529,10 +558,21 @@ public class ProductFunctionAnalysisService {
         normalized.put("forbiddenChanges", stringList(source.get("forbiddenChanges"), 12, 140));
         normalized.put("visualEvidence", stringList(source.get("visualEvidence"), 8, 140));
         normalized.put("uncertainties", stringList(source.get("uncertainties"), 6, 140));
+        // A still product photo may not establish how the garment is put on.
+        // Preserve that uncertainty instead of inventing a method or rejecting
+        // otherwise usable visible structure evidence.
+        boolean wearingUnknown = ((List<?>) normalized.get("wearingMethod")).isEmpty();
+        if (wearingUnknown) {
+            String unknown = "原图未明确展示穿法；保留可见开口和连接关系，不推断隐藏穿法";
+            normalized.put("wearingMethod", List.of(unknown));
+            List<String> uncertainties = new ArrayList<>((List<String>) normalized.get("uncertainties"));
+            uncertainties.add(unknown);
+            normalized.put("uncertainties", uncertainties);
+        }
         requireGarmentTopologyFields(normalized);
         Object confidence = source.get("confidence");
         normalized.put("confidence", confidence instanceof Number number
-                ? Math.max(0.0, Math.min(1.0, number.doubleValue())) : 0.0);
+                ? Math.max(0.0, Math.min(wearingUnknown ? 0.75 : 1.0, number.doubleValue())) : 0.0);
         return objectMapper.writeValueAsString(normalized);
     }
 
@@ -628,7 +668,8 @@ public class ProductFunctionAnalysisService {
     }
 
     private List<String> stringList(Object raw, int maxItems, int maxLength) {
-        if (!(raw instanceof List<?> values)) return List.of();
+        List<?> values = raw instanceof String scalar ? List.of(scalar)
+                : raw instanceof List<?> list ? list : List.of();
         List<String> result = new ArrayList<>();
         for (Object value : values) {
             String text = text(value, maxLength);
@@ -739,5 +780,5 @@ public class ProductFunctionAnalysisService {
         }
     }
 
-    record ValidationImage(String mimeType, byte[] bytes) {}
+    public record ValidationImage(String mimeType, byte[] bytes) {}
 }

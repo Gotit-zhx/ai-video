@@ -1,10 +1,35 @@
 package com.yingdao.aicommerce.video.domain;
 
 import org.junit.jupiter.api.Test;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class VideoScriptTest {
+
+    @Test
+    void outputSurvivesCompletionIsBoundedAndRejectsOldRunsAndSnapshots() {
+        VideoScript script = new VideoScript("stream", "org", "输出", "VIDEO_ANALYSIS", "PRODUCT_ONLY",
+                "source.mp4", "/tmp/source.mp4", "video/mp4", 10L, null, null, "user");
+        script.markAnalyzing("model", "driver");
+        String runId = script.getAnalysisRunId();
+        Instant first = Instant.parse("2026-09-17T00:00:00Z");
+        assertThat(script.receiveAnalysisOutput("old-run", "AI_ANALYZING", "旧任务文字", 5L, first)).isFalse();
+        String response = "真实输出".repeat(10_000);
+        assertThat(script.receiveAnalysisOutput(runId, "AI_ANALYZING", response, 40_000L, first)).isTrue();
+        assertThat(script.getAnalysisOutput()).hasSize(32_000).isEqualTo(response.substring(8_000));
+        assertThat(script.getAnalysisOutputCharacters()).isEqualTo(40_000L);
+        assertThat(script.receiveAnalysisOutput(runId, "AI_ANALYZING", "旧快照", 3L, first.minusSeconds(1))).isFalse();
+        script.complete("摘要", "视觉", "{}");
+        assertThat(script.getAnalysisOutput()).hasSize(32_000);
+        assertThat(script.receiveAnalysisOutput(runId, "AI_ANALYZING", "迟到文字", 4L, first.plusSeconds(1))).isFalse();
+        script.prepareRetry();
+        assertThat(script.getAnalysisOutput()).isEmpty();
+        assertThat(script.getAnalysisOutputCharacters()).isZero();
+        assertThat(script.getAnalysisOutputUpdatedAt()).isNull();
+        script.markAnalyzing("model", "driver");
+        assertThat(script.getAnalysisRunId()).isNotEqualTo(runId);
+    }
 
     @Test
     void completingAnalysisKeepsTheNameEnteredByTheUser() {

@@ -7,6 +7,7 @@ import com.yingdao.aicommerce.product.domain.ProductImageProcessingJob;
 import com.yingdao.aicommerce.product.domain.ProductPublishAudit;
 import com.yingdao.aicommerce.product.domain.ProductPublishWorkflow;
 import com.yingdao.aicommerce.product.application.provider.ProductPublishingProvider;
+import com.yingdao.aicommerce.product.application.provider.VideoUploadPendingException;
 import com.yingdao.aicommerce.product.mapper.ProductImageProcessingJobMapper;
 import com.yingdao.aicommerce.product.mapper.ProductPublishAuditMapper;
 import com.yingdao.aicommerce.product.mapper.ProductPublishWorkflowMapper;
@@ -17,9 +18,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -82,6 +85,8 @@ class ProductPublishWorkflowProcessorTest {
         when(workflowMapper.retry(any(), any(), any(), any(), any())).thenReturn(1);
         when(workflowMapper.waitForProgress(any(), any(), any(), any(), any(), anyLong(), any(), any()))
                 .thenReturn(1);
+        when(workflowMapper.waitForMediaProgress(any(), any(), anyLong(), any(), any(), any()))
+                .thenReturn(1);
     }
 
     @Test
@@ -102,6 +107,75 @@ class ProductPublishWorkflowProcessorTest {
 
         verify(workflowMapper).imageSucceeded(eq(workflowId), eq("worker-1"), eq(job.getId()),
                 eq(ready.getVersion()), eq("APPROVE"), any(), any());
+    }
+
+    @Test
+    void boundImageRetryUsesItsOwnKeyInsteadOfTheFailedOriginalWorkflowJob() {
+        capture.startImageProcessing();
+        workflow = runningWorkflow("IMAGES", capture.getVersion());
+        when(workflowMapper.selectById(workflow.getId())).thenReturn(workflow);
+        ProductImageProcessingJob original = new ProductImageProcessingJob("org-a", capture.getId(),
+                "user-1", "wf-" + workflow.getId() + "-images", "AI_WATERMARK_V1", 17, "{}");
+        original.fail("original interrupted request", "{}");
+        ProductImageProcessingJob retryJob = new ProductImageProcessingJob("org-a", capture.getId(),
+                "user-1", "user-authorized-image-retry", "AI_WATERMARK_V1", 17, "{}");
+        retryJob.start();
+        when(workflow.getImageJobId()).thenReturn(retryJob.getId());
+        when(imageJobMapper.selectById(retryJob.getId())).thenReturn(retryJob);
+        when(imageJobMapper.selectOne(any())).thenReturn(original);
+        when(workflowService.request(workflow)).thenReturn(Map.of("visionWatermarkCheck", true));
+        when(captureService.processImages(eq(capture.getId()), any(), eq(retryJob.getIdempotencyKey()), any()))
+                .thenAnswer(invocation -> {
+                    retryJob.succeed("{}");
+                    capture.imagesReady();
+                    return new ProductCaptureService.ImageProcessResult(retryJob, detail(capture), false, "AI_WATERMARK_V1");
+                });
+
+        processor.process(workflow.getId(), "worker-1");
+
+        verify(captureService).processImages(eq(capture.getId()), any(), eq("user-authorized-image-retry"), any());
+        verify(workflowMapper).imageSucceeded(eq(workflow.getId()), eq("worker-1"), eq(retryJob.getId()),
+                eq(capture.getVersion()), eq("APPROVE"), any(), any());
+        verify(imageJobMapper, never()).selectOne(any());
+        verify(workflowMapper, never()).fail(any(), any(), any(), any());
+        assertEquals("FAILED", original.getStatus());
+        assertEquals("original interrupted request", original.getErrorMessage());
+    }
+
+    @Test
+    void imageJobBoundToAnotherOrganizationIsRejectedWithoutLegacyFallback() {
+        rejectInvalidBoundImageJob("org-other", capture.getId(), false);
+    }
+
+    @Test
+    void imageJobBoundToAnotherCaptureIsRejectedWithoutLegacyFallback() {
+        rejectInvalidBoundImageJob("org-a", "another-capture", false);
+    }
+
+    @Test
+    void missingBoundImageJobIsRejectedWithoutLegacyFallback() {
+        rejectInvalidBoundImageJob("org-a", capture.getId(), true);
+    }
+
+    private void rejectInvalidBoundImageJob(String organizationId, String captureId, boolean missing) {
+        capture.startImageProcessing();
+        workflow = runningWorkflow("IMAGES", capture.getVersion());
+        when(workflowMapper.selectById(workflow.getId())).thenReturn(workflow);
+        ProductImageProcessingJob invalid = new ProductImageProcessingJob(organizationId, captureId,
+                "user-1", "foreign-retry-key", "AI_WATERMARK_V1", 17, "{}");
+        invalid.start();
+        when(workflow.getImageJobId()).thenReturn(invalid.getId());
+        // Returning the actual foreign entity checks ownership in code, independently
+        // of how a Mockito stub treats a LambdaQueryWrapper's SQL conditions.
+        when(imageJobMapper.selectById(invalid.getId())).thenReturn(missing ? null : invalid);
+
+        processor.process(workflow.getId(), "worker-1");
+
+        verify(workflowMapper).fail(eq(workflow.getId()), eq("worker-1"),
+                org.mockito.ArgumentMatchers.contains("不属于当前商品"), any());
+        verify(imageJobMapper, never()).selectOne(any());
+        verify(captureService, never()).processImages(any(), any(), any(), any());
+        verify(workflowMapper, never()).retry(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -258,6 +332,60 @@ class ProductPublishWorkflowProcessorTest {
     }
 
     @Test
+    void transportBeforeCreateRetriesWithBoundedBudget() {
+        for (int retries : new int[] {0, 3}) {
+            org.mockito.Mockito.clearInvocations(workflowMapper);
+            prepareVideoPendingWorkflow();
+            String workflowId = workflow.getId();
+            when(workflow.getRetryCount()).thenReturn(retries);
+            when(captureService.publish(eq(capture.getId()), any(),
+                    eq("wf-" + workflowId + "-publish"), any(PlatformPrincipal.class), any()))
+                    .thenThrow(new com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException(
+                            "店铺官方接口请求失败", new java.io.IOException("reset")));
+            processor.process(workflow.getId(), "worker-1");
+            if (retries == 0) {
+                verify(workflowMapper).retry(eq(workflow.getId()), eq("worker-1"), any(), any(), any());
+                verify(workflowMapper, never()).fail(any(), any(), any(), any());
+            } else {
+                verify(workflowMapper).fail(eq(workflow.getId()), eq("worker-1"), any(), any());
+                verify(workflowMapper, never()).retry(any(), any(), any(), any(), any());
+            }
+            verify(workflowMapper, never()).failUncertainPublication(any(), any(), any(), any());
+        }
+    }
+
+    @Test
+    void confirmedTitleRejectionReleasesDuplicateGuardButDoesNotAutoLoop() {
+        workflow = runningWorkflow("PUBLISH", 0);
+        String workflowId = workflow.getId();
+        when(workflowMapper.selectById(workflowId)).thenReturn(workflow);
+        capture.imagesReady();
+        capture.approve("reviewer");
+        when(captureService.get(eq(capture.getId()), any(PlatformPrincipal.class)))
+                .thenReturn(detail(capture));
+        when(workflowService.request(workflow)).thenReturn(Map.of(
+                "confirmed", true, "destinationPlatform", "SHOPEE", "shopId", "shop-1"));
+        when(publishAttemptGuard.enterExternalCreateBoundary(workflowId, "worker-1"))
+                .thenReturn(true);
+        when(captureService.publish(eq(capture.getId()), any(),
+                eq("wf-" + workflowId + "-publish"), any(PlatformPrincipal.class), any()))
+                .thenAnswer(invocation -> {
+                    ProductPublishingProvider.ExternalCreateBoundary boundary = invocation.getArgument(4);
+                    boundary.enter();
+                    throw new IllegalStateException("Shopee 官方接口 /api/v2/product/add_item 失败：Product name length must be between 20 and 100 characters. Please adjust it.");
+                });
+
+        when(workflowMapper.failRejectedPublication(any(), any(), any(), any())).thenReturn(1);
+        processor.process(workflowId, "worker-1");
+
+        verify(publishAttemptGuard).enterExternalCreateBoundary(workflowId, "worker-1");
+        verify(workflowMapper).failRejectedPublication(eq(workflowId), eq("worker-1"),
+                org.mockito.ArgumentMatchers.contains("拒绝创建商品"), any());
+        verify(workflowMapper, never()).retry(any(), any(), any(), any(), any());
+        verify(workflowMapper, never()).fail(any(), any(), any(), any());
+    }
+
+    @Test
     void externalCreateTimeoutIsQuarantinedAndNeverScheduledForRetry() {
         workflow = runningWorkflow("PUBLISH", 0);
         String workflowId = workflow.getId();
@@ -285,6 +413,67 @@ class ProductPublishWorkflowProcessorTest {
                 org.mockito.ArgumentMatchers.contains("停止自动重试"), any());
         verify(workflowMapper, never()).retry(any(), any(), any(), any(), any());
         verify(workflowMapper, never()).fail(any(), any(), any(), any());
+    }
+
+    @Test
+    void transcodingWaitDoesNotConsumeExhaustedGeneralRetryBudget() {
+        prepareVideoPendingWorkflow();
+        when(workflow.getRetryCount()).thenReturn(3);
+        // The workflow can have spent hours generating images before video starts.
+        when(workflow.getCreatedAt()).thenReturn(Instant.now().minusSeconds(7200));
+        when(captureService.publish(eq(capture.getId()), any(), any(), any(), any()))
+                .thenThrow(new VideoUploadPendingException("视频仍在转码"));
+
+        processor.process(workflow.getId(), "worker-1");
+
+        verify(workflowMapper).waitForMediaProgress(eq(workflow.getId()), eq("worker-1"),
+                eq(capture.getVersion()), eq("视频仍在转码"), any(), any());
+        verify(workflowMapper, never()).retry(any(), any(), any(), any(), any());
+        verify(workflowMapper, never()).fail(any(), any(), any(), any());
+        verify(publishAttemptGuard, never()).enterExternalCreateBoundary(any(), any());
+    }
+
+    @Test
+    void persistedMediaWaitDeadlineStopsEndlessPollingAfterRestart() {
+        prepareVideoPendingWorkflow();
+        when(workflow.getMediaWaitStartedAt()).thenReturn(Instant.now().minusSeconds(1801));
+        when(captureService.publish(eq(capture.getId()), any(), any(), any(), any()))
+                .thenThrow(new VideoUploadPendingException("视频仍在转码"));
+
+        processor.process(workflow.getId(), "worker-1");
+
+        verify(workflowMapper).fail(eq(workflow.getId()), eq("worker-1"),
+                org.mockito.ArgumentMatchers.contains("上传进度已保留"), any());
+        verify(workflowMapper, never()).retry(any(), any(), any(), any(), any());
+        verify(workflowMapper, never()).waitForMediaProgress(any(), any(), anyLong(), any(), any(), any());
+    }
+
+    @Test
+    void mediaPendingAfterExternalBoundaryCannotScheduleAnotherCreation() {
+        prepareVideoPendingWorkflow();
+        when(publishAttemptGuard.enterExternalCreateBoundary(workflow.getId(), "worker-1"))
+                .thenReturn(true);
+        when(captureService.publish(eq(capture.getId()), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    ProductPublishingProvider.ExternalCreateBoundary boundary = invocation.getArgument(4);
+                    boundary.enter();
+                    throw new VideoUploadPendingException("结果尚未确认");
+                });
+
+        processor.process(workflow.getId(), "worker-1");
+
+        verify(workflowMapper).failUncertainPublication(eq(workflow.getId()), eq("worker-1"), any(), any());
+        verify(workflowMapper, never()).retry(any(), any(), any(), any(), any());
+        verify(workflowMapper, never()).waitForMediaProgress(any(), any(), anyLong(), any(), any(), any());
+    }
+
+    private void prepareVideoPendingWorkflow() {
+        capture.imagesReady();
+        capture.approve("reviewer");
+        workflow = runningWorkflow("PUBLISH", capture.getVersion());
+        when(workflowMapper.selectById(workflow.getId())).thenReturn(workflow);
+        when(workflowService.request(workflow)).thenReturn(Map.of(
+                "confirmed", true, "destinationPlatform", "SHOPEE", "shopId", "shop-1"));
     }
 
     @Test
