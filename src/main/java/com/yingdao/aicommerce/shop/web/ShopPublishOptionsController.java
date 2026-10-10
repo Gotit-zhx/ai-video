@@ -33,6 +33,8 @@ public class ShopPublishOptionsController implements AutoCloseable {
     private com.yingdao.aicommerce.shop.infrastructure.TikTokShopOfficialClient tiktok;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final Duration readTimeout;
+    @Autowired
+    private com.yingdao.aicommerce.product.application.ProductListingLogisticsService listingLogistics;
     public ShopPublishOptionsController(ShopAuthorizationService shops, ShopeeOfficialClient shopee) {
         this(shops, shopee, Duration.ofSeconds(90));
     }
@@ -64,6 +66,8 @@ public class ShopPublishOptionsController implements AutoCloseable {
         long started = System.nanoTime();
         try {
             var result = new LinkedHashMap<String, Object>();
+            if (!isTikTok && listingLogistics != null)
+                result.put("listingLogistics", listingLogistics.config(user.organizationId(), id));
             if (isTikTok) {
                 // Resolve before selecting local categories/warehouses. Keep capability
                 // lookup within the same cancellable overall options deadline.

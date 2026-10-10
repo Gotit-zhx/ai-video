@@ -1,6 +1,7 @@
 (function (root) {
   'use strict';
   let context, templates = [], organization = '', pending = null, platform = 'SHOPEE', busy = false;
+  let shipping = null, shippingRequest = 0, shippingLoading = false;
   const normalize = value => ['TIKTOK','TIKTOK_SHOP'].includes(String(value).toUpperCase()) ? 'TIKTOK_SHOP' : 'SHOPEE';
   const byId = id => document.getElementById(id);
   function get(target) {
@@ -26,12 +27,24 @@
     return {weightGrams:String(template.weightGrams),packageLengthCm:String(template.packageLengthCm),
       packageWidthCm:String(template.packageWidthCm),packageHeightCm:String(template.packageHeightCm)};
   }
+  function logisticInfo(channels, config) {
+    const enabled = channels.filter(channel=>channel.enabled === true);
+    const available = new Set(enabled.map(channel=>String(channel.logistics_channel_id)));
+    const selected = config.mode === 'ALL_ENABLED' ? available : new Set((config.channelIds || []).map(String));
+    if (!['ALL_ENABLED','SELECTED'].includes(config.mode) || !selected.size)
+      throw Error('请在定制模板配置中选择至少一个已开通的物流渠道');
+    if ([...selected].some(id=>!available.has(id)))
+      throw Error('配置的物流渠道已停用或不属于当前店铺，请重新配置物流');
+    return enabled.map(channel=>({logistic_id:Number(channel.logistics_channel_id),enabled:selected.has(String(channel.logistics_channel_id))}));
+  }
   function setBusy(value) {
     busy = value;
-    byId('product-listing-template-form').querySelectorAll('input,textarea,button').forEach(control => {
+    byId('product-listing-template-form').querySelectorAll('input,textarea,select,button').forEach(control => {
       if (!['close-product-listing-templates','cancel-product-listing-templates'].includes(control.id))
-        control.disabled = value || (!control.dataset.listingPlatform && !context.canEdit());
+        control.disabled = value || control.dataset.logisticsEnabled === 'false'
+          || (!control.dataset.listingPlatform && !context.canEdit());
     });
+    byId('save-product-listing-template').disabled = value || !context.canEdit() || (platform === 'SHOPEE' && shippingLoading);
     byId('save-product-listing-template').textContent = value ? '保存中…' : '保存模板';
   }
   const draftValues = new Map();
@@ -41,6 +54,63 @@
       weightGrams:String(Math.round(Number(byId('listing-template-weight').value)*1000000)/1000),
       packageLengthCm:byId('listing-template-length').value,packageWidthCm:byId('listing-template-width').value,
       packageHeightCm:byId('listing-template-height').value,version:get(platform)?.version};
+  }
+  function shippingDraft() {
+    const shopId = byId('listing-logistics-shop').value;
+    if (!shopId || platform !== 'SHOPEE') return null;
+    if (!shipping || shipping.shopId !== shopId || shippingLoading) throw Error('请等待店铺物流读取成功，或清空店铺选择后仅保存详情模板');
+    return {shopId,mode:byId('listing-logistics-mode').value,version:shipping.version,
+      channelIds:[...byId('listing-logistics-channels').querySelectorAll('input:checked')].map(input=>input.value)};
+  }
+  function renderShipping() {
+    byId('listing-logistics-section').hidden = platform !== 'SHOPEE';
+    byId('listing-logistics-mode-label').hidden = !shipping;
+    const container = byId('listing-logistics-channels'); container.replaceChildren();
+    if (!shipping) return;
+    byId('listing-logistics-mode').value = shipping.mode;
+    for (const channel of shipping.channels) {
+      const row = document.createElement('label'); row.className = 'listing-logistics-channel';
+      const text = document.createElement('span'); text.textContent = channel.name;
+      const note = document.createElement('small'); note.textContent = channel.enabled ? '店铺已开通' : '店铺未开启';
+      text.append(note);
+      const input = document.createElement('input'); input.type = 'checkbox'; input.value = channel.id;
+      input.checked = channel.selected; input.dataset.logisticsEnabled = String(channel.enabled);
+      input.disabled = busy || !channel.enabled || !context.canEdit();
+      input.addEventListener('change',()=>{byId('listing-logistics-mode').value = 'SELECTED';});
+      row.append(text,input); container.append(row);
+    }
+  }
+  async function loadShippingShops() {
+    const org = context.getUser()?.organizationId;
+    shipping = null; shippingLoading = false; const request = ++shippingRequest;
+    const select = byId('listing-logistics-shop');
+    select.replaceChildren(new Option('选择店铺设置物流','')); renderShipping();
+    byId('listing-logistics-status').textContent = '默认启用目标店铺已开通的物流渠道。';
+    try {
+      const result = await context.api('/api/v1/product-listing-templates/logistics/shops');
+      if (request !== shippingRequest || context.getUser()?.organizationId !== org) return;
+      for (const shop of result.data || []) select.append(new Option(`${shop.name || shop.externalShopId} · ${shop.region || 'Shopee'}`,shop.id));
+      if (!result.data?.length) byId('listing-logistics-status').textContent = '暂无已连接的虾皮店铺；连接后可配置物流。';
+    } catch(error) {
+      if (request === shippingRequest && context.getUser()?.organizationId === org) byId('listing-logistics-status').textContent = `店铺读取失败：${error.message}`;
+    }
+  }
+  async function loadShipping() {
+    const shopId = byId('listing-logistics-shop').value, org = context.getUser()?.organizationId, request = ++shippingRequest;
+    shipping = null; shippingLoading = Boolean(shopId); renderShipping(); setBusy(busy);
+    byId('listing-logistics-status').textContent = shopId ? '正在读取该店铺的官方物流渠道…' : '默认启用目标店铺已开通的物流渠道。';
+    if (!shopId) return;
+    try {
+      const result = await context.api('/api/v1/product-listing-templates/logistics/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(95000)});
+      if (request !== shippingRequest || context.getUser()?.organizationId !== org) return;
+      if (result.data?.shopId !== shopId || !Array.isArray(result.data?.channels)) throw Error('物流返回不完整，请重试');
+      shipping = result.data; renderShipping();
+      byId('listing-logistics-status').textContent = shipping.version ? `已保存 · 物流版本 ${shipping.version}` : '尚未单独配置，默认启用全部已开通渠道。';
+    } catch(error) {
+      if (request === shippingRequest && context.getUser()?.organizationId === org) byId('listing-logistics-status').textContent = error.message;
+    } finally {
+      if (request === shippingRequest && context.getUser()?.organizationId === org) {shippingLoading = false;setBusy(busy);}
+    }
   }
   function render() {
     const template = draftValues.get(platform) || get(platform);
@@ -54,6 +124,7 @@
     document.querySelectorAll('[data-listing-platform]').forEach(button => button.setAttribute('aria-selected',String(button.dataset.listingPlatform === platform)));
     byId('listing-template-error').textContent = '';
     byId('listing-template-status').textContent = template.version ? `已保存 · 版本 ${template.version}` : '通用默认模板';
+    byId('listing-logistics-section').hidden = platform !== 'SHOPEE';
     setBusy(false);
   }
   async function open() {
@@ -61,19 +132,29 @@
     byId('listing-template-error').textContent = '';
     byId('listing-template-status').textContent = '正在读取模板…';
     byId('product-listing-template-dialog').showModal(); setBusy(true);
-    try { await ensure(true); render(); }
+    try { await Promise.all([ensure(true),loadShippingShops()]); render(); }
     catch (error) { byId('listing-template-error').textContent = error.message; setBusy(false); byId('save-product-listing-template').disabled = true; }
   }
   async function save(event) {
     event.preventDefault();
     if (busy || !context.canEdit()) return;
     const org = organization, target = platform, body = readDraft();
+    let shippingBody;
+    try {
+      shippingBody = shippingDraft();
+      if (shippingBody) body.logisticsConfig = shippingBody;
+    } catch(error) {byId('listing-template-error').textContent = error.message;return;}
     setBusy(true); byId('listing-template-error').textContent = '';
     try {
       const result = await context.api('/api/v1/product-listing-templates/'+target,
         {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       if (context.getUser()?.organizationId !== org || organization !== org) return;
       templates = templates.map(item => item.platform === target ? result.data : item);
+      if (shippingBody && shipping?.shopId === shippingBody.shopId) {
+        shipping.version = shippingBody.version+1; shipping.mode = shippingBody.mode;
+        shipping.channels = shipping.channels.map(channel=>({...channel,selected:channel.enabled && (shipping.mode === 'ALL_ENABLED' || shippingBody.channelIds.includes(channel.id))}));
+        renderShipping();byId('listing-logistics-status').textContent = `保存成功 · 物流版本 ${shipping.version}`;
+      }
       draftValues.delete(target); render();
       byId('listing-template-status').textContent = '保存成功 · 后续采集及上传自动使用此模板';
       context.onSaved?.();
@@ -101,13 +182,25 @@
     for (const id of ['close-product-listing-templates','cancel-product-listing-templates'])
       byId(id).addEventListener('click', () => byId('product-listing-template-dialog').close());
     byId('product-listing-template-form').addEventListener('submit', save);
+    byId('listing-logistics-shop').addEventListener('change',loadShipping);
+    byId('listing-logistics-mode').addEventListener('change',()=>{
+      if (!shipping) return;
+      shipping.mode = byId('listing-logistics-mode').value;
+      if (shipping.mode === 'ALL_ENABLED') shipping.channels = shipping.channels.map(channel=>({...channel,selected:channel.enabled}));
+      else shipping.channels = shipping.channels.map(channel=>({...channel,selected:[...byId('listing-logistics-channels').querySelectorAll('input:checked')].some(input=>input.value === channel.id)}));
+      renderShipping();
+    });
     document.querySelectorAll('[data-listing-platform]').forEach(button => button.addEventListener('click', () => {
       if (busy || button.dataset.listingPlatform === platform) return;
-      draftValues.set(platform,readDraft()); platform = button.dataset.listingPlatform; render();
+      if (shipping && platform === 'SHOPEE' && !shippingLoading) {
+        const draft = shippingDraft(); shipping.mode = draft.mode;
+        shipping.channels = shipping.channels.map(channel=>({...channel,selected:draft.channelIds.includes(channel.id)}));
+      }
+      draftValues.set(platform,readDraft()); platform = button.dataset.listingPlatform; render(); renderShipping();
     }));
     byId('product-template-preview-platform').addEventListener('change', () => preview(context.getCapture()));
   }
-  const api = {init,ensure,get,fields,preview};
-  if (typeof module !== 'undefined') module.exports = {fields,normalize};
+  const api = {init,ensure,get,fields,preview,logisticInfo};
+  if (typeof module !== 'undefined') module.exports = {fields,normalize,logisticInfo};
   else root.ProductListingTemplates = api;
 })(typeof window === 'undefined' ? globalThis : window);

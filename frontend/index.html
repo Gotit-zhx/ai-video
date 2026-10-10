@@ -1924,6 +1924,14 @@
           <label>宽度 / cm<input id="listing-template-width" type="number" min="0.01" max="1000" step="0.01" required></label>
           <label>高度 / cm<input id="listing-template-height" type="number" min="0.01" max="1000" step="0.01" required></label>
         </div>
+        <section id="listing-logistics-section" class="listing-logistics-section" aria-label="店铺物流配置">
+          <header><strong>物流渠道</strong><small>按目标店铺保存</small></header>
+          <label>目标店铺<select id="listing-logistics-shop"><option value="">选择店铺设置物流</option></select></label>
+          <label id="listing-logistics-mode-label" hidden>启用方式<select id="listing-logistics-mode"><option value="ALL_ENABLED">跟随店铺所有已开通渠道</option><option value="SELECTED">只启用勾选的渠道</option></select></label>
+          <div id="listing-logistics-channels"></div>
+          <p id="listing-logistics-status" role="status">默认启用目标店铺已开通的物流渠道。</p>
+          <p class="listing-template-note">支持同时启用多个渠道。运费和渠道限制由虾皮计算；这里的勾选用于商品上传。</p>
+        </section>
         <label>详情文案<textarea id="listing-template-description" rows="12" maxlength="9000" translate="no"></textarea></label>
         <p class="listing-template-note">SKU、原价、原图与原类目保留。两个平台独立保存；已提交的任务沿用提交时的模板。</p>
         <p id="listing-template-status" role="status"></p><p id="listing-template-error" role="alert"></p>
@@ -1941,9 +1949,9 @@
   <script src="/product-bulk-upload.js?v=20260910-shop-switch-1" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
-  <link rel="stylesheet" href="/product-listing-templates.css?v=20261010-2">
-  <script src="/product-listing-templates.js?v=20261010-1" defer></script>
-  <script src="/app.js?v=20261010-capture-templates-1" defer></script>
+  <link rel="stylesheet" href="/product-listing-templates.css?v=20261010-3">
+  <script src="/product-listing-templates.js?v=20261010-logistics-1" defer></script>
+  <script src="/app.js?v=20261010-capture-logistics-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261009-windows-unicode-017" defer></script>
   <script src="/hr-onboarding.js?v=20261009-mentor-selection-2" defer></script>
   <script src="/hr-bi.js?v=20261009-bi-compact-3" defer></script>

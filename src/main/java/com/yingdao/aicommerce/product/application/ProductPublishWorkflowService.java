@@ -58,6 +58,8 @@ public class ProductPublishWorkflowService {
     private org.springframework.jdbc.core.JdbcTemplate commerceDb;
     @org.springframework.beans.factory.annotation.Autowired
     private ProductListingTemplateService listingTemplates;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductListingLogisticsService listingLogistics;
 
     public ProductPublishWorkflowService(ProductPublishWorkflowMapper workflowMapper,
                                          ProductCaptureMapper captureMapper,
@@ -84,6 +86,7 @@ public class ProductPublishWorkflowService {
         Map<String, Object> body = mutableMap(request);
         body.remove("exchangeRateSnapshot"); // Server-owned immutable quote; never trust a browser rate.
         body.remove("listingTemplateSnapshot");
+        body.remove("listingLogisticsSnapshot");
         if (!confirmed(body.get("confirmed"))) {
             throw badRequest("一键上传前必须明确提交 confirmed=true");
         }
@@ -107,6 +110,7 @@ public class ProductPublishWorkflowService {
             body.put("executionMode", executionMode(sameKey));
             var savedRequest = request(sameKey);
             ProductListingTemplateService.apply(body, ProductListingTemplateService.snapshotFrom(savedRequest));
+            ProductListingLogisticsService.apply(body, ProductListingLogisticsService.snapshotFrom(savedRequest));
             if (savedRequest.containsKey("exchangeRateSnapshot")) body.put("exchangeRateSnapshot", savedRequest.get("exchangeRateSnapshot"));
             if (savedRequest.containsKey("visionWatermarkCheck")) body.put("visionWatermarkCheck",savedRequest.get("visionWatermarkCheck"));
             else body.remove("visionWatermarkCheck");
@@ -143,6 +147,10 @@ public class ProductPublishWorkflowService {
         if (listingTemplates != null) {
             var template = listingTemplates.snapshot(principal.organizationId(), destination, capture);
             ProductListingTemplateService.apply(body, template);
+            requestJson = writeJson(body);
+        }
+        if (listingLogistics != null && "SHOPEE".equals(destination) && MODE_LIVE.equals(executionMode)) {
+            ProductListingLogisticsService.apply(body, listingLogistics.snapshot(principal.organizationId(), storedShopId));
             requestJson = writeJson(body);
         }
         if (requestJson.length() > MAX_REQUEST_JSON_LENGTH) {

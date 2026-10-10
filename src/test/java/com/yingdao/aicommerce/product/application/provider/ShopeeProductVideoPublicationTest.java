@@ -116,6 +116,24 @@ class ShopeeProductVideoPublicationTest {
                 "package_length",new BigDecimal("5"),"package_width",new BigDecimal("25"),"package_height",new BigDecimal("25")));
         assertThat(capture.getDescription()).isEqualTo("Description");
     }
+    @Test void actualAddItemEnablesBothDestinationChannelsAndNeverOverridesOfficialFreight() {
+        var logistics=new com.yingdao.aicommerce.product.application.ProductListingLogisticsService(
+                mock(org.springframework.jdbc.core.JdbcTemplate.class),mock(ShopAuthorizationService.class),client,new ObjectMapper());
+        org.springframework.test.util.ReflectionTestUtils.setField(provider,"listingLogistics",logistics);
+        when(client.shopGet("/api/v2/logistics/get_channel_list",connection,Map.of())).thenReturn(Map.of("response",Map.of(
+                "logistics_channel_list",List.of(
+                        Map.of("logistics_channel_id",100,"logistics_channel_name","Shopee Self Pick-up","enabled",true),
+                        Map.of("logistics_channel_id",200,"logistics_channel_name","Standard Local","enabled",true)))));
+        when(videos.upload(capture,connection)).thenReturn(ShopeeProductVideoUploader.UploadedVideo.none());
+        var body=new java.util.LinkedHashMap<>(request());
+        com.yingdao.aicommerce.product.application.ProductListingLogisticsService.apply(body,Map.of(
+                "organizationId","org-1","shopId",connection.shop().getId(),"mode","ALL_ENABLED","channelIds",List.of(),"version",1));
+        provider.publish(capture,"SHOPEE",connection.shop().getId(),body,()->{});
+        @SuppressWarnings("unchecked") ArgumentCaptor<Map<String,Object>> payload=ArgumentCaptor.forClass(Map.class);
+        verify(client).shopPost(eq("/api/v2/product/add_item"),eq(connection),payload.capture());
+        assertThat(payload.getValue().get("logistic_info")).isEqualTo(List.of(
+                Map.of("logistic_id",100L,"enabled",true),Map.of("logistic_id",200L,"enabled",true)));
+    }
 
     @Test void nineLocalDetailsPublishAsMainAndEightDetailsWhileAllSkuImagesRemainBound() {
         var localImages = new ArrayList<ProductCaptureImage>();

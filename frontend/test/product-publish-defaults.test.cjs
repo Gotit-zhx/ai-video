@@ -29,6 +29,21 @@ test('fixed platform template overrides original parcel in single upload but kee
  assert.equal(node('#publish-package-width').value,'25');assert.equal(node('#publish-package-height').value,'25');
  assert.equal(c.selectedProductCaptureDetail.normalizedData.weightGrams,350);
 });
+test('single and bulk option resolution preserve all configured destination logistics',async()=>{
+ const {c,node}=context();
+ c.ProductListingTemplates.logisticInfo=require('../product-listing-templates.js').logisticInfo;
+ const options={categories:{category_list:[{category_id:2,has_children:false,display_category_name:'T-shirts'}]},
+   listingLogistics:{mode:'ALL_ENABLED',channelIds:[],version:1},
+   logistics:{logistics_channel_list:[
+     {logistics_channel_id:100,logistics_channel_name:'Shopee Self Pick-up',enabled:true},
+     {logistics_channel_id:200,logistics_channel_name:'Standard Local',enabled:true}]}};
+ c.api=async()=>({data:options});await c.prepareSimpleProductPublish();
+ const expected=[{logistic_id:100,enabled:true},{logistic_id:200,enabled:true}];
+ assert.deepEqual(JSON.parse(node('#publish-logistic-info').value),expected);
+ assert.equal(node('#publish-logistic-choice').disabled,true);
+ assert.match(node('#publish-auto-summary').textContent,/Shopee Self Pick-up、Standard Local/);
+ assert.deepEqual(JSON.parse(JSON.stringify(c.resolveShopeePublishOptions(c.selectedProductCaptureDetail,options).logisticInfo)),expected);
+});
 test('preserves unit-aware original weight without interpreting size text as weight',()=>{
  const {c}=context();assert.equal(c.originalProductWeight({normalizedData:{weightGrams:180}}),'180');
  assert.equal(c.originalProductWeight({normalizedData:{package_weight:{value:0.3,unit:'kg'}}}),'300');

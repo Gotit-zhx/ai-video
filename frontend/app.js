@@ -6145,8 +6145,11 @@ function resolveShopeePublishOptions(capture, options, common = {}, category = {
   const channels = (options?.logistics?.logistics_channel_list || []).filter(c => c.enabled === true);
   const logistic = channels.some(c => String(c.logistics_channel_id) === common.logistic)
     ? common.logistic : channels.length ? String(channels[0].logistics_channel_id) : '';
+  const configured = options?.listingLogistics;
   return { leaves, categoryId, matchedOriginal: Boolean(categoryId), channels, logistic,
-    logisticInfo: logistic ? [{ logistic_id: Number(logistic), enabled: true }] : [] };
+    logisticsConfigured: Boolean(configured),
+    logisticInfo: configured ? ProductListingTemplates.logisticInfo(channels, configured)
+      : logistic ? [{ logistic_id: Number(logistic), enabled: true }] : [] };
 }
 
 function resolveTikTokPublishOptions(capture, options, common = {}, category = {}) {
@@ -6475,6 +6478,7 @@ async function prepareSimpleProductPublish() {
   field('category-choice').required = false;
   field('category-choice').replaceChildren(new Option('正在读取官方类目…', ''));
   field('logistic-choice').replaceChildren(new Option('正在读取店铺物流…', ''));
+  field('logistic-choice').disabled = false;
   field('advanced').open = false;
   const shop = activeMarketplaceShops(platform).find(s => String(s.id) === shopId);
   const currency = {MY:'MYR',PH:'PHP',SG:'SGD',TH:'THB',VN:'VND',ID:'IDR',TW:'TWD',BR:'BRL',MX:'MXN',US:'USD',GB:'GBP'}[String(shop?.region || '').toUpperCase()];
@@ -6522,8 +6526,17 @@ async function prepareSimpleProductPublish() {
       return;
     }
     const channels = resolved.channels;
-    field('logistic-choice').replaceChildren(new Option('请选择配送渠道（下次自动带入）',''), ...channels.map(c => new Option(c.logistics_channel_name, String(c.logistics_channel_id))));
-    field('logistic-choice').value = resolved.logistic;
+    if (resolved.logisticsConfigured) {
+      preparation.logisticInfo = resolved.logisticInfo;
+      const selected = new Set(resolved.logisticInfo.filter(channel=>channel.enabled).map(channel=>String(channel.logistic_id)));
+      const names = channels.filter(channel=>selected.has(String(channel.logistics_channel_id))).map(channel=>channel.logistics_channel_name);
+      field('logistic-choice').replaceChildren(new Option(`已配置 ${names.length} 个物流渠道`, '__CONFIGURED__'));
+      field('logistic-choice').disabled = true;
+      field('auto-summary').textContent += ` · 物流：${names.join('、')}（可在定制模板配置中修改）`;
+    } else {
+      field('logistic-choice').replaceChildren(new Option('请选择配送渠道（下次自动带入）',''), ...channels.map(c => new Option(c.logistics_channel_name, String(c.logistics_channel_id))));
+      field('logistic-choice').value = resolved.logistic;
+    }
     syncSimplePublishLogistics();
     if (!channels.length) { field('advanced').open = true; field('auto-summary').textContent += '。店铺未返回已启用物流，请检查店铺配置。'; }
     preparation.status = 'READY';
@@ -6554,7 +6567,8 @@ async function prepareSimpleProductPublish() {
 }
 function syncSimplePublishLogistics() {
   const id = document.querySelector('#publish-logistic-choice').value;
-  document.querySelector('#publish-logistic-info').value = id ? JSON.stringify([{logistic_id:Number(id),enabled:true}]) : '';
+  document.querySelector('#publish-logistic-info').value = productPublishPreparation?.logisticInfo
+    ? JSON.stringify(productPublishPreparation.logisticInfo) : id ? JSON.stringify([{logistic_id:Number(id),enabled:true}]) : '';
 }
 
 function syncOfficialPublishFields() {

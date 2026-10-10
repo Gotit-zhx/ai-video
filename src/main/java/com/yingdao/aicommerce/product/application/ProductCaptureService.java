@@ -87,6 +87,8 @@ public class ProductCaptureService {
     private ProductListingTemplateService listingTemplates;
     @org.springframework.beans.factory.annotation.Autowired
     private ProductListingTitleService listingTitles;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductListingLogisticsService listingLogistics;
 
     public ProductCaptureService(
             ProductCaptureMapper captureMapper,
@@ -607,6 +609,12 @@ public class ProductCaptureService {
                     : listingTemplates.publishSnapshot(principal.organizationId(), id, key, destination, capture);
             ProductListingTemplateService.apply(body, snapshot);
         } else body.remove("listingTemplateSnapshot");
+        if (listingLogistics != null && "SHOPEE".equals(destination)) {
+            var shipping = existing != null
+                    ? ProductListingLogisticsService.snapshotFrom(readMap(existing.getRequestJson()))
+                    : listingLogistics.publishSnapshot(principal.organizationId(), id, key, shopId);
+            ProductListingLogisticsService.apply(body, shipping);
+        } else body.remove("listingLogisticsSnapshot");
         if (existing != null) {
             verifyPublishIdempotency(existing, capture, destination, shopId, body);
             return new PublishResult(existing, detail(capture));

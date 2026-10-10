@@ -68,6 +68,8 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     private final ShopeeSizeChartExtractor sizeCharts;
     @org.springframework.beans.factory.annotation.Autowired
     private ShopeeAttributeResolver attributeResolver;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.application.ProductListingLogisticsService listingLogistics;
 
     public ShopeeOfficialPublishingProvider(ShopAuthorizationService shopAuthorizationService,
                                             ShopeeOfficialClient client,
@@ -114,7 +116,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         rejectDryRunImages(images);
         int publishStock = requiredStock(request);
         long categoryId = requiredLong(request, "categoryId", "Shopee 发布前必须选择官方叶子类目");
-        List<Map<String, Object>> logisticInfo = requiredLogisticInfo(request.get("logisticInfo"));
+        var shippingSnapshot = com.yingdao.aicommerce.product.application.ProductListingLogisticsService.snapshotFrom(request);
+        List<Map<String, Object>> logisticInfo = !shippingSnapshot.isEmpty() && listingLogistics != null
+                ? listingLogistics.resolve(connection, shippingSnapshot) : requiredLogisticInfo(request.get("logisticInfo"));
         BigDecimal weightKg = requiredDecimal(request, "weightGrams", "Shopee 发布前必须填写包裹重量")
                 .divide(BigDecimal.valueOf(1000), 3, RoundingMode.UP);
         BigDecimal itemPrice = requiredPrice(ShopeePublishPricing.price(basePrice(capture, skus), request), "Shopee 发布价格必须大于 0");

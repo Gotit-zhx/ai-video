@@ -13,6 +13,7 @@ import zipfile
 root=Path(sys.argv[1]).resolve()
 expected=json.loads((root/"expected.json").read_text())
 manifest=json.loads((root/"manifest.json").read_text())
+plan=json.loads((root/"plan.json").read_text()) if (root/"plan.json").exists() else {}
 assert not (root/"activation.json").exists()
 assert shutil.disk_usage(root).free >= 2*1024**3
 backup=root/"rollback"
@@ -40,7 +41,9 @@ def idle():
             ("hr_onboarding_notices","status IN ('preparing','sending')")]:
             assert db.execute(f"SELECT COUNT(*) FROM {table} WHERE {condition}").fetchone()[0]==0,table
 
-names=("ai-commerce-app","heyi-pi-runtime","ai-commerce-frontend")
+names=tuple(plan.get("services",("ai-commerce-app","heyi-pi-runtime","ai-commerce-frontend")))
+assert "ai-commerce-app" in names and "ai-commerce-frontend" in names
+assert set(names)<= {"ai-commerce-app","heyi-pi-runtime","ai-commerce-frontend"}
 before={name:inspect(name) for name in names}
 preserved={info["Name"]:info["Id"] for info in json.loads(run("docker","inspect",*run("docker","ps","-q").decode().split()))
     if info["Name"].lstrip("/") not in names}
@@ -48,21 +51,23 @@ idle()
 backup.mkdir(exist_ok=False)
 run("docker","cp","ai-commerce-app:/app/app.jar",str(backup/"app.jar"))
 assert sha((backup/"app.jar").read_bytes())==expected["jar"],"Live JAR changed"
-prefixes=[
+prefixes=plan.get("javaPrefixes",[
     "product/application/ProductCaptureService","product/application/ProductPublishWorkflowService",
     "product/application/ProductListingTemplateService","product/application/ProductListingTitleService",
     "product/web/ProductListingTemplateController","product/web/ProductListingTitleController",
     "product/application/provider/ShopeeOfficialPublishingProvider",
     "product/application/provider/TikTokProductDescription","product/application/provider/TikTokShopOfficialPublishingProvider",
-    "config/SecurityConfig"]
+    "config/SecurityConfig"])
 changed={}
 for prefix in prefixes:
     path=root/"source/target/classes/com/yingdao/aicommerce"/prefix
     classes=list(path.parent.glob(path.name+".class"))+list(path.parent.glob(path.name+"$*.class"))
     assert classes,prefix
     for file in classes: changed["BOOT-INF/classes/"+str(file.relative_to(root/"source/target/classes"))]=file
-migration="BOOT-INF/classes/db/migration/V107__product_listing_templates.sql"
-changed[migration]=root/"source/src/main/resources/db/migration/V107__product_listing_templates.sql"
+migration_file=plan.get("migration","V107__product_listing_templates.sql")
+assert Path(migration_file).name==migration_file
+migration="BOOT-INF/classes/db/migration/"+migration_file
+changed[migration]=root/"source/src/main/resources/db/migration"/migration_file
 def replace_class(name):
     return name==migration or any(name.startswith("BOOT-INF/classes/com/yingdao/aicommerce/"+prefix+"$")
         or name=="BOOT-INF/classes/com/yingdao/aicommerce/"+prefix+".class" for prefix in prefixes)
@@ -82,6 +87,7 @@ for name,directory,files in [
     ("heyi-pi-runtime",root/"pi-image",{"src/server.js":"/app/src/server.js","src/product-listing-title.js":"/app/src/product-listing-title.js"}),
     ("ai-commerce-frontend",root/"frontend-image",{file:"/usr/share/nginx/html/"+file for file in
         ("index.html","app.js","product-listing-templates.js","product-listing-templates.css")})]:
+    if name not in names: continue
     directory.mkdir(exist_ok=True)
     copy_lines=["COPY app.jar /app/app.jar"] if name=="ai-commerce-app" else []
     for file,remote in files.items():
@@ -97,7 +103,7 @@ for name,directory,files in [
         assert sha(source.read_bytes())==manifest[key],key
         target=directory/file;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
         copy_lines.append("COPY "+file+" "+remote)
-    tag=before[name]["Config"]["Image"].split(":")[0]+":capture-templates-20261010"
+    tag=before[name]["Config"]["Image"].split(":")[0]+":"+plan.get("tag","capture-templates-20261010")
     (directory/"Dockerfile").write_text("FROM "+before[name]["Image"]+"\n"+"\n".join(copy_lines)+"\n")
     run("docker","build","-t",tag,str(directory));images[name]=tag
 
@@ -129,6 +135,7 @@ idle()
 activated=[]
 try:
     for name in ("heyi-pi-runtime","ai-commerce-app","ai-commerce-frontend"):
+        if name not in names: continue
         activated.append(name);activate(name,images[name]);health(name)
         after=inspect(name)
         mounts=lambda value:sorted((m["Source"],m["Destination"],m["RW"]) for m in value["Mounts"])
@@ -154,5 +161,6 @@ except BaseException:
     "images":images,"manifest":manifest,"javaEntries":{name:sha(file.read_bytes()) for name,file in changed.items()},
     "rollbackImages":{name:before[name]["Config"]["Image"] for name in names},
     "unrelatedJarEntriesPreserved":True,"preservedContainers":preserved},indent=2))
-for directory in (root/"app-image",root/"pi-image",root/"frontend-image"):shutil.rmtree(directory)
-print("Listing templates and capture AI titles published; all services healthy; original resources preserved")
+for directory in (root/"app-image",root/"pi-image",root/"frontend-image"):
+    if directory.exists(): shutil.rmtree(directory)
+print("Reviewed listing release published; services healthy; original resources preserved")
