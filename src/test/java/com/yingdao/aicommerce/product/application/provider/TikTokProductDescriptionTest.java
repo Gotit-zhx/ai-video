@@ -28,6 +28,14 @@ class TikTokProductDescriptionTest {
     private final TikTokShopOfficialClient client = mock(TikTokShopOfficialClient.class);
     private final MarketplaceImageDownloader downloader = mock(MarketplaceImageDownloader.class);
     private final TikTokProductDescription helper = new TikTokProductDescription(client, downloader);
+    @Test void targetTemplateReplacesTextWhilePreservingProcessedDetailImages() throws Exception {
+        var capture=capture("Source Shopee text"); var detail=image(capture,"DETAIL",0,"one"); responses();
+        var result=helper.prepare(capture,List.of(detail),connection("org-1"),"TikTok specific text\nSecond paragraph");
+        assertThat(result.html()).startsWith("<p>TikTok specific text<br>Second paragraph</p>");
+        assertThat(result.html()).doesNotContain("Source Shopee text").contains("<img ");
+        assertThat(result.imageCount()).isEqualTo(1);
+        assertThat(capture.getDescription()).isEqualTo("Source Shopee text");
+    }
 
     @Test void appendsAllDetailsInSourceOrderUsingProcessedArchivesAndOfficialUrl() throws Exception {
         var capture = capture("Cotton shirt\nSoft & comfortable");

@@ -4803,6 +4803,14 @@ function renderProductCaptureDetail() {
   document.querySelector("#product-price-min-input").value = capture.priceMin ?? "";
   document.querySelector("#product-price-max-input").value = capture.priceMax ?? "";
   document.querySelector("#product-description-input").value = capture.description || "";
+  ProductListingTemplates.preview(capture);
+  void ProductListingTemplates.ensure().then(() => {
+    if (selectedProductCaptureDetail?.id === capture.id) ProductListingTemplates.preview(selectedProductCaptureDetail);
+  }).catch(() => {});
+  document.querySelector('#generate-product-ai-title').disabled = !hasAnyPermission('product:edit') || capture.status === 'PUBLISHED';
+  const titleAi = capture.normalizedData?.titleAi;
+  document.querySelector('#product-ai-title-status').textContent = titleAi?.status === 'SUCCEEDED' ? `采集时已由 Pi Agent SDK 处理标题 · 原标题：${capture.normalizedData.originalTitle || ''}`
+    : titleAi?.status === 'FAILED' ? `自动标题处理失败，已保留原标题：${titleAi.error || '请重试'}` : '新采集商品自动通过 Pi Agent SDK 处理标题';
   renderProductSkus(capture);
   renderProductImages(capture);
   void renderProductVideos(capture);
@@ -4943,6 +4951,7 @@ async function loadProductCaptures(preferredId = null, {
   productCapturePaginationMessage = "";
   const list = document.querySelector("#product-capture-list");
   list.setAttribute("aria-busy", "true");
+  void ProductListingTemplates.ensure().catch(() => {});
   if (!silent && !append) {
     document.querySelector("#product-capture-list").innerHTML = `<div class="product-empty is-loading"><strong>正在读取商品草稿…</strong><span>只显示当前公司的采集数据。</span></div>`;
     document.querySelector("#product-result-count").textContent = "正在读取商品…";
@@ -6073,7 +6082,7 @@ function originalProductWeight(capture) {
   }
   return '';
 }
-function automaticProductPublishDefaults(capture, common = {}) {
+function automaticProductPublishDefaults(capture, common = {}, platform = capture?.sourcePlatform || 'SHOPEE') {
   return {
     publishStock: 999,
     weightGrams: originalProductWeight(capture) || '250',
@@ -6082,7 +6091,8 @@ function automaticProductPublishDefaults(capture, common = {}) {
     packageWidthCm: common['package-width'] || '25',
     packageHeightCm: common['package-height'] || '2',
     skuStocks: {}, productAttributes: [],
-    shopeePayload: { brand: { brand_id: 0, original_brand_name: 'NoBrand' } }
+    shopeePayload: { brand: { brand_id: 0, original_brand_name: 'NoBrand' } },
+    ...(typeof ProductListingTemplates !== 'undefined' ? ProductListingTemplates.fields(ProductListingTemplates.get(platform)) : {})
   };
 }
 
@@ -6291,7 +6301,9 @@ function publishCategoryExplicitFacts(capture) {
         else if (/^(?:long sleeve[ds]?|lengan panjang|长袖|長袖)$/.test(value)) facts.sleeve.add('long');
         else if (/^(?:sleeveless|tanpa lengan|无袖|無袖)$/.test(value)) facts.sleeve.add('none');
       }
-      if (/^(?:collar|neckline|necktype|garisleher|领口|领型|領口|領型)$/.test(key) && value) {
+      // "Others" is unspecified, not a concrete neckline contradicting the description.
+      if (/^(?:collar|neckline|necktype|garisleher|领口|领型|領口|領型)$/.test(key) && value
+          && !/^(?:other|others|unknown|not specified|n a|none|lain|lain lain|其他|其它|未指定|未知)$/.test(value)) {
         facts.neckline.add(/^(?:round neck|crew neck|crewneck|leher krew|圆领|圓領)$/.test(value) ? 'round' : 'other');
       }
       if (/^(?:(?:product|item)?condition|keadaan(?:barang)?|kondisibarang|商品状况|商品成色|成色)$/.test(key)) {
@@ -6317,7 +6329,7 @@ function publishCategoryExplicitFacts(capture) {
     for (const key of ['condition', 'productCondition', 'product_condition', 'itemCondition', 'item_condition']) add('condition', source?.[key]);
   }
   // Only labelled specifications are facts. Free-form descriptions and marketing titles cannot change product type.
-  const description = String(capture?.description || capture?.normalizedData?.description || '').slice(0, 100000)
+  const description = String(capture?.normalizedData?.originalDescription ?? capture?.description ?? capture?.normalizedData?.description ?? '').slice(0, 100000)
     .replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ');
   const fields = /(?:^|[\s;；|])((?:sleeve\s+length|panjang\s+lengan(?:\s+baju)?|袖长|袖長)|(?:collar|neckline|neck\s+type|garis\s+leher|领口|领型|領口|領型))\s*[:：]\s*((?:short|long)\s+sleeve[ds]?|sleeveless|lengan\s+(?:pendek|panjang)|tanpa\s+lengan|短袖|长袖|長袖|无袖|無袖|round\s+neck|crew\s*neck|(?:v|square|scoop)[\s-]+neck|collared|polo|leher\s+krew|圆领|圓領)(?=$|[\s;；,.，。|])/gi;
   for (const field of description.matchAll(fields)) add(field[1], field[2]);
@@ -6336,7 +6348,7 @@ function matchDestinationCategory(capture, leaves, saved = {}, genderOverride = 
   const labels = c => c.aliases?.length ? c.aliases : [c.label];
   const leafName = split(path).pop() || '';
   const categoryProfile = publishCategoryProfile(path), sourceLeaf = publishCategoryProfile(leafName);
-  const title = String(capture?.title || capture?.normalizedData?.title || '');
+  const title = String(capture?.normalizedData?.originalTitle ?? capture?.title ?? capture?.normalizedData?.title ?? '');
   const attributes = publishCategoryAttributeText(capture);
   const detailProfile = publishCategoryProfile(`${title} ${attributes}`);
   let sourceTypes = sourceLeaf.types.size ? sourceLeaf.types : detailProfile.types;
@@ -6433,9 +6445,19 @@ async function prepareSimpleProductPublish() {
     && platform === document.querySelector('#publish-destination-platform').value;
   const preparation = {version, captureId, organizationId, platform, shopId, status:'LOADING', error:''};
   productPublishPreparation = preparation;
+  try { if (!ProductListingTemplates.get(platform)) await ProductListingTemplates.ensure(); }
+  catch (error) {
+    if (current()) {
+      preparation.status = 'BLOCKED'; preparation.error = error.message;
+      document.querySelector('#publish-auto-summary').textContent = error.message;
+      document.querySelector('#publish-auto-summary').dataset.prepareError = error.message;
+    }
+    return;
+  }
+  if (!current()) return;
   const common = readPublishPreference();
   const category = readPublishPreference(true);
-  const defaults = automaticProductPublishDefaults(selectedProductCaptureDetail, common);
+  const defaults = automaticProductPublishDefaults(selectedProductCaptureDetail, common, platform);
   const field = name => document.querySelector(`#publish-${name}`);
   field('auto-summary').dataset.loading = 'false';
   field('auto-summary').dataset.prepareError = '';
@@ -6462,7 +6484,8 @@ async function prepareSimpleProductPublish() {
   field('price').required = false;
   for (const name of ['stock','weight-grams']) field(name).required = live;
   field('category-id').required = false;
-  field('auto-summary').textContent = `每个 SKU 默认库存 999 · ${originalProductWeight(selectedProductCaptureDetail) ? '已沿用原商品重量' : '重量默认 250 克/件'} · 默认无品牌 · 各 SKU 原售价按最新汇率自动换算为 ${currency || '目标币种'}`;
+  const template = ProductListingTemplates.get(platform);
+  field('auto-summary').textContent = `每个 SKU 默认库存 999 · ${template?.enabled ? `${template.name} · ${Number(defaults.weightGrams)/1000} kg · ${defaults.packageLengthCm} × ${defaults.packageWidthCm} × ${defaults.packageHeightCm} cm` : originalProductWeight(selectedProductCaptureDetail) ? '已沿用原商品重量' : '重量默认 250 克/件'} · 各 SKU 原售价按最新汇率自动换算为 ${currency || '目标币种'}`;
   const fallback = message => {
     field('category-choice').hidden = true;
     field('category-id').hidden = false;
@@ -6955,6 +6978,15 @@ function renderProductBulkCard(item, shops = [], preview = false) {
 
 function renderProductBulkProgress() {
   const shops = crossPlatformPublishShops();
+  const summary = document.querySelector('#product-bulk-defaults');
+  if (summary && typeof ProductListingTemplates !== 'undefined') {
+    const shopId = document.querySelector('#product-bulk-shop')?.value;
+    const target = shops.find(shop => String(shop.id) === shopId)?.platform;
+    const template = target && ProductListingTemplates.get(target);
+    summary.textContent = template?.enabled
+      ? `${template.name} · ${Number(template.weightGrams)/1000} kg · ${template.packageLengthCm} × ${template.packageWidthCm} × ${template.packageHeightCm} cm · 库存 999 · 自动匹配类目与物流`
+      : '自动套用目标平台配置 · 库存 999 · 默认无品牌 · 自动匹配类目与物流 · 原售价换汇';
+  }
   document.querySelector("#product-bulk-progress").innerHTML = productBulkItems.map(item => renderProductBulkCard(item, shops)).join('');
   const selection = document.querySelector('.product-bulk-selection');
   if (selection) selection.hidden = productBulkItems.length > 0;
@@ -7153,6 +7185,8 @@ async function submitProductBulkUpload(event) {
     const isCurrent = () => currentUser?.organizationId === org && productBulkRuns.get(key) === run;
     const isVisible = () => productBulkItems === items && productBulkStorageKey === key;
     const recordRetry = (item, label, details) => recordProductBulkRetry(item, label, details, run);
+    await ProductListingTemplates.ensure(true);
+    if (!isCurrent()) return;
     const shopOptions = new Map();
     const readShopOptions = shopId => {
       if (!shopOptions.has(shopId)) {
@@ -7225,7 +7259,7 @@ async function submitProductBulkUpload(event) {
         if (!resolved.categoryId) throw Error(`原商品类目“${capture.categoryName || '未采集'}”无法匹配目标店铺类目，未提交此商品`);
         if (platform === 'TIKTOK_SHOP' && !resolved.warehouseId) throw Error('目标店铺没有唯一或默认发货仓库，请在店铺后台设置默认仓库');
         if (platform === 'SHOPEE' && !resolved.logisticInfo.length) throw Error('Shopee 返回的配送渠道均不可用，请核对卖家中心物流设置后重试');
-        payload = {...base, ...automaticProductPublishDefaults(capture, common), categoryId: resolved.categoryId,
+        payload = {...base, ...automaticProductPublishDefaults(capture, common, platform), categoryId: resolved.categoryId,
           ...(platform === 'TIKTOK_SHOP' ? {warehouseId: resolved.warehouseId} : {logisticInfo: resolved.logisticInfo})};
       }
       capture = await normalizeProductCaptureForUpload(capture, isCurrent, captureRequest);
@@ -7775,6 +7809,31 @@ document.querySelector("#product-sku-manual-confirm").addEventListener("change",
   if (selectedProductCaptureDetail) syncProductActions(selectedProductCaptureDetail);
 }));
 
+ProductListingTemplates.init({api,getUser:()=>currentUser,canEdit:()=>hasAnyPermission('product:edit'),
+  getCapture:()=>selectedProductCaptureDetail,onSaved:()=>{
+    ProductListingTemplates.preview(selectedProductCaptureDetail); renderProductBulkProgress();
+  }});
+document.querySelector('#generate-product-ai-title').addEventListener('click', async event => {
+  const capture = selectedProductCaptureDetail, org = currentUser?.organizationId;
+  const button = event.currentTarget, status = document.querySelector('#product-ai-title-status');
+  if (!capture || button.disabled || !hasAnyPermission('product:edit')) return;
+  if (productEditorDirty || productCaptureSaveInFlightId) { status.textContent = '请先保存商品修改，再生成标题。'; return; }
+  const platform = document.querySelector('#product-template-preview-platform').value;
+  button.disabled = true; status.textContent = '正在根据原商品名称与规格生成标题…';
+  try {
+    const result = await api(`/api/v1/product-captures/${encodeURIComponent(capture.id)}/ai-title`,
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform}),signal:AbortSignal.timeout(105000)});
+    if (org !== currentUser?.organizationId || selectedProductCaptureDetail?.id !== capture.id) return;
+    if (!result.data?.title) throw Error('标题生成结果不完整，请重试');
+    document.querySelector('#product-title-input').value = result.data.title;
+    productEditorDirty = true; syncProductActions(capture);
+    status.textContent = '已生成，请核对标题后保存修改。';
+  } catch(error) {
+    if (org === currentUser?.organizationId && selectedProductCaptureDetail?.id === capture.id) status.textContent = error.message;
+  } finally {
+    if (org === currentUser?.organizationId && selectedProductCaptureDetail?.id === capture.id) button.disabled = !hasAnyPermission('product:edit');
+  }
+});
 document.querySelector("#refresh-product-captures").addEventListener("click", () =>
   loadProductCaptures(selectedProductCaptureId));
 document.querySelector("#save-product-capture").addEventListener("click", saveProductCapture);

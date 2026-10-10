@@ -123,7 +123,10 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
             throw conflict("TikTok Shop 发布至少需要一张处理完成的商品图");
         }
 
-        TikTokProductDescription.PreparedDescription description = descriptionBuilder.prepare(capture, images, connection);
+        TikTokProductDescription.PreparedDescription description = request.containsKey("listingTemplateSnapshot")
+                ? descriptionBuilder.prepare(capture, images, connection,
+                    com.yingdao.aicommerce.product.application.ProductListingTemplateService.publicationDescription(capture, request))
+                : descriptionBuilder.prepare(capture, images, connection);
         Map<String, Object> body = mutableMap(request.get("tiktokShopPayload"));
         body.remove("size_chart");
         if (sizeChart.present()) body.put("size_chart", sizeChart.payload());

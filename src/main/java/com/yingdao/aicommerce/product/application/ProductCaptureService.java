@@ -65,7 +65,8 @@ public class ProductCaptureService {
     private static final Set<String> PROTECTED_NORMALIZED_FIELDS = Set.of(
             "skus", "variants", "models", "images", "imageUrls",
             "skuCompleteness", "imageCompleteness", "fieldSources", "rawData",
-            "sourcePlatform", "sourceUrl", "sourceProductId", "sourceShopId", "captureMode"
+            "sourcePlatform", "sourceUrl", "sourceProductId", "sourceShopId", "captureMode",
+            "originalDescription", "listingTemplate", "originalTitle", "titleAi"
     );
 
     private final ProductCaptureMapper captureMapper;
@@ -82,6 +83,10 @@ public class ProductCaptureService {
     private final ObjectMapper objectMapper;
     @org.springframework.beans.factory.annotation.Autowired
     private ProductWatermarkQueue watermarkQueue;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductListingTemplateService listingTemplates;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductListingTitleService listingTitles;
 
     public ProductCaptureService(
             ProductCaptureMapper captureMapper,
@@ -145,6 +150,7 @@ public class ProductCaptureService {
         normalized.putAll(mapValue(body, "normalizedData", "normalized"));
         normalized.putAll(mapValue(body, "domData", "dom", "fields"));
         copyKnownFields(body, normalized);
+        copy(body, normalized, "attributes", "attributes", "productAttributes", "product_attributes", "productProperties");
         normalized.put("sourcePlatform", source.platform());
         normalized.put("sourceUrl", source.canonicalUrl());
         normalized.put("sourceProductId", source.productId());
@@ -178,7 +184,22 @@ public class ProductCaptureService {
         if (priceMin != null && priceMax == null) priceMax = priceMin;
         if (priceMin == null && priceMax != null) priceMin = priceMax;
         validatePriceRange(priceMin, priceMax);
+        if (listingTitles != null) {
+            normalized.put("originalTitle", title);
+            try {
+                title = listingTitles.generate(principal.organizationId(), title, category, normalized.get("attributes"), source.platform());
+                normalized.put("titleAi", Map.of("status", "SUCCEEDED", "sdk", "@earendil-works/pi-agent-core"));
+            } catch (BusinessException exception) {
+                // A model outage must not discard the successfully captured SKU/images.
+                normalized.put("titleAi", Map.of("status", "FAILED", "error", exception.getMessage(),
+                        "sdk", "@earendil-works/pi-agent-core"));
+            }
+        }
         putStandardFields(normalized, title, description, category, brand, currency, priceMin, priceMax);
+        if (listingTemplates != null) {
+            listingTemplates.applyCapture(principal.organizationId(), source.platform(), normalized);
+            description = boundedNullable(text(normalized, "description"), 100_000);
+        }
 
         Map<String, Object> raw = new LinkedHashMap<>();
         raw.put("captureRequest", body);
@@ -580,6 +601,12 @@ public class ProductCaptureService {
                 new LambdaQueryWrapper<ProductPublishAudit>()
                         .eq(ProductPublishAudit::getOrganizationId, principal.organizationId())
                         .eq(ProductPublishAudit::getIdempotencyKey, key));
+        if (listingTemplates != null) {
+            var snapshot = existing != null
+                    ? ProductListingTemplateService.snapshotFrom(readMap(existing.getRequestJson()))
+                    : listingTemplates.publishSnapshot(principal.organizationId(), id, key, destination, capture);
+            ProductListingTemplateService.apply(body, snapshot);
+        } else body.remove("listingTemplateSnapshot");
         if (existing != null) {
             verifyPublishIdempotency(existing, capture, destination, shopId, body);
             return new PublishResult(existing, detail(capture));

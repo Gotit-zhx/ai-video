@@ -929,7 +929,7 @@
               <button type="button" data-product-status="FAILED" aria-pressed="false">失败</button>
               <button type="button" data-product-status="ALL" aria-pressed="false">全部</button>
             </div>
-            <div class="product-result-caption"><span id="product-result-count" role="status" aria-live="polite">已显示 0 / 共 0 条</span><button id="refresh-product-captures" type="button" aria-controls="product-capture-list">刷新</button></div>
+            <div class="product-result-caption"><span id="product-result-count" role="status" aria-live="polite">已显示 0 / 共 0 条</span><div class="listing-template-actions"><button id="open-product-listing-templates" type="button" aria-controls="product-listing-template-dialog">定制模板配置</button><button id="refresh-product-captures" type="button" aria-controls="product-capture-list">刷新</button></div></div>
             <div class="product-result-caption"><span id="product-bulk-count" role="status" aria-live="polite">已勾选 0 件</span><div class="product-bulk-toolbar-actions"><button id="toggle-product-bulk-selection" type="button" aria-controls="product-capture-list" aria-pressed="false" title="勾选当前页全部可上传商品" disabled>全部勾选</button><button id="open-product-bulk-history" type="button" aria-controls="product-bulk-history-dialog">批量任务</button><button id="open-product-bulk-upload" type="button" disabled>批量一键上传</button></div></div>
             <div id="product-capture-list" class="product-capture-list" aria-label="采集商品列表" aria-busy="true"><div class="product-empty">正在读取商品草稿…</div></div>
             <div id="product-capture-pagination" class="product-capture-pagination" hidden>
@@ -963,13 +963,14 @@
               <section class="product-edit-section">
                 <header><div><span>01</span><h3>商品信息</h3></div><small id="product-edit-access-note">修改后先保存草稿</small></header>
                 <div class="product-form-grid">
-                  <label class="product-field-wide">商品标题<input id="product-title-input" maxlength="300" autocomplete="off"></label>
+                  <div class="product-field-wide listing-title-field"><div class="listing-title-row"><label for="product-title-input">商品标题</label><button id="generate-product-ai-title" type="button">AI 生成标题</button></div><input id="product-title-input" maxlength="300" autocomplete="off"><small id="product-ai-title-status" role="status"></small></div>
                   <label>分类<input id="product-category-input" maxlength="160" autocomplete="off"></label>
                   <label>品牌<input id="product-brand-input" maxlength="160" autocomplete="off"></label>
                   <label>币种<input id="product-currency-input" maxlength="12" autocomplete="off" placeholder="PHP"></label>
                   <label>最低价<input id="product-price-min-input" inputmode="decimal" autocomplete="off"></label>
                   <label>最高价<input id="product-price-max-input" inputmode="decimal" autocomplete="off"></label>
                   <label class="product-field-wide">商品描述<textarea id="product-description-input" rows="7" maxlength="30000"></textarea></label>
+                  <section id="product-listing-template-preview" class="product-field-wide listing-template-preview" hidden><header><strong>刊登模板预览</strong><select id="product-template-preview-platform" aria-label="模板预览平台"><option value="SHOPEE">Shopee · 虾皮</option><option value="TIKTOK_SHOP">TikTok Shop</option></select></header><p id="product-template-preview-specs"></p><details><summary>查看转换后的详情文案</summary><p id="product-template-preview-description" translate="no"></p></details></section>
                 </div>
               </section>
 
@@ -1902,12 +1903,32 @@
         </div>
       </fieldset>
       <p id="product-bulk-shop-hint" role="status"></p>
-      <p class="product-bulk-defaults">库存 999 · 沿用原重量，缺失时默认 250 克 · 默认无品牌<br>自动匹配原类目和物流 · 各规格原售价按最新汇率换算</p>
+      <p class="product-bulk-defaults" id="product-bulk-defaults">自动套用目标平台模板 · 库存 999 · 默认无品牌<br>自动匹配原类目和物流 · 各规格原售价按最新汇率换算</p>
       <p id="product-bulk-mode" role="status"></p>
       <details class="product-bulk-selection" open><summary id="product-bulk-summary">已选择商品</summary><div id="product-bulk-items"></div></details>
       <p id="product-bulk-error" role="alert"></p>
       <div id="product-bulk-progress" aria-live="polite"></div>
       <footer class="bulk-dialog-footer"><span>关闭窗口后，已提交任务继续运行</span><button id="submit-product-bulk" type="submit">一键上传所选商品</button></footer>
+    </form>
+  </dialog>
+  <dialog id="product-listing-template-dialog" class="listing-template-dialog" aria-labelledby="listing-template-title">
+    <form id="product-listing-template-form">
+      <header><div><small>LISTING TEMPLATE</small><h2 id="listing-template-title">定制模板配置</h2></div><button type="button" id="close-product-listing-templates" aria-label="关闭模板配置">✕</button></header>
+      <div class="listing-template-tabs" role="tablist" aria-label="平台模板"><button type="button" role="tab" aria-selected="true" data-listing-platform="SHOPEE">Shopee · 虾皮</button><button type="button" role="tab" aria-selected="false" data-listing-platform="TIKTOK_SHOP">TikTok Shop</button></div>
+      <div class="listing-template-body">
+        <label class="listing-template-toggle"><span><strong>自动应用模板</strong><small>新采集商品及已有未提交商品上传时，使用目标平台的详情与包裹规格。</small></span><input type="checkbox" id="listing-template-enabled"></label>
+        <label>模板名称<input id="listing-template-name" maxlength="100" required></label>
+        <div class="listing-template-specs">
+          <label>重量 / kg<input id="listing-template-weight" type="number" min="0.001" max="1000" step="0.001" required></label>
+          <label>长度 / cm<input id="listing-template-length" type="number" min="0.01" max="1000" step="0.01" required></label>
+          <label>宽度 / cm<input id="listing-template-width" type="number" min="0.01" max="1000" step="0.01" required></label>
+          <label>高度 / cm<input id="listing-template-height" type="number" min="0.01" max="1000" step="0.01" required></label>
+        </div>
+        <label>详情文案<textarea id="listing-template-description" rows="12" maxlength="9000" translate="no"></textarea></label>
+        <p class="listing-template-note">SKU、原价、原图与原类目保留。两个平台独立保存；已提交的任务沿用提交时的模板。</p>
+        <p id="listing-template-status" role="status"></p><p id="listing-template-error" role="alert"></p>
+      </div>
+      <footer><button type="button" id="cancel-product-listing-templates">取消</button><button type="submit" id="save-product-listing-template">保存模板</button></footer>
     </form>
   </dialog>
   <dialog id="product-bulk-history-dialog" class="product-bulk-dialog" aria-labelledby="product-bulk-history-title">
@@ -1920,7 +1941,9 @@
   <script src="/product-bulk-upload.js?v=20260910-shop-switch-1" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
-  <script src="/app.js?v=20261009-hr-user-access-2" defer></script>
+  <link rel="stylesheet" href="/product-listing-templates.css?v=20261010-2">
+  <script src="/product-listing-templates.js?v=20261010-1" defer></script>
+  <script src="/app.js?v=20261010-capture-templates-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261009-windows-unicode-017" defer></script>
   <script src="/hr-onboarding.js?v=20261009-mentor-selection-2" defer></script>
   <script src="/hr-bi.js?v=20261009-bi-compact-3" defer></script>

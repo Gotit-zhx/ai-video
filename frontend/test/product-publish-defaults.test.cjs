@@ -9,6 +9,7 @@ function context() {
  const values=new Map();
  const c={document:{querySelector:node},localStorage:{getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)},Option:function(text,value){this.text=text;this.value=value;},currentUser:{organizationId:'org'},selectedProductCaptureDetail:{id:'p1',categoryName:'Women Clothes > T-shirts',currency:'MYR',normalizedData:{}},marketplaceIntegrationStatus:{livePublishingEnabled:true},activeMarketplaceShops:()=>[{id:'shop',region:'MY'}],api:async()=>({data:{categories:{category_list:[{category_id:1,parent_category_id:0,display_category_name:'Women Clothes',has_children:true},{category_id:2,parent_category_id:1,display_category_name:'T-shirts',has_children:false}]},logistics:{logistics_channel_list:[{logistics_channel_id:3,logistics_channel_name:'Courier',enabled:true}]}}})};
  node('#publish-shop-id').value='shop';node('#publish-destination-platform').value='SHOPEE';
+ c.ProductListingTemplates={ensure:async()=>{},get:()=>({enabled:false}),fields:()=>({})};
  vm.createContext(c);vm.runInContext(source.slice(source.indexOf('let productPublishPrepareVersion'),source.indexOf('function syncOfficialPublishFields()')),c);
  return {c,node};
 }
@@ -17,6 +18,16 @@ test('defaults to 999 and 250g, matches full category and single enabled logisti
  assert.equal(node('#publish-stock').value,'999');assert.equal(node('#publish-weight-grams').value,'250');
  assert.equal(node('#publish-category-id').value,'2');assert.deepEqual(JSON.parse(node('#publish-logistic-info').value),[{logistic_id:3,enabled:true}]);
  assert.equal(node('#publish-advanced').open,false);
+});
+test('fixed platform template overrides original parcel in single upload but keeps source weight intact',async()=>{
+ const {c,node}=context();const fields=require('../product-listing-templates.js').fields;
+ const template={name:'虾皮通用模板',enabled:true,weightGrams:200,packageLengthCm:5,packageWidthCm:25,packageHeightCm:25};
+ c.ProductListingTemplates={ensure:async()=>{},get:()=>template,fields};
+ c.selectedProductCaptureDetail.normalizedData.weightGrams=350;
+ await c.prepareSimpleProductPublish();
+ assert.equal(node('#publish-weight-grams').value,'200');assert.equal(node('#publish-package-length').value,'5');
+ assert.equal(node('#publish-package-width').value,'25');assert.equal(node('#publish-package-height').value,'25');
+ assert.equal(c.selectedProductCaptureDetail.normalizedData.weightGrams,350);
 });
 test('preserves unit-aware original weight without interpreting size text as weight',()=>{
  const {c}=context();assert.equal(c.originalProductWeight({normalizedData:{weightGrams:180}}),'180');
@@ -32,7 +43,7 @@ test('saved choices are isolated by company, shop and source category; price and
  node('#publish-shop-id').value='shop';c.currentUser.organizationId='other';assert.equal(c.readPublishPreference().logistic,undefined);
 });
 test('late shop response cannot overwrite current shop selection',async()=>{
- const {c,node}=context();let resolve;c.api=()=>new Promise(r=>resolve=r);const first=c.prepareSimpleProductPublish();
+ const {c,node}=context();let resolve;c.api=()=>new Promise(r=>resolve=r);const first=c.prepareSimpleProductPublish();await Promise.resolve();
  node('#publish-shop-id').value='new';c.api=async()=>({data:{categories:{category_list:[{category_id:8,has_children:false,display_category_name:'New'}]},logistics:{logistics_channel_list:[]}}});await c.prepareSimpleProductPublish();
  resolve({data:{categories:{category_list:[{category_id:99,has_children:false,display_category_name:'Old'}]}}});await first;
  assert.equal(node('#publish-category-choice').options[1].value,'8');

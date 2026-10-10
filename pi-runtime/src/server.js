@@ -1,5 +1,6 @@
 import http from "node:http";
 import { handleRecruitment } from "./recruitment-analysis.js";
+import { generateListingTitle } from "./product-listing-title.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, realpath } from "node:fs/promises";
@@ -3459,6 +3460,16 @@ async function handlePlatformImageDownload(request, response) {
 const server = http.createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+    if (request.method === "POST" && requestUrl.pathname === "/v1/product-listing/title") {
+      if (request.headers["x-internal-token"] !== INTERNAL_TOKEN) {
+        json(response, 401, { message: "商品标题服务认证失败" }); return;
+      }
+      const controller = new AbortController();
+      response.on("close", () => controller.abort());
+      try { json(response, 200, { result: await generateListingTitle(await readBody(request), { signal: controller.signal }) }); }
+      catch { json(response, 502, { message: "AI 标题生成失败，请检查驱动模型配置后重试" }); }
+      return;
+    }
     if (request.method === "POST" && requestUrl.pathname === "/v1/recruitment/analyze") {
       if (request.headers["x-internal-token"] !== INTERNAL_TOKEN) {
         json(response, 401, { message: "招聘分析服务认证失败" });

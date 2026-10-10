@@ -10,6 +10,7 @@ const leaf = (id, label) => ({id, label});
 // Official MY v2 response, 2026-09-10: retain the complete taxonomy so competing branches remain in the regression.
 const officialMyCategories = require('./fixtures/tiktok-my-v2-categories-20260910.json');
 const actual96SkuFacts = require('./fixtures/shopee-my-96sku-category-facts.json');
+const actualPhTshirts = require('./fixtures/shopee-ph-tshirt-category-facts-20261010.json');
 const crossBorderCategories = require('./fixtures/tiktok-my-cross-border-categories-20260910.json');
 const officialMyLeaves = context.destinationCategoryLeaves(officialMyCategories, 'TIKTOK_SHOP');
 const shopeeOptions = {categories: {category_list: [
@@ -38,6 +39,19 @@ test('actual Chinese TikTok category maps to Shopee women T-shirts, not the sour
 test('English Shopee taxonomy maps to TikTok Chinese display and official English aliases', () => {
   assert.equal(context.resolveDestinationPublishOptions('TIKTOK_SHOP',
     {sourcePlatform: 'SHOPEE', categoryName: 'Women Clothes > Tops > T-shirts'}, tiktokOptions).categoryId, 'c');
+});
+test('all three actual PH T-shirts treat Others as unspecified neckline and retain executable leaves', () => {
+  for (const capture of actualPhTshirts) {
+    assert.equal(context.resolveDestinationPublishOptions('SHOPEE', capture, shopeeOptions).categoryId, '12');
+    assert.equal(context.resolveDestinationPublishOptions('TIKTOK_SHOP', capture, tiktokOptions).categoryId, 'c');
+    assert.equal(match(capture, officialMyLeaves), '601302');
+  }
+});
+test('template marketing text never replaces original garment facts during category matching', () => {
+  const capture = {...actualPhTshirts[0],description:'Bodycon dresses / leggings / seamless sets',
+    normalizedData:{...actualPhTshirts[0].normalizedData,originalDescription:actualPhTshirts[0].description,listingTemplate:{platform:'SHOPEE'}}};
+  assert.equal(context.resolveDestinationPublishOptions('SHOPEE', capture, shopeeOptions).categoryId, '12');
+  assert.equal(match({...capture,normalizedData:{...capture.normalizedData,attributes:{'Sleeve Length':'Long Sleeves'}}},officialMyLeaves),'');
 });
 test('Malay Tshirt aliases work in both directions', () => {
   for (const categoryName of ['Pakaian Wanita > Atasan > Kemeja-T', 'Pakaian Wanita > Baju T', 'Pakaian Wanita > Kaos']) {

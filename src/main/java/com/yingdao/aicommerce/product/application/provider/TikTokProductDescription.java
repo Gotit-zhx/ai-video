@@ -41,6 +41,11 @@ public class TikTokProductDescription {
 
     public PreparedDescription prepare(ProductCapture capture, List<ProductCaptureImage> images,
                                        MarketplaceAccess.Connection connection) {
+        return prepare(capture, images, connection, capture.getDescription());
+    }
+
+    public PreparedDescription prepare(ProductCapture capture, List<ProductCaptureImage> images,
+                                       MarketplaceAccess.Connection connection, String description) {
         if (!Objects.equals(capture.getOrganizationId(), connection.shop().getOrganizationId())) {
             throw conflict("TikTok Shop 详情图片不属于当前店铺公司");
         }
@@ -55,7 +60,7 @@ public class TikTokProductDescription {
             if (image.getOriginalUrl() != null) byUrl.putIfAbsent(image.getOriginalUrl(), image);
             if (image.getProcessedUrl() != null) byUrl.putIfAbsent(image.getProcessedUrl(), image);
         }
-        String html = htmlDescription(capture.getDescription());
+        String html = htmlDescription(description);
         var matcher = IMAGE_TAG.matcher(html);
         List<Part> parts = new ArrayList<>();
         Map<String, ProductCaptureImage> selected = new LinkedHashMap<>();

@@ -61,6 +61,7 @@ function harness(captures = fixture()) {
     ]}
   };
   const c = {
+    ProductListingTemplates:{ensure:async()=>{},get:()=>({enabled:false}),fields:()=>({})},
     ProductBulkUpload:{...ProductBulkUpload,retryRead:(operation,options)=>ProductBulkUpload.retryRead(operation,{...options,sleep:async()=>{}})},
     ProductBulkHistory,
     AbortController, Date:class extends Date {static now(){return state.now ?? Date.now();}}, currentUser:{organizationId:'org'}, selectedProductCaptureDetail:plain(poisonDetail),

@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -85,6 +86,24 @@ class ProductPublishWorkflowServiceTest {
         when(workflowMapper.findByIdempotency("org-a","fx-workflow-key-123")).thenReturn(inserted.getValue());
         service.create(capture.getId(),request,"fx-workflow-key-123",principal);
         verify(fx,times(1)).snapshot(any(),any());
+    }
+    @Test
+    void templateIsServerOwnedAndReplayKeepsSnapshotWithoutConfigRefetch() {
+        var templates=mock(ProductListingTemplateService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"listingTemplates",templates);
+        var snapshot=new java.util.LinkedHashMap<String,Object>(Map.of("enabled",true,
+                "description","fixed detail","weightGrams","200","packageLengthCm","5","packageWidthCm","25","packageHeightCm","25"));
+        when(templates.snapshot(anyString(),anyString(),any())).thenReturn(snapshot);
+        var body=Map.<String,Object>of("confirmed",true,"shopId","shop-1","destinationPlatform","SHOPEE",
+                "weightGrams","999","listingTemplateSnapshot",Map.of("title","forged"));
+        service.create(capture.getId(),body,"template-workflow-123",principal);
+        var inserted=ArgumentCaptor.forClass(ProductPublishWorkflow.class);
+        verify(workflowMapper).insert(inserted.capture());
+        assertEquals("200",service.request(inserted.getValue()).get("weightGrams"));
+        assertFalse(ProductListingTemplateService.snapshotFrom(service.request(inserted.getValue())).containsKey("title"));
+        when(workflowMapper.findByIdempotency("org-a","template-workflow-123")).thenReturn(inserted.getValue());
+        service.create(capture.getId(),body,"template-workflow-123",principal);
+        verify(templates,times(1)).snapshot(anyString(),anyString(),any());
     }
 
     @Test

@@ -21,6 +21,7 @@ function harness(){
  marketplaceIntegrationStatus:{livePublishingEnabled:true},activeMarketplaceShops:platform=>shops.filter(s=>s.platform===platform),
  api:async()=>options(),parseProductPublishStock:()=>999,parseProductSkuStocks:()=>({}),parseProductPublishJson:()=>({}),parseShopeeLogisticInfo:()=>[{logistic_id:1,enabled:true}]};
  node('#publish-shop-id').value='cross';node('#publish-destination-platform').value='TIKTOK_SHOP';
+ c.ProductListingTemplates={ensure:async()=>{},get:()=>({enabled:false}),fields:()=>({})};
  vm.createContext(c);
  vm.runInContext(source.slice(source.indexOf('let productPublishPrepareVersion'),source.indexOf('function syncOfficialPublishFields()')),c);
  vm.runInContext(source.slice(source.indexOf('function buildProductPublishPayload('),source.indexOf('function productPublishWorkflowMatchesTarget(')),c);
@@ -59,7 +60,7 @@ test('previous successful capability is unusable while the newly selected shop i
 });
 test('late old-shop success and failure cannot overwrite current-shop fields, error or loading flag',async()=>{
  for(const oldFails of [false,true]){
-  const h=harness(),gate=deferred();h.c.api=()=>gate.promise;const old=h.prepare();
+  const h=harness(),gate=deferred();h.c.api=()=>gate.promise;const old=h.prepare();await Promise.resolve();
   h.node('#publish-shop-id').value='local';h.c.api=async()=>options('LOCAL');await h.prepare();
   const snapshot=JSON.stringify({summary:h.node('#publish-auto-summary'),category:h.node('#publish-category-id'),warehouse:h.node('#publish-warehouse-id')});
   if(oldFails)gate.reject(Error('跨境刊登模式未就绪：旧店失败'));else gate.resolve(options());
@@ -74,7 +75,7 @@ test('a changed shop, capture or organization invalidates capability before anot
  }
 });
 test('an old cross-border response is ignored when destination platform changed to Shopee',async()=>{
- const h=harness(),gate=deferred();h.c.api=()=>gate.promise;const old=h.prepare();
+ const h=harness(),gate=deferred();h.c.api=()=>gate.promise;const old=h.prepare();await Promise.resolve();
  h.node('#publish-shop-id').value='shopee';h.node('#publish-destination-platform').value='SHOPEE';
  h.c.api=async()=>({data:{categories:{category_list:[{category_id:1,display_category_name:'T-shirts',has_children:false}]},logistics:{logistics_channel_list:[{logistics_channel_id:1,enabled:true}]}}});
  await h.prepare();gate.reject(Error('旧跨境接口失败'));await old;

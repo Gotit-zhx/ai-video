@@ -13,6 +13,7 @@ function harness(captures,canPublish=true){
   productSourcePlatformName:v=>v,productPriceLabel:()=>'',formatDate:()=>'',productCaptureDisplayStatus:()=> '已提交平台'};
  vm.createContext(context);
  vm.runInContext(source.slice(source.indexOf('function productCaptureCanUpload('),source.indexOf('function renderProductCaptureEmpty(')),context);
+ context.syncProductBulkSelection=()=>{};
  return {context,list};
 }
 test('every published product remains selectable and has a shop chooser with authoritative provenance',()=>{

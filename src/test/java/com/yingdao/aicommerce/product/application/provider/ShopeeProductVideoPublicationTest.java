@@ -101,6 +101,21 @@ class ShopeeProductVideoPublicationTest {
         assertThat(payload.getValue()).doesNotContainKey("video_upload_id");
         assertThat(result.providerResponse()).containsEntry("videoCount", 0).containsEntry("remoteStatus", "UNLIST");
     }
+    @Test void actualAddItemUsesImmutableTemplateDescriptionAndParcelInKg() {
+        when(videos.upload(capture,connection)).thenReturn(ShopeeProductVideoUploader.UploadedVideo.none());
+        var body=new java.util.LinkedHashMap<>(request());
+        com.yingdao.aicommerce.product.application.ProductListingTemplateService.apply(body,Map.of(
+                "enabled",true,"description","CurveLuxe PH — Stretch. Slay.","weightGrams","200",
+                "packageLengthCm","5","packageWidthCm","25","packageHeightCm","25"));
+        provider.publish(capture,"SHOPEE",connection.shop().getId(),body,()->{});
+        @SuppressWarnings("unchecked") ArgumentCaptor<Map<String,Object>> payload=ArgumentCaptor.forClass(Map.class);
+        verify(client).shopPost(eq("/api/v2/product/add_item"),eq(connection),payload.capture());
+        assertThat(payload.getValue()).containsEntry("description","CurveLuxe PH — Stretch. Slay.");
+        assertThat((BigDecimal)payload.getValue().get("weight")).isEqualByComparingTo("0.2");
+        assertThat(payload.getValue().get("dimension")).isEqualTo(Map.of(
+                "package_length",new BigDecimal("5"),"package_width",new BigDecimal("25"),"package_height",new BigDecimal("25")));
+        assertThat(capture.getDescription()).isEqualTo("Description");
+    }
 
     @Test void nineLocalDetailsPublishAsMainAndEightDetailsWhileAllSkuImagesRemainBound() {
         var localImages = new ArrayList<ProductCaptureImage>();

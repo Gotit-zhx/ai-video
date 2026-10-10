@@ -218,6 +218,32 @@ class ProductCaptureServiceTest {
         assertEquals("https://shopee.ph/a-i.123.456", dom.get("pageUrl"));
         assertEquals("kept", dom.get("customVisibleField"));
     }
+    @Test
+    void everyNewCaptureAutomaticallyProcessesTitleWithOriginalFactsAndRetainsRawTitle() {
+        var titles=mock(ProductListingTitleService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"listingTitles",titles);
+        when(titles.generate(anyString(),anyString(),any(),any(),anyString())).thenReturn("Women Cotton Short Sleeve Casual T-shirt");
+        var request=Map.<String,Object>of("sourceUrl","https://shopee.ph/a-i.123.456","title","COD Women Cotton Tee",
+                "categoryName","Women > T-shirts","attributes",Map.of("Sleeve Length","Short Sleeves"));
+        var result=service.create(request,"capture-auto-title-123",principal("org-a"));
+        assertEquals("Women Cotton Short Sleeve Casual T-shirt",result.capture().getTitle());
+        assertEquals("COD Women Cotton Tee",result.normalizedData().get("originalTitle"));
+        assertEquals("SUCCEEDED",((Map<?,?>)result.normalizedData().get("titleAi")).get("status"));
+        assertEquals("COD Women Cotton Tee",((Map<?,?>)result.rawData().get("captureRequest")).get("title"));
+        verify(titles).generate("org-a","COD Women Cotton Tee","Women > T-shirts",Map.of("Sleeve Length","Short Sleeves"),"SHOPEE");
+    }
+    @Test
+    void titleModelOutageKeepsCapturedDataAndRecordsFailureWithoutClaimingAiSuccess() {
+        var titles=mock(ProductListingTitleService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"listingTitles",titles);
+        when(titles.generate(anyString(),anyString(),any(),any(),anyString()))
+                .thenThrow(new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY,"AI 标题生成失败"));
+        var result=service.create(Map.of("sourceUrl","https://shopee.ph/a-i.123.456","title","Original Cotton Tee"),
+                "capture-failed-title-123",principal("org-a"));
+        assertEquals("Original Cotton Tee",result.capture().getTitle());
+        assertEquals("FAILED",((Map<?,?>)result.normalizedData().get("titleAi")).get("status"));
+        verify(captureMapper).insert(any(ProductCapture.class));
+    }
 
     @Test
     void stableIdempotencyKeyReturnsSameProductDespiteDynamicCaptureFields() {

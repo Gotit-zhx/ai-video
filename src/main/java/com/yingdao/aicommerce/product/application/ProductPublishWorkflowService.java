@@ -56,6 +56,8 @@ public class ProductPublishWorkflowService {
     private String watermarkProvider = "DRY_RUN";
     @org.springframework.beans.factory.annotation.Autowired
     private org.springframework.jdbc.core.JdbcTemplate commerceDb;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductListingTemplateService listingTemplates;
 
     public ProductPublishWorkflowService(ProductPublishWorkflowMapper workflowMapper,
                                          ProductCaptureMapper captureMapper,
@@ -81,6 +83,7 @@ public class ProductPublishWorkflowService {
         String key = requireIdempotencyKey(idempotencyKey);
         Map<String, Object> body = mutableMap(request);
         body.remove("exchangeRateSnapshot"); // Server-owned immutable quote; never trust a browser rate.
+        body.remove("listingTemplateSnapshot");
         if (!confirmed(body.get("confirmed"))) {
             throw badRequest("一键上传前必须明确提交 confirmed=true");
         }
@@ -103,6 +106,7 @@ public class ProductPublishWorkflowService {
         if (sameKey != null) {
             body.put("executionMode", executionMode(sameKey));
             var savedRequest = request(sameKey);
+            ProductListingTemplateService.apply(body, ProductListingTemplateService.snapshotFrom(savedRequest));
             if (savedRequest.containsKey("exchangeRateSnapshot")) body.put("exchangeRateSnapshot", savedRequest.get("exchangeRateSnapshot"));
             if (savedRequest.containsKey("visionWatermarkCheck")) body.put("visionWatermarkCheck",savedRequest.get("visionWatermarkCheck"));
             else body.remove("visionWatermarkCheck");
@@ -136,6 +140,11 @@ public class ProductPublishWorkflowService {
             body.put("exchangeRateSnapshot", quote);
         }
         String requestJson = writeJson(body);
+        if (listingTemplates != null) {
+            var template = listingTemplates.snapshot(principal.organizationId(), destination, capture);
+            ProductListingTemplateService.apply(body, template);
+            requestJson = writeJson(body);
+        }
         if (requestJson.length() > MAX_REQUEST_JSON_LENGTH) {
             throw badRequest("一键上传参数不能超过 2 MB");
         }

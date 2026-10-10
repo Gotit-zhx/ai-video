@@ -154,7 +154,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         addItem.put("category_id", categoryId);
         addItem.put("item_name", publishTitle);
         if (!sizeChart.isEmpty()) addItem.put("size_chart_info", sizeChart);
-        addItem.put("description", capture.getDescription());
+        addItem.put("description", com.yingdao.aicommerce.product.application.ProductListingTemplateService.publicationDescription(capture, request));
         addItem.put("item_status", "UNLIST");
         addItem.put("condition", fallbackText(addItem.get("condition"), "NEW"));
         addItem.put("original_price", itemPrice);

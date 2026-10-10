@@ -78,6 +78,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/product-captures/*/approve")
                             .hasAuthority("product:edit")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/product-captures/*/ai-title")
+                            .hasAuthority("product:edit")
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/product-captures/*/publish")
                             .hasAuthority("product:publish")
