@@ -167,7 +167,7 @@ public class CommerceBatchArtworkRetryService {
                 SELECT ?,organization_id,execution_id,capture_id,capture_version,kind,variant_index,color_key,color_label,?,
                        'PREPARED',?,model_config_id,model_fingerprint,?, ?,NOW(6),NOW(6)
                 FROM commerce_batch_artwork_jobs WHERE id=? AND execution_id=? AND organization_id=? AND kind='DRAPE_MASTER' AND status='READY'
-                """, newId, retryKey, CommerceDrapeReuseWorkflow.PROMPT, json.writeValueAsString(refs),
+                """, newId, retryKey, CommerceDrapeReuseWorkflow.PROMPT_DETAIL_V4, json.writeValueAsString(refs),
                 "已按模板优先规则重新准备母图；保留原母图、印花和全部精确套版", master.get("id"), run.id(), user.organizationId()) != 1)
             throw conflict("母图状态已变化，请刷新后重试");
         if (db.update("UPDATE commerce_batch_artwork_jobs SET status='RETRIED',updated_at=NOW(6) WHERE id=? AND execution_id=? AND organization_id=? AND kind='DRAPE_MASTER' AND status='READY'",

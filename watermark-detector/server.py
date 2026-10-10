@@ -83,7 +83,7 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(200, {'status':'UP','modelSha256':MODEL_SHA,'classes':CLASSES, 'engine':ENGINE})
 
     def do_POST(self):
-        if self.path not in ['/detect','/compose','/garment-foreground','/drape-prepare','/drape-render']:
+        if self.path not in ['/detect','/compose','/garment-foreground','/drape-prepare','/drape-render','/drape-detail-check']:
             return self.respond(404, {'error':'not found'})
         if not hmac.compare_digest(self.headers.get('X-Internal-Token',''),TOKEN):
             return self.respond(401, {'error':'unauthorized'})
@@ -93,9 +93,13 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= limit:
                 return self.respond(413, {'error':'request too large'})
             body=json.loads(self.rfile.read(length))
-            if self.path in ['/drape-prepare','/drape-render']:
+            if self.path in ['/drape-prepare','/drape-render','/drape-detail-check']:
                 from drape_reuse import prepare, render
-                with LOCK: result=(prepare if self.path=='/drape-prepare' else render)(body)
+                if self.path == '/drape-detail-check':
+                    from drape_detail_guard import check
+                    with LOCK: result=check(body)
+                else:
+                    with LOCK: result=(prepare if self.path=='/drape-prepare' else render)(body)
                 self.respond(200,result)
             elif self.path=='/garment-foreground':
                 from garment_foreground import segment
@@ -108,7 +112,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.respond(200, detect(body))
         except Exception as error:
-            if self.path in ['/drape-prepare','/drape-render']:
+            if self.path in ['/drape-prepare','/drape-render','/drape-detail-check']:
                 is_drape_error=type(error).__module__=='drape_reuse' and type(error).__name__=='DrapeError'
                 return self.respond(422, {'error':'local drape processing stopped',
                     'code':error.code if is_drape_error else 'LOCAL_DRAPE_FAILED',

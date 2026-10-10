@@ -103,6 +103,198 @@ class CommerceDrapeStyleReviewTest {
             h.server.verify();
         }
     }
+    @Test void V2RequiresAnIndependentNecklineVerdictAndDoesNotReuseV1Cache() {
+        var h = new Harness();
+        h.server.expect(requestTo("http://runtime/v1/product/analyze"))
+                .andExpect(jsonPath("$.context.analysisType").value("COMMERCE_DRAPE_STYLE_V1"))
+                .andRespond(withSuccess(response(accepted()), MediaType.APPLICATION_JSON));
+        var changed = accepted();changed.put("preservesNeckline",false);
+        changed.put("preservesSleeveBadge", true);
+        changed.put("preservesSideLabel", true);
+        changed.put("reason","领口被加深，领标位置错误");
+        h.server.expect(requestTo("http://runtime/v1/product/analyze"))
+                .andExpect(jsonPath("$.context.analysisType").value("COMMERCE_DRAPE_STYLE_V4"))
+                .andExpect(request -> {
+                    var payload = JSON.readTree(((MockClientHttpRequest) request).getBodyAsString());
+                    var sheet = ImageIO.read(new ByteArrayInputStream(Base64.getDecoder().decode(
+                            payload.path("image").path("data").asText())));
+                    assertEquals(1920, sheet.getWidth());
+                    assertEquals(1168, sheet.getHeight());
+                    // The inset makes the original MASTER image edge visible, so
+                    // the model cannot confuse the contact-sheet crop with a sleeve.
+                    colorClose(sheet, 1285, 368, new Color(236, 236, 236));
+                    colorClose(sheet, 1319, 368, new Color(236, 236, 236));
+                    colorClose(sheet, 1600, 368, Color.BLUE);
+                    colorClose(sheet, 1600, 65, new Color(236, 236, 236));
+                    colorClose(sheet, 240, 1050, Color.RED);
+                    colorClose(sheet, 720, 1050, Color.BLUE);
+                })
+                .andRespond(withSuccess(response(changed), MediaType.APPLICATION_JSON));
+        assertEquals(true, h.service.review("tenant-a",guide,scene,master).get("passed"));
+        var verdict=h.service.review("tenant-a",guide,scene,master,true);
+        assertEquals(false,verdict.get("passed"));
+        assertEquals(false,verdict.get("preservesNeckline"));
+        assertEquals(CommerceDrapeStyleReview.NECKLINE_CONTRACT_VERSION,verdict.get("contractVersion"));
+        h.server.verify();
+    }
+
+    @Test void missingSleeveOrSideVerdictCannotPassV3() {
+        for (String field : List.of("preservesSleeveBadge", "preservesSideLabel")) {
+            var h = new Harness();
+            var result = accepted();
+            result.put("preservesNeckline", true);
+            result.put("preservesSleeveBadge", true);
+            result.put("preservesSideLabel", true);
+            result.remove(field);
+            h.server.expect(requestTo("http://runtime/v1/product/analyze"))
+                    .andRespond(withSuccess(response(result), MediaType.APPLICATION_JSON));
+            assertThrows(CommerceDrapeStyleReview.ReviewUnavailableException.class,
+                    () -> h.service.review("tenant-a", guide, scene, master, true));
+            h.server.verify();
+        }
+    }
+
+    @Test void localEvidenceOverridesModelsFalsePositiveAndBindsExactBytes() {
+        var model = mock(ModelConfigService.class);
+        var connection = new ModelConfigService.RuntimeModelConnection("model-id", "https://model.example",
+                "vision-model", "OPENAI_COMPATIBLE", "CUSTOM", "secret-test");
+        when(model.driverConnection("tenant-a")).thenReturn(Optional.of(connection));
+        var visionBuilder = RestClient.builder().baseUrl("http://runtime");
+        var vision = MockRestServiceServer.bindTo(visionBuilder).build();
+        var detectorBuilder = RestClient.builder().baseUrl("http://detector");
+        var detector = MockRestServiceServer.bindTo(detectorBuilder).build();
+        var result = accepted();
+        result.put("preservesNeckline", true);
+        result.put("preservesSleeveBadge", true);
+        result.put("preservesSideLabel", true);
+        vision.expect(requestTo("http://runtime/v1/product/analyze"))
+                .andRespond(withSuccess(response(result), MediaType.APPLICATION_JSON));
+        detector.expect(requestTo("http://detector/drape-detail-check"))
+                .andExpect(jsonPath("$.guide").value(Base64.getEncoder().encodeToString(guide)))
+                .andExpect(jsonPath("$.master").value(Base64.getEncoder().encodeToString(master)))
+                .andRespond(withSuccess(JSON.writeValueAsString(Map.of(
+                        "algorithm", "DRAPE_DETAIL_GUARD_V1", "status", "REJECTED",
+                        "guideSha256", CommerceImageArchive.sha(guide),
+                        "masterSha256", CommerceImageArchive.sha(master),
+                        "geometryFullyVisible", true,
+                        "borderMargins", Map.of("left", 30, "right", 30, "top", 30, "bottom", 30),
+                        "sleevePresent", true, "sidePresent", false)), MediaType.APPLICATION_JSON));
+        var service = new CommerceDrapeStyleReview(model, visionBuilder.build(), detectorBuilder.build(), temp.resolve("guarded"));
+        var report = service.review("tenant-a", guide, scene, master, true);
+        assertEquals(false, report.get("passed"));
+        assertEquals(true, report.get("preservesSleeveBadge"));
+        assertEquals(false, report.get("preservesSideLabel"));
+        assertEquals("REJECTED", report.get("detailGuardStatus"));
+        vision.verify();
+        detector.verify();
+    }
+
+    @Test void localBoundaryEvidenceCorrectsFalseCropVerdictButRetainsModelsFinding() {
+        var model = mock(ModelConfigService.class);
+        var connection = new ModelConfigService.RuntimeModelConnection("model-id", "https://model.example",
+                "vision-model", "OPENAI_COMPATIBLE", "CUSTOM", "secret-test");
+        when(model.driverConnection("tenant-a")).thenReturn(Optional.of(connection));
+        var visionBuilder = RestClient.builder().baseUrl("http://runtime");
+        var vision = MockRestServiceServer.bindTo(visionBuilder).build();
+        var detectorBuilder = RestClient.builder().baseUrl("http://detector");
+        var detector = MockRestServiceServer.bindTo(detectorBuilder).build();
+        var result = accepted();
+        result.put("preservesNeckline", true);
+        result.put("preservesSleeveBadge", true);
+        result.put("preservesSideLabel", true);
+        result.put("fullyVisible", false);
+        vision.expect(requestTo("http://runtime/v1/product/analyze"))
+                .andRespond(withSuccess(response(result), MediaType.APPLICATION_JSON));
+        detector.expect(requestTo("http://detector/drape-detail-check"))
+                .andExpect(request -> assertTrue(request.getHeaders().getContentLength() > 0))
+                .andRespond(withSuccess(JSON.writeValueAsString(Map.of(
+                        "algorithm", "DRAPE_DETAIL_GUARD_V1", "status", "PASSED",
+                        "guideSha256", CommerceImageArchive.sha(guide),
+                        "masterSha256", CommerceImageArchive.sha(master),
+                        "geometryFullyVisible", true,
+                        "sleevePresent", true, "sidePresent", true,
+                        "borderMargins", Map.of("left", 48, "right", 39, "top", 42, "bottom", 30))), MediaType.APPLICATION_JSON));
+        var service = new CommerceDrapeStyleReview(model, visionBuilder.build(), detectorBuilder.build(), temp.resolve("boundary"));
+        var report = service.review("tenant-a", guide, scene, master, true);
+        assertEquals(true, report.get("passed"));
+        assertEquals(false, report.get("modelFullyVisible"));
+        assertEquals(true, report.get("fullyVisible"));
+        assertEquals("LOCAL_GARMENT_BORDER_V1", report.get("visibilityEvidence"));
+        vision.verify();
+        detector.verify();
+    }
+
+    @Test void exactDetailEvidenceCanCorrectAFalseBadgeWithoutInventingANewNecklineVerdict() {
+        var model = mock(ModelConfigService.class);
+        var connection = new ModelConfigService.RuntimeModelConnection("model-id", "https://model.example",
+                "vision-model", "OPENAI_COMPATIBLE", "CUSTOM", "secret-test");
+        when(model.driverConnection("tenant-a")).thenReturn(Optional.of(connection));
+        var visionBuilder = RestClient.builder().baseUrl("http://runtime");
+        var vision = MockRestServiceServer.bindTo(visionBuilder).build();
+        var detectorBuilder = RestClient.builder().baseUrl("http://detector");
+        var detector = MockRestServiceServer.bindTo(detectorBuilder).build();
+        var result = accepted();
+        result.put("preservesNeckline", true);
+        result.put("preservesSleeveBadge", false);
+        result.put("preservesSideLabel", true);
+        result.put("reason", "领口相符；袖口织标看不清");
+        vision.expect(requestTo("http://runtime/v1/product/analyze"))
+                .andRespond(withSuccess(response(result), MediaType.APPLICATION_JSON));
+        detector.expect(requestTo("http://detector/drape-detail-check"))
+                .andRespond(withSuccess(JSON.writeValueAsString(Map.of(
+                        "algorithm", "DRAPE_DETAIL_GUARD_V1", "status", "PASSED",
+                        "guideSha256", CommerceImageArchive.sha(guide),
+                        "masterSha256", CommerceImageArchive.sha(master),
+                        "geometryFullyVisible", true,
+                        "sleevePresent", true, "sidePresent", true,
+                        "borderMargins", Map.of("left", 48, "right", 39, "top", 42, "bottom", 30))), MediaType.APPLICATION_JSON));
+        var service = new CommerceDrapeStyleReview(model, visionBuilder.build(), detectorBuilder.build(), temp.resolve("details"));
+        var report = service.review("tenant-a", guide, scene, master, true);
+        assertEquals(true, report.get("passed"));
+        assertEquals(true, report.get("preservesNeckline"));
+        assertEquals(true, report.get("preservesSleeveBadge"));
+        assertEquals(false, report.get("modelPreservesSleeveBadge"));
+        assertEquals("领口相符；袖口织标看不清", report.get("modelReason"));
+        vision.verify();
+        detector.verify();
+    }
+
+    @Test void aSlowLocalDetailCheckReusesTheCompletedModelVerdictAfterRestart() throws IOException {
+        var model = mock(ModelConfigService.class);
+        var connection = new ModelConfigService.RuntimeModelConnection("model-id", "https://model.example",
+                "vision-model", "OPENAI_COMPATIBLE", "CUSTOM", "secret-test");
+        when(model.driverConnection("tenant-a")).thenReturn(Optional.of(connection));
+        var visionBuilder = RestClient.builder().baseUrl("http://runtime");
+        var vision = MockRestServiceServer.bindTo(visionBuilder).build();
+        var detectorBuilder = RestClient.builder().baseUrl("http://detector");
+        var detector = MockRestServiceServer.bindTo(detectorBuilder).build();
+        var result = accepted();
+        result.put("preservesNeckline", true);
+        result.put("preservesSleeveBadge", true);
+        result.put("preservesSideLabel", true);
+        vision.expect(requestTo("http://runtime/v1/product/analyze"))
+                .andRespond(withSuccess(response(result), MediaType.APPLICATION_JSON));
+        detector.expect(requestTo("http://detector/drape-detail-check"))
+                .andRespond(withException(new IOException("local queue delayed")));
+        detector.expect(requestTo("http://detector/drape-detail-check"))
+                .andRespond(withSuccess(JSON.writeValueAsString(Map.of(
+                        "algorithm", "DRAPE_DETAIL_GUARD_V1", "status", "PASSED",
+                        "guideSha256", CommerceImageArchive.sha(guide),
+                        "masterSha256", CommerceImageArchive.sha(master),
+                        "geometryFullyVisible", true, "sleevePresent", true, "sidePresent", true,
+                        "borderMargins", Map.of("left", 48, "right", 39, "top", 42, "bottom", 30))), MediaType.APPLICATION_JSON));
+        var cache = temp.resolve("model-checkpoint");
+        var first = new CommerceDrapeStyleReview(model, visionBuilder.build(), detectorBuilder.build(), cache);
+        assertThrows(CommerceDrapeStyleReview.DetailGuardUnavailableException.class,
+                () -> first.review("tenant-a", guide, scene, master, true));
+        try (var files = Files.list(cache)) {
+            assertEquals(1, files.filter(p -> p.getFileName().toString().startsWith("vision-")).count());
+        }
+        var restarted = new CommerceDrapeStyleReview(model, visionBuilder.build(), detectorBuilder.build(), cache);
+        assertEquals(true, restarted.review("tenant-a", guide, scene, master, true).get("passed"));
+        vision.verify();
+        detector.verify();
+    }
 
     @Test void missingNullStringsAndNumericVerdictsAreUnavailableRatherThanQualityRejections() {
         for (String field : CommerceDrapeStyleReview.CHECKS) {

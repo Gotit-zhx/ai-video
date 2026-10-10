@@ -111,7 +111,7 @@ public class CommerceBatchLaunchService {
             catch(BusinessException failure) {throw failure;}
             catch(RuntimeException failure) {throw bad("商品套版模板预检未通过："+failure.getMessage()+"；尚未启动图片生成");}
             if(CommerceBatchCreativePlanValidator.savedArtwork(plan))return checkedModelCalls(detailCalls+(
-                    CommerceBatchCreativePlanValidator.drapeOutput(plan)?sources*CommerceDrapeMasterRetry.MAX_ATTEMPTS:
+                    CommerceBatchCreativePlanValidator.drapeOutput(plan)?sources*3:
                     CommerceBatchCreativePlanValidator.sceneOutput(plan)?sources:0));
             boolean sourceStyle=CommerceBatchCreativePlanValidator.sourceProductStyle(plan);
             int groups=sourceStyle?CommerceSurfaceTemplateInputs.artworkGroups(configuration).size():1;
@@ -139,7 +139,7 @@ public class CommerceBatchLaunchService {
         // New drape runs can correct a visually rejected master up to the bounded attempt limit.
         // Other product photos, empty scenes, blanks and compositions retain their original budgets.
         calls+=2*printCalls;
-        if(CommerceBatchCreativePlanValidator.drapeOutput(plan))calls+=sources*CommerceDrapeMasterRetry.MAX_ATTEMPTS;
+        if(CommerceBatchCreativePlanValidator.drapeOutput(plan))calls+=sources*3;
         else if(CommerceBatchCreativePlanValidator.sceneOutput(plan))calls+=sources;
         return checkedModelCalls(calls+detailCalls);
     }

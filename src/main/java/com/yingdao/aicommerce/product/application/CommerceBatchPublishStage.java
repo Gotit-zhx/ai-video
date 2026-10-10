@@ -28,6 +28,8 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
  private final ProductPublishWorkflowService workflows;
  @org.springframework.beans.factory.annotation.Autowired
  private CommerceBatchPublicationOptions publicationOptions;
+ @org.springframework.beans.factory.annotation.Autowired
+ private CommerceDrapeStyleReview drapeReviews;
 
  public CommerceBatchPublishStage(CommerceBatchMapper batches,CommerceBatchCreativePlanMapper plans,
    CommerceTemplateMapper templates,ProductCaptureService captures,ShopMapper shops,JdbcTemplate db,
@@ -58,6 +60,7 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
   if(items.isEmpty())return new Result(false,"草稿上传准备停止：未选择目标店铺");
   var jobs=db.queryForList("SELECT * FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND status='READY'",run.id(),user.organizationId());
   var progress=new Progress(items.size()*plan.variantsPerPrint());
+  var deferredDetailSources=new HashSet<String>();
   List<String> supplementalSides=null;
   int created=0;
   for(var item:items){
@@ -74,6 +77,10 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
       if(progress.record(workflows.get(captureId,(String)record.get("workflow_id"),user),label))itemCompleted++;
       continue;
      }
+     if(deferredDetailSources.contains(item.captureId())){
+      progress.deferred++;
+      continue;
+     }
      // Inspect all existing workflows every round, but bound new image packing work.
      // An earlier pending/failed target must not starve later items or variants.
      if(created>=1){progress.deferred++;continue;}
@@ -87,6 +94,8 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
      if(supplementalSides==null)supplementalSides=printedSupplementalSides(config,user.organizationId());
      var source=plan.sources().stream().filter(x->x.captureId().equals(item.captureId())).findFirst()
        .orElseThrow(()->new IllegalArgumentException("固定创作配置缺少该来源商品"));
+     if(CommerceBatchCreativePlanValidator.drapeOutput(plan))
+      requireNecklineReview(jobs,source.captureId());
      if(source.colorTargets().isEmpty())throw new IllegalArgumentException("来源商品缺少固定 SKU 颜色");
      var manifest=new ArrayList<Map<String,Object>>();
      for(var color:source.colorTargets()){
@@ -107,7 +116,12 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
      // its nine gallery images by sort order (MAIN, then details) and keeps SKU media separate.
      var body=new LinkedHashMap<String,Object>(options);body.put("confirmed",true);body.put("shopId",item.shopId());body.put("destinationPlatform",shop.getPlatform());
      // This key also recovers a workflow created just before a lost database response.
-     var result=workflows.create(capture,body,"commerce-publish-"+run.id()+"-"+item.id()+"-"+variant,user);
+     String workflowKey="commerce-publish-"+run.id()+"-"+item.id()+"-"+variant;
+     var captureKeys=db.queryForList("SELECT idempotency_key FROM product_captures WHERE organization_id=? AND id=?",
+       String.class,user.organizationId(),capture);
+     if(captureKeys.size()==1&&captureKeys.getFirst().endsWith("-duplicate-recovery-1"))
+      workflowKey+="-duplicate-recovery-1";
+     var result=workflows.create(capture,body,workflowKey,user);
      created++;
      int linked=db.update("UPDATE commerce_batch_publications SET workflow_id=? WHERE organization_id=? AND execution_id=? AND item_id=? AND variant_index=? AND workflow_id IS NULL",result.workflow().id(),user.organizationId(),run.id(),item.id(),variant);
      if(linked!=1){
@@ -115,6 +129,10 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
       if(saved.isEmpty()||!result.workflow().id().equals(saved.getFirst().get("workflow_id")))throw new IllegalStateException("已创建上传任务，关联记录尚未确认");
      }
      if(progress.record(result.workflow(),label))itemCompleted++;
+    }catch(CommerceDrapeStyleReview.DetailGuardUnavailableException e){
+     deferredDetailSources.add(item.captureId());
+     progress.deferred++;
+     progress.waiting.add(label+"：已复用视觉结果，本地细节核查排队中，后台自动续试");
     }catch(BusinessException|IllegalArgumentException e){
      progress.failed(label,e.getMessage());
     }catch(RuntimeException e){
@@ -132,6 +150,46 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
   // Keep collecting independent targets until they settle, even when one needs repair.
   if(progress.pending>0||progress.deferred>0)return Result.progress(message);
   return progress.unknown>0?Result.unknown(message):new Result(false,message);
+ }
+
+ void requireNecklineReview(List<Map<String,Object>> jobs,String captureId){
+  var masters=jobs.stream().filter(job->captureId.equals(job.get("capture_id"))
+    &&CommerceDrapeReuseWorkflow.MASTER.equals(job.get("kind"))).toList();
+  var blanks=jobs.stream().filter(job->captureId.equals(job.get("capture_id"))
+    &&CommerceDrapeReuseWorkflow.BLANK.equals(job.get("kind"))).toList();
+  if(masters.size()!=1||blanks.size()!=1
+    ||!CommerceDrapeMasterRetry.necklinePrompt(Objects.toString(masters.getFirst().get("prompt"),"")))
+   throw new IllegalArgumentException("本批搭放图尚未通过领口专项验收，旧成品不能直接上传；请修复母图及衍生图");
+  var master=masters.getFirst();
+  List<String> references=json.readValue(Objects.toString(master.get("reference_keys"),""),
+    json.getTypeFactory().constructCollectionType(List.class,String.class));
+  if(references.size()!=3||!(master.get("storage_key") instanceof String masterKey)
+    ||!(blanks.getFirst().get("result_json") instanceof String result))
+   throw new IllegalArgumentException("搭放母图领口验收缺少完整的图片绑定");
+  var stored=json.readTree(result);
+  var review=stored.path("styleReview");
+  if(!CommerceDrapeStyleReview.NECKLINE_CONTRACT_VERSION.equals(review.path("contractVersion").asText())
+    ||!"PASSED".equals(review.path("detailGuardStatus").asText())){
+   if(drapeReviews==null)throw new IllegalArgumentException("搭放母图需要升级验收服务");
+   byte[] guide=Base64.getDecoder().decode(archive.read(master.get("organization_id").toString(),references.getFirst()).dataBase64());
+   byte[] scene=Base64.getDecoder().decode(archive.read(master.get("organization_id").toString(),references.get(1)).dataBase64());
+   byte[] image=Base64.getDecoder().decode(archive.read(master.get("organization_id").toString(),masterKey).dataBase64());
+   var checked=drapeReviews.review(master.get("organization_id").toString(),guide,scene,image,true);
+   if(!Boolean.TRUE.equals(checked.get("passed")))
+    throw new IllegalArgumentException("当前母图的领口、袖标或侧标未通过重新验收："+checked.get("reason"));
+   CommerceDrapeReuseWorkflow.requireStyleBinding(json.valueToTree(checked),
+    references.getFirst(),references.get(1),masterKey,true);
+   // Retain the old model-only verdict as evidence while upgrading this exact
+   // archived master. Never rewrite a platform submission or its linked capture.
+   var updated=(tools.jackson.databind.node.ObjectNode)stored.deepCopy();
+   updated.set("previousStyleReview",review.deepCopy());
+   updated.set("styleReview",json.valueToTree(checked));
+   int changed=db.update("UPDATE commerce_batch_artwork_jobs SET result_json=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='READY' AND result_json=?",
+    json.writeValueAsString(updated),blanks.getFirst().get("id"),master.get("organization_id"),result);
+   if(changed!=1)throw new IllegalArgumentException("搭放母图验收记录已变化，请稍后重新读取");
+   review=updated.path("styleReview");
+  }
+  CommerceDrapeReuseWorkflow.requireStyleBinding(review,references.getFirst(),references.get(1),masterKey,true);
  }
 
  List<String> printedSupplementalSides(CommercePrintTemplateService.Configuration config,String org){

@@ -36,6 +36,21 @@ class CommerceDrapeStyleWorkflowTest {
             verifyNoInteractions(h.processor,h.local);assertNull(h.find(CommerceDrapeReuseWorkflow.BLANK,0,null));
         }
     }
+    @Test void changedNecklineCannotBecomeAPublishedColorDerivative()throws Exception {
+        var h=new CommerceDrapeReuseWorkflowTest.Harness();
+        h.find(CommerceDrapeReuseWorkflow.MASTER,0,null).put("prompt",CommerceDrapeReuseWorkflow.PROMPT_NECKLINE);
+        var workflow=new CommerceDrapeReuseWorkflow(h.db,h.archive,h.json,h.processor,h.local,reviewer,retry,h.clock::get);
+        var review=report(h);review.put("contractVersion",CommerceDrapeStyleReview.NECKLINE_CONTRACT_VERSION);
+        review.put("preservesNeckline",false);review.put("preservesSleeveBadge",true);
+        review.put("preservesSideLabel",true);review.put("passed",false);review.put("reason","领口开口与模板不一致");
+        when(reviewer.review(eq("org"),any(),any(),any(),eq(true))).thenReturn(review);
+        when(retry.retry(eq(h.run),anyMap(),eq(review))).thenReturn(
+                new CommerceDrapeMasterRetry.Result("QUEUED","corrected-master",2,"纠正领口"));
+        assertEquals("QUEUED",workflow.finish(h.run,h.source,h.config,h.jobs).pendingStatus());
+        assertNull(h.find(CommerceDrapeReuseWorkflow.BLANK,0,null));
+        verifyNoInteractions(h.processor,h.local);
+        verify(reviewer).review(eq("org"),eq(h.guide),eq(h.assets.get(h.originalKey)),eq(h.master),eq(true));
+    }
     @Test void reviewOutageRetriesOnlyReadAndNeverCreatesPaidOrLocalCopies()throws Exception {
         var h=new CommerceDrapeReuseWorkflowTest.Harness();var workflow=current(h);
         when(reviewer.review(eq("org"),any(),any(),any())).thenThrow(new CommerceDrapeStyleReview.ReviewUnavailableException("network"));
@@ -43,11 +58,16 @@ class CommerceDrapeStyleWorkflowTest {
         verifyNoInteractions(h.processor,h.local,retry);
         var state=new LinkedHashMap<>(Map.<String,Object>of("status","REVIEW_RETRY_PENDING","readAttempts",2,"nextAttemptAt",0));
         h.checks.put((String)h.find(CommerceDrapeReuseWorkflow.MASTER,0,null).get("id"),h.json.writeValueAsString(state));
-        assertEquals("WAITING_INPUT",workflow.finish(h.run,h.source,h.config,h.jobs).pendingStatus());
-        state.put("status","REVIEW_UNAVAILABLE");state.put("readAttempts",3);
-        h.checks.put((String)h.find(CommerceDrapeReuseWorkflow.MASTER,0,null).get("id"),h.json.writeValueAsString(state));
-        // An explicitly resumed stopped execution starts a fresh read window, using the same paid image.
         assertEquals("QUEUED",workflow.finish(h.run,h.source,h.config,h.jobs).pendingStatus());
+        var saved=h.json.readTree(h.checks.get((String)h.find(CommerceDrapeReuseWorkflow.MASTER,0,null).get("id")));
+        assertEquals("REVIEW_RETRY_PENDING",saved.path("status").asText());
+        assertEquals(3,saved.path("readAttempts").asInt());
+        assertEquals(h.clock.get()+120000,saved.path("nextAttemptAt").asLong());
+        h.clock.addAndGet(120000);
+        assertEquals("QUEUED",workflow.finish(h.run,h.source,h.config,h.jobs).pendingStatus());
+        saved=h.json.readTree(h.checks.get((String)h.find(CommerceDrapeReuseWorkflow.MASTER,0,null).get("id")));
+        assertEquals(4,saved.path("readAttempts").asInt());
+        assertEquals(h.clock.get()+300000,saved.path("nextAttemptAt").asLong());
         verifyNoInteractions(h.processor,h.local,retry);
     }
     @Test void retryBackoffDoesNotCallVisionUntilDue()throws Exception {

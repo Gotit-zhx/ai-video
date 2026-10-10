@@ -283,7 +283,7 @@ public class CommerceBatchArtworkService {
                             try {
                                 var guide=drapeWorkflow.prepareGuide(run,source,config,completed);if(guide!=null)return guide;
                                 var master=find(completed,source.captureId(),CommerceDrapeReuseWorkflow.MASTER,0);
-                                if(!ready(master))return advance(run,source,CommerceDrapeReuseWorkflow.MASTER,0,CommerceDrapeReuseWorkflow.PROMPT,
+                                if(!ready(master))return advance(run,source,CommerceDrapeReuseWorkflow.MASTER,0,CommerceDrapeReuseWorkflow.PROMPT_DETAIL_V4,
                                         ()->drapeWorkflow.masterReferences(source,completed,archiveSource(source,details.get(source.captureId()),user)),master,user);
                                 var derived=drapeWorkflow.finish(run,source,config,completed);if(derived!=null)return derived;
                             } catch(RuntimeException failure){return new Result(false,"搭放母图复用已停止："+Objects.toString(failure.getMessage(),"本地处理未完成")+"；已完成母图与印花保留，不会追加生图");}

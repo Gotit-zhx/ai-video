@@ -5,35 +5,100 @@ import java.awt.image.BufferedImage;
 import java.io.*;
 import javax.imageio.ImageIO;
 class CommercePublicationDraftsTest {
- @Test void publicationSkuOrderFollowsSelectedColorsAndSizesAfterReplacingSourceStyles(){
+ @Test void generatedPrintTitlesKeepTheirVariantIdentityAfterDestinationLengthAdaptation(){
+  String original="COD SUKISILK denim-jacket braided-girl world-is-a-stage graphic casual loose-fit ladies top n109";
+  String first=CommercePublicationDrafts.variantTitle(original,1);
+  String second=CommercePublicationDrafts.variantTitle(original,2);
+  assertNotEquals(first,second);
+  assertTrue(first.startsWith("Graphic Design 1 | "));
+  assertTrue(second.startsWith("Graphic Design 2 | "));
+  assertTrue(second.substring(0,100).contains("Design 2"));
+ }
+ @Test void eachGeneratedPrintHasOneColorOptionAndSelectsItsCorrespondingSourceStyle(){
   var json=new tools.jackson.databind.ObjectMapper();
   var drafts=new CommercePublicationDrafts(null,null,null,null,null,json,null);
   var source=new java.util.ArrayList<com.yingdao.aicommerce.product.domain.ProductCaptureSku>();
   int order=0;
-  for(String color:java.util.List.of("Pink/2","Black","Pink/1"))
+  for(String color:java.util.List.of("Pink/2","Black","Pink/1","Pink/3"))
    for(String size:java.util.List.of("M(40-55KG)","S(35-40KG)"))
     source.add(new com.yingdao.aicommerce.product.domain.ProductCaptureSku("org","source",color+"-"+size,null,color+"-"+size,color+" / "+size,
-      java.math.BigDecimal.valueOf(263),java.math.BigDecimal.valueOf(538),10,"source","SKU",
+      java.math.BigDecimal.valueOf(263+order),java.math.BigDecimal.valueOf(538+order),10+order,"source","SKU",
       json.writeValueAsString(java.util.Map.of("Size",size,"Color",color)),"{}",order++));
   var manifest=java.util.List.<java.util.Map<String,Object>>of(
-    java.util.Map.of("colorLabel","Pink","skuKeys",java.util.List.of("Pink/2-M(40-55KG)","Pink/1-M(40-55KG)","Pink/2-S(35-40KG)","Pink/1-S(35-40KG)")),
+    java.util.Map.of("colorLabel","Pink","skuKeys",java.util.List.of("Pink/2-M(40-55KG)","Pink/1-M(40-55KG)","Pink/3-M(40-55KG)","Pink/2-S(35-40KG)","Pink/1-S(35-40KG)","Pink/3-S(35-40KG)")),
     java.util.Map.of("colorLabel","Black","skuKeys",java.util.List.of("Black-M(40-55KG)","Black-S(35-40KG)")));
   var urls=new java.util.HashMap<String,String>();
   source.forEach(sku->urls.put(sku.getSkuKey(),sku.getSkuKey().startsWith("Pink")?"pink-image":"black-image"));
-  var planned=drafts.plannedSkus(source,manifest,urls);
-  assertEquals(4,planned.size());
-  assertEquals(java.util.List.of("Pink / S(35-40KG)","Pink / M(40-55KG)","Black / S(35-40KG)","Black / M(40-55KG)"),
-    planned.stream().map(CommercePublicationDrafts.PlannedSku::name).toList());
-  assertEquals(java.util.List.of(0,1,2,3),planned.stream().map(CommercePublicationDrafts.PlannedSku::order).toList());
-  assertTrue(planned.getFirst().source().getSkuKey().startsWith("Pink/1"));
-  assertEquals("Pink",json.readTree(planned.getFirst().attributesJson()).get("Color").asText());
-  assertEquals("pink-image",planned.getFirst().imageUrl());
-  var declaration=drafts.generatedSkuCompleteness(planned);
+  var first=drafts.plannedSkus(source,manifest,urls,1);
+  var second=drafts.plannedSkus(source,manifest,urls,2);
+  var third=drafts.plannedSkus(source,manifest,urls,3);
+  assertEquals(4,first.size());assertEquals(4,second.size());assertEquals(4,third.size());
+  assertEquals(java.util.List.of("Pink-1 / S(35-40KG)","Pink-1 / M(40-55KG)",
+    "Black-1 / S(35-40KG)","Black-1 / M(40-55KG)"),
+    first.stream().map(CommercePublicationDrafts.PlannedSku::name).toList());
+  assertEquals(java.util.List.of("Pink-2 / S(35-40KG)","Pink-2 / M(40-55KG)",
+    "Black-2 / S(35-40KG)","Black-2 / M(40-55KG)"),
+    second.stream().map(CommercePublicationDrafts.PlannedSku::name).toList());
+  assertEquals(java.util.List.of("Pink-3 / S(35-40KG)","Pink-3 / M(40-55KG)",
+    "Black-3 / S(35-40KG)","Black-3 / M(40-55KG)"),
+    third.stream().map(CommercePublicationDrafts.PlannedSku::name).toList());
+  assertEquals(java.util.List.of(0,1,2,3),first.stream().map(CommercePublicationDrafts.PlannedSku::order).toList());
+  assertTrue(first.getFirst().source().getSkuKey().startsWith("Pink/1"));
+  assertTrue(second.getFirst().source().getSkuKey().startsWith("Pink/2"));
+  assertTrue(third.getFirst().source().getSkuKey().startsWith("Pink/3"));
+  assertEquals("Pink-1",json.readTree(first.getFirst().attributesJson()).get("Color").asText());
+  assertEquals("Pink-2",json.readTree(second.getFirst().attributesJson()).get("Color").asText());
+  assertEquals("Pink-3",json.readTree(third.getFirst().attributesJson()).get("Color").asText());
+  assertEquals(java.math.BigDecimal.valueOf(268),first.getFirst().source().getPrice());
+  assertEquals(java.math.BigDecimal.valueOf(265),first.stream().map(p->p.source().getPrice()).min(java.math.BigDecimal::compareTo).orElseThrow());
+  assertEquals(15,first.getFirst().source().getStock());
+  assertEquals(java.math.BigDecimal.valueOf(264),second.getFirst().source().getPrice());
+  assertEquals(11,second.getFirst().source().getStock());
+  assertEquals(java.math.BigDecimal.valueOf(270),third.getFirst().source().getPrice());
+  assertEquals(17,third.getFirst().source().getStock());
+  assertEquals("pink-image",first.getFirst().imageUrl());
+  var declaration=drafts.generatedSkuCompleteness(first);
   assertEquals(4,declaration.get("expectedCount"));
   assertEquals(4,declaration.get("capturedCount"));
   assertEquals(2,declaration.get("variantDimensionCount"));
   assertEquals(true,declaration.get("complete"));
   assertEquals("COMMERCE_GENERATED",declaration.get("source"));
+ }
+ @Test void conflictingDuplicateOfOneExactStyleAndSizeStillStopsInsteadOfInventingInventory(){
+  var json=new tools.jackson.databind.ObjectMapper();
+  var drafts=new CommercePublicationDrafts(null,null,null,null,null,json,null);
+  var source=new java.util.ArrayList<com.yingdao.aicommerce.product.domain.ProductCaptureSku>();
+  for(int i=0;i<2;i++)source.add(new com.yingdao.aicommerce.product.domain.ProductCaptureSku(
+    "org","source","white-"+i,null,"white-"+i,"White / M",
+    java.math.BigDecimal.valueOf(100+i),java.math.BigDecimal.valueOf(200+i),10+i,"image","SKU",
+    "{\"Color\":\"White/1\",\"Size\":\"M\"}","{}",i));
+  var keys=java.util.List.of("white-0","white-1");
+  var manifest=java.util.List.<java.util.Map<String,Object>>of(java.util.Map.of("colorLabel","White","skuKeys",keys));
+  assertTrue(assertThrows(IllegalArgumentException.class,
+    ()->drafts.plannedSkus(source,manifest,java.util.Map.of("white-0","image","white-1","image"),1))
+    .getMessage().contains("售价或库存不同"));
+ }
+ @Test void generatedCapturePriceRangeUsesSelectedSkusRatherThanSourceProductRange(){
+  var h=new DraftHarness();
+  var original=h.service.get(h.item.captureId(),h.user);
+  var source=original.capture();
+  source.updateDraft(source.getTitle(),source.getDescription(),source.getCategoryName(),source.getBrandName(),
+   source.getCurrency(),java.math.BigDecimal.ONE,java.math.BigDecimal.valueOf(999),source.getNormalizedData());
+  var prices=java.util.Map.of("black",java.math.BigDecimal.valueOf(21),
+   "white",java.math.BigDecimal.valueOf(34),"pink",java.math.BigDecimal.valueOf(27));
+  var selected=prices.entrySet().stream().map(entry->new com.yingdao.aicommerce.product.domain.ProductCaptureSku(
+   "org",source.getId(),entry.getKey()+"-sku",null,null,entry.getKey(),entry.getValue(),entry.getValue(),
+   10,"old","CAPTURED","{}","{}",0)).toList();
+  org.mockito.Mockito.when(h.service.get(source.getId(),h.user)).thenReturn(
+   new ProductCaptureService.CaptureDetail(source,selected,original.images(),java.util.List.of(),java.util.Map.of(),java.util.Map.of()));
+  h.prepare(java.util.List.of(
+   java.util.Map.of("frontKey","black-front","colorLabel","Black","skuKeys",java.util.List.of("black-sku")),
+   java.util.Map.of("frontKey","white-front","colorLabel","White","skuKeys",java.util.List.of("white-sku")),
+   java.util.Map.of("frontKey","pink-front","colorLabel","Pink","skuKeys",java.util.List.of("pink-sku"))));
+  var saved=org.mockito.ArgumentCaptor.forClass(com.yingdao.aicommerce.product.domain.ProductCapture.class);
+  org.mockito.Mockito.verify(h.captures).updateById(saved.capture());
+  assertEquals(java.math.BigDecimal.valueOf(21),saved.getValue().getPriceMin());
+  assertEquals(java.math.BigDecimal.valueOf(34),saved.getValue().getPriceMax());
  }
  @Test void existingDraftChangedManifestDelegatesOnlyToExplicitRestyleGuard(){
   var db=org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
@@ -118,7 +183,7 @@ class CommercePublicationDraftsTest {
   var draftCaptor=org.mockito.ArgumentCaptor.forClass(com.yingdao.aicommerce.product.domain.ProductCapture.class);
   org.mockito.Mockito.verify(captureMapper).insert(draftCaptor.capture());
   var draft=draftCaptor.getValue();
-  assertEquals(draftId,draft.getId());assertEquals("Original title",draft.getTitle());assertFalse(draft.getDescription().contains("<img"));
+  assertEquals(draftId,draft.getId());assertEquals("Graphic Design 1 | Original title",draft.getTitle());assertFalse(draft.getDescription().contains("<img"));
   var imageCaptor=org.mockito.ArgumentCaptor.forClass(com.yingdao.aicommerce.product.domain.ProductCaptureImage.class);
   org.mockito.Mockito.verify(imageMapper,org.mockito.Mockito.times(2)).insert(imageCaptor.capture());
   var copied=imageCaptor.getAllValues().stream().filter(i->"SIZE_CHART".equals(i.getRoleName())).findFirst().orElseThrow();

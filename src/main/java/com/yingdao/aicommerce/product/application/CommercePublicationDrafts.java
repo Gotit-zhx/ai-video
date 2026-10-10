@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -45,7 +46,7 @@ public class CommercePublicationDrafts {
   var detailKeys=detailKeys(manifest);
   var capture=new ProductCapture(user.organizationId(),user.userId(),"commerce-"+execution+"-"+item.id()+"-"+variant,
    CommerceImageArchive.sha(json.writeValueAsBytes(manifest)),original.getSourcePlatform(),original.getSourceUrl(),original.getSourceShopId(),original.getSourceProductId(),
-   original.getTitle(),description,original.getCategoryName(),original.getBrandName(),original.getCurrency(),original.getPriceMin(),original.getPriceMax(),json.writeValueAsString(normalized),"{}");
+   variantTitle(original.getTitle(),variant),description,original.getCategoryName(),original.getBrandName(),original.getCurrency(),original.getPriceMin(),original.getPriceMax(),json.writeValueAsString(normalized),"{}");
   captures.insert(capture);
   // Reserve the gallery positions immediately after MAIN for generated details.
   // Shopee uses only the first nine gallery images; SKU color bindings use URLs.
@@ -62,7 +63,12 @@ public class CommercePublicationDrafts {
    for(Object sku:(List<?>)entry.get("skuKeys"))if(skuImages.put((String)sku,url)!=null)throw new IllegalArgumentException("SKU 被分配到多个颜色");
   }
   for(int index=0;index<detailKeys.size();index++)addImage(capture,detailKeys.get(index),"DETAIL",index+1,"商品详情 "+(index+1));
-  var plannedSkus=plannedSkus(detail.skus(),manifest,skuImages);
+  var plannedSkus=plannedSkus(detail.skus(),manifest,skuImages,variant);
+  var prices=plannedSkus.stream().map(planned->planned.source().getPrice()).toList();
+  if(prices.stream().anyMatch(Objects::isNull))
+   throw new IllegalArgumentException("来源 SKU 售价缺失，不能生成商品价格区间");
+  BigDecimal priceMin=prices.isEmpty()?capture.getPriceMin():prices.stream().min(BigDecimal::compareTo).orElseThrow();
+  BigDecimal priceMax=prices.isEmpty()?capture.getPriceMax():prices.stream().max(BigDecimal::compareTo).orElseThrow();
   for(var planned:plannedSkus){
    var sku=planned.source();
    skus.insert(new ProductCaptureSku(user.organizationId(),capture.getId(),sku.getSkuKey(),sku.getExternalSkuId(),sku.getSellerSku(),planned.name(),sku.getPrice(),sku.getOriginalPrice(),sku.getStock(),planned.imageUrl(),"COMMERCE_GENERATED",planned.attributesJson(),"{}",planned.order()));
@@ -82,14 +88,20 @@ public class CommercePublicationDrafts {
   normalized.put("imageCompleteness",Map.of("complete",true,"expectedCount",position,"capturedCount",position,"requiredSkuImageCount",manifest.size(),"coveredSkuImageCount",manifest.size(),"requiredDetailImageCount",detailKeys.size(),"coveredDetailImageCount",detailKeys.size(),"issues",List.of()));
   // This is a new product: source-page completeness (96 old styles in this case)
   // cannot describe the generated color/size matrix after style replacement.
-  // plannedSkus has already checked every source key and rejected conflicting
-  // prices/stock for combinations that collapse into one generated SKU.
+  // Each generated print has its own color options; unrelated source-style
+  // prices and inventory are never merged into one generated SKU.
   normalized.put("skuCompleteness",generatedSkuCompleteness(plannedSkus));
-  capture.updateDraft(capture.getTitle(),description,capture.getCategoryName(),capture.getBrandName(),capture.getCurrency(),capture.getPriceMin(),capture.getPriceMax(),json.writeValueAsString(normalized));
+  capture.updateDraft(capture.getTitle(),description,capture.getCategoryName(),capture.getBrandName(),capture.getCurrency(),priceMin,priceMax,json.writeValueAsString(normalized));
   capture.imagesReady();captures.updateById(capture);
   service.approve(capture.getId(),user); // Data validation only; user's publish instruction supplies approval.
   db.update("UPDATE commerce_batch_publications SET capture_id=? WHERE organization_id=? AND execution_id=? AND item_id=? AND variant_index=?",capture.getId(),user.organizationId(),execution,item.id(),variant);
   return capture.getId();
+ }
+ static String variantTitle(String source,int variant){
+  if(variant<1||variant>20)throw new IllegalArgumentException("裂变印花编号无效");
+  // Prefix before destination title length adaptation, so each genuinely
+  // different print remains distinguishable even when Shopee trims a long name.
+  return "Graphic Design "+variant+" | "+Objects.toString(source,"").strip();
  }
  record PlannedSku(ProductCaptureSku source,String name,String attributesJson,String imageUrl,int order) {}
  Map<String,Object> generatedSkuCompleteness(List<PlannedSku> planned){
@@ -99,7 +111,8 @@ public class CommercePublicationDrafts {
   return Map.of("expectedCount",count,"capturedCount",count,"complete",count>0,
     "source","COMMERCE_GENERATED","hasVariants",count>1,"variantDimensionCount",dimensions,"issues",List.of());
  }
- List<PlannedSku> plannedSkus(List<ProductCaptureSku> source,List<Map<String,Object>> manifest,Map<String,String> skuImages){
+ List<PlannedSku> plannedSkus(List<ProductCaptureSku> source,List<Map<String,Object>> manifest,Map<String,String> skuImages,int variant){
+  if(variant<1||variant>20)throw new IllegalArgumentException("裂变印花编号无效");
   var byKey=new HashMap<String,ProductCaptureSku>();
   for(var sku:source)if(byKey.put(sku.getSkuKey(),sku)!=null)throw new IllegalArgumentException("来源 SKU 编号重复");
   var result=new ArrayList<PlannedSku>();
@@ -107,7 +120,7 @@ public class CommercePublicationDrafts {
   for(var color:manifest){
    String label=Objects.toString(color.get("colorLabel"),"").strip();
    if(label.isEmpty()||!(color.get("skuKeys") instanceof List<?> keys))throw new IllegalArgumentException("颜色分组缺少 SKU");
-   var grouped=new LinkedHashMap<String,ProductCaptureSku>();
+   var grouped=new LinkedHashMap<String,List<ProductCaptureSku>>();
    var attributesByGroup=new HashMap<String,Map<String,String>>();
    for(var rawKey:keys){
     String key=Objects.toString(rawKey,""),image=skuImages.get(key);
@@ -116,28 +129,27 @@ public class CommercePublicationDrafts {
     Map<String,Object> original=json.readValue(sku.getAttributesJson(),Map.class);
     var attributes=new LinkedHashMap<String,String>();
     String colorName=null;
-    for(var entry:original.entrySet())if(CommerceSourceColorResolver.isColorDimension(entry.getKey())){colorName=entry.getKey();break;}
+    for(var entry:original.entrySet())if(CommerceSourceColorResolver.isColorDimension(entry.getKey())){
+     colorName=entry.getKey();break;
+    }
     if(colorName==null)colorName="Color";
-    attributes.put(colorName,label);
+    attributes.put(colorName,label+"-"+variant);
     for(var entry:original.entrySet())if(!CommerceSourceColorResolver.isColorDimension(entry.getKey()))
      attributes.put(entry.getKey(),Objects.toString(entry.getValue(),"").strip());
     String group=json.writeValueAsString(attributes);
-    var previous=grouped.get(group);
-    if(previous!=null){
-     if(!samePrice(previous.getPrice(),sku.getPrice())||!samePrice(previous.getOriginalPrice(),sku.getOriginalPrice())
-       ||!Objects.equals(previous.getStock(),sku.getStock()))
-      throw new IllegalArgumentException("同一颜色尺码的来源款式售价或库存不同，请先核对："+label+" / "+attributes);
-     if(styleRank(sku)<styleRank(previous))grouped.put(group,sku);
-    }else grouped.put(group,sku);
+    grouped.computeIfAbsent(group,ignored->new ArrayList<>()).add(sku);
     attributesByGroup.put(group,attributes);
    }
    var groups=new ArrayList<>(grouped.keySet());
    groups.sort(Comparator.comparingInt((String key)->sizeRank(attributesByGroup.get(key)))
      .thenComparing(key->key));
    for(var group:groups){
-    var sku=grouped.get(group);var attrs=attributesByGroup.get(group);
+    var attrs=attributesByGroup.get(group);
+    var sku=selectSourceSku(grouped.get(group),variant,label,attrs);
     String size=attrs.entrySet().stream().filter(e->isSize(e.getKey())).map(Map.Entry::getValue).findFirst().orElse("");
-    result.add(new PlannedSku(sku,label+(size.isBlank()?"":" / "+size),group,skuImages.get(sku.getSkuKey()),result.size()));
+    String colorName=attrs.entrySet().stream().filter(e->CommerceSourceColorResolver.isColorDimension(e.getKey()))
+      .map(Map.Entry::getValue).findFirst().orElse(label);
+    result.add(new PlannedSku(sku,colorName+(size.isBlank()?"":" / "+size),group,skuImages.get(sku.getSkuKey()),result.size()));
    }
   }
   if(assigned.size()!=byKey.size())throw new IllegalArgumentException("存在未分配颜色的来源 SKU");
@@ -145,6 +157,21 @@ public class CommercePublicationDrafts {
  }
  private static boolean samePrice(java.math.BigDecimal a,java.math.BigDecimal b){
   return a==null?b==null:b!=null&&a.compareTo(b)==0;
+ }
+ /** The print index names the new color option. Prefer the matching source
+  * style for its price and stock; never add the other old styles to this print. */
+ private ProductCaptureSku selectSourceSku(List<ProductCaptureSku> candidates,int variant,String label,Map<String,String> attributes){
+  int chosenRank=candidates.stream().mapToInt(this::styleRank).filter(rank->rank==variant).findFirst().orElse(
+    candidates.stream().mapToInt(this::styleRank).filter(rank->rank==0).findFirst().orElse(
+      candidates.stream().mapToInt(this::styleRank).min().orElseThrow()));
+  var matches=candidates.stream().filter(sku->styleRank(sku)==chosenRank)
+    .sorted(Comparator.comparingInt(ProductCaptureSku::getSortOrder).thenComparing(ProductCaptureSku::getSkuKey)).toList();
+  var chosen=matches.getFirst();
+  for(var other:matches)if(!samePrice(chosen.getPrice(),other.getPrice())
+    ||!samePrice(chosen.getOriginalPrice(),other.getOriginalPrice())
+    ||!Objects.equals(chosen.getStock(),other.getStock()))
+   throw new IllegalArgumentException("同一来源款式的颜色尺码售价或库存不同，请先核对："+label+" / "+attributes);
+  return chosen;
  }
  private int styleRank(ProductCaptureSku sku){
   Map<String,Object> attrs=json.readValue(sku.getAttributesJson(),Map.class);

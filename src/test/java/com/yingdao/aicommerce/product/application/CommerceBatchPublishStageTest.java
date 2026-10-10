@@ -19,6 +19,110 @@ class CommerceBatchPublishStageTest {
  private static final String PUBLICATIONS="SELECT * FROM commerce_batch_publications WHERE organization_id=? AND execution_id=? AND item_id=? AND variant_index=?";
  private static final String LINK="UPDATE commerce_batch_publications SET workflow_id=? WHERE organization_id=? AND execution_id=? AND item_id=? AND variant_index=? AND workflow_id IS NULL";
 
+ @Test void oldDrapeCollarCannotBeUploadedButBoundV3ReviewCan(){
+  var h=new Harness(1,1);
+  String guide="tenant/"+"a".repeat(64),scene="tenant/"+"b".repeat(64),masterKey="tenant/"+"c".repeat(64);
+  var master=new HashMap<String,Object>();
+  master.put("capture_id","source-0");master.put("kind","DRAPE_MASTER");master.put("storage_key",masterKey);
+  master.put("reference_keys",new ObjectMapper().writeValueAsString(List.of(guide,scene,"tenant/"+"d".repeat(64))));
+  var blank=new HashMap<String,Object>();blank.put("capture_id","source-0");blank.put("kind","DRAPE_BLANK");
+  var review=new LinkedHashMap<String,Object>();
+  for(String flag:List.of("passed","hasScene","hasSupportContact","hasNaturalDrape","preservesGarment",
+    "preservesPrintPlacement","fullyVisible","preservesNeckline","preservesSleeveBadge","preservesSideLabel"))review.put(flag,true);
+  review.put("contractVersion",CommerceDrapeStyleReview.NECKLINE_CONTRACT_VERSION);
+  review.put("detailGuardVersion","DRAPE_DETAIL_GUARD_V1");review.put("detailGuardStatus","PASSED");
+  review.put("reason","领口和版型均与模板相符");
+  review.put("guideSha256","a".repeat(64));review.put("sceneSha256","b".repeat(64));review.put("masterSha256","c".repeat(64));
+  blank.put("result_json",new ObjectMapper().writeValueAsString(Map.of("styleReview",review)));
+  master.put("prompt",CommerceDrapeReuseWorkflow.PROMPT);
+  assertThrows(IllegalArgumentException.class,()->h.stage.requireNecklineReview(List.of(master,blank),"source-0"));
+  master.put("prompt",CommerceDrapeReuseWorkflow.PROMPT_NECKLINE);
+  assertDoesNotThrow(()->h.stage.requireNecklineReview(List.of(master,blank),"source-0"));
+  review.put("preservesSideLabel",false);
+  blank.put("result_json",new ObjectMapper().writeValueAsString(Map.of("styleReview",review)));
+  assertThrows(IllegalArgumentException.class,()->h.stage.requireNecklineReview(List.of(master,blank),"source-0"));
+  review.put("preservesSideLabel",true);
+  review.put("preservesNeckline",false);
+  blank.put("result_json",new ObjectMapper().writeValueAsString(Map.of("styleReview",review)));
+  assertThrows(IllegalArgumentException.class,()->h.stage.requireNecklineReview(List.of(master,blank),"source-0"));
+ }
+
+ @Test void oldModelOnlyReviewIsRecheckedAndPreservedBeforeDraftSubmission(){
+  var h=new Harness(1,1);var reviews=mock(CommerceDrapeStyleReview.class);
+  ReflectionTestUtils.setField(h.stage,"drapeReviews",reviews);
+  String guide="tenant/"+"a".repeat(64),scene="tenant/"+"b".repeat(64),masterKey="tenant/"+"c".repeat(64);
+  var master=new HashMap<String,Object>(Map.of("id","master","organization_id","org","capture_id","source-0",
+   "kind","DRAPE_MASTER","storage_key",masterKey,"prompt",CommerceDrapeReuseWorkflow.PROMPT_NECKLINE,
+   "reference_keys",new ObjectMapper().writeValueAsString(List.of(guide,scene,"tenant/"+"d".repeat(64)))));
+  String previous=new ObjectMapper().writeValueAsString(Map.of("styleReview",Map.of(
+   "contractVersion","COMMERCE_DRAPE_STYLE_V3","passed",true,"reason","旧模型判断")));
+  var blank=new HashMap<String,Object>(Map.of("id","blank","capture_id","source-0","kind","DRAPE_BLANK","result_json",previous));
+  byte[] bytes=new byte[]{1,2,3};
+  for(String key:List.of(guide,scene,masterKey))
+   when(h.archive.read("org",key)).thenReturn(new CommerceDesignImageGateway.Reference("image/png",Base64.getEncoder().encodeToString(bytes)));
+  var checked=new LinkedHashMap<String,Object>();
+  for(String flag:CommerceDrapeStyleReview.NECKLINE_CHECKS)checked.put(flag,true);
+  checked.put("passed",true);checked.put("reason","领口、袖标、侧标已核查");
+  checked.put("contractVersion",CommerceDrapeStyleReview.NECKLINE_CONTRACT_VERSION);
+  checked.put("detailGuardVersion","DRAPE_DETAIL_GUARD_V1");checked.put("detailGuardStatus","PASSED");
+  checked.put("guideSha256","a".repeat(64));checked.put("sceneSha256","b".repeat(64));checked.put("masterSha256","c".repeat(64));
+  when(reviews.review("org",bytes,bytes,bytes,true)).thenReturn(checked);
+  when(h.db.update(startsWith("UPDATE commerce_batch_artwork_jobs SET result_json="),anyString(),eq("blank"),eq("org"),eq(previous))).thenReturn(1);
+  assertDoesNotThrow(()->h.stage.requireNecklineReview(List.of(master,blank),"source-0"));
+  var saved=org.mockito.ArgumentCaptor.forClass(String.class);
+  verify(h.db).update(startsWith("UPDATE commerce_batch_artwork_jobs SET result_json="),saved.capture(),eq("blank"),eq("org"),eq(previous));
+  var report=new ObjectMapper().readTree(saved.getValue());
+  assertEquals("COMMERCE_DRAPE_STYLE_V3",report.path("previousStyleReview").path("contractVersion").asText());
+  assertEquals("DRAPE_DETAIL_GUARD_V1",report.path("styleReview").path("detailGuardVersion").asText());
+ }
+
+ @Test void delayedLocalDetailQueueDefersAllVariantsWithoutRepeatingVisualOrCreatingDrafts(){
+  var h=new Harness(1,2);var json=new ObjectMapper();
+  var reviews=mock(CommerceDrapeStyleReview.class);
+  ReflectionTestUtils.setField(h.stage,"drapeReviews",reviews);
+  var source=new CommerceBatchCreativePlanValidator.Selection("source-0",1,"image",List.of(),
+    List.of(new CommerceSourceColorResolver.Color("black","Black",List.of("black-sku"),"image",true)));
+  var plan=new CommerceBatchCreativePlanValidator.Plan("template",List.of(source),2,null,
+    "SOURCE_PRODUCT","SOURCE_SKU_COLORS",CommerceBatchCreativePlanValidator.GROK_DRAPE_POLICY);
+  when(h.plans.forExecution("org","run")).thenReturn(new CommerceBatchCreativePlanMapper.Row(
+    "plan","org","batch",1,json.writeValueAsString(plan),"user",Instant.now()));
+  var refs=List.of("guide","scene","art");
+  var master=new HashMap<String,Object>(Map.of("id","master","organization_id","org",
+    "capture_id","source-0","kind",CommerceDrapeReuseWorkflow.MASTER,"storage_key","master-key",
+    "prompt",CommerceDrapeReuseWorkflow.PROMPT_NECKLINE,"reference_keys",json.writeValueAsString(refs)));
+  var blank=new HashMap<String,Object>(Map.of("id","blank","capture_id","source-0",
+    "kind",CommerceDrapeReuseWorkflow.BLANK,"result_json",json.writeValueAsString(Map.of(
+      "styleReview",Map.of("contractVersion","COMMERCE_DRAPE_STYLE_V3")))));
+  when(h.db.queryForList("SELECT * FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND status='READY'","run","org"))
+    .thenReturn(List.of(master,blank));
+  for(String key:List.of("guide","scene","master-key"))
+   when(h.archive.read("org",key)).thenReturn(new CommerceDesignImageGateway.Reference(
+     "image/png",Base64.getEncoder().encodeToString(new byte[]{1,2,3})));
+  when(reviews.review(eq("org"),any(),any(),any(),eq(true)))
+    .thenThrow(new CommerceDrapeStyleReview.DetailGuardUnavailableException("本地核查排队中"));
+  var result=h.execute();
+  assertEquals("QUEUED",result.pendingStatus());
+  assertTrue(result.message().contains("2 款待提交"));
+  verify(reviews,times(1)).review(eq("org"),any(),any(),any(),eq(true));
+  verify(h.drafts,never()).prepare(anyString(),any(),anyInt(),anyList(),any());
+ }
+
+ @Test void recoveredDuplicateDraftUsesANewKeyWithoutChangingTheOriginalFailedWorkflow(){
+  var h=new Harness(1,1);
+  var item=h.items.getFirst();
+  when(h.db.queryForList(
+    "SELECT idempotency_key FROM product_captures WHERE organization_id=? AND id=?",
+    String.class,"org","draft-item-0-1")).thenReturn(List.of("commerce-run-item-0-1-duplicate-recovery-1"));
+  var pending=workflow("replacement","PENDING",false,null,null);
+  when(h.workflows.create(eq("draft-item-0-1"),anyMap(),
+    eq("commerce-publish-run-item-0-1-duplicate-recovery-1"),eq(h.user)))
+    .thenReturn(new ProductPublishWorkflowService.CreateResult(pending,true,false));
+  assertEquals("QUEUED",h.execute().pendingStatus());
+  verify(h.workflows).create(eq("draft-item-0-1"),anyMap(),
+    eq("commerce-publish-run-item-0-1-duplicate-recovery-1"),eq(h.user));
+  verify(h.db).update(eq(LINK),eq("replacement"),eq("org"),eq("run"),eq(item.id()),eq(1));
+ }
+
  @Test void firstPendingWorkflowDoesNotPreventAnotherItemFromBeingSubmitted(){
   var h=new Harness(2,1);h.existing(0,1,workflow("first","RUNNING",false,null,null));
   var result=h.execute();

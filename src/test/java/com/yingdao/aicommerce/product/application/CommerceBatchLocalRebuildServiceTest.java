@@ -34,6 +34,7 @@ class CommerceBatchLocalRebuildServiceTest {
  private final CommerceBatchExecutionService executions=mock(CommerceBatchExecutionService.class);
  private final CommerceBatchCreativePlanMapper plans=mock(CommerceBatchCreativePlanMapper.class);
  private final CommerceTemplateMapper templates=mock(CommerceTemplateMapper.class);
+ private final CommerceBatchModelLimitService limits=mock(CommerceBatchModelLimitService.class);
  private final ObjectMapper json=new ObjectMapper();
  private final CommerceBatchLocalRebuildService service=new CommerceBatchLocalRebuildService(db,executions,plans,templates,json);
  private final PlatformPrincipal user=user("org",List.of("product:edit","product:publish"));
@@ -41,6 +42,7 @@ class CommerceBatchLocalRebuildServiceTest {
  private CommerceBatchCreativePlanValidator.Plan plan;
 
  @BeforeEach void setup(){
+  org.springframework.test.util.ReflectionTestUtils.setField(service,"limits",limits);
   when(executions.get("batch",user)).thenReturn(run("WAITING_INPUT","PUBLISH",null,null));
   locked(run("WAITING_INPUT","PUBLISH",null,null));
   when(db.queryForList(JOBS,"run","org")).thenReturn(jobs);
@@ -55,6 +57,59 @@ class CommerceBatchLocalRebuildServiceTest {
   jobs.add(job("base","BASE_COLOR",0,"black","READY","LOCAL_PHOTO_V1"));
   jobs.add(job("matte","MATTE",1,null,"READY","LOCAL_PHOTO_V1"));
   jobs.add(job("mockup","MOCKUP",1,"black","READY","LOCAL_PHOTO_V1"));
+ }
+
+ @Test void necklineRepairReusesOriginalBatchAndRetiresOnlyMasterDerivatives()throws Exception{
+  plan(new CommerceBatchCreativePlanValidator.Plan("template",plan.sources(),1,null,
+    "SOURCE_PRODUCT","SOURCE_SKU_COLORS",CommerceBatchCreativePlanValidator.GROK_DRAPE_POLICY));
+  var guide=job("guide","DRAPE_GUIDE",0,null,"READY","LOCAL_PHOTO_V1");
+  guide.put("reference_keys",json.writeValueAsString(List.of("archive/template","archive/uv","archive/art")));
+  var mother=job("mother","DRAPE_MASTER",0,null,"READY","frozen-image-model");
+  mother.put("prompt",CommerceDrapeReuseWorkflow.PROMPT);
+  mother.put("model_fingerprint","b".repeat(64));
+  mother.put("reference_keys",json.writeValueAsString(List.of("archive/guide","archive/scene","archive/art")));
+  var blank=job("blank","DRAPE_BLANK",0,null,"READY","LOCAL_PHOTO_V1");
+  var image=job("image","DRAPED_FRONT",1,"black","READY","LOCAL_PHOTO_V1");
+  jobs.addAll(List.of(guide,mother,blank,image));
+  when(limits.reserve(eq("run"),eq("org"),anyString(),eq("MOCKUP"))).thenReturn(true);
+  var result=service.repairNeckline("batch","commerce-neckline-repair-v1-batch",user);
+  assertEquals("MOCKUP",result.execution().stage());
+  assertEquals("QUEUED",result.execution().status());
+  assertEquals(2,result.retiredArtifacts());
+  verify(limits).reserve(eq("run"),eq("org"),argThat((String key)->key.matches("[a-f0-9]{64}")),eq("MOCKUP"));
+  verify(db).update(startsWith("INSERT INTO commerce_batch_artwork_jobs"),anyString(),anyString(),
+    eq(CommerceDrapeReuseWorkflow.PROMPT_DETAIL_V4),anyString(),eq("mother"),eq("run"),eq("org"));
+  String event=CommerceBatchLocalRebuildService.eventId("org","run","neckline:commerce-neckline-repair-v1-batch");
+  for(String id:List.of("blank","image"))
+   verify(db).update(RETIRE,CommerceBatchLocalRebuildService.retiredRequestKey("request-"+id,id,event),id,"run","org","request-"+id);
+  verify(db,never()).update(contains("status='RETRIED',request_key="),eq("mockup"),anyString(),anyString(),anyString(),anyString());
+  assertNotNull(CommerceBatchLocalRebuildService.class.getMethod("repairNeckline",String.class,String.class,PlatformPrincipal.class)
+    .getAnnotation(Transactional.class));
+ }
+
+ @Test void necklineRepairRejectsStaleSourceAndChangedArtworkBinding(){
+  plan(new CommerceBatchCreativePlanValidator.Plan("template",plan.sources(),1,null,
+    "SOURCE_PRODUCT","SOURCE_SKU_COLORS",CommerceBatchCreativePlanValidator.GROK_DRAPE_POLICY));
+  var guide=job("guide","DRAPE_GUIDE",0,null,"READY","LOCAL_PHOTO_V1");
+  guide.put("reference_keys",json.writeValueAsString(List.of("archive/template","archive/uv","archive/art")));
+  var mother=job("mother","DRAPE_MASTER",0,null,"READY","frozen-image-model");
+  mother.put("prompt",CommerceDrapeReuseWorkflow.PROMPT);
+  mother.put("model_fingerprint","b".repeat(64));
+  mother.put("reference_keys",json.writeValueAsString(List.of("archive/guide","archive/scene","archive/art")));
+  jobs.addAll(List.of(guide,mother,job("blank","DRAPE_BLANK",0,null,"READY","LOCAL_PHOTO_V1"),
+    job("image","DRAPED_FRONT",1,"black","READY","LOCAL_PHOTO_V1")));
+  mother.put("capture_version",8L);
+  assertThrows(BusinessException.class,()->service.repairNeckline("batch","commerce-neckline-repair-v1-batch",user));
+  mother.put("capture_version",9L);
+  mother.put("reference_keys",json.writeValueAsString(List.of("archive/guide","archive/scene","archive/other-art")));
+  assertThrows(BusinessException.class,()->service.repairNeckline("batch","commerce-neckline-repair-v1-batch",user));
+  verifyNoInteractions(limits);
+ }
+
+ @Test void necklineRepairDoesNotReplaceImagesAfterAnyPublicationReservation(){
+  when(db.queryForList(PUBLICATIONS,"org","run")).thenReturn(List.of(Map.of("item_id","item")));
+  assertThrows(BusinessException.class,()->service.repairNeckline("batch","commerce-neckline-repair-v1-batch",user));
+  verifyNoInteractions(limits);
  }
 
  @Test void permissionsAndSourceAccessAreCheckedBeforeMutation(){

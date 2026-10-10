@@ -35,9 +35,11 @@ COPY commerce-artwork-library.css commerce-artwork-library.js commerce-publicati
 COPY commerce-motion-demo.html commerce-motion-demo.js commerce-motion-demo.css /usr/share/nginx/html/
 
 COPY i18n.js i18n.css /usr/share/nginx/html/
-COPY i18n /usr/share/nginx/html/i18n
-
-COPY bd-workspace.js bd-workspace.css /usr/share/nginx/html/
+COPY i18n/catalog.js i18n/catalog.json i18n/slots.json /usr/share/nginx/html/i18n/
 
 COPY knowledge-workspace.js knowledge-workspace.css /usr/share/nginx/html/
 COPY hr-workspace.js hr-workspace.css hr-pool.js hr-demands.js hr-departments.js hr-passive.js /usr/share/nginx/html/
+COPY hr-bi.js hr-desktop-bridge.js hr-onboarding.js hr-resume-preview.js hr-sourcing.js /usr/share/nginx/html/
+COPY product-listing-templates.js product-listing-templates.css /usr/share/nginx/html/
+COPY styles.css mobile.css /usr/share/nginx/html/
+COPY 50x.html /usr/share/nginx/html/

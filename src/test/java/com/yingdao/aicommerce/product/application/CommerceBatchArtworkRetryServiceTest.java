@@ -183,7 +183,7 @@ class CommerceBatchArtworkRetryServiceTest {
         verify(limits).reserve("run", "org", KEY, "MOCKUP");
         verify(limits, never()).initialize(anyString(), anyString(), anyInt());
         verify(db).update(startsWith("INSERT INTO commerce_batch_artwork_jobs"), eq(result.artifactId()), eq(KEY),
-                eq(CommerceDrapeReuseWorkflow.PROMPT), eq("[\"guide\",\"scene\",\"art\"]"), anyString(), eq("old"), eq("run"), eq("org"));
+                eq(CommerceDrapeReuseWorkflow.PROMPT_DETAIL_V4), eq("[\"guide\",\"scene\",\"art\"]"), anyString(), eq("old"), eq("run"), eq("org"));
         verify(db).update(contains("kind='DRAPE_MASTER' AND status='READY'"), eq("old"), eq("run"), eq("org"));
         verify(db, times(4)).update(anyString(), any(Object[].class));
         verify(db, never()).update(contains("storage_key="), any(Object[].class));
@@ -195,7 +195,7 @@ class CommerceBatchArtworkRetryServiceTest {
             drapeRun("MOCKUP", status, null, null);
             var result = service.retry("batch", "old", user);
             verify(db).update(startsWith("INSERT INTO commerce_batch_artwork_jobs"), eq(result.artifactId()), eq(KEY),
-                    eq(CommerceDrapeReuseWorkflow.PROMPT), eq("[\"guide\",\"scene\",\"art\"]"), anyString(), eq("old"), eq("run"), eq("org"));
+                    eq(CommerceDrapeReuseWorkflow.PROMPT_DETAIL_V4), eq("[\"guide\",\"scene\",\"art\"]"), anyString(), eq("old"), eq("run"), eq("org"));
         }
     }
 

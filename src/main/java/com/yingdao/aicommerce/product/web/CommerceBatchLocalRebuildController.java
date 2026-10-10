@@ -16,4 +16,9 @@ public class CommerceBatchLocalRebuildController {
    @RequestHeader(value="Idempotency-Key",required=false) String key,@AuthenticationPrincipal PlatformPrincipal user){
   return ApiResponse.ok(service.rebuild(batch,key,user));
  }
+ @PostMapping("/neckline")
+ public ApiResponse<CommerceBatchLocalRebuildService.Rebuilt> repairNeckline(@PathVariable String batch,
+   @RequestHeader("Idempotency-Key") String key,@AuthenticationPrincipal PlatformPrincipal user){
+  return ApiResponse.ok(service.repairNeckline(batch,key,user));
+ }
 }

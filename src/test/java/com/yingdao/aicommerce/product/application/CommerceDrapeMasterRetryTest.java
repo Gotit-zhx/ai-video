@@ -83,8 +83,25 @@ class CommerceDrapeMasterRetryTest {
             assertTrue(service.retry(run, master, review).queued(), flag);
         }
     }
+    @Test void necklineOnlyFailureCreatesAVersionBoundCorrection() {
+        master.put("prompt",CommerceDrapeReuseWorkflow.PROMPT_NECKLINE);
+        var review=passed();
+        review.put("contractVersion",CommerceDrapeStyleReview.NECKLINE_CONTRACT_VERSION);
+        review.put("preservesNeckline",false);
+        review.put("preservesSleeveBadge",true);
+        review.put("preservesSideLabel",true);
+        review.put("reason","领口开口变深，领边与模板不符");
+        var result=service.retry(run,master,review);
+        assertEquals("QUEUED",result.status());
+        verify(limits).reserve("run","org",CommerceDrapeMasterRetry.nextKey("root-key",true),"MOCKUP");
+        verify(db).update(startsWith("INSERT INTO commerce_batch_artwork_jobs"),eq(result.artifactId()),
+                eq(CommerceDrapeMasterRetry.nextKey("root-key",true)),
+                argThat((String prompt)->prompt.startsWith(CommerceDrapeReuseWorkflow.PROMPT_DETAIL_V4
+                        +CommerceDrapeMasterRetry.PROMPT_MARKER)&&prompt.contains("preservesNeckline")),
+                eq(REFS),eq(result.message()),eq("master-1"),eq("run"),eq("org"));
+    }
 
-    @Test void thirdTotalMotherIsTheFinalAutomaticAttemptAndManualHistoryCannotResetCount() {
+    @Test void fiveMothersAreBoundedAndManualHistoryCannotResetCount() {
         master.put("status", "RETRIED");
         var second = master("master-2", "historical-manual-key", "READY"); jobs.add(second); lock(second);
         var result = service.retry(run, second, failed());
@@ -94,8 +111,18 @@ class CommerceDrapeMasterRetryTest {
         second.put("status", "RETRIED");
         var third = master("master-3", CommerceDrapeMasterRetry.nextKey("historical-manual-key"), "READY");
         jobs.add(third); lock(third);
-        var stopped = service.retry(run, third, failed());
-        assertEquals("EXHAUSTED", stopped.status()); assertEquals(3, stopped.attempt()); assertFalse(stopped.queued());
+        assertEquals(4, service.retry(run, third, failed()).attempt());
+        clearInvocations(limits, db);
+        third.put("status", "RETRIED");
+        var fourth = master("master-4", CommerceDrapeMasterRetry.nextKey((String)third.get("request_key")), "READY");
+        jobs.add(fourth); lock(fourth);
+        assertEquals(5, service.retry(run, fourth, failed()).attempt());
+        clearInvocations(limits, db);
+        fourth.put("status", "RETRIED");
+        var fifth = master("master-5", CommerceDrapeMasterRetry.nextKey((String)fourth.get("request_key")), "READY");
+        jobs.add(fifth); lock(fifth);
+        var stopped = service.retry(run, fifth, failed());
+        assertEquals("EXHAUSTED", stopped.status()); assertEquals(5, stopped.attempt()); assertFalse(stopped.queued());
         noWrites();
     }
 

@@ -18,7 +18,7 @@ import java.util.List;
  @Update("UPDATE commerce_batch_executions SET status='QUEUED',message='已恢复，等待后台推进',updated_at=#{now} WHERE organization_id=#{org} AND batch_id=#{batch} AND status IN ('WAITING_CAPABILITY','WAITING_INPUT','PAUSED')") int resume(@Param("org")String org,@Param("batch")String batch,@Param("now")Instant now);
  @Update("""
    UPDATE commerce_batch_executions e SET status='QUEUED',message='已核对没有未决模型提交，继续使用持久化结果',updated_at=#{now}
-   WHERE e.organization_id=#{org} AND e.batch_id=#{batch} AND e.status='UNKNOWN' AND e.stage IN ('EXTRACT','VARIATE','MOCKUP')
+   WHERE e.organization_id=#{org} AND e.batch_id=#{batch} AND e.status='UNKNOWN' AND e.stage IN ('EXTRACT','VARIATE','MOCKUP','PUBLISH')
    AND EXISTS (SELECT 1 FROM commerce_batch_artwork_jobs j WHERE j.execution_id=e.id)
    AND NOT EXISTS (SELECT 1 FROM commerce_batch_artwork_jobs j WHERE j.execution_id=e.id AND j.status IN ('SUBMITTING','UNKNOWN'))
    """) int recover(@Param("org")String org,@Param("batch")String batch,@Param("now")Instant now);

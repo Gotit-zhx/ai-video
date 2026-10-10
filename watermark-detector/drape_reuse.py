@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image
 
 ALGORITHM = 'drape-reuse-v1'
-MASK_REVISION = 'U2NET_THREE_VIEW_V1'
+MASK_REVISION = 'U2NET_THREE_VIEW_SLEEVE_HEM_V2'
 NUMBER_ENCODING = 'DECIMAL_STRING_V1'
 COORDINATE_FIELDS = {'sourceCanvasToMasterH': (3, 3), 'textureToSourceCanvasH': (3, 3),
                      'textureToMasterH': (3, 3), 'targetCorners': (4, 2)}
@@ -406,6 +406,68 @@ def edge_alpha(rgb, mask):
     alpha[cv2.dilate(smooth.astype(np.uint8), np.ones((3, 3), np.uint8)) == 0] = 0
     return np.rint(alpha*255).astype(np.uint8)
 
+def recover_sleeve_fold(rgb, mask):
+    """Recover a small neutral sleeve hem lost beside a dark edge badge.
+
+    A broad dilation would also dye the chair/background and the badge itself.
+    Extrapolate only a measured straight sleeve hem with a dark badge above it.
+    """
+    height, width = mask.shape
+    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return mask
+    hull = np.zeros(mask.shape, np.uint8)
+    cv2.drawContours(hull, [cv2.convexHull(max(contours, key=cv2.contourArea))], -1, 255, -1)
+    scale = min(height, width)/1024
+    channels = rgb.astype(np.int16)
+    neutral = (channels.mean(2) > 145) & (channels.max(2)-channels.min(2) < 16)
+    recovered = mask.copy()
+    # A hem running behind a sewn-on badge can extend beyond the segmentation
+    # silhouette. Continue only a measured, nearly straight sleeve edge, and
+    # only when a dark badge sits directly above the missing neutral strip.
+    yy, xx = np.indices(mask.shape)
+    for mirrored in (False, True):
+        view_mask = mask[:, ::-1] if mirrored else mask
+        view_rgb = rgb[:, ::-1] if mirrored else rgb
+        vx, vy, vw, vh = cv2.boundingRect(max(cv2.findContours(
+            view_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0],
+            key=cv2.contourArea))
+        xs = np.arange(vx+round(vw*.07), vx+round(vw*.16))
+        lower = []
+        for column in xs:
+            rows = np.flatnonzero(view_mask[vy+round(vh*.40):vy+round(vh*.75), column])
+            if len(rows) == 0:
+                break
+            lower.append(vy+round(vh*.40)+int(rows[-1]))
+        if len(lower) != len(xs) or len(xs) < 12:
+            continue
+        slope, intercept = np.polyfit(xs, lower, 1)
+        if not .3 < slope < 1.2 or np.sqrt(np.mean((np.polyval((slope, intercept), xs)-lower)**2)) > 2*scale:
+            continue
+        anchor = xs[0]
+        line = slope*xx+intercept
+        near_hem = (xx >= vx+round(vw*.02)) & (xx < anchor) & (yy >= line-16*scale) & (yy <= line+2*scale)
+        dark_above = (view_rgb.astype(np.int16).mean(2) < 70) & (hull[:, ::-1] > 0 if mirrored else hull > 0)
+        badge_zone = dark_above[max(0,round(line[0,anchor])-65):round(line[0,anchor])-30,
+                               max(0,anchor-round(vw*.03)):anchor]
+        if badge_zone.size == 0 or badge_zone.sum() < 100*scale*scale:
+            continue
+        view_neutral = neutral[:, ::-1] if mirrored else neutral
+        strip = near_hem & view_neutral & ~view_mask
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(strip.astype(np.uint8))
+        for index in range(1, count):
+            _, _, sw, sh, area = map(int, stats[index])
+            if 60*scale*scale <= area <= 500*scale*scale and sw <= 75*scale and sh <= 30*scale:
+                addition = labels == index
+                if mirrored:
+                    recovered[:, ::-1] |= addition
+                else:
+                    recovered |= addition
+    # A small repair is acceptable; widespread disagreement remains a stop.
+    require(int((recovered & ~mask).sum()) <= max(400, int(mask.sum()*.002)),
+            'GARMENT_MASK_UNCERTAIN', '袖口折边与背景边界不清，未扩大换色区域')
+    return recovered
+
 def cleanup(rgb, mask, started):
     x, y, w, h = cv2.boundingRect(mask.astype(np.uint8)); pad = 6
     x0, y0, x1, y1 = max(0, x-pad), max(0, y-pad), min(rgb.shape[1], x+w+pad), min(rgb.shape[0], y+h+pad)
@@ -467,6 +529,7 @@ def prepare(body):
     values = blank[remove].astype(np.int16)
     require(float(((values.max(1)-values.min(1)) > 35).mean()) < .005,
             'PRINT_RESIDUE_DETECTED', '去花后仍有明显彩色残留，保留母图并停止自动套版')
+    mask = recover_sleeve_fold(blank, mask)
     matte = edge_alpha(blank, mask); blank_raw = png(blank); alpha_raw = png(matte); remove_raw = png(remove.astype(np.uint8)*255)
     mapping = {'algorithm': ALGORITHM, 'maskRevision': MASK_REVISION, 'width': w, 'height': h, 'printId': ids[slot-1], 'printSlot': slot,
                'sourceSha256': sha(master_raw), 'guideSha256': sha(guide_raw), 'uvSha256': sha(uv_raw), 'artworkSha256': sha(art_raw),

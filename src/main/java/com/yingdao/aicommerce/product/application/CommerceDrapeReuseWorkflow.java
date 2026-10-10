@@ -17,6 +17,11 @@ final class CommerceDrapeReuseWorkflow {
     static final String LEGACY_PROMPT="生成一张真实服装电商摄影。图1只提供原商品的自然摆放姿态、承托物和场景风格；忽略其旧印花、人物和标签。图2是本次要拍摄的商品，保持纯白色短袖服装的版型、领口、袖型，以及唯一胸前印花的图案、颜色、数量、大小比例和所在侧；图3为同一印花的清晰母版，不额外增加图案。参照图1的承托方式重新摆放图2服装：若原图搭在椅子上，则双肩由椅背支撑、下摆落到座面形成柔软堆褶；若原图为平铺，则保持自然平铺。上胸及印花区域舒展、基本正对镜头，折叠主要在下腹和下摆，不遮挡或折断胸前印花。衣服必须被真实承托，有接触阴影；不要悬空，不叠成方块。移除图2的衣架。完整呈现领口、双袖和下摆，四周保留少量边距。衣服仍是纯白布，只有图2规定的一处胸前印花，不复制图1的旧大印花。柔和自然光，背景与白衣有清晰对比，保留来源场景配色和材质但可简化道具。无人物、人体、衣架、标签、新增文字、水印或拼图，只输出单张成品照片。";
     static final String TEMPLATE_FIRST_PROMPT="【模板优先的服装摄影编辑】图1是唯一商品母版，也是本次编辑的底图；图2仅供参考场景材质和自然承托方式；图3仅补充图1胸花的清晰纹理。优先级为图1版型与印花布局高于图2姿态和构图。不得把图2的衣服当商品。严格保持图1的领口、肩线、袖长、袖口宽度、衣身宽长比例和下摆形状，不替换成另一件衣服。印花必须保持图1的胸前所在侧、相对领口距离、相对衣身宽度的尺寸及唯一数量；图3画布尺寸绝不代表印花尺寸，小胸花不得放大为中间大图案，不居中搬移，不镜像、不增删图案。只在图1基础上做轻微自然搭放和柔软褶皱；当参考姿态会改变版型、胸花位置或遮挡衣服时，优先减少姿态变化，保留图1轮廓。完整呈现领口、左右袖口及整个下摆，服装任何部位不得触边或出画；服装整体置于画布中央80%区域，四边至少留10%背景空间，宁可缩小整件服装，不裁切或拉伸衣服。布料保持图1的中性白色，用于后续还原商品颜色；胸花区域舒展，不折断图案。场景只借用图2的背景配色和承托物，不复制原商品、文字或印花。无人物、人体、衣架、标签、新增文字、水印或拼图，输出单张完整服装照片。输出前自查：版型等同图1、胸花侧别位置比例等同图1、领袖下摆完整、四周留足边距；有冲突一律保留图1，牺牲场景和姿态变化。";
     static final String PROMPT="【真实场景自然搭放 V3】生成一张真实的服装电商摄影，三张参考图用途不同，以下商品、场景、褶皱要求必须同时满足。图1仅定义要出售的服装版型结构与胸花布局，不是输出底图；不要继承它的白底、衣架、平铺姿态或僵直二维外轮廓。保持图1的领型、袖型、袖长、肩宽及衣身长宽比例；允许重力弯曲和折叠改变画面中的轮廓，不把自然搭放误解为照搬平铺轮廓。图2定义必须采用的真实背景、承托物、摆放方式和光线：保留其可辨认的场景材质、颜色及主要承托物，不能变成纯白或纯色抠图背景。若图2衣服搭在椅子上，则本件衣服双肩自然搭于椅背，下身垂落并在座面形成明显柔软的重力弯曲、层次褶皱和接触阴影；若原图自然平铺，则保留相同场景中的松弛弯曲、下摆起伏和可见软褶。必须有真实承托和布料厚度，不悬空、不僵硬、不把微小织纹当作褶皱。上胸基本正对镜头、舒展可读，自然褶皱集中在下腹、下摆和袖部。图1胸花相对于领口和衣身的位置、所在侧、尺寸比例、图案和唯一数量必须保留；图3只提供这枚胸花的清晰纹理，图3画布不代表印花大小。禁止将小胸花放大、居中搬移、镜像或复制图2旧花纹。衣服保持中性白色以便后续统一换色，白布同时保留明暗褶皱，不能把白色理解为白背景。完整呈现领口、双袖及整个下摆，四周有适量场景边距，任何衣物部位不裁切。移除衣架、人物、标签和新增文字。只输出单张照片。输出前同时检查：图1版型结构与胸花比例正确；图2背景和承托物仍清晰可见；衣服有与承托方式一致的自然弯曲和明显褶皱。三者缺一都不合格，不能牺牲背景或褶皱来复制图1。";
+    static final String LEGACY_NECKLINE_PROMPT=PROMPT+"\n\n【领口结构必须与图1一致】领口是商品版型的一部分：逐项对照图1的圆领开口宽度、深度、领边厚度与可见领标。图2的衣服领口不是商品参考。衣服可以自然搭放，但不能把领口收窄、加深、封成灰色布片、改变领标或画成另一件衣服的领子。保持领口与肩线的相对比例；若自然姿态导致领口无法完整呈现，应减小姿态变化。";
+    static final String PROMPT_NECKLINE=PROMPT+"\n\n【模板结构与细节必须与图1一致】领口是商品版型的一部分：逐项对照图1的圆领开口宽度、深度、领边厚度与可见领标。图2的衣服领口不是商品参考。衣服可以自然搭放，但不能把领口收窄、加深、封成灰色布片、改变领标或画成另一件衣服的领子。保持领口与肩线的相对比例；若自然姿态导致领口无法完整呈现，应减小姿态变化。图1袖口的小徽标和衣身侧边的小标签均须保持原图形、同侧位置和唯一数量，不遗漏、不凭空换图。";
+    static final String PROMPT_DETAIL_V4=PROMPT_NECKLINE
+            .replace("移除衣架、人物、标签和新增文字。", "移除衣架、人物与背景中新添的文字；图1自带的领标、袖口徽标和衣身侧标属于商品本体，必须保留。")
+            + "\n\n【细节优先】先逐项放大观察图1两侧袖口和衣身侧边。如果图1存在袖口徽标或衣身侧标，它们属于要出售的衣服，必须分别在生成图中按原侧别、尺寸比例和图案出现。请先确认这两处局部，再自然搭放整件衣服；不能把图2旧衣图案当作图1徽标，也不能把标签放到场景背景上。";
     private final JdbcTemplate db;private final CommerceImageArchive archive;private final ObjectMapper json;
     private final CommerceDrapeImageProcessor processor;private final CommerceLocalPhotoWorkflow local;
     private final CommerceDrapeStyleReview styleReviewer;private final CommerceDrapeMasterRetry masterRetry;private final LongSupplier now;
@@ -62,6 +67,7 @@ final class CommerceDrapeReuseWorkflow {
         String masterKey=(String)master.get("storage_key"),guideKey=(String)guide.get("storage_key");var guideRefs=references(guide);
         var masterRefs=references(master);
         boolean currentPrompt=CommerceDrapeMasterRetry.stylePrompt(Objects.toString(master.get("prompt"),""));
+        boolean necklinePrompt=CommerceDrapeMasterRetry.necklinePrompt(Objects.toString(master.get("prompt"),""));
         boolean templateFirst=TEMPLATE_FIRST_PROMPT.equals(master.get("prompt"));
         boolean legacyPrompt=LEGACY_PROMPT.equals(master.get("prompt"));
         if(guideRefs.size()!=3||masterRefs.size()!=3||!(currentPrompt||templateFirst||legacyPrompt)||!masterRefs.get(legacyPrompt?1:0).equals(guideKey)||!masterRefs.get(2).equals(guideRefs.get(2)))
@@ -72,21 +78,26 @@ final class CommerceDrapeReuseWorkflow {
             Map<String,Object> style=Map.of();
             if(currentPrompt) {
                 var saved=styleState(run,master);var state=saved.value();
-                if(state.path("passed").isBoolean()&&state.path("passed").asBoolean()) {
-                    requireStyleBinding(state,guideKey,sceneKey,masterKey);
+                if(state.path("passed").isBoolean()&&state.path("passed").asBoolean()
+                        &&(necklinePrompt?CommerceDrapeStyleReview.NECKLINE_CONTRACT_VERSION
+                        :CommerceDrapeStyleReview.CONTRACT_VERSION).equals(state.path("contractVersion").asText())) {
+                    requireStyleBinding(state,guideKey,sceneKey,masterKey,necklinePrompt);
                     style=styleEvidence(state);
                 } else {
                     if(styleReviewer==null)throw new IllegalArgumentException("搭放风格验收服务不可用，保留已生成母图");
                     int attempts="REVIEW_RETRY_PENDING".equals(state.path("status").asText())?state.path("readAttempts").asInt(0):0;
                     if(attempts>0&&state.path("nextAttemptAt").asLong(0)>now.getAsLong())return Result.progress("母图已保存，等待自动重试风格检查");
-                    try {style=styleReviewer.review(run.organizationId(),bytes(run.organizationId(),guideKey),bytes(run.organizationId(),sceneKey),bytes(run.organizationId(),masterKey));}
+                    try {style=necklinePrompt
+                            ? styleReviewer.review(run.organizationId(),bytes(run.organizationId(),guideKey),bytes(run.organizationId(),sceneKey),bytes(run.organizationId(),masterKey),true)
+                            : styleReviewer.review(run.organizationId(),bytes(run.organizationId(),guideKey),bytes(run.organizationId(),sceneKey),bytes(run.organizationId(),masterKey));}
                     catch(CommerceDrapeStyleReview.ReviewUnavailableException unavailable) {
                         int count=attempts+1;
-                        saveStyleState(run,master,saved,Map.of("status",count<3?"REVIEW_RETRY_PENDING":"REVIEW_UNAVAILABLE","readAttempts",count,"nextAttemptAt",now.getAsLong()+(count==1?15000:45000),"message","风格检查连接或结果异常，母图保留"));
-                        return count<3?Result.progress("母图已保存，风格检查暂未返回，正在自动重试检查（"+count+"/3）"):
-                                new Result(false,"风格检查连续未取得有效结果，母图保留；恢复仅重试检查，不再次生图");
+                        long delay=count==1?15000L:count==2?45000L:count==3?120000L:300000L;
+                        saveStyleState(run,master,saved,Map.of("status","REVIEW_RETRY_PENDING","readAttempts",count,
+                            "nextAttemptAt",now.getAsLong()+delay,"message","风格检查连接或结果异常，母图保留并自动重试"));
+                        return Result.progress("母图已保存，风格验收暂未返回；约 "+(delay/1000)+" 秒后自动重试第 "+(count+1)+" 次，不重复生图");
                     }
-                    if(Boolean.TRUE.equals(style.get("passed")))requireStyleBinding(json.valueToTree(style),guideKey,sceneKey,masterKey);
+                    if(Boolean.TRUE.equals(style.get("passed")))requireStyleBinding(json.valueToTree(style),guideKey,sceneKey,masterKey,necklinePrompt);
                     saveStyleState(run,master,saved,style);
                     if(!Boolean.TRUE.equals(style.get("passed"))) {
                         if(masterRetry==null)return new Result(false,"搭放母图风格未满足要求："+style.get("reason")+"；原图保留");
@@ -97,7 +108,8 @@ final class CommerceDrapeReuseWorkflow {
             }
             final Map<String,Object> styleReport=style;
             var refs=List.of(masterKey,guideKey,uv,seedArtwork);
-            Object cacheInputs=currentPrompt?List.of(refs,sceneKey,CommerceDrapeStyleReview.CONTRACT_VERSION):refs;
+            Object cacheInputs=currentPrompt?List.of(refs,sceneKey,necklinePrompt
+                    ?CommerceDrapeStyleReview.NECKLINE_CONTRACT_VERSION:CommerceDrapeStyleReview.CONTRACT_VERSION):refs;
             return localWithRecovery(run,source,master,List.of(guide),"prepare",BLANK,0,null,refs,VERSION+"/prepare",cacheInputs,List.of(cacheInputs,config.renderPrintIds()),()->{
                 if(processor==null)throw new IllegalArgumentException("本地搭放服务不可用");
                 var result=processor.prepare(bytes(run.organizationId(),masterKey),bytes(run.organizationId(),guideKey),bytes(run.organizationId(),uv),bytes(run.organizationId(),seedArtwork),config.renderPrintIds());
@@ -111,7 +123,7 @@ final class CommerceDrapeReuseWorkflow {
             },"搭放母图的衣服遮罩与印花位置已固定；后续换色换花不再生图");
         }
         var preparation=report(prepared);
-        if(currentPrompt)requireStyleBinding(preparation.path("styleReview"),guideKey,sceneKey,masterKey);
+        if(currentPrompt)requireStyleBinding(preparation.path("styleReview"),guideKey,sceneKey,masterKey,necklinePrompt);
         String blankKey=(String)prepared.get("storage_key"),alphaKey=preparation.path("alphaKey").asText();
         if(!masterKey.equals(preparation.path("masterKey").asText())||!guideKey.equals(preparation.path("guideKey").asText()))throw new IllegalArgumentException("搭放校准与母图不一致");
         for(int variant=1;variant<=sourceVariants(jobs,source);variant++)for(var color:source.colorTargets()) {
@@ -152,7 +164,8 @@ final class CommerceDrapeReuseWorkflow {
                 if(CommerceDrapeMasterRetry.stylePrompt(Objects.toString(master.get("prompt"),""))) {
                     var masterRefs=references(master);var guide=required(jobs,source,GUIDE,0,null);
                     if(masterRefs.size()!=3||!Objects.equals(guide.get("storage_key"),masterRefs.getFirst()))throw new IllegalArgumentException("搭放母图缺少本批定位参考");
-                    requireStyleBinding(report(blank).path("styleReview"),masterRefs.getFirst(),masterRefs.get(1),(String)master.get("storage_key"));
+                    requireStyleBinding(report(blank).path("styleReview"),masterRefs.getFirst(),masterRefs.get(1),(String)master.get("storage_key"),
+                            CommerceDrapeMasterRetry.necklinePrompt(Objects.toString(master.get("prompt"),"")));
                 }
                 var r=report(actual);var refs=references(actual);String ink=artwork(precise,id);
                 String alphaKey=report(blank).path("alphaKey").asText("");
@@ -181,8 +194,8 @@ final class CommerceDrapeReuseWorkflow {
     }
     private Map<String,Object> styleEvidence(tools.jackson.databind.JsonNode state) {
         var evidence=new LinkedHashMap<String,Object>();
-        for(String field:List.of("passed","hasScene","hasSupportContact","hasNaturalDrape","preservesGarment","preservesPrintPlacement","fullyVisible","contractVersion","reason","guideSha256","sceneSha256","masterSha256"))
-            evidence.put(field,json.convertValue(state.path(field),Object.class));
+        for(String field:List.of("passed","hasScene","hasSupportContact","hasNaturalDrape","preservesGarment","preservesPrintPlacement","fullyVisible","preservesNeckline","preservesSleeveBadge","preservesSideLabel","detailGuardVersion","detailGuardStatus","contractVersion","reason","guideSha256","sceneSha256","masterSha256"))
+            if(state.has(field))evidence.put(field,json.convertValue(state.path(field),Object.class));
         return evidence;
     }
     private void saveStyleState(CommerceBatchExecution run,Map<String,Object> master,CheckState observed,Map<String,Object> style) {
@@ -266,9 +279,18 @@ final class CommerceDrapeReuseWorkflow {
     }
     private static Result failed(String message){return new Result(false,message+"；保留母图、印花与已完成成品，不追加生图","FAILED");}
     static void requireStyleBinding(tools.jackson.databind.JsonNode r,String guide,String scene,String master) {
+        requireStyleBinding(r,guide,scene,master,false);
+    }
+    static void requireStyleBinding(tools.jackson.databind.JsonNode r,String guide,String scene,String master,boolean neckline) {
         for(String flag:List.of("passed","hasScene","hasSupportContact","hasNaturalDrape","preservesGarment","preservesPrintPlacement","fullyVisible"))
             if(!r.path(flag).isBoolean()||!r.path(flag).asBoolean())throw new IllegalArgumentException("搭放母图缺少已通过的背景、褶皱及商品一致性验收");
-        if(!CommerceDrapeStyleReview.CONTRACT_VERSION.equals(r.path("contractVersion").asText())
+        if(neckline&&CommerceDrapeStyleReview.NECKLINE_CHECKS.stream().anyMatch(flag->
+                !r.path(flag).isBoolean()||!r.path(flag).asBoolean()))
+            throw new IllegalArgumentException("搭放母图领口、袖口徽标或侧边标签与模板不一致，不能换色或上传");
+        if(neckline&&(!"DRAPE_DETAIL_GUARD_V1".equals(r.path("detailGuardVersion").asText())
+                ||!"PASSED".equals(r.path("detailGuardStatus").asText())))
+            throw new IllegalArgumentException("搭放母图缺少已绑定模板和母图的袖标、侧标本地验收，不能换色或上传");
+        if(!(neckline?CommerceDrapeStyleReview.NECKLINE_CONTRACT_VERSION:CommerceDrapeStyleReview.CONTRACT_VERSION).equals(r.path("contractVersion").asText())
                 ||!guide.endsWith("/"+r.path("guideSha256").asText())||!scene.endsWith("/"+r.path("sceneSha256").asText())||!master.endsWith("/"+r.path("masterSha256").asText())
                 ||r.path("reason").asText().isBlank())throw new IllegalArgumentException("搭放风格验收与本批模板、场景或母图不一致");
     }
