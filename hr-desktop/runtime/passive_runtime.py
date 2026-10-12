@@ -437,7 +437,8 @@ def catchup_step(c, db, rules, delay_for):
                 db.execute("UPDATE catchup SET done=1 WHERE kind='receipt' AND target=?", (friend,))
                 continue
             interval = max(0, last[0]+30-now) if last and receipt['state'] != 'received' else 0
-            delay = max(interval, delay_for(cost=4, queued=True, receiving=True))
+            received = receipt['state'] == 'received'
+            delay = max(interval, delay_for(cost=4, queued=True, receiving=received, history=not received))
             if delay:
                 db.execute("UPDATE catchup SET retry_at=? WHERE kind='receipt' AND target=?", (now+delay, friend))
                 continue
@@ -638,6 +639,7 @@ def step(c, db, request):
             due.append((discovered, 'discover'))
         with c.resume_db() as tracked:
             waiting = tracked.execute("SELECT 1 FROM resume_requests WHERE state IN ('waiting','uncertain') LIMIT 1").fetchone()
+            recorded_receipt = tracked.execute("SELECT 1 FROM resume_requests WHERE state='received' LIMIT 1").fetchone()
         waiting = waiting or db.execute("SELECT 1 FROM people WHERE state IN ('requested','request_uncertain') LIMIT 1").fetchone()
         received = float(get_state(db, 'receivedAt'))
         if waiting and now-received >= sweep:
@@ -646,7 +648,7 @@ def step(c, db, request):
             delays = []
             for _, operation in sorted(due):
                 delay = delay_for(cost=2 if operation == 'discover' else 4, queued=not pending,
-                                  receiving=operation == 'receive')
+                                  receiving=operation == 'receive' and bool(recorded_receipt))
                 if not delay:
                     put_state(db, 'lastLane', 'maintenance')
                     return discover(c, db, rules) if operation == 'discover' else receive(c, db)

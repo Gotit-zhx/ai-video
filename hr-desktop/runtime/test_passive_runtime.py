@@ -275,6 +275,17 @@ class WorkflowTest(unittest.TestCase):
         self.now+=31;self.step(reconnectId='login-2')
         self.assertEqual(self.c.poll_resumes_once.call_count,1,'Already stored resumes are not fetched again after relogin')
 
+    def test_reconnect_waiting_poll_is_paced_and_does_not_spend_new_attachment_reserve(self):
+        self.pending('requested')
+        with self.c.resume_db() as db:
+            db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
+        self.c.passive_delay = mock.Mock(return_value=120)
+        self.step(reconnectId='login-paced')
+        self.assertIn(mock.call(cost=4, queued=True, receiving=False, history=True),
+                      self.c.passive_delay.call_args_list)
+        self.c.poll_resumes_once.assert_not_called()
+        self.c.download_resume.assert_not_called()
+
     def test_reconnect_pages_through_read_greetings_and_preserves_cursor(self):
         self.pending('stored',friend='9')
         pages=[
