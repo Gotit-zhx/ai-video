@@ -639,7 +639,7 @@ def step(c, db, request):
         if due:
             delays = []
             for _, operation in sorted(due):
-                delay = delay_for(cost=2 if operation == 'discover' else 4, queued=True)
+                delay = delay_for(cost=2 if operation == 'discover' else 4, queued=not pending)
                 if not delay:
                     put_state(db, 'lastLane', 'maintenance')
                     return discover(c, db, rules) if operation == 'discover' else receive(c, db)
