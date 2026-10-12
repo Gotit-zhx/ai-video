@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 import tempfile
+import sqlite3
+import time
 import unittest
 from unittest import mock
 
@@ -125,6 +127,17 @@ class ReceiptTest(unittest.TestCase):
         self.assertFalse(flow.execute(self.c, self.root, request)['ok'])
         self.c.cli_json.assert_not_called()
 
+    def test_history_leaves_capacity_for_admitted_replies_and_manual_operations(self):
+        budget = self.root / 'budget.sqlite3'
+        with sqlite3.connect(budget) as db:
+            db.execute('CREATE TABLE requests(at REAL NOT NULL)')
+            db.executemany('INSERT INTO requests VALUES(?)', [(time.time(),)]*90)
+        self.c.passive_delay = lambda **options: flow.budget_delay(budget, 120, **options)
+        with flow.database(self.root) as db:
+            self.assertIsNone(receipts.step(self.c, db, {}))
+        self.c.cli_json.assert_not_called()
+        self.assertEqual(self.c.passive_delay(cost=3, queued=True), 0)
+        self.assertEqual(self.c.passive_delay(cost=20, queued=True, user_initiated=True), 0)
     def test_new_signal_during_paginated_fresh_pass_rechecks_latest_after_completion(self):
         with flow.database(self.root) as db:
             self.seed(db)

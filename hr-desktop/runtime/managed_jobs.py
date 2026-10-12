@@ -31,7 +31,7 @@ def save_statuses(root, result):
     return snapshot
 
 
-def availability(c, root, *, user_initiated=False):
+def availability(c, root, *, user_initiated=False, queued=False):
     """One budgeted refresh per five minutes, fail closed without tight retries."""
     now = time.time()
     try:
@@ -43,7 +43,7 @@ def availability(c, root, *, user_initiated=False):
             return {"statuses": {}, "retryAt": snapshot["retryAt"]}
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    delay = c.passive_delay(cost=2, queued=user_initiated, user_initiated=user_initiated)
+    delay = c.passive_delay(cost=2, queued=queued or user_initiated, user_initiated=user_initiated)
     if delay:
         return {"statuses": {}, "retryAt": now + delay}
     # Reserve the refresh cooldown before network I/O, including process death.

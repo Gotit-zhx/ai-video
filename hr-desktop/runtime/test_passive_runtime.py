@@ -111,7 +111,7 @@ class WorkflowTest(unittest.TestCase):
 
     def test_job_refresh_risk_stops_receipt_and_all_writes(self):
         self.pending('ready')
-        def refresh():
+        def refresh(**kwargs):
             self.c.held_code.return_value = 'ACCOUNT_RISK'
             return {'statuses': {}}
         self.c.managed_job_statuses.side_effect = refresh
@@ -119,6 +119,32 @@ class WorkflowTest(unittest.TestCase):
         self.c.cli_json.assert_not_called()
         self.c.poll_resumes_once.assert_not_called()
         self.c.request_resume.assert_not_called()
+
+    def test_pending_reply_precedes_all_conversation_backfill(self):
+        self.pending('reply_ready')
+        with mock.patch('boss_chat_receipts.step') as collect:
+            self.step(collectAllResumes=True)
+            collect.assert_not_called()
+        self.c.cli_json.assert_called_once_with('hr', 'reply', '1', '王同学，可以沟通下运营。')
+        self.assertEqual(self.state(), 'ready')
+
+    def test_closed_job_pending_reply_does_not_block_receive_only_collection(self):
+        self.pending('reply_ready')
+        self.c.managed_job_statuses.return_value = {'statuses': {'job1': '已关闭'}}
+        with mock.patch('boss_chat_receipts.step', return_value={'ok': True}) as collect:
+            self.step(collectAllResumes=True)
+            collect.assert_called_once()
+        self.c.cli_json.assert_not_called()
+        self.assertEqual(self.state(), 'reply_ready')
+
+    def test_collector_status_cannot_hide_an_admitted_reply_behind_stale_budget_deadline(self):
+        self.pending('reply_ready')
+        with flow.database(self.root) as db:
+            flow.put_state(db, 'nextAt', self.now+3600)
+            flow.put_state(db, 'status', json.dumps({'phase': 'collecting_resumes'}))
+        self.step()
+        self.assertEqual(self.state(), 'ready')
+        self.c.cli_json.assert_called_once()
 
     def test_progress_is_scoped_to_the_job_that_actually_requested(self):
         self.pending('requested',friend='1')

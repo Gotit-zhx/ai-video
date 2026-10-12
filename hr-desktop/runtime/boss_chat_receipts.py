@@ -218,7 +218,9 @@ def step(c, db, request):
         operation, cost = 'download', 8
     elif due <= now:
         operation, cost = 'discover', 2
-    if operation is None or delay_for(cost=cost, queued=True):
+    # Historical receipt reads must leave capacity for admitted replies and
+    # resume requests, as well as the existing manual-operation reserve.
+    if operation is None or delay_for(cost=cost, queued=False):
         return None
     db.commit()
     result = discover(c, db) if operation == 'discover' else download(c, db, receipt) if operation == 'download' else inspect(c, db, conversation)

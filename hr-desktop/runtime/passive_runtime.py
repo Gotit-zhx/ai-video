@@ -574,7 +574,8 @@ def activity_status(db, result):
 def step(c, db, request):
     configured = [r for r in request.get('rules', []) if r.get('enabled') is True]
     contacts = request.get('activeContacts', [])
-    availability = c.managed_job_statuses() if configured or contacts else {'statuses': {}}
+    admitted = db.execute("SELECT 1 FROM people WHERE state IN ('reply_ready','ready') LIMIT 1").fetchone()
+    availability = c.managed_job_statuses(queued=bool(admitted)) if configured or contacts else {'statuses': {}}
     if c.held_code():
         return {'ok': False, 'error': {'code': c.held_code()}}
     states = availability['statuses']
@@ -605,7 +606,7 @@ def step(c, db, request):
             put_state(db, 'lastLane', 'maintenance')
             return result
     previous = json.loads(get_state(db, 'status', '{}'))
-    if now < float(get_state(db, 'nextAt')) and previous.get('phase') != 'budget_wait':
+    if now < float(get_state(db, 'nextAt')) and previous.get('phase') != 'budget_wait' and not queued:
         return {'ok': True, 'data': previous}
     put_state(db, 'nextAt', now+30); db.commit()
     put_state(db, 'activityStreak', 0)
@@ -859,8 +860,17 @@ def execute(c, root, request):
             # The receive-only lane also runs with no rules or with closed jobs.
             # Alternate with the original flow; human commands dispatch earlier.
             turn = get_state(db, 'chat-resumes-turn', 'collect')
-            put_state(db, 'chat-resumes-turn', 'flow' if turn == 'collect' else 'collect')
-            if turn == 'collect':
+            configured = {r['id']: r for r in request.get('rules', []) if r.get('enabled') is True}
+            pending = list(db.execute("SELECT rule,body FROM people WHERE state IN ('reply_ready','ready')"))
+            open_jobs = c.managed_job_statuses(queued=True)['statuses'] if pending and configured else {}
+            if c.held_code():
+                return {'ok': False, 'error': {'code': c.held_code()}}
+            priority = any(row['rule'] in configured
+                           and json.loads(row['body']).get('jobId') == configured[row['rule']]['jobId']
+                           and open_jobs.get(configured[row['rule']]['jobId']) == '开放中'
+                           for row in pending)
+            put_state(db, 'chat-resumes-turn', 'collect' if priority else 'flow' if turn == 'collect' else 'collect')
+            if turn == 'collect' and not priority:
                 collected = boss_chat_receipts.step(c, db, request)
                 if collected is not None:
                     if collected.get('ok') is not True:
