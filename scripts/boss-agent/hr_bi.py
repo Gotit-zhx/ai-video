@@ -425,7 +425,7 @@ def export(user, query):
              "secondPassed":"二面通过","onboarding":"待入职","joined":"已入职","greetings":"主动联系记录",
              "date":"周期","count":"数量","examined":"评估人次","qualified":"符合条件人次",
              "notifications":"通知记录","notificationSent":"通知送达"}
-    for key,title in (("departments","部门汇总"),("jobs","职位汇总"),("trend","周期趋势"),("sources","邀约来源"),("aging","待审批账龄")):
+    for key,title in (("departments","部门汇总"),("jobs","职位汇总"),("trend","周期趋势"),("sources","简历来源"),("aging","待审批账龄")):
         records = data[key]
         columns = [k for k in records[0] if k != "key"] if records else ["名称"]
         sheets.append((title, [[names.get(k,k) for k in columns], *[[r.get(k,"") for k in columns] for r in records]]))

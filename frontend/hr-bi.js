@@ -204,9 +204,9 @@
       }
       series.addEventListener('change',()=>{seriesName=series.value;zoom=null;updateTrend();});updateTrend();
       el('span',data.filters.from+' — '+data.filters.to,trend.card,'hr-bi-range');
-      const source=chartCard(grid,'邀约来源','收到简历的来源构成','hr-bi-source');
+      const source=chartCard(grid,'简历来源','收到简历的来源构成','hr-bi-source');
       const sourceRows=data.sources||[],sourceTotal=sourceRows.reduce((sum,r)=>sum+r.count,0);
-      chart(source.card,'邀约来源环形图',()=>({
+      chart(source.card,'简历来源环形图',()=>({
         legend:{show:false},series:[{type:'pie',radius:['63%','83%'],center:['50%','50%'],avoidLabelOverlap:true,
           label:{show:false},emphasis:{scaleSize:5,label:{show:false}},
           itemStyle:{borderColor:theme().surface,borderWidth:5,borderRadius:7},

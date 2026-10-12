@@ -51,6 +51,22 @@ class HrBiTest(unittest.TestCase):
         self.assertEqual(data["sources"][0]["count"],1)
         self.assertEqual(sum(x["resumes"] for x in data["departments"]),3)
 
+    def test_boss_chat_source_is_included_in_statistics_and_export(self):
+        with pool.database() as db:
+            row=db.execute("SELECT body FROM hr_resume_pool WHERE id='r2'").fetchone()
+            value=json.loads(row['body']);value['origin']='boss_chat'
+            db.execute("UPDATE hr_resume_pool SET body=? WHERE id='r2'",(json.dumps(value),))
+        data=bi.dashboard(USER,self.query)
+        source=next(r for r in data['sources'] if r['name']=='BOSS沟通')
+        self.assertEqual(source['count'],1)
+        self.assertEqual(data['metrics']['resumes'],3)
+        _,records=bi.report(USER,self.query)
+        self.assertTrue(any(r['来源']=='BOSS沟通' for r in records['简历明细']))
+        content,_=bi.export(USER,self.query)
+        with zipfile.ZipFile(io.BytesIO(content)) as packet:
+            self.assertTrue(any('BOSS沟通' in packet.read(name).decode()
+                                for name in packet.namelist() if name.startswith('xl/worksheets/') and name.endswith('.xml')))
+
     def test_departed_employee_is_not_counted_as_active_joined_and_export_keeps_history(self):
         import hr_onboarding
         value={"name":"fixture","startDate":"2026-10-01","position":"算法","supervisor":"主管","department":"研发",
