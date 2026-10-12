@@ -64,11 +64,11 @@
     const value=await data(await connectionFetch(base+'/health',timeout({cache:'no-store',credentials:'omit'},interactive?30000:4000)));
     if(value.app!=='heyi-recruiter'||value.protocol!==1)throw Error('请安装新版赫逸招聘助手');
     const parts=typeof value.version==='string'&&/^\d+\.\d+\.\d+$/.test(value.version)?value.version.split('.').map(Number):[];
-    const minimum=[0,1,17],different=parts.findIndex((part,index)=>part!==minimum[index]);
+    const minimum=[0,1,19],different=parts.findIndex((part,index)=>part!==minimum[index]);
     const recent=parts.length===3&&(different===-1||parts[different]>minimum[different]);
     if(!recent){
       versionError=Object.assign(Error('当前运行的是旧版助手'+(parts.length?' '+value.version:'')
-        +'，请完全退出旧助手，再从“下载助手”覆盖安装 0.1.17 或更新版本。无需退出 BOSS 登录。'),{code:'ASSISTANT_UPDATE_REQUIRED'});
+        +'，请完全退出旧助手，再从“下载助手”覆盖安装 0.1.19 或更新版本，以自动收取所有 BOSS 会话简历。无需退出 BOSS 登录。'),{code:'ASSISTANT_UPDATE_REQUIRED'});
       throw versionError;
     }
     versionError=null;

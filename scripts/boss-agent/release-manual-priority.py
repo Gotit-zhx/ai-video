@@ -17,7 +17,7 @@ root = Path(sys.argv[1]).resolve()
 expected = json.loads((root / "expected-baseline.json").read_text())
 manifest = json.loads((root / "oss-installers.json").read_text())
 build = json.loads((root / "release-build.json").read_text())
-assets = ("index.html", "hr-bi.js", "hr-pool.js", "hr-workspace.js", "hr-sourcing.js", "hr-passive.js",
+assets = ("index.html", "hr-bi.js", "hr-desktop-bridge.js", "hr-pool.js", "hr-workspace.js", "hr-sourcing.js", "hr-passive.js",
           "hr-onboarding.js", "hr-workspace.css")
 modules = ("passive_pool.py", "hr_sourcing.py", "resume_storage.py", "hr_bi.py")
 container = "ai-commerce-frontend"
