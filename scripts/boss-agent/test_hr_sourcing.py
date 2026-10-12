@@ -530,7 +530,7 @@ class SourcingTest(unittest.TestCase):
         self.assertEqual(s.listing(USER,self.params())['run']['candidates'][0]['contact']['status'],'expired')
         self.assertEqual(passive.device_config(USER,{'accountKey':KEY,'capabilities':['active-sourcing']})['commands'],[])
 
-    def test_daily_150_claims_are_shared_across_desktops_and_uncertain_attempts_count(self):
+    def test_prior_150_attempts_do_not_block_claim_and_claim_remains_exactly_once(self):
         cid=self.searched()
         command=s.greet(USER,{**self.params(),'candidateId':cid,'message':'你好','confirmed':True})
         with pool.database() as db:
@@ -540,10 +540,9 @@ class SourcingTest(unittest.TestCase):
                            [(str(uuid.uuid4()),row['owner'],row['account'],row['job'],str(uuid.uuid4()),
                              json.dumps(payload),s.now(),s.now()) for _ in range(150)])
         result=passive.claim_command(USER,{'accountKey':KEY,'id':command['id']})
-        self.assertFalse(result['claimed'])
-        self.assertEqual(result['reasonCode'],'DAILY_GREETING_LIMIT')
-        self.assertEqual(s.listing(USER,self.params())['run']['candidates'][0]['contact']['waitInfo']['reasonCode'],
-                         'DAILY_GREETING_LIMIT')
+        self.assertTrue(result['claimed'])
+        self.assertFalse(passive.claim_command(USER,{'accountKey':KEY,'id':command['id']})['claimed'])
+        self.assertFalse(s.listing(USER,self.params())['run']['candidates'][0]['contact'].get('waitInfo'))
 
     def test_active_receipt_joins_same_review_flow_and_filters_by_origin_and_job(self):
         cid = self.searched()

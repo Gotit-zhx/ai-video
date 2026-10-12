@@ -6,7 +6,7 @@
     if(contact.status!=='queued'||!contact.waitInfo?.reasonCode)return sendStates[contact.status]||contact.status;
     const reasons={REQUEST_BUDGET_WAIT:'请求额度等待',SEND_INTERVAL:'等待发送间隔',JOB_STATUS_WAIT:'等待核实职位开放状态',
       JOB_NOT_OPEN:'职位未开放，暂停发送',RISK_PAUSED:'平台要求暂停，未发送',GREET_QUOTA:'今日招呼额度不足',
-      CARD_EXPIRED:'候选人卡片已过期，未发送',DAILY_GREETING_LIMIT:'已达每日 150 次上限，本次未发送'};
+      CARD_EXPIRED:'候选人卡片已过期，未发送',DAILY_GREETING_LIMIT:'等待平台招呼额度恢复'};
     const retry=Number(contact.waitInfo.retryAt)||0;
     return (reasons[contact.waitInfo.reasonCode]||'等待助手发送')+(retry>Date.now()/1000
       ?` · 预计 ${new Date(retry*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})} 继续`:'');
@@ -543,8 +543,8 @@
         templates.value=speeches[0]?.id||'';fillTemplate();
         greetingTitle.textContent='向 '+item.name+' 打招呼';
         const daily=state.dailyGreeting;
-        greetingHint.textContent=record.jobName+' · 每日最多 150 次'+(Number.isInteger(daily?.used)
-          ?`，今日已用 ${daily.used} 次`:'')+'。发送成功后跟进回复和简历，归入主动邀约。';
+        greetingHint.textContent=record.jobName+(Number.isInteger(daily?.used)
+          ?` · 今日已打招呼 ${daily.used} 次`:'')+'。发送成功后跟进回复和简历，归入主动邀约。';
         greetingError.textContent='';send.disabled=false;
       }catch(error){if(valid(ticket)&&dialog.open){greetingHint.textContent='尚未发送';greetingError.textContent=error.message;}}
     }

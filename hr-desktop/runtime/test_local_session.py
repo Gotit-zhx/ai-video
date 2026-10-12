@@ -49,6 +49,17 @@ class LocalSessionTest(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(self.g.BUDGET_DB)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM requests").fetchone()[0],2)
 
+    def test_removing_the_local_quota_recovers_old_budget_holds_without_clearing_history(self):
+        self.hold("REQUEST_BUDGET_EXHAUSTED")
+        self.g.HOURLY_LIMIT=0
+        with contextlib.closing(sqlite3.connect(self.g.BUDGET_DB)) as db, db:
+            db.execute("CREATE TABLE requests(at REAL)")
+            db.executemany("INSERT INTO requests VALUES(?)",[(time.time(),)]*150)
+        self.assertTrue(local_session.resume(self.c,self.g)["ok"])
+        self.g.verify_session.assert_called_once()
+        with contextlib.closing(sqlite3.connect(self.g.BUDGET_DB)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM requests").fetchone()[0],150)
+
     def test_failed_or_changed_session_cannot_remove_a_hold(self):
         self.hold("SESSION_UNAVAILABLE");before=self.g.RISK_HOLD.read_bytes()
         self.g.verify_session.side_effect=RuntimeError("private details")

@@ -129,23 +129,24 @@ class ActiveSourcingTest(unittest.TestCase):
             db.executemany('INSERT INTO requests VALUES(?)', [(900,)]*15)
         self.assertGreater(flow.budget_delay(path,120,cost=5,queued=True,user_initiated=True),0)
 
-    def test_daily_150_attempts_persist_and_resume_next_beijing_day(self):
+    def test_daily_usage_remains_visible_without_blocking_the_151st_greeting(self):
         with flow.database(self.root) as db:
             active.schema(db)
             day=active.daily_usage(db,self.now)['day']
             db.executemany('INSERT INTO active_greeting_attempts VALUES(?,?,?)',
                            [(f'previous-{i}',day,self.now) for i in range(150)])
         status=self.runop('sourcing-ready',command=self.command())['data']
-        self.assertFalse(status['allowed'])
-        self.assertEqual(status['reasonCode'],'DAILY_GREETING_LIMIT')
+        self.assertTrue(status['allowed'])
+        self.assertEqual(status['reasonCode'],'')
         self.assertEqual(status['dailyGreeting']['used'],150)
-        self.assertEqual(self.runop('sourcing-send',command=self.command())['data']['status'],'failed')
-        self.c.cli_json.assert_not_called()
+        self.assertIsNone(status['dailyGreeting']['limit'])
+        self.assertEqual(self.runop('sourcing-send',command=self.command())['data']['status'],'sent')
+        self.c.cli_json.assert_called_once()
         self.now=status['dailyGreeting']['resetAt']+1
         new={**self.command(),'id':'next-day','readAt':self.now}
         status=self.runop('sourcing-ready',command=new)['data']
         self.assertTrue(status['allowed'])
-        self.assertEqual(status['dailyGreeting']['remaining'],150)
+        self.assertIsNone(status['dailyGreeting']['remaining'])
 
     def test_readiness_reports_wait_without_refreshing_jobs_during_budget_or_risk_hold(self):
         self.c.passive_delay=lambda **kw:120

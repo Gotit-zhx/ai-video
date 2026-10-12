@@ -734,6 +734,8 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(flow.budget_delay(path,120,cost=2),3116)
         with contextlib.closing(sqlite3.connect(path)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],96)
+        for options in ({}, {'queued':True}, {'queued':True,'user_initiated':True}):
+            self.assertEqual(flow.budget_delay(path,0,cost=10000,**options),0)
 
     def test_chat_page_required_is_visible_without_marking_a_send_attempt(self):
         self.pending('reply_ready')

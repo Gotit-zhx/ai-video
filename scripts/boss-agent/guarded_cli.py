@@ -29,7 +29,9 @@ STOP_CODES = {
     "REQUEST_BUDGET_EXHAUSTED", "SESSION_MISMATCH", "SESSION_UNAVAILABLE",
 }
 MIN_INTERVAL = 6
-HOURLY_LIMIT = 120
+# No application-defined hourly quota. Platform responses and serialized
+# request spacing remain authoritative.
+HOURLY_LIMIT = 0
 REVIEWED_SOURCES = {
     "api/_base_client.py": "e0e2a88e1159d62f1d836fefebb51498d8afe58e20214e4d85e240b313488518",
     "api/recruiter_client.py": "140dfad3189cbd7b29dae33cdb3adfd9f17f2a3969c22a5fc31fcb3b79b2856a",
@@ -223,7 +225,7 @@ def reserve_request():
         now = time.time()
         db.execute("DELETE FROM requests WHERE at < ?", (now - 3600,))
         count, latest = db.execute("SELECT COUNT(*), MAX(at) FROM requests").fetchone()
-        if count >= HOURLY_LIMIT:
+        if HOURLY_LIMIT > 0 and count >= HOURLY_LIMIT:
             db.rollback()
             raise BudgetExhausted("招聘请求预算已用完，请稍后由用户重新验证连接")
         at = max(now, (latest or 0) + MIN_INTERVAL)

@@ -13,6 +13,8 @@ REQUEST_TEXT = '方便发一份简历过来吗？'
 
 def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False):
     """Allocate existing capacity; the shared HTTP/CDP hard guard still applies."""
+    if hard_limit <= 0:
+        return 0
     if not Path(path).exists():
         return 0
     now = time.time()

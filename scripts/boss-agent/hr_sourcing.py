@@ -849,24 +849,10 @@ def claim(db, owner, key, record):
     if time.time()-json.loads(row['body'])['readAt']>1800:
         db.execute("UPDATE hr_sourcing_contacts SET status='expired',updated_at=? WHERE id=?", (now(), record))
         return {'claimed': False}
-    timezone = datetime.timezone(datetime.timedelta(hours=8))
-    stamp = datetime.datetime.fromtimestamp(time.time(), timezone)
-    midnight = stamp.replace(hour=0,minute=0,second=0,microsecond=0)
-    used = 0
-    for previous in db.execute('SELECT body,status,created_at FROM hr_sourcing_contacts WHERE owner=? AND account=?', (owner,key)):
-        payload = json.loads(previous['body'])
-        attempted = payload.get('attemptedAt')
-        if attempted is None and previous['status'] in {'sending','sent','uncertain'}:
-            attempted = datetime.datetime.fromisoformat(previous['created_at']).timestamp()
-        if type(attempted) in (int,float) and midnight.timestamp() <= attempted < midnight.timestamp()+86400:
-            used += 1
     payload = json.loads(row['body'])
-    if used >= 150:
-        payload['waitInfo'] = {'reasonCode':'DAILY_GREETING_LIMIT','retryAt':int(midnight.timestamp()+86400)}
-        db.execute('UPDATE hr_sourcing_contacts SET body=?,updated_at=? WHERE id=?',(dump(payload),now(),record))
-        return {'claimed':False,'reasonCode':'DAILY_GREETING_LIMIT','used':used,'limit':150}
+    payload.pop('waitInfo', None)
     payload['attemptedAt'] = time.time()
-    # Claim and daily accounting share this transaction across all desktops.
+    # Claim accounting remains durable across desktops without a local quota.
     db.execute("UPDATE hr_sourcing_contacts SET status='sending',body=?,updated_at=? WHERE id=?", (dump(payload),now(),record))
     return {'claimed': True}
 
