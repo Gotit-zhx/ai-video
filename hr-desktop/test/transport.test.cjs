@@ -12,7 +12,7 @@ function fixture(mode='local'){
       calls.push({url,options});
       const json=data=>Response.json({success:true,data});
       if(url.endsWith('/transport'))return json({mode});
-      if(url.endsWith('/health'))return json({app:'heyi-recruiter',protocol:1,version:'0.1.17'});
+      if(url.endsWith('/health'))return json({app:'heyi-recruiter',protocol:1,version:'0.1.19'});
       if(url==='/api/v1/hr/desktop/pair')return json({ticket:'a'.repeat(43)});
       if(url==='http://127.0.0.1:17861/pair')return json({token:'local-token',expiresAt:env.Date.now()+1800000});
       return json({state:'idle'});
@@ -30,13 +30,13 @@ test('unpaired online workspace never falls back to server HR execution',async()
   assert.deepEqual(calls.map(x=>x.url),['/api/v1/hr/desktop/transport']);
 });
 test('outdated or unidentified assistants stop before pairing and clearly request a process restart and upgrade',async()=>{
-  for(const version of ['0.1.15','0.1.16',undefined,'unknown']){
+  for(const version of ['0.1.15','0.1.16','0.1.17','0.1.18',undefined,'unknown']){
     const {transport,env,calls,tick,timers}=fixture();const original=env.fetch;
     env.fetch=async(url,options)=>url.endsWith('/health')
       ?Response.json({success:true,data:{app:'heyi-recruiter',protocol:1,version}}):original(url,options);
     const result=await transport.diagnose();
     assert.equal(result.code,'ASSISTANT_UPDATE_REQUIRED');
-    assert.match(result.message,/完全退出旧助手.*0\.1\.17/);
+    assert.match(result.message,/完全退出旧助手.*0\.1\.19/);
     await assert.rejects(transport.connect(),{code:'ASSISTANT_UPDATE_REQUIRED'});
     assert.equal(transport.connection().phase,'update-required');
     transport.startAutoConnect();await tick();
@@ -45,7 +45,7 @@ test('outdated or unidentified assistants stop before pairing and clearly reques
   }
 });
 test('newer assistant versions remain compatible',async()=>{
-  for(const version of ['0.1.17','0.1.18','0.2.0','1.0.0']){
+  for(const version of ['0.1.19','0.1.20','0.2.0','1.0.0']){
     const {transport,env}=fixture();const original=env.fetch;
     env.fetch=async(url,options)=>url.endsWith('/health')
       ?Response.json({success:true,data:{app:'heyi-recruiter',protocol:1,version}}):original(url,options);
@@ -167,7 +167,7 @@ test('offline assistant backs off and recovers without business calls',async()=>
   assert.equal(transport.connection().paired,true);
   assert.ok(!calls.some(x=>x.url.endsWith('/login/start')));
 });
-test('reset during pairing drops late credentials and stops reconnection',async()=>{
+test('reset during pairing drops late credentials and stops reconnection',{timeout:5000},async()=>{
   const {transport,env,timers}=fixture();
   const fetch=env.fetch;let resolve;
   env.fetch=(url,options)=>url=== 'http://127.0.0.1:17861/pair'
