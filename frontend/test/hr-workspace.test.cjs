@@ -1213,7 +1213,7 @@ test('BI creates nine real-data charts and preserves chart mode and series acros
   assert.ok(mock.records.every(r=>r.settings.renderer==='svg'&&r.options.tooltip.renderMode==='richText'));
   const trend=mock.records.find(r=>r.node.dataset.chart==='招聘周期趋势');
   assert.deepEqual(Array.from(trend.options.series[0].data),[4,6]);
-  const ring=mock.records.find(r=>r.node.dataset.chart==='邀约来源环形图');
+  const ring=mock.records.find(r=>r.node.dataset.chart==='简历来源环形图');
   assert.deepEqual(Array.from(ring.options.series[0].data,r=>r.value),[3,7]);
   const heat=mock.records.find(r=>r.node.dataset.chart==='职位进展热力图');
   assert.deepEqual(Array.from(heat.options.series[0].data,r=>r[2]),[10,5,4,2,0,1]);
@@ -1263,7 +1263,7 @@ test('empty BI shows zero counts and missing rates without inventing a successfu
     return {data};
   }});
   await app.enter('overview');assert.equal(mock.records.length,9);
-  const ring=mock.records.find(r=>r.node.dataset.chart==='邀约来源环形图');
+  const ring=mock.records.find(r=>r.node.dataset.chart==='简历来源环形图');
   assert.equal(ring.options.series[0].silent,true);
   assert.equal(ring.options.graphic[0].style.text,'0');
   assert.equal(ring.options.series[0].data[0].tooltip.show,false);
