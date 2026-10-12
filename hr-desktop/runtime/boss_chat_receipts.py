@@ -55,12 +55,16 @@ def discover(c, db):
         if not friend:
             continue
         ids.append(friend)
-        fingerprint = hashlib.sha256(json.dumps(
-            [item.get(k) for k in ('last_msg', 'last_time', 'lastTS', 'lastTime', 'lastMsgInfo',
-                                  'lastMessageInfo', 'updateTime')], sort_keys=True).encode()).hexdigest()
+        activity_fields = [item.get(k) for k in ('last_msg', 'last_time', 'lastTS', 'lastTime', 'lastMsgInfo',
+                                               'lastMessageInfo', 'updateTime')]
+        fingerprint = hashlib.sha256(json.dumps(activity_fields, sort_keys=True).encode()).hexdigest()
         old = db.execute('SELECT body,last_read FROM chat_resume_conversations WHERE friend=?', (friend,)).fetchone()
         body = json.loads(old['body']) if old else {}
-        changed = body.get('fingerprint') != fingerprint
+        # Some official list responses contain only UIDs. They cannot prove a
+        # conversation unchanged; retain a slow safety rescan for those rows.
+        changed = body.get('fingerprint') != fingerprint or (
+            not any(value is not None and value != '' for value in activity_fields)
+            and old and old['last_read'] < time.time()-1800)
         body['fingerprint'] = fingerprint
         db.execute('''INSERT INTO chat_resume_conversations(friend,body,activity_at) VALUES(?,?,?)
           ON CONFLICT(friend) DO UPDATE SET body=excluded.body,

@@ -188,6 +188,19 @@ class ReceiptTest(unittest.TestCase):
             self.c.cli_json.return_value = {'ok': True, 'data': {'result': [{'uid': 1, 'last_time': 100}]}}
             receipts.discover(self.c, db)
             self.assertEqual(self.conversation(db)['dirty'], 0)
+
+    def test_uid_only_official_list_retains_slow_receive_rescan_without_local_notifications(self):
+        with flow.database(self.root) as db:
+            receipts.schema(db)
+            self.c.cli_json.return_value = {'ok': True, 'data': {'result': [{'uid': 1}]}}
+            receipts.discover(self.c, db)
+            self.inspect(db, [self.message(100, attachment=False)])
+            self.c.cli_json.return_value = {'ok': True, 'data': {'result': [{'uid': 1}]}}
+            receipts.discover(self.c, db)
+            self.assertEqual(self.conversation(db)['dirty'], 0)
+            db.execute("UPDATE chat_resume_conversations SET last_read=1 WHERE friend='1'")
+            receipts.discover(self.c, db)
+            self.assertEqual(self.conversation(db)['dirty'], 1)
     def test_new_signal_during_paginated_fresh_pass_rechecks_latest_after_completion(self):
         with flow.database(self.root) as db:
             self.seed(db)
