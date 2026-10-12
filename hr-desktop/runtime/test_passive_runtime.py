@@ -128,6 +128,27 @@ class WorkflowTest(unittest.TestCase):
         self.c.cli_json.assert_called_once_with('hr', 'reply', '1', '王同学，可以沟通下运营。')
         self.assertEqual(self.state(), 'ready')
 
+    def test_new_open_job_message_precedes_collection_and_keeps_its_durable_signal(self):
+        with mock.patch('boss_chat_receipts.step') as collect:
+            self.step(collectAllResumes=True, activityHints=[self.hint()])
+            collect.assert_not_called()
+        self.assertTrue(any(call.args[:2] == ('hr','chat') for call in self.c.cli_json.call_args_list))
+        with flow.database(self.root) as db:
+            row=db.execute("SELECT * FROM activity WHERE friend='1'").fetchone()
+            self.assertEqual(row['mid'],'200')
+        self.c.managed_job_statuses.assert_called_with(queued=True)
+
+    def test_collection_cannot_acknowledge_a_signal_without_saving_it_for_the_flow(self):
+        hint={**self.hint(), 'job':''}
+        with mock.patch('boss_chat_receipts.step', return_value={'ok':True}) as collect:
+            value=self.step(collectAllResumes=True, activityHints=[hint])
+            collect.assert_called_once()
+        self.assertEqual(value['data']['activityPending'],1)
+        with flow.database(self.root) as db:
+            row=db.execute("SELECT * FROM activity WHERE friend='1'").fetchone()
+            self.assertEqual(row['done'],0)
+            self.assertEqual(row['mid'],'200')
+
     def test_closed_job_pending_reply_does_not_block_receive_only_collection(self):
         self.pending('reply_ready')
         self.c.managed_job_statuses.return_value = {'statuses': {'job1': '已关闭'}}

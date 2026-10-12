@@ -575,6 +575,7 @@ def step(c, db, request):
     configured = [r for r in request.get('rules', []) if r.get('enabled') is True]
     contacts = request.get('activeContacts', [])
     admitted = db.execute("SELECT 1 FROM people WHERE state IN ('reply_ready','ready') LIMIT 1").fetchone()
+    admitted = admitted or db.execute("SELECT 1 FROM activity WHERE done=0 LIMIT 1").fetchone()
     availability = c.managed_job_statuses(queued=bool(admitted)) if configured or contacts else {'statuses': {}}
     if c.held_code():
         return {'ok': False, 'error': {'code': c.held_code()}}
@@ -855,6 +856,9 @@ def execute(c, root, request):
             db.execute('UPDATE commands SET state=? WHERE id=?', (send_status, cid))
             return {'ok': True, 'data': {'status': send_status}}
         if operation != 'passive-step': raise ValueError('unsupported passive operation')
+        # The collector may finish this turn before the communication lane runs.
+        # Persist every hint first: JS acknowledges it when this call succeeds.
+        remember_activity(db, request.get('activityHints', []))
         if request.get('collectAllResumes') is True:
             import boss_chat_receipts
             # The receive-only lane also runs with no rules or with closed jobs.
@@ -862,20 +866,24 @@ def execute(c, root, request):
             turn = get_state(db, 'chat-resumes-turn', 'collect')
             configured = {r['id']: r for r in request.get('rules', []) if r.get('enabled') is True}
             pending = list(db.execute("SELECT rule,body FROM people WHERE state IN ('reply_ready','ready')"))
-            open_jobs = c.managed_job_statuses(queued=True)['statuses'] if pending and configured else {}
+            incoming = list(db.execute("SELECT job FROM activity WHERE done=0 AND retry_at<=?", (time.time(),)))
+            open_jobs = c.managed_job_statuses(queued=True)['statuses'] if (pending or incoming) and configured else {}
             if c.held_code():
                 return {'ok': False, 'error': {'code': c.held_code()}}
             priority = any(row['rule'] in configured
                            and json.loads(row['body']).get('jobId') == configured[row['rule']]['jobId']
                            and open_jobs.get(configured[row['rule']]['jobId']) == '开放中'
                            for row in pending)
+            priority = priority or any(
+                hint['job'] == rule['jobId'] and open_jobs.get(rule['jobId']) == '开放中'
+                for hint in incoming for rule in configured.values())
             put_state(db, 'chat-resumes-turn', 'collect' if priority else 'flow' if turn == 'collect' else 'collect')
             if turn == 'collect' and not priority:
                 collected = boss_chat_receipts.step(c, db, request)
                 if collected is not None:
                     if collected.get('ok') is not True:
                         return collected
-                    return status(db, 'collecting_resumes')
+                    return activity_status(db, status(db, 'collecting_resumes'))
             else:
                 boss_chat_receipts.schema(db)
                 for hint in request.get('activityHints', [])[:200]:
