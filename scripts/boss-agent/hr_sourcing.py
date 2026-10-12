@@ -790,7 +790,7 @@ def greet(user, body):
         cid = uid(body.get('candidateId'))
         old = db.execute('SELECT * FROM hr_sourcing_contacts WHERE owner=? AND account=? AND job=? AND candidate=?',
                          (owner, job['account'], job['id'], cid)).fetchone()
-        if old: return {'id': old['id'], 'status': old['status']}
+        if old: return {'id': old['id'], 'status': old['status'], 'accountKey': job['account']}
         if not matching_criteria(job)["confirmed"]:
             raise ValueError("匹配规则已更新，请确认条件并重新评估后再联系")
         selected = db.execute('SELECT * FROM hr_sourcing_candidates WHERE id=? AND owner=? AND job=?', (cid, owner, job['id'])).fetchone()
@@ -812,7 +812,7 @@ def greet(user, body):
         db.execute('INSERT INTO hr_sourcing_contacts(id,owner,account,job,candidate,body,status,created_at,updated_at) VALUES(?,?,?,?,?,?,\'queued\',?,?)',
                    (record, owner, job['account'], job['id'], cid, dump(payload), now(), now()))
         pool.event(db, owner, actor, record, 'sourcing.greet-approved', None, {'candidate': cid, 'job': job['id'], 'message': message})
-        return {'id': record, 'status': 'queued'}
+        return {'id': record, 'status': 'queued', 'accountKey': job['account']}
 
 
 def device_contacts(db, owner, key):

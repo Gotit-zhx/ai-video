@@ -371,7 +371,17 @@
               if(!await syncJobAvailability(row.accountKey,true))throw Error('职位状态未确认，仅可查看，不能审批。');
               if(selected!==row.id||!allowed())return;
             }
-            await request('resume-pool/review',{id:row.id,version:row.version,action});
+            const decision=await request('resume-pool/review',{id:row.id,version:row.version,action});
+            if(action==='reject'&&decision.commandId&&decision.accountKey){
+              const ticket=generation;
+              const watchdog=setTimeout(()=>{if(generation===ticket)resumeFeedback.textContent='10 秒内未收到婉拒发送确认，正在继续核对，请勿重复发送。';},10000);
+              void hrApi('/api/v1/hr/commands/send',{method:'POST',body:JSON.stringify({
+                accountKey:decision.accountKey,commandId:decision.commandId})}).then(reply=>{
+                  if(generation===ticket)resumeFeedback.textContent=reply.data?.verified&&reply.data.status==='sent'
+                    ?'婉拒已发送成功':'婉拒已保留，'+(sendStates[reply.data?.status]||'正在核对发送结果');
+                }).catch(error=>{if(generation===ticket)resumeFeedback.textContent='婉拒已保留，发送结果继续核对：'+error.message;})
+                .finally(()=>clearTimeout(watchdog));
+            }
             if(selected===row.id&&allowed()){
               detail.close();
               if(action==='approve')navigate('pool',{stage:'invited'});

@@ -58,6 +58,39 @@ test('urgent dispatch yields only an interruptible background read and never int
     assert.equal(interrupts,interruptible?1:0);assert.deepEqual(order,['current','send']);
   }
 });
+test('manual greeting uses readiness before claim and retains daily limits',async t=>{
+  const {engine,directory,calls}=await fixture(t),key='a'.repeat(64),id='11111111-1111-4111-8111-111111111111';
+  engine.accountRoot=path.join(directory,'accounts',key);engine.state={state:'complete'};engine.paused=false;
+  let available=false,claims=0;
+  engine.runtime.run=async input=>{
+    calls.push(input);
+    if(input.operation==='sourcing-ready')return {ok:true,data:{allowed:available,reasonCode:'DAILY_GREETING_LIMIT',retryAt:12345}};
+    return {ok:true,data:{status:'sent'}};
+  };
+  engine.passiveCloud=async route=>{
+    if(route==='passive-config')return {commands:[{id,kind:'active_greet',message:'招呼'}]};
+    if(route==='passive-claim'){claims++;return {claimed:true};}
+    return {};
+  };
+  const waiting=await engine.dispatchCommand({accountKey:key,commandId:id});
+  assert.equal(waiting.reasonCode,'DAILY_GREETING_LIMIT');assert.equal(waiting.verified,false);
+  assert.equal(claims,0);assert.equal(calls.some(row=>row.operation==='sourcing-send'),false);
+  available=true;
+  assert.equal((await engine.dispatchCommand({accountKey:key,commandId:id})).verified,true);
+  assert.equal(claims,1);assert.equal(calls.at(-1).operation,'sourcing-send');
+});
+test('manual rejection uses server text and paused sessions cannot dispatch',async t=>{
+  const {engine,directory,calls}=await fixture(t),key='a'.repeat(64),id='11111111-1111-4111-8111-111111111111';
+  engine.accountRoot=path.join(directory,'accounts',key);engine.state={state:'complete'};engine.paused=false;
+  engine.runtime.run=async input=>{calls.push(input);return {ok:true,data:{status:'sent'}};};
+  engine.passiveCloud=async route=>route==='passive-config'
+    ?{commands:[{id,kind:'reject',message:'服务器话术',friendId:'123'}]}:{claimed:true};
+  await engine.dispatchCommand({accountKey:key,commandId:id,message:'客户端替换'});
+  assert.equal(calls.at(-1).command.message,'服务器话术');
+  engine.paused=true;
+  await assert.rejects(engine.dispatchCommand({accountKey:key,commandId:id}),/尚未就绪/);
+  assert.equal(calls.length,1);
+});
 test('HR permission authorizes a private desktop owner without allowing another user to reuse it',async t=>{
   const {engine}=await fixture(t);
   const hr={username:'15800000001',userId:'hr-a',organizationCode:'heyi',roles:['HR_DEPARTMENT'],

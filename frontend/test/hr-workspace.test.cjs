@@ -240,6 +240,37 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
   app.env.HrWorkspace.reset();
   assert.doesNotMatch(all(app.root).map(n=>n._text).join(' '),/参考.pdf|向 测试候选人甲 打招呼/);
 });
+test('manual greeting dispatch shows the real receipt while cloud contact status is stale',async()=>{
+  const key='a'.repeat(64),id='11111111-1111-4111-8111-111111111111';
+  let saved={id:'source1',accountKey:key,jobId:'job-test-1',jobName:'Java 工程师',version:1,
+    profileState:'complete',profile:{summary:'开发'},criteria:{confirmed:true,conditions:[]},
+    run:{state:'complete',version:1,candidates:[{id:'c1',name:'测试人才',canGreet:true,score:80,contact:null}]}};
+  const app=setup({sourcing:true,api:async(url,options)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','manual-dispatch-v1','sourcing-credentials-v2']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:'job-test-1',jobName:'Java 工程师',postDescription:'开发'}}}};
+    if(url.includes('/sourcing?')||url.endsWith('/sourcing/save'))return {data:structuredClone(saved)};
+    if(url.includes('/demands?'))return {data:{items:[]}};
+    if(url.endsWith('/speeches'))return {data:{items:[{id:'speech',kind:'active_greet',active:true,content:'{姓名}您好'}]}};
+    if(url.endsWith('/sourcing/greet')){
+      saved.run.candidates[0].contact={id,status:'sending'};
+      return {data:{id,accountKey:key,status:'queued'}};
+    }
+    if(url.endsWith('/commands/send')){
+      assert.deepEqual(JSON.parse(options.body),{accountKey:key,commandId:id});
+      return {data:{id,status:'sent',verified:true}};
+    }
+    throw Error('unexpected '+url);
+  }});
+  await app.enter('jobs');await app.click('AI 寻源');await app.click('打招呼');
+  await app.click('确认向该候选人发送');await flush();
+  assert.match(app.text(),/打招呼已发送成功/);
+  assert.match(app.text(),/已打招呼 · 正在关联对应会话/);
+  await app.tick(5000);
+  assert.doesNotMatch(app.text(),/发送中/);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/commands/send')).length,1);
+  app.env.HrWorkspace.reset();
+});
 test('sourcing route without selected job never reads BOSS or creates a new scope',async()=>{
   const app=setup({sourcing:true,api:async()=>{throw Error('No request expected');}});
   await app.enter('talent');

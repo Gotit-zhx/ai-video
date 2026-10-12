@@ -15,6 +15,17 @@ KEY = 'a'*64
 
 
 class PassiveTest(unittest.TestCase):
+    def test_manual_rejection_lookup_is_exact_and_private(self):
+        self.template()
+        decision=feature.review(USER,{'id':'r1','version':1,'action':'reject'})
+        self.assertEqual(decision['accountKey'],KEY)
+        command=feature.device_config(USER,{'accountKey':KEY,'commandId':decision['commandId']})['commands'][0]
+        self.assertEqual(command['kind'],'reject')
+        self.assertIn('本次暂不合适',command['message'])
+        self.assertEqual(feature.device_config(USER,{'accountKey':'b'*64,'commandId':decision['commandId']})['commands'],[])
+        other={**USER,'username':'15800000001','id':'other','roles':['HR'],'platformAdmin':False,'permissions':['hr:access']}
+        self.assertEqual(feature.device_config(other,{'accountKey':KEY,'commandId':decision['commandId']})['commands'],[])
+
     def test_manual_invitation_lookup_is_exact_and_cannot_cross_account_or_owner(self):
         approved=feature.review(USER,{'id':'r1','version':1,'action':'approve'})
         self.template()

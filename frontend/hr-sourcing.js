@@ -46,6 +46,7 @@
     let finding=false,searchError='',searchProgress='',searchSession=null,pausedSearch=false;
     let criteriaDraft=[],criteriaScope='',criteriaDirty=false;
     const painted=new WeakMap();
+    const verifiedContacts=new Map();
     function changed(node,value){
       const signature=JSON.stringify(value);
       if(painted.get(node)===signature)return false;
@@ -222,6 +223,10 @@
         for(const item of record.profile.questions||[])el('p','待确认：'+item,details,'hr-hint');
       }
       const run=record.run;
+      for(const item of run?.candidates||[]){
+        const receipt=item.contact&&verifiedContacts.get(item.contact.id);
+        if(receipt)item.contact={...item.contact,status:'sent'};
+      }
       searchStatus.textContent=run?.state==='running'
         ?`正在分析候选人 · 已等待 ${Math.max(0,Math.floor(Date.now()/1000-run.startedAt))} 秒`
         :run?.state==='failed'?run.error:run?.state==='complete'
@@ -486,10 +491,27 @@
       if(sending||!candidate||!message.value.trim()||!allowed())return;
       const ticket=generation;sending=true;send.disabled=cancel.disabled=true;
       try{
-        await accountCheck(record.accountKey);
+        const state=await accountCheck(record.accountKey);
         if(!valid(ticket)||!dialog.open)return;
-        await request('sourcing/greet',{...params(),candidateId:candidate.id,message:message.value.trim(),confirmed:true});
-        if(valid(ticket)){dialog.close();feedback.textContent='已确认，等待本机助手按发送间隔执行。';await reload();}
+        const command=await request('sourcing/greet',{...params(),candidateId:candidate.id,message:message.value.trim(),confirmed:true});
+        if(valid(ticket)){
+          dialog.close();feedback.textContent='正在优先发送打招呼…';
+          if(state.capabilities?.includes('manual-dispatch-v1')){
+            const watchdog=setTimeout(()=>{if(valid(ticket))feedback.textContent='10 秒内未收到发送确认，正在继续核对，请勿重复发送。';},10000);
+            void hrApi('/api/v1/hr/commands/send',{method:'POST',body:JSON.stringify({
+              accountKey:command.accountKey,commandId:command.id})}).then(async reply=>{
+              if(!valid(ticket))return;
+              const receipt=reply.data;
+              if(receipt?.verified&&receipt.status==='sent'){
+                verifiedContacts.set(command.id,true);feedback.textContent='打招呼已发送成功';
+              }else feedback.textContent=contactStatus({status:receipt?.status||'uncertain',
+                waitInfo:{reasonCode:receipt?.reasonCode,retryAt:receipt?.retryAt}});
+              await reload();
+            }).catch(error=>{if(valid(ticket))feedback.textContent='消息已保留，发送结果继续核对：'+error.message;})
+              .finally(()=>clearTimeout(watchdog));
+          }else feedback.textContent='已确认，等待本机助手执行；更新助手可优先发送。';
+          await reload();
+        }
       }catch(error){if(valid(ticket))greetingError.textContent=error.message;}
       finally{sending=false;send.disabled=cancel.disabled=false;}
     }
@@ -521,7 +543,7 @@
       name:row.jobName||row.name||'',education:requirementLabel(row.degreeName,row.degreeDesc,row.education),
       experience:requirementLabel(row.experienceName,row.workYearDesc,row.experience),refresh:true};record=null;searchError='';},
       enter,leave,reset(){leave();selected=record=candidate=null;searchSession=null;criteriaDraft=[];criteriaScope='';criteriaDirty=false;demands=[];speeches=[];
-        searchError='';
+        searchError='';verifiedContacts.clear();
         demandSelect.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();
         criteriaRows.replaceChildren();advancedRows.replaceChildren();diagnosticRows.replaceChildren();
         for(const node of [profileOutput,results,criteriaRows,diagnosticRows])painted.delete(node);

@@ -352,11 +352,17 @@ def device_config(user, body):
         expire_commands(db)
         if body.get('commandId'):
             record = uid(body['commandId'])
-            row = db.execute('SELECT * FROM hr_talent_messages WHERE id=? AND owner=? AND account=?',
-                             (record, owner, key)).fetchone()
-            return {'commands': [{**json.loads(row['body']), 'id': row['id'], 'friendId': row['friend_id']}]
-                                 if row and row['status'] == 'queued' else [],
-                    'commandStatus': row['status'] if row else 'unavailable'}
+            hr_sourcing.schema(db)
+            for table, kind in [('hr_talent_messages', 'invite'), ('hr_resume_commands', 'reject'),
+                                ('hr_sourcing_contacts', 'active_greet')]:
+                row = db.execute(f'SELECT * FROM {table} WHERE id=? AND owner=? AND account=?',
+                                 (record, owner, key)).fetchone()
+                if row:
+                    return {'commands': [{**json.loads(row['body']), 'kind': kind,
+                                          'id': row['id'], 'friendId': row['friend_id']}]
+                                         if row['status'] == 'queued' else [],
+                            'commandStatus': row['status']}
+            return {'commands': [], 'commandStatus': 'unavailable'}
         reply = db.execute('''SELECT s.* FROM hr_speeches s JOIN hr_passive_reply_defaults d
             ON d.speech_id=s.id AND d.owner=s.owner
             WHERE s.owner=? AND s.active=1 AND s.kind='passive_reply' ''', (owner,)).fetchone()
@@ -502,14 +508,15 @@ def review(user, body):
             message = re.sub(r'\{(姓名|职位)\}', lambda match: values[match[1]], template['content'])
             if len(message) > 1000: raise ValueError('替换后的婉拒话术过长，请在话术管理中缩短内容')
             command = str(uuid.uuid4())
-            payload = {'message': message, 'name': detail.get('name', ''), 'jobName': detail['jobName'], 'reviewedBy': actor,
+            payload = {'kind': 'reject', 'message': message, 'name': detail.get('name', ''), 'jobName': detail['jobName'], 'reviewedBy': actor,
                        'templateId': template['id'], 'templateVersion': template['version'], 'templateName': template['name'], 'resumeId': record}
             db.execute('INSERT INTO hr_resume_commands VALUES(?,?,?,?,?,?,?,?)', (command, owner, row['account'], record, row['friend_id'], dump(payload), 'queued', now()))
             status = 'rejected'
         db.execute('UPDATE hr_resume_pool SET status=?,body=?,version=version+1,updated_at=? WHERE owner=? AND id=?', (status, dump(detail), now(), owner, record))
         pool.event(db, owner, actor, record, 'resume.'+action, {'status': row['status']}, detail | {'status': status})
         return {'id': record, 'status': status, 'talentId': detail.get('talentId'),
-                'rejectionStatus': 'queued' if action == 'reject' else None}
+                'rejectionStatus': 'queued' if action == 'reject' else None,
+                'commandId': command if action == 'reject' else None, 'accountKey': row['account']}
 
 
 def claim_command(user, body):

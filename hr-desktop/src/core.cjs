@@ -178,7 +178,7 @@ class Recruiter extends EventEmitter {
           const prepared=options.prepare?await options.prepare(current):null;
           current();
           if(prepared?.result)return prepared.result;
-          const result=await this.runtime.run({operation,root,cdp:this.cdp,...extra,...prepared?.extra},options.timeout||100000);
+          const result=await this.runtime.run({operation:prepared?.operation||operation,root,cdp:this.cdp,...extra,...prepared?.extra},options.timeout||100000);
           current();
           const code=result?.error?.code;
           if(STOP.has(code))await this.hold({code});
@@ -195,25 +195,47 @@ class Recruiter extends EventEmitter {
     },{...options,key,interrupt:options.background&&SHARED_READS.has(operation)?()=>this.runtime.interrupt?.():undefined});
   }
   async dispatchInvitation(input,signal){
+    return this.dispatchCommand(input,signal,'invite');
+  }
+  async dispatchCommand(input,signal,expectedKind){
     if(!/^[a-f0-9]{64}$/.test(input.accountKey||'')||input.accountKey!==path.basename(this.accountRoot)
       ||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.commandId||''))
       throw Error('邀约不属于当前招聘账号，未执行发送');
-    if(!this.passiveCloud)throw Error('平台连接未就绪，邀约已保留');
+    if(!this.passiveCloud)throw Error('平台连接未就绪，消息已保留');
     const accountKey=input.accountKey,commandId=input.commandId;
     let claimed=false;
     const result=await this.call('passive-send',{},{
-      urgent:true,signal,key:`invite:${this.generation}:${accountKey}:${commandId}`,
+      urgent:true,signal,key:`manual:${this.generation}:${accountKey}:${commandId}`,
       prepare:async current=>{
+        if(this.paused||this.riskHold||this.state.state!=='complete')
+          throw Error('助手尚未就绪，消息已保留，恢复连接后继续核对');
         const config=await this.passiveCloud('passive-config',{accountKey,commandId});
         current();
-        const command=config.commands?.find(row=>row.id===commandId&&row.kind==='invite');
+        const command=config.commands?.find(row=>row.id===commandId
+          &&['invite','reject','active_greet'].includes(row.kind)&&(!expectedKind||row.kind===expectedKind));
         if(!command)return {result:{ok:true,data:{id:commandId,status:config.commandStatus||'uncertain',
           verified:config.commandStatus==='sent'}}};
+        const active=command.kind==='active_greet';
+        if(active){
+          const check=await this.runtime.run({operation:'sourcing-ready',root:this.accountRoot,cdp:this.cdp,command},30000);
+          current();
+          if(!check.ok){
+            if(STOP.has(check.error?.code))await this.hold({code:check.error.code});
+            return {result:check};
+          }
+          if(check.data?.allowed!==true){
+            await this.passiveCloud('passive-report',{accountKey,waitingContactId:commandId,
+              reasonCode:check.data?.reasonCode||'JOB_STATUS_WAIT',retryAt:check.data?.retryAt||0});
+            return {result:{ok:true,data:{id:commandId,status:'queued',verified:false,
+              reasonCode:check.data?.reasonCode,retryAt:check.data?.retryAt}}};
+          }
+        }
         const claim=await this.passiveCloud('passive-claim',{accountKey,id:commandId});
         current();
-        if(!claim.claimed)return {result:{ok:true,data:{id:commandId,status:'sending'}}};
+        if(!claim.claimed)return {result:{ok:true,data:{id:commandId,status:claim.reasonCode?'queued':'sending',
+          verified:false,reasonCode:claim.reasonCode}}};
         claimed=true;
-        return {extra:{command}};
+        return {operation:active?'sourcing-send':'passive-send',extra:{command}};
       },
       complete:value=>{
         const status=value.data?.status||'uncertain';
@@ -221,7 +243,7 @@ class Recruiter extends EventEmitter {
         void this.passiveCloud('passive-report',{accountKey,commandId,status}).catch(()=>{
           // The durable local receipt is reported by the next poll.
         });
-        this.event('INVITATION_'+(status==='sent'?'SENT':'UNCERTAIN'));
+        this.event('MANUAL_MESSAGE_'+(status==='sent'?'SENT':'UNCERTAIN'));
       },
     }).catch(async error=>{
       if(claimed)try{await this.passiveCloud('passive-report',{accountKey,commandId,status:'uncertain'});}catch{}
@@ -611,6 +633,8 @@ class Recruiter extends EventEmitter {
       if(this.state.state!=='complete'||this.paused)throw Error(this.state.error||'本机任务已暂停，请先连接招聘账号');
       if(method==='POST'&&route==='pool/messages/send')
         return ok(await this.dispatchInvitation(await request.json(),request.signal));
+      if(method==='POST'&&route==='commands/send')
+        return ok(await this.dispatchCommand(await request.json(),request.signal));
       if(method==='POST'&&route==='resumes/request'){
         const input=await request.json();
         if(!/^[1-9]\d{0,19}$/.test(String(input.friendId)))throw Error('会话标识格式不正确');
