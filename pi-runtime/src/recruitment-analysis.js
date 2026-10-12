@@ -17,6 +17,45 @@ function failure(code) {
   return Object.assign(new Error(recruitmentErrors[code]), { code });
 }
 
+const jsonOutputSupport = new Map();
+const supportsJsonOutput = id => /^(?:openai\/)?(?:gpt-[3-9]|grok-|deepseek-(?:chat|reasoner|v\d))/i.test(id);
+
+// Providers may surround JSON with a preface, fences or a separate reasoning
+// block. Accept one complete root only; never repair an unfinished container
+// into a successful candidate list or choose between competing results.
+export function parseRecruitmentResult(raw) {
+  const text = String(raw).replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "").trim();
+  if (/<\/?think\b/i.test(text)) throw failure("HR_AI_INVALID_JSON");
+  const roots = [];
+  let start = -1, stack = [], quote = "", escaped = false, missingValue = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (start < 0) {
+      if (char === "{" || char === "[") { start = i; stack = [char]; }
+      continue;
+    }
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = "";
+      continue;
+    }
+    if (char === '"' || char === "'") { quote = char; missingValue = false; }
+    else if (char === "{" || char === "[") { stack.push(char); missingValue = false; }
+    else if (char === "}" || char === "]") {
+      if (missingValue || stack.pop() !== (char === "}" ? "{" : "["))
+        throw failure("HR_AI_INVALID_JSON");
+      if (!stack.length) { roots.push(text.slice(start, i + 1)); start = -1; }
+    } else if (char === ":") missingValue = true;
+    else if (!/\s/.test(char)) missingValue = false;
+  }
+  if (start >= 0 || roots.length !== 1) throw failure("HR_AI_INVALID_JSON");
+  let result;
+  try { result = JSON.parse(jsonrepair(roots[0])); } catch { throw failure("HR_AI_INVALID_JSON"); }
+  if (!result || Array.isArray(result) || typeof result !== "object") throw failure("HR_AI_INVALID_JSON");
+  return result;
+}
+
 export function recruitmentModel(config) {
   if (config?.apiFormat !== "OPENAI_COMPATIBLE") throw failure("HR_AI_PROTOCOL");
   const id = String(config.modelId || "").trim();
@@ -53,14 +92,22 @@ export async function analyzeRecruitment(body, emit, { signal, stream = streamSi
     if (typeof body.systemPrompt !== "string" || !body.input || typeof body.input !== "object")
       throw failure("HR_AI_CONNECTION");
     emit({ event: "progress", data: { phase: "connecting", receivedChars: 0 } });
-    // Freeze the selected DRIVER. No fallback models, agents, tools, or retries.
-    const events = stream(model, {
+    // Ask the provider to enforce JSON while still using the selected Pi SDK
+    // model. An explicitly rejected parameter may be negotiated once; a stream
+    // failure, malformed generation or successful request is never replayed.
+    const capabilityKey = model.baseUrl + "\n" + model.id;
+    let jsonOutput = supportsJsonOutput(model.id) && jsonOutputSupport.get(capabilityKey) !== false;
+    const context = {
       systemPrompt: body.systemPrompt,
       messages: [{ role: "user", content: [{ type: "text", text: JSON.stringify(body.input) }], timestamp: Date.now() }],
-    }, {
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+    let negotiate = false;
+    const events = stream(model, context, {
       apiKey: body.model.apiKey, maxTokens: 10000, maxRetries: 0,
       timeoutMs: 300000, signal: controller.signal,
       ...(model.reasoning ? { reasoning: "low" } : {}),
+      onPayload: payload => jsonOutput ? { ...payload, response_format: { type: "json_object" } } : payload,
       onResponse: () => emit({ event: "progress", data: { phase: "generating", receivedChars: 0 } }),
     });
     for await (const event of events) {
@@ -77,11 +124,19 @@ export async function analyzeRecruitment(body, emit, { signal, stream = streamSi
         const text = String(event.error?.errorMessage || "");
         // Extract only a numeric HTTP status, never the upstream message.
         const status = text.match(/^\s*(?:HTTP\s*)?([45]\d\d)\b/i)?.[1];
+        if (attempt === 0 && jsonOutput && chars === 0 && ["400", "422"].includes(status)
+            && /response_format/i.test(text) && /unsupported|not supported|unknown|unrecognized|unexpected/i.test(text)) {
+          jsonOutputSupport.set(capabilityKey, false); jsonOutput = false; negotiate = true;
+          break;
+        }
         if (status) throw Object.assign(new Error(
           `驱动模型服务返回错误（HTTP ${status}），本次未自动重复调用`), { code: "HR_AI_UPSTREAM_HTTP", upstreamStatus: Number(status) });
         throw failure("HR_AI_INVALID_STREAM");
       }
       if (event.type === "done") done = event.message;
+    }
+    if (negotiate) continue;
+    break;
     }
     if (!done || done.stopReason === "error" || done.stopReason === "aborted") throw failure("HR_AI_INVALID_STREAM");
     if (done.stopReason === "length") throw failure("HR_AI_TRUNCATED");
@@ -90,9 +145,7 @@ export async function analyzeRecruitment(body, emit, { signal, stream = streamSi
       .trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     if (text.length > 200000) throw failure("HR_AI_OVERSIZED");
     emit({ event: "progress", data: { phase: "validating", receivedChars: text.length } });
-    let result;
-    try { result = JSON.parse(jsonrepair(text)); } catch { throw failure("HR_AI_INVALID_JSON"); }
-    if (!result || Array.isArray(result) || typeof result !== "object") throw failure("HR_AI_INVALID_JSON");
+    const result = parseRecruitmentResult(text);
     emit({ event: "result", data: result });
   } catch (error) {
     const code = Object.hasOwn(recruitmentErrors, error?.code) || error?.code === "HR_AI_UPSTREAM_HTTP"

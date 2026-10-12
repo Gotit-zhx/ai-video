@@ -87,6 +87,19 @@ class PassiveTest(unittest.TestCase):
             db.execute("UPDATE hr_resume_pool SET body=? WHERE id='r1'",(json.dumps(detail),))
         self.assertEqual(feature.listing(USER,'resume-pool',{})['items'][0]['name'],'手动姓名')
 
+    def test_previously_failed_name_is_reprocessed_from_existing_attachment_filename(self):
+        with pool.database() as db:
+            feature.schema(db)
+            detail=json.loads(db.execute("SELECT body FROM hr_resume_pool WHERE id='r1'").fetchone()[0])
+            detail.update(name='',nameExtractionVersion=2,
+                          fileName='【图像算法_厦门 10-15K】温嘉麒 27年应届生.pdf',resumeText='')
+            db.execute("UPDATE hr_resume_pool SET body=?,status='rejected' WHERE id='r1'",(json.dumps(detail),))
+        item=feature.listing(USER,'resume-pool',{})['items'][0]
+        self.assertEqual(item['name'],'温嘉麒')
+        self.assertEqual(item['nameSource'],'resume_filename')
+        self.assertEqual(item['status'],'rejected')
+        self.assertEqual(feature.listing(USER,'resume-pool',{})['items'][0]['version'],item['version'])
+
     def test_job_and_review_filters_share_scoped_counts_and_cannot_cross_organizations(self):
         with pool.database() as db:
             feature.schema(db)

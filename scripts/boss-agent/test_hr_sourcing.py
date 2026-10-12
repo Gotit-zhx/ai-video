@@ -454,6 +454,26 @@ class SourcingTest(unittest.TestCase):
         self.assertEqual(len(result['candidates']), 1)
         self.assertTrue(result['partial'])
         self.assertIn('标识不完整', result['error'])
+        request={**self.params(),'count':5,'requestId':token,'batchIndex':2,'page':2,
+                 'candidates':[self.card('new2')]}
+        with mock.patch.object(s.threading,'Thread') as worker:
+            unchanged=s.search(USER,request,'fixture')
+            worker.assert_not_called()
+            self.assertEqual(unchanged['run']['error'],result['error'])
+            retried=s.search(USER,{**request,'retryFailedBatch':True},'fixture')
+            worker.assert_called_once()
+            snapshot=worker.call_args.kwargs['args'][2]
+            self.assertEqual(len(retried['run']['candidates']),1)
+            self.assertEqual(retried['run']['pagesRead'],2)
+            duplicate=s.search(USER,{**request,'retryFailedBatch':True},'fixture')
+            self.assertEqual(duplicate['run']['state'],'running')
+            worker.assert_called_once()
+        with mock.patch.object(s,'driver',return_value={'candidates':[self.scored('c1',90)]}):
+            s.search_worker('heyi',retried['run']['id'],snapshot,'fixture')
+        final=s.listing(USER,self.params())['run']
+        self.assertEqual(final['error'],'')
+        self.assertEqual(len(final['candidates']),2)
+        self.assertEqual(final['examined'],2,'A failed batch is counted only after a successful analysis')
 
     def test_greeting_requires_confirmation_capable_desktop_and_exact_account(self):
         cid = self.searched()

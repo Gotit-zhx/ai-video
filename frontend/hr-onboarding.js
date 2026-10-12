@@ -9,16 +9,16 @@
       ['department','归属部门'],['company','归属公司'],['fixedSalary','固定薪资'],['performanceSalary','绩效薪资'],
       ['commission','提成'],['mentorName','导师名称'],['joined','是否入职']];
     const field=(label,parent,tag='input')=>{const wrap=el('label','',parent,'hr-field');el('span',label,wrap);return el(tag,'',wrap);};
-    const head=el('div','',panel,'hr-pool-toolbar'),intro=el('div','',head);
-    el('h2','从确认入职，到有人带教',intro);el('p','二面通过时填写安排，入职后由 HR 发送导师提醒。',intro,'hr-hint');
-    button('刷新',head,load);
     const tabs=el('div','',panel,'hr-pool-tabs');
     const options=[['all','全部'],['joined','已入职'],['departed','已离职']].map(([key,label])=>{
       const node=button(label,tabs,()=>{status=key;page=1;load();});return {key,node};});
-    const searchForm=el('form','',panel,'hr-form'),search=field('搜索姓名、岗位、部门或导师',searchForm);
-    search.maxLength=100;button('搜索',searchForm,()=>{page=1;load();});
+    const searchForm=el('form','',panel,'hr-onboarding-search'),search=el('input','',searchForm);
+    search.setAttribute('aria-label','搜索姓名、岗位、部门或导师');
+    search.placeholder='搜索姓名、岗位、部门或导师';search.maxLength=100;
+    button('搜索',searchForm,()=>{page=1;load();});
+    button('刷新',searchForm,load);
     searchForm.addEventListener('submit',event=>{event.preventDefault();page=1;load();});
-    const feedback=el('p','',panel,'hr-hint');feedback.setAttribute('role','status');
+    const feedback=el('span','',searchForm,'hr-hint');feedback.setAttribute('role','status');
     const results=el('div','',panel,'hr-table-scroll');
     const pager=el('div','',panel,'hr-pagination'),previous=button('上一页',pager,()=>{page--;load();});
     const pageLabel=el('span','',pager),next=button('下一页',pager,()=>{page++;load();});pager.hidden=true;

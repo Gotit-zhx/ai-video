@@ -35,6 +35,18 @@ class IdentityTest(unittest.TestCase):
             with self.subTest(filename=filename): self.assertEqual(filename_name(filename), '')
         self.assertEqual(original_filename('../../张晓林.pdf\r\n'), '张晓林.pdf')
 
+    def test_boss_job_salary_and_graduation_labels_are_not_person_names(self):
+        for filename, name in [
+            ('【总经理秘书_厦门 7-8K】陈明皓 25年应届生.pdf', '陈明皓'),
+            ('【图像算法_厦门 10-15K】温嘉麒 27年应届生.pdf', '温嘉麒'),
+            ('【图像算法_厦门 10-15K】刘杰华 26年应届生.jpg', '刘杰华'),
+            ('【图像算法_厦门 10-15K】李峰 26年应届生.pdf', '李峰'),
+            ('【图像算法_厦门 10-15K】陈璘旸 26年应届生.pdf', '陈璘旸'),
+            ('【陈佳宁】个人简历.pdf', '陈佳宁'),
+        ]:
+            with self.subTest(filename=filename): self.assertEqual(filename_name(filename), name)
+        self.assertEqual(filename_name('【图像算法_厦门 10-15K】27年应届生.pdf'), '')
+
     def test_ocr_uncertainty_never_becomes_an_automatic_name(self):
         tsv='level\tpage_num\tblock_num\tpar_num\tline_num\tconf\ttext\n'
         tsv+='5\t1\t1\t1\t1\t96\t张晓林\n5\t1\t2\t1\t1\t96\t个人简历\n'

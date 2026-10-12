@@ -183,13 +183,15 @@ def resume_identity(db, row, actor):
     detail = json.loads(row['body'])
     if detail.get('nameExtractionVersion') == resume_storage.NAME_VERSION:
         return row
-    name, source = resume_storage.identity(detail.get('originalFileName', ''), detail.get('resumeText', ''))
+    filename = detail.get('originalFileName') or detail.get('fileName', '')
+    name, source = resume_storage.identity(filename, detail.get('resumeText', ''))
     before = detail.get('name', '')
     detail['nameExtractionVersion'] = resume_storage.NAME_VERSION
     # A human edit is authoritative; automatic migration never overwrites it.
     if name and detail.get('nameSource') != 'manual':
         detail.update(name=name, nameSource=source,
-                      fileName=detail.get('originalFileName') or f'{name}-简历.{detail.get("extension", "pdf")}')
+                      fileName=detail.get('originalFileName') or (filename if source == 'resume_filename'
+                               else f'{name}-简历.{detail.get("extension", "pdf")}'))
     name = detail.get('name', '')
     db.execute('UPDATE hr_resume_pool SET body=?,version=version+1,updated_at=? WHERE id=? AND owner=?',
                (dump(detail), now(), row['id'], row['owner']))

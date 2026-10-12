@@ -31,3 +31,13 @@
 通过本地审核缓存、原对象路径中的 SHA-256 前 24 位、归档清单与目标对象完整读取，找回并验证 84 张视频首帧（9,527,502 字节）。逐条条件更新素材引用至大言云，冲突与失败均为 0；剩余 1,399 条、19,555,788,027 字节仍等待旧源可读。应用健康 UP，可用空间约 23.21 GiB。
 
 恢复工具 `scripts/recover-legacy-oss-references.py` 默认只验证，显式 `--apply` 才更新；写入前保存原引用与逐条恢复事件，支持已切换记录识别。生产私有检查点在 `/opt/heyi/migrations/aliyun-to-dayan-20261008/`，包含原始引用、内容证明、已恢复记录及剩余清单，不提交凭证或业务明细至仓库。离线校验测试 5 项通过。
+
+## 招聘助手安装包
+
+招聘助手安装包单独使用 `scripts/desktop-installer-storage.py` 管理，不进入工作素材自动归档。2026-10-12 核验发现旧 `.design` 域名的虚拟主机请求返回 404/403；现用 `https://oss.cloud.dayan.cloud` 与路径格式访问，经现有对象读取、小文件匿名下载和分片上传实测可用。业务素材存储配置未在此发布中修改。
+
+只有 `desktop-installers/<SHA-256>/Heyi-Recruiter-…` 安装包对象设置 `public-read`；不改变 Bucket 或其他对象的权限。每个分片校验 Content-MD5，完成后核对 HEAD 长度、分片 ETag，并完整匿名下载校验 SHA-256 与下载文件头。官网原 `/downloads/Heyi-Recruiter-…` 地址通过 Nginx 302 跳转到已核验的固定对象地址，没有过期签名。
+
+上传前必须提供 `--proof` 打包证明；源文件大小和 SHA-256 与证明不符时，不开始上传。分片中断会撤销此次上传。
+
+`scripts/boss-agent/release-manual-priority.py` 要求两端打包证明和 OSS 清单一致，部署前检查线上代码基线与在途任务，更新 HR 连接服务、前端及招聘分析 Pi 模块，保留 Java 应用和用户会话。`scripts/cleanup-recruiter-installers.py` 默认仅删历史安装包副本；指定 `--all-server-copies` 时必须先验证此次激活记录和官网重定向，才删除当前下载目录及发布暂存包。插件 ZIP、业务文件和账户数据不属于清理范围。删除记录与去重后的磁盘释放量保存到此次发布目录。

@@ -225,13 +225,13 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
   assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,1);
   assert.match(app.text(),/等待助手发送/);
   saved.run.candidates[0].contact={status:'queued',waitInfo:{reasonCode:'SEND_INTERVAL',retryAt:Date.now()/1000+60}};
-  await app.tick(5000);
+  await app.tick(1000);
   assert.match(app.text(),/等待发送间隔 · 预计/);
   saved.run.candidates[0].contact={status:'queued',waitInfo:{reasonCode:'DAILY_GREETING_LIMIT',retryAt:Date.now()/1000+600}};
-  await app.tick(5000);
+  await app.tick(1000);
   assert.match(app.text(),/已达每日 150 次上限/);
   saved.run.candidates[0].contact={status:'sent',friend_id:'123'};
-  await app.tick(5000);
+  await app.tick(1000);
   assert.match(app.text(),/已打招呼 · 等待对方回复/);
   assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,1,'Status polling never sends again');
   const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
@@ -242,10 +242,11 @@ test('job card owns sourcing; bounded candidate reads and AI do not send until H
 });
 test('manual greeting dispatch shows the real receipt while cloud contact status is stale',async()=>{
   const key='a'.repeat(64),id='11111111-1111-4111-8111-111111111111';
+  let receipt,watchdog;
   let saved={id:'source1',accountKey:key,jobId:'job-test-1',jobName:'Java 工程师',version:1,
     profileState:'complete',profile:{summary:'开发'},criteria:{confirmed:true,conditions:[]},
     run:{state:'complete',version:1,candidates:[{id:'c1',name:'测试人才',canGreet:true,score:80,contact:null}]}};
-  const app=setup({sourcing:true,api:async(url,options)=>{
+  const app=setup({sourcing:true,setTimeout:(fn,ms)=>{if(ms===10000)watchdog=fn;},api:async(url,options)=>{
     if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','manual-dispatch-v1','sourcing-credentials-v2']}};
     if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
     if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:'job-test-1',jobName:'Java 工程师',postDescription:'开发'}}}};
@@ -258,17 +259,28 @@ test('manual greeting dispatch shows the real receipt while cloud contact status
     }
     if(url.endsWith('/commands/send')){
       assert.deepEqual(JSON.parse(options.body),{accountKey:key,commandId:id});
-      return {data:{id,status:'sent',verified:true}};
+      return new Promise(resolve=>{receipt=()=>resolve({data:{id,status:'sent',verified:true}});});
     }
     throw Error('unexpected '+url);
   }});
   await app.enter('jobs');await app.click('AI 寻源');await app.click('打招呼');
-  await app.click('确认向该候选人发送');await flush();
+  const send=app.visible().find(n=>n.tagName==='button'&&n.textContent==='确认向该候选人发送');
+  const pending=send.click();await flush();
+  const dialog=app.visible().find(n=>n.className==='hr-pool-dialog hr-sourcing-greeting');
+  const meter=app.visible().find(n=>n.tagName==='progress'&&n.attributes['aria-label']==='消息发送进度');
+  assert.equal(dialog.open,true);assert.equal(meter.value,2);
+  assert.equal(send.disabled,true);assert.doesNotMatch(app.text(),/打招呼已发送成功/);
+  watchdog();assert.match(app.text(),/10 秒内未收到发送确认/);
+  await send.click();
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/sourcing/greet')).length,1);
+  receipt();await pending;await flush();
+  assert.equal(dialog.open,true);assert.equal(meter.value,3);
   assert.match(app.text(),/打招呼已发送成功/);
   assert.match(app.text(),/已打招呼 · 正在关联对应会话/);
   await app.tick(5000);
   assert.doesNotMatch(app.text(),/发送中/);
   assert.equal(app.calls.filter(c=>c.url.endsWith('/commands/send')).length,1);
+  await app.click('完成');assert.equal(dialog.open,false);
   app.env.HrWorkspace.reset();
 });
 test('sourcing route without selected job never reads BOSS or creates a new scope',async()=>{
@@ -276,6 +288,45 @@ test('sourcing route without selected job never reads BOSS or creates a new scop
   await app.enter('talent');
   assert.match(app.text(),/请返回职位管理/);
   assert.equal(app.calls.length,0);
+});
+test('explicit failed batch retry preserves candidates and page without repeating a BOSS read',async()=>{
+  const key='a'.repeat(64);let searches=0,firstRequest;
+  let record={id:'source1',accountKey:key,jobId:'job-test-1',jobName:'Java 工程师',version:1,
+    profileState:'complete',profile:{summary:'开发'},criteria:{confirmed:true,conditions:[]},run:null};
+  const app=setup({sourcing:true,api:async(url,options)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,
+      capabilities:['job-jd','active-sourcing','continuous-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:'job-test-1',jobName:'Java 工程师',postDescription:'开发'}}}};
+    if(url.includes('/sourcing?')||url.endsWith('/sourcing/save'))return {data:structuredClone(record)};
+    if(url.includes('/demands?'))return {data:{items:[]}};
+    if(url.includes('/recommendations?'))return {data:fixtures.recommendations};
+    if(url.endsWith('/sourcing/search')){
+      const value=JSON.parse(options.body);searches++;
+      if(searches===1)firstRequest=value;
+      else{
+        assert.equal(value.retryFailedBatch,true);assert.equal(value.requestId,firstRequest.requestId);
+        assert.equal(value.batchIndex,firstRequest.batchIndex);assert.equal(value.page,firstRequest.page);
+        assert.deepEqual(value.candidates,firstRequest.candidates);
+      }
+      record.run={id:'run1',state:'complete',version:1,wanted:5,pagesRead:1,examined:searches===1?0:2,
+        candidates:[{id:'existing',name:'已匹配人才',canGreet:false,score:90}],
+        error:searches===1?'驱动模型响应中断 [HR_AI_INVALID_STREAM]':''};
+      return {data:structuredClone(record)};
+    }
+    throw Error('unexpected '+url);
+  }});
+  await app.enter('jobs');await app.click('AI 寻源');
+  app.visible().find(n=>n.attributes['aria-label']==='获取人数').value='5';
+  await app.click('一键 AI 获取');
+  assert.match(app.text(),/已保留 1 位匹配人选/);
+  assert.equal(searches,1);
+  await app.tick(4000);assert.equal(searches,1,'Polling does not retry a failed model generation');
+  await app.click('重试失败批次');
+  assert.equal(searches,2);
+  assert.equal(app.calls.filter(c=>c.url.includes('/recommendations?')).length,1);
+  assert.match(app.text(),/已匹配人才/);
+  assert.equal(app.calls.some(c=>c.url.endsWith('/sourcing/greet')),false);
 });
 test('HR match score includes missing information instead of showing a sparse known score as 100',()=>{
   const app=setup({sourcing:true});
@@ -1015,6 +1066,9 @@ test('onboarding can update joining independently and mentor notification stays 
   const app=setup({onboarding:true,api:async url=>({data:url.endsWith('/onboarding/save')?{saved:true}:
     {items:[row],total:1,page:1,pages:1}})});
   await app.enter('onboarding');
+  assert.doesNotMatch(app.text(),/从确认入职，到有人带教|二面通过时填写安排|安排入职、确认到岗/);
+  const search=app.visible().find(n=>n.tagName==='input'&&n.attributes['aria-label']==='搜索姓名、岗位、部门或导师');
+  assert.equal(search.parentElement.className,'hr-onboarding-search');
   assert.equal(app.visible().find(n=>n._text==='通知导师').disabled,true);
   await app.click('编辑');
   const dialog=all(app.root).find(n=>n.className==='hr-pool-dialog hr-onboarding-dialog');

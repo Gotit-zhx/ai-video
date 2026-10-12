@@ -581,22 +581,25 @@ def search(user, body, cookie):
         requirements = basic_requirements(json.loads(job['body']))
         old = db.execute('SELECT * FROM hr_sourcing_runs WHERE id=? AND owner=?', (record, owner)).fetchone()
         previous, source = {}, {}
+        retry_failed = False
         if old:
             if old['job'] != job['id']: raise pool.Conflict('该请求已用于其他职位')
             previous = json.loads(old['result'])
             if previous.get('basicRequirements', []) != requirements:
                 raise pool.Conflict('岗位学历、年限核验已更新，请重新开始获取；不会自动重跑旧分析')
             completed_batches = previous.get('batches', 1)
-            if batch <= completed_batches:
-                return view(db, job, record)
             if old['version'] != job['version'] or old['wanted'] != wanted:
                 raise pool.Conflict('寻源岗位、画像或目标人数已变化，请重新获取')
-            if old['state'] != 'complete' or old['error']:
+            retry_failed = (body.get('retryFailedBatch') is True and batch == completed_batches
+                            and old['state'] in {'complete', 'failed'} and bool(old['error']))
+            if batch <= completed_batches and not retry_failed:
+                return view(db, job, record)
+            if not retry_failed and (old['state'] != 'complete' or old['error']):
                 raise pool.Conflict('上一批尚未完成或已停止，不会重复提交 AI')
             if previous.get('stopReason') == 'no_matches_100' or (
                     previous.get('examined', 0) >= 100 and not previous.get('qualified', 0)):
                 raise pool.Conflict('已分析 100 人仍无匹配，请先调整并保存匹配条件')
-            if batch != completed_batches + 1:
+            if not retry_failed and batch != completed_batches + 1:
                 raise ValueError('寻源分析批次不连续')
             source = {value['id']: value for value in json.loads(old['body'])}
             # Upgrade earlier runs lazily. Full card data stays in the candidate
@@ -618,9 +621,11 @@ def search(user, body, cookie):
             value['basicChecks'] = basic_checks(value, requirements)
             cid = str(uuid.uuid5(uuid.NAMESPACE_URL, f'hr-source-candidate:{owner}:{job["id"]}:{value["geekId"]}'))
             value['id'] = cid
-            if not db.execute('SELECT 1 FROM hr_sourcing_seen WHERE run=? AND candidate=?',
-                              (record, cid)).fetchone():
+            if (retry_failed and cid in source) or not db.execute(
+                    'SELECT 1 FROM hr_sourcing_seen WHERE run=? AND candidate=?', (record, cid)).fetchone():
                 parsed[cid] = value
+        if retry_failed and set(parsed) != set(source):
+            raise pool.Conflict('失败批次的人选已变化，请重新开始获取')
         if not parsed and source:
             return view(db, job, record)
         if not parsed: raise ValueError('已读取候选人，但卡片的职位或访问参数校验未通过，本次未调用 AI。请刷新获取候选人后重试')
@@ -638,7 +643,7 @@ def search(user, body, cookie):
                     'basicRequirements': requirements,
                     'threshold': MATCH_THRESHOLD, 'referenceOnly': True}
         if old:
-            db.execute("UPDATE hr_sourcing_runs SET state='running',body=?,result=?,started=?,updated_at=? WHERE id=?",
+            db.execute("UPDATE hr_sourcing_runs SET state='running',error='',body=?,result=?,started=?,updated_at=? WHERE id=?",
                        (dump(list(parsed.values())), dump(progress), time.time(), now(), record))
         else:
             db.execute('INSERT INTO hr_sourcing_runs(id,owner,job,version,wanted,state,body,result,started,updated_at) VALUES(?,?,?,?,?,\'running\',?,?,?,?)',

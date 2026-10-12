@@ -1046,10 +1046,11 @@
     titles.pool=['储备人才库','按部门归档人才，跟进每一个招聘阶段。'];
     titles.demands=['招聘需求池','梳理岗位需求，生成画像、胜任能力和结构化面试题。'];
     titles.departments=['部门管理','统一部门信息与负责人，供招聘需求直接选用。'];
-    titles.onboarding=['入职安排及跟进','安排入职、确认到岗，让导师及时准备带教。'];
+    titles.onboarding=['入职安排及跟进',''];
     titles['resume-pool']=['简历池','查看简历、人工审批，AI 分析仅供参考。'];
     titles.speeches=['话术管理','统一配置婉拒和常用沟通话术。'];
     pageTitle.textContent=titles[current][0];pageSubtitle.textContent=titles[current][1];
+    pageSubtitle.hidden=!titles[current][1];
     if (['resume-pool','speeches'].includes(current)) {
       passive?.enter(current);
     } else if (current === 'departments') {

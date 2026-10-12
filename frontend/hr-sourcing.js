@@ -128,10 +128,24 @@
     const messageLabel=el('label','',dialog,'hr-field');el('span','发送内容',messageLabel);
     const message=el('textarea','',messageLabel);message.rows=6;message.maxLength=1000;
     const greetingError=el('p','',dialog,'hr-error');greetingError.setAttribute('role','alert');
+    const greetingProgress=el('div','',dialog,'hr-greeting-progress');greetingProgress.hidden=true;
+    const greetingMeter=el('progress','',greetingProgress);greetingMeter.max=3;greetingMeter.value=0;
+    greetingMeter.setAttribute('aria-label','消息发送进度');
+    const greetingSteps=el('div','',greetingProgress,'hr-greeting-steps');
+    for(const text of ['提交消息','助手发送','确认结果'])el('span',text,greetingSteps);
+    const greetingResult=el('p','',greetingProgress);
+    greetingResult.setAttribute('role','status');greetingResult.setAttribute('aria-live','polite');
     const greetingActions=el('div','',dialog,'hr-actions');
     const cancel=button('取消',greetingActions,()=>dialog.close());
     const send=button('确认向该候选人发送',greetingActions,sendGreeting);send.className='hr-primary';
-    let candidate=null,speeches=[],sending=false;
+    let candidate=null,speeches=[],sending=false,greetingCommand=null;
+    dialog.addEventListener('cancel',event=>{if(sending)event.preventDefault();});
+    function greetingPhase(stage,text,state='sending'){
+      greetingProgress.hidden=false;greetingProgress.dataset.state=state;
+      greetingMeter.value=stage;greetingMeter.setAttribute('aria-valuetext',text);
+      greetingResult.textContent=text;
+      if(state==='sent'){send.textContent='已发送成功';send.disabled=true;cancel.textContent='完成';}
+    }
     const valid=ticket=>active&&ticket===generation&&allowed();
     const stop=()=>{clearInterval(timer);timer=null;};
     const running=()=>record?.profileState==='running'||(
@@ -193,7 +207,7 @@
       demandSelect.disabled=locked||demandLoading;
       findButton.disabled=locked||record.profileState!=='complete'||record.criteria?.confirmed===false||criteriaDirty;
       const analyzing=record.run?.version===record.version&&record.run?.state==='running';
-      findButton.textContent=finding?'正在获取…':analyzing?'AI 分析中…':searchSession?'继续寻找':'一键 AI 获取';
+      findButton.textContent=finding?'正在获取…':analyzing?'AI 分析中…':searchSession?.retryFailed?'重试失败批次':searchSession?'继续寻找':'一键 AI 获取';
       pauseButton.hidden=!finding;pauseButton.disabled=pausedSearch;
       findButton.setAttribute('aria-busy',String(finding||analyzing));
       refresh.disabled=busy;count.disabled=locked;
@@ -226,6 +240,12 @@
       for(const item of run?.candidates||[]){
         const receipt=item.contact&&verifiedContacts.get(item.contact.id);
         if(receipt)item.contact={...item.contact,status:'sent'};
+      }
+      const currentContact=greetingCommand&&run?.candidates?.find(item=>item.contact?.id===greetingCommand)?.contact;
+      if(currentContact&&dialog.open){
+        if(currentContact.status==='sent')greetingPhase(3,'打招呼已发送成功','sent');
+        else if(['failed','expired'].includes(currentContact.status))greetingPhase(2,contactStatus(currentContact),'failed');
+        else if(greetingProgress.dataset.state!=='sent')greetingPhase(2,contactStatus(currentContact),'waiting');
       }
       searchStatus.textContent=run?.state==='running'
         ?`正在分析候选人 · 已等待 ${Math.max(0,Math.floor(Date.now()/1000-run.startedAt))} 秒`
@@ -291,7 +311,7 @@
       }
       const pendingContact=run?.candidates?.some(item=>item.contact&&(
         ['queued','sending','uncertain'].includes(item.contact.status)||(item.contact.status==='sent'&&!item.contact.friend_id)));
-      if((running()||pendingContact)&&!timer){pollErrors=0;timer=setInterval(()=>reload(true),running()?4000:5000);}
+      if((running()||pendingContact)&&!timer){pollErrors=0;timer=setInterval(()=>reload(true),greetingCommand&&dialog.open?1000:running()?4000:5000);}
       if(!running()&&!pendingContact)stop();
     }
     async function reload(quiet=false){
@@ -429,16 +449,17 @@
           if(!await connected()||!valid(ticket))return;
           const current=candidates.slice(0,target);
           progress(`已读取 ${current.length} 位候选人 · 第 ${batch} 批 AI 分析 · 已匹配 ${qualified} / ${desired} 人`);
-          let value=await request('sourcing/search',{...snapshot,count:desired,candidates:current,requestId,batchIndex:batch,page});
+          let value=await request('sourcing/search',{...snapshot,count:desired,candidates:current,requestId,batchIndex:batch,page,
+            ...(session.retryFailed?{retryFailedBatch:true}:{})});
           if(!valid(ticket))return;
           record=value;render();
           value=await waitForAnalysis(ticket,snapshot,value);
           if(!value||!valid(ticket))return;
           record=value;qualified=session.qualified=value.run?.candidates?.length||0;
           if(value.run?.error||value.run?.state==='failed'){
-            searchSession=null;
             throw Error(value.run.error||'本批分析未完成，本轮已停止');
           }
+          session.retryFailed=false;
           candidates.splice(0,current.length);
           session.examined=value.run?.examined??session.examined+current.length;
           if(value.run?.stopReason==='no_matches_100'||!qualified&&session.examined>=100){
@@ -454,8 +475,11 @@
           :qualified>=desired?`已获取 ${qualified} 位初步匹配人选（已知条件 ≥ 80 分）。`
           :`已获取 ${qualified} / ${desired} 人。${pausedSearch?'已暂停，可以继续寻找。':'本职位推荐已读完。'}`;
         if(qualified>=desired||ended&&!candidates.length)searchSession=null;
-      }catch(error){if(valid(ticket))searchError=feedback.textContent=(record?.run?.candidates?.length
-        ?`已保留 ${record.run.candidates.length} 位匹配人选 · `:'')+error.message;}
+      }catch(error){if(valid(ticket)){
+        if(record?.run?.error&&record.run.state!=='running')session.retryFailed=true;
+        searchError=feedback.textContent=(record?.run?.candidates?.length
+          ?`已保留 ${record.run.candidates.length} 位匹配人选 · `:'')+error.message;
+      }}
       finally{if(valid(ticket)){
         if(pausedSearch)feedback.textContent='已暂停寻找，当前进度保留，可点击继续寻找。';
         busy=finding=false;searchProgress='';render();
@@ -467,7 +491,11 @@
     }
     templates.addEventListener('change',fillTemplate);
     async function openGreeting(item){
+      if(sending)return;
       const ticket=generation;
+      greetingCommand=null;greetingProgress.hidden=true;greetingMeter.value=0;
+      send.textContent='确认向该候选人发送';cancel.textContent='取消';
+      templates.disabled=message.disabled=false;
       candidate=item;message.value='';greetingTitle.textContent='向 '+item.name+' 打招呼';
       greetingHint.textContent='正在确认助手连接并加载话术…';greetingError.textContent='';
       send.disabled=true;dialog.showModal();
@@ -488,32 +516,48 @@
       }catch(error){if(valid(ticket)&&dialog.open){greetingHint.textContent='尚未发送';greetingError.textContent=error.message;}}
     }
     async function sendGreeting(){
-      if(sending||!candidate||!message.value.trim()||!allowed())return;
+      if(sending||greetingCommand||!candidate||!message.value.trim()||!allowed())return;
       const ticket=generation;sending=true;send.disabled=cancel.disabled=true;
+      templates.disabled=message.disabled=true;greetingError.textContent='';
+      greetingPhase(0,'正在确认账号和发送权限…');
+      const watchdog=setTimeout(()=>{if(valid(ticket)&&greetingProgress.dataset.state!=='sent'){
+        const text='10 秒内未收到发送确认，正在继续核对，请勿重复发送。';
+        greetingPhase(greetingMeter.value,text,'waiting');feedback.textContent=text;
+      }},10000);
       try{
         const state=await accountCheck(record.accountKey);
         if(!valid(ticket)||!dialog.open)return;
+        greetingPhase(1,'正在提交本次消息…');
         const command=await request('sourcing/greet',{...params(),candidateId:candidate.id,message:message.value.trim(),confirmed:true});
         if(valid(ticket)){
-          dialog.close();feedback.textContent='正在优先发送打招呼…';
+          greetingCommand=command.id;
+          greetingPhase(2,'正在优先发送，等待平台确认…');feedback.textContent='正在优先发送打招呼…';
+          void reload();
           if(state.capabilities?.includes('manual-dispatch-v1')){
-            const watchdog=setTimeout(()=>{if(valid(ticket))feedback.textContent='10 秒内未收到发送确认，正在继续核对，请勿重复发送。';},10000);
-            void hrApi('/api/v1/hr/commands/send',{method:'POST',body:JSON.stringify({
-              accountKey:command.accountKey,commandId:command.id})}).then(async reply=>{
+            const reply=await hrApi('/api/v1/hr/commands/send',{method:'POST',body:JSON.stringify({
+              accountKey:command.accountKey,commandId:command.id})});
               if(!valid(ticket))return;
               const receipt=reply.data;
               if(receipt?.verified&&receipt.status==='sent'){
                 verifiedContacts.set(command.id,true);feedback.textContent='打招呼已发送成功';
-              }else feedback.textContent=contactStatus({status:receipt?.status||'uncertain',
-                waitInfo:{reasonCode:receipt?.reasonCode,retryAt:receipt?.retryAt}});
+                greetingPhase(3,feedback.textContent,'sent');
+              }else if(greetingProgress.dataset.state!=='sent'){
+                feedback.textContent=contactStatus({status:receipt?.status||'uncertain',
+                  waitInfo:{reasonCode:receipt?.reasonCode,retryAt:receipt?.retryAt}});
+                greetingPhase(2,feedback.textContent,['failed','expired'].includes(receipt?.status)?'failed':'waiting');
+              }
               await reload();
-            }).catch(error=>{if(valid(ticket))feedback.textContent='消息已保留，发送结果继续核对：'+error.message;})
-              .finally(()=>clearTimeout(watchdog));
-          }else feedback.textContent='已确认，等待本机助手执行；更新助手可优先发送。';
-          await reload();
+          }else{
+            feedback.textContent='已提交，等待本机助手执行；更新助手可优先发送。';
+            greetingPhase(2,feedback.textContent,'waiting');
+          }
         }
-      }catch(error){if(valid(ticket))greetingError.textContent=error.message;}
-      finally{sending=false;send.disabled=cancel.disabled=false;}
+      }catch(error){if(valid(ticket)&&greetingProgress.dataset.state!=='sent'){
+        greetingError.textContent=greetingCommand?'消息已保留，发送结果继续核对：'+error.message:error.message;
+        greetingPhase(greetingCommand?2:0,greetingError.textContent,greetingCommand?'waiting':'failed');
+      }}
+      finally{clearTimeout(watchdog);sending=false;cancel.disabled=false;
+        send.disabled=!!greetingCommand;templates.disabled=message.disabled=!!greetingCommand;}
     }
     async function enter(){
       active=true;const ticket=++generation;busy=!!selected;render();

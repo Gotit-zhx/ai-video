@@ -15,7 +15,7 @@ import unicodedata
 import zipfile
 
 MAX_BYTES = 25*1024*1024
-NAME_VERSION = 2
+NAME_VERSION = 3
 TYPES = {'pdf': 'application/pdf', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
          'doc': 'application/msword', 'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg'}
 NON_NAMES = {'个人简历', '求职简历', '中文简历', '我的简历', '应聘简历', '附件简历', '基本信息', '联系方式',
@@ -92,6 +92,13 @@ def filename_name(value):
     if not re.search(r'\.(pdf|docx?|png|jpe?g)$', value, re.I):
         return ''
     stem = re.sub(r'\.(pdf|docx?|png|jpe?g)$', '', value, flags=re.I)
+    # BOSS attachments prefix the person's name with a job/city/salary label.
+    # Drop that label as a unit so a city or job never becomes another name.
+    stem = re.sub(r'【([^】]*)】|\[([^\]]*)\]', lambda match: ' ' if re.search(
+        r'经理|助理|秘书|工程|设计|运营|专员|管理|销售|客服|市场|算法|图像|\d+\s*[-~]\s*\d+\s*[kK]',
+        match[1] or match[2]) else match[0], stem)
+    stem = re.sub(r'\d{2,4}\s*年\s*(?:应届生|毕业生|应届)|\d+\s*届\s*(?:应届生|毕业生)?', ' ', stem)
+    stem = re.sub(r'\d+(?:\s*[-~]\s*\d+)?\s*[kK]\b', ' ', stem)
     # Remove common resume labels, copy counters and dates, not arbitrary job words.
     stem = re.sub(r'的?(?:个人|求职|中文|应聘|附件|我的)?简历|RESUME|CV', ' ', stem, flags=re.I)
     stem = re.sub(r'[\d]+(?:年|月|日|岁|届|版)?', ' ', stem)
@@ -108,7 +115,7 @@ def filename_name(value):
                    '沃利蔚越夔隆师巩厍聂晁勾敖融冷訾辛阚那简饶曾沙鞠须丰巢关蒯相查后荆红游竺权盖'
                    '益桓公仉督晋楚闫岳帅缑亢况郜有商牟佘佴伯赏墨哈谯笪年爱阳佟言福南火铁迟漆赫')
     names = {clean_name(part) for part in parts if clean_name(part) and part[0] in surnames
-             and not re.search(r'经理|助理|秘书|工程|设计|运营|专员|管理|销售|客服|市场|本科|大专|硕士', part)}
+             and not re.search(r'经理|助理|秘书|工程|设计|运营|专员|管理|销售|客服|市场|算法|应届|毕业|本科|大专|硕士', part)}
     return next(iter(names)) if len(names) == 1 else ''
 
 
