@@ -138,6 +138,12 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(row['mid'],'200')
         self.c.managed_job_statuses.assert_called_with(queued=True)
 
+    def test_monitoring_new_conversations_uses_the_flow_reserve_before_a_reply_exists(self):
+        self.c.passive_delay=lambda **options: 0 if options.get('queued') else 3600
+        self.step()
+        self.c.managed_job_statuses.assert_called_with(queued=True)
+        self.assertTrue(any(call.args[:2] == ('hr','chat') for call in self.c.cli_json.call_args_list))
+
     def test_collection_cannot_acknowledge_a_signal_without_saving_it_for_the_flow(self):
         hint={**self.hint(), 'job':''}
         with mock.patch('boss_chat_receipts.step', return_value={'ok':True}) as collect:

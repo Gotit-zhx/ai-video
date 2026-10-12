@@ -574,9 +574,9 @@ def activity_status(db, result):
 def step(c, db, request):
     configured = [r for r in request.get('rules', []) if r.get('enabled') is True]
     contacts = request.get('activeContacts', [])
-    admitted = db.execute("SELECT 1 FROM people WHERE state IN ('reply_ready','ready') LIMIT 1").fetchone()
-    admitted = admitted or db.execute("SELECT 1 FROM activity WHERE done=0 LIMIT 1").fetchone()
-    availability = c.managed_job_statuses(queued=bool(admitted)) if configured or contacts else {'statuses': {}}
+    # Enabled job monitoring is part of the opted-in communication flow. It
+    # must be able to discover new conversations before there is a reply row.
+    availability = c.managed_job_statuses(queued=True) if configured or contacts else {'statuses': {}}
     if c.held_code():
         return {'ok': False, 'error': {'code': c.held_code()}}
     states = availability['statuses']
@@ -639,7 +639,7 @@ def step(c, db, request):
         if due:
             delays = []
             for _, operation in sorted(due):
-                delay = delay_for(cost=2 if operation == 'discover' else 4, queued=False)
+                delay = delay_for(cost=2 if operation == 'discover' else 4, queued=True)
                 if not delay:
                     put_state(db, 'lastLane', 'maintenance')
                     return discover(c, db, rules) if operation == 'discover' else receive(c, db)
