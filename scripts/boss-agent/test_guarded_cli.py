@@ -151,17 +151,6 @@ class BudgetTest(unittest.TestCase):
         with mock.patch.object(guard.time, "time", return_value=14000):
             guard.reserve_request()
 
-    def test_default_has_no_hourly_quota_and_retains_request_spacing(self):
-        self.assertEqual(guard.HOURLY_LIMIT,0)
-        with contextlib.closing(sqlite3.connect(guard.BUDGET_DB)) as db, db:
-            db.execute('CREATE TABLE requests(at REAL NOT NULL)')
-            db.executemany('INSERT INTO requests VALUES(?)',[(9900,)]*1200)
-        with mock.patch.object(guard.time,'time',return_value=10000), \
-             mock.patch.object(guard.time,'sleep') as sleep:
-            guard.reserve_request()
-            guard.reserve_request()
-            sleep.assert_called_once_with(guard.MIN_INTERVAL)
-
     def test_unreviewed_sdk_version_fails_closed(self):
         with mock.patch.object(guard.importlib.metadata, "version", return_value="99.0.0"):
             with self.assertRaisesRegex(RuntimeError, "版本变化"):

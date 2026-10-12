@@ -28,7 +28,7 @@ def resume(connector, guard, store=None):
             if code == "REQUEST_BUDGET_EXHAUSTED" and guard.BUDGET_DB.exists():
                 with contextlib.closing(sqlite3.connect(guard.BUDGET_DB.resolve().as_uri() + "?mode=ro", uri=True)) as db:
                     count = db.execute("SELECT COUNT(*) FROM requests WHERE at>?", (time.time()-3600,)).fetchone()[0]
-                if guard.HOURLY_LIMIT > 0 and count >= guard.HOURLY_LIMIT:
+                if count >= guard.HOURLY_LIMIT:
                     return {"ok": False, "error": {"code": code}}
         # An app-only version bump changes Electron's default user agent.
         # Preserve every cookie and require an otherwise identical browser

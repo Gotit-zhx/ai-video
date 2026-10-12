@@ -132,13 +132,62 @@ class ReceiptTest(unittest.TestCase):
         budget = self.root / 'budget.sqlite3'
         with contextlib.closing(sqlite3.connect(budget)) as db, db:
             db.execute('CREATE TABLE requests(at REAL NOT NULL)')
-            db.executemany('INSERT INTO requests VALUES(?)', [(time.time(),)]*90)
+            db.executemany('INSERT INTO requests VALUES(?)', [(time.time()-600,)]*90)
         self.c.passive_delay = lambda **options: flow.budget_delay(budget, 120, **options)
         with flow.database(self.root) as db:
             self.assertIsNone(receipts.step(self.c, db, {}))
         self.c.cli_json.assert_not_called()
         self.assertEqual(self.c.passive_delay(cost=3, queued=True), 0)
         self.assertEqual(self.c.passive_delay(cost=20, queued=True, user_initiated=True), 0)
+
+    def test_new_closed_job_attachment_and_download_use_receipt_reserve_after_history_pauses(self):
+        budget = self.root / 'budget.sqlite3'
+        with contextlib.closing(sqlite3.connect(budget)) as db, db:
+            db.execute('CREATE TABLE requests(at REAL NOT NULL)')
+            db.executemany('INSERT INTO requests VALUES(?)', [(time.time(),)]*90)
+        self.c.passive_delay = lambda **options: flow.budget_delay(budget, 120, **options)
+        self.c.cli_json.return_value = {'ok': True, 'data': {'messages': [self.message(100)]}}
+        with flow.database(self.root) as db:
+            self.assertIsNone(receipts.step(self.c, db, {}))
+            receipts.wake(db, '1')
+            self.assertTrue(receipts.step(self.c, db, {})['ok'])
+            self.assertEqual(db.execute('SELECT count(*) FROM chat_resume_receipts').fetchone()[0], 1)
+            def downloaded(*args):
+                Path(args[-1]).write_bytes(b'%PDF-1.4 test')
+                return {'ok': True}
+            self.c.cli_json.side_effect = downloaded
+            self.assertTrue(receipts.step(self.c, db, {})['ok'])
+            self.assertEqual(db.execute('SELECT state FROM chat_resume_receipts').fetchone()[0], 'export')
+        self.c.request_resume.assert_not_called()
+
+    def test_receipt_reserve_never_bypasses_shared_hard_quota(self):
+        budget = self.root / 'budget.sqlite3'
+        with contextlib.closing(sqlite3.connect(budget)) as db, db:
+            db.execute('CREATE TABLE requests(at REAL NOT NULL)')
+            db.executemany('INSERT INTO requests VALUES(?)', [(time.time(),)]*120)
+        self.c.passive_delay = lambda **options: flow.budget_delay(budget, 120, **options)
+        with flow.database(self.root) as db:
+            self.seed(db)
+            self.assertIsNone(receipts.step(self.c, db, {}))
+            self.assertTrue(receipts.urgent(db))
+        self.c.cli_json.assert_not_called()
+
+    def test_plain_text_uses_one_read_without_redundant_job_binding_request(self):
+        with flow.database(self.root) as db:
+            self.seed(db)
+            self.inspect(db, [self.message(100, attachment=False)])
+        self.c.sourcing_friend_details.assert_not_called()
+
+    def test_unchanged_conversation_list_does_not_requeue_old_history_every_sweep(self):
+        with flow.database(self.root) as db:
+            receipts.schema(db)
+            self.c.cli_json.return_value = {'ok': True, 'data': {'result': [{'uid': 1, 'last_time': 100}]}}
+            receipts.discover(self.c, db)
+            self.inspect(db, [self.message(100, attachment=False)])
+            db.execute("UPDATE chat_resume_conversations SET last_read=1 WHERE friend='1'")
+            self.c.cli_json.return_value = {'ok': True, 'data': {'result': [{'uid': 1, 'last_time': 100}]}}
+            receipts.discover(self.c, db)
+            self.assertEqual(self.conversation(db)['dirty'], 0)
     def test_new_signal_during_paginated_fresh_pass_rechecks_latest_after_completion(self):
         with flow.database(self.root) as db:
             self.seed(db)

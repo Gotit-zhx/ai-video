@@ -52,6 +52,7 @@ jobs:
       - run: npm test
       - run: python -m unittest discover -s runtime -p test_passive_runtime.py
       - run: python -m unittest discover -s runtime -p test_boss_chat_receipts.py
+      - run: python -m unittest discover -s runtime -p test_recommendation_budget.py
       - run: python -m unittest discover -s runtime -p test_active_sourcing.py
       - run: python -m unittest discover -s runtime -p test_account_history.py
       - run: python -m unittest discover -s runtime -p test_local_session.py

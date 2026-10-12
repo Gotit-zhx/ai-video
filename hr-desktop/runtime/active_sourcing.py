@@ -4,6 +4,7 @@ import re
 import time
 import datetime
 
+DAILY_GREETING_LIMIT = 150
 CHINA_TIME = datetime.timezone(datetime.timedelta(hours=8))
 
 
@@ -28,7 +29,7 @@ def daily_usage(db, now):
             stamp = datetime.datetime.fromtimestamp(approved, CHINA_TIME).date().isoformat()
             db.execute('INSERT OR IGNORE INTO active_greeting_attempts VALUES(?,?,?)',(row['id'],stamp,approved))
             if stamp == day.date().isoformat(): used += 1
-    return {'used':used,'limit':None,'remaining':None,
+    return {'used':used,'limit':DAILY_GREETING_LIMIT,'remaining':max(0,DAILY_GREETING_LIMIT-used),
             'day':day.date().isoformat(),'resetAt':int(reset.timestamp())}
 
 
@@ -41,6 +42,8 @@ def readiness(c, db, command=None):
                                    'reasonCode': code, 'dailyGreeting': usage}}
     if c.held_code():
         return waiting('RISK_PAUSED')
+    if usage['remaining'] == 0:
+        return waiting('DAILY_GREETING_LIMIT', usage['resetAt']-now)
     if command:
         if now-command.get('readAt', 0)>1800:
             return waiting('CARD_EXPIRED')

@@ -11,24 +11,28 @@ import uuid
 
 REQUEST_TEXT = '方便发一份简历过来吗？'
 
-def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False):
+def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False, receiving=False, history=False):
     """Allocate existing capacity; the shared HTTP/CDP hard guard still applies."""
-    if hard_limit <= 0:
-        return 0
     if not Path(path).exists():
         return 0
     now = time.time()
     with contextlib.closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as db:
         times = [r[0] for r in db.execute('SELECT at FROM requests WHERE at>? ORDER BY at', (now-3600,))]
-    # Passive list/receipt refreshes use the smaller pool. Already-triggered
-    # conversations may use remaining capacity while retaining 20 for HR.
-    limit = hard_limit if user_initiated else max(0, min(hard_limit-20, hard_limit if queued else 82))
+    # All lanes share the unchanged hard quota. Historical scans cannot spend
+    # the final receipt allowance; real incoming attachments may use it while
+    # retaining ten slots for explicit HR actions.
+    limit = (hard_limit if user_initiated else max(0, hard_limit-10) if receiving
+             else max(0, min(hard_limit-20, hard_limit if queued and not history else 82)))
     needed = len(times) + cost - limit
+    # Persisted request times pace background work across restarts. Manual
+    # actions and actual incoming attachments retain the existing SDK spacing.
+    spacing = 0 if user_initiated or receiving else 120 if history or not queued else 60
+    cooldown = max(0, times[-1]+spacing-now) if times else 0
     if needed <= 0:
-        return 0
+        return cooldown
     if needed > len(times):
         return 3600
-    return max(30, times[needed-1]+3601-now)
+    return max(cooldown, 30, times[needed-1]+3601-now)
 
 
 @contextlib.contextmanager
@@ -433,7 +437,7 @@ def catchup_step(c, db, rules, delay_for):
                 db.execute("UPDATE catchup SET done=1 WHERE kind='receipt' AND target=?", (friend,))
                 continue
             interval = max(0, last[0]+30-now) if last and receipt['state'] != 'received' else 0
-            delay = max(interval, delay_for(cost=4, queued=True))
+            delay = max(interval, delay_for(cost=4, queued=True, receiving=True))
             if delay:
                 db.execute("UPDATE catchup SET retry_at=? WHERE kind='receipt' AND target=?", (now+delay, friend))
                 continue
@@ -447,7 +451,7 @@ def catchup_step(c, db, rules, delay_for):
             if not rule:
                 db.execute("UPDATE catchup SET done=1 WHERE kind='job' AND target=?", (task['target'],))
                 continue
-            delay = delay_for(cost=2, queued=True)
+            delay = delay_for(cost=2, queued=True, history=True)
             if delay:
                 db.execute("UPDATE catchup SET retry_at=? WHERE kind='job' AND target=?", (now+delay, rule['id']))
                 continue
@@ -516,7 +520,7 @@ def activity_step(c, db, rules, delay_for):
             with c.resume_db() as tracked:
                 last = tracked.execute('SELECT last_polled_at FROM resume_poll_state WHERE friend_id=?', (friend,)).fetchone()
             interval = max(0, last[0]+30-now) if last and saved['state'] != 'received' else 0
-            delay = max(interval, delay_for(cost=4, queued=True))
+            delay = max(interval, delay_for(cost=4, queued=True, receiving=True))
             if delay:
                 db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+delay, friend))
                 continue
@@ -641,7 +645,8 @@ def step(c, db, request):
         if due:
             delays = []
             for _, operation in sorted(due):
-                delay = delay_for(cost=2 if operation == 'discover' else 4, queued=not pending)
+                delay = delay_for(cost=2 if operation == 'discover' else 4, queued=not pending,
+                                  receiving=operation == 'receive')
                 if not delay:
                     put_state(db, 'lastLane', 'maintenance')
                     return discover(c, db, rules) if operation == 'discover' else receive(c, db)
@@ -863,6 +868,10 @@ def execute(c, root, request):
         remember_activity(db, request.get('activityHints', []))
         if request.get('collectAllResumes') is True:
             import boss_chat_receipts
+            boss_chat_receipts.schema(db)
+            for hint in request.get('activityHints', [])[:200]:
+                if isinstance(hint, dict):
+                    boss_chat_receipts.wake(db, hint.get('friend'))
             # The receive-only lane also runs with no rules or with closed jobs.
             # Alternate with the original flow; human commands dispatch earlier.
             turn = get_state(db, 'chat-resumes-turn', 'collect')
@@ -879,6 +888,15 @@ def execute(c, root, request):
             priority = priority or any(
                 hint['job'] == rule['jobId'] and open_jobs.get(rule['jobId']) == '开放中'
                 for hint in incoming for rule in configured.values())
+            # A known attachment precedes automated replies. Open-job message
+            # reads already adopt attachments in the original conversation lane;
+            # other messages use the receive-only lane, including closed jobs.
+            if boss_chat_receipts.urgent(db, attachments_only=priority):
+                collected = boss_chat_receipts.step(c, db, request)
+                if collected is not None:
+                    if collected.get('ok') is not True:
+                        return collected
+                    return activity_status(db, status(db, 'collecting_resumes'))
             put_state(db, 'chat-resumes-turn', 'collect' if priority else 'flow' if turn == 'collect' else 'collect')
             if turn == 'collect' and not priority:
                 collected = boss_chat_receipts.step(c, db, request)

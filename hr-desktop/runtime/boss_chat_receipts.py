@@ -24,6 +24,8 @@ def schema(db):
         retry_at REAL NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '',
         PRIMARY KEY(friend,mid));
     ''')
+    if 'signaled' not in {r[1] for r in db.execute('PRAGMA table_info(chat_resume_conversations)')}:
+        db.execute('ALTER TABLE chat_resume_conversations ADD COLUMN signaled INTEGER NOT NULL DEFAULT 0')
 
 
 def valid_id(value):
@@ -33,8 +35,8 @@ def valid_id(value):
 
 def wake(db, friend):
     if valid_id(friend):
-        db.execute("INSERT INTO chat_resume_conversations(friend,activity_at) VALUES(?,?) "
-                   "ON CONFLICT(friend) DO UPDATE SET dirty=1,retry_at=0,activity_at=excluded.activity_at,"
+        db.execute("INSERT INTO chat_resume_conversations(friend,activity_at,signaled) VALUES(?,?,1) "
+                   "ON CONFLICT(friend) DO UPDATE SET dirty=1,signaled=1,retry_at=0,activity_at=excluded.activity_at,"
                    "dirty_again=CASE WHEN fresh_before>0 THEN 1 ELSE dirty_again END", (friend, time.time()))
 
 
@@ -63,8 +65,8 @@ def discover(c, db):
         db.execute('''INSERT INTO chat_resume_conversations(friend,body,activity_at) VALUES(?,?,?)
           ON CONFLICT(friend) DO UPDATE SET body=excluded.body,
           activity_at=MAX(activity_at,excluded.activity_at),
-          dirty=CASE WHEN ? OR last_read<? THEN 1 ELSE dirty END''',
-                   (friend, json.dumps(body), flow.activity(item), changed, time.time()-300))
+          dirty=CASE WHEN ? THEN 1 ELSE dirty END''',
+                   (friend, json.dumps(body), flow.activity(item), changed))
     fingerprint = hashlib.sha256(json.dumps(ids).encode()).hexdigest()
     complete = not entries or flow.discovery_complete(result)
     if not complete and fingerprint == flow.get_state(db, 'chat-resumes-page-fingerprint', ''):
@@ -122,7 +124,10 @@ def inspect(c, db, conversation):
     if result.get('ok') is not True:
         db.execute('UPDATE chat_resume_conversations SET retry_at=? WHERE friend=?', (time.time()+300, friend))
         return result
-    detail_result = c.sourcing_friend_details([friend])
+    # Ordinary text messages require only the history read. Resolve the exact
+    # official job binding only when an incoming attachment actually exists.
+    attachments = list(attachment_metadata(c, result, friend, {}))
+    detail_result = c.sourcing_friend_details([friend]) if attachments else {'ok': True, 'data': {}}
     if c.held_code():
         return detail_result
     bindings = (detail_result.get('data') or {}).get('friendList', []) if detail_result.get('ok') is True else []
@@ -151,14 +156,14 @@ def inspect(c, db, conversation):
             # First page starts a separate historical cursor, so new messages
             # can be inspected while old attachments continue to backfill.
             db.execute('''UPDATE chat_resume_conversations SET latest_mid=?,dirty=0,
-              history_before=?,history_done=?,last_read=?,retry_at=0 WHERE friend=?''',
+              history_before=?,history_done=?,last_read=?,retry_at=0,signaled=0 WHERE friend=?''',
                        (top, low-1 if more else 0, not more, time.time(), friend))
         elif more and low > conversation['latest_mid']:
             db.execute('UPDATE chat_resume_conversations SET fresh_before=?,fresh_top=?,dirty=0,last_read=? WHERE friend=?',
                        (low-1, top, time.time(), friend))
         else:
             db.execute('''UPDATE chat_resume_conversations SET latest_mid=?,fresh_before=0,
-              fresh_top=0,dirty=dirty_again,dirty_again=0,last_read=?,retry_at=0 WHERE friend=?''', (top, time.time(), friend))
+              fresh_top=0,dirty=dirty_again,signaled=dirty_again,dirty_again=0,last_read=?,retry_at=0 WHERE friend=?''', (top, time.time(), friend))
     else:
         db.execute('UPDATE chat_resume_conversations SET history_before=?,history_done=?,last_read=?,retry_at=0 WHERE friend=?',
                    (low-1 if more else 0, not more, time.time(), friend))
@@ -204,14 +209,17 @@ def step(c, db, request):
     lane = flow.get_state(db, 'chat-resumes-lane', 'history')
     conversation = db.execute('''SELECT * FROM chat_resume_conversations WHERE retry_at<=?
       AND (dirty=1 OR fresh_before>0 OR history_done=0)
-      ORDER BY CASE WHEN ?='history' AND dirty=0 AND fresh_before=0 THEN 0
+      ORDER BY signaled DESC,CASE WHEN ?='history' AND dirty=0 AND fresh_before=0 THEN 0
         WHEN ?!='history' AND (dirty=1 OR fresh_before>0) THEN 0 ELSE 1 END,
         CASE WHEN ?!='history' THEN -activity_at ELSE 0 END,last_read,friend LIMIT 1''',
                               (now, lane, lane, lane)).fetchone()
-    if due <= now and flow.get_state(db, 'chat-resumes-last', '') != 'discover':
-        operation, cost = 'discover', 2
-    elif receipt and lane == 'download':
+    urgent = bool(receipt or (conversation and conversation['signaled']))
+    if receipt:
         operation, cost = 'download', 8
+    elif conversation and conversation['signaled']:
+        operation, cost = 'inspect', 2
+    elif due <= now and flow.get_state(db, 'chat-resumes-last', '') != 'discover':
+        operation, cost = 'discover', 2
     elif conversation:
         operation, cost = 'inspect', 2
     elif receipt:
@@ -220,13 +228,23 @@ def step(c, db, request):
         operation, cost = 'discover', 2
     # Historical receipt reads must leave capacity for admitted replies and
     # resume requests, as well as the existing manual-operation reserve.
-    if operation is None or delay_for(cost=cost, queued=False):
+    if operation is None or delay_for(cost=cost, queued=False, receiving=urgent, history=not urgent):
         return None
     db.commit()
     result = discover(c, db) if operation == 'discover' else download(c, db, receipt) if operation == 'download' else inspect(c, db, conversation)
     flow.put_state(db, 'chat-resumes-last', operation)
     flow.put_state(db, 'chat-resumes-lane', {'history': 'fresh', 'fresh': 'download', 'download': 'history'}[lane])
     return result
+
+
+def urgent(db, *, attachments_only=False):
+    """Local-only scheduling; closed jobs and absent passive rules are allowed."""
+    schema(db)
+    now = time.time()
+    return bool(db.execute("SELECT 1 FROM chat_resume_receipts WHERE state='found' AND retry_at<=? LIMIT 1",
+                           (now,)).fetchone() or not attachments_only and db.execute(
+        "SELECT 1 FROM chat_resume_conversations WHERE signaled=1 AND retry_at<=? "
+        "AND (dirty=1 OR fresh_before>0) LIMIT 1", (now,)).fetchone())
 
 
 def exports(db):

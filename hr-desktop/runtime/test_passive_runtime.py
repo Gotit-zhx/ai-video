@@ -734,8 +734,16 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(flow.budget_delay(path,120,cost=2),3116)
         with contextlib.closing(sqlite3.connect(path)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],96)
-        for options in ({}, {'queued':True}, {'queued':True,'user_initiated':True}):
-            self.assertEqual(flow.budget_delay(path,0,cost=10000,**options),0)
+
+    def test_background_is_paced_but_incoming_receipts_and_manual_commands_keep_their_reserve(self):
+        path=self.root/'budget.sqlite3'
+        with contextlib.closing(sqlite3.connect(path)) as db, db:
+            db.execute('CREATE TABLE requests(at REAL)')
+            db.executemany('INSERT INTO requests VALUES(?)',[(999,)]*90)
+        self.assertEqual(flow.budget_delay(path,120,cost=3,queued=True),59)
+        self.assertGreater(flow.budget_delay(path,120,cost=2,history=True),3000)
+        self.assertEqual(flow.budget_delay(path,120,cost=8,receiving=True),0)
+        self.assertEqual(flow.budget_delay(path,120,cost=10,user_initiated=True),0)
 
     def test_chat_page_required_is_visible_without_marking_a_send_attempt(self):
         self.pending('reply_ready')

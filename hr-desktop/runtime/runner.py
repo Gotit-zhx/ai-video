@@ -190,6 +190,14 @@ def main(request):
         return c.sanitize(read_managed_jobs())
     if operation == "job-statuses":
         return {"ok": True, "data": c.managed_job_statuses()}
+    if operation == "recommendations":
+        # Continuous AI pagination shares the historical pool; it cannot spend
+        # capacity reserved for incoming resumes or explicit communication.
+        delay = c.passive_delay(cost=2, history=True)
+        if delay:
+            return {"ok": False, "error": {"code": "REQUEST_BUDGET_WAIT",
+                    "retryAt": int(time.time()+delay),
+                    "message": "正在等待下一批读取，已找到的人选和页码保留"}}
     if request.get("jobId") and operation in ("jobs", "recommendations", "applications", "chats", "candidates"):
         availability = c.managed_job_statuses()
         if c.held_code():
