@@ -80,6 +80,31 @@ public class ModelConfigService {
         return imageConnection(tenantContext.organizationId());
     }
 
+    public Optional<RuntimeModelConnection> watermarkImageConnection(String organizationId) {
+        return watermarkConnection(organizationId, "IMAGE", "grok-imagine-image-");
+    }
+
+    public Optional<RuntimeModelConnection> watermarkDriverConnection(String organizationId) {
+        return watermarkConnection(organizationId, "DRIVER", "grok-");
+    }
+
+    private Optional<RuntimeModelConnection> watermarkConnection(String org, String type, String prefix) {
+        if (org == null || org.isBlank()) return Optional.empty();
+        return mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
+                        .eq(ModelConfig::getOrganizationId, org).eq(ModelConfig::getModelType, type)
+                        .eq(ModelConfig::getStatus, "ACTIVE").likeRight(ModelConfig::getModelId, prefix)
+                        .orderByDesc(ModelConfig::isDefaultModel).orderByDesc(ModelConfig::getUpdatedAt)
+                        .orderByAsc(ModelConfig::getId))
+                .stream().filter(candidate -> candidate != null && org.equals(candidate.getOrganizationId())
+                        && type.equals(candidate.getModelType()) && "ACTIVE".equals(candidate.getStatus())
+                        && candidate.getModelId() != null && candidate.getModelId().startsWith(prefix)
+                        && "OPENAI_COMPATIBLE".equals(candidate.getApiFormat()))
+                .flatMap(candidate -> {
+                    try { return java.util.stream.Stream.of(runtimeConnection(candidate)); }
+                    catch (IllegalStateException unusableKey) { return java.util.stream.Stream.empty(); }
+                }).filter(connection -> connection.apiKey() != null && !connection.apiKey().isBlank()).findFirst();
+    }
+
     public Optional<RuntimeModelConnection> imageConnection(String organizationId) {
         return modelConnection(organizationId, "IMAGE").map(primary -> {
             if (COPYRIGHT_FALLBACK_MODEL_ID.equals(primary.modelId())) return primary;

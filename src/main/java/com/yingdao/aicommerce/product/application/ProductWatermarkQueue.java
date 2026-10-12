@@ -12,6 +12,7 @@ import java.util.*;
 @Service
 public class ProductWatermarkQueue {
  public static final int MAX_CONCURRENT = 500;
+ public static final int MAX_RETRIES = 6;
  private final JdbcTemplate db;
  private final ObjectMapper json;
  public record Work(String id,String organizationId,String captureId,String imageId,String jobId,String token) {}
@@ -61,16 +62,20 @@ public class ProductWatermarkQueue {
  }
  @Transactional
  public void deferDownload(Work work,String message){
+  deferFailure(work,"结果图片下载失败；保留已有生成结果："+message);
+ }
+ @Transactional
+ public void deferFailure(Work work,String message){
   db.queryForObject("SELECT id FROM product_image_processing_jobs WHERE id=? AND organization_id=? FOR UPDATE",String.class,work.jobId(),work.organizationId());
-  var rows=db.queryForList("SELECT throttle_count,error_message FROM product_watermark_queue WHERE id=? AND worker_token=? AND status='RUNNING' FOR UPDATE",work.id(),work.token());
+  var rows=db.queryForList("SELECT retry_count FROM product_watermark_queue WHERE id=? AND worker_token=? AND status='RUNNING' FOR UPDATE",work.id(),work.token());
   if(rows.isEmpty())return;
   var row=rows.getFirst();
-  int retries=Objects.toString(row.get("error_message"),"").startsWith("结果图片下载自动重试")
-    && row.get("throttle_count") instanceof Number n?n.intValue():0;
-  if(retries>=6){finish(work,null,null,message+"；自动下载已重试6次，原生图结果仍保留");return;}
-  String progress="结果图片下载自动重试 "+(retries+1)+"/6；仅下载已有结果："+message;
+  int retries=row.get("retry_count") instanceof Number n?n.intValue():0;
+  if(retries>=MAX_RETRIES){finish(work,null,null,"已自动重试6次仍失败："+message);return;}
+  String progress="自动重试 "+(retries+1)+"/"+MAX_RETRIES+"："+message;
+  progress=progress.substring(0,Math.min(1000,progress.length()));
   int delay=downloadRetryDelay(retries);
-  if(db.update("UPDATE product_watermark_queue SET status='QUEUED',worker_token=NULL,lease_until=NULL,error_message=?,throttle_count=?,next_attempt_at=TIMESTAMPADD(SECOND,?,NOW(6)),updated_at=NOW(6) WHERE id=? AND worker_token=? AND status='RUNNING'",progress,retries+1,delay,work.id(),work.token())==1)
+  if(db.update("UPDATE product_watermark_queue SET status='QUEUED',worker_token=NULL,lease_until=NULL,error_message=?,retry_count=?,next_attempt_at=TIMESTAMPADD(SECOND,?,NOW(6)),updated_at=NOW(6) WHERE id=? AND worker_token=? AND status='RUNNING'",progress,retries+1,delay,work.id(),work.token())==1)
    db.update("UPDATE product_capture_images SET status='PENDING',error_message=?,updated_at=NOW(6) WHERE id=? AND organization_id=?",progress,work.imageId(),work.organizationId());
  }
  static int downloadRetryDelay(int retries){return new int[]{10,30,60,120,300,300}[Math.max(0,Math.min(5,retries))];}
@@ -102,7 +107,7 @@ public class ProductWatermarkQueue {
  public void finishExpired(Work work){
   db.queryForObject("SELECT id FROM product_image_processing_jobs WHERE id=? AND organization_id=? FOR UPDATE",String.class,work.jobId(),work.organizationId());
   var expired=db.queryForList("SELECT id FROM product_watermark_queue WHERE id=? AND worker_token=? AND status='RUNNING' AND lease_until<NOW(6) FOR UPDATE",work.id(),work.token());
-  if(!expired.isEmpty())finish(work,null,null,"服务中断或处理超时，模型结果未确认；未自动重复提交，请核查后重试");
+  if(!expired.isEmpty())deferFailure(work,"服务中断或处理超时，自动核对已保存结果后继续");
  }
  public List<Work> expired(){
   return db.query("SELECT id,organization_id,capture_id,image_id,job_id,worker_token FROM product_watermark_queue WHERE status='RUNNING' AND lease_until<NOW(6)",(rs,n)->new Work(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6)));

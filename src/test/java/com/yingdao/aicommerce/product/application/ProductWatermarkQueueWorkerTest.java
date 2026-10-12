@@ -17,7 +17,7 @@ class ProductWatermarkQueueWorkerTest {
     @Test void provenUnsentImageRequestUsesExistingDeferredQueue() throws Exception {
         run(new WatermarkRateLimitException("request was not sent"), true);
     }
-    @Test void ambiguousResponseFailureIsNotPutBackIntoAutomaticQueue() throws Exception {
+    @Test void ambiguousResponseFailureIsQueuedForDurableOperationReconciliation() throws Exception {
         run(new ResourceAccessException("read timed out", new SocketTimeoutException()), false);
     }
     private void run(Exception failure, boolean deferred) throws Exception {
@@ -37,7 +37,8 @@ class ProductWatermarkQueueWorkerTest {
                 verify(queue, never()).finish(any(), any(), any(), any());
             } else {
                 verify(queue, never()).defer(any(), anyString());
-                verify(queue).finish(eq(work), isNull(), isNull(), eq(failure.getMessage()));
+                verify(queue).deferFailure(work, failure.getMessage());
+                verify(queue, never()).finish(any(), any(), any(), any());
             }
             verify(provider).process(capture, image);
         } finally { worker.close(); }

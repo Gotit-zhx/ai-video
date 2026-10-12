@@ -35,12 +35,18 @@ class AiWatermarkLocalScreenTest {
  @Test void savedDoubleAbsentCannotBypassComplexBackgroundRestriction()throws Exception{run("SAVED_COMPLEX_BACKGROUND");}
  @Test void savedDoubleAbsentWithoutBackgroundEvidenceStillGenerates()throws Exception{run("SAVED_MISSING_BACKGROUND");}
  @Test void unsentPoolLeaseTimeoutReturnsToDetectedAndCanBeSafelyQueuedAgain()throws Exception{run("LEASE_TIMEOUT");}
- @Test void ambiguousResponseTimeoutIsHeldAndNeverAutomaticallyResubmitted()throws Exception{run("RESPONSE_TIMEOUT");}
+ @Test void ambiguousResponseTimeoutPreservesIntentForQueuedRecovery()throws Exception{run("RESPONSE_TIMEOUT");}
  @Test void uncertainDetectionStillGenerates()throws Exception{run("UNCERTAIN");}
  @Test void failedDetectionStillGenerates()throws Exception{run("DETECTION_FAILED");}
  @Test void receivedArtifactDoesNotRepeatGeneration()throws Exception{run("CACHED");}
  @Test void generationFailureIsNotSuccess()throws Exception{run("REJECTED");}
  @Test void failedResultDownloadPreservesGenerationAndRetryOnlyDownloads()throws Exception{run("RESULT_DOWNLOAD_RETRY");}
+ @Test void completedOperationRecoversSavedResultWithoutGeneratingAgain()throws Exception{run("RECOVERY_COMPLETED");}
+ @Test void activeOperationWaitsWithoutSubmittingAgain()throws Exception{run("RECOVERY_ACTIVE");}
+ @Test void failedOperationUsesNewDurableAttemptWithoutRepeatingDetection()throws Exception{run("RECOVERY_FAILED");}
+ @Test void recoverableOperationReattachesTheOriginalAttempt()throws Exception{run("RECOVERY_REATTACH");}
+ @Test void failedOperationLookupNeverStartsAnotherGeneration()throws Exception{run("RECOVERY_LOOKUP_FAILED");}
+ @Test void exhaustedGenerationRetriesStopWithTheActualError()throws Exception{run("RECOVERY_EXHAUSTED");}
  private void run(String decision)throws Exception{
   var json=new ObjectMapper();var requests=new ArrayList<String>();var requestBodies=new ArrayList<Map>();
   var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
@@ -70,14 +76,27 @@ class AiWatermarkLocalScreenTest {
    when(archive.read("org","source")).thenReturn(new CommerceDesignImageGateway.Reference("image/png",data));
    when(archive.store(eq("org"),any())).thenReturn(new CommerceImageArchive.Archived("source",hash,"image/png",bytes.length));
    var model=new ModelConfigService.RuntimeModelConnection("model","http://127.0.0.1:1","test-model","OPENAI_COMPATIBLE","CUSTOM","unit-only");
-   when(models.driverConnection("org")).thenReturn(Optional.of(model));when(models.imageConnection("org")).thenReturn(Optional.of(model));
+   when(models.watermarkDriverConnection("org")).thenReturn(Optional.of(model));when(models.watermarkImageConnection("org")).thenReturn(Optional.of(model));
    when(generator.generateArtwork(anyString(),anyString(),any(),anyList())).thenReturn(new CommerceDesignImageGateway.Response(new CommerceDesignImageGateway.Artifact(data,"image/png","test","edit",""),null));
    var row=new HashMap<String,Object>();row.put("status","PREPARED");row.put("source_sha256",hash);
+   if(decision.startsWith("RECOVERY_")){
+    row.put("status","REVIEW_REQUIRED");row.put("detection_json","{\"decision\":\"UNCERTAIN\"}");
+    row.put("generation_retry_count","RECOVERY_EXHAUSTED".equals(decision)?6:0);row.put("message","unit rejected");
+    if("RECOVERY_LOOKUP_FAILED".equals(decision))when(generator.operation(anyString())).thenThrow(new IllegalStateException("unit lookup failed"));
+    else when(generator.operation(anyString())).thenReturn(new CommerceDesignImageGateway.Operation(
+      "RECOVERY_COMPLETED".equals(decision)?"COMPLETED":"RECOVERY_REATTACH".equals(decision)?"RECOVERABLE":
+       "RECOVERY_ACTIVE".equals(decision)?"RUNNING":"FAILED","RECOVERY_ACTIVE".equals(decision),0,
+      "RECOVERY_COMPLETED".equals(decision)?new CommerceDesignImageGateway.Response(new CommerceDesignImageGateway.Artifact(data,"image/png","grok","edit",""),null):null,null));
+    when(ledger.retryGeneration(anyString(),eq("org"),anyString(),anyInt())).thenAnswer(c->{
+     row.put("generation_retry_count",(Integer)c.getArgument(3)+1);row.put("status","DETECTED");return true;});
+    doAnswer(c->{row.put("status","RESULT_RECEIVED");row.put("generation_json",c.getArgument(3));return null;})
+     .when(ledger).recoverReceived(anyString(),eq("org"),anyString(),anyString());
+   }
    if("LEASE_TIMEOUT".equals(decision)){
     when(image.getOriginalUrl()).thenReturn("https://source.invalid/original.png");
     when(db.queryForList(anyString(),eq("org"),eq("capture"),eq("image"))).thenAnswer(c->{
      String sql=c.getArgument(0);
-     return sql.contains("status='DETECTED'")&&"DETECTED".equals(row.get("status"))?List.of(Map.of("storage_key","source")):List.of();
+     return sql.contains("FROM product_watermark_checks")&&"DETECTED".equals(row.get("status"))?List.of(Map.of("storage_key","source")):List.of();
     });
     when(downloader.download("https://source.invalid/original.png"))
      .thenReturn(new MarketplaceImageDownloader.ImageBinary(bytes,"image/png",".png"))
@@ -114,10 +133,24 @@ class AiWatermarkLocalScreenTest {
    doAnswer(c->{row.put("status","READY");return null;}).when(ledger).ready(anyString(),eq("org"),anyString(),anyString(),anyString());
    doAnswer(c->{row.put("status","REVIEW_REQUIRED");return null;}).when(ledger).hold(anyString(),eq("org"),anyString(),anyString());
    var provider=new AiWatermarkRemovalProvider(ledger,archive,downloader,generator,models,db,json,local,"http://127.0.0.1:"+server.getAddress().getPort(),"unit-only","test-model");
+   if(decision.startsWith("RECOVERY_")){
+    if(List.of("RECOVERY_ACTIVE","RECOVERY_LOOKUP_FAILED").contains(decision))
+     assertThrows(WatermarkRateLimitException.class,()->provider.process(capture,image));
+    else if("RECOVERY_EXHAUSTED".equals(decision))
+     assertTrue(assertThrows(IllegalStateException.class,()->provider.process(capture,image)).getMessage().contains("unit rejected"));
+    else assertTrue(provider.process(capture,image).url().startsWith(ProductWatermarkAssets.PREFIX));
+    assertTrue(requests.isEmpty());verifyNoInteractions(downloader,local);
+    String checkId=CommerceImageArchive.sha(("org:capture:image:"+hash+":test-model:WATERMARK_V12_DETECT_FALLBACK_EDIT").getBytes(StandardCharsets.UTF_8));
+    if(List.of("RECOVERY_FAILED","RECOVERY_REATTACH").contains(decision))
+     verify(generator).generateArtwork(anyString(),eq(checkId+("RECOVERY_FAILED".equals(decision)?"_retry_1":"")),eq(model),anyList());
+    else verify(generator,never()).generateArtwork(anyString(),anyString(),any(),anyList());
+    if(!"RECOVERY_FAILED".equals(decision))verify(ledger,never()).retryGeneration(anyString(),anyString(),anyString(),anyInt());
+    return;
+   }
    if("RESULT_DOWNLOAD_RETRY".equals(decision)){
     String saved=(String)row.get("generation_json");
     when(downloader.download("https://result.invalid/image.png")).thenThrow(new IllegalStateException("图片域名解析失败"));
-    var failure=assertThrows(IllegalStateException.class,()->provider.process(capture,image));
+    var failure=assertThrows(GeneratedImageDownloadPendingException.class,()->provider.process(capture,image));
     assertTrue(failure.getMessage().contains("生图已成功，下载结果图片失败"));
     assertEquals("RESULT_RECEIVED",row.get("status"));assertEquals(saved,row.get("generation_json"));
     verify(ledger,never()).hold(anyString(),anyString(),anyString(),anyString());
@@ -132,7 +165,7 @@ class AiWatermarkLocalScreenTest {
    if("RESPONSE_TIMEOUT".equals(decision)){
     assertThrows(org.springframework.web.client.ResourceAccessException.class,()->provider.process(capture,image));
     assertEquals("REVIEW_REQUIRED",row.get("status"));
-    assertThrows(IllegalStateException.class,()->provider.process(capture,image));
+    assertThrows(WatermarkRateLimitException.class,()->provider.process(capture,image));
    }
    else if("REJECTED".equals(decision))assertThrows(IllegalStateException.class,()->provider.process(capture,image));
    else assertTrue(provider.process(capture,image).url().startsWith(ProductWatermarkAssets.PREFIX));

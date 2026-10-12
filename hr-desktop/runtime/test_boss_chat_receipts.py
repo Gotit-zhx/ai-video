@@ -1,3 +1,4 @@
+import contextlib
 import json
 from pathlib import Path
 import tempfile
@@ -129,7 +130,7 @@ class ReceiptTest(unittest.TestCase):
 
     def test_history_leaves_capacity_for_admitted_replies_and_manual_operations(self):
         budget = self.root / 'budget.sqlite3'
-        with sqlite3.connect(budget) as db:
+        with contextlib.closing(sqlite3.connect(budget)) as db, db:
             db.execute('CREATE TABLE requests(at REAL NOT NULL)')
             db.executemany('INSERT INTO requests VALUES(?)', [(time.time(),)]*90)
         self.c.passive_delay = lambda **options: flow.budget_delay(budget, 120, **options)

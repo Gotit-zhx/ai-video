@@ -454,8 +454,10 @@ class SourcingTest(unittest.TestCase):
         self.assertEqual(len(result['candidates']), 1)
         self.assertTrue(result['partial'])
         self.assertIn('标识不完整', result['error'])
-        request={**self.params(),'count':5,'requestId':token,'batchIndex':2,'page':2,
-                 'candidates':[self.card('new2')]}
+        with pool.database() as db:
+            before_read=db.execute("SELECT read_at FROM hr_sourcing_candidates WHERE geek='new2'").fetchone()[0]
+        request={**self.params(),'count':5,'requestId':str(uuid.uuid4()),'batchIndex':2,'page':2,
+                 'resumeRunId':result['id'],'resumeStoredBatch':True,'candidates':[]}
         with mock.patch.object(s.threading,'Thread') as worker:
             unchanged=s.search(USER,request,'fixture')
             worker.assert_not_called()
@@ -475,6 +477,9 @@ class SourcingTest(unittest.TestCase):
         self.assertEqual(len(final['candidates']),2)
         self.assertEqual(final['examined'],2,'A failed batch is counted only after a successful analysis')
         self.assertFalse(final['partial']);self.assertFalse(final['stopped'])
+        with pool.database() as db:
+            self.assertEqual(before_read,db.execute("SELECT read_at FROM hr_sourcing_candidates WHERE geek='new2'").fetchone()[0],
+                             'Read-only recovery must not make an expired BOSS greeting card fresh')
 
     def test_greeting_requires_confirmation_capable_desktop_and_exact_account(self):
         cid = self.searched()

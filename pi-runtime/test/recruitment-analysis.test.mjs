@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { analyzeRecruitment, recruitmentModel, parseRecruitmentResult } from "../src/recruitment-analysis.js";
+import { analyzeRecruitment as analyze, recruitmentModel, parseRecruitmentResult } from "../src/recruitment-analysis.js";
+const analyzeRecruitment = (body, emit, options = {}) => analyze(body, emit, { retryDelaysMs: [0, 0, 0], ...options });
 
 async function fixture(fn) {
   const server = http.createServer(fn);
@@ -44,7 +45,7 @@ for (const id of ["gpt-5.5", "grok-4.6", "deepseek-chat"]) {
   });
 }
 
-test("actual SDK provider 502 is redacted and never retried or switched", async () => {
+test("actual SDK provider 502 is redacted and automatically retried on the selected model", async () => {
   let calls = 0;
   const f = await fixture((req, res) => {
     calls++; req.resume(); res.writeHead(502, { "Content-Type": "application/json" });
@@ -53,7 +54,7 @@ test("actual SDK provider 502 is redacted and never retried or switched", async 
   try {
     const events = [];
     await analyzeRecruitment(body("gpt-5.5", f.url + "/v1"), e => events.push(e));
-    assert.equal(calls, 1);
+    assert.equal(calls, 4);
     assert.equal(events.at(-1).event, "error");
     assert.equal(events.at(-1).data.code, "HR_AI_UPSTREAM_HTTP");
     assert.equal(events.at(-1).data.upstreamStatus, 502);
@@ -82,11 +83,12 @@ test("only an explicit JSON parameter rejection is negotiated once on the same m
   } finally {await f.close();}
 });
 
-test("actual SDK truncation and broken stream cannot publish successful JSON", async () => {
+test("actual SDK truncation and clean EOF without a terminal signal cannot publish successful JSON", async () => {
   for (const finish of ["length", null]) {
     const f = await fixture((req, res) => {
       req.resume(); res.writeHead(200, { "Content-Type": "text/event-stream" });
-      res.end(chunk({ index: 0, delta: { content: '{"valid":"json"}' }, finish_reason: finish }) + "data: [DONE]\n\n");
+      res.end(chunk({ index: 0, delta: { content: '{"valid":"json"}' }, finish_reason: finish })
+        + (finish ? "data: [DONE]\n\n" : ""));
     });
     try {
       const events = [];
@@ -96,6 +98,89 @@ test("actual SDK truncation and broken stream cannot publish successful JSON", a
       assert.ok(!events.some(e => e.event === "result"));
     } finally { await f.close(); }
   }
+});
+
+test("actual SDK accepts a completed gateway response without finish_reason without replaying", async () => {
+  let calls = 0;
+  const f = await fixture((req, res) => {
+    calls++; req.resume(); res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(chunk({ index: 0, delta: { content: '{"candidates":[]}' }, finish_reason: null })
+      + "data: [DONE]\n\n");
+  });
+  try {
+    const events = [];
+    await analyzeRecruitment(body("gpt-5.5", f.url), e => events.push(e));
+    assert.equal(calls, 1);
+    assert.deepEqual(events.at(-1), { event: "result", data: { candidates: [] } });
+  } finally { await f.close(); }
+});
+
+test("missing finish with partial JSON, upstream errors or tools stays failed", async () => {
+  for (const content of [
+    chunk({ index: 0, delta: { content: '{"candidates":[' } }),
+    chunk({ index: 0, delta: { content: '{"candidates":[]}' } })
+      + 'event: error\ndata: {"error":{"status":429,"message":"fixture-secret private-body"}}\n\n',
+    chunk({ index: 0, delta: { content: '{"candidates":[]}', tool_calls: [
+      { index: 0, id: "test", type: "function", function: { name: "send", arguments: "{}" } },
+    ] } }),
+    "data: not-json\n\n",
+  ]) {
+    let calls = 0;
+    const f = await fixture((req, res) => {
+      calls++; req.resume(); res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.end(content + "data: [DONE]\n\n");
+    });
+    try {
+      const events = [];
+      await analyzeRecruitment(body("gpt-5.5", f.url), e => events.push(e));
+      assert.equal(calls, content.includes("tool_calls") ? 1 : 4);
+      assert.equal(events.at(-1).event, "error");
+      assert.ok(!events.some(e => e.event === "result"));
+      assert.ok(!JSON.stringify(events).includes("fixture-secret"));
+      if (content.includes('"status":429')) assert.equal(events.at(-1).data.upstreamStatus, 429);
+    } finally { await f.close(); }
+  }
+});
+
+test("buffered completion, SSE message and text-part deltas use the same SDK and response", async () => {
+  for (const format of ["buffered", "message", "parts"]) {
+    let calls = 0;
+    const f = await fixture((req, res) => {
+      calls++; req.resume();
+      if (format === "buffered") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ index: 0, message: { role: "assistant", content: '{"ok":true}' }, finish_reason: "stop" }] }));
+      } else {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.end(chunk({ index: 0, [format === "message" ? "message" : "delta"]: {
+          content: format === "parts" ? [{ type: "text", text: '{"ok":true}' }] : '{"ok":true}',
+        }, finish_reason: "stop" }) + "data: [DONE]\n\n");
+      }
+    });
+    try {
+      const events = [];
+      await analyzeRecruitment(body("grok-4.6", f.url), e => events.push(e));
+      assert.equal(calls, 1);
+      assert.deepEqual(events.at(-1), { event: "result", data: { ok: true } });
+    } finally { await f.close(); }
+  }
+});
+
+test("recruitment adapter does not modify unrelated concurrent fetches", async () => {
+  const f = await fixture((req, res) => {
+    req.resume(); res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' }, finish_reason: "stop" }] }));
+  });
+  try {
+    const events = [];
+    const [, response] = await Promise.all([
+      analyzeRecruitment(body("gpt-5.5", f.url), e => events.push(e)),
+      fetch(f.url),
+    ]);
+    assert.equal(response.headers.get("content-type"), "application/json");
+    assert.equal((await response.json()).choices[0].message.content, '{"ok":true}');
+    assert.equal(events.at(-1).event, "result");
+  } finally { await f.close(); }
 });
 
 test("fenced JSON is normalized but missing results and tool calls stay errors", async () => {

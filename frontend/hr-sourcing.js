@@ -40,10 +40,22 @@
     return null;
   }
   globalThis.HeyiHrSourcing={rows,matchingScore};
+  const recoverableAnalysis = error => /\[HR_AI_(?:INVALID_STREAM|CONNECTION|TIMEOUT|TRUNCATED|INVALID_JSON)\]/.test(error || '')
+    || /\[HR_AI_UPSTREAM_HTTP\]/.test(error || '') && /HTTP (?:408|429|5\d\d)/.test(error);
+  const unfinishedRun = run => run?.automaticRecovery&&run.state==='complete'&&!run.error
+    &&!run.stopped&&!run.recommendationsEnded&&(run.candidates?.length||0)<run.wanted;
   globalThis.createHrSourcing=({root,panel,element:el,button,allowed,navigate,hrApi})=>{
     let selected=null,record=null,active=false,generation=0,busy=false,timer=null,polling=false,pollErrors=0;
     let demands=[],demandLoading=false;
     let finding=false,searchError='',searchProgress='',searchSession=null,pausedSearch=false;
+    function selectionKey(){
+      const user=globalThis.currentUser;
+      return user&&(user.userId||user.id||user.username)
+        ?'heyi-sourcing-job:'+String(user.organizationId||user.organizationCode||'heyi')+':'+String(user.userId||user.id||user.username):null;
+    }
+    function saveSelection(){
+      try{const key=selectionKey();if(key&&selected)globalThis.localStorage?.setItem(key,JSON.stringify(selected));}catch{}
+    }
     let criteriaDraft=[],criteriaScope='',criteriaDirty=false;
     const painted=new WeakMap();
     const verifiedContacts=new Map();
@@ -371,7 +383,12 @@
         if(Date.now()-started>360000)throw Error('分析仍未完成，可刷新查看进度；本轮没有重新提交 AI');
         await new Promise(resolve=>setTimeout(resolve,1500));
         if(!valid(ticket))return null;
-        value=await request('sourcing?'+new URLSearchParams({...snapshot,runId:id}));
+        try{value=await request('sourcing?'+new URLSearchParams({...snapshot,runId:id}));}
+        catch(error){
+          if(!valid(ticket))return null;
+          searchProgress=searchStatus.textContent='连接恢复中，已匹配人选与当前批次均已保留…';
+          continue;
+        }
         if(!valid(ticket))return null;
         if(value?.run?.id!==id)throw Error('寻源结果已变化，请刷新核对；本轮已停止');
         record=value;render();
@@ -386,8 +403,15 @@
       pausedSearch=false;pauseButton.disabled=false;
       const desired=Number(count.value);
       if(!searchSession||searchSession.id!==record.id||searchSession.version!==record.version
-        ||searchSession.desired!==desired)searchSession={id:record.id,version:record.version,
-          desired,requestId:crypto.randomUUID(),candidates:[],seen:new Set(),page:0,batch:1,ended:false,qualified:0,examined:0};
+        ||searchSession.desired!==desired){
+        const previous=record.run,failed=recoverableAnalysis(previous?.error),restore=previous?.version===record.version
+          &&previous.wanted===desired&&(failed||unfinishedRun(previous));
+        searchSession={id:record.id,version:record.version,desired,
+          requestId:restore&&previous.requestToken||crypto.randomUUID(),candidates:[],seen:new Set(),
+          page:restore?previous.pagesRead||1:0,batch:restore?(previous.batches||1)+(failed?0:1):1,
+          ended:false,qualified:restore?previous.candidates?.length||0:0,examined:restore?previous.examined||0:0,
+          ...(restore?{resumeRunId:previous.id,resumeStored:failed,retryFailed:failed}:{})};
+      }
       const session=searchSession,{candidates,seen,requestId}=session;
       let {page,ended,qualified}=session;
       const wait=()=>new Promise(resolve=>setTimeout(resolve,3000));
@@ -405,13 +429,12 @@
       try{
         const account=await connected();if(!account)return;
         if(!account.capabilities?.includes('active-sourcing'))throw Error('请更新招聘助手到 0.1.10 或以上版本');
-        // Continue only after a completed batch. Never retry failed AI calls or
-        // repeat pages; desktop budgets and risk holds still guard every read.
+        // Reconnect the same persisted batch; successful pages/results stay saved.
         for(;qualified<desired&&!pausedSearch;session.batch++){
           const batch=session.batch;
           if(!qualified&&session.examined>=100){searchSession=null;break;}
           const target=Math.min(5,desired-qualified,qualified?5:100-session.examined);
-          while(candidates.length<target&&!ended&&!pausedSearch){
+          while(!session.resumeStored&&candidates.length<target&&!ended&&!pausedSearch){
             if(!await connected()||!valid(ticket))return;
             const nextPage=page+1;
             if(nextPage>20&&!account.capabilities?.includes('continuous-sourcing'))
@@ -445,21 +468,31 @@
             if(!fresh||hasMore(result)===false)ended=session.ended=true;
           }
           if(pausedSearch)break;
-          if(!candidates.length)break;
+          if(!candidates.length&&!session.resumeStored)break;
           if(!await connected()||!valid(ticket))return;
-          const current=candidates.slice(0,target);
+          const current=session.resumeStored?[]:candidates.slice(0,target);
           progress(`已读取 ${current.length} 位候选人 · 第 ${batch} 批 AI 分析 · 已匹配 ${qualified} / ${desired} 人`);
-          let value=await request('sourcing/search',{...snapshot,count:desired,candidates:current,requestId,batchIndex:batch,page,
-            ...(session.retryFailed?{retryFailedBatch:true}:{})});
-          if(!valid(ticket))return;
-          record=value;render();
-          value=await waitForAnalysis(ticket,snapshot,value);
-          if(!value||!valid(ticket))return;
-          record=value;qualified=session.qualified=value.run?.candidates?.length||0;
-          if(value.run?.error||value.run?.state==='failed'){
-            throw Error(value.run.error||'本批分析未完成，本轮已停止');
+          let value;
+          for(let recovery=0;;recovery++){
+            value=await request('sourcing/search',{...snapshot,count:desired,candidates:current,requestId,batchIndex:batch,page,
+              recommendationsEnded:!session.resumeStored&&ended&&candidates.length<=current.length,
+              ...(session.resumeRunId?{resumeRunId:session.resumeRunId}:{}),
+              ...(session.resumeStored?{resumeStoredBatch:true}:{}),
+              ...(session.retryFailed?{retryFailedBatch:true}:{})});
+            if(!valid(ticket))return;
+            record=value;render();
+            value=await waitForAnalysis(ticket,snapshot,value);
+            if(!value||!valid(ticket))return;
+            record=value;qualified=session.qualified=value.run?.candidates?.length||0;
+            if(!value.run?.error&&value.run?.state!=='failed')break;
+            if(!recoverableAnalysis(value.run?.error)||recovery>=2)
+              throw Error(value.run.error||'模型服务持续不可用，已保留当前批次');
+            session.retryFailed=true;
+            progress(`正在自动恢复第 ${batch} 批分析 · 已保留 ${qualified} 位匹配人选`);
+            await wait();
+            if(!valid(ticket)||pausedSearch)return;
           }
-          session.retryFailed=false;
+          session.retryFailed=false;session.resumeStored=false;
           candidates.splice(0,current.length);
           session.examined=value.run?.examined??session.examined+current.length;
           if(value.run?.stopReason==='no_matches_100'||!qualified&&session.examined>=100){
@@ -470,7 +503,7 @@
           }
           if(ended&&!candidates.length){session.batch++;break;}
         }
-        if(!seen.size)throw Error('BOSS 本次没有返回可用候选人，没有调用 AI');
+        if(!seen.size&&!session.resumeRunId)throw Error('BOSS 本次没有返回可用候选人，没有调用 AI');
         feedback.textContent=record.run?.stopReason==='no_matches_100'?'已分析 100 人，仍无匹配，已停止寻找。请调整并保存匹配条件。'
           :qualified>=desired?`已获取 ${qualified} 位初步匹配人选（已知条件 ≥ 80 分）。`
           :`已获取 ${qualified} / ${desired} 人。${pausedSearch?'已暂停，可以继续寻找。':'本职位推荐已读完。'}`;
@@ -560,11 +593,19 @@
         send.disabled=!!greetingCommand;templates.disabled=message.disabled=!!greetingCommand;}
     }
     async function enter(){
+      if(!selected&&allowed()){
+        try{
+          const key=selectionKey(),saved=key&&JSON.parse(globalThis.localStorage?.getItem(key)||'null');
+          if(saved&&typeof saved.id==='string'&&/^[A-Za-z0-9_~.-]{1,180}$/.test(saved.id))
+            selected={...saved,refresh:true};
+        }catch{}
+      }
       active=true;const ticket=++generation;busy=!!selected;render();
       if(!selected){feedback.textContent='请返回职位管理，选择职位卡片里的“AI 寻源”。';return;}
       feedback.textContent='正在确认招聘账号和职位…';
       try{
-        const state=await accountCheck();
+        const state=await accountCheck(selected.accountKey);
+        selected.accountKey=state.accountKey;saveSelection();
         if(!valid(ticket))return;
         if(!state.capabilities?.includes('job-jd'))throw Error('请更新招聘助手以读取岗位 JD');
         let value=await request('sourcing?'+new URLSearchParams({accountKey:state.accountKey,jobId:selected.id}));
@@ -580,12 +621,19 @@
         }
         if(valid(ticket)){record=value;selected.refresh=false;feedback.textContent='已关联 '+record.jobName+'，请选择招聘需求池的岗位分析。';await loadDemands();}
       }catch(error){if(valid(ticket)){record=null;feedback.textContent=error.message;}}
-      finally{if(valid(ticket)){busy=false;render();}}
+      finally{if(valid(ticket)){
+        busy=false;render();
+        if(!finding&&!pausedSearch&&record?.profileState==='complete'&&record.criteria?.confirmed
+          &&record.run?.version===record.version&&(recoverableAnalysis(record.run.error)||unfinishedRun(record.run))){
+          count.value=String(record.run.wanted);
+          await findPeople();
+        }
+      }}
     }
     function leave(){active=false;generation++;stop();busy=finding=demandLoading=false;searchProgress='';dialog.close();}
     return {select(row){selected={id:String(row.encryptJobId||row.encJobId||row.encryptId||row.jobId||row.id),
       name:row.jobName||row.name||'',education:requirementLabel(row.degreeName,row.degreeDesc,row.education),
-      experience:requirementLabel(row.experienceName,row.workYearDesc,row.experience),refresh:true};record=null;searchError='';},
+      experience:requirementLabel(row.experienceName,row.workYearDesc,row.experience),refresh:true};saveSelection();record=null;searchError='';},
       enter,leave,reset(){leave();selected=record=candidate=null;searchSession=null;criteriaDraft=[];criteriaScope='';criteriaDirty=false;demands=[];speeches=[];
         searchError='';verifiedContacts.clear();
         demandSelect.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();

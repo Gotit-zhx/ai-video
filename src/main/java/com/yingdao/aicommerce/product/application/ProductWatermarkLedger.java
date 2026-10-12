@@ -18,7 +18,7 @@ public class ProductWatermarkLedger {
  }
  /** A new local policy may recompose a received artifact, but never reuse its old approval. */
  public boolean reuseReceivedGeneration(String id,String org,String capture,String image,String sourceHash){
-  var prior=db.queryForList("SELECT id,detection_json,generation_json,local_detection_json FROM product_watermark_checks WHERE organization_id=? AND capture_id=? AND image_id=? AND source_sha256=? AND id<>? AND generation_json IS NOT NULL AND detection_json IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(detection_json, '$.decision'))='PRESENT' ORDER BY created_at DESC LIMIT 1",org,capture,image,sourceHash,id);
+  var prior=db.queryForList("SELECT id,detection_json,generation_json,local_detection_json FROM product_watermark_checks WHERE organization_id=? AND capture_id=? AND image_id=? AND source_sha256=? AND id<>? AND generation_json IS NOT NULL AND detection_json IS NOT NULL ORDER BY created_at DESC LIMIT 1",org,capture,image,sourceHash,id);
   if(prior.isEmpty())return false;
   var row=prior.getFirst();
   return db.update("UPDATE product_watermark_checks SET status='RESULT_RECEIVED',detection_json=JSON_SET(?, '$.reusedFromCheckId', ?),generation_json=?,local_detection_json=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='PREPARED'",row.get("detection_json"),row.get("id"),row.get("generation_json"),row.get("local_detection_json"),id,org)==1;
@@ -51,11 +51,17 @@ public class ProductWatermarkLedger {
  public void generated(String id,String org,String json){
   update("UPDATE product_watermark_checks SET generation_json=?,status='RESULT_RECEIVED',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='EDITING'",json,id,org);
  }
+ public void recoverReceived(String id,String org,String expected,String json){
+  update("UPDATE product_watermark_checks SET generation_json=?,status='RESULT_RECEIVED',message=NULL,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=?",json,id,org,expected);
+ }
+ public boolean retryGeneration(String id,String org,String expected,int retries){
+  return db.update("UPDATE product_watermark_checks SET generation_retry_count=generation_retry_count+1,status='DETECTED',message=NULL,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=? AND generation_json IS NULL AND generation_retry_count=? AND generation_retry_count<6",id,org,expected,retries)==1;
+ }
  public void ready(String id,String org,String expected,String key,String validation){
   update("UPDATE product_watermark_checks SET output_key=?,validation_json=?,status='READY',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=?",key,validation,id,org,expected);
  }
  public void hold(String id,String org,String expected,String message){
-  update("UPDATE product_watermark_checks SET status='REVIEW_REQUIRED',message=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=?",message,id,org,expected);
+  update("UPDATE product_watermark_checks SET status='REVIEW_REQUIRED',message=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=?",message.substring(0,Math.min(500,message.length())),id,org,expected);
  }
  public void rejectValidation(String id,String org,String validation){
   update("UPDATE product_watermark_checks SET status='REVIEW_REQUIRED',validation_json=?,message='去水印复检未通过，禁止上传',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='VALIDATING'",validation,id,org);

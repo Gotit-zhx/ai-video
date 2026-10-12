@@ -3917,6 +3917,8 @@ function productImageStateName(image = {}) {
   if (state === "completed") return "去水印完成";
   if (state === "processing") return productLiveImageStage(image)?.status === "DETECTING" ? "水印检测中" : "AI 去水印中";
   if (state === "failed") return "处理失败";
+  const retry = productLiveImageStage(image)?.message?.match(/自动重试\s+\d+\/\d+/);
+  if (retry) return retry[0];
   return productLiveImageStage(image)?.message?.includes("并发") ? "接口限流，自动排队" : "排队中";
 }
 
@@ -4577,7 +4579,7 @@ function renderProductImages(capture) {
           <figure><figcaption>来源原图</figcaption>${original ? `<button type="button" data-asset-preview="来源原图" aria-label="放大查看来源原图"><img src="${escapeHtml(original)}" data-full-src="${escapeHtml(original)}" alt="${escapeHtml(role)}来源原图" loading="lazy"></button>` : `<div class="product-image-placeholder">无原图</div>`}</figure>
           <figure><figcaption>${dryRun ? "Dry Run 占位图" : "AI 处理图"}</figcaption>${processed ? `<button type="button" data-asset-preview="${dryRun ? "Dry Run 占位图" : "AI 去水印结果"}" aria-label="放大查看${dryRun ? " Dry Run 占位图" : " AI 去水印结果"}"><img src="${escapeHtml(processed)}" data-full-src="${escapeHtml(processed)}" alt="${escapeHtml(role)}处理图" loading="lazy"></button>` : `<div class="product-image-placeholder"><i></i><span>${state === "failed" ? "处理失败" : state === "processing" ? "AI 去水印中" : "排队中"}</span></div>`}</figure>
         </div>
-        ${state === "processing" ? `<p class="product-image-working-note"><i aria-hidden="true"></i>${escapeHtml(productImageStateName(image))}，请稍候…</p>` : state === "failed" && (productLiveImageStage(image)?.message || image.errorMessage) ? `<p role="status">${escapeHtml(productLiveImageStage(image)?.message || image.errorMessage)}</p>` : ""}
+        ${state === "processing" ? `<p class="product-image-working-note"><i aria-hidden="true"></i>${escapeHtml(productImageStateName(image))}，请稍候…</p>` : ["failed","waiting"].includes(state) && (productLiveImageStage(image)?.message || image.errorMessage) ? `<p role="status">${escapeHtml(productLiveImageStage(image)?.message || image.errorMessage)}</p>` : ""}
       </article>`;
     }).join("");
 }

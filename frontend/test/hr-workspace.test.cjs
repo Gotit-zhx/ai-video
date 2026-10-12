@@ -289,11 +289,11 @@ test('sourcing route without selected job never reads BOSS or creates a new scop
   assert.match(app.text(),/请返回职位管理/);
   assert.equal(app.calls.length,0);
 });
-test('explicit failed batch retry preserves candidates and page without repeating a BOSS read',async()=>{
+test('failed batch automatically resumes with the same candidates and page without another BOSS read',async()=>{
   const key='a'.repeat(64);let searches=0,firstRequest;
   let record={id:'source1',accountKey:key,jobId:'job-test-1',jobName:'Java 工程师',version:1,
     profileState:'complete',profile:{summary:'开发'},criteria:{confirmed:true,conditions:[]},run:null};
-  const app=setup({sourcing:true,api:async(url,options)=>{
+  const app=setup({sourcing:true,setTimeout:fn=>{queueMicrotask(fn);return 1;},api:async(url,options)=>{
     if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,
       capabilities:['job-jd','active-sourcing','continuous-sourcing']}};
     if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
@@ -319,11 +319,8 @@ test('explicit failed batch retry preserves candidates and page without repeatin
   await app.enter('jobs');await app.click('AI 寻源');
   app.visible().find(n=>n.attributes['aria-label']==='获取人数').value='5';
   await app.click('一键 AI 获取');
-  assert.match(app.text(),/已保留 1 位匹配人选/);
-  assert.equal(searches,1);
-  await app.tick(4000);assert.equal(searches,1,'Polling does not retry a failed model generation');
-  await app.click('重试失败批次');
   assert.equal(searches,2);
+  await app.tick(4000);assert.equal(searches,2,'A recovered batch is not replayed by polling');
   assert.equal(app.calls.filter(c=>c.url.includes('/recommendations?')).length,1);
   assert.match(app.text(),/已匹配人才/);
   assert.equal(app.calls.some(c=>c.url.endsWith('/sourcing/greet')),false);

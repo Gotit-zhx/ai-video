@@ -38,7 +38,7 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
   var sourceRows=db.queryForList("SELECT storage_key FROM commerce_capture_source_archives WHERE organization_id=? AND capture_id=? AND image_id=? ORDER BY capture_version DESC LIMIT 1",org,capture.getId(),image.getId());
   // Image IDs bind immutable source URLs. Received results and detected-but-unsent retries use
   // their exact archived reference, so remote changes cannot create a new hash or repeat detection.
-  if(sourceRows.isEmpty())sourceRows=db.queryForList("SELECT source_key AS storage_key FROM product_watermark_checks WHERE organization_id=? AND capture_id=? AND image_id=? AND ((status IN ('RESULT_RECEIVED','EDITED','READY') AND generation_json IS NOT NULL) OR (status='DETECTED' AND generation_json IS NULL)) ORDER BY updated_at DESC LIMIT 1",org,capture.getId(),image.getId());
+  if(sourceRows.isEmpty())sourceRows=db.queryForList("SELECT source_key AS storage_key FROM product_watermark_checks WHERE organization_id=? AND capture_id=? AND image_id=? AND (generation_json IS NOT NULL OR detection_json IS NOT NULL) ORDER BY updated_at DESC LIMIT 1",org,capture.getId(),image.getId());
   var source=sourceRows.isEmpty()?null:archive.read(org,(String)sourceRows.getFirst().get("storage_key"));
   if(source==null){
    try{var downloaded=downloader.download(image.getOriginalUrl());var stored=archive.store(org,downloaded.bytes());source=archive.read(org,stored.storageKey());}
@@ -46,17 +46,20 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
   }
   byte[] original=Base64.getDecoder().decode(source.dataBase64());CommerceMockupComposer.decode(original);
   var stored=archive.store(org,original);
-  var imageModel=models.imageConnection(org).orElseThrow(()->new IllegalStateException("请配置图片编辑模型"));
+  var imageModel=models.watermarkImageConnection(org).orElseThrow(()->new IllegalStateException("请配置并启用 Grok 图片模型"));
   String id=CommerceImageArchive.sha((org+":"+capture.getId()+":"+image.getId()+":"+stored.sha256()+":"+imageModel.modelId()+":WATERMARK_V12_DETECT_FALLBACK_EDIT").getBytes(StandardCharsets.UTF_8));
   var row=ledger.prepare(id,org,capture.getId(),image.getId(),stored.sha256(),stored.storageKey());
   if("READY".equals(row.get("status")))return result(id,row);
   if("PREPARED".equals(row.get("status"))&&ledger.reuseReceivedGeneration(id,org,capture.getId(),image.getId(),stored.sha256()))row=ledger.get(id,org);
+  if(Set.of("REVIEW_REQUIRED","EDITING").contains(Objects.toString(row.get("status"),"")))
+   row=recoverAttempt(id,org,row);
   if("PREPARED".equals(row.get("status"))){
    claim(id,org,"PREPARED","DETECTING");
    Map<String,Object> detection;
    try {
-    var driver=models.driverConnection(org).orElseThrow(()->new IllegalStateException("检测模型未配置"));
-    String detectorModel=visionModel.isBlank()?driver.modelId():visionModel;
+    var driver=models.watermarkDriverConnection(org).orElseThrow(()->new IllegalStateException("请配置并启用 Grok 检测模型"));
+    // Use this connection's own model and key; another driver's key may not have Grok access.
+    String detectorModel=driver.modelId();
     detection=analyze(driver,detectorModel,source,List.of(),"ORIGINAL");
     if(!"SIZE_CHART".equals(detection.get("imageType")) && "ABSENT".equals(detection.get("decision"))){
      Map<String,Object> confirmation,background;
@@ -80,7 +83,7 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
    }
    ledger.detection(id,org,json.writeValueAsString(detection));row=ledger.get(id,org);
   }
-  if("DETECTED".equals(row.get("status"))){
+  if(Set.of("DETECTED","EDITING").contains(Objects.toString(row.get("status"),""))){
    var detection=json.readValue((String)row.get("detection_json"),Map.class);
    if("SIZE_CHART".equals(detection.get("imageType"))){
     // Preserve the source even when OCR is uncertain; never redraw numerical product information.
@@ -89,10 +92,10 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
    if(confirmedAbsent(detection)){
     ledger.ready(id,org,"DETECTED",stored.storageKey(),"{\"method\":\"UNCHANGED_ORIGINAL_DUAL_PRE_DETECTION\",\"postValidationSkipped\":true}");return result(id,ledger.get(id,org));
    }
-   claim(id,org,"DETECTED","EDITING");
+   if("DETECTED".equals(row.get("status")))claim(id,org,"DETECTED","EDITING");
    String prompt="仅移除参考照片后期叠加的水印。直接清理叠加水印；如无水印则保持原图不变。禁止改变商品的结构、形态、轮廓、比例、颜色、纹理、原有印花、刺绣、品牌、尺码标签和背景实物。不要二创，不要去掉衣服原图案。保持参考图的画布、留白、位置及尺寸，不缩放或移动商品。只输出一张同构图图片，不添加文字或对比排版。";
    try {
-    var response=generator.generateArtwork(prompt,id,imageModel,List.of(source));
+    var response=generator.generateArtwork(prompt,generationRequestId(id,row),imageModel,List.of(source));
     ledger.generated(id,org,json.writeValueAsString(response));row=ledger.get(id,org);
    } catch(ImageGenerationNotSentException e) {
     // A lease timeout happens before HTTP submission. Release only this confirmed-unsent
@@ -100,7 +103,7 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
     claim(id,org,"EDITING","DETECTED");
     throw new WatermarkRateLimitException(e.getMessage(),e);
    } catch(Exception e) {
-    ledger.hold(id,org,"EDITING","生图请求失败或结果未确认，未自动重复提交："+Objects.toString(e.getMessage(),"未知错误"));throw e;
+    ledger.hold(id,org,"EDITING","生图失败，等待自动核对及重试："+Objects.toString(e.getMessage(),"未知错误"));throw e;
    }
   }
   if("RESULT_RECEIVED".equals(row.get("status"))){
@@ -111,8 +114,7 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
     try{bytes=downloader.download(response.result().url()).bytes();}
     catch(RuntimeException e){
      String message="生图已成功，下载结果图片失败："+Objects.toString(e.getMessage(),"未知错误")+"；结果已保存，重试只继续下载";
-     if(GeneratedImageDownloadPendingException.retryable(e))throw new GeneratedImageDownloadPendingException(message,e);
-     throw new IllegalStateException(message,e);
+     throw new GeneratedImageDownloadPendingException(message,e);
     }
    }
    else throw new IllegalStateException("图片编辑没有返回可归档结果");
@@ -126,6 +128,32 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
   return result(id,row);
  }
  private void claim(String id,String org,String from,String to){if(!ledger.claim(id,org,from,to))throw new IllegalStateException("水印任务已由其他请求提交");}
+ static String generationRequestId(String id,Map<String,Object> row){
+  int retries=row.get("generation_retry_count") instanceof Number n?n.intValue():0;
+  return retries==0?id:id+"_retry_"+retries;
+ }
+ private Map<String,Object> recoverAttempt(String id,String org,Map<String,Object> row){
+  String state=(String)row.get("status");
+  if(row.get("generation_json")!=null){
+   ledger.recoverReceived(id,org,state,(String)row.get("generation_json"));return ledger.get(id,org);
+  }
+  CommerceDesignImageGateway.Operation operation;
+  try{operation=generator.operation(generationRequestId(id,row));}
+  catch(RuntimeException unavailable){throw new WatermarkRateLimitException("生成结果核对暂时失败，稍后自动重试",unavailable);}
+  if(operation!=null&&"COMPLETED".equals(operation.status())&&operation.response()!=null){
+   ledger.recoverReceived(id,org,state,json.writeValueAsString(operation.response()));return ledger.get(id,org);
+  }
+  if(operation!=null&&operation.active())
+   throw new WatermarkRateLimitException("已有 Grok 任务仍在生成，稍后自动核对结果");
+  if(operation!=null&&Set.of("RECOVERABLE","RUNNING").contains(operation.status())){
+   if(!"EDITING".equals(state))claim(id,org,state,"EDITING");
+   return ledger.get(id,org); // Reattach the same durable operation and saved provider response.
+  }
+  int retries=row.get("generation_retry_count") instanceof Number n?n.intValue():0;
+  if(retries>=6)throw new IllegalStateException("Grok 生图已自动重试6次仍失败："+Objects.toString(row.get("message"),"未获得有效图片"));
+  if(!ledger.retryGeneration(id,org,state,retries))throw new WatermarkRateLimitException("水印任务状态正在更新，稍后自动核对");
+  return ledger.get(id,org);
+ }
  private ProcessedImage result(String id,Map<String,Object> row){return new ProcessedImage(ProductWatermarkAssets.PREFIX+id,Map.of("checkId",id,"status","READY","sourceSha256",row.get("source_sha256"),"detection",json.readValue((String)row.get("detection_json"),Map.class)));}
  private Map<String,Object> analyze(ModelConfigService.RuntimeModelConnection model,String modelId,CommerceDesignImageGateway.Reference source,List<Map<String,Object>> detectionViews,String pass){
   var body=new LinkedHashMap<String,Object>();var driverRequest=new LinkedHashMap<String,Object>(model.driverRequestModel());driverRequest.put("modelId",modelId);body.put("model",driverRequest);body.put("context",Map.of("analysisType","WATERMARK_DETECTION_V1","detectionPass",pass));

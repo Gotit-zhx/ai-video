@@ -460,7 +460,9 @@ def driver(kind, snapshot, cookie):
         if isinstance(detail, str):
             for code, message in known.items():
                 if detail.endswith('['+code+']'):
-                    raise ValueError(message+'；没有自动重复调用 ['+code+']') from None
+                    status = re.search(r'HTTP ([45]\d\d)', detail)
+                    suffix = '（HTTP '+status[1]+'）' if code == 'HR_AI_UPSTREAM_HTTP' and status else ''
+                    raise ValueError(message+suffix+'；自动恢复暂未完成，当前批次已保留 ['+code+']') from None
         raise ValueError(messages.get(error.code, f'岗位分析服务返回 HTTP {error.code}，本轮已停止')) from None
     if len(raw) > 512000: raise ValueError('模型结果过长')
     result = json.loads(raw).get('data')
@@ -566,10 +568,12 @@ def search(user, body, cookie):
     wanted = body.get('count')
     if type(wanted) is not int or not 1 <= wanted <= 20: raise ValueError('请选择 1–20 人')
     raw = body.get('candidates')
-    if not isinstance(raw, list) or not 1 <= len(raw) <= 40: raise ValueError('本次需要 1–40 条本机读取的候选人资料')
+    stored_retry = body.get('resumeStoredBatch') is True
+    if not isinstance(raw, list) or (not stored_retry and not 1 <= len(raw) <= 40):
+        raise ValueError('本次需要 1–40 条本机读取的候选人资料')
     try: token = str(uuid.UUID(body.get('requestId', '')))
     except (ValueError, TypeError, AttributeError): raise ValueError('寻源请求标识无效')
-    record = str(uuid.uuid5(uuid.NAMESPACE_URL, f'hr-sourcing-search:{owner}:{token}'))
+    record = uid(body['resumeRunId']) if body.get('resumeRunId') else str(uuid.uuid5(uuid.NAMESPACE_URL, f'hr-sourcing-search:{owner}:{token}'))
     batch = body.get('batchIndex', 1)
     page = body.get('page', 1)
     if type(batch) is not int or batch < 1:
@@ -606,6 +610,8 @@ def search(user, body, cookie):
             # table; the session dedup index grows without rewriting all cards.
             for cid in source:
                 db.execute('INSERT OR IGNORE INTO hr_sourcing_seen VALUES(?,?)', (record, cid))
+        elif body.get('resumeRunId') or stored_retry:
+            raise ValueError('原寻源批次不存在或不属于当前账号')
         elif batch != 1:
             raise ValueError('请先开始第一批寻源分析')
         if job['profile_state'] != 'complete' or job['version'] != body.get('version'):
@@ -614,8 +620,12 @@ def search(user, body, cookie):
         if not rules['confirmed']: raise ValueError('请先确认并保存匹配条件，再开始寻找')
         if db.execute("SELECT 1 FROM hr_sourcing_runs WHERE owner=? AND state='running'", (owner,)).fetchone():
             raise pool.Conflict('已有寻源分析在执行，请等待完成')
-        parsed = {}
-        for entry in raw:
+        if stored_retry and not retry_failed:
+            raise pool.Conflict('只允许恢复当前岗位已保存的失败批次')
+        parsed = dict(source) if stored_retry else {}
+        if stored_retry and not 1 <= len(parsed) <= 40:
+            raise pool.Conflict('原批次候选人记录不完整')
+        for entry in ([] if stored_retry else raw):
             value = candidate(entry, job['job_id'])
             if not value: continue
             value['basicChecks'] = basic_checks(value, requirements)
@@ -632,14 +642,18 @@ def search(user, body, cookie):
         if not previous.get('qualified', 0):
             parsed = dict(list(parsed.items())[:max(0, 100 - previous.get('examined', 0))])
         for cid, value in parsed.items():
-            db.execute('INSERT OR REPLACE INTO hr_sourcing_candidates VALUES(?,?,?,?,?,?)',
-                       (cid, owner, job['id'], value['geekId'], dump(value), time.time()))
+            if not stored_retry:
+                db.execute('INSERT OR REPLACE INTO hr_sourcing_candidates VALUES(?,?,?,?,?,?)',
+                           (cid, owner, job['id'], value['geekId'], dump(value), time.time()))
             db.execute('INSERT OR IGNORE INTO hr_sourcing_seen VALUES(?,?)', (record, cid))
         snapshot = {'jobDescription': json.loads(job['body'])['description'], 'profile': dump({'conditions': rules['conditions']}),
                     'criteria': rules['conditions'], 'batchIndex': batch,
                     'candidates': [{'id': cid, 'evidence': value['evidenceText'], 'basicChecks': value['basicChecks']}
                                    for cid, value in parsed.items()]}
         progress = {**previous, 'batches': batch, 'pagesRead': max(page, previous.get('pagesRead', 0)),
+                    'requestToken': token, 'automaticRecovery': True,
+                    'recommendationsEnded': previous.get('recommendationsEnded', False) if stored_retry
+                        else body.get('recommendationsEnded') is True,
                     'basicRequirements': requirements,
                     'threshold': MATCH_THRESHOLD, 'referenceOnly': True}
         if old:
@@ -698,6 +712,8 @@ def search_worker(owner, record, snapshot, cookie):
         model_input['candidates'] = [
             {'id': alias, 'evidence': value['evidence']}
             for alias, value in zip(aliases, snapshot['candidates'])]
+        model_input['analysisRequestId'] = hashlib.sha256(
+            (owner+':'+record+':'+str(snapshot.get('batchIndex', 1))+':'+dump(model_input)).encode()).hexdigest()
         result = driver('sourcing-match', model_input, cookie)
         rows = result.get('candidates')
         expected = set(aliases)
@@ -897,5 +913,5 @@ def recover():
     with pool.database() as db:
         schema(db)
         db.execute("UPDATE hr_sourcing_jobs SET profile_state='failed',profile_error='服务已更新，请手动重新生成' WHERE profile_state='running'")
-        db.execute("UPDATE hr_sourcing_runs SET state='failed',error='服务已更新，请手动重新获取' WHERE state='running'")
+        db.execute("UPDATE hr_sourcing_runs SET state='failed',error='连接中断，当前批次已保留，正在自动恢复 [HR_AI_CONNECTION]' WHERE state='running'")
         db.execute("UPDATE hr_sourcing_contacts SET status='uncertain' WHERE status='sending'")

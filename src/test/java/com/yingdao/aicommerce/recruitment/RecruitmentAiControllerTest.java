@@ -228,6 +228,28 @@ class RecruitmentAiControllerTest {
     private RecruitmentAiController runtimeController(HttpServer server) {
         return new RecruitmentAiController(models,gate,json,"http://127.0.0.1:"+server.getAddress().getPort(),"internal-fixture");
     }
+    @Test void interruptedRuntimeResponseReconnectsWithTheSameCheckpointId() throws Exception {
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        var calls=new AtomicInteger();var requestId=new AtomicReference<String>();
+        server.createContext("/v1/recruitment/analyze",exchange->{
+            Map payload=json.readValue(exchange.getRequestBody().readAllBytes(),Map.class);
+            String id=(String)payload.get("requestId");
+            assertTrue(id.matches("[a-f0-9]{64}"));
+            if(requestId.get()==null)requestId.set(id);else assertEquals(requestId.get(),id);
+            boolean interrupted=calls.incrementAndGet()==1;
+            byte[] response=(json.writeValueAsString(interrupted
+                    ?Map.of("event","progress","data",Map.of("phase","generating","receivedChars",200))
+                    :Map.of("event","result","data",generated()))+"\n").getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200,response.length);exchange.getResponseBody().write(response);exchange.close();
+        });server.start();
+        try {
+            when(models.driverConnection("org-1")).thenReturn(Optional.of(new ModelConfigService.RuntimeModelConnection(
+                    "driver","http://unit.invalid/v1","gpt-5.5","OPENAI_COMPATIBLE","test","secret")));
+            when(gate.tryAcquireModelCall()).thenReturn(mock(RedisConcurrencyGate.Permit.class));
+            String result=json.writeValueAsString(runtimeController(server).generate(user("13800000000"),demand()));
+            assertEquals(2,calls.get());assertTrue(result.contains("interviewQuestions"));
+        } finally {server.stop(0);}
+    }
     private String frame(Map<String,Object> choice) {
         return "data: "+json.writeValueAsString(Map.of("choices",List.of(choice)))+"\n\n";
     }
@@ -253,6 +275,9 @@ class RecruitmentAiControllerTest {
             Map payload=json.readValue(exchange.getRequestBody().readAllBytes(),Map.class);
             assertEquals("sourcing",payload.get("mode"));
             var input=(Map)payload.get("input");
+            assertTrue(String.valueOf(payload.get("requestId")).matches("[a-f0-9]{64}"));
+            assertFalse(input.containsKey("_analysisRequestId"));
+            assertFalse(input.containsKey("analysisRequestId"));
             var output=new ArrayList<Map<String,Object>>();
             for(Object item:(List<?>)input.get("candidates")) {
                 var candidate=new HashMap<>(conditionCandidate("matched","unknown","matched"));
@@ -269,7 +294,7 @@ class RecruitmentAiControllerTest {
             var candidates=new ArrayList<Map<String,String>>();
             for(int i=1;i<=5;i++)candidates.add(Map.of("id","c"+i,"evidence","担任前台并处理收银对账，负责顾客接待引导"));
             Map input=json.readValue(json.writeValueAsString(Map.of("jobDescription","接待与协调","profile","已确认工作条件",
-                    "criteria",sourcingConditions(),"candidates",candidates)),Map.class);
+                    "criteria",sourcingConditions(),"candidates",candidates,"analysisRequestId","a".repeat(64))),Map.class);
             String reply=json.writeValueAsString(runtimeController(server).sourcingMatch(user("13800000000"),input));
             assertEquals(1,calls.get());assertTrue(reply.contains("\"score\":100.0"));
             assertTrue(reply.contains("\"id\":\"c5\""));assertTrue(reply.contains("\"scoreBasis\":\"known_conditions\""));

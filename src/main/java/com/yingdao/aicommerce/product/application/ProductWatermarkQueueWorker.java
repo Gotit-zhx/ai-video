@@ -46,6 +46,7 @@ public class ProductWatermarkQueueWorker {
    Throwable cause=e;for(int depth=0;depth<12&&cause.getCause()!=null&&cause.getCause()!=cause;depth++)cause=cause.getCause();
    // Record classification without serializing signed image URLs, response bodies or model keys.
    log.warn("Watermark image {} failed: errorType={}, causeType={}",work.imageId(),e.getClass().getSimpleName(),cause.getClass().getSimpleName());
+   try{queue.deferFailure(work,failure);}finally{active.remove(work.id(),work);}return;
   }
   try{queue.finish(work,url,result,failure);}
   catch(RuntimeException e){log.error("Could not commit watermark queue result {}",work.id(),e);}
