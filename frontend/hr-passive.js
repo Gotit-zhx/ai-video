@@ -22,6 +22,7 @@
     conversation_review:'持续接收新消息，部分会话待核对',
     job_review:'会话职位未核实，已暂停发送',
     jobs_paused:'职位未开放或状态待确认，新的邀约已暂停',
+    collecting_resumes:'正在同步 BOSS 会话简历',
     needs_review:'有发送结果待核对，请查看 BOSS 会话',disabled:'被动邀约已关闭'};
   const eventLabels={INCOMING_DETECTED:'收到主动消息',AUTO_REPLY_SENT:'话术回复已发送',
     AUTO_REPLY_UNCERTAIN:'话术回复结果待核对',CHAT_READ_UNAVAILABLE:'会话暂不可读取，已单独保留待核对',RESUME_REQUESTED:'已索取简历',
@@ -114,8 +115,8 @@
     const originLabel=el('div','',resumePanel,'hr-resume-job-filter');
     el('span','来源',originLabel);
     const originTabs=el('div','',originLabel,'hr-pool-tabs hr-resume-tabs hr-resume-job-tabs');
-    originTabs.setAttribute('aria-label','按邀约来源筛选简历');
-    const originButtons=[['','全部来源'],['active','主动邀约'],['passive','被动邀约']].map(([value,label])=>{
+    originTabs.setAttribute('aria-label','按简历来源筛选');
+    const originButtons=[['','全部来源'],['active','主动邀约'],['passive','被动邀约'],['boss_chat','BOSS沟通']].map(([value,label])=>{
       const control=button(label,originTabs,()=>{
         originFilter=value;page=1;poolSnapshot='';
         for(const tab of originButtons)tab.control.setAttribute('aria-pressed',String(tab.value===value));
@@ -215,7 +216,7 @@
         if(mode==='resume-pool'&&quiet&&signature===poolSnapshot)return;
         if(mode==='resume-pool')poolSnapshot=signature;
         box.replaceChildren();
-        if(!items.length)el('p',mode==='speeches'?'该用途暂无话术，点击“新建话术”可直接使用推荐内容。':'当前分类暂无简历。主动联系或被动邀约收到的简历会在这里归档。',box,'hr-pool-empty');
+        if(!items.length)el('p',mode==='speeches'?'该用途暂无话术，点击“新建话术”可直接使用推荐内容。':'当前分类暂无简历。BOSS 沟通收到的附件简历会自动归档。',box,'hr-pool-empty');
         const grid=el('div','',box,mode==='speeches'?'hr-card-grid hr-speech-grid':'hr-card-grid hr-resume-grid');
         for(const row of items){
           const card=el('article','',grid,mode==='speeches'?'hr-person-card hr-speech-card':'hr-person-card'),head=el('div','',card,'hr-card-heading');
@@ -230,7 +231,7 @@
             button('编辑话术',footer,()=>editSpeech(row));
           }else{
             el('span',statuses[row.status]||row.status,head,'hr-badge');
-            el('span',row.origin==='active'?'主动邀约':'被动邀约',card,'hr-eyebrow');
+            el('span',({active:'主动邀约',passive:'被动邀约',boss_chat:'BOSS沟通'})[row.origin]||'被动邀约',card,'hr-eyebrow');
             el('p',row.jobName,card,'hr-resume-job');el('p',[row.education,row.experience,row.city].filter(Boolean).join(' · ')||'详情见简历原件',card,'hr-hint');
             if(row.rejection)el('p','婉拒：'+(sendStates[row.rejection.status]||row.rejection.status),card,'hr-hint');
             if(row.aiState==='complete')el('p',`AI 参考匹配度 ${row.aiResult.score} / 100`,card,'hr-hint');

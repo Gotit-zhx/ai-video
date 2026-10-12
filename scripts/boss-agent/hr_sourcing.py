@@ -774,7 +774,7 @@ def search_worker(owner, record, snapshot, cookie):
                       'belowThreshold': previous.get('belowThreshold', 0) + sum(r.get('matchState') in ('below_threshold', 'required_mismatch') for r in rows),
                       'reviewExamples': [{**r, 'name': source[r['id']]['name']} for r in
                         sorted((r for r in rows if r.get('matchState') != 'matched'), key=lambda r: -r['score'])[:3]],
-                      'referenceOnly': True}
+                      'referenceOnly': True, 'partial': False, 'stopped': False}
             if result['examined'] >= 100 and result['qualified'] == 0:
                 basic = [{**check, 'id': 'basic:'+check['id'], 'basic': True}
                          for check in snapshot['candidates'][0].get('basicChecks', [])]

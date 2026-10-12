@@ -474,6 +474,7 @@ class SourcingTest(unittest.TestCase):
         self.assertEqual(final['error'],'')
         self.assertEqual(len(final['candidates']),2)
         self.assertEqual(final['examined'],2,'A failed batch is counted only after a successful analysis')
+        self.assertFalse(final['partial']);self.assertFalse(final['stopped'])
 
     def test_greeting_requires_confirmation_capable_desktop_and_exact_account(self):
         cid = self.searched()

@@ -16,7 +16,8 @@ downloads = Path("/opt/heyi/shared/hr-desktop-downloads")
 if args.all_server_copies:
     proof = json.loads((release / "activation.json").read_text())
     manifest = json.loads((release / "oss-installers.json").read_text())
-    assert proof["active"] and proof["version"] == "0.1.18"
+    build = json.loads((release / "release-build.json").read_text())
+    assert proof["active"] and proof["version"] == build["version"]
     for stable, record in proof["artifacts"].items():
         assert any(value["verified"] and value["sha256"] == record["sha256"]
                    and value["url"] == record["url"] for value in manifest.values())

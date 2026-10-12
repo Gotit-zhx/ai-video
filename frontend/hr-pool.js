@@ -626,7 +626,7 @@
         el('span',row.stage==='onboarding'?'待入职':stages.find(([key])=>key===row.stage)?.[1]||'未设置阶段',head,'hr-badge');
         const tags=el('div','',card,'hr-tags');
         el('span',departments.find(d=>d.id===row.departmentId)?.name||'待关联部门',tags,'hr-badge');
-        el('span',row.source==='boss'?'BOSS 人才':row.source==='passive'?'简历池审批':'手动录入',tags,'hr-badge');
+        el('span',({boss:'BOSS 人才',passive:'被动邀约',active:'主动邀约',boss_chat:'BOSS沟通'})[row.source]||'手动录入',tags,'hr-badge');
         const reviewRound=['first','second'].includes(stage)?stage:['first','second'].includes(row.stage)?row.stage:null;
         const reviewResult=reviewRound&&row.interviewReviews?.[reviewRound];
         if(reviewRound)el('span',`${reviewRound==='first'?'一面':'二面'} · ${reviewResult?(reviewResult.outcome==='passed'?'通过':'未通过'):'待填写意见'}`,tags,'hr-badge');

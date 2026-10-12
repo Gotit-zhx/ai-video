@@ -798,6 +798,7 @@ def execute(c, root, request):
     with database(root) as db:
         active_sourcing.schema(db)
         if operation == 'passive-local':
+            import boss_chat_receipts
             # Recover only from the existing local request ledger after a crash;
             # never dispatch an unconfirmed write again.
             uncertain = list(db.execute("SELECT friend,body FROM people WHERE state='request_uncertain'"))
@@ -813,6 +814,7 @@ def execute(c, root, request):
                             if state == 'requested':
                                 event(db, 'RESUME_REQUESTED', json.loads(person['body']))
             exports = [dict(row) for row in db.execute("SELECT * FROM people WHERE state='export' ORDER BY updated LIMIT 1")]
+            exports += boss_chat_receipts.exports(db)
             reports = [dict(row) for row in db.execute("SELECT * FROM commands WHERE reported=0 ORDER BY rowid LIMIT 1")]
             events = [json.loads(row['body']) for row in db.execute('SELECT body FROM events WHERE reported=0 ORDER BY rowid LIMIT 10')]
             return {'ok': True, 'data': {'exports': exports, 'reports': reports, 'events': events, 'bindings': active_sourcing.local(db),
@@ -823,6 +825,8 @@ def execute(c, root, request):
                 active_sourcing.schema(db)
                 db.execute('UPDATE active_contacts SET bound=1 WHERE id=? AND friend=?', (request['contactId'], request.get('friendId')))
             if request.get('friendId'):
+                import boss_chat_receipts
+                boss_chat_receipts.acknowledge(db, request['friendId'], request.get('messageId'))
                 db.execute("UPDATE people SET state='stored' WHERE friend=? AND mid=? AND state='export'",
                            (request['friendId'], request.get('messageId')))
             if request.get('commandId'):
@@ -846,10 +850,27 @@ def execute(c, root, request):
             db.commit()
             c.prepare_recruiter_chat()
             result = c.cli_json('hr', 'reply', friend, text)
-            status = 'sent' if result.get('ok') is True and (result.get('data') or {}).get('sent') is True else 'uncertain'
-            db.execute('UPDATE commands SET state=? WHERE id=?', (status, cid))
-            return {'ok': True, 'data': {'status': status}}
+            send_status = 'sent' if result.get('ok') is True and (result.get('data') or {}).get('sent') is True else 'uncertain'
+            db.execute('UPDATE commands SET state=? WHERE id=?', (send_status, cid))
+            return {'ok': True, 'data': {'status': send_status}}
         if operation != 'passive-step': raise ValueError('unsupported passive operation')
+        if request.get('collectAllResumes') is True:
+            import boss_chat_receipts
+            # The receive-only lane also runs with no rules or with closed jobs.
+            # Alternate with the original flow; human commands dispatch earlier.
+            turn = get_state(db, 'chat-resumes-turn', 'collect')
+            put_state(db, 'chat-resumes-turn', 'flow' if turn == 'collect' else 'collect')
+            if turn == 'collect':
+                collected = boss_chat_receipts.step(c, db, request)
+                if collected is not None:
+                    if collected.get('ok') is not True:
+                        return collected
+                    return status(db, 'collecting_resumes')
+            else:
+                boss_chat_receipts.schema(db)
+                for hint in request.get('activityHints', [])[:200]:
+                    if isinstance(hint, dict):
+                        boss_chat_receipts.wake(db, hint.get('friend'))
         result = activity_status(db, step(c, db, request))
         if result.get('ok') is True and db.execute(
                 "SELECT 1 FROM commands c JOIN active_contacts a ON a.id=c.id "

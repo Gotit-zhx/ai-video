@@ -16,9 +16,10 @@ import urllib.parse
 root = Path(sys.argv[1]).resolve()
 expected = json.loads((root / "expected-baseline.json").read_text())
 manifest = json.loads((root / "oss-installers.json").read_text())
+build = json.loads((root / "release-build.json").read_text())
 assets = ("index.html", "hr-pool.js", "hr-workspace.js", "hr-sourcing.js", "hr-passive.js",
           "hr-onboarding.js", "hr-workspace.css")
-modules = ("passive_pool.py", "hr_sourcing.py", "resume_storage.py")
+modules = ("passive_pool.py", "hr_sourcing.py", "resume_storage.py", "hr_bi.py")
 container = "ai-commerce-frontend"
 bin_dir = Path("/opt/heyi/boss-agent/bin")
 downloads = Path("/opt/heyi/shared/hr-desktop-downloads")
@@ -57,8 +58,8 @@ run("docker", "run", "--rm", "-v", str(root / "staged/pi-test") + ":/app/test:ro
     pi_image, "node", "--test", "test/recruitment-analysis.test.mjs")
 checksums = {}
 for platform, stable, name in [
-    ("mac", "Heyi-Recruiter-mac-arm64.dmg", "Heyi-Recruiter-0.1.18-mac-arm64.dmg"),
-    ("windows", "Heyi-Recruiter-windows-x64-Setup.exe", "Heyi-Recruiter-0.1.18-windows-x64-Setup.exe"),
+    ("mac", "Heyi-Recruiter-mac-arm64.dmg", f"Heyi-Recruiter-{build['version']}-mac-arm64.dmg"),
+    ("windows", "Heyi-Recruiter-windows-x64-Setup.exe", f"Heyi-Recruiter-{build['version']}-windows-x64-Setup.exe"),
 ]:
     artifact = root / "artifacts" / name
     record = manifest[str(artifact)]
@@ -66,7 +67,7 @@ for platform, stable, name in [
     assert record["sha256"] == sha(artifact.read_bytes())
     proof = json.loads((root / (platform + "-verified.json")).read_text())
     assert proof["artifacts"][name]["sha256"] == record["sha256"]
-    assert proof["commit"] == "a0e786e1479b32c8b8ea571255da35db88424546"
+    assert proof["commit"] == build["commit"]
     url = urllib.parse.urlsplit(record["url"])
     assert url.scheme == "https" and url.netloc == "oss.cloud.dayan.cloud" and not url.query
     assert "/desktop-installers/" + record["sha256"] + "/" in url.path
@@ -190,7 +191,7 @@ except Exception:
     raise
 (downloads / "checksums.json").write_text(json.dumps(checksums, indent=2))
 (root / "activation.json").write_text(json.dumps({
-    "version": "0.1.18", "frontendImage": inspect(container)["Image"],
+    "version": build["version"], "frontendImage": inspect(container)["Image"],
     "preservedContainers": preserved, "artifacts": checksums,
     "piImage": inspect("heyi-pi-runtime")["Image"],
     "active": True,

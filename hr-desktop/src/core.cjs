@@ -487,7 +487,7 @@ class Recruiter extends EventEmitter {
         await call('passive-ack',{friendId:item.friend,messageId:item.mid});
         this.event('RESUME_ARCHIVED');
       }
-      const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing','sourcing-credentials-v2','greeting-receipts-v1']});
+      const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing','sourcing-credentials-v2','greeting-receipts-v1','all-chat-resumes-v1']});
       if(!ready())return;
       const command=config.commands?.[0];
       if(command){
@@ -518,6 +518,7 @@ class Recruiter extends EventEmitter {
       const hints=[...this.activity.values()];
       const result=await call('passive-step',{rules:config.rules||[],replyTemplate:config.replyTemplate||null,
         activeContacts:config.activeContacts||[],
+        collectAllResumes:config.collectAllResumes===true,
         activityHints:hints,activityWatching:this.clock()-(this.activityObservedAt||0)<6000,
         reconnectId:this.reconnectId||''});
       if(result.ok&&ready()){

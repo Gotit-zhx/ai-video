@@ -143,7 +143,7 @@ def report(user, query):
         trends[day(row["created_at"])]["resumes"] += 1
         result = json.loads(row["ai_result"])
         resumes.append({"姓名": value.get("name", "姓名待补充"), "职位": value.get("jobName", ""),
-            "部门": dept_map.get(department, "未关联"), "来源": "主动邀约" if value.get("origin") == "active" else "被动邀约",
+            "部门": dept_map.get(department, "未关联"), "来源": {"active":"主动邀约","boss_chat":"BOSS沟通"}.get(value.get("origin"), "被动邀约"),
             "审批状态": STATUS.get(row["status"], row["status"]), "学历": value.get("education", ""),
             "工作年限": value.get("experience", ""), "AI 状态": STATUS.get(row["ai_state"], row["ai_state"]),
             "参考匹配分": result.get("score", "") if row["ai_state"] == "complete" else "",
@@ -343,7 +343,7 @@ def report(user, query):
             aging[0 if age <= 3 else 1 if age <= 7 else 2 if age <= 14 else 3]["count"] += 1
     sources = [{"name": name, "count": sum(r["来源"] == name for r in resumes),
                 "approved": sum(r["来源"] == name and r["审批状态"] == "通过" for r in resumes)}
-               for name in ("主动邀约", "被动邀约")]
+               for name in ("主动邀约", "被动邀约", "BOSS沟通")]
     dashboard = {"filters": selected, "metrics": metrics, "departments": rows("department"), "jobs": rows("job"),
         "trend": timeline, "sources": sources, "aging": aging,
         "stages": [{"name": name, "count": sum(r["阶段"] == name for r in talents)} for name in STAGES.values()],

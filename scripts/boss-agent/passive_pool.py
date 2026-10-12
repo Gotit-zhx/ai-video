@@ -232,7 +232,7 @@ def listing(user, kind, query):
         db.execute("UPDATE hr_resume_pool SET ai_state='failed',ai_error='分析等待超时，请手动重试' WHERE owner=? AND ai_state='running' AND ai_at<?", (owner, int(time.time())-360))
         scope, scope_args = 'owner=?', [owner]
         origin = query.get('origin', '')
-        if origin not in {'', 'active', 'passive'}: raise ValueError('邀约来源不正确')
+        if origin not in {'', 'active', 'passive', 'boss_chat'}: raise ValueError('简历来源不正确')
         if origin and not query.get('id'):
             scope += " AND COALESCE(json_extract(body,'$.origin'),'passive')=?"
             scope_args.append(origin)
@@ -270,8 +270,11 @@ def listing(user, kind, query):
             entry = jobs.setdefault(row['job_id'], {'id': row['job_id'], 'name': json.loads(row['body']).get('jobName') or '未命名职位', 'count': 0, 'ruleIds': []})
             entry['count'] += row['n']; entry['ruleIds'].append(row['id'])
         for row in db.execute("""SELECT rule_id,body,COUNT(*) n FROM hr_resume_pool
-                WHERE owner=? AND json_extract(body,'$.origin')='active' GROUP BY rule_id""", (owner,)):
+                WHERE owner=? AND json_extract(body,'$.origin') IN ('active','boss_chat')
+                GROUP BY rule_id,json_extract(body,'$.jobId')""", (owner,)):
             detail = json.loads(row['body'])
+            if not detail.get('jobId'):
+                continue
             entry = jobs.setdefault(detail['jobId'], {'id': detail['jobId'], 'name': detail['jobName'], 'count': 0, 'ruleIds': []})
             entry['count'] += row['n']; entry['ruleIds'].append(row['rule_id'])
         # Job counts honor the selected origin and include legacy passive rows.
@@ -378,7 +381,8 @@ def device_config(user, body):
             commands += [{**row, 'queuedAt': row['enabledAt']} for row in active if row['status'] == 'queued'
                          and (len(row.get('identifiers', {}).get('securityId', '')) <= 600
                               or 'sourcing-credentials-v2' in body.get('capabilities', []))]
-        return {'rules': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=? AND account=? AND enabled=1', (owner, key))],
+        return {'collectAllResumes': 'all-chat-resumes-v1' in body.get('capabilities', []),
+                'rules': [rule(r) for r in db.execute('SELECT * FROM hr_passive_rules WHERE owner=? AND account=? AND enabled=1', (owner, key))],
                 'replyTemplate': ({'id': reply['id'], 'version': reply['version'], 'content': reply['content'],
                                    'name': reply['name']} if reply else None),
                 'commands': commands[:1], 'activeContacts': [row for row in active if row['status'] == 'sent'
@@ -402,7 +406,20 @@ def ingest(user, body):
         if existing:
             if existing['file_hash'] != digest: raise pool.Conflict('同一简历消息的文件内容发生变化')
             return {'id': record, 'stored': True}
-        job = hr_sourcing.received_job(db, owner, key, rule_id, friend)
+        if rule_id == 'boss-chat-'+friend and body.get('origin') == 'boss_chat':
+            # Receiving a verified attachment is independent of enabling an
+            # invitation rule. JD lookup still uses exact owner/account/job.
+            job_id = pool.text(body.get('jobId', ''), 180)
+            hr_sourcing.schema(db)
+            saved = db.execute('SELECT body FROM hr_sourcing_jobs WHERE owner=? AND account=? AND job_id=?',
+                               (owner, key, job_id)).fetchone()
+            value = json.loads(saved['body']) if saved else {}
+            job = {'jobId': job_id, 'jobName': value.get('jobName') or pool.text(body.get('jobName', ''), 200)
+                   or ('职位待核实' if not job_id else 'BOSS 沟通职位'),
+                   'description': value.get('description', ''), 'education': value.get('education', ''),
+                   'experience': value.get('experience', ''), 'projectId': '', 'origin': 'boss_chat'}
+        else:
+            job = hr_sourcing.received_job(db, owner, key, rule_id, friend)
         if not job:
             source = db.execute('SELECT * FROM hr_passive_rules WHERE id=? AND owner=? AND account=?', (rule_id, owner, key)).fetchone()
             if not source: raise ValueError('简历未关联当前账号的招聘职位')

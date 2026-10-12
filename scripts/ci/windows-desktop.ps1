@@ -53,7 +53,7 @@ try {
     Run-Checked $python @('runtime/build.py')
     Run-Checked 'npm.cmd' @('test')
     foreach ($testFile in @(
-        'test_passive_runtime.py', 'test_active_sourcing.py',
+        'test_passive_runtime.py', 'test_boss_chat_receipts.py', 'test_active_sourcing.py',
         'test_account_history.py', 'test_local_session.py',
         'test_managed_jobs.py', 'test_conversation_scope.py'
     )) {

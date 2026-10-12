@@ -342,6 +342,37 @@ class PassiveTest(unittest.TestCase):
         self.assertEqual(row['aiState'],'idle')
         self.assertEqual(row['status'],'pending')
 
+    def test_manual_boss_chat_receipts_need_no_rule_and_are_private_idempotent_and_read_only(self):
+        body={'accountKey':KEY,'ruleId':'boss-chat-888','friendId':'888','messageId':'999',
+              'origin':'boss_chat','jobId':'closed-job','jobName':'真实会话岗位',
+              'originalFileName':'王小明简历.pdf','extension':'pdf',
+              'fileBase64':base64.b64encode(b'%PDF-1.4 test').decode()}
+        with mock.patch('resume_storage.store',return_value='private-key') as store, \
+             mock.patch('resume_storage.extract',return_value=('简历正文','')):
+            first=feature.ingest(USER,body)
+            self.assertEqual(feature.ingest(USER,body),first)
+            store.assert_called_once()
+            unknown=feature.ingest(USER,{**body,'friendId':'777','ruleId':'boss-chat-777','jobId':'','jobName':''})
+        rows=feature.listing(USER,'resume-pool',{'origin':'boss_chat'})
+        self.assertEqual(rows['total'],2)
+        self.assertEqual(rows['jobs'][0]['id'],'closed-job')
+        item=feature.listing(USER,'resume-pool',{'id':first['id']})['items'][0]
+        self.assertEqual(item['origin'],'boss_chat')
+        self.assertEqual(item['jobId'],'closed-job')
+        self.assertEqual(item['name'],'王小明')
+        self.assertFalse(item['canReview'])
+        for action in ('approve','reject'):
+            with self.assertRaises(pool.Conflict):
+                feature.review(USER,{'id':first['id'],'version':item['version'],'action':action})
+        self.assertFalse(feature.listing(USER,'resume-pool',{'id':unknown['id']})['items'][0]['canReview'])
+        other={**USER,'username':'15800000001','id':'other','roles':['HR'],
+               'platformAdmin':False,'permissions':['hr:access']}
+        self.assertEqual(feature.listing(other,'resume-pool',{'origin':'boss_chat'})['total'],0)
+        self.assertEqual(feature.listing(USER,'resume-pool',{'origin':'passive'})['total'],1)
+        config=feature.device_config(USER,{'accountKey':KEY,'capabilities':['all-chat-resumes-v1']})
+        self.assertTrue(config['collectAllResumes'])
+        self.assertFalse(feature.device_config(USER,{'accountKey':KEY})['collectAllResumes'])
+
     def test_existing_pdf_identity_backfill_preserves_review_and_does_not_call_providers(self):
         with pool.database() as db:
             raw = json.loads(db.execute("SELECT body FROM hr_resume_pool WHERE id='r1'").fetchone()[0])
