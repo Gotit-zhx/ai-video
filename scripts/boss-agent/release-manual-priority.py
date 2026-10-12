@@ -69,8 +69,11 @@ for platform, stable, name in [
     assert proof["artifacts"][name]["sha256"] == record["sha256"]
     assert proof["commit"] == build["commit"]
     url = urllib.parse.urlsplit(record["url"])
-    assert url.scheme == "https" and url.netloc == "oss.cloud.dayan.cloud" and not url.query
-    assert "/desktop-installers/" + record["sha256"] + "/" in url.path
+    assert url.scheme == "https" and url.netloc == "oss.cloud.dayan.cloud" and not url.query and not url.fragment
+    object_key = "desktop-installers/" + record["sha256"] + "/" + name
+    assert record["key"] == object_key
+    # Path-style OSS signs the object key with encoded slashes.
+    assert urllib.parse.unquote(url.path) == "/test-hoyee/" + object_key
     checksums[stable] = {key: record[key] for key in ("size", "sha256", "url")}
 
 for name in (*assets, "nginx.conf"):
