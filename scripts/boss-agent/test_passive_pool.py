@@ -15,6 +15,25 @@ KEY = 'a'*64
 
 
 class PassiveTest(unittest.TestCase):
+    def test_manual_invitation_lookup_is_exact_and_cannot_cross_account_or_owner(self):
+        approved=feature.review(USER,{'id':'r1','version':1,'action':'approve'})
+        self.template()
+        with pool.database() as db:
+            db.execute("INSERT INTO hr_resume_commands VALUES('old','heyi',?,'r1','123',?,'queued','2000-01-01')",
+                       (KEY,json.dumps({'message':'旧后台任务'})))
+        command=feature.invitation_messages(USER,{'talentId':approved['talentId'],'message':'新的手动邀约',
+                                                 'requestId':str(uuid.uuid4())},write=True)
+        self.assertEqual(command['accountKey'],KEY)
+        self.assertEqual(feature.device_config(USER,{'accountKey':KEY})['commands'][0]['id'],command['id'])
+        exact=feature.device_config(USER,{'accountKey':KEY,'commandId':command['id']})
+        self.assertEqual([row['id'] for row in exact['commands']],[command['id']])
+        self.assertEqual(feature.device_config(USER,{'accountKey':'b'*64,'commandId':command['id']})['commands'],[])
+        other={**USER,'username':'15800000001','id':'other','roles':['HR'], 'platformAdmin':False,'permissions':['hr:access']}
+        self.assertEqual(feature.device_config(other,{'accountKey':KEY,'commandId':command['id']})['commands'],[])
+        feature.claim_command(USER,{'accountKey':KEY,'id':command['id']})
+        feature.device_report(USER,{'accountKey':KEY,'commandId':command['id'],'status':'sent'})
+        done=feature.device_config(USER,{'accountKey':KEY,'commandId':command['id']})
+        self.assertEqual(done['commandStatus'],'sent');self.assertEqual(done['commands'],[])
     def setUp(self):
         folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
         patch=mock.patch.object(pool,'DB',Path(folder.name)/'test.db');patch.start();self.addCleanup(patch.stop)

@@ -350,13 +350,20 @@ def device_config(user, body):
     with pool.database() as db:
         schema(db)
         expire_commands(db)
+        if body.get('commandId'):
+            record = uid(body['commandId'])
+            row = db.execute('SELECT * FROM hr_talent_messages WHERE id=? AND owner=? AND account=?',
+                             (record, owner, key)).fetchone()
+            return {'commands': [{**json.loads(row['body']), 'id': row['id'], 'friendId': row['friend_id']}]
+                                 if row and row['status'] == 'queued' else [],
+                    'commandStatus': row['status'] if row else 'unavailable'}
         reply = db.execute('''SELECT s.* FROM hr_speeches s JOIN hr_passive_reply_defaults d
             ON d.speech_id=s.id AND d.owner=s.owner
             WHERE s.owner=? AND s.active=1 AND s.kind='passive_reply' ''', (owner,)).fetchone()
         commands = [{**json.loads(r['body']), 'id': r['id'], 'friendId': r['friend_id'], 'queuedAt': r['updated_at']}
                     for table in ('hr_resume_commands', 'hr_talent_messages')
                     for r in db.execute(f"SELECT * FROM {table} WHERE owner=? AND account=? AND status='queued' ORDER BY updated_at LIMIT 1", (owner, key))]
-        commands.sort(key=lambda value: value['queuedAt'])
+        commands.sort(key=lambda value: (value.get('kind') != 'invite', value['queuedAt']))
         active = hr_sourcing.device_contacts(db, owner, key)
         # Old desktops must never claim an operation they do not understand.
         if 'active-sourcing' in body.get('capabilities', []):
@@ -591,7 +598,7 @@ def invitation_messages(user, body, write=False):
             if old:
                 if old['talent_id'] != record or json.loads(old['body'])['message'] != message:
                     raise pool.Conflict('这次发送已提交，请刷新发送记录')
-                return {'id': command, 'status': old['status']}
+                return {'id': command, 'status': old['status'], 'accountKey': key}
             if db.execute("SELECT 1 FROM hr_talent_messages WHERE owner=? AND talent_id=? AND status IN ('queued','sending','uncertain')", (owner, record)).fetchone():
                 raise pool.Conflict('这位候选人有消息待发送或待核对，请先查看发送记录')
             detail = json.loads(talent['body'])
@@ -600,7 +607,7 @@ def invitation_messages(user, body, write=False):
             db.execute('INSERT INTO hr_talent_messages VALUES(?,?,?,?,?,?,?,?)',
                        (command, owner, key, record, friend, dump(payload), 'queued', now()))
             pool.event(db, owner, actor, record, 'talent.invite-message', None, {'commandId': command, 'message': message})
-            return {'id': command, 'status': 'queued'}
+            return {'id': command, 'status': 'queued', 'accountKey': key}
         return {'items': [{**json.loads(row['body']), 'id': row['id'], 'status': row['status'], 'updatedAt': row['updated_at']}
                           for row in db.execute('SELECT * FROM hr_talent_messages WHERE owner=? AND talent_id=? ORDER BY updated_at DESC,id LIMIT 20', (owner, record))]}
 

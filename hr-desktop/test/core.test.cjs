@@ -6,6 +6,58 @@ const os=require('node:os');
 const {Recruiter,restriction,ORIGIN}=require('../src/core.cjs');
 const {LocalBridge}=require('../src/bridge.cjs');
 const user={username:'13800000000',id:'fixture',organizationCode:'heyi',roles:['ADMIN'],platformAdmin:true};
+test('manual invitation bypasses queued reads and background fairness, with one claim and one send',async t=>{
+  const {engine,directory,calls}=await fixture(t),key='a'.repeat(64),id='11111111-1111-4111-8111-111111111111';
+  engine.accountRoot=path.join(directory,'accounts',key);engine.state={state:'complete'};engine.paused=false;
+  let release;engine.runtime.run=async input=>{
+    calls.push(input);
+    if(input.operation==='tracked')await new Promise(resolve=>{release=resolve;});
+    return {ok:true,data:{status:'sent'}};
+  };
+  const cloud=[];
+  engine.passiveCloud=async(route,body)=>{
+    cloud.push({route,body});
+    if(route==='passive-config')return {commands:[{id,kind:'invite',friendId:'123',message:'已确认邀约'}]};
+    if(route==='passive-claim')return {claimed:true};
+    return {};
+  };
+  const current=engine.call('tracked');while(!release)await new Promise(r=>setImmediate(r));
+  engine.operations.foregroundRuns=4;
+  const read=engine.call('jobs'),background=engine.call('passive-local',{}, {background:true});
+  const send=engine.dispatchInvitation({accountKey:key,commandId:id});
+  const duplicate=engine.dispatchInvitation({accountKey:key,commandId:id});
+  release();const results=await Promise.all([current,read,background,send,duplicate]);
+  assert.equal(calls[1].operation,'passive-send');
+  assert.equal(calls.filter(row=>row.operation==='passive-send').length,1);
+  assert.equal(cloud.filter(row=>row.route==='passive-claim').length,1);
+  assert.equal(cloud[0].body.commandId,id);
+  assert.equal(results[3].status,'sent');assert.equal(results[4].verified,true);
+});
+test('manual dispatch retains a verified local receipt when cloud reporting is unavailable',async t=>{
+  const {engine,directory}=await fixture(t),key='a'.repeat(64),id='11111111-1111-4111-8111-111111111111';
+  engine.accountRoot=path.join(directory,'accounts',key);engine.state={state:'complete'};engine.paused=false;
+  engine.runtime.run=async()=>({ok:true,data:{status:'sent'}});
+  engine.passiveCloud=async route=>{
+    if(route==='passive-config')return {commands:[{id,kind:'invite',friendId:'123',message:'邀约'}]};
+    if(route==='passive-claim')return {claimed:true};
+    if(route==='passive-report')throw Error('cloud offline');
+  };
+  assert.equal((await engine.dispatchInvitation({accountKey:key,commandId:id})).verified,true);
+  await assert.rejects(engine.dispatchInvitation({accountKey:'b'.repeat(64),commandId:id}),/当前招聘账号/);
+});
+test('urgent dispatch yields only an interruptible background read and never interrupts a write',async()=>{
+  const {OperationQueue}=require('../src/operation-queue.cjs');
+  for(const interruptible of [false,true]){
+    const queue=new OperationQueue(),order=[];
+    let release,interrupts=0;
+    const running=queue.add(()=>new Promise(resolve=>{release=()=>{order.push('current');resolve();};}),
+      {background:true,interrupt:interruptible?()=>{interrupts++;release();}:undefined});
+    const manual=queue.add(async()=>{order.push('send');},{urgent:true});
+    if(!interruptible){assert.deepEqual(order,[]);release();}
+    await Promise.all([running,manual]);
+    assert.equal(interrupts,interruptible?1:0);assert.deepEqual(order,['current','send']);
+  }
+});
 test('HR permission authorizes a private desktop owner without allowing another user to reuse it',async t=>{
   const {engine}=await fixture(t);
   const hr={username:'15800000001',userId:'hr-a',organizationCode:'heyi',roles:['HR_DEPARTMENT'],

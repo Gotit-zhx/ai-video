@@ -734,6 +734,30 @@ const interviewPreview=(talent)=>({talentId:talent.id,name:talent.name,version:1
   packageReady:true,config:{verified:true,version:1},resumes:[{id:'r1',filename:'测试人才.pdf',jobName:'算法'}],
   demands:[{id:'d1',position:'算法',department:'研发',version:1,resumeIds:['r1'],questionsReady:true,
     questionCount:6,recipientReady:true,recipient:'面试负责人',recipientId:'manager1'}],handoff:null});
+test('manual invitation dispatches immediately, ignores an older sent record and keeps the confirmed local receipt',async()=>{
+  const talent={...poolResult().items[0],source:'passive',stage:'invited'},key='a'.repeat(64);
+  const callbacks=[];let records=[],release;
+  const app=setup({setTimeout:(fn,ms)=>{callbacks.push({fn,ms});return callbacks.length;},api:async(url,options)=>{
+    if(url.endsWith('/speeches'))return {data:{items:[{id:'i',kind:'invite',active:true,name:'邀约',content:'邀请{姓名}面试'}]}};
+    if(url.endsWith('/pool/messages/send'))return new Promise(resolve=>{release=()=>resolve({data:{id:'current',status:'sent',verified:true}});});
+    if(url.includes('/pool/messages')){
+      if(options?.method==='POST'){records=[{id:'old',status:'sent',message:'上一次消息'},
+        {id:'current',status:'sending',message:'本次消息'}];return {data:{id:'current',status:'queued',accountKey:key}};}
+      return {data:{items:records}};
+    }
+    return {data:{...poolResult(),items:[talent]}};
+  }});
+  await app.enter('pool');await app.click('发送邀约');
+  const dialog=all(app.root).find(n=>n.className.includes('hr-invite-dialog'));
+  const pending=all(dialog).find(n=>n._text==='发送邀约到 BOSS').click();
+  await flush();assert.ok(release,'No wait for the 30-second background poll');
+  assert.doesNotMatch(dialog.textContent,/发送成功/);
+  callbacks.find(row=>row.ms===10000).fn();assert.match(dialog.textContent,/10 秒内未收到发送确认/);
+  release();await pending;await flush();
+  assert.match(dialog.textContent,/邀约已发送成功/);
+  await app.click('刷新发送状态');assert.match(dialog.textContent,/邀约已发送成功/);
+  assert.equal(app.calls.filter(c=>c.url.endsWith('/pool/messages/send')).length,1);
+});
 test('invitation uses an active template and sends edited text once to the exact talent',async()=>{
   const talent={...poolResult().items[0],source:'passive',stage:'invited',position:'算法工程师'};
   let messages=[];

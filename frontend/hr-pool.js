@@ -2,7 +2,7 @@
 (() => {
   const stages = [['invited','邀约'],['first','一面'],['second','二面'],['hired','已录取']];
   const defaultOutcome=stage=>['first','second'].includes(stage)?'pending':'all';
-  globalThis.createHrPool = ({root, section, element:el, button, allowed, navigate,beginOnboarding}) => {
+  globalThis.createHrPool = ({root, section, element:el, button, allowed, navigate,beginOnboarding,hrApi}) => {
     const panel=section('pool');
     let stage='invited',outcome='all',department='',page=1,generation=0,active=false,departments=[],rows=[],editing=null,saving=false;
     let departmentButtons=[],departmentDirectory='',pageButtons=[];
@@ -392,6 +392,7 @@
     const inviteRefresh=button('刷新发送状态',inviteActions,()=>refreshInvitation());
     const inviteSend=button('发送邀约到 BOSS',inviteActions,sendInvitation);inviteSend.className='hr-primary';
     let inviting=null,inviteTemplates=[],inviteEpoch=0,inviteTimer=null,inviteBusy=false,inviteReady=false,inviteAttempted=false,inviteRequest='';
+    let inviteCommand='',inviteVerified='',inviteWatchdog=null,inviteSlow=false,inviteRead=0;
     const inviteStates={queued:'等待助手发送',sending:'正在发送',sent:'已发送',uncertain:'发送结果待核对',failed:'发送未完成',cancelled:'已取消'};
     function syncInvitation(){
       inviteSend.disabled=!inviteReady||inviteBusy||inviteAttempted||!inviteMessage.value.trim();
@@ -404,35 +405,43 @@
     }
     inviteTemplate.addEventListener('change',useInvitationTemplate);
     inviteMessage.addEventListener('input',syncInvitation);
-    inviteDialog.addEventListener('close',()=>{++inviteEpoch;clearTimeout(inviteTimer);inviting=null;inviteReady=false;
+    inviteDialog.addEventListener('close',()=>{++inviteEpoch;clearTimeout(inviteTimer);clearTimeout(inviteWatchdog);inviting=null;inviteReady=false;
       inviteTemplates=[];inviteTemplate.replaceChildren();inviteMessage.value='';inviteRecords.replaceChildren();inviteFeedback.textContent='';});
     inviteDialog.addEventListener('cancel',event=>{if(inviteBusy)event.preventDefault();});
     async function refreshInvitation(epoch=inviteEpoch){
       clearTimeout(inviteTimer);
       if(!inviting||!inviteDialog.open||!active||!allowed())return;
-      const id=inviting.id;
+      const id=inviting.id,read=++inviteRead;
       try{
         const data=await request('/messages?talentId='+encodeURIComponent(id));
-        if(epoch!==inviteEpoch||inviting?.id!==id||!inviteDialog.open||!allowed())return;
+        if(epoch!==inviteEpoch||read!==inviteRead||inviting?.id!==id||!inviteDialog.open||!allowed())return;
         const records=data.items||[],pending=records.some(row=>['queued','sending','uncertain'].includes(row.status));
+        const current=inviteCommand?records.find(row=>row.id===inviteCommand)
+          :records.find(row=>['queued','sending','uncertain'].includes(row.status))||records[0];
+        const sent=!!inviteVerified||current?.status==='sent';
+        if(sent||current&&['failed','cancelled','uncertain'].includes(current.status))clearTimeout(inviteWatchdog);
         inviteRecords.replaceChildren();
         for(const row of records.slice(0,5)){
           const item=el('article','',inviteRecords,'hr-invite-record');
-          el('span',inviteStates[row.status]||row.status,item,'hr-badge');
+          el('span',row.id===inviteVerified?'已发送':inviteStates[row.status]||row.status,item,'hr-badge');
           el('p',row.message,item,'hr-prose');
         }
         inviteHistory.hidden=!records.length;
         inviteReady=inviteTemplates.length>0&&!pending;
-        if(pending||inviteAttempted)inviteFeedback.textContent=records.length
-          ?'最近邀约：'+(inviteStates[records[0].status]||records[0].status)
+        if(sent)inviteFeedback.textContent='邀约已发送成功';
+        else if(inviteSlow&&(!current||['queued','sending'].includes(current.status)))
+          inviteFeedback.textContent='10 秒内未收到发送确认，正在继续核对，请勿重复发送。';
+        else if(pending||inviteAttempted)inviteFeedback.textContent=current
+          ?'本次邀约：'+(inviteStates[current.status]||current.status)
           :'本次发送尚未确认，请刷新记录核对。';
         syncInvitation();
-        if(records.some(row=>['queued','sending'].includes(row.status)))inviteTimer=setTimeout(()=>refreshInvitation(epoch),5000);
-      }catch(error){if(epoch===inviteEpoch){inviteReady=false;inviteFeedback.textContent=error.message;syncInvitation();}}
+        if(records.some(row=>['queued','sending'].includes(row.status)))inviteTimer=setTimeout(()=>refreshInvitation(epoch),inviteSlow?2000:1000);
+      }catch(error){if(epoch===inviteEpoch&&read===inviteRead){inviteReady=false;if(!inviteVerified)inviteFeedback.textContent=error.message;syncInvitation();}}
     }
     async function openInvitation(row){
       if(!allowed()||inviteBusy||row.stage!=='invited'||row.source!=='passive')return;
       const epoch=++inviteEpoch;inviting=row;inviteAttempted=false;inviteReady=false;inviteTemplates=[];inviteRequest=crypto.randomUUID();
+      inviteCommand=inviteVerified='';inviteSlow=false;++inviteRead;clearTimeout(inviteWatchdog);
       inviteTitle.textContent='邀约对话 · '+row.name;invitePerson.textContent='对应岗位：'+(row.position||'岗位待补充');
       inviteTemplate.replaceChildren();inviteMessage.value='';inviteRecords.replaceChildren();inviteHistory.hidden=true;
       inviteFeedback.textContent='正在读取邀约话术与发送记录…';syncInvitation();inviteDialog.showModal();
@@ -451,13 +460,38 @@
     async function sendInvitation(){
       if(!inviting||!allowed()||inviteSend.disabled||inviteBusy)return;
       const row=inviting,epoch=inviteEpoch,message=inviteMessage.value.trim();
-      inviteBusy=true;inviteAttempted=true;syncInvitation();inviteFeedback.textContent='正在提交邀约…';
+      inviteBusy=true;inviteAttempted=true;syncInvitation();inviteFeedback.textContent='正在优先发送并确认回执…';
+      inviteWatchdog=setTimeout(()=>{
+        if(epoch===inviteEpoch&&inviteDialog.open&&!inviteVerified){
+          inviteSlow=true;inviteFeedback.textContent='10 秒内未收到发送确认，正在继续核对，请勿重复发送。';
+        }
+      },10000);
       try{
         const data=await request('/messages',{talentId:row.id,message,requestId:inviteRequest});
         if(epoch!==inviteEpoch||inviting?.id!==row.id||!inviteDialog.open||!allowed())return;
-        inviteFeedback.textContent=inviteStates[data.status]||'已提交，正在核对发送状态';
-        await refreshInvitation(epoch);
-      }catch(error){if(epoch===inviteEpoch&&inviteDialog.open)inviteFeedback.textContent=error.message+'。请刷新发送记录核对，系统不会自动重发。';}
+        inviteCommand=data.id;
+        if(data.status==='sent')inviteVerified=data.id;
+        void refreshInvitation(epoch);
+        if(data.status==='queued'&&data.accountKey&&hrApi){
+          try{
+            const receipt=await hrApi('/api/v1/hr/pool/messages/send',{method:'POST',
+              headers:{'Content-Type':'application/json'},body:JSON.stringify({commandId:data.id,accountKey:data.accountKey})});
+            if(epoch!==inviteEpoch||inviting?.id!==row.id||!inviteDialog.open||!allowed())return;
+            if(receipt.success===false)throw Error(receipt.message||'未收到发送确认');
+            if(receipt.data?.id===data.id&&receipt.data.status==='sent'){
+              inviteVerified=data.id;clearTimeout(inviteWatchdog);
+              inviteFeedback.textContent='邀约已发送成功';
+            }
+            await refreshInvitation(epoch);
+          }catch(error){
+            if(epoch===inviteEpoch&&inviteDialog.open&&!inviteVerified){
+              inviteFeedback.textContent=error.message+'；邀约记录已保留，正在继续核对，请勿重复发送。';
+              inviteTimer=setTimeout(()=>refreshInvitation(epoch),1000);
+            }
+          }
+        }
+      }catch(error){if(epoch===inviteEpoch&&inviteDialog.open){clearTimeout(inviteWatchdog);
+        inviteFeedback.textContent=error.message+'。请刷新发送记录核对，系统不会自动重发。';}}
       finally{inviteBusy=false;if(epoch===inviteEpoch)syncInvitation();}
     }
     let reviewing=null,reviewRequest='',reviewEpoch=0,reviewSaving=false;

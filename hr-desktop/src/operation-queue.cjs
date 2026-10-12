@@ -3,14 +3,17 @@ class OperationQueue {
   constructor(){this.tasks=[];this.current=null;this.keys=new Map();this.draining=false;this.foregroundRuns=0;}
   get pending(){return this.tasks.length;}
   get active(){return this.draining||this.tasks.length>0;}
-  add(run,{key='',background=false,signal}={}){
+  add(run,{key='',background=false,urgent=false,interrupt,signal}={}){
     if(signal?.aborted)return Promise.reject(this.cancelled());
     let task=key&&this.keys.get(key);
     if(!task){
-      if(this.tasks.length>=32)return Promise.reject(Error('等待操作较多，请等待当前读取完成'));
-      task={run,key,background,waiters:new Set(),started:false};
+      if(this.tasks.length>=(urgent?36:32))return Promise.reject(Error('等待操作较多，请等待当前读取完成'));
+      task={run,key,background,urgent,interrupt,waiters:new Set(),started:false};
       this.tasks.push(task);if(key)this.keys.set(key,task);
-    }else if(!background)task.background=false;
+    }else{
+      if(!background)task.background=false;
+      if(urgent)task.urgent=true;
+    }
     const promise=new Promise((resolve,reject)=>{
       const waiter={resolve,reject,signal};
       waiter.abort=()=>{
@@ -20,6 +23,7 @@ class OperationQueue {
       task.waiters.add(waiter);
       signal?.addEventListener('abort',waiter.abort,{once:true});
     });
+    if(urgent&&this.current?.background)this.current.interrupt?.();
     void this.drain();
     return promise;
   }
@@ -45,7 +49,8 @@ class OperationQueue {
       while(this.tasks.length){
         // A burst of manual reads may go first, but cannot starve resume receipt.
         const wantBackground=this.foregroundRuns>=4&&this.tasks.some(task=>task.background);
-        let index=this.tasks.findIndex(task=>task.background===wantBackground);
+        let index=this.tasks.findIndex(task=>task.urgent);
+        if(index<0)index=this.tasks.findIndex(task=>task.background===wantBackground);
         if(index<0)index=0;
         const [task]=this.tasks.splice(index,1);
         task.started=true;this.current=task;

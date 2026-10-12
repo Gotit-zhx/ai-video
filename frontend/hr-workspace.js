@@ -72,9 +72,9 @@
   const downloads = element('details', '', headerActions, 'hr-downloads');
   element('summary', '下载桌面助手', downloads);
   const downloadMenu = element('div', '', downloads, 'hr-download-menu');
-  for(const [label,file] of [['Mac · Apple 芯片','Heyi-Recruiter-mac-arm64.dmg'],['Windows · 64 位','Heyi-Recruiter-windows-x64-Setup.exe']]){
-    const link=element('a',label,downloadMenu);link.href='/downloads/'+file+'?v=0.1.17';
-    link.title='赫逸招聘助手 0.1.17';
+  for(const [label,file,version] of [['Mac · Apple 芯片','Heyi-Recruiter-mac-arm64.dmg','0.1.18'],['Windows · 64 位','Heyi-Recruiter-windows-x64-Setup.exe','0.1.18']]){
+    const link=element('a',label,downloadMenu);link.href='/downloads/'+file+'?v='+version;
+    link.title='赫逸招聘助手 '+version;
   }
   const note = element('p', '', root, 'hr-note');
   note.setAttribute('role', 'status');
@@ -1009,7 +1009,7 @@
     }
   }
   const onboarding=globalThis.createHrOnboarding?.({root,section,element,button,allowed,hrApi:api,navigate});
-  const pool=globalThis.createHrPool?.({root,section,element,button,allowed,navigate,
+  const pool=globalThis.createHrPool?.({root,section,element,button,allowed,navigate,hrApi,
     beginOnboarding:(row,payload,done)=>onboarding?.openPass(row,payload,done)});
   const demands=globalThis.createHrDemands?.({root,section,element,button,allowed,hrApi});
   const departmentManager=globalThis.createHrDepartments?.({root,section,element,button,allowed});

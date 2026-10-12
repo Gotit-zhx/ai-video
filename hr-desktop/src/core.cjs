@@ -63,8 +63,12 @@ class Runtime {
       });
       this.child=child;
       let output='', settled=false, failure=null;
+      this.interruptCurrent=()=>{
+        failure=Object.assign(Error('后台读取已为手动发送让出执行机会'),{code:'PRIORITY_YIELD'});
+        terminate(child);
+      };
       const finish=(error,value)=>{
-        if (settled) return; settled=true; clearTimeout(timer);
+        if (settled) return; settled=true; clearTimeout(timer);this.interruptCurrent=null;
         error ? reject(error) : resolve(value);
       };
       const timer=setTimeout(()=>{failure=Error('本机执行超时，已停止，未自动重试');terminate(child);},timeout);
@@ -85,6 +89,7 @@ class Runtime {
     });
   }
   stop(){terminate(this.child);}
+  interrupt(){if(this.child)this.interruptCurrent?.();}
 }
 class Recruiter extends EventEmitter {
   constructor({directory, runtime, browser, authorize, passiveCloud, clock=()=>Date.now()}) {
@@ -122,7 +127,7 @@ class Recruiter extends EventEmitter {
     passive:this.passiveStatus||{},dailyGreeting:this.dailyGreeting||{},reconnecting:this.paused&&this.autoReconnect&&!!this.accountRoot
       &&(!this.riskHold||TEMPORARY.has(this.riskHold.code)),
     accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
-    capabilities:['passive-resume','job-jd','active-sourcing','sourcing-credentials-v2','continuous-sourcing','managed-jobs','greeting-receipts-v1']};}
+    capabilities:['passive-resume','job-jd','active-sourcing','sourcing-credentials-v2','continuous-sourcing','managed-jobs','greeting-receipts-v1','manual-dispatch-v1']};}
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
   pause(code='USER_PAUSED'){
     if(code==='USER_PAUSED')this.autoReconnect=false;
@@ -161,7 +166,7 @@ class Recruiter extends EventEmitter {
       if(this.closed||this.disconnecting||generation!==this.generation||root!==this.accountRoot||hold!==this.riskHold)
         throw Object.assign(Error('连接状态已更改，本次操作未执行'),{code:'OPERATION_CANCELLED'});
     };
-    const key=SHARED_READS.has(operation)?JSON.stringify([generation,root,operation,extra]):'';
+    const key=options.key||(SHARED_READS.has(operation)?JSON.stringify([generation,root,operation,extra]):'');
     return this.operations.add(wanted=>{
       const pending=(async()=>{
         current();
@@ -170,10 +175,14 @@ class Recruiter extends EventEmitter {
         if(!wanted())throw this.operations.cancelled();
         this.busy=true;this.operation=operation;this.emit('change',this.snapshot());
         try {
-          const result=await this.runtime.run({operation,root,cdp:this.cdp,...extra});
+          const prepared=options.prepare?await options.prepare(current):null;
+          current();
+          if(prepared?.result)return prepared.result;
+          const result=await this.runtime.run({operation,root,cdp:this.cdp,...extra,...prepared?.extra},options.timeout||100000);
           current();
           const code=result?.error?.code;
           if(STOP.has(code))await this.hold({code});
+          if(options.complete)await options.complete(result);
           return result;
         }finally{this.busy=false;this.operation='';this.emit('change',this.snapshot());}
       })();
@@ -183,7 +192,43 @@ class Recruiter extends EventEmitter {
         // The queue drains before the next activity scheduling turn.
         queueMicrotask(()=>this.scheduleActivityPoll());
       });
-    },{...options,key});
+    },{...options,key,interrupt:options.background&&SHARED_READS.has(operation)?()=>this.runtime.interrupt?.():undefined});
+  }
+  async dispatchInvitation(input,signal){
+    if(!/^[a-f0-9]{64}$/.test(input.accountKey||'')||input.accountKey!==path.basename(this.accountRoot)
+      ||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.commandId||''))
+      throw Error('邀约不属于当前招聘账号，未执行发送');
+    if(!this.passiveCloud)throw Error('平台连接未就绪，邀约已保留');
+    const accountKey=input.accountKey,commandId=input.commandId;
+    let claimed=false;
+    const result=await this.call('passive-send',{},{
+      urgent:true,signal,key:`invite:${this.generation}:${accountKey}:${commandId}`,
+      prepare:async current=>{
+        const config=await this.passiveCloud('passive-config',{accountKey,commandId});
+        current();
+        const command=config.commands?.find(row=>row.id===commandId&&row.kind==='invite');
+        if(!command)return {result:{ok:true,data:{id:commandId,status:config.commandStatus||'uncertain',
+          verified:config.commandStatus==='sent'}}};
+        const claim=await this.passiveCloud('passive-claim',{accountKey,id:commandId});
+        current();
+        if(!claim.claimed)return {result:{ok:true,data:{id:commandId,status:'sending'}}};
+        claimed=true;
+        return {extra:{command}};
+      },
+      complete:value=>{
+        const status=value.data?.status||'uncertain';
+        value.data={...value.data,id:commandId,status,verified:status==='sent'};
+        void this.passiveCloud('passive-report',{accountKey,commandId,status}).catch(()=>{
+          // The durable local receipt is reported by the next poll.
+        });
+        this.event('INVITATION_'+(status==='sent'?'SENT':'UNCERTAIN'));
+      },
+    }).catch(async error=>{
+      if(claimed)try{await this.passiveCloud('passive-report',{accountKey,commandId,status:'uncertain'});}catch{}
+      throw error;
+    });
+    if(!result.ok)throw Error(result.error?.message||'发送结果待核对，系统不会自动重发');
+    return result.data;
   }
   async hold(hold){
     if(this.riskHold?.reason==='REALNAME_LINKED_ACCOUNT'&&!hold.reason)hold={...hold,...this.riskHold};
@@ -483,7 +528,7 @@ class Recruiter extends EventEmitter {
       else if(result.ok)this.backgroundRecovered();
     }
     catch(error){
-      if(error.code==='OPERATION_CANCELLED'||!ready())return;
+      if(['OPERATION_CANCELLED','PRIORITY_YIELD'].includes(error.code)||!ready())return;
       this.backgroundFailed(error.code);
     }
     finally{this.polling=false;this.scheduleActivityPoll();}
@@ -564,11 +609,13 @@ class Recruiter extends EventEmitter {
         const tracked=await this.call('tracked',{}, {signal:request.signal});return ok(tracked.data||[]);
       }
       if(this.state.state!=='complete'||this.paused)throw Error(this.state.error||'本机任务已暂停，请先连接招聘账号');
+      if(method==='POST'&&route==='pool/messages/send')
+        return ok(await this.dispatchInvitation(await request.json(),request.signal));
       if(method==='POST'&&route==='resumes/request'){
         const input=await request.json();
         if(!/^[1-9]\d{0,19}$/.test(String(input.friendId)))throw Error('会话标识格式不正确');
         // The existing workspace asks for explicit confirmation before POST.
-        const result=await this.call('request-resume',{friendId:String(input.friendId)},{signal:request.signal});
+        const result=await this.call('request-resume',{friendId:String(input.friendId)},{signal:request.signal,urgent:true});
         if(!result.ok)throw Error(result.error?.message||'未确认索取结果，请勿重复发送');
         return ok(result.data);
       }
