@@ -55,7 +55,7 @@ class ExtensionBearerAuthenticationFilterTest {
         ExtensionBearerAuthenticationFilter filter = new ExtensionBearerAuthenticationFilter(service);
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/product-captures");
         request.addHeader("Authorization", "Bearer hxt_" + "A".repeat(43));
-        request.addHeader(ExtensionVersionPolicy.HEADER, "0.2.6");
+        request.addHeader(ExtensionVersionPolicy.HEADER, "0.2.7");
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = (servletRequest, servletResponse) -> {
             var authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -73,7 +73,7 @@ class ExtensionBearerAuthenticationFilterTest {
     void oldMissingOrInvalidBuildCannotReachCaptureOrMeEvenWithNewToken() throws Exception {
         for (String path : List.of("/api/v1/product-captures", "/api/v1/product-captures/item/videos", "/api/v1/extension-auth/me")) {
             for (String version : List.of("", "0.2.4", "0.2.5", "invalid")) {
-                var service = authenticatedService("0.2.6");
+                var service = authenticatedService("0.2.7");
                 var request = tokenRequest(path);
                 if (!version.isEmpty()) request.addHeader(ExtensionVersionPolicy.HEADER, version);
                 var response = new MockHttpServletResponse();

@@ -240,7 +240,7 @@
   // overflow explicitly instead of silently losing description assets.
   api.planListingImages = function planListingImages(candidates, limit = 120) {
     const safeLimit = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 120) : 120;
-    const rolePriority = { MAIN: 0, VARIANT: 1, GALLERY: 2, DETAIL: 3 };
+    const rolePriority = { MAIN: 0, VARIANT: 1, SIZE_CHART: 2, GALLERY: 3, DETAIL: 4 };
     const byUrl = new Map();
     for (const [index, raw] of (Array.isArray(candidates) ? candidates : []).entries()) {
       const candidate = typeof raw === "string" ? { url: raw } : raw;
@@ -272,13 +272,14 @@
     }
 
     const unique = [...byUrl.values()];
-    const mainCandidates = unique.filter(image => image.roles.has("MAIN"))
+    const mainCandidates = unique.filter(image => image.roles.has("MAIN") && !image.roles.has("SIZE_CHART"))
       .sort((left, right) => left.firstIndex - right.firstIndex);
     const primary = mainCandidates[0]
-      || unique.slice().sort((left, right) => left.firstIndex - right.firstIndex)[0];
+      || unique.filter(image => !image.roles.has("SIZE_CHART")).sort((left, right) => left.firstIndex - right.firstIndex)[0];
     unique.forEach(image => {
       image.role = image === primary ? "MAIN"
-        : image.roles.has("VARIANT") ? "VARIANT"
+        : image.roles.has("SIZE_CHART") ? "SIZE_CHART"
+          : image.roles.has("VARIANT") ? "VARIANT"
           : image.roles.has("GALLERY") || image.roles.has("MAIN") ? "GALLERY" : "DETAIL";
     });
     unique.sort((left, right) => rolePriority[left.role] - rolePriority[right.role]
@@ -298,6 +299,7 @@
       if (selectedRoleCounts.VARIANT < roleCounts.VARIANT) issues.push("VARIANT_IMAGE_COVERAGE_TRUNCATED");
       if (selectedRoleCounts.GALLERY < roleCounts.GALLERY) issues.push("GALLERY_IMAGE_COVERAGE_TRUNCATED");
       if (selectedRoleCounts.DETAIL < roleCounts.DETAIL) issues.push("DETAIL_IMAGE_COVERAGE_TRUNCATED");
+      if (selectedRoleCounts.SIZE_CHART < roleCounts.SIZE_CHART) issues.push("SIZE_CHART_COVERAGE_TRUNCATED");
     }
     return {
       images: selected,
@@ -485,13 +487,13 @@
 
   function normalizeListingImageRole(value) {
     const role = api.cleanText(value, 32).toUpperCase();
-    if (role === "MAIN" || role === "VARIANT" || role === "DETAIL") return role;
+    if (role === "MAIN" || role === "VARIANT" || role === "DETAIL" || role === "SIZE_CHART") return role;
     if (role === "DESCRIPTION") return "DETAIL";
     return "GALLERY";
   }
 
   function countListingImageRoles(images) {
-    const counts = { MAIN: 0, GALLERY: 0, VARIANT: 0, DETAIL: 0 };
+    const counts = { MAIN: 0, GALLERY: 0, VARIANT: 0, DETAIL: 0, SIZE_CHART: 0 };
     images.forEach(image => { counts[normalizeListingImageRole(image?.role)] += 1; });
     return counts;
   }

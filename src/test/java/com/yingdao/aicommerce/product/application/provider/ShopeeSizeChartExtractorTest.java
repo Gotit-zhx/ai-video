@@ -10,6 +10,46 @@ import com.yingdao.aicommerce.shop.infrastructure.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.databind.ObjectMapper;
 class ShopeeSizeChartExtractorTest {
+ @Test void explicitSourceChartUploadsOriginalWithoutVisionAndPrecedesSharedTemplate() throws Exception {
+  var h=new Images();var client=mock(ShopeeOfficialClient.class);
+  var models=mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class);
+  var shop=mock(com.yingdao.aicommerce.shop.domain.Shop.class);when(shop.getOrganizationId()).thenReturn("org");
+  var connection=new com.yingdao.aicommerce.shop.application.MarketplaceAccess.Connection(shop,null);
+  when(client.shopGet(anyString(),eq(connection),anyMap())).thenReturn(Map.of("response",
+    Map.of("size_chart_limit",Map.of("size_chart_mandatory",true))));
+  var out=new java.io.ByteArrayOutputStream();
+  javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(10,10,java.awt.image.BufferedImage.TYPE_INT_RGB),"png",out);
+  var image=h.image("org","capture","https://cdn.example/original-chart.png","https://cdn.example/edited.png");
+  when(h.downloader.download(image.getOriginalUrl())).thenReturn(
+    new MarketplaceImageDownloader.ImageBinary(out.toByteArray(),"image/png",".png"));
+  when(client.shopMultipart(anyString(),eq(connection),anyString(),eq("image/png"),any(),anyMap()))
+    .thenReturn(Map.of("response",Map.of("image_info",Map.of("image_id","source-chart-id"))));
+  var extractor=new ShopeeSizeChartExtractor(models,h.downloader,client,new ObjectMapper(),h.db,h.archive,
+    "http://unused.invalid","unused",System.getProperty("java.io.tmpdir"));
+  assertThat(extractor.prepare(h.capture,List.of(image),connection,100352,Map.of(
+    "listingTemplateSnapshot",Map.of("enabled",true,"sizeChartImageKey","shared"))))
+    .containsEntry("size_chart","source-chart-id");
+  verifyNoInteractions(models,h.archive);
+  verify(h.downloader).download(image.getOriginalUrl());
+  verify(h.downloader,never()).download("https://cdn.example/edited.png");
+ }
+ @Test void optionalBatchChartWinsOverOriginalAndSharedTemplate() {
+  var h=new Images();var client=mock(ShopeeOfficialClient.class);
+  var shop=mock(com.yingdao.aicommerce.shop.domain.Shop.class);when(shop.getOrganizationId()).thenReturn("org");
+  var connection=new com.yingdao.aicommerce.shop.application.MarketplaceAccess.Connection(shop,null);
+  when(client.shopGet(anyString(),eq(connection),anyMap())).thenReturn(Map.of("response",
+    Map.of("size_chart_limit",Map.of("size_chart_mandatory",true))));
+  when(h.archive.read("org","batch")).thenReturn(new CommerceDesignImageGateway.Reference("image/jpeg","AQIDBA=="));
+  when(client.shopMultipart(anyString(),eq(connection),anyString(),eq("image/jpeg"),any(),anyMap()))
+    .thenReturn(Map.of("response",Map.of("image_info",Map.of("image_id","batch-chart-id"))));
+  var extractor=new ShopeeSizeChartExtractor(null,h.downloader,client,new ObjectMapper(),h.db,h.archive,
+    "http://unused.invalid","unused",System.getProperty("java.io.tmpdir"));
+  assertThat(extractor.prepare(h.capture,List.of(h.image("org","capture","https://cdn.example/original.png",null)),
+    connection,100352,Map.of("sizeChartImageKey","batch",
+    "listingTemplateSnapshot",Map.of("enabled",true,"sizeChartImageKey","shared"))))
+    .containsEntry("size_chart","batch-chart-id");
+  verify(h.archive).read("org","batch");verifyNoInteractions(h.downloader,h.db);
+ }
  @Test void configuredTemplatePublishesOriginalBytesWithoutOcrOrSourceDownload() {
   var h=new Images(); var client=mock(ShopeeOfficialClient.class);
   var models=mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class);

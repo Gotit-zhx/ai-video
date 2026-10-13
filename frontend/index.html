@@ -65,7 +65,7 @@
 
   <main id="login-view" class="login-shell" hidden>
 
-    <header class="login-masthead"><a class="login-home-brand" href="#home" aria-label="HOYEE 首页">HOYEE<span>赫逸</span></a><div class="login-header-tools"><a href="/downloads/hoyee-assistant-latest.zip" download class="login-header-download">插件下载 <span aria-hidden="true">↓</span></a><details class="login-header-guide"><summary>安装说明</summary><div class="login-guide-popover"><strong>安装插件助手</strong><ol><li>下载并解压安装包。</li><li>在 Chrome 地址栏输入 <code>chrome://extensions</code>；Edge 输入 <code>edge://extensions</code>。</li><li>开启“开发者模式”，点击“加载已解压的扩展程序”，选择解压后的 <code>hoyee-assistant</code> 文件夹。</li><li>刷新商品页面，点击浏览器工具栏的插件图标开始使用。</li></ol><p>v0.2.6 · 电脑端 Chrome / Edge</p></div></details></div></header>
+    <header class="login-masthead"><a class="login-home-brand" href="#home" aria-label="HOYEE 首页">HOYEE<span>赫逸</span></a><div class="login-header-tools"><a href="/downloads/hoyee-assistant-latest.zip" download class="login-header-download">插件下载 <span aria-hidden="true">↓</span></a><details class="login-header-guide"><summary>安装说明</summary><div class="login-guide-popover"><strong>安装插件助手</strong><ol><li>下载并解压安装包。</li><li>在 Chrome 地址栏输入 <code>chrome://extensions</code>；Edge 输入 <code>edge://extensions</code>。</li><li>开启“开发者模式”，点击“加载已解压的扩展程序”，选择解压后的 <code>hoyee-assistant</code> 文件夹。</li><li>刷新商品页面，点击浏览器工具栏的插件图标开始使用。</li></ol><p>v0.2.7 · 电脑端 Chrome / Edge</p></div></details></div></header>
 
     <section class="login-panel">
       <div class="login-card">
@@ -1896,11 +1896,18 @@
   <dialog id="product-bulk-dialog" class="product-bulk-dialog" aria-labelledby="product-bulk-title">
     <form id="product-bulk-form">
       <header><div><span class="bulk-dialog-eyebrow">PRODUCT UPLOAD</span><h2 id="product-bulk-title">批量一键上传</h2></div><div class="product-bulk-toolbar-actions"><button type="button" id="open-product-bulk-history-from-detail" aria-controls="product-bulk-history-dialog">批量任务</button><button type="button" id="close-product-bulk">关闭</button></div></header>
-      <p>只需选择店铺，其他设置自动完成。</p>
+      <p>选择店铺即可上传，也可为本批商品指定尺码图。</p>
       <fieldset id="product-bulk-settings">
         <div class="product-bulk-fields">
           <label>目标店铺<select id="product-bulk-shop" required></select></label>
         </div>
+        <section id="product-bulk-size-chart" class="product-bulk-size-chart" aria-label="本次上传尺码图" hidden>
+          <div><strong>尺码图片 <small>选填</small></strong><p>上传后用于本批商品；不上传则使用原商品尺码表。</p></div>
+          <div class="product-bulk-size-chart-actions"><label class="product-bulk-chart-upload">上传尺码图<input id="product-bulk-size-chart-file" type="file" accept="image/png,image/jpeg"></label><button id="product-bulk-size-chart-remove" type="button" hidden>移除</button></div>
+          <img id="product-bulk-size-chart-preview" alt="本次上传的尺码表" hidden>
+          <span id="product-bulk-size-chart-status" role="status"></span>
+          <span id="product-bulk-size-chart-error" role="alert"></span>
+        </section>
       </fieldset>
       <p id="product-bulk-shop-hint" role="status"></p>
       <p class="product-bulk-defaults" id="product-bulk-defaults">自动套用目标平台模板 · 库存 999 · 默认无品牌<br>自动匹配原类目和物流 · 各规格原售价按最新汇率换算</p>
@@ -1954,12 +1961,13 @@
   </dialog>
   <script src="/i18n/catalog.js?v=shopee-logistics-20260921" defer></script>
   <script src="/i18n.js?v=20260921-2" defer></script>
-  <script src="/product-bulk-upload.js?v=20260910-shop-switch-1" defer></script>
+  <script src="/product-bulk-upload.js?v=20261013-size-chart-2" defer></script>
+  <script src="/product-bulk-size-chart.js?v=20261013-size-chart-2" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
-  <link rel="stylesheet" href="/product-listing-templates.css?v=20261013-size-chart-1">
+  <link rel="stylesheet" href="/product-listing-templates.css?v=20261013-size-chart-2">
   <script src="/product-listing-templates.js?v=20261013-size-chart-1" defer></script>
-  <script src="/app.js?v=20261012-automatic-recovery-1" defer></script>
+  <script src="/app.js?v=20261013-size-chart-2" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-onboarding.js?v=20261012-compact-3" defer></script>
   <script src="/hr-bi.js?v=20261012-boss-chat-019" defer></script>

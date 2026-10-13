@@ -15,7 +15,8 @@
     if (!shopId || !key) throw Error('请选择目标店铺');
     if (!items.some(item => canChangeShop(item) && item.shopId !== shopId)) return items;
     return items.map((item, index) => canChangeShop(item) && item.shopId !== shopId
-      ? {captureId: item.captureId, title: item.title, shopId, status: 'WAITING', idempotencyKey: `${key}-${index}`}
+      ? {captureId: item.captureId, title: item.title, shopId, status: 'WAITING', idempotencyKey: `${key}-${index}`,
+        ...(item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})}
       : item);
   }
   function withDeadline(operation, { timeoutMs = 30000, signal, timeoutMessage = '请求超时，请重试' } = {}) {

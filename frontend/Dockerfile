@@ -7,7 +7,7 @@ COPY resend-theme.css /usr/share/nginx/html/resend-theme.css
 COPY image-progress.css /usr/share/nginx/html/image-progress.css
 COPY app.js /usr/share/nginx/html/app.js
 COPY video-script-terminal.js video-script-terminal.css /usr/share/nginx/html/
-COPY product-bulk-upload.js /usr/share/nginx/html/product-bulk-upload.js
+COPY product-bulk-upload.js product-bulk-size-chart.js /usr/share/nginx/html/
 COPY product-bulk-history.js product-bulk-history.css /usr/share/nginx/html/
 COPY commerce-planner.js commerce-planner.css /usr/share/nginx/html/
 COPY commerce-batches.js /usr/share/nginx/html/

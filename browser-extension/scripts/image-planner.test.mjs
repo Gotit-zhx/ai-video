@@ -23,6 +23,17 @@ context.globalThis = context;
 vm.runInContext(readFileSync(new URL("../src/content/common.js", import.meta.url), "utf8"), context);
 
 const common = context.HeyiCollector;
+const charts=common.planListingImages([
+  {url:"https://cdn.example/main.png",role:"MAIN"},
+  {url:"https://cdn.example/chart.png",role:"GALLERY"},
+  {url:"https://cdn.example/chart.png",role:"SIZE_CHART"},
+  {url:"https://cdn.example/color.png",role:"VARIANT"},
+  {url:"https://cdn.example/detail.png",role:"DETAIL"}
+],3);
+assert.deepEqual(Array.from(charts.images,image=>image.role),["MAIN","VARIANT","SIZE_CHART"]);
+assert.equal(charts.completeness.roleCounts.SIZE_CHART,1);
+assert.equal(charts.completeness.selectedRoleCounts.SIZE_CHART,1);
+assert.equal(common.planListingImages([{url:"https://cdn.example/chart.png",role:"SIZE_CHART"}]).images[0].role,"SIZE_CHART");
 const candidates = [
   { url: "https://cdn.example.com/main.webp", role: "MAIN" },
   ...Array.from({ length: 20 }, (_, index) => ({

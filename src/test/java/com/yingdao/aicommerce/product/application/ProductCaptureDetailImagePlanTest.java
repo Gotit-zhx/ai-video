@@ -50,7 +50,7 @@ class ProductCaptureDetailImagePlanTest {
         assertEquals("{\"preserved\":true}", main.getSourceJson());
         assertTrue(plan.requestedDetails());
         assertEquals(4, plan.completeness().get("expectedCount"));
-        assertEquals(Map.of("MAIN", 1, "GALLERY", 0, "VARIANT", 0, "DETAIL", 3),
+        assertEquals(Map.of("MAIN", 1, "GALLERY", 0, "VARIANT", 0, "DETAIL", 3, "SIZE_CHART", 0),
                 plan.completeness().get("roleCounts"));
     }
 
@@ -116,7 +116,7 @@ class ProductCaptureDetailImagePlanTest {
         assertEquals(1, plan.completeness().get("requiredSkuImageCount"));
         assertEquals(0L, plan.completeness().get("coveredSkuImageCount"));
         assertEquals(List.of("VARIANT_IMAGE_COVERAGE_TRUNCATED"), plan.completeness().get("issues"));
-        assertEquals(Map.of("MAIN", 1, "GALLERY", 0, "VARIANT", 0, "DETAIL", 0),
+        assertEquals(Map.of("MAIN", 1, "GALLERY", 0, "VARIANT", 0, "DETAIL", 0, "SIZE_CHART", 0),
                 plan.completeness().get("selectedRoleCounts"));
     }
 

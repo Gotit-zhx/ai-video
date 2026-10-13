@@ -7021,7 +7021,10 @@ function renderProductBulkProgress() {
   if (shopHint) shopHint.textContent = changeable.length
     ? `可切换店铺，${changeable.length} 件未提交商品将按新店铺重新准备。${changeable.length < productBulkItems.length ? '已提交商品保留原店铺。' : ''}` : '';
   button.textContent = productBulkBusy ? '正在自动准备并提交…' : productBulkItems.length ? pending ? '重试未提交商品' : reconnect ? '重试进度同步' : '全部商品已提交' : '一键上传所选商品';
-  button.disabled = productBulkBusy || (productBulkItems.length > 0 && !pending && !reconnect) || !document.querySelector('#product-bulk-shop').value;
+  button.disabled = productBulkBusy || ProductBulkSizeChart.isUploading() || (productBulkItems.length > 0 && !pending && !reconnect) || !document.querySelector('#product-bulk-shop').value;
+  const chartShop = shops.find(shop => String(shop.id) === document.querySelector('#product-bulk-shop').value);
+  ProductBulkSizeChart.render({busy:productBulkBusy,editable:!productBulkItems.length || changeable.length > 0,
+    platform:normalizedMarketplacePlatform(chartShop?.platform || 'SHOPEE')});
 }
 
 function productBulkSelectedShop() {
@@ -7144,6 +7147,7 @@ async function openProductBulkUpload(historyKey, captureId) {
   const run = productBulkRuns.get(productBulkStorageKey);
   productBulkItems = run?.items || saved?.items || [];
   productBulkBusy = Boolean(run);
+  ProductBulkSizeChart.open(org,productBulkStorageKey,productBulkItems);
   const shops = crossPlatformPublishShops();
   const select = document.querySelector('#product-bulk-shop');
   select.innerHTML = `<option value="">${shops.length ? '请选择目标店铺' : '没有可发布的授权店铺'}</option>` + shops.map(shop => `<option value="${escapeHtml(shop.id)}">${escapeHtml(shop.name || shop.shopName || shop.externalShopId)} · ${escapeHtml(shop.region || '')} · ${escapeHtml(shop.platform === 'TIKTOK_SHOP' ? 'TikTok Shop' : 'Shopee')}</option>`).join('');
@@ -7174,7 +7178,7 @@ async function openProductBulkUpload(historyKey, captureId) {
 
 async function submitProductBulkUpload(event) {
   event.preventDefault();
-  if (productBulkBusy || !hasAnyPermission('product:publish')) return;
+  if (productBulkBusy || ProductBulkSizeChart.isUploading() || !hasAnyPermission('product:publish')) return;
   const org = productBulkOrganization;
   const key = productBulkStorageKey;
   if (currentUser?.organizationId !== org) return;
@@ -7199,7 +7203,10 @@ async function submitProductBulkUpload(event) {
     if (!productBulkItems.length) {
       const items = [...document.querySelectorAll('[data-bulk-item]')].map(row => ({id: row.dataset.bulkItem, title: row.querySelector('strong').textContent}));
       productBulkItems = ProductBulkUpload.plan(items, document.querySelector('#product-bulk-shop').value, newProductIdempotencyKey());
-      for (const item of productBulkItems) item.thumbnailUrl = productBulkThumbnail(item);
+      for (const item of productBulkItems) {
+        item.thumbnailUrl = productBulkThumbnail(item);
+        item.sizeChartImageKey = ProductBulkSizeChart.key();
+      }
     }
     const items = productBulkItems;
     run = {items, org, key};
@@ -7258,7 +7265,8 @@ async function submitProductBulkUpload(event) {
       if (capture?.id !== item.captureId) throw Error('商品详情读取失败，请重试');
       const targetShop = crossPlatformPublishShops().find(shop => String(shop.id) === item.shopId);
       const platform = normalizedMarketplacePlatform(targetShop?.platform || item.payload?.destinationPlatform || 'SHOPEE');
-      const base = {confirmed: true, destinationPlatform: platform, shopId: item.shopId, idempotencyKey: item.idempotencyKey};
+      const base = {confirmed: true, destinationPlatform: platform, shopId: item.shopId, idempotencyKey: item.idempotencyKey,
+        ...(platform === 'SHOPEE' && item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})};
       let payload = base;
       if (marketplaceIntegrationStatus.livePublishingEnabled) {
         if (!targetShop) throw Error('目标店铺当前不可发布，请检查店铺授权');
@@ -7403,6 +7411,13 @@ document.querySelector('#product-bulk-form').addEventListener('submit', submitPr
 document.querySelector('#product-bulk-shop').addEventListener('change', changeProductBulkShop);
 document.querySelector('#close-product-bulk').addEventListener('click', () => document.querySelector('#product-bulk-dialog').close());
 document.querySelector('#product-bulk-dialog').addEventListener('close', stopProductBulkPolling);
+document.querySelector('#product-bulk-dialog').addEventListener('close', () => ProductBulkSizeChart.close());
+ProductBulkSizeChart.init({api,getOrganization:()=>currentUser?.organizationId,
+  canPublish:()=>hasAnyPermission('product:publish'),changed:renderProductBulkProgress,
+  selected:sizeChartImageKey=>{
+    for (const item of productBulkItems.filter(ProductBulkUpload.canChangeShop)) item.sizeChartImageKey=sizeChartImageKey;
+    if (productBulkItems.length) saveProductBulkItems();
+  }});
 
 async function submitProductPublish(event) {
   event.preventDefault();

@@ -4,7 +4,7 @@ import vm from "node:vm";
 
 const stored = new Map();
 globalThis.chrome = {
-  runtime: { getManifest: () => ({ version: "0.2.6" }) },
+  runtime: { getManifest: () => ({ version: "0.2.7" }) },
   storage: { local: {
     get: async key => ({ [key]: stored.get(key) }),
     set: async values => Object.entries(values).forEach(([key, value]) => stored.set(key, value)),
@@ -18,7 +18,7 @@ await writeAuth({ baseUrl: "https://hoyee.org.cn", accessToken: "existing-login-
   expiresAt: Date.now() + 3600000, permissions: ["product:collect"] });
 globalThis.fetch = async (url, options) => {
   assert.equal(new URL(url).origin, "https://hoyee.org.cn");
-  assert.equal(options.headers.get("X-Heyi-Extension-Version"), "0.2.6");
+  assert.equal(options.headers.get("X-Heyi-Extension-Version"), "0.2.7");
   return new Response(JSON.stringify({ code: "EXTENSION_UPDATE_REQUIRED", message: "请更新插件" }), {status:426});
 };
 for (const action of [refreshCurrentUser, () => createCapture({ title: "Test" }, "test")]) {

@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
 final class ProductCaptureImagePlan {
     static final int MAX_IMAGES = 120;
     private static final Map<String, Integer> PRIORITY = Map.of(
-            "MAIN", 0, "VARIANT", 1, "GALLERY", 2, "DETAIL", 3
+            "MAIN", 0, "VARIANT", 1, "SIZE_CHART", 2, "GALLERY", 3, "DETAIL", 4
     );
     private static final Pattern BYTEDANCE_ASSET = Pattern.compile(
             "/(tos-[^/]+/[A-Za-z0-9_-]{16,})(?:~|$)", Pattern.CASE_INSENSITIVE);
@@ -60,7 +60,8 @@ final class ProductCaptureImagePlan {
             Map<String, Object> source = imageMap(raw);
             String requestedRole = text(source, "role", "type");
             if (!"DETAIL".equalsIgnoreCase(requestedRole)
-                    && !"DESCRIPTION".equalsIgnoreCase(requestedRole)) continue;
+                    && !"DESCRIPTION".equalsIgnoreCase(requestedRole)
+                    && !"SIZE_CHART".equalsIgnoreCase(requestedRole)) continue;
             requestedDetails = true;
             String url = safeImageUrl.validate(text(source, "url", "originalUrl", "src", "imageUrl"));
             if (!assets.add(assetKey(url))) continue;
@@ -70,7 +71,7 @@ final class ProductCaptureImagePlan {
             Map<String, Object> value = new LinkedHashMap<>(source);
             value.put("url", url);
             value.put("originalUrl", url);
-            value.put("role", "DETAIL");
+            value.put("role", role(requestedRole, "DETAIL"));
             value.put("position", (int) nextPosition);
             value.put("sortOrder", (int) nextPosition++);
             additions.add(value);
@@ -155,11 +156,13 @@ final class ProductCaptureImagePlan {
 
         List<Candidate> candidates = new ArrayList<>(byUrl.values());
         Candidate primary = candidates.stream()
-                .filter(candidate -> candidate.roles.contains("MAIN"))
+                .filter(candidate -> candidate.roles.contains("MAIN") && !candidate.roles.contains("SIZE_CHART"))
                 .min(Comparator.comparingInt(candidate -> candidate.sequence))
-                .orElse(candidates.stream().min(Comparator.comparingInt(candidate -> candidate.sequence)).orElse(null));
+                .orElse(candidates.stream().filter(candidate -> !candidate.roles.contains("SIZE_CHART"))
+                        .min(Comparator.comparingInt(candidate -> candidate.sequence)).orElse(null));
         for (Candidate candidate : candidates) {
             candidate.finalRole = candidate == primary ? "MAIN"
+                    : candidate.roles.contains("SIZE_CHART") ? "SIZE_CHART"
                     : candidate.roles.contains("VARIANT") ? "VARIANT"
                     : candidate.roles.contains("GALLERY") || candidate.roles.contains("MAIN") ? "GALLERY"
                     : "DETAIL";
@@ -189,6 +192,9 @@ final class ProductCaptureImagePlan {
             issues.add("IMAGE_LIMIT_EXCEEDED");
             if (selectedRoleCounts.get("VARIANT") < roleCounts.get("VARIANT")) {
                 issues.add("VARIANT_IMAGE_COVERAGE_TRUNCATED");
+            }
+            if (selectedRoleCounts.get("SIZE_CHART") < roleCounts.get("SIZE_CHART")) {
+                issues.add("SIZE_CHART_COVERAGE_TRUNCATED");
             }
             if (selectedRoleCounts.get("GALLERY") < roleCounts.get("GALLERY")) {
                 issues.add("GALLERY_IMAGE_COVERAGE_TRUNCATED");
@@ -245,6 +251,7 @@ final class ProductCaptureImagePlan {
         String normalized = value == null ? fallback : value.trim().toUpperCase(Locale.ROOT);
         return switch (normalized) {
             case "MAIN" -> "MAIN";
+            case "SIZE_CHART" -> "SIZE_CHART";
             case "VARIANT", "SKU", "MODEL", "VARIANT_OPTION" -> "VARIANT";
             case "DETAIL", "DESCRIPTION" -> "DETAIL";
             default -> "GALLERY";
@@ -263,6 +270,7 @@ final class ProductCaptureImagePlan {
         counts.put("GALLERY", 0);
         counts.put("VARIANT", 0);
         counts.put("DETAIL", 0);
+        counts.put("SIZE_CHART", 0);
         return counts;
     }
 

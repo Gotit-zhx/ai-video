@@ -557,7 +557,7 @@ function sanitizeImageCompleteness(value, images, skus) {
 }
 
 function countImageRoles(images) {
-  const counts = { MAIN: 0, GALLERY: 0, VARIANT: 0, DETAIL: 0 };
+  const counts = { MAIN: 0, GALLERY: 0, VARIANT: 0, DETAIL: 0, SIZE_CHART: 0 };
   for (const image of images) counts[listingImageRole(image?.role)] += 1;
   return counts;
 }
@@ -573,6 +573,7 @@ function sanitizeImageRoleCounts(value, minimums) {
 function listingImageRole(value) {
   const role = cleanText(value, 32).toUpperCase();
   if (role === "MAIN") return "MAIN";
+  if (role === "SIZE_CHART") return "SIZE_CHART";
   if (["VARIANT", "SKU", "MODEL", "VARIANT_OPTION"].includes(role)) return "VARIANT";
   if (["DETAIL", "DESCRIPTION"].includes(role)) return "DETAIL";
   return "GALLERY";

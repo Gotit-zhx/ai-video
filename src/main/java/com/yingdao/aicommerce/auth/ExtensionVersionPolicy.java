@@ -6,7 +6,7 @@ import org.springframework.http.HttpStatus;
 /** Compatibility gate for capture clients, independent of the login token's age. */
 public final class ExtensionVersionPolicy {
     public static final String HEADER = "X-Heyi-Extension-Version";
-    public static final String MINIMUM_VERSION = "0.2.6";
+    public static final String MINIMUM_VERSION = "0.2.7";
     public static final String DOWNLOAD_URL = "https://hoyee.org.cn/downloads/hoyee-assistant-latest.zip";
 
     private ExtensionVersionPolicy() {}

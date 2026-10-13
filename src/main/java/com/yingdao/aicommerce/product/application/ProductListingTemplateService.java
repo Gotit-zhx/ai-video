@@ -175,6 +175,8 @@ public class ProductListingTemplateService {
     }
 
     public static String sizeChartImageKey(Map<String, Object> request) {
+        String selected = text(request.get("sizeChartImageKey"));
+        if (!selected.isBlank()) return selected;
         var snapshot = snapshotFrom(request);
         return Boolean.TRUE.equals(snapshot.get("enabled")) ? text(snapshot.get("sizeChartImageKey")) : "";
     }

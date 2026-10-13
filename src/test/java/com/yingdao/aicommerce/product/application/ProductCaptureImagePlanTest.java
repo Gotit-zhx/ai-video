@@ -86,6 +86,24 @@ class ProductCaptureImagePlanTest {
         assertEquals(List.of(), plan.completeness().get("issues"));
     }
 
+    @Test
+    void preservesSourceSizeChartsWithoutPromotingThemToMain() {
+        var plan = ProductCaptureImagePlan.prepare(List.of(image("chart", "SIZE_CHART"),
+                image("main", "MAIN"), image("chart", "GALLERY")), List.of(), safeImageUrl);
+        assertEquals(List.of("MAIN", "SIZE_CHART"), plan.images().stream().map(i -> i.get("role")).toList());
+        var chartOnly = ProductCaptureImagePlan.prepare(List.of(image("chart", "SIZE_CHART")), List.of(), safeImageUrl);
+        assertEquals("SIZE_CHART", chartOnly.images().getFirst().get("role"));
+    }
+
+    @Test
+    void allowsSupplementingOriginalSizeChartWithoutChangingExistingAssets() {
+        var plan = ProductCaptureImagePlan.supplementalDetails(List.of(),
+                List.of(image("chart", "SIZE_CHART")), List.of(), safeImageUrl);
+        assertTrue(plan.requestedDetails());
+        assertEquals("SIZE_CHART", plan.additions().getFirst().get("role"));
+        assertEquals(1, ((Map<?, ?>) plan.completeness().get("roleCounts")).get("SIZE_CHART"));
+    }
+
     private Map<String, Object> image(String name, String role) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("url", "https://cdn.example.com/" + name + ".webp");

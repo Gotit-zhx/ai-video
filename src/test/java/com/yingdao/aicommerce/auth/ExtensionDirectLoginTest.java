@@ -11,7 +11,7 @@ class ExtensionDirectLoginTest {
   var service=mock(ExtensionAuthService.class);var manager=mock(AuthenticationManager.class);var controller=new ExtensionAuthController(service);
   ReflectionTestUtils.setField(controller,"authenticationManager",manager);ReflectionTestUtils.setField(controller,"defaultOrganizationCode","heyi");
   when(manager.authenticate(any())).thenThrow(new BadCredentialsException("bad"));
-  assertThrows(RuntimeException.class,()->controller.login(new ExtensionAuthController.DirectLogin("123","bad","device","extension","0.2.6")));
+  assertThrows(RuntimeException.class,()->controller.login(new ExtensionAuthController.DirectLogin("123","bad","device","extension","0.2.7")));
   verifyNoInteractions(service);
  }
  @Test void successfulPasswordLoginIssuesScopedDeviceTokenForAuthenticatedUser(){
@@ -20,7 +20,7 @@ class ExtensionDirectLoginTest {
   var user=new PlatformPrincipal("u","org","heyi","123","name","",true,List.of(),List.of("product:collect"));
   when(manager.authenticate(any())).thenReturn(UsernamePasswordAuthenticationToken.authenticated(user,null,List.of()));
   when(service.createPairingCode(user)).thenReturn(new ExtensionAuthService.PairingCodeResult("internal",Instant.now(),List.of("product:collect")));
-  controller.login(new ExtensionAuthController.DirectLogin("123","password","device","extension","0.2.6"));
-  verify(service).exchange(new ExtensionAuthService.ExchangeRequest("internal","device","extension","0.2.6"));
+  controller.login(new ExtensionAuthController.DirectLogin("123","password","device","extension","0.2.7"));
+  verify(service).exchange(new ExtensionAuthService.ExchangeRequest("internal","device","extension","0.2.7"));
  }
 }

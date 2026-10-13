@@ -70,6 +70,10 @@
     const itemImages = [item.image, ...(Array.isArray(item.images) ? item.images : [])]
       .map(firstImageValue).map(shopeeImageUrl).filter(Boolean);
     const detailImages = richDescriptionImages(item);
+    const sizeChartImages = [item.size_chart, item.sizeChart,
+      item.size_chart_info?.size_chart, item.size_chart_info?.image_id, item.size_chart_info?.image_url]
+      .filter(value => typeof value === "string" && value.trim())
+      .map(shopeeImageUrl).filter(Boolean);
     const productMainImage = itemImages[0] || "";
     const rawModels = Array.isArray(item.models) ? item.models.slice(0, MAX_SKUS + 1) : [];
     const issues = [];
@@ -183,6 +187,7 @@
     const imageCandidates = [
       ...itemImages.map((url, index) => ({ url, role: index === 0 ? "MAIN" : "GALLERY", alt: "" })),
       ...variantImages,
+      ...[...new Set(sizeChartImages)].map(url => ({ url, role: "SIZE_CHART", alt: "Size Chart" })),
       ...detailImages.map(url => ({ url, role: "DETAIL", alt: "商品详情图" }))
     ];
 
@@ -367,6 +372,15 @@
     if (!Array.isArray(candidates) || candidates.length === 0) return null;
     candidates.sort((left, right) => compareCandidates(right, left));
     const selected = candidates[0].value;
+    // Chart assets can be present in bootstrap/rendered state while a fresher
+    // price response omits them. Merge only identity-matched chart assets.
+    const chartUrls = new Set(selected.imageCandidates.filter(image => image.role === "SIZE_CHART").map(image => image.url));
+    for (const {value} of candidates) {
+      if (value.productId !== selected.productId || value.shopId !== selected.shopId) continue;
+      for (const image of value.imageCandidates.filter(image => image.role === "SIZE_CHART")) {
+        if (!chartUrls.has(image.url)) { selected.imageCandidates.push(image); chartUrls.add(image.url); }
+      }
+    }
     // Keep the selected response's promotion prices and every explicit stock
     // value (including zero). Fill only absent inventory from the currently
     // rendered, identity-matched PDP, joined by the platform's real model ID.

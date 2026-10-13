@@ -61,6 +61,7 @@ function harness(captures = fixture()) {
     ]}
   };
   const c = {
+    ProductBulkSizeChart:{isUploading:()=>false,key:()=>state.sizeChartImageKey || '',open:()=>{},render:()=>{}},
     ProductListingTemplates:{ensure:async()=>{},get:()=>({enabled:false}),fields:()=>({})},
     ProductBulkUpload:{...ProductBulkUpload,retryRead:(operation,options)=>ProductBulkUpload.retryRead(operation,{...options,sleep:async()=>{}})},
     ProductBulkHistory,
@@ -148,6 +149,20 @@ function harness(captures = fixture()) {
     submit:() => c.submitProductBulkUpload({preventDefault(){}}), clearRuns:()=>vm.runInContext('productBulkRuns.clear()',c),
     runCount:()=>vm.runInContext('productBulkRuns.size',c)};
 }
+
+test('optional batch chart is frozen into each request; omission keeps original source behavior', async () => {
+  const custom=harness();custom.state.sizeChartImageKey='tenant/batch-chart';
+  await custom.submit();
+  assert.equal(custom.posts.length,2);
+  for(const post of custom.posts) assert.equal(post.body.sizeChartImageKey,'tenant/batch-chart');
+  const original=harness();await original.submit();
+  for(const post of original.posts) assert.equal(Object.hasOwn(post.body,'sizeChartImageKey'),false);
+});
+
+test('batch submission waits until the optional chart upload finishes', async () => {
+  const h=harness();h.c.ProductBulkSizeChart.isUploading=()=>true;
+  await h.submit();assert.equal(h.posts.length,0);assert.equal(h.optionReads.length,0);
+});
 
 test('shop-only submission prepares each product independently and preserves its source SKU prices', async () => {
   const h = harness();

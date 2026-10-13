@@ -96,6 +96,12 @@ assert.deepEqual(
   ]
 );
 assert.equal(parsed96.imageCandidates.some(image => image.url.includes("review-image")), false);
+const chartFixture=structuredClone(shopee96Fixture);
+chartFixture.data.item.size_chart="ph-11134207-820lc-mu8q8kokcefbfe";
+const withChart=common.parseShopeeProductData(chartFixture,{shopId:"123",productId:"456"},"TEST");
+assert.equal(withChart.skus.length,96);
+assert.deepEqual(Array.from(withChart.imageCandidates.filter(image=>image.role==="SIZE_CHART"),image=>image.url),
+  ["https://down-ph.img.susercontent.com/file/ph-11134207-820lc-mu8q8kokcefbfe"]);
 
 const summaryBeforeFullItem = {
   recommendation: { item_id: 456, shop_id: 123, name: "Summary", price: 15_900_000 },

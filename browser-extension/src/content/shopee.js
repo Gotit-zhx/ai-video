@@ -35,6 +35,8 @@
       const identity = productIdentity(productUrl) || {};
       const detail = pageType === "DETAIL";
       const productData = detail ? await common.loadShopeeProductData(identity) : null;
+      const chart = detail ? await readSizeChart(root, identity,
+        productData?.imageCandidates?.some(image => image.role === "SIZE_CHART")) : {images:[],missing:false};
       const structured = detail ? common.parseJsonLdProduct(document) : null;
       const titleResult = titleFrom(root, detail);
       const metaTitle = detail ? common.metaContent(["og:title", "twitter:title"]) : { value: "", key: "" };
@@ -129,10 +131,15 @@
       ) : [];
       const imagePlan = common.planListingImages([
         ...(productData?.imageCandidates || []),
+        ...chart.images,
         ...galleryImages,
         ...detailDomImages
       ], detail ? 120 : 3);
       const images = imagePlan.images;
+      if (chart.missing) {
+        imagePlan.completeness.complete = false;
+        imagePlan.completeness.issues.push("SIZE_CHART_NOT_CAPTURED");
+      }
       common.applyStructuredSkuImageFallback(productData, images);
       const domVariantHints = detail ? common.extractVariantHints(root, [
         "button[class*='product-variation']",
@@ -227,6 +234,61 @@
       };
     }
   };
+
+  async function readSizeChart(root, identity, alreadyCaptured) {
+    if (alreadyCaptured) return {images:[],missing:false};
+    const label = /^(?:size\s*(?:chart|guide)|尺码表|尺碼表|尺寸表)$/i;
+    const sameProduct = () => {
+      const current = productIdentity(location.href);
+      return current?.shopId === identity.shopId && current?.productId === identity.productId;
+    };
+    const controls = [...root.querySelectorAll("button,[role='button']")];
+    const button = controls.find(node => label.test(common.cleanText(node.textContent || node.getAttribute("aria-label"),80))
+      && common.isVisible(node) && !node.closest("[data-heyi-collector-host]"));
+    if (!button) return {images:[],missing:false};
+    function popup() {
+      const titles = [...document.querySelectorAll("h1,h2,h3,div,span")].filter(node =>
+        label.test(common.cleanText(node.textContent,100)) && common.isVisible(node)
+        && !node.closest("[data-heyi-collector-host]"));
+      for (const title of titles) {
+        let container = title.parentElement;
+        for (let depth=0;container && depth<4;depth++,container=container.parentElement) {
+          // Stop before any ancestor containing the PDP title/variation button.
+          if (container.contains(button) || container.querySelector("h1")) break;
+          const images = [...container.querySelectorAll("img")].filter(image => common.isVisible(image));
+          const urls = [...new Set(images.map(image => common.absoluteUrl(image.currentSrc || image.src)).filter(url => {
+            try { return /(^|\.)susercontent\.com$/.test(new URL(url).hostname)
+              || /(^|\.)shopee\.(ph|sg|vn)$/.test(new URL(url).hostname)
+              || /(^|\.)shopee\.(com\.my|co\.id|co\.th)$/.test(new URL(url).hostname); }
+            catch { return false; }
+          }))];
+          if (urls.length) return {container,images:urls.map(url=>({url,role:"SIZE_CHART",alt:"Size Chart"}))};
+        }
+      }
+      return null;
+    }
+    let found=popup(),opened=false;
+    try {
+      if (!found) {
+        if (!sameProduct()) throw Error("商品页面已切换，请重新采集");
+        button.click(); opened=true;
+        for (let attempt=0;attempt<20 && !found;attempt++) {
+          await new Promise(resolve=>setTimeout(resolve,150));
+          if (!sameProduct()) throw Error("商品页面已切换，请重新采集");
+          found=popup();
+        }
+      }
+      return {images:found?.images || [],missing:!found};
+    } finally {
+      if (opened && found && sameProduct()) {
+        const buttons=[...found.container.querySelectorAll("button,[role='button']")];
+        const close=buttons.find(node=>/close|关闭|關閉/i.test(node.getAttribute("aria-label")||node.textContent))
+          || (buttons.length===1 ? buttons[0] : null);
+        close?.click();
+      }
+    }
+  }
+  common.readShopeeSizeChart = readSizeChart;
 
   function productIdentity(value) {
     let url;

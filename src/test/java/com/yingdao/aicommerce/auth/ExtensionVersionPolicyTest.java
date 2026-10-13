@@ -14,9 +14,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ExtensionVersionPolicyTest {
     @Test
     void comparesNumericChromeVersionsAndFailsClosedForUnknownVersions() {
-        for (String value : List.of("0.2.6", "0.2.6.0", "0.2.10", "0.3", "1", "1.0.0"))
+        for (String value : List.of("0.2.7", "0.2.7.0", "0.2.10", "0.3", "1", "1.0.0"))
             assertTrue(ExtensionVersionPolicy.supported(value), value);
-        for (String value : List.of("", "0.2.5", "0.2", "0.1.99", "0.2.6-beta", "0.2.6.0.1", "99999", " 0.2.6", "NaN"))
+        for (String value : List.of("", "0.2.6", "0.2.5", "0.2", "0.1.99", "0.2.7-beta", "0.2.7.0.1", "99999", " 0.2.7", "NaN"))
             assertFalse(ExtensionVersionPolicy.supported(value), value);
         assertFalse(ExtensionVersionPolicy.supported(null));
     }
@@ -31,7 +31,7 @@ class ExtensionVersionPolicyTest {
                     .andExpect(status().isUpgradeRequired())
                     .andExpect(jsonPath("$.success").value(false))
                     .andExpect(jsonPath("$.code").value("EXTENSION_UPDATE_REQUIRED"))
-                    .andExpect(jsonPath("$.minimumVersion").value("0.2.6"))
+                    .andExpect(jsonPath("$.minimumVersion").value("0.2.7"))
                     .andExpect(jsonPath("$.downloadUrl").value(ExtensionVersionPolicy.DOWNLOAD_URL));
         }
         verifyNoInteractions(service);

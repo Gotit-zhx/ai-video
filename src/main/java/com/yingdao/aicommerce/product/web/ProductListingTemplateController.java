@@ -25,7 +25,12 @@ public class ProductListingTemplateController {
     public ApiResponse<Map<String, String>> uploadSizeChart(
             @RequestParam("file") org.springframework.web.multipart.MultipartFile file,
             @AuthenticationPrincipal PlatformPrincipal principal) throws java.io.IOException {
-        ProductListingTemplateService.requireAccess(principal, true);
+        // A batch publisher can upload a chart without permission to edit the shared template.
+        if (principal == null || !(principal.roleCodes().contains("ADMIN")
+                || principal.permissionCodes().contains("product:publish")
+                || principal.permissionCodes().contains("product:edit")))
+            throw new com.yingdao.aicommerce.common.exception.BusinessException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "没有尺码图上传权限");
         if (file.isEmpty() || file.getSize() > 8 * 1024 * 1024)
             throw new com.yingdao.aicommerce.common.exception.BusinessException(
                     org.springframework.http.HttpStatus.BAD_REQUEST, "尺码图须为 8 MB 以内的 PNG 或 JPG 图片");

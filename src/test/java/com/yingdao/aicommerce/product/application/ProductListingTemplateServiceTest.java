@@ -14,6 +14,15 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 
 class ProductListingTemplateServiceTest {
+    @Test void batchChartOverridesTemplateWithoutChangingItsSnapshot() {
+        var snapshot=Map.<String,Object>of("enabled",true,"sizeChartImageKey","shared-chart");
+        var body=new LinkedHashMap<String,Object>(Map.of("sizeChartImageKey","batch-chart"));
+        ProductListingTemplateService.apply(body,snapshot);
+        assertEquals("batch-chart",ProductListingTemplateService.sizeChartImageKey(body));
+        assertEquals("shared-chart",snapshot.get("sizeChartImageKey"));
+        body.remove("sizeChartImageKey");
+        assertEquals("shared-chart",ProductListingTemplateService.sizeChartImageKey(body));
+    }
     @Test void templateChartIsCapturedInSnapshotAndDisabledTemplateNeverSuppliesIt() {
         var service=spy(new ProductListingTemplateService(mock(JdbcTemplate.class),new ObjectMapper()));
         var configured=new ProductListingTemplateService.Template("SHOPEE","Template",true,"Text",

@@ -50,6 +50,21 @@ public class ShopeeSizeChartExtractor {
         if(!Boolean.TRUE.equals(rule.get("size_chart_mandatory")))return Map.of();
         if(Boolean.FALSE.equals(rule.get("support_image_size_chart")))throw bad("目标类目不支持图片尺码表，需要选择官方尺码模板");
         try {
+            String batchKey = String.valueOf(request.getOrDefault("sizeChartImageKey", "")).strip();
+            if (!batchKey.isBlank() && !"null".equals(batchKey)) {
+                var selected = archive.read(capture.getOrganizationId(), batchKey);
+                return upload(connection, Base64.getDecoder().decode(selected.dataBase64()), selected.mimeType());
+            }
+            // An explicit source chart is an original asset, not an OCR guess.
+            // Preserve it directly, including single-size and non-chest/length charts.
+            var sourceCharts = images.stream().filter(i -> "SIZE_CHART".equals(i.getRoleName())
+                    || TikTokProductSizeChart.explicitSizeChartLabel(i.getAltText())).toList();
+            if (!sourceCharts.isEmpty()) {
+                if (sourceCharts.stream().map(ProductCaptureImage::getOriginalUrl).distinct().count() > 1)
+                    throw bad("原商品存在多张不同尺码表，请在上传弹窗选择本次使用的尺码图");
+                byte[] original = originalImage(capture, sourceCharts.getFirst());
+                return upload(connection, png(ImageIO.read(new ByteArrayInputStream(original))), "image/png");
+            }
             String templateKey = com.yingdao.aicommerce.product.application.ProductListingTemplateService.sizeChartImageKey(request);
             if (!templateKey.isBlank()) {
                 var template = archive.read(capture.getOrganizationId(), templateKey);
