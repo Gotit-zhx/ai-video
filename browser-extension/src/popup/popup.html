@@ -18,22 +18,21 @@
     </header>
 
     <div id="notice" class="notice" role="status" hidden></div>
+    <section id="update-required" class="update-required" role="alert" hidden>
+      <strong>更新插件后继续使用</strong>
+      <p id="update-copy"></p>
+      <a class="primary-button" href="https://hoyee.org.cn/downloads/hoyee-assistant-latest.zip" target="_blank" rel="noopener noreferrer">下载最新版</a>
+      <p>解压覆盖原目录 → 扩展程序页点“重新加载” → 刷新商品页。无需退出登录。</p>
+    </section>
 
     <div id="revocation-warning" class="revocation-warning" role="status" aria-live="polite" hidden>
       <strong>旧凭证待撤销</strong>
       <span id="revocation-warning-copy"></span>
     </div>
 
-    <section class="platform-card" aria-labelledby="platform-title">
-      <div class="section-heading">
-        <h2 id="platform-title">平台连接</h2>
-        <span id="platform-state">未连接</span>
-      </div>
-      <label class="field">
-        <span>赫逸平台地址</span>
-        <input id="platform-url" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://hoyee.org.cn">
-      </label>
-      <p class="hint">只授权你填写的这个平台域名；生产环境必须使用 HTTPS。</p>
+    <section class="platform-connection" aria-label="官网连接">
+      <div><strong>赫逸官网</strong><span>hoyee.org.cn</span></div>
+      <span id="platform-state">未连接</span>
     </section>
 
     <section id="pairing-panel" class="pairing-card" aria-labelledby="pairing-title">

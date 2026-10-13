@@ -59,6 +59,13 @@ button, input { font: inherit; }
   line-height: 1.5;
 }
 .notice.success { border-color: #b9dfd0; color: #176c50; background: #f0fbf6; }
+.platform-connection { display: flex; align-items: center; justify-content: space-between; }
+.platform-connection div { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.platform-connection span { color: #68748f; font-size: 11px; }
+.update-required { border-color: #ead39b; background: #fffae9; }
+.update-required strong { font-size: 14px; }
+.update-required p { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.update-required a { display: block; text-align: center; text-decoration: none; }
 
 .revocation-warning {
   display: grid;

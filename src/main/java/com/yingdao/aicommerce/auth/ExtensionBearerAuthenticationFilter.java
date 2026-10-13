@@ -39,6 +39,19 @@ public class ExtensionBearerAuthenticationFilter extends OncePerRequestFilter {
         SecurityContext previous = SecurityContextHolder.getContext();
         try {
             ExtensionAuthService.AuthenticatedToken result = authService.authenticate(rawToken);
+            boolean logout = request.getRequestURI().equals("/api/v1/extension-auth/logout")
+                    || request.getRequestURI().equals("/api/v1/extension-auth/revoke");
+            // Every running build reports its version. Token metadata can describe
+            // an earlier build after an in-place update, or a later one after downgrade.
+            if (!logout && !ExtensionVersionPolicy.supported(request.getHeader(ExtensionVersionPolicy.HEADER))) {
+                response.setStatus(426);
+                response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+                response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                response.setHeader("Cache-Control", "no-store");
+                new tools.jackson.databind.ObjectMapper()
+                        .writeValue(response.getWriter(), ExtensionVersionPolicy.response());
+                return;
+            }
             var authentication = new UsernamePasswordAuthenticationToken(
                     result.principal(), null, result.principal().getAuthorities()
             );

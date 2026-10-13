@@ -77,7 +77,7 @@ if (mediaArchiveTests.status !== 0) process.exit(mediaArchiveTests.status || 1);
 const videoSourceTests = spawnSync(process.execPath, ["scripts/video-source.test.mjs"], { stdio: "inherit" });
 if (videoSourceTests.status !== 0) process.exit(videoSourceTests.status || 1);
 
-for (const name of ["tiktok-metadata.test.mjs", "tiktok-category-dom.test.mjs", "tiktok-mobile-pdp.test.mjs"]) {
+for (const name of ["tiktok-metadata.test.mjs", "tiktok-category-dom.test.mjs", "tiktok-mobile-pdp.test.mjs", "version-gate.test.mjs"]) {
   const result = spawnSync(process.execPath, [`scripts/${name}`], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }

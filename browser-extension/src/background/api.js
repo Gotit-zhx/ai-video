@@ -29,6 +29,7 @@ export class ApiError extends Error {
 async function fetchJson(baseUrl, path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("Accept", "application/json");
+  headers.set("X-Heyi-Extension-Version", chrome.runtime.getManifest().version);
   if (options.body !== undefined) headers.set("Content-Type", "application/json");
   if (options.accessToken) headers.set("Authorization", `Bearer ${options.accessToken}`);
 
@@ -262,7 +263,7 @@ export async function archiveCaptureVideos(captureId, videos) {
       const reader=response.body.getReader(),chunks=[];let size=0;
       while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>64*1024*1024){await reader.cancel();throw Error('视频超过64MiB');}chunks.push(value);}
       const form=new FormData();form.append('sourceUrl',video.url);form.append('file',new Blob(chunks,{type:response.headers.get('content-type')||'video/mp4'}),'source-video.mp4');
-      const r=await fetch(joinPlatformUrl(auth.baseUrl,`/api/v1/product-captures/${encodeURIComponent(captureId)}/videos`),{method:'POST',headers:{Authorization:`Bearer ${auth.accessToken}`},body:form,credentials:'omit',redirect:'error',signal:AbortSignal.timeout(90000)});
+      const r=await fetch(joinPlatformUrl(auth.baseUrl,`/api/v1/product-captures/${encodeURIComponent(captureId)}/videos`),{method:'POST',headers:{Authorization:`Bearer ${auth.accessToken}`,'X-Heyi-Extension-Version':chrome.runtime.getManifest().version},body:form,credentials:'omit',redirect:'error',signal:AbortSignal.timeout(90000)});
       if(!r.ok)throw Error((await r.json().catch(()=>({}))).message||'视频归档失败');saved++;
     }catch(error){errors.push(error.message);}
   }

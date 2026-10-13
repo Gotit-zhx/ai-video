@@ -138,7 +138,7 @@ async function currentState(refresh, sender) {
     await setAuthBadge(false);
     auth = null;
   }
-  if (refresh && auth && isPopup(sender)) {
+  if (refresh && auth) {
     try {
       auth = await refreshCurrentUser();
       await setAuthBadge(true);
@@ -191,7 +191,7 @@ async function autoLoginFromPlatform(settings) {
   if (Date.now()-autoLoginLastAttempt < 10000) return null;
   autoLoginLastAttempt=Date.now();
   autoLoginFlight=(async()=>{
-    for (const baseUrl of [...new Set([settings.baseUrl,'http://localhost:3000','https://hoyee.org.cn'])]) {
+    for (const baseUrl of ['https://hoyee.org.cn']) {
     if (!(await chrome.permissions.contains({origins:[originPattern(baseUrl)]}))) continue;
     try {const auth=await connectBrowserSession(baseUrl,settings.deviceName||defaultDeviceName());await writeSettings({...settings,baseUrl});await setAuthBadge(true);return auth;} catch {}
     const tabs=await chrome.tabs.query({url:originPattern(baseUrl)});
@@ -816,7 +816,8 @@ function publicError(error) {
     return {
       status: error.status,
       code: error.code,
-      kind: error.status === 401 ? "AUTH"
+      kind: error.status === 426 ? "UPDATE"
+        : error.status === 401 ? "AUTH"
         : error.status === 403 ? "PERMISSION"
           : error.status === 429 ? "RATE_LIMIT"
             : error.code === "NETWORK_ERROR" ? "NETWORK"

@@ -1,7 +1,6 @@
 import {
   DEFAULT_PLATFORM_URL,
   MESSAGE_TYPES,
-  normalizePlatformUrl,
   originPattern
 } from "../shared/constants.js";
 
@@ -9,7 +8,8 @@ const elements = {
   notice: document.querySelector("#notice"),
   revocationWarning: document.querySelector("#revocation-warning"),
   revocationWarningCopy: document.querySelector("#revocation-warning-copy"),
-  platformUrl: document.querySelector("#platform-url"),
+  updateRequired: document.querySelector("#update-required"),
+  updateCopy: document.querySelector("#update-copy"),
   platformState: document.querySelector("#platform-state"),
   connectionDot: document.querySelector("#connection-dot"),
   pairingPanel: document.querySelector("#pairing-panel"),
@@ -27,13 +27,13 @@ const elements = {
   logoutButton: document.querySelector("#logout-button")
 };
 
-elements.platformUrl.value = DEFAULT_PLATFORM_URL;
+let updateRequired = false;
 elements.deviceName.value = suggestedDeviceName();
 
 elements.openPlatform.addEventListener("click", async () => {
   clearNotice();
   try {
-    const baseUrl = normalizePlatformUrl(elements.platformUrl.value);
+    const baseUrl = DEFAULT_PLATFORM_URL;
     await requestPlatformPermission(baseUrl);
     const state = await callBackground({
       type: MESSAGE_TYPES.SAVE_PLATFORM,
@@ -43,7 +43,7 @@ elements.openPlatform.addEventListener("click", async () => {
     renderState(state);
     await callBackground({ type: MESSAGE_TYPES.OPEN_PLATFORM, baseUrl });
   } catch (error) {
-    showNotice(error.message);
+    showError(error);
   }
 });
 
@@ -53,7 +53,7 @@ elements.pairingForm.addEventListener("submit", async event => {
   elements.pairButton.disabled = true;
   elements.pairButton.textContent = "正在登录…";
   try {
-    const baseUrl = normalizePlatformUrl(elements.platformUrl.value);
+    const baseUrl = DEFAULT_PLATFORM_URL;
     await requestPlatformPermission(baseUrl);
     const state = await callBackground({
       type: MESSAGE_TYPES.LOGIN,
@@ -68,10 +68,10 @@ elements.pairingForm.addEventListener("submit", async event => {
       ? "登录成功；旧平台凭证仍在后台等待撤销"
       : "登录成功，可以开始采集商品", true);
   } catch (error) {
-    showNotice(error.message);
+    showError(error);
   } finally {
     elements.loginPassword.value = "";
-    elements.pairButton.disabled = false;
+    elements.pairButton.disabled = updateRequired;
     elements.pairButton.textContent = "登录";
   }
 });
@@ -87,7 +87,7 @@ elements.logoutButton.addEventListener("click", async () => {
       ? "已解除本地绑定；服务端撤销尚未完成，插件会在联网后自动重试"
       : "已退出并撤销本设备访问", true);
   } catch (error) {
-    showNotice(error.message);
+    showError(error);
     await loadState(false);
   } finally {
     elements.logoutButton.disabled = false;
@@ -102,7 +102,7 @@ async function loadState(refresh) {
     const state = await callBackground({ type: MESSAGE_TYPES.GET_STATE, refresh });
     renderState(state);
   } catch (error) {
-    showNotice(error.message);
+    showError(error);
   }
 }
 
@@ -113,8 +113,6 @@ function renderState(state) {
   elements.revocationWarningCopy.textContent = pendingRevocations > 0
     ? `还有 ${pendingRevocations} 个旧平台凭证未获服务端撤销确认。凭证仅保存在插件受限存储中，联网后自动重试；不影响切换或配对新平台。`
     : "";
-  elements.platformUrl.value = state?.baseUrl || elements.platformUrl.value || DEFAULT_PLATFORM_URL;
-  elements.platformUrl.disabled = authenticated;
   elements.pairingPanel.hidden = authenticated;
   elements.accountPanel.hidden = !authenticated;
   elements.connectionDot.classList.toggle("connected", authenticated);
@@ -161,7 +159,12 @@ async function callBackground(message) {
   } catch {
     throw new Error("插件后台未响应，请重新加载插件后重试");
   }
-  if (!response?.ok) throw new Error(response?.error?.message || "操作失败，请重试");
+  if (!response?.ok) {
+    const error = new Error(response?.error?.message || "操作失败，请重试");
+    error.status = response?.error?.status;
+    error.code = response?.error?.code;
+    throw error;
+  }
   return response.data;
 }
 
@@ -182,6 +185,19 @@ function showNotice(message, success = false) {
   elements.notice.textContent = message;
   elements.notice.hidden = false;
   elements.notice.classList.toggle("success", success);
+}
+
+function showError(error) {
+  if (error?.status === 426 || error?.code === "EXTENSION_UPDATE_REQUIRED") {
+    updateRequired = true;
+    elements.updateRequired.hidden = false;
+    elements.updateCopy.textContent = error.message;
+    elements.pairingForm.hidden = true;
+    elements.pairButton.disabled = true;
+    elements.platformState.textContent = "需要更新";
+    return;
+  }
+  showNotice(error.message);
 }
 
 function clearNotice() {

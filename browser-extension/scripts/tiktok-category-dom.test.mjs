@@ -27,7 +27,7 @@ const start=inject.indexOf('  async function runCapture(control, root)');
 const end=inject.indexOf('\n\n  function isIdempotentDuplicateConflict',start);
 const captureState=new Map();let category=null,calls=0;
 const ctx=vm.createContext({
- captureState,authenticated:true,MESSAGE_CAPTURE:'capture',
+ captureState,authenticated:true,upgradeRequired:"",MESSAGE_CAPTURE:'capture',
  adapter:{blockedReason:()=>'',extract:async()=>({title:'Shirt',sourcePlatform:'TIKTOK_SHOP',categoryName:category,skuCompleteness:{complete:true}})},
  ensureAuthenticated:async()=>true,
  HeyiVideoSources:{deduplicate:()=>[]},

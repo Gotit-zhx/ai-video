@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const values = new Map();
-globalThis.chrome = { storage: { local: {
+globalThis.chrome = { runtime: { getManifest: () => ({version:"0.2.6"}) }, storage: { local: {
   async get(key) { return { [key]: values.get(key) }; },
   async set(entries) { for (const [key, value] of Object.entries(entries)) values.set(key, value); },
   async remove(key) { values.delete(key); },
@@ -22,6 +22,7 @@ globalThis.fetch = async (url, options) => {
     return response;
   }
   assert.equal(options.headers.Authorization,"Bearer active-device-token-media-test");
+  assert.equal(options.headers["X-Heyi-Extension-Version"],"0.2.6");
   assert.equal(options.body.get("file").size,12);
   if (options.body.get("sourceUrl") === videos[1].url && failSecondUpload) {
     return new Response(JSON.stringify({message:"temporary storage failure"}),{status:503});
@@ -73,6 +74,7 @@ const end = source.indexOf("\n\n  function isIdempotentDuplicateConflict",start)
 const captureState = new Map(), states = [];
 let nextArchive = partial, captureCalls = 0, submittedVideos;
 const context = vm.createContext({
+  upgradeRequired: "",
   captureState,authenticated:true,MESSAGE_CAPTURE:"capture",
   HeyiVideoSources: globalThis.HeyiVideoSources,
   adapter:{blockedReason:()=>"",extract:async()=>({title:"Product",skuCompleteness:{complete:true},videos:[{url:fullVideo},{url:secondAsset}]})},

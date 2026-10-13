@@ -17,6 +17,8 @@
   let scheduled = false;
   let lastUrl = location.href;
   let authenticated = null;
+  let upgradeRequired = "";
+  let upgradeNotice = null;
 
   void initialize();
   scanPage();
@@ -140,6 +142,7 @@
         host.remove();
       },
       render(state = captureState.get(productUrl) || "idle", message = "") {
+        if (upgradeRequired) { state = "update"; message = upgradeRequired; }
         const labels = {
           idle: authenticated === false ? "登录后采集" : "一键采集",
           loading: "采集中…",
@@ -147,12 +150,13 @@
           error: "采集失败 · 重试",
           auth: "请先登录",
           permission: "无采集权限",
+          update: "请先更新插件",
           incomplete: "SKU待确认 · 重试",
           media_incomplete: "视频待补采 · 重试"
         };
         button.textContent = labels[state] || labels.idle;
         button.dataset.state = state === "permission" ? "error" : state === "media_incomplete" ? "incomplete" : state;
-        button.disabled = state === "loading" || state === "success" || state === "permission";
+        button.disabled = state === "loading" || state === "success" || state === "permission" || state === "update";
         button.title = message || (state === "auth" ? "请点击浏览器工具栏中的赫逸插件完成登录" : "采集当前商品到赫逸平台");
       }
     };
@@ -169,6 +173,7 @@
   }
 
   async function runCapture(control, root) {
+    if (upgradeRequired) return;
     if (captureState.get(control.productUrl) === "loading" || captureState.get(control.productUrl) === "success") return;
     const blockedReason = adapter.blockedReason?.() || "";
     if (blockedReason) {
@@ -235,6 +240,8 @@
         } else {
           setUrlState(control.productUrl, "success", "该完整商品已经提交过");
         }
+      } else if (details.kind === "UPDATE" || details.status === 426) {
+        showUpgradeRequired(details.message || error.message);
       } else if (details.kind === "AUTH" || details.status === 401) {
         authenticated = false;
         setUrlState(control.productUrl, "auth", details.message || "请先在插件中登录");
@@ -259,7 +266,8 @@
 
   async function readAuthState() {
     try {
-      const response = await chrome.runtime.sendMessage({ type: MESSAGE_GET_STATE, refresh: false });
+      const response = await chrome.runtime.sendMessage({ type: MESSAGE_GET_STATE, refresh: true });
+      if (response?.error?.status === 426) showUpgradeRequired(response.error.message);
       authenticated = Boolean(response?.ok && response.data?.authenticated);
       for (const controls of controlsByUrl.values()) {
         for (const control of controls) control.render();
@@ -278,7 +286,8 @@
 
   async function ensureAuthenticated() {
     try {
-      const response = await chrome.runtime.sendMessage({ type: MESSAGE_GET_STATE, refresh: false });
+      const response = await chrome.runtime.sendMessage({ type: MESSAGE_GET_STATE, refresh: true });
+      if (response?.error?.status === 426) showUpgradeRequired(response.error.message);
       authenticated = Boolean(response?.ok && response.data?.authenticated);
       if (authenticated) await globalThis.HeyiCaptureBridge?.activate?.().catch(() => false);
       return authenticated;
@@ -309,6 +318,35 @@
     return fallback
       ? `${fallback}；SKU 数据未能验证完整，请在平台审核`
       : "已保存草稿，但 SKU 数据未能验证完整；请完成页面验证并确认规格已加载后重试";
+  }
+
+  function showUpgradeRequired(message) {
+    upgradeRequired = message || "当前采集插件需要更新，请下载最新版后继续使用。";
+    for (const controls of controlsByUrl.values()) {
+      for (const control of controls) control.render();
+    }
+    if (upgradeNotice?.isConnected) return;
+    const host = document.createElement("aside");
+    host.dataset.heyiCollectorHost = "update";
+    host.style.cssText = "all:initial;position:fixed;right:18px;bottom:24px;z-index:2147483647;max-width:320px;";
+    const shadow = host.attachShadow({ mode: "closed" });
+    const panel = document.createElement("div");
+    panel.setAttribute("role", "alert");
+    panel.style.cssText = "padding:16px;border:1px solid #ead39b;border-radius:14px;background:#fffae9;color:#493718;box-shadow:0 8px 28px #0002;font:13px/1.6 system-ui;";
+    const heading = document.createElement("strong");
+    heading.textContent = "更新插件后继续采集";
+    const text = document.createElement("p");
+    text.textContent = upgradeRequired;
+    const link = document.createElement("a");
+    link.textContent = "下载最新版";
+    link.href = "https://hoyee.org.cn/downloads/hoyee-assistant-latest.zip";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.style.cssText = "display:block;padding:9px;border-radius:8px;background:#6057e9;color:#fff;text-decoration:none;text-align:center;font-weight:600;";
+    panel.append(heading, text, link);
+    shadow.appendChild(panel);
+    document.body.appendChild(host);
+    upgradeNotice = host;
   }
 
   function registerControl(control) {

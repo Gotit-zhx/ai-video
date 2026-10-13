@@ -26,6 +26,7 @@ public class ExtensionAuthController {
     @PostMapping("/session")
     public ApiResponse<ExtensionAuthService.ExchangeResult> session(@RequestBody DeviceRequest device,
             @AuthenticationPrincipal PlatformPrincipal principal,HttpServletRequest request) {
+        ExtensionVersionPolicy.requireSupported(device.extensionVersion());
         String origin=request.getHeader("Origin");
         if(device.extensionId()==null || !device.extensionId().matches("[a-p]{32}")
                 || !("chrome-extension://"+device.extensionId()).equals(origin))
@@ -37,6 +38,7 @@ public class ExtensionAuthController {
 
     @PostMapping("/login")
     public ApiResponse<ExtensionAuthService.ExchangeResult> login(@RequestBody DirectLogin request) {
+        ExtensionVersionPolicy.requireSupported(request.extensionVersion());
         if (request.account() == null || request.password() == null || request.account().isBlank())
             throw new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.BAD_REQUEST,"账号格式为 企业代码/手机号");
         org.springframework.security.core.Authentication authenticated;
@@ -56,7 +58,14 @@ public class ExtensionAuthController {
     public ApiResponse<ExtensionAuthService.ExchangeResult> exchange(
             @RequestBody ExtensionAuthService.ExchangeRequest request
     ) {
+        ExtensionVersionPolicy.requireSupported(request.extensionVersion());
         return ApiResponse.ok(authService.exchange(request));
+    }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(ExtensionVersionPolicy.UpgradeRequired.class)
+    public org.springframework.http.ResponseEntity<ExtensionVersionPolicy.UpgradeResponse> upgradeRequired() {
+        return org.springframework.http.ResponseEntity.status(org.springframework.http.HttpStatus.UPGRADE_REQUIRED)
+                .header("Cache-Control", "no-store").body(ExtensionVersionPolicy.response());
     }
 
     @GetMapping("/me")

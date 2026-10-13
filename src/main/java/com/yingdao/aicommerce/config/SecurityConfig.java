@@ -239,7 +239,7 @@ public class SecurityConfig {
         configuration.setAllowedOriginPatterns(List.of("chrome-extension://*"));
         configuration.setAllowedMethods(List.of("GET", "POST", "PATCH", "OPTIONS"));
         configuration.setAllowedHeaders(List.of(
-                "Authorization", "Content-Type", "Accept", "Idempotency-Key"
+                "Authorization", "Content-Type", "Accept", "Idempotency-Key", "X-Heyi-Extension-Version"
         ));
         configuration.setExposedHeaders(List.of("Location"));
         configuration.setAllowCredentials(false);
