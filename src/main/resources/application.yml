@@ -90,7 +90,7 @@ app:
     publishing:
       provider: ${APP_PRODUCT_PUBLISHING_PROVIDER:DRY_RUN}
   shop-auth:
-    state-ttl: ${APP_SHOP_AUTH_STATE_TTL:10m}
+    state-ttl: ${APP_SHOP_AUTH_STATE_TTL:1h}
     credential-key: ${APP_SHOP_CREDENTIAL_KEY:local-development-shop-secret-change-me}
     callback-base-url: ${APP_SHOP_AUTH_CALLBACK_BASE_URL:${APP_PUBLIC_BASE_URL:http://localhost:8080}}
     frontend-base-url: ${APP_SHOP_AUTH_FRONTEND_BASE_URL:http://localhost:3000}

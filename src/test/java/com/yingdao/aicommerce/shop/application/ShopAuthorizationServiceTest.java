@@ -111,6 +111,48 @@ class ShopAuthorizationServiceTest {
     }
 
     @Test
+    void copiedAuthorizationCanCompleteAfterTwentyMinutesWithoutChangingCompanyOwnership() {
+        Fixture fixture = fixture();
+        Instant openedAt = Instant.now().minus(Duration.ofMinutes(20));
+        org.springframework.test.util.ReflectionTestUtils.setField(fixture.session, "platform", "TIKTOK_SHOP");
+        org.springframework.test.util.ReflectionTestUtils.setField(fixture.session, "createdAt", openedAt);
+        org.springframework.test.util.ReflectionTestUtils.setField(fixture.session, "expiresAt",
+                openedAt.plus(Duration.ofHours(1)));
+        MarketplaceAccess.Client client = mock(MarketplaceAccess.Client.class);
+        when(fixture.clients.require(MarketplacePlatform.TIKTOK_SHOP)).thenReturn(client);
+        when(client.exchangeAuthorizationCode(eq("delayed-code"), any())).thenReturn(
+                new MarketplaceAccess.AuthorizationGrant(
+                        new MarketplaceAccess.TokenSet("access", "refresh",
+                                Instant.now().plusSeconds(3600), null, List.of("seller.shop.info")),
+                        List.of(new MarketplaceAccess.RemoteShop(
+                                "delayed-shop", "seller-1", "cipher-1", "LOCAL", "TikTok Shop", "MY"))));
+
+        var result = fixture.service.complete("TIKTOK_SHOP", "original-state", "delayed-code", Map.of());
+
+        assertThat(result.shops()).hasSize(1);
+        var inserted = org.mockito.ArgumentCaptor.forClass(Shop.class);
+        verify(fixture.shopMapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getOrganizationId()).isEqualTo("org-1");
+        assertThat(fixture.session.getStatus()).isEqualTo("SUCCEEDED");
+        verify(client, times(1)).exchangeAuthorizationCode(eq("delayed-code"), any());
+    }
+
+    @Test
+    void expiredAuthorizationNeverExchangesCodeOrCreatesShop() {
+        Fixture fixture = fixture();
+        org.springframework.test.util.ReflectionTestUtils.setField(fixture.session, "expiresAt",
+                Instant.now().minusSeconds(1));
+
+        assertThatThrownBy(() -> fixture.service.complete("TIKTOK_SHOP", "expired-state", "code", Map.of()))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("已过期");
+
+        verifyNoInteractions(fixture.clients);
+        verify(fixture.sessionMapper, never()).consume(any(), any());
+        verify(fixture.shopMapper, never()).insert(any(Shop.class));
+        verify(fixture.credentialMapper, never()).insert(any(ShopCredential.class));
+    }
+
+    @Test
     void providerRejectionAlsoConsumesStateAndBoundsRedirectMessage() {
         Fixture fixture = fixture();
         String longMessage = "平台拒绝：" + "x".repeat(2000);

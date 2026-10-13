@@ -55,10 +55,12 @@ test('copy authorization links never navigate and clipboard denial exposes a sel
  for(const copied of [true,false])for(const platform of ['SHOPEE','TIKTOK_SHOP']){
   const url='https://example.com/authorize?state=one',note={textContent:'',append(input){this.input=input;}};let clipboard,requests=0;
   const context={hasAnyPermission:()=>true,rememberProductCaptureRoute(){},safeProductUrl:x=>x,copyTextToClipboard:async x=>{clipboard=x;return copied;},
-   api:async()=>{requests++;return {data:{authorizationUrl:url}};},document:{querySelector:selector=>selector==='#marketplace-shop-note'?note:{value:'ROW'},createElement:()=>({style:{},setAttribute(){},focus(){},select(){this.selected=true;}})},window:{location:{assign(){throw new Error('must not navigate');}}}};
+   api:async()=>{requests++;return {data:{authorizationUrl:url,expiresAt:'2026-10-13T02:14:38Z'}};},document:{querySelector:selector=>selector==='#marketplace-shop-note'?note:{value:'ROW'},createElement:()=>({style:{},setAttribute(){},focus(){},select(){this.selected=true;}})},window:{location:{assign(){throw new Error('must not navigate');}}}};
   vm.createContext(context);vm.runInContext(source,context);const button={textContent:'复制授权链接',disabled:false,dataset:{authorizationCopy:'true'}};
   const pending=context.startMarketplaceAuthorization(platform,button);await context.startMarketplaceAuthorization(platform,button);await pending;
   assert.equal(requests,1);assert.equal(clipboard,url);assert.equal(button.disabled,false);assert.equal(button.textContent,'复制授权链接');assert.match(note.textContent,/请到对应的网络环境店铺进行授权/);
+  assert.ok(note.textContent.includes(new Date('2026-10-13T02:14:38Z').toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})));
+  assert.match(note.textContent,/过期后请重新复制授权链接/);
   if(!copied){assert.equal(note.input.value,url);assert.equal(note.input.selected,true);}
  }
 });

@@ -3702,6 +3702,12 @@ async function startMarketplaceAuthorization(platform, button) {
       const copied = await copyTextToClipboard(url);
       const note = document.querySelector("#marketplace-shop-note");
       note.textContent = copied ? "授权链接已复制。请到对应的网络环境店铺进行授权" : "未能自动复制，请复制下方链接。请到对应的网络环境店铺进行授权";
+      const expiresAt = new Date(result.data?.expiresAt);
+      if (Number.isFinite(expiresAt.getTime())) {
+        note.textContent += `。有效至 ${expiresAt.toLocaleString("zh-CN", {
+          month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false
+        })}，过期后请重新复制授权链接。`;
+      }
       if (!copied) {
         const input = document.createElement("input");
         input.type = "text"; input.readOnly = true; input.value = url;

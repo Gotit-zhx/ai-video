@@ -16,7 +16,7 @@ public class ShopIntegrationSettings {
     private final String publishingProvider;
 
     public ShopIntegrationSettings(
-            @Value("${app.shop-auth.state-ttl:10m}") Duration stateTtl,
+            @Value("${app.shop-auth.state-ttl:1h}") Duration stateTtl,
             @Value("${app.shop-auth.token-refresh-skew:5m}") Duration tokenRefreshSkew,
             @Value("${app.shop-auth.callback-base-url}") URI callbackBaseUrl,
             @Value("${app.shop-auth.frontend-base-url}") URI frontendBaseUrl,
