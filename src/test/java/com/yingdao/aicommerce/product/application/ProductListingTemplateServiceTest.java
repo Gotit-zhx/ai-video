@@ -14,6 +14,24 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 
 class ProductListingTemplateServiceTest {
+    @Test void templateChartIsCapturedInSnapshotAndDisabledTemplateNeverSuppliesIt() {
+        var service=spy(new ProductListingTemplateService(mock(JdbcTemplate.class),new ObjectMapper()));
+        var configured=new ProductListingTemplateService.Template("SHOPEE","Template",true,"Text",
+                BigDecimal.ONE,BigDecimal.ONE,BigDecimal.ONE,BigDecimal.ONE,3,"tenant/chart");
+        doReturn(configured).when(service).get("org-a","SHOPEE");
+        var snapshot=service.snapshot("org-a","SHOPEE",capture("{}"));
+        assertEquals("tenant/chart",snapshot.get("sizeChartImageKey"));
+        assertEquals("tenant/chart",ProductListingTemplateService.sizeChartImageKey(Map.of("listingTemplateSnapshot",snapshot)));
+        assertEquals("",ProductListingTemplateService.sizeChartImageKey(Map.of(
+                "listingTemplateSnapshot",Map.of("enabled",false,"sizeChartImageKey","tenant/chart"))));
+    }
+    @Test void sourceMeasurementsSurviveMarketingDescriptionReplacement() {
+        var json=new ObjectMapper();
+        var original="Size (cm) Chest Length\\nS 80 55\\nM 84 57";
+        var capture=capture(json.writeValueAsString(Map.of("originalDescription",original,"listingTemplate",Map.of("version",2))));
+        assertEquals(original,ProductListingTemplateService.sourceDescription(capture,json));
+        assertEquals("source description",ProductListingTemplateService.sourceDescription(capture("{}"),json));
+    }
     private PlatformPrincipal principal(String org, String permission) {
         return new PlatformPrincipal("user",org,org,"name","Name","",true,List.of(),List.of(permission));
     }

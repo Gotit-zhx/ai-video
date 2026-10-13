@@ -37,6 +37,8 @@ public class ProductListingTemplateService {
             """.strip();
     private final JdbcTemplate db;
     private final ObjectMapper json;
+    @org.springframework.beans.factory.annotation.Autowired
+    private CommerceImageArchive imageArchive;
 
     public ProductListingTemplateService(JdbcTemplate db, ObjectMapper json) {
         this.db = db;
@@ -54,7 +56,8 @@ public class ProductListingTemplateService {
                 (rs, n) -> new Template(target, rs.getString("name"), rs.getBoolean("enabled"),
                 rs.getString("description"), rs.getBigDecimal("weight_grams"),
                 rs.getBigDecimal("package_length_cm"), rs.getBigDecimal("package_width_cm"),
-                rs.getBigDecimal("package_height_cm"), rs.getLong("version")), organizationId, target);
+                rs.getBigDecimal("package_height_cm"), rs.getLong("version"),
+                rs.getString("size_chart_image_key")), organizationId, target);
         return rows.isEmpty() ? defaults(target) : rows.getFirst();
     }
 
@@ -74,22 +77,29 @@ public class ProductListingTemplateService {
         try { version = new BigDecimal(String.valueOf(body.get("version"))).longValueExact(); }
         catch (Exception e) { throw bad("请重新读取模板后保存"); }
         if (version < 0) throw bad("模板版本无效");
+        String sizeChartKey = body.containsKey("sizeChartImageKey") ? text(body.get("sizeChartImageKey"))
+                : text(get(principal.organizationId(), target).sizeChartImageKey());
+        if (!sizeChartKey.isBlank()) {
+            try { imageArchive.read(principal.organizationId(), sizeChartKey); }
+            catch (RuntimeException e) { throw bad("尺码模板图片不存在或不属于当前公司，请重新上传"); }
+        }
+        if (sizeChartKey.isBlank()) sizeChartKey = null;
         int changed;
         if (version == 0) {
             changed = db.update("""
                     INSERT IGNORE INTO product_listing_templates
-                    (organization_id,platform,name,enabled,description,weight_grams,package_length_cm,
+                    (organization_id,platform,name,enabled,description,size_chart_image_key,weight_grams,package_length_cm,
                      package_width_cm,package_height_cm,version,updated_by)
-                    VALUES (?,?,?,?,?,?,?,?,?,1,?)
-                    """, principal.organizationId(), target, name, enabled, description, weight,
+                    VALUES (?,?,?,?,?,?,?,?,?,?,1,?)
+                    """, principal.organizationId(), target, name, enabled, description, sizeChartKey, weight,
                     length, width, height, principal.userId());
         } else {
             changed = db.update("""
-                    UPDATE product_listing_templates SET name=?,enabled=?,description=?,weight_grams=?,
+                    UPDATE product_listing_templates SET name=?,enabled=?,description=?,size_chart_image_key=?,weight_grams=?,
                     package_length_cm=?,package_width_cm=?,package_height_cm=?,version=version+1,
                     updated_by=?,updated_at=CURRENT_TIMESTAMP(6)
                     WHERE organization_id=? AND platform=? AND version=?
-                    """, name, enabled, description, weight, length, width, height, principal.userId(),
+                    """, name, enabled, description, sizeChartKey, weight, length, width, height, principal.userId(),
                     principal.organizationId(), target, version);
         }
         if (changed != 1) throw new BusinessException(HttpStatus.CONFLICT, "模板已被其他人修改，请重新打开后保存");
@@ -105,6 +115,7 @@ public class ProductListingTemplateService {
         snapshot.put("enabled", template.enabled());
         snapshot.put("description", template.enabled() ? template.description() : originalDescription(capture));
         if (template.enabled()) {
+            snapshot.put("sizeChartImageKey", text(template.sizeChartImageKey()));
             snapshot.put("weightGrams", template.weightGrams().toPlainString());
             snapshot.put("packageLengthCm", template.packageLengthCm().toPlainString());
             snapshot.put("packageWidthCm", template.packageWidthCm().toPlainString());
@@ -151,6 +162,23 @@ public class ProductListingTemplateService {
         return snapshot.containsKey("description") ? text(snapshot.get("description")) : capture.getDescription();
     }
 
+    /** Original facts survive replacing the customer-facing marketing description. */
+    public static String sourceDescription(ProductCapture capture, ObjectMapper json) {
+        if (capture.getNormalizedData() != null && !capture.getNormalizedData().isBlank()) {
+            try {
+                Map<?, ?> normalized = json.readValue(capture.getNormalizedData(), Map.class);
+                if (normalized.containsKey("originalDescription"))
+                    return text(normalized.get("originalDescription"));
+            } catch (Exception ignored) { /* Legacy records can still use their description. */ }
+        }
+        return text(capture.getDescription());
+    }
+
+    public static String sizeChartImageKey(Map<String, Object> request) {
+        var snapshot = snapshotFrom(request);
+        return Boolean.TRUE.equals(snapshot.get("enabled")) ? text(snapshot.get("sizeChartImageKey")) : "";
+    }
+
     private String originalDescription(ProductCapture capture) {
         var normalized = read(capture.getNormalizedData());
         return normalized.containsKey("listingTemplate") && normalized.containsKey("originalDescription")
@@ -168,7 +196,7 @@ public class ProductListingTemplateService {
         return new Template(shopee ? "SHOPEE" : "TIKTOK_SHOP",
                 shopee ? "虾皮通用模板" : "TikTok 通用模板", shopee, shopee ? SHOPEE_DESCRIPTION : "",
                 BigDecimal.valueOf(shopee ? 200 : 250), BigDecimal.valueOf(shopee ? 5 : 30),
-                BigDecimal.valueOf(25), BigDecimal.valueOf(shopee ? 25 : 2), 0);
+                BigDecimal.valueOf(25), BigDecimal.valueOf(shopee ? 25 : 2), 0, null);
     }
     private static String platform(String value) {
         String target = text(value).toUpperCase(java.util.Locale.ROOT);
@@ -193,5 +221,12 @@ public class ProductListingTemplateService {
     private static BusinessException bad(String message) { return new BusinessException(HttpStatus.BAD_REQUEST, message); }
     public record Template(String platform, String name, boolean enabled, String description,
                            BigDecimal weightGrams, BigDecimal packageLengthCm, BigDecimal packageWidthCm,
-                           BigDecimal packageHeightCm, long version) {}
+                           BigDecimal packageHeightCm, long version, String sizeChartImageKey) {
+        public Template(String platform, String name, boolean enabled, String description,
+                        BigDecimal weightGrams, BigDecimal packageLengthCm, BigDecimal packageWidthCm,
+                        BigDecimal packageHeightCm, long version) {
+            this(platform, name, enabled, description, weightGrams, packageLengthCm, packageWidthCm,
+                    packageHeightCm, version, null);
+        }
+    }
 }

@@ -46,7 +46,7 @@ class ShopeeProductVideoPublicationTest {
         imageDownloader = mock(MarketplaceImageDownloader.class);
         videos = mock(ShopeeProductVideoUploader.class);
         charts = mock(ShopeeSizeChartExtractor.class);
-        when(charts.prepare(any(), anyList(), any(), anyLong())).thenReturn(Map.of());
+        when(charts.prepare(any(), anyList(), any(), anyLong(), anyMap())).thenReturn(Map.of());
         provider = spy(new ShopeeOfficialPublishingProvider(shops, client, skus, images, imageDownloader, new ObjectMapper(), videos, charts));
         capture = new ProductCapture("org-1", "user-1", "key", "fingerprint", "SHOPEE", "https://example.invalid/product", "source-shop", "1",
                 "【Ready Stock】Cherry Women White Cotton T-Shirt with Short Sleeves and Round Neck for Casual Everyday Summer Wear Multicoloured", "Description", "Category", null, "MYR", new BigDecimal("20"), new BigDecimal("20"), "{}", "{}");
@@ -70,7 +70,7 @@ class ShopeeProductVideoPublicationTest {
     }
 
     @Test void videoIsReadyBeforeCreateBoundaryAndOneVideoIdIsAttachedToUnlistedItem() {
-        when(charts.prepare(eq(capture), anyList(), eq(connection), anyLong())).thenReturn(Map.of("size_chart", "chart-123"));
+        when(charts.prepare(eq(capture), anyList(), eq(connection), anyLong(), anyMap())).thenReturn(Map.of("size_chart", "chart-123"));
         when(videos.upload(capture, connection)).thenAnswer(ignored -> { events.add("video_ready"); return new ShopeeProductVideoUploader.UploadedVideo("video-123", "source-video", 2); });
         var result = provider.publish(capture, "SHOPEE", connection.shop().getId(), request(), () -> events.add("create_boundary"));
         assertThat(events).containsExactly("video_ready", "create_boundary", "add_item");

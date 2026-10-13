@@ -41,23 +41,34 @@ public class ShopeeSizeChartExtractor {
         cache=Path.of(storage,"size-chart-extractions-v1");
     }
     public Map<String,Object> prepare(ProductCapture capture,List<ProductCaptureImage> images,MarketplaceAccess.Connection connection,long category) {
+        return prepare(capture, images, connection, category, Map.of());
+    }
+    public Map<String,Object> prepare(ProductCapture capture,List<ProductCaptureImage> images,MarketplaceAccess.Connection connection,long category,Map<String,Object> request) {
         if(!Objects.equals(capture.getOrganizationId(),connection.shop().getOrganizationId()))throw bad("尺码表与店铺不属于同一企业");
         var response=MarketplaceHttp.object(client.shopGet(ShopeeProductTitle.LIMITS,connection,Map.of("category_id",category)),"response");
         var rule=MarketplaceHttp.object(response,"size_chart_limit");
         if(!Boolean.TRUE.equals(rule.get("size_chart_mandatory")))return Map.of();
         if(Boolean.FALSE.equals(rule.get("support_image_size_chart")))throw bad("目标类目不支持图片尺码表，需要选择官方尺码模板");
         try {
+            String templateKey = com.yingdao.aicommerce.product.application.ProductListingTemplateService.sizeChartImageKey(request);
+            if (!templateKey.isBlank()) {
+                var template = archive.read(capture.getOrganizationId(), templateKey);
+                // The configured, tenant-owned chart is already selected by the operator.
+                // Publish it directly: model OCR is not required to use an explicit template.
+                return upload(connection, Base64.getDecoder().decode(template.dataBase64()), template.mimeType());
+            }
+            String sourceDescription = com.yingdao.aicommerce.product.application.ProductListingTemplateService.sourceDescription(capture, json);
             var candidates=images.stream().filter(i->List.of("SIZE_CHART","DETAIL","MAIN","GALLERY").contains(i.getRoleName()))
                     .sorted(Comparator.comparingInt(i->"SIZE_CHART".equals(i.getRoleName())?0:"DETAIL".equals(i.getRoleName())?1:2)).limit(24).toList();
             for(var i:candidates)if(!Objects.equals(i.getOrganizationId(),capture.getOrganizationId())||!Objects.equals(i.getCaptureId(),capture.getId()))throw bad("尺码图归属不一致");
-            String fingerprint=ShopeeProductVideoUploader.digest("SHA-256",(capture.getOrganizationId()+":"+capture.getId()+":"+capture.getDescription()+":"+candidates.stream().map(i->i.getId()+":"+i.getOriginalUrl()).toList()).getBytes(StandardCharsets.UTF_8));
+            String fingerprint=ShopeeProductVideoUploader.digest("SHA-256",(capture.getOrganizationId()+":"+capture.getId()+":"+sourceDescription+":"+candidates.stream().map(i->i.getId()+":"+i.getOriginalUrl()).toList()).getBytes(StandardCharsets.UTF_8));
             Files.createDirectories(cache);Path record=cache.resolve(fingerprint+".json"),imageFile=cache.resolve(fingerprint+".png");
             byte[] chart;Map<String,Object> extracted;
             if(Files.isRegularFile(record,LinkOption.NOFOLLOW_LINKS)&&Files.isRegularFile(imageFile,LinkOption.NOFOLLOW_LINKS)){
                 extracted=json.readValue(Files.readString(record),Map.class);chart=Files.readAllBytes(imageFile);
                 if(!ShopeeProductVideoUploader.digest("SHA-256",chart).equals(extracted.get("chartSha256")))throw bad("尺码图缓存校验失败");
             }else{
-                List<String> lines=TikTokProductSizeChart.sourceMeasurementLines(capture.getDescription());
+                List<String> lines=TikTokProductSizeChart.sourceMeasurementLines(sourceDescription);
                 if(!lines.isEmpty()){
                     chart=TikTokProductSizeChart.renderSourceMeasurements(lines).bytes();extracted=new LinkedHashMap<>(Map.of("sourceType","SOURCE_TEXT","lines",lines));
                 }else{
@@ -82,12 +93,16 @@ public class ShopeeSizeChartExtractor {
                 Path temp=Files.createTempFile(cache,"chart-",".png");Files.write(temp,chart);Files.move(temp,imageFile,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);
                 Path metadata=Files.createTempFile(cache,"chart-",".json");Files.writeString(metadata,json.writeValueAsString(extracted));Files.move(metadata,record,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);
             }
-            var upload=client.shopMultipart("/api/v2/media_space/upload_image",connection,"size-chart.png","image/png",chart,Map.of());
+            return upload(connection, chart, "image/png");
+        }catch(BusinessException e){throw e;}catch(IOException e){throw bad("尺码表提取或缓存失败，请稍后重试");}
+    }
+    private Map<String,Object> upload(MarketplaceAccess.Connection connection, byte[] chart, String mimeType) {
+            var upload=client.shopMultipart("/api/v2/media_space/upload_image",connection,
+                    "size-chart"+("image/jpeg".equals(mimeType)?".jpg":".png"),mimeType,chart,Map.of());
             var data=MarketplaceHttp.object(upload,"response");var info=MarketplaceHttp.object(data,"image_info");
             Object id=info.getOrDefault("image_id",data.get("image_id"));
             if(id==null||String.valueOf(id).isBlank())throw bad("Shopee 尺码图上传未返回图片编号");
             return Map.of("size_chart",String.valueOf(id));
-        }catch(BusinessException e){throw e;}catch(IOException e){throw bad("尺码表提取或缓存失败，请稍后重试");}
     }
     byte[] originalImage(ProductCapture capture,ProductCaptureImage image) {
         if(!Objects.equals(image.getOrganizationId(),capture.getOrganizationId())||!Objects.equals(image.getCaptureId(),capture.getId()))throw bad("尺码图归属不一致");
@@ -107,7 +122,7 @@ public class ShopeeSizeChartExtractor {
         if(response==null||!(response.get("result") instanceof Map<?,?>))throw bad("尺码识别未返回有效结果");return (Map<String,Object>)response.get("result");
     }
     static int selection(Map<String,Object> data,int count){
-        if(!Boolean.TRUE.equals(data.get("found"))||!(data.get("index") instanceof Number n)||n.doubleValue()!=n.intValue()||n.intValue()<0||n.intValue()>=count)throw bad("未识别到可确认的原商品尺码表，请补充清晰尺码图");return ((Number)data.get("index")).intValue();
+        if(!Boolean.TRUE.equals(data.get("found"))||!(data.get("index") instanceof Number n)||n.doubleValue()!=n.intValue()||n.intValue()<0||n.intValue()>=count)throw bad("原商品未识别到清晰尺码表，请在定制模板配置中上传通用尺码图后继续");return ((Number)data.get("index")).intValue();
     }
     static Map<String,Object> normalizeMeasurements(Map<String,Object> raw) {
         var result=new LinkedHashMap<String,Object>(raw);

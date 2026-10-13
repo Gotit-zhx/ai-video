@@ -138,7 +138,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         List<?> publishAttributes = attributeResolver == null ? ShopeeMaterialDefaults.prepare(client, connection, categoryId, request)
                 : attributeResolver.prepare(capture, images, connection, categoryId, request);
 
-        Map<String,Object> sizeChart = sizeCharts == null ? Map.of() : sizeCharts.prepare(capture, images, connection, categoryId);
+        Map<String,Object> sizeChart = sizeCharts == null ? Map.of() : sizeCharts.prepare(capture, images, connection, categoryId, request);
 
         // A still-transcoding video should not cause gallery images to be staged on every poll.
         ShopeeProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection);

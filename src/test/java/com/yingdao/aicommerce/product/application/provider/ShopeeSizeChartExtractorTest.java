@@ -3,12 +3,48 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.AdditionalMatchers.aryEq;
 import com.yingdao.aicommerce.product.application.*;
 import com.yingdao.aicommerce.product.domain.*;
 import com.yingdao.aicommerce.shop.infrastructure.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.databind.ObjectMapper;
 class ShopeeSizeChartExtractorTest {
+ @Test void configuredTemplatePublishesOriginalBytesWithoutOcrOrSourceDownload() {
+  var h=new Images(); var client=mock(ShopeeOfficialClient.class);
+  var models=mock(com.yingdao.aicommerce.saas.application.ModelConfigService.class);
+  var shop=mock(com.yingdao.aicommerce.shop.domain.Shop.class);
+  when(shop.getOrganizationId()).thenReturn("org");
+  var connection=new com.yingdao.aicommerce.shop.application.MarketplaceAccess.Connection(shop,null);
+  when(client.shopGet(eq(ShopeeProductTitle.LIMITS),eq(connection),anyMap())).thenReturn(
+    Map.of("response",Map.of("size_chart_limit",Map.of("size_chart_mandatory",true,"support_image_size_chart",true))));
+  byte[] configured={1,2,3,4};
+  when(h.archive.read("org","configured-chart")).thenReturn(
+    new CommerceDesignImageGateway.Reference("image/jpeg",Base64.getEncoder().encodeToString(configured)));
+  when(client.shopMultipart(anyString(),eq(connection),anyString(),eq("image/jpeg"),aryEq(configured),anyMap()))
+    .thenReturn(Map.of("response",Map.of("image_info",Map.of("image_id","official-chart-id"))));
+  var extractor=new ShopeeSizeChartExtractor(models,h.downloader,client,new ObjectMapper(),h.db,h.archive,
+    "http://unused.invalid","unused",System.getProperty("java.io.tmpdir"));
+  var result=extractor.prepare(h.capture,List.of(),connection,100352,
+    Map.of("listingTemplateSnapshot",Map.of("enabled",true,"sizeChartImageKey","configured-chart")));
+  assertThat(result).containsEntry("size_chart","official-chart-id");
+  verifyNoInteractions(models,h.downloader,h.db);
+ }
+ @Test void missingOrForeignTemplateCannotSilentlyFallBackToUnrelatedChart() {
+  var h=new Images();var client=mock(ShopeeOfficialClient.class);
+  var shop=mock(com.yingdao.aicommerce.shop.domain.Shop.class);when(shop.getOrganizationId()).thenReturn("org");
+  var connection=new com.yingdao.aicommerce.shop.application.MarketplaceAccess.Connection(shop,null);
+  when(client.shopGet(anyString(),eq(connection),anyMap())).thenReturn(
+    Map.of("response",Map.of("size_chart_limit",Map.of("size_chart_mandatory",true))));
+  when(h.archive.read("org","other-company-chart")).thenThrow(new IllegalArgumentException("图片归档不属于当前公司"));
+  var extractor=new ShopeeSizeChartExtractor(null,h.downloader,client,new ObjectMapper(),h.db,h.archive,
+    "http://unused.invalid","unused",System.getProperty("java.io.tmpdir"));
+  assertThatThrownBy(()->extractor.prepare(h.capture,List.of(),connection,100352,
+    Map.of("listingTemplateSnapshot",Map.of("enabled",true,"sizeChartImageKey","other-company-chart"))))
+    .hasMessageContaining("不属于当前公司");
+  verify(client,never()).shopMultipart(anyString(),any(),anyString(),anyString(),any(),anyMap());
+  verifyNoInteractions(h.downloader);
+ }
  @Test void unitConversionUsesExactInchFactorWithoutChangingSizeLabels(){
   var input=Map.<String,Object>of("sourceUnit","in","rows",List.of(Map.of("size","S","chest",30,"length",20),Map.of("size","M","chest",32,"length",21)));
   var out=ShopeeSizeChartExtractor.normalizeMeasurements(input);
