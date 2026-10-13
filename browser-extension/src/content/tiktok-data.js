@@ -129,7 +129,7 @@
         imageUrl,
         imageSource,
         imageInherited: imageSource === "PRODUCT_MAIN",
-        status: common.cleanText(sku.status || sku.sku_status || sku.skuStatus, 40) || null
+        status: common.cleanText(sku.status ?? sku.sku_status ?? sku.skuStatus, 40) || null
       });
     }
 
@@ -274,7 +274,7 @@
           id: cleanIdentifier(value?.id ?? value?.value_id ?? value?.prop_value_id
             ?? value?.property_value_id ?? value?.sku_property_value_id),
           name: common.cleanText(typeof value === "string" ? value : value?.name || value?.value_name
-            || value?.property_value_name || value?.sku_property_value_name || value?.value, 160),
+            || value?.property_value_name || value?.sku_property_value_name || value?.prop_value || value?.value, 160),
           image: firstHttpsImage(value?.image || value?.sku_img || value?.skuImg)
         })) : []
       };
@@ -284,7 +284,7 @@
   function tikTokAttributes(sku, definitions) {
     const attributes = {};
     const values = [];
-    const direct = sku.property_pairs || sku.propertyPairs || sku.sales_attributes || sku.salesAttributes || sku.sku_sales_attrs
+    const direct = sku.sku_sale_props || sku.property_pairs || sku.propertyPairs || sku.sales_attributes || sku.salesAttributes || sku.sku_sales_attrs
       || sku.skuSalesAttrs || sku.attributes || sku.properties;
     if (Array.isArray(direct) && direct.length) {
       let complete = true;
@@ -292,7 +292,7 @@
         const key = common.cleanText(item?.sku_property_name || item?.skuPropertyName || item?.name
           || item?.attribute_name || item?.property_name || item?.prop_name, 100);
         const value = common.cleanText(item?.sku_property_value_name || item?.skuPropertyValueName
-          || item?.value_name || item?.attribute_value || item?.property_value || item?.value, 160);
+          || item?.value_name || item?.attribute_value || item?.property_value || item?.prop_value || item?.value, 160);
         if (key === "-") continue;
         if (!key || !value) complete = false;
         if (key && value) {
@@ -303,7 +303,7 @@
       return { attributes, values, complete };
     }
 
-    const rawIds = sku.sku_sale_prop_ids || sku.skuSalePropIds || sku.sales_attr_value_ids || sku.salesAttrValueIds;
+    const rawIds = sku.sale_prop_value_ids || sku.sku_sale_prop_ids || sku.skuSalePropIds || sku.sales_attr_value_ids || sku.salesAttrValueIds;
     const ids = Array.isArray(rawIds)
       ? rawIds.map(cleanIdentifier).filter(Boolean)
       : common.cleanText(rawIds, 2_000).split(/[_,;|]/).map(cleanIdentifier).filter(Boolean);
@@ -335,10 +335,12 @@
       ? [promotionPrice?.origin_price_decimal, promotionPrice?.originPriceDecimal,
         promotionPrice?.original_price, promotionPrice?.originalPrice, promotionPrice?.origin_price, promotionPrice?.originPrice,
         sku.original_price, sku.originalPrice, sku.origin_price, sku.originPrice, sku.list_price, sku.listPrice,
+        price.origin_price_decimal, price.originPriceDecimal,
         price.original_price, price.originalPrice, price.origin_price, price.originPrice, price.list_price, price.listPrice]
       : [promotionPrice?.sale_price_decimal, promotionPrice?.salePriceDecimal,
         promotionPrice?.sale_price, promotionPrice?.salePrice, promotionPrice?.price,
         sku.sale_price, sku.salePrice, sku.price_value, sku.priceValue,
+        price.sale_price_decimal, price.salePriceDecimal,
         price.sale_price, price.salePrice, price.amount, price.price, price.current_price, price.currentPrice];
     for (const value of values) {
       const result = exactMoney(value);
@@ -413,7 +415,7 @@
     const candidates = [product.currency, product.currency_code, product.currencyCode,
       product.price?.currency, product.price_info?.currency, priceModel.currency_name, priceModel.currencyName,
       firstPriceEntry?.currency_name, firstPriceEntry?.currencyName, firstPriceEntry?.currency,
-      firstSku.price?.currency, firstSku.price_info?.currency];
+      firstSku.price?.currency, firstSku.price?.currency_name, firstSku.price_info?.currency];
     for (const value of candidates) {
       const result = common.cleanText(typeof value === "object" ? value?.code : value, 8).toUpperCase();
       if (/^[A-Z]{3}$/.test(result)) return result;
@@ -422,7 +424,7 @@
   }
 
   function productDescription(product) {
-    const value = product.description ?? product.product_description ?? product.productDescription;
+    const value = product.description ?? product.product_description ?? product.productDescription ?? product.desc_blocks;
     if (value === null || value === undefined) return "";
     if (typeof value !== "string") return richDescriptionText(value);
 
@@ -501,7 +503,7 @@
   }
 
   function productDetailImages(product) {
-    let value = product.description ?? product.product_description ?? product.productDescription;
+    let value = product.description ?? product.product_description ?? product.productDescription ?? product.desc_blocks;
     if (typeof value === "string") {
       const text = value.trim();
       if (text.length > MAX_DOCUMENT_BYTES || (!text.startsWith("[") && !text.startsWith("{"))) return [];
@@ -509,6 +511,7 @@
     }
     const state = { images: [], nodes: 0, seen: new WeakSet() };
     collectDescriptionImages(value, state, 0);
+    collectImageUrls(product.size_guide?.image, state.images);
     return [...new Set(state.images)].slice(0, 120);
   }
 
@@ -579,7 +582,7 @@
   }
 
   function firstAttributeImage(sku) {
-    const attributes = sku.property_pairs || sku.propertyPairs || sku.sales_attributes || sku.salesAttributes || sku.sku_sales_attrs
+    const attributes = sku.sku_sale_props || sku.property_pairs || sku.propertyPairs || sku.sales_attributes || sku.salesAttributes || sku.sku_sales_attrs
       || sku.skuSalesAttrs || sku.attributes || sku.properties;
     if (!Array.isArray(attributes)) return null;
     for (const attribute of attributes) {
@@ -590,11 +593,18 @@
   }
 
   function propertyDefinitionImage(sku, definitions) {
-    const pairs = sku.property_pairs || sku.propertyPairs;
-    if (!Array.isArray(pairs)) return null;
+    const pairs = sku.sku_sale_props || sku.property_pairs || sku.propertyPairs;
+    if (!Array.isArray(pairs)) {
+      const ids = common.cleanText(sku.sale_prop_value_ids, 2_000).split("_");
+      for (const definition of definitions) {
+        const option = definition.values.find(value => ids.includes(value.id));
+        if (option?.image) return option.image;
+      }
+      return null;
+    }
     for (const pair of pairs) {
-      const propertyId = cleanIdentifier(pair?.sku_property_id ?? pair?.skuPropertyId ?? pair?.property_id);
-      const valueId = cleanIdentifier(pair?.sku_property_value_id ?? pair?.skuPropertyValueId ?? pair?.property_value_id);
+      const propertyId = cleanIdentifier(pair?.sku_property_id ?? pair?.skuPropertyId ?? pair?.property_id ?? pair?.prop_id);
+      const valueId = cleanIdentifier(pair?.sku_property_value_id ?? pair?.skuPropertyValueId ?? pair?.property_value_id ?? pair?.prop_value_id);
       const definition = definitions.find(value => !propertyId || value.id === propertyId);
       const option = definition?.values.find(value => value.id === valueId);
       if (option?.image) return option.image;
@@ -660,7 +670,7 @@
     for (const owner of [product, context]) {
       if (!owner || typeof owner !== "object") continue;
       const sources = [owner.product_properties, owner.productProperties,
-        owner.product_attributes, owner.productAttributes, owner.attributes];
+        owner.product_attributes, owner.productAttributes, owner.specifications, owner.attributes];
       for (const source of sources) {
         if (!source || typeof source !== "object") continue;
         const entries = Array.isArray(source) ? source.slice(0, 50)

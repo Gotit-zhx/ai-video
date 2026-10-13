@@ -1,0 +1,1157 @@
+{
+  "product_id": "1736211359437981360",
+  "seller_id": "8652805097324906160",
+  "title": "Mobile PDP cotton T-shirt",
+  "images": [
+    {
+      "url_list": [
+        "https://example.com/pdp-image-1.webp"
+      ]
+    },
+    {
+      "url_list": [
+        "https://example.com/pdp-image-2.webp"
+      ]
+    },
+    {
+      "url_list": [
+        "https://example.com/pdp-image-3.webp"
+      ]
+    },
+    {
+      "url_list": [
+        "https://example.com/pdp-image-4.webp"
+      ]
+    },
+    {
+      "url_list": [
+        "https://example.com/pdp-image-5.webp"
+      ]
+    },
+    {
+      "url_list": [
+        "https://example.com/pdp-image-6.webp"
+      ]
+    },
+    {
+      "url_list": [
+        "https://example.com/pdp-image-7.webp"
+      ]
+    }
+  ],
+  "specifications": [
+    {
+      "name": "Fit",
+      "value": "Fitted"
+    },
+    {
+      "name": "Sleeve length",
+      "value": "Short sleeve"
+    },
+    {
+      "name": "Materials",
+      "value": "Cotton"
+    },
+    {
+      "name": "Style",
+      "value": "Ol,Modest,Party,Holiday,Sweet,Street,Sexy,Preppy,Minimalist,Cute,Korean,Japanese,Elegant,Chic,Boho,Basic,Athletic"
+    },
+    {
+      "name": "Clothing length",
+      "value": "Short"
+    },
+    {
+      "name": "Quantity per pack",
+      "value": "1"
+    },
+    {
+      "name": "Neckline",
+      "value": "Crew neck"
+    },
+    {
+      "name": "Season",
+      "value": "Summer,Spring"
+    },
+    {
+      "name": "Washing instructions",
+      "value": "Machine washable"
+    },
+    {
+      "name": "Occasion",
+      "value": "Casual"
+    }
+  ],
+  "desc_blocks": [
+    {
+      "type": "text",
+      "text": "Cotton crew neck T-shirt."
+    },
+    {
+      "type": "image",
+      "image": {
+        "url_list": [
+          "https://example.com/pdp-image-7.webp"
+        ]
+      }
+    },
+    {
+      "type": "image",
+      "image": {
+        "url_list": [
+          "https://example.com/pdp-image-8.webp"
+        ]
+      }
+    },
+    {
+      "type": "image",
+      "image": {
+        "url_list": [
+          "https://example.com/pdp-image-9.webp"
+        ]
+      }
+    }
+  ],
+  "price": {
+    "symbol_position": 1,
+    "is_interval_price": true,
+    "real_price": "₱64.40",
+    "original_price": "₱220.00",
+    "discount": "最高可节省 71%",
+    "currency": "PHP",
+    "currency_symbol": "₱",
+    "min_sku_price": "64.40",
+    "max_sku_price": "146.46",
+    "min_sku_original_price": "220.00"
+  },
+  "sale_props": [
+    {
+      "has_image": true,
+      "has_extended_images": false,
+      "prop_id": "100000",
+      "prop_name": "Color",
+      "sale_prop_values": [
+        {
+          "prop_value_id": "7644046491081901842",
+          "prop_value": "apricot",
+          "image": {
+            "url_list": [
+              "https://example.com/pdp-image-2.webp"
+            ]
+          }
+        },
+        {
+          "prop_value_id": "7033666138420840197",
+          "prop_value": "flowergrey",
+          "image": {
+            "url_list": [
+              "https://example.com/pdp-image-3.webp"
+            ]
+          }
+        },
+        {
+          "prop_value_id": "7654309252269426454",
+          "prop_value": "black",
+          "image": {
+            "url_list": [
+              "https://example.com/pdp-image-5.webp"
+            ]
+          }
+        },
+        {
+          "prop_value_id": "7654306811406976790",
+          "prop_value": "red",
+          "image": {
+            "url_list": [
+              "https://example.com/pdp-image-6.webp"
+            ]
+          }
+        },
+        {
+          "prop_value_id": "7654306368773572372",
+          "prop_value": "white",
+          "image": {
+            "url_list": [
+              "https://example.com/pdp-image-1.webp"
+            ]
+          }
+        },
+        {
+          "prop_value_id": "7654306368773736212",
+          "prop_value": "pink",
+          "image": {
+            "url_list": [
+              "https://example.com/pdp-image-4.webp"
+            ]
+          }
+        },
+        {
+          "prop_value_id": "7221431802756515610",
+          "prop_value": "PURE/WHITE",
+          "image": {
+            "url_list": [
+              "https://example.com/pdp-image-10.webp"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "has_image": false,
+      "has_extended_images": false,
+      "prop_id": "100007",
+      "prop_name": "Size",
+      "sale_prop_values": [
+        {
+          "prop_value_id": "7654551397714773774",
+          "prop_value": "S"
+        },
+        {
+          "prop_value_id": "7654556258594342657",
+          "prop_value": "M"
+        },
+        {
+          "prop_value_id": "7654556065794819861",
+          "prop_value": "L"
+        },
+        {
+          "prop_value_id": "7654556128071845639",
+          "prop_value": "XL"
+        }
+      ]
+    }
+  ],
+  "skus": [
+    {
+      "status": 1,
+      "stock": 999,
+      "sku_id": "1736211362208712368",
+      "sale_prop_value_ids": "7644046491081901842_7654551397714773774",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7644046491081901842",
+          "prop_value": "apricot"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654551397714773774",
+          "prop_value": "S"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362209171120",
+      "sale_prop_value_ids": "7644046491081901842_7654556258594342657",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7644046491081901842",
+          "prop_value": "apricot"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556258594342657",
+          "prop_value": "M"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 999,
+      "sku_id": "1736211362209629872",
+      "sale_prop_value_ids": "7644046491081901842_7654556065794819861",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7644046491081901842",
+          "prop_value": "apricot"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556065794819861",
+          "prop_value": "L"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 997,
+      "sku_id": "1736211362210088624",
+      "sale_prop_value_ids": "7644046491081901842_7654556128071845639",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7644046491081901842",
+          "prop_value": "apricot"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556128071845639",
+          "prop_value": "XL"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 998,
+      "sku_id": "1736211362208777904",
+      "sale_prop_value_ids": "7033666138420840197_7654551397714773774",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7033666138420840197",
+          "prop_value": "flowergrey"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654551397714773774",
+          "prop_value": "S"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362209236656",
+      "sale_prop_value_ids": "7033666138420840197_7654556258594342657",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7033666138420840197",
+          "prop_value": "flowergrey"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556258594342657",
+          "prop_value": "M"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 999,
+      "sku_id": "1736211362209695408",
+      "sale_prop_value_ids": "7033666138420840197_7654556065794819861",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7033666138420840197",
+          "prop_value": "flowergrey"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556065794819861",
+          "prop_value": "L"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362210154160",
+      "sale_prop_value_ids": "7033666138420840197_7654556128071845639",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7033666138420840197",
+          "prop_value": "flowergrey"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556128071845639",
+          "prop_value": "XL"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 997,
+      "sku_id": "1736211362208843440",
+      "sale_prop_value_ids": "7654309252269426454_7654551397714773774",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654309252269426454",
+          "prop_value": "black"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654551397714773774",
+          "prop_value": "S"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362209302192",
+      "sale_prop_value_ids": "7654309252269426454_7654556258594342657",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654309252269426454",
+          "prop_value": "black"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556258594342657",
+          "prop_value": "M"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 998,
+      "sku_id": "1736211362209760944",
+      "sale_prop_value_ids": "7654309252269426454_7654556065794819861",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654309252269426454",
+          "prop_value": "black"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556065794819861",
+          "prop_value": "L"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 995,
+      "sku_id": "1736211362210219696",
+      "sale_prop_value_ids": "7654309252269426454_7654556128071845639",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654309252269426454",
+          "prop_value": "black"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556128071845639",
+          "prop_value": "XL"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 999,
+      "sku_id": "1736211362208908976",
+      "sale_prop_value_ids": "7654306811406976790_7654551397714773774",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306811406976790",
+          "prop_value": "red"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654551397714773774",
+          "prop_value": "S"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 999,
+      "sku_id": "1736211362209367728",
+      "sale_prop_value_ids": "7654306811406976790_7654556258594342657",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306811406976790",
+          "prop_value": "red"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556258594342657",
+          "prop_value": "M"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362209826480",
+      "sale_prop_value_ids": "7654306811406976790_7654556065794819861",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306811406976790",
+          "prop_value": "red"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556065794819861",
+          "prop_value": "L"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 999,
+      "sku_id": "1736211362210285232",
+      "sale_prop_value_ids": "7654306811406976790_7654556128071845639",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306811406976790",
+          "prop_value": "red"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556128071845639",
+          "prop_value": "XL"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 998,
+      "sku_id": "1736211362208974512",
+      "sale_prop_value_ids": "7654306368773572372_7654551397714773774",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306368773572372",
+          "prop_value": "white"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654551397714773774",
+          "prop_value": "S"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 996,
+      "sku_id": "1736211362209433264",
+      "sale_prop_value_ids": "7654306368773572372_7654556258594342657",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306368773572372",
+          "prop_value": "white"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556258594342657",
+          "prop_value": "M"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 997,
+      "sku_id": "1736211362209892016",
+      "sale_prop_value_ids": "7654306368773572372_7654556065794819861",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306368773572372",
+          "prop_value": "white"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556065794819861",
+          "prop_value": "L"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 997,
+      "sku_id": "1736211362210350768",
+      "sale_prop_value_ids": "7654306368773572372_7654556128071845639",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306368773572372",
+          "prop_value": "white"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556128071845639",
+          "prop_value": "XL"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362209040048",
+      "sale_prop_value_ids": "7654306368773736212_7654551397714773774",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306368773736212",
+          "prop_value": "pink"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654551397714773774",
+          "prop_value": "S"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362209498800",
+      "sale_prop_value_ids": "7654306368773736212_7654556258594342657",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306368773736212",
+          "prop_value": "pink"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556258594342657",
+          "prop_value": "M"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 999,
+      "sku_id": "1736211362209957552",
+      "sale_prop_value_ids": "7654306368773736212_7654556065794819861",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306368773736212",
+          "prop_value": "pink"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556065794819861",
+          "prop_value": "L"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 2,
+      "stock": 0,
+      "sku_id": "1736211362210416304",
+      "sale_prop_value_ids": "7654306368773736212_7654556128071845639",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7654306368773736212",
+          "prop_value": "pink"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556128071845639",
+          "prop_value": "XL"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "146.46",
+        "origin_price_format": "377.80",
+        "discount_format": "61%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "146.46",
+        "origin_price_decimal": "377.8",
+        "discount_decimal": "0.61",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362209105584",
+      "sale_prop_value_ids": "7221431802756515610_7654551397714773774",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7221431802756515610",
+          "prop_value": "PURE/WHITE"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654551397714773774",
+          "prop_value": "S"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "64.40",
+        "origin_price_format": "220.00",
+        "discount_format": "71%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "64.4",
+        "origin_price_decimal": "220",
+        "discount_decimal": "0.71",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 999,
+      "sku_id": "1736211362209564336",
+      "sale_prop_value_ids": "7221431802756515610_7654556258594342657",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7221431802756515610",
+          "prop_value": "PURE/WHITE"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556258594342657",
+          "prop_value": "M"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "64.40",
+        "origin_price_format": "220.00",
+        "discount_format": "71%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "64.4",
+        "origin_price_decimal": "220",
+        "discount_decimal": "0.71",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362210023088",
+      "sale_prop_value_ids": "7221431802756515610_7654556065794819861",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7221431802756515610",
+          "prop_value": "PURE/WHITE"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556065794819861",
+          "prop_value": "L"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "64.40",
+        "origin_price_format": "220.00",
+        "discount_format": "71%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "64.4",
+        "origin_price_decimal": "220",
+        "discount_decimal": "0.71",
+        "currency_name": "PHP"
+      }
+    },
+    {
+      "status": 0,
+      "stock": 1000,
+      "sku_id": "1736211362210481840",
+      "sale_prop_value_ids": "7221431802756515610_7654556128071845639",
+      "sku_sale_props": [
+        {
+          "prop_id": "100000",
+          "prop_name": "Color",
+          "prop_value_id": "7221431802756515610",
+          "prop_value": "PURE/WHITE"
+        },
+        {
+          "prop_id": "100007",
+          "prop_name": "Size",
+          "prop_value_id": "7654556128071845639",
+          "prop_value": "XL"
+        }
+      ],
+      "price": {
+        "symbol_position": 1,
+        "price_type": 0,
+        "show_currency_space": false,
+        "sale_price_format": "64.40",
+        "origin_price_format": "220.00",
+        "discount_format": "71%",
+        "currency_symbol": "₱",
+        "sale_price_decimal": "64.4",
+        "origin_price_decimal": "220",
+        "discount_decimal": "0.71",
+        "currency_name": "PHP"
+      }
+    }
+  ],
+  "size_guide": {
+    "image": {
+      "url_list": [
+        "https://example.com/pdp-image-9.webp"
+      ]
+    },
+    "title": "尺码指南"
+  }
+}

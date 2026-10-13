@@ -1,3 +1,7 @@
+## 0.2.5 TikTok 移动商品页 SKU 与内容
+
+补齐移动商品页的 sku_sale_props、sale_prop_value_ids、SKU 内价格字段、desc_blocks、specifications 和尺码表图片。保存全部真实 SKU 的颜色、尺码、售价、原价、库存及对应图片，保留状态值 0；不会用当前选中规格替代全部 SKU。更新后重新加载扩展并刷新商品页。
+
 ## 0.2.4 TikTok 实页类目与详情图
 
 支持商品组件旁的 category_info.recommended_categories 类目路径；从已匹配商品的富文本 description 中采集详情图，保留主图、SKU 图并排除评论与推荐内容。MY 商品 1730135047201523374 真实数据已验证 71 个 SKU 和 8 张详情图。
