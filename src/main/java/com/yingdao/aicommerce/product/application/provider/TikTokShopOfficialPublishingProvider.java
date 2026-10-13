@@ -774,7 +774,10 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
     }
 
     private void rejectDryRunImages(List<ProductCaptureImage> images) {
-        if (images.stream().anyMatch(image -> image.getProcessedUrl() != null
+        // Original measurement charts intentionally retain their pixels. Ordinary
+        // product images must still pass the live-processing guard.
+        if (images.stream().anyMatch(image -> !"SIZE_CHART".equals(image.getRoleName())
+                && image.getProcessedUrl() != null
                 && image.getProcessedUrl().equals(image.getOriginalUrl()))) {
             throw conflict("商品图片仍是去水印 Dry Run 占位结果，禁止提交到真实 TikTok Shop 店铺");
         }
