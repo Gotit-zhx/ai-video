@@ -189,8 +189,9 @@ public class ProductCaptureService {
         if (listingTitles != null) {
             normalized.put("originalTitle", title);
             try {
-                title = listingTitles.generate(principal.organizationId(), title, category, normalized.get("attributes"), source.platform());
-                normalized.put("titleAi", Map.of("status", "SUCCEEDED", "sdk", "@earendil-works/pi-agent-core"));
+                title = listingTitles.generate(principal.organizationId(), normalized, source.platform());
+                normalized.put("titleAi", Map.of("status", "SUCCEEDED", "sdk", "@earendil-works/pi-agent-core",
+                        "basis", "MAIN_IMAGE_AND_COLLECTED_FACTS"));
             } catch (BusinessException exception) {
                 // A model outage must not discard the successfully captured SKU/images.
                 normalized.put("titleAi", Map.of("status", "FAILED", "error", exception.getMessage(),

@@ -18,10 +18,11 @@ public class ProductListingTitleController {
     public ApiResponse<Map<String, String>> generate(@PathVariable String id,
             @RequestBody(required = false) Map<String, Object> body, @AuthenticationPrincipal PlatformPrincipal principal) {
         ProductListingTemplateService.requireAccess(principal, true);
-        var capture = captures.get(id, principal).capture();
+        var detail = captures.get(id, principal);
+        var capture = detail.capture();
         String platform = body == null ? capture.getSourcePlatform() : String.valueOf(body.getOrDefault("platform", capture.getSourcePlatform()));
         if (!java.util.Set.of("SHOPEE", "TIKTOK", "TIKTOK_SHOP").contains(platform))
             throw new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.BAD_REQUEST, "请选择目标平台");
-        return ApiResponse.ok(Map.of("title", titles.generate(capture, platform), "originalTitle", capture.getTitle()));
+        return ApiResponse.ok(Map.of("title", titles.generate(capture, detail.images(), platform), "originalTitle", capture.getTitle()));
     }
 }

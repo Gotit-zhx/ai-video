@@ -4817,8 +4817,8 @@ function renderProductCaptureDetail() {
   }).catch(() => {});
   document.querySelector('#generate-product-ai-title').disabled = !hasAnyPermission('product:edit') || capture.status === 'PUBLISHED';
   const titleAi = capture.normalizedData?.titleAi;
-  document.querySelector('#product-ai-title-status').textContent = titleAi?.status === 'SUCCEEDED' ? `采集时已由 Pi Agent SDK 处理标题 · 原标题：${capture.normalizedData.originalTitle || ''}`
-    : titleAi?.status === 'FAILED' ? `自动标题处理失败，已保留原标题：${titleAi.error || '请重试'}` : '新采集商品自动通过 Pi Agent SDK 处理标题';
+  document.querySelector('#product-ai-title-status').textContent = titleAi?.status === 'SUCCEEDED' ? `${titleAi.basis === 'MAIN_IMAGE_AND_COLLECTED_FACTS' ? '采集时已根据主图与商品信息生成标题' : '采集时已由 Pi Agent SDK 处理标题'} · 原标题：${capture.normalizedData.originalTitle || ''}`
+    : titleAi?.status === 'FAILED' ? `自动标题处理失败，已保留原标题：${titleAi.error || '请重试'}` : '新采集商品自动根据主图与商品信息生成标题';
   renderProductSkus(capture);
   renderProductImages(capture);
   void renderProductVideos(capture);
@@ -7928,7 +7928,7 @@ document.querySelector('#generate-product-ai-title').addEventListener('click', a
   if (!capture || button.disabled || !hasAnyPermission('product:edit')) return;
   if (productEditorDirty || productCaptureSaveInFlightId) { status.textContent = '请先保存商品修改，再生成标题。'; return; }
   const platform = document.querySelector('#product-template-preview-platform').value;
-  button.disabled = true; status.textContent = '正在根据原商品名称与规格生成标题…';
+  button.disabled = true; status.textContent = '正在分析主图、采集图片与商品信息，生成新标题…';
   try {
     const result = await api(`/api/v1/product-captures/${encodeURIComponent(capture.id)}/ai-title`,
       {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform}),signal:AbortSignal.timeout(105000)});

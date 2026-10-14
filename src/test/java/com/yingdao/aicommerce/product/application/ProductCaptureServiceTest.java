@@ -42,6 +42,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -222,21 +225,23 @@ class ProductCaptureServiceTest {
     void everyNewCaptureAutomaticallyProcessesTitleWithOriginalFactsAndRetainsRawTitle() {
         var titles=mock(ProductListingTitleService.class);
         org.springframework.test.util.ReflectionTestUtils.setField(service,"listingTitles",titles);
-        when(titles.generate(anyString(),anyString(),any(),any(),anyString())).thenReturn("Women Cotton Short Sleeve Casual T-shirt");
+        when(titles.generate(anyString(),anyMap(),anyString())).thenReturn("Women Cotton Short Sleeve Casual T-shirt");
         var request=Map.<String,Object>of("sourceUrl","https://shopee.ph/a-i.123.456","title","COD Women Cotton Tee",
                 "categoryName","Women > T-shirts","attributes",Map.of("Sleeve Length","Short Sleeves"));
         var result=service.create(request,"capture-auto-title-123",principal("org-a"));
         assertEquals("Women Cotton Short Sleeve Casual T-shirt",result.capture().getTitle());
         assertEquals("COD Women Cotton Tee",result.normalizedData().get("originalTitle"));
         assertEquals("SUCCEEDED",((Map<?,?>)result.normalizedData().get("titleAi")).get("status"));
+        assertEquals("MAIN_IMAGE_AND_COLLECTED_FACTS",((Map<?,?>)result.normalizedData().get("titleAi")).get("basis"));
         assertEquals("COD Women Cotton Tee",((Map<?,?>)result.rawData().get("captureRequest")).get("title"));
-        verify(titles).generate("org-a","COD Women Cotton Tee","Women > T-shirts",Map.of("Sleeve Length","Short Sleeves"),"SHOPEE");
+        verify(titles).generate(eq("org-a"),argThat(facts->facts.get("categoryName").equals("Women > T-shirts")
+                && facts.get("attributes").equals(Map.of("Sleeve Length","Short Sleeves")) && facts.containsKey("images")),eq("SHOPEE"));
     }
     @Test
     void titleModelOutageKeepsCapturedDataAndRecordsFailureWithoutClaimingAiSuccess() {
         var titles=mock(ProductListingTitleService.class);
         org.springframework.test.util.ReflectionTestUtils.setField(service,"listingTitles",titles);
-        when(titles.generate(anyString(),anyString(),any(),any(),anyString()))
+        when(titles.generate(anyString(),anyMap(),anyString()))
                 .thenThrow(new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY,"AI 标题生成失败"));
         var result=service.create(Map.of("sourceUrl","https://shopee.ph/a-i.123.456","title","Original Cotton Tee"),
                 "capture-failed-title-123",principal("org-a"));
