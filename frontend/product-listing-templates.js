@@ -2,7 +2,6 @@
   'use strict';
   let context, templates = [], organization = '', pending = null, platform = 'SHOPEE', busy = false;
   let shipping = null, shippingRequest = 0, shippingLoading = false;
-  let sizeChartImageKey = '';
   const normalize = value => ['TIKTOK','TIKTOK_SHOP'].includes(String(value).toUpperCase()) ? 'TIKTOK_SHOP' : 'SHOPEE';
   const byId = id => document.getElementById(id);
   function get(target) {
@@ -52,7 +51,7 @@
   function readDraft() {
     return {name:byId('listing-template-name').value,enabled:byId('listing-template-enabled').checked,
       description:byId('listing-template-description').value,
-      sizeChartImageKey,
+      sizeChartImageKey:get(platform)?.sizeChartImageKey || '',
       weightGrams:String(Math.round(Number(byId('listing-template-weight').value)*1000000)/1000),
       packageLengthCm:byId('listing-template-length').value,packageWidthCm:byId('listing-template-width').value,
       packageHeightCm:byId('listing-template-height').value,version:get(platform)?.version};
@@ -120,8 +119,6 @@
     byId('listing-template-name').value = template.name;
     byId('listing-template-enabled').checked = template.enabled;
     byId('listing-template-description').value = template.description;
-    sizeChartImageKey = template.sizeChartImageKey || '';
-    renderSizeChart();
     byId('listing-template-weight').value = Number(template.weightGrams)/1000;
     for (const [id,key] of [['length','packageLengthCm'],['width','packageWidthCm'],['height','packageHeightCm']])
       byId('listing-template-'+id).value = template[key];
@@ -130,34 +127,6 @@
     byId('listing-template-status').textContent = template.version ? `已保存 · 版本 ${template.version}` : '通用默认模板';
     byId('listing-logistics-section').hidden = platform !== 'SHOPEE';
     setBusy(false);
-  }
-  function renderSizeChart() {
-    byId('listing-size-chart-section').hidden = platform !== 'SHOPEE';
-    const image = byId('listing-size-chart-preview');
-    image.hidden = !sizeChartImageKey;
-    if (sizeChartImageKey) image.src = '/api/v1/product-listing-templates/size-chart-image?key='+encodeURIComponent(sizeChartImageKey);
-    else image.removeAttribute('src');
-    byId('remove-listing-size-chart').hidden = !sizeChartImageKey;
-    byId('listing-size-chart-status').textContent = sizeChartImageKey
-      ? '已选择尺码图，保存后上传商品直接使用此图。'
-      : '未配置。请上传适用于商品的实际尺码表；包装长宽高不属于服装尺码。';
-  }
-  async function uploadSizeChart() {
-    const input = byId('listing-size-chart-file'), file = input.files?.[0];
-    if (!file || busy || !context.canEdit()) return;
-    const org = organization, target = platform;
-    if (!['image/png','image/jpeg'].includes(file.type) || file.size > 8*1024*1024) {
-      byId('listing-template-error').textContent = '请选择 8 MB 以内的 PNG 或 JPG 尺码图'; input.value=''; return;
-    }
-    setBusy(true); byId('listing-template-error').textContent='';
-    byId('listing-size-chart-status').textContent='正在上传尺码图…';
-    try {
-      const body = new FormData(); body.append('file',file);
-      const result = await context.api('/api/v1/product-listing-templates/size-chart-image',{method:'POST',body});
-      if (org !== organization || context.getUser()?.organizationId !== org || platform !== target) return;
-      sizeChartImageKey = result.data.storageKey; renderSizeChart();
-    } catch(error) {if (org === organization) byId('listing-template-error').textContent=error.message;}
-    finally {input.value=''; if (org === organization) setBusy(false);}
   }
   async function open() {
     platform = 'SHOPEE'; draftValues.clear();
@@ -214,11 +183,6 @@
     for (const id of ['close-product-listing-templates','cancel-product-listing-templates'])
       byId(id).addEventListener('click', () => byId('product-listing-template-dialog').close());
     byId('product-listing-template-form').addEventListener('submit', save);
-    byId('listing-size-chart-file').addEventListener('change',uploadSizeChart);
-    byId('remove-listing-size-chart').addEventListener('click',()=>{
-      if (busy || !context.canEdit()) return;
-      sizeChartImageKey='';renderSizeChart();
-    });
     byId('listing-logistics-shop').addEventListener('change',loadShipping);
     byId('listing-logistics-mode').addEventListener('change',()=>{
       if (!shipping) return;
