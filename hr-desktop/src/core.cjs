@@ -345,6 +345,7 @@ class Recruiter extends EventEmitter {
       this.riskHold=null;this.state={state:'complete',phase:'',error:'',failure_code:''};
       this.paused=false;await this.save();this.event('CONNECTED');
       this.browser.connected();
+      this.backgroundRetryAt=this.clock()+120000;
       this.passiveStatus={phase:'catching_up',catchupPending:1};this.scheduleActivityPoll();
     }catch{
       if(this.state.state==='pending'){
@@ -395,6 +396,7 @@ class Recruiter extends EventEmitter {
       await this.save();
       if(!current())return;
       this.event('CONNECTION_RESTORED');this.browser.connected();
+      this.backgroundRetryAt=this.clock()+120000;
       this.passiveStatus={...this.passiveStatus,phase:'catching_up',catchupPending:1};
       this.scheduleActivityPoll();
     }catch{/* Keep cookies and ledgers; retry only local checks after backoff. */}
@@ -422,7 +424,8 @@ class Recruiter extends EventEmitter {
     if(!this.activity.size&&!status.activityPending&&!status.exportsPending&&!status.catchupPending)return;
     const due=this.activity.size||status.exportsPending?0:status.catchupPending
       ?Number(status.catchupRetryAt||0)*1000:Number(status.activityRetryAt||0)*1000;
-    const delay=Math.max(1000,this.lastActivityPoll+10000-this.clock(),due-this.clock(),this.backgroundRetryAt-this.clock());
+    const interval=this.activity.size||status.activityPending?30000:status.exportsPending?10000:120000;
+    const delay=Math.max(1000,this.lastActivityPoll+interval-this.clock(),due-this.clock(),this.backgroundRetryAt-this.clock());
     this.activityTimer=setTimeout(()=>{
       this.activityTimer=null;this.poll();
     },delay);

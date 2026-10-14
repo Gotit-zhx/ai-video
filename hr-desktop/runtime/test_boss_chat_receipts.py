@@ -144,7 +144,7 @@ class ReceiptTest(unittest.TestCase):
         budget = self.root / 'budget.sqlite3'
         with contextlib.closing(sqlite3.connect(budget)) as db, db:
             db.execute('CREATE TABLE requests(at REAL NOT NULL)')
-            db.executemany('INSERT INTO requests VALUES(?)', [(time.time(),)]*90)
+            db.executemany('INSERT INTO requests VALUES(?)', [(time.time()-60,)]*90)
         self.c.passive_delay = lambda **options: flow.budget_delay(budget, 120, **options)
         self.c.cli_json.return_value = {'ok': True, 'data': {'messages': [self.message(100)]}}
         with flow.database(self.root) as db:
@@ -156,7 +156,8 @@ class ReceiptTest(unittest.TestCase):
                 Path(args[-1]).write_bytes(b'%PDF-1.4 test')
                 return {'ok': True}
             self.c.cli_json.side_effect = downloaded
-            self.assertTrue(receipts.step(self.c, db, {})['ok'])
+            with mock.patch.object(receipts.time,'time',return_value=time.time()+31):
+                self.assertTrue(receipts.step(self.c, db, {})['ok'])
             self.assertEqual(db.execute('SELECT state FROM chat_resume_receipts').fetchone()[0], 'export')
         self.c.request_resume.assert_not_called()
 
@@ -177,6 +178,67 @@ class ReceiptTest(unittest.TestCase):
             self.seed(db)
             self.inspect(db, [self.message(100, attachment=False)])
         self.c.sourcing_friend_details.assert_not_called()
+
+    def test_rescan_of_existing_attachment_does_not_repeat_binding_or_download(self):
+        with flow.database(self.root) as db:
+            self.seed(db)
+            self.inspect(db,[self.message(100)])
+            self.c.sourcing_friend_details.reset_mock()
+            receipts.wake(db,'1')
+            self.inspect(db,[self.message(100)])
+            self.c.sourcing_friend_details.assert_not_called()
+            self.assertEqual(db.execute('SELECT count(*) FROM chat_resume_receipts').fetchone()[0],1)
+
+    def test_filename_selects_docx_without_guessing_and_redownloading(self):
+        with flow.database(self.root) as db:
+            self.seed(db)
+            message=self.message(100)
+            message['body']['hyperLink']['title']='简历.docx'
+            self.inspect(db,[message])
+            def downloaded(*args):
+                self.assertTrue(args[-1].endswith('.docx'))
+                Path(args[-1]).write_bytes(b'valid docx fixture')
+                return {'ok':True}
+            self.c.cli_json.reset_mock();self.c.cli_json.side_effect=downloaded
+            receipts.download(self.c,db,db.execute('SELECT * FROM chat_resume_receipts').fetchone())
+            self.c.cli_json.assert_called_once()
+
+    def test_mismatched_suffix_queues_exact_sdk_format_without_immediate_retry(self):
+        with flow.database(self.root) as db:
+            self.seed(db);self.inspect(db,[self.message(100)])
+            self.c.cli_json.reset_mock()
+            self.c.cli_json.return_value={'ok':False,'error':{'code':'INVALID_PARAM',
+                'message':'文件内容与输出扩展名不符，请使用 .docx'}}
+            receipts.download(self.c,db,db.execute('SELECT * FROM chat_resume_receipts').fetchone())
+            self.c.cli_json.assert_called_once()
+            saved=db.execute('SELECT * FROM chat_resume_receipts').fetchone()
+            self.assertEqual(json.loads(saved['body'])['downloadSuffix'],'.docx')
+            self.assertGreater(saved['retry_at'],time.time()+50)
+            self.assertEqual(saved['state'],'found')
+
+    def test_pacing_survives_restart_and_new_activity_does_not_create_a_burst(self):
+        request={'activityHints':[{'friend':'1'}]}
+        self.c.cli_json.return_value={'ok':True,'data':{'messages':[self.message(100)]}}
+        with mock.patch.object(receipts.time,'time',return_value=1000):
+            with flow.database(self.root) as db:
+                self.seed(db);self.assertTrue(receipts.step(self.c,db,request)['ok'])
+        self.c.cli_json.reset_mock();self.c.sourcing_friend_details.reset_mock()
+        with mock.patch.object(receipts.time,'time',return_value=1010):
+            with flow.database(self.root) as db:self.assertIsNone(receipts.step(self.c,db,request))
+        self.c.cli_json.assert_not_called();self.c.sourcing_friend_details.assert_not_called()
+        with mock.patch.object(receipts.time,'time',return_value=1030):
+            with flow.database(self.root) as db:
+                with mock.patch.object(receipts,'download',return_value={'ok':True}) as download:
+                    self.assertTrue(receipts.step(self.c,db,request)['ok'])
+                    download.assert_called_once()
+
+    def test_historical_attachment_does_not_spend_incoming_receipt_reserve(self):
+        with flow.database(self.root) as db:
+            self.seed(db);db.execute("UPDATE chat_resume_conversations SET signaled=0")
+            self.inspect(db,[self.message(100)])
+            self.c.passive_delay=mock.Mock(return_value=120)
+            receipts.step(self.c,db,{})
+            self.c.passive_delay.assert_called_once_with(cost=8,queued=False,receiving=False,history=True)
 
     def test_unchanged_conversation_list_does_not_requeue_old_history_every_sweep(self):
         with flow.database(self.root) as db:

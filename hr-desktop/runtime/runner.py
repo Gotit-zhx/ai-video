@@ -66,6 +66,10 @@ def main(request):
                 "platform": sys.platform, "python": sys.version.split()[0]}
     c, g = configure(request["root"], request["cdp"])
     operation = request.get("operation")
+    # A receipt turn can contain several SDK reads. Pace those internal reads
+    # too, rather than only spacing the outer collector timer.
+    if operation in ("passive-step", "poll-resumes", "download-resume"):
+        g.MIN_INTERVAL = max(g.MIN_INTERVAL, 15)
     if operation == "diagnose-local":
         # Offline/CDP reads only, also used by packaged OS compatibility tests.
         g.install_policy()

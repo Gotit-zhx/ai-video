@@ -314,6 +314,27 @@ async function loggedIn(t){
   value.calls.length=0;
   return value;
 }
+test('login and local recovery wait two minutes before background reads while manual actions remain available',async t=>{
+  const {engine,calls}=await fixture(t);
+  let now=200000;engine.clock=()=>now;
+  engine.browser.inspect=async()=>({text:'',accountId:'123',token:{cookies:{wt2:'fixture-session'},user_agent:'fixture'}});
+  await engine.start();await engine.observe();
+  assert.equal(engine.backgroundRetryAt,now+120000);
+  calls.length=0;
+  await engine.poll();now+=119999;await engine.poll();
+  assert.equal(calls.length,0);
+  await engine.call('jobs');
+  assert.deepEqual(calls.map(c=>c.operation),['jobs']);
+  calls.length=0;now++;await engine.poll();
+  assert.ok(calls.some(c=>c.operation==='poll-resumes'));
+  engine.pause('COMPUTER_SLEEP');engine.recoveryAt=0;
+  await engine.reconnect();
+  assert.equal(engine.backgroundRetryAt,now+120000);
+  calls.length=0;await engine.poll();assert.equal(calls.length,0);
+  await engine.hold({code:'ACCOUNT_RISK'});now+=120000;
+  await engine.poll();await engine.reconnect();
+  assert.equal(calls.length,0);assert.equal(engine.riskHold.code,'ACCOUNT_RISK');
+});
 test('restart and sleep resume the same verified local account without login, sync or BOSS probes',async t=>{
   const {engine,calls}=await loggedIn(t);
   const account=engine.accountRoot;

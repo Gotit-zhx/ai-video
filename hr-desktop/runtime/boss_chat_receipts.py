@@ -44,7 +44,7 @@ def discover(c, db):
     page = int(flow.get_state(db, 'chat-resumes-page', '1'))
     result = c.cli_json('hr', 'chat', '--page', str(page))
     if result.get('ok') is not True:
-        flow.put_state(db, 'chat-resumes-discover-at', time.time()+300)
+        flow.put_state(db, 'chat-resumes-discover-at', time.time()+900)
         return result
     entries = flow.rows(result)
     ids = []
@@ -75,11 +75,11 @@ def discover(c, db):
     complete = not entries or flow.discovery_complete(result)
     if not complete and fingerprint == flow.get_state(db, 'chat-resumes-page-fingerprint', ''):
         # A repeated provider page is not permission to skip older conversations.
-        flow.put_state(db, 'chat-resumes-discover-at', time.time()+300)
+        flow.put_state(db, 'chat-resumes-discover-at', time.time()+900)
     else:
         flow.put_state(db, 'chat-resumes-page', 1 if complete else page+1)
         flow.put_state(db, 'chat-resumes-page-fingerprint', '' if complete else fingerprint)
-        flow.put_state(db, 'chat-resumes-discover-at', time.time()+(300 if complete else 15))
+        flow.put_state(db, 'chat-resumes-discover-at', time.time()+(900 if complete else 180))
     return result
 
 
@@ -130,7 +130,10 @@ def inspect(c, db, conversation):
         return result
     # Ordinary text messages require only the history read. Resolve the exact
     # official job binding only when an incoming attachment actually exists.
-    attachments = list(attachment_metadata(c, result, friend, {}))
+    # Reconnection/latest-page scans see attachments already archived. Resolve
+    # the official binding only for genuinely new receipts.
+    existing_mids = {row[0] for row in db.execute('SELECT mid FROM chat_resume_receipts WHERE friend=?', (friend,))}
+    attachments = [(mid,meta) for mid,meta in attachment_metadata(c,result,friend,{}) if mid not in existing_mids]
     detail_result = c.sourcing_friend_details([friend]) if attachments else {'ok': True, 'data': {}}
     if c.held_code():
         return detail_result
@@ -139,6 +142,9 @@ def inspect(c, db, conversation):
                     and valid_id(r.get('friendId') or r.get('uid')) == friend), {})
     person = db.execute('SELECT * FROM people WHERE friend=?', (friend,)).fetchone()
     for mid, metadata in attachment_metadata(c, result, friend, binding):
+        if mid in existing_mids:
+            continue
+        metadata['receiptPriority'] = bool(conversation['signaled'])
         rule = 'boss-chat-'+friend
         if person:
             known = json.loads(person['body'])
@@ -177,22 +183,30 @@ def inspect(c, db, conversation):
 def download(c, db, row):
     """The receipt ledger authorizes this exact incoming attachment, not a send."""
     c.RESUME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for suffix in ('.pdf', '.docx', '.doc', '.png', '.jpg'):
-        output = c.RESUME_DIR / (uuid.uuid4().hex+suffix)
-        result = c.cli_json('hr', 'download-resume', row['friend'], '--message-id', row['mid'], '--output', str(output))
-        if result.get('ok') is True and output.is_file():
-            db.execute("UPDATE chat_resume_receipts SET file=?,state='export',error='' WHERE friend=? AND mid=?",
-                       (str(output), row['friend'], row['mid']))
-            return result
-        output.unlink(missing_ok=True)
-        error = result.get('error') or {}
-        if error.get('code') != 'INVALID_PARAM' or '扩展名不符' not in error.get('message', ''):
-            db.execute('UPDATE chat_resume_receipts SET retry_at=?,error=? WHERE friend=? AND mid=?',
-                       (time.time()+3600, str(error.get('code') or 'DOWNLOAD_FAILED')[:80], row['friend'], row['mid']))
-            return result
-    db.execute("UPDATE chat_resume_receipts SET retry_at=?,error='UNSUPPORTED_FORMAT' WHERE friend=? AND mid=?",
-               (time.time()+3600, row['friend'], row['mid']))
-    return {'ok': True}
+    metadata = json.loads(row['body'])
+    allowed = {'.pdf', '.docx', '.doc', '.png', '.jpg', '.jpeg'}
+    suffix = metadata.get('downloadSuffix') or Path(metadata.get('originalFileName', '')).suffix.lower()
+    if suffix not in allowed:
+        suffix = '.pdf'
+    output = c.RESUME_DIR / (uuid.uuid4().hex+suffix)
+    result = c.cli_json('hr', 'download-resume', row['friend'], '--message-id', row['mid'], '--output', str(output))
+    if result.get('ok') is True and output.is_file():
+        db.execute("UPDATE chat_resume_receipts SET file=?,state='export',error='' WHERE friend=? AND mid=?",
+                   (str(output), row['friend'], row['mid']))
+        return result
+    output.unlink(missing_ok=True)
+    error = result.get('error') or {}
+    match = re.search(r'扩展名不符，请使用 (\.[a-z]+)(?:\s|$)', error.get('message', ''))
+    if error.get('code') == 'INVALID_PARAM' and match and match[1] in allowed and match[1] != suffix:
+        metadata['downloadSuffix'] = match[1]
+        db.execute("UPDATE chat_resume_receipts SET body=?,retry_at=?,error='FORMAT_RETRY_WAIT' WHERE friend=? AND mid=?",
+                   (json.dumps(metadata,ensure_ascii=False),time.time()+60,row['friend'],row['mid']))
+        # The next paced turn retries the SDK-confirmed suffix, never an
+        # immediate loop of five downloads of the same attachment.
+        return {'ok': True}
+    db.execute('UPDATE chat_resume_receipts SET retry_at=?,error=? WHERE friend=? AND mid=?',
+               (time.time()+3600,str(error.get('code') or 'DOWNLOAD_FAILED')[:80],row['friend'],row['mid']))
+    return result
 
 
 def step(c, db, request):
@@ -217,7 +231,9 @@ def step(c, db, request):
         WHEN ?!='history' AND (dirty=1 OR fresh_before>0) THEN 0 ELSE 1 END,
         CASE WHEN ?!='history' THEN -activity_at ELSE 0 END,last_read,friend LIMIT 1''',
                               (now, lane, lane, lane)).fetchone()
-    urgent = bool(receipt or (conversation and conversation['signaled']))
+    metadata = json.loads(receipt['body']) if receipt else {}
+    urgent = (bool(metadata.get('receiptPriority')) or
+              (now-3600 <= flow.seconds(metadata.get('receivedAt')) <= now+60)) if receipt else bool(conversation and conversation['signaled'])
     if receipt:
         operation, cost = 'download', 8
     elif conversation and conversation['signaled']:
@@ -232,8 +248,14 @@ def step(c, db, request):
         operation, cost = 'discover', 2
     # Historical receipt reads must leave capacity for admitted replies and
     # resume requests, as well as the existing manual-operation reserve.
-    if operation is None or delay_for(cost=cost, queued=False, receiving=urgent, history=not urgent):
+    interval = 30 if urgent else 180
+    last_turn = float(flow.get_state(db, 'chat-resumes-last-request-at', '0'))
+    if (operation is None or now < last_turn+interval
+            or delay_for(cost=cost, queued=False, receiving=urgent, history=not urgent)):
         return None
+    # Reserve before network I/O; restart, preemption or repeated activity
+    # notifications cannot erase the collector's pacing deadline.
+    flow.put_state(db, 'chat-resumes-last-request-at', now)
     db.commit()
     result = discover(c, db) if operation == 'discover' else download(c, db, receipt) if operation == 'download' else inspect(c, db, conversation)
     flow.put_state(db, 'chat-resumes-last', operation)
