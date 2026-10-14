@@ -1,6 +1,6 @@
 (function(root) {
   'use strict';
-  const markets = ['PH','MY','SG','TH','VN','ID','TW','CN','US','GB','JP','KR','AU','CA','BR','MX','DE','FR','IT','ES','NL','PL','BE','SE','AE','SA','IN','BD','PK','LK','KH','LA','MM','BN','TL','NZ','ZA'];
+  const markets = ['PH','MY','SG','TH','VN','ID','KH','LA','MM','BN','TL'];
   const fields = ['warehouseName','contactName','phone','province','city','postalCode','address'];
   let context, platform = 'SHOPEE', config = null, request = 0, loading = false, saving = false;
   const byId = id => document.getElementById(id);
