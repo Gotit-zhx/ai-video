@@ -146,7 +146,8 @@ class ReceiptTest(unittest.TestCase):
             db.execute('CREATE TABLE requests(at REAL NOT NULL)')
             db.executemany('INSERT INTO requests VALUES(?)', [(time.time()-60,)]*90)
         self.c.passive_delay = lambda **options: flow.budget_delay(budget, 120, **options)
-        self.c.cli_json.return_value = {'ok': True, 'data': {'messages': [self.message(100)]}}
+        message=self.message(100);message['time']=time.time()
+        self.c.cli_json.return_value = {'ok': True, 'data': {'messages': [message]}}
         with flow.database(self.root) as db:
             self.assertIsNone(receipts.step(self.c, db, {}))
             receipts.wake(db, '1')
@@ -218,7 +219,8 @@ class ReceiptTest(unittest.TestCase):
 
     def test_pacing_survives_restart_and_new_activity_does_not_create_a_burst(self):
         request={'activityHints':[{'friend':'1'}]}
-        self.c.cli_json.return_value={'ok':True,'data':{'messages':[self.message(100)]}}
+        message=self.message(100);message['time']=1000
+        self.c.cli_json.return_value={'ok':True,'data':{'messages':[message]}}
         with mock.patch.object(receipts.time,'time',return_value=1000):
             with flow.database(self.root) as db:
                 self.seed(db);self.assertTrue(receipts.step(self.c,db,request)['ok'])
@@ -231,6 +233,36 @@ class ReceiptTest(unittest.TestCase):
                 with mock.patch.object(receipts,'download',return_value={'ok':True}) as download:
                     self.assertTrue(receipts.step(self.c,db,request)['ok'])
                     download.assert_called_once()
+
+    def test_history_waits_ten_minutes_across_reconnect_without_resetting_list_deadline(self):
+        self.c.cli_json.return_value={'ok':True,'data':{'messages':[]}}
+        with mock.patch.object(receipts.time,'time',return_value=1000):
+            with flow.database(self.root) as db:
+                self.seed(db);db.execute("UPDATE chat_resume_conversations SET signaled=0")
+                flow.put_state(db,'chat-resumes-discover-at',9000)
+                self.assertTrue(receipts.step(self.c,db,{'reconnectId':'first'})['ok'])
+        self.c.cli_json.reset_mock()
+        with mock.patch.object(receipts.time,'time',return_value=1599):
+            with flow.database(self.root) as db:
+                self.assertIsNone(receipts.step(self.c,db,{'reconnectId':'second'}))
+                self.assertEqual(float(flow.get_state(db,'chat-resumes-discover-at')),9000)
+        self.c.cli_json.assert_not_called()
+        with mock.patch.object(receipts.time,'time',return_value=1600):
+            with flow.database(self.root) as db:
+                self.assertTrue(receipts.step(self.c,db,{'reconnectId':'second'})['ok'])
+        self.c.cli_json.assert_called_once()
+
+    def test_old_attachment_in_new_activity_stays_historical_and_new_activity_can_preempt_it(self):
+        with flow.database(self.root) as db:
+            self.seed(db);self.inspect(db,[self.message(100)])
+            saved=db.execute('SELECT * FROM chat_resume_receipts').fetchone()
+            self.assertFalse(json.loads(saved['body'])['receiptPriority'])
+            self.c.cli_json.reset_mock();self.c.cli_json.return_value={'ok':True,'data':{'messages':[]}}
+            receipts.wake(db,'2')
+            flow.put_state(db,'chat-resumes-last-request-at',time.time()-31)
+            self.assertTrue(receipts.step(self.c,db,{'activityHints':[{'friend':'2'}]})['ok'])
+            self.c.cli_json.assert_called_once()
+            self.assertEqual(self.c.cli_json.call_args.args[:3],('hr','chatmsg','2'))
 
     def test_historical_attachment_does_not_spend_incoming_receipt_reserve(self):
         with flow.database(self.root) as db:

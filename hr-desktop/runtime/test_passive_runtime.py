@@ -741,8 +741,8 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(flow.budget_delay(path,120,cost=3,queued=True),0)
         # 96 + 5 requires one expiry to leave 20 interactive slots.
         self.assertEqual(flow.budget_delay(path,120,cost=5,queued=True),3101)
-        # 96 + 2 - 60 = 38 expiries, rather than waking on the first one.
-        self.assertEqual(flow.budget_delay(path,120,cost=2),3138)
+        # 96 + 2 - 40 = 58 expiries, rather than waking on the first one.
+        self.assertEqual(flow.budget_delay(path,120,cost=2),3158)
         with contextlib.closing(sqlite3.connect(path)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],96)
 

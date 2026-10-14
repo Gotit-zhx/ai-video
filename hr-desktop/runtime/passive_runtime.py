@@ -22,11 +22,11 @@ def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False
     # the final receipt allowance; real incoming attachments may use it while
     # retaining ten slots for explicit HR actions.
     limit = (hard_limit if user_initiated else max(0, hard_limit-10) if receiving
-             else max(0, min(hard_limit-20, hard_limit if queued and not history else 60)))
+             else max(0, min(hard_limit-20, hard_limit if queued and not history else 40)))
     needed = len(times) + cost - limit
     # Persisted request times pace background work across restarts. Manual
     # actions retain their priority; incoming attachments also have a cooldown.
-    spacing = 0 if user_initiated else 30 if receiving else 180 if history or not queued else 60
+    spacing = 0 if user_initiated else 30 if receiving else 600 if history or not queued else 60
     cooldown = max(0, times[-1]+spacing-now) if times else 0
     if needed <= 0:
         return cooldown

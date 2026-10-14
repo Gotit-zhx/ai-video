@@ -44,7 +44,7 @@ def discover(c, db):
     page = int(flow.get_state(db, 'chat-resumes-page', '1'))
     result = c.cli_json('hr', 'chat', '--page', str(page))
     if result.get('ok') is not True:
-        flow.put_state(db, 'chat-resumes-discover-at', time.time()+900)
+        flow.put_state(db, 'chat-resumes-discover-at', time.time()+3600)
         return result
     entries = flow.rows(result)
     ids = []
@@ -75,11 +75,11 @@ def discover(c, db):
     complete = not entries or flow.discovery_complete(result)
     if not complete and fingerprint == flow.get_state(db, 'chat-resumes-page-fingerprint', ''):
         # A repeated provider page is not permission to skip older conversations.
-        flow.put_state(db, 'chat-resumes-discover-at', time.time()+900)
+        flow.put_state(db, 'chat-resumes-discover-at', time.time()+3600)
     else:
         flow.put_state(db, 'chat-resumes-page', 1 if complete else page+1)
         flow.put_state(db, 'chat-resumes-page-fingerprint', '' if complete else fingerprint)
-        flow.put_state(db, 'chat-resumes-discover-at', time.time()+(900 if complete else 180))
+        flow.put_state(db, 'chat-resumes-discover-at', time.time()+(3600 if complete else 600))
     return result
 
 
@@ -144,7 +144,9 @@ def inspect(c, db, conversation):
     for mid, metadata in attachment_metadata(c, result, friend, binding):
         if mid in existing_mids:
             continue
-        metadata['receiptPriority'] = bool(conversation['signaled'])
+        metadata['receiptPriority'] = bool(conversation['signaled'] and fresh and
+            ((conversation['latest_mid'] and int(mid) > conversation['latest_mid']) or
+             time.time()-3600 <= metadata['receivedAt'] <= time.time()+60))
         rule = 'boss-chat-'+friend
         if person:
             known = json.loads(person['body'])
@@ -217,12 +219,16 @@ def step(c, db, request):
     now = time.time()
     if request.get('reconnectId') != flow.get_state(db, 'chat-resumes-reconnect', ''):
         flow.put_state(db, 'chat-resumes-reconnect', request.get('reconnectId', ''))
-        flow.put_state(db, 'chat-resumes-discover-at', 0)
+        # Keep the historical list deadline across reconnects. New activity
+        # wakes its own conversation without resetting this slow sweep.
         db.execute('UPDATE chat_resume_conversations SET dirty=1,retry_at=0')
     delay_for = getattr(c, 'passive_delay', lambda **kwargs: 0)
     operation = None
     due = float(flow.get_state(db, 'chat-resumes-discover-at'))
-    receipt = db.execute("SELECT * FROM chat_resume_receipts WHERE state='found' AND retry_at<=? ORDER BY rowid LIMIT 1", (now,)).fetchone()
+    receipt = db.execute("""SELECT * FROM chat_resume_receipts WHERE state='found' AND retry_at<=?
+      ORDER BY CASE WHEN json_extract(body,'$.receiptPriority')=1 OR
+        json_extract(body,'$.receivedAt') BETWEEN ? AND ? THEN 0 ELSE 1 END,rowid LIMIT 1""",
+      (now,now-3600,now+60)).fetchone()
     # Alternate downloads, newest reads and historical reads; no five-page cap.
     lane = flow.get_state(db, 'chat-resumes-lane', 'history')
     conversation = db.execute('''SELECT * FROM chat_resume_conversations WHERE retry_at<=?
@@ -234,7 +240,10 @@ def step(c, db, request):
     metadata = json.loads(receipt['body']) if receipt else {}
     urgent = (bool(metadata.get('receiptPriority')) or
               (now-3600 <= flow.seconds(metadata.get('receivedAt')) <= now+60)) if receipt else bool(conversation and conversation['signaled'])
-    if receipt:
+    if conversation and conversation['signaled'] and not urgent:
+        urgent = True
+        operation, cost = 'inspect', 2
+    elif receipt:
         operation, cost = 'download', 8
     elif conversation and conversation['signaled']:
         operation, cost = 'inspect', 2
@@ -248,7 +257,7 @@ def step(c, db, request):
         operation, cost = 'discover', 2
     # Historical receipt reads must leave capacity for admitted replies and
     # resume requests, as well as the existing manual-operation reserve.
-    interval = 30 if urgent else 180
+    interval = 30 if urgent else 600
     last_turn = float(flow.get_state(db, 'chat-resumes-last-request-at', '0'))
     if (operation is None or now < last_turn+interval
             or delay_for(cost=cost, queued=False, receiving=urgent, history=not urgent)):
