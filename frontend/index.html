@@ -1903,7 +1903,10 @@
             <select id="product-bulk-shop" multiple hidden aria-label="目标店铺"></select>
             <details class="product-bulk-shop-picker"><summary id="product-bulk-shop-summary">请选择目标店铺（可多选）</summary><div id="product-bulk-shop-options" role="group" aria-label="选择上传店铺"></div></details>
           </div>
-          <label>发货地址<select id="product-bulk-origin-country"><option value="TARGET">海外地址（默认 · 按各店铺国家）</option><option value="CN">中国国内地址</option></select></label>
+          <div class="product-bulk-origin-fields">
+            <label>国家<select id="product-bulk-origin-country"><option value="TARGET">跟随目标店铺国家（默认）</option></select></label>
+            <label>地址类型<select id="product-bulk-origin-type"><option value="OVERSEAS">海外地址（默认）</option><option value="DOMESTIC">国内地址</option></select></label>
+          </div>
         </div>
         <p class="listing-template-note">自动读取定制模板中对应国家的地址；多店铺分别应用。TikTok 使用对应官方仓库，虾皮实际发货地址以卖家后台登记为准。</p>
         <section id="product-bulk-size-chart" class="product-bulk-size-chart" aria-label="本次上传尺码图" hidden>
@@ -1978,14 +1981,14 @@
   </dialog>
   <script src="/i18n/catalog.js?v=shopee-logistics-20260921" defer></script>
   <script src="/i18n.js?v=20260921-2" defer></script>
-  <script src="/product-bulk-upload.js?v=20261014-country-origin-2" defer></script>
+  <script src="/product-bulk-upload.js?v=20261014-dual-origin-1" defer></script>
   <script src="/product-bulk-size-chart.js?v=20261013-size-chart-2" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
-  <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-country-origin-1">
-  <script src="/product-listing-fulfillment.js?v=20261014-sea-origin-1" defer></script>
+  <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-dual-origin-1">
+  <script src="/product-listing-fulfillment.js?v=20261014-dual-origin-1" defer></script>
   <script src="/product-listing-templates.js?v=20261014-country-origin-1" defer></script>
-  <script src="/app.js?v=20261014-country-origin-2" defer></script>
+  <script src="/app.js?v=20261014-dual-origin-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-onboarding.js?v=20261012-compact-3" defer></script>
   <script src="/hr-bi.js?v=20261012-boss-chat-019" defer></script>

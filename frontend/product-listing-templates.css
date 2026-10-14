@@ -7,6 +7,8 @@
 .listing-logistics-section{margin-top:20px;padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft)}.listing-logistics-section header{padding:0 0 12px;font-size:13px}.listing-logistics-section header small{letter-spacing:0;font-size:11px}.listing-logistics-section>label{display:grid;gap:7px;margin-top:10px;font-size:12px}.listing-logistics-section select{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px;background:var(--surface);color:var(--ink)}.listing-logistics-channel{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);font-size:12px}.listing-logistics-channel input{width:18px;height:18px;accent-color:var(--solid)}.listing-logistics-channel small{display:block;color:var(--muted);font-size:10px;margin-top:3px}#listing-logistics-status{font-size:11px;color:var(--muted);line-height:1.6}
 .product-bulk-size-chart{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:12px;background:var(--surface-soft)}
 .product-bulk-shop-field{display:grid;gap:8px;font-size:13px}
+.product-bulk-origin-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+@media(max-width:600px){.product-bulk-origin-fields{grid-template-columns:1fr}}
 #listing-fulfillment-status{font-size:11px;color:var(--muted);line-height:1.6}
 #save-listing-fulfillment{padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font-size:12px}
 .product-bulk-shop-picker{border:1px solid var(--line);border-radius:10px;background:var(--surface)}

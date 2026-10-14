@@ -936,15 +936,40 @@ test('batch origin defaults overseas and domestic selection is frozen across ret
   await overseas.submit();
   assert.equal(overseas.posts[0].body.fulfillmentOriginCountry,'TARGET');
   const domestic=harness([fixture()[0]]);
-  domestic.node('#product-bulk-origin-country').value='CN';
+  domestic.c.setProductBulkOriginChoice('MY','DOMESTIC');
   let attempts=0;
   domestic.state.onPost=()=>{if(++attempts===1)throw Object.assign(Error('submission rejected'),{status:409});};
   await domestic.submit();
-  domestic.node('#product-bulk-origin-country').value='TARGET';
+  domestic.c.setProductBulkOriginChoice('TARGET','OVERSEAS');
   await domestic.submit();
   assert.equal(domestic.posts.length,2);
   assert.equal(domestic.posts[0].body.fulfillmentOriginCountry,'CN');
   assert.deepEqual(domestic.posts[0].body,domestic.posts[1].body);
+});
+test('country remains selected when switching between its domestic and overseas address',async()=>{
+  const h=harness([fixture()[0]]);
+  h.c.setProductBulkOriginChoice('MY','DOMESTIC');
+  assert.equal(h.c.productBulkOriginCountry(),'CN');
+  h.node('#product-bulk-origin-type').value='OVERSEAS';
+  assert.equal(h.node('#product-bulk-origin-country').value,'MY');
+  assert.equal(h.c.productBulkOriginCountry(),'MY');
+  await h.submit();
+  assert.equal(h.posts[0].body.fulfillmentOriginCountry,'MY');
+  const key=h.c.productBulkStorageKey;
+  h.c.productBulkItems=[];
+  await h.c.openProductBulkUpload(key);
+  assert.equal(h.node('#product-bulk-origin-country').value,'MY');
+  assert.equal(h.node('#product-bulk-origin-type').value,'OVERSEAS');
+  h.c.stopProductBulkPolling();
+});
+test('selected address country must match the destination shop for both address types',async()=>{
+  for(const type of ['OVERSEAS','DOMESTIC']){
+    const h=harness([fixture()[0]]);
+    h.c.setProductBulkOriginChoice('PH',type);
+    await h.submit();
+    assert.equal(h.posts.length,0);
+    assert.match(h.c.productBulkItems[0].error,/与店铺国家一致/);
+  }
 });
 test('persistently empty logistics stop after five reads without blaming shop or submitting products',async()=>{
  const h=harness();h.state.onOptions=()=>({data:{logistics:{logistics_channel_list:[]}}});

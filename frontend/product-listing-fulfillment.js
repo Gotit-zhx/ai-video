@@ -68,7 +68,7 @@
     byId('listing-fulfillment-type').addEventListener('change',load);
     byId('save-listing-fulfillment').addEventListener('click',save);
     const bulk = byId('product-bulk-origin-country');
-    for (const code of markets.filter(code=>code !== 'CN')) bulk.append(new Option(label(code)+'地址',code));
+    for (const code of markets) bulk.append(new Option(label(code),code));
   }
   root.ProductListingFulfillment = {init,setPlatform,reset};
 })(window);
