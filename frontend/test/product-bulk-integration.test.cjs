@@ -931,60 +931,6 @@ test('empty logistics and upstream 500 recover with five bounded reads and one s
  h.state.onOptions=()=>{calls++;if(calls===1)throw Object.assign(Error('upstream inner error'),{status:500});if(calls<5)return {data:{logistics:{logistics_channel_list:[]}}};};
  await h.submit();assert.equal(h.optionReads.length,5);assert.equal(h.posts.length,2);assert.equal(new Set(h.posts.map(x=>x.key)).size,2);
 });
-test('batch origin defaults overseas and domestic selection is frozen across retries',async()=>{
-  const overseas=harness([fixture()[0]]);
-  await overseas.submit();
-  assert.equal(overseas.posts[0].body.fulfillmentOriginCountry,'TARGET');
-  const domestic=harness([fixture()[0]]);
-  domestic.c.setProductBulkOriginChoice('MY','DOMESTIC');
-  let attempts=0;
-  domestic.state.onPost=()=>{if(++attempts===1)throw Object.assign(Error('submission rejected'),{status:409});};
-  await domestic.submit();
-  domestic.c.setProductBulkOriginChoice('TARGET','OVERSEAS');
-  await domestic.submit();
-  assert.equal(domestic.posts.length,2);
-  assert.equal(domestic.posts[0].body.fulfillmentOriginCountry,'CN');
-  assert.deepEqual(domestic.posts[0].body,domestic.posts[1].body);
-});
-test('country remains selected when switching between its domestic and overseas address',async()=>{
-  const h=harness([fixture()[0]]);
-  h.c.setProductBulkOriginChoice('MY','DOMESTIC');
-  assert.equal(h.c.productBulkOriginCountry(),'CN');
-  h.node('#product-bulk-origin-type').value='OVERSEAS';
-  assert.equal(h.node('#product-bulk-origin-country').value,'MY');
-  assert.equal(h.c.productBulkOriginCountry(),'MY');
-  await h.submit();
-  assert.equal(h.posts[0].body.fulfillmentOriginCountry,'MY');
-  const key=h.c.productBulkStorageKey;
-  h.c.productBulkItems=[];
-  await h.c.openProductBulkUpload(key);
-  assert.equal(h.node('#product-bulk-origin-country').value,'MY');
-  assert.equal(h.node('#product-bulk-origin-type').value,'OVERSEAS');
-  h.c.stopProductBulkPolling();
-});
-test('selected address country must match the destination shop for both address types',async()=>{
-  for(const type of ['OVERSEAS','DOMESTIC']){
-    const h=harness([fixture()[0]]);
-    h.c.setProductBulkOriginChoice('PH',type);
-    await h.submit();
-    assert.equal(h.posts.length,0);
-    assert.match(h.c.productBulkItems[0].error,/与店铺国家一致/);
-  }
-});
-test('domestic and overseas address choices keep the original configured delivery channels',async()=>{
-  const deliveries=[];
-  for(const type of ['OVERSEAS','DOMESTIC']){
-    const h=harness([fixture()[0]]);
-    h.c.setProductBulkOriginChoice('MY',type);
-    await h.submit();
-    assert.equal(h.posts.length,1);
-    deliveries.push(h.posts[0].body.logisticInfo);
-    assert.equal(h.posts[0].body.fulfillmentOriginCountry,type==='DOMESTIC'?'CN':'MY');
-    h.c.stopProductBulkPolling();
-  }
-  assert.deepEqual(deliveries[0],deliveries[1]);
-  assert.ok(deliveries[0].some(channel=>channel.enabled));
-});
 test('persistently empty logistics stop after five reads without blaming shop or submitting products',async()=>{
  const h=harness();h.state.onOptions=()=>({data:{logistics:{logistics_channel_list:[]}}});
  await h.submit();assert.equal(h.optionReads.length,5);assert.equal(h.posts.length,0);assert.ok(h.c.productBulkItems.every(x=>x.error.includes('不代表店铺未开启物流')));

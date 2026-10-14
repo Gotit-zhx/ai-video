@@ -6185,7 +6185,7 @@ function resolveTikTokPublishOptions(capture, options, common = {}, category = {
   const warehouseId = warehouses.find(w => String(w.id) === common['warehouse-id'])?.id
     || warehouses.find(w => w.is_default === true)?.id
     || (warehouses.length === 1 ? warehouses[0].id : '');
-  return {leaves, categoryId, matchedOriginal: Boolean(categoryId), genderConverted: Boolean(originalMatch && originalMatch.id !== categoryId), warehouseId: options?.listingFulfillment ? 'COUNTRY_TEMPLATE' : String(warehouseId || '')};
+  return {leaves, categoryId, matchedOriginal: Boolean(categoryId), genderConverted: Boolean(originalMatch && originalMatch.id !== categoryId), warehouseId: String(warehouseId || '')};
 }
 function publishCategoryText(value) {
   return String(value || '').normalize('NFKC').toLowerCase()
@@ -7159,30 +7159,6 @@ async function pollProductBulkProgress() {
   }
 }
 
-function setProductBulkOriginChoice(country, type) {
-  document.querySelector('#product-bulk-origin-country').value = country || 'TARGET';
-  document.querySelector('#product-bulk-origin-type').value = type === 'DOMESTIC' ? 'DOMESTIC' : 'OVERSEAS';
-}
-
-function productBulkOriginCountry() {
-  return document.querySelector('#product-bulk-origin-type').value === 'DOMESTIC'
-    ? 'CN' : document.querySelector('#product-bulk-origin-country').value || 'TARGET';
-}
-
-function changeProductBulkOrigin() {
-  if (productBulkBusy || document.querySelector('#product-bulk-settings').disabled) return;
-  const selected = productBulkOriginCountry();
-  const country = document.querySelector('#product-bulk-origin-country').value || 'TARGET';
-  const next = productBulkItems.map(item => ProductBulkUpload.canChangeShop(item)
-    ? {...item,fulfillmentOriginCountry:selected,fulfillmentTemplateCountry:country} : item);
-  try {
-    if (next.length) saveProductBulkItems(next);
-    stopProductBulkPolling();
-    productBulkItems = next;
-    void pollProductBulkProgress();
-  } catch(error) { document.querySelector('#product-bulk-error').textContent = error.message; }
-}
-
 async function openProductBulkUpload(historyKey, captureId) {
   if (!hasAnyPermission("product:publish")) return;
   if (typeof historyKey !== 'string') historyKey = '';
@@ -7206,11 +7182,6 @@ async function openProductBulkUpload(historyKey, captureId) {
   const run = productBulkRuns.get(productBulkStorageKey);
   productBulkItems = run?.items || saved?.items || [];
   productBulkBusy = Boolean(run);
-  const addressItem = productBulkItems.find(ProductBulkUpload.canChangeShop) || productBulkItems[0];
-  const savedOrigin = addressItem?.fulfillmentOriginCountry || addressItem?.payload?.fulfillmentOriginCountry || 'TARGET';
-  setProductBulkOriginChoice(addressItem?.fulfillmentTemplateCountry
-    || addressItem?.payload?.fulfillmentTemplateCountry || (savedOrigin === 'CN' ? 'TARGET' : savedOrigin),
-    savedOrigin === 'CN' ? 'DOMESTIC' : 'OVERSEAS');
   ProductBulkSizeChart.open(org,productBulkStorageKey,productBulkItems);
   const shops = crossPlatformPublishShops();
   const select = document.querySelector('#product-bulk-shop');
@@ -7270,8 +7241,6 @@ async function submitProductBulkUpload(event) {
       for (const item of productBulkItems) {
         item.thumbnailUrl = productBulkThumbnail(item);
         item.sizeChartImageKey = ProductBulkSizeChart.key();
-        item.fulfillmentOriginCountry = productBulkOriginCountry();
-        item.fulfillmentTemplateCountry = document.querySelector('#product-bulk-origin-country').value || 'TARGET';
       }
     }
     const items = productBulkItems;
@@ -7333,14 +7302,10 @@ async function submitProductBulkUpload(event) {
       const targetShop = crossPlatformPublishShops().find(shop => String(shop.id) === item.shopId);
       const platform = normalizedMarketplacePlatform(targetShop?.platform || item.payload?.destinationPlatform || 'SHOPEE');
       const base = {confirmed: true, destinationPlatform: platform, shopId: item.shopId, idempotencyKey: item.idempotencyKey,
-        fulfillmentOriginCountry: item.fulfillmentOriginCountry || 'TARGET',
         ...(platform === 'SHOPEE' && item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})};
       let payload = base;
       if (marketplaceIntegrationStatus.livePublishingEnabled) {
         if (!targetShop) throw Error('目标店铺当前不可发布，请检查店铺授权');
-        const templateCountry = item.fulfillmentTemplateCountry || 'TARGET';
-        if (templateCountry !== 'TARGET' && templateCountry !== String(targetShop.region || '').toUpperCase())
-          throw Error(`${targetShop.name || targetShop.externalShopId}：请选择与店铺国家一致的地址国家，或使用“跟随目标店铺国家”`);
         let shopOptions;
         try {
           shopOptions = await readShopOptions(item.shopId);
@@ -7496,11 +7461,6 @@ function openProductBulkHistory() {
 }
 
 document.querySelector('#open-product-bulk-upload').addEventListener('click', () => void openProductBulkUpload());
-document.querySelector('#product-bulk-origin-type').addEventListener('change', () => {
-  if (productBulkBusy || document.querySelector('#product-bulk-settings').disabled) return;
-  changeProductBulkOrigin();
-});
-document.querySelector('#product-bulk-origin-country').addEventListener('change', changeProductBulkOrigin);
 document.querySelector('#open-product-bulk-history').addEventListener('click', openProductBulkHistory);
 document.querySelector('#open-product-bulk-history-from-detail').addEventListener('click', openProductBulkHistory);
 document.querySelector('#close-product-bulk-history').addEventListener('click', () => document.querySelector('#product-bulk-history-dialog').close());

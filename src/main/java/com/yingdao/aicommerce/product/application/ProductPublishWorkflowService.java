@@ -60,8 +60,6 @@ public class ProductPublishWorkflowService {
     private ProductListingTemplateService listingTemplates;
     @org.springframework.beans.factory.annotation.Autowired
     private ProductListingLogisticsService listingLogistics;
-    @org.springframework.beans.factory.annotation.Autowired
-    private ProductListingFulfillmentService listingFulfillment;
 
     public ProductPublishWorkflowService(ProductPublishWorkflowMapper workflowMapper,
                                          ProductCaptureMapper captureMapper,
@@ -89,7 +87,6 @@ public class ProductPublishWorkflowService {
         body.remove("exchangeRateSnapshot"); // Server-owned immutable quote; never trust a browser rate.
         body.remove("listingTemplateSnapshot");
         body.remove("listingLogisticsSnapshot");
-        body.remove("listingFulfillmentSnapshot");
         if (!confirmed(body.get("confirmed"))) {
             throw badRequest("一键上传前必须明确提交 confirmed=true");
         }
@@ -114,7 +111,6 @@ public class ProductPublishWorkflowService {
             var savedRequest = request(sameKey);
             ProductListingTemplateService.apply(body, ProductListingTemplateService.snapshotFrom(savedRequest));
             ProductListingLogisticsService.apply(body, ProductListingLogisticsService.snapshotFrom(savedRequest));
-            ProductListingFulfillmentService.apply(body, ProductListingFulfillmentService.snapshotFrom(savedRequest));
             if (savedRequest.containsKey("exchangeRateSnapshot")) body.put("exchangeRateSnapshot", savedRequest.get("exchangeRateSnapshot"));
             if (savedRequest.containsKey("visionWatermarkCheck")) body.put("visionWatermarkCheck",savedRequest.get("visionWatermarkCheck"));
             else body.remove("visionWatermarkCheck");
@@ -155,11 +151,6 @@ public class ProductPublishWorkflowService {
         }
         if (listingLogistics != null && "SHOPEE".equals(destination) && MODE_LIVE.equals(executionMode)) {
             ProductListingLogisticsService.apply(body, listingLogistics.snapshot(principal.organizationId(), storedShopId));
-            requestJson = writeJson(body);
-        }
-        if (listingFulfillment != null && MODE_LIVE.equals(executionMode)) {
-            ProductListingFulfillmentService.apply(body,listingFulfillment.freezeSnapshot(principal.organizationId(),storedShopId,
-                    String.valueOf(body.getOrDefault("fulfillmentOriginCountry","TARGET"))));
             requestJson = writeJson(body);
         }
         if (requestJson.length() > MAX_REQUEST_JSON_LENGTH) {

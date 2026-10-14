@@ -35,8 +35,6 @@ public class ShopPublishOptionsController implements AutoCloseable {
     private final Duration readTimeout;
     @Autowired
     private com.yingdao.aicommerce.product.application.ProductListingLogisticsService listingLogistics;
-    @Autowired
-    private com.yingdao.aicommerce.product.application.ProductListingFulfillmentService listingFulfillment;
     public ShopPublishOptionsController(ShopAuthorizationService shops, ShopeeOfficialClient shopee) {
         this(shops, shopee, Duration.ofSeconds(90));
     }
@@ -68,8 +66,6 @@ public class ShopPublishOptionsController implements AutoCloseable {
         long started = System.nanoTime();
         try {
             var result = new LinkedHashMap<String, Object>();
-            if (listingFulfillment != null)
-                result.put("listingFulfillment",listingFulfillment.snapshot(user.organizationId(),id));
             if (!isTikTok && listingLogistics != null)
                 result.put("listingLogistics", listingLogistics.config(user.organizationId(), id));
             if (isTikTok) {

@@ -20,10 +20,7 @@
       .map(item=>{
         const source = items.find(capture=>capture.captureId === item.captureId && capture.sizeChartImageKey)
           || captures.find(capture=>capture.captureId === item.captureId);
-        const originSource = items.find(capture=>capture.captureId === item.captureId && canChangeShop(capture)) || source;
         return {...item,...(source.sizeChartImageKey ? {sizeChartImageKey:source.sizeChartImageKey} : {}),
-          ...(originSource.fulfillmentOriginCountry ? {fulfillmentOriginCountry:originSource.fulfillmentOriginCountry} : {}),
-          ...(originSource.fulfillmentTemplateCountry ? {fulfillmentTemplateCountry:originSource.fulfillmentTemplateCountry} : {}),
           ...(source.thumbnailUrl ? {thumbnailUrl:source.thumbnailUrl} : {})};
       });
     return retained.length === items.length && !added.length ? items : [...retained,...added];
@@ -37,9 +34,7 @@
     if (!items.some(item => canChangeShop(item) && item.shopId !== shopId)) return items;
     return items.map((item, index) => canChangeShop(item) && item.shopId !== shopId
       ? {captureId: item.captureId, title: item.title, shopId, status: 'WAITING', idempotencyKey: `${key}-${index}`,
-        ...(item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {}),
-        ...(item.fulfillmentOriginCountry ? {fulfillmentOriginCountry:item.fulfillmentOriginCountry} : {}),
-        ...(item.fulfillmentTemplateCountry ? {fulfillmentTemplateCountry:item.fulfillmentTemplateCountry} : {})}
+        ...(item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})}
       : item);
   }
   function withDeadline(operation, { timeoutMs = 30000, signal, timeoutMessage = '请求超时，请重试' } = {}) {
