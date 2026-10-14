@@ -1,11 +1,29 @@
 (function (root) {
   'use strict';
   function plan(items, shopId, key) {
-    if (!items.length || !shopId || !key) throw Error('请选择商品和目标店铺');
-    return [...new Map(items.map(item => [item.id, item])).values()].map((item, index) => {
+    const shops = [...new Set((Array.isArray(shopId) ? shopId : [shopId]).filter(Boolean))];
+    if (!items.length || !shops.length || !key) throw Error('请选择商品和目标店铺');
+    return [...new Map(items.map(item => [item.id, item])).values()].flatMap((item, index) => {
       if (!item.id) throw Error('商品记录不完整，请刷新后重试');
-      return { captureId: item.id, title: item.title, shopId, status: 'WAITING', idempotencyKey: `${key}-${index}` };
+      return shops.map((shop, shopIndex) => ({ captureId: item.id, title: item.title, shopId:shop,
+        status: 'WAITING', idempotencyKey: `${key}-${index}${shops.length > 1 ? '-'+shopIndex : ''}` }));
     });
+  }
+  function changeShops(items, shopIds, key) {
+    const shops = [...new Set(shopIds.filter(Boolean))];
+    if (!shops.length || !key) throw Error('请选择目标店铺');
+    const captures = [...new Map(items.map(item => [item.captureId,item])).values()];
+    const retained = items.filter(item => !canChangeShop(item) || shops.includes(item.shopId));
+    const pairs = new Set(retained.map(item => JSON.stringify([item.captureId,item.shopId])));
+    const added = plan(captures.map(item=>({id:item.captureId,title:item.title})),shops,key)
+      .filter(item=>!pairs.has(JSON.stringify([item.captureId,item.shopId])))
+      .map(item=>{
+        const source = items.find(capture=>capture.captureId === item.captureId && capture.sizeChartImageKey)
+          || captures.find(capture=>capture.captureId === item.captureId);
+        return {...item,...(source.sizeChartImageKey ? {sizeChartImageKey:source.sizeChartImageKey} : {}),
+          ...(source.thumbnailUrl ? {thumbnailUrl:source.thumbnailUrl} : {})};
+      });
+    return retained.length === items.length && !added.length ? items : [...retained,...added];
   }
   function canChangeShop(item) {
     return !item.workflow?.id && !item.payload
@@ -107,11 +125,12 @@
       return result;
     }
   }
-  async function submit(items, { save, prepare, create, isCurrent, changed, concurrency = 3 }) {
+  async function submit(items, { save, prepare, create, isCurrent, changed, beforeNextShop, concurrency = 3 }) {
     if (!isCurrent()) return;
     let nextIndex = 0;
     let stopClaims = false;
     let fatalError;
+    const captures = new Map();
     const fail = error => {
       fatalError ||= error instanceof Error ? error : Error('无法保存上传任务，请重试');
       stopClaims = true;
@@ -169,8 +188,25 @@
       try {
         while (!stopClaims && isCurrent() && nextIndex < items.length) {
           const item = items[nextIndex++];
-          if (item.workflow?.id) continue;
-          await submitItem(item);
+          if (item.workflow?.id) {
+            captures.set(item.captureId,{item,promise:Promise.resolve()});
+            continue;
+          }
+          const previous = captures.get(item.captureId);
+          const operation = (async () => {
+            if (previous && beforeNextShop) {
+              await previous.promise;
+              if (!isCurrent() || fatalError) return;
+              try { await beforeNextShop(item, previous.item); }
+              catch (error) {
+                if (isCurrent()) update(item, {status:'PREPARE_FAILED',error:error.message});
+                return;
+              }
+            }
+            if (isCurrent() && !fatalError) await submitItem(item);
+          })();
+          captures.set(item.captureId, {item,promise:operation});
+          await operation;
         }
       } catch (error) { fail(error); }
     }
@@ -181,7 +217,7 @@
     await Promise.all(Array.from({ length: Math.min(count, items.length) }, () => worker()));
     if (fatalError) throw fatalError;
   }
-  const api = { plan, canChangeShop, changeShop, submit, withDeadline, retryRead, isRetryableReadError };
+  const api = { plan, canChangeShop, changeShop, changeShops, submit, withDeadline, retryRead, isRetryableReadError };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ProductBulkUpload = api;
 })(typeof window === 'undefined' ? globalThis : window);

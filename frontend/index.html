@@ -1896,10 +1896,13 @@
   <dialog id="product-bulk-dialog" class="product-bulk-dialog" aria-labelledby="product-bulk-title">
     <form id="product-bulk-form">
       <header><div><span class="bulk-dialog-eyebrow">PRODUCT UPLOAD</span><h2 id="product-bulk-title">批量一键上传</h2></div><div class="product-bulk-toolbar-actions"><button type="button" id="open-product-bulk-history-from-detail" aria-controls="product-bulk-history-dialog">批量任务</button><button type="button" id="close-product-bulk">关闭</button></div></header>
-      <p>选择店铺即可上传，也可为本批商品指定尺码图。</p>
+      <p>可同时选择多个店铺上传，也可为本批商品指定尺码图。</p>
       <fieldset id="product-bulk-settings">
         <div class="product-bulk-fields">
-          <label>目标店铺<select id="product-bulk-shop" required></select></label>
+          <div class="product-bulk-shop-field"><span>目标店铺</span>
+            <select id="product-bulk-shop" multiple hidden aria-label="目标店铺"></select>
+            <details class="product-bulk-shop-picker"><summary id="product-bulk-shop-summary">请选择目标店铺（可多选）</summary><div id="product-bulk-shop-options" role="group" aria-label="选择上传店铺"></div></details>
+          </div>
         </div>
         <section id="product-bulk-size-chart" class="product-bulk-size-chart" aria-label="本次上传尺码图" hidden>
           <div><strong>尺码图片 <small>选填</small></strong><p>上传后用于本批商品；不上传则使用原商品尺码表。</p></div>
@@ -1953,13 +1956,13 @@
   </dialog>
   <script src="/i18n/catalog.js?v=shopee-logistics-20260921" defer></script>
   <script src="/i18n.js?v=20260921-2" defer></script>
-  <script src="/product-bulk-upload.js?v=20261013-size-chart-2" defer></script>
+  <script src="/product-bulk-upload.js?v=20261014-multi-shop-1" defer></script>
   <script src="/product-bulk-size-chart.js?v=20261013-size-chart-2" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
-  <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-batch-chart-only">
+  <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-multi-shop-1">
   <script src="/product-listing-templates.js?v=20261014-batch-chart-only" defer></script>
-  <script src="/app.js?v=20261013-size-chart-2" defer></script>
+  <script src="/app.js?v=20261014-multi-shop-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-onboarding.js?v=20261012-compact-3" defer></script>
   <script src="/hr-bi.js?v=20261012-boss-chat-019" defer></script>

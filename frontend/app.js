@@ -6981,7 +6981,7 @@ function renderProductBulkCard(item, shops = [], preview = false) {
   const measured = Number.isInteger(images?.totalImages) && images.totalImages > 0;
   const done = measured ? Math.min(images.totalImages, Math.max(0, Number(images.processedImages) || 0)) : 0;
   const percent = success ? 100 : measured ? Math.round(done / images.totalImages * 100) : null;
-  const progress = success ? '上传成功' : measured ? `图片 ${done} / ${images.totalImages}` : preview ? '选择店铺后自动准备' : stage || status;
+  const progress = success ? '上传成功' : item.waitMessage || (measured ? `图片 ${done} / ${images.totalImages}` : preview ? '选择店铺后自动准备' : stage || status);
   const shopId = workflow?.shopId || item.payload?.shopId || item.shopId;
   const shop = shops.find(candidate => String(candidate.id) === String(shopId));
   const shopName = shop?.name || shop?.shopName || shop?.externalShopId || shopId || '';
@@ -6998,14 +6998,40 @@ function renderProductBulkCard(item, shops = [], preview = false) {
       ${retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
 }
 
+function productBulkShopIds() {
+  const select = document.querySelector('#product-bulk-shop');
+  return select.multiple ? [...select.selectedOptions].map(option=>option.value).filter(Boolean)
+    : select.value ? [select.value] : [];
+}
+
+function setProductBulkShopIds(ids) {
+  const select = document.querySelector('#product-bulk-shop');
+  if (select.multiple) {
+    for (const option of select.options) option.selected = ids.includes(option.value);
+  } else select.value = ids[0] || '';
+}
+
+function renderProductBulkShopPicker(shops) {
+  const ids = productBulkShopIds();
+  const names = ids.map(id=>shops.find(shop=>String(shop.id) === id)?.name
+    || shops.find(shop=>String(shop.id) === id)?.shopName || id);
+  document.querySelector('#product-bulk-shop-summary').textContent = names.length
+    ? `已选 ${names.length} 家 · ${names.join('、')}` : '请选择目标店铺（可多选）';
+  document.querySelector('#product-bulk-shop-options').innerHTML = [...document.querySelector('#product-bulk-shop').options]
+    .filter(option=>option.value).map(option=>`<label><input type="checkbox" value="${escapeHtml(option.value)}"
+      ${ids.includes(option.value) ? 'checked' : ''}><span>${escapeHtml(option.text || option.label || option.value)}</span></label>`).join('')
+    || '<p>暂无可发布的授权店铺</p>';
+}
+
 function renderProductBulkProgress() {
   const shops = crossPlatformPublishShops();
   const summary = document.querySelector('#product-bulk-defaults');
   if (summary && typeof ProductListingTemplates !== 'undefined') {
-    const shopId = document.querySelector('#product-bulk-shop')?.value;
+    const shopId = productBulkShopIds()[0];
     const target = shops.find(shop => String(shop.id) === shopId)?.platform;
     const template = target && ProductListingTemplates.get(target);
-    summary.textContent = template?.enabled
+    summary.textContent = productBulkShopIds().length > 1 ? '各店铺独立应用对应平台模板、类目与物流 · 库存 999 · 原售价换汇'
+      : template?.enabled
       ? `${template.name} · ${Number(template.weightGrams)/1000} kg · ${template.packageLengthCm} × ${template.packageWidthCm} × ${template.packageHeightCm} cm · 库存 999 · 自动匹配类目与物流`
       : '自动套用目标平台配置 · 库存 999 · 默认无品牌 · 自动匹配类目与物流 · 原售价换汇';
   }
@@ -7018,13 +7044,17 @@ function renderProductBulkProgress() {
   const changeable = productBulkItems.filter(ProductBulkUpload.canChangeShop);
   document.querySelector('#product-bulk-settings').disabled = productBulkBusy || (productBulkItems.length > 0 && !changeable.length);
   const shopHint = document.querySelector('#product-bulk-shop-hint');
-  if (shopHint) shopHint.textContent = changeable.length
+  if (shopHint) shopHint.textContent = productBulkShopIds().length > 1
+    ? `已选择 ${productBulkShopIds().length} 家店铺，每件商品分别上传；进度与结果按店铺独立记录。`
+    : changeable.length
     ? `可切换店铺，${changeable.length} 件未提交商品将按新店铺重新准备。${changeable.length < productBulkItems.length ? '已提交商品保留原店铺。' : ''}` : '';
   button.textContent = productBulkBusy ? '正在自动准备并提交…' : productBulkItems.length ? pending ? '重试未提交商品' : reconnect ? '重试进度同步' : '全部商品已提交' : '一键上传所选商品';
-  button.disabled = productBulkBusy || ProductBulkSizeChart.isUploading() || (productBulkItems.length > 0 && !pending && !reconnect) || !document.querySelector('#product-bulk-shop').value;
-  const chartShop = shops.find(shop => String(shop.id) === document.querySelector('#product-bulk-shop').value);
+  button.disabled = productBulkBusy || ProductBulkSizeChart.isUploading() || (productBulkItems.length > 0 && !pending && !reconnect) || !productBulkShopIds().length;
+  const chartShop = shops.find(shop => productBulkShopIds().includes(String(shop.id)) && normalizedMarketplacePlatform(shop.platform) === 'SHOPEE')
+    || shops.find(shop => String(shop.id) === productBulkShopIds()[0]);
   ProductBulkSizeChart.render({busy:productBulkBusy,editable:!productBulkItems.length || changeable.length > 0,
     platform:normalizedMarketplacePlatform(chartShop?.platform || 'SHOPEE')});
+  renderProductBulkShopPicker(shops);
 }
 
 function productBulkSelectedShop() {
@@ -7033,16 +7063,21 @@ function productBulkSelectedShop() {
 }
 
 function changeProductBulkShop() {
-  const select = document.querySelector('#product-bulk-shop');
+  const ids = productBulkShopIds();
+  const restore = () => setProductBulkShopIds([...new Set(productBulkItems.map(item=>item.shopId))]);
   if (productBulkBusy || currentUser?.organizationId !== productBulkOrganization || !hasAnyPermission('product:publish')) {
-    if (productBulkItems.length) select.value = productBulkSelectedShop();
+    if (productBulkItems.length) restore();
     return;
   }
-  if (!productBulkItems.length || !select.value) { renderProductBulkProgress(); return; }
+  if (!productBulkItems.length) { renderProductBulkProgress(); return; }
   try {
-    if (!crossPlatformPublishShops().some(shop => String(shop.id) === select.value)
-      && !(select.value === 'dry-run-shop' && !marketplaceIntegrationStatus.livePublishingEnabled)) throw Error('目标店铺当前不可发布，请检查店铺授权');
-    const nextItems = ProductBulkUpload.changeShop(productBulkItems, select.value, newProductIdempotencyKey());
+    if (!ids.length) throw Error('请至少选择一家目标店铺');
+    if (ids.some(id=>!crossPlatformPublishShops().some(shop => String(shop.id) === id)
+      && !(id === 'dry-run-shop' && !marketplaceIntegrationStatus.livePublishingEnabled)
+      && !productBulkItems.some(item=>item.shopId === id && !ProductBulkUpload.canChangeShop(item)))) throw Error('目标店铺当前不可发布，请检查店铺授权');
+    const nextItems = ids.length === 1 && new Set(productBulkItems.map(item=>item.shopId)).size === 1
+      ? ProductBulkUpload.changeShop(productBulkItems, ids[0], newProductIdempotencyKey())
+      : ProductBulkUpload.changeShops(productBulkItems, ids, newProductIdempotencyKey());
     if (nextItems !== productBulkItems) {
       // Persist first so a storage failure cannot lose the original request/key.
       saveProductBulkItems(nextItems);
@@ -7050,9 +7085,9 @@ function changeProductBulkShop() {
       productBulkItems = nextItems;
       document.querySelector('#product-bulk-error').textContent = '';
       void pollProductBulkProgress();
-    } else select.value = productBulkSelectedShop();
+    } else restore();
   } catch (error) {
-    select.value = productBulkSelectedShop();
+    restore();
     document.querySelector('#product-bulk-error').textContent = error.message;
   }
   renderProductBulkProgress();
@@ -7134,7 +7169,7 @@ async function openProductBulkUpload(historyKey, captureId) {
   const view = ++productBulkViewGeneration;
   let saved = historyKey ? ProductBulkHistory.list(localStorage, org).find(record => record.key === historyKey) : null;
   if (historyKey && !saved) return;
-  const selectedIds = saved ? saved.items.map(item => item.captureId) : directCapture ? [directCapture.id] : [...productBulkSelectedIds];
+  const selectedIds = saved ? [...new Set(saved.items.map(item => item.captureId))] : directCapture ? [directCapture.id] : [...productBulkSelectedIds];
   await loadMarketplaceShops({silent:true});
   if (!org || currentUser?.organizationId !== org || view !== productBulkViewGeneration) return;
   if (historyKey) {
@@ -7154,10 +7189,10 @@ async function openProductBulkUpload(historyKey, captureId) {
   const selected = selectedIds.map(id => productCaptures.find(item => item.id === id) || productBulkSelectedCaptures.get(id)
     || (saved && {id, title:saved.items.find(item => item.captureId === id)?.title})).filter(Boolean);
   const republishing = selected.some(item => item.status === 'PUBLISHED');
-  select.value = '';
-  if (shops.length === 1 && !republishing) select.value = shops[0].id;
+  setProductBulkShopIds(shops.length === 1 && !republishing ? [String(shops[0].id)] : []);
   if (!marketplaceIntegrationStatus.livePublishingEnabled && !shops.length) {
     select.innerHTML = '<option value="dry-run-shop">发布演练（不连接店铺）</option>';
+    setProductBulkShopIds(['dry-run-shop']);
   }
   document.querySelector('#product-bulk-mode').textContent = marketplaceIntegrationStatus.livePublishingEnabled
     ? republishing ? '请重新选择目标店铺；已提交商品复用现有图片，同店重复提交会核对已有记录。' : '上传到店铺待上架目录，后续上架由你决定。'
@@ -7166,9 +7201,9 @@ async function openProductBulkUpload(historyKey, captureId) {
   document.querySelector('#product-bulk-items').innerHTML = selected.map(item => renderProductBulkCard(item, [], true)).join('');
   const restored = productBulkItems.length > 0;
   if (restored) {
-    const shopId = productBulkSelectedShop();
-    if (![...select.options].some(option => option.value === shopId)) select.add(new Option('原任务店铺（保留上传记录）', shopId));
-    select.value = shopId;
+    const shopIds = [...new Set([productBulkSelectedShop(), ...productBulkItems.map(item=>item.workflow?.shopId || item.payload?.shopId || item.shopId)].filter(Boolean))];
+    for (const shopId of shopIds) if (![...select.options].some(option => option.value === shopId)) select.add(new Option('原任务店铺（保留上传记录）', shopId));
+    setProductBulkShopIds(shopIds);
   }
   document.querySelector('#product-bulk-error').textContent = shops.length || !marketplaceIntegrationStatus.livePublishingEnabled || restored ? '' : '请先在店铺管理中连接可发布的 Shopee 或 TikTok Shop 店铺。';
   renderProductBulkProgress();
@@ -7202,7 +7237,7 @@ async function submitProductBulkUpload(event) {
   try {
     if (!productBulkItems.length) {
       const items = [...document.querySelectorAll('[data-bulk-item]')].map(row => ({id: row.dataset.bulkItem, title: row.querySelector('strong').textContent}));
-      productBulkItems = ProductBulkUpload.plan(items, document.querySelector('#product-bulk-shop').value, newProductIdempotencyKey());
+      productBulkItems = ProductBulkUpload.plan(items, productBulkShopIds(), newProductIdempotencyKey());
       for (const item of productBulkItems) {
         item.thumbnailUrl = productBulkThumbnail(item);
         item.sizeChartImageKey = ProductBulkSizeChart.key();
@@ -7251,6 +7286,7 @@ async function submitProductBulkUpload(event) {
       }
       return shopOptions.get(shopId);
     };
+    const normalizedCaptures = new Map();
     const prepare = async item => {
       item.retryMessage = '';
       if (selectedProductCaptureId === item.captureId && (productEditorDirty || productCaptureSaveInFlightId)) {
@@ -7292,15 +7328,43 @@ async function submitProductBulkUpload(event) {
         payload = {...base, ...automaticProductPublishDefaults(capture, common, platform), categoryId: resolved.categoryId,
           ...(platform === 'TIKTOK_SHOP' ? {warehouseId: resolved.warehouseId} : {logisticInfo: resolved.logisticInfo})};
       }
-      capture = await normalizeProductCaptureForUpload(capture, isCurrent, captureRequest);
+      if (!normalizedCaptures.has(item.captureId)) {
+        const normalization = normalizeProductCaptureForUpload(capture, isCurrent, captureRequest);
+        normalizedCaptures.set(item.captureId, normalization);
+        normalization.catch(()=>{if (normalizedCaptures.get(item.captureId) === normalization) normalizedCaptures.delete(item.captureId);});
+      }
+      capture = await normalizedCaptures.get(item.captureId);
       if (!isCurrent()) return;
       if (capture?.id) updateProductCaptureInMemory(capture, {preserveSelectedEditor: productEditorDirty || Boolean(productCaptureSaveInFlightId)});
       return payload;
     };
     await ProductBulkUpload.submit(items, {
       save: () => saveProductBulkItems(items, key, org), prepare, isCurrent, concurrency: 3,
+      beforeNextShop: async (item, previous) => {
+        if (!previous.workflow?.id) return;
+        item.waitMessage = '等待同商品前一家店铺完成';
+        if (isVisible()) renderProductBulkProgress();
+        const started = Date.now();
+        try {
+          while (isCurrent() && productPublishWorkflowIsActive(previous.workflow)) {
+            const result = await productBulkApi(productPublishWorkflowPath(previous.captureId, previous.workflow.id), {}, {
+              isCurrent, timeoutMs:30000
+            });
+            if (!isCurrent()) return;
+            if (result?.data?.id !== previous.workflow.id || result.data.captureId !== previous.captureId)
+              throw Error('前一家店铺上传进度返回不完整，请重试');
+            previous.workflow = result.data; previous.status = result.data.status;
+            saveProductBulkItems(items, key, org);
+            if (isVisible()) renderProductBulkProgress();
+            if (!productPublishWorkflowIsActive(previous.workflow)) break;
+            if (Date.now() - started > 30*60*1000) throw Error('前一家店铺仍在处理中，请稍后重试未提交商品');
+            await new Promise(resolve=>setTimeout(resolve,3000));
+          }
+          normalizedCaptures.delete(item.captureId);
+        } finally {item.waitMessage = '';}
+      },
       create: async (captureId, payload, key) => {
-        const item = items.find(candidate => candidate.captureId === captureId);
+        const item = items.find(candidate => candidate.captureId === captureId && candidate.idempotencyKey === key);
         item.retryMessage = '';
         const workflow = await createProductPublishWorkflow(captureId, payload, key, {
           requestApi: (path, options) => productBulkApi(path, options, {isCurrent}),
@@ -7409,6 +7473,14 @@ document.querySelector('#product-bulk-history-list').addEventListener('click', e
 });
 document.querySelector('#product-bulk-form').addEventListener('submit', submitProductBulkUpload);
 document.querySelector('#product-bulk-shop').addEventListener('change', changeProductBulkShop);
+document.querySelector('#product-bulk-shop-options').addEventListener('change', event => {
+  if (!event.target.matches('input[type="checkbox"]')) return;
+  const select = document.querySelector('#product-bulk-shop');
+  if (productBulkBusy || document.querySelector('#product-bulk-settings').disabled) return;
+  const option = [...select.options].find(candidate=>candidate.value === event.target.value);
+  if (option) option.selected = event.target.checked;
+  changeProductBulkShop();
+});
 document.querySelector('#close-product-bulk').addEventListener('click', () => document.querySelector('#product-bulk-dialog').close());
 document.querySelector('#product-bulk-dialog').addEventListener('close', stopProductBulkPolling);
 document.querySelector('#product-bulk-dialog').addEventListener('close', () => ProductBulkSizeChart.close());

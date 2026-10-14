@@ -1,6 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {plan,canChangeShop,changeShop,submit,withDeadline,retryRead,isRetryableReadError}=require('../product-bulk-upload.js');
+const {plan,canChangeShop,changeShop,changeShops,submit,withDeadline,retryRead,isRetryableReadError}=require('../product-bulk-upload.js');
 const fixtures=()=>plan([{id:'a',title:'A'},{id:'b',title:'B'},{id:'c',title:'C'}],'shop','batch-key');
 const prepare=async item=>({confirmed:true,destinationPlatform:'SHOPEE',shopId:item.shopId,idempotencyKey:item.idempotencyKey,autoConvertPrice:true,publishStock:999});
 const deps=(overrides={})=>({save:()=>{},prepare,isCurrent:()=>true,changed:()=>{},create:async id=>({id:'workflow-'+id,status:'PENDING'}),...overrides});
@@ -14,6 +14,40 @@ test('shop-only plan needs no price, currency, weight, category or logistics inp
  assert.equal(plan([{id:'a'},{id:'a'}],'shop','key').length,1);
  assert.throws(()=>plan([{id:'a'}],'','key'));
  assert.throws(()=>plan([],'shop','key'));
+});
+test('multi-shop plan creates each unique capture and shop pair with separate request keys',()=>{
+ const items=plan([{id:'a',title:'A'},{id:'a'},{id:'b',title:'B'}],['one','two','one'],'batch');
+ assert.deepEqual(items.map(item=>[item.captureId,item.shopId]),[['a','one'],['a','two'],['b','one'],['b','two']]);
+ assert.equal(new Set(items.map(item=>item.idempotencyKey)).size,4);
+ assert.throws(()=>plan([{id:'a'}],[],'batch'));
+});
+test('multi-shop selection retains sent requests and existing keys while adding only missing targets',()=>{
+ const items=plan([{id:'a',title:'A'}],['one','two'],'batch');
+ Object.assign(items[0],{status:'CREATE_FAILED',payload:{shopId:'one'},sizeChartImageKey:'chart'});
+ const next=changeShops(items,['two','three'],'next');
+ assert.equal(next[0],items[0]);assert.equal(next[1],items[1]);
+ assert.equal(next[2].shopId,'three');assert.equal(next[2].sizeChartImageKey,'chart');
+ assert.equal(changeShops(next,['two','three'],'unused'),next);
+ const removed=changeShops(next,['three'],'last');
+ assert.deepEqual(removed.map(item=>item.shopId),['one','three']);
+ assert.equal(removed[0],items[0]);assert.throws(()=>changeShops(items,[],'key'));
+});
+test('same-capture shops wait for the predecessor while other products can submit independently',async()=>{
+ const items=plan([{id:'a'},{id:'b'}],['one','two'],'batch'),gate=deferred(),created=[];
+ const running=submit(items,deps({beforeNextShop:async(item,previous)=>{
+   assert.equal(previous.workflow.id,'workflow-'+item.captureId+'-one');
+   if(item.captureId==='a')await gate.promise;
+ },create:async(id,payload)=>{created.push([id,payload.shopId]);return {id:'workflow-'+id+'-'+payload.shopId,status:'PENDING'};}}));
+ await turn();assert.ok(created.some(([id])=>id==='b'));
+ assert.ok(!created.some(([id,shop])=>id==='a'&&shop==='two'));
+ gate.resolve();await running;assert.equal(created.length,4);
+});
+test('retry waits for already accepted same-capture workflow and never submits it again',async()=>{
+ const items=plan([{id:'a'}],['one','two'],'batch'),calls=[];
+ Object.assign(items[0],{workflow:{id:'accepted',status:'RUNNING'},status:'RUNNING'});
+ await submit(items,deps({beforeNextShop:async(item,previous)=>calls.push(previous.workflow.id),
+   create:async(id,payload)=>{calls.push(payload.shopId);return {id:'second',status:'PENDING'};}}));
+ assert.deepEqual(calls,['accepted','two']);
 });
 test('shop changes are limited to unsent items without a saved request or accepted workflow',()=>{
  for(const status of ['WAITING','PREPARING','PREPARE_FAILED','PREPARED']) {

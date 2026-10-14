@@ -117,7 +117,8 @@ function harness(captures = fixture()) {
         const id = decodeURIComponent(workflowMatch[1]), workflowId = decodeURIComponent(workflowMatch[2]);
         workflowReads.push({id,workflowId});
         if (state.onWorkflowRead) return state.onWorkflowRead(id,workflowId,c,request);
-        return {data:{id:workflowId,captureId:id,status:'SUCCEEDED',shopId:'shop',destinationPlatform:'SHOPEE'}};
+        return {data:{id:workflowId,captureId:id,status:'SUCCEEDED',
+          shopId:c.productBulkItems.find(item=>item.workflow?.id===workflowId)?.shopId || 'shop',destinationPlatform:'SHOPEE'}};
       }
       const match = requestPath.match(/^\/captures\/([^/]+)\/publish-workflows$/);
       assert.ok(match && request.method === 'POST', `Unexpected API request: ${requestPath}`);
@@ -129,7 +130,7 @@ function harness(captures = fixture()) {
       assert.deepEqual(saved[0].payload, call.body,
         'Exact payload must be persisted before the workflow POST');
       if (state.onPost) await state.onPost(call, c);
-      return {data:{id:`workflow-${call.id}`, captureId:call.id, status:'PENDING', shopId:call.body.shopId, destinationPlatform:call.body.destinationPlatform}};
+      return {data:{id:`workflow-${call.id}${state.uniqueStoreWorkflows ? '-'+call.body.shopId : ''}`, captureId:call.id, status:'PENDING', shopId:call.body.shopId, destinationPlatform:call.body.destinationPlatform}};
     }
   };
   node('#product-bulk-shop').value = 'shop';
@@ -149,6 +150,53 @@ function harness(captures = fixture()) {
     submit:() => c.submitProductBulkUpload({preventDefault(){}}), clearRuns:()=>vm.runInContext('productBulkRuns.clear()',c),
     runCount:()=>vm.runInContext('productBulkRuns.size',c)};
 }
+
+test('multi-shop UI submits each product to both stores with separate requests and shared batch chart',async()=>{
+  const h=harness(),select=h.node('#product-bulk-shop');
+  h.c.activeMarketplaceShops=platform=>platform==='SHOPEE'
+    ? [{id:'shop',name:'One',platform:'SHOPEE'},{id:'shop-two',name:'Two',platform:'SHOPEE'}] : [];
+  select.multiple=true;
+  Object.defineProperty(select,'selectedOptions',{get:()=>select.options.filter(option=>option.selected)});
+  h.state.sizeChartImageKey='batch-chart';
+  h.state.uniqueStoreWorkflows=true;
+  await h.c.openProductBulkUpload();
+  assert.equal(h.c.productBulkShopIds().length,0);
+  h.c.setProductBulkShopIds(['shop','shop-two']);h.c.changeProductBulkShop();
+  assert.match(h.node('#product-bulk-shop-summary').textContent,/已选 2 家/);
+  await h.submit();
+  assert.equal(h.posts.length,4);
+  assert.equal(new Set(h.posts.map(call=>call.key)).size,4);
+  for(const id of ['a','b']) {
+    assert.deepEqual(h.posts.filter(call=>call.id===id).map(call=>call.body.shopId).sort(),['shop','shop-two']);
+  }
+  assert.ok(h.posts.every(call=>call.body.sizeChartImageKey==='batch-chart'));
+  assert.equal(h.patches.length,2,'Each capture is normalized once, not once per store');
+  assert.ok(h.workflowReads.length>=2,'Second store waits for first store workflow completion');
+  h.c.stopProductBulkPolling();
+});
+test('multi-shop retries only the rejected store with the frozen payload and key, then restores both choices',async()=>{
+  const h=harness([fixture()[0]]),select=h.node('#product-bulk-shop');
+  h.c.activeMarketplaceShops=platform=>platform==='SHOPEE'
+    ? [{id:'shop',name:'One',platform:'SHOPEE'},{id:'shop-two',name:'Two',platform:'SHOPEE'}] : [];
+  select.multiple=true;
+  h.state.uniqueStoreWorkflows=true;
+  Object.defineProperty(select,'selectedOptions',{get:()=>select.options.filter(option=>option.selected)});
+  await h.c.openProductBulkUpload();
+  h.c.setProductBulkShopIds(['shop','shop-two']);
+  h.state.onPost=async call=>{if(call.body.shopId==='shop-two')throw new h.c.ApiRequestError('store temporarily rejected the request',400);};
+  await h.submit();
+  const rejected=h.posts.find(call=>call.body.shopId==='shop-two');
+  assert.equal(h.c.productBulkItems[1].status,'CREATE_FAILED');
+  h.state.onPost=null;
+  const before=h.posts.length;await h.submit();
+  assert.equal(h.posts.length,before+1);
+  assert.deepEqual(h.posts.at(-1),rejected);
+  const key=h.c.productBulkStorageKey;h.c.productBulkItems=[];
+  await h.c.openProductBulkUpload(key);
+  assert.deepEqual(plain(h.c.productBulkShopIds()).sort(),['shop','shop-two']);
+  assert.equal(h.node('#product-bulk-summary').textContent,'已选择 1 件商品');
+  h.c.stopProductBulkPolling();
+});
 
 test('optional batch chart is frozen into each request; omission keeps original source behavior', async () => {
   const custom=harness();custom.state.sizeChartImageKey='tenant/batch-chart';
