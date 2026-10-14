@@ -8,7 +8,7 @@ import sys
 import time
 
 
-def configure(root, cdp):
+def configure(root, cdp, native=None):
     import connector as c
     import guarded_cli as g
     from urllib.parse import urlsplit
@@ -33,10 +33,16 @@ def configure(root, cdp):
         setattr(g, name, root.parents[2] / filename)
     g.CDP_URL = cdp
     os.environ["HEYI_EMBEDDED_DEFAULT_CONTEXT"] = "1"
+    if native is not None:
+        import native_client
+        c.native_client = native_client.install(native, g)
     c.LOGIN.update(state="complete")
     # Navigation by the old server helper used a fixed Linux CDP endpoint.
     # Desktop only uses an already-open official chat page for write actions.
     def existing_chat():
+        if native is not None:
+            c.native_client.snapshot()
+            return
         import urllib.request
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(cdp + "/json/list", timeout=3) as response:
@@ -64,7 +70,7 @@ def main(request):
         guarded_cli.install_policy()
         return {"ok": True, "version": importlib.metadata.version("boss-agent-cli"),
                 "platform": sys.platform, "python": sys.version.split()[0]}
-    c, g = configure(request["root"], request["cdp"])
+    c, g = configure(request["root"], request["cdp"], request.get("native"))
     operation = request.get("operation")
     # A receipt turn can contain several SDK reads. Pace those internal reads
     # too, rather than only spacing the outer collector timer.
@@ -233,7 +239,7 @@ if __name__ == "__main__":
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = main(request)
     except Exception as error:
-        code = "LOCAL_RUNTIME_ERROR"
+        code = getattr(error, "code", "LOCAL_RUNTIME_ERROR")
         try:
             import connector
             code = connector.held_code() or code
