@@ -133,7 +133,7 @@
     byId('listing-template-error').textContent = '';
     byId('listing-template-status').textContent = '正在读取模板…';
     byId('product-listing-template-dialog').showModal(); setBusy(true);
-    try { await Promise.all([ensure(true),loadShippingShops()]); render(); }
+    try { await Promise.all([ensure(true),loadShippingShops(),root.ProductListingFulfillment?.reset()]); render(); }
     catch (error) { byId('listing-template-error').textContent = error.message; setBusy(false); byId('save-product-listing-template').disabled = true; }
   }
   async function save(event) {
@@ -179,6 +179,7 @@
   }
   function init(config) {
     context = config;
+    root.ProductListingFulfillment?.init(config);
     byId('open-product-listing-templates').addEventListener('click', open);
     for (const id of ['close-product-listing-templates','cancel-product-listing-templates'])
       byId(id).addEventListener('click', () => byId('product-listing-template-dialog').close());
@@ -198,6 +199,7 @@
         shipping.channels = shipping.channels.map(channel=>({...channel,selected:draft.channelIds.includes(channel.id)}));
       }
       draftValues.set(platform,readDraft()); platform = button.dataset.listingPlatform; render(); renderShipping();
+      root.ProductListingFulfillment?.setPlatform(platform);
     }));
     byId('product-template-preview-platform').addEventListener('change', () => preview(context.getCapture()));
   }

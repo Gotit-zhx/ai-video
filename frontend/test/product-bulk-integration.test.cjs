@@ -931,6 +931,21 @@ test('empty logistics and upstream 500 recover with five bounded reads and one s
  h.state.onOptions=()=>{calls++;if(calls===1)throw Object.assign(Error('upstream inner error'),{status:500});if(calls<5)return {data:{logistics:{logistics_channel_list:[]}}};};
  await h.submit();assert.equal(h.optionReads.length,5);assert.equal(h.posts.length,2);assert.equal(new Set(h.posts.map(x=>x.key)).size,2);
 });
+test('batch origin defaults overseas and domestic selection is frozen across retries',async()=>{
+  const overseas=harness([fixture()[0]]);
+  await overseas.submit();
+  assert.equal(overseas.posts[0].body.fulfillmentOriginCountry,'TARGET');
+  const domestic=harness([fixture()[0]]);
+  domestic.node('#product-bulk-origin-country').value='CN';
+  let attempts=0;
+  domestic.state.onPost=()=>{if(++attempts===1)throw Object.assign(Error('submission rejected'),{status:409});};
+  await domestic.submit();
+  domestic.node('#product-bulk-origin-country').value='TARGET';
+  await domestic.submit();
+  assert.equal(domestic.posts.length,2);
+  assert.equal(domestic.posts[0].body.fulfillmentOriginCountry,'CN');
+  assert.deepEqual(domestic.posts[0].body,domestic.posts[1].body);
+});
 test('persistently empty logistics stop after five reads without blaming shop or submitting products',async()=>{
  const h=harness();h.state.onOptions=()=>({data:{logistics:{logistics_channel_list:[]}}});
  await h.submit();assert.equal(h.optionReads.length,5);assert.equal(h.posts.length,0);assert.ok(h.c.productBulkItems.every(x=>x.error.includes('不代表店铺未开启物流')));

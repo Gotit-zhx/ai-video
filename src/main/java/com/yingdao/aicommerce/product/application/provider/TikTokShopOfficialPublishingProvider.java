@@ -47,6 +47,8 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
     private final TikTokProductAttributeResolver attributeResolver;
     private final TikTokProductSizeChart sizeChartBuilder;
     private final TikTokShopListingCapabilityResolver listingCapabilityResolver;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.application.ProductListingFulfillmentService listingFulfillment;
 
     public TikTokShopOfficialPublishingProvider(ShopAuthorizationService shopAuthorizationService,
                                                 TikTokShopOfficialClient client,
@@ -91,8 +93,10 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         int stock = requiredStock(request);
         String categoryId = requiredText(request, "categoryId",
                 "TikTok Shop 发布前必须选择官方叶子类目");
-        String warehouseId = requiredText(request, "warehouseId",
-                "TikTok Shop 发布前必须选择官方仓库");
+        var fulfillment = com.yingdao.aicommerce.product.application.ProductListingFulfillmentService.snapshotFrom(request);
+        String warehouseId = !fulfillment.isEmpty() && listingFulfillment != null
+                ? listingFulfillment.resolveWarehouse(capture.getOrganizationId(),shopId,fulfillment)
+                : requiredText(request, "warehouseId", "TikTok Shop 发布前必须选择官方仓库");
         Map<String, Object> inventoryRule = listingCapability.requireWarehouse(warehouseId);
         BigDecimal weightGrams = requiredPositiveDecimal(request, "weightGrams",
                 "TikTok Shop 发布前必须填写包裹重量");

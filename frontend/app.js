@@ -6185,7 +6185,7 @@ function resolveTikTokPublishOptions(capture, options, common = {}, category = {
   const warehouseId = warehouses.find(w => String(w.id) === common['warehouse-id'])?.id
     || warehouses.find(w => w.is_default === true)?.id
     || (warehouses.length === 1 ? warehouses[0].id : '');
-  return {leaves, categoryId, matchedOriginal: Boolean(categoryId), genderConverted: Boolean(originalMatch && originalMatch.id !== categoryId), warehouseId: String(warehouseId || '')};
+  return {leaves, categoryId, matchedOriginal: Boolean(categoryId), genderConverted: Boolean(originalMatch && originalMatch.id !== categoryId), warehouseId: options?.listingFulfillment ? 'COUNTRY_TEMPLATE' : String(warehouseId || '')};
 }
 function publishCategoryText(value) {
   return String(value || '').normalize('NFKC').toLowerCase()
@@ -7182,6 +7182,9 @@ async function openProductBulkUpload(historyKey, captureId) {
   const run = productBulkRuns.get(productBulkStorageKey);
   productBulkItems = run?.items || saved?.items || [];
   productBulkBusy = Boolean(run);
+  const addressItem = productBulkItems.find(ProductBulkUpload.canChangeShop) || productBulkItems[0];
+  document.querySelector('#product-bulk-origin-country').value = addressItem?.fulfillmentOriginCountry
+    || addressItem?.payload?.fulfillmentOriginCountry || 'TARGET';
   ProductBulkSizeChart.open(org,productBulkStorageKey,productBulkItems);
   const shops = crossPlatformPublishShops();
   const select = document.querySelector('#product-bulk-shop');
@@ -7241,6 +7244,7 @@ async function submitProductBulkUpload(event) {
       for (const item of productBulkItems) {
         item.thumbnailUrl = productBulkThumbnail(item);
         item.sizeChartImageKey = ProductBulkSizeChart.key();
+        item.fulfillmentOriginCountry = document.querySelector('#product-bulk-origin-country').value || 'TARGET';
       }
     }
     const items = productBulkItems;
@@ -7302,6 +7306,7 @@ async function submitProductBulkUpload(event) {
       const targetShop = crossPlatformPublishShops().find(shop => String(shop.id) === item.shopId);
       const platform = normalizedMarketplacePlatform(targetShop?.platform || item.payload?.destinationPlatform || 'SHOPEE');
       const base = {confirmed: true, destinationPlatform: platform, shopId: item.shopId, idempotencyKey: item.idempotencyKey,
+        fulfillmentOriginCountry: item.fulfillmentOriginCountry || 'TARGET',
         ...(platform === 'SHOPEE' && item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})};
       let payload = base;
       if (marketplaceIntegrationStatus.livePublishingEnabled) {
@@ -7461,6 +7466,18 @@ function openProductBulkHistory() {
 }
 
 document.querySelector('#open-product-bulk-upload').addEventListener('click', () => void openProductBulkUpload());
+document.querySelector('#product-bulk-origin-country').addEventListener('change', () => {
+  if (productBulkBusy) return;
+  const selected = document.querySelector('#product-bulk-origin-country').value || 'TARGET';
+  const next = productBulkItems.map(item => ProductBulkUpload.canChangeShop(item)
+    ? {...item,fulfillmentOriginCountry:selected} : item);
+  try {
+    if (next.length) saveProductBulkItems(next);
+    stopProductBulkPolling();
+    productBulkItems = next;
+    void pollProductBulkProgress();
+  } catch(error) { document.querySelector('#product-bulk-error').textContent = error.message; }
+});
 document.querySelector('#open-product-bulk-history').addEventListener('click', openProductBulkHistory);
 document.querySelector('#open-product-bulk-history-from-detail').addEventListener('click', openProductBulkHistory);
 document.querySelector('#close-product-bulk-history').addEventListener('click', () => document.querySelector('#product-bulk-history-dialog').close());

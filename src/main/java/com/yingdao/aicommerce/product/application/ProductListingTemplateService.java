@@ -200,7 +200,7 @@ public class ProductListingTemplateService {
                 BigDecimal.valueOf(shopee ? 200 : 250), BigDecimal.valueOf(shopee ? 5 : 30),
                 BigDecimal.valueOf(25), BigDecimal.valueOf(shopee ? 25 : 2), 0, null);
     }
-    private static String platform(String value) {
+    static String platform(String value) {
         String target = text(value).toUpperCase(java.util.Locale.ROOT);
         if (List.of("TIKTOK", "TIKTOKSHOP", "TIKTOK_SHOP").contains(target)) return "TIKTOK_SHOP";
         if ("SHOPEE".equals(target)) return target;
