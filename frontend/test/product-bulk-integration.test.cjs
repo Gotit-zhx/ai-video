@@ -971,6 +971,20 @@ test('selected address country must match the destination shop for both address 
     assert.match(h.c.productBulkItems[0].error,/与店铺国家一致/);
   }
 });
+test('domestic and overseas address choices keep the original configured delivery channels',async()=>{
+  const deliveries=[];
+  for(const type of ['OVERSEAS','DOMESTIC']){
+    const h=harness([fixture()[0]]);
+    h.c.setProductBulkOriginChoice('MY',type);
+    await h.submit();
+    assert.equal(h.posts.length,1);
+    deliveries.push(h.posts[0].body.logisticInfo);
+    assert.equal(h.posts[0].body.fulfillmentOriginCountry,type==='DOMESTIC'?'CN':'MY');
+    h.c.stopProductBulkPolling();
+  }
+  assert.deepEqual(deliveries[0],deliveries[1]);
+  assert.ok(deliveries[0].some(channel=>channel.enabled));
+});
 test('persistently empty logistics stop after five reads without blaming shop or submitting products',async()=>{
  const h=harness();h.state.onOptions=()=>({data:{logistics:{logistics_channel_list:[]}}});
  await h.submit();assert.equal(h.optionReads.length,5);assert.equal(h.posts.length,0);assert.ok(h.c.productBulkItems.every(x=>x.error.includes('不代表店铺未开启物流')));
