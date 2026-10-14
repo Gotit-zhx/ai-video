@@ -252,6 +252,20 @@ class ReceiptTest(unittest.TestCase):
                 self.assertTrue(receipts.step(self.c,db,{'reconnectId':'second'})['ok'])
         self.c.cli_json.assert_called_once()
 
+    def test_schedule_uses_saved_history_deadline_and_prioritizes_new_activity_without_network(self):
+        with mock.patch.object(receipts.time,'time',return_value=1000):
+            with flow.database(self.root) as db:
+                self.seed(db);db.execute("UPDATE chat_resume_conversations SET signaled=0")
+                flow.put_state(db,'chat-resumes-last-request-at',990)
+                flow.put_state(db,'chat-resumes-discover-at',9000)
+                planned=receipts.schedule(db)
+                self.assertEqual(planned['collectorRetryAt'],1590)
+                receipts.wake(db,'2')
+                planned=receipts.schedule(db)
+                self.assertEqual(planned['collectorRetryAt'],1020)
+                self.assertEqual(planned['collectorPending'],3)
+        self.c.cli_json.assert_not_called();self.c.sourcing_friend_details.assert_not_called()
+
     def test_old_attachment_in_new_activity_stays_historical_and_new_activity_can_preempt_it(self):
         with flow.database(self.root) as db:
             self.seed(db);self.inspect(db,[self.message(100)])

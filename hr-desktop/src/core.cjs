@@ -98,6 +98,7 @@ class Recruiter extends EventEmitter {
     this.paused=false;this.busy=false;this.inFlight=null;this.loginTimer=null;
     this.operations=new OperationQueue();
     this.backgroundRetryAt=0;this.backgroundFailures=0;
+    this.nextBackgroundAt=0;this.idlePolls=0;this.jobStatusRetryAt=0;
     this.activity=new Map();this.activityTimer=null;this.lastActivityPoll=0;
     this.owner='';this.accountRoot='';this.cdp='';this.events=[];this.persist=Promise.resolve();this.riskHold=null;this.generation=0;
     this.autoReconnect=true;this.recovering=false;this.recoveryAt=0;this.recoveryFailures=0;this.closed=false;
@@ -110,6 +111,9 @@ class Recruiter extends EventEmitter {
       this.owner=saved.owner||'';this.accountRoot=saved.accountRoot||'';
       this.riskHold=saved.hold||null;
       this.autoReconnect=saved.autoReconnect!==false;
+      const scheduling=saved.scheduling||{};
+      this.idlePolls=Math.max(0,Math.min(3,Math.trunc(Number(scheduling.idlePolls)||0)));
+      this.nextBackgroundAt=Math.max(0,Math.min(this.clock()+300000,Number(scheduling.nextBackgroundAt)||0));
       if(this.accountRoot && !this.accountRoot.startsWith(this.directory+path.sep)) throw Error('path');
       this.paused=true;
       this.state=saved.hold
@@ -119,7 +123,7 @@ class Recruiter extends EventEmitter {
            error:this.autoReconnect?'正在恢复已登录的本机助手…':'本机任务已手动暂停。'};
     } catch(error) {if(error.code!=='ENOENT') this.paused=true;}
     this.closed=false;
-    this.pollTimer=setInterval(()=>this.paused?this.reconnect():this.poll(),30000);
+    this.pollTimer=setInterval(()=>this.paused?this.reconnect():this.pollIfDue(),30000);
     this.pollTimer.unref();
   }
   snapshot(){return {...this.state,paused:this.paused,busy:this.busy,runtime:'local',events:this.events.slice(-15),
@@ -141,7 +145,8 @@ class Recruiter extends EventEmitter {
     this.event(code);
   }
   save(hold) {
-    const record={owner:this.owner,accountRoot:this.accountRoot,hold:hold||this.riskHold,autoReconnect:this.autoReconnect};
+    const record={owner:this.owner,accountRoot:this.accountRoot,hold:hold||this.riskHold,autoReconnect:this.autoReconnect,
+      scheduling:{idlePolls:this.idlePolls,nextBackgroundAt:this.nextBackgroundAt}};
     this.persist=this.persist.catch(()=>{}).then(async()=>{
       const target=path.join(this.directory,'state.json');
       await fs.writeFile(target+'.tmp',JSON.stringify(record),{mode:0o600});
@@ -343,6 +348,7 @@ class Recruiter extends EventEmitter {
       if(!resumed.ok)throw Error('历史接收进度未能恢复');
       this.reconnectId=crypto.randomUUID();
       this.riskHold=null;this.state={state:'complete',phase:'',error:'',failure_code:''};
+      this.idlePolls=0;this.nextBackgroundAt=this.clock()+120000;this.jobStatusRetryAt=0;
       this.paused=false;await this.save();this.event('CONNECTED');
       this.browser.connected();
       this.backgroundRetryAt=this.clock()+120000;
@@ -393,6 +399,8 @@ class Recruiter extends EventEmitter {
       this.riskHold=null;this.paused=false;this.recoveryFailures=0;
       this.state={state:'complete',phase:'',error:'',failure_code:''};
       this.reconnectId=crypto.randomUUID();
+      this.nextBackgroundAt=Math.max(this.nextBackgroundAt,this.clock()+120000);
+      this.jobStatusRetryAt=0;
       await this.save();
       if(!current())return;
       this.event('CONNECTION_RESTORED');this.browser.connected();
@@ -408,28 +416,52 @@ class Recruiter extends EventEmitter {
   }
   notifyActivity(hints){
     if(this.state.state!=='complete'||this.paused||this.riskHold||!this.passiveCloud)return;
+    let changed=false;
     for(const hint of hints){
       if(!/^[1-9]\d{0,19}$/.test(hint.friend)||!/^[1-9]\d{0,29}$/.test(hint.mid))continue;
       const previous=this.activity.get(hint.friend);
       if(previous&&BigInt(previous.mid)>=BigInt(hint.mid))continue;
       this.activity.set(hint.friend,hint);
+      changed=true;
       if(this.activity.size>200)this.activity.delete(this.activity.keys().next().value);
     }
-    this.scheduleActivityPoll();
+    if(changed){
+      this.idlePolls=0;
+      this.nextBackgroundAt=Math.max(this.clock(),this.lastActivityPoll+30000);
+      clearTimeout(this.activityTimer);this.activityTimer=null;
+      this.scheduleActivityPoll();
+    }
   }
   scheduleActivityPoll(){
     if(this.activityTimer||this.polling||this.busy||this.operations.pending||this.paused||this.riskHold
       ||this.state.state!=='complete'||!this.passiveCloud)return;
-    const status=this.passiveStatus||{};
-    if(!this.activity.size&&!status.activityPending&&!status.exportsPending&&!status.catchupPending)return;
-    const due=this.activity.size||status.exportsPending?0:status.catchupPending
-      ?Number(status.catchupRetryAt||0)*1000:Number(status.activityRetryAt||0)*1000;
-    const interval=this.activity.size||status.activityPending?30000:status.exportsPending?10000:120000;
-    const delay=Math.max(1000,this.lastActivityPoll+interval-this.clock(),due-this.clock(),this.backgroundRetryAt-this.clock());
+    const delay=Math.max(1000,this.nextBackgroundAt-this.clock(),this.backgroundRetryAt-this.clock());
     this.activityTimer=setTimeout(()=>{
-      this.activityTimer=null;this.poll();
+      this.activityTimer=null;this.pollIfDue();
     },delay);
     this.activityTimer.unref();
+  }
+  async pollIfDue(){
+    if(this.clock()<this.nextBackgroundAt)return;
+    return this.poll();
+  }
+  planBackground(progress=false){
+    const now=this.clock(),status=this.passiveStatus||{};
+    const idle=[30000,60000,120000,300000][progress?0:this.idlePolls];
+    this.idlePolls=progress?0:Math.min(3,this.idlePolls+1);
+    let next=now+idle;
+    const consider=(pending,seconds,interval)=>{
+      if(pending)next=Math.min(next,Math.max(now+interval,(Number(seconds)||0)*1000));
+    };
+    consider(this.activity.size,0,30000);
+    consider(status.exportsPending,0,10000);
+    consider(status.activityPending,status.activityRetryAt,30000);
+    consider(status.workPending,status.workRetryAt,30000);
+    consider(status.catchupPending,status.catchupRetryAt,120000);
+    consider(status.collectorPending,status.collectorRetryAt,30000);
+    if(status.phase==='budget_wait'&&Number(status.retryAt)*1000>now&&!this.activity.size&&!status.exportsPending)
+      next=Math.max(next,Number(status.retryAt)*1000);
+    this.nextBackgroundAt=next;
   }
   async poll(){
     if(this.state.state!=='complete'||this.paused||this.busy||this.operations.active||this.polling
@@ -437,6 +469,8 @@ class Recruiter extends EventEmitter {
     this.polling=true;
     clearTimeout(this.activityTimer);this.activityTimer=null;this.lastActivityPoll=this.clock();
     const generation=this.generation,accountRoot=this.accountRoot;
+    const previousProgress=Number(this.passiveStatus?.lastProgressAt)||0;
+    let progress=false;
     const call=(operation,extra)=>this.call(operation,extra,{background:true});
     const ready=()=>generation===this.generation&&accountRoot===this.accountRoot&&this.state.state==='complete'&&!this.paused&&!this.riskHold;
     try{
@@ -448,20 +482,11 @@ class Recruiter extends EventEmitter {
         return;
       }
       const accountKey=path.basename(accountRoot);
-      if(!this.jobStatusSyncAt||this.clock()-this.jobStatusSyncAt>=60000){
-        const availability=await call('job-statuses');
-        if(!ready())return;
-        if(availability.ok&&availability.data?.statuses){
-          await this.passiveCloud('passive-report',{accountKey,jobStatuses:availability.data.statuses,
-            validFor:Math.max(0,Math.min(300,(availability.data.retryAt||0)-this.clock()/1000))});
-          if(!ready())return;
-          this.jobStatusSyncAt=this.clock();
-        }
-      }
       const local=await call('passive-local');
       if(!ready())return;
       if(!local.ok){this.backgroundFailed(local.error?.code);return;}
       if(local.data?.status)this.passiveStatus=local.data.status;
+      progress=!!(local.data?.events?.length||local.data?.reports?.length||local.data?.bindings?.length||local.data?.exports?.length);
       if(local.data?.dailyGreeting)this.dailyGreeting=local.data.dailyGreeting;
       for(const event of local.data?.events||[]){
         await this.passiveCloud('passive-report',{accountKey,event});
@@ -493,6 +518,17 @@ class Recruiter extends EventEmitter {
       const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing','sourcing-credentials-v2','greeting-receipts-v1','all-chat-resumes-v1']});
       if(!ready())return;
       const command=config.commands?.[0];
+      const needsJobs=command||(config.rules||[]).some(rule=>rule.enabled===true)||(config.activeContacts||[]).length;
+      if(needsJobs&&this.clock()>=this.jobStatusRetryAt){
+        const availability=await call('job-statuses');
+        if(!ready())return;
+        this.jobStatusRetryAt=Math.max(this.clock()+60000,(Number(availability.data?.retryAt)||0)*1000);
+        if(availability.ok&&availability.data?.statuses){
+          await this.passiveCloud('passive-report',{accountKey,jobStatuses:availability.data.statuses,
+            validFor:Math.max(0,Math.min(300,(availability.data.retryAt||0)-this.clock()/1000))});
+          if(!ready())return;
+        }
+      }
       if(command){
         const active=command.kind==='active_greet';
         let canSend=true;
@@ -514,6 +550,7 @@ class Recruiter extends EventEmitter {
         await this.passiveCloud('passive-report',{accountKey,commandId:command.id,status:result.data?.status||'uncertain'});
         await call('passive-ack',{commandId:command.id});
         this.event((active?'ACTIVE_GREETING_':command.kind==='invite'?'INVITATION_':'REJECTION_')+(result.data?.status==='sent'?'SENT':'UNCERTAIN'));
+        progress=true;
         this.backgroundRecovered();
         return;
         }
@@ -557,7 +594,14 @@ class Recruiter extends EventEmitter {
       if(['OPERATION_CANCELLED','PRIORITY_YIELD'].includes(error.code)||!ready())return;
       this.backgroundFailed(error.code);
     }
-    finally{this.polling=false;this.scheduleActivityPoll();}
+    finally{
+      this.polling=false;
+      if(ready()){
+        this.planBackground(progress||(Number(this.passiveStatus?.lastProgressAt)||0)>previousProgress);
+        await this.save();
+      }
+      this.scheduleActivityPoll();
+    }
   }
   backgroundFailed(code){
     if(this.paused||this.state.state!=='complete')return;

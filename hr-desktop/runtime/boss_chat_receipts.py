@@ -281,6 +281,25 @@ def urgent(db, *, attachments_only=False):
         "SELECT 1 FROM chat_resume_conversations WHERE signaled=1 AND retry_at<=? "
         "AND (dirty=1 OR fresh_before>0) LIMIT 1", (now,)).fetchone())
 
+def schedule(db):
+    """Report durable work deadlines using only the account-local ledger."""
+    schema(db)
+    now = time.time()
+    last = float(flow.get_state(db, 'chat-resumes-last-request-at', '0'))
+    deadlines = [max(last+600,float(flow.get_state(db,'chat-resumes-discover-at','0')))]
+    pending = 1
+    for row in db.execute("SELECT body,retry_at FROM chat_resume_receipts WHERE state='found'"):
+        metadata = json.loads(row['body'])
+        recent = bool(metadata.get('receiptPriority')) or now-3600 <= flow.seconds(metadata.get('receivedAt')) <= now+60
+        deadlines.append(max(row['retry_at'],last+(30 if recent else 600)))
+        pending += 1
+    for row in db.execute("""SELECT signaled,retry_at FROM chat_resume_conversations
+                            WHERE dirty=1 OR fresh_before>0 OR history_done=0"""):
+        deadlines.append(max(row['retry_at'],last+(30 if row['signaled'] else 600)))
+        pending += 1
+    return {'collectorPending':pending,'collectorRetryAt':min(deadlines),
+            'collectorExports':db.execute("SELECT count(*) FROM chat_resume_receipts WHERE state='export'").fetchone()[0]}
+
 
 def exports(db):
     schema(db)

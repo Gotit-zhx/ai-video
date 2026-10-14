@@ -102,7 +102,7 @@ test('HR permission authorizes a private desktop owner without allowing another 
   engine.authorize=async()=>({...hr,permissions:[]});
   await assert.rejects(engine.checkOwner(),/人力资源权限/);
 });
-test('official job availability is synchronized before cloud commands and reused within one minute',async t=>{
+test('job availability is read only for configured work and reused until its returned expiry',async t=>{
   const {engine,directory}=await fixture(t),sent=[];
   engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
   let reads=0;
@@ -110,12 +110,53 @@ test('official job availability is synchronized before cloud commands and reused
     if(input.operation==='job-statuses'){reads++;return {ok:true,data:{statuses:{job1:'开放中',job2:'已关闭'},retryAt:Date.now()/1000+200}};}
     return {ok:true,data:{}};
   };
-  engine.passiveCloud=async(route,body)=>{sent.push({route,body});return route==='passive-config'?{commands:[]} :{};};
+  engine.passiveCloud=async(route,body)=>{sent.push({route,body});return route==='passive-config'
+    ?{commands:[],rules:[{enabled:true,jobId:'job1'}]} :{};};
   await engine.poll();await engine.poll();
   assert.equal(reads,1);
-  assert.deepEqual(sent[0].body.jobStatuses,{job1:'开放中',job2:'已关闭'});
-  assert.ok(sent[0].body.validFor>0&&sent[0].body.validFor<=200);
-  assert.ok(sent.findIndex(x=>x.route==='passive-config')>0);
+  const status=sent.find(x=>x.body.jobStatuses);
+  assert.deepEqual(status.body.jobStatuses,{job1:'开放中',job2:'已关闭'});
+  assert.ok(status.body.validFor>0&&status.body.validFor<=200);
+});
+test('scheduled idle checks back off without job reads and a new message wakes only its coalesced conversation',async t=>{
+  const {engine,directory,calls}=await fixture(t);
+  let now=1000000;engine.clock=()=>now;
+  engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
+  engine.passiveCloud=async()=>({rules:[],collectAllResumes:true});
+  for(const delay of [30000,60000,120000,300000]){
+    await engine.pollIfDue();
+    assert.equal(engine.nextBackgroundAt,now+delay);
+    const before=calls.length;now+=delay-1;await engine.pollIfDue();assert.equal(calls.length,before);
+    now++;
+  }
+  assert.ok(!calls.some(row=>row.operation==='job-statuses'));
+  await engine.pollIfDue();const idleDeadline=engine.nextBackgroundAt;
+  now+=1000;
+  const hint={friend:'123',mid:'10',at:now/1000};
+  engine.notifyActivity([hint,hint]);assert.equal(engine.activity.size,1);
+  assert.equal(engine.nextBackgroundAt,engine.lastActivityPoll+30000);
+  assert.ok(engine.nextBackgroundAt<idleDeadline);
+  const before=calls.length;await engine.pollIfDue();assert.equal(calls.length,before);
+  now=engine.nextBackgroundAt;await engine.pollIfDue();
+  const step=calls.filter(row=>row.operation==='passive-step').at(-1);
+  assert.deepEqual(step.activityHints,[hint]);
+  await engine.hold({code:'ACCOUNT_RISK'});now+=300000;
+  const stopped=calls.length;await engine.pollIfDue();assert.equal(calls.length,stopped);
+});
+test('idle scheduling survives restart and new activity cannot bypass the login warmup or failure backoff',async t=>{
+  const {engine,calls}=await fixture(t);let now=1000000;engine.clock=()=>now;
+  engine.state={state:'complete'};engine.paused=false;engine.passiveCloud=async()=>({});
+  engine.idlePolls=3;engine.nextBackgroundAt=now+300000;await engine.save();
+  await engine.close();await engine.init(engine.cdp);
+  assert.equal(engine.idlePolls,3);assert.equal(engine.nextBackgroundAt,now+300000);
+  engine.state={state:'complete'};engine.paused=false;engine.backgroundRetryAt=now+120000;
+  engine.notifyActivity([{friend:'123',mid:'10'}]);
+  await engine.pollIfDue();assert.equal(calls.length,0);
+  now+=120000;engine.runtime.run=async input=>{calls.push(input);throw Error('read failure');};
+  await engine.pollIfDue();const before=calls.length;
+  engine.notifyActivity([{friend:'123',mid:'11'}]);
+  now+=1000;await engine.pollIfDue();assert.equal(calls.length,before);
+  assert.equal(engine.backgroundRetryAt,now-1000+30000);
 });
 test('a greeting receipt is reported and bound in the same poll before the next timer turn',async t=>{
   const {engine,calls,directory}=await fixture(t);

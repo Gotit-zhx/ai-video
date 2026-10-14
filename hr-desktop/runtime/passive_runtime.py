@@ -570,6 +570,13 @@ def activity_status(db, result):
     exports = db.execute("SELECT count(*) FROM people WHERE state='export'").fetchone()[0]
     catchup = db.execute('SELECT count(*),min(retry_at) FROM catchup WHERE done=0').fetchone()
     value = result.setdefault('data', {})
+    value.update(workPending=db.execute("SELECT count(*) FROM people WHERE state IN ('inspect','reply_ready','ready')").fetchone()[0],
+                 workRetryAt=float(get_state(db,'nextAt','0')))
+    if get_state(db,'collectAllResumes','0') == '1':
+        import boss_chat_receipts
+        collected = boss_chat_receipts.schedule(db)
+        exports += collected.pop('collectorExports')
+        value.update(collected)
     value.update(activityPending=pending[0], activityRetryAt=pending[1] or 0, exportsPending=exports,
                  catchupPending=catchup[0], catchupRetryAt=catchup[1] or 0)
     if catchup[0] and value.get('phase') in ('watching', 'receiving', 'disabled'):
@@ -828,8 +835,9 @@ def execute(c, root, request):
             exports += boss_chat_receipts.exports(db)
             reports = [dict(row) for row in db.execute("SELECT * FROM commands WHERE reported=0 ORDER BY rowid LIMIT 1")]
             events = [json.loads(row['body']) for row in db.execute('SELECT body FROM events WHERE reported=0 ORDER BY rowid LIMIT 10')]
+            local_status=activity_status(db,{'ok':True,'data':json.loads(get_state(db,'status','{}'))})['data']
             return {'ok': True, 'data': {'exports': exports, 'reports': reports, 'events': events, 'bindings': active_sourcing.local(db),
-                                         'status': json.loads(get_state(db, 'status', '{}')),
+                                         'status': local_status,
                                          'dailyGreeting': active_sourcing.daily_usage(db, time.time())}}
         if operation == 'passive-ack':
             if request.get('contactId'):
@@ -868,6 +876,7 @@ def execute(c, root, request):
         # The collector may finish this turn before the communication lane runs.
         # Persist every hint first: JS acknowledges it when this call succeeds.
         remember_activity(db, request.get('activityHints', []))
+        put_state(db,'collectAllResumes','1' if request.get('collectAllResumes') is True else '0')
         if request.get('collectAllResumes') is True:
             import boss_chat_receipts
             boss_chat_receipts.schema(db)

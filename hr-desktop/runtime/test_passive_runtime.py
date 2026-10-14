@@ -164,6 +164,20 @@ class WorkflowTest(unittest.TestCase):
         self.c.cli_json.assert_not_called()
         self.assertEqual(self.state(), 'reply_ready')
 
+    def test_local_scheduler_status_tracks_unexported_receipts_and_acknowledgement_without_network(self):
+        import boss_chat_receipts as receipts
+        with flow.database(self.root) as db:
+            receipts.schema(db);flow.put_state(db,'collectAllResumes','1')
+            flow.put_state(db,'chat-resumes-last-request-at',self.now-10)
+            flow.put_state(db,'chat-resumes-discover-at',self.now+3600)
+            db.execute("INSERT INTO chat_resume_receipts(friend,mid,rule,body,state) VALUES('1','100','r1','{}','export')")
+        result=self.runop('passive-local')
+        self.assertEqual(result['data']['status']['exportsPending'],1)
+        self.assertEqual(result['data']['status']['collectorRetryAt'],self.now+3600)
+        self.runop('passive-ack',friendId='1',messageId='100')
+        self.assertEqual(self.runop('passive-local')['data']['status']['exportsPending'],0)
+        self.c.cli_json.assert_not_called()
+
     def test_collector_status_cannot_hide_an_admitted_reply_behind_stale_budget_deadline(self):
         self.pending('reply_ready')
         with flow.database(self.root) as db:
