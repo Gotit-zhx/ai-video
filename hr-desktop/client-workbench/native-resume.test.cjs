@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const {NativeResume, isChatURL} = require('./native-resume.cjs');
 const {NativeRPC, RESUME_REQUEST_TEXT} = require('./native-rpc.cjs');
+const {decodeNativeProtocol} = require('./native-protocol.cjs');
 
 const friend = {friendId: '202', encryptJobId: 'job-a', securityId: 'fixture'};
 
@@ -135,6 +136,35 @@ test('matching text without native send observation cannot confirm a resume requ
   });
   await assert.rejects(rpc.requestResume('101', friend), {code: 'SEND_UNCONFIRMED'});
   assert.equal(invoked, 1);
+});
+test('original byte-array send observation links clientMid but still waits for the server receipt', async t => {
+  const scalar = (field, number) => {
+    const bytes = [field * 8];
+    do {
+      const value = number & 127;number >>>= 7;
+      bytes.push(number ? value | 128 : value);
+    } while (number);
+    return Buffer.from(bytes);
+  };
+  const field = (number, value) => Buffer.concat([
+    Buffer.from([number * 8 + 2, value.length]), value,
+  ]);
+  const packet = Buffer.concat([scalar(1, 1), field(3, Buffer.concat([
+    field(1, scalar(1, 101)), field(2, scalar(1, 202)), scalar(11, 404),
+    field(6, Buffer.concat([scalar(1, 1), field(3, Buffer.from(RESUME_REQUEST_TEXT))])),
+  ]))]);
+  let sends = 0;
+  const rpc = rpcFixture(t, async ({onReady}, rpc) => {
+    sends++;onReady();
+    rpc.observeNativeSend(decodeNativeProtocol(packet));
+    assert.equal(rpc.pendingSends.get('202').clientMid, '404');
+    assert.equal(rpc.pendingSends.size, 1);
+    confirm(rpc, {clientMid: '999'});
+    assert.equal(rpc.pendingSends.size, 1);
+    confirm(rpc);
+  });
+  assert.equal((await rpc.requestResume('101', friend)).confirmedBy, 'client-message-receipt');
+  assert.equal(sends, 1);
 });
 test('an invoked but unconfirmed native action remains uncertain and is never retried', async t => {
   let invoked = 0;

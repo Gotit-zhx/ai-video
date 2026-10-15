@@ -126,7 +126,7 @@ def patch_main(data):
     if text.count(before) != 1:
         raise ValueError("Original native text-message observation hook differs")
     text = text.replace(before, 'const r=new lC(uC.TEXT).getProtoMsg(e);'
-                        'try{heyiHost.observeNativeSend(mT.TechwolfChatProtocol.decode(r.finish()))}catch{}'
+                        'try{heyiHost.observeNativeSend(require("./heyi/native-protocol.cjs").decodeNativeProtocol(r))}catch{}'
                         'cC.send(r),t()', 1)
     text += """
 // Heyi local modification. Original authentication and handlers remain intact.
@@ -191,7 +191,7 @@ def own_files(sdk_path):
                  "native-network.cjs", "integrated-shell.cjs", "shell-preload.cjs",
                  "shell.html", "shell-renderer.cjs", "native-resume.cjs", "native-resume-smoke.cjs",
                  "platform-connection-smoke.cjs", "native-egress-smoke.cjs",
-                 "native-http.cjs", "native-http-smoke.cjs"]:
+                 "native-http.cjs", "native-http-smoke.cjs", "native-protocol.cjs"]:
         result["heyi/" + name] = (HERE / name).read_bytes()
     for source in (DESKTOP / "src").glob("*.cjs"):
         result["heyi/src/" + source.name] = source.read_bytes()

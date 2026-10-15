@@ -164,6 +164,32 @@ async function main() {
     }
     await fs.writeFile(path.join(root, 'native-message-contract.json'),
       JSON.stringify(messageContract, null, 2));
+    let receiveContract;
+    try {
+      receiveContract = await bindNativeModule(connection, {
+        modulePath: path.join(__dirname, 'native-receive-contract.cjs'),
+        config: {anonymousIsolated: true}, pinnedOriginalVerified: true,
+      });
+    } catch (error) {
+      receiveContract = {mode: 'offline-original-message-normalization-contract', ok: false,
+        reason: 'native-receive-contract-unavailable',
+        diagnostic: error.nativeBindingDiagnostic || {stage: 'binding-check'}};
+    }
+    await fs.writeFile(path.join(root, 'native-receive-contract.json'),
+      JSON.stringify(receiveContract, null, 2));
+    let requestContract;
+    try {
+      requestContract = await bindNativeModule(connection, {
+        modulePath: path.join(__dirname, 'native-request-contract.cjs'),
+        config: {anonymousIsolated: true}, pinnedOriginalVerified: true,
+      });
+    } catch (error) {
+      requestContract = {mode: 'offline-original-request-header-contract', ok: false,
+        reason: 'native-request-contract-unavailable',
+        diagnostic: error.nativeBindingDiagnostic || {stage: 'binding-check'}};
+    }
+    await fs.writeFile(path.join(root, 'native-request-contract.json'),
+      JSON.stringify(requestContract, null, 2));
     const shellSmoke = path.join(__dirname,'windows-shell-smoke.cjs');
     const priorTimeout=connection.client.timeout;
     let shellRun;
@@ -220,6 +246,12 @@ async function main() {
     }
     if (messageContract?.ok !== true) {
       throw Error('Original Windows message encoder contract incomplete; inspect the report');
+    }
+    if (receiveContract?.ok !== true) {
+      throw Error('Original Windows message normalization contract incomplete; inspect the report');
+    }
+    if (requestContract?.ok !== true) {
+      throw Error('Original Windows request header contract incomplete; inspect the report');
     }
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,
       sdkNames: report.observedSdk.length, nativeModules: report.nativeModules.length,
