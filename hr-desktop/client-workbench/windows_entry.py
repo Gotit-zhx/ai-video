@@ -22,6 +22,10 @@ def main():
     frozen = getattr(sys, "frozen", False)
     root = Path(sys.executable).resolve().parent if frozen else Path(sys.argv[1]).resolve()
     self_test = self_test_requested(sys.argv[1:] if frozen else sys.argv[2:], os.environ)
+    if self_test:
+        report_file = Path(os.environ["HEYI_WORKBENCH_TEST_OUTPUT"])
+        if report_file.exists() or report_file.is_symlink():
+            raise ValueError("A fresh test output is required")
     executable = root / "native-client" / "boss-zhipin.exe"
     controller = root / "native-client" / "resources" / "heyi" / "windows-launcher.cjs"
     environment = {key: value for key, value in os.environ.items()
@@ -36,7 +40,6 @@ def main():
         # Mark only a report returned by the controller. CI also requires this
         # exact windowless entry process to exit successfully.
         import json
-        report_file = Path(environment["HEYI_WORKBENCH_TEST_OUTPUT"])
         if report_file.is_file():
             report = json.loads(report_file.read_text(encoding="utf-8"))
             report["packagedEntryPoint"] = bool(frozen)

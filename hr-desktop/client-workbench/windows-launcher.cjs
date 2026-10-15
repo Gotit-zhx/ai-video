@@ -4,45 +4,68 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
 const {once} = require('node:events');
+const net = require('node:net');
 const {verifyPackage, profileEnvironment} = require('./windows-package.cjs');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
 const {waitForProcess} = require('./process-outcome.cjs');
 
+async function ensureInspectorPortFree(port = 9229) {
+  const guard = net.createServer();
+  try {
+    await new Promise((resolve, reject) => {
+      guard.once('error', () => reject(Error('Local inspector port is already occupied')));
+      guard.listen(port, '127.0.0.1', resolve);
+    });
+  } finally {
+    if (guard.listening) await new Promise(resolve => guard.close(resolve));
+  }
+}
+
 async function run(packageRoot, selfTest = false) {
   if (process.platform !== 'win32') throw Error('Windows launcher required');
-  let connection, statusFile, verified, stage = 'verify-package';
+  let connection, statusFile, verified, testOutput, stage = 'verify-package';
   try {
-    verified = await verifyPackage(packageRoot);
-    stage = 'profile-isolation';
     const profileRoot = selfTest ? process.env.HEYI_WORKBENCH_TEST_DATA :
       path.join(process.env.LOCALAPPDATA || '', 'HeyiBossWorkbench');
     if (selfTest && (!process.env.HEYI_WORKBENCH_TEST_OUTPUT ||
         process.env.HEYI_WORKBENCH_TEST_PORT !== '0')) throw Error('Fresh test profile and output required');
     if (selfTest) {
+      stage = 'test-isolation';
       const isolatedRoot = await fs.realpath(process.env.HEYI_NATIVE_PROBE_ROOT);
+      const packageDirectory = await fs.realpath(packageRoot);
       const firewall = JSON.parse(await fs.readFile(path.join(isolatedRoot, 'firewall.json'), 'utf8'));
       const inside = value => {
         const relative = path.relative(isolatedRoot, value);
         return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
       };
       if (firewall.verified !== true || firewall.workbenchIncluded !== true ||
-          !inside(verified.root) || !inside(profileRoot) || !inside(process.env.HEYI_WORKBENCH_TEST_OUTPUT)) {
+          !inside(packageDirectory) || !inside(profileRoot) || !inside(process.env.HEYI_WORKBENCH_TEST_OUTPUT)) {
         throw Error('Verified OS-isolated package check required');
       }
       try {await fs.lstat(profileRoot);throw Error('Test profile already exists');}
       catch (error) {if (error.code !== 'ENOENT') throw error;}
       try {await fs.lstat(process.env.HEYI_WORKBENCH_TEST_OUTPUT);throw Error('Test output already exists');}
       catch (error) {if (error.code !== 'ENOENT') throw error;}
+      testOutput = process.env.HEYI_WORKBENCH_TEST_OUTPUT;
     }
+    stage = 'verify-package';
+    verified = await verifyPackage(packageRoot);
+    stage = 'profile-isolation';
     const plan = profileEnvironment(profileRoot);
     for (const directory of [profileRoot, plan.profile, plan.env.APPDATA,
       plan.env.LOCALAPPDATA, plan.env.TEMP]) await fs.mkdir(directory, {recursive: true});
     statusFile = path.join(profileRoot, 'heyi-launcher-status.json');
     stage = 'original-startup';
+    // This exact original runtime passed delayed activation on its default
+    // loopback port. Its separate --inspect-port variant has not passed.
+    // Refuse an occupied port and accept only the URL emitted by our own
+    // child. Never connect to an existing debugger or retry attachment.
+    await ensureInspectorPortFree();
     connection = await launchInspecting(verified.executable,
       [`--user-data-dir=${plan.profile}`], {
         env: plan.env, cwd: path.dirname(verified.executable), timeout: 45000,
+        inspectPortArgument: false,
         activate: async child => {
           await new Promise(resolve => setTimeout(resolve, 12000));
           if (child.exitCode !== null) throw Error('Original client exited before addon binding');
@@ -58,8 +81,8 @@ async function run(packageRoot, selfTest = false) {
           } finally {clearTimeout(timer);}
         },
       });
-    if (new URL(connection.client.socket.url).port === '9229') {
-      throw Error('Dedicated loopback inspector was not used');
+    if (new URL(connection.client.socket.url).port !== '9229') {
+      throw Error('Unexpected original runtime inspector port');
     }
     stage = 'original-readiness';
     const deadline = Date.now() + 15000;
@@ -103,7 +126,7 @@ async function run(packageRoot, selfTest = false) {
       report.originalExitCode = outcome.code;report.timedOut = outcome.timedOut;
       report.terminationRequested = outcome.terminationRequested;
       report.ok = report.ok && outcome.code === 0 && !outcome.timedOut && !outcome.terminationRequested;
-      await fs.writeFile(process.env.HEYI_WORKBENCH_TEST_OUTPUT, JSON.stringify(report, null, 2));
+      await fs.writeFile(testOutput, JSON.stringify(report, null, 2), {flag: 'wx'});
       return report.ok ? 0 : 1;
     }
     stage = 'detach-inspector';
@@ -128,9 +151,9 @@ async function run(packageRoot, selfTest = false) {
     }
     if (statusFile) await fs.writeFile(statusFile,
       JSON.stringify({ok: false, experimental: true, stage}), {mode: 0o600}).catch(() => {});
-    if (selfTest && process.env.HEYI_WORKBENCH_TEST_OUTPUT) {
-      await fs.writeFile(process.env.HEYI_WORKBENCH_TEST_OUTPUT, JSON.stringify({ok: false, stage, diagnostic,
-        candidateMessagesSent: 0, actualBossNetworkUsed: false})).catch(() => {});
+    if (selfTest && testOutput) {
+      await fs.writeFile(testOutput, JSON.stringify({ok: false, stage, diagnostic,
+        candidateMessagesSent: 0, actualBossNetworkUsed: false}), {flag: 'wx'}).catch(() => {});
     }
     if (connection?.child.exitCode === null) {
       const stopper = spawn('taskkill.exe', ['/PID', String(connection.child.pid), '/T', '/F'],
@@ -147,4 +170,4 @@ if (require.main === module) {
   run(process.argv[2], process.argv[3] === '--self-test').then(
     code => {process.exitCode = code;}, () => {process.exitCode = 1;});
 }
-module.exports = {run};
+module.exports = {run, ensureInspectorPortFree};
