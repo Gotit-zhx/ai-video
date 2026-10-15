@@ -172,7 +172,39 @@ async function run() {
     headers: {Origin: 'https://hoyee.org.cn'},
   });
   assert.equal((await response.json()).data.version, '0.1.24');
-  await bridge.close();await rpc.close();main.destroy();
+  await bridge.close();await rpc.close();
+  // Exercise the actual shared host with its packaged worker and relay too.
+  // The original app is never loaded in this smoke path; the empty adapter
+  // represents only a signed-out local fixture.
+  const network = require('./native-network.cjs').instance({offline: true});
+  const singletonShell = require('./integrated-shell.cjs').instance();
+  const hostWindow = new BrowserWindow({show: false});
+  hostWindow.name = 'main';
+  singletonShell.attachWindow(hostWindow, 'main');
+  main.destroy();
+  const fixtureFile = path.join(app.getPath('userData'), 'host-fixture.html');
+  fs.writeFileSync(fixtureFile, '<!doctype html><meta charset="utf-8"><input id="fixture">');
+  const hostAdapter = {user: () => null, loggedIn: () => false};
+  const hostOptions = {offlineURL: require('node:url').pathToFileURL(fixtureFile).href};
+  const [host, sameHost] = await Promise.all([
+    require('./host.cjs').start(hostAdapter, hostOptions),
+    require('./host.cjs').start(hostAdapter, hostOptions),
+  ]);
+  assert.equal(host, sameHost);
+  await Promise.all([singletonShell.chromeReady, singletonShell.platformReady]);
+  const healthURL = `http://127.0.0.1:${host.bridge.port}/health`;
+  assert.equal((await fetch(healthURL, {headers: {Origin: 'https://hoyee.org.cn'}})).status, 200);
+  const hostWorker = await host.engine.runtime.run({
+    operation: 'health', root: path.join(app.getPath('userData'), 'offline-host-worker'), cdp: host.rpc.url,
+  });
+  assert.equal(hostWorker.ok, true);assert.equal(hostWorker.version, '2.0.0');
+  assert.equal(hostWorker.platform, process.platform);
+  assert.equal(network.offline, true);
+  const hostRoot = require('./shared-state.cjs').storagePaths(app).assistantRoot;
+  assert.equal(hostRoot, path.join(app.getPath('userData'), 'heyi', 'offline-assistant'));
+  assert.equal(fs.existsSync(path.join(hostRoot, 'device.json')), true);
+  await Promise.all([host.close(), host.close()]);
+  await assert.rejects(fetch(healthURL, {headers: {Origin: 'https://hoyee.org.cn'}}));
   fs.writeFileSync(process.env.HEYI_WORKBENCH_TEST_OUTPUT, JSON.stringify({
     ok: true, electron: process.versions.electron, node: process.versions.node,
     profile: app.getPath('userData'), accountDataUsed: false,
@@ -185,6 +217,8 @@ async function run() {
     nativeUserAgentHeaderValid: true, rendererUserAgentHeaderValid: true,
     integratedSingleWindow: true, nativeLoginTransitionFixture: true,
     leftNavigationFixture: true, pasteTargetRoutingFixture: true,
+    hostStartup: {concurrentStartup: true, actualHostBridge: true,
+      actualPackagedWorker: true, isolatedAssistantRecords: true, closedBridge: true},
     platformConnection, egressResponse, resumeAction, nativeHttp,
   }, null, 2));
   app.exit(0);

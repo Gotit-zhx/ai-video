@@ -8,7 +8,6 @@ const net = require('node:net');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {waitForProcess} = require('./process-outcome.cjs');
 const {RuntimeLogSignals} = require('./runtime-log-signals.cjs');
-const {inspectSdkScopes} = require('./sdk-scope-inventory.cjs');
 const {runMatchingScopeFixture} = require('./matching-scope-fixture.cjs');
 const {inspectSdkRegistry} = require('./sdk-registry-inventory.cjs');
 const {inspectNativeRoles} = require('./native-role-inventory.cjs');
@@ -175,6 +174,12 @@ async function main() {
   let connection;
   const logSignals = new RuntimeLogSignals();
   try {
+    // These fresh-process checks must run even if the later discovery process
+    // exits while a protocol call is pending. No failure is relabelled.
+    const pinnedDescriptor = require('./windows-original.json').requestBuilder;
+    const cold = await verifyColdStartup(executable, root, env, logSignals, pinnedDescriptor);
+    const launcher = await verifyColdStartup(executable, root, env, logSignals, pinnedDescriptor,
+      {dedicatedInspector: true, checkAdapter: false});
     connection = await launchOriginal(executable, root, env, logSignals);
     const outcome = waitForProcess(connection.child, 60000);
     outcome.catch(() => {});
@@ -208,22 +213,18 @@ async function main() {
         entry.profileState?.appDataUnderTestRoot !== true) {
       throw Error('Original profile isolation not verified before scope inspection');
     }
-    let scopeReport;
-    try {
-      const deadline = Date.now() + 15000;
-      while (!(await evaluateRunning(connection, 'typeof globalThis.$socket?.handleEvent === "function"'))) {
-        if (Date.now() >= deadline) throw Error('Original dispatcher not registered');
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      const registration = path.join(__dirname, 'original-dispatch-registration.cjs');
-      scopeReport = await inspectSdkScopes(connection, 'globalThis.$socket?.handleEvent', {
-        triggerExpression: `process.mainModule.require(${JSON.stringify(registration)}).registerForInspection(globalThis.$socket)`,
-      });
-    } catch (error) {
-      scopeReport = {mode: 'closure-metadata-only', ok: false,
-        reason: 'original-scope-inventory-unavailable', sdkMethodsInvoked: 0,
-        diagnostic: error.inventoryDiagnostic || {stage: 'dispatcher-readiness'}};
+    const deadline = Date.now() + 15000;
+    while (!(await evaluateRunning(connection, 'typeof globalThis.$socket?.handleEvent === "function"'))) {
+      if (Date.now() >= deadline) throw Error('Original dispatcher not registered');
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
+    // The cached main has no usable closure scope metadata. A function
+    // breakpoint there also preceded the native fatal error in 38724285552.
+    // Shipping bindings use queryObjects, never bytecode function breakpoints.
+    // Keep this optional capability explicitly unverified; exercise the
+    // protocol only on the independently owned matching-runtime fixture.
+    const scopeReport = {mode: 'original-bytecode-scope-not-attempted', ok: false,
+      reason: 'unsupported-original-bytecode-debug-scope', sdkMethodsInvoked: 0};
     await fs.writeFile(path.join(root, 'sdk-scope-inventory.json'),
       JSON.stringify(scopeReport, null, 2));
     let registryReport;
@@ -356,13 +357,6 @@ async function main() {
     const scopeFixture = await runMatchingScopeFixture(executable, root, env);
     await fs.writeFile(path.join(root, 'matching-runtime-scope-fixture.json'),
       JSON.stringify(scopeFixture, null, 2));
-    // Independent fresh-process checks use the descriptor already verified
-    // against this exact pinned binary. A discovery failure stays a failure,
-    // but must not suppress diagnostics from another isolated original process.
-    const pinnedDescriptor = require('./windows-original.json').requestBuilder;
-    const cold = await verifyColdStartup(executable, root, env, logSignals, pinnedDescriptor);
-    const launcher = await verifyColdStartup(executable, root, env, logSignals, pinnedDescriptor,
-      {dedicatedInspector: true, checkAdapter: false});
     if (!report.ok) throw Error('Original runtime observation incomplete; inspect the report');
     if (shellReport?.ok !== true) throw Error('Original Windows shell integration incomplete; inspect the report');
     if (httpReport?.ok !== true || httpReport.actualElectronRequest !== true) {

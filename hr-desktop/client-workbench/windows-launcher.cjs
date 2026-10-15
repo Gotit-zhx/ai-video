@@ -14,6 +14,7 @@ async function run(packageRoot, selfTest = false) {
   let connection, statusFile, verified, stage = 'verify-package';
   try {
     verified = await verifyPackage(packageRoot);
+    stage = 'profile-isolation';
     const profileRoot = selfTest ? process.env.HEYI_WORKBENCH_TEST_DATA :
       path.join(process.env.LOCALAPPDATA || '', 'HeyiBossWorkbench');
     if (selfTest && (!process.env.HEYI_WORKBENCH_TEST_OUTPUT ||
@@ -117,7 +118,7 @@ async function run(packageRoot, selfTest = false) {
     if (code !== 0) throw Error('Original client ended unexpectedly');
     return 0;
   } catch (error) {
-    let diagnostic = error.nativeBindingDiagnostic;
+    let diagnostic = error.packageDiagnostic || error.nativeBindingDiagnostic;
     if (stage === 'install-workbench' && connection && verified) {
       try {
         const state = await evaluateRunning(connection,

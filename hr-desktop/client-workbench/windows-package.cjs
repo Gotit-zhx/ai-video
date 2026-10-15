@@ -1,4 +1,7 @@
-const fs = require('node:fs/promises');
+// Integrity checks need the archive's real bytes. Electron's ordinary fs treats
+// app.asar as a virtual directory, including in its Node-mode controller.
+const rawFS = process.versions.electron ? require('original-fs') : require('node:fs');
+const fs = rawFS.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
 const original = require('./windows-original.json');
@@ -17,12 +20,9 @@ function packageEntries(manifest) {
   return files;
 }
 async function hashFile(file) {
-  const handle = await fs.open(file, 'r');
-  try {
-    const hash = crypto.createHash('sha256');
-    for await (const chunk of handle.createReadStream({autoClose: false})) hash.update(chunk);
-    return hash.digest('hex');
-  } finally {await handle.close();}
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of rawFS.createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
 }
 async function verifiedFile(root, relative) {
   if (!relativeFile(relative)) throw Error('Invalid package filename');
@@ -33,29 +33,45 @@ async function verifiedFile(root, relative) {
   return resolved;
 }
 async function verifyPackage(input) {
+  let stage = 'root', fileKind, fileIndex;
+  try {
   const root = await fs.realpath(input);
+  stage = 'manifest';
   const manifestFile = await verifiedFile(root, 'heyi-package.json');
   if ((await fs.stat(manifestFile)).size > 3 * 1024 * 1024) throw Error('Package manifest too large');
   const manifest = JSON.parse(await fs.readFile(manifestFile, 'utf8'));
   const files = new Map(packageEntries(manifest));
+  stage = 'pinned-original';
   for (const [file, expected] of Object.entries(original.files)) {
+    fileKind = file === 'boss-zhipin.exe' ? 'original-exe' :
+      file === 'resources/app.asar' ? 'original-asar' : 'original-manifest';
     const relative = 'native-client/' + file;
     if (files.get(relative) !== expected ||
         await hashFile(await verifiedFile(root, relative)) !== expected) {
       throw Error('Pinned original Windows client differs');
     }
   }
+  stage = 'required-files';fileKind = undefined;
   for (const required of ['native-client/resources/heyi/windows-workbench.cjs',
     'native-client/resources/heyi/windows-launcher.cjs',
     'native-client/resources/heyi-runtime/heyi-boss.exe']) {
     if (!files.has(required)) throw Error('Windows workbench package incomplete');
   }
+  stage = 'all-file-hashes';fileIndex = 0;
   for (const [file, expected] of files) {
+    fileIndex++;
     if (await hashFile(await verifiedFile(root, file)) !== expected) throw Error('Windows workbench file differs');
   }
   return {root, executable: path.join(root, 'native-client', 'boss-zhipin.exe'),
     addon: path.join(root, 'native-client', 'resources', 'heyi', 'windows-workbench.cjs'),
     requestBuilder: original.requestBuilder};
+  } catch (error) {
+    const code = ['ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'EINVAL'].includes(error?.code) ? error.code :
+      error?.name === 'TypeError' ? 'type-error' : 'verification-failed';
+    throw Object.assign(Error('Windows workbench verification incomplete'), {
+      packageDiagnostic: {stage, fileKind, fileIndex, code},
+    });
+  }
 }
 function profileEnvironment(root, inherited = process.env) {
   const win = path.win32;
@@ -69,4 +85,4 @@ function profileEnvironment(root, inherited = process.env) {
   return {env, profileRoot: root, profile: win.join(root, 'profile'),
     assistantRoot: win.join(inherited.APPDATA, 'heyi-recruiter')};
 }
-module.exports = {verifyPackage, profileEnvironment, packageEntries};
+module.exports = {verifyPackage, profileEnvironment, packageEntries, hashFile};
