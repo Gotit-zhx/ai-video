@@ -16,6 +16,40 @@ import static org.mockito.Mockito.mock;
 
 class AiVideoImageGatewayTest {
     @TempDir Path directory;
+    @Test void explicitRejectionPreservesProviderReasonAndNeverAutomaticallyResubmits() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicInteger posts = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/images/generate", exchange -> {
+            exchange.getRequestBody().readAllBytes(); posts.incrementAndGet();
+            exchange.sendResponseHeaders(202, -1); exchange.close();
+        });
+        server.createContext("/v1/images/operations", exchange -> {
+            byte[] body = mapper.writeValueAsBytes(Map.of("status", "FAILED", "active", false, "updatedAt", 2,
+                    "error", Map.of("requestState", "REJECTED", "failureKind", "PROVIDER",
+                            "providerStatus", 400, "message", "The image request is invalid. Check the input and try again.")));
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.createContext("/v1/images/progress", exchange -> {exchange.sendResponseHeaders(404, -1); exchange.close();});
+        server.start();
+        try {
+            RestClient client = RestClient.create("http://127.0.0.1:" + server.getAddress().getPort());
+            var progress = new ImageRuntimeProgress(mock(AiVideoTaskItemMapper.class), client);
+            var gateway = new AiVideoImageGateway(client, new AiVideoImageAttempts(mapper), 1);
+            var failure = assertThrows(IllegalStateException.class, () ->
+                    AiVideoImageProcessor.runWithImageRecovery(
+                            () -> gateway.generate(directory.resolve("rejected.json"), "hash", 0,
+                                    Map.of(), progress, "item", "MODEL_IMAGE"),
+                            ignored -> {}, () -> {}));
+            assertTrue(failure.getMessage().contains("IMAGE_REQUEST_REJECTED:"));
+            assertTrue(failure.getMessage().contains("HTTP 400"));
+            assertTrue(failure.getMessage().contains("The image request is invalid"));
+            assertFalse(AiVideoImageProcessor.retryableImageTransientFailure(failure.getMessage()));
+            assertEquals(1, posts.get());
+        } finally { server.stop(0); }
+    }
     @Test void completedTimeoutConsumesRemainingBudgetButNeverStartsAThirdAutomaticPost() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         AtomicInteger posts = new AtomicInteger();

@@ -36,6 +36,17 @@ const generatedResponse = () => response(200, {
   usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 }
 });
 
+test("explicit input fidelity is preserved for GPT image edits and configured models", async () => {
+  for (const modelId of ["gpt-image-2", "gpt-image-2-2026-04-21", "gpt-image-1.5", "custom-image-model"]) {
+    const h = harness(() => generatedResponse());
+    await h.call({ ...modelConfig(), modelId }, {
+      mode: "edit", prompt: "Preserve the reference.", size: "1024x1024", inputFidelity: "high"
+    }, inputImages);
+    assert.equal(h.calls[0].fields.input_fidelity, "high");
+    assert.equal(h.calls.length, 1);
+  }
+});
+
 function harness(reply) {
   const calls = [];
   const context = vm.createContext({

@@ -107,6 +107,7 @@ async function readCompletionResponse(response, onTextDelta, onActivity, require
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "", data = [], eventType = "", reply = "", finishReason = null, usage = {}, done = false, bytes = 0;
   const toolCalls = [];
+  const argumentFragments = new Map();
   const consumeEvent = () => {
     const type = eventType;
     eventType = "";
@@ -139,9 +140,18 @@ async function readCompletionResponse(response, onTextDelta, onActivity, require
         throw new ChatCompletionError("模型工具调用索引无效", "CHAT_INVALID_RESPONSE", false);
       }
       const target = toolCalls[call.index] ||= { id: "", type: "function", function: { name: "", arguments: "" } };
-      if (call.id) target.id += call.id;
-      if (call.function?.name) target.function.name += call.function.name;
-      if (call.function?.arguments) target.function.arguments += call.function.arguments;
+      if (call.id && call.id !== target.id) target.id += call.id;
+      if (call.function?.name && call.function.name !== target.function.name) target.function.name += call.function.name;
+      if (call.function?.arguments != null && call.function.arguments !== "") {
+        const argument = call.function.arguments;
+        if (typeof argument !== "string"
+            && (typeof argument !== "object" || Array.isArray(argument))) {
+          throw new ChatCompletionError("模型工具参数类型无效", "CHAT_INVALID_TOOL_CALL", false);
+        }
+        const fragments = argumentFragments.get(call.index) || [];
+        fragments.push(typeof argument === "string" ? argument : JSON.stringify(argument));
+        argumentFragments.set(call.index, fragments);
+      }
     }
     if (choice.finish_reason) finishReason = choice.finish_reason;
   };
@@ -187,6 +197,21 @@ async function readCompletionResponse(response, onTextDelta, onActivity, require
     const error = new ChatCompletionError("模型流式响应缺少结束标记 [DONE]", "CHAT_INCOMPLETE_RESPONSE", true);
     error.streamSummary = { finishReason, replyCharacters: reply.length, toolCallCount: toolCalls.length };
     throw error;
+  }
+  for (const [index, fragments] of argumentFragments) {
+    const joined = fragments.join("");
+    const objectJson = value => {
+      try {
+        const parsed = JSON.parse(value);
+        return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+      } catch { return false; }
+    };
+    // Prefer standard deltas. Some gateways repeat cumulative snapshots; accept
+    // only a complete, monotonic snapshot, never repair or invent tool arguments.
+    const last = fragments.at(-1);
+    const snapshot = fragments.every((value, i) => i === 0 || value.startsWith(fragments[i - 1]));
+    toolCalls[index].function.arguments = objectJson(joined) ? joined
+      : snapshot && objectJson(last) ? last : joined;
   }
   return { choices: [{ finish_reason: finishReason, message: { content: reply, tool_calls: toolCalls } }], usage };
 }

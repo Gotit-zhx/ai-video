@@ -291,7 +291,7 @@ const PRODUCT_FUNCTION_ANALYSIS_PROMPT = `你是电商视频生产中的商品�
 8. 每个数组最多 8 项，每项使用简短、可直接注入生成提示词的中文句子。`;
 
 const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `仅按商品原图识别服装结构，供生图和视频保持同款。只返回紧凑合法 JSON，不要 Markdown、推理过程、品牌文字或重复解释。
-必须包含以下字段（字符串用短语，数组只列独立事实，不适用写 N/A，看不清写不确定或 null）：
+必须包含以下全部字段。字符串用短语；openingInventory、seamConnections、wearingMethod、fixedStructures、forbiddenChanges、visualEvidence 必须是非空字符串数组。不适用写 ["N/A"]，看不清写 ["原图无法确认"] 并列入 uncertainties，不能省略字段、用 null 或空数组代替：
 {"imageLeftShoulderState":"","imageRightShoulderState":"","imageLeftSleeve":"","imageRightSleeve":"","visibleSleeveCount":null,"openingInventory":[],"seamConnections":[],"necklinePath":"","visualEvidence":[],"wearerLeftShoulderState":"","wearerRightShoulderState":"","wearerLeftSleeve":"","wearerRightSleeve":"","supportElements":[],"viewpointProjectionRule":"","wearingMethod":[],"fixedStructures":[],"forbiddenChanges":[],"uncertainties":[],"garmentType":"","topologyClass":"UNKNOWN","asymmetrical":null,"structureSymmetry":"UNKNOWN","wearingSidePolicy":"UNKNOWN","confidence":0.0}
 规则：
 1. 原图像素优先，先观察再分类；脚本和旧衣服不能覆盖商品证据。区分画面左右与穿着者身体左右，映射不确定须明说。
@@ -300,7 +300,7 @@ const GARMENT_TOPOLOGY_ANALYSIS_PROMPT = `仅按商品原图识别服装结构�
 4. structureSymmetry 仅选 SYMMETRIC_FIXED、INTRINSIC_ASYMMETRIC、SYMMETRIC_WIDE_NECK、NOT_APPLICABLE、UNKNOWN；wearingSidePolicy 仅选 FIXED_WEARER_SIDE、EITHER_SIDE_CHOOSE_ONCE、NOT_APPLICABLE、UNKNOWN。证据不足不猜。
 5. 身体侧固定，转身后屏幕左右投影可反转，但不能换身体侧。fixedStructures 和 forbiddenChanges 记录必须保留的连接/袖数/开口/左右关系，禁止对称化、补袖删袖、领口常规化及逐格换侧。
 6. 隐藏结构不猜，列入 uncertainties；袖数或身体侧映射不确定时 confidence≤0.75，仍保留清楚可见的结构。
-节省输出：普通字符串尽量≤24字，领口/穿法/投影≤50字；数组通常1–3项、每项≤30字，独立结构较多时可适当增加但不遗漏。相同事实不在各数组重复展开。`;
+节省输出：普通字符串尽量≤24字，领口/穿法/投影≤50字；数组通常1–3项、每项≤30字，独立结构较多时可适当增加但不遗漏。各数组保留各自必要事实，不能因其他字段已描述就省略。`;
 
 const MANUAL_SCRIPT_ANALYSIS_PROMPT = `你是电商短视频的中文分镜策划器。输入可能是一名业务人员写的一整段自然语言需求，也可能包含按顺序排列的多张真实参考图片。你要理解真实营销意图，将其整理成可直接制作的固定 9 个分镜。
 只返回一个合法 JSON 对象，不得使用 Markdown，不得输出 JSON 之外的文字：

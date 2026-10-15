@@ -131,7 +131,8 @@ def main():
     if target_bucket == "hoyee":
         raise ValueError("source and destination must differ")
     bucket = oss2.Bucket(oss2.Auth(credentials["accessKeyId"], credentials["accessKeySecret"]),
-                         "https://oss.cloud.dayan.design", target_bucket, connect_timeout=10)
+                         "https://oss.cloud.dayan.cloud", target_bucket, connect_timeout=10,
+                         is_path_style=True)
     bucket.session.session.trust_env = False
     task_root = next(m["Source"] for m in info["Mounts"] if m["Destination"] == "/data/ai-video-tasks")
     rows = json.loads((root / "verified-local-recovery.json").read_text())

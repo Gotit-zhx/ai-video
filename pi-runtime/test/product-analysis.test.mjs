@@ -55,7 +55,9 @@ test('topology is bounded to 180 seconds and retains its structure output budget
   assert.equal(h.calls[0].payload.max_tokens, 1800);
   assert.equal(h.calls[0].payload.reasoning_effort, undefined);
   const prompt = h.calls[0].payload.messages[0].content;
-  assert.ok(prompt.length < 1500);
+  assert.ok(prompt.length < 1700);
+  assert.ok(prompt.includes("必须是非空字符串数组"));
+  assert.ok(prompt.includes("不能省略字段、用 null 或空数组代替"));
   for (const key of ['visibleSleeveCount', 'seamConnections', 'supportElements', 'necklinePath',
     'wearingSidePolicy', 'viewpointProjectionRule', 'fixedStructures', 'forbiddenChanges', 'confidence']) {
     assert.ok(prompt.includes('"' + key + '"'), key);

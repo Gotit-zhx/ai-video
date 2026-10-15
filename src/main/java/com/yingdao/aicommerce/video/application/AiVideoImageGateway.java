@@ -70,6 +70,11 @@ final class AiVideoImageGateway {
                         attempts.rejected(ledger, id);
                         if ("CONCURRENCY".equals(kind) || "NOT_SENT".equals(state))
                             throw new IllegalStateException("图片服务暂不可用，网络超时或并发限制；将在剩余次数内恢复");
+                        throw new IllegalStateException("IMAGE_REQUEST_REJECTED: 图片接口拒绝请求（HTTP "
+                                + String.valueOf(error.getOrDefault("providerStatus", "未知"))
+                                + "）："
+                                + String.valueOf(error.getOrDefault("message", "接口未提供具体原因"))
+                                + "；已停止自动重试，请检查图片模型参数后手动重试");
                     }
                     throw new IllegalStateException("IMAGE_RESULT_UNKNOWN: "
                             + ("RESPONSE_TIMEOUT".equals(state) ? "图片通道等待响应超时，未收到最终图片；" : "")

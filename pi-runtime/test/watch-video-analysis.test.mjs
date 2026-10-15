@@ -383,6 +383,29 @@ test('only conflicting overlapping frames trigger one bounded image review befor
   assert.ok(answer.reviewedEvidenceConflicts>0);assert.equal(reviews,1);assert.equal(mock.calls.length,10);
 });
 
+test("watch accepts complete object arguments but never repairs incomplete JSON or replays a paid turn", async t => {
+  for (const [args, valid] of [[{ path: "/fixture.jpg" }, true], ['{"path":"', false]]) {
+    const mock = await provider(t, (_payload, response) => {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{
+        index: 0, id: "read-1", type: "function", function: { name: "read", arguments: args }
+      }] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    });
+    let failure;
+    const models = createWatchModelTransport({ config: mock.config, apiKey: mock.config.apiKey,
+      deadline: Date.now() + 3000, onFailure: error => { failure = error; } });
+    const answer = await models.streamSimple({ id: "configured-driver", api: "openai-completions", provider: "test" },
+      { messages: [], tools: [{ name: "read", parameters: { type: "object" } }] }).result();
+    assert.equal(answer.stopReason, valid ? "toolUse" : "error");
+    if (valid) assert.deepEqual(answer.content.at(-1).arguments, { path: "/fixture.jpg" });
+    else {
+      assert.equal(failure.failureCode, "CHAT_INVALID_TOOL_CALL");
+      assert.equal(failure.retryable, false);
+    }
+    assert.equal(mock.calls.length, 1);
+  }
+});
+
 test('watch retries only an empty interrupted turn once, without replaying visible text',async t=>{
   for(const partial of [false,true]) {
     let calls=0;

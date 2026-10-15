@@ -4,6 +4,53 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { chatCompletionEndpoint, requestChatCompletion } from "../src/chat-completion-transport.js";
 
+test("tool arguments preserve deltas and accept complete monotonic gateway snapshots", async t => {
+  for (const fragments of [
+    ['{"path":"', '/fixture.jpg', '"}'],
+    ['{"path":"', '{"path":"/fixture.jpg', '{"path":"/fixture.jpg"}'],
+    ['{"path":"/fixture.jpg"}', '{"path":"/fixture.jpg"}'],
+    [{ path: "/fixture.jpg" }]
+  ]) {
+    const mock = await upstream(t, response => {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      fragments.forEach(argumentsValue => response.write(`data: ${JSON.stringify({ choices: [{
+        delta: { tool_calls: [{ index: 0, id: "read-1", type: "function",
+          function: { name: "read", arguments: argumentsValue } }] }
+      }] })}\n\n`));
+      response.end('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n' + "data: [DONE]\n\n");
+    });
+    const result = await mock.request({ allowToolCalls: true, tools: [{
+      type: "function", function: { name: "read", parameters: { type: "object" } }
+    }] });
+    assert.equal(result.toolCalls[0].id, "read-1");
+    assert.equal(result.toolCalls[0].function.name, "read");
+    assert.deepEqual(JSON.parse(result.toolCalls[0].function.arguments), { path: "/fixture.jpg" });
+    assert.equal(mock.calls.length, 1);
+  }
+});
+
+test("tool snapshots never repair truncated, conflicting, or repeated text fragments", async t => {
+  for (const [fragments, expected] of [
+    [['{"path":"', "a", "a", '"}'], '{"path":"aa"}'],
+    [['{"path":"/one"}', '{"path":"/two"}'], '{"path":"/one"}{"path":"/two"}'],
+    [['{"path":"', '{"path":"/unfinished'], '{"path":"{"path":"/unfinished']
+  ]) {
+    const mock = await upstream(t, response => {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      fragments.forEach((argumentsValue, i) => response.write(`data: ${JSON.stringify({ choices: [{
+        delta: { tool_calls: [{ index: 0, ...(i ? {} : { id: "read-1", type: "function" }),
+          function: { ...(i ? {} : { name: "read" }), arguments: argumentsValue } }] }
+      }] })}\n\n`));
+      response.end('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n' + "data: [DONE]\n\n");
+    });
+    const result = await mock.request({ allowToolCalls: true, tools: [{
+      type: "function", function: { name: "read", parameters: { type: "object" } }
+    }] });
+    assert.equal(result.toolCalls[0].function.arguments, expected);
+    assert.equal(mock.calls.length, 1);
+  }
+});
+
 test("tool-capable SSE rejects sparse indexes and duplicate tool call IDs before execution", async t => {
   const call = (index, id) => ({ index, id, type: "function", function: { name: "read", arguments: '{"path":"/fixture.jpg"}' } });
   for (const toolCalls of [[call(1, "read-1")], [call(0, "same-id"), call(1, "same-id")]]) {

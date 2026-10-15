@@ -11161,6 +11161,15 @@ function friendlyAiVideoError(message = "", type = "image") {
   const imageStageFailure = /图片生成失败|图片模型|image generation|image model/i.test(value);
   const video = type === "video" && !imageStageFailure;
 
+  if (/STRUCTURE_ANALYSIS_PAUSED|服装结构识别.*缺少必填字段/.test(value)) {
+    return "服装结构识别未通过，尚未提交图片生成";
+  }
+  if (/IMAGE_REQUEST_REJECTED|image request is invalid/i.test(value)) {
+    return "图片接口拒绝请求，请检查模型参数";
+  }
+  if (/IMAGE_RESULT_UNKNOWN/.test(value)) {
+    return "图片结果待核对，已停止自动重复生成";
+  }
   if (isAiVideoCopyrightError(value)) {
     return "版权限制：素材含受版权、商标或角色授权保护的内容";
   }
@@ -11198,6 +11207,9 @@ function aiVideoFailureDetail(message = "") {
   const value = String(message || "").trim()
     .replace(/^(?:大衍|高速线路(?:·多模态)?|视频厂商|DAYAN|FAST|H3_MULTI)\s*[：:]\s*/i, "");
   if (!value) return "未收到厂商返回的具体失败原因";
+  if (/STRUCTURE_ANALYSIS_PAUSED|IMAGE_REQUEST_REJECTED|IMAGE_RESULT_UNKNOWN/.test(value)) {
+    return value;
+  }
   if (isAiVideoCopyrightError(value)) {
     return "请更换或移除受版权、商标或角色授权保护的图案后重新生成";
   }
@@ -11979,7 +11991,7 @@ function renderAiVideoTaskDetail(options = {}) {
     const storyboardTiles = storyboard
       ? `<img class="storyboard-grid-image" src="${storyboardUrl}" data-full-src="${storyboardFullUrl}" alt="完整 4K 九宫格分镜图" loading="lazy">`
       : aiVideoImagePlaceholder(storyboardStatusText, imagePresentation.hint);
-    const error = item.errorMessage && !(model && storyboard) ? `<p class="garment-error">${escapeHtml(friendlyAiVideoError(item.errorMessage, "image"))}</p>` : "";
+    const error = item.errorMessage && !(model && storyboard) ? `<div class="garment-error"><strong>${escapeHtml(friendlyAiVideoError(item.errorMessage, "image"))}</strong><p>${escapeHtml(aiVideoFailureDetail(item.errorMessage))}</p></div>` : "";
     const flipped = flippedAiVideoPromptItems.has(item.id);
     const editingPrompt = aiVideoPromptDrafts.has(item.id);
     const promptValue = editingPrompt ? aiVideoPromptDrafts.get(item.id) : item.videoPromptText || "";

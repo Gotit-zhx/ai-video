@@ -3670,8 +3670,13 @@ dialog.automation-form-dialog > form {
   border-left: 3px solid #e66e72;
   color: #a04449;
   background: #fff2f2;
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.garment-error p {
+  margin: 4px 0 0;
 }
 
 #ai-video-tasks-page .garment-state.failed {

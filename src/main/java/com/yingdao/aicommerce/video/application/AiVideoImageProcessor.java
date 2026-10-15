@@ -295,6 +295,7 @@ public class AiVideoImageProcessor {
     static boolean retryableImageTransientFailure(String message) {
         if (message != null && (message.contains("IMAGE_GENERATION_LIMIT:")
                 || message.contains("IMAGE_RESULT_UNKNOWN:")
+                || message.contains("IMAGE_REQUEST_REJECTED:")
                 || message.contains("IMAGE_RECOVERY_PAUSED:"))) return false;
         if (message != null && (message.startsWith("VIDEO_REVIEW_PAUSED:") || message.startsWith("VIDEO_GRID_REJECTED:"))) return false;
         if (message == null || message.isBlank()) return false;
