@@ -5,6 +5,25 @@ const {decodeNativeProtocol} = require('./native-protocol.cjs');
 const endpoint = '/wapi/zpjob/job/data/list';
 const content = 'Own offline SDK contract; no network';
 
+function classifyFailure(error) {
+  // Keep fixed categories and source offsets only, never original error text,
+  // stack paths, arguments, packets or account values.
+  const kind = ['TypeError', 'SyntaxError', 'RangeError', 'Error'].includes(error?.name) ?
+    error.name : 'other';
+  const message = typeof error?.message === 'string' ? error.message : '';
+  const missing = message.match(/^Cannot read propert(?:ies|y) (?:of (?:undefined|null) \(reading ['"]([^'"]+)['"]\)|['"]([^'"]+)['"] of (?:undefined|null))/);
+  const property = missing?.[1] || missing?.[2];
+  const known = ['userId', 'userInfo', 'uid', 'name', 'tinyAvatar', 'options', 'content'];
+  const source = typeof error?.stack === 'string' ?
+    error.stack.match(/(?:^|[\\/])main\.jsc:(\d{1,8}):(\d{1,8})(?:\)|\s|$)/m) : null;
+  return {kind,
+    category: property && known.includes(property) ? 'missing-' + property :
+      /(?:Unexpected token|not valid JSON|Unexpected end of JSON)/.test(message) ? 'invalid-json-input' :
+      'unclassified',
+    ...(source ? {originalMainLocation: {line: Number(source[1]), column: Number(source[2])}} : {}),
+  };
+}
+
 async function install(bindings, config = {}) {
   if (config.anonymousIsolated !== true) throw Error('Anonymous isolated adapter check required');
   let adapter, timer, stage = 'anonymous-login', sdkCalls = 0, loginReads = 0;
@@ -68,7 +87,10 @@ async function install(bindings, config = {}) {
     const completion = Promise.resolve().then(() => Reflect.apply(
       sdk._sdk_chatSocket_sendTextMessage, sdk, [{content, options: {uid: '202',
         encryptUid: 'offline-not-an-account', clientMid: '303'}}])).then(
-      () => 'settled', () => 'rejected').finally(() => {
+      () => 'settled', error => {
+        report.textSDKFailure = classifyFailure(error);
+        return 'rejected';
+      }).finally(() => {
       operationSettled = true;restore();
     });
     const outcome = await Promise.race([completion, new Promise(resolve => {
@@ -92,4 +114,4 @@ async function install(bindings, config = {}) {
   }
   return report;
 }
-module.exports = {install};
+module.exports = {install, classifyFailure};

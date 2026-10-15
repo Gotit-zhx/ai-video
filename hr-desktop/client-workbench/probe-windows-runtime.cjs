@@ -16,18 +16,22 @@ const {inspectAnonymousAuthentication} = require('./native-auth-behavior.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
 const {discoverNativeRequestBuilder} = require('./native-request-discovery.cjs');
 
-async function launchOriginal(executable, root, env, logSignals, pidFile = 'probe-pid.txt') {
+async function launchOriginal(executable, root, env, logSignals, pidFile = 'probe-pid.txt',
+  dedicatedInspector = false) {
   // Never attach to a pre-existing debugger. The cached original main starts
-  // without an inspector CLI flag; activate only after the original startup.
-  const portCheck = net.createServer();
-  await new Promise((resolve, reject) => {
-    portCheck.once('error', () => reject(Error('Default local inspector port is already occupied')));
-    portCheck.listen(9229, '127.0.0.1', resolve);
-  });
-  await new Promise(resolve => portCheck.close(resolve));
+  // without an active inspector; activate only after the original startup.
+  // The dedicated-port variant only sets its future loopback bind address.
+  if (!dedicatedInspector) {
+    const portCheck = net.createServer();
+    await new Promise((resolve, reject) => {
+      portCheck.once('error', () => reject(Error('Default local inspector port is already occupied')));
+      portCheck.listen(9229, '127.0.0.1', resolve);
+    });
+    await new Promise(resolve => portCheck.close(resolve));
+  }
   return launchInspecting(executable, ['--disable-gpu',
     `--user-data-dir=${path.join(root, 'profile')}`], {
-    env, cwd: path.dirname(executable), timeout: 45000, inspectPortArgument: false,
+    env, cwd: path.dirname(executable), timeout: 45000, inspectPortArgument: dedicatedInspector,
     onSpawn: child => {
       fs.writeFile(path.join(root, pidFile), String(child.pid)).catch(() => {});
       child.stdout.on('data', chunk => logSignals.observe('stdout', chunk));
@@ -50,9 +54,12 @@ async function launchOriginal(executable, root, env, logSignals, pidFile = 'prob
   });
 }
 
-async function verifyColdStartup(executable, root, env, logSignals, builderDescriptor) {
-  const cold = path.join(root, 'cold-start'), contract = path.join(__dirname, 'native-startup-contract.cjs');
-  let connection, stage = 'new-profile';
+async function verifyColdStartup(executable, root, env, logSignals, builderDescriptor,
+  {dedicatedInspector = false, checkAdapter = true} = {}) {
+  const cold = path.join(root, dedicatedInspector ? 'dedicated-start' : 'cold-start');
+  const reportName = dedicatedInspector ? 'native-launcher-startup.json' : 'native-cold-startup.json';
+  const contract = path.join(__dirname, 'native-startup-contract.cjs');
+  let connection, reservedPort, defaultPortConnections = 0, stage = 'new-profile';
   let report = {mode: 'fresh-process-native-binding', ok: false};
   try {
     await fs.mkdir(cold);
@@ -62,8 +69,20 @@ async function verifyColdStartup(executable, root, env, logSignals, builderDescr
     for (const key of ['APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP']) {
       await fs.mkdir(coldEnv[key], {recursive: true});
     }
+    if (dedicatedInspector) {
+      stage = 'reserve-default-inspector-port';
+      reservedPort = net.createServer(socket => {defaultPortConnections++;socket.destroy();});
+      await new Promise((resolve, reject) => {
+        reservedPort.once('error', reject);
+        reservedPort.listen(9229, '127.0.0.1', resolve);
+      });
+      report.defaultPortReservedByTest = true;
+    }
     stage = 'launch';
-    connection = await launchOriginal(executable, cold, coldEnv, logSignals);
+    connection = await launchOriginal(executable, cold, coldEnv, logSignals, 'probe-pid.txt', dedicatedInspector);
+    report.dedicatedInspectorRequested = dedicatedInspector;
+    report.actualDedicatedInspector = new URL(connection.client.socket.url).port !== '9229';
+    if (dedicatedInspector && !report.actualDedicatedInspector) throw Error('Dedicated inspector port not used');
     const outcome = waitForProcess(connection.child, 60000);outcome.catch(() => {});
     stage = 'readiness-and-profile';
     const deadline = Date.now() + 15000;
@@ -89,12 +108,14 @@ async function verifyColdStartup(executable, root, env, logSignals, builderDescr
     });
     report = {...report, ...binding, freshProcess: true, freshProfile: true,
       sdkDiscoveryUsed: false, bindingCheckCompletedBeforeShutdown: true};
-    stage = 'windows-adapter-contract';
-    report.adapter = await bindNativeModule(connection, {
-      modulePath: path.join(__dirname, 'windows-adapter-contract.cjs'), pinnedOriginalVerified: true,
-      builderDescriptor, config: {anonymousIsolated: true},
-    });
-    report.ok = report.ok === true && report.adapter.ok === true;
+    if (checkAdapter) {
+      stage = 'windows-adapter-contract';
+      report.adapter = await bindNativeModule(connection, {
+        modulePath: path.join(__dirname, 'windows-adapter-contract.cjs'), pinnedOriginalVerified: true,
+        builderDescriptor, config: {anonymousIsolated: true},
+      });
+      report.ok = report.ok === true && report.adapter.ok === true;
+    }
     stage = 'original-shutdown';
     const output = path.join(cold, 'runtime-observation.json');
     const observer = path.join(__dirname, 'windows-runtime-observer.cjs');
@@ -114,6 +135,10 @@ async function verifyColdStartup(executable, root, env, logSignals, builderDescr
     report.ok = report.ok === true && observed.ok === true && processOutcome.code === 0 &&
       !processOutcome.timedOut && !processOutcome.terminationRequested &&
       observed.shutdown?.sdkShutdownRequests === 1 && observed.shutdown?.dispatchFailed !== true;
+    if (dedicatedInspector) {
+      report.defaultPortConnections = defaultPortConnections;
+      report.ok = report.ok && reservedPort.listening && defaultPortConnections === 0;
+    }
   } catch (error) {
     report.ok = false;report.diagnostic = error.nativeBindingDiagnostic || {stage};
   } finally {
@@ -123,7 +148,8 @@ async function verifyColdStartup(executable, root, env, logSignals, builderDescr
     }
     connection?.client.close();
     if (connection?.child.exitCode === null) connection.child.kill();
-    await fs.writeFile(path.join(root, 'native-cold-startup.json'), JSON.stringify(report, null, 2));
+    if (reservedPort?.listening) await new Promise(resolve => reservedPort.close(resolve));
+    await fs.writeFile(path.join(root, reportName), JSON.stringify(report, null, 2));
   }
   return report;
 }
@@ -348,6 +374,9 @@ async function main() {
       throw Error('Original Windows request builder capture incomplete; inspect the report');
     }
     const cold = await verifyColdStartup(executable, root, env, logSignals, requestBuilder.builderDescriptor);
+    const launcher = await verifyColdStartup(executable, root, env, logSignals, requestBuilder.builderDescriptor,
+      {dedicatedInspector: true, checkAdapter: false});
+    if (launcher.ok !== true) throw Error('Original Windows dedicated startup incomplete; inspect the report');
     if (cold.ok !== true) throw Error('Original Windows fresh-process binding incomplete; inspect the report');
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,
       sdkNames: report.observedSdk.length, nativeModules: report.nativeModules.length,

@@ -163,7 +163,7 @@ try {
         'sdk-scope-inventory.json', 'sdk-registry-inventory.json',
         'native-role-inventory.json', 'native-auth-behavior.json', 'native-http-smoke.json',
         'native-message-contract.json', 'native-receive-contract.json', 'native-request-contract.json',
-        'native-request-builder.json', 'native-cold-startup.json',
+        'native-request-builder.json', 'native-cold-startup.json', 'native-launcher-startup.json',
         'windows-shell-smoke.json',
         'matching-runtime-scope-fixture.json')) {
         $report = Join-Path $root $name
