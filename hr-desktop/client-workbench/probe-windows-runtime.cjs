@@ -9,6 +9,7 @@ const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {waitForProcess} = require('./process-outcome.cjs');
 const {RuntimeLogSignals} = require('./runtime-log-signals.cjs');
 const {inspectSdkScopes} = require('./sdk-scope-inventory.cjs');
+const {runMatchingScopeFixture} = require('./matching-scope-fixture.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -131,6 +132,9 @@ async function main() {
       report.shutdown?.method === 'original-sdk:_sdk_exit' &&
       report.shutdown?.sdkShutdownRequests === 1 && report.shutdown?.dispatchFailed !== true;
     await fs.writeFile(output, JSON.stringify(report, null, 2));
+    const scopeFixture = await runMatchingScopeFixture(executable, root, env);
+    await fs.writeFile(path.join(root, 'matching-runtime-scope-fixture.json'),
+      JSON.stringify(scopeFixture, null, 2));
     if (!report.ok) throw Error('Original runtime observation incomplete; inspect the report');
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,
       sdkNames: report.observedSdk.length, nativeModules: report.nativeModules.length,

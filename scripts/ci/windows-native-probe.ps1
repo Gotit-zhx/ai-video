@@ -160,7 +160,7 @@ try {
     # Never print vendor stdout, installer/resources, code, or profile files.
     foreach ($name in @('ci-result.json', 'firewall.json', 'baseline.json', 'entry-runtime.json',
         'runtime-observation.json', 'runtime-log-signals.json', 'native-crash-events.json',
-        'sdk-scope-inventory.json')) {
+        'sdk-scope-inventory.json', 'matching-runtime-scope-fixture.json')) {
         $report = Join-Path $root $name
         if (Test-Path $report) {
             $data = Get-Content -Raw $report | ConvertFrom-Json
