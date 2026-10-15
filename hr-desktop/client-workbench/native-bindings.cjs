@@ -14,9 +14,17 @@ const SHAPES = {
   messageFactory: {getProtoMsg: 'function', generateMsgProto: 'function'},
 };
 
-async function bindNativeModule(connection, {modulePath, config = {}, pinnedOriginalVerified} = {}) {
+async function bindNativeModule(connection, {modulePath, config = {}, pinnedOriginalVerified,
+  builderDescriptor} = {}) {
   if (pinnedOriginalVerified !== true || !path.isAbsolute(modulePath || '') || !modulePath.endsWith('.cjs')) {
     throw Error('Verified original and an absolute addon module are required');
+  }
+  if (builderDescriptor !== undefined && (!builderDescriptor ||
+      !/^[A-Za-z_$][A-Za-z0-9_$]{0,99}$/.test(builderDescriptor.name || '') ||
+      !Number.isInteger(builderDescriptor.lineNumber) || builderDescriptor.lineNumber < 0 ||
+      builderDescriptor.lineNumber > 1000000 || !Number.isInteger(builderDescriptor.columnNumber) ||
+      builderDescriptor.columnNumber < 0 || builderDescriptor.columnNumber > 20000000)) {
+    throw Error('Verified request builder descriptor required');
   }
   const group = 'heyi-native-bindings-' + randomUUID();
   const command = (method, params) => connection.client.command(method, params);
@@ -88,6 +96,43 @@ async function bindNativeModule(connection, {modulePath, config = {}, pinnedOrig
         }`,
       }));
       await store(role, singleton);
+    }
+    if (builderDescriptor) {
+      stage = 'original-request-builder';
+      const factoryMethod = reference(await command('Runtime.callFunctionOn', {
+        objectId: bindings, objectGroup: group, returnByValue: false,
+        functionDeclaration: 'function(){return this.messageFactoryPrototype.getProtoMsg}',
+      }));
+      const locationOf = async objectId => {
+        const metadata = await command('Runtime.getProperties', {objectId, ownProperties: true});
+        return metadata.internalProperties?.find(property =>
+          property.name === '[[FunctionLocation]]')?.value?.value;
+      };
+      const originalLocation = await locationOf(factoryMethod);
+      if (!originalLocation?.scriptId) throw Error();
+      const candidates = reference(await command('Runtime.callFunctionOn', {
+        objectId: queried.objects.objectId, objectGroup: group, returnByValue: false,
+        arguments: [{value: builderDescriptor.name}],
+        functionDeclaration: `function(name){
+          const types=process.mainModule.require('node:util').types;
+          const found=this.filter(fn=>typeof fn==='function'&&!types.isProxy(fn)&&
+            types.isAsyncFunction(fn)&&Object.getOwnPropertyDescriptor(fn,'name')?.value===name&&
+            Object.getOwnPropertyDescriptor(fn,'length')?.value===1);
+          if(found.length<1||found.length>32)throw Error();
+          return found;
+        }`,
+      }));
+      const entries = await command('Runtime.getProperties', {objectId: candidates, ownProperties: true});
+      const matches = [];
+      for (const entry of entries.result || []) {
+        if (!/^\d+$/.test(entry.name) || !entry.value?.objectId) continue;
+        const location = await locationOf(entry.value.objectId);
+        if (location?.scriptId === originalLocation.scriptId &&
+            location.lineNumber === builderDescriptor.lineNumber &&
+            location.columnNumber === builderDescriptor.columnNumber) matches.push(entry.value.objectId);
+      }
+      if (matches.length !== 1) throw Error();
+      await store('requestBuilder', matches[0]);
     }
     stage = 'sdk-registry';
     const plainPrototype = reference(await command('Runtime.evaluate', {

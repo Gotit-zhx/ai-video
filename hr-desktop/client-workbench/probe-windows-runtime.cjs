@@ -194,7 +194,7 @@ async function main() {
     let requestBuilder;
     try {
       requestBuilder = await discoverNativeRequestBuilder(connection, {
-        anonymousIsolated: true, pinnedOriginalVerified: true,
+        anonymousIsolated: true, pinnedOriginalVerified: true, verifyBroker: true,
       });
     } catch (error) {
       requestBuilder = {mode: 'offline-original-request-builder-contract', ok: false,

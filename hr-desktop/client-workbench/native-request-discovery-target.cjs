@@ -35,7 +35,7 @@ async function install(bindings, config = {}) {
     return {ok: false, reason: 'anonymous-login-required'};
   }
   const state = {bindings, cleanup: [], closed: false, intercepts: 0,
-    sdkCalls: 0, builderCalls: 0, phase: 'prepared'};
+    sdkCalls: 0, builderCalls: 0, phase: 'prepared', verifyBroker: config.verifyBroker === true};
   active = state;
   try {
     if (!Array.isArray(bindings.httpClients) || !bindings.httpClients.length ||
@@ -93,7 +93,15 @@ async function verify() {
     originalHTTPCalls: 0, interceptedRequests: state.intercepts,
     nativeHeadersPrepared: state.builderBoundaryValid === true,
     candidateMessagesSent: 0, rawHeadersExported: false, originalFunctionExported: false};
+  const builder = state.builder, bindings = state.bindings;
   close();
+  if (state.verifyBroker && report.ok) {
+    report.broker = await require('./native-request-broker-smoke.cjs').run({
+      builder, clients: bindings.httpClients, authentication: bindings.authentication,
+      anonymousIsolated: true,
+    });
+    report.ok = report.broker.ok === true;
+  }
   return report;
 }
 function close() {

@@ -19,7 +19,8 @@ async function discoverNativeRequestBuilder(connection, options = {}) {
   };
   try {
     const prepared = await bindNativeModule(connection, {modulePath: file,
-      config: {anonymousIsolated: true}, pinnedOriginalVerified: true});
+      config: {anonymousIsolated: true, verifyBroker: options.verifyBroker === true},
+      pinnedOriginalVerified: true});
     if (prepared?.ok !== true) throw Error();
     stage = 'boundary-reference';
     const boundary = reference(await command('Runtime.evaluate', {
@@ -73,7 +74,12 @@ async function discoverNativeRequestBuilder(connection, options = {}) {
       const frame = frames.find(frame => frame.functionLocation &&
         ['scriptId', 'lineNumber', 'columnNumber'].every(key =>
           frame.functionLocation[key] === location[key]));
-      if (frame) matches.push({objectId: item.value.objectId, index: frames.indexOf(frame)});
+      if (frame) {
+        const name = metadata.result?.find(property => property.name === 'name')?.value?.value;
+        if (!/^[A-Za-z_$][A-Za-z0-9_$]{0,99}$/.test(name || '')) throw Error();
+        matches.push({objectId: item.value.objectId, index: frames.indexOf(frame),
+          descriptor: {name, lineNumber: location.lineNumber, columnNumber: location.columnNumber}});
+      }
     }
     // The nearest actual async one-argument caller is the request builder.
     // Ties are ambiguous. No minified identifier is hardcoded.
@@ -96,7 +102,7 @@ async function discoverNativeRequestBuilder(connection, options = {}) {
       expression: load + '.verify()', returnByValue: true, awaitPromise: true,
     });
     if (checked.exceptionDetails || !checked.result?.value) throw Error();
-    return {...checked.result.value, callerMetadata: callFrames};
+    return {...checked.result.value, builderDescriptor: matches[0].descriptor, callerMetadata: callFrames};
   } catch {
     failed = true;
     throw Object.assign(Error('Original request builder discovery did not complete; no automatic replay'), {

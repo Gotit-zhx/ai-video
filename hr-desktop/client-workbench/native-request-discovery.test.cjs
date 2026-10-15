@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {discoverNativeRequestBuilder} = require('./native-request-discovery.cjs');
+const {bindNativeModule} = require('./native-bindings.cjs');
 
 async function fixture(t, {ambiguous = false, failVerification = false} = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-request-discovery-'));
@@ -16,7 +17,8 @@ async function fixture(t, {ambiguous = false, failVerification = false} = {}) {
     globalThis.fixtureHTTPCalls=0;globalThis.fixtureSDKCalls=0;globalThis.fixtureBuilderCalls=0;
     class Identity{get userInfo(){throw Error('private identity')}
       get userId(){throw Error('private identity')}get avatar(){throw Error('private identity')}}
-    class Authentication{get(){}getAuthCookieHeader(){}setLoginCookies(){}clearLoginCookies(){}}
+    class Authentication{get(){}getAuthCookieHeader(){return Promise.resolve('wt2=fixture-private-cookie')}
+      setLoginCookies(){}clearLoginCookies(){}}
     class Network{getProxyConfig(){}getHttpProxy(){}getDNSProxy(){}setProxy(){}stopProxy(){}}
     class Receiver{receiveMessage(){}addMessageById(){}getMessageById(){}}
     class Sender{send(){}connect(){}onMessage(){}sendPresence(){}}
@@ -26,12 +28,13 @@ async function fixture(t, {ambiguous = false, failVerification = false} = {}) {
     function makeBuilder(){return async function actualFixtureBuilder(input){
       fixtureBuilderCalls++;
       if(${failVerification}&&input.url.includes('job/data'))throw Error('private verification failure');
-      await Promise.resolve();
+      const cookie=await keepAlive[1].getAuthCookieHeader();
       const prepared={...input,url:'https://www.zhipin.com'+input.url,
-        headers:{Cookie:'fixture-private-cookie','User-Agent':'fixture-private-agent',Traceid:'fixture-private-trace'}};
-      return new Promise(resolve=>{fixtureHTTP.send(prepared).then(response=>resolve(response.body));});
+        headers:{Cookie:cookie,'User-Agent':'fixture-private-agent',Traceid:fixtureBuilderCalls+'-fixture-private-trace'}};
+      return new Promise(resolve=>{fixtureHTTP.send(prepared).then(response=>resolve(response.body)).catch(()=>resolve(null));});
     }}
     const builder=makeBuilder();
+    globalThis.fixtureExpectedBuilder=builder;
     ${ambiguous ? 'globalThis.duplicateBuilder=makeBuilder();' : ''}
     globalThis.fixtureSDK={
       _sdk_getLoginStatus:async()=>false,_sdk_getNetworkStatus:async()=>false,
@@ -47,6 +50,7 @@ async function fixture(t, {ambiguous = false, failVerification = false} = {}) {
     globalThis.fixtureReady=true;setInterval(()=>{},1000);
   `);
   const connection = await launchInspecting(process.execPath, [file]);
+  connection.fixtureRoot = root;
   t.after(async () => {
     connection.client.close();connection.child.kill();
     await fs.rm(root, {recursive: true, force: true});
@@ -71,6 +75,9 @@ test('captures the actual caller by name and location, uses its native headers, 
   assert.equal(report.ok, true);
   assert.equal(report.originalSDKCalls, 1);assert.equal(report.originalBuilderCalls, 1);
   assert.equal(report.originalHTTPCalls, 0);assert.equal(report.interceptedRequests, 2);
+  assert.equal(report.builderDescriptor.name, 'actualFixtureBuilder');
+  assert.equal(Number.isInteger(report.builderDescriptor.lineNumber), true);
+  assert.equal(Number.isInteger(report.builderDescriptor.columnNumber), true);
   assert.equal(await evaluateRunning(connection, 'fixtureSDKCalls'), 1);
   assert.equal(await evaluateRunning(connection, 'fixtureBuilderCalls'), 2);
   assert.equal(await evaluateRunning(connection, 'fixtureHTTPCalls'), 0);
@@ -98,4 +105,33 @@ test('a failed builder verification is not retried or changed into success', asy
   assert.equal(await evaluateRunning(connection, 'fixtureBuilderCalls'), 2);
   assert.equal(await evaluateRunning(connection, 'fixtureHTTPCalls'), 0);
   assert.equal(await evaluateRunning(connection, 'Object.hasOwn(fixtureHTTP,"send")'), false);
+});
+test('the captured builder uses the broker and cannot send late after credential timeout and close', async t => {
+  const connection = await fixture(t);
+  const report = await discoverNativeRequestBuilder(connection,
+    {anonymousIsolated: true, pinnedOriginalVerified: true, verifyBroker: true});
+  assert.equal(report.ok, true);
+  assert.equal(report.broker.realPreparedHeaders, true);
+  assert.equal(report.broker.lateSendAfterCloseRejected, true);
+  assert.equal(report.broker.ownTransportCalls, 2);
+  assert.equal(await evaluateRunning(connection, 'fixtureBuilderCalls'), 5);
+  assert.equal(await evaluateRunning(connection, 'fixtureHTTPCalls'), 0);
+  assert.equal(await evaluateRunning(connection, 'Object.hasOwn(fixtureHTTP,"send")'), false);
+  assert.equal(await evaluateRunning(connection, 'Object.hasOwn(keepAlive[1],"getAuthCookieHeader")'), false);
+});
+test('a verified descriptor binds the same original function on a fresh process without any SDK invocation', async t => {
+  const first = await fixture(t);
+  const {builderDescriptor} = await discoverNativeRequestBuilder(first,
+    {anonymousIsolated: true, pinnedOriginalVerified: true});
+  const connection = await fixture(t), addon = path.join(connection.fixtureRoot, 'startup-addon.cjs');
+  await fs.writeFile(addon, `exports.install=bindings=>({ok:bindings.requestBuilder===fixtureExpectedBuilder});`);
+  const report = await bindNativeModule(connection, {
+    modulePath: addon, builderDescriptor, pinnedOriginalVerified: true,
+  });
+  assert.deepEqual(report, {ok: true});
+  assert.equal(await evaluateRunning(connection, 'fixtureSDKCalls+fixtureBuilderCalls+fixtureHTTPCalls'), 0);
+  await assert.rejects(bindNativeModule(connection, {modulePath: addon, pinnedOriginalVerified: true,
+    builderDescriptor: {...builderDescriptor, columnNumber: builderDescriptor.columnNumber + 1}}),
+  error => error.nativeBindingDiagnostic.stage === 'original-request-builder');
+  assert.equal(await evaluateRunning(connection, 'fixtureSDKCalls+fixtureBuilderCalls+fixtureHTTPCalls'), 0);
 });
