@@ -29,7 +29,8 @@ module.exports = function observe(electron, config) {
   }
   let ready = false, attemptedRequests = 0, finished = false, sdkReadRequests = 0, lastReport;
   let sdkRead = {ok: false, reason: 'not-requested'};
-  const shutdown = {method: 'app.quit', requested: false, callReturned: false, events: []};
+  const shutdown = {method: 'app.quit', requested: false, callReturned: false, events: [],
+    exitCalls: [], exceptions: []};
   const sessions = new WeakSet();
   const prepare = session => {
     if (sessions.has(session)) return;
@@ -58,6 +59,26 @@ module.exports = function observe(electron, config) {
   function persist() {
     if (lastReport) fs.writeFileSync(output, JSON.stringify(lastReport, null, 2), {mode: 0o600});
   }
+  // Observe the original exit arguments without changing, suppressing or
+  // replacing the requested exit. This disposable probe has no real account.
+  for (const [target, object] of [['app', app], ['process', process]]) {
+    const original = object.exit;
+    object.exit = function(...args) {
+      shutdown.exitCalls.push({target,
+        code: typeof args[0] === 'number' ? args[0] : null});
+      persist();
+      return Reflect.apply(original, this, args);
+    };
+  }
+  process.on('uncaughtExceptionMonitor', (error, origin) => {
+    if (shutdown.exceptions.length >= 5) return;
+    shutdown.exceptions.push({origin,
+      name: typeof error?.name === 'string' &&
+        /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(error.name) ? error.name : 'unknown',
+      code: typeof error?.code === 'string' &&
+        /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : null});
+    persist();
+  });
   function snapshot(reason) {
     const sdk = Object.entries(Object.getOwnPropertyDescriptors(globalThis))
       .filter(([name]) => /^_sdk_[A-Za-z0-9_]+$/.test(name))
@@ -73,6 +94,7 @@ module.exports = function observe(electron, config) {
       ready, userDataIsolated, attachedAfterReady, observedSdk: sdk, nativeModules,
       originalMainLoaded: Object.keys(require.cache).some(file => /[\\/]main\.jsc$/.test(file)),
       mainModuleName: path.basename(process.mainModule?.filename || ''),
+      mainExports: members(process.mainModule?.exports),
       namespaces: ['$api', '$socket', '$windowsMuster'].map(namespace),
       globalNames: Object.entries(Object.getOwnPropertyDescriptors(globalThis))
         .filter(([name]) => name.startsWith('$')).map(([name, entry]) => ({name, type: typeof entry.value})),
@@ -112,6 +134,19 @@ module.exports = function observe(electron, config) {
   }
   app.on('quit', (_event, code) => {shutdown.nativeQuitCode = code;persist();});
   process.once('exit', code => {shutdown.nodeExitCode = code;persist();});
+  // The parent first receives the installation result and closes its websocket.
+  // Delay closing the listener until then: inspector.close() synchronously waits
+  // for connected clients. The report distinguishes this run from the earlier
+  // listener-active control; it does not assume detachment fixes the exit.
+  if (config.detachInspector === true) {
+    setTimeout(() => {
+      shutdown.inspectorDetachRequested = true;
+      persist();
+      require('node:inspector').close();
+      shutdown.inspectorDetached = !require('node:inspector').url();
+      snapshot('inspector-detached');
+    }, 500);
+  }
   app.whenReady().then(async () => {
     ready = true;
     prepare(electron.session.defaultSession);
