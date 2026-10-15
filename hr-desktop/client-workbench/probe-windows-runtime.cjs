@@ -14,6 +14,7 @@ const {inspectSdkRegistry} = require('./sdk-registry-inventory.cjs');
 const {inspectNativeRoles} = require('./native-role-inventory.cjs');
 const {inspectAnonymousAuthentication} = require('./native-auth-behavior.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
+const {discoverNativeRequestBuilder} = require('./native-request-discovery.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -190,6 +191,18 @@ async function main() {
     }
     await fs.writeFile(path.join(root, 'native-request-contract.json'),
       JSON.stringify(requestContract, null, 2));
+    let requestBuilder;
+    try {
+      requestBuilder = await discoverNativeRequestBuilder(connection, {
+        anonymousIsolated: true, pinnedOriginalVerified: true,
+      });
+    } catch (error) {
+      requestBuilder = {mode: 'offline-original-request-builder-contract', ok: false,
+        reason: 'native-request-builder-unavailable',
+        diagnostic: error.requestDiscoveryDiagnostic || {stage: 'request-builder-discovery'}};
+    }
+    await fs.writeFile(path.join(root, 'native-request-builder.json'),
+      JSON.stringify(requestBuilder, null, 2));
     const shellSmoke = path.join(__dirname,'windows-shell-smoke.cjs');
     const priorTimeout=connection.client.timeout;
     let shellRun;
@@ -252,6 +265,9 @@ async function main() {
     }
     if (requestContract?.ok !== true) {
       throw Error('Original Windows request header contract incomplete; inspect the report');
+    }
+    if (requestBuilder?.ok !== true) {
+      throw Error('Original Windows request builder capture incomplete; inspect the report');
     }
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,
       sdkNames: report.observedSdk.length, nativeModules: report.nativeModules.length,
