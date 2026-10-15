@@ -10,7 +10,12 @@ async function fixture(t, code) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-anonymous-auth-'));
   const file = path.join(root, 'fixture.cjs');
   await fs.writeFile(file, `
-    globalThis.isLogin=false;globalThis.fixtureCalls=0;
+    globalThis.fixtureLoggedIn=false;globalThis.fixtureCalls=0;
+    globalThis.$socket={clientID:new Map(),handleEvent(_name,socket){
+      this.clientID.set(socket.handshake.query.cid,{sid:socket.id});
+      socket.on('message',request=>socket.emit('message',{...request,
+        data:{code:0,data:globalThis.fixtureLoggedIn}}));
+    }};
     class Authentication{
       getAuthCookieHeader(){fixtureCalls++;${code}}
       get(){}setLoginCookies(){}clearLoginCookies(){}
@@ -45,6 +50,7 @@ test('one original helper read exports only its empty-state metadata', async t =
   assert.equal(report.resultType, 'string');
   assert.equal(report.emptyString, true);
   assert.equal(report.originalMethodsInvoked, 1);
+  assert.equal(report.loginStatusReads, 1);
   assert.equal(await evaluateRunning(connection, 'fixtureCalls'), 1);
 });
 
@@ -64,11 +70,11 @@ test('return values and original failures never escape the process', async t => 
 
 test('a signed-in or ambiguous process invokes no helper', async t => {
   const connection = await fixture(t, 'return "must-not-read";');
-  await evaluateRunning(connection, 'isLogin=true;true');
+  await evaluateRunning(connection, 'fixtureLoggedIn=true;true');
   const signedIn = await inspectAnonymousAuthentication(connection, {anonymousIsolated: true});
   assert.equal(signedIn.ok, false);
   assert.equal(signedIn.originalMethodsInvoked, 0);
-  await evaluateRunning(connection, 'isLogin=false;keepAlive.push(new (keepAlive[0].constructor));true');
+  await evaluateRunning(connection, 'fixtureLoggedIn=false;keepAlive.push(new (keepAlive[0].constructor));true');
   const ambiguous = await inspectAnonymousAuthentication(connection, {anonymousIsolated: true});
   assert.equal(ambiguous.ok, false);
   assert.equal(await evaluateRunning(connection, 'fixtureCalls'), 0);

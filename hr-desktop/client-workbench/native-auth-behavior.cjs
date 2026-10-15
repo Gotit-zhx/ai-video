@@ -47,11 +47,19 @@ async function inspectAnonymousAuthentication(connection, options = {}) {
     const result = await command('Runtime.callFunctionOn', {
       objectId: instances.objects.objectId, objectGroup: group, returnByValue: true,
       awaitPromise: true,
-      functionDeclaration: `async function() {
+      arguments: [{value: require.resolve('./original-sdk-read.cjs')}],
+      functionDeclaration: `async function(readModule) {
         const isProxy=process.mainModule.require('node:util').types.isProxy;
-        const login=Object.getOwnPropertyDescriptor(globalThis,'isLogin');
-        if(this.length!==1||isProxy(this[0])||login?.value!==false)return {
+        if(this.length!==1||isProxy(this[0]))return {
           ok:false,reason:'anonymous-unique-instance-required',originalMethodsInvoked:0};
+        // This version does not publish global.isLogin. Use the original
+        // renderer's memory getter, and require an explicit false result.
+        const service=Object.getOwnPropertyDescriptor(globalThis,'$socket')?.value;
+        if(!service||isProxy(service))throw Error();
+        const loggedIn=await process.mainModule.require(readModule)
+          .readOriginalSDK(service,'_sdk_getLoginStatus',1000);
+        if(loggedIn!==false)return {ok:false,reason:'anonymous-login-required',
+          originalMethodsInvoked:0,loginStatusReads:1};
         const instance=this[0],prototype=Object.getPrototypeOf(instance);
         const method=Object.getOwnPropertyDescriptor(prototype,'getAuthCookieHeader')?.value;
         if(typeof method!=='function'||isProxy(method))throw Error();
@@ -63,7 +71,7 @@ async function inspectAnonymousAuthentication(connection, options = {}) {
           ]);
           const type=result===null?'null':typeof result;
           return {ok:true,reason:'anonymous-helper-read',
-            originalMethodsInvoked:1,resultType:type,
+            originalMethodsInvoked:1,loginStatusReads:1,resultType:type,
             emptyString:type==='string'&&result.length===0,
             hasWt2Field:type==='string'&&/(^|;\\s*)wt2=/.test(result),
             rawValuesRetained:false};

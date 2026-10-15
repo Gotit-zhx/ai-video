@@ -151,6 +151,21 @@ test('cancelled or timed-out credential reads cannot issue a late request', asyn
   assert.equal(calls.options.length, 0);
 });
 
+test('credential-provider failures are bounded, sanitized and never retried', async t => {
+  const {calls, options} = await fixture(t);
+  for (const reason of [null, undefined, Error('fixture-private-credential')]) {
+    let reads = 0;
+    await assert.rejects(nativeJSONRequest({...options, credentials: () => {
+      reads++;return Promise.reject(reason);
+    }}), value => {
+      assert.equal(value.message.includes('fixture-private-credential'), false);
+      return value.code === 'NATIVE_HTTP_FAILED';
+    });
+    assert.equal(reads, 1);
+  }
+  assert.equal(calls.options.length, 0);
+});
+
 test('account changes before transport and while the real response arrives stop the read', async t => {
   let valid = true;
   const {calls, options} = await fixture(t, (_req, res) => {

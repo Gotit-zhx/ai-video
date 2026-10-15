@@ -145,7 +145,7 @@ function nativeJSONRequest({net,session,url:input,method='GET',data,endpoints,
       if(!check())return;
       if(verb==='POST')request.end(form);else request.end();
     }).catch(error=>{
-      if(['AUTH_REQUIRED','SESSION_MISMATCH'].includes(error.code))finish(error);
+      if(['AUTH_REQUIRED','SESSION_MISMATCH'].includes(error?.code))finish(error);
       else finish(failure('NATIVE_HTTP_FAILED','原客户端接口准备未完成'));
     });
   });
