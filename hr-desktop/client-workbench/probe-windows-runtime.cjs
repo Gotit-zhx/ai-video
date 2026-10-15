@@ -6,6 +6,7 @@ const {once} = require('node:events');
 const {spawn} = require('node:child_process');
 const net = require('node:net');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
+const {waitForProcess} = require('./process-outcome.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -58,7 +59,8 @@ async function main() {
         } finally {clearTimeout(deadline);}
       },
     });
-    const exit = once(connection.child, 'exit');
+    const outcome = waitForProcess(connection.child, 35000);
+    outcome.catch(() => {});
     const loader = '(typeof require === "function" ? require : process.mainModule?.require.bind(process.mainModule))';
     let entry;
     // Poll only presence/type metadata, never execute an SDK method.
@@ -90,14 +92,13 @@ async function main() {
       `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({root, output})}))(${loader})`);
     if (!result?.observerInstalled) throw Error('Runtime observer was not installed');
     connection.client.close();
-    const timer = setTimeout(() => connection.child.kill(), 35000);
-    const [code] = await exit;
-    clearTimeout(timer);
+    const processOutcome = await outcome;
     const report = JSON.parse(await fs.readFile(output, 'utf8'));
     report.executableSha256 = actual;
     report.osFirewall = firewall;
-    report.processExitCode = code;
-    report.ok = report.ok && code === 0;
+    report.processExitCode = processOutcome.code;
+    report.processOutcome = processOutcome;
+    report.ok = report.ok && processOutcome.code === 0 && !processOutcome.timedOut;
     await fs.writeFile(output, JSON.stringify(report, null, 2));
     if (!report.ok) throw Error('Original runtime observation incomplete; inspect the report');
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,

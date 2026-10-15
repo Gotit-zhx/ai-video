@@ -1,6 +1,7 @@
 // Explicitly injected by the disposable Windows CI probe. Never used in the app.
 const fs = require('node:fs');
 const path = require('node:path');
+const {readOriginalSDK} = require('./original-sdk-read.cjs');
 
 module.exports = function observe(electron, config) {
   const {app, BrowserWindow, webContents} = electron;
@@ -26,7 +27,9 @@ module.exports = function observe(electron, config) {
     app.setPath('userData', userData);
     app.disableHardwareAcceleration();
   }
-  let ready = false, attemptedRequests = 0, finished = false;
+  let ready = false, attemptedRequests = 0, finished = false, sdkReadRequests = 0, lastReport;
+  let sdkRead = {ok: false, reason: 'not-requested'};
+  const shutdown = {method: 'app.quit', requested: false, callReturned: false, events: []};
   const sessions = new WeakSet();
   const prepare = session => {
     if (sessions.has(session)) return;
@@ -45,6 +48,16 @@ module.exports = function observe(electron, config) {
       .map(([name, entry]) => ({name: name.slice(0, 100),
         type: Object.hasOwn(entry, 'value') ? typeof entry.value : 'accessor'})).slice(0, 180);
   };
+  const descriptorValue = name => Object.getOwnPropertyDescriptor(globalThis, name)?.value;
+  const namespace = name => {
+    const object = descriptorValue(name);
+    if (!object || !['object', 'function'].includes(typeof object)) return {name, type: typeof object};
+    return {name, type: typeof object, own: members(object),
+      prototype: members(Object.getPrototypeOf(object))};
+  };
+  function persist() {
+    if (lastReport) fs.writeFileSync(output, JSON.stringify(lastReport, null, 2), {mode: 0o600});
+  }
   function snapshot(reason) {
     const sdk = Object.entries(Object.getOwnPropertyDescriptors(globalThis))
       .filter(([name]) => /^_sdk_[A-Za-z0-9_]+$/.test(name))
@@ -53,43 +66,68 @@ module.exports = function observe(electron, config) {
       .filter(([file]) => file.endsWith('.node'))
       .map(([file, entry]) => ({name: path.basename(file), members: members(entry.exports)}));
     const userDataIsolated = insideRoot(app.getPath('userData')) && insideRoot(app.getPath('appData'));
-    const report = {
+    lastReport = {
       schemaVersion: 1, mode: 'offline-original-runtime-observation',
-      ok: ready && sdk.length > 0 && userDataIsolated,
+      ok: ready && sdkRead.ok === true && userDataIsolated,
       reason, platform: process.platform, arch: process.arch, versions: process.versions,
       ready, userDataIsolated, attachedAfterReady, observedSdk: sdk, nativeModules,
       originalMainLoaded: Object.keys(require.cache).some(file => /[\\/]main\.jsc$/.test(file)),
       mainModuleName: path.basename(process.mainModule?.filename || ''),
+      namespaces: ['$api', '$socket', '$windowsMuster'].map(namespace),
+      globalNames: Object.entries(Object.getOwnPropertyDescriptors(globalThis))
+        .filter(([name]) => name.startsWith('$')).map(([name, entry]) => ({name, type: typeof entry.value})),
       windows: BrowserWindow.getAllWindows().map(window => ({
         id: window.id, visible: window.isVisible(), destroyed: window.isDestroyed(),
         contentsType: window.webContents.getType(),
       })),
       webContentsTypes: webContents.getAllWebContents().map(contents => contents.getType()),
-      webRequestsCancelled: attemptedRequests, observerSdkMethodsInvoked: 0,
+      webRequestsCancelled: attemptedRequests, observerSdkReadRequests: sdkReadRequests,
+      sdkRead, shutdown,
       candidateMessagesSent: 0, realAccountProvided: false,
       applicationBytesModified: false, originalSignatureReused: false,
     };
-    fs.writeFileSync(output, JSON.stringify(report, null, 2), {mode: 0o600});
-    return report;
+    persist();
+    return lastReport;
   }
   function finish(reason) {
     if (finished) return;
     finished = true;
+    shutdown.requested = true;
+    shutdown.inspectorListenerActive = Boolean(require('node:inspector').url());
     snapshot(reason);
+    // Save before and after the actual quit call. Do not call Electron getters
+    // after shutdown and do not force a zero exit code to satisfy this probe.
     app.quit();
-    setTimeout(() => app.exit(0), 2000).unref();
+    shutdown.callReturned = true;
+    persist();
   }
   // Persist before returning to the original loader; native app.exit/crashes
   // do not necessarily emit Node's process-exit event.
   snapshot('observer-attached');
   for (const event of ['will-finish-launching', 'before-quit', 'will-quit', 'window-all-closed']) {
-    app.on(event, () => {if (!finished) snapshot(event);});
+    app.on(event, () => {
+      shutdown.events.push(event);
+      if (finished) persist();else snapshot(event);
+    });
   }
-  process.once('exit', () => {if (!finished) snapshot('process-exit');});
-  app.whenReady().then(() => {
+  app.on('quit', (_event, code) => {shutdown.nativeQuitCode = code;persist();});
+  process.once('exit', code => {shutdown.nodeExitCode = code;persist();});
+  app.whenReady().then(async () => {
     ready = true;
     prepare(electron.session.defaultSession);
     snapshot('app-ready');
+    const service = descriptorValue('$socket');
+    if (service) {
+      sdkReadRequests++;
+      try {
+        const loggedIn = await readOriginalSDK(service, '_sdk_getLoginStatus');
+        sdkRead = {ok: loggedIn === false, method: '_sdk_getLoginStatus',
+          loggedIn, transport: 'original-in-process-dispatch'};
+      } catch {
+        sdkRead = {ok: false, method: '_sdk_getLoginStatus', reason: 'original-dispatch-not-verified'};
+      }
+    } else sdkRead = {ok: false, reason: 'original-dispatch-unavailable'};
+    snapshot('sdk-read-complete');
     setTimeout(() => finish('observation-complete'), 8000);
   });
   setTimeout(() => finish('ready-deadline'), 20000).unref();
