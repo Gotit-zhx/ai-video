@@ -100,9 +100,13 @@ class IntegratedShell {
     win.setTitle('赫逸智能化 AI 平台');
     win.show = () => {this.selectWindow(win);this.originalShow.get(win)();};
     win.on('resize', () => {if (this.window === win) this.layout();});
-    win.webContents.on('did-finish-load', () => {
+    const applyNativeCSS = () => {
       void win.webContents.insertCSS(name === 'login' ? LOGIN_CSS : MAIN_CSS).catch(() => {});
-    });
+    };
+    win.webContents.on('did-finish-load', applyNativeCSS);
+    // The Windows bytecode finishes creating its windows before we can attach
+    // our addon. Apply the same layout to an already loaded native page.
+    if (win.webContents.isLoadingMainFrame() === false) applyNativeCSS();
     win.on('closed', () => {
       if (this.windows.get(name) === win) this.windows.delete(name);
       if (this.window === win) this.window = null;

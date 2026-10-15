@@ -139,6 +139,20 @@ async function main() {
     }
     await fs.writeFile(path.join(root, 'native-role-inventory.json'),
       JSON.stringify(roleReport, null, 2));
+    const shellSmoke = path.join(__dirname,'windows-shell-smoke.cjs');
+    const priorTimeout=connection.client.timeout;
+    let shellRun;
+    try {
+      connection.client.timeout=30000;
+      shellRun = await connection.client.command('Runtime.evaluate', {
+        expression:`((load)=>load(${JSON.stringify(shellSmoke)}).run(load('electron'),${JSON.stringify(root)}))(${loader})`,
+        returnByValue:true, awaitPromise:true,
+      });
+    } finally {connection.client.timeout=priorTimeout;}
+    const shellReport = shellRun.exceptionDetails ?
+      {ok:false,reason:'original-window-shell-integration-incomplete'} : shellRun.result?.value;
+    await fs.writeFile(path.join(root,'windows-shell-smoke.json'),
+      JSON.stringify(shellReport || {ok:false,reason:'shell-report-unavailable'},null,2));
     const observer = path.join(__dirname, 'windows-runtime-observer.cjs');
     const result = await evaluateRunning(connection,
       `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({
@@ -161,6 +175,7 @@ async function main() {
     await fs.writeFile(path.join(root, 'matching-runtime-scope-fixture.json'),
       JSON.stringify(scopeFixture, null, 2));
     if (!report.ok) throw Error('Original runtime observation incomplete; inspect the report');
+    if (shellReport?.ok !== true) throw Error('Original Windows shell integration incomplete; inspect the report');
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,
       sdkNames: report.observedSdk.length, nativeModules: report.nativeModules.length,
       candidateMessagesSent: 0}));
