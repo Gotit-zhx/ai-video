@@ -82,6 +82,13 @@ async function start(adapter) {
       prepare: async () => {},
       inspect: async () => {
         const id = rpc.currentIdentity();
+        if (typeof adapter.verifyAccount === 'function') {
+          try {await adapter.verifyAccount(id);}
+          catch (error) {
+            if (error.code === 'AUTH_REQUIRED') return {text: '', token: null};
+            throw error;
+          }
+        }
         if (!id || !adapter.loggedIn()) return {text: '', token: null};
         if (boundAccount && boundAccount !== id) {
           await engine.hold({code: 'SESSION_MISMATCH'});
@@ -155,7 +162,9 @@ module.exports = {start, receive: messages => active?.rpc.receive(messages),
   observeNativeSend: message => active?.rpc.observeNativeSend(message),
   loginEstablished: () => active?.rpc.loginEstablished(),
   sessionLost: event => {
-    const code = ({10: 'SESSION_MISMATCH', 70: 'ACCOUNT_RISK',
+    const code = ['AUTH_EXPIRED', 'SESSION_MISMATCH', 'ACCOUNT_RISK',
+      'SECURITY_VERIFICATION_REQUIRED'].includes(event?.code) ? event.code :
+      ({10: 'SESSION_MISMATCH', 70: 'ACCOUNT_RISK',
       1013: 'ACCOUNT_RISK', 1014: 'SECURITY_VERIFICATION_REQUIRED'})[Number(event?.code)]
       || 'AUTH_EXPIRED';
     active?.rpc.sessionLost(code);

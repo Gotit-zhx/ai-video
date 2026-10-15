@@ -1,6 +1,7 @@
 const MAX_BYTES = 20 * 1024 * 1024;
 const DOWNLOAD_ORIGIN = 'https://docdownload.zhipin.com';
 const DOWNLOAD_PATH = '/wflow/zpgeek/download/download4boss/';
+const {nativeHeaders} = require('./native-http.cjs');
 const failure = (code, message) => Object.assign(Error(message), {code});
 
 function attachmentDisposition(value) {
@@ -53,22 +54,24 @@ function readCredentials(credentials, signal, timeout) {
 // A single native Chromium request with the original client's real session and
 // headers. No download-manager retries, redirects, or caller-supplied headers.
 async function downloadResume({net, session, url, credentials, checkAccount,
-  signal, timeout = 65000, maxBytes = MAX_BYTES}) {
+  signal, timeout = 65000, maxBytes = MAX_BYTES, useSessionCookies = true}) {
   url = resumeURL(url);
   checkAccount();
   if (!Number.isInteger(timeout) || timeout < 1 || timeout > 75000 ||
-      !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_BYTES) {
+      !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_BYTES ||
+      typeof useSessionCookies !== 'boolean') {
     throw failure('INVALID_ATTACHMENT', '附件下载限制不正确');
   }
   const deadline = Date.now() + timeout;
   const auth = await readCredentials(credentials, signal, timeout);
   checkAccount();
   if (!auth?.token || !auth.userAgent) throw failure('AUTH_REQUIRED', '原客户端登录态尚未建立');
+  const nativeCookie = nativeHeaders(auth).Cookie;
   if (signal?.aborted) throw failure('REQUESTS_PAUSED', '附件下载已取消');
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw failure('DOWNLOAD_TIMEOUT', '附件下载超时');
   return new Promise((resolve, reject) => {
-    const request = net.request({url, method: 'GET', session, redirect: 'manual', useSessionCookies: true});
+    const request = net.request({url, method: 'GET', session, redirect: 'manual', useSessionCookies});
     let response, settled = false;
     const finish = (error, value) => {
       if (settled) return;
@@ -129,7 +132,7 @@ async function downloadResume({net, session, url, credentials, checkAccount,
       });
     });
     try {
-      request.setHeader('Cookie', `wt2=${auth.token}`);
+      request.setHeader('Cookie', nativeCookie);
       if (auth.zpToken) request.setHeader('zp_token', auth.zpToken);
       request.setHeader('User-Agent', auth.userAgent);
       request.setHeader('Referer', 'https://www.zhipin.com/web/chat/index');

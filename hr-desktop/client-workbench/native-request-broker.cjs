@@ -27,7 +27,7 @@ function chromiumPreparedTransport({net, session, endpoints, authenticate}) {
 }
 
 class NativeRequestBroker {
-  constructor({clients, builder, transport, endpoints, timeout = 65000}) {
+  constructor({clients, builder, transport, endpoints, timeout = 65000, observePrepared}) {
     if (!Array.isArray(clients) || clients.length < 1 || clients.length > 8 ||
         new Set(clients).size !== clients.length || typeof builder !== 'function' ||
         typeof transport !== 'function' || !Number.isInteger(timeout) || timeout < 1 || timeout > 75000) {
@@ -46,6 +46,9 @@ class NativeRequestBroker {
         if (typeof original !== 'function') throw Error('Native HTTP send unavailable');
         const broker = this;
         const hook = function(...args) {
+          // Observe only metadata already prepared by the original caller.
+          // Observation must never change its result, this or exception.
+          try {observePrepared?.(args[0]);} catch {}
           const context = broker.context.getStore();
           if (!context || context.broker !== broker) return Reflect.apply(original, this, args);
           return broker.prepared(context, args[0]);

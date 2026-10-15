@@ -23,6 +23,17 @@ class NativeRPC extends EventEmitter {
     this.sessionEpoch = 0;
     this.loginGeneration = 0;
     this.closed = false;
+    // Windows observes the original client without patching its main source.
+    // Keep those events attached for exactly this RPC instance's lifetime.
+    if (typeof adapter.on === 'function' && typeof adapter.removeListener === 'function') {
+      this.adapterListeners = {
+        messages: messages => this.receive(messages),
+        'send-observed': protocol => this.observeNativeSend(protocol),
+        'session-lost': code => this.sessionLost(code),
+        'login-established': () => this.loginEstablished(),
+      };
+      for (const [event, listener] of Object.entries(this.adapterListeners)) adapter.on(event, listener);
+    }
   }
   async start() {
     this.server = http.createServer((req, res) => this.handle(req, res));
@@ -91,12 +102,15 @@ class NativeRPC extends EventEmitter {
     }
   }
   loginEstablished() {
-    // Only the original client's completed login handler calls this. This is
-    // not exposed to the website or the worker and performs no login itself.
+    // Called only by the original completed-login hook or the adapter after
+    // verifying its real memory transition and fresh native credentials.
+    // This is not exposed to the website or worker and performs no login.
     this.loginGeneration++;
     this.emit('session-status', this.accountState());
   }
   async refreshSession(account) {
+    if (this.sessionFailure && this.sessionFailure !== 'AUTH_EXPIRED') this.requireAccount(account);
+    if (typeof this.adapter.verifyAccount === 'function') await this.adapter.verifyAccount(account);
     if (!this.sessionFailure) {
       this.requireAccount(account);
       const snapshot = await this.adapter.snapshot();
@@ -106,16 +120,19 @@ class NativeRPC extends EventEmitter {
     if (this.sessionFailure !== 'AUTH_EXPIRED') this.requireAccount(account);
     const epoch = this.sessionEpoch;
     if (this.closed || this.currentIdentity() !== account || this.lostAccount !== account ||
-        !this.adapter.loggedIn() || this.loginGeneration <= this.lostLoginGeneration) {
+        !this.adapter.loggedIn()) {
       throw failure('AUTH_EXPIRED', '请先在原客户端完成同一账号的重新登录');
     }
     const snapshot = await this.adapter.snapshot();
+    if (this.sessionEpoch !== epoch || this.closed) throw failure('REQUESTS_PAUSED', '会话状态已变化');
+    if (this.loginGeneration <= this.lostLoginGeneration) {
+      throw failure('AUTH_EXPIRED', '请先在原客户端完成同一账号的重新登录');
+    }
     const tokens = new Set((snapshot.cookies || []).filter(cookie => {
       const domain = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
       return cookie.name === 'wt2' && cookie.value &&
         (domain === 'zhipin.com' || domain.endsWith('.zhipin.com'));
     }).map(cookie => cookie.value));
-    if (this.sessionEpoch !== epoch || this.closed) throw failure('REQUESTS_PAUSED', '会话状态已变化');
     if (this.currentIdentity() !== account || !this.adapter.loggedIn() ||
         identity(snapshot.accountId) !== account || tokens.size !== 1 || !snapshot.userAgent) {
       throw failure('SESSION_MISMATCH', '重新登录后的账号或登录态尚未核对');
@@ -154,6 +171,8 @@ class NativeRPC extends EventEmitter {
     }
   }
   async sendText(account, friend, content) {
+    if (this.closed || this.sessionFailure) this.requireAccount(account);
+    if (typeof this.adapter.verifyAccount === 'function') await this.adapter.verifyAccount(account);
     this.requireAccount(account);
     const id = identity(friend.friendId || friend.uid);
     if (!id || typeof content !== 'string' || !content.trim() || content.length > 3000) {
@@ -186,6 +205,8 @@ class NativeRPC extends EventEmitter {
     }
   }
   async requestResume(account, friend, signal) {
+    if (this.closed || this.sessionFailure) this.requireAccount(account);
+    if (typeof this.adapter.verifyAccount === 'function') await this.adapter.verifyAccount(account, signal);
     this.requireAccount(account);
     const id = identity(friend?.friendId || friend?.uid);
     const job = friend?.encryptJobId || friend?.encJobId;
@@ -255,6 +276,8 @@ class NativeRPC extends EventEmitter {
     }
   }
   async download(account, value, signal) {
+    if (this.closed || this.sessionFailure) this.requireAccount(account);
+    if (typeof this.adapter.verifyAccount === 'function') await this.adapter.verifyAccount(account, signal);
     this.requireAccount(account);
     const url = resumeURL(value);
     if (typeof this.adapter.download !== 'function') {
@@ -283,13 +306,17 @@ class NativeRPC extends EventEmitter {
     }
   }
   async dispatch(route, input, signal) {
+    if (route === '/download') return this.download(input.accountId, input.url, signal);
+    if (route === '/send-text') return this.sendText(input.accountId, input.friend, input.content);
+    if (route === '/request-resume') return this.requestResume(input.accountId, input.friend, signal);
+    if (this.closed || this.sessionFailure) this.requireAccount(input.accountId);
+    if (typeof this.adapter.verifyAccount === 'function') await this.adapter.verifyAccount(input.accountId, signal);
     this.requireAccount(input.accountId);
     if (route === '/snapshot') {
       const snapshot = await this.adapter.snapshot();
       this.requireAccount(input.accountId);
       return snapshot;
     }
-    if (route === '/download') return this.download(input.accountId, input.url, signal);
     if (route === '/http') {
       const url = new URL(input.url);
       if (url.origin !== 'https://www.zhipin.com' || url.username || url.password || url.hash ||
@@ -324,8 +351,6 @@ class NativeRPC extends EventEmitter {
         this.httpRequests.delete(controller);
       }
     }
-    if (route === '/send-text') return this.sendText(input.accountId, input.friend, input.content);
-    if (route === '/request-resume') return this.requestResume(input.accountId, input.friend, signal);
     throw failure('UNSUPPORTED_OPERATION', '不支持的客户端操作');
   }
   async handle(req, res) {
@@ -369,6 +394,10 @@ class NativeRPC extends EventEmitter {
   }
   async close() {
     this.closed = true;
+    for (const [event, listener] of Object.entries(this.adapterListeners || {})) {
+      this.adapter.removeListener(event, listener);
+    }
+    this.adapterListeners = null;
     this.emit('session-status', this.accountState());
     for (const controller of this.downloads) controller.abort();
     for (const controller of this.httpRequests) controller.abort();

@@ -89,6 +89,12 @@ async function verifyColdStartup(executable, root, env, logSignals, builderDescr
     });
     report = {...report, ...binding, freshProcess: true, freshProfile: true,
       sdkDiscoveryUsed: false, bindingCheckCompletedBeforeShutdown: true};
+    stage = 'windows-adapter-contract';
+    report.adapter = await bindNativeModule(connection, {
+      modulePath: path.join(__dirname, 'windows-adapter-contract.cjs'), pinnedOriginalVerified: true,
+      builderDescriptor, config: {anonymousIsolated: true},
+    });
+    report.ok = report.ok === true && report.adapter.ok === true;
     stage = 'original-shutdown';
     const output = path.join(cold, 'runtime-observation.json');
     const observer = path.join(__dirname, 'windows-runtime-observer.cjs');

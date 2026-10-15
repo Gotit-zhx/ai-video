@@ -51,6 +51,19 @@ test('invalid attachment metadata is dropped without losing valid file bytes', a
     assert.equal(result.body.toString(), '%PDF-1.7\nfixture');
   }
 });
+test('Windows downloads retain the fresh native cookie header without mixing session cookies', async () => {
+  const {options, calls} = fixture({useSessionCookies: false, credentials: async () => ({
+    cookieHeader: 'wt2=fixture-only; zp_at=fixture-secondary', token: 'fixture-only', userAgent: 'native',
+  })});
+  await downloadResume(options);
+  assert.equal(calls.options.useSessionCookies, false);
+  assert.equal(calls.headers.Cookie, 'wt2=fixture-only; zp_at=fixture-secondary');
+  const invalid = fixture({credentials: async () => ({
+    cookieHeader: 'wt2=other-account', token: 'fixture-only', userAgent: 'native',
+  })});
+  await assert.rejects(downloadResume(invalid.options), {code: 'SESSION_MISMATCH'});
+  assert.equal(invalid.calls.count, 0);
+});
 test('redirects report their status, never follow and never expose the signed destination', async () => {
   const {options, request, calls} = fixture();
   request.end = () => queueMicrotask(() => request.emit('redirect', 302, 'GET', 'https://secret.invalid'));
