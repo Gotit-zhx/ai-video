@@ -1,11 +1,12 @@
-const {app, BrowserWindow, Menu, session, shell} = require('electron');
+const {app, Menu, session} = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {NativeRPC, identity} = require('./native-rpc.cjs');
 const {Recruiter, ORIGIN} = require('./src/core.cjs');
 const {NativeRuntime} = require('./src/native-runtime.cjs');
-const {DirectEgress} = require('./src/direct-network.cjs');
+const {instance: networkInstance} = require('./native-network.cjs');
+const {instance: shellInstance} = require('./integrated-shell.cjs');
 const {LocalBridge} = require('./src/bridge.cjs');
 const {storagePaths} = require('./shared-state.cjs');
 
@@ -21,7 +22,7 @@ async function start(adapter) {
     adapter, endpoints: require('./endpoints.json'),
   }).start();
   active = {rpc};
-  let window, lease, checkedAt = 0, engine, boundAccount = '', ready = false;
+  let lease, checkedAt = 0, engine, boundAccount = '', ready = false;
   let device;
   try {device = JSON.parse(await fs.readFile(deviceFile, 'utf8')).id;} catch {}
   if (!/^[a-f0-9-]{36}$/.test(device || '')) {
@@ -31,10 +32,12 @@ async function start(adapter) {
   const bindingFile = path.join(root, 'native-binding.json');
   try {boundAccount = identity(JSON.parse(await fs.readFile(bindingFile, 'utf8')).id);} catch {}
   const platform = session.fromPartition('persist:heyi-workbench');
-  const egress = new DirectEgress(executable);
-  await egress.start();
-  await egress.configure(platform);
-  app.on('login', (event, _contents, _details, info, callback) => egress.authenticate(event, info, callback));
+  const egress = await networkInstance().configure(platform);
+  const integrated = shellInstance();
+  integrated.setNetworkState('ready');
+  integrated.setAccountState(rpc.accountState());
+  rpc.on('session-status', state => integrated.setAccountState(state));
+  egress.once('stopped', () => integrated.setNetworkState('stopped'));
   async function cloud(route, body) {
     const reply = await egress.fetch(platform, `${ORIGIN}/api/v1/hr/desktop/${route}`, {
       method: 'POST', body: JSON.stringify(body),
@@ -63,22 +66,7 @@ async function start(adapter) {
     if (previous) try {await cloud('release', {token: previous.token, device});} catch {}
   }
   function openWorkbench() {
-    if (window && !window.isDestroyed()) {window.show();window.focus();return;}
-    window = new BrowserWindow({
-      width: 1360, height: 880, minWidth: 1000, minHeight: 680,
-      title: '赫逸工作台 · BOSS 客户端改造版', backgroundColor: '#f5f7fb',
-      autoHideMenuBar: true, webPreferences: {
-        session: platform, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
-      },
-    });
-    window.webContents.setWindowOpenHandler(({url}) => {
-      try {if (new URL(url).protocol === 'https:') void shell.openExternal(url);} catch {}
-      return {action: 'deny'};
-    });
-    window.webContents.on('will-navigate', (event, url) => {
-      try {if (new URL(url).origin !== ORIGIN) event.preventDefault();} catch {event.preventDefault();}
-    });
-    void window.loadURL(ORIGIN + '/?lang=zh#hr-overview');
+    integrated.showWorkbench();
   }
   const worker = new NativeRuntime(executable, egress.info.adapter, rpc, () => boundAccount);
   engine = new Recruiter({
@@ -139,6 +127,10 @@ async function start(adapter) {
   }
   try {await engine.init(rpc.url);ready = true;}
   catch (error) {await bridge.close();await rpc.close();await egress.close();throw error;}
+  // The existing website starts its connection check as soon as it renders.
+  // Load it only after the loopback listener and owner state are both ready.
+  // This avoids racing its initial health/pair requests against startup.
+  integrated.configure({session: platform, url: ORIGIN + '/?lang=zh#hr-overview', origin: ORIGIN});
   rpc.on('activity', hint => {
     if (rpc.currentIdentity() === boundAccount) engine.notifyActivity([hint]);
   });
@@ -157,10 +149,10 @@ async function start(adapter) {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
   app.on('before-quit', () => {void engine.close();void bridge.close();void rpc.close();void egress.close();});
   active = {...active, engine, bridge, egress, openWorkbench};
-  openWorkbench();
   return active;
 }
 module.exports = {start, receive: messages => active?.rpc.receive(messages),
+  observeNativeSend: message => active?.rpc.observeNativeSend(message),
   loginEstablished: () => active?.rpc.loginEstablished(),
   sessionLost: event => {
     const code = ({10: 'SESSION_MISMATCH', 70: 'ACCOUNT_RISK',

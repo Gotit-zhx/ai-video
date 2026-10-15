@@ -151,6 +151,8 @@ def install(config, guard):
     def evaluate(self, script, arg=None):
         if script == "heyi-native-send-text-v1":
             return native.call("/send-text", **arg)
+        if script == "heyi-native-request-resume-v1":
+            return native.call("/request-resume", **arg)
         raise NativeError("UNSUPPORTED_NATIVE_ACTION",
                           "该操作尚未适配原客户端，请在客户端手动完成")
 
@@ -165,10 +167,13 @@ def install(config, guard):
         return {"code": 0, "message": "Success", "zpData": receipt}
 
     BossRecruiterClient.send_message_by_friend = send
-    def unsupported_exchange(self, friend_id, exchange_type):
-        # The webpage's Vue exchange handler is not the native client's
-        # handler. Do not replay it or report a synthetic websocket receipt.
-        raise NativeError("UNSUPPORTED_NATIVE_ACTION",
-                          "自动索取简历尚未完成原客户端适配，请在客户端手动索取")
-    BossRecruiterClient.exchange_request_by_friend = unsupported_exchange
+    def exchange(self, friend_id, exchange_type):
+        if exchange_type != 4:
+            raise NativeError("UNSUPPORTED_NATIVE_ACTION", "当前仅支持索取附件简历")
+        # ConversationScope checks the current job before any UI selection.
+        # The guard around evaluate_js still accounts and checks this action.
+        friend = self._require_chat_friend_data(friend_id)
+        receipt = self._get_browser().evaluate_js("heyi-native-request-resume-v1", {"friend": friend})
+        return {"code": 0, "message": "Success", "zpData": receipt}
+    BossRecruiterClient.exchange_request_by_friend = exchange
     return native

@@ -97,8 +97,40 @@ def patch_main(data):
         raise ValueError("Original completed-login hook differs")
     text = text.replace(before,
                         'n.show(),global.AppLink.handleGlobalAppLink(),heyiHost.loginEstablished(),t("成功")', 1)
+    before = 'll=()=>ul.getDNSProxy()'
+    if text.count(before) != 1:
+        raise ValueError("Original network service binding differs")
+    text = text.replace(before, 'heyiNativeNetwork=require("./heyi/native-network.cjs").instance(),'
+                        'heyiNetworkAttached=heyiNativeNetwork.attachNative(ul),'
+                        'll=()=>ul.getDNSProxy()', 1)
+    before = ('const t=ul.getProxyConfig(),{useProxy:r,model:n,proxyConfig:i}=t||{};'
+              'r&&i&&n===Vc.PROXY&&i.httpProxy.username&&i.httpProxy.password?'
+              'e.loadURL("https://www.zhipin.com/"):e.loadURL(o)')
+    if text.count(before) != 1:
+        raise ValueError("Original authenticated-proxy download initialization differs")
+    # The original client warms its hidden download window on an HTTPS origin
+    # for authenticated proxies. Our relay is always authenticated, regardless
+    # of the user's old proxy preferences. Preserve that original path without
+    # writing our ephemeral credentials to the vendor configuration.
+    text = text.replace(before, 'e.loadURL("https://www.zhipin.com/")', 1)
+    before = 'c.name=t,c.isShow=!1,c.display={}'
+    if text.count(before) != 1:
+        raise ValueError("Original native window registration differs")
+    text = text.replace(before, 'c.name=t,heyiShell.attachWindow(c,t),c.isShow=!1,c.display={}', 1)
+    before = 'wh=function(e,t=!1){const r=ph.get(e);'
+    if text.count(before) != 1:
+        raise ValueError("Original native window transition differs")
+    text = text.replace(before, 'wh=function(e,t=!1){'
+                        'heyiShell.beforeNativeClose(e,ph.get("main"));const r=ph.get(e);', 1)
+    before = 'const r=new lC(uC.TEXT).getProtoMsg(e);cC.send(r),t()'
+    if text.count(before) != 1:
+        raise ValueError("Original native text-message observation hook differs")
+    text = text.replace(before, 'const r=new lC(uC.TEXT).getProtoMsg(e);'
+                        'try{heyiHost.observeNativeSend(mT.TechwolfChatProtocol.decode(r.finish()))}catch{}'
+                        'cC.send(r),t()', 1)
     text += """
 // Heyi local modification. Original authentication and handlers remain intact.
+const heyiShell = require("./heyi/integrated-shell.cjs").instance();
 const heyiHost = require("./heyi/host.cjs");
 const heyiOriginalReceive = sC.receiveMessage.bind(sC);
 sC.receiveMessage = function(messages) {
@@ -119,7 +151,7 @@ global._sdk_logout = function(...args) {
 heyiHost.start({
   user: () => zc.userInfo,
   loggedIn: () => global.isLogin === true,
-  show: () => {const win = fh();if (win) {win.show();win.focus();}},
+  show: () => heyiShell.showNative(),
   snapshot: async () => {
     const cookies = await e.session.defaultSession.cookies.get({});
     const token = await Ep.get("wt2");
@@ -137,6 +169,10 @@ heyiHost.start({
         zpToken: await Ep.getZpToken(), userAgent: Wc("client")}),
     }),
   sendText: input => cC.send(new lC(uC.TEXT).getProtoMsg(input)),
+  requestResume: input => new (require("./heyi/native-resume.cjs").NativeResume)({
+    nativeWindow: () => ph.get("main"),
+    allContents: () => e.webContents.getAllWebContents(),
+  }).request(input),
 }).catch(error => {
   require("node:fs").writeFileSync(
     require("node:path").join(e.app.getPath("userData"), "heyi-startup-status.json"),
@@ -151,7 +187,10 @@ heyiHost.start({
 def own_files(sdk_path):
     result = {}
     for name in ["bootstrap.cjs", "compat.cjs", "host.cjs", "native-rpc.cjs",
-                 "native-download.cjs", "shared-state.cjs", "smoke.cjs", "ui-check.cjs"]:
+                 "native-download.cjs", "shared-state.cjs", "smoke.cjs", "ui-check.cjs",
+                 "native-network.cjs", "integrated-shell.cjs", "shell-preload.cjs",
+                 "shell.html", "shell-renderer.cjs", "native-resume.cjs", "native-resume-smoke.cjs",
+                 "platform-connection-smoke.cjs"]:
         result["heyi/" + name] = (HERE / name).read_bytes()
     for source in (DESKTOP / "src").glob("*.cjs"):
         result["heyi/src/" + source.name] = source.read_bytes()

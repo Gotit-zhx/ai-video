@@ -6,12 +6,18 @@ const {spawn} = require('node:child_process');
 const {NativeRPC} = require('./native-rpc.cjs');
 const {LocalBridge} = require('./src/bridge.cjs');
 const {downloadResume} = require('./native-download.cjs');
+const {validateHeaderValue} = require('node:http');
+const {IntegratedShell} = require('./integrated-shell.cjs');
 
 async function run() {
   if (!process.env.HEYI_WORKBENCH_TEST_DATA || !process.env.HEYI_WORKBENCH_TEST_OUTPUT) {
     throw Error('Disposable test profile and output required');
   }
   await app.whenReady();
+  process.env.HEYI_TEST_USER_DATA = app.getPath('userData');
+  const userAgent = session.defaultSession.getUserAgent();
+  validateHeaderValue('user-agent', userAgent);
+  assert.match(userAgent, /HeyiWorkbench\//);
   session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
     callback({cancel: /^https?:/.test(details.url)});
   });
@@ -19,6 +25,58 @@ async function run() {
     nodeIntegration: false, contextIsolation: true, sandbox: true,
   }});
   await window.loadURL('data:text/html,<title>赫逸工作台 · 离线验证</title>');
+  const rendererUserAgent = await window.webContents.executeJavaScript('navigator.userAgent');
+  validateHeaderValue('user-agent', rendererUserAgent);
+  assert.match(rendererUserAgent, /HeyiWorkbench\//);
+  window.name = 'login';
+  const integrated = new IntegratedShell();
+  integrated.attachWindow(window, 'login');
+  integrated.configure({session: session.defaultSession,
+    url: 'data:text/html,<input id="fixture" placeholder="Offline paste target">',
+    origin: 'null'});
+  await Promise.all([integrated.platformReady, integrated.chromeReady]);
+  integrated.setNetworkState('ready');
+  assert.equal(await integrated.toolbar.webContents.executeJavaScript(
+    `new Promise(resolve => setTimeout(() => resolve(
+      document.querySelector('#network-label').textContent), 0))`), '网卡直连');
+  integrated.setNetworkState('stopped');
+  assert.equal(await integrated.toolbar.webContents.executeJavaScript(
+    `new Promise(resolve => setTimeout(() => resolve(
+      document.querySelector('#network-label').textContent), 0))`), '直连已断开');
+  for (const [state, label] of [['connected', 'BOSS 已连接'],
+    ['paused', 'BOSS 会话待确认'], ['signed-out', '等待扫码登录']]) {
+    integrated.setAccountState(state);
+    assert.equal(await integrated.toolbar.webContents.executeJavaScript(
+      `new Promise(resolve => setTimeout(() => resolve(
+        document.querySelector('#account').textContent), 0))`), label);
+  }
+  assert.equal(window.getBrowserViews().length, 2);
+  integrated.showWorkbench();
+  assert.equal(window.getBrowserViews().length, 3);
+  const platformId = integrated.platform.webContents.id;
+  const leftLabels = await integrated.sidebar.webContents.executeJavaScript(
+    `Array.from(document.querySelectorAll('nav button')).map(e => e.innerText.trim())`);
+  assert.deepEqual(leftLabels.map(text => text.split('\n').pop()), ['BOSS', '系统']);
+  let prevented = false, pasteCalls = 0;
+  const contents = integrated.platform.webContents;
+  const nativePaste = contents.paste;
+  contents.paste = () => {pasteCalls++;};
+  contents.emit('before-input-event', {preventDefault() {prevented = true;}},
+    {type: 'keyDown', key: 'v', meta: true, control: true, alt: false});
+  contents.paste = nativePaste;
+  assert.equal(prevented, true);assert.equal(pasteCalls, 1);
+  const main = new BrowserWindow({show: false});
+  main.name = 'main';
+  integrated.attachWindow(main, 'main');
+  integrated.beforeNativeClose('login', main);
+  assert.equal(window.isVisible(), false);
+  assert.equal(main.isVisible(), true);
+  assert.equal(main.getBrowserViews().length, 3);
+  assert.equal(integrated.platform.webContents.id, platformId);
+  assert.equal(window.getBrowserViews().length, 0);
+  window.destroy();
+  const platformConnection = await require('./platform-connection-smoke.cjs').run();
+  const resumeAction = await require('./native-resume-smoke.cjs').run();
   const attachment = Buffer.from('%PDF-1.7\n% offline native download fixture\n%%EOF');
   const attachmentURL = 'https://docdownload.zhipin.com/wflow/zpgeek/download/download4boss/fixture?id=fixture';
   const downloadSession = session.fromPartition('heyi-offline-download-probe');
@@ -80,7 +138,7 @@ async function run() {
     headers: {Origin: 'https://hoyee.org.cn'},
   });
   assert.equal((await response.json()).data.version, '0.1.24');
-  await bridge.close();await rpc.close();window.destroy();
+  await bridge.close();await rpc.close();main.destroy();
   downloadSession.protocol.uninterceptProtocol('https');
   fs.writeFileSync(process.env.HEYI_WORKBENCH_TEST_OUTPUT, JSON.stringify({
     ok: true, electron: process.versions.electron, node: process.versions.node,
@@ -88,6 +146,10 @@ async function run() {
     actualBossNetworkUsed: false, receiptFixture: true, loopbackBridge: true,
     packagedNativeWorker: true, sdkSourceGuard: true,
     nativeAttachmentFixture: true, nativeChromiumRequestCount: nativeDownloads,
+    nativeUserAgentHeaderValid: true, rendererUserAgentHeaderValid: true,
+    integratedSingleWindow: true, nativeLoginTransitionFixture: true,
+    leftNavigationFixture: true, pasteTargetRoutingFixture: true,
+    platformConnection, resumeAction,
   }, null, 2));
   app.exit(0);
 }

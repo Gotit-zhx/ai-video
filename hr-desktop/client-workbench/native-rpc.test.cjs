@@ -90,6 +90,18 @@ test('native risk and duplicate-login holds retain their actual stop code', asyn
   rpc.sessionLost('SESSION_MISMATCH');
   await assert.rejects(rpc.sendText('101', {friendId: '202'}, 'hello'), {code: 'SESSION_MISMATCH'});
 });
+test('account status follows real login and retains a risk pause after re-login', async t => {
+  const {rpc, login} = fixture(t), statuses = [];
+  rpc.on('session-status', state => statuses.push(state));
+  assert.equal(rpc.accountState(), 'connected');
+  login(false);
+  assert.equal(rpc.accountState(), 'signed-out');
+  login(true);rpc.loginEstablished();
+  rpc.sessionLost('ACCOUNT_RISK');
+  rpc.loginEstablished();
+  assert.equal(rpc.accountState(), 'paused');
+  assert.deepEqual(statuses, ['connected', 'paused', 'paused']);
+});
 test('account change before receipt cannot confirm the previous account write', async t => {
   const {rpc, account, calls} = fixture(t);
   const task = rpc.sendText('101', {friendId: '202'}, 'hello');
@@ -124,6 +136,7 @@ test('only an actual completed same-account native login can recover ordinary ex
   rpc.loginEstablished();
   assert.equal((await rpc.refreshSession('101')).accountId, '101');
   assert.equal(rpc.sessionFailure, null);
+  assert.equal(rpc.accountState(), 'connected');
 });
 test('re-login cannot clear risk or duplicate-login stops, or bind another account', async t => {
   for (const code of ['ACCOUNT_RISK', 'SECURITY_VERIFICATION_REQUIRED', 'SESSION_MISMATCH']) {

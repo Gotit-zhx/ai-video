@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
+<title>赫逸工作台</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#253044;background:#f8fafc}
+header{height:54px;display:flex;align-items:center;gap:24px;padding:0 14px 0 20px;border-bottom:1px solid #e2e8f0;-webkit-app-region:drag}
+.brand{display:flex;align-items:center;gap:9px;font-weight:650;white-space:nowrap;color:#000}.mark{width:25px;height:25px;border-radius:8px;display:grid;place-items:center;background:#000;color:white;font-size:12px}
+nav{display:none;flex-direction:column;gap:10px;height:100%;padding:18px 9px;border-right:1px solid #e2e8f0;-webkit-app-region:no-drag}
+button{border:0;background:transparent;cursor:pointer;color:#64748b;font:inherit;border-radius:9px;padding:10px 6px}nav button{display:flex;align-items:center;flex-direction:column;gap:7px;font-size:12px}nav .icon{display:grid;place-items:center;width:28px;height:28px;font-size:19px;font-weight:650;color:#000}nav button[aria-selected=true]{background:#e8ebef;color:#111}nav button:hover{background:#edf2f8}
+.status{margin-left:auto;display:flex;gap:16px;color:#64748b;font-size:12px;white-space:nowrap}.network{color:#14816f}.dot{display:inline-block;width:6px;height:6px;border-radius:100%;background:#16a085;margin-right:5px}
+.network[data-state=starting]{color:#64748b}.network[data-state=stopped]{color:#b84343}.network[data-state=starting] .dot,.network[data-state=stopped] .dot{background:currentColor}
+.controls{display:flex;gap:2px;-webkit-app-region:no-drag}.controls button{padding:6px 9px;font-size:16px}.controls button:hover{background:#e8edf4}
+body.sidebar header{display:none}body.sidebar nav{display:flex}body.sidebar{background:#f8fafc}
+</style>
+<header>
+  <div class="brand"><span class="mark">H</span>赫逸工作台</div>
+  <div class="status"><span id="network" class="network" data-state="starting"><i class="dot"></i><span id="network-label">正在连接网卡</span></span><span id="account">等待扫码登录</span></div>
+  <div class="controls"><button data-action="minimize" aria-label="最小化">−</button><button data-action="maximize" aria-label="最大化">□</button><button data-action="hide" aria-label="隐藏窗口">×</button></div>
+</header>
+<nav aria-label="应用页面">
+  <button data-action="boss" aria-selected="false"><span class="icon">B</span>BOSS</button>
+  <button data-action="workbench" aria-selected="true"><span class="icon">▦</span>系统</button>
+</nav>
+<script src="./shell-renderer.cjs"></script>
+</html>

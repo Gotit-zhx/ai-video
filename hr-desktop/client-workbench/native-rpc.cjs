@@ -3,8 +3,10 @@ const crypto = require('node:crypto');
 const {EventEmitter} = require('node:events');
 const {resumeURL, MAX_BYTES} = require('./native-download.cjs');
 
-const identity = value => /^[1-9]\d{0,19}$/.test(String(value || '')) ? String(value) : '';
+const identity = value => (typeof value !== 'number' || Number.isSafeInteger(value)) &&
+  /^[1-9]\d{0,19}$/.test(String(value || '')) ? String(value) : '';
 const failure = (code, message) => Object.assign(Error(message), {code});
+const RESUME_REQUEST_TEXT = '方便发一份简历过来吗？';
 
 // Only the packaged worker knows this per-launch credential. The website talks
 // to the existing authorized HR bridge, never directly to these native methods.
@@ -36,6 +38,10 @@ class NativeRPC extends EventEmitter {
   currentIdentity() {
     return identity(this.adapter.user()?.userId);
   }
+  accountState() {
+    if (this.closed || this.sessionFailure) return 'paused';
+    return this.currentIdentity() && this.adapter.loggedIn() ? 'connected' : 'signed-out';
+  }
   requireAccount(expected) {
     if (this.closed) throw failure('REQUESTS_PAUSED', '客户端已关闭');
     if (this.sessionFailure) throw failure(this.sessionFailure, 'BOSS 会话已失效，请在原客户端确认');
@@ -56,15 +62,37 @@ class NativeRPC extends EventEmitter {
     this.lostLoginGeneration = this.loginGeneration;
     this.sessionEpoch++;
     for (const pending of this.pendingSends.values()) {
+      pending.controller?.abort();
       pending.reject(failure(this.sessionFailure, 'BOSS 会话已暂停，请在原客户端确认'));
     }
     for (const controller of this.downloads) controller.abort();
+    this.emit('session-status', this.accountState());
     this.emit('session-lost', this.sessionFailure);
+  }
+  observeNativeSend(protocol) {
+    // Observe the original SDK's real encoded outgoing message. This does not
+    // create, replace, send, or acknowledge a message. The server receipt is
+    // still mandatory and must match this exact native clientMid.
+    const own = this.currentIdentity();
+    if (!own || this.closed || this.sessionFailure || !this.adapter.loggedIn()) return;
+    for (const message of protocol?.messages || []) {
+      if (identity(message.from?.uid) !== own || message.body?.type !== 1) continue;
+      const friend = identity(message.to?.uid);
+      const pending = this.pendingSends.get(friend);
+      const clientMid = String(message.cmid || '');
+      if (pending?.kind !== 'resume' || !pending.armed || pending.account !== own ||
+          pending.content !== message.body.text || !/^[1-9]\d{0,29}$/.test(clientMid)) continue;
+      if (pending.clientMid && pending.clientMid !== clientMid) {
+        pending.controller.abort();
+        pending.reject(failure('SEND_UNCONFIRMED', '观察到多个原生发送，已停止并保留未确认状态'));
+      } else pending.clientMid = clientMid;
+    }
   }
   loginEstablished() {
     // Only the original client's completed login handler calls this. This is
     // not exposed to the website or the worker and performs no login itself.
     this.loginGeneration++;
+    this.emit('session-status', this.accountState());
   }
   async refreshSession(account) {
     if (!this.sessionFailure) {
@@ -91,6 +119,7 @@ class NativeRPC extends EventEmitter {
       throw failure('SESSION_MISMATCH', '重新登录后的账号或登录态尚未核对');
     }
     this.sessionFailure = null;
+    this.emit('session-status', this.accountState());
     // The recruiter engine remains paused until explicit server verification;
     // no ledger, persistent hold or unconfirmed write is removed here.
     return snapshot;
@@ -111,6 +140,7 @@ class NativeRPC extends EventEmitter {
           message.newSubmit !== true && message.status === 1 && message.type === 'text') {
         for (const pending of this.pendingSends.values()) {
           if (pending.account === own && pending.friend === friend &&
+              pending.clientMid &&
               pending.clientMid === String(message.clientMid || '') &&
               pending.content === message.text && at >= pending.started / 1000 - 2) {
             pending.resolve({friendId: friend, messageId: mid, confirmedBy: 'client-message-receipt'});
@@ -133,7 +163,7 @@ class NativeRPC extends EventEmitter {
     const confirmation = new Promise((resolve, reject) => {settle = {resolve, reject};});
     const started = Date.now();
     const clientMid = String(started * 1000 + crypto.randomInt(1000));
-    const pending = {account, friend: id, content, clientMid, started, ...settle};
+    const pending = {kind: 'text', account, friend: id, content, clientMid, started, ...settle};
     this.pendingSends.set(id, pending);
     const timer = setTimeout(() => pending.reject(failure('SEND_UNCONFIRMED', '未收到实际消息回执，未自动重复发送')), this.sendTimeout);
     try {
@@ -151,6 +181,75 @@ class NativeRPC extends EventEmitter {
     } finally {
       clearTimeout(timer);
       if (this.pendingSends.get(id) === pending) this.pendingSends.delete(id);
+    }
+  }
+  async requestResume(account, friend, signal) {
+    this.requireAccount(account);
+    const id = identity(friend?.friendId || friend?.uid);
+    const job = friend?.encryptJobId || friend?.encJobId;
+    if (!id || typeof job !== 'string' || !job || job.length > 256) {
+      throw failure('JOB_CONVERSATION_MISMATCH', '候选人与当前职位未核实');
+    }
+    if (typeof this.adapter.requestResume !== 'function') {
+      throw failure('UNSUPPORTED_NATIVE_ACTION', '原客户端索取简历尚未就绪');
+    }
+    // Every resume action changes the one native chat editor. Serialize this
+    // across candidates as well as keeping the per-friend send exclusion.
+    if (this.resumeAction || this.pendingSends.has(id)) {
+      throw failure('ACCOUNT_BUSY', '原客户端的简历索取操作尚未完成，请稍后');
+    }
+    let settle, timer;
+    const confirmation = new Promise((resolve, reject) => {settle = {resolve, reject};});
+    // The account may be lost while the native UI is still preparing its
+    // conversation. Keep that rejection observed until Promise.all is attached.
+    void confirmation.catch(() => {});
+    const controller = new AbortController();
+    const cancel = () => {
+      controller.abort();
+      pending.reject(failure('REQUESTS_PAUSED', '索取简历连接已停止'));
+    };
+    const pending = {kind: 'resume', account, friend: id, content: RESUME_REQUEST_TEXT,
+      clientMid: '', started: Date.now(), controller, armed: false, ...settle};
+    this.pendingSends.set(id, pending);
+    this.resumeAction = pending;
+    signal?.addEventListener('abort', cancel, {once: true});
+    const prepareTimer = setTimeout(() => {
+      controller.abort();
+      pending.reject(failure('REQUESTS_PAUSED', '原客户端会话准备超时，已停止'));
+    }, 6500);
+    try {
+      if (signal?.aborted) throw failure('REQUESTS_PAUSED', '索取简历连接已停止');
+      const perform = this.adapter.requestResume({
+        friend, signal: controller.signal, checkAccount: () => this.requireAccount(account),
+        onReady: () => {
+          this.requireAccount(account);
+          if (controller.signal.aborted) throw failure('REQUESTS_PAUSED', '索取简历已停止');
+          if (pending.armed) throw failure('INVALID_ACTION', '索取简历不能重复确认');
+          clearTimeout(prepareTimer);
+          pending.started = Date.now();
+          pending.armed = true;
+          timer = setTimeout(() => {
+            controller.abort();
+            pending.reject(failure('SEND_UNCONFIRMED', '未收到索取简历的实际消息回执，未自动重发'));
+          }, this.sendTimeout);
+        },
+      });
+      try {
+        await Promise.all([perform, confirmation]);
+      } catch (error) {
+        if (pending.armed && !['AUTH_EXPIRED', 'ACCOUNT_RISK', 'SESSION_MISMATCH',
+          'SECURITY_VERIFICATION_REQUIRED', 'REQUESTS_PAUSED'].includes(error.code)) {
+          throw failure('SEND_UNCONFIRMED', '索取简历未得到完整确认，请核对原客户端；没有自动重发');
+        }
+        throw error;
+      }
+      this.requireAccount(account);
+      return {...await confirmation, exchangeType: 4};
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      clearTimeout(prepareTimer);clearTimeout(timer);controller.abort();
+      if (this.pendingSends.get(id) === pending) this.pendingSends.delete(id);
+      if (this.resumeAction === pending) this.resumeAction = null;
     }
   }
   async download(account, value, signal) {
@@ -207,6 +306,7 @@ class NativeRPC extends EventEmitter {
       return result;
     }
     if (route === '/send-text') return this.sendText(input.accountId, input.friend, input.content);
+    if (route === '/request-resume') return this.requestResume(input.accountId, input.friend, signal);
     throw failure('UNSUPPORTED_OPERATION', '不支持的客户端操作');
   }
   async handle(req, res) {
@@ -248,10 +348,14 @@ class NativeRPC extends EventEmitter {
   }
   async close() {
     this.closed = true;
+    this.emit('session-status', this.accountState());
     for (const controller of this.downloads) controller.abort();
-    for (const pending of this.pendingSends.values()) pending.reject(failure('REQUESTS_PAUSED', '客户端已关闭'));
+    for (const pending of this.pendingSends.values()) {
+      pending.controller?.abort();
+      pending.reject(failure('REQUESTS_PAUSED', '客户端已关闭'));
+    }
     this.server?.closeAllConnections?.();
     await new Promise(resolve => this.server ? this.server.close(resolve) : resolve());
   }
 }
-module.exports = {NativeRPC, identity};
+module.exports = {NativeRPC, identity, RESUME_REQUEST_TEXT};

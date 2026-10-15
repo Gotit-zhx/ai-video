@@ -36,6 +36,7 @@ class NativeClientTest(unittest.TestCase):
         from boss_agent_cli.api.browser_client import BrowserSession
         import conversation_scope
         calls = []
+        resume_calls = []
         platform_code = [0]
 
         def call(client, path, **payload):
@@ -45,6 +46,9 @@ class NativeClientTest(unittest.TestCase):
             if path == "/http":
                 calls.append(payload)
                 return {"code": platform_code[0], "zpData": {"fixture": True}}
+            if path == "/request-resume":
+                resume_calls.append(payload)
+                return {"confirmedBy": "client-message-receipt", "messageId": "303"}
             raise AssertionError("Unexpected offline native action")
 
         # One isolated process owns these monkeypatches. No actual BOSS endpoint
@@ -57,10 +61,12 @@ class NativeClientTest(unittest.TestCase):
             with self.assertRaises(native_client.NativeError):
                 BrowserSession.evaluate_js(object(), "arbitrary script")
             guard.MIN_INTERVAL = 0
-            guard.HOURLY_LIMIT = 3
+            guard.HOURLY_LIMIT = 4
             guard.install_policy()
             self.assertTrue(_BaseHttpClient._request._heyi_guarded)
             token = {"cookies": {"wt2": "offline-token"}, "user_agent": "offline-agent"}
+            from boss_agent_cli.auth.token_store import TokenStore
+            TokenStore(connector.AUTH_DIR).save(token)
             auth = types.SimpleNamespace(get_token=lambda: token)
             client = BossRecruiterClient(auth, delay=(0, 0), cdp_url="http://127.0.0.1:12345",
                                          browser_source="stored-cookie")
@@ -68,6 +74,20 @@ class NativeClientTest(unittest.TestCase):
             url = "https://www.zhipin.com/wapi/zpchat/boss/historyMsg"
             self.assertEqual(client._request("GET", url)["code"], 0)
             self.assertEqual(len(calls), 1)
+            client.friend_detail = mock.Mock(return_value={"code": 0, "zpData": {
+                "friendList": [{"uid": 202, "encryptJobId": "expected-job", "securityId": "fixture"}]}})
+            client._get_browser = mock.Mock(return_value=types.SimpleNamespace(
+                evaluate_js=lambda script, arg: BrowserSession.evaluate_js(object(), script, arg)))
+            scope = conversation_scope.ConversationScope(BossRecruiterClient)
+            with scope.expect("202", "expected-job"):
+                result = client.exchange_request_by_friend(202, 4)
+            self.assertEqual(result["zpData"]["confirmedBy"], "client-message-receipt")
+            self.assertEqual(len(resume_calls), 1)
+            with sqlite3.connect(guard.BUDGET_DB) as ledger:
+                self.assertEqual(ledger.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 2)
+            with self.assertRaises(native_client.NativeError):
+                client.exchange_request_by_friend(202, 1)
+            self.assertEqual(len(resume_calls), 1)
             platform_code[0] = 36
             with self.assertRaises(AccountRiskError):
                 client._request("GET", url)
@@ -76,16 +96,21 @@ class NativeClientTest(unittest.TestCase):
             connector.pause_requests("ACCOUNT_RISK")
             with self.assertRaises(Exception):
                 client._request("GET", url)
+            with scope.expect("202", "expected-job"), self.assertRaises(Exception):
+                client.exchange_request_by_friend(202, 4)
+            self.assertEqual(len(resume_calls), 1)
             self.assertEqual(len(calls), 2)
             self.assertTrue(guard.RISK_HOLD.exists())
             with sqlite3.connect(guard.BUDGET_DB) as ledger:
-                self.assertEqual(ledger.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 2)
+                self.assertEqual(ledger.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 3)
             # Candidate/job verification still precedes the native send.
             client.friend_detail = mock.Mock(return_value={"code": 0, "zpData": {
                 "friendList": [{"uid": 202, "encryptJobId": "wrong-job", "securityId": "fixture"}]}})
-            scope = conversation_scope.ConversationScope(BossRecruiterClient)
             with scope.expect("202", "expected-job"), self.assertRaises(conversation_scope.ScopeError):
                 client.send_message_by_friend(202, "offline fixture")
+            with scope.expect("202", "expected-job"), self.assertRaises(conversation_scope.ScopeError):
+                client.exchange_request_by_friend(202, 4)
+            self.assertEqual(len(resume_calls), 1)
             # Webpage Vue actions cannot be silently dispatched via native RPC.
             from boss_agent_cli.api.client import PlatformRiskError
             with self.assertRaises(PlatformRiskError):

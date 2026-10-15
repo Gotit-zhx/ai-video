@@ -8,7 +8,10 @@ const data = process.env.HEYI_WORKBENCH_TEST_DATA ||
   path.join(app.getPath('appData'), 'heyi-boss-workbench');
 fs.mkdirSync(data, {recursive: true, mode: 0o700});
 app.setPath('userData', data);
-app.setName('赫逸工作台 · 客户端改造版');
+// Electron puts this internal name in the default User-Agent before the
+// original client builds its HTTP headers. Keep our own product token ASCII;
+// the macOS display name and window titles still provide the Chinese branding.
+app.setName('HeyiWorkbench');
 require('./compat.cjs').installWebTypes();
 if (process.argv.includes('--heyi-workbench-smoke')) {
   require('./smoke.cjs').run().catch(error => {
