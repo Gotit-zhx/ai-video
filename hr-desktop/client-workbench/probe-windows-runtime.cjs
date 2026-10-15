@@ -8,6 +8,7 @@ const net = require('node:net');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {waitForProcess} = require('./process-outcome.cjs');
 const {RuntimeLogSignals} = require('./runtime-log-signals.cjs');
+const {inspectSdkScopes} = require('./sdk-scope-inventory.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -93,6 +94,24 @@ async function main() {
     if (entry?.platform !== 'win32' || entry.arch !== 'ia32' || entry.requireType !== 'function') {
       throw Error('Unexpected original running environment');
     }
+    if (entry.profileState?.userDataUnderTestRoot !== true ||
+        entry.profileState?.appDataUnderTestRoot !== true) {
+      throw Error('Original profile isolation not verified before scope inspection');
+    }
+    let scopeReport;
+    try {
+      const deadline = Date.now() + 15000;
+      while (!(await evaluateRunning(connection, 'typeof globalThis.$socket?.handleEvent === "function"'))) {
+        if (Date.now() >= deadline) throw Error('Original dispatcher not registered');
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      scopeReport = await inspectSdkScopes(connection);
+    } catch {
+      scopeReport = {mode: 'closure-metadata-only', ok: false,
+        reason: 'original-scope-inventory-unavailable', sdkMethodsInvoked: 0};
+    }
+    await fs.writeFile(path.join(root, 'sdk-scope-inventory.json'),
+      JSON.stringify(scopeReport, null, 2));
     const observer = path.join(__dirname, 'windows-runtime-observer.cjs');
     const result = await evaluateRunning(connection,
       `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({root, output, detachInspector: true})}))(${loader})`);

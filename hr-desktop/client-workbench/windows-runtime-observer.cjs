@@ -112,6 +112,7 @@ module.exports = function observe(electron, config) {
       originalMainLoaded: Object.keys(require.cache).some(file => /[\\/]main\.jsc$/.test(file)),
       mainModuleName: path.basename(process.mainModule?.filename || ''),
       mainExports: members(process.mainModule?.exports),
+      applicationMembers: {own: members(app), prototype: members(Object.getPrototypeOf(app))},
       namespaces: ['$api', '$socket', '$windowsMuster'].map(namespace),
       globalNames: Object.entries(Object.getOwnPropertyDescriptors(globalThis))
         .filter(([name]) => name.startsWith('$')).map(([name, entry]) => ({name, type: typeof entry.value})),
