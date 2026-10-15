@@ -85,6 +85,18 @@ def patch_main(data):
         raise ValueError("Original app-link namespace differs")
     # Avoid taking over the installed official client's system URL handler.
     text = text.replace(before, 'const fI="heyi-boss-workbench"', 1)
+    # Preserve real HTTP status for our own caller. Original callers still
+    # receive exactly the original body and all original handling runs first.
+    before = 'pg("info",{config:t,status:a,statusCode:c,ret:u}),r(l)'
+    if text.count(before) != 1:
+        raise ValueError("Original HTTP response hook differs")
+    text = text.replace(before, 'pg("info",{config:t,status:a,statusCode:c,ret:u}),'
+                        'r(e.heyiWorkbenchMeta?{heyiNativeHttp:1,statusCode:c,body:l}:l)', 1)
+    before = 'n.show(),global.AppLink.handleGlobalAppLink(),t("成功")'
+    if text.count(before) != 1:
+        raise ValueError("Original completed-login hook differs")
+    text = text.replace(before,
+                        'n.show(),global.AppLink.handleGlobalAppLink(),heyiHost.loginEstablished(),t("成功")', 1)
     text += """
 // Heyi local modification. Original authentication and handlers remain intact.
 const heyiHost = require("./heyi/host.cjs");
@@ -117,7 +129,13 @@ heyiHost.start({
     return {accountId: String(zc.userInfo?.userId || ""),
       cookies, userAgent: Wc("client")};
   },
-  request: input => fg(input),
+  request: input => fg({...input, heyiWorkbenchMeta: true}),
+  download: (input, checkAccount, signal) =>
+    require("./heyi/native-download.cjs").downloadResume({
+      net: e.net, session: e.session.defaultSession, url: input.url, checkAccount, signal,
+      credentials: async () => ({token: await Ep.get("wt2"),
+        zpToken: await Ep.getZpToken(), userAgent: Wc("client")}),
+    }),
   sendText: input => cC.send(new lC(uC.TEXT).getProtoMsg(input)),
 }).catch(error => {
   require("node:fs").writeFileSync(
@@ -132,7 +150,8 @@ heyiHost.start({
 
 def own_files(sdk_path):
     result = {}
-    for name in ["bootstrap.cjs", "compat.cjs", "host.cjs", "native-rpc.cjs", "smoke.cjs", "ui-check.cjs"]:
+    for name in ["bootstrap.cjs", "compat.cjs", "host.cjs", "native-rpc.cjs",
+                 "native-download.cjs", "shared-state.cjs", "smoke.cjs", "ui-check.cjs"]:
         result["heyi/" + name] = (HERE / name).read_bytes()
     for source in (DESKTOP / "src").glob("*.cjs"):
         result["heyi/src/" + source.name] = source.read_bytes()

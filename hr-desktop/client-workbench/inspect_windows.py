@@ -46,11 +46,39 @@ def inspect(path):
                                 "address": hex(image + int(block["rva"], 16) + start - block["fileOffset"])
                                 if block else None})
                 start += len(needle)
+    references = []
+    if machine == 0x14C:
+        for marker in markers:
+            if not marker["address"] or marker["marker"] not in ("app.asar", "main.jsc", "bzl-aes-256-gcm-v2"):
+                continue
+            candidates = []
+            needle = struct.pack("<I", int(marker["address"], 16))
+            for block in blocks:
+                if not block["executable"]:
+                    continue
+                start, end = block["fileOffset"], block["fileOffset"] + block["fileBytes"]
+                delta = image + int(block["rva"], 16) - start
+                cursor = start
+                while len(candidates) < 32:
+                    cursor = data.find(needle, cursor, end)
+                    if cursor < 0:
+                        break
+                    # Compiler-specific heuristic only. Ghidra must validate
+                    # instruction boundaries and the containing function.
+                    prologue = max(data.rfind(pattern, max(start, cursor - 8192), cursor)
+                                   for pattern in (b"\x55\x89\xe5", b"\x55\x8b\xec"))
+                    candidates.append({"operandAddress": hex(cursor + delta),
+                                       "candidateFunction": hex(prologue + delta) if prologue >= 0 else None,
+                                       "prologueDistance": cursor - prologue if prologue >= 0 else None})
+                    cursor += 4
+            references.append({"marker": marker["marker"], "encoding": marker["encoding"],
+                               "address": marker["address"], "unverifiedOperandCandidates": candidates})
     return {"path": str(path), "sha256": hashlib.sha256(data).hexdigest(),
             "bytes": len(data), "machine": hex(machine), "architecture":
             "x86" if machine == 0x14C else "x64" if machine == 0x8664 else "unknown",
             "optionalHeader": hex(magic), "imageBase": hex(image), "entryRva": hex(entry),
             "entryAddress": hex(image + entry), "sections": blocks, "loaderMarkers": markers,
+            "loaderReferences": references,
             "targetExecuted": False, "encryptedSourceRecovered": False}
 
 

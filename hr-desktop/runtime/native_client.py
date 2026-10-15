@@ -49,6 +49,30 @@ class NativeClient:
                   and owned(c.get("domain", ""))}
         return tokens, value["userAgent"]
 
+    def download(self, url):
+        """Receive bounded bytes; never expose remote URLs or credentials."""
+        body = json.dumps({"accountId": self.config["accountId"], "url": url}).encode("utf-8")
+        request = urllib.request.Request(
+            self.config["url"] + "/download", data=body, method="POST",
+            headers={"Authorization": "Bearer " + self.config["secret"],
+                     "Content-Type": "application/json"})
+        try:
+            response = self.opener.open(request, timeout=75)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            if response.headers.get("X-Heyi-Native-Download") != "1":
+                try:
+                    value = json.loads(response.read(65537))
+                except (ValueError, UnicodeError):
+                    value = {}
+                error = value.get("error") or {}
+                raise NativeError(error.get("code", "DOWNLOAD_FAILED"), "原客户端附件下载未完成")
+            data = response.read(20 * 1024 * 1024 + 1)
+            if len(data) > 20 * 1024 * 1024:
+                raise NativeError("ATTACHMENT_TOO_LARGE", "附件超过 20 MiB 上限")
+            return response.status, data
+
 
 def install(config, guard):
     import httpx
@@ -62,6 +86,37 @@ def install(config, guard):
 
     class Transport(httpx.BaseTransport):
         def handle_request(self, request):
+            if request.url.host == "docdownload.zhipin.com":
+                if request.method != "GET":
+                    raise NativeError("INVALID_ATTACHMENT", "附件下载只允许读取")
+                # Upstream streams attachments outside _request. Wrap this
+                # otherwise unguarded read in the same lock/budget/session
+                # policy, once. No extra request or authentication refresh.
+                with guard.request_trace("native_download", "BOSS_RESUME_DOWNLOAD_URL", "GET") as metadata:
+                    guard.assert_requests_allowed()
+                    guard.reserve_request()
+                    guard.assert_requests_allowed()
+                    guard.verify_session()
+                    status, content = native.download(str(request.url))
+                    metadata["http_status"] = status
+                    if status == 429:
+                        raise guard.SessionSafetyError("RATE_LIMITED", "平台要求降低请求频率，附件未重试")
+                    if status in (301, 302, 303, 307, 308, 401, 403):
+                        raise guard.SessionSafetyError("TOKEN_REFRESH_FAILED", "附件访问需要在原客户端确认")
+                    try:
+                        payload = json.loads(content)
+                    except (ValueError, UnicodeError):
+                        payload = {}
+                    code = payload.get("code") if isinstance(payload, dict) else None
+                    metadata["platform_code"] = code if type(code) is int else None
+                    if code in (9, 36, 37):
+                        stop = {9: "RATE_LIMITED", 36: "ACCOUNT_RISK", 37: "ENVIRONMENT_RISK"}[code]
+                        if code == 37:
+                            from boss_agent_cli.api.zhipin_errors import classify_code_37
+                            if classify_code_37(payload) == "token_expired":
+                                stop = "TOKEN_REFRESH_FAILED"
+                        raise guard.SessionSafetyError(stop, "平台要求确认附件访问，已停止后续请求")
+                    return httpx.Response(status, content=content, request=request)
             data = {}
             raw = request.read()
             if raw:
@@ -71,6 +126,11 @@ def install(config, guard):
                     data = {k: v[-1] if len(v) == 1 else v
                             for k, v in parse_qs(raw.decode("utf-8"), keep_blank_values=True).items()}
             result = native.call("/http", url=str(request.url), method=request.method, data=data)
+            if isinstance(result, dict) and result.get("heyiNativeHttp") == 1:
+                status = result.get("statusCode")
+                if type(status) is not int or not 100 <= status <= 599:
+                    raise NativeError("NATIVE_TRANSPORT_ERROR", "原客户端未返回有效的 HTTP 状态")
+                return httpx.Response(status, json=result.get("body"), request=request)
             status = result.get("statusCode", 200) if isinstance(result, dict) else 200
             if not isinstance(status, int) or not 100 <= status <= 599:
                 status = 200
