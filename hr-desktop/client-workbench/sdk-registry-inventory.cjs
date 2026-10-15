@@ -27,10 +27,17 @@ async function inspectSdkRegistry(connection, options = {}) {
         const isProxy=process.mainModule.require('node:util').types.isProxy;
         const count=this.length;
         if(!Number.isSafeInteger(count)||count>200000)return {bounded:false,registries:[]};
-        const registries=[];
+        const registries=[],authenticationHelpers=[];
         for(let index=0;index<count;index++){
           const candidate=this[index];
           if(!candidate||typeof candidate!=='object'||isProxy(candidate))continue;
+          const auth=Object.getOwnPropertyDescriptor(candidate,'getAuthCookieHeader');
+          if(typeof auth?.value==='function'){
+            if(authenticationHelpers.length>=8)return {bounded:false,registries:[]};
+            authenticationHelpers.push({members:Object.entries(Object.getOwnPropertyDescriptors(candidate))
+              .filter(([name,d])=>/^[A-Za-z_$][A-Za-z0-9_$]{0,99}$/.test(name)&&typeof d.value==='function')
+              .slice(0,80).map(([name])=>({name,type:'function'}))});
+          }
           const login=Object.getOwnPropertyDescriptor(candidate,'_sdk_getLoginStatus');
           const network=Object.getOwnPropertyDescriptor(candidate,'_sdk_getNetworkStatus');
           if(typeof login?.value!=='function'||typeof network?.value!=='function')continue;
@@ -42,7 +49,7 @@ async function inspectSdkRegistry(connection, options = {}) {
             }));
           registries.push({sdkNames});
         }
-        return {bounded:true,registries};
+        return {bounded:true,registries,authenticationHelpers};
       }`,
     });
     if (response.exceptionDetails || response.result?.value?.bounded !== true) {
@@ -53,7 +60,8 @@ async function inspectSdkRegistry(connection, options = {}) {
     return {mode: 'anonymous-registry-metadata-only', ok: registries.length === 1,
       reason: registries.length === 1 ? 'unique-sdk-registry' :
         registries.length === 0 ? 'sdk-registry-not-found' : 'sdk-registry-ambiguous',
-      sdkMethodsInvoked: 0, rawValuesRetained: false, registries};
+      sdkMethodsInvoked: 0, rawValuesRetained: false, registries,
+      authenticationHelpers:response.result.value.authenticationHelpers};
   } catch {
     failed = true;
     throw Object.assign(Error('Original registry inventory unavailable'), {

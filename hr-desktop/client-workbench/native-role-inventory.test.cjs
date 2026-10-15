@@ -44,7 +44,8 @@ class Receiver{receiveMessage(){fixtureCalls++}addMessageById(){fixtureCalls++}
 class Sender{send(){fixtureCalls++}connect(){fixtureCalls++}
  onMessage(){fixtureCalls++}sendPresence(){fixtureCalls++}}
 class Factory{getProtoMsg(){fixtureCalls++}generateMsgProto(){fixtureCalls++}}
-globalThis.fixtureKeepAlive=[new Identity,new Network,new Cookies,new Receiver,new Sender,Factory];
+class Authentication{getAuthCookieHeader(){fixtureCalls++;return 'private-cookie'}}
+globalThis.fixtureKeepAlive=[new Identity,new Network,new Cookies,new Receiver,new Sender,Factory,new Authentication];
 `);
   const report=await inspectNativeRoles(connection,{anonymousIsolated:true});
   assert.equal(report.singletonsAvailable,true);
@@ -53,6 +54,14 @@ globalThis.fixtureKeepAlive=[new Identity,new Network,new Cookies,new Receiver,n
     assert.deepEqual(report.roles[role].instanceCounts,[1],role);
   }
   assert.deepEqual(report.roles.messageFactory.instanceCounts,[0]);
+  assert.equal(report.roles.authentication.uniqueSingleton,true);
+  assert.deepEqual(report.roles.authentication.availableMembers,[
+    [{name:'getAuthCookieHeader',type:'function'}],
+  ]);
+  assert.deepEqual(report.knownAuthenticationFunctions.sort((a,b)=>a.name.localeCompare(b.name)),[
+    {name:'getAuthCookieHeader',argumentCount:0},{name:'getZpToken',argumentCount:0},
+  ]);
+  assert.equal(JSON.stringify(report).includes('private-cookie'),false);
   assert.equal(await evaluateRunning(connection,'fixtureCalls'),0);
   assert.equal(report.originalMethodsInvoked,0);
   assert.equal(JSON.stringify(report).includes('objectId'),false);

@@ -7,6 +7,7 @@ const ROLES = Object.freeze({
     setProxy:'function', stopProxy:'function'},
   cookies: {get:'function', getZpToken:'function', setLoginCookies:'function',
     clearLoginCookies:'function'},
+  authentication: {getAuthCookieHeader:'function'},
   receiver: {receiveMessage:'function', addMessageById:'function', getMessageById:'function'},
   sender: {send:'function', connect:'function', onMessage:'function', sendPresence:'function'},
   messageFactory: {getProtoMsg:'function', generateMsgProto:'function'},
@@ -67,8 +68,22 @@ async function inspectNativeRoles(connection, options = {}) {
       const items = (properties.result || []).filter(item => /^\d+$/.test(item.name));
       if (items.length > 8) throw Error('Role prototype limit exceeded');
       const instances = [];
+      const availableMembers = [];
       for (const item of items) {
         if (!item.value?.objectId) throw Error('Role prototype reference unavailable');
+        const members=await command('Runtime.callFunctionOn',{
+          objectId:item.value.objectId,objectGroup:group,returnByValue:true,
+          functionDeclaration:`function(){
+            return Object.entries(Object.getOwnPropertyDescriptors(this))
+              .filter(([name,d])=>name!=='constructor'&&/^[A-Za-z_$][A-Za-z0-9_$]{0,99}$/.test(name)&&
+                (typeof d.value==='function'||typeof d.get==='function'||typeof d.set==='function'))
+              .slice(0,80).map(([name,d])=>({name,type:typeof d.value==='function'?'function':'accessor'}));
+          }`,
+        });
+        if(members.exceptionDetails||!Array.isArray(members.result?.value)){
+          throw Error('Role member metadata unavailable');
+        }
+        availableMembers.push(members.result.value);
         stage = 'query-role-instances';
         const queried = await command('Runtime.queryObjects', {
           prototypeObjectId: item.value.objectId, objectGroup: group,
@@ -86,10 +101,29 @@ async function inspectNativeRoles(connection, options = {}) {
       }
       roles[role] = {prototypeMatches: items.length, instanceCounts: instances,
         uniqueSingleton: items.length === 1 && instances[0] === 1,
-        members: Object.entries(signature).map(([name,type]) => ({name,type}))};
+        members: Object.entries(signature).map(([name,type]) => ({name,type})),availableMembers};
+    }
+    const authFunctions=await command('Runtime.callFunctionOn',{
+      objectId:functions.objects.objectId,objectGroup:group,returnByValue:true,
+      functionDeclaration:`function(){
+        const isProxy=process.mainModule.require('node:util').types.isProxy;
+        const result=[];
+        for(const fn of this){
+          if(typeof fn!=='function'||isProxy(fn))continue;
+          const name=Object.getOwnPropertyDescriptor(fn,'name')?.value;
+          if(!['getAuthCookieHeader','getZpToken','getClientHeaders'].includes(name))continue;
+          if(result.length>=20)throw Error('function match limit');
+          const length=Object.getOwnPropertyDescriptor(fn,'length')?.value;
+          result.push({name,argumentCount:Number.isSafeInteger(length)?length:null});
+        }
+        return result;
+      }`,
+    });
+    if(authFunctions.exceptionDetails||!Array.isArray(authFunctions.result?.value)){
+      throw Error('Known function metadata unavailable');
     }
     return {mode:'anonymous-native-role-metadata-only', rawValuesRetained:false,
-      originalMethodsInvoked:0, roles,
+      originalMethodsInvoked:0, roles,knownAuthenticationFunctions:authFunctions.result.value,
       singletonsAvailable: ['identity','network','cookies','receiver','sender']
         .every(role => roles[role].uniqueSingleton)};
   } catch {

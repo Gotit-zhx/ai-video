@@ -45,7 +45,8 @@ const decoy=new Proxy({},{
   getOwnPropertyDescriptor(){fixtureGetters++;throw Error('proxy must never run')},
   ownKeys(){fixtureGetters++;throw Error('proxy must never run')}
 });
-globalThis.fixtureKeepAlive=()=>[registry,decoy];
+const helper={getAuthCookieHeader(){fixtureCalls++;return 'private-cookie'}};
+globalThis.fixtureKeepAlive=()=>[registry,decoy,helper];
 `);
   const report = await inspectSdkRegistry(connection, {anonymousIsolated: true});
   assert.equal(report.ok, true);
@@ -61,6 +62,10 @@ globalThis.fixtureKeepAlive=()=>[registry,decoy];
   assert.equal(JSON.stringify(report).includes('objectId'), false);
   assert.equal(report.sdkMethodsInvoked, 0);
   assert.equal(report.rawValuesRetained, false);
+  assert.deepEqual(report.authenticationHelpers,[
+    {members:[{name:'getAuthCookieHeader',type:'function'}]},
+  ]);
+  assert.equal(JSON.stringify(report).includes('private-cookie'),false);
 });
 
 test('missing or multiple registries cannot be mistaken for a usable mapping', async t => {
