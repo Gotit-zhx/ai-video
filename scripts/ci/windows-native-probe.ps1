@@ -61,7 +61,14 @@ try {
         }
     }
     $result.resourcesVerified = $true
-    $executables = @(Get-ChildItem (Split-Path $app) -Filter '*.exe' -Recurse -File)
+    $workbench = $null
+    if ($env:HEYI_NATIVE_BUILD_WORKBENCH -eq 'true') {
+        $workbench = Join-Path $root 'workbench'
+        & python (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\build_windows.py') `
+            --source-dir (Split-Path $app) --output-dir $workbench
+        if ($LASTEXITCODE -ne 0) { throw 'Windows workbench build did not complete' }
+    }
+    $executables = @(Get-ChildItem $root -Filter '*.exe' -Recurse -File)
     # Hard isolation also covers vendor helper/daemon executables.
     foreach ($file in $executables) {
         $name = "$rulePrefix-$($rules.Count)"
@@ -72,8 +79,38 @@ try {
         $rule = Get-NetFirewallRule -DisplayName $name
         if ($rule.Action -ne 'Block' -or $rule.Enabled -ne 'True') { throw 'OS network boundary not active' }
     }
-    @{ verified = $true; executables = $executables.Count; originalProfileUsed = $false } |
+    @{ verified = $true; executables = $executables.Count; originalProfileUsed = $false;
+       workbenchIncluded = [bool]$workbench } |
         ConvertTo-Json | Set-Content (Join-Path $root 'firewall.json') -Encoding utf8NoBOM
+    $workbenchCode = 0
+    if ($workbench) {
+        $packagedExe = Join-Path $workbench '赫逸工作台.exe'
+        $testEnvironment = @{
+            ELECTRON_RUN_AS_NODE = $null
+            HEYI_NATIVE_PROBE_ROOT = $root
+            HEYI_WORKBENCH_TEST_DATA = Join-Path $root 'packaged-profile'
+            HEYI_WORKBENCH_TEST_PORT = '0'
+            HEYI_WORKBENCH_TEST_OUTPUT = Join-Path $root 'windows-workbench-smoke.json'
+            NODE_OPTIONS = $null
+            NODE_PATH = $null
+        }
+        $packagedTest = Start-Process -FilePath $packagedExe -WorkingDirectory $workbench `
+            -ArgumentList @('--self-test') `
+            -Environment $testEnvironment -WindowStyle Hidden -PassThru
+        if (!$packagedTest.WaitForExit(120000)) {
+            Stop-Process -Id $packagedTest.Id -Force -ErrorAction SilentlyContinue
+            $workbenchCode = -1
+        } else { $workbenchCode = $packagedTest.ExitCode }
+        $smokePath = Join-Path $root 'windows-workbench-smoke.json'
+        if (!(Test-Path $smokePath)) { $workbenchCode = 1 }
+        else {
+            $smoke = Get-Content $smokePath -Raw | ConvertFrom-Json
+            if ($smoke.ok -ne $true -or $smoke.packagedEntryPoint -ne $true -or
+                $smoke.entryControllerExitCode -ne 0) { $workbenchCode = 1 }
+        }
+        $result.workbenchBuilt = $true
+        $result.workbenchExitCode = $workbenchCode
+    }
     # Control run: same pinned, firewalled program without inspector/injection.
     $baseline = Join-Path $root 'baseline'
     foreach ($folder in @('app-data','local-app-data','user','temp','profile')) {
@@ -109,6 +146,7 @@ try {
     $result.originalExecuted = $true
     & node (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\probe-windows-runtime.cjs') $app $root
     if ($LASTEXITCODE -ne 0) { throw 'Windows original-runtime probe did not complete' }
+    if ($workbenchCode -ne 0) { throw 'Packaged Windows workbench did not pass' }
     $result.ok = $true
 } catch {
     $result.error = $_.Exception.Message
@@ -164,6 +202,7 @@ try {
         'native-role-inventory.json', 'native-auth-behavior.json', 'native-http-smoke.json',
         'native-message-contract.json', 'native-receive-contract.json', 'native-request-contract.json',
         'native-request-builder.json', 'native-cold-startup.json', 'native-launcher-startup.json',
+        'windows-workbench-smoke.json',
         'windows-shell-smoke.json',
         'matching-runtime-scope-fixture.json')) {
         $report = Join-Path $root $name

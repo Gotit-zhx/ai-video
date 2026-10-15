@@ -16,3 +16,11 @@ test('offline and UI probes never select real assistant records', () => {
   assert.equal(paths.assistantRoot, path.resolve('/offline/native-client/heyi/offline-assistant'));
   assert.ok(paths.recruiterDirectory.startsWith(paths.nativeRoot + path.sep));
 });
+test('Windows launcher can preserve the legacy records outside its isolated native AppData', () => {
+  const assistantRoot = path.resolve('/offline/original-appdata/heyi-recruiter');
+  const paths = storagePaths(app, {}, {assistantRoot});
+  assert.equal(paths.recruiterDirectory, path.join(assistantRoot, 'recruiter'));
+  const isolated = storagePaths(app, {HEYI_WORKBENCH_TEST_DATA: '/offline/native-client'}, {assistantRoot});
+  assert.notEqual(isolated.assistantRoot, assistantRoot);
+  assert.throws(() => storagePaths(app, {}, {assistantRoot: 'relative'}), /Absolute/);
+});

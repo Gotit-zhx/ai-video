@@ -356,6 +356,13 @@ async function main() {
     const scopeFixture = await runMatchingScopeFixture(executable, root, env);
     await fs.writeFile(path.join(root, 'matching-runtime-scope-fixture.json'),
       JSON.stringify(scopeFixture, null, 2));
+    // Independent fresh-process checks use the descriptor already verified
+    // against this exact pinned binary. A discovery failure stays a failure,
+    // but must not suppress diagnostics from another isolated original process.
+    const pinnedDescriptor = require('./windows-original.json').requestBuilder;
+    const cold = await verifyColdStartup(executable, root, env, logSignals, pinnedDescriptor);
+    const launcher = await verifyColdStartup(executable, root, env, logSignals, pinnedDescriptor,
+      {dedicatedInspector: true, checkAdapter: false});
     if (!report.ok) throw Error('Original runtime observation incomplete; inspect the report');
     if (shellReport?.ok !== true) throw Error('Original Windows shell integration incomplete; inspect the report');
     if (httpReport?.ok !== true || httpReport.actualElectronRequest !== true) {
@@ -373,9 +380,6 @@ async function main() {
     if (requestBuilder?.ok !== true) {
       throw Error('Original Windows request builder capture incomplete; inspect the report');
     }
-    const cold = await verifyColdStartup(executable, root, env, logSignals, requestBuilder.builderDescriptor);
-    const launcher = await verifyColdStartup(executable, root, env, logSignals, requestBuilder.builderDescriptor,
-      {dedicatedInspector: true, checkAdapter: false});
     if (launcher.ok !== true) throw Error('Original Windows dedicated startup incomplete; inspect the report');
     if (cold.ok !== true) throw Error('Original Windows fresh-process binding incomplete; inspect the report');
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,

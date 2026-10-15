@@ -1,10 +1,11 @@
 const {runtimeExecutable} = require('./runtime-paths.cjs');
 
 class NativeNetwork {
-  constructor({app, session, egress}) {
+  constructor({app, session, egress, offline = false}) {
     this.app = app;
     this.session = session;
     this.egress = egress;
+    this.offline = offline;
     this.stopped = false;
     this.prepared = new WeakMap();
     egress.on('stopped', () => {this.stopped = true;});
@@ -15,7 +16,7 @@ class NativeNetwork {
   ensure() {
     if (!this.starting) {
       this.starting = this.app.whenReady().then(async () => {
-        await this.egress.start();
+        await this.egress.start(this.offline);
         if (this.stopped) throw Error('网卡直连已停止，请重新启动助手');
         return this.egress;
       });
@@ -56,12 +57,19 @@ class NativeNetwork {
 }
 
 let shared;
-function instance() {
+function instance(options) {
+  if (options?.offline && (!process.env.HEYI_WORKBENCH_TEST_DATA ||
+      process.env.HEYI_WORKBENCH_TEST_PORT !== '0')) {
+    throw Error('Offline networking requires an isolated test profile');
+  }
+  if (shared && options && shared.offline !== Boolean(options.offline)) {
+    throw Error('Native networking mode is already fixed for this process');
+  }
   if (!shared) {
     const {app, session} = require('electron');
     const {DirectEgress} = require('./src/direct-network.cjs');
     shared = new NativeNetwork({app, session,
-      egress: new DirectEgress(runtimeExecutable())});
+      egress: new DirectEgress(runtimeExecutable()), offline: Boolean(options?.offline)});
   }
   return shared;
 }

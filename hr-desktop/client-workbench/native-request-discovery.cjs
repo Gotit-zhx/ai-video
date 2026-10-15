@@ -103,10 +103,11 @@ async function discoverNativeRequestBuilder(connection, options = {}) {
     });
     if (checked.exceptionDetails || !checked.result?.value) throw Error();
     return {...checked.result.value, builderDescriptor: matches[0].descriptor, callerMetadata: callFrames};
-  } catch {
+  } catch (error) {
     failed = true;
     throw Object.assign(Error('Original request builder discovery did not complete; no automatic replay'), {
-      requestDiscoveryDiagnostic: {stage, callerMetadata: callFrames},
+      requestDiscoveryDiagnostic: {stage, callerMetadata: callFrames,
+        ...(error.nativeBindingDiagnostic ? {binding: error.nativeBindingDiagnostic} : {})},
     });
   } finally {
     if (breakpoint?.breakpointId) {

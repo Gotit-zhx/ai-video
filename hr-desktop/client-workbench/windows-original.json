@@ -1,0 +1,10 @@
+{
+  "version": "1.7.5",
+  "architecture": "ia32",
+  "files": {
+    "boss-zhipin.exe": "be47a9065167f57d43933f0d6cb1c6f764084dcc3ba88ef47ba212283d6e953f",
+    "resources/app.asar": "0db840a254925923b26e298572869828d8195ced1a12fb708ad2ab800e8494af",
+    "resources/app.asar.bzlmanifest": "0eaf12aaf926040f3df48a4ac9ce7201e1db87fdba22475a17c509b0a15439ea"
+  },
+  "requestBuilder": {"name": "wg", "lineNumber": 0, "columnNumber": 529379}
+}
