@@ -52,8 +52,8 @@ async function inspectAnonymousAuthentication(connection, options = {}) {
         const isProxy=process.mainModule.require('node:util').types.isProxy;
         if(this.length!==1||isProxy(this[0]))return {
           ok:false,reason:'anonymous-unique-instance-required',originalMethodsInvoked:0};
-        // This version does not publish global.isLogin. Use the original
-        // renderer's memory getter, and require an explicit false result.
+        // Do not infer login status from an unavailable global flag. Use the
+        // original renderer's memory getter and require an explicit false.
         const service=Object.getOwnPropertyDescriptor(globalThis,'$socket')?.value;
         if(!service||isProxy(service))throw Error();
         const loggedIn=await process.mainModule.require(readModule)

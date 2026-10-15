@@ -85,6 +85,7 @@ async function run() {
   const attachmentURL = 'https://docdownload.zhipin.com/wflow/zpgeek/download/download4boss/fixture?id=fixture';
   const downloadSession = session.fromPartition('heyi-offline-download-probe');
   let nativeDownloads = 0;
+  let nativeDownloadTransports = 0;
   // Electron 22's buffer-protocol fixture does not expose custom response
   // headers. Use a real loopback response to verify bytes AND metadata with
   // its actual net.request implementation. The test-only wrapper below
@@ -98,6 +99,7 @@ async function run() {
   await new Promise(resolve => attachmentServer.listen(0, '127.0.0.1', resolve));
   const attachmentFixtureURL = `http://127.0.0.1:${attachmentServer.address().port}/attachment`;
   const attachmentNet = {request: options => {
+    nativeDownloadTransports++;
     assert.equal(options.url, attachmentURL);
     return net.request({...options, url: attachmentFixtureURL});
   }};
@@ -135,6 +137,14 @@ async function run() {
   assert.equal(downloaded.headers.get('content-disposition'), attachmentName);
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), attachment);
   assert.equal(nativeDownloads, 1);
+  let releaseCredentials;
+  await assert.rejects(downloadResume({net: attachmentNet, session: downloadSession, url: attachmentURL,
+    checkAccount() {}, timeout: 35,
+    credentials: () => new Promise(resolve => {releaseCredentials = resolve;}),
+  }), {code: 'DOWNLOAD_TIMEOUT'});
+  releaseCredentials({token: 'late-offline-fixture', userAgent: 'offline'});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nativeDownloadTransports, 1);
   await new Promise(resolve => attachmentServer.close(resolve));
   const worker = await new Promise((resolve, reject) => {
     const child = spawn(path.join(process.resourcesPath, 'heyi-runtime', 'heyi-boss'), [], {
@@ -170,6 +180,7 @@ async function run() {
     packagedNativeWorker: true, sdkSourceGuard: true,
     packagedManagedJobEndpoint: true,
     nativeAttachmentFixture: true, nativeAttachmentNamePreserved: true,
+    nativeAttachmentCredentialDeadline: true,
     nativeChromiumRequestCount: nativeDownloads,
     nativeUserAgentHeaderValid: true, rendererUserAgentHeaderValid: true,
     integratedSingleWindow: true, nativeLoginTransitionFixture: true,

@@ -92,3 +92,32 @@ test('account change before transport or while reading blocks the attachment', a
   await assert.rejects(downloadResume(during.options), {code: 'SESSION_MISMATCH'});
   assert.equal(during.calls.count, 1);
 });
+test('credential waits are cancelled or timed out before a late download can start', async () => {
+  for (const code of ['REQUESTS_PAUSED', 'DOWNLOAD_TIMEOUT']) {
+    let release;
+    const controller = new AbortController();
+    const {options, calls} = fixture({signal: controller.signal, timeout: 35,
+      credentials: () => new Promise(resolve => {release = resolve;})});
+    const pending = downloadResume(options);
+    await new Promise(resolve => setImmediate(resolve));
+    if (code === 'REQUESTS_PAUSED') controller.abort();
+    await assert.rejects(pending, {code});
+    release({token: 'late-fixture', userAgent: 'offline'});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.count, 0);
+    assert.equal(calls.aborted, 0);
+  }
+});
+test('an already cancelled download and rejected credentials never open a transport', async () => {
+  const controller = new AbortController();controller.abort();
+  let reads = 0;
+  const {options, calls} = fixture({signal: controller.signal, credentials: async () => {reads++;}});
+  await assert.rejects(downloadResume(options), {code: 'REQUESTS_PAUSED'});
+  assert.equal(reads, 0);
+  for (const reason of [null, undefined, Error('fixture-private-data')]) {
+    await assert.rejects(downloadResume({...options, signal: undefined,
+      credentials: () => Promise.reject(reason)}), value =>
+      value.code === 'DOWNLOAD_FAILED' && !value.message.includes('fixture-private-data'));
+  }
+  assert.equal(calls.count, 0);
+});

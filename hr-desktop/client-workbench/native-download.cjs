@@ -30,16 +30,43 @@ function resumeURL(value) {
   return url.href;
 }
 
+function readCredentials(credentials, signal, timeout) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;clearTimeout(timer);signal?.removeEventListener('abort', cancel);
+      if (error) reject(error);else resolve(value);
+    };
+    const cancel = () => finish(failure('REQUESTS_PAUSED', '附件下载已取消'));
+    const timer = setTimeout(() => finish(failure('DOWNLOAD_TIMEOUT', '附件下载超时')), timeout);
+    signal?.addEventListener('abort', cancel, {once: true});
+    if (signal?.aborted) {cancel();return;}
+    Promise.resolve().then(() => credentials()).then(value => finish(null, value), error => {
+      if (['AUTH_REQUIRED', 'SESSION_MISMATCH', 'ACCOUNT_RISK',
+        'SECURITY_VERIFICATION_REQUIRED', 'REQUESTS_PAUSED'].includes(error?.code)) finish(error);
+      else finish(failure('DOWNLOAD_FAILED', '原客户端附件准备未完成'));
+    });
+  });
+}
+
 // A single native Chromium request with the original client's real session and
 // headers. No download-manager retries, redirects, or caller-supplied headers.
 async function downloadResume({net, session, url, credentials, checkAccount,
   signal, timeout = 65000, maxBytes = MAX_BYTES}) {
   url = resumeURL(url);
   checkAccount();
-  const auth = await credentials();
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 75000 ||
+      !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_BYTES) {
+    throw failure('INVALID_ATTACHMENT', '附件下载限制不正确');
+  }
+  const deadline = Date.now() + timeout;
+  const auth = await readCredentials(credentials, signal, timeout);
   checkAccount();
   if (!auth?.token || !auth.userAgent) throw failure('AUTH_REQUIRED', '原客户端登录态尚未建立');
   if (signal?.aborted) throw failure('REQUESTS_PAUSED', '附件下载已取消');
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw failure('DOWNLOAD_TIMEOUT', '附件下载超时');
   return new Promise((resolve, reject) => {
     const request = net.request({url, method: 'GET', session, redirect: 'manual', useSessionCookies: true});
     let response, settled = false;
@@ -54,11 +81,12 @@ async function downloadResume({net, session, url, credentials, checkAccount,
       } else resolve(value);
     };
     const cancel = () => finish(failure('REQUESTS_PAUSED', '附件下载已取消'));
-    const timer = setTimeout(() => finish(failure('DOWNLOAD_TIMEOUT', '附件下载超时')), timeout);
+    const timer = setTimeout(() => finish(failure('DOWNLOAD_TIMEOUT', '附件下载超时')), remaining);
     signal?.addEventListener('abort', cancel, {once: true});
     request.on('error', () => finish(failure('DOWNLOAD_FAILED', '原客户端附件下载未完成')));
     request.on('abort', () => finish(failure('DOWNLOAD_FAILED', '原客户端附件下载已中断')));
     request.on('redirect', status => {
+      try {checkAccount();} catch (error) {finish(error);return;}
       // Report the real redirect without following it or returning its URL.
       finish(null, {status, body: Buffer.alloc(0)});
       request.abort();
