@@ -98,10 +98,20 @@ test('running-process observation uses the real main module without changing sou
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-inspector-running-'));
   t.after(() => fs.rm(root, {recursive: true, force: true}));
   const fixture = path.join(root, 'fixture.cjs');
-  const source = 'globalThis._sdk_fixture = () => {}; setInterval(() => {}, 1000);';
+  const ready = path.join(root, 'ready');
+  const source = 'globalThis._sdk_fixture = () => {}; require("node:fs").writeFileSync(process.argv[2], "ready"); setInterval(() => {}, 1000);';
   await fs.writeFile(fixture, source);
-  const connection = await launchInspecting(process.execPath, [fixture]);
+  const connection = await launchInspecting(process.execPath, [fixture, ready]);
   t.after(() => {connection.client.close();connection.child.kill();});
+  // The inspector may accept commands before Node has run its entry module.
+  // Use a signal written by the real fixture instead of a timing assumption.
+  const deadline = Date.now() + 5000;
+  while (true) {
+    try {await fs.stat(ready);break;} catch (error) {
+      if (error.code !== 'ENOENT' || Date.now() >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
   assert.equal(await evaluateRunning(connection,
     'typeof process.mainModule.require("node:fs").readFileSync'), 'function');
   assert.equal(await evaluateRunning(connection, 'typeof globalThis._sdk_fixture'), 'function');
