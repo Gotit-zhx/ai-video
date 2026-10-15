@@ -58,8 +58,10 @@ public class ProductCaptureVideoController {
  }
  @GetMapping("/{id}/file") public ResponseEntity<FileSystemResource> file(@PathVariable String capture,@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal user){
   captures.get(capture,user);
-  var rows=db.queryForList("SELECT mime_type FROM product_capture_videos WHERE organization_id=? AND capture_id=? AND id=?",user.organizationId(),capture,id);
+  var rows=db.queryForList("SELECT mime_type,storage_video_id FROM product_capture_videos WHERE organization_id=? AND capture_id=? AND id=?",user.organizationId(),capture,id);
   if(rows.isEmpty()||!id.matches("[a-f0-9-]{36}"))throw new BusinessException(HttpStatus.NOT_FOUND,"视频不存在");
-  return ResponseEntity.ok().contentType(MediaType.parseMediaType((String)rows.getFirst().get("mime_type"))).header("X-Content-Type-Options","nosniff").body(new FileSystemResource(root.resolve(id)));
+  String file=Objects.toString(rows.getFirst().get("storage_video_id"),id);
+  if(!file.matches("[a-f0-9-]{36}"))throw new BusinessException(HttpStatus.NOT_FOUND,"视频归档不存在");
+  return ResponseEntity.ok().contentType(MediaType.parseMediaType((String)rows.getFirst().get("mime_type"))).header("X-Content-Type-Options","nosniff").body(new FileSystemResource(root.resolve(file)));
  }
 }

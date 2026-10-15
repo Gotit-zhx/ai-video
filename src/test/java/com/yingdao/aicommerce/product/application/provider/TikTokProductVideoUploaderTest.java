@@ -106,6 +106,14 @@ class TikTokProductVideoUploaderTest {
                 endsWith(".webm"), eq("video/webm"), aryEq(bytes), anyMap());
     }
 
+    @Test void privateVideoUsesFrozenFileKeyButKeepsItsOwnUploadIdentity() {
+        String copy=UUID.randomUUID().toString();
+        sources.getFirst().put("id",copy);sources.getFirst().put("storage_video_id",video);
+        assertThat(uploader.upload(capture,connection,"private-copy").sourceVideoId()).isEqualTo(copy);
+        verify(client).apiMultipart(anyString(),eq(connection),anyMap(),anyString(),eq("video/mp4"),aryEq(bytes),anyMap());
+        verify(ledger).prepare(anyString(),eq("org-1"),eq(connection.shop().getId()),eq(copy),anyString(),anyString(),anyLong(),anyString());
+    }
+
     @Test void readyCheckpointIsReusedAcrossRetriesWithoutLocalFileOrAnotherUpload() throws Exception {
         uploader.upload(capture, connection, "request-a");
         Files.delete(storage.resolve("capture-videos").resolve(video));

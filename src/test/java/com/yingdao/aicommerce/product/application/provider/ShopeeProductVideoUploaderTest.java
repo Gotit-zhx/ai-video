@@ -97,6 +97,14 @@ class ShopeeProductVideoUploaderTest {
         assertThat(row.get("status")).isEqualTo("READY");
     }
 
+    @Test void privateVideoUsesFrozenFileKeyWithItsOwnRecordIdentity() {
+        String copy=UUID.randomUUID().toString();
+        sources.getFirst().put("id",copy);sources.getFirst().put("storage_video_id",video);
+        assertThat(uploader.upload(capture,connection,ignored->{}).sourceVideoId()).isEqualTo(copy);
+        verify(preprocessor).prepare(aryEq(bytes));
+        verify(ledger).prepare(anyString(),eq("org-1"),anyString(),eq(copy),anyString(),anyString(),anyLong());
+    }
+
     @Test void readyMediaIsReusedWithoutReadingArchiveOrCallingUpstream() throws Exception {
         row.put("status", "READY"); row.put("video_upload_id", "existing-upload");
         Files.delete(storage.resolve("capture-videos").resolve(video));

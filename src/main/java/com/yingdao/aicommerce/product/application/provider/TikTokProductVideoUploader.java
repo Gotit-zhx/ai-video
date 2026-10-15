@@ -72,7 +72,7 @@ public class TikTokProductVideoUploader {
                 || !MarketplacePlatform.TIKTOK_SHOP.name().equals(connection.shop().getPlatform())) {
             throw conflict("采集视频与目标 TikTok 店铺不属于同一企业或平台");
         }
-        var sources = db.queryForList("SELECT id,mime_type,byte_length,content_sha256 FROM product_capture_videos WHERE organization_id=? AND capture_id=? AND superseded_by IS NULL ORDER BY created_at,id",
+        var sources = db.queryForList("SELECT id,mime_type,byte_length,content_sha256,storage_video_id FROM product_capture_videos WHERE organization_id=? AND capture_id=? AND superseded_by IS NULL ORDER BY created_at,id",
                 org, capture.getId());
         if (sources.isEmpty()) return UploadedVideo.none();
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 255) {
@@ -108,7 +108,9 @@ public class TikTokProductVideoUploader {
             row = ledger.get(id, org, requestKey);
             if ("READY".equals(row.get("status"))) return uploaded(row, video, sources.size());
             if ("FAILED".equals(row.get("attempt_status"))) throw conflict("TikTok 视频处理失败：" + text(row, "attempt_message"));
-            byte[] bytes = readArchive(video, hash, byteLength);
+            String archiveVideo=java.util.Objects.toString(source.get("storage_video_id"),video);
+            if(!archiveVideo.matches("[a-f0-9-]{36}"))throw conflict("采集视频归档信息无效，商品尚未创建");
+            byte[] bytes = readArchive(archiveVideo, hash, byteLength);
             if (!ledger.beginUpload(id, org, worker, requestKey)) {
                 throw conflict("本次 TikTok 视频上传已尝试 3 次仍未取得有效视频编号，商品尚未创建；修复连接后可新建上传批次重试");
             }

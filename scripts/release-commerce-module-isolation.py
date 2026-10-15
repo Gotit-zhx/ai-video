@@ -25,8 +25,10 @@ TABLES = [
     "commerce_batch_item_publish_options", "commerce_design_drafts",
     "commerce_capture_source_archives", "flyway_schema_history",
 ]
-FIXTURE_TABLES = TABLES + ["organizations", "app_users", "shops", "product_watermark_checks"]
-NEW_TABLES = ["commerce_source_copy_images", "commerce_source_copies", "commerce_material_library_entries"]
+FIXTURE_TABLES = TABLES + ["organizations", "app_users", "shops"] + PLAN.get("additionalFixtureTables", [])
+if PLAN.get("includeWatermarkReports", True):
+    FIXTURE_TABLES += ["product_watermark_checks"]
+NEW_TABLES = PLAN.get("newTables", ["commerce_source_copy_images", "commerce_source_copies", "commerce_material_library_entries"])
 TEST_DB = "module_isolation_test_20261015"
 
 
@@ -246,7 +248,9 @@ def deploy():
             new.writestr(name, data, compress_type=zipfile.ZIP_DEFLATED)
     with zipfile.ZipFile(ROOT / "live/app.jar") as old, zipfile.ZipFile(appdir / "app.jar") as new:
         assert all(old.read(name) == new.read(name) for name in old.namelist() if not replaced(name))
-    tags = {APP: "ai-commerce-platform:module-isolation-20261015", FRONT: "ai-commerce-frontend:module-isolation-20261015"}
+    tag = PLAN.get("tag", "module-isolation-20261015")
+    assert all(character.isalnum() or character in "._-" for character in tag)
+    tags = {APP: "ai-commerce-platform:" + tag, FRONT: "ai-commerce-frontend:" + tag}
     for name, directory in [(APP, appdir), (FRONT, ROOT / "frontend-image")]:
         directory.mkdir(exist_ok=True)
         lines = ["FROM " + before[name]["Image"]]
@@ -262,13 +266,14 @@ def deploy():
         run("docker", "build", "-t", tags[name], str(directory))
     idle()
     backup = ROOT / "rollback"
-    backup.mkdir()
+    backup.mkdir(mode=0o700)
     # Stop only the application so the table backup and Flyway transition have one writer.
     run("docker", "stop", "--time", "60", APP)
     activated = []
     backed_up = False
     try:
         (backup / "database.sql").write_bytes(dump(source_db(), TABLES))
+        (backup / "database.sql").chmod(0o600)
         backed_up = True
         for name in [APP, FRONT]:
             activated.append(name)
@@ -281,8 +286,15 @@ def deploy():
         for file, digest in manifest.items():
             assert sha(run("docker", "exec", FRONT, "cat", "/usr/share/nginx/html/" + file)) == digest
         assert all(inspect(name)["Id"] == identifier for name, identifier in preserved.items())
-        assert mysql("SELECT COUNT(*) FROM flyway_schema_history WHERE version IN ('113','114') AND success=1;").strip() == b"2"
+        versions = PLAN.get("migrationVersions", ["113", "114"])
+        assert all(version.isdigit() for version in versions)
+        literals = ",".join("'" + version + "'" for version in versions)
+        assert int(mysql("SELECT COUNT(*) FROM flyway_schema_history WHERE version IN (" + literals + ") AND success=1;").strip()) == len(versions)
         assert mysql("SELECT COUNT(*) FROM commerce_batch_items i JOIN product_captures c ON c.id=i.capture_id WHERE c.data_module<>'FISSION';").strip() == b"0"
+        if "115" in versions:
+            assert mysql("""SELECT COUNT(*) FROM product_capture_videos v
+                JOIN commerce_source_copies c ON c.organization_id=v.organization_id AND c.capture_id=v.capture_id
+                WHERE v.storage_video_id IS NULL;""").strip() == b"0"
         assert run("systemctl", "is-active", "heyi-boss-connector").strip() == b"active"
     except BaseException:
         try:
@@ -331,7 +343,7 @@ def verify():
     health(FRONT, activation["frontend"]["app.js"])
     assert all(inspect(name)["Id"] == identifier for name, identifier in activation["preservedContainers"].items())
     queries = {
-        "migrations": "SELECT version,success FROM flyway_schema_history WHERE version IN ('113','114')",
+        "migrations": "SELECT version,success FROM flyway_schema_history WHERE version IN ('113','114','115')",
         "capturesByModule": "SELECT data_module,COUNT(*) FROM product_captures GROUP BY data_module",
         "configurationsByModule": "SELECT data_module,COUNT(*) FROM product_listing_templates GROUP BY data_module",
         "privateSources": "SELECT COUNT(*) FROM commerce_source_copies",
@@ -340,8 +352,13 @@ def verify():
             JOIN commerce_source_copies c ON c.capture_id=i.capture_id AND c.organization_id=i.organization_id
             WHERE i.processed_url LIKE '/api/v1/product-watermark/%'""",
     }
+    if "115" in PLAN.get("migrationVersions", []):
+        queries["copiedVideos"] = """SELECT COUNT(*) FROM product_capture_videos v
+            JOIN commerce_source_copies c ON c.organization_id=v.organization_id AND c.capture_id=v.capture_id"""
+        queries["unarchivedCopiedVideos"] = queries["copiedVideos"] + " WHERE v.storage_video_id IS NULL"
     results = {key: mysql(sql).decode().strip() for key, sql in queries.items()}
     assert results["dependentProcessedImages"] == "0"
+    assert results.get("unarchivedCopiedVideos", "0") == "0"
     results["images"] = activation["images"]
     results["unrelatedContainersPreserved"] = len(activation["preservedContainers"])
     (ROOT / "verification.json").write_text(json.dumps(results, indent=2))

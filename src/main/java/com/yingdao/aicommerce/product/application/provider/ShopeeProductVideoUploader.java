@@ -22,6 +22,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.function.LongConsumer;
 import java.util.stream.IntStream;
@@ -72,7 +73,7 @@ public class ShopeeProductVideoUploader {
     UploadedVideo upload(ProductCapture capture, MarketplaceAccess.Connection connection, LongConsumer sleeper) {
         String org = capture.getOrganizationId();
         if (!org.equals(connection.shop().getOrganizationId())) throw conflict("视频与目标店铺不属于同一企业");
-        var sources = db.queryForList("SELECT id,mime_type,byte_length,content_sha256 FROM product_capture_videos WHERE organization_id=? AND capture_id=? AND superseded_by IS NULL ORDER BY created_at,id",
+        var sources = db.queryForList("SELECT id,mime_type,byte_length,content_sha256,storage_video_id FROM product_capture_videos WHERE organization_id=? AND capture_id=? AND superseded_by IS NULL ORDER BY created_at,id",
                 org, capture.getId());
         if (sources.isEmpty()) return UploadedVideo.none();
         // Shopee add_item accepts one video_upload_id. Selection is stable across single/bulk/retry.
@@ -88,7 +89,9 @@ public class ShopeeProductVideoUploader {
         String id = digest("SHA-256", (org + ":" + shop + ":" + hash + ":" + destination).getBytes(StandardCharsets.UTF_8));
         var row = ledger.prepare(id, org, shop, video, hash, destination, byteLength);
         if ("READY".equals(row.get("status"))) return uploaded(row, video, sources.size());
-        byte[] bytes = preprocessor.prepare(readArchive(video, hash, byteLength));
+        String archiveVideo=Objects.toString(source.get("storage_video_id"),video);
+        if(!archiveVideo.matches("[a-f0-9-]{36}"))throw conflict("采集视频归档信息无效");
+        byte[] bytes = preprocessor.prepare(readArchive(archiveVideo, hash, byteLength));
         String preparedHash = digest("SHA-256", bytes);
         if (!preparedHash.equals(hash)) {
             id = digest("SHA-256", (org + ":" + shop + ":" + preparedHash + ":" + destination).getBytes(StandardCharsets.UTF_8));

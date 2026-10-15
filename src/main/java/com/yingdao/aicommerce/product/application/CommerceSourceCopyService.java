@@ -110,8 +110,8 @@ public class CommerceSourceCopyService {
                 """,copy.getId(),user.organizationId(),sourceId);
         db.update("""
                 INSERT INTO product_capture_videos
-                (id,organization_id,capture_id,source_url,mime_type,byte_length,content_sha256,created_at,source_asset_key)
-                SELECT UUID(),organization_id,?,source_url,mime_type,byte_length,content_sha256,created_at,source_asset_key
+                (id,organization_id,capture_id,source_url,mime_type,byte_length,content_sha256,created_at,source_asset_key,storage_video_id)
+                SELECT UUID(),organization_id,?,source_url,mime_type,byte_length,content_sha256,created_at,source_asset_key,COALESCE(storage_video_id,id)
                 FROM product_capture_videos WHERE organization_id=? AND capture_id=? AND superseded_by IS NULL
                 """,copy.getId(),user.organizationId(),sourceId);
         db.update("""
