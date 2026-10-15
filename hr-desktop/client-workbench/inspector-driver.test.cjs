@@ -118,3 +118,26 @@ test('running-process observation uses the real main module without changing sou
   await assert.rejects(evaluateRunning(connection, 'throw Error("fixture")'), /Runtime evaluation failed/);
   assert.equal(await fs.readFile(fixture, 'utf8'), source);
 });
+
+test('late activation observes code that ran before the inspector started', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-inspector-late-'));
+  t.after(() => fs.rm(root, {recursive: true, force: true}));
+  const fixture = path.join(root, 'fixture.cjs'), ready = path.join(root, 'ready');
+  await fs.writeFile(fixture,
+    'globalThis.heyiBeforeInspector = 1; require("node:fs").writeFileSync(process.argv[2],"ready"); setInterval(()=>{},1000);');
+  const connection = await launchInspecting(process.execPath, [fixture, ready], {
+    activate: async child => {
+      const deadline = Date.now() + 5000;
+      while (true) {
+        try {await fs.stat(ready);break;} catch (error) {
+          if (error.code !== 'ENOENT' || Date.now() >= deadline) throw error;
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+      }
+      if (child.exitCode !== null) throw Error('Fixture already exited');
+      process._debugProcess(child.pid);
+    },
+  });
+  t.after(() => {connection.client.close();connection.child.kill();});
+  assert.equal(await evaluateRunning(connection, 'globalThis.heyiBeforeInspector'), 1);
+});

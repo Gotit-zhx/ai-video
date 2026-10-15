@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {once} = require('node:events');
+const {spawn} = require('node:child_process');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 
 async function main() {
@@ -27,8 +28,24 @@ async function main() {
   try {
     connection = await launchInspecting(executable, ['--disable-gpu',
       `--user-data-dir=${path.join(root, 'profile')}`], {
-      env, cwd: path.dirname(executable), timeout: 20000,
+      env, cwd: path.dirname(executable), timeout: 45000,
       onSpawn: child => fs.writeFile(path.join(root, 'probe-pid.txt'), String(child.pid)).catch(() => {}),
+      activate: async child => {
+        // Let the original cached main code load without a startup inspector.
+        // Node's own x86 debug helper uses its matching Windows debug mapping.
+        await new Promise(resolve => setTimeout(resolve, 12000));
+        if (child.exitCode !== null) throw Error('Original process exited before late attach');
+        const helper = spawn(executable, ['-e',
+          'process._debugProcess(Number(process.argv[1]))', String(child.pid)], {
+          cwd: path.dirname(executable), env: {...env, ELECTRON_RUN_AS_NODE: '1'},
+          stdio: 'ignore', windowsHide: true,
+        });
+        const deadline = setTimeout(() => helper.kill(), 5000);
+        try {
+          const [code] = await once(helper, 'exit');
+          if (code !== 0) throw Error('Original x86 debug helper failed');
+        } finally {clearTimeout(deadline);}
+      },
     });
     const exit = once(connection.child, 'exit');
     const loader = '(typeof require === "function" ? require : process.mainModule?.require.bind(process.mainModule))';
@@ -36,12 +53,23 @@ async function main() {
     // Poll only presence/type metadata, never execute an SDK method.
     for (let attempt = 0; attempt < 40; attempt++) {
       entry = await evaluateRunning(connection,
-        `({platform:process.platform, arch:process.arch, versions:process.versions, requireType:typeof ${loader}})`);
+        `({platform:process.platform, arch:process.arch, versions:process.versions, requireType:typeof ${loader},
+          sdkNames:Object.entries(Object.getOwnPropertyDescriptors(globalThis))
+            .filter(([name])=>/^_sdk_[A-Za-z0-9_]+$/.test(name))
+            .map(([name,entry])=>({name,type:typeof entry.value}))})`);
       if (entry?.requireType === 'function') break;
       await new Promise(resolve => setTimeout(resolve, 200));
     }
+    if (entry?.requireType === 'function') {
+      entry.profileState = await evaluateRunning(connection,
+        `((load,root)=>{
+          const app=load('electron').app, path=load('node:path');
+          const inside=value=>{const r=path.relative(root,value);return Boolean(r)&&r!=='..'&&!r.startsWith('..'+path.sep)&&!path.isAbsolute(r)};
+          return {ready:app.isReady(),userDataUnderTestRoot:inside(app.getPath('userData')),appDataUnderTestRoot:inside(app.getPath('appData'))};
+        })(${loader},${JSON.stringify(root)})`);
+    }
     await fs.writeFile(path.join(root, 'entry-runtime.json'), JSON.stringify({
-      ...entry, observationStage: 'running-original-client',
+      ...entry, observationStage: 'late-attached-original-client',
     }, null, 2));
     if (entry?.platform !== 'win32' || entry.arch !== 'ia32' || entry.requireType !== 'function') {
       throw Error('Unexpected original running environment');
@@ -50,9 +78,6 @@ async function main() {
     const result = await evaluateRunning(connection,
       `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({root, output})}))(${loader})`);
     if (!result?.observerInstalled) throw Error('Runtime observer was not installed');
-    // Some packaged loaders wait for an attached inspector without emitting a
-    // JS entry pause for cached bytecode. This command is a no-op if not waiting.
-    await connection.client.command('Runtime.runIfWaitingForDebugger');
     connection.client.close();
     const timer = setTimeout(() => connection.child.kill(), 35000);
     const [code] = await exit;

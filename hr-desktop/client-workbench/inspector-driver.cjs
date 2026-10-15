@@ -107,8 +107,10 @@ class Inspector {
 }
 
 async function launchInspecting(executable, args = [], options = {}) {
-  const {timeout = 15000, env = process.env, cwd, onSpawn, pauseOnStart = false} = options;
-  const flag = pauseOnStart ? '--inspect-brk=127.0.0.1:0' : '--inspect=127.0.0.1:0';
+  const {timeout = 15000, env = process.env, cwd, onSpawn, pauseOnStart = false, activate} = options;
+  if (activate && pauseOnStart) throw Error('Late inspector activation cannot pause at startup');
+  const flag = activate ? '--inspect-port=127.0.0.1:0' :
+    pauseOnStart ? '--inspect-brk=127.0.0.1:0' : '--inspect=127.0.0.1:0';
   const child = spawn(executable, [flag, ...args], {
     cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });
@@ -137,6 +139,10 @@ async function launchInspecting(executable, args = [], options = {}) {
       };
       child.once('error', onError);child.once('exit', onExit);
       child.stderr.on('data', onData);
+      if (activate) {
+        Promise.resolve().then(() => activate(child)).catch(() =>
+          finish(Error('Late inspector activation failed')));
+      }
     });
     // Drain vendor logs without retaining or printing them.
     child.stdout.resume();child.stderr.resume();
