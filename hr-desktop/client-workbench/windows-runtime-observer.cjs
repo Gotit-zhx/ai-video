@@ -24,7 +24,6 @@ module.exports = function observe(electron, config) {
   if (!attachedAfterReady) {
     app.setPath('appData', appData);
     app.setPath('userData', userData);
-    app.setName('HeyiNativeWindowsProbe');
     app.disableHardwareAcceleration();
   }
   let ready = false, attemptedRequests = 0, finished = false;
@@ -59,6 +58,8 @@ module.exports = function observe(electron, config) {
       ok: ready && sdk.length > 0 && userDataIsolated,
       reason, platform: process.platform, arch: process.arch, versions: process.versions,
       ready, userDataIsolated, attachedAfterReady, observedSdk: sdk, nativeModules,
+      originalMainLoaded: Object.keys(require.cache).some(file => /[\\/]main\.jsc$/.test(file)),
+      mainModuleName: path.basename(process.mainModule?.filename || ''),
       windows: BrowserWindow.getAllWindows().map(window => ({
         id: window.id, visible: window.isVisible(), destroyed: window.isDestroyed(),
         contentsType: window.webContents.getType(),
@@ -81,6 +82,9 @@ module.exports = function observe(electron, config) {
   // Persist before returning to the original loader; native app.exit/crashes
   // do not necessarily emit Node's process-exit event.
   snapshot('observer-attached');
+  for (const event of ['will-finish-launching', 'before-quit', 'will-quit', 'window-all-closed']) {
+    app.on(event, () => {if (!finished) snapshot(event);});
+  }
   process.once('exit', () => {if (!finished) snapshot('process-exit');});
   app.whenReady().then(() => {
     ready = true;

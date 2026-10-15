@@ -47,6 +47,18 @@ try {
     $app = $apps[0].FullName
     $expectedApp = 'be47a9065167f57d43933f0d6cb1c6f764084dcc3ba88ef47ba212283d6e953f'
     if ((Get-FileHash $app -Algorithm SHA256).Hash -ine $expectedApp) { throw 'Original application fingerprint mismatch' }
+    $resources = Join-Path (Split-Path $app) 'resources'
+    $expectedResources = @{
+        'app.asar' = '0db840a254925923b26e298572869828d8195ced1a12fb708ad2ab800e8494af'
+        'app.asar.bzlmanifest' = '0eaf12aaf926040f3df48a4ac9ce7201e1db87fdba22475a17c509b0a15439ea'
+    }
+    foreach ($name in $expectedResources.Keys) {
+        $file = Join-Path $resources $name
+        if (!(Test-Path $file) -or (Get-FileHash $file -Algorithm SHA256).Hash -ine $expectedResources[$name]) {
+            throw "Original application resource mismatch: $name"
+        }
+    }
+    $result.resourcesVerified = $true
     $executables = @(Get-ChildItem (Split-Path $app) -Filter '*.exe' -Recurse -File)
     # Hard isolation also covers vendor helper/daemon executables.
     foreach ($file in $executables) {
@@ -60,6 +72,38 @@ try {
     }
     @{ verified = $true; executables = $executables.Count; originalProfileUsed = $false } |
         ConvertTo-Json | Set-Content (Join-Path $root 'firewall.json') -Encoding utf8NoBOM
+    # Control run: same pinned, firewalled program without inspector/injection.
+    $baseline = Join-Path $root 'baseline'
+    foreach ($folder in @('app-data','local-app-data','user','temp','profile')) {
+        New-Item -ItemType Directory -Force (Join-Path $baseline $folder) | Out-Null
+    }
+    $baselineEnv = @{
+        APPDATA = Join-Path $baseline 'app-data'
+        LOCALAPPDATA = Join-Path $baseline 'local-app-data'
+        USERPROFILE = Join-Path $baseline 'user'
+        TEMP = Join-Path $baseline 'temp'
+        TMP = Join-Path $baseline 'temp'
+        NODE_OPTIONS = $null
+        NODE_PATH = $null
+        ELECTRON_RUN_AS_NODE = $null
+    }
+    $baselineProcess = Start-Process -FilePath $app -WorkingDirectory (Split-Path $app) `
+        -ArgumentList @('--disable-gpu', "--user-data-dir=`"$(Join-Path $baseline 'profile')`"") `
+        -Environment $baselineEnv -PassThru
+    $exited = $baselineProcess.WaitForExit(10000)
+    $baselineResult = @{
+        exitedWithinTenSeconds = $exited
+        exitCode = $(if ($exited) { $baselineProcess.ExitCode } else { $null })
+        mainWindowPresent = ($baselineProcess.MainWindowHandle -ne [IntPtr]::Zero)
+        inspectorAttached = $false
+        ownCodeInjected = $false
+    }
+    $baselineResult | ConvertTo-Json | Set-Content (Join-Path $root 'baseline.json') -Encoding utf8NoBOM
+    $baselinePrefix = [System.IO.Path]::GetFullPath($root) + [System.IO.Path]::DirectorySeparatorChar
+    Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($baselinePrefix, [System.StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    if (!$exited) { $baselineProcess.WaitForExit(5000) | Out-Null }
     $result.originalExecuted = $true
     & node (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\probe-windows-runtime.cjs') $app $root
     if ($LASTEXITCODE -ne 0) { throw 'Windows original-runtime probe did not complete' }
@@ -77,7 +121,7 @@ try {
     $result | ConvertTo-Json -Depth 6 | Set-Content $resultPath -Encoding utf8NoBOM
     # Small own reports stay in Actions logs: no artifact-storage quota needed.
     # Never print vendor stdout, installer/resources, code, or profile files.
-    foreach ($name in @('ci-result.json', 'firewall.json', 'entry-runtime.json', 'runtime-observation.json')) {
+    foreach ($name in @('ci-result.json', 'firewall.json', 'baseline.json', 'entry-runtime.json', 'runtime-observation.json')) {
         $report = Join-Path $root $name
         if (Test-Path $report) {
             $data = Get-Content -Raw $report | ConvertFrom-Json
