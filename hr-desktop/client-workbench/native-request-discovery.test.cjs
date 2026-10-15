@@ -7,7 +7,8 @@ const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {discoverNativeRequestBuilder} = require('./native-request-discovery.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
 
-async function fixture(t, {ambiguous = false, failVerification = false} = {}) {
+async function fixture(t, {ambiguous = false, failVerification = false,
+  credentialMethod = 'getAuthCookieHeader'} = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-request-discovery-'));
   const file = path.join(root, 'fixture.cjs');
   const httpModule = path.join(root, 'node_modules/@bzl/electron-node-fetch/dist/index.js');
@@ -17,7 +18,8 @@ async function fixture(t, {ambiguous = false, failVerification = false} = {}) {
     globalThis.fixtureHTTPCalls=0;globalThis.fixtureSDKCalls=0;globalThis.fixtureBuilderCalls=0;
     class Identity{get userInfo(){throw Error('private identity')}
       get userId(){throw Error('private identity')}get avatar(){throw Error('private identity')}}
-    class Authentication{get(){}getAuthCookieHeader(){return Promise.resolve('wt2=fixture-private-cookie')}
+    class Authentication{get(){return Promise.resolve('wt2=fixture-private-cookie')}
+      getAuthCookieHeader(){return Promise.resolve('wt2=fixture-private-cookie')}
       setLoginCookies(){}clearLoginCookies(){}}
     class Network{getProxyConfig(){}getHttpProxy(){}getDNSProxy(){}setProxy(){}stopProxy(){}}
     class Receiver{receiveMessage(){}addMessageById(){}getMessageById(){}}
@@ -28,7 +30,7 @@ async function fixture(t, {ambiguous = false, failVerification = false} = {}) {
     function makeBuilder(){return async function actualFixtureBuilder(input){
       fixtureBuilderCalls++;
       if(${failVerification}&&input.url.includes('job/data'))throw Error('private verification failure');
-      const cookie=await keepAlive[1].getAuthCookieHeader();
+      const cookie=await keepAlive[1].${credentialMethod}('wt2');
       const prepared={...input,url:'https://www.zhipin.com'+input.url,
         headers:{Cookie:cookie,'User-Agent':'fixture-private-agent',Traceid:fixtureBuilderCalls+'-fixture-private-trace'}};
       return new Promise(resolve=>{fixtureHTTP.send(prepared).then(response=>resolve(response.body)).catch(()=>resolve(null));});
@@ -117,6 +119,16 @@ test('the captured builder uses the broker and cannot send late after credential
   assert.equal(await evaluateRunning(connection, 'fixtureBuilderCalls'), 5);
   assert.equal(await evaluateRunning(connection, 'fixtureHTTPCalls'), 0);
   assert.equal(await evaluateRunning(connection, 'Object.hasOwn(fixtureHTTP,"send")'), false);
+  assert.equal(await evaluateRunning(connection, 'Object.hasOwn(keepAlive[1],"getAuthCookieHeader")'), false);
+});
+test('the original builder can use get despite also exposing getAuthCookieHeader', async t => {
+  const connection = await fixture(t, {credentialMethod: 'get'});
+  const report = await discoverNativeRequestBuilder(connection,
+    {anonymousIsolated: true, pinnedOriginalVerified: true, verifyBroker: true});
+  assert.equal(report.ok, true);assert.equal(report.broker.credentialHelperName, 'get');
+  assert.equal(report.broker.lateSendAfterCloseRejected, true);
+  assert.equal(await evaluateRunning(connection, 'fixtureHTTPCalls'), 0);
+  assert.equal(await evaluateRunning(connection, 'Object.hasOwn(keepAlive[1],"get")'), false);
   assert.equal(await evaluateRunning(connection, 'Object.hasOwn(keepAlive[1],"getAuthCookieHeader")'), false);
 });
 test('a verified descriptor binds the same original function on a fresh process without any SDK invocation', async t => {
