@@ -76,6 +76,7 @@ async function run() {
   assert.equal(window.getBrowserViews().length, 0);
   window.destroy();
   const platformConnection = await require('./platform-connection-smoke.cjs').run();
+  const egressResponse = await require('./native-egress-smoke.cjs').run();
   const resumeAction = await require('./native-resume-smoke.cjs').run();
   const attachment = Buffer.from('%PDF-1.7\n% offline native download fixture\n%%EOF');
   const attachmentURL = 'https://docdownload.zhipin.com/wflow/zpgeek/download/download4boss/fixture?id=fixture';
@@ -101,7 +102,18 @@ async function run() {
       net, session: downloadSession, url: input.url, checkAccount, signal,
       credentials: async () => ({token: 'offline-fixture-only', userAgent: 'offline'}),
     }),
-  }, endpoints: []}).start();
+    request: async input => {
+      assert.equal(input.url, '/wapi/zpjob/job/data/list');
+      assert.equal(input.method, 'get');
+      assert.equal(input.data.page, '1');
+      return {code: 0, zpData: {data: [], hasMore: false}};
+    },
+  }, endpoints: require('./endpoints.json')}).start();
+  const managedJobs = await rpc.dispatch('/http', {accountId: '101', method: 'GET',
+    url: 'https://www.zhipin.com/wapi/zpjob/job/data/list?page=1&position=0&type=0'});
+  assert.deepEqual(managedJobs, {code: 0, zpData: {data: [], hasMore: false}});
+  await assert.rejects(rpc.dispatch('/http', {accountId: '101', method: 'GET',
+    url: 'https://www.zhipin.com/wapi/unreviewed/operation'}), {code: 'UNSUPPORTED_OPERATION'});
   const receipt = await rpc.sendText('101', {friendId: '202'}, 'offline fixture');
   assert.equal(receipt.messageId, '303');
   const downloaded = await fetch(rpc.url + '/download', {
@@ -145,11 +157,12 @@ async function run() {
     profile: app.getPath('userData'), accountDataUsed: false,
     actualBossNetworkUsed: false, receiptFixture: true, loopbackBridge: true,
     packagedNativeWorker: true, sdkSourceGuard: true,
+    packagedManagedJobEndpoint: true,
     nativeAttachmentFixture: true, nativeChromiumRequestCount: nativeDownloads,
     nativeUserAgentHeaderValid: true, rendererUserAgentHeaderValid: true,
     integratedSingleWindow: true, nativeLoginTransitionFixture: true,
     leftNavigationFixture: true, pasteTargetRoutingFixture: true,
-    platformConnection, resumeAction,
+    platformConnection, egressResponse, resumeAction,
   }, null, 2));
   app.exit(0);
 }

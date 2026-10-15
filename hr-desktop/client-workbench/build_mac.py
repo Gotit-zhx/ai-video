@@ -190,7 +190,7 @@ def own_files(sdk_path):
                  "native-download.cjs", "shared-state.cjs", "smoke.cjs", "ui-check.cjs",
                  "native-network.cjs", "integrated-shell.cjs", "shell-preload.cjs",
                  "shell.html", "shell-renderer.cjs", "native-resume.cjs", "native-resume-smoke.cjs",
-                 "platform-connection-smoke.cjs"]:
+                 "platform-connection-smoke.cjs", "native-egress-smoke.cjs"]:
         result["heyi/" + name] = (HERE / name).read_bytes()
     for source in (DESKTOP / "src").glob("*.cjs"):
         result["heyi/src/" + source.name] = source.read_bytes()
@@ -213,7 +213,11 @@ def own_files(sdk_path):
     paths += sorted(set(re.findall(r"[\"'](/wapi/[^\"'\s]+)[\"']", sdk)) - set(paths))
     if not paths:
         raise ValueError("No SDK endpoints found; do not broaden the native allowlist")
-    result["heyi/endpoints.json"] = json.dumps(paths).encode()
+    # managed_jobs.py intentionally reads the complete management list, rather
+    # than the SDK's chatted-job subset. It is an existing desktop operation
+    # and must survive packaging even though recruiter.yaml does not list it.
+    paths += ["/wapi/zpjob/job/data/list"]
+    result["heyi/endpoints.json"] = json.dumps(sorted(set(paths))).encode()
     return result
 
 

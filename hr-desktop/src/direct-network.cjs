@@ -1,6 +1,6 @@
 const {spawn}=require('node:child_process');
 const {EventEmitter}=require('node:events');
-const {Readable}=require('node:stream');
+const {ReadableStream}=require('node:stream/web');
 
 function directEnvironment(source=process.env){
   const result=Object.fromEntries(Object.entries(source).filter(([key])=>
@@ -68,28 +68,79 @@ class DirectEgress extends EventEmitter{
     delete headers['proxy-authorization'];
     delete headers['content-length'];
     return new Promise((resolve,reject)=>{
+      let bodyController,finished=false;
       const outgoing=net.request({
-        url:request.url,method:request.method,headers,session:target,
+        url:request.url,method:request.method,session:target,
         credentials:'include',redirect:request.redirect,bypassCustomProtocolHandlers:true,
       });
-      const abort=()=>{outgoing.abort();reject(Error('请求已停止'));};
+      const cleanup=()=>{
+        request.signal.removeEventListener('abort',abort);
+      };
+      const fail=error=>{
+        if(finished)return;
+        finished=true;cleanup();
+        bodyController?.error(error);
+        reject(error);
+      };
+      const abort=()=>{
+        fail(Error('请求已停止'));
+        outgoing.abort();
+      };
       request.signal.addEventListener('abort',abort,{once:true});
-      outgoing.once('close',()=>request.signal.removeEventListener('abort',abort));
+      // Electron 22's Writable can emit "close" as soon as the upload finishes,
+      // before Chromium even starts the request. Only response completion or
+      // an explicit failure can release cancellation.
+      outgoing.once('abort',()=>fail(Error('网卡直连请求已中断')));
       outgoing.on('login',(info,callback)=>{
         if(!this.authenticate({preventDefault(){}},info,callback))callback();
       });
-      outgoing.once('error',()=>reject(Error('网卡直连请求未完成，未自动重试')));
+      outgoing.once('error',()=>fail(Error('网卡直连请求未完成，未自动重试')));
       outgoing.once('response',reply=>{
-        const responseHeaders=new Headers();
-        for(const [name,values] of Object.entries(reply.headers)){
-          if(['content-encoding','content-length','transfer-encoding'].includes(name.toLowerCase()))continue;
-          for(const value of Array.isArray(values)?values:[values])responseHeaders.append(name,value);
-        }
-        const empty=request.method==='HEAD'||[204,205,304].includes(reply.statusCode);
-        resolve(new Response(empty?null:Readable.toWeb(reply),{status:reply.statusCode,headers:responseHeaders}));
-        if(empty)reply.resume();
+        reply.once('error',()=>fail(Error('网卡直连响应未完成，未自动重试')));
+        reply.once('aborted',()=>fail(Error('网卡直连响应已中断')));
+        reply.once('close',()=>{
+          if(!finished)fail(Error('网卡直连响应未完整接收'));
+        });
+        reply.once('end',()=>{
+          if(finished)return;
+          finished=true;cleanup();bodyController?.close();
+        });
+        try{
+          const responseHeaders=new Headers();
+          for(const [name,values] of Object.entries(reply.headers)){
+            if(['content-encoding','content-length','transfer-encoding'].includes(name.toLowerCase()))continue;
+            for(const value of Array.isArray(values)?values:[values])responseHeaders.append(name,value);
+          }
+          const empty=request.method==='HEAD'||[204,205,304].includes(reply.statusCode);
+          // Electron 22 uses Node 16, which has stream/web but no
+          // Readable.toWeb. Adapt the actual response without assuming its
+          // IncomingMessage is a Node Readable or supports async iteration.
+          const body=empty?null:new ReadableStream({
+            start(controller){
+              bodyController=controller;
+              reply.on('data',chunk=>{
+                if(finished)return;
+                controller.enqueue(new Uint8Array(chunk));
+                if(controller.desiredSize<=0)reply.pause();
+              });
+            },
+            pull(){if(!finished)reply.resume();},
+            cancel(){
+              if(finished)return;
+              finished=true;cleanup();outgoing.abort();
+            },
+          });
+          resolve(new Response(body,{status:reply.statusCode,headers:responseHeaders}));
+          if(empty)reply.resume();
+        }catch(error){fail(error);outgoing.abort();}
       });
-      outgoing.end(body||undefined);
+      try{
+        // net.request in the original runtime ignores an options.headers
+        // object. Set headers through its actual ClientRequest API.
+        for(const [name,value] of Object.entries(headers))outgoing.setHeader(name,value);
+        if(request.signal.aborted)abort();
+        else outgoing.end(body||undefined);
+      }catch(error){fail(error);outgoing.abort();}
     });
   }
   close(){
