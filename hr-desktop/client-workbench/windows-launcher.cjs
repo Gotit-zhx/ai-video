@@ -53,6 +53,9 @@ async function run(packageRoot, selfTest = false) {
     verified = await verifyPackage(packageRoot);
     stage = 'profile-isolation';
     const plan = profileEnvironment(profileRoot);
+    // The packaged worker independently requires this disposable-profile
+    // marker before it will start its loopback-only test relay.
+    if (selfTest) plan.env.HEYI_TEST_USER_DATA = plan.profile;
     for (const directory of [profileRoot, plan.profile, plan.env.APPDATA,
       plan.env.LOCALAPPDATA, plan.env.USERPROFILE, plan.env.TEMP]) await fs.mkdir(directory, {recursive: true});
     statusFile = path.join(profileRoot, 'heyi-launcher-status.json');

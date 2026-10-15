@@ -37,8 +37,9 @@ async function install(bindings, config = {}) {
         process.env.HEYI_WORKBENCH_TEST_PORT !== '0' || !config.offlineURL)) {
       throw Error('Disposable offline workbench configuration required');
     }
-    stage = 'direct-network';
+    stage = 'web-types';
     require('./compat.cjs').installWebTypes();
+    stage = 'direct-network';
     network = require('./native-network.cjs').instance({offline: Boolean(config.offline)});
     await network.configure(session.defaultSession);
     network.attachNative(bindings.network);
