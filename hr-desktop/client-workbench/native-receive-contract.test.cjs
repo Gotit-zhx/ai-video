@@ -13,6 +13,7 @@ function fixture(t, {loggedIn = false, throws = false, clientMid = false} = {}) 
   const receiver = new Receiver();
   class Sender {
     constructor() {throw Error('Original sender constructor must not run');}
+    send() {throw Error('Offline normalizer must not send');}
     dispatchMessage(protocol) {
       dispatchCalls++;
       assert.equal(Object.hasOwn(this, 'userId'), true);
@@ -38,6 +39,7 @@ for (const clientMid of [false, true]) {
     const report = await install(f.bindings, {anonymousIsolated: true});
     assert.equal(report.ok, true);
     assert.equal(report.clientMidPreserved, clientMid);
+    assert.equal(report.addonCorrelationLinked, true);
     assert.equal(f.dispatchCalls(), 1);assert.equal(f.receiverCalls(), 0);
     assert.equal(Object.hasOwn(f.bindings.receiver, 'receiveMessage'), false);
     f.bindings.receiver.receiveMessage([]);
