@@ -66,5 +66,23 @@ globalThis.fixtureDispatcher = ()=>plain;
 `);
   const report = await inspectSdkScopes(connection, 'globalThis.fixtureDispatcher');
   assert.deepEqual(report.scopes.flatMap(scope => scope.registries || []), []);
-  await assert.rejects(inspectSdkScopes(connection, 'undefined'), /function is unavailable/);
+  await assert.rejects(inspectSdkScopes(connection, 'undefined'), error =>
+    error.inventoryDiagnostic?.code === 'dispatcher-function-unavailable');
+});
+
+test('bound original dispatcher follows its target without calling the function', async t => {
+  const connection = await fixture(t, `
+globalThis.fixtureReads = 0;
+const registry = {
+ _sdk_getLoginStatus:async()=>{globalThis.fixtureReads++;return false},
+ _sdk_getNetworkStatus:async()=>{globalThis.fixtureReads++;return false},
+};
+function dispatch(){return registry}
+globalThis.fixtureDispatcher = dispatch.bind({});
+`);
+  const report = await inspectSdkScopes(connection, 'globalThis.fixtureDispatcher');
+  assert.ok(report.scopes.flatMap(scope => scope.registries || [])
+    .some(item => item.binding === 'registry'));
+  assert.equal(await evaluateRunning(connection, 'globalThis.fixtureReads'), 0);
+  assert.ok(report.functionInternals.length >= 2);
 });

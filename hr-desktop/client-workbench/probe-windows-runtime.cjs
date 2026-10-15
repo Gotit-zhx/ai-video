@@ -106,9 +106,10 @@ async function main() {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       scopeReport = await inspectSdkScopes(connection);
-    } catch {
+    } catch (error) {
       scopeReport = {mode: 'closure-metadata-only', ok: false,
-        reason: 'original-scope-inventory-unavailable', sdkMethodsInvoked: 0};
+        reason: 'original-scope-inventory-unavailable', sdkMethodsInvoked: 0,
+        diagnostic: error.inventoryDiagnostic || {stage: 'dispatcher-readiness'}};
     }
     await fs.writeFile(path.join(root, 'sdk-scope-inventory.json'),
       JSON.stringify(scopeReport, null, 2));

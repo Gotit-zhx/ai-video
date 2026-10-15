@@ -5,17 +5,33 @@ const {randomUUID} = require('node:crypto');
 async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.handleEvent') {
   const group = 'heyi-sdk-metadata-' + randomUUID();
   const command = (method, params) => connection.client.command(method, params);
+  let stage = 'dispatcher-reference', failed = false;
+  const functionInternals = [];
+  const unavailable = code => Object.assign(Error('Original SDK scope inventory unavailable'),
+    {inventoryCode: code});
   try {
     const reference = await command('Runtime.evaluate', {
       expression, objectGroup: group, returnByValue: false,
     });
     if (reference.exceptionDetails || reference.result?.type !== 'function' ||
-        !reference.result.objectId) throw Error('Original dispatcher function is unavailable');
-    const properties = await command('Runtime.getProperties', {
-      objectId: reference.result.objectId, ownProperties: true,
-    });
-    const scopeList = properties.internalProperties?.find(item => item.name === '[[Scopes]]')?.value?.objectId;
-    if (!scopeList) throw Error('Original dispatcher scopes are unavailable');
+        !reference.result.objectId) throw unavailable('dispatcher-function-unavailable');
+    let current = reference.result.objectId, scopeList;
+    stage = 'function-properties';
+    for (let depth = 0; depth < 4; depth++) {
+      const properties = await command('Runtime.getProperties', {
+        objectId: current, ownProperties: true,
+      });
+      functionInternals.push({depth,
+        names: (properties.internalProperties || []).map(item => item.name).slice(0, 20)});
+      scopeList = properties.internalProperties?.find(item => item.name === '[[Scopes]]')?.value?.objectId;
+      if (scopeList) break;
+      const target = properties.internalProperties?.find(item =>
+        ['[[TargetFunction]]', '[[BoundTargetFunction]]'].includes(item.name))?.value?.objectId;
+      if (!target) break;
+      current = target;
+    }
+    if (!scopeList) throw unavailable('dispatcher-scopes-unavailable');
+    stage = 'scope-list';
     const scopes = await command('Runtime.getProperties', {objectId: scopeList, ownProperties: true});
     const result = [];
     for (const scope of (scopes.result || []).filter(item => /^\d+$/.test(item.name)).slice(0, 8)) {
@@ -23,6 +39,7 @@ async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.ha
       const kind = /^(Closure|Script|Module|Block|Local|Catch)(?:\b|$)/
         .exec(scope.value?.description || '')?.[1];
       if (!kind || !scope.value?.objectId) continue;
+      stage = 'scope-metadata';
       const metadata = await command('Runtime.callFunctionOn', {
         objectId: scope.value.objectId, objectGroup: group, returnByValue: true,
         functionDeclaration: `function() {
@@ -68,14 +85,21 @@ async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.ha
         }`,
       });
       if (metadata.exceptionDetails || !metadata.result?.value) {
-        throw Error('Original scope metadata could not be inspected');
+        throw unavailable('scope-metadata-unavailable');
       }
       result.push({kind, ...metadata.result.value});
     }
     return {mode: 'closure-metadata-only', sdkMethodsInvoked: 0,
-      rawValuesRetained: false, scopes: result};
+      rawValuesRetained: false, functionInternals, scopes: result};
+  } catch (error) {
+    failed = true;
+    throw Object.assign(Error('Original SDK scope inventory unavailable'), {
+      inventoryDiagnostic: {stage, code: error.inventoryCode || 'inspector-command-failed',
+        functionInternals},
+    });
   } finally {
-    await command('Runtime.releaseObjectGroup', {objectGroup: group});
+    try {await command('Runtime.releaseObjectGroup', {objectGroup: group});}
+    catch (error) {if (!failed) throw error;}
   }
 }
 
