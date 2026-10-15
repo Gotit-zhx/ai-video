@@ -64,6 +64,7 @@ class NativeSession extends EventEmitter {
     if (this.closed) return;
     if (permanent.has(this.failure)) code = this.failure;
     if (!['AUTH_EXPIRED', ...permanent].includes(code)) code = 'AUTH_EXPIRED';
+    if (this.failure === code && !this.verifiedAccount) return;
     const previouslyVerified = Boolean(this.verifiedAccount);
     this.failure = code;this.lostCredentialHash ||= this.lastCredentialHash;
     this.verifiedAccount = '';this.epoch++;

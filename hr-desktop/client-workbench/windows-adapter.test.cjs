@@ -15,6 +15,11 @@ function fixture(t, {transport, nonEnumerable = false} = {}) {
     clearLoginCookies() {counts.clear++;assert.equal(this, authentication);signedIn = false;return 'original-clear-result';}};
   const sdk = {_sdk_getLoginStatus() {counts.login++;return Promise.resolve(signedIn);},
     _sdk_chatSocket_sendTextMessage(input) {counts.sdkText++;sent.push(input);sender.send(Buffer.from([0]));return Promise.resolve();}};
+  const nativeLogout = {_sdk_logout(event) {
+    assert.equal(this, nativeLogout);
+    authentication.clearLoginCookies();
+    return event;
+  }};
   const bindings = {httpClients: [http], sender, receiver, authentication, sdk,
     identity: {get userInfo() {return {userId: account};}},
     requestBuilder: async input => {
@@ -27,24 +32,27 @@ function fixture(t, {transport, nonEnumerable = false} = {}) {
   if (nonEnumerable) for (const name of Object.keys(bindings)) {
     Object.defineProperty(bindings, name, {enumerable: false});
   }
-  const original = {http: http.send, send: sender.send, clear: authentication.clearLoginCookies};
+  const original = {http: http.send, send: sender.send, clear: authentication.clearLoginCookies,
+    logout: nativeLogout._sdk_logout};
   const adapter = new WindowsAdapter({bindings, net: {}, session: {}, endpoints: [endpoint],
     show() {}, nativeWindow: () => null, allContents: () => [],
+    logoutTargets: [nativeLogout],
     transport: transport || (async () => ({heyiNativeHttp: 1, statusCode: 429, body: {code: 88}})),
     timeout: 100, sessionTimeout: 100});
   t.after(() => adapter.close());
-  return {adapter, counts, bindings, original, sent,
+  return {adapter, counts, bindings, original, sent, nativeLogout,
     login: value => {signedIn = value;}, account: value => {account = value;}};
 }
 const text = {content: 'Own offline fixture', options: {uid: '202', clientMid: '303'}};
 
 test('adapter installation has zero business calls and restores original methods on close', t => {
-  const {adapter, counts, bindings, original} = fixture(t);
+  const {adapter, counts, bindings, original, nativeLogout} = fixture(t);
   assert.deepEqual(counts, {login: 0, cookie: 0, builder: 0, http: 0, sdkText: 0, send: 0, clear: 0});
   adapter.close();
   assert.equal(bindings.httpClients[0].send, original.http);
   assert.equal(bindings.sender.send, original.send);
   assert.equal(bindings.authentication.clearLoginCookies, original.clear);
+  assert.equal(nativeLogout._sdk_logout, original.logout);
 });
 test('descriptor-only original bindings work without enumerable copies or constructor-time reads', async t => {
   const {adapter, counts, login} = fixture(t, {nonEnumerable: true});
@@ -155,3 +163,23 @@ test('an observation listener failure cannot change the original logout result',
   assert.equal(counts.clear, 1);
   assert.equal(adapter.loggedIn(), false);
 });
+for (const [code, reason] of [[10, 'SESSION_MISMATCH'], [70, 'ACCOUNT_RISK'],
+  [1013, 'ACCOUNT_RISK'], [1014, 'SECURITY_VERIFICATION_REQUIRED']]) {
+  test(`native logout code ${code} retains ${reason} through original cookie clearing`, async t => {
+    const {adapter, nativeLogout, counts, login} = fixture(t);
+    const rpc = new NativeRPC({adapter, endpoints: [endpoint]});
+    t.after(() => rpc.close());
+    await adapter.verifyAccount('101');
+    const stops = [];
+    adapter.on('session-lost', reason => stops.push(reason));
+    const event = {code};
+    assert.equal(nativeLogout._sdk_logout(event), event);
+    assert.equal(counts.clear, 1);
+    assert.equal(adapter.originalSession.failure, reason);
+    assert.equal(rpc.sessionFailure, reason);
+    assert.deepEqual(stops, [reason]);
+    login(true);
+    await assert.rejects(rpc.refreshSession('101'), {code: reason});
+    assert.equal(counts.sdkText, 0);
+  });
+}
