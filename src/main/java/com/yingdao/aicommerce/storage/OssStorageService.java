@@ -54,6 +54,7 @@ import java.util.UUID;
 public class OssStorageService {
     private static final Logger log = LoggerFactory.getLogger(OssStorageService.class);
     private static final int MULTIPART_SIZE = 8 * 1024 * 1024;
+    private static final String DAYAN_ENDPOINT = "https://oss.cloud.dayan.cloud";
     private final String bucket;
     private final Duration signedUrlTtl;
     private final OSS internalClient;
@@ -85,7 +86,7 @@ public class OssStorageService {
                     signedUrlTtl, publicImages, readOnlySigner, credentialsFile, "", "");
             bucket = dayanBucket;
             region = "cn-chengdu";
-            endpoint = "https://oss.cloud.dayan.design";
+            endpoint = DAYAN_ENDPOINT;
             publicEndpoint = endpoint;
             credentialsFile = dayanCredentialsFile;
             publicImages = false;
@@ -99,12 +100,16 @@ public class OssStorageService {
         this.signedUrlTtl = signedUrlTtl;
         this.readOnlySigner = readOnlySigner;
         this.publicImages = publicImages;
+        endpoint = normalizeEndpoint(endpoint);
+        publicEndpoint = normalizeEndpoint(publicEndpoint);
         this.publicEndpoint = URI.create(publicEndpoint);
-        this.disableImageProcessing = this.publicEndpoint.getHost().endsWith(".cloud.dayan.design");
+        this.disableImageProcessing = "oss.cloud.dayan.cloud".equalsIgnoreCase(this.publicEndpoint.getHost());
 
         CredentialsProvider provider = credentialsProvider(roleName, credentialsFile);
         ClientBuilderConfiguration clientConfig = new ClientBuilderConfiguration();
         clientConfig.setSignatureVersion(disableImageProcessing ? SignVersion.V1 : SignVersion.V4);
+        // Dayan routes both requests and signed downloads as /bucket/key.
+        clientConfig.setSLDEnabled(disableImageProcessing);
         clientConfig.setConnectionTimeout(10_000);
         clientConfig.setSocketTimeout(30_000);
         clientConfig.setMaxErrorRetry(2);
@@ -115,6 +120,11 @@ public class OssStorageService {
         }
         this.internalClient = client(endpoint, region, provider, clientConfig);
         this.publicClient = client(publicEndpoint, region, provider, clientConfig);
+    }
+
+    private static String normalizeEndpoint(String endpoint) {
+        return "oss.cloud.dayan.design".equalsIgnoreCase(URI.create(endpoint).getHost())
+                ? DAYAN_ENDPOINT : endpoint;
     }
 
     static CredentialsProvider credentialsProvider(String roleName, String credentialsFile) throws Exception {
