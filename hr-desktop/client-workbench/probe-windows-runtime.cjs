@@ -125,7 +125,10 @@ async function main() {
     report.osFirewall = firewall;
     report.processExitCode = processOutcome.code;
     report.processOutcome = processOutcome;
-    report.ok = report.ok && processOutcome.code === 0 && !processOutcome.timedOut;
+    report.ok = report.ok && processOutcome.code === 0 && !processOutcome.timedOut &&
+      report.shutdown?.requested === true &&
+      report.shutdown?.method === 'original-sdk:_sdk_exit' &&
+      report.shutdown?.sdkShutdownRequests === 1 && report.shutdown?.dispatchFailed !== true;
     await fs.writeFile(output, JSON.stringify(report, null, 2));
     if (!report.ok) throw Error('Original runtime observation incomplete; inspect the report');
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,
