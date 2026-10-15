@@ -3,6 +3,25 @@
 const {randomUUID} = require('node:crypto');
 const READS = new Set(['_sdk_getLoginStatus', '_sdk_getNetworkStatus']);
 
+async function waitForOriginalDispatcher(lookup, timeout = 10000, interval = 100) {
+  if (typeof lookup !== 'function' || !Number.isInteger(timeout) || timeout < 1 ||
+      timeout > 15000 || !Number.isInteger(interval) || interval < 1 || interval > 1000) {
+    throw Error('Invalid original dispatcher readiness check');
+  }
+  const deadline = Date.now() + timeout;
+  while (true) {
+    // Electron ready does not imply the original asynchronous socket service
+    // has been registered. These checks read local types only, never the SDK.
+    const service = lookup();
+    if (service && typeof service.handleEvent === 'function' &&
+        typeof service.clientID?.get === 'function' &&
+        typeof service.clientID?.delete === 'function') return service;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw Error('Original dispatcher did not become ready');
+    await new Promise(resolve => setTimeout(resolve, Math.min(interval, remaining)));
+  }
+}
+
 function readOriginalSDK(service, method, timeout = 5000) {
   if (!READS.has(method)) return Promise.reject(Error('Original SDK read is not permitted'));
   if (!service || typeof service.handleEvent !== 'function' ||
@@ -55,4 +74,4 @@ function readOriginalSDK(service, method, timeout = 5000) {
     }
   });
 }
-module.exports = {readOriginalSDK};
+module.exports = {readOriginalSDK, waitForOriginalDispatcher};

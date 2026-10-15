@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {readOriginalSDK} = require('./original-sdk-read.cjs');
+const {readOriginalSDK, waitForOriginalDispatcher} = require('./original-sdk-read.cjs');
 
 function fixture(reply) {
   const service = {
@@ -67,4 +67,23 @@ test('registration errors clean up and a different registration is never deleted
   await assert.rejects(readOriginalSDK(service, '_sdk_getLoginStatus'), /dispatch failed/);
   assert.equal([...service.clientID.values()].filter(v => v.sid === 'replacement').length, 1);
   assert.equal(service.clientID.get('unrelated-client').sid, 'unrelated-socket');
+});
+test('a late original service is awaited before one SDK call, without replay', async t => {
+  const service = fixture((input, socket) =>
+    socket.emit('message', {...input, data: {code: 0, data: false}}));
+  let available;
+  const timer = setTimeout(() => {available = service;}, 30);
+  t.after(() => clearTimeout(timer));
+  const found = await waitForOriginalDispatcher(() => available, 1000, 5);
+  assert.equal(found, service);
+  assert.equal(service.calls.length, 0);
+  assert.equal(await readOriginalSDK(found, '_sdk_getLoginStatus'), false);
+  assert.equal(service.calls.length, 1);clean(service);
+});
+test('missing or partial original service expires without invoking any SDK', async () => {
+  let calls = 0;
+  await assert.rejects(waitForOriginalDispatcher(() => ({
+    handleEvent() {calls++;}, clientID: {},
+  }), 20, 5), /did not become ready/);
+  assert.equal(calls, 0);
 });

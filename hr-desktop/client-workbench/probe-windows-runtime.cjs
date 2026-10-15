@@ -59,7 +59,7 @@ async function main() {
         } finally {clearTimeout(deadline);}
       },
     });
-    const outcome = waitForProcess(connection.child, 35000);
+    const outcome = waitForProcess(connection.child, 60000);
     outcome.catch(() => {});
     const loader = '(typeof require === "function" ? require : process.mainModule?.require.bind(process.mainModule))';
     let entry;

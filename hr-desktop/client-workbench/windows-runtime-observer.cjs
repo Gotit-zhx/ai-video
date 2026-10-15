@@ -1,7 +1,7 @@
 // Explicitly injected by the disposable Windows CI probe. Never used in the app.
 const fs = require('node:fs');
 const path = require('node:path');
-const {readOriginalSDK} = require('./original-sdk-read.cjs');
+const {readOriginalSDK, waitForOriginalDispatcher} = require('./original-sdk-read.cjs');
 
 module.exports = function observe(electron, config) {
   const {app, BrowserWindow, webContents} = electron;
@@ -115,7 +115,18 @@ module.exports = function observe(electron, config) {
     if (finished) return;
     finished = true;
     shutdown.requested = true;
-    shutdown.inspectorListenerActive = Boolean(require('node:inspector').url());
+    const inspector = require('node:inspector');
+    shutdown.inspectorListenerBeforeQuit = Boolean(inspector.url());
+    // The parent has already received the installation result and closed its
+    // websocket, long before this bounded observation finishes. Close the
+    // listener only here, after asynchronous original startup has completed.
+    if (config.detachInspector === true) {
+      shutdown.inspectorDetachRequested = true;
+      snapshot('before-inspector-detach');
+      inspector.close();
+      shutdown.inspectorDetached = !inspector.url();
+    }
+    shutdown.inspectorListenerActive = Boolean(inspector.url());
     snapshot(reason);
     // Save before and after the actual quit call. Do not call Electron getters
     // after shutdown and do not force a zero exit code to satisfy this probe.
@@ -134,25 +145,13 @@ module.exports = function observe(electron, config) {
   }
   app.on('quit', (_event, code) => {shutdown.nativeQuitCode = code;persist();});
   process.once('exit', code => {shutdown.nodeExitCode = code;persist();});
-  // The parent first receives the installation result and closes its websocket.
-  // Delay closing the listener until then: inspector.close() synchronously waits
-  // for connected clients. The report distinguishes this run from the earlier
-  // listener-active control; it does not assume detachment fixes the exit.
-  if (config.detachInspector === true) {
-    setTimeout(() => {
-      shutdown.inspectorDetachRequested = true;
-      persist();
-      require('node:inspector').close();
-      shutdown.inspectorDetached = !require('node:inspector').url();
-      snapshot('inspector-detached');
-    }, 500);
-  }
   app.whenReady().then(async () => {
     ready = true;
     prepare(electron.session.defaultSession);
     snapshot('app-ready');
-    const service = descriptorValue('$socket');
-    if (service) {
+    try {
+      const service = await waitForOriginalDispatcher(() => descriptorValue('$socket'));
+      if (finished) return;
       sdkReadRequests++;
       try {
         const loggedIn = await readOriginalSDK(service, '_sdk_getLoginStatus');
@@ -161,10 +160,13 @@ module.exports = function observe(electron, config) {
       } catch {
         sdkRead = {ok: false, method: '_sdk_getLoginStatus', reason: 'original-dispatch-not-verified'};
       }
-    } else sdkRead = {ok: false, reason: 'original-dispatch-unavailable'};
+    } catch {
+      sdkRead = {ok: false, reason: 'original-dispatch-unavailable'};
+    }
+    if (finished) return;
     snapshot('sdk-read-complete');
     setTimeout(() => finish('observation-complete'), 8000);
   });
-  setTimeout(() => finish('ready-deadline'), 20000).unref();
+  setTimeout(() => finish('ready-deadline'), 45000).unref();
   return {observerInstalled: true, userDataIsolated: true};
 };
