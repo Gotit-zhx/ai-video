@@ -4,11 +4,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from build_manifest import MANIFEST, source_snapshot, write_manifest
 
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE.parents[1] / "scripts" / "boss-agent"
 STAGE = HERE / "build" / "shared"
 STAGE.mkdir(parents=True, exist_ok=True)
+sources = source_snapshot()
 
 def replace_once(text, before, after):
     assert text.count(before) == 1, "Shared policy changed; review desktop adaptation"
@@ -32,6 +34,8 @@ for name, text in (("connector.py", connector), ("guarded_cli.py", guard)):
 if "--stage-only" in sys.argv:
     sys.exit(0)
 
+# A failed rebuild must not leave a previous manifest claiming the output is current.
+(HERE / "dist/heyi-boss" / MANIFEST).unlink(missing_ok=True)
 subprocess.run([
     sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
     "--name", "heyi-boss", "--paths", str(STAGE),
@@ -42,3 +46,4 @@ subprocess.run([
     "--distpath", str(HERE / "dist"), "--workpath", str(HERE / "build" / "pyinstaller"),
     "--specpath", str(HERE), str(HERE / "runner.py")
 ], check=True)
+write_manifest(HERE / "dist/heyi-boss", sources)

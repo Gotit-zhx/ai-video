@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 
-from build_mac import own_files
+from build_mac import own_files, verify_runtime
 
 HERE = Path(__file__).resolve().parent
 DESKTOP = HERE.parent
@@ -42,6 +42,7 @@ def stage(source, output, runtime, sdk):
             raise ValueError("Original Windows input differs")
     if not (runtime / "heyi-boss.exe").is_file() or (runtime / "heyi-boss.exe").read_bytes()[:2] != b"MZ":
         raise ValueError("Build the Windows worker first; do not copy a Mac runtime")
+    verify_runtime(runtime, "win32")
     addon = own_files(sdk)
     for name in ["windows-workbench.cjs", "windows-launcher.cjs", "windows-package.cjs",
                  "windows-original.json", "windows-adapter.cjs", "native-session.cjs",
@@ -60,6 +61,7 @@ def stage(source, output, runtime, sdk):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
     shutil.copytree(runtime, native / "resources/heyi-runtime")
+    verify_runtime(native / "resources/heyi-runtime", "win32")
     with tempfile.TemporaryDirectory(prefix="heyi-windows-entry-") as temporary:
         subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
                         "--onefile", "--windowed", "--name", "赫逸工作台",

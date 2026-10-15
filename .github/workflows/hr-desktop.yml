@@ -59,6 +59,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node node_modules/electron/install.js
       - run: python runtime/install.py
+      - run: python -m unittest discover -s runtime -p test_build_manifest.py
       - run: python runtime/build.py
       - run: npm test
       - run: python -m unittest discover -s runtime -p test_passive_runtime.py
@@ -171,6 +172,7 @@ jobs:
       - name: Build Windows worker for the isolated workbench
         if: ${{ inputs.nativeWorkbench == true }}
         run: |
+          python -m unittest discover -s hr-desktop/runtime -p test_build_manifest.py
           python hr-desktop/runtime/install.py
           python hr-desktop/runtime/build.py
       - name: Observe pinned original runtime without network or login

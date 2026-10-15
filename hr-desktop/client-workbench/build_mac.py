@@ -7,6 +7,7 @@ publish the derived third-party app to the source repository.
 import argparse
 import copy
 import hashlib
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath
 import plistlib
@@ -18,6 +19,14 @@ HERE = Path(__file__).resolve().parent
 DESKTOP = HERE.parent
 MAIN_SHA256 = "1806b34a0da262fec08afa8596b37666dfb06824eaa878e94ba39a89c46854e7"
 BLOCK_SIZE = 4 * 1024 * 1024
+
+
+def verify_runtime(directory, expected_platform):
+    spec = importlib.util.spec_from_file_location(
+        "heyi_runtime_build_manifest", DESKTOP / "runtime/build_manifest.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.verify_runtime(directory, expected_platform)
 
 
 def digest(data):
@@ -329,11 +338,13 @@ def main():
     runtime = DESKTOP / "runtime/dist/heyi-boss"
     if not (runtime / "heyi-boss").is_file():
         raise ValueError("Build the target-OS runtime first")
+    verify_runtime(runtime, "darwin")
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, output, symlinks=True)
     archive = output / "Contents/Resources/app.asar"
     details = repack(source_asar, archive, addon)
     shutil.copytree(runtime, output / "Contents/Resources/heyi-runtime", symlinks=True)
+    verify_runtime(output / "Contents/Resources/heyi-runtime", "darwin")
     plist_file = output / "Contents/Info.plist"
     plist = plistlib.loads(plist_file.read_bytes())
     # Electron 22 derives helper bundle names from CFBundleName. Preserve that
