@@ -22,7 +22,7 @@ try {
         $response = $client.GetAsync('https://d.zhipin.com/static/zhipin/desktop/win/boss-zhipin-1.7.5.exe').GetAwaiter().GetResult()
         $response.EnsureSuccessStatusCode() | Out-Null
         $stream = [System.IO.File]::Create($installer)
-        try { $response.Content.CopyToAsync($stream).GetAwaiter().GetResult() } finally { $stream.Dispose() }
+        try { $response.Content.CopyToAsync($stream).GetAwaiter().GetResult() | Out-Null } finally { $stream.Dispose() }
     } finally {
         $client.Dispose()
         $handler.Dispose()
@@ -75,7 +75,13 @@ try {
     } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     foreach ($name in $rules) { Remove-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue }
     $result | ConvertTo-Json -Depth 6 | Set-Content $resultPath -Encoding utf8NoBOM
-    # Artifacts are explicitly limited to these own reports; never the vendor
-    # installer, resources, original code, or temporary profile.
-    Write-Output "Own probe reports: $root"
+    # Small own reports stay in Actions logs: no artifact-storage quota needed.
+    # Never print vendor stdout, installer/resources, code, or profile files.
+    foreach ($name in @('ci-result.json', 'firewall.json', 'entry-runtime.json', 'runtime-observation.json')) {
+        $report = Join-Path $root $name
+        if (Test-Path $report) {
+            $data = Get-Content -Raw $report | ConvertFrom-Json
+            Write-Output ("HEYI_NATIVE_REPORT " + $name + " " + ($data | ConvertTo-Json -Depth 16 -Compress))
+        }
+    }
 }

@@ -4,7 +4,8 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {once} = require('node:events');
-const {localInspectorURL, launchPaused, evaluateEntry} = require('./inspector-driver.cjs');
+const {localInspectorURL, launchPaused, launchInspecting, evaluateEntry,
+  evaluateRunning} = require('./inspector-driver.cjs');
 
 test('inspector accepts only an explicit numeric loopback endpoint', () => {
   const token = '11111111-2222-3333-4444-555555555555';
@@ -91,4 +92,19 @@ test('disconnect rejects a pending call without reconnecting', async t => {
   const rejected = assert.rejects(pending, /(?:disconnected|transport failed); outcome unknown/);
   connection.child.kill();
   await rejected;
+});
+
+test('running-process observation uses the real main module without changing source', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-inspector-running-'));
+  t.after(() => fs.rm(root, {recursive: true, force: true}));
+  const fixture = path.join(root, 'fixture.cjs');
+  const source = 'globalThis._sdk_fixture = () => {}; setInterval(() => {}, 1000);';
+  await fs.writeFile(fixture, source);
+  const connection = await launchInspecting(process.execPath, [fixture]);
+  t.after(() => {connection.client.close();connection.child.kill();});
+  assert.equal(await evaluateRunning(connection,
+    'typeof process.mainModule.require("node:fs").readFileSync'), 'function');
+  assert.equal(await evaluateRunning(connection, 'typeof globalThis._sdk_fixture'), 'function');
+  await assert.rejects(evaluateRunning(connection, 'throw Error("fixture")'), /Runtime evaluation failed/);
+  assert.equal(await fs.readFile(fixture, 'utf8'), source);
 });

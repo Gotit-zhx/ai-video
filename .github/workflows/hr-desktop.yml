@@ -156,15 +156,3 @@ jobs:
       - name: Observe pinned original runtime without network or login
         shell: pwsh
         run: ./scripts/ci/windows-native-probe.ps1
-      - name: Save only our observation reports
-        if: ${{ always() && env.HEYI_NATIVE_PROBE_ROOT != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-native-observation
-          retention-days: 3
-          if-no-files-found: warn
-          path: |
-            ${{ env.HEYI_NATIVE_PROBE_ROOT }}/ci-result.json
-            ${{ env.HEYI_NATIVE_PROBE_ROOT }}/firewall.json
-            ${{ env.HEYI_NATIVE_PROBE_ROOT }}/entry-runtime.json
-            ${{ env.HEYI_NATIVE_PROBE_ROOT }}/runtime-observation.json

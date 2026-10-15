@@ -3,7 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {once} = require('node:events');
-const {launchPaused, evaluateEntry} = require('./inspector-driver.cjs');
+const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -25,21 +25,30 @@ async function main() {
   for (const name of ['APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP']) await fs.mkdir(env[name], {recursive: true});
   let connection;
   try {
-    connection = await launchPaused(executable, ['--disable-gpu'], {
+    connection = await launchInspecting(executable, ['--disable-gpu',
+      `--user-data-dir=${path.join(root, 'profile')}`], {
       env, cwd: path.dirname(executable), timeout: 20000,
       onSpawn: child => fs.writeFile(path.join(root, 'probe-pid.txt'), String(child.pid)).catch(() => {}),
     });
-    const entry = await evaluateEntry(connection,
-      '({platform:process.platform, arch:process.arch, versions:process.versions, requireType:typeof require})');
-    if (entry?.platform !== 'win32' || entry.arch !== 'ia32' || entry.requireType !== 'function') {
-      throw Error('Unexpected original entry environment');
+    const loader = '(typeof require === "function" ? require : process.mainModule?.require.bind(process.mainModule))';
+    let entry;
+    // Poll only presence/type metadata, never execute an SDK method.
+    for (let attempt = 0; attempt < 40; attempt++) {
+      entry = await evaluateRunning(connection,
+        `({platform:process.platform, arch:process.arch, versions:process.versions, requireType:typeof ${loader}})`);
+      if (entry?.requireType === 'function') break;
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
-    await fs.writeFile(path.join(root, 'entry-runtime.json'), JSON.stringify(entry, null, 2));
+    await fs.writeFile(path.join(root, 'entry-runtime.json'), JSON.stringify({
+      ...entry, observationStage: 'running-original-client',
+    }, null, 2));
+    if (entry?.platform !== 'win32' || entry.arch !== 'ia32' || entry.requireType !== 'function') {
+      throw Error('Unexpected original running environment');
+    }
     const observer = path.join(__dirname, 'windows-runtime-observer.cjs');
-    const result = await evaluateEntry(connection,
-      `require(${JSON.stringify(observer)})(require('electron'), ${JSON.stringify({root, output})})`);
+    const result = await evaluateRunning(connection,
+      `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({root, output})}))(${loader})`);
     if (!result?.observerInstalled) throw Error('Runtime observer was not installed');
-    await connection.client.command('Debugger.resume');
     connection.client.close();
     const exit = once(connection.child, 'exit');
     const timer = setTimeout(() => connection.child.kill(), 35000);

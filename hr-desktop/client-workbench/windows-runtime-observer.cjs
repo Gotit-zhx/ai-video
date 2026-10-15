@@ -6,18 +6,28 @@ module.exports = function observe(electron, config) {
   const {app, BrowserWindow, webContents} = electron;
   const root = fs.realpathSync(config.root);
   const output = path.resolve(config.output);
-  if (process.platform !== 'win32' || app.isReady() ||
+  const insideRoot = value => {
+    const relative = path.relative(root, path.resolve(value));
+    return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  };
+  const attachedAfterReady = app.isReady();
+  if (process.platform !== 'win32' ||
       !path.relative(root, output) || path.relative(root, output).startsWith('..')) {
-    throw Error('Observer requires a new Windows test directory before ready');
+    throw Error('Observer requires a new Windows test directory');
   }
-  const userData = path.join(root, 'profile');
-  const appData = path.join(root, 'app-data');
+  if (attachedAfterReady && (!insideRoot(app.getPath('userData')) || !insideRoot(app.getPath('appData')))) {
+    throw Error('Original runtime did not use disposable profile paths');
+  }
+  const userData = attachedAfterReady ? app.getPath('userData') : path.join(root, 'profile');
+  const appData = attachedAfterReady ? app.getPath('appData') : path.join(root, 'app-data');
   fs.mkdirSync(userData, {recursive: true});
   fs.mkdirSync(appData, {recursive: true});
-  app.setPath('appData', appData);
-  app.setPath('userData', userData);
-  app.setName('HeyiNativeWindowsProbe');
-  app.disableHardwareAcceleration();
+  if (!attachedAfterReady) {
+    app.setPath('appData', appData);
+    app.setPath('userData', userData);
+    app.setName('HeyiNativeWindowsProbe');
+    app.disableHardwareAcceleration();
+  }
   let ready = false, attemptedRequests = 0, finished = false;
   const sessions = new WeakSet();
   const prepare = session => {
@@ -44,12 +54,12 @@ module.exports = function observe(electron, config) {
     const nativeModules = Object.entries(require.cache)
       .filter(([file]) => file.endsWith('.node'))
       .map(([file, entry]) => ({name: path.basename(file), members: members(entry.exports)}));
-    const userDataIsolated = path.resolve(app.getPath('userData')) === path.resolve(userData);
+    const userDataIsolated = insideRoot(app.getPath('userData')) && insideRoot(app.getPath('appData'));
     const report = {
       schemaVersion: 1, mode: 'offline-original-runtime-observation',
       ok: ready && sdk.length > 0 && userDataIsolated,
       reason, platform: process.platform, arch: process.arch, versions: process.versions,
-      ready, userDataIsolated, observedSdk: sdk, nativeModules,
+      ready, userDataIsolated, attachedAfterReady, observedSdk: sdk, nativeModules,
       windows: BrowserWindow.getAllWindows().map(window => ({
         id: window.id, visible: window.isVisible(), destroyed: window.isDestroyed(),
         contentsType: window.webContents.getType(),

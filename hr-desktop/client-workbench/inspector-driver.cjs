@@ -106,9 +106,10 @@ class Inspector {
   }
 }
 
-async function launchPaused(executable, args = [], options = {}) {
-  const {timeout = 15000, env = process.env, cwd, onSpawn} = options;
-  const child = spawn(executable, ['--inspect-brk=127.0.0.1:0', ...args], {
+async function launchInspecting(executable, args = [], options = {}) {
+  const {timeout = 15000, env = process.env, cwd, onSpawn, pauseOnStart = false} = options;
+  const flag = pauseOnStart ? '--inspect-brk=127.0.0.1:0' : '--inspect=127.0.0.1:0';
+  const child = spawn(executable, [flag, ...args], {
     cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });
   try {
@@ -141,6 +142,7 @@ async function launchPaused(executable, args = [], options = {}) {
     child.stdout.resume();child.stderr.resume();
     const client = await Inspector.connect(address, Math.min(timeout, 5000));
     try {
+      if (!pauseOnStart) return {child, client};
       await client.command('Debugger.enable');
       const paused = client.event('Debugger.paused', timeout);
       // Attach rejection immediately, before the protocol command can fail.
@@ -158,6 +160,10 @@ async function launchPaused(executable, args = [], options = {}) {
   }
 }
 
+function launchPaused(executable, args = [], options = {}) {
+  return launchInspecting(executable, args, {...options, pauseOnStart: true});
+}
+
 async function evaluateEntry(connection, expression) {
   const response = await connection.client.command('Debugger.evaluateOnCallFrame', {
     callFrameId: connection.frame, expression, returnByValue: true,
@@ -166,4 +172,10 @@ async function evaluateEntry(connection, expression) {
   return response.result?.value;
 }
 
-module.exports = {localInspectorURL, Inspector, launchPaused, evaluateEntry};
+async function evaluateRunning(connection, expression) {
+  const response = await connection.client.command('Runtime.evaluate', {expression, returnByValue: true});
+  if (response.exceptionDetails) throw Error('Runtime evaluation failed');
+  return response.result?.value;
+}
+
+module.exports = {localInspectorURL, Inspector, launchPaused, launchInspecting, evaluateEntry, evaluateRunning};
