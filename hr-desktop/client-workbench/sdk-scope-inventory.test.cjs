@@ -36,7 +36,9 @@ Object.defineProperty(fixtureRegistry, '_sdk_fixtureGetter', {
   get(){globalThis.fixtureGetters++;throw Error('must not evaluate')},
 });
 const fixtureDispatch = name=>fixtureRegistry[name]();
-globalThis.fixtureDispatcher = ()=>fixtureDispatch;
+class Transport {send(){globalThis.fixtureReads++} receiveMessage(){globalThis.fixtureReads++}}
+const transport = new Transport();
+globalThis.fixtureDispatcher = ()=>[fixtureDispatch, transport];
 `);
   const report = await inspectSdkScopes(connection, 'globalThis.fixtureDispatcher');
   const registry = report.scopes.flatMap(scope => scope.registries || [])
@@ -52,6 +54,9 @@ globalThis.fixtureDispatcher = ()=>fixtureDispatch;
   assert.equal(JSON.stringify(report).includes('secret-value-must-not-appear'), false);
   assert.equal(JSON.stringify(report).includes('objectId'), false);
   assert.equal(report.sdkMethodsInvoked, 0);
+  assert.deepEqual(report.scopes.flatMap(scope => scope.objectBindings || [])
+    .find(item => item.binding === 'transport').members,
+  [{name:'receiveMessage',type:'function'},{name:'send',type:'function'}]);
 });
 
 test('a scope without a registry is reported without inventing SDK availability', async t => {

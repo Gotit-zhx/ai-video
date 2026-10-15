@@ -121,6 +121,8 @@ module.exports = function observe(electron, config) {
       windows: BrowserWindow.getAllWindows().map(window => ({
         id: window.id, visible: window.isVisible(), destroyed: window.isDestroyed(),
         contentsType: window.webContents.getType(),
+        role: ['main','login','download','crashReport','setting','uploadReport']
+          .includes(window.name) ? window.name : 'unrecognized',
       })),
       webContentsTypes: webContents.getAllWebContents().map(contents => contents.getType()),
       webRequestsCancelled: attemptedRequests, observerSdkReadRequests: sdkReadRequests,

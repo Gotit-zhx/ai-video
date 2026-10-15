@@ -42,8 +42,18 @@ async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.ha
             }
             if (!value || typeof value !== 'object') continue;
             const prototype = Object.getPrototypeOf(value);
-            if (prototype !== null && prototype !== Object.prototype) continue;
             const members = Object.getOwnPropertyDescriptors(value);
+            const inherited = prototype && prototype !== Object.prototype ?
+              Object.getOwnPropertyDescriptors(prototype) : {};
+            const signature = ['userInfo','receiveMessage','send','getProtoMsg',
+              'getZpToken','getProxyConfig','setProxy','closeNetCheck']
+              .filter(name => Object.hasOwn(members, name) || Object.hasOwn(inherited, name))
+              .map(name => {
+                const member = members[name] || inherited[name];
+                return {name, type:Object.hasOwn(member,'value') ? typeof member.value : 'accessor'};
+              });
+            if (signature.length && objectBindings.length < 80) objectBindings.push({binding, members:signature});
+            if (prototype !== null && prototype !== Object.prototype) continue;
             const sdkNames = Object.entries(members)
               .filter(([name]) => /^_sdk_[A-Za-z0-9_]{1,100}$/.test(name))
               .slice(0, 180).map(([name, member]) => ({
@@ -53,11 +63,6 @@ async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.ha
                 members._sdk_getNetworkStatus && typeof members._sdk_getNetworkStatus.value === 'function') {
               registries.push({binding, sdkNames});
             }
-            const signature = ['userInfo','receiveMessage','send','getProtoMsg']
-              .filter(name => Object.hasOwn(members, name))
-              .map(name => ({name, type:Object.hasOwn(members[name],'value') ?
-                typeof members[name].value : 'accessor'}));
-            if (signature.length && objectBindings.length < 40) objectBindings.push({binding, members:signature});
           }
           return {available:true, registries, functionBindings, objectBindings};
         }`,
