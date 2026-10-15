@@ -114,7 +114,9 @@ async function main() {
       JSON.stringify(scopeReport, null, 2));
     const observer = path.join(__dirname, 'windows-runtime-observer.cjs');
     const result = await evaluateRunning(connection,
-      `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({root, output, detachInspector: true})}))(${loader})`);
+      `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({
+        root, output, detachInspector: true, shutdownMethod: 'original-sdk-exit',
+      })}))(${loader})`);
     if (!result?.observerInstalled) throw Error('Runtime observer was not installed');
     connection.client.close();
     const processOutcome = await outcome;

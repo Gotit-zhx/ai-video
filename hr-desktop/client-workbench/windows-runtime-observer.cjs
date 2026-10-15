@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {readOriginalSDK, waitForOriginalDispatcher} = require('./original-sdk-read.cjs');
+const {requestOriginalExit} = require('./original-sdk-exit.cjs');
 
 module.exports = function observe(electron, config) {
   const {app, BrowserWindow, webContents} = electron;
@@ -29,7 +30,8 @@ module.exports = function observe(electron, config) {
   }
   let ready = false, attemptedRequests = 0, finished = false, sdkReadRequests = 0, lastReport;
   let sdkRead = {ok: false, reason: 'not-requested'};
-  const shutdown = {method: 'app.quit', requested: false, callReturned: false, events: [],
+  const shutdown = {method: config.shutdownMethod === 'original-sdk-exit' ?
+    'original-sdk:_sdk_exit' : 'app.quit', requested: false, callReturned: false, events: [],
     exitCalls: [], exceptions: [], unhandledRejections: []};
   const sessions = new WeakSet();
   const prepare = session => {
@@ -148,7 +150,10 @@ module.exports = function observe(electron, config) {
     snapshot(reason);
     // Save before and after the actual quit call. Do not call Electron getters
     // after shutdown and do not force a zero exit code to satisfy this probe.
-    app.quit();
+    if (config.shutdownMethod === 'original-sdk-exit') {
+      try {requestOriginalExit(descriptorValue('$socket'), shutdown, persist);}
+      catch {shutdown.dispatchFailed = true;persist();}
+    } else app.quit();
     shutdown.callReturned = true;
     persist();
   }
