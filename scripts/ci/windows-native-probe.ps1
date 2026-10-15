@@ -161,7 +161,7 @@ try {
     foreach ($name in @('ci-result.json', 'firewall.json', 'baseline.json', 'entry-runtime.json',
         'runtime-observation.json', 'runtime-log-signals.json', 'native-crash-events.json',
         'sdk-scope-inventory.json', 'sdk-registry-inventory.json',
-        'native-role-inventory.json', 'windows-shell-smoke.json',
+        'native-role-inventory.json', 'native-auth-behavior.json', 'windows-shell-smoke.json',
         'matching-runtime-scope-fixture.json')) {
         $report = Join-Path $root $name
         if (Test-Path $report) {

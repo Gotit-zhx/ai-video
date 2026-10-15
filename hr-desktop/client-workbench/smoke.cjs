@@ -79,6 +79,7 @@ async function run() {
   const platformConnection = await require('./platform-connection-smoke.cjs').run();
   const egressResponse = await require('./native-egress-smoke.cjs').run();
   const resumeAction = await require('./native-resume-smoke.cjs').run();
+  const nativeHttp = await require('./native-http-smoke.cjs').run();
   const attachment = Buffer.from('%PDF-1.7\n% offline native download fixture\n%%EOF');
   const attachmentName = "attachment; filename=resume.pdf; filename*=UTF-8''%E7%AE%80%E5%8E%86.pdf";
   const attachmentURL = 'https://docdownload.zhipin.com/wflow/zpgeek/download/download4boss/fixture?id=fixture';
@@ -173,7 +174,7 @@ async function run() {
     nativeUserAgentHeaderValid: true, rendererUserAgentHeaderValid: true,
     integratedSingleWindow: true, nativeLoginTransitionFixture: true,
     leftNavigationFixture: true, pasteTargetRoutingFixture: true,
-    platformConnection, egressResponse, resumeAction,
+    platformConnection, egressResponse, resumeAction, nativeHttp,
   }, null, 2));
   app.exit(0);
 }

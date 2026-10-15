@@ -190,7 +190,8 @@ def own_files(sdk_path):
                  "native-download.cjs", "shared-state.cjs", "smoke.cjs", "ui-check.cjs",
                  "native-network.cjs", "integrated-shell.cjs", "shell-preload.cjs",
                  "shell.html", "shell-renderer.cjs", "native-resume.cjs", "native-resume-smoke.cjs",
-                 "platform-connection-smoke.cjs", "native-egress-smoke.cjs"]:
+                 "platform-connection-smoke.cjs", "native-egress-smoke.cjs",
+                 "native-http.cjs", "native-http-smoke.cjs"]:
         result["heyi/" + name] = (HERE / name).read_bytes()
     for source in (DESKTOP / "src").glob("*.cjs"):
         result["heyi/src/" + source.name] = source.read_bytes()

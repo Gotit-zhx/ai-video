@@ -111,6 +111,7 @@ test('account change before receipt cannot confirm the previous account write', 
 test('HTTP bridge allows only known same-origin routes and omits credential or identity overrides', async t => {
   const {rpc, calls} = fixture(t);
   for (const url of ['https://other.invalid/wapi/offline/test',
+    'https://name:pass@www.zhipin.com/wapi/offline/test',
     'https://www.zhipin.com/wapi/unknown', 'https://www.zhipin.com/wapi/offline/test#x']) {
     await assert.rejects(rpc.dispatch('/http', {accountId: '101', url, method: 'GET'}),
       {code: 'UNSUPPORTED_OPERATION'});
@@ -127,6 +128,41 @@ test('account changing during an HTTP read prevents returning another account da
     url: 'https://www.zhipin.com/wapi/offline/test'});
   account('999');finish({code: 0});
   await assert.rejects(task, {code: 'SESSION_MISMATCH'});
+});
+test('risk pause and client closure abort active HTTP reads and retain the actual reason', async t => {
+  for (const mode of ['risk', 'close']) {
+    let started, signal;
+    const ready = new Promise(resolve => {started = resolve;});
+    const {rpc} = fixture(t, {request: (_input, check, value) => {
+      signal = value;check();started();
+      return new Promise((_resolve, reject) => {
+        value.addEventListener('abort', () => reject(Object.assign(Error(), {code: 'REQUESTS_PAUSED'})),
+          {once: true});
+      });
+    }});
+    const pending = rpc.dispatch('/http', {accountId: '101', method: 'GET',
+      url: 'https://www.zhipin.com/wapi/offline/test'});
+    await ready;
+    if (mode === 'risk') rpc.sessionLost('ACCOUNT_RISK');
+    else await rpc.close();
+    assert.equal(signal.aborted, true);
+    await assert.rejects(pending, {code: mode === 'risk' ? 'ACCOUNT_RISK' : 'REQUESTS_PAUSED'});
+    assert.equal(rpc.httpRequests.size, 0);
+  }
+});
+test('cancelled HTTP calls never invoke the adapter or return its late data', async t => {
+  let finish;
+  const {rpc, calls} = fixture(t);
+  const controller = new AbortController();controller.abort();
+  const input = {accountId: '101', method: 'GET', url: 'https://www.zhipin.com/wapi/offline/test'};
+  await assert.rejects(rpc.dispatch('/http', input, controller.signal), {code: 'REQUESTS_PAUSED'});
+  assert.equal(calls.length, 0);
+  rpc.adapter.request = () => new Promise(resolve => {finish = resolve;});
+  const second = new AbortController();
+  const pending = rpc.dispatch('/http', input, second.signal);
+  second.abort();finish({code: 0, data: 'late'});
+  await assert.rejects(pending, {code: 'REQUESTS_PAUSED'});
+  assert.equal(rpc.httpRequests.size, 0);
 });
 test('only an actual completed same-account native login can recover ordinary expiry', async t => {
   const {rpc} = fixture(t, {snapshot: async () => ({accountId: '101', userAgent: 'fixture',

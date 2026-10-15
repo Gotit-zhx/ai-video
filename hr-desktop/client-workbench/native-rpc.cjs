@@ -19,6 +19,7 @@ class NativeRPC extends EventEmitter {
     this.sendTimeout = sendTimeout;
     this.pendingSends = new Map();
     this.downloads = new Set();
+    this.httpRequests = new Set();
     this.sessionEpoch = 0;
     this.loginGeneration = 0;
     this.closed = false;
@@ -66,6 +67,7 @@ class NativeRPC extends EventEmitter {
       pending.reject(failure(this.sessionFailure, 'BOSS 会话已暂停，请在原客户端确认'));
     }
     for (const controller of this.downloads) controller.abort();
+    for (const controller of this.httpRequests) controller.abort();
     this.emit('session-status', this.accountState());
     this.emit('session-lost', this.sessionFailure);
   }
@@ -290,7 +292,7 @@ class NativeRPC extends EventEmitter {
     if (route === '/download') return this.download(input.accountId, input.url, signal);
     if (route === '/http') {
       const url = new URL(input.url);
-      if (url.origin !== 'https://www.zhipin.com' || url.hash ||
+      if (url.origin !== 'https://www.zhipin.com' || url.username || url.password || url.hash ||
           !this.endpoints.has(url.pathname) || !['GET', 'POST'].includes(input.method)) {
         throw failure('UNSUPPORTED_OPERATION', '不支持的客户端接口');
       }
@@ -301,9 +303,26 @@ class NativeRPC extends EventEmitter {
       const data = {...Object.fromEntries(url.searchParams), ...(input.data || {})};
       for (const name of ['__zp_stoken__', 'zp_token', 'wt2', 'headers', 'origin',
         'agent', 'clientInfo', 'userAgent', 'user_agent', 'platform', 'appid']) delete data[name];
-      const result = await this.adapter.request({url: url.pathname, method: input.method.toLowerCase(), data});
-      this.requireAccount(input.accountId);
-      return result;
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      signal?.addEventListener('abort', cancel, {once: true});
+      if (signal?.aborted) controller.abort();
+      this.httpRequests.add(controller);
+      try {
+        if (controller.signal.aborted) throw failure('REQUESTS_PAUSED', '接口读取已取消');
+        const result = await this.adapter.request(
+          {url: url.pathname, method: input.method.toLowerCase(), data},
+          () => this.requireAccount(input.accountId), controller.signal);
+        this.requireAccount(input.accountId);
+        if (controller.signal.aborted) throw failure('REQUESTS_PAUSED', '接口读取已取消');
+        return result;
+      } catch (error) {
+        this.requireAccount(input.accountId);
+        throw error;
+      } finally {
+        signal?.removeEventListener('abort', cancel);
+        this.httpRequests.delete(controller);
+      }
     }
     if (route === '/send-text') return this.sendText(input.accountId, input.friend, input.content);
     if (route === '/request-resume') return this.requestResume(input.accountId, input.friend, signal);
@@ -352,6 +371,7 @@ class NativeRPC extends EventEmitter {
     this.closed = true;
     this.emit('session-status', this.accountState());
     for (const controller of this.downloads) controller.abort();
+    for (const controller of this.httpRequests) controller.abort();
     for (const pending of this.pendingSends.values()) {
       pending.controller?.abort();
       pending.reject(failure('REQUESTS_PAUSED', '客户端已关闭'));

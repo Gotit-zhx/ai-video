@@ -12,6 +12,7 @@ const {inspectSdkScopes} = require('./sdk-scope-inventory.cjs');
 const {runMatchingScopeFixture} = require('./matching-scope-fixture.cjs');
 const {inspectSdkRegistry} = require('./sdk-registry-inventory.cjs');
 const {inspectNativeRoles} = require('./native-role-inventory.cjs');
+const {inspectAnonymousAuthentication} = require('./native-auth-behavior.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -139,6 +140,16 @@ async function main() {
     }
     await fs.writeFile(path.join(root, 'native-role-inventory.json'),
       JSON.stringify(roleReport, null, 2));
+    let authenticationBehavior;
+    try {
+      authenticationBehavior = await inspectAnonymousAuthentication(connection, {anonymousIsolated: true});
+    } catch (error) {
+      authenticationBehavior = {mode: 'anonymous-authentication-return-shape-only', ok: false,
+        reason: 'anonymous-authentication-check-unavailable',
+        diagnostic: error.authenticationDiagnostic || {stage: 'authentication-check'}};
+    }
+    await fs.writeFile(path.join(root, 'native-auth-behavior.json'),
+      JSON.stringify(authenticationBehavior, null, 2));
     const shellSmoke = path.join(__dirname,'windows-shell-smoke.cjs');
     const priorTimeout=connection.client.timeout;
     let shellRun;
