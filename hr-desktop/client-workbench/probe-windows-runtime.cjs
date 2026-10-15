@@ -13,6 +13,7 @@ const {runMatchingScopeFixture} = require('./matching-scope-fixture.cjs');
 const {inspectSdkRegistry} = require('./sdk-registry-inventory.cjs');
 const {inspectNativeRoles} = require('./native-role-inventory.cjs');
 const {inspectAnonymousAuthentication} = require('./native-auth-behavior.cjs');
+const {bindNativeModule} = require('./native-bindings.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -150,6 +151,19 @@ async function main() {
     }
     await fs.writeFile(path.join(root, 'native-auth-behavior.json'),
       JSON.stringify(authenticationBehavior, null, 2));
+    let messageContract;
+    try {
+      messageContract = await bindNativeModule(connection, {
+        modulePath: path.join(__dirname, 'native-message-contract.cjs'),
+        config: {anonymousIsolated: true}, pinnedOriginalVerified: true,
+      });
+    } catch (error) {
+      messageContract = {mode: 'offline-original-message-encoder-contract', ok: false,
+        reason: 'native-message-contract-unavailable',
+        diagnostic: error.nativeBindingDiagnostic || {stage: 'binding-check'}};
+    }
+    await fs.writeFile(path.join(root, 'native-message-contract.json'),
+      JSON.stringify(messageContract, null, 2));
     const shellSmoke = path.join(__dirname,'windows-shell-smoke.cjs');
     const priorTimeout=connection.client.timeout;
     let shellRun;
@@ -203,6 +217,9 @@ async function main() {
     if (shellReport?.ok !== true) throw Error('Original Windows shell integration incomplete; inspect the report');
     if (httpReport?.ok !== true || httpReport.actualElectronRequest !== true) {
       throw Error('Original Windows HTTP transport check incomplete; inspect the report');
+    }
+    if (messageContract?.ok !== true) {
+      throw Error('Original Windows message encoder contract incomplete; inspect the report');
     }
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,
       sdkNames: report.observedSdk.length, nativeModules: report.nativeModules.length,

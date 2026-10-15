@@ -162,6 +162,7 @@ try {
         'runtime-observation.json', 'runtime-log-signals.json', 'native-crash-events.json',
         'sdk-scope-inventory.json', 'sdk-registry-inventory.json',
         'native-role-inventory.json', 'native-auth-behavior.json', 'native-http-smoke.json',
+        'native-message-contract.json',
         'windows-shell-smoke.json',
         'matching-runtime-scope-fixture.json')) {
         $report = Join-Path $root $name
