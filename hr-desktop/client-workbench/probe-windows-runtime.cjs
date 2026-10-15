@@ -10,6 +10,7 @@ const {waitForProcess} = require('./process-outcome.cjs');
 const {RuntimeLogSignals} = require('./runtime-log-signals.cjs');
 const {inspectSdkScopes} = require('./sdk-scope-inventory.cjs');
 const {runMatchingScopeFixture} = require('./matching-scope-fixture.cjs');
+const {inspectSdkRegistry} = require('./sdk-registry-inventory.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -117,6 +118,16 @@ async function main() {
     }
     await fs.writeFile(path.join(root, 'sdk-scope-inventory.json'),
       JSON.stringify(scopeReport, null, 2));
+    let registryReport;
+    try {
+      registryReport = await inspectSdkRegistry(connection, {anonymousIsolated: true});
+    } catch (error) {
+      registryReport = {mode: 'anonymous-registry-metadata-only', ok: false,
+        reason: 'original-registry-inventory-unavailable', sdkMethodsInvoked: 0,
+        diagnostic: error.inventoryDiagnostic || {stage: 'registry-inventory'}};
+    }
+    await fs.writeFile(path.join(root, 'sdk-registry-inventory.json'),
+      JSON.stringify(registryReport, null, 2));
     const observer = path.join(__dirname, 'windows-runtime-observer.cjs');
     const result = await evaluateRunning(connection,
       `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({

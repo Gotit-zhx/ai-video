@@ -53,7 +53,14 @@ class Inspector {
     socket.addEventListener('error', () => this.fail(Error('Inspector transport failed; outcome unknown')));
   }
   static async connect(address, timeout = 5000) {
-    const socket = new WebSocket(localInspectorURL(address));
+    const localAddress = localInspectorURL(address);
+    // Electron 22's Node 16 has no global WebSocket. undici 5 intentionally
+    // exports none on that runtime either; use the independently pinned ws.
+    const socket = typeof globalThis.WebSocket === 'function' ?
+      new globalThis.WebSocket(localAddress) :
+      new (require('ws'))(localAddress, {
+        followRedirects: false, perMessageDeflate: false, maxPayload: 1024 * 1024,
+      });
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         socket.close();reject(Error('Inspector connection timed out'));

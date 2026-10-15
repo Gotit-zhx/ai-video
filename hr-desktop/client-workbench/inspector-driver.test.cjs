@@ -4,6 +4,8 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {once} = require('node:events');
+const {execFile} = require('node:child_process');
+const {promisify} = require('node:util');
 const {localInspectorURL, launchPaused, launchInspecting, evaluateEntry,
   evaluateRunning} = require('./inspector-driver.cjs');
 
@@ -140,4 +142,32 @@ test('late activation observes code that ran before the inspector started', asyn
   });
   t.after(() => {connection.client.close();connection.child.kill();});
   assert.equal(await evaluateRunning(connection, 'globalThis.heyiBeforeInspector'), 1);
+});
+
+test('a controller without global WebSocket uses the pinned Node 16 compatible transport', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-inspector-controller-'));
+  t.after(() => fs.rm(root, {recursive: true, force: true}));
+  const driver = require.resolve('./inspector-driver.cjs');
+  const fixture = path.join(root, 'fixture.cjs');
+  await fs.writeFile(fixture,
+    'globalThis.fixtureCalls=0;globalThis.fixtureRead=()=>++fixtureCalls;setInterval(()=>{},1000);');
+  const {stdout} = await promisify(execFile)(process.execPath, ['-e', `
+    globalThis.WebSocket=undefined;
+    const {launchInspecting,evaluateRunning}=require(${JSON.stringify(driver)});
+    (async()=>{
+      let connection;
+      try {
+        connection=await launchInspecting(process.execPath,[${JSON.stringify(fixture)}]);
+        const deadline=Date.now()+3000;
+        while(!await evaluateRunning(connection,'typeof fixtureRead==="function"')){
+          if(Date.now()>=deadline)throw Error('fixture not ready');
+          await new Promise(resolve=>setTimeout(resolve,10));
+        }
+        const result=await evaluateRunning(connection,'fixtureRead()');
+        console.log(JSON.stringify({globalWebSocket:typeof WebSocket,result,
+          calls:await evaluateRunning(connection,'fixtureCalls')}));
+      } finally {connection?.client.close();connection?.child.kill();}
+    })().catch(()=>{process.exitCode=1});
+  `], {timeout: 10000});
+  assert.deepEqual(JSON.parse(stdout), {globalWebSocket: 'undefined', result: 1, calls: 1});
 });

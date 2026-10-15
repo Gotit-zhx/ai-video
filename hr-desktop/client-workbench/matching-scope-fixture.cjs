@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {inspectSdkScopes} = require('./sdk-scope-inventory.cjs');
+const {inspectSdkRegistry} = require('./sdk-registry-inventory.cjs');
 const {waitForProcess} = require('./process-outcome.cjs');
 
 async function runMatchingScopeFixture(executable, root, env) {
@@ -47,6 +48,11 @@ globalThis.heyiScopeFixtureComplete = ()=>{clearInterval(keepAlive);clearTimeout
     } catch (error) {
       report.inventory = {diagnostic: error.inventoryDiagnostic || {stage: 'fixture-inspection'}};
     }
+    try {
+      report.registryInventory = await inspectSdkRegistry(connection, {anonymousIsolated: true});
+    } catch (error) {
+      report.registryInventory = {ok: false, diagnostic: error.inventoryDiagnostic};
+    }
     report.fixtureSdkMethodsInvoked = await evaluateRunning(connection, 'globalThis.heyiScopeFixtureReads');
     const outcome = waitForProcess(connection.child, 5000);
     outcome.catch(() => {});
@@ -57,6 +63,7 @@ globalThis.heyiScopeFixtureComplete = ()=>{clearInterval(keepAlive);clearTimeout
       report.fixtureSdkMethodsInvoked === 0 &&
       report.inventory.scopes?.some(scope =>
         scope.registries?.some(registry => registry.binding === 'fixtureRegistry')) === true &&
+      report.registryInventory.ok === true &&
       report.processOutcome.code === 0 && !report.processOutcome.timedOut;
   } catch {
     report.reason = 'matching-runtime-fixture-incomplete';

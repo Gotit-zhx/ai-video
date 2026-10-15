@@ -143,7 +143,11 @@ async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.ha
         }
       }
     }
-    return {mode: 'closure-metadata-only', sdkMethodsInvoked: 0,
+    const registries = result.flatMap(scope => scope.registries || []);
+    return {mode: 'closure-metadata-only', ok: registries.length === 1,
+      reason: registries.length === 1 ? 'unique-sdk-registry' :
+        registries.length === 0 ? 'sdk-registry-not-found' : 'sdk-registry-ambiguous',
+      sdkMethodsInvoked: 0,
       rawValuesRetained: false, inspectionPath, scopeTriggerInvocations,
       functionInternals, scopes: result};
   } catch (error) {
