@@ -3,6 +3,11 @@ const DOWNLOAD_ORIGIN = 'https://docdownload.zhipin.com';
 const DOWNLOAD_PATH = '/wflow/zpgeek/download/download4boss/';
 const failure = (code, message) => Object.assign(Error(message), {code});
 
+function attachmentDisposition(value) {
+  return typeof value === 'string' && value.length <= 8192 && /^[\x20-\x7e]+$/.test(value)
+    ? value : '';
+}
+
 function resumeURL(value) {
   let url;
   try {url = new URL(value);} catch {throw failure('INVALID_ATTACHMENT', '附件地址不正确');}
@@ -67,7 +72,8 @@ async function downloadResume({net, session, url, credentials, checkAccount,
       };
       if (!check()) return;
       const header = name => {
-        const value = response.headers?.[name];
+        const key = Object.keys(response.headers || {}).find(key => key.toLowerCase() === name);
+        const value = key ? response.headers[key] : undefined;
         return Array.isArray(value) ? value[0] : value;
       };
       const declared = Number(header('content-length'));
@@ -84,7 +90,11 @@ async function downloadResume({net, session, url, credentials, checkAccount,
         if (settled || !check()) return;
         if (Number.isFinite(declared) && declared >= 0 && !header('content-encoding') && declared !== size) {
           finish(failure('DOWNLOAD_FAILED', '附件长度不完整，未保存'));
-        } else finish(null, {status: response.statusCode, body: Buffer.concat(chunks)});
+        } else {
+          const disposition = attachmentDisposition(header('content-disposition'));
+          finish(null, {status: response.statusCode, body: Buffer.concat(chunks),
+            ...(disposition ? {contentDisposition: disposition} : {})});
+        }
       });
       response.on('close', () => {
         if (!settled) finish(failure('DOWNLOAD_FAILED', '附件未完整接收'));
@@ -101,4 +111,4 @@ async function downloadResume({net, session, url, credentials, checkAccount,
   });
 }
 
-module.exports = {downloadResume, resumeURL, MAX_BYTES};
+module.exports = {downloadResume, resumeURL, MAX_BYTES, attachmentDisposition};

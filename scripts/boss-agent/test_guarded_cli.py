@@ -29,6 +29,22 @@ class IsolatedTest(unittest.TestCase):
         self.addCleanup(patch.stop)
 
 class SessionTest(IsolatedTest):
+    def test_attachment_name_handles_unicode_and_drops_path_components(self):
+        for value, expected in [
+            ('attachment; filename="resume.pdf"', "resume.pdf"),
+            ("attachment; filename*=UTF-8''..%5C%E7%AE%80%E5%8E%86.pdf", "简历.pdf"),
+            ("attachment; filename=resume.pdf; filename*=UTF-8''%E7%AE%80%E5%8E%86.pdf", "简历.pdf"),
+            ("attachment; filename*=UTF-8''%E7%AE%80%E5%8E%86.pdf; filename=resume.pdf", "简历.pdf"),
+            ('attachment; filename="=?utf-8?b?566A5Y6GLnBkZg==?="', "简历.pdf"),
+            ('attachment; filename="../resume.pdf"', "resume.pdf"),
+            ('attachment; filename=".."', ""),
+            ("inline", ""),
+            ("x" * 8193, ""),
+            (None, ""),
+        ]:
+            with self.subTest(value=value):
+                self.assertEqual(guard.attachment_display_name(value), expected)
+
     def test_snapshot_uses_only_local_read_commands_and_exact_cookie_domains(self):
         websocket = mock.MagicMock()
         websocket.recv.side_effect = [

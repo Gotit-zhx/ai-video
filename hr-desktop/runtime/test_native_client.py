@@ -1,5 +1,6 @@
 """Run separately from the webpage SDK tests: installation replaces SDK methods."""
 from pathlib import Path
+from io import BytesIO
 import tempfile
 import types
 import unittest
@@ -10,6 +11,27 @@ import native_client
 
 
 class NativeClientTest(unittest.TestCase):
+    def test_download_preserves_only_bounded_display_metadata(self):
+        for disposition, expected in [
+            ("attachment; filename*=UTF-8''resume.pdf",
+             {"Content-Disposition": "attachment; filename*=UTF-8''resume.pdf"}),
+            ("bad\r\nInjected: yes", {}),
+            ("x" * 8193, {}),
+            ("", {}),
+        ]:
+            with self.subTest(disposition=disposition):
+                client = native_client.NativeClient({"url": "http://127.0.0.1:12345",
+                                                    "accountId": "101", "secret": "fixture"})
+                reply = BytesIO(b"%PDF-fixture")
+                reply.status = 200
+                reply.headers = {"X-Heyi-Native-Download": "1",
+                                 "Content-Disposition": disposition, "Set-Cookie": "private"}
+                client.opener = mock.Mock()
+                client.opener.open.return_value = reply
+                status, content, headers = client.download("https://docdownload.zhipin.com/fixture")
+                self.assertEqual((status, content, headers), (200, b"%PDF-fixture", expected))
+                self.assertEqual(client.opener.open.call_count, 1)
+
     def test_only_exact_boss_cookie_domains_are_used(self):
         client = native_client.NativeClient({"url": "http://127.0.0.1:12345",
                                             "accountId": "101", "secret": "fixture"})

@@ -49,7 +49,7 @@ class NativeDownloadTest(unittest.TestCase):
             cls.downloads.append(url)
             if isinstance(cls.reply, BaseException):
                 raise cls.reply
-            return cls.reply["status"], cls.reply["content"]
+            return cls.reply["status"], cls.reply["content"], cls.reply.get("headers", {})
 
         cls.patches = [mock.patch.object(native_client.NativeClient, "call", call),
                        mock.patch.object(native_client.NativeClient, "download", download)]
@@ -90,10 +90,14 @@ class NativeDownloadTest(unittest.TestCase):
         self.output.unlink(missing_ok=True)
 
     def test_sdk_validates_message_and_friend_then_saves_real_attachment_bytes(self):
+        type(self).reply["headers"] = {
+            "Content-Disposition": "attachment; filename*=UTF-8''..%2F%E8%8B%8F%E7%90%AA%E7%AE%80%E5%8E%86.pdf"}
         result = self.client.download_resume_by_friend(202, 303, self.output)
         self.assertEqual(result["code"], 0)
         self.assertEqual(self.output.read_bytes(), PDF)
         self.assertEqual(result["zpData"]["bytes"], len(PDF))
+        self.assertEqual(result["zpData"]["originalFileName"], "苏琪简历.pdf")
+        self.assertEqual(sorted(p.name for p in self.root.glob("*.pdf")), ["fixture.pdf"])
         self.assertEqual(len(self.http), 3)
         self.assertEqual(len(self.downloads), 1)
         self.assertEqual(urlsplit(self.downloads[0]).hostname, "docdownload.zhipin.com")

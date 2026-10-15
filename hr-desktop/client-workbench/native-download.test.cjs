@@ -28,7 +28,9 @@ test('attachment URLs accept only the fixed document host, path and validated pa
   }
 });
 test('native download makes one request and preserves actual bytes, status and native identity', async () => {
-  const {options, calls} = fixture();
+  const {options, calls, response} = fixture();
+  response.headers['Content-Disposition'] = ["attachment; filename*=UTF-8''resume.pdf"];
+  response.headers['set-cookie'] = ['private=not-forwarded'];
   const result = await downloadResume(options);
   assert.equal(result.status, 200);
   assert.equal(result.body.toString(), '%PDF-1.7\nfixture');
@@ -37,6 +39,17 @@ test('native download makes one request and preserves actual bytes, status and n
   assert.equal(calls.options.session, options.session);
   assert.equal(calls.headers.Cookie, 'wt2=fixture-only');
   assert.equal(calls.headers['User-Agent'], 'fixture-agent');
+  assert.equal(result.contentDisposition, "attachment; filename*=UTF-8''resume.pdf");
+  assert.equal(result.headers, undefined);
+});
+test('invalid attachment metadata is dropped without losing valid file bytes', async () => {
+  for (const value of ['bad\r\nX-Injected: 1', 'x'.repeat(8193), 'attachment; filename="简历.pdf"']) {
+    const {options, response} = fixture();
+    response.headers['content-disposition'] = value;
+    const result = await downloadResume(options);
+    assert.equal(result.contentDisposition, undefined);
+    assert.equal(result.body.toString(), '%PDF-1.7\nfixture');
+  }
 });
 test('redirects report their status, never follow and never expose the signed destination', async () => {
   const {options, request, calls} = fixture();
@@ -55,7 +68,7 @@ test('incomplete data, oversize, timeout and cancellation stop without retries',
         request.emit('response', response);response.emit('aborted');
       });code = 'DOWNLOAD_FAILED';
     }
-    if (kind === 'truncated') {response.headers['content-length'] = ['99'];code = 'DOWNLOAD_FAILED';}
+    if (kind === 'truncated') {response.headers['Content-Length'] = ['99'];code = 'DOWNLOAD_FAILED';}
     if (kind === 'timeout') {request.end = () => {};code = 'DOWNLOAD_TIMEOUT';}
     if (kind === 'cancelled') {
       const controller = new AbortController();options.signal = controller.signal;

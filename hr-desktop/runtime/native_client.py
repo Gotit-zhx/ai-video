@@ -71,7 +71,13 @@ class NativeClient:
             data = response.read(20 * 1024 * 1024 + 1)
             if len(data) > 20 * 1024 * 1024:
                 raise NativeError("ATTACHMENT_TOO_LARGE", "附件超过 20 MiB 上限")
-            return response.status, data
+            # Forward only attachment display metadata, never remote cookies,
+            # redirects or authentication headers.
+            disposition = response.headers.get("Content-Disposition", "")
+            headers = {}
+            if len(disposition) <= 8192 and disposition and all(32 <= ord(c) <= 126 for c in disposition):
+                headers["Content-Disposition"] = disposition
+            return response.status, data, headers
 
 
 def install(config, guard):
@@ -97,7 +103,7 @@ def install(config, guard):
                     guard.reserve_request()
                     guard.assert_requests_allowed()
                     guard.verify_session()
-                    status, content = native.download(str(request.url))
+                    status, content, headers = native.download(str(request.url))
                     metadata["http_status"] = status
                     if status == 429:
                         raise guard.SessionSafetyError("RATE_LIMITED", "平台要求降低请求频率，附件未重试")
@@ -116,7 +122,7 @@ def install(config, guard):
                             if classify_code_37(payload) == "token_expired":
                                 stop = "TOKEN_REFRESH_FAILED"
                         raise guard.SessionSafetyError(stop, "平台要求确认附件访问，已停止后续请求")
-                    return httpx.Response(status, content=content, request=request)
+                    return httpx.Response(status, content=content, headers=headers, request=request)
             data = {}
             raw = request.read()
             if raw:

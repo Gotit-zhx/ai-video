@@ -160,18 +160,27 @@ test('a second logout during session verification cannot be cleared by the earli
   assert.equal(rpc.sessionFailure, 'ACCOUNT_RISK');
 });
 test('private loopback download returns raw bytes and real failure status without redirects', async t => {
-  const {rpc} = fixture(t, {download: async () => ({status: 200, body: Buffer.from('%PDF-fixture')})});
+  const disposition = "attachment; filename*=UTF-8''resume.pdf";
+  const {rpc} = fixture(t, {download: async () => ({status: 200, body: Buffer.from('%PDF-fixture'),
+    contentDisposition: disposition, headers: {'Set-Cookie': 'private=not-forwarded'}})});
   await rpc.start();
   const url = 'https://docdownload.zhipin.com/wflow/zpgeek/download/download4boss/fixture?id=fixture';
   const options = {method: 'POST', body: JSON.stringify({accountId: '101', url}),
     headers: {Authorization: 'Bearer ' + rpc.secret}};
   const response = await fetch(rpc.url + '/download', options);
   assert.equal(response.headers.get('x-heyi-native-download'), '1');
+  assert.equal(response.headers.get('content-disposition'), disposition);
+  assert.equal(response.headers.get('set-cookie'), null);
   assert.equal(await response.text(), '%PDF-fixture');
   rpc.adapter.download = async () => ({status: 429, body: Buffer.from('limit')});
   const limited = await fetch(rpc.url + '/download', options);
   assert.equal(limited.status, 429);
   assert.equal(limited.headers.get('location'), null);
+  rpc.adapter.download = async () => ({status: 200, body: Buffer.from('%PDF-fixture'),
+    contentDisposition: 'bad\r\nX-Injected: 1'});
+  const invalidMetadata = await fetch(rpc.url + '/download', options);
+  assert.equal(invalidMetadata.headers.get('content-disposition'), null);
+  assert.equal(await invalidMetadata.text(), '%PDF-fixture');
 });
 test('logout aborts an active download; account change cannot return received bytes', async t => {
   let finish, signal;

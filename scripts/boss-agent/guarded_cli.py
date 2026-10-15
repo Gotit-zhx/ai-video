@@ -2,6 +2,9 @@
 """Restrict the pinned SDK without changing its installed files or risk checks."""
 
 import contextlib
+from email.header import decode_header, make_header
+from email.message import Message
+from email.utils import collapse_rfc2231_value
 import fcntl
 import functools
 import hashlib
@@ -14,6 +17,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+import unicodedata
 from pathlib import Path
 
 BUDGET_DB = Path("/opt/heyi/boss-agent/runtime/platform-request-budget.sqlite3")
@@ -33,6 +37,7 @@ HOURLY_LIMIT = 120
 REVIEWED_SOURCES = {
     "api/_base_client.py": "e0e2a88e1159d62f1d836fefebb51498d8afe58e20214e4d85e240b313488518",
     "api/recruiter_client.py": "140dfad3189cbd7b29dae33cdb3adfd9f17f2a3969c22a5fc31fcb3b79b2856a",
+    "api/recruiter_resume.py": "605c268734ff165bb64e7aac00a9f5c9b96762f9a91a9b7f0d590cfae11b6de8",
     "api/browser_client.py": "fd18ddfc70f3a40371b448e12848882a4bbfff28c18b735b74a3e8efd3956601",
     "auth/manager.py": "b835c4f4eb7592b4725ba8e2ee242433c7da4b033cc1877d1c49e53fe03e7d36",
     "auth/browser.py": "3e4103121987b4b05488ec0f97f2bd5292762dbb078da30c7867d35508740249",
@@ -213,6 +218,28 @@ class BudgetExhausted(RuntimeError):
     code = "REQUEST_BUDGET_EXHAUSTED"
 
 
+def attachment_display_name(disposition):
+    """Decode response metadata only; it must never select the output path."""
+    if not isinstance(disposition, str) or len(disposition) > 8192:
+        return ""
+    try:
+        header = Message()
+        header["Content-Disposition"] = disposition
+        # Servers commonly send an ASCII fallback plus filename*=UTF-8.
+        # email.get_filename() picks the fallback; prefer the encoded name.
+        encoded = [value for key, value in header.get_params(header="Content-Disposition", failobj=[])
+                   if key.lower() == "filename" and isinstance(value, tuple)]
+        name = collapse_rfc2231_value(encoded[0]) if len(encoded) == 1 else header.get_filename()
+        if not name:
+            return ""
+        name = str(make_header(decode_header(name)))
+        name = unicodedata.normalize("NFKC", name)
+        name = re.sub(r"[\x00-\x1f\x7f]", "", name).replace("\\", "/").rsplit("/", 1)[-1].strip()
+        return "" if name in ("", ".", "..") else name[:240]
+    except (LookupError, ValueError, UnicodeError):
+        return ""
+
+
 def reserve_request():
     """One shared, persistent budget across short-lived CLI processes."""
     BUDGET_DB.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -258,6 +285,21 @@ def install_policy():
 
     if getattr(_BaseHttpClient._request, "_heyi_guarded", False):
         return
+
+    from boss_agent_cli.api import recruiter_client, recruiter_resume
+    original_save_resume = recruiter_resume.save_resume
+
+    @functools.wraps(original_save_resume)
+    def save_resume(response, output):
+        # Retain the SDK's size, format, exclusive-create and private-mode
+        # checks. A server filename is display metadata after a successful save.
+        result = original_save_resume(response, output)
+        name = attachment_display_name(response.headers.get("Content-Disposition"))
+        if name:
+            result["originalFileName"] = name
+        return result
+
+    recruiter_resume.save_resume = recruiter_client.save_resume = save_resume
 
     class RequestBudgetError(PlatformRiskError):
         code = "REQUEST_BUDGET_EXHAUSTED"

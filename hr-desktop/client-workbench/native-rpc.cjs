@@ -1,7 +1,7 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
 const {EventEmitter} = require('node:events');
-const {resumeURL, MAX_BYTES} = require('./native-download.cjs');
+const {resumeURL, MAX_BYTES, attachmentDisposition} = require('./native-download.cjs');
 
 const identity = value => (typeof value !== 'number' || Number.isSafeInteger(value)) &&
   /^[1-9]\d{0,19}$/.test(String(value || '')) ? String(value) : '';
@@ -333,9 +333,11 @@ class NativeRPC extends EventEmitter {
       const value = await this.dispatch(req.url, JSON.parse(body), controller.signal);
       if (req.url === '/download') {
         if (!res.destroyed) {
+          const disposition = attachmentDisposition(value.contentDisposition);
           res.writeHead(value.status, {'Content-Type': 'application/octet-stream',
             'X-Heyi-Native-Download': '1', 'Cache-Control': 'no-store',
-            'Content-Length': value.body.length});
+            'Content-Length': value.body.length,
+            ...(disposition ? {'Content-Disposition': disposition} : {})});
           res.end(value.body);
         }
         return;

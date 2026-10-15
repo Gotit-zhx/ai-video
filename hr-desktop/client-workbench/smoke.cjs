@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
+const http = require('node:http');
 const {NativeRPC} = require('./native-rpc.cjs');
 const {LocalBridge} = require('./src/bridge.cjs');
 const {downloadResume} = require('./native-download.cjs');
@@ -79,18 +80,26 @@ async function run() {
   const egressResponse = await require('./native-egress-smoke.cjs').run();
   const resumeAction = await require('./native-resume-smoke.cjs').run();
   const attachment = Buffer.from('%PDF-1.7\n% offline native download fixture\n%%EOF');
+  const attachmentName = "attachment; filename=resume.pdf; filename*=UTF-8''%E7%AE%80%E5%8E%86.pdf";
   const attachmentURL = 'https://docdownload.zhipin.com/wflow/zpgeek/download/download4boss/fixture?id=fixture';
   const downloadSession = session.fromPartition('heyi-offline-download-probe');
   let nativeDownloads = 0;
-  // Exercise this original Electron version's actual net.request API while
-  // intercepting HTTPS entirely in memory. No BOSS service receives a request.
-  await new Promise((resolve, reject) => downloadSession.protocol.interceptBufferProtocol(
-    'https', (request, callback) => {
-      nativeDownloads++;
-      if (request.url !== attachmentURL) {callback({error: -10});return;}
-      callback({statusCode: 200, data: attachment, mimeType: 'application/pdf',
-        headers: {'Content-Length': String(attachment.length)}});
-    }, error => error ? reject(error) : resolve()));
+  // Electron 22's buffer-protocol fixture does not expose custom response
+  // headers. Use a real loopback response to verify bytes AND metadata with
+  // its actual net.request implementation. The test-only wrapper below
+  // rewrites the fixed validated URL before transport; BOSS is never called.
+  const attachmentServer = http.createServer((_request, response) => {
+    nativeDownloads++;
+    response.writeHead(200, {'Content-Type': 'application/pdf',
+      'Content-Length': attachment.length, 'Content-Disposition': attachmentName});
+    response.end(attachment);
+  });
+  await new Promise(resolve => attachmentServer.listen(0, '127.0.0.1', resolve));
+  const attachmentFixtureURL = `http://127.0.0.1:${attachmentServer.address().port}/attachment`;
+  const attachmentNet = {request: options => {
+    assert.equal(options.url, attachmentURL);
+    return net.request({...options, url: attachmentFixtureURL});
+  }};
   const rpc = await new NativeRPC({adapter: {
     user: () => ({userId: '101'}), loggedIn: () => true,
     snapshot: async () => ({accountId: '101', userAgent: 'offline', cookies: []}),
@@ -99,7 +108,7 @@ async function run() {
       clientMid: sent.options.clientMid, text: sent.content, type: 'text', status: 1,
     }])),
     download: (input, checkAccount, signal) => downloadResume({
-      net, session: downloadSession, url: input.url, checkAccount, signal,
+      net: attachmentNet, session: downloadSession, url: input.url, checkAccount, signal,
       credentials: async () => ({token: 'offline-fixture-only', userAgent: 'offline'}),
     }),
     request: async input => {
@@ -122,8 +131,10 @@ async function run() {
   });
   assert.equal(downloaded.status, 200);
   assert.equal(downloaded.headers.get('x-heyi-native-download'), '1');
+  assert.equal(downloaded.headers.get('content-disposition'), attachmentName);
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), attachment);
   assert.equal(nativeDownloads, 1);
+  await new Promise(resolve => attachmentServer.close(resolve));
   const worker = await new Promise((resolve, reject) => {
     const child = spawn(path.join(process.resourcesPath, 'heyi-runtime', 'heyi-boss'), [], {
       stdio: ['pipe', 'pipe', 'ignore'],
@@ -151,14 +162,14 @@ async function run() {
   });
   assert.equal((await response.json()).data.version, '0.1.24');
   await bridge.close();await rpc.close();main.destroy();
-  downloadSession.protocol.uninterceptProtocol('https');
   fs.writeFileSync(process.env.HEYI_WORKBENCH_TEST_OUTPUT, JSON.stringify({
     ok: true, electron: process.versions.electron, node: process.versions.node,
     profile: app.getPath('userData'), accountDataUsed: false,
     actualBossNetworkUsed: false, receiptFixture: true, loopbackBridge: true,
     packagedNativeWorker: true, sdkSourceGuard: true,
     packagedManagedJobEndpoint: true,
-    nativeAttachmentFixture: true, nativeChromiumRequestCount: nativeDownloads,
+    nativeAttachmentFixture: true, nativeAttachmentNamePreserved: true,
+    nativeChromiumRequestCount: nativeDownloads,
     nativeUserAgentHeaderValid: true, rendererUserAgentHeaderValid: true,
     integratedSingleWindow: true, nativeLoginTransitionFixture: true,
     leftNavigationFixture: true, pasteTargetRoutingFixture: true,
