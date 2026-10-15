@@ -13,6 +13,7 @@ async function run({builder, clients, authentication, anonymousIsolated}) {
   const authPrevious = Object.getOwnPropertyDescriptor(authentication, 'getAuthCookieHeader');
   const authOriginal = authentication.getAuthCookieHeader;
   let fallbackCalls = 0, transportCalls = 0, release, authEntered = false, authReads = 0;
+  let stage = 'attach-failure-sink';
   const traces = [];
   try {
     for (const client of clients) {
@@ -39,9 +40,11 @@ async function run({builder, clients, authentication, anonymousIsolated}) {
     const broker = new NativeRequestBroker({builder, clients, endpoints: [endpoint], transport, timeout: 1500});
     brokers.push(broker);
     for (const marker of ['one', 'two']) {
+      stage = 'original-builder-' + marker;
       assert.deepEqual(await broker.request({url: endpoint, method: 'GET',
         data: {heyiOfflineBroker: marker}}, () => {}), offlineFailure);
     }
+    stage = 'distinct-original-traces';
     assert.notEqual(traces[0], traces[1]);
     broker.close();
     const firstDeadline = Date.now() + 1500;
@@ -60,14 +63,17 @@ async function run({builder, clients, authentication, anonymousIsolated}) {
     };
     Object.defineProperty(authentication, 'getAuthCookieHeader',
       {value: delayed, configurable: true, writable: true});
+    stage = 'credential-deadline';
     const second = new NativeRequestBroker({builder, clients, endpoints: [endpoint], transport, timeout: 40});
     brokers.push(second);
     const pending = second.request({url: endpoint, method: 'GET', data: {heyiOfflineBroker: 'late'}}, () => {});
     await assert.rejects(pending, {code: 'NATIVE_HTTP_TIMEOUT'});
     assert.equal(authEntered, true);assert.equal(authReads, 1);
     second.close();
+    stage = 'retain-hook-for-late-builder';
     assert.equal(second.detached, false);
     release();
+    stage = 'late-builder-detaches';
     const deadline = Date.now() + 1500;
     while (!second.detached && Date.now() < deadline) await tick();
     assert.equal(second.detached, true);
@@ -77,6 +83,13 @@ async function run({builder, clients, authentication, anonymousIsolated}) {
       credentialWaitDeadline: true, lateSendAfterCloseRejected: true,
       originalHTTPCalls: 0, fallbackIntercepts: fallbackCalls, ownTransportCalls: transportCalls,
       candidateMessagesSent: 0, rawHeadersExported: false};
+  } catch (error) {
+    return {ok: false, diagnostic: {stage,
+      code: ['NATIVE_HTTP_TIMEOUT', 'NATIVE_HTTP_FAILED', 'UNEXPECTED_NATIVE_RETRY',
+        'UNSUPPORTED_OPERATION', 'INVALID_NATIVE_RESPONSE', 'ERR_ASSERTION'].includes(error?.code) ?
+        error.code : 'CHECK_INCOMPLETE'},
+      originalHTTPCalls: 0, fallbackIntercepts: fallbackCalls, ownTransportCalls: transportCalls,
+      authDelayEntered: authEntered, authReads, candidateMessagesSent: 0, rawHeadersExported: false};
   } finally {
     release?.();
     for (const broker of brokers) broker.close();

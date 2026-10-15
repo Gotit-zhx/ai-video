@@ -16,6 +16,112 @@ const {inspectAnonymousAuthentication} = require('./native-auth-behavior.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
 const {discoverNativeRequestBuilder} = require('./native-request-discovery.cjs');
 
+async function launchOriginal(executable, root, env, logSignals, pidFile = 'probe-pid.txt') {
+  // Never attach to a pre-existing debugger. The cached original main starts
+  // without an inspector CLI flag; activate only after the original startup.
+  const portCheck = net.createServer();
+  await new Promise((resolve, reject) => {
+    portCheck.once('error', () => reject(Error('Default local inspector port is already occupied')));
+    portCheck.listen(9229, '127.0.0.1', resolve);
+  });
+  await new Promise(resolve => portCheck.close(resolve));
+  return launchInspecting(executable, ['--disable-gpu',
+    `--user-data-dir=${path.join(root, 'profile')}`], {
+    env, cwd: path.dirname(executable), timeout: 45000, inspectPortArgument: false,
+    onSpawn: child => {
+      fs.writeFile(path.join(root, pidFile), String(child.pid)).catch(() => {});
+      child.stdout.on('data', chunk => logSignals.observe('stdout', chunk));
+      child.stderr.on('data', chunk => logSignals.observe('stderr', chunk));
+    },
+    activate: async child => {
+      await new Promise(resolve => setTimeout(resolve, 12000));
+      if (child.exitCode !== null) throw Error('Original process exited before late attach');
+      const helper = spawn(executable, ['-e',
+        'process._debugProcess(Number(process.argv[1]))', String(child.pid)], {
+        cwd: path.dirname(executable), env: {...env, ELECTRON_RUN_AS_NODE: '1'},
+        stdio: 'ignore', windowsHide: true,
+      });
+      const deadline = setTimeout(() => helper.kill(), 5000);
+      try {
+        const [code] = await once(helper, 'exit');
+        if (code !== 0) throw Error('Original x86 debug helper failed');
+      } finally {clearTimeout(deadline);}
+    },
+  });
+}
+
+async function verifyColdStartup(executable, root, env, logSignals, builderDescriptor) {
+  const cold = path.join(root, 'cold-start'), contract = path.join(__dirname, 'native-startup-contract.cjs');
+  let connection, stage = 'new-profile';
+  let report = {mode: 'fresh-process-native-binding', ok: false};
+  try {
+    await fs.mkdir(cold);
+    const coldEnv = {...env, APPDATA: path.join(cold, 'app-data'),
+      LOCALAPPDATA: path.join(cold, 'local-app-data'), USERPROFILE: path.join(cold, 'user'),
+      TEMP: path.join(cold, 'temp'), TMP: path.join(cold, 'temp')};
+    for (const key of ['APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP']) {
+      await fs.mkdir(coldEnv[key], {recursive: true});
+    }
+    stage = 'launch';
+    connection = await launchOriginal(executable, cold, coldEnv, logSignals);
+    const outcome = waitForProcess(connection.child, 60000);outcome.catch(() => {});
+    stage = 'readiness-and-profile';
+    const deadline = Date.now() + 15000;
+    while (!(await evaluateRunning(connection, 'typeof globalThis.$socket?.handleEvent === "function"'))) {
+      if (Date.now() >= deadline) throw Error();
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    const isolated = await evaluateRunning(connection, `(()=>{
+      const app=process.mainModule.require('electron').app,path=process.mainModule.require('node:path');
+      const inside=value=>{const r=path.relative(${JSON.stringify(cold)},value);
+        return Boolean(r)&&r!=='..'&&!r.startsWith('..'+path.sep)&&!path.isAbsolute(r)};
+      return app.isReady()&&inside(app.getPath('userData'))&&inside(app.getPath('appData'));
+    })()`);
+    if (isolated !== true) throw Error();
+    stage = 'observe-before-binding';
+    const armed = await bindNativeModule(connection, {modulePath: contract, pinnedOriginalVerified: true,
+      config: {phase: 'arm', anonymousIsolated: true}});
+    if (armed?.ok !== true) throw Error();
+    stage = 'descriptor-only-binding';
+    const binding = await bindNativeModule(connection, {
+      modulePath: contract, pinnedOriginalVerified: true, builderDescriptor,
+      config: {phase: 'verify', anonymousIsolated: true},
+    });
+    report = {...report, ...binding, freshProcess: true, freshProfile: true,
+      sdkDiscoveryUsed: false, bindingCheckCompletedBeforeShutdown: true};
+    stage = 'original-shutdown';
+    const output = path.join(cold, 'runtime-observation.json');
+    const observer = path.join(__dirname, 'windows-runtime-observer.cjs');
+    const installed = await evaluateRunning(connection,
+      `process.mainModule.require(${JSON.stringify(observer)})(process.mainModule.require('electron'),
+        ${JSON.stringify({root: cold, output, detachInspector: true, shutdownMethod: 'original-sdk-exit'})})`);
+    if (installed?.observerInstalled !== true) throw Error();
+    connection.client.close();
+    const processOutcome = await outcome, observed = JSON.parse(await fs.readFile(output, 'utf8'));
+    report.processExitCode = processOutcome.code;
+    report.timedOut = processOutcome.timedOut;
+    report.terminationRequested = processOutcome.terminationRequested;
+    // These original SDK calls occur after the zero-call binding check. Keep
+    // their actual counts separate rather than calling the entire run zero-call.
+    report.postBindingLoginReads = observed.observerSdkReadRequests;
+    report.originalShutdownRequests = observed.shutdown?.sdkShutdownRequests;
+    report.ok = report.ok === true && observed.ok === true && processOutcome.code === 0 &&
+      !processOutcome.timedOut && !processOutcome.terminationRequested &&
+      observed.shutdown?.sdkShutdownRequests === 1 && observed.shutdown?.dispatchFailed !== true;
+  } catch (error) {
+    report.ok = false;report.diagnostic = error.nativeBindingDiagnostic || {stage};
+  } finally {
+    if (connection?.child.exitCode === null) {
+      try {await evaluateRunning(connection, `process.mainModule.require(${JSON.stringify(contract)}).close()`);}
+      catch {}
+    }
+    connection?.client.close();
+    if (connection?.child.exitCode === null) connection.child.kill();
+    await fs.writeFile(path.join(root, 'native-cold-startup.json'), JSON.stringify(report, null, 2));
+  }
+  return report;
+}
+
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
   const [executableArg, rootArg] = process.argv.slice(2);
@@ -37,41 +143,7 @@ async function main() {
   let connection;
   const logSignals = new RuntimeLogSignals();
   try {
-    // Without any inspector CLI flag the original bytecode starts normally.
-    // Reserve/check the default late-activation port before creating our app;
-    // never attach to a pre-existing debugger on the runner.
-    const portCheck = net.createServer();
-    await new Promise((resolve, reject) => {
-      portCheck.once('error', () => reject(Error('Default local inspector port is already occupied')));
-      portCheck.listen(9229, '127.0.0.1', resolve);
-    });
-    await new Promise(resolve => portCheck.close(resolve));
-    connection = await launchInspecting(executable, ['--disable-gpu',
-      `--user-data-dir=${path.join(root, 'profile')}`], {
-      env, cwd: path.dirname(executable), timeout: 45000,
-      inspectPortArgument: false,
-      onSpawn: child => {
-        fs.writeFile(path.join(root, 'probe-pid.txt'), String(child.pid)).catch(() => {});
-        child.stdout.on('data', chunk => logSignals.observe('stdout', chunk));
-        child.stderr.on('data', chunk => logSignals.observe('stderr', chunk));
-      },
-      activate: async child => {
-        // Let the original cached main code load without a startup inspector.
-        // Node's own x86 debug helper uses its matching Windows debug mapping.
-        await new Promise(resolve => setTimeout(resolve, 12000));
-        if (child.exitCode !== null) throw Error('Original process exited before late attach');
-        const helper = spawn(executable, ['-e',
-          'process._debugProcess(Number(process.argv[1]))', String(child.pid)], {
-          cwd: path.dirname(executable), env: {...env, ELECTRON_RUN_AS_NODE: '1'},
-          stdio: 'ignore', windowsHide: true,
-        });
-        const deadline = setTimeout(() => helper.kill(), 5000);
-        try {
-          const [code] = await once(helper, 'exit');
-          if (code !== 0) throw Error('Original x86 debug helper failed');
-        } finally {clearTimeout(deadline);}
-      },
-    });
+    connection = await launchOriginal(executable, root, env, logSignals);
     const outcome = waitForProcess(connection.child, 60000);
     outcome.catch(() => {});
     const loader = '(typeof require === "function" ? require : process.mainModule?.require.bind(process.mainModule))';
@@ -269,6 +341,8 @@ async function main() {
     if (requestBuilder?.ok !== true) {
       throw Error('Original Windows request builder capture incomplete; inspect the report');
     }
+    const cold = await verifyColdStartup(executable, root, env, logSignals, requestBuilder.builderDescriptor);
+    if (cold.ok !== true) throw Error('Original Windows fresh-process binding incomplete; inspect the report');
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,
       sdkNames: report.observedSdk.length, nativeModules: report.nativeModules.length,
       candidateMessagesSent: 0}));

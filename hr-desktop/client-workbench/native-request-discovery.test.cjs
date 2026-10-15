@@ -124,11 +124,20 @@ test('a verified descriptor binds the same original function on a fresh process 
   const {builderDescriptor} = await discoverNativeRequestBuilder(first,
     {anonymousIsolated: true, pinnedOriginalVerified: true});
   const connection = await fixture(t), addon = path.join(connection.fixtureRoot, 'startup-addon.cjs');
-  await fs.writeFile(addon, `exports.install=bindings=>({ok:bindings.requestBuilder===fixtureExpectedBuilder});`);
+  const contract = path.join(__dirname, 'native-startup-contract.cjs');
+  await fs.writeFile(addon, `exports.install=(bindings,config)=>({
+    ...require(${JSON.stringify(contract)}).install(bindings,config),
+    expectedBuilder:config.phase==='verify'?bindings.requestBuilder===fixtureExpectedBuilder:true});`);
+  assert.equal((await bindNativeModule(connection, {modulePath: addon, pinnedOriginalVerified: true,
+    config: {phase: 'arm', anonymousIsolated: true}})).ok, true);
   const report = await bindNativeModule(connection, {
     modulePath: addon, builderDescriptor, pinnedOriginalVerified: true,
+    config: {phase: 'verify', anonymousIsolated: true},
   });
-  assert.deepEqual(report, {ok: true});
+  assert.equal(report.ok, true);assert.equal(report.expectedBuilder, true);
+  assert.equal(report.originalMethodsInvoked, 0);
+  assert.equal(report.sdkMethodsInvoked, 0);assert.equal(report.authenticationMethodsInvoked, 0);
+  assert.equal(report.identityGettersInvoked, 0);assert.equal(report.originalHTTPCalls, 0);
   assert.equal(await evaluateRunning(connection, 'fixtureSDKCalls+fixtureBuilderCalls+fixtureHTTPCalls'), 0);
   await assert.rejects(bindNativeModule(connection, {modulePath: addon, pinnedOriginalVerified: true,
     builderDescriptor: {...builderDescriptor, columnNumber: builderDescriptor.columnNumber + 1}}),

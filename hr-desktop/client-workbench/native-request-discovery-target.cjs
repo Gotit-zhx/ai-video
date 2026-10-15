@@ -96,10 +96,14 @@ async function verify() {
   const builder = state.builder, bindings = state.bindings;
   close();
   if (state.verifyBroker && report.ok) {
-    report.broker = await require('./native-request-broker-smoke.cjs').run({
-      builder, clients: bindings.httpClients, authentication: bindings.authentication,
-      anonymousIsolated: true,
-    });
+    try {
+      report.broker = await require('./native-request-broker-smoke.cjs').run({
+        builder, clients: bindings.httpClients, authentication: bindings.authentication,
+        anonymousIsolated: true,
+      });
+    } catch {
+      report.broker = {ok: false, diagnostic: {stage: 'broker-load-or-check'}};
+    }
     report.ok = report.broker.ok === true;
   }
   return report;
