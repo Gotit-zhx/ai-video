@@ -2,7 +2,7 @@
 // do not invoke SDK methods, export object references or retain primitive values.
 const {randomUUID} = require('node:crypto');
 
-async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.handleEvent') {
+async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.handleEvent', options = {}) {
   const group = 'heyi-sdk-metadata-' + randomUUID();
   const command = (method, params) => connection.client.command(method, params);
   let stage = 'dispatcher-reference', failed = false;
@@ -30,21 +30,16 @@ async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.ha
       if (!target) break;
       current = target;
     }
-    if (!scopeList) throw unavailable('dispatcher-scopes-unavailable');
-    stage = 'scope-list';
-    const scopes = await command('Runtime.getProperties', {objectId: scopeList, ownProperties: true});
     const result = [];
-    for (const scope of (scopes.result || []).filter(item => /^\d+$/.test(item.name)).slice(0, 8)) {
-      // Never enumerate the global object or copy values from it.
-      const kind = /^(Closure|Script|Module|Block|Local|Catch)(?:\b|$)/
-        .exec(scope.value?.description || '')?.[1];
-      if (!kind || !scope.value?.objectId) continue;
+    const inspectScope = async (objectId, kind) => {
       stage = 'scope-metadata';
       const metadata = await command('Runtime.callFunctionOn', {
-        objectId: scope.value.objectId, objectGroup: group, returnByValue: true,
+        objectId, objectGroup: group, returnByValue: true,
         functionDeclaration: `function() {
-          const hidden = Object.getOwnPropertyDescriptor(this, 'object');
-          const environment = hidden && hidden.value;
+          const own = Object.getOwnPropertyDescriptors(this);
+          const wrapper = Object.keys(own).length <= 3 &&
+            typeof own.description?.value === 'string' && own.object;
+          const environment = wrapper ? own.object.value : this;
           if (!environment || typeof environment !== 'object') return {available:false};
           const bindings = Object.entries(Object.getOwnPropertyDescriptors(environment));
           const registries = [], functionBindings = [], objectBindings = [];
@@ -88,9 +83,69 @@ async function inspectSdkScopes(connection, expression = 'globalThis.$socket?.ha
         throw unavailable('scope-metadata-unavailable');
       }
       result.push({kind, ...metadata.result.value});
+    };
+    let inspectionPath = 'internal-scopes', scopeTriggerInvocations = 0;
+    if (scopeList && options.preferPublicScope !== true) {
+      stage = 'scope-list';
+      const scopes = await command('Runtime.getProperties', {objectId: scopeList, ownProperties: true});
+      for (const scope of (scopes.result || []).filter(item => /^\d+$/.test(item.name)).slice(0, 8)) {
+        // Never enumerate the global object or copy values from it.
+        const kind = /^(Closure|Script|Module|Block|Local|Catch)(?:\b|$)/
+          .exec(scope.value?.description || '')?.[1];
+        if (kind && scope.value?.objectId) await inspectScope(scope.value.objectId, kind);
+      }
+    } else {
+      if (typeof options.triggerExpression !== 'string' || !options.triggerExpression) {
+        throw unavailable('dispatcher-scopes-unavailable');
+      }
+      // Electron 22 omits [[Scopes]] from Runtime.getProperties. Use the
+      // standard paused scopeChain instead, without changing any V8 flags.
+      // The caller supplies only an owned fixture or private registration;
+      // no original SDK method is invoked by that trigger.
+      inspectionPath = 'public-function-breakpoint';
+      let breakpoint, invoked, debuggerEnabled = false;
+      try {
+        stage = 'public-debugger-enable';
+        await command('Debugger.enable');debuggerEnabled = true;
+        stage = 'function-breakpoint';
+        breakpoint = await command('Debugger.setBreakpointOnFunctionCall', {objectId: current});
+        const paused = connection.client.event('Debugger.paused');
+        paused.catch(() => {});
+        stage = 'private-trigger';
+        scopeTriggerInvocations = 1;
+        invoked = command('Runtime.evaluate', {
+          expression: 'void (' + options.triggerExpression + ')', returnByValue: true,
+        });
+        invoked.catch(() => {});
+        const state = await paused;
+        if (!state.hitBreakpoints?.includes(breakpoint.breakpointId)) {
+          throw unavailable('unrelated-debugger-pause');
+        }
+        const chain = state.callFrames?.[0]?.scopeChain;
+        if (!chain) throw unavailable('paused-scopes-unavailable');
+        for (const scope of chain.slice(0, 8)) {
+          if (!['local', 'closure', 'script', 'module', 'block', 'catch'].includes(scope.type) ||
+              !scope.object?.objectId) continue;
+          const kind = scope.type[0].toUpperCase() + scope.type.slice(1);
+          await inspectScope(scope.object.objectId, kind);
+        }
+      } finally {
+        if (breakpoint?.breakpointId) {
+          try {await command('Debugger.removeBreakpoint', {breakpointId: breakpoint.breakpointId});} catch {}
+        }
+        if (debuggerEnabled) {
+          try {await command('Debugger.resume');} catch {}
+          try {await command('Debugger.disable');} catch {}
+        }
+        if (invoked) {
+          const value = await invoked;
+          if (value.exceptionDetails) throw unavailable('private-trigger-failed');
+        }
+      }
     }
     return {mode: 'closure-metadata-only', sdkMethodsInvoked: 0,
-      rawValuesRetained: false, functionInternals, scopes: result};
+      rawValuesRetained: false, inspectionPath, scopeTriggerInvocations,
+      functionInternals, scopes: result};
   } catch (error) {
     failed = true;
     throw Object.assign(Error('Original SDK scope inventory unavailable'), {

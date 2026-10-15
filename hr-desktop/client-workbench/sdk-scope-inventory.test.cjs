@@ -86,3 +86,42 @@ globalThis.fixtureDispatcher = dispatch.bind({});
   assert.equal(await evaluateRunning(connection, 'globalThis.fixtureReads'), 0);
   assert.ok(report.functionInternals.length >= 2);
 });
+
+test('public paused scopes expose metadata without SDK calls or exported values', async t => {
+  const connection = await fixture(t, `
+globalThis.fixtureReads = 0;
+const registry = {
+ _sdk_getLoginStatus:async()=>{globalThis.fixtureReads++;return false},
+ _sdk_getNetworkStatus:async()=>{globalThis.fixtureReads++;return false},
+ secretToken:'must-not-be-returned',
+};
+globalThis.fixtureDispatcher = ()=>registry;
+`);
+  const report = await inspectSdkScopes(connection, 'globalThis.fixtureDispatcher', {
+    preferPublicScope:true, triggerExpression:'globalThis.fixtureDispatcher()',
+  });
+  assert.equal(report.inspectionPath, 'public-function-breakpoint');
+  assert.equal(report.scopeTriggerInvocations, 1);
+  assert.ok(report.scopes.flatMap(scope => scope.registries || [])
+    .some(item => item.binding === 'registry'));
+  assert.equal(await evaluateRunning(connection, 'globalThis.fixtureReads'), 0);
+  assert.equal(JSON.stringify(report).includes('must-not-be-returned'), false);
+});
+
+test('failed public metadata inspection removes its breakpoint and resumes the worker', async t => {
+  const connection = await fixture(t, `
+globalThis.fixtureTicks=0;
+setInterval(()=>globalThis.fixtureTicks++,5);
+const unreadable = new Proxy({}, {ownKeys(){throw Error('fixture refusal')}});
+globalThis.fixtureDispatcher = ()=>unreadable;
+`);
+  await assert.rejects(inspectSdkScopes(connection, 'globalThis.fixtureDispatcher', {
+    preferPublicScope:true, triggerExpression:'globalThis.fixtureDispatcher()',
+  }), error => error.inventoryDiagnostic?.code === 'scope-metadata-unavailable');
+  const before = await evaluateRunning(connection, 'globalThis.fixtureTicks');
+  const deadline = Date.now() + 1000;
+  while ((await evaluateRunning(connection, 'globalThis.fixtureTicks')) <= before) {
+    if (Date.now() >= deadline) throw Error('Metadata failure left fixture paused');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+});

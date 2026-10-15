@@ -34,13 +34,16 @@ globalThis.heyiScopeFixtureComplete = ()=>{clearInterval(keepAlive);clearTimeout
     const state = await evaluateRunning(connection, `({
       versions:process.versions,
       originalAppCodeExecuted:Object.keys(process.mainModule.require('node:module')._cache)
-        .some(file=>/[\\\\/]main\\.jsc$/.test(file)),
+        .some(file=>/[\\\\/]main\\.jsc$/.test(file) ||
+          /[\\\\/]app\\.asar[\\\\/](?:main\\.js|heyi[\\\\/]bootstrap\\.cjs)$/.test(file)),
       fixtureMain:process.mainModule.require('node:fs').realpathSync(process.mainModule.filename)===
         process.mainModule.require('node:fs').realpathSync(${JSON.stringify(fixture)})
     })`);
     Object.assign(report, state);
     try {
-      report.inventory = await inspectSdkScopes(connection, 'globalThis.heyiScopeFixture');
+      report.inventory = await inspectSdkScopes(connection, 'globalThis.heyiScopeFixture', {
+        triggerExpression: 'globalThis.heyiScopeFixture()',
+      });
     } catch (error) {
       report.inventory = {diagnostic: error.inventoryDiagnostic || {stage: 'fixture-inspection'}};
     }

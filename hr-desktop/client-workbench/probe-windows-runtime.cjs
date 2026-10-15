@@ -106,7 +106,10 @@ async function main() {
         if (Date.now() >= deadline) throw Error('Original dispatcher not registered');
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-      scopeReport = await inspectSdkScopes(connection);
+      const registration = path.join(__dirname, 'original-dispatch-registration.cjs');
+      scopeReport = await inspectSdkScopes(connection, 'globalThis.$socket?.handleEvent', {
+        triggerExpression: `process.mainModule.require(${JSON.stringify(registration)}).registerForInspection(globalThis.$socket)`,
+      });
     } catch (error) {
       scopeReport = {mode: 'closure-metadata-only', ok: false,
         reason: 'original-scope-inventory-unavailable', sdkMethodsInvoked: 0,
