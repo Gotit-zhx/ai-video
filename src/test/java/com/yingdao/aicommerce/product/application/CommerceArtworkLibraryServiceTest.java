@@ -95,7 +95,7 @@ class CommerceArtworkLibraryServiceTest {
         assertTrue(service.list(0, null, external).items().isEmpty());
         verify(db).queryForList(CommerceArtworkLibraryService.LIST_SQL, "org", "external", "external", "", "", 48, 0L);
         assertEquals(HttpStatus.NOT_FOUND, assertThrows(BusinessException.class, () -> service.resolve("others-job", external)).getStatus());
-        verify(db).queryForList(contains("AND j.id=?"), eq("org"), eq("external"), eq("external"), eq("others-job"));
+        verify(db).queryForList(contains("AND artwork_id=?"), eq("org"), eq("external"), eq("external"), eq("others-job"));
         verifyNoInteractions(archive);
     }
 
@@ -144,7 +144,7 @@ class CommerceArtworkLibraryServiceTest {
     @Test void unauthorizedOrMissingIdsCannotReachArchivedBytes() {
         rows(List.of());
         assertEquals(HttpStatus.NOT_FOUND, assertThrows(BusinessException.class, () -> service.resolve("other-org-id", user)).getStatus());
-        verify(db).queryForList(contains("j.organization_id=?"), eq("org"), isNull(), isNull(), eq("other-org-id"));
+        verify(db).queryForList(contains("organization_id=?"), eq("org"), isNull(), isNull(), eq("other-org-id"));
         assertThrows(BusinessException.class, () -> service.image("x".repeat(37), user));
         verifyNoInteractions(archive);
     }

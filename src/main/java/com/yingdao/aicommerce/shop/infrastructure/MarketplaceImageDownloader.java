@@ -29,7 +29,9 @@ public class MarketplaceImageDownloader {
     public ImageBinary downloadProductImage(String url,com.yingdao.aicommerce.product.domain.ProductCaptureImage image){
         String commercePrefix=com.yingdao.aicommerce.product.application.CommercePublicationDrafts.PREFIX;
         if(url.startsWith(commercePrefix)){
-            if(image==null||!url.equals(image.getProcessedUrl())||!(url+"?original").equals(image.getOriginalUrl())||commerceDb.queryForObject("SELECT COUNT(*) FROM commerce_batch_publications WHERE organization_id=? AND capture_id=?",Integer.class,image.getOrganizationId(),image.getCaptureId())==0)throw new MarketplaceApiException("发布图片不属于已固定的裂变商品");
+            if(image==null||!url.equals(image.getProcessedUrl()))throw new MarketplaceApiException("发布图片不属于已固定的裂变商品");
+            int copies=java.util.Objects.requireNonNullElse(commerceDb.queryForObject("SELECT COUNT(*) FROM commerce_source_copies WHERE organization_id=? AND capture_id=?",Integer.class,image.getOrganizationId(),image.getCaptureId()),0);
+            if(copies==0&&(!(url+"?original").equals(image.getOriginalUrl())||commerceDb.queryForObject("SELECT COUNT(*) FROM commerce_batch_publications WHERE organization_id=? AND capture_id=?",Integer.class,image.getOrganizationId(),image.getCaptureId())==0))throw new MarketplaceApiException("发布图片不属于已固定的裂变商品");
             var ref=commerceArchive.read(image.getOrganizationId(),url.substring(commercePrefix.length()));
             return new ImageBinary(java.util.Base64.getDecoder().decode(ref.dataBase64()),ref.mimeType(),".png");
         }

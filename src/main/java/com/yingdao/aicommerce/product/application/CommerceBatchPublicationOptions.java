@@ -22,6 +22,7 @@ public class CommerceBatchPublicationOptions {
   "logisticInfo","skuStocks","shopeePayload","sizeChartImageId");
  private final CommerceBatchMapper batches;private final ProductCaptureService captures;private final ShopMapper shops;
  private final JdbcTemplate db;private final ObjectMapper json;
+ @org.springframework.beans.factory.annotation.Autowired private CommerceSourceCopyService sourceCopies;
  public CommerceBatchPublicationOptions(CommerceBatchMapper batches,ProductCaptureService captures,ShopMapper shops,JdbcTemplate db,ObjectMapper json){
   this.batches=batches;this.captures=captures;this.shops=shops;this.db=db;this.json=json;
  }
@@ -44,11 +45,16 @@ public class CommerceBatchPublicationOptions {
   var keyed=new LinkedHashMap<String,Map<String,Object>>();var errors=new ArrayList<String>();
   for(var request:requests){
    if(request==null||request.captureId()==null||request.shopId()==null)throw bad("发布参数缺少来源商品或目标店铺");
-   String key=key(request.captureId(),request.shopId());
+   String captureId=sourceCopies==null?request.captureId():sourceCopies.resolve(user.organizationId(),batch,request.captureId());
+   String key=key(captureId,request.shopId());
    if(keyed.containsKey(key))throw bad("同一商品与店铺不能重复提交发布参数");
    if(items.stream().noneMatch(item->key.equals(key(item.captureId(),item.shopId()))))throw bad("发布参数中的商品或店铺不属于当前批次");
    var filtered=new LinkedHashMap<String,Object>();
    if(request.request()!=null)request.request().forEach((field,value)->{if(FIELDS.contains(field)&&value!=null)filtered.put(field,value);});
+   if(sourceCopies!=null){
+    var remapped=sourceCopies.remapRequest(user.organizationId(),captureId,filtered);
+    filtered.clear();filtered.putAll(remapped);
+   }
    if(json.writeValueAsString(filtered).length()>2_000_000)throw bad("发布参数超过大小限制");
    keyed.put(key,filtered);
   }
@@ -71,7 +77,8 @@ public class CommerceBatchPublicationOptions {
  /** Compatibility for an existing single-product caller; never share its category with another product. */
  @Transactional public void saveOne(String batch,String capture,String shop,Map<String,Object> request,PlatformPrincipal user){
   var items=accessible(batch,user,true);
-  var matching=items.stream().filter(item->Objects.equals(shop,item.shopId())&&(capture==null||Objects.equals(capture,item.captureId()))).toList();
+  String resolved=capture==null||sourceCopies==null?capture:sourceCopies.resolve(user.organizationId(),batch,capture);
+  var matching=items.stream().filter(item->Objects.equals(shop,item.shopId())&&(resolved==null||Objects.equals(resolved,item.captureId()))).toList();
   if(matching.size()!=1)throw bad("请按商品与店铺提交完整发布参数");
   var chosen=matching.getFirst();var all=new ArrayList<PublicationRequest>();
   for(var item:items)all.add(new PublicationRequest(item.captureId(),item.shopId(),item.id().equals(chosen.id())?request:find(user.organizationId(),batch,item)));

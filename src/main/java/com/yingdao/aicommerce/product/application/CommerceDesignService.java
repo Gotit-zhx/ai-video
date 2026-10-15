@@ -16,8 +16,9 @@ import java.util.*;
 public class CommerceDesignService {
     public record Request(String captureId,long captureVersion,String mode,int variants,String brief,String rightsEvidence) {}
     private final CommerceDesignMapper mapper;private final ProductCaptureService captures;private final ObjectMapper json;
+    @org.springframework.beans.factory.annotation.Autowired private CommerceSourceCopyService sourceCopies;
     public CommerceDesignService(CommerceDesignMapper mapper,ProductCaptureService captures,ObjectMapper json){this.mapper=mapper;this.captures=captures;this.json=json;}
-    public List<CommerceDesignDraft> list(PlatformPrincipal user){access(user,false);return mapper.list(user.organizationId(),user.externallyRegistered()?user.userId():null);}
+    public List<CommerceDesignDraft> list(PlatformPrincipal user){access(user,false);return mapper.listModule(user.organizationId(),user.externallyRegistered()?user.userId():null,"ASSETS".equals(CommerceModule.current())?"ASSETS":CommerceModule.FISSION);}
     @Transactional
     public List<CommerceDesignDraft> create(Request r,String key,PlatformPrincipal user){
         access(user,true);
@@ -26,19 +27,24 @@ public class CommerceDesignService {
         if(key==null||!key.matches("[A-Za-z0-9_-]{8,128}"))throw error(HttpStatus.BAD_REQUEST,"请提供8至128位幂等键");
         String hash;
         try{hash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(json.writeValueAsString(r).getBytes(StandardCharsets.UTF_8)));}catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
-        // Recheck access even when replaying an old request.
-        var detail=captures.get(r.captureId(),user);
         var prior=mapper.byRequest(user.organizationId(),key);
         if(!prior.isEmpty()){
             if(prior.size()!=r.variants()||prior.stream().anyMatch(d->!d.requestHash().equals(hash)))throw error(HttpStatus.CONFLICT,"幂等键已用于不同设计请求");
+            prior.stream().map(CommerceDesignDraft::captureId).distinct().forEach(id->captures.get(id,user));
             return prior;
         }
+        var detail=captures.get(r.captureId(),user);
         if(detail.capture().getVersion()!=r.captureVersion())throw error(HttpStatus.CONFLICT,"商品已修改，请刷新后固定当前版本");
+        if(sourceCopies!=null){
+            String module="ASSETS".equals(CommerceModule.current())?"ASSETS":CommerceModule.FISSION;
+            var copy=sourceCopies.copy(UUID.randomUUID().toString(),r.captureId(),user,module);
+            detail=captures.get(copy.getId(),user);
+        }
         var images=detail.images().stream().filter(i->i.getOriginalUrl()!=null&&!i.getOriginalUrl().isBlank()).map(i->Map.of("imageId",i.getId(),"originalUrl",i.getOriginalUrl(),"role",Objects.toString(i.getRoleName(),"GALLERY"))).toList();
         if(images.isEmpty())throw error(HttpStatus.CONFLICT,"来源商品没有可用参考图");
         String snapshot=json.writeValueAsString(images);var now=Instant.now();var rows=new ArrayList<CommerceDesignDraft>();
         for(int index=1;index<=r.variants();index++){
-            var row=new CommerceDesignDraft(UUID.randomUUID().toString(),user.organizationId(),r.captureId(),r.captureVersion(),key,hash,index,r.mode(),r.brief(),r.rightsEvidence(),snapshot,"DRAFT",user.userId(),now);
+            var row=new CommerceDesignDraft(UUID.randomUUID().toString(),user.organizationId(),detail.capture().getId(),detail.capture().getVersion(),key,hash,index,r.mode(),r.brief(),r.rightsEvidence(),snapshot,"DRAFT",user.userId(),now);
             try{mapper.insert(row);}catch(DuplicateKeyException e){throw error(HttpStatus.CONFLICT,"同一设计请求正在保存，请使用原幂等键重试");}
             rows.add(row);
         }

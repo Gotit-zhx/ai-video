@@ -24,7 +24,7 @@ public class CommerceMaterialSlotService {
         return new Page(page,ids.size()>20,ids.stream().limit(20).map(id->get(id,user)).toList());
     }
     public Slot get(String id,PlatformPrincipal user){
-        access(user);var first=designs.get(user.organizationId(),id);
+        access(user);var first=designs.getMaterialSlot(user.organizationId(),id);
         if(first==null||user.externallyRegistered()&&!first.createdBy().equals(user.userId()))throw error(HttpStatus.NOT_FOUND,"图集不存在");
         var rows=designs.byRequest(user.organizationId(),first.requestKey());
         if(rows.isEmpty()||rows.stream().anyMatch(d->!d.captureId().equals(first.captureId())||d.captureVersion()!=first.captureVersion()||!d.requestHash().equals(first.requestHash())||user.externallyRegistered()&&!d.createdBy().equals(user.userId())))throw error(HttpStatus.CONFLICT,"图集来源记录不一致");

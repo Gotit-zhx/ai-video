@@ -21,4 +21,22 @@ class CommerceDesignServiceTest {
     @Test void staleProductRejected(){setup(2,true);assertThrows(BusinessException.class,()->service.create(request(2),"request_123",user));verify(mapper,never()).insert(any());}
     @Test void missingReferenceRejected(){setup(1,false);assertThrows(BusinessException.class,()->service.create(request(2),"request_123",user));verify(mapper,never()).insert(any());}
     @Test void variantLimitEnforced(){assertThrows(BusinessException.class,()->service.create(request(11),"request_123",user));verifyNoInteractions(captures,mapper);}
+    @Test void replayReadsOnlyThePrivateCopyAfterOriginalCollectionWasDeleted(){
+        setup(1,true);
+        var privateCapture=mock(ProductCapture.class);when(privateCapture.getId()).thenReturn("private-copy");
+        when(privateCapture.getVersion()).thenReturn(0L);
+        var sourceCopies=mock(CommerceSourceCopyService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"sourceCopies",sourceCopies);
+        when(sourceCopies.copy(anyString(),eq("capture"),eq(user),eq("FISSION"))).thenReturn(privateCapture);
+        when(captures.get("private-copy",user)).thenReturn(new ProductCaptureService.CaptureDetail(privateCapture,List.of(),
+                List.of(new ProductCaptureImage("org","private-copy","https://example.com/image.jpg","MAIN","",0,"image/jpeg","{}")),
+                List.of(),Map.of(),Map.of()));
+        var rows=service.create(request(2),"request_123",user);
+        when(mapper.byRequest("org","request_123")).thenReturn(rows);
+        when(captures.get("capture",user)).thenThrow(new BusinessException(org.springframework.http.HttpStatus.NOT_FOUND,"Deleted"));
+        clearInvocations(captures);
+        assertEquals(rows,service.create(request(2),"request_123",user));
+        verify(captures,never()).get("capture",user);
+        verify(captures).get("private-copy",user);
+    }
 }

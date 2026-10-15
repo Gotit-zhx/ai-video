@@ -20,6 +20,7 @@ public class CommerceCreativeOnlyBatchService {
     public record Request(String name,String printTemplateSnapshotId,List<String> captureIds) {}
     private final CommerceBatchMapper batches;private final CommerceTemplateMapper templates;
     private final ProductCaptureService captures;private final CommerceBatchService views;private final JdbcTemplate db;private final ObjectMapper json;
+    @org.springframework.beans.factory.annotation.Autowired private CommerceSourceCopyService sourceCopies;
     public CommerceCreativeOnlyBatchService(CommerceBatchMapper batches,CommerceTemplateMapper templates,ProductCaptureService captures,CommerceBatchService views,JdbcTemplate db,ObjectMapper json){this.batches=batches;this.templates=templates;this.captures=captures;this.views=views;this.db=db;this.json=json;}
     @Transactional public CommerceBatchService.View create(Request request,String key,PlatformPrincipal user){
         if(user==null||!user.permissionCodes().contains("product:edit")||!user.permissionCodes().contains("product:publish"))throw new BusinessException(HttpStatus.FORBIDDEN,"无批次创作权限");
@@ -34,7 +35,10 @@ public class CommerceCreativeOnlyBatchService {
         var batch=new CommerceBatch(id,user.organizationId(),request.name().trim(),template.id(),key,hash,"DRAFT",user.userId(),now);
         try{batches.insert(batch);}catch(DuplicateKeyException e){var winner=batches.byKey(user.organizationId(),key);if(winner==null)throw e;return replay(winner,hash,user);}
         db.update("INSERT INTO commerce_batch_creation_modes(batch_id,organization_id,mode) VALUES(?,?,'CREATIVE_ONLY')",id,user.organizationId());
-        for(var capture:selected)batches.insertItem(new CommerceBatchItem(UUID.randomUUID().toString(),user.organizationId(),id,capture.getId(),capture.getVersion(),null,"仅创作 · 不上架",0,"DRAFT",now));
+        for(var capture:selected){
+            var privateCopy=sourceCopies==null?capture:sourceCopies.copy(id,capture.getId(),user);
+            batches.insertItem(new CommerceBatchItem(UUID.randomUUID().toString(),user.organizationId(),id,privateCopy.getId(),privateCopy.getVersion(),null,"仅创作 · 不上架",0,"DRAFT",now));
+        }
         return views.get(id,user);
     }
     private CommerceBatchService.View replay(CommerceBatch batch,String hash,PlatformPrincipal user){if(!hash.equals(batch.requestHash()))throw bad("请求编号已用于其他批次");for(var item:batches.items(user.organizationId(),batch.id()))captures.get(item.captureId(),user);return views.get(batch.id(),user);}

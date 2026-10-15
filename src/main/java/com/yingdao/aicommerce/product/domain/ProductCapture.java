@@ -16,6 +16,7 @@ public class ProductCapture {
     @com.baomidou.mybatisplus.annotation.TableLogic(value = "null", delval = "now()")
     private Instant deletedAt;
     private String organizationId;
+    private String dataModule = "CAPTURE";
     private String createdBy;
     private String idempotencyKey;
     private String requestFingerprint;
@@ -137,6 +138,10 @@ public class ProductCapture {
 
     public String getId() { return id; }
     public String getOrganizationId() { return organizationId; }
+    public String getDataModule() { return dataModule; }
+    public void assignModule(String module) {
+        this.dataModule = com.yingdao.aicommerce.product.application.CommerceModule.validate(module);
+    }
     public String getCreatedBy() { return createdBy; }
     public String getIdempotencyKey() { return idempotencyKey; }
     public String getRequestFingerprint() { return requestFingerprint; }

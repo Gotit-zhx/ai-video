@@ -44,6 +44,10 @@ const commerceSections = {
   "commerce-batches": "批次上架",
   "commerce-ads": "广告测款"
 };
+function commerceDataModule(route = window.location.hash.slice(1).split("?")[0]) {
+  return {"commerce-designs":"FISSION","commerce-batches":"FISSION",
+    "commerce-templates":"TEMPLATES","commerce-ads":"ADS","commerce-assets":"ASSETS"}[route] || "CAPTURE";
+}
 function commerceRouteFromHash() {
   const route = window.location.hash.slice(1).split("?")[0];
   return Object.hasOwn(commerceSections, route) ? route : null;
@@ -63,6 +67,16 @@ function selectCommerceSection() {
   window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${route}${route === "product-capture" ? window.location.hash.slice(1).replace(/^[^?]*/, "") : ""}`);
   syncProductCaptureView();
   window.dispatchEvent(new CustomEvent("heyi:commerce-section-entered", {detail:{route}}));
+  if(route!=="product-capture"){
+    const panel=document.querySelector(`[data-commerce-panel="${route}"]`);
+    const heading=route==="commerce-designs"?document.querySelector(".commerce-batch-hub header"):panel?.querySelector("header");
+    if(heading&&!heading.querySelector("[data-module-listing-settings]")){
+      const settings=document.createElement("button");settings.type="button";
+      settings.dataset.moduleListingSettings="";settings.textContent="上传配置";
+      settings.addEventListener("click",()=>ProductListingTemplates.open());
+      heading.append(settings);
+    }
+  }
 }
 document.querySelectorAll(".nav-group > summary").forEach(summary => {
   summary.addEventListener("click", () => { if (!sidebarExpanded) applySidebarExpanded(true); });
@@ -845,7 +859,7 @@ async function api(path, options = {}) {
       ...options,
       cache: options.cache || "no-store",
       credentials: "same-origin",
-      headers: { ...(options.headers || {}) }
+      headers: { "X-Commerce-Module": typeof commerceDataModule === "function" ? commerceDataModule() : "CAPTURE", ...(options.headers || {}) }
     });
   } catch (_error) {
     throw new ApiRequestError("无法连接平台服务，请检查网络后重试", 0);
@@ -6058,8 +6072,9 @@ function publishPreferenceKey(category = false, capture = selectedProductCapture
   platform = document.querySelector('#publish-destination-platform').value,
   org = currentUser?.organizationId) {
   if (!org || !shop || shop === 'dry-run-shop') return null;
-  return JSON.stringify(['publish-settings-v1', org, platform, shop,
-    category ? capture?.categoryName || capture?.id : 'shop']);
+  const module = typeof commerceDataModule === 'function' ? commerceDataModule() : 'CAPTURE';
+  const scope = module === 'CAPTURE' ? ['publish-settings-v1',org] : ['publish-settings-v2',org,module];
+  return JSON.stringify([...scope, platform, shop, category ? capture?.categoryName || capture?.id : 'shop']);
 }
 function readPublishPreference(category = false, ...context) {
   try { return JSON.parse(localStorage.getItem(publishPreferenceKey(category, ...context)) || '{}'); } catch { return {}; }

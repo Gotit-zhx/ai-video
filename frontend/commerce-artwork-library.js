@@ -9,7 +9,7 @@
   const toolbar=make('div','',host);toolbar.className='artwork-library-toolbar';
   const query=make('input','',toolbar);query.type='search';query.placeholder='搜索印花或来源批次';query.setAttribute('aria-label','搜索透明印花');
   const search=button('读取印花',toolbar,()=>load(0));
-  const message=make('p','裂变成功的透明印花会自动出现在这里。',host);message.setAttribute('role','status');
+  const message=make('p','',host);message.setAttribute('role','status');
   const grid=make('div','',host);grid.className='artwork-library-grid';
   const pagination=make('div','',host);pagination.className='artwork-library-pagination';
   const previous=button('上一页',pagination,()=>load(Math.max(0,page-1))),pageText=make('span','',pagination),next=button('下一页',pagination,()=>load(page+1));
@@ -24,13 +24,13 @@
      if(onPick)button('使用此印花',card,()=>{if(!locked&&!busy)onPick(item);});
      else {const url=imageUrl(item);if(url){const link=make('a','查看透明原图 ↗',card);link.href=url;link.target='_blank';link.rel='noopener noreferrer';}}
     });
-    pageText.textContent='第 '+(page+1)+' 页';message.textContent=data.items.length?'透明 PNG · 相同图片合并展示，历史记录保留':'没有找到可用印花。生成成功且通过透明检查的印花会自动收录。';
+    pageText.textContent='第 '+(page+1)+' 页';message.textContent=data.items.length?'透明 PNG · 相同图片合并展示，历史记录保留':'没有找到已保存的印花。';
    }catch(error){if(ticket===revision){grid.replaceChildren();hasMore=false;message.textContent='读取印花失败：'+error.message+'。点击“读取印花”重试。';}}
    finally{if(ticket===revision){busy=false;controls();onBusy(false);}}
   }
   query.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();load(0);}});
   controls();
-  return {load,ensureLoaded:()=>loaded?Promise.resolve():load(0),setLocked(value){locked=!!value;controls();},reset(){revision++;busy=false;locked=false;loaded=false;hasMore=false;page=0;query.value='';grid.replaceChildren();pageText.textContent='';message.textContent='裂变成功的透明印花会自动出现在这里。';controls();onBusy(false);}};
+  return {load,ensureLoaded:()=>loaded?Promise.resolve():load(0),setLocked(value){locked=!!value;controls();},reset(){revision++;busy=false;locked=false;loaded=false;hasMore=false;page=0;query.value='';grid.replaceChildren();pageText.textContent='';message.textContent='';controls();onBusy(false);}};
  }
  globalThis.CommerceArtworkPicker={mount({host,onChange=()=>{},api:request=api}){
   if(!host)return null;
@@ -83,7 +83,7 @@
   };
  }};
  const host=document.getElementById('commerce-artwork-library');
- if(host){make('h2','透明印花',host);const note=make('p','历次裂变的可用印花自动归档，可在“新建裂变上架”中重复使用。',host);note.className='artwork-library-description';const library=catalogue(host);
+ if(host){make('h2','透明印花',host);const library=catalogue(host);
   const loadWhenVisible=()=>{if(globalThis.location?.hash==='#commerce-assets')library.load(0);};
   globalThis.addEventListener('heyi:commerce-section-entered',event=>{if(event.detail?.route==='commerce-assets')library.load(0);});
   globalThis.addEventListener('heyi:company-reset',()=>library.reset());

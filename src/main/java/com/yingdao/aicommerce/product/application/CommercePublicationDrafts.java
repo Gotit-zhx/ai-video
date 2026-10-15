@@ -47,6 +47,7 @@ public class CommercePublicationDrafts {
   var capture=new ProductCapture(user.organizationId(),user.userId(),"commerce-"+execution+"-"+item.id()+"-"+variant,
    CommerceImageArchive.sha(json.writeValueAsBytes(manifest)),original.getSourcePlatform(),original.getSourceUrl(),original.getSourceShopId(),original.getSourceProductId(),
    variantTitle(original.getTitle(),variant),description,original.getCategoryName(),original.getBrandName(),original.getCurrency(),original.getPriceMin(),original.getPriceMax(),json.writeValueAsString(normalized),"{}");
+  capture.assignModule(CommerceModule.FISSION);
   captures.insert(capture);
   // Reserve the gallery positions immediately after MAIN for generated details.
   // Shopee uses only the first nine gallery images; SKU color bindings use URLs.

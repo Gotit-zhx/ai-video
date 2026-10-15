@@ -2,19 +2,32 @@
   'use strict';
   let context, templates = [], organization = '', pending = null, platform = 'SHOPEE', busy = false;
   let shipping = null, shippingRequest = 0, shippingLoading = false;
+  let dataModule = '';
+  let revision = 0, dialogRequest = 0;
+  const currentModule = () => typeof commerceDataModule === 'function' ? commerceDataModule() : 'CAPTURE';
+  function scoped(path, options = {}, scope = dataModule || currentModule()) {
+    return context.api(path,{...options,headers:{...(options.headers||{}),'X-Commerce-Module':scope}});
+  }
   const normalize = value => ['TIKTOK','TIKTOK_SHOP'].includes(String(value).toUpperCase()) ? 'TIKTOK_SHOP' : 'SHOPEE';
   const byId = id => document.getElementById(id);
   function get(target) {
-    return organization === context?.getUser()?.organizationId ? templates.find(item => item.platform === normalize(target)) : null;
+    return organization === context?.getUser()?.organizationId && dataModule === currentModule()
+      ? templates.find(item => item.platform === normalize(target)) : null;
   }
   async function ensure(force = false) {
     const org = context?.getUser()?.organizationId;
     if (!org) throw Error('请先登录');
-    if (org !== organization) { organization = org; templates = []; pending = null; }
+    const scope = currentModule();
+    if (org !== organization || scope !== dataModule) {
+      organization = org; dataModule = scope; templates = []; pending = null;
+      draftValues.clear(); shipping = null; shippingRequest++;
+    }
     if (!force && templates.length) return templates;
     if (!pending || force) {
-      const request = context.api('/api/v1/product-listing-templates').then(result => {
-        if (context.getUser()?.organizationId !== org || organization !== org) throw Error('当前公司已变更，请重新打开');
+      const requestRevision=++revision;
+      const request = scoped('/api/v1/product-listing-templates',{},scope).then(result => {
+        if (requestRevision !== revision || context.getUser()?.organizationId !== org || organization !== org || dataModule !== scope || currentModule() !== scope)
+          throw Error('当前功能或公司已变更，请重新打开');
         if (!Array.isArray(result.data) || result.data.length !== 2) throw Error('模板读取不完整，请重试');
         templates = result.data; return templates;
       }).finally(() => { if (pending === request) pending = null; });
@@ -88,7 +101,7 @@
     select.replaceChildren(new Option('选择店铺设置物流','')); renderShipping();
     byId('listing-logistics-status').textContent = '默认启用目标店铺已开通的物流渠道。';
     try {
-      const result = await context.api('/api/v1/product-listing-templates/logistics/shops');
+      const result = await scoped('/api/v1/product-listing-templates/logistics/shops');
       if (request !== shippingRequest || context.getUser()?.organizationId !== org) return;
       for (const shop of result.data || []) select.append(new Option(`${shop.name || shop.externalShopId} · ${shop.region || 'Shopee'}`,shop.id));
       if (!result.data?.length) byId('listing-logistics-status').textContent = '暂无已连接的虾皮店铺；连接后可配置物流。';
@@ -102,7 +115,7 @@
     byId('listing-logistics-status').textContent = shopId ? '正在读取该店铺的官方物流渠道…' : '默认启用目标店铺已开通的物流渠道。';
     if (!shopId) return;
     try {
-      const result = await context.api('/api/v1/product-listing-templates/logistics/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(95000)});
+      const result = await scoped('/api/v1/product-listing-templates/logistics/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(95000)});
       if (request !== shippingRequest || context.getUser()?.organizationId !== org) return;
       if (result.data?.shopId !== shopId || !Array.isArray(result.data?.channels)) throw Error('物流返回不完整，请重试');
       shipping = result.data; renderShipping();
@@ -129,17 +142,21 @@
     setBusy(false);
   }
   async function open() {
+    const request=++dialogRequest;
+    const name={CAPTURE:'采集链接',FISSION:'一键裂变',TEMPLATES:'模板配置',ADS:'广告测款',ASSETS:'素材管理'}[currentModule()];
+    byId('listing-template-title').textContent=name+' · 上传配置';
     platform = 'SHOPEE'; draftValues.clear();
     byId('listing-template-error').textContent = '';
     byId('listing-template-status').textContent = '正在读取模板…';
     byId('product-listing-template-dialog').showModal(); setBusy(true);
-    try { await Promise.all([ensure(true),loadShippingShops()]); render(); }
-    catch (error) { byId('listing-template-error').textContent = error.message; setBusy(false); byId('save-product-listing-template').disabled = true; }
+    try { await Promise.all([ensure(true),loadShippingShops()]); if(request === dialogRequest) render(); }
+    catch (error) { if(request === dialogRequest) {byId('listing-template-error').textContent = error.message; setBusy(false); byId('save-product-listing-template').disabled = true;} }
   }
   async function save(event) {
     event.preventDefault();
     if (busy || !context.canEdit()) return;
-    const org = organization, target = platform, body = readDraft();
+    const org = organization, target = platform, scope = dataModule, body = readDraft();
+    if(scope !== currentModule()) { byId('product-listing-template-dialog').close(); return; }
     let shippingBody;
     try {
       shippingBody = shippingDraft();
@@ -147,9 +164,9 @@
     } catch(error) {byId('listing-template-error').textContent = error.message;return;}
     setBusy(true); byId('listing-template-error').textContent = '';
     try {
-      const result = await context.api('/api/v1/product-listing-templates/'+target,
-        {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if (context.getUser()?.organizationId !== org || organization !== org) return;
+      const result = await scoped('/api/v1/product-listing-templates/'+target,
+        {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)},scope);
+      if (context.getUser()?.organizationId !== org || organization !== org || dataModule !== scope || currentModule() !== scope) return;
       templates = templates.map(item => item.platform === target ? result.data : item);
       if (shippingBody && shipping?.shopId === shippingBody.shopId) {
         shipping.version = shippingBody.version+1; shipping.mode = shippingBody.mode;
@@ -157,10 +174,10 @@
         renderShipping();byId('listing-logistics-status').textContent = `保存成功 · 物流版本 ${shipping.version}`;
       }
       draftValues.delete(target); render();
-      byId('listing-template-status').textContent = '保存成功 · 后续采集及上传自动使用此模板';
+      byId('listing-template-status').textContent = '保存成功';
       context.onSaved?.();
-    } catch(error) { if (organization === org) byId('listing-template-error').textContent = error.message; }
-    finally { if (organization === org) setBusy(false); }
+    } catch(error) { if (organization === org && dataModule === scope && currentModule() === scope) byId('listing-template-error').textContent = error.message; }
+    finally { if (organization === org && dataModule === scope && currentModule() === scope) setBusy(false); }
   }
   function preview(capture) {
     const section = byId('product-listing-template-preview');
@@ -179,6 +196,12 @@
   }
   function init(config) {
     context = config;
+    root.addEventListener?.('hashchange',()=>{
+      if(dataModule && dataModule !== currentModule()){
+        shippingRequest++;revision++;dialogRequest++;pending=null;shipping=null;draftValues.clear();
+        byId('product-listing-template-dialog').close();
+      }
+    });
     byId('open-product-listing-templates').addEventListener('click', open);
     for (const id of ['close-product-listing-templates','cancel-product-listing-templates'])
       byId(id).addEventListener('click', () => byId('product-listing-template-dialog').close());
@@ -201,7 +224,7 @@
     }));
     byId('product-template-preview-platform').addEventListener('change', () => preview(context.getCapture()));
   }
-  const api = {init,ensure,get,fields,preview,logisticInfo};
+  const api = {init,ensure,get,fields,preview,logisticInfo,open};
   if (typeof module !== 'undefined') module.exports = {fields,normalize,logisticInfo};
   else root.ProductListingTemplates = api;
 })(typeof window === 'undefined' ? globalThis : window);

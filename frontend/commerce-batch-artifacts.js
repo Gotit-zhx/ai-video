@@ -177,6 +177,15 @@
     const note=localPhoto()&&isProduct(row)&&row.status==='READY'
       ?(row.message||'').replace(/(?:仍)?待质量复核/g,'可查看成品效果'):row.message||'';
     source.textContent=`来源 ${sourceName}${isScene(row)?' · 同商品共用背景':''} · ${note}`;card.append(source);
+    if(row.status==='READY' && /^VARIATE(?:_G[1-9][0-9]*)?$/.test(row.kind)){
+      const save=document.createElement('button');save.type='button';save.textContent='保存到素材库';
+      save.addEventListener('click',async()=>{
+        save.disabled=true;
+        try{await api(`/api/v1/commerce-artwork-library/${encodeURIComponent(row.id)}`,{method:'POST'});
+          save.textContent='已保存到素材库';}
+        catch(error){save.disabled=false;source.textContent=error.message;}
+      });card.append(save);
+    }
     if(row.status!=='READY')card.classList.remove('is-revealing');
     else if(oldStatus!=='READY'&&!isGuide(row))card.classList.add('is-revealing');
   }

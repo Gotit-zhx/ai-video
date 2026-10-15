@@ -15,7 +15,7 @@ class CommerceMaterialSlotServiceTest {
  final PlatformPrincipal user=new PlatformPrincipal("u","org","c","u","name","",true,List.of(),List.of("product:view"));
  CommerceDesignDraft row(String id,int index){return new CommerceDesignDraft(id,"org","source",3,"request","hash",index,"POD_DESIGN","brief","rights","[]","DRAFT","u",Instant.EPOCH);}
  @Test void slotIncludesAllVariantsAndActualArchiveStatus(){
-  var first=row("a",1);when(designs.get("org","a")).thenReturn(first);when(designs.byRequest("org","request")).thenReturn(List.of(row("b",2),first));
+  var first=row("a",1);when(designs.getMaterialSlot("org","a")).thenReturn(first);when(designs.byRequest("org","request")).thenReturn(List.of(row("b",2),first));
   when(outputs.byDesign("org","b")).thenReturn(new CommerceDesignOutput("o","org","b","attempt","key","hash","image/png",10,"PENDING_REVIEW",Instant.EPOCH));
   var slot=service.get("a",user);assertEquals(2,slot.images().size());assertEquals("NOT_GENERATED",slot.images().getFirst().status());assertEquals("PENDING_REVIEW",slot.images().get(1).status());assertEquals("a",slot.id());
  }

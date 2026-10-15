@@ -26,36 +26,13 @@ public class CommerceArtworkLibraryService {
             JOIN commerce_batches b ON b.id=e.batch_id AND b.organization_id=j.organization_id
             """;
     private static final String SCOPE = " WHERE j.organization_id=? AND (? IS NULL OR e.created_by=?) ";
-    private static final String PRINT = " (j.kind='VARIATE' OR j.kind REGEXP '^VARIATE_G[1-9][0-9]*$') ";
-    private static final String NATIVE_REPORT = """
-                  JSON_UNQUOTE(JSON_EXTRACT(c.report_json,'$.transparency.status'))='VERIFIED_ALPHA'
-              AND JSON_UNQUOTE(JSON_EXTRACT(c.report_json,'$.transparency.alphaChannel'))='true'
-              AND JSON_EXTRACT(c.report_json,'$.transparency.width') BETWEEN 2 AND 4096
-              AND JSON_EXTRACT(c.report_json,'$.transparency.height') BETWEEN 2 AND 4096
-              AND JSON_EXTRACT(c.report_json,'$.transparency.totalPixels') BETWEEN 4 AND 12000000
-              AND JSON_EXTRACT(c.report_json,'$.transparency.visiblePixels') >=
-                  GREATEST(4,FLOOR(JSON_EXTRACT(c.report_json,'$.transparency.totalPixels')/10000))
-              AND JSON_EXTRACT(c.report_json,'$.transparency.clearPixels') >=
-                  GREATEST(4,JSON_EXTRACT(c.report_json,'$.transparency.totalPixels')*0.03)
-            """;
-    // The native-alpha completion marker is only written after the full policy passes. Missing
-    // legacy inspections are checked once per content hash, never silently hidden forever.
-    // Reuse always re-reads the bytes, independently of this inexpensive listing index/cache.
     private static final String CANDIDATES_SQL = """
             WITH candidates AS (
-              SELECT j.id,j.kind,j.variant_index,j.created_at,j.content_sha256,j.storage_key,b.name AS batch_name,
-                CASE WHEN j.message='原生透明印花已归档，透明背景检查通过' AND
-            """ + NATIVE_REPORT + """
-                THEN 1 ELSE 0 END AS native_verified,
-                ROW_NUMBER() OVER (PARTITION BY j.content_sha256 ORDER BY j.created_at DESC,j.id DESC) AS content_rank
-            """ + FROM + " LEFT JOIN commerce_batch_artwork_checks c ON c.job_id=j.id " + SCOPE + """
-              AND j.status='READY' AND j.model_config_id<>'SAVED_ARTWORK' AND
-            """ + PRINT + """
-              AND j.content_sha256 REGEXP '^[a-f0-9]{64}$'
-              AND j.storage_key=CONCAT(SHA2(j.organization_id,256),'/',j.content_sha256)
-              AND (JSON_EXTRACT(c.report_json,'$.transparency.status') IS NULL OR
-            """ + NATIVE_REPORT + """
-              )
+              SELECT artwork_id AS id,kind,variant_index,created_at,content_sha256,storage_key,batch_name,
+                native_verified,
+                ROW_NUMBER() OVER (PARTITION BY content_sha256 ORDER BY created_at DESC,artwork_id DESC) AS content_rank
+              FROM commerce_material_library_entries
+              WHERE organization_id=? AND (? IS NULL OR created_by=?)
             )
             """;
     private static final String MATCHES = " WHERE content_rank=1 AND (?='' OR LOCATE(?,CONCAT_WS(' ',batch_name,'印花',CONCAT('V',variant_index)))>0) ";
@@ -89,7 +66,7 @@ public class CommerceArtworkLibraryService {
         if (page > 0 && db.queryForList(LEGACY_SQL, user.organizationId(), owner, owner, search, search).isEmpty()) {
             var rows = db.queryForList(LIST_SQL, user.organizationId(), owner, owner, search, search,
                     PAGE_SIZE + 1, (long) page * PAGE_SIZE);
-            if (rows.stream().allMatch(row -> row.get("native_verified") instanceof Number verified && verified.intValue() == 1))
+            if (rows.stream().allMatch(CommerceArtworkLibraryService::nativeVerified))
                 return new Page(page, rows.size() > PAGE_SIZE, rows.stream().limit(PAGE_SIZE).map(CommerceArtworkLibraryService::item).toList());
             // A newly completed legacy result may have appeared between queries; use the
             // full compatibility path so an old opaque image never leaks into the page.
@@ -113,7 +90,7 @@ public class CommerceArtworkLibraryService {
     }
 
     private boolean listedNative(Map<String, Object> row, PlatformPrincipal user, int[] legacyChecks) {
-        if (row.get("native_verified") instanceof Number verified && verified.intValue() == 1) return true;
+        if (nativeVerified(row)) return true;
         String key = Objects.toString(row.get("storage_key"), "");
         Boolean cached = legacyValidity.get(key);
         if (cached != null) return cached;
@@ -129,7 +106,16 @@ public class CommerceArtworkLibraryService {
         try { CommerceTransparentArtworkPolicy.requireNative(bytes); valid = true; }
         catch (IllegalArgumentException invalid) { valid = false; }
         legacyValidity.put(key, valid);
+        if(valid)db.update("""
+                UPDATE commerce_material_library_entries SET native_verified=TRUE
+                WHERE organization_id=? AND artwork_id=? AND content_sha256=?
+                """,user.organizationId(),row.get("id"),row.get("content_sha256"));
         return valid;
+    }
+
+    private static boolean nativeVerified(Map<String,Object> row) {
+        Object value=row.get("native_verified");
+        return Boolean.TRUE.equals(value) || value instanceof Number number && number.intValue()==1;
     }
 
     private static BusinessException narrowSearch() {
@@ -149,10 +135,47 @@ public class CommerceArtworkLibraryService {
 
     private Map<String, Object> find(String id, PlatformPrincipal user) {
         access(user);
+        if(id==null || id.isBlank() || id.length()>36)
+            throw error(HttpStatus.NOT_FOUND,"素材不存在或无权访问");
+        String owner = user.externallyRegistered() ? user.userId() : null;
+        var rows = db.queryForList("""
+                SELECT artwork_id AS id,kind,content_sha256,storage_key
+                FROM commerce_material_library_entries
+                WHERE organization_id=? AND (? IS NULL OR created_by=?) AND artwork_id=?
+                """,user.organizationId(),owner,owner,id);
+        if(rows.size()!=1)throw error(HttpStatus.NOT_FOUND,"素材不存在或未保存到当前公司的素材库");
+        var row=rows.getFirst();
+        String kind=Objects.toString(row.get("kind"),"");
+        if(!(kind.equals("VARIATE")||kind.matches("VARIATE_G[1-9][0-9]*"))
+                || row.containsKey("status")&&!"READY".equals(row.get("status")))
+            throw error(HttpStatus.CONFLICT,"素材不是已保存的透明印花");
+        String hash=Objects.toString(row.get("content_sha256"),"");
+        if(!hash.matches("[a-f0-9]{64}")||!CommerceSurfaceTemplateInputs.key(user.organizationId(),hash).equals(row.get("storage_key")))
+            throw error(HttpStatus.CONFLICT,"素材归档信息不完整");
+        return row;
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public void saveGenerated(String id, PlatformPrincipal user) {
+        access(user);
+        if(!user.permissionCodes().contains("product:edit"))
+            throw error(HttpStatus.FORBIDDEN,"保存素材需要商品编辑权限");
+        var row=findGenerated(id,user);
+        readChecked(row,user);
+        db.update("""
+                INSERT IGNORE INTO commerce_material_library_entries
+                (organization_id,artwork_id,kind,variant_index,batch_name,content_sha256,storage_key,created_by,created_at,native_verified)
+                VALUES(?,?,?,?,?,?,?,?,?,TRUE)
+                """,user.organizationId(),id,row.get("kind"),row.get("variant_index"),row.get("batch_name"),
+                row.get("content_sha256"),row.get("storage_key"),user.userId(),row.get("created_at"));
+    }
+
+    private Map<String, Object> findGenerated(String id, PlatformPrincipal user) {
+        access(user);
         if (id == null || id.isBlank() || id.length() > 36)
             throw error(HttpStatus.NOT_FOUND, "印花素材不存在或无权访问");
         String owner = user.externallyRegistered() ? user.userId() : null;
-        var rows = db.queryForList("SELECT j.id,j.status,j.kind,j.storage_key,j.content_sha256 " + FROM
+        var rows = db.queryForList("SELECT j.id,j.status,j.kind,j.variant_index,j.created_at,j.storage_key,j.content_sha256,b.name AS batch_name " + FROM
                 + SCOPE + " AND j.id=?", user.organizationId(), owner, owner, id);
         if (rows.size() != 1) throw error(HttpStatus.NOT_FOUND, "印花素材不存在或无权访问");
         var row = rows.getFirst();

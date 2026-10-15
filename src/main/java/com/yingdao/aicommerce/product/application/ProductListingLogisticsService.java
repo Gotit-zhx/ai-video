@@ -29,10 +29,13 @@ public class ProductListingLogisticsService {
         return shops.list(user, "SHOPEE").stream().filter(shop -> "ACTIVE".equals(shop.status())).toList();
     }
     public Config config(String org, String shopId) {
+        return config(org, shopId, CommerceModule.current());
+    }
+    public Config config(String org, String shopId, String module) {
         var rows = db.query("""
                 SELECT selection_mode,channel_ids_json,version FROM product_listing_logistics
-                WHERE organization_id=? AND shop_id=?
-                """, (rs, n) -> new Config(rs.getString(1), ids(read(rs.getString(2))), rs.getLong(3)), org, shopId);
+                WHERE organization_id=? AND shop_id=? AND data_module=?
+                """, (rs, n) -> new Config(rs.getString(1), ids(read(rs.getString(2))), rs.getLong(3)), org, shopId, CommerceModule.validate(module));
         return rows.isEmpty() ? new Config("ALL_ENABLED", List.of(), 0) : rows.getFirst();
     }
     public View get(String shopId, PlatformPrincipal user) {
@@ -56,29 +59,35 @@ public class ProductListingLogisticsService {
         if (version == 0) {
             count = db.update("""
                     INSERT IGNORE INTO product_listing_logistics
-                    (organization_id,shop_id,selection_mode,channel_ids_json,version,updated_by)
-                    VALUES (?,?,?,?,1,?)
-                    """, user.organizationId(), shopId, mode, write(selected), user.userId());
+                    (organization_id,shop_id,data_module,selection_mode,channel_ids_json,version,updated_by)
+                    VALUES (?,?,?,?,?,1,?)
+                    """, user.organizationId(), shopId, CommerceModule.current(), mode, write(selected), user.userId());
         } else if (version > 0) {
             count = db.update("""
                     UPDATE product_listing_logistics SET selection_mode=?,channel_ids_json=?,version=version+1,
                     updated_by=?,updated_at=CURRENT_TIMESTAMP(6)
-                    WHERE organization_id=? AND shop_id=? AND version=?
-                    """, mode, write(selected), user.userId(), user.organizationId(), shopId, version);
+                    WHERE organization_id=? AND shop_id=? AND version=? AND data_module=?
+                    """, mode, write(selected), user.userId(), user.organizationId(), shopId, version, CommerceModule.current());
         } else throw bad("物流配置版本无效");
         if (count != 1) throw new BusinessException(HttpStatus.CONFLICT, "物流配置已被修改，请重新选择店铺后保存");
     }
     public Map<String, Object> snapshot(String org, String shopId) {
-        Config config = config(org, shopId);
+        return snapshot(org, shopId, CommerceModule.current());
+    }
+    public Map<String, Object> snapshot(String org, String shopId, String module) {
+        Config config = config(org, shopId, module);
         return Map.of("organizationId", org, "shopId", shopId, "mode", config.mode(),
-                "channelIds", config.channelIds(), "version", config.version());
+                "channelIds", config.channelIds(), "version", config.version(), "dataModule", CommerceModule.validate(module));
     }
     public Map<String, Object> publishSnapshot(String org, String captureId, String key, String shopId) {
+        return publishSnapshot(org, captureId, key, shopId, CommerceModule.CAPTURE);
+    }
+    public Map<String, Object> publishSnapshot(String org, String captureId, String key, String shopId, String module) {
         var rows = db.query("""
                 SELECT request_json FROM product_publish_workflows
                 WHERE organization_id=? AND capture_id=? AND idempotency_key=?
                 """, (rs, n) -> readMap(rs.getString(1)), org, captureId, key);
-        return rows.isEmpty() ? snapshot(org, shopId) : snapshotFrom(rows.getFirst());
+        return rows.isEmpty() ? snapshot(org, shopId, module) : snapshotFrom(rows.getFirst());
     }
     public List<Map<String, Object>> resolve(MarketplaceAccess.Connection connection, Map<String, Object> snapshot) {
         if (!connection.shop().getOrganizationId().equals(snapshot.get("organizationId"))

@@ -38,6 +38,8 @@ public class CommerceBatchService {
     private final ObjectMapper json;
     private final ShopOperatingSettingsMapper operatingSettings;
     private final CommerceBatchCreativePlanService creativePlans;
+    @org.springframework.beans.factory.annotation.Autowired
+    private CommerceSourceCopyService sourceCopies;
     public CommerceBatchService(CommerceBatchMapper batches,CommerceTemplateMapper templates,
             ProductCaptureMapper captures,ShopMapper shops,ObjectMapper json,ShopOperatingSettingsMapper operatingSettings) {
         this(batches,templates,captures,shops,json,operatingSettings,null);
@@ -131,6 +133,11 @@ public class CommerceBatchService {
             if(winner==null) throw error(HttpStatus.CONFLICT,"批次正在创建，请使用原幂等键重试");
             return replay(winner,hash,user);
         }
+        if(sourceCopies!=null)items=items.stream().map(item->{
+            var copy=sourceCopies.copy(id,item.captureId(),user);
+            return new CommerceBatchItem(item.id(),item.organizationId(),item.batchId(),copy.getId(),
+                    copy.getVersion(),item.shopId(),item.shopName(),item.plannedDay(),item.status(),item.createdAt());
+        }).toList();
         items.forEach(batches::insertItem);
         if(printSnapshot!=null){
             if(r.renderPolicy()!=null)creativePlans.initialize(id,printSnapshot,c.designsPerProduct(),r.reusedArtworks(),r.renderPolicy(),user);

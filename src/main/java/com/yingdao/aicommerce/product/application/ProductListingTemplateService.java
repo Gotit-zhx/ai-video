@@ -51,13 +51,17 @@ public class ProductListingTemplateService {
     }
 
     public Template get(String organizationId, String platform) {
+        return get(organizationId, platform, CommerceModule.current());
+    }
+
+    public Template get(String organizationId, String platform, String module) {
         String target = platform(platform);
-        var rows = db.query("SELECT * FROM product_listing_templates WHERE organization_id=? AND platform=?",
+        var rows = db.query("SELECT * FROM product_listing_templates WHERE organization_id=? AND platform=? AND data_module=?",
                 (rs, n) -> new Template(target, rs.getString("name"), rs.getBoolean("enabled"),
                 rs.getString("description"), rs.getBigDecimal("weight_grams"),
                 rs.getBigDecimal("package_length_cm"), rs.getBigDecimal("package_width_cm"),
                 rs.getBigDecimal("package_height_cm"), rs.getLong("version"),
-                rs.getString("size_chart_image_key")), organizationId, target);
+                rs.getString("size_chart_image_key")), organizationId, target, CommerceModule.validate(module));
         return rows.isEmpty() ? defaults(target) : rows.getFirst();
     }
 
@@ -88,28 +92,29 @@ public class ProductListingTemplateService {
         if (version == 0) {
             changed = db.update("""
                     INSERT IGNORE INTO product_listing_templates
-                    (organization_id,platform,name,enabled,description,size_chart_image_key,weight_grams,package_length_cm,
+                    (organization_id,platform,data_module,name,enabled,description,size_chart_image_key,weight_grams,package_length_cm,
                      package_width_cm,package_height_cm,version,updated_by)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,1,?)
-                    """, principal.organizationId(), target, name, enabled, description, sizeChartKey, weight,
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)
+                    """, principal.organizationId(), target, CommerceModule.current(), name, enabled, description, sizeChartKey, weight,
                     length, width, height, principal.userId());
         } else {
             changed = db.update("""
                     UPDATE product_listing_templates SET name=?,enabled=?,description=?,size_chart_image_key=?,weight_grams=?,
                     package_length_cm=?,package_width_cm=?,package_height_cm=?,version=version+1,
                     updated_by=?,updated_at=CURRENT_TIMESTAMP(6)
-                    WHERE organization_id=? AND platform=? AND version=?
+                    WHERE organization_id=? AND platform=? AND version=? AND data_module=?
                     """, name, enabled, description, sizeChartKey, weight, length, width, height, principal.userId(),
-                    principal.organizationId(), target, version);
+                    principal.organizationId(), target, version, CommerceModule.current());
         }
         if (changed != 1) throw new BusinessException(HttpStatus.CONFLICT, "模板已被其他人修改，请重新打开后保存");
         return get(principal.organizationId(), target);
     }
 
     public Map<String, Object> snapshot(String organizationId, String destination, ProductCapture capture) {
-        Template template = get(organizationId, destination);
+        Template template = get(organizationId, destination, capture.getDataModule());
         var snapshot = new LinkedHashMap<String, Object>();
         snapshot.put("platform", template.platform());
+        snapshot.put("dataModule", capture.getDataModule());
         snapshot.put("name", template.name());
         snapshot.put("version", template.version());
         snapshot.put("enabled", template.enabled());
@@ -135,7 +140,7 @@ public class ProductListingTemplateService {
     }
 
     public void applyCapture(String organizationId, String sourcePlatform, Map<String, Object> normalized) {
-        Template template = get(organizationId, sourcePlatform);
+        Template template = get(organizationId, sourcePlatform, CommerceModule.CAPTURE);
         if (!template.enabled()) return;
         normalized.put("originalDescription", text(normalized.get("description")));
         normalized.put("description", template.description());

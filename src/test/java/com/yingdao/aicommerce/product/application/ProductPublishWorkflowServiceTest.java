@@ -113,7 +113,7 @@ class ProductPublishWorkflowServiceTest {
         var logistics=mock(ProductListingLogisticsService.class);
         org.springframework.test.util.ReflectionTestUtils.setField(service,"listingLogistics",logistics);
         var snapshot=Map.<String,Object>of("organizationId","org-a","shopId","shop-1","mode","SELECTED","channelIds",List.of("200"),"version",1);
-        when(logistics.snapshot("org-a","shop-1")).thenReturn(snapshot);
+        when(logistics.snapshot("org-a","shop-1","CAPTURE")).thenReturn(snapshot);
         var body=new java.util.LinkedHashMap<String,Object>(Map.of("confirmed",true,"shopId","shop-1","destinationPlatform","SHOPEE",
                 "listingLogisticsSnapshot",Map.of("mode","forged"),"logisticInfo",List.of(Map.of("logistic_id",999,"enabled",true))));
         service.create(capture.getId(),body,"logistics-workflow-123",principal);
@@ -123,7 +123,7 @@ class ProductPublishWorkflowServiceTest {
         when(workflowMapper.findByIdempotency("org-a","logistics-workflow-123")).thenReturn(inserted.getValue());
         body.put("logisticInfo",List.of(Map.of("logistic_id",888,"enabled",true)));
         service.create(capture.getId(),body,"logistics-workflow-123",principal);
-        verify(logistics,times(1)).snapshot(anyString(),anyString());
+        verify(logistics,times(1)).snapshot(anyString(),anyString(),anyString());
     }
 
     @Test

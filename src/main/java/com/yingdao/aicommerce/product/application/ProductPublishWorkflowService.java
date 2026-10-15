@@ -150,7 +150,7 @@ public class ProductPublishWorkflowService {
             requestJson = writeJson(body);
         }
         if (listingLogistics != null && "SHOPEE".equals(destination) && MODE_LIVE.equals(executionMode)) {
-            ProductListingLogisticsService.apply(body, listingLogistics.snapshot(principal.organizationId(), storedShopId));
+            ProductListingLogisticsService.apply(body, listingLogistics.snapshot(principal.organizationId(), storedShopId, capture.getDataModule()));
             requestJson = writeJson(body);
         }
         if (requestJson.length() > MAX_REQUEST_JSON_LENGTH) {

@@ -252,6 +252,7 @@ public class ProductCaptureService {
 
         QueryWrapper<ProductCapture> criteria = new QueryWrapper<ProductCapture>()
                 .eq("organization_id", organizationId)
+                .eq("data_module", CommerceModule.CAPTURE)
                 .in(!statuses.isEmpty(), "status", statuses)
                 .and(search != null, nested -> nested
                         .like("title", search)
@@ -324,6 +325,7 @@ public class ProductCaptureService {
         List<Map<String, Object>> rows = captureMapper.selectMaps(new QueryWrapper<ProductCapture>()
                 .select("status", "COUNT(*) AS total")
                 .eq("organization_id", organizationId)
+                .eq("data_module", CommerceModule.CAPTURE)
                 .groupBy("status"));
         for (Map<String, Object> row : rows) {
             String status = mapTextIgnoreCase(row, "status");
@@ -613,7 +615,7 @@ public class ProductCaptureService {
         if (listingLogistics != null && "SHOPEE".equals(destination)) {
             var shipping = existing != null
                     ? ProductListingLogisticsService.snapshotFrom(readMap(existing.getRequestJson()))
-                    : listingLogistics.publishSnapshot(principal.organizationId(), id, key, shopId);
+                    : listingLogistics.publishSnapshot(principal.organizationId(), id, key, shopId, capture.getDataModule());
             ProductListingLogisticsService.apply(body, shipping);
         } else body.remove("listingLogisticsSnapshot");
         if (existing != null) {
@@ -897,6 +899,14 @@ public class ProductCaptureService {
                 .eq(ProductCapture::getId, id)
                 .eq(ProductCapture::getOrganizationId, organizationId));
         if (capture == null) throw new BusinessException(HttpStatus.NOT_FOUND, "商品采集草稿不存在");
+        if (org.springframework.web.context.request.RequestContextHolder.getRequestAttributes()
+                instanceof org.springframework.web.context.request.ServletRequestAttributes attributes) {
+            var request=attributes.getRequest();
+            if (!Set.of("GET","HEAD").contains(request.getMethod())
+                    && request.getRequestURI().startsWith("/api/v1/product-captures/"+id)
+                    && !CommerceModule.current().equals(capture.getDataModule()))
+                throw new BusinessException(HttpStatus.CONFLICT,"该商品属于其他功能，不能跨功能修改");
+        }
         return capture;
     }
 

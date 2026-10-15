@@ -27,7 +27,7 @@ class ProductListingTemplateServiceTest {
         var service=spy(new ProductListingTemplateService(mock(JdbcTemplate.class),new ObjectMapper()));
         var configured=new ProductListingTemplateService.Template("SHOPEE","Template",true,"Text",
                 BigDecimal.ONE,BigDecimal.ONE,BigDecimal.ONE,BigDecimal.ONE,3,"tenant/chart");
-        doReturn(configured).when(service).get("org-a","SHOPEE");
+        doReturn(configured).when(service).get("org-a","SHOPEE","CAPTURE");
         var snapshot=service.snapshot("org-a","SHOPEE",capture("{}"));
         assertEquals("tenant/chart",snapshot.get("sizeChartImageKey"));
         assertEquals("tenant/chart",ProductListingTemplateService.sizeChartImageKey(Map.of("listingTemplateSnapshot",snapshot)));
@@ -61,8 +61,8 @@ class ProductListingTemplateServiceTest {
         assertTrue(shopee.description().endsWith("CurveLuxe PH — “Stretch. Slay.”"));
         assertFalse(shopee.description().contains("无法匹配"));
         assertFalse(service.get("org-b","TIKTOK").enabled());
-        verify(db).query(anyString(),any(RowMapper.class),eq("org-a"),eq("SHOPEE"));
-        verify(db).query(anyString(),any(RowMapper.class),eq("org-b"),eq("TIKTOK_SHOP"));
+        verify(db).query(anyString(),any(RowMapper.class),eq("org-a"),eq("SHOPEE"),eq("CAPTURE"));
+        verify(db).query(anyString(),any(RowMapper.class),eq("org-b"),eq("TIKTOK_SHOP"),eq("CAPTURE"));
     }
     @Test void unauthorizedReadAndReadOnlyWriteNeverTouchDatabase() {
         var db=mock(JdbcTemplate.class);

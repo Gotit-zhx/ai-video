@@ -15,6 +15,7 @@
     const current = () => { if (!isCurrent()) throw new Error('当前公司或批次已切换，已取消准备'); };
     current();
     if (!Array.isArray(targets) || !targets.length) throw new Error('没有需要准备上传的商品');
+    if(typeof ProductListingTemplates !== 'undefined')await ProductListingTemplates.ensure();
     const organizationId = typeof currentUser !== 'undefined' ? currentUser?.organizationId : undefined;
     const available = shops || (await read('/api/v1/shops')).data;
     current();

@@ -56,7 +56,7 @@ class ProductListingLogisticsServiceTest {
         var view=service.get("shop-a",user);
         assertEquals("ALL_ENABLED",view.mode());assertEquals(0,view.version());
         assertTrue(view.channels().stream().allMatch(ProductListingLogisticsService.Channel::selected));
-        verify(db).query(anyString(),any(RowMapper.class),eq("org-a"),eq("shop-a"));
+        verify(db).query(anyString(),any(RowMapper.class),eq("org-a"),eq("shop-a"),eq("CAPTURE"));
         verify(shops).connectionForPublishing("org-a","shop-a",MarketplacePlatform.SHOPEE);
     }
     @Test void missingPermissionsNeverReadOrWriteOfficialChannelsOrDatabase() {
@@ -72,10 +72,10 @@ class ProductListingLogisticsServiceTest {
     }
     @Test void saveChecksActualDestinationChannelsAndUsesOptimisticVersion() {
         var body=Map.<String,Object>of("shopId","shop-a","mode","SELECTED","channelIds",List.of("200"),"version",4);
-        when(db.update(anyString(),eq("SELECTED"),eq("[\"200\"]"),eq("user"),eq("org-a"),eq("shop-a"),eq(4L))).thenReturn(1);
+        when(db.update(anyString(),eq("SELECTED"),eq("[\"200\"]"),eq("user"),eq("org-a"),eq("shop-a"),eq(4L),eq("CAPTURE"))).thenReturn(1);
         service.save(body,user);
-        verify(db).update(contains("AND version=?"),eq("SELECTED"),eq("[\"200\"]"),eq("user"),eq("org-a"),eq("shop-a"),eq(4L));
-        when(db.update(anyString(),eq("SELECTED"),eq("[\"200\"]"),eq("user"),eq("org-a"),eq("shop-a"),eq(4L))).thenReturn(0);
+        verify(db).update(contains("AND version=?"),eq("SELECTED"),eq("[\"200\"]"),eq("user"),eq("org-a"),eq("shop-a"),eq(4L),eq("CAPTURE"));
+        when(db.update(anyString(),eq("SELECTED"),eq("[\"200\"]"),eq("user"),eq("org-a"),eq("shop-a"),eq(4L),eq("CAPTURE"))).thenReturn(0);
         assertEquals(org.springframework.http.HttpStatus.CONFLICT,assertThrows(BusinessException.class,()->service.save(body,user)).getStatus());
     }
     @Test void invalidOrClosedSelectionNeverPersists() {

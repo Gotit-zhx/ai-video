@@ -32,4 +32,10 @@ public class CommerceArtworkLibraryController {
         return ResponseEntity.ok().contentType(MediaType.IMAGE_PNG).cacheControl(CacheControl.noStore())
                 .body(Base64.getDecoder().decode(reference.dataBase64()));
     }
+
+    @PostMapping("/{id}")
+    public ApiResponse<Boolean> save(@PathVariable String id, @AuthenticationPrincipal PlatformPrincipal user) {
+        service.saveGenerated(id,user);
+        return ApiResponse.ok(true);
+    }
 }
