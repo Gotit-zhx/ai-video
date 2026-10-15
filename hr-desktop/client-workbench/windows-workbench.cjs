@@ -12,7 +12,7 @@ async function install(bindings, config = {}) {
   if (active) throw Error('Windows workbench is already installed');
   if (installing) throw Error('Windows workbench installation is already running');
   installing = true;
-  let adapter, host, network, stage = 'profile';
+  let adapter, host, network, stage = 'profile', profile;
   const listeners = [], attached = new WeakSet();
   const listen = (target, event, listener) => {
     target.on(event, listener);listeners.push({target, event, listener});
@@ -24,8 +24,13 @@ async function install(bindings, config = {}) {
     const {app, net, session, BrowserWindow, webContents} = require('electron');
     await app.whenReady();
     const root = await fs.realpath(config.profileRoot);
-    if (!inside(root, await fs.realpath(app.getPath('userData'))) ||
-        !inside(root, await fs.realpath(app.getPath('appData')))) {
+    profile = {userDataInside: Boolean(inside(root, app.getPath('userData'))),
+      appDataInside: Boolean(inside(root, app.getPath('appData')))};
+    stage = 'user-data-realpath';
+    profile.resolvedUserDataInside = Boolean(inside(root, await fs.realpath(app.getPath('userData'))));
+    stage = 'app-data-realpath';
+    profile.resolvedAppDataInside = Boolean(inside(root, await fs.realpath(app.getPath('appData'))));
+    if (!Object.values(profile).every(value => value === true)) {
       throw Error('Original client did not use the launcher profile');
     }
     if (config.offline && (!process.env.HEYI_WORKBENCH_TEST_DATA ||
@@ -97,7 +102,8 @@ async function install(bindings, config = {}) {
       nativeSessionVerified: adapter.loggedIn(), offline: Boolean(config.offline),
       originalResourcesModified: false};
   } catch (error) {
-    lastFailure = {stage};
+    lastFailure = {stage, profile,
+      ...(error.code === 'ENOENT' ? {ioCode: 'ENOENT'} : {})};
     for (const {target, event, listener} of listeners) target.removeListener(event, listener);
     await Promise.allSettled([host?.close(), network?.egress.close()]);
     adapter?.close();

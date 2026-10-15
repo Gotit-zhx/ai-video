@@ -13,11 +13,21 @@ test('native Windows AppData stays separate while existing assistant ledgers ret
   const plan = profileEnvironment('C:\\Users\\fixture\\AppData\\Local\\HeyiWorkbench', inherited);
   assert.equal(plan.assistantRoot, inherited.APPDATA + '\\heyi-recruiter');
   assert.notEqual(plan.env.APPDATA, inherited.APPDATA);
-  assert.equal(plan.env.USERPROFILE, inherited.USERPROFILE);
+  assert.equal(plan.env.USERPROFILE, plan.profileRoot + '\\user');
   assert.equal(plan.env.HTTPS_PROXY, undefined);
   assert.equal(plan.env.NODE_OPTIONS, undefined);
   assert.equal(plan.env.ELECTRON_RUN_AS_NODE, undefined);
   assert.equal(inherited.ELECTRON_RUN_AS_NODE, '1');
+});
+test('Windows path variables are replaced case-insensitively without retaining a second native profile', () => {
+  const plan = profileEnvironment('C:\\isolated', {AppData: 'C:\\original\\Roaming',
+    LocalAppData: 'C:\\original\\Local', UserProfile: 'C:\\original', Temp: 'C:\\original\\Temp'});
+  assert.equal(plan.env.AppData, undefined);
+  assert.equal(plan.env.UserProfile, undefined);
+  assert.equal(plan.env.Temp, undefined);
+  assert.equal(plan.env.APPDATA, 'C:\\isolated\\app-data');
+  assert.equal(plan.env.USERPROFILE, 'C:\\isolated\\user');
+  assert.equal(plan.assistantRoot, 'C:\\original\\Roaming\\heyi-recruiter');
 });
 test('package manifest rejects traversal, drive paths and malformed hashes before reading files', () => {
   const hash = 'a'.repeat(64);

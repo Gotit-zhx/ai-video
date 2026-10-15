@@ -54,7 +54,7 @@ async function run(packageRoot, selfTest = false) {
     stage = 'profile-isolation';
     const plan = profileEnvironment(profileRoot);
     for (const directory of [profileRoot, plan.profile, plan.env.APPDATA,
-      plan.env.LOCALAPPDATA, plan.env.TEMP]) await fs.mkdir(directory, {recursive: true});
+      plan.env.LOCALAPPDATA, plan.env.USERPROFILE, plan.env.TEMP]) await fs.mkdir(directory, {recursive: true});
     statusFile = path.join(profileRoot, 'heyi-launcher-status.json');
     stage = 'original-startup';
     // This exact original runtime passed delayed activation on its default

@@ -75,14 +75,16 @@ async function verifyPackage(input) {
 }
 function profileEnvironment(root, inherited = process.env) {
   const win = path.win32;
-  if (!win.isAbsolute(root) || !win.isAbsolute(inherited.APPDATA || '') ||
-      !win.isAbsolute(inherited.LOCALAPPDATA || '')) throw Error('Windows application data paths required');
+  const value = name => Object.entries(inherited).find(([key]) => key.toUpperCase() === name)?.[1];
+  if (!win.isAbsolute(root) || !win.isAbsolute(value('APPDATA') || '') ||
+      !win.isAbsolute(value('LOCALAPPDATA') || '')) throw Error('Windows application data paths required');
   const env = Object.fromEntries(Object.entries(inherited).filter(([name]) =>
-    !/^(?:NODE_OPTIONS|NODE_PATH|ELECTRON_RUN_AS_NODE|ELECTRON_ENABLE_LOGGING|(?:https?|all|ftp|no)_proxy)$/i.test(name)));
+    !/^(?:APPDATA|LOCALAPPDATA|USERPROFILE|TEMP|TMP|NODE_OPTIONS|NODE_PATH|ELECTRON_RUN_AS_NODE|ELECTRON_ENABLE_LOGGING|(?:https?|all|ftp|no)_proxy)$/i.test(name)));
   env.APPDATA = win.join(root, 'app-data');
   env.LOCALAPPDATA = win.join(root, 'local-app-data');
+  env.USERPROFILE = win.join(root, 'user');
   env.TEMP = env.TMP = win.join(root, 'temp');
   return {env, profileRoot: root, profile: win.join(root, 'profile'),
-    assistantRoot: win.join(inherited.APPDATA, 'heyi-recruiter')};
+    assistantRoot: win.join(value('APPDATA'), 'heyi-recruiter')};
 }
 module.exports = {verifyPackage, profileEnvironment, packageEntries, hashFile};
