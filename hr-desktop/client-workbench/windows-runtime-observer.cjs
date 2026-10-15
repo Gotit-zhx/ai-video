@@ -11,8 +11,7 @@ module.exports = function observe(electron, config) {
     return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
   };
   const attachedAfterReady = app.isReady();
-  if (process.platform !== 'win32' ||
-      !path.relative(root, output) || path.relative(root, output).startsWith('..')) {
+  if (process.platform !== 'win32' || !insideRoot(output)) {
     throw Error('Observer requires a new Windows test directory');
   }
   if (attachedAfterReady && (!insideRoot(app.getPath('userData')) || !insideRoot(app.getPath('appData')))) {
@@ -65,8 +64,8 @@ module.exports = function observe(electron, config) {
         contentsType: window.webContents.getType(),
       })),
       webContentsTypes: webContents.getAllWebContents().map(contents => contents.getType()),
-      webRequestsCancelled: attemptedRequests, sdkMethodsInvoked: 0,
-      candidateMessagesSent: 0, realProfileRead: false,
+      webRequestsCancelled: attemptedRequests, observerSdkMethodsInvoked: 0,
+      candidateMessagesSent: 0, realAccountProvided: false,
       applicationBytesModified: false, originalSignatureReused: false,
     };
     fs.writeFileSync(output, JSON.stringify(report, null, 2), {mode: 0o600});
@@ -79,6 +78,9 @@ module.exports = function observe(electron, config) {
     app.quit();
     setTimeout(() => app.exit(0), 2000).unref();
   }
+  // Persist before returning to the original loader; native app.exit/crashes
+  // do not necessarily emit Node's process-exit event.
+  snapshot('observer-attached');
   process.once('exit', () => {if (!finished) snapshot('process-exit');});
   app.whenReady().then(() => {
     ready = true;

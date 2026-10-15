@@ -30,6 +30,7 @@ async function main() {
       env, cwd: path.dirname(executable), timeout: 20000,
       onSpawn: child => fs.writeFile(path.join(root, 'probe-pid.txt'), String(child.pid)).catch(() => {}),
     });
+    const exit = once(connection.child, 'exit');
     const loader = '(typeof require === "function" ? require : process.mainModule?.require.bind(process.mainModule))';
     let entry;
     // Poll only presence/type metadata, never execute an SDK method.
@@ -49,8 +50,10 @@ async function main() {
     const result = await evaluateRunning(connection,
       `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({root, output})}))(${loader})`);
     if (!result?.observerInstalled) throw Error('Runtime observer was not installed');
+    // Some packaged loaders wait for an attached inspector without emitting a
+    // JS entry pause for cached bytecode. This command is a no-op if not waiting.
+    await connection.client.command('Runtime.runIfWaitingForDebugger');
     connection.client.close();
-    const exit = once(connection.child, 'exit');
     const timer = setTimeout(() => connection.child.kill(), 35000);
     const [code] = await exit;
     clearTimeout(timer);
