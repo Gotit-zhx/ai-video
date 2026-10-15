@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {once} = require('node:events');
 const {spawn} = require('node:child_process');
+const net = require('node:net');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 
 async function main() {
@@ -26,9 +27,19 @@ async function main() {
   for (const name of ['APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP']) await fs.mkdir(env[name], {recursive: true});
   let connection;
   try {
+    // Without any inspector CLI flag the original bytecode starts normally.
+    // Reserve/check the default late-activation port before creating our app;
+    // never attach to a pre-existing debugger on the runner.
+    const portCheck = net.createServer();
+    await new Promise((resolve, reject) => {
+      portCheck.once('error', () => reject(Error('Default local inspector port is already occupied')));
+      portCheck.listen(9229, '127.0.0.1', resolve);
+    });
+    await new Promise(resolve => portCheck.close(resolve));
     connection = await launchInspecting(executable, ['--disable-gpu',
       `--user-data-dir=${path.join(root, 'profile')}`], {
       env, cwd: path.dirname(executable), timeout: 45000,
+      inspectPortArgument: false,
       onSpawn: child => fs.writeFile(path.join(root, 'probe-pid.txt'), String(child.pid)).catch(() => {}),
       activate: async child => {
         // Let the original cached main code load without a startup inspector.
