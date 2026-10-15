@@ -11,6 +11,11 @@ on:
           - windows
           - macos
           - all
+      nativeProbe:
+        description: "仅隔离检查 Windows 原客户端；不打包稳定助手、不发布"
+        type: boolean
+        required: false
+        default: false
   # Code uploads are free of build side effects. An explicit build tag also
   # works before this workflow has been merged into the default branch.
   push:
@@ -19,12 +24,13 @@ on:
       - "hr-desktop-build-macos-v*"
       - "hr-desktop-build-all-v*"
 concurrency:
-  group: hr-desktop-${{ github.ref }}-${{ inputs.platform || 'tag' }}
+  group: hr-desktop-${{ github.ref }}-${{ inputs.platform || 'tag' }}-${{ inputs.nativeProbe || false }}
   cancel-in-progress: true
 permissions:
   contents: write
 jobs:
   desktop:
+    if: ${{ inputs.nativeProbe != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -134,3 +140,31 @@ jobs:
           for asset in release/*.exe release/*.dmg release/*.zip release/verified-*.json; do
             if [ -f "$asset" ]; then gh release upload "$tag" "$asset" --clobber; fi
           done
+  native-probe:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.nativeProbe == true }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify local inspector driver with real Node fixtures
+        run: node --test hr-desktop/client-workbench/inspector-driver.test.cjs
+      - name: Observe pinned original runtime without network or login
+        shell: pwsh
+        run: ./scripts/ci/windows-native-probe.ps1
+      - name: Save only our observation reports
+        if: ${{ always() && env.HEYI_NATIVE_PROBE_ROOT != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-observation
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            ${{ env.HEYI_NATIVE_PROBE_ROOT }}/ci-result.json
+            ${{ env.HEYI_NATIVE_PROBE_ROOT }}/firewall.json
+            ${{ env.HEYI_NATIVE_PROBE_ROOT }}/entry-runtime.json
+            ${{ env.HEYI_NATIVE_PROBE_ROOT }}/runtime-observation.json
