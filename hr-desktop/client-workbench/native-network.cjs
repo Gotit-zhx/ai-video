@@ -1,4 +1,4 @@
-const path = require('node:path');
+const {runtimeExecutable} = require('./runtime-paths.cjs');
 
 class NativeNetwork {
   constructor({app, session, egress}) {
@@ -61,7 +61,7 @@ function instance() {
     const {app, session} = require('electron');
     const {DirectEgress} = require('./src/direct-network.cjs');
     shared = new NativeNetwork({app, session,
-      egress: new DirectEgress(path.join(process.resourcesPath, 'heyi-runtime', 'heyi-boss'))});
+      egress: new DirectEgress(runtimeExecutable())});
   }
   return shared;
 }

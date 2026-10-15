@@ -9,6 +9,7 @@ const {instance: networkInstance} = require('./native-network.cjs');
 const {instance: shellInstance} = require('./integrated-shell.cjs');
 const {LocalBridge} = require('./src/bridge.cjs');
 const {storagePaths} = require('./shared-state.cjs');
+const {runtimeExecutable} = require('./runtime-paths.cjs');
 
 let active;
 async function start(adapter) {
@@ -17,7 +18,7 @@ async function start(adapter) {
   const {nativeRoot: root, assistantRoot, recruiterDirectory, deviceFile} = storagePaths(app);
   await fs.mkdir(root, {recursive: true, mode: 0o700});
   await fs.mkdir(assistantRoot, {recursive: true, mode: 0o700});
-  const executable = path.join(process.resourcesPath, 'heyi-runtime', 'heyi-boss');
+  const executable = runtimeExecutable();
   const rpc = await new NativeRPC({
     adapter, endpoints: require('./endpoints.json'),
   }).start();

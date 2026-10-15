@@ -147,7 +147,7 @@ async function run() {
   assert.equal(nativeDownloadTransports, 1);
   await new Promise(resolve => attachmentServer.close(resolve));
   const worker = await new Promise((resolve, reject) => {
-    const child = spawn(path.join(process.resourcesPath, 'heyi-runtime', 'heyi-boss'), [], {
+    const child = spawn(require('./runtime-paths.cjs').runtimeExecutable(), [], {
       stdio: ['pipe', 'pipe', 'ignore'],
     });
     let output = '';

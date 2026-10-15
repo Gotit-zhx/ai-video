@@ -4,7 +4,7 @@ const {WindowsAdapter} = require('./windows-adapter.cjs');
 const {NativeRPC} = require('./native-rpc.cjs');
 const endpoint = '/wapi/offline/fixture';
 
-function fixture(t, {transport} = {}) {
+function fixture(t, {transport, nonEnumerable = false} = {}) {
   let signedIn = true, account = '101';
   const counts = {login: 0, cookie: 0, builder: 0, http: 0, sdkText: 0, send: 0, clear: 0};
   const sent = [];
@@ -24,6 +24,9 @@ function fixture(t, {transport} = {}) {
         headers: {Cookie: cookie, 'User-Agent': 'native-fixture-UA', Traceid: String(counts.builder)}})).body;}
       catch {return null;}
     }};
+  if (nonEnumerable) for (const name of Object.keys(bindings)) {
+    Object.defineProperty(bindings, name, {enumerable: false});
+  }
   const original = {http: http.send, send: sender.send, clear: authentication.clearLoginCookies};
   const adapter = new WindowsAdapter({bindings, net: {}, session: {}, endpoints: [endpoint],
     show() {}, nativeWindow: () => null, allContents: () => [],
@@ -42,6 +45,13 @@ test('adapter installation has zero business calls and restores original methods
   assert.equal(bindings.httpClients[0].send, original.http);
   assert.equal(bindings.sender.send, original.send);
   assert.equal(bindings.authentication.clearLoginCookies, original.clear);
+});
+test('descriptor-only original bindings work without enumerable copies or constructor-time reads', async t => {
+  const {adapter, counts, login} = fixture(t, {nonEnumerable: true});
+  assert.equal(counts.login, 0);assert.equal(counts.cookie, 0);
+  login(false);
+  await assert.rejects(adapter.verifyAccount('101'), {code: 'AUTH_REQUIRED'});
+  assert.equal(counts.login, 1);assert.equal(counts.builder, 0);
 });
 test('signed-out memory status blocks SDK writes and native HTTP', async t => {
   const {adapter, counts, login} = fixture(t);login(false);
@@ -79,6 +89,15 @@ test('a real risk response stops the current and subsequent actions without anot
   await assert.rejects(adapter.request({url: endpoint}, () => {}), {code: 'ACCOUNT_RISK'});
   await assert.rejects(adapter.sendText(text), {code: 'ACCOUNT_RISK'});
   assert.equal(counts.builder, 1);assert.equal(counts.sdkText, 0);
+});
+test('a true memory getter after expiry cannot itself reopen business writes', async t => {
+  const {adapter, counts} = fixture(t);
+  await adapter.verifyAccount('101');
+  adapter.originalSession.invalidate('AUTH_EXPIRED');
+  await adapter.verifyAccount('101');
+  await assert.rejects(adapter.sendText(text), {code: 'AUTH_EXPIRED'});
+  await assert.rejects(adapter.request({url: endpoint}, () => {}), {code: 'AUTH_EXPIRED'});
+  assert.equal(counts.sdkText, 0);assert.equal(counts.builder, 0);
 });
 test('a changed original account cannot use the already bound adapter', async t => {
   const {adapter, account, counts} = fixture(t);await adapter.verifyAccount('101');

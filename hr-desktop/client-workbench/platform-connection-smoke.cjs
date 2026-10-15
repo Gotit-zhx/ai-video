@@ -16,7 +16,7 @@ async function run() {
     authorize: async () => {},
     pair: async () => ({expiresAt: Math.floor(Date.now() / 1000) + 300}),
   });
-  const egress = new DirectEgress(path.join(process.resourcesPath, 'heyi-runtime', 'heyi-boss'));
+  const egress = new DirectEgress(require('./runtime-paths.cjs').runtimeExecutable());
   const win = new BrowserWindow({show: false, webPreferences: {
     session: target, nodeIntegration: false, contextIsolation: true, sandbox: true,
     webSecurity: true,

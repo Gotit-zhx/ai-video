@@ -187,7 +187,7 @@ heyiHost.start({
 def own_files(sdk_path):
     result = {}
     for name in ["bootstrap.cjs", "compat.cjs", "host.cjs", "native-rpc.cjs",
-                 "native-download.cjs", "shared-state.cjs", "smoke.cjs", "ui-check.cjs",
+                 "native-download.cjs", "shared-state.cjs", "runtime-paths.cjs", "smoke.cjs", "ui-check.cjs",
                  "native-network.cjs", "integrated-shell.cjs", "shell-preload.cjs",
                  "shell.html", "shell-renderer.cjs", "native-resume.cjs", "native-resume-smoke.cjs",
                  "platform-connection-smoke.cjs", "native-egress-smoke.cjs",

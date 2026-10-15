@@ -15,7 +15,10 @@ class WindowsAdapter extends EventEmitter {
         typeof allContents !== 'function') throw Error('Verified Windows adapter inputs required');
     this.bindings = bindings;this.net = net;this.session = session;
     this.showNative = show;this.closed = false;
-    this.originalSession = new NativeSession({...bindings, timeout: sessionTimeout});
+    // Verified bindings are intentionally non-enumerable in the target
+    // process. Spreading the binding object would discard every reference.
+    this.originalSession = new NativeSession({sdk: bindings.sdk, identity: bindings.identity,
+      authentication: bindings.authentication, timeout: sessionTimeout});
     this.originalSession.on('session-lost', code => this.emit('session-lost', code));
     this.originalSession.on('login-established', () => this.emit('login-established'));
     this.resume = new NativeResume({nativeWindow, allContents});
@@ -48,6 +51,9 @@ class WindowsAdapter extends EventEmitter {
   show() {return this.showNative();}
   check(account, checkAccount) {
     this.originalSession.check(account);
+    if (this.originalSession.failure) {
+      throw fail(this.originalSession.failure, '原客户端会话尚未重新核对');
+    }
     if (!this.loggedIn()) throw fail(this.originalSession.failure || 'AUTH_REQUIRED', '请先在原客户端登录 BOSS');
     checkAccount?.();
   }
