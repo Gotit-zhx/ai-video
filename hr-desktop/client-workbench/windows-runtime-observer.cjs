@@ -116,6 +116,8 @@ module.exports = function observe(electron, config) {
       mainExports: members(process.mainModule?.exports),
       applicationMembers: {own: members(app), prototype: members(Object.getPrototypeOf(app))},
       namespaces: ['$api', '$socket', '$windowsMuster'].map(namespace),
+      authenticationProviders: require('./native-auth-metadata.cjs').nativeAuthMetadata(
+        process.mainModule,globalThis,require.cache),
       globalNames: Object.entries(Object.getOwnPropertyDescriptors(globalThis))
         .filter(([name]) => name.startsWith('$')).map(([name, entry]) => ({name, type: typeof entry.value})),
       windows: BrowserWindow.getAllWindows().map(window => ({
