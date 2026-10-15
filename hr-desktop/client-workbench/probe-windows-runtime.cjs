@@ -11,6 +11,7 @@ const {RuntimeLogSignals} = require('./runtime-log-signals.cjs');
 const {inspectSdkScopes} = require('./sdk-scope-inventory.cjs');
 const {runMatchingScopeFixture} = require('./matching-scope-fixture.cjs');
 const {inspectSdkRegistry} = require('./sdk-registry-inventory.cjs');
+const {inspectNativeRoles} = require('./native-role-inventory.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -128,6 +129,16 @@ async function main() {
     }
     await fs.writeFile(path.join(root, 'sdk-registry-inventory.json'),
       JSON.stringify(registryReport, null, 2));
+    let roleReport;
+    try {
+      roleReport = await inspectNativeRoles(connection, {anonymousIsolated: true});
+    } catch (error) {
+      roleReport = {mode: 'anonymous-native-role-metadata-only', singletonsAvailable: false,
+        reason: 'original-native-role-inventory-unavailable', originalMethodsInvoked: 0,
+        diagnostic: error.inventoryDiagnostic || {stage:'native-role-inventory'}};
+    }
+    await fs.writeFile(path.join(root, 'native-role-inventory.json'),
+      JSON.stringify(roleReport, null, 2));
     const observer = path.join(__dirname, 'windows-runtime-observer.cjs');
     const result = await evaluateRunning(connection,
       `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({

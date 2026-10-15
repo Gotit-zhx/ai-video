@@ -5,6 +5,7 @@ const path = require('node:path');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {inspectSdkScopes} = require('./sdk-scope-inventory.cjs');
 const {inspectSdkRegistry} = require('./sdk-registry-inventory.cjs');
+const {inspectNativeRoles} = require('./native-role-inventory.cjs');
 const {waitForProcess} = require('./process-outcome.cjs');
 
 async function runMatchingScopeFixture(executable, root, env) {
@@ -16,6 +17,20 @@ const fixtureRegistry = {
   _sdk_getNetworkStatus: async()=>{globalThis.heyiScopeFixtureReads++;return false},
 };
 globalThis.heyiScopeFixture = ()=>fixtureRegistry;
+class Identity {
+  get userInfo(){globalThis.heyiScopeFixtureReads++;return null}
+  get userId(){globalThis.heyiScopeFixtureReads++;return ''}
+  get avatar(){globalThis.heyiScopeFixtureReads++;return ''}
+}
+class Network {
+  getProxyConfig(){}getHttpProxy(){}getDNSProxy(){}setProxy(){}stopProxy(){}
+}
+class Cookies {get(){}getZpToken(){}setLoginCookies(){}clearLoginCookies(){}}
+class Receiver {receiveMessage(){}addMessageById(){}getMessageById(){}}
+class Sender {send(){}connect(){}onMessage(){}sendPresence(){}}
+class MessageFactory {getProtoMsg(){}generateMsgProto(){}}
+globalThis.heyiRoleFixture=()=>[new Identity,new Network,new Cookies,new Receiver,new Sender,MessageFactory];
+globalThis.heyiRoleFixtureInstances=globalThis.heyiRoleFixture();
 const keepAlive = setInterval(()=>{},1000);
 const deadline = setTimeout(()=>{process.exitCode=2;clearInterval(keepAlive)},15000);
 globalThis.heyiScopeFixtureComplete = ()=>{clearInterval(keepAlive);clearTimeout(deadline)};
@@ -53,6 +68,11 @@ globalThis.heyiScopeFixtureComplete = ()=>{clearInterval(keepAlive);clearTimeout
     } catch (error) {
       report.registryInventory = {ok: false, diagnostic: error.inventoryDiagnostic};
     }
+    try {
+      report.roleInventory = await inspectNativeRoles(connection, {anonymousIsolated: true});
+    } catch (error) {
+      report.roleInventory = {singletonsAvailable: false, diagnostic: error.inventoryDiagnostic};
+    }
     report.fixtureSdkMethodsInvoked = await evaluateRunning(connection, 'globalThis.heyiScopeFixtureReads');
     const outcome = waitForProcess(connection.child, 5000);
     outcome.catch(() => {});
@@ -64,6 +84,7 @@ globalThis.heyiScopeFixtureComplete = ()=>{clearInterval(keepAlive);clearTimeout
       report.inventory.scopes?.some(scope =>
         scope.registries?.some(registry => registry.binding === 'fixtureRegistry')) === true &&
       report.registryInventory.ok === true &&
+      report.roleInventory.singletonsAvailable === true &&
       report.processOutcome.code === 0 && !report.processOutcome.timedOut;
   } catch {
     report.reason = 'matching-runtime-fixture-incomplete';

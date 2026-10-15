@@ -158,7 +158,7 @@ jobs:
         working-directory: hr-desktop/client-workbench
         run: pnpm install --ignore-workspace --ignore-scripts --frozen-lockfile
       - name: Verify local inspector driver with real Node fixtures
-        run: node --test hr-desktop/client-workbench/inspector-driver.test.cjs hr-desktop/client-workbench/original-sdk-read.test.cjs hr-desktop/client-workbench/original-sdk-exit.test.cjs hr-desktop/client-workbench/process-outcome.test.cjs hr-desktop/client-workbench/runtime-log-signals.test.cjs hr-desktop/client-workbench/sdk-scope-inventory.test.cjs hr-desktop/client-workbench/sdk-registry-inventory.test.cjs hr-desktop/client-workbench/original-dispatch-registration.test.cjs
+        run: node --test hr-desktop/client-workbench/inspector-driver.test.cjs hr-desktop/client-workbench/original-sdk-read.test.cjs hr-desktop/client-workbench/original-sdk-exit.test.cjs hr-desktop/client-workbench/process-outcome.test.cjs hr-desktop/client-workbench/runtime-log-signals.test.cjs hr-desktop/client-workbench/sdk-scope-inventory.test.cjs hr-desktop/client-workbench/sdk-registry-inventory.test.cjs hr-desktop/client-workbench/native-role-inventory.test.cjs hr-desktop/client-workbench/original-dispatch-registration.test.cjs
       - name: Observe pinned original runtime without network or login
         shell: pwsh
         run: ./scripts/ci/windows-native-probe.ps1
