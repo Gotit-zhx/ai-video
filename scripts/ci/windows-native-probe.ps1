@@ -9,6 +9,8 @@ $installer = Join-Path $root 'original-installer.exe'
 $extract = Join-Path $root 'original'
 $rulePrefix = 'HeyiNativeProbe-' + [guid]::NewGuid().ToString('N')
 $rules = @()
+$app = $null
+$probeStarted = Get-Date
 $resultPath = Join-Path $root 'ci-result.json'
 $result = @{ ok = $false; originalExecuted = $false; installerSha256 = $null }
 try {
@@ -112,6 +114,41 @@ try {
     $result.error = $_.Exception.Message
     throw
 } finally {
+    # Keep only native crash classification fields for this exact disposable
+    # main executable. Never copy event messages, dump files or user profiles.
+    $nativeEvents = @{ checked = $false; matches = @() }
+    if ($app) {
+        try {
+            $events = @(Get-WinEvent -FilterHashtable @{
+                LogName = 'Application'; Id = 1000; StartTime = $probeStarted
+            } -ErrorAction Stop)
+            $nativeEvents.checked = $true
+            foreach ($event in $events) {
+                $fields = @{}
+                ([xml]$event.ToXml()).Event.EventData.Data | ForEach-Object {
+                    if ($_.Name) { $fields[[string]$_.Name] = [string]$_.'#text' }
+                }
+                if ($fields['AppPath'] -and
+                    $fields['AppPath'].Equals($app, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $nativeEvents.matches += @{
+                        application = 'boss-zhipin.exe'
+                        module = [System.IO.Path]::GetFileName($fields['ModuleName'])
+                        exceptionCode = $(if ($fields['ExceptionCode'] -match '^[0-9a-fA-Fx]{1,16}$') {
+                            $fields['ExceptionCode']
+                        } else { $null })
+                        faultOffset = $(if ($fields['FaultingOffset'] -match '^[0-9a-fA-Fx]{1,20}$') {
+                            $fields['FaultingOffset']
+                        } else { $null })
+                    }
+                }
+                if ($nativeEvents.matches.Count -ge 5) { break }
+            }
+        } catch {
+            if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { $nativeEvents.checked = $true }
+        }
+    }
+    $nativeEvents | ConvertTo-Json -Depth 6 |
+        Set-Content (Join-Path $root 'native-crash-events.json') -Encoding utf8NoBOM
     # Stop only processes whose executable is inside this disposable directory.
     $prefix = [System.IO.Path]::GetFullPath($root) + [System.IO.Path]::DirectorySeparatorChar
     Get-CimInstance Win32_Process | Where-Object {
@@ -121,7 +158,8 @@ try {
     $result | ConvertTo-Json -Depth 6 | Set-Content $resultPath -Encoding utf8NoBOM
     # Small own reports stay in Actions logs: no artifact-storage quota needed.
     # Never print vendor stdout, installer/resources, code, or profile files.
-    foreach ($name in @('ci-result.json', 'firewall.json', 'baseline.json', 'entry-runtime.json', 'runtime-observation.json')) {
+    foreach ($name in @('ci-result.json', 'firewall.json', 'baseline.json', 'entry-runtime.json',
+        'runtime-observation.json', 'runtime-log-signals.json', 'native-crash-events.json')) {
         $report = Join-Path $root $name
         if (Test-Path $report) {
             $data = Get-Content -Raw $report | ConvertFrom-Json

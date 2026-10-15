@@ -7,6 +7,7 @@ const {spawn} = require('node:child_process');
 const net = require('node:net');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {waitForProcess} = require('./process-outcome.cjs');
+const {RuntimeLogSignals} = require('./runtime-log-signals.cjs');
 
 async function main() {
   if (process.platform !== 'win32') throw Error('Windows runtime required');
@@ -27,6 +28,7 @@ async function main() {
   for (const name of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH']) delete env[name];
   for (const name of ['APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP']) await fs.mkdir(env[name], {recursive: true});
   let connection;
+  const logSignals = new RuntimeLogSignals();
   try {
     // Without any inspector CLI flag the original bytecode starts normally.
     // Reserve/check the default late-activation port before creating our app;
@@ -41,7 +43,11 @@ async function main() {
       `--user-data-dir=${path.join(root, 'profile')}`], {
       env, cwd: path.dirname(executable), timeout: 45000,
       inspectPortArgument: false,
-      onSpawn: child => fs.writeFile(path.join(root, 'probe-pid.txt'), String(child.pid)).catch(() => {}),
+      onSpawn: child => {
+        fs.writeFile(path.join(root, 'probe-pid.txt'), String(child.pid)).catch(() => {});
+        child.stdout.on('data', chunk => logSignals.observe('stdout', chunk));
+        child.stderr.on('data', chunk => logSignals.observe('stderr', chunk));
+      },
       activate: async child => {
         // Let the original cached main code load without a startup inspector.
         // Node's own x86 debug helper uses its matching Windows debug mapping.
@@ -107,6 +113,8 @@ async function main() {
   } finally {
     connection?.client.close();
     if (connection?.child.exitCode === null) connection.child.kill();
+    await fs.writeFile(path.join(root, 'runtime-log-signals.json'),
+      JSON.stringify(logSignals.close(), null, 2));
   }
 }
 main().catch(error => {

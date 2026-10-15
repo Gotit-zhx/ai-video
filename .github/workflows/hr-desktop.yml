@@ -152,7 +152,7 @@ jobs:
         with:
           node-version: "22"
       - name: Verify local inspector driver with real Node fixtures
-        run: node --test hr-desktop/client-workbench/inspector-driver.test.cjs hr-desktop/client-workbench/original-sdk-read.test.cjs hr-desktop/client-workbench/process-outcome.test.cjs
+        run: node --test hr-desktop/client-workbench/inspector-driver.test.cjs hr-desktop/client-workbench/original-sdk-read.test.cjs hr-desktop/client-workbench/process-outcome.test.cjs hr-desktop/client-workbench/runtime-log-signals.test.cjs
       - name: Observe pinned original runtime without network or login
         shell: pwsh
         run: ./scripts/ci/windows-native-probe.ps1

@@ -30,7 +30,7 @@ module.exports = function observe(electron, config) {
   let ready = false, attemptedRequests = 0, finished = false, sdkReadRequests = 0, lastReport;
   let sdkRead = {ok: false, reason: 'not-requested'};
   const shutdown = {method: 'app.quit', requested: false, callReturned: false, events: [],
-    exitCalls: [], exceptions: []};
+    exitCalls: [], exceptions: [], unhandledRejections: []};
   const sessions = new WeakSet();
   const prepare = session => {
     if (sessions.has(session)) return;
@@ -79,13 +79,30 @@ module.exports = function observe(electron, config) {
         /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : null});
     persist();
   });
+  // Adding an unhandledRejection listener can change Node's failure behavior.
+  // Observe the existing event dispatch instead and forward it unchanged.
+  const originalProcessEmit = process.emit;
+  process.emit = function(event, ...args) {
+    if (event === 'unhandledRejection' && shutdown.unhandledRejections.length < 5) {
+      const error = args[0];
+      shutdown.unhandledRejections.push({
+        name: typeof error?.name === 'string' &&
+          /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(error.name) ? error.name : 'unknown',
+        code: typeof error?.code === 'string' &&
+          /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : null});
+      persist();
+    }
+    return Reflect.apply(originalProcessEmit, this, [event, ...args]);
+  };
   function snapshot(reason) {
     const sdk = Object.entries(Object.getOwnPropertyDescriptors(globalThis))
       .filter(([name]) => /^_sdk_[A-Za-z0-9_]+$/.test(name))
       .map(([name, entry]) => ({name, type: typeof entry.value})).sort((a, b) => a.name.localeCompare(b.name));
     const nativeModules = Object.entries(require.cache)
       .filter(([file]) => file.endsWith('.node'))
-      .map(([file, entry]) => ({name: path.basename(file), members: members(entry.exports)}));
+      .map(([file, entry]) => ({name: path.basename(file), members: members(entry.exports),
+        exportedPrototype: members(entry.exports &&
+          Object.getOwnPropertyDescriptor(entry.exports, 'prototype')?.value)}));
     const userDataIsolated = insideRoot(app.getPath('userData')) && insideRoot(app.getPath('appData'));
     lastReport = {
       schemaVersion: 1, mode: 'offline-original-runtime-observation',
