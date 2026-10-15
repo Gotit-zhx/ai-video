@@ -164,6 +164,20 @@ async function main() {
       {ok:false,reason:'original-window-shell-integration-incomplete'} : shellRun.result?.value;
     await fs.writeFile(path.join(root,'windows-shell-smoke.json'),
       JSON.stringify(shellReport || {ok:false,reason:'shell-report-unavailable'},null,2));
+    const httpSmoke = path.join(__dirname, 'native-http-smoke.cjs');
+    let httpReport;
+    try {
+      connection.client.timeout = 30000;
+      const result = await connection.client.command('Runtime.evaluate', {
+        expression: `process.mainModule.require(${JSON.stringify(httpSmoke)}).run()`,
+        returnByValue: true, awaitPromise: true,
+      });
+      httpReport = result.exceptionDetails ?
+        {ok: false, reason: 'original-native-http-check-incomplete'} :
+        {ok: true, ...result.result?.value};
+    } finally {connection.client.timeout = priorTimeout;}
+    await fs.writeFile(path.join(root, 'native-http-smoke.json'),
+      JSON.stringify(httpReport, null, 2));
     const observer = path.join(__dirname, 'windows-runtime-observer.cjs');
     const result = await evaluateRunning(connection,
       `((load) => load(${JSON.stringify(observer)})(load('electron'), ${JSON.stringify({
@@ -187,6 +201,9 @@ async function main() {
       JSON.stringify(scopeFixture, null, 2));
     if (!report.ok) throw Error('Original runtime observation incomplete; inspect the report');
     if (shellReport?.ok !== true) throw Error('Original Windows shell integration incomplete; inspect the report');
+    if (httpReport?.ok !== true || httpReport.actualElectronRequest !== true) {
+      throw Error('Original Windows HTTP transport check incomplete; inspect the report');
+    }
     console.log(JSON.stringify({ok: true, arch: report.arch, electron: report.versions.electron,
       sdkNames: report.observedSdk.length, nativeModules: report.nativeModules.length,
       candidateMessagesSent: 0}));
