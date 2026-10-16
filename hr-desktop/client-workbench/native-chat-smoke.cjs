@@ -8,8 +8,12 @@ async function run() {
   const target = session.fromPartition(partition);
   let blockedRequests = 0;
   const html = `<!doctype html><meta charset="utf-8">
-    <div id="editor"><div class="boss-chat-editor-input"></div></div><script>
+    <div class="geek-list-wrapper"></div>
+    <div id="editor" class="chat-conversation-operate">
+      <div class="conversation-editor"><div class="boss-chat-editor-input"></div></div>
+    </div><script>
     window.fixtureCalls = 0;
+    window.fixtureSelections = 0;
     window.iBossRoot = {user: {get: () => '101'}};
     const conversation = {friendId: '202', encryptJobId: 'job-fixture',
       toPositionId: 'job-fixture', securityId: 'fixture-security'};
@@ -28,10 +32,16 @@ async function run() {
       }};
     const original = service.onMessageDelivered;
     window.observerRestored = () => service.onMessageDelivered === original;
-    document.querySelector('#editor').__vue__ = {conversation$: conversation,
+    const editor = {conversation$: {},
       $refs: {editbox: document.querySelector('.boss-chat-editor-input')},
       $root: {$children: [{$options: {name: 'dialog-nofit'}, source: 'conversation',
         getConversationService: () => service}]}};
+    document.querySelector('#editor').__vue__ = editor;
+    document.querySelector('.geek-list-wrapper').__vue__ = {$options: {name: 'geek-list'},
+      geekClick(friend) {
+        if (friend.friendId !== '202') throw Error('Wrong offline candidate');
+        fixtureSelections++;editor.conversation$ = conversation;
+      }};
     </script>`;
   await new Promise((resolve, reject) => target.protocol.interceptBufferProtocol(
     'https', (request, callback) => {
@@ -57,9 +67,11 @@ async function run() {
     const receipt = await rpc.sendText('101', {friendId: '202', encryptJobId: 'job-fixture'}, 'Offline fixture only');
     assert.equal(receipt.messageId, '505');
     assert.equal(await guest.executeJavaScript('window.fixtureCalls'), 1);
+    assert.equal(await guest.executeJavaScript('window.fixtureSelections'), 1);
     assert.equal(await guest.executeJavaScript('window.observerRestored()'), true);
     return {ok: true, actualElectronWebview: true, genuineDeliveryFixture: true,
-      singleInvocation: true, observerRestored: true, blockedRequests,
+      singleInvocation: true, currentNestedEditorLayout: true,
+      renamedContactList: true, observerRestored: true, blockedRequests,
       candidateMessagesSent: 0, actualBossNetworkUsed: false};
   } finally {
     await rpc?.close();

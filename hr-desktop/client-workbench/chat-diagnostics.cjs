@@ -6,7 +6,10 @@ const {NativeChat} = require('./native-chat.cjs');
 // no navigation, account data, message text, sends or network requests.
 function inspectPage() {
   const input = document.querySelector('.boss-chat-editor-input');
-  const editor = input?.parentElement?.__vue__;
+  const editor = document.querySelector('.chat-conversation-operate')?.__vue__ ||
+    input?.parentElement?.__vue__;
+  const list = document.querySelector('.geek-list-wrapper')?.__vue__ ||
+    document.querySelector('.chat-user')?.__vue__;
   const ancestors = [];
   for (let node = input, depth = 0; node && depth < 6; node = node.parentElement, depth++) {
     const name = node.__vue__?.$options?.name || node.__vue__?.$options?._componentTag || '';
@@ -15,7 +18,7 @@ function inspectPage() {
       conversation: !!node.__vue__?.conversation$});
   }
   const names = new Set(), services = new Set(), seen = new Set(), queue = [editor?.$root,
-    document.querySelector('.chat-user')?.__vue__?.$root,
+    list?.$root,
     ...Array.from(document.querySelectorAll('.not-fit-wrap')).map(node => node.__vue__)];
   while (queue.length && seen.size < 6000) {
     const item = queue.shift();
@@ -31,7 +34,7 @@ function inspectPage() {
   const conversation = editor?.conversation$;
   return {editor: !!editor, editorName: editor?.$options?.name || null, ancestors,
     inputFound: !!document.querySelector('.boss-chat-editor-input'),
-    listName: document.querySelector('.chat-user')?.__vue__?.$options?.name || null,
+    listName: list?.$options?.name || null,
     components: [...names], uniqueService: services.size === 1,
     sendMethod: typeof service?.sendMessage === 'function',
     deliveredCallback: typeof service?.onMessageDelivered === 'function',

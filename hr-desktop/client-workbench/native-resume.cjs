@@ -21,16 +21,18 @@ async function preparePage(args) {
   const state = {token: args.token, cancelled: false, invoked: false};
   window.__heyiResumeAction = state;
   const alive = () => !state.cancelled && window.__heyiResumeAction === state;
-  const list = document.querySelector('.chat-user')?.__vue__;
+  const list = document.querySelector('.geek-list-wrapper')?.__vue__ ||
+    document.querySelector('.chat-user')?.__vue__;
   if (!list || list.$options?.name !== 'geek-list' || typeof list.geekClick !== 'function') {
     return stop('NATIVE_CHAT_UNAVAILABLE', '原客户端聊天列表尚未就绪');
   }
-  const current = document.querySelector('.boss-chat-editor-input')?.parentElement?.__vue__?.conversation$;
+  const currentEditor = () => document.querySelector('.chat-conversation-operate')?.__vue__ ||
+    document.querySelector('.boss-chat-editor-input')?.parentElement?.__vue__;
+  const current = currentEditor()?.conversation$;
   if (String(current?.friendId || '') !== args.friendId) list.geekClick(args.friend);
   const end = Date.now() + 5000;
   while (alive() && Date.now() < end) {
-    const input = document.querySelector('.boss-chat-editor-input');
-    const editor = input?.parentElement?.__vue__;
+    const editor = currentEditor();
     const conversation = editor?.conversation$;
     if (String(conversation?.friendId || '') === args.friendId) {
       const job = String(conversation.encryptJobId || conversation.encJobId || '');

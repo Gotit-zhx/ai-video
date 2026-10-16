@@ -15,10 +15,13 @@ async function prepareChatPage(args) {
   const alive = () => !state.cancelled && window.__heyiChatAction === state;
   const draft = editor => !!(editor?.$refs?.editbox?.textContent?.trim() ||
     editor?.$refs?.editbox?.querySelector('img') || editor?.quoteMessage$);
-  let editor = document.querySelector('.boss-chat-editor-input')?.parentElement?.__vue__;
+  const currentEditor = () => document.querySelector('.chat-conversation-operate')?.__vue__ ||
+    document.querySelector('.boss-chat-editor-input')?.parentElement?.__vue__;
+  let editor = currentEditor();
   if (draft(editor)) return stop('NATIVE_DRAFT_PRESENT', 'BOSS 输入框有未发送内容，请先处理草稿');
   if (String(editor?.conversation$?.friendId || '') !== args.friendId) {
-    const list = document.querySelector('.chat-user')?.__vue__;
+    const list = document.querySelector('.geek-list-wrapper')?.__vue__ ||
+      document.querySelector('.chat-user')?.__vue__;
     if (list?.$options?.name !== 'geek-list' || typeof list.geekClick !== 'function') {
       return stop('NATIVE_CHAT_UNAVAILABLE', '原客户端聊天列表尚未就绪');
     }
@@ -27,7 +30,7 @@ async function prepareChatPage(args) {
   const end = Date.now() + 5000;
   while (alive() && Date.now() < end) {
     if (own() !== args.account) return stop('SESSION_MISMATCH', '原客户端账号已变化');
-    editor = document.querySelector('.boss-chat-editor-input')?.parentElement?.__vue__;
+    editor = currentEditor();
     const conversation = editor?.conversation$;
     if (String(conversation?.friendId || '') === args.friendId && !editor.conversationLoading$) {
       const job = String(conversation.encryptJobId || conversation.encJobId || '');
@@ -200,6 +203,15 @@ class NativeChat extends NativeResume {
       console.warn('HEYI_NATIVE_CHAT', JSON.stringify({phase,
         code: /^[A-Z_]+$/.test(error.code || '') ? error.code : 'NATIVE_OPERATION_FAILED',
         kind: resume ? 'resume' : 'text'}));
+      if (frame && process.env.HEYI_WORKBENCH_DIAGNOSTICS_OUTPUT) {
+        try {
+          const page = await frame.executeJavaScript(
+            `(${require('./chat-diagnostics.cjs').inspectPage.toString()})()`);
+          await require('node:fs/promises').writeFile(process.env.HEYI_WORKBENCH_DIAGNOSTICS_OUTPUT,
+            JSON.stringify({at: new Date().toISOString(), readOnly: true, phase,
+              code: error.code || 'NATIVE_OPERATION_FAILED', ...page}, null, 2));
+        } catch {}
+      }
       throw error;
     } finally {
       signal?.removeEventListener('abort', cancel);

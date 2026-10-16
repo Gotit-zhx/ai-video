@@ -13,14 +13,19 @@ function fixture(t, options = {}) {
     sendMessage(content, type, opts) {calls.push({content, type, opts});},
     onMessageDelivered() {return 'original-result';}};
   const original = service.onMessageDelivered, originalSend = service.sendMessage;
-  const editor = {conversation$: conversation, $refs: {editbox: {
+  let selected = !options.unselected;
+  const editor = {get conversation$() {return selected ? conversation : {};}, $refs: {editbox: {
     textContent: options.draft || '', querySelector: () => null}},
     $root: {$children: [{$options: {name: 'dialog-nofit'}, source: 'conversation',
       getConversationService: () => service}]}};
   const context = vm.createContext({window: {iBossRoot: {user: {get: () => options.account || '101'}}},
     document: {querySelectorAll() {return [];}, querySelector(selector) {
-      return selector === '.boss-chat-editor-input' ? {parentElement: {__vue__: editor}} :
-        {__vue__: {$options: {name: 'geek-list'}, geekClick() {calls.push('select');}}};
+      if (selector === '.boss-chat-editor-input') return {parentElement: options.legacy ? {__vue__: editor} : {}};
+      if (selector === '.chat-conversation-operate') return options.legacy ? null : {__vue__: editor};
+      if (selector === (options.legacy ? '.chat-user' : '.geek-list-wrapper')) {
+        return {__vue__: {$options: {name: 'geek-list'}, geekClick() {selected = true;calls.push('select');}}};
+      }
+      return null;
     }}, setTimeout(fn, ms) {const id = {};timers.set(id, {fn, ms});return id;},
     clearTimeout(id) {timers.delete(id);}});
   const run = (fn, input = args) => vm.runInContext(`(${fn.toString()})(${JSON.stringify(input)})`, context);
@@ -49,6 +54,21 @@ test('text uses the active conversation service once and only its real delivered
   f.run(cancelChatPage, f.args.token);
   assert.equal(f.service.onMessageDelivered, f.original);
   assert.equal(f.timers.size, 0);
+});
+
+test('current nested editor and renamed contact list resolve without the obsolete parent Vue node', async t => {
+  const f = fixture(t, {unselected: true});
+  assert.equal((await f.run(prepareChatPage)).ok, true);
+  assert.deepEqual(f.calls, ['select']);
+  assert.equal(f.run(commitTextPage).ok, true);
+  f.delivered();
+  assert.equal((await f.run(waitChatPage)).ok, true);
+});
+
+test('older verified page layout remains supported', async t => {
+  const f = fixture(t, {legacy: true, unselected: true});
+  assert.equal((await f.run(prepareChatPage)).ok, true);
+  assert.deepEqual(f.calls, ['select']);
 });
 
 test('historical, other account, other candidate, other clientMid and provisional messages cannot acknowledge', async t => {
