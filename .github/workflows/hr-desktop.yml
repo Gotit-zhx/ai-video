@@ -21,6 +21,11 @@ on:
         type: boolean
         required: false
         default: false
+      retainWorkbench:
+        description: "仅私有仓库：临时保留通过整包检查的 Windows 候选包供下载"
+        type: boolean
+        required: false
+        default: false
   # Code uploads are free of build side effects. An explicit build tag also
   # works before this workflow has been merged into the default branch.
   push:
@@ -180,8 +185,28 @@ jobs:
         env:
           PYTHONPATH: hr-desktop/runtime/build/shared
         run: python -m unittest discover -s hr-desktop/runtime -p test_invitation_lifecycle.py
+      - name: Check private candidate export boundaries
+        if: ${{ inputs.nativeWorkbench == true }}
+        run: python -m unittest discover -s scripts/ci -p test_export_workbench.py
       - name: Observe pinned original runtime without network or login
         shell: pwsh
         env:
           HEYI_NATIVE_BUILD_WORKBENCH: ${{ inputs.nativeWorkbench }}
         run: ./scripts/ci/windows-native-probe.ps1
+      - name: Prepare private candidate download after packaged checks
+        if: ${{ always() && inputs.retainWorkbench == true && inputs.nativeWorkbench == true && github.event.repository.private == true }}
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'heyi-private-candidate-export'
+          python scripts/ci/export_workbench.py --root "$env:HEYI_NATIVE_PROBE_ROOT" --output "$output" --event "$env:GITHUB_EVENT_PATH" --commit "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { throw 'Verified private candidate export failed' }
+          "HEYI_WORKBENCH_EXPORT=$output" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Retain private candidate temporarily
+        if: ${{ always() && inputs.retainWorkbench == true && github.event.repository.private == true && env.HEYI_WORKBENCH_EXPORT != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: heyi-workbench-windows-candidate
+          path: ${{ env.HEYI_WORKBENCH_EXPORT }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
