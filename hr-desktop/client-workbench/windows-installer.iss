@@ -8,6 +8,7 @@ AppPublisher=赫逸
 DefaultDirName={localappdata}\Programs\AiBoss
 DefaultGroupName=Ai boss
 DisableDirPage=yes
+DirExistsWarning=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible

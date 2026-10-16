@@ -42,6 +42,7 @@ INSTALLATION_CHECKS = (
     "installedExecutablesNetworkBlocked", "runningUpdateRejected", "runningUninstallRejected",
     "installedEntryPassed", "overwriteInstallPreservedData", "uninstallPreservedData",
     "untrackedFilePreserved", "shortcutsAndRegistrationRemoved", "reinstallPreservedData",
+    "installerCompletionObserved",
 )
 
 

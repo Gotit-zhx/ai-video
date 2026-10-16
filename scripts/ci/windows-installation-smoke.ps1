@@ -16,6 +16,7 @@ if ($boundary.verified -ne $true -or $boundary.workbenchIncluded -ne $true) {
 }
 $identity = 'cn.hoyee.bossworkbench.experimental'
 $mutexName = "Local\$identity.running"
+$setupMutexName = "Local\$identity.setup"
 $registry = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\${identity}_is1"
 $installed = Join-Path $Root 'installed'
 $setupDirectory = Join-Path $Root 'setup'
@@ -46,10 +47,23 @@ function Invoke-Setup([string]$File, [string[]]$Arguments, [bool]$ShouldSucceed 
         $tail = if (Test-Path $log) { (Get-Content $log -Tail 12) -join "`n" } else { '' }
         $tail = $tail.Replace($Root, '<fixture>').Replace($env:USERPROFILE, '<user>')
         if ($tail.Length -gt 4000) { $tail = $tail.Substring($tail.Length - 4000) }
-        Write-Output ('HEYI_INSTALLER_DIAGNOSTIC ' + (@{ stage = $stage; completed = $completed;
-            exitCode = $code; installerLogTail = $tail } | ConvertTo-Json -Compress))
+        $report.installerFailure = @{ stage = $stage; completed = $completed;
+            exitCode = $code; installerLogTail = $tail }
+        Write-Host ('HEYI_INSTALLER_DIAGNOSTIC ' + ($report.installerFailure | ConvertTo-Json -Compress))
         throw 'Installer lifecycle result did not match the expected outcome'
     }
+    # Inno's uninstaller clone can still be cleaning up after the original
+    # EXE reports an exit code. Observe completion rather than using a delay.
+    $deadline = (Get-Date).AddSeconds(15)
+    $busy = $true
+    while ($busy -and (Get-Date) -lt $deadline) {
+        try {
+            $handle = [Threading.Mutex]::OpenExisting($setupMutexName)
+            $handle.Dispose()
+            Start-Sleep -Milliseconds 100
+        } catch [Threading.WaitHandleCannotBeOpenedException] { $busy = $false }
+    }
+    if ($busy) { throw 'Installer process reported exit before releasing its active operation' }
     return $process.ExitCode
 }
 function Assert-Preserved {
@@ -181,6 +195,7 @@ try {
     $stage = 'final-uninstall'
     Invoke-Setup $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') | Out-Null
     Assert-Preserved
+    $report.installerCompletionObserved = $true
     $report.ok = $true
 } finally {
     $report.stage = $stage
