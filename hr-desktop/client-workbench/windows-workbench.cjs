@@ -13,7 +13,7 @@ async function install(bindings, config = {}) {
   if (active) throw Error('Windows workbench is already installed');
   if (installing) throw Error('Windows workbench installation is already running');
   installing = true;
-  let adapter, host, network, exitGuard, chatAction, stage = 'profile', profile;
+  let adapter, host, network, exitGuard, chatAction, resumeAction, incomingActivity, stage = 'profile', profile;
   const listeners = [], attached = new WeakSet();
   const listen = (target, event, listener) => {
     target.on(event, listener);listeners.push({target, event, listener});
@@ -49,6 +49,10 @@ async function install(bindings, config = {}) {
       // Run before installing window listeners so the disposable fixture
       // cannot be mistaken for a newly created real main window.
       chatAction = await require('./native-chat-smoke.cjs').run();
+      stage = 'native-resume-fixture';
+      resumeAction = await require('./native-resume-smoke.cjs').run();
+      stage = 'native-incoming-fixture';
+      incomingActivity = await require('./native-activity-smoke.cjs').run();
     }
     stage = 'native-window';
     const integrated = require('./integrated-shell.cjs').instance();
@@ -109,7 +113,7 @@ async function install(bindings, config = {}) {
       if (active) active.nativeExitRequested = true;
       await close();
     }});
-    active = {adapter, host, integrated, network, listeners, exitGuard, chatAction,
+    active = {adapter, host, integrated, network, listeners, exitGuard, chatAction, resumeAction, incomingActivity,
       offline: Boolean(config.offline), profileRoot: root, nativeExitRequested: false};
     lastFailure = undefined;
     return {ok: true, mode: 'windows-native-workbench', bridgeReady: true,
@@ -208,7 +212,9 @@ async function offlineCheck() {
     return {ok: true, actualOriginalWindows: true, singleVisibleWindow: true,
       sidebarRoundTrip: true, localFixturePaste: true, loopbackBridge: true,
       packagedWindowsWorker: true, sdkSourceGuard: true, offlineNetworkRelay: true,
-      signedOutSnapshotRejected: true, chatAction: active.chatAction, sessionCookiePrepared: true,
+      signedOutSnapshotRejected: true, chatAction: active.chatAction, resumeAction: active.resumeAction,
+      incomingActivity: active.incomingActivity,
+      sessionCookiePrepared: true,
       candidateMessagesSent: 0, actualBossNetworkUsed: false};
   } finally {clipboard.writeText(oldClipboard);}
 }

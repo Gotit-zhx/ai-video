@@ -168,13 +168,18 @@ jobs:
         working-directory: hr-desktop/client-workbench
         run: pnpm install --ignore-workspace --ignore-scripts --frozen-lockfile
       - name: Verify local inspector driver with real Node fixtures
-        run: node --test hr-desktop/client-workbench/*.test.cjs
+        run: node --test hr-desktop/client-workbench/*.test.cjs hr-desktop/test/core.test.cjs
       - name: Build Windows worker for the isolated workbench
         if: ${{ inputs.nativeWorkbench == true }}
         run: |
           python -m unittest discover -s hr-desktop/runtime -p test_build_manifest.py
           python hr-desktop/runtime/install.py
           python hr-desktop/runtime/build.py
+      - name: Check both invitation workflows with isolated platform fixtures
+        if: ${{ inputs.nativeWorkbench == true }}
+        env:
+          PYTHONPATH: hr-desktop/runtime/build/shared
+        run: python -m unittest discover -s hr-desktop/runtime -p test_invitation_lifecycle.py
       - name: Observe pinned original runtime without network or login
         shell: pwsh
         env:

@@ -164,19 +164,23 @@ test('cancellation releases listeners and prevents a prepared send', async t => 
   assert.equal(f.calls.length, 0);
 });
 
-test('resume request uses the original component sender and the same exact receipt', async t => {
+test('resume exchange does not turn a text message into a resume request receipt', async t => {
   const f = fixture(t);
   f.args.resume = true;
   await f.run(prepareChatPage);
+  assert.equal(f.service.sendMessage, f.originalSend);
+  assert.equal(f.service.onMessageDelivered, f.original);
   f.service.sendMessage(f.args.content, 'text', {bgSource: 7});
   assert.equal(f.calls[0].opts.bgSource, 7);
-  assert.equal(f.calls[0].opts.clientMid, f.args.clientMid);
-  const receipt = f.run(waitChatPage);
+  assert.equal(f.calls[0].opts.clientMid, undefined);
+  let confirmed = false;
+  f.run(waitChatPage).then(() => {confirmed = true;});
   f.delivered();
-  assert.equal((await receipt).ok, true);
-  assert.throws(() => f.service.sendMessage(f.args.content, 'text', {}), /未重复发送/);
+  await Promise.resolve();
+  assert.equal(confirmed, false);
+  const receipt = f.run(waitChatPage);
   f.run(cancelChatPage, f.args.token);
-  assert.equal(f.service.sendMessage, f.originalSend);
+  assert.equal((await receipt).code, 'REQUESTS_PAUSED');
 });
 
 test('native wrapper rejects missing job and serializes text with resume actions', async () => {

@@ -18,7 +18,8 @@ async function run() {
   process.env.HEYI_TEST_USER_DATA = app.getPath('userData');
   const userAgent = session.defaultSession.getUserAgent();
   validateHeaderValue('user-agent', userAgent);
-  assert.match(userAgent, /HeyiWorkbench\//);
+  assert.match(app.getName(), /^HeyiWorkbenchOffline-[a-f0-9]{16}$/);
+  assert.ok(userAgent.includes(app.getName() + '/'));
   session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
     callback({cancel: /^https?:/.test(details.url)});
   });
@@ -28,7 +29,7 @@ async function run() {
   await window.loadURL('data:text/html,<title>赫逸工作台 · 离线验证</title>');
   const rendererUserAgent = await window.webContents.executeJavaScript('navigator.userAgent');
   validateHeaderValue('user-agent', rendererUserAgent);
-  assert.match(rendererUserAgent, /HeyiWorkbench\//);
+  assert.ok(rendererUserAgent.includes(app.getName() + '/'));
   window.name = 'login';
   const integrated = new IntegratedShell();
   integrated.attachWindow(window, 'login');
@@ -79,6 +80,7 @@ async function run() {
   const platformConnection = await require('./platform-connection-smoke.cjs').run();
   const egressResponse = await require('./native-egress-smoke.cjs').run();
   const resumeAction = await require('./native-resume-smoke.cjs').run();
+  const incomingActivity = await require('./native-activity-smoke.cjs').run();
   const chatAction = await require('./native-chat-smoke.cjs').run();
   const nativeHttp = await require('./native-http-smoke.cjs').run();
   const attachment = Buffer.from('%PDF-1.7\n% offline native download fixture\n%%EOF');
@@ -208,7 +210,7 @@ async function run() {
   await assert.rejects(fetch(healthURL, {headers: {Origin: 'https://hoyee.org.cn'}}));
   fs.writeFileSync(process.env.HEYI_WORKBENCH_TEST_OUTPUT, JSON.stringify({
     ok: true, electron: process.versions.electron, node: process.versions.node,
-    profile: app.getPath('userData'), accountDataUsed: false,
+    profile: app.getPath('userData'), accountDataUsed: false, isolatedKeychainIdentity: true,
     actualBossNetworkUsed: false, receiptFixture: true, loopbackBridge: true,
     packagedNativeWorker: true, sdkSourceGuard: true,
     packagedManagedJobEndpoint: true,
@@ -220,7 +222,7 @@ async function run() {
     leftNavigationFixture: true, pasteTargetRoutingFixture: true,
     hostStartup: {concurrentStartup: true, actualHostBridge: true,
       actualPackagedWorker: true, isolatedAssistantRecords: true, closedBridge: true},
-    platformConnection, egressResponse, resumeAction, chatAction, nativeHttp,
+    platformConnection, egressResponse, resumeAction, incomingActivity, chatAction, nativeHttp,
   }, null, 2));
   app.exit(0);
 }

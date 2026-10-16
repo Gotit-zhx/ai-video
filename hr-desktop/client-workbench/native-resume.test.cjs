@@ -1,24 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const {NativeResume, isChatURL} = require('./native-resume.cjs');
+const {NativeResume, isChatURL, preparePage} = require('./native-resume.cjs');
 const {NativeRPC, RESUME_REQUEST_TEXT} = require('./native-rpc.cjs');
 const {decodeNativeProtocol} = require('./native-protocol.cjs');
 
 const friend = {friendId: '202', encryptJobId: 'job-a', securityId: 'fixture'};
 
-function pageFixture({job = 'job-a', changeDuringRequest = false, ambiguous = false} = {}) {
-  const calls = {select: 0, invoke: 0, confirm: 0};
+function pageFixture({job = 'job-a'} = {}) {
+  const calls = {select: 0, invoke: 0};
   const conversation = {friendId: '202', encryptJobId: job, securityId: 'fixture'};
   const visible = {getClientRects: () => [{}], getAttribute: () => null};
-  const button = {...visible, innerText: '确定', click: () => calls.confirm++};
-  const panel = {...visible, innerText: '向候选人请求附件简历',
-    querySelectorAll: () => ambiguous ? [button, {...button}] : [button]};
   const component = {$options: {name: 'ExchangeResume'}, type: 4, $el: visible,
-    handleExChange() {
-      calls.invoke++;
-      if (changeDuringRequest) conversation.friendId = '999';
-    }};
+    handleExChange() {calls.invoke++;}};
   const editor = {conversation$: conversation, $children: [component]};
   const list = {$options: {name: 'geek-list'}, geekClick: () => calls.select++};
   const context = vm.createContext({window: {}, Date, setTimeout,
@@ -26,7 +20,6 @@ function pageFixture({job = 'job-a', changeDuringRequest = false, ambiguous = fa
       querySelector(selector) {
         return selector === '.chat-user' ? {__vue__: list} : {parentElement: {__vue__: editor}};
       },
-      querySelectorAll: () => calls.invoke ? [panel] : [],
     }});
   const host = {};
   const frame = {url: 'https://www.zhipin.com/web/client/index',
@@ -35,9 +28,10 @@ function pageFixture({job = 'job-a', changeDuringRequest = false, ambiguous = fa
     hostWebContents: host, mainFrame: {framesInSubtree: [frame]}};
   const win = {name: 'main', isDestroyed: () => false, webContents: host};
   const native = new NativeResume({nativeWindow: () => win, allContents: () => [guest]});
-  const controller = new AbortController();
-  const input = {friend, signal: controller.signal, checkAccount() {}, onReady() {}};
-  return {calls, frame, guest, win, native, controller, input, conversation, component};
+  const prepare = () => frame.executeJavaScript(`(${preparePage.toString()})(${JSON.stringify({
+    friend, friendId:'202', job:'job-a', token:'fixture',
+  })})`);
+  return {calls, frame, guest, win, native, prepare, conversation, component};
 }
 
 test('resume action accepts only original same-origin chat pages', () => {
@@ -57,68 +51,42 @@ test('resume action refuses unrelated and ambiguous webviews', () => {
   f.guest.mainFrame.framesInSubtree.push(f.frame);
   assert.throws(() => f.native.frame(), {code: 'NATIVE_CHAT_UNAVAILABLE'});
 });
-test('real component is invoked once without reopening the already selected candidate', async () => {
+test('preparation locates the original component without sending or reopening the selected candidate', async () => {
   const f = pageFixture();
-  assert.equal((await f.native.request(f.input)).confirmed, true);
-  assert.deepEqual(f.calls, {select: 0, invoke: 1, confirm: 1});
+  assert.equal((await f.prepare()).ok, true);
+  assert.deepEqual(f.calls, {select: 0, invoke: 0});
 });
 test('wrong job cannot invoke or confirm the native resume component', async () => {
   const f = pageFixture({job: 'other-job'});
-  await assert.rejects(f.native.request(f.input), {code: 'JOB_CONVERSATION_MISMATCH'});
-  assert.deepEqual(f.calls, {select: 0, invoke: 0, confirm: 0});
+  assert.equal((await f.prepare()).code, 'JOB_CONVERSATION_MISMATCH');
+  assert.deepEqual(f.calls, {select: 0, invoke: 0});
 });
 test('resume requests use the current encrypted position even when list aliases are absent', async () => {
   const f = pageFixture();
   delete f.conversation.encryptJobId;
   f.conversation.toPositionId = 'job-a';
-  assert.equal((await f.native.request(f.input)).confirmed, true);
-  assert.equal(f.calls.invoke, 1);
+  assert.equal((await f.prepare()).ok, true);
+  assert.equal(f.calls.invoke, 0);
 });
 test('an incomplete conversation waits for its position without invoking a premature resume request', async () => {
   const f = pageFixture();
   delete f.conversation.encryptJobId;
-  const pending = f.native.request(f.input);
+  const pending = f.prepare();
   assert.equal(f.calls.invoke, 0);
   f.conversation.toPositionId = 'job-a';
-  assert.equal((await pending).confirmed, true);
-  assert.equal(f.calls.invoke, 1);
+  assert.equal((await pending).ok, true);
+  assert.equal(f.calls.invoke, 0);
 });
-test('resume requests reject contradictory or changed position aliases before invoking the component', async () => {
-  for (const changeAfterPrepare of [false, true]) {
-    const f = pageFixture();
-    f.conversation.toPositionId = changeAfterPrepare ? 'job-a' : 'other-job';
-    if (changeAfterPrepare) f.input.onReady = () => {f.conversation.toPositionId = 'other-job';};
-    await assert.rejects(f.native.request(f.input), {code: 'JOB_CONVERSATION_MISMATCH'});
-    assert.equal(f.calls.invoke, 0);assert.equal(f.calls.confirm, 0);
-  }
-});
-test('account cancellation after preparation prevents the request invocation', async () => {
+test('contradictory position aliases prevent preparing an exchange', async () => {
   const f = pageFixture();
-  f.input.onReady = () => f.controller.abort();
-  await assert.rejects(f.native.request(f.input), {code: 'REQUESTS_PAUSED'});
-  assert.equal(f.calls.invoke, 0);assert.equal(f.calls.confirm, 0);
+  f.conversation.toPositionId = 'other-job';
+  assert.equal((await f.prepare()).code, 'JOB_CONVERSATION_MISMATCH');
+  assert.equal(f.calls.invoke, 0);
 });
-test('changed native security context cannot invoke a prepared resume action', async () => {
-  const f = pageFixture();
-  f.input.onReady = () => {f.conversation.securityId = 'different-security-context';};
-  await assert.rejects(f.native.request(f.input), {code: 'JOB_CONVERSATION_MISMATCH'});
-  assert.equal(f.calls.invoke, 0);assert.equal(f.calls.confirm, 0);
-});
-test('changing the native exchange type after preparation cannot invoke another action', async () => {
-  const f = pageFixture();
-  f.input.onReady = () => {f.component.type = 1;};
-  await assert.rejects(f.native.request(f.input), {code: 'NATIVE_CHAT_UNAVAILABLE'});
-  assert.equal(f.calls.invoke, 0);assert.equal(f.calls.confirm, 0);
-});
-test('conversation changing inside the original handler is never confirmed', async () => {
-  const f = pageFixture({changeDuringRequest: true});
-  await assert.rejects(f.native.request(f.input), {code: 'REQUESTS_PAUSED'});
-  assert.equal(f.calls.invoke, 1);assert.equal(f.calls.confirm, 0);
-});
-test('ambiguous confirmation panels are not clicked', async () => {
-  const f = pageFixture({ambiguous: true});
-  await assert.rejects(f.native.request(f.input), {code: 'NATIVE_CONFIRMATION_REQUIRED'});
-  assert.equal(f.calls.invoke, 1);assert.equal(f.calls.confirm, 0);
+test('a different exchange type cannot be prepared as a resume action', async () => {
+  const f = pageFixture();f.component.type = 1;
+  assert.equal((await f.prepare()).code, 'NATIVE_CHAT_UNAVAILABLE');
+  assert.equal(f.calls.invoke, 0);
 });
 
 function rpcFixture(t, action) {
@@ -139,6 +107,34 @@ function confirm(rpc, fields = {}) {
     clientMid: '404', type: 'text', status: 1, text: RESUME_REQUEST_TEXT,
     time: Date.now(), ...fields}]);
 }
+test('native HTTP exchange confirmation must match the exact account, candidate, job and attempt', async t => {
+  const friend = {friendId: '202', encryptJobId: 'job-a'};
+  const rpc = rpcFixture(t, async input => {
+    input.onReady();
+    return {transport: 'native-exchange-response', account: '101', friendId: '202', job: 'job-a',
+      requestId: input.clientMid, exchangeType: 4, code: 0, status: 0};
+  });
+  assert.deepEqual(await rpc.requestResume('101', friend),
+    {friendId: '202', confirmedBy: 'native-exchange-response', exchangeType: 4});
+});
+test('another exchange attempt or a business error cannot finish the pending resume request', async t => {
+  for (const difference of [{account: '999'}, {friendId: '999'}, {job: 'other'},
+    {requestId: '999'}, {exchangeType: 1}, {code: 1013}, {status: 1}]) {
+    const rpc = rpcFixture(t, async input => {
+      input.onReady();
+      return {transport: 'native-exchange-response', account: '101', friendId: '202', job: 'job-a',
+        requestId: input.clientMid, exchangeType: 4, code: 0, status: 0, ...difference};
+    });
+    await assert.rejects(rpc.requestResume('101', friend), {code: 'SEND_UNCONFIRMED'});
+  }
+});
+test('platform rate limiting during the native exchange remains a stop code', async t => {
+  const rpc = rpcFixture(t, async input => {
+    input.onReady();
+    throw Object.assign(Error('fixture rate limit'), {code: 'RATE_LIMITED'});
+  });
+  await assert.rejects(rpc.requestResume('101', friend), {code: 'RATE_LIMITED'});
+});
 test('resume success requires the observed native clientMid and matching server receipt', async t => {
   const rpc = rpcFixture(t, async ({onReady}, rpc) => {
     onReady();

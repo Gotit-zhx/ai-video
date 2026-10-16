@@ -1,4 +1,4 @@
-const {app, Menu, session, safeStorage} = require('electron');
+const {app, Menu, session, safeStorage, BrowserWindow, webContents} = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -38,7 +38,7 @@ async function initialize(adapter, options) {
   await fs.mkdir(assistantRoot, {recursive: true, mode: 0o700});
   const executable = runtimeExecutable();
   const rpc = new NativeRPC({adapter, endpoints: require('./endpoints.json')});
-  let lease, checkedAt = 0, engine, bridge, egress, platformSession, boundAccount = '', ready = false, closing;
+  let lease, checkedAt = 0, engine, bridge, egress, platformSession, activity, boundAccount = '', ready = false, closing;
   const listeners = [];
   const listen = (target, event, listener) => {
     target.on(event, listener);listeners.push({target, event, listener});
@@ -51,6 +51,7 @@ async function initialize(adapter, options) {
       Promise.resolve().then(() => rpc.close()),
       Promise.resolve().then(() => egress?.close()),
       Promise.resolve().then(() => platformSession?.close()),
+      Promise.resolve().then(() => activity?.close()),
     ]);
     if (active?.rpc === rpc) active = undefined;
   })());
@@ -180,6 +181,15 @@ async function initialize(adapter, options) {
     listen(rpc, 'activity', hint => {
       if (rpc.currentIdentity() === boundAccount) engine.notifyActivity([hint]);
     });
+    activity = new (require('./native-activity.cjs').NativeActivity)({
+      nativeWindow: () => {
+        const windows = BrowserWindow.getAllWindows().filter(win => !win.isDestroyed() && win.name === 'main');
+        return windows.length === 1 ? windows[0] : null;
+      },
+      allContents: () => webContents.getAllWebContents(),
+      receive: hints => rpc.receive(hints),
+    });
+    activity.start();
     listen(rpc, 'session-lost', code => {
       void engine.hold({code});
     });

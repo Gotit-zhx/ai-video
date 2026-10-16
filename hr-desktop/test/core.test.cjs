@@ -347,6 +347,45 @@ async function fixture(t){
   t.after(async()=>{await engine.close();await fs.rm(directory,{recursive:true,force:true});});
   return {engine,directory,calls};
 }
+test('resume archive confirms only after cloud ingest and retries the same local bytes after interruption', async t=>{
+  const {engine,directory}=await fixture(t), key='a'.repeat(64);
+  engine.accountRoot=path.join(directory,'accounts',key);engine.state={state:'complete'};engine.paused=false;
+  let now=Date.now();engine.clock=()=>now;
+  const downloads=path.join(engine.accountRoot,'downloads');
+  await fs.mkdir(downloads,{recursive:true});
+  const file=path.join(downloads,'fixture.pdf'), bytes=Buffer.from('%PDF-1.4\n% isolated archive fixture');
+  await fs.writeFile(file,bytes);
+  let stored=false, failCloud=true;
+  const order=[], uploads=[];
+  engine.runtime.run=async input=>{
+    if(input.operation==='passive-local')return {ok:true,data:{exports:stored?[]:[{
+      friend:'202',mid:'900',rule:'active-fixture',file,
+      body:JSON.stringify({jobId:'fixture-job',origin:'active',originalFileName:'隔离测试.pdf'})
+    }]}};
+    if(input.operation==='passive-ack'&&input.friendId){
+      order.push('ack');assert.equal(input.friendId,'202');assert.equal(input.messageId,'900');
+      assert.equal(failCloud,false);stored=true;
+    }
+    return {ok:true,data:{}};
+  };
+  engine.passiveCloud=async(route,body)=>{
+    if(route==='passive-ingest'){
+      order.push('ingest');uploads.push(body);
+      if(failCloud)throw Error('isolated interrupted upload');
+      return {archived:true};
+    }
+    return {};
+  };
+  await engine.poll();
+  assert.equal(stored,false);assert.deepEqual(order,['ingest']);
+  failCloud=false;now+=31000;
+  await engine.poll();
+  assert.equal(stored,true);assert.deepEqual(order,['ingest','ingest','ack']);
+  assert.equal(uploads.length,2);assert.deepEqual(uploads[0],uploads[1]);
+  assert.deepEqual(Buffer.from(uploads[1].fileBase64,'base64'),bytes);
+  assert.equal(uploads[1].accountKey,key);assert.equal(uploads[1].jobId,'fixture-job');
+  assert.equal(uploads[1].friendId,'202');assert.equal(uploads[1].origin,'active');
+});
 async function loggedIn(t){
   const value=await fixture(t);
   value.engine.browser.inspect=async()=>({text:'',accountId:'123',token:{cookies:{wt2:'saved-session'},user_agent:'fixture'}});

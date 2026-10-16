@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
-const {NativeResume, isChatURL, preparePage, commitPage} = require('./native-resume.cjs');
+const {NativeResume, isChatURL, preparePage} = require('./native-resume.cjs');
+const {prepareExchangePage, commitExchangePage} = require('./native-exchange.cjs');
 const fail = (code, message) => Object.assign(Error(message), {code});
 
 // Runs in the client's existing chat frame. All writes still use its own
@@ -91,7 +92,12 @@ async function prepareChatPage(args) {
         };
         if (!state.valid()) return stop('JOB_CONVERSATION_MISMATCH', '当前会话账号或职位未核实');
         state.service = service;
-        state.result = new Promise(resolve => {state.finish = resolve;});
+        state.result = new Promise(resolve => {
+          state.finish = value => {
+            if (state.outcome) return;
+            state.outcome = value;resolve(value);
+          };
+        });
         const replace = (name, make) => {
           const descriptor = Object.getOwnPropertyDescriptor(service, name);
           const original = service[name], wrapped = make(original);
@@ -102,7 +108,7 @@ async function prepareChatPage(args) {
             else delete service[name];
           });
         };
-        replace('onMessageDelivered', original => function(rows) {
+        if (!args.resume) replace('onMessageDelivered', original => function(rows) {
           // Preserve native handling and return value. A queued/newSubmit row,
           // a resolved SDK promise, or matching text in history is not success.
           const result = Reflect.apply(original, this, [rows]);
@@ -122,14 +128,6 @@ async function prepareChatPage(args) {
           }
           return result;
         });
-        if (args.resume) {
-          replace('sendMessage', original => function(content, type, options = {}) {
-            if (content !== args.content || type !== 'text') return Reflect.apply(original, this, arguments);
-            if (!state.valid() || state.invoked) throw Error('简历请求已停止，未重复发送');
-            state.invoked = true;
-            return Reflect.apply(original, this, [content, type, {...options, clientMid: args.clientMid}]);
-          });
-        }
         state.deadline = setTimeout(() => state.finish(stop('SEND_UNCONFIRMED',
           '未收到实际消息回执，未自动重复发送')), 9500);
         return {ok: true};
@@ -210,9 +208,12 @@ class NativeChat extends NativeResume {
         return result;
       };
       await run(prepareChatPage);
-      if (resume) await run(preparePage);
+      if (resume) {
+        await run(preparePage);
+        await run(prepareExchangePage);
+      }
       onReady?.();
-      await run(resume ? commitPage : commitTextPage);
+      await run(resume ? commitExchangePage : commitTextPage);
       return (await run(waitChatPage)).receipt;
     } catch (error) {
       console.warn('HEYI_NATIVE_CHAT', JSON.stringify({phase,

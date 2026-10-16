@@ -281,6 +281,12 @@ class NativeRPC extends EventEmitter {
         if (receipt?.transport === 'native-chat-delivery' && receipt.clientMid === clientMid) {
           pending.clientMid = clientMid;
           this.receive([receipt]);
+        } else if (receipt?.transport === 'native-exchange-response' && pending.armed &&
+            !controller.signal.aborted && receipt.requestId === clientMid &&
+            receipt.account === account && receipt.friendId === id && receipt.job === job &&
+            receipt.exchangeType === 4 && receipt.code === 0 && receipt.status === 0) {
+          this.requireAccount(account);
+          pending.resolve({friendId: id, confirmedBy: 'native-exchange-response'});
         }
         return receipt;
       });
@@ -288,7 +294,7 @@ class NativeRPC extends EventEmitter {
         await Promise.all([perform, confirmation]);
       } catch (error) {
         if (pending.armed && !['AUTH_EXPIRED', 'ACCOUNT_RISK', 'SESSION_MISMATCH',
-          'SECURITY_VERIFICATION_REQUIRED', 'REQUESTS_PAUSED'].includes(error.code)) {
+          'SECURITY_VERIFICATION_REQUIRED', 'RATE_LIMITED', 'REQUESTS_PAUSED'].includes(error.code)) {
           throw failure('SEND_UNCONFIRMED', '索取简历未得到完整确认，请核对原客户端；没有自动重发');
         }
         throw error;

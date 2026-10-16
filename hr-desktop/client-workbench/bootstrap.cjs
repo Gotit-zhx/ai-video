@@ -11,7 +11,14 @@ app.setPath('userData', data);
 // Electron puts this internal name in the default User-Agent before the
 // original client builds its HTTP headers. Keep our own product token ASCII;
 // the macOS display name and window titles still provide the Chinese branding.
-app.setName('HeyiWorkbench');
+const offlineCheck = process.env.HEYI_WORKBENCH_TEST_DATA &&
+  ['--heyi-workbench-smoke', '--heyi-session-write', '--heyi-session-restore']
+    .some(flag => process.argv.includes(flag));
+// Cookie encryption and safeStorage keychain services also use the app name.
+// A disposable profile alone does not isolate them from the real account's
+// Keychain item. Give synthetic tests their own stable-per-profile identity.
+app.setName(offlineCheck ? 'HeyiWorkbenchOffline-' +
+  require('node:crypto').createHash('sha256').update(data).digest('hex').slice(0, 16) : 'HeyiWorkbench');
 require('./compat.cjs').installWebTypes();
 if (process.argv.includes('--heyi-workbench-smoke') ||
     process.argv.includes('--heyi-session-write') || process.argv.includes('--heyi-session-restore')) {

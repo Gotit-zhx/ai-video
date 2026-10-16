@@ -209,7 +209,8 @@ def own_files(sdk_path):
                  "native-download.cjs", "shared-state.cjs", "runtime-paths.cjs", "smoke.cjs", "ui-check.cjs",
                  "native-network.cjs", "integrated-shell.cjs", "shell-preload.cjs",
                  "shell.html", "shell-renderer.cjs", "native-resume.cjs", "native-resume-smoke.cjs",
-                 "native-chat.cjs", "native-chat-smoke.cjs", "chat-diagnostics.cjs", "platform-session.cjs",
+                 "native-chat.cjs", "native-chat-smoke.cjs", "native-exchange.cjs",
+                 "chat-diagnostics.cjs", "platform-session.cjs", "native-activity.cjs", "native-activity-smoke.cjs",
                  "platform-session-smoke.cjs",
                  "platform-connection-smoke.cjs", "native-egress-smoke.cjs",
                  "native-http.cjs", "native-http-smoke.cjs", "native-protocol.cjs"]:
