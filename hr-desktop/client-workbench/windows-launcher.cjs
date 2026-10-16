@@ -120,6 +120,7 @@ async function run(packageRoot, selfTest = false) {
       if (checked.exceptionDetails || checked.result?.value?.ok !== true) throw Error('Packaged check failed');
       const report = checked.result.value;
       report.independentInspector = true;
+      report.startupOutput = connection.startupOutput;
       stage = 'original-shutdown';
       const exitModule = path.join(path.dirname(verified.addon), 'original-sdk-exit.cjs');
       await evaluateRunning(connection, `setTimeout(()=>{
@@ -144,7 +145,8 @@ async function run(packageRoot, selfTest = false) {
     await evaluateRunning(connection, `setImmediate(() => process.mainModule.require('node:inspector').close()); true`);
     connection.client.close();
     await fs.writeFile(statusFile, JSON.stringify({ok: true, experimental: true,
-      stage: 'ready', originalResourcesModified: false}), {mode: 0o600});
+      stage: 'ready', originalResourcesModified: false,
+      startupOutput: connection.startupOutput}), {mode: 0o600});
     // Stay with this exact child. Never attach to another process or replay
     // addon installation if observation or the native process fails.
     const [code] = connection.child.exitCode === null ?

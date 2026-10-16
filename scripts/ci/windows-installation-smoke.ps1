@@ -28,17 +28,28 @@ $desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Ai boss.lnk'
 $profileRoot = Join-Path $env:LOCALAPPDATA 'HeyiBossWorkbench'
 $recordsRoot = Join-Path $env:APPDATA 'heyi-recruiter'
 $report = @{ ok = $false; realAccountUsed = $false; installerSha256 = $manifest.sha256;
-    packageManifestSha256 = $manifest.packageManifestSha256 }
+    packageManifestSha256 = $manifest.packageManifestSha256; installerRuns = @() }
 $rules = @()
 $sentinels = @{}
 $stage = 'fresh-runner'
 $test = $null
 
 function Invoke-Setup([string]$File, [string[]]$Arguments, [bool]$ShouldSucceed = $true) {
-    $process = Start-Process -FilePath $File -ArgumentList $Arguments -PassThru
-    if (!$process.WaitForExit(120000)) { throw 'Installer did not complete in time' }
-    if ($ShouldSucceed -and $process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
-    if (!$ShouldSucceed -and $process.ExitCode -eq 0) { throw 'Installer changed a running application' }
+    $log = Join-Path $Root ("installer-" + [guid]::NewGuid().ToString('N') + '.log')
+    $process = Start-Process -FilePath $File -ArgumentList ($Arguments + @("/LOG=`"$log`"")) -PassThru
+    $completed = $process.WaitForExit(120000)
+    $code = if ($completed) { $process.ExitCode } else { $null }
+    $report.installerRuns += @{ stage = $stage; expectedSuccess = $ShouldSucceed; completed = $completed; exitCode = $code }
+    if (!$completed -or ($ShouldSucceed -and $code -ne 0) -or (!$ShouldSucceed -and $code -eq 0)) {
+        if (!$completed -and !$process.HasExited) { $process.Kill($true) }
+        # Own installer logs in a disposable runner, never original app logs.
+        $tail = if (Test-Path $log) { (Get-Content $log -Tail 12) -join "`n" } else { '' }
+        $tail = $tail.Replace($Root, '<fixture>').Replace($env:USERPROFILE, '<user>')
+        if ($tail.Length -gt 4000) { $tail = $tail.Substring($tail.Length - 4000) }
+        Write-Output ('HEYI_INSTALLER_DIAGNOSTIC ' + (@{ stage = $stage; completed = $completed;
+            exitCode = $code; installerLogTail = $tail } | ConvertTo-Json -Compress))
+        throw 'Installer lifecycle result did not match the expected outcome'
+    }
     return $process.ExitCode
 }
 function Assert-Preserved {
@@ -142,7 +153,10 @@ try {
     }
     $report.installedEntryPassed = $true
     # Include the encrypted file actually saved by the installed Electron app.
-    $sessionFile = Join-Path $Root 'installed-profile/profile/heyi/platform-session.enc'
+    $sessionFiles = @(Get-ChildItem (Join-Path $Root 'installed-profile') `
+        -Filter 'platform-session.enc' -Recurse -File)
+    if ($sessionFiles.Count -ne 1) { throw 'Expected one encrypted session saved by the installed application' }
+    $sessionFile = $sessionFiles[0].FullName
     $sentinels[$sessionFile] = (Get-FileHash $sessionFile -Algorithm SHA256).Hash
     $stage = 'overwrite-install'
     Invoke-Setup $setup $arguments | Out-Null

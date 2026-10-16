@@ -199,6 +199,12 @@ jobs:
       - name: Check private candidate export boundaries
         if: ${{ inputs.nativeWorkbench == true }}
         run: |
+          foreach ($file in @('scripts/ci/windows-native-probe.ps1', 'scripts/ci/windows-installation-smoke.ps1')) {
+            $tokens = $null
+            $syntaxErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$syntaxErrors) | Out-Null
+            if ($syntaxErrors.Count) { throw ($syntaxErrors | Out-String) }
+          }
           python -m unittest discover -s scripts/ci -p test_export_workbench.py
           python -m unittest discover -s hr-desktop/client-workbench -p test_windows_entry.py
           python -m unittest discover -s hr-desktop/client-workbench -p test_windows_installer.py

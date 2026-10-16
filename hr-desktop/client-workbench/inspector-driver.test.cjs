@@ -164,6 +164,36 @@ test('late activation observes code that ran before the inspector started', asyn
   assert.equal(await evaluateRunning(connection, 'globalThis.heyiBeforeInspector'), 1);
 });
 
+test('startup stdout backpressure cannot block late inspector activation', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-inspector-output-'));
+  t.after(() => fs.rm(root, {recursive: true, force: true}));
+  const fixture = path.join(root, 'fixture.cjs'), ready = path.join(root, 'ready');
+  await fs.writeFile(fixture, `
+    process.stdout.write(Buffer.alloc(4*1024*1024,120),()=>{
+      globalThis.heyiOutputFlushed=true;
+      require('node:fs').writeFileSync(process.argv[2],'ready');
+    });
+    setInterval(()=>{},1000);
+  `);
+  const connection = await launchInspecting(process.execPath, [fixture, ready], {
+    timeout: 5000,
+    activate: async child => {
+      const deadline = Date.now() + 3500;
+      while (true) {
+        try {await fs.stat(ready);break;} catch (error) {
+          if (error.code !== 'ENOENT' || Date.now() >= deadline) throw error;
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      }
+      process._debugProcess(child.pid);
+    },
+  });
+  t.after(() => {connection.client.close();connection.child.kill();});
+  assert.equal(await evaluateRunning(connection, 'globalThis.heyiOutputFlushed'), true);
+  assert.equal(connection.startupOutput.stdoutBytes, 4 * 1024 * 1024);
+  assert.ok(connection.startupOutput.stderrBytes > 0);
+});
+
 test('a controller without global WebSocket uses the pinned Node 16 compatible transport', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-inspector-controller-'));
   t.after(() => fs.rm(root, {recursive: true, force: true}));

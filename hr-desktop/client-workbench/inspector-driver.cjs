@@ -1,4 +1,4 @@
-// Test tooling only. No retries: a lost inspector response has an unknown outcome.
+// Own-process startup inspection. A lost response is never automatically replayed.
 const {spawn} = require('node:child_process');
 
 function localInspectorURL(value) {
@@ -124,6 +124,12 @@ async function launchInspecting(executable, args = [], options = {}) {
     cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });
   const started = Date.now();
+  let stdoutBytes = 0, stderrBytes = 0;
+  const discardStdout = chunk => {stdoutBytes += chunk.length;};
+  // Drain from spawn, not after the inspector connects. A full stdout pipe
+  // can otherwise block the native process before it publishes its endpoint.
+  // Count bytes only; never retain or print application log content.
+  child.stdout.on('data', discardStdout);
   let phase = 'spawn', reason = 'spawn-hook-failed', activationAttempted = false,
     activationCompleted = false;
   try {
@@ -145,6 +151,7 @@ async function launchInspecting(executable, args = [], options = {}) {
       const onError = () => finish(Error('Failed to start inspected process'), undefined, 'spawn-failed');
       const onExit = () => finish(Error('Inspected process exited before attaching'), undefined, 'process-exited');
       const onData = data => {
+        stderrBytes += data.length;
         buffer += data.toString('utf8');
         if (buffer.length > 128 * 1024) {
           finish(Error('Inspector startup output exceeds limit'), undefined, 'output-limit');return;
@@ -167,11 +174,13 @@ async function launchInspecting(executable, args = [], options = {}) {
       }
     });
     // Drain vendor logs without retaining or printing them.
+    child.stdout.removeListener('data', discardStdout);
     child.stdout.resume();child.stderr.resume();
+    const startupOutput = {stdoutBytes, stderrBytes};
     phase = 'connect';reason = 'connection-failed';
     const client = await Inspector.connect(address, Math.min(timeout, 5000));
     try {
-      if (!pauseOnStart) return {child, client};
+      if (!pauseOnStart) return {child, client, startupOutput};
       phase = 'entry';reason = 'entry-pause-failed';
       await client.command('Debugger.enable');
       const paused = client.event('Debugger.paused', timeout);
@@ -181,13 +190,15 @@ async function launchInspecting(executable, args = [], options = {}) {
       const state = await paused;
       const frame = state.callFrames?.[0]?.callFrameId;
       if (!frame) throw Error('Missing entry call frame');
-      return {child, client, frame};
+      return {child, client, frame, startupOutput};
     } catch (error) {client.close();throw error;}
   } catch (error) {
     // Retain only our fixed launch stage and outcome, never vendor stderr,
     // command-line arguments, inspector URLs, profile paths or account data.
     error.inspectorStartupDiagnostic = {phase, reason, activationAttempted, activationCompleted,
-      processExitCode: child.exitCode, processSignal: child.signalCode, elapsedMs: Date.now() - started};
+      processExitCode: child.exitCode, processSignal: child.signalCode, elapsedMs: Date.now() - started,
+      stdoutBytes, stderrBytes};
+    child.stdout.removeListener('data', discardStdout);
     child.stdout.resume();child.stderr.resume();
     if (child.exitCode === null) child.kill();
     throw error;
