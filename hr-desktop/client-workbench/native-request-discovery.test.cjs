@@ -8,7 +8,7 @@ const {discoverNativeRequestBuilder} = require('./native-request-discovery.cjs')
 const {bindNativeModule} = require('./native-bindings.cjs');
 
 async function fixture(t, {ambiguous = false, failVerification = false,
-  credentialMethod = 'getAuthCookieHeader'} = {}) {
+  credentialMethod = 'getAuthCookieHeader', holdSDKCompletion = false} = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-request-discovery-'));
   const file = path.join(root, 'fixture.cjs');
   const httpModule = path.join(root, 'node_modules/@bzl/electron-node-fetch/dist/index.js');
@@ -16,6 +16,7 @@ async function fixture(t, {ambiguous = false, failVerification = false,
   await fs.writeFile(httpModule, 'exports.enfetch=class Enfetch{send(){fixtureHTTPCalls++;throw Error("No network")}};');
   await fs.writeFile(file, `
     globalThis.fixtureHTTPCalls=0;globalThis.fixtureSDKCalls=0;globalThis.fixtureBuilderCalls=0;
+    globalThis.fixtureSDKHold=new Promise(resolve=>{globalThis.fixtureReleaseSDK=resolve});
     class Identity{get userInfo(){throw Error('private identity')}
       get userId(){throw Error('private identity')}get avatar(){throw Error('private identity')}}
     class Authentication{get(){return Promise.resolve('wt2=fixture-private-cookie')}
@@ -41,7 +42,11 @@ async function fixture(t, {ambiguous = false, failVerification = false,
     globalThis.fixtureSDK={
       _sdk_getLoginStatus:async()=>false,_sdk_getNetworkStatus:async()=>false,
       _sdk_getUserInfo:async function(refresh=false){fixtureSDKCalls++;
-        if(refresh)return builder({url:'/wapi/zpuser/wap/getUserInfo.json'});},
+        if(refresh){
+          const result=await builder({url:'/wapi/zpuser/wap/getUserInfo.json'});
+          if(${holdSDKCompletion})await fixtureSDKHold;
+          return result;
+        }},
       _sdk_chatSocket_sendTextMessage(){throw Error('must not send')}
     };
     globalThis.$socket={clientID:new Map,handleEvent(_name,socket){
@@ -89,10 +94,19 @@ test('captures the actual caller by name and location, uses its native headers, 
   }
 });
 test('same-name and same-location closures remain ambiguous and are not guessed', async t => {
-  const connection = await fixture(t, {ambiguous: true});
+  const connection = await fixture(t, {ambiguous: true, holdSDKCompletion: true});
   await assert.rejects(discoverNativeRequestBuilder(connection,
     {anonymousIsolated: true, pinnedOriginalVerified: true}),
   error => error.requestDiscoveryDiagnostic.stage === 'match-actual-caller-location');
+  // Failure can return while the single SDK call is still settling. Until it
+  // settles, the target must retain its blocker instead of restoring transport.
+  assert.equal(await evaluateRunning(connection, 'Object.hasOwn(fixtureHTTP,"send")'), true);
+  await evaluateRunning(connection, 'fixtureReleaseSDK();true');
+  const deadline = Date.now() + 5000;
+  while (await evaluateRunning(connection, 'Object.hasOwn(fixtureHTTP,"send")')) {
+    assert.ok(Date.now() < deadline, 'Discovery must restore the boundary after SDK completion');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
   assert.equal(await evaluateRunning(connection, 'fixtureSDKCalls'), 1);
   assert.equal(await evaluateRunning(connection, 'fixtureBuilderCalls'), 1);
   assert.equal(await evaluateRunning(connection, 'fixtureHTTPCalls'), 0);
