@@ -38,6 +38,18 @@ class ExportWorkbenchTest(unittest.TestCase):
         self.smoke["incomingActivity"]["additionalBossRequests"] = 0
         self.write()
         (self.root / "ci-result.json").write_text('{"ok":false}')
+        self.setup = self.root / "setup"
+        self.setup.mkdir()
+        self.installer = self.setup / ("Ai-boss-Windows-Setup-" + "a" * 12 + ".exe")
+        self.installer.write_bytes(b"anonymous installer fixture")
+        self.setup_report = {"commit": "a" * 40, "installer": self.installer.name,
+                             "sha256": module.digest(self.installer), "perUser": True,
+                             "profileFilesIncluded": False, "realAccountTested": False,
+                             "packageManifestSha256": module.digest(self.package / "heyi-package.json")}
+        self.installation = {name: True for name in module.INSTALLATION_CHECKS}
+        self.installation.update(realAccountUsed=False, installerSha256=self.setup_report["sha256"],
+                                 packageManifestSha256=self.setup_report["packageManifestSha256"])
+        self.write_installer()
         self.pin = patch.object(module, "PIN", {"boss-zhipin.exe": files["native-client/boss-zhipin.exe"]})
         self.pin.start()
         self.addCleanup(self.pin.stop)
@@ -48,6 +60,10 @@ class ExportWorkbenchTest(unittest.TestCase):
 
     def run_export(self, private=True):
         return module.export(self.root, self.output, {"repository": {"private": private}}, "a" * 40)
+
+    def write_installer(self):
+        (self.setup / "installer.json").write_text(json.dumps(self.setup_report))
+        (self.root / "windows-installation-smoke.json").write_text(json.dumps(self.installation))
 
     def test_exports_only_verified_files_and_keeps_failed_probe_visible(self):
         (self.package / "untracked-session.enc").write_text("must not ship")
@@ -60,6 +76,20 @@ class ExportWorkbenchTest(unittest.TestCase):
             self.assertEqual(len(archive.namelist()), len(self.manifest["files"]) + 2)
             self.assertFalse(any("session" in name or "cookies" in name for name in archive.namelist()))
         self.assertEqual(module.digest(self.output / report["archive"]), report["sha256"])
+        self.assertEqual(module.digest(self.output / report["installer"]["name"]), self.setup_report["sha256"])
+
+    def test_incomplete_installation_or_different_installer_cannot_be_exported(self):
+        self.installation["runningUpdateRejected"] = False
+        self.write_installer()
+        with self.assertRaisesRegex(ValueError, "installation lifecycle"):
+            self.run_export()
+        self.assertFalse(self.output.exists())
+        self.installation["runningUpdateRejected"] = True
+        self.write_installer()
+        self.installer.write_bytes(b"changed installer")
+        with self.assertRaisesRegex(ValueError, "Installer differs"):
+            self.run_export()
+        self.assertFalse(self.output.exists())
 
     def test_public_repository_is_rejected_without_creating_output(self):
         with self.assertRaisesRegex(ValueError, "Private"):

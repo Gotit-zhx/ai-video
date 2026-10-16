@@ -198,7 +198,10 @@ jobs:
           python -m unittest discover -s hr-desktop/runtime -p test_managed_jobs.py
       - name: Check private candidate export boundaries
         if: ${{ inputs.nativeWorkbench == true }}
-        run: python -m unittest discover -s scripts/ci -p test_export_workbench.py
+        run: |
+          python -m unittest discover -s scripts/ci -p test_export_workbench.py
+          python -m unittest discover -s hr-desktop/client-workbench -p test_windows_entry.py
+          python -m unittest discover -s hr-desktop/client-workbench -p test_windows_installer.py
       - name: Observe pinned original runtime without network or login
         shell: pwsh
         env:
@@ -230,9 +233,11 @@ jobs:
           $draft = gh release view $tag --json isDraft --jq '.isDraft'
           if ($LASTEXITCODE -ne 0 -or $draft -ne 'true') { throw 'Candidate must remain a draft' }
           $assets = @(Get-ChildItem "$env:HEYI_WORKBENCH_EXPORT" -File | Where-Object {
-            $_.Name -eq 'verification.json' -or $_.Name -match '^Ai-boss-Windows-candidate-[a-f0-9]{12}\.zip$'
+            $_.Name -eq 'verification.json' -or
+            $_.Name -match '^Ai-boss-Windows-candidate-[a-f0-9]{12}\.zip$' -or
+            $_.Name -match '^Ai-boss-Windows-Setup-[a-f0-9]{12}\.exe$'
           } | ForEach-Object FullName)
-          if ($assets.Count -ne 2) { throw 'Expected one verified candidate and its report' }
+          if ($assets.Count -ne 3) { throw 'Expected one verified installer, portable candidate and report' }
           gh release upload $tag @assets
           if ($LASTEXITCODE -ne 0) { throw 'Private draft upload failed' }
           Write-Output "HEYI_PRIVATE_CANDIDATE_TAG $tag"

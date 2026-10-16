@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import zipfile
 
 PIN = json.loads((Path(__file__).resolve().parents[2] /
@@ -35,6 +36,12 @@ CHECKS = (
     "resumeAction.legacySenderUnused", "incomingActivity.incomingReplyAndAttachmentHints",
     "incomingActivity.observerRestored", "shutdown.nativeExitGuardInvoked",
     "shutdown.hostClosedBeforeNativeExit", "shutdown.platformSessionSaved",
+)
+INSTALLATION_CHECKS = (
+    "ok", "installedPayloadVerified", "perUserRegistration", "shortcutsVerified",
+    "installedExecutablesNetworkBlocked", "runningUpdateRejected", "runningUninstallRejected",
+    "installedEntryPassed", "overwriteInstallPreservedData", "uninstallPreservedData",
+    "untrackedFilePreserved", "shortcutsAndRegistrationRemoved", "reinstallPreservedData",
 )
 
 
@@ -104,6 +111,20 @@ def export(root, output, event, commit):
             smoke.get("timedOut") is not False or smoke.get("terminationRequested") is not False):
         raise ValueError("Anonymous packaged Windows checks must pass before export")
     probe = read_json(root / "ci-result.json")
+    installation = read_json(root / "windows-installation-smoke.json")
+    setup = read_json(root / "setup/installer.json")
+    installer_name = f"Ai-boss-Windows-Setup-{commit[:12]}.exe"
+    if (any(installation.get(name) is not True for name in INSTALLATION_CHECKS) or
+            installation.get("realAccountUsed") is not False or setup.get("commit") != commit or
+            setup.get("installer") != installer_name or setup.get("perUser") is not True or
+            setup.get("profileFilesIncluded") is not False or setup.get("realAccountTested") is not False or
+            setup.get("packageManifestSha256") != digest(manifest_file) or
+            installation.get("packageManifestSha256") != setup.get("packageManifestSha256") or
+            installation.get("installerSha256") != setup.get("sha256")):
+        raise ValueError("Verified installation lifecycle required before export")
+    installer_source = source_file(root / "setup", installer_name)
+    if digest(installer_source) != setup.get("sha256"):
+        raise ValueError("Installer differs from the verified build")
     checked = []
     for name, expected in files.items():
         if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected):
@@ -112,6 +133,7 @@ def export(root, output, event, commit):
     checked.append(("heyi-package.json", manifest_file, digest(manifest_file)))
     output.mkdir(parents=True, exist_ok=False)
     archive = output / f"Ai-boss-Windows-candidate-{commit[:12]}.zip"
+    installer_target = output / installer_name
     try:
         with zipfile.ZipFile(archive, "x", zipfile.ZIP_DEFLATED, compresslevel=6) as target:
             for name, source, expected in checked:
@@ -129,16 +151,23 @@ def export(root, output, event, commit):
                 "更新时先正常退出旧工作台，不要退出 BOSS 或赫逸账号，也不要删除登录资料目录。\n"
                 "本包通过了隔离整包检查，真实账号的完整招聘流程仍待验收。\n"
                 "仅用于已授权的内部验证，请勿公开分发。\n")
+        shutil.copyfile(installer_source, installer_target)
+        if digest(installer_target) != setup["sha256"]:
+            raise ValueError("Installer changed during export")
         report = {"commit": commit, "archive": archive.name, "sha256": digest(archive),
                   "bytes": archive.stat().st_size, "manifestFiles": len(files),
                   "packagedChecksPassed": True, "realAccountTested": False,
                   "overallProbePassed": probe.get("ok") is True,
                   "checks": {name: field(smoke, name) for name in CHECKS},
-                  "profileFilesIncluded": False}
+                  "profileFilesIncluded": False,
+                  "installer": {"name": installer_name, "sha256": setup["sha256"],
+                                "bytes": installer_target.stat().st_size,
+                                "checks": {name: installation[name] for name in INSTALLATION_CHECKS}}}
         (output / "verification.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         return report
     except BaseException:
         archive.unlink(missing_ok=True)
+        installer_target.unlink(missing_ok=True)
         raise
 
 

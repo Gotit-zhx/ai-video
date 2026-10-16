@@ -67,6 +67,9 @@ try {
         & python (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\build_windows.py') `
             --source-dir (Split-Path $app) --output-dir $workbench
         if ($LASTEXITCODE -ne 0) { throw 'Windows workbench build did not complete' }
+        & python (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\build_windows_installer.py') `
+            --package $workbench --output (Join-Path $root 'setup') --commit $env:GITHUB_SHA
+        if ($LASTEXITCODE -ne 0) { throw 'Windows installer build did not complete' }
     }
     $executables = @(Get-ChildItem $root -Filter '*.exe' -Recurse -File)
     # Hard isolation also covers vendor helper/daemon executables.
@@ -111,6 +114,10 @@ try {
         }
         $result.workbenchBuilt = $true
         $result.workbenchExitCode = $workbenchCode
+        if ($workbenchCode -eq 0) {
+            & (Join-Path $PSScriptRoot 'windows-installation-smoke.ps1') -Root $root
+            $result.installationChecked = $true
+        }
     }
     # Control run: same pinned, firewalled program without inspector/injection.
     $baseline = Join-Path $root 'baseline'
@@ -203,7 +210,8 @@ try {
         'native-role-inventory.json', 'native-auth-behavior.json', 'native-http-smoke.json',
         'native-message-contract.json', 'native-receive-contract.json', 'native-request-contract.json',
         'native-request-builder.json', 'native-cold-startup.json', 'native-launcher-startup.json',
-        'windows-workbench-smoke.json',
+        'windows-workbench-smoke.json', 'windows-installation-smoke.json',
+        'windows-installed-workbench-smoke.json',
         'windows-shell-smoke.json',
         'matching-runtime-scope-fixture.json')) {
         $report = Join-Path $root $name

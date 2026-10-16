@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from windows_installation import RunningGuard
 
 
 def self_test_requested(arguments, environment):
@@ -31,11 +32,12 @@ def main():
     environment = {key: value for key, value in os.environ.items()
                    if key.upper() not in {"NODE_OPTIONS", "NODE_PATH", "ELECTRON_RUN_AS_NODE"}}
     environment["ELECTRON_RUN_AS_NODE"] = "1"
-    result = subprocess.run([str(executable), str(controller), str(root)] +
-                            (["--self-test"] if self_test else []),
-                            cwd=root, env=environment, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            creationflags=subprocess.CREATE_NO_WINDOW)
+    with RunningGuard():
+        result = subprocess.run([str(executable), str(controller), str(root)] +
+                                (["--self-test"] if self_test else []),
+                                cwd=root, env=environment, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
     if self_test:
         # Mark only a report returned by the controller. CI also requires this
         # exact windowless entry process to exit successfully.
@@ -55,8 +57,9 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception:
+    except Exception as error:
         if sys.platform == "win32" and "--self-test" not in sys.argv[1:]:
-            ctypes.windll.user32.MessageBoxW(None, "工作台安装文件不完整，请重新安装。",
+            message = str(error) if isinstance(error, RuntimeError) else "工作台启动未完成，请检查安装文件。"
+            ctypes.windll.user32.MessageBoxW(None, message,
                                              "Ai boss", 0x10)
         raise SystemExit(1)
