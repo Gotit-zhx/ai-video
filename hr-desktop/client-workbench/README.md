@@ -5,8 +5,9 @@
 2026-10-16 品牌更新：后续双端显示名称统一为 `Ai boss`，使用自有黑底白字图标。
 Mac 的显示名、Dock/Finder 图标，Windows 的入口 EXE/任务栏图标以及共用顶栏
 均已接入。内部应用名、Keychain 标识、Cookie 分区与资料路径保持不变。
-Mac 当前 r31 没有重启；独立新包通过原 Electron 整包检查。
-Windows 真实账号的完整招聘闭环仍待验收，不能以离线检查代替。
+Mac 当前 r31 没有重启；两端新品牌包均通过原 Electron 整包离线检查。
+Windows run `38887664943` attempt 2 的实际 `Ai boss.exe` 已验证，
+但独立端口启动检查仍失败，真实账号的完整招聘闭环仍待验收，不能以离线检查代替。
 图标源文件与重建说明见 [assets/README.md](assets/README.md)。
 
 2026-10-16 16:25：Mac r28 已启动，两端登录保持。按用户最新要求，
