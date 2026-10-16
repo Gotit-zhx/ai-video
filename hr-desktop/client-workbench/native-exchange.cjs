@@ -12,8 +12,8 @@ function prepareExchangePage(args) {
       state.service.conversation.requestResume) {
     return stop('NATIVE_SEND_BLOCKED', '当前会话暂不能发起新的简历请求，请核对 BOSS 会话');
   }
-  const prototype = window.XMLHttpRequest?.prototype;
-  if (!prototype || typeof prototype.open !== 'function' || typeof prototype.send !== 'function') {
+  const constructor = window.XMLHttpRequest, prototype = constructor?.prototype;
+  if (typeof constructor !== 'function') {
     return stop('NATIVE_CHAT_UNAVAILABLE', '原客户端简历交换响应观察尚未就绪');
   }
   const securityId = String(state.service.conversation.securityId);
@@ -42,17 +42,18 @@ function prepareExchangePage(args) {
       return Object.fromEntries(entries);
     } catch {return null;}
   };
-  const wrap = (name, make) => {
-    const previous = Object.getOwnPropertyDescriptor(prototype, name), original = prototype[name];
+  const wrap = (target, name, make) => {
+    const previous = Object.getOwnPropertyDescriptor(target, name), original = target[name];
     const hook = make(original);
-    Object.defineProperty(prototype, name, {...previous, value: hook, configurable: true});
+    Object.defineProperty(target, name, {value: hook, configurable: true, writable: true,
+      enumerable: previous?.enumerable ?? false});
     state.cleanups.push(() => {
-      if (prototype[name] !== hook) return;
-      if (previous) Object.defineProperty(prototype, name, previous);
-      else delete prototype[name];
+      if (target[name] !== hook) return;
+      if (previous) Object.defineProperty(target, name, previous);
+      else delete target[name];
     });
   };
-  wrap('open', original => function(method, url, ...rest) {
+  const open = original => function(method, url, ...rest) {
     requests.delete(this);
     try {
       const parsed = new URL(url, location.href);
@@ -62,8 +63,8 @@ function prepareExchangePage(args) {
       }
     } catch {}
     return Reflect.apply(original, this, [method, url, ...rest]);
-  });
-  wrap('send', original => function(body) {
+  };
+  const send = original => function(body) {
     const route = requests.get(this), data = route && parsedBody(body);
     if (state.invoked && state.valid() && String(data?.type) === '4' &&
         String(data?.securityId || '') === securityId) {
@@ -101,7 +102,31 @@ function prepareExchangePage(args) {
       state.cleanups.push(() => xhr.removeEventListener('loadend', finished));
     }
     return Reflect.apply(original, this, [body]);
-  });
+  };
+  try {
+    if (typeof prototype?.open === 'function' && typeof prototype?.send === 'function') {
+      wrap(prototype, 'open', open);wrap(prototype, 'send', send);
+    } else {
+      // The native client's XHR adapter supplies methods on each returned
+      // instance, not its constructor prototype. Observe those actual objects
+      // without creating a request or replacing their responses.
+      wrap(window, 'XMLHttpRequest', original => new Proxy(original, {
+        construct(target, args, newTarget) {
+          const xhr = Reflect.construct(target, args, newTarget);
+          try {
+            if (typeof xhr.open !== 'function' || typeof xhr.send !== 'function' ||
+                typeof xhr.addEventListener !== 'function') throw Error('unobservable');
+            wrap(xhr, 'open', open);wrap(xhr, 'send', send);
+          } catch {
+            state.finish(stop('NATIVE_CHAT_UNAVAILABLE', '原客户端简历交换响应无法核实'));
+          }
+          return xhr;
+        },
+      }));
+    }
+  } catch {
+    return stop('NATIVE_CHAT_UNAVAILABLE', '原客户端简历交换响应观察尚未就绪');
+  }
   return {ok: true};
 }
 

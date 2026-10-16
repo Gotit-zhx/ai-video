@@ -36,14 +36,27 @@ async function initialize(adapter, options) {
     storagePaths(app, process.env, {assistantRoot: options.assistantRoot});
   await fs.mkdir(root, {recursive: true, mode: 0o700});
   await fs.mkdir(assistantRoot, {recursive: true, mode: 0o700});
+  const startupProgress = stage => {
+    // A GUI launch has no stderr. Keep only the current startup stage so a
+    // pending native promise can be diagnosed without logging account data.
+    try {
+      require('node:fs').writeFileSync(path.join(root, 'startup-progress.json'),
+        JSON.stringify({stage, pid: process.pid, updatedAt: new Date().toISOString()}),
+        {mode: 0o600});
+    } catch {}
+  };
+  startupProgress('rpc');
   const executable = runtimeExecutable();
   const rpc = new NativeRPC({adapter, endpoints: require('./endpoints.json')});
   let lease, checkedAt = 0, engine, bridge, egress, platformSession, activity, boundAccount = '', ready = false, closing;
+  let activityAccount = '';
+  const waitingActivity = new Map();
   const listeners = [];
   const listen = (target, event, listener) => {
     target.on(event, listener);listeners.push({target, event, listener});
   };
   const close = () => closing || (closing = (async () => {
+    waitingActivity.clear();
     for (const {target, event, listener} of listeners) target.removeListener(event, listener);
     await Promise.allSettled([
       Promise.resolve().then(() => engine?.close()),
@@ -71,8 +84,10 @@ async function initialize(adapter, options) {
     // encrypted session lifecycle there instead of skipping upgrade storage.
     platformSession = new (require('./platform-session.cjs').PlatformSession)({
       session: platform, safeStorage, directory: root, origin: ORIGIN,
+      onStartupStage: stage => startupProgress(`platform-session:${stage}`),
     });
     await platformSession.start();
+    startupProgress('direct-network');
     egress = networkInstance().egress;
     await networkInstance().configure(platform);
     const integrated = shellInstance();
@@ -161,26 +176,63 @@ async function initialize(adapter, options) {
     bridge = new LocalBridge({
       engine, authorize, release,
       pair: async ticket => {
-        lease = await cloud('redeem', {ticket, device});
+        const candidate = await cloud('redeem', {ticket, device});
+        try {engine.validateOwner(candidate.user);}
+        catch (error) {
+          // A different signed-in tab must not replace the working owner's
+          // lease before the bridge rejects that tab's pairing request.
+          try {await cloud('release', {token: candidate.token, device});} catch {}
+          throw error;
+        }
+        lease = candidate;
         checkedAt = 0;
         return lease;
       },
     });
     const offlinePort = process.env.HEYI_WORKBENCH_TEST_DATA &&
       process.env.HEYI_WORKBENCH_TEST_PORT === '0' ? 0 : undefined;
+    startupProgress('bridge');
     try {await bridge.start(offlinePort);}
     catch (error) {
       // No shared engine state has been opened or written yet.
       throw Object.assign(Error('本机助手端口已被占用，请完整退出旧助手后打开改造版'), {cause: error});
     }
+    startupProgress('records');
     await engine.init(rpc.url);ready = true;
     // The existing website starts its connection check as soon as it renders.
     // Load it only after the loopback listener and owner state are both ready.
     // This avoids racing its initial health/pair requests against startup.
     integrated.configure({session: platform, url: platformURL, origin: platformOrigin});
+    startupProgress('interface');
+    const flushActivity = () => {
+      const own = rpc.currentIdentity?.();
+      if (!own || own !== activityAccount || engine.riskHold || engine.autoReconnect === false) {
+        waitingActivity.clear();activityAccount = '';return;
+      }
+      if (own !== boundAccount || engine.paused || engine.state.state !== 'complete') return;
+      const hints = [...waitingActivity.values()].filter(hint =>
+        hint.at >= Date.now()/1000-(hint.resumePending === true ? 7*86400 : 3600));
+      waitingActivity.clear();
+      if (hints.length) engine.notifyActivity(hints);
+    };
     listen(rpc, 'activity', hint => {
-      if (rpc.currentIdentity() === boundAccount) engine.notifyActivity([hint]);
+      const own = rpc.currentIdentity();
+      if (!own || (boundAccount && own !== boundAccount) || engine.riskHold ||
+          engine.autoReconnect === false) return;
+      if (activityAccount !== own) waitingActivity.clear();
+      activityAccount = own;
+      const previous = waitingActivity.get(hint.friend);
+      if (!previous || BigInt(hint.mid) > BigInt(previous.mid) ||
+          hint.mid === previous.mid && hint.resumePending === true && !previous.resumePending) {
+        waitingActivity.set(hint.friend, hint);
+      }
+      if (waitingActivity.size > 200) waitingActivity.delete(waitingActivity.keys().next().value);
+      flushActivity();
     });
+    // The original page can emit its initial unread list before the HR lease
+    // is restored. Keep bounded account-specific hints until that restoration;
+    // notifyActivity still respects the engine's startup/cooldown barriers.
+    listen(engine, 'change', flushActivity);
     activity = new (require('./native-activity.cjs').NativeActivity)({
       nativeWindow: () => {
         const windows = BrowserWindow.getAllWindows().filter(win => !win.isDestroyed() && win.name === 'main');
@@ -191,6 +243,7 @@ async function initialize(adapter, options) {
     });
     activity.start();
     listen(rpc, 'session-lost', code => {
+      waitingActivity.clear();activityAccount = '';
       void engine.hold({code});
     });
     listen(egress, 'stopped', () => engine.pause('DIRECT_NETWORK_UNAVAILABLE'));
@@ -214,8 +267,10 @@ async function initialize(adapter, options) {
       void close().finally(() => {clearTimeout(deadline);app.quit();});
     });
     active = {...active, engine, bridge, egress, openWorkbench, close};
+    startupProgress('ready');
     return active;
   } catch (error) {
+    startupProgress('failed');
     await close();
     throw error;
   }

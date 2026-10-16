@@ -219,13 +219,19 @@ class NativeChat extends NativeResume {
       console.warn('HEYI_NATIVE_CHAT', JSON.stringify({phase,
         code: /^[A-Z_]+$/.test(error.code || '') ? error.code : 'NATIVE_OPERATION_FAILED',
         kind: resume ? 'resume' : 'text'}));
-      if (frame && process.env.HEYI_WORKBENCH_DIAGNOSTICS_OUTPUT) {
+      if (frame) {
         try {
-          const page = await frame.executeJavaScript(
-            `(${require('./chat-diagnostics.cjs').inspectPage.toString()})()`);
-          await require('node:fs/promises').writeFile(process.env.HEYI_WORKBENCH_DIAGNOSTICS_OUTPUT,
+          const output = process.env.HEYI_WORKBENCH_DIAGNOSTICS_OUTPUT ||
+            require('node:path').join(require('electron').app.getPath('userData'), 'heyi', 'native-chat-diagnostic.json');
+          let timeout;
+          const page = await Promise.race([frame.executeJavaScript(
+            `(${require('./chat-diagnostics.cjs').inspectPage.toString()})()`),
+            new Promise((_, reject) => {timeout = setTimeout(() => reject(Error('diagnostic timeout')), 1500);}),
+          ]).finally(() => clearTimeout(timeout));
+          await require('node:fs/promises').writeFile(output,
             JSON.stringify({at: new Date().toISOString(), readOnly: true, phase,
-              code: error.code || 'NATIVE_OPERATION_FAILED', ...page}, null, 2));
+              code: /^[A-Z_]+$/.test(error.code || '') ? error.code : 'NATIVE_OPERATION_FAILED', ...page}, null, 2),
+            {mode: 0o600});
         } catch {}
       }
       throw error;

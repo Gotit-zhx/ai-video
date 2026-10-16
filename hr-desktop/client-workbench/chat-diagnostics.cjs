@@ -32,7 +32,25 @@ function inspectPage() {
   }
   const service = services.size === 1 ? [...services][0] : null;
   const conversation = editor?.conversation$;
+  const resumeEntries = [], localSeen = new Set(), localQueue = [editor];
+  while (localQueue.length && localSeen.size < 2000) {
+    const entry = localQueue.shift();
+    if (!entry || localSeen.has(entry)) continue;
+    localSeen.add(entry);localQueue.push(...(entry.$children || []));
+    if ((entry.$options?.name || entry.$options?._componentTag) === 'ExchangeResume') {
+      resumeEntries.push({visible: !!entry.$el?.getClientRects().length,
+        type: Number(entry.type), canChat: !!entry.isCanNormalChart,
+        pendingOffer: !!entry.isExchangeResumeBlueMsg,
+        existingRequest: !!entry.conversation$?.requestResume,
+        preflight: typeof entry.handleCheckOpen === 'function',
+        confirm: typeof entry.handleExChange === 'function'});
+    }
+  }
   return {editor: !!editor, editorName: editor?.$options?.name || null, ancestors,
+    xhrConstructor: typeof window.XMLHttpRequest,
+    xhrPrototypeOpen: typeof window.XMLHttpRequest?.prototype?.open,
+    xhrPrototypeSend: typeof window.XMLHttpRequest?.prototype?.send,
+    resumeEntries,
     inputFound: !!document.querySelector('.boss-chat-editor-input'),
     listName: list?.$options?.name || null,
     components: [...names], uniqueService: services.size === 1,

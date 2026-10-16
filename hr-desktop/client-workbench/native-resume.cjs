@@ -44,7 +44,10 @@ async function preparePage(args) {
         return stop('JOB_CONVERSATION_MISMATCH', '当前会话职位不一致，未索取简历');
       }
       if (matchesJob(conversation) && conversation.securityId) {
-        const queue = [editor.$root || editor];
+        // The original toolbar is a child of this conversation editor. The
+        // app root also includes global/hidden conversation tools; scanning it
+        // makes an otherwise valid current entry ambiguous.
+        const queue = [editor];
         const seen = new Set(), found = [];
         while (queue.length && seen.size < 6000) {
           const vm = queue.shift();

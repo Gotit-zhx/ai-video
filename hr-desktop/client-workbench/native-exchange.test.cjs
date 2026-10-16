@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const {prepareExchangePage, commitExchangePage} = require('./native-exchange.cjs');
 
-function fixture(t) {
+function fixture(t, instanceMethods = false) {
   const sent = [], args = {token: 'test-token', account: '101', friendId: '202', job: 'job-one', clientMid: '303'};
   let valid = true, result, calls = 0, opens = 0;
   class XHR {
@@ -18,6 +18,13 @@ function fixture(t) {
     }
   }
   const originalOpen = XHR.prototype.open, originalSend = XHR.prototype.send;
+  function ClientXHR(...args) {
+    const instance = new XHR(...args);
+    instance.open = originalOpen.bind(instance);
+    instance.send = originalSend.bind(instance);
+    return instance;
+  }
+  ClientXHR.DONE = 4;
   const conversation = {securityId: 'security-one', toPositionId: 'job-one', requestResume: 0};
   const component = {type: 4, isCanNormalChart: true, isExchangeResumeBlueMsg: false,
     $el: {getClientRects: () => [{}], getAttribute: () => null},
@@ -28,20 +35,36 @@ function fixture(t) {
   const resume = {token: args.token, component, securityId: conversation.securityId,
     editor: {conversation$: conversation}, matchesJob: value => value.toPositionId === args.job};
   const context = vm.createContext({window: {__heyiChatAction: state, __heyiResumeAction: resume,
-    XMLHttpRequest: XHR}, location: {href: 'https://www.zhipin.com/web/client/index'},
+    XMLHttpRequest: instanceMethods ? ClientXHR : XHR}, location: {href: 'https://www.zhipin.com/web/client/index'},
     URL, URLSearchParams, setTimeout, clearTimeout});
   const run = fn => vm.runInContext(`(${fn.toString()})(${JSON.stringify(args)})`, context);
   const cleanup = () => {for (const clean of state.cleanups.reverse()) clean();};
   t.after(cleanup);
   const request = (body = 'type=4&securityId=security-one', route = '/wapi/zpchat/exchange/request') => {
-    const xhr = new XHR();
+    const xhr = new context.window.XMLHttpRequest();
     assert.equal(xhr.open('POST', route), 'opened');assert.equal(xhr.send(body), 'sent');
     return xhr;
   };
-  return {args, state, component, conversation, sent, XHR, run, request, cleanup,
+  return {args, state, component, conversation, sent, XHR, ClientXHR, context, run, request, cleanup,
     originalOpen, originalSend, result: () => result, calls: () => calls, opens: () => opens,
     invalidate: () => {valid = false;}};
 }
+test('native adapter with instance-owned XHR methods preserves transport and confirms actual response', async t => {
+  const f = fixture(t, true);
+  assert.equal(f.ClientXHR.prototype.open, undefined);
+  assert.equal(f.run(prepareExchangePage).ok, true);
+  assert.equal(f.context.window.XMLHttpRequest.DONE, 4);
+  assert.equal(f.sent.length, 0, 'installing observation creates no XHR or requests');
+  await f.run(commitExchangePage);
+  const xhr = f.request();
+  f.conversation.requestResume = 1;
+  xhr.respond({code: 0, zpData: {status: 0, type: 4}});
+  assert.equal(f.result().ok, true);
+  assert.equal(f.sent.length, 1);
+  f.cleanup();
+  assert.equal(f.context.window.XMLHttpRequest, f.ClientXHR);
+  assert.equal(xhr.open('GET', '/unrelated'), 'opened');
+});
 test('the native confirmation runs once and needs both the exact exchange response and native state update', async t => {
   const f = fixture(t);
   assert.equal(f.run(prepareExchangePage).ok, true);

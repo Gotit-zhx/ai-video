@@ -102,6 +102,17 @@ test('HR permission authorizes a private desktop owner without allowing another 
   engine.authorize=async()=>({...hr,permissions:[]});
   await assert.rejects(engine.checkOwner(),/人力资源权限/);
 });
+test('candidate owner validation cannot bind an unpaired engine or change an existing owner',async t=>{
+  const {engine}=await fixture(t);
+  const hr={userId:'hr-a',organizationCode:'heyi',permissions:['hr:access']};
+  assert.match(engine.validateOwner(hr),/^[a-f0-9]{64}$/);
+  assert.equal(engine.owner,'');
+  engine.authorize=async()=>hr;
+  const owner=await engine.checkOwner();
+  assert.equal(engine.validateOwner(hr),owner);
+  assert.throws(()=>engine.validateOwner({...hr,userId:'hr-b'}),/另一位用户/);
+  assert.equal(engine.owner,owner);
+});
 test('job availability is read only for configured work and reused until its returned expiry',async t=>{
   const {engine,directory}=await fixture(t),sent=[];
   engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;

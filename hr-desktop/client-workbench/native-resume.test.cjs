@@ -31,7 +31,7 @@ function pageFixture({job = 'job-a'} = {}) {
   const prepare = () => frame.executeJavaScript(`(${preparePage.toString()})(${JSON.stringify({
     friend, friendId:'202', job:'job-a', token:'fixture',
   })})`);
-  return {calls, frame, guest, win, native, prepare, conversation, component};
+  return {calls, frame, guest, win, native, prepare, conversation, component, editor};
 }
 
 test('resume action accepts only original same-origin chat pages', () => {
@@ -54,6 +54,15 @@ test('resume action refuses unrelated and ambiguous webviews', () => {
 test('preparation locates the original component without sending or reopening the selected candidate', async () => {
   const f = pageFixture();
   assert.equal((await f.prepare()).ok, true);
+  assert.deepEqual(f.calls, {select: 0, invoke: 0});
+});
+test('global toolbars cannot make the selected editor ambiguous or supply its missing entry', async () => {
+  const f = pageFixture();
+  const other = {...f.component};
+  f.editor.$root = {$children: [f.editor, {$children: [other]}]};
+  assert.equal((await f.prepare()).ok, true);
+  f.editor.$children = [];
+  assert.equal((await f.prepare()).code, 'NATIVE_CHAT_UNAVAILABLE');
   assert.deepEqual(f.calls, {select: 0, invoke: 0});
 });
 test('wrong job cannot invoke or confirm the native resume component', async () => {

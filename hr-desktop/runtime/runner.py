@@ -8,6 +8,20 @@ import sys
 import time
 
 
+def recommendation_wait(c, root):
+    """A durable page interval; unrelated receipt reads cannot postpone it."""
+    import passive_runtime as flow
+    with flow.database(root) as db:
+        now = time.time()
+        last = float(flow.get_state(db, 'recommendations-last-read-at', '0'))
+        delay = max(c.passive_delay(cost=2, history=True, last_operation_at=0),
+                    max(0, last+60-now) if last else 0)
+        if not delay:
+            # Reserve before I/O, including failures, across jobs and restarts.
+            flow.put_state(db, 'recommendations-last-read-at', now)
+        return delay
+
+
 def configure(root, cdp, native=None):
     import connector as c
     import guarded_cli as g
@@ -143,6 +157,20 @@ def main(request):
             return {'ok': True, 'data': result.get('zpData') or {}}
         return {'ok': False, 'error': {'code': c.held_code() or 'FRIEND_DETAIL_FAILED', 'message': '会话关联未确认，已停止'}}
     c.sourcing_friend_details = sourcing_friend_details
+    def receipt_conversations(page):
+        from boss_agent_cli.auth.manager import AuthManager
+        auth = AuthManager(c.AUTH_DIR.parent, platform="zhipin")
+        with BossRecruiterClient(auth, cdp_url=request['cdp'], browser_source="stored-cookie") as client:
+            result = client.friend_list(page=page)
+        c.observe_result(result)
+        if result.get('code') == 0:
+            return {'ok': True, 'data': result.get('zpData') or {}}
+        return {'ok': False, 'error': {'code': c.held_code() or 'CHAT_LIST_UNAVAILABLE'}}
+    c.receipt_conversations = receipt_conversations
+    def accept_incoming_resume(friend, mid, job):
+        with scope.expect(friend, job):
+            return invoke('hr', 'accept-resume', friend, '--message-id', mid, '--yes')
+    c.accept_incoming_resume = accept_incoming_resume
     import passive_runtime
     def passive_delay(**options):
         return passive_runtime.budget_delay(g.BUDGET_DB, g.HOURLY_LIMIT, **options)
@@ -203,7 +231,7 @@ def main(request):
     if operation == "recommendations":
         # Continuous AI pagination shares the historical pool; it cannot spend
         # capacity reserved for incoming resumes or explicit communication.
-        delay = c.passive_delay(cost=2, history=True)
+        delay = recommendation_wait(c, request['root'])
         if delay:
             return {"ok": False, "error": {"code": "REQUEST_BUDGET_WAIT",
                     "retryAt": int(time.time()+delay),

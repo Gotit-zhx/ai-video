@@ -5,11 +5,13 @@ const path = require('node:path');
 // Preserve our own website's session cookie in the OS encrypted store. This
 // neither saves passwords nor renews/recreates a server-expired session.
 class PlatformSession {
-  constructor({session, safeStorage, directory, origin = 'https://hoyee.org.cn', now = Date.now}) {
+  constructor({session, safeStorage, directory, origin = 'https://hoyee.org.cn', now = Date.now,
+    onStartupStage = () => {}}) {
     this.session = session;this.safeStorage = safeStorage;this.origin = origin;
     this.host = new URL(origin).hostname;this.now = now;
     this.file = path.join(directory, 'platform-session.enc');
     this.chain = Promise.resolve();this.closed = false;
+    this.onStartupStage = onStartupStage;
   }
   accepts(cookie) {
     return cookie?.name === 'HEYI_SESSION' &&
@@ -17,10 +19,13 @@ class PlatformSession {
       cookie.path === '/' && cookie.secure === true && cookie.httpOnly === true;
   }
   async start() {
+    this.onStartupStage('encryption');
     if (!this.safeStorage.isEncryptionAvailable()) return {available: false};
+    this.onStartupStage('cookies');
     const existing = await this.session.cookies.get({url: this.origin});
     if (!existing.some(cookie => this.accepts(cookie))) {
       try {
+        this.onStartupStage('restore');
         const data = JSON.parse(this.safeStorage.decryptString(await fs.readFile(this.file)));
         if (data.origin === this.origin && data.savedAt <= this.now() &&
             this.now() - data.savedAt < 8 * 3600 * 1000) {
@@ -41,7 +46,9 @@ class PlatformSession {
       void this.save();
     };
     this.session.cookies.on('changed', this.listener);
+    this.onStartupStage('save');
     await this.save();
+    this.onStartupStage('ready');
     return {available: true};
   }
   save() {

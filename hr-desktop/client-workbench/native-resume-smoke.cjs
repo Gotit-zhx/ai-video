@@ -21,6 +21,14 @@ async function run() {
         sendMessage() {fixtureCalls.textMessages++;throw Error('Exchange is not a text message');},
         onMessageDelivered() {}};
       const editor = {conversation$: {}, $refs: {editbox: document.querySelector('.boss-chat-editor-input')}};
+      // Native adapter shape: the constructor returns an existing XHR with
+      // own methods, while its public prototype has no open/send functions.
+      const OriginalXHR = XMLHttpRequest;
+      window.XMLHttpRequest = function() {
+        const xhr = new OriginalXHR();
+        xhr.open = xhr.open.bind(xhr);xhr.send = xhr.send.bind(xhr);
+        return xhr;
+      };
       const post = route => new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();xhr.open('POST', route);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
@@ -47,7 +55,8 @@ async function run() {
             });
           });
         }};
-      editor.$root = {$children: [resume, {$options: {name: 'dialog-nofit'},
+      editor.$children = [{$options: {name: 'Toolbar'}, $children: [resume]}];
+      editor.$root = {$children: [editor, {$options: {name: 'dialog-nofit'},
         source: 'conversation', getConversationService: () => service}]};
       document.querySelector('#editor').__vue__ = editor;
       document.querySelector('.geek-list-wrapper').__vue__ = {$options: {name: 'geek-list'},

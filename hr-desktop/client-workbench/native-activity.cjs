@@ -7,7 +7,7 @@ const {NativeResume, isChatURL} = require('./native-resume.cjs');
 // do not open another socket or fetch messages to discover activity.
 function installActivityPage(token) {
   const previous = window.__heyiIncomingActivity;
-  if (previous?.token === token) return {ok: true};
+  if (previous?.token === token) {previous.ensureList?.();return {ok: true};}
   if (previous) return {ok: false};
   const root = window.iBossRoot, store = root?.messageStore;
   const own = () => String(root?.user?.get('userId') || '');
@@ -36,12 +36,17 @@ function installActivityPage(token) {
       if (time > 1e12) time /= 1000;
       if (!from || from === account || to !== account || !mid || !Number.isFinite(time) ||
           time <= 0 || time > Date.now() / 1000 + 60) continue;
+      const dialog = raw ? row.body?.dialog : row.dialog;
+      const resumePending = time >= Date.now()/1000-7*86400 &&
+        (row.resumePendingHint === true || (raw ? row.body?.type === 7 : row.type === 'dialog') &&
+          dialog?.type === 2 && dialog.operated === false);
       // The same packet may reach both callbacks; keep only bounded identifiers.
-      const key = from + ':' + mid;
+      const key = from + ':' + mid + (resumePending ? ':offer' : '');
       if (seen.has(key)) continue;
       seen.add(key);
       if (seen.size > 512) seen.delete(seen.values().next().value);
-      queue.push({fromId: from, toId: to, mid, time, isSelf: false});
+      queue.push({fromId: from, toId: to, mid, time, isSelf: false,
+        ...(resumePending ? {resumePending: true} : {})});
       if (queue.length > 256) queue.shift();
     }
     if (queue.length) flush();
@@ -52,11 +57,45 @@ function installActivityPage(token) {
     try {notify(Array.isArray(args[0]) ? args[0] : [args[0]]);} catch {}
     return result;
   };
-  let subscription;
+  let subscription, listWatcher, watchedList;
+  state.ensureList = () => {
+    if (!active() || typeof document === 'undefined') return;
+    // An unresolved offer can predate this app launch. Inspect only messages
+    // already rendered by the native client; no scrolling or network scans.
+    const pending = Array.from(document.querySelectorAll?.('.message-item') || []).slice(-50)
+      .map(node => node.__vue__?.$props?.message)
+      .filter(row => row?.type === 'dialog' && row.dialog?.type === 2 && row.dialog.operated === false);
+    notify(pending);
+    const list = document.querySelector('.geek-list-wrapper')?.__vue__;
+    if (list === watchedList || list?.$options?.name !== 'geek-list' || typeof list.$watch !== 'function') return;
+    listWatcher?.();watchedList = list;
+    // The original list already receives batch updates and retains messages
+    // that arrived while our host was starting. Watch only its local metadata;
+    // no extra history request or new WebSocket is used to discover activity.
+    listWatcher = list.$watch(() => [...(list.topList$ || []), ...(list.list$ || [])].slice(0, 200)
+      .map(row => [row.friendId, row.friendSource, row.lastMsgId, row.lastTS || row.updateTime, row.lastIsSelf,
+        typeof row.lastText === 'string' && /^对方想发送附件简历给您[，,]\s*您是否同意[？?]?$/.test(row.lastText.trim())]),
+    rows => {
+      if (!active()) return;
+      const messages = [];
+      for (const [friend, source, mid, stamp, outgoing, offerHint] of rows || []) {
+        let time = Number(stamp);
+        if (time > 1e12) time /= 1000;
+        if (outgoing !== false || Number(source) !== 0 ||
+            time < Date.now()/1000-(offerHint ? 7*86400 : 3600) || time > Date.now()/1000+60) continue;
+        // The list summary is only a read hint. The worker validates the
+        // original incoming dialog and job before accepting anything.
+        messages.push({fromId: friend, toId: account, mid, time, isSelf: false,
+          resumePendingHint: offerHint});
+      }
+      notify(messages);
+    }, {deep: true, immediate: true});
+  };
   state.close = () => {
     if (state.closed) return;
     state.closed = true;queue.length = 0;seen.clear();flush();clearTimeout(state.timer);
     try {subscription?.unsubscribe();} catch {}
+    try {listWatcher?.();} catch {}
     if (store.add === hook) {
       if (descriptor) Object.defineProperty(store, 'add', descriptor);
       else delete store.add;
@@ -80,6 +119,7 @@ function installActivityPage(token) {
     if (typeof unread?.subscribe === 'function') {
       subscription = unread.subscribe(row => {try {notify([row]);} catch {}});
     }
+    state.ensureList();
     return {ok: true};
   } catch {state.close();return {ok: false};}
 }

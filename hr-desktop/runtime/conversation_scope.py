@@ -30,6 +30,26 @@ class ConversationScope:
         # No extra BOSS request, navigation, SDK source change, or fallback.
         # This check runs before geekClick/sendText/ExchangeResume can execute.
         client_type._require_chat_friend_data = require
+        # The SDK's accept-resume operation validates its exact incoming
+        # message and reads friend_detail directly, not through the helper
+        # above. Apply the same job boundary to that existing read as well.
+        detail = getattr(client_type, 'friend_detail', None)
+        if callable(detail):
+            @functools.wraps(detail)
+            def checked_detail(client, friend_ids, *args, **kwargs):
+                result = detail(client, friend_ids, *args, **kwargs)
+                if self.expected is not None and result.get('code') == 0:
+                    friend, job = self.expected
+                    data = result.get('zpData') or {}
+                    rows = data.get('friendList', []) if isinstance(data, dict) else []
+                    matches = [row for row in rows if isinstance(row, dict)
+                               and str(row.get('friendId') or row.get('uid') or '') == friend]
+                    if (list(map(str, friend_ids)) != [friend] or len(matches) != 1
+                            or str(matches[0].get('encryptJobId') or matches[0].get('encJobId') or '') != job):
+                        self.violation = True
+                        raise ScopeError("会话与当前职位不一致或职位未核实，本次没有发送")
+                return result
+            client_type.friend_detail = checked_detail
 
     @contextlib.contextmanager
     def expect(self, friend, job):

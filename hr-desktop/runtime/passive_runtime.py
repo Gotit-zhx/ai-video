@@ -733,6 +733,22 @@ def step(c, db, request):
             return result
         messages = c.resume_messages(result)
         since = trigger_since(db, friend, rule)
+        if request.get('collectAllResumes') is True:
+            import boss_chat_receipts
+            boss_chat_receipts.schema(db)
+            boss_chat_receipts.wake(db, friend)
+            conversation = db.execute('SELECT * FROM chat_resume_conversations WHERE friend=?', (friend,)).fetchone()
+            # Reuse the exact official latest-page read. Pending communication
+            # must not consume the read then hide the offer from collection.
+            # A separate collector pagination cursor remains untouched.
+            if not conversation['fresh_before']:
+                received = boss_chat_receipts.inspect(c, db, conversation, result=result)
+                if received.get('ok') is not True:
+                    return received
+            if db.execute("SELECT 1 FROM chat_resume_offers WHERE friend=? AND state IN ('pending','accepted','uncertain')",
+                          (friend,)).fetchone():
+                db.execute("UPDATE people SET state='seen',updated=? WHERE friend=?", (int(now), friend))
+                return status(db, 'receiving')
         if c.adopt_received_resume(result, friend, since) is True:
             db.execute("UPDATE people SET state='requested',updated=? WHERE friend=?", (int(now), friend))
             db.execute("INSERT OR REPLACE INTO catchup(kind,target,started) VALUES('receipt',?,?)", (friend, now))
@@ -887,7 +903,8 @@ def execute(c, root, request):
             boss_chat_receipts.schema(db)
             for hint in request.get('activityHints', [])[:200]:
                 if isinstance(hint, dict):
-                    boss_chat_receipts.wake(db, hint.get('friend'))
+                    boss_chat_receipts.wake(db, hint.get('friend'), hint.get('mid'),
+                                           resume_pending=hint.get('resumePending') is True)
             # The receive-only lane also runs with no rules or with closed jobs.
             # Alternate with the original flow; human commands dispatch earlier.
             turn = get_state(db, 'chat-resumes-turn', 'collect')
@@ -924,7 +941,8 @@ def execute(c, root, request):
                 boss_chat_receipts.schema(db)
                 for hint in request.get('activityHints', [])[:200]:
                     if isinstance(hint, dict):
-                        boss_chat_receipts.wake(db, hint.get('friend'))
+                        boss_chat_receipts.wake(db, hint.get('friend'), hint.get('mid'),
+                                               resume_pending=hint.get('resumePending') is True)
         result = activity_status(db, step(c, db, request))
         if result.get('ok') is True and db.execute(
                 "SELECT 1 FROM commands c JOIN active_contacts a ON a.id=c.id "

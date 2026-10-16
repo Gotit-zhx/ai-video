@@ -152,6 +152,22 @@ class InvitationLifecycleTest(unittest.TestCase):
         self.assertEqual(sum(args[1] == "reply" for args in self.calls), 0, "active follow-up must not greet twice")
         self.finish_receipt(request, "active")
 
+    def test_communication_inspection_hands_pending_offer_to_collector_without_sending_again(self):
+        offer = self.message(302)
+        offer['body'] = {'type': 7, 'dialog': {'type': 2, 'operated': False}}
+        self.messages = [offer]
+        with flow.database(self.root) as db:
+            detail = {'jobId': self.job, 'enabledAt': self.rule['enabledAt']}
+            db.execute("INSERT INTO people(friend,rule,body,state,updated) VALUES(?,?,?,'inspect',?)",
+                       ('202', self.rule['id'], json.dumps(detail), self.now))
+            flow.put_state(db, 'lastLane', 'maintenance')
+            with mock.patch.object(flow, 'prepare_catchup'), mock.patch.object(flow, 'catchup_step', return_value=None):
+                result = flow.step(connector, db, {'rules': [self.rule], 'collectAllResumes': True})
+            self.assertEqual(result['data']['phase'], 'receiving')
+            self.assertEqual(db.execute('SELECT state FROM chat_resume_offers').fetchone()[0], 'pending')
+            self.assertEqual(db.execute('SELECT state FROM people').fetchone()[0], 'seen')
+        self.assertEqual([args[1] for args in self.calls], ['chatmsg'])
+
 
 if __name__ == "__main__":
     unittest.main()

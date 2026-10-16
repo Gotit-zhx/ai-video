@@ -296,6 +296,11 @@ async function cloud(route,body){
 }
 async function pair(ticket){
   const connected=await cloud('redeem',{ticket,device});
+  try{engine.validateOwner(connected.user);}
+  catch(error){
+    try{await cloud('release',{token:connected.token,device});}catch{}
+    throw error;
+  }
   lease=connected;leaseChecked=0;
   engine.event('WORKSPACE_CONNECTED');return connected;
 }

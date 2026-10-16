@@ -154,14 +154,17 @@ class Recruiter extends EventEmitter {
     });
     return this.persist;
   }
-  async checkOwner(){
-    const user=await this.authorize();
+  validateOwner(user){
     const legacy=user?.platformAdmin===true&&user.organizationCode==='heyi'
       &&user.username==='13800000000'&&user.roles?.includes('ADMIN');
     if(!legacy&&(!user?.permissions?.includes('hr:access')||!user.organizationCode||!(user.id||user.userId)))
       throw Error('请先登录已开通人力资源权限的账号');
     const key=crypto.createHash('sha256').update(`${user.organizationCode}:${user.id||user.userId||user.username}`).digest('hex');
     if(this.owner && this.owner!==key) throw Error('本机已绑定另一位用户，请先断开原招聘连接');
+    return key;
+  }
+  async checkOwner(){
+    const key=this.validateOwner(await this.authorize());
     this.owner=key;
     return key;
   }
@@ -349,9 +352,9 @@ class Recruiter extends EventEmitter {
       this.reconnectId=crypto.randomUUID();
       this.riskHold=null;this.state={state:'complete',phase:'',error:'',failure_code:''};
       this.idlePolls=0;this.nextBackgroundAt=this.clock()+120000;this.jobStatusRetryAt=0;
+      this.backgroundRetryAt=this.clock()+120000;
       this.paused=false;await this.save();this.event('CONNECTED');
       this.browser.connected();
-      this.backgroundRetryAt=this.clock()+120000;
       this.passiveStatus={phase:'catching_up',catchupPending:1};this.scheduleActivityPoll();
     }catch{
       if(this.state.state==='pending'){
@@ -400,11 +403,11 @@ class Recruiter extends EventEmitter {
       this.state={state:'complete',phase:'',error:'',failure_code:''};
       this.reconnectId=crypto.randomUUID();
       this.nextBackgroundAt=Math.max(this.nextBackgroundAt,this.clock()+120000);
+      this.backgroundRetryAt=this.clock()+120000;
       this.jobStatusRetryAt=0;
       await this.save();
       if(!current())return;
       this.event('CONNECTION_RESTORED');this.browser.connected();
-      this.backgroundRetryAt=this.clock()+120000;
       this.passiveStatus={...this.passiveStatus,phase:'catching_up',catchupPending:1};
       this.scheduleActivityPoll();
     }catch{/* Keep cookies and ledgers; retry only local checks after backoff. */}
@@ -420,7 +423,8 @@ class Recruiter extends EventEmitter {
     for(const hint of hints){
       if(!/^[1-9]\d{0,19}$/.test(hint.friend)||!/^[1-9]\d{0,29}$/.test(hint.mid))continue;
       const previous=this.activity.get(hint.friend);
-      if(previous&&BigInt(previous.mid)>=BigInt(hint.mid))continue;
+      if(previous&&(BigInt(previous.mid)>BigInt(hint.mid) ||
+        previous.mid===hint.mid&&!(hint.resumePending===true&&!previous.resumePending)))continue;
       this.activity.set(hint.friend,hint);
       changed=true;
       if(this.activity.size>200)this.activity.delete(this.activity.keys().next().value);

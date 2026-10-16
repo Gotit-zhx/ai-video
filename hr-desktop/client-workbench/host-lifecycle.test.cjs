@@ -5,8 +5,9 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const {Recruiter} = require('../src/core.cjs');
 
-async function fixture(t, failure) {
+async function fixture(t, failure, cloudReply = async () => ({})) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-host-lifecycle-'));
   t.after(() => fs.rm(root, {recursive: true, force: true}));
   const counts = {rpcStarts: 0, rpcCloses: 0, relayCloses: 0,
@@ -27,6 +28,9 @@ async function fixture(t, failure) {
   }
   const egress = Object.assign(new EventEmitter(), {
     info: {adapter: {}}, close: async () => {counts.relayCloses++;},
+    fetch: async (_session, url, options) => ({ok: true, status: 200,
+      json: async () => ({success: true, data: await cloudReply(
+        url.split('/').at(-1), JSON.parse(options.body))})}),
   });
   const network = {egress, configure: async () => {
     if (failure === 'network') throw Error('fixture relay failure');
@@ -35,15 +39,17 @@ async function fixture(t, failure) {
   const integrated = {setNetworkState() {}, setAccountState() {}, configure() {}};
   class RPC extends EventEmitter {
     constructor() {super();this.url = 'http://127.0.0.1:1';}
+    currentIdentity() {return this.account || '101';}
     async start() {counts.rpcStarts++;return this;}
     accountState() {return 'signed-out';}
     async close() {counts.rpcCloses++;}
   }
-  class Engine {
+  class Engine extends Recruiter {
     async init() {counts.engineInits++;}
-    async close() {counts.engineCloses++;}
+    async close() {this.clearActivity();counts.engineCloses++;}
   }
   class Bridge {
+    constructor(options) {Object.assign(this, options);}
     async start() {if (failure === 'port') throw Error('fixture port occupied');}
     async close() {counts.bridgeCloses++;}
   }
@@ -65,9 +71,29 @@ async function fixture(t, failure) {
     module, process: {env: {}}, Promise, AbortSignal, setTimeout, clearTimeout,
     require: name => Object.hasOwn(dependencies, name) ? dependencies[name] : require(name),
   });
-  return {host: module.exports, counts, app, egress, releaseSession};
+  return {host: module.exports, counts, app, egress, releaseSession, root};
 }
 
+test('initial native activity waits for the same-account HR restoration and retains warmup', async t => {
+  const {host,root}=await fixture(t);
+  await fs.mkdir(path.join(root,'userData','heyi'),{recursive:true});
+  await fs.writeFile(path.join(root,'userData','heyi','native-binding.json'),JSON.stringify({id:'101'}));
+  const running=await host.start({}),{engine,rpc}=running;
+  t.after(()=>running.close());
+  engine.paused=true;engine.state={state:'verification_pending'};
+  const hint={friend:'202',mid:'300',at:Date.now()/1000,job:''};
+  rpc.emit('activity',hint);rpc.emit('activity',{...hint,mid:'301'});
+  assert.equal(engine.activity.size,0);
+  engine.paused=false;engine.state={state:'complete'};
+  engine.backgroundRetryAt=Date.now()+120000;
+  engine.emit('change');
+  assert.equal(engine.activity.get('202').mid,'301');
+  assert.ok(engine.backgroundRetryAt>Date.now()+119000);
+  engine.clearActivity();
+  engine.paused=true;rpc.emit('activity',{...hint,mid:'302'});
+  rpc.account='999';engine.paused=false;engine.emit('change');
+  assert.equal(engine.activity.size,0,'Buffered activity must not cross accounts');
+});
 test('relay initialization failure closes the opened RPC and cannot return a partial host', async t => {
   const {host, counts} = await fixture(t, 'network');
   await assert.rejects(host.start({}), /fixture relay failure/);
@@ -135,4 +161,31 @@ test('concurrent startup awaits one complete host and repeated shutdown removes 
   assert.equal(counts.relayCloses, 1);
   assert.equal(app.listenerCount('before-quit'), 0);
   assert.equal(egress.listenerCount('stopped'), 0);
+});
+
+test('a rejected second owner cannot replace the working owner lease', async t => {
+  const users = {
+    first: {id: 'owner-a', organizationCode: 'heyi', permissions: ['hr:access']},
+    second: {id: 'owner-b', organizationCode: 'heyi', permissions: ['hr:access']},
+  };
+  const released = [];
+  const {host} = await fixture(t, null, async (route, body) => {
+    if (route === 'redeem') return {token: body.ticket, user: users[body.ticket],
+      expiresAt: Date.now() / 1000 + 1800};
+    if (route === 'lease') return {user: users[body.token]};
+    if (route === 'release') {released.push(body.token);return {};}
+    throw Error('Unexpected fixture route');
+  });
+  const running = await host.start({});
+  t.after(() => running.close());
+  await running.bridge.pair('first');
+  const owner = await running.engine.checkOwner();
+  await assert.rejects(async () => {
+    await running.bridge.pair('second');
+    await running.engine.checkOwner();
+  }, /另一位用户/);
+  assert.equal(await running.engine.checkOwner(), owner,
+    'Rejected pairing must not poison authorization for the existing website');
+  assert.deepEqual(released, ['second']);
+  assert.equal(running.engine.owner, owner);
 });

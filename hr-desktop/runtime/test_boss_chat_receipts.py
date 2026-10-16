@@ -22,6 +22,8 @@ class ReceiptTest(unittest.TestCase):
         self.c.RESUME_AUTO_PAUSE = self.root / 'pause'
         self.c.held_code.return_value = ''
         self.c.passive_delay = lambda **kw: 0
+        self.c.receipt_conversations = None
+        self.c.accept_incoming_resume = None
         self.c.resume_messages = lambda r: r.get('data', {}).get('messages', [])
         self.c.sourcing_friend_details.return_value = {'ok': True, 'data': {
             'friendList': [{'uid': 1, 'encryptJobId': 'closed-job', 'jobName': '运营'}]}}
@@ -59,6 +61,171 @@ class ReceiptTest(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM people').fetchone()[0], 0)
         self.c.request_resume.assert_not_called()
         self.assertTrue(all(call.args[1] == 'chatmsg' for call in self.c.cli_json.call_args_list))
+
+    def offer(self, mid, **changes):
+        message = {'mid': str(mid), 'from': {'uid': '1', 'source': 0}, 'to': {'uid': '9'},
+                   'time': time.time()*1000, 'body': {'type': 7, 'dialog': {'type': 2, 'operated': False}}}
+        message.update(changes)
+        return message
+
+    def test_offers_are_exact_incoming_resume_requests_not_attachments_or_other_exchanges(self):
+        with flow.database(self.root) as db:
+            self.seed(db)
+            self.inspect(db, [self.offer(101),
+                self.offer(102, body={'type': 7, 'dialog': {'type': 1, 'operated': False}}),
+                self.offer(103, body={'type': 7, 'dialog': {'type': 2, 'operated': True}}),
+                self.offer(104, time=(time.time()-8*86400)*1000),
+                self.offer(105, **{'from': {'uid': '9'}})])
+            offers = db.execute('SELECT * FROM chat_resume_offers').fetchall()
+            self.assertEqual([row['mid'] for row in offers], ['101'])
+            self.assertEqual(db.execute('SELECT count(*) FROM chat_resume_receipts').fetchone()[0], 0)
+            self.assertEqual(offers[0]['job'], 'closed-job')
+        self.c.cli_json.assert_called_once()
+
+    def test_accept_offer_requires_open_job_and_never_replays_an_uncertain_or_completed_write(self):
+        self.c.managed_job_statuses.return_value = {'statuses': {'closed-job': '已关闭'}}
+        self.c.accept_incoming_resume = mock.Mock(return_value={'ok': False})
+        with flow.database(self.root) as db:
+            self.seed(db)
+            self.inspect(db, [self.offer(101)])
+            row = db.execute('SELECT * FROM chat_resume_offers').fetchone()
+            receipts.accept_offer(self.c, db, row)
+            self.c.accept_incoming_resume.assert_not_called()
+            self.c.managed_job_statuses.return_value = {'statuses': {'closed-job': '开放中'}}
+            receipts.accept_offer(self.c, db, row)
+            receipts.accept_offer(self.c, db, row)
+            self.c.accept_incoming_resume.assert_called_once_with('1', '101', 'closed-job')
+            self.assertEqual(db.execute('SELECT state FROM chat_resume_offers').fetchone()[0], 'uncertain')
+
+    def test_confirmed_acceptance_wakes_receipt_but_is_not_reported_as_an_archived_resume(self):
+        self.c.managed_job_statuses.return_value = {'statuses': {'closed-job': '开放中'}}
+        self.c.accept_incoming_resume = mock.Mock(return_value={
+            'ok': True, 'data': {'accepted': True, 'friend_id': 1, 'message_id': 101}})
+        with flow.database(self.root) as db:
+            self.seed(db)
+            self.inspect(db, [self.offer(101)])
+            row = db.execute('SELECT * FROM chat_resume_offers').fetchone()
+            self.assertTrue(receipts.accept_offer(self.c, db, row)['data']['resumeOfferAccepted'])
+            self.assertEqual(db.execute('SELECT state FROM chat_resume_offers').fetchone()[0], 'accepted')
+            self.assertTrue(self.conversation(db)['signaled'])
+            self.assertEqual(receipts.exports(db), [])
+            self.inspect(db, [self.message(102)])
+            attachment = db.execute('SELECT * FROM chat_resume_receipts').fetchone()
+            self.assertEqual(attachment['mid'], '102')
+            self.assertEqual(attachment['state'], 'found')
+
+    def test_pending_offer_hint_recovers_an_already_read_message_once_across_restart(self):
+        with flow.database(self.root) as db:
+            self.seed(db)
+            self.inspect(db, [self.message(200, attachment=False)])
+            receipts.wake(db, '1', '100')
+            self.assertFalse(self.conversation(db)['dirty'])
+            receipts.wake(db, '1', '100', resume_pending=True)
+            self.assertTrue(self.conversation(db)['signaled'])
+            self.inspect(db, [self.offer(100), self.message(200, attachment=False)])
+            self.assertEqual(db.execute('SELECT count(*) FROM chat_resume_offers').fetchone()[0], 1)
+        with flow.database(self.root) as db:
+            receipts.wake(db, '1', '100', resume_pending=True)
+            self.assertFalse(self.conversation(db)['dirty'])
+
+    def test_offer_discovery_reuses_communication_read_without_a_second_chat_request(self):
+        with flow.database(self.root) as db:
+            self.seed(db)
+            result = {'ok': True, 'data': {'messages': [self.offer(101)]}}
+            receipts.inspect(self.c, db, self.conversation(db), result=result)
+            self.c.cli_json.assert_not_called()
+            self.assertEqual(db.execute('SELECT state FROM chat_resume_offers').fetchone()[0], 'pending')
+
+    def test_old_pending_offer_keeps_slow_interval_but_can_use_receiving_capacity(self):
+        now = time.time()
+        budget = self.root/'budget.sqlite3'
+        with sqlite3.connect(budget) as db:
+            db.execute('CREATE TABLE requests(at REAL NOT NULL)')
+            db.executemany('INSERT INTO requests VALUES(?)', [(now-1,)]*72)
+        self.c.passive_delay = lambda **kw: flow.budget_delay(budget, 120, **kw)
+        self.c.managed_job_statuses.return_value = {'statuses': {'closed-job': '开放中'}}
+        self.c.accept_incoming_resume = mock.Mock(return_value={'ok': True, 'data': {
+            'accepted': True, 'friend_id': 1, 'message_id': 101}})
+        with flow.database(self.root) as db:
+            self.seed(db)
+            db.execute('UPDATE chat_resume_conversations SET signaled=0')
+            self.inspect(db, [self.offer(101, time=now-7200)])
+            flow.put_state(db, 'chat-resumes-last-request-at', now-599)
+            self.assertIsNone(receipts.step(self.c, db, {'collectAllResumes': True}))
+            self.c.accept_incoming_resume.assert_not_called()
+            flow.put_state(db, 'chat-resumes-last-request-at', now-601)
+            self.assertTrue(receipts.step(self.c, db, {'collectAllResumes': True})['data']['resumeOfferAccepted'])
+
+    def test_candidate_offer_to_attachment_to_export_is_paced_and_only_cloud_ack_marks_stored(self):
+        now = time.time()
+        request = {'collectAllResumes': True}
+        self.c.managed_job_statuses.return_value = {'statuses': {'closed-job': '开放中'}}
+        self.c.accept_incoming_resume = mock.Mock(return_value={'ok': True, 'data': {
+            'accepted': True, 'friend_id': 1, 'message_id': 101}})
+        def network(*args):
+            if args[1] == 'chatmsg':
+                message = self.offer(101) if not self.c.accept_incoming_resume.called else self.message(102)
+                message['time'] = now
+                return {'ok': True, 'data': {'messages': [message]}}
+            if args[1] == 'download-resume':
+                Path(args[-1]).write_bytes(b'%PDF-1.4 own fixture')
+                return {'ok': True}
+            self.fail('Unexpected operation')
+        self.c.cli_json.side_effect = network
+        with flow.database(self.root) as db:
+            self.seed(db)
+            for offset in (0, 31, 62, 93):
+                with mock.patch.object(receipts.time, 'time', return_value=now+offset):
+                    self.assertTrue(receipts.step(self.c, db, request)['ok'])
+                    self.assertIsNone(receipts.step(self.c, db, request), 'No burst inside a paced turn')
+            self.c.accept_incoming_resume.assert_called_once_with('1', '101', 'closed-job')
+            self.assertEqual(db.execute('SELECT state FROM chat_resume_receipts').fetchone()[0], 'export')
+            self.assertTrue(Path(receipts.exports(db)[0]['file']).read_bytes().startswith(b'%PDF'))
+            receipts.acknowledge(db, '1', '102')
+            self.assertEqual(db.execute('SELECT state FROM chat_resume_receipts').fetchone()[0], 'stored')
+
+    def test_large_historical_backlog_downloads_one_at_a_time_without_lifetime_count_limit(self):
+        now = time.time()
+        def downloaded(*args):
+            self.assertEqual(args[1], 'download-resume')
+            Path(args[-1]).write_bytes(b'%PDF-1.4 own fixture')
+            return {'ok': True}
+        self.c.cli_json.side_effect = downloaded
+        with flow.database(self.root) as db:
+            receipts.schema(db)
+            db.executemany("INSERT INTO chat_resume_receipts(friend,mid,rule,body,state) VALUES('1',?,'rule','{}','stored')",
+                           [(str(mid),) for mid in range(1, 501)])
+            db.executemany("INSERT INTO chat_resume_receipts(friend,mid,rule,body) VALUES('1',?,'rule',?)",
+                           [(str(mid), json.dumps({'originalFileName':'resume.pdf','receivedAt':now-86400})) for mid in (501,502)])
+            with mock.patch.object(receipts.time, 'time', return_value=now):
+                self.assertTrue(receipts.step(self.c, db, {})['ok'])
+                self.assertIsNone(receipts.step(self.c, db, {}))
+        with flow.database(self.root) as db:
+            with mock.patch.object(receipts.time, 'time', return_value=now+599):
+                self.assertIsNone(receipts.step(self.c, db, {}))
+            with mock.patch.object(receipts.time, 'time', return_value=now+600):
+                self.assertTrue(receipts.step(self.c, db, {})['ok'])
+            self.assertEqual(len(receipts.exports(db)), 1, 'Cloud exports also remain serial')
+            self.assertEqual(db.execute("SELECT count(*) FROM chat_resume_receipts WHERE state='export'").fetchone()[0], 2)
+        self.assertEqual(self.c.cli_json.call_count, 2)
+
+    def test_collection_index_does_not_request_optional_last_message_enrichment(self):
+        self.c.receipt_conversations = mock.Mock(return_value={'ok': True, 'data': {'result': [{'uid': 1}]}})
+        with flow.database(self.root) as db:
+            receipts.schema(db)
+            self.assertTrue(receipts.discover(self.c, db)['ok'])
+            self.assertEqual(self.conversation(db)['friend'], '1')
+        self.c.receipt_conversations.assert_called_once_with(1)
+        self.c.cli_json.assert_not_called()
+
+    def test_already_read_activity_does_not_schedule_the_same_message_again(self):
+        with flow.database(self.root) as db:
+            self.seed(db)
+            self.inspect(db, [self.message(101)])
+            receipts.wake(db, '1', '101')
+            self.assertEqual(self.conversation(db)['signaled'], 0)
+            receipts.wake(db, '1', '102')
+            self.assertEqual(self.conversation(db)['signaled'], 1)
 
     def test_history_continues_beyond_five_pages_and_fresh_messages_do_not_erase_cursor(self):
         with flow.database(self.root) as db:

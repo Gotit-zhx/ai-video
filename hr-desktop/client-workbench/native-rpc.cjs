@@ -166,7 +166,8 @@ class NativeRPC extends EventEmitter {
           }
         }
       } else if (message.isSelf === false && identity(message.toId) === own) {
-        this.emit('activity', {friend, mid, at, job: ''});
+        this.emit('activity', {friend, mid, at, job: '',
+          ...(message.resumePending === true ? {resumePending: true} : {})});
       }
     }
   }

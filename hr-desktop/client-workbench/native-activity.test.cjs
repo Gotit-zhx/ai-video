@@ -82,3 +82,41 @@ test('observer installs once, preserves a later owner, and never swallows an ori
   g.run(installActivityPage);
   assert.throws(() => g.store.add(g.incoming()), /native failure/);
 });
+test('already loaded recent incoming rows wake collection without replaying old or outgoing rows', async t => {
+  const f = fixture(t);
+  let sample, update, removed = 0;
+  const row = (friend, mid, lastIsSelf, lastTS = Date.now()) =>
+    ({friendId: friend, friendSource: 0, lastMsgId: mid, lastIsSelf, lastTS});
+  const list = {$options: {name: 'geek-list'},
+    list$: [row('202', '601', false), row('203', '602', true), row('204', '603', false, Date.now()-7200000),
+      {...row('205', '605', false, Date.now()-7200000), lastText: '对方想发送附件简历给您，您是否同意'}],
+    $watch(read, callback) {
+      sample = read;update = callback;callback(read());
+      return () => {removed++;};
+    }};
+  f.context.document = {querySelector: () => ({__vue__: list})};
+  f.run(installActivityPage);
+  let result = await f.run(drainActivityPage);
+  assert.deepEqual(Array.from(result.hints, h => [h.fromId, h.mid]), [['202', '601'], ['205', '605']]);
+  assert.equal(result.hints[1].resumePending, true);
+  update(sample());
+  list.list$.push(row('202', '604', false));update(sample());
+  result = await f.run(drainActivityPage);
+  assert.deepEqual(Array.from(result.hints, h => h.mid), ['604']);
+  f.run(closeActivityPage);assert.equal(removed, 1);
+});
+test('an already rendered pending resume offer survives the one-hour activity window without a network read', async t => {
+  const f = fixture(t);
+  const pending = {fromId: '202', toId: '101', isSelf: false, mid: '701',
+    time: Date.now()-7200000, type: 'dialog', dialog: {type: 2, operated: false}};
+  const rows = [pending, {...pending, mid: '702', dialog: {type: 2, operated: true}},
+    {...pending, mid: '703', fromId: '101', toId: '202', isSelf: true}];
+  f.context.document = {querySelector: () => null,
+    querySelectorAll: () => rows.map(message => ({__vue__: {$props: {message}}}))};
+  f.run(installActivityPage);
+  const result = await f.run(drainActivityPage);
+  assert.equal(result.hints.length, 1);
+  assert.equal(result.hints[0].mid, '701');
+  assert.equal(result.hints[0].resumePending, true);
+  assert.equal(f.calls.length, 0, 'reading rendered messages never invokes native storage or network');
+});
