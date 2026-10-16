@@ -164,7 +164,7 @@ pnpm install --ignore-workspace --ignore-scripts
 ```sh
 python build_mac.py \
   --source-app "/Volumes/BOSS直聘 1/BOSS直聘.app" \
-  --output-app "/Users/heyi/Applications/赫逸工作台-改造测试版.app" \
+  --output-app "/Users/heyi/Applications/Ai boss.app" \
   --sdk-endpoints "/absolute/path/to/boss_agent_cli/api/recruiter.yaml"
 ```
 

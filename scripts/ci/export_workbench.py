@@ -110,12 +110,12 @@ def export(root, output, event, commit):
         checked.append((name, source_file(package, name), expected))
     checked.append(("heyi-package.json", manifest_file, digest(manifest_file)))
     output.mkdir(parents=True, exist_ok=False)
-    archive = output / f"HeyiWorkbench-Windows-candidate-{commit[:12]}.zip"
+    archive = output / f"Ai-boss-Windows-candidate-{commit[:12]}.zip"
     try:
         with zipfile.ZipFile(archive, "x", zipfile.ZIP_DEFLATED, compresslevel=6) as target:
             for name, source, expected in checked:
                 actual = hashlib.sha256()
-                with source.open("rb") as stream, target.open("HeyiWorkbench-Windows/" + name, "w") as entry:
+                with source.open("rb") as stream, target.open("Ai-boss-Windows/" + name, "w") as entry:
                     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                         actual.update(chunk)
                         entry.write(chunk)
@@ -123,7 +123,7 @@ def export(root, output, event, commit):
                     raise ValueError("Package file changed or differs from manifest")
             target.writestr("使用说明.txt",
                 "Ai boss · Windows 候选验证版\n\n"
-                "请完整解压，运行 HeyiWorkbench-Windows 文件夹中的「Ai boss.exe」。\n"
+                "请完整解压，运行 Ai-boss-Windows 文件夹中的「Ai boss.exe」。\n"
                 "不要单独移动 EXE；它需要同目录的程序文件。\n"
                 "更新时先正常退出旧工作台，不要退出 BOSS 或赫逸账号，也不要删除登录资料目录。\n"
                 "本包通过了隔离整包检查，真实账号的完整招聘流程仍待验收。\n"
