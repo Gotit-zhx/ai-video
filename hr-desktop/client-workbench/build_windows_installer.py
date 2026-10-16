@@ -1,5 +1,6 @@
 """Compile only manifest-verified application files into a private installer."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,11 +9,27 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "scripts/ci"))
 from export_workbench import PIN, REQUIRED, digest, read_json, source_file
 from windows_installation import APP_ID, RUNNING_MUTEX, SETUP_MUTEX
+
+LANGUAGE_URL = ("https://raw.githubusercontent.com/jrsoftware/issrc/"
+                "6ef32198ef1f7b7b375cd4b6b90896c2a58eb4c2/Files/Languages/ChineseSimplified.isl")
+LANGUAGE_SHA256 = "e0b0b350e2245f3c5e65586dfe43d574f6e7f06f2261149aba284954b3fc9a8d"
+
+
+def chinese_language(destination):
+    # The compiler's stock install does not ship every upstream translation.
+    # Pin the upstream 6.5+ translation; do not silently fall back to English.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(LANGUAGE_URL, timeout=30) as response:
+        data = response.read(65537)
+    if len(data) > 65536 or hashlib.sha256(data).hexdigest() != LANGUAGE_SHA256:
+        raise ValueError("Pinned installer language differs")
+    destination.write_bytes(data)
 
 
 def payload(package):
@@ -65,10 +82,13 @@ def build(package, output, commit, compiler=None):
     try:
         with tempfile.TemporaryDirectory(prefix="ai-boss-installer-") as temporary:
             staging = Path(temporary)
+            language = staging / "ChineseSimplified.isl"
+            chinese_language(language)
             definitions = {
                 "AppIdentity": APP_ID, "RunningMutex": RUNNING_MUTEX, "SetupMutex": SETUP_MUTEX,
                 "AppVersion": version, "OutputDirectory": str(output), "OutputName": stem,
                 "BrandIcon": str(HERE / "assets/ai-boss.ico"),
+                "ChineseLanguage": str(language),
             }
             preamble = "".join(f'#define {key} "{value.replace(chr(34), chr(34)*2)}"\n'
                                for key, value in definitions.items())
@@ -94,6 +114,7 @@ def build(package, output, commit, compiler=None):
                   "sha256": digest(installer), "bytes": installer.stat().st_size,
                   "packageManifestSha256": digest(package / "heyi-package.json"),
                   "manifestFiles": len(entries) - 1, "perUser": True,
+                  "languageSha256": LANGUAGE_SHA256,
                   "profileFilesIncluded": False, "realAccountTested": False}
         (output / "installer.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         return report

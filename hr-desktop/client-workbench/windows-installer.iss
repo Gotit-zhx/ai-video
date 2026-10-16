@@ -29,7 +29,7 @@ AllowNoIcons=no
 UsePreviousTasks=yes
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimplified"; MessagesFile: "{#ChineseLanguage}"
 
 [Messages]
 WelcomeLabel2=安装 Ai boss 到本机。%n%n安装前请先正常退出旧助手，无需退出 BOSS 或赫逸账号。更新和卸载都会保留登录资料与招聘记录。
