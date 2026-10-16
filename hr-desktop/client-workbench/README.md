@@ -6,8 +6,9 @@
 Mac 的显示名、Dock/Finder 图标，Windows 的入口 EXE/任务栏图标以及共用顶栏
 均已接入。内部应用名、Keychain 标识、Cookie 分区与资料路径保持不变。
 Mac 当前 r31 没有重启；两端新品牌包均通过原 Electron 整包离线检查。
-Windows run `38891472857` 的实际 `Ai boss.exe` 已验证独立端口启动，
-可与已占用的默认端口共存；整体 CI 仍有原后台调用归属的检查待完成。
+Windows run `38894101005`（代码 `7e6b2ef`）整体 CI 已通过，307 项 Node
+检查及实际 `Ai boss.exe` 整包检查通过。独立端口可与已占用的默认端口共存；
+两种冷启动都测量了 30 个绑定表达式，绑定触发的原方法调用均为 0。
 真实账号的完整招聘闭环仍待验收，不能以离线检查代替。
 图标源文件与重建说明见 [assets/README.md](assets/README.md)。
 
