@@ -355,11 +355,15 @@ def step(c, db, request):
         operation, cost = 'discover', 2
     # Historical receipt reads must leave capacity for admitted replies and
     # resume requests, as well as the existing manual-operation reserve.
-    interval = 30 if urgent else 600
+    interval = 20 if urgent else 600
     last_turn = float(flow.get_state(db, 'chat-resumes-last-request-at', '0'))
-    if (operation is None or now < last_turn+interval
-            or delay_for(cost=cost, queued=False, receiving=urgent or operation == 'accept', history=not urgent,
-                         last_operation_at=last_turn)):
+    if operation is None:
+        return None
+    delay = delay_for(cost=cost, queued=False, receiving=urgent or operation == 'accept', history=not urgent,
+                      last_operation_at=last_turn, realtime_receipt=urgent)
+    retry_at = max(last_turn+interval, now+delay)
+    flow.put_state(db, 'chat-resumes-retry-at', retry_at)
+    if now < retry_at:
         return None
     # Reserve before network I/O; restart, preemption or repeated activity
     # notifications cannot erase the collector's pacing deadline.
@@ -367,6 +371,7 @@ def step(c, db, request):
     db.commit()
     result = (discover(c, db) if operation == 'discover' else download(c, db, receipt) if operation == 'download'
               else accept_offer(c, db, offer) if operation == 'accept' else inspect(c, db, conversation))
+    flow.put_state(db, 'chat-resumes-retry-at', 0)
     flow.put_state(db, 'chat-resumes-last', operation)
     flow.put_state(db, 'chat-resumes-lane', {'history': 'fresh', 'fresh': 'download', 'download': 'history'}[lane])
     return result
@@ -391,19 +396,20 @@ def schedule(db):
     deadlines = [max(last+600,float(flow.get_state(db,'chat-resumes-discover-at','0')))]
     pending = 1
     for row in db.execute("SELECT retry_at,received_at,priority FROM chat_resume_offers WHERE state='pending' AND received_at>=?", (now-7*86400,)):
-        interval = 30 if row['priority'] or now-3600 <= row['received_at'] <= now+60 else 600
+        interval = 20 if row['priority'] or now-3600 <= row['received_at'] <= now+60 else 600
         deadlines.append(max(row['retry_at'], last+interval, float(flow.get_state(db, 'nextWriteAt'))))
         pending += 1
     for row in db.execute("SELECT body,retry_at FROM chat_resume_receipts WHERE state='found'"):
         metadata = json.loads(row['body'])
         recent = bool(metadata.get('receiptPriority')) or now-3600 <= flow.seconds(metadata.get('receivedAt')) <= now+60
-        deadlines.append(max(row['retry_at'],last+(30 if recent else 600)))
+        deadlines.append(max(row['retry_at'],last+(20 if recent else 600)))
         pending += 1
     for row in db.execute("""SELECT signaled,retry_at FROM chat_resume_conversations
                             WHERE dirty=1 OR fresh_before>0 OR history_done=0"""):
-        deadlines.append(max(row['retry_at'],last+(30 if row['signaled'] else 600)))
+        deadlines.append(max(row['retry_at'],last+(20 if row['signaled'] else 600)))
         pending += 1
-    return {'collectorPending':pending,'collectorRetryAt':min(deadlines),
+    return {'collectorPending':pending,
+            'collectorRetryAt':max(min(deadlines),float(flow.get_state(db,'chat-resumes-retry-at','0'))),
             'collectorExports':db.execute("SELECT count(*) FROM chat_resume_receipts WHERE state='export'").fetchone()[0]}
 
 

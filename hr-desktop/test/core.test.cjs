@@ -145,7 +145,7 @@ test('scheduled idle checks back off without job reads and a new message wakes o
   now+=1000;
   const hint={friend:'123',mid:'10',at:now/1000};
   engine.notifyActivity([hint,hint]);assert.equal(engine.activity.size,1);
-  assert.equal(engine.nextBackgroundAt,engine.lastActivityPoll+30000);
+  assert.equal(engine.nextBackgroundAt,engine.lastActivityPoll+20000);
   assert.ok(engine.nextBackgroundAt<idleDeadline);
   const before=calls.length;await engine.pollIfDue();assert.equal(calls.length,before);
   now=engine.nextBackgroundAt;await engine.pollIfDue();
@@ -168,6 +168,14 @@ test('idle scheduling survives restart and new activity cannot bypass the login 
   engine.notifyActivity([{friend:'123',mid:'11'}]);
   now+=1000;await engine.pollIfDue();assert.equal(calls.length,before);
   assert.equal(engine.backgroundRetryAt,now-1000+30000);
+});
+test('collector deadlines do not acquire another full timer interval after a slow operation',async t=>{
+  const {engine}=await fixture(t);let now=1000000;engine.clock=()=>now;
+  engine.passiveStatus={collectorPending:1,collectorRetryAt:(now+7000)/1000};
+  engine.planBackground();assert.equal(engine.nextBackgroundAt,now+7000);
+  now+=15000;engine.planBackground();assert.equal(engine.nextBackgroundAt,now+1000);
+  engine.passiveStatus.collectorRetryAt=(now+60000)/1000;
+  engine.idlePolls=3;engine.planBackground();assert.equal(engine.nextBackgroundAt,now+60000);
 });
 test('a greeting receipt is reported and bound in the same poll before the next timer turn',async t=>{
   const {engine,calls,directory}=await fixture(t);
@@ -383,7 +391,7 @@ test('resume archive confirms only after cloud ingest and retries the same local
     if(route==='passive-ingest'){
       order.push('ingest');uploads.push(body);
       if(failCloud)throw Error('isolated interrupted upload');
-      return {archived:true};
+      return {stored:true};
     }
     return {};
   };
@@ -396,6 +404,39 @@ test('resume archive confirms only after cloud ingest and retries the same local
   assert.deepEqual(Buffer.from(uploads[1].fileBase64,'base64'),bytes);
   assert.equal(uploads[1].accountKey,key);assert.equal(uploads[1].jobId,'fixture-job');
   assert.equal(uploads[1].friendId,'202');assert.equal(uploads[1].origin,'active');
+});
+test('a newly downloaded resume uploads in the same turn without a second platform read',async t=>{
+  for(const confirmed of [true,false]){
+    const {engine,directory,calls}=await fixture(t),key='a'.repeat(64);
+    engine.accountRoot=path.join(directory,'accounts',key);engine.state={state:'complete'};engine.paused=false;
+    const downloads=path.join(engine.accountRoot,'downloads');await fs.mkdir(downloads,{recursive:true});
+    const file=path.join(downloads,'incoming.pdf');await fs.writeFile(file,'%PDF-1.4 own fixture');
+    let downloaded=false,acknowledged=false;
+    const uploads=[];
+    engine.runtime.run=async input=>{
+      calls.push(input);
+      if(input.operation==='passive-step'){
+        downloaded=true;return {ok:true,data:{exportsPending:1}};
+      }
+      if(input.operation==='passive-local')return {ok:true,data:{exports:downloaded&&!acknowledged?[{
+        friend:'202',mid:'901',rule:'boss-chat-202',file,
+        body:JSON.stringify({origin:'boss_chat',jobId:'fixture-job'})
+      }]:[]}};
+      if(input.operation==='passive-ack'&&input.friendId)acknowledged=true;
+      return {ok:true,data:{}};
+    };
+    engine.passiveCloud=async(route,body)=>{
+      if(route==='passive-config')return {rules:[],collectAllResumes:true};
+      if(route==='passive-ingest'){uploads.push(body);return confirmed?{stored:true}:{};}
+      return {};
+    };
+    await engine.poll();
+    assert.equal(uploads.length,1);assert.equal(acknowledged,confirmed);
+    assert.equal(uploads[0].origin,'boss_chat','Automatic synchronization preserves human communication origin');
+    assert.equal(calls.filter(row=>row.operation==='passive-step').length,1);
+    assert.equal(calls.filter(row=>['download-resume','poll-resumes','passive-send'].includes(row.operation)).length,0);
+    assert.equal(engine.backgroundFailures,confirmed?0:1);
+  }
 });
 async function loggedIn(t){
   const value=await fixture(t);

@@ -12,7 +12,7 @@ import uuid
 REQUEST_TEXT = '方便发一份简历过来吗？'
 
 def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False, receiving=False, history=False,
-                 last_operation_at=None):
+                 last_operation_at=None, realtime_receipt=False):
     """Allocate existing capacity; the shared HTTP/CDP hard guard still applies."""
     if not Path(path).exists():
         return 0
@@ -23,11 +23,17 @@ def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False
     # the final receipt allowance; real incoming attachments may use it while
     # retaining ten slots for explicit HR actions.
     limit = (hard_limit if user_initiated else max(0, hard_limit-10) if receiving
-             else max(0, min(hard_limit-20, hard_limit if queued and not history else 40)))
+             else max(0, hard_limit-(20 if queued and not history else 40)))
     needed = len(times) + cost - limit
     # Persisted request times pace background work across restarts. Manual
     # actions retain their priority; incoming attachments also have a cooldown.
     spacing = 0 if user_initiated else 30 if receiving else 600 if history or not queued else 60
+    if realtime_receipt and receiving and not history and not user_initiated:
+        # Only a signaled incoming receipt may use the shorter interval.
+        # Include the estimated next turn, and slow down before capacity runs
+        # low. This does not change the shared guard or its per-request gap.
+        load = (len(times)+cost)/hard_limit if hard_limit > 0 else 1
+        spacing = 20 if load < 0.5 else 30 if load < 0.75 else 60
     # A collector has its own durable operation timestamp. Counting every job
     # status read as a new historical sweep makes its ten-minute deadline move
     # forever. The same shared request count/hard guard still applies.
@@ -526,7 +532,8 @@ def activity_step(c, db, rules, delay_for):
             with c.resume_db() as tracked:
                 last = tracked.execute('SELECT last_polled_at FROM resume_poll_state WHERE friend_id=?', (friend,)).fetchone()
             interval = max(0, last[0]+30-now) if last and saved['state'] != 'received' else 0
-            delay = max(interval, delay_for(cost=4, queued=True, receiving=True))
+            delay = max(interval, delay_for(cost=4, queued=True, receiving=True,
+                         last_operation_at=float(get_state(db, 'receivedAt', '0'))))
             if delay:
                 db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+delay, friend))
                 continue
@@ -552,7 +559,8 @@ def activity_step(c, db, rules, delay_for):
                                (json.dumps(detail, ensure_ascii=False), friend))
                     db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
                     continue
-            delay = delay_for(cost=2, queued=True)
+            delay = delay_for(cost=2, queued=True,
+                              last_operation_at=float(get_state(db, 'discoveredAt', '0')))
             if delay:
                 db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+delay, friend))
                 continue
@@ -660,7 +668,8 @@ def step(c, db, request):
             delays = []
             for _, operation in sorted(due):
                 delay = delay_for(cost=2 if operation == 'discover' else 4, queued=not pending,
-                                  receiving=operation == 'receive' and bool(recorded_receipt))
+                                  receiving=operation == 'receive' and bool(recorded_receipt),
+                                  last_operation_at=discovered if operation == 'discover' else received)
                 if not delay:
                     put_state(db, 'lastLane', 'maintenance')
                     return discover(c, db, rules) if operation == 'discover' else receive(c, db)
@@ -695,11 +704,13 @@ def step(c, db, request):
     verify_history_job = (person['state'] == 'inspect' and recovering
                           and detail.get('historyJobVerified') != verification)
     delay = delay_for(cost=2 if verify_history_job else
-                     {'inspect': 1, 'reply_ready': 3, 'ready': 5}[person['state']], queued=True)
+                     {'inspect': 1, 'reply_ready': 3, 'ready': 5}[person['state']], queued=True,
+                     last_operation_at=float(get_state(db, 'work-last-request-at', '0')))
     if delay:
         return wait_budget(delay)
     put_state(db, 'lastLane', 'work')
     if person['state'] == 'inspect':
+        put_state(db, 'work-last-request-at', now); db.commit()
         if verify_history_job:
             verified = c.sourcing_friend_details([friend])
             if verified.get('ok') is not True:
@@ -787,6 +798,7 @@ def step(c, db, request):
         detail['reply'] = {'message': message, 'templateId': template['id'], 'templateVersion': template['version']}
         # Durable before write, including crashes/ambiguous responses. Never resend.
         put_state(db, 'nextWriteAt', now+60)
+        put_state(db, 'work-last-request-at', now)
         db.execute("UPDATE people SET state='reply_uncertain',body=?,updated=? WHERE friend=?",
                    (json.dumps(detail, ensure_ascii=False), int(now), friend)); db.commit()
         try:
@@ -807,6 +819,7 @@ def step(c, db, request):
         if c.held_code(): return {'ok': False, 'error': {'code': c.held_code()}}
         return status(db, 'request_queued' if sent else 'needs_review')
     put_state(db, 'nextWriteAt', now+60)
+    put_state(db, 'work-last-request-at', now)
     db.execute("UPDATE people SET state='request_uncertain',updated=? WHERE friend=?", (int(now), friend)); db.commit()
     try:
         with c.conversation_scope(friend, rule['jobId']):

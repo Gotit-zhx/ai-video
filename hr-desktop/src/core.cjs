@@ -431,7 +431,7 @@ class Recruiter extends EventEmitter {
     }
     if(changed){
       this.idlePolls=0;
-      this.nextBackgroundAt=Math.max(this.clock(),this.lastActivityPoll+30000);
+      this.nextBackgroundAt=Math.max(this.clock(),this.lastActivityPoll+20000);
       clearTimeout(this.activityTimer);this.activityTimer=null;
       this.scheduleActivityPoll();
     }
@@ -457,12 +457,14 @@ class Recruiter extends EventEmitter {
     const consider=(pending,seconds,interval)=>{
       if(pending)next=Math.min(next,Math.max(now+interval,(Number(seconds)||0)*1000));
     };
-    consider(this.activity.size,0,30000);
+    consider(this.activity.size,0,20000);
     consider(status.exportsPending,0,10000);
     consider(status.activityPending,status.activityRetryAt,30000);
     consider(status.workPending,status.workRetryAt,30000);
     consider(status.catchupPending,status.catchupRetryAt,120000);
-    consider(status.collectorPending,status.collectorRetryAt,30000);
+    // The worker already persists the receipt deadline and applies the shared
+    // budget. Do not add another 30 seconds after a slow read has finished.
+    consider(status.collectorPending,status.collectorRetryAt,1000);
     if(status.phase==='budget_wait'&&Number(status.retryAt)*1000>now&&!this.activity.size&&!status.exportsPending)
       next=Math.max(next,Number(status.retryAt)*1000);
     this.nextBackgroundAt=next;
@@ -477,6 +479,23 @@ class Recruiter extends EventEmitter {
     let progress=false;
     const call=(operation,extra)=>this.call(operation,extra,{background:true});
     const ready=()=>generation===this.generation&&accountRoot===this.accountRoot&&this.state.state==='complete'&&!this.paused&&!this.riskHold;
+    const archive=async(items,accountKey)=>{
+      for(const item of items||[]){
+        if(!ready())return false;
+        const file=await fs.realpath(item.file),prefix=await fs.realpath(path.join(accountRoot,'downloads'));
+        if(!file.startsWith(prefix+path.sep))throw Error('简历路径异常');
+        const stat=await fs.stat(file);if(!stat.isFile()||stat.size>25*1024*1024)throw Error('简历文件超过限制');
+        const raw=await fs.readFile(file);if(!ready())return false;
+        const metadata=JSON.parse(item.body);
+        const stored=await this.passiveCloud('passive-ingest',{accountKey,friendId:item.friend,messageId:item.mid,ruleId:item.rule,
+          ...metadata,extension:path.extname(file).slice(1).toLowerCase(),fileBase64:raw.toString('base64')});
+        if(!ready())return false;
+        if(stored?.stored!==true)throw Error('简历入库尚未确认，已保留文件等待同步');
+        await call('passive-ack',{friendId:item.friend,messageId:item.mid});
+        this.event('RESUME_ARCHIVED');progress=true;
+      }
+      return ready();
+    };
     try{
       await this.checkOwner();
       if(!ready())return;
@@ -507,18 +526,7 @@ class Recruiter extends EventEmitter {
         if(!ready())return;
         await call('passive-ack',binding);
       }
-      for(const item of local.data?.exports||[]){
-        const file=await fs.realpath(item.file),prefix=await fs.realpath(path.join(accountRoot,'downloads'));
-        if(!file.startsWith(prefix+path.sep))throw Error('简历路径异常');
-        const stat=await fs.stat(file);if(!stat.isFile()||stat.size>25*1024*1024)throw Error('简历文件超过限制');
-        const raw=await fs.readFile(file);if(!ready())return;
-        const metadata=JSON.parse(item.body);
-        await this.passiveCloud('passive-ingest',{accountKey,friendId:item.friend,messageId:item.mid,ruleId:item.rule,
-          ...metadata,extension:path.extname(file).slice(1).toLowerCase(),fileBase64:raw.toString('base64')});
-        if(!ready())return;
-        await call('passive-ack',{friendId:item.friend,messageId:item.mid});
-        this.event('RESUME_ARCHIVED');
-      }
+      if(!await archive(local.data?.exports,accountKey))return;
       const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing','sourcing-credentials-v2','greeting-receipts-v1','all-chat-resumes-v1']});
       if(!ready())return;
       const command=config.commands?.[0];
@@ -567,7 +575,7 @@ class Recruiter extends EventEmitter {
         reconnectId:this.reconnectId||''});
       if(result.ok&&ready()){
         // Publish newly verified receipts during this turn, before another poll.
-        if(result.data?.greetingReceiptReady){
+        if(result.data?.greetingReceiptReady||result.data?.exportsPending){
           const receipts=await call('passive-local');
           if(!ready())return;
           if(receipts.ok){
@@ -581,6 +589,12 @@ class Recruiter extends EventEmitter {
               if(!ready())return;
               await call('passive-ack',binding);
             }
+            // File upload is to our own system, not another BOSS operation.
+            // Only the cloud acknowledgement changes the durable receipt.
+            if(!await archive(receipts.data?.exports,accountKey))return;
+          }else{
+            this.backgroundFailed(receipts.error?.code);
+            return;
           }
         }
         // A newer signal received during this operation must survive its ack.

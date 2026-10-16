@@ -324,7 +324,7 @@ class ReceiptTest(unittest.TestCase):
                 Path(args[-1]).write_bytes(b'%PDF-1.4 test')
                 return {'ok': True}
             self.c.cli_json.side_effect = downloaded
-            with mock.patch.object(receipts.time,'time',return_value=time.time()+31):
+            with mock.patch.object(receipts.time,'time',return_value=time.time()+61):
                 self.assertTrue(receipts.step(self.c, db, {})['ok'])
             self.assertEqual(db.execute('SELECT state FROM chat_resume_receipts').fetchone()[0], 'export')
         self.c.request_resume.assert_not_called()
@@ -414,11 +414,36 @@ class ReceiptTest(unittest.TestCase):
         with mock.patch.object(receipts.time,'time',return_value=1010):
             with flow.database(self.root) as db:self.assertIsNone(receipts.step(self.c,db,request))
         self.c.cli_json.assert_not_called();self.c.sourcing_friend_details.assert_not_called()
-        with mock.patch.object(receipts.time,'time',return_value=1030):
+        with mock.patch.object(receipts.time,'time',return_value=1020):
             with flow.database(self.root) as db:
                 with mock.patch.object(receipts,'download',return_value={'ok':True}) as download:
                     self.assertTrue(receipts.step(self.c,db,request)['ok'])
                     download.assert_called_once()
+
+    def test_busy_receipt_wait_is_reported_and_restart_does_not_reset_it(self):
+        budget=self.root/'budget.sqlite3'
+        with sqlite3.connect(budget) as db:
+            db.execute('CREATE TABLE requests(at REAL)')
+            db.executemany('INSERT INTO requests VALUES(?)',[(990,)]*90)
+        self.c.passive_delay=lambda **kw:flow.budget_delay(budget,120,**kw)
+        message=self.message(100);message['time']=1000
+        self.c.cli_json.return_value={'ok':True,'data':{'messages':[message]}}
+        with mock.patch.object(receipts.time,'time',return_value=1000):
+            with flow.database(self.root) as db:
+                self.seed(db)
+                flow.put_state(db,'chat-resumes-last-request-at',990)
+                self.assertIsNone(receipts.step(self.c,db,{}))
+                self.assertEqual(receipts.schedule(db)['collectorRetryAt'],1050)
+        with mock.patch.object(receipts.time,'time',return_value=1049):
+            with flow.database(self.root) as db:
+                receipts.wake(db,'1','100')
+                self.assertIsNone(receipts.step(self.c,db,{}))
+                self.assertEqual(receipts.schedule(db)['collectorRetryAt'],1050)
+        self.c.cli_json.assert_not_called()
+        with mock.patch.object(receipts.time,'time',return_value=1050):
+            with flow.database(self.root) as db:
+                self.assertTrue(receipts.step(self.c,db,{})['ok'])
+        self.c.cli_json.assert_called_once()
 
     def test_history_waits_ten_minutes_across_reconnect_without_resetting_list_deadline(self):
         self.c.cli_json.return_value={'ok':True,'data':{'messages':[]}}
@@ -448,7 +473,7 @@ class ReceiptTest(unittest.TestCase):
                 self.assertEqual(planned['collectorRetryAt'],1590)
                 receipts.wake(db,'2')
                 planned=receipts.schedule(db)
-                self.assertEqual(planned['collectorRetryAt'],1020)
+                self.assertEqual(planned['collectorRetryAt'],1010)
                 self.assertEqual(planned['collectorPending'],3)
         self.c.cli_json.assert_not_called();self.c.sourcing_friend_details.assert_not_called()
 
@@ -471,7 +496,7 @@ class ReceiptTest(unittest.TestCase):
             self.c.passive_delay=mock.Mock(return_value=120)
             receipts.step(self.c,db,{})
             self.c.passive_delay.assert_called_once_with(cost=8,queued=False,receiving=False,history=True,
-                                                        last_operation_at=0.0)
+                                                        last_operation_at=0.0,realtime_receipt=False)
 
     def test_unchanged_conversation_list_does_not_requeue_old_history_every_sweep(self):
         with flow.database(self.root) as db:

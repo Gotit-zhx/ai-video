@@ -54,7 +54,7 @@ class RecommendationBudgetTest(unittest.TestCase):
             budget = Path(folder)/'budget.sqlite3'
             with sqlite3.connect(budget) as db:
                 db.execute('CREATE TABLE requests(at REAL)')
-                db.executemany('INSERT INTO requests VALUES(?)', [(999,)]*40)
+                db.executemany('INSERT INTO requests VALUES(?)', [(999,)]*80)
             c = mock.Mock()
             c.passive_delay = lambda **kw: flow.budget_delay(budget, 120, **kw)
             with mock.patch('runner.time.time', return_value=1000):

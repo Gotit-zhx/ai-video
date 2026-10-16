@@ -25,6 +25,9 @@ def recommendation_wait(c, root):
 def configure(root, cdp, native=None):
     import connector as c
     import guarded_cli as g
+    # User-configured desktop ceiling. All accounts and operation types still
+    # share the existing durable request ledger and per-request pacing guard.
+    g.HOURLY_LIMIT = 500
     from urllib.parse import urlsplit
     parsed = urlsplit(cdp)
     if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port:

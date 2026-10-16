@@ -70,6 +70,7 @@ jobs:
       - run: python -m unittest discover -s runtime -p test_passive_runtime.py
       - run: python -m unittest discover -s runtime -p test_boss_chat_receipts.py
       - run: python -m unittest discover -s runtime -p test_recommendation_budget.py
+      - run: python -m unittest discover -s runtime -p test_desktop_budget.py
       - run: python -m unittest discover -s runtime -p test_active_sourcing.py
       - run: python -m unittest discover -s runtime -p test_account_history.py
       - run: python -m unittest discover -s runtime -p test_local_session.py
@@ -185,6 +186,15 @@ jobs:
         env:
           PYTHONPATH: hr-desktop/runtime/build/shared
         run: python -m unittest discover -s hr-desktop/runtime -p test_invitation_lifecycle.py
+      - name: Check receipt scheduling and configured request ceiling
+        if: ${{ inputs.nativeWorkbench == true }}
+        env:
+          PYTHONPATH: hr-desktop/runtime/build/shared
+        run: |
+          python -m unittest discover -s hr-desktop/runtime -p test_desktop_budget.py
+          python -m unittest discover -s hr-desktop/runtime -p test_passive_runtime.py
+          python -m unittest discover -s hr-desktop/runtime -p test_boss_chat_receipts.py
+          python -m unittest discover -s hr-desktop/runtime -p test_recommendation_budget.py
       - name: Check private candidate export boundaries
         if: ${{ inputs.nativeWorkbench == true }}
         run: python -m unittest discover -s scripts/ci -p test_export_workbench.py

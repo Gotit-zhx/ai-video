@@ -723,7 +723,7 @@ class WorkflowTest(unittest.TestCase):
             flow.admit_history(db,'1',{**self.rule,'historyBackfill':True})
         self.c.passive_delay=mock.Mock(return_value=60)
         self.assertEqual(self.step()['data']['phase'],'budget_wait')
-        self.c.passive_delay.assert_called_once_with(cost=2,queued=True)
+        self.c.passive_delay.assert_called_once_with(cost=2,queued=True,last_operation_at=0.0)
         self.c.sourcing_friend_details.assert_not_called()
         self.c.cli_json.assert_not_called()
 
@@ -745,7 +745,7 @@ class WorkflowTest(unittest.TestCase):
         self.step()
         self.c.cli_json.assert_called_once_with('hr','reply','1','王同学，可以沟通下运营。')
         self.assertTrue(any(not c['queued'] for c in calls))
-        self.assertIn({'cost':3,'queued':True},calls)
+        self.assertIn({'cost':3,'queued':True,'last_operation_at':0.0},calls)
 
     def test_budget_accounts_for_complete_operation_and_actual_expiry(self):
         path=self.root/'budget.sqlite3'
@@ -755,8 +755,8 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(flow.budget_delay(path,120,cost=3,queued=True),0)
         # 96 + 5 requires one expiry to leave 20 interactive slots.
         self.assertEqual(flow.budget_delay(path,120,cost=5,queued=True),3101)
-        # 96 + 2 - 40 = 58 expiries, rather than waking on the first one.
-        self.assertEqual(flow.budget_delay(path,120,cost=2),3158)
+        # Leave forty slots: 96 + 2 - 80 needs eighteen expiries.
+        self.assertEqual(flow.budget_delay(path,120,cost=2),3118)
         with contextlib.closing(sqlite3.connect(path)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],96)
 
@@ -769,6 +769,60 @@ class WorkflowTest(unittest.TestCase):
         self.assertGreater(flow.budget_delay(path,120,cost=2,history=True),3000)
         self.assertEqual(flow.budget_delay(path,120,cost=8,receiving=True),29)
         self.assertEqual(flow.budget_delay(path,120,cost=10,user_initiated=True),0)
+
+    def test_realtime_receipts_speed_up_only_with_headroom_and_slow_before_quota(self):
+        path=self.root/'budget.sqlite3'
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE requests(at REAL)')
+        for count,expected in ((0,10),(51,10),(52,20),(81,20),(82,50),(102,50),(103,3590)):
+            with self.subTest(count=count):
+                with sqlite3.connect(path) as db:
+                    db.execute('DELETE FROM requests')
+                    db.executemany('INSERT INTO requests VALUES(?)',[(989,)]*count)
+                self.assertEqual(flow.budget_delay(path,120,cost=8,receiving=True,
+                    realtime_receipt=True,last_operation_at=990),expected)
+        with sqlite3.connect(path) as db:
+            db.execute('DELETE FROM requests')
+        self.assertEqual(flow.budget_delay(path,120,cost=2,history=True,last_operation_at=990),590)
+        self.assertEqual(flow.budget_delay(path,120,cost=3,queued=True,last_operation_at=990),50)
+        self.assertEqual(flow.budget_delay(path,120,cost=8,receiving=True,last_operation_at=990),20)
+
+    def test_pending_work_deadline_does_not_slide_with_unrelated_receipt_or_job_reads(self):
+        path=self.root/'budget.sqlite3'
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE requests(at REAL)')
+            db.executemany('INSERT INTO requests VALUES(?)',[(999,)]*108)
+        self.c.passive_delay=lambda **kw:flow.budget_delay(path,500,**kw)
+        self.pending('reply_ready')
+        with flow.database(self.root) as db:
+            flow.put_state(db,'lastLane','maintenance')
+            flow.put_state(db,'work-last-request-at',940)
+        self.step()
+        self.c.cli_json.assert_called_once_with('hr','reply','1','王同学，可以沟通下运营。')
+        self.c.cli_json.reset_mock()
+        self.pending('reply_ready',friend='2')
+        for stamp in (1001,1030,1059):
+            self.now=stamp
+            with sqlite3.connect(path) as db:
+                db.execute('INSERT INTO requests VALUES(?)',(stamp-1,))
+            with flow.database(self.root) as db:flow.put_state(db,'lastLane','maintenance')
+            result=self.step()
+            self.assertEqual(result['data']['retryAt'],1060)
+        self.c.cli_json.assert_not_called()
+
+    def test_configured_500_budget_retains_manual_and_incoming_capacity(self):
+        path=self.root/'budget.sqlite3'
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE requests(at REAL)')
+            db.executemany('INSERT INTO requests VALUES(?)',[(900,)]*459)
+        self.assertEqual(flow.budget_delay(path,500,cost=1,history=True,last_operation_at=0),0)
+        self.assertGreater(flow.budget_delay(path,500,cost=2,history=True,last_operation_at=0),0)
+        self.assertEqual(flow.budget_delay(path,500,cost=8,receiving=True,realtime_receipt=True),0)
+        with sqlite3.connect(path) as db:
+            db.executemany('INSERT INTO requests VALUES(?)',[(900,)]*40)
+        self.assertGreater(flow.budget_delay(path,500,cost=1,receiving=True),0)
+        self.assertEqual(flow.budget_delay(path,500,cost=1,user_initiated=True),0)
+        self.assertGreater(flow.budget_delay(path,500,cost=2,user_initiated=True),0)
 
     def test_chat_page_required_is_visible_without_marking_a_send_attempt(self):
         self.pending('reply_ready')
