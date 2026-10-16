@@ -96,3 +96,11 @@ Windows 原运行时的新检查和完整实机业务结果待验证，不声明
 - CUA 获取新应用界面超时，访问 SecurityAgent 时明确返回安全限制。未通过其他工具绕过该限制，也未读取或修改钥匙串凭据。具体弹窗内容不可见，需用户在本机检查并处理授权后继续验证。
 - 本次不能声明新应用真实双登录已恢复。原资料目录、内部应用名、Bundle ID 与 Cookie 分区继续保留；整包离线成功不代替此次真实启动结果。
 - 本轮证据保存在仓库外 `boss-client-analysis-20261014/ai-boss-mac-delivery-20261016`，包括 `mac-smoke.json`、`smoke-process.json` 和 `delivery.json`。
+
+## Windows 本机交付完成
+
+- `~/Downloads/Ai-boss-Windows-20261016/Ai-boss-Windows-Setup-6c09d85d5690.exe` 已完整下载。文件为 270,153,240 字节，SHA-256 与上述私有资产及安装生命周期验证记录相同；同目录附 `verification.json` 和安装验收说明。
+- GitHub 单连接下载速度低，本轮最终使用现有 GitHub 连接分八段取回文件，严格核对每段的 HTTP Content-Range，并对合并后的完整安装包校验 SHA-256。未修改助手的物理网卡直连配置；该交付文件没有上传公开 OSS。
+- 清理了本轮下载分段和被替代的临时文件。旧目录中的 `HeyiWorkbench-Windows-candidate-63aab4c88822.zip` 实际仅 10,800,768 字节，与旧清单要求的 324,019,751 字节及 SHA-256 不符；确认新安装器完整后删除旧残缺包。
+- 证据见 `windows-ai-boss-installer-verified-20261016/local-delivery.json` 和 `old-incomplete-download-removed.json`。没有在 Mac 执行 Windows EXE，也未使用任何真实 Windows 账号完成验收。
+- Mac 新进程仍停在加密资料读取，系统授权依然需要用户处理；安装包交付完成不能替代这项登录恢复检查。
