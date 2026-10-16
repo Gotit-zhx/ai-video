@@ -1,3 +1,4 @@
+import contextlib
 import tempfile
 import sqlite3
 from pathlib import Path
@@ -33,7 +34,7 @@ class RecommendationBudgetTest(unittest.TestCase):
     def test_page_cooldown_survives_restart_and_is_not_reset_by_unrelated_reads(self):
         with tempfile.TemporaryDirectory() as folder:
             budget = Path(folder)/'budget.sqlite3'
-            with sqlite3.connect(budget) as db:
+            with contextlib.closing(sqlite3.connect(budget)) as db, db:
                 db.execute('CREATE TABLE requests(at REAL)')
                 db.execute('INSERT INTO requests VALUES(999)')
             c = mock.Mock()
@@ -42,7 +43,7 @@ class RecommendationBudgetTest(unittest.TestCase):
                 self.assertEqual(runner.recommendation_wait(c, folder), 0)
             with mock.patch('runner.time.time', return_value=1020):
                 self.assertEqual(runner.recommendation_wait(c, folder), 40)
-            with sqlite3.connect(budget) as db:
+            with contextlib.closing(sqlite3.connect(budget)) as db, db:
                 db.execute('INSERT INTO requests VALUES(1059)')
             with mock.patch('runner.time.time', return_value=1060):
                 self.assertEqual(runner.recommendation_wait(c, folder), 0)
@@ -52,7 +53,7 @@ class RecommendationBudgetTest(unittest.TestCase):
     def test_receipt_reserve_remains_unavailable_to_recommendation_pages(self):
         with tempfile.TemporaryDirectory() as folder:
             budget = Path(folder)/'budget.sqlite3'
-            with sqlite3.connect(budget) as db:
+            with contextlib.closing(sqlite3.connect(budget)) as db, db:
                 db.execute('CREATE TABLE requests(at REAL)')
                 db.executemany('INSERT INTO requests VALUES(?)', [(999,)]*80)
             c = mock.Mock()

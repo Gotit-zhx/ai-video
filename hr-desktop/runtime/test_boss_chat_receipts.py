@@ -139,7 +139,7 @@ class ReceiptTest(unittest.TestCase):
     def test_old_pending_offer_keeps_slow_interval_but_can_use_receiving_capacity(self):
         now = time.time()
         budget = self.root/'budget.sqlite3'
-        with sqlite3.connect(budget) as db:
+        with contextlib.closing(sqlite3.connect(budget)) as db, db:
             db.execute('CREATE TABLE requests(at REAL NOT NULL)')
             db.executemany('INSERT INTO requests VALUES(?)', [(now-1,)]*72)
         self.c.passive_delay = lambda **kw: flow.budget_delay(budget, 120, **kw)
@@ -422,7 +422,7 @@ class ReceiptTest(unittest.TestCase):
 
     def test_busy_receipt_wait_is_reported_and_restart_does_not_reset_it(self):
         budget=self.root/'budget.sqlite3'
-        with sqlite3.connect(budget) as db:
+        with contextlib.closing(sqlite3.connect(budget)) as db, db:
             db.execute('CREATE TABLE requests(at REAL)')
             db.executemany('INSERT INTO requests VALUES(?)',[(990,)]*90)
         self.c.passive_delay=lambda **kw:flow.budget_delay(budget,120,**kw)

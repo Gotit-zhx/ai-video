@@ -146,14 +146,109 @@ class WorkflowTest(unittest.TestCase):
 
     def test_collection_cannot_acknowledge_a_signal_without_saving_it_for_the_flow(self):
         hint={**self.hint(), 'job':''}
+        self.c.passive_delay=lambda **kw:60
         with mock.patch('boss_chat_receipts.step', return_value={'ok':True}) as collect:
             value=self.step(collectAllResumes=True, activityHints=[hint])
-            collect.assert_called_once()
+            collect.assert_not_called()
         self.assertEqual(value['data']['activityPending'],1)
         with flow.database(self.root) as db:
             row=db.execute("SELECT * FROM activity WHERE friend='1'").fetchone()
             self.assertEqual(row['done'],0)
             self.assertEqual(row['mid'],'200')
+
+    def test_native_hint_without_job_is_resolved_then_replied_and_requested_once(self):
+        hint={**self.hint(), 'job':''}
+        with mock.patch('boss_chat_receipts.step') as collect:
+            self.step(collectAllResumes=True,activityHints=[hint])
+            collect.assert_not_called()
+        self.c.sourcing_friend_details.assert_called_once_with(['1'])
+        self.c.cli_json.assert_not_called()
+        self.assertEqual(self.state(),'inspect')
+        self.messages(self.message())
+        self.now+=61
+        self.step()
+        self.assertEqual(self.state(),'reply_ready')
+        self.c.cli_json.assert_called_once_with('hr','chatmsg','1','--count','100')
+        self.c.cli_json.return_value={'ok':True,'data':{'sent':True}}
+        # Maintenance reads can alternate with the two communication writes.
+        for _ in range(6):
+            if self.state()=='requested':
+                break
+            self.now+=61
+            self.step()
+        self.assertEqual(self.state(),'requested')
+        self.assertEqual(sum(call.args[:2]==('hr','reply') for call in self.c.cli_json.call_args_list),1)
+        self.c.request_resume.assert_called_once_with('1',retry_uncertain=False)
+        self.now+=61
+        self.step(activityHints=[hint])
+        self.c.request_resume.assert_called_once()
+
+    def test_unbound_hint_uses_exact_official_job_and_never_the_first_open_rule(self):
+        other={**self.rule,'id':'r2','jobId':'job2'}
+        self.c.managed_job_statuses.return_value={'statuses':{'job1':'开放中','job2':'开放中'}}
+        self.c.sourcing_friend_details.return_value={'ok':True,'data':{'friendList':[
+            {'uid':'999','encryptJobId':'job1'},
+            {'uid':'1','encryptJobId':'job2','name':'候选人'}]}}
+        self.runop('passive-step',rules=[self.rule,other],activityHints=[{**self.hint(),'job':''}])
+        with flow.database(self.root) as db:
+            row=db.execute("SELECT * FROM people WHERE friend='1'").fetchone()
+            self.assertEqual(row['rule'],'r2')
+            self.assertEqual(json.loads(row['body'])['jobId'],'job2')
+        self.c.cli_json.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_unbound_hint_does_not_admit_closed_or_unconfigured_job(self):
+        self.c.sourcing_friend_details.return_value={'ok':True,'data':{'friendList':[
+            {'uid':'1','encryptJobId':'closed-job'}]}}
+        self.step(activityHints=[{**self.hint(),'job':''}])
+        with flow.database(self.root) as db:
+            self.assertIsNone(db.execute('SELECT * FROM people').fetchone())
+            self.assertEqual(db.execute('SELECT done FROM activity').fetchone()[0],1)
+        self.c.cli_json.assert_not_called()
+        self.c.request_resume.assert_not_called()
+
+    def test_unbound_hint_waits_for_missing_binding_and_resumes_read_without_new_message(self):
+        self.c.sourcing_friend_details.return_value={'ok':True,'data':{'friendList':[]}}
+        self.step(activityHints=[{**self.hint(),'job':''}])
+        with flow.database(self.root) as db:
+            row=db.execute('SELECT * FROM activity').fetchone()
+            self.assertEqual((row['done'],row['retry_at']),(0,2800))
+        self.now=2800
+        self.c.sourcing_friend_details.return_value={'ok':True,'data':{'friendList':[
+            {'uid':'1','encryptJobId':'job1'}]}}
+        self.step()
+        self.assertEqual(self.state(),'inspect')
+        self.c.request_resume.assert_not_called()
+
+    def test_failed_binding_read_keeps_hint_and_pacing_deadline_across_restart(self):
+        self.c.sourcing_friend_details.return_value={'ok':False,'error':{'code':'FRIEND_DETAIL_FAILED'}}
+        self.assertFalse(self.step(activityHints=[{**self.hint(),'job':''}])['ok'])
+        with flow.database(self.root) as db:
+            self.assertEqual(float(flow.get_state(db,'work-last-request-at')),self.now)
+            row=db.execute('SELECT * FROM activity').fetchone()
+            self.assertEqual((row['done'],row['retry_at']),(0,self.now+300))
+        self.c.request_resume.assert_not_called()
+
+    def test_upgrade_recovers_only_dropped_unbound_reads_and_preserves_write_ledgers(self):
+        self.pending('reply_uncertain',friend='2')
+        with flow.database(self.root) as db:
+            db.executemany('INSERT INTO activity VALUES(?,?,?,?,0,1)',[
+                ('1','','201',900),('2','','202',900),('3','job1','203',900),
+                ('4','','204',self.now-8*86400)])
+            flow.recover_unbound_activity(db,{'r1':self.rule})
+            self.assertEqual(dict(db.execute('SELECT friend,done FROM activity')),
+                             {'1':0,'2':1,'3':1,'4':1})
+            db.execute("UPDATE activity SET done=1 WHERE friend='1'")
+            flow.recover_unbound_activity(db,{'r1':self.rule})
+            self.assertEqual(db.execute("SELECT done FROM activity WHERE friend='1'").fetchone()[0],1)
+        self.assertEqual(self.state('2'),'reply_uncertain')
+
+    def test_startup_list_hints_survive_the_same_one_hour_window_as_the_host(self):
+        self.now=10000
+        with flow.database(self.root) as db:
+            flow.remember_activity(db,[{**self.hint(),'at':self.now-1800,'job':''},
+                                       {**self.hint('2'),'at':self.now-3601,'job':''}])
+            self.assertEqual([r[0] for r in db.execute('SELECT friend FROM activity')],['1'])
 
     def test_closed_job_pending_reply_does_not_block_receive_only_collection(self):
         self.pending('reply_ready')
@@ -295,10 +390,24 @@ class WorkflowTest(unittest.TestCase):
             db.execute("INSERT INTO resume_requests VALUES('1','waiting',NULL)")
         self.c.passive_delay = mock.Mock(return_value=120)
         self.step(reconnectId='login-paced')
-        self.assertIn(mock.call(cost=4, queued=True, receiving=False, history=True),
+        self.assertIn(mock.call(cost=4, queued=True, receiving=False, history=True,last_operation_at=0),
                       self.c.passive_delay.call_args_list)
         self.c.poll_resumes_once.assert_not_called()
         self.c.download_resume.assert_not_called()
+
+    def test_history_catchup_deadline_is_not_extended_by_unrelated_recent_requests(self):
+        budget=self.root/'request-budget.sqlite3'
+        with contextlib.closing(sqlite3.connect(budget)) as db, db:
+            db.execute('CREATE TABLE requests(at REAL)')
+            db.execute('INSERT INTO requests VALUES(?)',(self.now-1,))
+        self.c.passive_delay=lambda **options:flow.budget_delay(budget,500,**options)
+        self.c.cli_json.return_value={'ok':True,'data':{'result':[]}}
+        with flow.database(self.root) as db:
+            flow.put_state(db,'catchup-last-request-at',self.now-600)
+            db.execute("INSERT INTO catchup(kind,target,started) VALUES('job','r1',?)",(self.now-600,))
+            flow.catchup_step(self.c,db,{'r1':self.rule},self.c.passive_delay)
+            self.assertEqual(float(flow.get_state(db,'catchup-last-request-at')),self.now)
+        self.c.cli_json.assert_called_once_with('hr','chat','--job-id','job1','--page','1')
 
     def test_reconnect_pages_through_read_greetings_and_preserves_cursor(self):
         self.pending('stored',friend='9')
@@ -772,16 +881,16 @@ class WorkflowTest(unittest.TestCase):
 
     def test_realtime_receipts_speed_up_only_with_headroom_and_slow_before_quota(self):
         path=self.root/'budget.sqlite3'
-        with sqlite3.connect(path) as db:
+        with contextlib.closing(sqlite3.connect(path)) as db, db:
             db.execute('CREATE TABLE requests(at REAL)')
         for count,expected in ((0,10),(51,10),(52,20),(81,20),(82,50),(102,50),(103,3590)):
             with self.subTest(count=count):
-                with sqlite3.connect(path) as db:
+                with contextlib.closing(sqlite3.connect(path)) as db, db:
                     db.execute('DELETE FROM requests')
                     db.executemany('INSERT INTO requests VALUES(?)',[(989,)]*count)
                 self.assertEqual(flow.budget_delay(path,120,cost=8,receiving=True,
                     realtime_receipt=True,last_operation_at=990),expected)
-        with sqlite3.connect(path) as db:
+        with contextlib.closing(sqlite3.connect(path)) as db, db:
             db.execute('DELETE FROM requests')
         self.assertEqual(flow.budget_delay(path,120,cost=2,history=True,last_operation_at=990),590)
         self.assertEqual(flow.budget_delay(path,120,cost=3,queued=True,last_operation_at=990),50)
@@ -789,7 +898,7 @@ class WorkflowTest(unittest.TestCase):
 
     def test_pending_work_deadline_does_not_slide_with_unrelated_receipt_or_job_reads(self):
         path=self.root/'budget.sqlite3'
-        with sqlite3.connect(path) as db:
+        with contextlib.closing(sqlite3.connect(path)) as db, db:
             db.execute('CREATE TABLE requests(at REAL)')
             db.executemany('INSERT INTO requests VALUES(?)',[(999,)]*108)
         self.c.passive_delay=lambda **kw:flow.budget_delay(path,500,**kw)
@@ -803,7 +912,7 @@ class WorkflowTest(unittest.TestCase):
         self.pending('reply_ready',friend='2')
         for stamp in (1001,1030,1059):
             self.now=stamp
-            with sqlite3.connect(path) as db:
+            with contextlib.closing(sqlite3.connect(path)) as db, db:
                 db.execute('INSERT INTO requests VALUES(?)',(stamp-1,))
             with flow.database(self.root) as db:flow.put_state(db,'lastLane','maintenance')
             result=self.step()
@@ -812,13 +921,13 @@ class WorkflowTest(unittest.TestCase):
 
     def test_configured_500_budget_retains_manual_and_incoming_capacity(self):
         path=self.root/'budget.sqlite3'
-        with sqlite3.connect(path) as db:
+        with contextlib.closing(sqlite3.connect(path)) as db, db:
             db.execute('CREATE TABLE requests(at REAL)')
             db.executemany('INSERT INTO requests VALUES(?)',[(900,)]*459)
         self.assertEqual(flow.budget_delay(path,500,cost=1,history=True,last_operation_at=0),0)
         self.assertGreater(flow.budget_delay(path,500,cost=2,history=True,last_operation_at=0),0)
         self.assertEqual(flow.budget_delay(path,500,cost=8,receiving=True,realtime_receipt=True),0)
-        with sqlite3.connect(path) as db:
+        with contextlib.closing(sqlite3.connect(path)) as db, db:
             db.executemany('INSERT INTO requests VALUES(?)',[(900,)]*40)
         self.assertGreater(flow.budget_delay(path,500,cost=1,receiving=True),0)
         self.assertEqual(flow.budget_delay(path,500,cost=1,user_initiated=True),0)
