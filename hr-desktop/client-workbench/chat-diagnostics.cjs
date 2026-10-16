@@ -42,7 +42,10 @@ function inspectPage() {
       String(service.bossId) === String(window.iBossRoot?.user?.get('userId') || ''),
     candidateMatched: !!conversation?.friendId &&
       String(conversation.friendId) === String(service?.get?.('friendId') || ''),
-    jobPresent: !!(conversation?.encryptJobId || conversation?.encJobId),
+    jobPresent: !!(conversation?.toPositionId || conversation?.encryptJobId || conversation?.encJobId),
+    selectedJobPresent: !!(service?.get?.('encryptJobId') || service?.get?.('encJobId')),
+    selectedJobMatchesPosition: !!conversation?.toPositionId &&
+      String(conversation.toPositionId) === String(service?.get?.('encryptJobId') || service?.get?.('encJobId') || ''),
     positionPresent: !!conversation?.toPositionId, securityContextPresent: !!conversation?.securityId,
     nativeConversationPresent: !!service?.conversation,
     nativeSecurityMatched: !!conversation?.securityId &&

@@ -67,6 +67,31 @@ test('wrong job cannot invoke or confirm the native resume component', async () 
   await assert.rejects(f.native.request(f.input), {code: 'JOB_CONVERSATION_MISMATCH'});
   assert.deepEqual(f.calls, {select: 0, invoke: 0, confirm: 0});
 });
+test('resume requests use the current encrypted position even when list aliases are absent', async () => {
+  const f = pageFixture();
+  delete f.conversation.encryptJobId;
+  f.conversation.toPositionId = 'job-a';
+  assert.equal((await f.native.request(f.input)).confirmed, true);
+  assert.equal(f.calls.invoke, 1);
+});
+test('an incomplete conversation waits for its position without invoking a premature resume request', async () => {
+  const f = pageFixture();
+  delete f.conversation.encryptJobId;
+  const pending = f.native.request(f.input);
+  assert.equal(f.calls.invoke, 0);
+  f.conversation.toPositionId = 'job-a';
+  assert.equal((await pending).confirmed, true);
+  assert.equal(f.calls.invoke, 1);
+});
+test('resume requests reject contradictory or changed position aliases before invoking the component', async () => {
+  for (const changeAfterPrepare of [false, true]) {
+    const f = pageFixture();
+    f.conversation.toPositionId = changeAfterPrepare ? 'job-a' : 'other-job';
+    if (changeAfterPrepare) f.input.onReady = () => {f.conversation.toPositionId = 'other-job';};
+    await assert.rejects(f.native.request(f.input), {code: 'JOB_CONVERSATION_MISMATCH'});
+    assert.equal(f.calls.invoke, 0);assert.equal(f.calls.confirm, 0);
+  }
+});
 test('account cancellation after preparation prevents the request invocation', async () => {
   const f = pageFixture();
   f.input.onReady = () => f.controller.abort();

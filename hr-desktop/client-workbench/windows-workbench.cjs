@@ -1,6 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const {WindowsAdapter} = require('./windows-adapter.cjs');
+const {installNativeExitGuard} = require('./native-exit-guard.cjs');
 
 let active, installing, lastFailure;
 const inside = (root, value) => {
@@ -12,7 +13,7 @@ async function install(bindings, config = {}) {
   if (active) throw Error('Windows workbench is already installed');
   if (installing) throw Error('Windows workbench installation is already running');
   installing = true;
-  let adapter, host, network, stage = 'profile', profile;
+  let adapter, host, network, exitGuard, chatAction, stage = 'profile', profile;
   const listeners = [], attached = new WeakSet();
   const listen = (target, event, listener) => {
     target.on(event, listener);listeners.push({target, event, listener});
@@ -43,6 +44,12 @@ async function install(bindings, config = {}) {
     network = require('./native-network.cjs').instance({offline: Boolean(config.offline)});
     await network.configure(session.defaultSession);
     network.attachNative(bindings.network);
+    if (config.offline) {
+      stage = 'native-chat-fixture';
+      // Run before installing window listeners so the disposable fixture
+      // cannot be mistaken for a newly created real main window.
+      chatAction = await require('./native-chat-smoke.cjs').run();
+    }
     stage = 'native-window';
     const integrated = require('./integrated-shell.cjs').instance();
     const windows = () => BrowserWindow.getAllWindows().filter(win =>
@@ -97,7 +104,13 @@ async function install(bindings, config = {}) {
     await integrated.chromeReady;
     if (config.offline) await integrated.platformReady;
     listen(app, 'before-quit', () => {void close();});
-    active = {adapter, host, integrated, network, listeners, offline: Boolean(config.offline)};
+    stage = 'native-exit';
+    exitGuard = installNativeExitGuard({targets: [bindings.sdk, globalThis], beforeExit: async () => {
+      if (active) active.nativeExitRequested = true;
+      await close();
+    }});
+    active = {adapter, host, integrated, network, listeners, exitGuard, chatAction,
+      offline: Boolean(config.offline), profileRoot: root, nativeExitRequested: false};
     lastFailure = undefined;
     return {ok: true, mode: 'windows-native-workbench', bridgeReady: true,
       nativeSessionVerified: adapter.loggedIn(), offline: Boolean(config.offline),
@@ -107,6 +120,7 @@ async function install(bindings, config = {}) {
       ...(error.code === 'ENOENT' ? {ioCode: 'ENOENT'} : {})};
     for (const {target, event, listener} of listeners) target.removeListener(event, listener);
     await Promise.allSettled([host?.close(), network?.egress.close()]);
+    exitGuard?.close();
     adapter?.close();
     throw error;
   } finally {installing = false;}
@@ -118,6 +132,24 @@ async function close() {
   for (const {target, event, listener} of current.listeners) target.removeListener(event, listener);
   await current.host.close();
   current.adapter.close();
+  if (current.offline) {
+    const {app, safeStorage} = require('electron');
+    const file = path.join(app.getPath('userData'), 'heyi', 'platform-session.enc');
+    let platformSessionSaved = false;
+    try {
+      const encrypted = await fs.readFile(file);
+      const stored = JSON.parse(safeStorage.decryptString(encrypted));
+      platformSessionSaved = !encrypted.includes(Buffer.from('heyi-offline-upgrade-cookie')) &&
+        stored.origin === 'https://hoyee.org.cn' && stored.cookies?.some(cookie =>
+          cookie.name === 'HEYI_SESSION' && cookie.value === 'heyi-offline-upgrade-cookie');
+    } catch {}
+    await fs.writeFile(path.join(current.profileRoot, 'workbench-exit-check.json'), JSON.stringify({
+      nativeExitGuardInvoked: current.nativeExitRequested,
+      hostClosedBeforeNativeExit: true, platformSessionSaved,
+      realAccountUsed: false,
+    }), {flag: 'wx'});
+  }
+  current.exitGuard.close();
 }
 
 function state() {
@@ -131,7 +163,7 @@ async function offlineCheck() {
   if (!active?.offline || !process.env.HEYI_WORKBENCH_TEST_DATA ||
       process.env.HEYI_WORKBENCH_TEST_PORT !== '0') throw Error('Isolated workbench check required');
   const assert = require('node:assert/strict');
-  const {BrowserWindow, clipboard, app} = require('electron');
+  const {BrowserWindow, clipboard, app, safeStorage} = require('electron');
   const {integrated, host} = active;
   await Promise.all([integrated.platformReady, integrated.chromeReady]);
   const oldClipboard = clipboard.readText();
@@ -168,10 +200,16 @@ async function offlineCheck() {
     assert.equal(worker.version, '2.0.0');
     assert.equal(state().networkReady, true);
     await assert.rejects(host.rpc.dispatch('/snapshot', {accountId: '101'}), {code: 'AUTH_REQUIRED'});
+    assert.equal(safeStorage.isEncryptionAvailable(), true);
+    await integrated.platform.webContents.session.cookies.set({
+      url: 'https://hoyee.org.cn', name: 'HEYI_SESSION', value: 'heyi-offline-upgrade-cookie',
+      path: '/', secure: true, httpOnly: true, sameSite: 'lax',
+    });
     return {ok: true, actualOriginalWindows: true, singleVisibleWindow: true,
       sidebarRoundTrip: true, localFixturePaste: true, loopbackBridge: true,
       packagedWindowsWorker: true, sdkSourceGuard: true, offlineNetworkRelay: true,
-      signedOutSnapshotRejected: true, candidateMessagesSent: 0, actualBossNetworkUsed: false};
+      signedOutSnapshotRejected: true, chatAction: active.chatAction, sessionCookiePrepared: true,
+      candidateMessagesSent: 0, actualBossNetworkUsed: false};
   } finally {clipboard.writeText(oldClipboard);}
 }
 module.exports = {install, close, state, offlineCheck};

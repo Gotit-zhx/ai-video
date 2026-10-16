@@ -28,18 +28,24 @@ async function preparePage(args) {
   }
   const currentEditor = () => document.querySelector('.chat-conversation-operate')?.__vue__ ||
     document.querySelector('.boss-chat-editor-input')?.parentElement?.__vue__;
+  const jobValues = conversation =>
+    [conversation?.toPositionId, conversation?.encryptJobId, conversation?.encJobId]
+      .filter(value => value !== undefined && value !== null && value !== '').map(String);
+  const matchesJob = conversation => {
+    const jobs = jobValues(conversation);
+    return jobs.length > 0 && jobs.every(job => job === args.job);
+  };
   const current = currentEditor()?.conversation$;
   if (String(current?.friendId || '') !== args.friendId) list.geekClick(args.friend);
   const end = Date.now() + 5000;
   while (alive() && Date.now() < end) {
     const editor = currentEditor();
     const conversation = editor?.conversation$;
-    if (String(conversation?.friendId || '') === args.friendId) {
-      const job = String(conversation.encryptJobId || conversation.encJobId || '');
-      if (job && job !== args.job) {
+    if (String(conversation?.friendId || '') === args.friendId && !editor.conversationLoading$) {
+      if (jobValues(conversation).length && !matchesJob(conversation)) {
         return stop('JOB_CONVERSATION_MISMATCH', '当前会话职位不一致，未索取简历');
       }
-      if (job === args.job && conversation.securityId) {
+      if (matchesJob(conversation) && conversation.securityId) {
         const queue = [editor.$root || editor];
         const seen = new Set(), found = [];
         while (queue.length && seen.size < 6000) {
@@ -63,6 +69,7 @@ async function preparePage(args) {
         state.editor = editor;
         state.component = vm;
         state.securityId = String(conversation.securityId);
+        state.matchesJob = matchesJob;
         return {ok: true};
       }
     }
@@ -79,8 +86,9 @@ async function commitPage(args) {
     const conversation = state?.editor?.conversation$;
     return state && state.token === args.token && !state.cancelled &&
       window.__heyiResumeAction === state &&
+      !state.editor.conversationLoading$ &&
       String(conversation?.friendId || '') === args.friendId &&
-      String(conversation.encryptJobId || conversation.encJobId || '') === args.job &&
+      state.matchesJob(conversation) &&
       !!conversation.securityId && String(conversation.securityId) === state.securityId;
   };
   if (!valid() || state.invoked) {

@@ -17,6 +17,15 @@ async function prepareChatPage(args) {
     editor?.$refs?.editbox?.querySelector('img') || editor?.quoteMessage$);
   const currentEditor = () => document.querySelector('.chat-conversation-operate')?.__vue__ ||
     document.querySelector('.boss-chat-editor-input')?.parentElement?.__vue__;
+  const jobValues = conversation =>
+    [conversation?.toPositionId, conversation?.encryptJobId, conversation?.encJobId]
+      .filter(value => value !== undefined && value !== null && value !== '').map(String);
+  const matchesJob = conversation => {
+    // The current client keeps its encrypted job in toPositionId; the list's
+    // currentData has encryptJobId. Require every supplied alias to agree.
+    const jobs = jobValues(conversation);
+    return jobs.length > 0 && jobs.every(job => job === args.job);
+  };
   let editor = currentEditor();
   if (draft(editor)) return stop('NATIVE_DRAFT_PRESENT', 'BOSS 输入框有未发送内容，请先处理草稿');
   if (String(editor?.conversation$?.friendId || '') !== args.friendId) {
@@ -33,9 +42,10 @@ async function prepareChatPage(args) {
     editor = currentEditor();
     const conversation = editor?.conversation$;
     if (String(conversation?.friendId || '') === args.friendId && !editor.conversationLoading$) {
-      const job = String(conversation.encryptJobId || conversation.encJobId || '');
-      if (job && job !== args.job) return stop('JOB_CONVERSATION_MISMATCH', '当前会话职位不一致');
-      if (job === args.job && conversation.toPositionId && conversation.securityId) {
+      if (jobValues(conversation).length && !matchesJob(conversation)) {
+        return stop('JOB_CONVERSATION_MISMATCH', '当前会话职位不一致');
+      }
+      if (matchesJob(conversation) && conversation.toPositionId && conversation.securityId) {
         if (draft(editor)) return stop('NATIVE_DRAFT_PRESENT', 'BOSS 输入框有未发送内容，请先处理草稿');
         // These existing components expose the current conversation service.
         // Never enumerate arbitrary objects, extract credentials, or access a
@@ -61,6 +71,11 @@ async function prepareChatPage(args) {
             String(service.get?.('friendId') || '') !== args.friendId) {
           return stop('NATIVE_CHAT_UNAVAILABLE', '当前会话发送服务未核实');
         }
+        const selectedJobMatches = () => {
+          const selected = [service.get('encryptJobId'), service.get('encJobId')]
+            .filter(value => value !== undefined && value !== null && value !== '').map(String);
+          return selected.every(job => job === args.job);
+        };
         const securityId = String(conversation.securityId);
         state.valid = () => {
           const current = editor.conversation$, native = service.conversation;
@@ -68,7 +83,7 @@ async function prepareChatPage(args) {
             String(service.bossId || '') === args.account &&
             String(service.get('friendId') || '') === args.friendId &&
             String(current?.friendId || '') === args.friendId &&
-            String(current.encryptJobId || current.encJobId || '') === args.job &&
+            matchesJob(current) && matchesJob(native) && selectedJobMatches() &&
             String(current.securityId || '') === securityId &&
             String(native?.securityId || '') === securityId &&
             String(native.toPositionId || '') === String(current.toPositionId || '') &&

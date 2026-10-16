@@ -17,7 +17,8 @@ function install(bindings, config = {}) {
   if (config.anonymousIsolated !== true) throw Error('Disposable isolated startup check required');
   if (config.phase === 'arm') {
     if (active) throw Error('Startup observer already armed');
-    const state = {bindings, changes: [], calls: {sdk: 0, authentication: 0, identity: 0, http: 0}};
+    const state = {bindings, changes: [], calls: {sdk: 0, authentication: 0, identity: 0, http: 0},
+      observedCalls: []};
     active = state;
     const observe = (object, name, kind, accessor = false) => {
       const previous = Object.getOwnPropertyDescriptor(object, name);
@@ -26,6 +27,19 @@ function install(bindings, config = {}) {
       if (typeof original !== 'function' || previous?.configurable === false) throw Error();
       const hook = function(...args) {
         state.calls[kind]++;
+        if (state.observedCalls.length < 30) {
+          // Fixed source categories and numeric offsets only. Preserve the
+          // strict zero-call gate while identifying native background work;
+          // never serialize full stacks, paths, arguments or return values.
+          const frames = String(new Error().stack || '').split('\n').slice(2, 7).map(line => {
+            const native = line.match(/[\\/]main\.jsc:(\d{1,8}):(\d{1,8})/);
+            if (native) return {source: 'original-main', line: Number(native[1]), column: Number(native[2])};
+            if (/[\\/]native-bindings\.cjs:/.test(line)) return {source: 'binding-controller'};
+            if (/node:/.test(line)) return {source: 'node-runtime'};
+            return {source: 'unclassified'};
+          });
+          state.observedCalls.push({kind, method: name, frames});
+        }
         return Reflect.apply(original, this, args);
       };
       Object.defineProperty(object, name, accessor ?
@@ -65,7 +79,7 @@ function install(bindings, config = {}) {
       originalMethodsInvoked, sdkMethodsInvoked: state.calls.sdk,
       authenticationMethodsInvoked: state.calls.authentication,
       identityGettersInvoked: state.calls.identity, originalHTTPCalls: state.calls.http,
-      rawValuesExported: false};
+      observedCalls: state.observedCalls, rawValuesExported: false};
   } finally {close();}
 }
 

@@ -47,7 +47,8 @@ def stage(source, output, runtime, sdk):
     for name in ["windows-workbench.cjs", "windows-launcher.cjs", "windows-package.cjs",
                  "windows-original.json", "windows-adapter.cjs", "native-session.cjs",
                  "native-bindings.cjs", "native-messages.cjs", "native-request-broker.cjs",
-                 "inspector-driver.cjs", "process-outcome.cjs", "original-sdk-exit.cjs"]:
+                 "inspector-driver.cjs", "process-outcome.cjs", "original-sdk-exit.cjs",
+                 "native-exit-guard.cjs"]:
         addon["heyi/" + name] = (HERE / name).read_bytes()
     ws = (HERE / "node_modules/ws").resolve(strict=True)
     for file in ws.rglob("*"):

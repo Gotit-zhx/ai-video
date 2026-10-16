@@ -66,12 +66,12 @@ async function initialize(adapter, options) {
     const bindingFile = path.join(root, 'native-binding.json');
     try {boundAccount = identity(JSON.parse(await fs.readFile(bindingFile, 'utf8')).id);} catch {}
     const platform = session.fromPartition('persist:heyi-workbench');
-    if (!options.offlineURL) {
-      platformSession = new (require('./platform-session.cjs').PlatformSession)({
-        session: platform, safeStorage, directory: root, origin: ORIGIN,
-      });
-      await platformSession.start();
-    }
+    // Offline host checks use a disposable profile too; exercise the same OS
+    // encrypted session lifecycle there instead of skipping upgrade storage.
+    platformSession = new (require('./platform-session.cjs').PlatformSession)({
+      session: platform, safeStorage, directory: root, origin: ORIGIN,
+    });
+    await platformSession.start();
     egress = networkInstance().egress;
     await networkInstance().configure(platform);
     const integrated = shellInstance();

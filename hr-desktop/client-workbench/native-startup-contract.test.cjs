@@ -33,7 +33,7 @@ test('startup binding checks references without invoking original methods or exp
   const result = contract.install({...bindings, httpClients: [...bindings.httpClients]}, config('verify'));
   assert.deepEqual(result, {ok: true, sameOriginalInstances: true, requestBuilderCaptured: true,
     originalMethodsInvoked: 0, sdkMethodsInvoked: 0, authenticationMethodsInvoked: 0,
-    identityGettersInvoked: 0, originalHTTPCalls: 0, rawValuesExported: false});
+    identityGettersInvoked: 0, originalHTTPCalls: 0, observedCalls: [], rawValuesExported: false});
   assert.deepEqual(Object.getOwnPropertyDescriptor(bindings.sdk, '_sdk_getLoginStatus'), original);
   assert.equal(Object.hasOwn(bindings.identity, 'userInfo'), false);
   assert.equal(Object.hasOwn(bindings.authentication, 'getAuthCookieHeader'), false);
@@ -51,6 +51,10 @@ test('the observer preserves this, Promise identity and original exceptions whil
   assert.equal(result.ok, false);assert.equal(result.originalMethodsInvoked, 6);
   assert.equal(result.sdkMethodsInvoked, 2);assert.equal(result.identityGettersInvoked, 2);
   assert.equal(result.authenticationMethodsInvoked, 1);assert.equal(result.originalHTTPCalls, 1);
+  assert.equal(result.observedCalls.length, 6);
+  assert.deepEqual(result.observedCalls.map(call => call.method),
+    ['_sdk_getLoginStatus', '_sdk_error', 'get', 'userId', 'userInfo', 'send']);
+  assert.equal(JSON.stringify(result.observedCalls).includes('private'), false);
 });
 test('a different instance or missing builder fails the cold binding check', t => {
   const {bindings} = fixture(t);

@@ -15,9 +15,10 @@ async function run() {
     window.fixtureCalls = 0;
     window.fixtureSelections = 0;
     window.iBossRoot = {user: {get: () => '101'}};
-    const conversation = {friendId: '202', encryptJobId: 'job-fixture',
+    const conversation = {friendId: '202',
       toPositionId: 'job-fixture', securityId: 'fixture-security'};
-    const service = {bossId: '101', conversation, get: key => conversation[key],
+    const currentData = {friendId: '202', encryptJobId: 'job-fixture'};
+    const service = {bossId: '101', conversation, get: key => currentData[key],
       onMessageDelivered() {},
       sendMessage(content, type, options) {
         fixtureCalls++;
@@ -71,7 +72,7 @@ async function run() {
     assert.equal(await guest.executeJavaScript('window.observerRestored()'), true);
     return {ok: true, actualElectronWebview: true, genuineDeliveryFixture: true,
       singleInvocation: true, currentNestedEditorLayout: true,
-      renamedContactList: true, observerRestored: true, blockedRequests,
+      renamedContactList: true, canonicalPositionVerified: true, observerRestored: true, blockedRequests,
       candidateMessagesSent: 0, actualBossNetworkUsed: false};
   } finally {
     await rpc?.close();

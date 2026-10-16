@@ -71,6 +71,45 @@ test('older verified page layout remains supported', async t => {
   assert.deepEqual(f.calls, ['select']);
 });
 
+test('current encrypted toPositionId is authoritative when the editor omits list job aliases', async t => {
+  const f = fixture(t);
+  delete f.conversation.encryptJobId;
+  assert.equal((await f.run(prepareChatPage)).ok, true);
+  assert.equal(f.run(commitTextPage).ok, true);
+  f.delivered();
+  assert.equal((await f.run(waitChatPage)).ok, true);
+});
+test('a conversation whose position is still loading waits before verifying and never sends early', async t => {
+  const f = fixture(t);
+  delete f.conversation.encryptJobId;delete f.conversation.toPositionId;
+  const preparing = f.run(prepareChatPage);
+  await Promise.resolve();
+  assert.equal(f.calls.length, 0);
+  const waiting = [...f.timers.entries()].find(([, timer]) => timer.ms === 100);
+  assert.ok(waiting);
+  f.conversation.toPositionId = 'job-one';
+  f.timers.delete(waiting[0]);waiting[1].fn();
+  assert.equal((await preparing).ok, true);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.run(commitTextPage).ok, true);
+});
+
+test('conflicting position, list job or changed position cannot send into another job', async t => {
+  for (const conflict of ['position', 'list']) {
+    const f = fixture(t);
+    if (conflict === 'position') f.conversation.toPositionId = 'other-job';
+    else f.service.get = key => key === 'encryptJobId' ? 'other-job' : f.conversation[key];
+    assert.equal((await f.run(prepareChatPage)).code, 'JOB_CONVERSATION_MISMATCH');
+    assert.equal(f.calls.length, 0);
+  }
+  const f = fixture(t);
+  delete f.conversation.encryptJobId;
+  await f.run(prepareChatPage);
+  f.conversation.toPositionId = 'other-job';
+  assert.equal(f.run(commitTextPage).code, 'JOB_CONVERSATION_MISMATCH');
+  assert.equal(f.calls.length, 0);
+});
+
 test('historical, other account, other candidate, other clientMid and provisional messages cannot acknowledge', async t => {
   const f = fixture(t);
   await f.run(prepareChatPage);

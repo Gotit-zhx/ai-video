@@ -114,10 +114,6 @@ async function run(packageRoot, selfTest = false) {
         expression: `process.mainModule.require(${JSON.stringify(verified.addon)}).offlineCheck()`});
       if (checked.exceptionDetails || checked.result?.value?.ok !== true) throw Error('Packaged check failed');
       const report = checked.result.value;
-      stage = 'workbench-close';
-      const closed = await connection.client.command('Runtime.evaluate', {returnByValue: true, awaitPromise: true,
-        expression: `process.mainModule.require(${JSON.stringify(verified.addon)}).close().then(()=>true)`});
-      if (closed.exceptionDetails || closed.result?.value !== true) throw Error('Workbench close failed');
       stage = 'original-shutdown';
       const exitModule = path.join(path.dirname(verified.addon), 'original-sdk-exit.cjs');
       await evaluateRunning(connection, `setTimeout(()=>{
@@ -128,7 +124,10 @@ async function run(packageRoot, selfTest = false) {
       const outcome = await waitForProcess(connection.child, 15000);
       report.originalExitCode = outcome.code;report.timedOut = outcome.timedOut;
       report.terminationRequested = outcome.terminationRequested;
-      report.ok = report.ok && outcome.code === 0 && !outcome.timedOut && !outcome.terminationRequested;
+      report.shutdown = JSON.parse(await fs.readFile(path.join(profileRoot, 'workbench-exit-check.json'), 'utf8'));
+      report.ok = report.ok && outcome.code === 0 && !outcome.timedOut && !outcome.terminationRequested &&
+        report.shutdown.nativeExitGuardInvoked === true &&
+        report.shutdown.hostClosedBeforeNativeExit === true && report.shutdown.platformSessionSaved === true;
       await fs.writeFile(testOutput, JSON.stringify(report, null, 2), {flag: 'wx'});
       return report.ok ? 0 : 1;
     }
