@@ -33,3 +33,16 @@ test('real worker stderr can be classified while its failure remains a failure',
   assert.equal(code, 3);
   assert.deepEqual(signals.close().signals.map(item => item.name), ['nativeFatal']);
 });
+
+test('startup port, option and bytecode failures expose only fixed categories', () => {
+  const signals = new RuntimeLogSignals();
+  signals.observe('stderr', Buffer.from(
+    'Starting inspector on 127.0.0.1:9229 failed: address already in use\n' +
+    '/private/profile/app.exe: bad option: --private-fixture\n' +
+    'Error: Invalid or incompatible cached data (cachedDataRejected)\n' +
+    'Debugger listening on ws://127.0.0.1:54321/private-token\n'));
+  const output = signals.close();
+  assert.deepEqual(output.signals.map(value => value.name),
+    ['inspectorStarted', 'inspectorAddressInUse', 'invalidRuntimeOption', 'cachedBytecodeRejected']);
+  assert.equal(/private|127\.0\.0\.1|9229|54321/.test(JSON.stringify(output)), false);
+});

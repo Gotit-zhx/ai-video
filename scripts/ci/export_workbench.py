@@ -23,8 +23,10 @@ CHECKS = (
     "sidebarRoundTrip", "localFixturePaste", "loopbackBridge", "packagedWindowsWorker",
     "offlineNetworkRelay", "signedOutSnapshotRejected",
     "chatAction.genuineDeliveryFixture", "chatAction.singleInvocation",
+    "chatAction.windowsAdapterPath", "chatAction.legacySenderUnused",
     "resumeAction.nativeHTTPExchangeFixture", "resumeAction.nativeOpeningCheck",
-    "resumeAction.singleConfirmation", "incomingActivity.incomingReplyAndAttachmentHints",
+    "resumeAction.singleConfirmation", "resumeAction.windowsAdapterPath",
+    "resumeAction.legacySenderUnused", "incomingActivity.incomingReplyAndAttachmentHints",
     "incomingActivity.observerRestored", "shutdown.nativeExitGuardInvoked",
     "shutdown.hostClosedBeforeNativeExit", "shutdown.platformSessionSaved",
 )

@@ -5,6 +5,17 @@ const {decodeNativeProtocol} = require('./native-protocol.cjs');
 const endpoint = '/wapi/zpjob/job/data/list';
 const content = 'Own offline SDK contract; no network';
 
+function legacyBoundarySafe(report) {
+  if (report.interceptedHTTPCalls !== 0) return false;
+  if (report.textSDKOutcome === 'settled') {
+    return report.interceptedNativeSends === 1 && report.textPacketMatches === true;
+  }
+  // In a genuinely signed-out original process the retired SDK requires an
+  // identity and rejects before encoding. Never inject one to make it pass.
+  return report.textSDKOutcome === 'rejected' && report.interceptedNativeSends === 0 &&
+    report.textSDKFailure?.category === 'missing-userId';
+}
+
 function classifyFailure(error) {
   // Keep fixed categories and source offsets only, never original error text,
   // stack paths, arguments, packets or account values.
@@ -29,7 +40,8 @@ async function install(bindings, config = {}) {
   let adapter, timer, stage = 'anonymous-login', sdkCalls = 0, loginReads = 0;
   const changes = [];
   const report = {ok: false, mode: 'offline-original-windows-adapter-contract',
-    currentIdentityModified: false, rawValuesExported: false, candidateMessagesSent: 0};
+    currentIdentityModified: false, rawValuesExported: false, candidateMessagesSent: 0,
+    productSendPath: 'native-chat', productDeliveryTested: false};
   const replace = (object, name, hook) => {
     const previous = Object.getOwnPropertyDescriptor(object, name);
     Object.defineProperty(object, name, {value: hook, configurable: true, writable: true});
@@ -58,8 +70,10 @@ async function install(bindings, config = {}) {
     const outcomes = [];
     for (const operation of [
       () => adapter.verifyAccount('101'),
+      () => adapter.snapshot(),
       () => adapter.request({url: endpoint}, () => {}),
       () => adapter.sendText({content, options: {uid: '202', clientMid: '303'}}),
+      () => adapter.requestResume({friend: {friendId: '202', encryptJobId: 'offline-fixture'}}),
     ]) {
       try {await operation();outcomes.push(false);}
       catch (error) {outcomes.push(error.code === 'AUTH_REQUIRED');}
@@ -100,8 +114,10 @@ async function install(bindings, config = {}) {
     report.interceptedNativeSends = interceptedSends;
     report.textPacketMatches = packetMatches;
     report.interceptedHTTPCalls = interceptedHTTP;
-    report.ok = report.signedOutActionsRejected && outcome === 'settled' &&
-      interceptedSends === 1 && packetMatches && interceptedHTTP === 0;
+    report.legacyBoundarySafe = legacyBoundarySafe(report);
+    // Actual product-path delivery is separately required by the packaged
+    // WindowsAdapter -> NativeChat -> local Electron page fixture.
+    report.ok = report.signedOutActionsRejected && report.legacyBoundarySafe;
   } catch {
     report.ok = false;report.diagnostic = {stage};
   } finally {
@@ -114,4 +130,4 @@ async function install(bindings, config = {}) {
   }
   return report;
 }
-module.exports = {install, classifyFailure};
+module.exports = {install, classifyFailure, legacyBoundarySafe};

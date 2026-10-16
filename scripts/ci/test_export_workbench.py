@@ -72,6 +72,13 @@ class ExportWorkbenchTest(unittest.TestCase):
             self.run_export()
         self.assertFalse(self.output.exists())
 
+    def test_chat_fixture_without_windows_adapter_cannot_be_exported(self):
+        del self.smoke["chatAction"]["windowsAdapterPath"]
+        self.write()
+        with self.assertRaisesRegex(ValueError, "checks must pass"):
+            self.run_export()
+        self.assertFalse(self.output.exists())
+
     def test_modified_binary_discards_archive(self):
         (self.package / "赫逸工作台.exe").write_bytes(b"modified")
         with self.assertRaisesRegex(ValueError, "differs"):

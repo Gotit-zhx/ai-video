@@ -28,29 +28,45 @@ async function launchOriginal(executable, root, env, logSignals, pidFile = 'prob
     });
     await new Promise(resolve => portCheck.close(resolve));
   }
-  return launchInspecting(executable, ['--disable-gpu',
-    `--user-data-dir=${path.join(root, 'profile')}`], {
-    env, cwd: path.dirname(executable), timeout: 45000, inspectPortArgument: dedicatedInspector,
-    onSpawn: child => {
-      fs.writeFile(path.join(root, pidFile), String(child.pid)).catch(() => {});
-      child.stdout.on('data', chunk => logSignals.observe('stdout', chunk));
-      child.stderr.on('data', chunk => logSignals.observe('stderr', chunk));
-    },
-    activate: async child => {
-      await new Promise(resolve => setTimeout(resolve, 12000));
-      if (child.exitCode !== null) throw Error('Original process exited before late attach');
-      const helper = spawn(executable, ['-e',
-        'process._debugProcess(Number(process.argv[1]))', String(child.pid)], {
-        cwd: path.dirname(executable), env: {...env, ELECTRON_RUN_AS_NODE: '1'},
-        stdio: 'ignore', windowsHide: true,
-      });
-      const deadline = setTimeout(() => helper.kill(), 5000);
-      try {
-        const [code] = await once(helper, 'exit');
-        if (code !== 0) throw Error('Original x86 debug helper failed');
-      } finally {clearTimeout(deadline);}
-    },
-  });
+  const startupSignals = new RuntimeLogSignals();
+  let spawned;
+  const startupStdout = chunk => startupSignals.observe('stdout', chunk);
+  const startupStderr = chunk => startupSignals.observe('stderr', chunk);
+  try {
+    return await launchInspecting(executable, ['--disable-gpu',
+      `--user-data-dir=${path.join(root, 'profile')}`], {
+      env, cwd: path.dirname(executable), timeout: 45000, inspectPortArgument: dedicatedInspector,
+      onSpawn: child => {
+        spawned = child;
+        fs.writeFile(path.join(root, pidFile), String(child.pid)).catch(() => {});
+        child.stdout.on('data', chunk => logSignals.observe('stdout', chunk));
+        child.stderr.on('data', chunk => logSignals.observe('stderr', chunk));
+        child.stdout.on('data', startupStdout);
+        child.stderr.on('data', startupStderr);
+      },
+      activate: async child => {
+        await new Promise(resolve => setTimeout(resolve, 12000));
+        if (child.exitCode !== null) throw Error('Original process exited before late attach');
+        const helper = spawn(executable, ['-e',
+          'process._debugProcess(Number(process.argv[1]))', String(child.pid)], {
+          cwd: path.dirname(executable), env: {...env, ELECTRON_RUN_AS_NODE: '1'},
+          stdio: 'ignore', windowsHide: true,
+        });
+        const deadline = setTimeout(() => helper.kill(), 5000);
+        try {
+          const [code] = await once(helper, 'exit');
+          if (code !== 0) throw Error('Original x86 debug helper failed');
+        } finally {clearTimeout(deadline);}
+      },
+    });
+  } catch (error) {
+    error.runtimeLogSignals = startupSignals.snapshot();
+    throw error;
+  } finally {
+    spawned?.stdout.removeListener('data', startupStdout);
+    spawned?.stderr.removeListener('data', startupStderr);
+    startupSignals.close();
+  }
 }
 
 async function verifyColdStartup(executable, root, env, logSignals, builderDescriptor,
@@ -139,7 +155,10 @@ async function verifyColdStartup(executable, root, env, logSignals, builderDescr
       report.ok = report.ok && reservedPort.listening && defaultPortConnections === 0;
     }
   } catch (error) {
-    report.ok = false;report.diagnostic = error.nativeBindingDiagnostic || {stage};
+    report.ok = false;report.diagnostic = error.nativeBindingDiagnostic || {stage,
+      ...(error.inspectorStartupDiagnostic ? {inspector: error.inspectorStartupDiagnostic} : {}),
+      ...(error.runtimeLogSignals ? {runtime: error.runtimeLogSignals} : {}),
+    };
   } finally {
     if (connection?.child.exitCode === null) {
       try {await evaluateRunning(connection, `process.mainModule.require(${JSON.stringify(contract)}).close()`);}
@@ -147,6 +166,7 @@ async function verifyColdStartup(executable, root, env, logSignals, builderDescr
     }
     connection?.client.close();
     if (connection?.child.exitCode === null) connection.child.kill();
+    if (reservedPort) report.defaultPortConnections = defaultPortConnections;
     if (reservedPort?.listening) await new Promise(resolve => reservedPort.close(resolve));
     await fs.writeFile(path.join(root, reportName), JSON.stringify(report, null, 2));
   }

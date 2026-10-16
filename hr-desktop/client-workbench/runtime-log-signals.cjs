@@ -8,6 +8,10 @@ const PATTERNS = {
   nativeThreadsafeCall: /\bnapi_call_threadsafe_function\b/,
   nativeThreadsafeRelease: /\bnapi_release_threadsafe_function\b/,
   nativeEnvironmentCleanup: /\b(?:napi_add_env_cleanup_hook|napi_remove_env_cleanup_hook)\b/,
+  inspectorStarted: /Debugger listening on ws:/,
+  inspectorAddressInUse: /Starting inspector[^\r\n]{0,250}address already in use/i,
+  invalidRuntimeOption: /(?:bad option:|unknown option:|unrecognized flag)/i,
+  cachedBytecodeRejected: /(?:Invalid or incompatible cached data|cachedDataRejected)/i,
 };
 
 class RuntimeLogSignals {

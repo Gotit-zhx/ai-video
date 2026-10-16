@@ -3,7 +3,7 @@ const {BrowserWindow, session, webContents} = require('electron');
 const {NativeChat} = require('./native-chat.cjs');
 const {NativeRPC} = require('./native-rpc.cjs');
 
-async function run() {
+async function run({windowsAdapter = false} = {}) {
   const url = 'https://www.zhipin.com/web/client/index';
   const partition = 'heyi-offline-resume-fixture';
   const target = session.fromPartition(partition);
@@ -79,7 +79,7 @@ async function run() {
     webviewTag: true, nodeIntegration: false, contextIsolation: true, sandbox: true,
   }});
   win.name = 'main';
-  let rpc;
+  let rpc, windowsFixture;
   try {
     const attached = new Promise(resolve => win.webContents.once(
       'did-attach-webview', (_event, contents) => resolve(contents)));
@@ -90,13 +90,13 @@ async function run() {
     const native = new NativeChat({nativeWindow: () => win,
       allContents: () => webContents.getAllWebContents()});
     assert.equal(native.frame().url, url);
-    let originalCalls;
-    rpc = new NativeRPC({endpoints: [], adapter: {
+    if (windowsAdapter) windowsFixture = require('./windows-chat-fixture.cjs').create({
+      nativeWindow: () => win, allContents: () => webContents.getAllWebContents(),
+    });
+    rpc = new NativeRPC({endpoints: [], adapter: windowsFixture?.adapter || {
       user: () => ({userId: '101'}), loggedIn: () => true,
       requestResume: async input => {
         const result = await native.perform({...input, resume: true});
-        originalCalls = await guest.executeJavaScript('window.fixtureCalls');
-        assert.deepEqual(originalCalls, {selected: 1, opened: 1, requested: 1, textMessages: 0});
         return result;
       },
     }});
@@ -104,13 +104,17 @@ async function run() {
       {friendId: '202', encryptJobId: 'job-fixture', securityId: 'fixture'});
     assert.equal(receipt.confirmedBy, 'native-exchange-response');
     assert.equal(receipt.messageId, undefined);
+    const originalCalls = await guest.executeJavaScript('window.fixtureCalls');
+    assert.deepEqual(originalCalls, {selected: 1, opened: 1, requested: 1, textMessages: 0});
     assert.deepEqual(exchanges, {check: 2, request: 1});
     return {nativeGuestFrame: true, resumeComponentFixture: true,
       nativeHTTPExchangeFixture: true, nativeOpeningCheck: true,
       noSyntheticTextReceipt: true, singleConfirmation: true,
-      resumeReceiptFixture: true, candidateMessagesSent: 0, actualBossNetworkUsed: false};
+      resumeReceiptFixture: true, candidateMessagesSent: 0, actualBossNetworkUsed: false,
+      ...windowsFixture?.verify()};
   } finally {
     await rpc?.close();
+    windowsFixture?.adapter.close();
     win.destroy();
     target.protocol.uninterceptProtocol('https');
   }

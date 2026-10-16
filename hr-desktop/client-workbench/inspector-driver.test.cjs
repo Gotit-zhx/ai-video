@@ -66,9 +66,29 @@ test('startup failure and missing inspector are bounded', async t => {
   t.after(() => fs.rm(root, {recursive: true, force: true}));
   // --version exits without opening the requested inspector.
   await assert.rejects(launchPaused(process.execPath, ['--version'], {timeout: 1500}),
-    /exited before attaching|No local inspector endpoint/);
+    error => {
+      assert.match(error.message, /exited before attaching|No local inspector endpoint/);
+      const diagnostic = error.inspectorStartupDiagnostic;
+      assert.equal(diagnostic.phase, 'endpoint');
+      assert.ok(['process-exited', 'endpoint-timeout'].includes(diagnostic.reason));
+      assert.equal(diagnostic.activationAttempted, false);
+      assert.equal(diagnostic.activationCompleted, false);
+      assert.equal(JSON.stringify(diagnostic).includes(process.execPath), false);
+      return true;
+    });
 });
 
+test('failed late activation reports its stage without exposing the helper exception', async () => {
+  await assert.rejects(launchInspecting(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+    activate: async () => {throw Error('private-fixture-helper-error');},
+  }), error => {
+    assert.equal(error.inspectorStartupDiagnostic.reason, 'activation-failed');
+    assert.equal(error.inspectorStartupDiagnostic.activationAttempted, true);
+    assert.equal(error.inspectorStartupDiagnostic.activationCompleted, false);
+    assert.equal(JSON.stringify(error.inspectorStartupDiagnostic).includes('private-fixture'), false);
+    return true;
+  });
+});
 test('a timed-out evaluation is never repeated', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-inspector-once-'));
   t.after(() => fs.rm(root, {recursive: true, force: true}));

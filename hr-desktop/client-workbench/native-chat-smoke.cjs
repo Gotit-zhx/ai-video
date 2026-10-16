@@ -3,7 +3,7 @@ const {BrowserWindow, session, webContents} = require('electron');
 const {NativeChat} = require('./native-chat.cjs');
 const {NativeRPC} = require('./native-rpc.cjs');
 
-async function run() {
+async function run({windowsAdapter = false} = {}) {
   const url = 'https://www.zhipin.com/web/client/index', partition = 'heyi-offline-chat-fixture';
   const target = session.fromPartition(partition);
   let blockedRequests = 0;
@@ -53,7 +53,7 @@ async function run() {
     webviewTag: true, nodeIntegration: false, contextIsolation: true, sandbox: true,
   }});
   win.name = 'main';
-  let rpc;
+  let rpc, windowsFixture;
   try {
     const attached = new Promise(resolve => win.webContents.once('did-attach-webview', (_event, guest) => resolve(guest)));
     await win.loadURL('data:text/html,' + encodeURIComponent(
@@ -61,7 +61,10 @@ async function run() {
     const guest = await attached;
     if (guest.isLoading()) await new Promise(resolve => guest.once('did-finish-load', resolve));
     const native = new NativeChat({nativeWindow: () => win, allContents: () => webContents.getAllWebContents()});
-    rpc = new NativeRPC({endpoints: [], adapter: {
+    if (windowsAdapter) windowsFixture = require('./windows-chat-fixture.cjs').create({
+      nativeWindow: () => win, allContents: () => webContents.getAllWebContents(),
+    });
+    rpc = new NativeRPC({endpoints: [], adapter: windowsFixture?.adapter || {
       user: () => ({userId: '101'}), loggedIn: () => true,
       sendText: input => native.perform({...input, clientMid: input.options.clientMid}),
     }});
@@ -73,9 +76,10 @@ async function run() {
     return {ok: true, actualElectronWebview: true, genuineDeliveryFixture: true,
       singleInvocation: true, currentNestedEditorLayout: true,
       renamedContactList: true, canonicalPositionVerified: true, observerRestored: true, blockedRequests,
-      candidateMessagesSent: 0, actualBossNetworkUsed: false};
+      candidateMessagesSent: 0, actualBossNetworkUsed: false, ...windowsFixture?.verify()};
   } finally {
     await rpc?.close();
+    windowsFixture?.adapter.close();
     win.destroy();
     target.protocol.uninterceptProtocol('https');
   }

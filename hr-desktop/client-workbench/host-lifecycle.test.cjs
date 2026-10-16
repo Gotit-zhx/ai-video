@@ -95,13 +95,17 @@ test('initial native activity waits for the same-account HR restoration and reta
   assert.equal(engine.activity.size,0,'Buffered activity must not cross accounts');
 });
 test('relay initialization failure closes the opened RPC and cannot return a partial host', async t => {
-  const {host, counts} = await fixture(t, 'network');
+  const {host, counts, root} = await fixture(t, 'network');
   await assert.rejects(host.start({}), /fixture relay failure/);
   await assert.rejects(host.start({}), /fixture relay failure/);
   assert.equal(counts.rpcStarts, 2);
   assert.equal(counts.rpcCloses, 2);
   assert.equal(counts.relayCloses, 2);
   assert.equal(counts.engineInits, 0);
+  const progress = JSON.parse(await fs.readFile(path.join(root, 'userData', 'heyi', 'startup-progress.json')));
+  assert.equal(progress.stage, 'failed');
+  assert.equal(progress.failedStage, 'direct-network');
+  assert.equal(JSON.stringify(progress).includes('fixture relay failure'), false);
 });
 
 test('occupied bridge port never initializes existing shared records and releases all opened resources', async t => {

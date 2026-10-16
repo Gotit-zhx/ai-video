@@ -16,12 +16,17 @@ class DirectEgress extends EventEmitter{
     });
     this.child=child;
     return new Promise((resolve,reject)=>{
-      let output='',settled=false;
+      let output='',settled=false,timeoutCheck;
       const finish=(error,value)=>{
-        if(settled)return;settled=true;clearTimeout(timer);
+        if(settled)return;settled=true;clearTimeout(timer);clearImmediate(timeoutCheck);
         if(error){child.kill();reject(error);}else resolve(value);
       };
-      const timer=setTimeout(()=>finish(Error('未找到可用的直联网卡，请检查网络后重新启动助手')),20000);
+      // OS encryption can block Electron's main thread while this child has
+      // already written its handshake. Let the pending pipe read run before
+      // declaring a timeout; an actually silent child still fails this turn.
+      const timer=setTimeout(()=>{
+        timeoutCheck=setImmediate(()=>finish(Error('未找到可用的直联网卡，请检查网络后重新启动助手')));
+      },20000);
       child.stdout.setEncoding('utf8');
       child.stdout.on('data',chunk=>{
         output+=chunk;
@@ -146,7 +151,9 @@ class DirectEgress extends EventEmitter{
   close(){
     if(!this.child)return Promise.resolve();
     const child=this.child;
-    if(child.exitCode!==null)return Promise.resolve();
+    // A process terminated by a signal has a null exitCode even after its
+    // close event. Waiting for that event again would hang startup cleanup.
+    if(child.exitCode!==null||child.signalCode!==null)return Promise.resolve();
     return new Promise(resolve=>{
       const timer=setTimeout(()=>child.kill(),2000);
       child.once('close',()=>{clearTimeout(timer);resolve();});

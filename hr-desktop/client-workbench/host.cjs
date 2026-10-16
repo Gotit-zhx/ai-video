@@ -36,14 +36,17 @@ async function initialize(adapter, options) {
     storagePaths(app, process.env, {assistantRoot: options.assistantRoot});
   await fs.mkdir(root, {recursive: true, mode: 0o700});
   await fs.mkdir(assistantRoot, {recursive: true, mode: 0o700});
+  let startupStage;
   const startupProgress = stage => {
     // A GUI launch has no stderr. Keep only the current startup stage so a
     // pending native promise can be diagnosed without logging account data.
     try {
       require('node:fs').writeFileSync(path.join(root, 'startup-progress.json'),
-        JSON.stringify({stage, pid: process.pid, updatedAt: new Date().toISOString()}),
+        JSON.stringify({stage, ...(stage === 'failed' ? {failedStage: startupStage} : {}),
+          pid: process.pid, updatedAt: new Date().toISOString()}),
         {mode: 0o600});
     } catch {}
+    startupStage = stage;
   };
   startupProgress('rpc');
   const executable = runtimeExecutable();

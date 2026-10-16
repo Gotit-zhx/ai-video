@@ -122,41 +122,56 @@ async function launchInspecting(executable, args = [], options = {}) {
   const child = spawn(executable, [...(flag ? [flag] : []), ...args], {
     cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });
+  const started = Date.now();
+  let phase = 'spawn', reason = 'spawn-hook-failed', activationAttempted = false,
+    activationCompleted = false;
   try {
     onSpawn?.(child);
+    phase = 'endpoint';
     const address = await new Promise((resolve, reject) => {
-      let buffer = '';
-      const timer = setTimeout(() => finish(Error('No local inspector endpoint before timeout')), timeout);
-      function finish(error, result) {
+      let buffer = '', settled = false;
+      const timer = setTimeout(() => finish(Error('No local inspector endpoint before timeout'),
+        undefined, 'endpoint-timeout'), timeout);
+      function finish(error, result, category) {
+        if (settled) return;
+        settled = true;
+        if (category) reason = category;
         clearTimeout(timer);
         child.removeListener('error', onError);child.removeListener('exit', onExit);
         child.stderr.removeListener('data', onData);
         if (error) reject(error);else resolve(result);
       }
-      const onError = () => finish(Error('Failed to start inspected process'));
-      const onExit = () => finish(Error('Inspected process exited before attaching'));
+      const onError = () => finish(Error('Failed to start inspected process'), undefined, 'spawn-failed');
+      const onExit = () => finish(Error('Inspected process exited before attaching'), undefined, 'process-exited');
       const onData = data => {
         buffer += data.toString('utf8');
         if (buffer.length > 128 * 1024) {
-          finish(Error('Inspector startup output exceeds limit'));return;
+          finish(Error('Inspector startup output exceeds limit'), undefined, 'output-limit');return;
         }
         const match = buffer.match(/Debugger listening on (ws:\/\/[^\s]+)/);
         if (match) {
-          try {finish(null, localInspectorURL(match[1]));} catch (error) {finish(error);}
+          try {finish(null, localInspectorURL(match[1]));}
+          catch (error) {finish(error, undefined, 'invalid-endpoint');}
         }
       };
       child.once('error', onError);child.once('exit', onExit);
       child.stderr.on('data', onData);
       if (activate) {
-        Promise.resolve().then(() => activate(child)).catch(() =>
-          finish(Error('Late inspector activation failed')));
+        Promise.resolve().then(async () => {
+          if (settled) return;
+          activationAttempted = true;
+          await activate(child);
+          activationCompleted = true;
+        }).catch(() => finish(Error('Late inspector activation failed'), undefined, 'activation-failed'));
       }
     });
     // Drain vendor logs without retaining or printing them.
     child.stdout.resume();child.stderr.resume();
+    phase = 'connect';reason = 'connection-failed';
     const client = await Inspector.connect(address, Math.min(timeout, 5000));
     try {
       if (!pauseOnStart) return {child, client};
+      phase = 'entry';reason = 'entry-pause-failed';
       await client.command('Debugger.enable');
       const paused = client.event('Debugger.paused', timeout);
       // Attach rejection immediately, before the protocol command can fail.
@@ -168,6 +183,10 @@ async function launchInspecting(executable, args = [], options = {}) {
       return {child, client, frame};
     } catch (error) {client.close();throw error;}
   } catch (error) {
+    // Retain only our fixed launch stage and outcome, never vendor stderr,
+    // command-line arguments, inspector URLs, profile paths or account data.
+    error.inspectorStartupDiagnostic = {phase, reason, activationAttempted, activationCompleted,
+      processExitCode: child.exitCode, processSignal: child.signalCode, elapsedMs: Date.now() - started};
     child.stdout.resume();child.stderr.resume();
     if (child.exitCode === null) child.kill();
     throw error;

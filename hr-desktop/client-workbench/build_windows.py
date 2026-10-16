@@ -48,7 +48,7 @@ def stage(source, output, runtime, sdk):
                  "windows-original.json", "windows-adapter.cjs", "native-session.cjs",
                  "native-bindings.cjs", "native-messages.cjs", "native-request-broker.cjs",
                  "inspector-driver.cjs", "process-outcome.cjs", "original-sdk-exit.cjs",
-                 "native-exit-guard.cjs"]:
+                 "native-exit-guard.cjs", "windows-chat-fixture.cjs"]:
         addon["heyi/" + name] = (HERE / name).read_bytes()
     ws = (HERE / "node_modules/ws").resolve(strict=True)
     for file in ws.rglob("*"):

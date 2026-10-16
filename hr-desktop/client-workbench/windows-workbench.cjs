@@ -48,9 +48,9 @@ async function install(bindings, config = {}) {
       stage = 'native-chat-fixture';
       // Run before installing window listeners so the disposable fixture
       // cannot be mistaken for a newly created real main window.
-      chatAction = await require('./native-chat-smoke.cjs').run();
+      chatAction = await require('./native-chat-smoke.cjs').run({windowsAdapter: true});
       stage = 'native-resume-fixture';
-      resumeAction = await require('./native-resume-smoke.cjs').run();
+      resumeAction = await require('./native-resume-smoke.cjs').run({windowsAdapter: true});
       stage = 'native-incoming-fixture';
       incomingActivity = await require('./native-activity-smoke.cjs').run();
     }
