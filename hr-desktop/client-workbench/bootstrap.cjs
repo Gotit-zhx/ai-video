@@ -10,7 +10,7 @@ fs.mkdirSync(data, {recursive: true, mode: 0o700});
 app.setPath('userData', data);
 // Electron puts this internal name in the default User-Agent before the
 // original client builds its HTTP headers. Keep our own product token ASCII;
-// the macOS display name and window titles still provide the Chinese branding.
+// the macOS display name and window titles provide the current Ai boss branding.
 const offlineCheck = process.env.HEYI_WORKBENCH_TEST_DATA &&
   ['--heyi-workbench-smoke', '--heyi-session-write', '--heyi-session-restore']
     .some(flag => process.argv.includes(flag));

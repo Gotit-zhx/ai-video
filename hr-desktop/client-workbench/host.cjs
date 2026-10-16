@@ -11,6 +11,7 @@ const {LocalBridge} = require('./src/bridge.cjs');
 const {storagePaths} = require('./shared-state.cjs');
 const {runtimeExecutable} = require('./runtime-paths.cjs');
 const {fileURLToPath} = require('node:url');
+const {displayName} = require('./assets/brand.json');
 
 let active, starting;
 function start(adapter, options = {}) {
@@ -113,8 +114,8 @@ async function initialize(adapter, options) {
       return result.data;
     }
     async function authorize() {
-      if (!ready) throw Error('赫逸工作台正在读取已有记录，请稍后');
-      if (!lease || lease.expiresAt * 1000 <= Date.now()) throw Error('请在赫逸工作台连接本机助手');
+      if (!ready) throw Error('Ai boss 正在读取已有记录，请稍后');
+      if (!lease || lease.expiresAt * 1000 <= Date.now()) throw Error('请在 Ai boss 连接本机助手');
       if (Date.now() - checkedAt < 15000) return lease.user;
       const result = await cloud('lease', {token: lease.token, device});
       checkedAt = Date.now();
@@ -252,7 +253,7 @@ async function initialize(adapter, options) {
     listen(egress, 'stopped', () => engine.pause('DIRECT_NETWORK_UNAVAILABLE'));
     const current = Menu.getApplicationMenu();
     const template = current?.items.map(item => item) || [];
-    template.push({label: '赫逸工作台', submenu: [
+    template.push({label: displayName, submenu: [
       {label: '打开人力资源工作台', accelerator: 'CommandOrControl+Shift+H', click: openWorkbench},
       {label: '打开 BOSS 客户端', click: () => adapter.show()},
       {type: 'separator'},

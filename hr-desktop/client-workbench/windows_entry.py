@@ -48,7 +48,7 @@ def main():
     elif result.returncode:
         ctypes.windll.user32.MessageBoxW(
             None, "工作台启动未完成。请查看本机 HeyiBossWorkbench 目录中的启动状态，或联系管理员。",
-            "赫逸工作台 · 改造测试版", 0x10)
+            "Ai boss", 0x10)
     return result.returncode
 
 
@@ -58,5 +58,5 @@ if __name__ == "__main__":
     except Exception:
         if sys.platform == "win32" and "--self-test" not in sys.argv[1:]:
             ctypes.windll.user32.MessageBoxW(None, "工作台安装文件不完整，请重新安装。",
-                                             "赫逸工作台 · 改造测试版", 0x10)
+                                             "Ai boss", 0x10)
         raise SystemExit(1)

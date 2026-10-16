@@ -84,7 +84,8 @@ try {
         ConvertTo-Json | Set-Content (Join-Path $root 'firewall.json') -Encoding utf8NoBOM
     $workbenchCode = 0
     if ($workbench) {
-        $packagedExe = Join-Path $workbench '赫逸工作台.exe'
+        $brand = Get-Content (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\assets\brand.json') -Raw | ConvertFrom-Json
+        $packagedExe = Join-Path $workbench $brand.windowsExecutable
         $testEnvironment = @{
             ELECTRON_RUN_AS_NODE = $null
             HEYI_NATIVE_PROBE_ROOT = $root

@@ -1,5 +1,6 @@
 const path = require('node:path');
 const {BrowserView, ipcMain, shell, Menu} = require('electron');
+const {applyWindowBrand} = require('./brand.cjs');
 
 const HEIGHT = 54;
 const SIDEBAR = 88;
@@ -97,7 +98,7 @@ class IntegratedShell {
     win.setFullScreenable(true);win.setMinimumSize(1080, 700);
     if (this.window && !this.window.isDestroyed()) win.setBounds(this.window.getBounds());
     else {win.setSize(1360, 880);win.center();}
-    win.setTitle('赫逸智能化 AI 平台');
+    applyWindowBrand(win);
     win.show = () => {this.selectWindow(win);this.originalShow.get(win)();};
     win.on('resize', () => {if (this.window === win) this.layout();});
     const applyNativeCSS = () => {

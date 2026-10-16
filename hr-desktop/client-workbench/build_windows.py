@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 
-from build_mac import own_files, verify_runtime
+from build_mac import BRAND, own_files, verify_runtime
 
 HERE = Path(__file__).resolve().parent
 DESKTOP = HERE.parent
@@ -65,7 +65,8 @@ def stage(source, output, runtime, sdk):
     verify_runtime(native / "resources/heyi-runtime", "win32")
     with tempfile.TemporaryDirectory(prefix="heyi-windows-entry-") as temporary:
         subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-                        "--onefile", "--windowed", "--name", "赫逸工作台",
+                        "--onefile", "--windowed", "--name", BRAND["displayName"],
+                        "--icon", str(HERE / "assets/ai-boss.ico"),
                         "--distpath", str(output), "--workpath", str(Path(temporary) / "build"),
                         "--specpath", temporary, str(HERE / "windows_entry.py")],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

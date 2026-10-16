@@ -12,8 +12,13 @@ import zipfile
 
 PIN = json.loads((Path(__file__).resolve().parents[2] /
                   "hr-desktop/client-workbench/windows-original.json").read_text(encoding="utf-8"))["files"]
+BRAND = json.loads((Path(__file__).resolve().parents[2] /
+                    "hr-desktop/client-workbench/assets/brand.json").read_text(encoding="utf-8"))
 REQUIRED = (
-    "赫逸工作台.exe",
+    BRAND["windowsExecutable"],
+    "native-client/resources/heyi/assets/brand.json",
+    "native-client/resources/heyi/assets/ai-boss.png",
+    "native-client/resources/heyi/assets/ai-boss-app.png",
     "native-client/resources/heyi/windows-launcher.cjs",
     "native-client/resources/heyi/windows-workbench.cjs",
     "native-client/resources/heyi-runtime/heyi-boss.exe",
@@ -117,8 +122,8 @@ def export(root, output, event, commit):
                 if actual.hexdigest() != expected:
                     raise ValueError("Package file changed or differs from manifest")
             target.writestr("使用说明.txt",
-                "赫逸工作台 · Windows 候选验证版\n\n"
-                "请完整解压，运行 HeyiWorkbench-Windows 文件夹中的「赫逸工作台.exe」。\n"
+                "Ai boss · Windows 候选验证版\n\n"
+                "请完整解压，运行 HeyiWorkbench-Windows 文件夹中的「Ai boss.exe」。\n"
                 "不要单独移动 EXE；它需要同目录的程序文件。\n"
                 "更新时先正常退出旧工作台，不要退出 BOSS 或赫逸账号，也不要删除登录资料目录。\n"
                 "本包通过了隔离整包检查，真实账号的完整招聘流程仍待验收。\n"

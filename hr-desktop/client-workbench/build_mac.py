@@ -19,6 +19,7 @@ HERE = Path(__file__).resolve().parent
 DESKTOP = HERE.parent
 MAIN_SHA256 = "1806b34a0da262fec08afa8596b37666dfb06824eaa878e94ba39a89c46854e7"
 BLOCK_SIZE = 4 * 1024 * 1024
+BRAND = json.loads((HERE / "assets/brand.json").read_text(encoding="utf-8"))
 
 
 def verify_runtime(directory, expected_platform):
@@ -196,8 +197,8 @@ heyiHost.start({
   require("node:fs").writeFileSync(
     require("node:path").join(e.app.getPath("userData"), "heyi-startup-status.json"),
     JSON.stringify({ok: false, code: error.code || "WORKBENCH_START_FAILED",
-      message: "赫逸工作台未启动；原客户端登录窗口保留"}));
-  e.dialog.showErrorBox("赫逸工作台", error.message || "工作台启动未完成");
+      message: "Ai boss 未启动；原客户端登录窗口保留"}));
+  e.dialog.showErrorBox("Ai boss", error.message || "工作台启动未完成");
 });
 """
     return text.encode("utf-8")
@@ -205,7 +206,7 @@ heyiHost.start({
 
 def own_files(sdk_path):
     result = {}
-    for name in ["bootstrap.cjs", "compat.cjs", "host.cjs", "native-rpc.cjs",
+    for name in ["bootstrap.cjs", "compat.cjs", "host.cjs", "brand.cjs", "native-rpc.cjs",
                  "native-download.cjs", "shared-state.cjs", "runtime-paths.cjs", "smoke.cjs", "ui-check.cjs",
                  "native-network.cjs", "integrated-shell.cjs", "shell-preload.cjs",
                  "shell.html", "shell-renderer.cjs", "native-resume.cjs", "native-resume-smoke.cjs",
@@ -215,6 +216,8 @@ def own_files(sdk_path):
                  "platform-connection-smoke.cjs", "native-egress-smoke.cjs",
                  "native-http.cjs", "native-http-smoke.cjs", "native-protocol.cjs"]:
         result["heyi/" + name] = (HERE / name).read_bytes()
+    for name in ["brand.json", "ai-boss.png", "ai-boss-app.png"]:
+        result["heyi/assets/" + name] = (HERE / "assets" / name).read_bytes()
     for source in (DESKTOP / "src").glob("*.cjs"):
         result["heyi/src/" + source.name] = source.read_bytes()
     result["heyi/package.json"] = (HERE / "package.json").read_bytes()
@@ -363,7 +366,10 @@ def main():
     # Electron 22 derives helper bundle names from CFBundleName. Preserve that
     # internal name so its existing native helper executables remain loadable.
     plist.update(CFBundleIdentifier="cn.hoyee.bossworkbench.experimental",
-                 CFBundleDisplayName="赫逸工作台 · 改造测试版")
+                 CFBundleDisplayName=BRAND["displayName"],
+                 CFBundleIconFile=BRAND["macIconFile"])
+    shutil.copyfile(HERE / "assets/ai-boss.icns",
+                    output / "Contents/Resources" / BRAND["macIconFile"])
     for declaration in plist.get("CFBundleURLTypes", []):
         declaration["CFBundleURLSchemes"] = [
             "heyi-boss-workbench" if scheme == "boss-desktop" else scheme

@@ -80,7 +80,7 @@ class ExportWorkbenchTest(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_modified_binary_discards_archive(self):
-        (self.package / "赫逸工作台.exe").write_bytes(b"modified")
+        (self.package / module.BRAND["windowsExecutable"]).write_bytes(b"modified")
         with self.assertRaisesRegex(ValueError, "differs"):
             self.run_export()
         self.assertEqual(list(self.output.glob("*.zip")), [])

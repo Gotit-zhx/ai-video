@@ -181,6 +181,11 @@ async function offlineCheck() {
   try {
     integrated.showWorkbench();
     assert.equal(BrowserWindow.getAllWindows().filter(win => win.isVisible()).length, 1);
+    assert.equal(integrated.window.getTitle(), 'Ai boss');
+    assert.equal(await integrated.toolbar.webContents.executeJavaScript(
+      `document.title === 'Ai boss' &&
+       document.querySelector('.brand').textContent.trim() === 'Ai boss' &&
+       document.querySelector('.mark').complete && document.querySelector('.mark').naturalWidth === 1024`), true);
     const labels = await integrated.sidebar.webContents.executeJavaScript(
       'Array.from(document.querySelectorAll("nav button")).map(node=>node.innerText.trim().split("\\n").pop())');
     assert.deepEqual(labels, ['BOSS', '系统']);
@@ -209,7 +214,7 @@ async function offlineCheck() {
       url: 'https://hoyee.org.cn', name: 'HEYI_SESSION', value: 'heyi-offline-upgrade-cookie',
       path: '/', secure: true, httpOnly: true, sameSite: 'lax',
     });
-    return {ok: true, actualOriginalWindows: true, singleVisibleWindow: true,
+    return {ok: true, actualOriginalWindows: true, singleVisibleWindow: true, applicationBrand: 'Ai boss',
       sidebarRoundTrip: true, localFixturePaste: true, loopbackBridge: true,
       packagedWindowsWorker: true, sdkSourceGuard: true, offlineNetworkRelay: true,
       signedOutSnapshotRejected: true, chatAction: active.chatAction, resumeAction: active.resumeAction,

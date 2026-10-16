@@ -37,6 +37,13 @@ async function run() {
     url: 'data:text/html,<input id="fixture" placeholder="Offline paste target">',
     origin: 'null'});
   await Promise.all([integrated.platformReady, integrated.chromeReady]);
+  assert.equal(window.getTitle(), 'Ai boss');
+  assert.equal(await integrated.toolbar.webContents.executeJavaScript(
+    `document.title === 'Ai boss' &&
+     document.querySelector('.brand').textContent.trim() === 'Ai boss' &&
+     document.querySelector('.mark').complete && document.querySelector('.mark').naturalWidth === 1024`), true);
+  await window.webContents.executeJavaScript(`document.title = 'Native page title'`);
+  assert.equal(window.getTitle(), 'Ai boss');
   integrated.setNetworkState('ready');
   assert.equal(await integrated.toolbar.webContents.executeJavaScript(
     `new Promise(resolve => setTimeout(() => resolve(
@@ -218,7 +225,7 @@ async function run() {
     nativeAttachmentCredentialDeadline: true,
     nativeChromiumRequestCount: nativeDownloads,
     nativeUserAgentHeaderValid: true, rendererUserAgentHeaderValid: true,
-    integratedSingleWindow: true, nativeLoginTransitionFixture: true,
+    integratedSingleWindow: true, nativeLoginTransitionFixture: true, applicationBrand: 'Ai boss',
     leftNavigationFixture: true, pasteTargetRoutingFixture: true,
     hostStartup: {concurrentStartup: true, actualHostBridge: true,
       actualPackagedWorker: true, isolatedAssistantRecords: true, closedBridge: true},
