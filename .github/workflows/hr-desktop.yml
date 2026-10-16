@@ -22,7 +22,7 @@ on:
         required: false
         default: false
       retainWorkbench:
-        description: "仅私有仓库：临时保留通过整包检查的 Windows 候选包供下载"
+        description: "仅私有仓库：通过草稿 Release 临时保留已验包的 Windows 候选包"
         type: boolean
         required: false
         default: false
@@ -156,7 +156,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -203,10 +203,25 @@ jobs:
           "HEYI_WORKBENCH_EXPORT=$output" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Retain private candidate temporarily
         if: ${{ always() && inputs.retainWorkbench == true && github.event.repository.private == true && env.HEYI_WORKBENCH_EXPORT != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: heyi-workbench-windows-candidate
-          path: ${{ env.HEYI_WORKBENCH_EXPORT }}
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # A private draft avoids Actions artifact quota; never publish it.
+          $private = gh repo view --json isPrivate --jq '.isPrivate'
+          if ($LASTEXITCODE -ne 0 -or $private -ne 'true') { throw 'Private repository required' }
+          $tag = "heyi-workbench-private-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $notes = Join-Path $env:RUNNER_TEMP 'heyi-private-candidate-notes.txt'
+          [IO.File]::WriteAllText($notes, "Temporary private candidate for local validation. Packaged offline checks passed. Live recruiting workflows are not yet accepted; separate original-runtime probes may remain failed. Delete this draft after downloading and verifying the candidate.")
+          gh release create $tag --draft --target "$env:GITHUB_SHA" --title '赫逸工作台 Windows 候选验证包' --notes-file "$notes"
+          if ($LASTEXITCODE -ne 0) { throw 'Private draft creation failed' }
+          $draft = gh release view $tag --json isDraft --jq '.isDraft'
+          if ($LASTEXITCODE -ne 0 -or $draft -ne 'true') { throw 'Candidate must remain a draft' }
+          $assets = @(Get-ChildItem "$env:HEYI_WORKBENCH_EXPORT" -File | Where-Object {
+            $_.Name -eq 'verification.json' -or $_.Name -match '^HeyiWorkbench-Windows-candidate-[a-f0-9]{12}\.zip$'
+          } | ForEach-Object FullName)
+          if ($assets.Count -ne 2) { throw 'Expected one verified candidate and its report' }
+          gh release upload $tag @assets
+          if ($LASTEXITCODE -ne 0) { throw 'Private draft upload failed' }
+          Write-Output "HEYI_PRIVATE_CANDIDATE_TAG $tag"
