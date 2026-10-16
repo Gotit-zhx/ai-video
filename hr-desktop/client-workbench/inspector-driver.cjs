@@ -115,9 +115,10 @@ class Inspector {
 
 async function launchInspecting(executable, args = [], options = {}) {
   const {timeout = 15000, env = process.env, cwd, onSpawn, pauseOnStart = false,
-    activate, inspectPortArgument = true} = options;
+    activate, inspectPortArgument = true, latePortOption = 'inspect-port'} = options;
   if (activate && pauseOnStart) throw Error('Late inspector activation cannot pause at startup');
-  const flag = activate ? (inspectPortArgument ? '--inspect-port=127.0.0.1:0' : null) :
+  if (!['inspect-port', 'debug-port'].includes(latePortOption)) throw Error('Unsupported late inspector port option');
+  const flag = activate ? (inspectPortArgument ? `--${latePortOption}=127.0.0.1:0` : null) :
     pauseOnStart ? '--inspect-brk=127.0.0.1:0' : '--inspect=127.0.0.1:0';
   const child = spawn(executable, [...(flag ? [flag] : []), ...args], {
     cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,

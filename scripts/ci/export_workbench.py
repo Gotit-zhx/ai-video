@@ -27,6 +27,7 @@ CHECKS = (
     "ok", "actualOriginalWindows", "packagedEntryPoint", "singleVisibleWindow",
     "sidebarRoundTrip", "localFixturePaste", "loopbackBridge", "packagedWindowsWorker",
     "offlineNetworkRelay", "signedOutSnapshotRejected",
+    "independentInspector", "defaultPortReservedByTest",
     "chatAction.genuineDeliveryFixture", "chatAction.singleInvocation",
     "chatAction.windowsAdapterPath", "chatAction.legacySenderUnused",
     "resumeAction.nativeHTTPExchangeFixture", "resumeAction.nativeOpeningCheck",
@@ -96,7 +97,7 @@ def export(root, output, event, commit):
     smoke = read_json(root / "windows-workbench-smoke.json")
     if (any(field(smoke, name) is not True for name in CHECKS) or
             any(smoke.get(name) != 0 for name in ("originalExitCode", "entryControllerExitCode",
-                                                 "candidateMessagesSent")) or
+                                                  "candidateMessagesSent", "defaultPortConnections")) or
             smoke.get("actualBossNetworkUsed") is not False or
             field(smoke, "shutdown.realAccountUsed") is not False or
             field(smoke, "incomingActivity.additionalBossRequests") != 0 or

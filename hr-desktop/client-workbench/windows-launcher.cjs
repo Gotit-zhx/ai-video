@@ -10,21 +10,36 @@ const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
 const {waitForProcess} = require('./process-outcome.cjs');
 
-async function ensureInspectorPortFree(port = 9229) {
-  const guard = net.createServer();
-  try {
-    await new Promise((resolve, reject) => {
-      guard.once('error', () => reject(Error('Local inspector port is already occupied')));
-      guard.listen(port, '127.0.0.1', resolve);
-    });
-  } finally {
-    if (guard.listening) await new Promise(resolve => guard.close(resolve));
-  }
+async function launchWorkbenchProcess(executable, args, {env = process.env, cwd, onSpawn} = {}) {
+  return launchInspecting(executable, args, {
+    env, cwd, onSpawn, timeout: 45000,
+    // Node 16 defines --debug-port as an alias of --inspect-port. Both set
+    // the future address without enabling a debugger before cached startup.
+    // Use the pinned runtime's supported alias and bind only an OS-assigned
+    // loopback port; no connection to a pre-existing debugger is attempted.
+    inspectPortArgument: true, latePortOption: 'debug-port',
+    activate: async child => {
+      await new Promise(resolve => setTimeout(resolve, 12000));
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw Error('Original client exited before addon binding');
+      }
+      const helper = spawn(executable, ['-e',
+        'process._debugProcess(Number(process.argv[1]))', String(child.pid)], {
+          cwd, env: {...env, ELECTRON_RUN_AS_NODE: '1'}, stdio: 'ignore', windowsHide: true,
+        });
+      const timer = setTimeout(() => helper.kill(), 5000);
+      try {
+        const [code] = await once(helper, 'exit');
+        if (code !== 0) throw Error('Original runtime helper did not activate');
+      } finally {clearTimeout(timer);}
+    },
+  });
 }
 
 async function run(packageRoot, selfTest = false) {
   if (process.platform !== 'win32') throw Error('Windows launcher required');
-  let connection, statusFile, verified, testOutput, stage = 'verify-package';
+  let connection, statusFile, verified, testOutput, reservedPort, defaultPortConnections = 0,
+    stage = 'verify-package';
   try {
     const profileRoot = selfTest ? process.env.HEYI_WORKBENCH_TEST_DATA :
       path.join(process.env.LOCALAPPDATA || '', 'HeyiBossWorkbench');
@@ -59,33 +74,23 @@ async function run(packageRoot, selfTest = false) {
     for (const directory of [profileRoot, plan.profile, plan.env.APPDATA,
       plan.env.LOCALAPPDATA, plan.env.USERPROFILE, plan.env.TEMP]) await fs.mkdir(directory, {recursive: true});
     statusFile = path.join(profileRoot, 'heyi-launcher-status.json');
-    stage = 'original-startup';
-    // This exact original runtime passed delayed activation on its default
-    // loopback port. Its separate --inspect-port variant has not passed.
-    // Refuse an occupied port and accept only the URL emitted by our own
-    // child. Never connect to an existing debugger or retry attachment.
-    await ensureInspectorPortFree();
-    connection = await launchInspecting(verified.executable,
-      [`--user-data-dir=${plan.profile}`], {
-        env: plan.env, cwd: path.dirname(verified.executable), timeout: 45000,
-        inspectPortArgument: false,
-        activate: async child => {
-          await new Promise(resolve => setTimeout(resolve, 12000));
-          if (child.exitCode !== null) throw Error('Original client exited before addon binding');
-          const helper = spawn(verified.executable, ['-e',
-            'process._debugProcess(Number(process.argv[1]))', String(child.pid)], {
-              cwd: path.dirname(verified.executable),
-              env: {...plan.env, ELECTRON_RUN_AS_NODE: '1'}, stdio: 'ignore', windowsHide: true,
-            });
-          const timer = setTimeout(() => helper.kill(), 5000);
-          try {
-            const [code] = await once(helper, 'exit');
-            if (code !== 0) throw Error('Original runtime helper did not activate');
-          } finally {clearTimeout(timer);}
-        },
+    if (selfTest) {
+      // The actual packaged entry must coexist with another local service.
+      // This listener is created only inside the verified disposable test.
+      stage = 'test-default-port-occupied';
+      reservedPort = net.createServer(socket => {defaultPortConnections++;socket.destroy();});
+      await new Promise((resolve, reject) => {
+        reservedPort.once('error', reject);
+        reservedPort.listen(9229, '127.0.0.1', resolve);
       });
-    if (new URL(connection.client.socket.url).port !== '9229') {
-      throw Error('Unexpected original runtime inspector port');
+    }
+    stage = 'original-startup';
+    connection = await launchWorkbenchProcess(verified.executable,
+      [`--user-data-dir=${plan.profile}`], {
+        env: plan.env, cwd: path.dirname(verified.executable),
+      });
+    if (new URL(connection.client.socket.url).port === '9229') {
+      throw Error('Original runtime did not use an independent inspector port');
     }
     stage = 'original-readiness';
     const deadline = Date.now() + 15000;
@@ -114,6 +119,7 @@ async function run(packageRoot, selfTest = false) {
         expression: `process.mainModule.require(${JSON.stringify(verified.addon)}).offlineCheck()`});
       if (checked.exceptionDetails || checked.result?.value?.ok !== true) throw Error('Packaged check failed');
       const report = checked.result.value;
+      report.independentInspector = true;
       stage = 'original-shutdown';
       const exitModule = path.join(path.dirname(verified.addon), 'original-sdk-exit.cjs');
       await evaluateRunning(connection, `setTimeout(()=>{
@@ -124,8 +130,11 @@ async function run(packageRoot, selfTest = false) {
       const outcome = await waitForProcess(connection.child, 15000);
       report.originalExitCode = outcome.code;report.timedOut = outcome.timedOut;
       report.terminationRequested = outcome.terminationRequested;
+      report.defaultPortReservedByTest = reservedPort.listening && reservedPort.address().port === 9229;
+      report.defaultPortConnections = defaultPortConnections;
       report.shutdown = JSON.parse(await fs.readFile(path.join(profileRoot, 'workbench-exit-check.json'), 'utf8'));
       report.ok = report.ok && outcome.code === 0 && !outcome.timedOut && !outcome.terminationRequested &&
+        report.defaultPortReservedByTest && report.defaultPortConnections === 0 &&
         report.shutdown.nativeExitGuardInvoked === true &&
         report.shutdown.hostClosedBeforeNativeExit === true && report.shutdown.platformSessionSaved === true;
       await fs.writeFile(testOutput, JSON.stringify(report, null, 2), {flag: 'wx'});
@@ -143,7 +152,8 @@ async function run(packageRoot, selfTest = false) {
     if (code !== 0) throw Error('Original client ended unexpectedly');
     return 0;
   } catch (error) {
-    let diagnostic = error.packageDiagnostic || error.nativeBindingDiagnostic;
+    let diagnostic = error.packageDiagnostic || error.nativeBindingDiagnostic ||
+      (error.inspectorStartupDiagnostic ? {inspector: error.inspectorStartupDiagnostic} : undefined);
     if (stage === 'install-workbench' && connection && verified) {
       try {
         const state = await evaluateRunning(connection,
@@ -152,7 +162,7 @@ async function run(packageRoot, selfTest = false) {
       } catch {}
     }
     if (statusFile) await fs.writeFile(statusFile,
-      JSON.stringify({ok: false, experimental: true, stage}), {mode: 0o600}).catch(() => {});
+      JSON.stringify({ok: false, experimental: true, stage, diagnostic}), {mode: 0o600}).catch(() => {});
     if (selfTest && testOutput) {
       await fs.writeFile(testOutput, JSON.stringify({ok: false, stage, diagnostic,
         candidateMessagesSent: 0, actualBossNetworkUsed: false}), {flag: 'wx'}).catch(() => {});
@@ -165,11 +175,14 @@ async function run(packageRoot, selfTest = false) {
       finally {clearTimeout(timer);}
     }
     return 1;
-  } finally {connection?.client.close();}
+  } finally {
+    connection?.client.close();
+    if (reservedPort?.listening) await new Promise(resolve => reservedPort.close(resolve));
+  }
 }
 
 if (require.main === module) {
   run(process.argv[2], process.argv[3] === '--self-test').then(
     code => {process.exitCode = code;}, () => {process.exitCode = 1;});
 }
-module.exports = {run, ensureInspectorPortFree};
+module.exports = {run, launchWorkbenchProcess};

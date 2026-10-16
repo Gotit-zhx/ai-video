@@ -36,6 +36,7 @@ async function launchOriginal(executable, root, env, logSignals, pidFile = 'prob
     return await launchInspecting(executable, ['--disable-gpu',
       `--user-data-dir=${path.join(root, 'profile')}`], {
       env, cwd: path.dirname(executable), timeout: 45000, inspectPortArgument: dedicatedInspector,
+      latePortOption: dedicatedInspector ? 'debug-port' : 'inspect-port',
       onSpawn: child => {
         spawned = child;
         fs.writeFile(path.join(root, pidFile), String(child.pid)).catch(() => {});

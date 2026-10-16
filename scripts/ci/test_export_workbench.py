@@ -26,7 +26,8 @@ class ExportWorkbenchTest(unittest.TestCase):
         self.manifest = {"schemaVersion": 1, "experimental": True, "realAccountTested": False,
                          "originalResourcesModified": False, "files": files}
         self.smoke = {"originalExitCode": 0, "entryControllerExitCode": 0, "candidateMessagesSent": 0,
-                      "actualBossNetworkUsed": False, "timedOut": False, "terminationRequested": False}
+                      "defaultPortConnections": 0, "actualBossNetworkUsed": False,
+                      "timedOut": False, "terminationRequested": False}
         for name in module.CHECKS:
             target = self.smoke
             parts = name.split(".")
@@ -74,6 +75,18 @@ class ExportWorkbenchTest(unittest.TestCase):
 
     def test_chat_fixture_without_windows_adapter_cannot_be_exported(self):
         del self.smoke["chatAction"]["windowsAdapterPath"]
+        self.write()
+        with self.assertRaisesRegex(ValueError, "checks must pass"):
+            self.run_export()
+        self.assertFalse(self.output.exists())
+
+    def test_old_fixed_port_or_foreign_port_connection_cannot_be_exported(self):
+        self.smoke["independentInspector"] = False
+        self.write()
+        with self.assertRaisesRegex(ValueError, "checks must pass"):
+            self.run_export()
+        self.smoke["independentInspector"] = True
+        self.smoke["defaultPortConnections"] = 1
         self.write()
         with self.assertRaisesRegex(ValueError, "checks must pass"):
             self.run_export()
