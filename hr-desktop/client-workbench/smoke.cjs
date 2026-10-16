@@ -79,6 +79,7 @@ async function run() {
   const platformConnection = await require('./platform-connection-smoke.cjs').run();
   const egressResponse = await require('./native-egress-smoke.cjs').run();
   const resumeAction = await require('./native-resume-smoke.cjs').run();
+  const chatAction = await require('./native-chat-smoke.cjs').run();
   const nativeHttp = await require('./native-http-smoke.cjs').run();
   const attachment = Buffer.from('%PDF-1.7\n% offline native download fixture\n%%EOF');
   const attachmentName = "attachment; filename=resume.pdf; filename*=UTF-8''%E7%AE%80%E5%8E%86.pdf";
@@ -219,7 +220,7 @@ async function run() {
     leftNavigationFixture: true, pasteTargetRoutingFixture: true,
     hostStartup: {concurrentStartup: true, actualHostBridge: true,
       actualPackagedWorker: true, isolatedAssistantRecords: true, closedBridge: true},
-    platformConnection, egressResponse, resumeAction, nativeHttp,
+    platformConnection, egressResponse, resumeAction, chatAction, nativeHttp,
   }, null, 2));
   app.exit(0);
 }

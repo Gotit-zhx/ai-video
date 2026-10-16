@@ -11,7 +11,8 @@ import uuid
 
 REQUEST_TEXT = '方便发一份简历过来吗？'
 
-def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False, receiving=False, history=False):
+def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False, receiving=False, history=False,
+                 last_operation_at=None):
     """Allocate existing capacity; the shared HTTP/CDP hard guard still applies."""
     if not Path(path).exists():
         return 0
@@ -27,7 +28,11 @@ def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False
     # Persisted request times pace background work across restarts. Manual
     # actions retain their priority; incoming attachments also have a cooldown.
     spacing = 0 if user_initiated else 30 if receiving else 600 if history or not queued else 60
-    cooldown = max(0, times[-1]+spacing-now) if times else 0
+    # A collector has its own durable operation timestamp. Counting every job
+    # status read as a new historical sweep makes its ten-minute deadline move
+    # forever. The same shared request count/hard guard still applies.
+    last = float(last_operation_at) if last_operation_at is not None else times[-1] if times else 0
+    cooldown = max(0, last+spacing-now) if last else 0
     if needed <= 0:
         return cooldown
     if needed > len(times):

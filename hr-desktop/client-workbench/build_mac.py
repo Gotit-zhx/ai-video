@@ -137,10 +137,23 @@ def patch_main(data):
     text = text.replace(before, 'const r=new lC(uC.TEXT).getProtoMsg(e);'
                         'try{heyiHost.observeNativeSend(require("./heyi/native-protocol.cjs").decodeNativeProtocol(r))}catch{}'
                         'cC.send(r),t()', 1)
+    before = 'e.BrowserWindow.getAllWindows().forEach((e=>{e.destroy()})),e.app.quit(),process.exit(1)'
+    if text.count(before) != 1:
+        raise ValueError("Original menu quit handler differs")
+    text = text.replace(before, 'e.app.quit()', 1)
+    before = 'setTimeout((()=>{e.app.exit(0)}),500)'
+    if text.count(before) != 1:
+        raise ValueError("Original delayed exit handler differs")
+    text = text.replace(before,
+                        'heyiHost.closeBeforeExit().finally((()=>{e.app.exit(0)}))', 1)
     text += """
 // Heyi local modification. Original authentication and handlers remain intact.
 const heyiShell = require("./heyi/integrated-shell.cjs").instance();
 const heyiHost = require("./heyi/host.cjs");
+const heyiChat = new (require("./heyi/native-chat.cjs").NativeChat)({
+  nativeWindow: () => ph.get("main"),
+  allContents: () => e.webContents.getAllWebContents(),
+});
 const heyiOriginalReceive = sC.receiveMessage.bind(sC);
 sC.receiveMessage = function(messages) {
   const result = heyiOriginalReceive(messages);
@@ -177,11 +190,8 @@ heyiHost.start({
       credentials: async () => ({token: await Ep.get("wt2"),
         zpToken: await Ep.getZpToken(), userAgent: Wc("client")}),
     }),
-  sendText: input => cC.send(new lC(uC.TEXT).getProtoMsg(input)),
-  requestResume: input => new (require("./heyi/native-resume.cjs").NativeResume)({
-    nativeWindow: () => ph.get("main"),
-    allContents: () => e.webContents.getAllWebContents(),
-  }).request(input),
+  sendText: input => heyiChat.perform({...input, clientMid: input.options.clientMid}),
+  requestResume: input => heyiChat.perform({...input, resume: true}),
 }).catch(error => {
   require("node:fs").writeFileSync(
     require("node:path").join(e.app.getPath("userData"), "heyi-startup-status.json"),
@@ -199,6 +209,8 @@ def own_files(sdk_path):
                  "native-download.cjs", "shared-state.cjs", "runtime-paths.cjs", "smoke.cjs", "ui-check.cjs",
                  "native-network.cjs", "integrated-shell.cjs", "shell-preload.cjs",
                  "shell.html", "shell-renderer.cjs", "native-resume.cjs", "native-resume-smoke.cjs",
+                 "native-chat.cjs", "native-chat-smoke.cjs", "chat-diagnostics.cjs", "platform-session.cjs",
+                 "platform-session-smoke.cjs",
                  "platform-connection-smoke.cjs", "native-egress-smoke.cjs",
                  "native-http.cjs", "native-http-smoke.cjs", "native-protocol.cjs"]:
         result["heyi/" + name] = (HERE / name).read_bytes()

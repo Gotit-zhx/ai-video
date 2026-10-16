@@ -3,7 +3,7 @@ const {NativeSession} = require('./native-session.cjs');
 const {NativeRequestBroker, chromiumPreparedTransport} = require('./native-request-broker.cjs');
 const {installMessageObservers} = require('./native-messages.cjs');
 const {downloadResume} = require('./native-download.cjs');
-const {NativeResume} = require('./native-resume.cjs');
+const {NativeChat} = require('./native-chat.cjs');
 const fail = (code, message) => Object.assign(Error(message), {code});
 function sessionReason(event) {
   const code = event?.code;
@@ -30,7 +30,7 @@ class WindowsAdapter extends EventEmitter {
       authentication: bindings.authentication, timeout: sessionTimeout});
     this.originalSession.on('session-lost', code => this.emit('session-lost', code));
     this.originalSession.on('login-established', () => this.emit('login-established'));
-    this.resume = new NativeResume({nativeWindow, allContents});
+    this.chat = new NativeChat({nativeWindow, allContents});
     try {
       this.requests = new NativeRequestBroker({
         clients: bindings.httpClients, builder: bindings.requestBuilder, endpoints, timeout,
@@ -109,15 +109,14 @@ class WindowsAdapter extends EventEmitter {
         !/^[1-9]\d{0,29}$/.test(String(options?.clientMid || ''))) {
       throw fail('INVALID_ACTION', '沟通对象或原生消息编号不正确');
     }
-    // The original SDK constructs and sends once. Its return value is not a
-    // server receipt; NativeRPC still waits for the exact native clientMid.
-    return Reflect.apply(this.bindings.sdk._sdk_chatSocket_sendTextMessage, this.bindings.sdk, [input]);
+    return this.chat.perform({...input, account, clientMid: options.clientMid,
+      checkAccount: () => this.check(account, input.checkAccount)});
   }
   async requestResume(input) {
     const account = this.originalSession.account();
     await this.verifyAccount(account, input.signal);
     this.check(account, input.checkAccount);
-    return this.resume.request({...input,
+    return this.chat.perform({...input, account, resume: true,
       checkAccount: () => this.check(account, input.checkAccount)});
   }
   close() {

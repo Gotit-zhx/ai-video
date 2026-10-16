@@ -174,6 +174,25 @@ class ReceiptTest(unittest.TestCase):
             self.assertTrue(receipts.urgent(db))
         self.c.cli_json.assert_not_called()
 
+    def test_job_checks_cannot_starve_durable_slow_collection(self):
+        budget = self.root / 'budget.sqlite3'
+        now = time.time()
+        with contextlib.closing(sqlite3.connect(budget)) as db, db:
+            db.execute('CREATE TABLE requests(at REAL NOT NULL)')
+            db.executemany('INSERT INTO requests VALUES(?)', [(now-60,), (now-1,)])
+        self.c.passive_delay = lambda **options: flow.budget_delay(budget, 120, **options)
+        self.c.cli_json.return_value = {'ok': True, 'data': {'result': []}}
+        with mock.patch.object(receipts.time, 'time', return_value=now):
+            with flow.database(self.root) as db:
+                flow.put_state(db, 'chat-resumes-last-request-at', now-601)
+                self.assertTrue(receipts.step(self.c, db, {})['ok'])
+                self.assertEqual(float(flow.get_state(db, 'chat-resumes-last-request-at')), now)
+            # Reopening the ledger models a replacement/worker restart.
+            with flow.database(self.root) as db:
+                self.assertIsNone(receipts.step(self.c, db, {}))
+        self.c.cli_json.assert_called_once_with('hr', 'chat', '--page', '1')
+        self.c.request_resume.assert_not_called()
+
     def test_plain_text_uses_one_read_without_redundant_job_binding_request(self):
         with flow.database(self.root) as db:
             self.seed(db)
@@ -284,7 +303,8 @@ class ReceiptTest(unittest.TestCase):
             self.inspect(db,[self.message(100)])
             self.c.passive_delay=mock.Mock(return_value=120)
             receipts.step(self.c,db,{})
-            self.c.passive_delay.assert_called_once_with(cost=8,queued=False,receiving=False,history=True)
+            self.c.passive_delay.assert_called_once_with(cost=8,queued=False,receiving=False,history=True,
+                                                        last_operation_at=0.0)
 
     def test_unchanged_conversation_list_does_not_requeue_old_history_every_sweep(self):
         with flow.database(self.root) as db:

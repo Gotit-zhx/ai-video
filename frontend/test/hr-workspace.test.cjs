@@ -683,6 +683,35 @@ test('resume categories are explicit, history is collapsed, and review embeds th
   assert.equal(all(app.root).some(n=>n.tagName==='a'&&n.target==='_blank'&&n.href===row.fileUrl),false);
   assert.ok(all(app.root).some(n=>n.className==='hr-review-preview'));
 });
+test('an open resume automatically refreshes verified job state after reconnect without reloading PDF or losing text',async()=>{
+  let connected=false,synced=false,now=Date.now(),previews=0,jobReads=0;
+  const key='a'.repeat(64),row={id:'r-connect',name:'测试候选人',accountKey:key,jobName:'测试职位',
+    status:'pending',aiState:'idle',resumeText:'原文'};
+  const app=setup({passive:true,api:async url=>{
+    if(url.endsWith('/login/status'))return {data:{state:connected?'complete':'disconnected',accountKey:key}};
+    if(url.endsWith('/resume-pool/jobs')){synced=true;return {data:{ok:true}};}
+    if(url.endsWith('/jobs')){jobReads++;return {data:{ok:true,data:[{encryptJobId:'job-one',statusDesc:'开放中'}]}};}
+    if(url.endsWith('/speeches'))return {data:{items:[{kind:'reject',active:true,isDefault:true}]}};
+    if(url.endsWith('/pool'))return {data:{departments:[]}};
+    return {data:{items:[{...row,canReview:synced}],total:1}};
+  }});
+  app.env.Date=class extends Date {static now(){return now;}};
+  app.env.createHrResumePreview=()=>{previews++;return ()=>{};};
+  await app.enter('resume-pool');await app.click('查看与审批');
+  const review=()=>app.visible().find(n=>n._text==='通过，加入邀约');
+  assert.equal(review().disabled,true);
+  assert.match(app.text(),/连接恢复后会自动更新/);
+  const resumeText=app.visible().find(n=>n.tagName==='textarea'&&n.rows===6);
+  resumeText.value='保留用户补充内容';
+  connected=true;now+=11000;await app.tick(10000);
+  assert.equal(review().disabled,false);
+  assert.equal(previews,1);
+  assert.equal(jobReads,1);
+  assert.equal(app.visible().find(n=>n.tagName==='textarea'&&n.rows===6).value,'保留用户补充内容');
+  await app.tick(10000);assert.equal(jobReads,1,'no recurring BOSS read after verification');
+  await app.click('关闭');now+=300000;await app.tick(10000);
+  assert.equal(jobReads,1,'closed details do not schedule a job refresh');
+});
 test('resume rejection uses the managed default directly without a speech selector or an extra confirmation',async()=>{
   const row={id:'resume1',version:2,name:'测试人才',jobName:'算法工程师',canReview:true,status:'pending',aiState:'idle',resumeText:'原简历文字'};
   const speech={id:'reject1',version:3,name:'婉拒话术',content:'{姓名}，感谢关注{职位}。',kind:'reject',active:true,isDefault:true};

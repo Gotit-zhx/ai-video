@@ -1,5 +1,7 @@
 (() => {
   let pdfModule;
+  const pdfBase=typeof Promise.withResolvers==='function'&&typeof Promise.try==='function'
+    ?'/vendor/pdfjs':'/vendor/pdfjs-legacy';
   globalThis.createHrResumePreview=({root,element:el,button,row})=>{
     let stopped=false,pdf=null,loading=null,rendering=null,page=1,revision=0,resizeTimer,image=null;
     let controller=new AbortController(),loadTimer;
@@ -68,9 +70,12 @@
         const bytes=new Uint8Array(await response.arrayBuffer());
         if(stopped||currentController.signal.aborted)return;
         if(bytes.length>25*1024*1024||String.fromCharCode(...bytes.slice(0,5))!=='%PDF-')throw Error('pdf');
-        if(!pdfModule)pdfModule=import('/vendor/pdfjs/pdf.js').catch(error=>{pdfModule=null;throw error;});
+        // The integrated desktop still uses Chromium 108. Keep the matching
+        // legacy worker with its official polyfills; patching only the page's
+        // Promise leaves the worker broken.
+        if(!pdfModule)pdfModule=import(pdfBase+'/pdf.js').catch(error=>{pdfModule=null;throw error;});
         const library=await pdfModule;if(stopped||currentController.signal.aborted)return;
-        library.GlobalWorkerOptions.workerSrc='/vendor/pdfjs/pdf.worker.js';
+        library.GlobalWorkerOptions.workerSrc=pdfBase+'/pdf.worker.js';
         loading=library.getDocument({data:bytes,isEvalSupported:false});
         const document=await loading.promise;
         if(stopped||currentController.signal.aborted){document.destroy().catch(()=>{});return;}

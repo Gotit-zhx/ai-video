@@ -113,13 +113,29 @@ test('a changed original account cannot use the already bound adapter', async t 
   await assert.rejects(adapter.sendText(text), {code: 'SESSION_MISMATCH'});
   assert.equal(counts.sdkText, 0);
 });
-test('original text SDK completion alone cannot confirm a send through NativeRPC', async t => {
+test('missing job is rejected without calling the retired text SDK', async t => {
   const {adapter, counts} = fixture(t);
   const rpc = new NativeRPC({adapter, endpoints: [endpoint], sendTimeout: 25});
   t.after(() => rpc.close());
   await assert.rejects(rpc.sendText('101', {friendId: '202'}, 'Own offline text'),
-    {code: 'SEND_UNCONFIRMED'});
-  assert.equal(counts.sdkText, 1);assert.equal(counts.send, 1);
+    {code: 'JOB_CONVERSATION_MISMATCH'});
+  assert.equal(counts.sdkText, 0);assert.equal(counts.send, 0);
+});
+test('Windows uses the shared chat adapter and its verified receipt, never the retired sender', async t => {
+  const {adapter, counts} = fixture(t);
+  const rpc = new NativeRPC({adapter, endpoints: [endpoint], sendTimeout: 100});
+  t.after(() => rpc.close());
+  adapter.chat.perform = async input => {
+    assert.equal(input.account, '101');
+    assert.equal(input.friend.encryptJobId, 'job-one');
+    input.checkAccount();
+    return {transport: 'native-chat-delivery', fromId: '101', toId: '202', mid: '555',
+      clientMid: input.clientMid, text: input.content, type: 'text',
+      isSelf: true, status: 1, time: Date.now()};
+  };
+  const receipt = await rpc.sendText('101', {friendId: '202', encryptJobId: 'job-one'}, 'Own offline text');
+  assert.equal(receipt.messageId, '555');
+  assert.equal(counts.sdkText, 0);assert.equal(counts.send, 0);
 });
 test('native logout reaches RPC and same-account memory relogin restores only ordinary expiry', async t => {
   const {adapter, bindings, login} = fixture(t);

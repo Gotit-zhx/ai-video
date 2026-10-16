@@ -260,7 +260,8 @@ def step(c, db, request):
     interval = 30 if urgent else 600
     last_turn = float(flow.get_state(db, 'chat-resumes-last-request-at', '0'))
     if (operation is None or now < last_turn+interval
-            or delay_for(cost=cost, queued=False, receiving=urgent, history=not urgent)):
+            or delay_for(cost=cost, queued=False, receiving=urgent, history=not urgent,
+                         last_operation_at=last_turn)):
         return None
     # Reserve before network I/O; restart, preemption or repeated activity
     # notifications cannot erase the collector's pacing deadline.

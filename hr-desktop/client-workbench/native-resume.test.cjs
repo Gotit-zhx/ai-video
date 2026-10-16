@@ -57,15 +57,15 @@ test('resume action refuses unrelated and ambiguous webviews', () => {
   f.guest.mainFrame.framesInSubtree.push(f.frame);
   assert.throws(() => f.native.frame(), {code: 'NATIVE_CHAT_UNAVAILABLE'});
 });
-test('real component is invoked once only after the candidate and job are selected', async () => {
+test('real component is invoked once without reopening the already selected candidate', async () => {
   const f = pageFixture();
   assert.equal((await f.native.request(f.input)).confirmed, true);
-  assert.deepEqual(f.calls, {select: 1, invoke: 1, confirm: 1});
+  assert.deepEqual(f.calls, {select: 0, invoke: 1, confirm: 1});
 });
 test('wrong job cannot invoke or confirm the native resume component', async () => {
   const f = pageFixture({job: 'other-job'});
   await assert.rejects(f.native.request(f.input), {code: 'JOB_CONVERSATION_MISMATCH'});
-  assert.deepEqual(f.calls, {select: 1, invoke: 0, confirm: 0});
+  assert.deepEqual(f.calls, {select: 0, invoke: 0, confirm: 0});
 });
 test('account cancellation after preparation prevents the request invocation', async () => {
   const f = pageFixture();

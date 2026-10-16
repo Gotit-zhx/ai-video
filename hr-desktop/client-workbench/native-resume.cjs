@@ -25,7 +25,8 @@ async function preparePage(args) {
   if (!list || list.$options?.name !== 'geek-list' || typeof list.geekClick !== 'function') {
     return stop('NATIVE_CHAT_UNAVAILABLE', '原客户端聊天列表尚未就绪');
   }
-  list.geekClick(args.friend);
+  const current = document.querySelector('.boss-chat-editor-input')?.parentElement?.__vue__?.conversation$;
+  if (String(current?.friendId || '') !== args.friendId) list.geekClick(args.friend);
   const end = Date.now() + 5000;
   while (alive() && Date.now() < end) {
     const input = document.querySelector('.boss-chat-editor-input');

@@ -170,7 +170,7 @@ class NativeRPC extends EventEmitter {
       }
     }
   }
-  async sendText(account, friend, content) {
+  async sendText(account, friend, content, signal) {
     if (this.closed || this.sessionFailure) this.requireAccount(account);
     if (typeof this.adapter.verifyAccount === 'function') await this.adapter.verifyAccount(account);
     this.requireAccount(account);
@@ -182,25 +182,44 @@ class NativeRPC extends EventEmitter {
     if (this.pendingSends.has(id)) throw failure('ACCOUNT_BUSY', '该候选人的发送操作尚未完成');
     let settle;
     const confirmation = new Promise((resolve, reject) => {settle = {resolve, reject};});
+    void confirmation.catch(() => {});
     const started = Date.now();
     const clientMid = String(started * 1000 + crypto.randomInt(1000));
-    const pending = {kind: 'text', account, friend: id, content, clientMid, started, ...settle};
+    const controller = new AbortController();
+    const pending = {kind: 'text', account, friend: id, content, clientMid, started, controller, ...settle};
     this.pendingSends.set(id, pending);
-    const timer = setTimeout(() => pending.reject(failure('SEND_UNCONFIRMED', '未收到实际消息回执，未自动重复发送')), this.sendTimeout);
+    const cancel = () => {
+      controller.abort();
+      pending.reject(failure('REQUESTS_PAUSED', '发送连接已停止，未自动重发'));
+    };
+    signal?.addEventListener('abort', cancel, {once: true});
+    const timer = setTimeout(() => {
+      pending.reject(failure('SEND_UNCONFIRMED', '未收到实际消息回执，未自动重复发送'));
+      controller.abort();
+    }, this.sendTimeout);
     try {
       this.requireAccount(account);
+      if (signal?.aborted) {
+        cancel();
+        throw failure('REQUESTS_PAUSED', '发送连接已停止');
+      }
       // Await both transport completion and an actual own-message receipt;
       // the original SDK's immediately resolved promise is insufficient.
       await Promise.all([
-        this.adapter.sendText({content, options: {
+        Promise.resolve(this.adapter.sendText({content, friend, account, signal: controller.signal,
+          checkAccount: () => this.requireAccount(account), options: {
           uid: id, encryptUid: friend.encryptUid, friendSource: friend.friendSource || 0, clientMid,
-        }}),
+        }})).then(receipt => {
+          if (receipt?.transport === 'native-chat-delivery') this.receive([receipt]);
+        }),
         confirmation,
       ]);
       this.requireAccount(account);
       return await confirmation;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+      controller.abort();
       if (this.pendingSends.get(id) === pending) this.pendingSends.delete(id);
     }
   }
@@ -231,6 +250,7 @@ class NativeRPC extends EventEmitter {
       controller.abort();
       pending.reject(failure('REQUESTS_PAUSED', '索取简历连接已停止'));
     };
+    const clientMid = String(Date.now() * 1000 + crypto.randomInt(1000));
     const pending = {kind: 'resume', account, friend: id, content: RESUME_REQUEST_TEXT,
       clientMid: '', started: Date.now(), controller, armed: false, ...settle};
     this.pendingSends.set(id, pending);
@@ -243,7 +263,8 @@ class NativeRPC extends EventEmitter {
     try {
       if (signal?.aborted) throw failure('REQUESTS_PAUSED', '索取简历连接已停止');
       const perform = this.adapter.requestResume({
-        friend, signal: controller.signal, checkAccount: () => this.requireAccount(account),
+        friend, account, content: RESUME_REQUEST_TEXT, clientMid,
+        signal: controller.signal, checkAccount: () => this.requireAccount(account),
         onReady: () => {
           this.requireAccount(account);
           if (controller.signal.aborted) throw failure('REQUESTS_PAUSED', '索取简历已停止');
@@ -256,6 +277,12 @@ class NativeRPC extends EventEmitter {
             pending.reject(failure('SEND_UNCONFIRMED', '未收到索取简历的实际消息回执，未自动重发'));
           }, this.sendTimeout);
         },
+      }).then(receipt => {
+        if (receipt?.transport === 'native-chat-delivery' && receipt.clientMid === clientMid) {
+          pending.clientMid = clientMid;
+          this.receive([receipt]);
+        }
+        return receipt;
       });
       try {
         await Promise.all([perform, confirmation]);
@@ -307,7 +334,7 @@ class NativeRPC extends EventEmitter {
   }
   async dispatch(route, input, signal) {
     if (route === '/download') return this.download(input.accountId, input.url, signal);
-    if (route === '/send-text') return this.sendText(input.accountId, input.friend, input.content);
+    if (route === '/send-text') return this.sendText(input.accountId, input.friend, input.content, signal);
     if (route === '/request-resume') return this.requestResume(input.accountId, input.friend, signal);
     if (this.closed || this.sessionFailure) this.requireAccount(input.accountId);
     if (typeof this.adapter.verifyAccount === 'function') await this.adapter.verifyAccount(input.accountId, signal);

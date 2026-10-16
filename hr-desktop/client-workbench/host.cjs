@@ -1,4 +1,4 @@
-const {app, Menu, session} = require('electron');
+const {app, Menu, session, safeStorage} = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -38,7 +38,7 @@ async function initialize(adapter, options) {
   await fs.mkdir(assistantRoot, {recursive: true, mode: 0o700});
   const executable = runtimeExecutable();
   const rpc = new NativeRPC({adapter, endpoints: require('./endpoints.json')});
-  let lease, checkedAt = 0, engine, bridge, egress, boundAccount = '', ready = false, closing;
+  let lease, checkedAt = 0, engine, bridge, egress, platformSession, boundAccount = '', ready = false, closing;
   const listeners = [];
   const listen = (target, event, listener) => {
     target.on(event, listener);listeners.push({target, event, listener});
@@ -50,6 +50,7 @@ async function initialize(adapter, options) {
       Promise.resolve().then(() => bridge?.close()),
       Promise.resolve().then(() => rpc.close()),
       Promise.resolve().then(() => egress?.close()),
+      Promise.resolve().then(() => platformSession?.close()),
     ]);
     if (active?.rpc === rpc) active = undefined;
   })());
@@ -65,6 +66,12 @@ async function initialize(adapter, options) {
     const bindingFile = path.join(root, 'native-binding.json');
     try {boundAccount = identity(JSON.parse(await fs.readFile(bindingFile, 'utf8')).id);} catch {}
     const platform = session.fromPartition('persist:heyi-workbench');
+    if (!options.offlineURL) {
+      platformSession = new (require('./platform-session.cjs').PlatformSession)({
+        session: platform, safeStorage, directory: root, origin: ORIGIN,
+      });
+      await platformSession.start();
+    }
     egress = networkInstance().egress;
     await networkInstance().configure(platform);
     const integrated = shellInstance();
@@ -186,7 +193,16 @@ async function initialize(adapter, options) {
       {label: '暂停赫逸任务', click: () => engine.pause('USER_PAUSED')},
     ]});
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-    listen(app, 'before-quit', () => {void close();});
+    let quitting = false;
+    listen(app, 'before-quit', event => {
+      if (quitting) return;
+      quitting = true;
+      event.preventDefault();
+      // Finish durable session/ledger writes before replacing the app. Never
+      // call website logout or clear either vendor's account directories.
+      const deadline = setTimeout(() => app.quit(), 5000);
+      void close().finally(() => {clearTimeout(deadline);app.quit();});
+    });
     active = {...active, engine, bridge, egress, openWorkbench, close};
     return active;
   } catch (error) {
@@ -194,7 +210,14 @@ async function initialize(adapter, options) {
     throw error;
   }
 }
-module.exports = {start, receive: messages => active?.rpc.receive(messages),
+async function closeBeforeExit() {
+  let timer;
+  try {
+    await Promise.race([active?.close?.(),
+      new Promise(resolve => {timer = setTimeout(resolve, 5000);})]);
+  } finally {clearTimeout(timer);}
+}
+module.exports = {start, closeBeforeExit, receive: messages => active?.rpc.receive(messages),
   observeNativeSend: message => active?.rpc.observeNativeSend(message),
   loginEstablished: () => active?.rpc.loginEstablished(),
   sessionLost: event => {

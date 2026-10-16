@@ -13,8 +13,10 @@ app.setPath('userData', data);
 // the macOS display name and window titles still provide the Chinese branding.
 app.setName('HeyiWorkbench');
 require('./compat.cjs').installWebTypes();
-if (process.argv.includes('--heyi-workbench-smoke')) {
-  require('./smoke.cjs').run().catch(error => {
+if (process.argv.includes('--heyi-workbench-smoke') ||
+    process.argv.includes('--heyi-session-write') || process.argv.includes('--heyi-session-restore')) {
+  const entry = process.argv.includes('--heyi-workbench-smoke') ? './smoke.cjs' : './platform-session-smoke.cjs';
+  require(entry).run().catch(error => {
     const output = process.env.HEYI_WORKBENCH_TEST_OUTPUT;
     if (output) fs.writeFileSync(output, JSON.stringify({ok: false, error: String(error)}));
     app.exit(1);
@@ -23,5 +25,8 @@ if (process.argv.includes('--heyi-workbench-smoke')) {
   require('../main.js');
   if (process.argv.includes('--heyi-workbench-ui-check')) {
     require('./ui-check.cjs').run();
+  }
+  if (process.argv.includes('--heyi-chat-diagnostics')) {
+    require('./chat-diagnostics.cjs').run();
   }
 }

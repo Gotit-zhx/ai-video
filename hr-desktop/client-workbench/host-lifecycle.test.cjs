@@ -10,10 +10,21 @@ async function fixture(t, failure) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-host-lifecycle-'));
   t.after(() => fs.rm(root, {recursive: true, force: true}));
   const counts = {rpcStarts: 0, rpcCloses: 0, relayCloses: 0,
-    engineInits: 0, engineCloses: 0, bridgeCloses: 0};
+    engineInits: 0, engineCloses: 0, bridgeCloses: 0,
+    sessionStarts: 0, sessionCloses: 0, quits: 0};
   const app = new EventEmitter();
   app.whenReady = async () => {};
   app.getPath = name => path.join(root, name);
+  app.quit = () => {counts.quits++;};
+  let releaseSession;
+  const sessionSaved = new Promise(resolve => {releaseSession = resolve;});
+  class PlatformSession {
+    async start() {counts.sessionStarts++;}
+    async close() {
+      counts.sessionCloses++;
+      if (failure === 'slow-save') await sessionSaved;
+    }
+  }
   const egress = Object.assign(new EventEmitter(), {
     info: {adapter: {}}, close: async () => {counts.relayCloses++;},
   });
@@ -46,14 +57,15 @@ async function fixture(t, failure) {
     './integrated-shell.cjs': {instance: () => integrated},
     './src/bridge.cjs': {LocalBridge: Bridge},
     './runtime-paths.cjs': {runtimeExecutable: () => '/own/offline-worker'},
+    './platform-session.cjs': {PlatformSession},
     './endpoints.json': [],
   };
   const module = {exports: {}};
   vm.runInNewContext(await fs.readFile(path.join(__dirname, 'host.cjs'), 'utf8'), {
-    module, process: {env: {}}, Promise, AbortSignal,
+    module, process: {env: {}}, Promise, AbortSignal, setTimeout, clearTimeout,
     require: name => Object.hasOwn(dependencies, name) ? dependencies[name] : require(name),
   });
-  return {host: module.exports, counts, app, egress};
+  return {host: module.exports, counts, app, egress, releaseSession};
 }
 
 test('relay initialization failure closes the opened RPC and cannot return a partial host', async t => {
@@ -74,7 +86,38 @@ test('occupied bridge port never initializes existing shared records and release
   assert.equal(counts.bridgeCloses, 1);
   assert.equal(counts.rpcCloses, 1);
   assert.equal(counts.relayCloses, 1);
+  assert.equal(counts.sessionCloses, 1);
   assert.equal(egress.listenerCount('stopped'), 0);
+});
+
+test('normal application replacement waits for encrypted session persistence before quitting', async t => {
+  const {host, counts, app, releaseSession} = await fixture(t, 'slow-save');
+  const running = await host.start({});
+  let prevented = false;
+  app.emit('before-quit', {preventDefault() {prevented = true;}});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(prevented, true);
+  assert.equal(counts.sessionCloses, 1);
+  assert.equal(counts.quits, 0);
+  releaseSession();
+  await running.close();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(counts.quits, 1);
+  assert.equal(app.listenerCount('before-quit'), 0);
+});
+
+test('original forced-exit hook also waits for the same durable session save', async t => {
+  const {host, counts, releaseSession} = await fixture(t, 'slow-save');
+  await host.start({});
+  let done = false;
+  const closing = host.closeBeforeExit().then(() => {done = true;});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(counts.sessionCloses, 1);
+  assert.equal(done, false);
+  releaseSession();
+  await closing;
+  assert.equal(done, true);
+  assert.equal(counts.sessionCloses, 1);
 });
 
 test('concurrent startup awaits one complete host and repeated shutdown removes listeners only once', async t => {
