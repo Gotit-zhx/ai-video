@@ -1,10 +1,13 @@
+import contextlib
 import os
+import sqlite3
 import unittest
 from unittest import mock
 import tempfile
 from pathlib import Path
 
 import managed_jobs as jobs
+import passive_runtime as flow
 
 
 class ManagedJobsTest(unittest.TestCase):
@@ -110,6 +113,35 @@ class ManagedJobsTest(unittest.TestCase):
             self.assertEqual(jobs.availability(client, root)['statuses'], {})
             self.assertEqual(jobs.availability(client, root)['statuses'], {})
             client.read_managed_jobs.assert_called_once()
+
+    def test_due_job_refresh_is_not_starved_by_continuous_receipt_reads(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(jobs.time, 'time', return_value=1000) as clock:
+            root=Path(directory);budget=root/'budget.sqlite3'
+            result={'ok':True,'data':{'jobs':[{'encryptJobId':'a','statusDesc':'开放中'}],'hasMore':False}}
+            jobs.save_statuses(root,result)
+            with contextlib.closing(sqlite3.connect(budget)) as db, db:
+                db.execute('CREATE TABLE requests(at REAL)')
+                db.executemany('INSERT INTO requests VALUES(?)',[(1299,)]*100)
+            clock.return_value=1300
+            client=mock.Mock()
+            client.passive_delay=lambda **options:flow.budget_delay(budget,500,**options)
+            client.read_managed_jobs.return_value=result
+            self.assertEqual(jobs.availability(client,root)['statuses'],{'a':'开放中'})
+            self.assertEqual(jobs.availability(client,root,queued=True)['statuses'],{'a':'开放中'})
+            client.read_managed_jobs.assert_called_once()
+
+    def test_own_refresh_clock_does_not_bypass_shared_request_quota(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(jobs.time, 'time', return_value=1000) as clock:
+            root=Path(directory);budget=root/'budget.sqlite3'
+            jobs.save_statuses(root,{'ok':True,'data':{'jobs':[{'encryptJobId':'a','statusDesc':'开放中'}],'hasMore':False}})
+            with contextlib.closing(sqlite3.connect(budget)) as db, db:
+                db.execute('CREATE TABLE requests(at REAL)')
+                db.executemany('INSERT INTO requests VALUES(?)',[(1299,)]*499)
+            clock.return_value=1300
+            client=mock.Mock()
+            client.passive_delay=lambda **options:flow.budget_delay(budget,500,**options)
+            self.assertEqual(jobs.availability(client,root,queued=True)['statuses'],{})
+            client.read_managed_jobs.assert_not_called()
 
     def test_closed_removed_and_incomplete_lists_invalidate_open_status(self):
         with tempfile.TemporaryDirectory() as directory:

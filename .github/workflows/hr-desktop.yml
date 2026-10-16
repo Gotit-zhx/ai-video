@@ -195,6 +195,7 @@ jobs:
           python -m unittest discover -s hr-desktop/runtime -p test_passive_runtime.py
           python -m unittest discover -s hr-desktop/runtime -p test_boss_chat_receipts.py
           python -m unittest discover -s hr-desktop/runtime -p test_recommendation_budget.py
+          python -m unittest discover -s hr-desktop/runtime -p test_managed_jobs.py
       - name: Check private candidate export boundaries
         if: ${{ inputs.nativeWorkbench == true }}
         run: python -m unittest discover -s scripts/ci -p test_export_workbench.py

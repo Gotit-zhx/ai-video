@@ -43,7 +43,11 @@ def availability(c, root, *, user_initiated=False, queued=False):
             return {"statuses": {}, "retryAt": snapshot["retryAt"]}
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    delay = c.passive_delay(cost=2, queued=queued or user_initiated, user_initiated=user_initiated)
+    # retryAt above already enforces this lane's durable five-minute interval.
+    # Apply the shared quota here without letting another lane's latest request
+    # postpone an expired job refresh (or imposing a second ten-minute delay).
+    delay = c.passive_delay(cost=2, queued=queued or user_initiated, user_initiated=user_initiated,
+                            last_operation_at=0)
     if delay:
         return {"statuses": {}, "retryAt": now + delay}
     # Reserve the refresh cooldown before network I/O, including process death.
