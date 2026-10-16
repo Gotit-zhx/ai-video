@@ -6,6 +6,7 @@ const path = require('node:path');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {discoverNativeRequestBuilder} = require('./native-request-discovery.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
+const {observeBindingConnection} = require('./startup-observation-client.cjs');
 
 async function fixture(t, {ambiguous = false, failVerification = false,
   credentialMethod = 'getAuthCookieHeader', holdSDKCompletion = false} = {}) {
@@ -145,7 +146,7 @@ test('the original builder can use get despite also exposing getAuthCookieHeader
   assert.equal(await evaluateRunning(connection, 'Object.hasOwn(keepAlive[1],"get")'), false);
   assert.equal(await evaluateRunning(connection, 'Object.hasOwn(keepAlive[1],"getAuthCookieHeader")'), false);
 });
-test('a verified descriptor binds the same original function on a fresh process without any SDK invocation', async t => {
+test('a verified descriptor binds the same original function without causing SDK calls alongside runtime activity', async t => {
   const first = await fixture(t);
   const {builderDescriptor} = await discoverNativeRequestBuilder(first,
     {anonymousIsolated: true, pinnedOriginalVerified: true});
@@ -155,14 +156,22 @@ test('a verified descriptor binds the same original function on a fresh process 
     ...require(${JSON.stringify(contract)}).install(bindings,config),
     expectedBuilder:config.phase==='verify'?bindings.requestBuilder===fixtureExpectedBuilder:true});`);
   assert.equal((await bindNativeModule(connection, {modulePath: addon, pinnedOriginalVerified: true,
-    config: {phase: 'arm', anonymousIsolated: true}})).ok, true);
-  const report = await bindNativeModule(connection, {
+    config: {phase: 'arm', anonymousIsolated: true, scopedObservation: true}})).ok, true);
+  // A synthetic original runtime callback between protocol commands must stay
+  // visible, without being misattributed to the descriptor-only binding.
+  await evaluateRunning(connection, 'fixtureSDK._sdk_getNetworkStatus();true');
+  const measured = observeBindingConnection(connection, contract);
+  const report = await bindNativeModule(measured, {
     modulePath: addon, builderDescriptor, pinnedOriginalVerified: true,
     config: {phase: 'verify', anonymousIsolated: true},
   });
   assert.equal(report.ok, true);assert.equal(report.expectedBuilder, true);
-  assert.equal(report.originalMethodsInvoked, 0);
-  assert.equal(report.sdkMethodsInvoked, 0);assert.equal(report.authenticationMethodsInvoked, 0);
+  assert.equal(report.originalMethodsInvoked, 1);
+  assert.equal(report.sdkMethodsInvoked, 1);assert.equal(report.authenticationMethodsInvoked, 0);
+  assert.equal(report.bindingMethodsInvoked, 0);
+  assert.equal(report.unscopedRuntimeMethodsInvoked, 1);
+  assert.ok(measured.scopedCommands > 1);
+  assert.equal(report.bindingScopeEntries, measured.scopedCommands);
   assert.equal(report.identityGettersInvoked, 0);assert.equal(report.originalHTTPCalls, 0);
   assert.equal(await evaluateRunning(connection, 'fixtureSDKCalls+fixtureBuilderCalls+fixtureHTTPCalls'), 0);
   await assert.rejects(bindNativeModule(connection, {modulePath: addon, pinnedOriginalVerified: true,

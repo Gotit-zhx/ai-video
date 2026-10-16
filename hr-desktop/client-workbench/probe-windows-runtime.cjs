@@ -14,6 +14,7 @@ const {inspectNativeRoles} = require('./native-role-inventory.cjs');
 const {inspectAnonymousAuthentication} = require('./native-auth-behavior.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
 const {discoverNativeRequestBuilder} = require('./native-request-discovery.cjs');
+const {observeBindingConnection} = require('./startup-observation-client.cjs');
 
 async function launchOriginal(executable, root, env, logSignals, pidFile = 'probe-pid.txt',
   dedicatedInspector = false) {
@@ -115,13 +116,17 @@ async function verifyColdStartup(executable, root, env, logSignals, builderDescr
     if (isolated !== true) throw Error();
     stage = 'observe-before-binding';
     const armed = await bindNativeModule(connection, {modulePath: contract, pinnedOriginalVerified: true,
-      config: {phase: 'arm', anonymousIsolated: true}});
+      config: {phase: 'arm', anonymousIsolated: true, scopedObservation: true}});
     if (armed?.ok !== true) throw Error();
     stage = 'descriptor-only-binding';
-    const binding = await bindNativeModule(connection, {
+    const measured = observeBindingConnection(connection, contract);
+    const binding = await bindNativeModule(measured, {
       modulePath: contract, pinnedOriginalVerified: true, builderDescriptor,
       config: {phase: 'verify', anonymousIsolated: true},
     });
+    if (!measured.scopedCommands || binding.bindingScopeEntries !== measured.scopedCommands) {
+      throw Error('Every binding expression must be measured');
+    }
     report = {...report, ...binding, freshProcess: true, freshProfile: true,
       sdkDiscoveryUsed: false, bindingCheckCompletedBeforeShutdown: true};
     if (checkAdapter) {
@@ -144,8 +149,8 @@ async function verifyColdStartup(executable, root, env, logSignals, builderDescr
     report.processExitCode = processOutcome.code;
     report.timedOut = processOutcome.timedOut;
     report.terminationRequested = processOutcome.terminationRequested;
-    // These original SDK calls occur after the zero-call binding check. Keep
-    // their actual counts separate rather than calling the entire run zero-call.
+    // These SDK calls occur after binding. Keep them separate from both the
+    // scoped binding calls and original runtime activity observed alongside it.
     report.postBindingLoginReads = observed.observerSdkReadRequests;
     report.originalShutdownRequests = observed.shutdown?.sdkShutdownRequests;
     report.ok = report.ok === true && observed.ok === true && processOutcome.code === 0 &&

@@ -1,6 +1,16 @@
 // Disposable, OS-firewalled startup check. Observe calls without changing
 // their arguments, this, return values or exceptions. Never export originals.
+const {AsyncLocalStorage} = require('node:async_hooks');
+const bindingScope = new AsyncLocalStorage();
 let active;
+
+function observeBindingCall(callback) {
+  if (!active?.scopedObservation || typeof callback !== 'function') {
+    throw Error('Scoped startup observer must be armed');
+  }
+  active.bindingScopeEntries++;
+  return bindingScope.run(active.scopeToken, callback);
+}
 
 function close() {
   if (!active) return;
@@ -18,7 +28,9 @@ function install(bindings, config = {}) {
   if (config.phase === 'arm') {
     if (active) throw Error('Startup observer already armed');
     const state = {bindings, changes: [], calls: {sdk: 0, authentication: 0, identity: 0, http: 0},
-      observedCalls: []};
+      bindingCalls: {sdk: 0, authentication: 0, identity: 0, http: 0},
+      scopedObservation: config.scopedObservation === true, scopeToken: {},
+      bindingScopeEntries: 0, observedCalls: []};
     active = state;
     const observe = (object, name, kind, accessor = false) => {
       const previous = Object.getOwnPropertyDescriptor(object, name);
@@ -27,9 +39,11 @@ function install(bindings, config = {}) {
       if (typeof original !== 'function' || previous?.configurable === false) throw Error();
       const hook = function(...args) {
         state.calls[kind]++;
+        const bindingCall = state.scopedObservation && bindingScope.getStore() === state.scopeToken;
+        if (bindingCall) state.bindingCalls[kind]++;
         if (state.observedCalls.length < 30) {
           // Fixed source categories and numeric offsets only. Preserve the
-          // strict zero-call gate while identifying native background work;
+          // zero-call binding gate while identifying concurrent runtime work;
           // never serialize full stacks, paths, arguments or return values.
           const frames = String(new Error().stack || '').split('\n').slice(2, 7).map(line => {
             const native = line.match(/[\\/]main\.jsc:(\d{1,8}):(\d{1,8})/);
@@ -38,7 +52,8 @@ function install(bindings, config = {}) {
             if (/node:/.test(line)) return {source: 'node-runtime'};
             return {source: 'unclassified'};
           });
-          state.observedCalls.push({kind, method: name, frames});
+          state.observedCalls.push({kind, method: name, frames,
+            ...(state.scopedObservation ? {origin: bindingCall ? 'binding' : 'unscoped-runtime'} : {})});
         }
         return Reflect.apply(original, this, args);
       };
@@ -74,13 +89,21 @@ function install(bindings, config = {}) {
       require('node:util').types.isAsyncFunction(bindings.requestBuilder) &&
       bindings.requestBuilder.length === 1;
     const originalMethodsInvoked = Object.values(state.calls).reduce((sum, count) => sum + count, 0);
-    return {ok: sameBindings && requestBuilderCaptured && originalMethodsInvoked === 0,
+    const bindingMethodsInvoked = Object.values(state.bindingCalls).reduce((sum, count) => sum + count, 0);
+    const noBindingSideEffects = state.scopedObservation ?
+      state.bindingScopeEntries > 0 && bindingMethodsInvoked === 0 : originalMethodsInvoked === 0;
+    return {ok: sameBindings && requestBuilderCaptured && noBindingSideEffects,
       sameOriginalInstances: sameBindings, requestBuilderCaptured,
       originalMethodsInvoked, sdkMethodsInvoked: state.calls.sdk,
       authenticationMethodsInvoked: state.calls.authentication,
       identityGettersInvoked: state.calls.identity, originalHTTPCalls: state.calls.http,
+      ...(state.scopedObservation ? {scopedObservation: true, bindingScopeEntries: state.bindingScopeEntries,
+        bindingMethodsInvoked, bindingSDKCalls: state.bindingCalls.sdk,
+        bindingAuthenticationCalls: state.bindingCalls.authentication,
+        bindingIdentityGetters: state.bindingCalls.identity, bindingHTTPCalls: state.bindingCalls.http,
+        unscopedRuntimeMethodsInvoked: originalMethodsInvoked - bindingMethodsInvoked} : {}),
       observedCalls: state.observedCalls, rawValuesExported: false};
   } finally {close();}
 }
 
-module.exports = {install, close};
+module.exports = {install, close, observeBindingCall};

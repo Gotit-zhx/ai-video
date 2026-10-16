@@ -71,3 +71,48 @@ test('a partial observer failure restores already changed properties', t => {
   assert.throws(() => contract.install(bindings, config('verify')));
   assert.throws(() => contract.install(bindings, {phase: 'arm'}));
 });
+
+test('scoped observation retains background counts and still rejects binding-triggered async calls', async t => {
+  const {bindings} = fixture(t);
+  contract.install(bindings, {...config('arm'), scopedObservation: true});
+  // Registered outside the measured binding: genuine concurrent runtime work.
+  const background = new Promise(resolve => setImmediate(() => {
+    bindings.sdk._sdk_getLoginStatus();resolve();
+  }));
+  await contract.observeBindingCall(async () => {
+    await background;
+    await Promise.resolve();
+    bindings.authentication.get();
+    bindings.httpClients[0].send({});
+  });
+  const result = contract.observeBindingCall(() => contract.install(bindings, config('verify')));
+  assert.equal(result.ok, false);
+  assert.equal(result.originalMethodsInvoked, 3);
+  assert.equal(result.bindingMethodsInvoked, 2);
+  assert.equal(result.bindingAuthenticationCalls, 1);
+  assert.equal(result.bindingHTTPCalls, 1);
+  assert.equal(result.unscopedRuntimeMethodsInvoked, 1);
+  assert.deepEqual(result.observedCalls.map(call => call.origin),
+    ['unscoped-runtime', 'binding', 'binding']);
+});
+
+test('background work is reported separately from a measured metadata-only binding', async t => {
+  const {bindings} = fixture(t);
+  contract.install(bindings, {...config('arm'), scopedObservation: true});
+  await new Promise(resolve => setImmediate(() => {
+    bindings.sdk._sdk_getLoginStatus();resolve();
+  }));
+  const result = contract.observeBindingCall(() => contract.install(bindings, config('verify')));
+  assert.equal(result.ok, true);
+  assert.equal(result.originalMethodsInvoked, 1);
+  assert.equal(result.bindingMethodsInvoked, 0);
+  assert.equal(result.unscopedRuntimeMethodsInvoked, 1);
+  assert.equal(result.bindingScopeEntries, 1);
+});
+
+test('a scoped observer cannot pass without a measured binding expression', t => {
+  const {bindings} = fixture(t);
+  contract.install(bindings, {...config('arm'), scopedObservation: true});
+  assert.equal(contract.install(bindings, config('verify')).ok, false);
+  assert.throws(() => contract.observeBindingCall(() => {}), /must be armed/);
+});
