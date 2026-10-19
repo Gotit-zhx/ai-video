@@ -68,6 +68,9 @@ class StartupWindow:
         self.native_window_seen = False
         self.hidden_count = 0
         self.activation_count = 0
+        self.observed_classes = set()
+        self.enumerations = 0
+        self.enumeration_errors = set()
         self.window = tk.Tk()
         self.window.title("Ai boss")
         self.window.configure(background="#ffffff")
@@ -100,13 +103,17 @@ class StartupWindow:
                     and self.user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
                     and pid.value == self.pid)
 
-    def _hide(self, hwnd):
+    def _hide(self, hwnd, top_level=False):
         if not self.ready and self._owned(hwnd):
             name = ctypes.create_unicode_buffer(128)
             self.user.GetClassNameW(hwnd, name, len(name))
-            # A real top-level BrowserWindow appears after main bytecode has
-            # loaded. Chromium's earlier message-only helper is not readiness.
-            if name.value == "Chrome_WidgetWin_1":
+            # The numeric suffix is Chromium's window-class registration
+            # counter, not a visibility/readiness contract. Only enumeration
+            # of this child's top-level windows may mark readiness: EnumWindows
+            # excludes Chromium's message-only helper windows.
+            if top_level and len(self.observed_classes) < 32:
+                self.observed_classes.add(name.value)
+            if top_level and name.value in {"Chrome_WidgetWin_0", "Chrome_WidgetWin_1"}:
                 self.native_window_seen = True
             if self.user.IsWindowVisible(hwnd):
                 self.user.ShowWindow(hwnd, 0)
@@ -146,8 +153,10 @@ class StartupWindow:
         if not self.ready:
             self.message.set(STAGES.get(status.get("stage"), "正在准备 Ai boss…"))
             if self.pid:
-                callback = self.enum_type(lambda hwnd, _param: (self._hide(hwnd), True)[1])
-                self.user.EnumWindows(callback, 0)
+                callback = self.enum_type(lambda hwnd, _param: (self._hide(hwnd, top_level=True), True)[1])
+                self.enumerations += 1
+                if not self.user.EnumWindows(callback, 0):
+                    self.enumeration_errors.add(ctypes.get_last_error())
         if activate:
             if self.ready:
                 self.foreground(window_status)
@@ -192,6 +201,9 @@ def supervise(process, guard, profile_root, launch_id, ui):
             "startupWindow": True, "handoffCompleted": ui.ready,
             "nativeWindowReadinessObserved": native_observed,
             "nativeWindowsHeld": ui.hidden_count, "activations": ui.activation_count,
+            "nativePidObserved": bool(ui.pid), "windowEnumerations": ui.enumerations,
+            "ownedTopLevelClasses": sorted(ui.observed_classes),
+            "windowEnumerationErrors": sorted(ui.enumeration_errors),
         }
     finally:
         ui.close()

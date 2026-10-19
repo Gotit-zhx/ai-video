@@ -173,6 +173,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: pwsh -NoProfile -Command "$ErrorActionPreference='Stop'; $PSNativeCommandUseErrorActionPreference=$true; . '{0}'"
     steps:
       - uses: actions/checkout@v4
       - name: Verify exact package source and private destination before building

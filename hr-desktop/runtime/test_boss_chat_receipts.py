@@ -205,7 +205,8 @@ class ReceiptTest(unittest.TestCase):
             self.c.cli_json.assert_not_called()
             self.assertEqual(db.execute('SELECT state FROM chat_resume_offers').fetchone()[0], 'pending')
 
-    def test_old_pending_offer_keeps_slow_interval_but_can_use_receiving_capacity(self):
+    @mock.patch.object(receipts.time, 'time', return_value=1792390000.0)
+    def test_old_pending_offer_keeps_slow_interval_but_can_use_receiving_capacity(self, _clock):
         now = time.time()
         budget = self.root/'budget.sqlite3'
         with contextlib.closing(sqlite3.connect(budget)) as db, db:
