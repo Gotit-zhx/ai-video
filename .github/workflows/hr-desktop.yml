@@ -26,6 +26,15 @@ on:
         type: boolean
         required: false
         default: false
+      deliverPrivate:
+        description: "仅把已验收的私有 Windows 包传至一次性 OSS 上传地址"
+        type: boolean
+        required: false
+        default: false
+      privateRelease:
+        description: "已通过验包的私有草稿 tag（仅传输模式）"
+        type: string
+        required: false
   # Code uploads are free of build side effects. An explicit build tag also
   # works before this workflow has been merged into the default branch.
   push:
@@ -40,7 +49,7 @@ permissions:
   contents: write
 jobs:
   desktop:
-    if: ${{ inputs.nativeProbe != true }}
+    if: ${{ inputs.nativeProbe != true && inputs.deliverPrivate != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -155,7 +164,7 @@ jobs:
             if [ -f "$asset" ]; then gh release upload "$tag" "$asset" --clobber; fi
           done
   native-probe:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.nativeProbe == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.nativeProbe == true && inputs.deliverPrivate != true }}
     runs-on: windows-latest
     timeout-minutes: 20
     permissions:
@@ -251,4 +260,23 @@ jobs:
           if ($assets.Count -ne 3) { throw 'Expected one verified installer, portable candidate and report' }
           gh release upload $tag @assets
           if ($LASTEXITCODE -ne 0) { throw 'Private draft upload failed' }
+  private-delivery:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deliverPrivate == true && github.event.repository.private == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s scripts/ci -p test_deliver_private_installer.py
+      - name: Transfer only a verified private installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRIVATE_RELEASE: ${{ inputs.privateRelease }}
+          UPLOAD_TICKET: ${{ secrets.HEYI_PRIVATE_INSTALLER_TRANSFER }}
+        run: python scripts/ci/deliver_private_installer.py
           Write-Output "HEYI_PRIVATE_CANDIDATE_TAG $tag"
