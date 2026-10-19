@@ -43,7 +43,13 @@ public class ProductMainImageAssets {
                 }).toList();
         if (rows.size() != slots.size() || rows.stream().anyMatch(row -> !"READY".equals(row.get("status"))))
             throw new TemplateChanged();
-        return rows.stream().map(row -> {
+        var ordered = rows.stream().sorted(Comparator.<Map<String, Object>, Boolean>comparing(row -> {
+            var slot = slots.get(((Number) row.get("sort_order")).intValue());
+            var analysis = json.convertValue(slot.get("analysis"), new tools.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            return ProductMainImageStylePolicy.preservesOriginal(analysis);
+        }).thenComparingInt(row -> ((Number) row.get("sort_order")).intValue())).toList();
+        return java.util.stream.IntStream.range(0, ordered.size()).mapToObj(position -> {
+            var row = ordered.get(position);
             var slot = slots.get(((Number) row.get("sort_order")).intValue());
             var analysis = json.convertValue(slot.get("analysis"), new tools.jackson.core.type.TypeReference<Map<String, Object>>() {});
             if (ProductMainImageStylePolicy.preservesOriginal(analysis)) {
@@ -57,7 +63,7 @@ public class ProductMainImageAssets {
             var reference = archive.read(capture.getOrganizationId(), (String) row.get("storage_key"));
             String url = ProductMainImageStylePolicy.PREFIX + row.get("id");
             var image = new ProductCaptureImage(capture.getOrganizationId(), capture.getId(), url + "?original", "MAIN",
-                    "风格主图", ((Number) row.get("sort_order")).intValue(), reference.mimeType(), "{}");
+                    "风格主图", position, reference.mimeType(), "{}");
             image.processed(url);
             return image;
         }).toList();

@@ -63,6 +63,34 @@ export class ImageOperationStore {
       response:record.status === 'COMPLETED' ? record.result ?? null : null,
       error};
   }
+  async archive(requestId, storageKey) {
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(String(requestId || ''))
+      || !/^[a-f0-9]{64}\/[a-f0-9]{64}$/.test(String(storageKey || '')))
+      throw Object.assign(new Error('图片归档凭据无效'), {status:400});
+    if (this.active.has(requestId)) throw Object.assign(new Error('图片任务仍在运行'), {status:409});
+    const file = path.join(this.directory, `${hash(requestId)}.json`);
+    let record;
+    try { record = JSON.parse(await readFile(file, 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return {status:'NOT_FOUND'}; throw error; }
+    if (record.status === 'ARCHIVED') {
+      if (record.archive?.storageKey !== storageKey) throw Object.assign(new Error('图片归档编号已改变'), {status:409});
+      return {status:'ARCHIVED'};
+    }
+    if (record.status !== 'COMPLETED') throw Object.assign(new Error('只能清理已完成且已归档的图片结果'), {status:409});
+    const encoded = record.result?.artifact?.dataBase64;
+    if (encoded && hash(Buffer.from(encoded, 'base64')) !== storageKey.slice(65))
+      throw Object.assign(new Error('归档图片与生成结果不一致'), {status:409});
+    // The backend acknowledges only after a verified OSS copy and a durable READY row.
+    // Keep the paid request identity and counters so replay can never start another POST.
+    record.status = 'ARCHIVED';
+    record.archive = {storageKey, archivedAt:Date.now()};
+    delete record.result;
+    delete record.error;
+    for (const route of Object.values(record.routes || {})) delete route.response;
+    record.updatedAt = Date.now();
+    await this.write(file, record);
+    return {status:'ARCHIVED'};
+  }
   execute(requestId, input, task) {
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(String(requestId || ''))) {
       return Promise.reject(Object.assign(new Error('图片恢复任务缺少有效请求编号'), {status:400}));
@@ -84,6 +112,7 @@ export class ImageOperationStore {
     try { record = JSON.parse(await readFile(file, 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (record && record.fingerprint !== fingerprint) throw Object.assign(new Error('同一图片任务的输入已改变'), {status:409});
+    if (record?.status === 'ARCHIVED') throw failure('图片已归档到OSS，请读取业务图片记录；禁止重复生图', 'IMAGE_RESULT_ARCHIVED');
     if (record?.status === 'COMPLETED') return record.result;
     if (record?.status === 'FAILED') throw restoreError(record.error);
     record ||= {version:1,fingerprint,createdAt:Date.now(),routes:{}};

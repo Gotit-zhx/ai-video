@@ -115,6 +115,14 @@ public class CommerceDesignImageGateway implements AutoCloseable {
         try{return operationClient.get().uri("/v1/images/operations?requestId={id}",attemptId).retrieve().body(Operation.class);}
         catch(RestClientResponseException failure){if(failure.getStatusCode().value()==404)return null;throw failure;}
     }
+    public void releaseArchivedOperation(String attemptId,String storageKey){
+        if(attemptId==null||!attemptId.matches("[A-Za-z0-9_-]{8,128}")
+                ||storageKey==null||!storageKey.matches("[a-f0-9]{64}/[a-f0-9]{64}"))throw bad("图片归档凭据无效");
+        var receipt=operationClient.post().uri("/v1/images/operations/archive").contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("requestId",attemptId,"storageKey",storageKey)).retrieve().body(Map.class);
+        if(receipt==null||!Set.of("ARCHIVED","NOT_FOUND").contains(Objects.toString(receipt.get("status"),"")))
+            throw new IllegalStateException("图片结果缓存尚未完成清理");
+    }
     private static java.net.http.HttpClient operationTransport(){
         return java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(2))
                 .followRedirects(java.net.http.HttpClient.Redirect.NEVER).build();

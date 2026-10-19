@@ -81,4 +81,53 @@ class ProductMainImageStylePolicyTest {
         assertEquals("1024x1536",ProductMainImageStylePolicy.size(800,1200));
         assertEquals("1536x1024",ProductMainImageStylePolicy.size(1600,900));
     }
+    static Map<String,Object> colorAnalysis() {
+        var value = analysis();
+        value.put("colorwayMode","TEMPLATE_COLORWAYS");
+        var colors = new ArrayList<Map<String,Object>>();
+        var regions = new ArrayList<Map<String,Object>>();
+        var labels = List.of("Black","Gray","Pink","Red","White","Cream");
+        var hexes = List.of("#202020","#C9C9C9","#F2B6CC","#AC0825","#F8F8F8","#EEE3CB");
+        for (int index=0;index<6;index++) {
+            regions.add(Map.of("x",(index%3)*.3,"y",(index/3)*.4,"width",.25,"height",.3));
+            colors.add(Map.of("regionIndex",index,"colorName",labels.get(index),"colorHex",hexes.get(index),"label",labels.get(index)));
+        }
+        value.put("productRegions",regions); value.put("colorways",colors);
+        return value;
+    }
+    @Test void colorwaySlotsKeepTheirOwnColorsAndLabelsWithoutChangingProductIdentity() {
+        var value = colorAnalysis();
+        assertDoesNotThrow(()->ProductMainImageStylePolicy.validateAnalysis(value));
+        String prompt = ProductMainImageStylePolicy.prompt("Black target shirt",value);
+        for (String label:List.of("Black","Gray","Pink","Red","White","Cream")) assertTrue(prompt.contains(label));
+        assertTrue(prompt.contains("regionIndex"));
+        assertTrue(prompt.contains("保留图片1的版型、结构、材质、印花图案及其原色"));
+        assertTrue(prompt.contains("不修改实际SKU"));
+        assertFalse(prompt.contains("款式、结构、颜色、材质"));
+    }
+    @Test void oldTemplatesReadReferenceColorsWhileExplicitSingleProductModeKeepsItsColor() {
+        assertTrue(ProductMainImageStylePolicy.prompt("Black shirt",analysis()).contains("直接从图片2识别"));
+        var value = analysis();value.put("colorwayMode","SOURCE_PRODUCT");value.put("colorways",List.of());
+        String prompt = ProductMainImageStylePolicy.prompt("Black shirt",value);
+        assertTrue(prompt.contains("忠实保留图片1商品原色"));
+        assertFalse(prompt.contains("旧模板未单独记录"));
+    }
+    @Test void malformedColorMappingsCannotCollapseDistinctSlotsOrEscapeTheTemplate() {
+        var original = colorAnalysis();
+        var colors = (List<Map<String,Object>>)original.get("colorways");
+        for (var edit:List.of(Map.of("regionIndex",-1),Map.of("regionIndex",6),Map.of("regionIndex",.5),
+                Map.of("regionIndex",0),Map.of("colorHex","black"),Map.of("label",true),Map.of("colorName",""))) {
+            var value = colorAnalysis();var modified = new ArrayList<>(colors);
+            var bad = new LinkedHashMap<>(modified.get(1));bad.putAll(edit);modified.set(1,bad);value.put("colorways",modified);
+            assertThrows(BusinessException.class,()->ProductMainImageStylePolicy.validateAnalysis(value));
+        }
+        var collapsed = colorAnalysis();collapsed.put("colorways",colors.stream().map(color->{
+            var copy=new LinkedHashMap<>(color);copy.put("colorHex","#000000");return copy;
+        }).toList());
+        assertThrows(BusinessException.class,()->ProductMainImageStylePolicy.validateAnalysis(collapsed));
+        var value = analysis();value.put("colorwayMode","SOURCE_PRODUCT");
+        var missing=value;assertThrows(BusinessException.class,()->ProductMainImageStylePolicy.validateAnalysis(missing));
+        value = originalAnalysis();value.put("colorwayMode","TEMPLATE_COLORWAYS");value.put("colorways",colors);
+        var originalPage=value;assertThrows(BusinessException.class,()->ProductMainImageStylePolicy.validateAnalysis(originalPage));
+    }
 }

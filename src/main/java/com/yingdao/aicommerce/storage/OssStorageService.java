@@ -217,6 +217,27 @@ public class OssStorageService {
         return new StoredObject(location(key), content.length);
     }
 
+    /** Stable private keys let commerce archives move off disk without changing tenant-owned references. */
+    public String commerceImageLocation(String archiveKey) {
+        if (archiveKey == null || !archiveKey.matches("[a-f0-9]{64}/[a-f0-9]{64}"))
+            throw new IllegalArgumentException("商品图片归档编号无效");
+        return location("heyi/commerce-images/" + archiveKey);
+    }
+
+    public StoredObject storeCommerceImage(String archiveKey, byte[] content, String contentType) throws Exception {
+        String destination = commerceImageLocation(archiveKey);
+        if (content == null || content.length == 0 || content.length > 8 * 1024 * 1024
+                || !archiveKey.substring(65).equals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content))))
+            throw new IllegalArgumentException("商品图片内容与归档编号不一致");
+        ObjectMetadata metadata = new ObjectMetadata();
+        metadata.setContentLength(content.length);
+        metadata.setContentType(contentType);
+        metadata.setCacheControl("private, max-age=31536000, immutable");
+        metadata.setObjectAcl(CannedAccessControlList.Private);
+        internalClient.putObject(new PutObjectRequest(bucket, key(destination), new ByteArrayInputStream(content), metadata));
+        return new StoredObject(destination, content.length);
+    }
+
     public StoredObject store(InputStream input, long declaredLength, long maxBytes, String contentType,
                               String category, String fileName) throws Exception {
         if (input == null) throw new IllegalStateException("待上传 OSS 的数据流为空");
@@ -365,7 +386,7 @@ public class OssStorageService {
     private boolean isPublicImage(String objectKey) {
         // Use MIME metadata rather than filenames so extensionless images work
         // and a video or archive named *.png is not exposed as an image.
-        return publicImages && objectKey.startsWith("heyi/")
+        return publicImages && objectKey.startsWith("heyi/") && !objectKey.startsWith("heyi/commerce-images/")
                 && isImageContentType(internalClient.getObjectMetadata(bucket, objectKey).getContentType());
     }
 

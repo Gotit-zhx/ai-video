@@ -3,8 +3,38 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile,readdir,rm,writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {ImageOperationStore} from '../src/image-operation-store.js';
 const config={baseUrl:'https://model.invalid/v1',modelId:'image'};
+test('OSS acknowledgement removes image payloads but keeps paid identity across restart',async t=>{
+ const {dir,store}=await fixture(t),bytes=Buffer.from('generated-image'),encoded=bytes.toString('base64');
+ const key='a'.repeat(64)+'/'+createHash('sha256').update(bytes).digest('hex');
+ await store.execute('archived-image-001',{prompt:'fixed'},async op=>{
+  const route=await op.forRoute(config);await route.beforeAttempt();await route.recordResponse({payload:{data:[{b64_json:encoded}]}});
+  return {artifact:{dataBase64:encoded}};
+ });
+ assert.deepEqual(await store.archive('archived-image-001',key),{status:'ARCHIVED'});
+ const file=path.join(dir,(await readdir(dir))[0]),raw=await readFile(file,'utf8'),record=JSON.parse(raw);
+ assert.ok(!raw.includes(encoded));assert.ok(record.fingerprint);assert.equal(Object.values(record.routes)[0].attempts,1);
+ assert.equal((await store.lookup('archived-image-001')).status,'ARCHIVED');
+ const restarted=new ImageOperationStore(dir);
+ assert.deepEqual(await restarted.archive('archived-image-001',key),{status:'ARCHIVED'});
+ await assert.rejects(restarted.execute('archived-image-001',{prompt:'fixed'},()=>{assert.fail('must not regenerate');}),
+  {failureCode:'IMAGE_RESULT_ARCHIVED'});
+ await assert.rejects(restarted.archive('archived-image-001','a'.repeat(64)+'/'+'b'.repeat(64)),/编号已改变/);
+});
+test('archive refuses live, failed, invalid and mismatched operations without losing images',async t=>{
+ const {store}=await fixture(t),key='a'.repeat(64)+'/'+'b'.repeat(64);
+ let release;const gate=new Promise(r=>release=r);
+ const live=store.execute('active-image-001',{},async()=>{await gate;return {artifact:{dataBase64:'aW1hZ2U='}};});
+ await assert.rejects(store.archive('active-image-001',key),/仍在运行/);release();await live;
+ await assert.rejects(store.archive('active-image-001',key),/不一致/);
+ assert.equal((await store.lookup('active-image-001')).status,'COMPLETED');
+ await assert.rejects(store.execute('failed-image-001',{},async()=>{throw Error('failed');}));
+ await assert.rejects(store.archive('failed-image-001',key),/只能清理已完成/);
+ await assert.rejects(store.archive('../secret',key));
+ assert.deepEqual(await store.archive('missing-image-001',key),{status:'NOT_FOUND'});
+});
 async function fixture(t){const dir=await mkdtemp(path.join(os.tmpdir(),'image-store-'));t.after(()=>rm(dir,{recursive:true,force:true}));return {dir,store:new ImageOperationStore(dir)};}
 test('duplicates join one operation and completed results survive restart',async t=>{
  const {dir,store}=await fixture(t);let calls=0,release;const gate=new Promise(r=>release=r);

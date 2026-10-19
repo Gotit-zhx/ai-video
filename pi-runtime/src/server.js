@@ -3582,6 +3582,14 @@ const server = http.createServer(async (request, response) => {
       await handleImageOperationLookup(request, response, requestUrl);
       return;
     }
+    if (request.method === "POST" && requestUrl.pathname === "/v1/images/operations/archive") {
+      if (request.headers["x-internal-token"] !== INTERNAL_TOKEN) {
+        json(response, 401, { message: "图片归档服务认证失败" }); return;
+      }
+      const body = await readBody(request);
+      json(response, 200, await imageOperationStore.archive(body.requestId, body.storageKey));
+      return;
+    }
     if (request.method === "POST" && request.url === "/v1/chat") {
       await handleChat(request, response);
       return;

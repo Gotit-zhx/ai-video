@@ -84,6 +84,21 @@ class OssPublicImagesTest {
         assertTrue(image.getCacheControl().startsWith("public,"));
         assertTrue(video.getCacheControl().startsWith("private,"));
     }
+    @Test void commerceContentAddressedImagesStayPrivateEvenWhenOtherImagesArePublic() throws Exception {
+        var storage=storage();byte[] bytes={1,2,3};
+        String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        String key="a".repeat(64)+"/"+hash;
+        var stored=storage.storeCommerceImage(key,bytes,"image/png");
+        assertEquals("oss://hoyee/heyi/commerce-images/"+key,stored.location());
+        ArgumentCaptor<PutObjectRequest> request=ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(internal).putObject(request.capture());
+        assertEquals("private",request.getValue().getMetadata().getRawMetadata().get("x-oss-object-acl").toString());
+        when(signer.isEnabled()).thenReturn(true);
+        when(signer.sign("hoyee","heyi/commerce-images/"+key)).thenReturn("signed-private-reference");
+        assertEquals("signed-private-reference",storage.signedUrl(stored.location()));
+        assertThrows(IllegalArgumentException.class,()->storage.storeCommerceImage(key,new byte[]{4},"image/png"));
+        assertThrows(IllegalArgumentException.class,()->storage.commerceImageLocation("../secret"));
+    }
 
     @Test void multipartImagesCarryPublicAclOnCompletion() throws Exception {
         OssStorageService storage = storage();

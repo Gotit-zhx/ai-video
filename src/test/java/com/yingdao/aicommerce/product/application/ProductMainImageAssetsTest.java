@@ -113,6 +113,30 @@ class ProductMainImageAssetsTest {
         when(archive.read("org","missing")).thenThrow(error);
         assertSame(error,assertThrows(IllegalStateException.class,()->assets.gallery(capture,request())));
     }
+    @Test void generatedProductImagesLeadTheFinalGalleryEvenWhenInformationPageWasUploadedFirst() {
+        var base=setup();
+        var information=new LinkedHashMap<String,Object>(base);information.put("analysis",ProductMainImageStylePolicyTest.originalAnalysis());
+        var first=new LinkedHashMap<String,Object>(base);first.put("imageId","generated-first");
+        var second=new LinkedHashMap<String,Object>(base);second.put("imageId","generated-second");
+        var slots=List.of(information,first,second);
+        when(templates.current(template,"org")).thenReturn(Map.of("images",slots));
+        var rows=new ArrayList<Map<String,Object>>();
+        for(int i=0;i<slots.size();i++){
+            var row=new LinkedHashMap<String,Object>();
+            row.put("id","job-"+i);row.put("sort_order",i);row.put("status","READY");
+            row.put("storage_key",i==0?"reference":"generated-"+i);
+            row.put("template_fingerprint",ProductMainImageStylePolicy.fingerprint(slots.get(i),json));
+            if(i==0){row.put("source_key","reference");row.put("reference_key","reference");row.put("review_json","{\"mode\":\"PRESERVE_ORIGINAL\"}");}
+            rows.add(row);
+        }
+        when(db.queryForList(contains("SELECT * FROM product_main_image_jobs"),eq(workflow),eq("org"),eq("capture"))).thenReturn(rows);
+        when(archive.read(eq("org"),anyString())).thenReturn(new CommerceDesignImageGateway.Reference("image/png","aW1hZ2U="));
+        var gallery=assets.gallery(capture,request());
+        assertEquals(List.of("job-1","job-2","job-0"),gallery.stream().map(i->i.getProcessedUrl().substring(ProductMainImageStylePolicy.PREFIX.length())).toList());
+        assertEquals(List.of(0,1,2),gallery.stream().map(i->i.getSortOrder()).toList());
+        assertTrue(gallery.stream().allMatch(i->"MAIN".equals(i.getRoleName())));
+        assets.verifyCurrentGallery(capture,request(),gallery);
+    }
     private Map<String,Object> request(){return Map.of("mainImageStyleTemplateId",template,"idempotencyKey","wf-"+workflow+"-publish");}
     private Map<String,Object> setup(){
         when(capture.getOrganizationId()).thenReturn("org");when(capture.getId()).thenReturn("capture");

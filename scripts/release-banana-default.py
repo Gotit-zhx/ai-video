@@ -14,6 +14,10 @@ ROOT = Path(sys.argv[1]).resolve()
 MODE = sys.argv[2]
 APP, PI, FRONT = "ai-commerce-app", "heyi-pi-runtime", "ai-commerce-frontend"
 TAG = "banana-default-20261019"
+BASE_COMMIT = "9128d64"
+RUNTIME_FILES = ("server.js",)
+NEW_PREFIXES = set()
+RELEASE_ENTRY = Path(__file__)
 PREFIXES = ["com/yingdao/aicommerce/" + name for name in (
     "saas/application/ModelConfigService",
     "product/application/ProductMainImageStyleService",
@@ -57,12 +61,17 @@ def pack():
                 "sourceCommit": run("git", "-C", str(source), "rev-parse", "HEAD").decode().strip()}
     shutil.copy2(source / "pi-runtime/src/server.js", ROOT / "server.js")
     manifest["runtimeHash"] = sha((ROOT / "server.js").read_bytes())
-    manifest["expectedRuntimeHash"] = sha(run("git", "-C", str(source), "show", "9128d64:pi-runtime/src/server.js"))
+    manifest["expectedRuntimeHash"] = sha(run("git", "-C", str(source), "show", BASE_COMMIT + ":pi-runtime/src/server.js"))
+    manifest["runtimeFiles"], manifest["expectedRuntimeFiles"] = {}, {}
+    for file in RUNTIME_FILES:
+        shutil.copy2(source / "pi-runtime/src" / file, ROOT / file)
+        manifest["runtimeFiles"][file] = sha((ROOT / file).read_bytes())
+        manifest["expectedRuntimeFiles"][file] = sha(run("git", "-C", str(source), "show", BASE_COMMIT + ":pi-runtime/src/" + file))
     for prefix in PREFIXES:
         for folder, key in [(baseline, "expectedClasses"), (source / "target/classes", "classes")]:
             file = folder / prefix
             matches = list(file.parent.glob(file.name + ".class")) + list(file.parent.glob(file.name + "$*.class"))
-            assert matches, "Missing class family: " + prefix
+            assert matches or key == "expectedClasses" and prefix in NEW_PREFIXES, "Missing class family: " + prefix
             for item in matches:
                 relative = str(item.relative_to(folder))
                 manifest[key]["BOOT-INF/classes/" + relative] = sha(item.read_bytes())
@@ -73,13 +82,17 @@ def pack():
     (ROOT / "runtime-tests").mkdir()
     for file in TESTS:
         shutil.copy2(source / "pi-runtime/test" / file, ROOT / "runtime-tests" / file)
-    shutil.copy2(source / "scripts/release-banana-default.py", ROOT / "release.py")
+    shutil.copy2(RELEASE_ENTRY, ROOT / "release.py")
+    if RELEASE_ENTRY.resolve() != Path(__file__).resolve():
+        shutil.copy2(Path(__file__), ROOT / "release-core.py")
     write_json(ROOT / "manifest.json", manifest)
-    print("Packed native Gemini adapter and three reviewed backend class families.")
+    print("Packed reviewed image runtime and backend class families.")
 
 
 def baseline():
-    assert sha(run("docker", "exec", PI, "cat", "/app/src/server.js")) == read_json("manifest.json")["expectedRuntimeHash"], "Runtime changed"
+    manifest = read_json("manifest.json")
+    for file, digest in manifest.get("expectedRuntimeFiles", {"server.js": manifest["expectedRuntimeHash"]}).items():
+        assert sha(run("docker", "exec", PI, "cat", "/app/src/" + file)) == digest, "Runtime changed: " + file
 
 
 def configuration(info):
@@ -181,8 +194,10 @@ def build():
         if name == APP:
             lines.append("COPY app.jar /app/app.jar")
         else:
-            shutil.copy2(ROOT / "server.js", directory / "server.js")
-            lines.append("COPY server.js /app/src/server.js")
+            for file, digest in manifest.get("runtimeFiles", {"server.js": manifest["runtimeHash"]}).items():
+                assert sha((ROOT / file).read_bytes()) == digest
+                shutil.copy2(ROOT / file, directory / file)
+                lines.append("COPY " + file + " /app/src/" + file)
         (directory / "Dockerfile").write_text("\n".join(lines) + "\n")
         images[name] = ("ai-commerce-platform" if name == APP else name) + ":" + TAG
         run("docker", "build", "-t", images[name], str(directory))
@@ -223,7 +238,7 @@ def deploy():
             activate(before, name, rollback[name])
             health(name)
         raise
-    print("Native image adapter deployed. Default model not changed by this deployment step.")
+    print("Image runtime overlay deployed. Model settings unchanged.")
 
 
 def verify():
@@ -231,7 +246,8 @@ def verify():
     for name, image in activation["images"].items():
         assert inspect(name)["Config"]["Image"] == image
         health(name)
-    assert sha(run("docker", "exec", PI, "cat", "/app/src/server.js")) == manifest["runtimeHash"]
+    for file, digest in manifest.get("runtimeFiles", {"server.js": manifest["runtimeHash"]}).items():
+        assert sha(run("docker", "exec", PI, "cat", "/app/src/" + file)) == digest
     assert sha(run("docker", "exec", APP, "cat", "/app/app.jar")) == prepared["jarHash"]
     assert all(inspect(name)["Id"] == value for name, value in activation["preservedContainers"].items())
     write_json(ROOT / "verification.json", {"healthy": True, "deployedHashesMatch": True,
