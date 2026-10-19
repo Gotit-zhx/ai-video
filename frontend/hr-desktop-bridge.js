@@ -65,7 +65,7 @@
     if(value.app!=='heyi-recruiter'||value.protocol!==1)throw Error('请安装新版赫逸招聘助手');
     const parts=typeof value.version==='string'&&/^\d+\.\d+\.\d+$/.test(value.version)?value.version.split('.').map(Number):[];
     const isWindows=/Win/i.test(navigator.userAgentData?.platform||navigator.platform||navigator.userAgent||'');
-    const minimum=isWindows?[0,1,26]:[0,1,25],different=parts.findIndex((part,index)=>part!==minimum[index]);
+    const minimum=isWindows?[0,1,27]:[0,1,25],different=parts.findIndex((part,index)=>part!==minimum[index]);
     const recent=parts.length===3&&(different===-1||parts[different]>minimum[different]);
     if(!recent){
       versionError=Object.assign(Error('当前运行的是旧版助手'+(parts.length?' '+value.version:'')
