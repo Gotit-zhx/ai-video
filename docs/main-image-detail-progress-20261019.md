@@ -52,3 +52,20 @@ Deployment requires idle background work. The user's in-flight style task was
 left running during implementation. It subsequently failed its first image's
 correction at the image service, before publication. No failed image or
 workflow was retried or rewritten as part of the progress fix.
+
+## Production Result
+
+Deployed source commit `f9d8a13` on 2026-10-19. Release directory:
+`/opt/heyi/releases/main-image-detail-progress-20261019-f9d8a13`.
+The application and frontend use the `main-image-detail-progress-20261019`
+image tags. HTTPS assets, backend JAR, health checks, complete container
+configuration, and unchanged unrelated containers all verified successfully.
+The Pi runtime was not restarted.
+
+At 2026-10-19 07:01 UTC, pre/post deployment fingerprints matched for the
+template, all seven template images and analyses, all seven style jobs and
+their generated/review data, and the selected-style publication workflow.
+No task retry, data rewrite, paid generation, or publication was performed by
+the deployment. Production authenticated UI inspection remained unavailable
+because the existing browser session had expired; layout and live polling
+were verified using the local isolated fixture.
