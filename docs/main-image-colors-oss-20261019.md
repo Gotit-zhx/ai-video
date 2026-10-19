@@ -54,3 +54,34 @@ replay protection. The targeted runtime suite passed 221 tests.
 Deployment uses exact live image overlays. Unrelated classes, frontend, container
 configuration and model defaults are not replaced. Banana remains the default,
 GPT Image remains the print model, and Grok remains the watermark model.
+
+## Production Rollout
+
+Deployed source commit `2694be5` on 2026-10-19 using release directory
+`/opt/heyi/releases/main-image-colors-oss-20261019-2694be5`. Final verification
+confirmed backend/runtime hashes and health, unchanged frontend and unrelated
+containers, and preserved configuration. The public site returned HTTP 200.
+
+The isolated live OSS check passed direct upload, SHA-256 readback, legacy
+migration, zero local image files, and tenant isolation. Temporary check objects
+were removed. Production maintenance migrated all 29 known style-image keys:
+none remained in the local archive. READY jobs with duplicated result payloads
+fell to zero. Subsequent maintenance passes each migrated another 25 archive
+files without a deferred-maintenance warning.
+
+Historical migration is still running. At approximately 10:43 UTC, the local
+commerce archive had 2,917 remaining files totaling 2,217,178,431 bytes; this is
+a live remaining count, not a claim that all historical media has been moved.
+Active and failed paid-operation recovery records remain protected.
+
+One real Pi Agent analysis using the configured `gpt-6.1-sol` model completed
+with HTTP 200 in 48.052 seconds. It returned `TEMPLATE_COLORWAYS` and six
+correctly positioned labels: Black, Gray, Pink, Red, White, Cream. This check
+did not change the template, regenerate product images, or republish the
+already successful listing. Remote diagnostic image copies were removed after
+matching their hashes against the retained local diagnostic copies.
+
+Authenticated browser preview verification was unavailable because the isolated
+browser opened at sign-in. The temporary browser task was closed; private-image
+storage and publishing behavior were checked through backend tests and live
+storage checks instead.
