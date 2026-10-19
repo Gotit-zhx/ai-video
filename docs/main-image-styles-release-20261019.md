@@ -29,7 +29,9 @@ deployment input.
 
 Production Flyway is at V115. This feature uses
 `V116__product_main_image_styles.sql`; existing migration checksums are unchanged.
-The three production HR asset cache versions from October 16 are retained.
+The production HR asset cache versions from October 16 and the concurrent
+October 19 AI BOSS downloads update are retained. The pre-deployment hash
+check stopped on that concurrent update before any production restart.
 
 A normalized comparison found 863/864 baseline Java classes identical. The
 only difference is `ShopIntegrationSettings`, which is not replaced. The
