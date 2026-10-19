@@ -30,3 +30,20 @@ block activation; health, configuration and served hashes are checked.
 The explicitly authorized failed workflow is recovered separately with a
 private backup and locked row-hash guards. Its already archived first image
 must be reused, not regenerated. No other failed workflow is resumed.
+
+## Production Record
+
+Deployed source `2e0ab0f` to
+`/opt/heyi/releases/main-image-direct-output-20261019-2e0ab0f`.
+The exact live frontend baseline was `ai-boss-startup-52755999f51a`;
+its unrelated changes were retained. Activation found no active application
+jobs. HTTPS asset hashes, patched JAR hash, health and container configuration
+matched; all unrelated containers, including Pi, retained their instance IDs.
+
+At 16:50:58 Asia/Shanghai on October 19, 2026, the authorized workflow
+`b76a2ea4-c37f-4db4-b607-cb8c92b9d8b0` resumed with a private backup and
+transactional row guards. Its archived first output became READY at 16:50:59
+with the same storage key, attempt count and paid-result history, and cleared
+review metadata. The second image entered generation at 16:51:03; the
+product-free seventh image remained READY. This records continuation, not
+completion of the remaining generation or marketplace publication.
