@@ -47,6 +47,8 @@ public class ProductPublishWorkflowProcessor {
     private final Executor executor;
     private final int batchSize;
     private final long leaseSeconds;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductMainImageStyleService mainImageStyles;
 
     public ProductPublishWorkflowProcessor(
             ProductPublishWorkflowMapper workflowMapper,
@@ -123,6 +125,15 @@ public class ProductPublishWorkflowProcessor {
                     && workflow.getImageJobId() == null && !"IMAGE_PROCESSING".equals(capture.getStatus())) {
                 processImages(workflow,worker,workflowPrincipal(workflow,"asset:watermark"),capture);
                 return;
+            }
+            if (List.of("READY", "APPROVED", "PUBLISHED").contains(capture.getStatus())
+                    && ProductMainImageStylePolicy.templateId(workflowService.request(workflow)) != null) {
+                workflowPrincipal(workflow, "product:edit");
+                owned(workflowMapper.markStep(workflow.getId(), worker, "STYLE_IMAGES", capture.getVersion(), Instant.now()));
+                if (!mainImageStyles.ensureReady(workflow, capture)) {
+                    wait(workflow, worker, "STYLE_IMAGES", null, null, capture.getVersion(), 3, null);
+                    return;
+                }
             }
             switch (capture.getStatus()) {
                 case "CAPTURED", "FAILED" -> processImages(workflow, worker,
@@ -282,6 +293,8 @@ public class ProductPublishWorkflowProcessor {
         if (workflow.getExpectedCaptureVersion() == capture.getVersion()) return true;
         return switch (workflow.getCurrentStep()) {
             case "IMAGES" -> ownImageJob(workflow) != null;
+            case "STYLE_IMAGES" -> capture.getVersion() > workflow.getExpectedCaptureVersion()
+                    && List.of("APPROVED", "PUBLISHED").contains(capture.getStatus());
             // Approval and publication only advance state; user edits always reset a draft to
             // CAPTURED. Accepting a later APPROVED/PUBLISHED version therefore lets independent
             // workflows publish the same approved product to different shops without mistaking a

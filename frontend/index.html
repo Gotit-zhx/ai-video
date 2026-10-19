@@ -45,6 +45,7 @@
   <link rel="stylesheet" href="/commerce-artwork-library.css?v=artwork-library-20260916-1">
   <link rel="stylesheet" href="/commerce-motion.css?v=workbench-layout-20260921">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
+  <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
     <link rel="stylesheet" href="/hr-workspace.css?v=20261012-progress-compact-3">
 <link rel="stylesheet" href="/i18n.css?v=20260921-2">
@@ -187,6 +188,7 @@
         </div></details>
         <details class="nav-group" data-nav-group="commerce"><summary title="商品运营"><span aria-hidden="true">◇</span><span class="nav-group-label">商品运营</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
         <a href="#product-capture" id="nav-publish" class="nav-item" data-nav-label="采集链接" title="采集链接"><span aria-hidden="true">◇</span><span class="nav-label">采集链接</span></a>
+        <a href="#product-main-image-styles" class="nav-item" data-commerce-route="product-main-image-styles" data-nav-label="主图风格模板" title="主图风格模板"><span aria-hidden="true">▧</span><span class="nav-label">主图风格模板</span></a>
         <a href="#commerce-designs" class="nav-item" data-commerce-route="commerce-designs" data-nav-label="一键裂变" title="一键裂变"><span aria-hidden="true">◈</span><span class="nav-label">一键裂变</span></a>
         <a href="#commerce-templates" class="nav-item" data-commerce-route="commerce-templates" data-nav-label="模板配置" title="模板配置"><span aria-hidden="true">▤</span><span class="nav-label">模板配置</span></a>
         <a href="#commerce-batches" class="nav-item" data-commerce-route="commerce-batches" data-nav-label="批次上架" title="批次上架"><span aria-hidden="true">▦</span><span class="nav-label">批次上架</span></a>
@@ -873,6 +875,12 @@
           <p id="commerce-batch-status" role="status" aria-live="polite"></p>
           <div id="commerce-batch-list"></div>
           <div id="commerce-batch-detail"></div>
+        </section>
+        <section data-commerce-panel="product-main-image-styles" hidden id="main-style-workspace">
+          <header class="main-style-heading"><div><h1>主图风格模板</h1><span id="main-style-count">0 套模板</span></div><div class="main-style-actions"><button type="button" id="main-style-refresh" title="刷新模板" aria-label="刷新模板">↻</button><button type="button" id="main-style-new">＋ 新建模板</button></div></header>
+          <p id="main-style-status" role="status" aria-live="polite"></p>
+          <div id="main-style-list" class="main-style-list"></div>
+          <section id="main-style-detail" hidden></section>
         </section>
         <div data-commerce-panel="product-capture">
         <section class="product-page-heading">
@@ -1903,7 +1911,10 @@
             <select id="product-bulk-shop" multiple hidden aria-label="目标店铺"></select>
             <details class="product-bulk-shop-picker"><summary id="product-bulk-shop-summary">请选择目标店铺（可多选）</summary><div id="product-bulk-shop-options" role="group" aria-label="选择上传店铺"></div></details>
           </div>
+          <label>主图风格模板 <span class="main-style-optional">可选</span><select id="product-bulk-main-style"><option value="">不使用风格模板</option></select></label>
         </div>
+        <div id="product-bulk-main-style-preview" class="main-style-bulk-preview" hidden></div>
+        <p id="product-bulk-main-style-status" role="status"></p>
         <section id="product-bulk-size-chart" class="product-bulk-size-chart" aria-label="本次上传尺码图" hidden>
           <div><strong>尺码图片 <small>选填</small></strong><p>上传后用于本批商品；不上传则使用原商品尺码表。</p></div>
           <div class="product-bulk-size-chart-actions"><label class="product-bulk-chart-upload">上传尺码图<input id="product-bulk-size-chart-file" type="file" accept="image/png,image/jpeg"></label><button id="product-bulk-size-chart-remove" type="button" hidden>移除</button></div>
@@ -1919,6 +1930,16 @@
       <p id="product-bulk-error" role="alert"></p>
       <div id="product-bulk-progress" aria-live="polite"></div>
       <footer class="bulk-dialog-footer"><span>关闭窗口后，已提交任务继续运行</span><button id="submit-product-bulk" type="submit">一键上传所选商品</button></footer>
+    </form>
+  </dialog>
+  <dialog id="main-style-create-dialog" class="main-style-dialog" aria-labelledby="main-style-create-title">
+    <form id="main-style-create-form">
+      <header class="main-style-heading"><h2 id="main-style-create-title">新建主图风格模板</h2><button type="button" id="main-style-close" title="关闭" aria-label="关闭">×</button></header>
+      <label>模板名称<input id="main-style-name" required maxlength="120" autocomplete="off" placeholder="例如：清新夏日系列"></label>
+      <label class="main-style-file-label">参考海报图集 <span>1–9 张 · PNG / JPEG / WEBP · 每张不超过 8 MB</span><input id="main-style-files" type="file" accept="image/png,image/jpeg,image/webp" multiple></label>
+      <div id="main-style-upload-list" class="main-style-upload-list"></div>
+      <p id="main-style-upload-error" role="alert"></p>
+      <footer><span id="main-style-upload-count">已选 0 张</span><button type="submit" id="main-style-save" disabled>保存并自动提取</button></footer>
     </form>
   </dialog>
   <dialog id="product-listing-template-dialog" class="listing-template-dialog" aria-labelledby="listing-template-title">
@@ -1956,22 +1977,23 @@
   </dialog>
   <script src="/i18n/catalog.js?v=shopee-logistics-20260921" defer></script>
   <script src="/i18n.js?v=20260921-2" defer></script>
-  <script src="/product-bulk-upload.js?v=20261014-multi-shop-1" defer></script>
+  <script src="/product-bulk-upload.js?v=20261019-style-1" defer></script>
   <script src="/product-bulk-size-chart.js?v=20261013-size-chart-2" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
   <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-multi-shop-1">
   <script src="/product-listing-templates.js?v=20261015-module-isolation" defer></script>
-  <script src="/app.js?v=20261015-module-isolation" defer></script>
+  <script src="/app.js?v=main-image-style-20261019-1" defer></script>
+  <script src="/product-main-image-styles.js?v=20261019-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261014-task-scheduling-024" defer></script>
   <script src="/hr-onboarding.js?v=20261012-compact-3" defer></script>
   <script src="/hr-bi.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-pool.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-demands.js?v=20261009-demands-delete-2" defer></script>
   <script src="/hr-departments.js?v=20261009-departments-compact-1" defer></script>
-  <script src="/hr-resume-preview.js?v=20261009-resume-jd-1" defer></script>
-  <script src="/hr-passive.js?v=20261012-boss-chat-019" defer></script>
-    <script src="/hr-sourcing.js?v=20261012-receipt-reserve-1" defer></script>
+  <script src="/hr-resume-preview.js?v=20261016-resume-compat" defer></script>
+  <script src="/hr-passive.js?v=20261016-resume-compat" defer></script>
+    <script src="/hr-sourcing.js?v=20261016-manual-sourcing" defer></script>
   <script src="/hr-workspace.js?v=20261014-task-scheduling-024" defer></script>
   <script src="/knowledge-workspace.js?v=20260923-3" defer></script>
   <script src="/commerce-planner.js?v=languages-20260921-2" defer></script>

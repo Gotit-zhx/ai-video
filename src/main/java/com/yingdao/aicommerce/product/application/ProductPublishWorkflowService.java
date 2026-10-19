@@ -60,6 +60,10 @@ public class ProductPublishWorkflowService {
     private ProductListingTemplateService listingTemplates;
     @org.springframework.beans.factory.annotation.Autowired
     private ProductListingLogisticsService listingLogistics;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductMainImageTemplateService mainImageTemplates;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductMainImageStyleService mainImageStyles;
 
     public ProductPublishWorkflowService(ProductPublishWorkflowMapper workflowMapper,
                                          ProductCaptureMapper captureMapper,
@@ -84,6 +88,9 @@ public class ProductPublishWorkflowService {
                                String idempotencyKey, PlatformPrincipal principal) {
         String key = requireIdempotencyKey(idempotencyKey);
         Map<String, Object> body = mutableMap(request);
+        body.remove("mainImageStyleSnapshot");
+        String styleTemplateId = ProductMainImageStylePolicy.templateId(body);
+        if (styleTemplateId == null) body.remove(ProductMainImageStylePolicy.TEMPLATE);
         body.remove("exchangeRateSnapshot"); // Server-owned immutable quote; never trust a browser rate.
         body.remove("listingTemplateSnapshot");
         body.remove("listingLogisticsSnapshot");
@@ -134,6 +141,10 @@ public class ProductPublishWorkflowService {
         body.put("visionWatermarkCheck", watermarkCheck);
         if (watermarkCheck) initialStep = "IMAGES";
         requireStagePermissions(initialStep, principal);
+        if (styleTemplateId != null) {
+            requireAuthority(principal, "product:edit", "当前账号没有主图生成权限");
+            mainImageTemplates.current(styleTemplateId, principal);
+        }
         String storedShopId = storedShopId(requestedShopId, executionMode);
         if (storedShopId != null) {
             validateShop(principal.organizationId(), storedShopId, destination);
@@ -344,7 +355,8 @@ public class ProductPublishWorkflowService {
                 stage(imageJob == null ? null : imageJob.getId(), imageJob == null ? null : imageJob.getStatus(),
                         imageJob == null ? null : imageJob.getErrorMessage(), imageJob == null ? 0 : imageJob.getProcessedImages(), imageJob == null ? 0 : imageJob.getTotalImages()),
                 audit(audit), workflow.getErrorMessage(), workflow.getCreatedAt(), workflow.getUpdatedAt(),
-                workflow.getCompletedAt()
+                workflow.getCompletedAt(),
+                mainImageStyles == null ? null : mainImageStyles.progress(workflow)
         );
     }
 
@@ -524,7 +536,7 @@ public class ProductPublishWorkflowService {
                                boolean publicationAttempted,
                                StageView imageProcessing, PublishStageView publication,
                                String errorMessage, Instant createdAt, Instant updatedAt,
-                               Instant completedAt) {}
+                               Instant completedAt, ProductMainImageStyleService.Progress mainImageStyle) {}
 
     public record StageView(String id, String status, String errorMessage, int processedImages, int totalImages) {}
 

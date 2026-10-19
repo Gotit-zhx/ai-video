@@ -39,6 +39,7 @@ applySidebarExpanded(true);
 const commerceSections = {
   "commerce-assets": "素材管理",
   "product-capture": "采集链接",
+  "product-main-image-styles": "主图风格模板",
   "commerce-designs": "一键裂变",
   "commerce-templates": "模板配置",
   "commerce-batches": "批次上架",
@@ -67,7 +68,7 @@ function selectCommerceSection() {
   window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}#${route}${route === "product-capture" ? window.location.hash.slice(1).replace(/^[^?]*/, "") : ""}`);
   syncProductCaptureView();
   window.dispatchEvent(new CustomEvent("heyi:commerce-section-entered", {detail:{route}}));
-  if(route!=="product-capture"){
+  if(route!=="product-capture" && route!=="product-main-image-styles"){
     const panel=document.querySelector(`[data-commerce-panel="${route}"]`);
     const heading=route==="commerce-designs"?document.querySelector(".commerce-batch-hub header"):panel?.querySelector("header");
     if(heading&&!heading.querySelector("[data-module-listing-settings]")){
@@ -4710,7 +4711,7 @@ function renderProductUploadResult(capture) {
   const dry = workflow.executionMode !== 'LIVE';
   el.dataset.state = success ? 'success' : running ? 'running' : 'warning';
   const title = success ? dry ? '模拟上传完成' : '✓ 上传成功' : running ? '上传处理中…' : remoteId ? '已创建，后续上传未完成' : '上传失败';
-  const detail = success ? productPublishOutcome(workflow).stepText : running ? ({IMAGES:'图片处理中',APPROVE:'资料校验中',PUBLISH:'正在提交平台'})[workflow.currentStep] || '排队中' : workflow.errorMessage || '请查看上传结果';
+  const detail = success ? productPublishOutcome(workflow).stepText : running ? ({IMAGES:'图片处理中',STYLE_IMAGES:'风格主图自动生成中',APPROVE:'资料校验中',PUBLISH:'正在提交平台'})[workflow.currentStep] || '排队中' : workflow.errorMessage || '请查看上传结果';
   el.replaceChildren();
   const heading = document.createElement('strong'); heading.textContent = title;
   const copy = document.createElement('span'); copy.textContent = `${remoteId ? '平台商品 ID：' + remoteId + ' · ' : ''}${detail}`;
@@ -5702,14 +5703,15 @@ function renderProductPublishWorkflow(workflow) {
   const status = String(workflow.status || "").toUpperCase();
   const requestedStep = String(workflow.currentStep || "IMAGES").toUpperCase();
   const steps = ["IMAGES", "APPROVE", "PUBLISH"];
-  const currentStep = steps.includes(requestedStep)
+  const currentStep = requestedStep === "STYLE_IMAGES" ? "IMAGES" : steps.includes(requestedStep)
     ? requestedStep : status === "SUCCEEDED" ? "PUBLISH" : "IMAGES";
   const currentIndex = steps.indexOf(currentStep);
   const outcome = productPublishOutcome(workflow);
   const completeText = { IMAGES: "处理完成", APPROVE: "校验通过", PUBLISH: "上传完成" };
   const waitingText = { IMAGES: "等待后台任务", APPROVE: "等待上一步", PUBLISH: "等待上一步" };
   const runningText = {
-    IMAGES: status === "PENDING" ? "等待后台处理图片" : "后台正在处理图片",
+    IMAGES: requestedStep === "STYLE_IMAGES" ? `风格主图 ${workflow.mainImageStyle?.processedImages || 0} / ${workflow.mainImageStyle?.totalImages || 0}`
+      : status === "PENDING" ? "等待后台处理图片" : "后台正在处理图片",
     APPROVE: status === "PENDING" ? "等待后台校验" : "后台正在校验审核",
     PUBLISH: status === "PENDING"
       ? "等待后台上传"
@@ -5803,7 +5805,7 @@ async function finalizeProductPublishWorkflow(workflow, organizationId) {
     productPublishIdempotencyCaptureId = "";
   } else {
     const message = productPublishWorkflowError(workflow);
-    const stageName = ({ IMAGES: "图片去水印", APPROVE: "资料校验与审核", PUBLISH: "上传店铺" })[
+    const stageName = ({ IMAGES: "图片去水印", STYLE_IMAGES: "风格主图生成", APPROVE: "资料校验与审核", PUBLISH: "上传店铺" })[
       String(workflow.currentStep || "").toUpperCase()] || "一键上传";
     productLastNotice = { captureId: workflow.captureId, type: "error", message: `${stageName}失败：${message}` };
     if (dialog?.open) {
@@ -6991,12 +6993,12 @@ function renderProductBulkCard(item, shops = [], preview = false) {
   const active = ['PREPARING','SUBMITTING','RUNNING'].includes(state);
   const tone = failed ? 'failed' : success ? 'success' : active ? 'active' : 'waiting';
   const status = {WAITING:'等待准备',PREPARING:'自动准备中',PREPARE_FAILED:'准备失败',PREPARED:'准备就绪',SUBMITTING:'正在提交',CREATE_FAILED:'提交失败',PENDING:'排队中',RUNNING:'处理中',SUCCEEDED:workflow?.executionMode === 'DRY_RUN' ? '演练完成' : '已上传 · 待上架',FAILED:'上传失败',REVIEW_REQUIRED:'需要处理'}[state] || state;
-  const stage = {IMAGES:'图片检测与处理',APPROVE:'商品资料确认',PUBLISH:'上传到待上架'}[workflow?.currentStep] || '';
-  const images = workflow?.imageProcessing;
+  const stage = {IMAGES:'图片检测与处理',STYLE_IMAGES:'生成风格主图',APPROVE:'商品资料确认',PUBLISH:'上传到待上架'}[workflow?.currentStep] || '';
+  const images = workflow?.currentStep === 'STYLE_IMAGES' ? workflow?.mainImageStyle : workflow?.imageProcessing;
   const measured = Number.isInteger(images?.totalImages) && images.totalImages > 0;
   const done = measured ? Math.min(images.totalImages, Math.max(0, Number(images.processedImages) || 0)) : 0;
   const percent = success ? 100 : measured ? Math.round(done / images.totalImages * 100) : null;
-  const progress = success ? '上传成功' : item.waitMessage || (measured ? `图片 ${done} / ${images.totalImages}` : preview ? '选择店铺后自动准备' : stage || status);
+  const progress = success ? '上传成功' : item.waitMessage || (measured ? `${workflow?.currentStep === 'STYLE_IMAGES' ? '风格主图' : '图片'} ${done} / ${images.totalImages}` : preview ? '选择店铺后自动准备' : stage || status);
   const shopId = workflow?.shopId || item.payload?.shopId || item.shopId;
   const shop = shops.find(candidate => String(candidate.id) === String(shopId));
   const shopName = shop?.name || shop?.shopName || shop?.externalShopId || shopId || '';
@@ -7009,6 +7011,8 @@ function renderProductBulkCard(item, shops = [], preview = false) {
       <div class="bulk-product-overlay"><div><span>${escapeHtml(progress)}</span>${percent !== null && !failed ? `<b>${percent}%</b>` : ''}</div><div class="bulk-product-track ${active && percent === null ? 'is-indeterminate' : ''}"><span style="width:${percent === null ? 0 : percent}%"></span></div></div>
     </div><div class="bulk-product-info"><strong title="${escapeHtml(item.title)}" translate="no">${escapeHtml(item.title)}</strong>
       ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : '<small>原价换汇 · 库存 999 · 自动匹配类目</small>'}
+      ${workflow?.mainImageStyle ? `<small>${escapeHtml(workflow.mainImageStyle.templateName)} · ${Number(workflow.mainImageStyle.processedImages) || 0}/${Number(workflow.mainImageStyle.totalImages) || 0} 张主图</small>` : ''}
+      ${workflow?.mainImageStyle?.imageUrls?.length ? `<div class="main-style-result-strip">${workflow.mainImageStyle.imageUrls.map(url => safeProductUrl(url) || url.startsWith('/api/v1/product-main-image-results/') ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img src="${escapeHtml(url)}" alt="已生成的风格主图" loading="lazy"></a>` : '').join('')}</div>` : ''}
       ${error ? `<details class="bulk-product-error"><summary>${success ? '查看状态同步提示' : '查看失败原因'}</summary><p>${escapeHtml(error)}</p></details>` : ''}
       ${retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
 }
@@ -7058,6 +7062,7 @@ function renderProductBulkProgress() {
   const button = document.querySelector('#submit-product-bulk');
   const changeable = productBulkItems.filter(ProductBulkUpload.canChangeShop);
   document.querySelector('#product-bulk-settings').disabled = productBulkBusy || (productBulkItems.length > 0 && !changeable.length);
+  globalThis.ProductMainImageStyles?.syncBulkLock(productBulkBusy || (productBulkItems.length > 0 && !changeable.length));
   const shopHint = document.querySelector('#product-bulk-shop-hint');
   if (shopHint) shopHint.textContent = productBulkShopIds().length > 1
     ? `已选择 ${productBulkShopIds().length} 家店铺，每件商品分别上传；进度与结果按店铺独立记录。`
@@ -7198,6 +7203,7 @@ async function openProductBulkUpload(historyKey, captureId) {
   productBulkItems = run?.items || saved?.items || [];
   productBulkBusy = Boolean(run);
   ProductBulkSizeChart.open(org,productBulkStorageKey,productBulkItems);
+  void globalThis.ProductMainImageStyles?.loadBulk(productBulkItems, {org, view});
   const shops = crossPlatformPublishShops();
   const select = document.querySelector('#product-bulk-shop');
   select.innerHTML = `<option value="">${shops.length ? '请选择目标店铺' : '没有可发布的授权店铺'}</option>` + shops.map(shop => `<option value="${escapeHtml(shop.id)}">${escapeHtml(shop.name || shop.shopName || shop.externalShopId)} · ${escapeHtml(shop.region || '')} · ${escapeHtml(shop.platform === 'TIKTOK_SHOP' ? 'TikTok Shop' : 'Shopee')}</option>`).join('');
@@ -7256,6 +7262,8 @@ async function submitProductBulkUpload(event) {
       for (const item of productBulkItems) {
         item.thumbnailUrl = productBulkThumbnail(item);
         item.sizeChartImageKey = ProductBulkSizeChart.key();
+        const styleId = document.querySelector('#product-bulk-main-style')?.value;
+        if (styleId) item.mainImageStyleTemplateId = styleId;
       }
     }
     const items = productBulkItems;
@@ -7317,6 +7325,7 @@ async function submitProductBulkUpload(event) {
       const targetShop = crossPlatformPublishShops().find(shop => String(shop.id) === item.shopId);
       const platform = normalizedMarketplacePlatform(targetShop?.platform || item.payload?.destinationPlatform || 'SHOPEE');
       const base = {confirmed: true, destinationPlatform: platform, shopId: item.shopId, idempotencyKey: item.idempotencyKey,
+        ...ProductBulkUpload.stylePayload(item),
         ...(platform === 'SHOPEE' && item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})};
       let payload = base;
       if (marketplaceIntegrationStatus.livePublishingEnabled) {

@@ -661,6 +661,7 @@ public class ProductCaptureService {
             providerResponse.put("dryRun", provider.dryRun());
             audit.completed(provider.dryRun() ? null : result.externalId(), writeJson(providerResponse));
         } catch (Exception exception) {
+            if (exception instanceof ProductMainImageAssets.TemplateChanged changed && !externalCreationEntered[0]) throw changed;
             // A durable media checkpoint may still be uploading/transcoding. Roll back
             // this provisional audit so the workflow can resume with its existing key.
             // The same exception after ADD_ITEM intent must never enable a create retry.

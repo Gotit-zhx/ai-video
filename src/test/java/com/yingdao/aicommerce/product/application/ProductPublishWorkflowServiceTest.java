@@ -67,6 +67,37 @@ class ProductPublishWorkflowServiceTest {
     }
 
     @Test
+    void unselectedStyleNeverReadsTemplatesAndDiscardsClientSnapshot() {
+        var templates = mock(ProductMainImageTemplateService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "mainImageTemplates", templates);
+        service.create(capture.getId(), Map.of("confirmed",true,"destinationPlatform","SHOPEE","shopId","shop-1",
+                "mainImageStyleSnapshot", Map.of("malicious","ignored")), "no-style-key-123", principal);
+        var inserted = ArgumentCaptor.forClass(ProductPublishWorkflow.class);
+        verify(workflowMapper).insert(inserted.capture());
+        assertFalse(service.request(inserted.getValue()).containsKey("mainImageStyleSnapshot"));
+        assertFalse(service.request(inserted.getValue()).containsKey("mainImageStyleTemplateId"));
+        org.mockito.Mockito.verifyNoInteractions(templates);
+    }
+
+    @Test
+    void selectedStyleStoresOnlyIdAndChecksCurrentTemplateWithoutSnapshot() {
+        var templates = mock(ProductMainImageTemplateService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "mainImageTemplates", templates);
+        String id = "12345678-1234-1234-1234-123456789012";
+        when(templates.current(id, principal)).thenReturn(Map.of("name","Current","images",List.of("slot")));
+        var body = Map.<String,Object>of("confirmed",true,"destinationPlatform","SHOPEE","shopId","shop-1","mainImageStyleTemplateId",id);
+        service.create(capture.getId(), body, "selected-style-key", principal);
+        var inserted = ArgumentCaptor.forClass(ProductPublishWorkflow.class);
+        verify(workflowMapper).insert(inserted.capture());
+        assertEquals(id, service.request(inserted.getValue()).get("mainImageStyleTemplateId"));
+        assertFalse(service.request(inserted.getValue()).containsKey("mainImageStyleSnapshot"));
+        verify(templates).current(id, principal);
+        when(workflowMapper.findByIdempotency("org-a","selected-style-key")).thenReturn(inserted.getValue());
+        service.create(capture.getId(), body, "selected-style-key", principal);
+        verify(templates, times(1)).current(id, principal);
+    }
+
+    @Test
     void automaticQuoteIsServerOwnedAndIdempotentReplayDoesNotRefetch() {
         when(shopSettings.publishingProvider()).thenReturn("OFFICIAL");
         when(shopSettings.effectiveLivePublishing()).thenReturn(true);

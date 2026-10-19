@@ -9,6 +9,7 @@ COPY app.js /usr/share/nginx/html/app.js
 COPY video-script-terminal.js video-script-terminal.css /usr/share/nginx/html/
 COPY product-bulk-upload.js product-bulk-size-chart.js /usr/share/nginx/html/
 COPY product-bulk-history.js product-bulk-history.css /usr/share/nginx/html/
+COPY product-main-image-styles.js product-main-image-styles.css /usr/share/nginx/html/
 COPY commerce-planner.js commerce-planner.css /usr/share/nginx/html/
 COPY commerce-batches.js /usr/share/nginx/html/
 COPY commerce-ad-evaluation.js /usr/share/nginx/html/

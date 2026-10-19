@@ -69,6 +69,9 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         this.listingCapabilityResolver = new TikTokShopListingCapabilityResolver(client);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.application.ProductMainImageAssets mainImageAssets;
+
     @Override public String code() { return "TIKTOK_SHOP_OFFICIAL_202309"; }
     @Override public boolean dryRun() { return false; }
     @Override public boolean supports(String destinationPlatform) {
@@ -87,6 +90,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         var listingCapability = listingCapabilityResolver.resolve(connection);
         List<ProductCaptureSku> skus = skus(capture);
         List<ProductCaptureImage> images = images(capture);
+        var styleGallery = mainImageAssets == null ? null : mainImageAssets.gallery(capture, request);
         rejectDryRunImages(images);
         int stock = requiredStock(request);
         String categoryId = requiredText(request, "categoryId",
@@ -118,7 +122,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 capture, images, connection, categoryRules);
 
         TikTokProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection, text(request.get("idempotencyKey")));
-        UploadedImages uploaded = uploadImages(connection, images, skus);
+        UploadedImages uploaded = uploadImages(connection, images, skus, styleGallery);
         if (uploaded.mainImages().isEmpty()) {
             throw conflict("TikTok Shop 发布至少需要一张处理完成的商品图");
         }
@@ -157,6 +161,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
 
         // The listing check is retryable validation. Persist the irreversible boundary only after
         // it passes and immediately before Create Product can reach TikTok Shop.
+        if (styleGallery != null) mainImageAssets.verifyCurrentGallery(capture, request, styleGallery);
         externalCreateBoundary.enter();
         Map<String, Object> response = client.apiPost(productBasePath, connection, Map.of(), body);
         String productId = nestedText(response, "data", "product_id");
@@ -469,10 +474,17 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
     private UploadedImages uploadImages(MarketplaceAccess.Connection connection,
                                          List<ProductCaptureImage> images,
                                          List<ProductCaptureSku> skus) {
-        List<ProductCaptureImage> galleryCandidates = images.stream()
+        return uploadImages(connection, images, skus, null);
+    }
+
+    private UploadedImages uploadImages(MarketplaceAccess.Connection connection,
+                                         List<ProductCaptureImage> images,
+                                         List<ProductCaptureSku> skus,
+                                         List<ProductCaptureImage> styleGallery) {
+        List<ProductCaptureImage> galleryCandidates = styleGallery == null ? images.stream()
                 .filter(image -> !"VARIANT".equalsIgnoreCase(image.getRoleName())
                         && !"DETAIL".equalsIgnoreCase(image.getRoleName()))
-                .toList();
+                .toList() : styleGallery;
         if (galleryCandidates.isEmpty()) galleryCandidates = images.stream()
                 .filter(image -> !"DETAIL".equalsIgnoreCase(image.getRoleName())).toList();
         List<Map<String, Object>> mainImages = new ArrayList<>();

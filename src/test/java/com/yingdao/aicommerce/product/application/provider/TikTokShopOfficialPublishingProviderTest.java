@@ -45,6 +45,11 @@ class TikTokShopOfficialPublishingProviderTest {
     }
 
     @Test
+    void selectedStyleReplacesOnlyTheMainGalleryAndIsRecheckedBeforeCreate() {
+        verifyConfirmedDraftFlow("LOCAL", null, true);
+    }
+
+    @Test
     void verifiedCrossBorderReplicationKeepsTheSameDraftCreateAndReadbackFlow() {
         for (Object methods : List.of("LOCAL_REPLICATION", List.of("LOCAL_REPLICATION"))) {
             verifyConfirmedDraftFlow("CROSS_BORDER", methods);
@@ -52,6 +57,10 @@ class TikTokShopOfficialPublishingProviderTest {
     }
 
     private void verifyConfirmedDraftFlow(String sellerType, Object listingMethods) {
+        verifyConfirmedDraftFlow(sellerType, listingMethods, false);
+    }
+
+    private void verifyConfirmedDraftFlow(String sellerType, Object listingMethods, boolean styled) {
         ShopAuthorizationService authorizationService = mock(ShopAuthorizationService.class);
         TikTokShopOfficialClient client = mock(TikTokShopOfficialClient.class);
         ProductCaptureSkuMapper skuMapper = mock(ProductCaptureSkuMapper.class);
@@ -70,6 +79,13 @@ class TikTokShopOfficialPublishingProviderTest {
                 "/api/v1/product-watermark/assets/red-processed");
         ProductCaptureImage blue = image(capture.getId(), "https://source.example/blue.jpg", "VARIANT", 1,
                 "https://processed.example/blue.jpg");
+        var styles = mock(com.yingdao.aicommerce.product.application.ProductMainImageAssets.class);
+        var styleImage = image(capture.getId(), "https://style.example/original.png", "MAIN", 0,
+                "https://main-image-style.invalid/style-job");
+        if (styled) {
+            org.springframework.test.util.ReflectionTestUtils.setField(provider,"mainImageAssets",styles);
+            when(styles.gallery(eq(capture),anyMap())).thenReturn(List.of(styleImage));
+        }
         ProductPublishingProvider.ExternalCreateBoundary createBoundary =
                 mock(ProductPublishingProvider.ExternalCreateBoundary.class);
 
@@ -122,14 +138,16 @@ class TikTokShopOfficialPublishingProviderTest {
                                                 "attribute-red-uri"))),
                         "request_id", "readback-request"));
 
+        var request = new LinkedHashMap<>(publishRequest());
+        if (styled) request.put("mainImageStyleTemplateId","12345678-1234-1234-1234-123456789012");
         ProductPublishingProvider.PublishResult result = provider.publish(
-                capture, "TIKTOK_SHOP", "shop-local", publishRequest(), createBoundary);
+                capture, "TIKTOK_SHOP", "shop-local", request, createBoundary);
 
         @SuppressWarnings("rawtypes")
         ArgumentCaptor<Map> listingPayload = ArgumentCaptor.forClass(Map.class);
         @SuppressWarnings("rawtypes")
         ArgumentCaptor<Map> createPayload = ArgumentCaptor.forClass(Map.class);
-        InOrder ordered = inOrder(client, createBoundary);
+        InOrder ordered = inOrder(client, styles, createBoundary);
         if ("CROSS_BORDER".equals(sellerType)) {
             ordered.verify(client).apiGet("/product/202507/global_listing_rules", "access-token", "shop-cipher", Map.of());
             assertThat(result.providerResponse()).containsEntry("listingMethod", "LOCAL_REPLICATION")
@@ -144,6 +162,7 @@ class TikTokShopOfficialPublishingProviderTest {
         }
         ordered.verify(client).apiPost(eq("/product/202309/products/listing_check"), eq(connection),
                 eq(Map.of()), listingPayload.capture());
+        if (styled) ordered.verify(styles).verifyCurrentGallery(eq(capture),anyMap(),eq(List.of(styleImage)));
         ordered.verify(createBoundary).enter();
         ordered.verify(client).apiPost(eq("/product/202309/products"), eq(connection),
                 eq(Map.of()), createPayload.capture());
@@ -160,7 +179,8 @@ class TikTokShopOfficialPublishingProviderTest {
                 .containsEntry("save_mode", "AS_DRAFT")
                 .containsEntry("category_version", "v2")
                 .containsEntry("idempotency_key", "publish-key");
-        verify(downloader, org.mockito.Mockito.times(2)).downloadProductImage(eq(red.getProcessedUrl()), eq(red));
+        verify(downloader, org.mockito.Mockito.times(styled ? 1 : 2)).downloadProductImage(eq(red.getProcessedUrl()), eq(red));
+        if (styled) verify(downloader).downloadProductImage(eq(styleImage.getProcessedUrl()),eq(styleImage));
         verify(downloader).downloadProductImage(eq(blue.getProcessedUrl()), eq(blue));
         verify(downloader, org.mockito.Mockito.never()).download(anyString());
         assertThat(result.externalId()).isEqualTo("product-1");

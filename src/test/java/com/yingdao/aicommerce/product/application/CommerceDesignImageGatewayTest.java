@@ -130,4 +130,22 @@ class CommerceDesignImageGatewayTest {
             ()->adapter.generateProductDetailGrid("invalid","detail_grid_2",model,Collections.nCopies(count,refs.getFirst())));
         server.verify();
     }
+    @Test void mainImagePosterPreservesOrderedProductAndPosterReferencesAtHighQuality(){
+        var builder=RestClient.builder();var server=MockRestServiceServer.bindTo(builder).build();
+        var adapter=new CommerceDesignImageGateway(builder,"http://runtime","internal-test");
+        var refs=List.of(new CommerceDesignImageGateway.Reference("image/png","cHJvZHVjdA=="),new CommerceDesignImageGateway.Reference("image/jpeg","cG9zdGVy"));
+        server.expect(requestTo("http://runtime/v1/images/generate"))
+            .andExpect(jsonPath("$.size").value("1024x1536"))
+            .andExpect(jsonPath("$.quality").value("high"))
+            .andExpect(jsonPath("$.inputFidelity").value("high"))
+            .andExpect(jsonPath("$.progressRequestId").value("main_poster_1"))
+            .andExpect(jsonPath("$.references.length()").value(2))
+            .andExpect(jsonPath("$.references[0].dataBase64").value(refs.getFirst().dataBase64()))
+            .andExpect(jsonPath("$.references[1].dataBase64").value(refs.get(1).dataBase64()))
+            .andRespond(withSuccess("{\"result\":{\"url\":\"https://result.example/poster.png\"}}",MediaType.APPLICATION_JSON));
+        assertEquals("https://result.example/poster.png",adapter.generateMainImagePoster("Poster","main_poster_1",model,refs,"1024x1536").result().url());
+        for(int count:List.of(0,1,3))assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,
+            ()->adapter.generateMainImagePoster("Poster","main_poster_2",model,Collections.nCopies(count,refs.getFirst()),"1024x1024"));
+        server.verify();
+    }
 }

@@ -20,7 +20,7 @@
       .map(item=>{
         const source = items.find(capture=>capture.captureId === item.captureId && capture.sizeChartImageKey)
           || captures.find(capture=>capture.captureId === item.captureId);
-        return {...item,...(source.sizeChartImageKey ? {sizeChartImageKey:source.sizeChartImageKey} : {}),
+        return {...item,...stylePayload(source),...(source.sizeChartImageKey ? {sizeChartImageKey:source.sizeChartImageKey} : {}),
           ...(source.thumbnailUrl ? {thumbnailUrl:source.thumbnailUrl} : {})};
       });
     return retained.length === items.length && !added.length ? items : [...retained,...added];
@@ -34,6 +34,20 @@
     if (!items.some(item => canChangeShop(item) && item.shopId !== shopId)) return items;
     return items.map((item, index) => canChangeShop(item) && item.shopId !== shopId
       ? {captureId: item.captureId, title: item.title, shopId, status: 'WAITING', idempotencyKey: `${key}-${index}`,
+        ...stylePayload(item),
+        ...(item.thumbnailUrl ? {thumbnailUrl:item.thumbnailUrl} : {}),
+        ...(item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})}
+      : item);
+  }
+  function stylePayload(item) {
+    const id = item?.mainImageStyleTemplateId;
+    return id ? {mainImageStyleTemplateId: id} : {};
+  }
+  function changeStyle(items, templateId, key) {
+    if (!key) throw Error('缺少任务编号');
+    return items.map((item, index) => canChangeShop(item) && (item.mainImageStyleTemplateId || '') !== (templateId || '')
+      ? {captureId: item.captureId, title: item.title, shopId: item.shopId, thumbnailUrl: item.thumbnailUrl,
+        status: 'WAITING', idempotencyKey: `${key}-${index}`, ...stylePayload({mainImageStyleTemplateId: templateId}),
         ...(item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})}
       : item);
   }
@@ -217,7 +231,7 @@
     await Promise.all(Array.from({ length: Math.min(count, items.length) }, () => worker()));
     if (fatalError) throw fatalError;
   }
-  const api = { plan, canChangeShop, changeShop, changeShops, submit, withDeadline, retryRead, isRetryableReadError };
+  const api = { plan, canChangeShop, changeShop, changeShops, stylePayload, changeStyle, submit, withDeadline, retryRead, isRetryableReadError };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ProductBulkUpload = api;
 })(typeof window === 'undefined' ? globalThis : window);

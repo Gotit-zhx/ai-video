@@ -26,7 +26,17 @@ public class MarketplaceImageDownloader {
     private com.yingdao.aicommerce.product.application.CommerceImageArchive commerceArchive;
     @org.springframework.beans.factory.annotation.Autowired
     private org.springframework.jdbc.core.JdbcTemplate commerceDb;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.application.ProductMainImageAssets mainImageAssets;
     public ImageBinary downloadProductImage(String url,com.yingdao.aicommerce.product.domain.ProductCaptureImage image){
+        String stylePrefix = com.yingdao.aicommerce.product.application.ProductMainImageStylePolicy.PREFIX;
+        if (url != null && url.startsWith(stylePrefix)) {
+            if (image == null || !url.equals(image.getProcessedUrl()) || !(url + "?original").equals(image.getOriginalUrl()))
+                throw new MarketplaceApiException("风格主图归属不一致");
+            var ref = mainImageAssets.read(image.getOrganizationId(), image.getCaptureId(), url.substring(stylePrefix.length()));
+            return new ImageBinary(java.util.Base64.getDecoder().decode(ref.dataBase64()), ref.mimeType(),
+                    ref.mimeType().equals("image/jpeg") ? ".jpg" : ref.mimeType().equals("image/webp") ? ".webp" : ".png");
+        }
         String commercePrefix=com.yingdao.aicommerce.product.application.CommercePublicationDrafts.PREFIX;
         if(url.startsWith(commercePrefix)){
             if(image==null||!url.equals(image.getProcessedUrl()))throw new MarketplaceApiException("发布图片不属于已固定的裂变商品");

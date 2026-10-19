@@ -7,6 +7,7 @@ import {
   GARMENT_TOPOLOGY_VALIDATION_PROMPT
 } from '../src/garment-topology-validation.js';
 import { requestChatCompletion } from '../src/chat-completion-transport.js';
+import { POSTER_STYLE, POSTER_REVIEW } from '../src/product-main-image-style.js';
 
 const source = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
 function section(start, end) {
@@ -16,10 +17,16 @@ function section(start, end) {
   return source.slice(a, b);
 }
 function harness(ok = true) {
-  const calls = [], timeouts = [], agents = [];
+  const calls = [], timeouts = [], agents = [], posterCalls = [];
   const context = vm.createContext({
     GARMENT_TOPOLOGY_VALIDATION_MAX_TOKENS,
     GARMENT_TOPOLOGY_VALIDATION_PROMPT,
+    POSTER_STYLE,
+    POSTER_REVIEW,
+    runPosterAnalysis: async (...args) => {
+      posterCalls.push(args);
+      return { poster: true };
+    },
     console: { info() {}, warn() {} },
     UndiciAgent: class { constructor(options) { agents.push(options); } },
     extractJsonObject: JSON.parse,
@@ -37,12 +44,25 @@ function harness(ok = true) {
     section('function imageApiUsage(', 'function imageEndpoint(') +
     section('async function requestAnalysisChat(', 'function modelSignature(') +
     section('async function runProductFunctionAnalysis(', 'async function handleProductFunctionAnalysis('), context);
-  return { context, calls, timeouts, agents };
+  return { context, calls, timeouts, agents, posterCalls };
 }
 const input = type => ({
   model: { modelId: 'gpt-5.4', baseUrl: 'https://unit.invalid/v1', apiKey: 'fake-test-only' },
   context: { analysisType: type }, image: { mimeType: 'image/jpeg', data: 'AA==' },
   candidateImage: { mimeType: 'image/png', data: 'AA==' }
+});
+
+test('poster extraction and review dispatch to their dedicated analyzer', async () => {
+  for (const type of [POSTER_STYLE, POSTER_REVIEW]) {
+    const h = harness();
+    const body = input(type);
+    assert.deepEqual(await h.context.runProductFunctionAnalysis(body), { poster: true });
+    assert.equal(h.posterCalls.length, 1);
+    assert.equal(h.posterCalls[0][0], body);
+    assert.equal(typeof h.posterCalls[0][1], 'function');
+    assert.equal(h.posterCalls[0][2], JSON.parse);
+    assert.equal(h.calls.length, 0);
+  }
 });
 test('topology is bounded to 180 seconds and retains its structure output budget', async () => {
   const h = harness();

@@ -95,6 +95,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         this.videoUploader = videoUploader;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.application.ProductMainImageAssets mainImageAssets;
+
     @Override public String code() { return "SHOPEE_OFFICIAL_V2"; }
     @Override public boolean dryRun() { return false; }
     @Override public boolean supports(String destinationPlatform) {
@@ -112,6 +115,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         List<ProductCaptureSku> allSkus = skus(capture);
         List<ProductCaptureSku> skus = client.isSandboxEnvironment() ? allSkus.stream().limit(50).toList() : allSkus;
         List<ProductCaptureImage> images = images(capture);
+        var styleGallery = mainImageAssets == null ? null : mainImageAssets.gallery(capture, request);
         boolean variants = hasVariants(skus);
         rejectDryRunImages(images);
         int publishStock = requiredStock(request);
@@ -143,10 +147,16 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         // A still-transcoding video should not cause gallery images to be staged on every poll.
         ShopeeProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection);
         Map<String, String> uploadedByUrl = uploadImages(connection, images);
-        List<String> galleryImageIds = images.stream()
+        if (styleGallery != null) {
+            var allUploaded = new LinkedHashMap<>(uploadedByUrl);
+            allUploaded.putAll(uploadImages(connection, styleGallery));
+            uploadedByUrl = allUploaded;
+        }
+        final Map<String, String> galleryUploads = uploadedByUrl;
+        List<String> galleryImageIds = (styleGallery == null ? images : styleGallery).stream()
                 .sorted(Comparator.comparingInt(ProductCaptureImage::getSortOrder))
                 .map(this::publishUrl)
-                .map(uploadedByUrl::get)
+                .map(galleryUploads::get)
                 .filter(value -> value != null && !value.isBlank())
                 .distinct().limit(9).toList();
         if (galleryImageIds.isEmpty()) {
@@ -183,6 +193,7 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
 
         // Everything above is local validation or media staging. Once ADD_ITEM can start,
         // a timeout/crash has an unknowable remote result and must never be retried blindly.
+        if (styleGallery != null) mainImageAssets.verifyCurrentGallery(capture, request, styleGallery);
         externalCreateBoundary.enter();
         Map<String, Object> created = client.shopPost(ADD_ITEM, connection, addItem);
         String itemId = nestedText(created, "response", "item_id");

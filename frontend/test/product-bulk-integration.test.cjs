@@ -158,6 +158,7 @@ test('multi-shop UI submits each product to both stores with separate requests a
   select.multiple=true;
   Object.defineProperty(select,'selectedOptions',{get:()=>select.options.filter(option=>option.selected)});
   h.state.sizeChartImageKey='batch-chart';
+  h.node('#product-bulk-main-style').value='12345678-1234-1234-1234-123456789012';
   h.state.uniqueStoreWorkflows=true;
   await h.c.openProductBulkUpload();
   assert.equal(h.c.productBulkShopIds().length,0);
@@ -170,6 +171,7 @@ test('multi-shop UI submits each product to both stores with separate requests a
     assert.deepEqual(h.posts.filter(call=>call.id===id).map(call=>call.body.shopId).sort(),['shop','shop-two']);
   }
   assert.ok(h.posts.every(call=>call.body.sizeChartImageKey==='batch-chart'));
+  assert.ok(h.posts.every(call=>call.body.mainImageStyleTemplateId==='12345678-1234-1234-1234-123456789012'));
   assert.equal(h.patches.length,2,'Each capture is normalized once, not once per store');
   assert.ok(h.workflowReads.length>=2,'Second store waits for first store workflow completion');
   h.c.stopProductBulkPolling();
@@ -250,6 +252,24 @@ test('shop-only submission prepares each product independently and preserves its
   assert.equal(h.node('#submit-product-bulk').textContent, '全部商品已提交');
   h.c.productBulkItems[0].payload.skuStocks.unique = 10;
   assert.deepEqual(plain(h.c.productBulkItems[1].payload.skuStocks), {});
+});
+
+test('optional style choice is sent automatically for each product with no snapshot or extra confirmation', async () => {
+  const h = harness();
+  h.node('#product-bulk-main-style').value = '12345678-1234-1234-1234-123456789012';
+  await h.submit();
+  assert.equal(h.posts.length, 2);
+  for (const {body} of h.posts) {
+    assert.equal(body.mainImageStyleTemplateId, '12345678-1234-1234-1234-123456789012');
+    assert.equal(Object.hasOwn(body, 'mainImageStyleSnapshot'), false);
+    assert.equal(body.confirmed, true);
+  }
+});
+
+test('default upload never adds a style-generation field', async () => {
+  const h = harness();
+  await h.submit();
+  for (const {body} of h.posts) assert.equal(Object.hasOwn(body, 'mainImageStyleTemplateId'), false);
 });
 
 test('one unmatched category does not block other products and a retry skips the accepted product', async () => {

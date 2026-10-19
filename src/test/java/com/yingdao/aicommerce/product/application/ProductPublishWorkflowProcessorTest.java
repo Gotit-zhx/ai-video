@@ -90,6 +90,50 @@ class ProductPublishWorkflowProcessorTest {
     }
 
     @Test
+    void selectedStyleWaitsForAutomaticGenerationBeforeApproval() {
+        capture.imagesReady();
+        workflow = runningWorkflow("APPROVE", capture.getVersion());
+        when(workflowMapper.selectById(workflow.getId())).thenReturn(workflow);
+        when(workflowService.request(workflow)).thenReturn(Map.of("mainImageStyleTemplateId","12345678-1234-1234-1234-123456789012"));
+        var styles = mock(ProductMainImageStyleService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(processor, "mainImageStyles", styles);
+        when(styles.ensureReady(workflow,capture)).thenReturn(false);
+        processor.process(workflow.getId(),"worker-1");
+        verify(workflowMapper).waitForProgress(eq(workflow.getId()),eq("worker-1"),eq("STYLE_IMAGES"),any(),any(),eq(capture.getVersion()),any(),any());
+        verify(captureService,never()).approve(any(),any());
+        verify(captureService,never()).publish(any(),any(),any(),any(),any());
+    }
+
+    @Test
+    void selectedStyleAutomaticallyContinuesAfterGenerationWithoutAnotherConfirmation() {
+        capture.imagesReady();
+        workflow = runningWorkflow("STYLE_IMAGES", capture.getVersion());
+        when(workflowMapper.selectById(workflow.getId())).thenReturn(workflow);
+        when(workflowService.request(workflow)).thenReturn(Map.of("mainImageStyleTemplateId","12345678-1234-1234-1234-123456789012"));
+        var styles = mock(ProductMainImageStyleService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(processor, "mainImageStyles", styles);
+        when(styles.ensureReady(workflow,capture)).thenReturn(true);
+        when(captureService.approve(eq(capture.getId()),any())).thenAnswer(invocation -> {capture.approve("user-1");return detail(capture);});
+        processor.process(workflow.getId(),"worker-1");
+        verify(captureService).approve(eq(capture.getId()),any());
+        verify(workflowMapper).approvalSucceeded(eq(workflow.getId()),eq("worker-1"),eq(capture.getVersion()),any(),any());
+    }
+
+    @Test
+    void noStyleChoiceLeavesTheOriginalApprovalPathUntouched() {
+        capture.imagesReady();
+        workflow = runningWorkflow("APPROVE", capture.getVersion());
+        when(workflowMapper.selectById(workflow.getId())).thenReturn(workflow);
+        when(workflowService.request(workflow)).thenReturn(Map.of());
+        var styles = mock(ProductMainImageStyleService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(processor, "mainImageStyles", styles);
+        when(captureService.approve(eq(capture.getId()),any())).thenAnswer(invocation -> {capture.approve("user-1");return detail(capture);});
+        processor.process(workflow.getId(),"worker-1");
+        org.mockito.Mockito.verifyNoInteractions(styles);
+        verify(captureService).approve(eq(capture.getId()),any());
+    }
+
+    @Test
     void advancesCapturedProductThroughImageStageUsingStableDownstreamKey() {
         ProductImageProcessingJob job = new ProductImageProcessingJob(
                 "org-a", capture.getId(), "user-1", "job-key", "DRY_RUN", 1, "{}");

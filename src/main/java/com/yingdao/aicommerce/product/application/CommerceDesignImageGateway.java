@@ -99,6 +99,16 @@ public class CommerceDesignImageGateway implements AutoCloseable {
         if(references==null||references.size()!=2)throw bad("四格详情图须使用商品主图和已组合的详情风格图两张参考图");
         return generateArtwork(prompt,attemptId,model,references,"medium",false,true,true);
     }
+    /** Poster generation keeps the target product and style reference in an explicit order. */
+    public Response generateMainImagePoster(String prompt, String attemptId, ModelConfigService.RuntimeModelConnection model,
+                                             List<Reference> references, String size) {
+        if (model == null || attemptId == null || !attemptId.matches("[A-Za-z0-9_-]{8,128}")
+                || references == null || references.size() != 2
+                || !Set.of("1024x1024", "1024x1536", "1536x1024").contains(size)) throw bad("风格主图必须绑定商品图、海报图和有效任务");
+        return submit(Map.of("model", model.imageRequestModel(), "prompt", prompt, "references", references,
+                "size", size, "inputFidelity", "high", "quality", "high", "progressRequestId", attemptId));
+    }
+
     /** Read the durable runtime outcome without submitting or retrying image generation. */
     public Operation operation(String attemptId){
         if(attemptId==null||!attemptId.matches("[A-Za-z0-9_-]{8,128}"))throw bad("缺少有效的图片任务编号");

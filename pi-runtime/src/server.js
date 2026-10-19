@@ -34,6 +34,7 @@ import { requestChatCompletion } from "./chat-completion-transport.js";
 import { createWatchModelTransport } from "./watch-model-transport.js";
 import { auditVideoFrame } from "./video-frame-layout-audit.js";
 import { runCommerceDrapeStyleAnalysis } from "./commerce-drape-style.js";
+import { runPosterAnalysis, POSTER_STYLE, POSTER_REVIEW } from "./product-main-image-style.js";
 import { runCommerceModelDetailAnalysis } from "./commerce-model-detail.js";
 import { runCommerceModelDetailStyleAnalysis } from "./commerce-model-detail-style.js";
 
@@ -3108,6 +3109,9 @@ async function runProductFunctionAnalysis(body) {
     throw new Error("没有可供分析的商品图片");
   }
   const analysisType = String(body?.context?.analysisType || "PRODUCT_FUNCTION_V1").trim();
+  if ([POSTER_STYLE, POSTER_REVIEW].includes(analysisType)) {
+    return runPosterAnalysis(body, requestAnalysisChat, extractJsonObject);
+  }
   if (analysisType === "COMMERCE_DRAPE_STYLE_V1" || analysisType === "COMMERCE_DRAPE_STYLE_V2"
       || analysisType === "COMMERCE_DRAPE_STYLE_V4") {
     return runCommerceDrapeStyleAnalysis(body, requestAnalysisChat, extractJsonObject);
