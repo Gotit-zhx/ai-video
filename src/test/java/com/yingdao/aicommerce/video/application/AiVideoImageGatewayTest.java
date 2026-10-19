@@ -16,6 +16,36 @@ import static org.mockito.Mockito.mock;
 
 class AiVideoImageGatewayTest {
     @TempDir Path directory;
+    @Test void nativeFourKImageCanBeCollectedWithoutAnotherGeneration() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        String image = "A".repeat(29_000_000);
+        AtomicInteger posts = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/images/generate", exchange -> {
+            exchange.getRequestBody().readAllBytes(); posts.incrementAndGet();
+            exchange.sendResponseHeaders(202, -1); exchange.close();
+        });
+        server.createContext("/v1/images/operations", exchange -> {
+            byte[] body = mapper.writeValueAsBytes(Map.of("status", "COMPLETED", "active", false, "updatedAt", 2,
+                    "response", Map.of("artifact", Map.of("dataBase64", image, "mimeType", "image/png",
+                            "modelId", "gemini-nano-banana-2.1"))));
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.createContext("/v1/images/progress", exchange -> {exchange.sendResponseHeaders(404, -1); exchange.close();});
+        server.start();
+        try {
+            RestClient client = RestClient.create("http://127.0.0.1:" + server.getAddress().getPort());
+            var progress = new ImageRuntimeProgress(mock(AiVideoTaskItemMapper.class), client);
+            var gateway = new AiVideoImageGateway(client, mapper);
+            Path file = directory.resolve("native-4k.json");
+            var result = gateway.generate(file, "hash", 0, Map.of(), progress, "item", "MODEL_IMAGE");
+            assertEquals(image, ((Map<?, ?>) result.get("artifact")).get("dataBase64"));
+            assertEquals(result, gateway.generate(file, "hash", 1, Map.of(), progress, "item", "MODEL_IMAGE"));
+            assertEquals(1, posts.get());
+        } finally { server.stop(0); }
+    }
     @Test void explicitRejectionPreservesProviderReasonAndNeverAutomaticallyResubmits() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         AtomicInteger posts = new AtomicInteger();

@@ -39,3 +39,39 @@ Regression checks passed: 155 Java tests and 198 runtime tests, including native
 text-to-image and 1/2/4-reference requests, 4K parameter mapping, saved-response
 reuse without another POST, invalid output, legacy download credentials and
 the dedicated print/watermark exceptions.
+
+## Production Rollout
+
+Activated on October 19, 2026, with the organization default switched at
+09:51:17 UTC (17:51:17 Asia/Shanghai). Release directory:
+`/opt/heyi/releases/banana-default-20261019-86ec17d`.
+
+Both paid smoke requests used the exact new runtime image in an isolated
+container, two real references, and one provider call with zero retries:
+
+| Request | Elapsed | Returned PNG |
+| --- | --- | --- |
+| Style poster | 72.4 seconds | 1024x1024, 1,626,535 bytes |
+| Video reference, requested 9:16 / 4K | 83.8 seconds | 3072x5504, 21,637,030 bytes |
+
+Both PNGs were fully decoded locally. These timings are measured samples,
+not a latency guarantee. No AI acceptance review or redraw was performed.
+Reports and original outputs are retained under
+`/opt/heyi/diagnostics/banana-platform-ready-20261019/` and
+`/opt/heyi/diagnostics/banana-video-ready-20261019/`.
+
+A further HTTP regression covers a 29-million-character inline image result
+through the production video gateway constructor, including recovery without
+a second generation POST. The seven focused Java test classes were rerun:
+125 tests passed with zero failures, errors or skips.
+
+Activation waited for template analysis and all guarded queues to become idle.
+The isolated smoke container was removed before deployment. Runtime/backend
+hashes, service health, unchanged frontend and unrelated container identities
+were verified after activation. The public website returned HTTP 200.
+
+The guarded database transaction changed only IMAGE default flags and their
+timestamps. Banana is the sole default; GPT Image 2 and Grok remain active.
+Keys, endpoints, DRIVER models and VIDEO models were verified unchanged.
+The release's `default-switch.json` records the committed change and private
+backup location. No additional model-selection UI was introduced.
