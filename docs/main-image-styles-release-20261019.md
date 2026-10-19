@@ -44,6 +44,13 @@ match, then verifies every unrelated JAR entry is preserved byte-for-byte.
   opt-in module migration test skipped because it requires a dedicated DB.
 - Frontend/runtime focused regression: 129 passed, including multi-shop,
   size-chart preservation, optional selection and default omission.
+- Browser checks against the production-derived frontend using
+  `frontend/test/main-image-style-preview.mjs`: ordered template detail,
+  optional/default bulk selection, automatic completion without a second
+  confirmation, exact request ID with no style snapshot, and preserved
+  multi-shop/size-chart controls. Desktop and 390px mobile screenshots were
+  inspected; mobile page width was 390px and the dialog had no horizontal
+  overflow.
 - No real image-model generation or marketplace product creation is performed
   by release verification. Actual generated-image fidelity requires a real
   product/reference run and is not established by mocked tests.
@@ -71,3 +78,21 @@ Release directory: `/opt/heyi/releases/main-image-style-20261019`.
 Deployment receipts are private files there, not source-controlled secrets.
 Rollback restores the prior images and keeps the additive schema/data;
 automatic destructive database rollback is deliberately avoided.
+
+## Deployment Result
+
+Deployed on October 19, 2026 from source commit
+`bc20df2454054f953c5d17d17b2dd97943d762ab`.
+
+- Application: `ai-commerce-platform:main-image-styles-20261019`
+- Runtime: `heyi-pi-runtime:main-image-styles-20261019`
+- Frontend: `ai-commerce-frontend:main-image-styles-20261019`
+- V116 applied successfully after the disposable-DB rehearsal.
+- HTTPS asset hashes and all three service health checks passed.
+- Existing environment, mounts, network and port bindings were preserved.
+  Six unrelated containers retained their IDs; the HR connector remained active.
+- Unauthenticated template/result requests return HTTP 401.
+- Duplicate build files and the disposable database/account were removed.
+  Rollback images and the private compressed MySQL backup remain on the server.
+- The browser's production session was logged out; authenticated production
+  template creation and paid generation were not exercised.
