@@ -384,7 +384,12 @@ def device_config(user, body):
                                'jobId': metadata.get('jobId', ''), 'jobName': metadata.get('jobName', ''),
                                'name': metadata.get('name', '')})
             return {'accountKey': key, 'receipts': values, 'hasMore': len(rows) > 200,
-                    'nextCursor': rows[min(len(rows), 200)-1]['receipt_seq'] if rows else cursor}
+                    'nextCursor': rows[min(len(rows), 200)-1]['receipt_seq'] if rows else cursor,
+                    'ruleAliases': [{'from': r['alias'], 'to': r['canonical'], 'jobId': r['job_id']}
+                        for r in db.execute('''SELECT a.alias,a.canonical,r.job_id
+                            FROM hr_account_record_aliases a JOIN hr_passive_rules r
+                            ON r.id=a.canonical AND r.owner=a.owner
+                            WHERE a.owner=? AND a.kind='rule' AND r.account=?''', (owner, key))]}
         expire_commands(db)
         if body.get('commandId'):
             record = uid(body['commandId'])

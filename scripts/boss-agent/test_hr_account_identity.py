@@ -95,6 +95,17 @@ class IdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '两份历史'):
             feature.device_config(USER, {'accountKey': MAC, 'identityKey': 'c'*64, 'identityOnly': True})
 
+    def test_receipt_sync_carries_only_this_accounts_verified_rule_aliases(self):
+        with pool.database() as db:
+            for owner, account, record in [('heyi', MAC, 'rule1'), ('heyi', WIN, 'rule2'),
+                                            ('other-owner', MAC, 'rule3')]:
+                db.execute('INSERT INTO hr_passive_rules VALUES(?,?,?,?,?,1,1,1,?)',
+                           (record, owner, account, 'job1', '{}', feature.now()))
+                db.execute('INSERT INTO hr_account_record_aliases VALUES(?,?,?,?)',
+                           (owner, 'rule', 'legacy-'+record, record))
+        page = feature.device_config(USER, {'accountKey': MAC, 'receiptSync': True})
+        self.assertEqual(page['ruleAliases'], [{'from': 'legacy-rule1', 'to': 'rule1', 'jobId': 'job1'}])
+
 
 if __name__ == '__main__':
     unittest.main()

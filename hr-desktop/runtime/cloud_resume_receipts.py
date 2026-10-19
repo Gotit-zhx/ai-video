@@ -16,6 +16,15 @@ def restore(db, request):
     bound = flow.get_state(db, 'cloud-receipt-account', '')
     if bound and bound != account:
         raise ValueError('云端简历收取记录不属于当前账号')
+    aliases = request.get('ruleAliases', [])
+    if not isinstance(aliases, list) or len(aliases) > 1000:
+        raise ValueError('职位关联记录无效')
+    for alias in aliases:
+        if (not isinstance(alias, dict) or not all(isinstance(alias.get(k), str)
+                and re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', alias[k]) for k in ('from', 'to'))
+                or alias['from'] == alias['to'] or not isinstance(alias.get('jobId'), str)
+                or not 1 <= len(alias['jobId']) <= 180):
+            raise ValueError('职位关联记录无效')
     clean = []
     for row in receipts:
         if not isinstance(row, dict) or not all(
@@ -30,6 +39,8 @@ def restore(db, request):
             raise ValueError('云端简历来源无效')
         clean.append(row)
     boss_chat_receipts.schema(db)
+    for alias in aliases:
+        rebind_rule(db, alias)
     for row in clean:
         friend, mid, rule = row['friendId'], row['messageId'], row['ruleId']
         metadata = {k: row.get(k, '') for k in ('origin', 'jobId', 'jobName', 'name')}
@@ -61,6 +72,38 @@ def restore(db, request):
     result = flow.status(db, previous.get('phase', 'watching'), restoredReceipts=len(clean))
     result['data'] = {**previous, **result['data']}
     return flow.activity_status(db, result)
+
+
+def rebind_rule(db, alias):
+    """Keep Windows' in-flight conversation ledger after a verified merge."""
+    old, new, job = alias['from'], alias['to'], alias['jobId']
+    for row in db.execute('SELECT friend,body FROM people WHERE rule=?', (old,)).fetchall():
+        body = json.loads(row['body'])
+        if body.get('jobId') != job:
+            continue
+        if body.get('ruleId') == old:
+            body['ruleId'] = new
+        db.execute('UPDATE people SET rule=?,body=? WHERE friend=? AND rule=?',
+                   (new, json.dumps(body, ensure_ascii=False), row['friend'], old))
+        db.execute('UPDATE recovery_windows SET rule=? WHERE friend=? AND rule=?', (new, row['friend'], old))
+    db.execute("UPDATE chat_resume_receipts SET rule=? WHERE rule=? AND json_extract(body,'$.jobId')=?",
+               (new, old, job))
+    task = db.execute("SELECT * FROM catchup WHERE kind='job' AND target=?", (old,)).fetchone()
+    if task:
+        existing = db.execute("SELECT 1 FROM catchup WHERE kind='job' AND target=?", (new,)).fetchone()
+        if not existing:
+            db.execute("UPDATE catchup SET target=? WHERE kind='job' AND target=?", (new, old))
+        else:
+            # Keep both cursors' unread range and the later cooldown. This is
+            # read-only recovery, never a fresh authorization to send again.
+            db.execute("""UPDATE catchup SET page=MIN(page,?),since=MIN(since,?),
+                done=MIN(done,?),retry_at=MAX(retry_at,?),fingerprint=''
+                WHERE kind='job' AND target=?""",
+                       (task['page'], task['since'], task['done'], task['retry_at'], new))
+            db.execute("DELETE FROM catchup WHERE kind='job' AND target=?", (old,))
+    for prefix in ('history-started:', 'history-complete:', 'discovery-complete:'):
+        db.execute('INSERT OR IGNORE INTO state(key,value) SELECT ?,value FROM state WHERE key=?',
+                   (prefix+new, prefix+old))
 
 
 def stored(db, friend, mid):

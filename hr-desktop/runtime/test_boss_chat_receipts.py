@@ -63,6 +63,24 @@ class ReceiptTest(unittest.TestCase):
             receipts.schema(db)
             self.assertEqual(db.execute('SELECT count(*) FROM chat_resume_receipts').fetchone()[0], 0)
 
+    def test_rule_rebind_preserves_inflight_writes_and_retry_deadlines(self):
+        with flow.database(self.root) as db:
+            db.execute("INSERT INTO people VALUES('2','windows-rule',?,'request_uncertain',99,'','')",
+                       (json.dumps({'jobId': 'job1', 'ruleId': 'windows-rule', 'replyAt': 80}),))
+            db.execute("INSERT INTO people VALUES('3','windows-rule',?,'ready',99,'','')",
+                       (json.dumps({'jobId': 'another-job'}),))
+            db.execute("INSERT INTO recovery_windows VALUES('2','windows-rule',1,1,1,'history')")
+            db.execute("INSERT INTO catchup(kind,target,page,since,started,retry_at) VALUES('job','windows-rule',4,1,2,9999)")
+        self.restore(receipts=[], ruleAliases=[{'from': 'windows-rule', 'to': 'mac-rule', 'jobId': 'job1'}])
+        with flow.database(self.root) as db:
+            row = db.execute("SELECT * FROM people WHERE friend='2'").fetchone()
+            self.assertEqual(row['rule'], 'mac-rule');self.assertEqual(row['state'], 'request_uncertain')
+            self.assertEqual(json.loads(row['body'])['replyAt'], 80)
+            self.assertEqual(db.execute("SELECT rule FROM people WHERE friend='3'").fetchone()[0], 'windows-rule')
+            task = db.execute("SELECT * FROM catchup WHERE target='mac-rule'").fetchone()
+            self.assertEqual((task['page'], task['retry_at']), (4, 9999))
+        self.c.cli_json.assert_not_called()
+
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)

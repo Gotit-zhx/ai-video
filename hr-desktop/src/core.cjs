@@ -537,7 +537,8 @@ class Recruiter extends EventEmitter {
           ||!Number.isSafeInteger(page.nextCursor)||page.nextCursor<this.receiptCursor
           ||typeof page.hasMore!=='boolean'||(page.hasMore&&page.nextCursor===this.receiptCursor))
           throw Error('云端简历收取记录尚未同步完整');
-        const restored=await call('passive-restore',{accountKey,receipts:page.receipts,nextCursor:page.nextCursor});
+        const restored=await call('passive-restore',{accountKey,receipts:page.receipts,
+          ruleAliases:page.ruleAliases||[],nextCursor:page.nextCursor});
         if(!ready())return;
         if(!restored.ok)throw Error('历史简历收取记录尚未恢复');
         this.receiptCursor=page.nextCursor;
