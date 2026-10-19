@@ -1,0 +1,29 @@
+[Unit]
+Description=Private Ai boss installer downloads
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=heyi-boss
+Group=heyi-boss
+WorkingDirectory=/opt/heyi/boss-agent/bin
+ExecStart=/opt/heyi/boss-agent/venv/bin/python /opt/heyi/boss-agent/bin/desktop_installers.py
+LoadCredential=oss:/opt/heyi/secrets/dayan-oss.properties
+Environment=APP_INSTALLER_OSS_CREDENTIALS_FILE=%d/oss
+Environment=APP_INSTALLER_OSS_BUCKET=test-hoyee
+Environment=APP_INSTALLER_MANIFEST=/opt/heyi/desktop-installers/current.json
+Environment=APP_INSTALLER_BIND=172.18.0.1
+Environment=APP_INSTALLER_PORT=8767
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
