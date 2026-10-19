@@ -64,11 +64,12 @@
     const value=await data(await connectionFetch(base+'/health',timeout({cache:'no-store',credentials:'omit'},interactive?30000:4000)));
     if(value.app!=='heyi-recruiter'||value.protocol!==1)throw Error('请安装新版赫逸招聘助手');
     const parts=typeof value.version==='string'&&/^\d+\.\d+\.\d+$/.test(value.version)?value.version.split('.').map(Number):[];
-    const minimum=[0,1,25],different=parts.findIndex((part,index)=>part!==minimum[index]);
+    const isWindows=/Win/i.test(navigator.userAgentData?.platform||navigator.platform||navigator.userAgent||'');
+    const minimum=isWindows?[0,1,26]:[0,1,25],different=parts.findIndex((part,index)=>part!==minimum[index]);
     const recent=parts.length===3&&(different===-1||parts[different]>minimum[different]);
     if(!recent){
       versionError=Object.assign(Error('当前运行的是旧版助手'+(parts.length?' '+value.version:'')
-        +'，请完全退出旧助手，再从“下载助手”覆盖安装 0.1.25 或更新版本，以同步跨设备收取记录并避免重复下载简历。无需退出 BOSS 登录。'),{code:'ASSISTANT_UPDATE_REQUIRED'});
+        +'，请完全退出旧助手，再从“下载助手”覆盖安装 '+minimum.join('.')+' 或更新版本，以使用启动及跨设备同步修复。无需退出 BOSS 登录。'),{code:'ASSISTANT_UPDATE_REQUIRED'});
       throw versionError;
     }
     versionError=null;
