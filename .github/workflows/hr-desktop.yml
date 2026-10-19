@@ -32,7 +32,11 @@ on:
         required: false
         default: false
       privateRelease:
-        description: "已通过验包的私有草稿 tag（仅传输模式）"
+        description: "已有私有草稿 tag；用于预先校验打包保存权限或传输已验收包"
+        type: string
+        required: false
+      nativeSourceCommit:
+        description: "可选：经源码树一致性验证的原生安装包业务提交"
         type: string
         required: false
   # Code uploads are free of build side effects. An explicit build tag also
@@ -171,6 +175,35 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Verify exact package source and private destination before building
+        shell: pwsh
+        env:
+          SOURCE_COMMIT: ${{ inputs.nativeSourceCommit }}
+          PRIVATE_RELEASE: ${{ inputs.privateRelease }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $commit = $env:GITHUB_SHA
+          if ($env:SOURCE_COMMIT) {
+            if ($env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Exact source commit required' }
+            git fetch --no-tags --depth=1 origin $env:SOURCE_COMMIT
+            if ($LASTEXITCODE -ne 0) { throw 'Source commit unavailable' }
+            git diff --exit-code $env:SOURCE_COMMIT HEAD -- hr-desktop scripts/boss-agent
+            if ($LASTEXITCODE -ne 0) { throw 'Business sources differ from requested artifact commit' }
+            $commit = $env:SOURCE_COMMIT
+          }
+          "HEYI_NATIVE_ARTIFACT_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if ($env:PRIVATE_RELEASE) {
+            if ($env:PRIVATE_RELEASE -notmatch '^heyi-workbench-private-\d+-\d+$') { throw 'Unexpected private draft tag' }
+            $draft = gh release view $env:PRIVATE_RELEASE --json isDraft,targetCommitish,assets | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or !$draft.isDraft -or $draft.targetCommitish -ne $commit -or $draft.assets.Count -ne 0) { throw 'Empty private draft for exact source required' }
+            $probe = Join-Path $env:RUNNER_TEMP "upload-check-$env:GITHUB_RUN_ID.txt"
+            [IO.File]::WriteAllText($probe, 'Private package upload permission check')
+            gh release upload $env:PRIVATE_RELEASE $probe
+            if ($LASTEXITCODE -ne 0) { throw 'Private upload permission unavailable; stop before building' }
+            gh release delete-asset $env:PRIVATE_RELEASE (Split-Path $probe -Leaf) --yes
+            if ($LASTEXITCODE -ne 0) { throw 'Private permission probe cleanup failed' }
+          }
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -232,7 +265,7 @@ jobs:
         shell: pwsh
         run: |
           $output = Join-Path $env:RUNNER_TEMP 'heyi-private-candidate-export'
-          python scripts/ci/export_workbench.py --root "$env:HEYI_NATIVE_PROBE_ROOT" --output "$output" --event "$env:GITHUB_EVENT_PATH" --commit "$env:GITHUB_SHA"
+          python scripts/ci/export_workbench.py --root "$env:HEYI_NATIVE_PROBE_ROOT" --output "$output" --event "$env:GITHUB_EVENT_PATH" --commit "$env:HEYI_NATIVE_ARTIFACT_COMMIT"
           if ($LASTEXITCODE -ne 0) { throw 'Verified private candidate export failed' }
           "HEYI_WORKBENCH_EXPORT=$output" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Retain private candidate temporarily
@@ -241,6 +274,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          PRIVATE_RELEASE: ${{ inputs.privateRelease }}
         run: |
           # A private draft avoids Actions artifact quota; never publish it.
           $private = gh repo view --json isPrivate --jq '.isPrivate'
@@ -248,10 +282,14 @@ jobs:
           $tag = "heyi-workbench-private-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           $notes = Join-Path $env:RUNNER_TEMP 'heyi-private-candidate-notes.txt'
           [IO.File]::WriteAllText($notes, "Temporary private candidate for local validation. Packaged offline checks passed. Live recruiting workflows are not yet accepted; separate original-runtime probes may remain failed. Delete this draft after downloading and verifying the candidate.")
-          gh release create $tag --draft --target "$env:GITHUB_SHA" --title 'Ai boss Windows 候选验证包' --notes-file "$notes"
-          if ($LASTEXITCODE -ne 0) { throw 'Private draft creation failed' }
-          $draft = gh release view $tag --json isDraft --jq '.isDraft'
-          if ($LASTEXITCODE -ne 0 -or $draft -ne 'true') { throw 'Candidate must remain a draft' }
+          if ($env:PRIVATE_RELEASE) {
+            $tag = $env:PRIVATE_RELEASE
+          } else {
+            gh release create $tag --draft --target "$env:HEYI_NATIVE_ARTIFACT_COMMIT" --title 'Ai boss Windows 候选验证包' --notes-file "$notes"
+            if ($LASTEXITCODE -ne 0) { throw 'Private draft creation failed' }
+          }
+          $draft = gh release view $tag --json isDraft,targetCommitish | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$draft.isDraft -or $draft.targetCommitish -ne $env:HEYI_NATIVE_ARTIFACT_COMMIT) { throw 'Candidate must remain a draft for the verified source' }
           $assets = @(Get-ChildItem "$env:HEYI_WORKBENCH_EXPORT" -File | Where-Object {
             $_.Name -eq 'verification.json' -or
             $_.Name -match '^Ai-boss-Windows-candidate-[a-f0-9]{12}\.zip$' -or

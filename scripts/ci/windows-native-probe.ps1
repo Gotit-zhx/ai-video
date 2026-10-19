@@ -67,8 +67,9 @@ try {
         & python (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\build_windows.py') `
             --source-dir (Split-Path $app) --output-dir $workbench
         if ($LASTEXITCODE -ne 0) { throw 'Windows workbench build did not complete' }
+        $artifactCommit = if ($env:HEYI_NATIVE_ARTIFACT_COMMIT) { $env:HEYI_NATIVE_ARTIFACT_COMMIT } else { $env:GITHUB_SHA }
         & python (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\build_windows_installer.py') `
-            --package $workbench --output (Join-Path $root 'setup') --commit $env:GITHUB_SHA
+            --package $workbench --output (Join-Path $root 'setup') --commit $artifactCommit
         if ($LASTEXITCODE -ne 0) { throw 'Windows installer build did not complete' }
     }
     $executables = @(Get-ChildItem $root -Filter '*.exe' -Recurse -File)
