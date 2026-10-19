@@ -51,3 +51,16 @@ Candidate tags use `main-image-progress-20261019`; rollback image tags append
 `-before`. Private receipts and previous JAR stay on the host. Existing
 templates, image storage, finished analyses and failed-task records are not
 rewritten by deployment.
+
+## Deployment Result
+
+Deployed on October 19, 2026 from source commit
+`dac291c7d95bb27366772566944af65a75f538f0`.
+
+- Application, runtime and frontend use the `main-image-progress-20261019`
+  image tags. HTTPS asset hashes, the application JAR hash, runtime source
+  hashes and all three health checks passed.
+- Existing Compose configuration and unrelated running containers were
+  preserved. No migration or task-state rewrite was performed.
+- The user's seven previously failed images remain available for explicit
+  retry through the new SDK path without reuploading.
