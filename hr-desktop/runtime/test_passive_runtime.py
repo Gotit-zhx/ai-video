@@ -17,6 +17,7 @@ class WorkflowTest(unittest.TestCase):
         self.c.held_code.return_value=''
         self.c.DISCONNECTED=self.root/'disconnected'
         self.c.RESUME_AUTO_PAUSE=self.root/'pause'
+        self.c.RESUME_DIR=self.root/'downloads'
         self.c.passive_delay=lambda **kwargs:0
         self.c.managed_job_statuses.return_value={'statuses':{'job1':'开放中'}}
         self.c.conversation_scope=lambda friend,job:contextlib.nullcontext()

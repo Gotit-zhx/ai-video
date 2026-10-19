@@ -365,6 +365,52 @@ def discover(c, db, rules, rule=None, page=1, capture=None):
     return status(db, 'watching')
 
 
+def reusable_resume(c, db, friend, mid):
+    """Reuse bytes from an exact local receipt, never its source or cloud ACK."""
+    if not re.fullmatch(r'[1-9]\d{0,19}', str(friend or '')) or not re.fullmatch(r'[1-9]\d{0,19}', str(mid or '')):
+        return None
+    try:
+        directory = Path(c.RESUME_DIR)
+        account = next(row[2] for row in db.execute('PRAGMA database_list') if row[1] == 'main')
+        if not account or directory.is_symlink():
+            return None
+        directory = directory.resolve(strict=True)
+        # The connector and both ledgers must belong to the same account.
+        directory.relative_to(Path(account).resolve().parent)
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return None
+    tables = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('people','chat_resume_receipts')")}
+    for table in ('people', 'chat_resume_receipts'):
+        if table not in tables:
+            continue
+        for row in db.execute(
+                f"SELECT file,body FROM {table} WHERE friend=? AND mid=? AND state IN ('export','stored')",
+                (str(friend), str(mid))):
+            try:
+                file = Path(row['file'])
+                if not file.is_absolute() or file.is_symlink():
+                    continue
+                file = file.resolve(strict=True)
+                file.relative_to(directory)
+                if not file.is_file():
+                    continue
+                with file.open('rb') as stream:
+                    header = stream.read(8)
+                if not header.startswith((b'%PDF-', b'PK\x03\x04', b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1',
+                                          b'\x89PNG\r\n\x1a\n', b'\xff\xd8\xff')):
+                    continue
+            except (OSError, ValueError, TypeError, RuntimeError):
+                continue
+            try:
+                body = json.loads(row['body'])
+            except (TypeError, ValueError):
+                body = {}
+            original = body.get('originalFileName', '') if isinstance(body, dict) else ''
+            return {'file': str(file), 'originalFileName': original if isinstance(original, str) else ''}
+    return None
+
+
 def receive(c, db, friend=None, reconnect=False):
     put_state(db, 'receivedAt', time.time()); db.commit()
     c.RESUME_POLL_LIMIT = 1
@@ -387,13 +433,16 @@ def receive(c, db, friend=None, reconnect=False):
                       if r['friend'] in received), None)
     if candidate:
         mid = received[candidate['friend']]['message_id']
-        file = str(c.download_resume(candidate['friend'], mid))
+        cached = reusable_resume(c, db, candidate['friend'], mid)
+        file = cached['file'] if cached else str(c.download_resume(candidate['friend'], mid))
         detail = json.loads(candidate['body'])
         with c.resume_db() as tracked:
             original = tracked.execute('SELECT original_name FROM resume_files WHERE friend_id=? AND message_id=?',
                                        (candidate['friend'], mid)).fetchone()
         if original:
             detail['originalFileName'] = original['original_name']
+        elif cached and cached['originalFileName']:
+            detail['originalFileName'] = cached['originalFileName']
         db.execute("UPDATE people SET state='export',body=?,file=?,mid=?,updated=? WHERE friend=?",
                    (json.dumps(detail, ensure_ascii=False), file, mid, int(time.time()), candidate['friend']))
         event(db, 'RESUME_RECEIVED', detail)

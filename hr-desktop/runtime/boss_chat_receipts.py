@@ -275,6 +275,13 @@ def accept_offer(c, db, row):
 
 def download(c, db, row):
     """The receipt ledger authorizes this exact incoming attachment, not a send."""
+    cached = flow.reusable_resume(c, db, row['friend'], row['mid'])
+    if cached:
+        # Keep the caller's existing pacing and this receipt's own job/source.
+        # Local bytes are ready for export, not proof of this row's cloud ACK.
+        db.execute("UPDATE chat_resume_receipts SET file=?,state='export',error='' WHERE friend=? AND mid=?",
+                   (cached['file'], row['friend'], row['mid']))
+        return {'ok': True, 'data': {'reused': True}}
     c.RESUME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     metadata = json.loads(row['body'])
     allowed = {'.pdf', '.docx', '.doc', '.png', '.jpg', '.jpeg'}

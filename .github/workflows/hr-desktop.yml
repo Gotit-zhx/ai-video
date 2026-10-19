@@ -69,6 +69,7 @@ jobs:
       - run: npm test
       - run: python -m unittest discover -s runtime -p test_passive_runtime.py
       - run: python -m unittest discover -s runtime -p test_boss_chat_receipts.py
+      - run: python -m unittest discover -s runtime -p test_resume_reuse.py
       - run: python -m unittest discover -s runtime -p test_recommendation_budget.py
       - run: python -m unittest discover -s runtime -p test_desktop_budget.py
       - run: python -m unittest discover -s runtime -p test_active_sourcing.py
@@ -194,6 +195,7 @@ jobs:
           python -m unittest discover -s hr-desktop/runtime -p test_desktop_budget.py
           python -m unittest discover -s hr-desktop/runtime -p test_passive_runtime.py
           python -m unittest discover -s hr-desktop/runtime -p test_boss_chat_receipts.py
+          python -m unittest discover -s hr-desktop/runtime -p test_resume_reuse.py
           python -m unittest discover -s hr-desktop/runtime -p test_recommendation_budget.py
           python -m unittest discover -s hr-desktop/runtime -p test_managed_jobs.py
       - name: Check private candidate export boundaries
