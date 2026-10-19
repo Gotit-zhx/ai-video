@@ -292,7 +292,7 @@ def repack(source, target, addon):
             else:
                 package = json.loads(content)
                 package["main"] = "./heyi/bootstrap.cjs"
-                package["heyiModification"] = {"version": "0.1.25", "experimental": True,
+                package["heyiModification"] = {"version": json.loads((HERE / "package.json").read_text())["version"], "experimental": True,
                                                "nativeAuthUnchanged": True}
                 replacements[name] = json.dumps(package, ensure_ascii=False, indent=2).encode()
     for name, content in replacements.items():

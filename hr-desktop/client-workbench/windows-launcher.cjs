@@ -9,17 +9,19 @@ const {verifyPackage, profileEnvironment} = require('./windows-package.cjs');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
 const {waitForProcess} = require('./process-outcome.cjs');
+const {launchStatus, waitForEntry, waitForNativeWindow} = require('./windows-launch-status.cjs');
 
-async function launchWorkbenchProcess(executable, args, {env = process.env, cwd, onSpawn} = {}) {
+async function launchWorkbenchProcess(executable, args, {env = process.env, cwd, onSpawn, waitUntilReady} = {}) {
+  if (typeof waitUntilReady !== 'function') throw Error('Native window readiness observer required');
   return launchInspecting(executable, args, {
-    env, cwd, onSpawn, timeout: 45000,
+    env, cwd, onSpawn, timeout: 60000,
     // Node 16 defines --debug-port as an alias of --inspect-port. Both set
     // the future address without enabling a debugger before cached startup.
     // Use the pinned runtime's supported alias and bind only an OS-assigned
     // loopback port; no connection to a pre-existing debugger is attempted.
     inspectPortArgument: true, latePortOption: 'debug-port',
     activate: async child => {
-      await new Promise(resolve => setTimeout(resolve, 12000));
+      await waitUntilReady(child);
       if (child.exitCode !== null || child.signalCode !== null) {
         throw Error('Original client exited before addon binding');
       }
@@ -38,8 +40,12 @@ async function launchWorkbenchProcess(executable, args, {env = process.env, cwd,
 
 async function run(packageRoot, selfTest = false) {
   if (process.platform !== 'win32') throw Error('Windows launcher required');
-  let connection, statusFile, verified, testOutput, reservedPort, defaultPortConnections = 0,
+  let connection, reportStatus, nativePid, verified, testOutput, reservedPort, defaultPortConnections = 0,
     stage = 'verify-package';
+  const progress = (next, extra = {}) => {
+    stage = next;
+    reportStatus?.({ok: next === 'ready', stage, nativePid, ...extra});
+  };
   try {
     const profileRoot = selfTest ? process.env.HEYI_WORKBENCH_TEST_DATA :
       path.join(process.env.LOCALAPPDATA || '', 'HeyiBossWorkbench');
@@ -64,16 +70,17 @@ async function run(packageRoot, selfTest = false) {
       catch (error) {if (error.code !== 'ENOENT') throw error;}
       testOutput = process.env.HEYI_WORKBENCH_TEST_OUTPUT;
     }
-    stage = 'verify-package';
+    await fs.mkdir(profileRoot, {recursive: true});
+    reportStatus = launchStatus(profileRoot, process.env.HEYI_LAUNCH_ID, 'heyi-launcher-status.json');
+    progress('verify-package');
     verified = await verifyPackage(packageRoot);
-    stage = 'profile-isolation';
+    progress('profile-isolation');
     const plan = profileEnvironment(profileRoot);
     // The packaged worker independently requires this disposable-profile
     // marker before it will start its loopback-only test relay.
     if (selfTest) plan.env.HEYI_TEST_USER_DATA = plan.profile;
     for (const directory of [profileRoot, plan.profile, plan.env.APPDATA,
       plan.env.LOCALAPPDATA, plan.env.USERPROFILE, plan.env.TEMP]) await fs.mkdir(directory, {recursive: true});
-    statusFile = path.join(profileRoot, 'heyi-launcher-status.json');
     if (selfTest) {
       // The actual packaged entry must coexist with another local service.
       // This listener is created only inside the verified disposable test.
@@ -84,22 +91,24 @@ async function run(packageRoot, selfTest = false) {
         reservedPort.listen(9229, '127.0.0.1', resolve);
       });
     }
-    stage = 'original-startup';
+    progress('original-startup');
     connection = await launchWorkbenchProcess(verified.executable,
       [`--user-data-dir=${plan.profile}`], {
         env: plan.env, cwd: path.dirname(verified.executable),
+        onSpawn: child => {nativePid = child.pid;progress('original-startup');},
+        waitUntilReady: child => waitForNativeWindow(profileRoot, process.env.HEYI_LAUNCH_ID, child),
       });
     if (new URL(connection.client.socket.url).port === '9229') {
       throw Error('Original runtime did not use an independent inspector port');
     }
-    stage = 'original-readiness';
+    progress('original-readiness');
     const deadline = Date.now() + 15000;
     while (!await evaluateRunning(connection, 'typeof globalThis.$socket?.handleEvent === "function"')) {
       if (Date.now() >= deadline) throw Error('Original client did not become ready');
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    stage = 'install-workbench';
-    connection.client.timeout = 45000;
+    progress('install-workbench');
+    connection.client.timeout = 90000;
     let offlineURL;
     if (selfTest) {
       offlineURL = await evaluateRunning(connection, `(()=>{
@@ -111,15 +120,33 @@ async function run(packageRoot, selfTest = false) {
     }
     const installed = await bindNativeModule(connection, {modulePath: verified.addon,
       pinnedOriginalVerified: true, builderDescriptor: verified.requestBuilder,
-      config: {profileRoot, assistantRoot: plan.assistantRoot, offline: selfTest, offlineURL}});
+      config: {profileRoot, assistantRoot: plan.assistantRoot, offline: selfTest, offlineURL,
+        launchId: process.env.HEYI_LAUNCH_ID, entryExecutable: path.join(verified.root, 'Ai boss.exe')}});
     if (installed?.ok !== true) throw Error('Workbench installation incomplete');
     if (selfTest) {
+      // The same real entry's gate must release before UI assertions run.
+      progress('ready');
+      await waitForEntry(profileRoot, process.env.HEYI_LAUNCH_ID);
+      if (process.env.HEYI_WORKBENCH_INSTALLATION_PROBE === '1') {
+        // Only the verified disposable installation probe may hold this entry
+        // while exercising real concurrent clicks and updater rejection.
+        const barrier = path.join(profileRoot, 'installer-checks-complete');
+        const end = Date.now() + 90000;
+        while (true) {
+          try {await fs.access(barrier);break;}
+          catch (error) {
+            if (error.code !== 'ENOENT' || Date.now() > end) throw Error('Installation probe did not finish');
+          }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
       stage = 'packaged-workbench-check';
       const checked = await connection.client.command('Runtime.evaluate', {returnByValue: true, awaitPromise: true,
         expression: `process.mainModule.require(${JSON.stringify(verified.addon)}).offlineCheck()`});
       if (checked.exceptionDetails || checked.result?.value?.ok !== true) throw Error('Packaged check failed');
       const report = checked.result.value;
       report.independentInspector = true;
+      report.installerGuardBarrierUsed = process.env.HEYI_WORKBENCH_INSTALLATION_PROBE === '1';
       report.startupOutput = connection.startupOutput;
       stage = 'original-shutdown';
       const exitModule = path.join(path.dirname(verified.addon), 'original-sdk-exit.cjs');
@@ -141,12 +168,12 @@ async function run(packageRoot, selfTest = false) {
       await fs.writeFile(testOutput, JSON.stringify(report, null, 2), {flag: 'wx'});
       return report.ok ? 0 : 1;
     }
-    stage = 'detach-inspector';
+    progress('detach-inspector');
     await evaluateRunning(connection, `setImmediate(() => process.mainModule.require('node:inspector').close()); true`);
     connection.client.close();
-    await fs.writeFile(statusFile, JSON.stringify({ok: true, experimental: true,
-      stage: 'ready', originalResourcesModified: false,
-      startupOutput: connection.startupOutput}), {mode: 0o600});
+    progress('ready', {experimental: true, originalResourcesModified: false,
+      startupOutput: connection.startupOutput});
+    await waitForEntry(profileRoot, process.env.HEYI_LAUNCH_ID);
     // Stay with this exact child. Never attach to another process or replay
     // addon installation if observation or the native process fails.
     const [code] = connection.child.exitCode === null ?
@@ -163,8 +190,7 @@ async function run(packageRoot, selfTest = false) {
         if (state?.diagnostic) diagnostic = {binding: diagnostic, workbench: state.diagnostic};
       } catch {}
     }
-    if (statusFile) await fs.writeFile(statusFile,
-      JSON.stringify({ok: false, experimental: true, stage, diagnostic}), {mode: 0o600}).catch(() => {});
+    try {reportStatus?.({ok: false, experimental: true, stage, diagnostic, nativePid});} catch {}
     if (selfTest && testOutput) {
       await fs.writeFile(testOutput, JSON.stringify({ok: false, stage, diagnostic,
         candidateMessagesSent: 0, actualBossNetworkUsed: false}), {flag: 'wx'}).catch(() => {});

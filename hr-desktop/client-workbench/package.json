@@ -1,6 +1,6 @@
 {
   "name": "heyi-boss-client-workbench",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "private": true,
   "dependencies": {
     "undici": "5.29.0",

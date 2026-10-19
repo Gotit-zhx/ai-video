@@ -138,6 +138,7 @@ try {
         HEYI_WORKBENCH_TEST_DATA = Join-Path $Root 'installed-profile'
         HEYI_WORKBENCH_TEST_PORT = '0'
         HEYI_WORKBENCH_TEST_OUTPUT = $output
+        HEYI_WORKBENCH_INSTALLATION_PROBE = '1'
         NODE_OPTIONS = $null
         NODE_PATH = $null
     }
@@ -153,16 +154,39 @@ try {
         } catch [Threading.WaitHandleCannotBeOpenedException] { Start-Sleep -Milliseconds 100 }
     }
     if (!$mutexFound) { throw 'Actual installed entry did not hold its running guard' }
+    # Multiple user clicks must wake this entry, not start more native clients.
+    $duplicates = @(1..3 | ForEach-Object {
+        Start-Process -FilePath $entry -WorkingDirectory $installed -PassThru
+    })
+    foreach ($duplicate in $duplicates) {
+        if (!$duplicate.WaitForExit(10000) -or $duplicate.ExitCode -ne 0) {
+            throw 'A repeated launch did not activate the existing entry'
+        }
+    }
+    if ($test.HasExited) { throw 'Repeated entry clicks interrupted the original application' }
+    $report.repeatedEntryActivated = $true
     Invoke-Setup $setup $arguments $false | Out-Null
     if ($test.HasExited) { throw 'Application did not stay live during update rejection' }
     Invoke-Setup $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') $false | Out-Null
     if ($test.HasExited -or !(Test-Path $entry)) { throw 'Uninstaller interrupted the live application' }
     $report.runningUpdateRejected = $true
     $report.runningUninstallRejected = $true
+    $startupStatus = Join-Path $Root 'installed-profile/heyi-launcher-status.json'
+    $deadline = (Get-Date).AddSeconds(30)
+    while (!(Test-Path $startupStatus) -and !$test.HasExited -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (!(Test-Path $startupStatus)) { throw 'Installed entry did not report its startup stage' }
+    [IO.File]::WriteAllText((Join-Path $Root 'installed-profile/installer-checks-complete'), 'complete')
     if (!$test.WaitForExit(120000) -or $test.ExitCode -ne 0) { throw 'Installed application check failed' }
     $smoke = Get-Content $output -Raw | ConvertFrom-Json
     if ($smoke.ok -ne $true -or $smoke.entryControllerExitCode -ne 0 -or
-        $smoke.shutdown.platformSessionSaved -ne $true -or $smoke.shutdown.realAccountUsed -ne $false) {
+        $smoke.shutdown.platformSessionSaved -ne $true -or $smoke.shutdown.realAccountUsed -ne $false -or
+        $smoke.entryStartup.handoffCompleted -ne $true -or
+        $smoke.entryStartup.nativeWindowReadinessObserved -ne $true -or
+        $smoke.installerGuardBarrierUsed -ne $true -or
+        $smoke.hiddenWindowRestored -ne $true -or $smoke.minimizedWindowRestored -ne $true -or
+        $smoke.nativeShowAdopted -ne $true) {
         throw 'Installed application did not complete and save its isolated session'
     }
     $report.installedEntryPassed = $true

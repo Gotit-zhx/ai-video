@@ -18,13 +18,22 @@ test('the product launcher starts without an inspector and later uses its own lo
     await fs.rm(root, {recursive: true, force: true});
   });
   const fixture = path.join(root, 'fixture.cjs');
+  const ready = path.join(root, 'ready');
   await fs.writeFile(fixture, `
     globalThis.startedWithoutInspector=!require('node:inspector').url();
     globalThis.fixtureStartupCalls=1;
+    require('node:fs').writeFileSync(process.argv[2],'ready');
     setInterval(()=>{},1000);
   `);
-  connection = await launchWorkbenchProcess(process.execPath, [fixture],
-    {env: {...process.env}, cwd: root});
+  connection = await launchWorkbenchProcess(process.execPath, [fixture, ready],
+    {env: {...process.env}, cwd: root, waitUntilReady: async () => {
+      const deadline = Date.now() + 5000;
+      while (true) {
+        try {await fs.stat(ready);return;}
+        catch (error) {if (error.code !== 'ENOENT' || Date.now() > deadline) throw error;}
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    }});
   const endpoint = new URL(connection.client.socket.url);
   assert.equal(endpoint.hostname, '127.0.0.1');
   assert.notEqual(endpoint.port, '9229');

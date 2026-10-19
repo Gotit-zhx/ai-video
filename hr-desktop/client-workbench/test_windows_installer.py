@@ -62,12 +62,14 @@ class InstallerPayloadTests(unittest.TestCase):
 
 
 class RunningGuardTests(unittest.TestCase):
-    def api(self, updating=None, last_error=2):
+    def api(self, updating=None, last_error=2, existing=False):
         api = MagicMock()
         api.CreateMutexW.return_value = 123
         api.OpenMutexW.return_value = updating
+        api.CreateEventW.return_value = 789
         factory = patch("ctypes.WinDLL", return_value=api, create=True)
-        error = patch("ctypes.get_last_error", return_value=last_error, create=True)
+        error = patch("ctypes.get_last_error",
+                      side_effect=[183 if existing else 0, last_error], create=True)
         factory.start()
         error.start()
         self.addCleanup(factory.stop)
@@ -80,7 +82,18 @@ class RunningGuardTests(unittest.TestCase):
             with RunningGuard():
                 api.CloseHandle.assert_not_called()
                 raise RuntimeError("runtime failure")
-        api.CloseHandle.assert_called_once_with(123)
+        self.assertEqual([call.args[0] for call in api.CloseHandle.call_args_list], [789, 123])
+
+    def test_second_entry_signals_existing_process_instead_of_starting_another(self):
+        api = self.api(existing=True)
+        with RunningGuard() as guard:
+            self.assertTrue(guard.already_running)
+            guard.activate()
+            api.SetEvent.assert_called_once_with(789)
+            api.WaitForSingleObject.return_value = 0
+            self.assertTrue(guard.activation_requested())
+            api.WaitForSingleObject.return_value = 258
+            self.assertFalse(guard.activation_requested())
 
     def test_update_or_unreadable_guard_prevents_startup_and_releases_handle(self):
         api = self.api(updating=456)

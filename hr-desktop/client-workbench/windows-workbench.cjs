@@ -13,8 +13,8 @@ async function install(bindings, config = {}) {
   if (active) throw Error('Windows workbench is already installed');
   if (installing) throw Error('Windows workbench installation is already running');
   installing = true;
-  let adapter, host, network, exitGuard, chatAction, resumeAction, incomingActivity, stage = 'profile', profile;
-  const listeners = [], attached = new WeakSet();
+  let adapter, host, network, exitGuard, windowOwner, chatAction, resumeAction, incomingActivity, stage = 'profile', profile;
+  const listeners = [];
   const listen = (target, event, listener) => {
     target.on(event, listener);listeners.push({target, event, listener});
   };
@@ -40,11 +40,10 @@ async function install(bindings, config = {}) {
     }
     stage = 'web-types';
     require('./compat.cjs').installWebTypes();
-    stage = 'direct-network';
-    network = require('./native-network.cjs').instance({offline: Boolean(config.offline)});
-    await network.configure(session.defaultSession);
-    network.attachNative(bindings.network);
     if (config.offline) {
+      network = require('./native-network.cjs').instance({offline: true});
+      await network.configure(session.defaultSession);
+      network.attachNative(bindings.network);
       stage = 'native-chat-fixture';
       // Run before installing window listeners so the disposable fixture
       // cannot be mistaken for a newly created real main window.
@@ -55,67 +54,58 @@ async function install(bindings, config = {}) {
       incomingActivity = await require('./native-activity-smoke.cjs').run();
     }
     stage = 'native-window';
+    require('./brand.cjs').setWindowsRelaunch(config.entryExecutable);
     const integrated = require('./integrated-shell.cjs').instance();
-    const windows = () => BrowserWindow.getAllWindows().filter(win =>
-      !win.isDestroyed() && ['login', 'main'].includes(win.name));
+    windowOwner = require('./windows-window-owner.cjs').ownWindows({
+      app, BrowserWindow, webContents, integrated});
+    await windowOwner.ready();
+    const windows = windowOwner.windows;
     const mainWindow = () => {
       const matches = windows().filter(win => win.name === 'main');
       return matches.length === 1 ? matches[0] : null;
     };
-    const attach = win => {
-      if (win.isDestroyed() || attached.has(win) || !['login', 'main'].includes(win.name)) return;
-      attached.add(win);
-      integrated.attachWindow(win, win.name);
-      // Existing guests were created before this late-bound addon.
-      for (const guest of webContents.getAllWebContents()) {
-        if (!guest.isDestroyed() && guest.getType() === 'webview' && guest.hostWebContents === win.webContents) {
-          integrated.enablePaste(guest);
-        }
-      }
-      listen(win, 'close', () => {
-        if (integrated.window !== win) return;
-        // Preserve our views before the native owner is destroyed. Do not
-        // open another native window: its original login handler owns show().
-        for (const view of [integrated.platform, integrated.toolbar, integrated.sidebar]) {
-          if (view && win.getBrowserViews().includes(view)) win.removeBrowserView(view);
-        }
-        integrated.window = null;
-        const next = windows().find(other => other !== win);
-        if (next) integrated.selectWindow(next);
-      });
-    };
-    const existing = windows().sort((left, right) => Number(right.isVisible()) - Number(left.isVisible()) ||
-      Number(right.name === 'login') - Number(left.name === 'login'));
-    if (!existing.length || new Set(existing.map(win => win.name)).size !== existing.length) {
-      throw Error('Unique original login/main windows required');
+    stage = 'direct-network';
+    if (!network) {
+      network = require('./native-network.cjs').instance();
+      await network.configure(session.defaultSession);
+      network.attachNative(bindings.network);
     }
-    for (const win of existing) attach(win);
-    listen(app, 'browser-window-created', (_event, win) => {
-      setImmediate(() => attach(win));
-      listen(win.webContents, 'did-finish-load', () => attach(win));
-    });
     stage = 'native-adapter';
     adapter = new WindowsAdapter({bindings, net, session: session.defaultSession,
       endpoints: require('./endpoints.json'), nativeWindow: mainWindow,
       allContents: () => webContents.getAllWebContents(), show: () => integrated.showNative()});
-    try {await adapter.verifyAccount(String(adapter.user()?.userId || ''));}
-    catch (error) {if (error.code !== 'AUTH_REQUIRED') throw error;}
+    // Identity restoration and the async native login getter can finish in
+    // different turns. An empty startup identity is not an account mismatch,
+    // and opening the UI must not require a completed BOSS login.
+    const startupFailure = await require('./windows-window-owner.cjs').checkStartupAccount(adapter);
+    if (adapter.loggedIn() && mainWindow()) integrated.selectWindow(mainWindow());
     stage = 'host-start';
     host = await require('./host.cjs').start(adapter, {
       assistantRoot: config.assistantRoot, offlineURL: config.offline ? config.offlineURL : undefined,
     });
+    if (startupFailure) host.rpc.sessionLost(startupFailure);
     stage = 'integrated-views';
     await integrated.chromeReady;
     if (config.offline) await integrated.platformReady;
+    const {launchStatus, nativeHandle} = require('./windows-launch-status.cjs');
+    const reportWindow = launchStatus(root, config.launchId, 'heyi-window-status.json');
+    const recordWindow = win => {
+      if (win && !win.isDestroyed()) reportWindow({
+        nativePid: process.pid, windowHandle: nativeHandle(win),
+      });
+    };
+    listen(integrated, 'window-selected', recordWindow);
+    recordWindow(integrated.window);
     listen(app, 'before-quit', () => {void close();});
     stage = 'native-exit';
     exitGuard = installNativeExitGuard({targets: [bindings.sdk, globalThis], beforeExit: async () => {
       if (active) active.nativeExitRequested = true;
       await close();
     }});
-    active = {adapter, host, integrated, network, listeners, exitGuard, chatAction, resumeAction, incomingActivity,
+    active = {adapter, host, integrated, network, listeners, exitGuard, windowOwner, chatAction, resumeAction, incomingActivity,
       offline: Boolean(config.offline), profileRoot: root, nativeExitRequested: false};
     lastFailure = undefined;
+    integrated.showCurrent();
     return {ok: true, mode: 'windows-native-workbench', bridgeReady: true,
       nativeSessionVerified: adapter.loggedIn(), offline: Boolean(config.offline),
       originalResourcesModified: false};
@@ -125,6 +115,7 @@ async function install(bindings, config = {}) {
     for (const {target, event, listener} of listeners) target.removeListener(event, listener);
     await Promise.allSettled([host?.close(), network?.egress.close()]);
     exitGuard?.close();
+    windowOwner?.close();
     adapter?.close();
     throw error;
   } finally {installing = false;}
@@ -134,6 +125,7 @@ async function close() {
   if (!active) return;
   const current = active;active = undefined;
   for (const {target, event, listener} of current.listeners) target.removeListener(event, listener);
+  current.windowOwner.close();
   await current.host.close();
   current.adapter.close();
   if (current.offline) {
@@ -182,6 +174,20 @@ async function offlineCheck() {
     integrated.showWorkbench();
     assert.equal(BrowserWindow.getAllWindows().filter(win => win.isVisible()).length, 1);
     assert.equal(integrated.window.getTitle(), 'Ai boss');
+    integrated.window.hide();
+    integrated.showCurrent();
+    assert.equal(integrated.window.isVisible(), true);
+    integrated.window.minimize();
+    await until(() => integrated.window.isMinimized());
+    integrated.showCurrent();
+    await until(() => !integrated.window.isMinimized() && integrated.window.isVisible());
+    // Simulate a saved native show function that bypasses our wrapper.
+    const other = active.windowOwner.windows().find(win => win !== integrated.window);
+    if (!other) throw Error('Expected original login and main windows');
+    integrated.originalShow.get(other)();
+    await until(() => integrated.window === other);
+    assert.ok(other.getBrowserViews().includes(integrated.toolbar));
+    assert.equal(BrowserWindow.getAllWindows().filter(win => win.isVisible()).length, 1);
     assert.equal(await integrated.toolbar.webContents.executeJavaScript(
       `document.title === 'Ai boss' &&
        document.querySelector('.brand').textContent.trim() === 'Ai boss' &&
@@ -202,7 +208,7 @@ async function offlineCheck() {
     const response = await fetch(`http://127.0.0.1:${host.bridge.port}/health`,
       {headers: {Origin: 'https://hoyee.org.cn'}});
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).data.version, '0.1.25');
+    assert.equal((await response.json()).data.version, require('./package.json').version);
     const worker = await host.engine.runtime.run({operation: 'health',
       root: path.join(app.getPath('userData'), 'heyi', 'offline-worker'), cdp: host.rpc.url});
     assert.equal(worker.ok, true);assert.equal(worker.platform, 'win32');
@@ -215,6 +221,7 @@ async function offlineCheck() {
       path: '/', secure: true, httpOnly: true, sameSite: 'lax',
     });
     return {ok: true, actualOriginalWindows: true, singleVisibleWindow: true, applicationBrand: 'Ai boss',
+      hiddenWindowRestored: true, minimizedWindowRestored: true, nativeShowAdopted: true,
       sidebarRoundTrip: true, localFixturePaste: true, loopbackBridge: true,
       packagedWindowsWorker: true, sdkSourceGuard: true, offlineNetworkRelay: true,
       signedOutSnapshotRejected: true, chatAction: active.chatAction, resumeAction: active.resumeAction,

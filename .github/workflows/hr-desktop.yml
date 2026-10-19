@@ -255,6 +255,7 @@ jobs:
           python -m unittest discover -s scripts/ci -p test_export_workbench.py
           python -m unittest discover -s hr-desktop/client-workbench -p test_windows_entry.py
           python -m unittest discover -s hr-desktop/client-workbench -p test_windows_installer.py
+          python -m unittest discover -s hr-desktop/client-workbench -p test_windows_startup.py
       - name: Observe pinned original runtime without network or login
         shell: pwsh
         env:

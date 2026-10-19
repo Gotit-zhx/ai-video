@@ -48,8 +48,10 @@ def stage(source, output, runtime, sdk):
                  "windows-original.json", "windows-adapter.cjs", "native-session.cjs",
                  "native-bindings.cjs", "native-messages.cjs", "native-request-broker.cjs",
                  "inspector-driver.cjs", "process-outcome.cjs", "original-sdk-exit.cjs",
-                 "native-exit-guard.cjs", "windows-chat-fixture.cjs"]:
+                 "native-exit-guard.cjs", "windows-chat-fixture.cjs",
+                 "windows-window-owner.cjs", "windows-launch-status.cjs"]:
         addon["heyi/" + name] = (HERE / name).read_bytes()
+    addon["heyi/assets/ai-boss.ico"] = (HERE / "assets/ai-boss.ico").read_bytes()
     ws = (HERE / "node_modules/ws").resolve(strict=True)
     for file in ws.rglob("*"):
         if file.is_file() and not file.is_symlink():
@@ -70,7 +72,8 @@ def stage(source, output, runtime, sdk):
                         "--distpath", str(output), "--workpath", str(Path(temporary) / "build"),
                         "--specpath", temporary, str(HERE / "windows_entry.py")],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    manifest = {"schemaVersion": 1, "experimental": True, "version": "0.1.25",
+    manifest = {"schemaVersion": 1, "experimental": True,
+                "version": json.loads((HERE / "package.json").read_text())["version"],
                 "originalResourcesModified": False, "realAccountTested": False,
                 "files": {file.relative_to(output).as_posix(): sha(file)
                           for file in sorted(output.rglob("*")) if file.is_file()}}

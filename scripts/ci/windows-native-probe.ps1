@@ -102,7 +102,7 @@ try {
         $packagedTest = Start-Process -FilePath $packagedExe -WorkingDirectory $workbench `
             -ArgumentList @('--self-test') `
             -Environment $testEnvironment -WindowStyle Hidden -PassThru
-        if (!$packagedTest.WaitForExit(120000)) {
+        if (!$packagedTest.WaitForExit(240000)) {
             Stop-Process -Id $packagedTest.Id -Force -ErrorAction SilentlyContinue
             $workbenchCode = -1
         } else { $workbenchCode = $packagedTest.ExitCode }
@@ -111,7 +111,9 @@ try {
         else {
             $smoke = Get-Content $smokePath -Raw | ConvertFrom-Json
             if ($smoke.ok -ne $true -or $smoke.packagedEntryPoint -ne $true -or
-                $smoke.entryControllerExitCode -ne 0) { $workbenchCode = 1 }
+                $smoke.entryControllerExitCode -ne 0 -or
+                $smoke.entryStartup.handoffCompleted -ne $true -or
+                $smoke.entryStartup.nativeWindowReadinessObserved -ne $true) { $workbenchCode = 1 }
         }
         $result.workbenchBuilt = $true
         $result.workbenchExitCode = $workbenchCode

@@ -1,4 +1,5 @@
 const path = require('node:path');
+const {EventEmitter} = require('node:events');
 const {BrowserView, ipcMain, shell, Menu} = require('electron');
 const {applyWindowBrand} = require('./brand.cjs');
 
@@ -30,8 +31,9 @@ function boundsFor(width, height, nativeName, mode) {
   };
 }
 
-class IntegratedShell {
+class IntegratedShell extends EventEmitter {
   constructor() {
+    super();
     this.windows = new Map();
     this.originalShow = new WeakMap();
     this.mode = 'boss';
@@ -100,6 +102,9 @@ class IntegratedShell {
     else {win.setSize(1360, 880);win.center();}
     applyWindowBrand(win);
     win.show = () => {this.selectWindow(win);this.originalShow.get(win)();};
+    // The Windows client may retain show() before the addon is installed,
+    // or show its HWND through native code. Observe the actual event too.
+    win.on('show', () => this.selectWindow(win));
     win.on('resize', () => {if (this.window === win) this.layout();});
     const applyNativeCSS = () => {
       void win.webContents.insertCSS(name === 'login' ? LOGIN_CSS : MAIN_CSS).catch(() => {});
@@ -137,6 +142,7 @@ class IntegratedShell {
   }
   selectWindow(win) {
     if (!win || win.isDestroyed()) return;
+    const changed = this.window !== win;
     if (this.window !== win) {
       const previous = this.window;
       if (previous && !previous.isDestroyed()) {
@@ -148,6 +154,7 @@ class IntegratedShell {
       this.window = win;
     }
     this.layout();
+    if (changed) this.emit('window-selected', win);
   }
   layout() {
     const win = this.window;
@@ -197,13 +204,15 @@ class IntegratedShell {
   }
   showWorkbench() {
     this.mode = 'workbench';this.layout();
-    if (this.window && !this.window.isDestroyed()) {
-      this.originalShow.get(this.window)?.();this.window.focus();
-    }
+    this.showCurrent();
   }
   showNative() {
     this.mode = 'boss';this.layout();
+    this.showCurrent();
+  }
+  showCurrent() {
     if (this.window && !this.window.isDestroyed()) {
+      if (this.window.isMinimized()) this.window.restore();
       this.originalShow.get(this.window)?.();this.window.focus();
     }
   }

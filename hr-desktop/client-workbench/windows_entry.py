@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import uuid
 from windows_installation import RunningGuard
+from windows_startup import StartupWindow, supervise
 
 
 def self_test_requested(arguments, environment):
@@ -32,12 +34,25 @@ def main():
     environment = {key: value for key, value in os.environ.items()
                    if key.upper() not in {"NODE_OPTIONS", "NODE_PATH", "ELECTRON_RUN_AS_NODE"}}
     environment["ELECTRON_RUN_AS_NODE"] = "1"
-    with RunningGuard():
-        result = subprocess.run([str(executable), str(controller), str(root)] +
-                                (["--self-test"] if self_test else []),
-                                cwd=root, env=environment, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                creationflags=subprocess.CREATE_NO_WINDOW)
+    with RunningGuard() as guard:
+        if guard.already_running:
+            guard.activate()
+            return 0
+        launch_id = uuid.uuid4().hex
+        environment["HEYI_LAUNCH_ID"] = launch_id
+        profile_root = Path(os.environ["HEYI_WORKBENCH_TEST_DATA"] if self_test else
+                            Path(os.environ["LOCALAPPDATA"]) / "HeyiBossWorkbench")
+        ui = StartupWindow(root / "native-client/resources/heyi/assets/ai-boss.ico")
+        try:
+            process = subprocess.Popen([str(executable), str(controller), str(root)] +
+                                       (["--self-test"] if self_test else []),
+                                       cwd=root, env=environment, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       creationflags=subprocess.CREATE_NO_WINDOW)
+        except Exception:
+            ui.close()
+            raise
+        returncode, startup = supervise(process, guard, profile_root, launch_id, ui)
     if self_test:
         # Mark only a report returned by the controller. CI also requires this
         # exact windowless entry process to exit successfully.
@@ -45,13 +60,14 @@ def main():
         if report_file.is_file():
             report = json.loads(report_file.read_text(encoding="utf-8"))
             report["packagedEntryPoint"] = bool(frozen)
-            report["entryControllerExitCode"] = result.returncode
+            report["entryControllerExitCode"] = returncode
+            report["entryStartup"] = startup
             report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    elif result.returncode:
+    elif returncode:
         ctypes.windll.user32.MessageBoxW(
             None, "工作台启动未完成。请查看本机 HeyiBossWorkbench 目录中的启动状态，或联系管理员。",
             "Ai boss", 0x10)
-    return result.returncode
+    return returncode
 
 
 if __name__ == "__main__":

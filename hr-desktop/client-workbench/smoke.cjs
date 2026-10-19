@@ -181,7 +181,7 @@ async function run() {
   const response = await fetch(`http://127.0.0.1:${bridge.port}/health`, {
     headers: {Origin: 'https://hoyee.org.cn'},
   });
-  assert.equal((await response.json()).data.version, '0.1.25');
+  assert.equal((await response.json()).data.version, require('./package.json').version);
   await bridge.close();await rpc.close();
   // Exercise the actual shared host with its packaged worker and relay too.
   // The original app is never loaded in this smoke path; the empty adapter

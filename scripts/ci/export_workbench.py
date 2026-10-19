@@ -22,6 +22,9 @@ REQUIRED = (
     "native-client/resources/heyi/assets/ai-boss-app.png",
     "native-client/resources/heyi/windows-launcher.cjs",
     "native-client/resources/heyi/windows-workbench.cjs",
+    "native-client/resources/heyi/windows-launch-status.cjs",
+    "native-client/resources/heyi/windows-window-owner.cjs",
+    "native-client/resources/heyi/assets/ai-boss.ico",
     "native-client/resources/heyi-runtime/heyi-boss.exe",
 )
 CHECKS = (
@@ -36,6 +39,9 @@ CHECKS = (
     "resumeAction.legacySenderUnused", "incomingActivity.incomingReplyAndAttachmentHints",
     "incomingActivity.observerRestored", "shutdown.nativeExitGuardInvoked",
     "shutdown.hostClosedBeforeNativeExit", "shutdown.platformSessionSaved",
+    "entryStartup.startupWindow", "entryStartup.handoffCompleted",
+    "entryStartup.nativeWindowReadinessObserved",
+    "hiddenWindowRestored", "minimizedWindowRestored", "nativeShowAdopted",
 )
 INSTALLATION_CHECKS = (
     "ok", "installedPayloadVerified", "perUserRegistration", "shortcutsVerified",
@@ -43,6 +49,7 @@ INSTALLATION_CHECKS = (
     "installedEntryPassed", "overwriteInstallPreservedData", "uninstallPreservedData",
     "untrackedFilePreserved", "shortcutsAndRegistrationRemoved", "reinstallPreservedData",
     "installerCompletionObserved",
+    "repeatedEntryActivated",
 )
 
 
