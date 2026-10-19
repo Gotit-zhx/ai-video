@@ -9,6 +9,7 @@ public final class ProductMainImageStylePolicy {
     public static final int MAX_IMAGES = 9;
     public static final String TEMPLATE = "mainImageStyleTemplateId";
     public static final String PREFIX = "https://main-image-style.invalid/";
+    public static final String PRESERVE_ORIGINAL = "PRESERVE_ORIGINAL";
     public static final List<String> CHECKS = List.of("productPreserved", "referenceProductRemoved",
             "layoutMatched", "styleMatched", "textSafe");
 
@@ -22,10 +23,19 @@ public final class ProductMainImageStylePolicy {
 
     public static void validateAnalysis(Map<String, Object> value) {
         if (!Boolean.TRUE.equals(value.get("complete"))) throw bad("未完整识别海报产品");
-        for (String key : List.of("productDescription", "layout", "palette", "typography", "background", "lighting", "decorations", "prompt")) {
+        if (value.containsKey("mode") && !"REPLACE_PRODUCT".equals(value.get("mode")) && !preservesOriginal(value))
+            throw bad("海报处理方式无效");
+        for (String key : List.of("productDescription", "layout", "palette", "typography", "background", "lighting", "decorations")) {
             if (!(value.get(key) instanceof String text) || text.isBlank() || text.length() > 4000)
                 throw bad("海报分析缺少有效的" + key);
         }
+        if (preservesOriginal(value)) {
+            if (!(value.get("productRegions") instanceof List<?> regions) || !regions.isEmpty() || !"".equals(value.get("prompt")))
+                throw bad("原样保留图片不能包含待替换商品区域或生成提示词");
+            return;
+        }
+        if (!(value.get("prompt") instanceof String prompt) || prompt.isBlank() || prompt.length() > 4000)
+            throw bad("海报分析缺少有效的prompt");
         if (!value.get("prompt").toString().contains("{{product}}")) throw bad("提示词缺少商品占位符");
         if (!(value.get("productRegions") instanceof List<?> regions) || regions.isEmpty() || regions.size() > 12)
             throw bad("海报产品区域无效");
@@ -34,6 +44,10 @@ public final class ProductMainImageStylePolicy {
             double x = number(map.get("x")), y = number(map.get("y")), w = number(map.get("width")), h = number(map.get("height"));
             if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > 1 || y + h > 1) throw bad("海报产品坐标超出图像");
         }
+    }
+
+    public static boolean preservesOriginal(Map<String, Object> analysis) {
+        return PRESERVE_ORIGINAL.equals(analysis.get("mode"));
     }
 
     public static boolean passed(Map<String, Object> review) {
@@ -66,6 +80,7 @@ public final class ProductMainImageStylePolicy {
 
     public static String prompt(String title, Map<String, Object> analysis) {
         validateAnalysis(analysis);
+        if (preservesOriginal(analysis)) throw bad("原样保留图片不需要生成提示词");
         var details = new LinkedHashMap<>(analysis);
         details.remove("prompt");
         return """

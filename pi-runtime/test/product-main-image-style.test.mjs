@@ -25,6 +25,24 @@ test('ambiguous subjects, invalid regions, missing placeholder and malformed boo
     {productRegions:[{x:NaN,y:0,width:1,height:1}]}, {prompt:'Copy the old product'}, {productDescription:''}
   ]) assert.throws(() => validatePosterStyle({...style(), ...change}));
 });
+test('explicitly product-free information pages preserve original bytes without a generation prompt', () => {
+  const original = {...style(), mode:'PRESERVE_ORIGINAL', productDescription:'After-sales information, no product',
+    productRegions:[], prompt:''};
+  assert.deepEqual(validatePosterStyle(original), original);
+  assert.deepEqual(validatePosterStyle({...style(), mode:'REPLACE_PRODUCT'}).mode, 'REPLACE_PRODUCT');
+  for (const change of [{complete:false}, {productRegions:style().productRegions}, {prompt:'{{product}}'}, {mode:null}, {mode:'UNKNOWN'}])
+    assert.throws(() => validatePosterStyle({...original, ...change}));
+  assert.throws(() => validatePosterStyle({...original, mode:'REPLACE_PRODUCT'}));
+  const legacy = {...original}; delete legacy.mode;
+  assert.throws(() => validatePosterStyle(legacy));
+  assert.match(POSTER_STYLE_PROMPT, /不得用原样保留掩盖识别失败/);
+});
+test('product-free analysis passes through as a valid completed template image', async () => {
+  const original = {...style(), mode:'PRESERVE_ORIGINAL', productRegions:[], prompt:''};
+  const result = await runPosterAnalysis({model:{apiKey:'test'}, image, context:{analysisType:POSTER_STYLE}},
+    async () => JSON.stringify(original), JSON.parse);
+  assert.deepEqual(result.result, original);
+});
 test('review requires every real boolean; a mismatch remains a mismatch', () => {
   assert.deepEqual(validatePosterReview({...review(), layoutMatched:false}).layoutMatched, false);
   assert.throws(() => validatePosterReview({...review(), productPreserved:'true'}));

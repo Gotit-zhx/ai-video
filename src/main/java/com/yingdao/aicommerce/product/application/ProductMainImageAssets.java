@@ -45,7 +45,15 @@ public class ProductMainImageAssets {
             throw new TemplateChanged();
         return rows.stream().map(row -> {
             var review = json.readTree(Objects.toString(row.get("review_json"), "{}"));
-            if (ProductMainImageStylePolicy.CHECKS.stream().anyMatch(check -> !review.path(check).isBoolean() || !review.path(check).asBoolean()))
+            var slot = slots.get(((Number) row.get("sort_order")).intValue());
+            var analysis = json.convertValue(slot.get("analysis"), new tools.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            if (ProductMainImageStylePolicy.preservesOriginal(analysis)) {
+                String original = (String) slot.get("storageKey");
+                if (!ProductMainImageStylePolicy.PRESERVE_ORIGINAL.equals(review.path("mode").asText())
+                        || !original.equals(row.get("storage_key")) || !original.equals(row.get("reference_key"))
+                        || !original.equals(row.get("source_key")))
+                    throw conflict("原样保留图片与当前模板原图不一致");
+            } else if (ProductMainImageStylePolicy.CHECKS.stream().anyMatch(check -> !review.path(check).isBoolean() || !review.path(check).asBoolean()))
                 throw conflict("风格主图缺少完整自动检查结果");
             var reference = archive.read(capture.getOrganizationId(), (String) row.get("storage_key"));
             String url = ProductMainImageStylePolicy.PREFIX + row.get("id");

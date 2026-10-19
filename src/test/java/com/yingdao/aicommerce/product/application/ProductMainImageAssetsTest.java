@@ -59,6 +59,37 @@ class ProductMainImageAssetsTest {
         assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class, () -> assets.preview("other-org","job"));
         verifyNoInteractions(archive);
     }
+    @Test void originalSlotReadsExactTemplateBytesAndRejectsSubstitutionWithoutFakeQualityChecks() {
+        var slot = new LinkedHashMap<>(setup());
+        slot.put("analysis",ProductMainImageStylePolicyTest.originalAnalysis());
+        when(templates.current(template,"org")).thenReturn(Map.of("images",List.of(slot)));
+        var row = new LinkedHashMap<String,Object>(Map.of("id","job","sort_order",0,"status","READY",
+                "storage_key","reference","source_key","reference","reference_key","reference",
+                "template_fingerprint",ProductMainImageStylePolicy.fingerprint(slot,json),
+                "review_json",json.writeValueAsString(Map.of("mode","PRESERVE_ORIGINAL"))));
+        when(db.queryForList(contains("SELECT * FROM product_main_image_jobs"),eq(workflow),eq("org"),eq("capture"))).thenReturn(List.of(row));
+        var original = new CommerceDesignImageGateway.Reference("image/png","b3JpZ2luYWw=");
+        when(archive.read("org","reference")).thenReturn(original);
+        var gallery = assets.gallery(capture,request());
+        assertEquals(1,gallery.size());
+        verify(archive).read("org","reference");
+        assertDoesNotThrow(() -> assets.verifyCurrentGallery(capture,request(),gallery));
+        for (String field : List.of("storage_key","source_key","reference_key")) {
+            row.put(field,"other");
+            assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,()->assets.gallery(capture,request()));
+            row.put(field,"reference");
+        }
+        row.put("review_json","{}");
+        assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,()->assets.gallery(capture,request()));
+    }
+    @Test void originalMarkerCannotBypassQualityChecksForAGeneratedSlot() {
+        var slot = setup();
+        var row = Map.<String,Object>of("id","job","sort_order",0,"status","READY","storage_key","reference",
+                "template_fingerprint",ProductMainImageStylePolicy.fingerprint(slot,json),"review_json","{\"mode\":\"PRESERVE_ORIGINAL\"}");
+        when(db.queryForList(contains("SELECT * FROM product_main_image_jobs"),eq(workflow),eq("org"),eq("capture"))).thenReturn(List.of(row));
+        assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,()->assets.gallery(capture,request()));
+        verifyNoInteractions(archive);
+    }
     private Map<String,Object> request(){return Map.of("mainImageStyleTemplateId",template,"idempotencyKey","wf-"+workflow+"-publish");}
     private Map<String,Object> setup(){
         when(capture.getOrganizationId()).thenReturn("org");when(capture.getId()).thenReturn("capture");

@@ -15,6 +15,29 @@ class ProductMainImageStylePolicyTest {
         value.put("prompt", "Use {{product}} with {{title}}");
         return value;
     }
+    static Map<String, Object> originalAnalysis() {
+        var value = analysis();
+        value.put("mode", ProductMainImageStylePolicy.PRESERVE_ORIGINAL);
+        value.put("productDescription", "After-sales information with no product");
+        value.put("productRegions", List.of());
+        value.put("prompt", "");
+        return value;
+    }
+    @Test void originalInformationPagesAreValidButCannotEnterGeneration() {
+        var value = originalAnalysis();
+        assertDoesNotThrow(() -> ProductMainImageStylePolicy.validateAnalysis(value));
+        assertTrue(ProductMainImageStylePolicy.preservesOriginal(value));
+        assertThrows(BusinessException.class, () -> ProductMainImageStylePolicy.prompt("Target", value));
+        for (var change : List.of(Map.of("complete", false), Map.of("mode", "UNKNOWN"),
+                Map.of("productRegions", analysis().get("productRegions")), Map.of("prompt", "{{product}}"))) {
+            var invalid = originalAnalysis(); invalid.putAll(change);
+            assertThrows(BusinessException.class, () -> ProductMainImageStylePolicy.validateAnalysis(invalid));
+        }
+        var missingMode = originalAnalysis(); missingMode.remove("mode");
+        assertThrows(BusinessException.class, () -> ProductMainImageStylePolicy.validateAnalysis(missingMode));
+        var explicitGeneration = analysis(); explicitGeneration.put("mode", "REPLACE_PRODUCT");
+        assertDoesNotThrow(() -> ProductMainImageStylePolicy.validateAnalysis(explicitGeneration));
+    }
     @Test void omittedOrBlankTemplateIsOptOut() {
         assertNull(ProductMainImageStylePolicy.templateId(Map.of()));
         assertNull(ProductMainImageStylePolicy.templateId(Map.of(ProductMainImageStylePolicy.TEMPLATE, "")));

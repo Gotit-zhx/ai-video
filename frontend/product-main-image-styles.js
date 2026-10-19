@@ -23,6 +23,7 @@
   let uploadRequest, uploadTimer, uploadState;
   const promptDrafts = new Map();
   const isAnalyzing = row => row.images.some(image => ['PENDING', 'QUEUED', 'ANALYZING'].includes(image.status));
+  const preservesOriginal = image => image.status === 'READY' && image.analysis?.mode === 'PRESERVE_ORIGINAL';
   const esc = value => escapeHtml(String(value ?? ''));
   const canEdit = () => hasAnyPermission('product:edit');
   const notify = message => { status.textContent = message; };
@@ -38,7 +39,7 @@
     const title = processed === total ? (failed ? '提取结束，有失败图片' : '全部提取完成') : '正在提取图集';
     const current = active.length
       ? `正在分析：第 ${active.map(image => image.index + 1).join('、')} 张`
-      : pending ? '等待分析任务启动' : failed ? '失败图片可重试' : '提示词已就绪';
+      : pending ? '等待分析任务启动' : failed ? '失败图片可重试' : '图集已就绪';
     return `<div class="main-style-progress ${failed ? 'has-failures' : ''}" ${compact ? '' : 'role="status" aria-live="polite"'}>
       <div class="main-style-progress-heading"><strong>${compact ? '提取进度' : title}</strong><span>已处理 ${processed} / ${total} 张</span></div>
       <progress max="${total || 1}" value="${processed}" aria-label="海报分析已处理 ${processed} / ${total} 张"></progress>
@@ -99,8 +100,10 @@
         return `<article class="main-style-image-row" data-image-id="${esc(image.id)}">
           <div><div class="main-style-reference"><img src="${esc(image.imageUrl)}" alt="第${index + 1}张参考海报">
           ${(analysis.productRegions || []).map(region => `<span class="main-style-region" style="left:${region.x * 100}%;top:${region.y * 100}%;width:${region.width * 100}%;height:${region.height * 100}%" title="识别的商品区域"></span>`).join('')}</div>
-          <div class="main-style-image-caption"><b>${String(index + 1).padStart(2, '0')}</b><span>${image.width} × ${image.height}</span><span>${labels[image.status] || esc(image.status)}</span></div></div>
-          <div class="main-style-analysis">${image.status === 'READY' ? `<dl><dt>产品主体</dt><dd>${esc(analysis.productDescription)}</dd><dt>海报布局</dt><dd>${esc(analysis.layout)}</dd><dt>配色与文字</dt><dd>${esc(analysis.palette)}<br>${esc(analysis.typography)}</dd></dl>
+          <div class="main-style-image-caption"><b>${String(index + 1).padStart(2, '0')}</b><span>${image.width} × ${image.height}</span><span>${preservesOriginal(image) ? '原样保留' : labels[image.status] || esc(image.status)}</span></div></div>
+          <div class="main-style-analysis">${preservesOriginal(image)
+            ? `<strong>原样保留</strong><dl><dt>图片内容</dt><dd>${esc(analysis.productDescription)}</dd><dt>海报布局</dt><dd>${esc(analysis.layout)}</dd></dl>`
+            : image.status === 'READY' ? `<dl><dt>产品主体</dt><dd>${esc(analysis.productDescription)}</dd><dt>海报布局</dt><dd>${esc(analysis.layout)}</dd><dt>配色与文字</dt><dd>${esc(analysis.palette)}<br>${esc(analysis.typography)}</dd></dl>
             <details><summary>背景、光影与装饰</summary><p>${esc(analysis.background)}<br>${esc(analysis.lighting)}<br>${esc(analysis.decorations)}</p></details>
             <label>生成提示词<textarea data-style-prompt rows="5" maxlength="4000" ${canEdit() ? '' : 'readonly'}>${esc(promptDrafts.get(image.id) ?? analysis.prompt)}</textarea></label>
             <div class="main-style-actions">${button('copy', '复制提示词', '⧉')}${canEdit() ? '<button type="button" data-style-action="save-prompt">保存修改</button>' : ''}<span data-image-status role="status"></span></div>`
@@ -316,7 +319,8 @@
     preview.innerHTML = row ? row.images.map(image => `<img src="${esc(image.imageUrl)}" alt="${esc(row.name)}参考图" loading="lazy">`).join('') : '';
     const count = productBulkItems.length || document.querySelectorAll('[data-bulk-item]').length
       * (typeof productBulkShopIds === 'function' ? productBulkShopIds().length : 1);
-    bulkStatus.textContent = row ? `${row.imageCount} 张 / 商品店铺任务 · 共 ${row.imageCount * count} 张风格主图`
+    const preserved = row?.images.filter(preservesOriginal).length || 0;
+    bulkStatus.textContent = row ? `${row.imageCount} 张 / 商品店铺任务${preserved ? `（生成 ${row.imageCount - preserved} 张，原样保留 ${preserved} 张）` : ''} · 共 ${row.imageCount * count} 张风格主图`
       : select.value ? '保留原任务的风格模板' : '额外风格主图：0 张';
   }
   async function loadBulk(items, {org, view}) {

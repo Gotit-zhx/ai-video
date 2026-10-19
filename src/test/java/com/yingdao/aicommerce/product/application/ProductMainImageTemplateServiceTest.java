@@ -62,6 +62,14 @@ class ProductMainImageTemplateServiceTest {
                 () -> service.current(id, editor)).getStatus());
         verifyNoInteractions(vision, archive);
     }
+    @Test void originalInformationPagesAreSelectableButHaveNoEditableGenerationPrompt() {
+        var image = readyTemplate();
+        image.put("analysis_json", json.writeValueAsString(ProductMainImageStylePolicyTest.originalAnalysis()));
+        assertDoesNotThrow(() -> service.current(id, editor));
+        when(db.queryForList(contains("FOR UPDATE"), eq("image"), eq(id), eq("org"))).thenReturn(List.of(image));
+        assertThrows(BusinessException.class, () -> service.savePrompt(id, "image", "Generate {{product}}", editor));
+        verify(db, never()).update(anyString(), any(Object[].class));
+    }
 
     @Test void editingPromptUpdatesTheOriginalImageAndKeepsItsProductPlaceholder() {
         var image = readyTemplate();

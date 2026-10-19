@@ -58,6 +58,49 @@ class ProductMainImageStyleServiceTest {
         assertEquals(1,service.progress(workflow).processedImages());
         verifyNoInteractions(gateway,vision,models,downloader);
     }
+    @Test void originalOnlyTemplateCopiesArchivedReferenceWithoutProductSourceOrAnyModel() {
+        slot.put("analysis", ProductMainImageStylePolicyTest.originalAnalysis());
+        var persisted = new ArrayList<Map<String,Object>>();
+        when(db.queryForList(anyString(),eq("workflow"),eq("org"))).thenReturn(persisted);
+        stubOriginalInsert(persisted);
+        assertTrue(service.ensureReady(workflow,capture));
+        assertTrue(service.ensureReady(workflow,capture));
+        assertEquals(1, persisted.size());
+        assertEquals("reference", persisted.getFirst().get("storage_key"));
+        assertEquals("", persisted.getFirst().get("model_config_id"));
+        assertEquals(1, service.progress(workflow).processedImages());
+        verify(db, times(1)).update(contains("'ORIGINAL'"), any(Object[].class));
+        verify(archive).read("org","reference");
+        verifyNoInteractions(images,downloader,gateway,vision,models);
+    }
+    @Test void mixedTemplateKeepsOriginalAndGeneratedImagesInTheirSlotsWithoutRegeneratingReadyWork() {
+        var generatedSlot = new LinkedHashMap<>(slot);
+        generatedSlot.put("imageId","generated-image");
+        job.put("sort_order",1);
+        job.put("template_fingerprint",ProductMainImageStylePolicy.fingerprint(generatedSlot,json));
+        slot.put("analysis", ProductMainImageStylePolicyTest.originalAnalysis());
+        when(templates.current(templateId,"org")).thenReturn(Map.of("name","Mixed","images",List.of(slot,generatedSlot)));
+        var persisted = new ArrayList<>(List.of(job));
+        when(db.queryForList(anyString(),eq("workflow"),eq("org"))).thenReturn(persisted);
+        stubOriginalInsert(persisted);
+        assertTrue(service.ensureReady(workflow,capture));
+        var progress = service.progress(workflow);
+        assertEquals(2,progress.totalImages());
+        assertEquals(2,progress.processedImages());
+        assertEquals("/api/v1/product-main-image-results/"+persisted.getFirst().get("id"),progress.imageUrls().getFirst());
+        assertEquals("/api/v1/product-main-image-results/"+job.get("id"),progress.imageUrls().getLast());
+        verifyNoInteractions(images,downloader,gateway,vision,models);
+    }
+    @Test void changingAnOriginalSlotToGeneratedDoesNotReuseItsEmptyModelId() {
+        var originalSlot = new LinkedHashMap<>(slot);
+        originalSlot.put("analysis",ProductMainImageStylePolicyTest.originalAnalysis());
+        job.put("model_config_id","");
+        job.put("template_fingerprint",ProductMainImageStylePolicy.fingerprint(originalSlot,json));
+        when(models.imageConnection("org")).thenReturn(Optional.empty());
+        assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,()->service.ensureReady(workflow,capture));
+        verify(models).imageConnection("org");
+        verifyNoInteractions(gateway);
+    }
     @Test void editingTheCurrentPromptInvalidatesTheOldCompletedOutput() {
         var changed = ProductMainImageStylePolicyTest.analysis();
         changed.put("prompt","New current layout with {{product}}");
@@ -149,5 +192,16 @@ class ProductMainImageStyleServiceTest {
         var model = new ModelConfigService.RuntimeModelConnection("model","https://unit.invalid","image-model","OPENAI_COMPATIBLE","CUSTOM","test-only");
         when(models.commerceMockupConnectionById("org","model")).thenReturn(Optional.of(model));
         return model;
+    }
+    private void stubOriginalInsert(List<Map<String,Object>> persisted) {
+        when(db.update(contains("'ORIGINAL'"),any(Object[].class))).thenAnswer(call -> {
+            var original = new LinkedHashMap<String,Object>();
+            original.put("id",call.getArgument(1)); original.put("sort_order",call.getArgument(5));
+            original.put("source_key",call.getArgument(6)); original.put("reference_key",call.getArgument(7));
+            original.put("template_fingerprint",call.getArgument(8)); original.put("storage_key",call.getArgument(9));
+            original.put("review_json",call.getArgument(10)); original.put("status","READY"); original.put("model_config_id","");
+            persisted.addFirst(original);
+            return 1;
+        });
     }
 }

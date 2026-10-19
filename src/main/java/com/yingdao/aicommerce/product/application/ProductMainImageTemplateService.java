@@ -97,6 +97,7 @@ public class ProductMainImageTemplateService {
                 imageId, id, user.organizationId());
         if (rows.isEmpty()) throw conflict("仅识别完成的图片可以修改提示词");
         var analysis = map(rows.getFirst().get("analysis_json"));
+        if (ProductMainImageStylePolicy.preservesOriginal(analysis)) throw conflict("原样保留图片不需要修改生成提示词");
         analysis.put("prompt", prompt.trim());
         ProductMainImageStylePolicy.validateAnalysis(analysis);
         db.update("UPDATE product_main_image_template_images SET analysis_json=?,updated_at=NOW(6) WHERE id=? AND organization_id=?",

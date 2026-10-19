@@ -133,3 +133,17 @@ test('polling preserves draft prompts when a different image changes status', as
   assert.match(h.get('main-style-detail').innerHTML, /My changed \{\{product\}\}/);
   assert.match(h.get('main-style-detail').innerHTML, /全部提取完成/);
 });
+test('product-free images are ready originals without prompt editing or a failed-state retry', async () => {
+  const h = harness(), template = row(['READY']);
+  template.images[0].analysis = {mode:'PRESERVE_ORIGINAL', complete:true, productRegions:[], prompt:'',
+    productDescription:'售后说明，无商品主体', layout:'纵向图标列表'};
+  h.rows([template]); await h.refresh(); h.select('style');
+  const html = h.get('main-style-detail').innerHTML;
+  assert.match(html, /原样保留/);
+  assert.match(html, /全部提取完成/);
+  assert.match(html, /成功 1/);
+  assert.match(html, /失败 0/);
+  assert.match(html, /售后说明，无商品主体/);
+  assert.doesNotMatch(html, /data-style-prompt|save-prompt|重试失败图片|main-style-region/);
+  assert.equal(h.timers.size, 0);
+});

@@ -175,27 +175,44 @@ public class ProductMainImageStyleService {
 
     private void prepare(ProductPublishWorkflow workflow, ProductCapture capture, List<Map<String, Object>> slots) {
         var existing = jobs(workflow);
-        if (currentJobs(workflow, slots).size() == slots.size()) return;
+        var current = currentJobs(workflow, slots);
+        if (current.size() == slots.size()) return;
         String org = workflow.getOrganizationId();
-        String sourceKey, modelId;
-        if (!existing.isEmpty()) {
-            sourceKey = (String) existing.getFirst().get("source_key");
-            modelId = (String) existing.getFirst().get("model_config_id");
-        } else {
-            modelId = models.imageConnection(org).orElseThrow(() -> conflict("请先配置可用的图片生成模型")).id();
-            var source = images.selectList(new LambdaQueryWrapper<ProductCaptureImage>()
-                    .eq(ProductCaptureImage::getOrganizationId, org).eq(ProductCaptureImage::getCaptureId, capture.getId())
-                    .orderByAsc(ProductCaptureImage::getSortOrder)).stream()
-                    .filter(image -> !Set.of("DETAIL", "VARIANT", "SIZE_CHART").contains(Objects.toString(image.getRoleName(), "")))
-                    .findFirst().orElseThrow(() -> conflict("商品缺少可供风格生成的主体图片"));
-            String url = source.getProcessedUrl() == null ? source.getOriginalUrl() : source.getProcessedUrl();
-            // Dry-run image markers are not downloadable; retain the original image in that case.
-            if (url == null || url.contains("dry-run")) url = source.getOriginalUrl();
-            sourceKey = archive.store(org, downloader.downloadProductImage(url, source).bytes()).storageKey();
-        }
+        var generated = existing.stream().filter(job -> job.get("model_config_id") instanceof String id && !id.isBlank()).findFirst();
+        String sourceKey = generated.map(job -> (String) job.get("source_key")).orElse(null);
+        String modelId = generated.map(job -> (String) job.get("model_config_id")).orElse(null);
         for (int index = 0; index < slots.size(); index++) {
             var slot = slots.get(index);
+            String fingerprint = ProductMainImageStylePolicy.fingerprint(slot, json);
+            int slotIndex = index;
+            if (current.stream().anyMatch(job -> ((Number) job.get("sort_order")).intValue() == slotIndex
+                    && fingerprint.equals(job.get("template_fingerprint")))) continue;
             var analysis = json.convertValue(slot.get("analysis"), new TypeReference<Map<String, Object>>() {});
+            ProductMainImageStylePolicy.validateAnalysis(analysis);
+            if (ProductMainImageStylePolicy.preservesOriginal(analysis)) {
+                String referenceKey = (String) slot.get("storageKey");
+                archive.read(org, referenceKey);
+                // Preserve the archived bytes and slot order; no model or generated-image review is involved.
+                db.update("""
+                        INSERT IGNORE INTO product_main_image_jobs(id,organization_id,workflow_id,capture_id,sort_order,
+                        source_key,reference_key,prompt,size,model_config_id,template_fingerprint,status,storage_key,review_json,updated_at)
+                        VALUES(?,?,?,?,?,?,?,'','ORIGINAL','',?,'READY',?,?,NOW(6))
+                        """, UUID.randomUUID().toString(), org, workflow.getId(), capture.getId(), index,
+                        referenceKey, referenceKey, fingerprint, referenceKey,
+                        json.writeValueAsString(Map.of("mode", ProductMainImageStylePolicy.PRESERVE_ORIGINAL)));
+                continue;
+            }
+            if (modelId == null) {
+                modelId = models.imageConnection(org).orElseThrow(() -> conflict("请先配置可用的图片生成模型")).id();
+                var source = images.selectList(new LambdaQueryWrapper<ProductCaptureImage>()
+                        .eq(ProductCaptureImage::getOrganizationId, org).eq(ProductCaptureImage::getCaptureId, capture.getId())
+                        .orderByAsc(ProductCaptureImage::getSortOrder)).stream()
+                        .filter(image -> !Set.of("DETAIL", "VARIANT", "SIZE_CHART").contains(Objects.toString(image.getRoleName(), "")))
+                        .findFirst().orElseThrow(() -> conflict("商品缺少可供风格生成的主体图片"));
+                String url = source.getProcessedUrl() == null ? source.getOriginalUrl() : source.getProcessedUrl();
+                if (url == null || url.contains("dry-run")) url = source.getOriginalUrl();
+                sourceKey = archive.store(org, downloader.downloadProductImage(url, source).bytes()).storageKey();
+            }
             String prompt = ProductMainImageStylePolicy.prompt(Objects.toString(capture.getTitle(), ""), analysis);
             db.update("""
                     INSERT IGNORE INTO product_main_image_jobs(id,organization_id,workflow_id,capture_id,sort_order,
@@ -203,7 +220,7 @@ public class ProductMainImageStyleService {
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,'PREPARED',NOW(6))
                     """, UUID.randomUUID().toString(), org, workflow.getId(), capture.getId(), index, sourceKey, slot.get("storageKey"),
                     prompt, ProductMainImageStylePolicy.size(((Number) slot.get("width")).intValue(), ((Number) slot.get("height")).intValue()), modelId,
-                    ProductMainImageStylePolicy.fingerprint(slot, json));
+                    fingerprint);
         }
     }
     private void received(String id, int attempt, CommerceDesignImageGateway.Response result) {

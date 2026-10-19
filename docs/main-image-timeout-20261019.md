@@ -33,3 +33,15 @@ exact running runtime image, verifies the old source hash, checks for active
 tasks, preserves the complete Compose chain and configuration, and retains a
 rollback image. The application, frontend, model configuration, stored source
 images and successful analyses are not rewritten.
+
+## Production Verification
+
+Deployed source commit `fbfe7f3` on October 19, 2026. All 28 local focused tests
+and 26 candidate-image SDK/regression tests passed. Deployment waited for two
+active video analyses to finish before replacing the runtime.
+
+The previously timed-out reference image 3 completed successfully through the
+normal retry API using the user's configured `gpt-6.1-sol`. The five previously
+successful results retained identical stored hashes. Image 7 still failed
+semantic validation, independently of timeout handling; it is a product-free
+information page addressed by the subsequent original-preservation change.
