@@ -45,7 +45,7 @@
   <link rel="stylesheet" href="/commerce-artwork-library.css?v=artwork-library-20260916-1">
   <link rel="stylesheet" href="/commerce-motion.css?v=workbench-layout-20260921">
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
-  <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-1">
+  <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-progress-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
     <link rel="stylesheet" href="/hr-workspace.css?v=20261012-progress-compact-3">
 <link rel="stylesheet" href="/i18n.css?v=20260921-2">
@@ -1938,8 +1938,18 @@
       <label>模板名称<input id="main-style-name" required maxlength="120" autocomplete="off" placeholder="例如：清新夏日系列"></label>
       <label class="main-style-file-label">参考海报图集 <span>1–9 张 · PNG / JPEG / WEBP · 每张不超过 8 MB</span><input id="main-style-files" type="file" accept="image/png,image/jpeg,image/webp" multiple></label>
       <div id="main-style-upload-list" class="main-style-upload-list"></div>
-      <p id="main-style-upload-error" role="alert"></p>
-      <footer><span id="main-style-upload-count">已选 0 张</span><button type="submit" id="main-style-save" disabled>保存并自动提取</button></footer>
+      <footer>
+        <div id="main-style-upload-progress" class="main-style-progress" hidden>
+          <strong id="main-style-upload-label" role="status" aria-live="polite"></strong>
+          <progress id="main-style-upload-bar" max="100" aria-labelledby="main-style-upload-label"></progress>
+          <span id="main-style-upload-meta"></span>
+        </div>
+        <p id="main-style-upload-error" role="alert"></p>
+        <div class="main-style-upload-actions">
+          <span id="main-style-upload-count">已选 0 张</span>
+          <button type="submit" id="main-style-save" disabled>保存并自动提取</button>
+        </div>
+      </footer>
     </form>
   </dialog>
   <dialog id="product-listing-template-dialog" class="listing-template-dialog" aria-labelledby="listing-template-title">
@@ -1984,7 +1994,7 @@
   <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-multi-shop-1">
   <script src="/product-listing-templates.js?v=20261015-module-isolation" defer></script>
   <script src="/app.js?v=main-image-style-20261019-1" defer></script>
-  <script src="/product-main-image-styles.js?v=20261019-1" defer></script>
+  <script src="/product-main-image-styles.js?v=20261019-progress-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261014-task-scheduling-024" defer></script>
   <script src="/hr-onboarding.js?v=20261012-compact-3" defer></script>
   <script src="/hr-bi.js?v=20261012-boss-chat-019" defer></script>

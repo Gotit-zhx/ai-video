@@ -88,11 +88,36 @@ class ProductMainImageTemplateServiceTest {
 
     @Test void saturatedWorkerQueueRestoresPendingWithoutCallingVision() {
         when(db.queryForList(contains("SELECT i.*"))).thenReturn(List.of(Map.of("id", "image", "organization_id", "org")));
-        when(db.update(contains("SET status='ANALYZING'"), eq("image"))).thenReturn(1);
+        when(db.update(contains("SET status='QUEUED'"), eq("image"))).thenReturn(1);
         doThrow(new java.util.concurrent.RejectedExecutionException("busy")).when(executor).execute(any());
         service.poll();
         verify(db).update(contains("SET status='PENDING'"), eq("image"));
         verifyNoInteractions(vision, archive);
+    }
+
+    @Test void queuedWorkIsNotAnalyzingUntilExecutorStartsIt() {
+        when(db.queryForList(contains("SELECT i.*"))).thenReturn(List.of(Map.of("id", "image", "organization_id", "org")));
+        when(db.update(contains("SET status='QUEUED'"), eq("image"))).thenReturn(1);
+        service.poll();
+        verify(executor).execute(any());
+        verify(db, never()).update(contains("SET i.status='ANALYZING'"), eq("image"));
+        verifyNoInteractions(vision, archive);
+    }
+
+    @Test void streamedProgressIsPersistedBeforeValidatedCompletion() {
+        when(db.queryForList(contains("SELECT i.*"))).thenReturn(List.of(Map.of("id", "image", "organization_id", "org", "storage_key", "ref")));
+        when(db.update(contains("SET status='QUEUED'"), eq("image"))).thenReturn(1);
+        when(db.update(contains("SET i.status='ANALYZING'"), eq("image"))).thenReturn(1);
+        when(archive.read("org", "ref")).thenReturn(new CommerceDesignImageGateway.Reference("image/png", "fixture"));
+        doAnswer(call -> { ((Runnable) call.getArgument(0)).run(); return null; }).when(executor).execute(any());
+        when(vision.analyze(eq("org"), eq("PRODUCT_MAIN_IMAGE_STYLE_V1"), anyList(), anyMap(), any())).thenAnswer(call -> {
+            java.util.function.Consumer<Map<String,Object>> progress = call.getArgument(4);
+            progress.accept(Map.of("stage", "MODEL_STREAMING", "outputCharacters", 123, "elapsedSeconds", 5));
+            return ProductMainImageStylePolicyTest.analysis();
+        });
+        service.poll();
+        verify(db).update(contains("SET analysis_json="), contains("\"outputCharacters\":123"), eq("image"));
+        verify(db).update(contains("SET status='READY'"), contains("{{product}}"), eq("image"));
     }
 
     private Map<String,Object> readyTemplate() {

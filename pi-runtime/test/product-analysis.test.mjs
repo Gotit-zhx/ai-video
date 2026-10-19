@@ -23,6 +23,7 @@ function harness(ok = true) {
     GARMENT_TOPOLOGY_VALIDATION_PROMPT,
     POSTER_STYLE,
     POSTER_REVIEW,
+    requestPosterAgent: async () => {},
     runPosterAnalysis: async (...args) => {
       posterCalls.push(args);
       return { poster: true };
@@ -59,7 +60,7 @@ test('poster extraction and review dispatch to their dedicated analyzer', async 
     assert.deepEqual(await h.context.runProductFunctionAnalysis(body), { poster: true });
     assert.equal(h.posterCalls.length, 1);
     assert.equal(h.posterCalls[0][0], body);
-    assert.equal(typeof h.posterCalls[0][1], 'function');
+    assert.equal(h.posterCalls[0][1], h.context.requestPosterAgent);
     assert.equal(h.posterCalls[0][2], JSON.parse);
     assert.equal(h.calls.length, 0);
   }

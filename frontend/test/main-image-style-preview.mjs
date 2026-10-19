@@ -20,6 +20,22 @@ const product = {id:'preview-product',organizationId:'preview-org',title:'Cotton
   skus:[{id:'sku-1',skuKey:'sku-1',externalSkuId:'shirt-M',price:'199',currency:'PHP',stock:100,attributes:{Size:'M'}}],
   normalizedData:{},completenessWarnings:[]};
 const requests = [], workflows = new Map();
+const progressMode = process.env.PREVIEW_PROGRESS === '1', started = new Map();
+function updateProgress() {
+  for (const row of templates) {
+    if (!started.has(row.id)) continue;
+    const elapsed = Math.floor((Date.now() - started.get(row.id)) / 1000);
+    row.images.forEach((slot, index) => {
+      const time = elapsed - Math.floor(index / 2) * 12;
+      slot.status = time < 0 ? 'QUEUED' : time < 12 ? 'ANALYZING' : index === row.images.length - 1 ? 'FAILED' : 'READY';
+      slot.analysis = slot.status === 'READY' ? {...analysis} : time >= 0 ? {progress: {
+        stage: time < 4 ? 'MODEL_WAITING' : 'MODEL_STREAMING', elapsedSeconds:Math.min(time,12), outputCharacters:Math.max(0,Math.min(time-4,8))*75
+      }} : {};
+      slot.error = slot.status === 'FAILED' ? '模拟模型连接中断，可重试此图' : null;
+    });
+    row.status = row.images.some(i=>i.status==='FAILED') ? 'FAILED' : row.images.every(i=>i.status==='READY') ? 'READY' : 'ANALYZING';
+  }
+}
 const json = (res, data, status = 200) => {res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify({data}));};
 const mime = {'.html':'text/html','.css':'text/css','.js':'text/javascript','.mjs':'text/javascript','.png':'image/png','.svg':'image/svg+xml','.json':'application/json'};
 const server = http.createServer(async (req,res) => {
@@ -36,13 +52,17 @@ const server = http.createServer(async (req,res) => {
     if (p === '/api/v1/product-captures') return json(res,{content:[product],totalElements:1,totalPages:1,number:0,size:24,
       statusCounts:{CAPTURED:0,READY:1,APPROVED:0,PUBLISHED:0,FAILED:0}});
     if (p === '/api/v1/product-captures/preview-product') return json(res,product);
-    if (p === '/api/v1/product-main-image-templates' && req.method === 'GET') return json(res,templates);
+    if (p === '/api/v1/product-main-image-templates' && req.method === 'GET') {updateProgress();return json(res,templates);}
     if (p === '/api/v1/product-main-image-templates' && req.method === 'POST') {
       const form = await new Request('http://localhost/upload',{method:'POST',headers:req.headers,body:req,duplex:'half'}).formData();
       const files = form.getAll('files'), id=crypto.randomUUID();
       const row={id,name:form.get('name'),status:'READY',imageCount:files.length,images:files.map((file,index)=>({
         id:crypto.randomUUID(),index,imageUrl:image,status:'READY',width:1024,height:1024,analysis:{...analysis},error:null}))};
-      templates.unshift(row); requests.push({method:'POST',path:p,files:files.map(f=>f.name)}); return json(res,row);
+      if (progressMode) {
+        await new Promise(resolve=>setTimeout(resolve,8000));
+        started.set(row.id,Date.now());
+      }
+      templates.unshift(row); updateProgress(); requests.push({method:'POST',path:p,files:files.map(f=>f.name)}); return json(res,row);
     }
     if (p.startsWith('/api/v1/product-main-image-templates/') && req.method === 'PATCH') {
       let raw='';for await(const chunk of req)raw+=chunk;

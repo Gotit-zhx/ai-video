@@ -40,7 +40,7 @@ export function validatePosterReview(value) {
     || !text(value.reason, 600)) throw fail('风格主图验收结果不完整');
   return value;
 }
-export async function runPosterAnalysis(body, requestAnalysisChat, extractJsonObject) {
+export async function runPosterAnalysis(body, requestAgent, extractJsonObject, options = {}) {
   const review = body?.context?.analysisType === POSTER_REVIEW;
   if (![POSTER_STYLE, POSTER_REVIEW].includes(body?.context?.analysisType)) throw fail('不支持的主图分析类型');
   const images = [body.image, ...(body.additionalImages || [])];
@@ -50,9 +50,102 @@ export async function runPosterAnalysis(body, requestAnalysisChat, extractJsonOb
       || !image.data || image.data.length > 11_184_812 || Buffer.from(image.data, 'base64').length > 8 * 1024 * 1024
       || Buffer.from(image.data, 'base64').toString('base64') !== image.data) throw fail('主图分析图片无效或超过8MiB');
   }
-  const reply = await requestAnalysisChat(body.model, body.model.apiKey, review ? POSTER_REVIEW_PROMPT : POSTER_STYLE_PROMPT,
+  const reply = await requestAgent(body.model, body.model.apiKey, review ? POSTER_REVIEW_PROMPT : POSTER_STYLE_PROMPT,
     JSON.stringify(body.context), images.map(image => ({ type: 'image', ...image })), review ? 1800 : 5000, undefined,
-    { reasoningEffort: 'low', activityTimeoutOnly: true, idleTimeoutMs: 120000, fallbackIdleTimeoutMs: 90000, fallbackOnPartialResponse: true });
-  const value = extractJsonObject(reply);
+    options);
+  options.onProgress?.({stage: 'VALIDATING', outputCharacters: reply.length});
+  let value;
+  try { value = extractJsonObject(reply); }
+  catch { throw fail('Pi Agent 返回的分析结果不是完整 JSON，请重试'); }
   return { result: review ? validatePosterReview(value) : validatePosterStyle(value), modelId: body.model.modelId };
+}
+
+const agentFailure = (message, code) => Object.assign(new Error(message),
+  {statusCode: 502, failureCode: code});
+
+export function createPosterAgentRequest({Agent, modelFrom, streamSimple, timeoutMs = 240_000, idleTimeoutMs = 90_000}) {
+  return async (config, apiKey, systemPrompt, prompt, images, maxTokens, _timeout, {onProgress, signal} = {}) => {
+    const startedAt = Date.now();
+    let lastActivity = startedAt, lastPublish = 0, outputCharacters = 0, stage = 'MODEL_WAITING', failure, calls = 0;
+    const publish = force => {
+      const now = Date.now();
+      if (!force && now - lastPublish < 1000) return;
+      lastPublish = now;
+      onProgress?.({stage, outputCharacters, elapsedSeconds: Math.floor((now - startedAt) / 1000)});
+    };
+    const base = modelFrom(config);
+    const model = {...base, reasoning: true, compat: {...base.compat, supportsReasoningEffort: true}};
+    const agent = new Agent({
+      initialState: {systemPrompt, model, thinkingLevel: 'low', messages: [], tools: []},
+      streamFn: (model, context, options) => {
+        if (++calls > 1) throw agentFailure('Pi Agent 返回了非预期的额外调用，已停止', 'POSTER_EXTRA_TURN');
+        return streamSimple(model, context, {...options, apiKey, maxTokens, reasoning: 'low', maxRetries: 0});
+      },
+      convertToLlm: messages => messages.filter(message => ['user', 'assistant'].includes(message.role))
+    });
+    const unsubscribe = agent.subscribe(event => {
+      if (event.type !== 'message_update' && event.type !== 'message_end') return;
+      const delta = event.assistantMessageEvent;
+      if (delta?.type === 'thinking_delta' || delta?.type === 'text_delta') lastActivity = Date.now();
+      if (event.message?.role !== 'assistant') return;
+      const count = (event.message.content || []).filter(part => part.type === 'text')
+        .reduce((sum, part) => sum + String(part.text || '').length, 0);
+      if (count > outputCharacters) {
+        outputCharacters = count;
+        const first = stage !== 'MODEL_STREAMING';
+        stage = 'MODEL_STREAMING'; publish(first);
+      }
+    });
+    const abort = () => agent.abort();
+    signal?.addEventListener('abort', abort, {once: true});
+    const clock = setInterval(() => {
+      if (Date.now() - startedAt >= timeoutMs || Date.now() - lastActivity >= idleTimeoutMs) {
+        failure ||= agentFailure('Pi Agent 分析等待超时，未自动重复调用，请重试此图', 'POSTER_ANALYSIS_TIMEOUT');
+        agent.abort();
+      }
+      publish(false);
+    }, Math.min(1000, timeoutMs, idleTimeoutMs));
+    try {
+      if (signal?.aborted) throw agentFailure('分析请求已中断', 'POSTER_ANALYSIS_ABORTED');
+      publish(true);
+      await agent.prompt(prompt, images);
+      if (failure) throw failure;
+      if (signal?.aborted) throw agentFailure('分析请求已中断', 'POSTER_ANALYSIS_ABORTED');
+      const assistant = [...agent.state.messages].reverse().find(message => message.role === 'assistant');
+      if (assistant?.stopReason === 'length') throw agentFailure('Pi Agent 输出达到长度限制，结果未完整返回，请重试', 'POSTER_OUTPUT_INCOMPLETE');
+      if (!assistant || ['error', 'aborted', 'toolUse'].includes(assistant.stopReason)) {
+        const reason = String(assistant?.errorMessage || '');
+        if (/\b429\b|rate.limit/i.test(reason)) throw agentFailure('视觉模型请求受限，请稍后重试', 'POSTER_MODEL_RATE_LIMITED');
+        if (/\b40[13]\b|unauthoriz|authentication/i.test(reason)) throw agentFailure('视觉模型认证失败，请检查模型配置', 'POSTER_MODEL_AUTH');
+        throw agentFailure('Pi Agent 未收到完整的模型响应，请检查视觉模型连接后重试', 'POSTER_MODEL_UNAVAILABLE');
+      }
+      const reply = assistant.content.filter(part => part.type === 'text').map(part => part.text).join('').trim();
+      if (!reply) throw agentFailure('Pi Agent 未返回分析正文，请重试', 'POSTER_OUTPUT_EMPTY');
+      return reply;
+    } catch (error) {
+      const safe = failure || (String(error.failureCode || '').startsWith('POSTER_') ? error
+        : agentFailure('Pi Agent 视觉模型连接失败，请检查模型配置后重试', 'POSTER_MODEL_UNAVAILABLE'));
+      console.warn(`[poster-analysis] failed code=${safe.failureCode} elapsedMs=${Date.now() - startedAt}`);
+      throw safe;
+    } finally {
+      clearInterval(clock); unsubscribe(); signal?.removeEventListener('abort', abort);
+    }
+  };
+}
+
+export async function streamPosterAnalysis(body, response, requestAgent, extractJsonObject) {
+  const controller = new AbortController();
+  const close = () => controller.abort();
+  response.on('close', close);
+  response.writeHead(200, {'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'});
+  const write = event => { if (!response.destroyed) response.write(JSON.stringify(event) + '\n'); };
+  try {
+    const result = await runPosterAnalysis(body, requestAgent, extractJsonObject, {
+      signal: controller.signal,
+      onProgress: progress => write({type: 'progress', ...progress})
+    });
+    write({type: 'result', ...result});
+  } catch (error) {
+    write({type: 'error', message: error.message, failureCode: error.failureCode || 'POSTER_ANALYSIS_FAILED'});
+  } finally { response.removeListener('close', close); response.end(); }
 }

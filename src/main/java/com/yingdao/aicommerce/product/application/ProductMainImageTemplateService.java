@@ -134,26 +134,33 @@ public class ProductMainImageTemplateService {
     @Scheduled(initialDelayString = "${app.main-image-style.initial-delay:5000}", fixedDelay = 3000)
     public void poll() {
         // Expired analyses are explicit failures, never silently repeated paid calls.
-        db.update("UPDATE product_main_image_template_images SET status='FAILED',error_message='识别超时，可重试未完成图片',updated_at=NOW(6) WHERE status='ANALYZING' AND updated_at<DATE_SUB(NOW(6),INTERVAL 15 MINUTE)");
+        db.update("UPDATE product_main_image_template_images SET status='FAILED',error_message='识别超时，可重试未完成图片',updated_at=NOW(6) WHERE status IN ('QUEUED','ANALYZING') AND updated_at<DATE_SUB(NOW(6),INTERVAL 15 MINUTE)");
         var candidates = db.queryForList("""
                 SELECT i.* FROM product_main_image_template_images i JOIN product_main_image_templates t ON t.id=i.template_id
                 WHERE i.status='PENDING' AND t.archived=FALSE ORDER BY t.created_at,i.sort_order LIMIT 2
                 """);
         for (var image : candidates) {
             String id = (String) image.get("id");
-            if (db.update("UPDATE product_main_image_template_images SET status='ANALYZING',updated_at=NOW(6) WHERE id=? AND status='PENDING'", id) != 1) continue;
+            if (db.update("UPDATE product_main_image_template_images SET status='QUEUED',analysis_json=NULL,updated_at=NOW(6) WHERE id=? AND status='PENDING'", id) != 1) continue;
             try { executor.execute(() -> analyze(image)); }
             catch (java.util.concurrent.RejectedExecutionException busy) {
-                db.update("UPDATE product_main_image_template_images SET status='PENDING',updated_at=NOW(6) WHERE id=? AND status='ANALYZING'", id);
+                db.update("UPDATE product_main_image_template_images SET status='PENDING',updated_at=NOW(6) WHERE id=? AND status='QUEUED'", id);
             }
         }
     }
 
     private void analyze(Map<String, Object> image) {
         String id = (String) image.get("id"), org = (String) image.get("organization_id");
+        if (db.update("""
+                UPDATE product_main_image_template_images i JOIN product_main_image_templates t ON t.id=i.template_id
+                SET i.status='ANALYZING',i.updated_at=NOW(6)
+                WHERE i.id=? AND i.status='QUEUED' AND t.archived=FALSE
+                """, id) != 1) return;
         try {
             var result = vision.analyze(org, "PRODUCT_MAIN_IMAGE_STYLE_V1",
-                    List.of(archive.read(org, (String) image.get("storage_key"))), Map.of());
+                    List.of(archive.read(org, (String) image.get("storage_key"))), Map.of(), progress ->
+                    db.update("UPDATE product_main_image_template_images SET analysis_json=?,updated_at=NOW(6) WHERE id=? AND status='ANALYZING'",
+                            json.writeValueAsString(Map.of("progress", progress)), id));
             ProductMainImageStylePolicy.validateAnalysis(result);
             db.update("UPDATE product_main_image_template_images SET status='READY',analysis_json=?,error_message=NULL,updated_at=NOW(6) WHERE id=? AND status='ANALYZING'",
                     json.writeValueAsString(result), id);

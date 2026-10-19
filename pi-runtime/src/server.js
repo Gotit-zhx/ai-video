@@ -34,12 +34,13 @@ import { requestChatCompletion } from "./chat-completion-transport.js";
 import { createWatchModelTransport } from "./watch-model-transport.js";
 import { auditVideoFrame } from "./video-frame-layout-audit.js";
 import { runCommerceDrapeStyleAnalysis } from "./commerce-drape-style.js";
-import { runPosterAnalysis, POSTER_STYLE, POSTER_REVIEW } from "./product-main-image-style.js";
+import { runPosterAnalysis, createPosterAgentRequest, streamPosterAnalysis, POSTER_STYLE, POSTER_REVIEW } from "./product-main-image-style.js";
 import { runCommerceModelDetailAnalysis } from "./commerce-model-detail.js";
 import { runCommerceModelDetailStyleAnalysis } from "./commerce-model-detail-style.js";
 
 const PORT = Number(process.env.PORT || 8090);
 const INTERNAL_TOKEN = process.env.PI_RUNTIME_TOKEN || "heyi-pi-runtime-dev-token";
+const requestPosterAgent = createPosterAgentRequest({Agent, modelFrom, streamSimple});
 const execFileAsync = promisify(execFile);
 const WATCH_SKILLS_DIR = path.resolve(
   process.env.WATCH_SKILLS_DIR || path.join(process.cwd(), "skills")
@@ -3110,7 +3111,7 @@ async function runProductFunctionAnalysis(body) {
   }
   const analysisType = String(body?.context?.analysisType || "PRODUCT_FUNCTION_V1").trim();
   if ([POSTER_STYLE, POSTER_REVIEW].includes(analysisType)) {
-    return runPosterAnalysis(body, requestAnalysisChat, extractJsonObject);
+    return runPosterAnalysis(body, requestPosterAgent, extractJsonObject);
   }
   if (analysisType === "COMMERCE_DRAPE_STYLE_V1" || analysisType === "COMMERCE_DRAPE_STYLE_V2"
       || analysisType === "COMMERCE_DRAPE_STYLE_V4") {
@@ -3225,6 +3226,11 @@ async function handleProductFunctionAnalysis(request, response) {
     return;
   }
   const body = await readBody(request);
+  if ([POSTER_STYLE, POSTER_REVIEW].includes(body?.context?.analysisType)
+      && String(request.headers.accept || '').includes('application/x-ndjson')) {
+    await streamPosterAnalysis(body, response, requestPosterAgent, extractJsonObject);
+    return;
+  }
   json(response, 200, await runProductFunctionAnalysis(body));
 }
 
