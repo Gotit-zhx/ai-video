@@ -260,6 +260,7 @@ jobs:
           if ($assets.Count -ne 3) { throw 'Expected one verified installer, portable candidate and report' }
           gh release upload $tag @assets
           if ($LASTEXITCODE -ne 0) { throw 'Private draft upload failed' }
+          Write-Output "HEYI_PRIVATE_CANDIDATE_TAG $tag"
   private-delivery:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.deliverPrivate == true && github.event.repository.private == true }}
     runs-on: ubuntu-latest
@@ -279,4 +280,3 @@ jobs:
           PRIVATE_RELEASE: ${{ inputs.privateRelease }}
           UPLOAD_TICKET: ${{ secrets.HEYI_PRIVATE_INSTALLER_TRANSFER }}
         run: python scripts/ci/deliver_private_installer.py
-          Write-Output "HEYI_PRIVATE_CANDIDATE_TAG $tag"
