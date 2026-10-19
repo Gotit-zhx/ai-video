@@ -11,6 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.databind.ObjectMapper;
 import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.AdditionalMatchers.aryEq;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -20,13 +21,12 @@ class ProductMainImageStyleServiceTest {
     private final CommerceImageArchive archive = mock(CommerceImageArchive.class);
     private final MarketplaceImageDownloader downloader = mock(MarketplaceImageDownloader.class);
     private final CommerceDesignImageGateway gateway = mock(CommerceDesignImageGateway.class);
-    private final ProductMainImageStyleVision vision = mock(ProductMainImageStyleVision.class);
     private final ModelConfigService models = mock(ModelConfigService.class);
     private final ProductMainImageTemplateService templates = mock(ProductMainImageTemplateService.class);
     private final ObjectMapper json = new ObjectMapper();
     private final ProductCapture capture = mock(ProductCapture.class);
     private final ProductPublishWorkflow workflow = mock(ProductPublishWorkflow.class);
-    private final ProductMainImageStyleService service = new ProductMainImageStyleService(db, images, archive, downloader, gateway, vision, models, json, templates);
+    private final ProductMainImageStyleService service = new ProductMainImageStyleService(db, images, archive, downloader, gateway, models, json, templates);
     private final String templateId = "12345678-1234-1234-1234-123456789012";
     private Map<String,Object> slot;
     private Map<String,Object> job;
@@ -51,12 +51,12 @@ class ProductMainImageStyleServiceTest {
         when(workflow.getRequestJson()).thenReturn("{}");
         assertTrue(service.ensureReady(workflow,capture));
         assertNull(service.progress(workflow));
-        verifyNoInteractions(db,images,archive,downloader,gateway,vision,models,templates);
+        verifyNoInteractions(db,images,archive,downloader,gateway,models,templates);
     }
     @Test void completedSlotsAreReusedWithoutAnotherPaidCall() {
         assertTrue(service.ensureReady(workflow,capture));
         assertEquals(1,service.progress(workflow).processedImages());
-        verifyNoInteractions(gateway,vision,models,downloader);
+        verifyNoInteractions(gateway,models,downloader);
     }
     @Test void originalOnlyTemplateCopiesArchivedReferenceWithoutProductSourceOrAnyModel() {
         slot.put("analysis", ProductMainImageStylePolicyTest.originalAnalysis());
@@ -71,7 +71,7 @@ class ProductMainImageStyleServiceTest {
         assertEquals(1, service.progress(workflow).processedImages());
         verify(db, times(1)).update(contains("'ORIGINAL'"), any(Object[].class));
         verify(archive).read("org","reference");
-        verifyNoInteractions(images,downloader,gateway,vision,models);
+        verifyNoInteractions(images,downloader,gateway,models);
     }
     @Test void mixedTemplateKeepsOriginalAndGeneratedImagesInTheirSlotsWithoutRegeneratingReadyWork() {
         var generatedSlot = new LinkedHashMap<>(slot);
@@ -89,7 +89,7 @@ class ProductMainImageStyleServiceTest {
         assertEquals(2,progress.processedImages());
         assertEquals("/api/v1/product-main-image-results/"+persisted.getFirst().get("id"),progress.imageUrls().getFirst());
         assertEquals("/api/v1/product-main-image-results/"+job.get("id"),progress.imageUrls().getLast());
-        verifyNoInteractions(images,downloader,gateway,vision,models);
+        verifyNoInteractions(images,downloader,gateway,models);
     }
     @Test void changingAnOriginalSlotToGeneratedDoesNotReuseItsEmptyModelId() {
         var originalSlot = new LinkedHashMap<>(slot);
@@ -161,32 +161,75 @@ class ProductMainImageStyleServiceTest {
         assertEquals(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,failure.getStatus());
         verify(db).update(contains("SET status='PREPARED'"),eq(job.get("id")),eq(0));
     }
-    @Test void receivedOutputIsAutomaticallyReviewedThenApproved() {
+    @Test void savedOutputBecomesReadyWithoutVisualReviewOrAnotherModelCall() {
         job.put("status","RESULT_RECEIVED");
-        var result = new LinkedHashMap<String,Object>();
-        ProductMainImageStylePolicy.CHECKS.forEach(key -> result.put(key,true));result.put("reason","Visual match");
-        when(vision.analyze(eq("org"),eq("PRODUCT_MAIN_IMAGE_REVIEW_V1"),anyList(),anyMap(),any())).thenReturn(result);
         assertFalse(service.ensureReady(workflow,capture));
-        verify(db).update(contains("SET status='READY'"),eq(json.writeValueAsString(result)),eq(job.get("id")),eq(0));
-        verifyNoInteractions(gateway,downloader);
+        verify(db).update(contains("SET status='READY',review_json=NULL"),eq(job.get("id")),eq(0),eq("output"));
+        verify(archive).read("org","output");
+        verifyNoMoreInteractions(archive);
+        verifyNoInteractions(gateway,models,downloader);
+        verify(db,never()).update(contains("history_json"),any(Object[].class));
     }
-    @Test void qualityMismatchSchedulesOneCorrectionAndRetainsOriginalPaidOutput() {
-        job.put("status","RESULT_RECEIVED");job.put("result_json","{\"artifact\":null,\"result\":null}");
-        var result = new LinkedHashMap<String,Object>();
-        ProductMainImageStylePolicy.CHECKS.forEach(key -> result.put(key,true));result.put("layoutMatched",false);result.put("reason","Title misplaced");
-        when(vision.analyze(eq("org"),eq("PRODUCT_MAIN_IMAGE_REVIEW_V1"),anyList(),anyMap(),any())).thenReturn(result);
+    @Test void legacyFailedReviewDoesNotGateSavedOutputOrScheduleCorrection() {
+        job.put("status","RESULT_RECEIVED");
+        job.put("review_json","{\"textSafe\":false,\"reason\":\"Reference size values\"}");
         assertFalse(service.ensureReady(workflow,capture));
-        verify(db).update(contains("attempt_count=1,history_json"),contains("\"storageKey\":\"output\""),contains("Title misplaced"),eq(job.get("id")));
-        verifyNoInteractions(gateway);
+        verify(db).update(contains("SET status='READY',review_json=NULL"),eq(job.get("id")),eq(0),eq("output"));
+        verify(db,never()).update(contains("SET status='PREPARED'"),any(Object[].class));
+        verify(db,never()).update(contains("SET status='FAILED'"),any(Object[].class));
+        verifyNoInteractions(gateway,models,downloader);
     }
-    @Test void secondQualityMismatchStopsInsteadOfLoopingPaidGenerations() {
+    @Test void alreadyGeneratedLegacyCorrectionFinishesWithoutAnotherReviewOrRedraw() {
         job.put("status","RESULT_RECEIVED");job.put("attempt_count",1);
-        var result = new LinkedHashMap<String,Object>();
-        ProductMainImageStylePolicy.CHECKS.forEach(key -> result.put(key,false));result.put("reason","Wrong product");
-        when(vision.analyze(eq("org"),eq("PRODUCT_MAIN_IMAGE_REVIEW_V1"),anyList(),anyMap(),any())).thenReturn(result);
-        assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class, () -> service.ensureReady(workflow,capture));
-        verify(db).update(contains("SET status='FAILED'"),contains("Wrong product"),eq(job.get("id")));
-        verifyNoInteractions(gateway);
+        job.put("review_json","{\"textSafe\":false,\"reason\":\"Reference size values\"}");
+        job.put("history_json","{\"result\":\"previous paid output\"}");
+        assertFalse(service.ensureReady(workflow,capture));
+        verify(db).update(contains("SET status='READY',review_json=NULL"),eq(job.get("id")),eq(1),eq("output"));
+        verify(db,never()).update(contains("history_json"),any(Object[].class));
+        verifyNoInteractions(gateway,models,downloader);
+    }
+    @Test void missingArchivedOutputDoesNotBecomeReadyOrTriggerGeneration() {
+        job.put("status","RESULT_RECEIVED");
+        when(archive.read("org","output")).thenThrow(new IllegalStateException("Missing file"));
+        assertThrows(IllegalStateException.class,()->service.ensureReady(workflow,capture));
+        verify(db,never()).update(contains("SET status='READY'"),any(Object[].class));
+        verifyNoInteractions(gateway,models,downloader);
+    }
+    @Test void inlineOutputIsStoredByteForByteAndReadyInTheSameWorkerClaim() throws Exception {
+        byte[] bytes = outputImage();
+        job.put("status","RESULT_RECEIVED");job.remove("storage_key");
+        job.put("result_json",json.writeValueAsString(new CommerceDesignImageGateway.Response(
+                new CommerceDesignImageGateway.Artifact(Base64.getEncoder().encodeToString(bytes),"image/png","model","edit","unchanged"),
+                null)));
+        when(archive.store(eq("org"),any(byte[].class))).thenReturn(new CommerceImageArchive.Archived("saved","hash","image/png",bytes.length));
+        assertFalse(service.ensureReady(workflow,capture));
+        verify(archive).store(eq("org"),aryEq(bytes));
+        var order=inOrder(db);
+        order.verify(db).update(contains("SET storage_key=?"),eq("saved"),eq(job.get("id")),eq(0));
+        order.verify(db).update(contains("SET status='READY',review_json=NULL"),eq(job.get("id")),eq(0),eq("saved"));
+        verifyNoInteractions(gateway,models,downloader);
+    }
+    @Test void downloadedOutputIsReturnedWithoutEditingOrAdditionalModelCalls() throws Exception {
+        byte[] bytes=outputImage();
+        job.put("status","RESULT_RECEIVED");job.remove("storage_key");
+        job.put("result_json",json.writeValueAsString(new CommerceDesignImageGateway.Response(null,
+                new CommerceDesignImageGateway.PendingResult("https://result.invalid/image.png","image/png","model","edit","unchanged"))));
+        when(downloader.download("https://result.invalid/image.png"))
+                .thenReturn(new MarketplaceImageDownloader.ImageBinary(bytes,"image/png","png"));
+        when(archive.store(eq("org"),any(byte[].class))).thenReturn(new CommerceImageArchive.Archived("saved","hash","image/png",bytes.length));
+        assertFalse(service.ensureReady(workflow,capture));
+        verify(archive).store(eq("org"),aryEq(bytes));
+        verify(db).update(contains("SET status='READY',review_json=NULL"),eq(job.get("id")),eq(0),eq("saved"));
+        verifyNoInteractions(gateway,models);
+    }
+    @Test void unreadableImageBytesStillCannotBeMarkedReady() {
+        job.put("status","RESULT_RECEIVED");job.remove("storage_key");
+        job.put("result_json",json.writeValueAsString(new CommerceDesignImageGateway.Response(
+                new CommerceDesignImageGateway.Artifact("aW1hZ2U=","image/png","model","edit",null),null)));
+        assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,()->service.ensureReady(workflow,capture));
+        verify(db).update(contains("SET status='FAILED'"),contains("无法解码"),eq(job.get("id")));
+        verify(db,never()).update(contains("SET status='READY'"),any(Object[].class));
+        verifyNoInteractions(archive,gateway,models,downloader);
     }
     @Test void progressIncludesEverySlotInOrderAndDoesNotCallModels() {
         var second = new LinkedHashMap<>(slot);
@@ -204,10 +247,10 @@ class ProductMainImageStyleServiceTest {
         assertEquals(1,progress.images().getLast().index());
         assertEquals("WAITING",progress.images().getLast().stage());
         assertNull(progress.images().getLast().elapsedSeconds());
-        verifyNoInteractions(gateway,vision,models,archive,downloader);
+        verifyNoInteractions(gateway,models,archive,downloader);
         verify(db,never()).update(anyString(),any(Object[].class));
     }
-    @Test void progressSeparatesOriginalsCorrectionsAndGeneratedQualityChecks() {
+    @Test void progressKeepsOriginalsAndSavesReceivedOutputWithoutReviewStages() {
         slot.put("analysis",ProductMainImageStylePolicyTest.originalAnalysis());
         job.put("template_fingerprint",ProductMainImageStylePolicy.fingerprint(slot,json));
         assertEquals("PRESERVED",service.progress(workflow).images().getFirst().stage());
@@ -215,14 +258,14 @@ class ProductMainImageStyleServiceTest {
         slot.put("analysis",ProductMainImageStylePolicyTest.analysis());
         job.put("template_fingerprint",ProductMainImageStylePolicy.fingerprint(slot,json));
         job.put("status","PREPARED");job.put("attempt_count",1);
-        assertEquals("CORRECTING",service.progress(workflow).images().getFirst().stage());
+        assertEquals("QUEUED",service.progress(workflow).images().getFirst().stage());
         job.put("status","RESULT_RECEIVED");
-        assertEquals("REVIEW_QUEUED",service.progress(workflow).images().getFirst().stage());
+        assertEquals("SAVING",service.progress(workflow).images().getFirst().stage());
         job.put("review_json","{\"progress\":{\"stage\":\"MODEL_STREAMING\",\"elapsedSeconds\":12,\"outputCharacters\":345},\"secret\":\"not exposed\"}");
         var image=service.progress(workflow).images().getFirst();
-        assertEquals("REVIEW_MODEL_STREAMING",image.stage());
-        assertEquals(12L,image.elapsedSeconds());
-        assertEquals(345,image.outputCharacters());
+        assertEquals("SAVING",image.stage());
+        assertNull(image.elapsedSeconds());
+        assertEquals(0,image.outputCharacters());
         assertFalse(json.writeValueAsString(image).contains("secret"));
         job.remove("review_json");job.remove("storage_key");
         assertEquals("SAVING",service.progress(workflow).images().getFirst().stage());
@@ -247,24 +290,10 @@ class ProductMainImageStyleServiceTest {
         assertNull(image.imageUrl());
         assertEquals(0,service.progress(workflow).processedImages());
     }
-    @Test void reviewStreamPersistsOnlyBoundedPublicProgressForCurrentAttempt() {
-        job.put("status","RESULT_RECEIVED");job.put("attempt_count",1);
-        var result = new LinkedHashMap<String,Object>();
-        ProductMainImageStylePolicy.CHECKS.forEach(key -> result.put(key,true));result.put("reason","Match");
-        when(vision.analyze(eq("org"),eq("PRODUCT_MAIN_IMAGE_REVIEW_V1"),anyList(),anyMap(),any())).thenAnswer(call -> {
-            java.util.function.Consumer<Map<String,Object>> callback=call.getArgument(4);
-            callback.accept(Map.of("stage","MODEL_STREAMING","elapsedSeconds",5,"outputCharacters",123,"reasoning","private"));
-            callback.accept(Map.of("stage","MODEL_STREAMING","elapsedSeconds",9999L,"outputCharacters",999999L));
-            callback.accept(Map.of("stage","UNTRUSTED","elapsedSeconds",1));
-            return result;
-        });
-        assertFalse(service.ensureReady(workflow,capture));
-        verify(db,times(3)).update(contains("SET review_json=?,updated_at"),anyString(),eq(job.get("id")),eq(1));
-        verify(db).update(contains("SET review_json=?,updated_at"),argThat((String value) ->
-                value.contains("\"outputCharacters\":123") && !value.contains("private")),eq(job.get("id")),eq(1));
-        verify(db).update(contains("SET review_json=?,updated_at"),argThat((String value) ->
-                value.contains("\"outputCharacters\":50000") && value.contains("\"elapsedSeconds\":600")),eq(job.get("id")),eq(1));
-        verify(db).update(contains("SET status='READY'"),eq(json.writeValueAsString(result)),eq(job.get("id")),eq(1));
+    private static byte[] outputImage() throws Exception {
+        var output=new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(128,128,java.awt.image.BufferedImage.TYPE_INT_RGB),"png",output);
+        return output.toByteArray();
     }
     private ModelConfigService.RuntimeModelConnection configuredModel() {
         var model = new ModelConfigService.RuntimeModelConnection("model","https://unit.invalid","image-model","OPENAI_COMPATIBLE","CUSTOM","test-only");

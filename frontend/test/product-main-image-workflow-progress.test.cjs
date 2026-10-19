@@ -31,7 +31,7 @@ const workflow = () => ({status:'RUNNING', currentStep:'STYLE_IMAGES', mainImage
 test('renders each ordered slot, actual stages, elapsed time and preserved original', () => {
   const html = harness().renderProductMainImageProgress(workflow());
   for (const text of ['泰国A','1 / 4 张就绪','第 1 张','第 2 张','第 3 张','第 4 张','正在生成',
-    '本阶段已用 42 秒','自动修正 · 正在返回检查结果','检查已返回 123 字符','排队中','原样保留 1 张']) assert.ok(html.includes(text),text);
+    '本阶段已用 42 秒','正在返回检查结果','检查已返回 123 字符','排队中','原样保留 1 张']) assert.ok(html.includes(text),text);
   assert.match(html, /<progress value="1" max="4"/);
   assert.equal((html.match(/<li /g)||[]).length,4);
   assert.equal((html.match(/<img /g)||[]).length,1);
@@ -85,9 +85,25 @@ test('ready results after a correction have previews without invented elapsed ti
   current.status='SUCCEEDED';
   current.mainImageStyle.images=[{index:0,status:'READY',stage:'READY',attempt:1,elapsedSeconds:99,imageUrl:'/api/v1/product-main-image-results/ready'}];
   const html=harness().renderProductMainImageProgress(current);
-  assert.match(html,/自动修正 · 生成完成/);
+  assert.match(html,/生成完成/);
+  assert.doesNotMatch(html,/自动修正/);
   assert.match(html,/alt="第 1 张风格主图"/);
   assert.doesNotMatch(html,/本阶段已用/);
+});
+test('generation-only progress goes from saving to ready without review or correction labels', () => {
+  const h=harness(), current=workflow();
+  current.mainImageStyle.images=[
+    {index:0,status:'RESULT_RECEIVED',stage:'SAVING',attempt:1},
+    {index:1,status:'PREPARED',stage:'QUEUED',attempt:0}
+  ];
+  const saving=h.renderProductMainImageProgress(current);
+  assert.match(saving,/正在保存生成结果/);
+  assert.doesNotMatch(saving,/检查|验收|自动修正/);
+  Object.assign(current.mainImageStyle.images[0],{status:'READY',stage:'READY',imageUrl:'/api/v1/product-main-image-results/saved'});
+  const ready=h.renderProductMainImageProgress(current);
+  assert.match(ready,/生成完成/);
+  assert.match(ready,/<img /);
+  assert.doesNotMatch(ready,/检查|验收|自动修正/);
 });
 test('product detail, publish dialog and bulk details all render the same live progress', () => {
   assert.match(functionSource('renderProductUploadResult','syncProductActions'), /replaceHtmlPreservingMedia\(el,[\s\S]*renderProductMainImageProgress\(workflow\)/);

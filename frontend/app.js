@@ -4713,7 +4713,7 @@ function renderProductMainImageProgress(workflow, compact = false) {
   const active = images.find(image => activeStages.includes(image.stage));
   const preserved = images.filter(image => image.stage === 'PRESERVED').length;
   const failed = images.filter(image => image.stage === 'FAILED' || image.stage === 'STOPPED').length;
-  const stageText = image => `${image.attempt > 0 && !['CORRECTING','PRESERVED','STOPPED'].includes(image.stage) ? '自动修正 · ' : ''}${labels[image.stage] || '等待处理'}`;
+  const stageText = image => labels[image.stage] || '等待处理';
   const imageLink = (url, index) => {
     const safe = safeProductUrl(url);
     return safe ? `<a class="main-style-workflow-image" href="${escapeHtml(safe)}" target="_blank" rel="noopener"><img src="${escapeHtml(safe)}" alt="第 ${index + 1} 张风格主图" loading="lazy"></a>`

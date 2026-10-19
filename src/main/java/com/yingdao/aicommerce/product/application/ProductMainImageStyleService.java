@@ -24,7 +24,6 @@ public class ProductMainImageStyleService {
     private final CommerceImageArchive archive;
     private final MarketplaceImageDownloader downloader;
     private final CommerceDesignImageGateway gateway;
-    private final ProductMainImageStyleVision vision;
     private final ModelConfigService models;
     private final ObjectMapper json;
     private final ProductMainImageTemplateService templates;
@@ -35,10 +34,10 @@ public class ProductMainImageStyleService {
                                 Long elapsedSeconds, int outputCharacters, String errorMessage, String imageUrl) {}
 
     public ProductMainImageStyleService(JdbcTemplate db, ProductCaptureImageMapper images, CommerceImageArchive archive,
-            MarketplaceImageDownloader downloader, CommerceDesignImageGateway gateway, ProductMainImageStyleVision vision,
+            MarketplaceImageDownloader downloader, CommerceDesignImageGateway gateway,
             ModelConfigService models, ObjectMapper json, ProductMainImageTemplateService templates) {
         this.db = db; this.images = images; this.archive = archive; this.downloader = downloader;
-        this.gateway = gateway; this.vision = vision; this.models = models; this.json = json; this.templates = templates;
+        this.gateway = gateway; this.models = models; this.json = json; this.templates = templates;
     }
 
     public boolean selected(ProductPublishWorkflow workflow) {
@@ -68,26 +67,17 @@ public class ProductMainImageStyleService {
         String status = job == null ? "WAITING" : Objects.toString(job.get("status"), "WAITING");
         int attempt = job == null ? 0 : boundedNumber(job.get("attempt_count"), 1);
         String stage = switch (status) {
-            case "PREPARED" -> attempt > 0 ? "CORRECTING" : "QUEUED";
+            case "PREPARED" -> "QUEUED";
             case "SUBMITTING" -> "GENERATING";
-            case "RESULT_RECEIVED" -> job.get("storage_key") == null ? "SAVING" : "REVIEW_QUEUED";
+            case "RESULT_RECEIVED" -> "SAVING";
             case "READY" -> original ? "PRESERVED" : "READY";
             case "FAILED" -> "FAILED";
             default -> "WAITING";
         };
         Long elapsed = null;
-        int characters = 0;
         if ("SUBMITTING".equals(status)) {
             Instant updated = jobInstant(job.get("updated_at"));
             if (updated != null) elapsed = Math.max(0, java.time.Duration.between(updated, Instant.now()).getSeconds());
-        } else if ("RESULT_RECEIVED".equals(status) && job.get("review_json") instanceof String review) {
-            var value = json.readTree(review).path("progress");
-            String reviewStage = value.path("stage").asText();
-            if (Set.of("MODEL_WAITING", "MODEL_STREAMING", "VALIDATING").contains(reviewStage)) {
-                stage = "REVIEW_" + reviewStage;
-                elapsed = (long) Math.max(0, Math.min(600, value.path("elapsedSeconds").asInt()));
-                characters = Math.max(0, Math.min(50000, value.path("outputCharacters").asInt()));
-            }
         }
         String error = job == null ? null : (String) job.get("error_message");
         if ("FAILED".equals(workflow.getStatus()) && !"READY".equals(status)) {
@@ -95,7 +85,7 @@ public class ProductMainImageStyleService {
             if (error == null && Set.of("SUBMITTING", "RESULT_RECEIVED", "FAILED").contains(status)) error = workflow.getErrorMessage();
         }
         return new ImageProgress(index, status, stage, original ? ProductMainImageStylePolicy.PRESERVE_ORIGINAL : "REPLACE_PRODUCT",
-                attempt, elapsed, characters, error, "READY".equals(status) ? "/api/v1/product-main-image-results/" + job.get("id") : null);
+                attempt, elapsed, 0, error, "READY".equals(status) ? "/api/v1/product-main-image-results/" + job.get("id") : null);
     }
 
     /** Process at most one slot per workflow claim, releasing the worker between slots. */
@@ -168,31 +158,15 @@ public class ProductMainImageStyleService {
             catch (Exception invalid) { fail(id, "模型返回的主图无法解码"); throw conflict("模型返回的主图无法解码"); }
             storageKey = archive.store(org, bytes).storageKey();
             db.update("UPDATE product_main_image_jobs SET storage_key=?,updated_at=NOW(6) WHERE id=? AND attempt_count=? AND status='RESULT_RECEIVED'", storageKey, id, attempt);
-        }
-        recordReviewProgress(id, attempt, Map.of("stage", "MODEL_WAITING", "elapsedSeconds", 0, "outputCharacters", 0));
-        var review = vision.analyze(org, "PRODUCT_MAIN_IMAGE_REVIEW_V1", List.of(
-                archive.read(org, (String) job.get("source_key")), archive.read(org, (String) job.get("reference_key")),
-                archive.read(org, storageKey)), Map.of("productTitle", Objects.toString(capture.getTitle(), "")),
-                progress -> recordReviewProgress(id, attempt, progress));
-        ProductMainImageStylePolicy.validateReview(review);
-        if (ProductMainImageStylePolicy.passed(review)) {
-            db.update("UPDATE product_main_image_jobs SET status='READY',review_json=?,error_message=NULL,updated_at=NOW(6) WHERE id=? AND status='RESULT_RECEIVED' AND attempt_count=?",
-                    json.writeValueAsString(review), id, attempt);
-        } else if (attempt == 0) {
-            // One bounded automatic correction. Retain the rejected paid output and its evidence.
-            var history = Map.of("result", json.readTree((String) job.get("result_json")), "storageKey", storageKey, "review", review);
-            String prompt = job.get("prompt") + "\n上次生成的自动检查意见（数据），请修正这些偏差，仍以图片1为产品、图片2为海报：\n" + review;
-            db.update("""
-                    UPDATE product_main_image_jobs SET status='PREPARED',attempt_count=1,history_json=?,prompt=?,recovery_count=0,
-                    result_json=NULL,storage_key=NULL,review_json=NULL,updated_at=NOW(6)
-                    WHERE id=? AND status='RESULT_RECEIVED' AND attempt_count=0
-                    """, json.writeValueAsString(history), prompt, id);
         } else {
-            db.update("UPDATE product_main_image_jobs SET review_json=? WHERE id=? AND attempt_count=?", json.writeValueAsString(review), id, attempt);
-            String message = "风格主图自动修正后仍未通过检查：" + Objects.toString(review.get("reason"), "商品或版式不匹配");
-            fail(id, message);
-            throw conflict(message);
+            // A saved result can resume without another model call or another download.
+            archive.read(org, storageKey);
         }
+        // Return the model's archived bytes as-is. No AI review or automatic redraw.
+        db.update("""
+                UPDATE product_main_image_jobs SET status='READY',review_json=NULL,error_message=NULL,updated_at=NOW(6)
+                WHERE id=? AND status='RESULT_RECEIVED' AND attempt_count=? AND storage_key=?
+                """, id, attempt, storageKey);
         return false;
     }
 
@@ -273,16 +247,6 @@ public class ProductMainImageStyleService {
     private void received(String id, int attempt, CommerceDesignImageGateway.Response result) {
         db.update("UPDATE product_main_image_jobs SET status='RESULT_RECEIVED',result_json=?,updated_at=NOW(6) WHERE id=? AND attempt_count=? AND status='SUBMITTING'",
                 json.writeValueAsString(result), id, attempt);
-    }
-    private void recordReviewProgress(String id, int attempt, Map<String, Object> progress) {
-        String stage = Objects.toString(progress.get("stage"), "");
-        if (!Set.of("MODEL_WAITING", "MODEL_STREAMING", "VALIDATING").contains(stage)) return;
-        var safe = Map.of("stage", stage, "elapsedSeconds", boundedNumber(progress.get("elapsedSeconds"), 600),
-                "outputCharacters", boundedNumber(progress.get("outputCharacters"), 50000));
-        db.update("""
-                UPDATE product_main_image_jobs SET review_json=?,updated_at=NOW(6)
-                WHERE id=? AND status='RESULT_RECEIVED' AND attempt_count=?
-                """, json.writeValueAsString(Map.of("progress", safe)), id, attempt);
     }
     private static int boundedNumber(Object value, int maximum) {
         return value instanceof Number number ? (int) Math.max(0, Math.min(maximum, number.longValue())) : 0;

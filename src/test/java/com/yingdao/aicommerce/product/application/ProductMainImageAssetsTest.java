@@ -82,13 +82,36 @@ class ProductMainImageAssetsTest {
         row.put("review_json","{}");
         assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,()->assets.gallery(capture,request()));
     }
-    @Test void originalMarkerCannotBypassQualityChecksForAGeneratedSlot() {
+    @Test void generatedImagesArePublishableWithoutAnyReviewMetadata() {
         var slot = setup();
-        var row = Map.<String,Object>of("id","job","sort_order",0,"status","READY","storage_key","reference",
-                "template_fingerprint",ProductMainImageStylePolicy.fingerprint(slot,json),"review_json","{\"mode\":\"PRESERVE_ORIGINAL\"}");
+        var row = new LinkedHashMap<String,Object>(Map.of("id","job","sort_order",0,"status","READY","storage_key","stored",
+                "template_fingerprint",ProductMainImageStylePolicy.fingerprint(slot,json)));
         when(db.queryForList(contains("SELECT * FROM product_main_image_jobs"),eq(workflow),eq("org"),eq("capture"))).thenReturn(List.of(row));
-        assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class,()->assets.gallery(capture,request()));
+        when(archive.read("org","stored")).thenReturn(new CommerceDesignImageGateway.Reference("image/png","aW1hZ2U="));
+        for (String review : Arrays.asList(null,"","{}","{\"textSafe\":false}","invalid json","{\"mode\":\"PRESERVE_ORIGINAL\"}")) {
+            row.put("review_json",review);
+            var result = assets.gallery(capture,request());
+            assertEquals(1,result.size());
+            assertEquals(ProductMainImageStylePolicy.PREFIX+"job",result.getFirst().getProcessedUrl());
+        }
+        verify(archive,times(6)).read("org","stored");
+    }
+    @Test void generatedImageMustStillBeReadyBeforePublishing() {
+        var slot = setup();
+        var row = Map.<String,Object>of("id","job","sort_order",0,"status","RESULT_RECEIVED","storage_key","stored",
+                "template_fingerprint",ProductMainImageStylePolicy.fingerprint(slot,json));
+        when(db.queryForList(contains("SELECT * FROM product_main_image_jobs"),eq(workflow),eq("org"),eq("capture"))).thenReturn(List.of(row));
+        assertThrows(ProductMainImageAssets.TemplateChanged.class,()->assets.gallery(capture,request()));
         verifyNoInteractions(archive);
+    }
+    @Test void generatedImageMustStillHaveAReadableArchivedFile() {
+        var slot = setup();
+        var row = Map.<String,Object>of("id","job","sort_order",0,"status","READY","storage_key","missing",
+                "template_fingerprint",ProductMainImageStylePolicy.fingerprint(slot,json));
+        when(db.queryForList(contains("SELECT * FROM product_main_image_jobs"),eq(workflow),eq("org"),eq("capture"))).thenReturn(List.of(row));
+        var error = new IllegalStateException("Archived output missing");
+        when(archive.read("org","missing")).thenThrow(error);
+        assertSame(error,assertThrows(IllegalStateException.class,()->assets.gallery(capture,request())));
     }
     private Map<String,Object> request(){return Map.of("mainImageStyleTemplateId",template,"idempotencyKey","wf-"+workflow+"-publish");}
     private Map<String,Object> setup(){
