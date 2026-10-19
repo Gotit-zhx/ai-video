@@ -232,8 +232,10 @@ def expire(db):
 
 
 def get_job(db, owner, body):
-    row = db.execute('SELECT * FROM hr_sourcing_jobs WHERE id=? AND owner=?', (uid(body.get('id')), owner)).fetchone()
-    if not row or row['account'] != account(body.get('accountKey')):
+    import hr_account_identity
+    record = hr_account_identity.record(db, owner, 'job', uid(body.get('id')))
+    row = db.execute('SELECT * FROM hr_sourcing_jobs WHERE id=? AND owner=?', (record, owner)).fetchone()
+    if not row or row['account'] != account(body.get('accountKey'), owner):
         raise ValueError('职位与当前招聘账号不一致，请从职位管理重新进入')
     return refresh_demand_source(db, row)
 
@@ -294,7 +296,7 @@ def listing(user, query):
         schema(db); expire(db)
         if query.get('id'):
             return view(db, get_job(db, owner, query), query.get('runId'))
-        key = account(query.get('accountKey'))
+        key = account(query.get('accountKey'), owner)
         row = db.execute('SELECT * FROM hr_sourcing_jobs WHERE owner=? AND account=? AND job_id=?',
                          (owner, key, pool.text(query.get('jobId'), 180))).fetchone()
         return view(db, refresh_demand_source(db, row)) if row else None
@@ -352,7 +354,7 @@ def demand(user, body):
 
 def save(user, body):
     owner, actor = pool.context(user)
-    key = account(body.get('accountKey')); job_id = pool.text(body.get('jobId'), 180)
+    key = account(body.get('accountKey'), owner); job_id = pool.text(body.get('jobId'), 180)
     if not re.fullmatch(r'[\w~-]+', job_id): raise ValueError('请选择具体职位')
     clean = {k: pool.text(body.get(k, ''), limit) for k, limit in
              {'jobName': 200, 'description': 10000, 'education': 100, 'experience': 100}.items()}

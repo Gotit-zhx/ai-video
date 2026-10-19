@@ -76,7 +76,7 @@ test('original header preparation and real failure status are used by the adapte
 });
 test('an original outside request can provide UA without initiating an extra request for snapshot', async t => {
   const {adapter, counts, bindings} = fixture(t);
-  await assert.rejects(adapter.snapshot(), {code: 'AUTH_REQUIRED'});
+  await assert.rejects(adapter.snapshot(), {code: 'SESSION_PREPARING'});
   await bindings.httpClients[0].send({url: 'https://www.zhipin.com/wapi/offline/original',
     headers: {Cookie: 'wt2=fixture-private', 'User-Agent': 'observed-original-UA'}});
   assert.equal((await adapter.snapshot()).userAgent, 'observed-original-UA');

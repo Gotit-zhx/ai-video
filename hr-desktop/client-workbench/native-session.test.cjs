@@ -40,7 +40,7 @@ test('only an explicit true memory result verifies the actual current identity',
 });
 test('snapshot uses fresh original cookies and a matching passively observed original UA', async t => {
   const {session, counts} = fixture(t);
-  await assert.rejects(session.snapshot('101', () => {}), {code: 'AUTH_REQUIRED'});
+  await assert.rejects(session.snapshot('101', () => {}), {code: 'SESSION_PREPARING'});
   prepared(session);
   assert.deepEqual(await session.snapshot('101', () => {}), {
     accountId: '101', userAgent: 'original-fixture-UA',
@@ -55,7 +55,7 @@ test('cookie rotation cannot borrow the previous native UA association', async t
   const {session, header} = fixture(t);prepared(session);
   await session.snapshot('101', () => {});
   header('wt2=rotated-fixture');
-  await assert.rejects(session.snapshot('101', () => {}), {code: 'AUTH_REQUIRED'});
+  await assert.rejects(session.snapshot('101', () => {}), {code: 'SESSION_PREPARING'});
   prepared(session, 'wt2=rotated-fixture', 'new-original-UA');
   assert.equal((await session.snapshot('101', () => {})).userAgent, 'new-original-UA');
 });
@@ -65,7 +65,7 @@ test('passive observation rejects other origins, duplicate headers and getters w
   Object.defineProperty(headers, 'cookie', {get() {assert.fail('must not read');}});
   session.observePrepared({url: 'https://www.zhipin.com/wapi/offline/fixture', headers});
   session.observePrepared({url: 'https://other.invalid', headers: {Cookie: 'wt2=private-fixture', 'User-Agent': 'other'}});
-  await assert.rejects(session.snapshot('101', () => {}), {code: 'AUTH_REQUIRED'});
+  await assert.rejects(session.snapshot('101', () => {}), {code: 'SESSION_PREPARING'});
 });
 test('a timed-out or cancelled login getter cannot establish a late session', async t => {
   let release;

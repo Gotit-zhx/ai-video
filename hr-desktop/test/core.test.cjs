@@ -232,7 +232,7 @@ test('active greeting checks budget before claim and uses its own operation with
 });
 test('verified same recruiter retains cloud account and catches up after a fresh cookie login',async t=>{
   const {engine,calls,directory}=await fixture(t);
-  engine.passiveCloud=async()=>({rules:[]});
+  engine.passiveCloud=async(route,body)=>({rules:[],accountKey:body.accountKey});
   engine.runtime.run=async input=>{calls.push(input);return {ok:true,data:{}};};
   engine.browser.inspect=async()=>({text:'',accountId:'123',token:{cookies:{wt2:'first'},user_agent:'fixture'}});
   await engine.start();await engine.observe();
@@ -366,6 +366,57 @@ async function fixture(t){
   t.after(async()=>{await engine.close();await fs.rm(directory,{recursive:true,force:true});});
   return {engine,directory,calls};
 }
+test('cross-device identity keeps profile path while using canonical cloud and manual keys', async t=>{
+  const {engine,directory}=await fixture(t),legacy='a'.repeat(64),stable='b'.repeat(64);
+  engine.accountRoot=path.join(directory,'accounts',stable);
+  engine.passiveCloud=async(route,body)=>{
+    assert.equal(body.identityKey,stable);assert.equal(body.accountKey,stable);
+    return {accountKey:legacy};
+  };
+  await engine.resolveCloudAccount(stable);
+  engine.state={state:'complete'};engine.paused=false;
+  assert.equal(engine.snapshot().accountKey,legacy);
+  assert.equal(path.basename(engine.accountRoot),stable);
+});
+test('cloud inventory restores before exports and blocks platform work until all pages finish', async t=>{
+  const {engine,directory,calls}=await fixture(t),key='a'.repeat(64);
+  engine.accountRoot=path.join(directory,'accounts',key);engine.cloudAccountKey=key;
+  engine.state={state:'complete'};engine.paused=false;
+  const cloud=[];let cursor=0;
+  engine.runtime.run=async input=>{calls.push(input);return {ok:true,data:{}};};
+  engine.passiveCloud=async(route,body)=>{
+    cloud.push(body);
+    if(body.receiptSync){assert.equal(body.receiptCursor,cursor);cursor++;
+      return {accountKey:key,receipts:[],nextCursor:cursor,hasMore:cursor===1};}
+    return {commands:[],rules:[]};
+  };
+  await engine.poll();
+  assert.deepEqual(calls.map(r=>r.operation),['passive-restore']);
+  await engine.poll();
+  assert.deepEqual(calls.map(r=>r.operation),['passive-restore','passive-restore','passive-local','passive-step']);
+  assert.equal(cloud.filter(r=>r.receiptSync).length,2);
+});
+test('failed or wrong-account receipt sync never runs collection or outgoing work', async t=>{
+  const {engine,directory,calls}=await fixture(t),key='a'.repeat(64);
+  engine.accountRoot=path.join(directory,'accounts',key);engine.cloudAccountKey=key;
+  engine.state={state:'complete'};engine.paused=false;
+  engine.passiveCloud=async()=>({accountKey:'b'.repeat(64),receipts:[],nextCursor:0,hasMore:false});
+  await engine.poll();
+  assert.equal(calls.length,0);
+  assert.equal(engine.passiveStatus.phase,'retry_wait');
+});
+test('native session preparation waits locally without failing login or sending platform requests', async t=>{
+  const {engine,calls}=await fixture(t);
+  await engine.start();
+  engine.browser.inspect=async()=>{throw Object.assign(Error('waiting native headers'),{code:'SESSION_PREPARING'});};
+  await engine.observe();await engine.observe();
+  assert.equal(engine.state.state,'pending');assert.equal(engine.state.phase,'verifying');
+  assert.ok(engine.loginTimer);
+  assert.equal(calls.length,0);
+  engine.clock=()=>engine.started+300001;
+  await engine.observe();
+  assert.equal(engine.state.failure_code,'LOGIN_TIMEOUT');
+});
 test('resume archive confirms only after cloud ingest and retries the same local bytes after interruption', async t=>{
   const {engine,directory}=await fixture(t), key='a'.repeat(64);
   engine.accountRoot=path.join(directory,'accounts',key);engine.state={state:'complete'};engine.paused=false;

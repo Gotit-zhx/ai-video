@@ -202,7 +202,7 @@ def main(request):
         with c.resume_db() as db:
             db.execute('UPDATE resume_poll_state SET failures=0')
         return {'ok': True}
-    if operation in ('passive-local', 'passive-ack', 'passive-send', 'passive-step', 'sourcing-ready', 'sourcing-send'):
+    if operation in ('passive-local', 'passive-ack', 'passive-restore', 'passive-send', 'passive-step', 'sourcing-ready', 'sourcing-send'):
         return passive_runtime.execute(c, request['root'], request)
     if operation == "verify":
         # Explicit user request only; bound to the existing hold generation.

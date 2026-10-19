@@ -17,6 +17,7 @@
     template_required:'请在话术管理中配置默认被动邀约回复',chat_required:'正在准备 BOSS 沟通页面',
     budget_wait:'正在按请求频率排队，会自动继续',send_wait:'正在按发送间隔排队',
     catching_up:'正在补收断开期间的新招呼和简历',
+    syncing_receipts:'正在同步已收取记录，完成后继续接收新简历',
     history_backfill:'正在补处理本职位历史招呼和简历',
     retry_wait:'后台连接暂缓，进度已保留，将自动继续',
     conversation_review:'持续接收新消息，部分会话待核对',
@@ -35,7 +36,7 @@
     for(const group of ruleId?(Array.isArray(ruleId)?ruleId:[ruleId]).map(id=>flow.counts?.[id]||{}):Object.values(flow.counts||{})){
       for(const [key,value] of Object.entries(group))counts[key]=(counts[key]||0)+value;
     }
-    const totals=[['inspect','待处理'],['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],
+    const totals=[['inspect','待核查会话'],['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],
       ['export','正在入池'],['stored','已入池'],
       ['inspect_review','会话待核对'],['job_review','职位待核对'],['reply_uncertain','回复待核对'],['request_uncertain','索取待核对'],['request_failed','索取未完成']]
       .filter(([key])=>counts[key]).map(([key,label])=>`${label} ${counts[key]}`);

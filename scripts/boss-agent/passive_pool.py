@@ -11,6 +11,7 @@ import urllib.request
 import urllib.error
 
 import talent_pool as pool
+import hr_account_identity as identities
 
 AI_URL = 'http://127.0.0.1:8080/api/v1/recruitment-ai/resume-match'
 DEFAULT_REJECTION = '您好，感谢您对{职位}岗位的关注和耐心沟通。经过综合评估，您的经历与我们目前岗位的需求暂未完全匹配，本次先不安排后续面试。感谢您的理解，祝您求职顺利！'
@@ -24,10 +25,10 @@ def uid(value):
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', value): raise ValueError('记录标识不正确')
     return value
 
-def account(value):
+def account(value, owner=None):
     value = pool.text(value, 64)
     if not re.fullmatch(r'[a-f0-9]{64}', value): raise ValueError('请先连接并确认本机招聘账号')
-    return value
+    return identities.resolve(owner, value) if owner else value
 
 
 def schema(db):
@@ -65,6 +66,14 @@ def schema(db):
     ''')
     # executescript commits implicitly. Start a fresh transaction for every caller.
     db.execute('BEGIN IMMEDIATE')
+    identities.schema(db)
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE name='hr_resume_receipt_sync'").fetchone():
+        db.execute('''CREATE TABLE hr_resume_receipt_sync(
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,resume_id TEXT NOT NULL UNIQUE)''')
+        db.execute('''INSERT INTO hr_resume_receipt_sync(resume_id)
+            SELECT id FROM hr_resume_pool ORDER BY rowid''')
+        db.execute('''CREATE TRIGGER hr_resume_receipt_added AFTER INSERT ON hr_resume_pool
+            BEGIN INSERT INTO hr_resume_receipt_sync(resume_id) VALUES(NEW.id); END''')
 
 
 def speech(row):
@@ -89,7 +98,7 @@ def resume(row, commands=None):
 def sync_jobs(user, body):
     """Persist a complete official desktop job snapshot, scoped to this account."""
     owner, _ = pool.context(user)
-    key = account(body.get('accountKey'))
+    key = account(body.get('accountKey'), owner)
     with pool.database() as db:
         schema(db)
         if body.get('invalid') is True:
@@ -331,7 +340,7 @@ def save_speech(user, body):
 
 def save_rule(user, body):
     owner, actor = pool.context(user)
-    key, job_id = account(body.get('accountKey')), pool.text(body.get('jobId'), 180)
+    key, job_id = account(body.get('accountKey'), owner), pool.text(body.get('jobId'), 180)
     if not job_id or not re.fullmatch(r'[\w~-]+', job_id): raise ValueError('职位标识不正确')
     enabled = body.get('enabled') is True
     clean = {k: pool.text(body.get(k, ''), limit) for k, limit in {'jobName': 200, 'description': 10000, 'education': 100, 'experience': 100, 'projectId': 80}.items()}
@@ -351,9 +360,31 @@ def save_rule(user, body):
 
 def device_config(user, body):
     import hr_sourcing
-    owner, _ = pool.context(user); key = account(body.get('accountKey'))
+    owner, _ = pool.context(user); key = account(body.get('accountKey'), owner)
     with pool.database() as db:
         schema(db)
+        if body.get('identityOnly') is True:
+            return {'accountKey': identities.identify(db, owner, key, body.get('identityKey'))}
+        if body.get('receiptSync') is True:
+            cursor = body.get('receiptCursor', 0)
+            if type(cursor) is not int or cursor < 0:
+                raise ValueError('简历同步位置无效')
+            # One bounded page per turn. Clients must finish the initial
+            # inventory before starting any BOSS collection operation.
+            rows = db.execute('''SELECT s.seq AS receipt_seq,r.* FROM hr_resume_receipt_sync s
+                JOIN hr_resume_pool r ON r.id=s.resume_id
+                WHERE r.owner=? AND r.account=? AND s.seq>? ORDER BY s.seq LIMIT 201''',
+                              (owner, key, cursor)).fetchall()
+            values = []
+            for row in rows[:200]:
+                metadata = json.loads(row['body'])
+                values.append({'friendId': row['friend_id'], 'messageId': row['message_id'],
+                               'ruleId': row['rule_id'], 'id': row['id'],
+                               'origin': metadata.get('origin', 'passive'),
+                               'jobId': metadata.get('jobId', ''), 'jobName': metadata.get('jobName', ''),
+                               'name': metadata.get('name', '')})
+            return {'accountKey': key, 'receipts': values, 'hasMore': len(rows) > 200,
+                    'nextCursor': rows[min(len(rows), 200)-1]['receipt_seq'] if rows else cursor}
         expire_commands(db)
         if body.get('commandId'):
             record = uid(body['commandId'])
@@ -392,7 +423,7 @@ def device_config(user, body):
 def ingest(user, body):
     import resume_storage
     import hr_sourcing
-    owner, actor = pool.context(user); key = account(body.get('accountKey'))
+    owner, actor = pool.context(user); key = account(body.get('accountKey'), owner)
     friend, mid, rule_id = str(body.get('friendId', '')), str(body.get('messageId', '')), uid(body.get('ruleId'))
     if not all(re.fullmatch(r'[1-9]\d{0,19}', x) for x in [friend, mid]): raise ValueError('简历会话标识无效')
     raw = base64.b64decode(body.get('fileBase64', ''), validate=True)
@@ -402,10 +433,14 @@ def ingest(user, body):
     record = str(uuid.uuid5(uuid.NAMESPACE_URL, f'hr-resume:{owner}:{key}:{friend}:{mid}'))
     with pool.database() as db:
         schema(db)
-        existing = db.execute('SELECT * FROM hr_resume_pool WHERE id=? AND owner=?', (record, owner)).fetchone()
+        # IDs created before account reconciliation remain valid for reviews,
+        # talent records and download links. Deduplicate on the receipt itself.
+        existing = db.execute('SELECT * FROM hr_resume_pool WHERE owner=? AND account=? AND friend_id=? AND message_id=?',
+                              (owner, key, friend, mid)).fetchone()
         if existing:
             if existing['file_hash'] != digest: raise pool.Conflict('同一简历消息的文件内容发生变化')
-            return {'id': record, 'stored': True}
+            return {'id': existing['id'], 'stored': True}
+        rule_id = identities.record(db, owner, 'rule', rule_id)
         if rule_id == 'boss-chat-'+friend and body.get('origin') == 'boss_chat':
             # Receiving a verified attachment is independent of enabling an
             # invitation rule. JD lookup still uses exact owner/account/job.
@@ -418,6 +453,14 @@ def ingest(user, body):
                    or ('职位待核实' if not job_id else 'BOSS 沟通职位'),
                    'description': value.get('description', ''), 'education': value.get('education', ''),
                    'experience': value.get('experience', ''), 'projectId': '', 'origin': 'boss_chat'}
+            # A fresh computer has no local invitation ledger yet. Only exact
+            # confirmed server evidence may upgrade this receipt's source.
+            contacts = db.execute('''SELECT id FROM hr_sourcing_contacts
+                WHERE owner=? AND account=? AND friend_id=? AND status='sent'
+                AND json_extract(body,'$.jobId')=? LIMIT 2''', (owner, key, friend, job_id)).fetchall()
+            if len(contacts) == 1:
+                rule_id = 'active-'+contacts[0]['id']
+                job = hr_sourcing.received_job(db, owner, key, rule_id, friend)
         else:
             job = hr_sourcing.received_job(db, owner, key, rule_id, friend)
         if not job:
@@ -451,11 +494,12 @@ def ingest(user, body):
         schema(db)
         inserted = db.execute('''INSERT OR IGNORE INTO hr_resume_pool(id,owner,account,friend_id,rule_id,message_id,body,file_key,file_hash,created_at,updated_at)
                       VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (record, owner, key, friend, rule_id, mid, dump(clean), location, digest, now(), now()))
-        saved = db.execute('SELECT file_hash FROM hr_resume_pool WHERE id=? AND owner=?', (record, owner)).fetchone()
+        saved = db.execute('SELECT id,file_hash FROM hr_resume_pool WHERE owner=? AND account=? AND friend_id=? AND message_id=?',
+                           (owner, key, friend, mid)).fetchone()
         if not saved or saved['file_hash'] != digest: raise pool.Conflict('同一简历消息的文件内容发生变化')
         if inserted.rowcount:
             pool.event(db, owner, actor, record, 'resume.receive', None, {'fileHash': digest, 'ruleId': rule_id})
-    return {'id': record, 'stored': True}
+    return {'id': saved['id'], 'stored': True}
 
 
 def get_file(user, record):
@@ -463,6 +507,7 @@ def get_file(user, record):
     owner, _ = pool.context(user)
     with pool.database() as db:
         schema(db)
+        record = identities.record(db, owner, 'resume', uid(record))
         row = db.execute('SELECT * FROM hr_resume_pool WHERE owner=? AND id=?', (owner, uid(record))).fetchone()
         if not row: raise ValueError('简历不存在')
         metadata, key = json.loads(row['body']), row['file_key']
@@ -474,6 +519,7 @@ def review(user, body):
     if action not in {'approve', 'reject', 'cancel-send'}: raise ValueError('审批操作不正确')
     with pool.database() as db:
         schema(db)
+        record = identities.record(db, owner, 'resume', record)
         row = db.execute('SELECT * FROM hr_resume_pool WHERE owner=? AND id=?', (owner, record)).fetchone()
         if not row: raise ValueError('简历不存在')
         if action == 'cancel-send':
@@ -540,7 +586,7 @@ def review(user, body):
 
 def claim_command(user, body):
     import hr_sourcing
-    owner, _ = pool.context(user); key = account(body.get('accountKey')); record = uid(body.get('id'))
+    owner, _ = pool.context(user); key = account(body.get('accountKey'), owner); record = uid(body.get('id'))
     with pool.database() as db:
         schema(db)
         active = hr_sourcing.claim(db, owner, key, record)
@@ -566,7 +612,7 @@ def claim_command(user, body):
 
 def device_report(user, body):
     import hr_sourcing
-    owner, _ = pool.context(user); key = account(body.get('accountKey'))
+    owner, _ = pool.context(user); key = account(body.get('accountKey'), owner)
     if 'jobStatuses' in body:
         states, valid_for = body['jobStatuses'], body.get('validFor', 0)
         if (not isinstance(states, dict) or len(states) > 1000 or type(valid_for) not in (int, float)
@@ -641,6 +687,7 @@ def analyze(user, body, cookie):
     owner, actor = pool.context(user); record = uid(body.get('id'))
     with pool.database() as db:
         schema(db)
+        record = identities.record(db, owner, 'resume', record)
         row = db.execute('SELECT * FROM hr_resume_pool WHERE owner=? AND id=?', (owner, record)).fetchone()
         if not row: raise ValueError('简历不存在')
         require_open_job(db, row)

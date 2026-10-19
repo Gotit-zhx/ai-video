@@ -275,6 +275,9 @@ def accept_offer(c, db, row):
 
 def download(c, db, row):
     """The receipt ledger authorizes this exact incoming attachment, not a send."""
+    from cloud_resume_receipts import stored
+    if stored(db, row['friend'], row['mid']):
+        return {'ok': True, 'data': {'cloudReceiptReused': True}}
     cached = flow.reusable_resume(c, db, row['friend'], row['mid'])
     if cached:
         # Keep the caller's existing pacing and this receipt's own job/source.

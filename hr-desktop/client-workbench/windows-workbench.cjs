@@ -202,7 +202,7 @@ async function offlineCheck() {
     const response = await fetch(`http://127.0.0.1:${host.bridge.port}/health`,
       {headers: {Origin: 'https://hoyee.org.cn'}});
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).data.version, '0.1.24');
+    assert.equal((await response.json()).data.version, '0.1.25');
     const worker = await host.engine.runtime.run({operation: 'health',
       root: path.join(app.getPath('userData'), 'heyi', 'offline-worker'), cdp: host.rpc.url});
     assert.equal(worker.ok, true);assert.equal(worker.platform, 'win32');

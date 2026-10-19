@@ -433,6 +433,11 @@ def receive(c, db, friend=None, reconnect=False):
                       if r['friend'] in received), None)
     if candidate:
         mid = received[candidate['friend']]['message_id']
+        from cloud_resume_receipts import stored
+        if stored(db, candidate['friend'], mid):
+            db.execute("UPDATE people SET state='stored',mid=?,updated=? WHERE friend=?",
+                       (mid, int(time.time()), candidate['friend']))
+            return status(db, 'receiving', receiptChecked=True, cloudReceiptReused=True)
         cached = reusable_resume(c, db, candidate['friend'], mid)
         file = cached['file'] if cached else str(c.download_resume(candidate['friend'], mid))
         detail = json.loads(candidate['body'])
@@ -973,6 +978,9 @@ def execute(c, root, request):
     operation = request['operation']
     with database(root) as db:
         active_sourcing.schema(db)
+        if operation == 'passive-restore':
+            from cloud_resume_receipts import restore
+            return restore(db, request)
         if operation == 'passive-local':
             import boss_chat_receipts
             # Recover only from the existing local request ledger after a crash;
@@ -993,7 +1001,10 @@ def execute(c, root, request):
             exports += boss_chat_receipts.exports(db)
             reports = [dict(row) for row in db.execute("SELECT * FROM commands WHERE reported=0 ORDER BY rowid LIMIT 1")]
             events = [json.loads(row['body']) for row in db.execute('SELECT body FROM events WHERE reported=0 ORDER BY rowid LIMIT 10')]
-            local_status=activity_status(db,{'ok':True,'data':json.loads(get_state(db,'status','{}'))})['data']
+            previous_status = json.loads(get_state(db, 'status', '{}'))
+            refreshed = status(db, previous_status.get('phase', 'watching'))
+            refreshed['data'] = {**previous_status, **refreshed['data']}
+            local_status=activity_status(db, refreshed)['data']
             return {'ok': True, 'data': {'exports': exports, 'reports': reports, 'events': events, 'bindings': active_sourcing.local(db),
                                          'status': local_status,
                                          'dailyGreeting': active_sourcing.daily_usage(db, time.time())}}

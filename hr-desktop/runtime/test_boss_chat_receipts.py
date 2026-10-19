@@ -12,6 +12,57 @@ import passive_runtime as flow
 
 
 class ReceiptTest(unittest.TestCase):
+    def restore(self, **changes):
+        request = {'operation': 'passive-restore', 'accountKey': 'a'*64, 'nextCursor': 1,
+                   'receipts': [{'id': 'cloud1', 'friendId': '1', 'messageId': '101',
+                                 'ruleId': 'passive1', 'origin': 'passive',
+                                 'jobId': 'closed-job', 'jobName': '运营'}], **changes}
+        return flow.execute(self.c, self.root, request)
+
+    def test_other_computer_receipt_skips_existing_attachment_but_admits_new_message(self):
+        self.restore()
+        with flow.database(self.root) as db:
+            self.seed(db)
+            self.inspect(db, [self.message(101)])
+            self.c.sourcing_friend_details.assert_not_called()
+            self.assertEqual(receipts.exports(db), [])
+            old = db.execute('SELECT * FROM chat_resume_receipts').fetchone()
+            self.assertEqual(old['state'], 'stored')
+            self.assertEqual(json.loads(old['body'])['origin'], 'passive')
+            self.c.cli_json.reset_mock()
+            receipts.download(self.c, db, old)
+            self.c.cli_json.assert_not_called()
+            receipts.wake(db, '1', '102')
+            self.inspect(db, [self.message(102), self.message(101)])
+            rows = db.execute('SELECT * FROM chat_resume_receipts ORDER BY mid').fetchall()
+            self.assertEqual([r['state'] for r in rows], ['stored', 'found'])
+            self.assertEqual(json.loads(rows[1]['body'])['origin'], 'passive')
+        # Reconnect/replay does not clear the later attachment or require bytes.
+        self.restore()
+        with flow.database(self.root) as db:
+            self.assertEqual(db.execute("SELECT state FROM chat_resume_receipts WHERE mid='102'").fetchone()[0], 'found')
+        self.assertFalse(self.c.RESUME_DIR.exists())
+
+    def test_restore_does_not_overwrite_newer_local_attachment_or_another_job(self):
+        with flow.database(self.root) as db:
+            db.execute("INSERT INTO people VALUES('1','active-current',?,'export',1,'new.pdf','102')",
+                       (json.dumps({'jobId': 'another-job', 'origin': 'active'}),))
+        self.restore()
+        with flow.database(self.root) as db:
+            row = db.execute('SELECT * FROM people').fetchone()
+            self.assertEqual(row['mid'], '102'); self.assertEqual(row['state'], 'export')
+            self.assertEqual(json.loads(row['body'])['jobId'], 'another-job')
+        with self.assertRaisesRegex(ValueError, '不属于'):
+            self.restore(accountKey='b'*64)
+
+    def test_restore_checks_entire_page_before_mutating_receipts(self):
+        with self.assertRaisesRegex(ValueError, '标识'):
+            self.restore(receipts=[{'id': 'valid', 'friendId': '1', 'messageId': '101',
+                                    'ruleId': 'r1', 'origin': 'passive'}, {'friendId': 'invalid'}])
+        with flow.database(self.root) as db:
+            receipts.schema(db)
+            self.assertEqual(db.execute('SELECT count(*) FROM chat_resume_receipts').fetchone()[0], 0)
+
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)

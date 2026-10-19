@@ -10,6 +10,24 @@ import passive_runtime as flow
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_cloud_receipt_suppresses_second_download_from_request_lane(self):
+        self.pending('requested')
+        self.runop('passive-restore', accountKey='a'*64, nextCursor=1, receipts=[
+            {'id': 'cloud1', 'friendId': '1', 'messageId': '456', 'ruleId': 'r1',
+             'jobId': 'job1', 'origin': 'passive'}])
+        # Simulate a pre-existing stale request row restored after cloud sync.
+        with flow.database(self.root) as db:
+            db.execute("UPDATE people SET state='requested' WHERE friend='1'")
+        with self.c.resume_db() as db:
+            db.execute("INSERT INTO resume_requests VALUES('1','received','456')")
+        with flow.database(self.root) as db:
+            result = flow.receive(self.c, db, '1')
+        self.assertTrue(result['data']['cloudReceiptReused'])
+        self.assertEqual(self.state(), 'stored')
+        self.c.download_resume.assert_not_called()
+        self.c.poll_resumes_once.assert_not_called()
+        self.assertEqual(self.runop('passive-local')['data']['exports'], [])
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         self.c=mock.Mock()

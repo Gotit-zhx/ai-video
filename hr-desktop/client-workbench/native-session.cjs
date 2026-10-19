@@ -140,7 +140,7 @@ class NativeSession extends EventEmitter {
     checkAccount();this.check(expected, epoch);
     const fields = cookieFields(cookieHeader), token = fields.get('wt2'), tokenHash = fingerprint(token);
     if (!this.observed || this.observed.tokenHash !== tokenHash) {
-      throw fail('AUTH_REQUIRED', '请在 BOSS 原客户端打开会话后重新连接，正在等待原生请求标识');
+      throw fail('SESSION_PREPARING', 'BOSS 已登录，正在等待原客户端会话就绪');
     }
     const result = {cookieHeader, token, userAgent: this.observed.userAgent};
     nativeHeaders(result);this.lastCredentialHash = tokenHash;

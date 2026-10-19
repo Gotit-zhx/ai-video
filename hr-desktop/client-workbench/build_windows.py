@@ -70,7 +70,7 @@ def stage(source, output, runtime, sdk):
                         "--distpath", str(output), "--workpath", str(Path(temporary) / "build"),
                         "--specpath", temporary, str(HERE / "windows_entry.py")],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    manifest = {"schemaVersion": 1, "experimental": True, "version": "0.1.24",
+    manifest = {"schemaVersion": 1, "experimental": True, "version": "0.1.25",
                 "originalResourcesModified": False, "realAccountTested": False,
                 "files": {file.relative_to(output).as_posix(): sha(file)
                           for file in sorted(output.rglob("*")) if file.is_file()}}

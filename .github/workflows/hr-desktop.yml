@@ -80,6 +80,7 @@ jobs:
       - run: python -m unittest discover -s runtime -p test_conversation_scope.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_recruitment_demands.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_passive_pool.py
+      - run: python -m unittest discover -s ../scripts/boss-agent -p test_hr_account_identity.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_hr_sourcing.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_resume_identity.py
       - run: python runtime/test_portable.py
@@ -186,7 +187,9 @@ jobs:
         if: ${{ inputs.nativeWorkbench == true }}
         env:
           PYTHONPATH: hr-desktop/runtime/build/shared
-        run: python -m unittest discover -s hr-desktop/runtime -p test_invitation_lifecycle.py
+        run: |
+          python -m unittest discover -s hr-desktop/runtime -p test_invitation_lifecycle.py
+          python -m unittest discover -s scripts/boss-agent -p test_hr_account_identity.py
       - name: Check receipt scheduling and configured request ceiling
         if: ${{ inputs.nativeWorkbench == true }}
         env:
