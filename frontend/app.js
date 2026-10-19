@@ -7176,7 +7176,8 @@ async function pollProductBulkProgress() {
   if (!productBulkPollSession || productBulkPollSession.items !== items || productBulkPollSession.org !== org) {
     stopProductBulkPolling();
     productBulkPollSession = {org, items, generation: productBulkPollGeneration,
-      controller: new AbortController(), polling: false, syncs: new Map(), pollErrors: new Map(), syncActive: 0, requested: false};
+      controller: new AbortController(), polling: false, syncs: new Map(), pollErrors: new Map(),
+      styleProgressReads: new Set(), syncActive: 0, requested: false};
     for (const item of items) { item.progressPaused = false; item.syncPaused = false; }
   }
   const session = productBulkPollSession;
@@ -7185,7 +7186,9 @@ async function pollProductBulkProgress() {
   productBulkPollTimer = null;
   session.polling = true;
   session.requested = false;
-  const active = items.filter(item => item.workflow?.id && productPublishWorkflowIsActive(item.workflow)
+  const needsProgress = item => productPublishWorkflowIsActive(item.workflow)
+    || item.workflow?.mainImageStyle && !session.styleProgressReads.has(item.workflow.id);
+  const active = items.filter(item => item.workflow?.id && needsProgress(item)
     && !item.progressPaused && !(session.pollErrors.get(item)?.retryAt > Date.now()));
   let cursor = 0;
   for (const item of items) syncProductBulkCapture(item, session);
@@ -7200,6 +7203,7 @@ async function pollProductBulkProgress() {
           });
           if (!productBulkPollIsCurrent(session)) return;
           if (result?.data?.id !== workflowId || result.data.captureId !== item.captureId) throw Error('上传进度响应不完整');
+          session.styleProgressReads.add(workflowId);
           item.workflow = result.data; item.status = result.data.status; item.error = '';
           item.retryMessage = ''; session.pollErrors.delete(item);
           saveProductBulkItems();
@@ -7227,7 +7231,7 @@ async function pollProductBulkProgress() {
     if (productBulkPollIsCurrent(session)) {
       const needsSync = items.some(item => item.workflow?.id && !productPublishWorkflowIsActive(item.workflow)
         && !session.syncs.get(item)?.done && !session.syncs.get(item)?.paused);
-      if (session.requested || productBulkBusy || needsSync || items.some(item => productPublishWorkflowIsActive(item.workflow) && !item.progressPaused)) {
+      if (session.requested || productBulkBusy || needsSync || items.some(item => item.workflow?.id && needsProgress(item) && !item.progressPaused)) {
         const retryTimes = [...session.pollErrors.values(), ...session.syncs.values()]
           .filter(state => state.retryAt > Date.now()).map(state => state.retryAt - Date.now());
         scheduleProductBulkPolling(session, session.requested ? 0 : Math.min(3000, ...retryTimes));

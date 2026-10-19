@@ -179,6 +179,24 @@ test('bulk detail polling updates per-image review progress without another crea
   assert.ok(h.timers.size>0);
 });
 
+test('cached terminal style workflows refresh missing per-image detail once without replaying creation',async()=>{
+  const h=harness();
+  const old={id:'style-workflow',captureId:'a',status:'FAILED',currentStep:'STYLE_IMAGES',
+    mainImageStyle:{templateName:'Old cache',totalImages:2,processedImages:1,imageUrls:[]}};
+  h.c.productBulkItems=[{captureId:'a',title:'Test',workflow:old}];
+  h.node('#product-bulk-dialog').open=true;
+  h.state.onWorkflowRead=async()=>({data:{...old,mainImageStyle:{...old.mainImageStyle,images:[
+    {index:0,status:'FAILED',stage:'FAILED',errorMessage:'Generation failed'},
+    {index:1,status:'READY',stage:'PRESERVED'}
+  ]}}});
+  await h.c.pollProductBulkProgress();
+  await h.c.pollProductBulkProgress();
+  assert.equal(h.workflowReads.length,1);
+  assert.equal(h.posts.length,0);
+  assert.match(h.node('#product-bulk-progress').innerHTML,/Generation failed/);
+  assert.match(h.node('#product-bulk-progress').innerHTML,/原样保留/);
+});
+
 test('multi-shop UI submits each product to both stores with separate requests and shared batch chart',async()=>{
   const h=harness(),select=h.node('#product-bulk-shop');
   h.c.activeMarketplaceShops=platform=>platform==='SHOPEE'

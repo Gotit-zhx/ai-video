@@ -23,10 +23,12 @@ changed. The UI displays actual generation-stage elapsed time and review event
 counters, ready thumbnails, preserved originals, and failure messages. It
 retains loaded media on refresh. Product detail also reports a disconnected
 progress read while its existing bounded-delay reconnection continues.
+Cached terminal style workflows receive one read-only refresh when their
+detail view opens, so old records gain current per-image results without replay.
 
 ## Verification
 
-- 193 product frontend unit and integration tests passed, including a
+- 194 product frontend unit and integration tests passed, including a
   same-count stage transition through the real bulk polling implementation.
 - 91 focused backend tests passed for styles, template analysis, original
   preservation, asset validation, and publication workflows.
