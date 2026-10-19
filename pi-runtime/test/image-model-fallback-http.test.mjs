@@ -65,6 +65,7 @@ function harness(reply) {
       const call = {
         url, method: wireRequest.method,
         authorization: wireRequest.headers.get("authorization"),
+        geminiKey: wireRequest.headers.get("x-goog-api-key"),
         idempotencyKey: wireRequest.headers.get("idempotency-key"), contentType
       };
       if (contentType.startsWith("multipart/form-data")) {
@@ -84,6 +85,84 @@ function harness(reply) {
   vm.runInContext(serverFunctions, context);
   return { calls, call: (config, params, images = inputImages) => context.callImageModel(config, params, images) };
 }
+
+const BANANA = "gemini-nano-banana-2.1";
+const bananaConfig = () => ({ modelId: BANANA, apiFormat: "OPENAI_COMPATIBLE", apiKey: "banana-unit-key",
+  baseUrl: `https://images.unit.invalid/v1beta/models/${BANANA}:generateContent`, copyrightFallbackModels: [] });
+const bananaPayload = () => ({ candidates: [{ finishReason: "STOP", content: { parts: [
+  { text: "Generated image" }, { inlineData: { mimeType: "image/png", data: PNG_BASE64 } }
+] } }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 20, totalTokenCount: 30 } });
+
+for (const count of [0, 1, 2, 4]) test(`Banana native request keeps ${count} ordered references and original output bytes`, async () => {
+  const h = harness(() => response(200, bananaPayload()));
+  const originals = Array.from({ length: count }, (_, i) => ({ mimeType: "image/jpeg",
+    dataBase64: Buffer.concat([OUTPUT_BYTES, Buffer.from([i])]).toString("base64") }));
+  const result = await h.call(bananaConfig(), { mode: count ? "edit" : "generate", prompt: "Exact prompt",
+    size: "1024x1024", quality: "high", inputFidelity: "high", streamImages: true, singleProviderAttempt: true }, originals);
+  assert.equal(h.calls.length, 1);
+  const call = h.calls[0], wire = call.json;
+  assert.equal(call.url, bananaConfig().baseUrl);
+  assert.equal(call.authorization, null); assert.equal(call.geminiKey, "banana-unit-key");
+  assert.equal(call.contentType, "application/json");
+  assert.deepEqual(wire.generationConfig, { responseModalities: ["TEXT", "IMAGE"], imageConfig: { aspectRatio: "1:1" } });
+  assert.equal(wire.contents[0].parts[0].text, "Exact prompt");
+  assert.equal(wire.contents[0].parts.length, count + 1);
+  originals.forEach((reference, index) => assert.deepEqual(wire.contents[0].parts[index + 1],
+    { inlineData: { mimeType: "image/png", data: reference.dataBase64 } }));
+  for (const field of ["model", "size", "quality", "input_fidelity", "stream", "image", "images"])
+    assert.equal(Object.hasOwn(wire, field), false);
+  assert.equal(result.artifact.dataBase64, PNG_BASE64);
+  assert.equal(result.artifact.modelId, BANANA);
+  assert.equal(result.usage.totalTokens, 30);
+  assert.equal(JSON.stringify(result).includes("banana-unit-key"), false);
+});
+
+for (const [size, imageConfig] of [
+  ["2160x3840", { aspectRatio: "9:16", imageSize: "4K" }],
+  ["2048x2048", { aspectRatio: "1:1", imageSize: "2K" }],
+  ["1024x1536", { aspectRatio: "2:3" }]
+]) test(`Banana maps ${size} without downgrading video resolution`, async () => {
+  const h = harness(() => response(200, bananaPayload()));
+  await h.call(bananaConfig(), { mode: "edit", prompt: "Video reference", size });
+  assert.deepEqual(h.calls[0].json.generationConfig.imageConfig, imageConfig);
+});
+
+test("Banana roots normalize to native endpoints and mismatched models fail before a POST", async () => {
+  for (const base of ["https://images.unit.invalid", "https://images.unit.invalid/v1beta/"]) {
+    const h = harness(() => response(200, bananaPayload()));
+    await h.call({ ...bananaConfig(), baseUrl: base }, { mode: "generate", prompt: "Single image" }, []);
+    assert.equal(h.calls[0].url, bananaConfig().baseUrl);
+  }
+  const h = harness(() => { throw new Error("Must not submit"); });
+  await assert.rejects(h.call({ ...bananaConfig(), modelId: "gemini-wrong-model" },
+    { mode: "edit", prompt: "Single image" }), /模型名称不一致/);
+  assert.equal(h.calls.length, 0);
+});
+
+test("Banana reuses a saved native response without another paid POST", async () => {
+  const h = harness(() => { throw new Error("Must not resubmit"); });
+  const operation = { forRoute: async () => ({ cachedResponse: {
+    payload: bananaPayload(), safeRetryCount: 0, networkRetryCount: 0, requestId: "saved" } }) };
+  const result = await h.call(bananaConfig(), { mode: "edit", prompt: "Saved output", operation });
+  assert.equal(result.artifact.dataBase64, PNG_BASE64); assert.equal(h.calls.length, 0);
+});
+
+test("Banana ignores thought images and cannot report text-only or invalid output as success", async () => {
+  for (const parts of [[{ text: "No image" }], [{ thought: true, inlineData: { data: PNG_BASE64 } }],
+    [{ inlineData: { data: "bm90LWFuLWltYWdl" } }]]) {
+    const h = harness(() => response(200, { candidates: [{ finishReason: "STOP", content: { parts } }] }));
+    await assert.rejects(h.call(bananaConfig(), { mode: "edit", prompt: "Single image", singleProviderAttempt: true }),
+      error => error.requestState === "COMPLETED_RESPONSE_RECEIVED" && error.failureCode.startsWith("GEMINI_IMAGE_"));
+    assert.equal(h.calls.length, 1);
+  }
+});
+
+test("Banana native rejection retains upstream status without switching models", async () => {
+  const h = harness(() => response(400, { error: { message: "Unsupported imageSize" } }));
+  await assert.rejects(h.call(bananaConfig(), { mode: "edit", prompt: "Single image", singleProviderAttempt: true }),
+    error => error.providerStatus === 400 && error.requestState === "REJECTED");
+  assert.equal(h.calls.length, 1);
+});
 
 test('dedicated product scene uses Grok low quality with ordered JSON references and no GPT-only fields', async () => {
   const h = harness(() => generatedResponse());

@@ -1719,7 +1719,13 @@ public class AiVideoImageProcessor {
         if (!java.util.Objects.equals(model.modelId(), pending.getModelId())) {
             downloadModel = model.copyrightFallbackModels().stream()
                     .filter(candidate -> java.util.Objects.equals(candidate.modelId(), pending.getModelId()))
-                    .findFirst().orElse(grokResult ? null : model);
+                    .findFirst().orElse(null);
+            if (downloadModel == null && "gemini-nano-banana-2.1".equals(model.modelId())) {
+                downloadModel = modelConfigService.imageResultConnection(pending.getOrganizationId(), pending.getModelId())
+                        .orElseThrow(() -> new IllegalStateException("已生成图片的原模型连接不可用，原结果地址已保留；请恢复原模型配置以下载"));
+            } else if (downloadModel == null && !grokResult) {
+                downloadModel = model;
+            }
         }
         if (grokResult && (downloadModel == null || downloadModel.apiKey() == null || downloadModel.apiKey().isBlank())) {
             throw new IllegalStateException("已生成的 grok-imagine-image-2.0 图片等待下载，但对应模型连接不可用；请恢复已启用的 Grok 备用模型及其 Key 后重试，原结果地址已保留");

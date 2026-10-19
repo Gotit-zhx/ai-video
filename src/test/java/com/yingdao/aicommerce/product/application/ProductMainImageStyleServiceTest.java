@@ -102,13 +102,19 @@ class ProductMainImageStyleServiceTest {
         verifyNoInteractions(gateway);
     }
     @Test void editingTheCurrentPromptInvalidatesTheOldCompletedOutput() {
+        var banana = new ModelConfigService.RuntimeModelConnection("banana", "https://unit.invalid",
+                "gemini-nano-banana-2.1", "OPENAI_COMPATIBLE", "AUTO", "test-only");
+        when(models.imageConnection("org")).thenReturn(Optional.of(banana));
         var changed = ProductMainImageStylePolicyTest.analysis();
         changed.put("prompt","New current layout with {{product}}");
         slot.put("analysis",changed);
         assertEquals(0,service.progress(workflow).processedImages());
         assertThrows(com.yingdao.aicommerce.common.exception.BusinessException.class, () -> service.ensureReady(workflow,capture));
-        verify(db).update(contains("INSERT IGNORE INTO product_main_image_jobs"), any(Object[].class));
-        verifyNoInteractions(gateway);
+        var arguments = org.mockito.ArgumentCaptor.forClass(Object[].class);
+        verify(db).update(contains("INSERT IGNORE INTO product_main_image_jobs"), arguments.capture());
+        assertEquals("source", arguments.getValue()[5]);
+        assertEquals("banana", arguments.getValue()[9]);
+        verifyNoInteractions(gateway, images, downloader);
     }
     @Test void uncertainSubmissionReadsOriginalOperationAndNeverRegenerates() {
         job.put("status","SUBMITTING");

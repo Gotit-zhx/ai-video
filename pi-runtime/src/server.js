@@ -1444,6 +1444,67 @@ function grokImageParameters(size, quality) {
   return parameters;
 }
 
+function isGeminiImageConfig(config) {
+  return /^gemini-/i.test(String(config?.modelId || ""))
+    || /\/models\/[^/]+:generateContent\/?$/i.test(String(config?.baseUrl || ""));
+}
+
+function geminiImageEndpoint(config) {
+  const url = new URL(String(config.baseUrl).trim());
+  if (!["https:", "http:"].includes(url.protocol) || url.search || url.hash || url.username || url.password)
+    throw new Error("Gemini 图片模型地址无效");
+  const endpoint = /\/models\/([^/]+):generateContent\/?$/.exec(url.pathname);
+  if (endpoint) {
+    if (decodeURIComponent(endpoint[1]) !== config.modelId) throw new Error("Gemini 图片接口地址与模型名称不一致");
+    return url.href.replace(/\/$/, "");
+  }
+  const base = url.pathname.replace(/\/+$/, "");
+  if (!["", "/v1", "/v1beta"].includes(base)) throw new Error("请填写 Gemini 原生 generateContent 地址或 API 根地址");
+  url.pathname = `${base === "/v1" ? "/v1" : "/v1beta"}/models/${encodeURIComponent(config.modelId)}:generateContent`;
+  return url.href;
+}
+
+function geminiImageParameters(size) {
+  const dimensions = /^(\d+)x(\d+)$/.exec(size);
+  if (!dimensions) return {};
+  const width = Number(dimensions[1]), height = Number(dimensions[2]);
+  if (!width || !height) throw new Error("Gemini 图片尺寸无效");
+  const ratio = width / height;
+  const aspectRatio = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+    .find(value => { const [w, h] = value.split(":").map(Number); return Math.abs(w / h - ratio) < 0.000001; });
+  if (!aspectRatio) throw new Error("Gemini 图片比例不受支持");
+  // Keep ordinary poster requests at the provider's default tier. Video's 4K
+  // request is explicit; do not silently reduce its reference images to 1K.
+  const imageSize = Math.max(width, height) > 2048 ? "4K" : Math.min(width, height) >= 2048 ? "2K" : null;
+  return { aspectRatio, ...(imageSize ? { imageSize } : {}) };
+}
+
+function geminiImagePayload(payload, requestMeta) {
+  const candidate = payload?.candidates?.[0];
+  const part = candidate?.content?.parts?.find(part => !part.thought && (part.inlineData || part.inline_data)?.data);
+  const image = part?.inlineData || part?.inline_data;
+  if (!image) {
+    const reason = payload?.promptFeedback?.blockReason || candidate?.finishReason || "EMPTY_IMAGE";
+    throw annotateImageFailure(new Error(`Gemini 图片模型未返回图片（${String(reason).slice(0, 100)}）`), {
+      ...requestMeta, requestState: "COMPLETED_RESPONSE_RECEIVED", retrySafe: false,
+      failureKind: "PROVIDER", failureCode: "GEMINI_IMAGE_MISSING"
+    });
+  }
+  const bytes = Buffer.from(image.data, "base64");
+  const mime = detectedImageMime(bytes);
+  if (!mime || !bytes.length || bytes.length > 64 * 1024 * 1024)
+    throw annotateImageFailure(new Error("Gemini 图片模型返回的图片内容无效"), {
+      ...requestMeta, requestState: "COMPLETED_RESPONSE_RECEIVED", retrySafe: false,
+      failureKind: "PROVIDER", failureCode: "GEMINI_IMAGE_INVALID"
+    });
+  const usage = payload.usageMetadata || {};
+  return {
+    data: [{ b64_json: image.data, mime_type: mime }],
+    usage: { input_tokens: usage.promptTokenCount || 0, output_tokens: usage.candidatesTokenCount || 0,
+      total_tokens: usage.totalTokenCount || 0 }
+  };
+}
+
 async function callSingleImageModel(config, params, inputImages) {
   if (!config?.apiKey || !config?.modelId || !config?.baseUrl) {
     throw new Error("请先在模型接入中配置并启用图片模型");
@@ -1466,9 +1527,20 @@ async function callSingleImageModel(config, params, inputImages) {
   const streamImages = params.streamImages === true
     && /^gpt-image-/.test(config.modelId)
     && new URL(config.baseUrl).hostname === "xbcl.link";
-  const headers = { Authorization: `Bearer ${config.apiKey}` };
+  const gemini = isGeminiImageConfig(config);
+  const headers = gemini ? { "x-goog-api-key": config.apiKey } : { Authorization: `Bearer ${config.apiKey}` };
   let bodyFactory;
-  if (mode === "edit") {
+  if (gemini) {
+    const normalizedReferences = inputImages.map(normalizeReferenceImage);
+    const body = JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }, ...normalizedReferences.map(input => ({
+        inlineData: { mimeType: input.mimeType, data: input.bytes.toString("base64") }
+      }))] }],
+      generationConfig: { responseModalities: ["TEXT", "IMAGE"], imageConfig: geminiImageParameters(size) }
+    });
+    headers["Content-Type"] = "application/json";
+    bodyFactory = () => body;
+  } else if (mode === "edit") {
     const normalizedReferences = inputImages.map(normalizeReferenceImage);
     if (config.modelId === "grok-imagine-image-2.0") {
       // xAI edits use JSON, not the OpenAI SDK's multipart image/image[] format.
@@ -1513,7 +1585,7 @@ async function callSingleImageModel(config, params, inputImages) {
       ...(streamImages ? {stream:true,partial_images:0} : {}) });
     bodyFactory = () => jsonBody;
   }
-  const endpoint = imageEndpoint(config.baseUrl, mode);
+  const endpoint = gemini ? geminiImageEndpoint(config) : imageEndpoint(config.baseUrl, mode);
   const recovery = params.operation ? await params.operation.forRoute(config, {maxNetworkRetries:params.maxNetworkRetries}) : {maxNetworkRetries:params.maxNetworkRetries};
   let received = recovery.cachedResponse;
   if (!received) {
@@ -1526,7 +1598,8 @@ async function callSingleImageModel(config, params, inputImages) {
     }
     await recovery.recordResponse?.(received);
   }
-  const { payload, safeRetryCount, networkRetryCount = 0, requestId } = received;
+  const { payload: rawPayload, safeRetryCount, networkRetryCount = 0, requestId } = received;
+  const payload = gemini ? geminiImagePayload(rawPayload, { safeRetryCount, networkRetryCount, requestId }) : rawPayload;
   const item = Array.isArray(payload.data) ? payload.data[0]
     : Array.isArray(payload.images) ? payload.images[0]
       : payload.output?.[0] || payload.image || null;

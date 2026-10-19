@@ -56,6 +56,18 @@ class ModelConfigCommerceMockupTest {
         verify(mapper).selectList(any());verify(mapper).selectOne(any());verifyNoMoreInteractions(mapper);
     }
 
+    @Test void defaultBananaOwnsNewMockupsInsteadOfTheOldGrokPreference(){
+        var banana=config("org","gemini-nano-banana-2.1","banana-key",true);
+        var grok=config("org",GROK,"grok-key",false);
+        when(mapper.selectList(any())).thenReturn(List.of(banana,grok));
+        when(cipher.decrypt("banana-key")).thenReturn("banana-test-only");
+        var selected=service.selectCommerceMockupRuntimeConnection(user).orElseThrow();
+        assertThat(selected.id()).isEqualTo(banana.getId());
+        assertThat(selected.copyrightFallbackModels()).isEmpty();
+        verify(cipher,never()).decrypt("grok-key");
+        verify(mapper,never()).selectOne(any());
+    }
+
     @Test void foreignDisabledUnsupportedOrUndecryptableGrokCannotBeUsed(){
         var foreign=config("foreign",GROK,"foreign-key",false);
         var disabled=config("org",GROK,"disabled-key",false);disabled.changeStatus("DISABLED");

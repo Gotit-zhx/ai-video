@@ -201,7 +201,7 @@ public class ProductMainImageStyleService {
         String org = workflow.getOrganizationId();
         var generated = existing.stream().filter(job -> job.get("model_config_id") instanceof String id && !id.isBlank()).findFirst();
         String sourceKey = generated.map(job -> (String) job.get("source_key")).orElse(null);
-        String modelId = generated.map(job -> (String) job.get("model_config_id")).orElse(null);
+        String modelId = null;
         for (int index = 0; index < slots.size(); index++) {
             var slot = slots.get(index);
             String fingerprint = ProductMainImageStylePolicy.fingerprint(slot, json);
@@ -225,6 +225,8 @@ public class ProductMainImageStyleService {
             }
             if (modelId == null) {
                 modelId = models.imageConnection(org).orElseThrow(() -> conflict("请先配置可用的图片生成模型")).id();
+            }
+            if (sourceKey == null) {
                 var source = images.selectList(new LambdaQueryWrapper<ProductCaptureImage>()
                         .eq(ProductCaptureImage::getOrganizationId, org).eq(ProductCaptureImage::getCaptureId, capture.getId())
                         .orderByAsc(ProductCaptureImage::getSortOrder)).stream()

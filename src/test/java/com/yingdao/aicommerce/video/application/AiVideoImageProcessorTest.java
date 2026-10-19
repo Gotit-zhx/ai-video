@@ -1432,6 +1432,37 @@ class AiVideoImageProcessorTest {
         }
     }
 
+    @Test
+    void bananaDefaultDownloadsOldPaidOutputWithItsOriginalConfiguredKey() throws Exception {
+        var pendingMapper = mock(com.yingdao.aicommerce.video.mapper.AiVideoPendingImageResultMapper.class);
+        var processor = processor(tempDirectory, pendingMapper);
+        Field modelsField = AiVideoImageProcessor.class.getDeclaredField("modelConfigService");
+        modelsField.setAccessible(true);
+        var models = (ModelConfigService) modelsField.get(processor);
+        var old = new ModelConfigService.RuntimeModelConnection("old", "https://old.example", "gpt-image-2",
+                "OPENAI_COMPATIBLE", "AUTO", "old-result-key");
+        var banana = new ModelConfigService.RuntimeModelConnection("banana", "https://banana.example", "gemini-nano-banana-2.1",
+                "OPENAI_COMPATIBLE", "AUTO", "banana-key");
+        when(models.imageResultConnection("org", "gpt-image-2")).thenReturn(Optional.of(old));
+        var builder = org.springframework.web.client.RestClient.builder();
+        var server = org.springframework.test.web.client.MockRestServiceServer.bindTo(builder).build();
+        Field client = AiVideoImageProcessor.class.getDeclaredField("piClient");
+        client.setAccessible(true); client.set(processor, builder.baseUrl("http://runtime.test").build());
+        var pending = new com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult(
+                "org", "task", "item", "MODEL_IMAGE", "hash", "https://result.example/saved.png",
+                "image/png", "gpt-image-2", "edit", "");
+        server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo("http://runtime.test/v1/images/download"))
+                .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.model.apiKey").value("old-result-key"))
+                .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath("$.model.modelId").value("gpt-image-2"))
+                .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(
+                        "{\"artifact\":{\"dataBase64\":\"aGVsbG8=\",\"mimeType\":\"image/png\",\"modelId\":\"gpt-image-2\"}}",
+                        org.springframework.http.MediaType.APPLICATION_JSON));
+        invokePendingDownload(processor, banana, pending);
+        verify(models).imageResultConnection("org", "gpt-image-2");
+        assertEquals(1, pending.getDownloadAttempts());
+        server.verify();
+    }
+
     private static Object invokePendingDownload(AiVideoImageProcessor processor, ModelConfigService.RuntimeModelConnection model,
                                                com.yingdao.aicommerce.video.domain.AiVideoPendingImageResult pending) throws Exception {
         var method = AiVideoImageProcessor.class.getDeclaredMethod("downloadPendingImage", ModelConfigService.RuntimeModelConnection.class,

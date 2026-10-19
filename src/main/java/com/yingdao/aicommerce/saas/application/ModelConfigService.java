@@ -18,6 +18,7 @@ import java.util.Optional;
 public class ModelConfigService {
 
     private static final String COPYRIGHT_FALLBACK_MODEL_ID = "grok-imagine-image-2.0";
+    private static final String BANANA_IMAGE_MODEL_ID = "gemini-nano-banana-2.1";
     private static final List<String> IMG2_ARTWORK_MODEL_IDS = List.of("gpt-image-2", "gpt-image-2-2026-04-21");
     private static final String IMG2_ARTWORK_UNAVAILABLE = "当前公司没有可用的 IMG2.0（gpt-image-2）图片模型；请在模型接入中配置并启用 IMG2.0 后重试，透明印花不会改用其他模型。";
 
@@ -80,6 +81,17 @@ public class ModelConfigService {
         return imageConnection(tenantContext.organizationId());
     }
 
+    /** Download an already-paid legacy result with its own connection after a model switch. */
+    public Optional<RuntimeModelConnection> imageResultConnection(String org, String modelId) {
+        if (org == null || org.isBlank() || modelId == null || modelId.isBlank()) return Optional.empty();
+        return mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
+                        .eq(ModelConfig::getOrganizationId, org).eq(ModelConfig::getModelType, "IMAGE")
+                        .eq(ModelConfig::getStatus, "ACTIVE").eq(ModelConfig::getModelId, modelId)
+                        .orderByDesc(ModelConfig::isDefaultModel).orderByDesc(ModelConfig::getUpdatedAt))
+                .stream().filter(config -> config != null && modelId.equals(config.getModelId()))
+                .map(config -> commerceMockupRuntime(org, config)).flatMap(Optional::stream).findFirst();
+    }
+
     public Optional<RuntimeModelConnection> watermarkImageConnection(String organizationId) {
         return watermarkConnection(organizationId, "IMAGE", "grok-imagine-image-");
     }
@@ -107,7 +119,7 @@ public class ModelConfigService {
 
     public Optional<RuntimeModelConnection> imageConnection(String organizationId) {
         return modelConnection(organizationId, "IMAGE").map(primary -> {
-            if (COPYRIGHT_FALLBACK_MODEL_ID.equals(primary.modelId())) return primary;
+            if (COPYRIGHT_FALLBACK_MODEL_ID.equals(primary.modelId()) || BANANA_IMAGE_MODEL_ID.equals(primary.modelId())) return primary;
             List<RuntimeModelConnection> fallbacks = mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
                             .eq(ModelConfig::getOrganizationId, organizationId)
                             .eq(ModelConfig::getModelType, "IMAGE")
@@ -121,16 +133,17 @@ public class ModelConfigService {
         });
     }
 
-    /** Select once for a new final product mockup; neither defaults nor artwork routes are changed. */
+    /** A default Banana also owns new product mockups; legacy tenants retain their Grok preference. */
     public Optional<RuntimeModelConnection> selectCommerceMockupRuntimeConnection(PlatformPrincipal user) {
         if (user == null || user.organizationId() == null || user.organizationId().isBlank())
             throw new BusinessException(HttpStatus.BAD_REQUEST, "商品套版模型选择缺少公司信息");
         String org = user.organizationId();
         var preferred = mapper.selectList(new LambdaQueryWrapper<ModelConfig>()
                         .eq(ModelConfig::getOrganizationId, org).eq(ModelConfig::getModelType, "IMAGE")
-                        .eq(ModelConfig::getStatus, "ACTIVE").eq(ModelConfig::getModelId, COPYRIGHT_FALLBACK_MODEL_ID)
+                        .eq(ModelConfig::getStatus, "ACTIVE").in(ModelConfig::getModelId, List.of(BANANA_IMAGE_MODEL_ID, COPYRIGHT_FALLBACK_MODEL_ID))
                         .orderByDesc(ModelConfig::isDefaultModel).orderByDesc(ModelConfig::getUpdatedAt).orderByAsc(ModelConfig::getId))
-                .stream().filter(config -> config != null && COPYRIGHT_FALLBACK_MODEL_ID.equals(config.getModelId()))
+                .stream().filter(config -> config != null && (COPYRIGHT_FALLBACK_MODEL_ID.equals(config.getModelId())
+                        || BANANA_IMAGE_MODEL_ID.equals(config.getModelId()) && config.isDefaultModel()))
                 .map(config -> commerceMockupRuntime(org, config)).flatMap(Optional::stream).findFirst();
         if (preferred.isPresent()) return preferred;
         var selected = mapper.selectOne(new LambdaQueryWrapper<ModelConfig>()

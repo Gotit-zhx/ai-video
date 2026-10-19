@@ -78,6 +78,16 @@ class ModelConfigTransparentArtworkTest {
         verify(mapper, never()).selectList(any());
     }
 
+    @Test void bananaDefaultNeverReplacesTheDedicatedPrintModel() {
+        var banana = config("org", "IMAGE", "gemini-nano-banana-2.1", "banana-key", true);
+        var img2 = config("org", "IMAGE", "gpt-image-2", "print-key", false);
+        when(mapper.selectOne(any())).thenReturn(banana);
+        when(mapper.selectList(any())).thenReturn(List.of(img2));
+        when(cipher.decrypt("print-key")).thenReturn("print-test-only");
+        assertThat(service.requireTransparentArtworkConnection("org").id()).isEqualTo(img2.getId());
+        verify(cipher, never()).decrypt("banana-key");
+    }
+
     @Test void foreignDisabledWrongTypeFormatAndDifferentModelCandidatesAreNeverDecrypted() {
         var foreign = config("other-org", "IMAGE", "gpt-image-2", "foreign", true);
         var disabled = config("org", "IMAGE", "gpt-image-2", "disabled", false);disabled.changeStatus("DISABLED");

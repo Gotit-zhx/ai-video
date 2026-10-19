@@ -128,6 +128,29 @@ class ModelConfigImageFallbackTest {
         verify(mapper, never()).selectList(any());
     }
 
+    @Test void bananaDefaultDoesNotAttachGrokOrBorrowAnotherModelsCredentials() {
+        var banana = config("org", "IMAGE", "AUTO", BASE_URL, "gemini-nano-banana-2.1", "banana-cipher", true);
+        when(mapper.selectOne(any())).thenReturn(banana);
+        when(cipher.decrypt("banana-cipher")).thenReturn("banana-test-key");
+        var selected = service.imageConnection("org").orElseThrow();
+        assertThat(selected.id()).isEqualTo(banana.getId());
+        assertThat(selected.apiKey()).isEqualTo("banana-test-key");
+        assertThat(selected.copyrightFallbackModels()).isEmpty();
+        verify(mapper, never()).selectList(any());
+    }
+
+    @Test void oldResultDownloadsResolveOnlyTheMatchingActiveTenantImageModel() {
+        var foreign = config("other", "IMAGE", "AUTO", BASE_URL, "gpt-image-2", "foreign", false);
+        var disabled = config("org", "IMAGE", "AUTO", BASE_URL, "gpt-image-2", "disabled", false);
+        disabled.changeStatus("DISABLED");
+        var old = config("org", "IMAGE", "AUTO", BASE_URL, "gpt-image-2", "old", false);
+        when(mapper.selectList(any())).thenReturn(List.of(foreign, disabled, old));
+        when(cipher.decrypt("old")).thenReturn("original-result-key");
+        assertThat(service.imageResultConnection("org", "gpt-image-2").orElseThrow().id()).isEqualTo(old.getId());
+        verify(cipher, never()).decrypt("foreign"); verify(cipher, never()).decrypt("disabled");
+        verify(mapper, never()).selectOne(any());
+    }
+
     @Test
     void missingPrimaryDoesNotPromoteBackupByASecondQuery() {
         when(mapper.selectOne(any())).thenReturn(null);

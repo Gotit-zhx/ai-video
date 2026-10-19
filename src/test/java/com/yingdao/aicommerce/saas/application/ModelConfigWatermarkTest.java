@@ -51,4 +51,13 @@ class ModelConfigWatermarkTest {
         assertThat(service.watermarkDriverConnection(" ")).isEmpty();
         verifyNoInteractions(mapper,cipher);
     }
+    @Test void bananaCannotReplaceTheDedicatedWatermarkModel(){
+        var banana=new ModelConfig("org","IMAGE","AUTO","https://unit.invalid","gemini-nano-banana-2.1","banana","unit",true);
+        var grok=config("org","IMAGE","grok-imagine-image-2.0","grok");
+        when(mapper.selectList(any())).thenReturn(List.of(banana,grok));
+        when(cipher.decrypt("grok")).thenReturn("grok-test-key");
+        assertThat(service.watermarkImageConnection("org").orElseThrow().id()).isEqualTo(grok.getId());
+        verify(cipher,never()).decrypt("banana");
+        verify(mapper,never()).selectOne(any());
+    }
 }
