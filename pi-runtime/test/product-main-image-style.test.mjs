@@ -103,3 +103,143 @@ test('NDJSON streams progress and terminal error instead of pretending a failed 
   assert.equal(response.ended, true);
   assert.equal(response.listenerCount('close'), 0);
 });
+
+function controlledAgent(options = {}) {
+  const seen = {calls: 0, aborted: 0};
+  class Agent {
+    constructor(options) {
+      seen.options = options; seen.agent = this;
+      this.message = {role:'assistant', content:[{type:'text', text:''}], stopReason:'stop'};
+      this.state = {messages:[]};
+    }
+    subscribe(listener) { this.listener = listener; return () => { seen.unsubscribed = true; }; }
+    prompt() { seen.calls++; return new Promise(resolve => { this.resolve = resolve; }); }
+    emit(type, delta) {
+      if (type === 'text_delta') this.message.content[0].text += delta;
+      this.listener({type:'message_update', message:this.message, assistantMessageEvent:{type, delta}});
+    }
+    finish() { this.state.messages.push(this.message); this.resolve(); }
+    // Intentionally ignore abort: the outer watchdog must still release its caller.
+    abort() { seen.aborted++; }
+  }
+  return {seen, request:createPosterAgentRequest({Agent, modelFrom:() => ({compat:{}}),
+    streamSimple:(_model, _context, config) => { seen.transport = config; }, ...options})};
+}
+
+test('slow first response survives the old 90-second idle cutoff and keeps progress live', async t => {
+  t.mock.timers.enable({apis:['Date', 'setInterval']});
+  const {seen, request} = controlledAgent(), progress = [];
+  const pending = request({}, 'test', 'system', 'prompt', [image], 5000, undefined,
+    {onProgress:event => progress.push(event)});
+  t.mock.timers.tick(120_000);
+  assert.equal(seen.aborted, 0);
+  assert.equal(progress.at(-1).stage, 'MODEL_WAITING');
+  assert.equal(progress.at(-1).elapsedSeconds, 120);
+  assert.equal(progress.at(-1).outputCharacters, 0);
+  seen.agent.emit('text_delta', 'complete');
+  seen.agent.finish();
+  assert.equal(await pending, 'complete');
+  assert.equal(seen.calls, 1);
+  assert.equal(seen.unsubscribed, true);
+  seen.options.streamFn({}, {}, {});
+  assert.equal(seen.transport.timeoutMs, 240_000);
+  assert.equal(seen.transport.maxRetries, 0);
+});
+
+test('silent first response times out once even if the SDK ignores abort', async t => {
+  t.mock.timers.enable({apis:['Date', 'setInterval']});
+  const {seen, request} = controlledAgent(), progress = [];
+  const pending = request({fallbackModels:[{modelId:'must-not-run'}]}, 'test', 'system', 'prompt', [image], 100,
+    undefined, {onProgress:event => progress.push(event)});
+  const rejected = assert.rejects(pending, {failureCode:'POSTER_ANALYSIS_TIMEOUT', timeoutPhase:'first-response'});
+  t.mock.timers.tick(180_000);
+  await rejected;
+  assert.equal(seen.calls, 1);
+  assert.equal(seen.aborted, 1);
+  assert.equal(seen.unsubscribed, true);
+  const count = progress.length;
+  t.mock.timers.tick(300_000);
+  seen.agent.emit('text_delta', 'late');
+  assert.equal(progress.length, count);
+});
+
+test('real reasoning activity keeps the request alive without exposing reasoning', async t => {
+  t.mock.timers.enable({apis:['Date', 'setInterval']});
+  const {seen, request} = controlledAgent(), progress = [];
+  const pending = request({}, 'test', 'system', 'prompt', [image], 100, undefined,
+    {onProgress:event => progress.push(event)});
+  for (let i = 0; i < 3; i++) {
+    t.mock.timers.tick(65_000);
+    seen.agent.emit('thinking_delta', 'private reasoning');
+  }
+  assert.equal(seen.aborted, 0);
+  assert.equal(progress.at(-1).outputCharacters, 0);
+  assert.equal(JSON.stringify(progress).includes('private reasoning'), false);
+  seen.agent.emit('text_delta', 'done');
+  seen.agent.finish();
+  assert.equal(await pending, 'done');
+});
+
+test('empty streaming events cannot keep a silent request alive', async t => {
+  t.mock.timers.enable({apis:['Date', 'setInterval']});
+  const {seen, request} = controlledAgent();
+  const pending = request({}, 'test', 'system', 'prompt', [image], 100);
+  const rejected = assert.rejects(pending, {timeoutPhase:'first-response'});
+  for (let i = 0; i < 3; i++) {
+    t.mock.timers.tick(50_000);
+    seen.agent.emit('thinking_delta', '');
+    seen.agent.emit('text_delta', '');
+  }
+  t.mock.timers.tick(30_000);
+  await rejected;
+  assert.equal(seen.calls, 1);
+});
+
+test('a stalled started stream still gets the shorter idle deadline', async t => {
+  t.mock.timers.enable({apis:['Date', 'setInterval']});
+  const {seen, request} = controlledAgent();
+  const pending = request({}, 'test', 'system', 'prompt', [image], 100);
+  const rejected = assert.rejects(pending, {failureCode:'POSTER_ANALYSIS_TIMEOUT', timeoutPhase:'idle'});
+  t.mock.timers.tick(10_000);
+  seen.agent.emit('text_delta', 'partial');
+  t.mock.timers.tick(90_000);
+  await rejected;
+  assert.equal(seen.calls, 1);
+});
+
+test('continuous output cannot bypass the total deadline', async t => {
+  t.mock.timers.enable({apis:['Date', 'setInterval']});
+  const {seen, request} = controlledAgent();
+  const pending = request({}, 'test', 'system', 'prompt', [image], 100);
+  const rejected = assert.rejects(pending, {timeoutPhase:'total'});
+  for (let i = 0; i < 3; i++) {
+    t.mock.timers.tick(60_000);
+    seen.agent.emit('text_delta', 'chunk');
+  }
+  t.mock.timers.tick(60_000);
+  await rejected;
+  assert.equal(seen.calls, 1);
+});
+
+test('caller cancellation settles promptly even with a stuck SDK', async () => {
+  const {seen, request} = controlledAgent(), controller = new AbortController();
+  const pending = request({}, 'test', 'system', 'prompt', [image], 100, undefined, {signal:controller.signal});
+  const rejected = assert.rejects(pending, {failureCode:'POSTER_ANALYSIS_ABORTED'});
+  controller.abort();
+  await rejected;
+  assert.equal(seen.aborted, 1);
+  assert.equal(seen.unsubscribed, true);
+});
+
+test('validation progress preserves elapsed time instead of resetting it to zero', async t => {
+  t.mock.timers.enable({apis:['Date', 'setInterval']});
+  const {seen, request} = controlledAgent(), progress = [];
+  const pending = runPosterAnalysis({model:{apiKey:'test'}, image, context:{analysisType:POSTER_STYLE}},
+    request, JSON.parse, {onProgress:event => progress.push(event)});
+  t.mock.timers.tick(120_000);
+  seen.agent.emit('text_delta', JSON.stringify(style()));
+  seen.agent.finish();
+  await pending;
+  assert.equal(progress.at(-1).stage, 'VALIDATING');
+  assert.equal(progress.at(-1).elapsedSeconds, 120);
+});
