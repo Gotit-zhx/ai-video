@@ -112,6 +112,9 @@ try {
             $smoke = Get-Content $smokePath -Raw | ConvertFrom-Json
             if ($smoke.ok -ne $true -or $smoke.packagedEntryPoint -ne $true -or
                 $smoke.entryControllerExitCode -ne 0 -or
+                $smoke.productionHandoff -ne $true -or
+                $smoke.inspectorClosedBeforeChecks -ne $true -or
+                $smoke.earlyNativeShowHeld -ne $true -or $smoke.entryStartup.nativeWindowsHeld -lt 1 -or
                 $smoke.entryStartup.handoffCompleted -ne $true -or
                 $smoke.entryStartup.nativeWindowReadinessObserved -ne $true) { $workbenchCode = 1 }
         }

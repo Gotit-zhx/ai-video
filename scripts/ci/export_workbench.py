@@ -24,6 +24,8 @@ REQUIRED = (
     "native-client/resources/heyi/windows-workbench.cjs",
     "native-client/resources/heyi/windows-launch-status.cjs",
     "native-client/resources/heyi/windows-window-owner.cjs",
+    "native-client/resources/heyi/windows-native-ready.cjs",
+    "native-client/resources/heyi/windows-handoff.cjs",
     "native-client/resources/heyi/assets/ai-boss.ico",
     "native-client/resources/heyi-runtime/heyi-boss.exe",
 )
@@ -41,6 +43,7 @@ CHECKS = (
     "shutdown.hostClosedBeforeNativeExit", "shutdown.platformSessionSaved",
     "entryStartup.startupWindow", "entryStartup.handoffCompleted",
     "entryStartup.nativeWindowReadinessObserved",
+    "productionHandoff", "inspectorClosedBeforeChecks", "earlyNativeShowHeld",
     "hiddenWindowRestored", "minimizedWindowRestored", "nativeShowAdopted",
 )
 INSTALLATION_CHECKS = (

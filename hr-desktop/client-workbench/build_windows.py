@@ -49,7 +49,8 @@ def stage(source, output, runtime, sdk):
                  "native-bindings.cjs", "native-messages.cjs", "native-request-broker.cjs",
                  "inspector-driver.cjs", "process-outcome.cjs", "original-sdk-exit.cjs",
                  "native-exit-guard.cjs", "windows-chat-fixture.cjs",
-                 "windows-window-owner.cjs", "windows-launch-status.cjs"]:
+                 "windows-window-owner.cjs", "windows-launch-status.cjs",
+                 "windows-native-ready.cjs", "windows-handoff.cjs"]:
         addon["heyi/" + name] = (HERE / name).read_bytes()
     addon["heyi/assets/ai-boss.ico"] = (HERE / "assets/ai-boss.ico").read_bytes()
     ws = (HERE / "node_modules/ws").resolve(strict=True)

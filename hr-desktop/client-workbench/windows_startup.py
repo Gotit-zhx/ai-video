@@ -197,13 +197,27 @@ def supervise(process, guard, profile_root, launch_id, ui):
                 temporary.replace(profile_root / "heyi-entry-status.json")
                 acknowledged = True
             time.sleep(.25 if ui.ready else .04)
-        return process.returncode, {
+        final_status = read_current_status(status_file, launch_id)
+        result = {
             "startupWindow": True, "handoffCompleted": ui.ready,
             "nativeWindowReadinessObserved": native_observed,
             "nativeWindowsHeld": ui.hidden_count, "activations": ui.activation_count,
             "nativePidObserved": bool(ui.pid), "windowEnumerations": ui.enumerations,
             "ownedTopLevelClasses": sorted(ui.observed_classes),
             "windowEnumerationErrors": sorted(ui.enumeration_errors),
+            "lastStage": final_status.get("stage"),
+            "waitingFor": final_status.get("waitingFor"),
         }
+        # Preserve bounded startup evidence for normal launches too. This
+        # contains window classes/counts and fixed stage names, never cookies,
+        # page titles, profile contents or vendor stdout.
+        temporary = profile_root / "heyi-startup-diagnostic.json.tmp"
+        try:
+            temporary.write_text(json.dumps({"launchId": launch_id,
+                "controllerExitCode": process.returncode, **result}), encoding="utf-8")
+            temporary.replace(profile_root / "heyi-startup-diagnostic.json")
+        except OSError:
+            pass
+        return process.returncode, result
     finally:
         ui.close()

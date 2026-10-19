@@ -103,7 +103,7 @@ async function install(bindings, config = {}) {
       await close();
     }});
     active = {adapter, host, integrated, network, listeners, exitGuard, windowOwner, chatAction, resumeAction, incomingActivity,
-      offline: Boolean(config.offline), profileRoot: root, nativeExitRequested: false};
+      offline: Boolean(config.offline), profileRoot: root, launchId: config.launchId, nativeExitRequested: false};
     lastFailure = undefined;
     integrated.showCurrent();
     return {ok: true, mode: 'windows-native-workbench', bridgeReady: true,
@@ -154,6 +154,48 @@ function state() {
   return {installed: true, nativeSessionVerified: adapter.loggedIn(),
     bridgePort: host.bridge.port, shell: integrated.state(),
     networkReady: !network.stopped && Boolean(host.egress.info)};
+}
+function completeStartup() {
+  if (!active || active.startupCompletion) throw Error('Startup handoff is unavailable or already armed');
+  const current = active;
+  const saveCheck = async report => {
+    const file = path.join(current.profileRoot, 'heyi-native-check.json');
+    await fs.writeFile(file + '.tmp', JSON.stringify({launchId: current.launchId, report}), {flag: 'wx'});
+    await fs.rename(file + '.tmp', file);
+  };
+  current.startupCompletion = (async () => {
+    await require('./windows-handoff.cjs').finishNativeHandoff(current.profileRoot, current.launchId);
+    if (!current.offline) return;
+    // Execute the packaged checks after the same detach/handoff path as a
+    // normal launch. No inspector connection is retained during these checks.
+    await require('./windows-launch-status.cjs').waitForEntry(current.profileRoot, current.launchId);
+    const installationProbe = process.env.HEYI_WORKBENCH_INSTALLATION_PROBE === '1';
+    if (installationProbe) {
+      const barrier = path.join(current.profileRoot, 'installer-checks-complete');
+      const deadline = Date.now() + 90000;
+      for (;;) {
+        try {await fs.access(barrier);break;}
+        catch (error) {
+          if (error.code !== 'ENOENT' || Date.now() >= deadline) throw Error('Installation probe did not finish');
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    const report = await offlineCheck();
+    report.productionHandoff = true;
+    report.inspectorClosedBeforeChecks = !require('node:inspector').url();
+    report.installerGuardBarrierUsed = installationProbe;
+    await saveCheck(report);
+    require('./original-sdk-exit.cjs').requestOriginalExit(globalThis.$socket, {});
+  })().catch(async () => {
+    lastFailure = {stage: 'startup-handoff'};
+    if (current.offline) {
+      await saveCheck({ok: false, stage: 'startup-handoff',
+        candidateMessagesSent: 0, actualBossNetworkUsed: false}).catch(() => {});
+      require('./original-sdk-exit.cjs').requestOriginalExit(globalThis.$socket, {});
+    }
+  });
+  return true;
 }
 async function offlineCheck() {
   if (!active?.offline || !process.env.HEYI_WORKBENCH_TEST_DATA ||
@@ -230,4 +272,4 @@ async function offlineCheck() {
       candidateMessagesSent: 0, actualBossNetworkUsed: false};
   } finally {clipboard.writeText(oldClipboard);}
 }
-module.exports = {install, close, state, offlineCheck};
+module.exports = {install, close, state, offlineCheck, completeStartup};

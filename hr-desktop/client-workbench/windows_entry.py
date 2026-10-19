@@ -6,7 +6,7 @@ import subprocess
 import sys
 import uuid
 from windows_installation import RunningGuard
-from windows_startup import StartupWindow, supervise
+from windows_startup import STAGES, StartupWindow, supervise
 
 
 def self_test_requested(arguments, environment):
@@ -64,8 +64,13 @@ def main():
             report["entryStartup"] = startup
             report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
     elif returncode:
+        message = ("工作台运行已中断。" if startup.get("handoffCompleted") else "工作台启动未完成。")
+        stage = STAGES.get(startup.get("lastStage"))
+        if stage:
+            message += "\n停止阶段：" + stage.rstrip("…")
+        message += "\n诊断已保存到本机 HeyiBossWorkbench 目录。"
         ctypes.windll.user32.MessageBoxW(
-            None, "工作台启动未完成。请查看本机 HeyiBossWorkbench 目录中的启动状态，或联系管理员。",
+            None, message,
             "Ai boss", 0x10)
     return returncode
 

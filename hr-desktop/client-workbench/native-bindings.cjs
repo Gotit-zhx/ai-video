@@ -14,8 +14,8 @@ const SHAPES = {
   messageFactory: {getProtoMsg: 'function', generateMsgProto: 'function'},
 };
 
-async function bindNativeModule(connection, {modulePath, config = {}, pinnedOriginalVerified,
-  builderDescriptor} = {}) {
+async function bindNativeModuleOnce(connection, {modulePath, config = {}, pinnedOriginalVerified,
+  builderDescriptor, waitForMissing = false, onInstall} = {}) {
   if (pinnedOriginalVerified !== true || !path.isAbsolute(modulePath || '') || !modulePath.endsWith('.cjs')) {
     throw Error('Verified original and an absolute addon module are required');
   }
@@ -30,6 +30,9 @@ async function bindNativeModule(connection, {modulePath, config = {}, pinnedOrig
   const command = (method, params) => connection.client.command(method, params);
   let stage = 'create-bindings', failed = false;
   const reference = response => {
+    if (!response.exceptionDetails && response.result?.subtype === 'null' && waitForMissing) {
+      throw Object.assign(Error('Native metadata is still initializing'), {metadataPending: true});
+    }
     if (response.exceptionDetails || !response.result?.objectId) throw Error();
     return response.result.objectId;
   };
@@ -72,7 +75,7 @@ async function bindNativeModule(connection, {modulePath, config = {}, pinnedOrig
             if(found[key].length>1)throw Error();
           }
         }
-        if(Object.values(found).some(values=>values.length!==1))throw Error();
+        if(Object.values(found).some(values=>values.length===0))return null;
         return Object.fromEntries(Object.entries(found).map(([key,values])=>[key,values[0]]));
       }`,
     }));
@@ -91,6 +94,7 @@ async function bindNativeModule(connection, {modulePath, config = {}, pinnedOrig
       const singleton = reference(await command('Runtime.callFunctionOn', {
         objectId: objects.objects.objectId, objectGroup: group, returnByValue: false,
         functionDeclaration: `function(){
+          if(this.length===0)return null;
           if(this.length!==1||process.mainModule.require('node:util').types.isProxy(this[0]))throw Error();
           return this[0];
         }`,
@@ -118,7 +122,8 @@ async function bindNativeModule(connection, {modulePath, config = {}, pinnedOrig
           const found=this.filter(fn=>typeof fn==='function'&&!types.isProxy(fn)&&
             types.isAsyncFunction(fn)&&Object.getOwnPropertyDescriptor(fn,'name')?.value===name&&
             Object.getOwnPropertyDescriptor(fn,'length')?.value===1);
-          if(found.length<1||found.length>32)throw Error();
+          if(found.length===0)return null;
+          if(found.length>32)throw Error();
           return found;
         }`,
       }));
@@ -155,7 +160,7 @@ async function bindNativeModule(connection, {modulePath, config = {}, pinnedOrig
               typeof Object.getOwnPropertyDescriptor(candidate,name)?.value==='function'))matches.push(candidate);
           if(matches.length>1)throw Error();
         }
-        if(matches.length!==1)throw Error();
+        if(matches.length===0)return null;
         return matches[0];
       }`,
     }));
@@ -167,6 +172,7 @@ async function bindNativeModule(connection, {modulePath, config = {}, pinnedOrig
         const isProxy=process.mainModule.require('node:util').types.isProxy;
         const modules=Object.entries(process.mainModule.require('node:module')._cache)
           .filter(([file])=>/[\\\\/]node_modules[\\\\/]@bzl[\\\\/]electron-node-fetch[\\\\/]dist[\\\\/]index\\.js$/.test(file));
+        if(modules.length===0)return null;
         if(modules.length!==1)throw Error();
         const exports=modules[0][1].exports;
         if(isProxy(exports))throw Error();
@@ -186,12 +192,14 @@ async function bindNativeModule(connection, {modulePath, config = {}, pinnedOrig
       objectId: httpClients.objects.objectId, objectGroup: group, returnByValue: false,
       functionDeclaration: `function(){
         const isProxy=process.mainModule.require('node:util').types.isProxy;
+        if(this.length===0)return null;
         if(this.length<1||this.length>8||this.some(client=>isProxy(client)))throw Error();
         return this;
       }`,
     }));
     await store('httpClients', checkedClients);
     stage = 'install-addon';
+    onInstall?.();
     const installed = await command('Runtime.callFunctionOn', {
       objectId: bindings, objectGroup: group, returnByValue: true, awaitPromise: true,
       functionDeclaration: 'async function(file,config){return process.mainModule.require(file).install(this,config)}',
@@ -199,14 +207,36 @@ async function bindNativeModule(connection, {modulePath, config = {}, pinnedOrig
     });
     if (installed.exceptionDetails || !installed.result?.value) throw Error();
     return installed.result.value;
-  } catch {
+  } catch (error) {
     failed = true;
     throw Object.assign(Error('Native addon binding did not complete; no automatic replay'), {
-      nativeBindingDiagnostic: {stage},
+      nativeBindingDiagnostic: {stage, ...(error.metadataPending ? {metadataPending: true} : {})},
     });
   } finally {
     try {await command('Runtime.releaseObjectGroup', {objectGroup: group});}
     catch (error) {if (!failed) throw error;}
+  }
+}
+
+async function bindNativeModule(connection, options = {}) {
+  const timeout = options.readinessTimeout ?? 0;
+  if (!Number.isInteger(timeout) || timeout < 0 || timeout > 60000) {
+    throw Error('Bounded native readiness timeout required');
+  }
+  const deadline = Date.now() + timeout;
+  let interval = 250;
+  for (;;) {
+    try {
+      return await bindNativeModuleOnce(connection, {...options, waitForMissing: timeout > 0});
+    } catch (error) {
+      // Only absent, read-only metadata may be observed again. Ambiguity,
+      // transport loss and addon execution failures must never be replayed.
+      if (!error.nativeBindingDiagnostic?.metadataPending || Date.now() >= deadline ||
+          connection.child?.exitCode != null || connection.child?.signalCode != null) throw error;
+      options.onReadiness?.(error.nativeBindingDiagnostic.stage);
+      await new Promise(resolve => setTimeout(resolve, Math.min(interval, deadline - Date.now())));
+      interval = Math.min(interval * 2, 1000);
+    }
   }
 }
 module.exports = {bindNativeModule};

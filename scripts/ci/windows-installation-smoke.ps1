@@ -181,6 +181,8 @@ try {
     if (!$test.WaitForExit(120000) -or $test.ExitCode -ne 0) { throw 'Installed application check failed' }
     $smoke = Get-Content $output -Raw | ConvertFrom-Json
     if ($smoke.ok -ne $true -or $smoke.entryControllerExitCode -ne 0 -or
+        $smoke.productionHandoff -ne $true -or $smoke.inspectorClosedBeforeChecks -ne $true -or
+        $smoke.earlyNativeShowHeld -ne $true -or $smoke.entryStartup.nativeWindowsHeld -lt 1 -or
         $smoke.shutdown.platformSessionSaved -ne $true -or $smoke.shutdown.realAccountUsed -ne $false -or
         $smoke.entryStartup.handoffCompleted -ne $true -or
         $smoke.entryStartup.nativeWindowReadinessObserved -ne $true -or

@@ -6,7 +6,7 @@ const path = require('node:path');
 const {launchInspecting, evaluateRunning} = require('./inspector-driver.cjs');
 const {bindNativeModule} = require('./native-bindings.cjs');
 
-async function fixture(t) {
+async function fixture(t, {defer = false} = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'heyi-native-bindings-'));
   const file = path.join(root, 'fixture.cjs'), modulePath = path.join(root, 'addon.cjs');
   const httpModule = path.join(root, 'node_modules/@bzl/electron-node-fetch/dist/index.js');
@@ -23,6 +23,7 @@ async function fixture(t) {
   `);
   await fs.writeFile(file, `
     globalThis.fixtureCalls=0;globalThis.fixtureInstalls=0;
+    globalThis.initialize=()=>{
     class Identity{get userInfo(){fixtureCalls++;throw Error('private-identity')}
       get userId(){fixtureCalls++;throw Error('private-identity')}
       get avatar(){fixtureCalls++;throw Error('private-identity')}}
@@ -40,6 +41,8 @@ async function fixture(t) {
       sdk:{_sdk_getLoginStatus(){fixtureCalls++},_sdk_getNetworkStatus(){fixtureCalls++},
         _sdk_getUserInfo(){fixtureCalls++},_sdk_chatSocket_sendTextMessage(){fixtureCalls++}}};
     globalThis.fixtureHttp=new (require(${JSON.stringify(httpModule)}).enfetch);
+    };
+    ${defer ? '' : 'initialize();'}
     globalThis.fixtureReady=true;setInterval(()=>{},1000);
   `);
   const connection = await launchInspecting(process.execPath, [file]);
@@ -87,7 +90,7 @@ test('captures actual target references without calling getters or business meth
 test('ambiguous account instances stop before installer or getters', async t => {
   const {connection, modulePath, releases} = await fixture(t);
   await evaluateRunning(connection, 'globalThis.extraIdentity=new fixtureExpected.identity.constructor;true');
-  await assert.rejects(bindNativeModule(connection, {modulePath, pinnedOriginalVerified: true}),
+  await assert.rejects(bindNativeModule(connection, {modulePath, pinnedOriginalVerified: true, readinessTimeout: 2000}),
     error => error.nativeBindingDiagnostic.stage === 'capture-identity');
   assert.equal(await evaluateRunning(connection, 'fixtureCalls+fixtureInstalls'), 0);
   assert.equal(releases(), 1);
@@ -122,7 +125,7 @@ test('too many HTTP clients are refused before installation', async t => {
 test('installer failures are sanitized, not replayed, and still release handles', async t => {
   const {connection, modulePath, releases} = await fixture(t);
   await assert.rejects(bindNativeModule(connection, {
-    modulePath, config: {throw: true}, pinnedOriginalVerified: true,
+    modulePath, config: {throw: true}, pinnedOriginalVerified: true, readinessTimeout: 2000,
   }), error => {
     assert.equal(error.nativeBindingDiagnostic.stage, 'install-addon');
     assert.equal(String(error).includes('private-installer'), false);
@@ -131,4 +134,27 @@ test('installer failures are sanitized, not replayed, and still release handles'
   assert.equal(await evaluateRunning(connection, 'fixtureInstalls'), 1);
   assert.equal(await evaluateRunning(connection, 'fixtureCalls'), 0);
   assert.equal(releases(), 1);
+});
+
+test('metadata that initializes after the dispatcher is observed safely before one addon installation', async t => {
+  const {connection, modulePath, releases} = await fixture(t, {defer: true});
+  const options = {modulePath, pinnedOriginalVerified: true};
+  // Reproduce the previous early-binding failure with the same target.
+  await assert.rejects(bindNativeModule(connection, options),
+    error => error.nativeBindingDiagnostic.stage === 'unique-role-prototypes');
+  await evaluateRunning(connection, 'setTimeout(initialize,150);true');
+  const waiting = [];
+  assert.equal((await bindNativeModule(connection, {...options, readinessTimeout: 5000,
+    onReadiness: stage => waiting.push(stage)})).ok, true);
+  assert.ok(waiting.includes('unique-role-prototypes'));
+  assert.equal(await evaluateRunning(connection, 'fixtureCalls'), 0);
+  assert.equal(await evaluateRunning(connection, 'fixtureInstalls'), 1);
+  assert.ok(releases() >= 3, 'every pending observation releases its own handles');
+});
+
+test('absent metadata has a deadline and never enters addon installation', async t => {
+  const {connection, modulePath} = await fixture(t, {defer: true});
+  await assert.rejects(bindNativeModule(connection, {modulePath, pinnedOriginalVerified: true,
+    readinessTimeout: 50}), error => error.nativeBindingDiagnostic.metadataPending === true);
+  assert.equal(await evaluateRunning(connection, 'fixtureCalls+fixtureInstalls'), 0);
 });
