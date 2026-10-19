@@ -20,6 +20,19 @@ const product = {id:'preview-product',organizationId:'preview-org',title:'Cotton
   skus:[{id:'sku-1',skuKey:'sku-1',externalSkuId:'shirt-M',price:'199',currency:'PHP',stock:100,attributes:{Size:'M'}}],
   normalizedData:{},completenessWarnings:[]};
 const requests = [], workflows = new Map();
+const styleWorkflowMode = process.env.PREVIEW_STYLE_WORKFLOW === '1';
+const styleWorkflowStarted = Date.now();
+function styleWorkflow() {
+  const elapsed = Math.floor((Date.now() - styleWorkflowStarted) / 1000);
+  const reviewing = elapsed % 40 >= 20;
+  return {id:'preview-style-workflow',captureId:product.id,shopId:'dry-run-shop',destinationPlatform:'SHOPEE',
+    executionMode:'DRY_RUN',status:'RUNNING',currentStep:'STYLE_IMAGES',mainImageStyle:{
+      templateName:'泰国A · 本地模拟进度',totalImages:7,processedImages:1,imageUrls:[image],
+      images:Array.from({length:7},(_,index)=>({index,status:index===6?'READY':index===0?reviewing?'RESULT_RECEIVED':'SUBMITTING':'PREPARED',
+        stage:index===6?'PRESERVED':index===0?reviewing?'REVIEW_MODEL_STREAMING':'GENERATING':'QUEUED',
+        mode:index===6?'PRESERVE_ORIGINAL':'REPLACE_PRODUCT',attempt:0,elapsedSeconds:index===0?elapsed%20:null,
+        outputCharacters:index===0&&reviewing?(elapsed%20)*32:0,imageUrl:index===6?image:null}))}};
+}
 const progressMode = process.env.PREVIEW_PROGRESS === '1', started = new Map();
 function updateProgress() {
   for (const row of templates) {
@@ -52,6 +65,8 @@ const server = http.createServer(async (req,res) => {
     if (p === '/api/v1/product-captures') return json(res,{content:[product],totalElements:1,totalPages:1,number:0,size:24,
       statusCounts:{CAPTURED:0,READY:1,APPROVED:0,PUBLISHED:0,FAILED:0}});
     if (p === '/api/v1/product-captures/preview-product') return json(res,product);
+    if (styleWorkflowMode && p === '/api/v1/product-captures/preview-product/publish-workflows' && req.method === 'GET') return json(res,[styleWorkflow()]);
+    if (styleWorkflowMode && p === '/api/v1/product-captures/preview-product/publish-workflows/preview-style-workflow' && req.method === 'GET') return json(res,styleWorkflow());
     if (p === '/api/v1/product-main-image-templates' && req.method === 'GET') {updateProgress();return json(res,templates);}
     if (p === '/api/v1/product-main-image-templates' && req.method === 'POST') {
       const form = await new Request('http://localhost/upload',{method:'POST',headers:req.headers,body:req,duplex:'half'}).formData();

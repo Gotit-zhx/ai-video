@@ -87,6 +87,35 @@
 #product-bulk-dialog .main-style-optional { display:inline; }
 .main-style-result-strip { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
 .main-style-result-strip img { width:40px; height:40px; object-fit:contain; border:1px solid var(--line); }
+.main-style-workflow-progress { min-width:0; width:100%; margin:12px 0 0; padding-top:12px; border-top:1px solid var(--line); color:var(--text); }
+.main-style-workflow-progress header { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 12px; align-items:center; }
+.main-style-workflow-progress header strong { font-size:13px; }
+.main-style-workflow-progress header span { font-size:12px; font-variant-numeric:tabular-nums; }
+.main-style-workflow-progress p { margin:6px 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.main-style-workflow-template { color:var(--muted); }
+.main-style-workflow-progress progress { display:block; width:100%; height:6px; margin:10px 0; accent-color:var(--success, #247f50); }
+.main-style-workflow-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr)); gap:0 16px; margin:8px 0 0; padding:0; list-style:none; }
+.main-style-workflow-image-row { display:grid; grid-template-columns:40px minmax(0,1fr); align-items:start; gap:10px; padding:10px 0; min-width:0; border-top:1px solid var(--line); }
+.main-style-workflow-image-row > div { display:grid; gap:3px; min-width:0; }
+.main-style-workflow-image-row strong { font-size:12px; line-height:1.4; }
+.main-style-workflow-image-row span { font-size:12px; line-height:1.5; }
+.main-style-workflow-image-row small { font-size:11px; line-height:1.5; color:var(--muted); }
+.main-style-workflow-image-row :is(strong,span,small) { overflow-wrap:anywhere; white-space:normal; }
+.main-style-workflow-number, .main-style-workflow-image { width:40px; height:40px; display:grid; place-items:center; background:var(--surface-soft); border:1px solid var(--line); border-radius:4px; }
+.main-style-workflow-image img { width:100%; height:100%; object-fit:contain; border-radius:3px; }
+.main-style-workflow-image-row.is-active > div > span, .main-style-workflow-current { color:var(--info, #2563a6); }
+.main-style-workflow-image-row.is-ready > div > span { color:var(--success, #247f50); }
+.main-style-workflow-image-row.is-failed > div > span, .main-style-workflow-image-row .main-style-workflow-error, .main-style-workflow-connection { color:var(--danger, #b33737); }
+.main-style-workflow-progress.is-compact { margin-top:8px; padding-top:8px; }
+.main-style-workflow-progress.is-compact .main-style-workflow-list { grid-template-columns:minmax(0,1fr); }
+.main-style-workflow-progress.is-compact .main-style-workflow-image-row { grid-template-columns:32px minmax(0,1fr); gap:8px; padding:8px 0; }
+.main-style-workflow-progress.is-compact :is(.main-style-workflow-number,.main-style-workflow-image) { width:32px; height:32px; }
+#product-bulk-dialog #product-bulk-progress:has(.main-style-workflow-progress) { grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr)); }
+.bulk-product-card:has(.main-style-workflow-progress) { border-radius:8px; }
+.bulk-product-card:has(.main-style-workflow-progress) .bulk-product-visual { aspect-ratio:16 / 7; background:var(--surface-soft); }
+.bulk-product-card:has(.main-style-workflow-progress) .bulk-product-visual img { object-fit:contain; }
+.bulk-product-info .main-style-workflow-progress strong { display:block; min-height:0; overflow:visible; -webkit-line-clamp:unset; }
+#product-bulk-progress .main-style-workflow-progress p { border:0; padding:0; margin:6px 0; line-height:1.5; }
 #main-style-workspace [hidden],.main-style-dialog [hidden],.main-style-bulk-preview[hidden] { display:none!important; }
 @media(max-width:700px) {
   #main-style-workspace { padding:16px 10px; }

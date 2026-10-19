@@ -84,6 +84,7 @@ function harness(captures = fixture()) {
       getItem:key => storage.get(key) ?? null, setItem:(key,value) => {state.onWrite?.(key,value);storage.set(key,value);}},
     activeMarketplaceShops:platform => platform==='SHOPEE'?[{id:'shop', name:'Original Shopee shop',region:'MY',platform:'SHOPEE'}]:[], hasAnyPermission:() => true,
     newProductIdempotencyKey:() => ++state.keyCount===1?'bulk-key':`bulk-key-${state.keyCount}`, escapeHtml:value => String(value ?? ''), safeProductUrl:value => value || '',
+    replaceHtmlPreservingMedia:(node,html)=>{node.innerHTML=html;},
     productCaptureSkus:capture => capture?.skus || [], productCaptureImages:capture => capture?.images || [],
     updateProductCaptureInMemory:capture => updates.push(plain(capture)),
     productPublishWorkflowPath:(id, workflowId='') => `/captures/${encodeURIComponent(id)}/publish-workflows${workflowId ? `/${workflowId}` : ''}`,
@@ -136,6 +137,7 @@ function harness(captures = fixture()) {
   node('#product-bulk-shop').value = 'shop';
   vm.createContext(c);
   const fragments = [
+    slice('function renderProductMainImageProgress(', 'function renderProductUploadResult('),
     slice('function productCaptureCanUpload(', 'function renderProductCaptureList('),
     slice('function productCapturePayload(', 'function productCaptureListPayload('),
     slice('function nullableProductValue(', 'function productSkuAttributesComplete('),
@@ -150,6 +152,32 @@ function harness(captures = fixture()) {
     submit:() => c.submitProductBulkUpload({preventDefault(){}}), clearRuns:()=>vm.runInContext('productBulkRuns.clear()',c),
     runCount:()=>vm.runInContext('productBulkRuns.size',c)};
 }
+
+test('bulk detail polling updates per-image review progress without another create or a completed-count change',async()=>{
+  const h=harness();
+  const initial={id:'style-workflow',captureId:'a',status:'RUNNING',currentStep:'STYLE_IMAGES',mainImageStyle:{
+    templateName:'Style',totalImages:2,processedImages:1,images:[
+      {index:0,status:'SUBMITTING',stage:'GENERATING',elapsedSeconds:20},
+      {index:1,status:'READY',stage:'PRESERVED',imageUrl:'/api/v1/product-main-image-results/original'}
+    ]}};
+  h.c.productBulkItems=[{captureId:'a',title:'Test',workflow:initial}];
+  h.node('#product-bulk-dialog').open=true;
+  h.c.renderProductBulkProgress();
+  assert.match(h.node('#product-bulk-progress').innerHTML,/正在生成/);
+  h.state.onWorkflowRead=async()=>({data:{...initial,mainImageStyle:{...initial.mainImageStyle,images:[
+    {index:0,status:'RESULT_RECEIVED',stage:'REVIEW_MODEL_STREAMING',elapsedSeconds:7,outputCharacters:144},
+    initial.mainImageStyle.images[1]
+  ]}}});
+  await h.c.pollProductBulkProgress();
+  const html=h.node('#product-bulk-progress').innerHTML;
+  assert.match(html,/1 \/ 2 张就绪/);
+  assert.match(html,/正在返回检查结果/);
+  assert.match(html,/检查已返回 144 字符/);
+  assert.match(html,/原样保留/);
+  assert.equal(h.posts.length,0);
+  assert.equal(h.workflowReads.length,1);
+  assert.ok(h.timers.size>0);
+});
 
 test('multi-shop UI submits each product to both stores with separate requests and shared batch chart',async()=>{
   const h=harness(),select=h.node('#product-bulk-shop');

@@ -29,7 +29,10 @@ public class ProductMainImageStyleService {
     private final ObjectMapper json;
     private final ProductMainImageTemplateService templates;
 
-    public record Progress(String templateName, int totalImages, int processedImages, List<String> imageUrls) {}
+    public record Progress(String templateName, int totalImages, int processedImages, List<String> imageUrls,
+                           List<ImageProgress> images) {}
+    public record ImageProgress(int index, String status, String stage, String mode, int attempt,
+                                Long elapsedSeconds, int outputCharacters, String errorMessage, String imageUrl) {}
 
     public ProductMainImageStyleService(JdbcTemplate db, ProductCaptureImageMapper images, CommerceImageArchive archive,
             MarketplaceImageDownloader downloader, CommerceDesignImageGateway gateway, ProductMainImageStyleVision vision,
@@ -46,11 +49,53 @@ public class ProductMainImageStyleService {
         if (!selected(workflow)) return null;
         Map<String, Object> template;
         try { template = current(workflow); }
-        catch (BusinessException unavailable) { return new Progress("模板不可用", 0, 0, List.of()); }
-        var jobs = currentJobs(workflow, slots(template));
-        var ready = jobs.stream().filter(job -> "READY".equals(job.get("status"))).toList();
-        return new Progress(Objects.toString(template.get("name"), ""), slots(template).size(), ready.size(),
-                ready.stream().map(job -> "/api/v1/product-main-image-results/" + job.get("id")).toList());
+        catch (BusinessException unavailable) { return new Progress("模板不可用", 0, 0, List.of(), List.of()); }
+        var slots = slots(template);
+        var jobs = currentJobs(workflow, slots);
+        var progress = new ArrayList<ImageProgress>();
+        for (int index = 0; index < slots.size(); index++) {
+            int position = index;
+            var job = jobs.stream().filter(row -> ((Number) row.get("sort_order")).intValue() == position).findFirst().orElse(null);
+            var analysis = json.convertValue(slots.get(index).get("analysis"), new TypeReference<Map<String, Object>>() {});
+            progress.add(imageProgress(index, job, ProductMainImageStylePolicy.preservesOriginal(analysis), workflow));
+        }
+        var ready = progress.stream().filter(image -> "READY".equals(image.status())).toList();
+        return new Progress(Objects.toString(template.get("name"), ""), slots.size(), ready.size(),
+                ready.stream().map(ImageProgress::imageUrl).toList(), List.copyOf(progress));
+    }
+
+    private ImageProgress imageProgress(int index, Map<String, Object> job, boolean original, ProductPublishWorkflow workflow) {
+        String status = job == null ? "WAITING" : Objects.toString(job.get("status"), "WAITING");
+        int attempt = job == null ? 0 : boundedNumber(job.get("attempt_count"), 1);
+        String stage = switch (status) {
+            case "PREPARED" -> attempt > 0 ? "CORRECTING" : "QUEUED";
+            case "SUBMITTING" -> "GENERATING";
+            case "RESULT_RECEIVED" -> job.get("storage_key") == null ? "SAVING" : "REVIEW_QUEUED";
+            case "READY" -> original ? "PRESERVED" : "READY";
+            case "FAILED" -> "FAILED";
+            default -> "WAITING";
+        };
+        Long elapsed = null;
+        int characters = 0;
+        if ("SUBMITTING".equals(status)) {
+            Instant updated = jobInstant(job.get("updated_at"));
+            if (updated != null) elapsed = Math.max(0, java.time.Duration.between(updated, Instant.now()).getSeconds());
+        } else if ("RESULT_RECEIVED".equals(status) && job.get("review_json") instanceof String review) {
+            var value = json.readTree(review).path("progress");
+            String reviewStage = value.path("stage").asText();
+            if (Set.of("MODEL_WAITING", "MODEL_STREAMING", "VALIDATING").contains(reviewStage)) {
+                stage = "REVIEW_" + reviewStage;
+                elapsed = (long) Math.max(0, Math.min(600, value.path("elapsedSeconds").asInt()));
+                characters = Math.max(0, Math.min(50000, value.path("outputCharacters").asInt()));
+            }
+        }
+        String error = job == null ? null : (String) job.get("error_message");
+        if ("FAILED".equals(workflow.getStatus()) && !"READY".equals(status)) {
+            stage = "FAILED".equals(status) ? "FAILED" : "STOPPED";
+            if (error == null && Set.of("SUBMITTING", "RESULT_RECEIVED", "FAILED").contains(status)) error = workflow.getErrorMessage();
+        }
+        return new ImageProgress(index, status, stage, original ? ProductMainImageStylePolicy.PRESERVE_ORIGINAL : "REPLACE_PRODUCT",
+                attempt, elapsed, characters, error, "READY".equals(status) ? "/api/v1/product-main-image-results/" + job.get("id") : null);
     }
 
     /** Process at most one slot per workflow claim, releasing the worker between slots. */
@@ -124,9 +169,11 @@ public class ProductMainImageStyleService {
             storageKey = archive.store(org, bytes).storageKey();
             db.update("UPDATE product_main_image_jobs SET storage_key=?,updated_at=NOW(6) WHERE id=? AND attempt_count=? AND status='RESULT_RECEIVED'", storageKey, id, attempt);
         }
+        recordReviewProgress(id, attempt, Map.of("stage", "MODEL_WAITING", "elapsedSeconds", 0, "outputCharacters", 0));
         var review = vision.analyze(org, "PRODUCT_MAIN_IMAGE_REVIEW_V1", List.of(
                 archive.read(org, (String) job.get("source_key")), archive.read(org, (String) job.get("reference_key")),
-                archive.read(org, storageKey)), Map.of("productTitle", Objects.toString(capture.getTitle(), "")));
+                archive.read(org, storageKey)), Map.of("productTitle", Objects.toString(capture.getTitle(), "")),
+                progress -> recordReviewProgress(id, attempt, progress));
         ProductMainImageStylePolicy.validateReview(review);
         if (ProductMainImageStylePolicy.passed(review)) {
             db.update("UPDATE product_main_image_jobs SET status='READY',review_json=?,error_message=NULL,updated_at=NOW(6) WHERE id=? AND status='RESULT_RECEIVED' AND attempt_count=?",
@@ -227,15 +274,31 @@ public class ProductMainImageStyleService {
         db.update("UPDATE product_main_image_jobs SET status='RESULT_RECEIVED',result_json=?,updated_at=NOW(6) WHERE id=? AND attempt_count=? AND status='SUBMITTING'",
                 json.writeValueAsString(result), id, attempt);
     }
+    private void recordReviewProgress(String id, int attempt, Map<String, Object> progress) {
+        String stage = Objects.toString(progress.get("stage"), "");
+        if (!Set.of("MODEL_WAITING", "MODEL_STREAMING", "VALIDATING").contains(stage)) return;
+        var safe = Map.of("stage", stage, "elapsedSeconds", boundedNumber(progress.get("elapsedSeconds"), 600),
+                "outputCharacters", boundedNumber(progress.get("outputCharacters"), 50000));
+        db.update("""
+                UPDATE product_main_image_jobs SET review_json=?,updated_at=NOW(6)
+                WHERE id=? AND status='RESULT_RECEIVED' AND attempt_count=?
+                """, json.writeValueAsString(Map.of("progress", safe)), id, attempt);
+    }
+    private static int boundedNumber(Object value, int maximum) {
+        return value instanceof Number number ? (int) Math.max(0, Math.min(maximum, number.longValue())) : 0;
+    }
+    private static Instant jobInstant(Object value) {
+        return value instanceof java.sql.Timestamp timestamp ? timestamp.toInstant()
+                : value instanceof java.time.LocalDateTime date ? date.atZone(java.time.ZoneId.systemDefault()).toInstant()
+                : value instanceof Instant instant ? instant : null;
+    }
     private void fail(String id, String reason) {
         db.update("UPDATE product_main_image_jobs SET status='FAILED',error_message=?,updated_at=NOW(6) WHERE id=? AND status<>'READY'",
                 reason.substring(0, Math.min(1000, reason.length())), id);
     }
     private boolean expired(Map<String, Object> job) {
-        Object value = job.get("updated_at");
-        Instant instant = value instanceof java.sql.Timestamp timestamp ? timestamp.toInstant()
-                : value instanceof java.time.LocalDateTime date ? date.atZone(java.time.ZoneId.systemDefault()).toInstant() : Instant.now();
-        return instant.plusSeconds(1800).isBefore(Instant.now());
+        Instant instant = jobInstant(job.get("updated_at"));
+        return instant != null && instant.plusSeconds(1800).isBefore(Instant.now());
     }
     private Map<String, Object> current(ProductPublishWorkflow workflow) {
         return templates.current(ProductMainImageStylePolicy.templateId(request(workflow)), workflow.getOrganizationId());

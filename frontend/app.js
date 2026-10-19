@@ -4698,6 +4698,50 @@ function syncProductEditorAccess(capture) {
 }
 
 const productUploadResultByCapture = new Map();
+function renderProductMainImageProgress(workflow, compact = false) {
+  const style = workflow?.mainImageStyle;
+  if (!style) return '';
+  const count = value => Math.max(0, Math.floor(Number(value) || 0));
+  const total = count(style.totalImages);
+  const done = Math.min(total, count(style.processedImages));
+  const images = Array.isArray(style.images) ? style.images : [];
+  const labels = {WAITING:'等待准备', QUEUED:'排队中', GENERATING:'正在生成', SAVING:'正在保存生成结果',
+    REVIEW_QUEUED:'等待结果检查', REVIEW_MODEL_WAITING:'正在检查商品与版式',
+    REVIEW_MODEL_STREAMING:'正在返回检查结果', REVIEW_VALIDATING:'正在校验检查结果',
+    CORRECTING:'等待自动修正', READY:'生成完成', PRESERVED:'原样保留', FAILED:'处理失败', STOPPED:'已停止'};
+  const activeStages = ['GENERATING','SAVING','REVIEW_MODEL_WAITING','REVIEW_MODEL_STREAMING','REVIEW_VALIDATING'];
+  const active = images.find(image => activeStages.includes(image.stage));
+  const preserved = images.filter(image => image.stage === 'PRESERVED').length;
+  const failed = images.filter(image => image.stage === 'FAILED' || image.stage === 'STOPPED').length;
+  const stageText = image => `${image.attempt > 0 && !['CORRECTING','PRESERVED','STOPPED'].includes(image.stage) ? '自动修正 · ' : ''}${labels[image.stage] || '等待处理'}`;
+  const imageLink = (url, index) => {
+    const safe = safeProductUrl(url);
+    return safe ? `<a class="main-style-workflow-image" href="${escapeHtml(safe)}" target="_blank" rel="noopener"><img src="${escapeHtml(safe)}" alt="第 ${index + 1} 张风格主图" loading="lazy"></a>`
+      : `<span class="main-style-workflow-number">${index + 1}</span>`;
+  };
+  const rows = images.map(image => {
+    const index = count(image.index);
+    const busy = activeStages.includes(image.stage);
+    const tone = ['FAILED','STOPPED'].includes(image.stage) ? 'failed' : image.status === 'READY' ? 'ready' : busy ? 'active' : 'waiting';
+    const metrics = [];
+    if (busy && image.elapsedSeconds != null) metrics.push(`本阶段已用 ${count(image.elapsedSeconds)} 秒`);
+    if (busy && count(image.outputCharacters)) metrics.push(`检查已返回 ${count(image.outputCharacters)} 字符`);
+    return `<li class="main-style-workflow-image-row is-${tone}">
+      ${imageLink(image.status === 'READY' ? image.imageUrl : null, index)}
+      <div><strong>第 ${index + 1} 张</strong><span>${escapeHtml(stageText(image))}</span>
+      ${metrics.length ? `<small>${escapeHtml(metrics.join(' · '))}</small>` : ''}
+      ${image.errorMessage ? `<small class="main-style-workflow-error">${escapeHtml(image.errorMessage)}</small>` : ''}</div></li>`;
+  }).join('');
+  return `<section class="main-style-workflow-progress${compact ? ' is-compact' : ''}" aria-label="风格主图处理进度">
+    <header><strong>风格主图</strong><span>${done} / ${total} 张就绪</span></header>
+    <p class="main-style-workflow-template">${escapeHtml(style.templateName || '')}${preserved ? ` · 原样保留 ${preserved} 张` : ''}${failed ? ` · 未完成 ${failed} 张` : ''}</p>
+    ${total ? `<progress value="${done}" max="${total}" aria-label="风格主图就绪张数"></progress>` : ''}
+    ${active && productPublishWorkflowIsActive(workflow) ? `<p class="main-style-workflow-current">第 ${count(active.index) + 1} 张 · ${escapeHtml(stageText(active))}</p>` : ''}
+    ${rows ? `<ol class="main-style-workflow-list">${rows}</ol>` : (style.imageUrls || []).length
+      ? `<div class="main-style-result-strip">${style.imageUrls.map((url, index) => imageLink(url, index)).join('')}</div>` : ''}
+    <p class="main-style-workflow-connection" role="status" hidden></p></section>`;
+}
+
 function renderProductUploadResult(capture) {
   const el = document.querySelector('#product-upload-result');
   if (!el) return;
@@ -4712,10 +4756,8 @@ function renderProductUploadResult(capture) {
   el.dataset.state = success ? 'success' : running ? 'running' : 'warning';
   const title = success ? dry ? '模拟上传完成' : '✓ 上传成功' : running ? '上传处理中…' : remoteId ? '已创建，后续上传未完成' : '上传失败';
   const detail = success ? productPublishOutcome(workflow).stepText : running ? ({IMAGES:'图片处理中',STYLE_IMAGES:'风格主图自动生成中',APPROVE:'资料校验中',PUBLISH:'正在提交平台'})[workflow.currentStep] || '排队中' : workflow.errorMessage || '请查看上传结果';
-  el.replaceChildren();
-  const heading = document.createElement('strong'); heading.textContent = title;
-  const copy = document.createElement('span'); copy.textContent = `${remoteId ? '平台商品 ID：' + remoteId + ' · ' : ''}${detail}`;
-  el.append(heading, copy);
+  const copy = `${remoteId ? '平台商品 ID：' + remoteId + ' · ' : ''}${detail}`;
+  replaceHtmlPreservingMedia(el, `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(copy)}</span>${renderProductMainImageProgress(workflow)}`);
 }
 function syncProductActions(capture) {
   const status = String(capture.status || "CAPTURED").toUpperCase();
@@ -5732,6 +5774,18 @@ function renderProductPublishWorkflow(workflow) {
       setProductUploadStep(step, "", waitingText[step]);
     }
   });
+  const stepsElement = document.querySelector('#product-upload-steps');
+  if (stepsElement) {
+    let styleProgress = document.querySelector('#product-publish-main-image-progress');
+    if (!styleProgress) {
+      styleProgress = document.createElement('div');
+      styleProgress.id = 'product-publish-main-image-progress';
+      styleProgress.setAttribute('aria-live', 'polite');
+      stepsElement.after(styleProgress);
+    }
+    styleProgress.hidden = !workflow.mainImageStyle;
+    replaceHtmlPreservingMedia(styleProgress, renderProductMainImageProgress(workflow));
+  }
   const button = document.querySelector("#submit-product-publish");
   if (!button) return;
   if (productPublishWorkflowIsActive(workflow)) {
@@ -5893,6 +5947,10 @@ function pollProductPublishWorkflow(workflow) {
         return;
       }
       delay = 3500;
+      document.querySelectorAll('#product-upload-result .main-style-workflow-connection, #product-publish-main-image-progress .main-style-workflow-connection').forEach(label => {
+        label.textContent = '进度连接中断，正在重连；以上为最近一次状态';
+        label.hidden = false;
+      });
       const errorLabel = document.querySelector("#product-publish-error");
       if (document.querySelector("#product-publish-dialog")?.open) {
         errorLabel.classList.remove("is-success");
@@ -7011,8 +7069,7 @@ function renderProductBulkCard(item, shops = [], preview = false) {
       <div class="bulk-product-overlay"><div><span>${escapeHtml(progress)}</span>${percent !== null && !failed ? `<b>${percent}%</b>` : ''}</div><div class="bulk-product-track ${active && percent === null ? 'is-indeterminate' : ''}"><span style="width:${percent === null ? 0 : percent}%"></span></div></div>
     </div><div class="bulk-product-info"><strong title="${escapeHtml(item.title)}" translate="no">${escapeHtml(item.title)}</strong>
       ${shopName ? `<small title="${escapeHtml(shopName)}">${escapeHtml(shopName)}</small>` : '<small>原价换汇 · 库存 999 · 自动匹配类目</small>'}
-      ${workflow?.mainImageStyle ? `<small>${escapeHtml(workflow.mainImageStyle.templateName)} · ${Number(workflow.mainImageStyle.processedImages) || 0}/${Number(workflow.mainImageStyle.totalImages) || 0} 张主图</small>` : ''}
-      ${workflow?.mainImageStyle?.imageUrls?.length ? `<div class="main-style-result-strip">${workflow.mainImageStyle.imageUrls.map(url => safeProductUrl(url) || url.startsWith('/api/v1/product-main-image-results/') ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img src="${escapeHtml(url)}" alt="已生成的风格主图" loading="lazy"></a>` : '').join('')}</div>` : ''}
+      ${renderProductMainImageProgress(workflow, true)}
       ${error ? `<details class="bulk-product-error"><summary>${success ? '查看状态同步提示' : '查看失败原因'}</summary><p>${escapeHtml(error)}</p></details>` : ''}
       ${retries ? `<small class="bulk-product-retry">${escapeHtml(retries)}</small>` : ''}</div></section>`;
 }
@@ -7054,7 +7111,7 @@ function renderProductBulkProgress() {
       ? `${template.name} · ${Number(template.weightGrams)/1000} kg · ${template.packageLengthCm} × ${template.packageWidthCm} × ${template.packageHeightCm} cm · 库存 999 · 自动匹配类目与物流`
       : '自动套用目标平台配置 · 库存 999 · 默认无品牌 · 自动匹配类目与物流 · 原售价换汇';
   }
-  document.querySelector("#product-bulk-progress").innerHTML = productBulkItems.map(item => renderProductBulkCard(item, shops)).join('');
+  replaceHtmlPreservingMedia(document.querySelector("#product-bulk-progress"), productBulkItems.map(item => renderProductBulkCard(item, shops)).join(''));
   const selection = document.querySelector('.product-bulk-selection');
   if (selection) selection.hidden = productBulkItems.length > 0;
   const pending = productBulkItems.some(item => !item.workflow?.id);
