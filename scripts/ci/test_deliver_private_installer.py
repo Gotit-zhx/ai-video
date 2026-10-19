@@ -41,7 +41,7 @@ class DeliveryTest(unittest.TestCase):
 
         class Response(io.BytesIO):
             status = 200
-            headers = {'ETag': hashlib.md5(raw).hexdigest()}
+            headers = {'ETag': '"'+hashlib.md5(raw).hexdigest().upper()+'"'}
 
         def request(value, **kwargs):
             url = value if isinstance(value, str) else value.full_url
@@ -52,6 +52,8 @@ class DeliveryTest(unittest.TestCase):
             if method == 'PUT':
                 self.assertEqual(value.data, raw)
                 self.assertEqual(value.get_header('Content-type'), 'application/octet-stream')
+            if method == 'POST':
+                self.assertIn(hashlib.md5(raw).hexdigest().upper().encode(), value.data)
             return Response(raw if url == ticket['get'] else b'')
 
         with mock.patch.dict(os.environ, {'PRIVATE_RELEASE': 'heyi-workbench-private-1-1',

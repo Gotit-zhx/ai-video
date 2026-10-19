@@ -69,8 +69,8 @@ def main():
                     request = urllib.request.Request(url, data=data,
                         headers={'Content-Type': 'application/octet-stream'}, method='PUT')
                     with opener.open(request, timeout=120) as response:
-                        etag = response.headers.get('ETag', '').strip('"').lower()
-                        if response.status != 200 or etag != hashlib.md5(data).hexdigest():
+                        etag = response.headers.get('ETag', '').strip('"')
+                        if response.status != 200 or etag.lower() != hashlib.md5(data).hexdigest():
                             raise ValueError('Uploaded part checksum differs')
                     part = ET.SubElement(xml, 'Part')
                     ET.SubElement(part, 'PartNumber').text = str(number)
