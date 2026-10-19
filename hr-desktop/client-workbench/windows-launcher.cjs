@@ -163,7 +163,9 @@ async function run(packageRoot, selfTest = false) {
       }
       const outcome = await waitForProcess(connection.child, 15000);
       if (checked.launchId !== process.env.HEYI_LAUNCH_ID || checked.report?.ok !== true) {
-        throw Error('Packaged check failed');
+        throw Object.assign(Error('Packaged check failed'), {
+          workbenchCheckDiagnostic: {stage: checked.report?.stage, check: checked.report?.diagnostic},
+        });
       }
       const report = checked.report;
       report.independentInspector = true;
@@ -188,8 +190,19 @@ async function run(packageRoot, selfTest = false) {
     if (code !== 0) throw Error('Original client ended unexpectedly');
     return 0;
   } catch (error) {
-    let diagnostic = error.packageDiagnostic || error.nativeBindingDiagnostic ||
+    let diagnostic = error.packageDiagnostic || error.nativeBindingDiagnostic || error.workbenchCheckDiagnostic ||
       (error.inspectorStartupDiagnostic ? {inspector: error.inspectorStartupDiagnostic} : undefined);
+    if (selfTest && stage === 'packaged-workbench-check-and-shutdown') {
+      try {
+        const profileRoot = process.env.HEYI_WORKBENCH_TEST_DATA;
+        const state = JSON.parse(await fs.readFile(path.join(profileRoot, 'heyi-native-check-progress.json'), 'utf8'));
+        if (state.launchId === process.env.HEYI_LAUNCH_ID) {
+          diagnostic = {...diagnostic, lastCheck: state.stage,
+            ioCode: error.code === 'ENOENT' ? 'ENOENT' : undefined,
+            nativeExitCode: connection?.child.exitCode, nativeSignal: connection?.child.signalCode};
+        }
+      } catch {}
+    }
     if (['install-workbench', 'original-readiness'].includes(stage) && connection && verified) {
       try {
         const state = await evaluateRunning(connection,

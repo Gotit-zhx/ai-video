@@ -158,6 +158,7 @@ function state() {
 function completeStartup() {
   if (!active || active.startupCompletion) throw Error('Startup handoff is unavailable or already armed');
   const current = active;
+  let phase = 'detach-inspector';
   const saveCheck = async report => {
     const file = path.join(current.profileRoot, 'heyi-native-check.json');
     await fs.writeFile(file + '.tmp', JSON.stringify({launchId: current.launchId, report}), {flag: 'wx'});
@@ -168,9 +169,11 @@ function completeStartup() {
     if (!current.offline) return;
     // Execute the packaged checks after the same detach/handoff path as a
     // normal launch. No inspector connection is retained during these checks.
+    phase = 'entry-handoff';
     await require('./windows-launch-status.cjs').waitForEntry(current.profileRoot, current.launchId);
     const installationProbe = process.env.HEYI_WORKBENCH_INSTALLATION_PROBE === '1';
     if (installationProbe) {
+      phase = 'installation-barrier';
       const barrier = path.join(current.profileRoot, 'installer-checks-complete');
       const deadline = Date.now() + 90000;
       for (;;) {
@@ -181,16 +184,18 @@ function completeStartup() {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
+    phase = 'offline-check';
     const report = await offlineCheck();
     report.productionHandoff = true;
     report.inspectorClosedBeforeChecks = !require('node:inspector').url();
     report.installerGuardBarrierUsed = installationProbe;
     await saveCheck(report);
+    phase = 'original-exit';
     require('./original-sdk-exit.cjs').requestOriginalExit(globalThis.$socket, {});
-  })().catch(async () => {
+  })().catch(async error => {
     lastFailure = {stage: 'startup-handoff'};
     if (current.offline) {
-      await saveCheck({ok: false, stage: 'startup-handoff',
+      await saveCheck({ok: false, stage: phase, diagnostic: error.offlineCheckDiagnostic,
         candidateMessagesSent: 0, actualBossNetworkUsed: false}).catch(() => {});
       require('./original-sdk-exit.cjs').requestOriginalExit(globalThis.$socket, {});
     }
@@ -203,6 +208,14 @@ async function offlineCheck() {
   const assert = require('node:assert/strict');
   const {BrowserWindow, clipboard, app, safeStorage} = require('electron');
   const {integrated, host} = active;
+  let stage = 'views-ready';
+  const progress = next => {
+    stage = next;
+    const sync = require('node:fs'), file = path.join(active.profileRoot, 'heyi-native-check-progress.json');
+    sync.writeFileSync(file + '.tmp', JSON.stringify({launchId: active.launchId, stage}));
+    sync.renameSync(file + '.tmp', file);
+  };
+  progress(stage);
   await Promise.all([integrated.platformReady, integrated.chromeReady]);
   const oldClipboard = clipboard.readText();
   const until = async check => {
@@ -213,23 +226,28 @@ async function offlineCheck() {
     }
   };
   try {
+    progress('show-workbench');
     integrated.showWorkbench();
     assert.equal(BrowserWindow.getAllWindows().filter(win => win.isVisible()).length, 1);
     assert.equal(integrated.window.getTitle(), 'Ai boss');
+    progress('restore-hidden');
     integrated.window.hide();
     integrated.showCurrent();
     assert.equal(integrated.window.isVisible(), true);
+    progress('restore-minimized');
     integrated.window.minimize();
     await until(() => integrated.window.isMinimized());
     integrated.showCurrent();
     await until(() => !integrated.window.isMinimized() && integrated.window.isVisible());
     // Simulate a saved native show function that bypasses our wrapper.
+    progress('native-show-adoption');
     const other = active.windowOwner.windows().find(win => win !== integrated.window);
     if (!other) throw Error('Expected original login and main windows');
     integrated.originalShow.get(other)();
     await until(() => integrated.window === other);
     assert.ok(other.getBrowserViews().includes(integrated.toolbar));
     assert.equal(BrowserWindow.getAllWindows().filter(win => win.isVisible()).length, 1);
+    progress('toolbar');
     assert.equal(await integrated.toolbar.webContents.executeJavaScript(
       `document.title === 'Ai boss' &&
        document.querySelector('.brand').textContent.trim() === 'Ai boss' &&
@@ -237,12 +255,14 @@ async function offlineCheck() {
     const labels = await integrated.sidebar.webContents.executeJavaScript(
       'Array.from(document.querySelectorAll("nav button")).map(node=>node.innerText.trim().split("\\n").pop())');
     assert.deepEqual(labels, ['BOSS', '系统']);
+    progress('sidebar');
     for (const mode of ['boss', 'workbench']) {
       await integrated.sidebar.webContents.executeJavaScript(
         `document.querySelector('[data-action="${mode}"]').click()`);
       await until(() => integrated.mode === mode);
     }
     clipboard.writeText('赫逸工作台安装包粘贴测试');
+    progress('paste');
     await integrated.platform.webContents.executeJavaScript('document.querySelector("#fixture").focus()');
     integrated.platform.webContents.paste();
     await until(async () => await integrated.platform.webContents.executeJavaScript(
@@ -251,13 +271,16 @@ async function offlineCheck() {
       {headers: {Origin: 'https://hoyee.org.cn'}});
     assert.equal(response.status, 200);
     assert.equal((await response.json()).data.version, require('./package.json').version);
+    progress('packaged-worker');
     const worker = await host.engine.runtime.run({operation: 'health',
       root: path.join(app.getPath('userData'), 'heyi', 'offline-worker'), cdp: host.rpc.url});
     assert.equal(worker.ok, true);assert.equal(worker.platform, 'win32');
     assert.equal(worker.version, '2.0.0');
     assert.equal(state().networkReady, true);
+    progress('signed-out-snapshot');
     await assert.rejects(host.rpc.dispatch('/snapshot', {accountId: '101'}), {code: 'AUTH_REQUIRED'});
     assert.equal(safeStorage.isEncryptionAvailable(), true);
+    progress('session-cookie');
     await integrated.platform.webContents.session.cookies.set({
       url: 'https://hoyee.org.cn', name: 'HEYI_SESSION', value: 'heyi-offline-upgrade-cookie',
       path: '/', secure: true, httpOnly: true, sameSite: 'lax',
@@ -270,6 +293,10 @@ async function offlineCheck() {
       incomingActivity: active.incomingActivity,
       sessionCookiePrepared: true,
       candidateMessagesSent: 0, actualBossNetworkUsed: false};
+  } catch (error) {
+    throw Object.assign(Error('Offline workbench check failed'), {
+      offlineCheckDiagnostic: {stage, assertion: error.code === 'ERR_ASSERTION'},
+    });
   } finally {clipboard.writeText(oldClipboard);}
 }
 module.exports = {install, close, state, offlineCheck, completeStartup};
