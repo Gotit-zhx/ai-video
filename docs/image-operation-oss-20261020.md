@@ -27,7 +27,7 @@ separate; uploading the former did not release the latter.
   HTTP 503 and never turn a saved paid operation into a missing operation.
 - Migration is background work, outside the foreground generation response.
   The initial delay is 120 seconds; files must be inactive for 60 seconds.
-  Each pass moves up to 20 records of at least 1 MiB. Full passes continue after
+  Each pass moves up to 20 records of at least 64 KiB. Full passes continue after
   one second; idle passes run every minute. New work is handled by the same loop.
 - Concurrently changed or active records are not replaced. Business acknowledgments
   still work. Model routes, prompts, generation acceptance and paid-call budgets
@@ -46,9 +46,10 @@ cannot read external result indexes.
 
 ## Cleanup Already Applied
 
-The reviewed cleanup removed 79 obsolete build/deployment archives totaling
-11,029,606,400 bytes, plus unused dangling Docker images (Docker reported
-2.081 GB) and apt download cache. Available space increased from approximately
+The reviewed cleanup removed 79 obsolete build/deployment archives, unused
+dangling Docker images (Docker reported 2.081 GB) and apt download cache.
+The net measured space reclaimed was 11,029,606,400 bytes.
+Available space increased from approximately
 3 GiB to 14 GiB; root filesystem utilization fell from 97% to 86%.
 
 Current and rollback releases, all running containers, database backups,

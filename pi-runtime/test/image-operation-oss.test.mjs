@@ -160,6 +160,20 @@ test('small inline records keep existing behavior without OSS writes',async t=>{
   assert.equal((await readdir(dir)).length,1);
 });
 
+test('default background archival includes sub-megabyte image responses',async t=>{
+  const {dir,archive} = await fixture(t);
+  const store = new ImageOperationStore(dir,{archive});
+  const id = 'small-image-response';
+  await store.execute(id,{small:true},async()=>({artifact:{dataBase64:randomBytes(100_000).toString('base64')}}));
+  const file = path.join(dir,hash(id)+'.json');
+  await utimes(file,1,1);
+  const before = await readFile(file);
+  assert.ok(before.length<1024*1024);
+  assert.equal(await store.migrateCompleted(),1);
+  assert.ok(JSON.parse(await readFile(file,'utf8')).externalRecord);
+  assert.deepEqual(await archive.read(hash(id),JSON.parse(await readFile(file,'utf8')).externalRecord),before);
+});
+
 test('large compressed results use bounded verified parts and remain byte-exact',async()=>{
   const content = randomBytes(9*1024*1024), parts = [], objects = new Map();
   const client = {

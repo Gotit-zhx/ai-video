@@ -15,7 +15,7 @@ spec = importlib.util.spec_from_file_location("release_core", library)
 core = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(core)
 ROOT, PI = core.ROOT, core.PI
-TAG = "image-operation-oss-20261020"
+TAG = "image-operation-oss-20261020-v2"
 FILES = ("image-operation-store.js", "image-operation-oss.js")
 TESTS = ("image-operation-oss.test.mjs", "image-operation-store.test.mjs",
          "image-network-recovery.test.mjs", "image-network-fallback-integration.test.mjs",
@@ -25,6 +25,7 @@ TESTS = ("image-operation-oss.test.mjs", "image-operation-store.test.mjs",
 
 def pack():
     source = Path(sys.argv[3]).resolve()
+    baseline_commit = sys.argv[4] if len(sys.argv) > 4 else "f29c0b9"
     ROOT.mkdir(mode=0o700, exist_ok=False)
     for name in FILES:
         shutil.copy2(source / "pi-runtime/src" / name, ROOT / name)
@@ -35,8 +36,9 @@ def pack():
     shutil.copy2(library, ROOT / "release-core.py")
     manifest = {"sourceCommit": core.run("git", "-C", str(source), "rev-parse", "HEAD").decode().strip(),
                 "files": {name: core.sha((ROOT / name).read_bytes()) for name in FILES},
+                "baselineCommit": baseline_commit,
                 "baseline": core.sha(core.run("git", "-C", str(source), "show",
-                                             "f29c0b9:pi-runtime/src/image-operation-store.js"))}
+                                             baseline_commit + ":pi-runtime/src/image-operation-store.js"))}
     core.write_json(ROOT / "manifest.json", manifest)
     print("Packed runtime storage adapter; model adapters and server handlers unchanged.")
 
@@ -173,10 +175,14 @@ def verify(preserved=None):
     before = core.read_json("before-private.json")
     expected_env = dict(value.split("=", 1) for value in before["Config"]["Env"])
     actual_env = dict(value.split("=", 1) for value in actual["Config"]["Env"])
-    assert all(actual_env[key] == value for key, value in expected_env.items())
-    assert set(actual_env) - set(expected_env) == {
-        "IMAGE_OPERATION_OSS_BUCKET", "IMAGE_OPERATION_OSS_CREDENTIALS_FILE",
-        "IMAGE_OPERATION_OSS_SDK_MODULE", "IMAGE_OPERATION_OSS_MIGRATE"}
+    prepared = core.read_json("prepared.json")
+    expected_env.update({
+        "IMAGE_OPERATION_OSS_BUCKET": prepared["bucket"],
+        "IMAGE_OPERATION_OSS_CREDENTIALS_FILE": prepared["credentialTarget"],
+        "IMAGE_OPERATION_OSS_SDK_MODULE": "file:///opt/image-oss-sdk/node_modules/ali-oss/lib/client.js",
+        "IMAGE_OPERATION_OSS_MIGRATE": actual_env.get("IMAGE_OPERATION_OSS_MIGRATE")})
+    assert actual_env.get("IMAGE_OPERATION_OSS_MIGRATE") in {"true", "false"}
+    assert actual_env == expected_env
     original_mounts = {(m["Source"], m["Destination"], m["RW"]) for m in before["Mounts"]}
     actual_mounts = {(m["Source"], m["Destination"], m["RW"]) for m in actual["Mounts"]}
     prepared = core.read_json("prepared.json")

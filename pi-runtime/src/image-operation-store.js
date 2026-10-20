@@ -32,7 +32,7 @@ const restoreError = value => Object.assign(new Error(value.message), value);
 // Only hashes, attempt metadata and returned output are stored; never model keys
 // or source images. Writes finish before a POST or before returning its result.
 export class ImageOperationStore {
-  constructor(directory, {maxNetworkRetries = 2, maxAttemptsPerRoute = 8, archive, minimumArchiveBytes = 1024 * 1024} = {}) {
+  constructor(directory, {maxNetworkRetries = 2, maxAttemptsPerRoute = 8, archive, minimumArchiveBytes = 64 * 1024} = {}) {
     this.directory = directory; this.maxNetworkRetries = maxNetworkRetries;
     this.maxAttemptsPerRoute = maxAttemptsPerRoute; this.active = new Map();
     this.externalArchive = archive; this.minimumArchiveBytes = minimumArchiveBytes;
