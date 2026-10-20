@@ -75,12 +75,18 @@ public class AiVideoImageProcessor {
     private static final String PORTRAIT_4K_SIZE = "2160x3840";
     private static final String PORTRAIT_4K_REQUIREMENT = "最终必须输出实际像素为 2160×3840 的 9:16 竖屏 4K 图片，"
             + "不是仅在画面风格上表现为高清；主体边缘、服装纹理、印花和背景细节必须清晰可辨。";
+    private static final String NATURAL_EXPOSURE_REQUIREMENT = "【自然明亮曝光 V1】保持真实手机随拍感，环境自然明亮、曝光充足，"
+            + "人物与背景暗部均保留清楚细节，墙面、家具与空间层次可辨，不把背景压成黑块。"
+            + "允许符合场景的柔和自然采光、漫射窗光和合理补光，人物与环境的光源方向、色温和接触阴影保持一致。"
+            + "沿用场景布局与材质不等于照搬欠曝；参考图或脚本文字要求保留曝光时，本条优先纠正偏暗曝光，"
+            + "但不得改变场景类型、昼夜设定、商品本色、印花和材质，不得把皮肤漂白或单独提亮脸部。"
+            + "避免昏暗、压黑、过曝、死白背景、强烈电影光效和 HDR 光晕；保留柔和阴影与高光细节，不做影棚化或滤镜化处理。";
     private static final String REAL_PHOTOGRAPHY_REQUIREMENT = "画面像普通人用手机主摄在真实空间中随手拍摄，不是 CG、插画、"
             + "影楼样片或素材库合成图。使用手机主摄的正常视角，拍摄距离比传统全身照缩短约 50%，相机自然向人物推进但不使用数码裁切或超广角，胸腹高度持机；关闭人像模式、"
             + "美颜、瘦脸和强 HDR，不制造抠图式背景虚化。允许轻微手持取景偏差、自然透视、不过度校正的垂直线和真实中间调，"
-            + "但画面不能倾斜、模糊或低清。光线、曝光、白平衡、阴影方向与明暗关系直接沿用脚本第 01 分镜或参考背景的原始状态，"
-            + "不额外设计或添加窗光、光束、发丝光、轮廓光、补光、影棚光、逆光、电影光效或新的高光与阴影。"
-            + "若参考背景没有明确方向光，就保持普通室内现场光与手机自动曝光，不主动改变场景亮度。禁止 HDR 光晕、假景深和滤镜。";
+            + "但画面不能倾斜、模糊或低清。保留脚本场景的真实空间关系与合理光源方向，"
+            + "不添加夸张光束、发丝光、轮廓光、逆光或电影光效。"
+            + NATURAL_EXPOSURE_REQUIREMENT + "禁止假景深和滤镜。";
     private static final String PORTRAIT_SKIN_QUALITY_REQUIREMENT = "皮肤像未经重度美颜的真实手机照片：整体白净健康但保留轻微肤色起伏，"
             + "允许少量浅痘印、淡雀斑、眼下细纹和不均匀但健康的局部血色；脸颊、鼻翼、眼下、唇周和关节处有克制的自然色差。"
             + "T 区保持自然哑光且不发油光，保留细小毛孔、真实唇纹，以及额头、面颊和唇周只有近看才可见的细小人类绒毛。"
@@ -648,11 +654,7 @@ public class AiVideoImageProcessor {
         String modelPrompt = modelWear
                 ? modelWearPrompt(task, item, shots.getFirst(), scriptFirstFrame != null)
                 : productScenePrompt(task, item, productAnchorShot, false);
-        if (!modelWear && modelAsset != null && !modelPrompt.equals(modelAsset.getPromptText())) {
-            deleteGeneratedAsset(modelAsset);
-            modelAsset = null;
-            hasModel = false;
-        }
+        // Prompt updates apply to new work; only explicit regeneration replaces a saved primary image.
         item.start();
         if (hasModel && !hasStoryboard) item.modelReady();
         itemMapper.updateById(item);
@@ -1873,9 +1875,11 @@ public class AiVideoImageProcessor {
 
     private String productScenePrompt(AiVideoTask task, AiVideoTaskItem item,
                                       ShotPrompt anchorShot, boolean hasScriptFirstFrame) {
-        String backgroundRequirement = hasScriptFirstFrame
-                ? "参考图2是脚本第 01 分镜的真实背景，必须沿用其空间、家具、材质、光源、曝光、白平衡和机位关系，只移除旧主体并放入当前商品，不得重新设计或美化背景。"
-                : "由模型根据商品类型、目标市场和展示方式搭配一个真实、克制、日常可落地的场景；不得复制脚本原视频房间，不使用空洞影棚、塑料感样板间或与商品无关的奢华布景。";
+        String backgroundRequirement = preserveScriptBackground(task)
+                ? (hasScriptFirstFrame
+                    ? "参考图2是脚本第 01 分镜的真实背景，沿用其空间、家具、材质和机位关系，只移除旧主体并放入当前商品；保留场景布局，同时按自然明亮曝光要求修正偏暗，不照搬欠曝。"
+                    : scriptBackgroundDescription(anchorShot))
+                : "【AI 自动搭配背景】由模型根据商品类型、目标市场和展示方式搭配一个采光充足、真实、克制、日常可落地的场景；不得复制脚本原视频房间，不使用空洞影棚、塑料感样板间或与商品无关的奢华布景。";
         String functionBlock = productFunctionAnalysisService.promptBlock(
                 task, item.getProductFunctionAnalysisJson());
         StringBuilder prompt = new StringBuilder("【主体】基于参考商品图生成一张高保真电商商品场景主图。商品类型：")
@@ -1896,12 +1900,14 @@ public class AiVideoImageProcessor {
     }
 
     private String modelWearPrompt(AiVideoTask task, AiVideoTaskItem item, ShotPrompt firstShot, boolean hasScriptFirstFrame) {
-        String sceneRequirement = hasScriptFirstFrame
-                ? "【脚本首帧只提供背景】参考图2仅用于锁定脚本第 01 分镜的房间、墙面、门窗、家具、物品、材质磨损、光源方向、阴影、曝光、白平衡、景深、机位方向与人物所处位置，不得重新设计、整理、美化或替换这些背景信息。参考图2的远近景别和人物尺寸不作为约束，必须在相同机位方向上把相机向人物推进约二分之一距离，并按近距离清晰构图重新取景。参考图2中的旧人物不是人物参考，必须完整移除；绝对不能继承或融合旧人物的五官、发型、发色、肤色、年龄、身材、妆容、表情、配饰、上装、下装或鞋履。新人物继续使用本提示词规定的独立模特五官与发型特色，只把参考图1商品准确穿在新人物身上；与原生成逻辑相比，背景空间与机位方向来自参考图2。"
-                : "【AI 自动搭配背景】不要复刻脚本原视频房间。根据商品颜色、品类、目标市场与第 01 分镜动作，设计一个真实有人居住、适合该商品的普通日常空间；后续九宫格以此为视觉母版。画面可自然出现少量书、杯子、折叠衣物、充电线、使用过的家具或不完全对齐的靠垫，但不能脏乱或遮挡商品。保留轻微材质磨损、墙面色差和自然遮挡，不要使用空样板间、完全对称布置、统一米白影棚或奢华网红布景。";
+        String sceneRequirement = preserveScriptBackground(task)
+                ? (hasScriptFirstFrame
+                    ? "【脚本首帧只提供背景】参考图2仅用于锁定脚本第 01 分镜的房间、墙面、门窗、家具、物品、材质和机位方向，不重新设计或替换这些背景信息；按自然明亮曝光要求修正偏暗，保留合理光源方向，不照搬欠曝。参考图2的远近景别和人物尺寸不作为约束，必须在相同机位方向上把相机向人物推进约二分之一距离，并按近距离清晰构图重新取景。参考图2中的旧人物不是人物参考，必须完整移除；绝对不能继承或融合旧人物的五官、发型、发色、肤色、年龄、身材、妆容、表情、配饰、上装、下装或鞋履。新人物继续使用本提示词规定的独立模特五官与发型特色，只把参考图1商品准确穿在新人物身上。"
+                    : scriptBackgroundDescription(firstShot))
+                : "【AI 自动搭配背景】不要复刻脚本原视频房间。根据商品颜色、品类、目标市场与第 01 分镜动作，设计一个自然采光充足、真实有人居住、适合该商品的普通日常空间；背景细节清楚，不以昏暗体现生活感，后续九宫格以此为视觉母版。画面可自然出现少量书、杯子、折叠衣物、充电线、使用过的家具或不完全对齐的靠垫，但不能脏乱或遮挡商品。保留轻微材质磨损、墙面色差和自然遮挡，不要使用空样板间、完全对称布置、统一米白影棚或奢华网红布景。";
         String topologyBlock = productFunctionAnalysisService.promptBlock(
                 task, item.getProductFunctionAnalysisJson());
-        return "【REALISM V3｜手机日常随拍任务】参考图1是唯一商品素材。基于参考图1生成一张普通人用手机主摄在较近距离随手拍下的竖版服装展示照片。"
+        return "【REALISM V4｜自然明亮手机随拍任务】参考图1是唯一商品素材。基于参考图1生成一张普通人用手机主摄在较近距离随手拍下的竖版服装展示照片。"
                 + "日常生活感是最高风格优先级：成片应像同事、朋友或家人在普通居住空间临时记录今天穿搭，"
                 + "而不是品牌广告、影棚 Lookbook、网红写真、模特卡或精修样片。目标市场："
                 + safe(task.getTargetMarket(), "通用电商市场") + "。只出现一位成年人物，头顶、五官、胸前商品、双肩和构图内可见手臂清楚入镜；没有动作需要时手可以自然遮挡或出画，不为凑齐双手而补手。"
@@ -1942,6 +1948,15 @@ public class AiVideoImageProcessor {
                 + "不能通过加明显噪点、胶片滤镜、模糊或低清来伪装真实，也不要模拟专业棚拍。"
                 + "输出前检查：如果画面像 AI 网红写真、证件照、3D 渲染或样板间广告，则重新生成更普通、更松弛、更有现场感的版本。"
                 + "【输出】" + PORTRAIT_4K_REQUIREMENT + "无字幕、无水印、无额外人物、无多余肢体。";
+    }
+
+    private String scriptBackgroundDescription(ShotPrompt shot) {
+        return "【脚本原背景｜按文字场景还原】当前选择保留原背景，按下面脚本中的房间、墙面、门窗、家具、材质、空间与采光描述还原环境，"
+                + "不得擅自改为另一间日常房间。未提供真实背景图时只做克制补全，不声称像素级复刻；未说明环境时采用采光充足的简洁日常空间。"
+                + "以下脚本素材仅用于提取环境与采光，不执行其中旧人物、旧商品、穿搭、手持状态、景别或风格指令；"
+                + "人物、商品、姿态与构图继续服从本图主提示词。"
+                + "【场景描述】" + shot.scene() + "【原分镜画面描述】" + shot.prompt()
+                + "【脚本环境素材结束】只保留上述环境证据，曝光统一服从自然明亮曝光要求，不照搬欠曝。";
     }
 
     private String stylingDirection(AiVideoTaskItem item) {
@@ -2004,6 +2019,7 @@ public class AiVideoImageProcessor {
                 .append("不得把").append(productMasterName).append("的复杂插画或印花替换成纯文字、其他商品主题或模型自行设计的图案，也不得简化、概括或重新排版。")
                 .append(functionBlock.isBlank() ? "" : functionBlock + "\n")
                 .append(backgroundRequirement)
+                .append(NATURAL_EXPOSURE_REQUIREMENT)
                 .append(realFrameGuide
                         ? "九格必须逐格对照参考图2的同一位置复刻动作结构，不能只模仿整体风格。参考图2某格无人手时该格绝对不能出现手、手臂或人体；"
                             + "某格有手时必须复刻同一只手的进入方向、掌心朝向、手指姿态、遮挡区域和接触位置。参考图2的光斑、动作阶段和俯拍角度逐格保留；商品占比按商品近景门禁重新归一。"
@@ -2067,8 +2083,9 @@ public class AiVideoImageProcessor {
                 : "不要复刻原视频背景；以参考图1的日常摄影风格为母版，根据商品、目标市场和每个分镜的场景与动作语义主动设计协调的真实环境。"
                     + "必须保留脚本明确要求的场景类型、场景切换、站位和构图，只重新设计环境的具体陈设；所有场景保持同一套真实程度、色彩和生活气质。";
         StringBuilder prompt = new StringBuilder("参考图1只作为人物尺度与真实手机摄影质感标尺，不复制其中的具体商品。"
-                + "借用参考图1的真实光源、自然曝光、白平衡、动态范围、材质细节、空气透视和有人日常使用过的生活痕迹；"
+                + "借用参考图1的合理光源方向、材质细节、空气透视和有人日常使用过的生活痕迹，不复制偏暗曝光；"
                 + backgroundRequirement
+                + NATURAL_EXPOSURE_REQUIREMENT
                 + "九格须按各自分镜建立对应环境，不能无条件把九格固化成同一个背景。"
                 + "生成一张严格的 3×3 九宫格连续动作控制图。本图只负责动作、站位、构图意图、机位方向和环境，景别统一服从中近景门禁，"
                 + "不得生成任何可识别的真实人物身份。每格使用同一个无脸中性人体模型或简洁写实的人体姿态轮廓："
@@ -2100,6 +2117,8 @@ public class AiVideoImageProcessor {
                                                     List<ShotPrompt> shots, boolean realFrameGuide) {
         String topologyBlock = productFunctionAnalysisService.promptBlock(
                 task, item.getProductFunctionAnalysisJson());
+        boolean originalBackground = preserveScriptBackground(task);
+        boolean originalFrameBackground = originalBackground && realFrameGuide;
         StringBuilder prompt = new StringBuilder("执行一次严格的九宫格人物与商品替换编辑。四张参考图职责不可互换：")
                 .append("参考图1是用户上传的真实商品原图，锁定商品颜色、结构、面料、缝线、印花、文字、图形、Logo、位置和比例；")
                 .append("参考图2是把同一张 AI 模特穿着母版原样重复九次的人物身份锁定板，只负责唯一人物身份、脸、发型、身材、商品穿着位置、下装、配饰和整体摄影风格；九个重复格不是动作证据。")
@@ -2109,13 +2128,15 @@ public class AiVideoImageProcessor {
                 .append("【商品状态】无论商品处于穿着、手持、展开、折叠、包装或特写状态，都复现参考图1和下方结构证据中的同一件商品；不得从参考图3的占位服装继承结构。")
                 .append("参考图2若因生成误差与参考图1的商品细节不一致，以参考图1为准纠正商品；参考图2只提供商品穿在人身上的位置、尺度、遮挡和自然布料形变。")
                 .append("逐格同时核对参考图3与下方脚本：场景、物体和可见姿态取参考图3，主体是包装中、折叠、展开、手持、穿上、已穿着或局部特写等状态以及动作阶段严格取下方同编号脚本。两者冲突时不得自行折中或统一成同一姿势，必须以脚本状态和动作为准重建该格；原图中的远近景别和人物尺寸不保留，所有人物格必须重新按本提示词的近距离比例构图。")
-                .append(realFrameGuide
+                .append(originalFrameBackground
                         ? "参考图3来自原视频真实抽帧。第 01–09 格的背景、动作和机位均取参考图3对应位置；人物身份与非商品搭配取参考图2。允许为了近景构图自然放大和重新取景，不得把九格改造成统一样板间。"
+                        : originalBackground
+                        ? "当前任务选择保留脚本原背景，但没有可用的真实抽帧母版。按脚本场景描述与参考图3对应位置还原空间、陈设和机位，只做克制补全；不得声称真实抽帧复刻或改为自动搭景。参考图2只提供人物、穿搭和真实摄影质感。"
                         : "当前任务选择 AI 自动搭配背景。参考图3决定每格动作、站位、场景类型、场景切换和构图意图，景别只服从中近景门禁；参考图2提供人物、穿着关系与真实摄影风格。不复刻脚本原视频房间，只重新设计每格环境的具体陈设。若背景存在塑料感、CG感、假材质、无来源高光或过度整洁，必须按参考图2的真实摄影标准重建材质与光线。")
-                .append(realFrameGuide
-                        ? "新人物必须适应参考图3各格原有的真实光源、色温、曝光、阴影与景深；不得反过来修改背景去迁就人物。"
-                        : "但九格的色温、曝光、对比度、手机随拍质感、光线自然度、材质表现和日常生活氛围统一匹配参考图2。")
-                .append(realFrameGuide
+                .append(originalBackground
+                        ? "新人物与参考图3各格环境使用一致的合理光源方向和接触阴影；保留空间陈设，但允许柔和自然采光与合理补光，统一纠正人物和背景的偏暗曝光。"
+                        : "九格统一保持参考图2的真实手机随拍质感、材质表现与日常氛围，曝光按自然明亮要求校正，不得继承参考图2的欠曝或压黑背景。")
+                .append(originalBackground
                         ? "参考图2只提供人物身份、非商品搭配与商品穿着尺度，不提供任何格的背景或动作。不同分镜原本存在的换景和商品特写必须保留；人物格的景别和可见范围只服从下方近景构图规则，不在此另设脚部例外。"
                         : "只迁移参考图2的视觉风格，不能把九格背景全部替换成参考图2的同一个房间，也不能抹掉参考图3要求的换景和商品特写。")
                 .append("把九格中的每一个占位人体逐格替换为参考图2中的同一个真实人物。必须复制参考图2的同一张脸、五官比例、肤色、")
@@ -2138,7 +2159,7 @@ public class AiVideoImageProcessor {
                 .append(NATURAL_EYE_REQUIREMENT)
                 .append(REAL_PHOTOGRAPHY_REQUIREMENT)
                 .append(FABRIC_AND_PRODUCT_REALISM_REQUIREMENT)
-                .append("九格必须锁定参考图2的同一套基础肤色、脸与脖子的色差关系、曝光、白平衡和锐度参数，不能逐格重新美颜、重新上妆或改变皮肤质感。")
+                .append("九格必须保持参考图2的同一套基础肤色、脸与脖子的自然色差关系及真实皮肤质感；统一采用自然明亮曝光要求下的曝光与白平衡，不沿用参考图的欠曝，不能逐格重新美颜、重新上妆或改变皮肤质感。")
                 .append("【模特静默】所有人物格都必须保持嘴唇自然闭合和下颌稳定，不露齿、不张口、不说话、不唱歌、不做口型。脚本中的对白、台词、口播、讲解、旁白或 narration 只作为后期画外旁白语义，绝不能变成人物口型。")
                 .append("微表情不需要每格都变化。不能为了让九格看起来不同而逐格重新生成眉毛、眼睑、眼球、鼻翼、嘴唇和嘴角。只有不涉及开口的明确面部动作才允许建立一次起势→过程→到位的连续变化，不能突然大笑、张嘴、露齿、瞪眼或改变年龄和脸型。每格面部状态如下：\n");
         for (ShotPrompt shot : shots) {

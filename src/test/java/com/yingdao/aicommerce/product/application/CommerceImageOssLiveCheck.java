@@ -17,6 +17,32 @@ public class CommerceImageOssLiveCheck {
                 env("APP_OSS_PUBLIC_ENDPOINT","https://oss-cn-guangzhou.aliyuncs.com"),env("ALIBABA_CLOUD_ECS_METADATA",""),
                 Duration.ofHours(2),Boolean.parseBoolean(env("APP_OSS_PUBLIC_IMAGES","false")),null,
                 env("APP_OSS_CREDENTIALS_FILE",""),env("APP_DAYAN_OSS_BUCKET",""),env("APP_DAYAN_OSS_CREDENTIALS_FILE",""));
+        if(args.length>0){
+            try{
+                if(args.length<3||!"--read-existing".equals(args[0]))
+                    throw new IllegalArgumentException("Expected --read-existing organization archive-key...");
+                String tenant=CommerceImageArchive.sha(args[1].getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                long total=0;
+                for(int index=2;index<args.length;index++){
+                    String key=args[index];
+                    if(!key.matches("[a-f0-9]{64}/[a-f0-9]{64}")||!key.startsWith(tenant+"/"))
+                        throw new IllegalArgumentException("Wrong tenant archive key");
+                    String location=storage.commerceImageLocation(key);
+                    var url=java.net.URI.create(storage.signedUrl(location));
+                    if(!"oss.cloud.dayan.cloud".equalsIgnoreCase(url.getHost()))
+                        throw new IllegalStateException("Existing image is not routed to Dayan OSS");
+                    byte[] bytes=storage.readAllBytes(location,8*1024*1024);
+                    if(!CommerceImageArchive.sha(bytes).equals(key.substring(65)))
+                        throw new IllegalStateException("Existing image digest differs");
+                    if(ImageIO.read(new java.io.ByteArrayInputStream(bytes))==null)
+                        throw new IllegalStateException("Existing object is not a readable image");
+                    total+=bytes.length;
+                }
+                System.out.println("{\"dayanReadback\":true,\"images\":"+(args.length-2)
+                        +",\"sha256Verified\":true,\"decodableImages\":true,\"bytes\":"+total+",\"writes\":0}");
+            }finally{storage.close();}
+            return;
+        }
         var root=Files.createTempDirectory("commerce-oss-check");
         var archive=new CommerceImageArchive(root.toString(),storage);
         var org="release-check-"+UUID.randomUUID();
