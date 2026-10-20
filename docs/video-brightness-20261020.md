@@ -231,3 +231,35 @@ The helper checks image-ready status, the exact task/model IDs, disabled
 automatic video start, and unchanged source task assets/provider ID. It records
 the submission before calling the API so transport uncertainty cannot cause
 an accidental duplicate request.
+
+Commit `dccd989` was deployed with image
+`ai-commerce-platform:video-photographic-edges-20261020` from release directory
+`/opt/heyi/releases/video-photographic-edges-20261020-dccd989`. The live baseline
+class hashes matched, queue/lease idle checks passed, and the activated JAR was
+verified healthy. Runtime/frontend and application configuration were unchanged;
+the public site returned HTTP 200.
+
+The diagnostic helper also passed isolated mocked checks for one-time
+submission, primary-model preservation, rejection when video auto-start is on,
+and refusing to resubmit after an uncertain transport failure.
+
+The one requested storyboard rebuild completed at 04:12:22 UTC on October 20,
+2026 (`IMAGE_READY`, 100%). The model image ID remained
+`d3a47484-87d6-4592-a9e2-3c34d3a97ba2`. Guide and final grid each used one
+generation attempt; the existing grid validation behavior remained unchanged.
+The preview has zero video-generation jobs, and the source task's original
+assets and provider video ID were preserved.
+
+| Asset | ID | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| Solid pose guide | `f56b6dcc-4893-4044-9336-30ec68001226` | 17980941 | `c176e3ddb577dcbee0a9d43ca61b9b9bfcf7da7e8b865b09e6c7d037db8a3cff` |
+| Photographic storyboard | `e2b37e5b-d2b0-4f7f-a45b-8fbaa52941bf` | 19710876 | `c639b4257ef3ab992a7238aa4f1ba722d0c0591b9d0b90a6bcc093d08ee07daf` |
+
+Both new assets use Dayan bucket `test-hoyee`; their stored prompts contain the
+new guide/transfer policy markers. Local inspection exports match the stored
+byte sizes and SHA-256 hashes, without retouching or postprocessing.
+The new guide is solid-shaded rather than outlined. Visual inspection of the
+new grid found no added drawn black borders on visible hands/arms, including
+the previously affected cells 04-08, while black print artwork remains visible.
+This verifies the reported outline defect for this sample, not every aspect of
+product fidelity or a guarantee for all future stochastic generations.
