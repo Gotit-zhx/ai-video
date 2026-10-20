@@ -1,0 +1,17 @@
+# Optional production storage overlay. Credentials stay outside the repository.
+services:
+  app:
+    environment:
+      APP_OSS_ENABLED: "true"
+      APP_DAYAN_OSS_BUCKET: ${APP_DAYAN_OSS_BUCKET:?Dayan bucket is required}
+      APP_DAYAN_OSS_CREDENTIALS_FILE: /run/secrets/dayan-oss.properties
+      APP_MATERIAL_ARCHIVE_ENABLED: "true"
+    volumes:
+      - ${DAYAN_OSS_CREDENTIALS_PATH:?Credential file path is required}:/run/secrets/dayan-oss.properties:ro
+  pi-runtime:
+    environment:
+      IMAGE_OPERATION_OSS_BUCKET: ${APP_DAYAN_OSS_BUCKET:?Dayan bucket is required}
+      IMAGE_OPERATION_OSS_CREDENTIALS_FILE: /run/secrets/dayan-oss.properties
+      IMAGE_OPERATION_OSS_MIGRATE: ${IMAGE_OPERATION_OSS_MIGRATE:-true}
+    volumes:
+      - ${DAYAN_OSS_CREDENTIALS_PATH:?Credential file path is required}:/run/secrets/dayan-oss.properties:ro

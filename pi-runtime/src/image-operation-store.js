@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, lstat, rename, writeFile, rm } from 'node:fs/promises';
+import { lstatSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
+import { createImageOperationOss } from './image-operation-oss.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 function canonical(value) {
@@ -30,15 +32,87 @@ const restoreError = value => Object.assign(new Error(value.message), value);
 // Only hashes, attempt metadata and returned output are stored; never model keys
 // or source images. Writes finish before a POST or before returning its result.
 export class ImageOperationStore {
-  constructor(directory, {maxNetworkRetries = 2, maxAttemptsPerRoute = 8} = {}) {
+  constructor(directory, {maxNetworkRetries = 2, maxAttemptsPerRoute = 8, archive, minimumArchiveBytes = 64 * 1024} = {}) {
     this.directory = directory; this.maxNetworkRetries = maxNetworkRetries;
     this.maxAttemptsPerRoute = maxAttemptsPerRoute; this.active = new Map();
+    this.externalArchive = archive; this.minimumArchiveBytes = minimumArchiveBytes;
+    this.archiving = false;
   }
   async initialize() {
     await mkdir(this.directory, {recursive:true,mode:0o700});
     const probe = path.join(this.directory, `.write-check-${randomUUID()}`);
     try { await writeFile(probe, 'ready', {mode:0o600,flag:'wx'}); }
     finally { await rm(probe, {force:true}); }
+    if (this.externalArchive === undefined) this.externalArchive = await createImageOperationOss();
+    if (this.externalArchive && process.env.IMAGE_OPERATION_OSS_MIGRATE !== 'false') {
+      const sweep = async () => {
+        let count = 0;
+        try {
+          count = await this.migrateCompleted();
+          if (count) console.info(`Image operation OSS migration: ${count} verified records offloaded`);
+        }
+        catch { console.warn('Image operation OSS migration deferred; local results preserved'); }
+        this.archiveTimer = setTimeout(sweep, count === 20 ? 1000 : 60_000);
+        this.archiveTimer.unref();
+      };
+      this.archiveTimer = setTimeout(sweep, 120_000);
+      this.archiveTimer.unref();
+    }
+  }
+  close() {
+    clearTimeout(this.archiveTimer);
+  }
+  async readRecord(file) {
+    const index = JSON.parse(await readFile(file, 'utf8'));
+    if (!index.externalRecord) return index;
+    try {
+      if (!this.externalArchive) throw new Error('Archive reader unavailable');
+      const raw = await this.externalArchive.read(path.basename(file, '.json'), index.externalRecord);
+      const record = JSON.parse(raw);
+      if (record.externalRecord || record.fingerprint !== index.fingerprint || record.status !== index.status
+          || record.updatedAt !== index.updatedAt) throw new Error('Archive identity mismatch');
+      return record;
+    } catch {
+      throw Object.assign(failure('已保存的图片暂时无法从OSS读取，请稍后重试，不会重新生图',
+        'IMAGE_RESULT_STORAGE_UNAVAILABLE'), {status:503});
+    }
+  }
+  async migrateCompleted({limit = 20, minimumAgeMs = 60_000} = {}) {
+    if (!this.externalArchive || this.archiving) return 0;
+    this.archiving = true;
+    let migrated = 0;
+    const active = key => [...this.active.keys()].some(requestId => hash(requestId) === key);
+    try {
+      for (const name of await readdir(this.directory)) {
+        if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+        const key = name.slice(0, -5), file = path.join(this.directory, name);
+        const before = await lstat(file);
+        if (!before.isFile() || before.isSymbolicLink() || before.size < this.minimumArchiveBytes || active(key)
+            || Date.now() - before.mtimeMs < minimumAgeMs) continue;
+        const raw = await readFile(file), record = JSON.parse(raw);
+        if (record.externalRecord || !['COMPLETED', 'RECOVERABLE'].includes(record.status)) continue;
+        const pointer = await this.externalArchive.store(key, raw);
+        // A synchronous compare-and-replace cannot interleave with a new execute() call.
+        const current = lstatSync(file);
+        if (current.isSymbolicLink() || current.ino !== before.ino || current.size !== before.size
+            || current.mtimeMs !== before.mtimeMs || active(key)) continue;
+        const index = {...record, externalRecord:pointer};
+        delete index.result;
+        index.routes = Object.fromEntries(Object.entries(record.routes || {}).map(([id, route]) => {
+          const metadata = {...route}; delete metadata.response; return [id, metadata];
+        }));
+        const temporary = `${file}.${randomUUID()}.tmp`;
+        try {
+          writeFileSync(temporary, JSON.stringify(index), {mode:0o600,flag:'wx'});
+          renameSync(temporary, file);
+        } finally {
+          try { unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+        migrated++;
+        if (migrated >= limit) break;
+      }
+      return migrated;
+    } finally { this.archiving = false; }
   }
   async write(file, value) {
     await mkdir(this.directory, {recursive:true,mode:0o700});
@@ -51,7 +125,7 @@ export class ImageOperationStore {
       throw Object.assign(new Error('图片恢复任务缺少有效请求编号'), {status:400});
     }
     let record;
-    try { record = JSON.parse(await readFile(path.join(this.directory, `${hash(requestId)}.json`), 'utf8')); }
+    try { record = await this.readRecord(path.join(this.directory, `${hash(requestId)}.json`)); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     const active = this.active.get(requestId);
     if (active) return {status:'RUNNING',active:true,updatedAt:record?.updatedAt || active.updatedAt,response:null,error:null};
@@ -70,7 +144,7 @@ export class ImageOperationStore {
     if (this.active.has(requestId)) throw Object.assign(new Error('图片任务仍在运行'), {status:409});
     const file = path.join(this.directory, `${hash(requestId)}.json`);
     let record;
-    try { record = JSON.parse(await readFile(file, 'utf8')); }
+    try { record = await this.readRecord(file); }
     catch (error) { if (error.code === 'ENOENT') return {status:'NOT_FOUND'}; throw error; }
     if (record.status === 'ARCHIVED') {
       if (record.archive?.storageKey !== storageKey) throw Object.assign(new Error('图片归档编号已改变'), {status:409});
@@ -109,7 +183,7 @@ export class ImageOperationStore {
   async run(requestId, fingerprint, task) {
     const file = path.join(this.directory, `${hash(requestId)}.json`);
     let record;
-    try { record = JSON.parse(await readFile(file, 'utf8')); }
+    try { record = await this.readRecord(file); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (record && record.fingerprint !== fingerprint) throw Object.assign(new Error('同一图片任务的输入已改变'), {status:409});
     if (record?.status === 'ARCHIVED') throw failure('图片已归档到OSS，请读取业务图片记录；禁止重复生图', 'IMAGE_RESULT_ARCHIVED');
