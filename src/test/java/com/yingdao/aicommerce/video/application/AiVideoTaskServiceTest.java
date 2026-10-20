@@ -144,6 +144,11 @@ class AiVideoTaskServiceTest {
         assertTrue(finalRule.contains("目标市场“泰国”对应的本地语言"));
         assertTrue(finalRule.contains("逐字朗读给定原文"));
         assertTrue(finalRule.contains("具有清晰可辨主旋律和稳定节拍的纯器乐伴奏"));
+        assertTrue(finalRule.contains("闭口静默不等于表情冻结"));
+        assertTrue(finalRule.contains("允许自然眨眼"));
+        assertTrue(finalRule.contains("没有明确侧倾动作时，头颈保持舒适中立位"));
+        assertTrue(finalRule.contains("不跟随语音音节或节拍"));
+        assertTrue(finalRule.contains("背身、遮脸和纯商品镜头不补脸、不强制转正"));
         assertFalse(finalRule.contains("自然开口并同步口型"));
         assertTrue(result.endsWith("与前文任何要求冲突时，只执行本段。"));
     }
@@ -251,7 +256,7 @@ class AiVideoTaskServiceTest {
         when(task.getScriptJson()).thenReturn("{\"shots\":[]}");
         AiVideoTaskItem old = mock(AiVideoTaskItem.class);
         when(old.getName()).thenReturn("样品");
-        when(old.getVideoPromptText()).thenReturn("提示词版本：V11.7 · 模特静默与旋律伴奏版\n旧时间轴");
+        when(old.getVideoPromptText()).thenReturn("提示词版本：V11.8 · 统一转场与近景动作归一\n旧时间轴");
         AiVideoTaskItem custom = mock(AiVideoTaskItem.class);
         when(custom.getVideoPromptText()).thenReturn("自定义：固定机位展示商品。");
         when(custom.getName()).thenReturn("自定义样品");
@@ -261,10 +266,33 @@ class AiVideoTaskServiceTest {
 
         testService(tasks, items, analysis).migrateLegacyGeneratedVideoPrompts();
 
-        verify(old).updateVideoPrompt(argThat(prompt -> prompt.startsWith("提示词版本：V11.8 · 统一转场与近景动作归一")));
+        verify(old).updateVideoPrompt(argThat(prompt -> prompt.startsWith("提示词版本：V11.9 · 自然头颈与表情")
+                && prompt.contains(AiVideoTaskService.NATURAL_FACE_MOTION_REQUIREMENT)));
         verify(items).updateById(old);
         verify(custom, never()).updateVideoPrompt(anyString());
         verify(items, never()).updateById(custom);
+    }
+
+    @Test
+    void bothVideoPromptPathsAllowNaturalExpressionWhileRetainingFramingAndSilentPerformance() {
+        AiVideoTaskService service = testService(mock(AiVideoTaskMapper.class),
+                mock(AiVideoTaskItemMapper.class), mock(ProductFunctionAnalysisService.class));
+        AiVideoTask task = mock(AiVideoTask.class);
+        when(task.getGenerationMode()).thenReturn("MODEL_WEAR");
+        when(task.getAspectRatio()).thenReturn("9:16");
+        when(task.getScriptJson()).thenReturn("{\"shots\":[]}");
+        for (String method : List.of("buildDirectReferenceVideoPrompt", "buildStoryboardAnimationPrompt")) {
+            String prompt = ReflectionTestUtils.invokeMethod(service, method, task, "样品");
+            assertTrue(prompt.contains(AiVideoTaskService.NATURAL_FACE_MOTION_REQUIREMENT));
+            assertTrue(prompt.contains("全片中近景锁定"));
+            assertTrue(prompt.contains("不说话、不唱歌"));
+            assertTrue(prompt.contains("五官"));
+        }
+        AiVideoTaskItem old = mock(AiVideoTaskItem.class);
+        when(old.getVideoPromptText()).thenReturn("提示词版本：DIRECT_DETAIL_V6 · 统一转场与近景动作归一\n旧提示");
+        assertTrue(Boolean.TRUE.equals(ReflectionTestUtils.invokeMethod(service, "isLegacyGeneratedPrompt", task, old)));
+        when(old.getVideoPromptText()).thenReturn("提示词版本：DIRECT_DETAIL_V7 · 自然头颈与表情\n新提示");
+        assertFalse(Boolean.TRUE.equals(ReflectionTestUtils.invokeMethod(service, "isLegacyGeneratedPrompt", task, old)));
     }
 
     @SuppressWarnings("unchecked")

@@ -865,9 +865,35 @@ public class CommerceBatchArtworkService {
     static String groupVariationPrompt(int variant,int group) {
         CommerceSurfaceTemplateInputs.variationKind(group);
         return "这是第 "+variant+" 款的图案组 "+group+"，独立设计一个新主体或新构图；同组各位置共用本次一张设计。"
-                +"参考图是来源商品提取的原始印花，继承其画风，主体可充分二次创作。"+variationPrompt(variant);
+                +"参考图是来源商品提取的原始印花，继承其画风，主体可充分二次创作。"+variationPrompt(variant,group);
     }
-    static String variationPrompt(int index) {return "这是第 "+index+" 张独立印花变体。"+CommerceSampleService.printPrompt("PRINT_VARIANT",1+(index-1)%3);}
+    static String variationPrompt(int index) {return variationPrompt(index,1);}
+    private static String variationPrompt(int index,int group) {
+        if(index<1||index>20)throw new IllegalArgumentException("裂变印花编号无效");
+        return "这是第 "+index+" 张独立印花变体。"+CommerceSampleService.printPrompt("PRINT_VARIANT",0)
+                +"本款固定创作方向："+variationDirection(index,group)
+                +"按此方向重新创作一个完整印花，不把各方向画成拼贴或多格对比。";
+    }
+    static String variationDirection(int index,int group) {
+        if(index<1||index>20||group<1)throw new IllegalArgumentException("裂变印花或图案组编号无效");
+        // Twenty distinct briefs per group, instead of repeating the same three
+        // instructions for variants 1/4/7... . The stored job prompt stays immutable.
+        int direction=(int)Math.floorMod(index-1L+(group-1L)*7,20);
+        String subject=List.of(
+            "全新单主体：替换角色身份、物种或核心抽象形状，并设计新的剪影与动作。",
+            "双主体互动：两个新角色互相配合、追逐或交流；抽象题材用两组互相呼应的新形状。",
+            "全新情节：新主角与一组新的道具发生清楚的动作关系；抽象题材重构形状间的运动与呼应。",
+            "主题意象重组：改用一组新的相关意象表达情绪，不沿用原图的主角与招牌道具；抽象题材创造新的视觉节奏。",
+            "多主体群像：设计三至五个相互关联的新主元素，大小有层次；抽象题材使用新的模块群与疏密关系。"
+        ).get(direction%5);
+        String composition=List.of(
+            "横向开放构图，明显改变原图重心，疏朗留白，不沿用原图轮廓与元素站位。",
+            "纵向不对称构图，按高低层次组织主体，形成与原图不同的整体轮廓。",
+            "斜向动势构图，让主体与辅助元素沿对角方向形成新的运动关系。",
+            "环绕流动构图，主次元素围绕开放留白组织，避免照搬原图布局，不加底板。"
+        ).get(direction/5);
+        return subject+composition;
+    }
     static String fingerprint(ModelConfigService.RuntimeModelConnection model) {return CommerceImageArchive.sha((model.id()+"\n"+model.baseUrl()+"\n"+model.modelId()+"\n"+model.apiFormat()+"\n"+model.provider()).getBytes(StandardCharsets.UTF_8));}
     private static BusinessException error(String message) {return new BusinessException(HttpStatus.CONFLICT,message);}
 }

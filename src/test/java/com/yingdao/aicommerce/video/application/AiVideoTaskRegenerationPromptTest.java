@@ -88,7 +88,7 @@ class AiVideoTaskRegenerationPromptTest {
 
         String submitted = fixture.promptsAtStart.get().get(item.getId());
         assertNotNull(submitted);
-        assertTrue(submitted.startsWith("提示词版本：V11.8"));
+        assertTrue(submitted.startsWith("提示词版本：V11.9"));
         assertEquals(item.getVideoPromptText(), submitted);
         verify(fixture.itemMapper).updateById(item);
         verify(fixture.generation).start(fixture.task);
@@ -106,7 +106,7 @@ class AiVideoTaskRegenerationPromptTest {
         for (AiVideoTaskItem item : fixture.items.subList(1, fixture.items.size())) {
             String submitted = fixture.promptsAtStart.get().get(item.getId());
             assertNotNull(submitted);
-            assertTrue(submitted.startsWith("提示词版本：V11.8"));
+            assertTrue(submitted.startsWith("提示词版本：V11.9"));
             verify(fixture.itemMapper).updateById(item);
         }
         verify(fixture.generation).start(fixture.task);

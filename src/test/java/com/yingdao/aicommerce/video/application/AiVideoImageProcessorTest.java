@@ -1199,6 +1199,31 @@ class AiVideoImageProcessorTest {
     }
 
     @Test
+    void defaultExpressionAllowsNaturalFaceChangesWithoutInventingSpeechOrAHeldSmile() {
+        String expression = AiVideoImageProcessor.inferMicroExpression(null, "展示衣服");
+
+        assertTrue(expression.contains("眉眼、面颊与嘴角可随动作轻微自然变化"));
+        assertTrue(expression.contains("不把上一格表情冻结复制"));
+        assertTrue(expression.contains("不露齿、不张口"));
+        assertFalse(expression.contains("不新增嘴角"));
+        assertFalse(expression.contains("形成轻微闭口微笑并稳定保持"));
+    }
+
+    @Test
+    void narrationDoesNotSuppressTheShotsExplicitBlinkSmileOrGaze() {
+        String expression = AiVideoImageProcessor.inferMicroExpression(
+                "微笑口播", "看向商品后眨眼");
+
+        assertTrue(expression.contains("只作为画外音语义"));
+        assertTrue(expression.contains("不生成口型"));
+        assertTrue(expression.contains("明确的眨眼按动作阶段完成"));
+        assertTrue(expression.contains("眼神、面颊和嘴角协调形成"));
+        assertTrue(expression.contains("双眼共同跟随动作目标平滑转移"));
+        assertTrue(expression.contains("不全程保持同一笑容"));
+        assertFalse(expression.contains("嘴角、眉毛和鼻翼沿用上一格状态"));
+    }
+
+    @Test
     void topologyCandidateRankingUsesTotalViolationsAndRejectsMissingDetails() {
         var summarized = new ProductFunctionAnalysisService.GarmentValidation(false, "",
                 java.util.List.of("问题一", "问题二", "问题三"), 0.9, 7);

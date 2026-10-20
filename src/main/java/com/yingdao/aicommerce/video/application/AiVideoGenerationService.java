@@ -877,6 +877,7 @@ public class AiVideoGenerationService {
         return base + "\n\n【最终音画硬约束｜最高优先级并覆盖前文】\n"
                 + "所有出镜人物全程保持嘴唇自然闭合、下颌稳定，不说话、不口播、不唱歌、不念台词，也不做任何对口型动作。"
                 + "脚本或自定义提示中的“对白、台词、口播、讲解、旁白、narration、speak、talk、lip sync”一律只作画外旁白语义，绝不由出镜人物演绎，且不得驱动嘴唇、表情、头部、手势或身体节拍。\n"
+                + AiVideoTaskService.NATURAL_FACE_MOTION_REQUIREMENT
                 + music + "；不得包含歌词、演唱或含糊人声。\n"
                 + voice + "。与前文任何要求冲突时，只执行本段。";
     }

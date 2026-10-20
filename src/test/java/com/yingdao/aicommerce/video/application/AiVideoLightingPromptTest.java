@@ -68,7 +68,7 @@ class AiVideoLightingPromptTest {
             assertFalse(prompt.contains("浅灰墙面与明亮柜体"));
         }
         if ("MODEL_WEAR".equals(mode)) {
-            assertTrue(prompt.contains("【REALISM V6｜自然采光与面料保真手机随拍任务】"));
+            assertTrue(prompt.contains("【REALISM V7｜自然头颈与鲜活神态手机随拍任务】"));
             assertTrue(prompt.contains("【商品保真】"));
             assertTrue(prompt.contains("正确穿着母版"));
             assertTrue(prompt.contains("【中近景门禁版本：CLOSE_FRAMING_GATE_V1】"));
@@ -77,6 +77,38 @@ class AiVideoLightingPromptTest {
                 assertTrue(prompt.contains("衣服不继承背景的磨损或旧物质感"));
             }
         }
+    }
+
+    @Test void modelImageUsesNeutralHeadPostureAndRelaxedFacialExpression() {
+        String prompt = primary(task("MODEL_WEAR", "AI_DESIGNED"), false);
+
+        assertTrue(prompt.contains("头颈保持舒适中立位"));
+        assertTrue(prompt.contains("不要把转脸画成向肩膀歪头"));
+        assertTrue(prompt.contains("双眼连线接近水平"));
+        assertTrue(prompt.contains("不固定成同一种笑容"));
+        assertTrue(prompt.contains("亲和感由眉眼与面颊共同呈现"));
+        assertTrue(prompt.contains("嘴唇放松且自然闭合，不抿紧、不露齿、不张口"));
+        assertFalse(prompt.contains("2–10 度"));
+        assertFalse(prompt.contains("只允许闭口的轻微嘴角变化"));
+        assertFalse(prompt.contains("一侧肩髋略低"));
+        assertNaturalExposure(prompt);
+        assertNaturalFabric(prompt);
+    }
+
+    @Test void storyboardKeepsIdentityWithoutCopyingTheSameTiltAndFrozenExpression() {
+        var task = task("MODEL_WEAR", "SCRIPT_ORIGINAL");
+        String prompt = ReflectionTestUtils.invokeMethod(processor, "storyboardIdentityTransferPrompt",
+                task, item(task), shots, true);
+
+        assertTrue(prompt.contains("参考图2的偶然歪头和瞬间表情不是固定姿势"));
+        assertTrue(prompt.contains("脚本没有侧倾动作时"));
+        assertTrue(prompt.contains("明确的转头、低头、抬头或侧倾按真实动作与重心连续完成"));
+        assertTrue(prompt.contains("闭口不等于表情冻结"));
+        assertTrue(prompt.contains("眨眼等短暂动作主要在视频帧间自然完成"));
+        assertTrue(prompt.contains("背身、遮挡和商品特写不得补脸"));
+        assertFalse(prompt.contains("不新增嘴角、眉毛、鼻翼、眼睑或眼球动作"));
+        assertFalse(prompt.contains("只有不涉及开口的明确面部动作才允许"));
+        assertTrue(prompt.contains("不露齿、不张口、不说话、不唱歌、不做口型"));
     }
 
     @ParameterizedTest

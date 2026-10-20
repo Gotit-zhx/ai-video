@@ -24,8 +24,11 @@ FAMILIES = (
     "CommerceTemplatePalette", "CommerceSourceColorResolver", "CommercePrintTemplateService",
     "CommerceBatchCreativePlanService", "CommerceBatchCreativePlanValidator", "CommerceGarmentColor",
     "CommerceLocalPhotoWorkflow", "CommerceBackPreviewService", "CommerceBatchArtworkService",
-    "CommerceBatchPublishStage", "CommercePublicationDrafts", "CommerceArtworkLibraryService",
-    "../web/CommerceArtworkLibraryController")
+    "CommerceBatchPublishStage", "CommercePublicationDrafts", "CommerceArtworkLibraryService", "CommerceSampleService",
+    "../web/CommerceArtworkLibraryController",
+    "../../video/application/AiVideoImageProcessor",
+    "../../video/application/AiVideoTaskService",
+    "../../video/application/AiVideoGenerationService")
 FILES = ("index.html", "commerce-print-editor.js", "commerce-planner.js",
          "commerce-template-appearance.js", "commerce-template-appearance.css",
          "commerce-creative-plan.js", "commerce-motion.js", "commerce-artwork-library.js")
@@ -189,13 +192,29 @@ def verify_images(images):
     assert core.sha(core.run("docker", "exec", APP, "cat", "/app/app.jar")) == core.read_json("prepared.json")["jarHash"]
 
 
+def idle():
+    core.idle()
+    sql = """
+        SELECT COUNT(*) FROM ai_video_generation_jobs
+        WHERE status IN ('SUBMITTING','REVIEWING')
+        OR (status IN ('QUEUED','RUNNING') AND
+            (provider_task_id IS NULL OR provider_task_id=''
+             OR next_poll_at > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 120 SECOND)))
+    """
+    count = core.run("docker", "exec", "-i", "ai-commerce-mysql", "sh", "-c",
+                    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -NB "$MYSQL_DATABASE"',
+                    data=sql.encode()).decode().splitlines()
+    assert count == ["0"], "Video submission, review or polling lease is active; no restart"
+    print("No active video request or polling lease; persisted provider jobs remain resumable.")
+
+
 def deploy():
     assert not (ROOT / "activation.json").exists()
     baseline()
     prepared, before = core.read_json("prepared.json"), core.read_json("before-private.json")
     for name, info in before.items():
         assert core.inspect(name)["Id"] == info["Id"], "Container changed: " + name
-    core.idle()
+    idle()
     preserved = {item["Name"]: item["Id"] for item in json.loads(core.run("docker", "inspect", *core.run("docker", "ps", "-q").decode().split()))
                  if item["Name"].lstrip("/") not in before}
     rollback = {}
@@ -242,7 +261,7 @@ def cleanup():
 if __name__ == "__main__":
     try:
         {"snapshot": snapshot, "pack": pack, "build": build, "deploy": deploy, "verify": verify,
-         "cleanup": cleanup, "idle": core.idle}[core.MODE]()
+         "cleanup": cleanup, "idle": idle}[core.MODE]()
     except subprocess.CalledProcessError as failure:
         log = ROOT / ("failure-" + core.MODE + ".private.log")
         log.write_bytes(failure.output or b"")

@@ -50,6 +50,12 @@ import java.util.zip.ZipOutputStream;
 public class AiVideoTaskService {
     private static final int MAX_ITEMS = 30;
     public static final int MAX_VIDEO_REFERENCE_IMAGES = 9;
+    static final String NATURAL_FACE_MOTION_REQUIREMENT = "【自然头颈与表情 V1】仅约束实际可见的人脸，背身、遮脸和纯商品镜头不补脸、不强制转正。"
+            + "身份一致锁定五官结构，不锁死面部肌肉：允许自然眨眼、随动作目标轻微转移视线，以及眉眼、面颊和闭口嘴角的细小连贯变化；"
+            + "微笑可以自然形成、稍作停留再放松，不全程挂着同一个表情。眨眼与神态变化不按固定周期重复，也不要求每秒都有动作，避免频繁挤眼、挑眉、抽动或无目的眼神游移。"
+            + "没有明确侧倾动作时，头颈保持舒适中立位，不持续向同一肩膀歪斜；明确的转头、低头、抬头或侧倾按动作平滑完成，不能突然掰正参考首帧或机械左右摆头。"
+            + "闭口静默不等于表情冻结；下颌稳定指没有口播式开合，正常转头、呼吸和闭口表情仍然自然。"
+            + "上述细微变化独立于旁白和音乐，不跟随语音音节或节拍，不改变人物身份、商品外观或脚本主要动作。\n";
     private static final int GENERAL_TASK_NAME_TARGET_LENGTH = 32;
     private static final int GENERAL_TASK_NAME_MAX_LENGTH = 36;
     private static final long MAX_IMAGE_BYTES = 20L * 1024 * 1024;
@@ -1634,7 +1640,7 @@ public class AiVideoTaskService {
 
     private String buildDirectReferenceVideoPrompt(AiVideoTask task, String subjectName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：DIRECT_DETAIL_V6 · 统一转场与近景动作归一\n\n");
+        prompt.append("提示词版本：DIRECT_DETAIL_V7 · 自然头颈与表情\n\n");
         prompt.append("【生成任务】\n");
         prompt.append("生成一条").append(task.getAspectRatio()).append("短视频，主体：").append(subjectName).append("。\n");
         prompt.append("参考图的编号、主参考和各图用途由用户单独指定；严格服从提交时附加的《参考图职责协议》，不得按上传顺序自行猜测，也不得把编号、用途说明或协议文字拍进成片。\n");
@@ -1646,6 +1652,7 @@ public class AiVideoTaskService {
         prompt.append("【人物人脸景别保护】\n");
         prompt.append("有人物时，全片保持同一人物身份、脸型、五官比例、肤色、年龄、发型、身材和穿搭；头部转动只产生真实透视变化，不得逐帧重绘五官、换脸或改变年龄。\n");
         prompt.append("动作、场景和主体关系服从每段脚本与对应参考图，但景别始终服从《全片中近景锁定》；脸部必须清晰、自然且结构稳定。出镜人物全程自然闭口，不说话、不唱歌、不做口型；脚本中的任何人声文字都只允许作为画外旁白，不得驱动人物眨眼、挑眉、口型、手势、舞蹈或夸张表演。\n\n");
+        prompt.append(NATURAL_FACE_MOTION_REQUIREMENT);
         prompt.append("【商品与物理一致性】\n");
         prompt.append("商品颜色、结构、数量、比例、Logo、文字、图案、材质和功能部件全片稳定，不得换款、复制、漂移、融化或凭空生长。拿取、开启、点燃、喷洒、倾倒和使用效果必须遵守真实接触关系、结构和功能原理。\n");
         prompt.append("手部只在脚本需要时出现，数量与动作自然；主体不得悬浮，必须与手、桌面、地面、支架或环境建立真实接触。\n\n");
@@ -1684,7 +1691,7 @@ public class AiVideoTaskService {
 
     private String buildStoryboardAnimationPrompt(AiVideoTask task, String garmentName) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("提示词版本：V11.8 · 统一转场与近景动作归一\n\n");
+        prompt.append("提示词版本：V11.9 · 自然头颈与表情\n\n");
         prompt.append("【参考图职责】\n");
         prompt.append("图1：第01格单画面首帧。人物身份、脸、发型、身材和非商品穿搭在全片保持一致；只有姿势、手持状态和背景仅约束 t=0。\n");
         prompt.append("图2：完整3×3时间索引，按左到右、上到下读取01→09。采用每格的动作、场景、构图意图和机位方向，但把对应内容重建为铺满画布的单画面；远景、全身和拉远信息由中近景规则覆盖，九宫格版式本身不是输出内容。\n");
@@ -1699,6 +1706,7 @@ public class AiVideoTaskService {
         prompt.append("【商品与人物稳定】\n");
         prompt.append("商品在穿着、手持、展开、折叠和特写状态下都保持图3及后附结构证据中的同一结构；只允许真实透视、遮挡、布料受力和褶皱变化。\n");
         prompt.append("脸部保持图1身份，转头只产生自然透视；嘴唇全程自然闭合且稳定，不说话、不唱歌、不做任何对口型动作。画外旁白不得驱动嘴唇、表情、头部、手势或身体节拍。商品印花随同一块布料运动，不改字、不增删、不漂移。\n");
+        prompt.append(NATURAL_FACE_MOTION_REQUIREMENT);
         appendMusicPrompt(prompt, task);
         prompt.append("同一镜头内保持曝光、白平衡、背景和人物尺度稳定；不生成字幕、额外Logo或水印。\n\n");
         appendImageToVideoTimeline(prompt, task);
@@ -1949,12 +1957,14 @@ public class AiVideoTaskService {
         if (isScriptVideoReplacement(task)) {
             return !current.contains("提示词版本：SCRIPT_VIDEO_REPLACE_V2 · 精准复刻");
         }
-        if (current.contains("提示词版本：DIRECT_DETAIL_V6 · 统一转场与近景动作归一")
+        if (current.contains("提示词版本：DIRECT_DETAIL_V7 · 自然头颈与表情")
                 || current.contains("提示词版本：PRODUCT_DETAIL_V7 · 统一转场与近景动作归一")
-                || current.contains("提示词版本：V11.8 · 统一转场与近景动作归一")) {
+                || current.contains("提示词版本：V11.9 · 自然头颈与表情")) {
             return false;
         }
-        return (current.contains("提示词版本：DIRECT_DETAIL_V5 · 模特静默与全片中近景锁定")
+        return (current.contains("提示词版本：DIRECT_DETAIL_V6 · 统一转场与近景动作归一")
+                || current.contains("提示词版本：V11.8 · 统一转场与近景动作归一")
+                || current.contains("提示词版本：DIRECT_DETAIL_V5 · 模特静默与全片中近景锁定")
                 || current.contains("提示词版本：PRODUCT_DETAIL_V6 · 旋律伴奏与全片商品近景锁定")
                 || current.contains("提示词版本：V11.7 · 模特静默与旋律伴奏版")
                 || current.contains("提示词版本：DIRECT_DETAIL_V4 · 全片中近景锁定")

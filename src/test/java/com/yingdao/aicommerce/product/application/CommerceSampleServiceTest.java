@@ -28,6 +28,9 @@ class CommerceSampleServiceTest {
   for(int i=0;i<4;i++){
    String prompt=CommerceSampleService.printPrompt("PRINT_VARIANT",i);
    assertTrue(prompt.contains("来源商品"));assertTrue(prompt.contains("只作为画风参考"));
+   assertTrue(prompt.contains("必须进行大幅自由二创"));
+   assertTrue(prompt.contains("至少同时重设计核心主体或形状、画面构图骨架"));
+   assertFalse(prompt.contains("保留原设计本来具有的白色填充"));
    assertTrue(prompt.contains("猫可以变成狗"));assertTrue(prompt.contains("画风与原印花统一"));
    assertFalse(prompt.contains("适度二创"));assertFalse(prompt.contains("保留可辨识的主题"));
    assertFalse(prompt.contains("本次侧重暖色配色"));
@@ -42,6 +45,21 @@ class CommerceSampleServiceTest {
    assertFalse(prompt.contains("不代表透明图"));
   }
  assertThrows(RuntimeException.class,()->CommerceSampleService.printPrompt("BAD",1));
+ }
+
+ @Test void batchVariationBriefsDoNotRepeatEveryThreeDesignsAndGroupsTakeDifferentDirections(){
+  for(int group=1;group<=3;group++){
+   var directions=new java.util.HashSet<String>();
+   for(int variant=1;variant<=20;variant++){
+    assertTrue(directions.add(CommerceBatchArtworkService.variationDirection(variant,group)));
+    assertTrue(CommerceBatchArtworkService.groupVariationPrompt(variant,group).contains("真实 alpha 透明通道"));
+   }
+   assertEquals(20,directions.size());
+  }
+  assertNotEquals(CommerceBatchArtworkService.variationDirection(1,1),CommerceBatchArtworkService.variationDirection(4,1));
+  assertNotEquals(CommerceBatchArtworkService.variationDirection(1,1),CommerceBatchArtworkService.variationDirection(1,2));
+  assertTrue(CommerceBatchArtworkService.surfacePrompt("FRONT").contains("不得再次更换图案主体"));
+  assertThrows(IllegalArgumentException.class,()->CommerceBatchArtworkService.variationPrompt(21));
  }
 
  @Test void paidOpaquePrintIsArchivedBeforeRejectionAndSameRequestNeverCallsTheModelAgain()throws Exception{
