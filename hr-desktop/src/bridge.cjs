@@ -76,6 +76,6 @@ class LocalBridge {
     }catch(error){if(!res.headersSent)send(409,{success:false,
       code:error.code==='DEVICE_IN_USE'?'DEVICE_IN_USE':undefined,message:error.message||'本机操作未完成'});}
   }
-  close(){this.token='';this.server?.closeAllConnections();return new Promise(resolve=>this.server?this.server.close(resolve):resolve());}
+  close(){this.token='';this.server?.closeAllConnections?.();return new Promise(resolve=>this.server?this.server.close(resolve):resolve());}
 }
 module.exports={LocalBridge,PORT};

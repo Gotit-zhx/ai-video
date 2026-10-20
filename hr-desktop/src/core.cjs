@@ -101,6 +101,7 @@ class Recruiter extends EventEmitter {
     this.nextBackgroundAt=0;this.idlePolls=0;this.jobStatusRetryAt=0;
     this.activity=new Map();this.activityTimer=null;this.lastActivityPoll=0;
     this.owner='';this.accountRoot='';this.cdp='';this.events=[];this.persist=Promise.resolve();this.riskHold=null;this.generation=0;
+    this.cloudAccountKey='';this.receiptCursor=0;
     this.autoReconnect=true;this.recovering=false;this.recoveryAt=0;this.recoveryFailures=0;this.closed=false;
   }
   async init(cdp) {
@@ -130,9 +131,19 @@ class Recruiter extends EventEmitter {
     queuedOperations:this.operations.pending,operation:this.operation||'',
     passive:this.passiveStatus||{},dailyGreeting:this.dailyGreeting||{},reconnecting:this.paused&&this.autoReconnect&&!!this.accountRoot
       &&(!this.riskHold||TEMPORARY.has(this.riskHold.code)),
-    accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?path.basename(this.accountRoot):'',
+    accountKey:this.state.state==='complete'&&!this.paused&&this.accountRoot?this.accountKey():'',
     capabilities:['passive-resume','job-jd','active-sourcing','sourcing-credentials-v2','continuous-sourcing','managed-jobs','greeting-receipts-v1','manual-dispatch-v1']};}
   event(code){this.events.push({at:this.clock(),code});this.events=this.events.slice(-100);this.emit('change',this.snapshot());}
+  accountKey(){return this.cloudAccountKey||path.basename(this.accountRoot);}
+  async resolveCloudAccount(identity){
+    if(!this.passiveCloud)return;
+    const generation=this.generation,root=this.accountRoot;
+    const result=await this.passiveCloud('passive-config',{
+      accountKey:path.basename(root),identityKey:identity,identityOnly:true});
+    if(generation!==this.generation||root!==this.accountRoot)return;
+    if(!validKey(result?.accountKey))throw Error('云端账号历史尚未核对');
+    this.cloudAccountKey=result.accountKey;this.receiptCursor=0;
+  }
   pause(code='USER_PAUSED'){
     if(code==='USER_PAUSED')this.autoReconnect=false;
     this.generation++;this.paused=true;clearInterval(this.loginTimer);this.loginTimer=null;
@@ -154,14 +165,17 @@ class Recruiter extends EventEmitter {
     });
     return this.persist;
   }
-  async checkOwner(){
-    const user=await this.authorize();
+  validateOwner(user){
     const legacy=user?.platformAdmin===true&&user.organizationCode==='heyi'
       &&user.username==='13800000000'&&user.roles?.includes('ADMIN');
     if(!legacy&&(!user?.permissions?.includes('hr:access')||!user.organizationCode||!(user.id||user.userId)))
       throw Error('请先登录已开通人力资源权限的账号');
     const key=crypto.createHash('sha256').update(`${user.organizationCode}:${user.id||user.userId||user.username}`).digest('hex');
     if(this.owner && this.owner!==key) throw Error('本机已绑定另一位用户，请先断开原招聘连接');
+    return key;
+  }
+  async checkOwner(){
+    const key=this.validateOwner(await this.authorize());
     this.owner=key;
     return key;
   }
@@ -203,7 +217,7 @@ class Recruiter extends EventEmitter {
     return this.dispatchCommand(input,signal,'invite');
   }
   async dispatchCommand(input,signal,expectedKind){
-    if(!/^[a-f0-9]{64}$/.test(input.accountKey||'')||input.accountKey!==path.basename(this.accountRoot)
+    if(!/^[a-f0-9]{64}$/.test(input.accountKey||'')||input.accountKey!==this.accountKey()
       ||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.commandId||''))
       throw Error('邀约不属于当前招聘账号，未执行发送');
     if(!this.passiveCloud)throw Error('平台连接未就绪，消息已保留');
@@ -293,6 +307,11 @@ class Recruiter extends EventEmitter {
     this.scanning=true;
     const generation=this.generation;
     try {
+      if(this.clock()-this.started>300000){
+        clearInterval(this.loginTimer);this.loginTimer=null;
+        this.state={state:'failed',phase:'',error:'等待已结束，登录页面和处理记录已保留',failure_code:'LOGIN_TIMEOUT'};
+        this.event('LOGIN_TIMEOUT');return;
+      }
       const sample=await this.browser.inspect();
       if(generation!==this.generation)return;
       const stop=restriction(sample.text||'');
@@ -343,18 +362,24 @@ class Recruiter extends EventEmitter {
         await bindAccount(this.accountRoot,account.identity);
         if(generation!==this.generation)return;
       }
+      await this.resolveCloudAccount(account.identity);
+      if(generation!==this.generation)return;
       const resumed=await this.call('resume-session');
       if(generation!==this.generation)return;
       if(!resumed.ok)throw Error('历史接收进度未能恢复');
       this.reconnectId=crypto.randomUUID();
       this.riskHold=null;this.state={state:'complete',phase:'',error:'',failure_code:''};
       this.idlePolls=0;this.nextBackgroundAt=this.clock()+120000;this.jobStatusRetryAt=0;
+      this.backgroundRetryAt=this.clock()+120000;
       this.paused=false;await this.save();this.event('CONNECTED');
       this.browser.connected();
-      this.backgroundRetryAt=this.clock()+120000;
       this.passiveStatus={phase:'catching_up',catchupPending:1};this.scheduleActivityPoll();
-    }catch{
+    }catch(error){
       if(this.state.state==='pending'){
+        if(error.code==='SESSION_PREPARING'){
+          this.state.phase='verifying';
+          return;
+        }
         clearInterval(this.loginTimer);this.loginTimer=null;
         this.state={state:'failed',phase:'',failure_code:'LOCAL_LOGIN_ERROR',
           error:'本机连接未完成，已保留页面。请查看 BOSS 页面提示，未自动重试。'};
@@ -396,15 +421,17 @@ class Recruiter extends EventEmitter {
       if(!account.bound||account.root!==root){await this.hold({code:'SESSION_MISMATCH'});return;}
       const checked=await this.call('resume-local');
       if(!current()||!checked.ok)return;
+      await this.resolveCloudAccount(account.identity);
+      if(!current())return;
       this.riskHold=null;this.paused=false;this.recoveryFailures=0;
       this.state={state:'complete',phase:'',error:'',failure_code:''};
       this.reconnectId=crypto.randomUUID();
       this.nextBackgroundAt=Math.max(this.nextBackgroundAt,this.clock()+120000);
+      this.backgroundRetryAt=this.clock()+120000;
       this.jobStatusRetryAt=0;
       await this.save();
       if(!current())return;
       this.event('CONNECTION_RESTORED');this.browser.connected();
-      this.backgroundRetryAt=this.clock()+120000;
       this.passiveStatus={...this.passiveStatus,phase:'catching_up',catchupPending:1};
       this.scheduleActivityPoll();
     }catch{/* Keep cookies and ledgers; retry only local checks after backoff. */}
@@ -420,14 +447,15 @@ class Recruiter extends EventEmitter {
     for(const hint of hints){
       if(!/^[1-9]\d{0,19}$/.test(hint.friend)||!/^[1-9]\d{0,29}$/.test(hint.mid))continue;
       const previous=this.activity.get(hint.friend);
-      if(previous&&BigInt(previous.mid)>=BigInt(hint.mid))continue;
+      if(previous&&(BigInt(previous.mid)>BigInt(hint.mid) ||
+        previous.mid===hint.mid&&!(hint.resumePending===true&&!previous.resumePending)))continue;
       this.activity.set(hint.friend,hint);
       changed=true;
       if(this.activity.size>200)this.activity.delete(this.activity.keys().next().value);
     }
     if(changed){
       this.idlePolls=0;
-      this.nextBackgroundAt=Math.max(this.clock(),this.lastActivityPoll+30000);
+      this.nextBackgroundAt=Math.max(this.clock(),this.lastActivityPoll+20000);
       clearTimeout(this.activityTimer);this.activityTimer=null;
       this.scheduleActivityPoll();
     }
@@ -453,12 +481,14 @@ class Recruiter extends EventEmitter {
     const consider=(pending,seconds,interval)=>{
       if(pending)next=Math.min(next,Math.max(now+interval,(Number(seconds)||0)*1000));
     };
-    consider(this.activity.size,0,30000);
+    consider(this.activity.size,0,20000);
     consider(status.exportsPending,0,10000);
     consider(status.activityPending,status.activityRetryAt,30000);
     consider(status.workPending,status.workRetryAt,30000);
     consider(status.catchupPending,status.catchupRetryAt,120000);
-    consider(status.collectorPending,status.collectorRetryAt,30000);
+    // The worker already persists the receipt deadline and applies the shared
+    // budget. Do not add another 30 seconds after a slow read has finished.
+    consider(status.collectorPending,status.collectorRetryAt,1000);
     if(status.phase==='budget_wait'&&Number(status.retryAt)*1000>now&&!this.activity.size&&!status.exportsPending)
       next=Math.max(next,Number(status.retryAt)*1000);
     this.nextBackgroundAt=next;
@@ -473,6 +503,23 @@ class Recruiter extends EventEmitter {
     let progress=false;
     const call=(operation,extra)=>this.call(operation,extra,{background:true});
     const ready=()=>generation===this.generation&&accountRoot===this.accountRoot&&this.state.state==='complete'&&!this.paused&&!this.riskHold;
+    const archive=async(items,accountKey)=>{
+      for(const item of items||[]){
+        if(!ready())return false;
+        const file=await fs.realpath(item.file),prefix=await fs.realpath(path.join(accountRoot,'downloads'));
+        if(!file.startsWith(prefix+path.sep))throw Error('简历路径异常');
+        const stat=await fs.stat(file);if(!stat.isFile()||stat.size>25*1024*1024)throw Error('简历文件超过限制');
+        const raw=await fs.readFile(file);if(!ready())return false;
+        const metadata=JSON.parse(item.body);
+        const stored=await this.passiveCloud('passive-ingest',{accountKey,friendId:item.friend,messageId:item.mid,ruleId:item.rule,
+          ...metadata,extension:path.extname(file).slice(1).toLowerCase(),fileBase64:raw.toString('base64')});
+        if(!ready())return false;
+        if(stored?.stored!==true)throw Error('简历入库尚未确认，已保留文件等待同步');
+        await call('passive-ack',{friendId:item.friend,messageId:item.mid});
+        this.event('RESUME_ARCHIVED');progress=true;
+      }
+      return ready();
+    };
     try{
       await this.checkOwner();
       if(!ready())return;
@@ -481,7 +528,25 @@ class Recruiter extends EventEmitter {
         if(result.ok)this.backgroundRecovered();else this.backgroundFailed(result.error?.code);
         return;
       }
-      const accountKey=path.basename(accountRoot);
+      const accountKey=this.accountKey();
+      if(this.cloudAccountKey){
+        const page=await this.passiveCloud('passive-config',{
+          accountKey,receiptSync:true,receiptCursor:this.receiptCursor});
+        if(!ready())return;
+        if(page?.accountKey!==accountKey||!Array.isArray(page.receipts)||page.receipts.length>200
+          ||!Number.isSafeInteger(page.nextCursor)||page.nextCursor<this.receiptCursor
+          ||typeof page.hasMore!=='boolean'||(page.hasMore&&page.nextCursor===this.receiptCursor))
+          throw Error('云端简历收取记录尚未同步完整');
+        const restored=await call('passive-restore',{accountKey,receipts:page.receipts,
+          ruleAliases:page.ruleAliases||[],nextCursor:page.nextCursor});
+        if(!ready())return;
+        if(!restored.ok)throw Error('历史简历收取记录尚未恢复');
+        this.receiptCursor=page.nextCursor;
+        if(page.hasMore){
+          this.passiveStatus={...restored.data,phase:'syncing_receipts',exportsPending:1};
+          this.backgroundRecovered();return;
+        }
+      }
       const local=await call('passive-local');
       if(!ready())return;
       if(!local.ok){this.backgroundFailed(local.error?.code);return;}
@@ -503,18 +568,7 @@ class Recruiter extends EventEmitter {
         if(!ready())return;
         await call('passive-ack',binding);
       }
-      for(const item of local.data?.exports||[]){
-        const file=await fs.realpath(item.file),prefix=await fs.realpath(path.join(accountRoot,'downloads'));
-        if(!file.startsWith(prefix+path.sep))throw Error('简历路径异常');
-        const stat=await fs.stat(file);if(!stat.isFile()||stat.size>25*1024*1024)throw Error('简历文件超过限制');
-        const raw=await fs.readFile(file);if(!ready())return;
-        const metadata=JSON.parse(item.body);
-        await this.passiveCloud('passive-ingest',{accountKey,friendId:item.friend,messageId:item.mid,ruleId:item.rule,
-          ...metadata,extension:path.extname(file).slice(1).toLowerCase(),fileBase64:raw.toString('base64')});
-        if(!ready())return;
-        await call('passive-ack',{friendId:item.friend,messageId:item.mid});
-        this.event('RESUME_ARCHIVED');
-      }
+      if(!await archive(local.data?.exports,accountKey))return;
       const config=await this.passiveCloud('passive-config',{accountKey,capabilities:['active-sourcing','sourcing-credentials-v2','greeting-receipts-v1','all-chat-resumes-v1']});
       if(!ready())return;
       const command=config.commands?.[0];
@@ -563,7 +617,7 @@ class Recruiter extends EventEmitter {
         reconnectId:this.reconnectId||''});
       if(result.ok&&ready()){
         // Publish newly verified receipts during this turn, before another poll.
-        if(result.data?.greetingReceiptReady){
+        if(result.data?.greetingReceiptReady||result.data?.exportsPending){
           const receipts=await call('passive-local');
           if(!ready())return;
           if(receipts.ok){
@@ -577,6 +631,12 @@ class Recruiter extends EventEmitter {
               if(!ready())return;
               await call('passive-ack',binding);
             }
+            // File upload is to our own system, not another BOSS operation.
+            // Only the cloud acknowledgement changes the durable receipt.
+            if(!await archive(receipts.data?.exports,accountKey))return;
+          }else{
+            this.backgroundFailed(receipts.error?.code);
+            return;
           }
         }
         // A newer signal received during this operation must survive its ack.
@@ -643,6 +703,7 @@ class Recruiter extends EventEmitter {
         this.event('LOCAL_CLEANUP_FAILED');throw Error(this.state.error);
       }
       this.accountRoot='';
+      this.cloudAccountKey='';this.receiptCursor=0;
       this.passiveStatus={};this.dailyGreeting={};
       this.state={state:'disconnected',phase:'',error:'',failure_code:''};
       await this.save();this.event('DISCONNECTED');

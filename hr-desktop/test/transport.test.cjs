@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),vm=require(
 const source=fs.readFileSync(require('node:path').join(__dirname,'../../frontend/hr-desktop-bridge.js'),'utf8');
 function fixture(mode='local'){
   const calls=[],storage=new Map(),timers=new Map(),events={};let timerId=0;
-  const env={URL,AbortSignal,Date,Error,TypeError,JSON,sessionStorage:{
+  const env={URL,AbortSignal,Date,Error,TypeError,JSON,navigator:{platform:'MacIntel'},sessionStorage:{
     getItem:key=>storage.get(key),setItem:(k,v)=>storage.set(k,v),removeItem:key=>storage.delete(key)},
     setTimeout(fn,ms){const id=++timerId;timers.set(id,{fn,ms});return id;},
     clearTimeout(id){timers.delete(id);},
@@ -12,7 +12,7 @@ function fixture(mode='local'){
       calls.push({url,options});
       const json=data=>Response.json({success:true,data});
       if(url.endsWith('/transport'))return json({mode});
-      if(url.endsWith('/health'))return json({app:'heyi-recruiter',protocol:1,version:'0.1.24'});
+      if(url.endsWith('/health'))return json({app:'heyi-recruiter',protocol:1,version:'0.1.25'});
       if(url==='/api/v1/hr/desktop/pair')return json({ticket:'a'.repeat(43)});
       if(url==='http://127.0.0.1:17861/pair')return json({token:'local-token',expiresAt:env.Date.now()+1800000});
       return json({state:'idle'});
@@ -30,13 +30,13 @@ test('unpaired online workspace never falls back to server HR execution',async()
   assert.deepEqual(calls.map(x=>x.url),['/api/v1/hr/desktop/transport']);
 });
 test('outdated or unidentified assistants stop before pairing and clearly request a process restart and upgrade',async()=>{
-  for(const version of ['0.1.15','0.1.16','0.1.17','0.1.18','0.1.19','0.1.20','0.1.21','0.1.22','0.1.23',undefined,'unknown']){
+  for(const version of ['0.1.15','0.1.16','0.1.17','0.1.18','0.1.19','0.1.20','0.1.21','0.1.22','0.1.23','0.1.24',undefined,'unknown']){
     const {transport,env,calls,tick,timers}=fixture();const original=env.fetch;
     env.fetch=async(url,options)=>url.endsWith('/health')
       ?Response.json({success:true,data:{app:'heyi-recruiter',protocol:1,version}}):original(url,options);
     const result=await transport.diagnose();
     assert.equal(result.code,'ASSISTANT_UPDATE_REQUIRED');
-    assert.match(result.message,/完全退出旧助手.*0\.1\.24/);
+    assert.match(result.message,/完全退出旧助手.*0\.1\.25/);
     await assert.rejects(transport.connect(),{code:'ASSISTANT_UPDATE_REQUIRED'});
     assert.equal(transport.connection().phase,'update-required');
     transport.startAutoConnect();await tick();
@@ -45,7 +45,7 @@ test('outdated or unidentified assistants stop before pairing and clearly reques
   }
 });
 test('newer assistant versions remain compatible',async()=>{
-  for(const version of ['0.1.24','0.1.25','0.2.0','1.0.0']){
+  for(const version of ['0.1.25','0.1.26','0.2.0','1.0.0']){
     const {transport,env}=fixture();const original=env.fetch;
     env.fetch=async(url,options)=>url.endsWith('/health')
       ?Response.json({success:true,data:{app:'heyi-recruiter',protocol:1,version}}):original(url,options);

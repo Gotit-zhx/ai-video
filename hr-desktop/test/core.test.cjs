@@ -102,6 +102,17 @@ test('HR permission authorizes a private desktop owner without allowing another 
   engine.authorize=async()=>({...hr,permissions:[]});
   await assert.rejects(engine.checkOwner(),/人力资源权限/);
 });
+test('candidate owner validation cannot bind an unpaired engine or change an existing owner',async t=>{
+  const {engine}=await fixture(t);
+  const hr={userId:'hr-a',organizationCode:'heyi',permissions:['hr:access']};
+  assert.match(engine.validateOwner(hr),/^[a-f0-9]{64}$/);
+  assert.equal(engine.owner,'');
+  engine.authorize=async()=>hr;
+  const owner=await engine.checkOwner();
+  assert.equal(engine.validateOwner(hr),owner);
+  assert.throws(()=>engine.validateOwner({...hr,userId:'hr-b'}),/另一位用户/);
+  assert.equal(engine.owner,owner);
+});
 test('job availability is read only for configured work and reused until its returned expiry',async t=>{
   const {engine,directory}=await fixture(t),sent=[];
   engine.accountRoot=path.join(directory,'accounts','a'.repeat(64));engine.state={state:'complete'};engine.paused=false;
@@ -134,7 +145,7 @@ test('scheduled idle checks back off without job reads and a new message wakes o
   now+=1000;
   const hint={friend:'123',mid:'10',at:now/1000};
   engine.notifyActivity([hint,hint]);assert.equal(engine.activity.size,1);
-  assert.equal(engine.nextBackgroundAt,engine.lastActivityPoll+30000);
+  assert.equal(engine.nextBackgroundAt,engine.lastActivityPoll+20000);
   assert.ok(engine.nextBackgroundAt<idleDeadline);
   const before=calls.length;await engine.pollIfDue();assert.equal(calls.length,before);
   now=engine.nextBackgroundAt;await engine.pollIfDue();
@@ -157,6 +168,14 @@ test('idle scheduling survives restart and new activity cannot bypass the login 
   engine.notifyActivity([{friend:'123',mid:'11'}]);
   now+=1000;await engine.pollIfDue();assert.equal(calls.length,before);
   assert.equal(engine.backgroundRetryAt,now-1000+30000);
+});
+test('collector deadlines do not acquire another full timer interval after a slow operation',async t=>{
+  const {engine}=await fixture(t);let now=1000000;engine.clock=()=>now;
+  engine.passiveStatus={collectorPending:1,collectorRetryAt:(now+7000)/1000};
+  engine.planBackground();assert.equal(engine.nextBackgroundAt,now+7000);
+  now+=15000;engine.planBackground();assert.equal(engine.nextBackgroundAt,now+1000);
+  engine.passiveStatus.collectorRetryAt=(now+60000)/1000;
+  engine.idlePolls=3;engine.planBackground();assert.equal(engine.nextBackgroundAt,now+60000);
 });
 test('a greeting receipt is reported and bound in the same poll before the next timer turn',async t=>{
   const {engine,calls,directory}=await fixture(t);
@@ -213,7 +232,7 @@ test('active greeting checks budget before claim and uses its own operation with
 });
 test('verified same recruiter retains cloud account and catches up after a fresh cookie login',async t=>{
   const {engine,calls,directory}=await fixture(t);
-  engine.passiveCloud=async()=>({rules:[]});
+  engine.passiveCloud=async(route,body)=>({rules:[],accountKey:body.accountKey});
   engine.runtime.run=async input=>{calls.push(input);return {ok:true,data:{}};};
   engine.browser.inspect=async()=>({text:'',accountId:'123',token:{cookies:{wt2:'first'},user_agent:'fixture'}});
   await engine.start();await engine.observe();
@@ -347,6 +366,129 @@ async function fixture(t){
   t.after(async()=>{await engine.close();await fs.rm(directory,{recursive:true,force:true});});
   return {engine,directory,calls};
 }
+test('cross-device identity keeps profile path while using canonical cloud and manual keys', async t=>{
+  const {engine,directory}=await fixture(t),legacy='a'.repeat(64),stable='b'.repeat(64);
+  engine.accountRoot=path.join(directory,'accounts',stable);
+  engine.passiveCloud=async(route,body)=>{
+    assert.equal(body.identityKey,stable);assert.equal(body.accountKey,stable);
+    return {accountKey:legacy};
+  };
+  await engine.resolveCloudAccount(stable);
+  engine.state={state:'complete'};engine.paused=false;
+  assert.equal(engine.snapshot().accountKey,legacy);
+  assert.equal(path.basename(engine.accountRoot),stable);
+});
+test('cloud inventory restores before exports and blocks platform work until all pages finish', async t=>{
+  const {engine,directory,calls}=await fixture(t),key='a'.repeat(64);
+  engine.accountRoot=path.join(directory,'accounts',key);engine.cloudAccountKey=key;
+  engine.state={state:'complete'};engine.paused=false;
+  const cloud=[];let cursor=0;
+  engine.runtime.run=async input=>{calls.push(input);return {ok:true,data:{}};};
+  engine.passiveCloud=async(route,body)=>{
+    cloud.push(body);
+    if(body.receiptSync){assert.equal(body.receiptCursor,cursor);cursor++;
+      return {accountKey:key,receipts:[],nextCursor:cursor,hasMore:cursor===1};}
+    return {commands:[],rules:[]};
+  };
+  await engine.poll();
+  assert.deepEqual(calls.map(r=>r.operation),['passive-restore']);
+  await engine.poll();
+  assert.deepEqual(calls.map(r=>r.operation),['passive-restore','passive-restore','passive-local','passive-step']);
+  assert.equal(cloud.filter(r=>r.receiptSync).length,2);
+});
+test('failed or wrong-account receipt sync never runs collection or outgoing work', async t=>{
+  const {engine,directory,calls}=await fixture(t),key='a'.repeat(64);
+  engine.accountRoot=path.join(directory,'accounts',key);engine.cloudAccountKey=key;
+  engine.state={state:'complete'};engine.paused=false;
+  engine.passiveCloud=async()=>({accountKey:'b'.repeat(64),receipts:[],nextCursor:0,hasMore:false});
+  await engine.poll();
+  assert.equal(calls.length,0);
+  assert.equal(engine.passiveStatus.phase,'retry_wait');
+});
+test('native session preparation waits locally without failing login or sending platform requests', async t=>{
+  const {engine,calls}=await fixture(t);
+  await engine.start();
+  engine.browser.inspect=async()=>{throw Object.assign(Error('waiting native headers'),{code:'SESSION_PREPARING'});};
+  await engine.observe();await engine.observe();
+  assert.equal(engine.state.state,'pending');assert.equal(engine.state.phase,'verifying');
+  assert.ok(engine.loginTimer);
+  assert.equal(calls.length,0);
+  engine.clock=()=>engine.started+300001;
+  await engine.observe();
+  assert.equal(engine.state.failure_code,'LOGIN_TIMEOUT');
+});
+test('resume archive confirms only after cloud ingest and retries the same local bytes after interruption', async t=>{
+  const {engine,directory}=await fixture(t), key='a'.repeat(64);
+  engine.accountRoot=path.join(directory,'accounts',key);engine.state={state:'complete'};engine.paused=false;
+  let now=Date.now();engine.clock=()=>now;
+  const downloads=path.join(engine.accountRoot,'downloads');
+  await fs.mkdir(downloads,{recursive:true});
+  const file=path.join(downloads,'fixture.pdf'), bytes=Buffer.from('%PDF-1.4\n% isolated archive fixture');
+  await fs.writeFile(file,bytes);
+  let stored=false, failCloud=true;
+  const order=[], uploads=[];
+  engine.runtime.run=async input=>{
+    if(input.operation==='passive-local')return {ok:true,data:{exports:stored?[]:[{
+      friend:'202',mid:'900',rule:'active-fixture',file,
+      body:JSON.stringify({jobId:'fixture-job',origin:'active',originalFileName:'隔离测试.pdf'})
+    }]}};
+    if(input.operation==='passive-ack'&&input.friendId){
+      order.push('ack');assert.equal(input.friendId,'202');assert.equal(input.messageId,'900');
+      assert.equal(failCloud,false);stored=true;
+    }
+    return {ok:true,data:{}};
+  };
+  engine.passiveCloud=async(route,body)=>{
+    if(route==='passive-ingest'){
+      order.push('ingest');uploads.push(body);
+      if(failCloud)throw Error('isolated interrupted upload');
+      return {stored:true};
+    }
+    return {};
+  };
+  await engine.poll();
+  assert.equal(stored,false);assert.deepEqual(order,['ingest']);
+  failCloud=false;now+=31000;
+  await engine.poll();
+  assert.equal(stored,true);assert.deepEqual(order,['ingest','ingest','ack']);
+  assert.equal(uploads.length,2);assert.deepEqual(uploads[0],uploads[1]);
+  assert.deepEqual(Buffer.from(uploads[1].fileBase64,'base64'),bytes);
+  assert.equal(uploads[1].accountKey,key);assert.equal(uploads[1].jobId,'fixture-job');
+  assert.equal(uploads[1].friendId,'202');assert.equal(uploads[1].origin,'active');
+});
+test('a newly downloaded resume uploads in the same turn without a second platform read',async t=>{
+  for(const confirmed of [true,false]){
+    const {engine,directory,calls}=await fixture(t),key='a'.repeat(64);
+    engine.accountRoot=path.join(directory,'accounts',key);engine.state={state:'complete'};engine.paused=false;
+    const downloads=path.join(engine.accountRoot,'downloads');await fs.mkdir(downloads,{recursive:true});
+    const file=path.join(downloads,'incoming.pdf');await fs.writeFile(file,'%PDF-1.4 own fixture');
+    let downloaded=false,acknowledged=false;
+    const uploads=[];
+    engine.runtime.run=async input=>{
+      calls.push(input);
+      if(input.operation==='passive-step'){
+        downloaded=true;return {ok:true,data:{exportsPending:1}};
+      }
+      if(input.operation==='passive-local')return {ok:true,data:{exports:downloaded&&!acknowledged?[{
+        friend:'202',mid:'901',rule:'boss-chat-202',file,
+        body:JSON.stringify({origin:'boss_chat',jobId:'fixture-job'})
+      }]:[]}};
+      if(input.operation==='passive-ack'&&input.friendId)acknowledged=true;
+      return {ok:true,data:{}};
+    };
+    engine.passiveCloud=async(route,body)=>{
+      if(route==='passive-config')return {rules:[],collectAllResumes:true};
+      if(route==='passive-ingest'){uploads.push(body);return confirmed?{stored:true}:{};}
+      return {};
+    };
+    await engine.poll();
+    assert.equal(uploads.length,1);assert.equal(acknowledged,confirmed);
+    assert.equal(uploads[0].origin,'boss_chat','Automatic synchronization preserves human communication origin');
+    assert.equal(calls.filter(row=>row.operation==='passive-step').length,1);
+    assert.equal(calls.filter(row=>['download-resume','poll-resumes','passive-send'].includes(row.operation)).length,0);
+    assert.equal(engine.backgroundFailures,confirmed?0:1);
+  }
+});
 async function loggedIn(t){
   const value=await fixture(t);
   value.engine.browser.inspect=async()=>({text:'',accountId:'123',token:{cookies:{wt2:'saved-session'},user_agent:'fixture'}});

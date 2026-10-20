@@ -20,6 +20,7 @@ class Node {
   append(...nodes) {nodes.forEach(n=>{n.parent=this;});this.children.push(...nodes);}
   replaceChildren(...nodes) {this._text='';this.children.forEach(n=>{n.parent=null;});this.children=[];this.append(...nodes);}
   remove(){if(this.parent){this.parent.children=this.parent.children.filter(n=>n!==this);this.parent=null;}}
+  replaceWith(node){const parent=this.parent;if(!parent)return;node.remove();const index=parent.children.indexOf(this);parent.children[index]=node;node.parent=parent;this.parent=null;}
   setAttribute(key,value) {this.attributes[key]=value;}
   removeAttribute(key) {delete this.attributes[key];}
   addEventListener(key,callback) {this.events[key]=callback;}
@@ -170,7 +171,7 @@ test('history backfill status and cursor belong only to the selected job',async(
   await app.enter('jobs');
   let note=all(app.root).find(n=>n.className==='hr-hint hr-passive-note');
   assert.match(note.textContent,/正在补处理本职位历史招呼和简历/);
-  assert.match(note.textContent,/待处理 8/);
+  assert.match(note.textContent,/待核查会话 8/);
   histories={closed:{complete:false,page:5},open:{complete:true,page:3}};
   await timeouts.find(timer=>timer.ms===30000).fn();
   await flush();
@@ -324,6 +325,72 @@ test('failed batch automatically resumes with the same candidates and page witho
   assert.equal(app.calls.filter(c=>c.url.includes('/recommendations?')).length,1);
   assert.match(app.text(),/已匹配人才/);
   assert.equal(app.calls.some(c=>c.url.endsWith('/sourcing/greet')),false);
+});
+for(const failed of [false,true])test(`returning to an unfinished sourcing run waits for an explicit click (${failed?'failed':'partial'})`,async()=>{
+  const key='a'.repeat(64);
+  const record={id:'source1',accountKey:key,jobId:'job-test-1',jobName:'Java 工程师',version:1,
+    profileState:'complete',profile:{},criteria:{confirmed:true,conditions:[]},
+    run:{id:'run1',version:1,state:'complete',wanted:5,automaticRecovery:true,pagesRead:2,batches:1,
+      requestToken:'persisted-request',candidates:[{id:'kept',name:'已保留人选',score:80,canGreet:false}],
+      error:failed?'响应中断 [HR_AI_INVALID_STREAM]':''}};
+  const app=setup({sourcing:true,api:async(url)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:record.jobId,postDescription:'开发'}}}};
+    if(url.includes('/sourcing?')||url.endsWith('/sourcing/save'))return {data:structuredClone(record)};
+    if(url.includes('/demands?'))return {data:{items:[]}};
+    throw Error('No new sourcing request expected: '+url);
+  }});
+  await app.enter('jobs');await app.click('AI 寻源');
+  assert.match(app.text(),/已保留人选/);
+  assert.match(app.text(),/点击“继续寻找”/);
+  assert.equal(app.visible().find(n=>n.tagName==='button'&&n._text==='继续寻找').disabled,false);
+  await app.enter('overview');await app.enter('talent');await app.click('刷新结果');
+  assert.equal(app.calls.some(c=>c.url.includes('/recommendations?')||c.url.endsWith('/sourcing/search')),false);
+});
+test('sourcing waits for the actual capacity deadline and pause cancels that wait without another read',async()=>{
+  const key='a'.repeat(64),waits=[];
+  const record={id:'source1',accountKey:key,jobId:'job-test-1',jobName:'工程师',version:1,
+    profileState:'complete',profile:{},criteria:{confirmed:true,conditions:[]},run:null};
+  const app=setup({sourcing:true,setTimeout:(fn,ms)=>{waits.push({fn,ms});return waits.length;},api:async(url)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:record.jobId,postDescription:'开发'}}}};
+    if(url.includes('/sourcing?')||url.endsWith('/sourcing/save'))return {data:structuredClone(record)};
+    if(url.includes('/demands?'))return {data:{items:[]}};
+    if(url.includes('/recommendations?'))return {data:{ok:false,error:{code:'REQUEST_BUDGET_WAIT',retryAt:Date.now()/1000+120}}};
+    throw Error('Unexpected request: '+url);
+  }});
+  await app.enter('jobs');await app.click('AI 寻源');
+  app.visible().find(n=>n.attributes['aria-label']==='获取人数').value='5';
+  const action=app.visible().find(n=>n.tagName==='button'&&n._text==='一键 AI 获取').click();
+  await flush();
+  assert.match(app.text(),/预计.*继续/);
+  assert.ok(waits.some(w=>w.ms>=119000),'Respect retryAt rather than retrying every three seconds');
+  await app.click('暂停寻找');await action;
+  assert.equal(app.calls.filter(c=>c.url.includes('/recommendations?')).length,1);
+  assert.match(app.text(),/已暂停寻找/);
+});
+test('result refresh preserves unchanged candidate cards and expanded matching evidence',async()=>{
+  const key='a'.repeat(64),record={id:'source1',accountKey:key,jobId:'job-test-1',jobName:'工程师',version:1,
+    profileState:'complete',profile:{},criteria:{confirmed:true,conditions:[]},run:{id:'r1',version:1,state:'complete',wanted:5,
+      candidates:[{id:'kept',name:'已保留人选',score:80,canGreet:true,checks:[{text:'技能',status:'matched'}]}]}};
+  const app=setup({sourcing:true,api:async(url)=>{
+    if(url.endsWith('/login/status'))return {data:{state:'complete',accountKey:key,capabilities:['job-jd','active-sourcing']}};
+    if(url==='/api/v1/hr/jobs')return {data:fixtures.jobs};
+    if(url.startsWith('/api/v1/hr/jobs?'))return {data:{ok:true,data:{job:{encryptId:record.jobId,postDescription:'开发'}}}};
+    if(url.includes('/sourcing?')||url.endsWith('/sourcing/save'))return {data:structuredClone(record)};
+    if(url.includes('/demands?'))return {data:{items:[]}};
+    throw Error('Unexpected request');
+  }});
+  await app.enter('jobs');await app.click('AI 寻源');
+  const card=app.visible().find(n=>n.tagName==='article'&&n.textContent.includes('已保留人选'));
+  const details=all(card).find(n=>n.className==='hr-sourcing-checks');details.open=true;
+  record.run.candidates.push({id:'second',name:'新到人选',score:82,canGreet:true});
+  await app.click('刷新结果');
+  assert.equal(app.visible().find(n=>n.tagName==='article'&&n.textContent.includes('已保留人选')),card);
+  assert.equal(details.open,true);
+  assert.match(app.text(),/新到人选/);
 });
 test('HR match score includes missing information instead of showing a sparse known score as 100',()=>{
   const app=setup({sourcing:true});
@@ -662,7 +729,7 @@ test('resume pool shows queue and retry time using cached status only, and refre
     :{items:[],total:0}})});
   await app.enter('resume-pool');
   assert.equal(reconnects,1);
-  assert.match(app.text(),/待处理 2/);assert.match(app.text(),/待接收 3/);
+  assert.match(app.text(),/待核查会话 2/);assert.match(app.text(),/待接收 3/);
   assert.match(app.text(),/预计 \d\d:\d\d 继续/);assert.match(app.text(),/上次进展/);
   await app.tick(10000);
   assert.ok(app.calls.every(c=>c.url.endsWith('/login/status')||c.url.startsWith('/api/v1/hr/resume-pool')));
@@ -682,6 +749,35 @@ test('resume categories are explicit, history is collapsed, and review embeds th
   await app.click('查看与审批');assert.equal(previews,1);
   assert.equal(all(app.root).some(n=>n.tagName==='a'&&n.target==='_blank'&&n.href===row.fileUrl),false);
   assert.ok(all(app.root).some(n=>n.className==='hr-review-preview'));
+});
+test('an open resume automatically refreshes verified job state after reconnect without reloading PDF or losing text',async()=>{
+  let connected=false,synced=false,now=Date.now(),previews=0,jobReads=0;
+  const key='a'.repeat(64),row={id:'r-connect',name:'测试候选人',accountKey:key,jobName:'测试职位',
+    status:'pending',aiState:'idle',resumeText:'原文'};
+  const app=setup({passive:true,api:async url=>{
+    if(url.endsWith('/login/status'))return {data:{state:connected?'complete':'disconnected',accountKey:key}};
+    if(url.endsWith('/resume-pool/jobs')){synced=true;return {data:{ok:true}};}
+    if(url.endsWith('/jobs')){jobReads++;return {data:{ok:true,data:[{encryptJobId:'job-one',statusDesc:'开放中'}]}};}
+    if(url.endsWith('/speeches'))return {data:{items:[{kind:'reject',active:true,isDefault:true}]}};
+    if(url.endsWith('/pool'))return {data:{departments:[]}};
+    return {data:{items:[{...row,canReview:synced}],total:1}};
+  }});
+  app.env.Date=class extends Date {static now(){return now;}};
+  app.env.createHrResumePreview=()=>{previews++;return ()=>{};};
+  await app.enter('resume-pool');await app.click('查看与审批');
+  const review=()=>app.visible().find(n=>n._text==='通过，加入邀约');
+  assert.equal(review().disabled,true);
+  assert.match(app.text(),/连接恢复后会自动更新/);
+  const resumeText=app.visible().find(n=>n.tagName==='textarea'&&n.rows===6);
+  resumeText.value='保留用户补充内容';
+  connected=true;now+=11000;await app.tick(10000);
+  assert.equal(review().disabled,false);
+  assert.equal(previews,1);
+  assert.equal(jobReads,1);
+  assert.equal(app.visible().find(n=>n.tagName==='textarea'&&n.rows===6).value,'保留用户补充内容');
+  await app.tick(10000);assert.equal(jobReads,1,'no recurring BOSS read after verification');
+  await app.click('关闭');now+=300000;await app.tick(10000);
+  assert.equal(jobReads,1,'closed details do not schedule a job refresh');
 });
 test('resume rejection uses the managed default directly without a speech selector or an extra confirmation',async()=>{
   const row={id:'resume1',version:2,name:'测试人才',jobName:'算法工程师',canReview:true,status:'pending',aiState:'idle',resumeText:'原简历文字'};

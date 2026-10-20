@@ -1,4 +1,4 @@
-"""Receive attachments from every official conversation, without sending messages."""
+"""Receive attachments and explicitly enabled incoming resume offers."""
 import hashlib
 import json
 from pathlib import Path
@@ -23,9 +23,16 @@ def schema(db):
         state TEXT NOT NULL DEFAULT 'found',file TEXT NOT NULL DEFAULT '',
         retry_at REAL NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '',
         PRIMARY KEY(friend,mid));
+      CREATE TABLE IF NOT EXISTS chat_resume_offers(
+        friend TEXT NOT NULL,mid TEXT NOT NULL,job TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending',received_at REAL NOT NULL,
+        retry_at REAL NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(friend,mid));
     ''')
     if 'signaled' not in {r[1] for r in db.execute('PRAGMA table_info(chat_resume_conversations)')}:
         db.execute('ALTER TABLE chat_resume_conversations ADD COLUMN signaled INTEGER NOT NULL DEFAULT 0')
+    if 'priority' not in {r[1] for r in db.execute('PRAGMA table_info(chat_resume_offers)')}:
+        db.execute('ALTER TABLE chat_resume_offers ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
 
 
 def valid_id(value):
@@ -33,8 +40,21 @@ def valid_id(value):
     return value if re.fullmatch(r'[1-9]\d{0,19}', value) else ''
 
 
-def wake(db, friend):
+def wake(db, friend, mid=None, *, resume_pending=False):
     if valid_id(friend):
+        if valid_id(mid):
+            known = db.execute('SELECT latest_mid,body FROM chat_resume_conversations WHERE friend=?', (friend,)).fetchone()
+            if known and int(mid) <= known['latest_mid']:
+                body = json.loads(known['body'])
+                if (not resume_pending or body.get('offerHintMid') == str(mid) or db.execute(
+                        'SELECT 1 FROM chat_resume_offers WHERE friend=? AND mid=?', (friend, str(mid))).fetchone()):
+                    return
+                # Upgrade recovery: old collectors could advance the read
+                # cursor without recognizing an offer. Admit this exact hint
+                # once, including after restart; never requeue a known write.
+                body['offerHintMid'] = str(mid)
+                db.execute('UPDATE chat_resume_conversations SET body=? WHERE friend=?',
+                           (json.dumps(body), friend))
         db.execute("INSERT INTO chat_resume_conversations(friend,activity_at,signaled) VALUES(?,?,1) "
                    "ON CONFLICT(friend) DO UPDATE SET dirty=1,signaled=1,retry_at=0,activity_at=excluded.activity_at,"
                    "dirty_again=CASE WHEN fresh_before>0 THEN 1 ELSE dirty_again END", (friend, time.time()))
@@ -42,7 +62,11 @@ def wake(db, friend):
 
 def discover(c, db):
     page = int(flow.get_state(db, 'chat-resumes-page', '1'))
-    result = c.cli_json('hr', 'chat', '--page', str(page))
+    # Collection needs the conversation index, not a second last-message
+    # enrichment request. The latter currently returns platform code 2 and
+    # spends another paced network slot without helping attachment discovery.
+    reader = getattr(c, 'receipt_conversations', None)
+    result = reader(page) if callable(reader) else c.cli_json('hr', 'chat', '--page', str(page))
     if result.get('ok') is not True:
         flow.put_state(db, 'chat-resumes-discover-at', time.time()+3600)
         return result
@@ -117,14 +141,14 @@ def attachment_metadata(c, envelope, friend, binding):
                     'originalFileName': filename, 'receivedAt': flow.seconds(message.get('time'))}
 
 
-def inspect(c, db, conversation):
+def inspect(c, db, conversation, *, result=None):
     friend = conversation['friend']
     fresh = conversation['dirty'] or conversation['fresh_before']
     before = conversation['fresh_before'] if fresh else conversation['history_before']
     args = ['hr', 'chatmsg', friend, '--count', '100']
     if before:
         args += ['--max-msg-id', str(before)]
-    result = c.cli_json(*args)
+    result = c.cli_json(*args) if result is None else result
     if result.get('ok') is not True:
         db.execute('UPDATE chat_resume_conversations SET retry_at=? WHERE friend=?', (time.time()+300, friend))
         return result
@@ -134,12 +158,44 @@ def inspect(c, db, conversation):
     # the official binding only for genuinely new receipts.
     existing_mids = {row[0] for row in db.execute('SELECT mid FROM chat_resume_receipts WHERE friend=?', (friend,))}
     attachments = [(mid,meta) for mid,meta in attachment_metadata(c,result,friend,{}) if mid not in existing_mids]
-    detail_result = c.sourcing_friend_details([friend]) if attachments else {'ok': True, 'data': {}}
+    from boss_agent_cli.api.recruiter_resume import incoming_message, ResumeValidationError
+    offers = []
+    for message in c.resume_messages(result):
+        if not isinstance(message, dict) or not valid_id(message.get('mid')):
+            continue
+        mid = valid_id(message['mid'])
+        try:
+            verified = incoming_message({'messages': c.resume_messages(result)}, int(friend), int(mid))
+        except ResumeValidationError:
+            continue
+        body = verified.get('body') or {}
+        dialog = body.get('dialog')
+        if body.get('type') != 7 or not isinstance(dialog, dict) or dialog.get('type') != 2:
+            continue
+        if dialog.get('operated') is True:
+            db.execute("UPDATE chat_resume_offers SET state='handled' WHERE friend=? AND mid=? AND state='pending'",
+                       (friend, mid))
+        stamp = flow.seconds(verified.get('time'))
+        if dialog.get('operated') is False and time.time()-7*86400 <= stamp <= time.time()+60:
+            offers.append((mid, stamp))
+    detail_result = c.sourcing_friend_details([friend]) if attachments or offers else {'ok': True, 'data': {}}
     if c.held_code():
+        return detail_result
+    if offers and detail_result.get('ok') is not True:
+        db.execute('UPDATE chat_resume_conversations SET retry_at=? WHERE friend=?', (time.time()+300, friend))
         return detail_result
     bindings = (detail_result.get('data') or {}).get('friendList', []) if detail_result.get('ok') is True else []
     binding = next((r for r in bindings if isinstance(r, dict)
                     and valid_id(r.get('friendId') or r.get('uid')) == friend), {})
+    job = str(binding.get('encryptJobId') or binding.get('encJobId') or '')
+    for mid, stamp in offers:
+        if job:
+            priority = bool(conversation['signaled'] and fresh and
+                            (int(mid) > conversation['latest_mid'] or
+                             json.loads(conversation['body']).get('offerHintMid') == mid))
+            db.execute('''INSERT INTO chat_resume_offers(friend,mid,job,received_at,priority) VALUES(?,?,?,?,?)
+              ON CONFLICT(friend,mid) DO UPDATE SET priority=MAX(priority,excluded.priority)''',
+                       (friend, mid, job, stamp, priority))
     person = db.execute('SELECT * FROM people WHERE friend=?', (friend,)).fetchone()
     for mid, metadata in attachment_metadata(c, result, friend, binding):
         if mid in existing_mids:
@@ -182,8 +238,53 @@ def inspect(c, db, conversation):
     return result
 
 
+def accept_offer(c, db, row):
+    """One exact candidate-initiated offer, with a durable no-replay ledger."""
+    now = time.time()
+    statuses = c.managed_job_statuses(queued=True)
+    if c.held_code():
+        return {'ok': False, 'error': {'code': c.held_code()}}
+    if statuses['statuses'].get(row['job']) != '开放中':
+        db.execute('UPDATE chat_resume_offers SET retry_at=?,error=? WHERE friend=? AND mid=?',
+                   (max(now+300, statuses.get('retryAt', 0)), 'JOB_NOT_OPEN', row['friend'], row['mid']))
+        return {'ok': True}
+    # An unknown response, crash or disconnect cannot repeat this acceptance.
+    changed = db.execute("UPDATE chat_resume_offers SET state='uncertain',error='' WHERE friend=? AND mid=? AND state='pending'",
+                         (row['friend'], row['mid'])).rowcount
+    if changed != 1:
+        return {'ok': True}
+    flow.put_state(db, 'nextWriteAt', now+60)
+    db.commit()
+    try:
+        result = c.accept_incoming_resume(row['friend'], row['mid'], row['job'])
+    except Exception:
+        result = {'ok': False, 'error': {'code': 'RESUME_ACCEPT_RESULT_UNKNOWN'}}
+    data = result.get('data') or {}
+    accepted = (result.get('ok') is True and data.get('accepted') is True
+                and str(data.get('friend_id')) == row['friend'] and str(data.get('message_id')) == row['mid'])
+    code = (result.get('error') or {}).get('code', '')
+    db.execute('UPDATE chat_resume_offers SET state=?,error=? WHERE friend=? AND mid=?',
+               ('accepted' if accepted else 'uncertain', '' if accepted else str(code or 'RESUME_ACCEPT_RESULT_UNKNOWN')[:80],
+                row['friend'], row['mid']))
+    if accepted:
+        wake(db, row['friend'])
+    if c.held_code():
+        return {'ok': False, 'error': {'code': c.held_code()}}
+    return {'ok': True, 'data': {'resumeOfferAccepted': accepted}}
+
+
 def download(c, db, row):
     """The receipt ledger authorizes this exact incoming attachment, not a send."""
+    from cloud_resume_receipts import stored
+    if stored(db, row['friend'], row['mid']):
+        return {'ok': True, 'data': {'cloudReceiptReused': True}}
+    cached = flow.reusable_resume(c, db, row['friend'], row['mid'])
+    if cached:
+        # Keep the caller's existing pacing and this receipt's own job/source.
+        # Local bytes are ready for export, not proof of this row's cloud ACK.
+        db.execute("UPDATE chat_resume_receipts SET file=?,state='export',error='' WHERE friend=? AND mid=?",
+                   (cached['file'], row['friend'], row['mid']))
+        return {'ok': True, 'data': {'reused': True}}
     c.RESUME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     metadata = json.loads(row['body'])
     allowed = {'.pdf', '.docx', '.doc', '.png', '.jpg', '.jpeg'}
@@ -215,7 +316,7 @@ def step(c, db, request):
     schema(db)
     for hint in request.get('activityHints', [])[:200]:
         if isinstance(hint, dict):
-            wake(db, hint.get('friend'))
+            wake(db, hint.get('friend'), hint.get('mid'), resume_pending=hint.get('resumePending') is True)
     now = time.time()
     if request.get('reconnectId') != flow.get_state(db, 'chat-resumes-reconnect', ''):
         flow.put_state(db, 'chat-resumes-reconnect', request.get('reconnectId', ''))
@@ -238,11 +339,18 @@ def step(c, db, request):
         CASE WHEN ?!='history' THEN -activity_at ELSE 0 END,last_read,friend LIMIT 1''',
                               (now, lane, lane, lane)).fetchone()
     metadata = json.loads(receipt['body']) if receipt else {}
+    offer = db.execute("""SELECT * FROM chat_resume_offers WHERE state='pending' AND retry_at<=?
+      AND received_at>=? ORDER BY priority DESC,received_at DESC LIMIT 1""", (now, now-7*86400)).fetchone()
+    accept_enabled = request.get('collectAllResumes') is True and callable(getattr(c, 'accept_incoming_resume', None))
     urgent = (bool(metadata.get('receiptPriority')) or
               (now-3600 <= flow.seconds(metadata.get('receivedAt')) <= now+60)) if receipt else bool(conversation and conversation['signaled'])
     if conversation and conversation['signaled'] and not urgent:
         urgent = True
         operation, cost = 'inspect', 2
+    elif receipt and urgent:
+        operation, cost = 'download', 8
+    elif offer and accept_enabled and now >= float(flow.get_state(db, 'nextWriteAt')):
+        operation, cost, urgent = 'accept', 4, bool(offer['priority']) or now-3600 <= offer['received_at'] <= now+60
     elif receipt:
         operation, cost = 'download', 8
     elif conversation and conversation['signaled']:
@@ -257,16 +365,23 @@ def step(c, db, request):
         operation, cost = 'discover', 2
     # Historical receipt reads must leave capacity for admitted replies and
     # resume requests, as well as the existing manual-operation reserve.
-    interval = 30 if urgent else 600
+    interval = 20 if urgent else 600
     last_turn = float(flow.get_state(db, 'chat-resumes-last-request-at', '0'))
-    if (operation is None or now < last_turn+interval
-            or delay_for(cost=cost, queued=False, receiving=urgent, history=not urgent)):
+    if operation is None:
+        return None
+    delay = delay_for(cost=cost, queued=False, receiving=urgent or operation == 'accept', history=not urgent,
+                      last_operation_at=last_turn, realtime_receipt=urgent)
+    retry_at = max(last_turn+interval, now+delay)
+    flow.put_state(db, 'chat-resumes-retry-at', retry_at)
+    if now < retry_at:
         return None
     # Reserve before network I/O; restart, preemption or repeated activity
     # notifications cannot erase the collector's pacing deadline.
     flow.put_state(db, 'chat-resumes-last-request-at', now)
     db.commit()
-    result = discover(c, db) if operation == 'discover' else download(c, db, receipt) if operation == 'download' else inspect(c, db, conversation)
+    result = (discover(c, db) if operation == 'discover' else download(c, db, receipt) if operation == 'download'
+              else accept_offer(c, db, offer) if operation == 'accept' else inspect(c, db, conversation))
+    flow.put_state(db, 'chat-resumes-retry-at', 0)
     flow.put_state(db, 'chat-resumes-last', operation)
     flow.put_state(db, 'chat-resumes-lane', {'history': 'fresh', 'fresh': 'download', 'download': 'history'}[lane])
     return result
@@ -277,7 +392,9 @@ def urgent(db, *, attachments_only=False):
     schema(db)
     now = time.time()
     return bool(db.execute("SELECT 1 FROM chat_resume_receipts WHERE state='found' AND retry_at<=? LIMIT 1",
-                           (now,)).fetchone() or not attachments_only and db.execute(
+                           (now,)).fetchone() or db.execute(
+        "SELECT 1 FROM chat_resume_offers WHERE state='pending' AND retry_at<=? AND received_at>=? LIMIT 1",
+        (now,now-7*86400)).fetchone() or not attachments_only and db.execute(
         "SELECT 1 FROM chat_resume_conversations WHERE signaled=1 AND retry_at<=? "
         "AND (dirty=1 OR fresh_before>0) LIMIT 1", (now,)).fetchone())
 
@@ -288,16 +405,21 @@ def schedule(db):
     last = float(flow.get_state(db, 'chat-resumes-last-request-at', '0'))
     deadlines = [max(last+600,float(flow.get_state(db,'chat-resumes-discover-at','0')))]
     pending = 1
+    for row in db.execute("SELECT retry_at,received_at,priority FROM chat_resume_offers WHERE state='pending' AND received_at>=?", (now-7*86400,)):
+        interval = 20 if row['priority'] or now-3600 <= row['received_at'] <= now+60 else 600
+        deadlines.append(max(row['retry_at'], last+interval, float(flow.get_state(db, 'nextWriteAt'))))
+        pending += 1
     for row in db.execute("SELECT body,retry_at FROM chat_resume_receipts WHERE state='found'"):
         metadata = json.loads(row['body'])
         recent = bool(metadata.get('receiptPriority')) or now-3600 <= flow.seconds(metadata.get('receivedAt')) <= now+60
-        deadlines.append(max(row['retry_at'],last+(30 if recent else 600)))
+        deadlines.append(max(row['retry_at'],last+(20 if recent else 600)))
         pending += 1
     for row in db.execute("""SELECT signaled,retry_at FROM chat_resume_conversations
                             WHERE dirty=1 OR fresh_before>0 OR history_done=0"""):
-        deadlines.append(max(row['retry_at'],last+(30 if row['signaled'] else 600)))
+        deadlines.append(max(row['retry_at'],last+(20 if row['signaled'] else 600)))
         pending += 1
-    return {'collectorPending':pending,'collectorRetryAt':min(deadlines),
+    return {'collectorPending':pending,
+            'collectorRetryAt':max(min(deadlines),float(flow.get_state(db,'chat-resumes-retry-at','0'))),
             'collectorExports':db.execute("SELECT count(*) FROM chat_resume_receipts WHERE state='export'").fetchone()[0]}
 
 

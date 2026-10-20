@@ -72,9 +72,9 @@
   const downloads = element('details', '', headerActions, 'hr-downloads');
   element('summary', '下载桌面助手', downloads);
   const downloadMenu = element('div', '', downloads, 'hr-download-menu');
-  for(const [label,file,version] of [['Mac · Apple 芯片','Heyi-Recruiter-mac-arm64.dmg','0.1.24'],['Windows · 64 位','Heyi-Recruiter-windows-x64-Setup.exe','0.1.24']]){
+  for(const [label,file,version] of [['Mac · Apple 芯片','Heyi-Recruiter-mac-arm64.dmg','0.1.27'],['Windows · 64 位','Heyi-Recruiter-windows-x64-Setup.exe','0.1.27']]){
     const link=element('a',label,downloadMenu);link.href='/downloads/'+file+'?v='+version;
-    link.title='赫逸招聘助手 '+version;
+    link.title='Ai boss '+version;
   }
   const note = element('p', '', root, 'hr-note');
   note.setAttribute('role', 'status');

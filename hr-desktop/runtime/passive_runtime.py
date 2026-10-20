@@ -11,7 +11,8 @@ import uuid
 
 REQUEST_TEXT = '方便发一份简历过来吗？'
 
-def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False, receiving=False, history=False):
+def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False, receiving=False, history=False,
+                 last_operation_at=None, realtime_receipt=False):
     """Allocate existing capacity; the shared HTTP/CDP hard guard still applies."""
     if not Path(path).exists():
         return 0
@@ -22,12 +23,22 @@ def budget_delay(path, hard_limit, *, cost=1, queued=False, user_initiated=False
     # the final receipt allowance; real incoming attachments may use it while
     # retaining ten slots for explicit HR actions.
     limit = (hard_limit if user_initiated else max(0, hard_limit-10) if receiving
-             else max(0, min(hard_limit-20, hard_limit if queued and not history else 40)))
+             else max(0, hard_limit-(20 if queued and not history else 40)))
     needed = len(times) + cost - limit
     # Persisted request times pace background work across restarts. Manual
     # actions retain their priority; incoming attachments also have a cooldown.
     spacing = 0 if user_initiated else 30 if receiving else 600 if history or not queued else 60
-    cooldown = max(0, times[-1]+spacing-now) if times else 0
+    if realtime_receipt and receiving and not history and not user_initiated:
+        # Only a signaled incoming receipt may use the shorter interval.
+        # Include the estimated next turn, and slow down before capacity runs
+        # low. This does not change the shared guard or its per-request gap.
+        load = (len(times)+cost)/hard_limit if hard_limit > 0 else 1
+        spacing = 20 if load < 0.5 else 30 if load < 0.75 else 60
+    # A collector has its own durable operation timestamp. Counting every job
+    # status read as a new historical sweep makes its ten-minute deadline move
+    # forever. The same shared request count/hard guard still applies.
+    last = float(last_operation_at) if last_operation_at is not None else times[-1] if times else 0
+    cooldown = max(0, last+spacing-now) if last else 0
     if needed <= 0:
         return cooldown
     if needed > len(times):
@@ -354,6 +365,52 @@ def discover(c, db, rules, rule=None, page=1, capture=None):
     return status(db, 'watching')
 
 
+def reusable_resume(c, db, friend, mid):
+    """Reuse bytes from an exact local receipt, never its source or cloud ACK."""
+    if not re.fullmatch(r'[1-9]\d{0,19}', str(friend or '')) or not re.fullmatch(r'[1-9]\d{0,19}', str(mid or '')):
+        return None
+    try:
+        directory = Path(c.RESUME_DIR)
+        account = next(row[2] for row in db.execute('PRAGMA database_list') if row[1] == 'main')
+        if not account or directory.is_symlink():
+            return None
+        directory = directory.resolve(strict=True)
+        # The connector and both ledgers must belong to the same account.
+        directory.relative_to(Path(account).resolve().parent)
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return None
+    tables = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('people','chat_resume_receipts')")}
+    for table in ('people', 'chat_resume_receipts'):
+        if table not in tables:
+            continue
+        for row in db.execute(
+                f"SELECT file,body FROM {table} WHERE friend=? AND mid=? AND state IN ('export','stored')",
+                (str(friend), str(mid))):
+            try:
+                file = Path(row['file'])
+                if not file.is_absolute() or file.is_symlink():
+                    continue
+                file = file.resolve(strict=True)
+                file.relative_to(directory)
+                if not file.is_file():
+                    continue
+                with file.open('rb') as stream:
+                    header = stream.read(8)
+                if not header.startswith((b'%PDF-', b'PK\x03\x04', b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1',
+                                          b'\x89PNG\r\n\x1a\n', b'\xff\xd8\xff')):
+                    continue
+            except (OSError, ValueError, TypeError, RuntimeError):
+                continue
+            try:
+                body = json.loads(row['body'])
+            except (TypeError, ValueError):
+                body = {}
+            original = body.get('originalFileName', '') if isinstance(body, dict) else ''
+            return {'file': str(file), 'originalFileName': original if isinstance(original, str) else ''}
+    return None
+
+
 def receive(c, db, friend=None, reconnect=False):
     put_state(db, 'receivedAt', time.time()); db.commit()
     c.RESUME_POLL_LIMIT = 1
@@ -376,13 +433,21 @@ def receive(c, db, friend=None, reconnect=False):
                       if r['friend'] in received), None)
     if candidate:
         mid = received[candidate['friend']]['message_id']
-        file = str(c.download_resume(candidate['friend'], mid))
+        from cloud_resume_receipts import stored
+        if stored(db, candidate['friend'], mid):
+            db.execute("UPDATE people SET state='stored',mid=?,updated=? WHERE friend=?",
+                       (mid, int(time.time()), candidate['friend']))
+            return status(db, 'receiving', receiptChecked=True, cloudReceiptReused=True)
+        cached = reusable_resume(c, db, candidate['friend'], mid)
+        file = cached['file'] if cached else str(c.download_resume(candidate['friend'], mid))
         detail = json.loads(candidate['body'])
         with c.resume_db() as tracked:
             original = tracked.execute('SELECT original_name FROM resume_files WHERE friend_id=? AND message_id=?',
                                        (candidate['friend'], mid)).fetchone()
         if original:
             detail['originalFileName'] = original['original_name']
+        elif cached and cached['originalFileName']:
+            detail['originalFileName'] = cached['originalFileName']
         db.execute("UPDATE people SET state='export',body=?,file=?,mid=?,updated=? WHERE friend=?",
                    (json.dumps(detail, ensure_ascii=False), file, mid, int(time.time()), candidate['friend']))
         event(db, 'RESUME_RECEIVED', detail)
@@ -438,10 +503,12 @@ def catchup_step(c, db, rules, delay_for):
                 continue
             interval = max(0, last[0]+30-now) if last and receipt['state'] != 'received' else 0
             received = receipt['state'] == 'received'
-            delay = max(interval, delay_for(cost=4, queued=True, receiving=received, history=not received))
+            delay = max(interval, delay_for(cost=4, queued=True, receiving=received, history=not received,
+                        last_operation_at=float(get_state(db, 'catchup-last-request-at', '0'))))
             if delay:
                 db.execute("UPDATE catchup SET retry_at=? WHERE kind='receipt' AND target=?", (now+delay, friend))
                 continue
+            put_state(db, 'catchup-last-request-at', now); db.commit()
             result = receive(c, db, friend, reconnect=True)
             if result.get('ok') is True:
                 value = result.get('data', {})
@@ -452,11 +519,13 @@ def catchup_step(c, db, rules, delay_for):
             if not rule:
                 db.execute("UPDATE catchup SET done=1 WHERE kind='job' AND target=?", (task['target'],))
                 continue
-            delay = delay_for(cost=2, queued=True, history=True)
+            delay = delay_for(cost=2, queued=True, history=True,
+                              last_operation_at=float(get_state(db, 'catchup-last-request-at', '0')))
             if delay:
                 db.execute("UPDATE catchup SET retry_at=? WHERE kind='job' AND target=?", (now+delay, rule['id']))
                 continue
             captured = {}
+            put_state(db, 'catchup-last-request-at', now); db.commit()
             result = discover(c, db, rules, rule, page=task['page'], capture=captured)
             if result.get('ok') is True:
                 entries = rows(captured['result'])
@@ -492,13 +561,78 @@ def remember_activity(db, hints):
         if (not isinstance(friend, str) or not re.fullmatch(r'[1-9]\d{0,19}', friend)
                 or not isinstance(mid, str) or not re.fullmatch(r'[1-9]\d{0,29}', mid)
                 or not isinstance(job, str) or len(job) > 180
-                or not time.time()-180 <= at <= time.time()+60):
+                or not time.time()-(7*86400 if hint.get('resumePending') is True else 3600) <= at <= time.time()+60):
             continue
         old = db.execute('SELECT mid FROM activity WHERE friend=?', (friend,)).fetchone()
         if old and int(old['mid']) >= int(mid): continue
         db.execute('INSERT OR REPLACE INTO activity VALUES(?,?,?,?,0,0)', (friend, job, mid, at))
     db.execute('DELETE FROM activity WHERE done=1 AND at<?', (time.time()-7*86400,))
     db.commit()
+
+
+def recover_unbound_activity(db, rules):
+    """Recover read hints dropped by the old missing-job branch, once per account."""
+    if not rules or get_state(db, 'unbound-activity-recovery-v1', ''):
+        return
+    db.execute("""UPDATE activity SET done=0,retry_at=0
+      WHERE done=1 AND job='' AND at BETWEEN ? AND ?
+      AND NOT EXISTS(SELECT 1 FROM people WHERE people.friend=activity.friend)""",
+               (time.time()-7*86400, time.time()+60))
+    put_state(db, 'unbound-activity-recovery-v1', time.time())
+    db.commit()
+
+
+def resolve_unbound_activity(c, db, rules, hint, delay_for):
+    """Resolve one signaled conversation through its exact official job binding."""
+    friend, now = hint['friend'], time.time()
+    delay = delay_for(cost=1, queued=True,
+                      last_operation_at=float(get_state(db, 'work-last-request-at', '0')))
+    if delay:
+        db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+delay, friend))
+        return None
+    put_state(db, 'work-last-request-at', now)
+    put_state(db, 'lastLane', 'maintenance')
+    db.commit()
+    result = c.sourcing_friend_details([friend])
+    if result.get('ok') is not True or c.held_code():
+        db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+300, friend))
+        return result if result.get('ok') is not True else {'ok': False, 'error': {'code': c.held_code()}}
+    bindings = (result.get('data') or {}).get('friendList') or []
+    binding = next((row for row in bindings if isinstance(row, dict)
+                    and str(row.get('friendId') or row.get('uid')) == friend), {})
+    job = str(binding.get('encryptJobId') or binding.get('encJobId') or '')
+    if not job:
+        # A partial profile is not a resolved signal. Keep a slow read retry;
+        # never infer the job from the message text, current tab or first rule.
+        db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+1800, friend))
+        return status(db, 'watching', bindingPending=True)
+    matches = [rule for rule in rules.values() if rule['jobId'] == job
+               and (not rule.get('activeFriend') or rule['activeFriend'] == friend)]
+    if len(matches) == 1:
+        rule = matches[0]
+        info = binding.get('geekCard') or binding.get('geekInfo') or binding.get('geekBaseInfo') or binding
+        if not isinstance(info, dict):
+            info = binding
+        def first(*keys):
+            return next((source[key].strip() for source in (info, binding) for key in keys
+                         if isinstance(source.get(key), str) and source[key].strip()), '')
+        detail = {'name': first('geekName', 'name', 'nickname')[:100],
+                  'education': first('geekDegree', 'degreeName', 'degreeDesc', 'education')[:100],
+                  'experience': first('geekWorkYear', 'workYearDesc', 'work_years', 'experience')[:100],
+                  'city': first('expectLocationName', 'locationName', 'city')[:100],
+                  'company': first('companyName', 'company')[:200],
+                  'jobId': job, 'jobName': rule.get('jobName', ''), 'ruleId': rule['id'],
+                  'enabledAt': rule['enabledAt'], 'activity': hint['at'],
+                  'historyJobVerified': {'jobId': job, 'enabledAt': rule['enabledAt']}}
+        admit_history(db, friend, rule)
+        # This only schedules a read. Sender/time checks, existing resume and
+        # command ledgers, and a fresh job check still gate every write.
+        db.execute("INSERT OR IGNORE INTO people(friend,rule,body,state,updated) VALUES(?,?,?,'inspect',?)",
+                   (friend, rule['id'], json.dumps(detail, ensure_ascii=False), int(now)))
+    db.execute('UPDATE activity SET job=?,done=1 WHERE friend=?', (job, friend))
+    put_state(db, 'activityStreak', int(get_state(db, 'activityStreak'))+1)
+    put_state(db, 'nextAt', now+10)
+    return status(db, 'watching')
 
 
 def activity_step(c, db, rules, delay_for):
@@ -511,6 +645,11 @@ def activity_step(c, db, rules, delay_for):
     for hint in candidates:
         friend = hint['friend']
         person = db.execute('SELECT * FROM people WHERE friend=?', (friend,)).fetchone()
+        if not person and not hint['job'] and rules:
+            result = resolve_unbound_activity(c, db, rules, hint, delay_for)
+            if result is not None:
+                return result
+            continue
         if person and hint['job'] and json.loads(person['body']).get('jobId') != hint['job']:
             # A signal from another position must not wake the old position.
             db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
@@ -521,7 +660,8 @@ def activity_step(c, db, rules, delay_for):
             with c.resume_db() as tracked:
                 last = tracked.execute('SELECT last_polled_at FROM resume_poll_state WHERE friend_id=?', (friend,)).fetchone()
             interval = max(0, last[0]+30-now) if last and saved['state'] != 'received' else 0
-            delay = max(interval, delay_for(cost=4, queued=True, receiving=True))
+            delay = max(interval, delay_for(cost=4, queued=True, receiving=True,
+                         last_operation_at=float(get_state(db, 'receivedAt', '0'))))
             if delay:
                 db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+delay, friend))
                 continue
@@ -547,7 +687,8 @@ def activity_step(c, db, rules, delay_for):
                                (json.dumps(detail, ensure_ascii=False), friend))
                     db.execute('UPDATE activity SET done=1 WHERE friend=?', (friend,))
                     continue
-            delay = delay_for(cost=2, queued=True)
+            delay = delay_for(cost=2, queued=True,
+                              last_operation_at=float(get_state(db, 'discoveredAt', '0')))
             if delay:
                 db.execute('UPDATE activity SET retry_at=? WHERE friend=?', (now+delay, friend))
                 continue
@@ -607,6 +748,7 @@ def step(c, db, request):
     prepare_catchup(c, db, request, rules)
     prepare_history(db, rules)
     remember_activity(db, request.get('activityHints', []))
+    recover_unbound_activity(db, rules)
     queued = any(row['rule'] in rules for row in db.execute(
         "SELECT rule FROM people WHERE state IN ('inspect','reply_ready','ready')"))
     # Continuous incoming traffic may not starve conversations already admitted.
@@ -655,7 +797,8 @@ def step(c, db, request):
             delays = []
             for _, operation in sorted(due):
                 delay = delay_for(cost=2 if operation == 'discover' else 4, queued=not pending,
-                                  receiving=operation == 'receive' and bool(recorded_receipt))
+                                  receiving=operation == 'receive' and bool(recorded_receipt),
+                                  last_operation_at=discovered if operation == 'discover' else received)
                 if not delay:
                     put_state(db, 'lastLane', 'maintenance')
                     return discover(c, db, rules) if operation == 'discover' else receive(c, db)
@@ -690,11 +833,13 @@ def step(c, db, request):
     verify_history_job = (person['state'] == 'inspect' and recovering
                           and detail.get('historyJobVerified') != verification)
     delay = delay_for(cost=2 if verify_history_job else
-                     {'inspect': 1, 'reply_ready': 3, 'ready': 5}[person['state']], queued=True)
+                     {'inspect': 1, 'reply_ready': 3, 'ready': 5}[person['state']], queued=True,
+                     last_operation_at=float(get_state(db, 'work-last-request-at', '0')))
     if delay:
         return wait_budget(delay)
     put_state(db, 'lastLane', 'work')
     if person['state'] == 'inspect':
+        put_state(db, 'work-last-request-at', now); db.commit()
         if verify_history_job:
             verified = c.sourcing_friend_details([friend])
             if verified.get('ok') is not True:
@@ -728,6 +873,22 @@ def step(c, db, request):
             return result
         messages = c.resume_messages(result)
         since = trigger_since(db, friend, rule)
+        if request.get('collectAllResumes') is True:
+            import boss_chat_receipts
+            boss_chat_receipts.schema(db)
+            boss_chat_receipts.wake(db, friend)
+            conversation = db.execute('SELECT * FROM chat_resume_conversations WHERE friend=?', (friend,)).fetchone()
+            # Reuse the exact official latest-page read. Pending communication
+            # must not consume the read then hide the offer from collection.
+            # A separate collector pagination cursor remains untouched.
+            if not conversation['fresh_before']:
+                received = boss_chat_receipts.inspect(c, db, conversation, result=result)
+                if received.get('ok') is not True:
+                    return received
+            if db.execute("SELECT 1 FROM chat_resume_offers WHERE friend=? AND state IN ('pending','accepted','uncertain')",
+                          (friend,)).fetchone():
+                db.execute("UPDATE people SET state='seen',updated=? WHERE friend=?", (int(now), friend))
+                return status(db, 'receiving')
         if c.adopt_received_resume(result, friend, since) is True:
             db.execute("UPDATE people SET state='requested',updated=? WHERE friend=?", (int(now), friend))
             db.execute("INSERT OR REPLACE INTO catchup(kind,target,started) VALUES('receipt',?,?)", (friend, now))
@@ -766,6 +927,7 @@ def step(c, db, request):
         detail['reply'] = {'message': message, 'templateId': template['id'], 'templateVersion': template['version']}
         # Durable before write, including crashes/ambiguous responses. Never resend.
         put_state(db, 'nextWriteAt', now+60)
+        put_state(db, 'work-last-request-at', now)
         db.execute("UPDATE people SET state='reply_uncertain',body=?,updated=? WHERE friend=?",
                    (json.dumps(detail, ensure_ascii=False), int(now), friend)); db.commit()
         try:
@@ -786,6 +948,7 @@ def step(c, db, request):
         if c.held_code(): return {'ok': False, 'error': {'code': c.held_code()}}
         return status(db, 'request_queued' if sent else 'needs_review')
     put_state(db, 'nextWriteAt', now+60)
+    put_state(db, 'work-last-request-at', now)
     db.execute("UPDATE people SET state='request_uncertain',updated=? WHERE friend=?", (int(now), friend)); db.commit()
     try:
         with c.conversation_scope(friend, rule['jobId']):
@@ -815,6 +978,9 @@ def execute(c, root, request):
     operation = request['operation']
     with database(root) as db:
         active_sourcing.schema(db)
+        if operation == 'passive-restore':
+            from cloud_resume_receipts import restore
+            return restore(db, request)
         if operation == 'passive-local':
             import boss_chat_receipts
             # Recover only from the existing local request ledger after a crash;
@@ -835,7 +1001,10 @@ def execute(c, root, request):
             exports += boss_chat_receipts.exports(db)
             reports = [dict(row) for row in db.execute("SELECT * FROM commands WHERE reported=0 ORDER BY rowid LIMIT 1")]
             events = [json.loads(row['body']) for row in db.execute('SELECT body FROM events WHERE reported=0 ORDER BY rowid LIMIT 10')]
-            local_status=activity_status(db,{'ok':True,'data':json.loads(get_state(db,'status','{}'))})['data']
+            previous_status = json.loads(get_state(db, 'status', '{}'))
+            refreshed = status(db, previous_status.get('phase', 'watching'))
+            refreshed['data'] = {**previous_status, **refreshed['data']}
+            local_status=activity_status(db, refreshed)['data']
             return {'ok': True, 'data': {'exports': exports, 'reports': reports, 'events': events, 'bindings': active_sourcing.local(db),
                                          'status': local_status,
                                          'dailyGreeting': active_sourcing.daily_usage(db, time.time())}}
@@ -882,12 +1051,13 @@ def execute(c, root, request):
             boss_chat_receipts.schema(db)
             for hint in request.get('activityHints', [])[:200]:
                 if isinstance(hint, dict):
-                    boss_chat_receipts.wake(db, hint.get('friend'))
+                    boss_chat_receipts.wake(db, hint.get('friend'), hint.get('mid'),
+                                           resume_pending=hint.get('resumePending') is True)
             # The receive-only lane also runs with no rules or with closed jobs.
             # Alternate with the original flow; human commands dispatch earlier.
             turn = get_state(db, 'chat-resumes-turn', 'collect')
             configured = {r['id']: r for r in request.get('rules', []) if r.get('enabled') is True}
-            pending = list(db.execute("SELECT rule,body FROM people WHERE state IN ('reply_ready','ready')"))
+            pending = list(db.execute("SELECT rule,body FROM people WHERE state IN ('inspect','reply_ready','ready')"))
             incoming = list(db.execute("SELECT job FROM activity WHERE done=0 AND retry_at<=?", (time.time(),)))
             open_jobs = c.managed_job_statuses(queued=True)['statuses'] if (pending or incoming) and configured else {}
             if c.held_code():
@@ -897,7 +1067,7 @@ def execute(c, root, request):
                            and open_jobs.get(configured[row['rule']]['jobId']) == '开放中'
                            for row in pending)
             priority = priority or any(
-                hint['job'] == rule['jobId'] and open_jobs.get(rule['jobId']) == '开放中'
+                (not hint['job'] or hint['job'] == rule['jobId']) and open_jobs.get(rule['jobId']) == '开放中'
                 for hint in incoming for rule in configured.values())
             # A known attachment precedes automated replies. Open-job message
             # reads already adopt attachments in the original conversation lane;
@@ -919,7 +1089,8 @@ def execute(c, root, request):
                 boss_chat_receipts.schema(db)
                 for hint in request.get('activityHints', [])[:200]:
                     if isinstance(hint, dict):
-                        boss_chat_receipts.wake(db, hint.get('friend'))
+                        boss_chat_receipts.wake(db, hint.get('friend'), hint.get('mid'),
+                                               resume_pending=hint.get('resumePending') is True)
         result = activity_status(db, step(c, db, request))
         if result.get('ok') is True and db.execute(
                 "SELECT 1 FROM commands c JOIN active_contacts a ON a.id=c.id "

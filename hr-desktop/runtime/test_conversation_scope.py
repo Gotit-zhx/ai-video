@@ -44,7 +44,9 @@ class ConversationScopeTest(unittest.TestCase):
     def test_pinned_sdk_blocks_both_real_write_paths_before_browser_actions(self):
         from boss_agent_cli.api.recruiter_client import BossRecruiterClient
         original = BossRecruiterClient._require_chat_friend_data
+        original_detail = BossRecruiterClient.friend_detail
         self.addCleanup(setattr, BossRecruiterClient, '_require_chat_friend_data', original)
+        self.addCleanup(setattr, BossRecruiterClient, 'friend_detail', original_detail)
         policy = scope.ConversationScope(BossRecruiterClient)
         client = object.__new__(BossRecruiterClient)
         client.friend_detail = mock.Mock(return_value={
@@ -59,6 +61,25 @@ class ConversationScopeTest(unittest.TestCase):
             client._run_chat_frontend_action.assert_not_called()
         self.assertEqual(client.friend_detail.call_count, 2)
         self.assertTrue(policy.violation)
+
+    def test_acceptance_friend_detail_cannot_bypass_the_same_job_boundary(self):
+        writes = []
+        class Client:
+            def _require_chat_friend_data(self, friend):
+                return {}
+            def friend_detail(self, ids, retry=False):
+                return {'code': 0, 'zpData': {'friendList': [{'uid': 123, 'encryptJobId': 'job-a'}]}}
+            def accept(self):
+                result = self.friend_detail([123], retry=False)
+                writes.append(result)
+        policy = scope.ConversationScope(Client)
+        client = Client()
+        with policy.expect('123', 'job-b'), self.assertRaises(scope.ScopeError):
+            client.accept()
+        self.assertEqual(writes, [])
+        with policy.expect('123', 'job-a'):
+            client.accept()
+        self.assertEqual(len(writes), 1)
 
 
 if __name__ == '__main__':

@@ -47,7 +47,8 @@
   globalThis.createHrSourcing=({root,panel,element:el,button,allowed,navigate,hrApi})=>{
     let selected=null,record=null,active=false,generation=0,busy=false,timer=null,polling=false,pollErrors=0;
     let demands=[],demandLoading=false;
-    let finding=false,searchError='',searchProgress='',searchSession=null,pausedSearch=false;
+    let finding=false,searchError='',searchProgress='',searchSession=null,pausedSearch=false,cancelSearchWait=null;
+    const candidateCards=new Map();
     function selectionKey(){
       const user=globalThis.currentUser;
       return user&&(user.userId||user.id||user.username)
@@ -122,7 +123,10 @@
     for(const n of [5,10,15,20])el('option',n+' 人',count).value=String(n);
     el('span','匹配 ≥ 80 · 核心条件需核实',controls,'hr-badge hr-sourcing-threshold');
     const findButton=button('一键 AI 获取',controls,findPeople);findButton.className='hr-primary';
-    const pauseButton=button('暂停寻找',controls,()=>{pausedSearch=true;pauseButton.disabled=true;});
+    const pauseButton=button('暂停寻找',controls,()=>{
+      pausedSearch=true;pauseButton.disabled=true;cancelSearchWait?.();
+      searchStatus.textContent='正在暂停，当前已发出的读取完成后保留结果，不再读取下一页。';
+    });
     pauseButton.className='hr-secondary';pauseButton.hidden=true;
     const refresh=button('刷新结果',controls,()=>reload());refresh.className='hr-secondary';
     const searchStatus=el('p','',find,'hr-hint');
@@ -162,6 +166,8 @@
     const stop=()=>{clearInterval(timer);timer=null;};
     const running=()=>record?.profileState==='running'||(
       record?.run?.version===record?.version&&record?.run?.state==='running');
+    const resumable=()=>record?.run?.version===record?.version&&(
+      recoverableAnalysis(record?.run?.error)||unfinishedRun(record?.run));
     async function accountCheck(expected){
       const value=(await hrApi('/api/v1/hr/login/status')).data;
       if(value?.state!=='complete'||value.paused||!/^[a-f0-9]{64}$/.test(value.accountKey||''))
@@ -219,7 +225,7 @@
       demandSelect.disabled=locked||demandLoading;
       findButton.disabled=locked||record.profileState!=='complete'||record.criteria?.confirmed===false||criteriaDirty;
       const analyzing=record.run?.version===record.version&&record.run?.state==='running';
-      findButton.textContent=finding?'正在获取…':analyzing?'AI 分析中…':searchSession?.retryFailed?'重试失败批次':searchSession?'继续寻找':'一键 AI 获取';
+      findButton.textContent=finding?'正在获取…':analyzing?'AI 分析中…':searchSession?.retryFailed?'重试失败批次':searchSession||resumable()?'继续寻找':'一键 AI 获取';
       pauseButton.hidden=!finding;pauseButton.disabled=pausedSearch;
       findButton.setAttribute('aria-busy',String(finding||analyzing));
       refresh.disabled=busy;count.disabled=locked;
@@ -271,8 +277,18 @@
       searchStatus.className=searchError?'hr-error':'hr-hint';
       if(searchError)searchStatus.textContent=searchError;
       else if(finding&&searchProgress)searchStatus.textContent=searchProgress;
-      if(changed(results,[run?.candidates,run?.version,record.version,locked]))for(const item of run?.candidates||[]){
+      else if(!finding&&resumable())searchStatus.textContent+=' · 上次进度已保留，点击“继续寻找”后继续。';
+      const currentCards=new Set();
+      for(const item of run?.candidates||[]){
+        const key=String(item.id),signature=JSON.stringify([item,run?.version,record.version,record.criteria?.confirmed]);
+        currentCards.add(key);
+        const cached=candidateCards.get(key);
+        if(cached?.signature===signature){
+          if(cached.greet)cached.greet.disabled=locked||record.criteria?.confirmed===false||run.version!==record.version||!item.canGreet;
+          continue;
+        }
         const card=el('article','',results,'hr-person-card');
+        if(cached){cached.card.replaceWith(card);}
         const head=el('div','',card,'hr-card-heading');el('h3',item.name,head);
         el('span',record.criteria?.confirmed===false?'旧条件结果':item.checks
           ?`满足 ${item.checks.filter(check=>check.status==='matched').length} / ${item.checks.length} 条`:`${item.score} · AI 参考`,head,'hr-badge');
@@ -306,14 +322,17 @@
         }
         else if(item.gaps?.length)el('p','待核实：'+item.gaps.join('；'),card,'hr-hint');
         const actions=el('div','',card,'hr-actions');
+        let greet;
         if(item.contact)el('span',item.contact.status==='sent'&&!item.contact.friend_id
           ?'已打招呼 · 正在关联对应会话':contactStatus(item.contact),actions,'hr-hint');
         else{
-          const greet=button('打招呼',actions,()=>openGreeting(item));greet.className='hr-primary';
+          greet=button('打招呼',actions,()=>openGreeting(item));greet.className='hr-primary';
           greet.disabled=locked||record.criteria?.confirmed===false||run.version!==record.version||!item.canGreet;
           if(!item.canGreet&&!item.basicRequirementsPending)el('span','平台未提供首次打招呼参数',actions,'hr-hint');
         }
+        candidateCards.set(key,{card,greet,signature});
       }
+      for(const [key,value] of candidateCards)if(!currentCards.has(key)){value.card.remove();candidateCards.delete(key);}
       diagnostics.hidden=!run?.reviewExamples?.length;
       if(changed(diagnosticRows,run?.reviewExamples))for(const item of run?.reviewExamples||[]){
         el('strong',`${item.name} · ${item.matchState==='needs_info'?'资料不足，需核实':item.score+' 分，未达已确认条件'}`,diagnosticRows);
@@ -379,10 +398,10 @@
     async function waitForAnalysis(ticket,snapshot,value){
       const id=value.run?.id,started=Date.now();
       while(value.run?.state==='running'){
-        if(!valid(ticket))return null;
+        if(!valid(ticket)||pausedSearch)return null;
         if(Date.now()-started>360000)throw Error('分析仍未完成，可刷新查看进度；本轮没有重新提交 AI');
         await new Promise(resolve=>setTimeout(resolve,1500));
-        if(!valid(ticket))return null;
+        if(!valid(ticket)||pausedSearch)return null;
         try{value=await request('sourcing?'+new URLSearchParams({...snapshot,runId:id}));}
         catch(error){
           if(!valid(ticket))return null;
@@ -398,7 +417,8 @@
     async function findPeople(){
       if(!record||busy||running()||record.profileState!=='complete'||record.criteria?.confirmed===false||criteriaDirty||!allowed())return;
       const ticket=generation,snapshot=params(),jobId=record.jobId;busy=finding=true;searchError='';searchProgress='';render();
-      const progress=text=>{searchProgress=text;feedback.textContent=searchStatus.textContent=text;};
+      const progress=text=>{searchProgress=text;searchStatus.textContent=text;};
+      feedback.textContent='正在按已确认条件寻找，当前进度显示在下方。';
       progress('正在确认招聘账号和岗位…');
       pausedSearch=false;pauseButton.disabled=false;
       const desired=Number(count.value);
@@ -414,13 +434,23 @@
       }
       const session=searchSession,{candidates,seen,requestId}=session;
       let {page,ended,qualified}=session;
-      const wait=()=>new Promise(resolve=>setTimeout(resolve,3000));
+      const wait=(delay=3000)=>new Promise(resolve=>{
+        let timer;
+        const finish=()=>{clearTimeout(timer);if(cancelSearchWait===finish)cancelSearchWait=null;resolve();};
+        cancelSearchWait=finish;timer=setTimeout(finish,delay);
+      });
+      const waitForCapacity=async error=>{
+        const retryAt=Number(error?.retryAt)||0;
+        progress('正在等待下一批读取，已找到的人选和页码保留'+(retryAt>Date.now()/1000
+          ?` · 预计 ${new Date(retryAt*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})} 继续`:''));
+        await wait(Math.min(3600000,Math.max(30000,retryAt*1000-Date.now()+250)));
+      };
       async function connected(){
         while(valid(ticket)&&!pausedSearch){
           const value=(await hrApi('/api/v1/hr/login/status')).data;
           const code=value?.hold?.code||value?.failure_code;
           if(value?.paused&&value.reconnecting&&['REQUEST_BUDGET_EXHAUSTED','SESSION_UNAVAILABLE'].includes(code)){
-            progress('助手正在等待额度或连接恢复 · 已找到的人选保留');await wait();continue;
+            progress('助手正在等待额度或连接恢复 · 已找到的人选保留');await wait(30000);continue;
           }
           return accountCheck(snapshot.accountKey);
         }
@@ -445,17 +475,17 @@
             catch(error){
               const status=(await hrApi('/api/v1/hr/login/status')).data;
               if(['REQUEST_BUDGET_EXHAUSTED','SESSION_UNAVAILABLE'].includes(status?.hold?.code)&&status.reconnecting){
-                progress('等待助手恢复后继续当前页，已找到的人选保留');await wait();continue;
+                progress('等待助手恢复后继续当前页，已找到的人选保留');await wait(30000);continue;
               }
               throw error;
             }
             if(!valid(ticket))return;
             if(result?.ok!==true){
               if(result?.error?.code==='REQUEST_BUDGET_WAIT'){
-                progress('正在等待下一批读取，已找到的人选和页码保留');await wait();continue;
+                await waitForCapacity(result.error);continue;
               }
               if(result?.error?.code==='REQUEST_BUDGET_EXHAUSTED'){
-                progress('读取额度已用完，等待助手恢复后继续当前页');await wait();continue;
+                await waitForCapacity(result.error);continue;
               }
               throw Error(result?.error?.message||'候选人读取失败，本轮已停止');
             }
@@ -626,19 +656,18 @@
       }catch(error){if(valid(ticket)){record=null;feedback.textContent=error.message;}}
       finally{if(valid(ticket)){
         busy=false;render();
-        if(!finding&&!pausedSearch&&record?.profileState==='complete'&&record.criteria?.confirmed
-          &&record.run?.version===record.version&&(recoverableAnalysis(record.run.error)||unfinishedRun(record.run))){
+        if(resumable()){
           count.value=String(record.run.wanted);
-          await findPeople();
+          feedback.textContent='已恢复上次结果和进度；点击“继续寻找”后才会读取下一批候选人。';
         }
       }}
     }
-    function leave(){active=false;generation++;stop();busy=finding=demandLoading=false;searchProgress='';dialog.close();}
+    function leave(){active=false;generation++;pausedSearch=true;cancelSearchWait?.();stop();busy=finding=demandLoading=false;searchProgress='';dialog.close();}
     return {select(row){selected={id:String(row.encryptJobId||row.encJobId||row.encryptId||row.jobId||row.id),
       name:row.jobName||row.name||'',education:requirementLabel(row.degreeName,row.degreeDesc,row.education),
       experience:requirementLabel(row.experienceName,row.workYearDesc,row.experience),refresh:true};saveSelection();record=null;searchError='';},
       enter,leave,reset(){leave();selected=record=candidate=null;searchSession=null;criteriaDraft=[];criteriaScope='';criteriaDirty=false;demands=[];speeches=[];
-        searchError='';verifiedContacts.clear();
+        searchError='';verifiedContacts.clear();candidateCards.clear();
         demandSelect.replaceChildren();profileOutput.replaceChildren();results.replaceChildren();templates.replaceChildren();
         criteriaRows.replaceChildren();advancedRows.replaceChildren();diagnosticRows.replaceChildren();
         for(const node of [profileOutput,results,criteriaRows,diagnosticRows])painted.delete(node);

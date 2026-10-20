@@ -8,9 +8,26 @@ import sys
 import time
 
 
-def configure(root, cdp):
+def recommendation_wait(c, root):
+    """A durable page interval; unrelated receipt reads cannot postpone it."""
+    import passive_runtime as flow
+    with flow.database(root) as db:
+        now = time.time()
+        last = float(flow.get_state(db, 'recommendations-last-read-at', '0'))
+        delay = max(c.passive_delay(cost=2, history=True, last_operation_at=0),
+                    max(0, last+60-now) if last else 0)
+        if not delay:
+            # Reserve before I/O, including failures, across jobs and restarts.
+            flow.put_state(db, 'recommendations-last-read-at', now)
+        return delay
+
+
+def configure(root, cdp, native=None):
     import connector as c
     import guarded_cli as g
+    # User-configured desktop ceiling. All accounts and operation types still
+    # share the existing durable request ledger and per-request pacing guard.
+    g.HOURLY_LIMIT = 500
     from urllib.parse import urlsplit
     parsed = urlsplit(cdp)
     if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port:
@@ -33,10 +50,16 @@ def configure(root, cdp):
         setattr(g, name, root.parents[2] / filename)
     g.CDP_URL = cdp
     os.environ["HEYI_EMBEDDED_DEFAULT_CONTEXT"] = "1"
+    if native is not None:
+        import native_client
+        c.native_client = native_client.install(native, g)
     c.LOGIN.update(state="complete")
     # Navigation by the old server helper used a fixed Linux CDP endpoint.
     # Desktop only uses an already-open official chat page for write actions.
     def existing_chat():
+        if native is not None:
+            c.native_client.snapshot()
+            return
         import urllib.request
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(cdp + "/json/list", timeout=3) as response:
@@ -64,7 +87,7 @@ def main(request):
         guarded_cli.install_policy()
         return {"ok": True, "version": importlib.metadata.version("boss-agent-cli"),
                 "platform": sys.platform, "python": sys.version.split()[0]}
-    c, g = configure(request["root"], request["cdp"])
+    c, g = configure(request["root"], request["cdp"], request.get("native"))
     operation = request.get("operation")
     # A receipt turn can contain several SDK reads. Pace those internal reads
     # too, rather than only spacing the outer collector timer.
@@ -137,6 +160,20 @@ def main(request):
             return {'ok': True, 'data': result.get('zpData') or {}}
         return {'ok': False, 'error': {'code': c.held_code() or 'FRIEND_DETAIL_FAILED', 'message': '会话关联未确认，已停止'}}
     c.sourcing_friend_details = sourcing_friend_details
+    def receipt_conversations(page):
+        from boss_agent_cli.auth.manager import AuthManager
+        auth = AuthManager(c.AUTH_DIR.parent, platform="zhipin")
+        with BossRecruiterClient(auth, cdp_url=request['cdp'], browser_source="stored-cookie") as client:
+            result = client.friend_list(page=page)
+        c.observe_result(result)
+        if result.get('code') == 0:
+            return {'ok': True, 'data': result.get('zpData') or {}}
+        return {'ok': False, 'error': {'code': c.held_code() or 'CHAT_LIST_UNAVAILABLE'}}
+    c.receipt_conversations = receipt_conversations
+    def accept_incoming_resume(friend, mid, job):
+        with scope.expect(friend, job):
+            return invoke('hr', 'accept-resume', friend, '--message-id', mid, '--yes')
+    c.accept_incoming_resume = accept_incoming_resume
     import passive_runtime
     def passive_delay(**options):
         return passive_runtime.budget_delay(g.BUDGET_DB, g.HOURLY_LIMIT, **options)
@@ -165,7 +202,7 @@ def main(request):
         with c.resume_db() as db:
             db.execute('UPDATE resume_poll_state SET failures=0')
         return {'ok': True}
-    if operation in ('passive-local', 'passive-ack', 'passive-send', 'passive-step', 'sourcing-ready', 'sourcing-send'):
+    if operation in ('passive-local', 'passive-ack', 'passive-restore', 'passive-send', 'passive-step', 'sourcing-ready', 'sourcing-send'):
         return passive_runtime.execute(c, request['root'], request)
     if operation == "verify":
         # Explicit user request only; bound to the existing hold generation.
@@ -197,7 +234,7 @@ def main(request):
     if operation == "recommendations":
         # Continuous AI pagination shares the historical pool; it cannot spend
         # capacity reserved for incoming resumes or explicit communication.
-        delay = c.passive_delay(cost=2, history=True)
+        delay = recommendation_wait(c, request['root'])
         if delay:
             return {"ok": False, "error": {"code": "REQUEST_BUDGET_WAIT",
                     "retryAt": int(time.time()+delay),
@@ -233,7 +270,7 @@ if __name__ == "__main__":
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = main(request)
     except Exception as error:
-        code = "LOCAL_RUNTIME_ERROR"
+        code = getattr(error, "code", "LOCAL_RUNTIME_ERROR")
         try:
             import connector
             code = connector.held_code() or code

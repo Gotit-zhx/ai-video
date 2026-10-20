@@ -11,6 +11,34 @@ on:
           - windows
           - macos
           - all
+      nativeProbe:
+        description: "隔离检查 Windows 原客户端；不打包稳定助手、不发布"
+        type: boolean
+        required: false
+        default: false
+      nativeWorkbench:
+        description: "同时构建独立 Windows 改造测试版并离线验包，不发布"
+        type: boolean
+        required: false
+        default: false
+      retainWorkbench:
+        description: "仅私有仓库：通过草稿 Release 临时保留已验包的 Windows 候选包"
+        type: boolean
+        required: false
+        default: false
+      deliverPrivate:
+        description: "仅把已验收的私有 Windows 包传至一次性 OSS 上传地址"
+        type: boolean
+        required: false
+        default: false
+      privateRelease:
+        description: "已有私有草稿 tag；用于预先校验打包保存权限或传输已验收包"
+        type: string
+        required: false
+      nativeSourceCommit:
+        description: "可选：经源码树一致性验证的原生安装包业务提交"
+        type: string
+        required: false
   # Code uploads are free of build side effects. An explicit build tag also
   # works before this workflow has been merged into the default branch.
   push:
@@ -19,12 +47,13 @@ on:
       - "hr-desktop-build-macos-v*"
       - "hr-desktop-build-all-v*"
 concurrency:
-  group: hr-desktop-${{ github.ref }}-${{ inputs.platform || 'tag' }}
+  group: hr-desktop-${{ github.ref }}-${{ inputs.platform || 'tag' }}-${{ inputs.nativeProbe || false }}
   cancel-in-progress: true
 permissions:
   contents: write
 jobs:
   desktop:
+    if: ${{ inputs.nativeProbe != true && inputs.deliverPrivate != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -48,11 +77,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node node_modules/electron/install.js
       - run: python runtime/install.py
+      - run: python -m unittest discover -s runtime -p test_build_manifest.py
       - run: python runtime/build.py
       - run: npm test
       - run: python -m unittest discover -s runtime -p test_passive_runtime.py
       - run: python -m unittest discover -s runtime -p test_boss_chat_receipts.py
+      - run: python -m unittest discover -s runtime -p test_resume_reuse.py
       - run: python -m unittest discover -s runtime -p test_recommendation_budget.py
+      - run: python -m unittest discover -s runtime -p test_desktop_budget.py
       - run: python -m unittest discover -s runtime -p test_active_sourcing.py
       - run: python -m unittest discover -s runtime -p test_account_history.py
       - run: python -m unittest discover -s runtime -p test_local_session.py
@@ -61,6 +93,7 @@ jobs:
       - run: python -m unittest discover -s runtime -p test_conversation_scope.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_recruitment_demands.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_passive_pool.py
+      - run: python -m unittest discover -s ../scripts/boss-agent -p test_hr_account_identity.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_hr_sourcing.py
       - run: python -m unittest discover -s ../scripts/boss-agent -p test_resume_identity.py
       - run: python runtime/test_portable.py
@@ -134,3 +167,158 @@ jobs:
           for asset in release/*.exe release/*.dmg release/*.zip release/verified-*.json; do
             if [ -f "$asset" ]; then gh release upload "$tag" "$asset" --clobber; fi
           done
+  native-probe:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.nativeProbe == true && inputs.deliverPrivate != true }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh -NoProfile -Command "$ErrorActionPreference='Stop'; $PSNativeCommandUseErrorActionPreference=$true; . '{0}'"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact package source and private destination before building
+        shell: pwsh
+        env:
+          SOURCE_COMMIT: ${{ inputs.nativeSourceCommit }}
+          PRIVATE_RELEASE: ${{ inputs.privateRelease }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $commit = $env:GITHUB_SHA
+          if ($env:SOURCE_COMMIT) {
+            if ($env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Exact source commit required' }
+            git fetch --no-tags --depth=1 origin $env:SOURCE_COMMIT
+            if ($LASTEXITCODE -ne 0) { throw 'Source commit unavailable' }
+            git diff --exit-code $env:SOURCE_COMMIT HEAD -- hr-desktop scripts/boss-agent
+            if ($LASTEXITCODE -ne 0) { throw 'Business sources differ from requested artifact commit' }
+            $commit = $env:SOURCE_COMMIT
+          }
+          "HEYI_NATIVE_ARTIFACT_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if ($env:PRIVATE_RELEASE) {
+            if ($env:PRIVATE_RELEASE -notmatch '^heyi-workbench-private-\d+-\d+$') { throw 'Unexpected private draft tag' }
+            $draft = gh release view $env:PRIVATE_RELEASE --json isDraft,targetCommitish,assets | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or !$draft.isDraft -or $draft.targetCommitish -ne $commit -or $draft.assets.Count -ne 0) { throw 'Empty private draft for exact source required' }
+            $probe = Join-Path $env:RUNNER_TEMP "upload-check-$env:GITHUB_RUN_ID.txt"
+            [IO.File]::WriteAllText($probe, 'Private package upload permission check')
+            gh release upload $env:PRIVATE_RELEASE $probe
+            if ($LASTEXITCODE -ne 0) { throw 'Private upload permission unavailable; stop before building' }
+            gh release delete-asset $env:PRIVATE_RELEASE (Split-Path $probe -Leaf) --yes
+            if ($LASTEXITCODE -ne 0) { throw 'Private permission probe cleanup failed' }
+          }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "11.25.0"
+      - uses: actions/setup-python@v5
+        if: ${{ inputs.nativeWorkbench == true }}
+        with:
+          python-version: "3.12"
+      - name: Install isolated inspection dependencies
+        working-directory: hr-desktop/client-workbench
+        run: pnpm install --ignore-workspace --ignore-scripts --frozen-lockfile
+      - name: Verify local inspector driver with real Node fixtures
+        run: node --test hr-desktop/client-workbench/*.test.cjs hr-desktop/test/core.test.cjs
+      - name: Build Windows worker for the isolated workbench
+        if: ${{ inputs.nativeWorkbench == true }}
+        run: |
+          python -m unittest discover -s hr-desktop/runtime -p test_build_manifest.py
+          python hr-desktop/runtime/install.py
+          python hr-desktop/runtime/build.py
+      - name: Check both invitation workflows with isolated platform fixtures
+        if: ${{ inputs.nativeWorkbench == true }}
+        env:
+          PYTHONPATH: hr-desktop/runtime/build/shared
+        run: |
+          python -m unittest discover -s hr-desktop/runtime -p test_invitation_lifecycle.py
+          python -m unittest discover -s scripts/boss-agent -p test_hr_account_identity.py
+      - name: Check receipt scheduling and configured request ceiling
+        if: ${{ inputs.nativeWorkbench == true }}
+        env:
+          PYTHONPATH: hr-desktop/runtime/build/shared
+        run: |
+          python -m unittest discover -s hr-desktop/runtime -p test_desktop_budget.py
+          python -m unittest discover -s hr-desktop/runtime -p test_passive_runtime.py
+          python -m unittest discover -s hr-desktop/runtime -p test_boss_chat_receipts.py
+          python -m unittest discover -s hr-desktop/runtime -p test_resume_reuse.py
+          python -m unittest discover -s hr-desktop/runtime -p test_recommendation_budget.py
+          python -m unittest discover -s hr-desktop/runtime -p test_managed_jobs.py
+      - name: Check private candidate export boundaries
+        if: ${{ inputs.nativeWorkbench == true }}
+        run: |
+          foreach ($file in @('scripts/ci/windows-native-probe.ps1', 'scripts/ci/windows-installation-smoke.ps1')) {
+            $tokens = $null
+            $syntaxErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$syntaxErrors) | Out-Null
+            if ($syntaxErrors.Count) { throw ($syntaxErrors | Out-String) }
+          }
+          python -m unittest discover -s scripts/ci -p test_export_workbench.py
+          python -m unittest discover -s hr-desktop/client-workbench -p test_windows_entry.py
+          python -m unittest discover -s hr-desktop/client-workbench -p test_windows_installer.py
+          python -m unittest discover -s hr-desktop/client-workbench -p test_windows_startup.py
+      - name: Observe pinned original runtime without network or login
+        shell: pwsh
+        env:
+          HEYI_NATIVE_BUILD_WORKBENCH: ${{ inputs.nativeWorkbench }}
+        run: ./scripts/ci/windows-native-probe.ps1
+      - name: Prepare private candidate download after packaged checks
+        if: ${{ always() && inputs.retainWorkbench == true && inputs.nativeWorkbench == true && github.event.repository.private == true }}
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'heyi-private-candidate-export'
+          python scripts/ci/export_workbench.py --root "$env:HEYI_NATIVE_PROBE_ROOT" --output "$output" --event "$env:GITHUB_EVENT_PATH" --commit "$env:HEYI_NATIVE_ARTIFACT_COMMIT"
+          if ($LASTEXITCODE -ne 0) { throw 'Verified private candidate export failed' }
+          "HEYI_WORKBENCH_EXPORT=$output" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Retain private candidate temporarily
+        if: ${{ always() && inputs.retainWorkbench == true && github.event.repository.private == true && env.HEYI_WORKBENCH_EXPORT != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRIVATE_RELEASE: ${{ inputs.privateRelease }}
+        run: |
+          # A private draft avoids Actions artifact quota; never publish it.
+          $private = gh repo view --json isPrivate --jq '.isPrivate'
+          if ($LASTEXITCODE -ne 0 -or $private -ne 'true') { throw 'Private repository required' }
+          $tag = "heyi-workbench-private-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $notes = Join-Path $env:RUNNER_TEMP 'heyi-private-candidate-notes.txt'
+          [IO.File]::WriteAllText($notes, "Temporary private candidate for local validation. Packaged offline checks passed. Live recruiting workflows are not yet accepted; separate original-runtime probes may remain failed. Delete this draft after downloading and verifying the candidate.")
+          if ($env:PRIVATE_RELEASE) {
+            $tag = $env:PRIVATE_RELEASE
+          } else {
+            gh release create $tag --draft --target "$env:HEYI_NATIVE_ARTIFACT_COMMIT" --title 'Ai boss Windows 候选验证包' --notes-file "$notes"
+            if ($LASTEXITCODE -ne 0) { throw 'Private draft creation failed' }
+          }
+          $draft = gh release view $tag --json isDraft,targetCommitish | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$draft.isDraft -or $draft.targetCommitish -ne $env:HEYI_NATIVE_ARTIFACT_COMMIT) { throw 'Candidate must remain a draft for the verified source' }
+          $assets = @(Get-ChildItem "$env:HEYI_WORKBENCH_EXPORT" -File | Where-Object {
+            $_.Name -eq 'verification.json' -or
+            $_.Name -match '^Ai-boss-Windows-candidate-[a-f0-9]{12}\.zip$' -or
+            $_.Name -match '^Ai-boss-Windows-Setup-[a-f0-9]{12}\.exe$'
+          } | ForEach-Object FullName)
+          if ($assets.Count -ne 3) { throw 'Expected one verified installer, portable candidate and report' }
+          gh release upload $tag @assets
+          if ($LASTEXITCODE -ne 0) { throw 'Private draft upload failed' }
+          Write-Output "HEYI_PRIVATE_CANDIDATE_TAG $tag"
+  private-delivery:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deliverPrivate == true && github.event.repository.private == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s scripts/ci -p test_deliver_private_installer.py
+      - name: Transfer only a verified private installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRIVATE_RELEASE: ${{ inputs.privateRelease }}
+          UPLOAD_TICKET: ${{ secrets.HEYI_PRIVATE_INSTALLER_TRANSFER }}
+        run: python scripts/ci/deliver_private_installer.py

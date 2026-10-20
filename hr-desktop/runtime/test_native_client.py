@@ -1,0 +1,143 @@
+"""Run separately from the webpage SDK tests: installation replaces SDK methods."""
+from pathlib import Path
+from io import BytesIO
+import tempfile
+import types
+import unittest
+import sqlite3
+from unittest import mock
+
+import native_client
+
+
+class NativeClientTest(unittest.TestCase):
+    def test_download_preserves_only_bounded_display_metadata(self):
+        for disposition, expected in [
+            ("attachment; filename*=UTF-8''resume.pdf",
+             {"Content-Disposition": "attachment; filename*=UTF-8''resume.pdf"}),
+            ("bad\r\nInjected: yes", {}),
+            ("x" * 8193, {}),
+            ("", {}),
+        ]:
+            with self.subTest(disposition=disposition):
+                client = native_client.NativeClient({"url": "http://127.0.0.1:12345",
+                                                    "accountId": "101", "secret": "fixture"})
+                reply = BytesIO(b"%PDF-fixture")
+                reply.status = 200
+                reply.headers = {"X-Heyi-Native-Download": "1",
+                                 "Content-Disposition": disposition, "Set-Cookie": "private"}
+                client.opener = mock.Mock()
+                client.opener.open.return_value = reply
+                status, content, headers = client.download("https://docdownload.zhipin.com/fixture")
+                self.assertEqual((status, content, headers), (200, b"%PDF-fixture", expected))
+                self.assertEqual(client.opener.open.call_count, 1)
+
+    def test_only_exact_boss_cookie_domains_are_used(self):
+        client = native_client.NativeClient({"url": "http://127.0.0.1:12345",
+                                            "accountId": "101", "secret": "fixture"})
+        client.call = mock.Mock(return_value={
+            "accountId": "101", "userAgent": "offline",
+            "cookies": [{"name": "wt2", "domain": domain, "value": domain}
+                        for domain in ["zhipin.com", ".www.zhipin.com",
+                                       "evilzhipin.com", "zhipin.com.other"]]}
+        )
+        self.assertEqual(client.snapshot(), ({"zhipin.com", ".www.zhipin.com"}, "offline"))
+
+    def test_endpoint_cannot_contain_credentials_queries_or_external_hosts(self):
+        for url in ["https://127.0.0.1:12345", "http://example.invalid:12345",
+                    "http://u:p@127.0.0.1:12345", "http://127.0.0.1:12345?x=1",
+                    "http://127.0.0.1:12345#x", "http://127.0.0.1:12345/path"]:
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                native_client.NativeClient({"url": url})
+
+    def test_real_guard_retains_budget_risk_and_session_checks_over_native_transport(self):
+        import runner
+        from boss_agent_cli.api.recruiter_client import BossRecruiterClient
+        from boss_agent_cli.api._base_client import _BaseHttpClient
+        from boss_agent_cli.api.client import AccountRiskError
+        from boss_agent_cli.api.browser_client import BrowserSession
+        import conversation_scope
+        calls = []
+        resume_calls = []
+        platform_code = [0]
+
+        def call(client, path, **payload):
+            if path == "/snapshot":
+                return {"accountId": "101", "userAgent": "offline-agent",
+                        "cookies": [{"name": "wt2", "domain": ".zhipin.com", "value": "offline-token"}]}
+            if path == "/http":
+                calls.append(payload)
+                return {"code": platform_code[0], "zpData": {"fixture": True}}
+            if path == "/request-resume":
+                resume_calls.append(payload)
+                return {"confirmedBy": "client-message-receipt", "messageId": "303"}
+            raise AssertionError("Unexpected offline native action")
+
+        # One isolated process owns these monkeypatches. No actual BOSS endpoint
+        # is called; all HTTP data is supplied by the fake local transport.
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(native_client.NativeClient, "call", call):
+            root = Path(directory) / "recruiter/accounts/owner/boss"
+            connector, guard = runner.configure(root, "http://127.0.0.1:12345", {
+                "url": "http://127.0.0.1:12345", "secret": "fixture", "accountId": "101"})
+            # The native adapter itself rejects unsupported webpage execution.
+            with self.assertRaises(native_client.NativeError):
+                BrowserSession.evaluate_js(object(), "arbitrary script")
+            guard.MIN_INTERVAL = 0
+            guard.HOURLY_LIMIT = 4
+            guard.install_policy()
+            self.assertTrue(_BaseHttpClient._request._heyi_guarded)
+            token = {"cookies": {"wt2": "offline-token"}, "user_agent": "offline-agent"}
+            from boss_agent_cli.auth.token_store import TokenStore
+            TokenStore(connector.AUTH_DIR).save(token)
+            auth = types.SimpleNamespace(get_token=lambda: token)
+            client = BossRecruiterClient(auth, delay=(0, 0), cdp_url="http://127.0.0.1:12345",
+                                         browser_source="stored-cookie")
+            self.addCleanup(client.close)
+            url = "https://www.zhipin.com/wapi/zpchat/boss/historyMsg"
+            self.assertEqual(client._request("GET", url)["code"], 0)
+            self.assertEqual(len(calls), 1)
+            client.friend_detail = mock.Mock(return_value={"code": 0, "zpData": {
+                "friendList": [{"uid": 202, "encryptJobId": "expected-job", "securityId": "fixture"}]}})
+            client._get_browser = mock.Mock(return_value=types.SimpleNamespace(
+                evaluate_js=lambda script, arg: BrowserSession.evaluate_js(object(), script, arg)))
+            scope = conversation_scope.ConversationScope(BossRecruiterClient)
+            with scope.expect("202", "expected-job"):
+                result = client.exchange_request_by_friend(202, 4)
+            self.assertEqual(result["zpData"]["confirmedBy"], "client-message-receipt")
+            self.assertEqual(len(resume_calls), 1)
+            with sqlite3.connect(guard.BUDGET_DB) as ledger:
+                self.assertEqual(ledger.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 2)
+            with self.assertRaises(native_client.NativeError):
+                client.exchange_request_by_friend(202, 1)
+            self.assertEqual(len(resume_calls), 1)
+            platform_code[0] = 36
+            with self.assertRaises(AccountRiskError):
+                client._request("GET", url)
+            self.assertEqual(len(calls), 2)
+            # A persisted real risk hold prevents the transport running again.
+            connector.pause_requests("ACCOUNT_RISK")
+            with self.assertRaises(Exception):
+                client._request("GET", url)
+            with scope.expect("202", "expected-job"), self.assertRaises(Exception):
+                client.exchange_request_by_friend(202, 4)
+            self.assertEqual(len(resume_calls), 1)
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(guard.RISK_HOLD.exists())
+            with sqlite3.connect(guard.BUDGET_DB) as ledger:
+                self.assertEqual(ledger.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 3)
+            # Candidate/job verification still precedes the native send.
+            client.friend_detail = mock.Mock(return_value={"code": 0, "zpData": {
+                "friendList": [{"uid": 202, "encryptJobId": "wrong-job", "securityId": "fixture"}]}})
+            with scope.expect("202", "expected-job"), self.assertRaises(conversation_scope.ScopeError):
+                client.send_message_by_friend(202, "offline fixture")
+            with scope.expect("202", "expected-job"), self.assertRaises(conversation_scope.ScopeError):
+                client.exchange_request_by_friend(202, 4)
+            self.assertEqual(len(resume_calls), 1)
+            # Webpage Vue actions cannot be silently dispatched via native RPC.
+            from boss_agent_cli.api.client import PlatformRiskError
+            with self.assertRaises(PlatformRiskError):
+                BrowserSession.evaluate_js(object(), "arbitrary script")
+
+
+if __name__ == "__main__":
+    unittest.main()

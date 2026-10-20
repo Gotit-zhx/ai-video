@@ -1,0 +1,191 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const {prepareChatPage, commitTextPage, waitChatPage, cancelChatPage, NativeChat} = require('./native-chat.cjs');
+
+function fixture(t, options = {}) {
+  const calls = [], timers = new Map();
+  const args = {token: 'fixture-token', account: '101', friendId: '202', job: 'job-one',
+    clientMid: '300', content: '已约好的面试信息', friend: {friendId: '202', encryptJobId: 'job-one'}};
+  const conversation = {friendId: '202', encryptJobId: 'job-one',
+    toPositionId: 'job-one', securityId: 'fixture-security'};
+  const service = {bossId: '101', conversation, get: key => conversation[key],
+    sendMessage(content, type, opts) {calls.push({content, type, opts});},
+    onMessageDelivered() {return 'original-result';}};
+  const original = service.onMessageDelivered, originalSend = service.sendMessage;
+  let selected = !options.unselected;
+  const editor = {get conversation$() {return selected ? conversation : {};}, $refs: {editbox: {
+    textContent: options.draft || '', querySelector: () => null}},
+    $root: {$children: [{$options: {name: 'dialog-nofit'}, source: 'conversation',
+      getConversationService: () => service}]}};
+  const context = vm.createContext({window: {iBossRoot: {user: {get: () => options.account || '101'}}},
+    document: {querySelectorAll() {return [];}, querySelector(selector) {
+      if (selector === '.boss-chat-editor-input') return {parentElement: options.legacy ? {__vue__: editor} : {}};
+      if (selector === '.chat-conversation-operate') return options.legacy ? null : {__vue__: editor};
+      if (selector === (options.legacy ? '.chat-user' : '.geek-list-wrapper')) {
+        return {__vue__: {$options: {name: 'geek-list'}, geekClick() {selected = true;calls.push('select');}}};
+      }
+      return null;
+    }}, setTimeout(fn, ms) {const id = {};timers.set(id, {fn, ms});return id;},
+    clearTimeout(id) {timers.delete(id);}});
+  const run = (fn, input = args) => vm.runInContext(`(${fn.toString()})(${JSON.stringify(input)})`, context);
+  const delivered = extra => service.onMessageDelivered([{fromId: '101', toId: '202',
+    mid: '400', cmid: '300', type: 'text', text: args.content, ...extra}]);
+  t.after(() => run(cancelChatPage, args.token));
+  return {args, service, original, originalSend, editor, conversation, calls, timers, context, run, delivered};
+}
+
+test('text uses the active conversation service once and only its real delivered callback confirms', async t => {
+  const f = fixture(t);
+  assert.equal((await f.run(prepareChatPage)).ok, true);
+  assert.equal(f.run(commitTextPage).ok, true);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].opts.clientMid, '300');
+  let confirmed = false;
+  const receipt = f.run(waitChatPage).then(result => {confirmed = true;return result;});
+  await Promise.resolve();
+  assert.equal(confirmed, false, 'the sender returning does not acknowledge a message');
+  assert.equal(f.delivered(), 'original-result');
+  const result = await receipt;
+  assert.equal(result.receipt.mid, '400');
+  assert.equal(result.receipt.clientMid, '300');
+  assert.equal(result.receipt.transport, 'native-chat-delivery');
+  assert.equal(f.run(commitTextPage).ok, false, 'a click cannot dispatch twice');
+  f.run(cancelChatPage, f.args.token);
+  assert.equal(f.service.onMessageDelivered, f.original);
+  assert.equal(f.timers.size, 0);
+});
+
+test('current nested editor and renamed contact list resolve without the obsolete parent Vue node', async t => {
+  const f = fixture(t, {unselected: true});
+  assert.equal((await f.run(prepareChatPage)).ok, true);
+  assert.deepEqual(f.calls, ['select']);
+  assert.equal(f.run(commitTextPage).ok, true);
+  f.delivered();
+  assert.equal((await f.run(waitChatPage)).ok, true);
+});
+
+test('older verified page layout remains supported', async t => {
+  const f = fixture(t, {legacy: true, unselected: true});
+  assert.equal((await f.run(prepareChatPage)).ok, true);
+  assert.deepEqual(f.calls, ['select']);
+});
+
+test('current encrypted toPositionId is authoritative when the editor omits list job aliases', async t => {
+  const f = fixture(t);
+  delete f.conversation.encryptJobId;
+  assert.equal((await f.run(prepareChatPage)).ok, true);
+  assert.equal(f.run(commitTextPage).ok, true);
+  f.delivered();
+  assert.equal((await f.run(waitChatPage)).ok, true);
+});
+test('a conversation whose position is still loading waits before verifying and never sends early', async t => {
+  const f = fixture(t);
+  delete f.conversation.encryptJobId;delete f.conversation.toPositionId;
+  const preparing = f.run(prepareChatPage);
+  await Promise.resolve();
+  assert.equal(f.calls.length, 0);
+  const waiting = [...f.timers.entries()].find(([, timer]) => timer.ms === 100);
+  assert.ok(waiting);
+  f.conversation.toPositionId = 'job-one';
+  f.timers.delete(waiting[0]);waiting[1].fn();
+  assert.equal((await preparing).ok, true);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.run(commitTextPage).ok, true);
+});
+
+test('conflicting position, list job or changed position cannot send into another job', async t => {
+  for (const conflict of ['position', 'list']) {
+    const f = fixture(t);
+    if (conflict === 'position') f.conversation.toPositionId = 'other-job';
+    else f.service.get = key => key === 'encryptJobId' ? 'other-job' : f.conversation[key];
+    assert.equal((await f.run(prepareChatPage)).code, 'JOB_CONVERSATION_MISMATCH');
+    assert.equal(f.calls.length, 0);
+  }
+  const f = fixture(t);
+  delete f.conversation.encryptJobId;
+  await f.run(prepareChatPage);
+  f.conversation.toPositionId = 'other-job';
+  assert.equal(f.run(commitTextPage).code, 'JOB_CONVERSATION_MISMATCH');
+  assert.equal(f.calls.length, 0);
+});
+
+test('historical, other account, other candidate, other clientMid and provisional messages cannot acknowledge', async t => {
+  const f = fixture(t);
+  await f.run(prepareChatPage);
+  f.delivered(); // Arrival before commit cannot confirm.
+  f.run(commitTextPage);
+  let confirmed = false;
+  const receipt = f.run(waitChatPage).then(result => {confirmed = true;return result;});
+  for (const extra of [{fromId: '999'}, {toId: '999'}, {cmid: '299'},
+    {newSubmit: true}, {mid: '300'}, {text: '另一条消息'}]) f.delivered(extra);
+  await Promise.resolve();
+  assert.equal(confirmed, false);
+  f.delivered();
+  assert.equal((await receipt).ok, true);
+});
+
+test('account, job, draft and changed conversation are checked before any text write', async t => {
+  for (const opts of [{account: '999'}, {draft: '用户正在输入的内容'}, {job: 'other'}]) {
+    const f = fixture(t, opts);
+    if (opts.job) f.conversation.encryptJobId = opts.job;
+    const result = await f.run(prepareChatPage);
+    assert.equal(result.ok, false);
+    assert.equal(f.calls.length, 0);
+  }
+  const f = fixture(t);
+  await f.run(prepareChatPage);
+  f.conversation.securityId = 'changed';
+  assert.equal(f.run(commitTextPage).ok, false);
+  assert.equal(f.calls.length, 0);
+});
+
+test('blocked native sender and timeout stay unsuccessful without retry', async t => {
+  for (const blocked of [true, false]) {
+    const f = fixture(t);
+    await f.run(prepareChatPage);
+    f.run(commitTextPage);
+    const receipt = f.run(waitChatPage);
+    if (blocked) f.calls[0].opts.onSendBlock();
+    else [...f.timers.values()].find(timer => timer.ms === 9500).fn();
+    assert.equal((await receipt).code, blocked ? 'NATIVE_SEND_BLOCKED' : 'SEND_UNCONFIRMED');
+    assert.equal(f.calls.length, 1);
+  }
+});
+
+test('cancellation releases listeners and prevents a prepared send', async t => {
+  const f = fixture(t);
+  await f.run(prepareChatPage);
+  const receipt = f.run(waitChatPage);
+  f.run(cancelChatPage, f.args.token);
+  assert.equal((await receipt).code, 'REQUESTS_PAUSED');
+  assert.equal(f.run(commitTextPage).ok, false);
+  assert.equal(f.service.onMessageDelivered, f.original);
+  assert.equal(f.calls.length, 0);
+});
+
+test('resume exchange does not turn a text message into a resume request receipt', async t => {
+  const f = fixture(t);
+  f.args.resume = true;
+  await f.run(prepareChatPage);
+  assert.equal(f.service.sendMessage, f.originalSend);
+  assert.equal(f.service.onMessageDelivered, f.original);
+  f.service.sendMessage(f.args.content, 'text', {bgSource: 7});
+  assert.equal(f.calls[0].opts.bgSource, 7);
+  assert.equal(f.calls[0].opts.clientMid, undefined);
+  let confirmed = false;
+  f.run(waitChatPage).then(() => {confirmed = true;});
+  f.delivered();
+  await Promise.resolve();
+  assert.equal(confirmed, false);
+  const receipt = f.run(waitChatPage);
+  f.run(cancelChatPage, f.args.token);
+  assert.equal((await receipt).code, 'REQUESTS_PAUSED');
+});
+
+test('native wrapper rejects missing job and serializes text with resume actions', async () => {
+  const native = new NativeChat({nativeWindow: () => null, allContents: () => []});
+  await assert.rejects(native.perform({friend: {uid: '202'}}), {code: 'JOB_CONVERSATION_MISMATCH'});
+  native.busy = true;
+  await assert.rejects(native.perform({}), {code: 'ACCOUNT_BUSY'});
+});

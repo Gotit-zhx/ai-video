@@ -17,6 +17,7 @@
     template_required:'请在话术管理中配置默认被动邀约回复',chat_required:'正在准备 BOSS 沟通页面',
     budget_wait:'正在按请求频率排队，会自动继续',send_wait:'正在按发送间隔排队',
     catching_up:'正在补收断开期间的新招呼和简历',
+    syncing_receipts:'正在同步已收取记录，完成后继续接收新简历',
     history_backfill:'正在补处理本职位历史招呼和简历',
     retry_wait:'后台连接暂缓，进度已保留，将自动继续',
     conversation_review:'持续接收新消息，部分会话待核对',
@@ -35,7 +36,7 @@
     for(const group of ruleId?(Array.isArray(ruleId)?ruleId:[ruleId]).map(id=>flow.counts?.[id]||{}):Object.values(flow.counts||{})){
       for(const [key,value] of Object.entries(group))counts[key]=(counts[key]||0)+value;
     }
-    const totals=[['inspect','待处理'],['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],
+    const totals=[['inspect','待核查会话'],['reply_ready','待回复'],['ready','待索取'],['requested','待接收'],
       ['export','正在入池'],['stored','已入池'],
       ['inspect_review','会话待核对'],['job_review','职位待核对'],['reply_uncertain','回复待核对'],['request_uncertain','索取待核对'],['request_failed','索取未完成']]
       .filter(([key])=>counts[key]).map(([key,label])=>`${label} ${counts[key]}`);
@@ -65,6 +66,7 @@
     let active='',generation=0,items=[],page=1,filter='pending',speechFilter='passive_reply',selected=null,timer=null,poolTimer=null,poolRefreshing=false;
     let jobFilter='',jobOptions=[],jobSignature='',originFilter='';
     let logOpen=false,poolSnapshot='',previewId='',previewHost=null,disposePreview=null;
+    let detailNeedsSync=false,detailSyncing=false,detailRetryAt=0,detailFields=null;
     const jobSyncs=new Map();
     const clearPreview=()=>{disposePreview?.();disposePreview=null;previewHost=null;previewId='';};
     const speechPanel=section('speeches'),resumePanel=section('resume-pool');
@@ -173,7 +175,7 @@
     };
     const detail=el('dialog','',root,'hr-pool-dialog hr-resume-review'),detailBody=el('div','',detail,'hr-review-body');
     button('关闭',el('div','',detail,'hr-review-close'),()=>{detail.close();selected=null;clearTimeout(timer);clearPreview();});
-    detail.addEventListener('close',()=>{selected=null;clearTimeout(timer);clearPreview();});
+    detail.addEventListener('close',()=>{selected=null;detailNeedsSync=false;detailRetryAt=0;clearTimeout(timer);clearPreview();});
     async function refreshPoolActivity(){
       if(active!=='resume-pool'||!allowed())return;const ticket=generation;
       try{
@@ -181,6 +183,14 @@
         if(ticket!==generation||active!=='resume-pool'||!allowed())return;
         poolActivity.textContent=status.data.state==='complete'&&!status.data.paused
           ?flowSummary(status.data.passive||{},jobFilter?jobOptions.find(job=>job.id===jobFilter)?.ruleIds||[]:null):'助手未连接，自动邀约暂停';
+        // This poll reads cached local connection state only. Once the same
+        // account is ready, refresh an initially locked detail without closing
+        // its PDF or requiring another click. Failed job reads retain backoff.
+        if(detail.open&&selected&&detailNeedsSync&&!detailSyncing&&Date.now()>=detailRetryAt
+          &&status.data.state==='complete'&&!status.data.paused){
+          detailSyncing=true;
+          try{await openResume(selected,{quiet:true});}finally{detailSyncing=false;}
+        }
       }catch{if(ticket===generation&&active==='resume-pool')poolActivity.textContent='正在等待助手恢复连接';}
     }
     async function load(quiet=false){
@@ -261,14 +271,15 @@
         }
       }catch(error){if(ticket===generation)feedback.textContent=error.message;}
     }
-    async function openResume(id){
-      const ticket=generation;selected=id;detailBody.replaceChildren();el('p','正在读取简历…',detailBody,'hr-hint');
+    async function openResume(id,{quiet=false}={}){
+      const ticket=generation;selected=id;detailNeedsSync=false;
+      if(!quiet){detailBody.replaceChildren();el('p','正在读取简历…',detailBody,'hr-hint');}
       if(!detail.open)detail.showModal();
       try{
         const [data,speeches,directory]=await Promise.all([request('resume-pool?id='+encodeURIComponent(id)),request('speeches'),request('pool')]);
         if(ticket!==generation||selected!==id||!allowed()||!detail.open)return;
         let row=data.items[0];if(!row)throw Error('简历不存在');
-        drawResume(row,speeches.items||[],directory.departments||[]);
+        if(!quiet)drawResume(row,speeches.items||[],directory.departments||[]);
         if(row.accountKey){
           const available=await syncJobAvailability(row.accountKey);
           if(ticket!==generation||selected!==id||!allowed()||!detail.open)return;
@@ -276,10 +287,19 @@
             const latest=await request('resume-pool?id='+encodeURIComponent(id));
             if(ticket!==generation||selected!==id||!allowed()||!detail.open)return;
             row=latest.items[0]||row;
-          }else row={...row,canReview:false,jobRestriction:'职位状态暂未确认，仅可查看；请连接对应招聘账号后重试。'};
-          drawResume(row,speeches.items||[],directory.departments||[]);
+          }else{
+            detailNeedsSync=true;
+            detailRetryAt=jobSyncs.get(row.accountKey)?.until||Date.now()+10000;
+            row={...row,canReview:false,jobRestriction:'正在等待对应招聘账号的职位状态，连接恢复后会自动更新。'};
+          }
+          drawResume(row,speeches.items||[],directory.departments||[],quiet);
+        }else if(quiet){
+          drawResume(row,speeches.items||[],directory.departments||[],true);
         }
-      }catch(error){if(ticket===generation&&selected===id){detailBody.replaceChildren();el('p',error.message,detailBody,'hr-error');}}
+      }catch(error){if(ticket===generation&&selected===id&&detail.open){
+        if(quiet){detailNeedsSync=true;detailRetryAt=Date.now()+10000;}
+        else{detailBody.replaceChildren();el('p',error.message,detailBody,'hr-error');}
+      }}
     }
     async function syncJobAvailability(accountKey,force=false){
       if(!allowed())return false;
@@ -304,9 +324,12 @@
         return false;
       }
     }
-    function drawResume(row,speeches,departments){
+    function drawResume(row,speeches,departments,preserve=false){
       const template=speeches.find(s=>s.isDefault&&s.active&&s.kind==='reject');
       const canReview=row.canReview===true;
+      const draft=preserve&&previewId===row.id&&detailFields?{
+        resume:detailFields.resume.value,job:detailFields.job.value,open:detailFields.details.open,
+      }:null;
       if(previewId!==row.id)clearPreview();
       detailBody.replaceChildren();
       const header=el('header','',detailBody,'hr-review-header');
@@ -328,6 +351,8 @@
       const textDetails=el('details','',ai);el('summary','查看或补充用于分析的简历文字',textDetails);
       const resumeText=field(textDetails,'简历正文','textarea');resumeText.value=row.resumeText||'';resumeText.rows=6;resumeText.maxLength=60000;
       const jobText=field(textDetails,'岗位职责与要求','textarea');jobText.value=row.jobDescription||'';jobText.rows=4;jobText.maxLength=10000;
+      if(draft){resumeText.value=draft.resume;jobText.value=draft.job;textDetails.open=draft.open;}
+      detailFields={resume:resumeText,job:jobText,details:textDetails};
       const aiFeedback=el('p',row.aiError||'',ai,'hr-hint'),aiActions=el('div','',ai,'hr-actions');
       aiFeedback.setAttribute('role','status');
       if(row.jobSource)el('p','分析岗位：'+row.jobName+' · JD 来自'+row.jobSource,ai,'hr-hint');
