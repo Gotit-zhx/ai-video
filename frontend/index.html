@@ -7,7 +7,8 @@
     if (window.location.search) {
       const language = new URLSearchParams(window.location.search).get("lang");
       const safeQuery = ["zh", "en", "ms", "id", "th", "vi", "fil"].includes(language) ? `?lang=${language}` : "";
-      window.history.replaceState(null, document.title, window.location.pathname + safeQuery + window.location.hash);
+      const safeHash = new URLSearchParams(window.location.search).get("view") === "finance" && !window.location.hash ? "#finance-shops" : window.location.hash;
+      window.history.replaceState(null, document.title, window.location.pathname + safeQuery + safeHash);
     }
 
     // Resolve the preferred theme before the render-blocking stylesheet loads.
@@ -48,6 +49,7 @@
   <link rel="stylesheet" href="/product-bulk-history.css?v=20260910-bulk-history-2">
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
+    <link rel="stylesheet" href="/finance-workspace.css?v=finance-20261020-1">
     <link rel="stylesheet" href="/hr-workspace.css?v=20261012-progress-compact-3">
 <link rel="stylesheet" href="/i18n.css?v=20260921-2">
 </head>
@@ -213,6 +215,15 @@
           <a href="#hr-onboarding" class="nav-item" data-hr-route="onboarding" data-nav-label="入职安排及跟进" title="入职安排及跟进"><span aria-hidden="true">▣</span><span class="nav-label">入职安排及跟进</span></a>
           <a href="#hr-speeches" class="nav-item" data-hr-route="speeches" data-nav-label="话术管理" title="话术管理"><span aria-hidden="true">▧</span><span class="nav-label">话术管理</span></a>
           <a href="#hr-departments" class="nav-item" data-hr-route="departments" data-nav-label="部门管理" title="部门管理"><span aria-hidden="true">▥</span><span class="nav-label">部门管理</span></a>
+        </div></details>
+        <details class="nav-group" data-nav-group="finance" hidden><summary title="财务 BI"><span aria-hidden="true">▥</span><span class="nav-group-label">财务 BI</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
+          <a href="#finance-overview" class="nav-item" data-finance-route="overview" data-nav-label="财务总览" title="财务总览"><span aria-hidden="true">▥</span><span class="nav-label">财务总览</span></a>
+          <a href="#finance-settlements" class="nav-item" data-finance-route="settlements" data-nav-label="结算中心" title="结算中心"><span aria-hidden="true">▥</span><span class="nav-label">结算中心</span></a>
+          <a href="#finance-reconciliation" class="nav-item" data-finance-route="reconciliation" data-nav-label="对账中心" title="对账中心"><span aria-hidden="true">▥</span><span class="nav-label">对账中心</span></a>
+          <a href="#finance-orders" class="nav-item" data-finance-route="orders" data-nav-label="订单与退款" title="订单与退款"><span aria-hidden="true">▥</span><span class="nav-label">订单与退款</span></a>
+          <a href="#finance-fees" class="nav-item" data-finance-route="fees" data-nav-label="费用与调整" title="费用与调整"><span aria-hidden="true">▥</span><span class="nav-label">费用与调整</span></a>
+          <a href="#finance-ads" class="nav-item" data-finance-route="ads" data-nav-label="广告分析" title="广告分析"><span aria-hidden="true">▥</span><span class="nav-label">广告分析</span></a>
+          <a href="#finance-shops" class="nav-item" data-finance-route="shops" data-nav-label="财务店铺管理" title="财务店铺管理"><span aria-hidden="true">▥</span><span class="nav-label">财务店铺管理</span></a>
         </div></details>
         <details class="nav-group" data-nav-group="automation"><summary title="自动化"><span aria-hidden="true">↯</span><span class="nav-group-label">自动化</span><i aria-hidden="true">⌄</i></summary><div class="nav-children">
         <a href="#" id="nav-automations" class="nav-item" data-nav-label="自动化中心" title="自动化中心"><span aria-hidden="true">↯</span><span class="nav-label">自动化中心</span></a>
@@ -718,6 +729,7 @@
       </div>
 
       <section id="knowledge-page" class="workspace-body" hidden></section>
+      <section id="finance-page" class="workspace-body finance-workspace" hidden></section>
       <section id="hr-page" class="workspace-body" hidden></section>
       <div id="shop-management-page" class="workspace-body" hidden>
         <details class="commerce-planner">
@@ -1994,10 +2006,11 @@
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
   <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-multi-shop-1">
   <script src="/product-listing-templates.js?v=20261015-module-isolation" defer></script>
-  <script src="/app.js?v=main-image-direct-20261019-1" defer></script>
+  <script src="/app.js?v=finance-20261020-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261019-preserve-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261012-compact-3" defer></script>
+  <script src="/finance-workspace.js?v=finance-20261020-1" defer></script>
   <script src="/hr-bi.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-pool.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-demands.js?v=20261009-demands-delete-2" defer></script>

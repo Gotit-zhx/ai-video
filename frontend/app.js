@@ -980,6 +980,9 @@ async function showDashboard(user) {
   document.querySelector("#current-organization").textContent = `${user.organizationName || "企业工作空间"}${user.organizationCode ? ` · ${user.organizationCode}` : ""}`;
   document.querySelector("#current-permission-state").textContent = productPermissionLabel();
   applyFeatureAccess();
+  if (window.location.hash.startsWith('#finance-') && globalThis.FinanceWorkspace?.allowed()) {
+    switchWorkspace('finance'); globalThis.FinanceWorkspace.enter(window.location.hash.slice(9)); return;
+  }
   if (window.location.hash.startsWith('#knowledge-') && canAccessKnowledge()) {
     switchWorkspace('knowledge'); globalThis.KnowledgeWorkspace?.enter(window.location.hash.slice(1)); return;
   }
@@ -1103,6 +1106,7 @@ function applyFeatureAccess() {
   document.querySelector("#nav-general-video").hidden = !canViewVideoTasks;
   document.querySelector("#nav-ai-video-monitor").hidden = !canViewVideoMonitor;
   document.querySelector("#nav-publish").hidden = !canAccessProductCenter();
+  document.querySelectorAll('[data-finance-route]').forEach(link => { link.hidden = currentUser?.platformAdmin !== true; });
   document.querySelector("#nav-shops").hidden = !hasAnyPermission("product:view", "product:publish");
   document.querySelector("#nav-automations").hidden = !canUseAutomation;
   document.querySelector("#nav-automation-admin").hidden = !canViewAutomationAdmin;
@@ -1392,6 +1396,10 @@ function switchWorkspace(page) {
   const isAiVideoMonitor = page === "aiVideoMonitor";
   const isProductPublish = page === "productPublish";
   const isShops = page === "shops";
+  const isFinance = page === 'finance';
+  document.querySelector('#finance-page').hidden = !isFinance;
+  if (!isFinance) globalThis.FinanceWorkspace?.leave();
+  document.querySelectorAll('[data-finance-route]').forEach(link => link.classList.toggle('active', isFinance && link.hash === window.location.hash));
   const isKnowledge = page === 'knowledge';
   document.querySelector('#knowledge-page').hidden = !isKnowledge;
   const isHr = page === 'hr';
@@ -1423,9 +1431,9 @@ function switchWorkspace(page) {
   document.querySelector("#nav-publish").classList.toggle("active", isProductPublish);
   document.querySelectorAll("[data-commerce-route]").forEach(link => { link.classList.remove("active"); link.removeAttribute("aria-current"); });
   document.querySelector(".topbar h2").textContent =
-    isKnowledge ? "知识库" : isHr ? "人力资源" : isShops ? "店铺管理" :
+    isFinance ? "财务 BI" : isKnowledge ? "知识库" : isHr ? "人力资源" : isShops ? "店铺管理" :
     isVideoScripts ? "视频脚本管理" : isGeneralVideo ? "通用生成" : isAiVideoTasks ? "AI 视频任务" : isAiVideoMonitor ? "AI 任务监控" : isProductPublish ? "商品采集与发布" : isAutomationAdmin ? "自动化管理" : isAutomations ? "自动化中心" : isAssistant ? "助手联调" : isModels ? "模型接入" : isSystem ? "企业系统配置" : "内容运营工作台";
-  if (isKnowledge || isHr) {
+  if (isKnowledge || isHr || isFinance) {
     rememberProductCaptureRoute(false);
   } else if (isShops) {
     rememberProductCaptureRoute(false);
@@ -1433,7 +1441,7 @@ function switchWorkspace(page) {
   } else if (isProductPublish) {
     rememberProductCaptureRoute(true);
     selectCommerceSection();
-  } else if (commerceRouteFromHash() || window.location.hash === "#shops" || window.location.hash.startsWith("#knowledge-") || window.location.hash.startsWith("#hr-")) {
+  } else if (commerceRouteFromHash() || window.location.hash === "#shops" || window.location.hash.startsWith("#knowledge-") || window.location.hash.startsWith("#hr-") || window.location.hash.startsWith("#finance-")) {
     rememberProductCaptureRoute(false);
     window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
   }
@@ -1485,6 +1493,9 @@ window.addEventListener("hashchange", () => {
     return;
   }
 
+  if (window.location.hash.startsWith('#finance-') && globalThis.FinanceWorkspace?.allowed()) {
+    switchWorkspace('finance'); globalThis.FinanceWorkspace.enter(window.location.hash.slice(9)); return;
+  }
   if (window.location.hash.startsWith('#knowledge-') && canAccessKnowledge()) {
     switchWorkspace('knowledge'); globalThis.KnowledgeWorkspace?.enter(window.location.hash.slice(1)); return;
   }
