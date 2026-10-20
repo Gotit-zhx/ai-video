@@ -1,4 +1,4 @@
-# Natural Exposure for Video Reference Images
+# Natural Exposure and Fabric for Video Reference Images
 
 ## Changes
 
@@ -144,3 +144,51 @@ All 105 focused tests passed with zero failures, errors or skips, including
 intentional source details, local grip physics, and reuse of existing outputs.
 The separate deployment tag is
 `ai-commerce-platform:video-natural-fabric-20261020`.
+
+The fabric update was deployed from commit `f75ff75` at
+`/opt/heyi/releases/video-natural-fabric-20261020-f75ff75`. Queue/lease idle
+checks, the reviewed JAR hash and app health all passed. Runtime/frontend
+containers remained unchanged and the public site returned HTTP 200.
+
+## Requested Image Preview
+
+After deployment the user explicitly requested a new image run using the latest
+video task. The source task was `8909ffc6-d52c-48dd-9ce9-464632be6013`, created on
+October 20, 2026 at 03:02:25 UTC, with item
+`a84613f2-388a-455e-85c8-f407a831a01f`, named
+`ScreenShot_2026-09-10_182615_395`.
+
+Because its video was still generating, the test used an isolated image-only
+task rather than deleting its existing image assets or altering its video job:
+
+- Preview task: `4cb9b2da-e0fa-484b-874c-293f77ccc9d9`.
+- Name: the original task name followed by ` - V6 preview 20261020`.
+- Source image SHA-256, script JSON, generation mode and background mode matched
+  the original task before submission.
+- Only `start-images` was called, once. Automatic video start remained disabled
+  and the preview has zero video-generation jobs.
+- All original asset IDs and the original provider video task ID were preserved.
+
+The preview reached `IMAGE_READY` at 100%. Model image, storyboard guide and
+final storyboard each recorded one generation attempt; the first frame was
+derived from the finished grid. The normal application analysis/validation
+behavior was unchanged, and no extra quality-based generation was requested.
+
+Both final image records use `gemini-nano-banana-2.1`, include the new background
+daylight and natural-fabric policies, and point to Dayan bucket `test-hoyee`:
+
+| Asset | ID | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| Model image | `d3a47484-87d6-4592-a9e2-3c34d3a97ba2` | 19366239 | `73bbb7f8df28130a23583c7ff29f04adf0eb3acbef2a8fad23c762e1d39b1b9d` |
+| Storyboard grid | `c576eb74-0b44-4fd4-a644-a6d696da0153` | 19982512 | `40de40bd667825b226a336503fcfda6d9335161323f049afcca34b13ac4fe187` |
+
+The model result is a 3072 x 5504 PNG. Results are exported without resizing,
+retouching or post-generation exposure changes. The one-off guarded helper is
+`scripts/preview-latest-video-images.py`; its state is recorded in
+`/opt/heyi/diagnostics/natural-fabric-preview-20261020/preview.json`.
+
+The exported model and grid PNG hashes match their stored output bytes. Visual
+inspection found black outlines on some hands and arms in the final grid.
+This is a residual output-quality issue, not a claim of visual acceptance.
+Both outputs are returned unchanged; no additional paid redraw or video
+generation was submitted to correct it.
