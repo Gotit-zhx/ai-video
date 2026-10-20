@@ -192,3 +192,42 @@ inspection found black outlines on some hands and arms in the final grid.
 This is a residual output-quality issue, not a claim of visual acceptance.
 Both outputs are returned unchanged; no additional paid redraw or video
 generation was submitted to correct it.
+
+## Photographic Edge Follow-Up
+
+Inspection of the actual preview guide confirms the source of the hand outlines:
+it is a flat, outlined mannequin image. Its hand and arm lines match the final
+grid's retained outlines, especially cells 04-08. The guide PNG SHA-256 is
+`7c6585f37a0dfdb3b76474fbf6642b1b474332e00a111e3ea74c0683ee3a3708`.
+
+The phrase permitting a neutral mannequin "or a simple realistic human pose
+outline" predates the lighting and fabric changes. Both the original task and
+the preview stored that wording. The recent fabric change did not modify the
+guide's body instructions; the lighting changes affected its illumination.
+The directly observed failure is guide-style leakage during identity transfer,
+not evidence that increasing daylight draws black borders.
+
+The fix removes the optional outline representation, specifies a shaded solid
+neutral mannequin without drawn strokes, and clarifies that replacement occurs
+in the next image step, not later in video generation. Final transfer must
+reconstruct the entire physical body, including all visible hands, from the
+model's photographic skin and shading rather than recoloring placeholder pixels.
+It also handles previously saved guides that already contain outlines.
+
+A shared photographic-edge rule applies to primary images and both final
+storyboard paths. It forbids added drawn borders on physical subjects while
+explicitly preserving original print artwork, lettering, logos, seams, piping,
+hair and natural contact shadows. It does not apply print-preservation language
+to the neutral guide. Background daylight and natural-fabric policies remain.
+
+All 107 focused tests passed, with zero failures, errors or skips, including
+24 lighting/fabric/edge cases. No extra validation request, postprocessing,
+automatic redraw, budget change or saved-asset invalidation is introduced.
+Prompt constraints are not a mathematical guarantee of model compliance.
+
+The requested visual follow-up is limited to one explicit storyboard
+regeneration on the isolated preview task, retaining its existing model image.
+The helper checks image-ready status, the exact task/model IDs, disabled
+automatic video start, and unchanged source task assets/provider ID. It records
+the submission before calling the API so transport uncertainty cannot cause
+an accidental duplicate request.

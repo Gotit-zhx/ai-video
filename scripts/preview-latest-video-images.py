@@ -122,6 +122,9 @@ def poll(opener):
     assert preview["videoSubmittedAt"] is None
     assert all(item["videoProviderTaskId"] is None for item in preview["items"])
     assert not any(asset["assetType"] == "VIDEO_RESULT" for asset in preview["assets"])
+    if record.get("preservedModelAssetId"):
+        assert any(asset["id"] == record["preservedModelAssetId"] and asset["assetType"] == "MODEL_IMAGE"
+                   for asset in preview["assets"]), "Preview model image changed"
     item = preview["items"][0]
     record.update(status=preview["task"]["status"], assets=preview["assets"])
     save(record)
@@ -136,10 +139,39 @@ def poll(opener):
     }, ensure_ascii=False))
 
 
+def regenerate_storyboard(opener):
+    record = state()
+    assert record["previewTaskId"] == "4cb9b2da-e0fa-484b-874c-293f77ccc9d9"
+    assert record.get("storyboardRegenerationRequests", 0) == 0, "Already requested; poll instead"
+    poll(opener)
+    preview = detail(opener, record["previewTaskId"])
+    assert preview["task"]["status"] == "IMAGE_READY"
+    assert len(preview["items"]) == 1 and preview["items"][0]["id"] == record["previewItemId"]
+    models = [asset for asset in preview["assets"] if asset["assetType"] == "MODEL_IMAGE"]
+    assert len(models) == 1 and models[0]["id"] == "d3a47484-87d6-4592-a9e2-3c34d3a97ba2"
+    sql = ("SELECT auto_start_video_after_images FROM ai_video_tasks "
+           "WHERE id='4cb9b2da-e0fa-484b-874c-293f77ccc9d9' "
+           "AND organization_id='6a61f788-6685-4b64-82b1-eec97ed8cf90';")
+    flag = subprocess.check_output(
+        ["docker", "exec", "-i", "ai-commerce-mysql", "sh", "-c",
+         'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -NB "$MYSQL_DATABASE"'],
+        input=sql.encode()).decode().strip()
+    assert flag == "0", "Automatic video start must remain disabled"
+    record.update(phase="SUBMITTING_STORYBOARD", storyboardRegenerationRequests=1,
+                  preservedModelAssetId=models[0]["id"], previousPreviewAssets=preview["assets"])
+    save(record)
+    result = request(opener, f"/api/v1/ai-video-tasks/{record['previewTaskId']}/items/"
+                     f"{record['previewItemId']}/regenerate-storyboard", "POST")
+    record.update(phase="STORYBOARD_SUBMITTED", status=result["status"])
+    save(record)
+    print(json.dumps({"phase": record["phase"], "status": result["status"],
+                      "storyboardRegenerationRequests": 1, "videoSubmissions": 0}))
+
+
 def export(opener):
     record = state()
     kind = sys.argv[3]
-    assert kind in ("MODEL_IMAGE", "STORYBOARD_GRID", "STORYBOARD_FIRST_FRAME")
+    assert kind in ("MODEL_IMAGE", "STORYBOARD_GUIDE", "STORYBOARD_GRID", "STORYBOARD_FIRST_FRAME")
     assets = detail(opener, record["previewTaskId"])["assets"]
     matches = [asset for asset in assets if asset["assetType"] == kind]
     assert len(matches) == 1, "Requested image is not ready"
@@ -154,7 +186,8 @@ if __name__ == "__main__":
     session = None
     try:
         session = login()
-        {"prepare": prepare, "generate": generate, "poll": poll, "export": export}[MODE](session)
+        {"prepare": prepare, "generate": generate, "poll": poll, "export": export,
+         "regenerate-storyboard": regenerate_storyboard}[MODE](session)
     except urllib.error.HTTPError as error:
         print(json.dumps({"error": "Platform request failed", "httpStatus": error.code,
                           "mode": MODE, "resubmitted": False}), file=sys.stderr)

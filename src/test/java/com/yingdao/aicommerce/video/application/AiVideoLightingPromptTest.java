@@ -54,6 +54,7 @@ class AiVideoLightingPromptTest {
         String prompt = primary(task, false);
         assertNaturalExposure(prompt);
         assertNaturalFabric(prompt);
+        assertPhotographicEdges(prompt);
         assertFalse(prompt.contains("不主动改变场景亮度"));
         assertFalse(prompt.contains("不额外设计或添加窗光"));
         if ("SCRIPT_ORIGINAL".equals(background)) {
@@ -84,6 +85,7 @@ class AiVideoLightingPromptTest {
         String prompt = primary(task(mode, "SCRIPT_ORIGINAL"), true);
         assertNaturalExposure(prompt);
         assertNaturalFabric(prompt);
+        assertPhotographicEdges(prompt);
         assertTrue(prompt.contains("参考图2"));
         assertTrue(prompt.contains("不照搬欠曝"));
         assertFalse(prompt.contains("曝光、白平衡、景深、机位方向"));
@@ -122,6 +124,14 @@ class AiVideoLightingPromptTest {
                 task, item(task), shots, frames);
         assertNaturalExposure(prompt);
         assertNaturalFabric(prompt);
+        assertPhotographicEdges(prompt);
+        assertTrue(prompt.contains("【动作与外观隔离 V1】"));
+        assertTrue(prompt.contains("不提供任何皮肤、材质或绘画笔触"));
+        assertTrue(prompt.contains("手臂、手腕、手掌与每根可见手指"));
+        assertTrue(prompt.contains("不能只换脸和衣服"));
+        assertTrue(prompt.contains("不能只把灰色占位手涂成肤色"));
+        assertTrue(prompt.contains("即使参考图3已有黑边、线稿或平涂"));
+        assertTrue(prompt.contains("禁止描摹其黑色边线"));
         assertTrue(prompt.contains("不沿用参考图的欠曝"));
         assertFalse(prompt.contains("不得反过来修改背景去迁就人物"));
         assertFalse(prompt.contains("曝光、白平衡和锐度参数"));
@@ -144,9 +154,29 @@ class AiVideoLightingPromptTest {
         String guide = ReflectionTestUtils.invokeMethod(processor, "storyboardGridPrompt", task, shots);
         assertNaturalExposure(product);
         assertNaturalFabric(product);
+        assertPhotographicEdges(product);
         assertNaturalExposure(guide);
         assertFalse(guide.contains("【服装自然质感 V1】"));
         assertTrue(guide.contains("不复制偏暗曝光"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"SCRIPT_ORIGINAL", "AI_DESIGNED"})
+    void generatedPoseGuidesUseSolidShadingWithoutSuggestingLineArt(String background) {
+        String prompt = ReflectionTestUtils.invokeMethod(processor, "storyboardGridPrompt",
+                task("MODEL_WEAR", background), shots);
+
+        assertTrue(prompt.contains("【实体动作底图 V2】"));
+        assertTrue(prompt.contains("无脸、无身份的中性灰哑光实体人体模型"));
+        assertTrue(prompt.contains("手掌和手指必须是有真实体积、连续明暗与自然遮挡的完整实体表面"));
+        assertTrue(prompt.contains("边缘不加描线"));
+        assertTrue(prompt.contains("禁止线稿、素描、漫画、二维剪影、骨架线、关节标记、黑色描边"));
+        assertTrue(prompt.contains("不能保留占位身体像素"));
+        assertTrue(prompt.contains("不穿带有颜色、图案、文字或款式特征的具体服装"));
+        assertFalse(prompt.contains("或简洁写实的人体姿态轮廓"));
+        assertFalse(prompt.contains("后续视频会用独立模特图替换该人体"));
+        assertFalse(prompt.contains("【真实摄影边缘 V1】"));
+        assertNaturalExposure(prompt);
     }
 
     @Test void ordinaryPosesDoNotAcquireGripWrinkles() {
@@ -235,6 +265,16 @@ class AiVideoLightingPromptTest {
         assertTrue(prompt.contains("原商品本身的薄纱、网眼或透视设计则按原样保留"));
         assertTrue(prompt.contains("不擅自加厚"));
         assertFalse(prompt.contains("连续褶皱"));
+    }
+
+    private static void assertPhotographicEdges(String prompt) {
+        assertTrue(prompt.contains("【真实摄影边缘 V1】"));
+        assertTrue(prompt.contains("保留正常接触阴影，不沿外缘额外画线"));
+        assertTrue(prompt.contains("禁止给实体添加黑色描边"));
+        assertTrue(prompt.contains("商品原有印花、插画、文字、Logo 内的黑线"));
+        assertTrue(prompt.contains("真实缝线、滚边、头发和自然暗部必须按原样保留"));
+        assertTrue(prompt.contains("不能统一去黑或模糊边缘"));
+        assertTrue(prompt.contains("印花的漫画笔触只属于布面图案"));
     }
 
     private static AiVideoTask task(String mode, String background) {
