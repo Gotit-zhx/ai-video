@@ -90,3 +90,28 @@ failure does not fall back to local image persistence.
 Readback evidence is recorded at
 `/opt/heyi/diagnostics/main-image-dayan-20261020/report.json`.
 This check verified storage and backend reads, not browser preview rendering.
+
+## Room Daylight Follow-Up
+
+The first exposure policy required readable shadow detail but did not explicitly
+prioritize lighting throughout the background. The follow-up strengthens the
+shared policy to natural-exposure V2 and the model prompt to REALISM V5:
+
+- Prioritize soft ambient illumination on walls, furniture, floors and the back
+  of the room, avoiding a bright subject against a dull, dark background.
+- For daytime or unspecified ordinary interiors, use broad diffuse daylight
+  and bounced light throughout the room. Keep shadow edges soft while retaining
+  contact shadows, material texture and spatial depth.
+- Keep people and products normally exposed instead of brightening the entire
+  image. Preserve light garment colors, folds and prints, dark product colors,
+  and natural skin tones.
+- Preserve existing windows, room layout and wall colors. Do not invent hard
+  sunbeams, turn a night scene into daylight, or add a gray haze to lift shadows.
+- Share the policy across model images, product scene images, generated guides
+  and final storyboards. Existing assets and generation budgets are unchanged.
+
+All 103 focused tests passed with zero failures, errors or skips, including
+20 lighting cases covering every prompt path and explicit night-scene evidence.
+Release script syntax validation and `git diff --check` also passed.
+The follow-up uses the separate image tag
+`ai-commerce-platform:video-room-daylight-20261020`.

@@ -66,6 +66,7 @@ class AiVideoLightingPromptTest {
             assertFalse(prompt.contains("浅灰墙面与明亮柜体"));
         }
         if ("MODEL_WEAR".equals(mode)) {
+            assertTrue(prompt.contains("【REALISM V5｜背景采光优先手机随拍任务】"));
             assertTrue(prompt.contains("【商品保真】"));
             assertTrue(prompt.contains("正确穿着母版"));
             assertTrue(prompt.contains("【中近景门禁版本：CLOSE_FRAMING_GATE_V1】"));
@@ -89,6 +90,22 @@ class AiVideoLightingPromptTest {
         assertNaturalExposure(prompt);
         assertFalse(AiVideoImageProcessor.useScriptFirstFrameForPrimary(true, true));
         assertFalse(AiVideoImageProcessor.useScriptFirstFrameForPrimary(false, true));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"MODEL_WEAR", "PRODUCT_ONLY"})
+    void roomLightingPreservesExplicitNightScenesAndTheirExistingLightSources(String mode) {
+        shots = ReflectionTestUtils.invokeMethod(processor, "readShots", """
+                {"shots":[{"sequence":1,"sceneDescription":"夜晚卧室，右侧床头灯照明",
+                "imagePrompt":{"prompt":"保留夜景与原有墙面，背景偏暗"}}]}
+                """);
+        String prompt = primary(task(mode, "SCRIPT_ORIGINAL"), false);
+
+        assertTrue(prompt.contains("夜晚卧室，右侧床头灯照明"));
+        assertTrue(prompt.contains("保留夜景与原有墙面，背景偏暗"));
+        assertNaturalExposure(prompt);
+        assertTrue(prompt.contains("脚本明确为夜景时保留夜景和原有光源"));
+        assertTrue(prompt.contains("不强行加入白昼日光"));
     }
 
     @ParameterizedTest
@@ -153,7 +170,20 @@ class AiVideoLightingPromptTest {
 
     private static void assertNaturalExposure(String prompt) {
         assertNotNull(prompt);
-        assertTrue(prompt.contains("【自然明亮曝光 V1】"));
+        assertTrue(prompt.contains("【自然明亮曝光 V2】"));
+        assertTrue(prompt.contains("【背景采光优先】"));
+        assertTrue(prompt.contains("重点提亮房间和背景的环境光"));
+        assertTrue(prompt.contains("墙面、家具、地面和房间深处都有柔和照明"));
+        assertTrue(prompt.contains("避免人亮背景暗、墙面灰闷或远处角落压黑"));
+        assertTrue(prompt.contains("日间或未指定昼夜的普通室内"));
+        assertTrue(prompt.contains("充足的大面积漫射自然日光与墙面反射补光"));
+        assertTrue(prompt.contains("阴影边缘柔和、暗部可辨"));
+        assertTrue(prompt.contains("保留真实接触阴影、材质纹理和空间层次"));
+        assertTrue(prompt.contains("人物和商品保持正常曝光，不整体拉高曝光"));
+        assertTrue(prompt.contains("浅色衣服保留本色、褶皱和印花细节，深色商品不提灰"));
+        assertTrue(prompt.contains("不凭空增添或移动门窗"));
+        assertTrue(prompt.contains("不把原墙面刷成白色"));
+        assertTrue(prompt.contains("不强行加入白昼日光"));
         assertTrue(prompt.contains("允许符合场景的柔和自然采光、漫射窗光和合理补光"));
         assertTrue(prompt.contains("不得改变场景类型、昼夜设定、商品本色"));
         assertTrue(prompt.contains("不得把皮肤漂白"));

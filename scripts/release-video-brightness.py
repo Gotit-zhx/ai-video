@@ -17,7 +17,7 @@ core = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(core)
 core.PREFIXES = ["com/yingdao/aicommerce/video/application/AiVideoImageProcessor"]
 ROOT, APP = core.ROOT, core.APP
-TAG = "video-brightness-20261020"
+TAG = "video-room-daylight-20261020"
 TESTS = ("AiVideoLightingPromptTest", "AiVideoImageProcessorTest", "AiVideoImageAttemptsTest",
          "AiVideoImageGatewayTest", "AiVideoTaskRegenerationPromptTest")
 
