@@ -41,3 +41,52 @@ live app image, checks baseline hashes, and preserves unrelated JAR entries.
 The runtime and frontend are not restarted. Activation waits for active image
 work, video submissions/reviews and video polling leases to be idle. Accepted
 provider-side video jobs remain persisted and resumable.
+
+## Production Rollout
+
+Deployed commit `a69fa6d` on October 20, 2026 with release directory
+`/opt/heyi/releases/video-brightness-20261020-a69fa6d` and active app image
+`ai-commerce-platform:video-brightness-20261020`.
+
+- Baseline processor hashes matched the live app. Only the reviewed processor
+  class family changed; unrelated JAR entries remained byte-for-byte identical.
+- Idle checks passed before the graceful app restart. Post-deployment checks
+  confirmed a healthy app, the expected JAR hash, unchanged runtime/frontend,
+  and HTTP 200 from the public site.
+- Existing model and storyboard image IDs were preserved. The accepted video
+  provider job remained on attempt 1; no generation, retry or paid test was
+  submitted as part of this rollout.
+- New generations and explicit regeneration use the updated exposure prompts.
+  Existing generated images are not automatically replaced.
+
+Release evidence is recorded in `manifest.json`, `prepared.json`,
+`activation.json` and `verification.json` under the release directory.
+
+## Dayan OSS Readback
+
+The commerce main-image archive already routes new writes to Dayan OSS.
+Production has OSS enabled with Dayan bucket `test-hoyee` and endpoint
+`https://oss.cloud.dayan.cloud`; the legacy bucket remains available only for
+old-location reads. This release does not change storage configuration.
+
+The screenshot's workflow `1b8311d5-6394-436e-940d-1f4c3d21910f` completed with
+all 9 images READY. The read-only `CommerceImageOssLiveCheck --read-existing`
+check used the production OSS SDK configuration and verified:
+
+- All 9 private objects were readable from Dayan OSS.
+- All content SHA-256 checks matched and all images decoded successfully.
+- Total verified image data was 13,313,148 bytes.
+- The check performed zero writes and found zero local archive image files.
+- A separate post-deployment database check found zero remaining duplicate
+  result payloads after archive acknowledgement.
+
+Stable archive references use
+`oss://test-hoyee/heyi/commerce-images/<tenant-sha256>/<content-sha256>`.
+The authenticated `/api/v1/product-main-image-results/{id}` route reads image
+bytes from OSS, so a `hoyee.org.cn` image URL is not evidence of local storage.
+New archive writes must pass OSS readback verification before success; an OSS
+failure does not fall back to local image persistence.
+
+Readback evidence is recorded at
+`/opt/heyi/diagnostics/main-image-dayan-20261020/report.json`.
+This check verified storage and backend reads, not browser preview rendering.
