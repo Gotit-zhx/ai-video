@@ -70,4 +70,33 @@ for the legacy source access limitation and content-proven recovery procedure.
 
 ## Rollout Evidence
 
-Deployment and production readback results are recorded here after verification.
+- Runtime: `heyi-pi-runtime:image-operation-oss-20261020-v2`.
+- Release: `/opt/heyi/releases/image-operation-oss-20261020-5df7990`.
+- Runtime source commit: `5df7990`. All 215 focused tests passed locally and
+  inside the exact production image without access to models.
+- The official Node SDK needed Dayan-compatible V1 `Date` signing and 8 MiB
+  multipart chunks, matching the existing Java uploader. A real 9 MiB random
+  object passed upload, complete readback and deletion before activation.
+- Two actual historical business operations passed the authenticated recovery
+  HTTP endpoint with identical original responses. Their local records shrank
+  from 1,071,488 and 1,221,611 bytes to 792 and 1,440 bytes. Anonymous object
+  access was denied. No generation requests were made.
+- At 2026-10-20 14:48:24 Asia/Shanghai, 37 records representing 257,013,729
+  original bytes had been offloaded, including 21 sub-megabyte records.
+  There were zero migration warnings. Historical migration was still in
+  progress; 1,633 inline records of at least 64 KiB remained at that checkpoint.
+- Root disk utilization was 86%, with 14,470,586,368 available bytes. Both
+  application and runtime health were UP and the public site returned HTTP 200.
+  Sampled CPU was 99% idle with zero I/O wait and no swap usage.
+- All other running containers, including the Java app and frontend, retained
+  their container IDs. Model configuration, database rows and existing business
+  task states were not changed by the deployment.
+
+Private `probe.json`, `recovery-probe.json`, `activation.json`, `tests.log` and
+timestamped inventory files in the release directory hold the rollout evidence.
+The continuously running migration is not a one-off cleanup command.
+
+The separate MySQL watermark-check table occupied approximately 1.46 GB
+(data and indexes) at inspection. This runtime release does not rewrite its
+SQL generation history or rebuild database tables. Database backups and source
+analysis working files are likewise not treated as disposable garbage.
