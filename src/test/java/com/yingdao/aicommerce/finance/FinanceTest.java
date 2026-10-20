@@ -25,6 +25,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class FinanceTest {
+    @SuppressWarnings("unchecked")
+    static <T>T classProxy(T target){
+        var factory=new org.springframework.aop.framework.ProxyFactory(target);factory.setProxyTargetClass(true);
+        factory.addAdvice((org.aopalliance.intercept.MethodInterceptor)invocation->invocation.proceed());
+        return (T)factory.getProxy();
+    }
     PlatformPrincipal user(String org){return new PlatformPrincipal("user",org,org,"admin","admin","",true,List.of("ADMIN"),List.of("finance:view","finance:manage"));}
     Entry entry(String id,BigDecimal amount){return new Entry("shop","SHOPEE","SETTLEMENT",id,"order","bill","结算","SETTLED",LocalDate.of(2026,10,20),"PHP",amount,null,null,null,null,"API",Map.of());}
     @Test void idsAreStableAndIsolated(){
@@ -166,7 +172,7 @@ class FinanceTest {
         var principal=user("heyi");when(policy.isPlatformAdmin(principal)).thenReturn(true);
         var quote=new FinanceFx.Quote("fixed",Instant.EPOCH,Map.of("PHP",new BigDecimal("0.125")));
         when(fx.quote("fixed")).thenReturn(quote);
-        var service=new FinanceService(repo,policy,mock(ShopAuthorizationService.class),fx);
+        var service=classProxy(new FinanceService(repo,policy,mock(ShopAuthorizationService.class),fx));
         var controller=new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class));
         var item=new HashMap<String,Object>(Map.of("external_id","00123456789012345678","currency","PHP","amount",new BigDecimal("100")));
         when(repo.details(any(),any(),any(),eq(1),eq(100))).thenReturn(Map.of("total",1,"items",List.of(item)));
@@ -182,5 +188,23 @@ class FinanceTest {
         var db=mock(JdbcTemplate.class);var repo=new FinanceRepository(db,new ObjectMapper());
         repo.grouped(new Scope("org","u"),new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,20),"","","","day"),"kind");
         verify(db).queryForList(contains("AND NOT(kind='BILL' AND source='IMPORT')"),any(Object[].class));
+    }
+    @Test void springClassProxiesRetainDependenciesForWorkersAndController(){
+        var db=mock(JdbcTemplate.class);
+        var repository=classProxy(new FinanceRepository(db,new ObjectMapper()));
+        assertTrue(org.springframework.aop.support.AopUtils.isCglibProxy(repository));
+        assertSame(db,repository.jdbc());
+        var policy=mock(OrganizationAccessPolicy.class);var fx=mock(FinanceFx.class);var shops=mock(ShopAuthorizationService.class);
+        var service=classProxy(new FinanceService(repository,policy,shops,fx));
+        assertSame(fx,service.exchangeRates());assertSame(shops,service.authorization());
+        var worker=new FinanceSync(repository,mock(FinanceMarketplace.class));
+        var ads=new FinanceAds(repository,service,mock(MarketplaceHttp.class),mock(ShopCredentialCipher.class));
+        try{
+            assertDoesNotThrow(worker::tick);assertDoesNotThrow(ads::tick);
+            assertDoesNotThrow(()->service.shops(new Scope("org","u")));
+            assertDoesNotThrow(()->service.syncStates(new Scope("org","u")));
+            assertDoesNotThrow(()->service.dashboard(new Scope("org","u"),
+                    new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,20),"","","","day"),false,null));
+        }finally{worker.stop();ads.stop();}
     }
 }

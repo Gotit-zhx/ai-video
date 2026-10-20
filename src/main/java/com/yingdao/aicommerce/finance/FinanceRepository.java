@@ -9,8 +9,9 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 
 @Repository
 public class FinanceRepository {
-    final JdbcTemplate db; final ObjectMapper json;
+    private final JdbcTemplate db; private final ObjectMapper json;
     public FinanceRepository(JdbcTemplate db,ObjectMapper json){this.db=db;this.json=json;}
+    public JdbcTemplate jdbc(){return db;}
     public Map<String,Object> read(String text){try{return map(json.readValue(text,Map.class));}catch(Exception e){throw bad("财务数据格式不正确");}}
     public String write(Object value){return json.writeValueAsString(value);}
     public void save(Scope s,Entry e){

@@ -13,13 +13,15 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 
 @Service
 public class FinanceService {
-    final FinanceRepository repo; final OrganizationAccessPolicy access; final ShopAuthorizationService shops;final FinanceFx fx;
+    private final FinanceRepository repo; private final OrganizationAccessPolicy access; private final ShopAuthorizationService shops;private final FinanceFx fx;
     public FinanceService(FinanceRepository repo,OrganizationAccessPolicy access,ShopAuthorizationService shops,FinanceFx fx){
         this.repo=repo;this.access=access;this.shops=shops;this.fx=fx;
     }
+    public FinanceFx exchangeRates(){return fx;}
+    public ShopAuthorizationService authorization(){return shops;}
     public Scope authorize(PlatformPrincipal principal){return scope(principal,access.isPlatformAdmin(principal));}
     public List<Map<String,Object>> shops(Scope s){
-        return repo.db.queryForList("""
+        return repo.jdbc().queryForList("""
             SELECT s.id,s.name,s.display_name,s.platform,s.region,s.external_shop_id,s.status authorization_status,
             COALESCE(f.enabled,FALSE) enabled, f.currency,f.timezone,
             (SELECT MAX(last_success_at) FROM finance_sync_states st WHERE st.organization_id=f.organization_id
@@ -40,28 +42,28 @@ public class FinanceService {
         if(!Set.of("SHOPEE","TIKTOK_SHOP").contains(text(shop.get("platform"))))throw bad("仅支持 Shopee 与 TikTok Shop");
         if(currency==null||!currency.matches("[A-Z]{3}"))throw bad("请选择正确币种");
         try{ZoneId.of(timezone);}catch(Exception e){throw bad("请选择正确时区");}
-        repo.db.update("""
+        repo.jdbc().update("""
             INSERT INTO finance_shops(organization_id,user_id,shop_id,enabled,currency,timezone) VALUES(?,?,?,?,?,?)
             ON DUPLICATE KEY UPDATE enabled=VALUES(enabled),currency=VALUES(currency),timezone=VALUES(timezone),updated_at=UTC_TIMESTAMP(6)
             """,s.organizationId(),s.userId(),id,enabled,currency,timezone);
         var channels=new ArrayList<>(List.of("ORDER","REFUND","SETTLEMENT"));
         if("TIKTOK_SHOP".equals(shop.get("platform")))channels.add("PENDING");
-        if(enabled)for(String channel:channels)repo.db.update("""
+        if(enabled)for(String channel:channels)repo.jdbc().update("""
             INSERT IGNORE INTO finance_sync_states(organization_id,user_id,shop_id,channel) VALUES(?,?,?,?)
             """,s.organizationId(),s.userId(),id,channel);
     }
     public List<Map<String,Object>> syncStates(Scope s){
-        return repo.db.queryForList("""
+        return repo.jdbc().queryForList("""
             SELECT shop_id,channel,status,error_message,next_at,last_success_at,coverage_start
             FROM finance_sync_states WHERE organization_id=? AND user_id=? ORDER BY shop_id,channel
             """,s.organizationId(),s.userId());
     }
     public void sync(Scope s,String shopId){
         ownedShop(s,shopId);
-        Integer enabled=repo.db.queryForObject("SELECT COUNT(*) FROM finance_shops WHERE organization_id=? AND user_id=? AND shop_id=? AND enabled=TRUE",
+        Integer enabled=repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_shops WHERE organization_id=? AND user_id=? AND shop_id=? AND enabled=TRUE",
                 Integer.class,s.organizationId(),s.userId(),shopId);
         if(enabled==null||enabled==0)throw bad("请先在财务店铺管理中开启同步");
-        repo.db.update("""
+        repo.jdbc().update("""
             UPDATE finance_sync_states SET next_at=UTC_TIMESTAMP(6),error_message=NULL,failures=0,
             status=CASE WHEN lease_until>UTC_TIMESTAMP(6) THEN status ELSE 'READY' END
             WHERE organization_id=? AND user_id=? AND shop_id=?

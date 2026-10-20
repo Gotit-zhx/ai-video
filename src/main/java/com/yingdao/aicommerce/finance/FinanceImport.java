@@ -21,10 +21,10 @@ public class FinanceImport {
     public Map<String,Object> commit(Scope s,String shopId,String kind,Map<String,Object> mapping,byte[] bytes,String filename){
         if(!Set.of("BILL","COST","AD").contains(kind))throw bad("支持导入结算账单、外部成本和广告费用");
         var shop=service.ownedShop(s,shopId);
-        if(kind.equals("AD")&&repo.db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE organization_id=? AND user_id=? AND shop_id=? AND enabled=TRUE",
+        if(kind.equals("AD")&&repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE organization_id=? AND user_id=? AND shop_id=? AND enabled=TRUE",
                 Integer.class,s.organizationId(),s.userId(),shopId)>0)throw bad("该店铺已启用广告接口同步，请勿重复导入广告费用");
         String digest=hash(Base64.getEncoder().encodeToString(bytes)+repo.write(new TreeMap<>(mapping)));
-        var old=repo.db.queryForList("SELECT row_count FROM finance_imports WHERE organization_id=? AND user_id=? AND shop_id=? AND kind=? AND content_hash=?",
+        var old=repo.jdbc().queryForList("SELECT row_count FROM finance_imports WHERE organization_id=? AND user_id=? AND shop_id=? AND kind=? AND content_hash=?",
                 s.organizationId(),s.userId(),shopId,kind,digest);
         if(!old.isEmpty())return Map.of("duplicate",true,"rows",old.getFirst().get("row_count"));
         var data=FinanceWorkbook.read(bytes,filename);if(data.size()<2)throw bad("文件没有数据");
@@ -43,7 +43,7 @@ public class FinanceImport {
             validate(entry);entries.add(entry);
         }
         for(var entry:entries)repo.save(s,entry);
-        repo.db.update("INSERT INTO finance_imports(id,organization_id,user_id,shop_id,file_name,content_hash,row_count,kind) VALUES(?,?,?,?,?,?,?,?)",
+        repo.jdbc().update("INSERT INTO finance_imports(id,organization_id,user_id,shop_id,file_name,content_hash,row_count,kind) VALUES(?,?,?,?,?,?,?,?)",
                 UUID.randomUUID().toString(),s.organizationId(),s.userId(),shopId,filename.substring(0,Math.min(250,filename.length())),digest,entries.size(),kind);
         return Map.of("duplicate",false,"rows",entries.size());
     }

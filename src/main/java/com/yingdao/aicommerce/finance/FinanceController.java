@@ -43,20 +43,20 @@ public class FinanceController {
     @PostMapping("/shops/{id}/sync") public ApiResponse<?> sync(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){service.sync(s(p),id);return ApiResponse.ok("已加入同步队列");}
     record Authorization(String platform,String market){}
     @PostMapping("/shops/authorize") public ApiResponse<?> start(@RequestBody Authorization body,@AuthenticationPrincipal PlatformPrincipal p){
-        s(p);return ApiResponse.ok(service.shops.start(body.platform,"/?view=finance",body.market,p));
+        s(p);return ApiResponse.ok(service.authorization().start(body.platform,"/?view=finance",body.market,p));
     }
     @GetMapping("/records") public ApiResponse<?> records(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var result=repo.details(s(p),filter(q),q.get("kind"),(int)Math.max(1,number(q.getOrDefault("page","1"))),50);
-        if("CNY".equals(q.get("displayCurrency")))service.fx.enrich(rows(result.get("items")),service.fx.quote(q.get("fxSnapshot")));
+        if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(rows(result.get("items")),service.exchangeRates().quote(q.get("fxSnapshot")));
         return ApiResponse.ok(result);
     }
     @GetMapping("/records/{id}") public ApiResponse<?> record(@PathVariable String id,@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var row=repo.detail(s(p),id);
-        if("CNY".equals(q.get("displayCurrency")))service.fx.enrich(List.of(row),service.fx.quote(q.get("fxSnapshot")));
+        if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(List.of(row),service.exchangeRates().quote(q.get("fxSnapshot")));
         return ApiResponse.ok(row);
     }
     @GetMapping("/reconciliation") public ApiResponse<?> reconciliation(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
-        var result=repo.reconciliation(s(p),filter(q));if("CNY".equals(q.get("displayCurrency")))service.fx.enrich(result,service.fx.quote(q.get("fxSnapshot")));
+        var result=repo.reconciliation(s(p),filter(q));if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(result,service.exchangeRates().quote(q.get("fxSnapshot")));
         return ApiResponse.ok(Map.of("items",result,"limit",1000));
     }
     @GetMapping("/ads") public ApiResponse<?> ads(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(ads.list(s(p)));}
@@ -74,7 +74,7 @@ public class FinanceController {
     @GetMapping("/export") public ResponseEntity<byte[]> export(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         Scope s=s(p);Filter f=filter(q);var rows=new ArrayList<List<String>>();
         String[] keys={"record_date","platform","shop_id","kind","external_id","order_id","statement_id","category","status","currency","amount","revenue","source"};
-        boolean cny="CNY".equals(q.get("displayCurrency"));FinanceFx.Quote quote=cny?service.fx.quote(q.get("fxSnapshot")):null;
+        boolean cny="CNY".equals(q.get("displayCurrency"));FinanceFx.Quote quote=cny?service.exchangeRates().quote(q.get("fxSnapshot")):null;
         var headers=new ArrayList<>(List.of("业务日期","平台","店铺ID","类型","记录编号","订单编号","账单编号","费用类别","状态","币种","原币金额","归因收入","来源"));
         if(cny)headers.addAll(List.of("折算人民币","人民币归因收入","参考汇率","汇率时间","汇率来源"));rows.add(headers);
         int page=1;long total=0;

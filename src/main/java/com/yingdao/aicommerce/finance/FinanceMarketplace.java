@@ -47,7 +47,7 @@ public class FinanceMarketplace {
                 if(data.containsKey("total_count")&&received!=number(data.get("total_count")))throw bad("待结算交易数量不完整，已保留进度等待重试");
                 String start=Instant.ofEpochSecond(from).atZone(ZoneId.of(zone)).toLocalDate().toString();
                 String end=Instant.ofEpochSecond(to-1).atZone(ZoneId.of(zone)).toLocalDate().toString();
-                repo.db.update("DELETE FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind='PENDING' AND source='API'"
+                repo.jdbc().update("DELETE FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind='PENDING' AND source='API'"
                                 +" AND record_date>=? AND record_date<=? AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_sync')),'')<>?",
                         s.organizationId(),s.userId(),shop,start,end,text(cp.get("run")));
             }else next.put("pendingCount",received);

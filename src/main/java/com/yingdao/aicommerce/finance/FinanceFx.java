@@ -27,10 +27,10 @@ public class FinanceFx {
     }
     public synchronized Quote quote(String snapshotId){
         if(snapshotId!=null&&!snapshotId.isBlank()){
-            var rows=repo.db.queryForList("SELECT * FROM finance_fx_snapshots WHERE id=?",snapshotId);
+            var rows=repo.jdbc().queryForList("SELECT * FROM finance_fx_snapshots WHERE id=?",snapshotId);
             if(rows.isEmpty())throw bad("汇率快照不存在，请刷新看板");return read(rows.getFirst());
         }
-        var cached=repo.db.queryForList("SELECT * FROM finance_fx_snapshots ORDER BY rate_time DESC LIMIT 1");
+        var cached=repo.jdbc().queryForList("SELECT * FROM finance_fx_snapshots ORDER BY rate_time DESC LIMIT 1");
         if(!cached.isEmpty()){
             Quote q=read(cached.getFirst());if(q.time.plusSeconds(86400).isAfter(Instant.now()))return q;
         }
@@ -45,7 +45,7 @@ public class FinanceFx {
             Map<String,BigDecimal> rates=new TreeMap<>();
             map(body.get("rates")).forEach((k,v)->{BigDecimal n=decimal(v);if(k.matches("[A-Z]{3}")&&n!=null&&n.signum()>0)rates.put(k,BigDecimal.ONE.divide(n,12,RoundingMode.HALF_UP));});
             rates.put("CNY",BigDecimal.ONE);if(rates.size()<20)throw bad("汇率数据不完整");
-            String id=Long.toString(timestamp);repo.db.update("INSERT IGNORE INTO finance_fx_snapshots(id,provider,rate_time,rates_json) VALUES(?,?,?,?)",
+            String id=Long.toString(timestamp);repo.jdbc().update("INSERT IGNORE INTO finance_fx_snapshots(id,provider,rate_time,rates_json) VALUES(?,?,?,?)",
                     id,"ExchangeRate-API",java.sql.Timestamp.from(time),repo.write(rates));return new Quote(id,time,rates);
         }catch(Exception e){
             if(!cached.isEmpty()){Quote q=read(cached.getFirst());if(q.time.plusSeconds(3*86400).isAfter(Instant.now()))return q;}
