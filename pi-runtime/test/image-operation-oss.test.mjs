@@ -1,11 +1,11 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,readFile,readdir,rm,utimes,writeFile,symlink} from 'node:fs/promises';
-import {createHash,randomBytes} from 'node:crypto';
+import {createHash,createHmac,randomBytes} from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import {ImageOperationStore} from '../src/image-operation-store.js';
-import {ImageOperationOss} from '../src/image-operation-oss.js';
+import {ImageOperationOss,createImageOperationOss} from '../src/image-operation-oss.js';
 
 const hash = data => createHash('sha256').update(data).digest('hex');
 const config = {baseUrl:'https://model.invalid/v1',modelId:'banana'};
@@ -161,19 +161,23 @@ test('small inline records keep existing behavior without OSS writes',async t=>{
 });
 
 test('large compressed results use bounded verified parts and remain byte-exact',async()=>{
-  const content = randomBytes(5*1024*1024), parts = [], objects = new Map();
+  const content = randomBytes(9*1024*1024), parts = [], objects = new Map();
   const client = {
     async initMultipartUpload(_key,options) {
       assert.equal(options.headers['x-oss-object-acl'],'private'); return {uploadId:'upload'};
     },
     async uploadPart(_key,_id,number,buffer,start,end,options) {
       const part = buffer.subarray(start,end), md5 = createHash('md5').update(part).digest();
-      assert.ok(part.length<=4*1024*1024);
+      assert.ok(part.length<=8*1024*1024);
+      if (number===1) assert.equal(part.length,8*1024*1024);
       assert.equal(options.headers['Content-MD5'],md5.toString('base64'));
       parts[number-1] = part; return {etag:'"'+md5.toString('hex')+'"'};
     },
-    async completeMultipartUpload(key,_id,records) {
-      assert.equal(records.length,2); objects.set(key,Buffer.concat(parts));
+    async completeMultipartUpload(key,_id,records,options) {
+      assert.equal(records.length,2);
+      assert.ok(records.every(part=>/^[a-f0-9]{32}$/.test(part.etag)));
+      assert.equal(options.headers['x-oss-object-acl'],'private');
+      objects.set(key,Buffer.concat(parts));
     },
     async get(key) {return {content:objects.get(key)};},
     async abortMultipartUpload() {assert.fail('must not abort successful upload');}
@@ -190,7 +194,7 @@ test('failed multipart upload is aborted before an index can be committed',async
     async uploadPart() {throw Error('upload interrupted');},
     async abortMultipartUpload(_key,id) {assert.equal(id,'upload');aborted=true;}
   },'test-hoyee');
-  await assert.rejects(archive.store('a'.repeat(64),randomBytes(5*1024*1024)),/interrupted/);
+  await assert.rejects(archive.store('a'.repeat(64),randomBytes(9*1024*1024)),/interrupted/);
   assert.equal(aborted,true);
 });
 
@@ -223,4 +227,25 @@ test('background maintenance keeps offloading newly completed tasks after the hi
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(passes,2);
   assert.ok(JSON.parse(await readFile(newFile,'utf8')).externalRecord);
+});
+
+test('Dayan V1 requests sign Date and canonical multipart subresources with the official SDK',async t=>{
+  const dir = await mkdtemp(path.join(os.tmpdir(),'dayan-signing-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const file = path.join(dir,'credentials');
+  await writeFile(file,'accessKeyId=test-id\naccessKeySecret=test-secret\n');
+  const archive = await createImageOperationOss({
+    IMAGE_OPERATION_OSS_BUCKET:'test-hoyee',IMAGE_OPERATION_OSS_CREDENTIALS_FILE:file,
+    IMAGE_OPERATION_OSS_SDK_MODULE:process.env.IMAGE_OPERATION_OSS_SDK_MODULE || 'ali-oss'
+  });
+  const date = 'Tue, 20 Oct 2026 00:00:00 GMT';
+  for (const [subres,query] of [['uploads','uploads'],[{partNumber:1,uploadId:'test'},'partNumber=1&uploadId=test']]) {
+    const headers = {'x-oss-date':date,'x-oss-object-acl':'private','Content-Type':'application/gzip'};
+    const signature = archive.client.authorization('POST','/test-hoyee/test',subres,headers);
+    const canonical = `POST\n\napplication/gzip\n${date}\nx-oss-object-acl:private\n/test-hoyee/test?${query}`;
+    assert.equal(signature,'OSS test-id:'+createHmac('sha1','test-secret').update(canonical).digest('base64'));
+    assert.equal(headers.Date,date);
+    assert.equal(headers['x-oss-date'],undefined);
+  }
+  assert.equal(archive.client.options.sldEnable,true);
 });

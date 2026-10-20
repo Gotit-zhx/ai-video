@@ -61,6 +61,7 @@ def build():
     image = "heyi-pi-runtime:" + TAG
     core.run("docker", "build", "-t", image, str(directory))
     tests = core.run("docker", "run", "--rm", "--network", "none",
+                    "-e", "IMAGE_OPERATION_OSS_SDK_MODULE=file:///opt/image-oss-sdk/node_modules/ali-oss/lib/client.js",
                     "-v", str(ROOT / "tests") + ":/app/test:ro",
                     image, "node", "--test", *("/app/test/" + name for name in TESTS))
     (ROOT / "tests.log").write_bytes(tests)

@@ -6,7 +6,9 @@ import { parseEnv, promisify } from 'node:util';
 const compress = promisify(gzip), decompress = promisify(gunzip);
 const digest = value => createHash('sha256').update(value).digest('hex');
 const MAX_BYTES = 128 * 1024 * 1024;
-const PART_BYTES = 4 * 1024 * 1024;
+const MAX_COMPRESSED_BYTES = MAX_BYTES + 1024 * 1024;
+// Match the production Java uploader: Dayan rejects 4 MiB non-final parts.
+const PART_BYTES = 8 * 1024 * 1024;
 const HEX = /^[a-f0-9]{64}$/;
 
 export class ImageOperationOss {
@@ -15,7 +17,7 @@ export class ImageOperationOss {
     this.bucket = bucket;
   }
   async store(operationKey, content) {
-    if (!HEX.test(operationKey) || !Buffer.isBuffer(content) || content.length > MAX_BYTES)
+    if (!HEX.test(operationKey) || !Buffer.isBuffer(content) || !content.length || content.length > MAX_BYTES)
       throw new Error('Invalid image operation archive');
     const sha256 = digest(content), zipped = await compress(content, {level: 1});
     const key = `heyi/image-operations/${operationKey}/${sha256}.json.gz`;
@@ -34,9 +36,10 @@ export class ImageOperationOss {
             {headers:{'Content-MD5':md5.toString('base64')}});
           if (result.etag.replaceAll('"','').toLowerCase() !== md5.toString('hex'))
             throw new Error('Image operation archive part mismatch');
-          parts.push({number,etag:result.etag});
+          parts.push({number,etag:result.etag.replaceAll('"','')});
         }
-        await this.client.completeMultipartUpload(key,uploadId,parts);
+        await this.client.completeMultipartUpload(key,uploadId,parts,
+          {headers:{'x-oss-object-acl':'private'}});
       } catch (error) {
         try { await this.client.abortMultipartUpload(key,uploadId); } catch {}
         throw error;
@@ -53,7 +56,7 @@ export class ImageOperationOss {
         || pointer.key !== `heyi/image-operations/${operationKey}/${pointer.sha256}.json.gz`
         || !HEX.test(pointer.compressedSha256 || '') || !Number.isInteger(pointer.size)
         || pointer.size < 1 || pointer.size > MAX_BYTES || !Number.isInteger(pointer.compressedSize)
-        || pointer.compressedSize < 1 || pointer.compressedSize > MAX_BYTES)
+        || pointer.compressedSize < 1 || pointer.compressedSize > MAX_COMPRESSED_BYTES)
       throw new Error('Invalid image operation archive reference');
     const result = await this.client.get(pointer.key);
     if (result.content.length !== pointer.compressedSize || digest(result.content) !== pointer.compressedSha256)
@@ -72,11 +75,23 @@ export async function createImageOperationOss(env = process.env) {
   const credentials = parseEnv(await readFile(env.IMAGE_OPERATION_OSS_CREDENTIALS_FILE, 'utf8'));
   if (!credentials.accessKeyId || !credentials.accessKeySecret)
     throw new Error('Invalid image operation OSS credentials');
-  const {default: OSS} = await import(env.IMAGE_OPERATION_OSS_SDK_MODULE || 'ali-oss');
+  const sdk = import.meta.resolve(env.IMAGE_OPERATION_OSS_SDK_MODULE || 'ali-oss');
+  const {default: OSS} = await import(sdk);
+  const {default: signing} = await import(new URL('./common/signUtils.js',sdk));
   const client = new OSS({bucket: env.IMAGE_OPERATION_OSS_BUCKET,
     endpoint: 'https://oss.cloud.dayan.cloud', region: 'oss-cn-chengdu',
     accessKeyId: credentials.accessKeyId, accessKeySecret: credentials.accessKeySecret,
     timeout: 120_000, authorizationV4: false, retryMax: 1});
   client.setSLDEnabled(true);
+  // Dayan accepts the standard V1 Date header, but rejects ali-oss's x-oss-date.
+  // Reuse the pinned official SDK's canonicalizer and signer, including subresources.
+  client.authorization = function(method, resource, subres, headers) {
+    const date = headers['x-oss-date'];
+    delete headers['x-oss-date'];
+    headers.Date = date;
+    return signing.authorization(this.options.accessKeyId, this.options.accessKeySecret,
+      signing.buildCanonicalString(method, resource, {headers,parameters:subres}, date),
+      this.options.headerEncoding);
+  };
   return new ImageOperationOss(client, env.IMAGE_OPERATION_OSS_BUCKET);
 }
