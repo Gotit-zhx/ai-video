@@ -56,7 +56,7 @@
   const drapeReuse=()=>view?.plan?.renderPolicy==='GROK_DRAPE_REUSE_V1';
   const drapeHint='先精确套版，再生成一次自然搭放母图，之后本地换色换花；需纯白服装模板 + 单处正面印花，背面、侧面补图沿用原有方式。每个来源商品额外 1 次 Grok 调用，所有款式与颜色共用。';
   const sceneHint=()=>drapeReuse()?drapeHint:sceneBackground()?'提取商品背景风格 · 同商品多款多色共用。Grok 根据所选商品图的场景氛围、配色、材质与光线重新设计背景。每个来源商品分别准备一次，已有相同来源背景可复用。':'';
-  const outputCount=()=>view?.plan?.outputPolicy==='SOURCE_SKU_COLORS'?(view.plan.sources||[]).reduce((n,source)=>n+(source.colorTargets?.length||0),0)*view.plan.variantsPerPrint:null;
+  const outputCount=()=>['SOURCE_SKU_COLORS','TEMPLATE_COLORS'].includes(view?.plan?.outputPolicy)?(view.plan.sources||[]).reduce((n,source)=>n+(source.colorTargets?.length||0),0)*view.plan.variantsPerPrint:null;
   const savedArtwork=()=>view?.plan?.artworkSource==='SAVED_ARTWORK';
   const reusedArtworks=()=>Array.isArray(view?.plan?.reusedArtworks)?view.plan.reusedArtworks:[];
   const reuseReady=()=>reusedArtworks().length>0&&artworkIds.length>0&&reusedArtworks().every(variant=>artworkIds.every(id=>variant.groupArtifacts?.[id]?.id&&/^[a-f0-9]{64}$/.test(variant.groupArtifacts[id].contentSha256||'')));
@@ -89,10 +89,10 @@
     artworkHint.hidden=!surfaceMode;
     const artworks=[...new Set(positions.map(print=>print.artworkId).filter(Boolean))];artworkIds=artworks;artworkCount=artworks.length;
     const legacy=legacySurface();
-    const colorOutput=view?.plan?.outputPolicy==='SOURCE_SKU_COLORS';
+    const colorOutput=['SOURCE_SKU_COLORS','TEMPLATE_COLORS'].includes(view?.plan?.outputPolicy);
     outputHint.hidden=!colorOutput&&!localPhoto();
     if(localPhoto())outputHint.textContent=`${sceneHint()}固定底图 · 本地套版 · 每色每款1张${outputCount()?' · 共 '+outputCount()+' 张商品主图':''}。同款同组共用透明母版，尺码不增加出图。`;
-    else if(colorOutput)outputHint.textContent=`保留来源商品颜色 · 每色每款 1 张 · 共 ${outputCount()} 张商品效果图${locked?' · 沿用已固定的生成流程':' · 保存后升级为本地套版'}`;
+    else if(colorOutput)outputHint.textContent=`${view?.plan?.outputPolicy==='TEMPLATE_COLORS'?'使用模板配色':'保留来源商品颜色'} · 每色每款 1 张 · 共 ${outputCount()} 张商品效果图${locked?' · 沿用已固定的生成流程':' · 保存后升级为本地套版'}`;
     variationHint.textContent=savedArtwork()?'使用已有透明印花，直接套版。素材和位置已固定，本任务不再生成新印花。'+sceneHint():locked&&view?.plan?.artworkSource!=='SOURCE_PRODUCT'?'本任务沿用启动时已固定的印花来源与创作规则。':'从来源商品原图提取印花的线条、笔触、色彩关系与质感，保持统一画风；主体可自由二创，例如猫变成狗或其他动物。';
     artworkHint.textContent=savedArtwork()?`已固定 ${reusedArtworks().length} 款已有印花。下方按位置分组展示实际选用的素材，每款按固定位置套版。`:legacy?'本任务使用固定模板中选中的印花进行裂变；同款多位置同步替换，其他图案沿用原配置。':'测试图案只标位置。同一件商品中，前后同款标记共用一张新图；不同标记分别生成，同样保持来源商品的画风。';
     artworkLegend.textContent=savedArtwork()?'已固定的透明印花与位置':legacy?'已固定的模板印花':'图片印花位置分组';
@@ -161,7 +161,7 @@
       });
       group.append(options);
       const colorTargets=data.plan?.sources.find(selected=>selected.captureId===source.captureId)?.colorTargets;
-      if(data.plan?.outputPolicy==='SOURCE_SKU_COLORS'&&colorTargets?.length){const colors=document.createElement('p');colors.className='creative-source-colors';colors.textContent=`原商品颜色：${colorTargets.map(color=>color.label).join('、')}。不同尺码共用对应颜色的图片。`;group.append(colors);}
+      if(['SOURCE_SKU_COLORS','TEMPLATE_COLORS'].includes(data.plan?.outputPolicy)&&colorTargets?.length){const colors=document.createElement('p');colors.className='creative-source-colors';colors.textContent=`${data.plan?.outputPolicy==='TEMPLATE_COLORS'?'模板配色':'原商品颜色'}：${colorTargets.map(color=>color.label).join('、')}。不同尺码共用对应颜色的图片。`;group.append(colors);}
       const mark=document.createElement('button');mark.type='button';mark.textContent=`标记旧印花与水印范围${cleanup.get(source.captureId)?.regions.length ? ' · 已保存' : ''}`;
       mark.hidden=surfaceMode;mark.dataset.cleanupAction='';
       mark.addEventListener('click',async()=>{const selected=[...options.querySelectorAll('input:checked')][0];if(!selected){status.textContent='请先选择提取原图。';return;}const ticket=revision,old=cleanup.get(source.captureId),image=source.images.find(i=>i.id===selected.value);const regions=await window.heyiEditPrintRegions(image.url,old?.imageId===image.id?old.regions:[]);if(regions&&ticket===revision){cleanup.set(source.captureId,{imageId:image.id,regions});mark.textContent=`标记旧印花与水印范围 · ${regions.length} 处`;dirty=true;status.textContent='范围已标记，请保存创作配置。';announce();}});

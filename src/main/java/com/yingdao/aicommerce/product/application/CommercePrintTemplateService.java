@@ -24,7 +24,16 @@ public class CommercePrintTemplateService {
                              String sourceImageId,String referenceSetId,List<SurfacePrint> surfacePrints,
                              Map<String,String> renderedViews,Map<String,String> blankRenderedViews,
                              Map<String,String> surfaceUvViews,Map<String,String> placementMasks,
-                             List<String> renderPrintIds,String renderBinding,List<PhotoPrint> photoPrints){
+                             List<String> renderPrintIds,String renderBinding,List<PhotoPrint> photoPrints,
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) List<CommerceTemplatePalette.Color> colors,
+                             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String mainImageStyleTemplateId){
+  public Configuration(String product,List<Area> areas,Map<String,String> baseImages,Reconstruction reconstruction,
+                       String sourceImageId,String referenceSetId,List<SurfacePrint> surfacePrints,
+                       Map<String,String> renderedViews,Map<String,String> blankRenderedViews,
+                       Map<String,String> surfaceUvViews,Map<String,String> placementMasks,
+                       List<String> renderPrintIds,String renderBinding,List<PhotoPrint> photoPrints){
+   this(product,areas,baseImages,reconstruction,sourceImageId,referenceSetId,surfacePrints,renderedViews,blankRenderedViews,surfaceUvViews,placementMasks,renderPrintIds,renderBinding,photoPrints,null,null);
+  }
   public Configuration(String product,List<Area> areas,Map<String,String> baseImages,Reconstruction reconstruction,
                        String sourceImageId,String referenceSetId,List<SurfacePrint> surfacePrints,
                        Map<String,String> renderedViews,Map<String,String> blankRenderedViews,
@@ -38,6 +47,8 @@ public class CommercePrintTemplateService {
    this(product,areas,baseImages,reconstruction,null,null,List.of(),Map.of(),Map.of(),Map.of(),Map.of(),List.of(),null);
   }
   public Configuration {
+   colors=colors==null?null:List.copyOf(colors);
+   mainImageStyleTemplateId=mainImageStyleTemplateId==null||mainImageStyleTemplateId.isBlank()?null:mainImageStyleTemplateId.strip();
    areas=areas==null?List.of():List.copyOf(areas);baseImages=immutable(baseImages);
    surfacePrints=surfacePrints==null?List.of():List.copyOf(surfacePrints);
    photoPrints=photoPrints==null?List.of():List.copyOf(photoPrints);
@@ -60,6 +71,8 @@ public class CommercePrintTemplateService {
  public record Request(String templateId,int expectedVersion,String name,Configuration configuration){}
  public record View(String templateId,String snapshotId,int version,String name,Configuration configuration,boolean productionReady){}
  private final CommerceTemplateMapper mapper;private final ObjectMapper json;private final CommerceImageArchive archive;private final CommercePrintReferenceService references;
+ @org.springframework.beans.factory.annotation.Autowired
+ private ProductMainImageTemplateService mainImageStyles;
  public CommercePrintTemplateService(CommerceTemplateMapper mapper,ObjectMapper json){this(mapper,json,null);}
  public CommercePrintTemplateService(CommerceTemplateMapper mapper,ObjectMapper json,CommerceImageArchive archive){this(mapper,json,archive,null);}
  @org.springframework.beans.factory.annotation.Autowired
@@ -91,6 +104,10 @@ public class CommercePrintTemplateService {
  }
  @Transactional public View save(Request r,PlatformPrincipal user){
   access(user,true);if(r==null||r.name()==null||r.name().isBlank()||r.name().length()>120||r.expectedVersion()<0||r.expectedVersion()==Integer.MAX_VALUE)throw bad("模板名称或版本无效");validate(r.configuration());validateReference(r.configuration(),user);if(!placementBindings(r.configuration()).isEmpty())requireSurfaceRenders(r.configuration());
+  if(r.configuration().mainImageStyleTemplateId()!=null){
+   if(mainImageStyles==null)throw bad("主图风格服务暂不可用");
+   mainImageStyles.current(r.configuration().mainImageStyleTemplateId(),user);
+  }
   for(String hash:assetIds(r.configuration())){if(archive==null)throw bad("底图存储不可用");archive.read(user.organizationId(),CommerceImageArchive.sha(user.organizationId().getBytes(java.nio.charset.StandardCharsets.UTF_8))+"/"+hash);}
   String id=r.templateId()==null?UUID.randomUUID().toString():r.templateId();if(!id.matches("[a-fA-F0-9-]{36}"))throw bad("模板标识无效");
   if(r.expectedVersion()>0){var root=mapper.lockRoot(user.organizationId(),id);if(root==null)throw new BusinessException(HttpStatus.NOT_FOUND,"模板不存在");var latest=mapper.latest(user.organizationId(),id);if(!"PRINT_LAYOUT".equals(latest.kind())||latest.version()!=r.expectedVersion())throw new BusinessException(HttpStatus.CONFLICT,"模板版本已变化，请重新读取");}
@@ -98,6 +115,10 @@ public class CommercePrintTemplateService {
   try{mapper.insert(row);}catch(DuplicateKeyException e){throw new BusinessException(HttpStatus.CONFLICT,"版本已存在，请重新读取");}return view(row);
  }
  public static void validate(Configuration c){
+  if(c!=null){
+   try{CommerceTemplatePalette.validate(c.colors());}catch(IllegalArgumentException failure){throw bad(failure.getMessage());}
+   if(c.mainImageStyleTemplateId()!=null&&!c.mainImageStyleTemplateId().matches("[a-fA-F0-9-]{36}"))throw bad("主图风格模板编号无效");
+  }
   if(c!=null)for(var entry:c.baseImages().entrySet())if(!Set.of("FRONT","BACK","LEFT","RIGHT").contains(entry.getKey())||!entry.getValue().matches("[a-f0-9]{64}"))throw bad("底图面向或标识无效");
   if(c==null||!Set.of("T_SHIRT","LONG_SLEEVE","SWEATSHIRT","TANK","SHORTS","TROUSERS","CUSHION","PILLOWCASE","BLANKET","TOTE","CAP","MUG","PHONE_CASE").contains(Objects.toString(c.product(),""))||c.areas().size()>8||(c.areas().isEmpty()&&c.reconstruction()==null&&!photoLayout(c)))throw bad("请选择商品类型并设置印花位置");
   var ids=new HashSet<String>();for(var a:c.areas()){

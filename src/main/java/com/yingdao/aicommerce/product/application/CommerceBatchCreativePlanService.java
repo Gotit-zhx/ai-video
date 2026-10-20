@@ -192,7 +192,7 @@ public class CommerceBatchCreativePlanService {
             var selected=new ArrayList<Selection>();
             for(var source:plan.sources()) {
                 var detail=state.details().get(source.captureId());
-                var colors=CommerceSourceColorResolver.resolve(detail);
+                var colors=template.colors()==null?CommerceSourceColorResolver.resolve(detail):CommerceTemplatePalette.resolve(template.colors(),detail);
                 if(colors.size()==1&&CommerceSourceColorResolver.DEFAULT_KEY.equals(colors.getFirst().key())) {
                     var color=colors.getFirst();
                     colors=List.of(new CommerceSourceColorResolver.Color(color.key(),color.label(),color.skuKeys(),source.imageId(),true));
@@ -203,7 +203,7 @@ public class CommerceBatchCreativePlanService {
                 validateColorTargets(frozen,readable.images().stream().map(Image::id).toList());
                 selected.add(frozen);
             }
-            return new Plan(plan.printTemplateSnapshotId(),selected,plan.variantsPerPrint(),plan.variationArtworkId(),plan.artworkSource(),"SOURCE_SKU_COLORS",policy,plan.reusedArtworks());
+            return new Plan(plan.printTemplateSnapshotId(),selected,plan.variantsPerPrint(),plan.variationArtworkId(),plan.artworkSource(),template.colors()==null?"SOURCE_SKU_COLORS":"TEMPLATE_COLORS",policy,plan.reusedArtworks());
         } catch(IllegalArgumentException failure) {throw conflict(failure.getMessage());}
     }
 

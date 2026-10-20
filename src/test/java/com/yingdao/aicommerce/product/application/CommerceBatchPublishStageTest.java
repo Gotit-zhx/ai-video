@@ -16,6 +16,17 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class CommerceBatchPublishStageTest {
+ @Test void workflowUsesSelectedTemplateForEntireMainGalleryAndDefaultOmitsStyle(){
+  for(String style:Arrays.asList(null,"11111111-1111-1111-1111-111111111111")){
+   var h=new Harness(1,1);var json=new ObjectMapper();
+   var config=new LinkedHashMap<String,Object>();config.put("product","T_SHIRT");config.put("areas",List.of());config.put("mainImageStyleTemplateId",style);
+   when(h.templates.snapshot("org","template")).thenReturn(new CommerceTemplateVersion("template","org","template-id",1,"PRINT_LAYOUT","Template",json.writeValueAsString(config),"user",Instant.now()));
+   assertEquals("QUEUED",h.execute().pendingStatus());
+   verify(h.workflows).create(eq("draft-item-0-1"),argThat(body->style==null
+     ?!body.containsKey(ProductMainImageStylePolicy.TEMPLATE):style.equals(body.get(ProductMainImageStylePolicy.TEMPLATE))),
+     eq("commerce-publish-run-item-0-1"),eq(h.user));
+  }
+ }
  private static final String PUBLICATIONS="SELECT * FROM commerce_batch_publications WHERE organization_id=? AND execution_id=? AND item_id=? AND variant_index=?";
  private static final String LINK="UPDATE commerce_batch_publications SET workflow_id=? WHERE organization_id=? AND execution_id=? AND item_id=? AND variant_index=? AND workflow_id IS NULL";
 

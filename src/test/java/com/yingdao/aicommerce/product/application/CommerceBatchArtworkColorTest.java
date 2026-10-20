@@ -144,10 +144,14 @@ class CommerceBatchArtworkColorTest {
         var config = new CommercePrintTemplateService.Configuration("T_SHIRT", List.of(new CommercePrintTemplateService.Area("front", "FRONT", .3, .3, .3, .3, 240, 240, 300)), Map.of("FRONT", SurfaceTemplateFixture.hash('b')));
         var jobs = new ArrayList<Map<String,Object>>(List.of(f.sourceArtwork(), f.variant()));
         f.configure(config, jobs);
+        // Source extraction, like variation, is a native transparent print master.
+        byte[] sourcePrint = CommerceArtworkLibraryServiceTest.artwork(true);
+        when(f.archive.read("org", key('8'))).thenReturn(SurfaceTemplateFixture.reference(sourcePrint));
         configurePlan(List.of(red), 1, "SOURCE_PRODUCT");
         setupModelAndNewJob();
         when(f.sourceArchives.find("capture", "red-image", 1, f.user)).thenReturn(key('6'));
-        assertEquals("UNKNOWN", f.service.execute(f.run, f.user).pendingStatus());
+        var started=f.service.execute(f.run, f.user);
+        assertEquals("UNKNOWN", started.pendingStatus(),started.message());
         Object[] args = f.insertedJob();
         assertEquals("MOCKUP", args[6]);
         var refs = f.json.readTree((String) args[12]);

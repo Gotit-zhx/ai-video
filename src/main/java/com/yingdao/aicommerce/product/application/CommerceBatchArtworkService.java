@@ -822,6 +822,7 @@ public class CommerceBatchArtworkService {
     }
     private String archiveColor(CommerceBatchCreativePlanValidator.Selection source,CommerceSourceColorResolver.Color color,
                                 ProductCaptureService.CaptureDetail detail,PlatformPrincipal user) {
+        if(color.hex()!=null)return archive.store(user.organizationId(),CommerceTemplatePalette.swatch(color.hex())).storageKey();
         return archiveSource(new CommerceBatchCreativePlanValidator.Selection(source.captureId(),source.version(),color.imageId()),detail,user);
     }
     private List<Map<String,Object>> rows(CommerceBatchExecution run) {return db.queryForList("SELECT id,capture_id,kind,variant_index,status,storage_key,content_sha256,message,reference_keys,prompt,model_config_id,model_fingerprint,request_key,color_key,color_label,capture_version,JSON_UNQUOTE(JSON_EXTRACT(result_json,'$.algorithm')) AS detail_algorithm,JSON_UNQUOTE(JSON_EXTRACT(result_json,'$.parentJobId')) AS detail_parent_job_id FROM commerce_batch_artwork_jobs WHERE execution_id=? AND organization_id=? AND status<>'RETRIED' ORDER BY created_at,id",run.id(),run.organizationId());}
@@ -844,7 +845,8 @@ public class CommerceBatchArtworkService {
     private static boolean hasGuide(Map<String,Object> job) {return !CommerceLocalPhotoWorkflow.POLICY.equals(job.get("model_config_id"))&&(CommerceSurfaceTemplateInputs.isSurfaceJob((String)job.get("kind"))||("MOCKUP".equals(job.get("kind"))&&job.get("color_key")!=null));}
     private static int guideIndex(Map<String,Object> job) {return CommerceSurfaceTemplateInputs.isSurfaceJob((String)job.get("kind"))?2:1;}
     static String colorPrompt(CommerceSourceColorResolver.Color color,boolean surface) {
-        return "本次按来源商品已固定的 SKU 颜色生成一张商品照片，颜色标识「"+color.label()+"」。"
+        return (color.hex()==null?"本次按来源商品已固定的 SKU 颜色生成一张商品照片，颜色标识「"+color.label()+"」。"
+                :"本次按用户模板配色生成一张商品照片，颜色「"+color.label()+"」，准确色号 "+color.hex()+"；仅参考该色号和提供的纯色色样，不从来源商品取色。")
                 +"参考图"+(surface?4:3)+"仅作为衣服底色的色样，不作为版型、印花、人物或构图参考；真实版型必须以用户模板和前面的定位图为准。"
                 +"唯一额外授权的修改是把衣服底色匹配这张 SKU 色样，覆盖前文保留原底色的要求；保留布料纹理和褶皱，不改变背景颜色。"
                 +"同款各颜色必须使用定位图中完全相同的新印花、位置和尺寸，不改变印花自身配色，不增加新颜色款式，不输出色卡、多视角或拼图；仅输出当前颜色的一张商品图。";

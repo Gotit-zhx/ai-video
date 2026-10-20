@@ -3,7 +3,7 @@
  const make=(tag,value,parent)=>{const node=document.createElement(tag);node.textContent=value;parent?.append(node);return node;};
  const button=(label,parent,action)=>{const node=make('button',label,parent);node.type='button';if(action)node.addEventListener('click',action);return node;};
  const imageUrl=item=>typeof item?.imageUrl==='string'&&/^\/api\/v1\/commerce-artwork-library\/[a-zA-Z0-9-]+\/image$/.test(item.imageUrl)?item.imageUrl:null;
- const thumbnail=(item,parent)=>{const box=make('div','',parent);box.className='artwork-transparent-preview';const url=imageUrl(item);if(url){const image=make('img','',box);image.alt=item.name||'透明印花';image.loading='lazy';image.src=url;image.addEventListener('error',()=>{image.remove();make('span','图片暂不可读取',box);});}else make('span','选择透明印花',box);return box;};
+ const thumbnail=(item,parent)=>{const box=make('div','',parent);box.className='artwork-transparent-preview';const url=imageUrl(item);if(url){const image=make('img','',box);image.alt=item.name||'透明印花';image.loading='lazy';image.decoding='async';image.width=256;image.height=256;image.src=url.replace(/\/image$/,'/thumbnail');image.addEventListener('error',()=>{image.remove();make('span','缩略图暂不可读取',box);});}else make('span','选择透明印花',box);return box;};
  function catalogue(host,{request=api,onPick=null,onBusy=()=>{}}={}){
   let page=0,revision=0,busy=false,locked=false,loaded=false;
   const toolbar=make('div','',host);toolbar.className='artwork-library-toolbar';
@@ -24,7 +24,7 @@
      if(onPick)button('使用此印花',card,()=>{if(!locked&&!busy)onPick(item);});
      else {const url=imageUrl(item);if(url){const link=make('a','查看透明原图 ↗',card);link.href=url;link.target='_blank';link.rel='noopener noreferrer';}}
     });
-    pageText.textContent='第 '+(page+1)+' 页';message.textContent=data.items.length?'透明 PNG · 相同图片合并展示，历史记录保留':'没有找到已保存的印花。';
+    pageText.textContent='第 '+(page+1)+' 页';message.textContent=data.items.length?'缩略图快速选择 · 制作使用高清透明原图':'没有找到已保存的印花。';
    }catch(error){if(ticket===revision){grid.replaceChildren();hasMore=false;message.textContent='读取印花失败：'+error.message+'。点击“读取印花”重试。';}}
    finally{if(ticket===revision){busy=false;controls();onBusy(false);}}
   }

@@ -10,6 +10,18 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CommerceGarmentColorTest {
+    @Test void configuredHexRecolorsClothWithoutSkuImageAndPreservesBackground() throws Exception {
+        var result=CommerceGarmentColor.prepareHex(png(garment(100,100,new Color(238,226,202))),"#AACCEE","雾蓝");
+        assertEquals(CommerceGarmentColor.Mode.TEMPLATE_HEX,result.report().mode());
+        assertEquals("#AACCEE",result.report().observedSourceRgb());
+        assertEquals(0,result.report().sourceEvidencePixels());
+        assertEquals(Color.WHITE.getRGB(),decode(result.png()).getRGB(0,0));
+        int cloth=decode(result.png()).getRGB(50,50);
+        assertTrue(Math.abs((cloth>>16&255)-170)<=2);
+        assertTrue(Math.abs((cloth>>8&255)-204)<=2);
+        assertTrue(Math.abs((cloth&255)-238)<=2);
+        assertThrows(CommerceGarmentColor.ColorException.class,()->CommerceGarmentColor.prepareHex(result.png(),"blue","蓝色"));
+    }
     @Test void fractionalOutlineCoverageSurvivesLightToBlackRecoloring() throws Exception {
         var blank=garment(100,100,new Color(238,226,202));
         fill(blank,19,25,1,50,new Color(247,241,229).getRGB());

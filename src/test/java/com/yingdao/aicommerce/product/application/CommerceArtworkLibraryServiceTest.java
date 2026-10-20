@@ -63,8 +63,40 @@ class CommerceArtworkLibraryServiceTest {
             assertEquals(HttpStatus.FORBIDDEN, assertThrows(BusinessException.class, () -> service.list(0, "", denied)).getStatus());
             assertEquals(HttpStatus.FORBIDDEN, assertThrows(BusinessException.class, () -> service.resolve("job", denied)).getStatus());
             assertEquals(HttpStatus.FORBIDDEN, assertThrows(BusinessException.class, () -> service.image("job", denied)).getStatus());
+            assertEquals(HttpStatus.FORBIDDEN, assertThrows(BusinessException.class, () -> service.thumbnail("job", denied)).getStatus());
         }
         verifyNoInteractions(db, archive);
+    }
+
+    @Test void previewIsSmallTransparentAndReusesCachedBytesWithoutChangingTheMaster() throws Exception {
+        var source = new BufferedImage(1024, 768, BufferedImage.TYPE_INT_ARGB);
+        var random = new Random(42);
+        for (int y=80;y<690;y++) for(int x=100;x<920;x++) source.setRGB(x,y,0xff000000 | random.nextInt(0xffffff));
+        var output = new ByteArrayOutputStream(); ImageIO.write(source,"png",output);
+        byte[] bytes = output.toByteArray();
+        var job = row("job", "org", bytes, true); rows(List.of(job)); archived(job, bytes);
+        byte[] preview = service.thumbnail("job",user);
+        var decoded = CommerceMockupComposer.decode(preview);
+        assertEquals(256,decoded.getWidth()); assertEquals(192,decoded.getHeight());
+        assertEquals(0,decoded.getRGB(0,0)>>>24);
+        assertTrue(preview.length < bytes.length/8, "a gallery must not transfer the high resolution original");
+        var response = new CommerceArtworkLibraryController(service).thumbnail("job",user);
+        assertArrayEquals(preview,response.getBody());
+        assertTrue(response.getHeaders().getCacheControl().contains("private"));
+        assertTrue(response.getHeaders().getCacheControl().contains("no-cache"));
+        assertNotNull(response.getHeaders().getETag());
+        verify(archive,times(1)).read("org",(String)job.get("storage_key"));
+        assertArrayEquals(bytes,Base64.getDecoder().decode(service.image("job",user).dataBase64()));
+    }
+
+    @Test void cachedPreviewStillRechecksOwnershipAndRejectsInvalidMasters() throws Exception {
+        byte[] bytes=artwork(true);var job=row("job","org",bytes,true);
+        rows(List.of(job));archived(job,bytes);service.thumbnail("job",user);
+        rows(List.of());
+        assertEquals(HttpStatus.NOT_FOUND,assertThrows(BusinessException.class,()->service.thumbnail("job",user)).getStatus());
+        assertThrows(BusinessException.class,()->service.thumbnail("job",user("other","other",false,List.of("product:view"))));
+        byte[] opaque=artwork(false);var invalid=row("invalid","org",opaque,true);rows(List.of(invalid));archived(invalid,opaque);
+        assertThrows(BusinessException.class,()->service.thumbnail("invalid",user));
     }
 
     @Test void invalidPagingAndSearchAreRejectedBeforeQuery() {

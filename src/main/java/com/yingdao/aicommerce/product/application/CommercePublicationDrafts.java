@@ -61,7 +61,7 @@ public class CommercePublicationDrafts {
    }
    for(String side:List.of("left","right"))if(entry.get(side+"Key") instanceof String view)
     addImage(capture,view,"GALLERY",position++,entry.get("colorLabel")+(side.equals("left")?" 左侧":" 右侧"));
-   for(Object sku:(List<?>)entry.get("skuKeys"))if(skuImages.put((String)sku,url)!=null)throw new IllegalArgumentException("SKU 被分配到多个颜色");
+   for(Object sku:(List<?>)entry.get("skuKeys"))if(skuImages.put(skuImageKey(entry,(String)sku),url)!=null)throw new IllegalArgumentException("SKU 被分配到多个颜色");
   }
   for(int index=0;index<detailKeys.size();index++)addImage(capture,detailKeys.get(index),"DETAIL",index+1,"商品详情 "+(index+1));
   var plannedSkus=plannedSkus(detail.skus(),manifest,skuImages,variant);
@@ -105,6 +105,9 @@ public class CommercePublicationDrafts {
   return "Graphic Design "+variant+" | "+Objects.toString(source,"").strip();
  }
  record PlannedSku(ProductCaptureSku source,String name,String attributesJson,String imageUrl,int order) {}
+ static String skuImageKey(Map<String,Object> color,String key){
+  return color.containsKey("colorHex")?Objects.toString(color.get("colorKey"))+":"+key:key;
+ }
  Map<String,Object> generatedSkuCompleteness(List<PlannedSku> planned){
   int count=planned.size();
   int dimensions=planned.isEmpty()?0:
@@ -118,15 +121,24 @@ public class CommercePublicationDrafts {
   for(var sku:source)if(byKey.put(sku.getSkuKey(),sku)!=null)throw new IllegalArgumentException("来源 SKU 编号重复");
   var result=new ArrayList<PlannedSku>();
   var assigned=new HashSet<String>();
+  var colorKeys=new HashSet<String>();
+  boolean templatePalette=manifest.stream().anyMatch(c->c.containsKey("colorHex"));
   for(var color:manifest){
    String label=Objects.toString(color.get("colorLabel"),"").strip();
    if(label.isEmpty()||!(color.get("skuKeys") instanceof List<?> keys))throw new IllegalArgumentException("颜色分组缺少 SKU");
+   if(templatePalette){
+    String hex=Objects.toString(color.get("colorHex"),"");
+    if(!hex.matches("#[0-9A-F]{6}")||!Objects.equals(color.get("colorKey"),"template-"+hex.substring(1).toLowerCase(Locale.ROOT))
+      ||!colorKeys.add(color.get("colorKey").toString()))throw new IllegalArgumentException("模板配色清单无效");
+   }
+   var assignedToColor=new HashSet<String>();
    var grouped=new LinkedHashMap<String,List<ProductCaptureSku>>();
    var attributesByGroup=new HashMap<String,Map<String,String>>();
    for(var rawKey:keys){
-    String key=Objects.toString(rawKey,""),image=skuImages.get(key);
+    String key=Objects.toString(rawKey,""),image=skuImages.get(skuImageKey(color,key));
     var sku=byKey.get(key);
-    if(sku==null||image==null||!assigned.add(key))throw new IllegalArgumentException("来源 SKU 分组不完整或重复："+key);
+    if(sku==null||image==null||!assignedToColor.add(key)||!templatePalette&&assigned.contains(key))throw new IllegalArgumentException("来源 SKU 分组不完整或重复："+key);
+    assigned.add(key);
     Map<String,Object> original=json.readValue(sku.getAttributesJson(),Map.class);
     var attributes=new LinkedHashMap<String,String>();
     String colorName=null;
@@ -147,10 +159,17 @@ public class CommercePublicationDrafts {
    for(var group:groups){
     var attrs=attributesByGroup.get(group);
     var sku=selectSourceSku(grouped.get(group),variant,label,attrs);
+    String image=skuImages.get(skuImageKey(color,sku.getSkuKey()));
+    if(templatePalette){
+     String key="tpl-"+CommerceImageArchive.sha((color.get("colorKey")+":"+variant+":"+group).getBytes(java.nio.charset.StandardCharsets.UTF_8)).substring(0,32);
+     // A configured POD color is a new variant; never reuse a competitor SKU identity.
+     sku=new ProductCaptureSku(sku.getOrganizationId(),sku.getCaptureId(),key,null,key,label,
+       sku.getPrice(),sku.getOriginalPrice(),sku.getStock(),image,"COMMERCE_GENERATED",group,"{}",result.size());
+    }
     String size=attrs.entrySet().stream().filter(e->isSize(e.getKey())).map(Map.Entry::getValue).findFirst().orElse("");
     String colorName=attrs.entrySet().stream().filter(e->CommerceSourceColorResolver.isColorDimension(e.getKey()))
       .map(Map.Entry::getValue).findFirst().orElse(label);
-    result.add(new PlannedSku(sku,colorName+(size.isBlank()?"":" / "+size),group,skuImages.get(sku.getSkuKey()),result.size()));
+    result.add(new PlannedSku(sku,colorName+(size.isBlank()?"":" / "+size),group,image,result.size()));
    }
   }
   if(assigned.size()!=byKey.size())throw new IllegalArgumentException("存在未分配颜色的来源 SKU");

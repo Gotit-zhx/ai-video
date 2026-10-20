@@ -12,7 +12,7 @@ import javax.imageio.ImageIO;
 /** Constrained photographic cloth recoloring; never invents a palette from a SKU name. */
 public final class CommerceGarmentColor {
     public static final String VERSION = "photo-cloth-color-v4";
-    public enum Mode { TEMPLATE_ORIGINAL, SOURCE_PHOTO_COLOR }
+    public enum Mode { TEMPLATE_ORIGINAL, SOURCE_PHOTO_COLOR, TEMPLATE_HEX }
     public record Report(Mode mode, String sourceLabel, String observedSourceRgb,
                          String observedTemplateRgb, double dominantSampleShare,
                          long sourceEvidencePixels, long recoloredPixels, long protectedPixels,
@@ -45,6 +45,20 @@ public final class CommerceGarmentColor {
         var source = garment(sourceSkuImage, "SKU 颜色「" + safeLabel + "」图", true);
         var targetColor = palette(source, false);
         verifyLabel(safeLabel, targetColor.rgb);
+        return recolor(blankPhoto, safeLabel, targetColor, Mode.SOURCE_PHOTO_COLOR);
+    }
+
+    public static Result prepareHex(byte[] blankPhoto, String hex, String label) {
+        if (hex == null || !hex.matches("#[0-9A-Fa-f]{6}"))
+            throw bad("INVALID_TEMPLATE_COLOR", "模板配色色号无效，请重新保存模板");
+        if (label == null || label.isBlank() || label.length() > 40)
+            throw bad("INVALID_COLOR_LABEL", "模板颜色名称无效");
+        int rgb = 0xff000000 | Integer.parseInt(hex.substring(1), 16);
+        return recolor(blankPhoto, label.strip(), new Palette(rgb, lab(rgb), 1, 0), Mode.TEMPLATE_HEX);
+    }
+
+    private static Result recolor(byte[] blankPhoto, String safeLabel, Palette targetColor, Mode mode) {
+        var blank = decode(blankPhoto);
         var template = garment(blankPhoto, "模板底图", false);
         var templateColor = palette(template, true);
         int width = blank.getWidth(), height = blank.getHeight(), n = width * height;
@@ -105,9 +119,11 @@ public final class CommerceGarmentColor {
         verifyCoverage(original, output, fabric, width, height, templateColor.lab.l, targetColor.lab.l);
         var result = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         result.setRGB(0, 0, width, height, output, 0, width);
-        return new Result(png(result), new Report(Mode.SOURCE_PHOTO_COLOR, safeLabel, hex(targetColor.rgb),
+        return new Result(png(result), new Report(mode, safeLabel, hex(targetColor.rgb),
                 hex(templateColor.rgb), targetColor.share, targetColor.evidence, changed, n - clothPixels, false,
-                "仅使用 SKU 照片中可分离、占主导且分布一致的布色，保留模板光影、背景和识别到的非布色细节。取样 RGB 受拍摄光照影响，不等同真实标准色号；布料边缘、材质与颜色仍需检查。"));
+                mode == Mode.TEMPLATE_HEX
+                        ? "按模板指定 HEX 配色，仅改变布料底色，保留光影、背景和印花；屏幕色号不代表实物染色验收。"
+                        : "仅使用 SKU 照片中可分离、占主导且分布一致的布色，保留模板光影、背景和识别到的非布色细节。取样 RGB 受拍摄光照影响，不等同真实标准色号；布料边缘、材质与颜色仍需检查。"));
     }
 
     /** Fail before archiving when a darker SKU still contains a patch of the original light cloth. */

@@ -65,7 +65,7 @@ public final class CommerceBatchCreativePlanValidator {
   }
   validateReusedDesigns(requested,configuration);
  }
- public static boolean sourceColorOutput(Plan plan){return plan!=null&&"SOURCE_SKU_COLORS".equals(plan.outputPolicy());}
+ public static boolean sourceColorOutput(Plan plan){return plan!=null&&Set.of("SOURCE_SKU_COLORS","TEMPLATE_COLORS").contains(Objects.toString(plan.outputPolicy(),""));}
  public static boolean drapeOutput(Plan plan){return plan!=null&&GROK_DRAPE_POLICY.equals(plan.renderPolicy());}
  public static boolean sceneOutput(Plan plan){return plan!=null&&GROK_SCENE_POLICY.equals(plan.renderPolicy());}
  public static boolean localPhotoOutput(Plan plan){return plan!=null&&(LOCAL_PHOTO_POLICY.equals(plan.renderPolicy())||sceneOutput(plan)||drapeOutput(plan));}
@@ -81,7 +81,7 @@ public final class CommerceBatchCreativePlanValidator {
   if(GROK_DRAPE_POLICY.equals(policy))CommerceDrapeReuseWorkflow.printId(configuration);
  }
  public static void validateOutputPolicy(String policy){
-  if(policy!=null&&!"SOURCE_SKU_COLORS".equals(policy))throw new IllegalArgumentException("商品出图规则无效，请重新保存创作配置");
+   if(policy!=null&&!Set.of("SOURCE_SKU_COLORS","TEMPLATE_COLORS").contains(policy))throw new IllegalArgumentException("商品出图规则无效，请重新保存创作配置");
  }
  public static void validateColorTargets(Selection source,List<String> readableImages){
   if(source.colorTargets().isEmpty())throw new IllegalArgumentException("缺少已固定的商品颜色，请重新保存创作配置");
@@ -89,7 +89,10 @@ public final class CommerceBatchCreativePlanValidator {
   for(var color:source.colorTargets()) {
    if(color==null||color.key()==null||color.key().isBlank()||!seen.add(color.key())||color.label()==null||color.label().isBlank())
     throw new IllegalArgumentException("商品颜色分组无效或重复，请重新保存创作配置");
-   if(!color.hasColorReference()||color.imageId()==null||color.imageId().isBlank()||(readableImages!=null&&!readableImages.contains(color.imageId())))
+   if(color.hex()!=null){
+    if(!color.hex().matches("#[0-9A-F]{6}")||!color.key().equals("template-"+color.hex().substring(1).toLowerCase(Locale.ROOT)))
+     throw new IllegalArgumentException("模板配色色号或颜色标识无效");
+   }else if(!color.hasColorReference()||color.imageId()==null||color.imageId().isBlank()||(readableImages!=null&&!readableImages.contains(color.imageId())))
     throw new IllegalArgumentException("颜色「"+color.label()+"」缺少本商品可读取的 SKU 色样图，请补齐对应颜色图片后重新保存；不会猜测颜色");
   }
  }

@@ -10,6 +10,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Base64;
+import org.springframework.util.DigestUtils;
 
 @RestController
 @RequestMapping("/api/v1/commerce-artwork-library")
@@ -37,5 +38,14 @@ public class CommerceArtworkLibraryController {
     public ApiResponse<Boolean> save(@PathVariable String id, @AuthenticationPrincipal PlatformPrincipal user) {
         service.saveGenerated(id,user);
         return ApiResponse.ok(true);
+    }
+
+    @GetMapping("/{id}/thumbnail")
+    public ResponseEntity<byte[]> thumbnail(@PathVariable String id, @AuthenticationPrincipal PlatformPrincipal user) {
+        byte[] bytes = service.thumbnail(id, user);
+        return ResponseEntity.ok().contentType(MediaType.IMAGE_PNG)
+                .cacheControl(CacheControl.noCache().cachePrivate())
+                .eTag("\"" + DigestUtils.md5DigestAsHex(bytes) + "\"")
+                .contentLength(bytes.length).body(bytes);
     }
 }

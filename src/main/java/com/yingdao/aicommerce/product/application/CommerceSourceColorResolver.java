@@ -18,7 +18,11 @@ public final class CommerceSourceColorResolver {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     public record Color(String key, String label, List<String> skuKeys,
-                        String imageId, boolean hasColorReference) {
+                        String imageId, boolean hasColorReference,
+                        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String hex) {
+        public Color(String key, String label, List<String> skuKeys, String imageId, boolean hasColorReference) {
+            this(key, label, skuKeys, imageId, hasColorReference, null);
+        }
         public Color { skuKeys = List.copyOf(skuKeys); }
     }
 

@@ -103,6 +103,7 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
       var finalFront=CommerceBatchCreativePlanValidator.drapeOutput(plan)?CommerceBackPreviewService.find(jobs,source.captureId(),CommerceDrapeReuseWorkflow.OUTPUT,variant,color.key()):front;
       String frontKey=(String)finalFront.get("storage_key");archive.read(user.organizationId(),frontKey);
       var row=new LinkedHashMap<String,Object>();row.put("colorKey",color.key());row.put("colorLabel",color.label());row.put("skuKeys",color.skuKeys());row.put("frontKey",frontKey);
+      if(color.hex()!=null)row.put("colorHex",color.hex());
       for(String side:supplementalSides){
        var image="BACK".equals(side)?backs.render(run.batchId(),(String)front.get("id"),user):backs.render(run.batchId(),(String)front.get("id"),side,user);
        row.put(side.toLowerCase(Locale.ROOT)+"Key",archive.store(user.organizationId(),Base64.getDecoder().decode(image.dataBase64())).storageKey());
@@ -115,6 +116,10 @@ public class CommerceBatchPublishStage implements CommerceBatchStageHandler {
      // Preserve all reviewed details in the local product. The Shopee adapter selects
      // its nine gallery images by sort order (MAIN, then details) and keeps SKU media separate.
      var body=new LinkedHashMap<String,Object>(options);body.put("confirmed",true);body.put("shopId",item.shopId());body.put("destinationPlatform",shop.getPlatform());
+     // The selected style owns the entire gallery. ProductMainImageAssets blocks
+     // incomplete styles instead of falling back to the old product main images.
+     body.remove(ProductMainImageStylePolicy.TEMPLATE);
+     if(config.mainImageStyleTemplateId()!=null)body.put(ProductMainImageStylePolicy.TEMPLATE,config.mainImageStyleTemplateId());
      // This key also recovers a workflow created just before a lost database response.
      String workflowKey="commerce-publish-"+run.id()+"-"+item.id()+"-"+variant;
      var captureKeys=db.queryForList("SELECT idempotency_key FROM product_captures WHERE organization_id=? AND id=?",

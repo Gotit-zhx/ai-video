@@ -9,6 +9,11 @@ import org.springframework.stereotype.Service;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.*;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import javax.imageio.ImageIO;
 
 /** Read-only library of completed, reusable print masters; product mockups are never library artwork. */
 @Service
@@ -44,6 +49,14 @@ public class CommerceArtworkLibraryService {
 
     private final JdbcTemplate db;
     private final CommerceImageArchive archive;
+    // Small previews only; source masters never enter this cache. Authorize every read
+    // before using the tenant/content key, including browser cache revalidation.
+    private final Map<String, byte[]> thumbnails = Collections.synchronizedMap(
+            new LinkedHashMap<>(32, .75f, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) { return size() > 128; }
+            });
+    private final Object[] thumbnailLocks = new Object[16];
+    private final java.util.concurrent.Semaphore thumbnailDecoders = new java.util.concurrent.Semaphore(2, true);
     private final Map<String, Boolean> legacyValidity = Collections.synchronizedMap(
             new LinkedHashMap<>(64, .75f, true) {
                 @Override protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) { return size() > 256; }
@@ -52,6 +65,7 @@ public class CommerceArtworkLibraryService {
     public CommerceArtworkLibraryService(JdbcTemplate db, CommerceImageArchive archive) {
         this.db = db;
         this.archive = archive;
+        Arrays.setAll(thumbnailLocks, ignored -> new Object());
     }
 
     public Page list(int page, String query, PlatformPrincipal user) {
@@ -131,6 +145,46 @@ public class CommerceArtworkLibraryService {
 
     public CommerceDesignImageGateway.Reference image(String id, PlatformPrincipal user) {
         return readChecked(find(id, user), user);
+    }
+
+    public byte[] thumbnail(String id, PlatformPrincipal user) {
+        var row = find(id, user);
+        String key = (String) row.get("storage_key");
+        synchronized (thumbnailLocks[Math.floorMod(key.hashCode(), thumbnailLocks.length)]) {
+            byte[] cached = thumbnails.get(key);
+            if (cached == null) {
+                try { thumbnailDecoders.acquire(); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw error(HttpStatus.SERVICE_UNAVAILABLE, "印花缩略图读取中断，请重新读取");
+                }
+                try {
+                    var source = readChecked(row, user);
+                    cached = preview(Base64.getDecoder().decode(source.dataBase64()));
+                    thumbnails.put(key, cached);
+                } finally { thumbnailDecoders.release(); }
+            }
+            return cached.clone();
+        }
+    }
+
+    private static byte[] preview(byte[] bytes) {
+        var source = CommerceMockupComposer.decode(bytes);
+        double scale = Math.min(1, 256.0 / Math.max(source.getWidth(), source.getHeight()));
+        var image = new BufferedImage(Math.max(1, (int) Math.round(source.getWidth() * scale)),
+                Math.max(1, (int) Math.round(source.getHeight() * scale)), BufferedImage.TYPE_INT_ARGB);
+        var graphics = image.createGraphics();
+        try {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.drawImage(source, 0, 0, image.getWidth(), image.getHeight(), null);
+        } finally { graphics.dispose(); }
+        try {
+            var output = new ByteArrayOutputStream();
+            if (!ImageIO.write(image, "png", output)) throw new IOException("PNG writer unavailable");
+            return output.toByteArray();
+        } catch (IOException invalid) {
+            throw error(HttpStatus.CONFLICT, "印花缩略图暂不可用，请重新读取");
+        }
     }
 
     private Map<String, Object> find(String id, PlatformPrincipal user) {

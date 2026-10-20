@@ -31,9 +31,9 @@ final class CommerceLocalPhotoWorkflow {
                 if(ready(find(jobs,source.captureId(),"BASE_COLOR",0,color.key())))continue;
                 String swatch=colorSource.archive(color);
                 boolean original=CommerceSourceColorResolver.DEFAULT_KEY.equals(color.key());
-                return local(run,source,"BASE_COLOR",0,color,List.of(base,swatch),CommerceGarmentColor.VERSION+"/"+CommerceGarmentForeground.VERSION,
+                return local(run,source,"BASE_COLOR",0,color,List.of(base,swatch),CommerceGarmentColor.VERSION+"/"+CommerceGarmentForeground.VERSION+(color.hex()==null?"":"/template-hex-v1"),
                         List.of(base,swatch,color.key(),color.label(),original),
-                        ()->prepareColor(bytes(run.organizationId(),base),bytes(run.organizationId(),swatch),color.label(),original),
+                        ()->prepareColor(bytes(run.organizationId(),base),bytes(run.organizationId(),swatch),color.label(),original,color.hex()),
                         "已固定「"+color.label()+"」商品底图，可供全部新款复用；未调用生图模型");
             }
             return null;
@@ -43,6 +43,13 @@ final class CommerceLocalPhotoWorkflow {
     }
 
     Produced prepareColor(byte[] base,byte[] swatch,String label,boolean original) {
+        return prepareColor(base,swatch,label,original,null);
+    }
+    Produced prepareColor(byte[] base,byte[] swatch,String label,boolean original,String hex) {
+        if(hex!=null){
+            var result=CommerceGarmentColor.prepareHex(base,hex,label);
+            return new Produced(result.png(),result.report());
+        }
         try {
             var result=CommerceGarmentColor.prepare(base,swatch,label,original);
             return new Produced(result.png(),result.report());

@@ -22,6 +22,15 @@ test('defaults to generation and reuse requires a material for every distinct ma
  assert.deepEqual(JSON.parse(JSON.stringify(h.picker.getSelection())),[{groupArtifacts:{'group-a':'asset-1','group-b':'asset-2'}}]);
  assert.equal(h.calls.length,1,'cached catalogue, no generation API calls');
 });
+test('gallery and chosen print load thumbnails while selection retains the original artifact identity',async()=>{
+ const h=setup();h.picker.setTemplate({photoPrints:[config.photoPrints[0]]});h.buttons('使用已有印花')[0].click();
+ h.buttons('选择印花')[0].click();await flush();
+ const previews=h.all().filter(n=>n.tag==='img');assert.equal(previews.length,2);
+ assert.ok(previews.every(n=>n.src.endsWith('/thumbnail')&&n.loading==='lazy'&&n.decoding==='async'));
+ h.buttons('使用此印花')[0].click();
+ assert.equal(h.picker.getSelection()[0].groupArtifacts['group-a'],'asset-1');
+ assert.ok(h.all().filter(n=>n.tag==='img').every(n=>!n.src.endsWith('/image')));
+});
 test('adding a variant requires complete choices and removing it preserves the first design',async()=>{
  const h=setup();h.picker.setTemplate({photoPrints:[config.photoPrints[0]]});h.buttons('使用已有印花')[0].click();h.buttons('选择印花')[0].click();await flush();h.buttons('使用此印花')[0].click();
  h.buttons('＋ 增加一款')[0].click();assert.equal(h.picker.getState().count,2);assert.throws(()=>h.picker.getSelection(),/第 2 款/);

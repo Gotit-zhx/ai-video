@@ -6,6 +6,7 @@
  let surfaceEditor=null,preview=null,previewPromise=null,templates=[],id=null,version=0,snapshotId=null;
  let revision=0,edit=0,savedEdit=-1,side='FRONT',baseImages={},sourcePreviewUrl=null,product='T_SHIRT';
  let busy=false,uploading=false,workflowLoading=false,workflowLoadGeneration=0,pendingWorkflowSnapshot=null;const imageAspects=new Map();
+ let appearance=null;
  const library=n('details','');library.className='print-editor-library';n('summary','导入已有版型',library);
  const tools=n('div','',library);tools.className='print-tools print-editor-tools';
  const name=n('input','',tools);name.placeholder='印花模板名称';name.setAttribute('aria-label','印花模板名称');name.className='print-internal-name';
@@ -32,10 +33,11 @@
  const retryLinked=n('button','重新载入关联模板',recoveryActions),saveThenReload=n('button','保存当前改动后载入',recoveryActions);retryLinked.id='print-linked-retry';saveThenReload.id='print-linked-save-retry';
  const status=n('p','上传商品图片后，在四面参考图上拖动、缩放或旋转印花。');status.className='print-editor-status';status.setAttribute('role','status');
  root.querySelectorAll('button').forEach(button=>button.type='button');
- const configuration=()=>({product,areas:[],baseImages:{...baseImages},reconstruction:null,surfacePrints:[]});
+ appearance=window.CommerceTemplateAppearance?.mount({layout,changed:()=>{edit++;notifyState();}});
+ const configuration=()=>({product,areas:[],baseImages:{...baseImages},reconstruction:null,surfacePrints:[],...appearance?.fields()});
  function getState(){const fields=surfaceEditor?.fields()||{};return {snapshotId:pendingWorkflowSnapshot||snapshotId,name:name.value,dirty:!!pendingWorkflowSnapshot||savedEdit!==edit,hasContent:!!(sourcePreviewUrl||fields.sourceImageId||Object.keys(baseImages).length||snapshotId),busy:busy||uploading||workflowLoading||!!surfaceEditor?.isWorking?.(),hasSource:!!(sourcePreviewUrl||fields.sourceImageId||Object.keys(baseImages).length),hasModel:false,saveBlocker:surfaceEditor?.saveBlocker?.()||null,pendingSnapshotId:pendingWorkflowSnapshot,printCount:fields.photoPrints?.length||0,status:status.textContent};}
  function hasUnsavedEditorContent(){return edit>0&&savedEdit!==edit||!!surfaceEditor?.hasUnfinishedSource?.();}
- function notifyState(){const state=getState(),dirty=hasUnsavedEditorContent();baseFile.disabled=plain.disabled=read.disabled=saved.disabled=fresh.disabled=state.busy;recoveryActions.hidden=!pendingWorkflowSnapshot;retryLinked.hidden=dirty;saveThenReload.hidden=!dirty;retryLinked.disabled=saveThenReload.disabled=state.busy;retryLinked.textContent=workflowLoading?'正在载入关联模板…':'重新载入关联模板';if(typeof CustomEvent==='function')window.dispatchEvent(new CustomEvent('heyi:print-template-state-change',{detail:state}));}
+ function notifyState(){const state=getState(),dirty=hasUnsavedEditorContent();appearance?.setLocked(state.busy);baseFile.disabled=plain.disabled=read.disabled=saved.disabled=fresh.disabled=state.busy;recoveryActions.hidden=!pendingWorkflowSnapshot;retryLinked.hidden=dirty;saveThenReload.hidden=!dirty;retryLinked.disabled=saveThenReload.disabled=state.busy;retryLinked.textContent=workflowLoading?'正在载入关联模板…':'重新载入关联模板';if(typeof CustomEvent==='function')window.dispatchEvent(new CustomEvent('heyi:print-template-state-change',{detail:state}));}
  window.CommercePrintTemplateSelection=()=>({snapshotId:pendingWorkflowSnapshot||snapshotId,name:name.value,dirty:getState().dirty||getState().busy});
  async function ensurePreview(){
   if(preview)return preview;
@@ -63,6 +65,7 @@
   workflowLoadGeneration++;pendingWorkflowSnapshot=null;workflowLoading=false;revision++;preview?.dispose();preview=null;
   const config=row.configuration||{};baseImages={...(config.baseImages||{})};product=config.product||'T_SHIRT';id=row.templateId;version=row.version;snapshotId=row.snapshotId;name.value=row.name;side=config.photoPrints?.[0]?.side||Object.keys(baseImages)[0]||'FRONT';
   surfaceEditor?.load(config);edit++;savedEdit=edit;draw();status.textContent=`已载入 ${row.name} · v${row.version}。`;notifyState();
+  appearance?.load(config);
  }
  async function loadWorkflowSnapshot(requested){
   const generation=++workflowLoadGeneration;workflowLoading=false;pendingWorkflowSnapshot=null;
@@ -87,6 +90,7 @@
   const refuse=message=>{status.textContent=message;notifyState();throw new Error(message);};
   if(!independentSave&&pendingWorkflowSnapshot)refuse('关联版型尚未载入，请重新载入当前模板后保存');
   const blocker=surfaceEditor?.saveBlocker?.();if(blocker)refuse(blocker);
+  appearance?.validate();
   if(busy||uploading||surfaceEditor?.isWorking?.())refuse('商品或印花仍在处理中，请完成后保存模板');
   if(typeof options.name==='string'&&options.name.trim()!==name.value){name.value=options.name.trim();edit++;}
   if(!independentSave&&snapshotId&&savedEdit===edit)return templates.find(row=>row.snapshotId===snapshotId)||{templateId:id,snapshotId,version,name:name.value};
@@ -105,7 +109,7 @@
  }
  save.addEventListener('click',()=>saveTemplate({},true).catch(()=>{}));
  window.CommercePrintTemplateEditor={save:options=>saveTemplate(options),getState,get dirty(){return getState().dirty;},get status(){return status.textContent;}};
- window.addEventListener('heyi:company-reset',()=>{workflowLoadGeneration++;pendingWorkflowSnapshot=null;revision++;preview?.dispose();preview=null;baseImages={};sourcePreviewUrl=null;id=null;version=0;snapshotId=null;edit=0;savedEdit=-1;busy=false;uploading=false;workflowLoading=false;name.value='';templates=[];saved.replaceChildren();renderTable();surfaceEditor?.reset();status.textContent='';draw();});
+ window.addEventListener('heyi:company-reset',()=>{workflowLoadGeneration++;pendingWorkflowSnapshot=null;revision++;preview?.dispose();preview=null;baseImages={};sourcePreviewUrl=null;id=null;version=0;snapshotId=null;edit=0;savedEdit=-1;busy=false;uploading=false;workflowLoading=false;name.value='';templates=[];saved.replaceChildren();renderTable();surfaceEditor?.reset();appearance?.reset();status.textContent='';draw();});
  if(window.CommercePrintSurface){surfaceEditor=window.CommercePrintSurface.mount({root,sidebar,host,baseTools,referencePanel,referenceActions,n,
   configuration,stateChanged:notifyState,revision:()=>revision,preview:()=>preview,ensurePreview,isPlain:()=>plain.checked,
   side:()=>side,setSide,isLocked:()=>busy||uploading||workflowLoading,imageAspect:face=>{const suffix='/api/v1/commerce-print-templates/base-images/'+baseImages[face];for(const [url,aspect]of imageAspects)if(url.endsWith(suffix))return aspect;return 1;},organizationId:()=>typeof currentUser!=='undefined'?currentUser?.organizationId:'',

@@ -123,7 +123,7 @@
       const name=templateName.value.trim();
       if(!name) { templateStatus.textContent="请填写模板名称。"; return; }
       if(savingTemplate)return;
-      savingTemplate=true;save.disabled=true; selector.disabled=true; refresh.disabled=true; newTemplate.disabled=true;
+      savingTemplate=true;globalThis.dispatchEvent?.(new CustomEvent('heyi:template-save-lock',{detail:true}));save.disabled=true; selector.disabled=true; refresh.disabled=true; newTemplate.disabled=true;
       templateName.disabled=true;if(designCount)designCount.disabled=true;showSaveState();
       const sessionTicket=templateRequest;
       // Read the header before disabling fields affects FormData; use the frozen count below.
@@ -155,7 +155,7 @@
         headerDirty=false;
         templateStatus.textContent=`已保存「${selected.name}」· v${selected.version}，版型与印花位置已关联，可在新建裂变时选用。`;
       } catch(error) { if(sessionTicket===templateRequest){headerDirty=true;templateStatus.textContent=error.message;} }
-      finally { if(sessionTicket===templateRequest){savingTemplate=false;save.disabled=false; selector.disabled=false; refresh.disabled=false; newTemplate.disabled=false;templateName.disabled=false;if(designCount)designCount.disabled=false;showSaveState();} }
+      finally { if(sessionTicket===templateRequest){savingTemplate=false;globalThis.dispatchEvent?.(new CustomEvent('heyi:template-save-lock',{detail:false}));save.disabled=false; selector.disabled=false; refresh.disabled=false; newTemplate.disabled=false;templateName.disabled=false;if(designCount)designCount.disabled=false;showSaveState();} }
     });
   }
   form.addEventListener("input", () => {

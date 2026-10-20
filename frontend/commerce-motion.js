@@ -25,9 +25,9 @@
   const colorBridge=create('div','studio-color-bridge',art);
   for(let i=0;i<3;i++)create('i','',colorBridge);
   const colorIntro=create('div','studio-color-intro',hero);
-  create('span','studio-color-eyebrow',colorIntro,'COLOR STUDY / 原色提取');
-  const colorTitle=create('h3','studio-color-title',colorIntro,'让原色，逐一就位');
-  const colorDeck=create('section','studio-color-deck',hero);colorDeck.setAttribute('aria-label','来源商品 SKU 颜色准备进度');
+  create('span','studio-color-eyebrow',colorIntro,'COLOR STUDY / 商品配色');
+  const colorTitle=create('h3','studio-color-title',colorIntro,'让配色，逐一就位');
+  const colorDeck=create('section','studio-color-deck',hero);colorDeck.setAttribute('aria-label','商品配色准备进度');
   const colorDeckHead=create('div','studio-color-deck-head',colorDeck);
   create('span','',colorDeckHead,'原商品配色');
   const colorCount=create('strong','studio-color-count',colorDeckHead);
@@ -202,10 +202,10 @@
     colorLight.hidden=colorBridge.hidden=!state.visible;
     if(!state.visible)return;
     hero.dataset.scene='colors';hero.dataset.colorsReady=String(state.complete);
-    colorTitle.textContent=state.complete?'原色已就位，接续创作':['FAILED','UNKNOWN','WAITING_INPUT','WAITING_CAPABILITY','STALE'].includes(hero.dataset.status)?'原色保留，等待继续':'让原色，逐一就位';
+    colorTitle.textContent=state.complete?'配色已就位，接续创作':['FAILED','UNKNOWN','WAITING_INPUT','WAITING_CAPABILITY','STALE'].includes(hero.dataset.status)?'配色保留，等待继续':'让配色，逐一就位';
     colorCount.textContent=state.known?`${state.ready} / ${state.entries.length}`:`已就绪 ${state.ready} 色`;
     colorNote.textContent=state.complete?'所有颜色底图已准备完成':hero.dataset.status==='RUNNING'?`已准备 ${state.ready} 色 · ${state.known?'按原商品颜色逐一展开':'正在同步完整颜色列表'}`:hero.dataset.status==='FAILED'?'颜色准备已停止 · 已完成颜色保留':hero.dataset.status==='STALE'?'正在同步后台状态 · 已完成颜色保留':`已准备 ${state.ready} 色 · 等待任务继续`;
-    motionCaption.textContent='商品原图 → 原有 SKU 颜色 → 每色一张底图';
+    motionCaption.textContent='固定模板 → 已配置配色 → 每色一张底图';
     const present=new Set();
     state.entries.forEach((color,index)=>{
       const key=JSON.stringify([state.selected,color.key]);present.add(key);

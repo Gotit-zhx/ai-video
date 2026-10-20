@@ -61,11 +61,12 @@ public class CommerceBackPreviewService {
   String sceneKey=CommerceSceneBackgroundAssets.readyKey(plan,config,source,jobs,user.organizationId(),archive,json);
   var cache=new CommerceMockupDerivativeCache(db,archive,json);
   var cacheInputs=new ArrayList<Object>(List.of(side,CommercePrintTemplateService.photoLayout(config),back,blank,uv,swatch,colorSpec.label(),replacementKeys,config.renderPrintIds()));
+  if(colorSpec.hex()!=null)cacheInputs.addAll(List.of("template-hex-v1",colorSpec.hex()));
   if(sceneKey!=null)cacheInputs.addAll(List.of(CommerceSceneBackgroundComposer.VERSION,sceneKey));
   String cacheKey=cache.key("photo-view-v2/"+CommerceGarmentColor.VERSION,cacheInputs);
   var entry=cache.find(user.organizationId(),cacheKey);
   if(entry==null){
-   var colored=new CommerceLocalPhotoWorkflow(db,archive,json,foreground).prepareColor(bytes(user.organizationId(),back),bytes(user.organizationId(),swatch),colorSpec.label(),CommerceSourceColorResolver.DEFAULT_KEY.equals(color));
+   var colored=new CommerceLocalPhotoWorkflow(db,archive,json,foreground).prepareColor(bytes(user.organizationId(),back),bytes(user.organizationId(),swatch),colorSpec.label(),CommerceSourceColorResolver.DEFAULT_KEY.equals(color),colorSpec.hex());
    byte[] output=colored.png();Object check=Map.of("plainBack",true);
    if(!replacementKeys.isEmpty()){
     var replacements=new LinkedHashMap<String,byte[]>();replacementKeys.forEach((k,v)->replacements.put(k,bytes(user.organizationId(),v)));
