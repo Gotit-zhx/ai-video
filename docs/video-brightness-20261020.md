@@ -115,3 +115,32 @@ All 103 focused tests passed with zero failures, errors or skips, including
 Release script syntax validation and `git diff --check` also passed.
 The follow-up uses the separate image tag
 `ai-commerce-platform:video-room-daylight-20261020`.
+
+The room-daylight update was deployed from commit `e599b63` at
+`/opt/heyi/releases/video-room-daylight-20261020-e599b63`. Idle checks passed,
+the reviewed app JAR was verified healthy, and runtime/frontend containers
+remained unchanged. The rollout did not submit image or video generations.
+
+## Natural Fabric Follow-Up
+
+The previous shared material prompt explicitly requested continuous wrinkles
+in every pose and repeatedly emphasized softness and drape. It did not request
+thin fabric, but lacked an explicit source-relative opacity and stiffness guard.
+
+The REALISM V6 model prompt and shared natural-fabric V1 policy now:
+
+- Keep garments normally tidy and naturally relaxed, with sparse soft folds
+  only at actual tension, bending or contact points.
+- Preserve the source garment's thickness, weave density, opacity, stiffness
+  and drape. Brighter environmental light must not make opaque fabric sheer.
+- Preserve intentional pleats, distressing and sheer or mesh designs without
+  adding wrinkles, wear, pilling, fading, damage or washed-out sagging.
+- Limit background signs of use to furniture and room furnishings.
+- Retain localized tension and gravity during explicit corner-lifting actions
+  without spreading dense creases throughout the garment.
+
+All 105 focused tests passed with zero failures, errors or skips, including
+22 lighting/fabric cases. Tests cover primary images and final storyboards,
+intentional source details, local grip physics, and reuse of existing outputs.
+The separate deployment tag is
+`ai-commerce-platform:video-natural-fabric-20261020`.

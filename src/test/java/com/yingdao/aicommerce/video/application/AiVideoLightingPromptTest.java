@@ -53,6 +53,7 @@ class AiVideoLightingPromptTest {
         var task = task(mode, background);
         String prompt = primary(task, false);
         assertNaturalExposure(prompt);
+        assertNaturalFabric(prompt);
         assertFalse(prompt.contains("不主动改变场景亮度"));
         assertFalse(prompt.contains("不额外设计或添加窗光"));
         if ("SCRIPT_ORIGINAL".equals(background)) {
@@ -66,10 +67,14 @@ class AiVideoLightingPromptTest {
             assertFalse(prompt.contains("浅灰墙面与明亮柜体"));
         }
         if ("MODEL_WEAR".equals(mode)) {
-            assertTrue(prompt.contains("【REALISM V5｜背景采光优先手机随拍任务】"));
+            assertTrue(prompt.contains("【REALISM V6｜自然采光与面料保真手机随拍任务】"));
             assertTrue(prompt.contains("【商品保真】"));
             assertTrue(prompt.contains("正确穿着母版"));
             assertTrue(prompt.contains("【中近景门禁版本：CLOSE_FRAMING_GATE_V1】"));
+            if ("AI_DESIGNED".equals(background)) {
+                assertTrue(prompt.contains("生活使用痕迹仅限家具与房间陈设"));
+                assertTrue(prompt.contains("衣服不继承背景的磨损或旧物质感"));
+            }
         }
     }
 
@@ -78,6 +83,7 @@ class AiVideoLightingPromptTest {
     void originalBackgroundEvidenceDoesNotLockUnderexposure(String mode) {
         String prompt = primary(task(mode, "SCRIPT_ORIGINAL"), true);
         assertNaturalExposure(prompt);
+        assertNaturalFabric(prompt);
         assertTrue(prompt.contains("参考图2"));
         assertTrue(prompt.contains("不照搬欠曝"));
         assertFalse(prompt.contains("曝光、白平衡、景深、机位方向"));
@@ -115,6 +121,7 @@ class AiVideoLightingPromptTest {
         String prompt = ReflectionTestUtils.invokeMethod(processor, "storyboardIdentityTransferPrompt",
                 task, item(task), shots, frames);
         assertNaturalExposure(prompt);
+        assertNaturalFabric(prompt);
         assertTrue(prompt.contains("不沿用参考图的欠曝"));
         assertFalse(prompt.contains("不得反过来修改背景去迁就人物"));
         assertFalse(prompt.contains("曝光、白平衡和锐度参数"));
@@ -136,8 +143,34 @@ class AiVideoLightingPromptTest {
                 task, item(task), shots, frames);
         String guide = ReflectionTestUtils.invokeMethod(processor, "storyboardGridPrompt", task, shots);
         assertNaturalExposure(product);
+        assertNaturalFabric(product);
         assertNaturalExposure(guide);
+        assertFalse(guide.contains("【服装自然质感 V1】"));
         assertTrue(guide.contains("不复制偏暗曝光"));
+    }
+
+    @Test void ordinaryPosesDoNotAcquireGripWrinkles() {
+        String primary = primary(task("PRODUCT_ONLY", "AI_DESIGNED"), false);
+        String grip = ReflectionTestUtils.invokeMethod(processor, "fabricGripPhysicsRequirement",
+                shots.getFirst());
+
+        assertNaturalFabric(primary);
+        assertEquals("", grip);
+        assertFalse(primary.contains("放射状张力褶皱"));
+    }
+
+    @Test void explicitGripKeepsLocalTensionWithoutWrinklingTheEntireGarment() {
+        shots = ReflectionTestUtils.invokeMethod(processor, "readShots", """
+                {"shots":[{"sequence":1,"motionDescription":"单手捏住衣角，轻轻提起一角"}]}
+                """);
+        String prompt = primary(task("PRODUCT_ONLY", "SCRIPT_ORIGINAL"), false);
+
+        assertNaturalFabric(prompt);
+        assertTrue(prompt.contains("未被支撑的布料受重力向下垂落"));
+        assertTrue(prompt.contains("与原面料厚度和挺度相符的少量放射状张力褶皱"));
+        assertTrue(prompt.contains("远离受力点的布面保持自然舒展"));
+        assertTrue(prompt.contains("不扩散成全件密集碎皱"));
+        assertTrue(prompt.contains("只约束脚本明确发生提拉的当前格"));
     }
 
     @ParameterizedTest
@@ -180,7 +213,7 @@ class AiVideoLightingPromptTest {
         assertTrue(prompt.contains("阴影边缘柔和、暗部可辨"));
         assertTrue(prompt.contains("保留真实接触阴影、材质纹理和空间层次"));
         assertTrue(prompt.contains("人物和商品保持正常曝光，不整体拉高曝光"));
-        assertTrue(prompt.contains("浅色衣服保留本色、褶皱和印花细节，深色商品不提灰"));
+        assertTrue(prompt.contains("浅色衣服保留本色、织纹和印花细节，深色商品不提灰"));
         assertTrue(prompt.contains("不凭空增添或移动门窗"));
         assertTrue(prompt.contains("不把原墙面刷成白色"));
         assertTrue(prompt.contains("不强行加入白昼日光"));
@@ -188,6 +221,20 @@ class AiVideoLightingPromptTest {
         assertTrue(prompt.contains("不得改变场景类型、昼夜设定、商品本色"));
         assertTrue(prompt.contains("不得把皮肤漂白"));
         assertTrue(prompt.contains("避免昏暗、压黑、过曝"));
+    }
+
+    private static void assertNaturalFabric(String prompt) {
+        assertTrue(prompt.contains("【服装自然质感 V1】"));
+        assertTrue(prompt.contains("正常整洁、自然舒展"));
+        assertTrue(prompt.contains("面料厚度、织物密度、遮盖性、挺度和垂感以原商品为准"));
+        assertTrue(prompt.contains("只在实际受力、弯曲或接触位置保留少量柔和褶皱"));
+        assertTrue(prompt.contains("不额外添加密集碎皱、深折痕"));
+        assertTrue(prompt.contains("保留原商品自带的百褶、压褶、纹理和做旧设计"));
+        assertTrue(prompt.contains("不得额外新增磨损、起球、褪色、破损或洗旧质感"));
+        assertTrue(prompt.contains("原本不透的衣料必须保持不透"));
+        assertTrue(prompt.contains("原商品本身的薄纱、网眼或透视设计则按原样保留"));
+        assertTrue(prompt.contains("不擅自加厚"));
+        assertFalse(prompt.contains("连续褶皱"));
     }
 
     private static AiVideoTask task(String mode, String background) {
