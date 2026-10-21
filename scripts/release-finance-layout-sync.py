@@ -16,12 +16,13 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 core = release.core
 APP, FRONT = core.APP, core.FRONT
-TAG = "finance-layout-sync-20261021"
-PREFIX = "BOOT-INF/classes/com/yingdao/aicommerce/finance/FinanceMarketplace"
+TAG = "finance-recent-sync-20261021"
+PREFIXES = tuple("BOOT-INF/classes/com/yingdao/aicommerce/finance/" + name
+                 for name in ("FinanceMarketplace", "FinanceSync"))
 
 
 def connector(name):
-    return name == PREFIX + ".class" or name.startswith(PREFIX + "$")
+    return any(name == prefix + ".class" or name.startswith(prefix + "$") for prefix in PREFIXES)
 
 
 def build():
@@ -48,7 +49,7 @@ def build():
     with zipfile.ZipFile(io.BytesIO(previous)) as old, zipfile.ZipFile(appdir / "app.jar") as new:
         assert set(old.namelist()) == set(new.namelist())
         assert all(old.read(n) == new.read(n) for n in old.namelist() if not connector(n))
-    assert set(manifest["files"]) == {"index.html", "finance-workspace.css"}
+    assert set(manifest["files"]) == {"index.html", "finance-workspace.css", "finance-workspace.js"}
     images = {}
     for name in (APP, FRONT):
         folder = appdir if name == APP else ROOT / "frontend-image"
@@ -94,6 +95,10 @@ def deploy():
     for name, info in before.items():
         assert core.inspect(name)["Id"] == info["Id"], "Live container changed during build"
     release.idle()
+    count = core.run("docker", "exec", "-i", "ai-commerce-mysql", "sh", "-c",
+                     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -NB "$MYSQL_DATABASE"',
+                     data=b"SELECT COUNT(*) FROM finance_sync_states WHERE status='RUNNING' AND lease_until>UTC_TIMESTAMP(6);")
+    assert count.decode().strip() == "0", "Finance request in progress; wait for its checkpoint before restart"
     preserved = {item["Name"]: item["Id"] for item in json.loads(core.run(
         "docker", "inspect", *core.run("docker", "ps", "-q").decode().split()))
         if item["Name"].lstrip("/") not in before}

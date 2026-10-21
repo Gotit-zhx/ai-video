@@ -186,6 +186,49 @@ class FinanceTest {
         }
         verifyNoInteractions(repo);
     }
+    @Test void initialSettlementShowsRecentWeekBeforeResumingExactHistoricalCursor(){
+        ZoneId zone=ZoneId.of("Asia/Manila");
+        long from=LocalDate.of(2026,7,24).atStartOfDay(zone).toEpochSecond();
+        long until=LocalDateTime.of(2026,10,21,9,0).atZone(zone).toEpochSecond();
+        var old=new LinkedHashMap<String,Object>(Map.of("from",from,"to",from+7*86400L,"until",until,
+                "coverage","2026-07-24","run","historical-run","cursor","old-page","transactionCursor","old-bill-page",
+                "transactionCount",20,"bills",List.of(Map.of("id","bill1"))));
+        var recent=FinanceSync.recentSettlementFirst(old,true,"SETTLEMENT",zone);
+        assertEquals(LocalDate.of(2026,10,15).atStartOfDay(zone).toEpochSecond(),recent.get("from"));
+        assertEquals(until,recent.get("to"));assertEquals("old-page",old.get("cursor"));
+        assertFalse(recent.containsKey("cursor"));assertFalse(recent.containsKey("bills"));
+        assertSame(recent,FinanceSync.recentSettlementFirst(recent,true,"SETTLEMENT",zone));
+        var page=new LinkedHashMap<>(recent);page.put("cursor","recent-page-2");
+        var progress=FinanceSync.nextWindow(recent,new FinanceMarketplace.Step(page,false));
+        assertFalse(progress.done());assertEquals("recent-page-2",progress.checkpoint().get("cursor"));
+        var resume=FinanceSync.nextWindow(page,new FinanceMarketplace.Step(page,true));
+        assertFalse(resume.done());assertEquals("old-page",resume.checkpoint().get("cursor"));
+        assertEquals("old-bill-page",resume.checkpoint().get("transactionCursor"));
+        assertEquals(20,resume.checkpoint().get("transactionCount"));
+        assertEquals(old.get("bills"),resume.checkpoint().get("bills"));
+        assertEquals(recent.get("from"),resume.checkpoint().get("until"));
+        assertSame(resume.checkpoint(),FinanceSync.recentSettlementFirst(resume.checkpoint(),true,"SETTLEMENT",zone));
+        long seconds=until-number(recent.get("from"));var cp=resume.checkpoint();boolean complete=false;
+        for(int windows=0;windows<20;windows++){
+            seconds+=number(cp.get("to"))-number(cp.get("from"));
+            var next=FinanceSync.nextWindow(cp,new FinanceMarketplace.Step(cp,true));
+            if(next.done()){complete=true;break;}
+            assertEquals(cp.get("to"),next.checkpoint().get("from"));
+            assertTrue(Boolean.TRUE.equals(next.checkpoint().get("recentFirst")));
+            cp=next.checkpoint();
+        }
+        assertTrue(complete);assertEquals(until-from,seconds);
+    }
+    @Test void recentPriorityDoesNotDisturbIncrementalSyncOrOtherChannels(){
+        var cp=Map.<String,Object>of("from",1L,"to",2L,"until",3L);
+        var zone=ZoneId.of("Asia/Manila");
+        assertSame(cp,FinanceSync.recentSettlementFirst(cp,false,"SETTLEMENT",zone));
+        for(String channel:List.of("ORDER","REFUND","PENDING"))
+            assertSame(cp,FinanceSync.recentSettlementFirst(cp,true,channel,zone));
+        var last=Map.<String,Object>of("from",1L,"to",3L,"until",3L);
+        assertSame(last,FinanceSync.recentSettlementFirst(last,true,"SETTLEMENT",zone));
+        assertTrue(FinanceSync.nextWindow(last,new FinanceMarketplace.Step(last,true)).done());
+    }
     @Test void mysqlTimestampVariantsUseUtc(){
         var day=LocalDateTime.of(2026,10,20,10,0);
         assertEquals(day.toInstant(ZoneOffset.UTC),instant(day));

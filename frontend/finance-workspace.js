@@ -27,6 +27,11 @@
   function cleanup(){charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;}
   function reset(){active=false;generation++;clearTimeout(refreshTimer);cleanup();root.replaceChildren();data=null;page=1;filters={start:ago(29),end:today(),shopId:'',platform:'',currency:'',granularity:'day',displayCurrency:'ORIGINAL',fxSnapshot:''};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
   function leave(){active=false;generation++;clearTimeout(refreshTimer);cleanup();}
+  function refreshWhenIdle(){
+    if(!active)return;
+    if(document.hidden||document.querySelector('.fi-dialog[open]')){refreshTimer=setTimeout(refreshWhenIdle,15000);return;}
+    load();
+  }
   function ensureCharts(){
     if(globalThis.echarts)return Promise.resolve(echarts);
     if(!chartPromise)chartPromise=new Promise(resolve=>{const s=document.createElement('script');const timer=setTimeout(()=>{chartPromise=null;resolve(null);s.remove();},12000);s.src='/vendor/echarts/echarts.min.js?v=6.1.0';s.onload=()=>{clearTimeout(timer);resolve(globalThis.echarts||null);};s.onerror=()=>{clearTimeout(timer);chartPromise=null;resolve(null);};document.head.append(s);});
@@ -272,7 +277,8 @@
       notify(errors?`${errors} 项同步需要处理，可在财务店铺管理查看权限或连接问题。`:'');
       observer=new ResizeObserver(()=>charts.forEach(c=>c.resize()));observer.observe(root);
       themeObserver=new MutationObserver(()=>charts.forEach(c=>c.setOption({...base(),...c.financeBuilder()},true)));themeObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
-      if(view==='shops')refreshTimer=setTimeout(load,30000);
+      if(view==='shops'||(data?.sync||[]).some(s=>['READY','RUNNING','SYNCING'].includes(s.status)))
+        refreshTimer=setTimeout(refreshWhenIdle,15000);
     }catch(e){if(run===generation){cleanup();notify(e.message||'财务数据暂时无法加载',true);}}
   }
   globalThis.FinanceWorkspace={allowed,enter(route){if(!allowed())return;view=routes[route]?route:'overview';active=true;page=1;load();},leave,reset};

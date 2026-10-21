@@ -33,7 +33,8 @@ public class FinanceSync {
         try{
             Map<String,Object> cp=row.get("checkpoint_json")==null?new LinkedHashMap<>():new LinkedHashMap<>(repo.read(text(row.get("checkpoint_json"))));
             Instant now=Instant.now();ZoneId zone=ZoneId.of(text(row.get("timezone")));
-            if(cp.isEmpty()){
+            boolean fresh=cp.isEmpty();
+            if(fresh){
                 LocalDate today=now.atZone(zone).toLocalDate();boolean initial=row.get("last_success_at")==null;
                 Instant last=initial?null:instant(row.get("last_success_at"));
                 boolean nightly=last!=null&&last.atZone(zone).toLocalDate().isBefore(today);
@@ -49,18 +50,16 @@ public class FinanceSync {
                 long until=now.getEpochSecond();
                 cp.put("from",start.atStartOfDay(zone).toEpochSecond());cp.put("to",Math.min(until,start.plusDays(7).atStartOfDay(zone).toEpochSecond()));
                 cp.put("until",until);cp.put("coverage",start.toString());cp.put("run",UUID.randomUUID().toString());
-                // Persist a fresh range before requests so timeouts/restarts retry exactly that range.
+            }
+            var prioritized=recentSettlementFirst(cp,row.get("last_success_at")==null,text(row.get("channel")),zone);
+            if(fresh||!prioritized.equals(cp)){
+                cp=prioritized;
+                // Persist before requests; retries retain both the recent cursor and historical resume point.
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=? WHERE "+where,repo.write(cp),keys[0],keys[1],keys[2],keys[3]);
             }
             // A fixed bounded range is retained across pages; retry never loses the current cursor.
-            var step=marketplace.step(s,row,cp);Map<String,Object> next=new LinkedHashMap<>(step.checkpoint());
+            var step=nextWindow(cp,marketplace.step(s,row,cp));Map<String,Object> next=new LinkedHashMap<>(step.checkpoint());
             boolean done=step.done();
-            if(done&&number(cp.get("to"))<number(cp.get("until"))){
-                long from=number(cp.get("to"));next=new LinkedHashMap<>();
-                next.put("from",from);next.put("to",Math.min(from+7*86400L,number(cp.get("until"))));
-                next.put("until",cp.get("until"));next.put("coverage",cp.get("coverage"));done=false;
-                next.put("run",UUID.randomUUID().toString());
-            }
             if(done){
                 int seconds=Set.of("SETTLEMENT","PENDING").contains(text(row.get("channel")))?3600:600;
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=NULL,status='SUCCESS',error_message=NULL,failures=0,"
@@ -83,5 +82,32 @@ public class FinanceSync {
             repo.jdbc().update("UPDATE finance_sync_states SET status='ERROR',error_message=?,failures=failures+1,lease_until=NULL,next_at=? WHERE "+where,
                     message,Timestamp.from(Instant.now().plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3]);
         }
+    }
+    static Map<String,Object> recentSettlementFirst(Map<String,Object> cp,boolean initial,String channel,ZoneId zone){
+        if(!initial||!"SETTLEMENT".equals(channel)||Boolean.TRUE.equals(cp.get("recentFirst"))
+                ||number(cp.get("to"))>=number(cp.get("until")))return cp;
+        long until=number(cp.get("until"));
+        long recent=Instant.ofEpochSecond(until).atZone(zone).toLocalDate().minusDays(6).atStartOfDay(zone).toEpochSecond();
+        recent=Math.max(recent,number(cp.get("to")));
+        if(recent>=until)return cp;
+        // Retain an in-flight page/bill exactly as it was, then resume it after recent data is visible.
+        var resume=new LinkedHashMap<>(cp);resume.put("until",recent);resume.put("recentFirst",true);
+        var next=new LinkedHashMap<String,Object>();
+        next.put("from",recent);next.put("to",until);next.put("until",until);next.put("coverage",cp.get("coverage"));
+        next.put("run",UUID.randomUUID().toString());next.put("recentFirst",true);next.put("backfillResume",resume);
+        return next;
+    }
+    static FinanceMarketplace.Step nextWindow(Map<String,Object> cp,FinanceMarketplace.Step step){
+        if(!step.done())return step;
+        if(cp.get("backfillResume") instanceof Map<?,?>)
+            return new FinanceMarketplace.Step(new LinkedHashMap<>(map(cp.get("backfillResume"))),false);
+        if(number(cp.get("to"))<number(cp.get("until"))){
+            long from=number(cp.get("to"));var next=new LinkedHashMap<String,Object>();
+            next.put("from",from);next.put("to",Math.min(from+7*86400L,number(cp.get("until"))));
+            next.put("until",cp.get("until"));next.put("coverage",cp.get("coverage"));next.put("run",UUID.randomUUID().toString());
+            if(Boolean.TRUE.equals(cp.get("recentFirst")))next.put("recentFirst",true);
+            return new FinanceMarketplace.Step(next,false);
+        }
+        return step;
     }
 }
