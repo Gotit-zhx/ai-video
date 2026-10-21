@@ -41,6 +41,8 @@ class AiWatermarkLocalScreenTest {
  @Test void receivedArtifactDoesNotRepeatGeneration()throws Exception{run("CACHED");}
  @Test void generationFailureIsNotSuccess()throws Exception{run("REJECTED");}
  @Test void failedResultDownloadPreservesGenerationAndRetryOnlyDownloads()throws Exception{run("RESULT_DOWNLOAD_RETRY");}
+ @Test void confirmedMissingResultSchedulesOneNewAttemptWithoutRepeatingDetection()throws Exception{run("RESULT_GONE");}
+ @Test void archivedCandidateDoesNotDependOnExpiredProviderLink()throws Exception{run("RESULT_ARCHIVED");}
  @Test void completedOperationRecoversSavedResultWithoutGeneratingAgain()throws Exception{run("RECOVERY_COMPLETED");}
  @Test void activeOperationWaitsWithoutSubmittingAgain()throws Exception{run("RECOVERY_ACTIVE");}
  @Test void failedOperationUsesNewDurableAttemptWithoutRepeatingDetection()throws Exception{run("RECOVERY_FAILED");}
@@ -118,11 +120,12 @@ class AiWatermarkLocalScreenTest {
      .thenReturn(new CommerceDesignImageGateway.Response(new CommerceDesignImageGateway.Artifact(data,"image/png","test","edit",""),null));
    if("RESPONSE_TIMEOUT".equals(decision))when(generator.generateArtwork(anyString(),anyString(),any(),anyList()))
      .thenThrow(new org.springframework.web.client.ResourceAccessException("unit-only response timeout",new java.net.SocketTimeoutException("read timed out")));
-   if(List.of("CACHED","RESULT_DOWNLOAD_RETRY").contains(decision)){
+   if(List.of("CACHED","RESULT_DOWNLOAD_RETRY","RESULT_GONE","RESULT_ARCHIVED").contains(decision)){
     row.put("status","RESULT_RECEIVED");row.put("detection_json","{\"method\":\"DIRECT_IMAGE_EDIT\"}");
-    row.put("generation_json",json.writeValueAsString("RESULT_DOWNLOAD_RETRY".equals(decision)
+    row.put("generation_json",json.writeValueAsString(!"CACHED".equals(decision)
        ?new CommerceDesignImageGateway.Response(null,new CommerceDesignImageGateway.PendingResult("https://result.invalid/image.png","image/png","grok-imagine-image-2.0","edit",""))
        :new CommerceDesignImageGateway.Response(new CommerceDesignImageGateway.Artifact(data,"image/png","test","edit",""),null)));
+    if("RESULT_ARCHIVED".equals(decision))row.put("candidate_key","source");
    }
    doAnswer(c->{row.put("status","EDITING");row.put("detection_json","{\"method\":\"DIRECT_IMAGE_EDIT\"}");return null;}).when(ledger).directEdit(anyString(),eq("org"));
    when(ledger.prepare(anyString(),anyString(),anyString(),anyString(),anyString(),anyString())).thenReturn(row);when(ledger.get(anyString(),eq("org"))).thenReturn(row);
@@ -133,6 +136,17 @@ class AiWatermarkLocalScreenTest {
    doAnswer(c->{row.put("status","READY");return null;}).when(ledger).ready(anyString(),eq("org"),anyString(),anyString(),anyString());
    doAnswer(c->{row.put("status","REVIEW_REQUIRED");return null;}).when(ledger).hold(anyString(),eq("org"),anyString(),anyString());
    var provider=new AiWatermarkRemovalProvider(ledger,archive,downloader,generator,models,db,json,local,"http://127.0.0.1:"+server.getAddress().getPort(),"unit-only","test-model");
+   if("RESULT_GONE".equals(decision)){
+    when(downloader.download("https://result.invalid/image.png")).thenThrow(
+      new com.yingdao.aicommerce.shop.infrastructure.MarketplaceApiException("读取商品图失败，HTTP 404"));
+    when(ledger.missingResult(anyString(),eq("org"),anyString(),eq(404))).thenAnswer(c->{
+      row.put("status","DETECTED");row.remove("generation_json");row.put("generation_retry_count",1);return true;});
+    assertThrows(WatermarkRateLimitException.class,()->provider.process(capture,image));
+    verify(generator,never()).generateArtwork(anyString(),anyString(),any(),anyList());
+    assertTrue(provider.process(capture,image).url().startsWith(ProductWatermarkAssets.PREFIX));
+    verify(generator).generateArtwork(anyString(),endsWith("_retry_1"),eq(model),anyList());
+    assertTrue(requests.isEmpty());return;
+   }
    if(decision.startsWith("RECOVERY_")){
     if(List.of("RECOVERY_ACTIVE","RECOVERY_LOOKUP_FAILED").contains(decision))
      assertThrows(WatermarkRateLimitException.class,()->provider.process(capture,image));
@@ -169,7 +183,7 @@ class AiWatermarkLocalScreenTest {
    }
    else if("REJECTED".equals(decision))assertThrows(IllegalStateException.class,()->provider.process(capture,image));
    else assertTrue(provider.process(capture,image).url().startsWith(ProductWatermarkAssets.PREFIX));
-   boolean cached=List.of("CACHED","RESULT_DOWNLOAD_RETRY","READY").contains(decision);
+   boolean cached=List.of("CACHED","RESULT_DOWNLOAD_RETRY","RESULT_ARCHIVED","READY").contains(decision);
    boolean confirmed="ABSENT".equals(decision)||decision.startsWith("CONFIRM_")||"LOW_CONFIDENCE_ABSENT".equals(decision);
    assertEquals(Collections.nCopies(cached||"OLD_DETECTED".equals(decision)||decision.startsWith("SAVED_")?0:confirmed?2:1,"WATERMARK_DETECTION_V1"),requests);
    // The generation reference must be the exact archived original, never the enhanced pixels.

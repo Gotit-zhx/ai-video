@@ -44,6 +44,7 @@ class FinanceConfigurationIntegrationTest {
         migration("V119__finance_ad_authorization.sql");
         migration("V120__finance_dashboard_covering_index.sql");
         migration("V121__finance_live_order_lane.sql");
+        migration("V122__finance_reconciliation_indexes.sql");
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
@@ -131,6 +132,53 @@ class FinanceConfigurationIntegrationTest {
         assertEquals("CARD",row.get("payment_method"));assertEquals("Dress",row.get("item_names"));assertEquals(1,row.get("item_count"));assertNotNull(row.get("create_time"));
         assertFalse(repo.write(row).contains("private"));assertFalse(row.containsKey("raw_json"));assertFalse(row.containsKey("estimated_shipping"));
         assertFalse(repo.write(repo.detail(owner,text(row.get("id")))).contains("private"));
+    }
+    @Test void reconciliationPagesBillsWithoutLimitingTheirTransactionsOrExport(){
+        String shop=connect(owner,false);connect(other,false);
+        for(int i=0;i<57;i++){
+            String bill="paged-bill-"+i;
+            repo.save(owner,new Entry(shop,"SHOPEE","BILL",bill,"",bill,"","SETTLED",filter.start(),"PHP",
+                    BigDecimal.TEN,null,null,null,null,"API",Map.of()));
+            // Transactions can have another business date; the entire bill must be reconciled.
+            repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","tx-"+i,"",bill,"","SETTLED",filter.start().minusDays(4),"PHP",
+                    BigDecimal.TEN,null,null,null,null,"API",Map.of()));
+            repo.save(other,new Entry(shop,"SHOPEE","SETTLEMENT","foreign-"+i,"",bill,"","SETTLED",filter.start(),"PHP",
+                    new BigDecimal("999"),null,null,null,null,"API",Map.of()));
+        }
+        var first=repo.reconciliationPage(owner,filter,1,50);var second=repo.reconciliationPage(owner,filter,2,50);
+        assertEquals(57L,first.get("total"));assertEquals(50,rows(first.get("items")).size());assertEquals(7,rows(second.get("items")).size());
+        var ids=new HashSet<String>();
+        for(var row:rows(first.get("items"))){assertEquals("MATCHED",row.get("result"));assertTrue(ids.add(text(row.get("id"))));}
+        for(var row:rows(second.get("items"))){assertEquals("MATCHED",row.get("result"));assertTrue(ids.add(text(row.get("id"))));}
+        assertEquals(57,repo.reconciliation(owner,filter,100001).size());
+        assertTrue(rows(repo.reconciliationPage(owner,filter,3,50).get("items")).isEmpty());
+        var q=Map.of("start","2026-10-21","end","2026-10-21","page","2","displayCurrency","CNY","fxSnapshot","fixed");
+        var response=map(controller().reconciliation(q,principal()).data());
+        assertEquals(7,rows(response.get("items")).size());assertEquals("CNY",map(response.get("filters")).get("displayCurrency"));
+        assertEquals(new BigDecimal("1.250000"),rows(response.get("items")).getFirst().get("cny_amount"));
+        assertEquals(List.of("PHP"),response.get("currencies"));assertFalse(response.containsKey("trend"));
+    }
+    @Test void reconciliationPreservesPartialUnknownMissingAndCurrencyBoundaries(){
+        String shop=connect(owner,false);
+        for(String bill:List.of("partial","unknown","missing","different","zero")){
+            repo.save(owner,new Entry(shop,"SHOPEE","BILL",bill,"",bill,"",bill.equals("partial")?"PARTIAL":"SETTLED",filter.start(),"PHP",
+                    bill.equals("zero")?BigDecimal.ZERO:BigDecimal.TEN,null,null,null,null,"API",Map.of()));
+            if(!bill.equals("missing"))repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","tx-"+bill,"",bill,"","SETTLED",filter.start(),"PHP",
+                    bill.equals("unknown")?null:bill.equals("different")?BigDecimal.ONE:bill.equals("zero")?BigDecimal.ZERO:BigDecimal.TEN,
+                    null,null,null,null,"API",Map.of()));
+        }
+        // An imported bill must inherit the corresponding API bill's incomplete status.
+        repo.save(owner,new Entry(shop,"SHOPEE","BILL","partial","","partial","","IMPORTED",filter.start(),"PHP",
+                BigDecimal.TEN,null,null,null,null,"IMPORT",Map.of()));
+        repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","wrong-currency","","missing","","SETTLED",filter.start(),"USD",
+                BigDecimal.TEN,null,null,null,null,"API",Map.of()));
+        var result=repo.reconciliation(owner,filter);
+        for(var row:result){
+            String expected=switch(text(row.get("external_id"))){case "partial"->"PARTIAL";case "different"->"DIFFERENCE";case "zero"->"MATCHED";default->"MISSING";};
+            assertEquals(expected,row.get("result"));
+            if(Set.of("PARTIAL","MISSING").contains(expected))assertNull(row.get("difference"));
+        }
+        assertEquals(6,result.size());
     }
     @Test void preferencesArePerUserPerTypeAndRejectUnknownPaths(){
         var fields=new FinanceFields(repo);

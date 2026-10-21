@@ -184,14 +184,17 @@
     button('下一页',controls,()=>{page++;load();}).disabled=page*result.pageSize>=result.total;
     footnote(parent,'未知金额显示为 —；退款仅完成后计入。预计待结算为 TikTok 官方预估，完整分页同步后移除已结算项。平台费用已含于净结算，不重复扣减。');
   }
-  async function reconciliation(parent,run){
-    meta(parent);const result=await request('/reconciliation?'+qs());if(run!==generation)return;
+  function reconciliation(parent,result){
+    meta(parent);
     parent.style.display='grid';parent.style.gap='15px';
     const stats=el('div',null,parent,'fi-mini-stats');
-    for(const [key,label]of[['MATCHED','核对一致'],['DIFFERENCE','存在差异'],['MISSING','待补齐 / 同步中']]){const n=el('div',null,stats);el('span',label,n);el('strong',result.items.filter(r=>r.result===key||(key==='MISSING'&&r.result==='PARTIAL')).length,n);el('span','当前展示账单',n);}
-    const {n,h}=card(parent,'平台结算账单核对','账单金额 ↔ 同账单、同币种的结算交易明细 · 最多展示 1,000 张账单',12);
+    for(const [key,label]of[['MATCHED','核对一致'],['DIFFERENCE','存在差异'],['MISSING','待补齐 / 同步中']]){const n=el('div',null,stats);el('span',label,n);el('strong',result.items.filter(r=>r.result===key||(key==='MISSING'&&r.result==='PARTIAL')).length,n);el('span','本页账单',n);}
+    const {n,h}=card(parent,'平台结算账单核对','账单金额 ↔ 同账单、同币种的结算交易明细 · 共 '+number(result.total)+' 张账单',12);
     action('字段设置','fee',h,()=>fieldsDialog('RECONCILIATION',result.fieldSettings));
     renderFieldsTable(n,result.items,result.fieldSettings,'暂无可核对账单。连接财务店铺同步结算数据，或导入平台结算账单。');
+    const bar=el('div',null,n,'fi-pagebar');el('span',`第 ${result.page} 页 · 每页 ${result.pageSize} 条`,bar);const controls=el('div',null,bar,'fi-actions');
+    button('上一页',controls,()=>{page--;load();}).disabled=page<=1;
+    button('下一页',controls,()=>{page++;load();}).disabled=page*result.pageSize>=result.total;
     footnote(parent,'按账单编号与币种精确匹配。缺少数据不会标记一致；这里核对平台结算，不确认银行到账。');
   }
   async function shopView(parent,run){
@@ -440,10 +443,14 @@
     setLoading(interactive);
     try{
       const next=root.cloneNode(false);
-      if(view!=='shops'){const response=await request('/overview?'+qs());if(run!==generation||!active)return;data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
+      if(view==='reconciliation'){
+        const response=await request('/reconciliation?'+qs({page}));if(run!==generation||!active)return;
+        data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
+        reconciliation(shell(next),response);
+      }else if(view!=='shops'){const response=await request('/overview?'+qs());if(run!==generation||!active)return;data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
         // Build filters after authorized shop/currency options have arrived.
         const body=shell(next);await ensureCharts();if(run!==generation||!active)return;
-        if(view==='overview')overview(body);else if(view==='reconciliation')await reconciliation(body,run);else if(view==='ads')await adsView(body,run);else await recordView(body,run);
+        if(view==='overview')overview(body);else if(view==='ads')await adsView(body,run);else await recordView(body,run);
       }else await shopView(shell(next),run);
       if(run!==generation||!active)return;
       commit(next);

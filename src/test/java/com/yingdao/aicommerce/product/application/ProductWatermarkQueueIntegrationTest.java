@@ -19,7 +19,7 @@ class ProductWatermarkQueueIntegrationTest {
  static JdbcTemplate db;static TransactionTemplate tx;static ProductWatermarkQueue queue;
  String org=UUID.randomUUID().toString(),capture=UUID.randomUUID().toString();
  @BeforeAll static void schema()throws Exception{
-  var ds=new DriverManagerDataSource(System.getenv("WATERMARK_QUEUE_TEST_DB"),"root","");db=new JdbcTemplate(ds);tx=new TransactionTemplate(new DataSourceTransactionManager(ds));queue=new ProductWatermarkQueue(db,new ObjectMapper());
+  var ds=new DriverManagerDataSource(System.getenv("WATERMARK_QUEUE_TEST_DB"),System.getenv().getOrDefault("WATERMARK_QUEUE_TEST_USER","root"),System.getenv().getOrDefault("WATERMARK_QUEUE_TEST_PASSWORD",""));db=new JdbcTemplate(ds);tx=new TransactionTemplate(new DataSourceTransactionManager(ds));queue=new ProductWatermarkQueue(db,new ObjectMapper());
   db.execute("CREATE TABLE product_captures(id CHAR(36) PRIMARY KEY,organization_id CHAR(36),status VARCHAR(32),deleted_at TIMESTAMP(6) NULL,version BIGINT DEFAULT 0,updated_at TIMESTAMP(6)) ENGINE=InnoDB");
   db.execute("CREATE TABLE product_image_processing_jobs(id CHAR(36) PRIMARY KEY,organization_id CHAR(36),capture_id CHAR(36),provider VARCHAR(32),status VARCHAR(32),processed_images INT DEFAULT 0,response_json JSON,error_message TEXT,completed_at TIMESTAMP(6) NULL,updated_at TIMESTAMP(6)) ENGINE=InnoDB");
   db.execute("CREATE TABLE product_capture_images(id CHAR(36) PRIMARY KEY,organization_id CHAR(36),capture_id CHAR(36),status VARCHAR(32),processed_url TEXT,error_message TEXT,updated_at TIMESTAMP(6)) ENGINE=InnoDB");
@@ -28,6 +28,7 @@ class ProductWatermarkQueueIntegrationTest {
   for(String sql:Files.readString(Path.of("src/main/resources/db/migration/V79__product_watermark_checks.sql")).split(";"))if(!sql.isBlank())db.execute(sql);
   for(String sql:Files.readString(Path.of("src/main/resources/db/migration/V80__local_watermark_screen.sql")).split(";"))if(!sql.isBlank())db.execute(sql);
   for(String sql:Files.readString(Path.of("src/main/resources/db/migration/V109__watermark_automatic_retries.sql")).split(";"))if(!sql.isBlank())db.execute(sql);
+  for(String sql:Files.readString(Path.of("src/main/resources/db/migration/V123__watermark_missing_result_recovery.sql")).split(";"))if(!sql.isBlank())db.execute(sql);
  }
  @BeforeEach void reset(){db.update("DELETE FROM product_watermark_checks");db.update("DELETE FROM product_watermark_queue");db.update("DELETE FROM product_capture_images");db.update("DELETE FROM product_image_processing_jobs");db.update("DELETE FROM product_captures");}
  @Test void generationRetryIsAtomicTenantScopedAndNeverReplaysReceivedResults(){
@@ -47,13 +48,39 @@ class ProductWatermarkQueueIntegrationTest {
   var ledger=new ProductWatermarkLedger(db);String image=UUID.randomUUID().toString(),hash="c".repeat(64);
   String old="a".repeat(64),next="b".repeat(64);
   ledger.prepare(old,org,capture,image,hash,"unit-source");
-  db.update("UPDATE product_watermark_checks SET status='RESULT_RECEIVED',detection_json='{\"decision\":\"UNCERTAIN\"}',generation_json='{}' WHERE id=?",old);
+  db.update("UPDATE product_watermark_checks SET status='RESULT_RECEIVED',detection_json='{\"decision\":\"UNCERTAIN\"}',generation_json='{}',candidate_key='saved-image' WHERE id=?",old);
   ledger.prepare(next,org,capture,image,hash,"unit-source");
   assertFalse(ledger.reuseReceivedGeneration(next,"foreign",capture,image,hash));
   assertFalse(ledger.reuseReceivedGeneration(next,org,capture,image,"d".repeat(64)));
   assertTrue(ledger.reuseReceivedGeneration(next,org,capture,image,hash));
   assertEquals("RESULT_RECEIVED",ledger.get(next,org).get("status"));
   assertEquals("{}",ledger.get(next,org).get("generation_json"));
+  assertEquals("saved-image",ledger.get(next,org).get("candidate_key"));
+ }
+ @Test void missingResultsRequireTwoSpacedConfirmationsAndPreserveBoundedAttemptHistory(){
+  var ledger=new ProductWatermarkLedger(db);String id="e".repeat(64);
+  ledger.prepare(id,org,capture,UUID.randomUUID().toString(),"f".repeat(64),"source");
+  String response="{\"result\":{\"url\":\"https://example.test/expired\"}}";
+  db.update("UPDATE product_watermark_checks SET status='RESULT_RECEIVED',generation_json=?,detection_json='{}' WHERE id=?",response,id);
+  assertThrows(IllegalArgumentException.class,()->tx.execute(s->ledger.missingResult(id,org,response,503)));
+  assertFalse(tx.<Boolean>execute(s->ledger.missingResult(id,"foreign",response,404)));
+  assertFalse(tx.<Boolean>execute(s->ledger.missingResult(id,org,"{}",404)));
+  assertFalse(tx.<Boolean>execute(s->ledger.missingResult(id,org,response,404)));
+  assertFalse(tx.<Boolean>execute(s->ledger.missingResult(id,org,response,404)));
+  assertEquals("RESULT_RECEIVED",ledger.get(id,org).get("status"));
+  db.update("UPDATE product_watermark_checks SET missing_result_since=DATE_SUB(NOW(6),INTERVAL 11 SECOND) WHERE id=?",id);
+  assertTrue(tx.<Boolean>execute(s->ledger.missingResult(id,org,response,404)));
+  assertFalse(tx.<Boolean>execute(s->ledger.missingResult(id,org,response,404)));
+  var row=ledger.get(id,org);assertEquals("DETECTED",row.get("status"));assertNull(row.get("generation_json"));
+  assertEquals(1,row.get("generation_retry_count"));assertTrue(row.get("unavailable_results_json").toString().contains("expired"));
+  assertEquals(id+"_retry_1",AiWatermarkRemovalProvider.generationRequestId(id,row));
+  db.update("UPDATE product_watermark_checks SET status='EDITING' WHERE id=?",id);ledger.generated(id,org,response);
+  assertFalse(tx.<Boolean>execute(s->ledger.missingResult(id,org,response,410)));
+  db.update("UPDATE product_watermark_checks SET missing_result_since=DATE_SUB(NOW(6),INTERVAL 11 SECOND) WHERE id=?",id);
+  assertTrue(tx.<Boolean>execute(s->ledger.missingResult(id,org,response,410)));
+  db.update("UPDATE product_watermark_checks SET status='EDITING' WHERE id=?",id);ledger.generated(id,org,response);
+  assertThrows(IllegalStateException.class,()->tx.execute(s->ledger.missingResult(id,org,response,404)));
+  assertEquals(2,db.queryForObject("SELECT JSON_LENGTH(unavailable_results_json) FROM product_watermark_checks WHERE id=?",Integer.class,id));
  }
  ProductImageProcessingJob seed(int count){
   var job=new ProductImageProcessingJob(org,capture,UUID.randomUUID().toString(),UUID.randomUUID().toString(),"AI_WATERMARK_V1",count,"{}");

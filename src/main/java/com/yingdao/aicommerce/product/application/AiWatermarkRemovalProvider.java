@@ -109,10 +109,16 @@ public class AiWatermarkRemovalProvider implements WatermarkRemovalProvider {
   if("RESULT_RECEIVED".equals(row.get("status"))){
    var response=json.readValue((String)row.get("generation_json"),CommerceDesignImageGateway.Response.class);
    byte[] bytes;
-   if(response.artifact()!=null&&response.artifact().dataBase64()!=null)bytes=Base64.getDecoder().decode(response.artifact().dataBase64());
+   // Reuse the owned archive before a historical provider URL, which may have expired.
+   var archivedCandidate=row.get("candidate_key") instanceof String key&&!key.isBlank()?archive.read(org,key):null;
+   if(archivedCandidate!=null)bytes=Base64.getDecoder().decode(archivedCandidate.dataBase64());
+   else if(response.artifact()!=null&&response.artifact().dataBase64()!=null)bytes=Base64.getDecoder().decode(response.artifact().dataBase64());
    else if(response.result()!=null){
     try{bytes=downloader.download(response.result().url()).bytes();}
     catch(RuntimeException e){
+     int missing=GeneratedImageDownloadPendingException.missingStatus(e);
+     if(missing!=0&&ledger.missingResult(id,org,(String)row.get("generation_json"),missing))
+      throw new WatermarkRateLimitException("结果链接已确认失效，原结果已留档，正在恢复生成",e);
      String message="生图已成功，下载结果图片失败："+Objects.toString(e.getMessage(),"未知错误")+"；结果已保存，重试只继续下载";
      throw new GeneratedImageDownloadPendingException(message,e);
     }

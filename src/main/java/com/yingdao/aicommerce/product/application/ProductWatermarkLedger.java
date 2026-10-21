@@ -18,10 +18,10 @@ public class ProductWatermarkLedger {
  }
  /** A new local policy may recompose a received artifact, but never reuse its old approval. */
  public boolean reuseReceivedGeneration(String id,String org,String capture,String image,String sourceHash){
-  var prior=db.queryForList("SELECT id,detection_json,generation_json,local_detection_json FROM product_watermark_checks WHERE organization_id=? AND capture_id=? AND image_id=? AND source_sha256=? AND id<>? AND generation_json IS NOT NULL AND detection_json IS NOT NULL ORDER BY created_at DESC LIMIT 1",org,capture,image,sourceHash,id);
+  var prior=db.queryForList("SELECT id,detection_json,generation_json,local_detection_json,candidate_key FROM product_watermark_checks WHERE organization_id=? AND capture_id=? AND image_id=? AND source_sha256=? AND id<>? AND generation_json IS NOT NULL AND detection_json IS NOT NULL ORDER BY created_at DESC LIMIT 1",org,capture,image,sourceHash,id);
   if(prior.isEmpty())return false;
   var row=prior.getFirst();
-  return db.update("UPDATE product_watermark_checks SET status='RESULT_RECEIVED',detection_json=JSON_SET(?, '$.reusedFromCheckId', ?),generation_json=?,local_detection_json=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='PREPARED'",row.get("detection_json"),row.get("id"),row.get("generation_json"),row.get("local_detection_json"),id,org)==1;
+  return db.update("UPDATE product_watermark_checks SET status='RESULT_RECEIVED',detection_json=JSON_SET(?, '$.reusedFromCheckId', ?),generation_json=?,local_detection_json=?,candidate_key=?,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='PREPARED'",row.get("detection_json"),row.get("id"),row.get("generation_json"),row.get("local_detection_json"),row.get("candidate_key"),id,org)==1;
  }
  public Map<String,Object> get(String id,String org){
   var rows=db.queryForList("SELECT * FROM product_watermark_checks WHERE id=? AND organization_id=?",id,org);
@@ -49,7 +49,37 @@ public class ProductWatermarkLedger {
   update("UPDATE product_watermark_checks SET candidate_key=?,status='EDITED',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='RESULT_RECEIVED'",key,id,org);
  }
  public void generated(String id,String org,String json){
-  update("UPDATE product_watermark_checks SET generation_json=?,status='RESULT_RECEIVED',updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='EDITING'",json,id,org);
+  update("UPDATE product_watermark_checks SET generation_json=?,status='RESULT_RECEIVED',missing_result_count=0,missing_result_since=NULL,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status='EDITING'",json,id,org);
+ }
+ /** A missing paid artifact must be confirmed twice, separated in time. Keep the
+  * exact response and attempt number before starting a bounded replacement.
+  * Timeouts, authorization failures and unknown generation outcomes never enter here.
+  */
+ public boolean missingResult(String id,String org,String response,int httpStatus){
+  if(httpStatus!=404&&httpStatus!=410)throw new IllegalArgumentException("Only missing artifacts may be replaced");
+  var rows=db.queryForList("SELECT generation_retry_count,missing_result_count,missing_result_since,"
+    +"COALESCE(JSON_LENGTH(unavailable_results_json),0) replacements,"
+    +"TIMESTAMPDIFF(SECOND,missing_result_since,NOW(6)) missing_seconds "
+    +"FROM product_watermark_checks WHERE id=? AND organization_id=? AND status='RESULT_RECEIVED' "
+    +"AND generation_json=? FOR UPDATE",id,org,response);
+  if(rows.isEmpty())return false;
+  var row=rows.getFirst();int retries=((Number)row.get("generation_retry_count")).intValue();
+  if(((Number)row.get("replacements")).intValue()>=2||retries>=6)
+   throw new IllegalStateException("图片服务多次返回失效结果，已保留原请求和失败记录，请检查图片服务");
+  int count=((Number)row.get("missing_result_count")).intValue();
+  long seconds=row.get("missing_seconds") instanceof Number n?n.longValue():0;
+  if(count<1||seconds<10){
+   db.update("UPDATE product_watermark_checks SET missing_result_count=missing_result_count+1,"
+     +"missing_result_since=COALESCE(missing_result_since,NOW(6)),updated_at=NOW(6) WHERE id=? AND organization_id=?",id,org);
+   return false;
+  }
+  update("UPDATE product_watermark_checks SET unavailable_results_json=JSON_ARRAY_APPEND("
+    +"COALESCE(unavailable_results_json,JSON_ARRAY()),'$',JSON_OBJECT('response',CAST(generation_json AS JSON),"
+    +"'attempt',generation_retry_count,'httpStatus',?,'confirmedAt',NOW(6))),"
+    +"generation_json=NULL,candidate_key=NULL,generation_retry_count=generation_retry_count+1,status='DETECTED',"
+    +"missing_result_count=0,missing_result_since=NULL,message='结果链接已确认失效，原结果留档后恢复生成',updated_at=NOW(6) "
+    +"WHERE id=? AND organization_id=? AND status='RESULT_RECEIVED'",httpStatus,id,org);
+  return true;
  }
  public void recoverReceived(String id,String org,String expected,String json){
   update("UPDATE product_watermark_checks SET generation_json=?,status='RESULT_RECEIVED',message=NULL,updated_at=NOW(6) WHERE id=? AND organization_id=? AND status=?",json,id,org,expected);

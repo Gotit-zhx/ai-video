@@ -79,6 +79,18 @@ public class FinanceRepository {
     public List<Map<String,Object>> reconciliation(Scope s,Filter f){
         return reconciliation(s,f,1000);
     }
+    public List<String> billCurrencies(Scope s,Filter f){
+        Query q=query(s,f);
+        return db.queryForList("SELECT DISTINCT currency FROM finance_records WHERE "+q.where
+                +" AND kind='BILL' ORDER BY currency",String.class,q.args.toArray());
+    }
+    public Map<String,Object> reconciliationPage(Scope s,Filter f,int page,int size){
+        Query q=query(s,f);int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
+        Long total=db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE "+q.where+" AND kind='BILL'",
+                Long.class,q.args.toArray());
+        return Map.of("items",reconciliation(s,f,safeSize,(long)(safePage-1)*safeSize),
+                "total",total==null?0:total,"page",safePage,"pageSize",safeSize);
+    }
     public List<Map<String,Object>> hourlyOrders(Scope s,Filter f){
         var q=query(s,f);
         return db.queryForList("SELECT shop_id,currency,FLOOR(CAST(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.create_time')) AS UNSIGNED)/3600) utc_hour,"
@@ -93,26 +105,35 @@ public class FinanceRepository {
         result.forEach(this::enrich);return result;
     }
     public List<Map<String,Object>> reconciliation(Scope s,Filter f,int limit){
-        Query q=query(s,f,"b");
-        // API bills are compared with API transaction sums; imported bills use the same reference IDs.
+        return reconciliation(s,f,Math.min(100001,Math.max(1,limit)),0);
+    }
+    private List<Map<String,Object>> reconciliation(Scope s,Filter f,int limit,long offset){
+        Query q=query(s,f);
+        // Select the visible bill page first, then use indexed lookups for that bill's
+        // complete transactions. Transaction dates must NOT inherit the bill date filter.
         String sql="""
             SELECT b.id,b.shop_id,b.platform,b.external_id,b.order_id,b.statement_id,b.record_date,b.currency,b.amount,b.source,b.status,b.updated_at,b.raw_json,
             api_bill.status api_status,
-            x.amount detail_amount,x.n detail_count,b.amount-x.amount difference
-            FROM finance_records b LEFT JOIN (
-              SELECT organization_id,user_id,shop_id,statement_id,currency,SUM(amount) amount,
-                     COUNT(*) n,COUNT(amount) known FROM finance_records WHERE kind='SETTLEMENT' AND source='API'
-              AND organization_id=? AND user_id=? GROUP BY organization_id,user_id,shop_id,statement_id,currency
-            ) x ON x.organization_id=b.organization_id AND x.user_id=b.user_id AND x.shop_id=b.shop_id
-              AND x.statement_id=b.external_id AND x.currency=b.currency AND x.known=x.n
+            CASE WHEN x.n>0 AND x.known=x.n THEN x.amount END detail_amount,
+            CASE WHEN x.n>0 AND x.known=x.n THEN x.n END detail_count,
+            CASE WHEN x.n>0 AND x.known=x.n THEN b.amount-x.amount END difference
+            FROM (
+              SELECT * FROM finance_records WHERE kind='BILL' AND %s
+              ORDER BY record_date DESC,id LIMIT ? OFFSET ?
+            ) b
+            LEFT JOIN LATERAL (
+              SELECT SUM(t.amount) amount,COUNT(*) n,COUNT(t.amount) known
+              FROM finance_records t
+              WHERE t.organization_id=b.organization_id AND t.user_id=b.user_id AND t.shop_id=b.shop_id
+                AND t.statement_id=b.external_id AND t.currency=b.currency AND t.kind='SETTLEMENT' AND t.source='API'
+            ) x ON TRUE
             LEFT JOIN finance_records api_bill ON api_bill.organization_id=b.organization_id AND api_bill.user_id=b.user_id
               AND api_bill.shop_id=b.shop_id AND api_bill.external_id=b.external_id AND api_bill.currency=b.currency
               AND api_bill.kind='BILL' AND api_bill.source='API'
-            WHERE b.kind='BILL' AND
+            ORDER BY b.record_date DESC,b.id
             """;
-        List<Object>a=new ArrayList<>(List.of(s.organizationId(),s.userId()));a.addAll(q.args);
-        a.add(Math.min(100001,Math.max(1,limit)));
-        var result=db.queryForList(sql+q.where+" ORDER BY b.record_date DESC,b.id LIMIT ?",a.toArray());
+        List<Object>a=new ArrayList<>(q.args);a.add(limit);a.add(offset);
+        var result=db.queryForList(sql.formatted(q.where),a.toArray());
         result.forEach(row->{reconcile(row);row.put("kind","BILL");enrich(row);});
         return result;
     }

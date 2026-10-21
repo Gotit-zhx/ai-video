@@ -92,6 +92,18 @@ public class FinanceService {
         return snapshots.get(new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false),
                 ()->buildDashboard(s,requested,cny,snapshotId,false));
     }
+    public Map<String,Object> reconciliationContext(Scope s,Filter requested,boolean cny,String snapshotId){
+        var all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity());
+        var currencies=repo.billCurrencies(s,all);
+        String currency=requested.currency().isBlank()?(cny||currencies.isEmpty()?"":currencies.getFirst()):requested.currency();
+        var result=new LinkedHashMap<String,Object>();
+        result.put("filters",Map.of("start",requested.start(),"end",requested.end(),"shopId",requested.shopId(),
+                "platform",requested.platform(),"currency",currency,"granularity",requested.granularity(),
+                "displayCurrency",cny?"CNY":currency));
+        result.put("currencies",currencies);result.put("shops",shops(s));result.put("sync",syncStates(s));
+        if(cny)result.put("fx",fx.quote(snapshotId).metadata());
+        return result;
+    }
     Map<String,Object> buildDashboard(Scope s,Filter requested,boolean cny,String snapshotId,boolean live){
         Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity());
         // One shop aggregate supplies currencies, totals and ranking. Previously

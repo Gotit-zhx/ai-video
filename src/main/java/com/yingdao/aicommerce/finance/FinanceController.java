@@ -63,8 +63,15 @@ public class FinanceController {
         return ApiResponse.ok(row);
     }
     @GetMapping("/reconciliation") public ApiResponse<?> reconciliation(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
-        var result=repo.reconciliation(s(p),filter(q));if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(result,service.exchangeRates().quote(q.get("fxSnapshot")));
-        return ApiResponse.ok(Map.of("items",result,"limit",1000,"fieldSettings",fields.settings(s(p),"RECONCILIATION")));
+        Scope scope=s(p);Filter requested=filter(q);boolean cny="CNY".equals(q.get("displayCurrency"));
+        var context=service.reconciliationContext(scope,requested,cny,q.get("fxSnapshot"));
+        var selected=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),
+                text(map(context.get("filters")).get("currency")),requested.granularity());
+        int page=(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1"))));
+        var result=new LinkedHashMap<>(repo.reconciliationPage(scope,selected,page,50));
+        result.putAll(context);result.put("fieldSettings",fields.settings(scope,"RECONCILIATION"));
+        if(cny)service.exchangeRates().enrich(rows(result.get("items")),service.exchangeRates().quote(text(map(context.get("fx")).get("id"))));
+        return ApiResponse.ok(result);
     }
     @GetMapping("/fields/{view}") public ApiResponse<?> fields(@PathVariable String view,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(fields.settings(s(p),view));}
     record FieldSelection(List<String> visible,List<String> exported){}
