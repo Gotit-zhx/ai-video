@@ -26,6 +26,7 @@ import static org.mockito.Mockito.*;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class FinanceConfigurationIntegrationTest {
     JdbcTemplate db;FinanceRepository repo;DataSourceTransactionManager tx;FinanceShopAuthorization auth;
+    com.zaxxer.hikari.HikariDataSource dataSource;
     MarketplaceAccess.Client client;FinanceService service;FinanceFx fx;
     Scope owner=new Scope("org","u"),other=new Scope("org","other");
     final ShopCredentialCipher cipher=new ShopCredentialCipher("finance-test-key-not-a-production-secret-12345");
@@ -33,7 +34,9 @@ class FinanceConfigurationIntegrationTest {
     PlatformPrincipal principal(){return new PlatformPrincipal("u","org","heyi","admin","admin","",true,List.of("ADMIN"),List.of());}
     @BeforeAll void migrate()throws Exception{
         assertTrue(System.getenv("FINANCE_QA_JDBC").matches("jdbc:mysql://[^/]+/finance_qa_[a-f0-9]+\\?.*"),"Only disposable finance_qa schemas are permitted");
-        var ds=new SingleConnectionDataSource(System.getenv("FINANCE_QA_JDBC"),System.getenv("FINANCE_QA_USER"),System.getenv("FINANCE_QA_PASSWORD"),true);
+        var ds=new com.zaxxer.hikari.HikariDataSource();dataSource=ds;
+        ds.setJdbcUrl(System.getenv("FINANCE_QA_JDBC"));ds.setUsername(System.getenv("FINANCE_QA_USER"));ds.setPassword(System.getenv("FINANCE_QA_PASSWORD"));
+        ds.setMaximumPoolSize(6);ds.setMinimumIdle(1);
         db=new JdbcTemplate(ds);tx=new DataSourceTransactionManager(ds);repo=new FinanceRepository(db,new ObjectMapper());
         db.execute("CREATE TABLE shops(id CHAR(36) PRIMARY KEY,marker VARCHAR(40))");
         db.execute("CREATE TABLE shop_credentials(id VARCHAR(36),secret VARCHAR(100))");
@@ -45,10 +48,12 @@ class FinanceConfigurationIntegrationTest {
         migration("V120__finance_dashboard_covering_index.sql");
         migration("V121__finance_live_order_lane.sql");
         migration("V122__finance_reconciliation_indexes.sql");
+        migration("V124__finance_sync_claim_token.sql");
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
     }
+    @AfterAll void closeDataSource(){if(dataSource!=null)dataSource.close();}
     void migration(String name)throws Exception{
         String sql=Files.readString(Path.of("src/main/resources/db/migration/"+name)).replaceAll("(?m)^--.*$","");
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
@@ -267,6 +272,62 @@ class FinanceConfigurationIntegrationTest {
         }finally{worker.stop();}
     }
     void migrationUncheckedLive(){try{migration("V121__finance_live_order_lane.sql");}catch(Exception e){throw new RuntimeException(e);}}
+    @Test void workersRunDifferentShopsConcurrentlyButNeverTwoChannelsOfOneShop()throws Exception{
+        auth.persist(owner,MarketplacePlatform.SHOPEE,new MarketplaceAccess.AuthorizationGrant(tokens(false),List.of(
+                new MarketplaceAccess.RemoteShop("10001",null,null,"LOCAL","one","PH","SHOP","10001"),
+                new MarketplaceAccess.RemoteShop("10002",null,null,"LOCAL","two","PH","SHOP","10002"))));
+        for(var shop:service.shops(owner))service.configure(owner,text(shop.get("id")),true,"PHP","Asia/Manila");
+        db.update("UPDATE finance_sync_states SET next_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)");
+        db.update("UPDATE finance_sync_states SET next_at=UTC_TIMESTAMP() WHERE channel IN ('ORDER','ORDER_LIVE')");
+        var entered=new java.util.concurrent.CountDownLatch(2);var release=new java.util.concurrent.CountDownLatch(1);
+        var returned=new java.util.concurrent.CountDownLatch(2);
+        Set<String> active=java.util.concurrent.ConcurrentHashMap.newKeySet();
+        var peak=new java.util.concurrent.atomic.AtomicInteger();var market=mock(FinanceMarketplace.class);
+        when(market.step(any(),anyMap(),anyMap())).thenAnswer(i->{
+            var row=map(i.getArgument(1));String shop=text(row.get("shop_id"));
+            assertTrue(active.add(shop),"two channels entered the same shop");assertEquals("ORDER_LIVE",row.get("channel"));
+            peak.accumulateAndGet(active.size(),Math::max);entered.countDown();
+            try{assertTrue(release.await(15,java.util.concurrent.TimeUnit.SECONDS));}
+            finally{active.remove(shop);}
+            return new FinanceMarketplace.Step(i.getArgument(2),true);
+        });
+        var worker=new FinanceSync(repo,market);
+        try(var threads=java.util.concurrent.Executors.newFixedThreadPool(4)){
+            var runs=new ArrayList<java.util.concurrent.Future<?>>();
+            for(int i=0;i<4;i++)runs.add(threads.submit(()->{try{worker.tick();}finally{returned.countDown();}}));
+            try{
+                assertTrue(entered.await(15,java.util.concurrent.TimeUnit.SECONDS),"different shops should run concurrently");
+                assertTrue(returned.await(15,java.util.concurrent.TimeUnit.SECONDS),"idle workers should finish while both shops remain locked");
+            }
+            finally{release.countDown();}
+            for(var run:runs)run.get(15,java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(2,peak.get());verify(market,times(2)).step(any(),anyMap(),anyMap());
+            assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_sync_states WHERE channel='ORDER_LIVE' AND status='SUCCESS' AND lease_token IS NULL",Integer.class));
+            assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_sync_states WHERE channel='ORDER' AND status='READY'",Integer.class));
+        }finally{release.countDown();worker.stop();}
+    }
+    @Test void expiredWorkerCannotOverwriteTheReplacementClaim()throws Exception{
+        String shop=connect(owner,false);service.configure(owner,shop,true,"PHP","Asia/Manila");
+        db.update("UPDATE finance_sync_states SET next_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)");
+        db.update("UPDATE finance_sync_states SET next_at=UTC_TIMESTAMP() WHERE channel='ORDER_LIVE'");
+        var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
+        var market=mock(FinanceMarketplace.class);
+        when(market.step(any(),anyMap(),anyMap())).thenAnswer(i->{
+            entered.countDown();assertTrue(release.await(15,java.util.concurrent.TimeUnit.SECONDS));
+            return new FinanceMarketplace.Step(i.getArgument(2),true);
+        });
+        var worker=new FinanceSync(repo,market);
+        try(var thread=java.util.concurrent.Executors.newSingleThreadExecutor()){
+            var run=thread.submit(worker::tick);
+            try{
+                assertTrue(entered.await(15,java.util.concurrent.TimeUnit.SECONDS));
+                db.update("UPDATE finance_sync_states SET lease_token='replacement',checkpoint_json='{\"cursor\":\"retained\"}' WHERE channel='ORDER_LIVE'");
+            }finally{release.countDown();}
+            run.get(15,java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals("RUNNING",db.queryForObject("SELECT status FROM finance_sync_states WHERE channel='ORDER_LIVE'",String.class));
+            assertEquals("retained",repo.read(db.queryForObject("SELECT checkpoint_json FROM finance_sync_states WHERE channel='ORDER_LIVE'",String.class)).get("cursor"));
+        }finally{release.countDown();worker.stop();}
+    }
     com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp adHttp;
     FinanceAdAuthorization adAuth(){
         adHttp=mock(com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp.class);

@@ -12,23 +12,21 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceSync {
     final FinanceRepository repo;final FinanceMarketplace marketplace;
     private final java.util.concurrent.atomic.AtomicBoolean verified=new java.util.concurrent.atomic.AtomicBoolean();
-    private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-shop-sync");t.setDaemon(true);return t;});
-    public FinanceSync(FinanceRepository repo,FinanceMarketplace marketplace){this.repo=repo;this.marketplace=marketplace;}
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance shop sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance sync dispatcher temporarily unavailable",e);}},45,5,java.util.concurrent.TimeUnit.SECONDS);}
-    @PreDestroy public void stop(){worker.shutdownNow();}
+    private final FinanceSyncClaims claims;
+    private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newScheduledThreadPool(4,r->{var t=new Thread(r,"finance-shop-sync");t.setDaemon(true);return t;});
+    private final java.util.concurrent.ScheduledExecutorService heartbeat=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-sync-lease");t.setDaemon(true);return t;});
+    public FinanceSync(FinanceRepository repo,FinanceMarketplace marketplace){this.repo=repo;this.marketplace=marketplace;this.claims=new FinanceSyncClaims(repo);}
+    @PostConstruct public void start(){for(int slot=0;slot<4;slot++)worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance shop sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance sync dispatcher temporarily unavailable",e);}},30_000+slot*250,1000,java.util.concurrent.TimeUnit.MILLISECONDS);}
+    @PreDestroy public void stop(){worker.shutdownNow();heartbeat.shutdownNow();}
     public void tick(){
-        var due=repo.jdbc().queryForList("""
-            SELECT st.*,f.timezone,f.currency FROM finance_sync_states st JOIN finance_connections f
-            ON f.organization_id=st.organization_id AND f.user_id=st.user_id AND f.id=st.shop_id
-            WHERE f.enabled=TRUE AND f.status='ACTIVE' AND st.next_at<=UTC_TIMESTAMP(6)
-              AND (st.lease_until IS NULL OR st.lease_until<UTC_TIMESTAMP(6)) ORDER BY st.next_at LIMIT 1
-            """);
-        if(due.isEmpty())return;var row=due.getFirst();Scope s=new Scope(text(row.get("organization_id")),text(row.get("user_id")));
-        Object[] keys={s.organizationId(),s.userId(),row.get("shop_id"),row.get("channel")};
-        String where="organization_id=? AND user_id=? AND shop_id=? AND channel=?";
-        int claimed=repo.jdbc().update("UPDATE finance_sync_states SET lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 10 MINUTE),status='RUNNING' WHERE "+where
-                +" AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6))",keys);
-        if(claimed!=1)return;
+        var claim=claims.claim();if(claim==null)return;
+        var row=claim.row();Scope s=new Scope(text(row.get("organization_id")),text(row.get("user_id")));
+        Object[] keys={s.organizationId(),s.userId(),row.get("shop_id"),row.get("channel"),claim.token()};
+        String where="organization_id=? AND user_id=? AND shop_id=? AND channel=? AND lease_token=?";
+        var renewal=heartbeat.scheduleWithFixedDelay(()->{
+            try{repo.jdbc().update("UPDATE finance_sync_states SET lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 10 MINUTE) WHERE "+where+" AND status='RUNNING'",keys);}
+            catch(RuntimeException failure){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance lease renewal deferred: {}",failure.getClass().getSimpleName());}
+        },30,30,java.util.concurrent.TimeUnit.SECONDS);
         try{
             Map<String,Object> cp=row.get("checkpoint_json")==null?new LinkedHashMap<>():new LinkedHashMap<>(repo.read(text(row.get("checkpoint_json"))));
             Instant now=Instant.now();ZoneId zone=ZoneId.of(text(row.get("timezone")));
@@ -60,7 +58,7 @@ public class FinanceSync {
             if(fresh||!prioritized.equals(cp)){
                 cp=prioritized;
                 // Persist before requests; retries retain both the recent cursor and historical resume point.
-                repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=? WHERE "+where,repo.write(cp),keys[0],keys[1],keys[2],keys[3]);
+                repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=? WHERE "+where,repo.write(cp),keys[0],keys[1],keys[2],keys[3],keys[4]);
             }
             // A fixed bounded range is retained across pages; retry never loses the current cursor.
             var step=nextWindow(cp,marketplace.step(s,row,cp));Map<String,Object> next=new LinkedHashMap<>(step.checkpoint());
@@ -72,12 +70,12 @@ public class FinanceSync {
                 // orders arriving while a long page chain runs must be fetched next time.
                 Instant completedThrough=live?Instant.ofEpochSecond(number(cp.get("until"))):Instant.now();
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=NULL,status='SUCCESS',error_message=NULL,failures=0,"
-                        +"lease_until=NULL,last_success_at=?,coverage_start=COALESCE(coverage_start,?),next_at=? WHERE "+where,
-                        Timestamp.from(completedThrough),cp.get("coverage"),Timestamp.from(Instant.now().plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3]);
+                        +"lease_until=NULL,lease_token=NULL,last_success_at=?,coverage_start=COALESCE(coverage_start,?),next_at=? WHERE "+where,
+                        Timestamp.from(completedThrough),cp.get("coverage"),Timestamp.from(Instant.now().plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3],keys[4]);
             }else{
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=?,status='SYNCING',error_message=NULL,failures=0,"
-                        +"lease_until=NULL,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 10 SECOND) WHERE "+where,
-                        repo.write(next),keys[0],keys[1],keys[2],keys[3]);
+                        +"lease_until=NULL,lease_token=NULL,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 2 SECOND) WHERE "+where,
+                        repo.write(next),keys[0],keys[1],keys[2],keys[3],keys[4]);
             }
         }catch(Exception failure){
             long attempts=number(row.get("failures"))+1;long seconds=Math.min(21600,60L*(1L<<Math.min(8,attempts)));
@@ -88,9 +86,9 @@ public class FinanceSync {
             }
             String message=text(failure.getMessage()).replaceAll("(?i)(token|secret|app_key|sign)[=:][^\\s,]+","$1=[已隐藏]");
             if(message.length()>700)message=message.substring(0,700);
-            repo.jdbc().update("UPDATE finance_sync_states SET status='ERROR',error_message=?,failures=failures+1,lease_until=NULL,next_at=? WHERE "+where,
-                    message,Timestamp.from(Instant.now().plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3]);
-        }
+            repo.jdbc().update("UPDATE finance_sync_states SET status='ERROR',error_message=?,failures=failures+1,lease_until=NULL,lease_token=NULL,next_at=? WHERE "+where,
+                    message,Timestamp.from(Instant.now().plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3],keys[4]);
+        }finally{renewal.cancel(false);claim.close();}
     }
     static Map<String,Object> recentSettlementFirst(Map<String,Object> cp,boolean initial,String channel,ZoneId zone){
         if(!initial||!Set.of("SETTLEMENT","ORDER").contains(channel)||cp.containsKey("backfillResume")

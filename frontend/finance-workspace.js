@@ -72,6 +72,7 @@
     if(data?.fx){el('span',' · 参考汇率 '+new Date(data.fx.time).toLocaleDateString('zh-CN')+' · ',left);const source=el('a',data.fx.provider,left);source.href='https://www.exchangerate-api.com';source.target='_blank';source.rel='noopener noreferrer';source.style.color='inherit';el('span',' · 按同一参考汇率折算',left);}
     else el('span',' · 原币独立核算',left);
     el('span',' · '+filters.start+' 至 '+filters.end,left);
+    if(data?.cache?.refreshing)el('span',' · 正在后台更新，当前数据截至 '+new Date(data.cache.generatedAt).toLocaleTimeString('zh-CN'),left);
   }
   function total(kind){return data?.totals?.find(r=>r.kind===kind);}
   function sum(kind){return total(kind)?.amount;}

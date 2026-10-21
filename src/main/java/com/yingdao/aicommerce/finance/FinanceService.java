@@ -14,6 +14,8 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceService {
     private final FinanceRepository repo; private final OrganizationAccessPolicy access; private final FinanceShopAuthorization shops;private final FinanceFx fx;
     private final FinanceSnapshotCache snapshots=new FinanceSnapshotCache();
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private FinanceReadCache sharedSnapshots;
     public FinanceService(FinanceRepository repo,OrganizationAccessPolicy access,FinanceShopAuthorization shops,FinanceFx fx){
         this.repo=repo;this.access=access;this.shops=shops;this.fx=fx;
     }
@@ -72,7 +74,7 @@ public class FinanceService {
             status=CASE WHEN lease_until>UTC_TIMESTAMP(6) THEN status ELSE 'READY' END
             WHERE organization_id=? AND user_id=? AND shop_id=?
             """,s.organizationId(),s.userId(),shopId);
-        snapshots.invalidate(s);
+        invalidateSnapshots(s);
     }
     @Transactional
     public void removeShop(Scope s,String id){
@@ -84,13 +86,26 @@ public class FinanceService {
     private void invalidateAfterCommit(Scope s){
         if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
             org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
-                @Override public void afterCommit(){snapshots.invalidate(s);}
+                @Override public void afterCommit(){invalidateSnapshots(s);}
             });
-        else snapshots.invalidate(s);
+        else invalidateSnapshots(s);
+    }
+    private void invalidateSnapshots(Scope s){
+        snapshots.invalidate(s);if(sharedSnapshots!=null)sharedSnapshots.invalidate(s);
     }
     public Map<String,Object> dashboard(Scope s,Filter requested,boolean cny,String snapshotId){
-        return snapshots.get(new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false),
-                ()->buildDashboard(s,requested,cny,snapshotId,false));
+        var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false);
+        java.util.function.Supplier<Map<String,Object>> load=()->buildDashboard(s,requested,cny,snapshotId,false);
+        return sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load);
+    }
+    public void prewarm(Scope s){
+        if(sharedSnapshots==null)return;
+        LocalDate today=LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        for(boolean live:List.of(false,true))for(boolean cny:List.of(false,true)){
+            var filter=new Filter(live?today:today.minusDays(29),today,"","","","day");
+            sharedSnapshots.prime(new FinanceSnapshotCache.Key(s,filter,cny,"",live),
+                    ()->live?buildScreen(s,filter,cny,""):buildDashboard(s,filter,cny,"",false));
+        }
     }
     public Map<String,Object> reconciliationContext(Scope s,Filter requested,boolean cny,String snapshotId){
         var all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity());
@@ -156,8 +171,9 @@ public class FinanceService {
     }
     public Map<String,Object> screen(Scope s,Filter requested,boolean cny,String snapshotId){
         if(!requested.start().equals(requested.end()))throw bad("实时大屏按单个业务日展示");
-        return snapshots.get(new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),true),
-                ()->buildScreen(s,requested,cny,snapshotId));
+        var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),true);
+        java.util.function.Supplier<Map<String,Object>> load=()->buildScreen(s,requested,cny,snapshotId);
+        return sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load);
     }
     private Map<String,Object> buildScreen(Scope s,Filter requested,boolean cny,String snapshotId){
         // An open screen requests a fresher order snapshot. Never reset an active page,

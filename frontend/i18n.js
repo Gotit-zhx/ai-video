@@ -14,6 +14,7 @@
   language ||= (navigator.languages||[navigator.language]).map(normalize).find(Boolean)||'en';
   let dictionary=window.HoyeeCatalog||{};
   let slotKinds=window.HoyeeCatalogSlots||{};
+  let catalogLoading=null;
   const originals=new WeakMap(),attrs=new WeakMap(),pending=new Set(),controls=new Set();
   const cache=new Map(),missing=new Set();
   let scheduled=false,patterns=[];
@@ -114,6 +115,30 @@
     try{localStorage.setItem(key,next);}catch(_){}
     const url=new URL(location.href);url.searchParams.set('lang',next);history.replaceState(null,'',url);
     render();document.dispatchEvent(new CustomEvent('hoyee:languagechange',{detail:{language}}));
+    ensureCatalog();
+  }
+  // Chinese is the source language; loading all translations must not block the app.
+  // One shared request also handles rapid language changes without applying an old choice.
+  function ensureCatalog(){
+    if(language==='zh'||Object.keys(dictionary).length)return;
+    if(catalogLoading)return catalogLoading;
+    catalogLoading=new Promise(resolve=>{
+      const script=document.createElement('script');
+      script.src='/i18n/catalog.js?v=shopee-logistics-20260921';script.async=true;
+      const finish=ok=>{
+        script.remove();catalogLoading=null;
+        if(ok&&Object.keys(window.HoyeeCatalog||{}).length){
+          dictionary=window.HoyeeCatalog;slotKinds=window.HoyeeCatalogSlots||{};
+          delete document.documentElement.dataset.languageLoadError;
+          compile();render();
+          document.dispatchEvent(new CustomEvent('hoyee:languagechange',{detail:{language}}));
+        }else document.documentElement.dataset.languageLoadError='true';
+        resolve();
+      };
+      script.onload=()=>finish(true);script.onerror=()=>finish(false);
+      document.head.append(script);
+    });
+    return catalogLoading;
   }
   for(const name of ['alert','confirm','prompt']){const native=window[name]?.bind(window);if(native)window[name]=(message,...args)=>native(text(String(message)),...args);}
   const validationMessages=new WeakMap();
@@ -136,5 +161,5 @@
   window.addEventListener('heyi:commerce-section-entered',()=>queueMicrotask(()=>render()));
   document.addEventListener('DOMContentLoaded',()=>render());
   compile();render();
-  if(!Object.keys(dictionary).length)fetch('/i18n/catalog.json?v=20260921-2').then(r=>{if(!r.ok)throw Error('catalog');return r.json();}).then(data=>{dictionary=data;compile();render();}).catch(()=>{document.documentElement.dataset.languageLoadError='true';});
+  ensureCatalog();
 })();
