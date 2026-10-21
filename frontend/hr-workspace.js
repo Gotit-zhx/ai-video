@@ -34,7 +34,7 @@
   const button = (text, parent, handler) => {
     const node = element('button', text, parent);
     node.type = 'button';
-    node.addEventListener('click', handler);
+    node.onclick = handler;
     return node;
   };
   const allowed = () => (currentUser?.platformAdmin === true && currentUser?.username === '13800000000')
@@ -481,7 +481,11 @@
     }
   }
   function renderTrackedResumes() {
-    attachmentResult.replaceChildren();
+    const next = attachmentResult.cloneNode(false);
+    renderTrackedResumeRows(next);
+    IncrementalDOM.children(attachmentResult,next);
+  }
+  function renderTrackedResumeRows(attachmentResult) {
     updateResumeRequestButton();
     const items = [...trackedResumeRequests.values()].sort((a,b) => b.requested_at - a.requested_at);
     if (!items.length) {
@@ -490,6 +494,7 @@
     }
     for (const item of items) {
       const card = element('article', '', attachmentResult, 'hr-record');
+      card.dataset.updateKey = String(item.friend_id);
       const known = conversations.find(row => conversationId(row) === String(item.friend_id))
         || (conversationId(selectedConversation || {}) === String(item.friend_id) ? selectedConversation : null);
       element('strong', known ? personName(known) : '候选人附件简历', card);

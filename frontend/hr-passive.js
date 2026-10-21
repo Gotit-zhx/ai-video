@@ -225,11 +225,12 @@
         const signature=JSON.stringify([page,filter,jobFilter,originFilter,data]);
         if(mode==='resume-pool'&&quiet&&signature===poolSnapshot)return;
         if(mode==='resume-pool')poolSnapshot=signature;
-        box.replaceChildren();
-        if(!items.length)el('p',mode==='speeches'?'该用途暂无话术，点击“新建话术”可直接使用推荐内容。':'当前分类暂无简历。BOSS 沟通收到的附件简历会自动归档。',box,'hr-pool-empty');
-        const grid=el('div','',box,mode==='speeches'?'hr-card-grid hr-speech-grid':'hr-card-grid hr-resume-grid');
+        const nextBox=box.cloneNode(false);
+        if(!items.length)el('p',mode==='speeches'?'该用途暂无话术，点击“新建话术”可直接使用推荐内容。':'当前分类暂无简历。BOSS 沟通收到的附件简历会自动归档。',nextBox,'hr-pool-empty');
+        const grid=el('div','',nextBox,mode==='speeches'?'hr-card-grid hr-speech-grid':'hr-card-grid hr-resume-grid');
         for(const row of items){
           const card=el('article','',grid,mode==='speeches'?'hr-person-card hr-speech-card':'hr-person-card'),head=el('div','',card,'hr-card-heading');
+          card.dataset.updateKey=row.id;
           const identity=mode==='speeches'?head:el('div','',head,'hr-identity');
           if(mode!=='speeches')el('span',row.name?.slice(0,1)||'人',identity,'hr-avatar');
           el('h3',row.name||'姓名待补充',identity);
@@ -251,24 +252,26 @@
           }
         }
         if(mode==='resume-pool'&&data.pages>1){
-          const pages=el('div','',box,'hr-actions');
+          const pages=el('div','',nextBox,'hr-actions');
           button('上一页',pages,()=>{page--;load();}).disabled=data.page<=1;
           el('span',`${data.page} / ${data.pages}`,pages);
           button('下一页',pages,()=>{page++;load();}).disabled=data.page>=data.pages;
         }
         if(mode==='resume-pool'&&data.events?.length){
-          const log=el('details','',box,'hr-activity-log');log.open=logOpen;
-          log.addEventListener('toggle',()=>{logOpen=log.open;});
+          const log=el('details','',nextBox,'hr-activity-log');log.open=logOpen;
+          log.ontoggle=event=>{logOpen=event.currentTarget.open;};
           const summary=el('summary','',log);
           el('strong','邀约记录',summary);el('span',`最近 ${data.events.length} 条`,summary,'hr-hint');
           const entries=el('div','',log,'hr-activity-entries');
           for(const event of data.events){
             const label=eventLabels[event.code];if(!label)continue;
             const entry=el('div','',entries,'hr-activity-entry');
+            entry.dataset.updateKey=event.id||[event.code,event.createdAt,event.name,event.jobName].join(':');
             el('span',event.name||event.jobName||'候选人',entry);el('span',label,entry,'hr-hint');
             el('time',new Date(event.createdAt).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}),entry,'hr-hint');
           }
         }
+        IncrementalDOM.children(box,nextBox);
       }catch(error){if(ticket===generation)feedback.textContent=error.message;}
     }
     async function openResume(id,{quiet=false}={}){

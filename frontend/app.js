@@ -2857,22 +2857,22 @@ function renderAutomationJobs(jobs) {
   const count = document.querySelector("#automation-job-count");
   if (count) count.textContent = `${jobs.length} 条记录`;
   if (!jobs.length) {
-    list.innerHTML = '<div class="empty-state automation-empty-state compact"><i aria-hidden="true">✓</i><strong>这里还很安静</strong><span>运行第一项自动化后，进度与结果会保存在这里。</span></div>';
+    IncrementalDOM.html(list, '<div class="empty-state automation-empty-state compact"><i aria-hidden="true">✓</i><strong>这里还很安静</strong><span>运行第一项自动化后，进度与结果会保存在这里。</span></div>');
     return;
   }
-  list.innerHTML = jobs.map(job => `
+  IncrementalDOM.html(list, jobs.map(job => `
     <button class="job-row automation-job-button" data-view-automation-job="${escapeHtml(job.id)}">
       <div class="job-icon">↯</div>
       <div class="job-main"><strong>${escapeHtml(job.automationCode)}</strong><span>${escapeHtml(job.progressMessage || "等待执行")}</span></div>
       <span class="job-status status-${job.status.toLowerCase()}">${escapeHtml(job.status)}</span>
       <time>${job.progressPercent}%</time>
     </button>
-  `).join("");
+  `).join(""));
   list.querySelectorAll("[data-view-automation-job]").forEach(button => {
-    button.addEventListener("click", () => {
+    button.onclick = () => {
       const job = automationJobs.find(item => item.id === button.dataset.viewAutomationJob);
       if (job) openAutomationJob(job);
-    });
+    };
   });
 }
 
@@ -2983,20 +2983,20 @@ function renderAutomationLive(job, events) {
     `${job.progressPercent || 0}%`;
   renderAutomationControls(job);
   renderAutomationBusinessResults(job, events);
-  document.querySelector("#automation-input-snapshot").innerHTML =
-    Object.entries(parameters || {}).map(([key, value]) =>
+  IncrementalDOM.html(document.querySelector("#automation-input-snapshot"), Object.entries(parameters || {}).map(([key, value]) =>
       `<div><dt>${escapeHtml(fieldLabels[key] || key)}</dt><dd>${escapeHtml(
         String(value).startsWith("heyi-attachment:")
           ? String(value).split(":").slice(2).join(":")
           : String(value)
       )}</dd></div>`
-    ).join("") || "<div><dd>没有额外输入参数</dd></div>";
+    ).join("") || "<div><dd>没有额外输入参数</dd></div>");
   document.querySelector("#automation-event-count").textContent =
     `${events.length} 条`;
   const stream = document.querySelector("#automation-event-stream");
-  stream.innerHTML = events.length
+  const followTail = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 48;
+  IncrementalDOM.html(stream, events.length
     ? events.map(event => `
-      <article class="automation-event ${String(event.eventType).toLowerCase()}">
+      <article data-update-key="${escapeHtml(event.id || `${event.eventType}:${event.createdAt}`)}" class="automation-event ${String(event.eventType).toLowerCase()}">
         <div><span>${automationSourceName(event.source)}</span><time>${formatAutomationTime(event.createdAt)}</time></div>
         <p>${escapeHtml(event.message)}</p>
         ${event.payload && ["MODEL_DIAGNOSIS", "MODEL_RECOVERY"].includes(event.eventType)
@@ -3004,19 +3004,19 @@ function renderAutomationLive(job, events) {
           : ""}
       </article>
     `).join("")
-    : '<div class="automation-event-empty">正在等待本机助手返回第一条消息…</div>';
-  stream.scrollTop = stream.scrollHeight;
+    : '<div class="automation-event-empty">正在等待本机助手返回第一条消息…</div>');
+  if (followTail) stream.scrollTop = stream.scrollHeight;
   const resultPanel = document.querySelector("#automation-result-panel");
   const result = job.output || (job.errorMessage ? { error: job.errorMessage } : null);
   resultPanel.hidden = !result;
   const artifact = job.output?.artifact;
   const delivery = job.output?.delivery;
-  document.querySelector("#automation-result-download").innerHTML = artifact?.id
+  IncrementalDOM.html(document.querySelector("#automation-result-download"), artifact?.id
     ? `<a href="/api/v1/automations/attachments/${encodeURIComponent(artifact.id)}" download="${escapeHtml(artifact.name || "任务结果.zip")}">下载任务结果</a>
        <span>${escapeHtml(artifact.name || "任务结果.zip")} · 仅保留 ${artifact.retentionDays || 3} 天</span>`
     : delivery?.status === "FAILED"
       ? `<span class="automation-delivery-error">业务执行已经完成，但结果包生成失败。本机结果已保留，请重试交付或联系管理员。${escapeHtml(delivery.message || "")}</span>`
-      : "";
+      : "");
   const businessResult = job.output?.businessResult;
   document.querySelector("#automation-result-output").textContent = result
     ? businessResult
@@ -3050,7 +3050,7 @@ function renderAutomationBusinessResults(job, events) {
   const count = outcome => units.filter(unit => unit.outcome === outcome).length;
   document.querySelector("#automation-result-counts").textContent =
     `共 ${units.length} 项 · 成功 ${count("SUCCESS")} · 待处理 ${count("NEEDS_ATTENTION")} · 失败 ${count("FAILED")}`;
-  document.querySelector("#automation-result-units").innerHTML = units.map(unit => {
+  IncrementalDOM.html(document.querySelector("#automation-result-units"), units.map(unit => {
     const analysis = analysisMap.get(unit.unitId || unit.unitName) || {};
     const diagnosis = analysis.diagnosis || {};
     const statusClass = String(unit.outcome || "UNKNOWN").toLowerCase();
@@ -3072,12 +3072,12 @@ function renderAutomationBusinessResults(job, events) {
       || (unit.verifiedFileCount
         ? `已确认 ${unit.verifiedFileCount} 个结果文件`
         : "");
-    return `<article class="automation-result-unit ${statusClass}">
+    return `<article data-update-key="${escapeHtml(unit.unitId || unit.unitName)}" class="automation-result-unit ${statusClass}">
       <div><strong>${escapeHtml(unit.unitName || "未命名执行项")}</strong><small>${escapeHtml(unit.platform || unit.unitType || "")}</small></div>
       <div><p>${escapeHtml(description)}</p>${output ? `<small>${escapeHtml(output)}</small>` : ""}</div>
       <span>${escapeHtml(statusName)}</span>
     </article>`;
-  }).join("");
+  }).join(""));
 }
 
 function renderAutomationControls(job) {
@@ -3102,16 +3102,16 @@ function renderAutomationControls(job) {
     ]
   }[job.status] || [];
   if (String(job.status).endsWith("_REQUESTED")) {
-    bar.innerHTML = `<span>控制请求已发送，正在等待本机助手确认…</span>`;
+    IncrementalDOM.html(bar, `<span>控制请求已发送，正在等待本机助手确认…</span>`);
     return;
   }
-  bar.innerHTML = controls.length
+  IncrementalDOM.html(bar, controls.length
     ? `<span>任务控制</span><div>${controls.map(([action, label, className]) =>
         `<button type="button" class="${className}" data-automation-control="${action}" data-job-id="${escapeHtml(job.id)}">${label}</button>`
       ).join("")}</div>`
-    : "";
+    : "");
   bar.querySelectorAll("[data-automation-control]").forEach(button => {
-    button.addEventListener("click", async () => {
+    button.onclick = async () => {
       const action = button.dataset.automationControl;
       if (action === "CANCEL" && !confirm("取消后本轮不能继续，确定取消吗？")) return;
       button.disabled = true;
@@ -3130,7 +3130,7 @@ function renderAutomationControls(job) {
         alert(error.message);
         button.disabled = false;
       }
-    });
+    };
   });
 }
 
@@ -4284,13 +4284,13 @@ function renderProductCaptureList() {
   syncProductCapturePagination();
   if (!filtered.length) {
     const hasCriteria = productCaptureStatusFilter !== "ALL" || Boolean(productCaptureSearchQuery.trim());
-    list.innerHTML = hasCriteria
+    IncrementalDOM.html(list, hasCriteria
       ? `<div class="product-empty"><strong>没有匹配商品</strong><span>调整状态筛选或搜索关键词。</span></div>`
-      : `<div class="product-empty"><strong>还没有采集商品</strong><span>安装并登录浏览器插件，在商品详情页点击“采集商品”。</span></div>`;
+      : `<div class="product-empty"><strong>还没有采集商品</strong><span>安装并登录浏览器插件，在商品详情页点击“采集商品”。</span></div>`);
     syncProductBulkSelection();
     return;
   }
-  list.innerHTML = filtered.map(capture => {
+  IncrementalDOM.html(list, filtered.map(capture => {
     const group = productCaptureStatusGroup(capture.status).toLowerCase();
     const title = capture.title || `商品 ${capture.sourceProductId || capture.id}`;
     const image = productCaptureImages(capture)[0];
@@ -4301,13 +4301,16 @@ function renderProductCaptureList() {
     const selected = capture.id === selectedProductCaptureId;
     const selectable = productCaptureCanUpload(capture);
     const origin = productCaptureOrigin(capture);
-    return `<div class="product-selectable-row"><input type="checkbox" data-product-bulk-id="${escapeHtml(capture.id)}" aria-label="勾选 ${escapeHtml(title)}" ${productBulkSelectedIds.has(capture.id) ? "checked" : ""} ${selectable ? "" : "disabled"}><button class="product-capture-row ${selected ? "active" : ""}" type="button" data-product-capture-id="${escapeHtml(capture.id)}"${selected ? ` aria-current="true"` : ""}>
+    return `<div class="product-selectable-row" data-update-key="${escapeHtml(capture.id)}"><input type="checkbox" data-product-bulk-id="${escapeHtml(capture.id)}" aria-label="勾选 ${escapeHtml(title)}" ${productBulkSelectedIds.has(capture.id) ? "checked" : ""} ${selectable ? "" : "disabled"}><button class="product-capture-row ${selected ? "active" : ""}" type="button" data-product-capture-id="${escapeHtml(capture.id)}"${selected ? ` aria-current="true"` : ""}>
       <span class="product-row-thumb ${escapeHtml(thumbnailStatus)}">${thumb ? `<span class="capture-thumbnail-placeholder">商品图片加载中</span><img src="${escapeHtml(thumb)}" alt="" loading="lazy" onload="this.previousElementSibling.hidden=true" onerror="this.hidden=true;this.previousElementSibling.textContent='图片暂不可用'">` : `<span class="capture-thumbnail-placeholder">暂无商品图片</span>`}</span>
       <span class="product-origin-badge ${origin.tone}">${origin.label}</span>
       <span class="product-row-copy"><strong translate="no">${escapeHtml(title)}</strong><small>${escapeHtml(productSourcePlatformName(capture.sourcePlatform))} · ${escapeHtml(productPriceLabel(capture))}</small><em>${formatDate(capture.updatedAt || capture.createdAt)}</em></span>
       <span class="product-row-status ${group}">${escapeHtml(productCaptureDisplayStatus(capture))}</span>
     </button><div class="capture-card-actions">${selectable ? `<button type="button" class="capture-upload-button" data-upload-capture="${escapeHtml(capture.id)}">${capture.status === "PUBLISHED" ? "选择店铺再次上传" : "选择店铺上传"}</button>` : ""}${hasAnyPermission("product:edit") ? `<button type="button" class="capture-delete-button" data-delete-capture="${escapeHtml(capture.id)}" aria-label="删除 ${escapeHtml(title)}">删除</button>` : ""}</div></div>`;
-  }).join("");
+  }).join(""));
+  list.querySelectorAll(".product-row-thumb img").forEach(img => {
+    if (img.complete && img.naturalWidth > 0) img.previousElementSibling.hidden = true;
+  });
   syncProductBulkSelection();
 }
 
@@ -4590,10 +4593,10 @@ function renderProductImages(capture) {
   document.querySelector("#product-image-progress-bar").style.width = `${progress}%`;
   const grid = document.querySelector("#product-image-grid");
   if (!images.length) {
-    grid.innerHTML = `<div class="product-empty"><strong>没有采集到图片</strong><span>请返回来源商品页重新采集。</span></div>`;
+    IncrementalDOM.html(grid, `<div class="product-empty"><strong>没有采集到图片</strong><span>请返回来源商品页重新采集。</span></div>`);
     return;
   }
-  grid.innerHTML = images
+  IncrementalDOM.html(grid, images
     .slice()
     .sort((left, right) => Number(left.sortOrder || 0) - Number(right.sortOrder || 0))
     .map((image, index) => {
@@ -4605,7 +4608,7 @@ function renderProductImages(capture) {
       const role = roleName === "MAIN" ? "主图"
         : roleName === "VARIANT" ? "规格图"
           : ["DESCRIPTION", "DETAIL"].includes(roleName) ? "详情图" : `商品图 ${index + 1}`;
-      return `<article class="product-image-card ${state}" aria-busy="${state === "processing"}">
+      return `<article data-update-key="${escapeHtml(image.id || image.originalUrl || image.url || index)}" class="product-image-card ${state}" aria-busy="${state === "processing"}">
         <header><div><strong>${escapeHtml(role)}</strong><small>${escapeHtml(image.mimeType || "图片")}</small></div><span>${escapeHtml(productImageDisplayState(image, capture))}</span></header>
         <div class="product-image-compare">
           <figure><figcaption>来源原图</figcaption>${original ? `<button type="button" data-asset-preview="来源原图" aria-label="放大查看来源原图"><img src="${escapeHtml(original)}" data-full-src="${escapeHtml(original)}" alt="${escapeHtml(role)}来源原图" loading="lazy"></button>` : `<div class="product-image-placeholder">无原图</div>`}</figure>
@@ -4613,7 +4616,7 @@ function renderProductImages(capture) {
         </div>
         ${state === "processing" ? `<p class="product-image-working-note"><i aria-hidden="true"></i>${escapeHtml(productImageStateName(image))}，请稍候…</p>` : ["failed","waiting"].includes(state) && (productLiveImageStage(image)?.message || image.errorMessage) ? `<p role="status">${escapeHtml(productLiveImageStage(image)?.message || image.errorMessage)}</p>` : ""}
       </article>`;
-    }).join("");
+    }).join(""));
 }
 
 function productReadiness(capture) {
@@ -4834,9 +4837,9 @@ function renderProductReadiness(capture) {
     : !skuCompleteness.complete
       ? "手工新增属于刊登补充；只有重新采集完整平台 SKU，或明确以 USER 来源逐项核对后，才可继续。"
     : "有商品编辑/审核权限的成员可以执行人工确认；真实发布另需发布权限。";
-  document.querySelector("#product-readiness-list").innerHTML = readiness.checks.map(check =>
+  IncrementalDOM.html(document.querySelector("#product-readiness-list"), readiness.checks.map(check =>
     `<li class="${check.ok ? "passed" : "missing"}"><i>${check.ok ? "✓" : "!"}</i><span>${escapeHtml(check.label)}</span></li>`
-  ).join("");
+  ).join(""));
 }
 
 function showProductNotice(message, type = "error") {
@@ -11368,7 +11371,7 @@ function htmlFragmentPreservingMedia(currentRoot, html) {
 }
 
 function replaceHtmlPreservingMedia(container, html) {
-  container.replaceChildren(htmlFragmentPreservingMedia(container, html));
+  IncrementalDOM.html(container, html);
 }
 
 function aiVideoSourceUrl(taskId, itemId, version = "") {
@@ -11485,15 +11488,15 @@ async function copyTextToClipboard(text) {
 function renderAiVideoTaskList() {
   const list = document.querySelector("#ai-video-task-list");
   if (!aiVideoTasks.length) {
-    list.innerHTML = `<div class="video-task-empty"><strong>还没有视频任务</strong><span>点击右上角新建，从 9 分镜脚本开始。</span></div>`;
+    IncrementalDOM.html(list, `<div class="video-task-empty"><strong>还没有视频任务</strong><span>点击右上角新建，从 9 分镜脚本开始。</span></div>`);
     return [];
   }
   const filtered = filteredAiVideoTasks();
   if (!filtered.length) {
-    list.innerHTML = `<div class="video-task-empty"><strong>没有匹配任务</strong><span>换一个任务名、脚本名或 ID 片段。</span></div>`;
+    IncrementalDOM.html(list, `<div class="video-task-empty"><strong>没有匹配任务</strong><span>换一个任务名、脚本名或 ID 片段。</span></div>`);
     return filtered;
   }
-  list.innerHTML = filtered.map(task => {
+  IncrementalDOM.html(list, filtered.map(task => {
     const active = task.id === selectedAiVideoTaskId;
     const status = aiVideoTaskStatusNames[task.status] || task.status;
     const progress = task.status === "VIDEO_GENERATING"
@@ -11505,7 +11508,7 @@ function renderAiVideoTaskList() {
       <div><strong translate="no">${escapeHtml(task.name)}</strong><small>${escapeHtml(task.resolution || "720p")} · ${escapeHtml(aiVideoGenerationModeNames[aiVideoMode(task)] || aiVideoMode(task))} · ${Number(task.totalItems || 0)} ${unit} · ${escapeHtml(status)}</small></div>
       <em>${escapeHtml(progress)}</em>
     </button>`;
-  }).join("");
+  }).join(""));
   return filtered;
 }
 
@@ -12125,9 +12128,9 @@ function renderAiVideoTaskDetail(options = {}) {
     const staging = document.createElement("div");
     changedItemIds.forEach(itemId => {
       const currentCard = garmentCardGrid.querySelector(`[data-garment-card][data-item-id="${CSS.escape(itemId)}"]`);
-      staging.replaceChildren(htmlFragmentPreservingMedia(currentCard, garmentCardsByItemId.get(itemId) || ""));
+      staging.innerHTML = garmentCardsByItemId.get(itemId) || "";
       const nextCard = staging.querySelector(`[data-garment-card][data-item-id="${CSS.escape(itemId)}"]`);
-      if (currentCard && nextCard) currentCard.replaceWith(nextCard);
+      if (currentCard && nextCard) IncrementalDOM.patch(currentCard,nextCard);
     });
   }
   syncAiVideoElapsedTimer();
@@ -12281,10 +12284,10 @@ function renderAiVideoMonitorList() {
   const list = document.querySelector("#monitor-task-list");
   document.querySelector("#monitor-result-count").textContent = `${tasks.length} 条结果`;
   if (!tasks.length) {
-    list.innerHTML = `<div class="monitor-empty"><strong>没有匹配任务</strong><span>调整状态或关键词后再试。</span></div>`;
+    IncrementalDOM.html(list, `<div class="monitor-empty"><strong>没有匹配任务</strong><span>调整状态或关键词后再试。</span></div>`);
     return;
   }
-  list.innerHTML = tasks.map(task => {
+  IncrementalDOM.html(list, tasks.map(task => {
     const group = monitorStatusGroup(task.status).toLowerCase();
     const taskType = task.taskType === "GENERAL" ? "通用生成" : escapeHtml(task.scriptName || "视频任务");
     return `<button class="monitor-task-row ${task.id === selectedMonitorTaskId ? "active" : ""}" type="button" data-monitor-task-id="${escapeHtml(task.id)}">
@@ -12293,7 +12296,7 @@ function renderAiVideoMonitorList() {
       <span class="monitor-task-meta"><b>${monitorStatusNames[task.status] || escapeHtml(task.status)}</b><small>${task.imageRequests || 0} 图 / ${task.videoRequests || 0} 视频请求</small></span>
       <span class="monitor-task-progress"><i style="--progress:${Math.max(0, Math.min(100, task.progress || 0))}%"></i></span>
     </button>`;
-  }).join("");
+  }).join(""));
 }
 
 function renderMonitorAssetPreview(event, task) {
@@ -12388,7 +12391,7 @@ function renderAiVideoMonitorDetail() {
     </section>
     ${task.errorMessage ? `<p class="monitor-task-error"><strong>任务错误</strong>${escapeHtml(task.errorMessage)}</p>` : ""}
     <section class="monitor-items"><header><div><span>请求轨迹</span><h3>${taskItems.length} 个${generalTask ? "生成单元" : "商品单品"}</h3></div><small>展开查看完整参数</small></header>
-      ${taskItems.map((item, index) => `<details class="monitor-item" ${index === 0 ? "open" : ""}>
+      ${taskItems.map((item, index) => `<details data-update-key="${escapeHtml(task.id+':'+item.id)}" class="monitor-item" ${index === 0 ? "open" : ""}>
         <summary><span class="monitor-item-index">${String(index + 1).padStart(2, "0")}</span><div><strong translate="${item.name ? 'no' : 'yes'}">${escapeHtml(item.name || item.sourceFileName || "未命名单品")}</strong><small>${escapeHtml(item.sku || "无 SKU")} · 更新于 ${formatDate(item.updatedAt)}</small></div><span class="monitor-item-count">${item.imageEvents?.length || 0} 图 / ${item.videoRequests?.length || 0} 请求</span><b>${monitorStatusNames[item.status] || escapeHtml(item.status)}</b></summary>
         <div class="monitor-item-body">
           ${item.errorMessage ? `<p class="monitor-request-error">${escapeHtml(item.errorMessage)}</p>` : ""}
@@ -13571,10 +13574,10 @@ function generalVideoTaskCard(task) {
 function renderGeneralVideoTasks() {
   const grid = document.querySelector("#general-video-task-grid");
   if (!generalVideoTasks.length) {
-    grid.innerHTML = `<div class="general-video-empty"><strong>还没有通用生成任务</strong><span>上传参考图并写下画面描述，第一条任务会出现在这里。</span></div>`;
+    IncrementalDOM.html(grid, `<div class="general-video-empty"><strong>还没有通用生成任务</strong><span>上传参考图并写下画面描述，第一条任务会出现在这里。</span></div>`);
     return;
   }
-  grid.innerHTML = generalVideoTasks.map(generalVideoTaskCard).join("");
+  IncrementalDOM.html(grid, generalVideoTasks.map(generalVideoTaskCard).join(""));
 }
 
 async function loadGeneralVideoTaskDetail(id, { silent = false } = {}) {
@@ -13612,7 +13615,7 @@ async function loadGeneralVideoTasks(options = {}) {
     syncGeneralVideoPolling();
   } catch (error) {
     if (generation !== generalVideoLoadGeneration || currentUser?.organizationId !== organizationId) return;
-    grid.innerHTML = `<div class="general-video-empty"><strong>任务读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;
+    if (!options.silent || !generalVideoTasks.length) grid.innerHTML = `<div class="general-video-empty"><strong>任务读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;
   }
 }
 

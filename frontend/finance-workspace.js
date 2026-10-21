@@ -8,7 +8,7 @@
   const states={READY:'待同步',RUNNING:'同步中',SYNCING:'历史回补中',SUCCESS:'已同步',ERROR:'同步异常',ACTIVE:'已授权',TOKEN_EXPIRED:'授权过期',DISABLED:'已断开',SETTLED:'已结算',IMPORTED:'已导入',REPORTED:'平台报表',PARTIAL:'明细同步中',UNSETTLED:'预计待结算',MATCHED:'核对一致',MISSING:'缺少明细',DIFFERENCE:'金额有差异'};
   const paths={chart:'M4 19h16M7 15v-4m5 4V5m5 10V8',download:'M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4',refresh:'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 3M18 17a7 7 0 0 1-12 2l-2-3',shop:'M3 10h18l-2-7H5zM5 10v11h14V10M9 21v-7h6v7',wallet:'M3 6h18v15H3zM3 6V3h15v3M16 12h5v5h-5z',arrow:'M7 17 17 7M7 7h10v10',refund:'m9 6-5 5 5 5M4 11h10a5 5 0 0 1 0 10',ad:'m3 11 15-6v14L3 14zM6 15v6h4v-5M21 9v6',fee:'M7 3h10l4 4v14H3V7zM8 9h8M8 13h8M8 17h5',info:'M12 11v6M12 7v1M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',plus:'M12 4v16M4 12h16',check:'m5 12 4 4 10-10'};
   let callbackNotice='';const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
-  let active=false,generation=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER';
+  let active=false,generation=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='';
   const dateText=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const today=()=>dateText(new Date()),ago=n=>{const d=new Date();d.setDate(d.getDate()-n);return dateText(d);};
   const periods=[['day','日 K','近 30 天'],['week','周 K','近 12 周'],['month','月 K','近 12 个月'],['quarter','季度 K','近 8 个季度'],['halfyear','半年 K','近 6 个半年'],['year','年 K','近 5 年']];
@@ -31,7 +31,7 @@
   let filters={start:ago(29),end:today(),shopId:'',platform:'',currency:'',granularity:'day',displayCurrency:'ORIGINAL',fxSnapshot:''};
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;parent?.append(n);return n;};
   function icon(name,parent){const n=document.createElementNS('http://www.w3.org/2000/svg','svg');n.setAttribute('viewBox','0 0 24 24');n.classList.add('fi-svg');n.setAttribute('aria-hidden','true');const path=document.createElementNS(n.namespaceURI,'path');path.setAttribute('d',paths[name]||paths.chart);n.append(path);parent?.append(n);return n;}
-  function button(label,parent,fn,cls=''){const n=el('button',label,parent,cls);n.type='button';n.addEventListener('click',async()=>{try{await fn(n);}catch(e){notify(e.message,true);}});return n;}
+  function button(label,parent,fn,cls=''){const n=el('button',label,parent,cls);n.type='button';n.onclick=async event=>{try{await fn(event.currentTarget);}catch(e){notify(e.message,true);}};return n;}
   function action(label,symbol,parent,fn,cls=''){const n=button('',parent,fn,'fi-btn-icon '+cls);icon(symbol,n);el('span',label,n);return n;}
   const number=v=>v==null?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2});
   const allowed=()=>typeof currentUser!=='undefined'&&currentUser?.platformAdmin===true;
@@ -43,7 +43,7 @@
   const json=(method,body)=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   function notify(message,error=false){const n=root.querySelector('.fi-state');if(n){n.textContent=message;n.hidden=!message;n.classList.toggle('is-error',error);}}
   function navigate(route){location.hash='finance-'+route;}
-  function cleanup(){clearInterval(clockTimer);charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;}
+  function cleanup(){clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
   function reset(){active=false;generation++;clearTimeout(refreshTimer);cleanup();root.replaceChildren();data=null;page=1;filters={start:ago(29),end:today(),shopId:'',platform:'',currency:'',granularity:'day',displayCurrency:'ORIGINAL',fxSnapshot:''};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
   function leave(){active=false;generation++;clearTimeout(refreshTimer);cleanup();}
   function refreshWhenIdle(){
@@ -56,10 +56,10 @@
     if(!chartPromise)chartPromise=new Promise(resolve=>{const s=document.createElement('script');const timer=setTimeout(()=>{chartPromise=null;resolve(null);s.remove();},12000);s.src='/vendor/echarts/echarts.min.js?v=6.1.0';s.onload=()=>{clearTimeout(timer);resolve(globalThis.echarts||null);};s.onerror=()=>{clearTimeout(timer);chartPromise=null;resolve(null);};document.head.append(s);});
     return chartPromise;
   }
-  function select(parent,label,options,value,onchange){const wrap=el('label',null,parent);el('span',label,wrap);const n=el('select',null,wrap);for(const [v,name] of options){el('option',name,n).value=v;}n.value=value||'';n.setAttribute('aria-label',label);n.onchange=()=>onchange(n.value);return n;}
-  function dateInput(parent,label,value,key){const n=el('input',null,parent);n.type='date';n.value=value;n.setAttribute('aria-label',label);n.max=today();n.onchange=()=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(n.value))return;const next={...filters,[key]:n.value};if(next.start>next.end){notify('开始日期不能晚于结束日期',true);return;}filters[key]=n.value;filters.granularity=dateGranularity(filters.start,filters.end);page=1;load();};return n;}
-  function shell(){
-    cleanup();root.replaceChildren();root.className='workspace-body finance-workspace';
+  function select(parent,label,options,value,onchange){const wrap=el('label',null,parent);wrap.dataset.updateKey='select:'+label;el('span',label,wrap);const n=el('select',null,wrap);for(const [v,name] of options){el('option',name,n).value=v;}n.value=value||'';n.setAttribute('aria-label',label);n.onchange=e=>onchange(e.currentTarget.value);return n;}
+  function dateInput(parent,label,value,key){const n=el('input',null,parent);n.type='date';n.setAttribute('value',value);n.setAttribute('aria-label',label);n.max=today();n.onchange=e=>{const value=e.currentTarget.value;if(!/^\d{4}-\d{2}-\d{2}$/.test(value))return;const next={...filters,[key]:value};if(next.start>next.end){notify('开始日期不能晚于结束日期',true);return;}filters[key]=value;filters.granularity=dateGranularity(filters.start,filters.end);page=1;load();};return n;}
+  function shell(root){
+    root.className='workspace-body finance-workspace';
     const head=el('header',null,root,'fi-head'),copy=el('div',null,head);
     el('span','FINANCE / ANALYTICS',copy,'fi-eyebrow');el('h1',routes[view],copy,'fi-title');
     el('p',view==='shops'?'统一管理财务店铺、广告账户与数据同步。':'看清每一笔收入、每一项费用，与每家店铺的经营表现。',copy,'fi-subtitle');
@@ -76,7 +76,7 @@
       const currencyToggle=el('div',null,bar,'fi-pills');currencyToggle.setAttribute('aria-label','金额展示币种');
       for(const [key,label] of [['ORIGINAL','原币'],['CNY','人民币 ¥']])button(label,currencyToggle,()=>{filters.displayCurrency=key;filters.currency='';filters.fxSnapshot='';page=1;load();}).setAttribute('aria-pressed',String(filters.displayCurrency===key));
       select(bar,'范围',[...periods.map(([key,,label])=>[key,label]),['7','近 7 天'],['90','近 90 天'],['180','近半年'],['365','近一年'],['custom','自定义']],rangeValue(),v=>{
-        if(v==='custom'){bar.querySelector('input[type=date]')?.focus();return;}
+        if(v==='custom'){document.querySelector('#finance-page input[type=date]')?.focus();return;}
         if(periods.some(([k])=>k===v)){Object.assign(filters,periodWindow(v));filters.granularity=v;}
         else {filters.start=ago(Number(v)-1);filters.end=today();filters.granularity=dateGranularity(filters.start,filters.end);}
         page=1;load();});
@@ -106,15 +106,42 @@
       const foot=el('div',null,n,'fi-metric-note');el('span',description,foot);icon('arrow',foot);
     });
   }
-  function card(parent,title,subtitle,span=4){const n=el('section',null,parent,'fi-card fi-span-'+span);const h=el('div',null,n,'fi-card-head'),copy=el('div',null,h);el('h3',title,copy);el('p',subtitle,copy);return {n,h};}
+  function card(parent,title,subtitle,span=4){const n=el('section',null,parent,'fi-card fi-span-'+span);n.dataset.updateKey=title;const h=el('div',null,n,'fi-card-head'),copy=el('div',null,h);el('h3',title,copy);el('p',subtitle,copy);return {n,h};}
   function theme(){if(view==='live')return {text:'#573e37',muted:'#8d6a5b',grid:'#f1e4dc',surface:'#fffdfb'};const dark=document.documentElement.dataset.theme==='dark';return {text:dark?'#d9e2f5':'#25344f',muted:dark?'#8f9db7':'#8995aa',grid:dark?'#2b364b':'#eef1f7',surface:dark?'#182236':'#fff'};}
   function base(){const t=theme();return {color:view==='live'?['#ee6645','#e7b243','#ae81bf','#70a6ad','#f29b7b','#b1accd']:colors,animation:view!=='live'&&!matchMedia('(prefers-reduced-motion: reduce)').matches,animationDuration:350,textStyle:{fontFamily:'Inter, -apple-system, PingFang SC, sans-serif',fontSize:11,color:t.text},tooltip:{trigger:'axis',renderMode:'richText',backgroundColor:t.surface,borderColor:t.grid,textStyle:{color:t.text,fontSize:11},confine:true},legend:{bottom:5,itemWidth:7,itemHeight:7,icon:'circle',textStyle:{color:t.muted,fontSize:10}},grid:{left:8,right:15,top:25,bottom:36,containLabel:true}};}
   function axis(type='value'){return {type,axisLine:{show:false},axisTick:{show:false},axisLabel:{color:theme().muted,fontSize:10,hideOverlap:true},splitLine:{show:type==='value',lineStyle:{color:theme().grid,type:'dashed'}}};}
   function plot(parent,title,builder,hasData=true){
-    if(!hasData){const empty=el('div',null,parent,'fi-chart-empty');icon('chart',empty);el('span','同步后在这里查看'+title,empty);return;}
-    const node=el('div',null,parent,'fi-chart');node.setAttribute('role','img');node.setAttribute('aria-label',title);
-    if(!globalThis.echarts){el('p','图表组件加载失败，请刷新；下方明细仍可查看。',node,'fi-muted');return;}
-    const c=echarts.init(node,null,{renderer:'svg'});charts.push(c);c.setOption({...base(),...builder()});c.financeBuilder=builder;
+    const node=el('div',null,parent,'fi-chart');node.dataset.updateKey='chart:'+title;
+    node.setAttribute('role','img');node.setAttribute('aria-label',title);
+    node.financePlot={title,builder,hasData};
+  }
+  function commit(next){
+    if(mountedView!==view){cleanup();root.replaceChildren();mountedView=view;}
+    IncrementalDOM.patch(root,next);
+    charts=charts.filter(c=>{if(root.contains(c.financeNode))return true;c.dispose();return false;});
+    for(const node of root.querySelectorAll('.fi-chart')){
+      const spec=node.financePlot;if(!spec)continue;
+      let c=charts.find(c=>c.financeNode===node);
+      if(!spec.hasData||!globalThis.echarts){
+        if(c){c.dispose();charts=charts.filter(item=>item!==c);}
+        const message=spec.hasData?'图表组件暂未加载，下方明细仍可查看。':'同步后在这里查看'+spec.title;
+        if(node.textContent!==message)node.textContent=message;
+        node.classList.add('fi-chart-empty');continue;
+      }
+      node.classList.remove('fi-chart-empty');
+      if(!c){node.replaceChildren();c=echarts.init(node,null,{renderer:'svg'});c.financeNode=node;charts.push(c);}
+      c.financeBuilder=spec.builder;
+      const options={...base(),...spec.builder()},signature=JSON.stringify(options);
+      if(signature!==c.financeSignature){c.setOption(options,{replaceMerge:['series'],lazyUpdate:true});c.financeSignature=signature;}
+    }
+    if(!observer){observer=new ResizeObserver(()=>charts.forEach(c=>c.resize()));observer.observe(root);}
+    if(!themeObserver){themeObserver=new MutationObserver(()=>charts.forEach(c=>{
+      const options={...base(),...c.financeBuilder()};c.setOption(options,{replaceMerge:['series'],lazyUpdate:true});c.financeSignature=JSON.stringify(options);
+    }));themeObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});}
+    if(view==='live'&&!clockTimer){
+      const tick=()=>{const clock=root.querySelector('.fi-live-clock');if(clock)clock.textContent=new Date().toLocaleString('zh-CN',{hour12:false});};
+      tick();clockTimer=setInterval(tick,1000);
+    }
   }
   function trend(parent,keys,title,subtitle,span=8){
     const {n}=card(parent,title,subtitle,span);
@@ -152,11 +179,11 @@
       return [shopName(id),number(get('ORDER')?.records),number(get('ORDER')?.amount),number(get('SETTLEMENT')?.amount),number(get('FEE')?.amount),number(get('AD')?.amount)];
     }),'启用财务店铺同步后，经营数据将自动汇总。');
   }
-  function table(parent,headers,rows,empty='当前范围暂无记录'){
+  function table(parent,headers,rows,empty='当前范围暂无记录',keys=[]){
     const wrap=el('div',null,parent,'fi-table-wrap');wrap.tabIndex=0;wrap.setAttribute('aria-label','可横向滚动的数据表');
     const t=el('table',null,wrap,'fi-table'),tr=el('tr',null,el('thead',null,t));
     headers.forEach(h=>el('th',h,tr).scope='col');const body=el('tbody',null,t);
-    rows.forEach(row=>{const tr=el('tr',null,body);row.forEach(value=>{const td=el('td',null,tr);if(value instanceof Node)td.append(value);else td.textContent=value??'—';});});
+    rows.forEach((row,i)=>{const tr=el('tr',null,body);if(keys[i]!=null)tr.dataset.updateKey=String(keys[i]);row.forEach(value=>{const td=el('td',null,tr);if(value instanceof Node)td.append(value);else td.textContent=value??'—';});});
     if(!rows.length)el('p',empty,parent,'fi-empty');return t;
   }
   function badge(status){const n=el('span',states[status]||status||'—',null,'fi-status');n.classList.toggle('success',['SUCCESS','SETTLED','MATCHED','ACTIVE'].includes(status));n.classList.toggle('error',['ERROR','DIFFERENCE','TOKEN_EXPIRED'].includes(status));n.classList.toggle('running',['RUNNING','SYNCING','READY','PARTIAL'].includes(status));return n;}
@@ -203,7 +230,7 @@
       const controls=el('div',null,null,'fi-shop-controls');button('配置',controls,()=>shopDialog(shop));button('立即同步',controls,async b=>{b.disabled=true;try{const message=await request('/shops/'+encodeURIComponent(shop.id)+'/sync',{method:'POST'});notify(message);setTimeout(()=>{if(active)load();},1000);}finally{b.disabled=false;}}).disabled=!shop.enabled;
       button('移除',controls,()=>removeShopDialog(shop));
       return [name,shop.region||'—',currency,badge(shop.authorization_status),sync,shop.last_success_at?new Date(shop.last_success_at).toLocaleString('zh-CN'):'尚未完成',controls];
-    }),'尚未配置财务店铺。点击右上角「连接店铺」独立授权，再开启同步。');
+    }),'尚未配置财务店铺。点击右上角「连接店铺」独立授权，再开启同步。',res.items.map(s=>s.id));
     footnote(parent,'首次分批补齐最近 90 天可用数据；同步失败自动退避重试。暂停财务同步不影响店铺发布功能。');
     await adAccountSettings(parent,run);
   }
@@ -217,7 +244,7 @@
       const controls=el('div',null,null,'fi-actions');button(account.enabled?'暂停':'启用',controls,async()=>{await request('/ads/'+account.advertiser_id,json('PUT',{enabled:!account.enabled}));load();});button('更新授权',controls,()=>adsDialog(account));
       const status=el('div');status.append(badge(account.status));if(account.error_message)el('small',account.error_message,status);if(account.gmv_store_id)el('small','GMV Max · '+(states[account.gmv_status]||account.gmv_status)+(account.gmv_error?' · '+account.gmv_error:''),status);
       return [account.name+' · '+account.advertiser_id,account.shop_id?shopName(account.shop_id):'未分配店铺',account.currency,status,account.last_success_at?new Date(account.last_success_at).toLocaleString('zh-CN'):'尚未完成',controls];
-    }),'尚未连接广告账户。点击「连接广告账户」完成独立授权，广告数据将在「广告分析」展示。');
+    }),'尚未连接广告账户。点击「连接广告账户」完成独立授权，广告数据将在「广告分析」展示。',accounts.map(a=>a.advertiser_id));
   }
   async function adsView(parent,run){
     parent.style.display='grid';parent.style.gap='15px';meta(parent);
@@ -309,7 +336,7 @@
   }
   function renderFieldsTable(parent,items,settings,empty){
     const fields=settings.visible.map(id=>settings.fields.find(f=>f.id===id)).filter(f=>f&&(!f.cny||data.fx));
-    table(parent,fields.map(f=>f.id==='shop_id'?'店铺':f.label),items.map(row=>fields.map(f=>columnValue(row,f))),empty);
+    table(parent,fields.map(f=>f.id==='shop_id'?'店铺':f.label),items.map(row=>fields.map(f=>columnValue(row,f))),empty,items.map(row=>row.id||[row.shop_id,row.statement_id,row.currency].join(':')));
   }
   async function fieldsDialog(key,initial){
     const d=dialog('字段显示与导出');d.d.classList.add('fi-fields-dialog');
@@ -367,8 +394,8 @@
       const result=await request('/imports',{method:'POST',body:form});d.d.close();await load();notify(result.duplicate?'此文件已导入，无重复入账。':`成功导入 ${result.rows} 条记录。`);
     });
   }
-  function liveScreen(){
-    cleanup();root.replaceChildren();root.className='workspace-body finance-workspace fi-live-screen';
+  function liveScreen(root){
+    root.className='workspace-body finance-workspace fi-live-screen';
     const top=el('header',null,root,'fi-live-head'),brand=el('div',null,top);
     el('span','HOYEE / LIVE COMMERCE',brand,'fi-eyebrow');el('h1','实时大屏',brand);el('p','每一份增长，都值得被看见',brand);
     const controls=el('div',null,top,'fi-actions');
@@ -376,8 +403,8 @@
     select(controls,'金额口径',[['CNY','人民币 ¥'],['ORIGINAL','原币']],filters.displayCurrency,v=>{filters.displayCurrency=v;filters.currency='';filters.fxSnapshot='';load();});
     if(filters.displayCurrency==='ORIGINAL')select(controls,'原币',data.currencies.map(c=>[c,c]),data.filters.currency,v=>{filters.currency=v;load();});
     button('返回总览',controls,async()=>{if(document.fullscreenElement)await document.exitFullscreen();navigate('overview');});
-    button('全屏展示',controls,async()=>{if(document.fullscreenElement)await document.exitFullscreen();else await root.requestFullscreen();});
-    const clock=el('div',null,top,'fi-live-clock');const updateClock=()=>{clock.textContent=new Date().toLocaleString('zh-CN',{hour12:false});};updateClock();clockTimer=setInterval(updateClock,1000);
+    button('全屏展示',controls,async()=>{if(document.fullscreenElement)await document.exitFullscreen();else await document.getElementById('finance-page').requestFullscreen();});
+    el('div',new Date().toLocaleString('zh-CN',{hour12:false}),top,'fi-live-clock');
     const errors=data.sync.filter(r=>r.status==='ERROR'),orders=data.sync.filter(r=>r.channel==='ORDER');
     const successes=orders.map(s=>s.last_success_at).filter(Boolean).sort();
     const strip=el('div',null,root,'fi-live-strip');el('span',errors.length?'部分同步异常 · 正在自动重试':orders.some(r=>['RUNNING','SYNCING','READY'].includes(r.status))?'数据同步中':'数据看板在线',strip,errors.length?'fi-live-warning':'fi-live-online');
@@ -402,39 +429,38 @@
     if(!rankingRows.length)el('div','连接财务店铺后显示实时排行',rank.n,'fi-empty');
     const rankingList=el('div',null,rank.n,'fi-live-ranking');
     const max=Math.max(...rankingRows.map(r=>Number(r.amount)),1);
-    rankingRows.forEach((r,i)=>{const line=el('div',null,rankingList,'fi-live-rank');el('b',String(i+1).padStart(2,'0'),line);const body=el('div',null,line);const title=el('div',null,body);el('span',shopName(r.shop_id),title);el('strong',number(r.amount),title);const rail=el('div',null,body,'fi-live-rail');el('i',null,rail).style.width=Math.max(0,Number(r.amount)/max*100)+'%';});
+    rankingRows.forEach((r,i)=>{const line=el('div',null,rankingList,'fi-live-rank');line.dataset.updateKey=r.shop_id;el('b',String(i+1).padStart(2,'0'),line);const body=el('div',null,line);const title=el('div',null,body);el('span',shopName(r.shop_id),title);el('strong',number(r.amount),title);const rail=el('div',null,body,'fi-live-rail');el('i',null,rail).style.width=Math.max(0,Number(r.amount)/max*100)+'%';});
     const recent=card(grid,'最新订单','仅展示订单业务信息 · 自动更新',8);
-    table(recent.n,['时间','店铺','订单编号','状态','金额'],data.recent.map(r=>[r.create_time?new Date(r.create_time).toLocaleTimeString('zh-CN',{hour12:false}):r.record_date,shopName(r.shop_id),r.external_id,statusName(r.status),number(data.fx?r.cny_amount:r.amount)]),'今日尚无订单，授权并开启财务店铺同步后自动显示。');
+    table(recent.n,['时间','店铺','订单编号','状态','金额'],data.recent.map(r=>[r.create_time?new Date(r.create_time).toLocaleTimeString('zh-CN',{hour12:false}):r.record_date,shopName(r.shop_id),r.external_id,statusName(r.status),number(data.fx?r.cny_amount:r.amount)]),'今日尚无订单，授权并开启财务店铺同步后自动显示。',data.recent.map(r=>r.id||r.shop_id+':'+r.external_id));
     donut(grid,'订单状态分布','包含未付款与取消订单，独立展示',data.statuses.filter(r=>r.kind==='ORDER').map(r=>({name:statusName(r.status),value:Number(r.records)})));
     const footer=el('footer',null,root,'fi-live-footer');el('span','HOYEE INTELLIGENCE · 让每一笔增长看得见',footer);el('span','更新时间 '+new Date(data.updatedAt).toLocaleTimeString('zh-CN',{hour12:false})+' · 仅超级管理员可见',footer);
-    observer=new ResizeObserver(()=>charts.forEach(c=>c.resize()));observer.observe(root);
   }
   async function loadLive(run){
     if(document.hidden){refreshTimer=setTimeout(()=>load(),15000);return;}
     filters.start=today();filters.end=today();filters.granularity='day';
     if(!root.classList.contains('fi-live-screen')){cleanup();root.replaceChildren();root.className='workspace-body finance-workspace fi-live-screen';el('div','正在连接今日经营数据…',root,'fi-state');}
-    try{const response=await request('/screen?'+qs(),{method:'POST'});if(run!==generation||!active)return;data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';await ensureCharts();if(run!==generation||!active)return;liveScreen();}
+    try{const response=await request('/screen?'+qs(),{method:'POST'});if(run!==generation||!active)return;data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';await ensureCharts();if(run!==generation||!active)return;const next=root.cloneNode(false);liveScreen(next);commit(next);}
     catch(e){if(run===generation){notify((data&&root.querySelector('.fi-live-head')?'更新暂未完成，保留上次数据。':'暂未读取到今日数据。')+'15 秒后自动重试。'+e.message,true);if(!root.querySelector('.fi-live-head')&&!root.querySelector('.fi-live-recovery')){const controls=el('div',null,root,'fi-actions fi-live-recovery');button('以原币查看',controls,()=>{filters.displayCurrency='ORIGINAL';filters.currency='';filters.fxSnapshot='';load();});button('返回总览',controls,()=>navigate('overview'));}}}
     finally{if(run===generation&&active)refreshTimer=setTimeout(()=>load(),15000);}
   }
   async function load(){
     if(!active||!allowed())return;const run=++generation;clearTimeout(refreshTimer);
     if(view==='live')return loadLive(run);
-    const content=shell();
+    if(mountedView!==view){cleanup();root.replaceChildren();const initial=root.cloneNode(false);shell(initial);IncrementalDOM.patch(root,initial);}
     try{
+      const next=root.cloneNode(false);
       if(view!=='shops'){const response=await request('/overview?'+qs());if(run!==generation||!active)return;data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
         // Build filters after authorized shop/currency options have arrived.
-        content.remove();const body=shell();await ensureCharts();if(run!==generation||!active)return;
+        const body=shell(next);await ensureCharts();if(run!==generation||!active)return;
         if(view==='overview')overview(body);else if(view==='reconciliation')await reconciliation(body,run);else if(view==='ads')await adsView(body,run);else await recordView(body,run);
-      }else await shopView(content,run);
+      }else await shopView(shell(next),run);
       if(run!==generation||!active)return;
+      commit(next);
       const errors=(data?.sync||[]).filter(s=>s.status==='ERROR').length;
       notify(callbackNotice||(errors?`${errors} 项同步需要处理，可在财务店铺管理查看权限或连接问题。`:''));callbackNotice='';
-      observer=new ResizeObserver(()=>charts.forEach(c=>c.resize()));observer.observe(root);
-      themeObserver=new MutationObserver(()=>charts.forEach(c=>c.setOption({...base(),...c.financeBuilder()},true)));themeObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
       if(view==='shops'||(data?.sync||[]).some(s=>['READY','RUNNING','SYNCING'].includes(s.status)))
         refreshTimer=setTimeout(refreshWhenIdle,15000);
-    }catch(e){if(run===generation){cleanup();notify(e.message||'财务数据暂时无法加载',true);}}
+    }catch(e){if(run===generation){notify((mountedView===view?'更新暂未完成，已保留当前数据。':'')+(e.message||'财务数据暂时无法加载'),true);refreshTimer=setTimeout(refreshWhenIdle,15000);}}
   }
   globalThis.FinanceWorkspace={allowed,enter(route){if(!allowed())return;const wasLive=view==='live';view=routes[route]?route:'overview';if(view==='live'){filters.displayCurrency='CNY';filters.currency='';filters.fxSnapshot='';}else if(wasLive){Object.assign(filters,periodWindow('day'));filters.granularity='day';}active=true;page=1;load();},leave,reset};
   window.addEventListener('heyi:company-reset',reset);

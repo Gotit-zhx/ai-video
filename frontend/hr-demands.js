@@ -165,7 +165,11 @@
       if(oldResult&&editing?.aiStatus!=='stale')aiMessage.textContent+=' 下方保留的是旧版需求的结果。';
       renderOutput();
     }
+    let outputSignature='';
     function renderOutput(){
+      const signature=JSON.stringify([outputTab,editing?.aiResult,editing?.aiStatus]);
+      if(signature===outputSignature&&output.childElementCount)return;
+      outputSignature=signature;
       output.replaceChildren();
       outputButtons.forEach((b,i)=>b.setAttribute('aria-pressed',String(['portrait','competencies','interviewQuestions'][i]===outputTab)));
       const data=editing?.aiResult;

@@ -75,12 +75,12 @@
     list.hidden = Boolean(selectedId);
     detail.hidden = !selectedId;
     if (!selectedId) {
-      list.innerHTML = rows.length ? rows.map(row => `<article class="main-style-card">
+      IncrementalDOM.html(list, rows.length ? rows.map(row => `<article class="main-style-card" data-update-key="${esc(row.id)}">
         <button class="main-style-open" type="button" data-style-id="${esc(row.id)}">
           <div class="main-style-contact-sheet">${row.images.slice(0, 4).map(image => `<img src="${esc(image.imageUrl)}" alt="${esc(row.name)}参考海报" loading="lazy">`).join('')}</div>
           <strong>${esc(row.name)}</strong><span>${row.imageCount} 张 <span class="main-style-badge is-${esc(row.status.toLowerCase())}">${statusLabel(row)}</span></span>
           ${analysisProgress(row, true)}
-        </button></article>`).join('') : '<div class="main-style-empty"><strong>暂无主图风格模板</strong><button type="button" data-style-action="new">＋ 新建模板</button></div>';
+        </button></article>`).join('') : '<div class="main-style-empty"><strong>暂无主图风格模板</strong><button type="button" data-style-action="new">＋ 新建模板</button></div>');
       return;
     }
     const row = rows.find(row => row.id === selectedId);
@@ -91,7 +91,7 @@
       ? {id: document.activeElement.closest('[data-image-id]').dataset.imageId,
         start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd} : null;
     detailSignature = signature;
-    detail.innerHTML = `<header class="main-style-detail-heading"><div>${button('back', '返回模板列表', '←')}<h2>${esc(row.name)}</h2><span>${row.imageCount} 张</span><span class="main-style-badge is-${esc(row.status.toLowerCase())}">${statusLabel(row)}</span></div>
+    IncrementalDOM.html(detail, `<header class="main-style-detail-heading"><div>${button('back', '返回模板列表', '←')}<h2>${esc(row.name)}</h2><span>${row.imageCount} 张</span><span class="main-style-badge is-${esc(row.status.toLowerCase())}">${statusLabel(row)}</span></div>
       <div class="main-style-actions">${row.status === 'FAILED' && canEdit() ? '<button type="button" data-style-action="retry">重试失败图片</button>' : ''}
       ${button('export', '下载提示词', '↓')}${canEdit() ? '<button type="button" data-style-action="archive">归档模板</button>' : ''}</div></header>
       ${analysisProgress(row)}
@@ -108,7 +108,7 @@
             <label>生成提示词<textarea data-style-prompt rows="5" maxlength="4000" ${canEdit() ? '' : 'readonly'}>${esc(promptDrafts.get(image.id) ?? analysis.prompt)}</textarea></label>
             <div class="main-style-actions">${button('copy', '复制提示词', '⧉')}${canEdit() ? '<button type="button" data-style-action="save-prompt">保存修改</button>' : ''}<span data-image-status role="status"></span></div>`
           : imageProgress(image, index)}</div></article>`;
-      }).join('')}</div>`;
+      }).join('')}</div>`);
     restorePromptFocus(editing);
   }
 

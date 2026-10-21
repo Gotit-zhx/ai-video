@@ -290,30 +290,33 @@
       finally{departing=false;if(control.isConnected)control.disabled=!row.joined||!!row.departed;}
     }
     async function load(){
-      if(!active||!allowed()||dialog.open)return;
-      const ticket=++epoch;feedback.textContent='正在读取入职安排…';clearTimeout(timer);
+      if(!active||!allowed())return;
+      if(dialog.open||notifyDialog.open||departing){clearTimeout(timer);timer=setTimeout(load,5000);return;}
+      const ticket=++epoch;if(!results.childElementCount)feedback.textContent='正在读取入职安排…';clearTimeout(timer);
       try{
         const data=await request('onboarding?'+new URLSearchParams({status,page:String(page),q:search.value.trim()}));
         if(ticket!==epoch||!active||!allowed())return;
         options.forEach(({key,node})=>node.setAttribute('aria-pressed',String(key===status)));
-        results.replaceChildren();feedback.textContent=`共 ${data.total} 人`;
-        if(!data.items.length)el('p','二面通过并填写入职信息后，安排会自动显示在这里。',results,'hr-hint');
+        const nextResults=results.cloneNode(false);feedback.textContent=`共 ${data.total} 人`;
+        if(!data.items.length)el('p','二面通过并填写入职信息后，安排会自动显示在这里。',nextResults,'hr-hint');
         else{
-          const table=el('table','',results,'hr-onboarding-table'),thead=el('tr','',el('thead','',table)),body=el('tbody','',table);
+          const table=el('table','',nextResults,'hr-onboarding-table'),thead=el('tr','',el('thead','',table)),body=el('tbody','',table);
           for(const [,label] of [...labels,['notice','导师提醒'],['actions','操作']])el('th',label,thead);
           for(const row of data.items){
             const tr=el('tr','',body);
+            tr.dataset.updateKey=row.talentId;
             for(const [key] of labels)el('td',key==='joined'?(row.departed?'已离职':row.joined?'已入职':'未入职'):row[key]||'待填写',tr);
             const notice=el('td',row.notice?noticeStates[row.notice.status]:'未发送',tr);
             if(row.notice?.error)el('p',row.notice.error,notice,'hr-error');
             const controls=el('div','',el('td','',tr),'hr-actions');
             button('编辑',controls,()=>openEdit(row));
-            const departure=button('员工离职',controls,()=>depart(row,departure));
+            const departure=button('员工离职',controls,event=>depart(row,event.currentTarget));
             departure.disabled=departing||!row.joined||!!row.departed;
             const sendButton=button(row.notice?.status==='failed'?'重试导师提醒':'通知导师',controls,()=>openNotice(row));
             sendButton.disabled=!row.joined||!!row.departed||!!row.notice&&row.notice.status!=='failed';
           }
         }
+        IncrementalDOM.children(results,nextResults);
         pager.hidden=false;page=data.page;pageLabel.textContent=`第 ${data.page} / ${data.pages} 页 · 每页 20 人`;
         previous.disabled=data.page<=1;next.disabled=data.page>=data.pages;
         if(data.items.some(r=>['preparing','sending','submitted'].includes(r.notice?.status)))timer=setTimeout(load,5000);
