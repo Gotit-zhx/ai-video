@@ -15,9 +15,13 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @RestController
 @RequestMapping("/api/v1/finance")
 public class FinanceController {
-    final FinanceService service;final FinanceRepository repo;final FinanceImport imports;final FinanceAds ads;final FinanceFields fields;
+    final FinanceService service;final FinanceRepository repo;final FinanceImport imports;final FinanceAds ads;final FinanceFields fields;final FinanceAdAuthorization adAuthorization;
     public FinanceController(FinanceService service,FinanceRepository repo,FinanceImport imports,FinanceAds ads){
-        this.service=service;this.repo=repo;this.imports=imports;this.ads=ads;this.fields=new FinanceFields(repo);
+        this(service,repo,imports,ads,null);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    public FinanceController(FinanceService service,FinanceRepository repo,FinanceImport imports,FinanceAds ads,FinanceAdAuthorization adAuthorization){
+        this.service=service;this.repo=repo;this.imports=imports;this.ads=ads;this.fields=new FinanceFields(repo);this.adAuthorization=adAuthorization;
     }
     @ModelAttribute public void authorize(@AuthenticationPrincipal PlatformPrincipal p,HttpServletRequest request){
         service.authorize(p);
@@ -68,6 +72,15 @@ public class FinanceController {
         fields.save(s(p),view,body.visible,body.exported);return ApiResponse.ok("字段设置已保存");
     }
     @GetMapping("/ads") public ApiResponse<?> ads(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(ads.list(s(p)));}
+    @GetMapping("/ads/application") public ApiResponse<?> adApplication(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(adAuthorization.configuration(s(p)));}
+    record AdApplication(String appId,String appSecret){}
+    @PutMapping("/ads/application") public ApiResponse<?> adApplication(@RequestBody AdApplication body,@AuthenticationPrincipal PlatformPrincipal p){
+        adAuthorization.configure(s(p),body.appId,body.appSecret);return ApiResponse.ok("广告应用已保存");
+    }
+    record AdAuthorization(String advertiserId,String shopId,String gmvStoreId){}
+    @PostMapping("/ads/authorize") public ApiResponse<?> authorizeAds(@RequestBody AdAuthorization body,@AuthenticationPrincipal PlatformPrincipal p){
+        return ApiResponse.ok(adAuthorization.start(s(p),body.advertiserId,body.shopId,body.gmvStoreId));
+    }
     record AdConfig(String advertiserId,String shopId,String accessToken,String gmvStoreId){}
     @PostMapping("/ads") public ApiResponse<?> connectAds(@RequestBody AdConfig body,@AuthenticationPrincipal PlatformPrincipal p){ads.connect(s(p),body.advertiserId,body.shopId,body.accessToken,body.gmvStoreId);return ApiResponse.ok("广告授权已验证");}
     record Enabled(boolean enabled){}

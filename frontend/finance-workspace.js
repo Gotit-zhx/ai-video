@@ -62,9 +62,9 @@
     cleanup();root.replaceChildren();root.className='workspace-body finance-workspace';
     const head=el('header',null,root,'fi-head'),copy=el('div',null,head);
     el('span','FINANCE / ANALYTICS',copy,'fi-eyebrow');el('h1',routes[view],copy,'fi-title');
-    el('p',view==='shops'?'独立管理财务店铺与同步，把每一份数据连接起来。':'看清每一笔收入、每一项费用，与每家店铺的经营表现。',copy,'fi-subtitle');
+    el('p',view==='shops'?'统一管理财务店铺、广告账户与数据同步。':'看清每一笔收入、每一项费用，与每家店铺的经营表现。',copy,'fi-subtitle');
     const actions=el('div',null,head,'fi-actions');
-    if(view!=='shops')action('店铺管理','shop',actions,()=>navigate('shops'));
+    if(view!=='shops')action('财务店铺管理','shop',actions,()=>navigate('shops'));
     action('刷新','refresh',actions,()=>{filters.fxSnapshot='';return load();});
     if(view==='shops'){action('连接店铺','plus',actions,()=>authorizeDialog(),'fi-primary');}
     else{action('字段设置','fee',actions,()=>fieldsDialog(currentFieldView()));action('导入账单','plus',actions,()=>importDialog());action('导出报表','download',actions,()=>exportDialog(),'fi-primary');}
@@ -107,8 +107,8 @@
     });
   }
   function card(parent,title,subtitle,span=4){const n=el('section',null,parent,'fi-card fi-span-'+span);const h=el('div',null,n,'fi-card-head'),copy=el('div',null,h);el('h3',title,copy);el('p',subtitle,copy);return {n,h};}
-  function theme(){const dark=view==='live'||document.documentElement.dataset.theme==='dark';return {text:dark?'#d9e2f5':'#25344f',muted:dark?'#8f9db7':'#8995aa',grid:dark?'#2b364b':'#eef1f7',surface:dark?'#182236':'#fff'};}
-  function base(){const t=theme();return {color:colors,animation:view!=='live'&&!matchMedia('(prefers-reduced-motion: reduce)').matches,animationDuration:350,textStyle:{fontFamily:'Inter, -apple-system, PingFang SC, sans-serif',fontSize:11,color:t.text},tooltip:{trigger:'axis',renderMode:'richText',backgroundColor:t.surface,borderColor:t.grid,textStyle:{color:t.text,fontSize:11},confine:true},legend:{bottom:5,itemWidth:7,itemHeight:7,icon:'circle',textStyle:{color:t.muted,fontSize:10}},grid:{left:8,right:15,top:25,bottom:36,containLabel:true}};}
+  function theme(){if(view==='live')return {text:'#573e37',muted:'#8d6a5b',grid:'#f1e4dc',surface:'#fffdfb'};const dark=document.documentElement.dataset.theme==='dark';return {text:dark?'#d9e2f5':'#25344f',muted:dark?'#8f9db7':'#8995aa',grid:dark?'#2b364b':'#eef1f7',surface:dark?'#182236':'#fff'};}
+  function base(){const t=theme();return {color:view==='live'?['#ee6645','#e7b243','#ae81bf','#70a6ad','#f29b7b','#b1accd']:colors,animation:view!=='live'&&!matchMedia('(prefers-reduced-motion: reduce)').matches,animationDuration:350,textStyle:{fontFamily:'Inter, -apple-system, PingFang SC, sans-serif',fontSize:11,color:t.text},tooltip:{trigger:'axis',renderMode:'richText',backgroundColor:t.surface,borderColor:t.grid,textStyle:{color:t.text,fontSize:11},confine:true},legend:{bottom:5,itemWidth:7,itemHeight:7,icon:'circle',textStyle:{color:t.muted,fontSize:10}},grid:{left:8,right:15,top:25,bottom:36,containLabel:true}};}
   function axis(type='value'){return {type,axisLine:{show:false},axisTick:{show:false},axisLabel:{color:theme().muted,fontSize:10,hideOverlap:true},splitLine:{show:type==='value',lineStyle:{color:theme().grid,type:'dashed'}}};}
   function plot(parent,title,builder,hasData=true){
     if(!hasData){const empty=el('div',null,parent,'fi-chart-empty');icon('chart',empty);el('span','同步后在这里查看'+title,empty);return;}
@@ -205,21 +205,26 @@
       return [name,shop.region||'—',currency,badge(shop.authorization_status),sync,shop.last_success_at?new Date(shop.last_success_at).toLocaleString('zh-CN'):'尚未完成',controls];
     }),'尚未配置财务店铺。点击右上角「连接店铺」独立授权，再开启同步。');
     footnote(parent,'首次分批补齐最近 90 天可用数据；同步失败自动退避重试。暂停财务同步不影响店铺发布功能。');
+    await adAccountSettings(parent,run);
   }
-  async function adsView(parent,run){
-    parent.style.display='grid';parent.style.gap='15px';meta(parent);
-    const a=el('div',null,parent,'fi-actions');action('连接广告账户','plus',a,()=>adsDialog(),'fi-primary');
-    const grid=el('div',null,parent,'fi-chart-grid');trend(grid,[['AD','广告总消耗']],'广告费用趋势','广告账户报表金额 · GMV Max 分析不重复计入总消耗',8);
-    const t=total('AD'),stats=card(grid,'投放概览','当前币种与筛选',4);
-    table(stats.n,['指标','数值'],[['广告消耗',number(t?.amount)],['曝光量',number(t?.impressions)],['点击量',number(t?.clicks)],['点击率',t?.impressions?number(Number(t.clicks)/Number(t.impressions)*100)+'%':'—'],['平均点击成本',t?.clicks?number(Number(t.amount)/Number(t.clicks)):'—']]);
-    const gmv=total('AD_GMV');const gmvCard=card(parent,'GMV Max 专项分析','独立口径，不与账户广告消耗相加；归因收入含自然流量影响',12);table(gmvCard.n,['专项消耗','归因收入','SKU 订单数','归因 ROI'],[[number(gmv?.amount),number(gmv?.revenue),number(gmv?.conversions),gmv?.amount?number(Number(gmv.revenue)/Number(gmv.amount)):'—']]);
+  async function adAccountSettings(parent,run){
     const accounts=await request('/ads');if(run!==generation)return;
-    const {n}=card(parent,'TikTok 广告账户','单独验证广告授权；仅专属一个店铺的账户才绑定店铺',12);
+    const {n,h}=card(parent,'广告账户','TikTok 广告独立授权；仅专属一个店铺的账户才绑定店铺',12);
+    const actions=el('div',null,h,'fi-actions');
+    button('广告应用配置',actions,()=>adApplicationDialog());
+    action('连接广告账户','plus',actions,()=>adsDialog(),'fi-primary');
     table(n,['广告账户','归属','币种','状态','最近同步','操作'],accounts.map(account=>{
       const controls=el('div',null,null,'fi-actions');button(account.enabled?'暂停':'启用',controls,async()=>{await request('/ads/'+account.advertiser_id,json('PUT',{enabled:!account.enabled}));load();});button('更新授权',controls,()=>adsDialog(account));
       const status=el('div');status.append(badge(account.status));if(account.error_message)el('small',account.error_message,status);if(account.gmv_store_id)el('small','GMV Max · '+(states[account.gmv_status]||account.gmv_status)+(account.gmv_error?' · '+account.gmv_error:''),status);
       return [account.name+' · '+account.advertiser_id,account.shop_id?shopName(account.shop_id):'未分配店铺',account.currency,status,account.last_success_at?new Date(account.last_success_at).toLocaleString('zh-CN'):'尚未完成',controls];
-    }),'连接已授权的 TikTok 广告账户后自动同步，也可以导入广告费用。');
+    }),'尚未连接广告账户。点击「连接广告账户」完成独立授权，广告数据将在「广告分析」展示。');
+  }
+  async function adsView(parent,run){
+    parent.style.display='grid';parent.style.gap='15px';meta(parent);
+    const grid=el('div',null,parent,'fi-chart-grid');trend(grid,[['AD','广告总消耗']],'广告费用趋势','广告账户报表金额 · GMV Max 分析不重复计入总消耗',8);
+    const t=total('AD'),stats=card(grid,'投放概览','当前币种与筛选',4);
+    table(stats.n,['指标','数值'],[['广告消耗',number(t?.amount)],['曝光量',number(t?.impressions)],['点击量',number(t?.clicks)],['点击率',t?.impressions?number(Number(t.clicks)/Number(t.impressions)*100)+'%':'—'],['平均点击成本',t?.clicks?number(Number(t.amount)/Number(t.clicks)):'—']]);
+    const gmv=total('AD_GMV');const gmvCard=card(parent,'GMV Max 专项分析','独立口径，不与账户广告消耗相加；归因收入含自然流量影响',12);table(gmvCard.n,['专项消耗','归因收入','SKU 订单数','归因 ROI'],[[number(gmv?.amount),number(gmv?.revenue),number(gmv?.conversions),gmv?.amount?number(Number(gmv.revenue)/Number(gmv.amount)):'—']]);
     const detailKinds=el('div',null,parent,'fi-tabs');if(!['AD','AD_GMV'].includes(selectedKind))selectedKind='AD';
     for(const k of ['AD','AD_GMV'])button(kinds[k]+'明细',detailKinds,()=>{selectedKind=k;page=1;load();}).setAttribute('aria-pressed',String(k===selectedKind));
     const records=await request('/records?'+qs({kind:selectedKind,page}));if(run!==generation)return;
@@ -247,18 +252,46 @@
     const d=dialog('连接财务店铺');const platform=select(d.body,'平台',[['SHOPEE','Shopee'],['TIKTOK_SHOP','TikTok Shop']],'SHOPEE',()=>{});
     const market=select(d.body,'授权市场',[['ROW','东南亚 / 全球（非美国）'],['US','美国']],'ROW',()=>{});
     el('p','为财务模块单独连接店铺。授权完成后在此开启同步，商品运营中的店铺不会自动加入。',d.body,'fi-muted');
-    d.submit('获取官方授权链接',async()=>{const result=await request('/shops/authorize',json('POST',{platform:platform.value,market:market.value}));
-      const url=new URL(result.authorizationUrl);if(url.protocol!=='https:')throw Error('平台授权地址无效');
-      const link=el('a','前往官方授权页面',d.body,'fi-action-link');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';});
+    d.submit('生成授权链接',async()=>{const result=await request('/shops/authorize',json('POST',{platform:platform.value,market:market.value}));authorizationLink(d,result);});
   }
-  function adsDialog(account={}){
-    const d=dialog('连接 TikTok 广告账户');
-    const id=field(d.body,'广告账户 ID','text',account.advertiser_id||'');id.disabled=!!account.advertiser_id;
+  function authorizationLink(d,result){
+    const url=new URL(result.authorizationUrl);if(url.protocol!=='https:')throw Error('平台授权地址无效');
+    d.body.querySelector('.fi-authorization-link')?.remove();
+    const wrap=el('div',null,d.body,'fi-authorization-link');
+    const input=field(wrap,'官方授权链接','text',url.href);input.readOnly=true;
+    button('复制授权链接',wrap,async b=>{await copyValue(input);b.textContent='已复制链接';});
+    el('p','将链接发给账户管理员，在浏览器打开并完成授权。授权成功后会回到财务店铺管理。'+(result.expiresAt?' 有效至 '+new Date(result.expiresAt).toLocaleString('zh-CN')+'。':''),wrap,'fi-muted');
+    const link=el('a','在当前设备打开授权',wrap,'fi-action-link');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';
+  }
+  async function copyValue(input){
+    try{await navigator.clipboard.writeText(input.value);}
+    catch{input.focus();input.select();if(!document.execCommand('copy'))throw Error('请选中链接后手动复制');}
+  }
+  async function adApplicationDialog(){
+    const d=dialog('TikTok 广告应用配置');
+    try{
+      const config=await request('/ads/application');if(!d.d.isConnected)return;
+      const id=field(d.body,'广告应用 App ID','text',config.appId||'');
+      const secret=field(d.body,'App Secret'+(config.configured?'（不修改可留空）':''),'password');secret.autocomplete='new-password';
+      const callback=field(d.body,'请在广告开放平台登记此回调地址','text',config.callbackUrl);callback.readOnly=true;
+      button('复制回调地址',d.body,async b=>{await copyValue(callback);b.textContent='已复制回调地址';});
+      el('p','填写 TikTok for Business 广告应用信息，并开通账户查看与报表权限。配置按当前账号独立保存；密钥加密保存，不回显。',d.body,'fi-muted');
+      d.submit('保存广告应用',async()=>{await request('/ads/application',json('PUT',{appId:id.value.trim(),appSecret:secret.value.trim()}));secret.value='';d.d.close();load();});
+    }catch(e){d.feedback.textContent=e.message;}
+  }
+  async function adsDialog(account={}){
+    const d=dialog(account.advertiser_id?'更新广告授权':'连接 TikTok 广告账户');
+    let config;try{config=await request('/ads/application');}catch(e){d.feedback.textContent=e.message;return;}
+    if(!d.d.isConnected)return;
+    if(!config.configured){
+      el('p','首次连接需先配置 TikTok for Business 广告应用。配置完成后即可生成链接，由广告账户管理员授权。',d.body,'fi-muted');
+      d.submit('配置广告应用',()=>{d.d.close();return adApplicationDialog();});return;
+    }
+    const id=field(d.body,'广告账户 ID（可选，留空连接本次授权的账户）','text',account.advertiser_id||'');id.disabled=!!account.advertiser_id;
     const shop=select(d.body,'专属店铺',[['','暂不分配（跨店账户）'],...(data.shops||[]).filter(s=>s.platform==='TIKTOK_SHOP').map(s=>[s.id,s.display_name||s.name])],account.shop_id||'',()=>{});shop.disabled=!!account.advertiser_id;
     const gmvStore=field(d.body,'GMV Max 店铺 ID（可选，来自广告平台）','text',account.gmv_store_id||'');
-    const token=field(d.body,'已授权的 Access Token','password');token.autocomplete='off';
-    el('p','使用 TikTok for Business 应用授权的令牌，需有账户查看及报表权限。令牌加密保存，保存后不会回显。店铺授权不能替代广告授权。',d.body,'fi-muted');
-    d.submit('验证并连接',async()=>{await request('/ads',json('POST',{advertiserId:id.value.trim(),shopId:shop.value,accessToken:token.value.trim(),gmvStoreId:gmvStore.value.trim()}));token.value='';d.d.close();load();});
+    el('p','复制链接给广告账户管理员，选择账户并授权。无需填写 Access Token。绑定专属店铺时请指定一个广告账户；跨店授权可全部留空。',d.body,'fi-muted');
+    d.submit('生成授权链接',async()=>{const result=await request('/ads/authorize',json('POST',{advertiserId:id.value.trim(),shopId:shop.value,gmvStoreId:gmvStore.value.trim()}));authorizationLink(d,result);});
   }
   function currentFieldView(){return view==='reconciliation'?'RECONCILIATION':view==='overview'?'ALL':view==='ads'?(selectedKind==='AD_GMV'?'AD_GMV':'AD'):selectedKind;}
   function columnValue(row,f){
@@ -337,7 +370,7 @@
   function liveScreen(){
     cleanup();root.replaceChildren();root.className='workspace-body finance-workspace fi-live-screen';
     const top=el('header',null,root,'fi-live-head'),brand=el('div',null,top);
-    el('span','HOYEE / LIVE COMMERCE',brand,'fi-eyebrow');el('h1','实时大屏',brand);el('p','今日经营表现 · 按店铺业务日统计',brand);
+    el('span','HOYEE / LIVE COMMERCE',brand,'fi-eyebrow');el('h1','实时大屏',brand);el('p','每一份增长，都值得被看见',brand);
     const controls=el('div',null,top,'fi-actions');
     select(controls,'店铺',[['','全部财务店铺'],...data.shops.map(shop=>[shop.id,shop.display_name||shop.name])],filters.shopId,v=>{filters.shopId=v;load();});
     select(controls,'金额口径',[['CNY','人民币 ¥'],['ORIGINAL','原币']],filters.displayCurrency,v=>{filters.displayCurrency=v;filters.currency='';filters.fxSnapshot='';load();});
@@ -352,23 +385,24 @@
     el('span','页面 15 秒刷新 · 订单同步目标约 1 分钟',strip);el('span','平台回传、历史回补和多店排队会有延迟',strip);
     const state=el('div','',root,'fi-state');state.hidden=true;state.setAttribute('role','status');
     const hero=el('div',null,root,'fi-live-hero');
-    const sales=el('section',null,hero,'fi-live-sales');el('div','TODAY’S SALES',sales,'fi-live-kicker');el('h2','今日订单金额',sales);
+    const sales=el('section',null,hero,'fi-live-sales');const headline=el('div',null,sales,'fi-live-sales-heading');el('div','TODAY’S SALES',headline,'fi-live-kicker');el('span','今日成交战报',headline,'fi-live-sales-badge');el('h2','今日订单金额',sales);
     const amount=el('div',null,sales,'fi-live-amount');el('strong',number(sum('ORDER')),amount);el('span',data.filters.displayCurrency||data.filters.currency||'—',amount);
     el('p','已支付且未取消 · 以平台订单数据为准',sales);
     if(data.fx)el('small','参考折算 · '+data.fx.provider+' · '+new Date(data.fx.time).toLocaleDateString('zh-CN'),sales);
     const kpis=el('div',null,hero,'fi-live-kpis');
     const count=total('ORDER')?.known_amounts,aov=count&&sum('ORDER')!=null?Number(sum('ORDER'))/Number(count):null;
     for(const [label,value,unit,note] of [['有效订单',count,'单','有已知支付金额的订单'],['平均客单价',aov,data.filters.displayCurrency||data.filters.currency,'订单金额 / 有效订单数'],['今日成功退款',sum('REFUND'),data.filters.displayCurrency||data.filters.currency,'按退款业务日统计'],['今日结算净额',sum('SETTLEMENT'),data.filters.displayCurrency||data.filters.currency,'结算日口径，含历史订单']]){
-      const k=el('section',null,kpis,'fi-live-kpi');el('span',label,k);const valueNode=el('div',null,k);el('strong',number(value),valueNode);el('small',unit||'',valueNode);el('p',note,k);
+      const k=el('section',null,kpis,'fi-live-kpi');el('span',label,k);icon(label==='有效订单'?'shop':label==='平均客单价'?'chart':label==='今日成功退款'?'refund':'wallet',el('span',null,k,'fi-live-kpi-icon'));const valueNode=el('div',null,k);el('strong',number(value),valueNode);el('small',unit||'',valueNode);el('p',note,k);
     }
     const grid=el('div',null,root,'fi-chart-grid fi-live-grid');
     const hourly=card(grid,'小时成交趋势','按各店铺当地小时汇总 · 空缺时间连线，不补造金额',8);
-    plot(hourly.n,'小时成交金额',()=>({xAxis:{...axis('category'),data:data.hourly.map(r=>r.hour),boundaryGap:false},yAxis:axis(),series:[{name:'订单金额',type:'line',data:data.hourly.map(r=>r.amount??null),connectNulls:true,showSymbol:true,symbolSize:5,lineStyle:{width:3,color:'#64ddce'},itemStyle:{color:'#64ddce'},areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:'#64ddce36'},{offset:1,color:'#64ddce00'}]}}}]}),data.hourly.some(r=>r.amount!=null));
+    plot(hourly.n,'小时成交金额',()=>({xAxis:{...axis('category'),data:data.hourly.map(r=>r.hour),boundaryGap:false},yAxis:axis(),series:[{name:'订单金额',type:'line',data:data.hourly.map(r=>r.amount??null),connectNulls:true,showSymbol:true,symbolSize:5,lineStyle:{width:3,color:'#ec6746'},itemStyle:{color:'#ec6746'},areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:'#f39a613d'},{offset:1,color:'#f8c99505'}]}}}]}),data.hourly.some(r=>r.amount!=null));
     const rank=card(grid,'店铺成交榜','当前展示币种 · 今日有效订单',4);
     const rankingRows=data.ranking.filter(r=>r.kind==='ORDER'&&r.amount!=null).sort((a,b)=>Number(b.amount)-Number(a.amount)).slice(0,5);
     if(!rankingRows.length)el('div','连接财务店铺后显示实时排行',rank.n,'fi-empty');
+    const rankingList=el('div',null,rank.n,'fi-live-ranking');
     const max=Math.max(...rankingRows.map(r=>Number(r.amount)),1);
-    rankingRows.forEach((r,i)=>{const line=el('div',null,rank.n,'fi-live-rank');el('b',String(i+1).padStart(2,'0'),line);const body=el('div',null,line);const title=el('div',null,body);el('span',shopName(r.shop_id),title);el('strong',number(r.amount),title);const rail=el('div',null,body,'fi-live-rail');el('i',null,rail).style.width=Math.max(0,Number(r.amount)/max*100)+'%';});
+    rankingRows.forEach((r,i)=>{const line=el('div',null,rankingList,'fi-live-rank');el('b',String(i+1).padStart(2,'0'),line);const body=el('div',null,line);const title=el('div',null,body);el('span',shopName(r.shop_id),title);el('strong',number(r.amount),title);const rail=el('div',null,body,'fi-live-rail');el('i',null,rail).style.width=Math.max(0,Number(r.amount)/max*100)+'%';});
     const recent=card(grid,'最新订单','仅展示订单业务信息 · 自动更新',8);
     table(recent.n,['时间','店铺','订单编号','状态','金额'],data.recent.map(r=>[r.create_time?new Date(r.create_time).toLocaleTimeString('zh-CN',{hour12:false}):r.record_date,shopName(r.shop_id),r.external_id,statusName(r.status),number(data.fx?r.cny_amount:r.amount)]),'今日尚无订单，授权并开启财务店铺同步后自动显示。');
     donut(grid,'订单状态分布','包含未付款与取消订单，独立展示',data.statuses.filter(r=>r.kind==='ORDER').map(r=>({name:statusName(r.status),value:Number(r.records)})));

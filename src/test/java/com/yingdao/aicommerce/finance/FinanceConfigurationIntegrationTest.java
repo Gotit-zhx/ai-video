@@ -41,6 +41,7 @@ class FinanceConfigurationIntegrationTest {
         migration("V117__finance_bi.sql");
         db.update("INSERT INTO finance_shops(organization_id,user_id,shop_id,enabled,currency,timezone) VALUES('org','u','legacy',TRUE,'PHP','Asia/Manila')");
         migration("V118__finance_independent_configuration.sql");
+        migration("V119__finance_ad_authorization.sql");
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
@@ -50,7 +51,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
-        for(String table:List.of("finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts"))db.update("DELETE FROM "+table);
+        for(String table:List.of("finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
         client=mock(MarketplaceAccess.Client.class);when(client.platform()).thenReturn(MarketplacePlatform.SHOPEE);when(client.configured()).thenReturn(true);
         var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
         auth=new FinanceShopAuthorization(repo,new MarketplaceClientRegistry(List.of(client)),cipher,settings,tx);
@@ -159,5 +160,84 @@ class FinanceConfigurationIntegrationTest {
         service.screen(owner,filter,false,null);assertEquals("ERROR",db.queryForObject("SELECT status FROM finance_sync_states WHERE channel='ORDER'",String.class));
         db.update("UPDATE finance_sync_states SET status='SYNCING',checkpoint_json='{\"cursor\":\"retain\"}' WHERE channel='ORDER'");service.screen(owner,filter,false,null);
         assertTrue(db.queryForObject("SELECT checkpoint_json FROM finance_sync_states WHERE channel='ORDER'",String.class).contains("retain"));
+    }
+    com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp adHttp;
+    FinanceAdAuthorization adAuth(){
+        adHttp=mock(com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp.class);
+        var ads=new FinanceAds(FinanceTest.classProxy(repo),service,adHttp,cipher);
+        var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
+        return new FinanceAdAuthorization(FinanceTest.classProxy(repo),FinanceTest.classProxy(ads),adHttp,cipher,settings,auth,tx);
+    }
+    String adState(Map<String,Object> start){
+        var query=URI.create(text(start.get("authorizationUrl"))).getRawQuery();
+        return Arrays.stream(query.split("&")).filter(p->p.startsWith("state=")).map(p->java.net.URLDecoder.decode(p.substring(6),java.nio.charset.StandardCharsets.UTF_8)).findFirst().orElseThrow();
+    }
+    void adGrant(List<String> ids,List<Map<String,Object>> accounts){
+        when(adHttp.postJson(any(),anyMap(),anyString())).thenReturn(Map.of("code",0,"data",Map.of("access_token","verified-ad-access","advertiser_ids",ids)));
+        when(adHttp.get(any(),anyMap())).thenReturn(Map.of("code",0,"data",Map.of("list",accounts)));
+    }
+    Map<String,Object> advertiser(String id){return Map.of("advertiser_id",id,"advertiser_name","Test ads "+id,"currency","PHP","timezone","Asia/Manila");}
+    @Test void advertisingApplicationIsPrivateEncryptedAndDoesNotReuseShopCredentials(){
+        var a=adAuth();assertThrows(BusinessException.class,()->a.start(owner,"","",""));
+        a.configure(owner,"12345678","private-ad-application-secret");
+        assertEquals(true,a.configuration(owner).get("configured"));assertEquals(false,a.configuration(other).get("configured"));
+        assertFalse(repo.write(a.configuration(owner)).contains("private-ad"));
+        String secret=db.queryForObject("SELECT secret_encrypted FROM finance_ad_applications",String.class);
+        assertNotEquals("private-ad-application-secret",secret);
+        assertEquals("private-ad-application-secret",cipher.decrypt(secret,"org","finance-ads-app:u"));
+        assertThrows(IllegalStateException.class,()->cipher.decrypt(secret,"org","finance-ads-app:other"));
+        a.configure(owner,"12345678","");assertEquals(true,a.configuration(owner).get("configured"));
+        assertThrows(BusinessException.class,()->a.configure(owner,"87654321",""));
+        assertThrows(BusinessException.class,()->a.start(other,"","",""));
+        assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials",String.class));
+    }
+    @Test void copiedAdAuthorizationLinkCompletesExactlyOnceAndConnectsScopedAccounts(){
+        var a=adAuth();a.configure(owner,"12345678","private-ad-application-secret");
+        var started=a.start(owner,"","","");String state=adState(started);
+        assertTrue(text(started.get("authorizationUrl")).startsWith("https://business-api.tiktok.com/portal/auth?"));
+        assertFalse(text(started.get("authorizationUrl")).contains("private-ad"));
+        assertNotEquals(state,db.queryForObject("SELECT state_hash FROM finance_authorization_sessions",String.class));
+        adGrant(List.of("100001","100002"),List.of(advertiser("100001"),advertiser("100002")));
+        var callback=new FinanceAdAuthorizationCallback(a);
+        var result=callback.callback(Map.of("state",state,"auth_code","one-time-code"));
+        assertTrue(result.getHeaders().getLocation().toString().contains("financeAuth=success"));
+        assertTrue(result.getHeaders().getLocation().toString().endsWith("#finance-shops"));
+        assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE user_id='u'",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE user_id='other'",Integer.class));
+        String token=db.queryForObject("SELECT access_token_encrypted FROM finance_ad_accounts WHERE advertiser_id='100001'",String.class);
+        assertEquals("verified-ad-access",cipher.decrypt(token,"org","finance:u:100001"));
+        assertTrue(callback.callback(Map.of("state",state,"auth_code","one-time-code")).getHeaders().getLocation().toString().contains("financeAuth=error"));
+        verify(adHttp,times(1)).postJson(any(),anyMap(),argThat(body->body.contains("\"app_id\":\"12345678\"")&&body.contains("\"auth_code\":\"one-time-code\"")&&body.contains("\"secret\":\"private-ad-application-secret\"")));
+    }
+    @Test void expiredCancelledAndShopStatesCannotExchangeAdvertisingCodes(){
+        var a=adAuth();a.configure(owner,"12345678","private-ad-application-secret");
+        String expired=adState(a.start(owner,"","",""));
+        db.update("UPDATE finance_authorization_sessions SET expires_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 SECOND)");
+        assertThrows(BusinessException.class,()->a.complete(expired,"code",null));
+        String cancelled=adState(a.start(owner,"","",""));a.configure(owner,"12345678","");
+        assertThrows(BusinessException.class,()->a.complete(cancelled,"code",null));
+        assertThrows(BusinessException.class,()->a.complete("finance_other-shop-state","code",null));
+        verifyNoInteractions(adHttp);
+    }
+    @Test void incompleteAdGrantRollsBackAllAccountsAndDoesNotLeakErrors(){
+        var a=adAuth();a.configure(owner,"12345678","private-ad-application-secret");
+        String state=adState(a.start(owner,"","",""));
+        adGrant(List.of("100001","100002"),List.of(advertiser("100001"),Map.of("advertiser_id","100002","currency","invalid")));
+        String result=a.complete(state,"code",null);
+        assertTrue(result.contains("financeAuth=error"));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts",Integer.class));
+        assertEquals("FAILED",db.queryForObject("SELECT status FROM finance_authorization_sessions",String.class));
+        String second=adState(a.start(owner,"","",""));
+        String rejected=a.complete(second,null,"private-provider-secret");
+        assertFalse(rejected.contains("private-provider-secret"));
+        assertFalse(db.queryForObject("SELECT error_message FROM finance_authorization_sessions WHERE state_hash=?",String.class,FinanceShopAuthorization.hash(second)).contains("private"));
+    }
+    @Test void advertisingGrantMustIncludeRequestedAccount(){
+        var a=adAuth();a.configure(owner,"12345678","private-ad-application-secret");
+        String state=adState(a.start(owner,"100003","",""));
+        adGrant(List.of("100001"),List.of(advertiser("100001")));
+        assertTrue(a.complete(state,"code",null).contains("financeAuth=error"));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts",Integer.class));
+        assertThrows(BusinessException.class,()->a.start(owner,"","foreign-shop",""));
     }
 }

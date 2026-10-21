@@ -9,8 +9,8 @@
 - 对账中心：同店铺、账单编号、币种的账单金额和结算交易金额核对。明细分页未完成、金额未知、数据缺失不会标为一致。页面最多 1,000 张账单，Excel 导出支持当前筛选的全部账单（最多 100,000）。
 - 订单与退款、费用与调整：分页明细及趋势。
 - 广告分析：TikTok 广告账户消耗、曝光、点击、转化；可选 GMV Max 专项消耗、归因收入、SKU 订单数及归因 ROI。两种消耗不相加。
-- 财务店铺管理：独立发起官方授权，授权状态、令牌、店铺配置与商品运营分开保存。初始关闭同步，由超级管理员按店铺开启。可移除财务店铺，历史记录保留但从当前看板隐藏。
-- 实时大屏：独立深色展示页，支持全屏；今日订单金额、有效订单数、客单价、小时趋势、店铺成交榜、订单状态及最新订单。不显示买家个人资料。
+- 财务店铺管理：统一配置独立财务店铺与广告账户。店铺授权状态、令牌与商品运营分开保存。初始关闭店铺同步，由超级管理员按店铺开启。可移除财务店铺，历史记录保留但从当前看板隐藏。广告账户连接、更新授权、启停同步全部在此，广告分析页仅保留报表功能。
+- 实时大屏：独立暖白橙红展示页，支持全屏；今日订单金额、有效订单数、客单价、小时趋势、店铺成交榜、订单状态及最新订单。不显示买家个人资料。
 
 沿用 HR 看板的 Tabler 设计参考和本地 ECharts 6.1.0。原有首页、全局配色、助手和 HR 业务不变。支持日、周、月、季度、半年、年聚合；切换周期联动选择近 30 天、12 周、12 个月、8 季度、6 半年、5 年范围，日期框、指标、明细与导出共用筛选。手动日期显示“自定义”并选择适宜聚合粒度。趋势连接空缺点，空缺金额仍为未知而非补零；这里的 K 表示业务统计周期，不是证券开高低收蜡烛图。
 
@@ -45,7 +45,11 @@ TikTok 结算扣费的负数转为费用正数，退款返还相反；原始响�
 
 GMV Max 需在广告账户连接弹窗填写可选的广告平台店铺 ID（不是假定商品店铺内部 ID）。使用官方 `advertiser_id, stat_time_day` 维度和 `cost, orders, gross_revenue, net_cost` 指标。该专项授权出错不会阻塞普通账户报表；错误单独显示。跨店账户可保持未分配，不强行摊到某个店铺。
 
-广告令牌单独通过 `/advertiser/info/` 验证，AES-GCM 加密保存，不回显。店铺授权不等于广告授权。广告接口及导入的广告费用不能在同一个绑定店铺重复接入。
+广告授权使用 TikTok for Business 官方授权链接；店铺与广告都可生成、复制链接，由账户管理员在自己的浏览器完成授权。首次在「财务店铺管理 → 广告应用配置」保存广告应用 App ID / App Secret，并把页面提供的回调地址登记到广告开放平台。不能使用 TikTok Shop 应用密钥替代广告应用。密钥按组织、用户隔离，AES-GCM 加密，不回显。
+
+广告回调为 `/api/v1/shop-authorizations/callback/tiktok_ads`，使用 32 字节随机、一次性、带过期时间的 state；数据库只存 state 摘要。服务端以 `auth_code` 调用 `/open_api/v1.3/oauth2/access_token/`，再通过 `/advertiser/info/` 验证账户。账户 ID 留空时接入本次授权返回的账户，保留已存在账户的归属；指定账户时必须出现在本次授权中。全部验证和写入以事务完成，失败不部分导入，重复回调不重复交换令牌。新账户默认跨店未分配；绑定专属店铺需指定账户 ID。
+
+广告令牌 AES-GCM 加密保存，不回显。店铺授权不等于广告授权。广告接口及导入的广告费用不能在同一个绑定店铺重复接入。广告应用信息按当前用户独立配置，系统不会把商品运营或其他用户的应用凭据复制过来。
 
 ## 同步与数据质量
 
@@ -84,7 +88,9 @@ GMV Max 需在广告账户连接弹窗填写可选的广告平台店铺 ID（不
 
 仓储与事务服务可能被 Spring CGLIB 代理，跨 Bean 获取 JdbcTemplate、汇率服务、店铺授权服务必须调用方法，不得直接读取目标对象字段。回归测试使用真实类代理验证两个后台任务、看板和人民币导出。线上需等到 `Finance shop sync ready` 和 `Finance ad sync ready` 均出现才确认后台同步调度可用；这两条就绪记录不代表真实店铺数据已经同步。
 
-本地 UI 验收数据仅在独立预览服务模拟，绝不进入生产。真实广告数据需管理员提供有效广告授权；真实店铺数据需开启财务同步后检验相应平台权限。
+本地 UI 验收数据仅在独立预览服务模拟，绝不进入生产。真实广告数据需管理员配置广告应用并完成官方授权；真实店铺数据需开启财务同步后检验相应平台权限。
+
+`V119__finance_ad_authorization.sql` 增加独立广告应用表和授权会话上下文，不修改历史财务记录、店铺授权或商品运营数据。`scripts/release-finance-live-ads.py` 仅覆盖四个财务类族、新迁移和三个财务前端资源；其余 JAR 项与运行服务保持原样。大屏改用暖白底、橙红主卡和金色点缀，订单金额在屏幕中央，左右展示关键指标；仅此页面采用该配色。
 
 财务页面内容区固定单列纵向排列，`fi-span-*` 仅用于图表网格的直接子项，避免明细表跨列规则生成隐式列、拉伸页签或挤压趋势图。
 
@@ -94,5 +100,9 @@ GMV Max 需在广告账户连接弹窗填写可选的广告平台店铺 ID（不
 - TikTok Shop 结算交易：`https://partner.tiktokshop.com/docv2/page/get-statement-transactions-202501`
 - TikTok Shop 待结算：`https://partner.tiktokshop.com/docv2/page/get-unsettled-transactions-202507`
 - TikTok 广告指标：`https://business-api.tiktok.com/portal/docs/metrics-in-gmv-max-campaign-reports/v1.3`
+- TikTok 广告授权：`https://business-api.tiktok.com/portal/docs?id=1738373141733378`
+- TikTok 官方 OAuth SDK：`https://github.com/tiktok/tiktok-business-api-sdk/blob/main/java_sdk/docs/AuthenticationApi.md`
 - Shopee Open Platform：`https://open.shopee.com/developer-guide`
 - 参考汇率说明：`https://www.exchangerate-api.com/docs/free`
+
+实时大屏视觉参考：阿里云 DataV 官方模板库中的“双11网店销售看板”，采用醒目的成交主数字、暖白卡片、橙红与金色重点；未复制模板图片或示例数据。官方模板库：`https://cn.aliyun.com/activity/intelligent/datav-showcase`。

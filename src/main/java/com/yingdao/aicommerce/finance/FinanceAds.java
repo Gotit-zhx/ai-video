@@ -26,8 +26,12 @@ public class FinanceAds {
     static String visibleAccount(){return "(COALESCE(a.shop_id,'')='' OR EXISTS (SELECT 1 FROM finance_connections c WHERE c.id=a.shop_id AND c.organization_id=a.organization_id AND c.user_id=a.user_id AND c.status<>'REMOVED'))";}
     public void connect(Scope s,String id,String shopId,String token,String gmvStoreId){
         if(!text(id).matches("\\d{5,30}")||text(token).length()<10||text(token).length()>4096)throw bad("请填写有效广告账户 ID 和授权 Access Token");
-        shopId=text(shopId);
-        gmvStoreId=text(gmvStoreId).trim();
+        validateDestination(s,text(shopId),text(gmvStoreId).trim());
+        var data=get("/advertiser/info/",token,Map.of("advertiser_ids",repo.write(List.of(id)),"fields",repo.write(List.of("advertiser_id","advertiser_name","currency","timezone"))));
+        var advertiser=rows(data.get("list")).stream().filter(r->id.equals(text(r.get("advertiser_id")))).findFirst().orElseThrow(()->bad("该授权未返回指定广告账户"));
+        connectVerified(s,id,shopId,token,gmvStoreId,advertiser);
+    }
+    public void validateDestination(Scope s,String shopId,String gmvStoreId){
         if(!gmvStoreId.isBlank()&&!gmvStoreId.matches("\\d{5,30}"))throw bad("GMV Max 店铺 ID 格式不正确");
         if(!gmvStoreId.isBlank()&&shopId.isBlank())throw bad("GMV Max 店铺报表需先选择对应的专属店铺");
         if(!shopId.isBlank()){
@@ -35,8 +39,11 @@ public class FinanceAds {
             if(repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind='AD' AND source='IMPORT'",
                     Integer.class,s.organizationId(),s.userId(),shopId)>0)throw bad("该店铺已有导入广告费用，请先使用未分配账户接入，避免重复计费");
         }
-        var data=get("/advertiser/info/",token,Map.of("advertiser_ids",repo.write(List.of(id)),"fields",repo.write(List.of("advertiser_id","advertiser_name","currency","timezone"))));
-        var advertiser=rows(data.get("list")).stream().filter(r->id.equals(text(r.get("advertiser_id")))).findFirst().orElseThrow(()->bad("该授权未返回指定广告账户"));
+    }
+    public void connectVerified(Scope s,String id,String shopId,String token,String gmvStoreId,Map<String,Object> advertiser){
+        shopId=text(shopId);gmvStoreId=text(gmvStoreId).trim();
+        validateDestination(s,shopId,gmvStoreId);
+        if(!id.equals(text(advertiser.get("advertiser_id"))))throw bad("广告账户授权身份不匹配");
         String currency=first(advertiser,"currency");if(!currency.matches("[A-Z]{3}"))throw bad("广告接口没有返回有效币种");
         String encrypted=cipher.encrypt(token,s.organizationId(),"finance:"+s.userId()+":"+id);
         var previous=repo.jdbc().queryForList("SELECT shop_id FROM finance_ad_accounts WHERE organization_id=? AND user_id=? AND advertiser_id=?",s.organizationId(),s.userId(),id);
