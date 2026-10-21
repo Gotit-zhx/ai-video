@@ -30,12 +30,21 @@ public class FinanceRepository {
     }
     public record Query(String where,List<Object> args) {}
     public Query query(Scope s,Filter f) {
-        String w=" organization_id=? AND user_id=? AND record_date>=? AND record_date<=?";
+        return query(s,f,"");
+    }
+    Query query(Scope s,Filter f,String alias) {
+        String p=alias.isEmpty()?"":alias+".";
+        String w=" "+p+"organization_id=? AND "+p+"user_id=? AND "+p+"record_date>=? AND "+p+"record_date<=?";
         List<Object> a=new ArrayList<>(List.of(s.organizationId(),s.userId(),Date.valueOf(f.start()),Date.valueOf(f.end())));
         for(var pair:List.of(new String[]{"shop_id",f.shopId()},new String[]{"platform",f.platform()},new String[]{"currency",f.currency()})){
-            if(!pair[1].isEmpty()){w+=" AND "+pair[0]+"=?";a.add(pair[1]);}
+            if(!pair[1].isEmpty()){w+=" AND "+p+pair[0]+"=?";a.add(pair[1]);}
         }
+        w+=" AND "+visible(alias.isEmpty()?"finance_records":alias);
         return new Query(w,a);
+    }
+    static String visible(String alias){
+        return "("+alias+".shop_id='UNASSIGNED' OR EXISTS (SELECT 1 FROM finance_connections fc WHERE fc.id="+alias
+                +".shop_id AND fc.organization_id="+alias+".organization_id AND fc.user_id="+alias+".user_id AND fc.status<>'REMOVED'))";
     }
     public List<Map<String,Object>> grouped(Scope s,Filter f,String dimension) {
         if(!Set.of("kind","record_date,kind","shop_id,kind","category,kind","status,kind","currency,kind").contains(dimension))throw bad("统计维度不正确");
@@ -50,25 +59,43 @@ public class FinanceRepository {
         int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
         Long total=db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE "+where,Long.class,a.toArray());
         a.add(safeSize);a.add((long)(safePage-1)*safeSize);
-        List<Map<String,Object>> data=db.queryForList("SELECT id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,record_date,currency,amount,revenue,source,updated_at"
+        List<Map<String,Object>> data=db.queryForList("SELECT id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,record_date,currency,amount,revenue,impressions,clicks,conversions,source,updated_at,raw_json"
                 +" FROM finance_records WHERE "+where+" ORDER BY record_date DESC,id LIMIT ? OFFSET ?",a.toArray());
+        data.forEach(this::enrich);
         return Map.of("items",data,"total",total==null?0:total,"page",safePage,"pageSize",safeSize);
     }
     public Map<String,Object> detail(Scope s,String id){
-        var rows=db.queryForList("SELECT * FROM finance_records WHERE organization_id=? AND user_id=? AND id=?",s.organizationId(),s.userId(),id);
+        var rows=db.queryForList("SELECT * FROM finance_records WHERE organization_id=? AND user_id=? AND id=? AND "+visible("finance_records"),s.organizationId(),s.userId(),id);
         if(rows.isEmpty())throw bad("记录不存在");var row=rows.getFirst();
         row.remove("organization_id");row.remove("user_id");
         // Return only selected business fields; raw provider responses may contain buyer PII.
-        row.remove("raw_json");return row;
+        enrich(row);return row;
+    }
+    void enrich(Map<String,Object> row){
+        Object raw=row.remove("raw_json");
+        FinanceFields.enrich(row,raw==null?Map.of():read(raw instanceof byte[] bytes?new String(bytes,java.nio.charset.StandardCharsets.UTF_8):text(raw)));
     }
     public List<Map<String,Object>> reconciliation(Scope s,Filter f){
         return reconciliation(s,f,1000);
     }
+    public List<Map<String,Object>> hourlyOrders(Scope s,Filter f){
+        var q=query(s,f);
+        return db.queryForList("SELECT shop_id,currency,FLOOR(CAST(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.create_time')) AS UNSIGNED)/3600) utc_hour,"
+                +"SUM(amount) amount,COUNT(amount) paid_count FROM finance_records WHERE "+q.where
+                +" AND kind='ORDER' AND JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.create_time')) REGEXP '^[0-9]{10}$'"
+                +" GROUP BY shop_id,currency,utc_hour ORDER BY utc_hour",q.args.toArray());
+    }
+    public List<Map<String,Object>> recentOrders(Scope s,Filter f){
+        var q=query(s,f);
+        var result=db.queryForList("SELECT id,shop_id,platform,kind,external_id,status,record_date,currency,amount,source,raw_json FROM finance_records WHERE "+q.where
+                +" AND kind='ORDER' ORDER BY CAST(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.create_time')) AS UNSIGNED) DESC,id LIMIT 8",q.args.toArray());
+        result.forEach(this::enrich);return result;
+    }
     public List<Map<String,Object>> reconciliation(Scope s,Filter f,int limit){
-        Query q=query(s,f);
+        Query q=query(s,f,"b");
         // API bills are compared with API transaction sums; imported bills use the same reference IDs.
         String sql="""
-            SELECT b.id,b.shop_id,b.external_id,b.record_date,b.currency,b.amount,b.source,b.status,
+            SELECT b.id,b.shop_id,b.platform,b.external_id,b.order_id,b.statement_id,b.record_date,b.currency,b.amount,b.source,b.status,b.updated_at,b.raw_json,
             api_bill.status api_status,
             x.amount detail_amount,x.n detail_count,b.amount-x.amount difference
             FROM finance_records b LEFT JOIN (
@@ -82,11 +109,10 @@ public class FinanceRepository {
               AND api_bill.kind='BILL' AND api_bill.source='API'
             WHERE b.kind='BILL' AND
             """;
-        String qualified=q.where.replaceAll("\\b(organization_id|user_id|record_date|shop_id|platform|currency)\\b","b.$1");
         List<Object>a=new ArrayList<>(List.of(s.organizationId(),s.userId()));a.addAll(q.args);
         a.add(Math.min(100001,Math.max(1,limit)));
-        var result=db.queryForList(sql+qualified+" ORDER BY b.record_date DESC,b.id LIMIT ?",a.toArray());
-        result.forEach(FinanceRepository::reconcile);
+        var result=db.queryForList(sql+q.where+" ORDER BY b.record_date DESC,b.id LIMIT ?",a.toArray());
+        result.forEach(row->{reconcile(row);row.put("kind","BILL");enrich(row);});
         return result;
     }
     static void reconcile(Map<String,Object> row){

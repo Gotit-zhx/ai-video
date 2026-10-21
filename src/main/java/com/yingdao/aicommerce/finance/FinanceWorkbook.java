@@ -49,7 +49,7 @@ public final class FinanceWorkbook {
                 book.append("<sheet name=\"").append(xml(sheet.getKey())).append("\" sheetId=\"").append(i).append("\" r:id=\"rId").append(i).append("\"/>");
                 rels.append("<Relationship Id=\"rId").append(i).append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"").append(path).append("\"/>");
                 StringBuilder body=new StringBuilder("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" state=\"frozen\"/></sheetView></sheetViews><sheetData>");
-                Set<String> numericHeaders=Set.of("金额","原币金额","归因收入","折算人民币","参考汇率","账单金额","结算明细金额","差异","人民币账单金额","人民币明细金额","人民币差异","人民币归因收入");
+                Set<String> numericHeaders=FinanceFields.numericLabels();
                 var headers=sheet.getValue().isEmpty()?List.<String>of():sheet.getValue().getFirst();
                 int rowIndex=0;
                 for(var row:sheet.getValue()){

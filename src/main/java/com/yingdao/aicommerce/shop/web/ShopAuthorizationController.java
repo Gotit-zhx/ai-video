@@ -4,6 +4,8 @@ import com.yingdao.aicommerce.auth.PlatformPrincipal;
 import com.yingdao.aicommerce.common.api.ApiResponse;
 import com.yingdao.aicommerce.common.exception.BusinessException;
 import com.yingdao.aicommerce.shop.application.ShopAuthorizationService;
+import com.yingdao.aicommerce.finance.FinanceShopAuthorization;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -24,9 +26,14 @@ import java.util.Map;
 @RequestMapping("/api/v1/shop-authorizations")
 public class ShopAuthorizationController {
     private final ShopAuthorizationService service;
+    private final FinanceShopAuthorization finance;
 
     public ShopAuthorizationController(ShopAuthorizationService service) {
-        this.service = service;
+        this(service,null);
+    }
+    @Autowired
+    public ShopAuthorizationController(ShopAuthorizationService service,FinanceShopAuthorization finance) {
+        this.service = service;this.finance=finance;
     }
 
     @PostMapping("/{platform}/start")
@@ -46,6 +53,10 @@ public class ShopAuthorizationController {
         String state = parameters.get("state");
         String code = first(parameters, "code", "auth_code");
         String providerError = first(parameters, "error_description", "error", "message");
+        if(FinanceShopAuthorization.financeState(state)&&finance!=null){
+            try{return redirect(finance.complete(platform,state,code,new LinkedHashMap<>(parameters),providerError));}
+            catch(BusinessException exception){return redirect(finance.redirect(false,"财务授权已过期或无效，请回到财务店铺管理重新连接"));}
+        }
         try {
             if (providerError != null) {
                 String message = "平台拒绝了店铺授权：" + providerError;

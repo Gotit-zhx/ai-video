@@ -11,14 +11,14 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 /** Read-only official connectors. Each step is checkpointed; never performs marketplace writes. */
 @Component
 public class FinanceMarketplace {
-    final ShopAuthorizationService authorization;final ShopeeOfficialClient shopee;final TikTokShopOfficialClient tiktok;final FinanceRepository repo;
-    public FinanceMarketplace(ShopAuthorizationService authorization,ShopeeOfficialClient shopee,TikTokShopOfficialClient tiktok,FinanceRepository repo){
+    final FinanceShopAuthorization authorization;final ShopeeOfficialClient shopee;final TikTokShopOfficialClient tiktok;final FinanceRepository repo;
+    public FinanceMarketplace(FinanceShopAuthorization authorization,ShopeeOfficialClient shopee,TikTokShopOfficialClient tiktok,FinanceRepository repo){
         this.authorization=authorization;this.shopee=shopee;this.tiktok=tiktok;this.repo=repo;
     }
     public record Step(Map<String,Object> checkpoint,boolean done){}
     public Step step(Scope scope,Map<String,Object> state,Map<String,Object> checkpoint){
         String shopId=text(state.get("shop_id")),channel=text(state.get("channel")),zone=text(state.get("timezone"));
-        MarketplaceAccess.Connection c=authorization.connectionForPublishing(scope.organizationId(),shopId);
+        MarketplaceAccess.Connection c=authorization.connection(scope,shopId);
         if("TIKTOK_SHOP".equals(c.shop().getPlatform()))return tik(scope,c,channel,zone,checkpoint);
         if("SHOPEE".equals(c.shop().getPlatform()))return sho(scope,c,channel,zone,checkpoint);
         throw bad("不支持的财务平台");

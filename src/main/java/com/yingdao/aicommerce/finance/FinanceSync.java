@@ -18,10 +18,9 @@ public class FinanceSync {
     @PreDestroy public void stop(){worker.shutdownNow();}
     public void tick(){
         var due=repo.jdbc().queryForList("""
-            SELECT st.*,f.timezone,f.currency FROM finance_sync_states st JOIN finance_shops f
-            ON f.organization_id=st.organization_id AND f.user_id=st.user_id AND f.shop_id=st.shop_id
-            JOIN shops sh ON sh.id=f.shop_id AND sh.organization_id=f.organization_id
-            WHERE f.enabled=TRUE AND sh.status='ACTIVE' AND st.next_at<=UTC_TIMESTAMP(6)
+            SELECT st.*,f.timezone,f.currency FROM finance_sync_states st JOIN finance_connections f
+            ON f.organization_id=st.organization_id AND f.user_id=st.user_id AND f.id=st.shop_id
+            WHERE f.enabled=TRUE AND f.status='ACTIVE' AND st.next_at<=UTC_TIMESTAMP(6)
               AND (st.lease_until IS NULL OR st.lease_until<UTC_TIMESTAMP(6)) ORDER BY st.next_at LIMIT 1
             """);
         if(due.isEmpty())return;var row=due.getFirst();Scope s=new Scope(text(row.get("organization_id")),text(row.get("user_id")));
@@ -48,7 +47,11 @@ public class FinanceSync {
                     }
                 }
                 long until=now.getEpochSecond();
-                cp.put("from",start.atStartOfDay(zone).toEpochSecond());cp.put("to",Math.min(until,start.plusDays(7).atStartOfDay(zone).toEpochSecond()));
+                long from=start.atStartOfDay(zone).toEpochSecond();
+                // Order APIs filter by update time. A five-minute overlap retains late updates
+                // without scanning yesterday's entire order book on every live refresh.
+                if("ORDER".equals(row.get("channel"))&&!initial&&!nightly)from=Math.max(from,last.minusSeconds(300).getEpochSecond());
+                cp.put("from",from);cp.put("to",Math.min(until,from+7*86400L));
                 cp.put("until",until);cp.put("coverage",start.toString());cp.put("run",UUID.randomUUID().toString());
             }
             var prioritized=recentSettlementFirst(cp,row.get("last_success_at")==null,text(row.get("channel")),zone);
@@ -84,10 +87,10 @@ public class FinanceSync {
         }
     }
     static Map<String,Object> recentSettlementFirst(Map<String,Object> cp,boolean initial,String channel,ZoneId zone){
-        if(!initial||!"SETTLEMENT".equals(channel)||Boolean.TRUE.equals(cp.get("recentFirst"))
+        if(!initial||!Set.of("SETTLEMENT","ORDER").contains(channel)||Boolean.TRUE.equals(cp.get("recentFirst"))
                 ||number(cp.get("to"))>=number(cp.get("until")))return cp;
         long until=number(cp.get("until"));
-        long recent=Instant.ofEpochSecond(until).atZone(zone).toLocalDate().minusDays(6).atStartOfDay(zone).toEpochSecond();
+        long recent=Instant.ofEpochSecond(until).atZone(zone).toLocalDate().minusDays("ORDER".equals(channel)?0:6).atStartOfDay(zone).toEpochSecond();
         recent=Math.max(recent,number(cp.get("to")));
         if(recent>=until)return cp;
         // Retain an in-flight page/bill exactly as it was, then resume it after recent data is visible.

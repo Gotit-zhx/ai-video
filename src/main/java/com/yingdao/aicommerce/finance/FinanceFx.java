@@ -72,6 +72,7 @@ public class FinanceFx {
     public void enrich(List<Map<String,Object>> rows,Quote quote){
         for(var row:rows){String currency=text(row.get("currency"));row.put("cny_amount",quote.convert(row.get("amount"),currency));row.put("cny_rate",quote.rates.get(currency));
             row.put("fx",quote.metadata());
+            if(row.containsKey("revenue"))row.put("cny_revenue",quote.convert(row.get("revenue"),currency));
             if(row.containsKey("difference"))row.put("cny_difference",quote.convert(row.get("difference"),currency));
             if(row.containsKey("detail_amount"))row.put("cny_detail_amount",quote.convert(row.get("detail_amount"),currency));
         }

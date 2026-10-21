@@ -21,8 +21,9 @@ public class FinanceAds {
     }
     public List<Map<String,Object>> list(Scope s){
         return repo.jdbc().queryForList("SELECT advertiser_id,name,shop_id,currency,enabled,status,error_message,next_at,last_success_at,gmv_store_id,gmv_status,gmv_error,timezone"
-                +" FROM finance_ad_accounts WHERE organization_id=? AND user_id=? ORDER BY name",s.organizationId(),s.userId());
+                +" FROM finance_ad_accounts a WHERE organization_id=? AND user_id=? AND "+visibleAccount()+" ORDER BY name",s.organizationId(),s.userId());
     }
+    static String visibleAccount(){return "(COALESCE(a.shop_id,'')='' OR EXISTS (SELECT 1 FROM finance_connections c WHERE c.id=a.shop_id AND c.organization_id=a.organization_id AND c.user_id=a.user_id AND c.status<>'REMOVED'))";}
     public void connect(Scope s,String id,String shopId,String token,String gmvStoreId){
         if(!text(id).matches("\\d{5,30}")||text(token).length()<10||text(token).length()>4096)throw bad("请填写有效广告账户 ID 和授权 Access Token");
         shopId=text(shopId);
@@ -39,15 +40,21 @@ public class FinanceAds {
         String currency=first(advertiser,"currency");if(!currency.matches("[A-Z]{3}"))throw bad("广告接口没有返回有效币种");
         String encrypted=cipher.encrypt(token,s.organizationId(),"finance:"+s.userId()+":"+id);
         var previous=repo.jdbc().queryForList("SELECT shop_id FROM finance_ad_accounts WHERE organization_id=? AND user_id=? AND advertiser_id=?",s.organizationId(),s.userId(),id);
-        if(!previous.isEmpty()&&!shopId.equals(text(previous.getFirst().get("shop_id"))))throw bad("该广告账户已有归属，请使用原归属更新授权，以免历史费用重复");
+        if(!previous.isEmpty()&&!shopId.equals(text(previous.getFirst().get("shop_id")))){
+            String original=text(previous.getFirst().get("shop_id"));
+            boolean retired=!original.isBlank()&&finance.shops(s).stream().noneMatch(shop->original.equals(text(shop.get("id"))));
+            if(!retired)throw bad("该广告账户已有归属，请使用原归属更新授权，以免历史费用重复");
+        }
         repo.jdbc().update("""
             INSERT INTO finance_ad_accounts(organization_id,user_id,advertiser_id,name,shop_id,currency,access_token_encrypted,gmv_store_id,gmv_status,timezone)
             VALUES(?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name),access_token_encrypted=VALUES(access_token_encrypted),
+            last_success_at=IF(shop_id<>VALUES(shop_id),NULL,last_success_at),shop_id=VALUES(shop_id),
             gmv_store_id=VALUES(gmv_store_id),gmv_status=VALUES(gmv_status),gmv_error=NULL,timezone=VALUES(timezone),checkpoint_json=NULL,
             enabled=TRUE,status='READY',error_message=NULL,failures=0,next_at=UTC_TIMESTAMP(6)
             """,s.organizationId(),s.userId(),id,first(advertiser,"advertiser_name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
     }
     public void pause(Scope s,String id,boolean enabled){
+        if(enabled&&list(s).stream().noneMatch(a->id.equals(text(a.get("advertiser_id")))))throw bad("广告账户不存在或绑定的财务店铺已移除");
         if(repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=?,next_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND user_id=? AND advertiser_id=?",
                 enabled,s.organizationId(),s.userId(),id)!=1)throw bad("广告账户不存在");
     }
@@ -60,7 +67,7 @@ public class FinanceAds {
     @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance ad sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance ad dispatcher temporarily unavailable",e);}},60,30,java.util.concurrent.TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
     public void tick(){
-        var accounts=repo.jdbc().queryForList("SELECT * FROM finance_ad_accounts WHERE enabled=TRUE AND next_at<=UTC_TIMESTAMP(6)"
+        var accounts=repo.jdbc().queryForList("SELECT * FROM finance_ad_accounts a WHERE enabled=TRUE AND "+visibleAccount()+" AND next_at<=UTC_TIMESTAMP(6)"
                 +" AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6)) ORDER BY next_at LIMIT 1");
         if(accounts.isEmpty())return;var account=accounts.getFirst();
         Scope s=new Scope(text(account.get("organization_id")),text(account.get("user_id")));String id=text(account.get("advertiser_id"));

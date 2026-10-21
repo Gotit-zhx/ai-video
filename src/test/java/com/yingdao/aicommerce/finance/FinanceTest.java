@@ -46,7 +46,7 @@ class FinanceTest {
     }
     @Test void everyEndpointRejectsOrdinaryAdminBeforeBusinessLogic() throws Exception {
         var policy=mock(OrganizationAccessPolicy.class);var repo=mock(FinanceRepository.class);
-        var service=new FinanceService(repo,policy,mock(ShopAuthorizationService.class),mock(FinanceFx.class));
+        var service=new FinanceService(repo,policy,mock(FinanceShopAuthorization.class),mock(FinanceFx.class));
         var controller=new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class));
         var principal=user("other");
         var mvc=MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new GlobalExceptionHandler())
@@ -54,9 +54,11 @@ class FinanceTest {
                     public boolean supportsParameter(MethodParameter p){return p.getParameterType()==PlatformPrincipal.class;}
                     public Object resolveArgument(MethodParameter p,ModelAndViewContainer m,NativeWebRequest r,WebDataBinderFactory b){return principal;}
                 }).build();
-        for(String path:List.of("/overview","/shops","/records","/records/a","/reconciliation","/ads","/export"))
+        for(String path:List.of("/overview","/shops","/records","/records/a","/reconciliation","/ads","/export","/fields/ALL"))
             mvc.perform(get("/api/v1/finance"+path)).andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/finance/shops/a/sync")).andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/finance/screen")).andExpect(status().isForbidden());
+        mvc.perform(delete("/api/v1/finance/shops/a")).andExpect(status().isForbidden());
         verifyNoInteractions(repo);
     }
     @Test void periodsRespectNaturalHalfYearAndIsoWeeks(){
@@ -94,7 +96,7 @@ class FinanceTest {
         assertThrows(BusinessException.class,()->FinanceWorkbook.read(bytes.toByteArray(),"bad.xlsx"));
     }
     @Test void tiktokStatementPaginationDoesNotAdvanceBeforeItsTransactions(){
-        var auth=mock(ShopAuthorizationService.class);var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);
+        var auth=mock(FinanceShopAuthorization.class);var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);
         var reader=new FinanceMarketplace(auth,mock(ShopeeOfficialClient.class),tk,repo);
         var shop=new Shop("org",MarketplacePlatform.TIKTOK_SHOP,"123","","cipher","LOCAL","test","PH","[]");
         var connection=new MarketplaceAccess.Connection(shop,new MarketplaceAccess.TokenSet("token","",Instant.now().plusSeconds(100),Instant.now().plusSeconds(100),List.of()));
@@ -110,7 +112,7 @@ class FinanceTest {
     }
     @Test void pendingRefundIsNotRecognizedAsSuccessfulCashRefund(){
         var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);
-        var reader=new FinanceMarketplace(mock(ShopAuthorizationService.class),mock(ShopeeOfficialClient.class),tk,repo);
+        var reader=new FinanceMarketplace(mock(FinanceShopAuthorization.class),mock(ShopeeOfficialClient.class),tk,repo);
         var shop=new Shop("org",MarketplacePlatform.TIKTOK_SHOP,"123","","cipher","LOCAL","test","PH","[]");
         var c=new MarketplaceAccess.Connection(shop,new MarketplaceAccess.TokenSet("token","",Instant.now(),Instant.now(),List.of()));
         var pending=Map.of("return_id","r1","order_id","o1","return_status","RETURN_OR_REFUND_REQUEST_SUCCESS","create_time",1760918400L,"refund_amount",Map.of("currency","PHP","refund_total","100"));
@@ -148,7 +150,7 @@ class FinanceTest {
     }
     @Test void shopeeIncomeAcceptsDocumentedAndLiveEnvelopesAndPreservesPagination(){
         var client=mock(ShopeeOfficialClient.class);var repo=mock(FinanceRepository.class);
-        var reader=new FinanceMarketplace(mock(ShopAuthorizationService.class),client,mock(TikTokShopOfficialClient.class),repo);
+        var reader=new FinanceMarketplace(mock(FinanceShopAuthorization.class),client,mock(TikTokShopOfficialClient.class),repo);
         var row=Map.of("order_sn","income1","actual_payout_time",Instant.parse("2026-10-19T12:00:00Z").getEpochSecond(),"currency","PHP","released_amount","123.45");
         var page=Map.of("list",List.of(row),"next_page",Map.of("cursor","next","page_size",5));
         when(client.shopGet(eq("/api/v2/payment/get_escrow_detail"),any(),anyMap()))
@@ -167,7 +169,7 @@ class FinanceTest {
     }
     @Test void shopeeSuccessfulEmptyResponseAdvancesWithoutInventingRecords(){
         var client=mock(ShopeeOfficialClient.class);var repo=mock(FinanceRepository.class);
-        var reader=new FinanceMarketplace(mock(ShopAuthorizationService.class),client,mock(TikTokShopOfficialClient.class),repo);
+        var reader=new FinanceMarketplace(mock(FinanceShopAuthorization.class),client,mock(TikTokShopOfficialClient.class),repo);
         // Observed live response for a historical range before the shop had income.
         when(client.shopGet(anyString(),any(),anyMap())).thenReturn(Map.of("error","","message","","response",Map.of()));
         var step=reader.sho(new Scope("org","u"),shopeeConnection(),"SETTLEMENT","Asia/Manila",shopeeCheckpoint());
@@ -176,7 +178,7 @@ class FinanceTest {
     }
     @Test void shopeeIncomeMalformedPagesDoNotAdvanceOrPretendToBeEmpty(){
         var client=mock(ShopeeOfficialClient.class);var repo=mock(FinanceRepository.class);
-        var reader=new FinanceMarketplace(mock(ShopAuthorizationService.class),client,mock(TikTokShopOfficialClient.class),repo);
+        var reader=new FinanceMarketplace(mock(FinanceShopAuthorization.class),client,mock(TikTokShopOfficialClient.class),repo);
         for(var envelope:List.<Map<String,Object>>of(Map.of(),Map.of("response","invalid"),Map.of("response",Map.of("unexpected",List.of())),
                 Map.of("response",Map.of("income_detail_list","invalid")),Map.of("response",Map.of("list",List.of("invalid"))),
                 Map.of("response",Map.of("list",List.of(),"next_page","invalid")),
@@ -223,11 +225,20 @@ class FinanceTest {
         var cp=Map.<String,Object>of("from",1L,"to",2L,"until",3L);
         var zone=ZoneId.of("Asia/Manila");
         assertSame(cp,FinanceSync.recentSettlementFirst(cp,false,"SETTLEMENT",zone));
-        for(String channel:List.of("ORDER","REFUND","PENDING"))
+        for(String channel:List.of("REFUND","PENDING"))
             assertSame(cp,FinanceSync.recentSettlementFirst(cp,true,channel,zone));
         var last=Map.<String,Object>of("from",1L,"to",3L,"until",3L);
         assertSame(last,FinanceSync.recentSettlementFirst(last,true,"SETTLEMENT",zone));
         assertTrue(FinanceSync.nextWindow(last,new FinanceMarketplace.Step(last,true)).done());
+    }
+    @Test void initialOrdersShowTodayThenResumeEveryHistoricalPage(){
+        var zone=ZoneId.of("Asia/Manila");long until=LocalDateTime.of(2026,10,21,12,0).atZone(zone).toEpochSecond();
+        long from=LocalDate.of(2026,7,24).atStartOfDay(zone).toEpochSecond();
+        var old=Map.<String,Object>of("from",from,"to",from+604800,"until",until,"cursor","keep","coverage","2026-07-24");
+        var prioritized=FinanceSync.recentSettlementFirst(old,true,"ORDER",zone);
+        assertEquals(LocalDate.of(2026,10,21).atStartOfDay(zone).toEpochSecond(),prioritized.get("from"));
+        var next=FinanceSync.nextWindow(prioritized,new FinanceMarketplace.Step(prioritized,true));
+        assertEquals("keep",next.checkpoint().get("cursor"));assertEquals(prioritized.get("from"),next.checkpoint().get("until"));
     }
     @Test void mysqlTimestampVariantsUseUtc(){
         var day=LocalDateTime.of(2026,10,20,10,0);
@@ -259,11 +270,11 @@ class FinanceTest {
         verify(repo,never()).save(any(),any());
     }
     @Test void cnyExportUsesPinnedSnapshotAndKeepsNativeAmounts(){
-        var repo=mock(FinanceRepository.class);var policy=mock(OrganizationAccessPolicy.class);var fx=mock(FinanceFx.class);
+        var repo=mock(FinanceRepository.class);when(repo.jdbc()).thenReturn(mock(JdbcTemplate.class));var policy=mock(OrganizationAccessPolicy.class);var fx=spy(new FinanceFx(repo,new ObjectMapper()));
         var principal=user("heyi");when(policy.isPlatformAdmin(principal)).thenReturn(true);
         var quote=new FinanceFx.Quote("fixed",Instant.EPOCH,Map.of("PHP",new BigDecimal("0.125")));
-        when(fx.quote("fixed")).thenReturn(quote);
-        var service=classProxy(new FinanceService(repo,policy,mock(ShopAuthorizationService.class),fx));
+        doReturn(quote).when(fx).quote("fixed");
+        var service=classProxy(new FinanceService(repo,policy,mock(FinanceShopAuthorization.class),fx));
         var controller=new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class));
         var item=new HashMap<String,Object>(Map.of("external_id","00123456789012345678","currency","PHP","amount",new BigDecimal("100")));
         when(repo.details(any(),any(),any(),eq(1),eq(100))).thenReturn(Map.of("total",1,"items",List.of(item)));
@@ -285,7 +296,7 @@ class FinanceTest {
         var repository=classProxy(new FinanceRepository(db,new ObjectMapper()));
         assertTrue(org.springframework.aop.support.AopUtils.isCglibProxy(repository));
         assertSame(db,repository.jdbc());
-        var policy=mock(OrganizationAccessPolicy.class);var fx=mock(FinanceFx.class);var shops=mock(ShopAuthorizationService.class);
+        var policy=mock(OrganizationAccessPolicy.class);var fx=mock(FinanceFx.class);var shops=mock(FinanceShopAuthorization.class);
         var service=classProxy(new FinanceService(repository,policy,shops,fx));
         assertSame(fx,service.exchangeRates());assertSame(shops,service.authorization());
         var worker=new FinanceSync(repository,mock(FinanceMarketplace.class));
