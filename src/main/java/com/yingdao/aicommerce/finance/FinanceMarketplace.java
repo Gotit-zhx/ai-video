@@ -91,7 +91,7 @@ public class FinanceMarketplace {
         String path=channel.equals("ORDER")?"/order/202309/orders/search":"/return_refund/202309/returns/search";
         data=map(tiktok.apiPost(path,c,q,body).get("data"));
         String key=channel.equals("ORDER")?"orders":"return_orders";
-        for(var row:requiredRows(data,key)){
+        for(var row:channel.equals("ORDER")?tikOrderRows(data,cursor):requiredRows(data,key)){
             if(channel.equals("ORDER")){
                 String status=first(row,"status");BigDecimal amount=amount(row,"payment.total_amount");
                 if(Set.of("UNPAID","CANCELLED").contains(status))amount=null;
@@ -176,10 +176,25 @@ public class FinanceMarketplace {
         return result;
     }
     static String identifier(String id){if(!id.matches("[A-Za-z0-9_-]{1,128}"))throw bad("平台返回的标识无效");return id;}
+    static List<Map<String,Object>> tikOrderRows(Map<String,Object> data,String cursor){
+        // Search Orders can issue a token on the last populated page, then omit
+        // orders on the terminal page. total_count is the whole search's count,
+        // not the number of rows on this page (observed: total_count=133).
+        // Accept only an explicit terminal page of an existing pagination chain;
+        // a missing body, invalid list or empty first page with a positive total
+        // must still fail and retain the checkpoint.
+        Object count=data.get("total_count");
+        BigDecimal total=decimal(count);
+        if(data.get("orders")==null&&!text(cursor).isBlank()
+                &&"".equals(data.get("next_page_token"))&&total!=null
+                &&total.signum()>=0&&total.stripTrailingZeros().scale()<=0)return List.of();
+        return requiredRows(data,"orders");
+    }
     static List<Map<String,Object>> requiredRows(Map<String,Object> data,String key){
         Object value=data.get(key);
         // Empty return search omits return_orders. Other envelopes must explicitly declare an empty result.
-        if(value==null&&(key.equals("return_orders")||data.containsKey("total_count")&&number(data.get("total_count"))==0))return List.of();
+        BigDecimal total=decimal(data.get("total_count"));
+        if(value==null&&(key.equals("return_orders")||total!=null&&total.signum()==0))return List.of();
         if(!(value instanceof List<?>))throw bad("平台财务响应结构异常："+key);
         if(((List<?>)value).stream().anyMatch(row->!(row instanceof Map<?,?>)))throw bad("平台财务记录结构异常："+key);
         return rows(value);

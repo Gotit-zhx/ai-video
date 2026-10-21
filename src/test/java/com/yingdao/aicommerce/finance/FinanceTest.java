@@ -120,6 +120,38 @@ class FinanceTest {
         reader.tik(new Scope("org","u"),c,"REFUND","Asia/Manila",Map.of("from",1,"to",2));
         var capture=org.mockito.ArgumentCaptor.forClass(Entry.class);verify(repo).save(any(),capture.capture());assertNull(capture.getValue().amount());
     }
+    @Test void tiktokOrdersAcceptSparseTerminalPageAndResumeHistoricalWindow(){
+        var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);
+        var reader=new FinanceMarketplace(mock(FinanceShopAuthorization.class),mock(ShopeeOfficialClient.class),tk,repo);
+        var shop=new Shop("org",MarketplacePlatform.TIKTOK_SHOP,"123","","cipher","LOCAL","test","PH","[]");
+        var c=new MarketplaceAccess.Connection(shop,new MarketplaceAccess.TokenSet("token","",Instant.now(),Instant.now(),List.of()));
+        var resume=Map.<String,Object>of("from",1L,"to",2L,"until",3L);
+        var cp=Map.<String,Object>of("from",10L,"to",20L,"until",20L,"cursor","last-page","backfillResume",resume);
+        when(tk.apiPost(anyString(),any(),anyMap(),anyMap()))
+                .thenReturn(Map.of("data",Map.of("total_count",133,"next_page_token","")));
+        var terminal=reader.tik(new Scope("org","u"),c,"ORDER","Asia/Manila",cp);
+        assertTrue(terminal.done());assertEquals("",terminal.checkpoint().get("cursor"));
+        var next=FinanceSync.nextWindow(cp,terminal);
+        assertFalse(next.done());assertEquals(resume,next.checkpoint());
+        verifyNoInteractions(repo);
+        verify(tk).apiPost(eq("/order/202309/orders/search"),eq(c),
+                argThat(q->"last-page".equals(q.get("page_token"))),
+                eq(Map.of("update_time_ge",10L,"update_time_lt",20L)));
+    }
+    @Test void tiktokSparseTerminalExceptionDoesNotHideMalformedOrIncompletePages(){
+        assertEquals(List.of(),FinanceMarketplace.tikOrderRows(Map.of("total_count",0),""));
+        assertEquals(List.of(),FinanceMarketplace.tikOrderRows(Map.of("orders",List.of()),""));
+        for(var page:List.of(Map.<String,Object>of(),
+                Map.<String,Object>of("total_count",133),
+                Map.<String,Object>of("total_count",133,"next_page_token","another"),
+                Map.<String,Object>of("total_count",-1,"next_page_token",""),
+                Map.<String,Object>of("total_count","invalid","next_page_token",""),
+                Map.<String,Object>of("total_count",133,"next_page_token","","orders",Map.of()),
+                Map.<String,Object>of("orders",List.of("bad"))))
+            assertThrows(BusinessException.class,()->FinanceMarketplace.tikOrderRows(page,"previous"));
+        assertThrows(BusinessException.class,()->FinanceMarketplace.tikOrderRows(
+                Map.of("total_count",133,"next_page_token",""),""));
+    }
     @Test void sqlScopeCannotBeReplacedByRequestedShop(){
         var repo=new FinanceRepository(mock(JdbcTemplate.class),new ObjectMapper());
         var q=repo.query(new Scope("org-a","user-a"),new Filter(LocalDate.of(2026,1,1),LocalDate.of(2026,1,2),"foreign-shop","","PHP","day"));
