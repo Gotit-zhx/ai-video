@@ -152,6 +152,16 @@ class FinanceTest {
         assertThrows(BusinessException.class,()->FinanceMarketplace.tikOrderRows(
                 Map.of("total_count",133,"next_page_token",""),""));
     }
+    @Test void liveOrdersUseOfficialOrderEndpointNewestFirst(){
+        var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);var authorization=mock(FinanceShopAuthorization.class);
+        var reader=new FinanceMarketplace(authorization,mock(ShopeeOfficialClient.class),tk,repo);
+        var shop=new Shop("org",MarketplacePlatform.TIKTOK_SHOP,"123","","cipher","LOCAL","test","PH","[]");
+        var c=new MarketplaceAccess.Connection(shop,new MarketplaceAccess.TokenSet("token","",Instant.now(),Instant.now(),List.of()));
+        when(authorization.connection(any(),anyString())).thenReturn(c);
+        when(tk.apiPost(anyString(),any(),anyMap(),anyMap())).thenReturn(Map.of("data",Map.of("orders",List.of())));
+        reader.step(new Scope("org","u"),Map.of("shop_id","shop","channel","ORDER_LIVE","timezone","Asia/Manila"),Map.of("from",1L,"to",2L));
+        verify(tk).apiPost(eq("/order/202309/orders/search"),eq(c),argThat(q->"DESC".equals(q.get("sort_order"))),eq(Map.of("update_time_ge",1L,"update_time_lt",2L)));
+    }
     @Test void sqlScopeCannotBeReplacedByRequestedShop(){
         var repo=new FinanceRepository(mock(JdbcTemplate.class),new ObjectMapper());
         var q=repo.query(new Scope("org-a","user-a"),new Filter(LocalDate.of(2026,1,1),LocalDate.of(2026,1,2),"foreign-shop","","PHP","day"));
@@ -228,14 +238,20 @@ class FinanceTest {
                 "coverage","2026-07-24","run","historical-run","cursor","old-page","transactionCursor","old-bill-page",
                 "transactionCount",20,"bills",List.of(Map.of("id","bill1"))));
         var recent=FinanceSync.recentSettlementFirst(old,true,"SETTLEMENT",zone);
-        assertEquals(LocalDate.of(2026,10,15).atStartOfDay(zone).toEpochSecond(),recent.get("from"));
-        assertEquals(until,recent.get("to"));assertEquals("old-page",old.get("cursor"));
+        assertEquals(LocalDate.of(2026,9,22).atStartOfDay(zone).toEpochSecond(),recent.get("from"));
+        assertEquals(number(recent.get("from"))+604800,recent.get("to"));assertEquals("old-page",old.get("cursor"));
         assertFalse(recent.containsKey("cursor"));assertFalse(recent.containsKey("bills"));
         assertSame(recent,FinanceSync.recentSettlementFirst(recent,true,"SETTLEMENT",zone));
         var page=new LinkedHashMap<>(recent);page.put("cursor","recent-page-2");
         var progress=FinanceSync.nextWindow(recent,new FinanceMarketplace.Step(page,false));
         assertFalse(progress.done());assertEquals("recent-page-2",progress.checkpoint().get("cursor"));
         var resume=FinanceSync.nextWindow(page,new FinanceMarketplace.Step(page,true));
+        while(resume.checkpoint().containsKey("backfillResume")){
+            var window=resume.checkpoint();
+            assertTrue(number(window.get("to"))-number(window.get("from"))<=604800);
+            assertFalse(window.containsKey("cursor"));
+            resume=FinanceSync.nextWindow(window,new FinanceMarketplace.Step(window,true));
+        }
         assertFalse(resume.done());assertEquals("old-page",resume.checkpoint().get("cursor"));
         assertEquals("old-bill-page",resume.checkpoint().get("transactionCursor"));
         assertEquals(20,resume.checkpoint().get("transactionCount"));
@@ -253,6 +269,16 @@ class FinanceTest {
         }
         assertTrue(complete);assertEquals(until-from,seconds);
     }
+    @Test void existingSevenDayBackfillUpgradesToMonthWithoutLosingCurrentBill(){
+        var zone=ZoneId.of("Asia/Manila");long from=LocalDate.of(2026,7,24).atStartOfDay(zone).toEpochSecond();
+        long until=LocalDate.of(2026,10,15).atStartOfDay(zone).toEpochSecond();
+        var old=Map.<String,Object>of("from",from,"to",from+604800,"until",until,"recentFirst",true,"cursor","keep-history","transactionCursor","keep-bill");
+        var next=FinanceSync.recentSettlementFirst(old,true,"SETTLEMENT",zone);
+        assertEquals(30,next.get("recentWindowDays"));
+        assertEquals("keep-history",map(next.get("backfillResume")).get("cursor"));
+        assertEquals("keep-bill",map(next.get("backfillResume")).get("transactionCursor"));
+        assertSame(next,FinanceSync.recentSettlementFirst(next,true,"SETTLEMENT",zone));
+    }
     @Test void recentPriorityDoesNotDisturbIncrementalSyncOrOtherChannels(){
         var cp=Map.<String,Object>of("from",1L,"to",2L,"until",3L);
         var zone=ZoneId.of("Asia/Manila");
@@ -263,13 +289,14 @@ class FinanceTest {
         assertSame(last,FinanceSync.recentSettlementFirst(last,true,"SETTLEMENT",zone));
         assertTrue(FinanceSync.nextWindow(last,new FinanceMarketplace.Step(last,true)).done());
     }
-    @Test void initialOrdersShowTodayThenResumeEveryHistoricalPage(){
+    @Test void historicalOrdersPrioritizeMonthAndResumeEveryOlderPage(){
         var zone=ZoneId.of("Asia/Manila");long until=LocalDateTime.of(2026,10,21,12,0).atZone(zone).toEpochSecond();
         long from=LocalDate.of(2026,7,24).atStartOfDay(zone).toEpochSecond();
         var old=Map.<String,Object>of("from",from,"to",from+604800,"until",until,"cursor","keep","coverage","2026-07-24");
         var prioritized=FinanceSync.recentSettlementFirst(old,true,"ORDER",zone);
-        assertEquals(LocalDate.of(2026,10,21).atStartOfDay(zone).toEpochSecond(),prioritized.get("from"));
+        assertEquals(LocalDate.of(2026,9,22).atStartOfDay(zone).toEpochSecond(),prioritized.get("from"));
         var next=FinanceSync.nextWindow(prioritized,new FinanceMarketplace.Step(prioritized,true));
+        while(next.checkpoint().containsKey("backfillResume"))next=FinanceSync.nextWindow(next.checkpoint(),new FinanceMarketplace.Step(next.checkpoint(),true));
         assertEquals("keep",next.checkpoint().get("cursor"));assertEquals(prioritized.get("from"),next.checkpoint().get("until"));
     }
     @Test void mysqlTimestampVariantsUseUtc(){

@@ -33,3 +33,9 @@
 
 .fi-authorization-link{display:grid;gap:10px;padding:14px;border:1px solid var(--fi-border);border-radius:10px;background:var(--fi-surface)}.fi-authorization-link input{font-size:11px}.fi-authorization-link button{justify-self:start}
 @media(max-width:650px){.fi-live-screen:fullscreen .fi-live-kpis{grid-template-columns:1fr 1fr}}
+/* Explicit feedback for user-requested filters; background polls remain quiet. */
+.fi-loading{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:8px;background:#4263eb10;color:#4263eb;font-size:12px;white-space:nowrap}
+.fi-loading[hidden]{display:none}
+.fi-loading::before{content:"";width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:fi-loading-spin .7s linear infinite}
+@keyframes fi-loading-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.fi-loading::before{animation:none}}

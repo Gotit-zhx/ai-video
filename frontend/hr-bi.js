@@ -53,10 +53,11 @@
     const periodDates=days=>{const today=new Date();end.value=date(today);start.value=date(new Date(today.getTime()-(days-1)*86400000));};
     period.value='30';periodDates(30);
     const state=el('div','',shell,'hr-bi-state'),feedback=el('p','',state,'hr-hint');feedback.setAttribute('role','status');
-    const metrics=el('div','',shell,'hr-bi-metrics'),detail=el('div','',shell,'hr-bi-details');
+    const metricRoot=el('div','',shell,'hr-bi-metrics'),detailRoot=el('div','',shell,'hr-bi-details');
     let active=false,generation=0,applied=null,data=null,charts=[],observer=null,themeObserver=null;
     let chartKind='line',seriesName='简历与面试',zoom=null;
     const cycleBar=el('div','',shell,'hr-bi-cyclebar'),cycleCopy=el('div','',cycleBar);
+    shell.insertBefore(cycleBar,detailRoot);
     el('span','周期趋势',cycleCopy,'hr-bi-section-kicker');
     const cycleDescription=el('p','按业务数量汇总 · 北京时间',cycleCopy,'hr-hint');
     const cycleActions=el('div','',cycleBar,'hr-bi-cycle-actions'),cycleButtons=el('div','',cycleActions,'hr-bi-segments');
@@ -135,27 +136,32 @@
       plot.setAttribute('role','img');plot.setAttribute('aria-label',label);plot.dataset.chart=label;
       const empty=el('p','所选范围暂无数据',card,'hr-bi-chart-empty');empty.hidden=nonempty;
       if(!nonempty)plot.setAttribute('aria-label',label+'，所选范围暂无数据');
-      charts.push({node:plot,builder,instance:null});
+      plot.dataset.updateKey='chart:'+label;plot.hrPlot={builder};
     }
     function chartCard(parent,title,subtitle,extra=''){
       const card=el('section','',parent,'hr-bi-card '+extra),heading=el('div','',card,'hr-bi-card-heading'),copy=el('div','',heading);
+      card.dataset.updateKey=extra==='hr-bi-trend'?'trend':title;
       el('h3',title,copy);if(subtitle)el('p',subtitle,copy,'hr-hint');return {card,heading};
     }
     function mountCharts(){
       if(!globalThis.echarts)return;
-      for(const record of charts){
-        if(!record.node.isConnected)continue;
-        record.instance=globalThis.echarts.init(record.node,null,{renderer:'svg'});
-        record.instance.setOption({...baseOptions(),...record.builder()});
-        record.instance.on?.('datazoom',event=>{
-          if(record.node.dataset.chart==='招聘周期趋势'){const bounds=event.batch?.[0]||event;zoom={start:bounds.start,end:bounds.end};}
-        });
+      charts=charts.filter(record=>{if(detailRoot.contains(record.node))return true;record.instance?.dispose();return false;});
+      for(const node of detailRoot.querySelectorAll('.hr-bi-plot')){
+        let record=charts.find(r=>r.node===node);
+        if(!record){
+          record={node,instance:globalThis.echarts.init(node,null,{renderer:'svg'})};charts.push(record);
+          record.instance.on?.('datazoom',event=>{
+            if(node.dataset.chart==='招聘周期趋势'){const bounds=event.batch?.[0]||event;zoom={start:bounds.start,end:bounds.end};}
+          });
+        }
+        record.builder=node.hrPlot.builder;
+        IncrementalCharts.update(record.instance,{...baseOptions(),...record.builder()});
       }
-      if(globalThis.ResizeObserver){
-        observer=new ResizeObserver(()=>{if(active)charts.forEach(r=>r.instance?.resize());});observer.observe(shell);
+      if(!observer&&globalThis.ResizeObserver){
+        observer=new ResizeObserver(()=>{if(active)charts.forEach(r=>IncrementalCharts.resize(r.instance,r.node));});observer.observe(shell);
       }
-      if(globalThis.MutationObserver&&document.documentElement){
-        themeObserver=new MutationObserver(()=>{if(active)charts.forEach(r=>r.instance?.setOption({...baseOptions(),...r.builder()},true));});
+      if(!themeObserver&&globalThis.MutationObserver&&document.documentElement){
+        themeObserver=new MutationObserver(()=>{if(active)charts.forEach(r=>IncrementalCharts.update(r.instance,{...baseOptions(),...r.builder()}));});
         themeObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
       }
     }
@@ -167,10 +173,9 @@
       ['消息与通知',[['notifications','通知记录'],['notificationSent','通知送达']]]
     ];
     function render(){
-      destroyCharts();metrics.replaceChildren();detail.replaceChildren();
+      const metrics=metricRoot.cloneNode(false),detail=detailRoot.cloneNode(false);
       const allMetrics=groups.flatMap(([,items])=>items),featured=el('div','',metrics,'hr-bi-featured');
       heroKeys.forEach((key,index)=>metric(featured,allMetrics.find(item=>item[0]===key),true,index));
-      detail.append(cycleBar);
       const grid=el('div','',detail,'hr-bi-chart-grid');
       const trend=chartCard(grid,(modes.find(([key])=>key===data.filters.granularity)?.[1]||'日 K')+' · 招聘进展',
         '观察招聘节奏，悬停查看每个周期的数据。','hr-bi-trend');
@@ -178,7 +183,7 @@
       for(const [name] of seriesGroups)el('option',name,series).value=name;series.value=seriesName;
       const kinds=el('div','',tools,'hr-bi-segments is-small');
       const kindButtons=['line','bar'].map((kind,index)=>{
-        const node=button(index?'柱状':'面积',kinds,()=>{chartKind=kind;updateTrend();});node.dataset.kind=kind;return node;
+        const node=button(index?'柱状':'面积',kinds,()=>{});node.onclick=()=>{chartKind=kind;updateTrend();};node.dataset.kind=kind;return node;
       });
       const trendBuilder=()=>{
         const columns=seriesGroups.find(([name])=>name===seriesName)[1],long=data.trend.length>12;
@@ -187,8 +192,8 @@
           grid:{left:5,right:15,top:26,bottom:long?82:46,containLabel:true},legend:{...baseOptions().legend,bottom:long?38:0},
           xAxis:{...axis('category'),data:data.trend.map(r=>r.date),boundaryGap:chartKind==='bar',
             axisLabel:{...axis('category').axisLabel,hideOverlap:true,margin:16}},yAxis:axis(),
-          dataZoom:long?[{type:'inside',start:zoom?.start??0,end:zoom?.end??100},
-            {type:'slider',height:16,bottom:0,start:zoom?.start??0,end:zoom?.end??100,borderColor:'transparent',
+          dataZoom:long?[{id:'trend-inside',type:'inside'},
+            {id:'trend-slider',type:'slider',height:16,bottom:0,borderColor:'transparent',
               backgroundColor:theme().grid,fillerColor:'#4263eb20',showDetail:false,brushSelect:false,handleSize:0}]:[],
           series:columns.map(([key,name],index)=>({name,type:chartKind==='bar'?'bar':'line',data:data.trend.map(r=>r[key]||0),
             smooth:false,showSymbol:data.trend.length<=1,symbolSize:7,lineStyle:{width:2.5},barMaxWidth:26,
@@ -199,10 +204,12 @@
       };
       chart(trend.card,'招聘周期趋势',trendBuilder,250);
       function updateTrend(){
-        kindButtons.forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.kind===chartKind)));
-        charts.find(r=>r.node.dataset.chart==='招聘周期趋势')?.instance?.setOption({...baseOptions(),...trendBuilder()},true);
+        detailRoot.querySelectorAll('[data-kind]').forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.kind===chartKind)));
+        const record=charts.find(r=>r.node.dataset.chart==='招聘周期趋势');
+        if(record){record.builder=trendBuilder;IncrementalCharts.update(record.instance,{...baseOptions(),...trendBuilder()});}
       }
-      series.addEventListener('change',()=>{seriesName=series.value;zoom=null;updateTrend();});updateTrend();
+      series.onchange=event=>{seriesName=event.currentTarget.value;updateTrend();};
+      kindButtons.forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.kind===chartKind)));
       el('span',data.filters.from+' — '+data.filters.to,trend.card,'hr-bi-range');
       const source=chartCard(grid,'简历来源','收到简历的来源构成','hr-bi-source');
       const sourceRows=data.sources||[],sourceTotal=sourceRows.reduce((sum,r)=>sum+r.count,0);
@@ -287,7 +294,7 @@
         series:[{name:'通过率',type:'bar',barWidth:20,showBackground:true,backgroundStyle:{color:theme().grid,borderRadius:6},
           label:{show:true,position:'right',color:theme().ink,
             formatter:params=>data.metrics[rateItems[params.dataIndex][0]]==null?'—':params.value+'%'},
-          data:rateItems.map(([key],i)=>({value:data.metrics[key]??0,itemStyle:{color:colors[i],borderRadius:6}}))}]
+          data:rateItems.map(([key],i)=>({value:data.metrics[key]??0,label:{formatter:data.metrics[key]==null?'—':'{c}%'},itemStyle:{color:colors[i],borderRadius:6}}))}]
       }),185,rateItems.some(([key])=>data.metrics[key]!=null));
       const additional=el('details','',detail,'hr-bi-all-metrics');el('summary','查看全部 24 项指标',additional);
       for(const [title,items] of groups){
@@ -305,7 +312,7 @@
       const definitions=el('section','',records,'hr-bi-card hr-bi-definitions');el('h3','统计口径与导出内容',definitions);
       const list=el('ul','',definitions);data.definitions.forEach(text=>el('li',text,list));
       const foot=el('div','',detail,'hr-bi-footer');el('span','HOYEE · RECRUITMENT INTELLIGENCE',foot);el('span','数据来自平台已保存记录',foot);
-      mountCharts();
+      IncrementalDOM.patch(metricRoot,metrics);IncrementalDOM.patch(detailRoot,detail);mountCharts();
     }
     function options(select,rows,allLabel){
       const chosen=select.value;select.replaceChildren();el('option',allLabel,select).value='';
@@ -324,21 +331,21 @@
         if(ticket!==generation||!active||!allowed())return;
         if(response.success===false||!response.data?.metrics)throw Error(response.message||'报表读取失败');
         data=response.data;options(department,data.options.departments,'全部部门');options(job,data.options.jobs,'全部职位');
-        applied=data.filters;zoom=null;syncCycles(applied.granularity);render();
+        applied=data.filters;syncCycles(applied.granularity);render();
         download.href='/api/v1/hr/bi/export?'+new URLSearchParams(applied);download.hidden=false;
         feedback.textContent='更新于 '+new Date(data.generatedAt).toLocaleString('zh-CN')+' · Excel 含汇总与全部业务明细';
         cycleDescription.textContent=applied.from+' — '+applied.to+' · 北京时间';
         if(!library)feedback.textContent+=' · 图表加载失败，可刷新重试或查看数据明细';
       }catch(e){
         if(ticket===generation){
-          destroyCharts();metrics.replaceChildren();detail.replaceChildren();data=null;applied=null;
-          feedback.textContent=e.message;feedback.className='hr-error';
+          feedback.textContent=(data?'更新暂未完成，保留上次数据。':'')+e.message;feedback.className='hr-error';
+          if(data)download.hidden=false;
         }
       }finally{if(ticket===generation){apply.disabled=refresh.disabled=false;shell.setAttribute('aria-busy','false');}}
     }
     return {
       enter(){active=true;load();},leave(){active=false;++generation;destroyCharts();},
-      reset(){active=false;++generation;destroyCharts();metrics.replaceChildren();detail.replaceChildren();download.hidden=true;applied=null;data=null;}
+      reset(){active=false;++generation;destroyCharts();metricRoot.replaceChildren();detailRoot.replaceChildren();download.hidden=true;applied=null;data=null;}
     };
   };
 })();

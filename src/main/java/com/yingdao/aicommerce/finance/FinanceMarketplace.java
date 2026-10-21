@@ -18,6 +18,9 @@ public class FinanceMarketplace {
     public record Step(Map<String,Object> checkpoint,boolean done){}
     public Step step(Scope scope,Map<String,Object> state,Map<String,Object> checkpoint){
         String shopId=text(state.get("shop_id")),channel=text(state.get("channel")),zone=text(state.get("timezone"));
+        if("ORDER_LIVE".equals(channel)){
+            channel="ORDER";checkpoint=new LinkedHashMap<>(checkpoint);checkpoint.put("liveOrder",true);
+        }
         MarketplaceAccess.Connection c=authorization.connection(scope,shopId);
         if("TIKTOK_SHOP".equals(c.shop().getPlatform()))return tik(scope,c,channel,zone,checkpoint);
         if("SHOPEE".equals(c.shop().getPlatform()))return sho(scope,c,channel,zone,checkpoint);
@@ -29,7 +32,7 @@ public class FinanceMarketplace {
     Step tik(Scope s,MarketplaceAccess.Connection c,String channel,String zone,Map<String,Object> cp){
         Map<String,Object> next=new LinkedHashMap<>(cp);String cursor=text(cp.get("cursor"));
         long from=number(cp.get("from")),to=number(cp.get("to"));String shop=c.shop().getId();
-        Map<String,Object> q=new LinkedHashMap<>(Map.of("page_size",20,"sort_order","ASC"));
+        Map<String,Object> q=new LinkedHashMap<>(Map.of("page_size",20,"sort_order",Boolean.TRUE.equals(cp.get("liveOrder"))?"DESC":"ASC"));
         if(!cursor.isEmpty())q.put("page_token",cursor);
         Map<String,Object> data;
         if(channel.equals("PENDING")){

@@ -42,6 +42,8 @@ class FinanceConfigurationIntegrationTest {
         db.update("INSERT INTO finance_shops(organization_id,user_id,shop_id,enabled,currency,timezone) VALUES('org','u','legacy',TRUE,'PHP','Asia/Manila')");
         migration("V118__finance_independent_configuration.sql");
         migration("V119__finance_ad_authorization.sql");
+        migration("V120__finance_dashboard_covering_index.sql");
+        migration("V121__finance_live_order_lane.sql");
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
@@ -65,6 +67,38 @@ class FinanceConfigurationIntegrationTest {
         return text(service.shops(s).getFirst().get("id"));
     }
     void record(Scope s,String shop,String kind,String external,BigDecimal amount,Map<String,Object> raw){repo.save(s,new Entry(shop,"SHOPEE",kind,external,"order1","bill1","测试","SETTLED",filter.start(),"PHP",amount,null,null,null,null,"API",raw));}
+    @Test void dashboardAggregatesMatchSqlAndCachedReadsRemainOwnerScoped(){
+        String id=connect(owner,false),foreign=connect(other,false);
+        for(String kind:List.of("ORDER","SETTLEMENT","FEE","REFUND")){
+            record(owner,id,kind,kind+"1",new BigDecimal("100.25"),Map.of());
+            record(owner,id,kind,kind+"2",null,Map.of());
+            record(other,foreign,kind,"private-"+kind,new BigDecimal("999"),Map.of());
+        }
+        for(var day:List.of(filter.start().minusDays(1),filter.end().plusDays(1)))
+            repo.save(owner,new Entry(id,"SHOPEE","ORDER","outside-"+day,"","","订单","PAID",day,"PHP",new BigDecimal("99999"),null,null,null,null,"API",Map.of()));
+        var first=service.dashboard(owner,filter,false,null);
+        var actual=rows(first.get("totals"));
+        for(var expected:repo.grouped(owner,filter,"kind")){
+            var total=actual.stream().filter(r->r.get("kind").equals(expected.get("kind"))).findFirst().orElseThrow();
+            for(String field:List.of("amount","records","known_amounts"))
+                assertEquals(0,decimal(expected.get(field)).compareTo(decimal(total.get(field))));
+        }
+        assertSame(first,service.dashboard(owner,filter,false,null));
+        assertEquals(0,new BigDecimal("999").compareTo(decimal(rows(service.dashboard(other,filter,false,null).get("totals")).getFirst().get("amount"))));
+        assertTrue(rows(first.get("statuses")).stream().allMatch(r->"ORDER".equals(r.get("kind"))));
+        assertTrue(rows(first.get("fees")).stream().allMatch(r->"FEE".equals(r.get("kind"))));
+        assertEquals(1,rows(first.get("trend")).size());
+        assertEquals("2026-10-21",rows(first.get("trend")).getFirst().get("period"));
+        assertEquals(0,new BigDecimal("100.25").compareTo(decimal(rows(first.get("trend")).getFirst().get("ORDER"))));
+        var wider=new Filter(filter.start().minusDays(1),filter.end(),filter.shopId(),filter.platform(),filter.currency(),"day");
+        assertEquals(0,new BigDecimal("100099.25").compareTo(decimal(rows(service.dashboard(owner,wider,false,null).get("totals")).stream().filter(r->"ORDER".equals(r.get("kind"))).findFirst().orElseThrow().get("amount"))));
+        var converted=rows(service.dashboard(owner,filter,true,"fixed").get("totals"));
+        assertEquals(0,new BigDecimal("12.53125").compareTo(decimal(converted.getFirst().get("amount"))));
+        service.removeShop(owner,id);
+        assertTrue(rows(service.dashboard(owner,filter,false,null).get("totals")).isEmpty());
+        assertFalse(rows(service.dashboard(other,filter,false,null).get("totals")).isEmpty());
+        assertTrue(db.queryForObject("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='finance_records' AND index_name='idx_finance_dashboard'",Integer.class)>0);
+    }
     @Test void authorizationIsIndependentEncryptedScopedAndPausedUntilEnabled(){
         String id=connect(owner,false),second=connect(other,false);assertNotEquals(id,second);
         assertEquals(1,service.shops(owner).size());assertEquals(false,service.shops(owner).getFirst().get("enabled"));
@@ -72,7 +106,7 @@ class FinanceConfigurationIntegrationTest {
         String secret=db.queryForObject("SELECT access_token_encrypted FROM finance_connections WHERE id=?",String.class,id);assertNotEquals("finance-access",secret);
         assertEquals("finance-access",cipher.decrypt(secret,"org","finance-shop:u:"+id));
         assertThrows(IllegalStateException.class,()->cipher.decrypt(secret,"org","legacy"));
-        service.configure(owner,id,true,"PHP","Asia/Manila");assertEquals(3,service.syncStates(owner).size());
+        service.configure(owner,id,true,"PHP","Asia/Manila");assertEquals(4,service.syncStates(owner).size());
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
     }
     @Test void legacyAndOtherUsersRecordsAreHiddenFromEveryReadPath(){
@@ -153,14 +187,38 @@ class FinanceConfigurationIntegrationTest {
         db.update("UPDATE finance_sync_states SET status='SUCCESS',last_success_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 MINUTE),next_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 10 MINUTE) WHERE shop_id=?",id);
         record(owner,id,"ORDER","o1",new BigDecimal("100"),Map.of("create_time",LocalDateTime.of(2026,10,21,10,0).atZone(ZoneId.of("Asia/Manila")).toEpochSecond()));
         var screen=service.screen(owner,filter,true,"fixed");
-        assertEquals("READY",db.queryForObject("SELECT status FROM finance_sync_states WHERE shop_id=? AND channel='ORDER'",String.class,id));
+        assertEquals("READY",db.queryForObject("SELECT status FROM finance_sync_states WHERE shop_id=? AND channel='ORDER_LIVE'",String.class,id));
+        assertEquals("SUCCESS",db.queryForObject("SELECT status FROM finance_sync_states WHERE shop_id=? AND channel='ORDER'",String.class,id));
         assertEquals("SUCCESS",db.queryForObject("SELECT status FROM finance_sync_states WHERE shop_id=? AND channel='SETTLEMENT'",String.class,id));
         var hour=rows(screen.get("hourly")).get(10);assertEquals(new BigDecimal("12.500000"),hour.get("amount"));assertEquals(1L,hour.get("count"));assertEquals(1,rows(screen.get("recent")).size());
-        db.update("UPDATE finance_sync_states SET status='ERROR',next_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 20 MINUTE) WHERE channel='ORDER'");
-        service.screen(owner,filter,false,null);assertEquals("ERROR",db.queryForObject("SELECT status FROM finance_sync_states WHERE channel='ORDER'",String.class));
-        db.update("UPDATE finance_sync_states SET status='SYNCING',checkpoint_json='{\"cursor\":\"retain\"}' WHERE channel='ORDER'");service.screen(owner,filter,false,null);
-        assertTrue(db.queryForObject("SELECT checkpoint_json FROM finance_sync_states WHERE channel='ORDER'",String.class).contains("retain"));
+        db.update("UPDATE finance_sync_states SET status='ERROR',next_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 20 MINUTE) WHERE channel='ORDER_LIVE'");
+        service.screen(owner,filter,false,null);assertEquals("ERROR",db.queryForObject("SELECT status FROM finance_sync_states WHERE channel='ORDER_LIVE'",String.class));
+        db.update("UPDATE finance_sync_states SET status='SYNCING',checkpoint_json='{\"cursor\":\"retain\"}' WHERE channel='ORDER_LIVE'");service.screen(owner,filter,false,null);
+        assertTrue(db.queryForObject("SELECT checkpoint_json FROM finance_sync_states WHERE channel='ORDER_LIVE'",String.class).contains("retain"));
     }
+    @Test void liveOrdersContinueWhileHistoricalCursorIsPausedAndKeepRequestWatermark(){
+        String id=connect(owner,false);service.configure(owner,id,true,"PHP","Asia/Manila");
+        db.update("UPDATE finance_sync_states SET next_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)");
+        String historical="{\"from\":1784822400,\"to\":1785427200,\"until\":1792512000,\"cursor\":\"history-page\"}";
+        db.update("UPDATE finance_sync_states SET status='SYNCING',checkpoint_json=? WHERE channel='ORDER'",historical);
+        migrationUncheckedLive();
+        assertEquals("history-page",map(repo.read(db.queryForObject("SELECT checkpoint_json FROM finance_sync_states WHERE channel='ORDER'",String.class))).get("cursor"));
+        Instant boundary=Instant.now().minusSeconds(120);
+        var cp=Map.<String,Object>of("from",boundary.minusSeconds(3600).getEpochSecond(),"to",boundary.getEpochSecond(),"until",boundary.getEpochSecond(),"coverage",LocalDate.now().toString(),"cursor","live-page");
+        db.update("UPDATE finance_sync_states SET checkpoint_json=?,next_at=UTC_TIMESTAMP() WHERE channel='ORDER_LIVE'",repo.write(cp));
+        var market=mock(FinanceMarketplace.class);
+        when(market.step(any(),anyMap(),anyMap())).thenAnswer(invocation->new FinanceMarketplace.Step(invocation.getArgument(2),true));
+        var worker=new FinanceSync(repo,market);
+        try{
+            worker.tick();
+            assertEquals(boundary.getEpochSecond(),db.queryForObject("SELECT UNIX_TIMESTAMP(last_success_at) FROM finance_sync_states WHERE channel='ORDER_LIVE'",Long.class));
+            assertEquals("history-page",repo.read(db.queryForObject("SELECT checkpoint_json FROM finance_sync_states WHERE channel='ORDER'",String.class)).get("cursor"));
+            db.update("UPDATE finance_sync_states SET next_at=UTC_TIMESTAMP() WHERE channel='ORDER_LIVE'");
+            worker.tick();
+            verify(market).step(eq(owner),argThat(row->"ORDER_LIVE".equals(row.get("channel"))),argThat(checkpoint->number(checkpoint.get("from"))==boundary.minusSeconds(300).getEpochSecond()&&!checkpoint.containsKey("cursor")));
+        }finally{worker.stop();}
+    }
+    void migrationUncheckedLive(){try{migration("V121__finance_live_order_lane.sql");}catch(Exception e){throw new RuntimeException(e);}}
     com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp adHttp;
     FinanceAdAuthorization adAuth(){
         adHttp=mock(com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp.class);

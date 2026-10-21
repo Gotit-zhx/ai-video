@@ -31,6 +31,7 @@
     // the retained node and current row/version, without accumulating listeners.
     for(const name of ['onclick','onchange','oninput','ontoggle'])if(next[name])node[name]=next[name];
     if(next.financePlot){node.financePlot=next.financePlot;return node;}
+    if(next.hrPlot){node.hrPlot=next.hrPlot;return node;}
     if(node.tagName==='TEXTAREA'){
       if(!focused&&priorValue!==nextValue&&node.value!==next.value)node.value=next.value;
       if(priorValue!==nextValue)node.defaultValue=next.defaultValue;

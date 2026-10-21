@@ -14,7 +14,7 @@ public class FinanceSync {
     private final java.util.concurrent.atomic.AtomicBoolean verified=new java.util.concurrent.atomic.AtomicBoolean();
     private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-shop-sync");t.setDaemon(true);return t;});
     public FinanceSync(FinanceRepository repo,FinanceMarketplace marketplace){this.repo=repo;this.marketplace=marketplace;}
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance shop sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance sync dispatcher temporarily unavailable",e);}},45,10,java.util.concurrent.TimeUnit.SECONDS);}
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance shop sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance sync dispatcher temporarily unavailable",e);}},45,5,java.util.concurrent.TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
     public void tick(){
         var due=repo.jdbc().queryForList("""
@@ -37,7 +37,8 @@ public class FinanceSync {
                 LocalDate today=now.atZone(zone).toLocalDate();boolean initial=row.get("last_success_at")==null;
                 Instant last=initial?null:instant(row.get("last_success_at"));
                 boolean nightly=last!=null&&last.atZone(zone).toLocalDate().isBefore(today);
-                LocalDate start=initial?today.minusDays(89):nightly?today.minusDays(30):today.minusDays(1);
+                boolean live="ORDER_LIVE".equals(row.get("channel"));
+                LocalDate start=live?(initial?today:today.minusDays(1)):initial?today.minusDays(89):nightly?today.minusDays(30):today.minusDays(1);
                 if("PENDING".equals(row.get("channel"))){
                     start=today.minusDays(89);
                     var oldest=repo.jdbc().queryForList("SELECT MIN(record_date) day FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind='PENDING'",
@@ -50,7 +51,8 @@ public class FinanceSync {
                 long from=start.atStartOfDay(zone).toEpochSecond();
                 // Order APIs filter by update time. A five-minute overlap retains late updates
                 // without scanning yesterday's entire order book on every live refresh.
-                if("ORDER".equals(row.get("channel"))&&!initial&&!nightly)from=Math.max(from,last.minusSeconds(300).getEpochSecond());
+                if(live&&!initial)from=last.minusSeconds(300).getEpochSecond();
+                else if("ORDER".equals(row.get("channel"))&&!initial&&!nightly)from=Math.max(from,last.minusSeconds(300).getEpochSecond());
                 cp.put("from",from);cp.put("to",Math.min(until,from+7*86400L));
                 cp.put("until",until);cp.put("coverage",start.toString());cp.put("run",UUID.randomUUID().toString());
             }
@@ -64,10 +66,14 @@ public class FinanceSync {
             var step=nextWindow(cp,marketplace.step(s,row,cp));Map<String,Object> next=new LinkedHashMap<>(step.checkpoint());
             boolean done=step.done();
             if(done){
-                int seconds=Set.of("SETTLEMENT","PENDING").contains(text(row.get("channel")))?3600:600;
+                boolean live="ORDER_LIVE".equals(row.get("channel"));
+                int seconds=live?60:Set.of("SETTLEMENT","PENDING").contains(text(row.get("channel")))?3600:600;
+                // The live watermark is the request boundary, not completion time:
+                // orders arriving while a long page chain runs must be fetched next time.
+                Instant completedThrough=live?Instant.ofEpochSecond(number(cp.get("until"))):Instant.now();
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=NULL,status='SUCCESS',error_message=NULL,failures=0,"
-                        +"lease_until=NULL,last_success_at=UTC_TIMESTAMP(6),coverage_start=COALESCE(coverage_start,?),next_at=? WHERE "+where,
-                        cp.get("coverage"),Timestamp.from(now.plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3]);
+                        +"lease_until=NULL,last_success_at=?,coverage_start=COALESCE(coverage_start,?),next_at=? WHERE "+where,
+                        Timestamp.from(completedThrough),cp.get("coverage"),Timestamp.from(Instant.now().plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3]);
             }else{
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=?,status='SYNCING',error_message=NULL,failures=0,"
                         +"lease_until=NULL,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 10 SECOND) WHERE "+where,
@@ -87,30 +93,35 @@ public class FinanceSync {
         }
     }
     static Map<String,Object> recentSettlementFirst(Map<String,Object> cp,boolean initial,String channel,ZoneId zone){
-        if(!initial||!Set.of("SETTLEMENT","ORDER").contains(channel)||Boolean.TRUE.equals(cp.get("recentFirst"))
+        if(!initial||!Set.of("SETTLEMENT","ORDER").contains(channel)||cp.containsKey("backfillResume")
+                ||number(cp.get("recentWindowDays"))>=30
                 ||number(cp.get("to"))>=number(cp.get("until")))return cp;
         long until=number(cp.get("until"));
-        long recent=Instant.ofEpochSecond(until).atZone(zone).toLocalDate().minusDays("ORDER".equals(channel)?0:6).atStartOfDay(zone).toEpochSecond();
+        long recent=Instant.ofEpochSecond(until).atZone(zone).toLocalDate().minusDays(29).atStartOfDay(zone).toEpochSecond();
         recent=Math.max(recent,number(cp.get("to")));
         if(recent>=until)return cp;
         // Retain an in-flight page/bill exactly as it was, then resume it after recent data is visible.
         var resume=new LinkedHashMap<>(cp);resume.put("until",recent);resume.put("recentFirst",true);
+        resume.put("recentWindowDays",30);
         var next=new LinkedHashMap<String,Object>();
-        next.put("from",recent);next.put("to",until);next.put("until",until);next.put("coverage",cp.get("coverage"));
+        next.put("from",recent);next.put("to",Math.min(recent+7*86400L,until));next.put("until",until);next.put("coverage",cp.get("coverage"));
         next.put("run",UUID.randomUUID().toString());next.put("recentFirst",true);next.put("backfillResume",resume);
+        next.put("recentWindowDays",30);
         return next;
     }
     static FinanceMarketplace.Step nextWindow(Map<String,Object> cp,FinanceMarketplace.Step step){
         if(!step.done())return step;
-        if(cp.get("backfillResume") instanceof Map<?,?>)
-            return new FinanceMarketplace.Step(new LinkedHashMap<>(map(cp.get("backfillResume"))),false);
         if(number(cp.get("to"))<number(cp.get("until"))){
             long from=number(cp.get("to"));var next=new LinkedHashMap<String,Object>();
             next.put("from",from);next.put("to",Math.min(from+7*86400L,number(cp.get("until"))));
             next.put("until",cp.get("until"));next.put("coverage",cp.get("coverage"));next.put("run",UUID.randomUUID().toString());
             if(Boolean.TRUE.equals(cp.get("recentFirst")))next.put("recentFirst",true);
+            if(cp.containsKey("recentWindowDays"))next.put("recentWindowDays",cp.get("recentWindowDays"));
+            if(cp.containsKey("backfillResume"))next.put("backfillResume",cp.get("backfillResume"));
             return new FinanceMarketplace.Step(next,false);
         }
+        if(cp.get("backfillResume") instanceof Map<?,?>)
+            return new FinanceMarketplace.Step(new LinkedHashMap<>(map(cp.get("backfillResume"))),false);
         return step;
     }
 }

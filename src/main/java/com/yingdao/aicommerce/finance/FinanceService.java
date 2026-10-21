@@ -13,6 +13,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @Service
 public class FinanceService {
     private final FinanceRepository repo; private final OrganizationAccessPolicy access; private final FinanceShopAuthorization shops;private final FinanceFx fx;
+    private final FinanceSnapshotCache snapshots=new FinanceSnapshotCache();
     public FinanceService(FinanceRepository repo,OrganizationAccessPolicy access,FinanceShopAuthorization shops,FinanceFx fx){
         this.repo=repo;this.access=access;this.shops=shops;this.fx=fx;
     }
@@ -44,15 +45,19 @@ public class FinanceService {
             UPDATE finance_connections SET enabled=?,currency=?,timezone=?,updated_at=UTC_TIMESTAMP(6)
             WHERE organization_id=? AND user_id=? AND id=? AND status<>'REMOVED'
             """,enabled,currency,timezone,s.organizationId(),s.userId(),id);
-        var channels=new ArrayList<>(List.of("ORDER","REFUND","SETTLEMENT"));
+        var channels=new ArrayList<>(List.of("ORDER","ORDER_LIVE","REFUND","SETTLEMENT"));
         if("TIKTOK_SHOP".equals(shop.get("platform")))channels.add("PENDING");
         if(enabled)for(String channel:channels)repo.jdbc().update("""
             INSERT IGNORE INTO finance_sync_states(organization_id,user_id,shop_id,channel) VALUES(?,?,?,?)
             """,s.organizationId(),s.userId(),id,channel);
+        invalidateAfterCommit(s);
     }
     public List<Map<String,Object>> syncStates(Scope s){
         return repo.jdbc().queryForList("""
-            SELECT st.shop_id,st.channel,st.status,st.error_message,st.next_at,st.last_success_at,st.coverage_start
+            SELECT st.shop_id,st.channel,st.status,st.error_message,st.next_at,st.last_success_at,st.coverage_start,
+              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.from')) window_start,
+              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.to')) window_end,
+              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.until')) target_until
             FROM finance_sync_states st JOIN finance_connections c ON c.id=st.shop_id AND c.organization_id=st.organization_id AND c.user_id=st.user_id
             WHERE st.organization_id=? AND st.user_id=? AND c.status<>'REMOVED' ORDER BY st.shop_id,st.channel
             """,s.organizationId(),s.userId());
@@ -67,27 +72,43 @@ public class FinanceService {
             status=CASE WHEN lease_until>UTC_TIMESTAMP(6) THEN status ELSE 'READY' END
             WHERE organization_id=? AND user_id=? AND shop_id=?
             """,s.organizationId(),s.userId(),shopId);
+        snapshots.invalidate(s);
     }
     @Transactional
     public void removeShop(Scope s,String id){
         ownedShop(s,id);
         repo.jdbc().update("UPDATE finance_connections SET enabled=FALSE,status='REMOVED',updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND user_id=? AND id=?",s.organizationId(),s.userId(),id);
         repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=FALSE,status='DISABLED' WHERE organization_id=? AND user_id=? AND shop_id=?",s.organizationId(),s.userId(),id);
+        invalidateAfterCommit(s);
+    }
+    private void invalidateAfterCommit(Scope s){
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+                @Override public void afterCommit(){snapshots.invalidate(s);}
+            });
+        else snapshots.invalidate(s);
     }
     public Map<String,Object> dashboard(Scope s,Filter requested,boolean cny,String snapshotId){
+        return snapshots.get(new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false),
+                ()->buildDashboard(s,requested,cny,snapshotId,false));
+    }
+    Map<String,Object> buildDashboard(Scope s,Filter requested,boolean cny,String snapshotId,boolean live){
         Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity());
-        List<Map<String,Object>> currencies=repo.grouped(s,all,"currency,kind");
-        List<String> codes=currencies.stream().map(r->text(r.get("currency"))).distinct().sorted().toList();
+        // One shop aggregate supplies currencies, totals and ranking. Previously
+        // each request scanned the same record range three times for these.
+        var allRanking=repo.grouped(s,all,"shop_id,kind");
+        List<String> codes=allRanking.stream().map(r->text(r.get("currency"))).distinct().sorted().toList();
         String currency=requested.currency().isBlank()?(cny||codes.isEmpty()?"":codes.getFirst()):requested.currency();
         Filter f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity());
-        List<Map<String,Object>> totals=repo.grouped(s,f,"kind");
+        var ranking=allRanking.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
+        List<Map<String,Object>> totals=nativeTotals(ranking);
         FinanceFx.Quote quote=cny?fx.quote(snapshotId):null;
         if(cny)totals=FinanceFx.groups(totals,quote,"kind");
         LinkedHashMap<String,Map<String,Object>> points=new LinkedHashMap<>();
-        for(LocalDate d=f.start();!d.isAfter(f.end());d=d.plusDays(1)){
+        for(LocalDate d=f.start();!live&&!d.isAfter(f.end());d=d.plusDays(1)){
             String key=bucket(d,f.granularity());points.computeIfAbsent(key,k->{var m=new LinkedHashMap<String,Object>();m.put("period",k);return m;});
         }
-        var daily=repo.grouped(s,f,"record_date,kind");
+        var daily=live?List.<Map<String,Object>>of():repo.grouped(s,f,"record_date,kind");
         if(cny)daily=FinanceFx.groups(daily,quote,"record_date","kind");
         for(var row:daily){
             String key=bucket(LocalDate.parse(text(row.get("record_date"))),f.granularity());
@@ -100,7 +121,7 @@ public class FinanceService {
         if(cny)out.put("fx",quote.metadata());
         out.put("currencies",codes);out.put("totals",totals);out.put("trend",new ArrayList<>(points.values()));
         out.put("shops",shops(s));
-        var ranking=repo.grouped(s,f,"shop_id,kind");var fees=repo.grouped(s,f,"category,kind");var statuses=repo.grouped(s,f,"status,kind");
+        var fees=live?List.<Map<String,Object>>of():repo.grouped(s,f,"category,kind");var statuses=repo.grouped(s,f,"status,kind");
         out.put("ranking",cny?FinanceFx.groups(ranking,quote,"shop_id","kind"):ranking);
         out.put("fees",(cny?FinanceFx.groups(fees,quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
         out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s));
@@ -108,8 +129,25 @@ public class FinanceService {
         out.put("basis","订单按创建日期，结算与费用按平台结算日期；广告按广告账户日期。原币分别统计，已结算不代表银行到账。");
         return out;
     }
+    static List<Map<String,Object>> nativeTotals(List<Map<String,Object>> ranking){
+        var totals=new LinkedHashMap<List<String>,Map<String,Object>>();
+        for(var row:ranking){
+            String kind=text(row.get("kind")),currency=text(row.get("currency"));
+            var total=totals.computeIfAbsent(List.of(kind,currency),k->new LinkedHashMap<>(Map.of("kind",kind,"currency",currency)));
+            for(String field:List.of("amount","revenue","records","known_amounts","impressions","clicks","conversions")){
+                BigDecimal value=decimal(row.get(field));
+                if(value==null)total.putIfAbsent(field,null);
+                else total.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));
+            }
+        }
+        return new ArrayList<>(totals.values());
+    }
     public Map<String,Object> screen(Scope s,Filter requested,boolean cny,String snapshotId){
         if(!requested.start().equals(requested.end()))throw bad("实时大屏按单个业务日展示");
+        return snapshots.get(new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),true),
+                ()->buildScreen(s,requested,cny,snapshotId));
+    }
+    private Map<String,Object> buildScreen(Scope s,Filter requested,boolean cny,String snapshotId){
         // An open screen requests a fresher order snapshot. Never reset an active page,
         // historical checkpoint or failed request's backoff; polling stops when closed.
         repo.jdbc().update("""
@@ -117,12 +155,12 @@ public class FinanceService {
               AND c.organization_id=st.organization_id AND c.user_id=st.user_id
             SET st.next_at=LEAST(st.next_at,UTC_TIMESTAMP(6)),st.status='READY'
             WHERE st.organization_id=? AND st.user_id=? AND c.enabled=TRUE AND c.status='ACTIVE'
-              AND st.channel='ORDER' AND st.status='SUCCESS' AND st.checkpoint_json IS NULL
+              AND st.channel='ORDER_LIVE' AND st.status='SUCCESS' AND st.checkpoint_json IS NULL
               AND st.last_success_at<DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 60 SECOND)
               AND (st.lease_until IS NULL OR st.lease_until<UTC_TIMESTAMP(6))
               AND (?='' OR c.id=?) AND (?='' OR c.platform=?)
             """,s.organizationId(),s.userId(),requested.shopId(),requested.shopId(),requested.platform(),requested.platform());
-        var out=dashboard(s,requested,cny,snapshotId);
+        var out=buildDashboard(s,requested,cny,snapshotId,true);
         var f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),text(map(out.get("filters")).get("currency")),"day");
         FinanceFx.Quote quote=cny?fx.quote(text(map(out.get("fx")).get("id"))):null;
         var shops=rows(out.get("shops"));var hourly=new LinkedHashMap<Integer,Map<String,Object>>();

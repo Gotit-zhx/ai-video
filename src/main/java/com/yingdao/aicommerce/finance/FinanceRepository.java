@@ -49,9 +49,10 @@ public class FinanceRepository {
     public List<Map<String,Object>> grouped(Scope s,Filter f,String dimension) {
         if(!Set.of("kind","record_date,kind","shop_id,kind","category,kind","status,kind","currency,kind").contains(dimension))throw bad("统计维度不正确");
         Query q=query(s,f);
+        String kind=dimension.equals("category,kind")?" AND kind='FEE'":dimension.equals("status,kind")?" AND kind='ORDER'":"";
         return db.queryForList("SELECT "+dimension+",currency,COUNT(*) records,COUNT(amount) known_amounts,SUM(amount) amount,"
                 +"SUM(revenue) revenue,SUM(impressions) impressions,SUM(clicks) clicks,SUM(conversions) conversions"
-                +" FROM finance_records WHERE "+q.where+" AND NOT(kind='BILL' AND source='IMPORT') GROUP BY "+dimension+",currency",q.args.toArray());
+                +" FROM finance_records WHERE "+q.where+kind+" AND NOT(kind='BILL' AND source='IMPORT') GROUP BY "+dimension+",currency",q.args.toArray());
     }
     public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size){
         Query q=query(s,f);String where=q.where;List<Object>a=new ArrayList<>(q.args);
