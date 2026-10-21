@@ -138,6 +138,54 @@ class FinanceTest {
         assertEquals(List.of(),FinanceMarketplace.requiredRows(Map.of("total_count",0),"transactions"));
         assertEquals(List.of(),FinanceMarketplace.requiredRows(Map.of(),"return_orders"));
     }
+    MarketplaceAccess.Connection shopeeConnection(){
+        var shop=new Shop("org",MarketplacePlatform.SHOPEE,"123","","","LOCAL","test","PH","[]");
+        return new MarketplaceAccess.Connection(shop,new MarketplaceAccess.TokenSet("token","",Instant.now(),Instant.now(),List.of()));
+    }
+    Map<String,Object> shopeeCheckpoint(){
+        return Map.of("from",Instant.parse("2026-10-13T16:00:00Z").getEpochSecond(),
+                "to",Instant.parse("2026-10-20T16:00:00Z").getEpochSecond(),"cursor","previous");
+    }
+    @Test void shopeeIncomeAcceptsDocumentedAndLiveEnvelopesAndPreservesPagination(){
+        var client=mock(ShopeeOfficialClient.class);var repo=mock(FinanceRepository.class);
+        var reader=new FinanceMarketplace(mock(ShopAuthorizationService.class),client,mock(TikTokShopOfficialClient.class),repo);
+        var row=Map.of("order_sn","income1","actual_payout_time",Instant.parse("2026-10-19T12:00:00Z").getEpochSecond(),"currency","PHP","released_amount","123.45");
+        var page=Map.of("list",List.of(row),"next_page",Map.of("cursor","next","page_size",5));
+        when(client.shopGet(eq("/api/v2/payment/get_escrow_detail"),any(),anyMap()))
+                .thenReturn(Map.of("response",Map.of("order_income",Map.of("escrow_amount","123.45","commission_fee","5"))));
+        for(var envelope:List.<Map<String,Object>>of(Map.of("income_detail_list",page),Map.of("response",Map.of("income_detail_list",page)),Map.of("response",page))){
+            clearInvocations(repo);
+            when(client.shopGet(eq("/api/v2/payment/get_income_detail"),any(),anyMap())).thenReturn(envelope);
+            var step=reader.sho(new Scope("org","u"),shopeeConnection(),"SETTLEMENT","Asia/Manila",shopeeCheckpoint());
+            assertFalse(step.done());assertEquals("next",step.checkpoint().get("cursor"));
+            var saved=org.mockito.ArgumentCaptor.forClass(Entry.class);verify(repo,times(4)).save(any(),saved.capture());
+            assertEquals(List.of("BILL","SETTLEMENT","FEE","BILL"),saved.getAllValues().stream().map(Entry::kind).toList());
+            assertEquals(new BigDecimal("123.45"),saved.getAllValues().get(1).amount());
+            assertEquals(LocalDate.of(2026,10,19),saved.getAllValues().get(1).date());
+            assertEquals("SETTLED",saved.getAllValues().getLast().status());
+        }
+    }
+    @Test void shopeeSuccessfulEmptyResponseAdvancesWithoutInventingRecords(){
+        var client=mock(ShopeeOfficialClient.class);var repo=mock(FinanceRepository.class);
+        var reader=new FinanceMarketplace(mock(ShopAuthorizationService.class),client,mock(TikTokShopOfficialClient.class),repo);
+        // Observed live response for a historical range before the shop had income.
+        when(client.shopGet(anyString(),any(),anyMap())).thenReturn(Map.of("error","","message","","response",Map.of()));
+        var step=reader.sho(new Scope("org","u"),shopeeConnection(),"SETTLEMENT","Asia/Manila",shopeeCheckpoint());
+        assertTrue(step.done());assertEquals("",step.checkpoint().get("cursor"));verifyNoInteractions(repo);
+        verify(client,times(1)).shopGet(eq("/api/v2/payment/get_income_detail"),any(),anyMap());
+    }
+    @Test void shopeeIncomeMalformedPagesDoNotAdvanceOrPretendToBeEmpty(){
+        var client=mock(ShopeeOfficialClient.class);var repo=mock(FinanceRepository.class);
+        var reader=new FinanceMarketplace(mock(ShopAuthorizationService.class),client,mock(TikTokShopOfficialClient.class),repo);
+        for(var envelope:List.<Map<String,Object>>of(Map.of(),Map.of("response","invalid"),Map.of("response",Map.of("unexpected",List.of())),
+                Map.of("response",Map.of("income_detail_list","invalid")),Map.of("response",Map.of("list",List.of("invalid"))),
+                Map.of("response",Map.of("list",List.of(),"next_page","invalid")),
+                Map.of("response",Map.of("list",List.of(),"next_page",Map.of("cursor","previous"))))){
+            when(client.shopGet(anyString(),any(),anyMap())).thenReturn(envelope);
+            assertThrows(BusinessException.class,()->reader.sho(new Scope("org","u"),shopeeConnection(),"SETTLEMENT","Asia/Manila",shopeeCheckpoint()));
+        }
+        verifyNoInteractions(repo);
+    }
     @Test void mysqlTimestampVariantsUseUtc(){
         var day=LocalDateTime.of(2026,10,20,10,0);
         assertEquals(day.toInstant(ZoneOffset.UTC),instant(day));

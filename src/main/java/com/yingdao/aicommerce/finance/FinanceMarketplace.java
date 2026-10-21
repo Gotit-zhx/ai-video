@@ -141,9 +141,8 @@ public class FinanceMarketplace {
         if(start.equals(end))end=LocalDate.parse(start).plusDays(1).toString();
         q.putAll(Map.of("date_from",start,"date_to",end,"income_status",1,"page_size",5,"cursor",cursor));
         Map<String,Object> envelope=shopee.shopGet("/api/v2/payment/get_income_detail",c,q);
-        data=map(envelope.get("income_detail_list"));
-        if(data.isEmpty())data=map(at(envelope,"response.income_detail_list"));
-        for(var row:requiredRows(data,"list")){
+        data=shopeeIncomePage(envelope);
+        for(var row:data.isEmpty()?List.<Map<String,Object>>of():requiredRows(data,"list")){
             String id=first(row,"order_sn"),currency=first(row,"currency");
             if(id.isBlank())throw bad("收入明细缺少订单编号，已保留同步进度");
             LocalDate day=date(row.get("actual_payout_time"),zone);
@@ -157,7 +156,24 @@ public class FinanceMarketplace {
             }
             save(s,c,"BILL",id,id,id,"订单释放收入","SETTLED",day,currency,amount(row,"released_amount"),row);
         }
-        return advance(next,map(data.get("next_page")),cursor,"cursor");
+        Object pagination=data.get("next_page");
+        if(pagination!=null&&!(pagination instanceof Map<?,?>))throw bad("平台收入分页结构异常，已保留同步进度");
+        return advance(next,map(pagination),cursor,"cursor");
+    }
+    static Map<String,Object> shopeeIncomePage(Map<String,Object> envelope){
+        // Shopee's documented envelope is income_detail_list; live shop responses also
+        // return the same page directly under response, including {} for an empty range.
+        Object page=envelope.get("income_detail_list");
+        if(page==null){
+            Object response=envelope.get("response");
+            if(!(response instanceof Map<?,?>))throw bad("平台收入响应缺少数据页，已保留同步进度");
+            Map<String,Object> body=map(response);
+            page=body.containsKey("income_detail_list")?body.get("income_detail_list"):body;
+        }
+        if(!(page instanceof Map<?,?>))throw bad("平台收入响应结构异常，已保留同步进度");
+        Map<String,Object> result=map(page);
+        if(!result.isEmpty()&&!result.containsKey("list"))throw bad("平台收入响应缺少明细列表，已保留同步进度");
+        return result;
     }
     static String identifier(String id){if(!id.matches("[A-Za-z0-9_-]{1,128}"))throw bad("平台返回的标识无效");return id;}
     static List<Map<String,Object>> requiredRows(Map<String,Object> data,String key){
