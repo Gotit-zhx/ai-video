@@ -34,17 +34,23 @@ public class FinanceRepository {
     }
     Query query(Scope s,Filter f,String alias) {
         String p=alias.isEmpty()?"":alias+".";
-        String w=" "+p+"organization_id=? AND "+p+"user_id=? AND "+p+"record_date>=? AND "+p+"record_date<=?";
-        List<Object> a=new ArrayList<>(List.of(s.organizationId(),s.userId(),Date.valueOf(f.start()),Date.valueOf(f.end())));
+        String w=" "+p+"organization_id=? AND "+p+"record_date>=? AND "+p+"record_date<=?";
+        List<Object> a=new ArrayList<>(List.of(s.organizationId(),Date.valueOf(f.start()),Date.valueOf(f.end())));
         for(var pair:List.of(new String[]{"shop_id",f.shopId()},new String[]{"platform",f.platform()},new String[]{"currency",f.currency()})){
             if(!pair[1].isEmpty()){w+=" AND "+p+pair[0]+"=?";a.add(pair[1]);}
         }
-        w+=" AND "+visible(alias.isEmpty()?"finance_records":alias);
+        String record=alias.isEmpty()?"finance_records":alias;
+        w+=" AND "+visible(record);
+        if(!f.groupId().isBlank()){
+            String group="EXISTS (SELECT 1 FROM finance_connections fg WHERE fg.organization_id="+record+".organization_id AND fg.id="+record+".shop_id AND fg.status<>'REMOVED' AND ";
+            if("UNGROUPED".equals(f.groupId()))w+=" AND ("+record+".shop_id='UNASSIGNED' OR "+group+"fg.group_id IS NULL))";
+            else {w+=" AND "+group+"fg.group_id=?)";a.add(f.groupId());}
+        }
         return new Query(w,a);
     }
     static String visible(String alias){
         return "("+alias+".shop_id='UNASSIGNED' OR EXISTS (SELECT 1 FROM finance_connections fc WHERE fc.id="+alias
-                +".shop_id AND fc.organization_id="+alias+".organization_id AND fc.user_id="+alias+".user_id AND fc.status<>'REMOVED'))";
+                +".shop_id AND fc.organization_id="+alias+".organization_id AND fc.status<>'REMOVED'))";
     }
     public List<Map<String,Object>> grouped(Scope s,Filter f,String dimension) {
         if(!Set.of("kind","record_date,kind","shop_id,kind","category,kind","status,kind","currency,kind").contains(dimension))throw bad("统计维度不正确");
@@ -66,7 +72,7 @@ public class FinanceRepository {
         return Map.of("items",data,"total",total==null?0:total,"page",safePage,"pageSize",safeSize);
     }
     public Map<String,Object> detail(Scope s,String id){
-        var rows=db.queryForList("SELECT * FROM finance_records WHERE organization_id=? AND user_id=? AND id=? AND "+visible("finance_records"),s.organizationId(),s.userId(),id);
+        var rows=db.queryForList("SELECT * FROM finance_records WHERE organization_id=? AND id=? AND "+visible("finance_records"),s.organizationId(),id);
         if(rows.isEmpty())throw bad("记录不存在");var row=rows.getFirst();
         row.remove("organization_id");row.remove("user_id");
         // Return only selected business fields; raw provider responses may contain buyer PII.

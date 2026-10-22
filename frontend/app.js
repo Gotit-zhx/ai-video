@@ -1106,7 +1106,7 @@ function applyFeatureAccess() {
   document.querySelector("#nav-general-video").hidden = !canViewVideoTasks;
   document.querySelector("#nav-ai-video-monitor").hidden = !canViewVideoMonitor;
   document.querySelector("#nav-publish").hidden = !canAccessProductCenter();
-  document.querySelectorAll('[data-finance-route]').forEach(link => { link.hidden = currentUser?.platformAdmin !== true; });
+  document.querySelectorAll('[data-finance-route]').forEach(link => { link.hidden = !window.FinanceWorkspace?.allowed(); });
   document.querySelector("#nav-shops").hidden = !hasAnyPermission("product:view", "product:publish");
   document.querySelector("#nav-automations").hidden = !canUseAutomation;
   document.querySelector("#nav-automation-admin").hidden = !canViewAutomationAdmin;
@@ -8666,6 +8666,7 @@ function permissionModuleName(module) {
     VIDEO: "视频生产",
     ASSET: "素材中心",
     COMMERCE: "商品与发布",
+    FINANCE: "财务 BI",
     AUTOMATION: "自动化",
     ASSISTANT: "智能助手",
     SYSTEM: "系统管理"

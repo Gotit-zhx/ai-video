@@ -21,9 +21,9 @@ public class FinanceAds {
     }
     public List<Map<String,Object>> list(Scope s){
         return repo.jdbc().queryForList("SELECT advertiser_id,name,shop_id,currency,enabled,status,error_message,next_at,last_success_at,gmv_store_id,gmv_status,gmv_error,timezone"
-                +" FROM finance_ad_accounts a WHERE organization_id=? AND user_id=? AND "+visibleAccount()+" ORDER BY name",s.organizationId(),s.userId());
+                +" FROM finance_ad_accounts a WHERE organization_id=? AND "+visibleAccount()+" ORDER BY name",s.organizationId());
     }
-    static String visibleAccount(){return "(COALESCE(a.shop_id,'')='' OR EXISTS (SELECT 1 FROM finance_connections c WHERE c.id=a.shop_id AND c.organization_id=a.organization_id AND c.user_id=a.user_id AND c.status<>'REMOVED'))";}
+    static String visibleAccount(){return "(COALESCE(a.shop_id,'')='' OR EXISTS (SELECT 1 FROM finance_connections c WHERE c.id=a.shop_id AND c.organization_id=a.organization_id AND c.status<>'REMOVED'))";}
     public void connect(Scope s,String id,String shopId,String token,String gmvStoreId){
         if(!text(id).matches("\\d{5,30}")||text(token).length()<10||text(token).length()>4096)throw bad("请填写有效广告账户 ID 和授权 Access Token");
         validateDestination(s,text(shopId),text(gmvStoreId).trim());
@@ -36,8 +36,8 @@ public class FinanceAds {
         if(!gmvStoreId.isBlank()&&shopId.isBlank())throw bad("GMV Max 店铺报表需先选择对应的专属店铺");
         if(!shopId.isBlank()){
             var shop=finance.ownedShop(s,shopId);if(!"TIKTOK_SHOP".equals(shop.get("platform")))throw bad("TikTok 广告只能绑定 TikTok 店铺");
-            if(repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind='AD' AND source='IMPORT'",
-                    Integer.class,s.organizationId(),s.userId(),shopId)>0)throw bad("该店铺已有导入广告费用，请先使用未分配账户接入，避免重复计费");
+            if(repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_records WHERE organization_id=? AND shop_id=? AND kind='AD' AND source='IMPORT'",
+                    Integer.class,s.organizationId(),shopId)>0)throw bad("该店铺已有导入广告费用，请先使用未分配账户接入，避免重复计费");
         }
     }
     public void connectVerified(Scope s,String id,String shopId,String token,String gmvStoreId,Map<String,Object> advertiser){
@@ -45,8 +45,9 @@ public class FinanceAds {
         validateDestination(s,shopId,gmvStoreId);
         if(!id.equals(text(advertiser.get("advertiser_id"))))throw bad("广告账户授权身份不匹配");
         String currency=first(advertiser,"currency");if(!currency.matches("[A-Z]{3}"))throw bad("广告接口没有返回有效币种");
-        String encrypted=cipher.encrypt(token,s.organizationId(),"finance:"+s.userId()+":"+id);
-        var previous=repo.jdbc().queryForList("SELECT shop_id FROM finance_ad_accounts WHERE organization_id=? AND user_id=? AND advertiser_id=?",s.organizationId(),s.userId(),id);
+        var previous=repo.jdbc().queryForList("SELECT user_id,shop_id FROM finance_ad_accounts WHERE organization_id=? AND advertiser_id=?",s.organizationId(),id);
+        Scope storage=previous.isEmpty()?companyScope(s.organizationId()):new Scope(s.organizationId(),text(previous.getFirst().get("user_id")));
+        String encrypted=cipher.encrypt(token,storage.organizationId(),"finance:"+storage.userId()+":"+id);
         if(!previous.isEmpty()&&!shopId.equals(text(previous.getFirst().get("shop_id")))){
             String original=text(previous.getFirst().get("shop_id"));
             boolean retired=!original.isBlank()&&finance.shops(s).stream().noneMatch(shop->original.equals(text(shop.get("id"))));
@@ -58,12 +59,12 @@ public class FinanceAds {
             last_success_at=IF(shop_id<>VALUES(shop_id),NULL,last_success_at),shop_id=VALUES(shop_id),
             gmv_store_id=VALUES(gmv_store_id),gmv_status=VALUES(gmv_status),gmv_error=NULL,timezone=VALUES(timezone),checkpoint_json=NULL,
             enabled=TRUE,status='READY',error_message=NULL,failures=0,next_at=UTC_TIMESTAMP(6)
-            """,s.organizationId(),s.userId(),id,first(advertiser,"advertiser_name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
+            """,storage.organizationId(),storage.userId(),id,first(advertiser,"advertiser_name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
     }
     public void pause(Scope s,String id,boolean enabled){
         if(enabled&&list(s).stream().noneMatch(a->id.equals(text(a.get("advertiser_id")))))throw bad("广告账户不存在或绑定的财务店铺已移除");
-        if(repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=?,next_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND user_id=? AND advertiser_id=?",
-                enabled,s.organizationId(),s.userId(),id)!=1)throw bad("广告账户不存在");
+        if(repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=?,next_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND advertiser_id=?",
+                enabled,s.organizationId(),id)!=1)throw bad("广告账户不存在");
     }
     Map<String,Object> get(String path,String token,Map<String,?> query){
         var response=http.get(MarketplaceHttp.uri("https://business-api.tiktok.com","/open_api/v1.3"+path,query),Map.of("Access-Token",token));

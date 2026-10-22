@@ -34,7 +34,7 @@ public class FinanceAdAuthorization {
     String callbackUrl(){return settings.callbackBaseUrl()+"/api/v1/shop-authorizations/callback/tiktok_ads";}
     String aad(Scope s){return "finance-ads-app:"+s.userId();}
     Map<String,Object> application(Scope s){
-        var rows=repo.jdbc().queryForList("SELECT * FROM finance_ad_applications WHERE organization_id=? AND user_id=?",s.organizationId(),s.userId());
+        var rows=repo.jdbc().queryForList("SELECT * FROM finance_ad_applications WHERE organization_id=?",s.organizationId());
         return rows.isEmpty()?Map.of():rows.getFirst();
     }
     public Map<String,Object> configuration(Scope s){
@@ -45,22 +45,24 @@ public class FinanceAdAuthorization {
         appId=text(appId).trim();secret=text(secret).trim();
         if(!appId.matches("\\d{5,30}"))throw bad("请填写 TikTok for Business 广告应用 App ID");
         var old=application(s);
+        final Scope storage=old.isEmpty()?companyScope(s.organizationId()):new Scope(s.organizationId(),text(old.get("user_id")));
         if(secret.isBlank()&&!old.isEmpty()&&appId.equals(text(old.get("app_id"))))
-            secret=cipher.decrypt(text(old.get("secret_encrypted")),s.organizationId(),aad(s));
+            secret=cipher.decrypt(text(old.get("secret_encrypted")),storage.organizationId(),aad(storage));
         if(secret.length()<10||secret.length()>4096)throw bad("请填写该广告应用的 App Secret");
-        final String id=appId,encrypted=cipher.encrypt(secret,s.organizationId(),aad(s));
+        final String id=appId,encrypted=cipher.encrypt(secret,storage.organizationId(),aad(storage));
         transactions.executeWithoutResult(status->{
             repo.jdbc().update("""
                 INSERT INTO finance_ad_applications(organization_id,user_id,app_id,secret_encrypted,revision)
                 VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE app_id=VALUES(app_id),secret_encrypted=VALUES(secret_encrypted),
                 revision=VALUES(revision),updated_at=UTC_TIMESTAMP(6)
-                """,s.organizationId(),s.userId(),id,encrypted,UUID.randomUUID().toString());
+                """,storage.organizationId(),storage.userId(),id,encrypted,UUID.randomUUID().toString());
             repo.jdbc().update("UPDATE finance_authorization_sessions SET status='CANCELLED' WHERE organization_id=? AND user_id=? AND platform=? AND status='PENDING'",
-                    s.organizationId(),s.userId(),PLATFORM);
+                    storage.organizationId(),storage.userId(),PLATFORM);
         });
     }
     public Map<String,Object> start(Scope s,String advertiserId,String shopId,String gmvStoreId){
         var app=application(s);if(app.isEmpty())throw bad("请先在财务店铺管理配置 TikTok for Business 广告应用");
+        Scope storage=new Scope(s.organizationId(),text(app.get("user_id")));
         advertiserId=text(advertiserId).trim();shopId=text(shopId).trim();gmvStoreId=text(gmvStoreId).trim();
         if(!advertiserId.isBlank()&&!advertiserId.matches("\\d{5,30}"))throw bad("广告账户 ID 格式不正确");
         if(advertiserId.isBlank()&&(!shopId.isBlank()||!gmvStoreId.isBlank()))
@@ -74,7 +76,7 @@ public class FinanceAdAuthorization {
         repo.jdbc().update("""
             INSERT INTO finance_authorization_sessions(id,organization_id,user_id,platform,state_hash,expires_at,context_json)
             VALUES(?,?,?,?,?,?,?)
-            """,UUID.randomUUID().toString(),s.organizationId(),s.userId(),PLATFORM,FinanceShopAuthorization.hash(state),Timestamp.from(expires),repo.write(context));
+            """,UUID.randomUUID().toString(),storage.organizationId(),storage.userId(),PLATFORM,FinanceShopAuthorization.hash(state),Timestamp.from(expires),repo.write(context));
         String url=MarketplaceHttp.uri("https://business-api.tiktok.com","/portal/auth",
                 Map.of("app_id",app.get("app_id"),"state",state,"redirect_uri",callbackUrl())).toString();
         return Map.of("authorizationUrl",url,"expiresAt",expires,"platform",PLATFORM);
@@ -125,7 +127,7 @@ public class FinanceAdAuthorization {
                 for(String id:ids){
                     String shop=text(context.get("shopId")),gmv=text(context.get("gmvStoreId"));
                     if(target.isBlank()){
-                        var previous=repo.jdbc().queryForList("SELECT shop_id,gmv_store_id FROM finance_ad_accounts WHERE organization_id=? AND user_id=? AND advertiser_id=?",s.organizationId(),s.userId(),id);
+                        var previous=repo.jdbc().queryForList("SELECT shop_id,gmv_store_id FROM finance_ad_accounts WHERE organization_id=? AND advertiser_id=?",s.organizationId(),id);
                         if(!previous.isEmpty()){shop=text(previous.getFirst().get("shop_id"));gmv=text(previous.getFirst().get("gmv_store_id"));}
                     }
                     ads.connectVerified(s,id,shop,token,gmv,info.get(id));

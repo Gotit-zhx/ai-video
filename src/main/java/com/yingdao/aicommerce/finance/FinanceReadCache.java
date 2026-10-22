@@ -83,7 +83,7 @@ public class FinanceReadCache {
             return prefix(key.scope())+revision+":"+digest(key.filter()+"|"+key.cny()+"|"+key.snapshot()+"|"+key.live());
         }catch(RuntimeException unavailable){return null;}
     }
-    static String prefix(Scope scope){return "heyi:finance:snapshot:v1:{"+scope.organizationId()+":"+scope.userId()+"}:";}
+    static String prefix(Scope scope){return "heyi:finance:snapshot:v2:{"+scope.organizationId()+":"+scope.userId()+"}:";}
     private static String revisionKey(Scope scope){return prefix(scope)+"revision";}
     private static String digest(String value){
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}
@@ -131,7 +131,7 @@ public class FinanceReadCache {
                     var data=map(envelope.get("data"));var f=map(data.get("filters"));
                     String currency=text(f.get("currency")),snapshot=key.cny()?text(map(data.get("fx")).get("id")):key.snapshot();
                     var alias=new FinanceSnapshotCache.Key(key.scope(),new Filter(key.filter().start(),key.filter().end(),
-                            key.filter().shopId(),key.filter().platform(),currency,key.filter().granularity()),key.cny(),snapshot,key.live());
+                            key.filter().shopId(),key.filter().platform(),currency,key.filter().granularity(),key.filter().groupId()),key.cny(),snapshot,key.live());
                     // Preserve the original revision so an in-flight refresh cannot repopulate an invalidated scope.
                     int separator=address.lastIndexOf(':');
                     save(address.substring(0,separator+1)+digest(alias.filter()+"|"+alias.cny()+"|"+alias.snapshot()+"|"+alias.live()),key.scope(),value);

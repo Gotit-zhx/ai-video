@@ -28,7 +28,7 @@ class FinanceConfigurationIntegrationTest {
     JdbcTemplate db;FinanceRepository repo;DataSourceTransactionManager tx;FinanceShopAuthorization auth;
     com.zaxxer.hikari.HikariDataSource dataSource;
     MarketplaceAccess.Client client;FinanceService service;FinanceFx fx;
-    Scope owner=new Scope("org","u"),other=new Scope("org","other");
+    Scope owner=new Scope("org","u"),other=new Scope("other-org","other");
     final ShopCredentialCipher cipher=new ShopCredentialCipher("finance-test-key-not-a-production-secret-12345");
     final Filter filter=new Filter(LocalDate.of(2026,10,21),LocalDate.of(2026,10,21),"","","PHP","day");
     PlatformPrincipal principal(){return new PlatformPrincipal("u","org","heyi","admin","admin","",true,List.of("ADMIN"),List.of());}
@@ -49,6 +49,8 @@ class FinanceConfigurationIntegrationTest {
         migration("V121__finance_live_order_lane.sql");
         migration("V122__finance_reconciliation_indexes.sql");
         migration("V124__finance_sync_claim_token.sql");
+        db.execute("CREATE TABLE permissions(id CHAR(36),code VARCHAR(80) PRIMARY KEY,name VARCHAR(120),module VARCHAR(40),resource_type VARCHAR(20),description VARCHAR(500),sort_order INT)");
+        migration("V125__finance_company_groups.sql");
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
@@ -59,7 +61,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
-        for(String table:List.of("finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
+        for(String table:List.of("finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
         client=mock(MarketplaceAccess.Client.class);when(client.platform()).thenReturn(MarketplacePlatform.SHOPEE);when(client.configured()).thenReturn(true);
         var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
         auth=new FinanceShopAuthorization(repo,new MarketplaceClientRegistry(List.of(client)),cipher,settings,tx);
@@ -73,6 +75,105 @@ class FinanceConfigurationIntegrationTest {
         return text(service.shops(s).getFirst().get("id"));
     }
     void record(Scope s,String shop,String kind,String external,BigDecimal amount,Map<String,Object> raw){repo.save(s,new Entry(shop,"SHOPEE",kind,external,"order1","bill1","测试","SETTLED",filter.start(),"PHP",amount,null,null,null,null,"API",raw));}
+    MarketplaceAccess.AuthorizationGrant grant(String external){
+        return new MarketplaceAccess.AuthorizationGrant(tokens(false),List.of(new MarketplaceAccess.RemoteShop(external,null,null,"LOCAL","Shop "+external,"PH","SHOP",external)));
+    }
+    String groupedShop(Scope s,String external,String group){
+        auth.persistGrant(s,MarketplacePlatform.SHOPEE,grant(external),group,"");
+        return db.queryForObject("SELECT id FROM finance_connections WHERE organization_id=? AND external_shop_id=?",String.class,s.organizationId(),external);
+    }
+    Filter grouped(String id){return new Filter(filter.start(),filter.end(),"","","PHP","day",id);}
+    @Test void companyMembersShareGroupsRecordsExportsAndPersonalColumnsStayPrivate(){
+        Scope colleague=new Scope("org","colleague");
+        String clothes=service.saveGroup(owner,null,"服饰"),shoes=service.saveGroup(owner,null,"鞋靴");
+        String a=groupedShop(owner,"100",clothes),b=groupedShop(colleague,"200",shoes);
+        service.configure(owner,a,true,"PHP","Asia/Manila",clothes);
+        service.configure(owner,b,true,"PHP","Asia/Manila",shoes);
+        for(String kind:KINDS){
+            record(owner,a,kind,kind.equals("BILL")?"bill1":kind,BigDecimal.TEN,Map.of("create_time",1792548000L));
+            record(colleague,b,kind,kind.equals("BILL")?"bill1":kind,new BigDecimal("99"),Map.of("create_time",1792548000L));
+        }
+        record(owner,"UNASSIGNED","AD","unassigned",BigDecimal.ONE,Map.of());
+        assertEquals(2,service.shops(colleague).size());assertEquals(2,service.groups(colleague).size());
+        assertEquals(9,number(repo.details(colleague,grouped(clothes),null,1,50).get("total")));
+        assertEquals(9,number(repo.details(owner,grouped(shoes),null,1,50).get("total")));
+        assertEquals(1,number(repo.details(owner,grouped("UNGROUPED"),null,1,50).get("total")));
+        assertEquals(0,number(repo.details(other,grouped(clothes),null,1,50).get("total")));
+        assertEquals("MATCHED",repo.reconciliation(colleague,grouped(clothes)).getFirst().get("result"));
+        assertEquals(a,repo.recentOrders(colleague,grouped(clothes)).getFirst().get("shop_id"));
+        assertEquals(a,repo.hourlyOrders(colleague,grouped(clothes)).getFirst().get("shop_id"));
+        assertTrue(service.syncStates(colleague,grouped(shoes)).stream().allMatch(row->b.equals(row.get("shop_id"))));
+        var dashboard=service.dashboard(companyScope("org"),grouped(clothes),false,null);
+        assertTrue(rows(dashboard.get("ranking")).stream().allMatch(row->a.equals(row.get("shop_id"))));
+        assertEquals(clothes,map(dashboard.get("filters")).get("groupId"));
+        var screen=service.screen(companyScope("org"),grouped(shoes),false,null);
+        assertTrue(rows(screen.get("recent")).stream().allMatch(row->b.equals(row.get("shop_id"))));
+        var selection=Map.of("start","2026-10-21","end","2026-10-21","view","ORDER","format","csv","groupId",shoes);
+        var exported=FinanceWorkbook.read(controller().export(selection,principal()).getBody(),"groups.csv");
+        assertEquals(2,exported.size());assertTrue(exported.get(1).contains(b));assertFalse(exported.get(1).contains(a));
+        var preferences=new FinanceFields(repo);preferences.save(owner,"ORDER",List.of("external_id"),List.of("external_id"));
+        assertNotEquals(preferences.get(owner,"ORDER"),preferences.get(colleague,"ORDER"));
+        var importer=new FinanceImport(service,repo);byte[] file="id,date,currency,amount\nbill2,2026-10-21,PHP,10".getBytes();
+        var mapping=Map.<String,Object>of("external_id",0,"date",1,"currency",2,"amount",3);
+        assertEquals(false,importer.commit(colleague,a,"BILL",mapping,file,"bill.csv").get("duplicate"));
+        assertEquals(true,importer.commit(owner,a,"BILL",mapping,file,"bill.csv").get("duplicate"));
+    }
+    @Test void duplicateShopAcrossMembersPreservesOwnerHistoryAndGroupWhileExplicitReauthorizationMovesGroup(){
+        Scope colleague=new Scope("org","colleague");
+        String original=service.saveGroup(owner,null,"服饰"),otherGroup=service.saveGroup(owner,null,"家居");
+        String shop=groupedShop(owner,"10001",original);service.configure(owner,shop,true,"PHP","Asia/Manila",original);
+        record(owner,shop,"ORDER","kept",BigDecimal.TEN,Map.of());
+        db.update("UPDATE finance_sync_states SET checkpoint_json='{\"from\":1,\"to\":2}' WHERE shop_id=?",shop);
+        var repeated=auth.persistGrant(colleague,MarketplacePlatform.SHOPEE,grant("10001"),otherGroup,"");
+        assertEquals(0,repeated.created());assertEquals(1,repeated.existing());assertEquals(1,service.shops(owner).size());
+        assertEquals("u",db.queryForObject("SELECT user_id FROM finance_connections WHERE id=?",String.class,shop));
+        assertEquals(original,service.shops(colleague).getFirst().get("group_id"));
+        assertEquals(1,number(repo.details(colleague,filter,"ORDER",1,50).get("total")));
+        assertEquals(4,db.queryForObject("SELECT COUNT(*) FROM finance_sync_states WHERE checkpoint_json IS NOT NULL",Integer.class));
+        assertEquals("finance-access",new TransactionTemplate(tx).execute(status->auth.connection(owner,shop)).tokens().accessToken());
+        auth.persistGrant(colleague,MarketplacePlatform.SHOPEE,grant("10001"),otherGroup,shop);
+        assertEquals(otherGroup,service.shops(owner).getFirst().get("group_id"));
+        assertEquals(1,number(repo.details(owner,grouped(otherGroup),"ORDER",1,50).get("total")));
+        assertEquals(0,number(repo.details(owner,grouped(original),"ORDER",1,50).get("total")));
+    }
+    @Test void mandatoryGroupsAreCompanyScopedAndCannotDeleteOccupiedGroup(){
+        String group=service.saveGroup(owner,null,"服饰");
+        assertThrows(BusinessException.class,()->service.saveGroup(owner,null,"服饰"));
+        assertThrows(BusinessException.class,()->auth.start("SHOPEE",null,owner,"u","",""));
+        assertThrows(BusinessException.class,()->auth.start("SHOPEE",null,other,"other",group,""));
+        String shop=groupedShop(owner,"100",group);
+        assertThrows(BusinessException.class,()->service.deleteGroup(owner,group));
+        assertThrows(BusinessException.class,()->service.configure(other,shop,true,"PHP","Asia/Manila",group));
+        service.saveGroup(owner,group,"女装");assertEquals("女装",service.groups(owner).getFirst().get("name"));
+        service.configure(owner,shop,false,"PHP","Asia/Manila","");
+        service.deleteGroup(owner,group);assertTrue(service.groups(owner).isEmpty());
+        assertEquals(1,service.shops(owner).size());
+    }
+    @Test void callbackShowsDuplicateNoticeAndRejectsDeletedGroupBeforeExchangingCode(){
+        String group=service.saveGroup(owner,null,"服饰");String shop=groupedShop(owner,"10001",group);
+        final String[] state={null};when(client.authorizationUrl(anyString(),anyString())).thenAnswer(i->{state[0]=i.getArgument(1);return "https://official.test/";});
+        auth.start("SHOPEE",null,companyScope("org"),"colleague",group,"");
+        when(client.exchangeAuthorizationCode(eq("duplicate"),anyMap())).thenReturn(grant("10001"));
+        String redirect=java.net.URLDecoder.decode(auth.complete("SHOPEE",state[0],"duplicate",Map.of(),null),java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(redirect.contains("店铺已存在"));assertEquals(shop,service.shops(owner).getFirst().get("id"));
+        String deleted=service.saveGroup(owner,null,"即将删除");auth.start("SHOPEE",null,owner,"u",deleted,"");service.deleteGroup(owner,deleted);
+        assertTrue(auth.complete("SHOPEE",state[0],"must-not-exchange",Map.of(),null).contains("financeAuth=error"));
+        verify(client,never()).exchangeAuthorizationCode(eq("must-not-exchange"),anyMap());
+    }
+    @Test void refundMigrationRepairsExistingAmountsWithoutChangingIdsOrRawPayloads()throws Exception{
+        String shop=connect(owner,false);
+        for(String status:List.of("ACCEPTED","PROCESSING","CANCELLED","CLOSED")){
+            repo.save(owner,new Entry(shop,"SHOPEE","REFUND","refund-"+status,"order1","","refund",status,filter.start(),"PHP",
+                    status.equals("CLOSED")?new BigDecimal("209"):null,null,null,null,null,"API",Map.of("refund_amount",209,"status",status)));
+        }
+        var before=db.queryForList("SELECT id,raw_json FROM finance_records ORDER BY id");
+        migration("V126__finance_shopee_refund_status.sql");
+        assertEquals(before,db.queryForList("SELECT id,raw_json FROM finance_records ORDER BY id"));
+        assertEquals(0,new BigDecimal("209").compareTo(db.queryForObject("SELECT amount FROM finance_records WHERE status='ACCEPTED'",BigDecimal.class)));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE amount IS NOT NULL",Integer.class));
+        var details=rows(repo.details(owner,filter,"REFUND",1,50).get("items"));
+        assertTrue(details.stream().allMatch(r->decimal(r.get("platform_refund_amount")).compareTo(new BigDecimal("209"))==0));
+    }
     @Test void dashboardAggregatesMatchSqlAndCachedReadsRemainOwnerScoped(){
         String id=connect(owner,false),foreign=connect(other,false);
         for(String kind:List.of("ORDER","SETTLEMENT","FEE","REFUND")){
@@ -211,7 +312,7 @@ class FinanceConfigurationIntegrationTest {
     }
     @Test void callbackConsumesOnlyItsOwnStateOnceAndRedirectsToFinance(){
         final String[] rawState={null};when(client.authorizationUrl(anyString(),anyString())).thenAnswer(i->{rawState[0]=i.getArgument(1);return "https://official.test/?state="+rawState[0];});
-        auth.start("SHOPEE",null,principal());
+        auth.start("SHOPEE",null,owner,principal().userId(),service.saveGroup(owner,null,"服饰"),"");
         assertNotEquals(rawState[0],db.queryForObject("SELECT state_hash FROM finance_authorization_sessions",String.class));
         when(client.exchangeAuthorizationCode(eq("code"),anyMap())).thenReturn(new MarketplaceAccess.AuthorizationGrant(tokens(false),List.of(new MarketplaceAccess.RemoteShop("10001",null,null,"LOCAL","New finance","PH"))));
         var commerce=mock(ShopAuthorizationService.class);var callback=new ShopAuthorizationController(commerce,auth);
@@ -222,7 +323,7 @@ class FinanceConfigurationIntegrationTest {
         assertEquals(1,service.shops(owner).size());assertTrue(service.shops(other).isEmpty());
     }
     @Test void expiredOrDifferentPlatformStateCannotExchangeCode(){
-        final String[] state={null};when(client.authorizationUrl(anyString(),anyString())).thenAnswer(i->{state[0]=i.getArgument(1);return "https://official.test/";});auth.start("SHOPEE",null,principal());
+        final String[] state={null};when(client.authorizationUrl(anyString(),anyString())).thenAnswer(i->{state[0]=i.getArgument(1);return "https://official.test/";});auth.start("SHOPEE",null,owner,principal().userId(),service.saveGroup(owner,null,"服饰"),"");
         assertThrows(BusinessException.class,()->auth.complete("TIKTOK_SHOP",state[0],"code",Map.of(),null));
         db.update("UPDATE finance_authorization_sessions SET expires_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 SECOND)");
         assertThrows(BusinessException.class,()->auth.complete("SHOPEE",state[0],"code",Map.of(),null));verify(client,never()).exchangeAuthorizationCode(any(),anyMap());
@@ -234,6 +335,21 @@ class FinanceConfigurationIntegrationTest {
         var connection=new TransactionTemplate(tx).execute(status->auth.connection(owner,id));assertEquals(id,connection.shop().getId());assertEquals("rotated-access",connection.tokens().accessToken());
         for(var shop:service.shops(owner))assertEquals("rotated-access",new TransactionTemplate(tx).execute(status->auth.connection(owner,text(shop.get("id")))).tokens().accessToken());
         verify(client,times(1)).refresh(any(),any());assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials",String.class));
+    }
+    @Test void sharedGrantRefreshRotatesAllOriginalCredentialOwnersTogether(){
+        String group=service.saveGroup(owner,null,"服饰"),old=groupedShop(owner,"1",group);
+        Scope shared=companyScope("org");
+        auth.persistGrant(shared,MarketplacePlatform.SHOPEE,new MarketplaceAccess.AuthorizationGrant(tokens(true),List.of(
+                new MarketplaceAccess.RemoteShop("1","merchant",null,"LOCAL","One","PH","MERCHANT","merchant"),
+                new MarketplaceAccess.RemoteShop("2","merchant",null,"LOCAL","Two","PH","MERCHANT","merchant"))),group,"");
+        var fresh=new MarketplaceAccess.TokenSet("shared-rotated-access","shared-rotated-refresh",Instant.now().plusSeconds(3600),Instant.now().plusSeconds(86400),List.of());
+        when(client.refresh(any(),any())).thenReturn(fresh);
+        assertEquals("shared-rotated-access",new TransactionTemplate(tx).execute(status->auth.connection(owner,old)).tokens().accessToken());
+        for(var shop:service.shops(shared)){
+            Scope storage=service.shopScope(shared,text(shop.get("id")));
+            assertEquals("shared-rotated-access",new TransactionTemplate(tx).execute(status->auth.connection(storage,text(shop.get("id")))).tokens().accessToken());
+        }
+        verify(client,times(1)).refresh(any(),any());
     }
     @Test void liveScreenRefreshesOrdersWithoutBypassingFailuresOrCheckpoints(){
         String id=connect(owner,false);service.configure(owner,id,true,"PHP","Asia/Manila");
@@ -351,7 +467,7 @@ class FinanceConfigurationIntegrationTest {
         assertFalse(repo.write(a.configuration(owner)).contains("private-ad"));
         String secret=db.queryForObject("SELECT secret_encrypted FROM finance_ad_applications",String.class);
         assertNotEquals("private-ad-application-secret",secret);
-        assertEquals("private-ad-application-secret",cipher.decrypt(secret,"org","finance-ads-app:u"));
+        assertEquals("private-ad-application-secret",cipher.decrypt(secret,"org","finance-ads-app:"+companyScope("org").userId()));
         assertThrows(IllegalStateException.class,()->cipher.decrypt(secret,"org","finance-ads-app:other"));
         a.configure(owner,"12345678","");assertEquals(true,a.configuration(owner).get("configured"));
         assertThrows(BusinessException.class,()->a.configure(owner,"87654321",""));
@@ -369,10 +485,10 @@ class FinanceConfigurationIntegrationTest {
         var result=callback.callback(Map.of("state",state,"auth_code","one-time-code"));
         assertTrue(result.getHeaders().getLocation().toString().contains("financeAuth=success"));
         assertTrue(result.getHeaders().getLocation().toString().endsWith("#finance-shops"));
-        assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE user_id='u'",Integer.class));
+        assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE organization_id='org'",Integer.class));
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE user_id='other'",Integer.class));
         String token=db.queryForObject("SELECT access_token_encrypted FROM finance_ad_accounts WHERE advertiser_id='100001'",String.class);
-        assertEquals("verified-ad-access",cipher.decrypt(token,"org","finance:u:100001"));
+        assertEquals("verified-ad-access",cipher.decrypt(token,"org","finance:"+companyScope("org").userId()+":100001"));
         assertTrue(callback.callback(Map.of("state",state,"auth_code","one-time-code")).getHeaders().getLocation().toString().contains("financeAuth=error"));
         verify(adHttp,times(1)).postJson(any(),anyMap(),argThat(body->body.contains("\"app_id\":\"12345678\"")&&body.contains("\"auth_code\":\"one-time-code\"")&&body.contains("\"secret\":\"private-ad-application-secret\"")));
     }

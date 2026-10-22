@@ -45,5 +45,6 @@ final class FinanceSnapshotCache {
         try{return entry.result.join();}
         catch(CompletionException e){if(e.getCause() instanceof RuntimeException r)throw r;if(e.getCause() instanceof Error r)throw r;throw e;}
     }
+    void invalidateCompany(String org){synchronized(entries){entries.keySet().removeIf(key->key.scope().organizationId().equals(org));}}
     void invalidate(Scope scope){synchronized(entries){entries.keySet().removeIf(key->key.scope().equals(scope));}}
 }

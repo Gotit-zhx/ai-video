@@ -15,8 +15,8 @@ public class FinanceCacheWarmer {
     public FinanceCacheWarmer(FinanceRepository repo,FinanceService service){this.repo=repo;this.service=service;}
     @PostConstruct public void start(){worker.scheduleWithFixedDelay(()->{
         try{
-            for(var row:repo.jdbc().queryForList("SELECT DISTINCT organization_id,user_id FROM finance_connections WHERE enabled=TRUE AND status='ACTIVE' ORDER BY organization_id,user_id LIMIT 32"))
-                service.prewarm(new Scope(text(row.get("organization_id")),text(row.get("user_id"))));
+            for(var row:repo.jdbc().queryForList("SELECT DISTINCT organization_id FROM finance_connections WHERE enabled=TRUE AND status='ACTIVE' ORDER BY organization_id LIMIT 32"))
+                service.prewarm(companyScope(text(row.get("organization_id"))));
         }catch(RuntimeException failure){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance snapshot prewarm deferred: {}",failure.getClass().getSimpleName());}
     },10,30,TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}

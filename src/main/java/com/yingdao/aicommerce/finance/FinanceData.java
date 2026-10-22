@@ -19,12 +19,16 @@ public final class FinanceData {
                         String statementId,String category,String status,LocalDate date,String currency,
                         BigDecimal amount,BigDecimal revenue,Long impressions,Long clicks,BigDecimal conversions,
                         String source,Map<String,Object> raw) {}
-    public record Filter(LocalDate start,LocalDate end,String shopId,String platform,String currency,String granularity) {
+    public record Filter(LocalDate start,LocalDate end,String shopId,String platform,String currency,String granularity,String groupId) {
+        public Filter(LocalDate start,LocalDate end,String shopId,String platform,String currency,String granularity){
+            this(start,end,shopId,platform,currency,granularity,"");
+        }
         public Filter {
             if(start==null||end==null||start.isAfter(end)||start.plusYears(10).isBefore(end))
                 throw bad("请选择有效日期范围，最多 10 年");
             shopId=shopId==null?"":shopId; platform=platform==null?"":platform; currency=currency==null?"":currency;
-            granularity=granularity==null?"day":granularity;
+            granularity=granularity==null?"day":granularity;groupId=groupId==null?"":groupId;
+            if(groupId.length()>36)throw bad("店铺分组不正确");
             if(!Set.of("day","week","month","quarter","halfyear","year").contains(granularity))throw bad("统计周期不正确");
             if(!platform.isEmpty()&&!Set.of("SHOPEE","TIKTOK_SHOP").contains(platform))throw bad("平台不正确");
             if(!currency.isEmpty()&&!currency.matches("[A-Z]{3}"))throw bad("币种必须为三位代码");
@@ -32,9 +36,14 @@ public final class FinanceData {
     }
     public static Scope scope(PlatformPrincipal p,boolean platformAdmin) {
         if(p==null)throw new BusinessException(HttpStatus.UNAUTHORIZED,"请先登录");
-        if(!platformAdmin)throw new BusinessException(HttpStatus.FORBIDDEN,"财务 BI 仅限超级管理员使用");
-        return new Scope(p.organizationId(),p.userId());
+        if(!platformAdmin&&!canView(p))throw new BusinessException(HttpStatus.FORBIDDEN,"没有财务 BI 查看权限");
+        return companyScope(p.organizationId());
     }
+    public static Scope companyScope(String organizationId){
+        return new Scope(organizationId,UUID.nameUUIDFromBytes(("finance:"+organizationId).getBytes(StandardCharsets.UTF_8)).toString());
+    }
+    public static boolean canManage(PlatformPrincipal p){return p!=null&&(p.roleCodes().contains("ADMIN")||p.permissionCodes().contains("finance:manage"));}
+    public static boolean canView(PlatformPrincipal p){return p!=null&&(canManage(p)||p.permissionCodes().contains("finance:view"));}
     public static BusinessException bad(String message){return new BusinessException(HttpStatus.BAD_REQUEST,message);}
     public static String hash(String text) {
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));}

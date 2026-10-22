@@ -26,6 +26,10 @@ public class FinanceController {
     @ModelAttribute public void authorize(@AuthenticationPrincipal PlatformPrincipal p,HttpServletRequest request){
         service.authorize(p);
         if(!Set.of("GET","HEAD","OPTIONS").contains(request.getMethod())){
+            String path=request.getRequestURI();
+            boolean personalFields="PUT".equals(request.getMethod())&&path.startsWith("/api/v1/finance/fields/");
+            boolean readScreen="POST".equals(request.getMethod())&&path.equals("/api/v1/finance/screen");
+            if(!personalFields&&!readScreen)service.requireManagement(p);
             String site=request.getHeader("Sec-Fetch-Site");
             if(site!=null&&!Set.of("same-origin","none").contains(site))throw new com.yingdao.aicommerce.common.exception.BusinessException(HttpStatus.FORBIDDEN,"请从本站发起财务操作");
             String origin=request.getHeader("Origin");
@@ -33,27 +37,33 @@ public class FinanceController {
         }
     }
     Scope s(PlatformPrincipal p){return service.authorize(p);}
+    Scope personal(PlatformPrincipal p){return new Scope(p.organizationId(),p.userId());}
     Filter filter(Map<String,String> q){
         try{return new Filter(LocalDate.parse(q.getOrDefault("start",LocalDate.now().minusDays(29).toString())),
-                LocalDate.parse(q.getOrDefault("end",LocalDate.now().toString())),q.get("shopId"),q.get("platform"),q.get("currency"),q.get("granularity"));}
+                LocalDate.parse(q.getOrDefault("end",LocalDate.now().toString())),q.get("shopId"),q.get("platform"),q.get("currency"),q.get("granularity"),q.get("groupId"));}
         catch(java.time.format.DateTimeParseException e){throw bad("日期格式不正确");}
     }
     @GetMapping("/overview") public ApiResponse<?> overview(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.dashboard(s(p),filter(q),"CNY".equals(q.get("displayCurrency")),q.get("fxSnapshot")));}
     @PostMapping("/screen") public ApiResponse<?> screen(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.screen(s(p),filter(q),"CNY".equals(q.get("displayCurrency")),q.get("fxSnapshot")));}
-    @GetMapping("/shops") public ApiResponse<?> shops(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(Map.of("items",service.shops(s(p)),"sync",service.syncStates(s(p))));}
-    record ShopConfig(boolean enabled,String currency,String timezone){}
+    @GetMapping("/shops") public ApiResponse<?> shops(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(Map.of("items",service.shops(s(p)),"sync",service.syncStates(s(p)),"groups",service.groups(s(p))));}
+    record ShopConfig(boolean enabled,String currency,String timezone,String groupId){}
     @PutMapping("/shops/{id}") public ApiResponse<?> configure(@PathVariable String id,@RequestBody ShopConfig body,@AuthenticationPrincipal PlatformPrincipal p){
-        service.configure(s(p),id,body.enabled,body.currency,body.timezone);return ApiResponse.ok("已保存");
+        service.configure(s(p),id,body.enabled,body.currency,body.timezone,body.groupId);return ApiResponse.ok("已保存");
     }
     @PostMapping("/shops/{id}/sync") public ApiResponse<?> sync(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){service.sync(s(p),id);return ApiResponse.ok("已加入同步队列");}
     @DeleteMapping("/shops/{id}") public ApiResponse<?> removeShop(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){service.removeShop(s(p),id);return ApiResponse.ok("已移除财务店铺");}
-    record Authorization(String platform,String market){}
+    record GroupName(String name){}
+    @GetMapping("/groups") public ApiResponse<?> groups(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.groups(s(p)));}
+    @PostMapping("/groups") public ApiResponse<?> addGroup(@RequestBody GroupName body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(Map.of("id",service.saveGroup(s(p),null,body.name)));}
+    @PutMapping("/groups/{id}") public ApiResponse<?> renameGroup(@PathVariable String id,@RequestBody GroupName body,@AuthenticationPrincipal PlatformPrincipal p){service.saveGroup(s(p),id,body.name);return ApiResponse.ok("分组已保存");}
+    @DeleteMapping("/groups/{id}") public ApiResponse<?> deleteGroup(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){service.deleteGroup(s(p),id);return ApiResponse.ok("分组已删除");}
+    record Authorization(String platform,String market,String groupId,String shopId){}
     @PostMapping("/shops/authorize") public ApiResponse<?> start(@RequestBody Authorization body,@AuthenticationPrincipal PlatformPrincipal p){
-        s(p);return ApiResponse.ok(service.authorization().start(body.platform,body.market,p));
+        s(p);return ApiResponse.ok(service.authorization().start(body.platform,body.market,s(p),p.userId(),body.groupId,body.shopId));
     }
     @GetMapping("/records") public ApiResponse<?> records(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var result=new LinkedHashMap<>(repo.details(s(p),filter(q),q.get("kind"),(int)Math.max(1,number(q.getOrDefault("page","1"))),50));
-        result.put("fieldSettings",fields.settings(s(p),q.get("kind")));
+        result.put("fieldSettings",fields.settings(personal(p),q.get("kind")));
         if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(rows(result.get("items")),service.exchangeRates().quote(q.get("fxSnapshot")));
         return ApiResponse.ok(result);
     }
@@ -66,17 +76,17 @@ public class FinanceController {
         Scope scope=s(p);Filter requested=filter(q);boolean cny="CNY".equals(q.get("displayCurrency"));
         var context=service.reconciliationContext(scope,requested,cny,q.get("fxSnapshot"));
         var selected=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),
-                text(map(context.get("filters")).get("currency")),requested.granularity());
+                text(map(context.get("filters")).get("currency")),requested.granularity(),requested.groupId());
         int page=(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1"))));
         var result=new LinkedHashMap<>(repo.reconciliationPage(scope,selected,page,50));
-        result.putAll(context);result.put("fieldSettings",fields.settings(scope,"RECONCILIATION"));
+        result.putAll(context);result.put("fieldSettings",fields.settings(personal(p),"RECONCILIATION"));
         if(cny)service.exchangeRates().enrich(rows(result.get("items")),service.exchangeRates().quote(text(map(context.get("fx")).get("id"))));
         return ApiResponse.ok(result);
     }
-    @GetMapping("/fields/{view}") public ApiResponse<?> fields(@PathVariable String view,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(fields.settings(s(p),view));}
+    @GetMapping("/fields/{view}") public ApiResponse<?> fields(@PathVariable String view,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(fields.settings(personal(p),view));}
     record FieldSelection(List<String> visible,List<String> exported){}
     @PutMapping("/fields/{view}") public ApiResponse<?> fields(@PathVariable String view,@RequestBody FieldSelection body,@AuthenticationPrincipal PlatformPrincipal p){
-        fields.save(s(p),view,body.visible,body.exported);return ApiResponse.ok("字段设置已保存");
+        fields.save(personal(p),view,body.visible,body.exported);return ApiResponse.ok("字段设置已保存");
     }
     @GetMapping("/ads") public ApiResponse<?> ads(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(ads.list(s(p)));}
     @GetMapping("/ads/application") public ApiResponse<?> adApplication(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(adAuthorization.configuration(s(p)));}
@@ -104,7 +114,7 @@ public class FinanceController {
         String view=FinanceFields.view(q.getOrDefault("view",q.get("kind")));
         boolean rec=view.equals("RECONCILIATION"),cny="CNY".equals(q.get("displayCurrency"));
         FinanceFx.Quote quote=cny?service.exchangeRates().quote(q.get("fxSnapshot")):null;
-        var columns=fields.selected(s,view,true,cny);
+        var columns=fields.selected(personal(p),view,true,cny);
         var rows=exportRows(columns);
         if(rec)appendReconciliation(rows,columns,s,f,quote);
         else {
@@ -122,13 +132,13 @@ public class FinanceController {
         if(csv)bytes=FinanceWorkbook.csv(rows).getBytes(StandardCharsets.UTF_8);
         else{
             var sheets=new LinkedHashMap<String,List<List<String>>>();sheets.put(rec?"结算对账":"财务明细",rows);
-            sheets.put("统计口径",List.of(List.of("日期范围",f.start()+" 至 "+f.end()),List.of("币种",f.currency().isBlank()?"原币分列，禁止跨币种直接合计":f.currency()),
+            sheets.put("统计口径",List.of(List.of("日期范围",f.start()+" 至 "+f.end()),List.of("店铺分组",f.groupId().isBlank()?"全部分组":"UNGROUPED".equals(f.groupId())?"未分组":service.groups(s).stream().filter(g->f.groupId().equals(g.get("id"))).map(g->text(g.get("name"))).findFirst().orElse("所选分组")),List.of("币种",f.currency().isBlank()?"原币分列，禁止跨币种直接合计":f.currency()),
                     List.of("范围","当前筛选全部记录；列按当前用户的导出配置生成；平台已结算不代表银行到账"),
                     List.of("时间口径","订单按创建日，结算费用按结算日，广告按广告账户日"),
                     List.of("扩展字段","仅展示平台实际返回的字段；空白表示未返回或不适用。标记原币的扩展金额不做人民币转换。"),
                     List.of("生成时间",java.time.Instant.now().toString())));
             if(!rec){
-                var rc=fields.selected(s,"RECONCILIATION",true,cny);var rr=exportRows(rc);
+                var rc=fields.selected(personal(p),"RECONCILIATION",true,cny);var rr=exportRows(rc);
                 appendReconciliation(rr,rc,s,f,quote);sheets.put("结算对账",rr);
             }
             if(cny){

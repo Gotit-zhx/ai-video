@@ -39,16 +39,20 @@ class FinanceTest {
         assertNotEquals(id(new Scope("org","u1"),e),id(new Scope("org","u2"),e));
         assertNotEquals(id(new Scope("org","u1"),e),id(new Scope("other","u1"),e));
     }
-    @Test void ordinaryAdminAndPermissionCodesCannotUnlockFinance(){
-        assertThrows(BusinessException.class,()->scope(user("other"),false));
+    PlatformPrincipal member(String org,String user,String...permissions){return new PlatformPrincipal(user,org,org,user,user,"",true,List.of("STAFF"),List.of(permissions));}
+    @Test void financialRolesShareCompanyScopeAndOtherCompaniesRemainIsolated(){
+        assertThrows(BusinessException.class,()->scope(member("org","u"),false));
         assertThrows(BusinessException.class,()->scope(null,false));
-        assertEquals("user",scope(user("heyi"),true).userId());
+        assertEquals(scope(member("org","a","finance:view"),false),scope(member("org","b","finance:manage"),false));
+        assertNotEquals(scope(member("org","a","finance:view"),false),scope(member("other","a","finance:view"),false));
+        assertEquals(companyScope("heyi"),scope(user("heyi"),true));
+        assertFalse(canManage(member("org","a","finance:view")));assertTrue(canManage(member("org","a","finance:manage")));
     }
-    @Test void everyEndpointRejectsOrdinaryAdminBeforeBusinessLogic() throws Exception {
+    @Test void everyEndpointRejectsUnpermittedUserBeforeBusinessLogic() throws Exception {
         var policy=mock(OrganizationAccessPolicy.class);var repo=mock(FinanceRepository.class);
         var service=new FinanceService(repo,policy,mock(FinanceShopAuthorization.class),mock(FinanceFx.class));
         var controller=new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class));
-        var principal=user("other");
+        var principal=member("other","user");
         var mvc=MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new GlobalExceptionHandler())
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver(){
                     public boolean supportsParameter(MethodParameter p){return p.getParameterType()==PlatformPrincipal.class;}
@@ -60,6 +64,24 @@ class FinanceTest {
         mvc.perform(post("/api/v1/finance/screen")).andExpect(status().isForbidden());
         mvc.perform(delete("/api/v1/finance/shops/a")).andExpect(status().isForbidden());
         verifyNoInteractions(repo);
+    }
+    @Test void viewerCanReadAndChooseFieldsButCannotManage()throws Exception{
+        var policy=mock(OrganizationAccessPolicy.class);var repo=mock(FinanceRepository.class);var db=mock(JdbcTemplate.class);when(repo.jdbc()).thenReturn(db);
+        var service=new FinanceService(repo,policy,mock(FinanceShopAuthorization.class),mock(FinanceFx.class));
+        var controller=new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class));
+        var principal=member("org","viewer","finance:view");
+        var mvc=MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new GlobalExceptionHandler())
+                .setCustomArgumentResolvers(new HandlerMethodArgumentResolver(){
+                    public boolean supportsParameter(MethodParameter p){return p.getParameterType()==PlatformPrincipal.class;}
+                    public Object resolveArgument(MethodParameter p,ModelAndViewContainer m,NativeWebRequest r,WebDataBinderFactory b){return principal;}
+                }).build();
+        mvc.perform(get("/api/v1/finance/groups")).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/finance/shops")).andExpect(status().isOk());
+        mvc.perform(post("/api/v1/finance/shops/authorize").contentType("application/json").content("{\"platform\":\"SHOPEE\"}")).andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/finance/groups").contentType("application/json").content("{\"name\":\"Dress\"}")).andExpect(status().isForbidden());
+        mvc.perform(delete("/api/v1/finance/shops/id")).andExpect(status().isForbidden());
+        mvc.perform(put("/api/v1/finance/fields/ORDER").contentType("application/json").content("{\"visible\":[\"external_id\"],\"exported\":[\"external_id\"]}")).andExpect(status().isOk());
+        verify(db).update(contains("finance_view_preferences"),eq("org"),eq("viewer"),eq("ORDER"),nullable(String.class));
     }
     @Test void periodsRespectNaturalHalfYearAndIsoWeeks(){
         assertEquals("2025-12-29",bucket(LocalDate.of(2026,1,1),"week"));
@@ -120,6 +142,24 @@ class FinanceTest {
         reader.tik(new Scope("org","u"),c,"REFUND","Asia/Manila",Map.of("from",1,"to",2));
         var capture=org.mockito.ArgumentCaptor.forClass(Entry.class);verify(repo).save(any(),capture.capture());assertNull(capture.getValue().amount());
     }
+    @Test void shopeeRefundConfirmsAcceptedAndKeepsCancelledOrClosedAmountsSeparate(){
+        var shopee=mock(ShopeeOfficialClient.class);var repo=mock(FinanceRepository.class);
+        var reader=new FinanceMarketplace(mock(FinanceShopAuthorization.class),shopee,mock(TikTokShopOfficialClient.class),repo);
+        var shop=new Shop("org",MarketplacePlatform.SHOPEE,"123","","","LOCAL","test","PH","[]");
+        var connection=new MarketplaceAccess.Connection(shop,new MarketplaceAccess.TokenSet("token","",Instant.now(),Instant.now(),List.of()));
+        var returns=List.of("ACCEPTED","PROCESSING","CANCELLED","CLOSED").stream().map(status->Map.<String,Object>of(
+                "status",status,"return_sn","return-"+status,"order_sn","order1","create_time",1760918400L,"currency","PHP","refund_amount","209")).toList();
+        when(shopee.shopGet(eq("/api/v2/returns/get_return_list"),any(),anyMap())).thenReturn(Map.of("response",Map.of("return",returns,"more",false)));
+        reader.sho(new Scope("org","u"),connection,"REFUND","Asia/Manila",Map.of("from",1,"to",2));
+        var entries=org.mockito.ArgumentCaptor.forClass(Entry.class);verify(repo,times(4)).save(any(),entries.capture());
+        assertEquals(new BigDecimal("209"),entries.getAllValues().getFirst().amount());
+        assertTrue(entries.getAllValues().subList(1,4).stream().allMatch(e->e.amount()==null));
+        for(var entry:entries.getAllValues()){
+            var row=new HashMap<String,Object>();row.put("kind","REFUND");row.put("platform","SHOPEE");row.put("source","API");row.put("status",entry.status());row.put("amount",entry.amount());
+            FinanceFields.enrich(row,entry.raw());assertEquals(new BigDecimal("209"),row.get("platform_refund_amount"));assertNotNull(row.get("refund_amount_note"));
+        }
+        assertTrue(FinanceFields.defaults("REFUND").visible().contains("platform_refund_amount"));
+    }
     @Test void tiktokOrdersAcceptSparseTerminalPageAndResumeHistoricalWindow(){
         var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);
         var reader=new FinanceMarketplace(mock(FinanceShopAuthorization.class),mock(ShopeeOfficialClient.class),tk,repo);
@@ -165,7 +205,7 @@ class FinanceTest {
     @Test void sqlScopeCannotBeReplacedByRequestedShop(){
         var repo=new FinanceRepository(mock(JdbcTemplate.class),new ObjectMapper());
         var q=repo.query(new Scope("org-a","user-a"),new Filter(LocalDate.of(2026,1,1),LocalDate.of(2026,1,2),"foreign-shop","","PHP","day"));
-        assertTrue(q.where().contains("organization_id=? AND user_id=?"));assertEquals(List.of("org-a","user-a"),q.args().subList(0,2));
+        assertTrue(q.where().contains("organization_id=?"));assertFalse(q.where().contains("user_id=?"));assertEquals("org-a",q.args().getFirst());
         assertFalse(q.where().contains("foreign-shop"));
     }
     @Test void incompleteBillsCannotAppearMatchedEvenWhenAmountsHappenToAgree(){
@@ -324,6 +364,7 @@ class FinanceTest {
         var service=mock(FinanceService.class);var repo=spy(new FinanceRepository(mock(JdbcTemplate.class),new ObjectMapper()));var importer=new FinanceImport(service,repo);
         var scope=new Scope("org","user");
         when(service.ownedShop(scope,"shop")).thenReturn(Map.of("platform","SHOPEE"));
+        when(service.shopScope(scope,"shop")).thenReturn(scope);
         byte[] csv="id,date,currency,amount\nvalid,2026-10-20,PHP,100\ninvalid,not-date,PHP,99".getBytes();
         assertThrows(BusinessException.class,()->importer.commit(scope,"shop","BILL",Map.of("external_id",0,"date",1,"currency",2,"amount",3),csv,"bill.csv"));
         verify(repo,never()).save(any(),any());

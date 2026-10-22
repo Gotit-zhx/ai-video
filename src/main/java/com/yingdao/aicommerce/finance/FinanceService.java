@@ -22,24 +22,36 @@ public class FinanceService {
     public FinanceFx exchangeRates(){return fx;}
     public FinanceShopAuthorization authorization(){return shops;}
     public Scope authorize(PlatformPrincipal principal){return scope(principal,access.isPlatformAdmin(principal));}
+    public void requireManagement(PlatformPrincipal p){
+        authorize(p);if(!canManage(p)&&!access.isPlatformAdmin(p))throw new com.yingdao.aicommerce.common.exception.BusinessException(org.springframework.http.HttpStatus.FORBIDDEN,"没有财务配置管理权限");
+    }
+    public List<Map<String,Object>> groups(Scope s){return new FinanceGroups(repo).list(s);}
+    @Transactional public String saveGroup(Scope s,String id,String name){String result=new FinanceGroups(repo).save(s,id,name);invalidateAfterCommit(s);return result;}
+    @Transactional public void deleteGroup(Scope s,String id){new FinanceGroups(repo).delete(s,id);invalidateAfterCommit(s);}
+    public Scope shopScope(Scope s,String id){
+        var owners=repo.jdbc().queryForList("SELECT user_id FROM finance_connections WHERE organization_id=? AND id=? AND status<>'REMOVED'",s.organizationId(),id);
+        if(owners.isEmpty())throw bad("没有找到本公司的财务店铺");return new Scope(s.organizationId(),text(owners.getFirst().get("user_id")));
+    }
     public List<Map<String,Object>> shops(Scope s){
         return repo.jdbc().queryForList("""
             SELECT s.id,s.name,s.display_name,s.platform,s.region,s.external_shop_id,s.status authorization_status,
-            s.enabled,s.currency,s.timezone,
+            s.enabled,s.currency,s.timezone,s.group_id,
+            (SELECT g.name FROM finance_groups g WHERE g.organization_id=s.organization_id AND g.id=s.group_id) group_name,
             (SELECT MAX(last_success_at) FROM finance_sync_states st WHERE st.organization_id=s.organization_id
               AND st.user_id=s.user_id AND st.shop_id=s.id) last_success_at
-            FROM finance_connections s WHERE s.organization_id=? AND s.user_id=? AND s.status<>'REMOVED' ORDER BY s.platform,s.name
-            """,s.organizationId(),s.userId()).stream().map(row->{
+            FROM finance_connections s WHERE s.organization_id=? AND s.status<>'REMOVED' ORDER BY s.platform,s.name
+            """,s.organizationId()).stream().map(row->{
                 if(row.get("currency")==null)row.put("currency",currencyFor(text(row.get("region"))));
                 if(row.get("timezone")==null)row.put("timezone",timezoneFor(text(row.get("region"))));return row;
             }).toList();
     }
     public Map<String,Object> ownedShop(Scope s,String id){
-        return shops(s).stream().filter(r->id.equals(r.get("id"))).findFirst().orElseThrow(()->bad("没有找到当前账号独立配置的财务店铺"));
+        return shops(s).stream().filter(r->id.equals(r.get("id"))).findFirst().orElseThrow(()->bad("没有找到本公司的财务店铺"));
     }
     @Transactional
     public void configure(Scope s,String id,boolean enabled,String currency,String timezone){
         Map<String,Object> shop=ownedShop(s,id);
+        s=shopScope(s,id);
         if(!Set.of("SHOPEE","TIKTOK_SHOP").contains(text(shop.get("platform"))))throw bad("仅支持 Shopee 与 TikTok Shop");
         if(currency==null||!currency.matches("[A-Z]{3}"))throw bad("请选择正确币种");
         try{ZoneId.of(timezone);}catch(Exception e){throw bad("请选择正确时区");}
@@ -54,6 +66,17 @@ public class FinanceService {
             """,s.organizationId(),s.userId(),id,channel);
         invalidateAfterCommit(s);
     }
+    @Transactional
+    public void configure(Scope s,String id,boolean enabled,String currency,String timezone,String groupId){
+        if(!text(groupId).isBlank())new FinanceGroups(repo).require(s,groupId,true);
+        configure(s,id,enabled,currency,timezone);
+        repo.jdbc().update("UPDATE finance_connections SET group_id=?,updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND id=?",
+                text(groupId).isBlank()?null:groupId,s.organizationId(),id);
+    }
+    public List<Map<String,Object>> syncStates(Scope s,Filter f){
+        var ids=shops(s).stream().filter(shop->FinanceGroups.matches(shop,f)).map(shop->text(shop.get("id"))).collect(java.util.stream.Collectors.toSet());
+        return syncStates(s).stream().filter(row->ids.contains(text(row.get("shop_id")))).toList();
+    }
     public List<Map<String,Object>> syncStates(Scope s){
         return repo.jdbc().queryForList("""
             SELECT st.shop_id,st.channel,st.status,st.error_message,st.next_at,st.last_success_at,st.coverage_start,
@@ -61,11 +84,11 @@ public class FinanceService {
               JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.to')) window_end,
               JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.until')) target_until
             FROM finance_sync_states st JOIN finance_connections c ON c.id=st.shop_id AND c.organization_id=st.organization_id AND c.user_id=st.user_id
-            WHERE st.organization_id=? AND st.user_id=? AND c.status<>'REMOVED' ORDER BY st.shop_id,st.channel
-            """,s.organizationId(),s.userId());
+            WHERE st.organization_id=? AND c.status<>'REMOVED' ORDER BY st.shop_id,st.channel
+            """,s.organizationId());
     }
     public void sync(Scope s,String shopId){
-        ownedShop(s,shopId);
+        ownedShop(s,shopId);s=shopScope(s,shopId);
         Integer enabled=repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_connections WHERE organization_id=? AND user_id=? AND id=? AND enabled=TRUE AND status='ACTIVE'",
                 Integer.class,s.organizationId(),s.userId(),shopId);
         if(enabled==null||enabled==0)throw bad("请先在财务店铺管理中开启同步");
@@ -78,9 +101,9 @@ public class FinanceService {
     }
     @Transactional
     public void removeShop(Scope s,String id){
-        ownedShop(s,id);
+        ownedShop(s,id);s=shopScope(s,id);
         repo.jdbc().update("UPDATE finance_connections SET enabled=FALSE,status='REMOVED',updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND user_id=? AND id=?",s.organizationId(),s.userId(),id);
-        repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=FALSE,status='DISABLED' WHERE organization_id=? AND user_id=? AND shop_id=?",s.organizationId(),s.userId(),id);
+        repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=FALSE,status='DISABLED' WHERE organization_id=? AND shop_id=?",s.organizationId(),id);
         invalidateAfterCommit(s);
     }
     private void invalidateAfterCommit(Scope s){
@@ -91,7 +114,7 @@ public class FinanceService {
         else invalidateSnapshots(s);
     }
     private void invalidateSnapshots(Scope s){
-        snapshots.invalidate(s);if(sharedSnapshots!=null)sharedSnapshots.invalidate(s);
+        Scope shared=companyScope(s.organizationId());snapshots.invalidateCompany(s.organizationId());if(sharedSnapshots!=null)sharedSnapshots.invalidate(shared);
     }
     public Map<String,Object> dashboard(Scope s,Filter requested,boolean cny,String snapshotId){
         var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false);
@@ -108,25 +131,25 @@ public class FinanceService {
         }
     }
     public Map<String,Object> reconciliationContext(Scope s,Filter requested,boolean cny,String snapshotId){
-        var all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity());
+        var all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity(),requested.groupId());
         var currencies=repo.billCurrencies(s,all);
         String currency=requested.currency().isBlank()?(cny||currencies.isEmpty()?"":currencies.getFirst()):requested.currency();
         var result=new LinkedHashMap<String,Object>();
         result.put("filters",Map.of("start",requested.start(),"end",requested.end(),"shopId",requested.shopId(),
                 "platform",requested.platform(),"currency",currency,"granularity",requested.granularity(),
-                "displayCurrency",cny?"CNY":currency));
-        result.put("currencies",currencies);result.put("shops",shops(s));result.put("sync",syncStates(s));
+                "displayCurrency",cny?"CNY":currency,"groupId",requested.groupId()));
+        result.put("currencies",currencies);result.put("shops",shops(s));result.put("groups",groups(s));result.put("sync",syncStates(s,requested));
         if(cny)result.put("fx",fx.quote(snapshotId).metadata());
         return result;
     }
     Map<String,Object> buildDashboard(Scope s,Filter requested,boolean cny,String snapshotId,boolean live){
-        Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity());
+        Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity(),requested.groupId());
         // One shop aggregate supplies currencies, totals and ranking. Previously
         // each request scanned the same record range three times for these.
         var allRanking=repo.grouped(s,all,"shop_id,kind");
         List<String> codes=allRanking.stream().map(r->text(r.get("currency"))).distinct().sorted().toList();
         String currency=requested.currency().isBlank()?(cny||codes.isEmpty()?"":codes.getFirst()):requested.currency();
-        Filter f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity());
+        Filter f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId());
         var ranking=allRanking.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
         List<Map<String,Object>> totals=nativeTotals(ranking);
         FinanceFx.Quote quote=cny?fx.quote(snapshotId):null;
@@ -144,14 +167,14 @@ public class FinanceService {
             point.merge(kind+"_count",number(row.get("records")),(a,b)->(Long)a+(Long)b);
         }
         var out=new LinkedHashMap<String,Object>();
-        out.put("filters",Map.of("start",f.start(),"end",f.end(),"shopId",f.shopId(),"platform",f.platform(),"currency",currency,"granularity",f.granularity(),"displayCurrency",cny?"CNY":currency));
+        out.put("filters",Map.of("start",f.start(),"end",f.end(),"shopId",f.shopId(),"platform",f.platform(),"currency",currency,"granularity",f.granularity(),"displayCurrency",cny?"CNY":currency,"groupId",requested.groupId()));
         if(cny)out.put("fx",quote.metadata());
         out.put("currencies",codes);out.put("totals",totals);out.put("trend",new ArrayList<>(points.values()));
-        out.put("shops",shops(s));
+        out.put("shops",shops(s));out.put("groups",groups(s));
         var fees=live?List.<Map<String,Object>>of():repo.grouped(s,f,"category,kind");var statuses=repo.grouped(s,f,"status,kind");
         out.put("ranking",cny?FinanceFx.groups(ranking,quote,"shop_id","kind"):ranking);
         out.put("fees",(cny?FinanceFx.groups(fees,quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
-        out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s));
+        out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
         out.put("updatedAt",Instant.now().toString());
         out.put("basis","订单按创建日期，结算与费用按平台结算日期；广告按广告账户日期。原币分别统计，已结算不代表银行到账。");
         return out;
@@ -182,14 +205,15 @@ public class FinanceService {
             UPDATE finance_sync_states st JOIN finance_connections c ON c.id=st.shop_id
               AND c.organization_id=st.organization_id AND c.user_id=st.user_id
             SET st.next_at=LEAST(st.next_at,UTC_TIMESTAMP(6)),st.status='READY'
-            WHERE st.organization_id=? AND st.user_id=? AND c.enabled=TRUE AND c.status='ACTIVE'
+            WHERE st.organization_id=? AND c.enabled=TRUE AND c.status='ACTIVE'
               AND st.channel='ORDER_LIVE' AND st.status='SUCCESS' AND st.checkpoint_json IS NULL
               AND st.last_success_at<DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 60 SECOND)
               AND (st.lease_until IS NULL OR st.lease_until<UTC_TIMESTAMP(6))
               AND (?='' OR c.id=?) AND (?='' OR c.platform=?)
-            """,s.organizationId(),s.userId(),requested.shopId(),requested.shopId(),requested.platform(),requested.platform());
+              AND (?='' OR (?='UNGROUPED' AND c.group_id IS NULL) OR c.group_id=?)
+            """,s.organizationId(),requested.shopId(),requested.shopId(),requested.platform(),requested.platform(),requested.groupId(),requested.groupId(),requested.groupId());
         var out=buildDashboard(s,requested,cny,snapshotId,true);
-        var f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),text(map(out.get("filters")).get("currency")),"day");
+        var f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),text(map(out.get("filters")).get("currency")),"day",requested.groupId());
         FinanceFx.Quote quote=cny?fx.quote(text(map(out.get("fx")).get("id"))):null;
         var shops=rows(out.get("shops"));var hourly=new LinkedHashMap<Integer,Map<String,Object>>();
         for(int h=0;h<24;h++)hourly.put(h,new LinkedHashMap<>(Map.of("hour",String.format("%02d:00",h))));

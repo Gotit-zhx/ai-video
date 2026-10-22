@@ -42,6 +42,8 @@ public final class FinanceFields {
         extra("tk_seller_discount","TK 商家折扣（原币）","money","ORDER","payment.seller_discount"),
         extra("tk_platform_discount","TK 平台折扣（原币）","money","ORDER","payment.platform_discount"),
         extra("tk_tax","TK 税费（原币）","money","ORDER","payment.tax"),
+        new Field("platform_refund_amount","平台退款金额（原币）","money","退款信息",false,"REFUND","refund_amount.refund_total|refund_amount"),
+        new Field("refund_amount_note","退款金额说明","text","退款信息",false,"REFUND",""),
         extra("refund_reason","退款原因","text","REFUND","reason|return_reason"),
         extra("refund_type","退款类型","text","REFUND","return_type"),
         extra("shopee_original","Shopee 商品原价（原币）","money","SETTLEMENT","order_income.original_price"),
@@ -79,9 +81,14 @@ public final class FinanceFields {
     }
     public static List<Field> catalog(String key){
         String v=view(key);return CATALOG.stream().filter(f->f.views.equals("*")||!f.views.equals("RECONCILIATION")&&v.equals("ALL")
-                ||Arrays.asList(f.views.split(" ")).contains(v)).toList();
+                ||Arrays.asList(f.views.split(" ")).contains(v)).map(f->v.equals("REFUND")&&f.id.equals("amount")?new Field(f.id,"确认退款金额（原币）",f.type,f.group,f.cny,f.views,f.path):v.equals("REFUND")&&f.id.equals("cny_amount")?new Field(f.id,"确认退款金额（人民币）",f.type,f.group,f.cny,f.views,f.path):f).toList();
     }
     static Preferences defaults(String key){
+        if(key.equals("REFUND")){
+            var visible=new ArrayList<>(DEFAULT_VISIBLE);visible.add(visible.indexOf("amount"),"platform_refund_amount");
+            var exported=new ArrayList<>(DEFAULT_EXPORT);exported.add(exported.indexOf("amount"),"platform_refund_amount");exported.add("refund_amount_note");
+            return new Preferences(visible,exported);
+        }
         return key.equals("RECONCILIATION")?new Preferences(RECON_VISIBLE,RECON_EXPORT):new Preferences(DEFAULT_VISIBLE,DEFAULT_EXPORT);
     }
     public Preferences get(Scope s,String key){
@@ -115,7 +122,7 @@ public final class FinanceFields {
         return ids.stream().map(id->catalog.stream().filter(f->f.id.equals(id)).findFirst().orElseThrow()).filter(f->cny||!f.cny).toList();
     }
     static Set<String> numericLabels(){
-        var labels=new HashSet<>(List.of("金额","账单金额","人民币账单金额"));
+        var labels=new HashSet<>(List.of("金额","账单金额","人民币账单金额","确认退款金额（原币）","确认退款金额（人民币）"));
         CATALOG.stream().filter(f->Set.of("money","number").contains(f.type)).map(Field::label).forEach(labels::add);return labels;
     }
     static void enrich(Map<String,Object> row,Map<String,Object> raw){
@@ -133,6 +140,11 @@ public final class FinanceFields {
                 catch(RuntimeException e){value=null;}
             }else if(value!=null)value=text(value).substring(0,Math.min(2000,text(value).length()));
             if(value!=null)row.put(field.id,value);
+        }
+        if(kind.equals("REFUND")){
+            String status=text(row.get("status"));
+            boolean confirmed=platform.equals("SHOPEE")?status.equals("ACCEPTED"):Set.of("RETURN_OR_REFUND_REQUEST_COMPLETE","REPLACEMENT_REQUEST_REFUND_SUCCESS").contains(status);
+            row.put("refund_amount_note",row.get("amount")!=null?"已确认退款":confirmed?"平台未返回确认退款金额":status.equals("CLOSED")?"已关闭，不计入退款":Set.of("CANCELLED","RETURN_OR_REFUND_REQUEST_CANCEL").contains(status)?"已取消，不计入退款":"尚未确认，不计入退款合计");
         }
         if(kind.equals("ORDER")){
             Object items=raw.get(platform.equals("SHOPEE")?"item_list":"line_items");

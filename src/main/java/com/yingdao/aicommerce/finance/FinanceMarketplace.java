@@ -134,8 +134,10 @@ public class FinanceMarketplace {
             data=map(shopee.shopGet("/api/v2/returns/get_return_list",c,q).get("response"));
             for(var row:requiredRows(data,"return")){
                 String status=first(row,"status");
+                // Shopee's official return flow: ACCEPTED confirms refund; CLOSED is
+                // the platform closing the case without refund. Never count CLOSED.
                 save(s,c,"REFUND",first(row,"return_sn"),first(row,"order_sn"),"","退货退款",status,date(row.get("create_time"),zone),first(row,"currency"),
-                        status.equals("CLOSED")?amount(row,"refund_amount"):null,row);
+                        status.equals("ACCEPTED")?amount(row,"refund_amount"):null,row);
             }
             boolean more=Boolean.TRUE.equals(data.get("more"));next.put("page",page+1);return new Step(next,!more);
         }
