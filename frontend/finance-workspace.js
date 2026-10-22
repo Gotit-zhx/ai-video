@@ -6,6 +6,8 @@
   const routes={overview:'财务总览',live:'实时大屏',settlements:'结算中心',reconciliation:'对账中心',orders:'订单与退款',fees:'费用与调整',ads:'广告分析',shops:'财务店铺管理'};
   const kinds={ORDER:'订单',REFUND:'退款',SETTLEMENT:'结算明细',BILL:'结算账单',FEE:'平台费用',AD:'广告费用',AD_GMV:'GMV Max 分析',COST:'外部成本',PENDING:'待结算'};
   const states={READY:'待同步',RUNNING:'同步中',SYNCING:'历史回补中',SUCCESS:'已同步',ERROR:'同步异常',ACTIVE:'已授权',TOKEN_EXPIRED:'授权过期',DISABLED:'已断开',SETTLED:'已结算',IMPORTED:'已导入',REPORTED:'平台报表',ACCEPTED:'已确认退款',PROCESSING:'处理中',REQUESTED:'申请中',JUDGING:'平台审核中',CLOSED:'已关闭',REFUND_PAID:'退款已支付',RETURN_OR_REFUND_REQUEST_COMPLETE:'退款已完成',RETURN_OR_REFUND_REQUEST_CANCEL:'退款已取消',RETURN_OR_REFUND_REQUEST_SUCCESS:'申请成功',AWAITING_BUYER_SHIP:'等待买家寄回',PARTIAL:'明细同步中',UNSETTLED:'预计待结算',MATCHED:'核对一致',MISSING:'缺少明细',DIFFERENCE:'金额有差异'};
+  const orderStates={UNPAID:'待付款',ON_HOLD:'订单暂挂',CANCELLED:'已取消',CANCELED:'已取消',IN_CANCEL:'取消处理中',COMPLETED:'已完成',DELIVERED:'已送达',AWAITING_SHIPMENT:'待发货',AWAITING_COLLECTION:'待揽收',PARTIALLY_SHIPPING:'部分发货',PARTIALLY_SHIPPED:'部分发货',IN_TRANSIT:'运输中',READY_TO_SHIP:'待发货',PROCESSED:'已处理',RETRY_SHIP:'待重新发货',SHIPPED:'已发货',TO_CONFIRM_RECEIVE:'待确认收货',TO_RETURN:'待退货'};
+  const refundStates={INITIATED:'已发起申请',REFUND_OR_RETURN_REQUESTED:'已申请退货退款',RETURN_OR_REFUND_REQUEST_PENDING:'退货退款待处理',RETURN_OR_REFUND_REQUEST_REJECT:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_REJECTED:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_APPROVED:'退货退款已同意',REFUND_OR_RETURN_REQUEST_REJECT:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_REVIEWING:'退货退款审核中',RETURN_OR_REFUND_REQUEST_REVIEWING_APPEAL:'退货退款申诉审核中',RETURN_OR_REFUND_REQUEST_APPROVED_APPEAL:'退货退款申诉已通过',RETURN_OR_REFUND_REQUEST_REJECTED_APPEAL:'退货退款申诉已拒绝',RETURN_OR_REFUND_REQUEST_PENDING_BUYER_RETURN:'待买家退货',RETURN_OR_REFUND_REQUEST_BUYER_RETURNING:'买家退货中',RETURN_OR_REFUND_REQUEST_PENDING_RECEIVE:'待卖家收货',RETURN_OR_REFUND_REQUEST_RECEIVED:'退货已收到',REPLACEMENT_REQUEST_REFUND_SUCCESS:'换货退款已完成',REPLACEMENT_REQUEST_COMPLETE:'换货已完成',REPLACEMENT_REQUEST_CANCEL:'换货已取消',REJECTED:'已拒绝',APPROVED:'已同意',REFUNDED:'已退款',REFUNDING:'退款中'};
   const paths={chart:'M4 19h16M7 15v-4m5 4V5m5 10V8',download:'M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4',refresh:'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 3M18 17a7 7 0 0 1-12 2l-2-3',shop:'M3 10h18l-2-7H5zM5 10v11h14V10M9 21v-7h6v7',wallet:'M3 6h18v15H3zM3 6V3h15v3M16 12h5v5h-5z',arrow:'M7 17 17 7M7 7h10v10',refund:'m9 6-5 5 5 5M4 11h10a5 5 0 0 1 0 10',ad:'m3 11 15-6v14L3 14zM6 15v6h4v-5M21 9v6',fee:'M7 3h10l4 4v14H3V7zM8 9h8M8 13h8M8 17h5',info:'M12 11v6M12 7v1M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',plus:'M12 4v16M4 12h16',check:'m5 12 4 4 10-10'};
   let callbackNotice='';const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
   let active=false,generation=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='';
@@ -15,6 +17,21 @@
   let filters={start:ago(29),end:today(),shopId:'',groupId:'',platform:'',currency:'',granularity:'day',displayCurrency:'ORIGINAL',fxSnapshot:''};
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;parent?.append(n);return n;};
   function icon(name,parent){const n=document.createElementNS('http://www.w3.org/2000/svg','svg');n.setAttribute('viewBox','0 0 24 24');n.classList.add('fi-svg');n.setAttribute('aria-hidden','true');const path=document.createElementNS(n.namespaceURI,'path');path.setAttribute('d',paths[name]||paths.chart);n.append(path);parent?.append(n);return n;}
+  function recordPlatform(row){return row.platform||data?.shops?.find(shop=>shop.id===row.shop_id)?.platform||'';}
+  function platformBadge(platform){
+    const key=String(platform||'').trim().toUpperCase(),shopee=key==='SHOPEE',tiktok=['TIKTOK_SHOP','TIKTOK_ADS','TIKTOK'].includes(key);
+    const label=shopee?'虾皮':tiktok?'TikTok':'平台待确认',n=el('span',null,null,'fi-market-badge '+(shopee?'is-shopee':tiktok?'is-tiktok':'is-unknown'));
+    n.dataset.platform=key;n.title=shopee?'虾皮（Shopee）':tiktok?'TikTok（TK）':platform||'平台信息未返回';n.setAttribute('aria-label','平台：'+n.title);
+    const mark=el('span',null,n,'fi-market-mark'),svg=icon('shop',mark);svg.replaceChildren();
+    function path(d,stroke,width=1.7,transform=''){const p=document.createElementNS(svg.namespaceURI,'path');p.setAttribute('d',d);p.setAttribute('stroke',stroke);p.setAttribute('stroke-width',width);p.setAttribute('fill','none');p.setAttribute('stroke-linecap','round');p.setAttribute('stroke-linejoin','round');if(transform)p.setAttribute('transform',transform);svg.append(p);}
+    if(shopee){path('M5 8h14l1 13H4L5 8Zm3 0V6a4 4 0 0 1 8 0v2','currentColor');path('M15 12c-1-1-5-1-5 1s5 1 5 3-4 3-6 1','currentColor',1.5);}
+    else if(tiktok){const note='M14 4v12a4 4 0 1 1-4-4M14 4c0 4 3 5 6 5';path(note,'#25f4ee',2.5,'translate(-.8 .7)');path(note,'#fe2c55',2.5,'translate(.8 -.3)');path(note,'#fff',2);}
+    else path(paths.shop,'currentColor');
+    el('span',label,n);return n;
+  }
+  function recordLead(row,value){const n=el('span',null,null,'fi-record-lead');n.append(platformBadge(recordPlatform(row)));const content=el('span',null,n,'fi-record-value');if(value instanceof Node)content.append(value);else content.textContent=value??'—';return n;}
+  // record_date is a business calendar date; never shift it through the browser's timezone.
+  function businessDate(value){if(value==null||value==='')return '—';const match=String(value).match(/^(\d{4}-\d{2}-\d{2})(?:$|[T ])/);return match?match[1]:'—';}
   function button(label,parent,fn,cls=''){const n=el('button',label,parent,cls);n.type='button';n.onclick=async event=>{try{await fn(event.currentTarget);}catch(e){notify(e.message,true);}};return n;}
   function action(label,symbol,parent,fn,cls=''){const n=button('',parent,fn,'fi-btn-icon '+cls);icon(symbol,n);el('span',label,n);return n;}
   const number=v=>v==null?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2});
@@ -187,8 +204,8 @@
     rows.forEach((row,i)=>{const tr=el('tr',null,body);if(keys[i]!=null)tr.dataset.updateKey=String(keys[i]);row.forEach(value=>{const td=el('td',null,tr);if(value instanceof Node)td.append(value);else td.textContent=value??'—';});});
     if(!rows.length)el('p',empty,parent,'fi-empty');return t;
   }
-  function badge(status){const n=el('span',states[status]||status||'—',null,'fi-status');n.classList.toggle('success',['SUCCESS','SETTLED','MATCHED','ACTIVE'].includes(status));n.classList.toggle('error',['ERROR','DIFFERENCE','TOKEN_EXPIRED'].includes(status));n.classList.toggle('running',['RUNNING','SYNCING','READY','PARTIAL'].includes(status));return n;}
-  function statusName(status){return ({UNPAID:'待付款',CANCELLED:'已取消',COMPLETED:'已完成',DELIVERED:'已送达',AWAITING_SHIPMENT:'待发货',IN_TRANSIT:'运输中',READY_TO_SHIP:'待发货',SHIPPED:'已发货'})[status]||states[status]||status;}
+  function badge(status){const key=String(status||'').trim().toUpperCase(),n=el('span',statusName(status),null,'fi-status');if(status)n.title=String(status);n.classList.toggle('success',['SUCCESS','SETTLED','MATCHED','ACTIVE','COMPLETED','DELIVERED','ACCEPTED','REFUNDED','RETURN_OR_REFUND_REQUEST_COMPLETE','REPLACEMENT_REQUEST_REFUND_SUCCESS'].includes(key));n.classList.toggle('error',['ERROR','DIFFERENCE','TOKEN_EXPIRED','REJECTED'].includes(key));n.classList.toggle('running',['RUNNING','SYNCING','READY','PARTIAL','PROCESSING','PROCESSED','AWAITING_COLLECTION','AWAITING_SHIPMENT','READY_TO_SHIP','SHIPPED','IN_TRANSIT','PARTIALLY_SHIPPING'].includes(key));return n;}
+  function statusName(status){if(status==null||String(status).trim()==='')return '—';const text=String(status).trim(),key=text.toUpperCase();return orderStates[key]||refundStates[key]||states[key]||(/[\u3400-\u9fff]/.test(text)?text:'其他状态');}
   function feeName(key){return ({commission_fee:'佣金',service_fee:'服务费',seller_transaction_fee:'支付手续费',final_shipping_fee:'物流费用',reverse_shipping_fee:'逆向物流',order_ams_commission_fee:'达人佣金',campaign_fee:'活动费用',withholding_tax:'代扣税',fbs_fee:'仓储履约',seller_order_processing_fee:'订单处理费',pay_per_sale:'成交广告费'})[key]||key||'其他';}
   async function recordView(parent,run){
     parent.style.display='grid';parent.style.gap='15px';
@@ -374,16 +391,18 @@
     if(f.id==='status'||f.id==='result')return badge(value);
     if(row.kind==='REFUND'&&['amount','cny_amount'].includes(f.id)&&value==null){const hint=el('span',row.refund_amount_note||'未确认',null,'fi-muted');hint.title=row.refund_amount_note||'平台尚未返回已完成退款金额';return hint;}
     if(f.id==='kind')return kinds[value]||value;
-    if(f.id==='platform')return ({SHOPEE:'Shopee',TIKTOK_SHOP:'TikTok Shop'})[value]||value;
+    if(f.id==='platform')return platformBadge(recordPlatform(row));
     if(f.id==='source')return ({API:'官方接口',IMPORT:'导入账单'})[value]||value;
     if(f.id==='category')return feeName(value);
     if(f.type==='money'||f.type==='number')return number(value);
+    if(f.type==='date')return businessDate(value);
     if(f.type==='datetime'&&value)return f.label.includes('UTC')?String(value).replace('T',' ').replace('Z',' UTC'):new Date(value).toLocaleString('zh-CN');
     return value==null||value===''?'—':value;
   }
   function renderFieldsTable(parent,items,settings,empty){
     const fields=settings.visible.map(id=>settings.fields.find(f=>f.id===id)).filter(f=>f&&(!f.cny||data.fx));
-    table(parent,fields.map(f=>f.id==='shop_id'?'店铺':f.label),items.map(row=>fields.map(f=>columnValue(row,f))),empty,items.map(row=>row.id||[row.shop_id,row.statement_id,row.currency].join(':')));
+    const showLead=!fields.some(f=>f.id==='platform');
+    table(parent,fields.map((f,i)=>(showLead&&i===0?'平台 / ':'')+(f.id==='shop_id'?'店铺':f.label)),items.map(row=>fields.map((f,i)=>{const value=columnValue(row,f);return showLead&&i===0?recordLead(row,value):value;})),empty,items.map(row=>row.id||[row.shop_id,row.statement_id,row.currency].join(':')));
   }
   async function fieldsDialog(key,initial){
     const d=dialog('字段显示与导出');d.d.classList.add('fi-fields-dialog');
@@ -480,7 +499,7 @@
     const max=Math.max(...rankingRows.map(r=>Number(r.amount)),1);
     rankingRows.forEach((r,i)=>{const line=el('div',null,rankingList,'fi-live-rank');line.dataset.updateKey=r.shop_id;el('b',String(i+1).padStart(2,'0'),line);const body=el('div',null,line);const title=el('div',null,body);el('span',shopName(r.shop_id),title);el('strong',number(r.amount),title);const rail=el('div',null,body,'fi-live-rail');el('i',null,rail).style.width=Math.max(0,Number(r.amount)/max*100)+'%';});
     const recent=card(grid,'最新订单','仅展示订单业务信息 · 自动更新',8);
-    table(recent.n,['时间','店铺','订单编号','状态','金额'],data.recent.map(r=>[r.create_time?new Date(r.create_time).toLocaleTimeString('zh-CN',{hour12:false}):r.record_date,shopName(r.shop_id),r.external_id,statusName(r.status),number(data.fx?r.cny_amount:r.amount)]),'今日尚无订单，授权并开启财务店铺同步后自动显示。',data.recent.map(r=>r.id||r.shop_id+':'+r.external_id));
+    table(recent.n,['平台 / 时间','店铺','订单编号','状态','金额'],data.recent.map(r=>[recordLead(r,r.create_time?new Date(r.create_time).toLocaleTimeString('zh-CN',{hour12:false}):businessDate(r.record_date)),shopName(r.shop_id),r.external_id,badge(r.status),number(data.fx?r.cny_amount:r.amount)]),'今日尚无订单，授权并开启财务店铺同步后自动显示。',data.recent.map(r=>r.id||r.shop_id+':'+r.external_id));
     donut(grid,'订单状态分布','包含未付款与取消订单，独立展示',data.statuses.filter(r=>r.kind==='ORDER').map(r=>({name:statusName(r.status),value:Number(r.records)})));
     const footer=el('footer',null,root,'fi-live-footer');el('span','HOYEE INTELLIGENCE · 让每一笔增长看得见',footer);el('span','更新时间 '+new Date(data.updatedAt).toLocaleTimeString('zh-CN',{hour12:false})+' · 财务角色授权可见',footer);
   }
