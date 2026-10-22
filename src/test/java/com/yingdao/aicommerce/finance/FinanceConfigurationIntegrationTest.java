@@ -446,10 +446,13 @@ class FinanceConfigurationIntegrationTest {
     }
     com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp adHttp;
     FinanceAdAuthorization adAuth(){
+        return adAuth(new FinanceAdApplicationSettings("","",""));
+    }
+    FinanceAdAuthorization adAuth(FinanceAdApplicationSettings applicationSettings){
         adHttp=mock(com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp.class);
         var ads=new FinanceAds(FinanceTest.classProxy(repo),service,adHttp,cipher);
         var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
-        return new FinanceAdAuthorization(FinanceTest.classProxy(repo),FinanceTest.classProxy(ads),adHttp,cipher,settings,auth,tx);
+        return new FinanceAdAuthorization(FinanceTest.classProxy(repo),FinanceTest.classProxy(ads),adHttp,cipher,settings,auth,tx,applicationSettings);
     }
     String adState(Map<String,Object> start){
         var query=URI.create(text(start.get("authorizationUrl"))).getRawQuery();
@@ -460,6 +463,45 @@ class FinanceConfigurationIntegrationTest {
         when(adHttp.get(any(),anyMap())).thenReturn(Map.of("code",0,"data",Map.of("list",accounts)));
     }
     Map<String,Object> advertiser(String id){return Map.of("advertiser_id",id,"advertiser_name","Test ads "+id,"currency","PHP","timezone","Asia/Manila");}
+    @Test void serverAdvertisingApplicationCreatesCopiedLinksWithoutCompanySetupAndKeepsAccountsIsolated(){
+        var a=adAuth(new FinanceAdApplicationSettings("12345678","server-ad-private-secret",""));
+        assertEquals(true,a.configuration(owner).get("configured"));
+        assertFalse(repo.write(a.configuration(owner)).contains("server-ad-private"));
+        assertFalse(a.configuration(owner).containsKey("appId"));
+        assertThrows(BusinessException.class,()->a.configure(owner,"87654321","user-ad-private-secret"));
+        String state=adState(a.start(owner,"","",""));
+        String otherState=adState(a.start(other,"","",""));
+        assertNotEquals(state,otherState);
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_applications",Integer.class));
+        assertFalse(db.queryForObject("SELECT context_json FROM finance_authorization_sessions WHERE state_hash=?",String.class,FinanceShopAuthorization.hash(state)).contains("server-ad-private"));
+        adGrant(List.of("100001"),List.of(advertiser("100001")));
+        assertTrue(a.complete(state,"code",null).contains("financeAuth=success"));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE organization_id='org'",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE organization_id='other-org'",Integer.class));
+        assertThrows(BusinessException.class,()->a.complete(state,"code",null));
+        verify(adHttp,times(1)).postJson(any(),anyMap(),argThat(body->body.contains("\"secret\":\"server-ad-private-secret\"")));
+    }
+    @Test void rotatingServerAdvertisingCredentialsRejectsPendingLinkBeforeExchangingCode()throws Exception{
+        Path file=Files.createTempFile("finance-ad-qa-",".properties");
+        try{
+            Files.writeString(file,"app-id=12345678\napp-secret=first-ad-private-secret\n");
+            var a=adAuth(new FinanceAdApplicationSettings("","",file.toString()));
+            String state=adState(a.start(owner,"","",""));
+            Files.writeString(file,"app-id=12345678\napp-secret=rotated-ad-private-secret\n");
+            assertTrue(a.complete(state,"code",null).contains("financeAuth=error"));
+            verifyNoInteractions(adHttp);
+            assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts",Integer.class));
+        }finally{Files.deleteIfExists(file);}
+    }
+    @Test void existingAdvertisingLinkStillUsesItsOriginalApplicationAfterServerConfiguration(){
+        var legacy=adAuth();legacy.configure(owner,"87654321","legacy-ad-private-secret");
+        String state=adState(legacy.start(owner,"","",""));
+        var managed=adAuth(new FinanceAdApplicationSettings("12345678","server-ad-private-secret",""));
+        adGrant(List.of("100001"),List.of(advertiser("100001")));
+        assertTrue(managed.complete(state,"code",null).contains("financeAuth=success"));
+        verify(adHttp).postJson(any(),anyMap(),argThat(body->body.contains("\"app_id\":\"87654321\"")&&body.contains("\"secret\":\"legacy-ad-private-secret\"")));
+        assertEquals("12345678",URI.create(text(managed.start(owner,"","","").get("authorizationUrl"))).getQuery().split("app_id=")[1].split("&")[0]);
+    }
     @Test void advertisingApplicationIsPrivateEncryptedAndDoesNotReuseShopCredentials(){
         var a=adAuth();assertThrows(BusinessException.class,()->a.start(owner,"","",""));
         a.configure(owner,"12345678","private-ad-application-secret");

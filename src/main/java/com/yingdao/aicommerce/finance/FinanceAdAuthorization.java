@@ -24,24 +24,45 @@ public class FinanceAdAuthorization {
     private final ShopIntegrationSettings settings;
     private final FinanceShopAuthorization shopAuthorization;
     private final TransactionTemplate transactions;
+    private final FinanceAdApplicationSettings applicationSettings;
 
     public FinanceAdAuthorization(FinanceRepository repo,FinanceAds ads,MarketplaceHttp http,
             ShopCredentialCipher cipher,ShopIntegrationSettings settings,
-            FinanceShopAuthorization shopAuthorization,PlatformTransactionManager manager){
+            FinanceShopAuthorization shopAuthorization,PlatformTransactionManager manager,
+            FinanceAdApplicationSettings applicationSettings){
         this.repo=repo;this.ads=ads;this.http=http;this.cipher=cipher;this.settings=settings;
         this.shopAuthorization=shopAuthorization;this.transactions=new TransactionTemplate(manager);
+        this.applicationSettings=applicationSettings;
     }
     String callbackUrl(){return settings.callbackBaseUrl()+"/api/v1/shop-authorizations/callback/tiktok_ads";}
     String aad(Scope s){return "finance-ads-app:"+s.userId();}
     Map<String,Object> application(Scope s){
+        var configured=applicationSettings.current();
+        if(configured!=null)return Map.of("app_id",configured.appId(),"revision",configured.revision(),
+                "user_id",companyScope(s.organizationId()).userId(),"source","SERVER");
+        return legacyApplication(s);
+    }
+    Map<String,Object> legacyApplication(Scope s){
         var rows=repo.jdbc().queryForList("SELECT * FROM finance_ad_applications WHERE organization_id=?",s.organizationId());
         return rows.isEmpty()?Map.of():rows.getFirst();
     }
+    Map<String,Object> sessionApplication(Scope s,Map<String,Object> context){
+        return "SERVER".equals(context.get("applicationSource"))?application(s):legacyApplication(s);
+    }
+    String applicationSecret(Scope s,Map<String,Object> app){
+        if("SERVER".equals(app.get("source"))){
+            var configured=applicationSettings.current();
+            if(configured==null||!configured.revision().equals(app.get("revision")))throw bad("广告应用配置已变更");
+            return configured.secret();
+        }
+        return cipher.decrypt(text(app.get("secret_encrypted")),s.organizationId(),"finance-ads-app:"+text(app.get("user_id")));
+    }
     public Map<String,Object> configuration(Scope s){
         var app=application(s);
-        return Map.of("configured",!app.isEmpty(),"appId",text(app.get("app_id")),"callbackUrl",callbackUrl());
+        return Map.of("configured",!app.isEmpty(),"managed",true,"callbackUrl",callbackUrl());
     }
     public void configure(Scope s,String appId,String secret){
+        if(applicationSettings.current()!=null)throw bad("广告应用由服务端统一配置，无需在页面填写");
         appId=text(appId).trim();secret=text(secret).trim();
         if(!appId.matches("\\d{5,30}"))throw bad("请填写 TikTok for Business 广告应用 App ID");
         var old=application(s);
@@ -61,7 +82,7 @@ public class FinanceAdAuthorization {
         });
     }
     public Map<String,Object> start(Scope s,String advertiserId,String shopId,String gmvStoreId){
-        var app=application(s);if(app.isEmpty())throw bad("请先在财务店铺管理配置 TikTok for Business 广告应用");
+        var app=application(s);if(app.isEmpty())throw bad("广告授权暂未准备好，请联系管理员完成服务端配置");
         Scope storage=new Scope(s.organizationId(),text(app.get("user_id")));
         advertiserId=text(advertiserId).trim();shopId=text(shopId).trim();gmvStoreId=text(gmvStoreId).trim();
         if(!advertiserId.isBlank()&&!advertiserId.matches("\\d{5,30}"))throw bad("广告账户 ID 格式不正确");
@@ -69,7 +90,8 @@ public class FinanceAdAuthorization {
             throw bad("绑定专属店铺时请指定广告账户 ID；跨店批量授权请保留未分配");
         ads.validateDestination(s,shopId,gmvStoreId);
         var context=Map.of("appId",text(app.get("app_id")),"revision",text(app.get("revision")),
-                "advertiserId",advertiserId,"shopId",shopId,"gmvStoreId",gmvStoreId);
+                "advertiserId",advertiserId,"shopId",shopId,"gmvStoreId",gmvStoreId,
+                "applicationSource","SERVER".equals(app.get("source"))?"SERVER":"LEGACY");
         byte[] random=new byte[32];new SecureRandom().nextBytes(random);
         String state=PREFIX+Base64.getUrlEncoder().withoutPadding().encodeToString(random);
         Instant expires=Instant.now().plus(settings.stateTtl());
@@ -93,9 +115,9 @@ public class FinanceAdAuthorization {
         Scope s=new Scope(text(session.get("organization_id")),text(session.get("user_id")));
         try{
             if(!text(providerError).isBlank()||text(code).isBlank()||code.length()>4096)throw bad("广告授权未完成");
-            var context=repo.read(text(session.get("context_json")));var app=application(s);
+            var context=repo.read(text(session.get("context_json")));var app=sessionApplication(s,context);
             if(!Objects.equals(app.get("revision"),context.get("revision")))throw bad("广告应用配置已变更");
-            String secret=cipher.decrypt(text(app.get("secret_encrypted")),s.organizationId(),aad(s));
+            String secret=applicationSecret(s,app);
             var result=http.postJson(URI.create("https://business-api.tiktok.com/open_api/v1.3/oauth2/access_token/"),Map.of(),
                     repo.write(Map.of("app_id",app.get("app_id"),"secret",secret,"auth_code",code)));
             var grant=successful(result);String token=text(grant.get("access_token"));
@@ -122,8 +144,12 @@ public class FinanceAdAuthorization {
             if(!info.keySet().equals(ids))throw bad("未能确认全部授权账户，未保存");
             // Validate first, then persist all accounts atomically; never partly attach a grant.
             transactions.executeWithoutResult(status->{
-                var current=repo.jdbc().queryForList("SELECT revision FROM finance_ad_applications WHERE organization_id=? AND user_id=? FOR UPDATE",s.organizationId(),s.userId());
-                if(current.size()!=1||!Objects.equals(current.getFirst().get("revision"),context.get("revision")))throw bad("广告应用配置已变更");
+                if("SERVER".equals(context.get("applicationSource"))){
+                    if(!Objects.equals(application(s).get("revision"),context.get("revision")))throw bad("广告应用配置已变更");
+                }else{
+                    var current=repo.jdbc().queryForList("SELECT revision FROM finance_ad_applications WHERE organization_id=? AND user_id=? FOR UPDATE",s.organizationId(),s.userId());
+                    if(current.size()!=1||!Objects.equals(current.getFirst().get("revision"),context.get("revision")))throw bad("广告应用配置已变更");
+                }
                 for(String id:ids){
                     String shop=text(context.get("shopId")),gmv=text(context.get("gmvStoreId"));
                     if(target.isBlank()){

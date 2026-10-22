@@ -89,6 +89,11 @@ app:
       local-token: ${APP_PRODUCT_WATERMARK_LOCAL_TOKEN:}
     publishing:
       provider: ${APP_PRODUCT_PUBLISHING_PROVIDER:DRY_RUN}
+  finance:
+    ads:
+      app-id: ${APP_TIKTOK_ADS_APP_ID:}
+      app-secret: ${APP_TIKTOK_ADS_APP_SECRET:}
+      credentials-file: ${APP_TIKTOK_ADS_CREDENTIALS_FILE:}
   shop-auth:
     state-ttl: ${APP_SHOP_AUTH_STATE_TTL:1h}
     credential-key: ${APP_SHOP_CREDENTIAL_KEY:local-development-shop-secret-change-me}

@@ -1,0 +1,4 @@
+# Copy outside this repository as application.properties; restrict access to the app operator.
+# TikTok API for Business advertising application, separate from TikTok Shop.
+app-id=
+app-secret=

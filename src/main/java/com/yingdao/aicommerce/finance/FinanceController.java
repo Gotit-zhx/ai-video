@@ -92,7 +92,7 @@ public class FinanceController {
     @GetMapping("/ads/application") public ApiResponse<?> adApplication(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(adAuthorization.configuration(s(p)));}
     record AdApplication(String appId,String appSecret){}
     @PutMapping("/ads/application") public ApiResponse<?> adApplication(@RequestBody AdApplication body,@AuthenticationPrincipal PlatformPrincipal p){
-        adAuthorization.configure(s(p),body.appId,body.appSecret);return ApiResponse.ok("广告应用已保存");
+        s(p);throw bad("广告应用由服务端统一配置，请直接复制广告授权链接");
     }
     record AdAuthorization(String advertiserId,String shopId,String gmvStoreId){}
     @PostMapping("/ads/authorize") public ApiResponse<?> authorizeAds(@RequestBody AdAuthorization body,@AuthenticationPrincipal PlatformPrincipal p){

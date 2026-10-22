@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 const {JSDOM}=await import(process.env.JSDOM_MODULE||'jsdom');
 const dom=new JSDOM('<!doctype html><div id="finance-page"></div>',{url:'https://example.test/#finance-shops',runScripts:'outside-only',pretendToBeVisual:true});
 const w=dom.window,d=w.document,requests=[];
+let adConfigured=true,copied='';
+Object.defineProperty(w.navigator,'clipboard',{value:{writeText:async value=>{copied=value;}}});
 w.currentUser={roles:['STAFF'],permissions:['finance:manage']};
 w.matchMedia=()=>({matches:false});w.ResizeObserver=class{observe(){}disconnect(){}};
 w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
@@ -17,6 +19,8 @@ w.api=async(path,options={})=>{
   requests.push({url,method,body});const endpoint=url.pathname.replace('/api/v1/finance','');
   if(endpoint==='/shops')return {data:{items:shops,sync:[],groups}};
   if(endpoint==='/ads')return {data:[]};
+  if(endpoint==='/ads/application')return {data:{configured:adConfigured,managed:true}};
+  if(endpoint==='/ads/authorize')return {data:{authorizationUrl:'https://business-api.tiktok.com/portal/auth?state=opaque',expiresAt:'2026-10-22T20:00:00Z'}};
   if(endpoint==='/groups'&&method==='GET')return {data:groups};
   if(endpoint==='/groups'&&method==='POST'){groups=[...groups,{id:'new',name:body.name,shop_count:0}];return {data:{id:'new'}};}
   if(endpoint.startsWith('/groups/')){const id=endpoint.split('/').at(-1);groups=method==='DELETE'?groups.filter(g=>g.id!==id):groups.map(g=>g.id===id?{...g,name:body.name}:g);return {data:'已保存'};}
@@ -36,6 +40,19 @@ async function tick(){await new Promise(r=>setTimeout(r,15));}
 async function choose(label,value){const select=d.querySelector(`[aria-label="${label}"]`);assert(select,label);select.value=value;select.dispatchEvent(new w.Event('change'));await ready();}
 w.FinanceWorkspace.enter('shops');await ready();
 assert(button('分组管理'));assert.equal(d.querySelectorAll('.fi-shop-controls').length,3);
+assert(!button('广告应用配置'));assert(!button('连接广告账户'));
+button('复制广告授权链接').click();await tick();
+let adDialog=d.querySelector('dialog');assert(adDialog);assert(!adDialog.querySelector('input[type=password]'));
+assert(adDialog.querySelector('.fi-authorization-link'));assert.equal(copied,'https://business-api.tiktok.com/portal/auth?state=opaque');
+assert.equal(requests.filter(r=>r.url.pathname.endsWith('/ads/authorize')).length,1);
+assert.deepEqual(requests.at(-1).body,{advertiserId:'',shopId:'',gmvStoreId:''});
+assert(!adDialog.querySelector('details').open);
+const gmv=adDialog.querySelector('details label:last-of-type input');gmv.value='123456';gmv.dispatchEvent(new w.Event('input'));
+assert(!adDialog.querySelector('.fi-authorization-link'));adDialog.close();
+adConfigured=false;button('复制广告授权链接').click();await tick();adDialog=d.querySelector('dialog');
+assert(adDialog.textContent.includes('服务端配置'));assert(!adDialog.querySelector('.fi-authorization-link'));
+assert.equal(requests.filter(r=>r.url.pathname.endsWith('/ads/authorize')).length,1);adDialog.close();adConfigured=true;
+requests.length=0;
 button('连接店铺').click();await tick();
 let dialog=d.querySelector('dialog');assert(dialog);button('生成授权链接',dialog).click();await tick();
 assert(dialog.textContent.includes('请选择店铺分组'));assert(!requests.some(r=>r.url.pathname.endsWith('/authorize')));
@@ -60,7 +77,7 @@ for(const route of ['overview','reconciliation','settlements','fees','ads','live
 w.FinanceWorkspace.reset();w.currentUser={roles:['STAFF'],permissions:['finance:view']};
 assert(w.FinanceWorkspace.allowed());assert(!w.FinanceWorkspace.canManage());
 w.FinanceWorkspace.enter('shops');await ready();
-for(const label of ['连接店铺','分组管理','配置','移除','重新授权','广告应用配置'])assert(!button(label),'viewer must not see '+label);
+for(const label of ['连接店铺','分组管理','配置','移除','重新授权','广告应用配置','复制广告授权链接'])assert(!button(label),'viewer must not see '+label);
 w.FinanceWorkspace.enter('overview');await ready();assert(button('导出报表'));assert(!button('导入账单'));
 w.currentUser={roles:['STAFF'],permissions:[]};assert(!w.FinanceWorkspace.allowed());
 w.FinanceWorkspace.leave();dom.window.close();

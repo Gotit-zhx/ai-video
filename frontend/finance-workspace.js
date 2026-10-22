@@ -256,13 +256,12 @@
     const accounts=await request('/ads');if(run!==generation)return;
     const {n,h}=card(parent,'广告账户','TikTok 广告独立授权；仅专属一个店铺的账户才绑定店铺',12);
     const actions=el('div',null,h,'fi-actions');
-    if(canManage())button('广告应用配置',actions,()=>adApplicationDialog());
-    if(canManage())action('连接广告账户','plus',actions,()=>adsDialog(),'fi-primary');
+    if(canManage())action('复制广告授权链接','link',actions,()=>adsDialog({},true),'fi-primary');
     table(n,['广告账户','归属','币种','状态','最近同步','操作'],accounts.filter(a=>!filters.groupId||(a.shop_id?inGroup(data.shops.find(s=>s.id===a.shop_id)||{}):filters.groupId==='UNGROUPED')).map(account=>{
       const controls=el('div',null,null,'fi-actions');if(canManage()){button(account.enabled?'暂停':'启用',controls,async()=>{await request('/ads/'+account.advertiser_id,json('PUT',{enabled:!account.enabled}));load();});button('更新授权',controls,()=>adsDialog(account));}else el('span','只读',controls,'fi-muted');
       const status=el('div');status.append(badge(account.status));if(account.error_message)el('small',account.error_message,status);if(account.gmv_store_id)el('small','GMV Max · '+(states[account.gmv_status]||account.gmv_status)+(account.gmv_error?' · '+account.gmv_error:''),status);
       return [account.name+' · '+account.advertiser_id,account.shop_id?shopName(account.shop_id):'未分配店铺',account.currency,status,account.last_success_at?new Date(account.last_success_at).toLocaleString('zh-CN'):'尚未完成',controls];
-    }),'尚未连接广告账户。点击「连接广告账户」完成独立授权，广告数据将在「广告分析」展示。',accounts.map(a=>a.advertiser_id));
+    }),'尚未连接广告账户。复制广告授权链接，由账户管理员打开并授权，数据将在「广告分析」展示。',accounts.map(a=>a.advertiser_id));
   }
   async function adsView(parent,run){
     parent.style.display='grid';parent.style.gap='15px';meta(parent);
@@ -334,31 +333,38 @@
     try{await navigator.clipboard.writeText(input.value);}
     catch{input.focus();input.select();if(!document.execCommand('copy'))throw Error('请选中链接后手动复制');}
   }
-  async function adApplicationDialog(){
-    const d=dialog('TikTok 广告应用配置');
-    try{
-      const config=await request('/ads/application');if(!d.d.isConnected)return;
-      const id=field(d.body,'广告应用 App ID','text',config.appId||'');
-      const secret=field(d.body,'App Secret'+(config.configured?'（不修改可留空）':''),'password');secret.autocomplete='new-password';
-      const callback=field(d.body,'请在广告开放平台登记此回调地址','text',config.callbackUrl);callback.readOnly=true;
-      button('复制回调地址',d.body,async b=>{await copyValue(callback);b.textContent='已复制回调地址';});
-      el('p','填写 TikTok for Business 广告应用信息，并开通账户查看与报表权限。配置在本公司财务成员间共享；密钥加密保存，不回显。',d.body,'fi-muted');
-      d.submit('保存广告应用',async()=>{await request('/ads/application',json('PUT',{appId:id.value.trim(),appSecret:secret.value.trim()}));secret.value='';d.d.close();load();});
-    }catch(e){d.feedback.textContent=e.message;}
-  }
-  async function adsDialog(account={}){
-    const d=dialog(account.advertiser_id?'更新广告授权':'连接 TikTok 广告账户');
+  async function adsDialog(account={},copyImmediately=true){
+    const d=dialog(account.advertiser_id?'更新广告授权':'广告账户授权');
+    d.feedback.textContent='正在准备授权链接…';
     let config;try{config=await request('/ads/application');}catch(e){d.feedback.textContent=e.message;return;}
     if(!d.d.isConnected)return;
     if(!config.configured){
-      el('p','首次连接需先配置 TikTok for Business 广告应用。配置完成后即可生成链接，由广告账户管理员授权。',d.body,'fi-muted');
-      d.submit('配置广告应用',()=>{d.d.close();return adApplicationDialog();});return;
+      d.feedback.textContent='广告授权暂未准备好，请联系管理员完成服务端配置。';return;
     }
-    const id=field(d.body,'广告账户 ID（可选，留空连接本次授权的账户）','text',account.advertiser_id||'');id.disabled=!!account.advertiser_id;
-    const shop=select(d.body,'专属店铺',[['','暂不分配（跨店账户）'],...(data.shops||[]).filter(s=>s.platform==='TIKTOK_SHOP').map(s=>[s.id,s.display_name||s.name])],account.shop_id||'',()=>{});shop.disabled=!!account.advertiser_id;
-    const gmvStore=field(d.body,'GMV Max 店铺 ID（可选，来自广告平台）','text',account.gmv_store_id||'');
-    el('p','复制链接给广告账户管理员，选择账户并授权。无需填写 Access Token。绑定专属店铺时请指定一个广告账户；跨店授权可全部留空。',d.body,'fi-muted');
-    d.submit('生成授权链接',async()=>{const result=await request('/ads/authorize',json('POST',{advertiserId:id.value.trim(),shopId:shop.value,gmvStoreId:gmvStore.value.trim()}));authorizationLink(d,result);});
+    d.feedback.textContent='';
+    el('p','复制链接给广告账户管理员，打开后选择账户并授权。授权完成后自动同步广告数据。',d.body,'fi-muted');
+    const options=el('details',null,d.body,'fi-ad-options');options.open=!!account.advertiser_id;
+    el('summary','指定账户或绑定店铺（可选）',options);
+    const invalidate=()=>{d.body.querySelector('.fi-authorization-link')?.remove();d.feedback.textContent='选项已变更，请重新生成授权链接';};
+    const id=field(options,'广告账户 ID（留空连接本次授权的账户）','text',account.advertiser_id||'');id.disabled=!!account.advertiser_id;
+    const shop=select(options,'专属店铺',[['','暂不分配（跨店账户）'],...(data.shops||[]).filter(s=>s.platform==='TIKTOK_SHOP').map(s=>[s.id,s.display_name||s.name])],account.shop_id||'',invalidate);shop.disabled=!!account.advertiser_id;
+    const gmvStore=field(options,'GMV Max 店铺 ID（可选，来自广告平台）','text',account.gmv_store_id||'');
+    id.addEventListener('input',invalidate);gmvStore.addEventListener('input',invalidate);
+    el('p','绑定专属店铺时请指定一个广告账户；跨店授权可全部留空。',options,'fi-muted');
+    let preparing=false;
+    async function generate(){
+      if(preparing)return;preparing=true;d.feedback.textContent='正在生成授权链接…';
+      const selected={advertiserId:id.value.trim(),shopId:shop.value,gmvStoreId:gmvStore.value.trim()};
+      try{
+        const result=await request('/ads/authorize',json('POST',selected));
+        if(!d.d.isConnected||selected.advertiserId!==id.value.trim()||selected.shopId!==shop.value||selected.gmvStoreId!==gmvStore.value.trim())return;
+        authorizationLink(d,result);
+        try{await copyValue(d.body.querySelector('.fi-authorization-link input'));d.feedback.textContent='授权链接已复制，发送给账户管理员即可';}
+        catch{d.feedback.textContent='链接已生成，请点击「复制授权链接」或手动复制';}
+      }finally{preparing=false;}
+    }
+    d.submit('重新生成并复制',generate);
+    if(copyImmediately)try{await generate();}catch(e){d.feedback.textContent=e.message;}
   }
   function currentFieldView(){return view==='reconciliation'?'RECONCILIATION':view==='overview'?'ALL':view==='ads'?(selectedKind==='AD_GMV'?'AD_GMV':'AD'):selectedKind;}
   function columnValue(row,f){

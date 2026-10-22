@@ -1,0 +1,8 @@
+# Keep the actual directory outside the source tree; application.properties contains secrets.
+# Usage: docker compose -f compose.yaml -f compose.finance-ads.yaml up -d app
+services:
+  app:
+    environment:
+      APP_TIKTOK_ADS_CREDENTIALS_FILE: /run/heyi-finance-ads/application.properties
+    volumes:
+      - ${TIKTOK_ADS_CONFIG_DIRECTORY:-/opt/heyi/shared/finance-ads}:/run/heyi-finance-ads:ro
