@@ -119,7 +119,7 @@
         const period=el('div',row.start===row.end?row.start:row.start+' ～ '+row.end);if(live)el('small','计入：'+row.recordDate,period);
         const treatment=el('div');treatment.append(badge(label(treatments,row.treatment),row.treatment==='extra'?'good':'warn'));if(live)el('small',row.status,treatment);
         return [period,label(categories,row.category),destination,money(row.amount)+' '+row.currency,treatment,row.source,canManage?button(null,'调整',()=>entry(row),'fi-record-link'):'只读'];
-      }),live?'当前筛选没有手工费用。平台费用与已有导入记录可从“平台费用 / 原有明细”查看。':'尚无符合筛选的预览费用。可以新增一笔草稿，查看订单归属、计入方式与调整记录。');
+      }),live?'当前筛选没有手工费用。原来的平台费用和导入记录保留在上方“平台费用”分类。':'尚无符合筛选的预览费用。可以新增一笔草稿，查看订单归属、计入方式与调整记录。');
       if(live){const pager=el('div',null,p.n,'fi-pagebar');el('span',`共 ${state.totals?.records||0} 笔 · 第 ${state.page} 页`,pager);const actions=el('div',null,pager,'fi-actions');button(actions,'上一页',()=>{state.page--;return refresh();}).disabled=state.page<=1;button(actions,'下一页',()=>{state.page++;return refresh();}).disabled=state.page*50>=Number(state.totals?.records||0);}
       el('p',live?'只有“单独计入费用”的订单 / 店铺费用计入 BI 外部成本。分组公共费用待分摊，已含费用与待核对记录不再扣减。':'这里的金额仅来自本页手工草稿，未关联正式订单，也不会计入财务 BI。',p.n,'fc-inline-note');
     }
@@ -165,17 +165,17 @@
       if(live){button(actions,'平台费用 / 原有明细',()=>{location.hash='finance-fee-records';});button(actions,'刷新',refresh);}
       }
       const workspace=el('div',null,root,'fc-workspace'),banner=el('div',null,workspace,'fc-preview-note');
-      el('span',live?'费用口径':'设计预览',banner,'fc-preview-label');el('span',live?'费用按原币和计入财务日期统计；分组公共费用先归集，确认分摊前不计入各店铺结果。':'所有录入仅保留在当前页面，刷新后清空；尚未接入正式账目、订单校验与分摊。',banner);
+      el('span',live?'其他费用':'设计预览',banner,'fc-preview-label');el('span',live?'补录包装、运费等其他费用；平台费用请查看上方“平台费用”。':'所有录入仅保留在当前页面，刷新后清空；尚未接入正式账目、订单校验与分摊。',banner);
       const feedback=el('p',state.feedback,workspace,'fc-feedback fe-feedback');feedback.setAttribute('role','status');
       const rows=state.rows.filter(r=>visible(r)&&r.currency===state.currency),metrics=el('div',null,workspace,'fc-metrics');
       for(const [title,value,note]of [
-        [live?'费用台账总额':'预览草稿金额',money(live?state.totals?.amount||0:rows.reduce((sum,r)=>sum+Number(r.amount),0)),state.currency+' · '+(live?state.totals?.records||0:rows.length)+(live?' 笔费用':' 笔草稿')],
+        [live?'其他费用台账总额':'预览草稿金额',money(live?state.totals?.amount||0:rows.reduce((sum,r)=>sum+Number(r.amount),0)),state.currency+' · '+(live?state.totals?.records||0:rows.length)+(live?' 笔费用':' 笔草稿')],
         [live?'已单独计入':'拟单独计入',money(live?state.totals?.posted||0:rows.filter(r=>r.treatment==='extra').reduce((sum,r)=>sum+Number(r.amount),0)),state.currency+(live?' · BI 外部成本':' · 未计入正式核算')],
         ['已含其他口径',(live?state.totals?.included||0:rows.filter(r=>['unit','settlement','ad'].includes(r.treatment)).length)+' 笔','仅作核对，不重复加计'],
         [live?'待核对 / 待分摊':'待核对',(live?state.totals?.pending||0:rows.filter(r=>r.treatment==='pending').length)+' 笔','确认归属与计入方式后启用']
       ]){const n=el('div',null,metrics,'fc-metric');el('span',title,n);el('strong',value,n);el('small',note,n);}
       const tabs=el('div',null,workspace,'fc-tabs');tabs.setAttribute('role','tablist');
-      [['ledger','费用台账'],['rules','分摊规则'],['changes','调整记录'],['sources','来源与口径']].forEach(([id,title],i)=>{
+      [['ledger','费用台账'],['changes','调整记录']].forEach(([id,title],i)=>{
         const n=button(tabs,'',()=>{state.tab=id;draw();});n.setAttribute('role','tab');n.setAttribute('aria-selected',String(state.tab===id));el('span',String(i+1).padStart(2,'0'),n);el('strong',title,n);
       });
       const host=el('div',null,workspace,'fe-content');host.setAttribute('role','tabpanel');

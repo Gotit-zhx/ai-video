@@ -3,7 +3,7 @@
   'use strict';
   const root=document.getElementById('finance-page');if(!root)return;
   const colors=['#4263eb','#53a8c9','#9a85d8','#e4ac62','#e7828c','#8198be'];
-  const routes={overview:'财务总览',live:'实时大屏',settlements:'结算中心',reconciliation:'对账中心',orders:'订单与退款',fees:'费用与调整','fee-records':'平台费用与导入明细',costs:'成本管理',ads:'广告分析',shops:'财务店铺管理'};
+  const routes={overview:'财务总览',live:'实时大屏',settlements:'结算中心',reconciliation:'对账中心',orders:'订单与退款',fees:'费用与调整','fee-records':'费用与调整','expense-ledger':'费用与调整',costs:'成本管理',ads:'广告分析',shops:'财务店铺管理'};
   const kinds={ORDER:'订单',REFUND:'退款',SETTLEMENT:'结算明细',BILL:'结算账单',FEE:'平台费用',AD:'广告费用',AD_GMV:'GMV Max 分析',COST:'外部成本',PENDING:'待结算'};
   const states={READY:'待同步',RUNNING:'同步中',SYNCING:'历史回补中',SUCCESS:'已同步',ERROR:'同步异常',ACTIVE:'已授权',TOKEN_EXPIRED:'授权过期',DISABLED:'已断开',SETTLED:'已结算',IMPORTED:'已导入',REPORTED:'平台报表',ACCEPTED:'已确认退款',PROCESSING:'处理中',REQUESTED:'申请中',JUDGING:'平台审核中',CLOSED:'已关闭',REFUND_PAID:'退款已支付',RETURN_OR_REFUND_REQUEST_COMPLETE:'退款已完成',RETURN_OR_REFUND_REQUEST_CANCEL:'退款已取消',RETURN_OR_REFUND_REQUEST_SUCCESS:'申请成功',AWAITING_BUYER_SHIP:'等待买家寄回',PARTIAL:'明细同步中',UNSETTLED:'预计待结算',MATCHED:'核对一致',MISSING:'缺少明细',DIFFERENCE:'金额有差异'};
   const orderStates={UNPAID:'待付款',ON_HOLD:'订单暂挂',CANCELLED:'已取消',CANCELED:'已取消',IN_CANCEL:'取消处理中',COMPLETED:'已完成',DELIVERED:'已送达',AWAITING_SHIPMENT:'待发货',AWAITING_COLLECTION:'待揽收',PARTIALLY_SHIPPING:'部分发货',PARTIALLY_SHIPPED:'部分发货',IN_TRANSIT:'运输中',READY_TO_SHIP:'待发货',PROCESSED:'已处理',RETRY_SHIP:'待重新发货',SHIPPED:'已发货',TO_CONFIRM_RECEIVE:'待确认收货',TO_RETURN:'待退货'};
@@ -89,10 +89,15 @@
     if(view!=='shops')action('财务店铺管理','shop',actions,()=>navigate('shops'));
     action('刷新','refresh',actions,()=>{filters.fxSnapshot='';return load();});
     if(view==='shops'){if(canManage())action('连接店铺','plus',actions,()=>authorizeDialog(),'fi-primary');}
-    else if(view==='fees'){action('平台费用 / 原有明细','fee',actions,()=>navigate('fee-records'));action('成本管理','chart',actions,()=>navigate('costs'));}
+    else if(view==='expense-ledger'){action('成本管理','chart',actions,()=>navigate('costs'));}
     else if(view!=='costs'){action('字段设置','fee',actions,()=>fieldsDialog(currentFieldView()));if(canManage())action('导入账单','plus',actions,()=>importDialog());action('导出报表','download',actions,()=>exportDialog(),'fi-primary');}
-    if(view==='fee-records')action('返回费用台账','arrow',actions,()=>navigate('fees'));
-    if(!['shops','costs','fees'].includes(view)){
+    if(['fee-records','expense-ledger'].includes(view)){
+      const sections=el('nav',null,root,'fc-tabs fi-expense-sections');sections.setAttribute('aria-label','费用数据分类');
+      for(const [route,label,note]of [['fee-records','平台费用','平台同步与原有导入明细'],['expense-ledger','其他费用与调整','手工费用、分摊与调整记录']]){
+        const tab=button('',sections,()=>navigate(route==='fee-records'?'fees':route));tab.setAttribute('aria-pressed',String(view===route));el('strong',label,tab);el('span',note,tab);
+      }
+    }
+    if(!['shops','costs','expense-ledger'].includes(view)){
       const bar=el('div',null,root,'fi-filters');
       groupSelect(bar);
       select(bar,'平台',[['','全部平台'],['SHOPEE','Shopee'],['TIKTOK_SHOP','TikTok Shop']],filters.platform,v=>{filters.platform=v;filters.shopId='';page=1;load();});
@@ -551,12 +556,12 @@
     setLoading(interactive);
     try{
       const next=root.cloneNode(false);
-      if(view==='costs'||view==='fees'){
+      if(view==='costs'||view==='expense-ledger'){
         const response=await request('/shops');if(run!==generation||!active)return;
         data={shops:response.items,groups:response.groups||[],sync:[]};
         if(view==='costs'){
-          const shopId=globalThis.FinanceCosts?.shopId?.(),selected=data.shops.find(s=>s.id===shopId)||data.shops[0];
-          data.costs=globalThis.FinanceCostPreviewData||(!selected?{live:true,costs:[],products:[]}:await request('/workspace/costs?shopId='+encodeURIComponent(selected.id)));
+          const shopId=globalThis.FinanceCosts?.shopId?.(),selected=data.shops.find(s=>s.id===shopId);
+          data.costs=globalThis.FinanceCostPreviewData||(!data.shops.length?{live:true,costs:[],products:[]}:await request('/workspace/costs?shopId='+encodeURIComponent(selected?.id||'')));
           if(run!==generation||!active)return;const host=el('div',null,shell(next));host.dataset.financeCosts='';
         }else{
           data.expenses=await request('/workspace/expenses?'+(globalThis.FinanceExpensesDesign?.query()||''));if(run!==generation||!active)return;
@@ -578,7 +583,7 @@
         if(globalThis.FinanceCosts)FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,request:(path,options)=>request('/workspace'+path,options)});
         else el('p','成本管理页面组件暂未加载，请刷新重试。',host,'fi-muted');
       }
-      if(view==='fees'){
+      if(view==='expense-ledger'){
         const host=root.querySelector('[data-finance-expenses]');
         if(globalThis.FinanceExpensesDesign)FinanceExpensesDesign.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),live:true,embedded:true,data:data.expenses,request:(path,options)=>request('/workspace'+path,options)});
         else el('p','费用组件暂未加载，请刷新重试。',host,'fi-muted');
@@ -590,6 +595,6 @@
     }catch(e){if(run===generation){notify((mountedView===view?'更新暂未完成，已保留当前数据。':'')+(e.message||'财务数据暂时无法加载'),true);refreshTimer=setTimeout(refreshWhenIdle,15000);}}
     finally{if(run===generation)setLoading(false);}
   }
-  globalThis.FinanceWorkspace={allowed,canManage,enter(route){if(!allowed())return;const wasLive=view==='live';view=routes[route]?route:'overview';if(view==='live'){filters.displayCurrency='CNY';filters.currency='';filters.fxSnapshot='';}else if(wasLive){filters.start=ago(29);filters.end=today();filters.granularity='day';}if(view==='fees')globalThis.FinanceExpensesDesign?.setFilters(filters);active=true;page=1;load();},leave,reset};
+  globalThis.FinanceWorkspace={allowed,canManage,enter(route){if(!allowed())return;const wasLive=view==='live';view=route==='fees'?'fee-records':routes[route]?route:'overview';if(route==='fees')selectedKind='FEE';if(['fee-records','expense-ledger'].includes(view))document.querySelector('[data-finance-route="fees"]')?.classList.add('active');if(view==='live'){filters.displayCurrency='CNY';filters.currency='';filters.fxSnapshot='';}else if(wasLive){filters.start=ago(29);filters.end=today();filters.granularity='day';}if(view==='expense-ledger')globalThis.FinanceExpensesDesign?.setFilters(filters);active=true;page=1;load();},leave,reset};
   window.addEventListener('heyi:company-reset',reset);
 })();

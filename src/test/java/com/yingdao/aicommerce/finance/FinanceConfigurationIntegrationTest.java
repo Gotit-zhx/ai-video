@@ -87,9 +87,18 @@ class FinanceConfigurationIntegrationTest {
     @Test void costWorkspacePreservesVersionsAndScopesSkuByPlatformIdentity(){
         String group=service.saveGroup(owner,null,"成本测试"),shop=groupedShop(owner,"cost-shop",group);
         var workspace=new FinanceCostWorkspace(repo,service);var transactions=new TransactionTemplate(tx);
+        String emptyGroup=service.saveGroup(owner,null,"无成本资料"),emptyShop=groupedShop(owner,"00-empty-shop",emptyGroup);
+        assertEquals(emptyShop,service.shops(owner).getFirst().get("id"),"fixture starts with a shop without costs");
+        assertEquals("",workspace.costs(other,null).get("shopId"),"companies without shops receive an empty workspace");
         byte[] file=("仓库,型号,20269,202610\n菲律宾仓,PACK,2.50,3.25\n菲律宾仓,PACK*5,13,16\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var imported=transactions.execute(status->workspace.importCosts(owner,"u",group,file,"cost.csv"));
         assertEquals(2,imported.get("rows"));
+        var preferred=workspace.costs(new Scope("org","colleague"),null);
+        assertEquals(shop,preferred.get("shopId"),"default selection opens a shop with an imported cost book");
+        assertEquals("CNY",preferred.get("currency"),"cost files are yuan regardless of shop settlement currency");
+        assertEquals(2,number(map(map(preferred.get("shopCatalogs")).get(shop)).get("costRows")));
+        assertEquals(0,number(map(map(preferred.get("shopCatalogs")).get(emptyShop)).get("costRows")));
+        assertEquals(emptyShop,workspace.costs(owner,emptyShop).get("shopId"),"explicit shop selection is respected even without costs");
         assertEquals(true,transactions.execute(status->workspace.importCosts(new Scope("org","colleague"),"colleague",group,file,"cost.csv")).get("duplicate"));
         assertThrows(BusinessException.class,()->transactions.execute(status->workspace.importCosts(other,"x",group,file,"cost.csv")));
         record(owner,shop,"ORDER","sku-order",BigDecimal.TEN,Map.of("item_list",List.of(
@@ -100,6 +109,21 @@ class FinanceConfigurationIntegrationTest {
         var mapping=new LinkedHashMap<String,Object>(Map.of("product_id","product1","sku_id","variant1","warehouse","菲律宾仓","code","PACK","factor",1,"confirmed",true,"version",0));
         transactions.executeWithoutResult(status->workspace.mapping(owner,"u",shop,mapping));
         assertEquals(1,map(workspace.costs(new Scope("org","colleague"),shop).get("mappings")).size());
+        String sibling=groupedShop(owner,"sibling-cost-shop",group);
+        record(owner,sibling,"ORDER","sibling-order",BigDecimal.ONE,Map.of("item_list",List.of(Map.of("item_id","product1","model_id","variant1","model_sku","PACK","model_name","50 PCS"))));
+        var siblingData=workspace.costs(owner,sibling);
+        assertEquals(1,rows(siblingData.get("products")).size());
+        assertTrue(map(siblingData.get("mappings")).isEmpty(),"same product and SKU identities in another shop never reuse a mapping");
+        var auto=transactions.execute(status->workspace.autoMatch(owner,"u",shop,Map.of()));
+        var associations=map(auto.get("mappings"));assertEquals(2,associations.size());
+        assertEquals(1,number(map(associations.get(shop+":product1:variant1:菲律宾仓")).get("factor")),"automatic matching preserves an existing manual override");
+        var automatic=map(associations.get(shop+":product2:variant2:菲律宾仓"));
+        assertEquals("EXACT_CODE",automatic.get("method"));assertNull(automatic.get("factor"),"matching a code must not invent the price unit conversion");
+        assertTrue(map(workspace.costs(owner,sibling).get("mappings")).isEmpty(),"automatic matching never writes another shop");
+        transactions.executeWithoutResult(status->workspace.autoMatch(owner,"u",shop,Map.of()));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_AUTO_MATCH'",Integer.class),"a repeated run is idempotent");
+        assertThrows(BusinessException.class,()->transactions.execute(status->workspace.autoMatch(other,"x",shop,Map.of())));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='COST'",Integer.class),"linking SKUs must not generate financial costs");
         assertThrows(BusinessException.class,()->transactions.executeWithoutResult(status->workspace.mapping(owner,"u",shop,mapping)));
         assertThrows(BusinessException.class,()->workspace.costs(other,shop));
         byte[] next="仓库,型号,202610\n菲律宾仓,PACK,4\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);

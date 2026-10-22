@@ -2,8 +2,8 @@
 (() => {
   'use strict';
   let state,loadSequence=0;
-  const defaultRules=()=>({currency:'',unit:'',basis:'shipment',missing:'pending',freight:'',inbound:''});
-  const fresh=()=>({tab:'costs',shopId:'',warehouse:'',month:'',search:'',status:'',page:1,mappings:{},settings:{},rules:defaultRules()});
+  const defaultRules=()=>({currency:'CNY',unit:'',basis:'shipment',missing:'pending',freight:'',inbound:''});
+  const fresh=()=>({tab:'costs',shopId:'',collapsedShopId:'',spus:{},warehouse:'',month:'',search:'',status:'',page:1,mappings:{},settings:{},rules:defaultRules()});
   const reset=()=>{loadSequence++;state=fresh();document.querySelectorAll('.fc-dialog').forEach(n=>n.remove());};
   reset();
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;parent?.append(n);return n;};
@@ -43,20 +43,54 @@
   }
   function mount(root,context={}){
     const preview=context.preview||null,live=preview?.live===true,shops=context.shops||[],editable=Boolean(context.canManage),costs=preview?.costs||[],products=preview?.products||[];
-    if(live){const previous=state.shopId===preview.shopId?state.warehouse:'';state.shopId=preview.shopId||'';state.mappings=preview.mappings||{};state.warehouse=previous||preview.settings?.warehouse||'';state.rules={...defaultRules(),...preview.settings?.rules};}
+    if(live){const previous=state.shopId===preview.shopId?state.warehouse:'';state.shopId=preview.shopId||'';state.mappings=preview.mappings||{};state.warehouse=previous||preview.settings?.warehouse||'';state.rules={...defaultRules(),...preview.settings?.rules,currency:'CNY'};}
     const json=body=>({headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    async function reload(shopId=state.shopId){const run=++loadSequence;const data=await context.request('/costs?shopId='+encodeURIComponent(shopId));if(run!==loadSequence||!root.isConnected)return;mount(root,{...context,preview:data});}
+    async function reload(shopId=state.shopId){const run=++loadSequence;const data=await context.request('/costs?shopId='+encodeURIComponent(shopId));if(run!==loadSequence||!root.isConnected)return;if(shopId!==state.shopId){state.page=1;state.search='';state.status='';state.collapsedShopId='';}mount(root,{...context,preview:data});}
     const months=[...new Set(costs.flatMap(c=>Object.keys(c.prices||{})))].sort().reverse(),warehouses=[...new Set(costs.map(c=>c.warehouse))];
     if(!shops.some(s=>s.id===state.shopId))state.shopId=preview?.shopId&&shops.some(s=>s.id===preview.shopId)?preview.shopId:shops[0]?.id||'';
-    if(!state.month)state.month=months[0]||'';
+    if(!months.includes(state.month))state.month=months[0]||'';
     const getShop=()=>shops.find(s=>s.id===state.shopId);
     const applies=()=>Boolean(preview&&getShop()?.group_id===preview.groupId);
     if(!state.warehouse&&applies()&&preview?.suggestedWarehouse)state.warehouse=preview.suggestedWarehouse;
     const currentCosts=()=>applies()?costs:[];
     const currentProducts=()=>products.filter(p=>p.shop_id===state.shopId);
     const key=p=>[p.shop_id,p.product_id,p.sku_id].join(':');
-    const mapped=p=>{const draft=state.mappings[key(p)+':'+state.warehouse]||state.mappings[key(p)];return draft?.warehouse===state.warehouse&&(!live||draft.groupId===preview.groupId)?draft:null;};
-    const recommendation=p=>mapped(p)?{status:'draft',label:live?'已关联':'预览已关联',note:live?'已保存，公司财务成员共享':'本页草稿，尚未保存到正式系统',...mapped(p)}:candidate(p,currentCosts(),state.warehouse);
+    const mapped=p=>{
+      const draft=state.mappings[key(p)+':'+state.warehouse]||state.mappings[key(p)];
+      if(draft?.warehouse===state.warehouse&&(!live||draft.groupId===preview.groupId))return draft;
+      if(state.warehouse)return null;
+      const matches=Object.entries(state.mappings).filter(([id,m])=>id.startsWith(key(p)+':')&&(!live||m.groupId===preview.groupId)).map(([,m])=>m);
+      return matches.length&&new Set(matches.map(m=>m.code)).size===1?{...matches[0],warehouse:'',factor:null}:null;
+    };
+    const recommendation=p=>{
+      const saved=mapped(p),suggestion=candidate(p,currentCosts(),state.warehouse);
+      if(!saved)return suggestion;
+      const review=saved.method==='EXACT_CODE'&&suggestion.status==='conflict';
+      return {...saved,status:review?'review':'draft',label:review?'已关联 · 需核对':live?(saved.method==='EXACT_CODE'?'已自动关联':'已关联'):'预览已关联',note:review?suggestion.note:live?'已保存，公司财务成员共享':'本页草稿，尚未保存到正式系统'};
+    };
+    const tone=rec=>rec.status==='draft'?'good':rec.status==='missing'?'danger':'warn';
+    const catalogFor=shop=>preview?.shopCatalogs?.[shop.id]||(shop.group_id===preview?.groupId?{costRows:costs.length,sourceName:preview.sourceName}:{costRows:0,sourceName:''});
+    async function chooseShop(id){
+      if(!id)return;
+      if(live){await reload(id);return;}
+      state.settings[state.shopId]={warehouse:state.warehouse,rules:{...state.rules}};state.shopId=id;
+      const settings=state.settings[id];state.warehouse=settings?.warehouse||(applies()?preview.suggestedWarehouse:'')||'';state.rules=settings?.rules||defaultRules();
+      state.page=1;state.search='';state.status='';state.collapsedShopId='';draw();
+    }
+    function missingAutomatic(){
+      return live&&editable&&currentProducts().some(p=>currentCosts().some(c=>c.sku===String(p.seller_sku||'').trim()&&!state.mappings[key(p)+':'+c.warehouse]));
+    }
+    async function autoMatch(){
+      const run=++loadSequence;toast('正在按相同编码自动关联 SKU…');
+      try{
+        const data=await context.request('/costs/'+encodeURIComponent(state.shopId)+'/auto-match',{method:'POST',...json({})});
+        if(run!==loadSequence||!root.isConnected)return;
+        mount(root,{...context,preview:data});
+      }catch(e){
+        if(run!==loadSequence||!root.isConnected)return;
+        toast('自动关联暂未完成：'+e.message+'。');action(root.querySelector('.fc-feedback'),'重试自动关联',autoMatch,'fi-record-link');
+      }
+    }
     function toast(message){root.querySelector('.fc-feedback').textContent=message;}
     function unavailable(message){const d=modal('功能预留');el('p',message||'页面结构已预留，正式保存与同步将在成本口径确认后接入。',d.body,'fi-muted');}
     function importDialog(){
@@ -64,7 +98,7 @@
         const d=modal('导入成本表'),group=select(d.body,'归属分组',[['','请选择'],...(context.groups||[]).map(g=>[g.id,g.name])],getShop()?.group_id||'',()=>{});
         const label=el('label',null,d.body);el('span','上传 XLSX / CSV',label);const file=el('input',null,label);file.type='file';file.accept='.xlsx,.csv';file.setAttribute('aria-label','成本表文件');
         el('p','支持「型号、仓库、月份、单价」四列，或仓库 / 型号加多个月份的横排成本表。首个工作表需为数值；公式请先转换为值。',d.body,'fi-muted');
-        el('p','重复文件不会重复导入；相同型号与月份的新价格保存为新版本。币种、计价单位在“仓库与规则”确认。',d.body,'fi-muted');
+        el('p','成本金额统一按人民币（CNY）导入；相同文件不重复导入，新价格保留历史版本。',d.body,'fi-muted');
         el('p','',d.body,'fc-alert').setAttribute('role','alert');
         action(d.foot,'确认导入',async()=>{if(!group.value||!file.files?.length)throw Error('请选择分组和成本文件');const form=new FormData();form.append('groupId',group.value);form.append('file',file.files[0]);const result=await context.request('/costs/import',{method:'POST',body:form});d.n.close();await reload();toast(result.duplicate?'此文件已经导入。':`已导入 ${result.rows} 条成本资料，请确认计价口径。`);},'fi-primary');return;
       }
@@ -73,16 +107,17 @@
       const grid=el('div',null,d.body,'fi-grid2');select(grid,'归属分组',(context.groups||[]).map(g=>[g.id,g.name]),getShop()?.group_id||'',()=>{});
       select(grid,'文件用途',[['unit','SKU 单位成本表']], 'unit',()=>{});
       table(d.body,['识别字段','对应内容'],[['成本型号','型号'],['成本仓库','仓库'],['成本月份','月份列'],['单位成本','期末单价']]);
-      tag(d.body,'待补充：币种、计价单位、费用是否已包含','warn');
+      tag(d.body,'人民币 CNY · 计价单位待确认','warn');
       const n=action(d.foot,'确认导入（待接入）',()=>{});n.disabled=true;
     }
     function history(cost){
-      const d=modal('月度成本记录');el('strong',cost.sku,d.body);el('p',cost.warehouse+' · 原表单价，币种与单位待确认',d.body,'fi-muted');
-      table(d.body,['月份','原表单价','状态'],Object.entries(cost.prices).sort(([a],[b])=>b.localeCompare(a)).map(([month,value])=>[month,format(value),value===0?'零值待确认':value==null?'缺失':'原表数据']));
+      const d=modal('月度成本记录');el('strong',cost.sku,d.body);el('p',cost.warehouse+' · 原表单价，人民币 CNY',d.body,'fi-muted');
+      table(d.body,['月份','单价（人民币）','状态'],Object.entries(cost.prices).sort(([a],[b])=>b.localeCompare(a)).map(([month,value])=>[month,value==null?'—':'¥ '+format(value),value===0?'零值待确认':value==null?'缺失':'原表数据']));
     }
     function mappingDialog(product){
       if(!preview)return unavailable();
       const d=modal(live?'关联成本型号':'关联成本型号 · 仅预览'),rec=recommendation(product);
+      tag(d.body,'归属店铺：'+(getShop()?.name||getShop()?.display_name||''),'good');
       el('strong',product.seller_sku||'未提供商家 SKU',d.body);el('p',product.spec||product.name,d.body,'fi-muted');
       el('p',`商品 ID：${product.product_id||'待补充'} · 规格 SKU ID：${product.sku_id||'待补充'}`,d.body,'fi-muted');
       if(rec.status==='conflict')el('p',rec.note,d.body,'fc-alert');
@@ -111,93 +146,131 @@
       search.onchange=()=>{state.search=search.value.trim();state.page=1;body();};
       select(bar,'成本月份',[['','待导入'],...(applies()?months:[]).map(m=>[m,m])],state.month,v=>{state.month=v;state.page=1;body();});
       select(bar,'成本仓库',[['','请选择仓库'],...(applies()?warehouses:[]).map(w=>[w,w])],state.warehouse,v=>{state.warehouse=v;state.page=1;body();});
-      if(withStatus)select(bar,'关联状态',[['','全部'],['exact','编码一致'],['bundle','组合装'],['conflict','规格冲突'],['missing','待关联'],['draft',live?'已关联':'预览已关联']],state.status,v=>{state.status=v;state.page=1;body();});
+      if(withStatus)select(bar,'关联状态',[['','全部'],['good','已关联'],['danger','未关联'],['warn','需核对']],state.status,v=>{state.status=v;state.page=1;body();});
     }
     function costPanel(parent){
       const source=panel(parent,'母表与月度成本',applies()?'仅用于「'+(preview.groupName||'所选分组')+'」的成本资料':'成本资料按分组管理');
       const controls=el('div',null,source.h,'fi-actions');if(editable)action(controls,'导入成本表',importDialog,'fi-primary');
       if(applies()&&costs.length){
-        const file=el('div',null,source.n,'fc-file');el('span','XLSX',file,'fc-file-icon');const copy=el('div',null,file);el('strong',preview.sourceName,copy);el('small',`主表 ${costs.length} 条 · ${warehouses.length} 个仓库 · 已识别 ${months.length} 个月份`,copy);tag(file,'待确认成本口径','warn');
-        const notice=el('p',null,source.n,'fc-inline-note');notice.textContent='原表中的多包装型号保留独立成本。辅助页的赠品、别名和包装信息预留为待核对资料，不自动覆盖主表。';
+        const file=el('div',null,source.n,'fc-file');el('span','XLSX',file,'fc-file-icon');const copy=el('div',null,file);el('strong',preview.sourceName,copy);el('small',`主表 ${costs.length} 条 · ${warehouses.length} 个仓库 · 已识别 ${months.length} 个月份`,copy);tag(file,'人民币 CNY','good');
+        const notice=el('p',null,source.n,'fc-inline-note');notice.textContent='原表中的多包装型号保留独立成本。辅助页的赠品与别名未计入主表。';
       }
       toolbar(source.n);
       const rows=currentCosts().filter(c=>(!state.warehouse||c.warehouse===state.warehouse)&&(!state.search||c.sku.toLowerCase().includes(state.search.toLowerCase())));
-      table(source.n,['成本型号','成本仓','月份','原表单价','计价口径','操作'],rows.slice((state.page-1)*12,state.page*12).map(c=>[
-        el('span',c.sku,null,'fc-code'),c.warehouse,state.month,format(c.prices[state.month]),tag(null,state.rules.currency&&state.rules.unit?state.rules.currency+' / '+state.rules.unit+(live?'':'（预览）'):'币种 / 单位待确认','warn'),action(null,'查看历史',()=>history(c),'fi-record-link')
+      table(source.n,['成本型号','成本仓','月份','单价（人民币）','计价单位','操作'],rows.slice((state.page-1)*12,state.page*12).map(c=>[
+        el('span',c.sku,null,'fc-code'),c.warehouse,state.month,c.prices[state.month]==null?'—':'¥ '+format(c.prices[state.month]),tag(null,state.rules.unit||'单位待确认',state.rules.unit?'':'warn'),action(null,'查看历史',()=>history(c),'fi-record-link')
       ]),applies()?'当前筛选没有成本记录':'该店铺分组尚未配置成本资料。');pager(source.n,rows.length);
     }
+    function productRows(parent){
+      const source=el('div',null,parent,'fc-shop-source');
+      if(applies()&&costs.length){
+        tag(source,'成本表已导入','good');el('strong',preview.sourceName,source);
+        el('span',`${costs.length} 条成本资料 · ${warehouses.length} 个仓库 · ${months.length} 个月份`,source);
+        action(source,'查看成本表',()=>{state.tab='costs';state.page=1;state.search='';draw();},'fi-record-link');
+      }else{
+        el('span','该店铺所属分组尚未导入成本表。',source);
+        if(editable)action(source,'导入成本表',importDialog,'fi-record-link');
+      }
+      const info=el('div',null,parent,'fc-shop-sku-info');
+      el('span',live?`已读取 ${currentProducts().length} 个 SKU · 最近 ${preview.sampleOrders||0} 笔已同步订单（最多 ${preview.orderLimit||2000} 笔）`:`${currentProducts().length} 个 SKU · 已同步订单样本`,info);
+      if(live)action(info,'刷新订单 SKU',()=>reload(),'fi-record-link');
+      toolbar(parent,true);
+      const groups=new Map();
+      for(const product of currentProducts()){
+        const group=groups.get(product.product_id)||{product,rows:[]};group.rows.push({product,rec:recommendation(product)});groups.set(product.product_id,group);
+      }
+      const counts=group=>({good:group.rows.filter(r=>tone(r.rec)==='good').length,danger:group.rows.filter(r=>tone(r.rec)==='danger').length,warn:group.rows.filter(r=>tone(r.rec)==='warn').length});
+      const matches=row=>(!state.status||tone(row.rec)===state.status)&&(!state.search||[row.product.product_id,row.product.sku_id,row.product.seller_sku,row.product.name,row.product.spec].join(' ').toLowerCase().includes(state.search.toLowerCase()));
+      const spus=[...groups.values()].filter(group=>group.rows.some(matches)).sort((a,b)=>{const x=counts(a),y=counts(b);return Number(Boolean(y.danger||y.warn))-Number(Boolean(x.danger||x.warn));});
+      const list=el('div',null,parent,'fc-spu-list');
+      for(const [index,group]of spus.slice((state.page-1)*12,state.page*12).entries()){
+        const product=group.product,totals=counts(group),id=state.shopId+':'+product.product_id,expanded=state.spus[id]??index===0;
+        state.spus[id]=expanded;
+        const status=totals.danger?'danger':totals.warn?'warn':'good',card=el('section',null,list,'fc-spu '+status);card.dataset.productId=product.product_id;
+        const heading=action(card,'',()=>{state.spus[id]=!expanded;body();},'fc-spu-parent');
+        heading.setAttribute('aria-expanded',String(expanded));heading.setAttribute('aria-label','展开商品 '+(product.name||product.product_id));heading.setAttribute('aria-controls','fc-spu-'+product.product_id);
+        el('span',expanded?'▾':'▸',heading,'fc-shop-chevron').setAttribute('aria-hidden','true');
+        if(/^https:\/\//.test(product.image||'')){const image=el('img',null,heading,'fc-spu-image');image.src=product.image;image.alt='';image.loading='lazy';image.referrerPolicy='no-referrer';}
+        const copy=el('span',null,heading,'fc-spu-copy');el('strong',product.name||'商品名称待补充',copy);el('small','SPU ID：'+product.product_id+' · '+group.rows.length+' 个 SKU',copy);
+        const badges=el('span',null,heading,'fc-spu-counts');
+        tag(badges,'已关联 '+totals.good,'good');if(totals.danger)tag(badges,'未关联 '+totals.danger,'danger');if(totals.warn)tag(badges,'需核对 '+totals.warn,'warn');
+        const detail=el('div',null,card,'fc-spu-detail');detail.id='fc-spu-'+product.product_id;detail.hidden=!expanded;
+        if(!expanded)continue;
+        const visible=group.rows.filter(matches).sort((a,b)=>({danger:0,warn:1,good:2})[tone(a.rec)]-({danger:0,warn:1,good:2})[tone(b.rec)]);
+        table(detail,['SKU 规格','商家 SKU','成本型号','关联状态','操作'],visible.map(({product,rec})=>{
+          const item=el('div',null,null,'fc-product');const copy=el('div',null,item);el('strong',product.spec||'规格待补充',copy);el('small','规格 SKU ID：'+product.sku_id,copy);
+          const badge=tag(null,rec.status==='missing'?'未关联':rec.label,tone(rec));badge.title=rec.note;
+          const button=editable?action(null,mapped(product)?'查看 / 调整':'核对关联',()=>mappingDialog(product),'fi-record-link'):'只读';
+          return [item,el('span',product.seller_sku||'—',null,'fc-code'),el('span',rec.code||'未找到',null,'fc-code'),badge,button];
+        }));
+      }
+      if(!spus.length)el('p',currentProducts().length?'没有符合筛选的商品，请清空搜索或调整关联状态。':'该店铺已同步订单暂未提供 SKU，成本表仍可查看。',list,'fc-empty');
+      pager(parent,spus.length);
+      el('p','绿：关联成功 · 红：未找到相同编码 · 橙：规格或组合装需核对。每家店铺独立保存；只展示已同步订单里的商品规格。',parent,'fc-inline-note');
+    }
     function productPanel(parent){
-      const p=panel(parent,'店铺 SKU 与成本关联',live?`从最近最多 ${preview.orderLimit||2000} 笔已同步订单读取规格；不代表全店商品目录`:currentProducts().length?`来自已同步的 ${preview.sampleOrders||0} 笔订单样本；完整商品目录同步待接入`:'同步店铺商品后，在这里建立稳定的成本关系');
-      if(editable)action(p.h,live?'刷新订单 SKU':'同步商品（待接入）',()=>live?reload():unavailable('商品列表、规格与图片同步入口已预留。当前预览仅使用已有订单中的商品样本，不代表店铺全部商品。'));
-      toolbar(p.n,true);
-      const rows=currentProducts().map(product=>({product,rec:recommendation(product)})).filter(({product,rec})=>(!state.status||rec.status===state.status)&&(!state.search||[product.seller_sku,product.name,product.spec].join(' ').toLowerCase().includes(state.search.toLowerCase())));
-      table(p.n,['店铺商品 / 销售规格','商家 SKU','建议成本型号','换算数量','关联状态','操作'],rows.slice((state.page-1)*12,state.page*12).map(({product,rec})=>{
-        const item=el('div',null,null,'fc-product');
-        if(/^https:\/\//.test(product.image||'')){const image=el('img',null,item);image.src=product.image;image.alt='';image.loading='lazy';image.referrerPolicy='no-referrer';}
-        else el('span','SKU',item,'fc-product-placeholder');
-        const copy=el('div',null,item);const name=el('strong',product.name||'商品名称待补充',copy);name.title=product.name||'';el('small',product.spec||'规格待补充',copy);el('small','规格 SKU ID：'+(product.sku_id||'待补充'),copy);
-        const status=tag(null,rec.label,rec.status==='conflict'?'danger':rec.status==='draft'?'good':'warn');status.title=rec.note;
-        const button=editable?action(null,rec.status==='draft'?(live?'调整关联':'调整预览'):'关联',()=>mappingDialog(product),'fi-record-link'):'只读';
-        return [item,el('span',product.seller_sku||'—',null,'fc-code'),el('span',rec.code||'待选择',null,'fc-code'),rec.code?'× '+rec.factor:'—',status,button];
-      }),'当前店铺尚无商品样本，商品同步入口已预留。');pager(p.n,rows.length);
-      el('p','编码和销售规格冲突时必须人工核对。相同商家 SKU 可以出现在多个商品中，关联按店铺与平台 SKU 分别保存。',p.n,'fc-inline-note');
+      const p=panel(parent,'店铺 → SPU → SKU','相同编码自动关联。商品外层显示关联结果，未关联和需核对的优先展示。');
+      const tree=el('div',null,p.n,'fc-shop-tree');
+      if(!shops.length)el('p','请先在财务店铺管理中授权店铺。',tree,'fc-empty');
+      const ordered=[...shops].sort((a,b)=>Boolean(catalogFor(b).costRows)-Boolean(catalogFor(a).costRows));
+      for(const shop of ordered){
+        const selected=shop.id===state.shopId,expanded=selected&&state.collapsedShopId!==shop.id,catalog=catalogFor(shop);
+        const branch=el('section',null,tree,'fc-shop-branch'+(expanded?' is-expanded':''));branch.dataset.shopId=shop.id;
+        const head=action(branch,'',async()=>{
+          if(selected){state.collapsedShopId=expanded?shop.id:'';body();return;}
+          const pending=el('span','正在读取店铺 SKU…',branch,'fc-shop-loading');head.setAttribute('aria-busy','true');
+          try{await chooseShop(shop.id);}finally{pending.remove();head.removeAttribute('aria-busy');}
+        },'fc-shop-parent');
+        head.setAttribute('aria-label','查看店铺 '+(shop.name||shop.display_name));head.setAttribute('aria-expanded',String(expanded));head.setAttribute('aria-controls','fc-shop-'+shop.id);
+        el('span',expanded?'▾':'▸',head,'fc-shop-chevron').setAttribute('aria-hidden','true');
+        const copy=el('span',null,head,'fc-shop-title');el('strong',shop.name||shop.display_name,copy);
+        el('small',(shop.region||'')+' · '+(context.groups?.find(g=>g.id===shop.group_id)?.name||'未分组'),copy);
+        tag(head,shop.platform==='SHOPEE'?'虾皮':'TikTok');
+        const totals=el('span',null,head,'fc-shop-counts');
+        tag(totals,catalog.costRows?`成本资料 ${catalog.costRows} 条`:'尚无成本表',catalog.costRows?'good':'');
+        el('small',selected?`${currentProducts().length} 个 SKU`:'展开查看 SKU',totals);
+        const children=el('div',null,branch,'fc-shop-children');children.id='fc-shop-'+shop.id;children.hidden=!expanded;
+        if(expanded)productRows(children);
+      }
     }
     function rulesPanel(parent){
-      const layout=el('div',null,parent,'fc-rule-grid'),p=panel(layout,'仓库与成本口径','这些配置用于确定每笔订单应该采用哪份成本');
-      const form=el('div',null,p.n,'fc-form');
+      const p=panel(parent,'成本表设置','成本金额统一使用人民币（CNY）。'),form=el('div',null,p.n,'fc-form');
       select(form,'默认成本仓',[['','请选择'],...(applies()?warehouses:[]).map(w=>[w,w])],state.warehouse,v=>{state.warehouse=v;}).disabled=!editable;
-      const controls=[
-        ['成本币种','currency',[['','待确认'],['CNY','人民币 CNY'],['PHP','菲律宾比索 PHP'],['THB','泰铢 THB'],['MYR','马来西亚林吉特 MYR']]],
-        ['默认计价单位','unit',[['','待确认'],['包','包'],['片','片'],['箱','箱'],['套','套']]],
-        ['成本归属月份','basis',[['shipment','发货月份'],['order','下单月份']]],
-        ['当月成本缺失','missing',[['pending','标记缺失，等待补齐'],['previous','沿用最近月份，标记暂估']]],
-        ['原表是否已含头程','freight',[['','待确认'],['included','已包含，不再重复加'],['excluded','未包含，另行配置']]],
-        ['原表是否已含入仓费','inbound',[['','待确认'],['included','已包含，不再重复加'],['excluded','未包含，另行配置']]]
-      ];
-      for(const [label,key,options]of controls){const input=select(form,label,options,state.rules[key],v=>{state.rules[key]=v;});input.disabled=!editable;}
-      if(editable)action(form,live?'保存成本规则':preview?'应用到预览':'保存配置（待接入）',async()=>{if(live){await context.request('/costs/'+encodeURIComponent(state.shopId)+'/settings',{method:'PUT',...json({warehouse:state.warehouse,rules:state.rules,version:preview.settingsVersion||0})});await reload();toast('成本规则已保存，历史订单尚未启用自动核算。');return;}if(!preview)return unavailable();draw();toast('成本规则已应用到预览；正式数据未变更。');},'fi-primary');
-      const extra=panel(layout,'其他费用预留','商品单位成本之外的支出分开记录');
-      for(const [name,desc]of [['订单费用','额外包装、外部运费、仓库操作费，按店铺和订单编号关联。'],['公共费用','人工、租金等按店铺或分组归集，再选择是否分摊。'],['去重口径','已包含在平台结算或单位成本里的费用，明确标记，不重复扣减。']]){
-        const row=el('div',null,extra.n,'fc-expense');el('strong',name,row);el('p',desc,row);tag(row,'入口预留');
-      }
-      action(extra.n,'前往费用与调整',()=>{location.hash='finance-fees';},'fc-secondary');
-    }
-    function orderPanel(parent){
-      const p=panel(parent,'订单成本与利润字段预留','在 SKU 关联和成本口径确认后，逐笔生成成本快照');
-      const flow=el('div',null,p.n,'fc-flow');
-      for(const [i,label,note]of [[1,'订单商品行','店铺、平台 SKU、销售数量'],[2,'对应成本','型号、仓库、月份、换算数量'],[3,'冻结快照','保留版本，后续改价可追溯'],[4,'订单利润','结算、成本、额外费用同单核算']]){const step=el('div',null,flow);el('i',i,step);el('strong',label,step);el('small',note,step);}
-      table(p.n,['订单编号','销售 SKU / 数量','成本型号 / 版本','商品成本','其他费用','核算状态'],[],live?'订单成本计算入口已预留。先确认成本口径和 SKU 关联，自动核算暂未启用。':'完成成本口径确认后，订单成本将在这里逐笔展示。当前预览不产生利润金额。');
-      const notes=el('div',null,p.n,'fc-order-notes');for(const text of ['缺成本显示“待补充”，不会当作零成本。','当月没有成本，按配置等待补齐或明确标记“暂估”。','成本表更新保留历史版本，已核算订单不静默变价。'])el('p',text,notes);
+      for(const [label,key,options]of [
+                ['默认计价单位','unit',[['','待确认'],['包','包'],['片','片'],['箱','箱'],['套','套']]]
+      ])select(form,label,options,state.rules[key],v=>{state.rules[key]=v;}).disabled=!editable;
+      if(editable)action(form,live?'保存成本设置':'应用到预览',async()=>{
+        if(live){await context.request('/costs/'+encodeURIComponent(state.shopId)+'/settings',{method:'PUT',...json({warehouse:state.warehouse,rules:state.rules,version:preview.settingsVersion||0})});await reload();toast('成本设置已保存。');return;}
+        if(!preview)return unavailable();draw();toast('成本设置已应用到预览；正式数据未变更。');
+      },'fi-primary');
     }
     function body(){
       const host=root.querySelector('.fc-tab-content');if(!host)return;host.replaceChildren();
-      ({costs:costPanel,mapping:productPanel,rules:rulesPanel,orders:orderPanel})[state.tab](host);
+      ({costs:costPanel,mapping:productPanel,rules:rulesPanel})[state.tab](host);
     }
     function draw(){
       root.replaceChildren();root.className='fc-workspace';
-      const banner=el('div',null,root,'fc-preview-note');el('span',live?'成本准备':preview?'设计预览':'功能预留',banner,'fc-preview-label');el('span',live?'成本资料、SKU 关联与规则保存后公司共享；自动订单成本核算尚未启用。':preview?'成本表与店铺样本为只读展示；交互修改仅保留在本页，尚未启用正式成本核算。':'成本资料、SKU 关联和订单成本入口已预留，等待接入数据与保存功能。',banner);
-      const hero=el('div',null,root,'fc-hero'),copy=el('div',null,hero);el('span','PRODUCT COST WORKSPACE',copy,'fc-eyebrow');el('h2','让每笔订单找到对应成本',copy);el('p','按商品规格关联，按仓库与月份取价，保留每次成本变化。',copy);
-      const shopControl=el('div',null,hero,'fc-shop-select');select(shopControl,'财务店铺',[['','请选择店铺'],...shops.map(s=>[s.id,s.name||s.display_name])],state.shopId,v=>{
-        if(live){if(v)reload(v).catch(e=>toast(e.message));return;}
-        state.settings[state.shopId]={warehouse:state.warehouse,rules:{...state.rules}};state.shopId=v;
-        const settings=state.settings[v];state.warehouse=settings?.warehouse||(applies()?preview.suggestedWarehouse:'')||'';state.rules=settings?.rules||defaultRules();
-        state.page=1;state.search='';state.status='';draw();
+      if(!live){const banner=el('div',null,root,'fc-preview-note');el('span',preview?'设计预览':'暂无成本资料',banner,'fc-preview-label');el('span','本页预览不会修改正式数据。',banner);}
+      const hero=el('div',null,root,'fc-hero'),copy=el('div',null,hero);el('h2','店铺成本管理',copy);el('p','导入成本表，相同 SKU 编码自动关联。',copy);
+      const shopControl=el('div',null,hero,'fc-shop-select');const shopSelect=select(shopControl,'财务店铺',shops.map(s=>[s.id,(s.name||s.display_name)+(catalogFor(s).costRows?' · 已有成本表':'')]),state.shopId,v=>{
+        shopSelect.disabled=true;chooseShop(v).catch(e=>{shopSelect.value=state.shopId;toast(e.message);}).finally(()=>{shopSelect.disabled=false;});
       });
       const shop=getShop();if(shop){const meta=el('div',null,shopControl,'fc-shop-meta');tag(meta,shop.platform==='SHOPEE'?'虾皮':'TikTok');el('span',(shop.region||'')+' · '+(context.groups?.find(g=>g.id===shop.group_id)?.name||'未分组')+' · 已授权',meta);}
-      const metrics=el('div',null,root,'fc-metrics');
+      action(shopControl,'成本表设置',()=>{state.tab='rules';draw();},'fi-record-link');
+      const metrics=el('div',null,root,'fc-metrics fc-cost-metrics'),linked=currentProducts().filter(p=>mapped(p)).length;
       for(const [label,value,note]of [
-        ['成本资料',applies()?costs.length:'—',applies()?`${warehouses.length} 个仓库 · ${preview.groupName}`:'等待导入成本表'],
-        ['最新成本月份',applies()?months[0]:'—','文件更新日期不等于成本生效月份'],
-        [live?'订单规格 SKU':'订单 SKU 样本',currentProducts().length||'—',currentProducts().length?`取自 ${preview.sampleOrders} 笔已同步订单`:'全量商品目录同步待接入'],
-        ['正式成本核算','待启用','先确认币种、单位与费用口径']
+        ['成本资料',applies()?costs.length:0,applies()&&months.length?`${warehouses.length} 个仓库 · 最新 ${months[0]}`:'请选择已导入成本表的店铺'],
+        ['已关联 SKU',linked,`当前店铺共 ${currentProducts().length} 个订单 SKU`],
+        ['待关联 SKU',currentProducts().length-linked,'未匹配到编码的商品集中核对']
       ]){const n=el('div',null,metrics,'fc-metric');el('span',label,n);el('strong',value,n);el('small',note,n);}
       const tabs=el('div',null,root,'fc-tabs');tabs.setAttribute('role','tablist');
-      for(const [id,title,number]of [['costs','成本资料','01'],['mapping','SKU 关联','02'],['rules','仓库与规则','03'],['orders','订单成本','04']]){
+      for(const [id,title,number]of [['costs','成本表','01'],['mapping','SKU 关联','02']]){
         const n=action(tabs,'',()=>{state.tab=id;state.page=1;state.search='';state.status='';draw();});n.setAttribute('role','tab');n.setAttribute('aria-selected',String(state.tab===id));n.setAttribute('aria-controls','fc-panel');el('span',number,n);el('strong',title,n);
       }
       el('p','',root,'fc-feedback').setAttribute('role','status');const host=el('div',null,root,'fc-tab-content');host.id='fc-panel';host.setAttribute('role','tabpanel');body();
     }
     draw();
+    if(missingAutomatic())void autoMatch();
   }
   globalThis.FinanceCosts={mount,reset,candidate,shopId:()=>state.shopId};
 })();

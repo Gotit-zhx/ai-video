@@ -46,6 +46,43 @@
 .fc-product>div{min-width:0}
 .fc-product strong{display:block;max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;font-weight:550}
 .fc-product small{font-size:10px;line-height:1.45;white-space:normal;max-width:230px}
+.fc-shop-tree{margin:16px 20px 20px;border:1px solid var(--fi-border,#e8edf5);border-radius:10px;overflow:hidden}
+.fc-shop-branch+.fc-shop-branch{border-top:1px solid var(--fi-border,#e8edf5)}
+.finance-workspace .fc-shop-parent{width:100%;display:flex;align-items:center;gap:12px;text-align:left;border:0;border-radius:0;padding:14px 16px;background:var(--fi-surface,#fff);color:var(--fi-ink,#1d2b45)}
+.finance-workspace .fc-shop-parent:hover,.fc-shop-branch.is-expanded>.fc-shop-parent{background:var(--fi-soft,#f5f7fd)}
+.fc-shop-chevron{font-size:13px;color:var(--fi-muted,#8190a8)}
+.fc-shop-title{display:grid;gap:5px;min-width:0;flex:1}
+.fc-shop-title strong{font-size:13px;overflow-wrap:anywhere}
+.fc-shop-title small,.fc-shop-counts small{font-size:10px;color:var(--fi-muted,#8190a8);font-weight:400}
+.fc-shop-counts{display:grid;justify-items:end;gap:5px}
+.fc-shop-children{border-top:1px solid var(--fi-border,#e8edf5);border-left:3px solid #d8e2fb;margin-left:21px;padding-bottom:1px}
+.fc-shop-children[hidden]{display:none}
+.fc-shop-source{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:16px 20px 12px;font-size:11px;color:var(--fi-muted,#8190a8)}
+.fc-shop-source strong{font-size:11px;font-weight:550;color:var(--fi-ink,#1d2b45);overflow-wrap:anywhere}
+.fc-shop-sku-info{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 20px;font-size:11px;color:var(--fi-muted,#8190a8)}
+.fc-shop-loading{display:block;padding:10px 20px;color:var(--fi-muted,#8190a8);font-size:11px}
+.fc-cost-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+.fc-spu-list{display:grid;gap:12px;margin:16px 20px}
+.fc-spu{border:1px solid var(--fi-border,#e8edf5);border-left:3px solid #559d7e;border-radius:8px;overflow:hidden}
+.fc-spu.danger{border-left-color:#d9776b}.fc-spu.warn{border-left-color:#d2a14d}
+.finance-workspace .fc-spu-parent{display:flex;align-items:center;gap:10px;width:100%;padding:13px;border:0;border-radius:0;text-align:left;background:var(--fi-surface,#fff);color:var(--fi-ink,#1d2b45)}
+.fc-spu-copy{display:grid;gap:6px;flex:1;min-width:0}
+.fc-spu-copy strong{font-size:12px;line-height:1.5;max-width:470px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.fc-spu-copy small{font-size:10px;color:var(--fi-muted,#8190a8);font-weight:400}
+.fc-spu-image{height:40px;width:40px;object-fit:cover;border-radius:6px;flex-shrink:0}
+.fc-spu-counts{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+.fc-spu-detail{border-top:1px solid var(--fi-border,#e8edf5)}
+.fc-spu-detail[hidden]{display:none}
+.fc-spu-detail .fi-table-wrap{margin:0}
+.fc-spu-detail .fc-product{min-width:150px;max-width:250px}
+.fc-shop-tree .fc-tag.good{color:#367757;background:#eaf6ef}
+[data-theme=dark] .fc-shop-tree .fc-tag.good{color:#a6d8b9;background:#1d3e32}
+@media(max-width:650px){.fc-spu-list{margin:14px 10px}.finance-workspace .fc-spu-parent{flex-wrap:wrap}.fc-spu-copy strong{max-width:220px}.fc-spu-counts{flex-basis:100%;justify-content:flex-start;margin-left:22px}.fc-cost-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.fc-order-links{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin:0 20px 24px}
+.finance-workspace .fi-expense-sections{margin:0 0 18px;gap:18px}
+.finance-workspace .fi-expense-sections button{flex-direction:column;align-items:flex-start;gap:5px;padding:12px 16px}
+.finance-workspace .fi-expense-sections button[aria-pressed=true]{border-bottom-color:#4263eb;color:#4263d9;background:var(--fi-soft,#f5f7ff)}
+@media(max-width:650px){.fc-shop-tree{margin:14px 10px}.finance-workspace .fc-shop-parent{gap:8px;padding:12px 10px}.fc-shop-children{margin-left:10px}.fc-shop-parent>.fc-tag{display:none}.fc-shop-counts .fc-tag{font-size:9px}.fc-shop-sku-info{align-items:flex-start;flex-direction:column}}
 .fc-rule-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:16px;align-items:start}
 .fc-form{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:20px}
 .fc-form label{display:grid;gap:8px;font-size:11px;color:var(--fi-muted,#8190a8)}

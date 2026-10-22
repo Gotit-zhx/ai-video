@@ -33,12 +33,35 @@ public class FinanceCostWorkspace {
         if(group.isBlank())return Map.of();
         var result=repo.jdbc().queryForList("SELECT id,source_name,data_json,created_at FROM finance_cost_books WHERE organization_id=? AND group_id=? ORDER BY created_at DESC,id DESC LIMIT 1",s.organizationId(),group);
         if(result.isEmpty())return Map.of();
-        var row=result.getFirst();var resultData=new LinkedHashMap<>(decode(row.get("data_json")));resultData.put("bookId",row.get("id"));resultData.put("sourceName",row.get("source_name"));return resultData;
+        var row=result.getFirst();var resultData=new LinkedHashMap<>(decode(row.get("data_json")));resultData.put("currency","CNY");resultData.put("bookId",row.get("id"));resultData.put("sourceName",row.get("source_name"));return resultData;
     }
     public Map<String,Object> costs(Scope s,String shopId){
-        var shop=service.ownedShop(s,shopId);String group=text(shop.get("group_id"));
+        var shops=service.shops(s);
+        var catalogs=new LinkedHashMap<String,Map<String,Object>>();
+        for(var row:repo.jdbc().queryForList("""
+            SELECT b.group_id,b.source_name,JSON_LENGTH(b.data_json,'$.costs') cost_rows
+            FROM finance_groups g JOIN finance_cost_books b ON b.id=(
+                SELECT id FROM finance_cost_books
+                WHERE organization_id=g.organization_id AND group_id=g.id
+                ORDER BY created_at DESC,id DESC LIMIT 1
+            ) WHERE g.organization_id=?
+            """,s.organizationId())){
+            catalogs.put(text(row.get("group_id")),Map.of("sourceName",text(row.get("source_name")),"costRows",number(row.get("cost_rows"))));
+        }
+        var shopCatalogs=new LinkedHashMap<String,Object>();
+        for(var item:shops)shopCatalogs.put(text(item.get("id")),catalogs.getOrDefault(text(item.get("group_id")),Map.of("sourceName","","costRows",0)));
+        if(text(shopId).isBlank()){
+            var selected=shops.stream().filter(item->catalogs.containsKey(text(item.get("group_id")))).findFirst();
+            if(selected.isEmpty()&&!shops.isEmpty())selected=Optional.of(shops.getFirst());
+            if(selected.isEmpty())return Map.of("live",true,"shopId","","costs",List.of(),"products",List.of(),"shopCatalogs",shopCatalogs);
+            shopId=text(selected.get().get("id"));
+        }
+        String selectedShopId=shopId;
+        var shop=shops.stream().filter(item->selectedShopId.equals(item.get("id"))).findFirst().orElseThrow(()->bad("没有找到本公司的财务店铺"));
+        String group=text(shop.get("group_id"));
         var result=new LinkedHashMap<>(book(s,group));result.putIfAbsent("costs",List.of());
         result.put("shopId",shopId);result.put("groupId",group);result.put("groupName",text(shop.get("group_name")));result.put("live",true);
+        result.put("shopCatalogs",shopCatalogs);
         var settings=repo.jdbc().queryForList("SELECT data_json,version FROM finance_cost_settings WHERE organization_id=? AND shop_id=?",s.organizationId(),shopId);
         result.put("settings",settings.isEmpty()?Map.of():decode(settings.getFirst().get("data_json")));
         result.put("settingsVersion",settings.isEmpty()?0:settings.getFirst().get("version"));
@@ -137,15 +160,15 @@ public class FinanceCostWorkspace {
         for(var c:rows(book(s,group).get("costs")))merged.put(text(c.get("warehouse"))+"\0"+c.get("sku"),new LinkedHashMap<>(c));
         var incoming=parseCosts(bytes,name);
         for(var c:incoming){String key=c.get("warehouse")+"\0"+c.get("sku");var prices=new LinkedHashMap<>(map(merged.getOrDefault(key,Map.of()).get("prices")));prices.putAll(map(c.get("prices")));c.put("prices",prices);merged.put(key,c);}
-        String id=UUID.randomUUID().toString();var body=Map.of("costs",merged.values());
+        String id=UUID.randomUUID().toString();var body=Map.of("costs",merged.values(),"currency","CNY");
         repo.jdbc().update("INSERT INTO finance_cost_books(id,organization_id,group_id,source_name,content_hash,data_json,created_by) VALUES(?,?,?,?,?,?,?)",
                 id,s.organizationId(),group,name.substring(0,Math.min(250,name.length())),digest,repo.write(body),actor);
-        audit(s,actor,"COST_IMPORT",id,null,Map.of("file",name,"groupId",group,"rows",incoming.size()),"导入成本资料；币种和计价单位另行确认");
+        audit(s,actor,"COST_IMPORT",id,null,Map.of("file",name,"groupId",group,"rows",incoming.size(),"currency","CNY"),"导入人民币成本资料；计价单位另行确认");
         return Map.of("duplicate",false,"id",id,"rows",incoming.size());
     }
     @Transactional public void settings(Scope s,String actor,String shopId,Map<String,Object> body){
         var shop=service.ownedShop(s,shopId);String warehouse=text(body.get("warehouse"));var rules=new LinkedHashMap<>(map(body.get("rules")));
-        String currency=text(rules.get("currency"));if(!currency.isBlank()&&!currency.matches("[A-Z]{3}"))throw bad("币种不正确");
+        String currency=text(rules.get("currency"));if(!currency.isBlank()&&!currency.equals("CNY"))throw bad("成本表统一使用人民币 CNY");rules.put("currency","CNY");
         choice(rules,"unit","","包","片","箱","套");choice(rules,"basis","order","shipment");choice(rules,"missing","pending","previous");
         choice(rules,"freight","","included","excluded");choice(rules,"inbound","","included","excluded");
         if(!warehouse.isBlank()&&rows(book(s,text(shop.get("group_id"))).get("costs")).stream().noneMatch(c->warehouse.equals(c.get("warehouse"))))throw bad("成本仓不属于当前分组");
@@ -166,6 +189,31 @@ public class FinanceCostWorkspace {
         repo.jdbc().update("INSERT INTO finance_cost_mappings(id,organization_id,shop_id,product_id,sku_id,warehouse,data_json,updated_by) VALUES(?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE data_json=VALUES(data_json),version=version+1,updated_by=VALUES(updated_by),updated_at=UTC_TIMESTAMP(6)",
                 id,s.organizationId(),shopId,product,sku,warehouse,repo.write(saved),actor);
         audit(s,actor,"COST_MAPPING",id,old.isEmpty()?null:decode(old.getFirst().get("data_json")),saved,"人工确认 SKU 成本关系");
+    }
+    @Transactional public Map<String,Object> autoMatch(Scope s,String actor,String shopId,Map<String,Object> body){
+        var data=costs(s,shopId);var catalog=rows(data.get("costs"));
+        var byCode=new LinkedHashMap<String,Set<String>>();
+        for(var cost:catalog)byCode.computeIfAbsent(text(cost.get("sku")),key->new LinkedHashSet<>()).add(text(cost.get("warehouse")));
+        var existing=map(data.get("mappings"));int candidates=0;
+        for(var product:rows(data.get("products"))){
+            String code=text(product.get("seller_sku")).trim();
+            if(code.isBlank()||!byCode.containsKey(code))continue;
+            String productId=text(product.get("product_id")),skuId=text(product.get("sku_id"));
+            for(String warehouse:byCode.get(code)){
+            if(existing.containsKey(shopId+":"+productId+":"+skuId+":"+warehouse))continue;
+            String id=hash(s.organizationId()+"\0"+shopId+"\0"+productId+"\0"+skuId+"\0"+warehouse);
+            var saved=new LinkedHashMap<String,Object>();saved.put("code",code);saved.put("warehouse",warehouse);saved.put("groupId",data.get("groupId"));
+            saved.put("method","EXACT_CODE");saved.put("factor",null);saved.put("unitConfirmed",false);
+            // Preserve manual decisions, including a decision saved concurrently with this batch.
+            repo.jdbc().update("""
+                INSERT INTO finance_cost_mappings(id,organization_id,shop_id,product_id,sku_id,warehouse,data_json,updated_by)
+                VALUES(?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id
+                """,id,s.organizationId(),shopId,productId,skuId,warehouse,repo.write(saved),actor);
+            candidates++;
+            }
+        }
+        if(candidates>0)audit(s,actor,"COST_AUTO_MATCH",shopId,null,Map.of("candidateCount",candidates),"按本店同编码自动关联全部可用成本仓；单位换算待确认，不启用成本计算");
+        return costs(s,shopId);
     }
     public Map<String,Object> expenses(Scope s,Map<String,String> query){
         String start=query.getOrDefault("start",LocalDate.now().minusDays(29).toString()),end=query.getOrDefault("end",LocalDate.now().toString());
