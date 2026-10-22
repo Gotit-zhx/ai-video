@@ -32,6 +32,19 @@
   function recordLead(row,value){const n=el('span',null,null,'fi-record-lead');n.append(platformBadge(recordPlatform(row)));const content=el('span',null,n,'fi-record-value');if(value instanceof Node)content.append(value);else content.textContent=value??'—';return n;}
   // record_date is a business calendar date; never shift it through the browser's timezone.
   function businessDate(value){if(value==null||value==='')return '—';const match=String(value).match(/^(\d{4}-\d{2}-\d{2})(?:$|[T ])/);return match?match[1]:'—';}
+  function recordZone(row){return data?.shops?.find(shop=>shop.id===row.shop_id)?.timezone||'UTC';}
+  function dateTimeCell(value,zone='UTC'){
+    if(value==null||value==='')return null;
+    const text=String(value);if(/^\d{4}-\d{2}-\d{2}$/.test(text))return null;
+    const stamp=/^\d{10}(?:\d{3})?$/.test(text)?Number(text)*(text.length===10?1000:1):text;
+    const date=new Date(stamp);if(!Number.isFinite(date.getTime()))return null;
+    let parts;
+    try{parts=new Intl.DateTimeFormat('en-GB',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(date);}
+    catch{zone='UTC';parts=new Intl.DateTimeFormat('en-GB',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(date);}
+    const p=Object.fromEntries(parts.map(part=>[part.type,part.value])),day=`${p.year}-${p.month}-${p.day}`,clock=`${p.hour}:${p.minute}:${p.second}`;
+    const n=el('time',null,null,'fi-record-time');n.dateTime=date.toISOString();n.title=`${day} ${clock} · ${zone}`;
+    el('span',day,n);el('small',' '+clock,n);return n;
+  }
   function button(label,parent,fn,cls=''){const n=el('button',label,parent,cls);n.type='button';n.onclick=async event=>{try{await fn(event.currentTarget);}catch(e){notify(e.message,true);}};return n;}
   function action(label,symbol,parent,fn,cls=''){const n=button('',parent,fn,'fi-btn-icon '+cls);icon(symbol,n);el('span',label,n);return n;}
   const number=v=>v==null?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2});
@@ -384,10 +397,21 @@
     if(copyImmediately)try{await generate();}catch(e){d.feedback.textContent=e.message;}
   }
   function currentFieldView(){return view==='reconciliation'?'RECONCILIATION':view==='overview'?'ALL':view==='ads'?(selectedKind==='AD_GMV'?'AD_GMV':'AD'):selectedKind;}
+  function presentationSettings(settings,key=settings.view||currentFieldView()){
+    const orderView=['ORDER','REFUND','SETTLEMENT','PENDING','FEE','COST'].includes(key)&&settings.fields.some(f=>f.id==='order_id');
+    const visible=[...new Set(settings.visible.map(id=>orderView&&id==='external_id'?'order_id':id))];
+    const eventTime=['ORDER','REFUND'].includes(key)&&!visible.includes('create_time');
+    const fields=settings.fields.map(f=>{
+      if(f.id==='record_date'&&eventTime)return {...f,label:key==='ORDER'?'下单时间':'退款申请时间',recordTime:true};
+      if(f.id==='external_id'&&['BILL','RECONCILIATION'].includes(key))return {...f,label:'账单编号'};
+      return f;
+    });
+    return {...settings,fields,visible,orderView,defaults:settings.defaults?{...settings.defaults,visible:[...new Set(settings.defaults.visible.map(id=>orderView&&id==='external_id'?'order_id':id))]}:settings.defaults};
+  }
   function columnValue(row,f){
     const value=f.id==='fx_time'?row.fx?.time:f.id==='fx_provider'?row.fx?.provider:row[f.id];
     if(f.id==='shop_id')return shopName(value);
-    if(f.id==='external_id'&&row.id)return button(value||'查看详情',null,()=>detailDialog(row.id));
+    if(['external_id','order_id'].includes(f.id)&&row.id){const n=button(value||'查看详情',null,()=>detailDialog(row.id),'fi-record-link');n.title=value?String(value)+' · 查看详情':'未关联订单 · 查看详情';return n;}
     if(f.id==='status'||f.id==='result')return badge(value);
     if(row.kind==='REFUND'&&['amount','cny_amount'].includes(f.id)&&value==null){const hint=el('span',row.refund_amount_note||'未确认',null,'fi-muted');hint.title=row.refund_amount_note||'平台尚未返回已完成退款金额';return hint;}
     if(f.id==='kind')return kinds[value]||value;
@@ -395,18 +419,24 @@
     if(f.id==='source')return ({API:'官方接口',IMPORT:'导入账单'})[value]||value;
     if(f.id==='category')return feeName(value);
     if(f.type==='money'||f.type==='number')return number(value);
-    if(f.type==='date')return businessDate(value);
-    if(f.type==='datetime'&&value)return f.label.includes('UTC')?String(value).replace('T',' ').replace('Z',' UTC'):new Date(value).toLocaleString('zh-CN');
+    if(f.type==='date')return f.recordTime?(dateTimeCell(row.create_time,recordZone(row))||businessDate(value)):businessDate(value);
+    if(f.type==='datetime')return dateTimeCell(value,f.label.includes('UTC')?'UTC':recordZone(row))||businessDate(value);
     return value==null||value===''?'—':value;
   }
   function renderFieldsTable(parent,items,settings,empty){
+    settings=presentationSettings(settings);
     const fields=settings.visible.map(id=>settings.fields.find(f=>f.id===id)).filter(f=>f&&(!f.cny||data.fx));
     const showLead=!fields.some(f=>f.id==='platform');
-    table(parent,fields.map((f,i)=>(showLead&&i===0?'平台 / ':'')+(f.id==='shop_id'?'店铺':f.label)),items.map(row=>fields.map((f,i)=>{const value=columnValue(row,f);return showLead&&i===0?recordLead(row,value):value;})),empty,items.map(row=>row.id||[row.shop_id,row.statement_id,row.currency].join(':')));
+    const t=table(parent,fields.map((f,i)=>(showLead&&i===0?'平台 / ':'')+(f.id==='shop_id'?'店铺':f.label)),items.map(row=>fields.map((f,i)=>{
+      let value=columnValue(row,f);if(!(value instanceof Node)&&f.type==='text'){const text=el('span',value==null||value===''?'—':value,null,'fi-cell-text');text.title=String(value??'');value=text;}
+      return showLead&&i===0?recordLead(row,value):value;
+    })),empty,items.map(row=>row.id||[row.shop_id,row.statement_id,row.currency].join(':')));
+    fields.forEach((f,i)=>{for(const row of t.rows){const cell=row.cells[i];if(['money','number'].includes(f.type))cell.classList.add('fi-num');if(f.recordTime&&row.parentElement.tagName==='THEAD')cell.title='按店铺时区显示，悬停时间可查看时区；平台未提供具体时间时仅显示业务日期。';}});
   }
   async function fieldsDialog(key,initial){
     const d=dialog('字段显示与导出');d.d.classList.add('fi-fields-dialog');
     el('p','主要字段默认选中，扩展字段可按需要添加。页面显示和文件导出独立保存，仅影响当前账号。未返回或不适用的字段显示 —；扩展金额按原币展示。',d.body,'fi-muted');
+    el('p','订单及退款页面的业务日期优先显示真实创建时间。导出时业务日期仍为年月日，需要时分秒请勾选「平台创建时间（UTC）」等时间字段。',d.body,'fi-muted');
     let settings=initial,checks=[];
     const choose=select(d.body,'数据类型',[['ALL','全部财务明细'],...Object.entries(kinds),['RECONCILIATION','结算对账']],key,async v=>{try{await render(v);}catch(e){d.feedback.textContent=e.message;}});
     const list=el('div',null,d.body,'fi-field-list');
@@ -415,13 +445,13 @@
     button('导出与显示相同',toolbar,()=>checks.forEach(c=>c.exported.checked=c.visible.checked));
     let renderRun=0;
     async function render(v){const run=++renderRun;list.textContent='正在读取字段…';checks=[];settings=null;
-      const result=initial?.view===v?initial:await request('/fields/'+v);if(run!==renderRun)return;settings=result;list.replaceChildren();
+      const result=initial?.view===v?initial:await request('/fields/'+v);if(run!==renderRun)return;settings=presentationSettings(result,v);list.replaceChildren();
       const header=el('div',null,list,'fi-field-row is-header');el('span','字段',header);el('span','显示',header);el('span','导出',header);
       for(const group of [...new Set(settings.fields.map(f=>f.group))]){
         el('div',group,list,'fi-field-group');
         for(const f of settings.fields.filter(f=>f.group===group)){
-          const row=el('div',null,list,'fi-field-row');el('span',f.label+(f.cny?' · 人民币模式':''),row);
-          const controls={id:f.id};for(const mode of ['visible','exported']){const label=el('label',null,row),input=el('input',null,label);input.type='checkbox';input.checked=settings[mode].includes(f.id);input.setAttribute('aria-label',f.label+(mode==='visible'?' 页面显示':' 导出包含'));controls[mode]=input;}checks.push(controls);
+          const fieldLabel=f.recordTime?'业务日期':f.label,row=el('div',null,list,'fi-field-row');el('span',fieldLabel+(f.cny?' · 人民币模式':''),row);
+          const controls={id:f.id};for(const mode of ['visible','exported']){const label=el('label',null,row),input=el('input',null,label);input.type='checkbox';input.checked=settings[mode].includes(f.id);input.setAttribute('aria-label',fieldLabel+(mode==='visible'?' 页面显示':' 导出包含'));if(mode==='visible'&&f.id==='external_id'&&settings.orderView){input.disabled=true;input.checked=false;label.title='页面统一使用订单编号，原始记录编号可在详情查看或导出';}controls[mode]=input;}checks.push(controls);
         }
       }
     }

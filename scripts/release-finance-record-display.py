@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location(
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 core, FRONT = release.core, release.FRONT
-release.IMAGE = "ai-commerce-frontend:finance-record-display-20261022"
+release.IMAGE = "ai-commerce-frontend:finance-record-compact-20261022"
 FILES = {"index.html", "finance-workspace.js", "finance-workspace.css"}
 
 
