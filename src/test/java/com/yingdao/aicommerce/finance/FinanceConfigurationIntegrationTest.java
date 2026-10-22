@@ -51,6 +51,7 @@ class FinanceConfigurationIntegrationTest {
         migration("V124__finance_sync_claim_token.sql");
         db.execute("CREATE TABLE permissions(id CHAR(36),code VARCHAR(80) PRIMARY KEY,name VARCHAR(120),module VARCHAR(40),resource_type VARCHAR(20),description VARCHAR(500),sort_order INT)");
         migration("V125__finance_company_groups.sql");
+        migration("V127__finance_cost_workspace.sql");
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
@@ -61,7 +62,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
-        for(String table:List.of("finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
+        for(String table:List.of("finance_workspace_audit","finance_expense_rules","finance_expenses","finance_cost_mappings","finance_cost_settings","finance_cost_books","finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
         client=mock(MarketplaceAccess.Client.class);when(client.platform()).thenReturn(MarketplacePlatform.SHOPEE);when(client.configured()).thenReturn(true);
         var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
         auth=new FinanceShopAuthorization(repo,new MarketplaceClientRegistry(List.of(client)),cipher,settings,tx);
@@ -83,6 +84,57 @@ class FinanceConfigurationIntegrationTest {
         return db.queryForObject("SELECT id FROM finance_connections WHERE organization_id=? AND external_shop_id=?",String.class,s.organizationId(),external);
     }
     Filter grouped(String id){return new Filter(filter.start(),filter.end(),"","","PHP","day",id);}
+    @Test void costWorkspacePreservesVersionsAndScopesSkuByPlatformIdentity(){
+        String group=service.saveGroup(owner,null,"成本测试"),shop=groupedShop(owner,"cost-shop",group);
+        var workspace=new FinanceCostWorkspace(repo,service);var transactions=new TransactionTemplate(tx);
+        byte[] file=("仓库,型号,20269,202610\n菲律宾仓,PACK,2.50,3.25\n菲律宾仓,PACK*5,13,16\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var imported=transactions.execute(status->workspace.importCosts(owner,"u",group,file,"cost.csv"));
+        assertEquals(2,imported.get("rows"));
+        assertEquals(true,transactions.execute(status->workspace.importCosts(new Scope("org","colleague"),"colleague",group,file,"cost.csv")).get("duplicate"));
+        assertThrows(BusinessException.class,()->transactions.execute(status->workspace.importCosts(other,"x",group,file,"cost.csv")));
+        record(owner,shop,"ORDER","sku-order",BigDecimal.TEN,Map.of("item_list",List.of(
+                Map.of("item_id","product1","model_id","variant1","model_sku","PACK","model_name","50 PCS","item_name","Diapers","image_info",Map.of("image_url","https://example.test/image.jpg")),
+                Map.of("item_id","product2","model_id","variant2","model_sku","PACK","model_name","50 PCS","item_name","Diapers")),"buyer_username","never-return"));
+        var current=workspace.costs(owner,shop);assertEquals(2,rows(current.get("products")).size());assertFalse(repo.write(current).contains("never-return"));
+        assertEquals(0,new BigDecimal("2.50").compareTo(decimal(map(rows(current.get("costs")).getFirst().get("prices")).get("2026-09"))));
+        var mapping=new LinkedHashMap<String,Object>(Map.of("product_id","product1","sku_id","variant1","warehouse","菲律宾仓","code","PACK","factor",1,"confirmed",true,"version",0));
+        transactions.executeWithoutResult(status->workspace.mapping(owner,"u",shop,mapping));
+        assertEquals(1,map(workspace.costs(new Scope("org","colleague"),shop).get("mappings")).size());
+        assertThrows(BusinessException.class,()->transactions.executeWithoutResult(status->workspace.mapping(owner,"u",shop,mapping)));
+        assertThrows(BusinessException.class,()->workspace.costs(other,shop));
+        byte[] next="仓库,型号,202610\n菲律宾仓,PACK,4\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        transactions.executeWithoutResult(status->workspace.importCosts(owner,"u",group,next,"next.csv"));
+        assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class));
+        var prices=map(rows(workspace.costs(owner,shop).get("costs")).getFirst().get("prices"));
+        assertEquals(0,new BigDecimal("2.5").compareTo(decimal(prices.get("2026-09"))));assertEquals(0,new BigDecimal("4").compareTo(decimal(prices.get("2026-10"))));
+    }
+    @Test void expenseLedgerPostsExactlyOnceAndRetainsAdjustmentsAndCompanyBoundaries(){
+        String group=service.saveGroup(owner,null,"费用测试"),shop=groupedShop(owner,"expense-shop",group);
+        record(owner,shop,"ORDER","known-order",BigDecimal.TEN,Map.of());
+        var workspace=new FinanceCostWorkspace(repo,service);var transactions=new TransactionTemplate(tx);
+        var body=new LinkedHashMap<String,Object>(Map.of("scope","order","target",shop,"category","shipping","source","WAYBILL-1","treatment","extra","currency","PHP","order","known-order","start","2026-10-21","end","2026-10-21","recordDate","2026-10-21"));body.put("amount","12.50");body.put("note","运费");
+        var saved=transactions.execute(status->workspace.expense(owner,"u",null,body));String id=text(saved.get("id"));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='COST'",Integer.class));
+        assertThrows(BusinessException.class,()->transactions.execute(status->workspace.expense(owner,"u",null,body)));
+        var edited=new LinkedHashMap<>(saved);edited.put("amount","15.75");edited.put("note","运单核对");
+        transactions.executeWithoutResult(status->workspace.expense(new Scope("org","colleague"),"colleague",id,edited));
+        assertEquals(0,new BigDecimal("15.75").compareTo(db.queryForObject("SELECT amount FROM finance_records WHERE kind='COST'",BigDecimal.class)));
+        assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='EXPENSE'",Integer.class));
+        assertThrows(BusinessException.class,()->transactions.execute(status->workspace.expense(owner,"u",id,edited)));
+        assertThrows(BusinessException.class,()->transactions.execute(status->workspace.expense(other,"x",id,edited)));
+        edited.put("version",2);edited.put("treatment","settlement");
+        transactions.executeWithoutResult(status->workspace.expense(owner,"u",id,edited));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='COST'",Integer.class),"already included costs must not be deducted a second time");
+        var q=Map.of("start","2026-10-21","end","2026-10-21","currency","PHP","group",group);
+        assertEquals(1,rows(workspace.expenses(owner,q).get("rows")).size());
+        assertTrue(rows(workspace.expenses(owner,Map.of("start","2026-10-21","end","2026-10-21","currency","PHP","group","UNGROUPED")).get("rows")).isEmpty());
+        assertTrue(rows(workspace.expenses(other,Map.of("start","2026-10-21","end","2026-10-21","currency","PHP")).get("rows")).isEmpty());
+        body.put("order","unknown-order");body.put("source","WAYBILL-2");
+        assertThrows(BusinessException.class,()->transactions.execute(status->workspace.expense(owner,"u",null,body)));
+        body.put("scope","group");body.put("target",group);
+        var pending=transactions.execute(status->workspace.expense(owner,"u",null,body));assertEquals("待分摊",pending.get("status"));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='COST'",Integer.class));
+    }
     @Test void companyMembersShareGroupsRecordsExportsAndPersonalColumnsStayPrivate(){
         Scope colleague=new Scope("org","colleague");
         String clothes=service.saveGroup(owner,null,"服饰"),shoes=service.saveGroup(owner,null,"鞋靴");

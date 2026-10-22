@@ -106,7 +106,7 @@ public class FinanceService {
         repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=FALSE,status='DISABLED' WHERE organization_id=? AND shop_id=?",s.organizationId(),id);
         invalidateAfterCommit(s);
     }
-    private void invalidateAfterCommit(Scope s){
+    void invalidateAfterCommit(Scope s){
         if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
             org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
                 @Override public void afterCommit(){invalidateSnapshots(s);}

@@ -73,6 +73,11 @@ public final class FinanceWorkbook {
     static void put(ZipOutputStream zip,String name,String content)throws IOException{zip.putNextEntry(new ZipEntry(name));zip.write(content.getBytes(StandardCharsets.UTF_8));zip.closeEntry();}
     static String xml(String s){return text(s).replaceAll("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]","").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\"","&quot;");}
     public static List<List<String>> read(byte[] bytes,String name){
+        return read(bytes,name,false);
+    }
+    /** Cost imports may ignore auxiliary formula columns, but must reject formulas in mapped cost fields. */
+    static List<List<String>> readCostTable(byte[] bytes,String name){return read(bytes,name,true);}
+    private static List<List<String>> read(byte[] bytes,String name,boolean markFormulas){
         if(bytes.length>12*1024*1024)throw bad("文件不能超过 12 MB");
         if(name.toLowerCase(Locale.ROOT).endsWith(".csv"))return parseCsv(new String(bytes,StandardCharsets.UTF_8));
         if(!name.toLowerCase(Locale.ROOT).endsWith(".xlsx"))throw bad("支持 UTF-8 CSV 或 XLSX 文件");
@@ -90,16 +95,17 @@ public final class FinanceWorkbook {
                 var nodes=doc.getElementsByTagName("si");for(int i=0;i<nodes.getLength();i++)strings.add(nodes.item(i).getTextContent());}
             byte[] worksheet=files.get("xl/worksheets/sheet1.xml");if(worksheet==null)throw bad("未找到第一个工作表");
             var doc=builder.parse(new ByteArrayInputStream(worksheet));var nodes=doc.getElementsByTagName("row");
-            if(nodes.getLength()>20001)throw bad("单次导入最多 20,000 行");
+            if(nodes.getLength()>(markFormulas?100001:20001))throw bad("工作表行结构过大，请清理末尾空白格式；单次最多 20,000 行数据");
             List<List<String>> result=new ArrayList<>();
             for(int i=0;i<nodes.getLength();i++){List<String> row=new ArrayList<>();var cells=((Element)nodes.item(i)).getElementsByTagName("c");
                 for(int j=0;j<cells.getLength();j++){Element cell=(Element)cells.item(j);String ref=cell.getAttribute("r");
                     int col=0;for(char c:ref.toCharArray()){if(c<'A'||c>'Z')break;col=col*26+c-'A'+1;}col=col==0?row.size():col-1;
                     if(col>199)throw bad("单次导入最多 200 列");while(row.size()<=col)row.add("");
-                    if(cell.getElementsByTagName("f").getLength()>0)throw bad("请将公式转换为值后导入");
+                    if(cell.getElementsByTagName("f").getLength()>0){if(markFormulas){row.set(col,"[FORMULA]");continue;}throw bad("请将公式转换为值后导入");}
                     String type=cell.getAttribute("t");String value=type.equals("inlineStr")?cell.getTextContent():content(cell,"v");
                     if(type.equals("s"))value=strings.get(Integer.parseInt(value));row.set(col,value);
                 }if(row.stream().anyMatch(v->!v.isBlank()))result.add(row);
+                if(result.size()>20001)throw bad("单次导入最多 20,000 行数据");
             }return result;
         }catch(com.yingdao.aicommerce.common.exception.BusinessException e){throw e;}
         catch(Exception e){throw bad("无法读取 XLSX，请使用标准工作簿或 UTF-8 CSV；日期请保存为 YYYY-MM-DD 文本");}

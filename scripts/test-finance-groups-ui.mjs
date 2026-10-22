@@ -111,12 +111,12 @@ assert.equal(d.querySelector('[aria-label="店铺"]').options.length,2);
 button('退款').click();await ready();
 assert(d.querySelector('thead').textContent.includes('退款申请时间'));assert.equal(d.querySelector('tbody time').textContent,'2026-10-22 09:23:45');
 assert(!d.querySelector('thead').textContent.includes('记录编号'));
-for(const route of ['overview','reconciliation','settlements','fees','ads','live']){
+for(const route of ['overview','reconciliation','settlements','fee-records','ads','live']){
   w.FinanceWorkspace.enter(route);await ready();
   assert.equal(requests.at(-1).url.searchParams.get('groupId'),'shoes',route+' retains group');
   if(route==='settlements'){assert.equal(d.querySelectorAll('.fi-settlement-totals strong').length,3);assert(d.querySelector('.fi-settlement-chart'));assert(d.querySelector('.fi-settlement-totals').textContent.includes('1,200'));}
-  if(['reconciliation','settlements','fees','ads','live'].includes(route)){assert.equal(d.querySelectorAll('.fi-market-badge').length,4,route+' identifies every detail record');assert(!d.querySelector('.fi-table-wrap:last-of-type')?.textContent.includes('AWAITING_COLLECTION'));}
-  if(['reconciliation','settlements','fees','ads'].includes(route)){
+  if(['reconciliation','settlements','fee-records','ads','live'].includes(route)){assert.equal(d.querySelectorAll('.fi-market-badge').length,4,route+' identifies every detail record');assert(!d.querySelector('.fi-table-wrap:last-of-type')?.textContent.includes('AWAITING_COLLECTION'));}
+  if(['reconciliation','settlements','fee-records','ads'].includes(route)){
     assert.equal(d.querySelector('.fi-record-value').textContent,'2026-10-22','non-order records keep their business date without inventing event time');
     if(route==='reconciliation')assert([...d.querySelectorAll('th')].some(n=>n.textContent==='账单编号'),'bills retain their identifier');
   }
