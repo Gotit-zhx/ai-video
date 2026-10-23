@@ -32,7 +32,7 @@ w.api=async(path,options={})=>{
     throw Error('Unexpected mutation '+path);
   }
   if(url.pathname==='/api/v1/finance/shops')return {data:{items:shops,groups,sync:[]}};
-  if(url.pathname==='/api/v1/finance/workspace/costs/orders'){reads.push(Object.fromEntries(url.searchParams));return {data:{items:[{id:'order-1',shop_id:'shop',order_id:'ORDER-1',product_skus:'PACK\n（PACK）*2',record_date:'2026-10-19',first_settlement_date:'2026-10-23',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};}
+  if(url.pathname==='/api/v1/finance/workspace/costs/orders'){reads.push(Object.fromEntries(url.searchParams));return {data:{items:[{id:'order-1',shop_id:'shop',order_id:'ORDER-1',order_type_label:'商家承担的免费样品单',product_skus:'PACK\n（PACK）*2',record_date:'2026-10-19',first_settlement_date:'2026-10-23',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};}
   if(url.pathname==='/api/v1/finance/workspace/costs'){
     reads.push(url.searchParams.get('shopId'));
     if(url.searchParams.get('shopId')==='other'){
@@ -57,6 +57,7 @@ assert.equal(reads[0],'','initial selection is chosen by persisted cost availabi
 assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');
 await click('订单成本');assert(d.body.textContent.includes('已结算订单已算部分'));assert(d.body.textContent.includes('¥ 5.5'));assert(d.querySelector('tbody').textContent.includes('待补齐'));assert(!d.querySelector('tbody').textContent.includes('¥ 0'));
 assert(d.querySelector('thead').textContent.includes('首次平台结算日期'));assert.equal(reads.at(-1).kind,'SETTLED_ORDER');assert(d.querySelector('thead').textContent.includes('商品 SKU'));assert(d.querySelector('tbody').textContent.includes('（PACK）*2'));
+assert.equal(d.querySelector('tbody .fi-sample-tag')?.textContent,'免费样品单');
 const retainedCostRow=d.querySelector('tbody tr'),retainedCostStats=d.querySelector('.fi-cost-stats');
 let costMutations=0;const observer=new w.MutationObserver(entries=>costMutations+=entries.length);
 observer.observe(d.querySelector('.fc-order-results'),{subtree:true,childList:true,characterData:true,attributes:true});

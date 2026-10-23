@@ -31,7 +31,7 @@ public final class FinanceOrderCosts {
     static Map<String,Object> calculate(Map<String,Object> order,Map<String,Object> raw,Context context){
         String status=text(order.get("status")),warehouse=resolveWarehouse(context);
         var rules=map(context.settings().get("rules"));
-        boolean excluded=status.equals("UNPAID")||Set.of("CANCELLED","CANCELED").contains(status)&&shippingTime(raw)==null;
+        boolean excluded=Set.of("UNPAID","CANCELLED","CANCELED").contains(status);
         var out=new LinkedHashMap<String,Object>();
         out.put("currency","CNY");out.put("basis","MERCHANT_SKU_STANDARD");out.put("warehouse",warehouse);
         out.put("bookId",context.bookId());out.put("dateBasis",text(rules.getOrDefault("basis","order")));
@@ -69,9 +69,8 @@ public final class FinanceOrderCosts {
                 if(previous!=null){if(previous.equals(signature))continue;line.put("issue","平台商品行重复且内容不一致");lines.add(line);continue;}
             }
             lines.add(line);
-            boolean lineShipped=shippingTime(item)!=null||Set.of("FULFILLING","COMPLETED","CANCELLED").contains(first(item,"package_status"))
-                    ||Set.of("CANCELLED","CANCELED").contains(status)&&shippingTime(raw)!=null;
-            if("UNPAID".equals(lineStatus)||Set.of("CANCELLED","CANCELED").contains(lineStatus)&&!lineShipped){line.put("amountCny",BigDecimal.ZERO);line.put("excluded",true);matched++;continue;}
+            // This report excludes cancelled sales regardless of dispatch. Actual logistics fees stay in the platform ledger.
+            if(Set.of("UNPAID","CANCELLED","CANCELED").contains(lineStatus)){line.put("amountCny",BigDecimal.ZERO);line.put("excluded",true);matched++;continue;}
             if(quantity==null||quantity.signum()<=0||quantity.stripTrailingZeros().scale()>0||quantity.compareTo(new BigDecimal("1000000"))>0){line.put("issue","缺少有效购买数量");continue;}
             if(context.costs().isEmpty()){line.put("issue","店铺分组尚未导入成本表");continue;}
             if(warehouse.isBlank()){line.put("issue","请配置成本仓，无法唯一匹配店铺国家");continue;}
@@ -105,10 +104,11 @@ public final class FinanceOrderCosts {
         }
         if(items.isEmpty())lines.add(new LinkedHashMap<>(Map.of("issue","平台尚未返回订单商品明细")));
         int total=lines.size();boolean complete=total>0&&matched==total;
-        out.put("lines",lines);out.put("status",complete?(fallback>0?"ESTIMATED":"READY"):"INCOMPLETE");
+        boolean allExcluded=complete&&lines.stream().allMatch(line->Boolean.TRUE.equals(line.get("excluded")));
+        out.put("lines",lines);out.put("status",allExcluded?"EXCLUDED":complete?(fallback>0?"ESTIMATED":"READY"):"INCOMPLETE");
         out.put("amountCny",complete?known:null);out.put("knownAmountCny",known);out.put("lineCount",total);
         out.put("matchedLines",matched);out.put("fallbackLines",fallback);
-        out.put("note",complete?(fallback>0?"使用最近历史月份的标准成本估算":"按商家 SKU 与下单数量统计标准成本"):"成本资料待补齐，不按零成本计算");
+        out.put("note",allExcluded?"全部商品明细未付款或已取消，不计标准成本":complete?(fallback>0?"使用最近历史月份的标准成本估算":"按商家 SKU 与有效购买数量统计标准成本，取消商品明细不计入"):"成本资料待补齐，不按零成本计算");
         return out;
     }
     Context context(String organization,String shopId){
@@ -129,7 +129,7 @@ public final class FinanceOrderCosts {
         if(value instanceof List<?> list)return list.stream().map(FinanceOrderCosts::canonical).toList();
         return value;
     }
-    static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash(repo.write(canonical(raw))+status);}
+    static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash("cancelled-excluded-v2:"+repo.write(canonical(raw))+status);}
     static void enqueue(FinanceRepository repo,Scope s,Entry entry){
         if(!entry.kind().equals("ORDER"))return;
         repo.jdbc().update("""

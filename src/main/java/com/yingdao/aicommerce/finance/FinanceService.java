@@ -164,10 +164,12 @@ public class FinanceService {
         }
         var daily=live?List.<Map<String,Object>>of():repo.grouped(s,f,"record_date,kind");
         if(cny)daily=FinanceFx.groups(daily,quote,"record_date","kind");
+        daily=FinanceProfitReport.withGross(daily,"record_date");
         for(var row:daily){
             String key=bucket(LocalDate.parse(text(row.get("record_date"))),f.granularity());
             var point=points.get(key);String kind=text(row.get("kind"));if(point==null)continue;
             BigDecimal value=decimal(row.get("amount"));if(value!=null)point.merge(kind,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));
+            BigDecimal gross=decimal(row.get("settled_gross_amount"));if(gross!=null)point.merge("SETTLEMENT_GROSS",gross,(a,b)->((BigDecimal)a).add((BigDecimal)b));
             point.merge(kind+"_count",number(row.get("records")),(a,b)->(Long)a+(Long)b);
         }
         var out=new LinkedHashMap<String,Object>();
@@ -176,11 +178,17 @@ public class FinanceService {
         out.put("currencies",codes);out.put("totals",totals);out.put("trend",new ArrayList<>(points.values()));
         out.put("shops",shops(s));out.put("groups",groups(s));
         var fees=live?List.<Map<String,Object>>of():repo.grouped(s,f,"category,kind");var statuses=repo.grouped(s,f,"status,kind");
-        out.put("ranking",cny?FinanceFx.groups(ranking,quote,"shop_id","kind"):ranking);
+        out.put("ranking",FinanceProfitReport.withGross(cny?FinanceFx.groups(ranking,quote,"shop_id","kind"):ranking,"shop_id"));
         out.put("fees",(cny?FinanceFx.groups(fees,quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
         out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
         out.put("updatedAt",Instant.now().toString());
-        out.put("productCosts",new FinanceCostReport(repo).summary(s,f,"SETTLED_ORDER"));
+        var productCosts=new FinanceCostReport(repo).summary(s,f,"SETTLED_ORDER");
+        out.put("productCosts",productCosts);
+        FinanceFx.Quote profitQuote=quote;
+        if(!cny&&!"CNY".equals(currency)&&decimal(map(productCosts.get("total")).get("known_amount_cny")).signum()!=0&&fx!=null){
+            try{profitQuote=fx.quote(snapshotId);}catch(RuntimeException unavailable){/* Native-currency ledger stays available when a reference quote is unavailable. */}
+        }
+        out.put("profit",FinanceProfitReport.calculate(totals,productCosts,cny?"CNY":currency,profitQuote));
         out.put("basis","订单按创建日期，结算与费用按平台结算日期；广告按广告账户日期。原币分别统计，已结算不代表银行到账。");
         return out;
     }

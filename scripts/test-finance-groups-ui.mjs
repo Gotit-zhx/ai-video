@@ -21,6 +21,7 @@ const records=[
   {id:'record4',external_id:'A4',record_date:null,status:'NEW_PLATFORM_STATUS'}
 ];
 records[0].product_sku_values=['YUXI-BPants-L','（YUXI-BPants-XXL）*2'];records[0].product_skus=records[0].product_sku_values.join('\n');records[0].product_cost_cny=36.54;
+records[1].order_type_label='商家承担的免费样品单';
 const costLinks=[];w.FinanceCosts={openOrders:value=>costLinks.push(value),reset(){}};
 w.api=async(path,options={})=>{
   const url=new URL(path,'https://example.test'),method=options.method||'GET',body=options.body?JSON.parse(options.body):{};
@@ -43,7 +44,7 @@ w.api=async(path,options={})=>{
     ranking:[],statuses:[],fees:[],trend:[],basis:'测试数据',updatedAt:'2026-10-22T00:00:00Z',hourly:[],recent:records,
     productCosts:{scope:'ORDER',basis:'测试订单成本口径',total:{known_amount_cny:88.75,amount_cny:null,ready_count:3,pending_count:1,estimated_count:2,excluded_count:0},shops:[{shop_id:'shop2',known_amount_cny:88.75,amount_cny:null,pending_count:1}]}};
   if(['/overview','/screen'].includes(endpoint))return {data:common};
-  if(['/records','/reconciliation'].includes(endpoint)){const kind=endpoint==='/reconciliation'?'RECONCILIATION':url.searchParams.get('kind')||'ORDER';return {data:{...common,items:records.map((r,i)=>({...r,kind,order_id:i===3?'':r.external_id,currency:'PHP',amount:[203,226,538,null][i]})),total:51,page,pageSize:50,fieldSettings:settings(kind)}};}
+  if(['/records','/reconciliation'].includes(endpoint)){const kind=endpoint==='/reconciliation'?'RECONCILIATION':url.searchParams.get('kind')||'ORDER';return {data:{...common,items:records.map((r,i)=>({...r,kind,order_id:i===3?'':r.external_id,currency:'PHP',amount:[203,226,kind==='SETTLEMENT'?0:538,null][i]})),total:51,page,pageSize:50,fieldSettings:settings(kind)}};}
   throw Error('Unexpected API '+endpoint);
 };
 for(const file of ['incremental-dom.js','incremental-charts.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../frontend/'+file,import.meta.url),'utf8'));
@@ -124,17 +125,26 @@ assert(!d.querySelector('thead').textContent.includes('记录编号'));
 for(const route of ['overview','reconciliation','settlements','fees','fee-records','ads','live']){
   w.FinanceWorkspace.enter(route);await ready();
   assert.equal(requests.at(-1).url.searchParams.get('groupId'),'shoes',route+' retains group');
-  assert(d.querySelector('.fi-product-cost-summary')?.textContent.includes('¥ 88.75'),route+' shows the shared cost result');
+  assert(route==='overview'?d.querySelector('[data-metric="PRODUCT_COST"]')?.textContent.includes('88.75'):d.querySelector('.fi-product-cost-summary')?.textContent.includes('¥ 88.75'),route+' shows the shared cost result');
   if(route==='settlements'){assert.equal(d.querySelectorAll('.fi-settlement-totals strong').length,3);assert(d.querySelector('.fi-settlement-chart'));assert(d.querySelector('.fi-settlement-totals').textContent.includes('1,200'));}
   if(['reconciliation','settlements','fees','fee-records','ads','live'].includes(route)){assert.equal(d.querySelectorAll('.fi-market-badge').length,4,route+' identifies every detail record');assert(!d.querySelector('.fi-table-wrap:last-of-type')?.textContent.includes('AWAITING_COLLECTION'));}
   if(['reconciliation','settlements','fees','fee-records','ads','live'].includes(route))assert([...d.querySelectorAll('th')].some(n=>n.textContent==='商品 SKU'),route+' includes merchant SKU column');
+  if(route==='settlements'){
+    assert(d.body.textContent.includes('平台返回 0'));
+    assert(d.querySelector('.fi-settlement-amount.is-missing')?.textContent.includes('金额未获取'),'missing settlement values must stay distinct from an explicit zero');
+    assert.equal(d.querySelector('.fi-sample-tag')?.textContent,'免费样品单','sample orders must have an explicit tag next to their order number');
+    if(process.env.FINANCE_SAMPLE_PREVIEW){
+      const css=await fs.readFile(new URL('../frontend/finance-workspace.css',import.meta.url),'utf8');
+      await fs.writeFile(process.env.FINANCE_SAMPLE_PREVIEW,`<!doctype html><meta charset="utf-8"><title>免费样品单标注 · 验收示例</title><style>${css}body{margin:0;padding:26px;background:#f7f8fb;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}#finance-page{max-width:1250px}body>p{max-width:1250px;margin:0 auto 12px;color:#8791a4;font-size:12px}</style><p>界面验收示例 · 非正式财务数据</p>${d.querySelector('#finance-page').outerHTML}`);
+    }
+  }
   if(['fees','fee-records'].includes(route)){assert(d.querySelector('[aria-label="费用数据分类"] [aria-pressed=true]').textContent.includes('平台费用'));assert(button('导出报表'));assert(!d.body.textContent.includes('其他费用台账总额'));}
   if(['reconciliation','settlements','fees','fee-records','ads'].includes(route)){
     assert.equal(d.querySelector('.fi-record-value').textContent,'2026-10-22','non-order records keep their business date without inventing event time');
     if(route==='reconciliation')assert([...d.querySelectorAll('th')].some(n=>n.textContent==='账单编号'),'bills retain their identifier');
   }
 }
-w.FinanceWorkspace.enter('fees');await ready();button('外部成本').click();await ready();
+w.FinanceWorkspace.enter('fees');await ready();button('物流贴单成本').click();await ready();
 assert.equal(requests.at(-1).url.searchParams.get('kind'),'COST');
 w.FinanceWorkspace.enter('fees');await ready();
 assert.equal(requests.at(-1).url.searchParams.get('kind'),'FEE','the original fees entry always reopens platform fees');

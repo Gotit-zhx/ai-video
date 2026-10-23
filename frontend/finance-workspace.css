@@ -54,3 +54,24 @@
 .fi-table .fi-sku-cell{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;min-width:130px;max-width:220px;white-space:pre-line;overflow-wrap:anywhere;font-size:11px;line-height:1.5}
 .finance-workspace .fi-cost-link,.fc-workspace .fi-cost-link{min-height:0;padding:0;border:0;border-radius:2px;background:transparent;color:var(--fi-blue,#4169d8);font:inherit;font-variant-numeric:tabular-nums;text-align:inherit;cursor:pointer;text-decoration:underline;text-decoration-color:currentColor;text-underline-offset:3px}
 .finance-workspace .fi-cost-link:hover,.fc-workspace .fi-cost-link:hover{opacity:.8}
+.fi-metrics.fi-metrics-expanded{grid-template-columns:repeat(4,minmax(0,1fr))}
+.fi-metrics-expanded .fi-metric{min-height:118px;padding:15px 17px}
+.fi-metrics-expanded .fi-metric-value strong{font-size:28px;overflow-wrap:anywhere;min-width:0}
+.fi-metric.is-profit{background:#eef3ff;border-color:#cbd8ff}
+.fi-metric.is-profit .fi-metric-value strong{color:#314fc4}
+.fi-metric.is-profit.is-negative .fi-metric-value strong{color:#bc4554}
+.fi-cost-quality{display:grid;grid-template-columns:minmax(280px,1fr) minmax(400px,1.2fr);align-items:center}
+.fi-cost-quality .fi-card-head{padding:14px 18px}
+.fi-cost-quality .fi-cost-stats{grid-template-columns:repeat(3,minmax(0,1fr));padding:14px 18px}
+.fi-cost-quality .fi-cost-stats strong{font-size:20px}
+.fi-cost-quality>.fi-note{grid-column:1/-1;padding:0 18px 12px}
+.fi-profit-formula{font-size:13px;line-height:1.8;padding:12px 14px;background:#f1f4ff;color:#354da0;border-radius:9px}
+.fi-settlement-amount{display:inline-block}.fi-settlement-amount small{max-width:180px!important;font-size:10px!important}.fi-settlement-amount.is-missing{color:#b57d27}
+.fi-settlement-amount .fi-sample-tag{display:table!important;width:auto!important;margin-top:4px;padding:2px 6px;border:1px solid #f4d4a4;border-radius:5px;background:#fff5e5;color:#8a4c09!important;font-size:11px!important;font-weight:600}
+.fi-dialog-body>.fi-note{margin-top:12px}
+[data-theme=dark] .fi-metric.is-profit{background:#243352;border-color:#3e5484}
+[data-theme=dark] .fi-metric.is-profit .fi-metric-value strong{color:#aabbff}
+[data-theme=dark] .fi-metric.is-profit.is-negative .fi-metric-value strong{color:#f0a6ae}
+[data-theme=dark] .fi-profit-formula{background:#243352;color:#b8c6ff}
+@media(max-width:1100px){.fi-metrics.fi-metrics-expanded{grid-template-columns:repeat(2,minmax(0,1fr))}.fi-cost-quality{grid-template-columns:minmax(0,1fr)}.fi-cost-quality .fi-card-head{padding-bottom:0}}
+@media(max-width:480px){.fi-metrics-expanded .fi-metric{padding:12px 10px;min-height:108px}.fi-metrics-expanded .fi-metric-value strong{font-size:23px}.fi-cost-quality .fi-card-head{align-items:flex-start;flex-direction:column}.fi-cost-quality .fi-cost-stats{gap:8px;padding:12px}.fi-cost-quality .fi-cost-stats strong{font-size:18px}}

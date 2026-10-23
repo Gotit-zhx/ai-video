@@ -60,6 +60,7 @@ class FinanceCostExportTest {
     static String value(Document d,String ref){return cell(d,ref).getTextContent();}
     @Test void detailedWorkbookPreservesPrecisionIdsStatusesDatesAndSnapshots()throws Exception{
         var estimated=row("ESTIMATED","586742209199441786");
+        var sampleRaw=new LinkedHashMap<>(repo.read(text(estimated.get("raw_json"))));sampleRaw.put("order_type","SELLER_FUND_FREE_SAMPLE");sampleRaw.put("is_sample_order",true);estimated.put("raw_json",repo.write(sampleRaw));
         var pending=row("INCOMPLETE","586742209199441787");pending.put("amount_cny",null);
         var partial=map(repo.read(text(pending.get("cost_json"))));var missing=new LinkedHashMap<String,Object>(rows(partial.get("lines")).getFirst());
         missing.remove("amountCny");missing.remove("unitPriceCny");missing.put("issue","缺少成本价");partial.put("lines",List.of(missing));pending.put("cost_json",repo.write(partial));
@@ -76,6 +77,7 @@ class FinanceCostExportTest {
         assertEquals("0",value(orders,"N5"));assertEquals("后台计算中",value(orders,"P4"));
         assertEquals("3",cell(orders,"G2").getAttribute("s"));assertEquals("4",cell(orders,"H2").getAttribute("s"));
         assertEquals("2026-09",value(lines,"V2"));assertEquals("1.234567",value(lines,"S2"));
+        assertEquals("商家承担的免费样品单",value(orders,"AC2"));assertEquals("商家承担的免费样品单",value(lines,"AD2"));
         assertEquals("3",value(lines,"Q2"));assertEquals("2",value(lines,"R2"));
         assertEquals("=不应执行的商品名",value(lines,"I2"));assertEquals("inlineStr",cell(lines,"I2").getAttribute("t"));
         assertEquals(0,lines.getElementsByTagName("f").getLength());

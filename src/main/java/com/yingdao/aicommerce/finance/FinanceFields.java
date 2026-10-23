@@ -25,6 +25,9 @@ public final class FinanceFields {
         new Field("product_cost_state","商品成本状态","text","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("product_cost_pending","待补齐成本订单数","number","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("product_cost_note","商品成本说明","text","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
+        new Field("related_order_status","关联订单状态","text","结算核对",false,"REFUND SETTLEMENT FEE PENDING",""),
+        new Field("order_type_label","订单类型","text","结算核对",false,"ORDER REFUND SETTLEMENT FEE PENDING",""),
+        new Field("settlement_amount_note","结算金额说明","text","结算核对",false,"SETTLEMENT BILL RECONCILIATION",""),
         new Field("detail_amount","结算明细金额","money","对账字段",false,"RECONCILIATION",""),
         new Field("detail_count","明细笔数","number","对账字段",false,"RECONCILIATION",""),
         new Field("difference","差异","money","对账字段",false,"RECONCILIATION",""),
@@ -91,12 +94,14 @@ public final class FinanceFields {
     static Preferences defaults(String key){
         if(key.equals("REFUND")){
             var visible=new ArrayList<>(DEFAULT_VISIBLE);visible.add(visible.indexOf("amount"),"platform_refund_amount");
-            var exported=new ArrayList<>(DEFAULT_EXPORT);exported.add(exported.indexOf("amount"),"platform_refund_amount");exported.add("refund_amount_note");
+            var exported=new ArrayList<>(DEFAULT_EXPORT);exported.add(exported.indexOf("amount"),"platform_refund_amount");exported.add("refund_amount_note");exported.add("order_type_label");
             visible.addAll(List.of("product_cost_cny","product_cost_state"));exported.addAll(List.of("product_cost_cny","product_cost_known_cny","product_cost_state","product_cost_pending","product_cost_note"));
             return new Preferences(visible,exported);
         }
         var visible=new ArrayList<>(key.equals("RECONCILIATION")?RECON_VISIBLE:DEFAULT_VISIBLE);
         var exported=new ArrayList<>(key.equals("RECONCILIATION")?RECON_EXPORT:DEFAULT_EXPORT);
+        if(Set.of("SETTLEMENT","BILL","RECONCILIATION","ALL").contains(key))exported.add("settlement_amount_note");
+        if(Set.of("ORDER","SETTLEMENT","FEE","PENDING","ALL").contains(key))exported.add("order_type_label");
         if(Set.of("ORDER","SETTLEMENT","BILL","PENDING","RECONCILIATION","ALL").contains(key)){
             visible.addAll(List.of("product_cost_cny","product_cost_state"));exported.addAll(List.of("product_cost_cny","product_cost_known_cny","product_cost_state","product_cost_pending","product_cost_note"));
         }
@@ -146,6 +151,11 @@ public final class FinanceFields {
         var labels=new HashSet<>(List.of("金额","账单金额","人民币账单金额","确认退款金额（原币）","确认退款金额（人民币）"));
         CATALOG.stream().filter(f->Set.of("money","number").contains(f.type)).map(Field::label).forEach(labels::add);return labels;
     }
+    static String orderType(String type,String sample){
+        if("SELLER_FUND_FREE_SAMPLE".equals(type))return "商家承担的免费样品单";
+        if("true".equalsIgnoreCase(sample))return "样品单";
+        return "NORMAL".equals(type)?"普通订单":type.isBlank()?"":"其他订单";
+    }
     static void enrich(Map<String,Object> row,Map<String,Object> raw){
         if(!"API".equals(row.get("source")))return;
         String kind=text(row.get("kind")),platform=text(row.get("platform"));
@@ -162,12 +172,19 @@ public final class FinanceFields {
             }else if(value!=null)value=text(value).substring(0,Math.min(2000,text(value).length()));
             if(value!=null)row.put(field.id,value);
         }
+        if(Set.of("SETTLEMENT","BILL").contains(kind)){
+            BigDecimal settlement=decimal(row.get("amount"));
+            row.put("settlement_amount_note",settlement==null?"结算金额尚未获取，不按 0 统计":
+                settlement.signum()==0?"API".equals(row.get("source"))?"平台明确返回结算金额 0":"账单记录金额为 0":
+                settlement.signum()<0?"平台负向结算，保留扣费及调整的原始符号":"平台结算金额");
+        }
         if(kind.equals("REFUND")){
             String status=text(row.get("status"));
             boolean confirmed=platform.equals("SHOPEE")?status.equals("ACCEPTED"):Set.of("RETURN_OR_REFUND_REQUEST_COMPLETE","REPLACEMENT_REQUEST_REFUND_SUCCESS").contains(status);
             row.put("refund_amount_note",row.get("amount")!=null?"已确认退款":confirmed?"平台未返回确认退款金额":status.equals("CLOSED")?"已关闭，不计入退款":Set.of("CANCELLED","RETURN_OR_REFUND_REQUEST_CANCEL").contains(status)?"已取消，不计入退款":"尚未确认，不计入退款合计");
         }
         if(kind.equals("ORDER")){
+            if(platform.equals("TIKTOK_SHOP"))row.put("order_type_label",orderType(first(raw,"order_type"),text(raw.get("is_sample_order"))));
             FinanceProductSkus.put(row,FinanceProductSkus.fromOrder(platform,raw));
             Object items=raw.get(platform.equals("SHOPEE")?"item_list":"line_items");
             if(items instanceof List<?> list){

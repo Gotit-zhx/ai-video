@@ -63,16 +63,22 @@ class FinanceOrderCostsTest {
         result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("a","PACK"))),context(costs,Map.of(),mapping));
         amountEquals("7",result.get("amountCny"));
     }
-    @Test void cancellationAndRefundDoNotInventAStockReturn(){
+    @Test void cancelledOrdersAreExcludedRegardlessOfShipmentWhileCompletedOrdersKeepTheirCost(){
         var context=context(List.of(cost("PACK","海外仓-菲律宾","2026-10","7")),Map.of(),Map.of());
         var raw=Map.<String,Object>of("line_items",List.of(tk("a","PACK")));
         assertEquals("EXCLUDED",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","CANCELLED"),raw,context).get("status"));
         amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
         raw=Map.of("line_items",List.of(tk("a","PACK")),"collection_time",1792551040L);
-        amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","CANCELLED"),raw,context).get("amountCny"));
+        assertEquals("EXCLUDED",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","CANCELLED"),raw,context).get("status"));
         var cancelled=tk("a","PACK");cancelled.put("status","CANCELLED");
         raw=Map.of("line_items",List.of(cancelled),"collection_time",1792551040L);
-        amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","CANCELLED"),raw,context).get("amountCny"));
+        amountEquals("0",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","CANCELLED"),raw,context).get("amountCny"));
+        for(String platform:List.of("TIKTOK_SHOP","SHOPEE"))for(String status:List.of("CANCELLED","CANCELED","UNPAID")){
+            var excluded=FinanceOrderCosts.calculate(order(platform,status),raw,context(List.of(),Map.of(),Map.of()));
+            assertEquals("EXCLUDED",excluded.get("status"));amountEquals("0",excluded.get("knownAmountCny"));
+        }
+        var zeroPaid=new LinkedHashMap<>(order("TIKTOK_SHOP","COMPLETED"));zeroPaid.put("amount",BigDecimal.ZERO);
+        amountEquals("7",FinanceOrderCosts.calculate(zeroPaid,Map.of("line_items",List.of(tk("a","PACK"))),context).get("amountCny"));
     }
     @Test void zeroPriceAndMissingShipmentDateRemainIncomplete(){
         var context=context(List.of(cost("PACK","海外仓-菲律宾","2026-10","0")),Map.of(),Map.of());
@@ -86,7 +92,11 @@ class FinanceOrderCostsTest {
         var cancelled=tk("cancelled","PACK");cancelled.put("display_status","CANCELLED");cancelled.put("package_status","TO_FULFILL");
         var raw=Map.<String,Object>of("line_items",List.of(tk("valid","PACK"),cancelled),"collection_time",1792551040L);
         amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
-        cancelled.put("package_status","CANCELLED"); // Cancelled packages can be lost or damaged after dispatch.
-        amountEquals("14",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
+        cancelled.put("package_status","CANCELLED");
+        amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
+        cancelled.put("collection_time",1792551040L);
+        amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
+        var excluded=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(cancelled)),context);
+        assertEquals("EXCLUDED",excluded.get("status"));amountEquals("0",excluded.get("amountCny"));
     }
 }

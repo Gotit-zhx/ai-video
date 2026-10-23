@@ -320,7 +320,7 @@
         }
         const orderTable=table(next,['店铺','订单编号','商品 SKU',settled?'首次平台结算日期':'下单日期','已结算商品成本（人民币）','成本状态','操作'],(result.items||[]).map(row=>[
           shops.find(s=>s.id===row.shop_id)?.display_name||shops.find(s=>s.id===row.shop_id)?.name||'—',
-          row.order_id||row.external_id,context.skuCell?.(row)||row.product_skus||'—',String((settled?row.first_settlement_date:row.record_date)||'').slice(0,10)||'—',row.product_cost_cny==null?'—':context.openRecord&&row.id?action(null,'¥ '+format(row.product_cost_cny),()=>context.openRecord(row.id),'fi-cost-link'):'¥ '+format(row.product_cost_cny),
+          orderIdentifier(row),context.skuCell?.(row)||row.product_skus||'—',String((settled?row.first_settlement_date:row.record_date)||'').slice(0,10)||'—',row.product_cost_cny==null?'—':context.openRecord&&row.id?action(null,'¥ '+format(row.product_cost_cny),()=>context.openRecord(row.id),'fi-cost-link'):'¥ '+format(row.product_cost_cny),
           tag(null,row.product_cost_state||'后台计算中',row.product_cost_state==='已计算'?'good':row.product_cost_state==='待补齐'?'danger':'warn'),
           context.openRecord&&row.id?action(null,'查看计算明细',()=>context.openRecord(row.id),'fi-record-link'):'订单待同步'
         ]));
@@ -328,7 +328,7 @@
         const pager=el('div',null,next,'fi-pagebar');el('span',`${result.total} 笔订单 · 第 ${result.page} 页`,pager);const controls=el('div',null,pager,'fi-actions');
         action(controls,'上一页',()=>{state.orderPage--;body();}).disabled=state.orderPage<=1;
         action(controls,'下一页',()=>{state.orderPage++;body();}).disabled=state.orderPage*result.pageSize>=result.total;
-        el('p','仅平台已结算订单计入成本，不代表银行到账。按首次结算归属，后续结算调整不重复计整单成本；退款不自动退回成本。金额取人民币成本表，缺价不按零，历史取价标为估算。',next,'fc-inline-note');
+        el('p','仅平台已结算订单计入成本，不代表银行到账。未付款、已取消订单及取消的商品明细不计商品成本；免费样品单单独标注，已履约成本保留。按首次结算归属，后续结算调整不重复计整单成本；退款不自动退回成本。金额取人民币成本表，缺价不按零，历史取价标为估算。',next,'fc-inline-note');
         if(result.productCosts?.rebuilding)el('p','后台正在分批计算历史订单，完成后自动更新。',next,'fc-inline-note');
         if(globalThis.IncrementalDOM)IncrementalDOM.children(content,next);else content.replaceChildren(...next.childNodes);
         signature=nextSignature;
@@ -338,6 +338,11 @@
         finally{busy=false;}
       }
       await refresh();
+      function orderIdentifier(row){
+        if(!row.order_type_label?.includes('样品单'))return row.order_id||row.external_id;
+        const cell=el('span',null,null,'fi-settlement-amount');el('span',row.order_id||row.external_id,cell);
+        const label=el('small',row.order_type_label.includes('免费')?'免费样品单':'样品单',cell,'fi-sample-tag');label.title=row.order_type_label;return cell;
+      }
     }
     function body(){
       const host=root.querySelector('.fc-tab-content');if(!host)return;host.replaceChildren();

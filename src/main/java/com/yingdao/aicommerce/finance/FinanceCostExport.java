@@ -81,15 +81,15 @@ public class FinanceCostExport {
             summary.row(List.of("订单范围说明",kind.equals("SETTLED_ORDER")?"仅平台已结算订单，按首次结算日期归属；待结算不计入，后续重复结算或调整不重复计整单成本。":kind.equals("ORDER")?"仅核对所选已结算订单，不限制下单日期；不代表当前结算期间的成本合计。":"仅统计所选来源记录关联的已结算去重订单，日期依据为"+basis(kind)+"。"));
             summary.row(List.of("计算口径","商家 SKU 成本单价 × 购买数量 × 组合数量；完整组合装单价优先，成本固定为人民币。"));
             summary.row(List.of("缺失与估算","待补齐的完整成本留空，不按零成本计算。历史价格保留实际取价月份。计算中订单不使用旧成本快照。"));
-            summary.row(List.of("排除口径","未付款、未发货即取消的订单不计成本；退款不会自动退回商品成本。商品标准成本不等于仓库实际出库成本。"));
+            summary.row(List.of("排除口径","未付款或已取消订单、已取消商品明细不计商品成本，不受发货状态影响；实际平台费用保留。退款不会自动退回商品成本。商品标准成本不等于仓库实际出库成本。"));
             summary.row(List.of("核对方式","按订单编号连接订单与 SKU 明细；组合单价、数量、月份均取自同一次已保存计算。订单成本合计按去重订单统计。"));
             summary.row(List.of("时间说明","下单时间为店铺时区，平台未提供时留空；下单日期为平台业务日。成本更新时间使用 UTC。"));
             return book.bytes();
         }catch(IOException e){throw new IllegalStateException("成本报表生成失败，请重试",e);}
         finally{slots.release();}
     }
-    static final List<String> ORDER_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","商品 SKU","下单日期","下单时间（店铺时区）","店铺时区","订单状态","订单状态代码","订单原币","订单金额（原币）","商品成本（人民币）","已计算部分成本（人民币）","成本状态","成本仓","成本月份依据","目标成本月份","实际取价月份","SKU 明细行数","匹配成功行数","历史价行数","成本来源文件","成本版本","成本更新时间（UTC）","说明","首次平台结算日期");
-    static final List<String> LINE_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","下单日期","订单状态","订单成本状态","商品名称","规格名称","商品 SPU 编号","平台 SKU 编号","商家 SKU","商品行编号","成本型号","成本仓","购买数量","组合数量","成本单价（人民币）","商品行成本（人民币）","目标成本月份","实际取价月份","历史价格估算","商品行状态","缺失原因或说明","成本来源文件","成本版本","成本更新时间（UTC）","首次平台结算日期");
+    static final List<String> ORDER_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","商品 SKU","下单日期","下单时间（店铺时区）","店铺时区","订单状态","订单状态代码","订单原币","订单金额（原币）","商品成本（人民币）","已计算部分成本（人民币）","成本状态","成本仓","成本月份依据","目标成本月份","实际取价月份","SKU 明细行数","匹配成功行数","历史价行数","成本来源文件","成本版本","成本更新时间（UTC）","说明","首次平台结算日期","订单类型");
+    static final List<String> LINE_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","下单日期","订单状态","订单成本状态","商品名称","规格名称","商品 SPU 编号","平台 SKU 编号","商家 SKU","商品行编号","成本型号","成本仓","购买数量","组合数量","成本单价（人民币）","商品行成本（人民币）","目标成本月份","实际取价月份","历史价格估算","商品行状态","缺失原因或说明","成本来源文件","成本版本","成本更新时间（UTC）","首次平台结算日期","订单类型");
     static final class Totals{
         long orders,ready,estimated,pending,excluded,lines;BigDecimal known=BigDecimal.ZERO;
         final Set<String> shops=new LinkedHashSet<>();
@@ -107,6 +107,7 @@ public class FinanceCostExport {
         String shop=text(row.get("shop_name")),zone=text(row.get("timezone"));
         if(zone.isBlank())zone=timezoneFor(text(row.get("region")));
         String market=platform(text(row.get("platform")));
+        String orderType=FinanceFields.orderType(first(raw,"order_type"),text(raw.get("is_sample_order")));
         Object date=day(row.get("record_date")),updated=timestamp(row.get("cost_updated_at"));
         var skus=new LinkedHashSet<String>();var months=new TreeSet<String>();var issues=new LinkedHashSet<String>();
         for(var line:costLines){if(!text(line.get("sellerSku")).isBlank())skus.add(text(line.get("sellerSku")));if(!text(line.get("priceMonth")).isBlank())months.add(text(line.get("priceMonth")));if(!text(line.get("issue")).isBlank())issues.add(text(line.get("issue")));}
@@ -125,12 +126,12 @@ public class FinanceCostExport {
             row.get("currency"),decimal(row.get("amount")),amount,known,status,cost.get("warehouse"),
             cost.isEmpty()?"":"shipment".equals(cost.get("dateBasis"))?"发货月份":"下单月份",cost.get("costMonth"),String.join("、",months),
             cost.get("lineCount"),cost.get("matchedLines"),cost.get("fallbackLines"),queued?null:row.get("cost_source"),
-            queued?null:row.get("cost_version"),queued?null:updated,note,day(row.get("first_settlement_date"))));
+            queued?null:row.get("cost_version"),queued?null:updated,note,day(row.get("first_settlement_date")),orderType));
         // Retain an explanatory row even when the source order or its calculation is unavailable.
         if(costLines.isEmpty()){
             detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),date,orderStatus(text(row.get("order_status"))),status,
                 null,null,null,null,String.join("\n",skus),null,null,cost.get("warehouse"),null,null,null,code.equals("EXCLUDED")?BigDecimal.ZERO:null,
-                cost.get("costMonth"),null,null,status,note,queued?null:row.get("cost_source"),queued?null:row.get("cost_version"),queued?null:updated,day(row.get("first_settlement_date"))));
+                cost.get("costMonth"),null,null,status,note,queued?null:row.get("cost_source"),queued?null:row.get("cost_version"),queued?null:updated,day(row.get("first_settlement_date")),orderType));
             totals.lines++;return;
         }
         for(var line:costLines){
@@ -142,7 +143,7 @@ public class FinanceCostExport {
                 first(source,"product_name","item_name"),first(source,"sku_name","model_name"),line.get("productId"),line.get("skuId"),line.get("sellerSku"),line.get("lineId"),
                 line.get("costCode"),line.get("warehouse"),line.get("quantity"),line.get("factor"),line.get("unitPriceCny"),line.get("amountCny"),
                 cost.get("costMonth"),line.get("priceMonth"),Boolean.TRUE.equals(line.get("previousPrice"))?"是":"否",lineState,
-                issue.isBlank()?excluded?"未付款或未发货取消，不计成本":"单价 × 购买数量 × 组合数量":issue,row.get("cost_source"),row.get("cost_version"),updated,day(row.get("first_settlement_date"))));
+                issue.isBlank()?excluded?"未付款或已取消，不计成本":"单价 × 有效购买数量 × 组合数量":issue,row.get("cost_source"),row.get("cost_version"),updated,day(row.get("first_settlement_date")),orderType));
             totals.lines++;
         }
     }

@@ -19,7 +19,7 @@ public class FinanceImport {
     }
     @Transactional
     public Map<String,Object> commit(Scope s,String shopId,String kind,Map<String,Object> mapping,byte[] bytes,String filename){
-        if(!Set.of("BILL","COST","AD").contains(kind))throw bad("支持导入结算账单、外部成本和广告费用");
+        if(!Set.of("BILL","COST","AD").contains(kind))throw bad("支持导入结算账单、物流贴单成本和广告费用");
         var shop=service.ownedShop(s,shopId);
         s=service.shopScope(s,shopId);
         if(kind.equals("AD")&&repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_ad_accounts WHERE organization_id=? AND shop_id=? AND enabled=TRUE",

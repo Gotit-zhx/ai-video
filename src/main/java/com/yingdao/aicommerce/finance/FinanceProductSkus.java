@@ -35,6 +35,8 @@ public final class FinanceProductSkus {
     }
     private void page(Scope scope,List<Map<String,Object>> records){
         var orders=new LinkedHashMap<OrderKey,SortedSet<String>>();
+        var statuses=new HashMap<OrderKey,String>();
+        var types=new HashMap<OrderKey,String>();
         var bills=new LinkedHashMap<String,SortedSet<String>>();
         for(var row:records){
             if("ORDER".equals(row.get("kind")))continue;
@@ -49,10 +51,13 @@ public final class FinanceProductSkus {
             var args=new ArrayList<Object>();args.add(scope.organizationId());
             orders.keySet().forEach(key->{args.add(key.shop());args.add(key.order());});
             String where=String.join(" OR ",Collections.nCopies(orders.size(),"(o.shop_id=? AND o.order_id=?)"));
-            for(var row:repo.jdbc().queryForList("SELECT o.shop_id,o.order_id,"+SKU+" sku FROM finance_records o "+ITEMS
+            for(var row:repo.jdbc().queryForList("SELECT o.shop_id,o.order_id,o.status related_order_status,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.order_type')) order_type,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.is_sample_order')) is_sample_order,"+SKU+" sku FROM finance_records o "+ITEMS
                     +" WHERE o.organization_id=? AND o.kind='ORDER' AND o.source='API' AND ("+where+")",args.toArray())){
                 String code=text(row.get("sku")).trim();
-                if(!code.isBlank())orders.get(new OrderKey(text(row.get("shop_id")),text(row.get("order_id")))).add(code);
+                var key=new OrderKey(text(row.get("shop_id")),text(row.get("order_id")));
+                statuses.put(key,text(row.get("related_order_status")));
+                types.put(key,FinanceFields.orderType(text(row.get("order_type")),text(row.get("is_sample_order"))));
+                if(!code.isBlank())orders.get(key).add(code);
             }
         }
         if(!bills.isEmpty()){
@@ -73,6 +78,18 @@ public final class FinanceProductSkus {
         for(var row:records){
             var codes="BILL".equals(row.get("kind"))?bills.get(text(row.get("id"))):orders.get(new OrderKey(text(row.get("shop_id")),text(row.get("order_id"))));
             if(codes!=null)put(row,codes);
+            String status=statuses.get(new OrderKey(text(row.get("shop_id")),text(row.get("order_id"))));
+            String type=types.get(new OrderKey(text(row.get("shop_id")),text(row.get("order_id"))));
+            if(type!=null&&!type.isBlank())row.put("order_type_label",type);
+            if(status!=null&&!status.isBlank()){
+                row.put("related_order_status",status);
+                if("SETTLEMENT".equals(row.get("kind"))&&"API".equals(row.get("source"))
+                    &&Set.of("CANCELLED","CANCELED").contains(status)&&decimal(row.get("amount"))!=null&&decimal(row.get("amount")).signum()==0)
+                    row.put("settlement_amount_note","已取消订单，平台明确返回结算金额 0");
+                else if("SETTLEMENT".equals(row.get("kind"))&&"API".equals(row.get("source"))&&type!=null&&type.contains("样品单")
+                    &&decimal(row.get("amount"))!=null&&decimal(row.get("amount")).signum()<0)
+                    row.put("settlement_amount_note",type+"，平台扣费形成负结算");
+            }
         }
     }
     public void attachExpenses(Scope scope,List<? extends Map<String,Object>> expenses){
