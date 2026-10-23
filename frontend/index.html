@@ -1990,6 +1990,13 @@
           <p id="listing-logistics-status" role="status">默认启用目标店铺已开通的物流渠道。</p>
           <p class="listing-template-note">支持同时启用多个渠道。运费和渠道限制由虾皮计算；这里的勾选用于商品上传。</p>
         </section>
+        <section id="listing-warehouse-section" class="listing-logistics-section" aria-label="TikTok 发货地址" hidden>
+          <header><strong>发货地址 / 仓库</strong><small>读取目标店铺，上传时自动带入</small></header>
+          <label>目标店铺<select id="listing-warehouse-shop"><option value="">选择店铺查看发货地址</option></select></label>
+          <label id="listing-warehouse-choice-label" hidden>发货仓库<select id="listing-warehouse-choice"><option value="">自动选择</option></select></label>
+          <p id="listing-warehouse-status" class="listing-template-note" role="status">优先平台默认发货仓；没有默认时优先海外仓。</p>
+          <p class="listing-template-note">只使用当前店铺已启用的发货仓，不使用退货仓。可选择其他仓库并保存。</p>
+        </section>
         <label>详情文案<textarea id="listing-template-description" rows="12" maxlength="9000" translate="no"></textarea></label>
         <p class="listing-template-note">SKU、原价、原图与原类目保留。两个平台独立保存；已提交的任务沿用提交时的模板。</p>
         <p id="listing-template-status" role="status"></p><p id="listing-template-error" role="alert"></p>
@@ -2008,10 +2015,10 @@
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
   <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-multi-shop-1">
-  <script src="/product-listing-templates.js?v=20261015-module-isolation" defer></script>
+  <script src="/product-listing-templates.js?v=20261023-tiktok-warehouse-1" defer></script>
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
-  <script src="/app.js?v=20261022-finance-groups-1" defer></script>
+  <script src="/app.js?v=20261023-tiktok-warehouse-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261021-incremental-1" defer></script>

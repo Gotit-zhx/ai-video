@@ -15,6 +15,8 @@ public class ProductListingTemplateController {
     @org.springframework.beans.factory.annotation.Autowired
     private com.yingdao.aicommerce.product.application.ProductListingLogisticsService logistics;
     @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.application.ProductListingWarehouseService warehouses;
+    @org.springframework.beans.factory.annotation.Autowired
     private com.yingdao.aicommerce.product.application.CommerceImageArchive imageArchive;
     public ProductListingTemplateController(ProductListingTemplateService service) { this.service = service; }
     @GetMapping
@@ -71,6 +73,11 @@ public class ProductListingTemplateController {
             var shipping = new java.util.LinkedHashMap<String, Object>();
             config.forEach((key, value) -> shipping.put(String.valueOf(key), value));
             logistics.save(shipping, principal);
+        }
+        if ("TIKTOK_SHOP".equals(template.platform()) && body.get("warehouseConfig") instanceof Map<?,?> config) {
+            var selection = new java.util.LinkedHashMap<String,Object>();
+            config.forEach((key,value)->selection.put(String.valueOf(key),value));
+            warehouses.save(selection,principal);
         }
         return ApiResponse.ok(template);
     }

@@ -2,6 +2,7 @@
   'use strict';
   let context, templates = [], organization = '', pending = null, platform = 'SHOPEE', busy = false;
   let shipping = null, shippingRequest = 0, shippingLoading = false;
+  let warehouse = null, warehouseRequest = 0, warehouseLoading = false;
   let dataModule = '';
   let revision = 0, dialogRequest = 0;
   const currentModule = () => typeof commerceDataModule === 'function' ? commerceDataModule() : 'CAPTURE';
@@ -21,6 +22,7 @@
     if (org !== organization || scope !== dataModule) {
       organization = org; dataModule = scope; templates = []; pending = null;
       draftValues.clear(); shipping = null; shippingRequest++;
+      warehouse = null; warehouseRequest++;
     }
     if (!force && templates.length) return templates;
     if (!pending || force) {
@@ -57,7 +59,7 @@
         control.disabled = value || control.dataset.logisticsEnabled === 'false'
           || (!control.dataset.listingPlatform && !context.canEdit());
     });
-    byId('save-product-listing-template').disabled = value || !context.canEdit() || (platform === 'SHOPEE' && shippingLoading);
+    byId('save-product-listing-template').disabled = value || !context.canEdit() || (platform === 'SHOPEE' ? shippingLoading : warehouseLoading);
     byId('save-product-listing-template').textContent = value ? '保存中…' : '保存模板';
   }
   const draftValues = new Map();
@@ -126,6 +128,72 @@
       if (request === shippingRequest && context.getUser()?.organizationId === org) {shippingLoading = false;setBusy(busy);}
     }
   }
+  function warehouseDraft() {
+    const shopId=byId('listing-warehouse-shop').value;
+    if(platform!=='TIKTOK_SHOP'||!shopId)return null;
+    if(warehouseLoading||!warehouse||warehouse.shopId!==shopId)
+      throw Error('请等待店铺发货仓库读取成功后保存');
+    const warehouseId=byId('listing-warehouse-choice').value;
+    if(warehouseId&&!warehouse.warehouses.some(w=>w.id===warehouseId))throw Error('请选择当前店铺可用的发货仓库');
+    if(!warehouse.warehouses.length)throw Error('目标店铺没有可用的发货仓库');
+    return {shopId,warehouseId,version:warehouse.version};
+  }
+  function renderWarehouse() {
+    byId('listing-warehouse-section').hidden=platform!=='TIKTOK_SHOP';
+    const select=byId('listing-warehouse-choice');
+    byId('listing-warehouse-choice-label').hidden=!warehouse;
+    if(!warehouse)return;
+    const automatic=[...warehouse.warehouses].sort((a,b)=>{
+      const rank=w=>w.isDefault?0:w.subType==='CB_OVERSEA_WAREHOUSE'?1:2;
+      return rank(a)-rank(b)||(a.id<b.id?-1:a.id>b.id?1:0);
+    })[0];
+    select.replaceChildren(new Option('自动选择'+(automatic?' · '+(automatic.name||automatic.id):''),''));
+    for(const item of warehouse.warehouses)
+      select.append(new Option(`${item.name||'发货仓'} · ${item.id}${item.isDefault?' · 平台默认':''}${item.subType==='CB_OVERSEA_WAREHOUSE'?' · 海外仓':''}`,item.id));
+    if(warehouse.warehouseId&&!warehouse.warehouses.some(w=>w.id===warehouse.warehouseId)){
+      const invalid=new Option('原配置仓库已不可用，请重新选择',warehouse.warehouseId);invalid.disabled=true;select.append(invalid);
+    }
+    select.value=warehouse.warehouseId;
+    showWarehouseAddress();
+  }
+  function showWarehouseAddress() {
+    if(!warehouse)return;
+    const selected=byId('listing-warehouse-choice').value;
+    const auto=[...warehouse.warehouses].sort((a,b)=>{
+      const rank=w=>w.isDefault?0:w.subType==='CB_OVERSEA_WAREHOUSE'?1:2;
+      return rank(a)-rank(b)||(a.id<b.id?-1:a.id>b.id?1:0);
+    })[0];
+    const item=selected?warehouse.warehouses.find(w=>w.id===selected):auto;
+    byId('listing-warehouse-status').textContent=item
+      ? `上传将使用：${item.name||item.id}${item.address?' · '+item.address:''}`
+      : warehouse.error||'未读取到可用发货仓库';
+  }
+  async function loadWarehouseShops() {
+    const request=++warehouseRequest,org=context.getUser()?.organizationId,scope=dataModule;
+    warehouse=null;warehouseLoading=false;
+    const select=byId('listing-warehouse-shop');select.replaceChildren(new Option('选择店铺查看发货地址',''));
+    renderWarehouse();byId('listing-warehouse-status').textContent='上传自动读取目标店铺发货仓库，优先平台默认；没有默认时优先海外仓。';
+    try{
+      const response=await scoped('/api/v1/product-listing-templates/warehouses/shops',{},scope);
+      if(request!==warehouseRequest||org!==context.getUser()?.organizationId||scope!==currentModule())return;
+      for(const shop of response.data||[])select.append(new Option(`${shop.name||shop.externalShopId} · ${shop.region||'TikTok Shop'}`,shop.id));
+      if(!response.data?.length)byId('listing-warehouse-status').textContent='暂无已授权的 TikTok Shop 店铺。';
+      if(response.data?.length===1){select.value=response.data[0].id;await loadWarehouse();}
+    }catch(error){if(request===warehouseRequest)byId('listing-warehouse-status').textContent=error.message;}
+  }
+  async function loadWarehouse() {
+    const shopId=byId('listing-warehouse-shop').value,request=++warehouseRequest,org=context.getUser()?.organizationId,scope=dataModule;
+    warehouse=null;warehouseLoading=Boolean(shopId);renderWarehouse();setBusy(busy);
+    byId('listing-warehouse-status').textContent=shopId?'正在读取该店铺的官方发货仓库…':'上传时自动读取目标店铺发货仓库。';
+    if(!shopId)return;
+    try{
+      const response=await scoped('/api/v1/product-listing-templates/warehouses/'+encodeURIComponent(shopId),{signal:AbortSignal.timeout(180000)},scope);
+      if(request!==warehouseRequest||org!==context.getUser()?.organizationId||scope!==currentModule())return;
+      if(response.data?.shopId!==shopId||!Array.isArray(response.data.warehouses))throw Error('发货仓库读取不完整，请重试');
+      warehouse=response.data;renderWarehouse();
+    }catch(error){if(request===warehouseRequest)byId('listing-warehouse-status').textContent=error.message;}
+    finally{if(request===warehouseRequest){warehouseLoading=false;setBusy(busy);}}
+  }
   function render() {
     const template = draftValues.get(platform) || get(platform);
     if (!template) return;
@@ -139,6 +207,7 @@
     byId('listing-template-error').textContent = '';
     byId('listing-template-status').textContent = template.version ? `已保存 · 版本 ${template.version}` : '通用默认模板';
     byId('listing-logistics-section').hidden = platform !== 'SHOPEE';
+    byId('listing-warehouse-section').hidden = platform !== 'TIKTOK_SHOP';
     setBusy(false);
   }
   async function open() {
@@ -149,7 +218,7 @@
     byId('listing-template-error').textContent = '';
     byId('listing-template-status').textContent = '正在读取模板…';
     byId('product-listing-template-dialog').showModal(); setBusy(true);
-    try { await Promise.all([ensure(true),loadShippingShops()]); if(request === dialogRequest) render(); }
+    try { await Promise.all([ensure(true),loadShippingShops()]); if(request === dialogRequest) {render();void loadWarehouseShops();} }
     catch (error) { if(request === dialogRequest) {byId('listing-template-error').textContent = error.message; setBusy(false); byId('save-product-listing-template').disabled = true;} }
   }
   async function save(event) {
@@ -161,6 +230,7 @@
     try {
       shippingBody = shippingDraft();
       if (shippingBody) body.logisticsConfig = shippingBody;
+      const warehouseBody=warehouseDraft();if(warehouseBody)body.warehouseConfig=warehouseBody;
     } catch(error) {byId('listing-template-error').textContent = error.message;return;}
     setBusy(true); byId('listing-template-error').textContent = '';
     try {
@@ -174,6 +244,9 @@
         renderShipping();byId('listing-logistics-status').textContent = `保存成功 · 物流版本 ${shipping.version}`;
       }
       draftValues.delete(target); render();
+      if(body.warehouseConfig&&warehouse?.shopId===body.warehouseConfig.shopId){
+        warehouse.version=body.warehouseConfig.version+1;warehouse.warehouseId=body.warehouseConfig.warehouseId;renderWarehouse();
+      }
       byId('listing-template-status').textContent = '保存成功';
       context.onSaved?.();
     } catch(error) { if (organization === org && dataModule === scope && currentModule() === scope) byId('listing-template-error').textContent = error.message; }
@@ -199,6 +272,7 @@
     root.addEventListener?.('hashchange',()=>{
       if(dataModule && dataModule !== currentModule()){
         shippingRequest++;revision++;dialogRequest++;pending=null;shipping=null;draftValues.clear();
+        warehouseRequest++;warehouse=null;warehouseLoading=false;
         byId('product-listing-template-dialog').close();
       }
     });
@@ -207,6 +281,11 @@
       byId(id).addEventListener('click', () => byId('product-listing-template-dialog').close());
     byId('product-listing-template-form').addEventListener('submit', save);
     byId('listing-logistics-shop').addEventListener('change',loadShipping);
+    byId('listing-warehouse-shop').addEventListener('change',loadWarehouse);
+    byId('listing-warehouse-choice').addEventListener('change',()=>{
+      if(warehouse)warehouse.warehouseId=byId('listing-warehouse-choice').value;
+      showWarehouseAddress();
+    });
     byId('listing-logistics-mode').addEventListener('change',()=>{
       if (!shipping) return;
       shipping.mode = byId('listing-logistics-mode').value;
@@ -221,6 +300,7 @@
         shipping.channels = shipping.channels.map(channel=>({...channel,selected:draft.channelIds.includes(channel.id)}));
       }
       draftValues.set(platform,readDraft()); platform = button.dataset.listingPlatform; render(); renderShipping();
+      renderWarehouse();
     }));
     byId('product-template-preview-platform').addEventListener('change', () => preview(context.getCapture()));
   }

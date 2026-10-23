@@ -6269,11 +6269,18 @@ function resolveTikTokPublishOptions(capture, options, common = {}, category = {
     if (alternative) categoryId = alternative;
   }
   requireTikTokCategoryPermission(leaves.find(leaf => leaf.id === categoryId));
-  const warehouses = (options?.warehouses?.warehouses || []).filter(w =>
-    w.type === 'SALES_WAREHOUSE' && (!w.status || w.status === 'ENABLED' || w.status === 'ACTIVE'));
-  const warehouseId = warehouses.find(w => String(w.id) === common['warehouse-id'])?.id
-    || warehouses.find(w => w.is_default === true)?.id
-    || (warehouses.length === 1 ? warehouses[0].id : '');
+  const allowed = options?.listingMethod === 'LOCAL_REPLICATION' && Array.isArray(options.inventoryRules)
+    ? new Set(options.inventoryRules.map(rule => String(rule.local_warehouse_id))) : null;
+  const warehouses = (options?.warehouses?.warehouses || []).filter(w => {
+    const status = w.effect_status ?? w.status;
+    return w.id && w.type === 'SALES_WAREHOUSE' && (!status || status === 'ENABLED' || status === 'ACTIVE')
+      && (!allowed || allowed.has(String(w.id)));
+  });
+  if (options?.warehouseSelection?.error) throw Error(options.warehouseSelection.error);
+  const preferred = options?.warehouseSelection ? options.warehouseSelection.resolvedWarehouseId : common['warehouse-id'];
+  const rank = w => w.is_default === true ? 0 : w.sub_type === 'CB_OVERSEA_WAREHOUSE' ? 1 : 2;
+  const warehouseId = warehouses.find(w => String(w.id) === String(preferred || ''))?.id
+    || [...warehouses].sort((a,b) => rank(a)-rank(b) || (String(a.id)<String(b.id)?-1:String(a.id)>String(b.id)?1:0))[0]?.id;
   return {leaves, categoryId, matchedOriginal: Boolean(categoryId), genderConverted: Boolean(originalMatch && originalMatch.id !== categoryId), warehouseId: String(warehouseId || '')};
 }
 function publishCategoryText(value) {

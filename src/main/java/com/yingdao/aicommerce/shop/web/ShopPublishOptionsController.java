@@ -35,6 +35,8 @@ public class ShopPublishOptionsController implements AutoCloseable {
     private final Duration readTimeout;
     @Autowired
     private com.yingdao.aicommerce.product.application.ProductListingLogisticsService listingLogistics;
+    @Autowired
+    private com.yingdao.aicommerce.product.application.ProductListingWarehouseService listingWarehouses;
     public ShopPublishOptionsController(ShopAuthorizationService shops, ShopeeOfficialClient shopee) {
         this(shops, shopee, Duration.ofSeconds(90));
     }
@@ -64,6 +66,7 @@ public class ShopPublishOptionsController implements AutoCloseable {
         var tasks = new ArrayList<Future<Map.Entry<String, Object>>>(2);
         Future<TikTokShopListingCapabilityResolver.Capability> capabilityTask = null;
         long started = System.nanoTime();
+        TikTokShopListingCapabilityResolver.Capability listingCapability = null;
         try {
             var result = new LinkedHashMap<String, Object>();
             if (!isTikTok && listingLogistics != null)
@@ -75,6 +78,7 @@ public class ShopPublishOptionsController implements AutoCloseable {
                 long remaining = readTimeout.toNanos() - (System.nanoTime() - started);
                 if (remaining <= 0) throw new TimeoutException();
                 var capability = capabilityTask.get(remaining, TimeUnit.NANOSECONDS);
+                listingCapability = capability;
                 result.put("listingMethod", capability.listingMethod());
                 result.put("canCreateDraft", true);
                 if (capability.requestId() != null) result.put("listingRulesRequestId", capability.requestId());
@@ -101,6 +105,12 @@ public class ShopPublishOptionsController implements AutoCloseable {
                         new HttpTimeoutException("店铺上传选项读取超时"));
                 var entry = task.get();
                 result.put(entry.getKey(), entry.getValue());
+            }
+            if (isTikTok && listingWarehouses != null) {
+                var warehouseData = result.get("warehouses") instanceof Map<?,?> m ? m : Map.of();
+                result.put("warehouseSelection", com.yingdao.aicommerce.product.application.ProductListingWarehouseService.view(id,
+                        listingWarehouses.config(user.organizationId(),id,com.yingdao.aicommerce.product.application.CommerceModule.current()),
+                        warehouseData.get("warehouses"),listingCapability));
             }
             return ApiResponse.ok(result);
         } catch (InterruptedException exception) {

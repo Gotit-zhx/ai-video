@@ -44,6 +44,25 @@ test('successful cross-border options must explicitly confirm LOCAL_REPLICATION 
  const h=harness();await h.prepare();assert.equal(h.payload().warehouseId,'warehouse-LOCAL_REPLICATION');
  assert.match(h.node('#publish-auto-summary').textContent,/已确认跨境店铺刊登模式/);
 });
+test('multiple enabled TK warehouses without a default use an eligible overseas sales warehouse',async()=>{
+ const h=harness();
+ h.c.api=async()=>({data:{...options().data,
+  inventoryRules:[{local_warehouse_id:'7563746552255661844'},{local_warehouse_id:'7573610496839321365'},{local_warehouse_id:'7563288949508196117'}],
+  warehouses:{warehouses:[
+   {id:'disabled',type:'SALES_WAREHOUSE',effect_status:'DISABLED',is_default:true},
+   {id:'return',type:'RETURN_WAREHOUSE',effect_status:'ENABLED',is_default:true},
+   {id:'foreign',type:'SALES_WAREHOUSE',effect_status:'ENABLED',is_default:true},
+   {id:'7573610496839321365',type:'SALES_WAREHOUSE',effect_status:'ENABLED',sub_type:'CB_OVERSEA_WAREHOUSE',is_default:false},
+   {id:'7563288949508196117',type:'SALES_WAREHOUSE',effect_status:'ENABLED',sub_type:'CB_DIRECT_SHIPPING_WAREHOUSE',is_default:false},
+   {id:'7563746552255661844',type:'SALES_WAREHOUSE',effect_status:'ENABLED',sub_type:'CB_OVERSEA_WAREHOUSE',is_default:false}
+  ]}}});
+ await h.prepare();assert.equal(h.payload().warehouseId,'7563746552255661844');
+ const original=h.c.api;
+ h.c.api=async()=>{const response=await original();response.data.warehouseSelection={resolvedWarehouseId:'7573610496839321365',error:''};return response;};
+ await h.prepare();assert.equal(h.payload().warehouseId,'7573610496839321365');
+ h.c.api=async()=>{const response=await original();response.data.warehouseSelection={resolvedWarehouseId:'',error:'配置的发货仓库已停用'};return response;};
+ await h.prepare();assert.throws(h.payload,/发货仓库已停用/);
+});
 test('switching a failed cross-border shop to a local shop clears old failure and reads new options',async()=>{
  const h=harness(),reads=[];h.c.api=async path=>{reads.push(path);if(path.includes('/cross/'))throw Error('跨境刊登模式未就绪');return options('LOCAL');};
  await h.prepare();h.node('#publish-shop-id').value='local';await h.prepare();

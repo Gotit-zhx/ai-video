@@ -48,6 +48,11 @@ class TikTokShopOfficialPublishingProviderTest {
     void selectedStyleReplacesOnlyTheMainGalleryAndIsRecheckedBeforeCreate() {
         verifyConfirmedDraftFlow("LOCAL", null, true);
     }
+    @Test
+    void missingWarehouseAutomaticallyReadsDestinationWarehouseAndPreservesDraftCreateBoundary() {
+        verifyConfirmedDraftFlow("LOCAL", null, false, true);
+        verifyConfirmedDraftFlow("CROSS_BORDER", List.of("LOCAL_REPLICATION"), false, true);
+    }
 
     @Test
     void verifiedCrossBorderReplicationKeepsTheSameDraftCreateAndReadbackFlow() {
@@ -61,6 +66,9 @@ class TikTokShopOfficialPublishingProviderTest {
     }
 
     private void verifyConfirmedDraftFlow(String sellerType, Object listingMethods, boolean styled) {
+        verifyConfirmedDraftFlow(sellerType, listingMethods, styled, false);
+    }
+    private void verifyConfirmedDraftFlow(String sellerType, Object listingMethods, boolean styled, boolean automaticWarehouse) {
         ShopAuthorizationService authorizationService = mock(ShopAuthorizationService.class);
         TikTokShopOfficialClient client = mock(TikTokShopOfficialClient.class);
         ProductCaptureSkuMapper skuMapper = mock(ProductCaptureSkuMapper.class);
@@ -139,6 +147,13 @@ class TikTokShopOfficialPublishingProviderTest {
                         "request_id", "readback-request"));
 
         var request = new LinkedHashMap<>(publishRequest());
+        if (automaticWarehouse) {
+            request.remove("warehouseId");
+            when(client.apiGet("/logistics/202309/warehouses", "access-token", "shop-cipher", Map.of()))
+                    .thenReturn(Map.of("data",Map.of("warehouses",List.of(
+                            Map.of("id","return","type","RETURN_WAREHOUSE","effect_status","ENABLED","is_default",true),
+                            Map.of("id","warehouse-1","type","SALES_WAREHOUSE","effect_status","ENABLED","sub_type","CB_OVERSEA_WAREHOUSE","is_default",false)))));
+        }
         if (styled) request.put("mainImageStyleTemplateId","12345678-1234-1234-1234-123456789012");
         ProductPublishingProvider.PublishResult result = provider.publish(
                 capture, "TIKTOK_SHOP", "shop-local", request, createBoundary);
@@ -185,6 +200,7 @@ class TikTokShopOfficialPublishingProviderTest {
         verify(downloader, org.mockito.Mockito.never()).download(anyString());
         assertThat(result.externalId()).isEqualTo("product-1");
         assertThat(result.providerResponse())
+                .containsEntry("inventoryWarehouseId","warehouse-1")
                 .containsEntry("verification", "CONFIRMED_BY_GET_PRODUCT")
                 .containsEntry("remoteStatus", "DRAFT")
                 .containsEntry("listingCheckRequestId", "listing-check-request")

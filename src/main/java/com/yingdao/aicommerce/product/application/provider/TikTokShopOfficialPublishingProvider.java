@@ -71,6 +71,8 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
 
     @org.springframework.beans.factory.annotation.Autowired
     private com.yingdao.aicommerce.product.application.ProductMainImageAssets mainImageAssets;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.application.ProductListingWarehouseService listingWarehouses;
 
     @Override public String code() { return "TIKTOK_SHOP_OFFICIAL_202309"; }
     @Override public boolean dryRun() { return false; }
@@ -95,8 +97,17 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         int stock = requiredStock(request);
         String categoryId = requiredText(request, "categoryId",
                 "TikTok Shop 发布前必须选择官方叶子类目");
-        String warehouseId = requiredText(request, "warehouseId",
-                "TikTok Shop 发布前必须选择官方仓库");
+        String warehouseId = text(request.get("warehouseId"));
+        if (warehouseId == null) {
+            var warehouseResponse = client.apiGet("/logistics/202309/warehouses",connection.tokens().accessToken(),
+                    connection.shop().getShopCipher(),Map.of());
+            var warehouseData = warehouseResponse.get("data") instanceof Map<?,?> m ? m : Map.of();
+            var candidates = com.yingdao.aicommerce.shop.application.TikTokWarehouseSelection.candidates(
+                    warehouseData.get("warehouses"),listingCapability);
+            String configured = listingWarehouses == null ? "" : listingWarehouses.config(
+                    capture.getOrganizationId(),shopId,capture.getDataModule()).warehouseId();
+            warehouseId = String.valueOf(com.yingdao.aicommerce.shop.application.TikTokWarehouseSelection.choose(candidates,configured).get("id"));
+        }
         Map<String, Object> inventoryRule = listingCapability.requireWarehouse(warehouseId);
         BigDecimal weightGrams = requiredPositiveDecimal(request, "weightGrams",
                 "TikTok Shop 发布前必须填写包裹重量");
@@ -177,6 +188,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         Map<String, Object> receipt = new LinkedHashMap<>();
         receipt.put("platform", "TIKTOK_SHOP");
         receipt.put("listingMethod", listingCapability.listingMethod());
+        receipt.put("inventoryWarehouseId", warehouseId);
         if (listingCapability.requestId() != null) receipt.put("listingRulesRequestId", listingCapability.requestId());
         if (!inventoryRule.isEmpty()) {
             receipt.put("inventoryRules", listingCapability.inventoryRules());
