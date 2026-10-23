@@ -189,19 +189,19 @@
   }
   function costLink(label,selection={}){
     const n=button(label,null,()=>openCosts(selection),'fi-cost-link');
-    n.title='查看对应订单的商品成本';return n;
+    n.title='查看对应已结算订单的商品成本';return n;
   }
   function productCostSummary(parent,report=data?.productCosts){
     if(!report?.total)return;
     const totals=report.total,block=el('section',null,parent,'fi-card fi-product-cost-summary');
     block.dataset.updateKey='product-cost-summary-'+(report.scope||'ORDER');
-    const heading=el('div',null,block,'fi-card-head'),copy=el('div',null,heading);el('h3','商品成本统计 · 人民币',copy);
-    el('p',report.basis,copy);button('查看订单成本',heading,()=>openCosts({kind:report.scope||'ORDER'}),'fi-record-link');
+    const heading=el('div',null,block,'fi-card-head'),copy=el('div',null,heading);el('h3',report.scope==='REFUND'?'退款关联已结算成本 · 仅供核对':'已结算订单商品成本 · 人民币',copy);
+    el('p',report.basis,copy);button('查看已结算订单成本',heading,()=>openCosts({kind:report.scope||'SETTLED_ORDER'}),'fi-record-link');
     const stats=el('div',null,block,'fi-cost-stats'),partial=Number(totals.pending_count)>0;
     for(const [label,value,note]of [
-      [partial?'已计算部分成本':'商品标准成本','¥ '+number(partial?totals.known_amount_cny:totals.amount_cny),partial?'待补齐部分尚未计入':'按商家 SKU、数量及成本表计算'],
-      ['已计算订单',number(totals.ready_count),'不计成本 '+number(totals.excluded_count)+' 单'],
-      ['待补齐订单',number(totals.pending_count),'缺价、缺型号或正在后台计算'],
+      [partial?'已结算订单已算部分':'已结算商品成本','¥ '+number(partial?totals.known_amount_cny:totals.amount_cny),partial?'待补齐部分尚未计入':'人民币成本表单价 × 数量，仅已结算订单'],
+      ['已计算的结算订单',number(totals.ready_count),'不计成本 '+number(totals.excluded_count)+' 单'],
+      ['已结算待补齐订单',number(totals.pending_count),'缺价、缺型号或正在后台计算'],
       ['历史价估算',number(totals.estimated_count),'使用最近可用月份，明细保留原月份']
     ]){const n=el('div',null,stats);el('span',label,n);const valueNode=el('strong',null,n);if(label.includes('成本'))valueNode.append(costLink(value,{kind:report.scope||'ORDER'}));else valueNode.textContent=value;el('small',note,n);}
     if(report.rebuilding)footnote(block,'成本配置已更新，后台正在分批重算；完成后自动更新统计。');
@@ -225,9 +225,9 @@
   }
   function storeSummary(parent){
     const ids=[...new Set(data.ranking.map(r=>r.shop_id))];
-    table(parent,['店铺','订单数','订单金额','结算净额','平台费用','广告消耗','商品成本（人民币）'],ids.map(id=>{
+    table(parent,['店铺','订单数','订单金额','结算净额','平台费用','广告消耗','已结算商品成本（人民币）'],ids.map(id=>{
       const rows=data.ranking.filter(r=>r.shop_id===id),get=k=>rows.find(r=>r.kind===k);
-      return [shopName(id),number(get('ORDER')?.records),number(get('ORDER')?.amount),number(get('SETTLEMENT')?.amount),number(get('FEE')?.amount),number(get('AD')?.amount),costAmountText(shopCost(id),{shopId:id,kind:'ORDER'})];
+      return [shopName(id),number(get('ORDER')?.records),number(get('ORDER')?.amount),number(get('SETTLEMENT')?.amount),number(get('FEE')?.amount),number(get('AD')?.amount),costAmountText(shopCost(id),{shopId:id,kind:'SETTLED_ORDER'})];
     }),'启用财务店铺同步后，经营数据将自动汇总。');
   }
   function groupSummary(parent){
@@ -239,9 +239,9 @@
       kind.records+=Number(row.records)||0;if(row.amount!=null)kind.amount=(kind.amount??0)+Number(row.amount);
     }
     const groupCost=id=>{const rows=(data.productCosts?.shops||[]).filter(r=>(data.shops.find(s=>s.id===r.shop_id)?.group_id||'')===id);return rows.length?{pending_count:rows.reduce((a,r)=>a+Number(r.pending_count||0),0),known_amount_cny:rows.reduce((a,r)=>a+Number(r.known_amount_cny||0),0),amount_cny:rows.reduce((a,r)=>a+Number(r.amount_cny||0),0)}:null;};
-    table(parent,['分组','币种','订单数','订单金额','结算净额','平台费用','广告消耗','商品成本（人民币）'],[...grouped.values()].map(g=>[
+    table(parent,['分组','币种','订单数','订单金额','结算净额','平台费用','广告消耗','已结算商品成本（人民币）'],[...grouped.values()].map(g=>[
       button(groupName(g.id),null,()=>{filters.groupId=g.id||'UNGROUPED';filters.shopId='';page=1;load();},'fi-action-link'),
-      g.currency,number(g.kinds.ORDER?.records),...['ORDER','SETTLEMENT','FEE','AD'].map(k=>number(g.kinds[k]?.amount)),costAmountText(groupCost(g.id),{groupId:g.id||'UNGROUPED',kind:'ORDER'})
+      g.currency,number(g.kinds.ORDER?.records),...['ORDER','SETTLEMENT','FEE','AD'].map(k=>number(g.kinds[k]?.amount)),costAmountText(groupCost(g.id),{groupId:g.id||'UNGROUPED',kind:'SETTLED_ORDER'})
     ]),'按类目建立店铺分组后，可在这里查看分组经营表现。');
   }
   function table(parent,headers,rows,empty='当前范围暂无记录',keys=[]){
@@ -507,7 +507,7 @@
   function removeShopDialog(shop){const d=dialog('移除财务店铺');el('p','移除「'+(shop.display_name||shop.name)+'」后停止财务同步，并从财务看板隐藏该店铺。历史记录保留，商品运营中的店铺不变。',d.body);d.submit('确认移除',async()=>{await request('/shops/'+encodeURIComponent(shop.id),{method:'DELETE'});if(filters.shopId===shop.id)filters.shopId='';d.d.close();load();});}
   async function detailDialog(id){const d=dialog('财务记录详情');try{const row=await request('/records/'+encodeURIComponent(id)+'?'+qs());const settings=await request('/fields/'+(row.kind||'ALL'));const dl=el('dl',null,d.body);
     for(const f of settings.fields){if(f.cny&&!row.fx)continue;const value=columnValue(row,f);if(row[f.id]==null&&!f.id.startsWith('fx_'))continue;el('dt',f.label,dl);const dd=el('dd',null,dl);if(value instanceof Node)dd.textContent=value.textContent;else dd.textContent=value;}
-    if(row.productCost){const cost=row.productCost;el('h3','商品标准成本明细 · 人民币',d.body);el('p',cost.note+' · 成本仓：'+(cost.warehouse||'待配置'),d.body,'fi-muted');
+    if(row.productCost){const cost=row.productCost;el('h3','已结算订单商品成本明细 · 人民币',d.body);el('p',cost.note+' · 成本仓：'+(cost.warehouse||'待配置'),d.body,'fi-muted');
       table(d.body,['商家 SKU / 成本型号','数量 × 组合','月份 / 单价（¥）','成本（¥）','说明'],(cost.lines||[]).map(line=>[
         (line.sellerSku||'未提供 SKU')+(line.costCode?' / '+line.costCode:''),number(line.quantity)+' × '+number(line.factor),
         (line.priceMonth||'—')+' / '+number(line.unitPriceCny),number(line.amountCny),line.issue||(line.excluded?'已取消，不计成本':line.previousPrice?'历史月份价格估算':'按商家 SKU 计算')
@@ -524,6 +524,19 @@
       if(!response.ok){let message='导出失败';try{message=(await response.json()).message||message;}catch{}throw Error(message);}
       const url=URL.createObjectURL(await response.blob());const a=el('a',null,d.body);a.href=url;a.download='财务报表-'+filters.start+'.'+format.value;a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);d.d.close();
     });
+  }
+  async function downloadOrderCosts(selection){
+    if(!allowed())throw Error('没有财务 BI 查看权限');
+    const owner=typeof currentUser!=='undefined'?currentUser?.organizationId:null;
+    const response=await fetch('/api/v1/finance/workspace/costs/orders/export?'+new URLSearchParams(selection),{
+      credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(180000)
+    });
+    if(!response.ok){let message='成本导出失败，请重试';try{message=(await response.json()).message||message;}catch{}throw Error(message);}
+    const blob=await response.blob();
+    if(!allowed()||(typeof currentUser!=='undefined'?currentUser?.organizationId:null)!==owner)throw Error('登录公司已变化，请重新导出');
+    const url=URL.createObjectURL(blob),a=el('a',null,document.body);
+    a.href=url;a.download=`已结算订单成本-${selection.start}-${selection.end}.xlsx`;a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),10000);
   }
   function importDialog(){
     const d=dialog('导入平台账单 / 费用');
@@ -583,7 +596,7 @@
     const max=Math.max(...rankingRows.map(r=>Number(r.amount)),1);
     rankingRows.forEach((r,i)=>{const line=el('div',null,rankingList,'fi-live-rank');line.dataset.updateKey=r.shop_id;el('b',String(i+1).padStart(2,'0'),line);const body=el('div',null,line);const title=el('div',null,body);el('span',shopName(r.shop_id),title);el('strong',number(r.amount),title);const rail=el('div',null,body,'fi-live-rail');el('i',null,rail).style.width=Math.max(0,Number(r.amount)/max*100)+'%';});
     const recent=card(grid,'最新订单','仅展示订单业务信息 · 自动更新',8);
-    table(recent.n,['平台 / 时间','店铺','订单编号','商品 SKU','状态','金额','商品成本（¥）'],data.recent.map(r=>[recordLead(r,r.create_time?new Date(r.create_time).toLocaleTimeString('zh-CN',{hour12:false}):businessDate(r.record_date)),shopName(r.shop_id),r.external_id,skuCell(r),badge(r.status),number(data.fx?r.cny_amount:r.amount),r.product_cost_cny==null?'—':costLink(number(r.product_cost_cny),{recordId:r.id,shopId:r.shop_id,kind:'ORDER'})]),'今日尚无订单，授权并开启财务店铺同步后自动显示。',data.recent.map(r=>r.id||r.shop_id+':'+r.external_id));
+    table(recent.n,['平台 / 时间','店铺','订单编号','商品 SKU','状态','金额','已结算商品成本（¥）'],data.recent.map(r=>[recordLead(r,r.create_time?new Date(r.create_time).toLocaleTimeString('zh-CN',{hour12:false}):businessDate(r.record_date)),shopName(r.shop_id),r.external_id,skuCell(r),badge(r.status),number(data.fx?r.cny_amount:r.amount),r.product_cost_cny==null?r.product_cost_state||'待核对':costLink(number(r.product_cost_cny),{recordId:r.id,shopId:r.shop_id,kind:'ORDER'})]),'今日尚无订单，授权并开启财务店铺同步后自动显示。',data.recent.map(r=>r.id||r.shop_id+':'+r.external_id));
     donut(grid,'订单状态分布','包含未付款与取消订单，独立展示',data.statuses.filter(r=>r.kind==='ORDER').map(r=>({name:statusName(r.status),value:Number(r.records)})));
     const footer=el('footer',null,root,'fi-live-footer');el('span','HOYEE INTELLIGENCE · 让每一笔增长看得见',footer);el('span','更新时间 '+new Date(data.updatedAt).toLocaleTimeString('zh-CN',{hour12:false})+' · 财务角色授权可见',footer);
   }
@@ -627,7 +640,7 @@
       commit(next);
       if(view==='costs'){
         const host=root.querySelector('[data-finance-costs]');
-        if(globalThis.FinanceCosts)FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,openRecord:detailDialog,skuCell,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});
+        if(globalThis.FinanceCosts)FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,openRecord:detailDialog,skuCell,downloadOrderCosts,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});
         else el('p','成本管理页面组件暂未加载，请刷新重试。',host,'fi-muted');
       }
       if(view==='expense-ledger'){

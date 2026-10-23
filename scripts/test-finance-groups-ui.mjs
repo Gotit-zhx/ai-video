@@ -79,7 +79,7 @@ created.querySelector('input').value='家纺';button('保存',created).click();a
 button('删除',[...dialog.querySelectorAll('.fi-group-row')].find(row=>row.querySelector('input').value==='家纺')).click();await tick();assert(!groups.some(g=>g.name==='家纺'));dialog.close();await ready();
 await choose('店铺分组','clothes');assert.equal(d.querySelectorAll('.fi-shop-controls').length,1);
 w.FinanceWorkspace.enter('orders');await ready();assert.equal(requests.at(-1).url.searchParams.get('groupId'),'clothes');
-assert(d.querySelector('.fi-product-cost-summary').textContent.includes('已计算部分成本'));
+assert(d.querySelector('.fi-product-cost-summary').textContent.includes('已结算订单已算部分'));
 assert(d.querySelector('.fi-product-cost-summary').textContent.includes('¥ 88.75'),'standard costs stay in yuan when the page shows PHP');
 let rows=[...d.querySelectorAll('.fi-table tbody tr')];
 assert.deepEqual(rows.map(r=>r.querySelector('.fi-record-value').textContent),['2026-10-22 09:23:45','2026-10-22 01:06:09','2026-10-21','—'],'real timestamps use shop timezone to the second, missing/invalid times must not become fabricated midnight');

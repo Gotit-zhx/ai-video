@@ -180,7 +180,7 @@ public class FinanceService {
         out.put("fees",(cny?FinanceFx.groups(fees,quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
         out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
         out.put("updatedAt",Instant.now().toString());
-        out.put("productCosts",new FinanceCostReport(repo).summary(s,f,"ORDER"));
+        out.put("productCosts",new FinanceCostReport(repo).summary(s,f,"SETTLED_ORDER"));
         out.put("basis","订单按创建日期，结算与费用按平台结算日期；广告按广告账户日期。原币分别统计，已结算不代表银行到账。");
         return out;
     }

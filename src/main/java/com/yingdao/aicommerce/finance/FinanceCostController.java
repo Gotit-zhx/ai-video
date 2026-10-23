@@ -13,6 +13,8 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @RequestMapping("/api/v1/finance/workspace")
 public class FinanceCostController {
     final FinanceCostWorkspace workspace;final FinanceService service;
+    @org.springframework.beans.factory.annotation.Autowired
+    private FinanceCostExport costExport;
     public FinanceCostController(FinanceCostWorkspace workspace,FinanceService service){this.workspace=workspace;this.service=service;}
     @ModelAttribute public void authorize(@AuthenticationPrincipal PlatformPrincipal p,HttpServletRequest request){
         service.authorize(p);
@@ -26,12 +28,24 @@ public class FinanceCostController {
     @GetMapping("/costs") public ApiResponse<?> costs(@RequestParam(required=false) String shopId,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.costs(service.authorize(p),shopId));}
     @GetMapping("/costs/orders") public ApiResponse<?> orderCosts(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
-        var today=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
-        var filter=new Filter(q.containsKey("start")?FinanceCostWorkspace.day(q.get("start")):today.minusDays(29),
-                q.containsKey("end")?FinanceCostWorkspace.day(q.get("end")):today,shopId,q.getOrDefault("platform",""),
-                q.getOrDefault("currency",""),"day",q.getOrDefault("groupId",""));
+        var filter=costFilter(q);
         int page=(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1"))));
-        return ApiResponse.ok(workspace.orderCosts(scope,filter,q.getOrDefault("kind","ORDER"),q.getOrDefault("recordId",""),page));
+        return ApiResponse.ok(workspace.orderCosts(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""),page));
+    }
+    @GetMapping("/costs/orders/export") public org.springframework.http.ResponseEntity<byte[]> exportOrderCosts(
+            @RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
+        var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
+        var filter=costFilter(q);
+        byte[] bytes=costExport.export(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""));
+        return org.springframework.http.ResponseEntity.ok().header("Cache-Control","no-store, private")
+            .header("Content-Disposition","attachment; filename=\"order-costs-"+filter.start()+"-"+filter.end()+".xlsx\"")
+            .contentType(org.springframework.http.MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).body(bytes);
+    }
+    private static Filter costFilter(Map<String,String> q){
+        var today=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        return new Filter(q.containsKey("start")?FinanceCostWorkspace.day(q.get("start")):today.minusDays(29),
+                q.containsKey("end")?FinanceCostWorkspace.day(q.get("end")):today,q.getOrDefault("shopId",""),q.getOrDefault("platform",""),
+                q.getOrDefault("currency",""),"day",q.getOrDefault("groupId",""));
     }
     @PostMapping("/costs/import") public ApiResponse<?> upload(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{
         return ApiResponse.ok(workspace.importCosts(service.authorize(p),p.userId(),groupId,file.getBytes(),text(file.getOriginalFilename())));

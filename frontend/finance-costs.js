@@ -277,38 +277,50 @@
       },'fi-primary');
     }
     async function orderCostsPanel(parent){
-      const p=panel(parent,'订单商品成本','按商家 SKU 计算，每笔订单保留单价、数量和成本月份。');
-      if(!live){el('p','正式系统按已同步订单计算；此预览不生成成本金额。',p.n,'fc-inline-note');return;}
       const origin=state.orderContext;
+      const settled=!origin?.kind||origin.kind==='SETTLED_ORDER'||(!origin.recordId&&origin.kind==='ORDER');
+      const p=panel(parent,settled?'已结算订单商品成本':'关联已结算订单成本',
+        settled?'按首次平台结算日期筛选；待结算不计入，同一订单成本只计一次。':'仅核对所选来源关联的已结算订单成本，未结算不计入。');
+      if(!live){el('p','正式系统按已同步订单计算；此预览不生成成本金额。',p.n,'fc-inline-note');return;}
       if(origin){
         const scopeShop=shops.find(s=>s.id===origin.shopId);
         const scopeName=origin.shopId?scopeShop?.display_name||scopeShop?.name||'所选店铺':origin.groupId?context.groups?.find(g=>g.id===origin.groupId)?.name||'所选分组':'全部店铺';
-        el('p',origin.recordId?'当前仅展示刚才点击记录关联的订单，包含其他下单日期的订单。':'当前范围：'+scopeName+' · '+({ORDER:'下单日期',REFUND:'退款日期',SETTLEMENT:'结算日期',BILL:'账单日期',PENDING:'待结算日期',RECONCILIATION:'账单日期'}[origin.kind]||'下单日期'),p.n,'fc-inline-note');
-        if(origin.recordId)action(p.h,'查看该店全部订单',()=>{state.orderContext=null;state.orderPage=1;body();},'fi-record-link');
+        el('p',origin.recordId?'当前仅展示刚才点击记录关联的已结算订单，包含其他下单日期的订单。':'当前范围：'+scopeName+' · '+({ORDER:'首次平台结算日期',SETTLED_ORDER:'首次平台结算日期',REFUND:'退款日期',SETTLEMENT:'结算日期',BILL:'账单日期',PENDING:'待结算不计成本',RECONCILIATION:'账单日期'}[origin.kind]||'首次平台结算日期'),p.n,'fc-inline-note');
+        if(origin.recordId)action(p.h,'查看该店已结算订单',()=>{state.orderContext=null;state.orderPage=1;body();},'fi-record-link');
       }
       const bar=el('div',null,p.n,'fc-table-tools');
-      for(const [key,title]of [['start','开始日期'],['end','结束日期']]){
+      for(const [key,title]of [['start',settled?'结算开始日期':'开始日期'],['end',settled?'结算结束日期':'结束日期']]){
         const label=el('label',null,bar);el('span',title,label);const input=el('input',null,label);input.type='date';input.value=state[key];input.setAttribute('aria-label',title);
         input.disabled=!!origin?.recordId;input.onchange=()=>{state[key]=input.value;state.orderPage=1;body();};
       }
       action(bar,'刷新成本',()=>refresh(),'fi-record-link');
+      const exportButton=action(bar,'导出 Excel',async()=>{
+        const selection={shopId:state.shopId,kind:'SETTLED_ORDER',...state.orderContext,start:state.start,end:state.end};
+        exportButton.textContent='正在生成 Excel…';
+        try{
+          if(!context.downloadOrderCosts)throw Error('导出功能未加载，请刷新页面后重试');
+          await context.downloadOrderCosts(selection);
+          toast('订单成本 Excel 已生成，包含汇总说明、全部订单及 SKU 计算明细。');
+        }finally{exportButton.textContent='导出 Excel';}
+      },'fi-primary');
+      exportButton.title='导出当前筛选的全部订单，含 SKU 单价、数量、成本月份与缺失原因';
       const content=el('div',null,p.n,'fc-order-results'),feedback=el('p','正在读取订单成本…',p.n,'fc-inline-note');
       const run=++loadSequence;let timer,busy=false,signature='';
       async function refresh(){
         if(busy||run!==loadSequence||!p.n.isConnected)return;
         busy=true;clearTimeout(timer);
         try{
-        const result=await context.request('/costs/orders?'+new URLSearchParams({shopId:state.shopId,...state.orderContext,start:state.start,end:state.end,page:state.orderPage}));
+        const result=await context.request('/costs/orders?'+new URLSearchParams({shopId:state.shopId,kind:'SETTLED_ORDER',...state.orderContext,start:state.start,end:state.end,page:state.orderPage}));
         if(run!==loadSequence||!p.n.isConnected)return;feedback.textContent='';
         const nextSignature=JSON.stringify(result);
         if(signature!==nextSignature){
         const next=content.cloneNode(false),totals=result.productCosts?.total||{},stats=el('div',null,next,'fi-cost-stats');
-        for(const [label,value]of [[Number(totals.pending_count)>0?'已计算部分成本':'商品标准成本','¥ '+format(Number(totals.pending_count)>0?totals.known_amount_cny:totals.amount_cny)],['已计算订单',format(totals.ready_count)],['待补齐订单',format(totals.pending_count)],['历史价估算',format(totals.estimated_count)]]){
+        for(const [label,value]of [[Number(totals.pending_count)>0?'已结算订单已算部分':'已结算订单商品成本','¥ '+format(Number(totals.pending_count)>0?totals.known_amount_cny:totals.amount_cny)],['已计算的结算订单',format(totals.ready_count)],['已结算待补齐订单',format(totals.pending_count)],['历史价估算',format(totals.estimated_count)]]){
           const n=el('div',null,stats);el('span',label,n);el('strong',value,n);
         }
-        const orderTable=table(next,['店铺','订单编号','商品 SKU','下单日期','商品成本（人民币）','成本状态','操作'],(result.items||[]).map(row=>[
+        const orderTable=table(next,['店铺','订单编号','商品 SKU',settled?'首次平台结算日期':'下单日期','已结算商品成本（人民币）','成本状态','操作'],(result.items||[]).map(row=>[
           shops.find(s=>s.id===row.shop_id)?.display_name||shops.find(s=>s.id===row.shop_id)?.name||'—',
-          row.order_id||row.external_id,context.skuCell?.(row)||row.product_skus||'—',String(row.record_date||'').slice(0,10),row.product_cost_cny==null?'—':context.openRecord&&row.id?action(null,'¥ '+format(row.product_cost_cny),()=>context.openRecord(row.id),'fi-cost-link'):'¥ '+format(row.product_cost_cny),
+          row.order_id||row.external_id,context.skuCell?.(row)||row.product_skus||'—',String((settled?row.first_settlement_date:row.record_date)||'').slice(0,10)||'—',row.product_cost_cny==null?'—':context.openRecord&&row.id?action(null,'¥ '+format(row.product_cost_cny),()=>context.openRecord(row.id),'fi-cost-link'):'¥ '+format(row.product_cost_cny),
           tag(null,row.product_cost_state||'后台计算中',row.product_cost_state==='已计算'?'good':row.product_cost_state==='待补齐'?'danger':'warn'),
           context.openRecord&&row.id?action(null,'查看计算明细',()=>context.openRecord(row.id),'fi-record-link'):'订单待同步'
         ]));
@@ -316,7 +328,7 @@
         const pager=el('div',null,next,'fi-pagebar');el('span',`${result.total} 笔订单 · 第 ${result.page} 页`,pager);const controls=el('div',null,pager,'fi-actions');
         action(controls,'上一页',()=>{state.orderPage--;body();}).disabled=state.orderPage<=1;
         action(controls,'下一页',()=>{state.orderPage++;body();}).disabled=state.orderPage*result.pageSize>=result.total;
-        el('p','未付款、未发货即取消的订单不计标准成本；退款不会自动退回商品成本。缺价不当作零，历史价估算保留来源月份。',next,'fc-inline-note');
+        el('p','仅平台已结算订单计入成本，不代表银行到账。按首次结算归属，后续结算调整不重复计整单成本；退款不自动退回成本。金额取人民币成本表，缺价不按零，历史取价标为估算。',next,'fc-inline-note');
         if(result.productCosts?.rebuilding)el('p','后台正在分批计算历史订单，完成后自动更新。',next,'fc-inline-note');
         if(globalThis.IncrementalDOM)IncrementalDOM.children(content,next);else content.replaceChildren(...next.childNodes);
         signature=nextSignature;
@@ -355,5 +367,5 @@
     draw();
     if(state.tab!=='orders'&&missingAutomatic())void autoMatch();
   }
-  globalThis.FinanceCosts={mount,reset,candidate,shopId:()=>state.shopId,openOrders:filters=>{state.tab='orders';state.start=filters.start;state.end=filters.end;state.orderPage=1;state.orderContext={shopId:filters.shopId||'',groupId:filters.groupId||'',platform:filters.platform||'',currency:filters.currency||'',kind:filters.kind||'ORDER',recordId:filters.recordId||''};if(filters.shopId)state.shopId=filters.shopId;}};
+  globalThis.FinanceCosts={mount,reset,candidate,shopId:()=>state.shopId,openOrders:filters=>{state.tab='orders';state.start=filters.start;state.end=filters.end;state.orderPage=1;state.orderContext={shopId:filters.shopId||'',groupId:filters.groupId||'',platform:filters.platform||'',currency:filters.currency||'',kind:filters.kind||'SETTLED_ORDER',recordId:filters.recordId||''};if(filters.shopId)state.shopId=filters.shopId;}};
 })();

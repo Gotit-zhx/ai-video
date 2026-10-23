@@ -130,7 +130,7 @@ class FinanceConfigurationIntegrationTest {
         assertFalse(fields.get(owner,"ORDER").visible().contains("product_skus"),"users can hide the new column after upgrading");
         assertTrue(fields.get(owner,"BILL").exported().contains("product_skus"));
     }
-    @Test void standardCostsAreIncrementalCompanyScopedAndDeduplicateSettlementOrders(){
+    @Test void standardCostsAreIncrementalCompanyScopedAndDeduplicateSettlementOrders()throws Exception{
         String group=service.saveGroup(owner,null,"标准成本"),shop=groupedShop(owner,"standard-cost-shop",group);
         var workspace=new FinanceCostWorkspace(repo,service);var txs=new TransactionTemplate(tx);var engine=new FinanceOrderCosts(repo);
         txs.executeWithoutResult(status->workspace.importCosts(owner,"u",group,"仓库,型号,202610\n海外仓-菲律宾,PACK,10\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),"unit.csv"));
@@ -141,11 +141,11 @@ class FinanceConfigurationIntegrationTest {
         txs.execute(status->engine.seedAndFill());txs.execute(status->engine.processBatch(50));
         var q=new Filter(filter.start(),filter.end(),shop,"","","day",group);var reports=new FinanceCostReport(repo);
         var totals=map(reports.summary(new Scope("org","colleague"),q,"ORDER").get("total"));
-        assertEquals(2,number(totals.get("order_count")));assertEquals(1,number(totals.get("pending_count")));
-        assertNull(totals.get("amount_cny"));assertEquals(0,new BigDecimal("60").compareTo(decimal(totals.get("known_amount_cny"))));
-        var detail=repo.detail(owner,id(owner,entry));assertEquals("已计算",detail.get("product_cost_state"));
+        assertEquals(0,number(totals.get("order_count")));assertEquals(0,number(totals.get("pending_count")),"unsettled orders are not missing settled costs");
+        assertEquals(0,decimal(totals.get("known_amount_cny")).signum());
+        var detail=repo.detail(owner,id(owner,entry));assertEquals("未结算，不计入",detail.get("product_cost_state"));
         assertFalse(repo.write(detail).contains("do-not-expose"));
-        assertEquals(0,new BigDecimal("60").compareTo(decimal(detail.get("product_cost_cny"))));
+        assertNull(detail.get("product_cost_cny"));assertFalse(detail.containsKey("productCost"));
         repo.save(owner,entry);assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_order_cost_jobs",Integer.class),"unchanged sync does not recompute costs");
         for(int i=1;i<=2;i++){
             repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","tx-"+i,"order-a","bill-"+i,"结算","SETTLED",filter.start(),"PHP",new BigDecimal("45"),null,null,null,null,"API",Map.of()));
@@ -159,6 +159,19 @@ class FinanceConfigurationIntegrationTest {
             assertEquals(0,new BigDecimal("60").compareTo(decimal(rows(drill.get("items")).getFirst().get("product_cost_cny"))));
             assertEquals(summary,map(map(drill.get("productCosts")).get("total")));
         }
+        var settledTotals=map(reports.summary(owner,q,"SETTLED_ORDER").get("total"));
+        assertEquals(1,number(settledTotals.get("order_count")));assertEquals(0,number(settledTotals.get("pending_count")));
+        assertEquals(0,new BigDecimal("60").compareTo(decimal(settledTotals.get("amount_cny"))));
+        var txRows=rows(repo.details(owner,q,"SETTLEMENT",1,50).get("items"));
+        assertEquals(1,txRows.stream().filter(r->r.get("product_cost_cny")!=null).count(),"multiple settlement rows recognize cost only once");
+        assertEquals(0,number(map(reports.summary(owner,q,"PENDING").get("total")).get("order_count")));
+        repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","later-adjustment","order-a","later-bill","调整","SETTLED",filter.start().plusDays(1),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
+        var later=new Filter(filter.start().plusDays(1),filter.end().plusDays(1),shop,"","","day",group);
+        assertEquals(0,number(map(reports.summary(owner,later,"SETTLED_ORDER").get("total")).get("order_count")),"later adjustments must not recognize the entire order cost again");
+        assertEquals(0,number(reports.orders(owner,later,"SETTLED_ORDER","",1).get("total")));
+        var exported=new FinanceCostExport(repo).export(owner,q,"SETTLED_ORDER","");
+        assertTrue(exported.length>1000);
+        assertEquals(2,FinanceCostExportTest.sheet(exported,2).getElementsByTagName("row").getLength());
         assertEquals(0,number(map(reports.summary(other,q,"ORDER").get("total")).get("order_count")));
         var rec=repo.reconciliation(owner,q);assertEquals(2,rec.size());assertTrue(rec.stream().allMatch(r->"MATCHED".equals(r.get("result"))),"costs never change platform reconciliation");
         var dashboard=service.dashboard(owner,q,true,"fixed");assertEquals(0,new BigDecimal("60").compareTo(decimal(at(dashboard,"productCosts.total.known_amount_cny"))),"yuan costs are not multiplied by the PHP conversion rate");
@@ -167,7 +180,7 @@ class FinanceConfigurationIntegrationTest {
         assertEquals(0,new BigDecimal("30").compareTo(decimal(repo.detail(owner,id(owner,entry)).get("product_cost_cny"))));
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='ORDER_STANDARD_COST'",Integer.class));
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='COST'",Integer.class),"standard cost snapshots stay separate from external expense ledger");
-        assertEquals(0,new BigDecimal("90").compareTo(db.queryForObject("SELECT SUM(amount) FROM finance_records WHERE kind='SETTLEMENT'",BigDecimal.class)));
+        assertEquals(0,new BigDecimal("91").compareTo(db.queryForObject("SELECT SUM(amount) FROM finance_records WHERE kind='SETTLEMENT'",BigDecimal.class)));
         String newGroup=service.saveGroup(owner,null,"未导入成本");
         txs.executeWithoutResult(status->service.configure(owner,shop,true,"PHP","Asia/Manila",newGroup));
         assertEquals("READY",db.queryForObject("SELECT status FROM finance_cost_rebuilds WHERE shop_id=?",String.class,shop));

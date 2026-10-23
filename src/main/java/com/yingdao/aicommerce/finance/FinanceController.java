@@ -136,6 +136,7 @@ public class FinanceController {
             sheets.put("统计口径",List.of(List.of("日期范围",f.start()+" 至 "+f.end()),List.of("店铺分组",f.groupId().isBlank()?"全部分组":"UNGROUPED".equals(f.groupId())?"未分组":service.groups(s).stream().filter(g->f.groupId().equals(g.get("id"))).map(g->text(g.get("name"))).findFirst().orElse("所选分组")),List.of("币种",f.currency().isBlank()?"原币分列，禁止跨币种直接合计":f.currency()),
                     List.of("范围","当前筛选全部记录；列按当前用户的导出配置生成；平台已结算不代表银行到账"),
                     List.of("时间口径","订单按创建日，结算费用按结算日，广告按广告账户日"),
+                    List.of("商品成本口径","仅平台已结算订单计入商品成本；整单成本归属首次结算，后续结算调整不重复计成本。未结算成本留空并注明；退款关联成本只作核对，不再次扣减。成本固定人民币，历史价估算保留状态。"),
                     List.of("扩展字段","仅展示平台实际返回的字段；空白表示未返回或不适用。标记原币的扩展金额不做人民币转换。"),
                     List.of("生成时间",java.time.Instant.now().toString())));
             if(!rec){

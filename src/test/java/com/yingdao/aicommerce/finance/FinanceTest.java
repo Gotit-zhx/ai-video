@@ -412,7 +412,7 @@ class FinanceTest {
                 .andExpect(jsonPath("$.data.page").value(2))
                 .andExpect(jsonPath("$.data.items").isArray())
                 .andExpect(jsonPath("$.data.productCosts.currency").value("CNY"))
-                .andExpect(jsonPath("$.data.productCosts.scope").value("ORDER"));
+                .andExpect(jsonPath("$.data.productCosts.scope").value("SETTLED_ORDER"));
         verify(db).queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),
                 eq("org"),eq(java.sql.Date.valueOf("2026-10-01")),eq(java.sql.Date.valueOf("2026-10-23")));
         clearInvocations(db);
