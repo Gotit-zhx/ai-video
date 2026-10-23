@@ -12,8 +12,11 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 /** Company-scoped cost configuration and expense ledger. No inferred cost currency or invented profit. */
 @Service
 public class FinanceCostWorkspace {
-    final FinanceRepository repo; final FinanceService service;
+    private final FinanceRepository repo; private final FinanceService service;
     public FinanceCostWorkspace(FinanceRepository repo,FinanceService service){this.repo=repo;this.service=service;}
+    public Map<String,Object> orderCosts(Scope scope,Filter filter,String kind,String recordId,int page){
+        return new FinanceCostReport(repo).orders(scope,filter,kind,recordId,page);
+    }
     static String required(Map<String,Object> body,String key,int max){
         String value=text(body.get(key)).trim();if(value.isBlank()||value.length()>max)throw bad("请填写有效的 "+key);return value;
     }

@@ -31,7 +31,7 @@ public class FinanceCostController {
                 q.containsKey("end")?FinanceCostWorkspace.day(q.get("end")):today,shopId,q.getOrDefault("platform",""),
                 q.getOrDefault("currency",""),"day",q.getOrDefault("groupId",""));
         int page=(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1"))));
-        return ApiResponse.ok(new FinanceCostReport(workspace.repo).orders(scope,filter,q.getOrDefault("kind","ORDER"),q.getOrDefault("recordId",""),page));
+        return ApiResponse.ok(workspace.orderCosts(scope,filter,q.getOrDefault("kind","ORDER"),q.getOrDefault("recordId",""),page));
     }
     @PostMapping("/costs/import") public ApiResponse<?> upload(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{
         return ApiResponse.ok(workspace.importCosts(service.authorize(p),p.userId(),groupId,file.getBytes(),text(file.getOriginalFilename())));

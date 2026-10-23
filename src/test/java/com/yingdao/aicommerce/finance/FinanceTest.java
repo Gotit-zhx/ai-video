@@ -392,6 +392,38 @@ class FinanceTest {
         repo.grouped(new Scope("org","u"),new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,20),"","","","day"),"kind");
         verify(db).queryForList(contains("AND NOT(kind='BILL' AND source='IMPORT')"),any(Object[].class));
     }
+    @Test void orderCostHttpEndpointWorksThroughSpringClassProxies()throws Exception{
+        var db=mock(JdbcTemplate.class);
+        var repository=classProxy(new FinanceRepository(db,new ObjectMapper()));
+        var service=classProxy(new FinanceService(repository,mock(OrganizationAccessPolicy.class),
+                mock(FinanceShopAuthorization.class),mock(FinanceFx.class)));
+        var workspace=classProxy(new FinanceCostWorkspace(repository,service));
+        assertTrue(org.springframework.aop.support.AopUtils.isCglibProxy(workspace));
+        var principal=member("org","viewer","finance:view");
+        var mvc=MockMvcBuilders.standaloneSetup(new FinanceCostController(workspace,service))
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .setCustomArgumentResolvers(new HandlerMethodArgumentResolver(){
+                    public boolean supportsParameter(MethodParameter p){return p.getParameterType()==PlatformPrincipal.class;}
+                    public Object resolveArgument(MethodParameter p,ModelAndViewContainer m,NativeWebRequest r,WebDataBinderFactory b){return principal;}
+                }).build();
+        mvc.perform(get("/api/v1/finance/workspace/costs/orders")
+                .param("start","2026-10-01").param("end","2026-10-23").param("page","2"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.page").value(2))
+                .andExpect(jsonPath("$.data.items").isArray())
+                .andExpect(jsonPath("$.data.productCosts.currency").value("CNY"))
+                .andExpect(jsonPath("$.data.productCosts.scope").value("ORDER"));
+        verify(db).queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),
+                eq("org"),eq(java.sql.Date.valueOf("2026-10-01")),eq(java.sql.Date.valueOf("2026-10-23")));
+        clearInvocations(db);
+        mvc.perform(get("/api/v1/finance/workspace/costs/orders")
+                .param("kind","BILL").param("recordId","bill-record"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.productCosts.scope").value("BILL"));
+        verify(db).queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),eq("org"),eq("bill-record"));
+        mvc.perform(get("/api/v1/finance/workspace/costs/orders").param("kind","INVALID"))
+                .andExpect(status().isBadRequest());
+    }
     @Test void springClassProxiesRetainDependenciesForWorkersAndController(){
         var db=mock(JdbcTemplate.class);
         var repository=classProxy(new FinanceRepository(db,new ObjectMapper()));
