@@ -137,7 +137,7 @@
     function mappingDialog(product){
       if(!preview)return unavailable();
       const d=modal(live?'关联成本型号':'关联成本型号 · 仅预览'),rec=recommendation(product);
-      tag(d.body,'归属店铺：'+(getShop()?.name||getShop()?.display_name||''),'good');
+      tag(d.body,'归属店铺：'+(getShop()?.display_name||getShop()?.name||''),'good');
       el('strong',product.seller_sku||'未提供商家 SKU',d.body);el('p',product.spec||product.name,d.body,'fi-muted');
       el('p',`商品 ID：${product.product_id||'待补充'} · 规格 SKU ID：${product.sku_id||'待补充'}`,d.body,'fi-muted');
       if(rec.status==='conflict')el('p',rec.note,d.body,'fc-alert');
@@ -250,9 +250,9 @@
           const pending=el('span','正在读取店铺 SKU…',branch,'fc-shop-loading');head.setAttribute('aria-busy','true');
           try{await chooseShop(shop.id);}finally{pending.remove();head.removeAttribute('aria-busy');}
         },'fc-shop-parent');
-        head.setAttribute('aria-label','查看店铺 '+(shop.name||shop.display_name));head.setAttribute('aria-expanded',String(expanded));head.setAttribute('aria-controls','fc-shop-'+shop.id);
+        head.setAttribute('aria-label','查看店铺 '+(shop.display_name||shop.name));head.setAttribute('aria-expanded',String(expanded));head.setAttribute('aria-controls','fc-shop-'+shop.id);
         el('span',expanded?'▾':'▸',head,'fc-shop-chevron').setAttribute('aria-hidden','true');
-        const copy=el('span',null,head,'fc-shop-title');el('strong',shop.name||shop.display_name,copy);
+        const copy=el('span',null,head,'fc-shop-title');el('strong',shop.display_name||shop.name,copy);
         el('small',(shop.region||'')+' · '+(context.groups?.find(g=>g.id===shop.group_id)?.name||'未分组'),copy);
         tag(head,shop.platform==='SHOPEE'?'虾皮':'TikTok');
         const totals=el('span',null,head,'fc-shop-counts');
@@ -281,7 +281,8 @@
       if(!live){el('p','正式系统按已同步订单计算；此预览不生成成本金额。',p.n,'fc-inline-note');return;}
       const origin=state.orderContext;
       if(origin){
-        const scopeName=origin.shopId?shops.find(s=>s.id===origin.shopId)?.name||'所选店铺':origin.groupId?context.groups?.find(g=>g.id===origin.groupId)?.name||'所选分组':'全部店铺';
+        const scopeShop=shops.find(s=>s.id===origin.shopId);
+        const scopeName=origin.shopId?scopeShop?.display_name||scopeShop?.name||'所选店铺':origin.groupId?context.groups?.find(g=>g.id===origin.groupId)?.name||'所选分组':'全部店铺';
         el('p',origin.recordId?'当前仅展示刚才点击记录关联的订单，包含其他下单日期的订单。':'当前范围：'+scopeName+' · '+({ORDER:'下单日期',REFUND:'退款日期',SETTLEMENT:'结算日期',BILL:'账单日期',PENDING:'待结算日期',RECONCILIATION:'账单日期'}[origin.kind]||'下单日期'),p.n,'fc-inline-note');
         if(origin.recordId)action(p.h,'查看该店全部订单',()=>{state.orderContext=null;state.orderPage=1;body();},'fi-record-link');
       }
@@ -334,7 +335,7 @@
       root.replaceChildren();root.className='fc-workspace';
       if(!live){const banner=el('div',null,root,'fc-preview-note');el('span',preview?'设计预览':'暂无成本资料',banner,'fc-preview-label');el('span','本页预览不会修改正式数据。',banner);}
       const hero=el('div',null,root,'fc-hero'),copy=el('div',null,hero);el('h2','店铺成本管理',copy);el('p','导入成本表，相同 SKU 编码自动关联。',copy);
-      const shopControl=el('div',null,hero,'fc-shop-select');const shopSelect=select(shopControl,'财务店铺',shops.map(s=>[s.id,(s.name||s.display_name)+(catalogFor(s).costRows?' · 已有成本表':'')]),state.shopId,v=>{
+      const shopControl=el('div',null,hero,'fc-shop-select');const shopSelect=select(shopControl,'财务店铺',shops.map(s=>[s.id,(s.display_name||s.name)+(catalogFor(s).costRows?' · 已有成本表':'')]),state.shopId,v=>{
         shopSelect.disabled=true;chooseShop(v).catch(e=>{shopSelect.value=state.shopId;toast(e.message);}).finally(()=>{shopSelect.disabled=false;});
       });
       const shop=getShop();if(shop){const meta=el('div',null,shopControl,'fc-shop-meta');tag(meta,shop.platform==='SHOPEE'?'虾皮':'TikTok');el('span',(shop.region||'')+' · '+(context.groups?.find(g=>g.id===shop.group_id)?.name||'未分组')+' · 已授权',meta);}
