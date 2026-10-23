@@ -190,20 +190,52 @@ public class FinanceCostWorkspace {
                 id,s.organizationId(),shopId,product,sku,warehouse,repo.write(saved),actor);
         audit(s,actor,"COST_MAPPING",id,old.isEmpty()?null:decode(old.getFirst().get("data_json")),saved,"人工确认 SKU 成本关系");
     }
+    // Only presentation wrappers are ignored; size letters, hyphens and bundle quantities remain significant.
+    static String normalizedSku(String code){
+        String value=text(code).replaceAll("[\\s\\p{Z}\\uFEFF]+","").replace('（','(').replace('）',')').replace('×','*').replace('＊','*');
+        String previous;
+        do{
+            previous=value;
+            value=value.replaceFirst("^\\(([^()]+)\\)(\\*[1-9][0-9]*)?$","$1$2");
+        }while(!previous.equals(value));
+        return value;
+    }
+    static String matchingCostCode(String sellerCode,Set<String> codes,Map<String,Set<String>> normalized){
+        String code=text(sellerCode).trim();
+        if(code.isBlank())return "";
+        if(codes.contains(code))return code;
+        var matches=normalized.getOrDefault(normalizedSku(code),Set.of());
+        return matches.size()==1?matches.iterator().next():"";
+    }
+    record CostCodeMatch(String code,String method,Integer bundleQuantity){}
+    static CostCodeMatch matchSku(String sellerCode,Set<String> codes,Map<String,Set<String>> normalized){
+        String code=matchingCostCode(sellerCode,codes,normalized);
+        if(!code.isBlank())return new CostCodeMatch(code,code.equals(text(sellerCode).trim())?"EXACT_CODE":"NORMALIZED_CODE",null);
+        String formatted=normalizedSku(sellerCode);
+        if(normalized.containsKey(formatted))return null; // Ambiguous full bundle codes must not fall back to a base price.
+        var bundle=java.util.regex.Pattern.compile("^([^*]+)\\*([1-9][0-9]{0,5})$").matcher(formatted);
+        if(!bundle.matches())return null;
+        code=matchingCostCode(bundle.group(1),codes,normalized);
+        return code.isBlank()?null:new CostCodeMatch(code,"BUNDLE_CODE",Integer.valueOf(bundle.group(2)));
+    }
     @Transactional public Map<String,Object> autoMatch(Scope s,String actor,String shopId,Map<String,Object> body){
         var data=costs(s,shopId);var catalog=rows(data.get("costs"));
         var byCode=new LinkedHashMap<String,Set<String>>();
         for(var cost:catalog)byCode.computeIfAbsent(text(cost.get("sku")),key->new LinkedHashSet<>()).add(text(cost.get("warehouse")));
+        var normalized=new LinkedHashMap<String,Set<String>>();
+        for(String code:byCode.keySet())normalized.computeIfAbsent(normalizedSku(code),key->new LinkedHashSet<>()).add(code);
         var existing=map(data.get("mappings"));int candidates=0;
         for(var product:rows(data.get("products"))){
-            String code=text(product.get("seller_sku")).trim();
-            if(code.isBlank()||!byCode.containsKey(code))continue;
+            var match=matchSku(text(product.get("seller_sku")),byCode.keySet(),normalized);
+            if(match==null)continue;
+            String code=match.code();
             String productId=text(product.get("product_id")),skuId=text(product.get("sku_id"));
             for(String warehouse:byCode.get(code)){
             if(existing.containsKey(shopId+":"+productId+":"+skuId+":"+warehouse))continue;
             String id=hash(s.organizationId()+"\0"+shopId+"\0"+productId+"\0"+skuId+"\0"+warehouse);
             var saved=new LinkedHashMap<String,Object>();saved.put("code",code);saved.put("warehouse",warehouse);saved.put("groupId",data.get("groupId"));
-            saved.put("method","EXACT_CODE");saved.put("factor",null);saved.put("unitConfirmed",false);
+            saved.put("method",match.method());saved.put("factor",null);saved.put("unitConfirmed",false);
+            if(match.bundleQuantity()!=null)saved.put("bundleQuantity",match.bundleQuantity());
             // Preserve manual decisions, including a decision saved concurrently with this batch.
             repo.jdbc().update("""
                 INSERT INTO finance_cost_mappings(id,organization_id,shop_id,product_id,sku_id,warehouse,data_json,updated_by)

@@ -14,6 +14,25 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class FinanceCostWorkspaceTest {
+    @Test void skuFormattingKeepsBundleIdentityAndRejectsAmbiguousNormalizedCodes(){
+        for(String code:List.of("(YUXI-BPants-XL) *2","（YUXI-BPants-XL） × 2"," ( YUXI-BPants-XL *2 ) ","YUXI-BPants-XL＊2"))
+            assertEquals("YUXI-BPants-XL*2",FinanceCostWorkspace.normalizedSku(code));
+        assertEquals("PACK(A)",FinanceCostWorkspace.normalizedSku("PACK(A)"),"internal variant labels remain meaningful");
+        assertNotEquals(FinanceCostWorkspace.normalizedSku("PACK*2"),FinanceCostWorkspace.normalizedSku("PACK*3"));
+        var codes=Set.of("PACK","PACK*2");
+        var normalized=Map.of("PACK",Set.of("PACK"),"PACK*2",Set.of("PACK*2"));
+        assertEquals("PACK*2",FinanceCostWorkspace.matchingCostCode("(PACK) × 2",codes,normalized));
+        assertEquals("",FinanceCostWorkspace.matchingCostCode("(PACK)*3",codes,normalized),"never auto-multiply a base price");
+        var ambiguous=Map.of("PACK*2",Set.of("PACK*2","(PACK)*2"));
+        assertEquals("",FinanceCostWorkspace.matchingCostCode("（PACK） × 2",ambiguous.get("PACK*2"),ambiguous));
+        assertEquals("PACK*2",FinanceCostWorkspace.matchingCostCode("PACK*2",ambiguous.get("PACK*2"),ambiguous));
+        assertEquals("PACK*2",FinanceCostWorkspace.matchSku("(PACK)*2",codes,normalized).code());
+        assertNull(FinanceCostWorkspace.matchSku("(PACK)*2",codes,normalized).bundleQuantity(),"independent bundle model wins");
+        var bundle=FinanceCostWorkspace.matchSku("(PACK) *3",codes,normalized);
+        assertEquals("PACK",bundle.code());assertEquals(3,bundle.bundleQuantity());
+        assertNull(FinanceCostWorkspace.matchSku("(UNKNOWN)*2",codes,normalized));
+        assertNull(FinanceCostWorkspace.matchSku("（PACK） × 2",Set.of("PACK","PACK*2","(PACK)*2"),ambiguous),"ambiguous full bundle cannot fall back to base");
+    }
     @Test void monthlyCostSheetsKeepBundlePricesAndRecognizeSingleDigitMonths(){
         byte[] data="月份,,202510,20261,20269\n仓库,型号,期末单价,期末单价,期末单价\n菲律宾仓,PACK,1,2,3\n,PACK*5,7,11,16\n".getBytes(StandardCharsets.UTF_8);
         var rows=FinanceCostWorkspace.parseCosts(data,"cost.csv");

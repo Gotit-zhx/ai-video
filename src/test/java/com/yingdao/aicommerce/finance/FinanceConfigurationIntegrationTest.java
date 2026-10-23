@@ -124,6 +124,24 @@ class FinanceConfigurationIntegrationTest {
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_AUTO_MATCH'",Integer.class),"a repeated run is idempotent");
         assertThrows(BusinessException.class,()->transactions.execute(status->workspace.autoMatch(other,"x",shop,Map.of())));
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='COST'",Integer.class),"linking SKUs must not generate financial costs");
+        record(owner,shop,"ORDER","bundle-order",BigDecimal.TEN,Map.of("item_list",List.of(
+                Map.of("item_id","product3","model_id","bundle1","model_sku","(PACK) *5","model_name","5 Packs"),
+                Map.of("item_id","product3","model_id","bundle2","model_sku","（PACK） × 5","model_name","5 Packs"),
+                Map.of("item_id","product3","model_id","bundle3","model_sku","(PACK)*3","model_name","3 Packs"))));
+        var bundles=map(transactions.execute(status->workspace.autoMatch(owner,"u",shop,Map.of())).get("mappings"));
+        assertEquals(5,bundles.size(),"formatted bundle SKUs and the unique base model are linked");
+        for(String sku:List.of("bundle1","bundle2")){
+            var linked=map(bundles.get(shop+":product3:"+sku+":菲律宾仓"));
+            assertEquals("PACK*5",linked.get("code"),"use the independent bundle cost row");
+            assertEquals("NORMALIZED_CODE",linked.get("method"));assertNull(linked.get("factor"));
+        }
+        var baseBundle=map(bundles.get(shop+":product3:bundle3:菲律宾仓"));
+        assertEquals("PACK",baseBundle.get("code"));assertEquals("BUNDLE_CODE",baseBundle.get("method"));
+        assertEquals(3,number(baseBundle.get("bundleQuantity")));assertNull(baseBundle.get("factor"),"encoded quantity is retained without activating an unconfirmed accounting conversion");
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='COST'",Integer.class));
+        transactions.executeWithoutResult(status->workspace.autoMatch(owner,"u",shop,Map.of()));
+        assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='COST_AUTO_MATCH'",Integer.class));
+        assertTrue(map(workspace.costs(owner,sibling).get("mappings")).isEmpty());
         assertThrows(BusinessException.class,()->transactions.executeWithoutResult(status->workspace.mapping(owner,"u",shop,mapping)));
         assertThrows(BusinessException.class,()->workspace.costs(other,shop));
         byte[] next="仓库,型号,202610\n菲律宾仓,PACK,4\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);

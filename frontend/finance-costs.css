@@ -40,6 +40,7 @@
 .fc-table td{padding:9px 14px;vertical-align:middle}
 .fc-table .fi-record-link{font-size:11px!important}
 .fc-code{display:inline-block;max-width:220px;white-space:normal;overflow-wrap:anywhere;font-size:11px;line-height:1.5;font-variant-numeric:tabular-nums}
+.fc-bundle-quantity{display:block;margin-top:3px;font-size:10px;color:var(--fi-muted,#8190a8)}
 .fc-product{display:flex;align-items:center;gap:10px;min-width:210px;max-width:290px}
 .fc-product img,.fc-product-placeholder{width:42px;height:42px;flex-shrink:0;border-radius:6px;border:1px solid var(--fi-border,#e8edf5);object-fit:cover;background:#f3f5fb}
 .fc-product-placeholder{display:grid;place-items:center;color:#8c9abd;font-size:9px;font-weight:700}
@@ -62,22 +63,28 @@
 .fc-shop-sku-info{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 20px;font-size:11px;color:var(--fi-muted,#8190a8)}
 .fc-shop-loading{display:block;padding:10px 20px;color:var(--fi-muted,#8190a8);font-size:11px}
 .fc-cost-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
-.fc-spu-list{display:grid;gap:12px;margin:16px 20px}
-.fc-spu{border:1px solid var(--fi-border,#e8edf5);border-left:3px solid #559d7e;border-radius:8px;overflow:hidden}
+.fc-spu-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 20px}
+.fc-spu{min-width:0;border:1px solid var(--fi-border,#e8edf5);border-left:3px solid #559d7e;border-radius:8px;overflow:hidden}
 .fc-spu.danger{border-left-color:#d9776b}.fc-spu.warn{border-left-color:#d2a14d}
-.finance-workspace .fc-spu-parent{display:flex;align-items:center;gap:10px;width:100%;padding:13px;border:0;border-radius:0;text-align:left;background:var(--fi-surface,#fff);color:var(--fi-ink,#1d2b45)}
-.fc-spu-copy{display:grid;gap:6px;flex:1;min-width:0}
-.fc-spu-copy strong{font-size:12px;line-height:1.5;max-width:470px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.fc-spu-copy small{font-size:10px;color:var(--fi-muted,#8190a8);font-weight:400}
-.fc-spu-image{height:40px;width:40px;object-fit:cover;border-radius:6px;flex-shrink:0}
-.fc-spu-counts{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
-.fc-spu-detail{border-top:1px solid var(--fi-border,#e8edf5)}
+.fc-spu.is-expanded{box-shadow:0 0 0 1px #91a6e6}
+.finance-workspace .fc-spu-parent{position:relative;display:flex;align-items:flex-start;flex-wrap:wrap;align-content:space-between;gap:10px;width:100%;height:100%;min-height:144px;padding:13px;border:0;border-radius:0;text-align:left;background:var(--fi-surface,#fff);color:var(--fi-ink,#1d2b45)}
+.finance-workspace .fc-spu-parent:hover,.fc-spu.is-expanded .fc-spu-parent{background:var(--fi-soft,#f5f7fd)}
+.fc-spu-parent>.fc-shop-chevron{position:absolute;right:10px;top:12px}
+.fc-spu-copy{display:grid;gap:7px;flex:1;min-width:0;padding-right:8px}
+.fc-spu-copy strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;font-size:12px;line-height:1.5;height:36px;overflow:hidden;white-space:normal}
+.fc-spu-copy small{font-size:10px;color:var(--fi-muted,#8190a8);font-weight:400;overflow-wrap:anywhere;line-height:1.6}
+.fc-spu-image{height:44px;width:44px;object-fit:cover;border-radius:6px;flex-shrink:0}
+.fc-spu-counts{display:flex;gap:5px;flex-wrap:wrap;flex-basis:100%;margin-top:auto;justify-content:flex-start}
+.fc-spu-detail{grid-column:1/-1;min-width:0;border:1px solid var(--fi-border,#e8edf5);border-radius:8px;overflow:hidden}
+.fc-spu-detail-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;background:var(--fi-soft,#f5f7fd);font-size:12px}
+.fc-spu-detail-head strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fc-spu-detail-head button{flex-shrink:0}
 .fc-spu-detail[hidden]{display:none}
 .fc-spu-detail .fi-table-wrap{margin:0}
 .fc-spu-detail .fc-product{min-width:150px;max-width:250px}
 .fc-shop-tree .fc-tag.good{color:#367757;background:#eaf6ef}
 [data-theme=dark] .fc-shop-tree .fc-tag.good{color:#a6d8b9;background:#1d3e32}
-@media(max-width:650px){.fc-spu-list{margin:14px 10px}.finance-workspace .fc-spu-parent{flex-wrap:wrap}.fc-spu-copy strong{max-width:220px}.fc-spu-counts{flex-basis:100%;justify-content:flex-start;margin-left:22px}.fc-cost-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:1100px){.fc-spu-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:650px){.fc-spu-list{grid-template-columns:minmax(0,1fr);margin:14px 10px}.finance-workspace .fc-spu-parent{min-height:140px}.fc-cost-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .fc-order-links{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin:0 20px 24px}
 .finance-workspace .fi-expense-sections{margin:0 0 18px;gap:18px}
 .finance-workspace .fi-expense-sections button{flex-direction:column;align-items:flex-start;gap:5px;padding:12px 16px}
