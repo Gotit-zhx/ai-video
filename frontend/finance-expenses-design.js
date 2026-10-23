@@ -37,7 +37,7 @@
   }
   function reset(){loadSequence++;state=fresh();document.querySelectorAll('.fe-dialog').forEach(n=>n.remove());}
   const query=()=>new URLSearchParams({currency:state.currency,group:state.group,search:state.search,start:state.start,end:state.end,page:state.page}).toString();
-  function mount(root,{shops=[],groups=[],canManage=false,live=false,data=null,request,embedded=false}={}){
+  function mount(root,{shops=[],groups=[],canManage=false,live=false,data=null,request,embedded=false,skuCell}={}){
     function hydrate(data){state.rows=data.rows||[];state.rules=data.rules||[];state.changes=data.changes||[];state.totals=data.totals||null;}
     if(live&&data)hydrate(data);
     async function refresh(){const run=++loadSequence;if(live){const data=await request('/expenses?'+query());if(run!==loadSequence||!root.isConnected)return;hydrate(data);}draw();}
@@ -114,11 +114,11 @@
       if(live)for(const [name,key]of[['费用开始日期','start'],['费用结束日期','end']]){const n=field(tools,name,state[key],'date');n.onchange=()=>{state[key]=n.value;filter();};}
       const search=field(tools,'搜索费用',state.search);search.placeholder='订单编号 / 来源编号';search.onchange=()=>{state.search=search.value.trim();filter();};
       const rows=state.rows.filter(r=>visible(r)&&r.currency===state.currency&&[r.source,r.order,r.note].join(' ').includes(state.search));
-      table(p.n,['日期 / 期间','费用类型','归属 / 订单','金额','计入方式','来源编号','操作'],rows.map(row=>{
+      table(p.n,['日期 / 期间','费用类型','归属 / 订单','商品 SKU','金额','计入方式','来源编号','操作'],rows.map(row=>{
         const destination=el('div',owner(row));el('small',row.scope==='order'?row.order:label(scopes,row.scope),destination);
         const period=el('div',row.start===row.end?row.start:row.start+' ～ '+row.end);if(live)el('small','计入：'+row.recordDate,period);
         const treatment=el('div');treatment.append(badge(label(treatments,row.treatment),row.treatment==='extra'?'good':'warn'));if(live)el('small',row.status,treatment);
-        return [period,label(categories,row.category),destination,money(row.amount)+' '+row.currency,treatment,row.source,canManage?button(null,'调整',()=>entry(row),'fi-record-link'):'只读'];
+        return [period,label(categories,row.category),destination,skuCell?.(row)||row.product_skus||'—',money(row.amount)+' '+row.currency,treatment,row.source,canManage?button(null,'调整',()=>entry(row),'fi-record-link'):'只读'];
       }),live?'当前筛选没有手工费用。原来的平台费用和导入记录保留在上方“平台费用”分类。':'尚无符合筛选的预览费用。可以新增一笔草稿，查看订单归属、计入方式与调整记录。');
       if(live){const pager=el('div',null,p.n,'fi-pagebar');el('span',`共 ${state.totals?.records||0} 笔 · 第 ${state.page} 页`,pager);const actions=el('div',null,pager,'fi-actions');button(actions,'上一页',()=>{state.page--;return refresh();}).disabled=state.page<=1;button(actions,'下一页',()=>{state.page++;return refresh();}).disabled=state.page*50>=Number(state.totals?.records||0);}
       el('p',live?'只有“单独计入费用”的订单 / 店铺费用计入 BI 外部成本。分组公共费用待分摊，已含费用与待核对记录不再扣减。':'这里的金额仅来自本页手工草稿，未关联正式订单，也不会计入财务 BI。',p.n,'fc-inline-note');

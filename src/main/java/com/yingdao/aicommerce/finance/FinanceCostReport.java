@@ -41,8 +41,10 @@ public final class FinanceCostReport {
             """.formatted(kind);
     }
     public Map<String,Object> summary(Scope scope,Filter filter,String kind){
+        return summary(scope,kind,repo.query(scope,filter,"r"));
+    }
+    private Map<String,Object> summary(Scope scope,String kind,FinanceRepository.Query q){
         String selected=text(kind).toUpperCase(Locale.ROOT);
-        var q=repo.query(scope,filter,"r");
         var perShop=repo.jdbc().queryForList("SELECT x.shop_id,"+AGGREGATE+" FROM ("+related(selected)+q.where()+") x"
             +" LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id"
             +" LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id GROUP BY x.shop_id",q.args().toArray());
@@ -66,6 +68,25 @@ public final class FinanceCostReport {
         }
         result.put("rebuilding",rebuilding);result.put("processing",rebuilding||number(total.get("queued_count"))>0);
         return result;
+    }
+    /** Drill down using the source's date basis; a selected bill is not restricted to order creation dates. */
+    public Map<String,Object> orders(Scope scope,Filter filter,String kind,String recordId,int page){
+        String selected=text(kind).toUpperCase(Locale.ROOT);
+        if(!Set.of("ORDER","REFUND","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(selected))throw bad("成本来源类型不正确");
+        FinanceRepository.Query q=text(recordId).isBlank()?repo.query(scope,filter,"r"):
+                new FinanceRepository.Query("r.organization_id=? AND r.id=? AND "+FinanceRepository.visible("r"),List.of(scope.organizationId(),recordId));
+        String from=" FROM ("+related(selected)+q.where()+") x";
+        Long total=repo.jdbc().queryForObject("SELECT COUNT(*)"+from,Long.class,q.args().toArray());
+        int safePage=Math.max(1,page);var args=new ArrayList<>(q.args());args.add(50);args.add((safePage-1L)*50);
+        var items=repo.jdbc().queryForList("""
+            SELECT o.id,x.shop_id,o.platform,'ORDER' kind,o.external_id,COALESCE(o.order_id,x.reference) order_id,
+              o.status,o.record_date,o.currency,o.amount,o.source,o.updated_at,o.raw_json
+            """+from+" LEFT JOIN finance_records o ON o.id=x.order_record_id"
+                +" ORDER BY o.record_date DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
+        items.forEach(repo::enrich);attach(scope,items,false);
+        var result=new LinkedHashMap<String,Object>();
+        result.put("items",items);result.put("total",total==null?0:total);result.put("page",safePage);result.put("pageSize",50);
+        result.put("productCosts",summary(scope,selected,q));return result;
     }
     public void attach(Scope scope,List<Map<String,Object>> records,boolean detail){
         var eligible=records.stream().filter(r->Set.of("ORDER","REFUND","SETTLEMENT","BILL","PENDING").contains(text(r.get("kind")))).toList();

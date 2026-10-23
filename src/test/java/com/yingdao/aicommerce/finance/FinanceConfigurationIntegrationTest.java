@@ -85,6 +85,51 @@ class FinanceConfigurationIntegrationTest {
         return db.queryForObject("SELECT id FROM finance_connections WHERE organization_id=? AND external_shop_id=?",String.class,s.organizationId(),external);
     }
     Filter grouped(String id){return new Filter(filter.start(),filter.end(),"","","PHP","day",id);}
+    @Test void merchantSkuColumnsFollowOrdersAndBillsWithoutCrossingShopOrCompany(){
+        String group=service.saveGroup(owner,null,"SKU 列测试"),shop=groupedShop(owner,"sku-column-shop",group),sibling=groupedShop(owner,"sku-column-sibling",group);
+        var order=new Entry(shop,"TIKTOK_SHOP","ORDER","shared-order","shared-order","","订单","COMPLETED",filter.start().minusDays(20),"PHP",BigDecimal.TEN,null,null,null,null,"API",
+                Map.of("line_items",List.of(Map.of("seller_sku","SKU-A"),Map.of("seller_sku","（SKU-B）*2"),Map.of("seller_sku","SKU-A"),Map.of("sku_id","not-a-merchant-code")),"buyer_email","never-expose"));
+        repo.save(owner,order);
+        repo.save(other,order);
+        db.update("UPDATE finance_records SET raw_json=? WHERE organization_id=?",repo.write(Map.of("line_items",List.of(Map.of("seller_sku","OTHER-COMPANY")))),other.organizationId());
+        repo.save(owner,new Entry(shop,"TIKTOK_SHOP","ORDER","shared-order","shared-order","","订单","COMPLETED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"IMPORT",Map.of("line_items",List.of(Map.of("seller_sku","IMPORTED-COPY")))));
+        var shopee=new Entry(sibling,"SHOPEE","ORDER","shared-order","shared-order","","订单","COMPLETED",filter.start(),"PHP",BigDecimal.TEN,null,null,null,null,"API",
+                Map.of("item_list",List.of(Map.of("model_sku","  ","item_sku","SHOPEE-FALLBACK"),Map.of("model_sku","SHOPEE-VARIANT","item_sku","not-the-variant"))));
+        repo.save(owner,shopee);
+        for(String kind:List.of("REFUND","SETTLEMENT","PENDING","FEE","COST"))
+            repo.save(owner,new Entry(shop,"TIKTOK_SHOP",kind,"sku-"+kind,"shared-order","sku-bill","测试","SETTLED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
+        repo.save(owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","second-tx","shared-order","sku-bill","测试","SETTLED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
+        repo.save(owner,new Entry(shop,"TIKTOK_SHOP","BILL","sku-bill","","sku-bill","测试","SETTLED",filter.start(),"PHP",new BigDecimal("2"),null,null,null,null,"API",Map.of()));
+        var selected=new Filter(filter.start(),filter.end(),shop,"","","day");
+        for(String kind:List.of("REFUND","SETTLEMENT","PENDING","FEE","COST","BILL")){
+            var records=rows(repo.details(new Scope("org","colleague"),selected,kind,1,50).get("items"));
+            assertFalse(records.isEmpty());
+            for(var row:records)assertEquals(List.of("SKU-A","（SKU-B）*2"),row.get("product_sku_values"),kind);
+            assertFalse(repo.write(records).contains("never-expose"));
+        }
+        assertEquals("SKU-A\n（SKU-B）*2",repo.reconciliation(owner,selected).getFirst().get("product_skus"));
+        var drill=new FinanceCostReport(repo).orders(owner,selected,"BILL","",1);
+        assertEquals(1,number(drill.get("total")));
+        assertEquals("SKU-A\n（SKU-B）*2",rows(drill.get("items")).getFirst().get("product_skus"),"bill drill-down includes orders created outside the selected bill dates");
+        assertEquals(0,number(new FinanceCostReport(repo).orders(other,selected,"BILL","",1).get("total")));
+        assertEquals(1,number(new FinanceCostReport(repo).orders(owner,selected,"ORDER",id(owner,order),1).get("total")),"direct order links ignore the current calendar");
+        assertEquals(0,number(new FinanceCostReport(repo).orders(other,selected,"ORDER",id(owner,order),1).get("total")),"record links cannot cross company boundaries");
+        assertEquals("SHOPEE-FALLBACK\nSHOPEE-VARIANT",repo.detail(owner,id(owner,shopee)).get("product_skus"));
+        var direct=repo.detail(owner,id(owner,order));
+        assertEquals("SKU-A\n（SKU-B）*2",direct.get("product_skus"));
+        var expenses=new ArrayList<Map<String,Object>>(List.of(new LinkedHashMap<>(Map.of("scope","order","target",shop,"order","shared-order")),
+                new LinkedHashMap<>(Map.of("scope","shop","target",shop,"order",""))));
+        new FinanceProductSkus(repo).attachExpenses(owner,expenses);
+        assertEquals(direct.get("product_skus"),expenses.getFirst().get("product_skus"));assertEquals("",expenses.getLast().get("product_skus"));
+        var fields=new FinanceFields(repo);
+        db.update("INSERT INTO finance_view_preferences(organization_id,user_id,view_key,preferences_json) VALUES(?,?,?,?)",
+                owner.organizationId(),owner.userId(),"ORDER",repo.write(Map.of("visible",List.of("order_id","amount"),"exported",List.of("amount"))));
+        assertEquals(List.of("order_id","product_skus","amount"),fields.get(owner,"ORDER").visible());
+        assertTrue(fields.get(owner,"ORDER").exported().contains("product_skus"));
+        fields.save(owner,"ORDER",List.of("order_id","amount"),List.of("amount"));
+        assertFalse(fields.get(owner,"ORDER").visible().contains("product_skus"),"users can hide the new column after upgrading");
+        assertTrue(fields.get(owner,"BILL").exported().contains("product_skus"));
+    }
     @Test void standardCostsAreIncrementalCompanyScopedAndDeduplicateSettlementOrders(){
         String group=service.saveGroup(owner,null,"标准成本"),shop=groupedShop(owner,"standard-cost-shop",group);
         var workspace=new FinanceCostWorkspace(repo,service);var txs=new TransactionTemplate(tx);var engine=new FinanceOrderCosts(repo);
@@ -110,6 +155,9 @@ class FinanceConfigurationIntegrationTest {
         for(String kind:List.of("SETTLEMENT","BILL","REFUND","RECONCILIATION")){
             var summary=map(reports.summary(owner,q,kind).get("total"));assertEquals(1,number(summary.get("order_count")),kind+" must deduplicate the same order");
             assertEquals(0,new BigDecimal("60").compareTo(decimal(summary.get("amount_cny"))));
+            var drill=reports.orders(owner,q,kind,"",1);assertEquals(1,number(drill.get("total")));
+            assertEquals(0,new BigDecimal("60").compareTo(decimal(rows(drill.get("items")).getFirst().get("product_cost_cny"))));
+            assertEquals(summary,map(map(drill.get("productCosts")).get("total")));
         }
         assertEquals(0,number(map(reports.summary(other,q,"ORDER").get("total")).get("order_count")));
         var rec=repo.reconciliation(owner,q);assertEquals(2,rec.size());assertTrue(rec.stream().allMatch(r->"MATCHED".equals(r.get("result"))),"costs never change platform reconciliation");

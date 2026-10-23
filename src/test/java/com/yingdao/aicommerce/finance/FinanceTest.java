@@ -376,7 +376,7 @@ class FinanceTest {
         doReturn(quote).when(fx).quote("fixed");
         var service=classProxy(new FinanceService(repo,policy,mock(FinanceShopAuthorization.class),fx));
         var controller=new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class));
-        var item=new HashMap<String,Object>(Map.of("external_id","00123456789012345678","currency","PHP","amount",new BigDecimal("100")));
+        var item=new HashMap<String,Object>(Map.of("external_id","00123456789012345678","currency","PHP","amount",new BigDecimal("100"),"product_skus","SKU-A\n（SKU-B）*2"));
         when(repo.details(any(),any(),any(),eq(1),eq(100))).thenReturn(Map.of("total",1,"items",List.of(item)));
         when(repo.reconciliation(any(),any(),eq(100001))).thenReturn(List.of());
         var response=controller.export(Map.of("start","2026-10-01","end","2026-10-20","displayCurrency","CNY","fxSnapshot","fixed"),principal);
@@ -384,6 +384,7 @@ class FinanceTest {
         assertEquals("100",table.get(1).get(table.getFirst().indexOf("原币金额")));
         assertEquals("12.500000",table.get(1).get(table.getFirst().indexOf("折算人民币")));
         assertEquals("00123456789012345678",table.get(1).get(table.getFirst().indexOf("记录编号")));
+        assertEquals("SKU-A\n（SKU-B）*2",table.get(1).get(table.getFirst().indexOf("商品 SKU")));
         verify(fx).quote("fixed");
     }
     @Test void importedComparisonBillsNeverDoubleCountOfficialStatementCharts(){

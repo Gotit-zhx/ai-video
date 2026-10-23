@@ -24,7 +24,7 @@ w.api=async(path,options={})=>{
     throw Error('Unexpected mutation '+path);
   }
   if(url.pathname==='/api/v1/finance/shops')return {data:{items:shops,groups,sync:[]}};
-  if(url.pathname==='/api/v1/finance/workspace/costs/orders')return {data:{items:[{id:'order-1',order_id:'ORDER-1',record_date:'2026-10-23',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};
+  if(url.pathname==='/api/v1/finance/workspace/costs/orders'){reads.push(Object.fromEntries(url.searchParams));return {data:{items:[{id:'order-1',shop_id:'shop',order_id:'ORDER-1',product_skus:'PACK\n（PACK）*2',record_date:'2026-10-23',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};}
   if(url.pathname==='/api/v1/finance/workspace/costs'){
     reads.push(url.searchParams.get('shopId'));
     if(url.searchParams.get('shopId')==='other'){
@@ -48,6 +48,7 @@ assert(!d.body.textContent.includes('待启用'));assert(button('订单成本'))
 assert.equal(reads[0],'','initial selection is chosen by persisted cost availability, not the first shop');
 assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');
 await click('订单成本');assert(d.body.textContent.includes('已计算部分成本'));assert(d.body.textContent.includes('¥ 5.5'));assert(d.querySelector('tbody').textContent.includes('待补齐'));assert(!d.querySelector('tbody').textContent.includes('¥ 0'));
+assert(d.querySelector('thead').textContent.includes('商品 SKU'));assert(d.querySelector('tbody').textContent.includes('（PACK）*2'));
 const retainedCostRow=d.querySelector('tbody tr'),retainedCostStats=d.querySelector('.fi-cost-stats');
 let costMutations=0;const observer=new w.MutationObserver(entries=>costMutations+=entries.length);
 observer.observe(d.querySelector('.fc-order-results'),{subtree:true,childList:true,characterData:true,attributes:true});
@@ -58,6 +59,12 @@ if(process.env.FINANCE_COST_PREVIEW_PATH){
   const css=(await Promise.all(['finance-workspace.css','finance-costs.css'].map(name=>fs.readFile(new URL('../frontend/'+name,import.meta.url),'utf8')))).join('\n');
   await fs.writeFile(process.env.FINANCE_COST_PREVIEW_PATH,`<!doctype html><meta charset="utf-8"><title>订单成本验收 · 测试数据</title><style>${css}body{margin:0;padding:32px;background:#f5f7fc;color:#25334d;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}</style><h2>订单成本验收 · 测试数据</h2>${d.querySelector('#finance-page').outerHTML}`);
 }
+w.FinanceCosts.openOrders({start:'2026-10-01',end:'2026-10-23',shopId:'shop',kind:'BILL',recordId:'selected-bill'});
+w.FinanceWorkspace.enter('costs');await settle();
+assert.equal(reads.at(-1).recordId,'selected-bill');assert.equal(reads.at(-1).kind,'BILL');
+assert(d.querySelector('[aria-label="开始日期"]').disabled,'a single-record drill-down must not pretend the calendar filters it');
+assert(d.body.textContent.includes('刚才点击记录关联的订单'));
+await click('查看该店全部订单');assert(!reads.at(-1).recordId);assert(!d.querySelector('[aria-label="开始日期"]').disabled);
 await click('SKU 关联');
 assert.equal(d.querySelectorAll('.fc-shop-parent').length,2);
 assert.equal(d.querySelector('.fc-shop-parent[aria-expanded=true]').getAttribute('aria-label'),'查看店铺 母婴测试店');

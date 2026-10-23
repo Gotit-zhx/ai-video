@@ -16,7 +16,7 @@ public final class FinanceFields {
     private static Field extra(String id,String label,String type,String views,String path){return new Field(id,label,type,"接口扩展",false,views,path);}
     static final List<Field> CATALOG=List.of(
         core("record_date","业务日期","date"),core("platform","平台","text"),core("shop_id","店铺ID","text"),
-        core("kind","类型","text"),core("external_id","记录编号","text"),core("order_id","订单编号","text"),
+        core("kind","类型","text"),core("external_id","记录编号","text"),core("order_id","订单编号","text"),core("product_skus","商品 SKU","text"),
         core("statement_id","账单编号","text"),core("category","费用类别","text"),core("status","状态","text"),
         core("currency","币种","text"),core("amount","原币金额","money"),core("revenue","归因收入","money"),core("source","来源","text"),
         core("updated_at","最后同步时间","datetime"),
@@ -76,10 +76,10 @@ public final class FinanceFields {
         extra("conversions","转化 / SKU 订单数","number","AD AD_GMV",""),
         extra("net_cost","GMV Max 净消耗（原币）","money","AD_GMV","metrics.net_cost")
     );
-    static final List<String> DEFAULT_EXPORT=List.of("record_date","platform","shop_id","kind","external_id","order_id","statement_id","category","status","currency","amount","revenue","source","cny_amount","cny_revenue","cny_rate","fx_time","fx_provider");
-    static final List<String> DEFAULT_VISIBLE=List.of("record_date","shop_id","external_id","order_id","category","status","currency","amount","cny_amount");
-    static final List<String> RECON_VISIBLE=List.of("record_date","shop_id","external_id","source","currency","amount","detail_amount","difference","cny_difference","result");
-    static final List<String> RECON_EXPORT=List.of("record_date","shop_id","external_id","source","currency","amount","detail_amount","detail_count","difference","result","cny_amount","cny_detail_amount","cny_difference","cny_rate");
+    static final List<String> DEFAULT_EXPORT=List.of("record_date","platform","shop_id","kind","external_id","order_id","product_skus","statement_id","category","status","currency","amount","revenue","source","cny_amount","cny_revenue","cny_rate","fx_time","fx_provider");
+    static final List<String> DEFAULT_VISIBLE=List.of("record_date","shop_id","external_id","order_id","product_skus","category","status","currency","amount","cny_amount");
+    static final List<String> RECON_VISIBLE=List.of("record_date","shop_id","external_id","product_skus","source","currency","amount","detail_amount","difference","cny_difference","result");
+    static final List<String> RECON_EXPORT=List.of("record_date","shop_id","external_id","product_skus","source","currency","amount","detail_amount","detail_count","difference","result","cny_amount","cny_detail_amount","cny_difference","cny_rate");
     public static String view(String key){
         key=text(key).toUpperCase(Locale.ROOT);if(key.isBlank())return "ALL";
         if(!KINDS.contains(key)&&!Set.of("ALL","RECONCILIATION").contains(key))throw bad("字段设置的数据类型不正确");return key;
@@ -107,7 +107,17 @@ public final class FinanceFields {
         var saved=repo.jdbc().queryForList("SELECT preferences_json FROM finance_view_preferences WHERE organization_id=? AND user_id=? AND view_key=?",s.organizationId(),s.userId(),key);
         if(saved.isEmpty())return defaults(key);
         var value=repo.read(text(saved.getFirst().get("preferences_json")));
-        return validate(key,strings(value.get("visible")),strings(value.get("exported")));
+        boolean upgraded=number(value.get("productSkuColumnVersion"))>=1;
+        return validate(key,upgraded?strings(value.get("visible")):withProductSkus(strings(value.get("visible"))),
+                upgraded?strings(value.get("exported")):withProductSkus(strings(value.get("exported"))));
+    }
+    static List<String> withProductSkus(List<String> fields){
+        var result=new ArrayList<>(fields);
+        if(!result.contains("product_skus")){
+            int index=result.indexOf("order_id");if(index<0)index=result.indexOf("external_id");
+            result.add(index<0?result.size():index+1,"product_skus");
+        }
+        return result;
     }
     public Map<String,Object> settings(Scope s,String key){
         key=view(key);var prefs=get(s,key);
@@ -116,7 +126,7 @@ public final class FinanceFields {
     public void save(Scope s,String key,List<String> visible,List<String> exported){
         key=view(key);var prefs=validate(key,visible,exported);
         repo.jdbc().update("INSERT INTO finance_view_preferences(organization_id,user_id,view_key,preferences_json) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE preferences_json=VALUES(preferences_json),updated_at=UTC_TIMESTAMP(6)",
-                s.organizationId(),s.userId(),key,repo.write(prefs));
+                s.organizationId(),s.userId(),key,repo.write(Map.of("visible",prefs.visible,"exported",prefs.exported,"productSkuColumnVersion",1)));
     }
     static Preferences validate(String key,List<String> visible,List<String> exported){
         Set<String> allowed=new HashSet<>(catalog(key).stream().map(Field::id).toList());
@@ -158,6 +168,7 @@ public final class FinanceFields {
             row.put("refund_amount_note",row.get("amount")!=null?"已确认退款":confirmed?"平台未返回确认退款金额":status.equals("CLOSED")?"已关闭，不计入退款":Set.of("CANCELLED","RETURN_OR_REFUND_REQUEST_CANCEL").contains(status)?"已取消，不计入退款":"尚未确认，不计入退款合计");
         }
         if(kind.equals("ORDER")){
+            FinanceProductSkus.put(row,FinanceProductSkus.fromOrder(platform,raw));
             Object items=raw.get(platform.equals("SHOPEE")?"item_list":"line_items");
             if(items instanceof List<?> list){
                 row.put("item_count",list.size());

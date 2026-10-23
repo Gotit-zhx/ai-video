@@ -20,6 +20,8 @@ const records=[
   {id:'record3',shop_id:'shop2',external_id:'A3',record_date:'2026-10-21',create_time:'invalid-time',status:'SHIPPED'},
   {id:'record4',external_id:'A4',record_date:null,status:'NEW_PLATFORM_STATUS'}
 ];
+records[0].product_sku_values=['YUXI-BPants-L','（YUXI-BPants-XXL）*2'];records[0].product_skus=records[0].product_sku_values.join('\n');records[0].product_cost_cny=36.54;
+const costLinks=[];w.FinanceCosts={openOrders:value=>costLinks.push(value),reset(){}};
 w.api=async(path,options={})=>{
   const url=new URL(path,'https://example.test'),method=options.method||'GET',body=options.body?JSON.parse(options.body):{};
   requests.push({url,method,body});const endpoint=url.pathname.replace('/api/v1/finance','');
@@ -32,6 +34,7 @@ w.api=async(path,options={})=>{
   if(endpoint.startsWith('/groups/')){const id=endpoint.split('/').at(-1);groups=method==='DELETE'?groups.filter(g=>g.id!==id):groups.map(g=>g.id===id?{...g,name:body.name}:g);return {data:'已保存'};}
   if(endpoint==='/shops/authorize'){assert(body.groupId,'OAuth requires a group');return {data:{authorizationUrl:'https://official.test/authorize?state=opaque',expiresAt:'2026-10-22T20:00:00Z'}};}
   const fields=[{id:'record_date',label:'业务日期',type:'date'},{id:'platform',label:'平台',type:'text'},{id:'shop_id',label:'店铺',type:'text'},{id:'external_id',label:'记录编号',type:'text'},{id:'order_id',label:'订单编号',type:'text'},{id:'status',label:'状态',type:'text'},{id:'currency',label:'币种',type:'text'},{id:'amount',label:'原币金额',type:'money'},{id:'create_time',label:'平台创建时间（UTC）',type:'datetime'}].map(f=>({...f,group:'主要字段'})),page=Number(url.searchParams.get('page')||1);
+  fields.splice(5,0,{id:'product_skus',label:'商品 SKU',type:'text',group:'主要字段'},{id:'product_cost_cny',label:'商品成本（人民币）',type:'money',group:'商品成本'});
   const settings=view=>{const visible=fields.filter(f=>(showPlatform||f.id!=='platform')&&(showCreateTime||f.id!=='create_time')).map(f=>f.id);return {view,fields,visible,exported:fields.map(f=>f.id),defaults:{visible,exported:fields.map(f=>f.id)}};};
   if(endpoint.startsWith('/fields/'))return {data:method==='PUT'?'已保存':settings(endpoint.split('/').at(-1))};
   if(endpoint.startsWith('/records/'))return {data:{...records.find(r=>r.id===endpoint.split('/').at(-1)),kind:'ORDER'}};
@@ -85,6 +88,10 @@ assert.equal(rows[0].querySelector('time').dateTime,'2026-10-22T01:23:45.000Z');
 let headers=[...d.querySelectorAll('.fi-table th')].map(n=>n.textContent);
 assert(headers.includes('平台 / 下单时间'));assert(!headers.includes('记录编号'));assert.equal(headers.filter(h=>h==='订单编号').length,1);
 assert.equal(rows[0].querySelector('.fi-record-link').textContent,'261022ABCD1234');
+assert(headers.includes('商品 SKU'));assert.equal(rows[0].querySelector('.fi-sku-cell').textContent,records[0].product_skus);
+rows[0].querySelector('.fi-cost-link').click();assert.equal(costLinks.at(-1).recordId,'record1');assert.equal(costLinks.at(-1).shopId,'shop1');assert.equal(costLinks.at(-1).kind,'ORDER');
+assert.equal(w.location.hash,'#finance-costs');
+assert.equal(rows[1].querySelector('.fi-sku-cell').textContent,'—');
 assert.equal(rows[3].querySelector('.fi-record-link').textContent,'查看详情','missing order number must not be replaced with an unrelated record ID');
 assert.deepEqual(rows.map(r=>r.querySelector('.fi-status').textContent),['已处理','待揽收','已发货','其他状态']);
 assert.equal(rows[3].querySelector('.fi-status').title,'NEW_PLATFORM_STATUS','unrecognized status remains inspectable without guessing its meaning');
@@ -120,6 +127,7 @@ for(const route of ['overview','reconciliation','settlements','fees','fee-record
   assert(d.querySelector('.fi-product-cost-summary')?.textContent.includes('¥ 88.75'),route+' shows the shared cost result');
   if(route==='settlements'){assert.equal(d.querySelectorAll('.fi-settlement-totals strong').length,3);assert(d.querySelector('.fi-settlement-chart'));assert(d.querySelector('.fi-settlement-totals').textContent.includes('1,200'));}
   if(['reconciliation','settlements','fees','fee-records','ads','live'].includes(route)){assert.equal(d.querySelectorAll('.fi-market-badge').length,4,route+' identifies every detail record');assert(!d.querySelector('.fi-table-wrap:last-of-type')?.textContent.includes('AWAITING_COLLECTION'));}
+  if(['reconciliation','settlements','fees','fee-records','ads','live'].includes(route))assert([...d.querySelectorAll('th')].some(n=>n.textContent==='商品 SKU'),route+' includes merchant SKU column');
   if(['fees','fee-records'].includes(route)){assert(d.querySelector('[aria-label="费用数据分类"] [aria-pressed=true]').textContent.includes('平台费用'));assert(button('导出报表'));assert(!d.body.textContent.includes('其他费用台账总额'));}
   if(['reconciliation','settlements','fees','fee-records','ads'].includes(route)){
     assert.equal(d.querySelector('.fi-record-value').textContent,'2026-10-22','non-order records keep their business date without inventing event time');

@@ -70,6 +70,7 @@ public class FinanceRepository {
         List<Map<String,Object>> data=db.queryForList("SELECT id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,record_date,currency,amount,revenue,impressions,clicks,conversions,source,updated_at,raw_json"
                 +" FROM finance_records WHERE "+where+" ORDER BY record_date DESC,id LIMIT ? OFFSET ?",a.toArray());
         data.forEach(this::enrich);
+        new FinanceProductSkus(this).attach(s,data);
         new FinanceCostReport(this).attach(s,data,false);
         return Map.of("items",data,"total",total==null?0:total,"page",safePage,"pageSize",safeSize);
     }
@@ -78,7 +79,7 @@ public class FinanceRepository {
         if(rows.isEmpty())throw bad("记录不存在");var row=rows.getFirst();
         row.remove("organization_id");row.remove("user_id");
         // Return only selected business fields; raw provider responses may contain buyer PII.
-        enrich(row);new FinanceCostReport(this).attach(s,List.of(row),true);return row;
+        enrich(row);new FinanceProductSkus(this).attach(s,List.of(row));new FinanceCostReport(this).attach(s,List.of(row),true);return row;
     }
     void enrich(Map<String,Object> row){
         Object raw=row.remove("raw_json");
@@ -143,6 +144,7 @@ public class FinanceRepository {
         List<Object>a=new ArrayList<>(q.args);a.add(limit);a.add(offset);
         var result=db.queryForList(sql.formatted(q.where),a.toArray());
         result.forEach(row->{reconcile(row);row.put("kind","BILL");enrich(row);});
+        new FinanceProductSkus(this).attach(s,result);
         new FinanceCostReport(this).attach(s,result,false);
         return result;
     }
