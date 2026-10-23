@@ -35,7 +35,7 @@ const ambiguousCosts=[...preview.costs,{sku:'(BABY-BPants-XXL)*2',warehouse:'菲
 assert.equal(w.FinanceCosts.candidate({seller_sku:'（BABY-BPants-XXL） × 2'},ambiguousCosts,'菲律宾仓').status,'conflict','normalized duplicate codes need review');
 assert.equal(w.FinanceCosts.candidate({seller_sku:'BABY-BPants-XXL*2'},ambiguousCosts,'菲律宾仓').code,'BABY-BPants-XXL*2','exact code still has priority');
 assert.equal(w.FinanceCosts.candidate({seller_sku:'(BABY-BPants-XXL)*3'},preview.costs,'菲律宾仓').status,'bundle','base multiplication remains only a manual suggestion');
-assert.equal(w.FinanceCosts.candidate(preview.products[2],preview.costs,'菲律宾仓').status,'conflict');
+assert.equal(w.FinanceCosts.candidate(preview.products[2],preview.costs,'菲律宾仓').code,'BABY-BPants-XXL*2','sales description size no longer blocks the merchant SKU');
 assert.equal(w.FinanceCosts.candidate(preview.products[0],preview.costs,'').status,'missing','warehouse ambiguity must not silently choose a cost');
 const firstProduct=d.querySelector('[data-product-id="product-1"] .fc-spu-parent');if(firstProduct.getAttribute('aria-expanded')==='false')firstProduct.click();
 const row=[...d.querySelectorAll('tbody tr')].find(n=>n.textContent.includes('sku-1'));button('核对关联',row).click();
@@ -47,7 +47,7 @@ assert(!d.querySelector('[aria-label="成本仓库"]').textContent.includes('菲
 select('财务店铺','baby');button('成本表设置').click();select('默认计价单位','包');button('应用到预览').click();assert(d.body.textContent.includes('正式数据未变更'));
 select('财务店铺','other');assert.equal(d.querySelector('[aria-label="默认计价单位"]').value,'','cost rules are isolated by shop');
 select('财务店铺','baby');assert.equal(d.querySelector('[aria-label="默认计价单位"]').value,'包','switching shops retains that shop’s draft');
-assert(!button('订单成本'));assert(!button('仓库与规则'));
+assert(button('订单成本'));assert(!button('仓库与规则'));
 assert.equal(requests.length,3,'all prototype interactions remain local');
 w.FinanceWorkspace.reset();w.currentUser={permissions:['finance:view']};w.FinanceWorkspace.enter('costs');await ready();
 assert(!button('导入成本表'));button('SKU 关联').click();assert(!d.querySelector('tbody button'),'viewers cannot edit mapping drafts');

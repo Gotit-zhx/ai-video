@@ -24,6 +24,13 @@ public class FinanceCostController {
         }
     }
     @GetMapping("/costs") public ApiResponse<?> costs(@RequestParam(required=false) String shopId,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.costs(service.authorize(p),shopId));}
+    @GetMapping("/costs/orders") public ApiResponse<?> orderCosts(@RequestParam String shopId,@RequestParam(required=false) String start,@RequestParam(required=false) String end,@RequestParam(defaultValue="1") int page,@AuthenticationPrincipal PlatformPrincipal p){
+        var scope=service.authorize(p);service.ownedShop(scope,shopId);
+        var today=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        var filter=new Filter(start==null?today.minusDays(29):FinanceCostWorkspace.day(start),end==null?today:FinanceCostWorkspace.day(end),shopId,"","","day");
+        var result=new LinkedHashMap<>(workspace.repo.details(scope,filter,"ORDER",page,50));
+        result.put("productCosts",new FinanceCostReport(workspace.repo).summary(scope,filter,"ORDER"));return ApiResponse.ok(result);
+    }
     @PostMapping("/costs/import") public ApiResponse<?> upload(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{
         return ApiResponse.ok(workspace.importCosts(service.authorize(p),p.userId(),groupId,file.getBytes(),text(file.getOriginalFilename())));
     }

@@ -1,0 +1,92 @@
+package com.yingdao.aicommerce.finance;
+
+import org.junit.jupiter.api.Test;
+import java.math.BigDecimal;
+import java.util.*;
+import static com.yingdao.aicommerce.finance.FinanceData.*;
+import static org.junit.jupiter.api.Assertions.*;
+
+class FinanceOrderCostsTest {
+    Map<String,Object> cost(String code,String warehouse,String month,String price){return Map.of("sku",code,"warehouse",warehouse,"prices",Map.of(month,new BigDecimal(price)));}
+    FinanceOrderCosts.Context context(List<Map<String,Object>> costs,Map<String,Object> settings,Map<String,Object> mappings){
+        return new FinanceOrderCosts.Context("shop","group","PH","Asia/Manila","book",costs,settings,mappings);
+    }
+    Map<String,Object> tk(String id,String code){return new LinkedHashMap<>(Map.of("id",id,"product_id","product","sku_id","sku","seller_sku",code,"sku_name","Pants-XXXL"));}
+    Map<String,Object> order(String platform,String status){return Map.of("platform",platform,"status",status,"record_date","2026-10-21");}
+    void amountEquals(String expected,Object value){assertNotNull(value);assertEquals(0,new BigDecimal(expected).compareTo(decimal(value)));}
+    @Test void merchantSkuControlsSizeAndIndependentBundlePriceWins(){
+        var context=context(List.of(cost("YUXI-BPants-XXL","海外仓-菲律宾","2026-10","10"),cost("YUXI-BPants-XXL*2","海外仓-菲律宾","2026-10","23")),Map.of(),Map.of());
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("line","（YUXI-BPants-XXL） *2"))),context);
+        assertEquals("READY",result.get("status"));amountEquals("23",result.get("amountCny"));
+        var line=rows(result.get("lines")).getFirst();assertEquals("YUXI-BPants-XXL*2",line.get("costCode"));amountEquals("1",line.get("factor"));
+    }
+    @Test void perUnitTiktokLinesExplicitQuantitiesAndDuplicatesDoNotDoubleCount(){
+        var context=context(List.of(cost("PACK","海外仓-菲律宾","2026-10","4.125")),Map.of(),Map.of());
+        var one=tk("a","(PACK)*2");var two=tk("b","(PACK)*2");two.put("quantity",3);
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(one,one,two),"buyer_username","private"),context);
+        amountEquals("33",result.get("amountCny"));assertEquals(2,result.get("lineCount"));assertFalse(result.toString().contains("private"));
+        var missing=new LinkedHashMap<>(one);missing.remove("id");
+        assertEquals("INCOMPLETE",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(missing)),context).get("status"));
+    }
+    @Test void shopeeQuantityIsRequiredAndBaseBundlesRetainTheMultiplier(){
+        var context=context(List.of(cost("PACK","海外仓-菲律宾","2026-10","10")),Map.of(),Map.of());
+        var item=new LinkedHashMap<String,Object>(Map.of("item_id","i","model_id","m","model_sku","(PACK) *2","model_quantity_purchased",3));
+        var result=FinanceOrderCosts.calculate(order("SHOPEE","COMPLETED"),Map.of("item_list",List.of(item)),context);
+        amountEquals("60",result.get("amountCny"));item.remove("model_quantity_purchased");
+        var incomplete=FinanceOrderCosts.calculate(order("SHOPEE","COMPLETED"),Map.of("item_list",List.of(item)),context);
+        assertNull(incomplete.get("amountCny"));assertEquals("INCOMPLETE",incomplete.get("status"));
+    }
+    @Test void historicalPriceIsLabelledFuturePriceIsNeverUsedAndMissingDoesNotMeanZero(){
+        var costs=List.of(cost("PACK","海外仓-菲律宾","2026-09","7"),cost("FUTURE","海外仓-菲律宾","2026-11","8"));
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("a","PACK"))),context(costs,Map.of(),Map.of()));
+        assertEquals("ESTIMATED",result.get("status"));amountEquals("7",result.get("amountCny"));
+        assertEquals("2026-09",rows(result.get("lines")).getFirst().get("priceMonth"));
+        result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("a","PACK"),tk("b","FUTURE"))),context(costs,Map.of(),Map.of()));
+        assertNull(result.get("amountCny"));amountEquals("7",result.get("knownAmountCny"));
+        result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("a","PACK"))),context(costs,Map.of("rules",Map.of("missing","pending")),Map.of()));
+        assertEquals("INCOMPLETE",result.get("status"));
+    }
+    @Test void warehouseCountryNeedsUniqueMatchAndExplicitWarehouseTakesPriority(){
+        var costs=List.of(cost("PACK","海外仓-菲律宾","2026-10","7"),cost("PACK","成品总仓","2026-10","5"));
+        assertEquals("海外仓-菲律宾",FinanceOrderCosts.resolveWarehouse(context(costs,Map.of(),Map.of())));
+        assertEquals("成品总仓",FinanceOrderCosts.resolveWarehouse(context(costs,Map.of("warehouse","成品总仓"),Map.of())));
+        var ambiguous=new ArrayList<>(costs);ambiguous.add(cost("PACK","海外仓-菲律宾2","2026-10","8"));
+        assertEquals("",FinanceOrderCosts.resolveWarehouse(context(ambiguous,Map.of(),Map.of())));
+    }
+    @Test void manualConversionsAreScopedToShopAndGroup(){
+        var costs=List.of(cost("PACK","海外仓-菲律宾","2026-10","7"),cost("OTHER","海外仓-菲律宾","2026-10","5"));
+        var key="shop:product:sku:海外仓-菲律宾";
+        var mapping=Map.<String,Object>of(key,Map.of("code","OTHER","factor",3,"groupId","group"));
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("a","PACK"))),context(costs,Map.of(),mapping));
+        amountEquals("15",result.get("amountCny"));
+        mapping=Map.of(key,Map.of("code","OTHER","factor",3,"groupId","other-group"));
+        result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("a","PACK"))),context(costs,Map.of(),mapping));
+        amountEquals("7",result.get("amountCny"));
+    }
+    @Test void cancellationAndRefundDoNotInventAStockReturn(){
+        var context=context(List.of(cost("PACK","海外仓-菲律宾","2026-10","7")),Map.of(),Map.of());
+        var raw=Map.<String,Object>of("line_items",List.of(tk("a","PACK")));
+        assertEquals("EXCLUDED",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","CANCELLED"),raw,context).get("status"));
+        amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
+        raw=Map.of("line_items",List.of(tk("a","PACK")),"collection_time",1792551040L);
+        amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","CANCELLED"),raw,context).get("amountCny"));
+        var cancelled=tk("a","PACK");cancelled.put("status","CANCELLED");
+        raw=Map.of("line_items",List.of(cancelled),"collection_time",1792551040L);
+        amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","CANCELLED"),raw,context).get("amountCny"));
+    }
+    @Test void zeroPriceAndMissingShipmentDateRemainIncomplete(){
+        var context=context(List.of(cost("PACK","海外仓-菲律宾","2026-10","0")),Map.of(),Map.of());
+        var raw=Map.<String,Object>of("line_items",List.of(tk("a","PACK")));
+        assertNull(FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
+        context=context(List.of(cost("PACK","海外仓-菲律宾","2026-10","7")),Map.of("rules",Map.of("basis","shipment")),Map.of());
+        assertNull(FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
+    }
+    @Test void tiktokPartialCancellationUsesLineDisplayStatusNotOtherItemsCollection(){
+        var context=context(List.of(cost("PACK","海外仓-菲律宾","2026-10","7")),Map.of(),Map.of());
+        var cancelled=tk("cancelled","PACK");cancelled.put("display_status","CANCELLED");cancelled.put("package_status","TO_FULFILL");
+        var raw=Map.<String,Object>of("line_items",List.of(tk("valid","PACK"),cancelled),"collection_time",1792551040L);
+        amountEquals("7",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
+        cancelled.put("package_status","CANCELLED"); // Cancelled packages can be lost or damaged after dispatch.
+        amountEquals("14",FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context).get("amountCny"));
+    }
+}

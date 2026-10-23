@@ -64,14 +64,17 @@ public class FinanceService {
         if(enabled)for(String channel:channels)repo.jdbc().update("""
             INSERT IGNORE INTO finance_sync_states(organization_id,user_id,shop_id,channel) VALUES(?,?,?,?)
             """,s.organizationId(),s.userId(),id,channel);
+        if(!timezone.equals(text(shop.get("timezone"))))new FinanceOrderCosts(repo).requestShop(s.organizationId(),id);
         invalidateAfterCommit(s);
     }
     @Transactional
     public void configure(Scope s,String id,boolean enabled,String currency,String timezone,String groupId){
         if(!text(groupId).isBlank())new FinanceGroups(repo).require(s,groupId,true);
+        String previousGroup=text(ownedShop(s,id).get("group_id"));
         configure(s,id,enabled,currency,timezone);
         repo.jdbc().update("UPDATE finance_connections SET group_id=?,updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND id=?",
                 text(groupId).isBlank()?null:groupId,s.organizationId(),id);
+        if(!previousGroup.equals(text(groupId)))new FinanceOrderCosts(repo).requestShop(s.organizationId(),id);
     }
     public List<Map<String,Object>> syncStates(Scope s,Filter f){
         var ids=shops(s).stream().filter(shop->FinanceGroups.matches(shop,f)).map(shop->text(shop.get("id"))).collect(java.util.stream.Collectors.toSet());
@@ -140,6 +143,7 @@ public class FinanceService {
                 "displayCurrency",cny?"CNY":currency,"groupId",requested.groupId()));
         result.put("currencies",currencies);result.put("shops",shops(s));result.put("groups",groups(s));result.put("sync",syncStates(s,requested));
         if(cny)result.put("fx",fx.quote(snapshotId).metadata());
+        result.put("productCosts",new FinanceCostReport(repo).summary(s,new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId()),"RECONCILIATION"));
         return result;
     }
     Map<String,Object> buildDashboard(Scope s,Filter requested,boolean cny,String snapshotId,boolean live){
@@ -176,6 +180,7 @@ public class FinanceService {
         out.put("fees",(cny?FinanceFx.groups(fees,quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
         out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
         out.put("updatedAt",Instant.now().toString());
+        out.put("productCosts",new FinanceCostReport(repo).summary(s,f,"ORDER"));
         out.put("basis","订单按创建日期，结算与费用按平台结算日期；广告按广告账户日期。原币分别统计，已结算不代表银行到账。");
         return out;
     }

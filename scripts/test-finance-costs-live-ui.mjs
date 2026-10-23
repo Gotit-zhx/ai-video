@@ -8,8 +8,8 @@ w.ResizeObserver=class{observe(){}disconnect(){}};
 w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
 w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
 const shops=[{id:'other',name:'无成本店',platform:'SHOPEE',group_id:'other-group',region:'TH'},{id:'shop',name:'母婴测试店',platform:'TIKTOK_SHOP',group_id:'group',region:'PH'}],groups=[{id:'group',name:'母婴组'}];
-let costs={live:true,shopId:'shop',groupId:'group',groupName:'母婴组',sourceName:'成本.csv',costs:[{sku:'PACK',warehouse:'海外仓',prices:{'2026-09':2}},{sku:'BABY-BPants-XXL',warehouse:'海外仓',prices:{'2026-09':3}}],
-  products:[{shop_id:'shop',product_id:'product',sku_id:'variant',seller_sku:'PACK',name:'商品',spec:'一包'},{shop_id:'shop',product_id:'product',sku_id:'unmatched',seller_sku:'OTHER-CODE',name:'商品',spec:'其他规格'},{shop_id:'shop',product_id:'product',sku_id:'review',seller_sku:'BABY-BPants-XXL',name:'商品',spec:'Pants-XXXL'}],sampleOrders:1,orderLimit:2000,
+let costs={live:true,shopId:'shop',groupId:'group',groupName:'母婴组',sourceName:'成本.csv',costs:[{sku:'PACK',warehouse:'海外仓',prices:{'2026-09':2}},{sku:'DUP*2',warehouse:'海外仓',prices:{'2026-09':3}},{sku:'(DUP)*2',warehouse:'海外仓',prices:{'2026-09':4}}],
+  products:[{shop_id:'shop',product_id:'product',sku_id:'variant',seller_sku:'PACK',name:'商品',spec:'一包'},{shop_id:'shop',product_id:'product',sku_id:'unmatched',seller_sku:'OTHER-CODE',name:'商品',spec:'其他规格'},{shop_id:'shop',product_id:'product',sku_id:'review',seller_sku:'（DUP） ×2',name:'商品',spec:'Pants-XXXL'}],sampleOrders:1,orderLimit:2000,
   settings:{warehouse:'海外仓',rules:{currency:'CNY',unit:'包',basis:'shipment',missing:'pending',freight:'',inbound:''}},settingsVersion:1,mappings:{},shopCatalogs:{shop:{costRows:1,sourceName:'成本.csv'},other:{costRows:0,sourceName:''}}};
 const reads=[];let failOther=false;
 let expenses={rows:[],rules:[],changes:[],totals:{records:0,amount:0,posted:0,included:0,pending:0},page:1,pageSize:50};
@@ -24,6 +24,7 @@ w.api=async(path,options={})=>{
     throw Error('Unexpected mutation '+path);
   }
   if(url.pathname==='/api/v1/finance/shops')return {data:{items:shops,groups,sync:[]}};
+  if(url.pathname==='/api/v1/finance/workspace/costs/orders')return {data:{items:[{id:'order-1',order_id:'ORDER-1',record_date:'2026-10-23',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};
   if(url.pathname==='/api/v1/finance/workspace/costs'){
     reads.push(url.searchParams.get('shopId'));
     if(url.searchParams.get('shopId')==='other'){
@@ -43,9 +44,20 @@ function field(name,value,root=d){const n=root.querySelector(`[aria-label="${nam
 w.FinanceWorkspace.enter('costs');await settle();
 assert(d.body.textContent.includes('店铺成本管理'));assert(!d.body.textContent.includes('设计预览'));
 assert.equal(mutations.filter(r=>r.path.endsWith('/auto-match')).length,1,'same codes are linked automatically without per-SKU clicks');
-assert(!d.body.textContent.includes('待启用'));assert(!button('订单成本'));assert(!button('仓库与规则'));
+assert(!d.body.textContent.includes('待启用'));assert(button('订单成本'));assert(!button('仓库与规则'));
 assert.equal(reads[0],'','initial selection is chosen by persisted cost availability, not the first shop');
 assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');
+await click('订单成本');assert(d.body.textContent.includes('已计算部分成本'));assert(d.body.textContent.includes('¥ 5.5'));assert(d.querySelector('tbody').textContent.includes('待补齐'));assert(!d.querySelector('tbody').textContent.includes('¥ 0'));
+const retainedCostRow=d.querySelector('tbody tr'),retainedCostStats=d.querySelector('.fi-cost-stats');
+let costMutations=0;const observer=new w.MutationObserver(entries=>costMutations+=entries.length);
+observer.observe(d.querySelector('.fc-order-results'),{subtree:true,childList:true,characterData:true,attributes:true});
+await click('刷新成本');observer.disconnect();
+assert.equal(d.querySelector('tbody tr'),retainedCostRow);assert.equal(d.querySelector('.fi-cost-stats'),retainedCostStats);
+assert.equal(costMutations,0,'unchanged costs keep all result nodes and cause no DOM animation refresh');
+if(process.env.FINANCE_COST_PREVIEW_PATH){
+  const css=(await Promise.all(['finance-workspace.css','finance-costs.css'].map(name=>fs.readFile(new URL('../frontend/'+name,import.meta.url),'utf8')))).join('\n');
+  await fs.writeFile(process.env.FINANCE_COST_PREVIEW_PATH,`<!doctype html><meta charset="utf-8"><title>订单成本验收 · 测试数据</title><style>${css}body{margin:0;padding:32px;background:#f5f7fc;color:#25334d;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}</style><h2>订单成本验收 · 测试数据</h2>${d.querySelector('#finance-page').outerHTML}`);
+}
 await click('SKU 关联');
 assert.equal(d.querySelectorAll('.fc-shop-parent').length,2);
 assert.equal(d.querySelector('.fc-shop-parent[aria-expanded=true]').getAttribute('aria-label'),'查看店铺 母婴测试店');

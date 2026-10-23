@@ -37,7 +37,8 @@ w.api=async(path,options={})=>{
   if(endpoint.startsWith('/records/'))return {data:{...records.find(r=>r.id===endpoint.split('/').at(-1)),kind:'ORDER'}};
   const common={filters:{...Object.fromEntries(url.searchParams),currency:'PHP',displayCurrency:'PHP'},groups,shops,sync:[],currencies:['PHP'],
     totals:[{kind:'SETTLEMENT',amount:1200,records:3},{kind:'BILL',amount:1200,records:1},{kind:'PENDING',amount:300,records:2}],
-    ranking:[],statuses:[],fees:[],trend:[],basis:'测试数据',updatedAt:'2026-10-22T00:00:00Z',hourly:[],recent:records};
+    ranking:[],statuses:[],fees:[],trend:[],basis:'测试数据',updatedAt:'2026-10-22T00:00:00Z',hourly:[],recent:records,
+    productCosts:{scope:'ORDER',basis:'测试订单成本口径',total:{known_amount_cny:88.75,amount_cny:null,ready_count:3,pending_count:1,estimated_count:2,excluded_count:0},shops:[{shop_id:'shop2',known_amount_cny:88.75,amount_cny:null,pending_count:1}]}};
   if(['/overview','/screen'].includes(endpoint))return {data:common};
   if(['/records','/reconciliation'].includes(endpoint)){const kind=endpoint==='/reconciliation'?'RECONCILIATION':url.searchParams.get('kind')||'ORDER';return {data:{...common,items:records.map((r,i)=>({...r,kind,order_id:i===3?'':r.external_id,currency:'PHP',amount:[203,226,538,null][i]})),total:51,page,pageSize:50,fieldSettings:settings(kind)}};}
   throw Error('Unexpected API '+endpoint);
@@ -75,6 +76,8 @@ created.querySelector('input').value='家纺';button('保存',created).click();a
 button('删除',[...dialog.querySelectorAll('.fi-group-row')].find(row=>row.querySelector('input').value==='家纺')).click();await tick();assert(!groups.some(g=>g.name==='家纺'));dialog.close();await ready();
 await choose('店铺分组','clothes');assert.equal(d.querySelectorAll('.fi-shop-controls').length,1);
 w.FinanceWorkspace.enter('orders');await ready();assert.equal(requests.at(-1).url.searchParams.get('groupId'),'clothes');
+assert(d.querySelector('.fi-product-cost-summary').textContent.includes('已计算部分成本'));
+assert(d.querySelector('.fi-product-cost-summary').textContent.includes('¥ 88.75'),'standard costs stay in yuan when the page shows PHP');
 let rows=[...d.querySelectorAll('.fi-table tbody tr')];
 assert.deepEqual(rows.map(r=>r.querySelector('.fi-record-value').textContent),['2026-10-22 09:23:45','2026-10-22 01:06:09','2026-10-21','—'],'real timestamps use shop timezone to the second, missing/invalid times must not become fabricated midnight');
 assert(rows[0].querySelector('time').title.endsWith('Asia/Manila'));assert(rows[1].querySelector('time').title.endsWith('Asia/Bangkok'));
@@ -89,7 +92,7 @@ assert.deepEqual(rows.map(r=>r.querySelector('.fi-market-badge').dataset.platfor
 assert.equal(d.querySelectorAll('.fi-market-badge svg').length,4);
 if(process.env.FINANCE_PREVIEW_PATH){
   const css=await fs.readFile(new URL('../frontend/finance-workspace.css',import.meta.url),'utf8');
-  await fs.writeFile(process.env.FINANCE_PREVIEW_PATH,`<!doctype html><meta charset="utf-8"><title>财务明细样式验收 · 测试数据</title><style>${css}body{margin:0;padding:36px;background:#f5f7fc;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}h1{font-size:22px}body[data-theme=dark]{background:#101827;color:#e0e7f5}</style><h1>财务明细样式验收 · 测试数据</h1><main class="finance-workspace">${rows[0].closest('section').outerHTML}</main>`);
+  await fs.writeFile(process.env.FINANCE_PREVIEW_PATH,`<!doctype html><meta charset="utf-8"><title>财务明细样式验收 · 测试数据</title><style>${css}body{margin:0;padding:36px;background:#f5f7fc;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}h1{font-size:22px}body[data-theme=dark]{background:#101827;color:#e0e7f5}</style><h1>财务明细样式验收 · 测试数据</h1>${d.querySelector('#finance-page').outerHTML}`);
 }
 const retainedRow=rows[0],retainedBadge=retainedRow.querySelector('.fi-market-badge');button('刷新').click();await ready();
 assert.equal(d.querySelector('tbody tr'),retainedRow);assert.equal(d.querySelector('.fi-market-badge'),retainedBadge,'unchanged refresh must retain the badge node');
@@ -114,6 +117,7 @@ assert(!d.querySelector('thead').textContent.includes('记录编号'));
 for(const route of ['overview','reconciliation','settlements','fees','fee-records','ads','live']){
   w.FinanceWorkspace.enter(route);await ready();
   assert.equal(requests.at(-1).url.searchParams.get('groupId'),'shoes',route+' retains group');
+  assert(d.querySelector('.fi-product-cost-summary')?.textContent.includes('¥ 88.75'),route+' shows the shared cost result');
   if(route==='settlements'){assert.equal(d.querySelectorAll('.fi-settlement-totals strong').length,3);assert(d.querySelector('.fi-settlement-chart'));assert(d.querySelector('.fi-settlement-totals').textContent.includes('1,200'));}
   if(['reconciliation','settlements','fees','fee-records','ads','live'].includes(route)){assert.equal(d.querySelectorAll('.fi-market-badge').length,4,route+' identifies every detail record');assert(!d.querySelector('.fi-table-wrap:last-of-type')?.textContent.includes('AWAITING_COLLECTION'));}
   if(['fees','fee-records'].includes(route)){assert(d.querySelector('[aria-label="费用数据分类"] [aria-pressed=true]').textContent.includes('平台费用'));assert(button('导出报表'));assert(!d.body.textContent.includes('其他费用台账总额'));}

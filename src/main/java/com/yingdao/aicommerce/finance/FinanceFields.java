@@ -20,6 +20,11 @@ public final class FinanceFields {
         core("statement_id","账单编号","text"),core("category","费用类别","text"),core("status","状态","text"),
         core("currency","币种","text"),core("amount","原币金额","money"),core("revenue","归因收入","money"),core("source","来源","text"),
         core("updated_at","最后同步时间","datetime"),
+        new Field("product_cost_cny","关联订单商品成本（人民币）","money","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
+        new Field("product_cost_known_cny","已算商品成本（人民币）","money","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
+        new Field("product_cost_state","商品成本状态","text","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
+        new Field("product_cost_pending","待补齐成本订单数","number","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
+        new Field("product_cost_note","商品成本说明","text","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("detail_amount","结算明细金额","money","对账字段",false,"RECONCILIATION",""),
         new Field("detail_count","明细笔数","number","对账字段",false,"RECONCILIATION",""),
         new Field("difference","差异","money","对账字段",false,"RECONCILIATION",""),
@@ -87,9 +92,15 @@ public final class FinanceFields {
         if(key.equals("REFUND")){
             var visible=new ArrayList<>(DEFAULT_VISIBLE);visible.add(visible.indexOf("amount"),"platform_refund_amount");
             var exported=new ArrayList<>(DEFAULT_EXPORT);exported.add(exported.indexOf("amount"),"platform_refund_amount");exported.add("refund_amount_note");
+            visible.addAll(List.of("product_cost_cny","product_cost_state"));exported.addAll(List.of("product_cost_cny","product_cost_known_cny","product_cost_state","product_cost_pending","product_cost_note"));
             return new Preferences(visible,exported);
         }
-        return key.equals("RECONCILIATION")?new Preferences(RECON_VISIBLE,RECON_EXPORT):new Preferences(DEFAULT_VISIBLE,DEFAULT_EXPORT);
+        var visible=new ArrayList<>(key.equals("RECONCILIATION")?RECON_VISIBLE:DEFAULT_VISIBLE);
+        var exported=new ArrayList<>(key.equals("RECONCILIATION")?RECON_EXPORT:DEFAULT_EXPORT);
+        if(Set.of("ORDER","SETTLEMENT","BILL","PENDING","RECONCILIATION","ALL").contains(key)){
+            visible.addAll(List.of("product_cost_cny","product_cost_state"));exported.addAll(List.of("product_cost_cny","product_cost_known_cny","product_cost_state","product_cost_pending","product_cost_note"));
+        }
+        return new Preferences(visible,exported);
     }
     public Preferences get(Scope s,String key){
         key=view(key);

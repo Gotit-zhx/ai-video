@@ -27,6 +27,7 @@ public class FinanceRepository {
             """,id(s,e),s.organizationId(),s.userId(),e.shopId(),e.platform(),e.kind(),e.externalId(),e.orderId(),
                 e.statementId(),e.category(),e.status(),Date.valueOf(e.date()),e.currency(),e.amount(),e.revenue(),
                 e.impressions(),e.clicks(),e.conversions(),e.source(),write(e.raw()));
+        FinanceOrderCosts.enqueue(this,s,e);
     }
     public record Query(String where,List<Object> args) {}
     public Query query(Scope s,Filter f) {
@@ -69,6 +70,7 @@ public class FinanceRepository {
         List<Map<String,Object>> data=db.queryForList("SELECT id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,record_date,currency,amount,revenue,impressions,clicks,conversions,source,updated_at,raw_json"
                 +" FROM finance_records WHERE "+where+" ORDER BY record_date DESC,id LIMIT ? OFFSET ?",a.toArray());
         data.forEach(this::enrich);
+        new FinanceCostReport(this).attach(s,data,false);
         return Map.of("items",data,"total",total==null?0:total,"page",safePage,"pageSize",safeSize);
     }
     public Map<String,Object> detail(Scope s,String id){
@@ -76,7 +78,7 @@ public class FinanceRepository {
         if(rows.isEmpty())throw bad("记录不存在");var row=rows.getFirst();
         row.remove("organization_id");row.remove("user_id");
         // Return only selected business fields; raw provider responses may contain buyer PII.
-        enrich(row);return row;
+        enrich(row);new FinanceCostReport(this).attach(s,List.of(row),true);return row;
     }
     void enrich(Map<String,Object> row){
         Object raw=row.remove("raw_json");
@@ -108,7 +110,7 @@ public class FinanceRepository {
         var q=query(s,f);
         var result=db.queryForList("SELECT id,shop_id,platform,kind,external_id,status,record_date,currency,amount,source,raw_json FROM finance_records WHERE "+q.where
                 +" AND kind='ORDER' ORDER BY CAST(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.create_time')) AS UNSIGNED) DESC,id LIMIT 8",q.args.toArray());
-        result.forEach(this::enrich);return result;
+        result.forEach(this::enrich);new FinanceCostReport(this).attach(s,result,false);return result;
     }
     public List<Map<String,Object>> reconciliation(Scope s,Filter f,int limit){
         return reconciliation(s,f,Math.min(100001,Math.max(1,limit)),0);
@@ -141,6 +143,7 @@ public class FinanceRepository {
         List<Object>a=new ArrayList<>(q.args);a.add(limit);a.add(offset);
         var result=db.queryForList(sql.formatted(q.where),a.toArray());
         result.forEach(row->{reconcile(row);row.put("kind","BILL");enrich(row);});
+        new FinanceCostReport(this).attach(s,result,false);
         return result;
     }
     static void reconcile(Map<String,Object> row){

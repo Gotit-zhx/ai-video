@@ -52,6 +52,7 @@ class FinanceConfigurationIntegrationTest {
         db.execute("CREATE TABLE permissions(id CHAR(36),code VARCHAR(80) PRIMARY KEY,name VARCHAR(120),module VARCHAR(40),resource_type VARCHAR(20),description VARCHAR(500),sort_order INT)");
         migration("V125__finance_company_groups.sql");
         migration("V127__finance_cost_workspace.sql");
+        migration("V128__finance_order_standard_costs.sql");
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
@@ -62,7 +63,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
-        for(String table:List.of("finance_workspace_audit","finance_expense_rules","finance_expenses","finance_cost_mappings","finance_cost_settings","finance_cost_books","finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
+        for(String table:List.of("finance_order_cost_jobs","finance_order_costs","finance_cost_rebuilds","finance_workspace_audit","finance_expense_rules","finance_expenses","finance_cost_mappings","finance_cost_settings","finance_cost_books","finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
         client=mock(MarketplaceAccess.Client.class);when(client.platform()).thenReturn(MarketplacePlatform.SHOPEE);when(client.configured()).thenReturn(true);
         var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
         auth=new FinanceShopAuthorization(repo,new MarketplaceClientRegistry(List.of(client)),cipher,settings,tx);
@@ -84,6 +85,47 @@ class FinanceConfigurationIntegrationTest {
         return db.queryForObject("SELECT id FROM finance_connections WHERE organization_id=? AND external_shop_id=?",String.class,s.organizationId(),external);
     }
     Filter grouped(String id){return new Filter(filter.start(),filter.end(),"","","PHP","day",id);}
+    @Test void standardCostsAreIncrementalCompanyScopedAndDeduplicateSettlementOrders(){
+        String group=service.saveGroup(owner,null,"标准成本"),shop=groupedShop(owner,"standard-cost-shop",group);
+        var workspace=new FinanceCostWorkspace(repo,service);var txs=new TransactionTemplate(tx);var engine=new FinanceOrderCosts(repo);
+        txs.executeWithoutResult(status->workspace.importCosts(owner,"u",group,"仓库,型号,202610\n海外仓-菲律宾,PACK,10\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),"unit.csv"));
+        var line=Map.<String,Object>of("item_id","p","model_id","v","model_sku","(PACK)*2","model_quantity_purchased",3);
+        var entry=new Entry(shop,"SHOPEE","ORDER","order-a","order-a","","订单","COMPLETED",filter.start(),"PHP",new BigDecimal("100"),null,null,null,null,"API",Map.of("item_list",List.of(line),"buyer_username","do-not-expose"));
+        repo.save(owner,entry);
+        repo.save(owner,new Entry(shop,"SHOPEE","ORDER","order-b","order-b","","订单","COMPLETED",filter.start(),"PHP",BigDecimal.TEN,null,null,null,null,"API",Map.of("item_list",List.of(Map.of("item_id","p2","model_id","v2","model_sku","MISSING","model_quantity_purchased",1)))));
+        txs.execute(status->engine.seedAndFill());txs.execute(status->engine.processBatch(50));
+        var q=new Filter(filter.start(),filter.end(),shop,"","","day",group);var reports=new FinanceCostReport(repo);
+        var totals=map(reports.summary(new Scope("org","colleague"),q,"ORDER").get("total"));
+        assertEquals(2,number(totals.get("order_count")));assertEquals(1,number(totals.get("pending_count")));
+        assertNull(totals.get("amount_cny"));assertEquals(0,new BigDecimal("60").compareTo(decimal(totals.get("known_amount_cny"))));
+        var detail=repo.detail(owner,id(owner,entry));assertEquals("已计算",detail.get("product_cost_state"));
+        assertFalse(repo.write(detail).contains("do-not-expose"));
+        assertEquals(0,new BigDecimal("60").compareTo(decimal(detail.get("product_cost_cny"))));
+        repo.save(owner,entry);assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_order_cost_jobs",Integer.class),"unchanged sync does not recompute costs");
+        for(int i=1;i<=2;i++){
+            repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","tx-"+i,"order-a","bill-"+i,"结算","SETTLED",filter.start(),"PHP",new BigDecimal("45"),null,null,null,null,"API",Map.of()));
+            repo.save(owner,new Entry(shop,"SHOPEE","BILL","bill-"+i,"","bill-"+i,"账单","SETTLED",filter.start(),"PHP",new BigDecimal("45"),null,null,null,null,"API",Map.of()));
+            repo.save(owner,new Entry(shop,"SHOPEE","REFUND","refund-"+i,"order-a","","退款","ACCEPTED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
+        }
+        for(String kind:List.of("SETTLEMENT","BILL","REFUND","RECONCILIATION")){
+            var summary=map(reports.summary(owner,q,kind).get("total"));assertEquals(1,number(summary.get("order_count")),kind+" must deduplicate the same order");
+            assertEquals(0,new BigDecimal("60").compareTo(decimal(summary.get("amount_cny"))));
+        }
+        assertEquals(0,number(map(reports.summary(other,q,"ORDER").get("total")).get("order_count")));
+        var rec=repo.reconciliation(owner,q);assertEquals(2,rec.size());assertTrue(rec.stream().allMatch(r->"MATCHED".equals(r.get("result"))),"costs never change platform reconciliation");
+        var dashboard=service.dashboard(owner,q,true,"fixed");assertEquals(0,new BigDecimal("60").compareTo(decimal(at(dashboard,"productCosts.total.known_amount_cny"))),"yuan costs are not multiplied by the PHP conversion rate");
+        txs.executeWithoutResult(status->workspace.mapping(owner,"u",shop,Map.of("product_id","p","sku_id","v","warehouse","海外仓-菲律宾","code","PACK","factor",1,"confirmed",true,"version",0)));
+        txs.execute(status->engine.seedAndFill());txs.execute(status->engine.processBatch(50));
+        assertEquals(0,new BigDecimal("30").compareTo(decimal(repo.detail(owner,id(owner,entry)).get("product_cost_cny"))));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='ORDER_STANDARD_COST'",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='COST'",Integer.class),"standard cost snapshots stay separate from external expense ledger");
+        assertEquals(0,new BigDecimal("90").compareTo(db.queryForObject("SELECT SUM(amount) FROM finance_records WHERE kind='SETTLEMENT'",BigDecimal.class)));
+        String newGroup=service.saveGroup(owner,null,"未导入成本");
+        txs.executeWithoutResult(status->service.configure(owner,shop,true,"PHP","Asia/Manila",newGroup));
+        assertEquals("READY",db.queryForObject("SELECT status FROM finance_cost_rebuilds WHERE shop_id=?",String.class,shop));
+        txs.execute(status->engine.seedAndFill());txs.execute(status->engine.processBatch(50));
+        assertNull(repo.detail(owner,id(owner,entry)).get("product_cost_cny"),"changing group must not keep the previous group's cost");
+    }
     @Test void costWorkspacePreservesVersionsAndScopesSkuByPlatformIdentity(){
         String group=service.saveGroup(owner,null,"成本测试"),shop=groupedShop(owner,"cost-shop",group);
         var workspace=new FinanceCostWorkspace(repo,service);var transactions=new TransactionTemplate(tx);

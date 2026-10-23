@@ -164,6 +164,8 @@ public class FinanceCostWorkspace {
         repo.jdbc().update("INSERT INTO finance_cost_books(id,organization_id,group_id,source_name,content_hash,data_json,created_by) VALUES(?,?,?,?,?,?,?)",
                 id,s.organizationId(),group,name.substring(0,Math.min(250,name.length())),digest,repo.write(body),actor);
         audit(s,actor,"COST_IMPORT",id,null,Map.of("file",name,"groupId",group,"rows",incoming.size(),"currency","CNY"),"导入人民币成本资料；计价单位另行确认");
+        new FinanceOrderCosts(repo).requestGroup(s,group);
+        service.invalidateAfterCommit(s);
         return Map.of("duplicate",false,"id",id,"rows",incoming.size());
     }
     @Transactional public void settings(Scope s,String actor,String shopId,Map<String,Object> body){
@@ -177,6 +179,7 @@ public class FinanceCostWorkspace {
         var saved=Map.of("warehouse",warehouse,"rules",rules);
         repo.jdbc().update("INSERT INTO finance_cost_settings(organization_id,shop_id,data_json,updated_by) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE data_json=VALUES(data_json),version=version+1,updated_by=VALUES(updated_by),updated_at=UTC_TIMESTAMP(6)",s.organizationId(),shopId,repo.write(saved),actor);
         audit(s,actor,"COST_SETTINGS",shopId,old.isEmpty()?null:decode(old.getFirst().get("data_json")),saved,"更新成本口径");
+        new FinanceOrderCosts(repo).requestShop(s.organizationId(),shopId);service.invalidateAfterCommit(s);
     }
     @Transactional public void mapping(Scope s,String actor,String shopId,Map<String,Object> body){
         var shop=service.ownedShop(s,shopId);String product=required(body,"product_id",128),sku=required(body,"sku_id",128),warehouse=required(body,"warehouse",120),code=required(body,"code",255);
@@ -189,6 +192,7 @@ public class FinanceCostWorkspace {
         repo.jdbc().update("INSERT INTO finance_cost_mappings(id,organization_id,shop_id,product_id,sku_id,warehouse,data_json,updated_by) VALUES(?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE data_json=VALUES(data_json),version=version+1,updated_by=VALUES(updated_by),updated_at=UTC_TIMESTAMP(6)",
                 id,s.organizationId(),shopId,product,sku,warehouse,repo.write(saved),actor);
         audit(s,actor,"COST_MAPPING",id,old.isEmpty()?null:decode(old.getFirst().get("data_json")),saved,"人工确认 SKU 成本关系");
+        new FinanceOrderCosts(repo).requestShop(s.organizationId(),shopId);service.invalidateAfterCommit(s);
     }
     // Only presentation wrappers are ignored; size letters, hyphens and bundle quantities remain significant.
     static String normalizedSku(String code){

@@ -1,0 +1,35 @@
+package com.yingdao.aicommerce.finance;
+
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import java.util.*;
+import java.util.concurrent.*;
+import static com.yingdao.aicommerce.finance.FinanceData.*;
+
+/** Bounded background batches: page reads never parse historical order JSON or call marketplace APIs. */
+@Component
+public class FinanceCostWorker {
+    final FinanceOrderCosts costs;final FinanceService service;final TransactionTemplate transactions;
+    final ScheduledExecutorService worker=Executors.newSingleThreadScheduledExecutor(r->{var thread=new Thread(r,"finance-standard-costs");thread.setDaemon(true);return thread;});
+    public FinanceCostWorker(FinanceRepository repo,FinanceService service,PlatformTransactionManager tx){
+        costs=new FinanceOrderCosts(repo);this.service=service;transactions=new TransactionTemplate(tx);transactions.setTimeout(30);
+    }
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(this::tick,20,5,TimeUnit.SECONDS);}
+    @PreDestroy public void stop(){worker.shutdownNow();}
+    public void tick(){
+        try{
+            transactions.execute(status->costs.seedAndFill());
+            var changed=new LinkedHashSet<String>();
+            for(int i=0;i<4;i++){
+                var organizations=transactions.execute(status->costs.processBatch(50));
+                if(organizations!=null)changed.addAll(organizations);
+            }
+            changed.forEach(org->service.invalidateAfterCommit(companyScope(org)));
+        }catch(RuntimeException error){
+            org.slf4j.LoggerFactory.getLogger(getClass()).warn("Standard cost batch deferred: {}",error.getClass().getSimpleName());
+        }
+    }
+}

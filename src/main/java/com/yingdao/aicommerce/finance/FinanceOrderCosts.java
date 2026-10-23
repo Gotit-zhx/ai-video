@@ -1,0 +1,204 @@
+package com.yingdao.aicommerce.finance;
+
+import java.math.*;
+import java.time.*;
+import java.util.*;
+import static com.yingdao.aicommerce.finance.FinanceData.*;
+
+/** Merchant-SKU standard costs, separate from the platform ledger and actual warehouse accounting. */
+public final class FinanceOrderCosts {
+    final FinanceRepository repo;
+    public FinanceOrderCosts(FinanceRepository repo){this.repo=repo;}
+    public record Context(String shopId,String groupId,String region,String timezone,String bookId,
+                          List<Map<String,Object>> costs,Map<String,Object> settings,Map<String,Object> mappings){}
+    static String resolveWarehouse(Context context){
+        String explicit=text(context.settings().get("warehouse"));
+        if(!explicit.isBlank())return explicit;
+        var warehouses=new LinkedHashSet<String>();
+        for(var c:context.costs())warehouses.add(text(c.get("warehouse")));
+        var names=switch(context.region().toUpperCase(Locale.ROOT)){
+            case "PH"->List.of("菲律宾");case "TH"->List.of("泰国");case "MY"->List.of("马来");
+            case "VN"->List.of("越南");case "SG"->List.of("新加坡");case "ID"->List.of("印尼","印度尼西亚");default->List.<String>of();
+        };
+        var matched=warehouses.stream().filter(w->w.contains("海外")&&names.stream().anyMatch(w::contains)).toList();
+        if(matched.size()==1)return matched.getFirst();
+        return warehouses.size()==1?warehouses.iterator().next():"";
+    }
+    static Object shippingTime(Map<String,Object> raw){
+        for(String key:List.of("collection_time","shipped_time","ship_time"))if(number(raw.get(key))>0)return raw.get(key);
+        return null;
+    }
+    static Map<String,Object> calculate(Map<String,Object> order,Map<String,Object> raw,Context context){
+        String status=text(order.get("status")),warehouse=resolveWarehouse(context);
+        var rules=map(context.settings().get("rules"));
+        boolean excluded=status.equals("UNPAID")||Set.of("CANCELLED","CANCELED").contains(status)&&shippingTime(raw)==null;
+        var out=new LinkedHashMap<String,Object>();
+        out.put("currency","CNY");out.put("basis","MERCHANT_SKU_STANDARD");out.put("warehouse",warehouse);
+        out.put("bookId",context.bookId());out.put("dateBasis",text(rules.getOrDefault("basis","order")));
+        out.put("lines",new ArrayList<Map<String,Object>>());
+        if(excluded){out.putAll(Map.of("status","EXCLUDED","amountCny",BigDecimal.ZERO,"knownAmountCny",BigDecimal.ZERO,"lineCount",0,"matchedLines",0,"fallbackLines",0,"note","未付款或取消订单，不计标准成本"));return out;}
+        String month="";
+        try{
+            Object basis="shipment".equals(out.get("dateBasis"))?shippingTime(raw):order.get("record_date");
+            if(basis!=null)month=date(basis,context.timezone()).toString().substring(0,7);
+        }catch(RuntimeException ignored){}
+        out.put("costMonth",month);
+        boolean tk="TIKTOK_SHOP".equals(order.get("platform"));
+        var items=rows(raw.get(tk?"line_items":"item_list"));var lines=new ArrayList<Map<String,Object>>();
+        var codes=new LinkedHashMap<String,Map<String,Object>>();var normalized=new LinkedHashMap<String,Set<String>>();
+        var allCodes=new LinkedHashSet<String>();
+        for(var cost:context.costs()){
+            String code=text(cost.get("sku"));allCodes.add(code);
+            normalized.computeIfAbsent(FinanceCostWorkspace.normalizedSku(code),k->new LinkedHashSet<>()).add(code);
+            if(warehouse.equals(text(cost.get("warehouse"))))codes.put(code,cost);
+        }
+        BigDecimal known=BigDecimal.ZERO;int matched=0,fallback=0;
+        var seen=new HashMap<String,String>();
+        for(var item:items){
+            String lineId=first(item,"id","line_item_id"),product=first(item,tk?"product_id":"item_id"),sku=first(item,tk?"sku_id":"model_id");
+            String seller=first(item,tk?"seller_sku":"model_sku",tk?"seller_sku":"item_sku").trim();
+            BigDecimal quantity=amount(item,tk?"quantity":"model_quantity_purchased");
+            // TikTok supplies one uniquely identified order line per purchased unit when no quantity field is present.
+            if(tk&&quantity==null&&!lineId.isBlank())quantity=BigDecimal.ONE;
+            var line=new LinkedHashMap<String,Object>();line.put("lineId",lineId);line.put("productId",product);line.put("skuId",sku);
+            line.put("sellerSku",seller);line.put("quantity",quantity);line.put("warehouse",warehouse);
+            String lineStatus=first(item,"display_status","status");
+            String signature=seller+"\0"+product+"\0"+sku+"\0"+quantity+"\0"+lineStatus+"\0"+first(item,"package_status");
+            if(!lineId.isBlank()){
+                String previous=seen.putIfAbsent(lineId,signature);
+                if(previous!=null){if(previous.equals(signature))continue;line.put("issue","平台商品行重复且内容不一致");lines.add(line);continue;}
+            }
+            lines.add(line);
+            boolean lineShipped=shippingTime(item)!=null||Set.of("FULFILLING","COMPLETED","CANCELLED").contains(first(item,"package_status"))
+                    ||Set.of("CANCELLED","CANCELED").contains(status)&&shippingTime(raw)!=null;
+            if("UNPAID".equals(lineStatus)||Set.of("CANCELLED","CANCELED").contains(lineStatus)&&!lineShipped){line.put("amountCny",BigDecimal.ZERO);line.put("excluded",true);matched++;continue;}
+            if(quantity==null||quantity.signum()<=0||quantity.stripTrailingZeros().scale()>0||quantity.compareTo(new BigDecimal("1000000"))>0){line.put("issue","缺少有效购买数量");continue;}
+            if(context.costs().isEmpty()){line.put("issue","店铺分组尚未导入成本表");continue;}
+            if(warehouse.isBlank()){line.put("issue","请配置成本仓，无法唯一匹配店铺国家");continue;}
+            if(month.isBlank()){line.put("issue","缺少所选成本口径的业务日期");continue;}
+            String mappingKey=context.shopId()+":"+product+":"+sku+":"+warehouse;
+            var saved=map(context.mappings().get(mappingKey));
+            boolean manual=!saved.isEmpty()&&!Set.of("EXACT_CODE","NORMALIZED_CODE","BUNDLE_CODE").contains(text(saved.get("method")))
+                    &&context.groupId().equals(text(saved.get("groupId")));
+            var automatic=FinanceCostWorkspace.matchSku(seller,allCodes,normalized);
+            String code=manual?text(saved.get("code")):automatic==null?"":automatic.code();
+            BigDecimal factor=manual?decimal(saved.get("factor")):automatic!=null&&automatic.bundleQuantity()!=null?BigDecimal.valueOf(automatic.bundleQuantity()):BigDecimal.ONE;
+            if(code.isBlank()||!codes.containsKey(code)){line.put("issue",seller.isBlank()?"平台未返回商家 SKU":"当前成本仓没有唯一对应的商家 SKU 成本");continue;}
+            if(factor==null||factor.signum()<=0){line.put("issue","人工关联缺少有效换算数量");continue;}
+            var prices=map(codes.get(code).get("prices"));String priceMonth=month;
+            BigDecimal price=decimal(prices.get(month));
+            if(price==null&&!"pending".equals(text(rules.getOrDefault("missing","previous")))){
+                final String targetMonth=month;
+                priceMonth=prices.keySet().stream().filter(m->m.compareTo(targetMonth)<=0&&decimal(prices.get(m))!=null).max(String::compareTo).orElse("");
+                price=decimal(prices.get(priceMonth));
+            }
+            line.put("costCode",code);line.put("factor",factor);line.put("priceMonth",priceMonth);line.put("bookId",context.bookId());line.put("unitPriceCny",price);
+            if(price==null||price.signum()<0){line.put("issue","缺少 "+month+" 可用成本价");continue;}
+            // Imported zeroes require explicit confirmation; do not silently treat blank/formula placeholders as free goods.
+            if(price.signum()==0&&!Boolean.TRUE.equals(rules.get("allowZero"))){line.put("issue","成本表为零值，需核对单价");continue;}
+            BigDecimal value=price.multiply(quantity).multiply(factor).setScale(6,RoundingMode.HALF_UP);
+            if(value.precision()-value.scale()>18){line.put("issue","成本金额超出支持范围");continue;}
+            BigDecimal next=known.add(value);
+            if(next.precision()-next.scale()>18){line.put("issue","订单成本合计超出支持范围");continue;}
+            boolean previous=!priceMonth.equals(month);line.put("previousPrice",previous);line.put("amountCny",value);
+            known=known.add(value);matched++;if(previous)fallback++;
+        }
+        if(items.isEmpty())lines.add(new LinkedHashMap<>(Map.of("issue","平台尚未返回订单商品明细")));
+        int total=lines.size();boolean complete=total>0&&matched==total;
+        out.put("lines",lines);out.put("status",complete?(fallback>0?"ESTIMATED":"READY"):"INCOMPLETE");
+        out.put("amountCny",complete?known:null);out.put("knownAmountCny",known);out.put("lineCount",total);
+        out.put("matchedLines",matched);out.put("fallbackLines",fallback);
+        out.put("note",complete?(fallback>0?"使用最近历史月份的标准成本估算":"按商家 SKU 与下单数量统计标准成本"):"成本资料待补齐，不按零成本计算");
+        return out;
+    }
+    Context context(String organization,String shopId){
+        var shops=repo.jdbc().queryForList("SELECT group_id,region,timezone FROM finance_connections WHERE organization_id=? AND id=? AND status<>'REMOVED'",organization,shopId);
+        if(shops.isEmpty())return null;var shop=shops.getFirst();String group=text(shop.get("group_id"));
+        var books=repo.jdbc().queryForList("SELECT id,data_json FROM finance_cost_books WHERE organization_id=? AND group_id=? ORDER BY created_at DESC,id DESC LIMIT 1",organization,group);
+        var settings=repo.jdbc().queryForList("SELECT data_json FROM finance_cost_settings WHERE organization_id=? AND shop_id=?",organization,shopId);
+        var mappings=new LinkedHashMap<String,Object>();
+        for(var m:repo.jdbc().queryForList("SELECT product_id,sku_id,warehouse,data_json FROM finance_cost_mappings WHERE organization_id=? AND shop_id=?",organization,shopId))
+            mappings.put(shopId+":"+m.get("product_id")+":"+m.get("sku_id")+":"+m.get("warehouse"),decode(m.get("data_json")));
+        String zone=text(shop.get("timezone"));if(zone.isBlank())zone=timezoneFor(text(shop.get("region")));
+        return new Context(shopId,group,text(shop.get("region")),zone,books.isEmpty()?"":text(books.getFirst().get("id")),
+                books.isEmpty()?List.of():rows(decode(books.getFirst().get("data_json")).get("costs")),settings.isEmpty()?Map.of():decode(settings.getFirst().get("data_json")),mappings);
+    }
+    Map<String,Object> decode(Object value){return value==null?Map.of():repo.read(value instanceof byte[] b?new String(b,java.nio.charset.StandardCharsets.UTF_8):text(value));}
+    static Object canonical(Object value){
+        if(value instanceof Map<?,?> m){var sorted=new TreeMap<String,Object>();m.forEach((k,v)->sorted.put(text(k),canonical(v)));return sorted;}
+        if(value instanceof List<?> list)return list.stream().map(FinanceOrderCosts::canonical).toList();
+        return value;
+    }
+    static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash(repo.write(canonical(raw))+status);}
+    static void enqueue(FinanceRepository repo,Scope s,Entry entry){
+        if(!entry.kind().equals("ORDER"))return;
+        repo.jdbc().update("""
+            INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id)
+            SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM finance_order_costs WHERE order_record_id=? AND source_hash=?) AND EXISTS (
+              SELECT 1 FROM finance_connections c JOIN finance_cost_books b
+              ON b.organization_id=c.organization_id AND b.group_id=c.group_id
+              WHERE c.organization_id=? AND c.id=? AND c.status<>'REMOVED')
+            ON DUPLICATE KEY UPDATE priority=0
+            """,id(s,entry),s.organizationId(),entry.shopId(),id(s,entry),sourceHash(repo,entry.raw(),entry.status()),s.organizationId(),entry.shopId());
+    }
+    void requestShop(String organization,String shopId){
+        repo.jdbc().update("""
+            INSERT INTO finance_cost_rebuilds(organization_id,shop_id) VALUES(?,?)
+            ON DUPLICATE KEY UPDATE cursor_id='',status='READY',requested_at=UTC_TIMESTAMP(6)
+            """,organization,shopId);
+    }
+    void requestGroup(Scope s,String group){
+        for(String shop:repo.jdbc().queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND group_id=? AND status<>'REMOVED'",String.class,s.organizationId(),group))
+            requestShop(s.organizationId(),shop);
+    }
+    int seedAndFill(){
+        repo.jdbc().update("""
+            INSERT IGNORE INTO finance_cost_rebuilds(organization_id,shop_id)
+            SELECT c.organization_id,c.id FROM finance_connections c
+            WHERE c.status<>'REMOVED' AND EXISTS (
+              SELECT 1 FROM finance_cost_books b WHERE b.organization_id=c.organization_id AND b.group_id=c.group_id)
+            """);
+        var jobs=repo.jdbc().queryForList("SELECT * FROM finance_cost_rebuilds WHERE status='READY' ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED");
+        if(jobs.isEmpty())return 0;var job=jobs.getFirst();
+        var ids=repo.jdbc().queryForList("""
+            SELECT id FROM finance_records WHERE organization_id=? AND shop_id=? AND kind='ORDER'
+            AND id>? ORDER BY id LIMIT 500
+            """,String.class,job.get("organization_id"),job.get("shop_id"),job.get("cursor_id"));
+        if(!ids.isEmpty()){
+            repo.jdbc().batchUpdate("INSERT IGNORE INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id,priority) VALUES(?,?,?,1)",
+                    ids.stream().map(id->new Object[]{id,job.get("organization_id"),job.get("shop_id")}).toList());
+            repo.jdbc().update("UPDATE finance_cost_rebuilds SET cursor_id=?,status=? WHERE organization_id=? AND shop_id=?",ids.getLast(),ids.size()<500?"DONE":"READY",job.get("organization_id"),job.get("shop_id"));
+        }else repo.jdbc().update("UPDATE finance_cost_rebuilds SET status='DONE' WHERE organization_id=? AND shop_id=?",job.get("organization_id"),job.get("shop_id"));
+        return ids.size();
+    }
+    Set<String> processBatch(int limit){
+        var jobs=repo.jdbc().queryForList("SELECT * FROM finance_order_cost_jobs ORDER BY priority,requested_at,order_record_id LIMIT ? FOR UPDATE SKIP LOCKED",Math.min(100,Math.max(1,limit)));
+        var contexts=new HashMap<String,Context>();var changed=new LinkedHashSet<String>();
+        for(var job:jobs){
+            String recordId=text(job.get("order_record_id")),organization=text(job.get("organization_id")),shop=text(job.get("shop_id"));
+            var records=repo.jdbc().queryForList("SELECT * FROM finance_records WHERE id=? AND organization_id=? AND shop_id=? AND kind='ORDER'",recordId,organization,shop);
+            Context context=contexts.computeIfAbsent(organization+":"+shop,k->context(organization,shop));
+            if(!records.isEmpty()&&context!=null){
+                var order=records.getFirst();var raw=decode(order.get("raw_json"));var result=calculate(order,raw,context);String serialized=repo.write(result);
+                String sourceHash=sourceHash(repo,raw,text(order.get("status")));
+                var old=repo.jdbc().queryForList("SELECT data_json FROM finance_order_costs WHERE order_record_id=?",recordId);
+                if(old.isEmpty()||!decode(old.getFirst().get("data_json")).equals(decode(serialized))){
+                    if(!old.isEmpty())repo.jdbc().update("""
+                        INSERT INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,before_json,after_json,reason,actor_id)
+                        VALUES(?,?,'ORDER_STANDARD_COST',?,?,?,'订单或成本配置更新，重算标准成本','SYSTEM_COST')
+                        """,UUID.randomUUID().toString(),organization,recordId,repo.write(decode(old.getFirst().get("data_json"))),serialized);
+                    repo.jdbc().update("""
+                        INSERT INTO finance_order_costs(order_record_id,organization_id,shop_id,order_id,record_date,status,amount_cny,known_amount_cny,line_count,matched_lines,fallback_lines,source_hash,data_json)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE record_date=VALUES(record_date),status=VALUES(status),amount_cny=VALUES(amount_cny),
+                        known_amount_cny=VALUES(known_amount_cny),line_count=VALUES(line_count),matched_lines=VALUES(matched_lines),fallback_lines=VALUES(fallback_lines),
+                        source_hash=VALUES(source_hash),data_json=VALUES(data_json),version=version+1,updated_at=UTC_TIMESTAMP(6)
+                        """,recordId,organization,shop,order.get("order_id"),order.get("record_date"),result.get("status"),result.get("amountCny"),result.get("knownAmountCny"),
+                            result.get("lineCount"),result.get("matchedLines"),result.get("fallbackLines"),sourceHash,serialized);
+                    changed.add(organization);
+                }else repo.jdbc().update("UPDATE finance_order_costs SET source_hash=? WHERE order_record_id=? AND source_hash<>?",sourceHash,recordId,sourceHash);
+            }
+            repo.jdbc().update("DELETE FROM finance_order_cost_jobs WHERE order_record_id=?",recordId);
+        }
+        return changed;
+    }
+}
