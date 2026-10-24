@@ -41,9 +41,14 @@ public class FinanceRepository {
             if(!pair[1].isEmpty()){w+=" AND "+p+pair[0]+"=?";a.add(pair[1]);}
         }
         String record=alias.isEmpty()?"finance_records":alias;
-        w+=" AND "+visible(record);
+        // The organization is already fixed above. Materialize the small authorized-shop
+        // set once instead of running a correlated visibility lookup for every ledger row.
+        w+=" AND ("+record+".shop_id='UNASSIGNED' OR "+record+".shop_id IN"
+                +" (SELECT fc.id FROM finance_connections fc WHERE fc.organization_id=? AND fc.status<>'REMOVED'))";
+        a.add(s.organizationId());
         if(!f.groupId().isBlank()){
-            String group="EXISTS (SELECT 1 FROM finance_connections fg WHERE fg.organization_id="+record+".organization_id AND fg.id="+record+".shop_id AND fg.status<>'REMOVED' AND ";
+            String group=record+".shop_id IN (SELECT fg.id FROM finance_connections fg WHERE fg.organization_id=? AND fg.status<>'REMOVED' AND ";
+            a.add(s.organizationId());
             if("UNGROUPED".equals(f.groupId()))w+=" AND ("+record+".shop_id='UNASSIGNED' OR "+group+"fg.group_id IS NULL))";
             else {w+=" AND "+group+"fg.group_id=?)";a.add(f.groupId());}
         }
@@ -61,14 +66,31 @@ public class FinanceRepository {
                 +"SUM(revenue) revenue,SUM(impressions) impressions,SUM(clicks) clicks,SUM(conversions) conversions"
                 +" FROM finance_records WHERE "+q.where+kind+" AND NOT(kind='BILL' AND source='IMPORT') GROUP BY "+dimension+",currency",q.args.toArray());
     }
+    /** One covering range scan; only fee categories and order statuses need extra dimensions. */
+    public List<Map<String,Object>> dashboardBuckets(Scope s,Filter f){
+        Query q=query(s,f);
+        return db.queryForList("""
+            SELECT shop_id,record_date,kind,currency,
+              CASE WHEN kind='FEE' THEN category ELSE '' END category,
+              CASE WHEN kind='ORDER' THEN status ELSE '' END status,
+              COUNT(*) records,COUNT(amount) known_amounts,SUM(amount) amount,
+              SUM(revenue) revenue,SUM(impressions) impressions,SUM(clicks) clicks,SUM(conversions) conversions
+            FROM finance_records FORCE INDEX (idx_finance_company_dashboard) WHERE
+            """+q.where+" AND NOT(kind='BILL' AND source='IMPORT')"
+                +" GROUP BY shop_id,record_date,kind,currency,"
+                +"CASE WHEN kind='FEE' THEN category ELSE '' END,CASE WHEN kind='ORDER' THEN status ELSE '' END",q.args.toArray());
+    }
     public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size){
         Query q=query(s,f);String where=q.where;List<Object>a=new ArrayList<>(q.args);
         if(kind!=null&&!kind.isBlank()){if(!KINDS.contains(kind))throw bad("数据类型不正确");where+=" AND kind=?";a.add(kind);}
         int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
-        Long total=db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE "+where,Long.class,a.toArray());
+        // MySQL can otherwise choose a user-prefixed skip scan for ORDER counts,
+        // even when the company/type/date index is available.
+        String source="finance_records FORCE INDEX ("+(kind!=null&&!kind.isBlank()?"idx_finance_company_kind_date":"idx_finance_company_dashboard")+")";
+        Long total=db.queryForObject("SELECT COUNT(*) FROM "+source+" WHERE "+where,Long.class,a.toArray());
         a.add(safeSize);a.add((long)(safePage-1)*safeSize);
         List<Map<String,Object>> data=db.queryForList("SELECT id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,record_date,currency,amount,revenue,impressions,clicks,conversions,source,updated_at,raw_json"
-                +" FROM finance_records WHERE "+where+" ORDER BY record_date DESC,id LIMIT ? OFFSET ?",a.toArray());
+                +" FROM "+(kind!=null&&!kind.isBlank()?source:"finance_records")+" WHERE "+where+" ORDER BY record_date DESC,id LIMIT ? OFFSET ?",a.toArray());
         data.forEach(this::enrich);
         new FinanceProductSkus(this).attach(s,data);
         new FinanceCostReport(this).attach(s,data,false);

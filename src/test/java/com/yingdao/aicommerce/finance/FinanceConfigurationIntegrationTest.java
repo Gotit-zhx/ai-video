@@ -53,6 +53,7 @@ class FinanceConfigurationIntegrationTest {
         migration("V125__finance_company_groups.sql");
         migration("V127__finance_cost_workspace.sql");
         migration("V128__finance_order_standard_costs.sql");
+        migration("V130__finance_query_indexes.sql");
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
@@ -386,6 +387,47 @@ class FinanceConfigurationIntegrationTest {
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE amount IS NOT NULL",Integer.class));
         var details=rows(repo.details(owner,filter,"REFUND",1,50).get("items"));
         assertTrue(details.stream().allMatch(r->decimal(r.get("platform_refund_amount")).compareTo(new BigDecimal("209"))==0));
+    }
+    @Test void compactDashboardPreservesEveryDimensionCurrencyAndVisibility(){
+        String group=service.saveGroup(owner,null,"查询核对"),shop=groupedShop(owner,"speed-main",group);
+        String ungrouped=groupedShop(owner,"speed-ungrouped",group),removed=groupedShop(owner,"speed-removed",group);
+        db.update("UPDATE finance_connections SET group_id=NULL WHERE id=?",ungrouped);
+        var fixtures=new ArrayList<Object[]>();
+        for(String target:List.of(shop,ungrouped,removed,"UNASSIGNED","unknown-shop"))
+            for(String kind:List.of("ORDER","FEE","SETTLEMENT","BILL","AD","REFUND"))
+                for(String currency:List.of("PHP","CNY"))
+                    for(int i=0;i<3;i++)for(Scope scope:List.of(owner,other))
+                        fixtures.add(new Object[]{UUID.randomUUID().toString(),scope.organizationId(),scope.userId(),target,kind,kind+currency+i,
+                            "category-"+i,"status-"+i,java.sql.Date.valueOf(filter.start().plusDays(i)),currency,
+                            scope.equals(other)?new BigDecimal("999"):i==0?null:i==1?BigDecimal.ZERO:new BigDecimal("-1.235678"),
+                            new BigDecimal("0.123456"),(long)i,new BigDecimal("0.25")});
+        db.batchUpdate("""
+            INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,category,status,
+              record_date,currency,amount,revenue,impressions,conversions,source,raw_json)
+            VALUES(?,?,?,?,'SHOPEE',?,?,?,?,?,?,?,?,?,?,'API','{}')
+            """,fixtures);
+        repo.save(owner,new Entry(shop,"SHOPEE","BILL","imported","","","bill","IMPORTED",filter.start(),"PHP",new BigDecimal("99999"),null,null,null,null,"IMPORT",Map.of()));
+        service.removeShop(owner,removed);
+        for(String selectedGroup:List.of("",group,"UNGROUPED"))
+            for(String currency:List.of("","PHP","CNY")){
+                var f=new Filter(filter.start(),filter.end().plusDays(2),"","",currency,"day",selectedGroup);
+                var buckets=repo.dashboardBuckets(owner,f);
+                for(String dimension:List.of("kind","shop_id,kind","record_date,kind","category,kind","status,kind")){
+                    var source=buckets.stream().filter(r->!dimension.equals("category,kind")||"FEE".equals(r.get("kind")))
+                        .filter(r->!dimension.equals("status,kind")||"ORDER".equals(r.get("kind"))).toList();
+                    var actual=FinanceService.aggregate(source,dimension.split(","));
+                    var expected=repo.grouped(owner,f,dimension);
+                    assertEquals(expected.size(),actual.size(),dimension);
+                    var dimensions=new ArrayList<>(List.of(dimension.split(",")));dimensions.add("currency");
+                    for(var row:expected){
+                        var found=actual.stream().filter(a->dimensions.stream().allMatch(d->Objects.equals(a.get(d),row.get(d)))).findFirst().orElseThrow();
+                        for(String field:List.of("records","known_amounts","amount","revenue","impressions","clicks","conversions")){
+                            if(row.get(field)==null)assertNull(found.get(field),field);
+                            else assertEquals(0,decimal(row.get(field)).compareTo(decimal(found.get(field))),dimension+" "+field);
+                        }
+                    }
+                }
+            }
     }
     @Test void dashboardAggregatesMatchSqlAndCachedReadsRemainOwnerScoped(){
         String id=connect(owner,false),foreign=connect(other,false);

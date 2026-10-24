@@ -148,9 +148,8 @@ public class FinanceService {
     }
     Map<String,Object> buildDashboard(Scope s,Filter requested,boolean cny,String snapshotId,boolean live){
         Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity(),requested.groupId());
-        // One shop aggregate supplies currencies, totals and ranking. Previously
-        // each request scanned the same record range three times for these.
-        var allRanking=repo.grouped(s,all,"shop_id,kind");
+        var buckets=repo.dashboardBuckets(s,all);
+        var allRanking=aggregate(buckets,"shop_id","kind");
         List<String> codes=allRanking.stream().map(r->text(r.get("currency"))).distinct().sorted().toList();
         String currency=requested.currency().isBlank()?(cny||codes.isEmpty()?"":codes.getFirst()):requested.currency();
         Filter f=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId());
@@ -162,7 +161,8 @@ public class FinanceService {
         for(LocalDate d=f.start();!live&&!d.isAfter(f.end());d=d.plusDays(1)){
             String key=bucket(d,f.granularity());points.computeIfAbsent(key,k->{var m=new LinkedHashMap<String,Object>();m.put("period",k);return m;});
         }
-        var daily=live?List.<Map<String,Object>>of():repo.grouped(s,f,"record_date,kind");
+        var selected=buckets.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
+        var daily=live?List.<Map<String,Object>>of():aggregate(selected,"record_date","kind");
         if(cny)daily=FinanceFx.groups(daily,quote,"record_date","kind");
         daily=FinanceProfitReport.withGross(daily,"record_date");
         for(var row:daily){
@@ -177,7 +177,8 @@ public class FinanceService {
         if(cny)out.put("fx",quote.metadata());
         out.put("currencies",codes);out.put("totals",totals);out.put("trend",new ArrayList<>(points.values()));
         out.put("shops",shops(s));out.put("groups",groups(s));
-        var fees=live?List.<Map<String,Object>>of():repo.grouped(s,f,"category,kind");var statuses=repo.grouped(s,f,"status,kind");
+        var fees=live?List.<Map<String,Object>>of():aggregate(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),"category","kind");
+        var statuses=aggregate(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),"status","kind");
         out.put("ranking",FinanceProfitReport.withGross(cny?FinanceFx.groups(ranking,quote,"shop_id","kind"):ranking,"shop_id"));
         out.put("fees",(cny?FinanceFx.groups(fees,quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
         out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
@@ -193,10 +194,15 @@ public class FinanceService {
         return out;
     }
     static List<Map<String,Object>> nativeTotals(List<Map<String,Object>> ranking){
-        var totals=new LinkedHashMap<List<String>,Map<String,Object>>();
+        return aggregate(ranking,"kind");
+    }
+    static List<Map<String,Object>> aggregate(List<Map<String,Object>> ranking,String... dimensions){
+        var totals=new LinkedHashMap<List<Object>,Map<String,Object>>();
         for(var row:ranking){
-            String kind=text(row.get("kind")),currency=text(row.get("currency"));
-            var total=totals.computeIfAbsent(List.of(kind,currency),k->new LinkedHashMap<>(Map.of("kind",kind,"currency",currency)));
+            var key=new ArrayList<Object>();for(String d:dimensions)key.add(row.get(d));key.add(row.get("currency"));
+            var total=totals.computeIfAbsent(key,k->{
+                var m=new LinkedHashMap<String,Object>();for(String d:dimensions)m.put(d,row.get(d));m.put("currency",row.get("currency"));return m;
+            });
             for(String field:List.of("amount","revenue","records","known_amounts","impressions","clicks","conversions")){
                 BigDecimal value=decimal(row.get(field));
                 if(value==null)total.putIfAbsent(field,null);

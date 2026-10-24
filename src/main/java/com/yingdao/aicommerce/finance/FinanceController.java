@@ -64,7 +64,11 @@ public class FinanceController {
     @GetMapping("/records") public ApiResponse<?> records(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var result=new LinkedHashMap<>(repo.details(s(p),filter(q),q.get("kind"),(int)Math.max(1,number(q.getOrDefault("page","1"))),50));
         result.put("fieldSettings",fields.settings(personal(p),q.get("kind")));
-        result.put("productCosts",new FinanceCostReport(repo).summary(s(p),filter(q),q.get("kind")));
+        // List workspaces already receive this exact settled-order summary from /overview.
+        // Refund/bill/settlement summaries keep their own source-specific basis.
+        boolean sharedCostScope="SETTLED_ORDER".equals(FinanceCostReport.scopeKind(q.get("kind"),false));
+        if(!sharedCostScope||!"false".equals(q.get("includeProductCosts")))
+            result.put("productCosts",new FinanceCostReport(repo).summary(s(p),filter(q),q.get("kind")));
         if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(rows(result.get("items")),service.exchangeRates().quote(q.get("fxSnapshot")));
         return ApiResponse.ok(result);
     }

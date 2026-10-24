@@ -102,7 +102,9 @@ public final class FinanceCostReport {
         FinanceRepository.Query q=text(recordId).isBlank()?repo.query(scope,filter,"r"):
                 new FinanceRepository.Query("r.organization_id=? AND r.id=? AND "+FinanceRepository.visible("r"),List.of(scope.organizationId(),recordId));
         String from=" FROM ("+related(selected)+q.where()+") x";
-        Long total=repo.jdbc().queryForObject("SELECT COUNT(*)"+from,Long.class,q.args().toArray());
+        // The exact same deduplicated relation supplies the summary and page count.
+        var costs=summary(scope,selected,q);
+        long total=number(map(costs.get("total")).get("order_count"));
         int safePage=Math.max(1,page);var args=new ArrayList<>(q.args());args.add(50);args.add((safePage-1L)*50);
         var items=repo.jdbc().queryForList("""
             SELECT o.id,x.shop_id,o.platform,'ORDER' kind,o.external_id,COALESCE(o.order_id,x.reference) order_id,
@@ -113,8 +115,8 @@ public final class FinanceCostReport {
         items.forEach(repo::enrich);attach(scope,items,false);
         for(var item:items)if(item.get("id")==null){item.put("product_cost_state","订单待同步");item.put("product_cost_pending",1);}
         var result=new LinkedHashMap<String,Object>();
-        result.put("items",items);result.put("total",total==null?0:total);result.put("page",safePage);result.put("pageSize",50);
-        result.put("productCosts",summary(scope,selected,q));return result;
+        result.put("items",items);result.put("total",total);result.put("page",safePage);result.put("pageSize",50);
+        result.put("productCosts",costs);return result;
     }
     public void attach(Scope scope,List<Map<String,Object>> records,boolean detail){
         var eligible=records.stream().filter(r->Set.of("ORDER","REFUND","SETTLEMENT","BILL","PENDING").contains(text(r.get("kind")))).toList();

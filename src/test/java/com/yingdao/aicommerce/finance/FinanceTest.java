@@ -413,14 +413,15 @@ class FinanceTest {
                 .andExpect(jsonPath("$.data.items").isArray())
                 .andExpect(jsonPath("$.data.productCosts.currency").value("CNY"))
                 .andExpect(jsonPath("$.data.productCosts.scope").value("SETTLED_ORDER"));
-        verify(db).queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),
-                eq("org"),eq(java.sql.Date.valueOf("2026-10-01")),eq(java.sql.Date.valueOf("2026-10-23")));
+        verify(db).queryForList(startsWith("SELECT x.shop_id,"),
+                eq("org"),eq(java.sql.Date.valueOf("2026-10-01")),eq(java.sql.Date.valueOf("2026-10-23")),eq("org"));
+        verify(db,never()).queryForObject(startsWith("SELECT COUNT(*) FROM ("),eq(Long.class),any(Object[].class));
         clearInvocations(db);
         mvc.perform(get("/api/v1/finance/workspace/costs/orders")
                 .param("kind","BILL").param("recordId","bill-record"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.productCosts.scope").value("BILL"));
-        verify(db).queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),eq("org"),eq("bill-record"));
+        verify(db).queryForList(startsWith("SELECT x.shop_id,"),eq("org"),eq("bill-record"));
         mvc.perform(get("/api/v1/finance/workspace/costs/orders").param("kind","INVALID"))
                 .andExpect(status().isBadRequest());
     }

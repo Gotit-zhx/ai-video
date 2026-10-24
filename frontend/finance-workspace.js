@@ -10,7 +10,7 @@
   const refundStates={INITIATED:'已发起申请',REFUND_OR_RETURN_REQUESTED:'已申请退货退款',RETURN_OR_REFUND_REQUEST_PENDING:'退货退款待处理',RETURN_OR_REFUND_REQUEST_REJECT:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_REJECTED:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_APPROVED:'退货退款已同意',REFUND_OR_RETURN_REQUEST_REJECT:'退货退款已拒绝',RETURN_OR_REFUND_REQUEST_REVIEWING:'退货退款审核中',RETURN_OR_REFUND_REQUEST_REVIEWING_APPEAL:'退货退款申诉审核中',RETURN_OR_REFUND_REQUEST_APPROVED_APPEAL:'退货退款申诉已通过',RETURN_OR_REFUND_REQUEST_REJECTED_APPEAL:'退货退款申诉已拒绝',RETURN_OR_REFUND_REQUEST_PENDING_BUYER_RETURN:'待买家退货',RETURN_OR_REFUND_REQUEST_BUYER_RETURNING:'买家退货中',RETURN_OR_REFUND_REQUEST_PENDING_RECEIVE:'待卖家收货',RETURN_OR_REFUND_REQUEST_RECEIVED:'退货已收到',REPLACEMENT_REQUEST_REFUND_SUCCESS:'换货退款已完成',REPLACEMENT_REQUEST_COMPLETE:'换货已完成',REPLACEMENT_REQUEST_CANCEL:'换货已取消',REJECTED:'已拒绝',APPROVED:'已同意',REFUNDED:'已退款',REFUNDING:'退款中'};
   const paths={chart:'M4 19h16M7 15v-4m5 4V5m5 10V8',download:'M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4',refresh:'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 3M18 17a7 7 0 0 1-12 2l-2-3',shop:'M3 10h18l-2-7H5zM5 10v11h14V10M9 21v-7h6v7',wallet:'M3 6h18v15H3zM3 6V3h15v3M16 12h5v5h-5z',arrow:'M7 17 17 7M7 7h10v10',refund:'m9 6-5 5 5 5M4 11h10a5 5 0 0 1 0 10',ad:'m3 11 15-6v14L3 14zM6 15v6h4v-5M21 9v6',fee:'M7 3h10l4 4v14H3V7zM8 9h8M8 13h8M8 17h5',info:'M12 11v6M12 7v1M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',plus:'M12 4v16M4 12h16',check:'m5 12 4 4 10-10'};
   let callbackNotice='';const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
-  let active=false,generation=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='';
+  let active=false,generation=0,mountedGeneration=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='';
   const dateText=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const today=()=>dateText(new Date()),ago=n=>{const d=new Date();d.setDate(d.getDate()-n);return dateText(d);};
   function dateGranularity(start,end){const days=Math.round((Date.parse(end)-Date.parse(start))/86400000)+1;return days<=45?'day':days<=200?'week':days<=400?'month':days<=900?'quarter':days<=1500?'halfyear':'year';}
@@ -157,6 +157,10 @@
   function commit(next){
     if(mountedView!==view){cleanup();root.replaceChildren();mountedView=view;}
     IncrementalDOM.patch(root,next);
+    mountedGeneration=generation;
+    paintCharts();
+  }
+  function paintCharts(){
     charts=charts.filter(c=>{if(root.contains(c.financeNode))return true;c.dispose();return false;});
     for(const node of root.querySelectorAll('.fi-chart')){
       const spec=node.financePlot;if(!spec)continue;
@@ -272,9 +276,10 @@
   function badge(status){const key=String(status||'').trim().toUpperCase(),n=el('span',statusName(status),null,'fi-status');if(status)n.title=String(status);n.classList.toggle('success',['SUCCESS','SETTLED','MATCHED','ACTIVE','COMPLETED','DELIVERED','ACCEPTED','REFUNDED','RETURN_OR_REFUND_REQUEST_COMPLETE','REPLACEMENT_REQUEST_REFUND_SUCCESS'].includes(key));n.classList.toggle('error',['ERROR','DIFFERENCE','TOKEN_EXPIRED','REJECTED'].includes(key));n.classList.toggle('running',['RUNNING','SYNCING','READY','PARTIAL','PROCESSING','PROCESSED','AWAITING_COLLECTION','AWAITING_SHIPMENT','READY_TO_SHIP','SHIPPED','IN_TRANSIT','PARTIALLY_SHIPPING'].includes(key));return n;}
   function statusName(status){if(status==null||String(status).trim()==='')return '—';const text=String(status).trim(),key=text.toUpperCase();return key==='CONFIRMED'?'已确认':orderStates[key]||refundStates[key]||states[key]||(/[\u3400-\u9fff]/.test(text)?text:'其他状态');}
   function feeName(key){return ({packaging:'包装耗材',shipping:'外部运费',warehouse:'仓储操作',staff:'人工',rent:'租金',other:'其他费用',commission_fee:'佣金',service_fee:'服务费',seller_transaction_fee:'支付手续费',final_shipping_fee:'物流费用',reverse_shipping_fee:'逆向物流',order_ams_commission_fee:'达人佣金',campaign_fee:'活动费用',withholding_tax:'代扣税',fbs_fee:'仓储履约',seller_order_processing_fee:'订单处理费',pay_per_sale:'成交广告费'})[key]||key||'其他';}
-  async function recordView(parent,run){
+  function recordKinds(){return view==='orders'?['ORDER','REFUND']:view==='settlements'?['SETTLEMENT','BILL','PENDING']:['FEE','COST'];}
+  async function recordView(parent,run,result){
     parent.style.display='grid';parent.style.gap='15px';
-    const allowedKinds=view==='orders'?['ORDER','REFUND']:view==='settlements'?['SETTLEMENT','BILL','PENDING']:['FEE','COST'];
+    const allowedKinds=recordKinds();
     if(!allowedKinds.includes(selectedKind))selectedKind=allowedKinds[0];
     const pills=el('div',null,parent,view==='settlements'?'fi-settlement-totals':'fi-tabs');
     allowedKinds.forEach(k=>{const tab=button(view==='settlements'?'':kinds[k],pills,()=>{selectedKind=k;page=1;load();});tab.setAttribute('aria-pressed',String(k===selectedKind));
@@ -282,9 +287,9 @@
     });
     meta(parent);
     const grid=el('div',null,parent,'fi-chart-grid'+(view==='settlements'?' fi-settlement-chart':''));trend(grid,(view==='settlements'?[selectedKind]:allowedKinds).map(k=>[k,kinds[k]]),routes[view]+'趋势','按业务日期及当前展示币种统计',12);
-    const result=await request('/records?'+qs({kind:selectedKind,page}));if(run!==generation)return;
+    if(run!==generation)return;
     if(result.productCosts)data.productCosts=result.productCosts;
-    productCostSummary(parent,result.productCosts);
+    productCostSummary(parent,result.productCosts||data.productCosts);
     if(selectedKind==='REFUND')footnote(parent,'平台退款金额保留接口返回的申请/退款金额；确认退款金额仅按已完成状态计入总览。处理中的申请和已取消申请不计入确认退款。');
     const {n,h}=card(parent,selectedKind==='SETTLEMENT'?'结算明细':kinds[selectedKind]+'明细','当前筛选 · 共 '+number(result.total)+' 条',12);el('span',data.filters.currency||'原币',h,'fi-tag');
     renderFieldsTable(n,result.items,result.fieldSettings);action('字段设置','fee',h,()=>fieldsDialog(selectedKind,result.fieldSettings));
@@ -655,10 +660,25 @@
         const response=await request('/reconciliation?'+qs({page}));if(run!==generation||!active)return;
         data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
         reconciliation(shell(next),response);
-      }else if(view!=='shops'){const response=await request('/overview?'+qs());if(run!==generation||!active)return;data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
+      }else if(view!=='shops'){
+        // Start the chart download immediately; a slow chart component must not hold up rows.
+        ensureCharts().then(()=>{if(run===generation&&run===mountedGeneration&&active&&mountedView===view)paintCharts();})
+          .catch(()=>{if(run===generation&&active)notify('图表暂未加载，明细仍可查看。',true);});
+        const isRecordView=!['overview','ads'].includes(view);
+        if(isRecordView&&!recordKinds().includes(selectedKind))selectedKind=recordKinds()[0];
+        const recordQuery=()=>'/records?'+qs({kind:selectedKind,page,includeProductCosts:'false'});
+        // Parallel requests only once the native currency and (for CNY) FX snapshot are fixed.
+        const resolvedCurrency=filters.currency||filters.displayCurrency==='CNY';
+        const resolvedFx=filters.displayCurrency!=='CNY'||filters.fxSnapshot;
+        const [response,prefetched]=await Promise.all([request('/overview?'+qs()),
+          isRecordView&&resolvedCurrency&&resolvedFx?request(recordQuery()):null]);
+        if(run!==generation||!active)return;data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
         // Build filters after authorized shop/currency options have arrived.
-        const body=shell(next);await ensureCharts();if(run!==generation||!active)return;
-        if(view==='overview')overview(body);else if(view==='ads')await adsView(body,run);else await recordView(body,run);
+        const body=shell(next);
+        if(view==='overview')overview(body);else if(view==='ads')await adsView(body,run);else {
+          const records=prefetched||await request(recordQuery());if(run!==generation||!active)return;
+          await recordView(body,run,records);
+        }
       }else await shopView(shell(next),run);
       if(run!==generation||!active)return;
       commit(next);
