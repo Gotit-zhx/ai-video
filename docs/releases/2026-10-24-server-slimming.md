@@ -68,3 +68,30 @@ gzip -dk /opt/heyi/releases/module-isolation-20261015/rollback/database.sql.gz
 - 23 份压缩备份全部在位；16 份日常数据库备份保留。
 - 本轮清单和验证结果保存在服务器 `/opt/heyi/operations/server-slimming-20261024-round2/`，包括 `compression-candidates.json`、`cleanup-result.json`、`verification.json`。清理清单记录了原路径、压缩路径、文件大小及内容哈希。
 - 本轮仅维护服务器产物和运维文档，未修改业务代码、用户数据、助手登录资料或服务配置。
+
+## 第三轮清理
+
+用户再次要求检查可删除内容后，于 2026-10-24 17:16（北京时间）完成第三轮清理。
+
+- 磁盘上移除的文件实际分配空间合计 **825.32 MiB**，清理前后可用空间净增 **825.16 MiB**。线上服务持续写入，因此净增量略小。
+- 另外释放 `/tmp` 内存盘中的 **164.10 MiB**，不计入上述磁盘释放量。
+- 清理后根盘可用约 **25.55 GiB**，`df -h` 显示可用 26G、使用率 **73%**。
+
+### 清理范围与校验
+
+- 移除 9 处 9 月 22 日至 10 月 8 日旧构建目录中的 `BOOT-INF/lib`。每处 156 个依赖包，共 1,404 个重复文件；逐文件 SHA-256 均与当前保留的 `finance-shop-deletion-20261024/app-image/app.jar` 内对应依赖相同。旧构建的业务类、源代码及操作记录保留。
+- 删除 8 月 20 日旧补丁 JAR、10 月 19 日旧 `live-baseline.tar.gz`、8 月 27 日旧前端 Docker 镜像导出包。基线归档内的其他前端及 PI 文件已逐个核对，与归档外保留副本一致；旧前端导出镜像不属于当前保留的镜像集合。
+- 删除已执行完成的 `/tmp/finance-shop-delete-qa-20261024` 测试工作目录。这里是 `tmpfs`，释放的是临时内存盘占用。
+- 在取得 dpkg、APT 的四个排他锁后，移除可重建的 `pkgcache.bin` 和 `srcpkgcache.bin`。软件包清单、已安装程序及配置保留；后续软件包操作可能重新生成缓存。
+- 清理前检查了运行容器挂载、进程命令、工作目录、打开文件和内存映射，未发现候选路径被运行程序引用。
+- 1Panel 的 `/usr/bin` 入口实际链接到 `/usr/local/bin`，后者是正在运行的程序，完整保留。
+
+本轮依赖文件清单及逐文件哈希位于服务器 `server-slimming-20261024-round3/library-candidates.json`。如果需要重跑这些早期构建脚本，应先按清单从上述保留 JAR 提取对应依赖，并校验哈希；不要直接假定旧构建目录仍包含完整依赖。
+
+### 第三轮验证
+
+- 当前发布验证通过，9 个线上容器 ID 均未改变，未重启业务服务；MySQL、Redis、文档预览和 ERP 健康检查正常，1Panel 两个服务均为 `active`。
+- 验证时 17 家财务授权店铺保留，删除任务为 0，最近 5 分钟有 29 条同步状态记录成功更新。
+- 16 份日常 MySQL 备份、第二轮压缩的 23 份历史备份均在位；二进制恢复日志仍按 30 天保留。
+- 本轮未修改业务数据、服务配置、登录态、数据库卷及保留镜像。
+- 完整记录位于服务器 `/opt/heyi/operations/server-slimming-20261024-round3/`，包括 `library-candidates.json`、`cleanup-result.json`、`verification.json`。
