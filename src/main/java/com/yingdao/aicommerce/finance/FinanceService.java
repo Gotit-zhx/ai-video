@@ -46,6 +46,7 @@ public class FinanceService {
             }).toList();
     }
     public Map<String,Object> ownedShop(Scope s,String id){
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())repo.requireShopWrite(s,id);
         return shops(s).stream().filter(r->id.equals(r.get("id"))).findFirst().orElseThrow(()->bad("没有找到本公司的财务店铺"));
     }
     @Transactional
@@ -104,11 +105,13 @@ public class FinanceService {
     }
     @Transactional
     public void removeShop(Scope s,String id){
-        ownedShop(s,id);s=shopScope(s,id);
-        repo.jdbc().update("UPDATE finance_connections SET enabled=FALSE,status='REMOVED',updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND user_id=? AND id=?",s.organizationId(),s.userId(),id);
-        repo.jdbc().update("UPDATE finance_ad_accounts SET enabled=FALSE,status='DISABLED' WHERE organization_id=? AND shop_id=?",s.organizationId(),id);
+        new FinanceShopDeletion(repo).request(s,id);
         invalidateAfterCommit(s);
     }
+    @Transactional public void removeShop(Scope s,String id,String actor){
+        new FinanceShopDeletion(repo).request(s,id,actor);invalidateAfterCommit(s);
+    }
+    public List<Map<String,Object>> deletions(Scope s){return new FinanceShopDeletion(repo).progress(s);}
     void invalidateAfterCommit(Scope s){
         if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
             org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){

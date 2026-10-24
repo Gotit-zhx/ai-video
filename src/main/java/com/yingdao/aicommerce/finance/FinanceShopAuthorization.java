@@ -48,10 +48,14 @@ public class FinanceShopAuthorization {
         var client=clients.require(platform);
         String url=normalized.isBlank()?client.authorizationUrl(callback,state):client.authorizationUrl(callback,state,normalized);
         Instant expires=Instant.now().plus(settings.stateTtl());
-        repo.jdbc().update("""
+        repo.transaction(()->{
+            if(!text(targetShop).isBlank())repo.requireShopWrite(scope,targetShop);
+            repo.jdbc().update("""
             INSERT INTO finance_authorization_sessions(id,organization_id,user_id,platform,state_hash,expires_at,context_json)
             VALUES(?,?,?,?,?,?,?)
             """,UUID.randomUUID().toString(),scope.organizationId(),scope.userId(),platform.name(),hash(state),Timestamp.from(expires),repo.write(Map.of("groupId",businessGroup,"actorUserId",text(actorUserId),"shopId",text(targetShop))));
+            return null;
+        });
         return new ShopAuthorizationService.AuthorizationStart(url,expires,platform.name());
     }
     public String complete(String value,String state,String code,Map<String,String> parameters,String providerError){
@@ -71,7 +75,7 @@ public class FinanceShopAuthorization {
             if(businessGroup.isBlank())return failSession(id,"请重新生成授权链接并选择店铺分组");
             new FinanceGroups(repo).require(scope,businessGroup,false);
             var grant=clients.require(platform).exchangeAuthorizationCode(code,parameters);
-            var result=persistGrant(scope,platform,grant,businessGroup,text(context.get("shopId")));
+            var result=persistGrant(scope,platform,grant,businessGroup,text(context.get("shopId")),instant(session.get("created_at")));
             repo.jdbc().update("UPDATE finance_authorization_sessions SET status='SUCCESS',error_message=NULL WHERE id=?",id);
             if(sharedSnapshots!=null)sharedSnapshots.invalidate(companyScope(scope.organizationId()));
             String message=result.created()>0?"已连接 "+result.created()+" 家财务店铺，请配置并开启同步":"";
@@ -97,6 +101,9 @@ public class FinanceShopAuthorization {
     }
     record PersistResult(int created,int existing){}
     PersistResult persistGrant(Scope s,MarketplacePlatform platform,MarketplaceAccess.AuthorizationGrant grant,String businessGroup,String targetShop){
+        return persistGrant(s,platform,grant,businessGroup,targetShop,Instant.now());
+    }
+    PersistResult persistGrant(Scope s,MarketplacePlatform platform,MarketplaceAccess.AuthorizationGrant grant,String businessGroup,String targetShop,Instant started){
         if(grant==null||grant.tokens()==null||grant.shops().isEmpty()||text(grant.tokens().accessToken()).isBlank())throw bad("平台未返回可用店铺授权");
         Set<String> ids=new HashSet<>();
         for(var shop:grant.shops()){
@@ -114,6 +121,7 @@ public class FinanceShopAuthorization {
             if(!text(targetShop).isBlank()&&existing.stream().noneMatch(r->targetShop.equals(text(r.get("id")))&&ids.contains(text(r.get("external_shop_id")))))throw bad("本次授权未包含所选店铺");
             String group=UUID.randomUUID().toString();int created=0,duplicates=0;
             for(var remote:grant.shops()){
+                new FinanceShopDeletion(repo).checkAuthorization(s,platform.name(),remote.externalShopId(),started);
                 var previous=existing.stream().filter(r->remote.externalShopId().equals(text(r.get("external_shop_id")))).findFirst().orElse(null);
                 String id=previous==null?UUID.randomUUID().toString():text(previous.get("id"));
                 Scope storage=previous==null?s:new Scope(s.organizationId(),text(previous.get("user_id")));
@@ -147,7 +155,7 @@ public class FinanceShopAuthorization {
         var found=repo.jdbc().queryForList("SELECT * FROM finance_connections WHERE organization_id=? AND user_id=? AND id=?",s.organizationId(),s.userId(),id);
         if(found.isEmpty()||!"ACTIVE".equals(found.getFirst().get("status")))throw bad("财务店铺授权不可用，请在财务店铺管理重新连接");
         String group=text(found.getFirst().get("token_group_id"));
-        var locked=repo.jdbc().queryForList("SELECT * FROM finance_connections WHERE organization_id=? AND token_group_id=? ORDER BY id FOR UPDATE",s.organizationId(),group);
+        var locked=repo.jdbc().queryForList("SELECT * FROM finance_connections WHERE organization_id=? AND token_group_id=? AND status<>'REMOVED' ORDER BY id FOR UPDATE",s.organizationId(),group);
         var row=locked.stream().filter(r->id.equals(text(r.get("id")))).findFirst().orElseThrow(()->bad("财务授权已变更，请重试"));
         if(!"ACTIVE".equals(row.get("status")))throw bad("财务店铺已移除");
         Shop shop=new FinanceShop(row);

@@ -226,6 +226,7 @@ public class FinanceCostWorkspace {
         return code.isBlank()?null:new CostCodeMatch(code,"BUNDLE_CODE",Integer.valueOf(bundle.group(2)));
     }
     @Transactional public Map<String,Object> autoMatch(Scope s,String actor,String shopId,Map<String,Object> body){
+        repo.requireShopWrite(s,shopId);
         var data=costs(s,shopId);var catalog=rows(data.get("costs"));
         var byCode=new LinkedHashMap<String,Set<String>>();
         for(var cost:catalog)byCode.computeIfAbsent(text(cost.get("sku")),key->new LinkedHashSet<>()).add(text(cost.get("warehouse")));
@@ -287,6 +288,10 @@ public class FinanceCostWorkspace {
         BigDecimal amount=positive(body.get("amount"));String reason=text(body.get("note")).trim();if(reason.length()>1000)throw bad("说明不能超过 1000 字");
         var old=id==null?List.<Map<String,Object>>of():repo.jdbc().queryForList("SELECT data_json,version FROM finance_expenses WHERE organization_id=? AND id=? FOR UPDATE",s.organizationId(),id);
         if(id!=null&&(old.isEmpty()||number(old.getFirst().get("version"))!=number(body.get("version"))))throw bad("记录不存在或已被修改，请刷新重试");
+        if(!old.isEmpty()){
+            var previous=decode(old.getFirst().get("data_json"));
+            if(!"group".equals(text(previous.get("scope"))))repo.requireShopWrite(s,text(previous.get("target")));
+        }
         if(id!=null&&reason.isBlank())throw bad("请填写调整原因");
         String identifier=id==null?UUID.randomUUID().toString():id;long version=old.isEmpty()?1:number(old.getFirst().get("version"))+1;
         var saved=new LinkedHashMap<String,Object>();saved.put("id",identifier);saved.put("scope",scope);saved.put("target",target);saved.put("order",order);saved.put("category",category);saved.put("source",source);saved.put("amount",amount);saved.put("currency",currency);saved.put("start",start.toString());saved.put("end",end.toString());saved.put("recordDate",record.toString());saved.put("treatment",treatment);saved.put("note",reason);saved.put("version",version);

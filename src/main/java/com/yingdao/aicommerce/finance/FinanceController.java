@@ -45,13 +45,13 @@ public class FinanceController {
     }
     @GetMapping("/overview") public ApiResponse<?> overview(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.dashboard(s(p),filter(q),"CNY".equals(q.get("displayCurrency")),q.get("fxSnapshot")));}
     @PostMapping("/screen") public ApiResponse<?> screen(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.screen(s(p),filter(q),"CNY".equals(q.get("displayCurrency")),q.get("fxSnapshot")));}
-    @GetMapping("/shops") public ApiResponse<?> shops(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(Map.of("items",service.shops(s(p)),"sync",service.syncStates(s(p)),"groups",service.groups(s(p))));}
+    @GetMapping("/shops") public ApiResponse<?> shops(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(Map.of("items",service.shops(s(p)),"sync",service.syncStates(s(p)),"groups",service.groups(s(p)),"deletions",service.deletions(s(p))));}
     record ShopConfig(boolean enabled,String currency,String timezone,String groupId){}
     @PutMapping("/shops/{id}") public ApiResponse<?> configure(@PathVariable String id,@RequestBody ShopConfig body,@AuthenticationPrincipal PlatformPrincipal p){
         service.configure(s(p),id,body.enabled,body.currency,body.timezone,body.groupId);return ApiResponse.ok("已保存");
     }
     @PostMapping("/shops/{id}/sync") public ApiResponse<?> sync(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){service.sync(s(p),id);return ApiResponse.ok("已加入同步队列");}
-    @DeleteMapping("/shops/{id}") public ApiResponse<?> removeShop(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){service.removeShop(s(p),id);return ApiResponse.ok("已移除财务店铺");}
+    @DeleteMapping("/shops/{id}") public ApiResponse<?> removeShop(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){service.removeShop(s(p),id,p.userId());return ApiResponse.ok("已停止同步并清除授权凭据，历史数据正在后台分批删除");}
     record GroupName(String name){}
     @GetMapping("/groups") public ApiResponse<?> groups(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.groups(s(p)));}
     @PostMapping("/groups") public ApiResponse<?> addGroup(@RequestBody GroupName body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(Map.of("id",service.saveGroup(s(p),null,body.name)));}

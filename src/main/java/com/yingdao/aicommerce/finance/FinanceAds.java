@@ -41,7 +41,15 @@ public class FinanceAds {
         }
     }
     public void connectVerified(Scope s,String id,String shopId,String token,String gmvStoreId,Map<String,Object> advertiser){
+        connectVerified(s,id,shopId,token,gmvStoreId,advertiser,Instant.now());
+    }
+    void connectVerified(Scope s,String id,String shopId,String token,String gmvStoreId,Map<String,Object> advertiser,Instant started){
+        repo.transaction(()->{saveVerified(s,id,shopId,token,gmvStoreId,advertiser,started);return null;});
+    }
+    private void saveVerified(Scope s,String id,String shopId,String token,String gmvStoreId,Map<String,Object> advertiser,Instant started){
         shopId=text(shopId);gmvStoreId=text(gmvStoreId).trim();
+        if(!shopId.isBlank())repo.requireShopWrite(s,shopId);
+        new FinanceShopDeletion(repo).checkAdAuthorization(s,id,started);
         validateDestination(s,shopId,gmvStoreId);
         if(!id.equals(text(advertiser.get("advertiser_id"))))throw bad("广告账户授权身份不匹配");
         String currency=first(advertiser,"currency");if(!currency.matches("[A-Z]{3}"))throw bad("广告接口没有返回有效币种");
@@ -50,6 +58,8 @@ public class FinanceAds {
         String encrypted=cipher.encrypt(token,storage.organizationId(),"finance:"+storage.userId()+":"+id);
         if(!previous.isEmpty()&&!shopId.equals(text(previous.getFirst().get("shop_id")))){
             String original=text(previous.getFirst().get("shop_id"));
+            if(!repo.jdbc().queryForList("SELECT shop_id FROM finance_shop_deletions WHERE organization_id=? AND shop_id=? AND status<>'COMPLETE'",
+                    s.organizationId(),original).isEmpty())throw bad("该广告账户所属店铺正在删除，请稍后重新授权");
             boolean retired=!original.isBlank()&&finance.shops(s).stream().noneMatch(shop->original.equals(text(shop.get("id"))));
             if(!retired)throw bad("该广告账户已有归属，请使用原归属更新授权，以免历史费用重复");
         }
@@ -58,7 +68,7 @@ public class FinanceAds {
             VALUES(?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name),access_token_encrypted=VALUES(access_token_encrypted),
             last_success_at=IF(shop_id<>VALUES(shop_id),NULL,last_success_at),shop_id=VALUES(shop_id),
             gmv_store_id=VALUES(gmv_store_id),gmv_status=VALUES(gmv_status),gmv_error=NULL,timezone=VALUES(timezone),checkpoint_json=NULL,
-            enabled=TRUE,status='READY',error_message=NULL,failures=0,next_at=UTC_TIMESTAMP(6)
+            enabled=TRUE,status='READY',error_message=NULL,failures=0,lease_token=NULL,lease_until=NULL,next_at=UTC_TIMESTAMP(6)
             """,storage.organizationId(),storage.userId(),id,first(advertiser,"advertiser_name"),shopId,currency,encrypted,gmvStoreId,gmvStoreId.isBlank()?"DISABLED":"READY",first(advertiser,"timezone"));
     }
     public void pause(Scope s,String id,boolean enabled){
@@ -79,9 +89,11 @@ public class FinanceAds {
                 +" AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6)) ORDER BY next_at LIMIT 1");
         if(accounts.isEmpty())return;var account=accounts.getFirst();
         Scope s=new Scope(text(account.get("organization_id")),text(account.get("user_id")));String id=text(account.get("advertiser_id"));
-        String where="organization_id=? AND user_id=? AND advertiser_id=?";
-        if(repo.jdbc().update("UPDATE finance_ad_accounts SET status='RUNNING',lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 MINUTE) WHERE "+where
-                +" AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6))",s.organizationId(),s.userId(),id)!=1)return;
+        String lease=UUID.randomUUID().toString();
+        String where="organization_id=? AND user_id=? AND advertiser_id=? AND lease_token=?";
+        if(repo.jdbc().update("UPDATE finance_ad_accounts SET status='RUNNING',lease_token=?,lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 MINUTE)"
+                +" WHERE organization_id=? AND user_id=? AND advertiser_id=? AND shop_id=? AND enabled=TRUE"
+                +" AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6))",lease,s.organizationId(),s.userId(),id,text(account.get("shop_id")))!=1)return;
         try{
             String token=cipher.decrypt(text(account.get("access_token_encrypted")),s.organizationId(),"finance:"+s.userId()+":"+id);
             Map<String,Object> cp=account.get("checkpoint_json")==null?new LinkedHashMap<>():new LinkedHashMap<>(repo.read(text(account.get("checkpoint_json"))));
@@ -92,7 +104,7 @@ public class FinanceAds {
                 cp.put("from",today.minusDays(account.get("last_success_at")==null?90:nightly?31:7).toString());cp.put("until",today.toString());cp.put("page",1);
             }
             cp.putIfAbsent("run",UUID.randomUUID().toString());
-            repo.jdbc().update("UPDATE finance_ad_accounts SET checkpoint_json=? WHERE "+where,repo.write(cp),s.organizationId(),s.userId(),id);
+            repo.jdbc().update("UPDATE finance_ad_accounts SET checkpoint_json=? WHERE "+where,repo.write(cp),s.organizationId(),s.userId(),id,lease);
             LocalDate from=LocalDate.parse(text(cp.get("from"))),to=from.plusDays(6);LocalDate until=LocalDate.parse(text(cp.get("until")));if(to.isAfter(until))to=until;
             int page=(int)Math.max(1,number(cp.get("page")));
             var q=new LinkedHashMap<String,Object>(Map.of("advertiser_id",id,"report_type","BASIC","data_level","AUCTION_ADVERTISER",
@@ -106,7 +118,7 @@ public class FinanceAds {
             try{data=get(gmv?"/gmv_max/report/get/":"/report/integrated/get/",token,q);}
             catch(Exception ex){
                 if(!gmv)throw ex;
-                repo.jdbc().update("UPDATE finance_ad_accounts SET gmv_status='ERROR',gmv_error='GMV Max 报表未授权或店铺 ID 不匹配，请核对广告权限' WHERE "+where,s.organizationId(),s.userId(),id);
+                repo.jdbc().update("UPDATE finance_ad_accounts SET gmv_status='ERROR',gmv_error='GMV Max 报表未授权或店铺 ID 不匹配，请核对广告权限' WHERE "+where,s.organizationId(),s.userId(),id,lease);
                 // Never block ordinary advertising costs because the optional GMV report is unavailable.
                 cp.put("gmvFailed",true);data=Map.of("list",List.of(),"page_info",Map.of("total_page",1));
             }
@@ -124,24 +136,24 @@ public class FinanceAds {
             if(more)cp.put("page",page+1);
             else{
                 if(!gmv||!Boolean.TRUE.equals(cp.get("gmvFailed"))){
-                    repo.jdbc().update("DELETE FROM finance_records WHERE organization_id=? AND user_id=? AND kind=? AND source='API'"
+                    repo.jdbc().update("DELETE FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind=? AND source='API'"
                                     +" AND record_date>=? AND record_date<=? AND JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.advertiser_id'))=?"
                                     +" AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_sync')),'')<>?",
-                            s.organizationId(),s.userId(),gmv?"AD_GMV":"AD",from.toString(),to.toString(),id,cp.get("run"));
-                    if(gmv)repo.jdbc().update("UPDATE finance_ad_accounts SET gmv_status='SUCCESS',gmv_error=NULL WHERE "+where,s.organizationId(),s.userId(),id);
+                            s.organizationId(),s.userId(),text(account.get("shop_id")).isBlank()?"UNASSIGNED":text(account.get("shop_id")),gmv?"AD_GMV":"AD",from.toString(),to.toString(),id,cp.get("run"));
+                    if(gmv)repo.jdbc().update("UPDATE finance_ad_accounts SET gmv_status='SUCCESS',gmv_error=NULL WHERE "+where,s.organizationId(),s.userId(),id,lease);
                 }
                 if(!gmv&&!text(account.get("gmv_store_id")).isBlank()){cp.put("channel","GMV");cp.put("page",1);}
                 else if(to.isBefore(until)){cp.put("from",to.plusDays(1).toString());cp.put("page",1);cp.remove("channel");cp.remove("run");cp.remove("gmvFailed");}
                 else cp.clear();
             }
             boolean done=cp.isEmpty();
-            repo.jdbc().update("UPDATE finance_ad_accounts SET checkpoint_json=?,status=?,error_message=NULL,failures=0,lease_until=NULL,"
+            repo.jdbc().update("UPDATE finance_ad_accounts SET checkpoint_json=?,status=?,error_message=NULL,failures=0,lease_until=NULL,lease_token=NULL,"
                     +"last_success_at=CASE WHEN ? THEN UTC_TIMESTAMP(6) ELSE last_success_at END,next_at=? WHERE "+where,
-                    done?null:repo.write(cp),done?"SUCCESS":"SYNCING",done,Timestamp.from(Instant.now().plusSeconds(done?3600:30)),s.organizationId(),s.userId(),id);
+                    done?null:repo.write(cp),done?"SUCCESS":"SYNCING",done,Timestamp.from(Instant.now().plusSeconds(done?3600:30)),s.organizationId(),s.userId(),id,lease);
         }catch(Exception e){
             long seconds=Math.min(21600,120*(1L<<Math.min(7,number(account.get("failures")))));
-            repo.jdbc().update("UPDATE finance_ad_accounts SET status='ERROR',error_message=?,failures=failures+1,lease_until=NULL,next_at=? WHERE "+where,
-                    "广告同步失败，请检查授权与报表权限；已保存同步进度",Timestamp.from(Instant.now().plusSeconds(seconds)),s.organizationId(),s.userId(),id);
+            repo.jdbc().update("UPDATE finance_ad_accounts SET status='ERROR',error_message=?,failures=failures+1,lease_until=NULL,lease_token=NULL,next_at=? WHERE "+where,
+                    "广告同步失败，请检查授权与报表权限；已保存同步进度",Timestamp.from(Instant.now().plusSeconds(seconds)),s.organizationId(),s.userId(),id,lease);
         }
     }
 }

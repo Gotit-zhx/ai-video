@@ -95,10 +95,14 @@ public class FinanceAdAuthorization {
         byte[] random=new byte[32];new SecureRandom().nextBytes(random);
         String state=PREFIX+Base64.getUrlEncoder().withoutPadding().encodeToString(random);
         Instant expires=Instant.now().plus(settings.stateTtl());
-        repo.jdbc().update("""
+        repo.transaction(()->{
+            if(!text(context.get("shopId")).isBlank())repo.requireShopWrite(s,text(context.get("shopId")));
+            repo.jdbc().update("""
             INSERT INTO finance_authorization_sessions(id,organization_id,user_id,platform,state_hash,expires_at,context_json)
             VALUES(?,?,?,?,?,?,?)
             """,UUID.randomUUID().toString(),storage.organizationId(),storage.userId(),PLATFORM,FinanceShopAuthorization.hash(state),Timestamp.from(expires),repo.write(context));
+            return null;
+        });
         String url=MarketplaceHttp.uri("https://business-api.tiktok.com","/portal/auth",
                 Map.of("app_id",app.get("app_id"),"state",state,"redirect_uri",callbackUrl())).toString();
         return Map.of("authorizationUrl",url,"expiresAt",expires,"platform",PLATFORM);
@@ -156,7 +160,7 @@ public class FinanceAdAuthorization {
                         var previous=repo.jdbc().queryForList("SELECT shop_id,gmv_store_id FROM finance_ad_accounts WHERE organization_id=? AND advertiser_id=?",s.organizationId(),id);
                         if(!previous.isEmpty()){shop=text(previous.getFirst().get("shop_id"));gmv=text(previous.getFirst().get("gmv_store_id"));}
                     }
-                    ads.connectVerified(s,id,shop,token,gmv,info.get(id));
+                    ads.connectVerified(s,id,shop,token,gmv,info.get(id),instant(session.get("created_at")));
                 }
                 repo.jdbc().update("UPDATE finance_authorization_sessions SET status='SUCCESS',error_message=NULL WHERE id=?",sessionId);
             });

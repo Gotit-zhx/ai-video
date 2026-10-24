@@ -315,7 +315,7 @@
   }
   async function shopView(parent,run){
     const res=await request('/shops');if(run!==generation)return;
-    data={...(data||{}),shops:res.items,sync:res.sync,groups:res.groups||[]};parent.style.display='grid';parent.style.gap='15px';
+    data={...(data||{}),shops:res.items,sync:res.sync,groups:res.groups||[],deletions:res.deletions||[]};parent.style.display='grid';parent.style.gap='15px';
     const enabledCount=res.items.filter(r=>Number(r.enabled)===1||r.enabled===true).length;
     const mini=el('div',null,parent,'fi-mini-stats');
     for(const [value,label,sub]of[[res.items.length,'独立授权店铺','财务专用配置'],[enabledCount,'已开启财务同步','最新订单与历史回补独立运行'],['约 1 分钟','最新订单同步目标','退款每 10 分钟 · 结算与广告每小时']]){const n=el('div',null,mini);el('span',label,n);el('strong',value,n);el('span',sub,n);}
@@ -340,6 +340,14 @@
       button('重新授权',controls,()=>authorizeDialog(shop));button('移除',controls,()=>removeShopDialog(shop));}else el('span','只读',controls,'fi-muted');
       return [name,groupName(shop.group_id),shop.region||'—',currency,badge(shop.authorization_status),sync,shop.last_success_at?new Date(shop.last_success_at).toLocaleString('zh-CN'):'尚未完成',controls];
     }),'尚未配置财务店铺。点击右上角「连接店铺」独立授权，再开启同步。',visibleShops.map(s=>s.id));
+    if(data.deletions.length){
+      const progress=card(parent,'店铺数据删除进度','后台分批清理，中断自动续接；共享成本表和其他店铺保留',12).n;
+      table(progress,['店铺 / 任务','状态','已清理记录','提交时间'],data.deletions.map(job=>[
+        job.shop_label||'已删除店铺 · '+String(job.shop_id).slice(0,8),
+        el('span',job.status==='COMPLETE'?'已彻底删除':job.status==='RETRY'?'正在重试，进度已保留':'正在删除',null,'fi-status '+(job.status==='COMPLETE'?'success':'running')),
+        number(job.deleted_rows),new Date(job.requested_at).toLocaleString('zh-CN')
+      ]),'',data.deletions.map(job=>job.shop_id));
+    }
     footnote(parent,'首次分批补齐最近 90 天可用数据，最新订单独立持续同步；平台回传、分页与多店排队会有延迟，失败自动退避重试。暂停财务同步不影响店铺发布功能。');
     await adAccountSettings(parent,run);
   }
@@ -534,7 +542,20 @@
     d.submit('保存字段配置',async()=>{if(!settings||settings.view!==choose.value)throw Error('请等待字段加载完成');await request('/fields/'+choose.value,json('PUT',{visible:checks.filter(c=>c.visible.checked).map(c=>c.id),exported:checks.filter(c=>c.exported.checked).map(c=>c.id)}));d.d.close();load();});
     try{await render(key);}catch(e){d.feedback.textContent=e.message;}
   }
-  function removeShopDialog(shop){const d=dialog('移除财务店铺');el('p','移除「'+(shop.display_name||shop.name)+'」后停止财务同步，并从财务看板隐藏该店铺。历史记录保留，商品运营中的店铺不变。',d.body);d.submit('确认移除',async()=>{await request('/shops/'+encodeURIComponent(shop.id),{method:'DELETE'});if(filters.shopId===shop.id)filters.shopId='';d.d.close();load();});}
+  function removeShopDialog(shop){
+    const name=shop.display_name||shop.name,d=dialog('删除财务店铺及数据');
+    el('p','将永久删除「'+name+'」的财务订单、退款、结算、费用、成本关联、导入记录及本地授权凭据，同时删除该店绑定的财务广告账户。此操作不可恢复。',d.body);
+    el('p','提交后立即停止同步，历史数据在后台分批清理。其他店铺、分组共享成本表和商品运营中的店铺不受影响。',d.body,'fi-muted');
+    const confirmation=field(d.body,'输入店铺名称确认删除：'+name);
+    confirmation.autocomplete='off';
+    const submit=d.submit('永久删除',async()=>{
+      if(confirmation.value!==name)throw Error('请准确输入店铺名称');
+      const message=await request('/shops/'+encodeURIComponent(shop.id),{method:'DELETE'});
+      if(filters.shopId===shop.id)filters.shopId='';
+      d.d.close();callbackNotice=message;await load();
+    });
+    submit.disabled=true;confirmation.oninput=()=>{submit.disabled=confirmation.value!==name;};
+  }
   async function detailDialog(id){const d=dialog('财务记录详情');try{const row=await request('/records/'+encodeURIComponent(id)+'?'+qs());const settings=await request('/fields/'+(row.kind||'ALL'));const dl=el('dl',null,d.body);
     for(const f of settings.fields){if(f.cny&&!row.fx)continue;const value=columnValue(row,f);if(row[f.id]==null&&!f.id.startsWith('fx_'))continue;el('dt',f.label,dl);const dd=el('dd',null,dl);if(value instanceof Node)dd.textContent=value.textContent;else dd.textContent=value;}
     if(row.productCost){const cost=row.productCost;el('h3','已结算订单商品成本明细 · 人民币',d.body);el('p',cost.note+' · 成本仓：'+(cost.warehouse||'待配置'),d.body,'fi-muted');
@@ -696,7 +717,7 @@
       const errors=(data?.sync||[]).filter(s=>s.status==='ERROR').length;
       notify(callbackNotice||(errors?`${errors} 项同步需要处理，可在财务店铺管理查看权限或连接问题。`:''));callbackNotice='';
       if(view==='shops'||data?.productCosts?.processing||(data?.sync||[]).some(s=>['READY','RUNNING','SYNCING'].includes(s.status)))
-        refreshTimer=setTimeout(refreshWhenIdle,15000);
+        refreshTimer=setTimeout(refreshWhenIdle,view==='shops'&&data?.deletions?.some(job=>job.status!=='COMPLETE')?3000:15000);
     }catch(e){if(run===generation){notify((mountedView===view?'更新暂未完成，已保留当前数据。':'')+(e.message||'财务数据暂时无法加载'),true);refreshTimer=setTimeout(refreshWhenIdle,15000);}}
     finally{if(run===generation)setLoading(false);}
   }

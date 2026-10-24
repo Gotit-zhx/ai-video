@@ -54,6 +54,7 @@ class FinanceConfigurationIntegrationTest {
         migration("V127__finance_cost_workspace.sql");
         migration("V128__finance_order_standard_costs.sql");
         migration("V130__finance_query_indexes.sql");
+        migration("V131__finance_shop_deletion_jobs.sql");
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
@@ -64,7 +65,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
-        for(String table:List.of("finance_order_cost_jobs","finance_order_costs","finance_cost_rebuilds","finance_workspace_audit","finance_expense_rules","finance_expenses","finance_cost_mappings","finance_cost_settings","finance_cost_books","finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
+        for(String table:List.of("finance_shop_deletion_ads","finance_shop_deletions","finance_order_cost_jobs","finance_order_costs","finance_cost_rebuilds","finance_workspace_audit","finance_expense_rules","finance_expenses","finance_cost_mappings","finance_cost_settings","finance_cost_books","finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
         client=mock(MarketplaceAccess.Client.class);when(client.platform()).thenReturn(MarketplacePlatform.SHOPEE);when(client.configured()).thenReturn(true);
         var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
         auth=new FinanceShopAuthorization(repo,new MarketplaceClientRegistry(List.of(client)),cipher,settings,tx);
@@ -86,6 +87,135 @@ class FinanceConfigurationIntegrationTest {
         return db.queryForObject("SELECT id FROM finance_connections WHERE organization_id=? AND external_shop_id=?",String.class,s.organizationId(),external);
     }
     Filter grouped(String id){return new Filter(filter.start(),filter.end(),"","","PHP","day",id);}
+    void finishDeletion(String shop){
+        for(int i=0;i<120;i++){
+            if("COMPLETE".equals(db.queryForObject("SELECT status FROM finance_shop_deletions WHERE organization_id=? AND shop_id=?",String.class,owner.organizationId(),shop)))return;
+            repo.transaction(()->new FinanceShopDeletion(repo).batch());
+        }
+        fail("Deletion did not finish within bounded test batches");
+    }
+    @Test void shopDeletionIsBoundedResumableAndPreservesOtherShopsAndSharedCosts(){
+        String group=service.saveGroup(owner,null,"删除测试"),shop=groupedShop(owner,"delete-shop",group),sibling=groupedShop(owner,"keep-shop",group);
+        String foreign=connect(other,false);
+        var txs=new TransactionTemplate(tx);
+        txs.executeWithoutResult(status->new FinanceCostWorkspace(repo,service).importCosts(owner,"u",group,
+                "仓库,型号,202610\n海外仓-菲律宾,PACK,10\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),"shared.csv"));
+        record(owner,sibling,"ORDER","keep-order",BigDecimal.TEN,Map.of());record(other,foreign,"ORDER","foreign-order",BigDecimal.TEN,Map.of());
+        var values=new ArrayList<Object[]>();
+        for(int i=0;i<1201;i++)values.add(new Object[]{"delete-"+i,shop,"order-"+i});
+        db.batchUpdate("""
+            INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,record_date,currency,amount,source,raw_json)
+            VALUES(?,'org','u',?,'SHOPEE','ORDER',?,'2026-10-21','PHP',1,'API','{}')
+            """,values);
+        db.update("INSERT INTO finance_order_costs(order_record_id,organization_id,shop_id,order_id,record_date,status,source_hash,data_json) VALUES('delete-0','org',?,'order-0','2026-10-21','READY','hash','{}')",shop);
+        db.update("INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id) VALUES('delete-0','org',?)",shop);
+        db.update("INSERT IGNORE INTO finance_cost_rebuilds(organization_id,shop_id) VALUES('org',?)",shop);
+        db.update("INSERT INTO finance_cost_settings(organization_id,shop_id,data_json,updated_by) VALUES('org',?,'{}','u')",shop);
+        db.update("INSERT INTO finance_cost_mappings(id,organization_id,shop_id,product_id,sku_id,warehouse,data_json,updated_by) VALUES('mapping','org',?,'p','sku','PH','{}','u')",shop);
+        db.update("INSERT INTO finance_imports(id,organization_id,user_id,shop_id,file_name,content_hash,row_count,kind) VALUES('import','org','u',?,'private.csv','hash',1,'BILL')",shop);
+        db.update("""
+            INSERT INTO finance_expenses(id,organization_id,scope,target_id,category,source_ref,dedupe_key,amount,currency,start_date,end_date,record_date,treatment,data_json,created_by,updated_by)
+            VALUES('expense','org','shop',?,'shipping','source','hash',1,'CNY','2026-10-21','2026-10-21','2026-10-21','extra','{}','u','u')
+            """,shop);
+        db.update("INSERT INTO finance_expense_rules(id,organization_id,data_json,created_by) VALUES('rule','org',?,'u'),('shared-rule','org',?,'u')",
+                repo.write(Map.of("scope","shop","target",shop)),repo.write(Map.of("scope","group","target",group)));
+        for(var pair:List.of(new String[]{"ORDER_STANDARD_COST","delete-0"},new String[]{"COST_MAPPING","mapping"},
+                new String[]{"COST_SETTINGS",shop},new String[]{"COST_AUTO_MATCH",shop},new String[]{"EXPENSE","expense"},new String[]{"EXPENSE_RULE","rule"}))
+            db.update("INSERT INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,after_json,reason,actor_id) VALUES(?,'org',?,?,'{}','test','u')",
+                    UUID.randomUUID().toString(),pair[0],pair[1]);
+        db.update("INSERT INTO finance_ad_accounts(organization_id,user_id,advertiser_id,name,shop_id,currency,access_token_encrypted,lease_token) VALUES('org','u','123456','advertiser',?,'PHP','secret','old-lease')",shop);
+        service.configure(owner,shop,true,"PHP","Asia/Manila");
+        db.update("UPDATE finance_sync_states SET status='RUNNING',lease_token='old-lease',lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 10 MINUTE) WHERE shop_id=?",shop);
+        db.update("INSERT INTO finance_authorization_sessions(id,organization_id,user_id,platform,state_hash,expires_at,context_json) VALUES('session','org','u','SHOPEE','hash',DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 HOUR),?)",repo.write(Map.of("shopId",shop)));
+        Instant oldLink=Instant.now().minusSeconds(10);
+        assertThrows(BusinessException.class,()->service.removeShop(other,shop));
+        service.removeShop(owner,shop);service.removeShop(owner,shop);
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_shop_deletions",Integer.class));
+        assertEquals("",db.queryForObject("SELECT access_token_encrypted FROM finance_connections WHERE id=?",String.class,shop));
+        assertNull(db.queryForObject("SELECT refresh_token_encrypted FROM finance_connections WHERE id=?",String.class,shop));
+        assertEquals("",db.queryForObject("SELECT access_token_encrypted FROM finance_ad_accounts WHERE shop_id=?",String.class,shop));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_sync_states WHERE shop_id=? AND lease_token IS NOT NULL",Integer.class,shop));
+        assertEquals("CANCELLED",db.queryForObject("SELECT status FROM finance_authorization_sessions WHERE id='session'",String.class));
+        assertEquals(1201,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE shop_id=?",Integer.class,shop));
+        assertThrows(BusinessException.class,()->record(owner,shop,"ORDER","late-page",BigDecimal.ONE,Map.of()));
+        assertThrows(BusinessException.class,()->auth.persistGrant(owner,MarketplacePlatform.SHOPEE,grant("delete-shop"),group,""));
+        for(int i=0;i<60&&db.queryForObject("SELECT stage FROM finance_shop_deletions WHERE shop_id=?",Integer.class,shop)<10;i++)
+            repo.transaction(()->new FinanceShopDeletion(repo).batch());
+        assertEquals(10,db.queryForObject("SELECT stage FROM finance_shop_deletions WHERE shop_id=?",Integer.class,shop));
+        assertThrows(IllegalStateException.class,()->repo.transaction(()->{
+            new FinanceShopDeletion(repo).batch();throw new IllegalStateException("simulated interruption");
+        }));
+        assertEquals(1201,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE shop_id=?",Integer.class,shop),"failed batch rolls back its data and checkpoint");
+        repo.transaction(()->new FinanceShopDeletion(repo).batch());
+        assertEquals(701,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE shop_id=?",Integer.class,shop),"one batch removes at most 500 records");
+        finishDeletion(shop);
+        for(String table:List.of("finance_records","finance_order_costs","finance_order_cost_jobs","finance_cost_rebuilds","finance_cost_mappings","finance_cost_settings","finance_imports","finance_ad_accounts","finance_sync_states"))
+            assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM "+table+" WHERE organization_id='org' AND shop_id=?",Integer.class,shop),table);
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_connections WHERE id=?",Integer.class,shop));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_expenses",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_authorization_sessions WHERE id='session'",Integer.class));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_expense_rules",Integer.class),"shared group rule remains");
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit",Integer.class),"shared cost import audit remains");
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class));
+        assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));
+        assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
+        assertEquals("",db.queryForObject("SELECT shop_label FROM finance_shop_deletions WHERE shop_id=?",String.class,shop));
+        service.removeShop(owner,shop);
+        assertThrows(BusinessException.class,()->record(owner,shop,"ORDER","late-after-complete",BigDecimal.ONE,Map.of()));
+        assertThrows(BusinessException.class,()->auth.persistGrant(owner,MarketplacePlatform.SHOPEE,grant("delete-shop"),group,"",oldLink));
+        auth.persistGrant(owner,MarketplacePlatform.SHOPEE,grant("delete-shop"),group,"");
+        String fresh=db.queryForObject("SELECT id FROM finance_connections WHERE external_shop_id='delete-shop'",String.class);
+        assertNotEquals(shop,fresh,"explicit fresh authorization gets a new shop identity");
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE shop_id=?",Integer.class,fresh));
+    }
+    @Test void deletingShopWaitsForFinancialWritesAndFencesLateWork()throws Exception{
+        String shop=connect(owner,false);
+        var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
+        try(var executor=java.util.concurrent.Executors.newFixedThreadPool(2)){
+            var writing=executor.submit(()->repo.transaction(()->{
+                record(owner,shop,"ORDER","in-flight",BigDecimal.ONE,Map.of());entered.countDown();
+                try{assertTrue(release.await(10,java.util.concurrent.TimeUnit.SECONDS));}catch(InterruptedException e){throw new RuntimeException(e);}return null;
+            }));
+            assertTrue(entered.await(10,java.util.concurrent.TimeUnit.SECONDS));
+            var deleting=executor.submit(()->service.removeShop(owner,shop));
+            try{assertThrows(java.util.concurrent.TimeoutException.class,()->deleting.get(200,java.util.concurrent.TimeUnit.MILLISECONDS));}
+            finally{release.countDown();}
+            writing.get(10,java.util.concurrent.TimeUnit.SECONDS);deleting.get(10,java.util.concurrent.TimeUnit.SECONDS);
+        }
+        assertThrows(BusinessException.class,()->repo.transaction(()->{repo.requireShopWrite(owner,shop);return null;}));
+        repo.transaction(()->{new FinanceOrderCosts(repo).requestShop(owner.organizationId(),shop);return null;});
+        finishDeletion(shop);
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE shop_id=?",Integer.class,shop));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_cost_rebuilds WHERE shop_id=?",Integer.class,shop));
+    }
+    @Test void lateAdvertisingResponseCannotRestoreDeletedShopOrOverwriteNewAuthorization()throws Exception{
+        String shop=connect(owner,false);db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP' WHERE id=?",shop);
+        var http=mock(com.yingdao.aicommerce.shop.infrastructure.MarketplaceHttp.class);
+        var ads=new FinanceAds(repo,service,http,cipher);
+        var advertiser=Map.<String,Object>of("advertiser_id","123456","advertiser_name","Old advertiser","currency","PHP","timezone","Asia/Manila");
+        ads.connectVerified(owner,"123456",shop,"valid-advertiser-token","",advertiser);
+        Instant oldLink=Instant.now().minusSeconds(10);
+        var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
+        when(http.get(any(URI.class),anyMap())).thenAnswer(invocation->{
+            entered.countDown();assertTrue(release.await(60,java.util.concurrent.TimeUnit.SECONDS));
+            return Map.of("code",0,"data",Map.of("list",List.of(Map.of("dimensions",Map.of("stat_time_day","2026-10-21"),
+                    "metrics",Map.of("spend","10","impressions","1","clicks","1","conversion","0"))),"page_info",Map.of("total_page",1)));
+        });
+        try(var executor=java.util.concurrent.Executors.newSingleThreadExecutor()){
+            var running=executor.submit(ads::tick);assertTrue(entered.await(10,java.util.concurrent.TimeUnit.SECONDS));
+            try{
+                service.removeShop(owner,shop);finishDeletion(shop);
+                assertThrows(BusinessException.class,()->ads.connectVerified(owner,"123456","","another-valid-token","",advertiser,oldLink));
+                var newAdvertiser=new HashMap<>(advertiser);newAdvertiser.put("advertiser_name","New advertiser");
+                ads.connectVerified(owner,"123456","","new-valid-advertiser-token","",newAdvertiser);
+            }finally{release.countDown();}
+            running.get(10,java.util.concurrent.TimeUnit.SECONDS);
+        }finally{ads.stop();}
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));
+        assertEquals("New advertiser",db.queryForObject("SELECT name FROM finance_ad_accounts WHERE advertiser_id='123456'",String.class));
+        assertEquals("READY",db.queryForObject("SELECT status FROM finance_ad_accounts WHERE advertiser_id='123456'",String.class));
+        assertNull(db.queryForObject("SELECT checkpoint_json FROM finance_ad_accounts WHERE advertiser_id='123456'",String.class));
+    }
     @Test void merchantSkuColumnsFollowOrdersAndBillsWithoutCrossingShopOrCompany(){
         String group=service.saveGroup(owner,null,"SKU 列测试"),shop=groupedShop(owner,"sku-column-shop",group),sibling=groupedShop(owner,"sku-column-sibling",group);
         var order=new Entry(shop,"TIKTOK_SHOP","ORDER","shared-order","shared-order","","订单","COMPLETED",filter.start().minusDays(20),"PHP",BigDecimal.TEN,null,null,null,null,"API",

@@ -142,6 +142,7 @@ public final class FinanceOrderCosts {
             """,id(s,entry),s.organizationId(),entry.shopId(),id(s,entry),sourceHash(repo,entry.raw(),entry.status()),s.organizationId(),entry.shopId());
     }
     void requestShop(String organization,String shopId){
+        if(!repo.writableShop(organization,shopId))return;
         repo.jdbc().update("""
             INSERT INTO finance_cost_rebuilds(organization_id,shop_id) VALUES(?,?)
             ON DUPLICATE KEY UPDATE cursor_id='',status='READY',requested_at=UTC_TIMESTAMP(6)
@@ -152,14 +153,22 @@ public final class FinanceOrderCosts {
             requestShop(s.organizationId(),shop);
     }
     int seedAndFill(){
-        repo.jdbc().update("""
-            INSERT IGNORE INTO finance_cost_rebuilds(organization_id,shop_id)
+        var missing=repo.jdbc().queryForList("""
             SELECT c.organization_id,c.id FROM finance_connections c
-            WHERE c.status<>'REMOVED' AND EXISTS (
+            WHERE c.status<>'REMOVED' AND NOT EXISTS (
+              SELECT 1 FROM finance_cost_rebuilds r WHERE r.organization_id=c.organization_id AND r.shop_id=c.id)
+            AND EXISTS (
               SELECT 1 FROM finance_cost_books b WHERE b.organization_id=c.organization_id AND b.group_id=c.group_id)
+            ORDER BY c.organization_id,c.id LIMIT 100
             """);
+        for(var shop:missing)if(repo.writableShop(text(shop.get("organization_id")),text(shop.get("id"))))
+            repo.jdbc().update("INSERT IGNORE INTO finance_cost_rebuilds(organization_id,shop_id) VALUES(?,?)",shop.get("organization_id"),shop.get("id"));
         var jobs=repo.jdbc().queryForList("SELECT * FROM finance_cost_rebuilds WHERE status='READY' ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED");
         if(jobs.isEmpty())return 0;var job=jobs.getFirst();
+        if(!repo.writableShop(text(job.get("organization_id")),text(job.get("shop_id")))){
+            repo.jdbc().update("DELETE FROM finance_cost_rebuilds WHERE organization_id=? AND shop_id=?",job.get("organization_id"),job.get("shop_id"));
+            return 0;
+        }
         var ids=repo.jdbc().queryForList("""
             SELECT id FROM finance_records WHERE organization_id=? AND shop_id=? AND kind='ORDER'
             AND id>? ORDER BY id LIMIT 500
@@ -176,6 +185,9 @@ public final class FinanceOrderCosts {
         var contexts=new HashMap<String,Context>();var changed=new LinkedHashSet<String>();
         for(var job:jobs){
             String recordId=text(job.get("order_record_id")),organization=text(job.get("organization_id")),shop=text(job.get("shop_id"));
+            if(!repo.writableShop(organization,shop)){
+                repo.jdbc().update("DELETE FROM finance_order_cost_jobs WHERE order_record_id=?",recordId);continue;
+            }
             var records=repo.jdbc().queryForList("SELECT * FROM finance_records WHERE id=? AND organization_id=? AND shop_id=? AND kind='ORDER'",recordId,organization,shop);
             Context context=contexts.computeIfAbsent(organization+":"+shop,k->context(organization,shop));
             if(!records.isEmpty()&&context!=null){

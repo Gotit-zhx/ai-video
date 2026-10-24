@@ -12,10 +12,35 @@ public class FinanceRepository {
     private final JdbcTemplate db; private final ObjectMapper json;
     public FinanceRepository(JdbcTemplate db,ObjectMapper json){this.db=db;this.json=json;}
     public JdbcTemplate jdbc(){return db;}
+    <T>T transaction(java.util.function.Supplier<T> action){
+        var tx=new org.springframework.transaction.support.TransactionTemplate(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(Objects.requireNonNull(db.getDataSource())));
+        tx.setTimeout(15);
+        return tx.execute(status->action.get());
+    }
+    /** Lock before a financial write so removal waits for committed work and blocks late responses. */
+    boolean writableShop(String organization,String shop){
+        return !db.queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND id=? AND status<>'REMOVED' FOR SHARE",
+                organization,shop).isEmpty();
+    }
+    void requireShopWrite(Scope scope,String shop){
+        if(!writableShop(scope.organizationId(),shop))throw bad("财务店铺已移除或正在删除，请刷新页面");
+    }
+    private void rejectDeletedWrite(Scope scope,String shop){
+        if("UNASSIGNED".equals(shop))return;
+        var connection=db.queryForList("SELECT status FROM finance_connections WHERE organization_id=? AND id=? FOR SHARE",scope.organizationId(),shop);
+        if(!connection.isEmpty()){
+            if("REMOVED".equals(connection.getFirst().get("status")))throw bad("财务店铺已移除，忽略迟到的同步数据");
+        }else if(!db.queryForList("SELECT shop_id FROM finance_shop_deletions WHERE organization_id=? AND shop_id=? FOR SHARE",
+                scope.organizationId(),shop).isEmpty())throw bad("财务店铺已删除，忽略迟到的同步数据");
+    }
     public Map<String,Object> read(String text){try{return map(json.readValue(text,Map.class));}catch(Exception e){throw bad("财务数据格式不正确");}}
     public String write(Object value){return json.writeValueAsString(value);}
     public void save(Scope s,Entry e){
         validate(e);
+        transaction(()->{rejectDeletedWrite(s,e.shopId());saveEntry(s,e);return null;});
+    }
+    private void saveEntry(Scope s,Entry e){
         db.update("""
             INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,order_id,
             statement_id,category,status,record_date,currency,amount,revenue,impressions,clicks,conversions,source,raw_json)
