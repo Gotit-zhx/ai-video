@@ -10,7 +10,7 @@ w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEven
 w.echarts={init:()=>({setOption(){},resize(){},dispose(){},getWidth(){return 1;},getHeight(){return 1;}})};
 w.FinanceCosts={openOrders:filters=>drilldowns.push(filters),reset(){}};
 const response={
-  filters:{start:'2026-09-24',end:'2026-10-23',currency:'PHP',displayCurrency:'CNY'},
+  filters:{start:'2026-09-24',end:'2026-10-23',currency:'',displayCurrency:'CNY'},
   groups:[],shops:[{id:'shop',name:'示例母婴店',display_name:'示例母婴店',platform:'TIKTOK_SHOP',region:'PH',currency:'PHP',timezone:'Asia/Manila'}],sync:[],currencies:['PHP'],
   totals:[{kind:'SETTLEMENT',amount:82646.26,records:3010},{kind:'ORDER',amount:116762.59,records:3500},{kind:'REFUND',amount:969.52},{kind:'FEE',amount:33976.43}],
   ranking:[{shop_id:'shop',currency:'CNY',kind:'SETTLEMENT',amount:82646.26,settled_gross_amount:116622.69,records:3010}],
@@ -21,13 +21,16 @@ const response={
     settlementBasis:'已结算额度按平台结算金额加回已扣平台费用计算。',refundBasis:'退款已体现在平台结算中，不再重复扣减。',basis:'按当前筛选期间已同步及已录入的数据计算。',
     notes:['广告消耗尚无记录，按 0 暂计，补录后利润将变化','商品成本包含历史月份取价估算']}
 };
-w.api=async path=>{assert(path.startsWith('/api/v1/finance/overview?'));return {data:structuredClone(response)};};
+w.api=async path=>{assert(path.startsWith('/api/v1/finance/overview?'));const query=new URL(path,'https://example.test').searchParams;assert.equal(query.get('displayCurrency'),'CNY');assert.equal(query.get('currency'),'','default and refresh aggregate every source currency');return {data:structuredClone(response)};};
 for(const file of ['incremental-dom.js','incremental-charts.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../frontend/'+file,import.meta.url),'utf8'));
 async function ready(){for(let i=0;i<200;i++){await new Promise(r=>setTimeout(r,5));if(d.querySelector('#finance-page').getAttribute('aria-busy')==='false')return;}throw Error('UI timeout');}
 const metric=key=>d.querySelector(`[data-metric="${key}"]`);
 const refresh=()=>[...d.querySelectorAll('button')].find(n=>n.textContent.trim()==='刷新').click();
 w.FinanceWorkspace.enter('overview');await ready();
 assert.equal(d.querySelectorAll('.fi-metric').length,8);
+assert.equal(d.querySelector('.fi-pills [aria-pressed="true"]').textContent,'人民币 ¥');
+assert.equal(d.querySelector('select[aria-label="原币"]').value,'');
+assert([...d.querySelectorAll('.fi-metric-value small')].every(n=>n.textContent==='CNY'));
 assert.deepEqual([...d.querySelectorAll('.fi-metric-label>span:first-child')].map(n=>n.textContent),['已结算额度','订单金额','确认退款','平台费用','广告消耗','物流贴单成本','商品成本','利润额']);
 assert(metric('SETTLEMENT').textContent.includes('116,622.69'));assert(!metric('SETTLEMENT').textContent.includes('82,646.26'));
 assert(metric('PRODUCT_COST').textContent.includes('78,473.52'));assert(metric('PRODUCT_COST').textContent.includes('CNY'));
@@ -35,6 +38,9 @@ assert(metric('PROFIT').textContent.includes('4,172.74'));assert(metric('PROFIT'
 assert(!d.querySelector('.fi-cost-quality').textContent.includes('78,473.52'),'product cost amount moves into the top metrics instead of being duplicated');
 assert.equal(d.querySelectorAll('.fi-cost-quality .fi-cost-stats>div').length,3);
 const old=metric('PROFIT');refresh();await ready();assert.equal(metric('PROFIT'),old,'unchanged refresh retains the existing metric');
+const firstAmounts=[...d.querySelectorAll('.fi-metric-value')].map(n=>n.textContent);
+[...d.querySelectorAll('.fi-pills button')].find(n=>n.textContent==='人民币 ¥').click();await ready();
+assert.deepEqual([...d.querySelectorAll('.fi-metric-value')].map(n=>n.textContent),firstAmounts,'first entry and manual CNY selection show the same amounts');
 metric('PROFIT').click();let dialog=d.querySelector('dialog');assert(dialog);assert(dialog.textContent.includes('不再重复扣减'));assert(dialog.textContent.includes('按 0 暂计'));assert.equal(dialog.querySelectorAll('tbody tr').length,6);dialog.close();
 metric('PRODUCT_COST').click();assert.equal(drilldowns.at(-1).kind,'SETTLED_ORDER');
 if(process.env.FINANCE_PREVIEW_PATH){

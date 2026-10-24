@@ -69,6 +69,8 @@
 .fi-settlement-amount{display:inline-block}.fi-settlement-amount small{max-width:180px!important;font-size:10px!important}.fi-settlement-amount.is-missing{color:#b57d27}
 .fi-settlement-amount .fi-sample-tag{display:table!important;width:auto!important;margin-top:4px;padding:2px 6px;border:1px solid #f4d4a4;border-radius:5px;background:#fff5e5;color:#8a4c09!important;font-size:11px!important;font-weight:600}
 .fi-dialog-body>.fi-note{margin-top:12px}
+.fi-metric-note>span{opacity:0;transition:opacity 140ms ease}
+.fi-metric:hover .fi-metric-note>span,.fi-metric:focus-visible .fi-metric-note>span{opacity:1}
 [data-theme=dark] .fi-metric.is-profit{background:#243352;border-color:#3e5484}
 [data-theme=dark] .fi-metric.is-profit .fi-metric-value strong{color:#aabbff}
 [data-theme=dark] .fi-metric.is-profit.is-negative .fi-metric-value strong{color:#f0a6ae}
