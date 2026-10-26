@@ -25,7 +25,7 @@ public class FinanceCostController {
             if(origin!=null){try{if(!request.getServerName().equalsIgnoreCase(java.net.URI.create(origin).getHost()))throw bad("操作来源不正确");}catch(IllegalArgumentException e){throw bad("操作来源不正确");}}
         }
     }
-    @GetMapping("/costs") public ApiResponse<?> costs(@RequestParam(required=false) String shopId,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.costs(service.authorize(p),shopId));}
+    @GetMapping("/costs") public ApiResponse<?> costs(@RequestParam(required=false) String shopId,@RequestParam(defaultValue="") String groupId,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.costs(service.authorize(p),shopId,groupId));}
     @GetMapping("/costs/orders") public ApiResponse<?> orderCosts(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
         var filter=costFilter(q);
@@ -52,6 +52,18 @@ public class FinanceCostController {
     }
     @PutMapping("/costs/{shopId}/settings") public ApiResponse<?> settings(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){workspace.settings(service.authorize(p),p.userId(),shopId,body);return ApiResponse.ok("成本口径已保存");}
     @PutMapping("/costs/{shopId}/mapping") public ApiResponse<?> mapping(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){workspace.mapping(service.authorize(p),p.userId(),shopId,body);return ApiResponse.ok("SKU 关联已保存");}
+    @DeleteMapping("/costs/groups/{groupId}/files/{id}") public ApiResponse<?> removeSource(@PathVariable String groupId,@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){
+        workspace.removeSource(service.authorize(p),p.userId(),groupId,id);return ApiResponse.ok("已移除该文件的成本，手动成本保留");
+    }
+    @PostMapping("/costs/{shopId}/manual-mapping") public ApiResponse<?> manualMapping(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){
+        return ApiResponse.ok(workspace.manualMapping(service.authorize(p),p.userId(),shopId,body));
+    }
+    @PutMapping("/costs/groups/{groupId}/manual/{id}") public ApiResponse<?> editManual(@PathVariable String groupId,@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){
+        workspace.changeManual(service.authorize(p),p.userId(),groupId,id,body,false);return ApiResponse.ok("手动成本已更新");
+    }
+    @DeleteMapping("/costs/groups/{groupId}/manual/{id}") public ApiResponse<?> deleteManual(@PathVariable String groupId,@PathVariable String id,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){
+        workspace.changeManual(service.authorize(p),p.userId(),groupId,id,body,true);return ApiResponse.ok("手动成本已删除");
+    }
     @PostMapping("/costs/{shopId}/auto-match") public ApiResponse<?> autoMatch(@PathVariable String shopId,@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.autoMatch(service.authorize(p),p.userId(),shopId,body));}
     @GetMapping("/expenses") public ApiResponse<?> expenses(@RequestParam Map<String,String> query,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.expenses(service.authorize(p),query));}
     @PostMapping("/expenses") public ApiResponse<?> addExpense(@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(workspace.expense(service.authorize(p),p.userId(),null,body));}

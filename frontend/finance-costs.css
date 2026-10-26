@@ -1,4 +1,23 @@
 .fc-workspace{display:grid;gap:13px;min-width:0;align-content:start;color:var(--fi-ink,#1d2b45)}
+.fc-dialog .fc-check{display:flex;align-items:flex-start;gap:8px;font-size:12px;line-height:1.7}
+.fc-dialog .fc-check input{width:16px;min-height:16px;height:16px;flex:0 0 16px;margin:3px 0}
+.fc-mapping-editor{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px;border:1px solid #e1e7f5;border-radius:9px;background:#f8faff}
+.fc-mapping-editor label{display:grid;gap:6px;font-size:12px}
+.fc-mapping-editor .fc-inline-note,.fc-mapping-editor .fc-check{grid-column:1/-1;margin:0}
+.fc-mapping-editor input,.fc-mapping-editor select{min-width:0;width:100%;box-sizing:border-box}
+.fc-workspace .fc-danger{color:#b9514e}
+.fc-file-copy{overflow:hidden}
+.fc-spu{position:relative}
+.finance-workspace .fc-image-button,.fc-dialog .fc-image-button{padding:0;border:1px solid var(--fi-border,#e8edf5);border-radius:6px;background:#f3f5fb;overflow:hidden;cursor:zoom-in;flex-shrink:0}
+.fc-image-button img{display:block;width:100%;height:100%;object-fit:contain}
+.finance-workspace .fc-spu-image{position:absolute;z-index:1;top:13px;left:13px;width:44px;height:44px;min-height:0}
+.fc-spu.has-image .fc-spu-copy{padding-left:54px}
+.fc-sku-image{width:42px;height:42px;min-height:0}
+.fc-image-view{width:min(900px,94vw)}
+.fc-image-view .fi-dialog-body{display:flex;flex-direction:column;align-items:center;gap:12px}
+.fc-image-view .fi-dialog-body>img{display:block;width:auto;height:auto;max-width:100%;max-height:65vh;object-fit:contain}
+.fc-image-caption{margin:0;text-align:center;line-height:1.6;color:var(--fi-muted,#8190a8)}
+@media(max-width:600px){.fc-mapping-editor{grid-template-columns:minmax(0,1fr)}}
 .fc-preview-note{display:flex;align-items:center;gap:10px;padding:10px 14px;border:1px solid #e3e8f6;border-radius:9px;background:#f5f7fd;color:#627091;font-size:11px;line-height:1.6}
 .fc-preview-label{font-weight:700;white-space:nowrap;color:#4263c4}
 .fc-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:16px 20px;background:linear-gradient(110deg,#f1f4fe,#fafbff 58%,#f5f7fc);border:1px solid #e1e7f5;border-radius:14px}

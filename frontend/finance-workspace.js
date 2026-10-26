@@ -613,7 +613,7 @@
     if(row.productCost){const cost=row.productCost;el('h3','已结算订单商品成本明细 · 人民币',d.body);el('p',cost.note+' · 成本仓：'+(cost.warehouse||'待配置'),d.body,'fi-muted');
       table(d.body,['商品 / 规格 / SKU','数量 × 组合','月份 / 单价（¥）','成本（¥）','说明'],(cost.lines||[]).map(line=>[
         costSkuCell(row,line),number(line.quantity)+' × '+number(line.factor),
-        (line.priceMonth||'—')+' / '+number(line.unitPriceCny),number(line.amountCny),line.issue||(line.excluded?'已取消，不计成本':line.previousPrice?'历史月份价格估算':'按商家 SKU 计算')
+        (line.priceMonth||'—')+' / '+number(line.unitPriceCny),number(line.amountCny),line.issue||(line.excluded?'已取消，不计成本':line.manualCostId?'按手动人民币单价计算':line.previousPrice?'历史月份价格估算':'按商家 SKU 计算')
       ]));
     }
     if(row.fx)el('p',`${row.fx.provider} · ${row.fx.time} · 参考折算`,d.body,'fi-muted');}catch(e){d.feedback.textContent=e.message;}}
@@ -734,7 +734,8 @@
         data={shops:response.items,groups:response.groups||[],sync:[]};
         if(view==='costs'){
           const shopId=globalThis.FinanceCosts?.shopId?.(),selected=data.shops.find(s=>s.id===shopId);
-          data.costs=globalThis.FinanceCostPreviewData||(!data.shops.length?{live:true,costs:[],products:[]}:await request('/workspace/costs?shopId='+encodeURIComponent(selected?.id||'')));
+          const wantedGroup=globalThis.FinanceCosts?.groupId?.(),groupId=selected?.group_id||data.groups.find(g=>g.id===wantedGroup)?.id||(!data.shops.length?data.groups[0]?.id:'')||'';
+          data.costs=globalThis.FinanceCostPreviewData||await request('/workspace/costs?'+new URLSearchParams({shopId:selected?.id||'',groupId}));
           if(run!==generation||!active)return;const host=el('div',null,shell(next));host.dataset.financeCosts='';
         }else{
           data.expenses=await request('/workspace/expenses?'+(globalThis.FinanceExpensesDesign?.query()||''));if(run!==generation||!active)return;

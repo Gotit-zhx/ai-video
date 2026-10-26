@@ -63,6 +63,17 @@ class FinanceOrderCostsTest {
         result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("a","PACK"))),context(costs,Map.of(),mapping));
         amountEquals("7",result.get("amountCny"));
     }
+    @Test void manualPriceCannotSwitchToAnotherWarehouseAfterDeletionOrExcelChanges(){
+        var manual=Map.<String,Object>of("sku","PACK","warehouse","海外仓-菲律宾","manualId","manual","unitPriceCny",new BigDecimal("3"),"unit","包");
+        var foreign=cost("PACK","海外仓-泰国","2026-10","100");
+        var mapping=Map.<String,Object>of("shop:product:sku:海外仓-菲律宾",Map.of("code","PACK","warehouse","海外仓-菲律宾","factor",2,"groupId","group","manualCostId","manual"));
+        var raw=Map.<String,Object>of("line_items",List.of(tk("a","PACK")));
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context(List.of(manual,foreign),Map.of(),mapping));
+        amountEquals("6",result.get("amountCny"));assertEquals("海外仓-菲律宾",result.get("warehouse"));
+        result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),raw,context(List.of(foreign),Map.of(),mapping));
+        assertEquals("INCOMPLETE",result.get("status"));assertNull(result.get("amountCny"));
+        assertTrue(text(rows(result.get("lines")).getFirst().get("issue")).contains("手动成本已删除"));
+    }
     @Test void cancelledOrdersAreExcludedRegardlessOfShipmentWhileCompletedOrdersKeepTheirCost(){
         var context=context(List.of(cost("PACK","海外仓-菲律宾","2026-10","7")),Map.of(),Map.of());
         var raw=Map.<String,Object>of("line_items",List.of(tk("a","PACK")));

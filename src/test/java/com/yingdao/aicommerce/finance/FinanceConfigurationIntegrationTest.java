@@ -55,6 +55,16 @@ class FinanceConfigurationIntegrationTest {
         migration("V128__finance_order_standard_costs.sql");
         migration("V130__finance_query_indexes.sql");
         migration("V131__finance_shop_deletion_jobs.sql");
+        db.update("""
+            INSERT INTO finance_cost_books(id,organization_id,group_id,source_name,content_hash,data_json,created_by,created_at)
+            VALUES('old1','migration-org','migration-group','old.csv','hash1','{"costs":[{"sku":"PACK","warehouse":"PH","prices":{"2026-09":10}}]}','u','2026-10-01'),
+            ('old2','migration-org','migration-group','latest.csv','hash2','{"costs":[{"sku":"PACK","warehouse":"PH","prices":{"2026-09":10,"2026-10":12}}]}','u','2026-10-02')
+            """);
+        migration("V132__finance_cost_sources.sql");
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
+        assertEquals(1,db.queryForObject("SELECT legacy_merged FROM finance_cost_sources WHERE id='old2'",Integer.class));
+        assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class),"legacy snapshots remain for audit");
+        assertEquals(12,db.queryForObject("SELECT JSON_EXTRACT(data_json,'$.costs[0].prices.\"2026-10\"') FROM finance_cost_sources WHERE id='old2'",Integer.class));
         assertEquals(0,db.queryForObject("SELECT enabled FROM finance_shops WHERE shop_id='legacy'",Integer.class));
         assertEquals("commerce-unchanged",db.queryForObject("SELECT marker FROM shops WHERE id='legacy'",String.class));
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
@@ -65,7 +75,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
-        for(String table:List.of("finance_shop_deletion_ads","finance_shop_deletions","finance_order_cost_jobs","finance_order_costs","finance_cost_rebuilds","finance_workspace_audit","finance_expense_rules","finance_expenses","finance_cost_mappings","finance_cost_settings","finance_cost_books","finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
+        for(String table:List.of("finance_shop_deletion_ads","finance_shop_deletions","finance_order_cost_jobs","finance_order_costs","finance_cost_rebuilds","finance_workspace_audit","finance_expense_rules","finance_expenses","finance_cost_mappings","finance_cost_settings","finance_cost_sources","finance_manual_costs","finance_cost_books","finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
         client=mock(MarketplaceAccess.Client.class);when(client.platform()).thenReturn(MarketplacePlatform.SHOPEE);when(client.configured()).thenReturn(true);
         var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
         auth=new FinanceShopAuthorization(repo,new MarketplaceClientRegistry(List.of(client)),cipher,settings,tx);
@@ -460,6 +470,78 @@ class FinanceConfigurationIntegrationTest {
         assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class));
         var prices=map(rows(workspace.costs(owner,shop).get("costs")).getFirst().get("prices"));
         assertEquals(0,new BigDecimal("2.5").compareTo(decimal(prices.get("2026-09"))));assertEquals(0,new BigDecimal("4").compareTo(decimal(prices.get("2026-10"))));
+    }
+    @Test void independentFilesRestoreTheirOwnPricesAndNeverRemoveManualCosts(){
+        String group=service.saveGroup(owner,null,"独立成本"),shop=groupedShop(owner,"independent",group);
+        String another=service.saveGroup(owner,null,"其他分组");
+        var workspace=new FinanceCostWorkspace(repo,service);var txs=new TransactionTemplate(tx);var engine=new FinanceOrderCosts(repo);
+        byte[] a="仓库,型号,202610\n海外仓-菲律宾,PACK,10\n海外仓-菲律宾,ONLY-A,5\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] b="仓库,型号,202610\n海外仓-菲律宾,PACK,12\n海外仓-菲律宾,ONLY-B,8\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String aid=text(txs.execute(t->workspace.importCosts(owner,"u",group,a,"a.csv")).get("id"));
+        String bid=text(txs.execute(t->workspace.importCosts(owner,"u",group,b,"b.csv")).get("id"));
+        var catalog=workspace.book(owner,group);
+        assertEquals(3,rows(catalog.get("costs")).size());
+        assertEquals(0,new BigDecimal("12").compareTo(decimal(map(rows(catalog.get("costs")).getFirst().get("prices")).get("2026-10"))));
+        assertEquals(2,rows(workspace.costs(owner,shop).get("imports")).size());
+        var body=new LinkedHashMap<String,Object>(Map.of("product_id","p","sku_id","v","code","PACK","warehouse","海外仓-菲律宾","factor","2","unit","包","unitPriceCny","3.5","confirmed",true,"version",0));
+        String manual=text(txs.execute(t->workspace.manualMapping(owner,"u",shop,body)).get("id"));
+        var raw=Map.<String,Object>of("item_list",List.of(Map.of("item_id","p","model_id","v","model_sku","PACK","model_quantity_purchased",3)));
+        var order=Map.<String,Object>of("platform","SHOPEE","status","COMPLETED","record_date",filter.start());
+        assertEquals(0,new BigDecimal("21").compareTo(decimal(FinanceOrderCosts.calculate(order,raw,engine.context("org",shop)).get("amountCny"))));
+        assertThrows(BusinessException.class,()->txs.executeWithoutResult(t->workspace.removeSource(other,"other",group,bid)));
+        assertThrows(BusinessException.class,()->txs.executeWithoutResult(t->workspace.removeSource(owner,"u",another,bid)));
+        txs.executeWithoutResult(t->workspace.removeSource(owner,"u",group,bid));
+        catalog=workspace.book(owner,group);
+        assertEquals(2,rows(catalog.get("costs")).size(),"only B-exclusive rows disappear");
+        assertEquals(0,new BigDecimal("10").compareTo(decimal(map(rows(catalog.get("costs")).getFirst().get("prices")).get("2026-10"))));
+        assertEquals(1,rows(catalog.get("manualCosts")).size());
+        txs.executeWithoutResult(t->workspace.removeSource(owner,"u",group,aid));
+        assertTrue(rows(workspace.book(owner,group).get("costs")).isEmpty());
+        assertEquals(0,new BigDecimal("21").compareTo(decimal(FinanceOrderCosts.calculate(order,raw,engine.context("org",shop)).get("amountCny"))),"manual price survives deleting every Excel file");
+        txs.executeWithoutResult(t->workspace.importCosts(owner,"u",group,b,"b.csv"));
+        assertEquals(0,new BigDecimal("21").compareTo(decimal(FinanceOrderCosts.calculate(order,raw,engine.context("org",shop)).get("amountCny"))),"same-code Excel never replaces explicit manual price");
+        assertThrows(BusinessException.class,()->txs.executeWithoutResult(t->workspace.changeManual(owner,"u",group,manual,Map.of("version",0),true)));
+        txs.executeWithoutResult(t->workspace.changeManual(owner,"u",group,manual,Map.of("version",1,"unit","包","unitPriceCny","4","confirmed",true),false));
+        assertEquals(0,new BigDecimal("24").compareTo(decimal(FinanceOrderCosts.calculate(order,raw,engine.context("org",shop)).get("amountCny"))));
+        txs.executeWithoutResult(t->workspace.changeManual(owner,"u",group,manual,Map.of("version",2),true));
+        var deleted=FinanceOrderCosts.calculate(order,raw,engine.context("org",shop));
+        assertEquals("INCOMPLETE",deleted.get("status"));assertNull(deleted.get("amountCny"));
+        assertTrue(text(rows(deleted.get("lines")).getFirst().get("issue")).contains("手动成本已删除"),"must not fall back to same-code Excel after manual deletion");
+        assertEquals(2,rows(workspace.book(owner,group).get("costs")).size(),"deleting manual costs preserves Excel");
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_manual_costs",Integer.class));
+    }
+    @Test void manualMappingIsAtomicVersionedAndSupportsGroupsWithoutFiles(){
+        String group=service.saveGroup(owner,null,"手动专用"),shop=groupedShop(owner,"manual-only",group);
+        String empty=service.saveGroup(owner,null,"没有店铺");
+        var workspace=new FinanceCostWorkspace(repo,service);var txs=new TransactionTemplate(tx);var engine=new FinanceOrderCosts(repo);
+        assertEquals(empty,workspace.costs(owner,"",empty).get("groupId"));
+        assertEquals("",workspace.costs(owner,"",empty).get("shopId"));
+        assertThrows(BusinessException.class,()->workspace.costs(other,"",empty));
+        assertThrows(BusinessException.class,()->workspace.costs(owner,shop,empty));
+        var body=new LinkedHashMap<String,Object>(Map.of("product_id","p","sku_id","v","code","CUSTOM","warehouse","海外仓-菲律宾","factor","2","unit","片","unitPriceCny","0","confirmed",true,"version",0));
+        assertThrows(BusinessException.class,()->txs.execute(t->workspace.manualMapping(owner,"u",shop,body)),"zero is never inferred");
+        body.put("unitPriceCny","3");body.put("version",1);
+        assertThrows(BusinessException.class,()->txs.execute(t->workspace.manualMapping(owner,"u",shop,body)),"stale association rolls back the new manual cost and book");
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_manual_costs",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class));
+        body.put("version",0);
+        String id=text(txs.execute(t->workspace.manualMapping(owner,"u",shop,body)).get("id"));
+        assertEquals(1,rows(workspace.costs(owner,shop).get("manualCosts")).size());
+        assertTrue(rows(workspace.costs(owner,shop).get("imports")).isEmpty());
+        var entry=new Entry(shop,"SHOPEE","ORDER","manual-order","manual-order","","订单","COMPLETED",filter.start(),"PHP",BigDecimal.TEN,null,null,null,null,"API",
+            Map.of("item_list",List.of(Map.of("item_id","p","model_id","v","model_sku","","model_quantity_purchased",2))));
+        repo.save(owner,entry);
+        txs.execute(t->engine.seedAndFill());txs.execute(t->engine.processBatch(50));
+        assertEquals(0,new BigDecimal("12").compareTo(db.queryForObject("SELECT amount_cny FROM finance_order_costs WHERE order_record_id=?",BigDecimal.class,id(owner,entry))));
+        var foreign= new LinkedHashMap<String,Object>(body);foreign.put("manualCostId",id);foreign.put("code","CUSTOM");
+        String sibling=groupedShop(owner,"manual-sibling",empty);
+        assertThrows(BusinessException.class,()->txs.executeWithoutResult(t->workspace.mapping(owner,"u",sibling,foreign)));
+        txs.executeWithoutResult(t->workspace.changeManual(owner,"u",group,id,Map.of("version",1,"unit","片","unitPriceCny","0","confirmed",true,"zeroConfirmed",true),false));
+        txs.execute(t->engine.seedAndFill());txs.execute(t->engine.processBatch(50));
+        assertEquals(0,db.queryForObject("SELECT amount_cny FROM finance_order_costs WHERE order_record_id=?",BigDecimal.class,id(owner,entry)).signum());
+        txs.executeWithoutResult(t->workspace.changeManual(owner,"u",group,id,Map.of("version",2),true));
+        txs.execute(t->engine.seedAndFill());txs.execute(t->engine.processBatch(50));
+        assertNull(db.queryForObject("SELECT amount_cny FROM finance_order_costs WHERE order_record_id=?",BigDecimal.class,id(owner,entry)));
     }
     @Test void expenseLedgerPostsExactlyOnceAndRetainsAdjustmentsAndCompanyBoundaries(){
         String group=service.saveGroup(owner,null,"费用测试"),shop=groupedShop(owner,"expense-shop",group);

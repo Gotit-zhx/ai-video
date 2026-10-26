@@ -48,9 +48,16 @@ public final class FinanceOrderCosts {
         var codes=new LinkedHashMap<String,Map<String,Object>>();var normalized=new LinkedHashMap<String,Set<String>>();
         var allCodes=new LinkedHashSet<String>();
         for(var cost:context.costs()){
+            if(!text(cost.get("manualId")).isBlank())continue;
             String code=text(cost.get("sku"));allCodes.add(code);
             normalized.computeIfAbsent(FinanceCostWorkspace.normalizedSku(code),k->new LinkedHashSet<>()).add(code);
             if(warehouse.equals(text(cost.get("warehouse"))))codes.put(code,cost);
+        }
+        var explicitBySku=new HashMap<String,List<Map<String,Object>>>();
+        for(var entry:context.mappings().entrySet()){
+            var mapping=map(entry.getValue());String suffix=":"+text(mapping.get("warehouse"));
+            if(context.groupId().equals(text(mapping.get("groupId")))&&!text(mapping.get("manualCostId")).isBlank()&&entry.getKey().endsWith(suffix))
+                explicitBySku.computeIfAbsent(entry.getKey().substring(0,entry.getKey().length()-suffix.length()),k->new ArrayList<>()).add(mapping);
         }
         BigDecimal known=BigDecimal.ZERO;int matched=0,fallback=0;
         var seen=new HashMap<String,String>();
@@ -72,43 +79,67 @@ public final class FinanceOrderCosts {
             // This report excludes cancelled sales regardless of dispatch. Actual logistics fees stay in the platform ledger.
             if(Set.of("UNPAID","CANCELLED","CANCELED").contains(lineStatus)){line.put("amountCny",BigDecimal.ZERO);line.put("excluded",true);matched++;continue;}
             if(quantity==null||quantity.signum()<=0||quantity.stripTrailingZeros().scale()>0||quantity.compareTo(new BigDecimal("1000000"))>0){line.put("issue","缺少有效购买数量");continue;}
-            if(context.costs().isEmpty()){line.put("issue","店铺分组尚未导入成本表");continue;}
-            if(warehouse.isBlank()){line.put("issue","请配置成本仓，无法唯一匹配店铺国家");continue;}
             if(month.isBlank()){line.put("issue","缺少所选成本口径的业务日期");continue;}
             String mappingKey=context.shopId()+":"+product+":"+sku+":"+warehouse;
             var saved=map(context.mappings().get(mappingKey));
+            // An explicit standalone price stays pinned even if an Excel change alters warehouse inference.
+            var explicit=explicitBySku.getOrDefault(context.shopId()+":"+product+":"+sku,List.of());
+            boolean selectedExplicit=!saved.isEmpty()&&!Set.of("EXACT_CODE","NORMALIZED_CODE","BUNDLE_CODE").contains(text(saved.get("method")))
+                &&context.groupId().equals(text(saved.get("groupId")));
+            if(!selectedExplicit&&!explicit.isEmpty()){
+                if(explicit.size()!=1){line.put("issue","手动成本存在多个成本仓，请配置明确的成本仓");continue;}
+                saved=explicit.getFirst();
+            }
+            String lineWarehouse=!text(saved.get("manualCostId")).isBlank()&&context.groupId().equals(text(saved.get("groupId")))?text(saved.get("warehouse")):warehouse;
+            line.put("warehouse",lineWarehouse);
+            if(lineWarehouse.isBlank()){line.put("issue","请配置成本仓，无法唯一匹配店铺国家");continue;}
             boolean manual=!saved.isEmpty()&&!Set.of("EXACT_CODE","NORMALIZED_CODE","BUNDLE_CODE").contains(text(saved.get("method")))
                     &&context.groupId().equals(text(saved.get("groupId")));
             var automatic=FinanceCostWorkspace.matchSku(seller,allCodes,normalized);
             String code=manual?text(saved.get("code")):automatic==null?"":automatic.code();
             BigDecimal factor=manual?decimal(saved.get("factor")):automatic!=null&&automatic.bundleQuantity()!=null?BigDecimal.valueOf(automatic.bundleQuantity()):BigDecimal.ONE;
-            if(code.isBlank()||!codes.containsKey(code)){line.put("issue",seller.isBlank()?"平台未返回商家 SKU":"当前成本仓没有唯一对应的商家 SKU 成本");continue;}
+            String manualId=manual?text(saved.get("manualCostId")):"";
+            Map<String,Object> selected;
+            if(!manualId.isBlank()){
+                selected=context.costs().stream().filter(c->manualId.equals(text(c.get("manualId")))&&lineWarehouse.equals(text(c.get("warehouse")))).findFirst().orElse(Map.of());
+                if(selected.isEmpty()){line.put("issue","关联的手动成本已删除，请重新核对");continue;}
+                code=text(selected.get("sku"));
+            }else{
+                if(context.costs().isEmpty()){line.put("issue","店铺分组尚未配置成本资料");continue;}
+                if(code.isBlank()||!codes.containsKey(code)){line.put("issue",seller.isBlank()?"平台未返回商家 SKU":"当前成本仓没有唯一对应的商家 SKU 成本");continue;}
+                selected=codes.get(code);
+            }
             if(factor==null||factor.signum()<=0){line.put("issue","人工关联缺少有效换算数量");continue;}
-            var prices=map(codes.get(code).get("prices"));String priceMonth=month;
-            BigDecimal price=decimal(prices.get(month));
-            if(price==null&&!"pending".equals(text(rules.getOrDefault("missing","previous")))){
+            var prices=map(selected.get("prices"));String priceMonth=manualId.isBlank()?month:"固定单价";
+            BigDecimal price=decimal(manualId.isBlank()?prices.get(month):selected.get("unitPriceCny"));
+            if(manualId.isBlank()&&price==null&&!"pending".equals(text(rules.getOrDefault("missing","previous")))){
                 final String targetMonth=month;
                 priceMonth=prices.keySet().stream().filter(m->m.compareTo(targetMonth)<=0&&decimal(prices.get(m))!=null).max(String::compareTo).orElse("");
                 price=decimal(prices.get(priceMonth));
             }
             line.put("costCode",code);line.put("factor",factor);line.put("priceMonth",priceMonth);line.put("bookId",context.bookId());line.put("unitPriceCny",price);
+            if(!manualId.isBlank()){line.put("manualCostId",manualId);line.put("costSource","手动成本");line.put("unit",selected.get("unit"));}
+            else if(map(selected.get("priceSources")).containsKey(priceMonth))line.put("priceSource",map(selected.get("priceSources")).get(priceMonth));
             if(price==null||price.signum()<0){line.put("issue","缺少 "+month+" 可用成本价");continue;}
             // Imported zeroes require explicit confirmation; do not silently treat blank/formula placeholders as free goods.
-            if(price.signum()==0&&!Boolean.TRUE.equals(rules.get("allowZero"))){line.put("issue","成本表为零值，需核对单价");continue;}
+            if(manualId.isBlank()&&price.signum()==0&&!Boolean.TRUE.equals(rules.get("allowZero"))){line.put("issue","成本表为零值，需核对单价");continue;}
             BigDecimal value=price.multiply(quantity).multiply(factor).setScale(6,RoundingMode.HALF_UP);
             if(value.precision()-value.scale()>18){line.put("issue","成本金额超出支持范围");continue;}
             BigDecimal next=known.add(value);
             if(next.precision()-next.scale()>18){line.put("issue","订单成本合计超出支持范围");continue;}
-            boolean previous=!priceMonth.equals(month);line.put("previousPrice",previous);line.put("amountCny",value);
+            boolean previous=manualId.isBlank()&&!priceMonth.equals(month);line.put("previousPrice",previous);line.put("amountCny",value);
             known=known.add(value);matched++;if(previous)fallback++;
         }
         if(items.isEmpty())lines.add(new LinkedHashMap<>(Map.of("issue","平台尚未返回订单商品明细")));
         int total=lines.size();boolean complete=total>0&&matched==total;
+        var lineWarehouses=lines.stream().map(l->text(l.get("warehouse"))).filter(w->!w.isBlank()).distinct().toList();
+        if(!lineWarehouses.isEmpty())out.put("warehouse",String.join("、",lineWarehouses));
         boolean allExcluded=complete&&lines.stream().allMatch(line->Boolean.TRUE.equals(line.get("excluded")));
         out.put("lines",lines);out.put("status",allExcluded?"EXCLUDED":complete?(fallback>0?"ESTIMATED":"READY"):"INCOMPLETE");
         out.put("amountCny",complete?known:null);out.put("knownAmountCny",known);out.put("lineCount",total);
         out.put("matchedLines",matched);out.put("fallbackLines",fallback);
-        out.put("note",allExcluded?"全部商品明细未付款或已取消，不计标准成本":complete?(fallback>0?"使用最近历史月份的标准成本估算":"按商家 SKU 与有效购买数量统计标准成本，取消商品明细不计入"):"成本资料待补齐，不按零成本计算");
+        out.put("note",allExcluded?"全部商品明细未付款或已取消，不计标准成本":complete?(fallback>0?"使用最近历史月份的标准成本估算":
+            lines.stream().anyMatch(l->l.containsKey("manualCostId"))?"按已关联成本计算（含独立手动成本），金额为人民币":"按商家 SKU 与有效购买数量统计标准成本，取消商品明细不计入"):"成本资料待补齐，不按零成本计算");
         return out;
     }
     Context context(String organization,String shopId){
@@ -121,7 +152,7 @@ public final class FinanceOrderCosts {
             mappings.put(shopId+":"+m.get("product_id")+":"+m.get("sku_id")+":"+m.get("warehouse"),decode(m.get("data_json")));
         String zone=text(shop.get("timezone"));if(zone.isBlank())zone=timezoneFor(text(shop.get("region")));
         return new Context(shopId,group,text(shop.get("region")),zone,books.isEmpty()?"":text(books.getFirst().get("id")),
-                books.isEmpty()?List.of():rows(decode(books.getFirst().get("data_json")).get("costs")),settings.isEmpty()?Map.of():decode(settings.getFirst().get("data_json")),mappings);
+                books.isEmpty()?List.of():FinanceCostSources.allCosts(decode(books.getFirst().get("data_json"))),settings.isEmpty()?Map.of():decode(settings.getFirst().get("data_json")),mappings);
     }
     Map<String,Object> decode(Object value){return value==null?Map.of():repo.read(value instanceof byte[] b?new String(b,java.nio.charset.StandardCharsets.UTF_8):text(value));}
     static Object canonical(Object value){
