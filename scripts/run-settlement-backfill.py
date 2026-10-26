@@ -8,6 +8,7 @@ import subprocess
 import sys
 import importlib.util
 import time
+import signal
 
 os.umask(0o077)
 root = Path(sys.argv[1]).resolve()
@@ -24,6 +25,12 @@ assert re.fullmatch(r"[a-zA-Z0-9_]+", schema)
 network = next(iter(set(app["NetworkSettings"]["Networks"]) & set(mysql["NetworkSettings"]["Networks"])))
 user, password = "fi_derive_" + secrets.token_hex(5), secrets.token_hex(32)
 environment = root / "backfill-private.env"
+
+def interrupted(signum, frame):
+    raise KeyboardInterrupt("Settlement derivation interrupted")
+
+signal.signal(signal.SIGTERM, interrupted)
+signal.signal(signal.SIGHUP, interrupted)
 
 def sql(statement):
     result = subprocess.run(["docker", "exec", "-i", "ai-commerce-mysql", "sh", "-c",
@@ -64,13 +71,24 @@ try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        progress.publish("COMPLETE" if process.returncode == 0 else "FAILED")
+        result = process.returncode
+        if result == 0:
+            audit_root = output.resolve().parent
+            if not (audit_root / "platform-net-before.tsv.gz").is_file():
+                raise RuntimeError("Completed derivation requires its original platform-net baseline")
+            audit = subprocess.run([sys.executable, str(root / "check-settlement-net-ledger.py"),
+                                    str(audit_root), "after"], timeout=60)
+            result = audit.returncode
+            # Let the local five-second raw-fact cache expire before invalidating shared snapshots.
+            time.sleep(6)
+            progress.invalidate_snapshots()
+        progress.publish("COMPLETE" if result == 0 else "FAILED")
     except BaseException:
-        subprocess.run(["docker", "stop", "--time", "20", "finance-settlement-derivation"], capture_output=True)
+        subprocess.run(["docker", "stop", "--timeout", "20", "finance-settlement-derivation"], capture_output=True, timeout=30)
         process.wait(timeout=30)
         progress.publish("FAILED")
         raise
-    raise SystemExit(process.returncode)
+    raise SystemExit(result)
 finally:
     environment.unlink(missing_ok=True)
     sql(f"DROP USER IF EXISTS '{user}'@'%';")

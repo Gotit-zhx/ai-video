@@ -66,5 +66,6 @@
 - 发布目录：`/opt/heyi/releases/finance-settled-goods-20261026`、`/opt/heyi/releases/finance-calculation-speed-20261026`。
 - 当前镜像标签：`finance-calculation-speed-20261026`。保留回滚镜像，其他 JAR 内容、前端文件及容器配置不变，Flyway 仍为 V133。
 - 数据备份和最终检查点位于第一个发布目录的 `backfill/`；第二个发布目录复用该检查点目录，不重新起算。
+- 剩余历史回补由一次性 systemd 服务 `finance-settlement-backfill-20261026` 独立运行；完成后自动对照原始净额基线再验一次、失效统计缓存并清理临时数据库账号。审计失败会把任务状态标成失败，不继续显示计算中。
 
 最终历史重算状态与全量核对结果以发布目录 `backfill/complete.json`、`platform-net-verification.json` 为准；上线完成不等于历史回补已完成。

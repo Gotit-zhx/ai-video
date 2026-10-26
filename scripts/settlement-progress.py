@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import hashlib
+import uuid
 
 
 class SettlementProgress:
@@ -43,10 +45,15 @@ class SettlementProgress:
             groups.setdefault(shop["organization"], []).append({
                 "shopId": shop["shopId"], "total": shop["total"],
                 "records": progress.get("records", 0), "bills": progress.get("bills", 0),
-                "complete": progress.get("complete", False)})
+                "complete": progress.get("complete", False) and status != "FAILED"})
         for organization, shops in groups.items():
             payload = json.dumps({"status": status, "heartbeat": int(time.time() * 1000), "shops": shops}).encode()
             # -x appends the payload as the last argument, so use SETEX.
             self.redis("SETEX", "heyi:finance:calculation:{" + organization + "}:settlements",
                        "600" if status != "RUNNING" else "120", payload=payload)
         return groups
+
+    def invalidate_snapshots(self):
+        for organization in {shop["organization"] for shop in self.shops}:
+            owner = str(uuid.UUID(bytes=hashlib.md5(("finance:" + organization).encode()).digest(), version=3))
+            self.redis("INCR", "heyi:finance:snapshot:v6-settled-goods:{" + organization + ":" + owner + "}:revision")
