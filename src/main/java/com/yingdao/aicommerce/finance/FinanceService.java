@@ -189,11 +189,11 @@ public class FinanceService {
         var productCosts=new FinanceCostReport(repo).summary(s,f,"SETTLED_ORDER");
         out.put("productCosts",productCosts);
         FinanceFx.Quote profitQuote=quote;
-        if(!cny&&!"CNY".equals(currency)&&decimal(map(productCosts.get("total")).get("known_amount_cny")).signum()!=0&&fx!=null){
+        if(!cny&&!"CNY".equals(currency)&&(decimal(map(productCosts.get("total")).get("known_amount_cny")).signum()!=0||decimal(map(productCosts.get("total")).get("label_cost_cny")).signum()!=0)&&fx!=null){
             try{profitQuote=fx.quote(snapshotId);}catch(RuntimeException unavailable){/* Native-currency ledger stays available when a reference quote is unavailable. */}
         }
         out.put("profit",FinanceProfitReport.calculate(totals,productCosts,cny?"CNY":currency,profitQuote));
-        out.put("basis","订单按创建日期，结算与费用按平台结算日期；广告按广告账户日期。原币分别统计，已结算不代表银行到账。");
+        out.put("basis","经营汇总排除刷单订单及其关联结算、平台费用和成本；原始账单与对账保留。订单按创建日期，结算与费用按平台结算日期；广告按广告账户日期。原币分别统计，已结算不代表银行到账。");
         return out;
     }
     static List<Map<String,Object>> nativeTotals(List<Map<String,Object>> ranking){

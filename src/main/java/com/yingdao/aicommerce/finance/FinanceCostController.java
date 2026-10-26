@@ -13,6 +13,14 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @RequestMapping("/api/v1/finance/workspace")
 public class FinanceCostController {
     final FinanceCostWorkspace workspace;final FinanceService service;
+    @org.springframework.beans.factory.annotation.Autowired private FinanceOrderCharges charges;
+    @GetMapping("/charges") public ApiResponse<?> charges(@RequestParam String groupId,@RequestParam(defaultValue="1") int page,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(charges.workspace(service.authorize(p),groupId,page));}
+    @PostMapping("/charges/preview") public ApiResponse<?> previewCharges(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{return ApiResponse.ok(charges.preview(service.authorize(p),groupId,file.getBytes(),text(file.getOriginalFilename())));}
+    @PostMapping("/charges/import") public ApiResponse<?> importCharges(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{return ApiResponse.ok(charges.upload(service.authorize(p),p.userId(),groupId,file.getBytes(),text(file.getOriginalFilename())));}
+    @DeleteMapping("/charges/imports/{id}") public ApiResponse<?> removeCharges(@PathVariable String id,@RequestParam String groupId,@AuthenticationPrincipal PlatformPrincipal p){charges.remove(service.authorize(p),p.userId(),groupId,id);return ApiResponse.ok("来源已移除，后台重算中");}
+    @PostMapping("/charges/rules") public ApiResponse<?> chargeRule(@RequestBody Map<String,Object> b,@AuthenticationPrincipal PlatformPrincipal p){charges.saveRule(service.authorize(p),p.userId(),b);return ApiResponse.ok("贴单规则已保存，后台重算中");}
+    @DeleteMapping("/charges/rules/{id}") public ApiResponse<?> deleteChargeRule(@PathVariable String id,@RequestParam String groupId,@RequestParam long version,@AuthenticationPrincipal PlatformPrincipal p){charges.removeRule(service.authorize(p),p.userId(),groupId,id,version);return ApiResponse.ok("规则已移除");}
+
     @org.springframework.beans.factory.annotation.Autowired
     private FinanceCostExport costExport;
     public FinanceCostController(FinanceCostWorkspace workspace,FinanceService service){this.workspace=workspace;this.service=service;}

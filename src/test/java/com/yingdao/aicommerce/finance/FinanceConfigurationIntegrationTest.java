@@ -61,6 +61,7 @@ class FinanceConfigurationIntegrationTest {
             ('old2','migration-org','migration-group','latest.csv','hash2','{"costs":[{"sku":"PACK","warehouse":"PH","prices":{"2026-09":10,"2026-10":12}}]}','u','2026-10-02')
             """);
         migration("V132__finance_cost_sources.sql");
+        migration("V133__finance_order_charges.sql");
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
         assertEquals(1,db.queryForObject("SELECT legacy_merged FROM finance_cost_sources WHERE id='old2'",Integer.class));
         assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class),"legacy snapshots remain for audit");
@@ -75,7 +76,7 @@ class FinanceConfigurationIntegrationTest {
         for(String statement:sql.split(";"))if(!statement.isBlank())db.execute(statement);
     }
     @BeforeEach void setup(){
-        for(String table:List.of("finance_shop_deletion_ads","finance_shop_deletions","finance_order_cost_jobs","finance_order_costs","finance_cost_rebuilds","finance_workspace_audit","finance_expense_rules","finance_expenses","finance_cost_mappings","finance_cost_settings","finance_cost_sources","finance_manual_costs","finance_cost_books","finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
+        for(String table:List.of("finance_marketing_orders","finance_charge_rows","finance_charge_imports","finance_label_rules","finance_shop_deletion_ads","finance_shop_deletions","finance_order_cost_jobs","finance_order_costs","finance_cost_rebuilds","finance_workspace_audit","finance_expense_rules","finance_expenses","finance_cost_mappings","finance_cost_settings","finance_cost_sources","finance_manual_costs","finance_cost_books","finance_groups","finance_imports","finance_connections","finance_authorization_sessions","finance_records","finance_sync_states","finance_view_preferences","finance_ad_accounts","finance_ad_applications"))db.update("DELETE FROM "+table);
         client=mock(MarketplaceAccess.Client.class);when(client.platform()).thenReturn(MarketplacePlatform.SHOPEE);when(client.configured()).thenReturn(true);
         var settings=new ShopIntegrationSettings(Duration.ofMinutes(30),Duration.ofMinutes(5),URI.create("https://example.test"),URI.create("https://example.test"),false,"DRY_RUN");
         auth=new FinanceShopAuthorization(repo,new MarketplaceClientRegistry(List.of(client)),cipher,settings,tx);
@@ -1093,4 +1094,71 @@ class FinanceConfigurationIntegrationTest {
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_ad_accounts",Integer.class));
         assertThrows(BusinessException.class,()->a.start(owner,"","foreign-shop",""));
     }
+    byte[] chargeCsv(String order,String shop,String fee){return ("订单编号,店铺,实际订单金额,代刷费CNY\n"+order+","+shop+",100,"+fee+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);}
+    BigDecimal bucketTotal(String kind){return repo.dashboardBuckets(owner,filter).stream().filter(r->kind.equals(r.get("kind"))).map(r->decimal(r.get("amount"))).filter(Objects::nonNull).reduce(BigDecimal.ZERO,BigDecimal::add);}
+    @Test void marketingTagsExcludeSummaryButPreserveLedgerAndUndoOnlyLastSource(){
+        String group=service.saveGroup(owner,null,"母婴"),shop=groupedShop(owner,"charge-shop",group);
+        record(owner,shop,"ORDER","order1",new BigDecimal("100"),Map.of());
+        record(owner,shop,"SETTLEMENT","settle1",new BigDecimal("80"),Map.of());
+        record(owner,shop,"FEE","fee1",new BigDecimal("20"),Map.of());
+        repo.save(owner,new Entry(shop,"SHOPEE","ORDER","order2","order2","","","COMPLETED",filter.start(),"PHP",new BigDecimal("60"),null,null,null,null,"API",Map.of()));
+        repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","settle2","order2","bill1","","SETTLED",filter.start(),"PHP",new BigDecimal("50"),null,null,null,null,"API",Map.of()));
+        record(owner,shop,"BILL","bill1",new BigDecimal("130"),Map.of());
+        var costs=new FinanceOrderCosts(repo);repo.transaction(()->{costs.requestShop("org",shop);costs.seedAndFill();costs.processBatch(50);return null;});
+        assertEquals(0,bucketTotal("SETTLEMENT").compareTo(new BigDecimal("130")));
+        var charges=new FinanceOrderCharges(repo,service);byte[] file=chargeCsv("order1","Shop charge-shop","7");
+        var imported=repo.transaction(()->charges.upload(owner,"u",group,file,"cost.csv"));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_marketing_orders",Integer.class));
+        assertEquals(0,bucketTotal("SETTLEMENT").compareTo(new BigDecimal("50")));
+        assertEquals(0,bucketTotal("ORDER").compareTo(new BigDecimal("60")));
+        assertEquals(0,bucketTotal("FEE").compareTo(BigDecimal.ZERO));
+        assertEquals(1,number(map(new FinanceCostReport(repo).summary(owner,filter,"SETTLED_ORDER").get("total")).get("order_count")));
+        var details=repo.details(owner,filter,"ORDER",1,50);assertEquals(2,number(details.get("total")));
+        assertEquals("刷单",rows(details.get("items")).stream().filter(r->"order1".equals(r.get("order_id"))).findFirst().orElseThrow().get("marketing_label"));
+        assertEquals(0,decimal(repo.reconciliation(owner,filter).getFirst().get("difference")).compareTo(BigDecimal.ZERO));
+        assertEquals(6,db.queryForObject("SELECT COUNT(*) FROM finance_records",Integer.class));
+        assertEquals(true,repo.transaction(()->charges.upload(owner,"u",group,file,"renamed.csv")).get("duplicate"));
+        byte[] second=(new String(file,java.nio.charset.StandardCharsets.UTF_8)+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var duplicate=repo.transaction(()->charges.upload(owner,"u",group,second,"second.csv"));
+        // New reference to an already matched order must preserve the one-order marker and fee.
+        assertEquals(2,db.queryForObject("SELECT source_count FROM finance_marketing_orders",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT service_fee_cny FROM finance_marketing_orders",BigDecimal.class).compareTo(new BigDecimal("7")));
+        repo.transaction(()->{charges.remove(owner,"u",group,text(imported.get("id")));return null;});
+        assertEquals(1,db.queryForObject("SELECT source_count FROM finance_marketing_orders",Integer.class));
+        repo.transaction(()->{charges.remove(owner,"u",group,text(duplicate.get("id")));return null;});
+        assertEquals(0,bucketTotal("SETTLEMENT").compareTo(new BigDecimal("130")));
+        assertEquals(2,number(map(new FinanceCostReport(repo).summary(owner,filter,"SETTLED_ORDER").get("total")).get("order_count")));
+    }
+    @Test void unmatchedSourcesAreRetriedAndCrossShopIdentitiesStaySeparate(){
+        String group=service.saveGroup(owner,null,"后续匹配"),shop=groupedShop(owner,"later",group),otherShop=groupedShop(owner,"different",group);
+        var charges=new FinanceOrderCharges(repo,service);
+        repo.transaction(()->charges.upload(owner,"u",group,chargeCsv("order1","Shop later","7"),"pending.csv"));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_marketing_orders",Integer.class));
+        record(owner,otherShop,"ORDER","order1",new BigDecimal("100"),Map.of());
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_marketing_orders",Integer.class));
+        record(owner,shop,"ORDER","order1",new BigDecimal("100"),Map.of());
+        assertEquals(shop,db.queryForObject("SELECT shop_id FROM finance_marketing_orders",String.class));
+        assertThrows(BusinessException.class,()->charges.workspace(other,group,1));
+        repo.transaction(()->charges.upload(owner,"u",group,chargeCsv("order1","Shop later","8"),"conflict.csv"));
+        assertNull(db.queryForObject("SELECT service_fee_cny FROM finance_marketing_orders",BigDecimal.class));
+        assertEquals(1,number(map(charges.workspace(owner,group,1).get("marked")).get("conflicts")));
+        service.removeShop(owner,shop);finishDeletion(shop);
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_marketing_orders",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_charge_rows WHERE matched_shop_id=?",Integer.class,shop));
+    }
+    @Test void labelCostsUseCountryAndDateOncePerOrderAndKeepRmb(){
+        String group=service.saveGroup(owner,null,"贴单"),shop=groupedShop(owner,"labels",group);var charges=new FinanceOrderCharges(repo,service);
+        repo.transaction(()->{charges.saveRule(owner,"u",Map.of("groupId",group,"country","","effectiveDate","2026-01-01","unitPriceCny","1"));return null;});
+        repo.transaction(()->{charges.saveRule(owner,"u",Map.of("groupId",group,"country","PH","effectiveDate","2026-10-01","unitPriceCny","2.5"));return null;});
+        assertThrows(BusinessException.class,()->repo.transaction(()->{charges.saveRule(owner,"u",Map.of("groupId",group,"country","PH","effectiveDate","2026-10-01","unitPriceCny","2"));return null;}));
+        var worker=new FinanceOrderCosts(repo);var context=worker.context("org",shop);
+        var order=new LinkedHashMap<String,Object>(Map.of("shop_id",shop,"order_id","order1","status","COMPLETED","record_date","2026-10-21"));
+        var result=charges.label("org",order,Map.of(),context,Map.of());assertEquals(0,decimal(result.get("labelCostCny")).compareTo(new BigDecimal("2.5")));
+        order.put("record_date","2026-09-21");assertEquals(0,decimal(charges.label("org",order,Map.of(),context,Map.of()).get("labelCostCny")).compareTo(BigDecimal.ONE));
+        order.put("status","CANCELLED");assertEquals(0,decimal(charges.label("org",order,Map.of(),context,Map.of()).get("labelCostCny")).signum());
+        record(owner,shop,"ORDER","order1",BigDecimal.TEN,Map.of("ship_time",1790000000));
+        repo.transaction(()->{worker.seedAndFill();worker.processBatch(50);return null;});
+        assertEquals(0,db.queryForObject("SELECT label_cost_cny FROM finance_order_costs",BigDecimal.class).compareTo(new BigDecimal("2.5")));
+    }
+
 }

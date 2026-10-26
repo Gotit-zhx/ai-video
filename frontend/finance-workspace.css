@@ -83,3 +83,5 @@
 .fi-sku-item+.fi-sku-item{padding-top:7px;border-top:1px solid var(--fi-border,#e8edf5)}
 .fi-sku-item strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-weight:550}.fi-sku-spec{color:var(--fi-ink,#25344f)}
 .fi-sku-missing{color:#a86218}.fi-sku-id{font-variant-numeric:tabular-nums}.fi-sku-item small{color:var(--fi-muted,#69778f)}
+
+.fi-marketing-tag{display:inline-flex;align-items:center;padding:2px 7px;border-radius:5px;background:#fff2bf;color:#875c00;border:1px solid #ebcf68;font-size:12px;font-weight:650;white-space:nowrap}.fq-content{padding:20px;display:grid;gap:14px}.fq-callout{margin:0;padding:12px 14px;background:#fff9e8;border:1px solid #f0dfaa;border-radius:8px;color:#795e27;line-height:1.7}.fq-workspace .fc-metrics{margin:0}.fq-dialog{max-width:min(1000px,94vw)}.fq-dialog input[type=file]{max-width:100%}.fq-workspace .fi-table{font-size:13px}.fq-workspace .fi-table th,.fq-workspace .fi-table td{padding:9px 12px}.fq-content h4{margin:8px 0 0}@media(max-width:650px){.fq-content{padding:12px}.fq-workspace .fc-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}

@@ -166,9 +166,9 @@ public final class FinanceOrderCosts {
         repo.jdbc().update("""
             INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id)
             SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM finance_order_costs WHERE order_record_id=? AND source_hash=?) AND EXISTS (
-              SELECT 1 FROM finance_connections c JOIN finance_cost_books b
-              ON b.organization_id=c.organization_id AND b.group_id=c.group_id
-              WHERE c.organization_id=? AND c.id=? AND c.status<>'REMOVED')
+              SELECT 1 FROM finance_connections c WHERE c.organization_id=? AND c.id=? AND c.status<>'REMOVED' AND (
+              EXISTS(SELECT 1 FROM finance_cost_books b WHERE b.organization_id=c.organization_id AND b.group_id=c.group_id)
+              OR EXISTS(SELECT 1 FROM finance_label_rules l WHERE l.organization_id=c.organization_id AND l.group_id=c.group_id)))
             ON DUPLICATE KEY UPDATE priority=0
             """,id(s,entry),s.organizationId(),entry.shopId(),id(s,entry),sourceHash(repo,entry.raw(),entry.status()),s.organizationId(),entry.shopId());
     }
@@ -222,7 +222,7 @@ public final class FinanceOrderCosts {
             var records=repo.jdbc().queryForList("SELECT * FROM finance_records WHERE id=? AND organization_id=? AND shop_id=? AND kind='ORDER'",recordId,organization,shop);
             Context context=contexts.computeIfAbsent(organization+":"+shop,k->context(organization,shop));
             if(!records.isEmpty()&&context!=null){
-                var order=records.getFirst();var raw=decode(order.get("raw_json"));var result=calculate(order,raw,context);String serialized=repo.write(result);
+                var order=records.getFirst();var raw=decode(order.get("raw_json"));var result=new FinanceOrderCharges(repo).label(organization,order,raw,context,calculate(order,raw,context));String serialized=repo.write(result);
                 String sourceHash=sourceHash(repo,raw,text(order.get("status")));
                 var old=repo.jdbc().queryForList("SELECT data_json FROM finance_order_costs WHERE order_record_id=?",recordId);
                 if(old.isEmpty()||!decode(old.getFirst().get("data_json")).equals(decode(serialized))){
@@ -237,6 +237,7 @@ public final class FinanceOrderCosts {
                         source_hash=VALUES(source_hash),data_json=VALUES(data_json),version=version+1,updated_at=UTC_TIMESTAMP(6)
                         """,recordId,organization,shop,order.get("order_id"),order.get("record_date"),result.get("status"),result.get("amountCny"),result.get("knownAmountCny"),
                             result.get("lineCount"),result.get("matchedLines"),result.get("fallbackLines"),sourceHash,serialized);
+                    repo.jdbc().update("UPDATE finance_order_costs SET label_cost_cny=?,charges_pending=? WHERE order_record_id=?",result.get("labelCostCny"),result.get("chargesPending"),recordId);
                     changed.add(organization);
                 }else repo.jdbc().update("UPDATE finance_order_costs SET source_hash=? WHERE order_record_id=? AND source_hash<>?",sourceHash,recordId,sourceHash);
             }

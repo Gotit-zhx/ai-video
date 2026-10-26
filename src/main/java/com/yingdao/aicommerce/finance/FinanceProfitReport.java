@@ -34,6 +34,12 @@ public final class FinanceProfitReport {
                 notes.add("人民币商品成本按同一参考汇率折算为 "+currency);
             }
         }
+        BigDecimal label=decimal(cost.get("label_cost_cny"));if(label==null)label=BigDecimal.ZERO;
+        if(!"CNY".equals(currency)&&label.signum()!=0){BigDecimal rate=quote==null?null:quote.rates().get(currency);label=rate==null||rate.signum()<=0?null:label.divide(rate,6,RoundingMode.HALF_UP);}
+        if(label==null){if(state.equals("READY"))state="MISSING_FX";notes.add("缺少人民币贴单费用展示汇率");}
+        if(number(cost.get("charges_pending"))>0){if(state.equals("READY"))state="INCOMPLETE_CHARGES";notes.add("贴单费用与已录入订单成本可能重复，请先核对");}
+        if(label!=null)shipping=shipping.add(label);
+        result.put("marketingBasis","刷单订单的结算金额、关联平台费用和成本已排除；平台原始账单与对账保留");
         boolean estimated=number(cost.get("estimated_count"))>0;
         if(estimated)notes.add("商品成本包含历史月份取价估算");
         for(var item:List.of(new String[]{"AD","广告消耗"},new String[]{"COST","物流贴单成本"})){

@@ -83,7 +83,7 @@ public class FinanceReadCache {
             return prefix(key.scope())+revision+":"+digest(key.filter()+"|"+key.cny()+"|"+key.snapshot()+"|"+key.live());
         }catch(RuntimeException unavailable){return null;}
     }
-    static String prefix(Scope scope){return "heyi:finance:snapshot:v4-profit:{"+scope.organizationId()+":"+scope.userId()+"}:";}
+    static String prefix(Scope scope){return "heyi:finance:snapshot:v5-marketing:{"+scope.organizationId()+":"+scope.userId()+"}:";}
     private static String revisionKey(Scope scope){return prefix(scope)+"revision";}
     private static String digest(String value){
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}

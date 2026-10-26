@@ -19,7 +19,7 @@ public final class FinanceFields {
         core("kind","类型","text"),core("external_id","记录编号","text"),core("order_id","订单编号","text"),core("product_skus","商品 SKU","text"),
         core("statement_id","账单编号","text"),core("category","费用类别","text"),core("status","状态","text"),
         core("currency","币种","text"),core("amount","原币金额","money"),core("revenue","归因收入","money"),core("source","来源","text"),
-        core("updated_at","最后同步时间","datetime"),
+        core("updated_at","最后同步时间","datetime"),core("marketing_label","订单标记","text"),core("summary_inclusion","经营汇总口径","text"),
         new Field("product_cost_cny","已结算订单商品成本（人民币）","money","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("product_cost_known_cny","已结算订单已算成本（人民币）","money","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("product_cost_state","商品成本状态","text","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
@@ -79,7 +79,7 @@ public final class FinanceFields {
         extra("conversions","转化 / SKU 订单数","number","AD AD_GMV",""),
         extra("net_cost","GMV Max 净消耗（原币）","money","AD_GMV","metrics.net_cost")
     );
-    static final List<String> DEFAULT_EXPORT=List.of("record_date","platform","shop_id","kind","external_id","order_id","product_skus","statement_id","category","status","currency","amount","revenue","source","cny_amount","cny_revenue","cny_rate","fx_time","fx_provider");
+    static final List<String> DEFAULT_EXPORT=List.of("record_date","platform","shop_id","kind","external_id","order_id","marketing_label","summary_inclusion","product_skus","statement_id","category","status","currency","amount","revenue","source","cny_amount","cny_revenue","cny_rate","fx_time","fx_provider");
     static final List<String> DEFAULT_VISIBLE=List.of("record_date","shop_id","external_id","order_id","product_skus","category","status","currency","amount","cny_amount");
     static final List<String> RECON_VISIBLE=List.of("record_date","shop_id","external_id","product_skus","source","currency","amount","detail_amount","difference","cny_difference","result");
     static final List<String> RECON_EXPORT=List.of("record_date","shop_id","external_id","product_skus","source","currency","amount","detail_amount","detail_count","difference","result","cny_amount","cny_detail_amount","cny_difference","cny_rate");

@@ -96,7 +96,7 @@
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选日期…';n.title=filters.start+' 至 '+filters.end;}}
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
-  function reset(){active=false;generation++;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
+  function reset(){active=false;generation++;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
   function leave(){active=false;generation++;clearTimeout(refreshTimer);cleanup();}
   function refreshWhenIdle(){
     if(!active)return;
@@ -124,7 +124,7 @@
     else if(view!=='costs'){action('字段设置','fee',actions,()=>fieldsDialog(currentFieldView()));if(canManage())action('导入账单','plus',actions,()=>importDialog());action('导出报表','download',actions,()=>exportDialog(),'fi-primary');}
     if(['fee-records','expense-ledger'].includes(view)){
       const sections=el('nav',null,root,'fc-tabs fi-expense-sections');sections.setAttribute('aria-label','费用数据分类');
-      for(const [route,label,note]of [['fee-records','平台费用','平台同步与原有导入明细'],['expense-ledger','其他费用与调整','手工费用、分摊与调整记录']]){
+      for(const [route,label,note]of [['fee-records','平台费用','平台同步与原有导入明细'],['expense-ledger','贴单成本与刷单成本','分组贴单价、费用导入与订单标记']]){
         const tab=button('',sections,()=>navigate(route==='fee-records'?'fees':route));tab.setAttribute('aria-pressed',String(view===route));el('strong',label,tab);el('span',note,tab);
       }
     }
@@ -152,9 +152,9 @@
   function sum(kind){return total(kind)?.amount;}
   function metricCards(parent){
     const cards=el('div',null,parent,'fi-metrics fi-metrics-expanded'),profit=data?.profit,cost=data?.productCosts?.total||{},partial=Number(cost.pending_count)>0;
-    const definitions=[['SETTLEMENT','已结算额度','扣平台费用前 · 按结算日期','wallet','settlements'],['ORDER','订单金额','已支付且未取消订单','shop','orders'],['REFUND','确认退款','利润中的退款以结算记录为准','refund','orders'],['FEE','平台费用','已结算的平台费用','fee','fee-records'],['AD','广告消耗','当前期间已同步 / 已导入费用','ad','ads'],['COST','物流贴单成本','另行承担的物流贴单费用','chart','fee-records'],['PRODUCT_COST','商品成本',partial?'已结算订单 · 仅已算部分':'仅已结算订单 · 人民币成本表','chart','costs'],['PROFIT','利润额',profit?.amount==null?'数据待补齐 · 查看计算口径':profit.estimated?'暂估 · 查看费用完整性':'扣除以上费用及商品成本','wallet','']];
+    const definitions=[['SETTLEMENT','已结算额度','扣平台费用前 · 按结算日期','wallet','settlements'],['ORDER','订单金额','已支付且未取消订单','shop','orders'],['REFUND','确认退款','利润中的退款以结算记录为准','refund','orders'],['FEE','平台费用','已结算的平台费用','fee','fee-records'],['AD','广告消耗','当前期间已同步 / 已导入费用','ad','ads'],['COST','物流贴单成本','另行承担的物流贴单费用','chart','expense-ledger'],['PRODUCT_COST','商品成本',partial?'已结算订单 · 仅已算部分':'仅已结算订单 · 人民币成本表','chart','costs'],['PROFIT','利润额',profit?.amount==null?'数据待补齐 · 查看计算口径':profit.estimated?'暂估 · 查看费用完整性':'扣除以上费用及商品成本','wallet','']];
     definitions.forEach(([kind,label,description,symbol,route],i)=>{
-      const amount=kind==='SETTLEMENT'?profit?.settledGrossAmount:kind==='PRODUCT_COST'?partial?cost.known_amount_cny:cost.amount_cny:kind==='PROFIT'?profit?.amount:total(kind)?.amount;
+      const amount=kind==='SETTLEMENT'?profit?.settledGrossAmount:kind==='PRODUCT_COST'?partial?cost.known_amount_cny:cost.amount_cny:kind==='PROFIT'?profit?.amount:kind==='COST'?profit?.logisticsLabelCost:total(kind)?.amount;
       const n=button('',cards,()=>{if(kind==='PROFIT'){profitDialog();return;}if(kind==='PRODUCT_COST'){openCosts({kind:'SETTLED_ORDER'});return;}selectedKind=kind;navigate(route);},'fi-metric'+(i===0?' is-featured':'')+(kind==='PROFIT'?' is-profit':''));
       n.dataset.updateKey='metric:'+kind;n.dataset.metric=kind;
       if(kind==='PROFIT'&&amount!=null&&Number(amount)<0)n.classList.add('is-negative');
@@ -173,7 +173,7 @@
       ['减：物流贴单成本',number(profit.logisticsLabelCost)],['减：商品成本',number(profit.productCost)],
       [profit.estimated?'利润额（暂估）':'利润额',number(profit.amount)]
     ]);
-    for(const note of [profit.settlementBasis,profit.refundBasis,profit.basis,...(profit.notes||[])])if(note)footnote(d.body,note);
+    for(const note of [profit.settlementBasis,profit.refundBasis,profit.marketingBasis,profit.basis,...(profit.notes||[])])if(note)footnote(d.body,note);
     if(profit.fx)footnote(d.body,'成本折算使用 '+new Date(profit.fx.time).toLocaleDateString('zh-CN')+' 的 '+profit.fx.provider+' 参考汇率，人民币成本表原值不变。');
   }
   function card(parent,title,subtitle,span=4){const n=el('section',null,parent,'fi-card fi-span-'+span);n.dataset.updateKey=title;const h=el('div',null,n,'fi-card-head'),copy=el('div',null,h);el('h3',title,copy);el('p',subtitle,copy);return {n,h};}
@@ -277,9 +277,9 @@
   }
   function storeSummary(parent){
     const ids=[...new Set(data.ranking.map(r=>r.shop_id))];
-    table(parent,['店铺','订单数','订单金额','已结算额度','平台费用','广告消耗','已结算商品成本（人民币）'],ids.map(id=>{
+    table(parent,['店铺','订单数','订单金额','已结算额度','平台费用','广告消耗','已结算商品成本（人民币）','贴单成本（人民币）'],ids.map(id=>{
       const rows=data.ranking.filter(r=>r.shop_id===id),get=k=>rows.find(r=>r.kind===k);
-      return [shopName(id),number(get('ORDER')?.records),number(get('ORDER')?.amount),number(get('SETTLEMENT')?.settled_gross_amount),number(get('FEE')?.amount),number(get('AD')?.amount),costAmountText(shopCost(id),{shopId:id,kind:'SETTLED_ORDER'})];
+      return [shopName(id),number(get('ORDER')?.records),number(get('ORDER')?.amount),number(get('SETTLEMENT')?.settled_gross_amount),number(get('FEE')?.amount),number(get('AD')?.amount),costAmountText(shopCost(id),{shopId:id,kind:'SETTLED_ORDER'}),'¥ '+number(shopCost(id)?.label_cost_cny||0)];
     }),'启用财务店铺同步后，经营数据将自动汇总。');
   }
   function groupSummary(parent){
@@ -291,10 +291,10 @@
       kind.records+=Number(row.records)||0;if(row.amount!=null)kind.amount=(kind.amount??0)+Number(row.amount);
       if(row.settled_gross_amount!=null)kind.settledGross=(kind.settledGross??0)+Number(row.settled_gross_amount);
     }
-    const groupCost=id=>{const rows=(data.productCosts?.shops||[]).filter(r=>(data.shops.find(s=>s.id===r.shop_id)?.group_id||'')===id);return rows.length?{pending_count:rows.reduce((a,r)=>a+Number(r.pending_count||0),0),known_amount_cny:rows.reduce((a,r)=>a+Number(r.known_amount_cny||0),0),amount_cny:rows.reduce((a,r)=>a+Number(r.amount_cny||0),0)}:null;};
-    table(parent,['分组','币种','订单数','订单金额','已结算额度','平台费用','广告消耗','已结算商品成本（人民币）'],[...grouped.values()].map(g=>[
+    const groupCost=id=>{const rows=(data.productCosts?.shops||[]).filter(r=>(data.shops.find(s=>s.id===r.shop_id)?.group_id||'')===id);return rows.length?{pending_count:rows.reduce((a,r)=>a+Number(r.pending_count||0),0),known_amount_cny:rows.reduce((a,r)=>a+Number(r.known_amount_cny||0),0),amount_cny:rows.reduce((a,r)=>a+Number(r.amount_cny||0),0),label_cost_cny:rows.reduce((a,r)=>a+Number(r.label_cost_cny||0),0)}:null;};
+    table(parent,['分组','币种','订单数','订单金额','已结算额度','平台费用','广告消耗','已结算商品成本（人民币）','贴单成本（人民币）'],[...grouped.values()].map(g=>[
       button(groupName(g.id),null,()=>{filters.groupId=g.id||'UNGROUPED';filters.shopId='';page=1;load();},'fi-action-link'),
-      g.currency,number(g.kinds.ORDER?.records),number(g.kinds.ORDER?.amount),number(g.kinds.SETTLEMENT?.settledGross),...['FEE','AD'].map(k=>number(g.kinds[k]?.amount)),costAmountText(groupCost(g.id),{groupId:g.id||'UNGROUPED',kind:'SETTLED_ORDER'})
+      g.currency,number(g.kinds.ORDER?.records),number(g.kinds.ORDER?.amount),number(g.kinds.SETTLEMENT?.settledGross),...['FEE','AD'].map(k=>number(g.kinds[k]?.amount)),costAmountText(groupCost(g.id),{groupId:g.id||'UNGROUPED',kind:'SETTLED_ORDER'}),'¥ '+number(groupCost(g.id)?.label_cost_cny||0)
     ]),'按类目建立店铺分组后，可在这里查看分组经营表现。');
   }
   function table(parent,headers,rows,empty='当前范围暂无记录',keys=[]){
@@ -314,7 +314,7 @@
     if(!allowedKinds.includes(selectedKind))selectedKind=allowedKinds[0];
     const pills=el('div',null,parent,view==='settlements'?'fi-settlement-totals':'fi-tabs');
     allowedKinds.forEach(k=>{const tab=button(view==='settlements'?'':kinds[k],pills,()=>{selectedKind=k;page=1;load();});tab.setAttribute('aria-pressed',String(k===selectedKind));
-      if(view==='settlements'){el('span',kinds[k]+'合计',tab);const value=el('div',null,tab);el('strong',number(sum(k)),value);el('small',data.filters.displayCurrency||data.filters.currency||'原币',value);el('small',number(total(k)?.records)+' 笔 · '+(k==='BILL'?'仅平台账单，导入账单用于对账':k==='PENDING'?'平台预估，未最终结算':'平台已结算明细'),tab);}
+      if(view==='settlements'){el('span',kinds[k]+'合计',tab);const value=el('div',null,tab);el('strong',number(sum(k)),value);el('small',data.filters.displayCurrency||data.filters.currency||'原币',value);el('small',number(total(k)?.records)+' 笔 · '+(k==='BILL'?'平台原始账单（含刷单），用于对账':k==='PENDING'?'平台预估，已排除刷单':'已排除刷单的经营结算'),tab);}
     });
     meta(parent);
     const grid=el('div',null,parent,'fi-chart-grid'+(view==='settlements'?' fi-settlement-chart':''));trend(grid,(view==='settlements'?[selectedKind]:allowedKinds).map(k=>[k,kinds[k]]),routes[view]+'趋势','按业务日期及当前展示币种统计',12);
@@ -327,7 +327,7 @@
     const bar=el('div',null,n,'fi-pagebar');el('span',`第 ${result.page} 页 · 每页 ${result.pageSize} 条`,bar);const controls=el('div',null,bar,'fi-actions');
     button('上一页',controls,()=>{page--;load();}).disabled=page<=1;
     button('下一页',controls,()=>{page++;load();}).disabled=page*result.pageSize>=result.total;
-    footnote(parent,'未知金额显示为 —；退款仅完成后计入。预计待结算为 TikTok 官方预估，完整分页同步后移除已结算项。平台费用已含于净结算，不重复扣减。');
+    footnote(parent,'明细保留黄色刷单标签；经营汇总排除这些订单的结算和成本，平台原始账单与对账仍完整保留。未知金额显示为 —；退款仅完成后计入。预计待结算为 TikTok 官方预估，完整分页同步后移除已结算项。平台费用已含于净结算，不重复扣减。');
   }
   function reconciliation(parent,result){
     meta(parent);
@@ -341,7 +341,7 @@
     const bar=el('div',null,n,'fi-pagebar');el('span',`第 ${result.page} 页 · 每页 ${result.pageSize} 条`,bar);const controls=el('div',null,bar,'fi-actions');
     button('上一页',controls,()=>{page--;load();}).disabled=page<=1;
     button('下一页',controls,()=>{page++;load();}).disabled=page*result.pageSize>=result.total;
-    footnote(parent,'按账单编号与币种精确匹配。缺少数据不会标记一致；这里核对平台结算，不确认银行到账。');
+    footnote(parent,'此处保留包含刷单在内的平台完整流水，用于真实账单核对。按账单编号与币种精确匹配。缺少数据不会标记一致；这里核对平台结算，不确认银行到账。');
   }
   async function shopView(parent,run){
     const res=await request('/shops');if(run!==generation)return;
@@ -541,7 +541,7 @@
     if(f.id==='shop_id')return shopName(value);
     if(f.id==='product_skus')return skuCell(row);
     if(['product_cost_cny','product_cost_known_cny'].includes(f.id)&&value!=null&&row.id)return costLink(number(value),{recordId:row.id,shopId:row.shop_id,kind:row.kind==='BILL'?'BILL':row.kind||'ORDER'});
-    if(['external_id','order_id'].includes(f.id)&&row.id){const n=button(value||'查看详情',null,()=>detailDialog(row.id),'fi-record-link');n.title=value?String(value)+' · 查看详情':'未关联订单 · 查看详情';if(row.order_type_label?.includes('样品单')){const wrap=el('span',null,null,'fi-settlement-amount');wrap.append(n);const tag=el('small',row.order_type_label.includes('免费')?'免费样品单':'样品单',wrap,'fi-sample-tag');tag.title=row.order_type_label;return wrap;}return n;}
+    if(['external_id','order_id'].includes(f.id)&&row.id){const n=button(value||'查看详情',null,()=>detailDialog(row.id),'fi-record-link');n.title=value?String(value)+' · 查看详情':'未关联订单 · 查看详情';if(row.marketing_order){const wrap=el('span',null,null,'fi-settlement-amount');wrap.append(n);const tag=el('small','刷单',wrap,'fi-marketing-tag');tag.title='不计入经营汇总；原始订单和对账保留';return wrap;}if(row.order_type_label?.includes('样品单')){const wrap=el('span',null,null,'fi-settlement-amount');wrap.append(n);const tag=el('small',row.order_type_label.includes('免费')?'免费样品单':'样品单',wrap,'fi-sample-tag');tag.title=row.order_type_label;return wrap;}return n;}
     if(f.id==='status'||f.id==='result')return badge(value);
     if(f.id==='related_order_status')return badge(value);
     if(['SETTLEMENT','BILL'].includes(row.kind)&&['amount','cny_amount'].includes(f.id)&&(row.amount==null||Number(row.amount)<=0)){
@@ -608,7 +608,7 @@
     });
     submit.disabled=true;confirmation.oninput=()=>{submit.disabled=confirmation.value!==name;};
   }
-  async function detailDialog(id){const d=dialog('财务记录详情');try{const row=await request('/records/'+encodeURIComponent(id)+'?'+qs());const settings=await request('/fields/'+(row.kind||'ALL'));const dl=el('dl',null,d.body);
+  async function detailDialog(id){const d=dialog('财务记录详情');try{const row=await request('/records/'+encodeURIComponent(id)+'?'+qs());if(row.marketing_order){el('span','刷单',d.body,'fi-marketing-tag');el('p','此订单的结算金额、关联平台费用和成本不计入经营汇总；以下保留平台原始明细。',d.body,'fi-muted');}const settings=await request('/fields/'+(row.kind||'ALL'));const dl=el('dl',null,d.body);
     for(const f of settings.fields){if(f.cny&&!row.fx)continue;const value=columnValue(row,f);if(row[f.id]==null&&!f.id.startsWith('fx_'))continue;el('dt',f.label,dl);const dd=el('dd',null,dl);if(value instanceof Node)dd.textContent=value.textContent;else dd.textContent=value;}
     if(row.productCost){const cost=row.productCost;el('h3','已结算订单商品成本明细 · 人民币',d.body);el('p',cost.note+' · 成本仓：'+(cost.warehouse||'待配置'),d.body,'fi-muted');
       table(d.body,['商品 / 规格 / SKU','数量 × 组合','月份 / 单价（¥）','成本（¥）','说明'],(cost.lines||[]).map(line=>[
@@ -774,7 +774,7 @@
       }
       if(view==='expense-ledger'){
         const host=root.querySelector('[data-finance-expenses]');
-        if(globalThis.FinanceExpensesDesign)FinanceExpensesDesign.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),live:true,embedded:true,data:data.expenses,skuCell,request:(path,options)=>request('/workspace'+path,options)});
+        if(globalThis.FinanceCharges)FinanceCharges.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),live:true,embedded:true,data:data.expenses,skuCell,request:(path,options)=>request('/workspace'+path,options)});
         else el('p','费用组件暂未加载，请刷新重试。',host,'fi-muted');
       }
       const errors=(data?.sync||[]).filter(s=>s.status==='ERROR').length;

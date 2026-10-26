@@ -97,7 +97,11 @@ final class FinanceShopDeletion {
             case 0 -> delete("finance_sync_states","organization_id=? AND shop_id=?",keys);
             case 1 -> delete("finance_cost_rebuilds","organization_id=? AND shop_id=?",keys);
             case 2 -> delete("finance_order_cost_jobs","organization_id=? AND shop_id=?",keys);
-            case 3 -> entities("finance_order_costs","order_record_id","ORDER_STANDARD_COST","organization_id=? AND shop_id=?",keys);
+            case 3 -> {
+                int removed=delete("finance_marketing_orders","organization_id=? AND shop_id=?",keys);
+                if(removed==0)removed=delete("finance_charge_rows","organization_id=? AND matched_shop_id=?",keys);
+                yield removed>0?removed:entities("finance_order_costs","order_record_id","ORDER_STANDARD_COST","organization_id=? AND shop_id=?",keys);
+            }
             case 4 -> entities("finance_cost_mappings","id","COST_MAPPING","organization_id=? AND shop_id=?",keys);
             case 5 -> delete("finance_workspace_audit","organization_id=? AND entity_id=? AND entity_type IN ('COST_SETTINGS','COST_AUTO_MATCH')",keys);
             case 6 -> delete("finance_cost_settings","organization_id=? AND shop_id=?",keys);

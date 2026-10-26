@@ -37,6 +37,7 @@ final class FinanceGroups {
             throw bad("此分组还有店铺，请先调整店铺分组再删除");
         if(repo.jdbc().queryForObject("SELECT (SELECT COUNT(*) FROM finance_cost_sources WHERE organization_id=? AND group_id=?)+(SELECT COUNT(*) FROM finance_manual_costs WHERE organization_id=? AND group_id=?)",
                 Long.class,s.organizationId(),id,s.organizationId(),id)>0)throw bad("此分组还有成本文件或手动成本，请先在成本管理中移除");
+        if(repo.jdbc().queryForObject("SELECT (SELECT COUNT(*) FROM finance_charge_imports WHERE organization_id=? AND group_id=?)+(SELECT COUNT(*) FROM finance_label_rules WHERE organization_id=? AND group_id=?)",Long.class,s.organizationId(),id,s.organizationId(),id)>0)throw bad("此分组还有贴单规则或费用文件，请先移除");
         // An unused authorization link must not silently attach to a deleted group.
         repo.jdbc().update("DELETE FROM finance_groups WHERE organization_id=? AND id=?",s.organizationId(),id);
     }
