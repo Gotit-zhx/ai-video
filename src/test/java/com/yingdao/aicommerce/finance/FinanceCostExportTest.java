@@ -58,6 +58,20 @@ class FinanceCostExportTest {
         throw new AssertionError(ref);
     }
     static String value(Document d,String ref){return cell(d,ref).getTextContent();}
+    @Test void pendingSkuExportsShowIdentityAndRecoverNamesByProductAndVariant()throws Exception{
+        var pending=row("INCOMPLETE","old-order");
+        var cost=repo.read(text(pending.get("cost_json")));var line=new LinkedHashMap<>(rows(cost.get("lines")).getFirst());
+        line.put("sellerSku","");line.put("issue","平台未返回商家 SKU");line.remove("amountCny");line.remove("unitPriceCny");
+        cost.put("lines",List.of(line));pending.put("cost_json",repo.write(cost));pending.put("amount_cny",null);
+        pending.put("raw_json",repo.write(Map.of("line_items",List.of(Map.of("product_id",line.get("productId"),"sku_id",line.get("skuId"),
+            "seller_sku","","product_name","历史商品","sku_name","旧规格")))));
+        results(List.of(pending));byte[] bytes=export.export(scope,filter,"SETTLED_ORDER","","PENDING");
+        var orders=sheet(bytes,2);var lines=sheet(bytes,3);
+        assertTrue(value(orders,"F2").contains("平台 SKU：20000000000000002"));assertTrue(value(orders,"F2").contains("商家 SKU 未提供"));
+        assertEquals("历史商品",value(lines,"I2"));assertEquals("旧规格",value(lines,"J2"));
+        assertEquals("20000000000000002",value(lines,"L2"));assertEquals("",value(lines,"M2"));
+        assertEquals("",value(orders,"N2"),"identity fallback must not fill a financial amount");
+    }
     @Test void detailedWorkbookPreservesPrecisionIdsStatusesDatesAndSnapshots()throws Exception{
         var estimated=row("ESTIMATED","586742209199441786");
         var sampleRaw=new LinkedHashMap<>(repo.read(text(estimated.get("raw_json"))));sampleRaw.put("order_type","SELLER_FUND_FREE_SAMPLE");sampleRaw.put("is_sample_order",true);estimated.put("raw_json",repo.write(sampleRaw));

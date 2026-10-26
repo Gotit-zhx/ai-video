@@ -29,6 +29,38 @@ public final class FinanceProductSkus {
         row.put("product_sku_values",List.copyOf(codes));
         row.put("product_skus",String.join("\n",codes));
     }
+    /** Display-only identities from the original order. Never use a platform ID as a merchant cost code. */
+    static List<Map<String,Object>> identities(String platform,Map<String,Object> raw){
+        if(!Set.of("SHOPEE","TIKTOK_SHOP").contains(platform))return List.of();
+        boolean shopee=platform.equals("SHOPEE");var result=new ArrayList<Map<String,Object>>();
+        for(var item:rows(raw.get(shopee?"item_list":"line_items"))){
+            var value=new LinkedHashMap<String,Object>();
+            String seller=displayText(item.get(shopee?"model_sku":"seller_sku"),255);
+            if(shopee&&seller.isBlank())seller=displayText(item.get("item_sku"),255);
+            value.put("sellerSku",seller);
+            value.put("productId",displayText(item.get(shopee?"item_id":"product_id"),128));
+            value.put("skuId",displayText(item.get(shopee?"model_id":"sku_id"),128));
+            value.put("name",displayText(item.get(shopee?"item_name":"product_name"),500));
+            value.put("spec",displayText(item.get(shopee?"model_name":"sku_name"),500));
+            value.put("image",displayText(shopee?at(item,"image_info.image_url"):item.get("sku_image"),1500));
+            value.put("quantity",decimal(item.get(shopee?"model_quantity_purchased":"quantity")));
+            String line=displayText(item.get("id"),128);if(line.isBlank())line=displayText(item.get("line_item_id"),128);
+            value.put("lineId",line);result.add(value);
+        }
+        return result;
+    }
+    private static String displayText(Object value,int limit){
+        String text=value instanceof String||value instanceof Number?text(value).trim():"";
+        return text.substring(0,Math.min(limit,text.length()));
+    }
+    static String missingIdentity(Map<String,Object> item){
+        var parts=new ArrayList<String>();
+        if(!text(item.get("name")).isBlank())parts.add(text(item.get("name")));
+        if(!text(item.get("spec")).isBlank())parts.add("规格："+item.get("spec"));
+        if(!text(item.get("skuId")).isBlank())parts.add("平台 SKU："+item.get("skuId"));
+        if(!text(item.get("productId")).isBlank())parts.add("SPU："+item.get("productId"));
+        parts.add("商家 SKU 未提供");return String.join(" · ",parts);
+    }
     /** Only enrich the requested page. No per-row queries or whole-history JSON scan. */
     public void attach(Scope scope,List<Map<String,Object>> records){
         for(int start=0;start<records.size();start+=100)page(scope,records.subList(start,Math.min(start+100,records.size())));

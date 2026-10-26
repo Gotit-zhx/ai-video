@@ -365,6 +365,11 @@ class FinanceConfigurationIntegrationTest {
         for(var page:List.of(first,second))for(var row:rows(page.get("items"))){
             assertTrue(number(row.get("product_cost_pending"))>0);assertTrue(ids.add(text(row.get("order_id"))));
             assertFalse(text(row.get("product_cost_issue")).isBlank());
+            if("平台未返回商家 SKU".equals(row.get("product_cost_issue"))){
+                var identity=rows(row.get("product_sku_details")).getFirst();
+                assertEquals("old-sku",identity.get("skuId"));assertEquals("old-product",identity.get("productId"));
+                assertEquals("同名规格不可猜测成本",identity.get("spec"));assertEquals("",identity.get("sellerSku"));
+            }
         }
         assertEquals(61,number(reports.orders(owner,q,"SETTLED_ORDER","",1,"ALL").get("total")));
         assertEquals(0,number(reports.orders(other,q,"SETTLED_ORDER","",1,"PENDING").get("total")));

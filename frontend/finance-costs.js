@@ -91,7 +91,7 @@
     const catalogFor=shop=>preview?.shopCatalogs?.[shop.id]||(shop.group_id===preview?.groupId?{costRows:costs.length,sourceName:preview.sourceName}:{costRows:0,sourceName:''});
     async function chooseShop(id){
       if(!id)return;
-      state.orderContext=null;state.orderPage=1;
+      state.orderContext=null;state.orderPage=1;state.mappingReturn=null;
       if(live){await reload(id);return;}
       state.settings[state.shopId]={warehouse:state.warehouse,rules:{...state.rules}};state.shopId=id;
       const settings=state.settings[id];state.warehouse=settings?.warehouse||(applies()?preview.suggestedWarehouse:'')||'';state.rules=settings?.rules||defaultRules();
@@ -138,6 +138,7 @@
       if(!preview)return unavailable();
       const d=modal(live?'关联成本型号':'关联成本型号 · 仅预览'),rec=recommendation(product);
       tag(d.body,'归属店铺：'+(getShop()?.display_name||getShop()?.name||''),'good');
+      if(/^https:\/\//.test(product.image||'')){const image=el('img',null,d.body,'fc-mapping-image');image.src=product.image;image.alt=product.name||'订单商品图';image.loading='lazy';image.referrerPolicy='no-referrer';}
       el('strong',product.seller_sku||'未提供商家 SKU',d.body);el('p',product.spec||product.name,d.body,'fi-muted');
       el('p',`商品 ID：${product.product_id||'待补充'} · 规格 SKU ID：${product.sku_id||'待补充'}`,d.body,'fi-muted');
       if(rec.status==='conflict')el('p',rec.note,d.body,'fc-alert');
@@ -234,7 +235,7 @@
           const button=editable?action(null,mapped(product)?'查看 / 调整':'核对关联',()=>mappingDialog(product),'fi-record-link'):'只读';
           const costCode=el('span',rec.code||'未找到',null,'fc-code');
           if(rec.bundleQuantity)el('small','组合数量 ×'+rec.bundleQuantity,costCode,'fc-bundle-quantity');
-          return [item,el('span',product.seller_sku||'—',null,'fc-code'),costCode,badge,button];
+          return [item,el('span',product.seller_sku||'未提供商家 SKU',null,'fc-code'),costCode,badge,button];
         }));
         if(index%4===3||index===pageSpus.length-1){list.append(openDetail);openDetail=null;}
       }
@@ -244,6 +245,7 @@
     }
     function productPanel(parent){
       const p=panel(parent,'店铺 → SPU → SKU','相同编码自动关联。商品外层显示关联结果，未关联和需核对的优先展示。');
+      if(state.mappingReturn)action(p.h,state.mappingReturn.orderCostStatus==='PENDING'?'返回待补齐订单':'返回订单成本',async()=>{Object.assign(state,state.mappingReturn);state.mappingReturn=null;state.tab='orders';if(live)await reload(state.shopId);else draw();},'fi-record-link');
       const tree=el('div',null,p.n,'fc-shop-tree');
       if(!shops.length)el('p','请先在财务店铺管理中授权店铺。',tree,'fc-empty');
       const ordered=[...shops].sort((a,b)=>Boolean(catalogFor(b).costRows)-Boolean(catalogFor(a).costRows));
@@ -388,5 +390,10 @@
     draw();
     if(state.tab!=='orders'&&missingAutomatic())void autoMatch();
   }
-  globalThis.FinanceCosts={mount,reset,candidate,shopId:()=>state.shopId,openOrders:filters=>{state.tab='orders';state.start=filters.start;state.end=filters.end;state.orderPage=1;state.orderCostStatus=filters.costStatus==='PENDING'?'PENDING':'ALL';state.orderContext={shopId:filters.shopId||'',groupId:filters.groupId||'',platform:filters.platform||'',currency:filters.currency||'',kind:filters.kind||'SETTLED_ORDER',recordId:filters.recordId||''};if(filters.shopId)state.shopId=filters.shopId;}};
+  globalThis.FinanceCosts={mount,reset,candidate,shopId:()=>state.shopId,openMapping:selection=>{
+    state.mappingReturn=selection.returnToOrders?{shopId:state.shopId,warehouse:state.warehouse,orderPage:state.orderPage,orderContext:state.orderContext,orderCostStatus:state.orderCostStatus,start:state.start,end:state.end}:null;
+    if(state.shopId!==selection.shopId)state.warehouse='';
+    state.tab='mapping';state.shopId=selection.shopId;state.collapsedShopId='';state.search=selection.skuId;state.status='';state.page=1;
+    state.spus={};state.spus[selection.shopId+':'+selection.productId]=true;
+  },openOrders:filters=>{state.mappingReturn=null;state.tab='orders';state.start=filters.start;state.end=filters.end;state.orderPage=1;state.orderCostStatus=filters.costStatus==='PENDING'?'PENDING':'ALL';state.orderContext={shopId:filters.shopId||'',groupId:filters.groupId||'',platform:filters.platform||'',currency:filters.currency||'',kind:filters.kind||'SETTLED_ORDER',recordId:filters.recordId||''};if(filters.shopId)state.shopId=filters.shopId;}};
 })();

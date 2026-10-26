@@ -119,6 +119,8 @@ public class FinanceCostExport {
         for(var line:costLines){if(!text(line.get("sellerSku")).isBlank())skus.add(text(line.get("sellerSku")));if(!text(line.get("priceMonth")).isBlank())months.add(text(line.get("priceMonth")));if(!text(line.get("issue")).isBlank())issues.add(text(line.get("issue")));}
         var sourceLines=rows(raw.get("TIKTOK_SHOP".equals(row.get("platform"))?"line_items":"item_list"));
         if(skus.isEmpty())for(var line:sourceLines){String sku=first(line,"seller_sku","model_sku","item_sku");if(!sku.isBlank())skus.add(sku);}
+        for(var identity:FinanceProductSkus.identities(text(row.get("platform")),raw))
+            if(text(identity.get("sellerSku")).isBlank())skus.add(FinanceProductSkus.missingIdentity(identity));
         String note=queued?"后台正在重新计算，旧成本未计入本次导出":missing?"关联订单尚未同步":text(cost.get("note"));
         if(!issues.isEmpty())note+=(note.isBlank()?"":"；")+String.join("；",issues);
         if(note.isBlank()&&!Set.of("READY","ESTIMATED","EXCLUDED").contains(code))note="成本尚未计算或资料待补齐";
@@ -141,8 +143,9 @@ public class FinanceCostExport {
             totals.lines++;return;
         }
         for(var line:costLines){
-            var source=sourceLines.stream().filter(s->!text(line.get("lineId")).isBlank()?text(line.get("lineId")).equals(first(s,"id","line_item_id")):
-                text(line.get("productId")).equals(first(s,"product_id","item_id"))&&text(line.get("skuId")).equals(first(s,"sku_id","model_id"))).findFirst().orElse(Map.of());
+            var source=sourceLines.stream().filter(s->!text(line.get("lineId")).isBlank()&&text(line.get("lineId")).equals(first(s,"id","line_item_id"))).findFirst().orElseGet(
+                ()->sourceLines.stream().filter(s->!text(line.get("productId")).isBlank()&&!text(line.get("skuId")).isBlank()
+                    &&text(line.get("productId")).equals(first(s,"product_id","item_id"))&&text(line.get("skuId")).equals(first(s,"sku_id","model_id"))).findFirst().orElse(Map.of()));
             boolean excluded=Boolean.TRUE.equals(line.get("excluded"));
             String issue=text(line.get("issue")),lineState=!issue.isBlank()?"待补齐":excluded?"不计成本":Boolean.TRUE.equals(line.get("previousPrice"))?"历史价估算":"已计算";
             detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),date,orderStatus(text(row.get("order_status"))),status,

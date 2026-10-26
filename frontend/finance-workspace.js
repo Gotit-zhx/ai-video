@@ -498,8 +498,30 @@
   }
   function currentFieldView(){return view==='reconciliation'?'RECONCILIATION':view==='overview'?'ALL':view==='ads'?(selectedKind==='AD_GMV'?'AD_GMV':'AD'):selectedKind;}
   function skuCell(row){
+    const items=row.product_sku_details||[];
+    if(items.some(item=>!item.sellerSku)){
+      const n=el('div',null,null,'fi-sku-details');
+      for(const item of items){
+        const part=el('div',null,n,'fi-sku-item'),photo=el('span','无商品图',part,'fi-sku-photo');
+        if(/^https:\/\/[^/]+\/.+/.test(item.image||'')){
+          photo.textContent='';const image=el('img',null,photo);image.src=item.image;image.alt=item.name||'订单商品图';image.setAttribute('loading','lazy');image.setAttribute('decoding','async');image.referrerPolicy='no-referrer';
+          image.onerror=e=>{e.currentTarget.parentElement.textContent='商品图未加载';};
+        }
+        const copy=el('div',null,part,'fi-sku-copy');
+        if(item.name){const name=el('strong',item.name,copy);name.title=item.name;}
+        el('span','订单规格：'+(item.spec||'平台未提供'),copy,'fi-sku-spec');
+        if(item.quantity!=null)el('span','购买数量：'+item.quantity,copy);
+        if(item.sellerSku)el('span','商家 SKU：'+item.sellerSku,copy);
+        else el('span','商家 SKU 未提供',copy,'fi-sku-missing');
+        if(item.skuId)el('span','平台 SKU：'+item.skuId,copy,'fi-sku-id');
+        if(item.productId)el('small','SPU：'+item.productId,copy);
+        if(globalThis.FinanceCosts?.openMapping&&row.shop_id&&item.productId&&item.skuId)
+          button('核对关联',copy,()=>{copy.closest('dialog')?.close();FinanceCosts.openMapping({shopId:row.shop_id,productId:item.productId,skuId:item.skuId,returnToOrders:view==='costs'});if(view==='costs')load();else navigate('costs');},'fi-record-link');
+      }
+      return n;
+    }
     const codes=row.product_sku_values||String(row.product_skus||'').split('\n').filter(Boolean);
-    const n=el('span',codes.join('\n')||'—',null,'fi-sku-cell');
+    const n=el('span',codes.join('\n')||(row.item_names?row.item_names+'\n商家 SKU 未提供':'暂无商品 SKU 信息'),null,'fi-sku-cell');
     n.title=codes.length?'关联订单的商家 SKU'+(codes.length>1?'（'+codes.length+' 个）':'')+'\n'+codes.join('\n'):'暂无关联订单的商家 SKU';
     return n;
   }
@@ -589,12 +611,21 @@
   async function detailDialog(id){const d=dialog('财务记录详情');try{const row=await request('/records/'+encodeURIComponent(id)+'?'+qs());const settings=await request('/fields/'+(row.kind||'ALL'));const dl=el('dl',null,d.body);
     for(const f of settings.fields){if(f.cny&&!row.fx)continue;const value=columnValue(row,f);if(row[f.id]==null&&!f.id.startsWith('fx_'))continue;el('dt',f.label,dl);const dd=el('dd',null,dl);if(value instanceof Node)dd.textContent=value.textContent;else dd.textContent=value;}
     if(row.productCost){const cost=row.productCost;el('h3','已结算订单商品成本明细 · 人民币',d.body);el('p',cost.note+' · 成本仓：'+(cost.warehouse||'待配置'),d.body,'fi-muted');
-      table(d.body,['商家 SKU / 成本型号','数量 × 组合','月份 / 单价（¥）','成本（¥）','说明'],(cost.lines||[]).map(line=>[
-        (line.sellerSku||'未提供 SKU')+(line.costCode?' / '+line.costCode:''),number(line.quantity)+' × '+number(line.factor),
+      table(d.body,['商品 / 规格 / SKU','数量 × 组合','月份 / 单价（¥）','成本（¥）','说明'],(cost.lines||[]).map(line=>[
+        costSkuCell(row,line),number(line.quantity)+' × '+number(line.factor),
         (line.priceMonth||'—')+' / '+number(line.unitPriceCny),number(line.amountCny),line.issue||(line.excluded?'已取消，不计成本':line.previousPrice?'历史月份价格估算':'按商家 SKU 计算')
       ]));
     }
     if(row.fx)el('p',`${row.fx.provider} · ${row.fx.time} · 参考折算`,d.body,'fi-muted');}catch(e){d.feedback.textContent=e.message;}}
+  function costSkuCell(row,line){
+    const items=row.product_sku_details||[];
+    const item=items.find(item=>line.lineId&&item.lineId===line.lineId)
+      ||items.find(item=>line.productId&&line.skuId&&item.productId===line.productId&&item.skuId===line.skuId)
+      ||{sellerSku:line.sellerSku||'',productId:line.productId,skuId:line.skuId};
+    const cell=skuCell({shop_id:row.shop_id,product_sku_details:[item],product_sku_values:line.sellerSku?[line.sellerSku]:[]});
+    if(line.costCode)el('small','成本型号：'+line.costCode,cell);
+    return cell;
+  }
   function exportDialog(){
     const d=dialog('导出财务报表');el('p',`${filters.start} 至 ${filters.end} · 当前分组、店铺、平台和币种筛选 · 全部符合条件的记录`,d.body,'fi-muted');
     const type=select(d.body,'导出类型',[['ALL','全部财务明细'],...Object.entries(kinds),['RECONCILIATION','结算对账']],currentFieldView(),()=>{});
