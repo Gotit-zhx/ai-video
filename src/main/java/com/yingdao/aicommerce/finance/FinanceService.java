@@ -14,6 +14,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceService {
     private final FinanceRepository repo; private final OrganizationAccessPolicy access; private final FinanceShopAuthorization shops;private final FinanceFx fx;
     private final FinanceSnapshotCache snapshots=new FinanceSnapshotCache();
+    private final FinanceSnapshotCache dashboardFacts=new FinanceSnapshotCache(System::nanoTime,java.util.concurrent.TimeUnit.SECONDS.toNanos(5),32);
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private FinanceReadCache sharedSnapshots;
     public FinanceService(FinanceRepository repo,OrganizationAccessPolicy access,FinanceShopAuthorization shops,FinanceFx fx){
@@ -60,7 +61,7 @@ public class FinanceService {
             UPDATE finance_connections SET enabled=?,currency=?,timezone=?,updated_at=UTC_TIMESTAMP(6)
             WHERE organization_id=? AND user_id=? AND id=? AND status<>'REMOVED'
             """,enabled,currency,timezone,s.organizationId(),s.userId(),id);
-        var channels=new ArrayList<>(List.of("ORDER","ORDER_LIVE","REFUND","SETTLEMENT"));
+        var channels=new ArrayList<>(List.of("ORDER","ORDER_LIVE","ORDER_REPAIR","REFUND","SETTLEMENT"));
         if("TIKTOK_SHOP".equals(shop.get("platform")))channels.add("PENDING");
         if(enabled)for(String channel:channels)repo.jdbc().update("""
             INSERT IGNORE INTO finance_sync_states(organization_id,user_id,shop_id,channel) VALUES(?,?,?,?)
@@ -120,12 +121,17 @@ public class FinanceService {
         else invalidateSnapshots(s);
     }
     private void invalidateSnapshots(Scope s){
-        Scope shared=companyScope(s.organizationId());snapshots.invalidateCompany(s.organizationId());if(sharedSnapshots!=null)sharedSnapshots.invalidate(shared);
+        Scope shared=companyScope(s.organizationId());snapshots.invalidateCompany(s.organizationId());dashboardFacts.invalidateCompany(s.organizationId());if(sharedSnapshots!=null)sharedSnapshots.invalidate(shared);
     }
     public Map<String,Object> dashboard(Scope s,Filter requested,boolean cny,String snapshotId){
         var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false);
         java.util.function.Supplier<Map<String,Object>> load=()->buildDashboard(s,requested,cny,snapshotId,false);
-        return sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load);
+        return withCalculations(s,requested,sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load));
+    }
+    private Map<String,Object> withCalculations(Scope s,Filter f,Map<String,Object> result){
+        if(sharedSnapshots==null)return result;
+        var selected=rows(result.get("shops")).stream().filter(shop->FinanceGroups.matches(shop,f)).map(shop->text(shop.get("id"))).toList();
+        var copy=new LinkedHashMap<>(result);copy.put("settlementCalculation",sharedSnapshots.settlementCalculation(s,selected));return copy;
     }
     public void prewarm(Scope s){
         if(sharedSnapshots==null)return;
@@ -151,7 +157,19 @@ public class FinanceService {
     }
     Map<String,Object> buildDashboard(Scope s,Filter requested,boolean cny,String snapshotId,boolean live){
         Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity(),requested.groupId());
-        var buckets=repo.dashboardBuckets(s,all);
+        var costReport=new FinanceCostReport(repo);
+        // Currency changes and concurrent CNY/native prewarming share the same bounded raw read.
+        var facts=dashboardFacts.get(new FinanceSnapshotCache.Key(s,all,false,"",live),()->repo.readSnapshot(()->{
+            var buckets=new ArrayList<>(repo.dashboardBuckets(s,all));
+            var orders=costReport.dashboardFacts(s,all);
+            if(!live){
+                buckets.removeIf(row->Set.of("ORDER","REFUND").contains(text(row.get("kind"))));
+                buckets.addAll(orders.stream().filter(row->number(row.get("records"))>0).toList());
+                buckets.addAll(repo.settledOrderBuckets(s,all,"REFUND"));
+            }
+            return Map.of("buckets",buckets,"orders",orders);
+        }));
+        var buckets=rows(facts.get("buckets"));
         var allRanking=aggregate(buckets,"shop_id","kind");
         List<String> codes=allRanking.stream().map(r->text(r.get("currency"))).distinct().sorted().toList();
         String currency=requested.currency().isBlank()?(cny||codes.isEmpty()?"":codes.getFirst()):requested.currency();
@@ -168,13 +186,16 @@ public class FinanceService {
         var daily=live?List.<Map<String,Object>>of():aggregate(selected,"record_date","kind");
         if(cny)daily=FinanceFx.groups(daily,quote,"record_date","kind");
         daily=FinanceProfitReport.withGross(daily,"record_date");
+        var incompletePoints=new HashSet<String>();
         for(var row:daily){
             String key=bucket(LocalDate.parse(text(row.get("record_date"))),f.granularity());
             var point=points.get(key);String kind=text(row.get("kind"));if(point==null)continue;
-            BigDecimal value=decimal(row.get("amount"));if(value!=null)point.merge(kind,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));
+            BigDecimal value=Set.of("SETTLEMENT","BILL").contains(kind)?FinanceProfitReport.goods(row):decimal(row.get("amount"));if(value!=null)point.merge(kind,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));
+            if(Set.of("SETTLEMENT","BILL").contains(kind)&&value==null)incompletePoints.add(key+"\0"+kind);
             BigDecimal gross=decimal(row.get("settled_gross_amount"));if(gross!=null)point.merge("SETTLEMENT_GROSS",gross,(a,b)->((BigDecimal)a).add((BigDecimal)b));
             point.merge(kind+"_count",number(row.get("records")),(a,b)->(Long)a+(Long)b);
         }
+        for(String missing:incompletePoints){var parts=missing.split("\0");var point=points.get(parts[0]);point.put(parts[1],null);if(parts[1].equals("SETTLEMENT"))point.put("SETTLEMENT_GROSS",null);}
         var out=new LinkedHashMap<String,Object>();
         out.put("filters",Map.of("start",f.start(),"end",f.end(),"shopId",f.shopId(),"platform",f.platform(),"currency",currency,"granularity",f.granularity(),"displayCurrency",cny?"CNY":currency,"groupId",requested.groupId()));
         if(cny)out.put("fx",quote.metadata());
@@ -186,14 +207,16 @@ public class FinanceService {
         out.put("fees",(cny?FinanceFx.groups(fees,quote,"category","kind"):fees).stream().filter(r->"FEE".equals(r.get("kind"))).toList());
         out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
         out.put("updatedAt",Instant.now().toString());
-        var productCosts=new FinanceCostReport(repo).summary(s,f,"SETTLED_ORDER");
+        var productCosts=costReport.dashboardSummary(s,f,rows(facts.get("orders")));
         out.put("productCosts",productCosts);
         FinanceFx.Quote profitQuote=quote;
         if(!cny&&!"CNY".equals(currency)&&(decimal(map(productCosts.get("total")).get("known_amount_cny")).signum()!=0||decimal(map(productCosts.get("total")).get("label_cost_cny")).signum()!=0)&&fx!=null){
             try{profitQuote=fx.quote(snapshotId);}catch(RuntimeException unavailable){/* Native-currency ledger stays available when a reference quote is unavailable. */}
         }
         out.put("profit",FinanceProfitReport.calculate(totals,productCosts,cny?"CNY":currency,profitQuote));
-        out.put("basis","经营汇总排除刷单订单及其关联结算、平台费用和成本；原始账单与对账保留。订单按创建日期，结算与费用按平台结算日期；广告按广告账户日期。原币分别统计，已结算不代表银行到账。");
+        out.put("basis","结算金额为平台返回的优惠前商品金额；商家优惠、退款冲减、佣金、物流、税费及补贴按原始字段列入平台费用。"
+                +(live?"实时订单按下单日显示；结算与成本按平台结算日。":"日期筛选以平台结算日期为准，订单、关联退款和商品成本按首次平台结算日期归属，不限制下单月份。")
+                +"经营汇总排除刷单；原始账单净额用于对账。广告及独立费用按发生日，待结算尚无结算日期。已结算不代表银行到账。");
         return out;
     }
     static List<Map<String,Object>> nativeTotals(List<Map<String,Object>> ranking){
@@ -206,7 +229,7 @@ public class FinanceService {
             var total=totals.computeIfAbsent(key,k->{
                 var m=new LinkedHashMap<String,Object>();for(String d:dimensions)m.put(d,row.get(d));m.put("currency",row.get("currency"));return m;
             });
-            for(String field:List.of("amount","revenue","records","known_amounts","impressions","clicks","conversions")){
+            for(String field:List.of("amount","revenue","records","known_amounts","known_revenues","impressions","clicks","conversions")){
                 BigDecimal value=decimal(row.get(field));
                 if(value==null)total.putIfAbsent(field,null);
                 else total.merge(field,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));
@@ -218,7 +241,7 @@ public class FinanceService {
         if(!requested.start().equals(requested.end()))throw bad("实时大屏按单个业务日展示");
         var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),true);
         java.util.function.Supplier<Map<String,Object>> load=()->buildScreen(s,requested,cny,snapshotId);
-        return sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load);
+        return withCalculations(s,requested,sharedSnapshots==null?snapshots.get(key,load):sharedSnapshots.get(key,load));
     }
     private Map<String,Object> buildScreen(Scope s,Filter requested,boolean cny,String snapshotId){
         // An open screen requests a fresher order snapshot. Never reset an active page,

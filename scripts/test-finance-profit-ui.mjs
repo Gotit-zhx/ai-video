@@ -12,13 +12,13 @@ w.FinanceCosts={openOrders:filters=>drilldowns.push(filters),reset(){}};
 const response={
   filters:{start:'2026-09-24',end:'2026-10-23',currency:'',displayCurrency:'CNY'},
   groups:[],shops:[{id:'shop',name:'示例母婴店',display_name:'示例母婴店',platform:'TIKTOK_SHOP',region:'PH',currency:'PHP',timezone:'Asia/Manila'}],sync:[],currencies:['PHP'],
-  totals:[{kind:'SETTLEMENT',amount:82646.26,records:3010},{kind:'ORDER',amount:116762.59,records:3500},{kind:'REFUND',amount:969.52},{kind:'FEE',amount:33976.43}],
+  totals:[{kind:'SETTLEMENT',amount:82646.26,revenue:116622.69,records:3010,known_revenues:3010},{kind:'ORDER',amount:116762.59,records:3500},{kind:'REFUND',amount:969.52},{kind:'FEE',amount:33976.43}],
   ranking:[{shop_id:'shop',currency:'CNY',kind:'SETTLEMENT',amount:82646.26,settled_gross_amount:116622.69,records:3010}],
   fees:[],statuses:[],trend:[],updatedAt:'2026-10-23T09:00:00Z',basis:'示例数据，用于界面验收',
   productCosts:{scope:'SETTLED_ORDER',basis:'仅统计平台已结算订单，按首次结算日期归属；未结算不计入。',total:{amount_cny:78473.52,known_amount_cny:78473.52,pending_count:0,ready_count:2771,estimated_count:1731,excluded_count:239},shops:[]},
   profit:{currency:'CNY',settledGrossAmount:116622.69,settledLedgerAmount:82646.26,platformFees:33976.43,advertising:0,logisticsLabelCost:0,productCost:78473.52,productCostCny:78473.52,amount:4172.74,status:'ESTIMATED',estimated:true,
-    formula:'利润额 = 已结算额度 − 平台费用 − 广告消耗 − 物流贴单成本 − 商品成本',
-    settlementBasis:'已结算额度按平台结算金额加回已扣平台费用计算。',refundBasis:'退款已体现在平台结算中，不再重复扣减。',basis:'按当前筛选期间已同步及已录入的数据计算。',
+    formula:'利润额 = 已结算商品金额（优惠前） − 平台费用及扣减 − 广告消耗 − 物流贴单成本 − 商品成本',
+    settlementBasis:'已结算商品金额直接取平台优惠前字段；优惠、退款和费用逐项列明。',refundBasis:'退款已体现在平台结算中，不再重复扣减。',basis:'按当前筛选期间已同步及已录入的数据计算。',
     notes:['广告消耗尚无记录，按 0 暂计，补录后利润将变化','商品成本包含历史月份取价估算']}
 };
 w.api=async path=>{assert(path.startsWith('/api/v1/finance/overview?'));const query=new URL(path,'https://example.test').searchParams;assert.equal(query.get('displayCurrency'),'CNY');assert.equal(query.get('currency'),'','default and refresh aggregate every source currency');return {data:structuredClone(response)};};
@@ -27,11 +27,11 @@ async function ready(){for(let i=0;i<200;i++){await new Promise(r=>setTimeout(r,
 const metric=key=>d.querySelector(`[data-metric="${key}"]`);
 const refresh=()=>[...d.querySelectorAll('button')].find(n=>n.textContent.trim()==='刷新').click();
 w.FinanceWorkspace.enter('overview');await ready();
-assert.equal(d.querySelectorAll('.fi-metric').length,8);
+assert.equal(d.querySelectorAll('.fi-metric').length,8);assert(d.querySelector('.fi-date-range').textContent.includes('结算日期'));
 assert.equal(d.querySelector('.fi-pills [aria-pressed="true"]').textContent,'人民币 ¥');
 assert.equal(d.querySelector('select[aria-label="原币"]').value,'');
 assert([...d.querySelectorAll('.fi-metric-value small')].every(n=>n.textContent==='CNY'));
-assert.deepEqual([...d.querySelectorAll('.fi-metric-label>span:first-child')].map(n=>n.textContent),['已结算额度','订单金额','确认退款','平台费用','广告消耗','物流贴单成本','商品成本','利润额']);
+assert.deepEqual([...d.querySelectorAll('.fi-metric-label>span:first-child')].map(n=>n.textContent),['已结算商品金额','已结算订单金额','确认退款','平台费用及扣减','广告消耗','物流贴单成本','商品成本','利润额']);
 assert(metric('SETTLEMENT').textContent.includes('116,622.69'));assert(!metric('SETTLEMENT').textContent.includes('82,646.26'));
 assert(metric('PRODUCT_COST').textContent.includes('78,473.52'));assert(metric('PRODUCT_COST').textContent.includes('CNY'));
 assert(metric('PROFIT').textContent.includes('4,172.74'));assert(metric('PROFIT').textContent.includes('暂估'));
@@ -51,5 +51,25 @@ response.profit.amount=-35;response.profit.estimated=false;response.profit.statu
 response.profit.amount=null;response.profit.status='INCOMPLETE_COST';response.productCosts.total.amount_cny=null;response.productCosts.total.pending_count=1;refresh();await ready();
 assert(metric('PROFIT').textContent.includes('数据待补齐'));assert(!metric('PROFIT').classList.contains('is-negative'));
 assert(metric('PRODUCT_COST').textContent.includes('仅已算部分'));assert(metric('PRODUCT_COST').textContent.includes('78,473.52'));
+assert(!d.querySelector('.fi-calculation-rail'),'missing cost data is not a running calculation');
+response.profit.settledGrossAmount=null;
+response.settlementCalculation={status:'RUNNING',processed:60,total:100,scope:'所选店铺的历史结算与账单'};
+refresh();await ready();
+assert(metric('SETTLEMENT').textContent.includes('结算金额计算中'));
+assert(metric('SETTLEMENT').querySelector('[role="progressbar"]'));
+assert(!metric('AD').querySelector('[role="progressbar"]'),'no advertising data does not mean computing');
+if(process.env.FINANCE_PROGRESS_PREVIEW_PATH){
+  const css=await fs.readFile(new URL('../frontend/finance-workspace.css',import.meta.url),'utf8');
+  await fs.writeFile(process.env.FINANCE_PROGRESS_PREVIEW_PATH,`<!doctype html><meta charset="utf-8"><title>计算进度 · 界面验收示例</title><style>${css}body{margin:0;padding:26px;background:#f7f8fb;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}#finance-page{max-width:1250px}body>p{color:#8791a4;font-size:12px}</style><p>界面验收示例 · 非正式财务数据</p>${d.querySelector('#finance-page').outerHTML}`);
+}
+const stable=metric('SETTLEMENT'),rail=stable.querySelector('.fi-calculation-rail');refresh();await ready();
+assert.equal(metric('SETTLEMENT'),stable);assert.equal(stable.querySelector('.fi-calculation-rail'),rail,'polling does not restart the animation');
+response.settlementCalculation.status='INTERRUPTED';refresh();await ready();
+assert(!metric('SETTLEMENT').querySelector('[role="progressbar"]'));assert(metric('SETTLEMENT').textContent.includes('计算暂时中断'));
+response.settlementCalculation.status='COMPLETE';response.profit.settledGrossAmount=116622.69;
+response.productCosts.processing=true;refresh();await ready();
+assert(!metric('SETTLEMENT').querySelector('[role="progressbar"]'));assert(metric('SETTLEMENT').textContent.includes('116,622.69'));
+assert(metric('PRODUCT_COST').querySelector('[role="progressbar"]'));assert(metric('PRODUCT_COST').textContent.includes('78,473.52'),'known costs remain visible while queued costs calculate');
+response.productCosts.processing=false;refresh();await ready();assert(!d.querySelector('.fi-calculation-rail'));
 w.FinanceWorkspace.leave();dom.window.close();
 console.log('Finance profit UI passed: eight metrics, settled gross, product-cost drilldown, profit explanation, incomplete/negative states and stable refresh.');

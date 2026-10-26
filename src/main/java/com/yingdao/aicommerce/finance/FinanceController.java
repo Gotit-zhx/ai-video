@@ -140,7 +140,8 @@ public class FinanceController {
             sheets.put("统计口径",List.of(List.of("日期范围",f.start()+" 至 "+f.end()),List.of("店铺分组",f.groupId().isBlank()?"全部分组":"UNGROUPED".equals(f.groupId())?"未分组":service.groups(s).stream().filter(g->f.groupId().equals(g.get("id"))).map(g->text(g.get("name"))).findFirst().orElse("所选分组")),List.of("币种",f.currency().isBlank()?"原币分列，禁止跨币种直接合计":f.currency()),
                     List.of("范围","当前筛选全部记录；列按当前用户的导出配置生成；平台已结算不代表银行到账"),
                     List.of("刷单口径","原始财务明细保留刷单记录及订单标记；经营汇总排除刷单结算金额、关联费用和成本，原始账单对账不删除记录。"),
-                    List.of("时间口径","订单按创建日，结算费用按结算日，广告按广告账户日"),
+                    List.of("时间口径","已结算订单及关联退款按首次平台结算日期筛选；结算和平台费用按平台结算日期。广告及独立费用按费用日期，待结算按订单日期。"),
+                    List.of("结算金额口径","结算明细及账单主金额取优惠前商品金额；优惠、退款、平台费用及补贴逐项列示。平台实际净结算另列，对账使用平台原始净额。"),
                     List.of("商品成本口径","仅平台已结算订单计入商品成本；整单成本归属首次结算，后续结算调整不重复计成本。未结算成本留空并注明；退款关联成本只作核对，不再次扣减。成本固定人民币，历史价估算保留状态。"),
                     List.of("扩展字段","仅展示平台实际返回的字段；空白表示未返回或不适用。标记原币的扩展金额不做人民币转换。"),
                     List.of("生成时间",java.time.Instant.now().toString())));

@@ -28,6 +28,19 @@ public final class FinanceFields {
         new Field("related_order_status","关联订单状态","text","结算核对",false,"REFUND SETTLEMENT FEE PENDING",""),
         new Field("order_type_label","订单类型","text","结算核对",false,"ORDER REFUND SETTLEMENT FEE PENDING",""),
         new Field("settlement_amount_note","结算金额说明","text","结算核对",false,"SETTLEMENT BILL RECONCILIATION",""),
+        new Field("goods_before_discount_amount","优惠前商品金额（原币）","money","结算核对",false,"SETTLEMENT BILL RECONCILIATION",""),
+        new Field("settled_net_amount","平台实际净结算（原币）","money","结算核对",false,"SETTLEMENT BILL RECONCILIATION",""),
+        new Field("cny_settled_net_amount","平台实际净结算（人民币）","money","人民币折算",true,"SETTLEMENT BILL RECONCILIATION",""),
+        new Field("cny_goods_before_discount_amount","优惠前商品金额（人民币）","money","人民币折算",true,"SETTLEMENT BILL RECONCILIATION",""),
+        new Field("first_settlement_date","首次平台结算日期","date","结算核对",false,"ORDER REFUND",""),
+        new Field("source_record_date","原记录日期（非筛选日期）","date","接口扩展",false,"ORDER REFUND",""),
+        extra("settlement_date_source","结算日期来源","text","SETTLEMENT BILL RECONCILIATION","_finance_date_source"),
+        extra("statement_time","平台结算账单时间（UTC）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_statement_time|create_time"),
+        extra("actual_release_time","实际收入释放时间（UTC）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_actual_payout_time|actual_payout_time"),
+        extra("fee_group","费用分组","text","FEE","fee_group"),
+        extra("fee_source_field","平台原始字段","text","FEE","field"),
+        extra("fee_source_amount","平台原始有符号金额（原币）","money","FEE","source_amount"),
+        extra("fee_note","费用说明","text","FEE","basis"),
         new Field("detail_amount","结算明细金额","money","对账字段",false,"RECONCILIATION",""),
         new Field("detail_count","明细笔数","number","对账字段",false,"RECONCILIATION",""),
         new Field("difference","差异","money","对账字段",false,"RECONCILIATION",""),
@@ -89,7 +102,19 @@ public final class FinanceFields {
     }
     public static List<Field> catalog(String key){
         String v=view(key);return CATALOG.stream().filter(f->f.views.equals("*")||!f.views.equals("RECONCILIATION")&&v.equals("ALL")
-                ||Arrays.asList(f.views.split(" ")).contains(v)).map(f->v.equals("REFUND")&&f.id.equals("amount")?new Field(f.id,"确认退款金额（原币）",f.type,f.group,f.cny,f.views,f.path):v.equals("REFUND")&&f.id.equals("cny_amount")?new Field(f.id,"确认退款金额（人民币）",f.type,f.group,f.cny,f.views,f.path):f).toList();
+                ||Arrays.asList(f.views.split(" ")).contains(v)).map(f->{
+                    String label=f.label;
+                    if(v.equals("REFUND")&&f.id.equals("amount"))label="确认退款金额（原币）";
+                    if(v.equals("REFUND")&&f.id.equals("cny_amount"))label="确认退款金额（人民币）";
+                    if(Set.of("ORDER","REFUND","SETTLEMENT","BILL","FEE","RECONCILIATION").contains(v)&&f.id.equals("record_date"))label="结算日期";
+                    if(Set.of("SETTLEMENT","BILL").contains(v)&&f.id.equals("amount"))label="优惠前商品金额（原币）";
+                    if(Set.of("SETTLEMENT","BILL").contains(v)&&f.id.equals("cny_amount"))label="优惠前商品金额（人民币）";
+                    if(Set.of("SETTLEMENT","BILL","RECONCILIATION").contains(v)&&f.id.equals("revenue"))label="优惠前商品金额（原币）";
+                    if(Set.of("SETTLEMENT","BILL","RECONCILIATION").contains(v)&&f.id.equals("cny_revenue"))label="优惠前商品金额（人民币）";
+                    if(v.equals("RECONCILIATION")&&f.id.equals("amount"))label="平台净结算账单（原币）";
+                    if(v.equals("RECONCILIATION")&&f.id.equals("cny_amount"))label="平台净结算账单（人民币）";
+                    return new Field(f.id,label,f.type,f.group,f.cny,f.views,f.path);
+                }).toList();
     }
     static Preferences defaults(String key){
         if(key.equals("REFUND")){
@@ -100,6 +125,8 @@ public final class FinanceFields {
         }
         var visible=new ArrayList<>(key.equals("RECONCILIATION")?RECON_VISIBLE:DEFAULT_VISIBLE);
         var exported=new ArrayList<>(key.equals("RECONCILIATION")?RECON_EXPORT:DEFAULT_EXPORT);
+        if(key.equals("FEE")){visible.add("fee_group");exported.addAll(List.of("fee_group","fee_source_field","fee_source_amount","fee_note"));}
+        if(Set.of("SETTLEMENT","BILL","RECONCILIATION","ALL").contains(key))exported.addAll(List.of("settled_net_amount","goods_before_discount_amount","cny_settled_net_amount"));
         if(Set.of("SETTLEMENT","BILL","RECONCILIATION","ALL").contains(key))exported.add("settlement_amount_note");
         if(Set.of("ORDER","SETTLEMENT","FEE","PENDING","ALL").contains(key))exported.add("order_type_label");
         if(Set.of("ORDER","SETTLEMENT","BILL","PENDING","RECONCILIATION","ALL").contains(key)){
@@ -174,6 +201,15 @@ public final class FinanceFields {
         }
         if(Set.of("SETTLEMENT","BILL").contains(kind)){
             BigDecimal settlement=decimal(row.get("amount"));
+            row.put("settled_net_amount",settlement);
+            if(!row.containsKey("settlement_date_source"))row.put("settlement_date_source",platform.equals("SHOPEE")
+                    ?"Shopee 实际收入释放日期（actual_payout_time，店铺时区）":"TikTok 已结算账单覆盖的交易业务日（UTC）：账单生成日前一天；平台未单独返回每单结算完成时刻");
+            var breakdown=kind.equals("SETTLEMENT")?FinanceSettlementBreakdown.parse(platform,raw,settlement):null;
+            BigDecimal goods=breakdown==null?decimal(row.get("revenue")):breakdown.goods();
+            row.put("goods_before_discount_amount",goods);
+            if(breakdown!=null)row.put("settlement_fee_breakdown",breakdown.fees().stream().map(f->Map.of(
+                    "field",f.field(),"label",f.label(),"group",f.group(),"amount",f.amount(),
+                    "sourceAmount",f.sourceAmount(),"note",f.note())).toList());
             row.put("settlement_amount_note",settlement==null?"结算金额尚未获取，不按 0 统计":
                 settlement.signum()==0?"API".equals(row.get("source"))?"平台明确返回结算金额 0":"账单记录金额为 0":
                 settlement.signum()<0?"平台负向结算，保留扣费及调整的原始符号":"平台结算金额");

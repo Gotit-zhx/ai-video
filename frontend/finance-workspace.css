@@ -39,6 +39,17 @@
 .fi-loading::before{content:"";width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:fi-loading-spin .7s linear infinite}
 @keyframes fi-loading-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.fi-loading::before{animation:none}}
+.fi-loading{position:relative;overflow:hidden;padding-bottom:9px}
+.fi-loading::after{content:"";position:absolute;bottom:0;left:0;width:35%;height:2px;background:currentColor;animation:fi-calculation-slide 1.35s ease-in-out infinite}
+.fi-calculation-status{display:flex;align-items:center;gap:10px;min-width:0;color:var(--fi-blue,#4263eb);font-size:11px;line-height:1.5}
+.fi-calculation-rail{display:block;flex:1;min-width:35px;max-width:160px;height:4px;overflow:hidden;border-radius:4px;background:color-mix(in srgb,currentColor 16%,transparent)}
+.fi-calculation-rail i{display:block;width:35%;height:100%;border-radius:inherit;background:currentColor;animation:fi-calculation-slide 1.35s ease-in-out infinite}
+.fi-metric .fi-calculation-status{margin:2px 0 5px;font-size:10px;color:inherit}
+.fi-metric.is-featured .fi-calculation-status,.fi-metric.is-featured .fi-calculation-paused{color:#d4deff}
+.fi-product-cost-summary>.fi-calculation-status{padding:0 18px 14px}
+.fi-calculation-paused{font-size:11px;color:var(--fi-muted,#8995aa)}
+@keyframes fi-calculation-slide{0%{transform:translateX(-110%)}100%{transform:translateX(390%)}}
+@media(prefers-reduced-motion:reduce){.fi-calculation-rail i,.fi-loading::after{animation:none;transform:translateX(90%)}}
 
 .fi-group-tools{flex-wrap:wrap}.fi-group-tools label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted,#8892a5)}.fi-group-tools select{max-width:180px;min-height:34px;border:1px solid var(--border-color,#e5e9f1);border-radius:8px;padding:5px 10px;background:var(--surface-color,#fff);color:inherit}.fi-group-create,.fi-group-row{display:flex;align-items:end;gap:10px;flex-wrap:wrap}.fi-group-create>label,.fi-group-row>label{flex:1;min-width:140px}.fi-group-list{display:grid;gap:12px;margin-top:12px}.fi-group-row{padding:12px 0;border-top:1px solid var(--border-color,#e5e9f1)}.fi-group-row .fi-muted{align-self:center;font-size:12px}.fi-dialog .fi-group-create button,.fi-dialog .fi-group-row button{flex-shrink:0}
 

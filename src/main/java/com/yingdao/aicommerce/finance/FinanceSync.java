@@ -12,6 +12,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceSync {
     final FinanceRepository repo;final FinanceMarketplace marketplace;
     private final java.util.concurrent.atomic.AtomicBoolean verified=new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicBoolean repairRegistered=new java.util.concurrent.atomic.AtomicBoolean();
     private final FinanceSyncClaims claims;
     private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newScheduledThreadPool(4,r->{var t=new Thread(r,"finance-shop-sync");t.setDaemon(true);return t;});
     private final java.util.concurrent.ScheduledExecutorService heartbeat=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-sync-lease");t.setDaemon(true);return t;});
@@ -19,6 +20,14 @@ public class FinanceSync {
     @PostConstruct public void start(){for(int slot=0;slot<4;slot++)worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance shop sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance sync dispatcher temporarily unavailable",e);}},30_000+slot*250,1000,java.util.concurrent.TimeUnit.MILLISECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();heartbeat.shutdownNow();}
     public void tick(){
+        if(!repairRegistered.get()){
+            repo.jdbc().update("""
+                INSERT IGNORE INTO finance_sync_states(organization_id,user_id,shop_id,channel)
+                SELECT organization_id,user_id,id,'ORDER_REPAIR' FROM finance_connections
+                WHERE enabled=TRUE AND status='ACTIVE'
+                """);
+            repairRegistered.set(true);
+        }
         var claim=claims.claim();if(claim==null)return;
         var row=claim.row();Scope s=new Scope(text(row.get("organization_id")),text(row.get("user_id")));
         Object[] keys={s.organizationId(),s.userId(),row.get("shop_id"),row.get("channel"),claim.token()};
@@ -31,7 +40,10 @@ public class FinanceSync {
             Map<String,Object> cp=row.get("checkpoint_json")==null?new LinkedHashMap<>():new LinkedHashMap<>(repo.read(text(row.get("checkpoint_json"))));
             Instant now=Instant.now();ZoneId zone=ZoneId.of(text(row.get("timezone")));
             boolean fresh=cp.isEmpty();
-            if(fresh){
+            if(fresh&&"ORDER_REPAIR".equals(row.get("channel"))){
+                cp.put("from",0);cp.put("to",0);cp.put("until",0);
+                cp.put("coverage",now.atZone(zone).toLocalDate().toString());
+            }else if(fresh){
                 LocalDate today=now.atZone(zone).toLocalDate();boolean initial=row.get("last_success_at")==null;
                 Instant last=initial?null:instant(row.get("last_success_at"));
                 boolean nightly=last!=null&&last.atZone(zone).toLocalDate().isBefore(today);
@@ -65,7 +77,7 @@ public class FinanceSync {
             boolean done=step.done();
             if(done){
                 boolean live="ORDER_LIVE".equals(row.get("channel"));
-                int seconds=live?60:Set.of("SETTLEMENT","PENDING").contains(text(row.get("channel")))?3600:600;
+                int seconds=live?60:"ORDER_REPAIR".equals(row.get("channel"))?21600:Set.of("SETTLEMENT","PENDING").contains(text(row.get("channel")))?3600:600;
                 // The live watermark is the request boundary, not completion time:
                 // orders arriving while a long page chain runs must be fetched next time.
                 Instant completedThrough=live?Instant.ofEpochSecond(number(cp.get("until"))):Instant.now();

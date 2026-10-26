@@ -63,6 +63,26 @@ public class FinanceReadCache {
         var cached=read(address);
         if(cached==null||clock.getAsLong()-number(cached.get("built"))>FRESH_MS)background(address,key,load);
     }
+    /** Job heartbeat is read outside the amount snapshot so a stopped job never keeps animating. */
+    public Map<String,Object> settlementCalculation(Scope scope,List<String> shops){
+        if(shops.isEmpty())return Map.of();
+        try{
+            String value=redis.opsForValue().get("heyi:finance:calculation:{"+scope.organizationId()+"}:settlements");
+            if(value==null||value.length()>131072)return Map.of();
+            var job=map(json.readValue(value,Map.class));var selected=rows(job.get("shops")).stream()
+                    .filter(row->shops.contains(text(row.get("shopId")))).toList();
+            if(selected.isEmpty())return Map.of();
+            long heartbeat=number(job.get("heartbeat")),age=clock.getAsLong()-heartbeat;
+            boolean complete=selected.stream().allMatch(row->Boolean.TRUE.equals(row.get("complete")));
+            String state=complete?"COMPLETE":text(job.get("status"));
+            if(state.equals("RUNNING")&&(heartbeat<=0||age>30_000||age< -5_000))state="INTERRUPTED";
+            if(!Set.of("RUNNING","COMPLETE","FAILED","INTERRUPTED").contains(state))return Map.of();
+            long processed=selected.stream().mapToLong(row->number(row.get("records"))+number(row.get("bills"))).sum();
+            long total=selected.stream().mapToLong(row->number(row.get("total"))).sum();
+            return Map.of("status",state,"processed",processed,"total",total,
+                    "scope","所选店铺的历史结算与账单","heartbeat",heartbeat);
+        }catch(RuntimeException unavailable){return Map.of();}
+    }
     public void invalidate(Scope scope){
         UUID change=UUID.randomUUID();dirtyScopes.put(scope,change);
         try{redis.opsForValue().increment(revisionKey(scope));dirtyScopes.remove(scope,change);}
@@ -83,7 +103,7 @@ public class FinanceReadCache {
             return prefix(key.scope())+revision+":"+digest(key.filter()+"|"+key.cny()+"|"+key.snapshot()+"|"+key.live());
         }catch(RuntimeException unavailable){return null;}
     }
-    static String prefix(Scope scope){return "heyi:finance:snapshot:v5-marketing:{"+scope.organizationId()+":"+scope.userId()+"}:";}
+    static String prefix(Scope scope){return "heyi:finance:snapshot:v6-settled-goods:{"+scope.organizationId()+":"+scope.userId()+"}:";}
     private static String revisionKey(Scope scope){return prefix(scope)+"revision";}
     private static String digest(String value){
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}

@@ -22,6 +22,7 @@ public class FinanceMarketplace {
             channel="ORDER";checkpoint=new LinkedHashMap<>(checkpoint);checkpoint.put("liveOrder",true);
         }
         MarketplaceAccess.Connection c=authorization.connection(scope,shopId);
+        if(channel.equals("ORDER_REPAIR"))return repairSettledOrders(scope,c,zone,checkpoint);
         if("TIKTOK_SHOP".equals(c.shop().getPlatform()))return tik(scope,c,channel,zone,checkpoint);
         if("SHOPEE".equals(c.shop().getPlatform()))return sho(scope,c,channel,zone,checkpoint);
         throw bad("不支持的财务平台");
@@ -62,15 +63,16 @@ public class FinanceMarketplace {
                 var bill=bills.getFirst();String billId=text(bill.get("id"));q.put("sort_field","order_create_time");
                 q.remove("page_token");if(!text(cp.get("transactionCursor")).isBlank())q.put("page_token",cp.get("transactionCursor"));
                 data=tikGet(c,"/finance/202501/statements/"+identifier(billId)+"/statement_transactions",q);
-                LocalDate day=date(bill.get("statement_time"),"UTC");String currency=text(data.get("currency"));
+                LocalDate day=tiktokSettlementDay(bill.get("statement_time"));String currency=text(data.get("currency"));
+                data=new LinkedHashMap<>(data);data.put("_finance_statement_time",bill.get("statement_time"));
+                data.put("_finance_date_source","TikTok 已结算账单覆盖的交易业务日：statement_time 的 UTC 日期前一天；原始账单时间另列");
                 var transactions=requiredRows(data,"transactions");
                 save(s,c,"BILL",billId,"",billId,"结算账单","PARTIAL",day,currency,amount(data,"total_settlement_amount"),data);
                 for(var tx:transactions){
                     if("RESERVE".equals(tx.get("type")))continue;
                     String id=first(tx,"id");String order=first(tx,"order_id","adjustment_order_id");
-                    save(s,c,"SETTLEMENT",id,order,billId,first(tx,"type"),"SETTLED",day,currency,amount(tx,"settlement_amount"),tx);
-                    for(var fee:Map.of("fee_tax_amount","平台费用及税费","shipping_cost_amount","物流费用","adjustment_amount","调整").entrySet())
-                        if(amount(tx,fee.getKey())!=null)save(s,c,"FEE",id+":"+fee.getKey(),order,billId,fee.getValue(),"SETTLED",day,currency,amount(tx,fee.getKey()).negate(),Map.of("value",tx.get(fee.getKey()),"basis","平台扣费负数转换为费用正数，返还相反"));
+                    var raw=new LinkedHashMap<>(tx);raw.put("_finance_statement_time",bill.get("statement_time"));raw.put("_finance_date_source",data.get("_finance_date_source"));
+                    save(s,c,"SETTLEMENT",id,order,billId,first(tx,"type"),"SETTLED",day,currency,amount(tx,"settlement_amount"),raw);
                 }
                 String token=first(data,"next_page_token");
                 long received=number(cp.get("transactionCount"))+transactions.size();
@@ -150,15 +152,14 @@ public class FinanceMarketplace {
         for(var row:data.isEmpty()?List.<Map<String,Object>>of():requiredRows(data,"list")){
             String id=first(row,"order_sn"),currency=first(row,"currency");
             if(id.isBlank())throw bad("收入明细缺少订单编号，已保留同步进度");
-            LocalDate day=date(row.get("actual_payout_time"),zone);
+            LocalDate day=settlementDay(row.get("actual_payout_time"),zone);
             save(s,c,"BILL",id,id,id,"订单释放收入","PARTIAL",day,currency,amount(row,"released_amount"),row);
             Map<String,Object> detail=map(shopee.shopGet("/api/v2/payment/get_escrow_detail",c,Map.of("order_sn",id)).get("response"));
             Map<String,Object> income=map(detail.get("order_income"));
             if(income.isEmpty())throw bad("平台尚未返回订单结算拆分");
+            detail=new LinkedHashMap<>(detail);detail.put("_finance_actual_payout_time",row.get("actual_payout_time"));
+            detail.put("_finance_date_source","Shopee actual_payout_time（实际收入释放时间，按店铺时区）");
             save(s,c,"SETTLEMENT",id,id,id,"订单结算","SETTLED",day,currency,amount(income,"escrow_amount_after_adjustment","escrow_amount"),detail);
-            for(String fee:List.of("commission_fee","service_fee","seller_transaction_fee","final_shipping_fee","reverse_shipping_fee","order_ams_commission_fee","campaign_fee","withholding_tax","fbs_fee","seller_order_processing_fee","pay_per_sale")){
-                BigDecimal value=amount(income,fee);if(value!=null)save(s,c,"FEE",id+":"+fee,id,id,fee,"SETTLED",day,currency,value,Map.of("field",fee,"amount",value));
-            }
             save(s,c,"BILL",id,id,id,"订单释放收入","SETTLED",day,currency,amount(row,"released_amount"),row);
         }
         Object pagination=data.get("next_page");
@@ -181,6 +182,42 @@ public class FinanceMarketplace {
         return result;
     }
     static String identifier(String id){if(!id.matches("[A-Za-z0-9_-]{1,128}"))throw bad("平台返回的标识无效");return id;}
+    static LocalDate settlementDay(Object value,String zone){
+        if(number(value)<=0)throw bad("平台尚未返回有效的结算日期，保留同步进度，不使用下单日或当天代替");
+        return date(value,zone);
+    }
+    /** Get Statements defines daily 00:00 UTC statements as covering the preceding day's transactions. */
+    static LocalDate tiktokSettlementDay(Object statementTime){return settlementDay(statementTime,"UTC").minusDays(1);}
+    /** Fetch missing historical order identities directly, independent of the creation/update lookback. */
+    Step repairSettledOrders(Scope s,MarketplaceAccess.Connection c,String zone,Map<String,Object> cp){
+        var missing=repo.jdbc().queryForList("""
+            SELECT r.id,r.order_id FROM finance_records r FORCE INDEX(idx_finance_cost_backfill)
+            WHERE r.organization_id=? AND r.shop_id=? AND r.kind='SETTLEMENT' AND r.id>?
+              AND r.source='API' AND r.status='SETTLED' AND r.order_id<>''
+              AND (r.platform<>'TIKTOK_SHOP' OR r.category='ORDER')
+              AND NOT EXISTS (SELECT 1 FROM finance_records o WHERE o.organization_id=r.organization_id
+                AND o.shop_id=r.shop_id AND o.kind='ORDER' AND o.source='API' AND o.order_id=r.order_id)
+            ORDER BY r.id LIMIT 20
+            """,s.organizationId(),c.shop().getId(),text(cp.get("repairCursor")));
+        var next=new LinkedHashMap<>(cp);if(missing.isEmpty())return new Step(next,true);
+        List<String> ids=missing.stream().map(r->identifier(text(r.get("order_id")))).distinct().toList();
+        List<Map<String,Object>> orders;
+        boolean tik=c.shop().getPlatform().equals("TIKTOK_SHOP");
+        if(tik)orders=requiredRows(tikGet(c,"/order/202309/orders",Map.of("ids",String.join(",",ids))),"orders");
+        else orders=requiredRows(map(shopee.shopGet("/api/v2/order/get_order_detail",c,Map.of("order_sn_list",String.join(",",ids),
+                "response_optional_fields","total_amount,item_list,actual_shipping_fee,estimated_shipping_fee,payment_method")).get("response")),"order_list");
+        var received=new HashSet<String>();
+        for(var row:orders){
+            String id=first(row,tik?"id":"order_sn");if(!ids.contains(id))throw bad("平台返回了不属于本次补齐的订单");
+            String status=first(row,tik?"status":"order_status");
+            BigDecimal value=Set.of("UNPAID","CANCELLED").contains(status)?null:amount(row,tik?"payment.total_amount":"total_amount");
+            save(s,c,"ORDER",id,id,"","订单",status,date(row.get("create_time"),zone),first(row,tik?"payment.currency":"currency"),value,row);
+            received.add(id);
+        }
+        if(!received.containsAll(ids))throw bad("已结算订单详情尚未全部返回，保留补齐进度继续重试");
+        next.put("repairCursor",missing.getLast().get("id"));
+        return new Step(next,missing.size()<20);
+    }
     static List<Map<String,Object>> tikOrderRows(Map<String,Object> data,String cursor){
         // Search Orders can issue a token on the last populated page, then omit
         // orders on the terminal page. total_count is the whole search's count,

@@ -92,4 +92,21 @@ class FinanceReadCacheTest {
         assertEquals(new BigDecimal("3"),cache.get(key("one","PHP",false),()->data("3")).get("amount"));
         assertEquals(new BigDecimal("3"),decimal(cache.get(key("one","PHP",false),()->data("4")).get("amount")));
     }
+    @Test void calculationHeartbeatIsScopedToSelectedShopsAndExpiresWithoutAnEndlessSpinner(){
+        String address="heyi:finance:calculation:{org}:settlements";
+        values.put(address,new ObjectMapper().writeValueAsString(Map.of("status","RUNNING","heartbeat",now.get(),"shops",List.of(
+                Map.of("shopId","one","records",40,"bills",2,"total",100,"complete",false),
+                Map.of("shopId","two","records",10,"bills",1,"total",11,"complete",true)))));
+        assertEquals("RUNNING",cache.settlementCalculation(new Scope("org","reader"),List.of("one")).get("status"));
+        assertEquals(42L,cache.settlementCalculation(new Scope("org","reader"),List.of("one")).get("processed"));
+        assertEquals("COMPLETE",cache.settlementCalculation(new Scope("org","reader"),List.of("two")).get("status"));
+        assertTrue(cache.settlementCalculation(new Scope("other","reader"),List.of("one")).isEmpty());
+        assertTrue(cache.settlementCalculation(new Scope("org","reader"),List.of("unknown")).isEmpty());
+        now.addAndGet(31_000);
+        assertEquals("INTERRUPTED",cache.settlementCalculation(new Scope("org","reader"),List.of("one")).get("status"));
+        values.put(address,values.get(address).replace("RUNNING","FAILED"));
+        assertEquals("FAILED",cache.settlementCalculation(new Scope("org","reader"),List.of("one")).get("status"));
+        values.remove(address);
+        assertTrue(cache.settlementCalculation(new Scope("org","reader"),List.of("one")).isEmpty());
+    }
 }

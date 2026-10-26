@@ -128,9 +128,33 @@ class FinanceTest {
         var cp=new LinkedHashMap<String,Object>(Map.of("from",1,"to",2,"bills",List.of(bill),"lastBillPage",true));
         var step=reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",cp);
         assertFalse(step.done());assertEquals("cursor2",step.checkpoint().get("transactionCursor"));
-        verify(repo,times(3)).save(any(),any());
+        verify(repo,times(2)).save(any(),any()); // Fee rows are now atomically derived by the repository.
         when(tk.apiGet(anyString(),anyString(),anyString(),anyMap())).thenReturn(Map.of("data",Map.of("currency","PHP","total_settlement_amount","30","transactions",List.of())));
         assertTrue(reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",step.checkpoint()).done());
+    }
+    @Test void missingSettlementDateNeverFallsBackToTodayOrOrderDate(){
+        assertThrows(BusinessException.class,()->FinanceMarketplace.settlementDay(null,"UTC"));
+        assertThrows(BusinessException.class,()->FinanceMarketplace.settlementDay(0,"UTC"));
+        assertEquals(LocalDate.of(2026,10,4),FinanceMarketplace.settlementDay(Instant.parse("2026-10-03T17:30:00Z").getEpochSecond(),"Asia/Manila"));
+        assertEquals(LocalDate.of(2026,9,30),FinanceMarketplace.tiktokSettlementDay(Instant.parse("2026-10-01T00:00:00Z").getEpochSecond()));
+    }
+    @Test void settledOrderRepairFetchesOldIdsDirectlyAndRetainsCheckpointOnPartialResponse(){
+        var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);var db=mock(JdbcTemplate.class);
+        when(repo.jdbc()).thenReturn(db);
+        when(db.queryForList(anyString(),any(Object[].class))).thenReturn(List.of(Map.of("id","record-a","order_id","123"),Map.of("id","record-b","order_id","456")));
+        var reader=new FinanceMarketplace(mock(FinanceShopAuthorization.class),mock(ShopeeOfficialClient.class),tk,repo);
+        var shop=new Shop("org",MarketplacePlatform.TIKTOK_SHOP,"shop","","cipher","LOCAL","test","PH","[]");
+        var connection=new MarketplaceAccess.Connection(shop,new MarketplaceAccess.TokenSet("token","",Instant.now(),Instant.now(),List.of()));
+        var first=Map.of("id","123","status","COMPLETED","create_time",Instant.parse("2026-08-01T00:00:00Z").getEpochSecond(),"payment",Map.of("currency","PHP","total_amount","100"));
+        when(tk.apiGet(anyString(),anyString(),anyString(),anyMap())).thenReturn(Map.of("data",Map.of("orders",List.of(first))));
+        var cp=Map.<String,Object>of("repairCursor","previous");
+        assertThrows(BusinessException.class,()->reader.repairSettledOrders(new Scope("org","u"),connection,"Asia/Manila",cp));
+        assertEquals("previous",cp.get("repairCursor"));
+        var second=new LinkedHashMap<>(first);second.put("id","456");
+        when(tk.apiGet(anyString(),anyString(),anyString(),anyMap())).thenReturn(Map.of("data",Map.of("orders",List.of(first,second))));
+        var step=reader.repairSettledOrders(new Scope("org","u"),connection,"Asia/Manila",cp);
+        assertTrue(step.done());assertEquals("record-b",step.checkpoint().get("repairCursor"));
+        verify(tk,times(2)).apiGet(eq("/order/202309/orders"),eq("token"),eq("cipher"),eq(Map.of("ids","123,456")));
     }
     @Test void pendingRefundIsNotRecognizedAsSuccessfulCashRefund(){
         var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);
@@ -242,8 +266,8 @@ class FinanceTest {
             when(client.shopGet(eq("/api/v2/payment/get_income_detail"),any(),anyMap())).thenReturn(envelope);
             var step=reader.sho(new Scope("org","u"),shopeeConnection(),"SETTLEMENT","Asia/Manila",shopeeCheckpoint());
             assertFalse(step.done());assertEquals("next",step.checkpoint().get("cursor"));
-            var saved=org.mockito.ArgumentCaptor.forClass(Entry.class);verify(repo,times(4)).save(any(),saved.capture());
-            assertEquals(List.of("BILL","SETTLEMENT","FEE","BILL"),saved.getAllValues().stream().map(Entry::kind).toList());
+            var saved=org.mockito.ArgumentCaptor.forClass(Entry.class);verify(repo,times(3)).save(any(),saved.capture());
+            assertEquals(List.of("BILL","SETTLEMENT","BILL"),saved.getAllValues().stream().map(Entry::kind).toList());
             assertEquals(new BigDecimal("123.45"),saved.getAllValues().get(1).amount());
             assertEquals(LocalDate.of(2026,10,19),saved.getAllValues().get(1).date());
             assertEquals("SETTLED",saved.getAllValues().getLast().status());
@@ -425,8 +449,9 @@ class FinanceTest {
         mvc.perform(get("/api/v1/finance/workspace/costs/orders").param("kind","INVALID"))
                 .andExpect(status().isBadRequest());
     }
-    @Test void springClassProxiesRetainDependenciesForWorkersAndController(){
+    @Test void springClassProxiesRetainDependenciesForWorkersAndController()throws Exception{
         var db=mock(JdbcTemplate.class);
+        var source=mock(javax.sql.DataSource.class);when(source.getConnection()).thenReturn(mock(java.sql.Connection.class));when(db.getDataSource()).thenReturn(source);
         var repository=classProxy(new FinanceRepository(db,new ObjectMapper()));
         assertTrue(org.springframework.aop.support.AopUtils.isCglibProxy(repository));
         assertSame(db,repository.jdbc());

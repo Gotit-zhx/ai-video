@@ -239,7 +239,7 @@ class FinanceConfigurationIntegrationTest {
                 Map.of("item_list",List.of(Map.of("model_sku","  ","item_sku","SHOPEE-FALLBACK"),Map.of("model_sku","SHOPEE-VARIANT","item_sku","not-the-variant"))));
         repo.save(owner,shopee);
         for(String kind:List.of("REFUND","SETTLEMENT","PENDING","FEE","COST"))
-            repo.save(owner,new Entry(shop,"TIKTOK_SHOP",kind,"sku-"+kind,"shared-order","sku-bill","测试","SETTLED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
+            repo.save(owner,new Entry(shop,"TIKTOK_SHOP",kind,"sku-"+kind,"shared-order","sku-bill",kind.equals("SETTLEMENT")?"ORDER":"测试","SETTLED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
         repo.save(owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","second-tx","shared-order","sku-bill","测试","SETTLED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
         repo.save(owner,new Entry(shop,"TIKTOK_SHOP","BILL","sku-bill","","sku-bill","测试","SETTLED",filter.start(),"PHP",new BigDecimal("2"),null,null,null,null,"API",Map.of()));
         var selected=new Filter(filter.start(),filter.end(),shop,"","","day");
@@ -302,6 +302,7 @@ class FinanceConfigurationIntegrationTest {
             assertEquals(summary,map(map(drill.get("productCosts")).get("total")));
         }
         var settledTotals=map(reports.summary(owner,q,"SETTLED_ORDER").get("total"));
+        assertEquals(settledTotals,map(reports.dashboardSummary(owner,q,reports.dashboardFacts(owner,q)).get("total")),"one dashboard scan must match deduplicated cost accounting");
         assertEquals(1,number(settledTotals.get("order_count")));assertEquals(0,number(settledTotals.get("pending_count")));
         assertEquals(0,new BigDecimal("60").compareTo(decimal(settledTotals.get("amount_cny"))));
         var txRows=rows(repo.details(owner,q,"SETTLEMENT",1,50).get("items"));
@@ -335,6 +336,7 @@ class FinanceConfigurationIntegrationTest {
         var corrected=repo.detail(owner,id(owner,cancelled));
         assertEquals("不计成本",corrected.get("product_cost_state"));assertEquals(0,decimal(corrected.get("product_cost_cny")).signum());
         var correctedSummary=map(reports.summary(owner,q,"SETTLED_ORDER").get("total"));
+        assertEquals(correctedSummary,map(reports.dashboardSummary(owner,q,reports.dashboardFacts(owner,q)).get("total")));
         assertEquals(1,number(correctedSummary.get("excluded_count")));assertEquals(0,new BigDecimal("30").compareTo(decimal(correctedSummary.get("amount_cny"))));
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='ORDER_STANDARD_COST' AND entity_id=?",Integer.class,id(owner,cancelled)),"correction must retain the previous cost in the audit");
         repo.save(owner,cancelled);assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_order_cost_jobs",Integer.class));
@@ -611,13 +613,14 @@ class FinanceConfigurationIntegrationTest {
         String original=service.saveGroup(owner,null,"服饰"),otherGroup=service.saveGroup(owner,null,"家居");
         String shop=groupedShop(owner,"10001",original);service.configure(owner,shop,true,"PHP","Asia/Manila",original);
         record(owner,shop,"ORDER","kept",BigDecimal.TEN,Map.of());
+        record(owner,shop,"SETTLEMENT","kept-settlement",BigDecimal.TEN,Map.of());
         db.update("UPDATE finance_sync_states SET checkpoint_json='{\"from\":1,\"to\":2}' WHERE shop_id=?",shop);
         var repeated=auth.persistGrant(colleague,MarketplacePlatform.SHOPEE,grant("10001"),otherGroup,"");
         assertEquals(0,repeated.created());assertEquals(1,repeated.existing());assertEquals(1,service.shops(owner).size());
         assertEquals("u",db.queryForObject("SELECT user_id FROM finance_connections WHERE id=?",String.class,shop));
         assertEquals(original,service.shops(colleague).getFirst().get("group_id"));
         assertEquals(1,number(repo.details(colleague,filter,"ORDER",1,50).get("total")));
-        assertEquals(4,db.queryForObject("SELECT COUNT(*) FROM finance_sync_states WHERE checkpoint_json IS NOT NULL",Integer.class));
+        assertEquals(5,db.queryForObject("SELECT COUNT(*) FROM finance_sync_states WHERE checkpoint_json IS NOT NULL",Integer.class));
         assertEquals("finance-access",new TransactionTemplate(tx).execute(status->auth.connection(owner,shop)).tokens().accessToken());
         auth.persistGrant(colleague,MarketplacePlatform.SHOPEE,grant("10001"),otherGroup,shop);
         assertEquals(otherGroup,service.shops(owner).getFirst().get("group_id"));
@@ -659,7 +662,8 @@ class FinanceConfigurationIntegrationTest {
         assertEquals(before,db.queryForList("SELECT id,raw_json FROM finance_records ORDER BY id"));
         assertEquals(0,new BigDecimal("209").compareTo(db.queryForObject("SELECT amount FROM finance_records WHERE status='ACCEPTED'",BigDecimal.class)));
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE amount IS NOT NULL",Integer.class));
-        var details=rows(repo.details(owner,filter,"REFUND",1,50).get("items"));
+        record(owner,shop,"SETTLEMENT","refunded-order-settlement",BigDecimal.ZERO,Map.of());
+        var details=rows(repo.details(owner,filter,"REFUND",1,50).get("items"));assertEquals(4,details.size());
         assertTrue(details.stream().allMatch(r->decimal(r.get("platform_refund_amount")).compareTo(new BigDecimal("209"))==0));
     }
     @Test void compactDashboardPreservesEveryDimensionCurrencyAndVisibility(){
@@ -727,7 +731,7 @@ class FinanceConfigurationIntegrationTest {
         assertEquals("2026-10-21",rows(first.get("trend")).getFirst().get("period"));
         assertEquals(0,new BigDecimal("100.25").compareTo(decimal(rows(first.get("trend")).getFirst().get("ORDER"))));
         var wider=new Filter(filter.start().minusDays(1),filter.end(),filter.shopId(),filter.platform(),filter.currency(),"day");
-        assertEquals(0,new BigDecimal("100099.25").compareTo(decimal(rows(service.dashboard(owner,wider,false,null).get("totals")).stream().filter(r->"ORDER".equals(r.get("kind"))).findFirst().orElseThrow().get("amount"))));
+        assertEquals(0,new BigDecimal("100.25").compareTo(decimal(rows(service.dashboard(owner,wider,false,null).get("totals")).stream().filter(r->"ORDER".equals(r.get("kind"))).findFirst().orElseThrow().get("amount"))),"unsettled older orders are excluded by the settlement-date scope");
         var converted=rows(service.dashboard(owner,filter,true,"fixed").get("totals"));
         assertEquals(0,new BigDecimal("12.53125").compareTo(decimal(converted.getFirst().get("amount"))));
         service.removeShop(owner,id);
@@ -742,7 +746,7 @@ class FinanceConfigurationIntegrationTest {
         String secret=db.queryForObject("SELECT access_token_encrypted FROM finance_connections WHERE id=?",String.class,id);assertNotEquals("finance-access",secret);
         assertEquals("finance-access",cipher.decrypt(secret,"org","finance-shop:u:"+id));
         assertThrows(IllegalStateException.class,()->cipher.decrypt(secret,"org","legacy"));
-        service.configure(owner,id,true,"PHP","Asia/Manila");assertEquals(4,service.syncStates(owner).size());
+        service.configure(owner,id,true,"PHP","Asia/Manila");assertEquals(5,service.syncStates(owner).size());
         assertEquals("commerce-secret-unchanged",db.queryForObject("SELECT secret FROM shop_credentials WHERE id='legacy'",String.class));
     }
     @Test void legacyAndOtherUsersRecordsAreHiddenFromEveryReadPath(){
@@ -763,6 +767,7 @@ class FinanceConfigurationIntegrationTest {
     @Test void safeExtraFieldsStayTypedAndRawBuyerDataNeverEscapes(){
         String id=connect(owner,false);
         record(owner,id,"ORDER","order",new BigDecimal("100"),Map.of("payment_method","CARD","create_time",1792533600L,"item_list",List.of(Map.of("item_name","Dress")),"buyer_username","private","recipient_address",Map.of("phone","private"),"access_token","private"));
+        record(owner,id,"SETTLEMENT","settlement",new BigDecimal("80"),Map.of());
         var row=rows(repo.details(owner,filter,"ORDER",1,50).get("items")).getFirst();
         assertEquals("CARD",row.get("payment_method"));assertEquals("Dress",row.get("item_names"));assertEquals(1,row.get("item_count"));assertNotNull(row.get("create_time"));
         assertFalse(repo.write(row).contains("private"));assertFalse(row.containsKey("raw_json"));assertFalse(row.containsKey("estimated_shipping"));
@@ -1095,6 +1100,94 @@ class FinanceConfigurationIntegrationTest {
         assertThrows(BusinessException.class,()->a.start(owner,"","foreign-shop",""));
     }
     byte[] chargeCsv(String order,String shop,String fee){return ("订单编号,店铺,实际订单金额,代刷费CNY\n"+order+","+shop+",100,"+fee+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);}
+    Entry dated(String shop,String kind,String external,String order,String bill,LocalDate day,String net,Map<String,Object> raw){
+        return new Entry(shop,"SHOPEE",kind,external,order,bill,"结算","SETTLED",day,"PHP",decimal(net),null,null,null,null,"API",raw);
+    }
+    @Test void actualSettlementDateIncludesPriorMonthOrdersAndKeepsCostAndExportScopeAligned()throws Exception{
+        String group=service.saveGroup(owner,null,"跨月结算"),shop=groupedShop(owner,"cross-month",group);
+        var august=dated(shop,"ORDER","august","august","",LocalDate.of(2026,8,15),"100",Map.of());
+        var september=dated(shop,"ORDER","september","september","",LocalDate.of(2026,9,10),"200",Map.of());
+        repo.save(owner,august);repo.save(owner,september);
+        repo.save(owner,dated(shop,"SETTLEMENT","s-sep","august","bill-sep",LocalDate.of(2026,9,1),"80",
+            Map.of("order_income",Map.of("original_price",150,"seller_discount",50,"commission_fee",20))));
+        repo.save(owner,dated(shop,"SETTLEMENT","s-oct","september","bill-oct",LocalDate.of(2026,10,4),"170",
+            Map.of("order_income",Map.of("original_price",300,"seller_discount",100,"commission_fee",30))));
+        repo.save(owner,dated(shop,"REFUND","refund-aug","august","",LocalDate.of(2026,8,30),"10",Map.of()));
+        repo.save(owner,dated(shop,"SETTLEMENT","later","august","adjustment-oct",LocalDate.of(2026,10,7),"5",Map.of()));
+        for(var pair:List.of(Map.entry(9,"august"),Map.entry(10,"september"))){
+            var start=LocalDate.of(2026,pair.getKey(),1);
+            var f=new Filter(start,start.withDayOfMonth(start.lengthOfMonth()),shop,"","","day",group);
+            var list=repo.details(new Scope("org","colleague"),f,"ORDER",1,50);
+            assertEquals(1,number(list.get("total")));var item=rows(list.get("items")).getFirst();
+            assertEquals(pair.getValue(),item.get("order_id"));assertEquals(pair.getKey(),LocalDate.parse(text(item.get("record_date"))).getMonthValue());
+            assertNotEquals(item.get("record_date"),item.get("source_record_date"));
+            assertEquals(item.get("record_date"),repo.detail(owner,text(item.get("id"))).get("record_date"));
+            var mixed=rows(repo.details(owner,f,null,1,50).get("items"));
+            assertEquals(1,mixed.stream().filter(r->"ORDER".equals(r.get("kind"))).count());
+            assertEquals(1,number(map(new FinanceCostReport(repo).summary(owner,f,"ORDER").get("total")).get("order_count")));
+            var csv=FinanceWorkbook.read(controller().export(Map.of("start",start.toString(),"end",f.end().toString(),"view","ORDER","format","csv","shopId",shop),principal()).getBody(),"report.csv");
+            assertEquals(2,csv.size());assertTrue(csv.getLast().contains(pair.getValue()));
+        }
+        var septemberFilter=new Filter(LocalDate.of(2026,9,1),LocalDate.of(2026,9,30),shop,"","","day",group);
+        assertEquals(1,number(repo.details(owner,septemberFilter,"REFUND",1,50).get("total")));
+        assertEquals(1,number(map(new FinanceCostReport(repo).summary(owner,septemberFilter,"REFUND").get("total")).get("order_count")));
+        assertEquals(2,FinanceCostExportTest.sheet(new FinanceCostExport(repo).export(owner,septemberFilter,"REFUND",""),2).getElementsByTagName("row").getLength());
+        assertEquals(0,number(repo.details(other,septemberFilter,"ORDER",1,50).get("total")));
+    }
+    @Test void rebuildingDerivedFeesIsIdempotentAndNeverAltersNetOrUnrelatedImportedFees(){
+        String shop=connect(owner,false);
+        var raw=Map.<String,Object>of("order_income",Map.of("original_price",899,"seller_discount",349,"voucher_from_seller",165,
+            "commission_fee",54,"service_fee",33,"seller_transaction_fee",13,"order_ams_commission_fee",6,"seller_order_processing_fee",1));
+        var settlement=dated(shop,"SETTLEMENT","tx_1","order","bill",filter.start(),"278",raw);
+        repo.save(owner,settlement);repo.save(owner,settlement);
+        assertEquals(7,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='FEE'",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT SUM(amount) FROM finance_records WHERE kind='FEE'",BigDecimal.class).compareTo(decimal("621")));
+        assertEquals(0,db.queryForObject("SELECT revenue FROM finance_records WHERE kind='SETTLEMENT'",BigDecimal.class).compareTo(decimal("899")));
+        repo.save(owner,new Entry(shop,"SHOPEE","FEE","tx_1:import","order","bill","导入费用","IMPORTED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"IMPORT",Map.of()));
+        repo.save(owner,dated(shop,"FEE","txX1:other","order","bill",filter.start(),"2",Map.of()));
+        var updated=dated(shop,"SETTLEMENT","tx_1","order","bill",filter.start(),"278",
+            Map.of("order_income",Map.of("original_price",300,"seller_discount",22)));
+        repo.save(owner,updated);
+        assertEquals(3,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='FEE'",Integer.class));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE external_id='txX1:other'",Integer.class),"LIKE escapes prevent deleting another transaction");
+        repo.save(owner,dated(shop,"BILL","bill","","bill",filter.start(),"278",Map.of()));
+        var view=repo.detail(owner,id(owner,updated));assertEquals(0,decimal(view.get("amount")).compareTo(decimal("300")));
+        assertEquals(0,decimal(view.get("settled_net_amount")).compareTo(decimal("278")));
+        assertEquals(0,db.queryForObject("SELECT amount FROM finance_records WHERE kind='SETTLEMENT'",BigDecimal.class).compareTo(decimal("278")));
+        assertEquals("MATCHED",repo.reconciliation(owner,filter).getFirst().get("result"));
+        assertEquals(0,decimal(rows(repo.details(owner,filter,"BILL",1,50).get("items")).getFirst().get("amount")).compareTo(decimal("300")));
+        var original=db.queryForMap("SELECT amount,raw_json,record_date,updated_at FROM finance_records WHERE id=?",id(owner,updated));
+        assertTrue(repo.rebuildSettlement(owner,shop,id(owner,updated)));
+        assertEquals(original,db.queryForMap("SELECT amount,raw_json,record_date,updated_at FROM finance_records WHERE id=?",id(owner,updated)),"backfill changes only derived revenue and fee rows");
+    }
+    @Test void tiktokHistoricalRebuildUsesCoveredSettlementDayAndNeverSubtractsAnotherDayOnRetry(){
+        String shop=connect(owner,false);LocalDate generated=LocalDate.of(2026,10,1);
+        long timestamp=generated.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
+        repo.save(owner,new Entry(shop,"TIKTOK_SHOP","BILL","bill-month-end","","bill-month-end","","SETTLED",generated,"PHP",decimal("80"),null,null,null,null,"API",Map.of("create_time",timestamp)));
+        var raw=Map.<String,Object>of("type","ORDER","settlement_amount","80","revenue_breakdown",Map.of("subtotal_before_discount_amount","120","seller_discount_amount","-40"));
+        var entry=new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","tx-month-end","old-order","bill-month-end","ORDER","SETTLED",generated,"PHP",decimal("80"),null,null,null,null,"API",raw);
+        repo.save(owner,entry);String record=id(owner,entry);
+        var before=db.queryForMap("SELECT raw_json,amount,updated_at FROM finance_records WHERE id=?",record);
+        assertTrue(repo.rebuildSettlement(owner,shop,record));assertTrue(repo.rebuildSettlement(owner,shop,record));
+        assertEquals("2026-09-30",db.queryForObject("SELECT record_date FROM finance_records WHERE id=?",String.class,record));
+        assertEquals(before,db.queryForMap("SELECT raw_json,amount,updated_at FROM finance_records WHERE id=?",record));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='FEE' AND record_date='2026-09-30'",Integer.class));
+        assertEquals(LocalDate.of(2026,9,30),repo.tiktokBillDay(owner,shop,"bill-month-end"));
+    }
+    @Test void boundedSettlementBatchRollsBackEveryChangeWhenAnyRecordFails(){
+        String shop=connect(owner,false);
+        var good=dated(shop,"SETTLEMENT","good","one","bill",filter.start(),"80",Map.of("order_income",Map.of("original_price",100,"seller_discount",20)));
+        var bad=new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","missing-bill","two","not-present","ORDER","SETTLED",
+                filter.start(),"PHP",decimal("70"),null,null,null,null,"API",
+                Map.of("type","ORDER","settlement_amount","70","revenue_breakdown",Map.of("subtotal_before_discount_amount","90")));
+        repo.save(owner,good);repo.save(owner,bad);
+        db.update("UPDATE finance_records SET revenue=NULL WHERE kind='SETTLEMENT'");
+        var before=db.queryForList("SELECT id,amount,revenue,record_date,raw_json,updated_at FROM finance_records ORDER BY id");
+        assertThrows(BusinessException.class,()->repo.rebuildSettlements(owner,shop,List.of(id(owner,good),id(owner,bad))));
+        assertEquals(before,db.queryForList("SELECT id,amount,revenue,record_date,raw_json,updated_at FROM finance_records ORDER BY id"));
+        assertEquals(1,repo.rebuildSettlements(owner,shop,List.of(id(owner,good))));
+        assertThrows(IllegalArgumentException.class,()->repo.rebuildSettlements(owner,shop,Collections.nCopies(21,id(owner,good))));
+    }
     BigDecimal bucketTotal(String kind){return repo.dashboardBuckets(owner,filter).stream().filter(r->kind.equals(r.get("kind"))).map(r->decimal(r.get("amount"))).filter(Objects::nonNull).reduce(BigDecimal.ZERO,BigDecimal::add);}
     @Test void marketingTagsExcludeSummaryButPreserveLedgerAndUndoOnlyLastSource(){
         String group=service.saveGroup(owner,null,"母婴"),shop=groupedShop(owner,"charge-shop",group);

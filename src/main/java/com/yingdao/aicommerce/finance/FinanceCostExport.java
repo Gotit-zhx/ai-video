@@ -19,7 +19,7 @@ public class FinanceCostExport {
     public FinanceCostExport(FinanceRepository repo){this.repo=repo;}
     static String kind(String value){
         String kind=text(value).toUpperCase(Locale.ROOT);
-        if(!Set.of("SETTLED_ORDER","ORDER","REFUND","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(kind))throw bad("成本来源类型不正确");
+        if(!Set.of("SETTLED_ORDER","ORDER","REFUND","REFUND_SETTLED","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(kind))throw bad("成本来源类型不正确");
         return kind;
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=120)
@@ -50,7 +50,7 @@ public class FinanceCostExport {
                       g.name group_name,c.status cost_status,c.amount_cny,c.known_amount_cny,c.data_json cost_json,
                       c.version cost_version,c.updated_at cost_updated_at,b.source_name cost_source,
                       j.order_record_id queued_id,
-                    """+("SETTLED_ORDER".equals(kind)?"x.settlement_date":"NULL")+" first_settlement_date"+from+"""
+                    """+(Set.of("SETTLED_ORDER","REFUND_SETTLED").contains(kind)?"x.settlement_date":"NULL")+" first_settlement_date"+from+"""
                      LEFT JOIN finance_records o ON o.id=x.order_record_id
                      LEFT JOIN finance_connections s ON s.id=x.shop_id AND s.organization_id=?
                      LEFT JOIN finance_groups g ON g.id=s.group_id AND g.organization_id=s.organization_id
@@ -58,7 +58,7 @@ public class FinanceCostExport {
                      LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id AND j.organization_id=s.organization_id
                      LEFT JOIN finance_cost_books b ON b.id=JSON_UNQUOTE(JSON_EXTRACT(c.data_json,'$.bookId')) AND b.organization_id=s.organization_id
                     """+FinanceCostReport.costStatusWhere(selectedStatus)+" ORDER BY "
-                    +("SETTLED_ORDER".equals(kind)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
+                    +(Set.of("SETTLED_ORDER","REFUND_SETTLED").contains(kind)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
                 if(rows.isEmpty())throw bad("导出数据读取不完整，请重试");
                 for(var row:rows){
                     append(row,orders,lines,totals);
@@ -168,7 +168,7 @@ public class FinanceCostExport {
         }catch(RuntimeException e){return null;}
     }
     static String platform(String value){return switch(value){case "TIKTOK_SHOP"->"TikTok Shop";case "SHOPEE"->"虾皮";default->value;};}
-    static String basis(String value){return switch(value){case "SETTLED_ORDER"->"首次平台结算日期";case "REFUND"->"退款日期";case "SETTLEMENT"->"结算日期";case "BILL","RECONCILIATION"->"账单日期";case "PENDING"->"待结算日期";default->"下单日期";};}
+    static String basis(String value){return switch(value){case "SETTLED_ORDER","REFUND_SETTLED"->"首次平台结算日期";case "REFUND"->"所选退款记录";case "SETTLEMENT"->"结算日期";case "BILL","RECONCILIATION"->"账单日期";case "PENDING"->"待结算日期";default->"下单日期";};}
     static String costStatus(String value){return switch(value){case "READY"->"已计算";case "ESTIMATED"->"历史价估算";case "EXCLUDED"->"不计成本";case "QUEUED"->"后台计算中";case "MISSING"->"订单待同步";default->"待补齐";};}
     static String orderStatus(String value){return switch(value){
         case "UNPAID"->"待付款";case "ON_HOLD"->"订单暂挂";case "CANCELLED","CANCELED"->"已取消";case "IN_CANCEL"->"取消处理中";
