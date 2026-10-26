@@ -24,6 +24,19 @@ public final class FinanceCostReport {
         String value=text(kind).toUpperCase(Locale.ROOT);
         return !record&&Set.of("","ALL","ORDER","SETTLED_ORDER","FEE","COST","AD","AD_GMV").contains(value)?"SETTLED_ORDER":value;
     }
+    static String costStatus(String value){
+        String selected=text(value).toUpperCase(Locale.ROOT);if(selected.isBlank())return "ALL";
+        if(!Set.of("ALL","PENDING").contains(selected))throw bad("成本状态筛选不正确");
+        return selected;
+    }
+    /** Applied before pagination and export; missing orders/snapshots and queued recalculations remain pending. */
+    static String costStatusWhere(String value){
+        return costStatus(value).equals("ALL")?"":"""
+             WHERE (EXISTS (SELECT 1 FROM finance_order_cost_jobs filter_job WHERE filter_job.order_record_id=x.order_record_id)
+               OR NOT EXISTS (SELECT 1 FROM finance_order_costs filter_cost WHERE filter_cost.order_record_id=x.order_record_id
+                 AND filter_cost.status IN ('READY','ESTIMATED','EXCLUDED')))
+            """;
+    }
     static final String AGGREGATE="""
         COUNT(*) order_count,
         SUM(CASE WHEN x.order_record_id IS NULL THEN 1 ELSE 0 END) missing_order_count,
@@ -97,6 +110,10 @@ public final class FinanceCostReport {
     }
     /** Drill down using the source's date basis; a selected bill is not restricted to order creation dates. */
     public Map<String,Object> orders(Scope scope,Filter filter,String kind,String recordId,int page){
+        return orders(scope,filter,kind,recordId,page,"ALL");
+    }
+    public Map<String,Object> orders(Scope scope,Filter filter,String kind,String recordId,int page,String status){
+        String selectedStatus=costStatus(status);
         String selected=scopeKind(kind,!text(recordId).isBlank());
         if(!Set.of("SETTLED_ORDER","ORDER","REFUND","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(selected))throw bad("成本来源类型不正确");
         FinanceRepository.Query q=text(recordId).isBlank()?repo.query(scope,filter,"r"):
@@ -104,19 +121,40 @@ public final class FinanceCostReport {
         String from=" FROM ("+related(selected)+q.where()+") x";
         // The exact same deduplicated relation supplies the summary and page count.
         var costs=summary(scope,selected,q);
-        long total=number(map(costs.get("total")).get("order_count"));
+        long total=number(map(costs.get("total")).get(selectedStatus.equals("PENDING")?"pending_count":"order_count"));
         int safePage=Math.max(1,page);var args=new ArrayList<>(q.args());args.add(50);args.add((safePage-1L)*50);
         var items=repo.jdbc().queryForList("""
             SELECT o.id,x.shop_id,o.platform,'ORDER' kind,o.external_id,COALESCE(o.order_id,x.reference) order_id,
               o.status,o.record_date,o.currency,o.amount,o.source,o.updated_at,o.raw_json,
             """+("SETTLED_ORDER".equals(selected)?"x.settlement_date":"NULL")+" first_settlement_date"
-                +from+" LEFT JOIN finance_records o ON o.id=x.order_record_id"
+                +from+" LEFT JOIN finance_records o ON o.id=x.order_record_id"+costStatusWhere(selectedStatus)
                 +" ORDER BY "+("SETTLED_ORDER".equals(selected)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
         items.forEach(repo::enrich);attach(scope,items,false);
         for(var item:items)if(item.get("id")==null){item.put("product_cost_state","订单待同步");item.put("product_cost_pending",1);}
+        pendingIssues(scope,items);
         var result=new LinkedHashMap<String,Object>();
         result.put("items",items);result.put("total",total);result.put("page",safePage);result.put("pageSize",50);
+        result.put("costStatus",selectedStatus);
         result.put("productCosts",costs);return result;
+    }
+    private void pendingIssues(Scope scope,List<Map<String,Object>> items){
+        var pending=new LinkedHashMap<String,Map<String,Object>>();
+        for(var row:items)if(number(row.get("product_cost_pending"))>0){
+            row.put("product_cost_issue",row.get("id")==null?"关联订单尚未同步":"等待后台计算成本");
+            if(row.get("id")!=null)pending.put(text(row.get("id")),row);
+        }
+        if(pending.isEmpty())return;
+        var args=new ArrayList<Object>();args.add(scope.organizationId());args.addAll(pending.keySet());
+        String slots=String.join(",",Collections.nCopies(pending.size(),"?"));
+        for(var snapshot:repo.jdbc().queryForList("""
+            SELECT c.order_record_id,c.data_json FROM finance_order_costs c
+            LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=c.order_record_id
+            WHERE c.organization_id=? AND c.order_record_id IN (%s) AND j.order_record_id IS NULL
+            """.formatted(slots),args.toArray())){
+            var cost=new FinanceOrderCosts(repo).decode(snapshot.get("data_json"));var issues=new LinkedHashSet<String>();
+            for(var line:rows(cost.get("lines")))if(!text(line.get("issue")).isBlank())issues.add(text(line.get("issue")));
+            if(!issues.isEmpty())pending.get(text(snapshot.get("order_record_id"))).put("product_cost_issue",String.join("；",issues));
+        }
     }
     public void attach(Scope scope,List<Map<String,Object>> records,boolean detail){
         var eligible=records.stream().filter(r->Set.of("ORDER","REFUND","SETTLEMENT","BILL","PENDING").contains(text(r.get("kind")))).toList();

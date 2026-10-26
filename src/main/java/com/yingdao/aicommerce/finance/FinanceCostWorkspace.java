@@ -17,6 +17,9 @@ public class FinanceCostWorkspace {
     public Map<String,Object> orderCosts(Scope scope,Filter filter,String kind,String recordId,int page){
         return new FinanceCostReport(repo).orders(scope,filter,kind,recordId,page);
     }
+    public Map<String,Object> orderCosts(Scope scope,Filter filter,String kind,String recordId,int page,String costStatus){
+        return new FinanceCostReport(repo).orders(scope,filter,kind,recordId,page,costStatus);
+    }
     static String required(Map<String,Object> body,String key,int max){
         String value=text(body.get(key)).trim();if(value.isBlank()||value.length()>max)throw bad("请填写有效的 "+key);return value;
     }
@@ -97,14 +100,62 @@ public class FinanceCostWorkspace {
         for(var row:rows){
             orders.add(text(row.get("record_id")));String product=text(row.get("product_id")),sku=text(row.get("sku_id"));
             if(product.isBlank()||sku.isBlank())continue;
-            var p=new LinkedHashMap<String,Object>();p.put("shop_id",shopId);p.put("product_id",product);p.put("sku_id",sku);
-            for(String key:List.of("seller_sku","name","spec","image"))p.put(key,text(row.get(key)));
-            if(text(p.get("seller_sku")).isBlank())p.put("seller_sku",text(row.get("item_sku")));
-            products.putIfAbsent(product+":"+sku,p);
+            products.putIfAbsent(product+":"+sku,productSnapshot(shopId,row));
         }
+        addPendingProducts(s,shopId,tk,fields,products,result);
         result.put("products",new ArrayList<>(products.values()));result.put("sampleOrders",orders.size());result.put("orderLimit",2000);
         result.put("imports",repo.jdbc().queryForList("SELECT id,source_name,created_at FROM finance_cost_books WHERE organization_id=? AND group_id=? ORDER BY created_at DESC LIMIT 20",s.organizationId(),group));
         return result;
+    }
+    static Map<String,Object> productSnapshot(String shopId,Map<String,Object> row){
+        var p=new LinkedHashMap<String,Object>();p.put("shop_id",shopId);
+        for(String key:List.of("product_id","sku_id","seller_sku","name","spec","image"))p.put(key,text(row.get(key)));
+        if(text(p.get("seller_sku")).isBlank())p.put("seller_sku",text(row.get("item_sku")));
+        return p;
+    }
+    /** Include historical unresolved identities, even when absent from the recent-order sample.
+     * Reads saved cost issues first, then only one order per identity; never infers delisting or a cost code. */
+    private void addPendingProducts(Scope s,String shopId,boolean tk,String fields,
+                                    Map<String,Map<String,Object>> products,Map<String,Object> result){
+        var pending=repo.jdbc().queryForList("""
+            SELECT missing.product_id,missing.sku_id,COUNT(DISTINCT c.order_record_id) pending_orders,
+              MAX(c.order_record_id) sample_record_id,
+              GROUP_CONCAT(DISTINCT missing.issue_text ORDER BY missing.issue_text SEPARATOR '；') pending_reason
+            FROM finance_order_costs c JOIN JSON_TABLE(c.data_json,'$.lines[*]' COLUMNS(
+              product_id VARCHAR(128) PATH '$.productId',sku_id VARCHAR(128) PATH '$.skuId',
+              issue_text VARCHAR(500) PATH '$.issue')) missing
+            WHERE c.organization_id=? AND c.shop_id=? AND c.status='INCOMPLETE'
+              AND COALESCE(missing.issue_text,'')<>'' AND COALESCE(missing.product_id,'')<>'' AND COALESCE(missing.sku_id,'')<>''
+              AND
+            """+FinanceCostReport.hasSettlement("c","c.order_id")+"""
+             GROUP BY missing.product_id,missing.sku_id
+             ORDER BY pending_orders DESC,missing.product_id,missing.sku_id LIMIT 1001
+            """,s.organizationId(),shopId);
+        boolean truncated=pending.size()>1000;if(truncated)pending=pending.subList(0,1000);
+        var wanted=new LinkedHashMap<String,Map<String,Object>>();
+        var ids=new LinkedHashSet<String>();
+        for(var row:pending){wanted.put(row.get("product_id")+":"+row.get("sku_id"),row);ids.add(text(row.get("sample_record_id")));}
+        var samples=new ArrayList<>(ids);int added=0;
+        for(int start=0;start<samples.size();start+=100){
+            var batch=samples.subList(start,Math.min(start+100,samples.size()));
+            String slots=String.join(",",Collections.nCopies(batch.size(),"?"));
+            var args=new ArrayList<Object>();args.add(tk?"$.line_items[*]":"$.item_list[*]");args.add(s.organizationId());args.add(shopId);args.addAll(batch);
+            var source=repo.jdbc().queryForList("""
+                SELECT r.id record_id,x.* FROM finance_records r JOIN JSON_TABLE(r.raw_json,? COLUMNS(%s)) x
+                WHERE r.organization_id=? AND r.shop_id=? AND r.kind='ORDER' AND r.source='API' AND r.id IN (%s)
+                """.formatted(fields,slots),args.toArray());
+            for(var row:source){
+                String key=row.get("product_id")+":"+row.get("sku_id");var issue=wanted.get(key);
+                if(issue==null||!Objects.equals(text(issue.get("sample_record_id")),text(row.get("record_id"))))continue;
+                if(!products.containsKey(key)){var p=productSnapshot(shopId,row);p.put("historical_cost_pending",true);products.put(key,p);added++;}
+            }
+        }
+        for(var row:pending){
+            var p=products.get(row.get("product_id")+":"+row.get("sku_id"));
+            if(p!=null){p.put("pending_cost_orders",row.get("pending_orders"));p.put("pending_cost_reason",row.get("pending_reason"));}
+        }
+        result.put("historicalPendingSkuCount",added);result.put("pendingSkuCount",pending.size());
+        result.put("pendingSkusTruncated",truncated);result.put("pendingSkuLimit",1000);
     }
     /** Accepts the supplied warehouse-by-month shape or an explicit four-column long table. */
     static List<Map<String,Object>> parseCosts(byte[] bytes,String name){

@@ -81,7 +81,7 @@ class FinanceCostExportTest {
         assertEquals("3",value(lines,"Q2"));assertEquals("2",value(lines,"R2"));
         assertEquals("=不应执行的商品名",value(lines,"I2"));assertEquals("inlineStr",cell(lines,"I2").getAttribute("t"));
         assertEquals(0,lines.getElementsByTagName("f").getLength());
-        assertEquals("",value(summary,"B16"));assertEquals("14.814804",value(summary,"B17"));
+        assertEquals("",value(summary,"B17"));assertEquals("14.814804",value(summary,"B18"));
         assertTrue(orders.getElementsByTagName("autoFilter").getLength()>0);
         Files.createDirectories(Path.of("target"));Files.write(Path.of("target/order-cost-export-test.xlsx"),bytes);
     }

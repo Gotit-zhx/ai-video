@@ -16,6 +16,36 @@
   function dateGranularity(start,end){const days=Math.round((Date.parse(end)-Date.parse(start))/86400000)+1;return days<=45?'day':days<=200?'week':days<=400?'month':days<=900?'quarter':days<=1500?'halfyear':'year';}
   const defaultFilters=()=>({start:ago(29),end:today(),shopId:'',groupId:'',platform:'',currency:'',granularity:'day',displayCurrency:'CNY',fxSnapshot:''});
   let filters=defaultFilters();
+  let filterScope=null,pinnedDates=false,reportFilters=null;
+  const filterStorageKey=()=>typeof currentUser!=='undefined'&&currentUser?.organizationId&&currentUser?.userId
+    ?'heyi:finance-filters:v1:'+JSON.stringify([currentUser.organizationId,currentUser.userId]):'';
+  const validFilterDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)
+    &&dateText(new Date(value+'T12:00:00'))===value&&value<=today();
+  function restoreFilters(){
+    const key=filterStorageKey();if(key===filterScope)return;
+    filterScope=key;filters=defaultFilters();pinnedDates=false;reportFilters=null;
+    if(!key)return;
+    try{
+      const saved=JSON.parse(sessionStorage.getItem(key)||'null');if(!saved||typeof saved!=='object')return;
+      for(const field of ['shopId','groupId'])if(typeof saved[field]==='string'&&saved[field].length<=128)filters[field]=saved[field];
+      if(['','SHOPEE','TIKTOK_SHOP'].includes(saved.platform))filters.platform=saved.platform;
+      if(['CNY','ORIGINAL'].includes(saved.displayCurrency))filters.displayCurrency=saved.displayCurrency;
+      if(typeof saved.currency==='string'&&/^(?:[A-Z]{3})?$/.test(saved.currency))filters.currency=saved.currency;
+      if(saved.pinnedDates===true&&validFilterDate(saved.start)&&validFilterDate(saved.end)&&saved.start<=saved.end){
+        filters.start=saved.start;filters.end=saved.end;pinnedDates=true;
+        filters.granularity=dateGranularity(filters.start,filters.end);
+      }
+    }catch{/* A blocked or invalid browser cache must not prevent financial queries. */}
+  }
+  function rememberFilters(){
+    const key=filterStorageKey(),value=view==='live'?reportFilters:filters;
+    if(!key||key!==filterScope||!value)return;
+    const saved={pinnedDates};
+    for(const field of ['shopId','groupId','platform','currency','displayCurrency'])saved[field]=value[field];
+    if(pinnedDates){saved.start=value.start;saved.end=value.end;}
+    // FX snapshots are refreshed on re-entry; the user's calendar and shop selection are retained.
+    try{sessionStorage.setItem(key,JSON.stringify(saved));}catch{}
+  }
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;parent?.append(n);return n;};
   function icon(name,parent){const n=document.createElementNS('http://www.w3.org/2000/svg','svg');n.setAttribute('viewBox','0 0 24 24');n.classList.add('fi-svg');n.setAttribute('aria-hidden','true');const path=document.createElementNS(n.namespaceURI,'path');path.setAttribute('d',paths[name]||paths.chart);n.append(path);parent?.append(n);return n;}
   function recordPlatform(row){return row.platform||data?.shops?.find(shop=>shop.id===row.shop_id)?.platform||'';}
@@ -66,7 +96,7 @@
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选日期…';n.title=filters.start+' 至 '+filters.end;}}
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
-  function reset(){active=false;generation++;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();root.replaceChildren();data=null;page=1;filters=defaultFilters();document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
+  function reset(){active=false;generation++;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
   function leave(){active=false;generation++;clearTimeout(refreshTimer);cleanup();}
   function refreshWhenIdle(){
     if(!active)return;
@@ -79,7 +109,7 @@
     return chartPromise;
   }
   function select(parent,label,options,value,onchange){const wrap=el('label',null,parent);wrap.dataset.updateKey='select:'+label;el('span',label,wrap);const n=el('select',null,wrap);for(const [v,name] of options){el('option',name,n).value=v;}n.value=value||'';n.setAttribute('aria-label',label);n.onchange=e=>onchange(e.currentTarget.value);return n;}
-  function dateInput(parent,label,value,key){const n=el('input',null,parent);n.type='date';n.setAttribute('value',value);n.setAttribute('aria-label',label);n.max=today();n.onchange=e=>{const value=e.currentTarget.value;if(!/^\d{4}-\d{2}-\d{2}$/.test(value))return;const next={...filters,[key]:value};if(next.start>next.end){notify('开始日期不能晚于结束日期',true);return;}filters[key]=value;filters.granularity=dateGranularity(filters.start,filters.end);page=1;load();};return n;}
+  function dateInput(parent,label,value,key){const n=el('input',null,parent);n.type='date';n.setAttribute('value',value);n.setAttribute('aria-label',label);n.max=today();n.onchange=e=>{const value=e.currentTarget.value;if(!validFilterDate(value))return;const next={...filters,[key]:value};if(next.start>next.end){notify('开始日期不能晚于结束日期',true);return;}filters[key]=value;pinnedDates=true;filters.granularity=dateGranularity(filters.start,filters.end);page=1;load();};return n;}
   function shell(root){
     root.className='workspace-body finance-workspace';
     const head=el('header',null,root,'fi-head'),copy=el('div',null,head);
@@ -662,6 +692,7 @@
   }
   async function load(interactive=true){
     if(!active||!allowed())return;const run=++generation;clearTimeout(refreshTimer);
+    rememberFilters();
     if(view==='live')return loadLive(run,interactive);
     if(mountedView!==view){cleanup();root.replaceChildren();const initial=root.cloneNode(false);shell(initial);IncrementalDOM.patch(root,initial);}
     setLoading(interactive);
@@ -721,6 +752,18 @@
     }catch(e){if(run===generation){notify((mountedView===view?'更新暂未完成，已保留当前数据。':'')+(e.message||'财务数据暂时无法加载'),true);refreshTimer=setTimeout(refreshWhenIdle,15000);}}
     finally{if(run===generation)setLoading(false);}
   }
-  globalThis.FinanceWorkspace={allowed,canManage,enter(route){if(!allowed())return;const wasLive=view==='live';view=route==='fees'?'fee-records':routes[route]?route:'overview';if(route==='fees')selectedKind='FEE';if(['fee-records','expense-ledger'].includes(view))document.querySelector('[data-finance-route="fees"]')?.classList.add('active');if(view==='live'){filters.displayCurrency='CNY';filters.currency='';filters.fxSnapshot='';}else if(wasLive){filters.start=ago(29);filters.end=today();filters.granularity='day';}if(view==='expense-ledger')globalThis.FinanceExpensesDesign?.setFilters(filters);active=true;page=1;load();},leave,reset};
+  globalThis.FinanceWorkspace={allowed,canManage,enter(route){
+    if(!allowed())return;restoreFilters();const wasLive=view==='live';
+    view=route==='fees'?'fee-records':routes[route]?route:'overview';
+    if(route==='fees')selectedKind='FEE';
+    if(['fee-records','expense-ledger'].includes(view))document.querySelector('[data-finance-route="fees"]')?.classList.add('active');
+    if(view==='live'&&(!wasLive||!reportFilters)){
+      reportFilters={...filters};filters={...filters,displayCurrency:'CNY',currency:'',fxSnapshot:''};
+    }else if(view!=='live'&&wasLive&&reportFilters){
+      filters={...reportFilters,fxSnapshot:''};reportFilters=null;
+    }
+    if(view==='expense-ledger')globalThis.FinanceExpensesDesign?.setFilters(filters);
+    active=true;page=1;load();
+  },leave,reset};
   window.addEventListener('heyi:company-reset',reset);
 })();

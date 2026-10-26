@@ -30,13 +30,13 @@ public class FinanceCostController {
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
         var filter=costFilter(q);
         int page=(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1"))));
-        return ApiResponse.ok(workspace.orderCosts(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""),page));
+        return ApiResponse.ok(workspace.orderCosts(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""),page,q.getOrDefault("costStatus","ALL")));
     }
     @GetMapping("/costs/orders/export") public org.springframework.http.ResponseEntity<byte[]> exportOrderCosts(
             @RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
         var filter=costFilter(q);
-        byte[] bytes=costExport.export(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""));
+        byte[] bytes=costExport.export(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""),q.getOrDefault("costStatus","ALL"));
         return org.springframework.http.ResponseEntity.ok().header("Cache-Control","no-store, private")
             .header("Content-Disposition","attachment; filename=\"order-costs-"+filter.start()+"-"+filter.end()+".xlsx\"")
             .contentType(org.springframework.http.MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).body(bytes);

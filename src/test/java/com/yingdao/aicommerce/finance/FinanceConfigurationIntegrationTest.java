@@ -334,6 +334,62 @@ class FinanceConfigurationIntegrationTest {
         txs.execute(status->engine.seedAndFill());txs.execute(status->engine.processBatch(50));
         assertNull(repo.detail(owner,id(owner,entry)).get("product_cost_cny"),"changing group must not keep the previous group's cost");
     }
+    @Test void pendingCostFilterPagesExportsAndIncludesHistoricalMissingSkus()throws Exception{
+        String group=service.saveGroup(owner,null,"历史成本"),shop=groupedShop(owner,"historical-cost-shop",group);
+        var workspace=new FinanceCostWorkspace(repo,service);var txs=new TransactionTemplate(tx);
+        txs.executeWithoutResult(s->workspace.importCosts(owner,"u",group,"仓库,型号,202610\n海外仓-菲律宾,PACK,10\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),"unit.csv"));
+        String oldId="";
+        for(int i=0;i<60;i++){
+            String id="historic-"+i,sku=i<55?"":"PACK",status=i==58?"CANCELLED":"COMPLETED";
+            var raw=Map.<String,Object>of("buyer_username","do-not-expose","item_list",List.of(Map.of(
+                "item_id",i<55?"old-product":"new-product","model_id",i<55?"old-sku":"new-sku",
+                "model_sku",sku,"model_name","同名规格不可猜测成本","model_quantity_purchased",1)));
+            var entry=new Entry(shop,"SHOPEE","ORDER",id,id,"","订单",status,filter.start().minusDays(1),"PHP",BigDecimal.TEN,null,null,null,null,"API",raw);
+            repo.save(owner,entry);if(i==0)oldId=id(owner,entry);
+            repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","settle-"+id,id,"","结算","SETTLED",filter.start(),"PHP",BigDecimal.TEN,null,null,null,null,"API",Map.of()));
+        }
+        var engine=new FinanceOrderCosts(repo);
+        txs.execute(s->engine.seedAndFill());txs.execute(s->engine.processBatch(100));txs.execute(s->engine.processBatch(100));
+        db.update("DELETE FROM finance_order_cost_jobs");
+        db.update("UPDATE finance_cost_rebuilds SET status='DONE'");
+        // A queued READY cost, an absent snapshot and an absent order must all remain pending.
+        String queued=db.queryForObject("SELECT id FROM finance_records WHERE shop_id=? AND external_id='historic-55' AND kind='ORDER'",String.class,shop);
+        db.update("INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id) VALUES(?,?,?)",queued,owner.organizationId(),shop);
+        db.update("DELETE FROM finance_order_costs WHERE shop_id=? AND order_id='historic-56'",shop);
+        repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","no-order","missing-order","","结算","SETTLED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
+        var reports=new FinanceCostReport(repo);var q=new Filter(filter.start(),filter.end(),shop,"","","day",group);
+        var first=reports.orders(owner,q,"SETTLED_ORDER","",1,"PENDING");
+        var second=reports.orders(owner,q,"SETTLED_ORDER","",2,"PENDING");
+        assertEquals(58,number(first.get("total")));assertEquals(50,rows(first.get("items")).size());assertEquals(8,rows(second.get("items")).size());
+        var ids=new HashSet<String>();
+        for(var page:List.of(first,second))for(var row:rows(page.get("items"))){
+            assertTrue(number(row.get("product_cost_pending"))>0);assertTrue(ids.add(text(row.get("order_id"))));
+            assertFalse(text(row.get("product_cost_issue")).isBlank());
+        }
+        assertEquals(61,number(reports.orders(owner,q,"SETTLED_ORDER","",1,"ALL").get("total")));
+        assertEquals(0,number(reports.orders(other,q,"SETTLED_ORDER","",1,"PENDING").get("total")));
+        var outside=new Filter(filter.end().plusDays(1),filter.end().plusDays(1),shop,"","","day");
+        assertEquals(0,number(reports.orders(owner,outside,"SETTLED_ORDER","",1,"PENDING").get("total")));
+        byte[] exported=new FinanceCostExport(repo).export(owner,q,"SETTLED_ORDER","","PENDING");
+        assertEquals(59,FinanceCostExportTest.sheet(exported,2).getElementsByTagName("row").getLength());
+        assertTrue(FinanceCostExportTest.sheet(exported,1).getDocumentElement().getTextContent().contains("仅待补齐订单"));
+        // Push the unresolved identities beyond the recent-2000 sample without platform calls.
+        var args=new ArrayList<Object[]>();
+        for(int i=0;i<2001;i++)args.add(new Object[]{UUID.randomUUID().toString(),owner.organizationId(),owner.userId(),shop,"recent-"+i,"recent-"+i,filter.start().toString(),repo.write(Map.of("item_list",List.of(Map.of("item_id","recent-product","model_id","recent-sku","model_sku","PACK"))))});
+        db.batchUpdate("INSERT INTO finance_records(id,organization_id,user_id,shop_id,platform,kind,external_id,order_id,category,status,record_date,currency,source,raw_json) VALUES(?,?,?,?,'SHOPEE','ORDER',?,?,'订单','COMPLETED',?,'PHP','API',?)",args);
+        var data=workspace.costs(owner,shop);assertEquals(1,number(data.get("historicalPendingSkuCount")));
+        var historic=rows(data.get("products")).stream().filter(p->"old-sku".equals(p.get("sku_id"))).findFirst().orElseThrow();
+        assertEquals("",historic.get("seller_sku"));assertEquals(55,number(historic.get("pending_cost_orders")));
+        assertEquals(true,historic.get("historical_cost_pending"));assertFalse(repo.write(data).contains("do-not-expose"));
+        assertTrue(map(data.get("mappings")).isEmpty(),"blank merchant codes must not infer a match from a similar name");
+        // An explicitly confirmed identity mapping repairs the historical orders through the existing queue.
+        txs.executeWithoutResult(s->workspace.mapping(owner,"u",shop,Map.of("product_id","old-product","sku_id","old-sku","warehouse","海外仓-菲律宾","code","PACK","factor",1,"confirmed",true,"version",0)));
+        String historicalRecord=oldId;
+        db.update("INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id) VALUES(?,?,?)",historicalRecord,owner.organizationId(),shop);
+        txs.execute(s->engine.processBatch(100));
+        assertEquals("READY",db.queryForObject("SELECT status FROM finance_order_costs WHERE order_record_id=?",String.class,historicalRecord));
+        assertEquals(0,BigDecimal.TEN.compareTo(db.queryForObject("SELECT amount_cny FROM finance_order_costs WHERE order_record_id=?",BigDecimal.class,historicalRecord)));
+    }
     @Test void costWorkspacePreservesVersionsAndScopesSkuByPlatformIdentity(){
         String group=service.saveGroup(owner,null,"成本测试"),shop=groupedShop(owner,"cost-shop",group);
         var workspace=new FinanceCostWorkspace(repo,service);var transactions=new TransactionTemplate(tx);

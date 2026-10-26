@@ -24,13 +24,18 @@ public class FinanceCostExport {
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=120)
     public byte[] export(Scope scope,Filter filter,String source,String recordId){
+        return export(scope,filter,source,recordId,"ALL");
+    }
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=120)
+    public byte[] export(Scope scope,Filter filter,String source,String recordId,String costStatus){
+        String selectedStatus=FinanceCostReport.costStatus(costStatus);
         if(!slots.tryAcquire())throw bad("当前有其他成本报表正在生成，请稍后重试");
         try(var book=new FinanceCostWorkbook()){
             String kind=kind(FinanceCostReport.scopeKind(source,!text(recordId).isBlank()));
             FinanceRepository.Query q=text(recordId).isBlank()?repo.query(scope,filter,"r"):
                 new FinanceRepository.Query("r.organization_id=? AND r.id=? AND "+FinanceRepository.visible("r"),List.of(scope.organizationId(),recordId));
             String from=" FROM ("+FinanceCostReport.related(kind)+q.where()+") x";
-            Long total=repo.jdbc().queryForObject("SELECT COUNT(*)"+from,Long.class,q.args().toArray());
+            Long total=repo.jdbc().queryForObject("SELECT COUNT(*)"+from+FinanceCostReport.costStatusWhere(selectedStatus),Long.class,q.args().toArray());
             if(total!=null&&total>MAX_ORDERS)throw bad("订单成本导出最多 50,000 笔订单，请缩小日期或店铺范围");
             var summary=book.sheet("汇总说明",List.of("项目","内容"));
             var orders=book.sheet("订单成本",ORDER_HEADERS);
@@ -52,8 +57,8 @@ public class FinanceCostExport {
                      LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id AND c.organization_id=s.organization_id
                      LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id AND j.organization_id=s.organization_id
                      LEFT JOIN finance_cost_books b ON b.id=JSON_UNQUOTE(JSON_EXTRACT(c.data_json,'$.bookId')) AND b.organization_id=s.organization_id
-                     ORDER BY
-                    """+("SETTLED_ORDER".equals(kind)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
+                    """+FinanceCostReport.costStatusWhere(selectedStatus)+" ORDER BY "
+                    +("SETTLED_ORDER".equals(kind)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
                 if(rows.isEmpty())throw bad("导出数据读取不完整，请重试");
                 for(var row:rows){
                     append(row,orders,lines,totals);
@@ -65,6 +70,7 @@ public class FinanceCostExport {
             summary.row(List.of("报表",kind.equals("SETTLED_ORDER")?"已结算订单商品成本（人民币）":"关联已结算订单商品成本（人民币）"));
             summary.row(List.of("生成时间（北京时间）",LocalDateTime.now(ZoneId.of("Asia/Shanghai"))));
             summary.row(List.of("筛选日期",filter.start()+" 至 "+filter.end()));
+            summary.row(List.of("成本状态筛选",selectedStatus.equals("PENDING")?"仅待补齐订单（含订单待同步及后台计算中）":"全部成本状态"));
             summary.row(List.of("日期依据",basis(kind)));
             summary.row(List.of("导出范围",text(recordId).isBlank()?"当前店铺、分组、平台、币种与日期筛选内的全部已结算订单，不受页面分页影响":"所选记录关联的全部已结算订单，不再限制下单日期"));
             summary.row(List.of("店铺",String.join("、",totals.shops)));
