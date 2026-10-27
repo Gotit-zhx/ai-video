@@ -138,7 +138,7 @@ field('成本分组','group');await settle();
 assert(d.querySelector('tbody').textContent.includes('已关联'),'returning to the shop restores its saved mapping');
 failOther=true;field('成本分组','other-group');await settle();
 assert(d.body.textContent.includes('店铺读取暂时失败'));assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');assert(d.querySelector('tbody').textContent.includes('已关联'),'failed reads preserve the last correctly labelled shop');
-w.FinanceWorkspace.enter('expense-ledger');await settle();assert(d.body.textContent.includes('来源记录'));assert(d.querySelector('[aria-label="费用数据分类"]').textContent.includes('平台费用'));assert(!d.body.textContent.includes('历史其他费用'));
+w.FinanceWorkspace.enter('expense-ledger');await settle();assert(d.body.textContent.includes('范围内已结算刷单'));assert(d.querySelector('[aria-label="费用数据分类"]').textContent.includes('平台费用'));assert(!d.body.textContent.includes('历史其他费用'));
 assert(button('导入 Excel'));await click('贴单成本');assert(button('新增贴单规则'));assert(!button('导入 Excel'));
 w.FinanceWorkspace.reset();w.currentUser={permissions:['finance:view']};w.FinanceWorkspace.enter('expense-ledger');await settle();
 assert(!button('新增贴单规则'));assert(!button('导入 Excel'));assert(!button('新增费用'));

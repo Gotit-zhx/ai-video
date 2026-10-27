@@ -54,6 +54,12 @@ class FinanceProfitReportTest {
         var partlyKnown=settlement("100","120");partlyKnown.put("records",2);
         assertNull(FinanceProfitReport.calculate(List.of(partlyKnown),cost("0",0,0),"CNY",null).get("amount"));
     }
+    @Test void updatingOnlyLabelsRetainsProductCostsButDoesNotFinalizeProfit(){
+        var costs=cost("50",0,0);costs.put("processing",true);costs.put("productProcessing",false);costs.put("labelProcessing",true);
+        var r=FinanceProfitReport.calculate(ledger(),costs,"CNY",null);
+        money("50",r.get("productCost"));assertNull(r.get("operatingCost"));assertNull(r.get("amount"));
+        assertEquals("INCOMPLETE_CHARGES",r.get("status"));assertTrue(text(r.get("notes")).contains("贴单费用更新中"));
+    }
     @Test void missingRecordedExpensesAndHistoricalCostPricesAreClearlyEstimated(){
         var r=FinanceProfitReport.calculate(List.of(settlement("100","120"),total("FEE","20")),cost("50",0,0),"CNY",null);
         money("50",r.get("amount"));assertEquals("ESTIMATED",r.get("status"));assertEquals(true,r.get("estimated"));
@@ -105,5 +111,17 @@ class FinanceProfitReportTest {
         var incomplete=total("COST","5");incomplete.put("records",2);
         r=FinanceProfitReport.calculate(List.of(settlement("100","120"),incomplete),cost("50",0,0),"CNY",null);
         assertNull(r.get("operatingCost"));assertNull(r.get("amount"));
+    }
+    @Test void missingLabelConfigurationIsExplicitAndConfirmedZeroRulesRemainValid(){
+        var costs=cost("50",0,0);
+        var missing=List.of(Map.<String,Object>of("shopId","shop","groupId","baby","name","母婴店","region","PH"));
+        costs.put("labelConfiguration",Map.of("configuredShops",0,"missingShops",missing));
+        var r=FinanceProfitReport.calculate(List.of(settlement("100","120"),total("FEE","20"),total("AD","10")),costs,"CNY",null);
+        money("40",r.get("amount"));assertEquals("ESTIMATED",r.get("status"));
+        assertEquals(missing,map(r.get("labelConfiguration")).get("missingShops"));
+        assertTrue(text(r.get("notes")).contains("并非实际零成本"));
+        costs.put("labelConfiguration",Map.of("configuredShops",1,"missingShops",List.of()));
+        r=FinanceProfitReport.calculate(List.of(settlement("100","120"),total("FEE","20"),total("AD","10")),costs,"CNY",null);
+        assertEquals("READY",r.get("status"));money("40",r.get("amount"));
     }
 }

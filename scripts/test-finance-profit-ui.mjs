@@ -52,6 +52,11 @@ if(process.env.FINANCE_BREAKDOWN_PREVIEW_PATH){const css=await fs.readFile(new U
 [...dialog.querySelectorAll('button')].find(n=>n.textContent==='核对订单').click();assert.equal(drilldowns.at(-1).kind,'SAMPLE_SETTLED');
 assert.equal(drilldowns.at(-1).start,categoryReads[0].start);assert.equal(drilldowns.at(-1).end,categoryReads[0].end);
 failCategory=true;metric('OPERATING_COST').click();await new Promise(r=>setTimeout(r,20));dialog=d.querySelector('dialog');assert(dialog.textContent.includes('读取失败'));assert(dialog.textContent.includes('¥ 120'));dialog.close();failCategory=false;
+response.profit.labelConfiguration={configuredShops:0,missingShops:[{shopId:'shop',groupId:'baby',name:'示例母婴店',region:'PH'}]};
+refresh();await ready();assert(metric('OPERATING_COST').textContent.includes('贴单待配置'));
+metric('OPERATING_COST').click();await new Promise(r=>setTimeout(r,20));dialog=d.querySelector('dialog');
+assert(dialog.textContent.includes('未配置贴单单价'));assert(dialog.textContent.includes('并非实际零成本'));dialog.close();
+delete response.profit.labelConfiguration;refresh();await ready();
 if(process.env.FINANCE_PREVIEW_PATH){
   const css=await fs.readFile(new URL('../frontend/finance-workspace.css',import.meta.url),'utf8');
   await fs.writeFile(process.env.FINANCE_PREVIEW_PATH,`<!doctype html><meta charset="utf-8"><title>财务总览 · 界面验收示例</title><style>${css}body{margin:0;padding:26px;background:#f7f8fb;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}#finance-page{max-width:1250px}body>p{max-width:1250px;margin:0 auto 12px;color:#8791a4;font-size:12px}</style><p>界面验收示例 · 非正式财务报表</p>${d.querySelector('#finance-page').outerHTML}`);
@@ -61,6 +66,10 @@ response.profit.amount=null;response.profit.status='INCOMPLETE_COST';response.pr
 assert(metric('PROFIT').textContent.includes('数据待补齐'));assert(!metric('PROFIT').classList.contains('is-negative'));
 assert(metric('OPERATING_COST').textContent.includes('仅已算部分'));assert(metric('OPERATING_COST').textContent.includes('78,473.52'));
 assert(!d.querySelector('.fi-calculation-rail'),'missing cost data is not a running calculation');
+assert(metric('PROFIT').textContent.includes('1 笔订单成本待补齐'));
+metric('PROFIT').click();dialog=d.querySelector('dialog');
+[...dialog.querySelectorAll('button')].find(n=>n.textContent==='核对 1 笔待补齐订单').click();
+assert.equal(drilldowns.at(-1).costStatus,'PENDING');assert.equal(drilldowns.at(-1).kind,'SETTLED_ORDER');
 response.profit.settledGrossAmount=null;
 const settled=response.totals.find(r=>r.kind==='SETTLEMENT');
 settled.known_revenues=2500;
@@ -94,5 +103,8 @@ assert(!metric('SETTLEMENT').querySelector('[role="progressbar"]'));assert(metri
 assert(!metric('SETTLEMENT').querySelector('.fi-partial-badge'),'completion removes the partial badge');
 assert(metric('OPERATING_COST').querySelector('[role="progressbar"]'));assert(metric('OPERATING_COST').textContent.includes('78,473.52'),'known costs remain visible while queued costs calculate');
 response.productCosts.processing=false;refresh();await ready();assert(!d.querySelector('.fi-calculation-rail'));
+response.productCosts.processing=true;response.productCosts.productProcessing=false;response.productCosts.labelProcessing=true;refresh();await ready();
+assert(metric('OPERATING_COST').textContent.includes('贴单费用更新中'));
+assert(d.querySelector('.fi-cost-quality').textContent.includes('商品成本已保留'));
 w.FinanceWorkspace.leave();dom.window.close();
 console.log('Finance profit UI passed: six metrics with operating-cost grouping and lazy subset drilldowns, settled gross, product-cost drilldown, profit explanation, incomplete/negative states and stable refresh.');

@@ -53,6 +53,16 @@ class FinanceOrderCostsTest {
         var ambiguous=new ArrayList<>(costs);ambiguous.add(cost("PACK","海外仓-菲律宾2","2026-10","8"));
         assertEquals("",FinanceOrderCosts.resolveWarehouse(context(ambiguous,Map.of(),Map.of())));
     }
+    @Test void recognizedBundleWithoutLocalCountryCostIsExplicitAndNeverBorrowsAnotherCountry(){
+        var context=new FinanceOrderCosts.Context("shop","group","MY","Asia/Kuala_Lumpur","book",
+            List.of(cost("YUXI-BDiaper-NB","海外仓-菲律宾","2026-08","9.1"),cost("YUXI-BDiaper-NB","海外仓-泰国","2026-08","9"),
+                cost("OTHER","海外仓-马来","2026-08","5")),Map.of(),Map.of());
+        var result=FinanceOrderCosts.calculate(Map.of("platform","TIKTOK_SHOP","status","COMPLETED","record_date","2026-08-10"),
+            Map.of("line_items",List.of(tk("line","（YUXI-BDiaper-NB）*2"))),context);
+        assertNull(result.get("amountCny"));assertEquals("INCOMPLETE",result.get("status"));
+        String issue=text(rows(result.get("lines")).getFirst().get("issue"));
+        assertTrue(issue.contains("海外仓-马来"));assertTrue(issue.contains("YUXI-BDiaper-NB"));assertTrue(issue.contains("不能自动使用其他国家成本"));
+    }
     @Test void manualConversionsAreScopedToShopAndGroup(){
         var costs=List.of(cost("PACK","海外仓-菲律宾","2026-10","7"),cost("OTHER","海外仓-菲律宾","2026-10","5"));
         var key="shop:product:sku:海外仓-菲律宾";

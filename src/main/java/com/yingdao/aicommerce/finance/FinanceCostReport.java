@@ -38,7 +38,7 @@ public final class FinanceCostReport {
     /** Applied before pagination and export; missing orders/snapshots and queued recalculations remain pending. */
     static String costStatusWhere(String value){
         return costStatus(value).equals("ALL")?"":"""
-             WHERE (EXISTS (SELECT 1 FROM finance_order_cost_jobs filter_job WHERE filter_job.order_record_id=x.order_record_id)
+             WHERE (EXISTS (SELECT 1 FROM finance_order_cost_jobs filter_job WHERE filter_job.order_record_id=x.order_record_id AND filter_job.priority<2)
                OR NOT EXISTS (SELECT 1 FROM finance_order_costs filter_cost WHERE filter_cost.order_record_id=x.order_record_id
                  AND filter_cost.status IN ('READY','ESTIMATED','EXCLUDED')))
             """;
@@ -49,12 +49,14 @@ public final class FinanceCostReport {
         COALESCE(SUM(CASE WHEN j.order_record_id IS NULL THEN c.charges_pending END),0) charges_pending,
         SUM(CASE WHEN x.order_record_id IS NULL THEN 1 ELSE 0 END) missing_order_count,
         SUM(CASE WHEN j.order_record_id IS NOT NULL THEN 1 ELSE 0 END) queued_count,
-        SUM(CASE WHEN j.order_record_id IS NULL AND c.status='EXCLUDED' THEN 1 ELSE 0 END) excluded_count,
-        SUM(CASE WHEN j.order_record_id IS NULL AND c.status IN ('READY','ESTIMATED') THEN 1 ELSE 0 END) ready_count,
-        SUM(CASE WHEN j.order_record_id IS NULL AND c.status='ESTIMATED' THEN 1 ELSE 0 END) estimated_count,
-        SUM(CASE WHEN j.order_record_id IS NULL AND c.status IN ('READY','ESTIMATED','EXCLUDED') THEN 0 ELSE 1 END) pending_count,
-        COALESCE(SUM(CASE WHEN j.order_record_id IS NULL THEN c.known_amount_cny END),0) known_amount_cny,
-        CASE WHEN SUM(CASE WHEN j.order_record_id IS NULL AND c.status IN ('READY','ESTIMATED','EXCLUDED') THEN 0 ELSE 1 END)=0
+        SUM(CASE WHEN j.priority<2 THEN 1 ELSE 0 END) product_queued_count,
+        SUM(CASE WHEN j.priority=2 THEN 1 ELSE 0 END) label_queued_count,
+        SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND c.status='EXCLUDED' THEN 1 ELSE 0 END) excluded_count,
+        SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND c.status IN ('READY','ESTIMATED') THEN 1 ELSE 0 END) ready_count,
+        SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND c.status='ESTIMATED' THEN 1 ELSE 0 END) estimated_count,
+        SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND c.status IN ('READY','ESTIMATED','EXCLUDED') THEN 0 ELSE 1 END) pending_count,
+        COALESCE(SUM(CASE WHEN j.order_record_id IS NULL OR j.priority=2 THEN c.known_amount_cny END),0) known_amount_cny,
+        CASE WHEN SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND c.status IN ('READY','ESTIMATED','EXCLUDED') THEN 0 ELSE 1 END)=0
           THEN COALESCE(SUM(c.amount_cny),0) END amount_cny
         """;
     static String related(String kind){
@@ -128,7 +130,7 @@ public final class FinanceCostReport {
         byShop.values().forEach(row->row.put("amount_cny",number(row.get("pending_count"))==0?row.get("known_amount_cny"):null));
         return summary(scope,"SETTLED_ORDER",new ArrayList<>(byShop.values()));
     }
-    static final List<String> COST_SUMS=List.of("order_count","missing_order_count","excluded_count","ready_count","estimated_count","pending_count","queued_count","known_amount_cny","label_cost_cny","charges_pending");
+    static final List<String> COST_SUMS=List.of("order_count","missing_order_count","excluded_count","ready_count","estimated_count","pending_count","queued_count","product_queued_count","label_queued_count","known_amount_cny","label_cost_cny","charges_pending");
     private Map<String,Object> summary(Scope scope,String kind,FinanceRepository.Query q){
         String selected=text(kind).toUpperCase(Locale.ROOT);
         var perShop=repo.jdbc().queryForList("SELECT x.shop_id,"+AGGREGATE+" FROM ("+related(selected)+q.where()+") x"
@@ -154,12 +156,18 @@ public final class FinanceCostReport {
         });
         result.put("formula","商家 SKU 成本单价 × 购买数量 × 组合数量；完整组合装单价优先，成本固定为人民币。");
         result.put("pendingNote","待补齐订单不按零成本计算；历史月份价格标为估算。");
-        boolean rebuilding=false;
+        boolean productRebuilding=false,labelRebuilding=false;
         if(!perShop.isEmpty()){
             String slots=String.join(",",Collections.nCopies(perShop.size(),"?"));var args=new ArrayList<Object>();args.add(scope.organizationId());perShop.forEach(row->args.add(row.get("shop_id")));
-            rebuilding=number(repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_cost_rebuilds WHERE organization_id=? AND status='READY' AND shop_id IN ("+slots+")",Long.class,args.toArray()))>0;
+            for(var rebuild:repo.jdbc().queryForList("SELECT DISTINCT status FROM finance_cost_rebuilds WHERE organization_id=? AND status IN ('READY','LABELS') AND shop_id IN ("+slots+")",args.toArray())){
+                if("READY".equals(rebuild.get("status")))productRebuilding=true;
+                else labelRebuilding=true;
+            }
         }
-        result.put("rebuilding",rebuilding);result.put("processing",rebuilding||number(total.get("queued_count"))>0);
+        boolean productProcessing=productRebuilding||number(total.get("product_queued_count"))>0;
+        boolean labelProcessing=labelRebuilding||number(total.get("label_queued_count"))>0;
+        result.put("productProcessing",productProcessing);result.put("labelProcessing",labelProcessing);
+        result.put("rebuilding",productRebuilding||labelRebuilding);result.put("processing",productProcessing||labelProcessing);
         return result;
     }
     /** Drill down using the source's date basis; a selected bill is not restricted to order creation dates. */
@@ -242,7 +250,7 @@ public final class FinanceCostReport {
         for(var snapshot:repo.jdbc().queryForList("""
             SELECT c.order_record_id,c.data_json FROM finance_order_costs c
             LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=c.order_record_id
-            WHERE c.organization_id=? AND c.order_record_id IN (%s) AND j.order_record_id IS NULL
+            WHERE c.organization_id=? AND c.order_record_id IN (%s) AND (j.order_record_id IS NULL OR j.priority=2)
             """.formatted(slots),args.toArray())){
             var cost=new FinanceOrderCosts(repo).decode(snapshot.get("data_json"));var issues=new LinkedHashSet<String>();
             for(var line:rows(cost.get("lines")))if(!text(line.get("issue")).isBlank())issues.add(text(line.get("issue")));
@@ -289,7 +297,7 @@ public final class FinanceCostReport {
                 row.put("product_cost_pending",costs.get("pending_count"));
                 row.put("product_cost_state",number(costs.get("pending_count"))>0?"待补齐":number(costs.get("excluded_count"))==number(costs.get("order_count"))?"不计成本":number(costs.get("estimated_count"))>0?"历史价估算":"已计算");
                 row.put("product_cost_note","已结算订单商品成本（人民币）；首次结算计入，退款只作关联核对，不再重复扣减。");
-                if(detail&&"ORDER".equals(row.get("kind"))&&number(costs.get("queued_count"))==0){
+                if(detail&&"ORDER".equals(row.get("kind"))&&(number(costs.get("queued_count"))==0||number(costs.get("pending_count"))==0)){
                     var snapshots=repo.jdbc().queryForList("SELECT data_json,version,updated_at FROM finance_order_costs WHERE organization_id=? AND order_record_id=?",scope.organizationId(),row.get("id"));
                     if(!snapshots.isEmpty()){
                         var snapshot=new FinanceOrderCosts(repo).decode(snapshots.getFirst().get("data_json"));

@@ -14,7 +14,13 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceCostController {
     final FinanceCostWorkspace workspace;final FinanceService service;
     @org.springframework.beans.factory.annotation.Autowired private FinanceOrderCharges charges;
-    @GetMapping("/charges") public ApiResponse<?> charges(@RequestParam String groupId,@RequestParam(defaultValue="1") int page,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(charges.workspace(service.authorize(p),groupId,page));}
+    @GetMapping("/charges") public ApiResponse<?> charges(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
+        var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
+        return ApiResponse.ok(charges.workspace(scope,q.getOrDefault("groupId",""),(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1")))),costFilter(q)));
+    }
+    @PostMapping("/charges/rematch") public ApiResponse<?> rematchCharges(@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){
+        charges.rematch(service.authorize(p),p.userId(),text(body.get("groupId")));return ApiResponse.ok("已重新匹配");
+    }
     @PostMapping("/charges/preview") public ApiResponse<?> previewCharges(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{return ApiResponse.ok(charges.preview(service.authorize(p),groupId,file.getBytes(),text(file.getOriginalFilename())));}
     @PostMapping("/charges/import") public ApiResponse<?> importCharges(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{return ApiResponse.ok(charges.upload(service.authorize(p),p.userId(),groupId,file.getBytes(),text(file.getOriginalFilename())));}
     @DeleteMapping("/charges/imports/{id}") public ApiResponse<?> removeCharges(@PathVariable String id,@RequestParam String groupId,@AuthenticationPrincipal PlatformPrincipal p){charges.remove(service.authorize(p),p.userId(),groupId,id);return ApiResponse.ok("来源已移除，后台重算中");}

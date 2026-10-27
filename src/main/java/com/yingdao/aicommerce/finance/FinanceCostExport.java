@@ -49,7 +49,8 @@ public class FinanceCostExport {
                       COALESCE(NULLIF(s.display_name,''),s.name,x.shop_id) shop_name,s.region,s.timezone,
                       g.name group_name,c.status cost_status,c.amount_cny,c.known_amount_cny,c.data_json cost_json,
                       c.version cost_version,c.updated_at cost_updated_at,b.source_name cost_source,
-                      j.order_record_id queued_id,
+                      CASE WHEN j.priority<2 THEN j.order_record_id END queued_id,
+                      CASE WHEN j.priority=2 THEN 1 ELSE 0 END label_pending,
                     """+(Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind)?"x.settlement_date":"NULL")+" first_settlement_date"+from+"""
                      LEFT JOIN finance_records o ON o.id=x.order_record_id
                      LEFT JOIN finance_connections s ON s.id=x.shop_id AND s.organization_id=?
@@ -138,7 +139,8 @@ public class FinanceCostExport {
             row.get("settlement_currency"),decimal(row.get("settlement_goods_amount")),amount,known,status,cost.get("warehouse"),
             cost.isEmpty()?"":"shipment".equals(cost.get("dateBasis"))?"发货月份":"下单月份",cost.get("costMonth"),String.join("、",months),
             cost.get("lineCount"),cost.get("matchedLines"),cost.get("fallbackLines"),queued?null:row.get("cost_source"),
-            queued?null:row.get("cost_version"),queued?null:updated,note,day(row.get("first_settlement_date")),orderType,cost.get("labelCostCny"),cost.get("labelNote"),
+            queued?null:row.get("cost_version"),queued?null:updated,note,day(row.get("first_settlement_date")),orderType,
+            number(row.get("label_pending"))>0?null:cost.get("labelCostCny"),number(row.get("label_pending"))>0?"贴单费用更新中，商品成本保留":cost.get("labelNote"),
             row.get("settlement_net_amount"),row.get("currency"),decimal(row.get("amount")),row.get("settlement_amount_note")));
         // Retain an explanatory row even when the source order or its calculation is unavailable.
         if(costLines.isEmpty()){

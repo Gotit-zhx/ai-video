@@ -1304,7 +1304,7 @@ class FinanceConfigurationIntegrationTest {
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_marketing_orders",Integer.class));
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_charge_rows WHERE matched_shop_id=?",Integer.class,shop));
     }
-    @Test void labelCostsUseCountryAndDateOncePerOrderAndKeepRmb(){
+    @Test void labelCostsUseCurrentCountryPriceForHistoricalOrdersAndKeepRmb(){
         String group=service.saveGroup(owner,null,"贴单"),shop=groupedShop(owner,"labels",group);var charges=new FinanceOrderCharges(repo,service);
         repo.transaction(()->{charges.saveRule(owner,"u",Map.of("groupId",group,"country","","effectiveDate","2026-01-01","unitPriceCny","1"));return null;});
         repo.transaction(()->{charges.saveRule(owner,"u",Map.of("groupId",group,"country","PH","effectiveDate","2026-10-01","unitPriceCny","2.5"));return null;});
@@ -1312,11 +1312,111 @@ class FinanceConfigurationIntegrationTest {
         var worker=new FinanceOrderCosts(repo);var context=worker.context("org",shop);
         var order=new LinkedHashMap<String,Object>(Map.of("shop_id",shop,"order_id","order1","status","COMPLETED","record_date","2026-10-21"));
         var result=charges.label("org",order,Map.of(),context,Map.of());assertEquals(0,decimal(result.get("labelCostCny")).compareTo(new BigDecimal("2.5")));
-        order.put("record_date","2026-09-21");assertEquals(0,decimal(charges.label("org",order,Map.of(),context,Map.of()).get("labelCostCny")).compareTo(BigDecimal.ONE));
+        order.put("record_date","2026-09-21");assertEquals(0,decimal(charges.label("org",order,Map.of(),context,Map.of()).get("labelCostCny")).compareTo(new BigDecimal("2.5")),"configuration date does not exclude historical orders");
         order.put("status","CANCELLED");assertEquals(0,decimal(charges.label("org",order,Map.of(),context,Map.of()).get("labelCostCny")).signum());
+        assertEquals(0,decimal(charges.label("org",order,Map.of("ship_time",1790000000),context,Map.of()).get("labelCostCny")).signum(),"cancelled orders do not reintroduce label costs");
         record(owner,shop,"ORDER","order1",BigDecimal.TEN,Map.of("ship_time",1790000000));
         repo.transaction(()->{worker.seedAndFill();worker.processBatch(50);return null;});
         assertEquals(0,db.queryForObject("SELECT label_cost_cny FROM finance_order_costs",BigDecimal.class).compareTo(new BigDecimal("2.5")));
+        var rule=rows(charges.workspace(owner,group,1).get("rules")).stream().filter(r->"PH".equals(r.get("country"))).findFirst().orElseThrow();
+        repo.transaction(()->{charges.saveRule(owner,"u",Map.of("groupId",group,"id",rule.get("id"),"version",rule.get("version"),"country","PH","unitPriceCny","3"));return null;});
+        order.put("status","COMPLETED");
+        assertEquals(0,decimal(charges.label("org",order,Map.of(),context,Map.of()).get("labelCostCny")).compareTo(new BigDecimal("3")),"adjustment does not require an order-date cutoff");
+    }
+    @Test void labelOnlyRebuildPreservesSkuCostsAndClearsRemovedRules(){
+        String group=service.saveGroup(owner,null,"贴单独立更新"),shop=groupedShop(owner,"label-only",group);
+        var workspace=new FinanceCostWorkspace(repo,service);var charges=new FinanceOrderCharges(repo,service);
+        repo.transaction(()->workspace.importCosts(owner,"u",group,"仓库,型号,202610\n海外仓-菲律宾,PACK,10\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),"cost.csv"));
+        var raw=Map.<String,Object>of("item_list",List.of(Map.of("item_id","product","model_id","sku","model_sku","PACK","model_quantity_purchased",2)));
+        var entry=new Entry(shop,"SHOPEE","ORDER","label-order","label-order","","ORDER","COMPLETED",filter.start(),"PHP",decimal("100"),null,null,null,null,"API",raw);
+        repo.save(owner,entry);
+        repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","label-settlement","label-order","","结算","SETTLED",filter.start(),"PHP",decimal("80"),null,null,null,null,"API",Map.of()));
+        var worker=spy(new FinanceOrderCosts(repo));
+        repo.transaction(()->{worker.seedAndFill();worker.processBatch(100);return null;});
+        var before=worker.decode(db.queryForObject("SELECT data_json FROM finance_order_costs WHERE order_record_id=?",String.class,id(owner,entry)));
+        assertEquals(0,decimal("20").compareTo(decimal(before.get("amountCny"))));
+        repo.transaction(()->{charges.saveRule(owner,"u",Map.of("groupId",group,"country","PH","unitPriceCny","1.95"));worker.seedAndFill();return null;});
+        assertEquals(2,db.queryForObject("SELECT priority FROM finance_order_cost_jobs",Integer.class));
+        var f=new Filter(filter.start(),filter.end(),shop,"","","day",group);
+        var summary=new FinanceCostReport(repo).summary(owner,f,"SETTLED_ORDER");
+        assertEquals(false,summary.get("productProcessing"));assertEquals(true,summary.get("labelProcessing"));
+        var totals=map(summary.get("total"));
+        assertEquals(1,number(totals.get("queued_count")));assertEquals(0,number(totals.get("pending_count")));
+        assertEquals(0,decimal("20").compareTo(decimal(totals.get("amount_cny"))),"label-only work must not blank confirmed product costs");
+        assertEquals(0,number(new FinanceCostReport(repo).orders(owner,f,"SETTLED_ORDER","",1,"PENDING").get("total")));
+        doThrow(new AssertionError("Label changes must not load SKU cost books or mappings")).when(worker).context(anyString(),anyString());
+        repo.transaction(()->worker.processBatch(100));
+        var after=worker.decode(db.queryForObject("SELECT data_json FROM finance_order_costs WHERE order_record_id=?",String.class,id(owner,entry)));
+        assertEquals(before.get("lines"),after.get("lines"));assertEquals(before.get("amountCny"),after.get("amountCny"));
+        assertEquals(0,decimal("1.95").compareTo(decimal(after.get("labelCostCny"))));assertTrue(after.containsKey("labelRuleId"));
+        var rule=db.queryForMap("SELECT id,version FROM finance_label_rules");
+        repo.transaction(()->{charges.removeRule(owner,"u",group,text(rule.get("id")),number(rule.get("version")));worker.seedAndFill();worker.processBatch(100);return null;});
+        after=worker.decode(db.queryForObject("SELECT data_json FROM finance_order_costs WHERE order_record_id=?",String.class,id(owner,entry)));
+        assertEquals(before.get("lines"),after.get("lines"));assertEquals(0,decimal(after.get("labelCostCny")).signum());
+        assertFalse(after.containsKey("labelRuleId"));assertFalse(after.containsKey("labelRuleVersion"));
+        assertEquals(0,db.queryForObject("SELECT amount FROM finance_records WHERE kind='SETTLEMENT'",BigDecimal.class).compareTo(decimal("80")));
+    }
+    @Test void fullAndLiveCostRequestsTakePrecedenceOverLabelRebuilds(){
+        String group=service.saveGroup(owner,null,"优先级"),shop=groupedShop(owner,"label-priority",group);
+        var charges=new FinanceOrderCharges(repo,service);var worker=new FinanceOrderCosts(repo);
+        repo.transaction(()->{charges.saveRule(owner,"u",Map.of("groupId",group,"country","PH","unitPriceCny","2"));return null;});
+        record(owner,shop,"ORDER","order1",BigDecimal.TEN,Map.of("ship_time",1790000000));
+        repo.transaction(()->{worker.seedAndFill();return null;});
+        assertEquals(0,db.queryForObject("SELECT priority FROM finance_order_cost_jobs",Integer.class),"historical label scan cannot downgrade a live order");
+        repo.transaction(()->worker.processBatch(100));
+        repo.transaction(()->{worker.requestLabelGroup(owner,group);worker.seedAndFill();return null;});
+        assertEquals(2,db.queryForObject("SELECT priority FROM finance_order_cost_jobs",Integer.class));
+        repo.transaction(()->{worker.requestGroup(owner,group);worker.requestLabelGroup(owner,group);return null;});
+        assertEquals("READY",db.queryForObject("SELECT status FROM finance_cost_rebuilds",String.class));
+        assertEquals(1,db.queryForObject("SELECT priority FROM finance_order_cost_jobs",Integer.class),"SKU changes upgrade queued label-only work immediately");
+        repo.transaction(()->{worker.seedAndFill();worker.processBatch(100);return null;});
+        repo.transaction(()->{worker.requestLabelGroup(owner,group);worker.seedAndFill();return null;});
+        db.update("UPDATE finance_records SET status='CANCELLED' WHERE kind='ORDER'");
+        repo.transaction(()->worker.processBatch(100));
+        assertEquals("EXCLUDED",db.queryForObject("SELECT status FROM finance_order_costs",String.class),"source changes fall back to a full calculation");
+        assertEquals(0,db.queryForObject("SELECT label_cost_cny FROM finance_order_costs",BigDecimal.class).signum());
+    }
+    @Test void chargePeriodUsesFirstSettlementAndNeverDuplicatesLabelsOrMarketingFees(){
+        String group=service.saveGroup(owner,null,"期间费用"),shop=groupedShop(owner,"period-charge",group);
+        var charges=new FinanceOrderCharges(repo,service);var worker=new FinanceOrderCosts(repo);
+        repo.transaction(()->{charges.saveRule(owner,"u",Map.of("groupId",group,"country","PH","unitPriceCny","2.5"));return null;});
+        LocalDate orderDay=LocalDate.of(2026,8,10),settledDay=LocalDate.of(2026,9,1);
+        for(String order:List.of("normal","marked","not-settled")){
+            repo.save(owner,dated(shop,"ORDER",order,order,"",orderDay,"100",Map.of("ship_time",1786406400)));
+            if(!order.equals("not-settled")){
+                repo.save(owner,dated(shop,"SETTLEMENT",order+"-first",order,"bill",settledDay,"80",Map.of("order_income",Map.of("original_price",100,"commission_fee",20))));
+                repo.save(owner,dated(shop,"SETTLEMENT",order+"-second",order,"bill",settledDay,"0",Map.of()));
+                repo.save(owner,dated(shop,"SETTLEMENT",order+"-adjustment",order,"bill2",LocalDate.of(2026,10,4),"5",Map.of()));
+            }
+        }
+        repo.transaction(()->charges.upload(owner,"u",group,chargeCsv("marked","Shop period-charge","7"),"first.csv"));
+        byte[] second=(new String(chargeCsv("marked","Shop period-charge","7"),java.nio.charset.StandardCharsets.UTF_8)+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        repo.transaction(()->charges.upload(owner,"u",group,second,"second.csv"));
+        repo.transaction(()->{worker.seedAndFill();worker.processBatch(50);return null;});
+        for(int month:List.of(8,9,10)){
+            LocalDate start=LocalDate.of(2026,month,1);var f=new Filter(start,start.withDayOfMonth(start.lengthOfMonth()),shop,"","","day",group);
+            var response=charges.workspace(owner,group,1,f);var label=map(map(response.get("labelSummary")).get("total"));var marketing=map(response.get("periodMarked"));
+            assertEquals(month==9?1:0,number(label.get("order_count")));
+            assertEquals(0,decimal(label.get("label_cost_cny")).compareTo(decimal(month==9?"2.5":"0")));
+            assertEquals(month==9?1:0,number(marketing.get("orders")));
+            assertEquals(0,decimal(marketing.get("service_fee_cny")).compareTo(decimal(month==9?"7":"0")));
+            assertEquals(1,number(map(response.get("marked")).get("orders")),"lifetime and period statistics remain distinguishable");
+        }
+        repo.transaction(()->{charges.rematch(owner,"u",group);charges.rematch(owner,"u",group);return null;});
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_marketing_orders",Integer.class));
+        assertEquals(2,db.queryForObject("SELECT source_count FROM finance_marketing_orders",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT service_fee_cny FROM finance_marketing_orders",BigDecimal.class).compareTo(decimal("7")));
+    }
+    @Test void wrongGroupChargeSourcesExplainTheirScopeAndNeverMarkAnotherGroup(){
+        String group=service.saveGroup(owner,null,"母婴"),wrong=service.saveGroup(owner,null,"服装"),shop=groupedShop(owner,"group-match",group);
+        record(owner,shop,"ORDER","order1",decimal("100"),Map.of());
+        var charges=new FinanceOrderCharges(repo,service);
+        repo.transaction(()->charges.upload(owner,"u",wrong,chargeCsv("order1","Shop group-match","7"),"wrong.csv"));
+        var match=map(rows(charges.workspace(owner,wrong,1).get("rows")).getFirst().get("match"));
+        assertEquals("REVIEW",match.get("matchStatus"));assertTrue(text(match.get("matchNote")).contains("母婴"));
+        repo.transaction(()->{charges.rematch(owner,"u",wrong);return null;});
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_marketing_orders",Integer.class));
+        assertThrows(BusinessException.class,()->charges.rematch(other,"u",wrong));
     }
 
 }

@@ -17,15 +17,17 @@ public class FinanceCostWorker {
     public FinanceCostWorker(FinanceRepository repo,FinanceService service,PlatformTransactionManager tx){
         costs=new FinanceOrderCosts(repo);this.service=service;transactions=new TransactionTemplate(tx);transactions.setTimeout(30);
     }
-    @PostConstruct public void start(){worker.scheduleWithFixedDelay(this::tick,20,5,TimeUnit.SECONDS);}
+    @PostConstruct public void start(){worker.scheduleWithFixedDelay(this::tick,20,1,TimeUnit.SECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();}
     public void tick(){
         try{
-            transactions.execute(status->costs.seedAndFill());
             var changed=new LinkedHashSet<String>();
-            for(int i=0;i<4;i++){
-                var organizations=transactions.execute(status->costs.processBatch(50));
+            long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
+            for(int i=0;i<10&&System.nanoTime()<deadline;i++){
+                if(i%5==0)transactions.execute(status->costs.seedAndFill());
+                var organizations=transactions.execute(status->costs.processBatch(100));
                 if(organizations!=null)changed.addAll(organizations);
+                if(organizations==null||organizations.isEmpty())break;
             }
             changed.forEach(org->service.invalidateAfterCommit(companyScope(org)));
         }catch(RuntimeException error){

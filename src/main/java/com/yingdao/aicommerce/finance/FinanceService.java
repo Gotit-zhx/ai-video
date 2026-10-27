@@ -208,6 +208,7 @@ public class FinanceService {
         out.put("statuses",cny?FinanceFx.groups(statuses,quote,"status","kind"):statuses);out.put("sync",syncStates(s,requested));
         out.put("updatedAt",Instant.now().toString());
         var productCosts=costReport.dashboardSummary(s,f,rows(facts.get("orders")));
+        productCosts.put("labelConfiguration",new FinanceOrderCharges(repo).labelConfiguration(s,rows(out.get("shops")),rows(productCosts.get("shops"))));
         out.put("productCosts",productCosts);
         FinanceFx.Quote profitQuote=quote;
         if(!cny&&!"CNY".equals(currency)&&(decimal(map(productCosts.get("total")).get("known_amount_cny")).signum()!=0||decimal(map(productCosts.get("total")).get("label_cost_cny")).signum()!=0)&&fx!=null){

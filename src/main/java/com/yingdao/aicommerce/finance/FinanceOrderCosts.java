@@ -106,7 +106,8 @@ public final class FinanceOrderCosts {
                 code=text(selected.get("sku"));
             }else{
                 if(context.costs().isEmpty()){line.put("issue","店铺分组尚未配置成本资料");continue;}
-                if(code.isBlank()||!codes.containsKey(code)){line.put("issue",seller.isBlank()?"平台未返回商家 SKU":"当前成本仓没有唯一对应的商家 SKU 成本");continue;}
+                if(code.isBlank()){line.put("issue",seller.isBlank()?"平台未返回商家 SKU":"当前成本仓没有唯一对应的商家 SKU 成本");continue;}
+                if(!codes.containsKey(code)){line.put("issue","成本表缺少 "+lineWarehouse+" 的 "+code+" 成本，不能自动使用其他国家成本");continue;}
                 selected=codes.get(code);
             }
             if(factor==null||factor.signum()<=0){line.put("issue","人工关联缺少有效换算数量");continue;}
@@ -154,6 +155,11 @@ public final class FinanceOrderCosts {
         return new Context(shopId,group,text(shop.get("region")),zone,books.isEmpty()?"":text(books.getFirst().get("id")),
                 books.isEmpty()?List.of():FinanceCostSources.allCosts(decode(books.getFirst().get("data_json"))),settings.isEmpty()?Map.of():decode(settings.getFirst().get("data_json")),mappings);
     }
+    Context labelContext(String organization,String shopId){
+        var shops=repo.jdbc().queryForList("SELECT group_id,region,timezone FROM finance_connections WHERE organization_id=? AND id=? AND status<>'REMOVED'",organization,shopId);
+        if(shops.isEmpty())return null;var shop=shops.getFirst();
+        return new Context(shopId,text(shop.get("group_id")),text(shop.get("region")),text(shop.get("timezone")),"",List.of(),Map.of(),Map.of());
+    }
     Map<String,Object> decode(Object value){return value==null?Map.of():repo.read(value instanceof byte[] b?new String(b,java.nio.charset.StandardCharsets.UTF_8):text(value));}
     static Object canonical(Object value){
         if(value instanceof Map<?,?> m){var sorted=new TreeMap<String,Object>();m.forEach((k,v)->sorted.put(text(k),canonical(v)));return sorted;}
@@ -178,10 +184,21 @@ public final class FinanceOrderCosts {
             INSERT INTO finance_cost_rebuilds(organization_id,shop_id) VALUES(?,?)
             ON DUPLICATE KEY UPDATE cursor_id='',status='READY',requested_at=UTC_TIMESTAMP(6)
             """,organization,shopId);
+        repo.jdbc().update("UPDATE finance_order_cost_jobs SET priority=1 WHERE organization_id=? AND shop_id=? AND priority=2",organization,shopId);
     }
     void requestGroup(Scope s,String group){
         for(String shop:repo.jdbc().queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND group_id=? AND status<>'REMOVED'",String.class,s.organizationId(),group))
             requestShop(s.organizationId(),shop);
+    }
+    /** Label edits do not invalidate already calculated SKU costs. Full/live requests always win. */
+    void requestLabelGroup(Scope s,String group){
+        for(String shop:repo.jdbc().queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND group_id=? AND status<>'REMOVED'",String.class,s.organizationId(),group)){
+            if(!repo.writableShop(s.organizationId(),shop))continue;
+            repo.jdbc().update("""
+                INSERT INTO finance_cost_rebuilds(organization_id,shop_id,status) VALUES(?,?,'LABELS')
+                ON DUPLICATE KEY UPDATE cursor_id='',status=IF(status='READY','READY','LABELS'),requested_at=UTC_TIMESTAMP(6)
+                """,s.organizationId(),shop);
+        }
     }
     int seedAndFill(){
         var missing=repo.jdbc().queryForList("""
@@ -194,7 +211,7 @@ public final class FinanceOrderCosts {
             """);
         for(var shop:missing)if(repo.writableShop(text(shop.get("organization_id")),text(shop.get("id"))))
             repo.jdbc().update("INSERT IGNORE INTO finance_cost_rebuilds(organization_id,shop_id) VALUES(?,?)",shop.get("organization_id"),shop.get("id"));
-        var jobs=repo.jdbc().queryForList("SELECT * FROM finance_cost_rebuilds WHERE status='READY' ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED");
+        var jobs=repo.jdbc().queryForList("SELECT * FROM finance_cost_rebuilds WHERE status IN ('READY','LABELS') ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED");
         if(jobs.isEmpty())return 0;var job=jobs.getFirst();
         if(!repo.writableShop(text(job.get("organization_id")),text(job.get("shop_id")))){
             repo.jdbc().update("DELETE FROM finance_cost_rebuilds WHERE organization_id=? AND shop_id=?",job.get("organization_id"),job.get("shop_id"));
@@ -205,44 +222,73 @@ public final class FinanceOrderCosts {
             AND id>? ORDER BY id LIMIT 500
             """,String.class,job.get("organization_id"),job.get("shop_id"),job.get("cursor_id"));
         if(!ids.isEmpty()){
-            repo.jdbc().batchUpdate("INSERT IGNORE INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id,priority) VALUES(?,?,?,1)",
-                    ids.stream().map(id->new Object[]{id,job.get("organization_id"),job.get("shop_id")}).toList());
-            repo.jdbc().update("UPDATE finance_cost_rebuilds SET cursor_id=?,status=? WHERE organization_id=? AND shop_id=?",ids.getLast(),ids.size()<500?"DONE":"READY",job.get("organization_id"),job.get("shop_id"));
+            int priority="LABELS".equals(job.get("status"))?2:1;
+            insertRows("INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id,priority) VALUES ",
+                    "(?,?,?,?)"," ON DUPLICATE KEY UPDATE priority=LEAST(priority,VALUES(priority))",
+                    ids.stream().map(id->new Object[]{id,job.get("organization_id"),job.get("shop_id"),priority}).toList());
+            repo.jdbc().update("UPDATE finance_cost_rebuilds SET cursor_id=?,status=? WHERE organization_id=? AND shop_id=?",ids.getLast(),ids.size()<500?"DONE":job.get("status"),job.get("organization_id"),job.get("shop_id"));
         }else repo.jdbc().update("UPDATE finance_cost_rebuilds SET status='DONE' WHERE organization_id=? AND shop_id=?",job.get("organization_id"),job.get("shop_id"));
         return ids.size();
     }
+    /** A bounded multi-row statement avoids one network round trip per row without driver-specific flags. */
+    void insertRows(String prefix,String tuple,String suffix,List<Object[]> rows){
+        if(rows.isEmpty())return;
+        repo.jdbc().update(prefix+String.join(",",Collections.nCopies(rows.size(),tuple))+suffix,
+            rows.stream().flatMap(Arrays::stream).toArray());
+    }
     Set<String> processBatch(int limit){
         var jobs=repo.jdbc().queryForList("SELECT * FROM finance_order_cost_jobs ORDER BY priority,requested_at,order_record_id LIMIT ? FOR UPDATE SKIP LOCKED",Math.min(100,Math.max(1,limit)));
-        var contexts=new HashMap<String,Context>();var changed=new LinkedHashSet<String>();
+        if(jobs.isEmpty())return Set.of();
+        var contexts=new HashMap<String,Context>();var labelContexts=new HashMap<String,Context>();
+        var rules=new HashMap<String,Map<String,Object>>();var writable=new HashMap<String,Boolean>();var changed=new LinkedHashSet<String>();
+        var records=new HashMap<String,Map<String,Object>>();
+        String slots=String.join(",",Collections.nCopies(jobs.size(),"?"));
+        for(var order:repo.jdbc().queryForList("""
+            SELECT o.*,c.data_json cost_data,c.source_hash cost_source_hash,
+              EXISTS(SELECT 1 FROM finance_records expense WHERE expense.organization_id=o.organization_id
+                AND expense.shop_id=o.shop_id AND expense.order_id=o.order_id AND expense.kind='COST') independent_cost
+            FROM finance_records o LEFT JOIN finance_order_costs c ON c.order_record_id=o.id
+            WHERE o.kind='ORDER' AND o.id IN (%s)
+            """.formatted(slots),jobs.stream().map(j->j.get("order_record_id")).toArray()))
+            records.put(text(order.get("id")),order);
+        var audits=new ArrayList<Object[]>();var writes=new ArrayList<Object[]>();var hashes=new ArrayList<Object[]>();
+        var charges=new FinanceOrderCharges(repo);
         for(var job:jobs){
             String recordId=text(job.get("order_record_id")),organization=text(job.get("organization_id")),shop=text(job.get("shop_id"));
-            if(!repo.writableShop(organization,shop)){
-                repo.jdbc().update("DELETE FROM finance_order_cost_jobs WHERE order_record_id=?",recordId);continue;
-            }
-            var records=repo.jdbc().queryForList("SELECT * FROM finance_records WHERE id=? AND organization_id=? AND shop_id=? AND kind='ORDER'",recordId,organization,shop);
-            Context context=contexts.computeIfAbsent(organization+":"+shop,k->context(organization,shop));
-            if(!records.isEmpty()&&context!=null){
-                var order=records.getFirst();var raw=decode(order.get("raw_json"));var result=new FinanceOrderCharges(repo).label(organization,order,raw,context,calculate(order,raw,context));String serialized=repo.write(result);
-                String sourceHash=sourceHash(repo,raw,text(order.get("status")));
-                var old=repo.jdbc().queryForList("SELECT data_json FROM finance_order_costs WHERE order_record_id=?",recordId);
-                if(old.isEmpty()||!decode(old.getFirst().get("data_json")).equals(decode(serialized))){
-                    if(!old.isEmpty())repo.jdbc().update("""
-                        INSERT INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,before_json,after_json,reason,actor_id)
-                        VALUES(?,?,'ORDER_STANDARD_COST',?,?,?,'订单或成本配置更新，重算标准成本','SYSTEM_COST')
-                        """,UUID.randomUUID().toString(),organization,recordId,repo.write(decode(old.getFirst().get("data_json"))),serialized);
-                    repo.jdbc().update("""
-                        INSERT INTO finance_order_costs(order_record_id,organization_id,shop_id,order_id,record_date,status,amount_cny,known_amount_cny,line_count,matched_lines,fallback_lines,source_hash,data_json)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE record_date=VALUES(record_date),status=VALUES(status),amount_cny=VALUES(amount_cny),
-                        known_amount_cny=VALUES(known_amount_cny),line_count=VALUES(line_count),matched_lines=VALUES(matched_lines),fallback_lines=VALUES(fallback_lines),
-                        source_hash=VALUES(source_hash),data_json=VALUES(data_json),version=version+1,updated_at=UTC_TIMESTAMP(6)
-                        """,recordId,organization,shop,order.get("order_id"),order.get("record_date"),result.get("status"),result.get("amountCny"),result.get("knownAmountCny"),
-                            result.get("lineCount"),result.get("matchedLines"),result.get("fallbackLines"),sourceHash,serialized);
-                    repo.jdbc().update("UPDATE finance_order_costs SET label_cost_cny=?,charges_pending=? WHERE order_record_id=?",result.get("labelCostCny"),result.get("chargesPending"),recordId);
-                    changed.add(organization);
-                }else repo.jdbc().update("UPDATE finance_order_costs SET source_hash=? WHERE order_record_id=? AND source_hash<>?",sourceHash,recordId,sourceHash);
-            }
-            repo.jdbc().update("DELETE FROM finance_order_cost_jobs WHERE order_record_id=?",recordId);
+            String key=organization+":"+shop;
+            if(!writable.computeIfAbsent(key,k->repo.writableShop(organization,shop)))continue;
+            var order=records.get(recordId);
+            if(order==null||!organization.equals(order.get("organization_id"))||!shop.equals(order.get("shop_id")))continue;
+            var raw=decode(order.get("raw_json"));String sourceHash=sourceHash(repo,raw,text(order.get("status")));
+            var old=decode(order.get("cost_data"));
+            boolean labelOnly=number(job.get("priority"))==2&&sourceHash.equals(text(order.get("cost_source_hash")))&&old.containsKey("status")&&old.containsKey("lines");
+            Context context=labelOnly?labelContexts.computeIfAbsent(key,k->labelContext(organization,shop)):contexts.computeIfAbsent(key,k->context(organization,shop));
+            if(context==null)continue;
+            var rule=rules.computeIfAbsent(organization+":"+context.groupId()+":"+context.region(),k->charges.labelRule(organization,context));
+            var result=FinanceOrderCharges.label(order,raw,labelOnly?old:calculate(order,raw,context),rule,Boolean.TRUE.equals(order.get("independent_cost"))||number(order.get("independent_cost"))>0);
+            String serialized=repo.write(result);
+            if(!old.equals(decode(serialized))){
+                if(order.get("cost_data")!=null)audits.add(new Object[]{UUID.randomUUID().toString(),organization,recordId,repo.write(old),serialized,
+                    labelOnly?"贴单单价更新，保留已有商品成本":"订单或成本配置更新，重算标准成本"});
+                writes.add(new Object[]{recordId,organization,shop,order.get("order_id"),order.get("record_date"),result.get("status"),result.get("amountCny"),result.get("knownAmountCny"),
+                    result.get("lineCount"),result.get("matchedLines"),result.get("fallbackLines"),sourceHash,serialized,result.get("labelCostCny"),result.get("chargesPending")});
+                changed.add(organization);
+            }else if(!sourceHash.equals(text(order.get("cost_source_hash"))))hashes.add(new Object[]{sourceHash,recordId});
+            // Completing any queued job changes the report's processing state even if its amount is unchanged.
+            changed.add(organization);
         }
+        insertRows("INSERT INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,before_json,after_json,reason,actor_id) VALUES ",
+            "(?,?,'ORDER_STANDARD_COST',?,?,?,?,'SYSTEM_COST')","",audits);
+        insertRows("""
+            INSERT INTO finance_order_costs(order_record_id,organization_id,shop_id,order_id,record_date,status,amount_cny,known_amount_cny,line_count,matched_lines,fallback_lines,source_hash,data_json,label_cost_cny,charges_pending)
+            VALUES
+            ""","(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)","""
+             ON DUPLICATE KEY UPDATE record_date=VALUES(record_date),status=VALUES(status),amount_cny=VALUES(amount_cny),
+            known_amount_cny=VALUES(known_amount_cny),line_count=VALUES(line_count),matched_lines=VALUES(matched_lines),fallback_lines=VALUES(fallback_lines),
+            source_hash=VALUES(source_hash),data_json=VALUES(data_json),label_cost_cny=VALUES(label_cost_cny),charges_pending=VALUES(charges_pending),version=version+1,updated_at=UTC_TIMESTAMP(6)
+            """,writes);
+        if(!hashes.isEmpty())repo.jdbc().batchUpdate("UPDATE finance_order_costs SET source_hash=? WHERE order_record_id=?",hashes);
+        repo.jdbc().update("DELETE FROM finance_order_cost_jobs WHERE order_record_id IN ("+slots+")",jobs.stream().map(j->j.get("order_record_id")).toArray());
         return changed;
     }
 }
