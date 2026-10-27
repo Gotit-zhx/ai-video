@@ -49,8 +49,9 @@ class SettlementProgress:
         for organization, shops in groups.items():
             payload = json.dumps({"status": status, "heartbeat": int(time.time() * 1000), "shops": shops}).encode()
             # -x appends the payload as the last argument, so use SETEX.
+            retention = "120" if status == "RUNNING" else "604800" if status == "FAILED" else "86400"
             self.redis("SETEX", "heyi:finance:calculation:{" + organization + "}:settlements",
-                       "600" if status != "RUNNING" else "120", payload=payload)
+                       retention, payload=payload)
         return groups
 
     def invalidate_snapshots(self):

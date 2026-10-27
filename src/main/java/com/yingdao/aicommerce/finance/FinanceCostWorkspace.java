@@ -20,6 +20,12 @@ public class FinanceCostWorkspace {
     public Map<String,Object> orderCosts(Scope scope,Filter filter,String kind,String recordId,int page,String costStatus){
         return new FinanceCostReport(repo).orders(scope,filter,kind,recordId,page,costStatus);
     }
+    /** Requested only when opening the operating-cost breakdown, never on every dashboard poll. */
+    @Transactional(readOnly=true,timeout=30)
+    public Map<String,Object> costSummary(Scope scope,Filter filter,String kind){
+        if(!Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind))throw bad("成本分类不正确");
+        return new FinanceCostReport(repo).summary(scope,filter,kind);
+    }
     static String required(Map<String,Object> body,String key,int max){
         String value=text(body.get(key)).trim();if(value.isBlank()||value.length()>max)throw bad("请填写有效的 "+key);return value;
     }

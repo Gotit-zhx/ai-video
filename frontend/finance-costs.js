@@ -406,8 +406,8 @@
     }
     async function orderCostsPanel(parent){
       const origin=state.orderContext;
-      const settled=!origin?.kind||origin.kind==='SETTLED_ORDER'||(!origin.recordId&&origin.kind==='ORDER');
-      const p=panel(parent,settled?'已结算订单商品成本':'关联已结算订单成本',
+      const settled=!origin?.kind||['SETTLED_ORDER','SAMPLE_SETTLED','REFUND_SETTLED'].includes(origin.kind)||(!origin.recordId&&origin.kind==='ORDER');
+      const p=panel(parent,origin?.kind==='SAMPLE_SETTLED'?'样品订单商品成本':origin?.kind==='REFUND_SETTLED'?'退货退款关联商品成本':settled?'已结算订单商品成本':'关联已结算订单成本',
         settled?'按首次平台结算日期筛选；待结算不计入，同一订单成本只计一次。':'仅核对所选来源关联的已结算订单成本，未结算不计入。');
       if(!live){el('p','正式系统按已同步订单计算；此预览不生成成本金额。',p.n,'fc-inline-note');return;}
       if(origin){
@@ -451,9 +451,15 @@
           const button=action(statusFilters,title,()=>{state.orderCostStatus=value;state.orderPage=1;body();},state.orderCostStatus===value?'fi-primary':'');
           button.setAttribute('aria-pressed',String(state.orderCostStatus===value));button.dataset.costStatus=value;
         }
-        const orderTable=table(next,['店铺','订单编号','商品 SKU',settled?'首次平台结算日期':'下单日期','已结算商品成本（人民币）','成本状态','操作'],(result.items||[]).map(row=>[
+        const settlementAmount=(row,key)=>{
+          const n=el('span',row[key]==null?'待补齐':format(row[key])+' '+(row.settlement_currency||''));
+          n.title=row.settlement_amount_note||'首次结算日的平台金额，不以原订单金额代替';return n;
+        };
+        const orderTable=table(next,['店铺','订单编号','商品 SKU','首次平台结算日期','优惠前商品金额','平台净结算','已结算商品成本（人民币）','成本状态','操作'],(result.items||[]).map(row=>[
           shops.find(s=>s.id===row.shop_id)?.display_name||shops.find(s=>s.id===row.shop_id)?.name||'—',
-          orderIdentifier(row),context.skuCell?.(row)||row.product_skus||'—',String((settled?row.first_settlement_date:row.record_date)||'').slice(0,10)||'—',row.product_cost_cny==null?'—':context.openRecord&&row.id?action(null,'¥ '+format(row.product_cost_cny),()=>context.openRecord(row.id),'fi-cost-link'):'¥ '+format(row.product_cost_cny),
+          orderIdentifier(row),context.skuCell?.(row)||row.product_skus||'—',String(row.first_settlement_date||'').slice(0,10)||'—',
+          settlementAmount(row,'settlement_goods_amount'),settlementAmount(row,'settlement_net_amount'),
+          row.product_cost_cny==null?'—':context.openRecord&&row.id?action(null,'¥ '+format(row.product_cost_cny),()=>context.openRecord(row.id),'fi-cost-link'):'¥ '+format(row.product_cost_cny),
           costState(row),
           context.openRecord&&row.id?action(null,'查看计算明细',()=>context.openRecord(row.id),'fi-record-link'):'订单待同步'
         ]));
@@ -462,7 +468,7 @@
         const pager=el('div',null,next,'fi-pagebar');el('span',`${result.total} 笔订单 · 第 ${result.page} 页`,pager);const controls=el('div',null,pager,'fi-actions');
         action(controls,'上一页',()=>{state.orderPage--;body();}).disabled=state.orderPage<=1;
         action(controls,'下一页',()=>{state.orderPage++;body();}).disabled=state.orderPage*result.pageSize>=result.total;
-        el('p','仅平台已结算订单计入成本，不代表银行到账。未付款、已取消订单及取消的商品明细不计商品成本；免费样品单单独标注，已履约成本保留。按首次结算归属，后续结算调整不重复计整单成本；退款不自动退回成本。金额取人民币成本表，缺价不按零，历史取价标为估算。',next,'fc-inline-note');
+        el('p','优惠前商品金额和平台净结算取首次结算日的平台字段，按结算原币展示；后续调整见结算明细。商品成本取人民币成本表。仅已结算订单计入，取消单及取消商品不计成本；样品已履约成本保留，退款不自动退回成本。缺价不按零，历史取价标为估算。',next,'fc-inline-note');
         if(result.productCosts?.rebuilding)el('p','后台正在分批计算历史订单，完成后自动更新。',next,'fc-inline-note');
         if(globalThis.IncrementalDOM)IncrementalDOM.children(content,next);else content.replaceChildren(...next.childNodes);
         signature=nextSignature;

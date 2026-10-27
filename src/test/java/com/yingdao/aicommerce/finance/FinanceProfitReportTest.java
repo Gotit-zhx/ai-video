@@ -83,4 +83,27 @@ class FinanceProfitReportTest {
         var r=FinanceProfitReport.calculate(List.of(settlement("100","120"),total("FEE","20"),total("COST",null)),cost("50",0,0),"CNY",null);
         assertNull(r.get("amount"));assertEquals("INCOMPLETE_AMOUNTS",r.get("status"));
     }
+    @Test void operatingCostGroupsProductAndLabelsWithoutAddingRefundsAgain(){
+        var costs=cost("50",0,0);map(costs.get("total")).put("label_cost_cny",decimal("3"));
+        var r=FinanceProfitReport.calculate(ledger(),costs,"CNY",null);
+        money("58",r.get("operatingCost"));money("58",r.get("knownOperatingCost"));money("32",r.get("amount"));
+        money("32",decimal(r.get("settledLedgerAmount")).subtract(decimal(r.get("advertising"))).subtract(decimal(r.get("operatingCost"))));
+        assertTrue(text(r.get("formula")).contains("营业成本"));
+        // A non-CNY display converts both RMB components using the same reference, not mixed units.
+        var q=new FinanceFx.Quote("test",Instant.EPOCH,Map.of("PHP",decimal("0.1")));
+        r=FinanceProfitReport.calculate(ledger(),costs,"PHP",q);money("535",r.get("operatingCost"));
+    }
+    @Test void partiallyKnownOperatingCostStaysPartialAndMissingFxIsNeverTreatedAsZero(){
+        var costs=cost(null,1,0);map(costs.get("total")).put("known_amount_cny",decimal("12"));
+        var r=FinanceProfitReport.calculate(ledger(),costs,"CNY",null);
+        assertNull(r.get("operatingCost"));money("17",r.get("knownOperatingCost"));assertNull(r.get("amount"));
+        r=FinanceProfitReport.calculate(ledger(),costs,"PHP",null);
+        assertNull(r.get("operatingCost"));assertNull(r.get("knownOperatingCost"));
+        costs=cost("0",0,0);map(costs.get("total")).put("label_cost_cny",decimal("3"));
+        r=FinanceProfitReport.calculate(ledger(),costs,"PHP",null);
+        assertNull(r.get("logisticsLabelCost"));assertNull(r.get("operatingCost"));assertNull(r.get("amount"));
+        var incomplete=total("COST","5");incomplete.put("records",2);
+        r=FinanceProfitReport.calculate(List.of(settlement("100","120"),incomplete),cost("50",0,0),"CNY",null);
+        assertNull(r.get("operatingCost"));assertNull(r.get("amount"));
+    }
 }

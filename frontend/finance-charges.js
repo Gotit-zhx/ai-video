@@ -8,7 +8,7 @@
   function mount(root,options){
     const {groups=[],request,canManage=false}=options;
     if(!groups.some(g=>g.id===state.group))state.group=groups[0]?.id||'';
-    let data=null,feedback,content,busy=false;
+    let data=null,feedback,content,primary,busy=false;
     function button(parent,text,fn,cls=''){
       const n=el('button',text,parent,cls);n.type='button';
       n.onclick=async()=>{if(n.disabled)return;n.disabled=true;try{await fn();}catch(e){(n.closest('dialog')?.querySelector('[role=alert]')||feedback).textContent=e.message||'操作失败，请重试';}finally{n.disabled=false;}};
@@ -33,12 +33,12 @@
       const foot=el('div',null,n,'fi-dialog-foot');button(foot,'取消',()=>n.close());n.onclose=()=>n.remove();n.showModal();return {n,body,foot};
     }
     async function refresh(){
-      const run=++sequence,group=state.group;busy=true;feedback.textContent='正在更新…';
+      const run=++sequence,group=state.group;busy=true;feedback.textContent='正在更新…';content.setAttribute('aria-busy','true');
       try{
         const incoming=group?await request('/charges?'+new URLSearchParams({groupId:group,page:state.page})):null;
         if(run!==sequence||!root.isConnected)return;
         data=incoming;feedback.textContent='';drawContent();
-      }finally{if(run===sequence)busy=false;}
+      }finally{if(run===sequence){busy=false;content.setAttribute('aria-busy','false');}}
     }
     function rule(existing){
       const group=state.group,d=dialog(existing?'调整贴单单价':'新增贴单规则'),form=el('div',null,d.body,'fe-form');
@@ -76,17 +76,17 @@
       });
     }
     function drawContent(){
-      if(state.tab==='legacy'){
-        content.replaceChildren();
-        FinanceExpensesDesign.mount(content,{...options,embedded:true,live:true});return;
-      }
-      content.replaceChildren();
+      if(primary){primary.textContent=state.tab==='labels'?'新增贴单规则':'导入 Excel';primary.disabled=!state.group;}
+      const current=content;content=current.cloneNode(false);
+      renderContent();
+      if(globalThis.IncrementalDOM)IncrementalDOM.patch(current,content);else current.replaceChildren(...content.childNodes);
+      content=current;
+    }
+    function renderContent(){
       if(!state.group){el('p','请先在财务店铺管理建立分组。',content,'fi-empty');return;}
       if(!data){el('p','正在读取…',content);return;}
-      const head=el('div',null,content,'fi-card-head');
-      el('h3',state.tab==='labels'?'贴单成本 · 人民币':'刷单标签与服务费',head);
       if(state.tab==='labels'){
-        if(canManage)button(head,'新增贴单规则',()=>rule(),'fi-primary');
+        el('p','按分组设置人民币单价，国家规则优先于分组默认。',content,'fq-description');
         table(content,['国家','生效日期','单价（¥ / 单）','版本','操作'],data.rules.map(r=>{
           const actions=el('span',null,null,'fi-actions');
           if(canManage){button(actions,'调整',()=>rule(r));button(actions,'移除',()=>confirmRemoval('移除贴单规则','移除后按剩余规则重算；原平台费用保留。',()=>request('/charges/rules/'+encodeURIComponent(r.id)+'?'+new URLSearchParams({groupId:state.group,version:r.version}),{method:'DELETE'})));}
@@ -94,37 +94,38 @@
         }));
         return;
       }
-      if(canManage)button(head,'导入 Excel',importFile,'fi-primary');
-      el('p','黄色“刷单”标签的订单不计入正常经营汇总；原始订单、结算、费用和对账完整保留。服务费单独统计，不混入正常订单利润。',content,'fq-callout');
       const metrics=el('div',null,content,'fc-metrics');
       for(const [name,value] of [['来源记录',data.totals.records],['已标记订单',data.marked?.orders||0],['去重服务费（¥）',money(data.marked?.service_fee_cny??0)],['待匹配 / 待核对',data.totals.unmatched||0]]){
         const box=el('div',null,metrics,'fc-metric');el('span',name,box);el('strong',value,box);
       }
+      el('p','刷单订单不计入经营汇总，服务费单独统计。原始订单、结算及对账记录保留。',content,'fq-description');
       if(Number(data.marked?.conflicts)>0)el('p',`${data.marked.conflicts} 笔订单存在不同服务费来源，合计仅包含已确认部分；请核对并移除错误来源。`,content,'fq-callout');
-      el('h4','导入文件',content);
-      table(content,['文件','来源行数','操作'],data.imports.map(f=>[f.source_name,f.row_count,canManage?button(null,'移除',()=>confirmRemoval('移除费用来源','只撤销这个文件的来源。同单仍有其他来源时保留标签；没有其他来源时自动恢复正常经营汇总。',()=>request('/charges/imports/'+encodeURIComponent(f.id)+'?'+new URLSearchParams({groupId:state.group}),{method:'DELETE'}))):'—']));
-      el('h4','订单核对',content);
-      table(content,['订单编号','来源店铺','本金原币（核对用）','服务费（¥）','匹配状态'],data.rows.map(r=>{
+      const files=el('section',null,content,'fq-section');el('h4','导入文件',files);
+      table(files,['文件','来源行数','操作'],data.imports.map(f=>[f.source_name,f.row_count,canManage?button(null,'移除',()=>confirmRemoval('移除费用来源','只撤销这个文件的来源。同单仍有其他来源时保留标签；没有其他来源时自动恢复正常经营汇总。',()=>request('/charges/imports/'+encodeURIComponent(f.id)+'?'+new URLSearchParams({groupId:state.group}),{method:'DELETE'}))):'—']));
+      const orders=el('section',null,content,'fq-section');el('h4','订单核对',orders);
+      table(orders,['订单编号','来源店铺','本金原币（核对用）','服务费（¥）','匹配状态'],data.rows.map(r=>{
         const matched=r.match.matchStatus==='MATCHED',status=el('span',matched?'刷单':r.match.matchStatus==='REVIEW'?'待核对':'待匹配',null,matched?'fi-marketing-tag':'fi-status');
         status.title=r.match.matchNote+(r.marker?.source_count>1?' · 多文件同单只统计一次':'');const wrap=el('span',null);wrap.append(status);
         if(r.marker?.source_count&&r.marker.service_fee_cny==null)el('small',' 服务费冲突',wrap);
         return [r.order_id,r.shop_hint,money(r.principal_native)+' '+(r.match.currency||'币种待匹配'),money(r.service_fee_cny),wrap];
       }));
-      const pages=el('div',null,content,'fi-actions');
+      const pages=el('div',null,orders,'fi-actions fq-pagination');
       button(pages,'上一页',async()=>{state.page--;await refresh();}).disabled=state.page<=1;
       el('span',`第 ${state.page} 页 · 共 ${data.totals.records} 条来源`,pages);
       button(pages,'下一页',async()=>{state.page++;await refresh();}).disabled=state.page*50>=Number(data.totals.records);
     }
-    root.replaceChildren();root.className='fe-workspace fq-workspace';
-    const tools=el('div',null,root,'fc-table-tools');
-    select(tools,'费用分组',groups.map(g=>[g.id,g.name]),state.group,async group=>{state.group=group;state.page=1;try{await refresh();}catch(e){feedback.textContent=e.message;}});
-    button(tools,'刷新',refresh);
-    feedback=el('p','',root,'fc-feedback');feedback.setAttribute('role','status');
-    const tabs=el('div',null,root,'fi-tabs');
-    for(const [key,name]of[['labels','贴单成本'],['brush','刷单成本'],['legacy','历史其他费用']]){
-      const n=button(tabs,name,()=>{state.tab=key;for(const b of tabs.children)b.classList.toggle('active',b===n);drawContent();});n.classList.toggle('active',state.tab===key);
+    root.replaceChildren();root.className='fq-workspace';
+    const toolbar=el('div',null,root,'fq-toolbar'),tabs=el('div',null,toolbar,'fi-tabs fq-tabs');tabs.setAttribute('aria-label','成本类型');
+    for(const [key,name]of[['labels','贴单成本'],['brush','刷单成本']]){
+      const n=button(tabs,name,()=>{state.tab=key;for(const b of tabs.children)b.setAttribute('aria-pressed',String(b===n));drawContent();});
+      n.setAttribute('aria-pressed',String(state.tab===key));
     }
+    const tools=el('div',null,toolbar,'fq-controls');
+    select(tools,'费用分组',groups.map(g=>[g.id,g.name]),state.group,async group=>{state.group=group;state.page=1;data=null;drawContent();try{await refresh();}catch(e){feedback.textContent=e.message;}});
+    if(canManage)primary=button(tools,'导入 Excel',()=>state.tab==='labels'?rule():importFile(),'fi-primary');
+    feedback=el('p','',root,'fc-feedback');feedback.setAttribute('role','status');
     content=el('section',null,root,'fi-card fq-content');
+    drawContent();
     refresh().catch(e=>{feedback.textContent=e.message;});
   }
   globalThis.FinanceCharges={mount,reset(){sequence++;state={group:'',tab:'brush',page:1};document.querySelectorAll('.fq-dialog').forEach(n=>n.remove());}};

@@ -58,6 +58,9 @@ public final class FinanceCostReport {
           THEN COALESCE(SUM(c.amount_cny),0) END amount_cny
         """;
     static String related(String kind){
+        if("SAMPLE_SETTLED".equals(kind))return related("SETTLED_ORDER")
+            +"o.platform='TIKTOK_SHOP' AND (JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.order_type'))='SELLER_FUND_FREE_SAMPLE'"
+            +" OR LOWER(JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.is_sample_order')))='true') AND ";
         if("REFUND_SETTLED".equals(kind))return """
             SELECT DISTINCT o.id order_record_id,r.shop_id,r.order_id reference,r.record_date settlement_date
             FROM finance_records r LEFT JOIN finance_records o
@@ -142,6 +145,7 @@ public final class FinanceCostReport {
         var result=new LinkedHashMap<String,Object>();result.put("total",total);result.put("shops",perShop);result.put("currency","CNY");
         result.put("scope",selected);result.put("basis",switch(selected){
             case "SETTLED_ORDER"->"仅统计非刷单的平台已结算订单，按首次平台结算日期归属，每笔订单商品成本只计一次；待结算订单不计入。";
+            case "SAMPLE_SETTLED"->"已结算样品订单的商品成本，已包含在商品成本合计中，不重复加计；以平台样品标记为准，不将零金额订单直接认定为样品。";
             case "REFUND","REFUND_SETTLED"->"按首次平台结算日期核对关联退款的已结算订单成本，同一订单去重；不重复扣减或自动退回商品成本。";
             case "PENDING"->"待结算订单尚未完成平台结算，不计入已结算商品成本。";
             case "SETTLEMENT"->"所选结算日期内首次结算的订单成本；后续重复结算或调整不重复计整单成本。";
@@ -165,7 +169,7 @@ public final class FinanceCostReport {
     public Map<String,Object> orders(Scope scope,Filter filter,String kind,String recordId,int page,String status){
         String selectedStatus=costStatus(status);
         String selected=scopeKind(kind,!text(recordId).isBlank());
-        if(!Set.of("SETTLED_ORDER","ORDER","REFUND","REFUND_SETTLED","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(selected))throw bad("成本来源类型不正确");
+        if(!Set.of("SETTLED_ORDER","SAMPLE_SETTLED","ORDER","REFUND","REFUND_SETTLED","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(selected))throw bad("成本来源类型不正确");
         FinanceRepository.Query q=text(recordId).isBlank()?repo.query(scope,filter,"r"):
                 new FinanceRepository.Query("r.organization_id=? AND r.id=? AND "+FinanceRepository.visible("r"),List.of(scope.organizationId(),recordId));
         String from=" FROM ("+related(selected)+q.where()+") x";
@@ -176,16 +180,55 @@ public final class FinanceCostReport {
         var items=repo.jdbc().queryForList("""
             SELECT o.id,x.shop_id,o.platform,'ORDER' kind,o.external_id,COALESCE(o.order_id,x.reference) order_id,
               o.status,o.record_date,o.currency,o.amount,o.source,o.updated_at,o.raw_json,
-            """+(Set.of("SETTLED_ORDER","REFUND_SETTLED").contains(selected)?"x.settlement_date":"NULL")+" first_settlement_date"
+            """+(Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(selected)?"x.settlement_date":"NULL")+" first_settlement_date"
                 +from+" LEFT JOIN finance_records o ON o.id=x.order_record_id"+costStatusWhere(selectedStatus)
-                +" ORDER BY "+(Set.of("SETTLED_ORDER","REFUND_SETTLED").contains(selected)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
-        items.forEach(repo::enrich);attach(scope,items,false);
+                +" ORDER BY "+(Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(selected)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
+        items.forEach(repo::enrich);attach(scope,items,false);attachSettlementAmounts(scope,items);
         for(var item:items)if(item.get("id")==null){item.put("product_cost_state","订单待同步");item.put("product_cost_pending",1);}
         pendingIssues(scope,items);
         var result=new LinkedHashMap<String,Object>();
         result.put("items",items);result.put("total",total);result.put("page",safePage);result.put("pageSize",50);
         result.put("costStatus",selectedStatus);
         result.put("productCosts",costs);return result;
+    }
+    /** Shared page/export amounts: use the first settlement day's provider fields, never buyer payment. */
+    void attachSettlementAmounts(Scope scope,List<Map<String,Object>> items){
+        for(int start=0;start<items.size();start+=100){
+            var batch=items.subList(start,Math.min(start+100,items.size()));
+            var byShop=new LinkedHashMap<String,Set<String>>();
+            for(var row:batch){
+                String order=first(row,"order_id","reference");
+                if(!order.isBlank())byShop.computeIfAbsent(text(row.get("shop_id")),key->new LinkedHashSet<>()).add(order);
+            }
+            if(byShop.isEmpty())continue;
+            var predicates=new ArrayList<String>();var args=new ArrayList<Object>();args.add(scope.organizationId());
+            byShop.forEach((shop,orders)->{
+                predicates.add("(s.shop_id=? AND s.order_id IN ("+String.join(",",Collections.nCopies(orders.size(),"?"))+"))");
+                args.add(shop);args.addAll(orders);
+            });
+            var values=repo.jdbc().queryForList("""
+                SELECT s.shop_id,s.order_id,s.currency settlement_currency,MIN(s.record_date) first_settlement_date,
+                  COUNT(*) settlement_records,COUNT(s.revenue) known_goods,COUNT(s.amount) known_net,
+                  SUM(s.revenue) settlement_goods_amount,SUM(s.amount) settlement_net_amount
+                FROM finance_records s FORCE INDEX(idx_finance_cost_order)
+                WHERE s.organization_id=? AND
+                """+firstSettlement("s",false)+" AND "+FinanceRepository.visible("s")+" AND ("+String.join(" OR ",predicates)+") GROUP BY s.shop_id,s.order_id,s.currency",args.toArray());
+            var grouped=new HashMap<String,List<Map<String,Object>>>();
+            for(var row:values)grouped.computeIfAbsent(text(row.get("shop_id"))+"\0"+text(row.get("order_id")),key->new ArrayList<>()).add(row);
+            for(var row:batch){
+                var matches=grouped.getOrDefault(text(row.get("shop_id"))+"\0"+first(row,"order_id","reference"),List.of());
+                row.put("settlement_goods_amount",null);row.put("settlement_net_amount",null);row.put("settlement_currency","");
+                row.put("settlement_amount_note","优惠前商品金额待补齐，不以原订单金额或净结算替代");
+                if(matches.size()!=1){if(matches.size()>1)row.put("settlement_amount_note","订单存在不同结算币种，请在结算明细分币种核对");continue;}
+                var value=matches.getFirst();row.put("settlement_currency",value.get("settlement_currency"));
+                row.put("first_settlement_date",value.get("first_settlement_date"));
+                if(number(value.get("known_goods"))==number(value.get("settlement_records"))){
+                    row.put("settlement_goods_amount",value.get("settlement_goods_amount"));
+                    row.put("settlement_amount_note","首次结算日的优惠前商品金额，直接取平台结算字段；后续调整请查结算明细");
+                }
+                if(number(value.get("known_net"))==number(value.get("settlement_records")))row.put("settlement_net_amount",value.get("settlement_net_amount"));
+            }
+        }
     }
     private void pendingIssues(Scope scope,List<Map<String,Object>> items){
         var pending=new LinkedHashMap<String,Map<String,Object>>();

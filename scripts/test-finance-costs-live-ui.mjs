@@ -32,7 +32,7 @@ w.api=async(path,options={})=>{
     throw Error('Unexpected mutation '+path);
   }
   if(url.pathname==='/api/v1/finance/shops')return {data:{items:shops,groups,sync:[]}};
-  if(url.pathname==='/api/v1/finance/workspace/costs/orders'){reads.push(Object.fromEntries(url.searchParams));return {data:{items:[{id:'order-1',shop_id:'shop',order_id:'ORDER-1',order_type_label:'商家承担的免费样品单',product_skus:'PACK\n（PACK）*2',record_date:'2026-10-19',first_settlement_date:'2026-10-23',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};}
+  if(url.pathname==='/api/v1/finance/workspace/costs/orders'){reads.push(Object.fromEntries(url.searchParams));return {data:{items:[{id:'order-1',shop_id:'shop',order_id:'ORDER-1',order_type_label:'商家承担的免费样品单',product_skus:'PACK\n（PACK）*2',record_date:'2026-10-19',first_settlement_date:'2026-10-23',amount:99,settlement_goods_amount:129,settlement_net_amount:80,settlement_currency:'PHP',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};}
   if(url.pathname==='/api/v1/finance/workspace/costs'){
     reads.push(url.searchParams.get('shopId'));
     if(url.searchParams.get('shopId')==='other'||url.searchParams.get('groupId')==='other-group'){
@@ -41,10 +41,10 @@ w.api=async(path,options={})=>{
     }
     return {data:structuredClone(costs)};
   }
-  if(url.pathname==='/api/v1/finance/workspace/expenses')return {data:structuredClone(expenses)};
+  if(url.pathname==='/api/v1/finance/workspace/charges')return {data:{rules:[],imports:[],rows:[],totals:{records:0,unmatched:0},marked:{orders:0,service_fee_cny:0}}};
   throw Error('Unexpected GET '+path);
 };
-for(const name of ['incremental-dom.js','incremental-charts.js','finance-costs.js','finance-expenses-design.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../frontend/'+name,import.meta.url),'utf8'));
+for(const name of ['incremental-dom.js','incremental-charts.js','finance-costs.js','finance-charges.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../frontend/'+name,import.meta.url),'utf8'));
 const button=(text,root=d)=>[...root.querySelectorAll('button')].find(n=>n.textContent.trim()===text||n.textContent.trim().endsWith(text));
 const settle=()=>new Promise(r=>setTimeout(r,20));
 async function click(text,root=d){const n=button(text,root);assert(n,text);n.click();await settle();}
@@ -58,6 +58,7 @@ assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');
 await click('订单成本');assert(d.body.textContent.includes('已结算订单已算部分'));assert(d.body.textContent.includes('¥ 5.5'));assert(d.querySelector('tbody').textContent.includes('待补齐'));assert(!d.querySelector('tbody').textContent.includes('¥ 0'));
 assert(d.querySelector('thead').textContent.includes('首次平台结算日期'));assert.equal(reads.at(-1).kind,'SETTLED_ORDER');assert(d.querySelector('thead').textContent.includes('商品 SKU'));assert(d.querySelector('tbody').textContent.includes('（PACK）*2'));
 assert.equal(d.querySelector('tbody .fi-sample-tag')?.textContent,'免费样品单');
+assert(d.querySelector('thead').textContent.includes('优惠前商品金额'));assert(d.querySelector('tbody').textContent.includes('129 PHP'));assert(d.querySelector('tbody').textContent.includes('80 PHP'));assert(!d.querySelector('tbody').textContent.includes('99 PHP'),'the buyer amount is not shown as provider gross');
 const retainedCostRow=d.querySelector('tbody tr'),retainedCostStats=d.querySelector('.fi-cost-stats');
 let costMutations=0;const observer=new w.MutationObserver(entries=>costMutations+=entries.length);
 observer.observe(d.querySelector('.fc-order-results'),{subtree:true,childList:true,characterData:true,attributes:true});
@@ -137,15 +138,9 @@ field('成本分组','group');await settle();
 assert(d.querySelector('tbody').textContent.includes('已关联'),'returning to the shop restores its saved mapping');
 failOther=true;field('成本分组','other-group');await settle();
 assert(d.body.textContent.includes('店铺读取暂时失败'));assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');assert(d.querySelector('tbody').textContent.includes('已关联'),'failed reads preserve the last correctly labelled shop');
-w.FinanceWorkspace.enter('expense-ledger');await settle();assert(d.body.textContent.includes('其他费用台账总额'));assert(d.querySelector('[aria-label="费用数据分类"]').textContent.includes('平台费用'));assert(!d.body.textContent.includes('设计预览'));
-await click('新增费用');dialog=d.querySelector('dialog');
-for(const [name,value]of [['归属店铺','shop'],['订单编号','known-order'],['费用日期','2026-10-22'],['计入财务日期','2026-10-22'],['金额','12.50'],['费用来源编号','waybill-1'],['计入方式','extra']])field(name,value,dialog);
-await click('保存费用',dialog);
-const savedExpense=mutations.find(r=>r.path.endsWith('/expenses'));assert.equal(savedExpense.method,'POST');assert.equal(savedExpense.body.amount,'12.50');
-assert(d.querySelector('tbody').textContent.includes('waybill-1'));
-await click('刷新');assert(d.querySelector('tbody').textContent.includes('waybill-1'),'saved record survives reload');
+w.FinanceWorkspace.enter('expense-ledger');await settle();assert(d.body.textContent.includes('来源记录'));assert(d.querySelector('[aria-label="费用数据分类"]').textContent.includes('平台费用'));assert(!d.body.textContent.includes('历史其他费用'));
+assert(button('导入 Excel'));await click('贴单成本');assert(button('新增贴单规则'));assert(!button('导入 Excel'));
 w.FinanceWorkspace.reset();w.currentUser={permissions:['finance:view']};w.FinanceWorkspace.enter('expense-ledger');await settle();
-assert(!button('新增费用'));assert(!button('调整',d.querySelector('tbody')));
-assert(!button('分摊规则'));assert(!button('来源与口径'));
+assert(!button('新增贴单规则'));assert(!button('导入 Excel'));assert(!button('新增费用'));
 w.FinanceWorkspace.leave();w.close();
 console.log('Live cost/expense UI: authorized endpoints, confirmed SKU mapping, versioned settings, exact decimal input, persisted refresh and read-only roles passed.');

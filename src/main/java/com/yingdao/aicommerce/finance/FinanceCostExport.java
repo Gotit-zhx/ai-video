@@ -19,7 +19,7 @@ public class FinanceCostExport {
     public FinanceCostExport(FinanceRepository repo){this.repo=repo;}
     static String kind(String value){
         String kind=text(value).toUpperCase(Locale.ROOT);
-        if(!Set.of("SETTLED_ORDER","ORDER","REFUND","REFUND_SETTLED","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(kind))throw bad("成本来源类型不正确");
+        if(!Set.of("SETTLED_ORDER","SAMPLE_SETTLED","ORDER","REFUND","REFUND_SETTLED","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(kind))throw bad("成本来源类型不正确");
         return kind;
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=120)
@@ -50,7 +50,7 @@ public class FinanceCostExport {
                       g.name group_name,c.status cost_status,c.amount_cny,c.known_amount_cny,c.data_json cost_json,
                       c.version cost_version,c.updated_at cost_updated_at,b.source_name cost_source,
                       j.order_record_id queued_id,
-                    """+(Set.of("SETTLED_ORDER","REFUND_SETTLED").contains(kind)?"x.settlement_date":"NULL")+" first_settlement_date"+from+"""
+                    """+(Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind)?"x.settlement_date":"NULL")+" first_settlement_date"+from+"""
                      LEFT JOIN finance_records o ON o.id=x.order_record_id
                      LEFT JOIN finance_connections s ON s.id=x.shop_id AND s.organization_id=?
                      LEFT JOIN finance_groups g ON g.id=s.group_id AND g.organization_id=s.organization_id
@@ -58,8 +58,9 @@ public class FinanceCostExport {
                      LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id AND j.organization_id=s.organization_id
                      LEFT JOIN finance_cost_books b ON b.id=JSON_UNQUOTE(JSON_EXTRACT(c.data_json,'$.bookId')) AND b.organization_id=s.organization_id
                     """+FinanceCostReport.costStatusWhere(selectedStatus)+" ORDER BY "
-                    +(Set.of("SETTLED_ORDER","REFUND_SETTLED").contains(kind)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
+                    +(Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
                 if(rows.isEmpty())throw bad("导出数据读取不完整，请重试");
+                new FinanceCostReport(repo).attachSettlementAmounts(scope,rows);
                 for(var row:rows){
                     append(row,orders,lines,totals);
                     if(totals.lines>MAX_LINES)throw bad("SKU 成本明细超过 200,000 行，请缩小日期或店铺范围");
@@ -91,11 +92,13 @@ public class FinanceCostExport {
             summary.row(List.of("排除口径","未付款或已取消订单、已取消商品明细不计商品成本，不受发货状态影响；实际平台费用保留。退款不会自动退回商品成本。商品标准成本不等于仓库实际出库成本。"));
             summary.row(List.of("核对方式","按订单编号连接订单与 SKU 明细；组合单价、数量、月份均取自同一次已保存计算。订单成本合计按去重订单统计。"));
             summary.row(List.of("时间说明","下单时间为店铺时区，平台未提供时留空；下单日期为平台业务日。成本更新时间使用 UTC。"));
+            summary.row(List.of("商品金额口径","优惠前商品金额与平台净结算取首次结算日的平台结算字段；缺失时留空，不以原订单金额代替。后续跨日调整请查结算明细。"));
+            summary.row(List.of("成本分类","商品成本与贴单成本归入营业成本；样品和退款关联订单的商品成本已包含其中，不重复扣减。"));
             return book.bytes();
         }catch(IOException e){throw new IllegalStateException("成本报表生成失败，请重试",e);}
         finally{slots.release();}
     }
-    static final List<String> ORDER_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","商品 SKU","下单日期","下单时间（店铺时区）","店铺时区","订单状态","订单状态代码","订单原币","订单金额（原币）","商品成本（人民币）","已计算部分成本（人民币）","成本状态","成本仓","成本月份依据","目标成本月份","实际取价月份","SKU 明细行数","匹配成功行数","历史价行数","成本来源文件","成本版本","成本更新时间（UTC）","说明","首次平台结算日期","订单类型","贴单成本（人民币）","贴单口径");
+    static final List<String> ORDER_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","商品 SKU","下单日期","下单时间（店铺时区）","店铺时区","订单状态","订单状态代码","结算原币","优惠前商品金额（结算原币）","商品成本（人民币）","已计算部分成本（人民币）","成本状态","成本仓","成本月份依据","目标成本月份","实际取价月份","SKU 明细行数","匹配成功行数","历史价行数","成本来源文件","成本版本","成本更新时间（UTC）","说明","首次平台结算日期","订单类型","贴单成本（人民币）","贴单口径","平台净结算（结算原币）","原订单币种（核对用）","原订单金额（核对用）","商品金额口径");
     static final List<String> LINE_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","下单日期","订单状态","订单成本状态","商品名称","规格名称","商品 SPU 编号","平台 SKU 编号","商家 SKU","商品行编号","成本型号","成本仓","购买数量","组合数量","成本单价（人民币）","商品行成本（人民币）","目标成本月份","实际取价月份","历史价格估算","商品行状态","缺失原因或说明","成本来源文件","成本版本","成本更新时间（UTC）","首次平台结算日期","订单类型");
     static final class Totals{
         long orders,ready,estimated,pending,excluded,lines;BigDecimal known=BigDecimal.ZERO;
@@ -132,10 +135,11 @@ public class FinanceCostExport {
         if(known!=null)totals.known=totals.known.add(known);
         orders.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),String.join("\n",skus),date,
             created(raw.get("create_time"),zone),zone,orderStatus(text(row.get("order_status"))),row.get("order_status"),
-            row.get("currency"),decimal(row.get("amount")),amount,known,status,cost.get("warehouse"),
+            row.get("settlement_currency"),decimal(row.get("settlement_goods_amount")),amount,known,status,cost.get("warehouse"),
             cost.isEmpty()?"":"shipment".equals(cost.get("dateBasis"))?"发货月份":"下单月份",cost.get("costMonth"),String.join("、",months),
             cost.get("lineCount"),cost.get("matchedLines"),cost.get("fallbackLines"),queued?null:row.get("cost_source"),
-            queued?null:row.get("cost_version"),queued?null:updated,note,day(row.get("first_settlement_date")),orderType,cost.get("labelCostCny"),cost.get("labelNote")));
+            queued?null:row.get("cost_version"),queued?null:updated,note,day(row.get("first_settlement_date")),orderType,cost.get("labelCostCny"),cost.get("labelNote"),
+            row.get("settlement_net_amount"),row.get("currency"),decimal(row.get("amount")),row.get("settlement_amount_note")));
         // Retain an explanatory row even when the source order or its calculation is unavailable.
         if(costLines.isEmpty()){
             detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),date,orderStatus(text(row.get("order_status"))),status,
@@ -168,7 +172,7 @@ public class FinanceCostExport {
         }catch(RuntimeException e){return null;}
     }
     static String platform(String value){return switch(value){case "TIKTOK_SHOP"->"TikTok Shop";case "SHOPEE"->"虾皮";default->value;};}
-    static String basis(String value){return switch(value){case "SETTLED_ORDER","REFUND_SETTLED"->"首次平台结算日期";case "REFUND"->"所选退款记录";case "SETTLEMENT"->"结算日期";case "BILL","RECONCILIATION"->"账单日期";case "PENDING"->"待结算日期";default->"下单日期";};}
+    static String basis(String value){return switch(value){case "SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED"->"首次平台结算日期";case "REFUND"->"所选退款记录";case "SETTLEMENT"->"结算日期";case "BILL","RECONCILIATION"->"账单日期";case "PENDING"->"待结算日期";default->"下单日期";};}
     static String costStatus(String value){return switch(value){case "READY"->"已计算";case "ESTIMATED"->"历史价估算";case "EXCLUDED"->"不计成本";case "QUEUED"->"后台计算中";case "MISSING"->"订单待同步";default->"待补齐";};}
     static String orderStatus(String value){return switch(value){
         case "UNPAID"->"待付款";case "ON_HOLD"->"订单暂挂";case "CANCELLED","CANCELED"->"已取消";case "IN_CANCEL"->"取消处理中";

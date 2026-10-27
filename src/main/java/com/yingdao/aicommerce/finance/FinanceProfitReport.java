@@ -38,7 +38,7 @@ public final class FinanceProfitReport {
         if(!"CNY".equals(currency)&&label.signum()!=0){BigDecimal rate=quote==null?null:quote.rates().get(currency);label=rate==null||rate.signum()<=0?null:label.divide(rate,6,RoundingMode.HALF_UP);}
         if(label==null){if(state.equals("READY"))state="MISSING_FX";notes.add("缺少人民币贴单费用展示汇率");}
         if(number(cost.get("charges_pending"))>0){if(state.equals("READY"))state="INCOMPLETE_CHARGES";notes.add("贴单费用与已录入订单成本可能重复，请先核对");}
-        if(label!=null&&shipping!=null)shipping=shipping.add(label);
+        shipping=label!=null&&shipping!=null?shipping.add(label):null;
         result.put("marketingBasis","刷单订单的结算金额、关联平台费用和成本已排除；平台原始账单与对账保留");
         boolean estimated=number(cost.get("estimated_count"))>0;
         if(estimated)notes.add("商品成本包含历史月份取价估算");
@@ -52,8 +52,19 @@ public final class FinanceProfitReport {
         result.put("currency",currency);result.put("settledGrossAmount",gross);result.put("settledLedgerAmount",net);
         result.put("platformFees",fee);result.put("advertising",ad);result.put("logisticsLabelCost",shipping);
         result.put("productCostCny",product);result.put("productCost",converted);result.put("amount",profit);
+        BigDecimal known=decimal(cost.get("known_amount_cny"));
+        if(known==null)known=product;
+        if(known!=null&&!"CNY".equals(currency)&&known.signum()!=0){
+            BigDecimal rate=quote==null?null:quote.rates().get(currency);
+            known=rate==null||rate.signum()<=0?null:known.divide(rate,6,RoundingMode.HALF_UP);
+        }
+        result.put("operatingCost",converted!=null&&shipping!=null&&complete(logistics)&&number(cost.get("charges_pending"))==0
+                ?converted.add(shipping):null);
+        result.put("knownProductCost",known);
+        result.put("knownOperatingCost",known!=null&&shipping!=null?known.add(shipping):null);
+        result.put("operatingCostBasis","营业成本 = 商品成本 + 物流贴单成本。样品及退款关联商品成本属于商品成本明细，不重复加计；退款不自动冲回商品成本。");
         result.put("status",state);result.put("estimated",estimated);result.put("notes",notes);
-        result.put("formula","利润额 = 已结算商品金额（优惠前）− 平台费用及结算扣减 − 广告消耗 − 物流贴单成本 − 商品成本");
+        result.put("formula","利润额 = 已结算商品金额（优惠前）− 平台费用及结算扣减 − 广告消耗 − 营业成本");
         result.put("settlementBasis","已结算商品金额直接取平台优惠前商品金额字段；平台费用及结算扣减包含商家优惠、退款冲减、佣金、税费、物流、调整与负向补贴，逐项保留原字段。优惠前商品金额减这些分项等于平台净结算，利润按实际净结算减成本计算。");
         result.put("refundBasis","退款对利润的影响以平台结算记录为准，不再重复扣减按退款日期汇总的确认退款金额。");
         result.put("basis","按当前筛选期间已同步及已录入的数据计算；商品成本按首次平台结算日期归属，广告与物流贴单成本按费用日期归属。");

@@ -347,6 +347,51 @@ class FinanceConfigurationIntegrationTest {
         txs.execute(status->engine.seedAndFill());txs.execute(status->engine.processBatch(50));
         assertNull(repo.detail(owner,id(owner,entry)).get("product_cost_cny"),"changing group must not keep the previous group's cost");
     }
+    @Test void sampleAndRefundCostSubsetsUseFirstSettlementAndNeverIncreaseTotal()throws Exception{
+        String group=service.saveGroup(owner,null,"分类核对"),shop=groupedShop(owner,"classification",group);
+        var reports=new FinanceCostReport(repo);
+        var q=new Filter(filter.start(),filter.end(),shop,"","","day",group);
+        for(int i=0;i<5;i++){
+            String oid="subset-"+i;var raw=new LinkedHashMap<String,Object>();
+            if(i==0)raw.put("order_type","SELLER_FUND_FREE_SAMPLE");
+            if(i==1||i>=3)raw.put("is_sample_order",true);
+            var order=new Entry(shop,"TIKTOK_SHOP","ORDER",oid,oid,"","ORDER","COMPLETED",filter.start().minusMonths(1),"PHP",BigDecimal.ZERO,null,null,null,null,"API",raw);
+            repo.save(owner,order);
+            db.update("INSERT INTO finance_order_costs(order_record_id,organization_id,shop_id,order_id,record_date,status,amount_cny,known_amount_cny,source_hash,data_json) VALUES(?,?,?,?,?,'READY',10,10,'test','{}')",
+                    id(owner,order),owner.organizationId(),shop,oid,order.date());
+            db.update("DELETE FROM finance_order_cost_jobs WHERE order_record_id=?",id(owner,order));
+            if(i!=3)repo.save(owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","tx-"+i,oid,"bill","ORDER","SETTLED",i==4?filter.start().minusDays(1):filter.start(),"PHP",BigDecimal.ZERO,BigDecimal.ZERO,null,null,null,"API",Map.of()));
+        }
+        // Two settlements and two refund records for the same sample still yield one order cost.
+        repo.save(owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","tx-repeat","subset-0","bill","ORDER","SETTLED",filter.start(),"PHP",BigDecimal.ZERO,BigDecimal.ZERO,null,null,null,"API",Map.of()));
+        for(int i=0;i<2;i++)repo.save(owner,new Entry(shop,"TIKTOK_SHOP","REFUND","refund-"+i,"subset-0","","退款","ACCEPTED",filter.start().plusDays(5),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
+        var all=map(reports.summary(owner,q,"SETTLED_ORDER").get("total"));
+        var sample=map(reports.summary(owner,q,"SAMPLE_SETTLED").get("total"));
+        var refunds=map(reports.summary(owner,q,"REFUND_SETTLED").get("total"));
+        assertEquals(3,number(all.get("order_count")));assertEquals(0,decimal(all.get("amount_cny")).compareTo(decimal("30")));
+        assertEquals(2,number(sample.get("order_count")));assertEquals(0,decimal(sample.get("amount_cny")).compareTo(decimal("20")));
+        assertEquals(1,number(refunds.get("order_count")));assertEquals(0,decimal(refunds.get("amount_cny")).compareTo(decimal("10")));
+        assertEquals(0,number(map(reports.summary(other,q,"SAMPLE_SETTLED").get("total")).get("order_count")));
+        assertEquals(2,number(reports.orders(owner,q,"SAMPLE_SETTLED","",1).get("total")));
+        var xlsx=new FinanceCostExport(repo).export(owner,q,"SAMPLE_SETTLED","");
+        assertEquals(3,FinanceCostExportTest.sheet(xlsx,2).getElementsByTagName("row").getLength());
+        var workspace=new FinanceCostWorkspace(repo,service);
+        assertEquals(sample,map(workspace.costSummary(owner,q,"SAMPLE_SETTLED").get("total")));
+        assertThrows(BusinessException.class,()->workspace.costSummary(owner,q,"unexpected"));
+        assertEquals(all,map(reports.summary(owner,q,"SETTLED_ORDER").get("total")),"reading overlapping subsets cannot modify the main total");
+        db.update("UPDATE finance_records SET revenue=120,amount=100 WHERE organization_id=? AND shop_id=? AND kind='SETTLEMENT' AND order_id='subset-2'",owner.organizationId(),shop);
+        repo.save(owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","later-change","subset-2","bill","ORDER","SETTLED",filter.start().plusDays(1),"PHP",decimal("999"),decimal("999"),null,null,null,"API",Map.of()));
+        var normal=rows(reports.orders(owner,q,"SETTLED_ORDER","",1).get("items")).stream().filter(r->"subset-2".equals(r.get("order_id"))).findFirst().orElseThrow();
+        assertEquals(0,decimal(normal.get("amount")).signum(),"source buyer amount remains unchanged");
+        assertEquals(0,decimal("120").compareTo(decimal(normal.get("settlement_goods_amount"))));
+        assertEquals(0,decimal("100").compareTo(decimal(normal.get("settlement_net_amount"))));
+        assertEquals("PHP",normal.get("settlement_currency"));
+        assertEquals(filter.start().toString(),text(normal.get("first_settlement_date")));
+        repo.save(owner,new Entry(shop,"TIKTOK_SHOP","SETTLEMENT","missing-gross","subset-2","bill","ORDER","SETTLED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
+        normal=rows(reports.orders(owner,q,"SETTLED_ORDER","",1).get("items")).stream().filter(r->"subset-2".equals(r.get("order_id"))).findFirst().orElseThrow();
+        assertNull(normal.get("settlement_goods_amount"),"partially known gross must not use buyer payment or net as a replacement");
+        assertEquals(0,decimal("101").compareTo(decimal(normal.get("settlement_net_amount"))));
+    }
     @Test void pendingCostFilterPagesExportsAndIncludesHistoricalMissingSkus()throws Exception{
         String group=service.saveGroup(owner,null,"历史成本"),shop=groupedShop(owner,"historical-cost-shop",group);
         var workspace=new FinanceCostWorkspace(repo,service);var txs=new TransactionTemplate(tx);
@@ -1159,6 +1204,26 @@ class FinanceConfigurationIntegrationTest {
         var original=db.queryForMap("SELECT amount,raw_json,record_date,updated_at FROM finance_records WHERE id=?",id(owner,updated));
         assertTrue(repo.rebuildSettlement(owner,shop,id(owner,updated)));
         assertEquals(original,db.queryForMap("SELECT amount,raw_json,record_date,updated_at FROM finance_records WHERE id=?",id(owner,updated)),"backfill changes only derived revenue and fee rows");
+    }
+    @Test void repeatedSettlementSyncPreservesUnchangedFeesAndUpdatesOnlyChangedFields(){
+        String shop=connect(owner,false);
+        var raw=Map.<String,Object>of("order_income",Map.of("original_price",100,"seller_discount",10,"commission_fee",5));
+        var first=dated(shop,"SETTLEMENT","stable","order","bill",filter.start(),"85",raw);
+        repo.save(owner,first);
+        db.update("UPDATE finance_records SET updated_at='2000-01-01 00:00:00' WHERE kind='FEE'");
+        var before=db.queryForList("SELECT id,amount,raw_json,updated_at FROM finance_records WHERE kind='FEE' ORDER BY id");
+        repo.save(owner,first);
+        repo.rebuildSettlement(owner,shop,id(owner,first));
+        assertEquals(before,db.queryForList("SELECT id,amount,raw_json,updated_at FROM finance_records WHERE kind='FEE' ORDER BY id"),
+                "unchanged sync and backfill must not rewrite fee rows or timestamps");
+        repo.save(owner,dated(shop,"SETTLEMENT","stable","order","bill",filter.start(),"82",
+                Map.of("order_income",Map.of("original_price",100,"seller_discount",13,"commission_fee",5))));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='FEE' AND updated_at='2000-01-01 00:00:00'",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT SUM(amount) FROM finance_records WHERE kind='FEE'",BigDecimal.class).compareTo(decimal("18")));
+        repo.save(owner,dated(shop,"SETTLEMENT","stable","order","bill",filter.start(),"95",
+                Map.of("order_income",Map.of("original_price",100,"commission_fee",5))));
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='FEE'",Integer.class),"obsolete fields are removed");
+        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='FEE' AND updated_at='2000-01-01 00:00:00'",Integer.class),"unchanged commission survives other field removals");
     }
     @Test void tiktokHistoricalRebuildUsesCoveredSettlementDayAndNeverSubtractsAnotherDayOnRetry(){
         String shop=connect(owner,false);LocalDate generated=LocalDate.of(2026,10,1);

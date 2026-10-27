@@ -123,22 +123,46 @@ public class FinanceRepository {
         return FinanceMarketplace.tiktokSettlementDay(found.getFirst().get("statement_time"));
     }
     private void replaceFees(Scope s,Entry e,FinanceSettlementBreakdown.Result breakdown){
-        // Replace this transaction's generated fee rows atomically. Imports and other transactions stay intact.
+        // Reconcile this transaction's generated rows. Repeated sync must not delete and reinsert
+        // identical fees across every index; imports and unrelated transactions remain untouched.
         String prefix=e.externalId().replace("=","==").replace("%","=%").replace("_","=_")+":%";
-        db.update("""
-            DELETE FROM finance_records WHERE organization_id=? AND shop_id=? AND kind='FEE'
+        var existing=new LinkedHashMap<String,Map<String,Object>>();
+        for(var row:db.queryForList("""
+            SELECT * FROM finance_records WHERE organization_id=? AND shop_id=? AND kind='FEE'
               AND order_id=? AND statement_id=? AND source='API' AND external_id LIKE ? ESCAPE '='
-            """,s.organizationId(),e.shopId(),e.orderId(),e.statementId(),prefix);
+              FOR UPDATE
+            """,s.organizationId(),e.shopId(),e.orderId(),e.statementId(),prefix))existing.put(text(row.get("id")),row);
         var batch=new ArrayList<Object[]>();
         for(var fee:breakdown.fees()){
             var raw=new LinkedHashMap<String,Object>();
             raw.put("field",fee.field());raw.put("source_amount",fee.sourceAmount());raw.put("amount",fee.amount());
             raw.put("fee_group",fee.group());raw.put("basis",fee.note());raw.put("settlement_external_id",e.externalId());
             raw.put("breakdown_version",1);
-            batch.add(entryArgs(s,new Entry(e.shopId(),e.platform(),"FEE",e.externalId()+":d:"+hash(fee.field()).substring(0,24),
-                    e.orderId(),e.statementId(),fee.label(),"SETTLED",e.date(),e.currency(),fee.amount(),null,null,null,null,"API",raw),null));
+            var args=entryArgs(s,new Entry(e.shopId(),e.platform(),"FEE",e.externalId()+":d:"+hash(fee.field()).substring(0,24),
+                    e.orderId(),e.statementId(),fee.label(),"SETTLED",e.date(),e.currency(),fee.amount(),null,null,null,null,"API",raw),null);
+            var old=existing.remove(text(args[0]));
+            if(old==null||!sameFee(old,args))batch.add(args);
+        }
+        if(!existing.isEmpty()){
+            var args=new ArrayList<Object>(List.of(s.organizationId(),e.shopId()));args.addAll(existing.keySet());
+            db.update("DELETE FROM finance_records WHERE organization_id=? AND shop_id=? AND kind='FEE' AND source='API' AND id IN ("
+                    +String.join(",",Collections.nCopies(existing.size(),"?"))+")",args.toArray());
         }
         if(!batch.isEmpty())db.batchUpdate(UPSERT,batch);
+    }
+    private boolean sameFee(Map<String,Object> row,Object[] values){
+        var fields=List.of("id","organization_id","user_id","shop_id","platform","kind","external_id","order_id",
+                "statement_id","category","status","record_date","currency","amount","revenue","impressions","clicks","conversions","source");
+        for(int i=0;i<fields.size();i++)if(!sameJsonValue(row.get(fields.get(i)),values[i]))return false;
+        return sameJsonValue(read(text(row.get("raw_json"))),read(text(values[19])));
+    }
+    private static boolean sameJsonValue(Object a,Object b){
+        if(a instanceof Number&&b instanceof Number)return decimal(a).compareTo(decimal(b))==0;
+        if(a instanceof Map<?,?> x&&b instanceof Map<?,?> y){
+            if(!x.keySet().equals(y.keySet()))return false;
+            return x.keySet().stream().allMatch(k->sameJsonValue(x.get(k),y.get(k)));
+        }
+        return Objects.equals(a,b);
     }
     public record Query(String where,List<Object> args) {}
     public Query query(Scope s,Filter f) {

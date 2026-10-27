@@ -105,7 +105,7 @@ class FinanceCostExportTest {
         results(data);
         var bytes=export.export(scope,filter,"ORDER","");
         assertEquals(502,sheet(bytes,2).getElementsByTagName("row").getLength());
-        var calls=mockingDetails(db).getInvocations().stream().filter(i->i.getMethod().getName().equals("queryForList")).toList();
+        var calls=mockingDetails(db).getInvocations().stream().filter(i->i.getMethod().getName().equals("queryForList")&&((String)i.getArgument(0)).contains("cost_json")).toList();
         assertEquals(2,calls.size());
         String sql=(String)calls.getFirst().getArgument(0);
         assertTrue(sql.contains("r.organization_id=?"));assertTrue(sql.contains("r.shop_id=?"));
@@ -124,5 +124,22 @@ class FinanceCostExportTest {
         assertThrows(RuntimeException.class,()->export.export(scope,filter,"ORDER",""));
         assertThrows(RuntimeException.class,()->export.export(scope,filter,"AD",""));
         verify(db,never()).queryForList(anyString(),any(Object[].class));
+    }
+    @Test void primaryWorkbookAmountIsProviderGrossAndBuyerAmountIsOnlyForReference()throws Exception{
+        var order=row("READY","gross-order");results(List.of(order));
+        var settlement=new LinkedHashMap<String,Object>();
+        settlement.put("shop_id",order.get("shop_id"));settlement.put("order_id",order.get("order_id"));
+        settlement.put("settlement_currency","PHP");settlement.put("first_settlement_date",java.sql.Date.valueOf("2026-10-23"));
+        settlement.put("settlement_records",1);settlement.put("known_goods",1);settlement.put("known_net",1);
+        settlement.put("settlement_goods_amount",decimal("299.50"));settlement.put("settlement_net_amount",decimal("150.25"));
+        when(db.queryForList(contains("SUM(s.revenue) settlement_goods_amount"),any(Object[].class))).thenReturn(List.of(settlement));
+        var orders=sheet(export.export(scope,filter,"SETTLED_ORDER",""),2);
+        assertEquals("优惠前商品金额（结算原币）",value(orders,"M1"));
+        assertEquals("299.50",value(orders,"M2"));assertEquals("150.25",value(orders,"AF2"));
+        assertEquals("199.50",value(orders,"AH2"),"buyer payment is retained separately, not substituted for provider gross");
+        assertEquals("7.407402",value(orders,"N2"),"RMB cost is unchanged by revenue reporting");
+        settlement.put("known_goods",0);
+        orders=sheet(export.export(scope,filter,"SETTLED_ORDER",""),2);
+        assertEquals("",value(orders,"M2"));assertEquals("199.50",value(orders,"AH2"));
     }
 }

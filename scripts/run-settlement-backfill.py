@@ -9,13 +9,20 @@ import sys
 import importlib.util
 import time
 import signal
+import shutil
 
 os.umask(0o077)
 root = Path(sys.argv[1]).resolve()
 workers = int(sys.argv[2]) if len(sys.argv) > 2 else 2
 assert 1 <= workers <= 4, "Backfill workers must be between one and four"
+batch_size = int(sys.argv[3]) if len(sys.argv) > 3 else 5
+assert 1 <= batch_size <= 20, "Backfill batch must contain one to twenty records"
+assert shutil.disk_usage(root).free >= 2 * 1024**3, "Backfill requires at least 2 GiB of free disk"
 output = root / "backfill"
 output.mkdir(exist_ok=True, mode=0o700)
+for required in ("FinanceRepository", "FinanceSettlementBreakdown", "FinanceMarketplace"):
+    assert (root / "classes/com/yingdao/aicommerce/finance" / (required + ".class")).is_file(), \
+        "Backfill requires complete production finance classes: " + required
 deps = Path("/tmp/finance-order-tags-qa-20261026")
 app = json.loads(subprocess.check_output(["docker", "inspect", "ai-commerce-app"]))[0]
 mysql = json.loads(subprocess.check_output(["docker", "inspect", "ai-commerce-mysql"]))[0]
@@ -44,7 +51,7 @@ try:
         f"GRANT SELECT ON {schema}.finance_connections TO '{user}'@'%';")
     environment.write_text(
         f"BACKFILL_JDBC=jdbc:mysql://ai-commerce-mysql:3306/{schema}?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&connectTimeout=8000&socketTimeout=30000&rewriteBatchedStatements=true\n"
-        f"BACKFILL_USER={user}\nBACKFILL_PASSWORD={password}\nBACKFILL_WORKERS={workers}\n")
+        f"BACKFILL_USER={user}\nBACKFILL_PASSWORD={password}\nBACKFILL_WORKERS={workers}\nBACKFILL_BATCH_SIZE={batch_size}\n")
     environment.chmod(0o600)
     command = ["docker", "run", "--rm", "--user", "0:0", "--name", "finance-settlement-derivation",
         "--network", network, "--memory", "768m", "--cpus", "1.5", "--env-file", str(environment),
@@ -57,7 +64,7 @@ try:
     progress = module.SettlementProgress(root, app)
     checkpoints = [json.loads(p.read_text()) for p in output.glob("*.json") if p.stem.count("-") == 4]
     (root / "backfill-run.json").write_text(json.dumps({
-        "workers": workers, "batchSize": 20, "startedAt": time.time(),
+        "workers": workers, "batchSize": batch_size, "startedAt": time.time(),
         "recordsBefore": sum(p.get("records", 0) for p in checkpoints),
         "billsBefore": sum(p.get("bills", 0) for p in checkpoints)}))
     process = subprocess.Popen(command)
@@ -82,10 +89,13 @@ try:
             # Let the local five-second raw-fact cache expire before invalidating shared snapshots.
             time.sleep(6)
             progress.invalidate_snapshots()
+        if result != 0:
+            (output / "complete.json").unlink(missing_ok=True)
         progress.publish("COMPLETE" if result == 0 else "FAILED")
     except BaseException:
         subprocess.run(["docker", "stop", "--timeout", "20", "finance-settlement-derivation"], capture_output=True, timeout=30)
         process.wait(timeout=30)
+        (output / "complete.json").unlink(missing_ok=True)
         progress.publish("FAILED")
         raise
     raise SystemExit(result)
