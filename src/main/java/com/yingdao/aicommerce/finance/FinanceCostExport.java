@@ -27,13 +27,16 @@ public class FinanceCostExport {
         return export(scope,filter,source,recordId,"ALL");
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=120)
-    public byte[] export(Scope scope,Filter filter,String source,String recordId,String costStatus){
+    public byte[] export(Scope scope,Filter filter,String source,String recordId,String costStatus){return export(scope,filter,source,recordId,costStatus,"");}
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,timeout=120)
+    public byte[] export(Scope scope,Filter filter,String source,String recordId,String costStatus,String numbers){
         String selectedStatus=FinanceCostReport.costStatus(costStatus);
         if(!slots.tryAcquire())throw bad("当前有其他成本报表正在生成，请稍后重试");
         try(var book=new FinanceCostWorkbook()){
             String kind=kind(FinanceCostReport.scopeKind(source,!text(recordId).isBlank()));
             FinanceRepository.Query q=text(recordId).isBlank()?repo.query(scope,filter,"r"):
                 new FinanceRepository.Query("r.organization_id=? AND r.id=? AND "+FinanceRepository.visible("r"),List.of(scope.organizationId(),recordId));
+            q=FinanceRecordSearch.orders(q,Set.of("BILL","RECONCILIATION").contains(kind)?"o.order_id":"r.order_id",numbers);
             String from=" FROM ("+FinanceCostReport.related(kind)+q.where()+") x";
             Long total=repo.jdbc().queryForObject("SELECT COUNT(*)"+from+FinanceCostReport.costStatusWhere(selectedStatus),Long.class,q.args().toArray());
             if(total!=null&&total>MAX_ORDERS)throw bad("订单成本导出最多 50,000 笔订单，请缩小日期或店铺范围");
@@ -72,6 +75,7 @@ public class FinanceCostExport {
             summary.row(List.of("报表",kind.equals("SETTLED_ORDER")?"已结算订单商品成本（人民币）":"关联已结算订单商品成本（人民币）"));
             summary.row(List.of("生成时间（北京时间）",LocalDateTime.now(ZoneId.of("Asia/Shanghai"))));
             summary.row(List.of("筛选日期",filter.start()+" 至 "+filter.end()));
+            summary.row(List.of("订单编号查询",String.join("、",FinanceRecordSearch.numbers(numbers))));
             summary.row(List.of("成本状态筛选",selectedStatus.equals("PENDING")?"仅待补齐订单（含订单待同步及后台计算中）":"全部成本状态"));
             summary.row(List.of("日期依据",basis(kind)));
             summary.row(List.of("导出范围",text(recordId).isBlank()?"当前店铺、分组、平台、币种与日期筛选内的全部已结算订单，不受页面分页影响":"所选记录关联的全部已结算订单，不再限制下单日期"));

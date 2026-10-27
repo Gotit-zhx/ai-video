@@ -62,7 +62,7 @@ public class FinanceController {
         s(p);return ApiResponse.ok(service.authorization().start(body.platform,body.market,s(p),p.userId(),body.groupId,body.shopId));
     }
     @GetMapping("/records") public ApiResponse<?> records(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
-        var result=new LinkedHashMap<>(repo.details(s(p),filter(q),q.get("kind"),(int)Math.max(1,number(q.getOrDefault("page","1"))),50));
+        var result=new LinkedHashMap<>(repo.details(s(p),filter(q),q.get("kind"),(int)Math.max(1,number(q.getOrDefault("page","1"))),50,q.get("numbers")));
         result.put("fieldSettings",fields.settings(personal(p),q.get("kind")));
         // List workspaces already receive this exact settled-order summary from /overview.
         // Refund/bill/settlement summaries keep their own source-specific basis.
@@ -83,7 +83,7 @@ public class FinanceController {
         var selected=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),
                 text(map(context.get("filters")).get("currency")),requested.granularity(),requested.groupId());
         int page=(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1"))));
-        var result=new LinkedHashMap<>(repo.reconciliationPage(scope,selected,page,50));
+        var result=new LinkedHashMap<>(repo.reconciliationPage(scope,selected,page,50,q.get("numbers")));
         result.putAll(context);result.put("fieldSettings",fields.settings(personal(p),"RECONCILIATION"));
         if(cny)service.exchangeRates().enrich(rows(result.get("items")),service.exchangeRates().quote(text(map(context.get("fx")).get("id"))));
         return ApiResponse.ok(result);
@@ -121,11 +121,11 @@ public class FinanceController {
         FinanceFx.Quote quote=cny?service.exchangeRates().quote(q.get("fxSnapshot")):null;
         var columns=fields.selected(personal(p),view,true,cny);
         var rows=exportRows(columns);
-        if(rec)appendReconciliation(rows,columns,s,f,quote);
+        if(rec)appendReconciliation(rows,columns,s,f,quote,q.get("numbers"));
         else {
             int page=1;long total;
             do{
-                var result=repo.details(s,f,view.equals("ALL")?null:view,page,100);total=number(result.get("total"));
+                var result=repo.details(s,f,view.equals("ALL")?null:view,page,100,q.get("numbers"));total=number(result.get("total"));
                 if(total>100000)throw bad("本次导出超过 100,000 条，请缩小日期或店铺范围");
                 var items=FinanceData.rows(result.get("items"));
                 if(cny)service.exchangeRates().enrich(items,quote);
@@ -138,6 +138,7 @@ public class FinanceController {
         else{
             var sheets=new LinkedHashMap<String,List<List<String>>>();sheets.put(rec?"结算对账":"财务明细",rows);
             sheets.put("统计口径",List.of(List.of("日期范围",f.start()+" 至 "+f.end()),List.of("店铺分组",f.groupId().isBlank()?"全部分组":"UNGROUPED".equals(f.groupId())?"未分组":service.groups(s).stream().filter(g->f.groupId().equals(g.get("id"))).map(g->text(g.get("name"))).findFirst().orElse("所选分组")),List.of("币种",f.currency().isBlank()?"原币分列，禁止跨币种直接合计":f.currency()),
+                    List.of("编号查询",String.join("、",FinanceRecordSearch.numbers(q.get("numbers")))),
                     List.of("范围","当前筛选全部记录；列按当前用户的导出配置生成；平台已结算不代表银行到账"),
                     List.of("刷单口径","原始财务明细保留刷单记录及订单标记；经营汇总排除刷单结算金额、关联费用和成本，原始账单对账不删除记录。"),
                     List.of("时间口径","已结算订单及关联退款按首次平台结算日期筛选；结算和平台费用按平台结算日期。广告及独立费用按费用日期，待结算按订单日期。"),
@@ -147,7 +148,7 @@ public class FinanceController {
                     List.of("生成时间",java.time.Instant.now().toString())));
             if(!rec){
                 var rc=fields.selected(personal(p),"RECONCILIATION",true,cny);var rr=exportRows(rc);
-                appendReconciliation(rr,rc,s,f,quote);sheets.put("结算对账",rr);
+                appendReconciliation(rr,rc,s,f,quote,q.get("numbers"));sheets.put("结算对账",rr);
             }
             if(cny){
                 var rateRows=new ArrayList<List<String>>();rateRows.add(List.of("原币","参考汇率"));
@@ -163,8 +164,8 @@ public class FinanceController {
     static ArrayList<List<String>> exportRows(List<FinanceFields.Field> columns){
         var rows=new ArrayList<List<String>>();rows.add(columns.stream().map(FinanceFields.Field::label).toList());return rows;
     }
-    void appendReconciliation(List<List<String>> rows,List<FinanceFields.Field> columns,Scope s,Filter f,FinanceFx.Quote quote){
-        var items=repo.reconciliation(s,f,100001);
+    void appendReconciliation(List<List<String>> rows,List<FinanceFields.Field> columns,Scope s,Filter f,FinanceFx.Quote quote,String numbers){
+        var items=repo.reconciliation(s,f,100001,numbers);
         if(items.size()>100000)throw bad("对账导出超过 100,000 张账单，请缩小日期或店铺范围");
         if(quote!=null)service.exchangeRates().enrich(items,quote);
         for(var item:items)rows.add(columns.stream().map(field->FinanceFields.cell(item,field)).toList());

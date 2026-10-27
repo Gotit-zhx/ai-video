@@ -58,6 +58,12 @@ class FinanceCostExportTest {
         throw new AssertionError(ref);
     }
     static String value(Document d,String ref){return cell(d,ref).getTextContent();}
+    static String summaryValue(Document document,String label){
+        var rows=document.getElementsByTagName("row");
+        for(int i=0;i<rows.getLength();i++){var cells=((Element)rows.item(i)).getElementsByTagName("c");
+            if(cells.getLength()>1&&label.equals(cells.item(0).getTextContent()))return cells.item(1).getTextContent();}
+        throw new AssertionError("Missing summary: "+label);
+    }
     @Test void pendingSkuExportsShowIdentityAndRecoverNamesByProductAndVariant()throws Exception{
         var pending=row("INCOMPLETE","old-order");
         var cost=repo.read(text(pending.get("cost_json")));var line=new LinkedHashMap<>(rows(cost.get("lines")).getFirst());
@@ -95,7 +101,7 @@ class FinanceCostExportTest {
         assertEquals("3",value(lines,"Q2"));assertEquals("2",value(lines,"R2"));
         assertEquals("=不应执行的商品名",value(lines,"I2"));assertEquals("inlineStr",cell(lines,"I2").getAttribute("t"));
         assertEquals(0,lines.getElementsByTagName("f").getLength());
-        assertEquals("",value(summary,"B17"));assertEquals("14.814804",value(summary,"B18"));
+        assertEquals("",summaryValue(summary,"已结算商品成本合计（人民币）"));assertEquals("14.814804",summaryValue(summary,"已计算部分成本（人民币）"));
         assertTrue(orders.getElementsByTagName("autoFilter").getLength()>0);
         Files.createDirectories(Path.of("target"));Files.write(Path.of("target/order-cost-export-test.xlsx"),bytes);
     }

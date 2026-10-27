@@ -266,7 +266,7 @@ class FinanceConfigurationIntegrationTest {
         var fields=new FinanceFields(repo);
         db.update("INSERT INTO finance_view_preferences(organization_id,user_id,view_key,preferences_json) VALUES(?,?,?,?)",
                 owner.organizationId(),owner.userId(),"ORDER",repo.write(Map.of("visible",List.of("order_id","amount"),"exported",List.of("amount"))));
-        assertEquals(List.of("order_id","product_skus","amount"),fields.get(owner,"ORDER").visible());
+        assertEquals(List.of("order_id","product_skus","amount","order_created_time"),fields.get(owner,"ORDER").visible());
         assertTrue(fields.get(owner,"ORDER").exported().contains("product_skus"));
         fields.save(owner,"ORDER",List.of("order_id","amount"),List.of("amount"));
         assertFalse(fields.get(owner,"ORDER").visible().contains("product_skus"),"users can hide the new column after upgrading");
@@ -1147,6 +1147,48 @@ class FinanceConfigurationIntegrationTest {
     byte[] chargeCsv(String order,String shop,String fee){return ("订单编号,店铺,实际订单金额,代刷费CNY\n"+order+","+shop+",100,"+fee+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);}
     Entry dated(String shop,String kind,String external,String order,String bill,LocalDate day,String net,Map<String,Object> raw){
         return new Entry(shop,"SHOPEE",kind,external,order,bill,"结算","SETTLED",day,"PHP",decimal(net),null,null,null,null,"API",raw);
+    }
+    @Test void batchNumberSearchPreservesSettlementScopeAndOriginalOrderTimes()throws Exception{
+        String group=service.saveGroup(owner,null,"日期核对"),shop=groupedShop(owner,"date-search",group);
+        String order="585766520348574952",later="586208660231587825";
+        var created=Instant.parse("2026-08-28T05:27:54Z");
+        var september=new Filter(LocalDate.of(2026,9,1),LocalDate.of(2026,9,30),shop,"","","day",group);
+        repo.save(owner,dated(shop,"ORDER",order,order,"",LocalDate.of(2026,8,28),"100",Map.of("create_time",created.getEpochSecond())));
+        repo.save(owner,dated(shop,"ORDER",later,later,"",LocalDate.of(2026,9,23),"100",Map.of("create_time",Instant.parse("2026-09-23T01:33:43Z").getEpochSecond())));
+        repo.save(owner,dated(shop,"SETTLEMENT","s1",order,"sep-bill",LocalDate.of(2026,9,1),"80",Map.of()));
+        repo.save(owner,dated(shop,"SETTLEMENT","s2",later,"oct-bill",LocalDate.of(2026,10,4),"80",Map.of()));
+        repo.save(owner,dated(shop,"BILL","sep-bill","","sep-bill",LocalDate.of(2026,9,1),"80",Map.of()));
+        repo.save(owner,dated(shop,"REFUND","refund-id",order,"",LocalDate.of(2026,8,31),"10",Map.of("create_time",created.plusSeconds(86400).getEpochSecond())));
+        repo.save(owner,dated(shop,"FEE","fee-id",order,"sep-bill",LocalDate.of(2026,9,1),"20",Map.of()));
+        String query=order+"\n"+later+"，"+order;
+        for(String kind:List.of("ORDER","REFUND","SETTLEMENT","FEE","BILL")){
+            var result=repo.details(owner,september,kind,1,50,query);
+            assertEquals(1,number(result.get("total")),kind);
+            var item=rows(result.get("items")).getFirst();
+            assertEquals(created.toString(),item.get("order_created_time"),kind+" uses the related order creation, even when it has no line items");
+            assertEquals("Asia/Manila",item.get("order_timezone"));
+            assertEquals(0,number(repo.details(other,september,kind,1,50,query).get("total")));
+        }
+        assertEquals(1,number(repo.details(owner,september,"REFUND",1,50,"refund-id").get("total")));
+        assertEquals(0,number(repo.details(owner,september,"ORDER",1,50,later).get("total")));
+        assertEquals(0,number(repo.details(owner,september,"ORDER",1,50,order.substring(0,12)).get("total")),"no partial identifier matching");
+        assertEquals(5,number(repo.details(owner,september,null,1,50,query).get("total")));
+        assertEquals(1,number(repo.reconciliationPage(owner,september,1,50,order).get("total")),"order search finds its entire bill without trimming reconciliation transactions");
+        assertEquals(0,decimal(repo.reconciliation(owner,september,100,order).getFirst().get("difference")).compareTo(BigDecimal.ZERO));
+        var costs=new FinanceCostReport(repo).orders(owner,september,"SETTLED_ORDER","",1,"ALL",query);
+        assertEquals(1,number(costs.get("total")));assertEquals(order,rows(costs.get("items")).getFirst().get("order_id"));
+        var exported=new FinanceCostExport(repo).export(owner,september,"SETTLED_ORDER","","ALL",query);
+        assertEquals(2,FinanceCostExportTest.sheet(exported,2).getElementsByTagName("row").getLength());
+        var csv=FinanceWorkbook.read(controller().export(Map.of("start","2026-09-01","end","2026-09-30","view","ORDER","format","csv","shopId",shop,"numbers",query),principal()).getBody(),"report.csv");
+        assertEquals(2,csv.size());assertTrue(csv.getLast().contains("2026-08-28 13:27:54"));
+        assertTrue(csv.getLast().contains(order));assertFalse(csv.getLast().contains(later));
+        var fields=new FinanceFields(repo);
+        assertTrue(fields.get(owner,"REFUND").visible().contains("order_created_time"));
+        db.update("INSERT INTO finance_view_preferences(organization_id,user_id,view_key,preferences_json) VALUES(?,?,?,?)",
+                owner.organizationId(),owner.userId(),"REFUND",repo.write(Map.of("visible",List.of("order_id"),"exported",List.of("order_id"),"productSkuColumnVersion",1)));
+        assertTrue(fields.get(owner,"REFUND").visible().contains("order_created_time"),"old preferences receive the new default once");
+        fields.save(owner,"REFUND",List.of("order_id"),List.of("order_id"));
+        assertEquals(List.of("order_id"),fields.get(owner,"REFUND").visible(),"explicitly hiding a column remains respected");
     }
     @Test void actualSettlementDateIncludesPriorMonthOrdersAndKeepsCostAndExportScopeAligned()throws Exception{
         String group=service.saveGroup(owner,null,"跨月结算"),shop=groupedShop(owner,"cross-month",group);

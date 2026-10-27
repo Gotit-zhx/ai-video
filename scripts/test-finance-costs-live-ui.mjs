@@ -7,7 +7,7 @@ w.currentUser={permissions:['finance:manage']};w.matchMedia=()=>({matches:false}
 w.ResizeObserver=class{observe(){}disconnect(){}};
 w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
 w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
-const shops=[{id:'other',name:'无成本店',platform:'SHOPEE',group_id:'other-group',region:'TH'},{id:'shop',name:'母婴测试店',platform:'TIKTOK_SHOP',group_id:'group',region:'PH'}],groups=[{id:'group',name:'母婴组'},{id:'other-group',name:'其他组'}];
+const shops=[{id:'other',name:'无成本店',platform:'SHOPEE',group_id:'other-group',region:'TH'},{id:'shop',name:'母婴测试店',platform:'TIKTOK_SHOP',group_id:'group',region:'PH',timezone:'Asia/Manila'}],groups=[{id:'group',name:'母婴组'},{id:'other-group',name:'其他组'}];
 let costs={live:true,shopId:'shop',groupId:'group',groupName:'母婴组',sourceName:'成本.csv',costs:[{sku:'PACK',warehouse:'海外仓',prices:{'2026-09':2}},{sku:'DUP*2',warehouse:'海外仓',prices:{'2026-09':3}},{sku:'(DUP)*2',warehouse:'海外仓',prices:{'2026-09':4}}],
   products:[{shop_id:'shop',product_id:'product',sku_id:'variant',seller_sku:'PACK',name:'商品',spec:'一包'},{shop_id:'shop',product_id:'product',sku_id:'unmatched',seller_sku:'OTHER-CODE',name:'商品',spec:'其他规格'},{shop_id:'shop',product_id:'product',sku_id:'review',seller_sku:'（DUP） ×2',name:'商品',spec:'Pants-XXXL'}],sampleOrders:1,orderLimit:2000,
   settings:{warehouse:'海外仓',rules:{currency:'CNY',unit:'包',basis:'shipment',missing:'pending',freight:'',inbound:''}},settingsVersion:1,mappings:{},shopCatalogs:{shop:{costRows:1,sourceName:'成本.csv'},other:{costRows:0,sourceName:''}}};
@@ -32,7 +32,7 @@ w.api=async(path,options={})=>{
     throw Error('Unexpected mutation '+path);
   }
   if(url.pathname==='/api/v1/finance/shops')return {data:{items:shops,groups,sync:[]}};
-  if(url.pathname==='/api/v1/finance/workspace/costs/orders'){reads.push(Object.fromEntries(url.searchParams));return {data:{items:[{id:'order-1',shop_id:'shop',order_id:'ORDER-1',order_type_label:'商家承担的免费样品单',product_skus:'PACK\n（PACK）*2',record_date:'2026-10-19',first_settlement_date:'2026-10-23',amount:99,settlement_goods_amount:129,settlement_net_amount:80,settlement_currency:'PHP',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};}
+  if(url.pathname==='/api/v1/finance/workspace/costs/orders'){reads.push(Object.fromEntries(url.searchParams));return {data:{items:[{id:'order-1',shop_id:'shop',order_id:'ORDER-1',order_type_label:'商家承担的免费样品单',product_skus:'PACK\n（PACK）*2',record_date:'2026-08-28',order_created_time:'2026-08-28T05:27:54Z',first_settlement_date:'2026-10-23',amount:99,settlement_goods_amount:129,settlement_net_amount:80,settlement_currency:'PHP',product_cost_cny:null,product_cost_state:'待补齐'}],total:1,page:1,pageSize:50,productCosts:{total:{pending_count:1,ready_count:0,estimated_count:0,known_amount_cny:5.5,amount_cny:null}}}};}
   if(url.pathname==='/api/v1/finance/workspace/costs'){
     reads.push(url.searchParams.get('shopId'));
     if(url.searchParams.get('shopId')==='other'||url.searchParams.get('groupId')==='other-group'){
@@ -57,6 +57,7 @@ assert.equal(reads[0],'','initial selection is chosen by persisted cost availabi
 assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');
 await click('订单成本');assert(d.body.textContent.includes('已结算订单已算部分'));assert(d.body.textContent.includes('¥ 5.5'));assert(d.querySelector('tbody').textContent.includes('待补齐'));assert(!d.querySelector('tbody').textContent.includes('¥ 0'));
 assert(d.querySelector('thead').textContent.includes('首次平台结算日期'));assert.equal(reads.at(-1).kind,'SETTLED_ORDER');assert(d.querySelector('thead').textContent.includes('商品 SKU'));assert(d.querySelector('tbody').textContent.includes('（PACK）*2'));
+assert.equal(d.querySelector('tbody time').textContent,'2026-08-28 13:27:54');assert(d.querySelector('tbody').textContent.includes('2026-10-23'));
 assert.equal(d.querySelector('tbody .fi-sample-tag')?.textContent,'免费样品单');
 assert(d.querySelector('thead').textContent.includes('优惠前商品金额'));assert(d.querySelector('tbody').textContent.includes('129 PHP'));assert(d.querySelector('tbody').textContent.includes('80 PHP'));assert(!d.querySelector('tbody').textContent.includes('99 PHP'),'the buyer amount is not shown as provider gross');
 const retainedCostRow=d.querySelector('tbody tr'),retainedCostStats=d.querySelector('.fi-cost-stats');
@@ -65,11 +66,12 @@ observer.observe(d.querySelector('.fc-order-results'),{subtree:true,childList:tr
 await click('刷新成本');observer.disconnect();
 assert.equal(d.querySelector('tbody tr'),retainedCostRow);assert.equal(d.querySelector('.fi-cost-stats'),retainedCostStats);
 assert.equal(costMutations,0,'unchanged costs keep all result nodes and cause no DOM animation refresh');
+let numberInput=d.querySelector('.fi-number-search textarea');numberInput.value='585766520348574952\n585766481305634280';numberInput.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await settle();assert.equal(reads.at(-1).numbers,'585766520348574952,585766481305634280');
 field('结算开始日期','2026-10-01');await settle();
 await click('导出 Excel');
 assert.equal(downloads,1);assert.equal(exports.at(-1).url.pathname,'/api/v1/finance/workspace/costs/orders/export');
 assert.equal(exports.at(-1).url.searchParams.get('shopId'),'shop');assert.equal(exports.at(-1).url.searchParams.get('kind'),'SETTLED_ORDER');
-assert.equal(exports.at(-1).url.searchParams.get('start'),'2026-10-01');
+assert.equal(exports.at(-1).url.searchParams.get('start'),'2026-10-01');assert.equal(exports.at(-1).url.searchParams.get('numbers'),'585766520348574952,585766481305634280');
 assert(!exports.at(-1).url.searchParams.has('page'),'export includes every page');
 exportFails=true;await click('导出 Excel');
 assert(d.body.textContent.includes('导出范围过大'));assert(!button('导出 Excel').disabled);

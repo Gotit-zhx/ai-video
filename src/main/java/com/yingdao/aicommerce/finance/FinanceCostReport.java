@@ -174,12 +174,14 @@ public final class FinanceCostReport {
     public Map<String,Object> orders(Scope scope,Filter filter,String kind,String recordId,int page){
         return orders(scope,filter,kind,recordId,page,"ALL");
     }
-    public Map<String,Object> orders(Scope scope,Filter filter,String kind,String recordId,int page,String status){
+    public Map<String,Object> orders(Scope scope,Filter filter,String kind,String recordId,int page,String status){return orders(scope,filter,kind,recordId,page,status,"");}
+    public Map<String,Object> orders(Scope scope,Filter filter,String kind,String recordId,int page,String status,String numbers){
         String selectedStatus=costStatus(status);
         String selected=scopeKind(kind,!text(recordId).isBlank());
         if(!Set.of("SETTLED_ORDER","SAMPLE_SETTLED","ORDER","REFUND","REFUND_SETTLED","SETTLEMENT","PENDING","BILL","RECONCILIATION").contains(selected))throw bad("成本来源类型不正确");
         FinanceRepository.Query q=text(recordId).isBlank()?repo.query(scope,filter,"r"):
                 new FinanceRepository.Query("r.organization_id=? AND r.id=? AND "+FinanceRepository.visible("r"),List.of(scope.organizationId(),recordId));
+        q=FinanceRecordSearch.orders(q,Set.of("BILL","RECONCILIATION").contains(selected)?"o.order_id":"r.order_id",numbers);
         String from=" FROM ("+related(selected)+q.where()+") x";
         // The exact same deduplicated relation supplies the summary and page count.
         var costs=summary(scope,selected,q);

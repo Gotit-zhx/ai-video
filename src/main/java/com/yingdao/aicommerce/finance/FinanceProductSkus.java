@@ -69,7 +69,17 @@ public final class FinanceProductSkus {
         var orders=new LinkedHashMap<OrderKey,SortedSet<String>>();
         var statuses=new HashMap<OrderKey,String>();
         var types=new HashMap<OrderKey,String>();
+        var times=new HashMap<OrderKey,String>();
+        var billTimes=new HashMap<String,SortedSet<String>>();
         var bills=new LinkedHashMap<String,SortedSet<String>>();
+        var shopIds=records.stream().map(r->text(r.get("shop_id"))).filter(v->!v.isBlank()).distinct().toList();
+        if(!shopIds.isEmpty()){
+            var args=new ArrayList<Object>();args.add(scope.organizationId());args.addAll(shopIds);
+            var zones=new HashMap<String,String>();
+            for(var row:repo.jdbc().queryForList("SELECT id,timezone FROM finance_connections WHERE organization_id=? AND id IN ("
+                    +String.join(",",Collections.nCopies(shopIds.size(),"?"))+")",args.toArray()))zones.put(text(row.get("id")),text(row.get("timezone")));
+            for(var row:records)row.put("order_timezone",zones.getOrDefault(text(row.get("shop_id")),"UTC"));
+        }
         for(var row:records){
             if("ORDER".equals(row.get("kind")))continue;
             put(row,List.of());
@@ -83,10 +93,11 @@ public final class FinanceProductSkus {
             var args=new ArrayList<Object>();args.add(scope.organizationId());
             orders.keySet().forEach(key->{args.add(key.shop());args.add(key.order());});
             String where=String.join(" OR ",Collections.nCopies(orders.size(),"(o.shop_id=? AND o.order_id=?)"));
-            for(var row:repo.jdbc().queryForList("SELECT o.shop_id,o.order_id,o.status related_order_status,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.order_type')) order_type,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.is_sample_order')) is_sample_order,"+SKU+" sku FROM finance_records o "+ITEMS
+            for(var row:repo.jdbc().queryForList("SELECT o.shop_id,o.order_id,o.status related_order_status,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.create_time')) order_created_time,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.order_type')) order_type,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.is_sample_order')) is_sample_order,"+SKU+" sku FROM finance_records o "+ITEMS.replace("JOIN JSON_TABLE","LEFT JOIN JSON_TABLE")+" ON TRUE "
                     +" WHERE o.organization_id=? AND o.kind='ORDER' AND o.source='API' AND ("+where+")",args.toArray())){
                 String code=text(row.get("sku")).trim();
                 var key=new OrderKey(text(row.get("shop_id")),text(row.get("order_id")));
+                String time=FinanceFields.orderTime(row.get("order_created_time"));if(time!=null)times.put(key,time);
                 statuses.put(key,text(row.get("related_order_status")));
                 types.put(key,FinanceFields.orderType(text(row.get("order_type")),text(row.get("is_sample_order"))));
                 if(!code.isBlank())orders.get(key).add(code);
@@ -96,18 +107,24 @@ public final class FinanceProductSkus {
             var args=new ArrayList<Object>();args.add(scope.organizationId());args.addAll(bills.keySet());
             String slots=String.join(",",Collections.nCopies(bills.size(),"?"));
             for(var row:repo.jdbc().queryForList("""
-                SELECT r.id record_id,%s sku FROM finance_records r
+                SELECT r.id record_id,JSON_UNQUOTE(JSON_EXTRACT(o.raw_json,'$.create_time')) order_created_time,%s sku FROM finance_records r
                 JOIN finance_records t ON t.organization_id=r.organization_id AND t.shop_id=r.shop_id
                   AND t.kind='SETTLEMENT' AND t.source='API' AND t.statement_id=r.external_id
                 JOIN finance_records o ON o.organization_id=r.organization_id AND o.shop_id=r.shop_id
                   AND o.kind='ORDER' AND o.source='API' AND o.order_id=t.order_id
-                %s WHERE r.organization_id=? AND r.kind='BILL' AND r.id IN (%s)
-                """.formatted(SKU,ITEMS,slots),args.toArray())){
+                %s ON TRUE WHERE r.organization_id=? AND r.kind='BILL' AND r.id IN (%s)
+                """.formatted(SKU,ITEMS.replace("JOIN JSON_TABLE","LEFT JOIN JSON_TABLE"),slots),args.toArray())){
+                String time=FinanceFields.orderTime(row.get("order_created_time"));
+                if(time!=null)billTimes.computeIfAbsent(text(row.get("record_id")),key->new TreeSet<>()).add(time);
                 String code=text(row.get("sku")).trim();
                 if(!code.isBlank())bills.get(text(row.get("record_id"))).add(code);
             }
         }
         for(var row:records){
+            String time=times.get(new OrderKey(text(row.get("shop_id")),text(row.get("order_id"))));
+            if(time!=null)row.put("order_created_time",time);
+            var range=billTimes.get(text(row.get("id")));
+            if(range!=null&&!range.isEmpty()){row.put("order_created_time",range.first());row.put("order_created_time_end",range.last());}
             var codes="BILL".equals(row.get("kind"))?bills.get(text(row.get("id"))):orders.get(new OrderKey(text(row.get("shop_id")),text(row.get("order_id"))));
             if(codes!=null)put(row,codes);
             String status=statuses.get(new OrderKey(text(row.get("shop_id")),text(row.get("order_id"))));
@@ -132,6 +149,8 @@ public final class FinanceProductSkus {
         for(int i=0;i<expenses.size();i++){
             expenses.get(i).put("product_skus",references.get(i).get("product_skus"));
             expenses.get(i).put("product_sku_values",references.get(i).get("product_sku_values"));
+            expenses.get(i).put("order_created_time",references.get(i).get("order_created_time"));
+            expenses.get(i).put("order_timezone",references.get(i).get("order_timezone"));
         }
     }
 }

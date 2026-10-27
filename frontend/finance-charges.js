@@ -1,7 +1,7 @@
 /* Internal expense sources and order tags. Import/removal never edits platform transactions. */
 (() => {
   'use strict';
-  let state={group:'',tab:'brush',page:1},sequence=0,pollTimer=null;
+  let state={group:'',tab:'brush',page:1,numbers:''},sequence=0,pollTimer=null;
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;parent?.append(n);return n;};
   const money=v=>v==null?'待核对':Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
   const json=body=>({headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -42,7 +42,7 @@
       clearTimeout(pollTimer);
       const run=++sequence,group=state.group,requestedScope={...scope};busy=true;feedback.textContent='正在更新…';content.setAttribute('aria-busy','true');
       try{
-        const incoming=group?await request('/charges?'+new URLSearchParams({...requestedScope,groupId:group,page:state.page})):null;
+        const incoming=group?await request('/charges?'+new URLSearchParams({...requestedScope,groupId:group,page:state.page,numbers:state.numbers})):null;
         if(run!==sequence||!root.isConnected)return;
         data=incoming?{...incoming,filters:incoming.filters||requestedScope}:null;feedback.textContent='';drawContent();
         if(data?.labelSummary?.processing||Number(data?.totals?.unmatched)>0)pollTimer=setTimeout(()=>{if(run===sequence&&root.isConnected&&!document.querySelector('.fq-dialog'))refresh().catch(e=>{feedback.textContent=e.message;});},15000);
@@ -124,17 +124,18 @@
       const files=el('section',null,content,'fq-section');el('h4','导入文件',files);
       table(files,['文件','来源行数','操作'],data.imports.map(f=>[f.source_name,f.row_count,canManage?button(null,'移除',()=>confirmRemoval('移除费用来源','只撤销这个文件的来源。同单仍有其他来源时保留标签；没有其他来源时自动恢复正常经营汇总。',()=>request('/charges/imports/'+encodeURIComponent(f.id)+'?'+new URLSearchParams({groupId:state.group}),{method:'DELETE'}))):'—']));
       const orders=el('section',null,content,'fq-section');el('h4','订单核对',orders);
-      table(orders,['订单编号','来源店铺','本金原币（核对用）','服务费（¥）','匹配状态'],data.rows.map(r=>{
+      options.numberSearch?.(orders,state.numbers,value=>{state.numbers=value;state.page=1;refresh();},'订单编号');
+      table(orders,['订单编号','下单时间（店铺时区）','来源店铺','本金原币（核对用）','服务费（¥）','匹配状态'],data.rows.map(r=>{
         const matched=r.match.matchStatus==='MATCHED',status=el('span',matched?'刷单':r.match.matchStatus==='REVIEW'?'待核对':'待匹配',null,matched?'fi-marketing-tag':'fi-status');
         status.title=r.match.matchNote+(r.marker?.source_count>1?' · 多文件同单只统计一次':'');const wrap=el('span',null);wrap.append(status);
         if(!matched)el('small',r.match.matchNote,wrap);
         if(r.marker?.source_count&&r.marker.service_fee_cny==null)el('small',' 服务费冲突',wrap);
-        return [r.order_id,r.shop_hint,money(r.principal_native)+' '+(r.match.currency||'币种待匹配'),money(r.service_fee_cny),wrap];
+        return [r.order_id,options.dateTimeCell?.(r.order_created_time,r.order_timezone||'UTC')||'—',r.shop_hint,money(r.principal_native)+' '+(r.match.currency||'币种待匹配'),money(r.service_fee_cny),wrap];
       }));
       const pages=el('div',null,orders,'fi-actions fq-pagination');
       button(pages,'上一页',async()=>{state.page--;await refresh();}).disabled=state.page<=1;
-      el('span',`第 ${state.page} 页 · 共 ${data.totals.records} 条来源`,pages);
-      button(pages,'下一页',async()=>{state.page++;await refresh();}).disabled=state.page*50>=Number(data.totals.records);
+      el('span',`第 ${state.page} 页 · 共 ${data.recordTotal??data.totals.records} 条来源`,pages);
+      button(pages,'下一页',async()=>{state.page++;await refresh();}).disabled=state.page*50>=Number(data.recordTotal??data.totals.records);
     }
     root.replaceChildren();root.className='fq-workspace';
     const toolbar=el('div',null,root,'fq-toolbar'),tabs=el('div',null,toolbar,'fi-tabs fq-tabs');tabs.setAttribute('aria-label','成本类型');
@@ -161,5 +162,5 @@
     drawContent();
     refresh().catch(e=>{feedback.textContent=e.message;});
   }
-  globalThis.FinanceCharges={mount,openLabels(group){state.tab='labels';if(group)state.group=group;},reset(){sequence++;clearTimeout(pollTimer);state={group:'',tab:'brush',page:1};document.querySelectorAll('.fq-dialog').forEach(n=>n.remove());}};
+  globalThis.FinanceCharges={mount,openLabels(group){state.tab='labels';if(group)state.group=group;},reset(){sequence++;clearTimeout(pollTimer);state={group:'',tab:'brush',page:1,numbers:''};document.querySelectorAll('.fq-dialog').forEach(n=>n.remove());}};
 })();

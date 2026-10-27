@@ -17,8 +17,9 @@ public class FinanceCostWorkspace {
     public Map<String,Object> orderCosts(Scope scope,Filter filter,String kind,String recordId,int page){
         return new FinanceCostReport(repo).orders(scope,filter,kind,recordId,page);
     }
-    public Map<String,Object> orderCosts(Scope scope,Filter filter,String kind,String recordId,int page,String costStatus){
-        return new FinanceCostReport(repo).orders(scope,filter,kind,recordId,page,costStatus);
+    public Map<String,Object> orderCosts(Scope scope,Filter filter,String kind,String recordId,int page,String costStatus){return orderCosts(scope,filter,kind,recordId,page,costStatus,"");}
+    public Map<String,Object> orderCosts(Scope scope,Filter filter,String kind,String recordId,int page,String costStatus,String numbers){
+        return new FinanceCostReport(repo).orders(scope,filter,kind,recordId,page,costStatus,numbers);
     }
     /** Requested only when opening the operating-cost breakdown, never on every dashboard poll. */
     @Transactional(readOnly=true,timeout=30)

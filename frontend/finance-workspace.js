@@ -15,7 +15,8 @@
   const today=()=>dateText(new Date()),ago=n=>{const d=new Date();d.setDate(d.getDate()-n);return dateText(d);};
   function dateGranularity(start,end){const days=Math.round((Date.parse(end)-Date.parse(start))/86400000)+1;return days<=45?'day':days<=200?'week':days<=400?'month':days<=900?'quarter':days<=1500?'halfyear':'year';}
   const defaultFilters=()=>({start:ago(29),end:today(),shopId:'',groupId:'',platform:'',currency:'',granularity:'day',displayCurrency:'CNY',fxSnapshot:''});
-  let filters=defaultFilters();
+  let filters=defaultFilters(),numberQueries={};
+  const detailNumbers=()=>numberQueries[view+':'+currentFieldView()]||'';
   let filterScope=null,pinnedDates=false,reportFilters=null;
   const filterStorageKey=()=>typeof currentUser!=='undefined'&&currentUser?.organizationId&&currentUser?.userId
     ?'heyi:finance-filters:v1:'+JSON.stringify([currentUser.organizationId,currentUser.userId]):'';
@@ -63,7 +64,7 @@
   function recordLead(row,value){const n=el('span',null,null,'fi-record-lead');n.append(platformBadge(recordPlatform(row)));const content=el('span',null,n,'fi-record-value');if(value instanceof Node)content.append(value);else content.textContent=value??'—';return n;}
   // record_date is a business calendar date; never shift it through the browser's timezone.
   function businessDate(value){if(value==null||value==='')return '—';const match=String(value).match(/^(\d{4}-\d{2}-\d{2})(?:$|[T ])/);return match?match[1]:'—';}
-  function recordZone(row){return data?.shops?.find(shop=>shop.id===row.shop_id)?.timezone||'UTC';}
+  function recordZone(row){return row.order_timezone||data?.shops?.find(shop=>shop.id===row.shop_id)?.timezone||'UTC';}
   function dateTimeCell(value,zone='UTC'){
     if(value==null||value==='')return null;
     const text=String(value);if(/^\d{4}-\d{2}-\d{2}$/.test(text))return null;
@@ -96,7 +97,7 @@
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选日期…';n.title=filters.start+' 至 '+filters.end;}}
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
-  function reset(){active=false;generation++;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
+  function reset(){active=false;generation++;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
   function leave(){active=false;generation++;clearTimeout(refreshTimer);cleanup();}
   function refreshWhenIdle(){
     if(!active)return;
@@ -421,6 +422,7 @@
     productCostSummary(parent,result.productCosts||data.productCosts);
     if(selectedKind==='REFUND')footnote(parent,'平台退款金额保留接口返回的申请/退款金额；确认退款金额仅按已完成状态计入总览。处理中的申请和已取消申请不计入确认退款。');
     const {n,h}=card(parent,selectedKind==='SETTLEMENT'?'结算明细':kinds[selectedKind]+'明细','当前筛选 · 共 '+number(result.total)+' 条',12);el('span',data.filters.currency||'原币',h,'fi-tag');
+    numberSearch(n,detailNumbers(),value=>{numberQueries[view+':'+currentFieldView()]=value;page=1;load();});
     renderFieldsTable(n,result.items,result.fieldSettings);action('字段设置','fee',h,()=>fieldsDialog(selectedKind,result.fieldSettings));
     const bar=el('div',null,n,'fi-pagebar');el('span',`第 ${result.page} 页 · 每页 ${result.pageSize} 条`,bar);const controls=el('div',null,bar,'fi-actions');
     button('上一页',controls,()=>{page--;load();}).disabled=page<=1;
@@ -435,6 +437,7 @@
     for(const [key,label]of[['MATCHED','核对一致'],['DIFFERENCE','存在差异'],['MISSING','待补齐 / 同步中']]){const n=el('div',null,stats);el('span',label,n);el('strong',result.items.filter(r=>r.result===key||(key==='MISSING'&&r.result==='PARTIAL')).length,n);el('span','本页账单',n);}
     const {n,h}=card(parent,'平台结算账单核对','账单金额 ↔ 同账单、同币种的结算交易明细 · 共 '+number(result.total)+' 张账单',12);
     action('字段设置','fee',h,()=>fieldsDialog('RECONCILIATION',result.fieldSettings));
+    numberSearch(n,detailNumbers(),value=>{numberQueries[view+':'+currentFieldView()]=value;page=1;load();});
     renderFieldsTable(n,result.items,result.fieldSettings,'暂无可核对账单。连接财务店铺同步结算数据，或导入平台结算账单。');
     const bar=el('div',null,n,'fi-pagebar');el('span',`第 ${result.page} 页 · 每页 ${result.pageSize} 条`,bar);const controls=el('div',null,bar,'fi-actions');
     button('上一页',controls,()=>{page--;load();}).disabled=page<=1;
@@ -628,6 +631,7 @@
     const visible=[...new Set(settings.visible.map(id=>orderView&&id==='external_id'?'order_id':id))];
     const fields=settings.fields.map(f=>{
       if(f.id==='record_date'&&['ORDER','REFUND'].includes(key))return {...f,label:'首次平台结算日期',recordTime:false};
+      if(f.id==='order_created_time'&&['BILL','RECONCILIATION'].includes(key))return {...f,label:'关联订单下单时间范围'};
       if(f.id==='external_id'&&['BILL','RECONCILIATION'].includes(key))return {...f,label:'账单编号'};
       return f;
     });
@@ -637,6 +641,11 @@
     const value=f.id==='fx_time'?row.fx?.time:f.id==='fx_provider'?row.fx?.provider:row[f.id];
     if(f.id==='shop_id')return shopName(value);
     if(f.id==='product_skus')return skuCell(row);
+    if(f.id==='order_created_time'&&row.kind==='BILL'){
+      const start=dateTimeCell(value,recordZone(row)),end=dateTimeCell(row.order_created_time_end,recordZone(row));
+      if(!start)return '—';if(!end||value===row.order_created_time_end)return start;
+      const range=el('span',null,null,'fi-order-time-range');range.append(start);el('small','至',range);range.append(end);return range;
+    }
     if(['product_cost_cny','product_cost_known_cny'].includes(f.id)&&value!=null&&row.id)return costLink(number(value),{recordId:row.id,shopId:row.shop_id,kind:row.kind==='BILL'?'BILL':row.kind||'ORDER'});
     if(['external_id','order_id'].includes(f.id)&&row.id){const n=button(value||'查看详情',null,()=>detailDialog(row.id),'fi-record-link');n.title=value?String(value)+' · 查看详情':'未关联订单 · 查看详情';if(row.marketing_order){const wrap=el('span',null,null,'fi-settlement-amount');wrap.append(n);const tag=el('small','刷单',wrap,'fi-marketing-tag');tag.title='不计入经营汇总；原始订单和对账保留';return wrap;}if(row.order_type_label?.includes('样品单')){const wrap=el('span',null,null,'fi-settlement-amount');wrap.append(n);const tag=el('small',row.order_type_label.includes('免费')?'免费样品单':'样品单',wrap,'fi-sample-tag');tag.title=row.order_type_label;return wrap;}return n;}
     if(f.id==='status'||f.id==='result')return badge(value);
@@ -656,6 +665,14 @@
     if(f.type==='datetime')return dateTimeCell(value,f.label.includes('UTC')?'UTC':recordZone(row))||businessDate(value);
     return value==null||value===''?'—':value;
   }
+  function numberSearch(parent,value,onSearch,label='订单 / 账单 / 退款编号'){
+    const form=el('form',null,parent,'fi-number-search'),input=el('textarea',null,form);input.rows=1;input.value=value;input.placeholder=label+'，多个用换行或逗号分隔';input.setAttribute('aria-label',label+'查询');input.maxLength=16000;
+    const submit=el('button','查询',form,'fi-primary');submit.type='submit';
+    form.onsubmit=event=>{event.preventDefault();const ids=[...new Set(input.value.trim().split(/[\s,，;；]+/).filter(Boolean))];if(ids.length>100){input.setCustomValidity('最多查询 100 个编号');input.reportValidity();return;}input.setCustomValidity('');onSearch(ids.join(','));};
+    input.oninput=()=>input.setCustomValidity('');input.onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();form.requestSubmit();}};
+    if(value)button('清除',form,()=>onSearch(''));
+    el('small',value?'按完整编号查询以下明细和导出，仍受当前日期、店铺及分组限制。':'支持批量粘贴，最多 100 个完整编号。',form);return form;
+  }
   function renderFieldsTable(parent,items,settings,empty){
     settings=presentationSettings(settings);
     const fields=settings.visible.map(id=>settings.fields.find(f=>f.id===id)).filter(f=>f&&(!f.cny||data.fx));
@@ -669,7 +686,7 @@
   async function fieldsDialog(key,initial){
     const d=dialog('字段显示与导出');d.d.classList.add('fi-fields-dialog');
     el('p','主要字段默认选中，扩展字段可按需要添加。页面显示和文件导出独立保存，仅影响当前账号。未返回或不适用的字段显示 —；扩展金额按原币展示。',d.body,'fi-muted');
-    el('p','订单及关联退款按首次平台结算日期筛选，跨月下单不影响归属。下单或退款申请的时分秒可勾选「平台创建时间（UTC）」。平台净结算可单独选择，用于核对。',d.body,'fi-muted');
+    el('p','订单及关联退款按首次平台结算日期筛选，跨月下单不影响归属。下单时间按店铺时区单独显示，包含时分秒；退款申请时间可另选「平台创建时间（UTC）」。平台净结算可单独选择，用于核对。',d.body,'fi-muted');
     let settings=initial,checks=[];
     const choose=select(d.body,'数据类型',[['ALL','全部财务明细'],...Object.entries(kinds),['RECONCILIATION','结算对账']],key,async v=>{try{await render(v);}catch(e){d.feedback.textContent=e.message;}});
     const list=el('div',null,d.body,'fi-field-list');
@@ -734,7 +751,7 @@
     button('配置导出字段',d.body,()=>fieldsDialog(type.value));
     const format=select(d.body,'文件格式',[['xlsx','Excel（含结算对账与统计口径）'],['csv','CSV 明细']],'xlsx',()=>{});
     d.submit('下载报表',async()=>{
-      const response=await fetch('/api/v1/finance/export?'+qs({view:type.value,format:format.value}),{credentials:'same-origin',cache:'no-store'});
+      const response=await fetch('/api/v1/finance/export?'+qs({view:type.value,format:format.value,numbers:detailNumbers()}),{credentials:'same-origin',cache:'no-store'});
       if(!response.ok){let message='导出失败';try{message=(await response.json()).message||message;}catch{}throw Error(message);}
       const url=URL.createObjectURL(await response.blob());const a=el('a',null,d.body);a.href=url;a.download='财务报表-'+filters.start+'.'+format.value;a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);d.d.close();
     });
@@ -843,7 +860,7 @@
           const host=el('div',null,shell(next));host.dataset.financeExpenses='';
         }
       }else if(view==='reconciliation'){
-        const response=await request('/reconciliation?'+qs({page}));if(run!==generation||!active)return;
+        const response=await request('/reconciliation?'+qs({page,numbers:detailNumbers()}));if(run!==generation||!active)return;
         data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';
         reconciliation(shell(next),response);
       }else if(view!=='shops'){
@@ -852,7 +869,7 @@
           .catch(()=>{if(run===generation&&active)notify('图表暂未加载，明细仍可查看。',true);});
         const isRecordView=!['overview','ads'].includes(view);
         if(isRecordView&&!recordKinds().includes(selectedKind))selectedKind=recordKinds()[0];
-        const recordQuery=()=>'/records?'+qs({kind:selectedKind,page,includeProductCosts:'false'});
+        const recordQuery=()=>'/records?'+qs({kind:selectedKind,page,includeProductCosts:'false',numbers:detailNumbers()});
         // Parallel requests only once the native currency and (for CNY) FX snapshot are fixed.
         const resolvedCurrency=filters.currency||filters.displayCurrency==='CNY';
         const resolvedFx=filters.displayCurrency!=='CNY'||filters.fxSnapshot;
@@ -870,12 +887,12 @@
       commit(next);
       if(view==='costs'){
         const host=root.querySelector('[data-finance-costs]');
-        if(globalThis.FinanceCosts)FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,openRecord:detailDialog,skuCell,downloadOrderCosts,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});
+        if(globalThis.FinanceCosts)FinanceCosts.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),preview:data.costs,openRecord:detailDialog,skuCell,dateTimeCell,numberSearch,downloadOrderCosts,isActive:()=>active&&view==='costs',request:(path,options)=>request('/workspace'+path,options)});
         else el('p','成本管理页面组件暂未加载，请刷新重试。',host,'fi-muted');
       }
       if(view==='expense-ledger'){
         const host=root.querySelector('[data-finance-expenses]');
-        if(globalThis.FinanceCharges)FinanceCharges.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),skuCell,filters:{...filters},onFiltersChange:scope=>{Object.assign(filters,scope);pinnedDates=true;rememberFilters();},request:(path,options)=>request('/workspace'+path,options)});
+        if(globalThis.FinanceCharges)FinanceCharges.mount(host,{shops:data.shops,groups:data.groups,canManage:canManage(),skuCell,dateTimeCell,numberSearch,filters:{...filters},onFiltersChange:scope=>{Object.assign(filters,scope);pinnedDates=true;rememberFilters();},request:(path,options)=>request('/workspace'+path,options)});
         else el('p','费用组件暂未加载，请刷新重试。',host,'fi-muted');
       }
       const errors=(data?.sync||[]).filter(s=>s.status==='ERROR').length;

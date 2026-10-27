@@ -20,6 +20,9 @@ public final class FinanceFields {
         core("statement_id","账单编号","text"),core("category","费用类别","text"),core("status","状态","text"),
         core("currency","币种","text"),core("amount","原币金额","money"),core("revenue","归因收入","money"),core("source","来源","text"),
         core("updated_at","最后同步时间","datetime"),core("marketing_label","订单标记","text"),core("summary_inclusion","经营汇总口径","text"),
+        new Field("order_created_time","下单时间（店铺时区）","datetime","主要字段",false,"ORDER REFUND SETTLEMENT BILL FEE COST PENDING RECONCILIATION",""),
+        new Field("order_created_time_end","最晚下单时间（店铺时区）","datetime","主要字段",false,"BILL RECONCILIATION",""),
+        new Field("order_timezone","店铺时区","text","主要字段",false,"ORDER REFUND SETTLEMENT BILL FEE COST PENDING RECONCILIATION",""),
         new Field("product_cost_cny","已结算订单商品成本（人民币）","money","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("product_cost_known_cny","已结算订单已算成本（人民币）","money","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("product_cost_state","商品成本状态","text","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
@@ -137,11 +140,25 @@ public final class FinanceFields {
     public Preferences get(Scope s,String key){
         key=view(key);
         var saved=repo.jdbc().queryForList("SELECT preferences_json FROM finance_view_preferences WHERE organization_id=? AND user_id=? AND view_key=?",s.organizationId(),s.userId(),key);
-        if(saved.isEmpty())return defaults(key);
+        if(saved.isEmpty())return withOrderTimes(key,defaults(key));
         var value=repo.read(text(saved.getFirst().get("preferences_json")));
         boolean upgraded=number(value.get("productSkuColumnVersion"))>=1;
-        return validate(key,upgraded?strings(value.get("visible")):withProductSkus(strings(value.get("visible"))),
+        var prefs=validate(key,upgraded?strings(value.get("visible")):withProductSkus(strings(value.get("visible"))),
                 upgraded?strings(value.get("exported")):withProductSkus(strings(value.get("exported"))));
+        return number(value.get("orderTimeColumnVersion"))>=1?prefs:withOrderTimes(key,prefs);
+    }
+    static Preferences withOrderTimes(String key,Preferences prefs){
+        if(Set.of("AD","AD_GMV").contains(key))return prefs;
+        var visible=insertAfter(prefs.visible,"order_created_time","record_date");
+        var exported=insertAfter(prefs.exported,"order_created_time","record_date");
+        exported=insertAfter(exported,"order_timezone","order_created_time");
+        if(Set.of("BILL","RECONCILIATION","ALL").contains(key))exported=insertAfter(exported,"order_created_time_end","order_created_time");
+        return new Preferences(visible,exported);
+    }
+    static List<String> insertAfter(List<String> fields,String id,String after){
+        var out=new ArrayList<>(fields);
+        if(!out.contains(id)){int i=out.indexOf(after);out.add(i<0?out.size():i+1,id);}
+        return out;
     }
     static List<String> withProductSkus(List<String> fields){
         var result=new ArrayList<>(fields);
@@ -153,12 +170,12 @@ public final class FinanceFields {
     }
     public Map<String,Object> settings(Scope s,String key){
         key=view(key);var prefs=get(s,key);
-        return Map.of("view",key,"fields",catalog(key),"visible",prefs.visible,"exported",prefs.exported,"defaults",defaults(key));
+        return Map.of("view",key,"fields",catalog(key),"visible",prefs.visible,"exported",prefs.exported,"defaults",withOrderTimes(key,defaults(key)));
     }
     public void save(Scope s,String key,List<String> visible,List<String> exported){
         key=view(key);var prefs=validate(key,visible,exported);
         repo.jdbc().update("INSERT INTO finance_view_preferences(organization_id,user_id,view_key,preferences_json) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE preferences_json=VALUES(preferences_json),updated_at=UTC_TIMESTAMP(6)",
-                s.organizationId(),s.userId(),key,repo.write(Map.of("visible",prefs.visible,"exported",prefs.exported,"productSkuColumnVersion",1)));
+                s.organizationId(),s.userId(),key,repo.write(Map.of("visible",prefs.visible,"exported",prefs.exported,"productSkuColumnVersion",1,"orderTimeColumnVersion",1)));
     }
     static Preferences validate(String key,List<String> visible,List<String> exported){
         Set<String> allowed=new HashSet<>(catalog(key).stream().map(Field::id).toList());
@@ -186,6 +203,10 @@ public final class FinanceFields {
     static void enrich(Map<String,Object> row,Map<String,Object> raw){
         if(!"API".equals(row.get("source")))return;
         String kind=text(row.get("kind")),platform=text(row.get("platform"));
+        if(Set.of("SETTLEMENT","PENDING").contains(kind)){
+            String time=orderTime(raw.get("order_create_time"));
+            if(time!=null)row.put("order_created_time",time);
+        }
         for(var field:catalog(kind)){
             if(field.path.isEmpty()||field.id.startsWith("shopee_")&&!platform.equals("SHOPEE")
                     ||field.id.startsWith("tk_")&&!platform.equals("TIKTOK_SHOP"))continue;
@@ -220,6 +241,7 @@ public final class FinanceFields {
             row.put("refund_amount_note",row.get("amount")!=null?"已确认退款":confirmed?"平台未返回确认退款金额":status.equals("CLOSED")?"已关闭，不计入退款":Set.of("CANCELLED","RETURN_OR_REFUND_REQUEST_CANCEL").contains(status)?"已取消，不计入退款":"尚未确认，不计入退款合计");
         }
         if(kind.equals("ORDER")){
+            if(row.get("create_time")!=null)row.put("order_created_time",row.get("create_time"));
             if(platform.equals("TIKTOK_SHOP"))row.put("order_type_label",orderType(first(raw,"order_type"),text(raw.get("is_sample_order"))));
             FinanceProductSkus.put(row,FinanceProductSkus.fromOrder(platform,raw));
             var identities=FinanceProductSkus.identities(platform,raw);
@@ -235,6 +257,16 @@ public final class FinanceFields {
     }
     static String cell(Map<String,Object> row,Field field){
         Object value=switch(field.id){case "fx_time"->at(row,"fx.time");case "fx_provider"->at(row,"fx.provider");default->row.get(field.id);};
+        if(Set.of("order_created_time","order_created_time_end").contains(field.id)&&value!=null){
+            try{return Instant.parse(text(value)).atZone(java.time.ZoneId.of(text(row.get("order_timezone")).isBlank()?"UTC":text(row.get("order_timezone"))))
+                    .format(java.time.format.DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss"));}
+            catch(RuntimeException ignored){return "";}
+        }
         return value instanceof BigDecimal decimal?decimal.toPlainString():text(value);
+    }
+    static String orderTime(Object value){
+        try{String v=text(value);if(v.matches("\\d{10,13}"))return Instant.ofEpochSecond(Long.parseLong(v)/(v.length()>10?1000:1)).toString();}
+        catch(RuntimeException ignored){}
+        return null;
     }
 }

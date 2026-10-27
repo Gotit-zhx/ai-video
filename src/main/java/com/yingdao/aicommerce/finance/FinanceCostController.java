@@ -16,7 +16,7 @@ public class FinanceCostController {
     @org.springframework.beans.factory.annotation.Autowired private FinanceOrderCharges charges;
     @GetMapping("/charges") public ApiResponse<?> charges(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
-        return ApiResponse.ok(charges.workspace(scope,q.getOrDefault("groupId",""),(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1")))),costFilter(q)));
+        return ApiResponse.ok(charges.workspace(scope,q.getOrDefault("groupId",""),(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1")))),costFilter(q),q.get("numbers")));
     }
     @PostMapping("/charges/rematch") public ApiResponse<?> rematchCharges(@RequestBody Map<String,Object> body,@AuthenticationPrincipal PlatformPrincipal p){
         charges.rematch(service.authorize(p),p.userId(),text(body.get("groupId")));return ApiResponse.ok("已重新匹配");
@@ -48,13 +48,13 @@ public class FinanceCostController {
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
         var filter=costFilter(q);
         int page=(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1"))));
-        return ApiResponse.ok(workspace.orderCosts(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""),page,q.getOrDefault("costStatus","ALL")));
+        return ApiResponse.ok(workspace.orderCosts(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""),page,q.getOrDefault("costStatus","ALL"),q.get("numbers")));
     }
     @GetMapping("/costs/orders/export") public org.springframework.http.ResponseEntity<byte[]> exportOrderCosts(
             @RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
         var filter=costFilter(q);
-        byte[] bytes=costExport.export(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""),q.getOrDefault("costStatus","ALL"));
+        byte[] bytes=costExport.export(scope,filter,q.getOrDefault("kind","SETTLED_ORDER"),q.getOrDefault("recordId",""),q.getOrDefault("costStatus","ALL"),q.get("numbers"));
         return org.springframework.http.ResponseEntity.ok().header("Cache-Control","no-store, private")
             .header("Content-Disposition","attachment; filename=\"order-costs-"+filter.start()+"-"+filter.end()+".xlsx\"")
             .contentType(org.springframework.http.MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).body(bytes);

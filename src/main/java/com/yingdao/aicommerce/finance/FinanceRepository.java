@@ -236,10 +236,11 @@ public class FinanceRepository {
         return buckets.stream().filter(row->number(row.get("records"))>0).toList();
     }
     static List<Object> bucketKey(Map<String,Object> row){return java.util.stream.Stream.of("shop_id","record_date","kind","currency","category","status").map(row::get).toList();}
-    public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size){
-        if(text(kind).isBlank())return reportDetails(s,f,page,size);
-        if(Set.of("ORDER","REFUND").contains(text(kind)))return settledOrderDetails(s,f,kind,page,size);
-        Query q=query(s,f);String where=q.where;List<Object>a=new ArrayList<>(q.args);
+    public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size){return details(s,f,kind,page,size,"");}
+    public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size,String numbers){
+        if(text(kind).isBlank())return reportDetails(s,f,page,size,numbers);
+        if(Set.of("ORDER","REFUND").contains(text(kind)))return settledOrderDetails(s,f,kind,page,size,numbers);
+        Query q=FinanceRecordSearch.apply(query(s,f),"finance_records",numbers,true);String where=q.where;List<Object>a=new ArrayList<>(q.args);
         if(kind!=null&&!kind.isBlank()){if(!KINDS.contains(kind))throw bad("数据类型不正确");where+=" AND kind=?";a.add(kind);}
         int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
         // MySQL can otherwise choose a user-prefixed skip scan for ORDER counts,
@@ -291,8 +292,9 @@ public class FinanceRepository {
             """+settledOrderRelation(s,f,kind,true)
                 +" GROUP BY o.shop_id,r.record_date,o.kind,o.currency,CASE WHEN o.kind='ORDER' THEN o.status ELSE '' END",q.args().toArray());
     }
-    Map<String,Object> settledOrderDetails(Scope s,Filter f,String kind,int page,int size){
-        var q=query(s,f,"r");String relation=settledOrderRelation(s,f,kind,false);
+    Map<String,Object> settledOrderDetails(Scope s,Filter f,String kind,int page,int size,String numbers){
+        var q=FinanceRecordSearch.apply(query(s,f,"r"),"o",numbers,false);
+        String relation=settledOrderRelation(s,f,kind,false)+q.where().substring(query(s,f,"r").where().length());
         int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
         long total=number(db.queryForObject("SELECT COUNT(*) "+relation,Long.class,q.args().toArray()));
         var args=new ArrayList<>(q.args());args.add(safeSize);args.add((safePage-1L)*safeSize);
@@ -306,18 +308,19 @@ public class FinanceRepository {
         data.forEach(this::enrich);new FinanceProductSkus(this).attach(s,data);new FinanceCostReport(this).attach(s,data,false);
         return Map.of("items",data,"total",total,"page",safePage,"pageSize",safeSize);
     }
-    Map<String,Object> reportDetails(Scope s,Filter f,int page,int size){
-        Query q=query(s,f,"r");var args=new ArrayList<Object>(q.args());
+    Map<String,Object> reportDetails(Scope s,Filter f,int page,int size,String numbers){
+        Query q=FinanceRecordSearch.apply(query(s,f,"r"),"r",numbers,true);var args=new ArrayList<Object>(q.args());
         int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
         String other=" FROM finance_records r FORCE INDEX(idx_finance_company_dashboard) WHERE "+q.where()+" AND r.kind NOT IN ('ORDER','REFUND')";
         String count="SELECT (SELECT COUNT(*)"+other+")";
         long candidates=(long)safePage*safeSize;
         String union="(SELECT r.id,r.record_date report_date"+other+" ORDER BY r.record_date DESC,r.id LIMIT "+candidates+")";
         for(String kind:List.of("ORDER","REFUND")){
-            String relation=settledOrderRelation(s,f,kind,false);
+            var selected=FinanceRecordSearch.apply(query(s,f,"r"),"o",numbers,false);
+            String relation=settledOrderRelation(s,f,kind,false)+selected.where().substring(query(s,f,"r").where().length());
             count+="+(SELECT COUNT(*) "+relation+")";
             union+=" UNION ALL (SELECT o.id,r.record_date report_date "+relation+" ORDER BY r.record_date DESC,o.id LIMIT "+candidates+")";
-            args.addAll(q.args());
+            args.addAll(selected.args());
         }
         long total=number(db.queryForObject(count,Long.class,args.toArray()));
         args.add(safeSize);args.add((safePage-1L)*safeSize);
@@ -355,11 +358,12 @@ public class FinanceRepository {
         return db.queryForList("SELECT DISTINCT currency FROM finance_records WHERE "+q.where
                 +" AND kind='BILL' ORDER BY currency",String.class,q.args.toArray());
     }
-    public Map<String,Object> reconciliationPage(Scope s,Filter f,int page,int size){
-        Query q=query(s,f);int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
+    public Map<String,Object> reconciliationPage(Scope s,Filter f,int page,int size){return reconciliationPage(s,f,page,size,"");}
+    public Map<String,Object> reconciliationPage(Scope s,Filter f,int page,int size,String numbers){
+        Query q=FinanceRecordSearch.apply(query(s,f),"finance_records",numbers,true);int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
         Long total=db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE "+q.where+" AND kind='BILL'",
                 Long.class,q.args.toArray());
-        return Map.of("items",reconciliation(s,f,safeSize,(long)(safePage-1)*safeSize),
+        return Map.of("items",reconciliation(s,f,safeSize,(long)(safePage-1)*safeSize,numbers),
                 "total",total==null?0:total,"page",safePage,"pageSize",safeSize);
     }
     public List<Map<String,Object>> hourlyOrders(Scope s,Filter f){
@@ -376,10 +380,13 @@ public class FinanceRepository {
         result.forEach(this::enrich);new FinanceCostReport(this).attach(s,result,false);return result;
     }
     public List<Map<String,Object>> reconciliation(Scope s,Filter f,int limit){
-        return reconciliation(s,f,Math.min(100001,Math.max(1,limit)),0);
+        return reconciliation(s,f,limit,"");
     }
-    private List<Map<String,Object>> reconciliation(Scope s,Filter f,int limit,long offset){
-        Query q=query(s,f);
+    public List<Map<String,Object>> reconciliation(Scope s,Filter f,int limit,String numbers){
+        return reconciliation(s,f,Math.min(100001,Math.max(1,limit)),0,numbers);
+    }
+    private List<Map<String,Object>> reconciliation(Scope s,Filter f,int limit,long offset,String numbers){
+        Query q=FinanceRecordSearch.apply(query(s,f),"finance_records",numbers,true);
         // Select the visible bill page first, then use indexed lookups for that bill's
         // complete transactions. Transaction dates must NOT inherit the bill date filter.
         String sql="""

@@ -169,13 +169,19 @@ public class FinanceOrderCharges {
         return workspace(s,group,page,null);
     }
     public Map<String,Object> workspace(Scope s,String group,int page,Filter filter){
+        return workspace(s,group,page,filter,"");
+    }
+    public Map<String,Object> workspace(Scope s,String group,int page,Filter filter,String numbers){
         new FinanceGroups(repo).require(s,group,false);
         var imports=repo.jdbc().queryForList("SELECT id,source_name,row_count,created_at FROM finance_charge_imports WHERE organization_id=? AND group_id=? ORDER BY created_at DESC,id",s.organizationId(),group);
         var rules=repo.jdbc().queryForList("SELECT * FROM finance_label_rules WHERE organization_id=? AND group_id=? ORDER BY country,updated_at DESC,id",s.organizationId(),group);
         var activeCountries=new HashSet<String>();
         for(var rule:rules)rule.put("active",activeCountries.add(text(rule.get("country"))));
         var count=repo.jdbc().queryForMap("SELECT COUNT(*) records,COALESCE(SUM(matched_shop_id IS NULL),0) unmatched,COALESCE(SUM(service_fee_cny),0) service_fee_cny FROM finance_charge_rows WHERE organization_id=? AND group_id=?",s.organizationId(),group);
-        var rows=repo.jdbc().queryForList("SELECT * FROM finance_charge_rows WHERE organization_id=? AND group_id=? ORDER BY import_id,source_row LIMIT 50 OFFSET ?",s.organizationId(),group,(Math.max(1,page)-1L)*50);
+        var sourceQuery=FinanceRecordSearch.orders(new FinanceRepository.Query("organization_id=? AND group_id=?",List.of(s.organizationId(),group)),"order_id",numbers);
+        long recordTotal=number(repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_charge_rows WHERE "+sourceQuery.where(),Long.class,sourceQuery.args().toArray()));
+        var sourceArgs=new ArrayList<>(sourceQuery.args());sourceArgs.add((Math.max(1,page)-1L)*50);
+        var rows=repo.jdbc().queryForList("SELECT * FROM finance_charge_rows WHERE "+sourceQuery.where()+" ORDER BY import_id,source_row LIMIT 50 OFFSET ?",sourceArgs.toArray());
         for(var r:rows){
             var m=matchedRow(s.organizationId(),r);
             r.put("match",m);r.put("source",decode(r.remove("data_json")));
@@ -185,8 +191,16 @@ public class FinanceOrderCharges {
                 if(marker.isEmpty())r.put("match",Map.of("matchStatus","REVIEW","matchNote","已找到对应订单，点击重新匹配后计入统计"));
             }
         }
+        var references=new ArrayList<Map<String,Object>>();
+        for(var row:rows)references.add(new LinkedHashMap<>(Map.of("kind","COST","shop_id",text(map(row.get("match")).get("shop_id")),"order_id",text(row.get("order_id")))));
+        new FinanceProductSkus(repo).attach(s,references);
+        for(int i=0;i<rows.size();i++){
+            rows.get(i).put("order_created_time",references.get(i).get("order_created_time"));
+            rows.get(i).put("order_timezone",references.get(i).get("order_timezone"));
+        }
         var marked=repo.jdbc().queryForMap("SELECT COUNT(*) orders,COALESCE(SUM(m.service_fee_cny),0) service_fee_cny,COALESCE(SUM(m.service_fee_cny IS NULL),0) conflicts FROM finance_marketing_orders m JOIN finance_connections c ON c.organization_id=m.organization_id AND c.id=m.shop_id AND c.status<>'REMOVED' WHERE m.organization_id=? AND EXISTS(SELECT 1 FROM finance_charge_rows x WHERE x.organization_id=m.organization_id AND x.matched_shop_id=m.shop_id AND x.order_id=m.order_id AND x.group_id=?)",s.organizationId(),group);
         var result=new LinkedHashMap<String,Object>(Map.of("imports",imports,"rules",rules,"rows",rows,"totals",count,"marked",marked,"page",Math.max(1,page),"pageSize",50,"groupId",group));
+        result.put("recordTotal",recordTotal);
         if(filter!=null){
             var scoped=new Filter(filter.start(),filter.end(),filter.shopId(),filter.platform(),"","day",group);
             var costs=new FinanceCostReport(repo).summary(s,scoped,"SETTLED_ORDER");

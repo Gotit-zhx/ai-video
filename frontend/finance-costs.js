@@ -4,7 +4,7 @@
   let state,loadSequence=0;
   const defaultRules=()=>({currency:'CNY',unit:'',basis:'order',missing:'previous',freight:'',inbound:''});
   const day=offset=>{const d=new Date();d.setDate(d.getDate()-offset);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
-  const fresh=()=>({tab:'costs',shopId:'',groupId:'',collapsedShopId:'',spus:{},warehouse:'',month:'',search:'',status:'',page:1,orderPage:1,orderCostStatus:'ALL',orderContext:null,start:day(29),end:day(0),mappings:{},settings:{},rules:defaultRules()});
+  const fresh=()=>({tab:'costs',shopId:'',groupId:'',collapsedShopId:'',spus:{},warehouse:'',month:'',search:'',status:'',page:1,orderPage:1,orderCostStatus:'ALL',orderNumbers:'',orderContext:null,start:day(29),end:day(0),mappings:{},settings:{},rules:defaultRules()});
   const reset=()=>{loadSequence++;state=fresh();document.querySelectorAll('.fc-dialog').forEach(n=>n.remove());};
   reset();
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;parent?.append(n);return n;};
@@ -421,9 +421,10 @@
         const label=el('label',null,bar);el('span',title,label);const input=el('input',null,label);input.type='date';input.value=state[key];input.setAttribute('aria-label',title);
         input.disabled=!!origin?.recordId;input.onchange=()=>{state[key]=input.value;state.orderPage=1;body();};
       }
+      context.numberSearch?.(p.n,state.orderNumbers,value=>{state.orderNumbers=value;state.orderPage=1;body();},'订单编号');
       action(bar,'刷新成本',()=>refresh(),'fi-record-link');
       const exportButton=action(bar,'导出 Excel',async()=>{
-        const selection={shopId:state.shopId,kind:'SETTLED_ORDER',...state.orderContext,start:state.start,end:state.end,costStatus:state.orderCostStatus};
+        const selection={shopId:state.shopId,kind:'SETTLED_ORDER',...state.orderContext,start:state.start,end:state.end,costStatus:state.orderCostStatus,numbers:state.orderNumbers};
         exportButton.textContent='正在生成 Excel…';
         try{
           if(!context.downloadOrderCosts)throw Error('导出功能未加载，请刷新页面后重试');
@@ -438,7 +439,7 @@
         if(busy||run!==loadSequence||!p.n.isConnected)return;
         busy=true;clearTimeout(timer);
         try{
-        const result=await context.request('/costs/orders?'+new URLSearchParams({shopId:state.shopId,kind:'SETTLED_ORDER',...state.orderContext,start:state.start,end:state.end,page:state.orderPage,costStatus:state.orderCostStatus}));
+        const result=await context.request('/costs/orders?'+new URLSearchParams({shopId:state.shopId,kind:'SETTLED_ORDER',...state.orderContext,start:state.start,end:state.end,page:state.orderPage,costStatus:state.orderCostStatus,numbers:state.orderNumbers}));
         if(run!==loadSequence||!p.n.isConnected)return;feedback.textContent='';
         const nextSignature=JSON.stringify(result);
         if(signature!==nextSignature){
@@ -455,9 +456,9 @@
           const n=el('span',row[key]==null?'待补齐':format(row[key])+' '+(row.settlement_currency||''));
           n.title=row.settlement_amount_note||'首次结算日的平台金额，不以原订单金额代替';return n;
         };
-        const orderTable=table(next,['店铺','订单编号','商品 SKU','首次平台结算日期','优惠前商品金额','平台净结算','已结算商品成本（人民币）','成本状态','操作'],(result.items||[]).map(row=>[
+        const orderTable=table(next,['店铺','订单编号','商品 SKU','下单时间（店铺时区）','首次平台结算日期','优惠前商品金额','平台净结算','已结算商品成本（人民币）','成本状态','操作'],(result.items||[]).map(row=>[
           shops.find(s=>s.id===row.shop_id)?.display_name||shops.find(s=>s.id===row.shop_id)?.name||'—',
-          orderIdentifier(row),context.skuCell?.(row)||row.product_skus||'—',String(row.first_settlement_date||'').slice(0,10)||'—',
+          orderIdentifier(row),context.skuCell?.(row)||row.product_skus||'—',context.dateTimeCell?.(row.order_created_time||row.create_time,shops.find(s=>s.id===row.shop_id)?.timezone||'UTC')||'—',String(row.first_settlement_date||'').slice(0,10)||'—',
           settlementAmount(row,'settlement_goods_amount'),settlementAmount(row,'settlement_net_amount'),
           row.product_cost_cny==null?'—':context.openRecord&&row.id?action(null,'¥ '+format(row.product_cost_cny),()=>context.openRecord(row.id),'fi-cost-link'):'¥ '+format(row.product_cost_cny),
           costState(row),
@@ -526,5 +527,5 @@
     if(state.shopId!==selection.shopId)state.warehouse='';
     state.tab='mapping';state.shopId=selection.shopId;state.collapsedShopId='';state.search=selection.skuId;state.status='';state.page=1;
     state.spus={};state.spus[selection.shopId+':'+selection.productId]=true;
-  },openOrders:filters=>{state.mappingReturn=null;state.tab='orders';state.start=filters.start;state.end=filters.end;state.orderPage=1;state.orderCostStatus=filters.costStatus==='PENDING'?'PENDING':'ALL';state.orderContext={shopId:filters.shopId||'',groupId:filters.groupId||'',platform:filters.platform||'',currency:filters.currency||'',kind:filters.kind||'SETTLED_ORDER',recordId:filters.recordId||''};if(filters.shopId)state.shopId=filters.shopId;}};
+  },openOrders:filters=>{state.mappingReturn=null;state.tab='orders';state.orderNumbers=filters.numbers||'';state.start=filters.start;state.end=filters.end;state.orderPage=1;state.orderCostStatus=filters.costStatus==='PENDING'?'PENDING':'ALL';state.orderContext={shopId:filters.shopId||'',groupId:filters.groupId||'',platform:filters.platform||'',currency:filters.currency||'',kind:filters.kind||'SETTLED_ORDER',recordId:filters.recordId||''};if(filters.shopId)state.shopId=filters.shopId;}};
 })();

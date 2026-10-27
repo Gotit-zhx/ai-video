@@ -393,6 +393,13 @@ class FinanceTest {
         assertThrows(BusinessException.class,()->importer.commit(scope,"shop","BILL",Map.of("external_id",0,"date",1,"currency",2,"amount",3),csv,"bill.csv"));
         verify(repo,never()).save(any(),any());
     }
+    @Test void batchNumbersRemainExactTextAndRejectUnboundedSearch(){
+        assertEquals(List.of("585757874943591564","00123456789012345678"),FinanceRecordSearch.numbers("585757874943591564\n00123456789012345678，585757874943591564"));
+        assertEquals(List.of(),FinanceRecordSearch.numbers(null));
+        assertThrows(BusinessException.class,()->FinanceRecordSearch.numbers(String.join(",",java.util.stream.IntStream.range(0,101).mapToObj(String::valueOf).toList())));
+        var q=FinanceRecordSearch.apply(new FinanceRepository.Query("r.organization_id=?",List.of("org")),"r","x' OR 1=1 --",false);
+        assertFalse(q.where().contains("x'"));assertEquals("org",q.args().getFirst());
+    }
     @Test void cnyExportUsesPinnedSnapshotAndKeepsNativeAmounts(){
         var repo=mock(FinanceRepository.class);when(repo.jdbc()).thenReturn(mock(JdbcTemplate.class));var policy=mock(OrganizationAccessPolicy.class);var fx=spy(new FinanceFx(repo,new ObjectMapper()));
         var principal=user("heyi");when(policy.isPlatformAdmin(principal)).thenReturn(true);
@@ -401,8 +408,8 @@ class FinanceTest {
         var service=classProxy(new FinanceService(repo,policy,mock(FinanceShopAuthorization.class),fx));
         var controller=new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class));
         var item=new HashMap<String,Object>(Map.of("external_id","00123456789012345678","currency","PHP","amount",new BigDecimal("100"),"product_skus","SKU-A\n（SKU-B）*2"));
-        when(repo.details(any(),any(),any(),eq(1),eq(100))).thenReturn(Map.of("total",1,"items",List.of(item)));
-        when(repo.reconciliation(any(),any(),eq(100001))).thenReturn(List.of());
+        when(repo.details(any(),any(),any(),eq(1),eq(100),nullable(String.class))).thenReturn(Map.of("total",1,"items",List.of(item)));
+        when(repo.reconciliation(any(),any(),eq(100001),nullable(String.class))).thenReturn(List.of());
         var response=controller.export(Map.of("start","2026-10-01","end","2026-10-20","displayCurrency","CNY","fxSnapshot","fixed"),principal);
         var table=FinanceWorkbook.read(response.getBody(),"export.xlsx");
         assertEquals("100",table.get(1).get(table.getFirst().indexOf("原币金额")));
