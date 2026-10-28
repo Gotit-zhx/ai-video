@@ -109,7 +109,11 @@ final class FinanceShopDeletion {
             case 8 -> entities("finance_expense_rules","id","EXPENSE_RULE",
                     "organization_id=? AND JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.target'))=? AND JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.scope'))='shop'",keys);
             case 9 -> delete("finance_imports","organization_id=? AND shop_id=?",keys);
-            case 10 -> delete("finance_records","organization_id=? AND shop_id=?",keys);
+            case 10 -> {
+                int removed=delete("finance_records","organization_id=? AND shop_id=?",keys);
+                if(removed==0)removed=delete("finance_reporting_months","organization_id=? AND shop_id=?",keys);
+                yield removed;
+            }
             case 11 -> delete("finance_ad_accounts","organization_id=? AND shop_id=?",keys);
             case 12 -> delete("finance_authorization_sessions","organization_id=? AND JSON_UNQUOTE(JSON_EXTRACT(context_json,'$.shopId'))=?",keys);
             case 13 -> {

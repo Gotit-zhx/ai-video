@@ -2,7 +2,7 @@
   "name": "heyi-product-capture-extension",
   "private": true,
   "type": "module",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "scripts": {
     "check": "node scripts/check.mjs"
   }

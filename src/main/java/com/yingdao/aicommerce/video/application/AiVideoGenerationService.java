@@ -460,22 +460,10 @@ public class AiVideoGenerationService {
     }
 
     private List<RuntimeModelConnection> videoRoutes(AiVideoTask task) {
-        String selectedRoute = selectedRoute(task);
-        List<RuntimeModelConnection> routes = modelConfigs.videoConnections(task.getOrganizationId()).stream()
-                .filter(route -> !"FAST".equals(route.provider()))
+        // Both historical QUALITY/SPEED selections now use the same Seedance model.
+        return modelConfigs.videoConnections(task.getOrganizationId()).stream()
+                .filter(route -> "DAYAN".equals(route.provider()))
                 .toList();
-        if ("QUALITY".equals(selectedRoute)) {
-            return routes.stream()
-                    .filter(route -> "DAYAN".equals(route.provider()) && !isDayanFast(route))
-                    .toList();
-        }
-        if ("SPEED".equals(selectedRoute)) {
-            return routes.stream()
-                    .filter(route -> isDayanFast(route) || "H3_MULTI".equals(route.provider()))
-                    .sorted(Comparator.comparingInt(route -> isDayanFast(route) ? 0 : 1))
-                    .toList();
-        }
-        return routes;
     }
 
     private String selectedRoute(AiVideoTask task) {
@@ -489,15 +477,8 @@ public class AiVideoGenerationService {
         }
     }
 
-    private boolean isDayanFast(RuntimeModelConnection route) {
-        return "DAYAN".equals(route.provider())
-                && "minimax-h3-fast".equalsIgnoreCase(route.modelId().trim());
-    }
-
     private String missingRouteMessage(AiVideoTask task) {
-        return "SPEED".equals(selectedRoute(task))
-                ? "低质量高速度线路尚未配置或启用"
-                : "高质量低速度线路尚未配置或启用";
+        return "Seedance 2.0 Mini 视频线路尚未配置或启用";
     }
 
     private void submitNext(String runId, String taskId, String itemId) {
@@ -542,7 +523,7 @@ public class AiVideoGenerationService {
                                       RuntimeModelConnection connection, int attempt) {
         String taskId = task.getId();
         String itemId = item.getId();
-        int duration = task.isGeneral() ? task.getDurationSeconds() : duration(task.getScriptJson());
+        int duration = -1;
         String requestedResolution = task.getResolution() == null || task.getResolution().isBlank()
                 ? "720p" : task.getResolution();
         VideoGenerationProvider provider = providers.require(connection.provider());
@@ -626,7 +607,7 @@ public class AiVideoGenerationService {
                                                                      int duration, String resolution) {
         if (!hasSubmissionCapacity(task.getOrganizationId())) return null;
         AiVideoGenerationJob job = new AiVideoGenerationJob(runId, task.getOrganizationId(), task.getId(), item.getId(), attempt,
-                connection.id(), connection.provider(), connection.modelId(), duration, task.getAspectRatio(), resolution);
+                connection.id(), connection.provider(), connection.modelId(), duration, "adaptive", resolution);
         jobMapper.insert(job);
         return job;
     }
@@ -810,8 +791,8 @@ public class AiVideoGenerationService {
 
     static void validateIndividualFrameRoute(AiVideoTask task, RuntimeModelConnection connection) {
         if (usesIndividualFrames(task) && !("DAYAN".equalsIgnoreCase(connection.provider())
-                && "minimax-h3".equalsIgnoreCase(connection.modelId()))) {
-            throw new IllegalStateException("九张独立分镜参考仅支持 DAYAN/minimax-h3，当前线路不支持；未提交视频请求");
+                && com.yingdao.aicommerce.video.application.provider.DayanVideoGenerationProvider.MODEL.equalsIgnoreCase(connection.modelId()))) {
+            throw new IllegalStateException("九张独立分镜参考仅支持 DAYAN/Seedance 2.0 Mini，当前线路不支持；未提交视频请求");
         }
     }
 

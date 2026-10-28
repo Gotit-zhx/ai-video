@@ -59,7 +59,7 @@ export function joinPlatformUrl(baseUrl, path) {
 }
 
 export function safeAuthView(settings, auth) {
-  const now = Date.now();
+  const now = Date.now() + authClockOffset(auth);
   const expiresAt = auth?.expiresAt || null;
   const expired = Boolean(expiresAt && Date.parse(expiresAt) <= now);
   return {
@@ -68,6 +68,12 @@ export function safeAuthView(settings, auth) {
     expiresAt,
     user: auth?.user || null,
     permissions: Array.isArray(auth?.permissions) ? auth.permissions : [],
-    pairedAt: auth?.pairedAt || null
+    pairedAt: auth?.pairedAt || null,
+    clockAdjusted: Math.abs(authClockOffset(auth)) > 5 * 60 * 1000
   };
+}
+
+export function authClockOffset(auth) {
+  const value = auth?.serverTimeOffsetMs;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }

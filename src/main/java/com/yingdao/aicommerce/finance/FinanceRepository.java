@@ -57,6 +57,7 @@ public class FinanceRepository {
         transaction(()->{rejectDeletedWrite(s,e.shopId());saveEntry(s,e);return null;});
     }
     void saveEntry(Scope s,Entry e){
+        e=new FinanceReportingMonths(this).apply(s,e);
         boolean settlement=e.source().equals("API")&&e.kind().equals("SETTLEMENT")
                 &&FinanceSettlementBreakdown.supported(e.platform(),e.raw());
         var breakdown=settlement?FinanceSettlementBreakdown.parse(e.platform(),e.raw(),e.amount()):null;
@@ -97,30 +98,71 @@ public class FinanceRepository {
             if(found.isEmpty())return false;var row=found.getFirst();var raw=read(text(row.get("raw_json")));
             if(!FinanceSettlementBreakdown.supported(text(row.get("platform")),raw))return false;
             var day=java.time.LocalDate.parse(text(row.get("record_date")));
-            if("TIKTOK_SHOP".equals(row.get("platform")))day=number(raw.get("_finance_statement_time"))>0
-                    ?FinanceMarketplace.tiktokSettlementDay(raw.get("_finance_statement_time"))
+            if("TIKTOK_SHOP".equals(row.get("platform")))day=FinanceSettlementDates.completed(raw)
+                    ?FinanceSettlementDates.day(raw,shopTimezone(scope,shop))
                     :tiktokBillDay(scope,shop,text(row.get("statement_id")));
             var e=new Entry(shop,text(row.get("platform")),"SETTLEMENT",text(row.get("external_id")),text(row.get("order_id")),
                     text(row.get("statement_id")),text(row.get("category")),text(row.get("status")),day,
                     text(row.get("currency")),decimal(row.get("amount")),null,null,null,null,"API",raw);
+            e=new FinanceReportingMonths(this).apply(scope,e);
             var result=FinanceSettlementBreakdown.parse(e.platform(),raw,e.amount());
-            db.update("UPDATE finance_records SET revenue=?,record_date=?,updated_at=updated_at WHERE id=?",result.goods(),Date.valueOf(day),record);
+            db.update("UPDATE finance_records SET revenue=?,record_date=?,raw_json=?,updated_at=updated_at WHERE id=?",result.goods(),Date.valueOf(e.date()),write(e.raw()),record);
             replaceFees(new Scope(scope.organizationId(),text(row.get("user_id"))),e,result);
             return true;
         });
     }
     java.time.LocalDate tiktokBillDay(Scope scope,String shop,String statement){
         var found=db.queryForList("""
-            SELECT COALESCE(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_statement_time')),
-              JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$.create_time'))) statement_time,
-              JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_legacy_statement_date')) statement_date
+            SELECT raw_json
             FROM finance_records FORCE INDEX(idx_finance_cost_statement)
             WHERE organization_id=? AND shop_id=? AND kind='BILL' AND statement_id=? AND source='API' LIMIT 1
             """,scope.organizationId(),shop,statement);
-        if(!found.isEmpty()&&number(found.getFirst().get("statement_time"))<=0&&!text(found.getFirst().get("statement_date")).isBlank())
-            return java.time.LocalDate.parse(text(found.getFirst().get("statement_date"))).minusDays(1);
-        if(found.isEmpty()||number(found.getFirst().get("statement_time"))<=0)throw bad("历史 TikTok 结算缺少原始账单时间，未猜测结算日期");
-        return FinanceMarketplace.tiktokSettlementDay(found.getFirst().get("statement_time"));
+        if(found.isEmpty())throw bad("历史 TikTok 结算缺少原始账单，未猜测结算日期");
+        return FinanceSettlementDates.day(read(text(found.getFirst().get("raw_json"))),shopTimezone(scope,shop));
+    }
+    String shopTimezone(Scope scope,String shop){
+        return db.queryForObject("SELECT timezone FROM finance_connections WHERE organization_id=? AND id=?",String.class,scope.organizationId(),shop);
+    }
+    /** Date-only repair from verified official statement metadata. No amount, price or fee derivation. */
+    int repairSettlementDates(Scope scope,String shop,Map<String,Object> bill,List<String> ids){
+        if(ids.isEmpty())return 0;
+        if(ids.size()>200)throw new IllegalArgumentException("Date repair is limited to 200 records");
+        return transaction(()->{
+            requireShopWrite(scope,shop);
+            String zone=shopTimezone(scope,shop),statement=text(bill.get("id"));
+            var day=FinanceSettlementDates.day(bill,zone);
+            var metadata=FinanceSettlementDates.metadata(bill,zone);
+            var args=new ArrayList<Object>(List.of(scope.organizationId(),shop,statement));args.addAll(ids);
+            var records=db.queryForList("""
+                SELECT id,kind,status,record_date,raw_json,order_id FROM finance_records
+                WHERE organization_id=? AND shop_id=? AND statement_id=? AND platform='TIKTOK_SHOP'
+                  AND source='API' AND kind IN ('BILL','SETTLEMENT','FEE') AND id IN (
+                """+String.join(",",Collections.nCopies(ids.size(),"?"))+") ORDER BY id FOR UPDATE",args.toArray());
+            var changes=new ArrayList<Object[]>();
+            for(var row:records){
+                var raw=read(text(row.get("raw_json")));
+                if(number(raw.get("_finance_statement_time"))>0&&number(raw.get("_finance_statement_time"))!=number(bill.get("statement_time")))
+                    throw bad("原始账单时间与平台核对结果不一致，已停止本批日期修复");
+                String status=FinanceSettlementDates.PENDING.equals(row.get("status"))?"SETTLED":text(row.get("status"));
+                var rowMetadata="FEE".equals(row.get("kind"))?Map.<String,Object>of():metadata;
+                var merged=new LinkedHashMap<>(raw);merged.putAll(rowMetadata);
+                // Refresh the real provider day while retaining the approved reporting month.
+                merged.remove("_finance_original_settlement_date");
+                var projected=new FinanceReportingMonths(this).apply(scope,new Entry(shop,"TIKTOK_SHOP",text(row.get("kind")),
+                        "",text(row.get("order_id")),statement,"",status,day,"PHP",null,null,null,null,null,"API",merged));
+                if(projected.date().toString().equals(text(row.get("record_date")))&&status.equals(row.get("status"))
+                        &&sameJsonValue(raw,projected.raw()))continue;
+                if(day.toString().equals(text(row.get("record_date")))&&status.equals(row.get("status"))
+                        &&!projected.raw().containsKey("_finance_reporting_month")
+                        &&rowMetadata.entrySet().stream().allMatch(e->sameJsonValue(raw.get(e.getKey()),e.getValue())))continue;
+                changes.add(new Object[]{Date.valueOf(projected.date()),status,write(projected.raw()),row.get("id")});
+            }
+            if(!changes.isEmpty())db.batchUpdate("""
+                UPDATE finance_records SET record_date=?,status=?,raw_json=JSON_MERGE_PATCH(raw_json,CAST(? AS JSON)),
+                  updated_at=updated_at WHERE id=?
+                """,changes);
+            return changes.size();
+        });
     }
     private void replaceFees(Scope s,Entry e,FinanceSettlementBreakdown.Result breakdown){
         // Reconcile this transaction's generated rows. Repeated sync must not delete and reinsert
@@ -138,8 +180,9 @@ public class FinanceRepository {
             raw.put("field",fee.field());raw.put("source_amount",fee.sourceAmount());raw.put("amount",fee.amount());
             raw.put("fee_group",fee.group());raw.put("basis",fee.note());raw.put("settlement_external_id",e.externalId());
             raw.put("breakdown_version",1);
+            for(String key:FinanceReportingMonths.RAW_FIELDS)if(e.raw().containsKey(key))raw.put(key,e.raw().get(key));
             var args=entryArgs(s,new Entry(e.shopId(),e.platform(),"FEE",e.externalId()+":d:"+hash(fee.field()).substring(0,24),
-                    e.orderId(),e.statementId(),fee.label(),"SETTLED",e.date(),e.currency(),fee.amount(),null,null,null,null,"API",raw),null);
+                    e.orderId(),e.statementId(),fee.label(),e.status(),e.date(),e.currency(),fee.amount(),null,null,null,null,"API",raw),null);
             var old=existing.remove(text(args[0]));
             if(old==null||!sameFee(old,args))batch.add(args);
         }
@@ -170,7 +213,7 @@ public class FinanceRepository {
     }
     Query query(Scope s,Filter f,String alias) {
         String p=alias.isEmpty()?"":alias+".";
-        String w=" "+p+"organization_id=? AND "+p+"record_date>=? AND "+p+"record_date<=?";
+        String w=" "+p+"organization_id=? AND "+p+"record_date>=? AND "+p+"record_date<=? AND "+p+"status<>'DATE_PENDING'";
         List<Object> a=new ArrayList<>(List.of(s.organizationId(),Date.valueOf(f.start()),Date.valueOf(f.end())));
         for(var pair:List.of(new String[]{"shop_id",f.shopId()},new String[]{"platform",f.platform()},new String[]{"currency",f.currency()})){
             if(!pair[1].isEmpty()){w+=" AND "+p+pair[0]+"=?";a.add(pair[1]);}
@@ -187,7 +230,7 @@ public class FinanceRepository {
             if("UNGROUPED".equals(f.groupId()))w+=" AND ("+record+".shop_id='UNASSIGNED' OR "+group+"fg.group_id IS NULL))";
             else {w+=" AND "+group+"fg.group_id=?)";a.add(f.groupId());}
         }
-        return new Query(w,a);
+        return FinanceReportingMonths.constrain(s,new Query(w,a),f,alias);
     }
     static String visible(String alias){
         return "("+alias+".shop_id='UNASSIGNED' OR EXISTS (SELECT 1 FROM finance_connections fc WHERE fc.id="+alias
@@ -250,7 +293,7 @@ public class FinanceRepository {
         a.add(safeSize);a.add((long)(safePage-1)*safeSize);
         List<Map<String,Object>> data=db.queryForList("SELECT id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,record_date,currency,amount,revenue,impressions,clicks,conversions,source,updated_at,raw_json"
                 +" FROM "+(kind!=null&&!kind.isBlank()?source:"finance_records")+" WHERE "+where+" ORDER BY record_date DESC,id LIMIT ? OFFSET ?",a.toArray());
-        data.forEach(this::enrich);
+        data.forEach(this::enrich);new FinanceReportingMonths(this).attach(s,data);
         new FinanceProductSkus(this).attach(s,data);
         new FinanceCostReport(this).attach(s,data,false);
         presentSettlementAmounts(data);
@@ -266,7 +309,7 @@ public class FinanceRepository {
             row.put("source_record_date",row.get("record_date"));row.put("first_settlement_date",day);row.put("record_date",day);
         }
         // Return only selected business fields; raw provider responses may contain buyer PII.
-        enrich(row);new FinanceProductSkus(this).attach(s,List.of(row));new FinanceCostReport(this).attach(s,List.of(row),true);presentSettlementAmounts(List.of(row));return row;
+        enrich(row);new FinanceReportingMonths(this).attach(s,List.of(row));new FinanceProductSkus(this).attach(s,List.of(row));new FinanceCostReport(this).attach(s,List.of(row),true);presentSettlementAmounts(List.of(row));return row;
     }
     /** Reporting follows the first actual settlement, without placing an order-created date condition on o. */
     String settledOrderRelation(Scope s,Filter f,String kind,boolean normal){
@@ -305,7 +348,7 @@ public class FinanceRepository {
             FROM (SELECT o.id,r.record_date
             """+relation+" ORDER BY r.record_date DESC,o.id LIMIT ? OFFSET ?) p"
                 +" JOIN finance_records o ON o.id=p.id ORDER BY p.record_date DESC,p.id",args.toArray());
-        data.forEach(this::enrich);new FinanceProductSkus(this).attach(s,data);new FinanceCostReport(this).attach(s,data,false);
+        data.forEach(this::enrich);new FinanceReportingMonths(this).attach(s,data);new FinanceProductSkus(this).attach(s,data);new FinanceCostReport(this).attach(s,data,false);
         return Map.of("items",data,"total",total,"page",safePage,"pageSize",safeSize);
     }
     Map<String,Object> reportDetails(Scope s,Filter f,int page,int size,String numbers){
@@ -331,7 +374,7 @@ public class FinanceRepository {
               r.currency,r.amount,r.revenue,r.impressions,r.clicks,r.conversions,r.source,r.updated_at,r.raw_json
             FROM (
             """+union+" ORDER BY report_date DESC,id LIMIT ? OFFSET ?) p JOIN finance_records r ON r.id=p.id ORDER BY p.report_date DESC,p.id",args.toArray());
-        data.forEach(this::enrich);new FinanceProductSkus(this).attach(s,data);new FinanceCostReport(this).attach(s,data,false);
+        data.forEach(this::enrich);new FinanceReportingMonths(this).attach(s,data);new FinanceProductSkus(this).attach(s,data);new FinanceCostReport(this).attach(s,data,false);
         presentSettlementAmounts(data);
         return Map.of("items",data,"total",total,"page",safePage,"pageSize",safeSize);
     }

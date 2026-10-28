@@ -57,4 +57,4 @@ class SettlementProgress:
     def invalidate_snapshots(self):
         for organization in {shop["organization"] for shop in self.shops}:
             owner = str(uuid.UUID(bytes=hashlib.md5(("finance:" + organization).encode()).digest(), version=3))
-            self.redis("INCR", "heyi:finance:snapshot:v6-settled-goods:{" + organization + ":" + owner + "}:revision")
+            self.redis("INCR", "heyi:finance:snapshot:v8-reporting-months:{" + organization + ":" + owner + "}:revision")

@@ -47,10 +47,15 @@ abstract class ProviderJsonSupport {
     }
 
     protected Map<String, Object> post(String url, String apiKey, Object body) {
+        return post(url, apiKey, body, Map.of());
+    }
+
+    protected Map<String, Object> post(String url, String apiKey, Object body, Map<String, String> headers) {
         for (int attempt = 0; ; attempt++) {
             try {
                 String value = client.post().uri(url)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                        .headers(values -> headers.forEach(values::set))
                         .contentType(MediaType.APPLICATION_JSON).body(body)
                         .retrieve().body(String.class);
                 return read(value);

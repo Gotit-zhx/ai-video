@@ -34,6 +34,7 @@
       <div><strong>赫逸官网</strong><span>hoyee.org.cn</span></div>
       <span id="platform-state">未连接</span>
     </section>
+    <p id="clock-warning" class="privacy-note" hidden>本机时间存在偏差，已按平台时间校验登录。建议开启电脑“自动设置日期和时间”。</p>
 
     <section id="pairing-panel" class="pairing-card" aria-labelledby="pairing-title">
       <div class="section-heading">
@@ -72,7 +73,8 @@
       <button id="logout-button" class="danger-button" type="button">退出并撤销本设备</button>
     </section>
 
-    <footer>采集公开商品字段 · 不读取店铺 Cookie · 不自动发布</footer>
+    <button id="check-connection" class="secondary-button" type="button">检测本机连接</button>
+    <footer><span id="extension-version"></span> · 采集公开商品字段 · 不自动发布</footer>
   </main>
   <script type="module" src="popup.js"></script>
 </body>

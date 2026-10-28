@@ -1,11 +1,11 @@
-import { DEFAULT_PLATFORM_URL, STORAGE_KEYS, normalizePlatformUrl } from "../shared/constants.js";
+import { DEFAULT_PLATFORM_URL, STORAGE_KEYS, normalizePlatformUrl, authClockOffset } from "../shared/constants.js";
 
 const MAX_PENDING_REVOCATIONS = 20;
 let pendingRevocationMutation = Promise.resolve();
 
 export async function restrictStorageToExtensionPages() {
   if (typeof chrome.storage.local.setAccessLevel !== "function") {
-    throw new Error("当前浏览器版本不支持安全的插件存储");
+    throw storageError("BROWSER_STORAGE_UNSUPPORTED", "当前浏览器版本不支持安全的插件存储");
   }
   await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 }
@@ -40,7 +40,8 @@ export async function writeSettings(settings) {
 export async function readAuth() {
   const stored = await chrome.storage.local.get(STORAGE_KEYS.AUTH);
   const auth = stored[STORAGE_KEYS.AUTH] || null;
-  if (!auth?.accessToken || !auth?.baseUrl) return null;
+  if (!auth || typeof auth !== "object" || Array.isArray(auth)) return null;
+  if (typeof auth.accessToken !== "string" || !auth.baseUrl) return null;
   try {
     normalizePlatformUrl(auth.baseUrl);
   } catch {
@@ -48,19 +49,21 @@ export async function readAuth() {
     return null;
   }
   const expiry = Date.parse(String(auth.expiresAt || ""));
-  if (!Number.isFinite(expiry) || expiry <= Date.now()) {
+  if (!Number.isFinite(expiry) || expiry <= Date.now() + authClockOffset(auth)) {
     await clearAuth();
     return null;
   }
-  return auth;
+  // Older installations can contain a profile without a permissions array.
+  // Normalize only metadata; retain the credential and its original expiry.
+  return { ...auth, permissions: permissionStrings(auth.permissions, auth.user?.permissions, auth.user?.permissionCodes) };
 }
 
 export async function writeAuth(auth) {
   await restrictStorageToExtensionPages();
-  if (!auth?.accessToken) throw new Error("平台没有返回访问凭证");
+  if (!auth?.accessToken) throw storageError("INVALID_AUTH_RESPONSE", "平台没有返回访问凭证");
   const accessToken = String(auth.accessToken);
   if (accessToken.length < 16 || accessToken.length > 8_192 || /\s|[\u0000-\u001F\u007F]/.test(accessToken)) {
-    throw new Error("平台返回的访问凭证格式不正确");
+    throw storageError("INVALID_AUTH_RESPONSE", "平台返回的访问凭证格式不正确");
   }
   const user = sanitizeUser(auth.user);
   const permissions = Array.isArray(auth.permissions)
@@ -68,8 +71,10 @@ export async function writeAuth(auth) {
     : Array.isArray(user?.permissions)
       ? user.permissions.filter(value => typeof value === "string").slice(0, 200)
       : [];
-  const expiresAt = shortExpiry(auth.expiresAt);
-  if (Date.parse(expiresAt) <= Date.now()) throw new Error("平台返回的访问凭证已经过期");
+  const serverTimeOffsetMs = clockOffset(auth.serverClock);
+  const expiresAt = shortExpiry(auth.expiresAt, serverTimeOffsetMs);
+  if (Date.parse(expiresAt) <= Date.now() + serverTimeOffsetMs)
+    throw storageError("AUTH_CLOCK_OR_EXPIRY", "平台返回的访问凭证已经过期");
   const value = {
     baseUrl: normalizePlatformUrl(auth.baseUrl),
     accessToken,
@@ -77,26 +82,25 @@ export async function writeAuth(auth) {
     expiresAt,
     pairedAt: new Date().toISOString(),
     user,
-    permissions
+    permissions,
+    serverTimeOffsetMs
   };
   await chrome.storage.local.set({ [STORAGE_KEYS.AUTH]: value });
   return value;
 }
 
-export async function updateAuthProfile(profile) {
+export async function updateAuthProfile(profile, serverClock = null) {
   const auth = await readAuth();
   if (!auth) return null;
   const user = sanitizeUser(profile?.user && typeof profile.user === "object" ? profile.user : profile);
-  const permissions = Array.isArray(profile?.permissions || profile?.permissionCodes)
-    ? (profile.permissions || profile.permissionCodes)
-    : Array.isArray(user?.permissions)
-      ? user.permissions
-      : auth.permissions;
+  const permissions = permissionStrings(profile?.permissions, profile?.permissionCodes, user?.permissions, auth.permissions);
+  const serverTimeOffsetMs = clockOffset(serverClock, authClockOffset(auth));
   const next = {
     ...auth,
     user: user || auth.user,
     permissions: permissions.filter(value => typeof value === "string").slice(0, 200),
-    expiresAt: shortExpiry(profile?.expiresAt || auth.expiresAt)
+    expiresAt: shortExpiry(profile?.expiresAt || auth.expiresAt, serverTimeOffsetMs),
+    serverTimeOffsetMs
   };
   await chrome.storage.local.set({ [STORAGE_KEYS.AUTH]: next });
   return next;
@@ -124,6 +128,8 @@ export async function enqueuePendingRevocation(auth, errorCode = "REQUEST_FAILED
       pending[existingIndex] = {
         ...existing,
         expiresAt: credential.expiresAt,
+        ...(credential.serverTimeOffsetMs || existing.serverTimeOffsetMs
+          ? { serverTimeOffsetMs: credential.serverTimeOffsetMs || 0 } : {}),
         lastAttemptAt: credential.lastAttemptAt,
         attemptCount: Math.max(existing.attemptCount + 1, credential.attemptCount),
         lastErrorCode: credential.lastErrorCode,
@@ -218,7 +224,7 @@ function pendingCredential(value, overrides = {}) {
   const accessToken = typeof value.accessToken === "string" ? value.accessToken : "";
   if (accessToken.length < 16 || accessToken.length > 8_192
       || /\s|[\u0000-\u001F\u007F]/.test(accessToken)) return null;
-  const expiresAt = normalizedFutureDate(value.expiresAt);
+  const expiresAt = normalizedFutureDate(value.expiresAt, authClockOffset(value));
   if (!expiresAt) return null;
   const now = new Date().toISOString();
   const id = typeof value.id === "string" && /^[A-Za-z0-9_-]{8,100}$/.test(value.id)
@@ -236,6 +242,7 @@ function pendingCredential(value, overrides = {}) {
     baseUrl,
     accessToken,
     expiresAt,
+    ...(authClockOffset(value) ? { serverTimeOffsetMs: authClockOffset(value) } : {}),
     queuedAt,
     lastAttemptAt,
     attemptCount,
@@ -248,12 +255,12 @@ function normalizedDate(value) {
   const parsed = typeof value === "number" && Number.isFinite(value)
     ? (value < 10_000_000_000 ? value * 1000 : value)
     : Date.parse(String(value || ""));
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  return Number.isFinite(parsed) && Number.isFinite(new Date(parsed).getTime()) ? new Date(parsed).toISOString() : null;
 }
 
-function normalizedFutureDate(value) {
+function normalizedFutureDate(value, offset = 0) {
   const normalized = normalizedDate(value);
-  return normalized && Date.parse(normalized) > Date.now() ? normalized : null;
+  return normalized && Date.parse(normalized) > Date.now() + offset ? normalized : null;
 }
 
 function cleanRevocationCode(value) {
@@ -262,21 +269,28 @@ function cleanRevocationCode(value) {
 }
 
 function normalizeExpiry(value) {
-  if (!value) return null;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const milliseconds = value < 10_000_000_000 ? value * 1000 : value;
-    return new Date(milliseconds).toISOString();
-  }
-  const parsed = Date.parse(String(value));
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  return value ? normalizedDate(value) : null;
 }
 
-function shortExpiry(value) {
-  const now = Date.now();
+function shortExpiry(value, offset = 0) {
+  const now = Date.now() + offset;
   const fallback = now + 8 * 60 * 60 * 1000;
   const maximum = now + 24 * 60 * 60 * 1000;
   const parsed = Date.parse(normalizeExpiry(value) || "");
   return new Date(Math.min(Number.isFinite(parsed) ? parsed : fallback, maximum)).toISOString();
+}
+
+function clockOffset(clock, fallback = 0) {
+  return Number.isFinite(clock?.serverTimeMs) && Number.isFinite(clock?.receivedAtMs)
+    ? clock.serverTimeMs - clock.receivedAtMs : fallback;
+}
+
+function permissionStrings(...values) {
+  return (values.find(Array.isArray) || []).filter(value => typeof value === "string").slice(0, 200);
+}
+
+function storageError(code, message) {
+  return Object.assign(new Error(message), { code });
 }
 
 function sanitizeUser(value) {

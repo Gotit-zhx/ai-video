@@ -49,6 +49,14 @@ public class FinanceSync {
                 boolean nightly=last!=null&&last.atZone(zone).toLocalDate().isBefore(today);
                 boolean live="ORDER_LIVE".equals(row.get("channel"));
                 LocalDate start=live?(initial?today:today.minusDays(1)):initial?today.minusDays(89):nightly?today.minusDays(30):today.minusDays(1);
+                if("SETTLEMENT".equals(row.get("channel"))){
+                    var pending=repo.jdbc().queryForObject("""
+                        SELECT MIN(record_date) FROM finance_records
+                        WHERE organization_id=? AND shop_id=? AND kind='BILL' AND source='API' AND status='DATE_PENDING'
+                        """,java.sql.Date.class,s.organizationId(),row.get("shop_id"));
+                    // Keep delayed completions discoverable even beyond the routine lookback.
+                    if(pending!=null&&pending.toLocalDate().minusDays(1).isBefore(start))start=pending.toLocalDate().minusDays(1);
+                }
                 if("PENDING".equals(row.get("channel"))){
                     start=today.minusDays(89);
                     var oldest=repo.jdbc().queryForList("SELECT MIN(record_date) day FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind='PENDING'",

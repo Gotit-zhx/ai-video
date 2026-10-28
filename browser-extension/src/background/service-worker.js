@@ -49,7 +49,7 @@ chrome.storage.session?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" }).ca
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   dispatchMessage(message, sender)
     .then(data => sendResponse({ ok: true, data }))
-    .catch(error => sendResponse({ ok: false, error: publicError(error) }));
+    .catch(error => sendResponse({ ok: false, error: publicError(error, message?.type) }));
   return true;
 });
 
@@ -808,11 +808,16 @@ function defaultDeviceName() {
 }
 
 async function setAuthBadge(authenticated) {
-  await chrome.action.setBadgeBackgroundColor({ color: authenticated ? "#16845b" : "#c83b3b" });
-  await chrome.action.setBadgeText({ text: authenticated ? "" : "!" });
+  try {
+    await chrome.action.setBadgeBackgroundColor({ color: authenticated ? "#16845b" : "#c83b3b" });
+    await chrome.action.setBadgeText({ text: authenticated ? "" : "!" });
+  } catch {
+    // Toolbar rendering is optional: a browser/profile badge failure must not
+    // turn a successful login or an already-saved product into a failed action.
+  }
 }
 
-function publicError(error) {
+function publicError(error, operation = "") {
   if (error instanceof ApiError) {
     return {
       status: error.status,
@@ -826,5 +831,26 @@ function publicError(error) {
       message: error.message
     };
   }
-  return { status: 0, code: "UNEXPECTED", kind: "REQUEST", message: "插件暂时无法完成操作" };
+  const known = {
+    BROWSER_STORAGE_UNSUPPORTED: "当前浏览器内核不支持插件安全存储，请更新 Chrome / Edge 后重新加载插件。",
+    INVALID_AUTH_RESPONSE: "登录凭证格式异常，请更新插件后重新登录；请勿清除其他网站数据。",
+    AUTH_CLOCK_OR_EXPIRY: "登录凭证时间校验失败，请开启电脑“自动设置日期和时间”，再重新登录插件。"
+  };
+  if (Object.hasOwn(known, error?.code || "")) {
+    return { status: 0, code: error.code, kind: "LOCAL", message: known[error.code] };
+  }
+  const description = String(error?.message || "");
+  if (/quota|QUOTA_BYTES|storage.*(?:denied|failed|unavailable)|access to storage|storage area|storage is not/i.test(description)) {
+    return { status: 0, code: "LOCAL_STORAGE_UNAVAILABLE", kind: "LOCAL",
+      message: "这台电脑的插件存储不可用。请关闭无痕窗口，在扩展程序页重新加载插件；仍失败时检查浏览器策略或磁盘空间。" };
+  }
+  const stage = {
+    HEYI_GET_STATE: "STATE", HEYI_LOGIN: "LOGIN", HEYI_PAIR: "PAIR",
+    HEYI_LOGOUT: "LOGOUT", HEYI_CAPTURE_PRODUCT: "CAPTURE",
+    HEYI_OPEN_PRODUCT_DETAIL: "DETAIL", HEYI_TAKE_PENDING_CAPTURE: "PENDING"
+  }[operation] || "REQUEST";
+  // Never echo native exception text: it can contain a token, request body or URL.
+  const code = `LOCAL_${stage}_FAILED`;
+  return { status: 0, code, kind: "LOCAL",
+    message: `本机插件运行异常（${code}）。请在扩展程序页重新加载最新版插件，再刷新商品页面；若仍失败，请提供此错误编号。` };
 }

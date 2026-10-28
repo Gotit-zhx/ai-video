@@ -11,6 +11,9 @@ const elements = {
   updateRequired: document.querySelector("#update-required"),
   updateCopy: document.querySelector("#update-copy"),
   platformState: document.querySelector("#platform-state"),
+  clockWarning: document.querySelector("#clock-warning"),
+  checkConnection: document.querySelector("#check-connection"),
+  extensionVersion: document.querySelector("#extension-version"),
   connectionDot: document.querySelector("#connection-dot"),
   pairingPanel: document.querySelector("#pairing-panel"),
   accountPanel: document.querySelector("#account-panel"),
@@ -28,7 +31,21 @@ const elements = {
 };
 
 let updateRequired = false;
+elements.extensionVersion.textContent = `v${chrome.runtime.getManifest?.().version || "0.2.8"}`;
 elements.deviceName.value = suggestedDeviceName();
+
+elements.checkConnection.addEventListener("click", async () => {
+  clearNotice();
+  elements.checkConnection.disabled = true;
+  try {
+    const state = await loadState(true);
+    if (state) showNotice(state.authenticated
+      ? "登录连接正常。重新加载插件后，请同时刷新已打开的商品页面。"
+      : "插件后台已响应，当前尚未登录，请先登录后再采集。", state.authenticated);
+  } finally {
+    elements.checkConnection.disabled = false;
+  }
+});
 
 elements.openPlatform.addEventListener("click", async () => {
   clearNotice();
@@ -101,6 +118,7 @@ async function loadState(refresh) {
   try {
     const state = await callBackground({ type: MESSAGE_TYPES.GET_STATE, refresh });
     renderState(state);
+    return state;
   } catch (error) {
     showError(error);
   }
@@ -108,6 +126,7 @@ async function loadState(refresh) {
 
 function renderState(state) {
   const authenticated = Boolean(state?.authenticated);
+  elements.clockWarning.hidden = !state?.clockAdjusted;
   const pendingRevocations = Number(state?.pendingRevocationCount || 0);
   elements.revocationWarning.hidden = pendingRevocations <= 0;
   elements.revocationWarningCopy.textContent = pendingRevocations > 0

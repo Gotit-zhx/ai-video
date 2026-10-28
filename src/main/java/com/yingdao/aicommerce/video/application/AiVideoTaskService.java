@@ -291,9 +291,6 @@ public class AiVideoTaskService {
         validateGeneralReferenceBatch(references.images());
         validateGeneralMentions(prompt, references.images().size(), references.videos().size());
         if (references.videos().isEmpty() && (command.videoClipStart() != null || command.videoClipEnd() != null)) throw new BusinessException(HttpStatus.BAD_REQUEST, "未上传视频，不能指定截取范围");
-        if (!references.videos().isEmpty() && "SPEED".equals(command.videoRoute())) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频参考请使用质量线路");
-        }
         int durationSeconds = normalizeDurationSeconds(command.durationSeconds());
         String aspectRatio = normalizeAspectRatio(command.aspectRatio());
         String resolution = normalizeResolution(command.resolution());
@@ -1546,7 +1543,7 @@ public class AiVideoTaskService {
 
     private String normalizeAspectRatio(String value) {
         String ratio = value == null || value.isBlank() ? "9:16" : value.trim();
-        if (!List.of("9:16", "1:1", "16:9").contains(ratio)) {
+        if (!List.of("adaptive", "9:16", "1:1", "16:9").contains(ratio)) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "不支持的画幅比例");
         }
         return ratio;
@@ -1562,8 +1559,8 @@ public class AiVideoTaskService {
 
     private int normalizeDurationSeconds(Integer value) {
         int duration = value == null ? 6 : value;
-        if (duration < 4 || duration > 15) {
-            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频时长仅支持 4–15 秒");
+        if (duration != -1 && (duration < 4 || duration > 15)) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "视频时长支持自动或 4–15 秒");
         }
         return duration;
     }

@@ -63,22 +63,27 @@ public class FinanceMarketplace {
                 var bill=bills.getFirst();String billId=text(bill.get("id"));q.put("sort_field","order_create_time");
                 q.remove("page_token");if(!text(cp.get("transactionCursor")).isBlank())q.put("page_token",cp.get("transactionCursor"));
                 data=tikGet(c,"/finance/202501/statements/"+identifier(billId)+"/statement_transactions",q);
-                LocalDate day=tiktokSettlementDay(bill.get("statement_time"));String currency=text(data.get("currency"));
-                data=new LinkedHashMap<>(data);data.put("_finance_statement_time",bill.get("statement_time"));
-                data.put("_finance_date_source","TikTok 已结算账单覆盖的交易业务日：statement_time 的 UTC 日期前一天；原始账单时间另列");
+                boolean completed=FinanceSettlementDates.completed(bill);
+                // Unfinished statements remain stored for retry/reconciliation but are excluded
+                // from dated reports. Their storage date is never presented as completion.
+                LocalDate day=completed?FinanceSettlementDates.day(bill,zone):settlementDay(bill.get("statement_time"),zone);
+                String finalStatus=completed?"SETTLED":FinanceSettlementDates.PENDING;
+                String currency=text(data.get("currency"));
+                var dateMetadata=FinanceSettlementDates.metadata(bill,zone);
+                data=new LinkedHashMap<>(data);data.putAll(dateMetadata);
                 var transactions=requiredRows(data,"transactions");
-                save(s,c,"BILL",billId,"",billId,"结算账单","PARTIAL",day,currency,amount(data,"total_settlement_amount"),data);
+                save(s,c,"BILL",billId,"",billId,"结算账单",completed?"PARTIAL":FinanceSettlementDates.PENDING,day,currency,amount(data,"total_settlement_amount"),data);
                 for(var tx:transactions){
                     if("RESERVE".equals(tx.get("type")))continue;
                     String id=first(tx,"id");String order=first(tx,"order_id","adjustment_order_id");
-                    var raw=new LinkedHashMap<>(tx);raw.put("_finance_statement_time",bill.get("statement_time"));raw.put("_finance_date_source",data.get("_finance_date_source"));
-                    save(s,c,"SETTLEMENT",id,order,billId,first(tx,"type"),"SETTLED",day,currency,amount(tx,"settlement_amount"),raw);
+                    var raw=new LinkedHashMap<>(tx);raw.putAll(dateMetadata);
+                    save(s,c,"SETTLEMENT",id,order,billId,first(tx,"type"),finalStatus,day,currency,amount(tx,"settlement_amount"),raw);
                 }
                 String token=first(data,"next_page_token");
                 long received=number(cp.get("transactionCount"))+transactions.size();
                 if(token.isEmpty()){
                     if(data.containsKey("total_count")&&received!=number(data.get("total_count")))throw bad("账单交易数量不完整，已保留进度等待重试");
-                    save(s,c,"BILL",billId,"",billId,"结算账单","SETTLED",day,currency,amount(data,"total_settlement_amount"),data);
+                    save(s,c,"BILL",billId,"",billId,"结算账单",finalStatus,day,currency,amount(data,"total_settlement_amount"),data);
                     bills.removeFirst();next.remove("transactionCursor");next.remove("transactionCount");next.put("bills",bills);
                 }else {if(token.equals(text(cp.get("transactionCursor"))))throw bad("平台分页游标重复");next.put("transactionCursor",token);next.put("transactionCount",received);}
                 if(bills.isEmpty()&&Boolean.TRUE.equals(cp.get("lastBillPage")))return new Step(next,true);
@@ -186,8 +191,6 @@ public class FinanceMarketplace {
         if(number(value)<=0)throw bad("平台尚未返回有效的结算日期，保留同步进度，不使用下单日或当天代替");
         return date(value,zone);
     }
-    /** Get Statements defines daily 00:00 UTC statements as covering the preceding day's transactions. */
-    static LocalDate tiktokSettlementDay(Object statementTime){return settlementDay(statementTime,"UTC").minusDays(1);}
     /** Fetch missing historical order identities directly, independent of the creation/update lookback. */
     Step repairSettledOrders(Scope s,MarketplaceAccess.Connection c,String zone,Map<String,Object> cp){
         var missing=repo.jdbc().queryForList("""

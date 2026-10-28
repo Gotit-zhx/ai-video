@@ -15,6 +15,7 @@ import {
 export const deduplicateVideos = globalThis.HeyiVideoSources.deduplicate;
 
 const REVOCATION_RETRY_INTERVAL_MS = 30_000;
+const SERVER_CLOCK = Symbol("platform response clock");
 
 export class ApiError extends Error {
   constructor(message, status = 0, code = "REQUEST_FAILED", payload = null) {
@@ -61,7 +62,18 @@ async function fetchJson(baseUrl, path, options = {}) {
       payload
     );
   }
-  return payload?.data ?? payload;
+  if (response.status === 204 && path === API_PATHS.LOGOUT) return null;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new ApiError("平台响应不是有效数据，请检查本机代理或网络后重试", 502, "INVALID_RESPONSE");
+  }
+  const data = payload?.data ?? payload;
+  const serverTimeMs = Date.parse(response.headers?.get?.("date") || "");
+  if (data && typeof data === "object" && Number.isFinite(serverTimeMs)) {
+    Object.defineProperty(data, SERVER_CLOCK, {
+      value: { serverTimeMs, receivedAtMs: Date.now() }
+    });
+  }
+  return data;
 }
 
 export async function exchangePairingCode(baseUrl, code, deviceName) {
@@ -80,6 +92,7 @@ export async function exchangePairingCode(baseUrl, code, deviceName) {
     baseUrl,
     accessToken,
     expiresAt: data?.expiresAt,
+    serverClock: data?.[SERVER_CLOCK],
     user: data?.user,
     permissions: data?.permissions || data?.permissionCodes
       || data?.user?.permissions || data?.user?.permissionCodes
@@ -89,7 +102,7 @@ export async function exchangePairingCode(baseUrl, code, deviceName) {
 export async function connectBrowserSession(baseUrl,deviceName) {
  const data=await fetchJson(baseUrl,'/api/v1/extension-auth/session',{method:'POST',credentials:'include',body:{deviceName,extensionId:chrome.runtime.id,extensionVersion:chrome.runtime.getManifest().version}});
  if(!data?.accessToken)throw new ApiError('浏览器尚未登录',401);
- return writeAuth({baseUrl,accessToken:data.accessToken,expiresAt:data.expiresAt,user:data.user,permissions:data.permissions});
+ return writeAuth({baseUrl,accessToken:data.accessToken,expiresAt:data.expiresAt,user:data.user,permissions:data.permissions,serverClock:data[SERVER_CLOCK]});
 }
 
 export async function loginWithPassword(baseUrl, account, password, deviceName) {
@@ -97,14 +110,14 @@ export async function loginWithPassword(baseUrl, account, password, deviceName) 
     method:'POST', body:{account,password,deviceName,extensionId:chrome.runtime.id,extensionVersion:chrome.runtime.getManifest().version}
   });
   if (!data?.accessToken) throw new ApiError('登录没有返回凭证',502);
-  return writeAuth({baseUrl,accessToken:data.accessToken,expiresAt:data.expiresAt,user:data.user,permissions:data.permissions});
+  return writeAuth({baseUrl,accessToken:data.accessToken,expiresAt:data.expiresAt,user:data.user,permissions:data.permissions,serverClock:data[SERVER_CLOCK]});
 }
 
 export async function refreshCurrentUser() {
   const auth = await requireAuth();
   try {
     const data = await fetchJson(auth.baseUrl, API_PATHS.ME, { accessToken: auth.accessToken });
-    return updateAuthProfile(data);
+    return updateAuthProfile(data, data?.[SERVER_CLOCK]);
   } catch (error) {
     await clearIfUnauthorized(error);
     throw error;

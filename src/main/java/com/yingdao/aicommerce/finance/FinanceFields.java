@@ -20,6 +20,9 @@ public final class FinanceFields {
         core("statement_id","账单编号","text"),core("category","费用类别","text"),core("status","状态","text"),
         core("currency","币种","text"),core("amount","原币金额","money"),core("revenue","归因收入","money"),core("source","来源","text"),
         core("updated_at","最后同步时间","datetime"),core("marketing_label","订单标记","text"),core("summary_inclusion","经营汇总口径","text"),
+        new Field("reporting_month","校正归属月份","text","结算核对",false,"ORDER REFUND SETTLEMENT FEE",""),
+        new Field("platform_settlement_date","平台原始结算日期","date","结算核对",false,"ORDER REFUND SETTLEMENT FEE",""),
+        new Field("reporting_date_source","归属校正来源","text","结算核对",false,"ORDER REFUND SETTLEMENT FEE",""),
         new Field("order_created_time","下单时间（店铺时区）","datetime","主要字段",false,"ORDER REFUND SETTLEMENT BILL FEE COST PENDING RECONCILIATION",""),
         new Field("order_created_time_end","最晚下单时间（店铺时区）","datetime","主要字段",false,"BILL RECONCILIATION",""),
         new Field("order_timezone","店铺时区","text","主要字段",false,"ORDER REFUND SETTLEMENT BILL FEE COST PENDING RECONCILIATION",""),
@@ -38,7 +41,9 @@ public final class FinanceFields {
         new Field("first_settlement_date","首次平台结算日期","date","结算核对",false,"ORDER REFUND",""),
         new Field("source_record_date","原记录日期（非筛选日期）","date","接口扩展",false,"ORDER REFUND",""),
         extra("settlement_date_source","结算日期来源","text","SETTLEMENT BILL RECONCILIATION","_finance_date_source"),
-        extra("statement_time","平台结算账单时间（UTC）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_statement_time|create_time"),
+        extra("statement_time","账单生成时间（UTC，非筛选日期）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_statement_time|create_time"),
+        extra("settlement_completed_time","平台结算完成记录时间（UTC）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_payment_time|payment_time"),
+        extra("settlement_payment_status","平台结算支付状态","text","SETTLEMENT BILL RECONCILIATION","_finance_payment_status|payment_status"),
         extra("actual_release_time","实际收入释放时间（UTC）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_actual_payout_time|actual_payout_time"),
         extra("fee_group","费用分组","text","FEE","fee_group"),
         extra("fee_source_field","平台原始字段","text","FEE","field"),
@@ -140,12 +145,19 @@ public final class FinanceFields {
     public Preferences get(Scope s,String key){
         key=view(key);
         var saved=repo.jdbc().queryForList("SELECT preferences_json FROM finance_view_preferences WHERE organization_id=? AND user_id=? AND view_key=?",s.organizationId(),s.userId(),key);
-        if(saved.isEmpty())return withOrderTimes(key,defaults(key));
+        if(saved.isEmpty())return withReportingMonths(key,withOrderTimes(key,defaults(key)));
         var value=repo.read(text(saved.getFirst().get("preferences_json")));
         boolean upgraded=number(value.get("productSkuColumnVersion"))>=1;
         var prefs=validate(key,upgraded?strings(value.get("visible")):withProductSkus(strings(value.get("visible"))),
                 upgraded?strings(value.get("exported")):withProductSkus(strings(value.get("exported"))));
-        return number(value.get("orderTimeColumnVersion"))>=1?prefs:withOrderTimes(key,prefs);
+        prefs=number(value.get("orderTimeColumnVersion"))>=1?prefs:withOrderTimes(key,prefs);
+        return number(value.get("reportingMonthColumnVersion"))>=1?prefs:withReportingMonths(key,prefs);
+    }
+    static Preferences withReportingMonths(String key,Preferences prefs){
+        if(!Set.of("ORDER","REFUND","SETTLEMENT","FEE","ALL").contains(key))return prefs;
+        var exported=new ArrayList<>(prefs.exported);
+        for(String id:List.of("reporting_month","platform_settlement_date","reporting_date_source"))if(!exported.contains(id))exported.add(id);
+        return new Preferences(prefs.visible,exported);
     }
     static Preferences withOrderTimes(String key,Preferences prefs){
         if(Set.of("AD","AD_GMV").contains(key))return prefs;
@@ -170,12 +182,12 @@ public final class FinanceFields {
     }
     public Map<String,Object> settings(Scope s,String key){
         key=view(key);var prefs=get(s,key);
-        return Map.of("view",key,"fields",catalog(key),"visible",prefs.visible,"exported",prefs.exported,"defaults",withOrderTimes(key,defaults(key)));
+        return Map.of("view",key,"fields",catalog(key),"visible",prefs.visible,"exported",prefs.exported,"defaults",withReportingMonths(key,withOrderTimes(key,defaults(key))));
     }
     public void save(Scope s,String key,List<String> visible,List<String> exported){
         key=view(key);var prefs=validate(key,visible,exported);
         repo.jdbc().update("INSERT INTO finance_view_preferences(organization_id,user_id,view_key,preferences_json) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE preferences_json=VALUES(preferences_json),updated_at=UTC_TIMESTAMP(6)",
-                s.organizationId(),s.userId(),key,repo.write(Map.of("visible",prefs.visible,"exported",prefs.exported,"productSkuColumnVersion",1,"orderTimeColumnVersion",1)));
+                s.organizationId(),s.userId(),key,repo.write(Map.of("visible",prefs.visible,"exported",prefs.exported,"productSkuColumnVersion",1,"orderTimeColumnVersion",1,"reportingMonthColumnVersion",1)));
     }
     static Preferences validate(String key,List<String> visible,List<String> exported){
         Set<String> allowed=new HashSet<>(catalog(key).stream().map(Field::id).toList());
@@ -202,6 +214,7 @@ public final class FinanceFields {
     }
     static void enrich(Map<String,Object> row,Map<String,Object> raw){
         if(!"API".equals(row.get("source")))return;
+        FinanceReportingMonths.enrich(row,raw);
         String kind=text(row.get("kind")),platform=text(row.get("platform"));
         if(Set.of("SETTLEMENT","PENDING").contains(kind)){
             String time=orderTime(raw.get("order_create_time"));
@@ -224,7 +237,11 @@ public final class FinanceFields {
             BigDecimal settlement=decimal(row.get("amount"));
             row.put("settled_net_amount",settlement);
             if(!row.containsKey("settlement_date_source"))row.put("settlement_date_source",platform.equals("SHOPEE")
-                    ?"Shopee 实际收入释放日期（actual_payout_time，店铺时区）":"TikTok 已结算账单覆盖的交易业务日（UTC）：账单生成日前一天；平台未单独返回每单结算完成时刻");
+                    ?"Shopee 实际收入释放日期（actual_payout_time，店铺时区）":FinanceSettlementDates.completed(raw)?FinanceSettlementDates.SOURCE:"平台结算日期待核对");
+            if(FinanceSettlementDates.PENDING.equals(row.get("status")))row.put("record_date",null);
+            if(row.containsKey("settlement_payment_status"))row.put("settlement_payment_status",switch(text(row.get("settlement_payment_status"))){
+                case "PAID"->"已支付";case "SETTLED"->"已结算至卖家账户";case "PROCESSING"->"处理中";case "FAILED"->"支付失败";default->row.get("settlement_payment_status");
+            });
             var breakdown=kind.equals("SETTLEMENT")?FinanceSettlementBreakdown.parse(platform,raw,settlement):null;
             BigDecimal goods=breakdown==null?decimal(row.get("revenue")):breakdown.goods();
             row.put("goods_before_discount_amount",goods);
@@ -256,6 +273,8 @@ public final class FinanceFields {
         }
     }
     static String cell(Map<String,Object> row,Field field){
+        if(Set.of("record_date","first_settlement_date").contains(field.id)&&!text(row.get("reporting_month")).isBlank())
+            return FinanceReportingMonths.dateLabel(row,field.id);
         Object value=switch(field.id){case "fx_time"->at(row,"fx.time");case "fx_provider"->at(row,"fx.provider");default->row.get(field.id);};
         if(Set.of("order_created_time","order_created_time_end").contains(field.id)&&value!=null){
             try{return Instant.parse(text(value)).atZone(java.time.ZoneId.of(text(row.get("order_timezone")).isBlank()?"UTC":text(row.get("order_timezone"))))

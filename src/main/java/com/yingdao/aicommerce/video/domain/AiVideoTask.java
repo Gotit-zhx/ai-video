@@ -240,7 +240,7 @@ public class AiVideoTask {
     public String getOrganizationId() { return organizationId; }
     public String getName() { return name; }
     public String getTaskType() { return taskType == null || taskType.isBlank() ? "PRODUCT" : taskType; }
-    public int getDurationSeconds() { return durationSeconds > 0 ? durationSeconds : 12; }
+    public int getDurationSeconds() { return durationSeconds == -1 || durationSeconds > 0 ? durationSeconds : 12; }
     public boolean isGeneral() { return "GENERAL".equals(getTaskType()); }
     public String getScriptId() { return scriptId; }
     public int getScriptVersion() { return scriptVersion; }

@@ -122,7 +122,7 @@ class FinanceTest {
         var reader=new FinanceMarketplace(auth,mock(ShopeeOfficialClient.class),tk,repo);
         var shop=new Shop("org",MarketplacePlatform.TIKTOK_SHOP,"123","","cipher","LOCAL","test","PH","[]");
         var connection=new MarketplaceAccess.Connection(shop,new MarketplaceAccess.TokenSet("token","",Instant.now().plusSeconds(100),Instant.now().plusSeconds(100),List.of()));
-        var bill=Map.<String,Object>of("id","bill-1","statement_time",1760918400L);
+        var bill=Map.<String,Object>of("id","bill-1","statement_time",1760918400L,"payment_time",1760920000L,"payment_status","PAID");
         when(tk.apiGet(anyString(),anyString(),anyString(),anyMap())).thenReturn(Map.of("data",Map.of("currency","PHP","total_settlement_amount","30",
                 "transactions",List.of(Map.of("id","tx1","type","ORDER","order_id","order1","settlement_amount","30","fee_tax_amount","2")),"next_page_token","cursor2")));
         var cp=new LinkedHashMap<String,Object>(Map.of("from",1,"to",2,"bills",List.of(bill),"lastBillPage",true));
@@ -136,7 +136,26 @@ class FinanceTest {
         assertThrows(BusinessException.class,()->FinanceMarketplace.settlementDay(null,"UTC"));
         assertThrows(BusinessException.class,()->FinanceMarketplace.settlementDay(0,"UTC"));
         assertEquals(LocalDate.of(2026,10,4),FinanceMarketplace.settlementDay(Instant.parse("2026-10-03T17:30:00Z").getEpochSecond(),"Asia/Manila"));
-        assertEquals(LocalDate.of(2026,9,30),FinanceMarketplace.tiktokSettlementDay(Instant.parse("2026-10-01T00:00:00Z").getEpochSecond()));
+        assertThrows(BusinessException.class,()->FinanceSettlementDates.day(Map.of("statement_time",1790812800L),"Asia/Manila"));
+        assertThrows(BusinessException.class,()->FinanceSettlementDates.day(Map.of("payment_status","PROCESSING","payment_time",1790812800L),"Asia/Manila"));
+        assertThrows(BusinessException.class,()->FinanceSettlementDates.day(Map.of("payment_status","PAID","payment_time",0),"Asia/Manila"));
+        assertEquals(LocalDate.of(2026,9,1),FinanceSettlementDates.day(Map.of("statement_time",1788220800L,"payment_time",1788237386L,"payment_status","PAID"),"Asia/Manila"));
+        assertEquals(LocalDate.of(2026,10,4),FinanceSettlementDates.day(Map.of("statement_time",1790726400L,"payment_time",Instant.parse("2026-10-03T17:30:00Z").getEpochSecond(),"payment_status","SETTLED"),"Asia/Manila"));
+    }
+    @Test void unfinishedStatementKeepsItsEvidenceWithoutBlockingLaterBillsOrPretendingItIsSettled(){
+        var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);
+        var reader=new FinanceMarketplace(mock(FinanceShopAuthorization.class),mock(ShopeeOfficialClient.class),tk,repo);
+        var shop=new Shop("org",MarketplacePlatform.TIKTOK_SHOP,"123","","cipher","LOCAL","test","PH","[]");
+        var connection=new MarketplaceAccess.Connection(shop,new MarketplaceAccess.TokenSet("token","",Instant.now(),Instant.now(),List.of()));
+        var pending=Map.<String,Object>of("id","bill-1","statement_time",1788220800L,"payment_time",0,"payment_status","PROCESSING");
+        var paid=Map.<String,Object>of("id","bill-2","statement_time",1788220800L,"payment_time",1788237386L,"payment_status","PAID");
+        when(tk.apiGet(anyString(),anyString(),anyString(),anyMap())).thenReturn(Map.of("data",Map.of("currency","PHP","total_settlement_amount","80",
+                "transactions",List.of(Map.of("id","tx","type","ORDER","order_id","order","settlement_amount","80")))));
+        var step=reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",Map.of("bills",List.of(pending,paid),"lastBillPage",true));
+        assertFalse(step.done());assertEquals(List.of(paid),step.checkpoint().get("bills"));
+        verify(repo,times(3)).save(any(),argThat(e->FinanceSettlementDates.PENDING.equals(e.status())));
+        assertTrue(reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",step.checkpoint()).done());
+        verify(repo).save(any(),argThat(e->e.kind().equals("SETTLEMENT")&&e.status().equals("SETTLED")&&e.date().equals(LocalDate.of(2026,9,1))));
     }
     @Test void settledOrderRepairFetchesOldIdsDirectlyAndRetainsCheckpointOnPartialResponse(){
         var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);var db=mock(JdbcTemplate.class);
@@ -445,7 +464,8 @@ class FinanceTest {
                 .andExpect(jsonPath("$.data.productCosts.currency").value("CNY"))
                 .andExpect(jsonPath("$.data.productCosts.scope").value("SETTLED_ORDER"));
         verify(db).queryForList(startsWith("SELECT x.shop_id,"),
-                eq("org"),eq(java.sql.Date.valueOf("2026-10-01")),eq(java.sql.Date.valueOf("2026-10-23")),eq("org"));
+                eq("org"),eq(java.sql.Date.valueOf("2026-10-01")),eq(java.sql.Date.valueOf("2026-10-23")),eq("org"),
+                eq("org"),eq(java.sql.Date.valueOf("2026-10-01")),eq(java.sql.Date.valueOf("2026-10-23")));
         verify(db,never()).queryForObject(startsWith("SELECT COUNT(*) FROM ("),eq(Long.class),any(Object[].class));
         clearInvocations(db);
         mvc.perform(get("/api/v1/finance/workspace/costs/orders")

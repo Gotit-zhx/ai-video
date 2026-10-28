@@ -266,7 +266,10 @@ public class ModelConfigService {
                         .orderByDesc(ModelConfig::isDefaultModel)
                         .orderByDesc(ModelConfig::getUpdatedAt))
                 .stream().map(this::runtimeConnection)
-                .filter(connection -> !"FAST".equals(connection.provider()))
+                .filter(connection -> "DAYAN".equals(connection.provider()))
+                .map(connection -> new RuntimeModelConnection(connection.id(), connection.baseUrl(),
+                        com.yingdao.aicommerce.video.application.provider.DayanVideoGenerationProvider.MODEL,
+                        connection.apiFormat(), connection.provider(), connection.apiKey()))
                 .toList();
     }
 
@@ -515,7 +518,7 @@ public class ModelConfigService {
         String value = baseUrl == null ? "" : baseUrl.toLowerCase();
         if (value.contains("ai.usmercari.com")) return "FAST";
         if (value.contains("h3.zhongbiao.cloud")) return "H3_MULTI";
-        if (value.contains("dayan.design")) return "DAYAN";
+        if (value.contains("dayan.design") || value.contains("dayan.cloud")) return "DAYAN";
         return "AUTO";
     }
 

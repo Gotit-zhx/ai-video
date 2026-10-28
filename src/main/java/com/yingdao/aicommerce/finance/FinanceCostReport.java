@@ -198,6 +198,10 @@ public final class FinanceCostReport {
         pendingIssues(scope,items);
         var result=new LinkedHashMap<String,Object>();
         result.put("items",items);result.put("total",total);result.put("page",safePage);result.put("pageSize",50);
+        if(text(recordId).isBlank()){
+            var months=new FinanceReportingMonths(repo).coverage(scope,filter);
+            if(!months.isEmpty()){result.put("reportingMonths",months);result.put("reportingMonthNotice",FinanceReportingMonths.NOTE);}
+        }
         result.put("costStatus",selectedStatus);
         result.put("productCosts",costs);return result;
     }
@@ -218,6 +222,8 @@ public final class FinanceCostReport {
             });
             var values=repo.jdbc().queryForList("""
                 SELECT s.shop_id,s.order_id,s.currency settlement_currency,MIN(s.record_date) first_settlement_date,
+                  MAX(JSON_UNQUOTE(JSON_EXTRACT(s.raw_json,'$._finance_reporting_month'))) reporting_month,
+                  MAX(JSON_UNQUOTE(JSON_EXTRACT(s.raw_json,'$._finance_original_settlement_date'))) platform_settlement_date,
                   COUNT(*) settlement_records,COUNT(s.revenue) known_goods,COUNT(s.amount) known_net,
                   SUM(s.revenue) settlement_goods_amount,SUM(s.amount) settlement_net_amount
                 FROM finance_records s FORCE INDEX(idx_finance_cost_order)
@@ -232,6 +238,11 @@ public final class FinanceCostReport {
                 if(matches.size()!=1){if(matches.size()>1)row.put("settlement_amount_note","订单存在不同结算币种，请在结算明细分币种核对");continue;}
                 var value=matches.getFirst();row.put("settlement_currency",value.get("settlement_currency"));
                 row.put("first_settlement_date",value.get("first_settlement_date"));
+                if(value.get("reporting_month")!=null){
+                    row.put("reporting_month",value.get("reporting_month"));
+                    row.put("platform_settlement_date",value.get("platform_settlement_date"));
+                    row.put("reporting_date_source",FinanceReportingMonths.SOURCE);
+                }
                 if(number(value.get("known_goods"))==number(value.get("settlement_records"))){
                     row.put("settlement_goods_amount",value.get("settlement_goods_amount"));
                     row.put("settlement_amount_note","首次结算日的优惠前商品金额，直接取平台结算字段；后续调整请查结算明细");

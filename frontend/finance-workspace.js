@@ -20,8 +20,9 @@
   let filterScope=null,pinnedDates=false,reportFilters=null;
   const filterStorageKey=()=>typeof currentUser!=='undefined'&&currentUser?.organizationId&&currentUser?.userId
     ?'heyi:finance-filters:v1:'+JSON.stringify([currentUser.organizationId,currentUser.userId]):'';
+  const currentMonthEnd=()=>{const now=new Date();return dateText(new Date(now.getFullYear(),now.getMonth()+1,0));};
   const validFilterDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)
-    &&dateText(new Date(value+'T12:00:00'))===value&&value<=today();
+    &&dateText(new Date(value+'T12:00:00'))===value&&value<=currentMonthEnd();
   function restoreFilters(){
     const key=filterStorageKey();if(key===filterScope)return;
     filterScope=key;filters=defaultFilters();pinnedDates=false;reportFilters=null;
@@ -110,7 +111,7 @@
     return chartPromise;
   }
   function select(parent,label,options,value,onchange){const wrap=el('label',null,parent);wrap.dataset.updateKey='select:'+label;el('span',label,wrap);const n=el('select',null,wrap);for(const [v,name] of options){el('option',name,n).value=v;}n.value=value||'';n.setAttribute('aria-label',label);n.onchange=e=>onchange(e.currentTarget.value);return n;}
-  function dateInput(parent,label,value,key){const n=el('input',null,parent);n.type='date';n.setAttribute('value',value);n.setAttribute('aria-label',label);n.max=today();n.onchange=e=>{const value=e.currentTarget.value;if(!validFilterDate(value))return;const next={...filters,[key]:value};if(next.start>next.end){notify('开始日期不能晚于结束日期',true);return;}filters[key]=value;pinnedDates=true;filters.granularity=dateGranularity(filters.start,filters.end);page=1;load();};return n;}
+  function dateInput(parent,label,value,key){const n=el('input',null,parent);n.type='date';n.setAttribute('value',value);n.setAttribute('aria-label',label);n.max=key==='end'?currentMonthEnd():today();n.onchange=e=>{const value=e.currentTarget.value;if(!validFilterDate(value)||(key==='start'&&value>today()))return;const next={...filters,[key]:value};if(next.start>next.end){notify('开始日期不能晚于结束日期',true);return;}filters[key]=value;pinnedDates=true;filters.granularity=dateGranularity(filters.start,filters.end);page=1;load();};return n;}
   function shell(root){
     root.className='workspace-body finance-workspace';
     const head=el('header',null,root,'fi-head'),copy=el('div',null,head);
@@ -148,6 +149,18 @@
     else el('span',' · 原币独立核算',left);
     el('span',' · '+filters.start+' 至 '+filters.end+' · '+(filters.groupId==='UNGROUPED'?'未分组':filters.groupId?groupName(filters.groupId):'全部分组'),left);
     if(data?.cache?.refreshing)el('span',' · 正在后台更新，当前数据截至 '+new Date(data.cache.generatedAt).toLocaleTimeString('zh-CN'),left);
+    if(data?.reportingMonthNotice){
+      const periods=(data.reportingMonths||[]).map(r=>r.reporting_month+'：'+r.orders+' 笔'+(r.included?'已按月归入':'需完整月份查询'));
+      const notice=el('p',periods.join('；')+'。'+data.reportingMonthNotice,parent,'fi-muted');
+      notice.setAttribute('role','note');
+      for(const r of data.reportingMonths||[])if(!r.included){
+        button('查看 '+r.reporting_month+' 整月',notice,()=>{
+          const [year,month]=r.reporting_month.split('-').map(Number);
+          filters.start=r.reporting_month+'-01';filters.end=dateText(new Date(year,month,0));
+          filters.granularity='month';pinnedDates=true;page=1;load();
+        },'fi-record-link');
+      }
+    }
     const job=data?.settlementCalculation;
     if(job?.status==='RUNNING'){
       const status=calculationIndicator(parent,'结算金额计算中');
@@ -353,12 +366,15 @@
   }
   function shopCost(id){return data?.productCosts?.shops?.find(r=>r.shop_id===id);}
   function costAmountText(row,selection){return row?costLink('¥ '+number(Number(row.pending_count)>0?row.known_amount_cny:row.amount_cny)+(Number(row.pending_count)>0?' · 已算部分':''),selection):'—';}
+  states.DATE_PENDING='结算日期待确认';
   function overview(parent){
     parent.style.display='grid';parent.style.gap='15px';meta(parent);metricCards(parent);
     productCostSummary(parent,data?.productCosts,true);
     if(data?.profit)footnote(parent,data.profit.formula+'。退款影响以平台结算为准，不再重复扣减确认退款；利润按已同步和已录入费用计算，未录入费用会影响最终结果。');
     if(data.sync.some(s=>!['ORDER_LIVE','ORDER_REPAIR'].includes(s.channel)&&Number(s.window_start)>0))
       footnote(parent,'历史回补尚未完成，所选期间的金额与笔数可能继续补齐。可在「财务店铺管理」查看各项同步进度。');
+    const pendingDates=data.sync.reduce((n,s)=>n+Number(s.pending_date_bills||0),0);
+    if(pendingDates)footnote(parent,pendingDates+' 张账单尚无平台确认的结算完成日期，暂不归入任一结算月份；系统会继续同步，可在财务店铺管理核对。');
     const pending=total('PENDING');if(pending)footnote(parent,'TikTok 预计待结算 '+number(pending.amount)+' '+(data.filters.displayCurrency||data.filters.currency)+' · 动态预估，已与最终结算分开统计。');
     const grid=el('div',null,parent,'fi-chart-grid');
     trend(grid,[['SETTLEMENT_GROSS','优惠前商品金额'],['ORDER','已结算订单金额']],'收入与结算趋势','按平台结算日期统计，跨月订单计入结算月份');ranking(grid);
@@ -465,6 +481,7 @@
           el('small','正在同步 '+day(state.window_start)+' — '+day(Number(state.window_end)-1),line);
         }else if(state.channel==='ORDER_LIVE'&&state.last_success_at)el('small','已同步至 '+new Date(state.last_success_at).toLocaleTimeString('zh-CN',{hour12:false}),line);
         if(state.error_message){line.title=state.error_message;el('small',state.error_message,line);}
+        if(Number(state.pending_date_bills)>0)el('small',state.pending_date_bills+' 张账单结算日期待确认，暂未计入月度统计',line);
       });
       else el('span','尚未开启',sync,'fi-muted');
       const controls=el('div',null,null,'fi-shop-controls');if(canManage()){button('配置',controls,()=>shopDialog(shop));button('立即同步',controls,async b=>{b.disabled=true;try{const message=await request('/shops/'+encodeURIComponent(shop.id)+'/sync',{method:'POST'});notify(message);setTimeout(()=>{if(active)load();},1000);}finally{b.disabled=false;}}).disabled=!shop.enabled;
@@ -639,6 +656,11 @@
   }
   function columnValue(row,f){
     const value=f.id==='fx_time'?row.fx?.time:f.id==='fx_provider'?row.fx?.provider:row[f.id];
+    if(['record_date','first_settlement_date'].includes(f.id)&&row.reporting_month){
+      const n=el('span',row.reporting_month+'（按月校正）');
+      n.title=(row.reporting_date_source||'用户确认归属月份')+'；平台原始结算日期：'+(row.platform_settlement_date||'—');
+      return n;
+    }
     if(f.id==='shop_id')return shopName(value);
     if(f.id==='product_skus')return skuCell(row);
     if(f.id==='order_created_time'&&row.kind==='BILL'){

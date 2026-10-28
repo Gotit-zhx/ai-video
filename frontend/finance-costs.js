@@ -447,6 +447,7 @@
         for(const [label,value]of [[Number(totals.pending_count)>0?'已结算订单已算部分':'已结算订单商品成本','¥ '+format(Number(totals.pending_count)>0?totals.known_amount_cny:totals.amount_cny)],['已计算的结算订单',format(totals.ready_count)],['已结算待补齐订单',format(totals.pending_count)],['历史价估算',format(totals.estimated_count)]]){
           const n=el('div',null,stats);el('span',label,n);el('strong',value,n);
         }
+        if(result.reportingMonthNotice)el('p',(result.reportingMonths||[]).map(r=>r.reporting_month+'：'+r.orders+' 笔'+(r.included?'已归入':'需完整月份查询')).join('；')+'。'+result.reportingMonthNotice,next,'fc-inline-note');
         const statusFilters=el('div',null,next,'fi-actions fc-order-status');statusFilters.setAttribute('aria-label','订单成本状态筛选');
         for(const [value,title]of [['ALL','全部订单'],['PENDING',`待补齐（${format(totals.pending_count||0)}）`]]){
           const button=action(statusFilters,title,()=>{state.orderCostStatus=value;state.orderPage=1;body();},state.orderCostStatus===value?'fi-primary':'');
@@ -458,7 +459,7 @@
         };
         const orderTable=table(next,['店铺','订单编号','商品 SKU','下单时间（店铺时区）','首次平台结算日期','优惠前商品金额','平台净结算','已结算商品成本（人民币）','成本状态','操作'],(result.items||[]).map(row=>[
           shops.find(s=>s.id===row.shop_id)?.display_name||shops.find(s=>s.id===row.shop_id)?.name||'—',
-          orderIdentifier(row),context.skuCell?.(row)||row.product_skus||'—',context.dateTimeCell?.(row.order_created_time||row.create_time,shops.find(s=>s.id===row.shop_id)?.timezone||'UTC')||'—',String(row.first_settlement_date||'').slice(0,10)||'—',
+          orderIdentifier(row),context.skuCell?.(row)||row.product_skus||'—',context.dateTimeCell?.(row.order_created_time||row.create_time,shops.find(s=>s.id===row.shop_id)?.timezone||'UTC')||'—',row.reporting_month?row.reporting_month+'（按月校正）':String(row.first_settlement_date||'').slice(0,10)||'—',
           settlementAmount(row,'settlement_goods_amount'),settlementAmount(row,'settlement_net_amount'),
           row.product_cost_cny==null?'—':context.openRecord&&row.id?action(null,'¥ '+format(row.product_cost_cny),()=>context.openRecord(row.id),'fi-cost-link'):'¥ '+format(row.product_cost_cny),
           costState(row),

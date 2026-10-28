@@ -31,7 +31,15 @@ class DayanReferenceVideoTest {
             var json=new ObjectMapper().readTree(captured.get());
             assertEquals("image_url",json.get("content").get(1).get("type").asText());
             assertEquals("video_url",json.get("content").get(2).get("type").asText());
-            assertEquals("https://example.test/ref.mp4",json.get("content").get(2).get("video_url").asText());
+            assertEquals("https://example.test/ref.mp4",json.get("content").get(2).get("video_url").get("url").asText());
+            assertEquals("reference_image",json.get("content").get(1).get("role").asText());
+            assertEquals("reference_video",json.get("content").get(2).get("role").asText());
+            assertEquals(DayanVideoGenerationProvider.MODEL,json.get("model").asText());
+            assertEquals(-1,json.get("duration").asInt());
+            assertEquals("adaptive",json.get("ratio").asText());
+            assertFalse(json.get("generate_audio").asBoolean());
+            assertFalse(json.get("watermark").asBoolean());
+            assertTrue(json.get("return_last_frame").asBoolean());
             assertTrue(json.get("content").get(0).get("text").asText().contains("@视频1"));
         } finally {server.stop(0);}
     }

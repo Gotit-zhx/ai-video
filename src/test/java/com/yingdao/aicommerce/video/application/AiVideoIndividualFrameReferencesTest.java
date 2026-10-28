@@ -44,10 +44,24 @@ class AiVideoIndividualFrameReferencesTest {
         assertThat(AiVideoGenerationService.usesIndividualFrames(task("INDIVIDUAL_FRAMES", true))).isFalse();
         assertThat(AiVideoGenerationService.usesIndividualFrames(task("INDIVIDUAL_FRAMES", false))).isTrue();
         AiVideoGenerationService.validateIndividualFrameRoute(task, connection("FAST", "model"));
-        assertThatThrownBy(() -> AiVideoGenerationService.validateIndividualFrameRoute(task("INDIVIDUAL_FRAMES", false), connection("FAST", "minimax-h3")))
-                .hasMessageContaining("仅支持 DAYAN/minimax-h3");
+        assertThatThrownBy(() -> AiVideoGenerationService.validateIndividualFrameRoute(task("INDIVIDUAL_FRAMES", false), connection("FAST", "doubao-seedance-2-0-mini-260615")))
+                .hasMessageContaining("仅支持 DAYAN/Seedance 2.0 Mini");
         assertThatThrownBy(() -> AiVideoGenerationService.validateIndividualFrameRoute(task("INDIVIDUAL_FRAMES", false), connection("DAYAN", "other-model")))
                 .hasMessageContaining("未提交");
+    }
+
+    @Test void allHistoricalRouteSelectionsNowResolveToSeedance() {
+        var configs = mock(ModelConfigService.class);
+        var mini = connection("DAYAN", "doubao-seedance-2-0-mini-260615");
+        when(configs.videoConnections(any())).thenReturn(List.of(mini, connection("H3_MULTI", "MiniMax H3")));
+        var service = service();
+        ReflectionTestUtils.setField(service, "modelConfigs", configs);
+        for (String route : List.of("QUALITY", "SPEED")) {
+            var task = task("GRID", false);
+            ReflectionTestUtils.setField(task, "generationRulesJson", "{\"videoRoute\":\"" + route + "\"}");
+            List<RuntimeModelConnection> routes = ReflectionTestUtils.invokeMethod(service, "videoRoutes", task);
+            assertThat(routes).containsExactly(mini);
+        }
     }
 
     @Test void individualProtocolRetainsEntireCustomPromptAndStructureContractWithoutOldGridRoles() {
@@ -67,7 +81,7 @@ class AiVideoIndividualFrameReferencesTest {
         when(oss.publish(any(Path.class), eq("image/jpeg"), eq("video-storyboard-frames"))).thenAnswer(invocation -> {
             Path path = invocation.getArgument(0); uploaded.add(path); return "https://test.invalid/" + path.getFileName();
         });
-        List<VideoGenerationProvider.Reference> result = references(service(), task("INDIVIDUAL_FRAMES", false), item(), connection("DAYAN", "minimax-h3"));
+        List<VideoGenerationProvider.Reference> result = references(service(), task("INDIVIDUAL_FRAMES", false), item(), connection("DAYAN", "doubao-seedance-2-0-mini-260615"));
         assertThat(result).hasSize(9);
         for (int i = 0; i < 9; i++) assertThat(result.get(i).url()).isEqualTo(String.format("https://test.invalid/%02d.jpg", i + 1));
         assertThat(uploaded).hasSize(9);
@@ -84,7 +98,7 @@ class AiVideoIndividualFrameReferencesTest {
         ReflectionTestUtils.setField(service, "ossStorage", null);
         var links = new VideoReferenceLinkService("https://media.test", false, "qa-secret", java.time.Duration.ofMinutes(5));
         ReflectionTestUtils.setField(service, "referenceLinks", links);
-        var result = references(service, task("INDIVIDUAL_FRAMES", false), item(), connection("DAYAN", "minimax-h3"));
+        var result = references(service, task("INDIVIDUAL_FRAMES", false), item(), connection("DAYAN", "doubao-seedance-2-0-mini-260615"));
         assertThat(result).hasSize(9);
         for (int i = 0; i < 9; i++) assertThat(result.get(i).url()).contains("/storyboard-frame/" + (i + 1) + "/" + grid.getId(), "signature=");
         verifyNoInteractions(oss);
@@ -92,7 +106,7 @@ class AiVideoIndividualFrameReferencesTest {
 
     @Test void unsupportedRouteFailsBeforeDownloadingOrPublishingAnything() {
         when(assets.selectList(any())).thenReturn(List.of(asset("STORYBOARD_GRID", "oss://bucket/grid.png")));
-        assertThatThrownBy(() -> references(service(), task("INDIVIDUAL_FRAMES", false), item(), connection("FAST", "minimax-h3")))
+        assertThatThrownBy(() -> references(service(), task("INDIVIDUAL_FRAMES", false), item(), connection("FAST", "doubao-seedance-2-0-mini-260615")))
                 .hasMessageContaining("仅支持");
         verifyNoInteractions(oss);
     }
@@ -102,7 +116,7 @@ class AiVideoIndividualFrameReferencesTest {
         when(oss.isOssLocation(anyString())).thenReturn(true);
         when(oss.signedUrl(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
         when(oss.publish(any(Path.class), anyString(), eq("source-images"))).thenReturn("original-product");
-        var result = references(service(), task("GRID", false), item(), connection("DAYAN", "minimax-h3"));
+        var result = references(service(), task("GRID", false), item(), connection("DAYAN", "doubao-seedance-2-0-mini-260615"));
         assertThat(result).extracting(VideoGenerationProvider.Reference::url)
                 .containsExactly("oss://bucket/first.png", "oss://bucket/grid.png", "original-product");
         verify(oss, never()).download(anyString());

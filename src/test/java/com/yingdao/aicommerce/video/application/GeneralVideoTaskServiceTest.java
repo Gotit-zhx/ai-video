@@ -69,12 +69,14 @@ class GeneralVideoTaskServiceTest {
     }
 
     @Test
-    void rejectsVideoOnUnsupportedSpeedRouteBeforeCreatingTask() {
+    void acceptsAutomaticSeedanceParametersWithHistoricalSpeedSelection() {
         Fixture fixture = fixture();
-        var video = new MockMultipartFile("files", "ref.mp4", "video/mp4", new byte[] {1});
-        assertThrows(BusinessException.class, () -> fixture.service.createGeneral(
-                new AiVideoTaskService.GeneralCreateCommand(null, "@视频1", 5, "9:16", "720p", "SPEED", false), List.of(video), principal()));
-        verify(fixture.taskMapper, never()).insert(any(AiVideoTask.class));
+        var task = fixture.service.createGeneral(
+                new AiVideoTaskService.GeneralCreateCommand(null, "@图片1", -1, "adaptive", "720p", "SPEED", false),
+                List.of(image("reference.png")), principal());
+        assertEquals(-1, task.getDurationSeconds());
+        assertEquals("adaptive", task.getAspectRatio());
+        verify(fixture.taskMapper).insert(any(AiVideoTask.class));
     }
 
     @Test

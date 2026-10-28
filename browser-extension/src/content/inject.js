@@ -181,13 +181,13 @@
       ensureBlockedNotice(blockedReason);
       return;
     }
-    if (!(await ensureAuthenticated())) {
-      setUrlState(control.productUrl, "auth", "请先点击浏览器工具栏中的赫逸插件完成登录");
-      return;
-    }
-    setUrlState(control.productUrl, "loading");
     let payload;
     try {
+      if (!(await ensureAuthenticated())) {
+        setUrlState(control.productUrl, "auth", "请先点击浏览器工具栏中的赫逸插件完成登录");
+        return;
+      }
+      setUrlState(control.productUrl, "loading");
       if (control.pageType === "CARD") {
         const opened = await chrome.runtime.sendMessage({ type: MESSAGE_OPEN_DETAIL, productUrl: control.productUrl });
         if (!opened?.ok) {
@@ -268,12 +268,16 @@
     try {
       const response = await chrome.runtime.sendMessage({ type: MESSAGE_GET_STATE, refresh: true });
       if (response?.error?.status === 426) showUpgradeRequired(response.error.message);
+      if (!response?.ok) throw backgroundError(response);
       authenticated = Boolean(response?.ok && response.data?.authenticated);
       for (const controls of controlsByUrl.values()) {
         for (const control of controls) control.render();
       }
-    } catch {
-      authenticated = false;
+    } catch (error) {
+      if (error?.details?.status === 401) authenticated = false;
+      for (const controls of controlsByUrl.values()) {
+        for (const control of controls) control.render("error", error.message || "插件连接失败，请重试");
+      }
     }
   }
 
@@ -285,16 +289,18 @@
   }
 
   async function ensureAuthenticated() {
-    try {
-      const response = await chrome.runtime.sendMessage({ type: MESSAGE_GET_STATE, refresh: true });
-      if (response?.error?.status === 426) showUpgradeRequired(response.error.message);
-      authenticated = Boolean(response?.ok && response.data?.authenticated);
-      if (authenticated) await globalThis.HeyiCaptureBridge?.activate?.().catch(() => false);
-      return authenticated;
-    } catch {
-      authenticated = false;
-      return false;
-    }
+    const response = await chrome.runtime.sendMessage({ type: MESSAGE_GET_STATE, refresh: true });
+    if (response?.error?.status === 426) showUpgradeRequired(response.error.message);
+    if (!response?.ok) throw backgroundError(response);
+    authenticated = Boolean(response.data?.authenticated);
+    if (authenticated) await globalThis.HeyiCaptureBridge?.activate?.().catch(() => false);
+    return authenticated;
+  }
+
+  function backgroundError(response) {
+    const error = new Error(response?.error?.message || "插件后台未响应，请重新加载插件并刷新商品页");
+    error.details = response?.error || {};
+    return error;
   }
 
   async function resumePendingCapture() {

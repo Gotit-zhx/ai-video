@@ -87,7 +87,10 @@ public class FinanceService {
             SELECT st.shop_id,st.channel,st.status,st.error_message,st.next_at,st.last_success_at,st.coverage_start,
               JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.from')) window_start,
               JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.to')) window_end,
-              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.until')) target_until
+              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.until')) target_until,
+              CASE WHEN st.channel='SETTLEMENT' THEN (SELECT COUNT(*) FROM finance_records p
+                WHERE p.organization_id=st.organization_id AND p.shop_id=st.shop_id
+                  AND p.kind='BILL' AND p.source='API' AND p.status='DATE_PENDING') ELSE 0 END pending_date_bills
             FROM finance_sync_states st JOIN finance_connections c ON c.id=st.shop_id AND c.organization_id=st.organization_id AND c.user_id=st.user_id
             WHERE st.organization_id=? AND c.status<>'REMOVED' ORDER BY st.shop_id,st.channel
             """,s.organizationId());
@@ -167,8 +170,10 @@ public class FinanceService {
                 buckets.addAll(orders.stream().filter(row->number(row.get("records"))>0).toList());
                 buckets.addAll(repo.settledOrderBuckets(s,all,"REFUND"));
             }
-            return Map.of("buckets",buckets,"orders",orders);
+            return Map.of("buckets",buckets,"orders",orders,"reportingMonths",live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
         }));
+        var reportingMonths=rows(facts.get("reportingMonths"));
+        String trendGranularity=reportingMonths.stream().anyMatch(r->Boolean.TRUE.equals(r.get("included")))?"month":requested.granularity();
         var buckets=rows(facts.get("buckets"));
         var allRanking=aggregate(buckets,"shop_id","kind");
         List<String> codes=allRanking.stream().map(r->text(r.get("currency"))).distinct().sorted().toList();
@@ -180,7 +185,7 @@ public class FinanceService {
         if(cny)totals=FinanceFx.groups(totals,quote,"kind");
         LinkedHashMap<String,Map<String,Object>> points=new LinkedHashMap<>();
         for(LocalDate d=f.start();!live&&!d.isAfter(f.end());d=d.plusDays(1)){
-            String key=bucket(d,f.granularity());points.computeIfAbsent(key,k->{var m=new LinkedHashMap<String,Object>();m.put("period",k);return m;});
+            String key=bucket(d,trendGranularity);points.computeIfAbsent(key,k->{var m=new LinkedHashMap<String,Object>();m.put("period",k);return m;});
         }
         var selected=buckets.stream().filter(r->currency.isBlank()||currency.equals(text(r.get("currency")))).toList();
         var daily=live?List.<Map<String,Object>>of():aggregate(selected,"record_date","kind");
@@ -188,7 +193,7 @@ public class FinanceService {
         daily=FinanceProfitReport.withGross(daily,"record_date");
         var incompletePoints=new HashSet<String>();
         for(var row:daily){
-            String key=bucket(LocalDate.parse(text(row.get("record_date"))),f.granularity());
+            String key=bucket(LocalDate.parse(text(row.get("record_date"))),trendGranularity);
             var point=points.get(key);String kind=text(row.get("kind"));if(point==null)continue;
             BigDecimal value=Set.of("SETTLEMENT","BILL").contains(kind)?FinanceProfitReport.goods(row):decimal(row.get("amount"));if(value!=null)point.merge(kind,value,(a,b)->((BigDecimal)a).add((BigDecimal)b));
             if(Set.of("SETTLEMENT","BILL").contains(kind)&&value==null)incompletePoints.add(key+"\0"+kind);
@@ -197,6 +202,8 @@ public class FinanceService {
         }
         for(String missing:incompletePoints){var parts=missing.split("\0");var point=points.get(parts[0]);point.put(parts[1],null);if(parts[1].equals("SETTLEMENT"))point.put("SETTLEMENT_GROSS",null);}
         var out=new LinkedHashMap<String,Object>();
+        out.put("reportingMonths",reportingMonths);out.put("trendGranularity",trendGranularity);
+        if(!reportingMonths.isEmpty())out.put("reportingMonthNotice",FinanceReportingMonths.NOTE);
         out.put("filters",Map.of("start",f.start(),"end",f.end(),"shopId",f.shopId(),"platform",f.platform(),"currency",currency,"granularity",f.granularity(),"displayCurrency",cny?"CNY":currency,"groupId",requested.groupId()));
         if(cny)out.put("fx",quote.metadata());
         out.put("currencies",codes);out.put("totals",totals);out.put("trend",new ArrayList<>(points.values()));
@@ -216,7 +223,8 @@ public class FinanceService {
         }
         out.put("profit",FinanceProfitReport.calculate(totals,productCosts,cny?"CNY":currency,profitQuote));
         out.put("basis","结算金额为平台返回的优惠前商品金额；商家优惠、退款冲减、佣金、物流、税费及补贴按原始字段列入平台费用。"
-                +(live?"实时订单按下单日显示；结算与成本按平台结算日。":"日期筛选以平台结算日期为准，订单、关联退款和商品成本按首次平台结算日期归属，不限制下单月份。")
+                +(live?"实时订单按下单日显示；结算与成本按平台结算日。":"日期筛选以平台完成结算记录的日期为准（店铺时区）：TikTok 使用已完成状态的 payment_time，Shopee 使用 actual_payout_time。订单、关联退款和商品成本按首次结算日期归属，不限制下单月份。")
+                +"明确确认过归属月份的订单按校正月份统计，原始平台日期保留；月份校正不代表获取了具体完成时间。"
                 +"经营汇总排除刷单；原始账单净额用于对账。广告及独立费用按发生日，待结算尚无结算日期。已结算不代表银行到账。");
         return out;
     }

@@ -96,6 +96,7 @@ public class FinanceCostExport {
             summary.row(List.of("刷单口径","刷单订单不计入本报表的结算商品成本；原始财务明细保留黄色标签对应的订单标记。"));
             summary.row(List.of("排除口径","未付款或已取消订单、已取消商品明细不计商品成本，不受发货状态影响；实际平台费用保留。退款不会自动退回商品成本。商品标准成本不等于仓库实际出库成本。"));
             summary.row(List.of("核对方式","按订单编号连接订单与 SKU 明细；组合单价、数量、月份均取自同一次已保存计算。订单成本合计按去重订单统计。"));
+            summary.row(List.of("月份校正",FinanceReportingMonths.NOTE));
             summary.row(List.of("时间说明","下单时间为店铺时区，平台未提供时留空；下单日期为平台业务日。成本更新时间使用 UTC。"));
             summary.row(List.of("商品金额口径","优惠前商品金额与平台净结算取首次结算日的平台结算字段；缺失时留空，不以原订单金额代替。后续跨日调整请查结算明细。"));
             summary.row(List.of("成本分类","商品成本与贴单成本归入营业成本；样品和退款关联订单的商品成本已包含其中，不重复扣减。"));
@@ -103,8 +104,8 @@ public class FinanceCostExport {
         }catch(IOException e){throw new IllegalStateException("成本报表生成失败，请重试",e);}
         finally{slots.release();}
     }
-    static final List<String> ORDER_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","商品 SKU","下单日期","下单时间（店铺时区）","店铺时区","订单状态","订单状态代码","结算原币","优惠前商品金额（结算原币）","商品成本（人民币）","已计算部分成本（人民币）","成本状态","成本仓","成本月份依据","目标成本月份","实际取价月份","SKU 明细行数","匹配成功行数","历史价行数","成本来源文件","成本版本","成本更新时间（UTC）","说明","首次平台结算日期","订单类型","贴单成本（人民币）","贴单口径","平台净结算（结算原币）","原订单币种（核对用）","原订单金额（核对用）","商品金额口径");
-    static final List<String> LINE_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","下单日期","订单状态","订单成本状态","商品名称","规格名称","商品 SPU 编号","平台 SKU 编号","商家 SKU","商品行编号","成本型号","成本仓","购买数量","组合数量","成本单价（人民币）","商品行成本（人民币）","目标成本月份","实际取价月份","历史价格估算","商品行状态","缺失原因或说明","成本来源文件","成本版本","成本更新时间（UTC）","首次平台结算日期","订单类型");
+    static final List<String> ORDER_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","商品 SKU","下单日期","下单时间（店铺时区）","店铺时区","订单状态","订单状态代码","结算原币","优惠前商品金额（结算原币）","商品成本（人民币）","已计算部分成本（人民币）","成本状态","成本仓","成本月份依据","目标成本月份","实际取价月份","SKU 明细行数","匹配成功行数","历史价行数","成本来源文件","成本版本","成本更新时间（UTC）","说明","首次平台结算日期","订单类型","贴单成本（人民币）","贴单口径","平台净结算（结算原币）","原订单币种（核对用）","原订单金额（核对用）","商品金额口径","校正归属月份","平台原始结算日期","归属校正来源");
+    static final List<String> LINE_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","下单日期","订单状态","订单成本状态","商品名称","规格名称","商品 SPU 编号","平台 SKU 编号","商家 SKU","商品行编号","成本型号","成本仓","购买数量","组合数量","成本单价（人民币）","商品行成本（人民币）","目标成本月份","实际取价月份","历史价格估算","商品行状态","缺失原因或说明","成本来源文件","成本版本","成本更新时间（UTC）","首次平台结算日期","订单类型","校正归属月份","平台原始结算日期","归属校正来源");
     static final class Totals{
         long orders,ready,estimated,pending,excluded,lines;BigDecimal known=BigDecimal.ZERO;
         final Set<String> shops=new LinkedHashSet<>();
@@ -143,14 +144,14 @@ public class FinanceCostExport {
             row.get("settlement_currency"),decimal(row.get("settlement_goods_amount")),amount,known,status,cost.get("warehouse"),
             cost.isEmpty()?"":"shipment".equals(cost.get("dateBasis"))?"发货月份":"下单月份",cost.get("costMonth"),String.join("、",months),
             cost.get("lineCount"),cost.get("matchedLines"),cost.get("fallbackLines"),queued?null:row.get("cost_source"),
-            queued?null:row.get("cost_version"),queued?null:updated,note,day(row.get("first_settlement_date")),orderType,
+            queued?null:row.get("cost_version"),queued?null:updated,note,settlementDay(row),orderType,
             number(row.get("label_pending"))>0?null:cost.get("labelCostCny"),number(row.get("label_pending"))>0?"贴单费用更新中，商品成本保留":cost.get("labelNote"),
-            row.get("settlement_net_amount"),row.get("currency"),decimal(row.get("amount")),row.get("settlement_amount_note")));
+            row.get("settlement_net_amount"),row.get("currency"),decimal(row.get("amount")),row.get("settlement_amount_note"),row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source")));
         // Retain an explanatory row even when the source order or its calculation is unavailable.
         if(costLines.isEmpty()){
             detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),date,orderStatus(text(row.get("order_status"))),status,
                 null,null,null,null,String.join("\n",skus),null,null,cost.get("warehouse"),null,null,null,code.equals("EXCLUDED")?BigDecimal.ZERO:null,
-                cost.get("costMonth"),null,null,status,note,queued?null:row.get("cost_source"),queued?null:row.get("cost_version"),queued?null:updated,day(row.get("first_settlement_date")),orderType));
+                cost.get("costMonth"),null,null,status,note,queued?null:row.get("cost_source"),queued?null:row.get("cost_version"),queued?null:updated,settlementDay(row),orderType,row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source")));
             totals.lines++;return;
         }
         for(var line:costLines){
@@ -163,11 +164,12 @@ public class FinanceCostExport {
                 first(source,"product_name","item_name"),first(source,"sku_name","model_name"),line.get("productId"),line.get("skuId"),line.get("sellerSku"),line.get("lineId"),
                 line.get("costCode"),line.get("warehouse"),line.get("quantity"),line.get("factor"),line.get("unitPriceCny"),line.get("amountCny"),
                 cost.get("costMonth"),line.get("priceMonth"),Boolean.TRUE.equals(line.get("previousPrice"))?"是":"否",lineState,
-                issue.isBlank()?excluded?"未付款或已取消，不计成本":"单价 × 有效购买数量 × 组合数量":issue,row.get("cost_source"),row.get("cost_version"),updated,day(row.get("first_settlement_date")),orderType));
+                issue.isBlank()?excluded?"未付款或已取消，不计成本":"单价 × 有效购买数量 × 组合数量":issue,row.get("cost_source"),row.get("cost_version"),updated,settlementDay(row),orderType,row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source")));
             totals.lines++;
         }
     }
     private Map<String,Object> decode(Object value){return new FinanceOrderCosts(repo).decode(value);}
+    static Object settlementDay(Map<String,Object> row){return text(row.get("reporting_month")).isBlank()?day(row.get("first_settlement_date")):FinanceReportingMonths.dateLabel(row,"first_settlement_date");}
     static Object day(Object value){try{return value==null?null:LocalDate.parse(text(value).substring(0,10));}catch(RuntimeException e){return null;}}
     static Object timestamp(Object value){return value instanceof java.sql.Timestamp t?t.toInstant().atZone(ZoneOffset.UTC).toLocalDateTime():null;}
     static Object created(Object value,String zone){

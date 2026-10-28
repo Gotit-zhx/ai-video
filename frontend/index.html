@@ -71,7 +71,7 @@
 
   <main id="login-view" class="login-shell" hidden>
 
-    <header class="login-masthead"><a class="login-home-brand" href="#home" aria-label="HOYEE 首页">HOYEE<span>赫逸</span></a><div class="login-header-tools"><a href="/downloads/hoyee-assistant-latest.zip" download class="login-header-download">插件下载 <span aria-hidden="true">↓</span></a><details class="login-header-guide"><summary>安装说明</summary><div class="login-guide-popover"><strong>安装插件助手</strong><ol><li>下载并解压安装包。</li><li>在 Chrome 地址栏输入 <code>chrome://extensions</code>；Edge 输入 <code>edge://extensions</code>。</li><li>开启“开发者模式”，点击“加载已解压的扩展程序”，选择解压后的 <code>hoyee-assistant</code> 文件夹。</li><li>刷新商品页面，点击浏览器工具栏的插件图标开始使用。</li></ol><p>v0.2.7 · 电脑端 Chrome / Edge</p></div></details></div></header>
+    <header class="login-masthead"><a class="login-home-brand" href="#home" aria-label="HOYEE 首页">HOYEE<span>赫逸</span></a><div class="login-header-tools"><a href="/downloads/hoyee-assistant-latest.zip" download class="login-header-download">插件下载 <span aria-hidden="true">↓</span></a><details class="login-header-guide"><summary>安装说明</summary><div class="login-guide-popover"><strong>安装插件助手</strong><ol><li>下载并解压安装包。</li><li>在 Chrome 地址栏输入 <code>chrome://extensions</code>；Edge 输入 <code>edge://extensions</code>。</li><li>开启“开发者模式”，点击“加载已解压的扩展程序”，选择解压后的 <code>hoyee-assistant</code> 文件夹。</li><li>刷新商品页面，点击浏览器工具栏的插件图标开始使用。</li></ol><p>v0.2.8 · 电脑端 Chrome / Edge</p></div></details></div></header>
 
     <section class="login-panel">
       <div class="login-card">
@@ -567,10 +567,11 @@
             </div>
 
             <footer class="general-generation-controls">
-              <fieldset><legend>画面比例</legend><label><input type="radio" name="aspectRatio" value="9:16" checked><span>9:16</span></label><label><input type="radio" name="aspectRatio" value="16:9"><span>16:9</span></label><label><input type="radio" name="aspectRatio" value="1:1"><span>1:1</span></label></fieldset>
-              <fieldset><legend>分辨率</legend><label><input type="radio" name="resolution" value="720p" checked><span>720p</span></label><label><input type="radio" name="resolution" value="1080p"><span>1080p</span></label></fieldset>
-              <fieldset><legend>时长</legend><label><input type="radio" name="durationSeconds" value="5" checked><span>5 秒</span></label><label><input type="radio" name="durationSeconds" value="10"><span>10 秒</span></label><label><input type="radio" name="durationSeconds" value="15"><span>15 秒</span></label></fieldset>
-              <fieldset><legend>生成线路</legend><label><input type="radio" name="videoRoute" value="QUALITY" checked><span>质量</span></label><label><input type="radio" name="videoRoute" value="SPEED"><span>极速 · 768p</span></label></fieldset>
+              <fieldset><legend>生成模型</legend><label><input type="radio" name="videoRoute" value="QUALITY" checked><span>Seedance 2.0 Mini</span></label></fieldset>
+              <fieldset><legend>画面比例</legend><label><input type="radio" name="aspectRatio" value="adaptive" checked><span>自适应</span></label></fieldset>
+              <fieldset><legend>分辨率</legend><label><input type="radio" name="resolution" value="720p" checked><span>720p</span></label></fieldset>
+              <fieldset><legend>时长</legend><label><input type="radio" name="durationSeconds" value="-1" checked><span>自动</span></label></fieldset>
+              <small>静音 · 无水印 · 返回尾帧</small>
               <label class="general-auto-start"><input type="checkbox" name="autoStart" checked><span><b>立即开始</b><small>创建后自动进入视频线路</small></span></label>
               <button id="general-video-submit" class="new-job-button" type="submit">开始生成 <span aria-hidden="true">→</span></button>
             </footer>
@@ -1511,9 +1512,8 @@
         <label class="generation-mode-option generation-mode-option-replica"><input type="radio" name="generationMode" value="SCRIPT_REPLICA"><i>复</i><span><strong>脚本视频复刻</strong><small>沿用原视频，定向替换人物或商品</small></span><em>×2 收费</em></label>
       </fieldset>
       <fieldset class="generation-mode-picker video-route-picker">
-        <legend>视频生成线路</legend>
-        <label class="generation-mode-option active"><input type="radio" name="videoRoute" value="QUALITY" checked><i>质</i><span><strong>高质量 · 低速度</strong><small>画面质量优先，生成时间较长</small></span></label>
-        <label class="generation-mode-option"><input type="radio" name="videoRoute" value="SPEED"><i>快</i><span><strong>低质量 · 高速度</strong><small>生成速度优先，适合快速出片</small></span></label>
+        <legend>视频生成模型</legend>
+        <label class="generation-mode-option active"><input type="radio" name="videoRoute" value="QUALITY" checked><i>影</i><span><strong>Seedance 2.0 Mini</strong><small>720p · 自动时长和画幅 · 静音 · 无水印 · 返回尾帧</small></span></label>
       </fieldset>
       <section id="direct-reference-mode-note" class="direct-reference-mode-note" hidden>
         <span class="direct-reference-orbit" aria-hidden="true"><i>1</i><i>9</i></span>
@@ -1769,7 +1769,7 @@
       </div>
       <div class="simple-model-form">
         <label id="model-organization-field"><span>所属公司</span><select name="organizationId" id="model-organization" required></select></label>
-        <label id="video-provider-field" hidden><span>视频线路</span><select name="provider"><option value="AUTO">自动识别</option><option value="DAYAN">高质量 · 低速度</option><option value="H3_MULTI">低质量 · 高速度</option></select></label>
+        <label id="video-provider-field" hidden><span>视频线路</span><select name="provider"><option value="AUTO">自动识别</option><option value="DAYAN">Seedance 2.0 Mini</option></select></label>
         <label><span>API 地址</span><input name="baseUrl" type="url" required maxlength="512" placeholder="https://api.example.com/v1"></label>
         <label><span>模型 ID</span><input name="modelId" required maxlength="160" placeholder="例如：image-model-v1"></label>
         <label><span>API Key</span><input name="apiKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="粘贴服务商提供的 Key"></label>
@@ -2018,14 +2018,14 @@
   <script src="/product-listing-templates.js?v=20261023-tiktok-warehouse-1" defer></script>
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
-  <script src="/app.js?v=20261023-tiktok-warehouse-1" defer></script>
+  <script src="/app.js?v=20261027-seedance-mini-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261021-incremental-1" defer></script>
-  <script src="/finance-costs.js?v=20261027-date-search-1" defer></script>
+  <script src="/finance-costs.js?v=20261028-reporting-months-1" defer></script>
   <script src="/finance-expenses-design.js?v=20261023-profit-overview-1" defer></script>
   <script src="/finance-charges.js?v=20261027-date-search-1" defer></script>
-  <script src="/finance-workspace.js?v=20261027-date-search-1" defer></script>
+  <script src="/finance-workspace.js?v=20261028-reporting-months-2" defer></script>
   <script src="/hr-bi.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-pool.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-demands.js?v=20261021-incremental-1" defer></script>

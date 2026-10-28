@@ -8247,10 +8247,7 @@ function renderModelConfigs() {
     target.innerHTML = configs.map(config => {
       const active = config.status === "ACTIVE";
       const isVideo = type === "VIDEO";
-      const isDayanFast = config.provider === "DAYAN" && String(config.modelId || "").trim().toLowerCase() === "minimax-h3-fast";
-      const providerName = isDayanFast
-        ? "低质量 · 高速度（主线路）"
-        : ({ DAYAN: "高质量 · 低速度", H3_MULTI: "低质量 · 高速度（备用）", AUTO: "自动识别线路" }[config.provider] || config.provider);
+      const providerName = ({ DAYAN: "Seedance 2.0 Mini", H3_MULTI: "旧视频线路（停用）", AUTO: "自动识别线路" }[config.provider] || config.provider);
       return `
         <article class="model-config-card ${active ? "" : "disabled"}">
           <div class="model-config-main">
@@ -11952,7 +11949,7 @@ function renderAiVideoTaskDetail(options = {}) {
   document.querySelector("#ai-video-task-title").setAttribute("translate", (task.name) ? "no" : "yes");
   document.querySelector("#ai-video-task-title").textContent = task.name;
   const musicLabel = task.musicMode === "UPLOADED" ? `已上传配乐 · ${task.musicFileName || "音乐"}` : "AI 轻快旋律 BGM";
-  const routeLabel = task.videoRoute === "SPEED" ? "低质量 · 高速度" : "高质量 · 低速度";
+  const routeLabel = task.modelId && /minimax|h3/i.test(task.modelId) ? "历史视频模型" : "Seedance 2.0 Mini";
   document.querySelector("#ai-video-task-script").innerHTML = `<span class="task-mode-badge resolution">${escapeHtml(task.resolution || "720p")}</span><span class="task-mode-badge">${routeLabel}</span>${directReferenceVideo ? `<span class="task-mode-badge direct">${task.useScriptReferenceVideo ? "原视频替换" : "参考图直提"}</span>` : `<span class="task-mode-badge">${escapeHtml(aiVideoGenerationModeNames[mode] || mode)}</span><span class="task-mode-badge background">${escapeHtml(aiVideoBackgroundModeNames[task.backgroundMode || "SCRIPT_ORIGINAL"])}</span>`}<span class="task-mode-badge music">${escapeHtml(musicLabel)}</span> 使用脚本：${escapeHtml(task.scriptName)} / v${Number(task.scriptVersion || 1)} <b>已冻结</b>`;
   const taskProgress = document.querySelector("#ai-video-task-progress");
   taskProgress.textContent = waitingForProviderAcceptance
@@ -12340,7 +12337,7 @@ function renderMonitorVideoRequests(requests, videoPrompt, videoAsset, task) {
       ${videoAsset && ["COMPLETED", "SUCCEEDED"].includes(request.status) ? renderMonitorAssetPreview(videoAsset, task) : ""}
       <dl>
         <div><dt>请求 ID</dt><dd>${escapeHtml(request.id)}</dd></div><div><dt>供应商任务 ID</dt><dd>${escapeHtml(request.providerTaskId || "尚未受理")}</dd></div>
-        <div><dt>模型</dt><dd>${escapeHtml(request.modelId || "—")}</dd></div><div><dt>规格</dt><dd>${request.durationSeconds || "—"} 秒 · ${escapeHtml(request.aspectRatio || "—")} · ${escapeHtml(request.resolution || "—")}</dd></div>
+        <div><dt>模型</dt><dd>${escapeHtml(request.modelId || "—")}</dd></div><div><dt>规格</dt><dd>${Number(request.durationSeconds) === -1 ? "自动时长" : `${request.durationSeconds || "—"} 秒`} · ${escapeHtml(request.aspectRatio || "—")} · ${escapeHtml(request.resolution || "—")}</dd></div>
         <div><dt>请求状态</dt><dd>${escapeHtml(request.requestState || "—")}</dd></div><div><dt>费用</dt><dd>${request.cost == null ? "—" : escapeHtml(request.cost)}</dd></div>
       </dl>
       ${request.errorMessage ? `<p class="monitor-request-error">${escapeHtml(request.errorMessage)}</p>` : ""}
@@ -12384,7 +12381,7 @@ function renderAiVideoMonitorDetail() {
   const finished = ["IMAGE_READY", "VIDEO_READY", "FAILED"].includes(task.status);
   const detailHtml = `
     <header class="monitor-detail-head">
-      <div><span class="monitor-detail-id">${generalTask ? "GENERAL" : "TASK"} · ${escapeHtml(task.id)}</span><h2 translate="${task.name ? 'no' : 'yes'}">${escapeHtml(task.name || "未命名任务")}</h2><p>${generalTask ? `通用生成 · ${escapeHtml(task.durationSeconds || "—")} 秒` : `${escapeHtml(task.scriptName || "未关联脚本")} · v${task.scriptVersion} · ${escapeHtml(task.generationMode || "—")}`}</p></div>
+      <div><span class="monitor-detail-id">${generalTask ? "GENERAL" : "TASK"} · ${escapeHtml(task.id)}</span><h2 translate="${task.name ? 'no' : 'yes'}">${escapeHtml(task.name || "未命名任务")}</h2><p>${generalTask ? `通用生成 · ${Number(task.durationSeconds) === -1 ? "自动时长" : `${escapeHtml(task.durationSeconds || "—")} 秒`}` : `${escapeHtml(task.scriptName || "未关联脚本")} · v${task.scriptVersion} · ${escapeHtml(task.generationMode || "—")}`}</p></div>
       <div class="monitor-detail-status ${monitorStatusGroup(task.status).toLowerCase()}"><i></i><span>${monitorStatusNames[task.status] || escapeHtml(task.status)}</span><strong>${task.progress || 0}%</strong></div>
     </header>
     <section class="monitor-trace" aria-label="任务生成轨迹">
@@ -12394,7 +12391,7 @@ function renderAiVideoMonitorDetail() {
       <div class="${task.status === "FAILED" ? "failed" : finished ? "done" : ""}"><i></i><span>${task.status === "FAILED" ? "异常结束" : "任务完成"}</span><small>${finished ? monitorDuration(task.createdAt, task.completedAt || task.updatedAt) : "等待全部完成"}</small></div>
     </section>
     <section class="monitor-task-facts">
-      <div><span>任务类型</span><strong>${generalTask ? "通用生成" : "商品视频"}</strong></div><div><span>${generalTask ? "视频时长" : "商品品类"}</span><strong>${generalTask ? `${escapeHtml(task.durationSeconds || "—")} 秒` : escapeHtml(task.productCategory || "未设置")}</strong></div>
+      <div><span>任务类型</span><strong>${generalTask ? "通用生成" : "商品视频"}</strong></div><div><span>${generalTask ? "视频时长" : "商品品类"}</span><strong>${generalTask ? `${Number(task.durationSeconds) === -1 ? "自动时长" : `${escapeHtml(task.durationSeconds || "—")} 秒`}` : escapeHtml(task.productCategory || "未设置")}</strong></div>
       <div><span>画面规格</span><strong>${escapeHtml(task.aspectRatio || "—")} · ${escapeHtml(task.resolution || "—")}</strong></div><div><span>当前模型</span><strong>${escapeHtml(task.modelId || "尚未调用")}</strong></div>
     </section>
     ${task.errorMessage ? `<p class="monitor-task-error"><strong>任务错误</strong>${escapeHtml(task.errorMessage)}</p>` : ""}
@@ -13464,17 +13461,9 @@ function renderGeneralVideoReferences() {
 }
 
 function syncGeneralVideoRouteResolution() {
-  const speedSelected = document.querySelector('#general-video-form input[name="videoRoute"]:checked')?.value === "SPEED";
-  const qualityInput = document.querySelector('#general-video-form input[name="videoRoute"][value="QUALITY"]');
-  const speedInput = document.querySelector('#general-video-form input[name="videoRoute"][value="SPEED"]');
-  const resolution720 = document.querySelector('#general-video-form input[name="resolution"][value="720p"]');
-  const resolution1080 = document.querySelector('#general-video-form input[name="resolution"][value="1080p"]');
-  if (speedSelected && resolution1080.checked) resolution720.checked = true;
-  resolution1080.disabled = speedSelected;
-  resolution1080.parentElement.title = speedSelected ? "极速线路固定输出 768P；1080p 请使用质量线路" : "";
-  qualityInput.parentElement.title = "";
-  speedInput.disabled = Boolean(generalVideoReference);
-  speedInput.parentElement.title = generalVideoReference ? "视频参考使用质量线路" : "极速线路固定输出 768P";
+  const form = document.querySelector('#general-video-form');
+  form.querySelector('input[name="videoRoute"][value="QUALITY"]').checked = true;
+  form.querySelector('input[name="resolution"][value="720p"]').checked = true;
 }
 
 function addGeneralVideoReferences(files) {
@@ -13573,7 +13562,7 @@ function generalVideoTaskCard(task) {
   return `<article class="general-video-task-card ${expanded ? "is-expanded" : ""}" data-general-task-id="${escapeHtml(task.id)}">
     <div class="general-task-cover" aria-hidden="true"><span>${aspectRatio}</span><i style="--progress:${progress}%"></i><strong>${state === "completed" ? "PLAY" : state === "running" ? `${progress}%` : "VIDEO"}</strong></div>
     <header><div><span>${task.taskType === "GENERAL" ? "通用生成" : "视频任务"} · ${formatDate(task.updatedAt || task.createdAt)}</span><h3 translate="${task.name ? 'no' : 'yes'}">${escapeHtml(task.name || "未命名任务")}</h3></div><em class="${state}">${generalVideoStatusNames[task.status] || escapeHtml(task.status || "待提交")}</em></header>
-    <dl><div><dt>比例</dt><dd>${escapeHtml(aspectRatio)}</dd></div><div><dt>清晰度</dt><dd>${escapeHtml(resolution)}</dd></div><div><dt>时长</dt><dd>${escapeHtml(duration)} 秒</dd></div></dl>
+    <dl><div><dt>比例</dt><dd>${aspectRatio === "adaptive" ? "自适应" : escapeHtml(aspectRatio)}</dd></div><div><dt>清晰度</dt><dd>${escapeHtml(resolution)}</dd></div><div><dt>时长</dt><dd>${Number(duration) === -1 ? "自动" : `${escapeHtml(duration)} 秒`}</dd></div></dl>
     <button class="general-task-expand" type="button" data-general-task-expand aria-expanded="${expanded}"><span>${expanded ? "收起详情" : "查看详情"}</span><i aria-hidden="true">⌄</i></button>
     ${expandedBody}
   </article>`;
