@@ -606,7 +606,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
             if (!sales.isEmpty()) value.put("sales_attributes", sales);
             result.add(value);
         }
-        return result;
+        return TikTokSkuOrdering.order(result);
     }
 
     private List<?> sourceSalesAttributes(ProductCaptureSku sku) {
