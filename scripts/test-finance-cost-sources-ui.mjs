@@ -34,6 +34,7 @@ async function click(text,root=d){const n=[...root.querySelectorAll('button')].f
 function field(label,value,root=d){const n=root.querySelector(`[aria-label="${label}"]`);assert(n,label);n.value=value;n.dispatchEvent(new w.Event('change'));return n;}
 function consent(root,text){const label=[...root.querySelectorAll('label')].find(n=>n.textContent.includes(text));assert(label,text);label.querySelector('input').checked=true;}
 w.FinanceCosts.mount(d.querySelector('#root'),{...context,preview:structuredClone(data)});
+await click('商品成本表');
 assert.equal(d.querySelector('[aria-label="成本分组"]').value,'g');assert.equal(d.querySelectorAll('.fc-file').length,2);
 assert(d.querySelector('tbody').textContent.includes('十月补充.xlsx'),'price source is visible');
 await click('手动管理');assert(d.body.textContent.includes('尚无手动成本'));

@@ -42,24 +42,27 @@ w.api=async(path,options={})=>{
     return {data:structuredClone(costs)};
   }
   if(url.pathname==='/api/v1/finance/workspace/charges')return {data:{rules:[],imports:[],rows:[],totals:{records:0,unmatched:0},marked:{orders:0,service_fee_cny:0}}};
+  if(url.pathname==='/api/v1/finance/workspace/label-costs')return {data:{files:[],rows:[],period:{amount_cny:0,orders:0,shipments:0,conflicts:0},state:{},processing:false,total:0}};
   throw Error('Unexpected GET '+path);
 };
-for(const name of ['incremental-dom.js','incremental-charts.js','finance-costs.js','finance-charges.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../frontend/'+name,import.meta.url),'utf8'));
+for(const name of ['incremental-dom.js','incremental-charts.js','finance-label-costs.js','finance-costs.js','finance-charges.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../frontend/'+name,import.meta.url),'utf8'));
 const button=(text,root=d)=>[...root.querySelectorAll('button')].find(n=>n.textContent.trim()===text||n.textContent.trim().endsWith(text));
 const settle=()=>new Promise(r=>setTimeout(r,20));
 async function click(text,root=d){const n=button(text,root);assert(n,text);n.click();await settle();}
 function field(name,value,root=d){const n=root.querySelector(`[aria-label="${name}"]`);assert(n,name);n.value=value;n.dispatchEvent(new w.Event('change'));}
 w.FinanceWorkspace.enter('costs');await settle();
-assert(d.body.textContent.includes('分组成本管理'));assert(!d.body.textContent.includes('设计预览'));
+assert(d.body.textContent.includes('月度贴单账单'));assert(!d.body.textContent.includes('设计预览'));
+assert.equal(mutations.filter(r=>r.path.endsWith('/auto-match')).length,0,'invoice view does not trigger unrelated SKU rebuilds');
+await click('商品成本表');
 assert.equal(mutations.filter(r=>r.path.endsWith('/auto-match')).length,1,'same codes are linked automatically without per-SKU clicks');
 assert(!d.body.textContent.includes('待启用'));assert(button('订单成本'));assert(!button('仓库与规则'));
 assert.equal(reads[0],'','initial selection is chosen by persisted cost availability, not the first shop');
 assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');
 await click('订单成本');assert(d.body.textContent.includes('已结算订单已算部分'));assert(d.body.textContent.includes('¥ 5.5'));assert(d.querySelector('tbody').textContent.includes('待补齐'));assert(!d.querySelector('tbody').textContent.includes('¥ 0'));
-assert(d.querySelector('thead').textContent.includes('首次平台结算日期'));assert.equal(reads.at(-1).kind,'SETTLED_ORDER');assert(d.querySelector('thead').textContent.includes('商品 SKU'));assert(d.querySelector('tbody').textContent.includes('（PACK）*2'));
+assert(d.querySelector('thead').textContent.includes('结算归属日期'));assert.equal(reads.at(-1).kind,'SETTLED_ORDER');assert(d.querySelector('thead').textContent.includes('商品 SKU'));assert(d.querySelector('tbody').textContent.includes('（PACK）*2'));
 assert.equal(d.querySelector('tbody time').textContent,'2026-08-28 13:27:54');assert(d.querySelector('tbody').textContent.includes('2026-10-23'));
 assert.equal(d.querySelector('tbody .fi-sample-tag')?.textContent,'免费样品单');
-assert(d.querySelector('thead').textContent.includes('优惠前商品金额'));assert(d.querySelector('tbody').textContent.includes('129 PHP'));assert(d.querySelector('tbody').textContent.includes('80 PHP'));assert(!d.querySelector('tbody').textContent.includes('99 PHP'),'the buyer amount is not shown as provider gross');
+assert(d.querySelector('thead').textContent.includes('销售收入'));assert(d.querySelector('tbody').textContent.includes('129 PHP'));assert(d.querySelector('tbody').textContent.includes('80 PHP'));assert(!d.querySelector('tbody').textContent.includes('99 PHP'),'the buyer amount is not shown as provider gross');
 const retainedCostRow=d.querySelector('tbody tr'),retainedCostStats=d.querySelector('.fi-cost-stats');
 let costMutations=0;const observer=new w.MutationObserver(entries=>costMutations+=entries.length);
 observer.observe(d.querySelector('.fc-order-results'),{subtree:true,childList:true,characterData:true,attributes:true});
@@ -84,7 +87,7 @@ w.FinanceCosts.openOrders({start:'2026-10-01',end:'2026-10-23',shopId:'shop',kin
 w.FinanceWorkspace.enter('costs');await settle();
 assert.equal(reads.at(-1).recordId,'selected-bill');assert.equal(reads.at(-1).kind,'BILL');
 assert(d.querySelector('[aria-label="开始日期"]').disabled,'a single-record drill-down must not pretend the calendar filters it');
-assert(d.body.textContent.includes('刚才点击记录关联的已结算订单'));
+assert(d.body.textContent.includes('所选记录关联的已结算订单'));
 await click('导出 Excel');
 assert.equal(exports.at(-1).url.searchParams.get('recordId'),'selected-bill');
 assert.equal(exports.at(-1).url.searchParams.get('kind'),'BILL','drilldown export preserves source scope');
@@ -140,8 +143,8 @@ field('成本分组','group');await settle();
 assert(d.querySelector('tbody').textContent.includes('已关联'),'returning to the shop restores its saved mapping');
 failOther=true;field('成本分组','other-group');await settle();
 assert(d.body.textContent.includes('店铺读取暂时失败'));assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'shop');assert(d.querySelector('tbody').textContent.includes('已关联'),'failed reads preserve the last correctly labelled shop');
-w.FinanceWorkspace.enter('expense-ledger');await settle();assert(d.body.textContent.includes('范围内已结算刷单'));assert(d.querySelector('[aria-label="费用数据分类"]').textContent.includes('平台费用'));assert(!d.body.textContent.includes('历史其他费用'));
-assert(button('导入 Excel'));await click('贴单成本');assert(button('新增贴单规则'));assert(!button('导入 Excel'));
+w.FinanceWorkspace.enter('expense-ledger');await settle();assert(d.body.textContent.includes('月度贴单账单'));assert(d.querySelector('[aria-label="费用数据分类"]').textContent.includes('平台费用'));assert(!d.body.textContent.includes('历史其他费用'));
+assert(button('导入月度账单'));assert(!button('新增贴单规则'));await click('刷单成本');assert(button('导入 Excel'));
 w.FinanceWorkspace.reset();w.currentUser={permissions:['finance:view']};w.FinanceWorkspace.enter('expense-ledger');await settle();
 assert(!button('新增贴单规则'));assert(!button('导入 Excel'));assert(!button('新增费用'));
 w.FinanceWorkspace.leave();w.close();

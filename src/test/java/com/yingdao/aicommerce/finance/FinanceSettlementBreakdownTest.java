@@ -13,29 +13,28 @@ class FinanceSettlementBreakdownTest {
     static void balanced(FinanceSettlementBreakdown.Result r){money(r.net().toPlainString(),r.goods().subtract(r.deductions()));}
     @Test void tiktokDiscountIsNotConfusedWithCommissionAndAliasesAreNotDoubleCounted(){
         var r=FinanceSettlementBreakdown.parse("TIKTOK_SHOP",raw("""
-            {"type":"ORDER","revenue_breakdown":{"subtotal_before_discount_amount":"902","seller_discount_amount":"-615.01"},
+            {"type":"ORDER","revenue_amount":"286.99","revenue_breakdown":{"subtotal_before_discount_amount":"902","seller_discount_amount":"-615.01"},
              "fee_tax_amount":"-90.95","shipping_cost_amount":"0",
              "fee_tax_breakdown":{"fee":{"platform_commission_amount":"-60","affiliate_commission_amount":"-30.95",
                "affiliate_commission_amount_before_pit":"-30.95"},"tax":{}},
              "shipping_cost_breakdown":{"actual_shipping_fee_amount":"-20","shipping_fee_discount_amount":"20",
                "supplementary_component":{"logistics_discount_amount":"20"}}}
             """),new BigDecimal("196.04"));
-        money("902",r.goods());balanced(r);money("705.96",r.deductions());
-        assertEquals(5,r.fees().size());assertTrue(r.fees().stream().noneMatch(f->f.group().equals("待核对")));
-        assertEquals("商家优惠",r.fees().getFirst().group());
+        money("286.99",r.goods());balanced(r);money("90.95",r.deductions());
+        assertEquals(4,r.fees().size());assertTrue(r.fees().stream().noneMatch(f->f.group().equals("待核对")));
+        assertTrue(r.fees().stream().noneMatch(f->f.field().startsWith("revenue_breakdown.")));
     }
-    @Test void fullTiktokRefundKeepsOriginalSalesAndReturnsExplicitly(){
+    @Test void fullTiktokRefundIsZeroRevenueWithoutChargingRefundAgain(){
         var r=FinanceSettlementBreakdown.parse("TIKTOK_SHOP",raw("""
-            {"type":"ORDER","revenue_breakdown":{"subtotal_before_discount_amount":"858","seller_discount_amount":"-585",
+            {"type":"ORDER","revenue_amount":"0","revenue_breakdown":{"subtotal_before_discount_amount":"858","seller_discount_amount":"-585",
               "refund_subtotal_before_discount_amount":"-858","seller_discount_refund_amount":"585"},
              "fee_tax_amount":"0","shipping_cost_amount":"0"}
             """),BigDecimal.ZERO);
-        money("858",r.goods());balanced(r);assertEquals(3,r.fees().size());
-        assertTrue(r.fees().stream().anyMatch(f->f.label().contains("退款返还")&&f.amount().signum()<0));
+        money("0",r.goods());balanced(r);assertTrue(r.fees().isEmpty());
     }
     @Test void missingFeeSubcomponentIsNamedAsUnresolvedNotInventedTax(){
         var r=FinanceSettlementBreakdown.parse("TIKTOK_SHOP",raw("""
-            {"type":"ORDER","revenue_breakdown":{"subtotal_before_discount_amount":"285.71"},
+            {"type":"ORDER","revenue_amount":"285.71","revenue_breakdown":{"subtotal_before_discount_amount":"285.71"},
              "fee_tax_amount":"-88.03","fee_tax_breakdown":{"fee":{"platform_commission_amount":"-85.17"}},
              "shipping_cost_amount":"-62","shipping_cost_breakdown":{"actual_shipping_fee_amount":"-62"}}
             """),new BigDecimal("135.68"));
@@ -52,7 +51,7 @@ class FinanceSettlementBreakdownTest {
              "commission_fee":54,"service_fee":33,"seller_transaction_fee":13,"credit_card_transaction_fee":13,
              "order_ams_commission_fee":6,"seller_order_processing_fee":1,"voucher_from_shopee":30}}
             """),new BigDecimal("278"));
-        balanced(r);money("899",r.goods());money("621",r.deductions());
+        balanced(r);money("385",r.goods());money("107",r.deductions());
         assertTrue(r.fees().stream().noneMatch(f->f.group().equals("待核对")));
         assertTrue(r.fees().stream().noneMatch(f->f.field().endsWith("final_shipping_fee")||f.field().endsWith("credit_card_transaction_fee")));
     }
@@ -66,7 +65,7 @@ class FinanceSettlementBreakdownTest {
             {"order_income":{"original_price":100,"seller_discount":20,"original_cost_of_goods_sold":160,
              "seller_return_refund":-80,"commission_fee":10,"escrow_amount":70}}
             """),new BigDecimal("70"));
-        money("100",r.goods());balanced(r);assertEquals(2,r.fees().size());
+        money("80",r.goods());balanced(r);assertEquals(1,r.fees().size());
     }
     @Test void shopeeAdjustmentUsesActualBeforeAndAfterSign(){
         var r=FinanceSettlementBreakdown.parse("SHOPEE",raw("""
@@ -84,10 +83,26 @@ class FinanceSettlementBreakdownTest {
     }
     @Test void unknownContributingFieldIsRetainedWithItsOriginalNameAndSign(){
         var r=FinanceSettlementBreakdown.parse("TIKTOK_SHOP",raw("""
-            {"type":"ORDER","revenue_breakdown":{"subtotal_before_discount_amount":"100"},
+            {"type":"ORDER","revenue_amount":"100","revenue_breakdown":{"subtotal_before_discount_amount":"100"},
              "fee_tax_amount":"-7","fee_tax_breakdown":{"fee":{"new_provider_fee_amount":"-7"}}}
             """),new BigDecimal("93"));
         balanced(r);assertTrue(r.fees().getFirst().label().contains("new_provider_fee_amount"));
         money("-7",r.fees().getFirst().sourceAmount());
+    }
+    @Test void originalPriceCannotSubstituteForMissingTotalRevenue(){
+        var r=FinanceSettlementBreakdown.parse("TIKTOK_SHOP",raw("""
+            {"type":"ORDER","revenue_breakdown":{"subtotal_before_discount_amount":"902","seller_discount_amount":"-615.01"},
+             "fee_tax_amount":"-90.95"}
+            """),new BigDecimal("196.04"));
+        assertNull(r.goods());
+        assertTrue(r.fees().stream().noneMatch(f->f.field().startsWith("revenue_breakdown.")));
+    }
+    @Test void laterRefundHasNegativeRevenueAndOnlyActualFeeReturns(){
+        var r=FinanceSettlementBreakdown.parse("TIKTOK_SHOP",raw("""
+            {"type":"ORDER","revenue_amount":"-273","revenue_breakdown":{"subtotal_before_discount_amount":"0",
+              "refund_subtotal_before_discount_amount":"-858","seller_discount_refund_amount":"585"},
+             "fee_tax_amount":"20","fee_tax_breakdown":{"fee":{"platform_commission_amount":"20"}}}
+            """),new BigDecimal("-253"));
+        money("-273",r.goods());money("-20",r.deductions());balanced(r);
     }
 }

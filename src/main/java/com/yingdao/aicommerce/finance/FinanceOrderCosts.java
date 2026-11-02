@@ -169,14 +169,24 @@ public final class FinanceOrderCosts {
     static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash("cancelled-excluded-v2:"+repo.write(canonical(raw))+status);}
     static void enqueue(FinanceRepository repo,Scope s,Entry entry){
         if(!entry.kind().equals("ORDER"))return;
-        repo.jdbc().update("""
-            INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id)
-            SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM finance_order_costs WHERE order_record_id=? AND source_hash=?) AND EXISTS (
+        // INSERT ... SELECT takes shared locks on its source rows in MySQL's
+        // default isolation. Parallel order writers would then both try to
+        // upgrade the same label-state lock when marking their arrivals dirty.
+        // A normal consistent read avoids those locks; the job's primary key
+        // still makes the following insert idempotent.
+        boolean required=Boolean.TRUE.equals(repo.jdbc().queryForObject("""
+            SELECT NOT EXISTS(SELECT 1 FROM finance_order_costs WHERE order_record_id=? AND source_hash=?) AND EXISTS (
               SELECT 1 FROM finance_connections c WHERE c.organization_id=? AND c.id=? AND c.status<>'REMOVED' AND (
               EXISTS(SELECT 1 FROM finance_cost_books b WHERE b.organization_id=c.organization_id AND b.group_id=c.group_id)
-              OR EXISTS(SELECT 1 FROM finance_label_rules l WHERE l.organization_id=c.organization_id AND l.group_id=c.group_id)))
+              OR EXISTS(SELECT 1 FROM finance_label_order_totals l JOIN finance_label_state ls
+                ON ls.organization_id=l.organization_id AND ls.active_generation=l.generation
+                WHERE l.organization_id=c.organization_id AND l.shop_id=c.id)))
+            """,Boolean.class,id(s,entry),sourceHash(repo,entry.raw(),entry.status()),s.organizationId(),entry.shopId()));
+        if(!required)return;
+        repo.jdbc().update("""
+            INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id) VALUES(?,?,?)
             ON DUPLICATE KEY UPDATE priority=0
-            """,id(s,entry),s.organizationId(),entry.shopId(),id(s,entry),sourceHash(repo,entry.raw(),entry.status()),s.organizationId(),entry.shopId());
+            """,id(s,entry),s.organizationId(),entry.shopId());
     }
     void requestShop(String organization,String shopId){
         if(!repo.writableShop(organization,shopId))return;
@@ -240,19 +250,18 @@ public final class FinanceOrderCosts {
         var jobs=repo.jdbc().queryForList("SELECT * FROM finance_order_cost_jobs ORDER BY priority,requested_at,order_record_id LIMIT ? FOR UPDATE SKIP LOCKED",Math.min(100,Math.max(1,limit)));
         if(jobs.isEmpty())return Set.of();
         var contexts=new HashMap<String,Context>();var labelContexts=new HashMap<String,Context>();
-        var rules=new HashMap<String,Map<String,Object>>();var writable=new HashMap<String,Boolean>();var changed=new LinkedHashSet<String>();
+        var writable=new HashMap<String,Boolean>();var changed=new LinkedHashSet<String>();
         var records=new HashMap<String,Map<String,Object>>();
         String slots=String.join(",",Collections.nCopies(jobs.size(),"?"));
         for(var order:repo.jdbc().queryForList("""
             SELECT o.*,c.data_json cost_data,c.source_hash cost_source_hash,
-              EXISTS(SELECT 1 FROM finance_records expense WHERE expense.organization_id=o.organization_id
-                AND expense.shop_id=o.shop_id AND expense.order_id=o.order_id AND expense.kind='COST') independent_cost
+              lc.amount_cny invoice_label_amount,lc.pending_count invoice_label_pending,lc.shipment_count invoice_label_shipments
             FROM finance_records o LEFT JOIN finance_order_costs c ON c.order_record_id=o.id
-            WHERE o.kind='ORDER' AND o.id IN (%s)
-            """.formatted(slots),jobs.stream().map(j->j.get("order_record_id")).toArray()))
+            """+FinanceLabelCosts.join("o.organization_id","o.shop_id","o.order_id")+" WHERE o.kind='ORDER' AND o.id IN ("+slots+")",
+            jobs.stream().map(j->j.get("order_record_id")).toArray()))
             records.put(text(order.get("id")),order);
+        var actual=new FinanceActualCosts(repo).forRecords(records.keySet());
         var audits=new ArrayList<Object[]>();var writes=new ArrayList<Object[]>();var hashes=new ArrayList<Object[]>();
-        var charges=new FinanceOrderCharges(repo);
         for(var job:jobs){
             String recordId=text(job.get("order_record_id")),organization=text(job.get("organization_id")),shop=text(job.get("shop_id"));
             String key=organization+":"+shop;
@@ -264,14 +273,16 @@ public final class FinanceOrderCosts {
             boolean labelOnly=number(job.get("priority"))==2&&sourceHash.equals(text(order.get("cost_source_hash")))&&old.containsKey("status")&&old.containsKey("lines");
             Context context=labelOnly?labelContexts.computeIfAbsent(key,k->labelContext(organization,shop)):contexts.computeIfAbsent(key,k->context(organization,shop));
             if(context==null)continue;
-            var rule=rules.computeIfAbsent(organization+":"+context.groupId()+":"+context.region(),k->charges.labelRule(organization,context));
-            var result=FinanceOrderCharges.label(order,raw,labelOnly?old:calculate(order,raw,context),rule,Boolean.TRUE.equals(order.get("independent_cost"))||number(order.get("independent_cost"))>0);
+            var product=labelOnly?old:actual.containsKey(recordId)?actual.get(recordId):calculate(order,raw,context);
+            var label=new LinkedHashMap<String,Object>();label.put("amount_cny",order.get("invoice_label_amount"));
+            label.put("pending_count",order.get("invoice_label_pending"));label.put("shipment_count",order.get("invoice_label_shipments"));
+            var result=FinanceLabelCosts.overlay(product,label);
             String serialized=repo.write(result);
             if(!old.equals(decode(serialized))){
                 if(order.get("cost_data")!=null)audits.add(new Object[]{UUID.randomUUID().toString(),organization,recordId,repo.write(old),serialized,
-                    labelOnly?"贴单单价更新，保留已有商品成本":"订单或成本配置更新，重算标准成本"});
+                    labelOnly?"贴单账单更新，保留已有商品成本":"按实际出库凭据优先、标准成本补充的口径重算"});
                 writes.add(new Object[]{recordId,organization,shop,order.get("order_id"),order.get("record_date"),result.get("status"),result.get("amountCny"),result.get("knownAmountCny"),
-                    result.get("lineCount"),result.get("matchedLines"),result.get("fallbackLines"),sourceHash,serialized,result.get("labelCostCny"),result.get("chargesPending")});
+                    result.get("lineCount"),result.get("matchedLines"),result.get("fallbackLines"),sourceHash,serialized,result.get("labelKnownCny"),result.get("chargesPending"),result.get("basis")});
                 changed.add(organization);
             }else if(!sourceHash.equals(text(order.get("cost_source_hash"))))hashes.add(new Object[]{sourceHash,recordId});
             // Completing any queued job changes the report's processing state even if its amount is unchanged.
@@ -280,12 +291,12 @@ public final class FinanceOrderCosts {
         insertRows("INSERT INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,before_json,after_json,reason,actor_id) VALUES ",
             "(?,?,'ORDER_STANDARD_COST',?,?,?,?,'SYSTEM_COST')","",audits);
         insertRows("""
-            INSERT INTO finance_order_costs(order_record_id,organization_id,shop_id,order_id,record_date,status,amount_cny,known_amount_cny,line_count,matched_lines,fallback_lines,source_hash,data_json,label_cost_cny,charges_pending)
+            INSERT INTO finance_order_costs(order_record_id,organization_id,shop_id,order_id,record_date,status,amount_cny,known_amount_cny,line_count,matched_lines,fallback_lines,source_hash,data_json,label_cost_cny,charges_pending,cost_basis)
             VALUES
-            ""","(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)","""
+            ""","(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)","""
              ON DUPLICATE KEY UPDATE record_date=VALUES(record_date),status=VALUES(status),amount_cny=VALUES(amount_cny),
             known_amount_cny=VALUES(known_amount_cny),line_count=VALUES(line_count),matched_lines=VALUES(matched_lines),fallback_lines=VALUES(fallback_lines),
-            source_hash=VALUES(source_hash),data_json=VALUES(data_json),label_cost_cny=VALUES(label_cost_cny),charges_pending=VALUES(charges_pending),version=version+1,updated_at=UTC_TIMESTAMP(6)
+            source_hash=VALUES(source_hash),data_json=VALUES(data_json),label_cost_cny=VALUES(label_cost_cny),charges_pending=VALUES(charges_pending),cost_basis=VALUES(cost_basis),version=version+1,updated_at=UTC_TIMESTAMP(6)
             """,writes);
         if(!hashes.isEmpty())repo.jdbc().batchUpdate("UPDATE finance_order_costs SET source_hash=? WHERE order_record_id=?",hashes);
         repo.jdbc().update("DELETE FROM finance_order_cost_jobs WHERE order_record_id IN ("+slots+")",jobs.stream().map(j->j.get("order_record_id")).toArray());

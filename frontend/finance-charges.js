@@ -1,13 +1,24 @@
 /* Internal expense sources and order tags. Import/removal never edits platform transactions. */
 (() => {
   'use strict';
-  let state={group:'',tab:'brush',page:1,numbers:''},sequence=0,pollTimer=null;
+  let state={group:'',tab:'labels',page:1,numbers:''},sequence=0,pollTimer=null;
   const el=(tag,text,parent,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;parent?.append(n);return n;};
   const money=v=>v==null?'待核对':Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
   const json=body=>({headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   function mount(root,options){
     const {groups=[],shops=[],request,canManage=false}=options;
     clearTimeout(pollTimer);
+    globalThis.FinanceLabelCosts?.reset();
+    if(state.tab==='labels'&&globalThis.FinanceLabelCosts){
+      root.replaceChildren();root.className='fq-workspace';
+      const tabs=el('div',null,root,'fi-tabs fq-tabs');tabs.setAttribute('aria-label','成本类型');
+      for(const [key,name]of [['labels','贴单成本'],['brush','刷单成本']]){
+        const n=el('button',name,tabs);n.type='button';n.setAttribute('aria-pressed',String(state.tab===key));
+        n.onclick=()=>{state.tab=key;mount(root,options);};
+      }
+      const host=el('section',null,root,'fi-card fq-content');
+      FinanceLabelCosts.mount(host,options);return;
+    }
     if(groups.some(g=>g.id===options.filters?.groupId))state.group=options.filters.groupId;
     if(!groups.some(g=>g.id===state.group))state.group=groups[0]?.id||'';
     const today=new Date(),startDay=new Date(today);startDay.setDate(today.getDate()-29);
@@ -48,18 +59,6 @@
         if(data?.labelSummary?.processing||Number(data?.totals?.unmatched)>0)pollTimer=setTimeout(()=>{if(run===sequence&&root.isConnected&&!document.querySelector('.fq-dialog'))refresh().catch(e=>{feedback.textContent=e.message;});},15000);
       }finally{if(run===sequence){busy=false;content.setAttribute('aria-busy','false');}}
     }
-    function rule(existing){
-      const group=state.group,d=dialog(existing?'调整贴单单价':'新增贴单规则'),form=el('div',null,d.body,'fe-form');
-      const country=select(form,'国家',[['','分组默认'],['PH','菲律宾'],['TH','泰国'],['MY','马来西亚'],['VN','越南'],['SG','新加坡'],['ID','印度尼西亚'],['US','美国'],['GB','英国']],existing?.country||'');
-      const price=field(form,'人民币单价（元 / 订单）',existing?.unit_price_cny??'','number');price.min='0';price.step='0.000001';
-      country.disabled=!!existing;
-      el('p','国家规则优先于分组默认。按当前单价统计查询范围内首次结算的已发货订单，每单一次；不限制下单日期。刷单不计入经营汇总。修改后后台重算历史适用订单，金额固定为人民币。',d.body,'fi-muted');
-      button(d.foot,'保存并重算',async()=>{
-        if(price.value===''||Number(price.value)<0)throw Error('请填写非负人民币单价');
-        await request('/charges/rules',{method:'POST',...json({groupId:group,id:existing?.id||'',version:existing?.version||0,country:country.value,unitPriceCny:price.value})});
-        d.n.close();await refresh();
-      },'fi-primary');
-    }
     function confirmRemoval(title,explanation,fn){
       const d=dialog(title);el('p',explanation,d.body);
       button(d.foot,'确认移除',async()=>{await fn();d.n.close();await refresh();},'fi-primary');
@@ -83,7 +82,7 @@
       });
     }
     function drawContent(){
-      if(primary){primary.textContent=state.tab==='labels'?'新增贴单规则':'导入 Excel';primary.disabled=!state.group;}
+      if(primary){primary.textContent='导入 Excel';primary.disabled=!state.group;}
       const current=content;content=current.cloneNode(false);
       renderContent();
       if(globalThis.IncrementalDOM)IncrementalDOM.patch(current,content);else current.replaceChildren(...content.childNodes);
@@ -94,24 +93,7 @@
       if(!data){el('p','正在读取…',content);return;}
       const shown=data.filters||scope;
       el('p',`结算日期：${shown.start} 至 ${shown.end} · 金额固定人民币 · 按首次结算每单统计一次`,content,'fq-description');
-      if(state.tab==='labels'){
-        const total=data.labelSummary?.total;
-        if(total){
-          const metrics=el('div',null,content,'fc-metrics');
-          for(const [name,value]of [['范围内结算订单',total.order_count||0],['已计算贴单成本（¥）',money(total.label_cost_cny||0)],['等待重算订单',total.queued_count||0],['费用待核对订单',total.charges_pending||0]]){
-            const box=el('div',null,metrics,'fc-metric');el('span',name,box);el('strong',value,box);
-          }
-          if(data.labelSummary.processing){const status=el('p','贴单成本正在后台重算，完成后自动更新…',content,'fi-loading');status.setAttribute('role','status');}
-        }
-        el('p','按当前单价计费，不限制下单日期；国家规则优先于分组默认。未发货、未结算、已取消及刷单不计入这里。',content,'fq-description');
-        if(!data.rules.length)el('p','当前分组还没有贴单单价，其他分组的规则不会自动应用。',content,'fq-callout');
-        table(content,['国家','单价（¥ / 单）','状态','版本','操作'],data.rules.map(r=>{
-          const actions=el('span',null,null,'fi-actions');
-          if(canManage){button(actions,'调整',()=>rule(r));button(actions,'移除',()=>confirmRemoval('移除贴单规则','移除后按剩余规则重算；原平台费用保留。',()=>request('/charges/rules/'+encodeURIComponent(r.id)+'?'+new URLSearchParams({groupId:state.group,version:r.version}),{method:'DELETE'})));}
-          return [({PH:'菲律宾',TH:'泰国',MY:'马来西亚',VN:'越南',SG:'新加坡',ID:'印度尼西亚',US:'美国',GB:'英国'})[r.country]||'分组默认',money(r.unit_price_cny),r.active===false?'历史配置':'当前单价',r.version,actions];
-        }));
-        return;
-      }
+
       const metrics=el('div',null,content,'fc-metrics');
       const period=data.periodMarked||data.marked;
       for(const [name,value] of [['范围内已结算刷单',period?.orders||0],['范围内刷单服务费（¥）',money(period?.service_fee_cny??0)],['累计已标记订单',data.marked?.orders||0],['来源待匹配 / 待核对',data.totals.unmatched||0]]){
@@ -140,12 +122,12 @@
     root.replaceChildren();root.className='fq-workspace';
     const toolbar=el('div',null,root,'fq-toolbar'),tabs=el('div',null,toolbar,'fi-tabs fq-tabs');tabs.setAttribute('aria-label','成本类型');
     for(const [key,name]of[['labels','贴单成本'],['brush','刷单成本']]){
-      const n=button(tabs,name,()=>{state.tab=key;for(const b of tabs.children)b.setAttribute('aria-pressed',String(b===n));drawContent();});
+      const n=button(tabs,name,()=>{state.tab=key;mount(root,options);});
       n.setAttribute('aria-pressed',String(state.tab===key));
     }
     const tools=el('div',null,toolbar,'fq-controls');
     select(tools,'费用分组',groups.map(g=>[g.id,g.name]),state.group,async group=>{state.group=group;state.page=1;scope.shopId='';remember();renderShopOptions();data=null;drawContent();try{await refresh();}catch(e){feedback.textContent=e.message;}});
-    if(canManage)primary=button(tools,'导入 Excel',()=>state.tab==='labels'?rule():importFile(),'fi-primary');
+    if(canManage)primary=button(tools,'导入 Excel',()=>importFile(),'fi-primary');
     feedback=el('p','',root,'fc-feedback');feedback.setAttribute('role','status');
     const filters=el('div',null,root,'fi-filters');
     const changeScope=async()=>{remember();state.page=1;try{await refresh();}catch(e){feedback.textContent=e.message;}};
@@ -162,5 +144,5 @@
     drawContent();
     refresh().catch(e=>{feedback.textContent=e.message;});
   }
-  globalThis.FinanceCharges={mount,openLabels(group){state.tab='labels';if(group)state.group=group;},reset(){sequence++;clearTimeout(pollTimer);state={group:'',tab:'brush',page:1,numbers:''};document.querySelectorAll('.fq-dialog').forEach(n=>n.remove());}};
+  globalThis.FinanceCharges={mount,openLabels(group){state.tab='labels';if(group)state.group=group;},reset(){sequence++;clearTimeout(pollTimer);globalThis.FinanceLabelCosts?.reset();state={group:'',tab:'labels',page:1,numbers:''};document.querySelectorAll('.fq-dialog').forEach(n=>n.remove());}};
 })();

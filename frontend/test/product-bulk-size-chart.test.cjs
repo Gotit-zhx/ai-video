@@ -33,7 +33,16 @@ test('failed replacement keeps the selected chart and restores submission',async
   const task=h.api.upload(file);h.reject();await task;assert.equal(h.api.key(),key);assert.equal(h.api.isUploading(),false);
   assert.match(h.get('product-bulk-size-chart-error').textContent,/network/);
 });
-test('invalid files and other platforms never upload',async()=>{
+test('invalid files and unsupported platforms never upload',async()=>{
   const h=harness();await h.api.upload({...file,type:'image/svg+xml'});assert.equal(h.api.isUploading(),false);
-  h.api.render({platform:'TIKTOK_SHOP',busy:false,editable:true});await h.api.upload(file);assert.equal(h.api.isUploading(),false);
+  h.api.render({platform:'UNKNOWN',busy:false,editable:true});await h.api.upload(file);assert.equal(h.api.isUploading(),false);
+});
+test('TikTok and Shopee expose the same tenant-owned supplemental chart upload',async()=>{
+  for(const platform of ['SHOPEE','TIKTOK_SHOP','TIKTOK']){
+    const h=harness();h.api.render({platform,busy:false,editable:true});
+    assert.equal(h.get('product-bulk-size-chart').hidden,false);
+    const pending=h.api.upload(file);assert.equal(h.api.isUploading(),true);
+    h.resolve(key);await pending;assert.deepEqual(h.selected,[key]);
+    assert.equal(h.get('product-bulk-size-chart-status').textContent,'本次上传使用此图');
+  }
 });

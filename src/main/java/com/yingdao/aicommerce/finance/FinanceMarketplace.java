@@ -37,6 +37,11 @@ public class FinanceMarketplace {
         if(!cursor.isEmpty())q.put("page_token",cursor);
         Map<String,Object> data;
         if(channel.equals("PENDING")){
+            // The official endpoint permits 100 rows. Keep existing 20-row
+            // cursor chains unchanged; new ranges use fewer requests and
+            // have a shorter exposure to unsettled transactions changing.
+            int batch=cursor.isBlank()?100:number(cp.get("pendingPageSize"))==100?100:20;
+            q.put("page_size",batch);next.put("pendingPageSize",batch);
             q.put("sort_field","order_create_time");q.put("search_time_ge",from);q.put("search_time_lt",to);
             data=tikGet(c,"/finance/202507/orders/unsettled",q);
             var pendingRows=requiredRows(data,"transactions");
@@ -51,6 +56,10 @@ public class FinanceMarketplace {
                 if(data.containsKey("total_count")&&received!=number(data.get("total_count")))throw bad("待结算交易数量不完整，已保留进度等待重试");
                 String start=Instant.ofEpochSecond(from).atZone(ZoneId.of(zone)).toLocalDate().toString();
                 String end=Instant.ofEpochSecond(to-1).atZone(ZoneId.of(zone)).toLocalDate().toString();
+                Long distinct=repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind='PENDING' AND source='API'"
+                                +" AND record_date>=? AND record_date<=? AND JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_sync'))=?",
+                        Long.class,s.organizationId(),s.userId(),shop,start,end,text(cp.get("run")));
+                if(distinct==null||distinct!=received)throw bad("待结算交易数量不完整，已保留进度等待重试");
                 repo.jdbc().update("DELETE FROM finance_records WHERE organization_id=? AND user_id=? AND shop_id=? AND kind='PENDING' AND source='API'"
                                 +" AND record_date>=? AND record_date<=? AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(raw_json,'$._finance_sync')),'')<>?",
                         s.organizationId(),s.userId(),shop,start,end,text(cp.get("run")));

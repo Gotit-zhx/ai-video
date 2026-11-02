@@ -16,6 +16,14 @@ final class FinanceReportingMonths {
     Entry apply(Scope s,Entry e){
         if(!e.platform().equals("TIKTOK_SHOP")||!e.source().equals("API")
                 ||!Set.of("SETTLEMENT","FEE").contains(e.kind())||text(e.orderId()).isBlank())return e;
+        if(FinanceSettlementDates.exportBasis(e.raw())){
+            var raw=new LinkedHashMap<>(e.raw());
+            for(String key:RAW_FIELDS)if(raw.containsKey(key)){
+                raw.put("_finance_legacy"+key.substring("_finance".length()),raw.remove(key));
+            }
+            return new Entry(e.shopId(),e.platform(),e.kind(),e.externalId(),e.orderId(),e.statementId(),e.category(),
+                    e.status(),e.date(),e.currency(),e.amount(),e.revenue(),e.impressions(),e.clicks(),e.conversions(),e.source(),raw);
+        }
         var matches=repo.jdbc().queryForList("""
             SELECT reporting_month FROM finance_reporting_months
             WHERE organization_id=? AND shop_id=? AND order_id=? AND statement_id=?
@@ -44,12 +52,17 @@ final class FinanceReportingMonths {
                 +" ON corrected.organization_id=rm.organization_id AND corrected.shop_id=rm.shop_id"
                 +" AND corrected.order_id=rm.order_id AND corrected.statement_id=rm.statement_id"
                 +" AND corrected.kind IN ('SETTLEMENT','FEE') AND corrected.source='API' AND corrected.platform='TIKTOK_SHOP'"
+                +" AND JSON_EXTRACT(corrected.raw_json,'$._finance_reporting_month') IS NOT NULL"
                 +" WHERE rm.organization_id=? AND (rm.reporting_month<? OR LAST_DAY(rm.reporting_month)>?))",args);
     }
 
     List<Map<String,Object>> coverage(Scope s,Filter f){
         if(!f.platform().isBlank()&&!f.platform().equals("TIKTOK_SHOP"))return List.of();
-        String where="m.organization_id=? AND m.reporting_month BETWEEN ? AND ? AND c.status<>'REMOVED'";
+        String where="m.organization_id=? AND m.reporting_month BETWEEN ? AND ? AND c.status<>'REMOVED'"
+                +" AND EXISTS(SELECT 1 FROM finance_records corrected WHERE corrected.organization_id=m.organization_id"
+                +" AND corrected.shop_id=m.shop_id AND corrected.order_id=m.order_id AND corrected.statement_id=m.statement_id"
+                +" AND corrected.kind='SETTLEMENT' AND corrected.source='API'"
+                +" AND JSON_EXTRACT(corrected.raw_json,'$._finance_reporting_month') IS NOT NULL)";
         var args=new ArrayList<Object>(List.of(s.organizationId(),Date.valueOf(f.start().withDayOfMonth(1)),Date.valueOf(f.end())));
         if(!f.shopId().isBlank()){where+=" AND m.shop_id=?";args.add(f.shopId());}
         if(!f.currency().isBlank()){where+=" AND c.currency=?";args.add(f.currency());}

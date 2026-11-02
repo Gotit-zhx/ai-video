@@ -190,13 +190,10 @@ public final class FinanceSettlementBreakdown {
     public static Result parse(String platform,Map<String,Object> raw,BigDecimal net){
         var fees=new ArrayList<Fee>();BigDecimal goods=null;
         if(platform.equals("TIKTOK_SHOP")){
-            goods=amount(raw,"revenue_breakdown.subtotal_before_discount_amount");
+            // Seller Center's Total Revenue already includes seller discounts and refunds.
+            // Keep the original breakdown as evidence, never turn it into another fee.
+            goods=amount(raw,"revenue_amount");
             if(goods==null&&!first(raw,"type").isBlank()&&!Set.of("ORDER","RESERVE").contains(first(raw,"type")))goods=BigDecimal.ZERO;
-            for(var e:map(raw.get("revenue_breakdown")).entrySet())if(!e.getKey().equals("subtotal_before_discount_amount")){
-                String field="revenue_breakdown."+e.getKey();
-                add(fees,field,label(field),e.getKey().contains("refund")?"退款与返还":e.getKey().contains("discount")?"商家优惠":"收入调整",
-                    decimal(e.getValue()),true,"优惠前商品金额到实际商品收入的拆分；不属于额外平台佣金");
-            }
             tikGroup(fees,raw,"fee_tax_breakdown","fee_tax_amount","平台费用及税费");
             tikGroup(fees,raw,"shipping_cost_breakdown","shipping_cost_amount","物流费用");
             String type=first(raw,"type");
@@ -229,11 +226,16 @@ public final class FinanceSettlementBreakdown {
             BigDecimal before=amount(income,"escrow_amount");
             if(before!=null&&net!=null)add(fees,"order_income.total_adjustment_amount","平台订单结算调整","平台调整",
                 before.subtract(net),false,"escrow_amount − escrow_amount_after_adjustment；对应平台订单级调整");
+            if(goods!=null){
+                var merchandise=fees.stream().filter(f->Set.of("商家优惠","退款与返还").contains(f.group())).toList();
+                goods=goods.subtract(merchandise.stream().map(Fee::amount).reduce(BigDecimal.ZERO,BigDecimal::add));
+                fees.removeAll(merchandise);
+            }
         }
         if(goods!=null&&net!=null){
             BigDecimal remainder=goods.subtract(net).subtract(fees.stream().map(Fee::amount).reduce(BigDecimal.ZERO,BigDecimal::add));
             add(fees,"unitemized_settlement_difference","未拆分结算差额（待核对）","待核对",remainder,false,
-                "优惠前商品金额 − 平台净结算 − 已识别分项；接口未完整解释的差额，不视为已确认的平台收费");
+                "销售收入 − 平台净结算 − 已识别分项；接口未完整解释的差额，不视为已确认的平台收费");
         }
         return new Result(goods,net,List.copyOf(fees));
     }

@@ -29,6 +29,23 @@
     return !item.workflow?.id && !item.payload
       && ['WAITING', 'PREPARING', 'PREPARE_FAILED', 'PREPARED'].includes(item.status);
   }
+  function canRepairSizeChart(item) {
+    const workflow = item?.workflow;
+    return Boolean(workflow?.id && workflow.status === 'FAILED' && workflow.currentStep === 'PUBLISH'
+      && workflow.publicationAttempted === false && !workflow.publication?.id
+      && /尺码表|尺码图|尺寸表/.test(workflow.errorMessage || '')
+      && item.payload?.shopId === workflow.shopId && item.captureId === workflow.captureId);
+  }
+  function repairSizeChart(item, imageKey, key) {
+    if (!canRepairSizeChart(item) || !/^[a-f0-9]{64}\/[a-f0-9]{64}$/.test(imageKey || '') || !key)
+      throw Error('请补传尺码图，并确认原任务尚未在平台创建商品');
+    // Only an explicitly unattempted chart failure gets a new request. Never
+    // change the body/key of a request whose platform outcome is uncertain.
+    return {...item, workflow:undefined, status:'PREPARED', error:'', syncError:'', retryMessage:'',
+      progressPaused:false, syncPaused:false, idempotencyKey:key, sizeChartImageKey:imageKey,
+      previousWorkflowIds:[...(item.previousWorkflowIds || []), item.workflow.id],
+      payload:{...item.payload, idempotencyKey:key, sizeChartImageKey:imageKey}};
+  }
   function changeShop(items, shopId, key) {
     if (!shopId || !key) throw Error('请选择目标店铺');
     if (!items.some(item => canChangeShop(item) && item.shopId !== shopId)) return items;
@@ -231,7 +248,7 @@
     await Promise.all(Array.from({ length: Math.min(count, items.length) }, () => worker()));
     if (fatalError) throw fatalError;
   }
-  const api = { plan, canChangeShop, changeShop, changeShops, stylePayload, changeStyle, submit, withDeadline, retryRead, isRetryableReadError };
+  const api = { plan, canChangeShop, canRepairSizeChart, repairSizeChart, changeShop, changeShops, stylePayload, changeStyle, submit, withDeadline, retryRead, isRetryableReadError };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ProductBulkUpload = api;
 })(typeof window === 'undefined' ? globalThis : window);

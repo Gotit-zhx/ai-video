@@ -12,14 +12,23 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from desktop_bridge import identity
-
 ROUTES = {
     "/downloads/Heyi-Recruiter-mac-arm64.dmg": "mac",
     "/downloads/Heyi-Recruiter-windows-x64-Setup.exe": "windows",
 }
 ENDPOINT = "https://oss.cloud.dayan.cloud"
 EXPIRY = 1800
+
+
+def identity(user):
+    """The existing HR download policy, without importing the retired collector runtime."""
+    legacy = (user.get("username") == "13800000000" and user.get("platformAdmin") is True
+              and user.get("organizationCode") == "heyi" and "ADMIN" in user.get("roles", []))
+    if not legacy and ("hr:access" not in user.get("permissions", [])
+                       or not user.get("organizationCode") or not (user.get("id") or user.get("userId"))):
+        raise ValueError("账号未开通人力资源权限")
+    return {key: user.get(key) for key in
+            ("username", "id", "userId", "organizationCode", "platformAdmin", "roles", "permissions")}
 
 
 def read_manifest(path):

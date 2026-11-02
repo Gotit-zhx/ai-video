@@ -29,7 +29,7 @@ public class FinanceCostWorker {
                 if(organizations!=null)changed.addAll(organizations);
                 if(organizations==null||organizations.isEmpty())break;
             }
-            changed.forEach(org->service.invalidateAfterCommit(companyScope(org)));
+            changed.forEach(org->service.refreshCostSnapshots(companyScope(org)));
         }catch(RuntimeException error){
             org.slf4j.LoggerFactory.getLogger(getClass()).warn("Standard cost batch deferred: {}",error.getClass().getSimpleName());
         }

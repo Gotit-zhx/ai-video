@@ -53,7 +53,7 @@ public class FinanceCostExport {
                       g.name group_name,c.status cost_status,c.amount_cny,c.known_amount_cny,c.data_json cost_json,
                       c.version cost_version,c.updated_at cost_updated_at,b.source_name cost_source,
                       CASE WHEN j.priority<2 THEN j.order_record_id END queued_id,
-                      CASE WHEN j.priority=2 THEN 1 ELSE 0 END label_pending,
+                      lc.amount_cny invoice_label_amount,lc.pending_count invoice_label_pending,lc.shipment_count invoice_label_shipments,
                     """+(Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind)?"x.settlement_date":"NULL")+" first_settlement_date"+from+"""
                      LEFT JOIN finance_records o ON o.id=x.order_record_id
                      LEFT JOIN finance_connections s ON s.id=x.shop_id AND s.organization_id=?
@@ -61,7 +61,7 @@ public class FinanceCostExport {
                      LEFT JOIN finance_order_costs c ON c.order_record_id=x.order_record_id AND c.organization_id=s.organization_id
                      LEFT JOIN finance_order_cost_jobs j ON j.order_record_id=x.order_record_id AND j.organization_id=s.organization_id
                      LEFT JOIN finance_cost_books b ON b.id=JSON_UNQUOTE(JSON_EXTRACT(c.data_json,'$.bookId')) AND b.organization_id=s.organization_id
-                    """+FinanceCostReport.costStatusWhere(selectedStatus)+" ORDER BY "
+                    """+FinanceLabelCosts.join("x.organization_id","x.shop_id","x.reference")+FinanceCostReport.costStatusWhere(selectedStatus)+" ORDER BY "
                     +(Set.of("SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED").contains(kind)?"x.settlement_date":"o.record_date")+" DESC,x.order_record_id,x.shop_id,x.reference LIMIT ? OFFSET ?",args.toArray());
                 if(rows.isEmpty())throw bad("导出数据读取不完整，请重试");
                 new FinanceCostReport(repo).attachSettlementAmounts(scope,rows);
@@ -87,33 +87,57 @@ public class FinanceCostExport {
             summary.row(List.of("历史价估算订单",totals.estimated));
             summary.row(List.of("待补齐订单（含计算中）",totals.pending));
             summary.row(List.of("不计成本订单",totals.excluded));
+            summary.row(List.of("实际出库成本订单",totals.actual));
             summary.row(List.of("SKU 明细行数",totals.lines));
             summary.row(Arrays.asList("已结算商品成本合计（人民币）",totals.pending==0?totals.known:null));
             summary.row(List.of("已计算部分成本（人民币）",totals.known));
+            summary.row(List.of("已匹配贴单金额（人民币）",totals.labels));
+            summary.row(List.of("贴单账单待补齐订单",totals.labelMissing));
+            summary.row(List.of("贴单金额冲突订单",totals.labelConflicts));
+            summary.row(List.of("贴单金额口径","仓库账单操作费，人民币原值。按参考号匹配订单，同一 WMS 出库单去重；按订单首次结算日期归属，不再使用分组或国家单价。"));
             summary.row(List.of("订单范围说明",kind.equals("SETTLED_ORDER")?"仅平台已结算订单，按首次结算日期归属；待结算不计入，后续重复结算或调整不重复计整单成本。":kind.equals("ORDER")?"仅核对所选已结算订单，不限制下单日期；不代表当前结算期间的成本合计。":"仅统计所选来源记录关联的已结算去重订单，日期依据为"+basis(kind)+"。"));
-            summary.row(List.of("计算口径","商家 SKU 成本单价 × 购买数量 × 组合数量；完整组合装单价优先，成本固定为人民币。"));
+            summary.row(List.of("计算口径","实际出库凭据优先：使用 ERP 出库型号、数量及人民币成本。无实际凭据时，使用商家 SKU 标准成本单价 × 购买数量 × 组合数量。"));
             summary.row(List.of("缺失与估算","待补齐的完整成本留空，不按零成本计算。历史价格保留实际取价月份。计算中订单不使用旧成本快照。"));
             summary.row(List.of("刷单口径","刷单订单不计入本报表的结算商品成本；原始财务明细保留黄色标签对应的订单标记。"));
-            summary.row(List.of("排除口径","未付款或已取消订单、已取消商品明细不计商品成本，不受发货状态影响；实际平台费用保留。退款不会自动退回商品成本。商品标准成本不等于仓库实际出库成本。"));
+            summary.row(List.of("排除口径","有实际出库凭据的订单保留成本，包括出库后取消；无实际凭据的取消单仍不计标准成本。确认退回入库的商品单独冲回，退款金额不等于入库成本。"));
             summary.row(List.of("核对方式","按订单编号连接订单与 SKU 明细；组合单价、数量、月份均取自同一次已保存计算。订单成本合计按去重订单统计。"));
             summary.row(List.of("月份校正",FinanceReportingMonths.NOTE));
-            summary.row(List.of("时间说明","下单时间为店铺时区，平台未提供时留空；下单日期为平台业务日。成本更新时间使用 UTC。"));
-            summary.row(List.of("商品金额口径","优惠前商品金额与平台净结算取首次结算日的平台结算字段；缺失时留空，不以原订单金额代替。后续跨日调整请查结算明细。"));
-            summary.row(List.of("成本分类","商品成本与贴单成本归入营业成本；样品和退款关联订单的商品成本已包含其中，不重复扣减。"));
+            summary.row(List.of("时间说明","结算归属日期为期间筛选依据；已确认月份显示“按月校正”，不推测具体完成日。下单日期和下单时间仅供核对，不用于期间筛选；下单时间为店铺时区，成本更新时间使用 UTC。"));
+            summary.row(List.of("商品金额口径","销售收入与平台净结算取首次结算账单日期的平台结算字段；缺失时留空，不以原订单金额代替。后续跨日调整请查结算明细。"));
+            summary.row(List.of("成本分类","营业成本 = 商品成本 + 贴单成本 − 已确认退货入库成本。样品和退款关联商品成本属于子项，不重复扣减。"));
+            if(text(recordId).isBlank()&&kind.equals("SETTLED_ORDER")){
+                var credits=new FinanceActualCosts(repo).returns(scope,filter,numbers);
+                var returned=book.sheet("退货成本冲回",List.of("店铺","订单编号","退回入库日期","商品型号","数量","冲回成本（人民币）","数据来源","千易库存流水编号","千易售后单号"));
+                BigDecimal totalReturn=BigDecimal.ZERO;
+                for(var r:credits){var evidence=map(r.get("evidence"));totalReturn=totalReturn.add(decimal(r.get("amount_cny")));
+                    returned.row(Arrays.asList(r.get("shop_name"),r.get("order_id"),day(r.get("receipt_date")),evidence.get("sku"),evidence.get("quantity"),r.get("amount_cny"),r.get("source_name"),evidence.get("movementId"),evidence.get("receiptId")));
+                }
+                summary.row(List.of("已确认退货入库成本冲回（人民币）",totalReturn));
+                summary.row(List.of("退货冲回口径","仅千易已确认库存流水成本，按实际退回入库日期统计并去重；旧 Excel 退货成本不计入。未确认部分不包含在本小计，零小计不代表全部售后成本为零，请在千易售后明细核对状态。"));
+            }
             return book.bytes();
         }catch(IOException e){throw new IllegalStateException("成本报表生成失败，请重试",e);}
         finally{slots.release();}
     }
-    static final List<String> ORDER_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","商品 SKU","下单日期","下单时间（店铺时区）","店铺时区","订单状态","订单状态代码","结算原币","优惠前商品金额（结算原币）","商品成本（人民币）","已计算部分成本（人民币）","成本状态","成本仓","成本月份依据","目标成本月份","实际取价月份","SKU 明细行数","匹配成功行数","历史价行数","成本来源文件","成本版本","成本更新时间（UTC）","说明","首次平台结算日期","订单类型","贴单成本（人民币）","贴单口径","平台净结算（结算原币）","原订单币种（核对用）","原订单金额（核对用）","商品金额口径","校正归属月份","平台原始结算日期","归属校正来源");
-    static final List<String> LINE_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","下单日期","订单状态","订单成本状态","商品名称","规格名称","商品 SPU 编号","平台 SKU 编号","商家 SKU","商品行编号","成本型号","成本仓","购买数量","组合数量","成本单价（人民币）","商品行成本（人民币）","目标成本月份","实际取价月份","历史价格估算","商品行状态","缺失原因或说明","成本来源文件","成本版本","成本更新时间（UTC）","首次平台结算日期","订单类型","校正归属月份","平台原始结算日期","归属校正来源");
+    static final List<String> ORDER_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","商品 SKU","结算归属日期","下单时间（店铺时区）","店铺时区","订单状态","订单状态代码","结算原币","销售收入（结算原币）","商品成本（人民币）","已计算部分成本（人民币）","成本状态","成本仓","成本月份依据","目标成本月份","实际取价月份","SKU 明细行数","匹配成功行数","历史价行数","成本来源文件","成本版本","成本更新时间（UTC）","说明","下单日期（核对用）","订单类型","贴单成本（人民币）","贴单口径","平台净结算（结算原币）","原订单币种（核对用）","原订单金额（核对用）","商品金额口径","校正归属月份","平台原始结算日期","归属校正来源","成本计价依据");
+    static final List<String> LINE_HEADERS=List.of("平台","店铺","订单编号","店铺国家","店铺分组","结算归属日期","订单状态","订单成本状态","商品名称","规格名称","商品 SPU 编号","平台 SKU 编号","商家 SKU","商品行编号","成本型号","成本仓","购买或实际出库数量","组合数量","成本单价（人民币）","商品行成本（人民币）","目标成本月份","实际取价月份","历史价格估算","商品行状态","缺失原因或说明","成本来源文件","成本版本","成本更新时间（UTC）","下单日期（核对用）","订单类型","校正归属月份","平台原始结算日期","归属校正来源","成本计价依据","出库单号","来源行");
     static final class Totals{
-        long orders,ready,estimated,pending,excluded,lines;BigDecimal known=BigDecimal.ZERO;
+        long orders,ready,actual,estimated,pending,excluded,lines,labelMissing,labelConflicts;BigDecimal known=BigDecimal.ZERO,labels=BigDecimal.ZERO;
         final Set<String> shops=new LinkedHashSet<>();
     }
     void append(Map<String,Object> row,FinanceCostWorkbook.Sheet orders,FinanceCostWorkbook.Sheet detail,Totals totals)throws IOException{
         Map<String,Object> raw=decode(row.get("raw_json"));
         boolean missing=row.get("order_record_id")==null,queued=row.get("queued_id")!=null;
         var cost=queued?Map.<String,Object>of():decode(row.get("cost_json"));
+        var label=new LinkedHashMap<String,Object>();label.put("amount_cny",row.get("invoice_label_amount"));
+        label.put("pending_count",row.get("invoice_label_pending"));label.put("shipment_count",row.get("invoice_label_shipments"));
+        var invoice=FinanceLabelCosts.overlay(Map.of(),label);
+        if(number(row.get("invoice_label_shipments"))==0)totals.labelMissing++;
+        if(number(row.get("invoice_label_pending"))>0)totals.labelConflicts++;
+        if(decimal(row.get("invoice_label_amount"))!=null)totals.labels=totals.labels.add(decimal(row.get("invoice_label_amount")));
+        boolean actual="ERP_ACTUAL".equals(cost.get("basis"));
+        String priceBasis=actual?"ERP 实际出库成本":"商家 SKU 标准成本";
+        Object costSource=actual?cost.get("sourceName"):row.get("cost_source");
         String code=queued?"QUEUED":missing?"MISSING":text(row.get("cost_status"));
         String status=costStatus(code);
         BigDecimal amount=Set.of("READY","ESTIMATED","EXCLUDED").contains(code)?decimal(row.get("amount_cny")):null;
@@ -135,23 +159,24 @@ public class FinanceCostExport {
         if(!issues.isEmpty())note+=(note.isBlank()?"":"；")+String.join("；",issues);
         if(note.isBlank()&&!Set.of("READY","ESTIMATED","EXCLUDED").contains(code))note="成本尚未计算或资料待补齐";
         totals.orders++;totals.shops.add(shop);
+        if(actual)totals.actual++;
         if(code.equals("EXCLUDED"))totals.excluded++;
         else if(Set.of("READY","ESTIMATED").contains(code)){totals.ready++;if(code.equals("ESTIMATED"))totals.estimated++;}
         else totals.pending++;
         if(known!=null)totals.known=totals.known.add(known);
-        orders.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),String.join("\n",skus),date,
+        orders.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),String.join("\n",skus),settlementDay(row),
             created(raw.get("create_time"),zone),zone,orderStatus(text(row.get("order_status"))),row.get("order_status"),
             row.get("settlement_currency"),decimal(row.get("settlement_goods_amount")),amount,known,status,cost.get("warehouse"),
-            cost.isEmpty()?"":"shipment".equals(cost.get("dateBasis"))?"发货月份":"下单月份",cost.get("costMonth"),String.join("、",months),
-            cost.get("lineCount"),cost.get("matchedLines"),cost.get("fallbackLines"),queued?null:row.get("cost_source"),
-            queued?null:row.get("cost_version"),queued?null:updated,note,settlementDay(row),orderType,
-            number(row.get("label_pending"))>0?null:cost.get("labelCostCny"),number(row.get("label_pending"))>0?"贴单费用更新中，商品成本保留":cost.get("labelNote"),
-            row.get("settlement_net_amount"),row.get("currency"),decimal(row.get("amount")),row.get("settlement_amount_note"),row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source")));
+            cost.isEmpty()?"":actual?"实际出库凭据":"shipment".equals(cost.get("dateBasis"))?"发货月份":"下单月份",cost.get("costMonth"),String.join("、",months),
+            cost.get("lineCount"),cost.get("matchedLines"),cost.get("fallbackLines"),queued?null:costSource,
+            queued?null:row.get("cost_version"),queued?null:updated,note,date,orderType,
+            invoice.get("labelCostCny"),invoice.get("labelNote"),
+            row.get("settlement_net_amount"),row.get("currency"),decimal(row.get("amount")),row.get("settlement_amount_note"),row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source"),queued?null:priceBasis));
         // Retain an explanatory row even when the source order or its calculation is unavailable.
         if(costLines.isEmpty()){
-            detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),date,orderStatus(text(row.get("order_status"))),status,
+            detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),settlementDay(row),orderStatus(text(row.get("order_status"))),status,
                 null,null,null,null,String.join("\n",skus),null,null,cost.get("warehouse"),null,null,null,code.equals("EXCLUDED")?BigDecimal.ZERO:null,
-                cost.get("costMonth"),null,null,status,note,queued?null:row.get("cost_source"),queued?null:row.get("cost_version"),queued?null:updated,settlementDay(row),orderType,row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source")));
+                cost.get("costMonth"),null,null,status,note,queued?null:costSource,queued?null:row.get("cost_version"),queued?null:updated,date,orderType,row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source"),queued?null:priceBasis,null,null));
             totals.lines++;return;
         }
         for(var line:costLines){
@@ -160,11 +185,11 @@ public class FinanceCostExport {
                     &&text(line.get("productId")).equals(first(s,"product_id","item_id"))&&text(line.get("skuId")).equals(first(s,"sku_id","model_id"))).findFirst().orElse(Map.of()));
             boolean excluded=Boolean.TRUE.equals(line.get("excluded"));
             String issue=text(line.get("issue")),lineState=!issue.isBlank()?"待补齐":excluded?"不计成本":Boolean.TRUE.equals(line.get("previousPrice"))?"历史价估算":"已计算";
-            detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),date,orderStatus(text(row.get("order_status"))),status,
-                first(source,"product_name","item_name"),first(source,"sku_name","model_name"),line.get("productId"),line.get("skuId"),line.get("sellerSku"),line.get("lineId"),
+            detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),settlementDay(row),orderStatus(text(row.get("order_status"))),status,
+                actual?line.get("name"):first(source,"product_name","item_name"),first(source,"sku_name","model_name"),line.get("productId"),line.get("skuId"),line.get("sellerSku"),line.get("lineId"),
                 line.get("costCode"),line.get("warehouse"),line.get("quantity"),line.get("factor"),line.get("unitPriceCny"),line.get("amountCny"),
                 cost.get("costMonth"),line.get("priceMonth"),Boolean.TRUE.equals(line.get("previousPrice"))?"是":"否",lineState,
-                issue.isBlank()?excluded?"未付款或已取消，不计成本":"单价 × 有效购买数量 × 组合数量":issue,row.get("cost_source"),row.get("cost_version"),updated,settlementDay(row),orderType,row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source")));
+                issue.isBlank()?excluded?"未付款或已取消，不计成本":actual?"ERP 已确认出库成本，实际型号及数量见本行":"单价 × 有效购买数量 × 组合数量":issue,costSource,row.get("cost_version"),updated,date,orderType,row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source"),priceBasis,line.get("shipmentId"),line.get("sourceRow")));
             totals.lines++;
         }
     }
@@ -180,7 +205,7 @@ public class FinanceCostExport {
         }catch(RuntimeException e){return null;}
     }
     static String platform(String value){return switch(value){case "TIKTOK_SHOP"->"TikTok Shop";case "SHOPEE"->"虾皮";default->value;};}
-    static String basis(String value){return switch(value){case "SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED"->"首次平台结算日期";case "REFUND"->"所选退款记录";case "SETTLEMENT"->"结算日期";case "BILL","RECONCILIATION"->"账单日期";case "PENDING"->"待结算日期";default->"下单日期";};}
+    static String basis(String value){return switch(value){case "SETTLED_ORDER","SAMPLE_SETTLED","REFUND_SETTLED","SETTLEMENT"->"结算归属日期（首次平台结算；已确认月份按月校正）";case "REFUND"->"所选退款记录，不按日期筛选";case "BILL","RECONCILIATION"->"所选账单关联记录，不按日期筛选";case "PENDING"->"待结算不计商品成本";default->"所选订单，不按下单日期筛选";};}
     static String costStatus(String value){return switch(value){case "READY"->"已计算";case "ESTIMATED"->"历史价估算";case "EXCLUDED"->"不计成本";case "QUEUED"->"后台计算中";case "MISSING"->"订单待同步";default->"待补齐";};}
     static String orderStatus(String value){return switch(value){
         case "UNPAID"->"待付款";case "ON_HOLD"->"订单暂挂";case "CANCELLED","CANCELED"->"已取消";case "IN_CANCEL"->"取消处理中";

@@ -6,6 +6,9 @@ import unittest
 from unittest import mock
 import urllib.error
 import urllib.request
+import subprocess
+import sys
+import shutil
 
 import desktop_installers as installers
 
@@ -96,6 +99,18 @@ class InstallerTest(unittest.TestCase):
             self.assertEqual(installers.authorize(""), 401)
             self.assertEqual(installers.authorize("a"*4097), 401)
             open_factory.assert_not_called()
+
+    def test_download_service_imports_without_any_recruitment_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "desktop_installers.py"
+            shutil.copy2(installers.__file__, target)
+            result = subprocess.run(
+                [sys.executable, "-I", "-c",
+                 "import runpy,sys; m=runpy.run_path(sys.argv[1]); "
+                 "assert 'desktop_bridge' not in sys.modules; "
+                 "assert m['authorize']('') == 401", str(target)],
+                capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     def test_real_http_head_redirect_and_unauthorized_responses_are_not_cached(self):
         server = installers.http.server.ThreadingHTTPServer(("127.0.0.1", 0),

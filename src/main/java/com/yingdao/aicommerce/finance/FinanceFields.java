@@ -31,6 +31,8 @@ public final class FinanceFields {
         new Field("product_cost_state","商品成本状态","text","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("product_cost_pending","待补齐成本订单数","number","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("product_cost_note","商品成本说明","text","商品成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
+        new Field("label_cost_cny","贴单金额（人民币）","money","贴单成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
+        new Field("label_cost_note","贴单金额口径","text","贴单成本",false,"ORDER REFUND SETTLEMENT BILL PENDING RECONCILIATION",""),
         new Field("related_order_status","关联订单状态","text","结算核对",false,"REFUND SETTLEMENT FEE PENDING",""),
         new Field("order_type_label","订单类型","text","结算核对",false,"ORDER REFUND SETTLEMENT FEE PENDING",""),
         new Field("settlement_amount_note","结算金额说明","text","结算核对",false,"SETTLEMENT BILL RECONCILIATION",""),
@@ -114,11 +116,11 @@ public final class FinanceFields {
                     String label=f.label;
                     if(v.equals("REFUND")&&f.id.equals("amount"))label="确认退款金额（原币）";
                     if(v.equals("REFUND")&&f.id.equals("cny_amount"))label="确认退款金额（人民币）";
-                    if(Set.of("ORDER","REFUND","SETTLEMENT","BILL","FEE","RECONCILIATION").contains(v)&&f.id.equals("record_date"))label="结算日期";
-                    if(Set.of("SETTLEMENT","BILL").contains(v)&&f.id.equals("amount"))label="优惠前商品金额（原币）";
-                    if(Set.of("SETTLEMENT","BILL").contains(v)&&f.id.equals("cny_amount"))label="优惠前商品金额（人民币）";
-                    if(Set.of("SETTLEMENT","BILL","RECONCILIATION").contains(v)&&f.id.equals("revenue"))label="优惠前商品金额（原币）";
-                    if(Set.of("SETTLEMENT","BILL","RECONCILIATION").contains(v)&&f.id.equals("cny_revenue"))label="优惠前商品金额（人民币）";
+                    if(Set.of("ORDER","REFUND","SETTLEMENT","BILL","FEE","RECONCILIATION").contains(v)&&f.id.equals("record_date"))label="结算账单日期";
+                    if(Set.of("SETTLEMENT","BILL").contains(v)&&f.id.equals("amount"))label="销售收入（原币）";
+                    if(Set.of("SETTLEMENT","BILL").contains(v)&&f.id.equals("cny_amount"))label="销售收入（人民币）";
+                    if(Set.of("SETTLEMENT","BILL","RECONCILIATION").contains(v)&&f.id.equals("revenue"))label="销售收入（原币）";
+                    if(Set.of("SETTLEMENT","BILL","RECONCILIATION").contains(v)&&f.id.equals("cny_revenue"))label="销售收入（人民币）";
                     if(v.equals("RECONCILIATION")&&f.id.equals("amount"))label="平台净结算账单（原币）";
                     if(v.equals("RECONCILIATION")&&f.id.equals("cny_amount"))label="平台净结算账单（人民币）";
                     return new Field(f.id,label,f.type,f.group,f.cny,f.views,f.path);
@@ -145,13 +147,19 @@ public final class FinanceFields {
     public Preferences get(Scope s,String key){
         key=view(key);
         var saved=repo.jdbc().queryForList("SELECT preferences_json FROM finance_view_preferences WHERE organization_id=? AND user_id=? AND view_key=?",s.organizationId(),s.userId(),key);
-        if(saved.isEmpty())return withReportingMonths(key,withOrderTimes(key,defaults(key)));
+        if(saved.isEmpty())return withLabelCosts(key,withReportingMonths(key,withOrderTimes(key,defaults(key))));
         var value=repo.read(text(saved.getFirst().get("preferences_json")));
         boolean upgraded=number(value.get("productSkuColumnVersion"))>=1;
         var prefs=validate(key,upgraded?strings(value.get("visible")):withProductSkus(strings(value.get("visible"))),
                 upgraded?strings(value.get("exported")):withProductSkus(strings(value.get("exported"))));
         prefs=number(value.get("orderTimeColumnVersion"))>=1?prefs:withOrderTimes(key,prefs);
-        return number(value.get("reportingMonthColumnVersion"))>=1?prefs:withReportingMonths(key,prefs);
+        prefs=number(value.get("reportingMonthColumnVersion"))>=1?prefs:withReportingMonths(key,prefs);
+        return number(value.get("labelInvoiceColumnVersion"))>=1?prefs:withLabelCosts(key,prefs);
+    }
+    static Preferences withLabelCosts(String key,Preferences prefs){
+        if(!Set.of("ORDER","REFUND","SETTLEMENT","BILL","PENDING","RECONCILIATION","ALL").contains(key))return prefs;
+        return new Preferences(insertAfter(prefs.visible,"label_cost_cny","product_cost_cny"),
+            insertAfter(insertAfter(prefs.exported,"label_cost_cny","product_cost_cny"),"label_cost_note","label_cost_cny"));
     }
     static Preferences withReportingMonths(String key,Preferences prefs){
         if(!Set.of("ORDER","REFUND","SETTLEMENT","FEE","ALL").contains(key))return prefs;
@@ -182,12 +190,12 @@ public final class FinanceFields {
     }
     public Map<String,Object> settings(Scope s,String key){
         key=view(key);var prefs=get(s,key);
-        return Map.of("view",key,"fields",catalog(key),"visible",prefs.visible,"exported",prefs.exported,"defaults",withReportingMonths(key,withOrderTimes(key,defaults(key))));
+        return Map.of("view",key,"fields",catalog(key),"visible",prefs.visible,"exported",prefs.exported,"defaults",withLabelCosts(key,withReportingMonths(key,withOrderTimes(key,defaults(key)))));
     }
     public void save(Scope s,String key,List<String> visible,List<String> exported){
         key=view(key);var prefs=validate(key,visible,exported);
         repo.jdbc().update("INSERT INTO finance_view_preferences(organization_id,user_id,view_key,preferences_json) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE preferences_json=VALUES(preferences_json),updated_at=UTC_TIMESTAMP(6)",
-                s.organizationId(),s.userId(),key,repo.write(Map.of("visible",prefs.visible,"exported",prefs.exported,"productSkuColumnVersion",1,"orderTimeColumnVersion",1,"reportingMonthColumnVersion",1)));
+                s.organizationId(),s.userId(),key,repo.write(Map.of("visible",prefs.visible,"exported",prefs.exported,"productSkuColumnVersion",1,"orderTimeColumnVersion",1,"reportingMonthColumnVersion",1,"labelInvoiceColumnVersion",1)));
     }
     static Preferences validate(String key,List<String> visible,List<String> exported){
         Set<String> allowed=new HashSet<>(catalog(key).stream().map(Field::id).toList());
@@ -244,7 +252,10 @@ public final class FinanceFields {
             });
             var breakdown=kind.equals("SETTLEMENT")?FinanceSettlementBreakdown.parse(platform,raw,settlement):null;
             BigDecimal goods=breakdown==null?decimal(row.get("revenue")):breakdown.goods();
-            row.put("goods_before_discount_amount",goods);
+            row.put("revenue",goods);
+            row.put("goods_before_discount_amount",kind.equals("SETTLEMENT")
+                    ?platform.equals("TIKTOK_SHOP")?amount(raw,"revenue_breakdown.subtotal_before_discount_amount")
+                    :amount(raw,"order_income.original_price","order_income.order_original_price"):null);
             if(breakdown!=null)row.put("settlement_fee_breakdown",breakdown.fees().stream().map(f->Map.of(
                     "field",f.field(),"label",f.label(),"group",f.group(),"amount",f.amount(),
                     "sourceAmount",f.sourceAmount(),"note",f.note())).toList());

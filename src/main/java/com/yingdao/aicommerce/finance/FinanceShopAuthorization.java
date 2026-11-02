@@ -78,8 +78,8 @@ public class FinanceShopAuthorization {
             var result=persistGrant(scope,platform,grant,businessGroup,text(context.get("shopId")),instant(session.get("created_at")));
             repo.jdbc().update("UPDATE finance_authorization_sessions SET status='SUCCESS',error_message=NULL WHERE id=?",id);
             if(sharedSnapshots!=null)sharedSnapshots.invalidate(companyScope(scope.organizationId()));
-            String message=result.created()>0?"已连接 "+result.created()+" 家财务店铺，请配置并开启同步":"";
-            if(result.existing()>0)message+=(message.isEmpty()?"":"；")+"店铺已存在（"+result.existing()+" 家），已更新原店铺授权，未重复导入";
+            String message=result.created()>0?"已连接 "+result.created()+" 家财务店铺，已自动开启同步":"";
+            if(result.existing()>0)message+=(message.isEmpty()?"":"；")+"店铺已存在（"+result.existing()+" 家），已更新原店铺授权并开启同步，未重复导入";
             return redirect(true,message);
         }catch(RuntimeException e){
             String message=safeMessage(e);
@@ -132,19 +132,20 @@ public class FinanceShopAuthorization {
                 repo.jdbc().update("""
                     INSERT INTO finance_connections(id,organization_id,user_id,platform,external_shop_id,name,region,
                     merchant_id,shop_cipher,seller_type,authorization_subject_type,authorization_subject_id,currency,timezone,
-                    token_group_id,access_token_encrypted,refresh_token_encrypted,access_token_expires_at,refresh_token_expires_at,scopes_json,group_id)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    token_group_id,access_token_encrypted,refresh_token_encrypted,access_token_expires_at,refresh_token_expires_at,scopes_json,group_id,enabled)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,TRUE)
                     ON DUPLICATE KEY UPDATE name=VALUES(name),region=VALUES(region),merchant_id=VALUES(merchant_id),
                     shop_cipher=VALUES(shop_cipher),seller_type=VALUES(seller_type),authorization_subject_type=VALUES(authorization_subject_type),
                     authorization_subject_id=VALUES(authorization_subject_id),token_group_id=VALUES(token_group_id),
                     access_token_encrypted=VALUES(access_token_encrypted),refresh_token_encrypted=VALUES(refresh_token_encrypted),
                     access_token_expires_at=VALUES(access_token_expires_at),refresh_token_expires_at=VALUES(refresh_token_expires_at),
-                    scopes_json=VALUES(scopes_json),group_id=VALUES(group_id),enabled=IF(status='REMOVED',FALSE,enabled),status='ACTIVE',updated_at=UTC_TIMESTAMP(6)
+                    scopes_json=VALUES(scopes_json),group_id=VALUES(group_id),enabled=TRUE,status='ACTIVE',updated_at=UTC_TIMESTAMP(6)
                     """,id,storage.organizationId(),storage.userId(),platform.name(),remote.externalShopId(),text(remote.name()),remote.region(),
                         remote.merchantId(),remote.shopCipher(),remote.sellerType(),remote.authorizationSubjectType(),remote.authorizationSubjectId(),
                         currencyFor(remote.region()),timezoneFor(remote.region()),group,
                         encrypt(storage,id,tokens.accessToken()),encrypt(storage,id,tokens.refreshToken()),timestamp(tokens.accessTokenExpiresAt()),
                         timestamp(tokens.refreshTokenExpiresAt()),repo.write(tokens.scopes()),text(assigned).isBlank()?null:assigned);
+                FinanceSyncChannels.enable(repo,storage,id,platform.name());
             }
             return new PersistResult(created,duplicates);
         });

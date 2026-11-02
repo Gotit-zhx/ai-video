@@ -49,6 +49,10 @@ class TikTokShopOfficialPublishingProviderTest {
         verifyConfirmedDraftFlow("LOCAL", null, true);
     }
     @Test
+    void selectedSizeChartReachesInjectedBuilderAndBothOfficialProductRequests() {
+        verifyConfirmedDraftFlow("LOCAL", null, false, false, true);
+    }
+    @Test
     void missingWarehouseAutomaticallyReadsDestinationWarehouseAndPreservesDraftCreateBoundary() {
         verifyConfirmedDraftFlow("LOCAL", null, false, true);
         verifyConfirmedDraftFlow("CROSS_BORDER", List.of("LOCAL_REPLICATION"), false, true);
@@ -69,13 +73,29 @@ class TikTokShopOfficialPublishingProviderTest {
         verifyConfirmedDraftFlow(sellerType, listingMethods, styled, false);
     }
     private void verifyConfirmedDraftFlow(String sellerType, Object listingMethods, boolean styled, boolean automaticWarehouse) {
+        verifyConfirmedDraftFlow(sellerType, listingMethods, styled, automaticWarehouse, false);
+    }
+    private void verifyConfirmedDraftFlow(String sellerType, Object listingMethods, boolean styled,
+                                         boolean automaticWarehouse, boolean selectedChart) {
         ShopAuthorizationService authorizationService = mock(ShopAuthorizationService.class);
         TikTokShopOfficialClient client = mock(TikTokShopOfficialClient.class);
         ProductCaptureSkuMapper skuMapper = mock(ProductCaptureSkuMapper.class);
         ProductCaptureImageMapper imageMapper = mock(ProductCaptureImageMapper.class);
         MarketplaceImageDownloader downloader = mock(MarketplaceImageDownloader.class);
-        TikTokShopOfficialPublishingProvider provider = provider(
-                authorizationService, client, skuMapper, imageMapper, downloader);
+        var chartBuilder = selectedChart ? mock(TikTokProductSizeChart.class) : null;
+        TikTokShopOfficialPublishingProvider provider;
+        if (selectedChart) {
+            var videos = mock(TikTokProductVideoUploader.class);
+            when(videos.upload(any(), any(), any())).thenReturn(TikTokProductVideoUploader.UploadedVideo.none());
+            provider = new TikTokShopOfficialPublishingProvider(authorizationService, client, skuMapper,
+                    imageMapper, downloader, new ObjectMapper(), videos,
+                    new TikTokProductDescription(client, downloader), chartBuilder);
+            when(chartBuilder.prepare(any(), any(), any(), any(), any())).thenReturn(
+                    new TikTokProductSizeChart.PreparedSizeChart(
+                            Map.of("image", Map.of("uri", "selected-chart-uri")), null, "SELECTED_IMAGE"));
+        } else {
+            provider = provider(authorizationService, client, skuMapper, imageMapper, downloader);
+        }
         MarketplaceAccess.Connection connection = connection(sellerType, "PH");
         ProductCapture capture = capture();
         List<ProductCaptureSku> skus = List.of(
@@ -147,6 +167,7 @@ class TikTokShopOfficialPublishingProviderTest {
                         "request_id", "readback-request"));
 
         var request = new LinkedHashMap<>(publishRequest());
+        if (selectedChart) request.put("sizeChartImageKey", "a".repeat(64) + "/" + "b".repeat(64));
         if (automaticWarehouse) {
             request.remove("warehouseId");
             when(client.apiGet("/logistics/202309/warehouses", "access-token", "shop-cipher", Map.of()))
@@ -194,6 +215,12 @@ class TikTokShopOfficialPublishingProviderTest {
                 .containsEntry("save_mode", "AS_DRAFT")
                 .containsEntry("category_version", "v2")
                 .containsEntry("idempotency_key", "publish-key");
+        if (selectedChart) {
+            verify(chartBuilder).prepare(eq(capture), eq(List.of(red, blue)), eq(connection), any(), eq(request));
+            assertThat(createPayload.getValue()).containsEntry("size_chart",
+                    Map.of("image", Map.of("uri", "selected-chart-uri")));
+            assertThat(result.providerResponse()).containsEntry("sizeChartSourceType", "SELECTED_IMAGE");
+        }
         verify(downloader, org.mockito.Mockito.times(styled ? 1 : 2)).downloadProductImage(eq(red.getProcessedUrl()), eq(red));
         if (styled) verify(downloader).downloadProductImage(eq(styleImage.getProcessedUrl()),eq(styleImage));
         verify(downloader).downloadProductImage(eq(blue.getProcessedUrl()), eq(blue));

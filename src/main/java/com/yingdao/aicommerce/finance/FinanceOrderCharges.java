@@ -121,50 +121,19 @@ public class FinanceOrderCharges {
         repo.jdbc().update("DELETE FROM finance_charge_imports WHERE organization_id=? AND id=?",s.organizationId(),id);
         affected.forEach(r->rebuildMarker(s.organizationId(),text(r.get("matched_shop_id")),text(r.get("order_id"))));invalidate(s);
     }
-    void enqueueGroup(Scope s,String group){new FinanceOrderCosts(repo).requestLabelGroup(s,group);}
     Map<String,Object> labelConfiguration(Scope s,List<Map<String,Object>> shops,List<Map<String,Object>> costShops){
-        var rules=repo.jdbc().queryForList("SELECT group_id,country FROM finance_label_rules WHERE organization_id=?",s.organizationId());
-        var applicable=new HashSet<String>();
-        for(var rule:rules)applicable.add(text(rule.get("group_id"))+":"+text(rule.get("country")));
-        var wanted=new HashSet<String>();
-        for(var cost:costShops)if(number(cost.get("order_count"))>number(cost.get("excluded_count")))wanted.add(text(cost.get("shop_id")));
         var missing=new ArrayList<Map<String,Object>>();int configured=0;
-        for(var shop:shops)if(wanted.contains(text(shop.get("id")))){
-            String group=text(shop.get("group_id")),country=text(shop.get("region"));
-            if(applicable.contains(group+":")||applicable.contains(group+":"+country))configured++;
-            else missing.add(Map.of("shopId",text(shop.get("id")),"name",first(shop,"display_name","name"),
-                "groupId",group,"region",country));
+        for(var costs:costShops){
+            long absent=number(costs.get("label_missing_count"));
+            if(absent==0){configured++;continue;}
+            shops.stream().filter(shop->text(shop.get("id")).equals(text(costs.get("shop_id")))).findFirst().ifPresent(shop->
+                missing.add(Map.of("shopId",text(shop.get("id")),"name",first(shop,"display_name","name"),
+                    "groupId",text(shop.get("group_id")),"region",text(shop.get("region")),"missingOrders",absent)));
         }
-        return Map.of("configuredShops",configured,"missingShops",missing);
+        return Map.of("configuredShops",configured,"missingShops",missing,"basis","WAREHOUSE_INVOICE");
     }
-    @Transactional public void saveRule(Scope s,String actor,Map<String,Object> b){
-        String group=text(b.get("groupId"));new FinanceGroups(repo).require(s,group,true);
-        String country=text(b.get("country"));
-        if(!Set.of("","PH","TH","MY","VN","SG","ID","US","GB").contains(country))throw bad("请选择支持的店铺国家或分组默认");
-        BigDecimal value=price(b.get("unitPriceCny"));
-        String id=text(b.get("id"));Map<String,Object> old=null;
-        if(id.isBlank()){
-            if(!repo.jdbc().queryForList("SELECT id FROM finance_label_rules WHERE organization_id=? AND group_id=? AND country=?",s.organizationId(),group,country).isEmpty())
-                throw bad("该分组和国家已有贴单单价，请调整现有规则");
-            // Retained as historical configuration metadata; it no longer gates order eligibility.
-            LocalDate date=text(b.get("effectiveDate")).isBlank()?LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")):FinanceCostWorkspace.day(b.get("effectiveDate"));
-            id=UUID.randomUUID().toString();
-            repo.jdbc().update("INSERT INTO finance_label_rules(id,organization_id,group_id,country,effective_date,unit_price_cny,created_by) VALUES(?,?,?,?,?,?,?)",id,s.organizationId(),group,country,date,value,actor);
-        }else{
-            var rows=repo.jdbc().queryForList("SELECT * FROM finance_label_rules WHERE organization_id=? AND group_id=? AND id=? FOR UPDATE",s.organizationId(),group,id);
-            if(rows.isEmpty()||number(rows.getFirst().get("version"))!=number(b.get("version")))throw bad("规则已更新，请刷新后再修改");
-            old=rows.getFirst();
-            if(!country.equals(text(old.get("country"))))throw bad("修改单价时不能改变国家，请新增对应国家的规则");
-            repo.jdbc().update("UPDATE finance_label_rules SET unit_price_cny=?,version=version+1,updated_at=UTC_TIMESTAMP(6) WHERE id=?",value,id);
-        }
-        audit(s,actor,"LABEL_RULE",id,old,b,"保存当前人民币贴单单价；按查询范围内首次平台结算的适用订单统计");enqueueGroup(s,group);invalidate(s);
-    }
-    @Transactional public void removeRule(Scope s,String actor,String group,String id,long version){
-        new FinanceGroups(repo).require(s,group,true);
-        if(repo.jdbc().update("DELETE FROM finance_label_rules WHERE organization_id=? AND group_id=? AND id=? AND version=?",s.organizationId(),group,id,version)!=1)
-            throw bad("规则已更新或删除，请刷新");
-        audit(s,actor,"LABEL_RULE_DELETE",id,null,Map.of("groupId",group,"version",version),"移除规则并重算受影响订单");enqueueGroup(s,group);invalidate(s);
-    }
+    @Deprecated public void saveRule(Scope s,String actor,Map<String,Object> b){throw bad("贴单单价配置已停用，请导入月度仓库账单");}
+    @Deprecated public void removeRule(Scope s,String actor,String group,String id,long version){throw bad("贴单单价配置已停用，原规则不再参与统计");}
     public Map<String,Object> workspace(Scope s,String group,int page){
         return workspace(s,group,page,null);
     }
@@ -174,9 +143,7 @@ public class FinanceOrderCharges {
     public Map<String,Object> workspace(Scope s,String group,int page,Filter filter,String numbers){
         new FinanceGroups(repo).require(s,group,false);
         var imports=repo.jdbc().queryForList("SELECT id,source_name,row_count,created_at FROM finance_charge_imports WHERE organization_id=? AND group_id=? ORDER BY created_at DESC,id",s.organizationId(),group);
-        var rules=repo.jdbc().queryForList("SELECT * FROM finance_label_rules WHERE organization_id=? AND group_id=? ORDER BY country,updated_at DESC,id",s.organizationId(),group);
-        var activeCountries=new HashSet<String>();
-        for(var rule:rules)rule.put("active",activeCountries.add(text(rule.get("country"))));
+        var rules=List.<Map<String,Object>>of();
         var count=repo.jdbc().queryForMap("SELECT COUNT(*) records,COALESCE(SUM(matched_shop_id IS NULL),0) unmatched,COALESCE(SUM(service_fee_cny),0) service_fee_cny FROM finance_charge_rows WHERE organization_id=? AND group_id=?",s.organizationId(),group);
         var sourceQuery=FinanceRecordSearch.orders(new FinanceRepository.Query("organization_id=? AND group_id=?",List.of(s.organizationId(),group)),"order_id",numbers);
         long recordTotal=number(repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_charge_rows WHERE "+sourceQuery.where(),Long.class,sourceQuery.args().toArray()));
@@ -267,26 +234,11 @@ public class FinanceOrderCharges {
             for(var r:batch)if(marked.contains(text(r.get("id")))){r.put("marketing_order",true);r.put("marketing_label","刷单");r.put("summary_inclusion","不计入经营汇总，原始账目保留");}
         }
     }
-    Map<String,Object> label(String org,Map<String,Object> order,Map<String,Object> raw,FinanceOrderCosts.Context ctx,Map<String,Object> standard){
-        var rule=labelRule(org,ctx);
-        boolean independent=!rule.isEmpty()&&repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_records WHERE organization_id=? AND shop_id=? AND order_id=? AND kind='COST'",Long.class,org,ctx.shopId(),order.get("order_id"))>0;
-        return label(order,raw,standard,rule,independent);
+    @Deprecated Map<String,Object> label(String org,Map<String,Object> order,Map<String,Object> raw,FinanceOrderCosts.Context ctx,Map<String,Object> standard){
+        return FinanceLabelCosts.overlay(standard,Map.of());
     }
-    Map<String,Object> labelRule(String org,FinanceOrderCosts.Context ctx){
-        var rules=repo.jdbc().queryForList("SELECT * FROM finance_label_rules WHERE organization_id=? AND group_id=? AND (country='' OR country=?) ORDER BY (country<>'') DESC,updated_at DESC,id LIMIT 1",org,ctx.groupId(),ctx.region());
-        return rules.isEmpty()?Map.of():rules.getFirst();
-    }
-    static Map<String,Object> label(Map<String,Object> order,Map<String,Object> raw,Map<String,Object> standard,Map<String,Object> rule,boolean independent){
-        var out=new LinkedHashMap<>(standard);BigDecimal value=BigDecimal.ZERO;String note="未启用贴单规则";int pending=0;
-        out.remove("labelRuleId");out.remove("labelRuleVersion");
-        boolean shipped=FinanceOrderCosts.shippingTime(raw)!=null||Set.of("COMPLETED","DELIVERED","SHIPPED","TO_CONFIRM_RECEIVE","IN_TRANSIT").contains(text(order.get("status")));
-        boolean cancelled=Set.of("CANCELLED","CANCELED","UNPAID").contains(text(order.get("status")));
-        if(shipped&&!cancelled){
-            if(!rule.isEmpty()){
-                value=decimal(rule.get("unit_price_cny"));out.put("labelRuleId",rule.get("id"));out.put("labelRuleVersion",rule.get("version"));note="人民币 / 每笔已发货订单；按当前分组及国家单价，查询范围内首次结算计入一次，不限制下单日期";
-                if(independent){value=BigDecimal.ZERO;pending=1;note="该订单已有独立成本记录，贴单费暂不重复计入，请核对原有费用";}
-            }
-        }else note=cancelled?"未付款或取消订单，不计贴单费":"未发货，不计贴单费";
-        out.put("labelCostCny",value);out.put("labelNote",note);out.put("chargesPending",pending);return out;
+    @Deprecated Map<String,Object> labelRule(String org,FinanceOrderCosts.Context ctx){return Map.of();}
+    @Deprecated static Map<String,Object> label(Map<String,Object> order,Map<String,Object> raw,Map<String,Object> standard,Map<String,Object> rule,boolean independent){
+        return FinanceLabelCosts.overlay(standard,Map.of());
     }
 }

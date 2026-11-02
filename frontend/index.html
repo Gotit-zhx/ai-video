@@ -50,10 +50,12 @@
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
     <link rel="stylesheet" href="/finance-workspace.css?v=20261027-date-search-1">
-    <link rel="stylesheet" href="/finance-costs.css?v=20261026-cost-sources-1">
+    <link rel="stylesheet" href="/finance-costs.css?v=20261030-label-pages-1">
     <link rel="stylesheet" href="/finance-expenses-design.css?v=20261022-cost-shops-2">
     <link rel="stylesheet" href="/hr-workspace.css?v=20261012-progress-compact-3">
 <link rel="stylesheet" href="/i18n.css?v=20260921-2">
+  <link rel="stylesheet" href="/finance-qianyi.css?v=20261102-qianyi-refunds-2">
+  <link rel="stylesheet" href="/finance-loading.css?v=20261102-query-status-1">
 </head>
 <body>
   <main id="portal-view" class="portal" hidden>
@@ -1932,14 +1934,14 @@
         </div>
         <div id="product-bulk-main-style-preview" class="main-style-bulk-preview" hidden></div>
         <p id="product-bulk-main-style-status" role="status"></p>
+      </fieldset>
         <section id="product-bulk-size-chart" class="product-bulk-size-chart" aria-label="本次上传尺码图" hidden>
-          <div><strong>尺码图片 <small>选填</small></strong><p>上传后用于本批商品；不上传则使用原商品尺码表。</p></div>
+          <div><strong>尺码图片 <small>选填</small></strong><p>上传适用于本批商品的尺码表；因缺少尺码表而失败的商品可补图后继续上传。</p></div>
           <div class="product-bulk-size-chart-actions"><label class="product-bulk-chart-upload">上传尺码图<input id="product-bulk-size-chart-file" type="file" accept="image/png,image/jpeg"></label><button id="product-bulk-size-chart-remove" type="button" hidden>移除</button></div>
           <img id="product-bulk-size-chart-preview" alt="本次上传的尺码表" hidden>
           <span id="product-bulk-size-chart-status" role="status"></span>
           <span id="product-bulk-size-chart-error" role="alert"></span>
         </section>
-      </fieldset>
       <p id="product-bulk-shop-hint" role="status"></p>
       <p class="product-bulk-defaults" id="product-bulk-defaults">自动套用目标平台模板 · 库存 999 · 默认无品牌<br>自动匹配原类目和物流 · 各规格原售价按最新汇率换算</p>
       <p id="product-bulk-mode" role="status"></p>
@@ -2010,22 +2012,24 @@
     <div id="product-bulk-history-list" role="list" aria-live="polite"><p class="product-bulk-history-empty">暂无批量任务。</p></div>
   </dialog>
   <script src="/i18n.js?v=20261021-on-demand-1" defer></script>
-  <script src="/product-bulk-upload.js?v=20261019-style-1" defer></script>
-  <script src="/product-bulk-size-chart.js?v=20261013-size-chart-2" defer></script>
+  <script src="/product-bulk-upload.js?v=20261029-size-chart-repair" defer></script>
+  <script src="/product-bulk-size-chart.js?v=20261029-size-chart-repair" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
   <link rel="stylesheet" href="/product-listing-templates.css?v=20261014-multi-shop-1">
   <script src="/product-listing-templates.js?v=20261023-tiktok-warehouse-1" defer></script>
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
-  <script src="/app.js?v=20261027-seedance-mini-1" defer></script>
+  <script src="/app.js?v=20261029-size-chart-repair" defer></script>
   <script src="/product-main-image-styles.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261021-incremental-1" defer></script>
-  <script src="/finance-costs.js?v=20261028-reporting-months-1" defer></script>
+  <script src="/finance-label-costs.js?v=20261030-label-zero-1" defer></script>
+  <script src="/finance-qianyi.js?v=20261102-qianyi-refunds-2" defer></script>
+  <script src="/finance-costs.js?v=20261030-invoice-1" defer></script>
   <script src="/finance-expenses-design.js?v=20261023-profit-overview-1" defer></script>
-  <script src="/finance-charges.js?v=20261027-date-search-1" defer></script>
-  <script src="/finance-workspace.js?v=20261028-reporting-months-2" defer></script>
+  <script src="/finance-charges.js?v=20261030-invoice-1" defer></script>
+  <script src="/finance-workspace.js?v=20261102-query-status-1" defer></script>
   <script src="/hr-bi.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-pool.js?v=20261012-boss-chat-019" defer></script>
   <script src="/hr-demands.js?v=20261021-incremental-1" defer></script>

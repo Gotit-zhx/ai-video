@@ -22,6 +22,8 @@ final class FinanceSyncClaims {
               ON f.id=st.shop_id AND f.organization_id=st.organization_id AND f.user_id=st.user_id
             WHERE f.enabled=TRUE AND f.status='ACTIVE' AND st.next_at<=UTC_TIMESTAMP(6)
               AND (st.lease_until IS NULL OR st.lease_until<UTC_TIMESTAMP(6))
+              AND NOT EXISTS(SELECT 1 FROM finance_api_pacing pace
+                WHERE pace.platform=f.platform AND pace.channel=st.channel AND pace.next_allowed_at>UTC_TIMESTAMP(6))
               AND NOT EXISTS(SELECT 1 FROM finance_sync_states busy
                 WHERE busy.organization_id=st.organization_id AND busy.user_id=st.user_id AND busy.shop_id=st.shop_id
                   AND busy.lease_until>UTC_TIMESTAMP(6))
@@ -51,6 +53,7 @@ final class FinanceSyncClaims {
                           AND st.next_at<=UTC_TIMESTAMP(6) AND (st.lease_until IS NULL OR st.lease_until<UTC_TIMESTAMP(6))
                         """,shop[0],shop[1],shop[2],candidate.get("channel"));
                     if(rows.isEmpty())return null;
+                    if(!FinanceRefundPacing.reserve(repo,rows.getFirst()))return null;
                     String token=UUID.randomUUID().toString();
                     int updated=db.update("""
                         UPDATE finance_sync_states SET lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 10 MINUTE),

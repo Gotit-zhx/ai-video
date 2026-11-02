@@ -11,6 +11,11 @@ public final class FinanceProfitReport {
                                                String currency,FinanceFx.Quote quote){
         var result=new LinkedHashMap<String,Object>();
         var notes=new ArrayList<String>();
+        BigDecimal costRate="CNY".equals(currency)?BigDecimal.ONE:quote==null?null:quote.rates().get(currency);
+        if(costRate!=null&&costRate.signum()<=0)costRate=null;
+        // Expose the exact same CNY-per-display-unit rate for lazy cost category/receipt drilldowns.
+        result.put("costCnyRate",costRate);
+        if(costRate!=null&&quote!=null&&!"CNY".equals(currency))result.put("fx",quote.metadata());
         Map<String,Object> settled=find(totals,"SETTLEMENT"),fees=find(totals,"FEE"),ads=find(totals,"AD"),logistics=find(totals,"COST");
         var cost=map(costs.get("total"));
         BigDecimal net=value(settled),fee=value(fees),ad=value(ads),shipping=value(logistics);
@@ -37,9 +42,14 @@ public final class FinanceProfitReport {
             }
         }
         BigDecimal label=decimal(cost.get("label_cost_cny"));if(label==null)label=BigDecimal.ZERO;
+        // Return inventory credits are disabled. Historical cached inputs must not
+        // change profit or block it while Qianyi aftersale documents synchronize.
+        result.put("returnCostsPending",false);
+        result.put("returnPendingCount",0);
+        result.put("returnedProductCostCny",BigDecimal.ZERO);
         if(!"CNY".equals(currency)&&label.signum()!=0){BigDecimal rate=quote==null?null:quote.rates().get(currency);label=rate==null||rate.signum()<=0?null:label.divide(rate,6,RoundingMode.HALF_UP);}
         if(label==null){if(state.equals("READY"))state="MISSING_FX";notes.add("缺少人民币贴单费用展示汇率");}
-        if(number(cost.get("charges_pending"))>0){if(state.equals("READY"))state="INCOMPLETE_CHARGES";notes.add("贴单费用与已录入订单成本可能重复，请先核对");}
+        if(number(cost.get("charges_pending"))>0){if(state.equals("READY"))state="INCOMPLETE_CHARGES";notes.add("贴单账单存在仓库计费失败或费用来源冲突，未确认部分未计入");}
         if(labelProcessing){if(state.equals("READY"))state="INCOMPLETE_CHARGES";notes.add("贴单费用更新中，已计算的商品成本保留，完成后更新完整利润");}
         shipping=label!=null&&shipping!=null?shipping.add(label):null;
         result.put("marketingBasis","刷单订单的结算金额、关联平台费用和成本已排除；平台原始账单与对账保留");
@@ -48,18 +58,19 @@ public final class FinanceProfitReport {
         var labelConfiguration=map(costs.get("labelConfiguration"));
         result.put("labelConfiguration",labelConfiguration);
         int missingLabels=rows(labelConfiguration.get("missingShops")).size();
-        if(missingLabels>0){estimated=true;notes.add(missingLabels+" 家店铺所属分组／国家未配置贴单单价，未配置部分暂按 0 估算，并非实际零成本");}
+        if(missingLabels>0||number(cost.get("label_missing_count"))>0){estimated=true;notes.add("部分订单尚无对应贴单账单，当前只包含已导入并匹配的贴单金额，未匹配部分不代表零成本");}
         for(var item:List.of(new String[]{"AD","广告消耗"},new String[]{"COST","物流贴单成本"})){
             if(item[0].equals("COST")&&!labelConfiguration.isEmpty())continue;
             if(find(totals,item[0])==null){estimated=true;notes.add(item[1]+"尚无记录，按 0 暂计，补录后利润将变化");}
         }
         BigDecimal gross=goods(settled);
-        if(net!=null&&gross==null){if(state.equals("READY"))state="INCOMPLETE_AMOUNTS";notes.add("优惠前商品金额正在补齐，不用净结算或订单实付代替");}
+        if(net!=null&&gross==null){if(state.equals("READY"))state="INCOMPLETE_AMOUNTS";notes.add("销售收入正在补齐，不用净结算或订单实付代替");}
         BigDecimal profit=state.equals("READY")?net.subtract(ad).subtract(shipping).subtract(converted):null;
         if(state.equals("READY")&&estimated)state="ESTIMATED";
         result.put("currency",currency);result.put("settledGrossAmount",gross);result.put("settledLedgerAmount",net);
         result.put("platformFees",fee);result.put("advertising",ad);result.put("logisticsLabelCost",shipping);
         result.put("productCostCny",product);result.put("productCost",converted);result.put("amount",profit);
+        result.put("returnedProductCost",BigDecimal.ZERO);result.put("returnReceiptCount",0);
         BigDecimal known=decimal(cost.get("known_amount_cny"));
         if(known==null)known=product;
         if(known!=null&&!"CNY".equals(currency)&&known.signum()!=0){
@@ -70,12 +81,12 @@ public final class FinanceProfitReport {
                 ?converted.add(shipping):null);
         result.put("knownProductCost",known);
         result.put("knownOperatingCost",known!=null&&shipping!=null?known.add(shipping):null);
-        result.put("operatingCostBasis","营业成本 = 商品成本 + 物流贴单成本。样品及退款关联商品成本属于商品成本明细，不重复加计；退款不自动冲回商品成本。");
+        result.put("operatingCostBasis","营业成本 = 商品成本 + 物流贴单成本。商品成本优先使用实际出库凭据；样品成本属于商品成本子项，不重复加计。千易售后退款用于核对，不重复扣减利润。");
         result.put("status",state);result.put("estimated",estimated);result.put("notes",notes);
-        result.put("formula","利润额 = 已结算商品金额（优惠前）− 平台费用及结算扣减 − 广告消耗 − 营业成本");
-        result.put("settlementBasis","已结算商品金额直接取平台优惠前商品金额字段；平台费用及结算扣减包含商家优惠、退款冲减、佣金、税费、物流、调整与负向补贴，逐项保留原字段。优惠前商品金额减这些分项等于平台净结算，利润按实际净结算减成本计算。");
+        result.put("formula","利润额 = 销售收入 − 已结算平台费用（含物流及调整）− 广告消耗 − 营业成本");
+        result.put("settlementBasis","TikTok 销售收入取 revenue_amount（Excel 的 Total Revenue）；商家优惠和退款已体现在收入中，不再作为平台费用重复扣减。Shopee 同样扣除商品折扣与退款后展示收入。佣金、税费、物流及平台调整逐项保留原字段；销售收入减这些分项等于平台净结算。");
         result.put("refundBasis","退款对利润的影响以平台结算记录为准，不再重复扣减按退款日期汇总的确认退款金额。");
-        result.put("basis","按查询范围内的平台结算日期统计；商品和配置的贴单成本按首次结算日期计入一次，贴单采用当前分组及国家单价。广告及独立录入费用按费用发生日归属。");
+        result.put("basis","按查询范围内的结算账单日期统计；商品和贴单成本按订单首次结算日期计入一次。贴单金额取导入订单费用明细的金额或仓库账单操作费（人民币），按参考号绑定并去重，不再采用分组或国家单价。");
         return result;
     }
     static List<Map<String,Object>> withGross(List<Map<String,Object>> rows,String dimension){

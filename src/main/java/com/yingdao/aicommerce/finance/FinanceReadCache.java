@@ -51,7 +51,9 @@ public class FinanceReadCache {
         if(cached!=null){
             long age=Math.max(0,clock.getAsLong()-number(cached.get("built")));
             if(age<=MAX_STALE_MS){
-                boolean stale=age>FRESH_MS;
+                String revision;
+                try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){return load.get();}
+                boolean stale=age>FRESH_MS||!revision.equals(Objects.toString(cached.get("dataRevision"),"0"));
                 if(stale)background(address,key,load);
                 return response(cached,stale);
             }
@@ -61,7 +63,10 @@ public class FinanceReadCache {
     public void prime(FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){
         String address=address(key);if(address==null)return;
         var cached=read(address);
-        if(cached==null||clock.getAsLong()-number(cached.get("built"))>FRESH_MS)background(address,key,load);
+        String revision;
+        try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){return;}
+        if(cached==null||clock.getAsLong()-number(cached.get("built"))>FRESH_MS
+                ||!revision.equals(Objects.toString(cached.get("dataRevision"),"0")))background(address,key,load);
     }
     /** Job heartbeat is read outside the amount snapshot so a stopped job never keeps animating. */
     public Map<String,Object> settlementCalculation(Scope scope,List<String> shops){
@@ -92,6 +97,12 @@ public class FinanceReadCache {
             org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance snapshot invalidation deferred: {}",failure.getClass().getSimpleName());
         }
     }
+    /** Background cost batches keep a bounded, explicitly stale response available.
+     * Configuration/authorization/deletion changes still use hard invalidation. */
+    public void refresh(Scope scope){
+        try{redis.opsForValue().increment(dataRevisionKey(scope));}
+        catch(RuntimeException unavailable){invalidate(scope);}
+    }
     private String address(FinanceSnapshotCache.Key key){
         try{
             UUID change=dirtyScopes.get(key.scope());
@@ -103,8 +114,10 @@ public class FinanceReadCache {
             return prefix(key.scope())+revision+":"+digest(key.filter()+"|"+key.cny()+"|"+key.snapshot()+"|"+key.live());
         }catch(RuntimeException unavailable){return null;}
     }
-    static String prefix(Scope scope){return "heyi:finance:snapshot:v8-reporting-months:{"+scope.organizationId()+":"+scope.userId()+"}:";}
+    static String prefix(Scope scope){return "heyi:finance:snapshot:v14-qianyi-refunds:{"+scope.organizationId()+":"+scope.userId()+"}:";}
     private static String revisionKey(Scope scope){return prefix(scope)+"revision";}
+    private static String dataRevisionKey(Scope scope){return prefix(scope)+"data-revision";}
+    private String dataRevision(Scope scope){return Objects.toString(redis.opsForValue().get(dataRevisionKey(scope)),"0");}
     private static String digest(String value){
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}
         catch(Exception impossible){throw new IllegalStateException(impossible);}
@@ -139,12 +152,17 @@ public class FinanceReadCache {
     private void complete(String address,FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load,
                           CompletableFuture<Map<String,Object>> future){
         try{
-            var envelope=Map.<String,Object>of("built",clock.getAsLong(),"data",load.get());
+            String revision=null;
+            try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){/* Serve the database result. */}
+            var loaded=load.get();
             // Built time is the time the query finishes, not when it entered a busy queue.
-            envelope=Map.of("built",clock.getAsLong(),"data",envelope.get("data"));
+            // Capture the data revision before querying: a batch committed during the
+            // read must trigger another refresh, never be labelled already included.
+            var envelope=Map.<String,Object>of("built",clock.getAsLong(),"data",loaded,
+                    "dataRevision",revision==null?"unavailable":revision);
             try{
                 String value=json.writeValueAsString(envelope);
-                if(value.getBytes(StandardCharsets.UTF_8).length<=524_288){
+                if(revision!=null&&value.getBytes(StandardCharsets.UTF_8).length<=524_288){
                     save(address,key.scope(),value);
                     // The UI resolves an automatic currency / FX snapshot after its first response.
                     // Save that equivalent key too, without collapsing different explicit filters.
@@ -157,7 +175,9 @@ public class FinanceReadCache {
                     save(address.substring(0,separator+1)+digest(alias.filter()+"|"+alias.cny()+"|"+alias.snapshot()+"|"+alias.live()),key.scope(),value);
                 }
             }catch(RuntimeException unavailable){/* A cache failure must not hide a successful database read. */}
-            future.complete(response(envelope,false));
+            boolean refreshing=true;
+            try{refreshing=!Objects.equals(revision,dataRevision(key.scope()));}catch(RuntimeException unavailable){/* Retry on the next refresh. */}
+            future.complete(response(envelope,refreshing));
         }catch(Throwable failure){future.completeExceptionally(failure);}
         finally{pending.remove(address,future);}
     }

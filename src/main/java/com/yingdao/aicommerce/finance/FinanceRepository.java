@@ -54,7 +54,17 @@ public class FinanceRepository {
     public String write(Object value){return json.writeValueAsString(value);}
     public void save(Scope s,Entry e){
         validate(e);
-        transaction(()->{rejectDeletedWrite(s,e.shopId());saveEntry(s,e);return null;});
+        // Retry only this idempotent database write, after its whole transaction
+        // has rolled back. A caller-owned transaction must be retried by its owner.
+        boolean nested=org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
+        for(int attempt=0;;attempt++){
+            try{transaction(()->{rejectDeletedWrite(s,e.shopId());saveEntry(s,e);return null;});return;}
+            catch(org.springframework.dao.PessimisticLockingFailureException failure){
+                if(nested||attempt>=2||Thread.currentThread().isInterrupted())throw failure;
+                try{Thread.sleep(java.util.concurrent.ThreadLocalRandom.current().nextLong(25,76)*(attempt+1));}
+                catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw failure;}
+            }
+        }
     }
     void saveEntry(Scope s,Entry e){
         e=new FinanceReportingMonths(this).apply(s,e);
@@ -67,6 +77,7 @@ public class FinanceRepository {
         if(breakdown!=null)replaceFees(s,e,breakdown);
         FinanceOrderCosts.enqueue(this,s,e);
         new FinanceOrderCharges(this).orderArrived(s,e);
+        FinanceLabelCosts.orderArrived(this,s,e);
     }
     Object[] entryArgs(Scope s,Entry e,java.math.BigDecimal revenue){
         return new Object[]{id(s,e),s.organizationId(),s.userId(),e.shopId(),e.platform(),e.kind(),e.externalId(),e.orderId(),
@@ -98,9 +109,20 @@ public class FinanceRepository {
             if(found.isEmpty())return false;var row=found.getFirst();var raw=read(text(row.get("raw_json")));
             if(!FinanceSettlementBreakdown.supported(text(row.get("platform")),raw))return false;
             var day=java.time.LocalDate.parse(text(row.get("record_date")));
-            if("TIKTOK_SHOP".equals(row.get("platform")))day=FinanceSettlementDates.completed(raw)
-                    ?FinanceSettlementDates.day(raw,shopTimezone(scope,shop))
-                    :tiktokBillDay(scope,shop,text(row.get("statement_id")));
+            if("TIKTOK_SHOP".equals(row.get("platform"))){
+                String zone=shopTimezone(scope,shop);
+                if(!FinanceSettlementDates.completed(raw)){
+                    var bills=db.queryForList("SELECT raw_json FROM finance_records WHERE organization_id=? AND shop_id=?"
+                            +" AND kind='BILL' AND statement_id=? AND source='API' LIMIT 1",
+                            scope.organizationId(),shop,text(row.get("statement_id")));
+                    if(bills.isEmpty())throw bad("结算元数据尚未补齐，不能重新归属账单日期");
+                    var merged=new LinkedHashMap<>(raw);
+                    merged.putAll(FinanceSettlementDates.metadata(read(text(bills.getFirst().get("raw_json"))),zone));
+                    raw=merged;
+                }
+                raw=new LinkedHashMap<>(raw);raw.putAll(FinanceSettlementDates.metadata(raw,zone));
+                day=FinanceSettlementDates.day(raw,zone);
+            }
             var e=new Entry(shop,text(row.get("platform")),"SETTLEMENT",text(row.get("external_id")),text(row.get("order_id")),
                     text(row.get("statement_id")),text(row.get("category")),text(row.get("status")),day,
                     text(row.get("currency")),decimal(row.get("amount")),null,null,null,null,"API",raw);
@@ -144,21 +166,17 @@ public class FinanceRepository {
                 if(number(raw.get("_finance_statement_time"))>0&&number(raw.get("_finance_statement_time"))!=number(bill.get("statement_time")))
                     throw bad("原始账单时间与平台核对结果不一致，已停止本批日期修复");
                 String status=FinanceSettlementDates.PENDING.equals(row.get("status"))?"SETTLED":text(row.get("status"));
-                var rowMetadata="FEE".equals(row.get("kind"))?Map.<String,Object>of():metadata;
+                var rowMetadata=metadata;
                 var merged=new LinkedHashMap<>(raw);merged.putAll(rowMetadata);
-                // Refresh the real provider day while retaining the approved reporting month.
-                merged.remove("_finance_original_settlement_date");
+                // Version 3 supersedes the legacy month correction and retains its provenance.
                 var projected=new FinanceReportingMonths(this).apply(scope,new Entry(shop,"TIKTOK_SHOP",text(row.get("kind")),
                         "",text(row.get("order_id")),statement,"",status,day,"PHP",null,null,null,null,null,"API",merged));
                 if(projected.date().toString().equals(text(row.get("record_date")))&&status.equals(row.get("status"))
                         &&sameJsonValue(raw,projected.raw()))continue;
-                if(day.toString().equals(text(row.get("record_date")))&&status.equals(row.get("status"))
-                        &&!projected.raw().containsKey("_finance_reporting_month")
-                        &&rowMetadata.entrySet().stream().allMatch(e->sameJsonValue(raw.get(e.getKey()),e.getValue())))continue;
                 changes.add(new Object[]{Date.valueOf(projected.date()),status,write(projected.raw()),row.get("id")});
             }
             if(!changes.isEmpty())db.batchUpdate("""
-                UPDATE finance_records SET record_date=?,status=?,raw_json=JSON_MERGE_PATCH(raw_json,CAST(? AS JSON)),
+                UPDATE finance_records SET record_date=?,status=?,raw_json=?,
                   updated_at=updated_at WHERE id=?
                 """,changes);
             return changes.size();
@@ -175,14 +193,7 @@ public class FinanceRepository {
               FOR UPDATE
             """,s.organizationId(),e.shopId(),e.orderId(),e.statementId(),prefix))existing.put(text(row.get("id")),row);
         var batch=new ArrayList<Object[]>();
-        for(var fee:breakdown.fees()){
-            var raw=new LinkedHashMap<String,Object>();
-            raw.put("field",fee.field());raw.put("source_amount",fee.sourceAmount());raw.put("amount",fee.amount());
-            raw.put("fee_group",fee.group());raw.put("basis",fee.note());raw.put("settlement_external_id",e.externalId());
-            raw.put("breakdown_version",1);
-            for(String key:FinanceReportingMonths.RAW_FIELDS)if(e.raw().containsKey(key))raw.put(key,e.raw().get(key));
-            var args=entryArgs(s,new Entry(e.shopId(),e.platform(),"FEE",e.externalId()+":d:"+hash(fee.field()).substring(0,24),
-                    e.orderId(),e.statementId(),fee.label(),e.status(),e.date(),e.currency(),fee.amount(),null,null,null,null,"API",raw),null);
+        for(var args:derivedFees(s,e,breakdown)){
             var old=existing.remove(text(args[0]));
             if(old==null||!sameFee(old,args))batch.add(args);
         }
@@ -193,7 +204,24 @@ public class FinanceRepository {
         }
         if(!batch.isEmpty())db.batchUpdate(UPSERT,batch);
     }
-    private boolean sameFee(Map<String,Object> row,Object[] values){
+    /** Shared derivation for live writes and bounded historical maintenance. */
+    List<Object[]> derivedFees(Scope s,Entry e,FinanceSettlementBreakdown.Result breakdown){
+        var result=new ArrayList<Object[]>();
+        for(var fee:breakdown.fees()){
+            var raw=new LinkedHashMap<String,Object>();
+            raw.put("field",fee.field());raw.put("source_amount",fee.sourceAmount());raw.put("amount",fee.amount());
+            raw.put("fee_group",fee.group());raw.put("basis",fee.note());raw.put("settlement_external_id",e.externalId());
+            raw.put("breakdown_version",1);
+            for(String key:FinanceReportingMonths.RAW_FIELDS)if(e.raw().containsKey(key))raw.put(key,e.raw().get(key));
+            for(String key:List.of("_finance_date_version","_finance_export_statement_date","_finance_date_source"))
+                if(e.raw().containsKey(key))raw.put(key,e.raw().get(key));
+            var args=entryArgs(s,new Entry(e.shopId(),e.platform(),"FEE",e.externalId()+":d:"+hash(fee.field()).substring(0,24),
+                    e.orderId(),e.statementId(),fee.label(),e.status(),e.date(),e.currency(),fee.amount(),null,null,null,null,"API",raw),null);
+            result.add(args);
+        }
+        return result;
+    }
+    boolean sameFee(Map<String,Object> row,Object[] values){
         var fields=List.of("id","organization_id","user_id","shop_id","platform","kind","external_id","order_id",
                 "statement_id","category","status","record_date","currency","amount","revenue","impressions","clicks","conversions","source");
         for(int i=0;i<fields.size();i++)if(!sameJsonValue(row.get(fields.get(i)),values[i]))return false;
@@ -246,6 +274,10 @@ public class FinanceRepository {
     }
     /** One covering range scan; only fee categories and order statuses need extra dimensions. */
     public List<Map<String,Object>> dashboardBuckets(Scope s,Filter f){
+        return dashboardBuckets(s,f,true);
+    }
+    /** Historical dashboards obtain orders/refunds by settlement date in separate indexed reads. */
+    List<Map<String,Object>> dashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders){
         Query q=query(s,f);
         var buckets=db.queryForList("""
             SELECT shop_id,record_date,kind,currency,
@@ -253,8 +285,10 @@ public class FinanceRepository {
               CASE WHEN kind='ORDER' THEN status ELSE '' END status,
               COUNT(*) records,COUNT(amount) known_amounts,COUNT(revenue) known_revenues,SUM(amount) amount,
               SUM(revenue) revenue,SUM(impressions) impressions,SUM(clicks) clicks,SUM(conversions) conversions
-            FROM finance_records FORCE INDEX (idx_finance_company_dashboard) WHERE
-            """+q.where+" AND NOT(kind='BILL' AND source='IMPORT')"
+            FROM finance_records FORCE INDEX (
+            """+(f.shopId().isBlank()?"idx_finance_company_dashboard":"idx_finance_shop_dashboard")+") WHERE "
+                +q.where+" AND NOT(kind='BILL' AND source='IMPORT')"
+                +(includeCreatedOrders?"":" AND kind NOT IN ('ORDER','REFUND')")
                 +" GROUP BY shop_id,record_date,kind,currency,"
                 +"CASE WHEN kind='FEE' THEN category ELSE '' END,CASE WHEN kind='ORDER' THEN status ELSE '' END",q.args.toArray());
         // Keep the covering scan. Only tagged order identities need the secondary lookup.
@@ -268,7 +302,9 @@ public class FinanceRepository {
             FROM finance_marketing_orders m STRAIGHT_JOIN finance_records r FORCE INDEX(idx_finance_marketing_order)
               ON r.organization_id=m.organization_id AND r.shop_id=m.shop_id AND r.order_id=m.order_id
             WHERE
-            """+markedQuery.where()+" AND r.kind IN ('ORDER','REFUND','SETTLEMENT','PENDING','FEE','COST') GROUP BY r.shop_id,r.record_date,r.kind,r.currency,CASE WHEN r.kind='FEE' THEN r.category ELSE '' END,CASE WHEN r.kind='ORDER' THEN r.status ELSE '' END",markedQuery.args().toArray());
+            """+markedQuery.where()+" AND r.kind IN ('ORDER','REFUND','SETTLEMENT','PENDING','FEE','COST')"
+                +(includeCreatedOrders?"":" AND r.kind NOT IN ('ORDER','REFUND')")
+                +" GROUP BY r.shop_id,r.record_date,r.kind,r.currency,CASE WHEN r.kind='FEE' THEN r.category ELSE '' END,CASE WHEN r.kind='ORDER' THEN r.status ELSE '' END",markedQuery.args().toArray());
         var lookup=new HashMap<List<Object>,Map<String,Object>>();removed.forEach(row->lookup.put(bucketKey(row),row));
         for(var row:buckets){var excluded=lookup.get(bucketKey(row));if(excluded==null)continue;
             for(String field:List.of("records","known_amounts","known_revenues","amount","revenue","impressions","clicks","conversions")){
@@ -382,11 +418,10 @@ public class FinanceRepository {
     void presentSettlementAmounts(List<Map<String,Object>> rows){
         for(var row:rows)if(Set.of("SETTLEMENT","BILL").contains(text(row.get("kind")))){
             row.put("settled_net_amount",row.get("amount"));
-            Object goods=row.get("goods_before_discount_amount");
-            if(!row.containsKey("goods_before_discount_amount"))goods=row.get("revenue");
+            Object goods=row.get("revenue");
             row.put("amount",goods);
-            row.put("settlement_display_basis","优惠前商品金额；优惠、退款冲减、平台费用及补贴在平台费用中分别列明");
-            row.put("settlement_amount_note",goods==null?"平台优惠前商品金额待补齐，不用实付或净结算代替":"平台优惠前商品金额；实际净结算另列");
+            row.put("settlement_display_basis","销售收入：商家优惠和退款已体现在收入中；平台费用、物流及调整另列");
+            row.put("settlement_amount_note",goods==null?"平台销售收入待补齐，不用订单实付或净结算代替":"平台销售收入；实际净结算另列");
         }
     }
     void enrich(Map<String,Object> row){

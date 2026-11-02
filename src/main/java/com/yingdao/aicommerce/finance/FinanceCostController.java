@@ -14,6 +14,26 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceCostController {
     final FinanceCostWorkspace workspace;final FinanceService service;
     @org.springframework.beans.factory.annotation.Autowired private FinanceOrderCharges charges;
+    @org.springframework.beans.factory.annotation.Autowired private FinanceLabelCosts labelCosts;
+    @GetMapping("/label-costs") public ApiResponse<?> labelCosts(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
+        var scope=service.authorize(p);String shop=q.getOrDefault("shopId","");if(!shop.isBlank())service.ownedShop(scope,shop);
+        return ApiResponse.ok(labelCosts.workspace(scope,costFilter(q),q));
+    }
+    @PostMapping("/label-costs/import") @ResponseStatus(org.springframework.http.HttpStatus.ACCEPTED)
+    public ApiResponse<?> importLabelCosts(@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{
+        try(var input=file.getInputStream()){
+            return ApiResponse.ok(labelCosts.upload(service.authorize(p),p.userId(),text(file.getOriginalFilename()),input));
+        }
+    }
+    @DeleteMapping("/label-costs/imports/{id}") public ApiResponse<?> removeLabelCosts(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){
+        labelCosts.remove(service.authorize(p),id);return ApiResponse.ok("正在移除账单费用，完成后自动更新");
+    }
+    @PostMapping("/label-costs/imports/{id}/retry") public ApiResponse<?> retryLabelCosts(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){
+        labelCosts.retry(service.authorize(p),id);return ApiResponse.ok("已加入重试队列");
+    }
+    @PostMapping("/label-costs/rematch") public ApiResponse<?> rematchLabelCosts(@AuthenticationPrincipal PlatformPrincipal p){
+        labelCosts.rematch(service.authorize(p));return ApiResponse.ok("已加入自动匹配队列");
+    }
     @GetMapping("/charges") public ApiResponse<?> charges(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
         return ApiResponse.ok(charges.workspace(scope,q.getOrDefault("groupId",""),(int)Math.min(Integer.MAX_VALUE,Math.max(1,number(q.getOrDefault("page","1")))),costFilter(q),q.get("numbers")));
@@ -24,11 +44,15 @@ public class FinanceCostController {
     @PostMapping("/charges/preview") public ApiResponse<?> previewCharges(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{return ApiResponse.ok(charges.preview(service.authorize(p),groupId,file.getBytes(),text(file.getOriginalFilename())));}
     @PostMapping("/charges/import") public ApiResponse<?> importCharges(@RequestParam String groupId,@RequestParam MultipartFile file,@AuthenticationPrincipal PlatformPrincipal p)throws Exception{return ApiResponse.ok(charges.upload(service.authorize(p),p.userId(),groupId,file.getBytes(),text(file.getOriginalFilename())));}
     @DeleteMapping("/charges/imports/{id}") public ApiResponse<?> removeCharges(@PathVariable String id,@RequestParam String groupId,@AuthenticationPrincipal PlatformPrincipal p){charges.remove(service.authorize(p),p.userId(),groupId,id);return ApiResponse.ok("来源已移除，后台重算中");}
-    @PostMapping("/charges/rules") public ApiResponse<?> chargeRule(@RequestBody Map<String,Object> b,@AuthenticationPrincipal PlatformPrincipal p){charges.saveRule(service.authorize(p),p.userId(),b);return ApiResponse.ok("贴单规则已保存，后台重算中");}
-    @DeleteMapping("/charges/rules/{id}") public ApiResponse<?> deleteChargeRule(@PathVariable String id,@RequestParam String groupId,@RequestParam long version,@AuthenticationPrincipal PlatformPrincipal p){charges.removeRule(service.authorize(p),p.userId(),groupId,id,version);return ApiResponse.ok("规则已移除");}
+    @PostMapping("/charges/rules") public ApiResponse<?> chargeRule(@RequestBody Map<String,Object> b,@AuthenticationPrincipal PlatformPrincipal p){throw bad("贴单单价配置已停用，请导入月度仓库账单");}
+    @DeleteMapping("/charges/rules/{id}") public ApiResponse<?> deleteChargeRule(@PathVariable String id,@AuthenticationPrincipal PlatformPrincipal p){throw bad("贴单单价配置已停用，原规则不再参与统计");}
 
     @org.springframework.beans.factory.annotation.Autowired
     private FinanceCostExport costExport;
+    @GetMapping("/costs/returns") public ApiResponse<?> returnedCosts(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
+        var scope=service.authorize(p);String shopId=q.getOrDefault("shopId","");if(!shopId.isBlank())service.ownedShop(scope,shopId);
+        return ApiResponse.ok(workspace.returnCosts(scope,costFilter(q),q.get("numbers")));
+    }
     public FinanceCostController(FinanceCostWorkspace workspace,FinanceService service){this.workspace=workspace;this.service=service;}
     @ModelAttribute public void authorize(@AuthenticationPrincipal PlatformPrincipal p,HttpServletRequest request){
         service.authorize(p);

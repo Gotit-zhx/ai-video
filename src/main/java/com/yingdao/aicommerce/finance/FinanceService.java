@@ -14,7 +14,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 public class FinanceService {
     private final FinanceRepository repo; private final OrganizationAccessPolicy access; private final FinanceShopAuthorization shops;private final FinanceFx fx;
     private final FinanceSnapshotCache snapshots=new FinanceSnapshotCache();
-    private final FinanceSnapshotCache dashboardFacts=new FinanceSnapshotCache(System::nanoTime,java.util.concurrent.TimeUnit.SECONDS.toNanos(5),32);
+    private final FinanceSnapshotCache dashboardFacts=new FinanceSnapshotCache(System::nanoTime,java.util.concurrent.TimeUnit.SECONDS.toNanos(15),32);
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private FinanceReadCache sharedSnapshots;
     public FinanceService(FinanceRepository repo,OrganizationAccessPolicy access,FinanceShopAuthorization shops,FinanceFx fx){
@@ -61,11 +61,7 @@ public class FinanceService {
             UPDATE finance_connections SET enabled=?,currency=?,timezone=?,updated_at=UTC_TIMESTAMP(6)
             WHERE organization_id=? AND user_id=? AND id=? AND status<>'REMOVED'
             """,enabled,currency,timezone,s.organizationId(),s.userId(),id);
-        var channels=new ArrayList<>(List.of("ORDER","ORDER_LIVE","ORDER_REPAIR","REFUND","SETTLEMENT"));
-        if("TIKTOK_SHOP".equals(shop.get("platform")))channels.add("PENDING");
-        if(enabled)for(String channel:channels)repo.jdbc().update("""
-            INSERT IGNORE INTO finance_sync_states(organization_id,user_id,shop_id,channel) VALUES(?,?,?,?)
-            """,s.organizationId(),s.userId(),id,channel);
+        if(enabled)FinanceSyncChannels.enable(repo,s,id,text(shop.get("platform")));
         if(!timezone.equals(text(shop.get("timezone"))))new FinanceOrderCosts(repo).requestShop(s.organizationId(),id);
         invalidateAfterCommit(s);
     }
@@ -78,6 +74,18 @@ public class FinanceService {
                 text(groupId).isBlank()?null:groupId,s.organizationId(),id);
         if(!previousGroup.equals(text(groupId)))new FinanceOrderCosts(repo).requestShop(s.organizationId(),id);
     }
+    @Transactional
+    public void configure(Scope s,String id,boolean enabled,String currency,String timezone,String groupId,String alias){
+        String value=alias==null?null:alias.strip();
+        if(value!=null&&(value.codePointCount(0,value.length())>100||value.codePoints().anyMatch(Character::isISOControl)))
+            throw bad("店铺别名最多 100 个字，不能包含换行或控制字符");
+        configure(s,id,enabled,currency,timezone,groupId);
+        if(value!=null){
+            repo.jdbc().update("UPDATE finance_connections SET display_name=?,updated_at=UTC_TIMESTAMP(6) WHERE organization_id=? AND id=? AND status<>'REMOVED'",
+                value.isBlank()?null:value,s.organizationId(),id);
+            invalidateAfterCommit(s);
+        }
+    }
     public List<Map<String,Object>> syncStates(Scope s,Filter f){
         var ids=shops(s).stream().filter(shop->FinanceGroups.matches(shop,f)).map(shop->text(shop.get("id"))).collect(java.util.stream.Collectors.toSet());
         return syncStates(s).stream().filter(row->ids.contains(text(row.get("shop_id")))).toList();
@@ -85,9 +93,10 @@ public class FinanceService {
     public List<Map<String,Object>> syncStates(Scope s){
         return repo.jdbc().queryForList("""
             SELECT st.shop_id,st.channel,st.status,st.error_message,st.next_at,st.last_success_at,st.coverage_start,
-              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.from')) window_start,
-              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.to')) window_end,
-              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.until')) target_until,
+              CASE WHEN st.channel='ORDER_REPAIR' THEN 'ORDER_ID' ELSE 'TIME_RANGE' END progress_mode,
+              CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.from')),'0') END window_start,
+              CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.to')),'0') END window_end,
+              CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.until')),'0') END target_until,
               CASE WHEN st.channel='SETTLEMENT' THEN (SELECT COUNT(*) FROM finance_records p
                 WHERE p.organization_id=st.organization_id AND p.shop_id=st.shop_id
                   AND p.kind='BILL' AND p.source='API' AND p.status='DATE_PENDING') ELSE 0 END pending_date_bills
@@ -126,6 +135,11 @@ public class FinanceService {
     private void invalidateSnapshots(Scope s){
         Scope shared=companyScope(s.organizationId());snapshots.invalidateCompany(s.organizationId());dashboardFacts.invalidateCompany(s.organizationId());if(sharedSnapshots!=null)sharedSnapshots.invalidate(shared);
     }
+    /** Called only after committed worker batches; edits/removals retain hard invalidation. */
+    void refreshCostSnapshots(Scope s){
+        snapshots.invalidateCompany(s.organizationId());dashboardFacts.invalidateCompany(s.organizationId());
+        if(sharedSnapshots!=null)sharedSnapshots.refresh(companyScope(s.organizationId()));
+    }
     public Map<String,Object> dashboard(Scope s,Filter requested,boolean cny,String snapshotId){
         var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false);
         java.util.function.Supplier<Map<String,Object>> load=()->buildDashboard(s,requested,cny,snapshotId,false);
@@ -163,7 +177,7 @@ public class FinanceService {
         var costReport=new FinanceCostReport(repo);
         // Currency changes and concurrent CNY/native prewarming share the same bounded raw read.
         var facts=dashboardFacts.get(new FinanceSnapshotCache.Key(s,all,false,"",live),()->repo.readSnapshot(()->{
-            var buckets=new ArrayList<>(repo.dashboardBuckets(s,all));
+            var buckets=new ArrayList<>(repo.dashboardBuckets(s,all,live));
             var orders=costReport.dashboardFacts(s,all);
             if(!live){
                 buckets.removeIf(row->Set.of("ORDER","REFUND").contains(text(row.get("kind"))));
@@ -218,13 +232,13 @@ public class FinanceService {
         productCosts.put("labelConfiguration",new FinanceOrderCharges(repo).labelConfiguration(s,rows(out.get("shops")),rows(productCosts.get("shops"))));
         out.put("productCosts",productCosts);
         FinanceFx.Quote profitQuote=quote;
-        if(!cny&&!"CNY".equals(currency)&&(decimal(map(productCosts.get("total")).get("known_amount_cny")).signum()!=0||decimal(map(productCosts.get("total")).get("label_cost_cny")).signum()!=0)&&fx!=null){
+        if(!cny&&!"CNY".equals(currency)&&(decimal(map(productCosts.get("total")).get("known_amount_cny")).signum()!=0||decimal(map(productCosts.get("total")).get("label_cost_cny")).signum()!=0||decimal(map(productCosts.get("total")).get("return_cost_cny")).signum()!=0)&&fx!=null){
             try{profitQuote=fx.quote(snapshotId);}catch(RuntimeException unavailable){/* Native-currency ledger stays available when a reference quote is unavailable. */}
         }
         out.put("profit",FinanceProfitReport.calculate(totals,productCosts,cny?"CNY":currency,profitQuote));
-        out.put("basis","结算金额为平台返回的优惠前商品金额；商家优惠、退款冲减、佣金、物流、税费及补贴按原始字段列入平台费用。"
-                +(live?"实时订单按下单日显示；结算与成本按平台结算日。":"日期筛选以平台完成结算记录的日期为准（店铺时区）：TikTok 使用已完成状态的 payment_time，Shopee 使用 actual_payout_time。订单、关联退款和商品成本按首次结算日期归属，不限制下单月份。")
-                +"明确确认过归属月份的订单按校正月份统计，原始平台日期保留；月份校正不代表获取了具体完成时间。"
+        out.put("basis","销售收入已扣除商家优惠和退款；平台佣金、物流、税费及调整另列，不重复扣减。"
+                +(live?"实时订单按下单日显示；销售收入与成本按结算账单日期。":"日期筛选使用结算账单日期：TikTok 与 Excel 的 Statement date 口径一致，Shopee 使用 actual_payout_time。订单、关联退款和商品成本按首次结算账单日期归属，不限制下单月份。")
+                +"已核对的 TikTok 账单日期优先于历史手工月份校正，原始平台时间保留。"
                 +"经营汇总排除刷单；原始账单净额用于对账。广告及独立费用按发生日，待结算尚无结算日期。已结算不代表银行到账。");
         return out;
     }

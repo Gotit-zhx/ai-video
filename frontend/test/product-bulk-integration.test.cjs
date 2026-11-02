@@ -153,6 +153,63 @@ function harness(captures = fixture()) {
     runCount:()=>vm.runInContext('productBulkRuns.size',c)};
 }
 
+function chartFailure() {
+  return {captureId:'a',title:'Original product',shopId:'shop',idempotencyKey:'original-key',status:'FAILED',
+    payload:{confirmed:true,shopId:'shop',destinationPlatform:'TIKTOK_SHOP',idempotencyKey:'original-key',
+      categoryId:'601',warehouseId:'original-warehouse',publishStock:999},
+    workflow:{id:'chart-failure',captureId:'a',shopId:'shop',status:'FAILED',currentStep:'PUBLISH',
+      destinationPlatform:'TIKTOK_SHOP',publicationAttempted:false,
+      errorMessage:'目标类目必须有尺码表，但原商品没有可确认的尺码表图片或完整尺寸数据'}};
+}
+
+test('supplemented chart retries a verified pre-publication failure at the original shop with a fresh persisted request',async()=>{
+  const h=harness(), original=chartFailure();
+  h.c.productBulkItems=[original];
+  h.state.sizeChartImageKey='a'.repeat(64)+'/'+'b'.repeat(64);
+  h.state.onWorkflowRead=async()=>({data:plain(original.workflow)});
+  h.c.renderProductBulkProgress();
+  assert.equal(h.node('#submit-product-bulk').disabled,false);
+  assert.equal(h.node('#submit-product-bulk').textContent,'补图并重试失败商品');
+  await h.submit();
+  assert.equal(h.workflowReads.length,1);
+  assert.equal(h.posts.length,1);
+  const {key,body}=h.posts[0];
+  assert.notEqual(key,'original-key');
+  assert.deepEqual(body,{...original.payload,idempotencyKey:key,sizeChartImageKey:h.state.sizeChartImageKey});
+  assert.equal(h.captureReads.length,0,'Keep the original target/options instead of reading the open editor');
+  assert.deepEqual(plain(h.c.productBulkItems[0].previousWorkflowIds),['chart-failure']);
+  assert.equal(original.payload.sizeChartImageKey,undefined);
+});
+
+test('chart repair rechecks platform state and never replays an already attempted or successful workflow',async()=>{
+  for(const state of [
+    {status:'SUCCEEDED',publicationAttempted:true},
+    {status:'FAILED',publicationAttempted:true},
+    {status:'RUNNING',publicationAttempted:false},
+    {status:'FAILED',publicationAttempted:false,publication:{id:'audit'}}
+  ]) {
+    const h=harness(),original=chartFailure();
+    h.c.productBulkItems=[original];
+    h.state.sizeChartImageKey='a'.repeat(64)+'/'+'b'.repeat(64);
+    h.state.onWorkflowRead=async()=>({data:{...plain(original.workflow),...state}});
+    await h.submit();
+    assert.equal(h.posts.length,0);
+    assert.equal(h.c.productBulkItems[0].workflow.id,'chart-failure');
+    assert.equal(h.c.productBulkItems[0].idempotencyKey,'original-key');
+  }
+});
+
+test('failed chart repair cannot send an unpersisted request',async()=>{
+  const h=harness(),original=chartFailure();
+  h.c.productBulkItems=[original];
+  h.state.sizeChartImageKey='a'.repeat(64)+'/'+'b'.repeat(64);
+  h.state.onWorkflowRead=async()=>({data:plain(original.workflow)});
+  h.state.onWrite=()=>{throw Error('storage full');};
+  await h.submit();
+  assert.equal(h.posts.length,0);
+  assert.equal(h.c.productBulkItems[0].idempotencyKey,'original-key');
+});
+
 test('bulk detail polling updates per-image review progress without another create or a completed-count change',async()=>{
   const h=harness();
   const initial={id:'style-workflow',captureId:'a',status:'RUNNING',currentStep:'STYLE_IMAGES',mainImageStyle:{
@@ -584,6 +641,7 @@ test('terminal detail synchronization has its own three-attempt budget and can b
 
 test('Shopee captures bulk upload to TikTok using destination shop and official warehouse',async()=>{
  const h=harness(fixture().map(c=>({...c,sourcePlatform:'SHOPEE'})));
+ h.state.sizeChartImageKey='tenant/manually-supplemented-size-chart';
  h.c.activeMarketplaceShops=platform=>platform==='TIKTOK_SHOP'?[{id:'shop',region:'MY',platform:'TIKTOK_SHOP'}]:[];
  h.state.onOptions=async()=>({data:{listingMethod:'LOCAL',canCreateDraft:true,
    categories:{categories:[{id:'9',name:'T-shirts',is_leaf:true},{id:'10',name:'Socks',is_leaf:true}]},
@@ -595,6 +653,7 @@ test('Shopee captures bulk upload to TikTok using destination shop and official 
    assert.equal(body.destinationPlatform,'TIKTOK_SHOP');assert.equal(body.warehouseId,'wh');
    assert.equal(body.publishStock,999);assert.equal(body.autoConvertPrice,true);
    assert.equal(body.logisticInfo,undefined);
+   assert.equal(body.sizeChartImageKey,'tenant/manually-supplemented-size-chart','TikTok receives the same manually selected chart as Shopee');
  }
 });
 test('TikTok captures can bulk upload to Shopee without changing source identity',async()=>{

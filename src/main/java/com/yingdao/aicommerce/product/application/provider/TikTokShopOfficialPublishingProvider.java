@@ -56,6 +56,20 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                                                 ObjectMapper objectMapper,
                                                 TikTokProductVideoUploader videoUploader,
                                                 TikTokProductDescription descriptionBuilder) {
+        this(shopAuthorizationService, client, skuMapper, imageMapper, imageDownloader, objectMapper,
+                videoUploader, descriptionBuilder, new TikTokProductSizeChart(client, imageDownloader, objectMapper));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TikTokShopOfficialPublishingProvider(ShopAuthorizationService shopAuthorizationService,
+                                                TikTokShopOfficialClient client,
+                                                ProductCaptureSkuMapper skuMapper,
+                                                ProductCaptureImageMapper imageMapper,
+                                                MarketplaceImageDownloader imageDownloader,
+                                                ObjectMapper objectMapper,
+                                                TikTokProductVideoUploader videoUploader,
+                                                TikTokProductDescription descriptionBuilder,
+                                                TikTokProductSizeChart sizeChartBuilder) {
         this.shopAuthorizationService = shopAuthorizationService;
         this.client = client;
         this.skuMapper = skuMapper;
@@ -65,7 +79,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         this.videoUploader = videoUploader;
         this.descriptionBuilder = descriptionBuilder;
         this.attributeResolver = new TikTokProductAttributeResolver(client, objectMapper);
-        this.sizeChartBuilder = new TikTokProductSizeChart(client, imageDownloader, objectMapper);
+        this.sizeChartBuilder = sizeChartBuilder;
         this.listingCapabilityResolver = new TikTokShopListingCapabilityResolver(client);
     }
 
@@ -130,7 +144,7 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
                 connection.tokens().accessToken(), connection.shop().getShopCipher(),
                 Map.of("category_version", categoryVersion));
         TikTokProductSizeChart.PreparedSizeChart sizeChart = sizeChartBuilder.prepare(
-                capture, images, connection, categoryRules);
+                capture, images, connection, categoryRules, request);
 
         TikTokProductVideoUploader.UploadedVideo video = videoUploader.upload(capture, connection, text(request.get("idempotencyKey")));
         UploadedImages uploaded = uploadImages(connection, images, skus, styleGallery);

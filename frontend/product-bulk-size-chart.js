@@ -10,7 +10,7 @@
   function render(options = controls) {
     controls = options;
     const section = byId('product-bulk-size-chart');
-    section.hidden = options.platform !== 'SHOPEE';
+    section.hidden = !['SHOPEE','TIKTOK_SHOP','TIKTOK'].includes(options.platform);
     const preview = byId('product-bulk-size-chart-preview');
     preview.hidden = !imageKey;
     if (imageKey) preview.src = '/api/v1/product-listing-templates/size-chart-image?key='+encodeURIComponent(imageKey);
@@ -31,7 +31,7 @@
   function close() { generation++; uploading = false; }
   async function upload(file) {
     if (!file || uploading || controls.busy || !controls.editable
-      || controls.platform !== 'SHOPEE' || !context.canPublish()) return;
+      || !['SHOPEE','TIKTOK_SHOP','TIKTOK'].includes(controls.platform) || !context.canPublish()) return;
     const error = byId('product-bulk-size-chart-error');
     error.textContent = '';
     if (!['image/png','image/jpeg'].includes(file.type) || file.size <= 0 || file.size > 8*1024*1024) {

@@ -1,0 +1,28 @@
+/* A progress rail represents an active request, never the delay before retrying. */
+.finance-workspace > .fi-content[hidden] { display: none; }
+.finance-workspace[aria-busy="true"] > .fi-state {
+  display: block;
+  min-height: 4px;
+  background: linear-gradient(90deg, transparent, #4263eb, transparent);
+  background-size: 45% 4px;
+  background-repeat: no-repeat;
+  animation: fi-scope-loading 1.2s linear infinite;
+  padding-top: 10px;
+}
+.finance-workspace[aria-busy="true"] > .fi-state[hidden] {
+  display: block;
+}
+.finance-workspace.fi-selection-pending .fi-content a,
+.finance-workspace.fi-selection-pending .fi-content button {
+  cursor: progress;
+}
+@keyframes fi-scope-loading {
+  from { background-position: -85% 0; }
+  to { background-position: 185% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .finance-workspace[aria-busy="true"] > .fi-state {
+    animation: none;
+    background-position: center top;
+  }
+}

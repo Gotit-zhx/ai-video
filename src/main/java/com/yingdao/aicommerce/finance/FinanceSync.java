@@ -70,6 +70,7 @@ public class FinanceSync {
                 // Order APIs filter by update time. A five-minute overlap retains late updates
                 // without scanning yesterday's entire order book on every live refresh.
                 if(live&&!initial)from=last.minusSeconds(300).getEpochSecond();
+                else if("REFUND".equals(row.get("channel"))&&!initial)from=last.minusSeconds(300).getEpochSecond();
                 else if("ORDER".equals(row.get("channel"))&&!initial&&!nightly)from=Math.max(from,last.minusSeconds(300).getEpochSecond());
                 cp.put("from",from);cp.put("to",Math.min(until,from+7*86400L));
                 cp.put("until",until);cp.put("coverage",start.toString());cp.put("run",UUID.randomUUID().toString());
@@ -82,13 +83,15 @@ public class FinanceSync {
             }
             // A fixed bounded range is retained across pages; retry never loses the current cursor.
             var step=nextWindow(cp,marketplace.step(s,row,cp));Map<String,Object> next=new LinkedHashMap<>(step.checkpoint());
+            FinanceRefundPacing.succeeded(repo,row);
             boolean done=step.done();
             if(done){
                 boolean live="ORDER_LIVE".equals(row.get("channel"));
-                int seconds=live?60:"ORDER_REPAIR".equals(row.get("channel"))?21600:Set.of("SETTLEMENT","PENDING").contains(text(row.get("channel")))?3600:600;
+                int seconds=live?60:"REFUND".equals(row.get("channel"))?FinanceRefundPacing.refreshSeconds(text(row.get("shop_id"))):
+                    "ORDER_REPAIR".equals(row.get("channel"))?21600:Set.of("SETTLEMENT","PENDING").contains(text(row.get("channel")))?3600:600;
                 // The live watermark is the request boundary, not completion time:
                 // orders arriving while a long page chain runs must be fetched next time.
-                Instant completedThrough=live?Instant.ofEpochSecond(number(cp.get("until"))):Instant.now();
+                Instant completedThrough=live||"REFUND".equals(row.get("channel"))?Instant.ofEpochSecond(number(cp.get("until"))):Instant.now();
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=NULL,status='SUCCESS',error_message=NULL,failures=0,"
                         +"lease_until=NULL,lease_token=NULL,last_success_at=?,coverage_start=COALESCE(coverage_start,?),next_at=? WHERE "+where,
                         Timestamp.from(completedThrough),cp.get("coverage"),Timestamp.from(Instant.now().plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3],keys[4]);
@@ -99,16 +102,40 @@ public class FinanceSync {
             }
         }catch(Exception failure){
             long attempts=number(row.get("failures"))+1;long seconds=Math.min(21600,60L*(1L<<Math.min(8,attempts)));
+            boolean limited=FinanceRefundPacing.applies(row)&&FinanceRefundPacing.throttled(failure);
+            Instant retry=limited?FinanceRefundPacing.cooldown(repo):Instant.now().plusSeconds(seconds);
             if(text(failure.getMessage()).contains("交易数量不完整")){
                 // The upstream collection changed during pagination. Replay this fixed range, with upsert IDs.
-                String paths="PENDING".equals(row.get("channel"))?"'$.cursor','$.pendingCount'":"'$.transactionCursor','$.transactionCount'";
-                repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=JSON_REMOVE(checkpoint_json,"+paths+") WHERE "+where,keys);
+                if("PENDING".equals(row.get("channel"))){
+                    // A successful replay must remove transactions that settled
+                    // after the failed pass, rather than retaining its old marks.
+                    repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=JSON_SET(JSON_REMOVE(checkpoint_json,'$.cursor','$.pendingCount'),'$.run',?) WHERE "+where,
+                        UUID.randomUUID().toString(),keys[0],keys[1],keys[2],keys[3],keys[4]);
+                }else repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=JSON_REMOVE(checkpoint_json,'$.transactionCursor','$.transactionCount') WHERE "+where,keys);
             }
-            String message=text(failure.getMessage()).replaceAll("(?i)(token|secret|app_key|sign)[=:][^\\s,]+","$1=[已隐藏]");
+            String message=publicError(failure);
+            if(limited)message="TikTok 退款接口触发限流，全部店铺已共享降频并等待重试；原时间范围与分页进度保留";
             if(message.length()>700)message=message.substring(0,700);
-            repo.jdbc().update("UPDATE finance_sync_states SET status='ERROR',error_message=?,failures=failures+1,lease_until=NULL,lease_token=NULL,next_at=? WHERE "+where,
-                    message,Timestamp.from(Instant.now().plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3],keys[4]);
+            repo.jdbc().update("UPDATE finance_sync_states SET status=?,error_message=?,failures=failures+1,lease_until=NULL,lease_token=NULL,next_at=? WHERE "+where,
+                    limited?"RATE_LIMITED":"ERROR",message,Timestamp.from(retry),keys[0],keys[1],keys[2],keys[3],keys[4]);
         }finally{renewal.cancel(false);claim.close();}
+    }
+    static String publicError(Throwable failure){
+        var seen=Collections.newSetFromMap(new IdentityHashMap<Throwable,Boolean>());
+        boolean database=false;
+        for(Throwable cause=failure;cause!=null&&seen.add(cause);cause=cause.getCause()){
+            database|=cause instanceof org.springframework.dao.DataAccessException;
+            if(cause instanceof java.sql.SQLException sql){
+                int code=sql.getErrorCode();
+                if(code==1114||code==1021)
+                    return "数据库存储空间不足（"+code+"），同步进度已保留，空间恢复后自动重试";
+                if(code==1205||code==1213)
+                    return "数据库暂忙（"+code+"），同步进度已保留，稍后自动重试";
+                return "数据库读写暂未完成"+(code>0?"（"+code+"）":"")+"，同步进度已保留，稍后自动重试";
+            }
+        }
+        if(database)return "数据库连接或读写暂未完成，同步进度已保留，稍后自动重试";
+        return text(failure.getMessage()).replaceAll("(?i)(token|secret|app_key|sign)[=:][^\\s,]+","$1=[已隐藏]");
     }
     static Map<String,Object> recentSettlementFirst(Map<String,Object> cp,boolean initial,String channel,ZoneId zone){
         if(!initial||!Set.of("SETTLEMENT","ORDER").contains(channel)||cp.containsKey("backfillResume")

@@ -7136,6 +7136,8 @@ function renderProductBulkProgress() {
   const selection = document.querySelector('.product-bulk-selection');
   if (selection) selection.hidden = productBulkItems.length > 0;
   const pending = productBulkItems.some(item => !item.workflow?.id);
+  const chartFailures = productBulkItems.filter(ProductBulkUpload.canRepairSizeChart);
+  const repairChart = chartFailures.length > 0 && Boolean(ProductBulkSizeChart.key());
   const reconnect = productBulkItems.some(item => item.progressPaused || item.syncPaused);
   const button = document.querySelector('#submit-product-bulk');
   const changeable = productBulkItems.filter(ProductBulkUpload.canChangeShop);
@@ -7146,11 +7148,11 @@ function renderProductBulkProgress() {
     ? `已选择 ${productBulkShopIds().length} 家店铺，每件商品分别上传；进度与结果按店铺独立记录。`
     : changeable.length
     ? `可切换店铺，${changeable.length} 件未提交商品将按新店铺重新准备。${changeable.length < productBulkItems.length ? '已提交商品保留原店铺。' : ''}` : '';
-  button.textContent = productBulkBusy ? '正在自动准备并提交…' : productBulkItems.length ? pending ? '重试未提交商品' : reconnect ? '重试进度同步' : '全部商品已提交' : '一键上传所选商品';
-  button.disabled = productBulkBusy || ProductBulkSizeChart.isUploading() || (productBulkItems.length > 0 && !pending && !reconnect) || !productBulkShopIds().length;
+  button.textContent = productBulkBusy ? '正在自动准备并提交…' : productBulkItems.length ? repairChart ? '补图并重试失败商品' : pending ? '重试未提交商品' : reconnect ? '重试进度同步' : chartFailures.length ? '补传尺码图后重试' : '全部商品已提交' : '一键上传所选商品';
+  button.disabled = productBulkBusy || ProductBulkSizeChart.isUploading() || (productBulkItems.length > 0 && !pending && !reconnect && !repairChart) || !productBulkShopIds().length;
   const chartShop = shops.find(shop => productBulkShopIds().includes(String(shop.id)) && normalizedMarketplacePlatform(shop.platform) === 'SHOPEE')
     || shops.find(shop => String(shop.id) === productBulkShopIds()[0]);
-  ProductBulkSizeChart.render({busy:productBulkBusy,editable:!productBulkItems.length || changeable.length > 0,
+  ProductBulkSizeChart.render({busy:productBulkBusy,editable:!productBulkItems.length || changeable.length > 0 || chartFailures.length > 0,
     platform:normalizedMarketplacePlatform(chartShop?.platform || 'SHOPEE')});
   renderProductBulkShopPicker(shops);
 }
@@ -7328,7 +7330,8 @@ async function submitProductBulkUpload(event) {
       item.error = ''; item.syncError = ''; item.retryMessage = '';
     }
   }
-  if (reconnect && productBulkItems.every(item => item.workflow?.id)) {
+  if (reconnect && productBulkItems.every(item => item.workflow?.id)
+      && !(ProductBulkSizeChart.key() && productBulkItems.some(ProductBulkUpload.canRepairSizeChart))) {
     void pollProductBulkProgress();
     renderProductBulkProgress();
     return;
@@ -7338,6 +7341,23 @@ async function submitProductBulkUpload(event) {
   renderProductBulkProgress();
   let run;
   try {
+    const chartKey = ProductBulkSizeChart.key();
+    const failures = chartKey ? productBulkItems.filter(ProductBulkUpload.canRepairSizeChart) : [];
+    if (failures.length) {
+      stopProductBulkPolling();
+      for (const item of failures) {
+        const result = await productBulkApi(productPublishWorkflowPath(item.captureId, item.workflow.id));
+        if (currentUser?.organizationId !== org || productBulkStorageKey !== key) return;
+        if (result?.data?.id !== item.workflow.id || result.data.captureId !== item.captureId
+            || result.data.shopId !== item.payload.shopId) throw Error('原任务状态核对失败，请重试');
+        item.workflow = result.data; item.status = result.data.status;
+      }
+      const nextItems = productBulkItems.map(item => ProductBulkUpload.canRepairSizeChart(item)
+        ? ProductBulkUpload.repairSizeChart(item, chartKey, newProductIdempotencyKey()) : item);
+      // Save the repaired requests before replacing the visible batch or sending a POST.
+      saveProductBulkItems(nextItems, key, org);
+      productBulkItems = nextItems;
+    }
     if (!productBulkItems.length) {
       const items = [...document.querySelectorAll('[data-bulk-item]')].map(row => ({id: row.dataset.bulkItem, title: row.querySelector('strong').textContent}));
       productBulkItems = ProductBulkUpload.plan(items, productBulkShopIds(), newProductIdempotencyKey());
@@ -7408,7 +7428,7 @@ async function submitProductBulkUpload(event) {
       const platform = normalizedMarketplacePlatform(targetShop?.platform || item.payload?.destinationPlatform || 'SHOPEE');
       const base = {confirmed: true, destinationPlatform: platform, shopId: item.shopId, idempotencyKey: item.idempotencyKey,
         ...ProductBulkUpload.stylePayload(item),
-        ...(platform === 'SHOPEE' && item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})};
+        ...(item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})};
       let payload = base;
       if (marketplaceIntegrationStatus.livePublishingEnabled) {
         if (!targetShop) throw Error('目标店铺当前不可发布，请检查店铺授权');
@@ -7593,7 +7613,8 @@ document.querySelector('#product-bulk-dialog').addEventListener('close', () => P
 ProductBulkSizeChart.init({api,getOrganization:()=>currentUser?.organizationId,
   canPublish:()=>hasAnyPermission('product:publish'),changed:renderProductBulkProgress,
   selected:sizeChartImageKey=>{
-    for (const item of productBulkItems.filter(ProductBulkUpload.canChangeShop)) item.sizeChartImageKey=sizeChartImageKey;
+    for (const item of productBulkItems.filter(item => ProductBulkUpload.canChangeShop(item)
+      || ProductBulkUpload.canRepairSizeChart(item))) item.sizeChartImageKey=sizeChartImageKey;
     if (productBulkItems.length) saveProductBulkItems();
   }});
 

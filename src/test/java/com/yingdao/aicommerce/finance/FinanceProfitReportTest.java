@@ -35,13 +35,37 @@ class FinanceProfitReportTest {
     @Test void nativeCurrencyConvertsRmbCostsBeforeSubtracting(){
         var q=new FinanceFx.Quote("test",Instant.parse("2026-10-23T00:00:00Z"),Map.of("PHP",new BigDecimal("0.1")));
         var r=FinanceProfitReport.calculate(ledger(),cost("5",0,0),"PHP",q);
+        money("0.1",r.get("costCnyRate"));
         money("50",r.get("productCost"));money("5",r.get("productCostCny"));money("35",r.get("amount"));
         assertNotNull(r.get("fx"));
+    }
+    @Test void costDrilldownsReceiveSameRateForPartialZeroAndReturnOnlyAmounts(){
+        var q=new FinanceFx.Quote("fixed",Instant.EPOCH,Map.of("PHP",decimal("0.125")));
+        var partial=cost(null,1,0);map(partial.get("total")).put("known_amount_cny",decimal("12"));
+        var r=FinanceProfitReport.calculate(ledger(),partial,"PHP",q);
+        money("0.125",r.get("costCnyRate"));assertEquals("fixed",map(r.get("fx")).get("id"));
+        var returned=cost("0",0,0);map(returned.get("total")).put("return_cost_cny",decimal("3"));
+        r=FinanceProfitReport.calculate(ledger(),returned,"PHP",q);
+        money("0",r.get("returnedProductCost"));money("0.125",r.get("costCnyRate"));
+        r=FinanceProfitReport.calculate(ledger(),returned,"CNY",q);
+        money("1",r.get("costCnyRate"));money("0",r.get("returnedProductCost"));
+        r=FinanceProfitReport.calculate(ledger(),partial,"PHP",null);
+        assertNull(r.get("costCnyRate"));assertNull(r.get("knownProductCost"));
     }
     @Test void missingFxNeverSubtractsRmbDirectlyFromNativeCurrency(){
         var r=FinanceProfitReport.calculate(ledger(),cost("50",0,0),"PHP",null);
         assertNull(r.get("amount"));assertNull(r.get("productCost"));assertEquals("MISSING_FX",r.get("status"));
         money("120",r.get("settledGrossAmount"));
+    }
+    @Test void disabledReturnCreditsCannotInflateProfitOrBlockItFromHistoricalCachedInputs(){
+        var costs=cost("50",0,0);
+        map(costs.get("total")).put("return_cost_cny",decimal("999"));
+        map(costs.get("total")).put("return_pending_count",200);
+        costs.put("returnProcessing",true);
+        var result=FinanceProfitReport.calculate(ledger(),costs,"CNY",null);
+        money("35",result.get("amount"));money("55",result.get("operatingCost"));
+        money("55",result.get("knownOperatingCost"));assertEquals("READY",result.get("status"));
+        assertEquals(false,result.get("returnCostsPending"));money("0",result.get("returnedProductCost"));
     }
     @Test void incompleteFinancialAmountsOrCostsNeverProduceAnApparentlyCompleteProfit(){
         var unknown=List.of(settlement("100",null),total("FEE",null),total("AD","10"),total("COST","5"));
@@ -112,14 +136,14 @@ class FinanceProfitReportTest {
         r=FinanceProfitReport.calculate(List.of(settlement("100","120"),incomplete),cost("50",0,0),"CNY",null);
         assertNull(r.get("operatingCost"));assertNull(r.get("amount"));
     }
-    @Test void missingLabelConfigurationIsExplicitAndConfirmedZeroRulesRemainValid(){
+    @Test void missingLabelInvoiceIsExplicitAndConfirmedZeroRemainsValid(){
         var costs=cost("50",0,0);
         var missing=List.of(Map.<String,Object>of("shopId","shop","groupId","baby","name","母婴店","region","PH"));
         costs.put("labelConfiguration",Map.of("configuredShops",0,"missingShops",missing));
         var r=FinanceProfitReport.calculate(List.of(settlement("100","120"),total("FEE","20"),total("AD","10")),costs,"CNY",null);
         money("40",r.get("amount"));assertEquals("ESTIMATED",r.get("status"));
         assertEquals(missing,map(r.get("labelConfiguration")).get("missingShops"));
-        assertTrue(text(r.get("notes")).contains("并非实际零成本"));
+        assertTrue(text(r.get("notes")).contains("不代表零成本"));
         costs.put("labelConfiguration",Map.of("configuredShops",1,"missingShops",List.of()));
         r=FinanceProfitReport.calculate(List.of(settlement("100","120"),total("FEE","20"),total("AD","10")),costs,"CNY",null);
         assertEquals("READY",r.get("status"));money("40",r.get("amount"));

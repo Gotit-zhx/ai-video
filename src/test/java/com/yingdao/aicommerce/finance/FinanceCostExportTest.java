@@ -31,7 +31,7 @@ class FinanceCostExportTest {
         var row=new LinkedHashMap<String,Object>();
         row.put("order_record_id",id);row.put("order_id",id);row.put("shop_name","测试店（店铺1616）");row.put("shop_id","shop");
         row.put("platform","TIKTOK_SHOP");row.put("group_name","母婴");row.put("region","PH");row.put("timezone","Asia/Manila");
-        row.put("order_status","COMPLETED");row.put("record_date",java.sql.Date.valueOf("2026-10-23"));
+        row.put("order_status","COMPLETED");row.put("record_date",java.sql.Date.valueOf("2026-08-28"));row.put("first_settlement_date",java.sql.Date.valueOf("2026-10-23"));
         row.put("currency","PHP");row.put("amount",new BigDecimal("199.50"));row.put("cost_status",status);
         row.put("amount_cny",new BigDecimal("7.407402"));row.put("known_amount_cny",new BigDecimal("7.407402"));
         row.put("cost_json",repo.write(cost));row.put("cost_version",2L);row.put("cost_source","母婴成本.xlsx");
@@ -96,6 +96,10 @@ class FinanceCostExportTest {
         assertEquals("",value(orders,"N3"));assertEquals("",value(orders,"N4"));assertEquals("",value(orders,"O4"));
         assertEquals("0",value(orders,"N5"));assertEquals("后台计算中",value(orders,"P4"));
         assertEquals("3",cell(orders,"G2").getAttribute("s"));assertEquals("4",cell(orders,"H2").getAttribute("s"));
+        assertEquals("结算归属日期",value(orders,"G1"));assertEquals("结算归属日期",value(lines,"F1"));
+        assertEquals("下单日期（核对用）",value(orders,"AB1"));assertEquals("下单日期（核对用）",value(lines,"AC1"));
+        assertNotEquals(value(orders,"G2"),value(orders,"AB2"),"settlement date must not be replaced by order creation");
+        assertEquals(value(orders,"G2"),value(lines,"F2"));assertEquals(value(orders,"AB2"),value(lines,"AC2"));
         assertEquals("2026-09",value(lines,"V2"));assertEquals("1.234567",value(lines,"S2"));
         assertEquals("商家承担的免费样品单",value(orders,"AC2"));assertEquals("商家承担的免费样品单",value(lines,"AD2"));
         assertEquals("3",value(lines,"Q2"));assertEquals("2",value(lines,"R2"));
@@ -125,6 +129,17 @@ class FinanceCostExportTest {
         assertTrue(sql.contains("r.kind='BILL'"));assertTrue(sql.contains("r.organization_id=? AND r.id=?"));
         assertFalse(sql.contains("r.record_date>="));assertTrue(Arrays.asList(call.getArguments()).contains("selected-bill"));
     }
+    @Test void billPeriodExportsUseOrderSettlementDatesInsteadOfBillCreationDates()throws Exception{
+        for(String source:List.of("BILL","RECONCILIATION")){
+            clearInvocations(db);results(List.of());
+            var bytes=export.export(scope,filter,source,"");
+            var call=mockingDetails(db).getInvocations().stream().filter(i->i.getMethod().getName().equals("queryForObject")).findFirst().orElseThrow();
+            String sql=call.getArgument(0);
+            assertTrue(sql.contains("r.kind='SETTLEMENT'"));assertFalse(sql.contains("r.kind='BILL'"));
+            assertTrue(sql.contains("r.record_date>=?"));assertTrue(sql.contains("r.record_date<=?"));
+            assertTrue(summaryValue(sheet(bytes,1),"日期依据").contains("结算归属日期"));
+        }
+    }
     @Test void oversizedOrInvalidExportFailsInsteadOfTruncating(){
         when(db.queryForObject(startsWith("SELECT COUNT(*)"),eq(Long.class),any(Object[].class))).thenReturn(50001L);
         assertThrows(RuntimeException.class,()->export.export(scope,filter,"ORDER",""));
@@ -140,7 +155,7 @@ class FinanceCostExportTest {
         settlement.put("settlement_goods_amount",decimal("299.50"));settlement.put("settlement_net_amount",decimal("150.25"));
         when(db.queryForList(contains("SUM(s.revenue) settlement_goods_amount"),any(Object[].class))).thenReturn(List.of(settlement));
         var orders=sheet(export.export(scope,filter,"SETTLED_ORDER",""),2);
-        assertEquals("优惠前商品金额（结算原币）",value(orders,"M1"));
+        assertEquals("销售收入（结算原币）",value(orders,"M1"));
         assertEquals("299.50",value(orders,"M2"));assertEquals("150.25",value(orders,"AF2"));
         assertEquals("199.50",value(orders,"AH2"),"buyer payment is retained separately, not substituted for provider gross");
         assertEquals("7.407402",value(orders,"N2"),"RMB cost is unchanged by revenue reporting");

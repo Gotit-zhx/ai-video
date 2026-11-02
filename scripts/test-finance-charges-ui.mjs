@@ -15,14 +15,17 @@ const request=async(path,options={})=>{
   assert(!path.includes('expenses'),'removed legacy ledger must not be requested');
   if(options.method){writes.push({path,...options});return {};}
   reads.push(path);if(fail)throw Error('分组读取失败');
+  if(path.startsWith('/label-costs'))return {files:[],rows:[],period:{amount_cny:0,orders:0,shipments:0,conflicts:0},state:{},processing:false,total:0};
   return new URL(path,'https://example.test').searchParams.get('groupId')==='baby'?structuredClone(records):{rules:[],imports:[],rows:[],totals:{records:0,unmatched:0},marked:{}};
 };
-for(const file of ['incremental-dom.js','finance-charges.js'])w.eval(await fs.readFile(new URL('../frontend/'+file,import.meta.url),'utf8'));
+for(const file of ['incremental-dom.js','finance-label-costs.js','finance-charges.js'])w.eval(await fs.readFile(new URL('../frontend/'+file,import.meta.url),'utf8'));
 const wait=()=>new Promise(r=>setTimeout(r,15));
 const btn=(text,scope=d)=>[...scope.querySelectorAll('button')].find(b=>b.textContent===text);
 const mount=canManage=>w.FinanceCharges.mount(root,{groups:[{id:'baby',name:'母婴组'},{id:'other',name:'其他组'}],request,canManage,filters:{start:'2026-10-01',end:'2026-10-27'}});
 mount(true);await wait();
 assert.equal(root.querySelectorAll('.fq-tabs button').length,2);
+assert(root.textContent.includes('月度贴单账单'));assert(!btn('新增贴单规则'));
+btn('刷单成本').click();await wait();
 assert(!root.textContent.includes('历史其他费用'));assert(root.textContent.includes('母婴费用.xlsx'));
 assert(root.querySelector('.fq-toolbar').contains(btn('导入 Excel')));
 assert(root.querySelector('.fq-toolbar').contains(d.querySelector('[aria-label="费用分组"]')));
@@ -34,18 +37,9 @@ if(process.env.FINANCE_CHARGES_PREVIEW_PATH){
   await fs.writeFile(process.env.FINANCE_CHARGES_PREVIEW_PATH,`<!doctype html><meta charset="utf-8"><title>费用与调整 · 布局验收示例</title><style>${css}body{margin:0;padding:28px;background:#f7f8fb;font:14px/1.5 -apple-system,sans-serif}.finance-workspace{max-width:1250px;margin:auto}</style><p>界面验收示例 · 非正式财务数据</p>${d.querySelector('main').outerHTML}`);
 }
 btn('贴单成本').click();await wait();
-assert.equal(btn('贴单成本').getAttribute('aria-pressed'),'true');assert(btn('新增贴单规则'));assert(!btn('导入 Excel'));
-assert(root.textContent.includes('3.50'));assert(!root.textContent.includes('生效日期'));
-const retained=root.querySelector('tbody tr');
-btn('调整').click();await wait();
-assert(d.querySelector('dialog [aria-label="国家"]').disabled);
-assert(!d.querySelector('dialog [aria-label="生效日期"]'));
-btn('保存并重算').click();await wait();
-assert.equal(writes.length,1);assert.equal(JSON.parse(writes[0].body).groupId,'baby');assert.equal(JSON.parse(writes[0].body).unitPriceCny,'0.5');
-assert(!('effectiveDate' in JSON.parse(writes[0].body)));
-assert.equal(root.querySelector('tbody tr'),retained,'unchanged refresh patches content and preserves rows');
+assert.equal(btn('贴单成本').getAttribute('aria-pressed'),'true');assert(btn('导入月度账单'));assert(!btn('新增贴单规则'));assert(!btn('导入 Excel'));
 btn('刷单成本').click();await wait();
-btn('重新匹配').click();await wait();assert.equal(writes[1].path,'/charges/rematch');assert.equal(JSON.parse(writes[1].body).groupId,'baby');
+btn('重新匹配').click();await wait();assert.equal(writes[0].path,'/charges/rematch');assert.equal(JSON.parse(writes[0].body).groupId,'baby');
 const dateInput=d.querySelector('[aria-label="开始日期"]');dateInput.value='2026-09-01';dateInput.dispatchEvent(new w.Event('change'));await wait();
 assert(reads.at(-1).includes('start=2026-09-01'));
 dateInput.value='2026-11-01';dateInput.dispatchEvent(new w.Event('change'));await wait();assert(root.textContent.includes('开始日期不能晚于结束日期'));
@@ -56,4 +50,4 @@ assert(root.textContent.includes('分组读取失败'));assert(!root.textContent
 fail=false;select.value='baby';select.dispatchEvent(new w.Event('change'));await wait();assert(root.textContent.includes('母婴费用.xlsx'));
 w.FinanceCharges.reset();mount(false);await wait();assert(!btn('导入 Excel'));btn('贴单成本').click();await wait();assert(!btn('新增贴单规则'));assert(!btn('调整'));assert(!btn('移除'));
 w.FinanceCharges.reset();w.close();
-console.log('Finance charges passed: compact toolbar, scoped tabs, no legacy requests, RMB rule payloads, preserved rows and read-only access.');
+console.log('Finance charges passed: invoice imports replace unit-price rules; independent marketing sources, scope filters and read-only access remain intact.');

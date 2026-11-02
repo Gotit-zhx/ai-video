@@ -2,6 +2,7 @@ package com.yingdao.aicommerce.product.application.provider;
 
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
+import com.yingdao.aicommerce.product.application.CommerceImageArchive;
 import com.yingdao.aicommerce.shop.application.MarketplaceAccess;
 import com.yingdao.aicommerce.shop.domain.MarketplacePlatform;
 import com.yingdao.aicommerce.shop.domain.Shop;
@@ -21,11 +22,95 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class TikTokProductSizeChartTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path archiveDirectory;
     private static final Map<String,Object> REQUIRED = Map.of("data", Map.of("size_chart",Map.of("is_supported",true,"is_required",true)));
     private static final String REAL_TABLE = "Size (weight), length, chest circumference, sleeve length, shoulder width S(35-40kg)68cm 47cm 19cm 46cm M(40-55kg)70cm 50cm 20cm 48cm L(55-65kg)72cm 53cm 21cm 50cm XL(65-75kg)74cm 56cm 22cm 52cm XXL(75-85kg)76cm 59cm 23cm 54cm XXXL(85-100kg)78cm 62cm 24cm 56cm";
     private final TikTokShopOfficialClient client = mock(TikTokShopOfficialClient.class);
     private final MarketplaceImageDownloader downloader = mock(MarketplaceImageDownloader.class);
     private final TikTokProductSizeChart helper = new TikTokProductSizeChart(client,downloader,new ObjectMapper());
+    private static final Map<String,String> SOURCE_ATTRIBUTES = Map.of(
+            "Size (INT)","Shoulder(cm) Bust(cm) Sleeve Length(cm) Length(cm)",
+            "L","46 98 21 65","M","44 94 20 63","XL","48 102 21 67",
+            "XXL","50 106 22 69","XXXL","52 110 22 71","Material","Cotton");
+    @Test void capturedAttributeTableKeepsAllSourceMeasurementsAndSortsSizes() {
+        assertThat(TikTokProductSizeChart.sourceAttributeLines(SOURCE_ATTRIBUTES)).containsExactly(
+                "Size (INT) Shoulder(cm) Bust(cm) Sleeve Length(cm) Length(cm)",
+                "M  44 94 20 63","L  46 98 21 65","XL  48 102 21 67",
+                "XXL  50 106 22 69","XXXL  52 110 22 71");
+        var capture=capture("Only weight recommendations; no dimensions in description");
+        capture.supplementCategory(capture.getCategoryName(),new ObjectMapper().writeValueAsString(
+                Map.of("attributes",SOURCE_ATTRIBUTES)));
+        stub();
+        assertThat(helper.prepare(capture,List.of(),connection(),REQUIRED).sourceType()).isEqualTo("SOURCE_ATTRIBUTES");
+        verifyNoInteractions(downloader);
+    }
+    @Test void malformedAttributeTablesNeverSupplyMissingOrInventedMeasurements() {
+        for(var replacement:List.of(
+                Map.of("M","44 94 20"),
+                Map.of("M","0 94 20 63"),
+                Map.of("M","44 94 20 63 garbage"),
+                Map.of("Size (INT)","Shoulder Bust Sleeve Length Length"),
+                Map.of("Size (INT)","Weight(kg) Recommended height(cm)"),
+                Map.of("2XL","50 106 22 69"))) {
+            var attributes=new java.util.LinkedHashMap<>(SOURCE_ATTRIBUTES);attributes.putAll(replacement);
+            assertThat(TikTokProductSizeChart.sourceAttributeLines(attributes)).as(replacement.toString()).isEmpty();
+        }
+        assertThat(TikTokProductSizeChart.sourceAttributeLines(Map.of("S","40-50KG","M","50-55KG"))).isEmpty();
+    }
+    @Test void selectedBatchChartOverridesSourceAndTemplateWithTenantVerifiedBytes() throws Exception {
+        var archive=new CommerceImageArchive(archiveDirectory.toString());
+        var helper=new TikTokProductSizeChart(client,downloader,new ObjectMapper(),archive);
+        var selected=archive.store("org-1",png(800,600).bytes());
+        var capture=capture("No dimensions");
+        capture.supplementCategory(capture.getCategoryName(),"{\"sizeChartImageId\":\"removed-old-image\"}");
+        stub();
+        var result=helper.prepare(capture,List.of(),connection(),REQUIRED,
+                Map.of("sizeChartImageKey",selected.storageKey(),"listingTemplateSnapshot",
+                        Map.of("enabled",true,"sizeChartImageKey","invalid-template-key")));
+        assertThat(result.sourceType()).isEqualTo("SELECTED_IMAGE");
+        assertThat(result.payload()).isEqualTo(Map.of("image",Map.of("uri","tos-source/size-chart")));
+        verifyNoInteractions(downloader);
+    }
+    @Test void enabledTemplateChartIsUsedWhenNoExplicitSourceChartExists() throws Exception {
+        var archive=new CommerceImageArchive(archiveDirectory.toString());
+        var helper=new TikTokProductSizeChart(client,downloader,new ObjectMapper(),archive);
+        var selected=archive.store("org-1",png(1200,1200).bytes());
+        stub();
+        var result=helper.prepare(capture("No dimensions"),List.of(),connection(),REQUIRED,
+                Map.of("listingTemplateSnapshot",Map.of("enabled",true,"sizeChartImageKey",selected.storageKey())));
+        assertThat(result.sourceType()).isEqualTo("TEMPLATE_IMAGE");verifyNoInteractions(downloader);
+    }
+    @Test void invalidOrForeignSelectedChartsFailBeforeAnyPlatformCall() throws Exception {
+        var archive=new CommerceImageArchive(archiveDirectory.toString());
+        var helper=new TikTokProductSizeChart(client,downloader,new ObjectMapper(),archive);
+        var foreign=archive.store("other-org",png(1200,1200).bytes());
+        for(String key:List.of(foreign.storageKey(),"../chart","https://example.com/chart")){
+            assertThatThrownBy(()->helper.prepare(capture(REAL_TABLE),List.of(),connection(),REQUIRED,Map.of("sizeChartImageKey",key)))
+                    .hasMessageContaining("所选尺码图不可读取");
+        }
+        verifyNoInteractions(client,downloader);
+    }
+    @Test void disabledTemplateChartIsNotSilentlyApplied() throws Exception {
+        var archive=new CommerceImageArchive(archiveDirectory.toString());
+        var helper=new TikTokProductSizeChart(client,downloader,new ObjectMapper(),archive);
+        var selected=archive.store("org-1",png(1200,1200).bytes());
+        assertThatThrownBy(()->helper.prepare(capture("Sizes S M L"),List.of(),connection(),REQUIRED,
+                Map.of("listingTemplateSnapshot",Map.of("enabled",false,"sizeChartImageKey",selected.storageKey()))))
+                .hasMessageContaining("没有可确认的尺码表");
+        verifyNoInteractions(client,downloader);
+    }
+    @Test void originalMeasurementsSurviveListingDescriptionReplacement() {
+        var capture=capture("Generic listing template without size measurements");
+        capture.supplementCategory(capture.getCategoryName(),new ObjectMapper().writeValueAsString(Map.of("originalDescription",REAL_TABLE)));
+        stub();
+        assertThat(helper.prepare(capture,List.of(),connection(),REQUIRED).sourceType()).isEqualTo("SOURCE_MEASUREMENTS");
+    }
+    @Test void templateMeasurementsCannotReplaceMissingOriginalMeasurements() {
+        var capture=capture(REAL_TABLE);
+        capture.supplementCategory(capture.getCategoryName(),"{\"originalDescription\":\"Sizes S M L\"}");
+        assertThatThrownBy(()->helper.prepare(capture,List.of(),connection(),REQUIRED)).hasMessageContaining("没有可确认的尺码表");
+        verifyNoInteractions(client,downloader);
+    }
     @Test void officialPayloadUsesSizeChartUploadUriAndVerifiedCaptureImage() throws Exception {
         var capture=capture("No textual measurements"); var image=image(capture,"DETAIL");
         capture.supplementCategory(capture.getCategoryName(), "{\"sizeChartImageId\":\""+image.getId()+"\"}");

@@ -50,6 +50,11 @@ final class FinanceShopDeletion {
                 WHERE organization_id=? AND shop_id=?
                 """,scope.organizationId(),shopId);
             repo.jdbc().update("""
+                UPDATE finance_qianyi_connections SET enabled=FALSE,status='DISABLED',secret_encrypted='',
+                  lease_token=NULL,lease_until=NULL,checkpoint_json=NULL,revision=revision+1
+                WHERE organization_id=? AND shop_id=?
+                """,scope.organizationId(),shopId);
+            repo.jdbc().update("""
                 UPDATE finance_authorization_sessions SET status='CANCELLED',error_message=NULL
                 WHERE organization_id=? AND JSON_UNQUOTE(JSON_EXTRACT(context_json,'$.shopId'))=?
                 """,scope.organizationId(),shopId);
@@ -98,12 +103,17 @@ final class FinanceShopDeletion {
             case 1 -> delete("finance_cost_rebuilds","organization_id=? AND shop_id=?",keys);
             case 2 -> delete("finance_order_cost_jobs","organization_id=? AND shop_id=?",keys);
             case 3 -> {
-                int removed=delete("finance_marketing_orders","organization_id=? AND shop_id=?",keys);
+                int removed=delete("finance_qianyi_return_costs","organization_id=? AND shop_id=?",keys);
+                if(removed==0)removed=delete("finance_qianyi_returns","organization_id=? AND shop_id=?",keys);
+                if(removed==0)removed=delete("finance_qianyi_connections","organization_id=? AND shop_id=?",keys);
+                if(removed==0)removed=delete("finance_marketing_orders","organization_id=? AND shop_id=?",keys);
                 if(removed==0)removed=delete("finance_charge_rows","organization_id=? AND matched_shop_id=?",keys);
+                if(removed==0)removed=delete("finance_label_order_totals","organization_id=? AND shop_id=?",keys);
+                if(removed==0)removed=delete("finance_label_invoice_rows","organization_id=? AND matched_shop_id=?",keys);
                 yield removed>0?removed:entities("finance_order_costs","order_record_id","ORDER_STANDARD_COST","organization_id=? AND shop_id=?",keys);
             }
             case 4 -> entities("finance_cost_mappings","id","COST_MAPPING","organization_id=? AND shop_id=?",keys);
-            case 5 -> delete("finance_workspace_audit","organization_id=? AND entity_id=? AND entity_type IN ('COST_SETTINGS','COST_AUTO_MATCH')",keys);
+            case 5 -> delete("finance_workspace_audit","organization_id=? AND entity_id=? AND entity_type IN ('COST_SETTINGS','COST_AUTO_MATCH','ACTUAL_COST_IMPORT')",keys);
             case 6 -> delete("finance_cost_settings","organization_id=? AND shop_id=?",keys);
             case 7 -> entities("finance_expenses","id","EXPENSE","organization_id=? AND target_id=? AND scope IN ('shop','order')",keys);
             case 8 -> entities("finance_expense_rules","id","EXPENSE_RULE",

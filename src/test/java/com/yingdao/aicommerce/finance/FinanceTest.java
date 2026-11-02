@@ -83,6 +83,35 @@ class FinanceTest {
         mvc.perform(put("/api/v1/finance/fields/ORDER").contentType("application/json").content("{\"visible\":[\"external_id\"],\"exported\":[\"external_id\"]}")).andExpect(status().isOk());
         verify(db).update(contains("finance_view_preferences"),eq("org"),eq("viewer"),eq("ORDER"),nullable(String.class));
     }
+    @Test void shopConfigurationBindsExplicitPathNamesAndEnforcesSameOrigin()throws Exception{
+        var service=mock(FinanceService.class);var repo=mock(FinanceRepository.class);
+        var principal=user("org");when(service.authorize(principal)).thenReturn(companyScope("org"));
+        var mvc=MockMvcBuilders.standaloneSetup(new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class)))
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .setCustomArgumentResolvers(new HandlerMethodArgumentResolver(){
+                    public boolean supportsParameter(MethodParameter p){return p.getParameterType()==PlatformPrincipal.class;}
+                    public Object resolveArgument(MethodParameter p,ModelAndViewContainer m,NativeWebRequest r,WebDataBinderFactory b){return principal;}
+                }).build();
+        String body="{\"enabled\":true,\"currency\":\"PHP\",\"timezone\":\"Asia/Manila\",\"groupId\":\"baby\"}";
+        mvc.perform(put("/api/v1/finance/shops/authorized-shop").contentType("application/json").content(body))
+                .andExpect(status().isOk());
+        verify(service).configure(companyScope("org"),"authorized-shop",true,"PHP","Asia/Manila","baby");
+        verify(service).requireManagement(principal);
+        mvc.perform(post("/api/v1/finance/shops/authorized-shop/sync")).andExpect(status().isOk());
+        verify(service).sync(companyScope("org"),"authorized-shop");
+        clearInvocations(service);
+        mvc.perform(put("/api/v1/finance/shops/authorized-shop").header("Sec-Fetch-Site","cross-site")
+                .contentType("application/json").content(body)).andExpect(status().isForbidden());
+        verify(service,never()).configure(any(),anyString(),anyBoolean(),anyString(),anyString(),anyString());
+        // Overlay releases may omit javac -parameters; scalar bindings must not rely on it.
+        for(var method:FinanceController.class.getDeclaredMethods())for(var parameter:method.getParameters()){
+            var path=parameter.getAnnotation(org.springframework.web.bind.annotation.PathVariable.class);
+            if(path!=null)assertFalse(path.value().isBlank()&&path.name().isBlank());
+            var query=parameter.getAnnotation(org.springframework.web.bind.annotation.RequestParam.class);
+            if(query!=null&&!Map.class.isAssignableFrom(parameter.getType()))
+                assertFalse(query.value().isBlank()&&query.name().isBlank());
+        }
+    }
     @Test void periodsRespectNaturalHalfYearAndIsoWeeks(){
         assertEquals("2025-12-29",bucket(LocalDate.of(2026,1,1),"week"));
         assertEquals("2026 H1",bucket(LocalDate.of(2026,6,30),"halfyear"));
@@ -139,8 +168,11 @@ class FinanceTest {
         assertThrows(BusinessException.class,()->FinanceSettlementDates.day(Map.of("statement_time",1790812800L),"Asia/Manila"));
         assertThrows(BusinessException.class,()->FinanceSettlementDates.day(Map.of("payment_status","PROCESSING","payment_time",1790812800L),"Asia/Manila"));
         assertThrows(BusinessException.class,()->FinanceSettlementDates.day(Map.of("payment_status","PAID","payment_time",0),"Asia/Manila"));
-        assertEquals(LocalDate.of(2026,9,1),FinanceSettlementDates.day(Map.of("statement_time",1788220800L,"payment_time",1788237386L,"payment_status","PAID"),"Asia/Manila"));
-        assertEquals(LocalDate.of(2026,10,4),FinanceSettlementDates.day(Map.of("statement_time",1790726400L,"payment_time",Instant.parse("2026-10-03T17:30:00Z").getEpochSecond(),"payment_status","SETTLED"),"Asia/Manila"));
+        assertEquals(LocalDate.of(2026,9,2),FinanceSettlementDates.day(Map.of("statement_time",1788220800L,"payment_time",1788237386L,"payment_status","PAID"),"Asia/Manila"));
+        assertEquals(LocalDate.of(2026,10,1),FinanceSettlementDates.day(Map.of("statement_time",1790726400L,"payment_time",Instant.parse("2026-10-03T17:30:00Z").getEpochSecond(),"payment_status","SETTLED"),"Asia/Manila"));
+        assertEquals(LocalDate.of(2026,9,1),FinanceSettlementDates.day(Map.of("_finance_statement_time",1788134400L,
+                "_finance_payment_time",1788146820L,"_finance_payment_status","PAID"),"Asia/Manila"));
+        assertThrows(BusinessException.class,()->FinanceSettlementDates.day(Map.of("payment_time",1788146820L,"payment_status","PAID"),"Asia/Manila"));
     }
     @Test void unfinishedStatementKeepsItsEvidenceWithoutBlockingLaterBillsOrPretendingItIsSettled(){
         var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);
@@ -155,7 +187,7 @@ class FinanceTest {
         assertFalse(step.done());assertEquals(List.of(paid),step.checkpoint().get("bills"));
         verify(repo,times(3)).save(any(),argThat(e->FinanceSettlementDates.PENDING.equals(e.status())));
         assertTrue(reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",step.checkpoint()).done());
-        verify(repo).save(any(),argThat(e->e.kind().equals("SETTLEMENT")&&e.status().equals("SETTLED")&&e.date().equals(LocalDate.of(2026,9,1))));
+        verify(repo).save(any(),argThat(e->e.kind().equals("SETTLEMENT")&&e.status().equals("SETTLED")&&e.date().equals(LocalDate.of(2026,9,2))));
     }
     @Test void settledOrderRepairFetchesOldIdsDirectlyAndRetainsCheckpointOnPartialResponse(){
         var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);var db=mock(JdbcTemplate.class);

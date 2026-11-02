@@ -1,6 +1,8 @@
 package com.yingdao.aicommerce.product.application.provider;
 
 import com.yingdao.aicommerce.common.exception.BusinessException;
+import com.yingdao.aicommerce.product.application.CommerceImageArchive;
+import com.yingdao.aicommerce.product.application.ProductListingTemplateService;
 import com.yingdao.aicommerce.product.domain.ProductCapture;
 import com.yingdao.aicommerce.product.domain.ProductCaptureImage;
 import com.yingdao.aicommerce.shop.application.MarketplaceAccess;
@@ -17,6 +19,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -36,19 +39,34 @@ public class TikTokProductSizeChart {
     private final TikTokShopOfficialClient client;
     private final MarketplaceImageDownloader downloader;
     private final ObjectMapper json;
+    private final CommerceImageArchive archive;
 
     public TikTokProductSizeChart(TikTokShopOfficialClient client, MarketplaceImageDownloader downloader, ObjectMapper json) {
-        this.client = client; this.downloader = downloader; this.json = json;
+        this(client, downloader, json, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TikTokProductSizeChart(TikTokShopOfficialClient client, MarketplaceImageDownloader downloader,
+                                 ObjectMapper json, CommerceImageArchive archive) {
+        this.client = client; this.downloader = downloader; this.json = json; this.archive = archive;
     }
 
     public PreparedSizeChart prepare(ProductCapture capture, List<ProductCaptureImage> images,
                                      MarketplaceAccess.Connection connection, Map<String, Object> categoryRules) {
+        return prepare(capture, images, connection, categoryRules, Map.of());
+    }
+
+    public PreparedSizeChart prepare(ProductCapture capture, List<ProductCaptureImage> images,
+                                     MarketplaceAccess.Connection connection, Map<String, Object> categoryRules,
+                                     Map<String, Object> request) {
         if (!Objects.equals(capture.getOrganizationId(), connection.shop().getOrganizationId())) throw conflict("尺码表不属于目标店铺公司");
         Map<?, ?> rules = categoryRules == null ? Map.of() : categoryRules;
         if (rules.get("data") instanceof Map<?, ?> data) rules = data;
         Map<?, ?> sizeRules = rules.get("size_chart") instanceof Map<?, ?> map ? map : Map.of();
         boolean required = Boolean.TRUE.equals(sizeRules.get("is_required"));
         if (Boolean.FALSE.equals(sizeRules.get("is_supported"))) return PreparedSizeChart.none();
+        String selectedKey = string(request.get("sizeChartImageKey"));
+        if (selectedKey != null) return uploadArchived(capture, connection, selectedKey, "SELECTED_IMAGE");
         Map<String, Object> normalized = normalized(capture);
         String imageId = string(normalized.get("sizeChartImageId"));
         ProductCaptureImage selected = null;
@@ -79,14 +97,41 @@ public class TikTokProductSizeChart {
             binary = normalizeImage(downloader.downloadProductImage(selected.getProcessedUrl(), selected));
             sourceType = "SOURCE_IMAGE";
         } else {
-            List<String> lines = sourceMeasurementLines(capture.getDescription());
+            String templateKey = ProductListingTemplateService.sizeChartImageKey(request);
+            if (!templateKey.isBlank()) return uploadArchived(capture, connection, templateKey, "TEMPLATE_IMAGE");
+            // Listing copy may replace the displayed description; measurements must come from the source.
+            List<String> lines = sourceAttributeLines(normalized.get("attributes"));
+            sourceType = "SOURCE_ATTRIBUTES";
             if (lines.isEmpty()) {
-                if (required) throw conflict("目标类目必须有尺码表，但原商品没有可确认的尺码表图片或完整尺寸数据；请补采原商品尺码表后上传");
+                lines = sourceMeasurementLines(ProductListingTemplateService.sourceDescription(capture, json));
+                sourceType = "SOURCE_MEASUREMENTS";
+            }
+            if (lines.isEmpty()) {
+                if (required) throw conflict("原商品没有可确认的尺码表或尺寸数据；目标类目必须有尺码表（尺寸对照表），SKU颜色或款式图不能代替，请在上传窗口补传尺码表后重试");
                 return PreparedSizeChart.none();
             }
             binary = renderSourceMeasurements(lines);
-            sourceType = "SOURCE_MEASUREMENTS";
         }
+        return upload(connection, binary, selected == null ? null : selected.getId(), sourceType);
+    }
+
+    private PreparedSizeChart uploadArchived(ProductCapture capture, MarketplaceAccess.Connection connection,
+                                            String key, String sourceType) {
+        if (archive == null) throw conflict("尺码图读取服务暂不可用，请稍后重试");
+        MarketplaceImageDownloader.ImageBinary binary;
+        try {
+            var selected = archive.read(capture.getOrganizationId(), key);
+            binary = normalizeImage(new MarketplaceImageDownloader.ImageBinary(
+                    Base64.getDecoder().decode(selected.dataBase64()), selected.mimeType(),
+                    "image/png".equals(selected.mimeType()) ? ".png" : ".jpg"));
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            throw conflict("所选尺码图不可读取或不属于当前公司，请重新上传对应尺码图");
+        }
+        return upload(connection, binary, null, sourceType);
+    }
+
+    private PreparedSizeChart upload(MarketplaceAccess.Connection connection,
+                                     MarketplaceImageDownloader.ImageBinary binary, String imageId, String sourceType) {
         Map<String, Object> response = client.apiMultipart("/product/" + client.apiVersion() + "/images/upload",
                 connection, Map.of(), "size-chart" + binary.extension(), binary.contentType(), binary.bytes(),
                 Map.of("use_case", "SIZE_CHART_IMAGE"));
@@ -96,13 +141,81 @@ public class TikTokProductSizeChart {
         if (uri == null || uri.length() > 2048 || uri.matches(".*[\\s<>\\\"].*") || uri.contains("://")) {
             throw conflict("TikTok 尺码表上传未返回有效图片 URI，未提交商品");
         }
-        return new PreparedSizeChart(Map.of("image", Map.of("uri", uri)), selected == null ? null : selected.getId(), sourceType);
+        return new PreparedSizeChart(Map.of("image", Map.of("uri", uri)), imageId, sourceType);
     }
 
     static boolean explicitSizeChartLabel(String value) {
         return value != null && value.length() <= 60 && value.trim().matches(
                 "(?i)^(?:size[ _-]*(?:chart|guide)|measurement[ _-]*chart|尺码表|尺碼表|尺寸表|尺码指南|尺碼指南)(?:\\s*[（(](?:cm|mm|inch|inches|厘米|英寸)[）)])?$"
         );
+    }
+
+    /** Shopee's DOM collector stores a structured size table alongside product attributes. */
+    static List<String> sourceAttributeLines(Object value) {
+        if (!(value instanceof Map<?, ?> attributes) || attributes.size() > 500) return List.of();
+        String header = null;
+        int columns = 0;
+        List<Map.Entry<String, String>> rows = new ArrayList<>();
+        var sizeKey = Pattern.compile("(?i)^" + SIZE + "$");
+        var headerKey = Pattern.compile("(?i)^(?:size|saiz|尺码|尺碼|尺寸)(?:\\s*[（(][^()（）]{1,35}[）)])?$");
+        // Each dimension must be labeled with a unit; unrelated attributes and
+        // weight recommendations are not evidence for a measurement table.
+        var dimensionColumn = Pattern.compile("(?i)(?:shoulder|bust|chest|(?:sleeve\\s+)?length|waist|hips?|inseam|肩宽|肩寬|胸围|胸圍|袖长|袖長|衣长|衣長|腰围|腰圍|臀围|臀圍|裤长|褲長)\\s*[（(]\\s*" + UNIT + "\\s*[）)]");
+        var number = Pattern.compile("[0-9]+(?:\\.[0-9]+)?(?:\\s*[-–~]\\s*[0-9]+(?:\\.[0-9]+)?)?");
+        for (var entry : attributes.entrySet()) {
+            if (!(entry.getKey() instanceof String key) || !(entry.getValue() instanceof String text)) continue;
+            key = key.strip(); text = text.strip();
+            if (headerKey.matcher(key).matches()) {
+                if (header != null || text.length() > 500) return List.of();
+                var matcher = dimensionColumn.matcher(text);
+                int end = 0;
+                while (matcher.find()) {
+                    if (!text.substring(end, matcher.start()).matches("[\\s,，;；|/]*")) return List.of();
+                    columns++; end = matcher.end();
+                }
+                if (!text.substring(end).matches("[\\s,，;；|/]*") || columns < 2 || columns > 12) return List.of();
+                header = key + " " + text;
+            } else if (sizeKey.matcher(key).matches()) {
+                if (text.length() > 300) return List.of();
+                rows.add(Map.entry(key.toUpperCase(java.util.Locale.ROOT), text));
+            }
+        }
+        if (header == null || rows.size() < 2 || rows.size() > 25) return List.of();
+        rows.sort(java.util.Comparator.comparingInt(row -> sizeOrder(row.getKey())));
+        List<String> lines = new ArrayList<>();
+        lines.add(header);
+        HashSet<Integer> sizes = new HashSet<>();
+        for (var row : rows) {
+            if (!sizes.add(sizeOrder(row.getKey()))) return List.of();
+            var matcher = number.matcher(row.getValue());
+            int count = 0, end = 0;
+            while (matcher.find()) {
+                if (!row.getValue().substring(end, matcher.start()).matches("[\\s,，;；|]*")) return List.of();
+                for (String amount : matcher.group().split("\\s*[-–~]\\s*")) {
+                    double parsed = Double.parseDouble(amount);
+                    if (!Double.isFinite(parsed) || parsed <= 0 || parsed > 10000) return List.of();
+                }
+                count++; end = matcher.end();
+            }
+            if (count != columns || !row.getValue().substring(end).matches("[\\s,，;；|]*")) return List.of();
+            lines.add(row.getKey() + "  " + row.getValue());
+        }
+        return List.copyOf(lines);
+    }
+
+    private static int sizeOrder(String size) {
+        return switch (size) {
+            case "XXS" -> 0;
+            case "XS" -> 1;
+            case "S" -> 2;
+            case "M" -> 3;
+            case "L" -> 4;
+            case "XL" -> 5;
+            case "XXL" -> 6;
+            case "XXXL" -> 7;
+            case "均码", "均碼" -> 20;
+            default -> Integer.parseInt(size.substring(0, 1)) + 4;
+        };
     }
 
     static List<String> sourceMeasurementLines(String description) {

@@ -67,6 +67,45 @@ assert.equal(query.get('shopId'),'shop1');assert.equal(query.get('numbers'),'585
 button('下一页').click();await ready();assert.equal(requests.at(-1).url.searchParams.get('page'),'2');
 button('清除').click();await ready();assert.equal(requests.at(-1).url.searchParams.get('numbers'),'');assert.equal(requests.at(-1).url.searchParams.get('page'),'1');
 for(const route of ['settlements','reconciliation','fee-records']){w.FinanceWorkspace.enter(route);await ready();assert(d.querySelector('.fi-number-search textarea'),route+' supports identifier search');assert([...d.querySelectorAll('thead')].some(n=>n.textContent.includes('下单时间')),route+' displays order placement separately');}
+// Exports use the table's full query, even after background refresh/navigation changes the page.
+const downloads=[],exportRequests=[];let completeExport;
+w.URL.createObjectURL=()=> 'blob:finance-export';w.URL.revokeObjectURL=()=>{};
+w.HTMLAnchorElement.prototype.click=function(){downloads.push(this.download);};
+w.fetch=(path,options)=>new Promise((resolve,reject)=>{
+  exportRequests.push({url:new URL(path,'https://example.test'),options});completeExport=resolve;
+  options.signal.addEventListener('abort',()=>reject(new w.DOMException('Aborted','AbortError')));
+});
+w.FinanceWorkspace.enter('settlements');await ready();
+await choose('店铺分组','clothes');await choose('平台','SHOPEE');await choose('店铺','shop1');
+for(const [kind,label] of [['SETTLEMENT','结算明细'],['BILL','结算账单'],['PENDING','待结算']]){
+  [...d.querySelectorAll('.fi-settlement-totals button')].find(b=>b.textContent.startsWith(label+'合计')).click();await ready();
+  input=d.querySelector('.fi-number-search textarea');input.value='00123456789012345678';
+  input.closest('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await ready();
+  button('下一页').click();await ready();
+  const current=requests.filter(r=>r.url.pathname.endsWith('/records')).at(-1).url.searchParams;
+  button('导出 Excel').click();await tick();const modal=d.querySelector('dialog');
+  assert.equal(modal.querySelector('[aria-label="导出类型"]').value,kind);
+  assert(modal.textContent.includes('不限当前页'));assert(modal.textContent.includes('00123456789012345678'));
+  const submit=button('下载报表',modal);submit.click();await tick();submit.click();
+  assert(submit.disabled);assert(!modal.querySelector('.fi-loading').hidden);
+  assert.equal(exportRequests.length,downloads.length+1,'repeated clicks do not send duplicate requests');
+  const selection=exportRequests.at(-1).url.searchParams;
+  for(const key of ['start','end','shopId','groupId','platform','currency','displayCurrency','fxSnapshot','numbers'])assert.equal(selection.get(key),current.get(key),key);
+  assert.equal(selection.get('view'),kind);assert.equal(selection.get('format'),'xlsx');assert(!selection.has('page'));assert(!selection.has('pageSize'));
+  completeExport({ok:true,blob:async()=>new w.Blob(['test workbook'])});await tick();
+  assert.equal(downloads.at(-1),`${label}-${current.get('start')}-${current.get('end')}.xlsx`);assert(!modal.isConnected);
+}
+button('导出 Excel').click();await tick();
+let modal=d.querySelector('dialog');button('下载报表',modal).click();await tick();
+completeExport({ok:false,json:async()=>({message:'导出超过限制，请缩小范围'})});await tick();
+assert(modal.querySelector('.fi-feedback').textContent.includes('请缩小范围'));
+assert(!button('下载报表',modal).disabled);assert(modal.querySelector('.fi-loading').hidden);
+button('下载报表',modal).click();await tick();button('取消',modal).click();await tick();assert(exportRequests.at(-1).options.signal.aborted);
+button('导出 Excel').click();await tick();modal=d.querySelector('dialog');
+const captured=modal.querySelector('p').textContent;
+await choose('店铺','shop2');button('下载报表',modal).click();await tick();
+assert.equal(exportRequests.at(-1).url.searchParams.get('shopId'),'shop1');assert.equal(modal.querySelector('p').textContent,captured);
+button('取消',modal).click();await tick();
 w.FinanceWorkspace.enter('orders');await ready();
 if(process.env.FINANCE_DATE_PREVIEW_PATH){const css=await fs.readFile(new URL('../frontend/finance-workspace.css',import.meta.url),'utf8');await fs.writeFile(process.env.FINANCE_DATE_PREVIEW_PATH,`<!doctype html><meta charset="utf-8"><title>下单与结算日期核对 · 测试数据</title><style>${css}body{margin:0;padding:28px;background:#f5f7fc;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}</style><h2>下单与结算日期核对 · 测试数据</h2>${d.querySelector('#finance-page').outerHTML}`);}
-w.FinanceWorkspace.leave();dom.window.close();console.log('Order placement, distinct settlement date, exact batch IDs, scope retention and stable refresh passed.');
+w.FinanceWorkspace.leave();dom.window.close();console.log('Order dates, batch search, settlement exports, frozen filters, download state, errors and cancellation passed.');
