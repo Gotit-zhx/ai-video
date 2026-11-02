@@ -11,3 +11,6 @@ Group=root
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+StandardOutput=null
+StandardError=null
+TimeoutStartSec=3900

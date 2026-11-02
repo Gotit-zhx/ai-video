@@ -1,6 +1,7 @@
 """Release bounded BI caches and long-running query UI over exact live images."""
 import gzip
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -49,7 +50,10 @@ def build():
         assert set(new.namelist()) == {n for n in old.namelist() if not replaced(n)} | set(entries)
         assert all(new.read(n) == old.read(n) for n in old.namelist() if not replaced(n))
     (folder / "app.jar").chmod(0o644)
-    (folder / "Dockerfile").write_text("FROM " + before[APP]["Config"]["Image"] + "\nCOPY app.jar /app/app.jar\n")
+    image_base = json.loads(core.run(
+        "python3", "/usr/local/lib/heyi/compact-release-image.py", "--prepare",
+        before[APP]["Image"], IMAGES[APP] + "-base").decode())["baseImage"]
+    (folder / "Dockerfile").write_text("FROM " + image_base + "\nCOPY app.jar /app/app.jar\n")
     core.run("docker", "build", "--pull=false", "-t", IMAGES[APP], str(folder))
     frontend = ROOT / "frontend"
     assert {p.name for p in frontend.iterdir()} == FILES

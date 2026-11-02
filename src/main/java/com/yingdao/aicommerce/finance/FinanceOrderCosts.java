@@ -261,7 +261,7 @@ public final class FinanceOrderCosts {
             jobs.stream().map(j->j.get("order_record_id")).toArray()))
             records.put(text(order.get("id")),order);
         var actual=new FinanceActualCosts(repo).forRecords(records.keySet());
-        var audits=new ArrayList<Object[]>();var writes=new ArrayList<Object[]>();var hashes=new ArrayList<Object[]>();
+        var writes=new ArrayList<Object[]>();var hashes=new ArrayList<Object[]>();
         for(var job:jobs){
             String recordId=text(job.get("order_record_id")),organization=text(job.get("organization_id")),shop=text(job.get("shop_id"));
             String key=organization+":"+shop;
@@ -279,8 +279,9 @@ public final class FinanceOrderCosts {
             var result=FinanceLabelCosts.overlay(product,label);
             String serialized=repo.write(result);
             if(!old.equals(decode(serialized))){
-                if(order.get("cost_data")!=null)audits.add(new Object[]{UUID.randomUUID().toString(),organization,recordId,repo.write(old),serialized,
-                    labelOnly?"贴单账单更新，保留已有商品成本":"按实际出库凭据优先、标准成本补充的口径重算"});
+                // Persist the current derived result only. Repeated synchronization
+                // must not append full before/after snapshots for every order;
+                // explicit cost imports and manual edits keep their own audit trail.
                 writes.add(new Object[]{recordId,organization,shop,order.get("order_id"),order.get("record_date"),result.get("status"),result.get("amountCny"),result.get("knownAmountCny"),
                     result.get("lineCount"),result.get("matchedLines"),result.get("fallbackLines"),sourceHash,serialized,result.get("labelKnownCny"),result.get("chargesPending"),result.get("basis")});
                 changed.add(organization);
@@ -288,8 +289,6 @@ public final class FinanceOrderCosts {
             // Completing any queued job changes the report's processing state even if its amount is unchanged.
             changed.add(organization);
         }
-        insertRows("INSERT INTO finance_workspace_audit(id,organization_id,entity_type,entity_id,before_json,after_json,reason,actor_id) VALUES ",
-            "(?,?,'ORDER_STANDARD_COST',?,?,?,?,'SYSTEM_COST')","",audits);
         insertRows("""
             INSERT INTO finance_order_costs(order_record_id,organization_id,shop_id,order_id,record_date,status,amount_cny,known_amount_cny,line_count,matched_lines,fallback_lines,source_hash,data_json,label_cost_cny,charges_pending,cost_basis)
             VALUES

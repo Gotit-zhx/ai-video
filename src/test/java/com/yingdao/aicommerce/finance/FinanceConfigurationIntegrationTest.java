@@ -335,7 +335,8 @@ class FinanceConfigurationIntegrationTest {
         txs.executeWithoutResult(status->workspace.mapping(owner,"u",shop,Map.of("product_id","p","sku_id","v","warehouse","海外仓-菲律宾","code","PACK","factor",1,"confirmed",true,"version",0)));
         txs.execute(status->engine.seedAndFill());txs.execute(status->engine.processBatch(50));
         assertEquals(0,new BigDecimal("30").compareTo(decimal(repo.detail(owner,id(owner,entry)).get("product_cost_cny"))));
-        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='ORDER_STANDARD_COST'",Integer.class));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='ORDER_STANDARD_COST'",Integer.class),
+            "automatic recalculation keeps the current result without appending full snapshots");
         assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_records WHERE kind='COST'",Integer.class),"standard cost snapshots stay separate from external expense ledger");
         assertEquals(0,new BigDecimal("91").compareTo(db.queryForObject("SELECT SUM(amount) FROM finance_records WHERE kind='SETTLEMENT'",BigDecimal.class)));
         var shippedRaw=Map.<String,Object>of("item_list",List.of(line),"shipped_time",1792551040L);
@@ -352,7 +353,8 @@ class FinanceConfigurationIntegrationTest {
         var correctedSummary=map(reports.summary(owner,q,"SETTLED_ORDER").get("total"));
         assertEquals(correctedSummary,map(reports.dashboardSummary(owner,q,reports.dashboardFacts(owner,q)).get("total")));
         assertEquals(1,number(correctedSummary.get("excluded_count")));assertEquals(0,new BigDecimal("30").compareTo(decimal(correctedSummary.get("amount_cny"))));
-        assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='ORDER_STANDARD_COST' AND entity_id=?",Integer.class,id(owner,cancelled)),"correction must retain the previous cost in the audit");
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_workspace_audit WHERE entity_type='ORDER_STANDARD_COST' AND entity_id=?",Integer.class,id(owner,cancelled)),
+            "cancellation correction updates the current cost without a duplicate audit snapshot");
         repo.save(owner,cancelled);assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_order_cost_jobs",Integer.class));
         assertEquals(0,new BigDecimal("91").compareTo(db.queryForObject("SELECT SUM(amount) FROM finance_records WHERE kind='SETTLEMENT'",BigDecimal.class)),"cost correction must preserve the official ledger");
         String newGroup=service.saveGroup(owner,null,"未导入成本");
