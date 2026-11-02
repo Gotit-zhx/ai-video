@@ -173,10 +173,21 @@ public class FinanceService {
         return result;
     }
     Map<String,Object> buildDashboard(Scope s,Filter requested,boolean cny,String snapshotId,boolean live){
-        Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"",requested.granularity(),requested.groupId());
+        // SQL facts are daily and currency-neutral. Display granularity is applied below.
+        Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"","day",requested.groupId());
         var costReport=new FinanceCostReport(repo);
-        // Currency changes and concurrent CNY/native prewarming share the same bounded raw read.
-        var facts=dashboardFacts.get(new FinanceSnapshotCache.Key(s,all,false,"",live),()->repo.readSnapshot(()->{
+        var factsKey=new FinanceSnapshotCache.Key(s,all,false,"",live);
+        var companyKey=new FinanceSnapshotCache.Key(s,new Filter(all.start(),all.end(),"","","","day"),false,"",live);
+        // A shop-first visit stays a shop query. A previously loaded company snapshot can
+        // serve its shops/groups without repeating the large ledger and cost scans.
+        var wider=factsKey.equals(companyKey)?null:sharedSnapshots==null?dashboardFacts.find(companyKey):sharedSnapshots.findFacts(companyKey);
+        // Unassigned expenses may span platforms, which the existing daily buckets
+        // combine. Preserve the SQL platform filter rather than infer their platform.
+        if(wider!=null&&!all.platform().isBlank()&&rows(wider.get("buckets")).stream()
+                .anyMatch(row->"UNASSIGNED".equals(text(row.get("shop_id")))))wider=null;
+        // The bounded cold read contains multiple queries; a per-query-sized total
+        // transaction deadline previously discarded complete month computations.
+        java.util.function.Supplier<Map<String,Object>> read=()->repo.readSnapshot(180,()->{
             var buckets=new ArrayList<>(repo.dashboardBuckets(s,all,live));
             var orders=costReport.dashboardFacts(s,all);
             if(!live){
@@ -184,8 +195,11 @@ public class FinanceService {
                 buckets.addAll(orders.stream().filter(row->number(row.get("records"))>0).toList());
                 buckets.addAll(repo.settledOrderBuckets(s,all,"REFUND"));
             }
-            return Map.of("buckets",buckets,"orders",orders,"reportingMonths",live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
-        }));
+            return Map.of("buckets",dailyFactRows(buckets),"orders",dailyFactRows(orders),
+                    "reportingMonths",live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
+        });
+        var facts=wider==null?(sharedSnapshots==null?dashboardFacts.get(factsKey,read):sharedSnapshots.facts(factsKey,read)):
+                narrowDashboardFacts(wider,all,shops(s),live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
         var reportingMonths=rows(facts.get("reportingMonths"));
         String trendGranularity=reportingMonths.stream().anyMatch(r->Boolean.TRUE.equals(r.get("included")))?"month":requested.granularity();
         var buckets=rows(facts.get("buckets"));
@@ -240,7 +254,30 @@ public class FinanceService {
                 +(live?"实时订单按下单日显示；销售收入与成本按结算账单日期。":"日期筛选使用结算账单日期：TikTok 与 Excel 的 Statement date 口径一致，Shopee 使用 actual_payout_time。订单、关联退款和商品成本按首次结算账单日期归属，不限制下单月份。")
                 +"已核对的 TikTok 账单日期优先于历史手工月份校正，原始平台时间保留。"
                 +"经营汇总排除刷单；原始账单净额用于对账。广告及独立费用按发生日，待结算尚无结算日期。已结算不代表银行到账。");
+        if(facts.containsKey("_financeDataRevision"))out.put("_financeDataRevision",facts.get("_financeDataRevision"));
         return out;
+    }
+    static List<Map<String,Object>> dailyFactRows(List<Map<String,Object>> rows){
+        return rows.stream().map(row->{
+            var copy=new LinkedHashMap<String,Object>(row);
+            // JDBC calendar dates must survive Redis as ISO dates, not epoch milliseconds.
+            if(row.get("record_date")!=null)copy.put("record_date",text(row.get("record_date")));
+            return (Map<String,Object>)copy;
+        }).toList();
+    }
+    static Map<String,Object> narrowDashboardFacts(Map<String,Object> facts,Filter filter,List<Map<String,Object>> shops,
+                                                   List<Map<String,Object>> reportingMonths){
+        var selected=shops.stream().filter(shop->FinanceGroups.matches(shop,filter)).map(shop->text(shop.get("id")))
+                .collect(java.util.stream.Collectors.toSet());
+        // Company queries allow unassigned independent expenses; named groups do not.
+        if((filter.shopId().isBlank()||filter.shopId().equals("UNASSIGNED"))
+                &&(filter.groupId().isBlank()||filter.groupId().equals("UNGROUPED"))&&filter.platform().isBlank())
+            selected.add("UNASSIGNED");
+        var narrowed=new LinkedHashMap<String,Object>(Map.of("buckets",rows(facts.get("buckets")).stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
+                "orders",rows(facts.get("orders")).stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
+                "reportingMonths",reportingMonths));
+        if(facts.containsKey("_financeDataRevision"))narrowed.put("_financeDataRevision",facts.get("_financeDataRevision"));
+        return narrowed;
     }
     static List<Map<String,Object>> nativeTotals(List<Map<String,Object>> ranking){
         return aggregate(ranking,"kind");

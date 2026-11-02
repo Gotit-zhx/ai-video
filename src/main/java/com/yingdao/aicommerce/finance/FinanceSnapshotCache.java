@@ -16,6 +16,17 @@ final class FinanceSnapshotCache {
     private final LongSupplier clock;private final long ttl;private final int capacity;
     FinanceSnapshotCache(){this(System::nanoTime,TimeUnit.SECONDS.toNanos(5),32);}
     FinanceSnapshotCache(LongSupplier clock,long ttl,int capacity){this.clock=clock;this.ttl=ttl;this.capacity=capacity;}
+    /** Reuse an existing wider read, including its single flight, without starting one. */
+    Map<String,Object> find(Key key){
+        Entry entry;
+        synchronized(entries){
+            entry=entries.get(key);
+            if(entry==null)return null;
+            if(entry.result.isDone()&&entry.expires<=clock.getAsLong()){entries.remove(key);return null;}
+        }
+        try{return entry.result.join();}
+        catch(CompletionException failure){return null;}
+    }
     Map<String,Object> get(Key key,Supplier<Map<String,Object>> load){
         Entry entry;boolean owner=false;
         synchronized(entries){

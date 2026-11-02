@@ -28,10 +28,13 @@ public class FinanceRepository {
         return tx.execute(status->action.get());
     }
     <T>T readSnapshot(java.util.function.Supplier<T> action){
+        return readSnapshot(15,action);
+    }
+    <T>T readSnapshot(int seconds,java.util.function.Supplier<T> action){
         var tx=new org.springframework.transaction.support.TransactionTemplate(
                 new org.springframework.jdbc.datasource.DataSourceTransactionManager(Objects.requireNonNull(db.getDataSource())));
         tx.setReadOnly(true);tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
-        tx.setTimeout(15);
+        tx.setTimeout(seconds);
         return tx.execute(status->action.get());
     }
     /** Lock before a financial write so removal waits for committed work and blocks late responses. */

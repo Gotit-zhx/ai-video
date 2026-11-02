@@ -11,6 +11,7 @@
   const paths={chart:'M4 19h16M7 15v-4m5 4V5m5 10V8',download:'M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4',refresh:'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 3M18 17a7 7 0 0 1-12 2l-2-3',shop:'M3 10h18l-2-7H5zM5 10v11h14V10M9 21v-7h6v7',wallet:'M3 6h18v15H3zM3 6V3h15v3M16 12h5v5h-5z',arrow:'M7 17 17 7M7 7h10v10',refund:'m9 6-5 5 5 5M4 11h10a5 5 0 0 1 0 10',ad:'m3 11 15-6v14L3 14zM6 15v6h4v-5M21 9v6',fee:'M7 3h10l4 4v14H3V7zM8 9h8M8 13h8M8 17h5',info:'M12 11v6M12 7v1M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',plus:'M12 4v16M4 12h16',check:'m5 12 4 4 10-10'};
   let callbackNotice='';const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
   let active=false,generation=0,mountedGeneration=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='',loadController=null,mountedSelection='';
+  let activeLoadKey='',waitingTimer=null;
   const dateText=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const today=()=>dateText(new Date()),ago=n=>{const d=new Date();d.setDate(d.getDate()-n);return dateText(d);};
   function dateGranularity(start,end){const days=Math.round((Date.parse(end)-Date.parse(start))/86400000)+1;return days<=45?'day':days<=200?'week':days<=400?'month':days<=900?'quarter':days<=1500?'halfyear':'year';}
@@ -107,7 +108,7 @@
   const json=(method,body)=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   function notify(message,error=false){const n=root.querySelector('.fi-state');if(n){n.textContent=message;n.hidden=!message;n.classList.toggle('is-error',error);}}
   function loadingIndicator(parent){const n=el('span','正在加载所选数据…',parent,'fi-loading');n.hidden=true;n.setAttribute('role','status');n.setAttribute('aria-live','polite');}
-  function selectionKey(){return JSON.stringify([view,filters.start,filters.end,filters.shopId,filters.groupId,filters.platform,filters.currency,filters.displayCurrency,page,selectedKind,detailNumbers()]);}
+  function selectionKey(){return JSON.stringify([view,filters.start,filters.end,filters.shopId,filters.groupId,filters.platform,filters.currency,filters.displayCurrency,filters.granularity,page,selectedKind,detailNumbers()]);}
   function markPending(){
     const pending=!!mountedSelection&&mountedSelection!==selectionKey();
     root.classList.toggle('fi-selection-pending',pending);
@@ -128,8 +129,8 @@
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选店铺和日期…';n.title=filters.start+' 至 '+filters.end;}}
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){qianyiCleanup?.();qianyiCleanup=null;mountedSelection='';root.classList.remove('fi-selection-pending');clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
-  function reset(){qianyiSelection={};active=false;generation++;loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
-  function leave(){active=false;generation++;loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();}
+  function reset(){qianyiSelection={};active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
+  function leave(){active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();}
   function refreshWhenIdle(){
     if(!active)return;
     if(document.hidden||document.querySelector('.fi-dialog[open]')){refreshTimer=setTimeout(refreshWhenIdle,15000);return;}
@@ -950,17 +951,30 @@
     if(!root.classList.contains('fi-live-screen')){cleanup();root.replaceChildren();root.className='workspace-body finance-workspace fi-live-screen';el('div','正在连接今日经营数据…',root,'fi-state');}
     markPending();setLoading(interactive);
     const selection={...filters};
-    try{const [response]=await Promise.all([request('/screen?'+new URLSearchParams(selection),{method:'POST',signal}),ensureCharts()]);if(run!==generation||!active)return;data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';const next=root.cloneNode(false);liveScreen(next);commit(next);}
-    catch(e){if(run===generation){notify((data&&root.querySelector('.fi-live-head')?'更新暂未完成，保留上次数据。':'暂未读取到今日数据。')+'15 秒后自动重试。'+e.message,true);if(!root.querySelector('.fi-live-head')&&!root.querySelector('.fi-live-recovery')){const controls=el('div',null,root,'fi-actions fi-live-recovery');button('以原币查看',controls,()=>selectFilters({displayCurrency:'ORIGINAL'}));button('返回总览',controls,()=>navigate('overview'));}}}
-    finally{if(run===generation&&active){setLoading(false);refreshTimer=setTimeout(()=>load(false),15000);}}
+    let succeeded=false;
+    try{const [response]=await Promise.all([request('/screen?'+new URLSearchParams(selection),{method:'POST',signal}),ensureCharts()]);if(run!==generation||!active)return;data=response;filters.currency=data.filters.currency||'';filters.fxSnapshot=data.fx?.id||'';const next=root.cloneNode(false);liveScreen(next);commit(next);succeeded=true;}
+    catch(e){if(run===generation&&!signal.aborted){notify('本次查询未完成，已停止自动重试。请检查网络或点击重新查询。',true);if(!root.querySelector('.fi-live-recovery')){const controls=el('div',null,root,'fi-actions fi-live-recovery');button('重新查询',controls,()=>load());button('返回总览',controls,()=>navigate('overview'));}}}
+    finally{if(run===generation&&active){setLoading(false);if(succeeded)refreshTimer=setTimeout(()=>load(false),15000);}}
   }
   async function load(interactive=true){
-    if(!active||!allowed())return;const run=++generation;clearTimeout(refreshTimer);
+    if(!active||!allowed())return;
+    const nextKey=selectionKey();
+    if(activeLoadKey===nextKey&&loadController&&!loadController.signal.aborted)return;
+    activeLoadKey=nextKey;
+    const run=++generation;clearTimeout(refreshTimer);clearInterval(waitingTimer);
     qianyiCleanup?.();qianyiCleanup=null;
     loadController?.abort();loadController=new AbortController();const signal=loadController.signal;
     const read=path=>request(path,{signal});
+    const started=Date.now();
+    waitingTimer=setInterval(()=>{
+      if(run===generation&&active&&!signal.aborted)
+        notify(`正在计算所选数据，已等待 ${Math.floor((Date.now()-started)/1000)} 秒，请保持页面打开，无需重复点击。`);
+    },10000);
     rememberFilters();
-    if(view==='live')return loadLive(run,interactive,signal);
+    if(view==='live'){
+      try{return await loadLive(run,interactive,signal);}
+      finally{if(run===generation){activeLoadKey='';clearInterval(waitingTimer);}}
+    }
     if(mountedView!==view){cleanup();root.replaceChildren();const initial=root.cloneNode(false);shell(initial);IncrementalDOM.patch(root,initial);}
     const changed=markPending();setLoading(true);
     if(!changed)notify(mountedView===view?'正在更新当前数据，请稍候…':'正在查询，请稍候…');
@@ -994,6 +1008,7 @@
         const isRecordView=view!=='overview';
         const allowedKinds=view==='ads'?['AD','AD_GMV']:recordKinds();
         if(isRecordView&&!allowedKinds.includes(selectedKind))selectedKind=allowedKinds[0];
+        activeLoadKey=selectionKey();
         const kind=selectedKind;
         const recordQuery=resolved=>'/records?'+query({...resolved,kind,page:selectedPage,includeProductCosts:'false',numbers});
         const resolvedCurrency=selection.currency||selection.displayCurrency==='CNY';
@@ -1044,16 +1059,15 @@
       notify(callbackNotice||(errors?`${errors} 项同步需要处理，可在财务店铺管理查看权限或连接问题。`:''));callbackNotice='';
       if(view==='shops'||data?.settlementCalculation?.status==='RUNNING'||data?.cache?.refreshing||data?.productCosts?.processing||(data?.sync||[]).some(s=>['READY','RUNNING','SYNCING'].includes(s.status)))
         refreshTimer=setTimeout(refreshWhenIdle,view==='shops'&&data?.deletions?.some(job=>job.status!=='COMPLETE')?3000:15000);
-    }catch(e){if(run===generation){
+    }catch(e){if(run===generation&&!signal.aborted){
       const changed=mountedView===view&&!!mountedSelection&&mountedSelection!==selectionKey();
       const content=root.querySelector('.fi-content');
       if(changed&&content){content.hidden=true;content.setAttribute('aria-busy','false');}
       const temporary=!e.message||/Internal server error|Failed to fetch|fetch failed|NetworkError|Load failed|timeout|超时/i.test(e.message);
-      const message=temporary?'暂未查到本次查询结果':e.message;
-      notify(message+'，15 秒后自动重试，也可点击刷新。'+(changed?'已隐藏上次筛选的结果。':mountedView===view?'当前显示的是相同条件的上次结果。':''),!temporary);
-      refreshTimer=setTimeout(refreshWhenIdle,15000);
+      const message=temporary?'本次查询连接中断':e.message;
+      notify(message+'。已停止自动重试，可点击刷新重新查询。'+(changed?'已隐藏上次筛选的结果。':mountedView===view?'当前显示的是相同条件的上次结果。':''),true);
     }}
-    finally{if(run===generation)setLoading(false);}
+    finally{if(run===generation){activeLoadKey='';clearInterval(waitingTimer);setLoading(false);}}
   }
   globalThis.FinanceWorkspace={allowed,canManage,enter(route){
     if(!allowed())return;restoreFilters();const wasLive=view==='live';

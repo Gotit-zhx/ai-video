@@ -155,9 +155,9 @@ try{
   heldShop='';pending.splice(0).forEach(resolve=>resolve());await pause();
   failedShop='ph';change('店铺','ph');await ready();
   assert(root.querySelector('.fi-content').hidden,'a failed new-scope request must not show old amounts');
-  assert(root.querySelector('.fi-state').textContent.includes('15 秒后自动重试'));
+  assert(root.querySelector('.fi-state').textContent.includes('已停止自动重试'));
   assert(!root.querySelector('.fi-state').textContent.includes('Internal server error'));
-  assert(!root.querySelector('.fi-state').classList.contains('is-error'),'temporary retry is a neutral status');
+  assert(root.querySelector('.fi-state').classList.contains('is-error'),'an actual failed request must not pretend it is still computing');
   failedShop='';await click('刷新');assertVisible('overview',shops[0]);
   assert(!root.querySelector('.fi-content').hidden,'a successful retry restores the selected results');
   failedShop='ph';await click('刷新');

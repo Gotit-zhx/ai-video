@@ -20,7 +20,7 @@ public class FinanceReadCache {
                 redis.call('set',KEYS[1],ARGV[1],'EX',ARGV[2])
                 redis.call('zadd',KEYS[2],ARGV[3],KEYS[1])
                 redis.call('zremrangebyscore',KEYS[2],'-inf',tonumber(ARGV[3])-tonumber(ARGV[2])*1000)
-                local extra=redis.call('zcard',KEYS[2])-64
+                local extra=redis.call('zcard',KEYS[2])-tonumber(ARGV[4])
                 if extra>0 then
                     local old=redis.call('zrange',KEYS[2],0,extra-1)
                     for _,key in ipairs(old) do redis.call('del',key);redis.call('zrem',KEYS[2],key) end
@@ -30,6 +30,7 @@ public class FinanceReadCache {
                 """,Long.class);
     private static final long FRESH_MS=15_000,MAX_STALE_MS=60_000;
     private static final Duration RETENTION=Duration.ofMinutes(5);
+    private static final int RESPONSE_LIMIT=524_288,FACTS_LIMIT=16*1024*1024,FACTS_STORED_LIMIT=2*1024*1024;
     private final StringRedisTemplate redis;private final ObjectMapper json;private final LongSupplier clock;
     private final Executor executor;private final ExecutorService ownedExecutor;
     private final ConcurrentHashMap<String,CompletableFuture<Map<String,Object>>> pending=new ConcurrentHashMap<>();
@@ -46,13 +47,13 @@ public class FinanceReadCache {
     }
     public Map<String,Object> get(FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){
         String address=address(key);
-        if(address==null)return load.get();
+        if(address==null)return withoutFactRevision(load.get());
         var cached=read(address);
         if(cached!=null){
             long age=Math.max(0,clock.getAsLong()-number(cached.get("built")));
             if(age<=MAX_STALE_MS){
                 String revision;
-                try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){return load.get();}
+                try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){return withoutFactRevision(load.get());}
                 boolean stale=age>FRESH_MS||!revision.equals(Objects.toString(cached.get("dataRevision"),"0"));
                 if(stale)background(address,key,load);
                 return response(cached,stale);
@@ -67,6 +68,78 @@ public class FinanceReadCache {
         try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){return;}
         if(cached==null||clock.getAsLong()-number(cached.get("built"))>FRESH_MS
                 ||!revision.equals(Objects.toString(cached.get("dataRevision"),"0")))background(address,key,load);
+    }
+    /** Raw daily amounts are shared by currency, chart granularity and narrower shop views.
+     * Both revisions fence these reads: never renew the age of an older raw generation. */
+    Map<String,Object> facts(FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){
+        String address=factsAddress(key);
+        if(address==null)return load.get();
+        var cached=freshFacts(address,key.scope());
+        if(cached!=null)return cached;
+        var future=new CompletableFuture<Map<String,Object>>();
+        var existing=pending.putIfAbsent(address,future);
+        if(existing!=null){
+            try{return existing.join();}
+            catch(CompletionException failure){
+                if(failure.getCause() instanceof RuntimeException r)throw r;
+                if(failure.getCause() instanceof Error e)throw e;
+                throw failure;
+            }
+        }
+        try{
+            cached=freshFacts(address,key.scope());
+            if(cached!=null){future.complete(cached);return cached;}
+            String revision;
+            try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){revision="unavailable";}
+            var loaded=load.get();
+            var envelope=Map.<String,Object>of("built",clock.getAsLong(),"data",loaded,"dataRevision",revision);
+            try{
+                byte[] raw=json.writeValueAsString(envelope).getBytes(StandardCharsets.UTF_8);
+                String value=raw.length<=FACTS_LIMIT?compressFacts(raw):null;
+                if(value!=null&&value.length()<=FACTS_STORED_LIMIT)
+                    redis.execute(SAVE,List.of(address,prefix(key.scope())+"facts-entries"),value,"60",
+                            Long.toString(clock.getAsLong()),"16");
+            }catch(RuntimeException unavailable){/* The successful consistent database read remains usable. */}
+            var stamped=stampFacts(envelope);future.complete(stamped);return stamped;
+        }catch(Throwable failure){
+            future.completeExceptionally(failure);
+            if(failure instanceof RuntimeException r)throw r;
+            if(failure instanceof Error e)throw e;
+            throw new CompletionException(failure);
+        }finally{pending.remove(address,future);}
+    }
+    Map<String,Object> findFacts(FinanceSnapshotCache.Key key){
+        String address=factsAddress(key);if(address==null)return null;
+        var cached=freshFacts(address,key.scope());if(cached!=null)return cached;
+        var running=pending.get(address);
+        if(running==null)return null;
+        try{return running.join();}catch(CompletionException failure){return null;}
+    }
+    private String factsAddress(FinanceSnapshotCache.Key key){
+        String address=address(key);if(address==null)return null;
+        // Soft data changes must not start a second expensive scan while this one
+        // is running. The envelope keeps its original revision for stale marking.
+        return address+":facts";
+    }
+    private Map<String,Object> freshFacts(String address,Scope scope){
+        var cached=read(address,FACTS_STORED_LIMIT,true);
+        if(cached==null||Math.max(0,clock.getAsLong()-number(cached.get("built")))>FRESH_MS)return null;
+        try{return Objects.equals(cached.get("dataRevision"),dataRevision(scope))?stampFacts(cached):null;}
+        catch(RuntimeException unavailable){return null;}
+    }
+    private static Map<String,Object> stampFacts(Map<String,Object> envelope){
+        var data=new LinkedHashMap<>(map(envelope.get("data")));
+        data.put("_financeDataRevision",envelope.get("dataRevision"));return data;
+    }
+    private static Map<String,Object> withoutFactRevision(Map<String,Object> data){
+        var copy=new LinkedHashMap<>(data);copy.remove("_financeDataRevision");return copy;
+    }
+    private static String compressFacts(byte[] raw){
+        try{
+            var bytes=new java.io.ByteArrayOutputStream();
+            try(var gzip=new java.util.zip.GZIPOutputStream(bytes)){gzip.write(raw);}
+            return "gz:"+Base64.getEncoder().encodeToString(bytes.toByteArray());
+        }catch(java.io.IOException unavailable){return null;}
     }
     /** Job heartbeat is read outside the amount snapshot so a stopped job never keeps animating. */
     public Map<String,Object> settlementCalculation(Scope scope,List<String> shops){
@@ -114,7 +187,7 @@ public class FinanceReadCache {
             return prefix(key.scope())+revision+":"+digest(key.filter()+"|"+key.cny()+"|"+key.snapshot()+"|"+key.live());
         }catch(RuntimeException unavailable){return null;}
     }
-    static String prefix(Scope scope){return "heyi:finance:snapshot:v14-qianyi-refunds:{"+scope.organizationId()+":"+scope.userId()+"}:";}
+    static String prefix(Scope scope){return "heyi:finance:snapshot:v15-shared-facts:{"+scope.organizationId()+":"+scope.userId()+"}:";}
     private static String revisionKey(Scope scope){return prefix(scope)+"revision";}
     private static String dataRevisionKey(Scope scope){return prefix(scope)+"data-revision";}
     private String dataRevision(Scope scope){return Objects.toString(redis.opsForValue().get(dataRevisionKey(scope)),"0");}
@@ -123,13 +196,24 @@ public class FinanceReadCache {
         catch(Exception impossible){throw new IllegalStateException(impossible);}
     }
     private Map<String,Object> read(String address){
+        return read(address,RESPONSE_LIMIT,false);
+    }
+    private Map<String,Object> read(String address,int limit,boolean compressed){
         try{
             String value=redis.opsForValue().get(address);
-            if(value==null||value.length()>524_288)return null;
+            if(value==null||value.length()>limit)return null;
+            if(compressed){
+                if(!value.startsWith("gz:"))return null;
+                try(var gzip=new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(Base64.getDecoder().decode(value.substring(3))))){
+                    byte[] raw=gzip.readNBytes(FACTS_LIMIT+1);
+                    if(raw.length>FACTS_LIMIT)return null;
+                    value=new String(raw,StandardCharsets.UTF_8);
+                }
+            }
             var envelope=map(json.readerFor(Map.class)
                     .with(tools.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readValue(value));
             return envelope.get("data") instanceof Map<?,?>&&envelope.get("built") instanceof Number?envelope:null;
-        }catch(RuntimeException unavailable){return null;}
+        }catch(RuntimeException|java.io.IOException unavailable){return null;}
     }
     private static Map<String,Object> response(Map<String,Object> envelope,boolean refreshing){
         var result=new LinkedHashMap<>(map(envelope.get("data")));
@@ -154,7 +238,9 @@ public class FinanceReadCache {
         try{
             String revision=null;
             try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){/* Serve the database result. */}
-            var loaded=load.get();
+            var loaded=new LinkedHashMap<>(load.get());
+            Object factsRevision=loaded.remove("_financeDataRevision");
+            if(factsRevision!=null)revision=text(factsRevision);
             // Built time is the time the query finishes, not when it entered a busy queue.
             // Capture the data revision before querying: a batch committed during the
             // read must trigger another refresh, never be labelled already included.
@@ -162,7 +248,7 @@ public class FinanceReadCache {
                     "dataRevision",revision==null?"unavailable":revision);
             try{
                 String value=json.writeValueAsString(envelope);
-                if(revision!=null&&value.getBytes(StandardCharsets.UTF_8).length<=524_288){
+                if(revision!=null&&value.getBytes(StandardCharsets.UTF_8).length<=RESPONSE_LIMIT){
                     save(address,key.scope(),value);
                     // The UI resolves an automatic currency / FX snapshot after its first response.
                     // Save that equivalent key too, without collapsing different explicit filters.
@@ -182,7 +268,7 @@ public class FinanceReadCache {
         finally{pending.remove(address,future);}
     }
     private void save(String address,Scope scope,String value){
-        redis.execute(SAVE,List.of(address,prefix(scope)+"entries"),value,Long.toString(RETENTION.toSeconds()),Long.toString(clock.getAsLong()));
+        redis.execute(SAVE,List.of(address,prefix(scope)+"entries"),value,Long.toString(RETENTION.toSeconds()),Long.toString(clock.getAsLong()),"64");
     }
     @PreDestroy public void stop(){if(ownedExecutor!=null)ownedExecutor.shutdownNow();}
 }

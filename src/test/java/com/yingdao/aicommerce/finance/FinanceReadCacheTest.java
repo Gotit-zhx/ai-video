@@ -60,6 +60,75 @@ class FinanceReadCacheTest {
         assertEquals(new BigDecimal("123456789012345678.123456"),hit.get("amount"));
         assertEquals(false,map(hit.get("cache")).get("refreshing"));
     }
+    @Test void rawFactsCanBeSharedAcrossInstancesButNotRevisionsScopesOrExpiredGenerations(){
+        var k=key("one","",false);var calls=new AtomicInteger();
+        var facts=Map.<String,Object>of("buckets",List.of(Map.of("amount",new BigDecimal("12.345678"))));
+        assertNull(cache.findFacts(k));
+        cache.facts(k,()->{calls.incrementAndGet();return facts;});
+        var other=new FinanceReadCache(redis,new ObjectMapper(),now::get,tasks::add,false);
+        var hit=other.facts(k,()->{fail("raw facts must survive another service instance");return null;});
+        assertEquals(new BigDecimal("12.345678"),rows(hit.get("buckets")).getFirst().get("amount"));
+        assertNull(other.findFacts(key("two","",false)));
+        assertNull(other.findFacts(key("one","",true)));
+        cache.refresh(k.scope());assertNull(other.findFacts(k));
+        other.facts(k,()->facts);cache.invalidate(k.scope());assertNull(other.findFacts(k));
+        other.facts(k,()->facts);now.addAndGet(15_001);assertNull(other.findFacts(k));
+        assertEquals(1,calls.get());
+    }
+    @Test void invalidationDuringRawReadCannotPublishItAsANewGeneration(){
+        var k=key("one","",false);
+        cache.facts(k,()->{cache.refresh(k.scope());return Map.of("amount",1);});
+        assertNull(cache.findFacts(k));
+        cache.facts(k,()->{cache.invalidate(k.scope());return Map.of("amount",2);});
+        assertNull(cache.findFacts(k));
+        assertEquals(3,cache.facts(k,()->Map.of("amount",3)).get("amount"));
+    }
+    @Test void largeRawFactsUseASeparateBoundWithoutExpandingResponseLimits(){
+        var k=key("one","",false);var data=Map.<String,Object>of("buckets",List.of(),"payload","x".repeat(600_000));
+        cache.facts(k,()->data);assertNotNull(cache.findFacts(k));
+        cache.refresh(k.scope());
+        cache.facts(k,()->Map.of("payload","x".repeat(16*1024*1024)));assertNull(cache.findFacts(k));
+    }
+    @Test void rawReadFailureDoesNotPoisonTheNextAttempt(){
+        var k=key("one","",false);
+        assertThrows(IllegalStateException.class,()->cache.facts(k,()->{throw new IllegalStateException("unavailable");}));
+        assertEquals(2,cache.facts(k,()->Map.of("amount",2)).get("amount"));
+    }
+    @Test void rawCalendarDatesSurviveRedisWithoutTimezoneOrTimestampCoercion(){
+        var k=key("one","",false);
+        var rows=FinanceService.dailyFactRows(List.of(Map.of("record_date",java.sql.Date.valueOf("2026-10-01"),
+                "amount",new BigDecimal("0.123456"))));
+        cache.facts(k,()->Map.of("buckets",rows));
+        var restored=rows(cache.findFacts(k).get("buckets")).getFirst();
+        assertEquals(LocalDate.of(2026,10,1),LocalDate.parse(text(restored.get("record_date"))));
+        assertEquals(new BigDecimal("0.123456"),restored.get("amount"));
+    }
+    @Test void newDataRevisionJoinsTheRunningFactsReadAndRemainsExplicitlyStale()throws Exception{
+        var raw=key("one","",false);var firstStarted=new CountDownLatch(1);var release=new CountDownLatch(1);
+        var joined=new CountDownLatch(1);var calls=new AtomicInteger();
+        try(var executor=Executors.newVirtualThreadPerTaskExecutor()){
+            var first=executor.submit(()->cache.get(key("one","PHP",false),()->cache.facts(raw,()->{
+                calls.incrementAndGet();firstStarted.countDown();
+                try{assertTrue(release.await(3,TimeUnit.SECONDS));}catch(InterruptedException e){throw new RuntimeException(e);}
+                return data("1");
+            })));
+            assertTrue(firstStarted.await(2,TimeUnit.SECONDS));cache.refresh(raw.scope());
+            var second=executor.submit(()->cache.get(key("one","THB",false),()->{
+                joined.countDown();return cache.facts(raw,()->{calls.incrementAndGet();return data("2");});
+            }));
+            assertTrue(joined.await(2,TimeUnit.SECONDS));
+            assertThrows(TimeoutException.class,()->second.get(30,TimeUnit.MILLISECONDS));
+            release.countDown();
+            for(var future:List.of(first,second)){
+                var result=future.get(2,TimeUnit.SECONDS);
+                assertEquals(new BigDecimal("1"),decimal(result.get("amount")));
+                assertEquals(true,map(result.get("cache")).get("refreshing"));
+                assertFalse(result.containsKey("_financeDataRevision"));
+            }
+            assertEquals(1,calls.get(),"worker batches must not multiply the same in-flight SQL");
+            assertNull(cache.findFacts(raw),"a completed older generation is not a new fresh snapshot");
+        }
+    }
     @Test void staleReturnsImmediatelyAndSchedulesOnlyOneRefresh(){
         cache.get(key("one","PHP",false),()->data("1"));now.addAndGet(16_000);
         var calls=new AtomicInteger();
