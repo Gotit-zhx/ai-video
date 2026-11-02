@@ -233,6 +233,8 @@ let aiVideoTasks = [];
 let aiVideoTaskSearchQuery = "";
 let selectedAiVideoTaskId = null;
 let aiVideoTaskDetail = null;
+let activeAiVideoDownload = null;
+const aiVideoDownloadResults = new Map();
 let aiVideoTaskPollTimer = null;
 let aiVideoTaskPollInFlight = false;
 let aiVideoTaskLoadGeneration = 0;
@@ -11911,7 +11913,6 @@ function renderAiVideoTaskDetail(options = {}) {
   const startButton = document.querySelector("#generate-shot-images");
   const retryFailedButton = document.querySelector("#retry-failed-videos");
   const upload = document.querySelector("#batch-garment-upload");
-  const batchDownloadButton = document.querySelector("#batch-download-videos");
   const canManageVideoTasks = hasAnyPermission("video:task:manage");
   startButton.hidden = !canManageVideoTasks;
   retryFailedButton.hidden = true;
@@ -11934,8 +11935,7 @@ function renderAiVideoTaskDetail(options = {}) {
     startButton.disabled = true;
     startButton.classList.remove("is-background-processing");
     upload.disabled = true;
-    batchDownloadButton.disabled = true;
-    batchDownloadButton.textContent = "↓ 批量下载视频";
+    renderAiVideoDownloadState();
     renderAiVideoEmpty("等待任务", "选择一个任务后查看衣服素材和生成结果。");
     return;
   }
@@ -11995,10 +11995,7 @@ function renderAiVideoTaskDetail(options = {}) {
   const allVideosReady = detail.items.length > 0 && detail.items.every(item => (assetsByItem.get(item.id) || []).some(asset => asset.assetType === "VIDEO_RESULT"));
   const failedVideoItems = detail.items.filter(item => item.status === "VIDEO_FAILED");
   const completedVideoCount = detail.items.filter(item => (assetsByItem.get(item.id) || []).some(asset => asset.assetType === "VIDEO_RESULT")).length;
-  batchDownloadButton.disabled = completedVideoCount === 0;
-  batchDownloadButton.textContent = completedVideoCount === 1 ? "↓ 下载视频"
-    : completedVideoCount > 1 ? `↓ 打包下载视频（${completedVideoCount}）`
-      : "↓ 暂无可下载视频";
+  renderAiVideoDownloadState();
   const hasFailedVideos = failedVideoItems.length > 0;
   retryFailedButton.hidden = !canManageVideoTasks || !hasFailedVideos;
   retryFailedButton.disabled = generating;
@@ -12880,32 +12877,75 @@ document.querySelector("#batch-garment-upload").addEventListener("change", async
   }
 });
 
+function aiVideoDownloadFiles() {
+  const detail = aiVideoTaskDetail;
+  if (!detail?.task?.id || detail.task.id !== selectedAiVideoTaskId) return [];
+  const items = new Map((detail.items || []).map(item => [item.id, item.name]));
+  return [...new Map((detail.assets || []).filter(asset => asset.assetType === "VIDEO_RESULT")
+    .map(asset => [asset.id, asset])).values()].map((asset, index) => {
+      const name = `${detail.task.name || "AI 视频"}-${String(index + 1).padStart(2, "0")}-${items.get(asset.itemId) || "成片"}`
+        .replace(/[\\/:*?"<>|\r\n]+/g, "-").trim().slice(0, 150) + ".mp4";
+      const url = new URL(aiVideoAssetUrl(detail.task.id, asset.id, asset.createdAt), window.location.href);
+      url.searchParams.set("download", "true");
+      url.searchParams.set("filename", name);
+      return { id: asset.id, url: url.href, filename: name, size: Number(asset.sizeBytes) || 0 };
+    });
+}
+
+function renderAiVideoDownloadState() {
+  const button = document.querySelector("#batch-download-videos");
+  const status = document.querySelector("#batch-video-download-status");
+  const files = aiVideoDownloadFiles();
+  const result = aiVideoDownloadResults.get(selectedAiVideoTaskId);
+  const failed = result?.failed.filter(file => files.some(current => current.id === file.id)) || [];
+  button.disabled = Boolean(activeAiVideoDownload) || files.length === 0;
+  button.setAttribute("aria-busy", String(Boolean(activeAiVideoDownload)));
+  button.textContent = activeAiVideoDownload
+    ? `正在下载 ${activeAiVideoDownload.index}/${activeAiVideoDownload.count}`
+    : failed.length ? `↻ 重试失败视频（${failed.length}）`
+      : files.length ? `↓ ${files.length === 1 ? "下载视频" : `逐个下载视频（${files.length}）`}` : "↓ 暂无可下载视频";
+  const permissionNote = "若浏览器提示，请允许下载多个文件。";
+  status.textContent = activeAiVideoDownload
+    ? `${activeAiVideoDownload.taskName}：${activeAiVideoDownload.filename || "正在准备"}${activeAiVideoDownload.percent ? ` · ${activeAiVideoDownload.percent}%` : ""}。${permissionNote}`
+    : result ? `已发起 ${result.succeeded.length} 个视频下载。${failed.length
+      ? `${failed.length} 个未下载：${failed.map(file => `${file.filename}（${file.error}）`).join("；")}。点击按钮只重试失败项。`
+      : permissionNote}` : "";
+  status.hidden = !status.textContent;
+}
+
 document.querySelector("#batch-download-videos").addEventListener("click", async event => {
-  const button = event.currentTarget;
-  if (!selectedAiVideoTaskId || button.disabled) return;
-  const videos = (aiVideoTaskDetail?.assets || []).filter(asset => asset.assetType === "VIDEO_RESULT");
-  if (videos.length === 1) {
-    const video = videos[0];
-    await downloadImageAsset(button, aiVideoAssetUrl(selectedAiVideoTaskId, video.id, video.createdAt),
-      `${aiVideoTaskDetail?.task?.name || "AI 视频"}-成片`);
-    return;
+  if (!selectedAiVideoTaskId || event.currentTarget.disabled || activeAiVideoDownload) return;
+  const taskId = selectedAiVideoTaskId;
+  let files = aiVideoDownloadFiles();
+  const previous = aiVideoDownloadResults.get(taskId);
+  const retryIds = new Set(previous?.failed.map(file => file.id) || []);
+  const retrying = files.some(file => retryIds.has(file.id));
+  if (retrying) files = files.filter(file => retryIds.has(file.id));
+  if (!files.length) return;
+  activeAiVideoDownload = { taskId, taskName: aiVideoTaskDetail.task.name, index: 1, count: files.length };
+  renderAiVideoDownloadState();
+  try {
+    const result = await window.HeyVideoDownloads.run(files, {
+      onProgress: progress => {
+        Object.assign(activeAiVideoDownload, {
+          index: progress.index, filename: progress.file.filename,
+          percent: progress.total > 0 ? Math.min(100, Math.floor(progress.received * 100 / progress.total)) : 0
+        });
+        renderAiVideoDownloadState();
+      },
+      onAuthExpired: handleSessionExpired
+    });
+    if (retrying) result.succeeded = [...new Set([...previous.succeeded, ...result.succeeded])];
+    aiVideoDownloadResults.set(taskId, result);
+  } catch (_error) {
+    aiVideoDownloadResults.set(taskId, {
+      succeeded: retrying ? previous.succeeded : [],
+      failed: files.map(file => ({ ...file, error: "下载未完成，请刷新页面后重试" }))
+    });
+  } finally {
+    activeAiVideoDownload = null;
+    renderAiVideoDownloadState();
   }
-  if (!videos.length) return;
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = "正在准备 ZIP…";
-  const link = document.createElement("a");
-  link.href = `/api/v1/ai-video-tasks/${encodeURIComponent(selectedAiVideoTaskId)}/video-results.zip`;
-  link.download = "";
-  link.target = "_blank";
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => {
-    button.disabled = false;
-    button.textContent = original;
-  }, 2500);
 });
 
 document.querySelector("#garment-card-grid").addEventListener("change", async event => {

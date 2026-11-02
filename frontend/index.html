@@ -616,10 +616,12 @@
           <div class="batch-group-bar">
             <div class="batch-task-context"><strong id="ai-video-task-market">未设置目标市场</strong><span>当前任务的商品素材与生成结果</span></div>
             <div class="batch-group-actions">
-              <button class="batch-video-download-button" id="batch-download-videos" type="button" disabled title="将已完成的视频成片打包为 ZIP">↓ 批量下载视频</button>
+              <button class="batch-video-download-button" id="batch-download-videos" type="button" disabled title="将已完成的视频逐个下载为独立 MP4 文件">↓ 批量下载视频</button>
               <label class="batch-upload-button" id="batch-garment-upload-label"><input id="batch-garment-upload" type="file" accept="image/*" multiple><span id="batch-upload-label-text">＋ 批量上传商品</span></label>
             </div>
           </div>
+
+          <p id="batch-video-download-status" role="status" aria-live="polite" hidden style="margin: 0 24px 16px; color: #64748b; font-size: 13px; overflow-wrap: anywhere;"></p>
 
           <section class="garment-board">
             <header>
@@ -2020,7 +2022,8 @@
   <script src="/product-listing-templates.js?v=20261023-tiktok-warehouse-1" defer></script>
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
-  <script src="/app.js?v=20261029-size-chart-repair" defer></script>
+  <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
+  <script src="/app.js?v=20261102-direct-download-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261021-incremental-1" defer></script>

@@ -1236,6 +1236,15 @@ public class AiVideoTaskService {
         return Files.newInputStream(file.path());
     }
 
+    public InputStream openVideoDownload(AssetFile file) {
+        try {
+            return openVideoBatchFile(new VideoBatchFile(file.path(), file.location(), "video.mp4", file.size()));
+        } catch (IOException | RuntimeException exception) {
+            throw new BusinessException(HttpStatus.BAD_GATEWAY,
+                    "视频源文件暂时无法读取，下载链接可能已过期，请稍后重试");
+        }
+    }
+
     public PreparedVideoBatch prepareVideoBatch(VideoBatch batch) {
         Path directory = storageRoot.resolve("_download-archives").normalize();
         if (!directory.startsWith(storageRoot)) {

@@ -11,6 +11,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
@@ -204,6 +205,18 @@ public class AiVideoTaskController {
                                    @AuthenticationPrincipal PlatformPrincipal principal) {
         AiVideoTaskService.AssetFile file = service.asset(taskId, assetId, principal);
         if (file.location() != null) {
+            if (download && file.contentType() != null && file.contentType().startsWith("video/")) {
+                // Return the bytes on our authenticated origin. Cross-origin redirects
+                // can open a player or fail CORS instead of saving the requested video.
+                InputStreamResource resource = new InputStreamResource(service.openVideoDownload(file));
+                ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                        .cacheControl(CacheControl.noStore()).contentType(mediaType(file.contentType()))
+                        .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                                .filename(downloadFilename(filename, java.nio.file.Path.of("video.mp4")), StandardCharsets.UTF_8)
+                                .build().toString());
+                if (file.size() > 0) response.contentLength(file.size());
+                return response.body(resource);
+            }
             boolean imagePreview = preview && !download && file.contentType() != null
                     && file.contentType().startsWith("image/");
             return ResponseEntity.status(HttpStatus.TEMPORARY_REDIRECT)
