@@ -11,7 +11,7 @@
   const paths={chart:'M4 19h16M7 15v-4m5 4V5m5 10V8',download:'M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4',refresh:'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 3M18 17a7 7 0 0 1-12 2l-2-3',shop:'M3 10h18l-2-7H5zM5 10v11h14V10M9 21v-7h6v7',wallet:'M3 6h18v15H3zM3 6V3h15v3M16 12h5v5h-5z',arrow:'M7 17 17 7M7 7h10v10',refund:'m9 6-5 5 5 5M4 11h10a5 5 0 0 1 0 10',ad:'m3 11 15-6v14L3 14zM6 15v6h4v-5M21 9v6',fee:'M7 3h10l4 4v14H3V7zM8 9h8M8 13h8M8 17h5',info:'M12 11v6M12 7v1M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',plus:'M12 4v16M4 12h16',check:'m5 12 4 4 10-10'};
   let callbackNotice='';const callbackParams=new URLSearchParams(location.search);if(callbackParams.has('financeAuth')){callbackNotice=callbackParams.get('financeMessage')||(callbackParams.get('financeAuth')==='success'?'财务店铺已连接':'财务授权未完成');callbackParams.delete('financeAuth');callbackParams.delete('financeMessage');history.replaceState(null,'',location.pathname+(callbackParams.size?'?'+callbackParams:'')+location.hash);}
   let active=false,generation=0,mountedGeneration=0,view='overview',data=null,chartPromise,charts=[],observer,themeObserver,refreshTimer=null,clockTimer=null,page=1,selectedKind='ORDER',mountedView='',loadController=null,mountedSelection='';
-  let activeLoadKey='',waitingTimer=null,shopSyncFilter='ALL';
+  let activeLoadKey='',waitingTimer=null,shopMonthFilter='ALL',shopSearch='';
   const dateText=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const today=()=>dateText(new Date()),ago=n=>{const d=new Date();d.setDate(d.getDate()-n);return dateText(d);};
   function dateGranularity(start,end){const days=Math.round((Date.parse(end)-Date.parse(start))/86400000)+1;return days<=45?'day':days<=200?'week':days<=400?'month':days<=900?'quarter':days<=1500?'halfyear':'year';}
@@ -129,7 +129,7 @@
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选店铺和日期…';n.title=filters.start+' 至 '+filters.end;}}
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){qianyiCleanup?.();qianyiCleanup=null;mountedSelection='';root.classList.remove('fi-selection-pending');clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
-  function reset(){shopSyncFilter='ALL';qianyiSelection={};active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
+  function reset(){shopMonthFilter='ALL';shopSearch='';qianyiSelection={};active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
   function leave(){active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();}
   function refreshWhenIdle(){
     if(!active)return;
@@ -528,6 +528,27 @@
   const syncChannel=channel=>({ORDER_LIVE:'最新订单',ORDER:'历史订单',ORDER_REPAIR:'结算订单补齐'})[channel]||kinds[channel]||channel;
   const syncExecution=state=>state.execution_state||state.status;
   const initialIncomplete=channels=>channels.some(s=>['ORDER','SETTLEMENT'].includes(s.channel)&&(s.initial_sync_complete===false||s.initial_sync_complete==null&&!s.last_success_at));
+  function shopPreviousMonth(shop,channels){
+    const required=['ORDER','SETTLEMENT'].map(channel=>({channel,state:channels.find(s=>s.channel===channel)}));
+    const months=[...new Set(required.map(r=>r.state?.previous_month).filter(v=>/^\d{4}-\d{2}$/.test(v||'')))];
+    const month=months.length===1?months[0]:'';
+    const missing=required.filter(r=>!month||r.state?.previous_month!==month||r.state?.previous_month_checked!==true||r.state?.previous_month_complete!==true);
+    return {month,complete:missing.length===0,note:missing.length
+      ?missing.map(r=>r.state?.previous_month_reason||syncChannel(r.channel)+'的上月明细尚未核验完成').join('；')
+      :month+' · 上月订单、结算扫描已完成，未发现上月待补齐账单；平台后续变动仍会自动更新'};
+  }
+  function filterShopRows(parent=root){
+    const words=shopSearch.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const rows=[...parent.querySelectorAll('.fi-shops-table tbody tr')];let visible=0;
+    for(const row of rows){
+      const complete=row.dataset.monthComplete==='true';
+      row.hidden=!(shopMonthFilter==='ALL'||(shopMonthFilter==='COMPLETE'?complete:!complete))
+        ||!words.every(word=>(row.dataset.shopSearch||'').includes(word));
+      if(!row.hidden)visible++;
+    }
+    const count=parent.querySelector('.fi-shop-results');if(count)count.textContent=`当前分组 ${rows.length} 家 · 符合条件 ${visible} 家`;
+    const empty=parent.querySelector('.fi-shop-no-match');if(empty)empty.hidden=!rows.length||visible>0;
+  }
   function syncStateLabel(state){
     const execution=syncExecution(state);
     return ({RUNNING:'正在抓取',QUEUED:'排队等待',WAITING_SHOP:'等待本店其他项目',API_WAIT:'等待平台请求间隔',RETRY_WAIT:'异常退避等待',RATE_LIMITED:'平台限流等待',SCHEDULED:state.status==='SYNCING'?'分页间隔等待':'等待计划时间',SUCCESS:'本轮已完成',DISABLED:'已暂停'})[execution]||statusName(state.status);
@@ -562,12 +583,13 @@
     data={...(data||{}),shops:res.items,sync:res.sync,groups:res.groups||[],deletions:res.deletions||[]};parent.style.display='grid';parent.style.gap='15px';
     const groupedShops=res.items.filter(inGroup),ids=new Set(groupedShops.map(s=>s.id)),groupedStates=res.sync.filter(s=>ids.has(s.shop_id));
     const byShop=new Map(groupedShops.map(s=>[s.id,groupedStates.filter(r=>r.shop_id===s.id)]));
+    const months=new Map(groupedShops.map(s=>[s.id,shopPreviousMonth(s,byShop.get(s.id))]));
     const executing=groupedStates.filter(s=>syncExecution(s)==='RUNNING');
     const prioritized=groupedShops.filter(s=>byShop.get(s.id).some(r=>r.shop_priority_requested_at))
       .sort((a,b)=>Date.parse(byShop.get(a.id).find(s=>s.shop_priority_requested_at).shop_priority_requested_at)-Date.parse(byShop.get(b.id).find(s=>s.shop_priority_requested_at).shop_priority_requested_at)||a.id.localeCompare(b.id));
     const enabledCount=res.items.filter(r=>Number(r.enabled)===1||r.enabled===true).length;
     const mini=el('div',null,parent,'fi-mini-stats fi-shop-stats');
-    for(const [value,label,sub]of[[res.items.length,'独立授权店铺','公司全部财务店铺'],[enabledCount,'已开启财务同步','公司全部已开启同步的店铺'],[executing.length,'正在抓取','当前分组 · 实际执行中的项目'],[groupedShops.filter(s=>initialIncomplete(byShop.get(s.id))).length,'历史首次补齐未完成','当前分组 · 历史订单或结算首轮未完成'],[prioritized.length,'优先同步店铺','当前分组 · 从原进度优先继续']]){const n=el('div',null,mini);el('span',label,n);el('strong',value,n);el('span',sub,n);}
+    for(const [value,label,sub]of[[res.items.length,'独立授权店铺','公司全部财务店铺'],[enabledCount,'已开启财务同步','公司全部已开启同步的店铺'],[groupedShops.filter(s=>months.get(s.id).complete).length,'上月已完成','当前分组 · 订单与结算整轮同步记录'],[executing.length,'正在抓取','当前分组 · 实际执行中的项目'],[groupedShops.filter(s=>initialIncomplete(byShop.get(s.id))).length,'历史首次补齐未完成','当前分组 · 历史订单或结算首轮未完成'],[prioritized.length,'优先同步店铺','当前分组 · 从原进度优先继续']]){const n=el('div',null,mini);el('span',label,n);el('strong',value,n);el('span',sub,n);}
     const activity=card(parent,'当前同步进度','自动刷新 · 优先请求按先后排队；平台限流时会等待，其他可执行店铺继续推进',12).n;
     const activityList=el('div',null,activity,'fi-sync-activity');
     for(const state of executing){
@@ -589,18 +611,16 @@
     }
     button('千易售后明细',groupTools,()=>FinanceQianyi.openReturns({request,shops:data.shops,groups:data.groups,selection:{groupId:filters.groupId}}));
     const filterTools=el('div',null,n,'fi-sync-filters');
-    select(filterTools,'同步进度',[['ALL','全部店铺'],['INCOMPLETE','历史首次补齐未完成'],['RUNNING','正在抓取'],['PRIORITY','优先同步'],['QUEUED','排队等待'],['WAIT','限流 / 异常等待']],shopSyncFilter,value=>{shopSyncFilter=value;load();});
-    el('span','排队序号按同公司、同平台实时计算；最近成功只代表其中一项完成。',filterTools,'fi-muted');
-    const visibleShops=groupedShops.filter(shop=>{
-      const channels=byShop.get(shop.id);
-      return shopSyncFilter==='ALL'||shopSyncFilter==='INCOMPLETE'&&initialIncomplete(channels)
-        ||shopSyncFilter==='PRIORITY'&&channels.some(s=>s.shop_priority_requested_at)
-        ||shopSyncFilter==='RUNNING'&&channels.some(s=>syncExecution(s)==='RUNNING')
-        ||shopSyncFilter==='QUEUED'&&channels.some(s=>['QUEUED','WAITING_SHOP','API_WAIT'].includes(syncExecution(s)))
-        ||shopSyncFilter==='WAIT'&&channels.some(s=>['RATE_LIMITED','RETRY_WAIT'].includes(syncExecution(s)));
-    });
-    const shopTable=table(n,['店铺 / 平台','店铺分组','国家','币种 / 时区','授权','财务同步','最近单项成功','操作'],visibleShops.map(shop=>{
+    select(filterTools,'上月完成情况',[['ALL','全部店铺'],['COMPLETE','上月已完成'],['INCOMPLETE','上月未完成']],shopMonthFilter,value=>{shopMonthFilter=value;filterShopRows();});
+    const searchLabel=el('label',null,filterTools,'fi-shop-search');searchLabel.dataset.updateKey='shop-search';el('span','查询店铺',searchLabel);
+    const search=el('input',null,searchLabel);search.type='search';search.setAttribute('value',shopSearch);search.setAttribute('aria-label','查询店铺');search.placeholder='名称 / 别名 / 店铺编号';search.maxLength=120;
+    search.oninput=event=>{shopSearch=event.currentTarget.value;filterShopRows();};
+    button('清空',filterTools,()=>{shopSearch='';const input=root.querySelector('.fi-shop-search input');if(input)input.value='';filterShopRows();});
+    el('span','',filterTools,'fi-muted fi-shop-results');
+    const shopTable=table(n,['店铺 / 平台','店铺分组','国家','币种 / 时区','授权','财务同步','最近单项成功','操作'],groupedShops.map(shop=>{
       const name=el('div',null,null,'fi-platform'+(shop.platform==='SHOPEE'?' shopee':''));el('i',shop.platform==='SHOPEE'?'S':'TK',name);const c=el('div',null,name);el('span',shop.display_name||shop.name,c,'fi-shop-name');el('small',shop.external_shop_id,c);
+      const month=months.get(shop.id),monthTag=el('span',(month.complete?'上月已完成':'上月未完成')+(month.month?' · '+month.month:''),c,'fi-status fi-shop-month'+(month.complete?' success':''));
+      monthTag.title=month.note;
       const currency=el('div',shop.currency||'待配置');el('small',shop.timezone,currency);
       const channels=byShop.get(shop.id);const sync=el('div',null,null,'fi-shop-sync');
       let progress=sync;
@@ -630,8 +650,14 @@
       const controls=el('div',null,null,'fi-shop-controls');if(canManage()){button('配置',controls,()=>shopDialog(shop));button('立即同步',controls,async b=>{b.disabled=true;try{const message=await request('/shops/'+encodeURIComponent(shop.id)+'/sync',{method:'POST'});notify(message);setTimeout(()=>{if(active)load();},1000);}finally{b.disabled=false;}}).disabled=!shop.enabled;
       button('重新授权',controls,()=>authorizeDialog(shop));button('移除',controls,()=>removeShopDialog(shop));}else el('span','只读',controls,'fi-muted');
       return [name,groupName(shop.group_id),shop.region||'—',currency,badge(shop.authorization_status),sync,shop.last_success_at?new Date(shop.last_success_at).toLocaleString('zh-CN'):'尚未完成',controls];
-    }),groupedShops.length?'当前筛选没有符合条件的店铺。':'尚未配置财务店铺。点击右上角「连接店铺」，授权成功后自动开启同步。',visibleShops.map(s=>s.id));
+    }),'尚未配置财务店铺。点击右上角「连接店铺」，授权成功后自动开启同步。',groupedShops.map(s=>s.id));
     shopTable.classList.add('fi-shops-table');
+    [...shopTable.tBodies[0].rows].forEach((row,i)=>{
+      const shop=groupedShops[i];row.dataset.monthComplete=String(months.get(shop.id).complete);
+      row.dataset.shopSearch=[shop.display_name,shop.alias,shop.name,shop.external_shop_id,shop.id,shop.region,shop.platform,groupName(shop.group_id)].filter(Boolean).join(' ').toLocaleLowerCase();
+    });
+    el('p','当前筛选没有符合条件的店铺。',n,'fi-empty fi-shop-no-match');
+    filterShopRows(parent);
     if(data.deletions.length){
       const progress=card(parent,'店铺数据删除进度','后台分批清理，中断自动续接；共享成本表和其他店铺保留',12).n;
       table(progress,['店铺 / 任务','状态','已清理记录','提交时间'],data.deletions.map(job=>[

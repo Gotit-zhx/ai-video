@@ -94,7 +94,7 @@ public class FinanceService {
         var rows=repo.jdbc().queryForList("""
             SELECT st.shop_id,st.channel,st.status,st.error_message,st.next_at,st.last_success_at,st.coverage_start,
               st.lease_until,st.failures,st.priority_requested_at,st.last_progress_at,
-              c.platform,c.enabled,c.status connection_status,
+              c.platform,c.enabled,c.timezone,c.status connection_status,
               CASE WHEN st.channel='ORDER_REPAIR' THEN 'ORDER_ID' ELSE 'TIME_RANGE' END progress_mode,
               CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.from')),'0') END window_start,
               CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.to')),'0') END window_end,
@@ -108,8 +108,18 @@ public class FinanceService {
             ) pending ON pending.shop_id=st.shop_id
             WHERE st.organization_id=? AND c.status<>'REMOVED' ORDER BY st.shop_id,st.channel
             """,s.organizationId(),s.organizationId());
-        return FinanceSyncProgress.describe(rows,repo.jdbc().queryForList(
-            "SELECT platform,channel,next_allowed_at FROM finance_api_pacing"),Instant.now());
+        Instant now=Instant.now();
+        // A bounded indexed check over open bills, not a scan of transaction details.
+        // Two preceding UTC months cover the prior local month at timezone boundaries.
+        LocalDate month=now.atZone(ZoneOffset.UTC).toLocalDate().withDayOfMonth(1);
+        var openBills=repo.jdbc().queryForList("""
+            SELECT shop_id,record_date,COUNT(*) bills FROM finance_records
+            WHERE organization_id=? AND kind='BILL' AND source='API'
+              AND status IN ('PARTIAL','DATE_PENDING') AND record_date>=? AND record_date<?
+            GROUP BY shop_id,record_date
+            """,s.organizationId(),month.minusMonths(2),month.plusMonths(1));
+        return FinanceSyncMonth.describe(FinanceSyncProgress.describe(rows,repo.jdbc().queryForList(
+            "SELECT platform,channel,next_allowed_at FROM finance_api_pacing"),now),openBills,now);
     }
     @Transactional
     public void sync(Scope s,String shopId){
