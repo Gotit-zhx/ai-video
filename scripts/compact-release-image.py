@@ -28,7 +28,7 @@ def quoted(value):
 
 def changes(config):
     supported = {"Env", "Labels", "Entrypoint", "Cmd", "User", "WorkingDir",
-                 "ExposedPorts", "Volumes"}
+                 "ExposedPorts", "Volumes", "StopSignal"}
     unsupported = {k for k, v in config.items() if v and k not in supported}
     if unsupported or config.get("Volumes"):
         raise ValueError("Image has volumes or unsupported metadata; refusing compaction")
@@ -45,6 +45,8 @@ def changes(config):
         result.append("USER " + config["User"])
     if config.get("WorkingDir"):
         result.append("WORKDIR " + config["WorkingDir"])
+    if config.get("StopSignal"):
+        result.append("STOPSIGNAL " + config["StopSignal"])
     for port in config.get("ExposedPorts") or {}:
         result.append("EXPOSE " + port)
     return result

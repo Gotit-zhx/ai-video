@@ -17,9 +17,13 @@ public class FinanceSync {
     private final java.util.concurrent.ScheduledExecutorService worker=java.util.concurrent.Executors.newScheduledThreadPool(4,r->{var t=new Thread(r,"finance-shop-sync");t.setDaemon(true);return t;});
     private final java.util.concurrent.ScheduledExecutorService heartbeat=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"finance-sync-lease");t.setDaemon(true);return t;});
     public FinanceSync(FinanceRepository repo,FinanceMarketplace marketplace){this.repo=repo;this.marketplace=marketplace;this.claims=new FinanceSyncClaims(repo);}
-    @PostConstruct public void start(){for(int slot=0;slot<4;slot++)worker.scheduleWithFixedDelay(()->{try{tick();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance shop sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance sync dispatcher temporarily unavailable",e);}},30_000+slot*250,1000,java.util.concurrent.TimeUnit.MILLISECONDS);}
+    @PostConstruct public void start(){for(int slot=0;slot<4;slot++)worker.scheduleWithFixedDelay(()->{try{dispatch();if(verified.compareAndSet(false,true))org.slf4j.LoggerFactory.getLogger(getClass()).info("Finance shop sync ready");}catch(Exception e){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Finance sync dispatcher temporarily unavailable",e);}},30_000+slot*250,1000,java.util.concurrent.TimeUnit.MILLISECONDS);}
     @PreDestroy public void stop(){worker.shutdownNow();heartbeat.shutdownNow();}
-    public void tick(){
+    public void tick(){runNext();}
+    // Fill existing worker capacity without an extra idle second after every
+    // completed page. Each new claim rechecks priority, shop delay and API budgets.
+    void dispatch(){for(int i=0;i<4&&!Thread.currentThread().isInterrupted();i++)if(!runNext())return;}
+    private boolean runNext(){
         if(!repairRegistered.get()){
             repo.jdbc().update("""
                 INSERT IGNORE INTO finance_sync_states(organization_id,user_id,shop_id,channel)
@@ -28,7 +32,7 @@ public class FinanceSync {
                 """);
             repairRegistered.set(true);
         }
-        var claim=claims.claim();if(claim==null)return;
+        var claim=claims.claim();if(claim==null)return false;
         var row=claim.row();Scope s=new Scope(text(row.get("organization_id")),text(row.get("user_id")));
         Object[] keys={s.organizationId(),s.userId(),row.get("shop_id"),row.get("channel"),claim.token()};
         String where="organization_id=? AND user_id=? AND shop_id=? AND channel=? AND lease_token=?";
@@ -93,11 +97,12 @@ public class FinanceSync {
                 // orders arriving while a long page chain runs must be fetched next time.
                 Instant completedThrough=live||"REFUND".equals(row.get("channel"))?Instant.ofEpochSecond(number(cp.get("until"))):Instant.now();
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=NULL,status='SUCCESS',error_message=NULL,failures=0,"
-                        +"lease_until=NULL,lease_token=NULL,last_success_at=?,coverage_start=COALESCE(coverage_start,?),next_at=? WHERE "+where,
+                        +"lease_until=NULL,lease_token=NULL,priority_requested_at=NULL,last_progress_at=UTC_TIMESTAMP(6),"
+                        +"last_success_at=?,coverage_start=COALESCE(coverage_start,?),next_at=? WHERE "+where,
                         Timestamp.from(completedThrough),cp.get("coverage"),Timestamp.from(Instant.now().plusSeconds(seconds)),keys[0],keys[1],keys[2],keys[3],keys[4]);
             }else{
                 repo.jdbc().update("UPDATE finance_sync_states SET checkpoint_json=?,status='SYNCING',error_message=NULL,failures=0,"
-                        +"lease_until=NULL,lease_token=NULL,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 2 SECOND) WHERE "+where,
+                        +"lease_until=NULL,lease_token=NULL,last_progress_at=UTC_TIMESTAMP(6),next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 2 SECOND) WHERE "+where,
                         repo.write(next),keys[0],keys[1],keys[2],keys[3],keys[4]);
             }
         }catch(Exception failure){
@@ -119,6 +124,7 @@ public class FinanceSync {
             repo.jdbc().update("UPDATE finance_sync_states SET status=?,error_message=?,failures=failures+1,lease_until=NULL,lease_token=NULL,next_at=? WHERE "+where,
                     limited?"RATE_LIMITED":"ERROR",message,Timestamp.from(retry),keys[0],keys[1],keys[2],keys[3],keys[4]);
         }finally{renewal.cancel(false);claim.close();}
+        return true;
     }
     static String publicError(Throwable failure){
         var seen=Collections.newSetFromMap(new IdentityHashMap<Throwable,Boolean>());

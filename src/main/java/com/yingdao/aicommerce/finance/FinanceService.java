@@ -91,27 +91,39 @@ public class FinanceService {
         return syncStates(s).stream().filter(row->ids.contains(text(row.get("shop_id")))).toList();
     }
     public List<Map<String,Object>> syncStates(Scope s){
-        return repo.jdbc().queryForList("""
+        var rows=repo.jdbc().queryForList("""
             SELECT st.shop_id,st.channel,st.status,st.error_message,st.next_at,st.last_success_at,st.coverage_start,
+              st.lease_until,st.failures,st.priority_requested_at,st.last_progress_at,
+              c.platform,c.enabled,c.status connection_status,
               CASE WHEN st.channel='ORDER_REPAIR' THEN 'ORDER_ID' ELSE 'TIME_RANGE' END progress_mode,
               CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.from')),'0') END window_start,
               CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.to')),'0') END window_end,
               CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.until')),'0') END target_until,
-              CASE WHEN st.channel='SETTLEMENT' THEN (SELECT COUNT(*) FROM finance_records p
-                WHERE p.organization_id=st.organization_id AND p.shop_id=st.shop_id
-                  AND p.kind='BILL' AND p.source='API' AND p.status='DATE_PENDING') ELSE 0 END pending_date_bills
+              CASE WHEN st.channel='SETTLEMENT' THEN COALESCE(pending.bills,0) ELSE 0 END pending_date_bills
             FROM finance_sync_states st JOIN finance_connections c ON c.id=st.shop_id AND c.organization_id=st.organization_id AND c.user_id=st.user_id
+            LEFT JOIN (
+              SELECT shop_id,COUNT(*) bills FROM finance_records
+              WHERE organization_id=? AND kind='BILL' AND source='API' AND status='DATE_PENDING'
+              GROUP BY shop_id
+            ) pending ON pending.shop_id=st.shop_id
             WHERE st.organization_id=? AND c.status<>'REMOVED' ORDER BY st.shop_id,st.channel
-            """,s.organizationId());
+            """,s.organizationId(),s.organizationId());
+        return FinanceSyncProgress.describe(rows,repo.jdbc().queryForList(
+            "SELECT platform,channel,next_allowed_at FROM finance_api_pacing"),Instant.now());
     }
+    @Transactional
     public void sync(Scope s,String shopId){
         ownedShop(s,shopId);s=shopScope(s,shopId);
-        Integer enabled=repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_connections WHERE organization_id=? AND user_id=? AND id=? AND enabled=TRUE AND status='ACTIVE'",
-                Integer.class,s.organizationId(),s.userId(),shopId);
-        if(enabled==null||enabled==0)throw bad("请先在财务店铺管理中开启同步");
+        var enabled=repo.jdbc().queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND user_id=? AND id=? AND enabled=TRUE AND status='ACTIVE' FOR UPDATE",
+                s.organizationId(),s.userId(),shopId);
+        if(enabled.isEmpty())throw bad("请先在财务店铺管理中开启同步");
+        Long pending=repo.jdbc().queryForObject("SELECT COUNT(*) FROM finance_sync_states WHERE organization_id=? AND user_id=? AND shop_id=? AND priority_requested_at IS NOT NULL",
+                Long.class,s.organizationId(),s.userId(),shopId);
+        if(pending!=null&&pending>0)return; // Repeated clicks join the unfinished request.
         repo.jdbc().update("""
-            UPDATE finance_sync_states SET next_at=UTC_TIMESTAMP(6),error_message=NULL,failures=0,
-            status=CASE WHEN lease_until>UTC_TIMESTAMP(6) THEN status ELSE 'READY' END
+            UPDATE finance_sync_states SET priority_requested_at=COALESCE(priority_requested_at,UTC_TIMESTAMP(6)),
+            next_at=CASE WHEN failures>0 OR status IN ('ERROR','RATE_LIMITED') THEN next_at ELSE LEAST(next_at,UTC_TIMESTAMP(6)) END,
+            status=CASE WHEN lease_until>UTC_TIMESTAMP(6) OR failures>0 OR status IN ('ERROR','RATE_LIMITED','SYNCING') THEN status ELSE 'READY' END
             WHERE organization_id=? AND user_id=? AND shop_id=?
             """,s.organizationId(),s.userId(),shopId);
         invalidateSnapshots(s);

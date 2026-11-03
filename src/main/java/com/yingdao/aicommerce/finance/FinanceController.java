@@ -50,7 +50,7 @@ public class FinanceController {
     @PutMapping("/shops/{id}") public ApiResponse<?> configure(@PathVariable("id") String id,@RequestBody ShopConfig body,@AuthenticationPrincipal PlatformPrincipal p){
         service.configure(s(p),id,body.enabled,body.currency,body.timezone,body.groupId,body.alias);return ApiResponse.ok("已保存");
     }
-    @PostMapping("/shops/{id}/sync") public ApiResponse<?> sync(@PathVariable("id") String id,@AuthenticationPrincipal PlatformPrincipal p){service.sync(s(p),id);return ApiResponse.ok("已加入同步队列");}
+    @PostMapping("/shops/{id}/sync") public ApiResponse<?> sync(@PathVariable("id") String id,@AuthenticationPrincipal PlatformPrincipal p){service.sync(s(p),id);return ApiResponse.ok("已加入店铺优先队列，将从现有进度继续；平台限流和异常退避仍会生效");}
     @DeleteMapping("/shops/{id}") public ApiResponse<?> removeShop(@PathVariable("id") String id,@AuthenticationPrincipal PlatformPrincipal p){service.removeShop(s(p),id,p.userId());return ApiResponse.ok("已停止同步并清除授权凭据，历史数据正在后台分批删除");}
     record GroupName(String name){}
     @GetMapping("/groups") public ApiResponse<?> groups(@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.groups(s(p)));}

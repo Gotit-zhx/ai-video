@@ -17,7 +17,14 @@ final class FinanceSyncClaims {
     Claim claim(){
         var db=repo.jdbc();
         var due=db.queryForList("""
-            SELECT st.organization_id,st.user_id,st.shop_id,st.channel,f.platform
+            WITH candidates AS (
+            SELECT st.organization_id,st.user_id,st.shop_id,st.channel,f.platform,
+              st.priority_requested_at,
+              TIMESTAMPADD(SECOND,CASE WHEN st.channel='ORDER_LIVE' THEN -30 ELSE 0 END,st.next_at) due_at,
+              ROW_NUMBER() OVER (PARTITION BY f.platform ORDER BY
+                st.priority_requested_at IS NULL,st.priority_requested_at,
+                TIMESTAMPADD(SECOND,CASE WHEN st.channel='ORDER_LIVE' THEN -30 ELSE 0 END,st.next_at),
+                st.shop_id,st.channel) platform_rank
             FROM finance_sync_states st JOIN finance_connections f
               ON f.id=st.shop_id AND f.organization_id=st.organization_id AND f.user_id=st.user_id
             WHERE f.enabled=TRUE AND f.status='ACTIVE' AND st.next_at<=UTC_TIMESTAMP(6)
@@ -27,8 +34,9 @@ final class FinanceSyncClaims {
               AND NOT EXISTS(SELECT 1 FROM finance_sync_states busy
                 WHERE busy.organization_id=st.organization_id AND busy.user_id=st.user_id AND busy.shop_id=st.shop_id
                   AND busy.lease_until>UTC_TIMESTAMP(6))
-            ORDER BY TIMESTAMPADD(SECOND,CASE WHEN st.channel='ORDER_LIVE' THEN -30 ELSE 0 END,st.next_at),
-                     st.shop_id,st.channel LIMIT 32
+            )
+            SELECT organization_id,user_id,shop_id,channel,platform FROM candidates WHERE platform_rank<=32
+            ORDER BY priority_requested_at IS NULL,priority_requested_at,due_at,shop_id,channel
             """);
         if(due.isEmpty())return null;
         var tx=new TransactionTemplate(new DataSourceTransactionManager(Objects.requireNonNull(db.getDataSource())));
