@@ -330,8 +330,16 @@ public class FinanceRepository {
         String source="finance_records FORCE INDEX ("+(kind!=null&&!kind.isBlank()?"idx_finance_company_kind_date":"idx_finance_company_dashboard")+")";
         Long total=db.queryForObject("SELECT COUNT(*) FROM "+source+" WHERE "+where,Long.class,a.toArray());
         a.add(safeSize);a.add((long)(safePage-1)*safeSize);
-        List<Map<String,Object>> data=db.queryForList("SELECT id,shop_id,platform,kind,external_id,order_id,statement_id,category,status,record_date,currency,amount,revenue,impressions,clicks,conversions,source,updated_at,raw_json"
-                +" FROM "+(kind!=null&&!kind.isBlank()?source:"finance_records")+" WHERE "+where+" ORDER BY record_date DESC,id LIMIT ? OFFSET ?",a.toArray());
+        // Select page identities through the covering index before reading large
+        // provider payloads. Every filter and the stable page order stay inside.
+        List<Map<String,Object>> data=db.queryForList("""
+                SELECT detail.id,detail.shop_id,detail.platform,detail.kind,detail.external_id,detail.order_id,
+                  detail.statement_id,detail.category,detail.status,detail.record_date,detail.currency,
+                  detail.amount,detail.revenue,detail.impressions,detail.clicks,detail.conversions,
+                  detail.source,detail.updated_at,detail.raw_json
+                FROM (SELECT id,record_date FROM
+                """+source+" WHERE "+where+" ORDER BY record_date DESC,id LIMIT ? OFFSET ?) page"
+                +" JOIN finance_records detail ON detail.id=page.id ORDER BY page.record_date DESC,page.id",a.toArray());
         data.forEach(this::enrich);new FinanceReportingMonths(this).attach(s,data);
         new FinanceProductSkus(this).attach(s,data);
         new FinanceCostReport(this).attach(s,data,false);

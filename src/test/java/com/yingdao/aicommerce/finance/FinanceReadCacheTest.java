@@ -60,7 +60,7 @@ class FinanceReadCacheTest {
         assertEquals(new BigDecimal("123456789012345678.123456"),hit.get("amount"));
         assertEquals(false,map(hit.get("cache")).get("refreshing"));
     }
-    @Test void rawFactsCanBeSharedAcrossInstancesButNotRevisionsScopesOrExpiredGenerations(){
+    @Test void rawFactsShareBoundedSnapshotsButNotConfigurationRevisionsScopesOrExpiredGenerations(){
         var k=key("one","",false);var calls=new AtomicInteger();
         var facts=Map.<String,Object>of("buckets",List.of(Map.of("amount",new BigDecimal("12.345678"))));
         assertNull(cache.findFacts(k));
@@ -70,7 +70,7 @@ class FinanceReadCacheTest {
         assertEquals(new BigDecimal("12.345678"),rows(hit.get("buckets")).getFirst().get("amount"));
         assertNull(other.findFacts(key("two","",false)));
         assertNull(other.findFacts(key("one","",true)));
-        cache.refresh(k.scope());assertNull(other.findFacts(k));
+        cache.refresh(k.scope());assertEquals("0",other.findFacts(k).get("_financeDataRevision"));
         other.facts(k,()->facts);cache.invalidate(k.scope());assertNull(other.findFacts(k));
         other.facts(k,()->facts);now.addAndGet(15_001);assertNull(other.findFacts(k));
         assertEquals(1,calls.get());
@@ -78,7 +78,9 @@ class FinanceReadCacheTest {
     @Test void invalidationDuringRawReadCannotPublishItAsANewGeneration(){
         var k=key("one","",false);
         cache.facts(k,()->{cache.refresh(k.scope());return Map.of("amount",1);});
-        assertNull(cache.findFacts(k));
+        var previous=cache.findFacts(k);assertEquals("0",previous.get("_financeDataRevision"));
+        assertEquals(now.get(),number(previous.get("_financeFactsBuilt")));
+        cache.invalidate(k.scope());
         cache.facts(k,()->{cache.invalidate(k.scope());return Map.of("amount",2);});
         assertNull(cache.findFacts(k));
         assertEquals(3,cache.facts(k,()->Map.of("amount",3)).get("amount"));
@@ -86,7 +88,7 @@ class FinanceReadCacheTest {
     @Test void largeRawFactsUseASeparateBoundWithoutExpandingResponseLimits(){
         var k=key("one","",false);var data=Map.<String,Object>of("buckets",List.of(),"payload","x".repeat(600_000));
         cache.facts(k,()->data);assertNotNull(cache.findFacts(k));
-        cache.refresh(k.scope());
+        cache.invalidate(k.scope());
         cache.facts(k,()->Map.of("payload","x".repeat(16*1024*1024)));assertNull(cache.findFacts(k));
     }
     @Test void rawReadFailureDoesNotPoisonTheNextAttempt(){
@@ -124,10 +126,49 @@ class FinanceReadCacheTest {
                 assertEquals(new BigDecimal("1"),decimal(result.get("amount")));
                 assertEquals(true,map(result.get("cache")).get("refreshing"));
                 assertFalse(result.containsKey("_financeDataRevision"));
+                assertFalse(result.containsKey("_financeFactsBuilt"));
             }
             assertEquals(1,calls.get(),"worker batches must not multiply the same in-flight SQL");
-            assertNull(cache.findFacts(raw),"a completed older generation is not a new fresh snapshot");
+            assertEquals("0",cache.findFacts(raw).get("_financeDataRevision"),"reuse must preserve the older revision");
         }
+    }
+    @Test void continuousWorkerBatchesReuseFactsWithoutRenewingTheirAgeOrClaimingFreshness(){
+        var raw=key("one","",false);var calls=new AtomicInteger();
+        long built=now.get();
+        cache.facts(raw,()->{calls.incrementAndGet();return data("12.345678");});
+        for(int batch=1;batch<=12;batch++){
+            now.addAndGet(1_000);cache.refresh(raw.scope());
+            var display=new FinanceSnapshotCache.Key(raw.scope(),raw.filter(),true,"quote-"+batch,false);
+            var response=cache.get(display,()->cache.facts(raw,()->{calls.incrementAndGet();return data("99");}));
+            assertEquals(new BigDecimal("12.345678"),decimal(response.get("amount")));
+            assertEquals(true,map(response.get("cache")).get("refreshing"));
+            assertEquals(java.time.Instant.ofEpochMilli(built).toString(),map(response.get("cache")).get("generatedAt"));
+            assertFalse(response.containsKey("_financeFactsBuilt"));
+        }
+        assertEquals(1,calls.get(),"soft updates cannot force one SQL scan per display change");
+        now.set(built+15_001);
+        assertNull(cache.findFacts(raw));
+        assertEquals(new BigDecimal("20"),decimal(cache.facts(raw,()->{calls.incrementAndGet();return data("20");}).get("amount")));
+        assertEquals(2,calls.get());
+    }
+    @Test void projectedResponseKeepsOriginalGenerationTimeAndHardExpiry(){
+        var raw=key("one","",false);long built=now.get();
+        cache.facts(raw,()->data("1"));now.addAndGet(14_000);
+        var display=key("one","PHP",false);
+        var projected=cache.get(display,()->cache.findFacts(raw));
+        assertEquals(java.time.Instant.ofEpochMilli(built).toString(),map(projected.get("cache")).get("generatedAt"));
+        now.set(built+60_001);
+        assertThrows(IllegalStateException.class,()->cache.get(display,()->{throw new IllegalStateException("database unavailable");}));
+    }
+    @Test void narrowerFactsRetainGenerationMetadataAndFallbackResponsesRemoveIt(){
+        var raw=key("one","",false);
+        var facts=cache.facts(raw,()->Map.of("buckets",List.of(),"orders",List.of()));
+        var narrowed=FinanceService.narrowDashboardFacts(facts,raw.filter(),List.of(),List.of());
+        assertEquals(facts.get("_financeDataRevision"),narrowed.get("_financeDataRevision"));
+        assertEquals(facts.get("_financeFactsBuilt"),narrowed.get("_financeFactsBuilt"));
+        when(ops.get(anyString())).thenThrow(new IllegalStateException("offline"));
+        var response=cache.get(raw,()->narrowed);
+        assertFalse(response.containsKey("_financeDataRevision"));assertFalse(response.containsKey("_financeFactsBuilt"));
     }
     @Test void staleReturnsImmediatelyAndSchedulesOnlyOneRefresh(){
         cache.get(key("one","PHP",false),()->data("1"));now.addAndGet(16_000);

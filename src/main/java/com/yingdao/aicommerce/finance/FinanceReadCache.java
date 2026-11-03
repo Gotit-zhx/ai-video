@@ -69,8 +69,9 @@ public class FinanceReadCache {
         if(cached==null||clock.getAsLong()-number(cached.get("built"))>FRESH_MS
                 ||!revision.equals(Objects.toString(cached.get("dataRevision"),"0")))background(address,key,load);
     }
-    /** Raw daily amounts are shared by currency, chart granularity and narrower shop views.
-     * Both revisions fence these reads: never renew the age of an older raw generation. */
+    /** Raw daily amounts are shared for at most fifteen seconds after calculation.
+     * Soft changes retain the original revision and timestamp; configuration changes
+     * still fence the address immediately. Transforming a snapshot never renews it. */
     Map<String,Object> facts(FinanceSnapshotCache.Key key,Supplier<Map<String,Object>> load){
         String address=factsAddress(key);
         if(address==null)return load.get();
@@ -123,16 +124,22 @@ public class FinanceReadCache {
     }
     private Map<String,Object> freshFacts(String address,Scope scope){
         var cached=read(address,FACTS_STORED_LIMIT,true);
-        if(cached==null||Math.max(0,clock.getAsLong()-number(cached.get("built")))>FRESH_MS)return null;
-        try{return Objects.equals(cached.get("dataRevision"),dataRevision(scope))?stampFacts(cached):null;}
-        catch(RuntimeException unavailable){return null;}
+        if(cached==null||cached.get("dataRevision")==null
+                ||Math.max(0,clock.getAsLong()-number(cached.get("built")))>FRESH_MS)return null;
+        // Cost/label workers can commit while a monthly read is running. Requiring
+        // their newest revision here made a just-finished snapshot unusable for
+        // currency/shop changes and restarted the same SQL after almost every batch.
+        // Its revision remains attached so the response explicitly reports staleness.
+        return stampFacts(cached);
     }
     private static Map<String,Object> stampFacts(Map<String,Object> envelope){
         var data=new LinkedHashMap<>(map(envelope.get("data")));
-        data.put("_financeDataRevision",envelope.get("dataRevision"));return data;
+        data.put("_financeDataRevision",envelope.get("dataRevision"));
+        data.put("_financeFactsBuilt",envelope.get("built"));return data;
     }
     private static Map<String,Object> withoutFactRevision(Map<String,Object> data){
-        var copy=new LinkedHashMap<>(data);copy.remove("_financeDataRevision");return copy;
+        var copy=new LinkedHashMap<>(data);
+        copy.remove("_financeDataRevision");copy.remove("_financeFactsBuilt");return copy;
     }
     private static String compressFacts(byte[] raw){
         try{
@@ -240,11 +247,14 @@ public class FinanceReadCache {
             try{revision=dataRevision(key.scope());}catch(RuntimeException unavailable){/* Serve the database result. */}
             var loaded=new LinkedHashMap<>(load.get());
             Object factsRevision=loaded.remove("_financeDataRevision");
+            Object factsBuilt=loaded.remove("_financeFactsBuilt");
             if(factsRevision!=null)revision=text(factsRevision);
-            // Built time is the time the query finishes, not when it entered a busy queue.
+            // A projection retains its raw snapshot's finish time. New database
+            // reads use their finish time, not when they entered a busy queue.
             // Capture the data revision before querying: a batch committed during the
             // read must trigger another refresh, never be labelled already included.
-            var envelope=Map.<String,Object>of("built",clock.getAsLong(),"data",loaded,
+            long built=factsBuilt instanceof Number?Math.min(clock.getAsLong(),number(factsBuilt)):clock.getAsLong();
+            var envelope=Map.<String,Object>of("built",built,"data",loaded,
                     "dataRevision",revision==null?"unavailable":revision);
             try{
                 String value=json.writeValueAsString(envelope);
@@ -262,7 +272,7 @@ public class FinanceReadCache {
                 }
             }catch(RuntimeException unavailable){/* A cache failure must not hide a successful database read. */}
             boolean refreshing=true;
-            try{refreshing=!Objects.equals(revision,dataRevision(key.scope()));}catch(RuntimeException unavailable){/* Retry on the next refresh. */}
+            try{refreshing=clock.getAsLong()-built>FRESH_MS||!Objects.equals(revision,dataRevision(key.scope()));}catch(RuntimeException unavailable){/* Retry on the next refresh. */}
             future.complete(response(envelope,refreshing));
         }catch(Throwable failure){future.completeExceptionally(failure);}
         finally{pending.remove(address,future);}

@@ -276,7 +276,8 @@ public class FinanceService {
                 +(live?"实时订单按下单日显示；销售收入与成本按结算账单日期。":"日期筛选使用结算账单日期：TikTok 与 Excel 的 Statement date 口径一致，Shopee 使用 actual_payout_time。订单、关联退款和商品成本按首次结算账单日期归属，不限制下单月份。")
                 +"已核对的 TikTok 账单日期优先于历史手工月份校正，原始平台时间保留。"
                 +"经营汇总排除刷单；原始账单净额用于对账。广告及独立费用按发生日，待结算尚无结算日期。已结算不代表银行到账。");
-        if(facts.containsKey("_financeDataRevision"))out.put("_financeDataRevision",facts.get("_financeDataRevision"));
+        for(String key:List.of("_financeDataRevision","_financeFactsBuilt"))
+            if(facts.containsKey(key))out.put(key,facts.get(key));
         return out;
     }
     static List<Map<String,Object>> dailyFactRows(List<Map<String,Object>> rows){
@@ -298,7 +299,8 @@ public class FinanceService {
         var narrowed=new LinkedHashMap<String,Object>(Map.of("buckets",rows(facts.get("buckets")).stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "orders",rows(facts.get("orders")).stream().filter(row->selected.contains(text(row.get("shop_id")))).toList(),
                 "reportingMonths",reportingMonths));
-        if(facts.containsKey("_financeDataRevision"))narrowed.put("_financeDataRevision",facts.get("_financeDataRevision"));
+        for(String key:List.of("_financeDataRevision","_financeFactsBuilt"))
+            if(facts.containsKey(key))narrowed.put(key,facts.get(key));
         return narrowed;
     }
     static List<Map<String,Object>> nativeTotals(List<Map<String,Object>> ranking){
