@@ -4,7 +4,7 @@ import java.time.*;
 import java.util.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 
-/** Month status uses successful scans, unfinished ranges, and persisted open bills. */
+/** Month status requires an explicit full-month certificate and complete bill details. */
 final class FinanceSyncMonth {
     private FinanceSyncMonth(){}
     static List<Map<String,Object>> describe(List<Map<String,Object>> states,List<Map<String,Object>> openBills,Instant now){
@@ -26,10 +26,9 @@ final class FinanceSyncMonth {
                 row.put("previous_month_open_bills",open);
                 String reason="";
                 if(!Set.of("ORDER","SETTLEMENT").contains(channel))reason="不属于上月订单与结算完成判断";
-                else if(row.get("last_success_at")==null||row.get("coverage_start")==null
-                        ||LocalDate.parse(text(row.get("coverage_start"))).isAfter(start)
-                        ||instant(row.get("last_success_at")).isBefore(end.atStartOfDay(zone).toInstant())
-                        ||instant(row.get("last_success_at")).isAfter(now))
+                else if(!start.toString().equals(text(row.get("completed_month")))||row.get("month_completed_at")==null
+                        ||instant(row.get("month_completed_at")).isBefore(end.atStartOfDay(zone).toInstant())
+                        ||instant(row.get("month_completed_at")).isAfter(now))
                     reason="上月"+("ORDER".equals(channel)?"历史订单":"结算")+"尚无完整同步记录";
                 else if(pendingRange(row,start,end,zone))
                     reason="上月"+("ORDER".equals(channel)?"历史订单":"结算明细")+"仍在抓取或等待重试";
@@ -45,6 +44,10 @@ final class FinanceSyncMonth {
     }
     private static boolean pendingRange(Map<String,Object> row,LocalDate start,LocalDate end,ZoneId zone){
         if("SUCCESS".equals(row.get("status")))return false;
+        // History resumes only after the complete priority month is certified.
+        // This range deliberately skips that month and must not reopen its status.
+        if(number(row.get("completed_month_from"))==start.atStartOfDay(zone).toEpochSecond()
+                &&number(row.get("completed_month_until"))==end.atStartOfDay(zone).toEpochSecond())return false;
         long from=number(row.get("window_start")),until=number(row.get("target_until"));
         // An outstanding scan without a valid range cannot establish completion.
         if(from<946684800L||until<=from||until>=4102444800L)return true;

@@ -20,9 +20,11 @@ final class FinanceSyncClaims {
             WITH candidates AS (
             SELECT st.organization_id,st.user_id,st.shop_id,st.channel,f.platform,
               st.priority_requested_at,
+              CASE WHEN JSON_EXTRACT(st.checkpoint_json,'$.missingSettlementPass')=TRUE THEN 0 ELSE 1 END recovery_rank,
               TIMESTAMPADD(SECOND,CASE WHEN st.channel='ORDER_LIVE' THEN -30 ELSE 0 END,st.next_at) due_at,
               ROW_NUMBER() OVER (PARTITION BY f.platform ORDER BY
                 st.priority_requested_at IS NULL,st.priority_requested_at,
+                CASE WHEN JSON_EXTRACT(st.checkpoint_json,'$.missingSettlementPass')=TRUE THEN 0 ELSE 1 END,
                 TIMESTAMPADD(SECOND,CASE WHEN st.channel='ORDER_LIVE' THEN -30 ELSE 0 END,st.next_at),
                 st.shop_id,st.channel) platform_rank
             FROM finance_sync_states st JOIN finance_connections f
@@ -36,7 +38,7 @@ final class FinanceSyncClaims {
                   AND busy.lease_until>UTC_TIMESTAMP(6))
             )
             SELECT organization_id,user_id,shop_id,channel,platform FROM candidates WHERE platform_rank<=32
-            ORDER BY priority_requested_at IS NULL,priority_requested_at,due_at,shop_id,channel
+            ORDER BY priority_requested_at IS NULL,priority_requested_at,recovery_rank,due_at,shop_id,channel
             """);
         if(due.isEmpty())return null;
         var tx=new TransactionTemplate(new DataSourceTransactionManager(Objects.requireNonNull(db.getDataSource())));

@@ -236,7 +236,7 @@ class FinanceQianyiIntegrationTest extends FinanceActualCostsIntegrationTest {
         source.put("refundStatus","WAIT_PAYMENT");source.put("orderNumber","Q-SALE-1");source.put("buyerId","private-buyer");
         source.put("orderRefundAmount","36.8");source.put("currency","PHP");page(source,false);
         var read=new FinanceQianyiReturns(repo,service);
-        var query=new HashMap<String,String>();query.put("returnStatus","FINISH");query.put("refundStatus","WAIT_PAYMENT");
+        var query=new HashMap<String,String>();query.put("receiptScope","ALL");query.put("returnStatus","FINISH");query.put("refundStatus","WAIT_PAYMENT");
         query.put("dateField","RECEIPT");query.put("start","2026-09-01");query.put("end","2026-09-30");
         var result=read.list(owner,query);assertEquals(1,number(result.get("total")));
         assertNull(rows(result.get("items")).getFirst().get("amount_cny"));
@@ -259,11 +259,11 @@ class FinanceQianyiIntegrationTest extends FinanceActualCostsIntegrationTest {
         for(int i=0;i<53;i++){var source=FinanceQianyiEvidenceTest.receipt();source.put("returnNumber",String.format("R%03d",i));sources.add(source);}
         integration.acceptPage(lease(false),"test-lease",new FinanceQianyiClient.Page(sources,53),Map.of(),true);
         var read=new FinanceQianyiReturns(repo,service);
-        var first=read.list(owner,Map.of("page","1"));var second=read.list(owner,Map.of("page","2"));
+        var first=read.list(owner,Map.of("page","1","receiptScope","ALL","start","","end",""));var second=read.list(owner,Map.of("page","2","receiptScope","ALL","start","","end",""));
         assertEquals(50,rows(first.get("items")).size());assertEquals(3,rows(second.get("items")).size());
         var numbers=new HashSet<String>();for(var row:rows(first.get("items")))assertTrue(numbers.add(text(row.get("return_number"))));
         for(var row:rows(second.get("items")))assertTrue(numbers.add(text(row.get("return_number"))));
-        assertEquals(53,number(read.list(owner,Map.of("refundStatus","NOT_RETURNED","costStatus","PENDING")).get("total")));
+        assertEquals(53,number(read.list(owner,Map.of("refundStatus","NOT_RETURNED","costStatus","PENDING","receiptScope","ALL","start","","end","")).get("total")));
         assertEquals(0,number(read.list(owner,Map.of("costStatus","READY")).get("total")));
         assertThrows(RuntimeException.class,()->read.list(owner,Map.of("returnStatus","' OR 1=1")));
     }
@@ -275,11 +275,13 @@ class FinanceQianyiIntegrationTest extends FinanceActualCostsIntegrationTest {
         var worker=new FinanceQianyiWorker(integration);
         try{
             worker.readReturns(lease(false),"test-lease");
-            assertEquals("2026-08-01",requested.getFirst().get("updateTimeFrom"));
+            var today=LocalDate.now(ZoneId.of("Asia/Shanghai"));
+            assertEquals(today.withDayOfMonth(1).minusMonths(1)+" 00:00:00",requested.getFirst().get("receiveTimeFrom"));
             var checkpoint=repo.read(text(integration.connection(owner,shop).get("checkpoint_json")));
-            assertEquals("2026-08-08",checkpoint.get("from"));
+            assertEquals(today.withDayOfMonth(1).minusMonths(1).plusDays(7).toString(),checkpoint.get("from"));
+            assertEquals("2026-08-01",map(checkpoint.get("backfillResume")).get("from"));
             worker.readReturns(lease(false),"test-lease");
-            assertEquals("2026-08-08",requested.getLast().get("updateTimeFrom"),"do not restart the history pass on every page");
+            assertEquals(checkpoint.get("from")+" 00:00:00",requested.getLast().get("receiveTimeFrom"),"do not restart the receipt pass on every page");
         }finally{worker.stop();}
     }
 }

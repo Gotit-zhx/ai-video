@@ -23,7 +23,8 @@ class FinanceSyncMonthIntegrationTest {
         db.execute("""
             CREATE TABLE finance_sync_states(organization_id VARCHAR(36),user_id VARCHAR(36),shop_id VARCHAR(36),channel VARCHAR(24),
             status VARCHAR(24),error_message VARCHAR(700),next_at DATETIME(6),last_success_at DATETIME(6),coverage_start DATE,
-            lease_until DATETIME(6),failures INT DEFAULT 0,priority_requested_at DATETIME(6),last_progress_at DATETIME(6),checkpoint_json JSON)
+            lease_until DATETIME(6),failures INT DEFAULT 0,priority_requested_at DATETIME(6),last_progress_at DATETIME(6),checkpoint_json JSON,
+            completed_month DATE,month_completed_at DATETIME(6))
             """);
         db.execute("""
             CREATE TABLE finance_records(organization_id VARCHAR(36),shop_id VARCHAR(36),kind VARCHAR(24),source VARCHAR(24),
@@ -37,9 +38,9 @@ class FinanceSyncMonthIntegrationTest {
         month=Instant.now().atZone(ZoneId.of("Asia/Manila")).toLocalDate().withDayOfMonth(1);
         db.update("INSERT INTO finance_connections VALUES('a','org','u','TIKTOK_SHOP',TRUE,'Asia/Manila','ACTIVE'),('foreign','other','u','TIKTOK_SHOP',TRUE,'Asia/Manila','ACTIVE')");
         for(String channel:List.of("ORDER","SETTLEMENT"))db.update("""
-            INSERT INTO finance_sync_states(organization_id,user_id,shop_id,channel,status,next_at,last_success_at,coverage_start)
-            VALUES('org','u','a',?,'SUCCESS',DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 HOUR),UTC_TIMESTAMP(6),?)
-            """,channel,month.minusMonths(2));
+            INSERT INTO finance_sync_states(organization_id,user_id,shop_id,channel,status,next_at,last_success_at,coverage_start,completed_month,month_completed_at)
+            VALUES('org','u','a',?,'SUCCESS',DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 HOUR),UTC_TIMESTAMP(6),?,?,UTC_TIMESTAMP(6))
+            """,channel,month.minusMonths(2),month.minusMonths(1));
     }
     void bill(String org,String shop,String kind,String source,String status,LocalDate day){
         db.update("INSERT INTO finance_records VALUES(?,?,?,?,?,?)",org,shop,kind,source,status,day);

@@ -153,7 +153,7 @@ public class FinanceQianyi {
             if(!ids.isEmpty()){
                 var args=new ArrayList<Object>();Collections.addAll(args,org,shop);args.addAll(ids);
                 for(var row:repo.jdbc().queryForList("""
-                    SELECT return_number,source_updated_at,source_hash FROM finance_qianyi_returns
+                    SELECT return_number,source_updated_at,source_hash,data_json,cost_status FROM finance_qianyi_returns
                     WHERE organization_id=? AND shop_id=? AND return_number IN (
                     """+String.join(",",Collections.nCopies(ids.size(),"?"))+")",args.toArray()))
                     previous.put(text(row.get("return_number")),row);
@@ -168,28 +168,32 @@ public class FinanceQianyi {
                 if(!prior.isEmpty()&&FinanceData.number(prior.get("source_updated_at"))>FinanceData.number(value.get("updateTime")))continue;
                 String status=FinanceQianyiEvidence.status(value),hash=hash(repo.write(value));
                 if(hash.equals(prior.get("source_hash")))continue;
+                boolean costChanged=prior.isEmpty()||!FinanceQianyiEvidence.costFields(value).equals(
+                    FinanceQianyiEvidence.costFields(repo.read(text(prior.get("data_json")))));
+                if(!costChanged)status=text(prior.get("cost_status"));
                 var date=FinanceQianyiEvidence.receiptDate(value,zone);
                 repo.jdbc().update("""
                     INSERT INTO finance_qianyi_returns(organization_id,shop_id,return_number,account_key,order_id,receipt_date,source_updated_at,source_hash,data_json,cost_status)
                     VALUES(?,?,?,?,?,?,?,?,?,?)
                     ON DUPLICATE KEY UPDATE cost_status=IF(source_hash=VALUES(source_hash),cost_status,VALUES(cost_status)),
-                      cost_note=IF(source_hash=VALUES(source_hash),cost_note,''),next_at=IF(source_hash=VALUES(source_hash),next_at,UTC_TIMESTAMP(6)),
+                      cost_note=IF(source_hash=VALUES(source_hash) OR NOT ?,cost_note,''),next_at=IF(source_hash=VALUES(source_hash) OR NOT ?,next_at,UTC_TIMESTAMP(6)),
                       order_id=VALUES(order_id),receipt_date=VALUES(receipt_date),source_updated_at=VALUES(source_updated_at),
                       data_json=VALUES(data_json),source_hash=VALUES(source_hash),updated_at=UTC_TIMESTAMP(6)
-                    """,org,shop,number,config.get("account_key"),order,date,FinanceData.number(value.get("updateTime")),hash,repo.write(value),status);
-                if(!prior.isEmpty()||Set.of("CLOSED","NO_RETURN","WAIT_RECEIPT").contains(status))
+                    """,org,shop,number,config.get("account_key"),order,date,FinanceData.number(value.get("updateTime")),hash,repo.write(value),status,costChanged,costChanged);
+                if(!prior.isEmpty()&&costChanged||Set.of("CLOSED","NO_RETURN","WAIT_RECEIPT").contains(status))
                     repo.jdbc().update("DELETE FROM finance_qianyi_return_costs WHERE organization_id=? AND shop_id=? AND return_number=?",org,shop,number);
-                previous.put(number,Map.of("source_updated_at",value.get("updateTime"),"source_hash",hash));
+                previous.put(number,Map.of("source_updated_at",value.get("updateTime"),"source_hash",hash,"data_json",repo.write(value),"cost_status",status));
                 changed=true;
             }
             var progress=new LinkedHashMap<>(next);
+            boolean receiptFinished=Boolean.TRUE.equals(progress.remove("receiptScanFinished"));
             if(changed)progress.put("sourcesChanged",true);
             repo.jdbc().update("""
                 UPDATE finance_qianyi_connections SET checkpoint_json=?,status=?,last_success_at=IF(?,UTC_TIMESTAMP(6),last_success_at),
-                  source_version=IF(?,2,source_version),
+                  source_version=IF(?,3,source_version),last_receipt_scan_at=IF(?,UTC_TIMESTAMP(6),last_receipt_scan_at),
                   failures=0,error_message=NULL,lease_token=NULL,lease_until=NULL,next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ? SECOND)
                 WHERE organization_id=? AND shop_id=? AND lease_token=?
-                """,done?null:repo.write(progress),done?"SUCCESS":"SYNCING",done,done,done?300:1,org,shop,lease);
+                """,done?null:repo.write(progress),done?"SUCCESS":"SYNCING",done,done,receiptFinished,done?300:1,org,shop,lease);
             // Initial source collection and identical overlap pages do not alter
             // financial amounts. Do not evict the whole BI cache on every page.
             if(changed&&Boolean.TRUE.equals(config.get("cost_basis_verified"))||done&&Boolean.TRUE.equals(progress.get("sourcesChanged")))

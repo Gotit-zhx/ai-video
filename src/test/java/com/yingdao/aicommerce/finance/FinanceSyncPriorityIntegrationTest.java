@@ -22,6 +22,19 @@ class FinanceSyncPriorityIntegrationTest extends FinanceConfigurationIntegration
     Map<String,Object> state(String shop,String channel){
         return db.queryForMap("SELECT * FROM finance_sync_states WHERE shop_id=? AND channel=?",shop,channel);
     }
+    @Test void gapPassPrecedesOrdinaryRefreshButRespectsManualPriorityAndPlatformCapacity(){
+        String automatic=shop("ordinary"),gap=shop("gap"),manual=shop("manual");
+        onlyOrdersDue();
+        db.update("UPDATE finance_sync_states SET checkpoint_json='{\"missingSettlementPass\":true}',next_at=UTC_TIMESTAMP(6) WHERE shop_id=? AND channel='ORDER'",gap);
+        request(manual);onlyOrdersDue();
+        var claims=new FinanceSyncClaims(repo);
+        try(var first=claims.claim();var second=claims.claim()){
+            assertEquals(manual,first.row().get("shop_id"));
+            assertEquals(gap,second.row().get("shop_id"));
+            assertNull(claims.claim());
+        }
+        assertNull(state(automatic,"ORDER").get("lease_token"));
+    }
     @Test void priorityBeatsOlderAutomaticWorkAndRepeatedClickKeepsFifoAndCompletedChannels(){
         String automatic=shop("automatic"),first=shop("first"),second=shop("second");
         onlyOrdersDue();request(first);
@@ -142,5 +155,93 @@ class FinanceSyncPriorityIntegrationTest extends FinanceConfigurationIntegration
         var rows=service.syncStates(owner);
         assertTrue(rows.stream().noneMatch(r->foreign.equals(r.get("shop_id"))));
         for(var row:rows)assertEquals("SETTLEMENT".equals(row.get("channel"))?2:0,number(row.get("pending_date_bills")));
+    }
+    @Test void previousCalendarMonthIsDurableBeforeRequestAndResumesOriginalPageAfterRetryAndRestart(){
+        String id=shop("calendar-resume");request(id);onlyOrdersDue();
+        ZoneId zone=ZoneId.of("Asia/Manila");
+        LocalDate end=LocalDate.now(zone).withDayOfMonth(1),start=end.minusMonths(1),history=start.minusMonths(1);
+        long from=history.atStartOfDay(zone).toEpochSecond(),until=Instant.now().getEpochSecond();
+        var original=Map.<String,Object>of("from",from,"to",from+604800,"until",until,
+                "coverage",history.toString(),"run","saved-run","cursor","saved-page");
+        db.update("UPDATE finance_sync_states SET checkpoint_json=? WHERE shop_id=? AND channel='ORDER'",repo.write(original),id);
+        var market=mock(FinanceMarketplace.class);var calls=new ArrayList<Map<String,Object>>();
+        when(market.step(any(),anyMap(),anyMap())).thenAnswer(call->{
+            Map<String,Object> cp=call.getArgument(2);calls.add(cp);
+            assertEquals(number(cp.get("from")),number(repo.read(text(state(id,"ORDER").get("checkpoint_json"))).get("from")));
+            if(calls.size()==1)throw bad("temporary upstream error");
+            return new FinanceMarketplace.Step(cp,true);
+        });
+        var worker=new FinanceSync(repo,market);
+        try{worker.tick();}finally{worker.stop();}
+        assertEquals("ERROR",state(id,"ORDER").get("status"));
+        var persisted=repo.read(text(state(id,"ORDER").get("checkpoint_json")));
+        assertEquals(start.atStartOfDay(zone).toEpochSecond(),number(persisted.get("from")));
+        assertEquals(end.atStartOfDay(zone).toEpochSecond(),number(persisted.get("until")));
+        assertEquals("saved-page",map(persisted.get("backfillResume")).get("cursor"));
+        assertNotNull(state(id,"ORDER").get("priority_requested_at"));
+        var restarted=new FinanceSync(repo,market);
+        try{
+            for(int i=0;i<40&&!"SUCCESS".equals(state(id,"ORDER").get("status"));i++){
+                db.update("UPDATE finance_sync_states SET next_at=UTC_TIMESTAMP(6) WHERE shop_id=? AND channel='ORDER'",id);
+                restarted.tick();
+            }
+        }finally{restarted.stop();}
+        assertEquals("SUCCESS",state(id,"ORDER").get("status"));
+        assertNull(state(id,"ORDER").get("checkpoint_json"));
+        assertNull(state(id,"ORDER").get("priority_requested_at"));
+        var saved=calls.stream().filter(c->"saved-page".equals(c.get("cursor"))).findFirst().orElseThrow();
+        for(String key:original.keySet()){
+            if(original.get(key) instanceof Number)assertEquals(number(original.get(key)),number(saved.get(key)),key);
+            else assertEquals(original.get(key),saved.get(key),key);
+        }
+        assertEquals(repo.read(repo.write(calls.get(0))),repo.read(repo.write(calls.get(1))),
+            "retry must keep the same priority run and window");
+    }
+    @Test void manualRefreshOfPreviouslyCompletedChannelStartsAtPreviousMonth(){
+        String id=shop("calendar-manual");
+        db.update("UPDATE finance_sync_states SET last_success_at=UTC_TIMESTAMP(6),status='SUCCESS' WHERE shop_id=?",id);
+        request(id);onlyOrdersDue();
+        var market=mock(FinanceMarketplace.class);
+        when(market.step(any(),anyMap(),anyMap())).thenAnswer(call->{
+            Map<String,Object> cp=call.getArgument(2);
+            var start=LocalDate.now(ZoneId.of("Asia/Manila")).withDayOfMonth(1).minusMonths(1);
+            assertEquals(start.atStartOfDay(ZoneId.of("Asia/Manila")).toEpochSecond(),number(cp.get("from")));
+            return new FinanceMarketplace.Step(cp,false);
+        });
+        var worker=new FinanceSync(repo,market);
+        try{worker.tick();verify(market).step(any(),anyMap(),anyMap());}finally{worker.stop();}
+        assertEquals("SYNCING",state(id,"ORDER").get("status"));
+    }
+    @Test void monthCertificateIsWrittenOnlyAfterLastPageAndSurvivesOlderHistoryFailure(){
+        String id=shop("calendar-certificate");onlyOrdersDue();
+        ZoneId zone=ZoneId.of("Asia/Manila");LocalDate end=LocalDate.now(zone).withDayOfMonth(1),start=end.minusMonths(1);
+        long from=start.minusMonths(1).atStartOfDay(zone).toEpochSecond();
+        var old=Map.<String,Object>of("from",from,"to",from+604800,"until",Instant.now().getEpochSecond(),"cursor","history-page");
+        db.update("UPDATE finance_sync_states SET checkpoint_json=? WHERE shop_id=? AND channel='ORDER'",repo.write(old),id);
+        var market=mock(FinanceMarketplace.class);
+        when(market.step(any(),anyMap(),anyMap())).thenAnswer(call->{
+            Map<String,Object> cp=call.getArgument(2);
+            if("history-page".equals(cp.get("cursor")))throw bad("older history temporarily unavailable");
+            return new FinanceMarketplace.Step(cp,true);
+        });
+        var worker=new FinanceSync(repo,market);
+        try{
+            int windows=(start.lengthOfMonth()+6)/7;
+            for(int i=0;i<windows;i++){
+                db.update("UPDATE finance_sync_states SET next_at=UTC_TIMESTAMP(6) WHERE shop_id=? AND channel='ORDER'",id);
+                worker.tick();
+                if(i<windows-1)assertNull(state(id,"ORDER").get("completed_month"));
+            }
+            var certified=state(id,"ORDER");
+            assertEquals(start.toString(),text(certified.get("completed_month")));
+            assertNotNull(certified.get("month_completed_at"));assertNull(certified.get("last_success_at"));
+            assertEquals("history-page",repo.read(text(certified.get("checkpoint_json"))).get("cursor"));
+            db.update("UPDATE finance_sync_states SET next_at=UTC_TIMESTAMP(6) WHERE shop_id=? AND channel='ORDER'",id);
+            worker.tick();
+            assertEquals("ERROR",state(id,"ORDER").get("status"));
+            assertEquals(certified.get("month_completed_at"),state(id,"ORDER").get("month_completed_at"));
+            var described=service.syncStates(owner).stream().filter(r->id.equals(r.get("shop_id"))&&"ORDER".equals(r.get("channel"))).findFirst().orElseThrow();
+            assertEquals(true,described.get("previous_month_complete"));
+        }finally{worker.stop();}
     }
 }

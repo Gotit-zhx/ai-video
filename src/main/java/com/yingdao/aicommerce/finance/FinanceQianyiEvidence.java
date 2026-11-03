@@ -13,7 +13,7 @@ final class FinanceQianyiEvidence {
         for(String field:List.of("returnNumber","onlineOrderNumber","orderNumber","shop","warehouse","warehouseId",
                 "returnStatus","refundStatus","status","type","asnNumber","asnId","warehouseEntryNumber","warehouseEntryID",
                 "receiveTime","finishTime","updateTime","createTime","commitTime","isDeleted",
-                "currency","orderRefundAmount","totalAmount","orderStatus"))
+                "currency","orderRefundAmount","totalAmount","orderStatus","customNumber","carrier","returnSn"))
             if(source.containsKey(field))result.put(field,source.get(field));
         for(String field:List.of("returnNumber","onlineOrderNumber","orderNumber","warehouseId","asnId","warehouseEntryID"))
             if(result.get(field)!=null)result.put(field,text(result.get(field)));
@@ -28,16 +28,27 @@ final class FinanceQianyiEvidence {
         }
         if(lines.size()>1000)throw bad("千易退货单商品行超过限制，未截断明细");
         result.put("returnSkuList",lines);
+        if(source.get(FinanceQianyiReceipt.FIELD) instanceof Map<?,?>){
+            var receipt=new LinkedHashMap<String,Object>();var proof=map(source.get(FinanceQianyiReceipt.FIELD));
+            for(String key:List.of("source","sourceSignature","state","trackingNumber","eventDate","event"))
+                if(proof.containsKey(key))receipt.put(key,proof.get(key));
+            result.put(FinanceQianyiReceipt.FIELD,receipt);
+        }
         return result;
     }
     static boolean deleted(Object value){return Boolean.TRUE.equals(value)||"1".equals(text(value));}
+    static Map<String,Object> costFields(Map<String,Object> source){
+        var fields=new LinkedHashMap<>(source);
+        for(String name:List.of(FinanceQianyiReceipt.FIELD,"customNumber","carrier","returnSn"))fields.remove(name);
+        return fields;
+    }
     static String status(Map<String,Object> source){
         if(deleted(source.get("isDeleted"))||Set.of("CLOSE","CLOSED").contains(first(source,"returnStatus","status")))return "CLOSED";
         if(!"SALES_RETURN".equals(source.get("type"))||"NO_NEED_RETURN".equals(first(source,"returnStatus","status")))return "NO_RETURN";
         return "FINISH".equals(first(source,"returnStatus","status"))?"PENDING":"WAIT_RECEIPT";
     }
     static LocalDate receiptDate(Map<String,Object> source,String zone){
-        long millis=number(source.get("receiveTime"));if(millis<=0)millis=number(source.get("finishTime"));
+        long millis=FinanceQianyiReceipt.received(source.get("receiveTime"));
         return millis<=0?null:Instant.ofEpochMilli(millis).atZone(ZoneId.of(zone)).toLocalDate();
     }
     static List<String> documents(Map<String,Object> source){

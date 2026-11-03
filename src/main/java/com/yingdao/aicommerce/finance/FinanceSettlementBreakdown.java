@@ -222,14 +222,27 @@ public final class FinanceSettlementBreakdown {
             for(String field:List.of("shopee_discount","buyer_paid_shipping_fee","shopee_shipping_rebate",
                     "shipping_fee_discount_from_3pl","rsf_seller_protection_fee_claim_amount","buyer_paid_packaging_fee"))
                 component(fees,raw,"order_income."+field,"补贴与返还",true);
-            // The final platform amount is authoritative for the adjustment's sign.
+            // Use the actual payout represented by this Income row; cumulative
+            // order adjustments remain in raw data, never enter this row twice.
             BigDecimal before=amount(income,"escrow_amount");
             if(before!=null&&net!=null)add(fees,"order_income.total_adjustment_amount","平台订单结算调整","平台调整",
-                before.subtract(net),false,"escrow_amount − escrow_amount_after_adjustment；对应平台订单级调整");
+                before.subtract(net),false,raw.containsKey("_finance_released_amount")
+                    ?"escrow_amount − released_amount；仅对应本次实际释放金额的差额，累计调整单独保留"
+                    :"escrow_amount − escrow_amount_after_adjustment；对应平台订单级调整");
+            var merchandise=fees.stream().filter(f->Set.of("商家优惠","退款与返还").contains(f.group())).toList();
             if(goods!=null){
-                var merchandise=fees.stream().filter(f->Set.of("商家优惠","退款与返还").contains(f.group())).toList();
                 goods=goods.subtract(merchandise.stream().map(Fee::amount).reduce(BigDecimal.ZERO,BigDecimal::add));
-                fees.removeAll(merchandise);
+            }
+            fees.removeAll(merchandise);
+            // cost_of_goods_sold already reflects the platform's final goods refunds.
+            // Zero is authoritative; reconstruct only for older payloads without it.
+            BigDecimal sold=amount(income,"cost_of_goods_sold");
+            if(sold!=null){
+                goods=sold;
+                for(String field:List.of("voucher_from_seller","seller_coin_cash_back")){
+                    BigDecimal discountValue=amount(income,field);
+                    if(discountValue!=null)goods=goods.subtract(discountValue);
+                }
             }
         }
         if(goods!=null&&net!=null){

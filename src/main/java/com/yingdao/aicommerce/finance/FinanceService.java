@@ -93,12 +93,14 @@ public class FinanceService {
     public List<Map<String,Object>> syncStates(Scope s){
         var rows=repo.jdbc().queryForList("""
             SELECT st.shop_id,st.channel,st.status,st.error_message,st.next_at,st.last_success_at,st.coverage_start,
-              st.lease_until,st.failures,st.priority_requested_at,st.last_progress_at,
+              st.lease_until,st.failures,st.priority_requested_at,st.last_progress_at,st.completed_month,st.month_completed_at,
               c.platform,c.enabled,c.timezone,c.status connection_status,
               CASE WHEN st.channel='ORDER_REPAIR' THEN 'ORDER_ID' ELSE 'TIME_RANGE' END progress_mode,
               CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.from')),'0') END window_start,
               CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.to')),'0') END window_end,
               CASE WHEN st.channel='ORDER_REPAIR' THEN NULL ELSE NULLIF(JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.until')),'0') END target_until,
+              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.completedMonthFrom')) completed_month_from,
+              JSON_UNQUOTE(JSON_EXTRACT(st.checkpoint_json,'$.completedMonthUntil')) completed_month_until,
               CASE WHEN st.channel='SETTLEMENT' THEN COALESCE(pending.bills,0) ELSE 0 END pending_date_bills
             FROM finance_sync_states st JOIN finance_connections c ON c.id=st.shop_id AND c.organization_id=st.organization_id AND c.user_id=st.user_id
             LEFT JOIN (

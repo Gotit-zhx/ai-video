@@ -74,6 +74,23 @@ class FinanceSettlementBreakdownTest {
             """),new BigDecimal("105"));
         balanced(r);money("-5",r.deductions());
     }
+    @Test void shopeeMonthlyIncomeUsesFinalGoodsIncludingExplicitZeroAndKeepsCumulativeAdjustmentsSeparate(){
+        var raw=raw("""
+            {"_finance_released_amount":-11,"order_income":{"original_price":0,"seller_discount":0,
+             "original_cost_of_goods_sold":298,"seller_return_refund":-197,"cost_of_goods_sold":0,
+             "escrow_amount":-11,"escrow_amount_after_adjustment":217.97,"total_adjustment_amount":228.97,
+             "seller_order_processing_fee":11}}
+            """);
+        var r=FinanceSettlementBreakdown.parse("SHOPEE",raw,new BigDecimal("-11"));
+        money("0",r.goods());money("11",r.deductions());balanced(r);
+        assertTrue(r.fees().stream().noneMatch(f->f.group().equals("平台调整")||f.group().equals("待核对")));
+        r=FinanceSettlementBreakdown.parse("SHOPEE",raw("""
+            {"order_income":{"cost_of_goods_sold":100,"voucher_from_seller":5,"seller_coin_cash_back":2,
+             "seller_discount":900,"seller_return_refund":-800,"commission_fee":10,"escrow_amount":83}}
+            """),new BigDecimal("83"));
+        money("93",r.goods());balanced(r);
+        assertEquals(1,r.fees().size(),"seller refund and discount are already included, not deducted twice");
+    }
     @Test void missingOriginalAmountIsDifferentFromExplicitZeroAndAdjustmentsHaveNoNewSales(){
         assertNull(FinanceSettlementBreakdown.parse("TIKTOK_SHOP",Map.of("type","ORDER"),BigDecimal.ZERO).goods());
         assertNull(FinanceSettlementBreakdown.parse("SHOPEE",Map.of("order_income",Map.of("escrow_amount",100)),new BigDecimal("100")).goods());

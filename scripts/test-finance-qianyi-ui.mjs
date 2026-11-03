@@ -32,7 +32,8 @@ assert(!field('对应千易店铺'));assert(current().textContent.includes('公�
 field('千易 App Secret').value='not-a-real-secret';await click('保存全局配置');
 assert.equal(calls.find(c=>c.options.method==='PUT').body.appSecret,'not-a-real-secret');assert.equal(field('千易 App Secret').value,'');assert.equal(w.localStorage.length,0);
 await click('保存全局配置');assert.equal(calls.filter(c=>c.options.method==='PUT').at(-1).body.appSecret,'');
-await click('查看千易售后');assert(!current().textContent.includes('冲回'));assert(!field('成本状态'));assert(current().textContent.includes('千易未返回'));
+await click('查看千易售后');assert(!current().textContent.includes('退货成本冲回'));assert(!field('成本状态'));assert(current().textContent.includes('千易未返回'));
+assert.equal(field('日期口径').value,'RECEIPT');assert.equal(field('退回物流状态').value,'SIGNED');assert.equal(field('退货状态').value,'FINISH');
 await change('退货状态','FINISH');await change('退款状态','WAIT_PAYMENT');
 let query=new URL(calls.at(-1).path,'https://test').searchParams;assert.equal(query.get('returnStatus'),'FINISH');assert.equal(query.get('refundStatus'),'WAIT_PAYMENT');
 await change('日期口径','RECEIPT');field('开始日期').value='2026-09-01';field('结束日期').value='2026-09-30';field('平台订单号 / 千易售后单号').value='586208660231587825';await click('查询');

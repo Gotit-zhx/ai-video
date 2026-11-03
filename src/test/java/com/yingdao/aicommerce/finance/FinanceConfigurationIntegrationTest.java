@@ -71,6 +71,8 @@ class FinanceConfigurationIntegrationTest {
         migration("V140__finance_qianyi_company_configuration.sql");
         migration("V141__finance_cost_date_covering.sql");
         migration("V142__finance_sync_priority.sql");
+        migration("V143__finance_calendar_month_completion.sql");
+        migration("V144__qianyi_receipt_qualification.sql");
         assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM finance_cost_sources",Integer.class));
         assertEquals(1,db.queryForObject("SELECT legacy_merged FROM finance_cost_sources WHERE id='old2'",Integer.class));
         assertEquals(2,db.queryForObject("SELECT COUNT(*) FROM finance_cost_books",Integer.class),"legacy snapshots remain for audit");

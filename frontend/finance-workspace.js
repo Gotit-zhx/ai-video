@@ -283,11 +283,11 @@
     el('h3','退款核对 · 数据来源：千易 ERP',d.body,'fi-operating-heading');
     const refundRows=el('div',null,d.body),refundStatus=el('p','正在读取千易退款金额…',d.body,'fi-muted');
     refundStatus.setAttribute('role','status');
-    const refundSelection={...selection,currency:'',type:'',refundStatus:'FINISH',dateField:'CREATED',page:1};
+    const refundSelection={...selection,currency:'',type:'SALES_RETURN',returnStatus:'FINISH',refundStatus:'',receiptScope:'RECEIVED',receiptStatus:'SIGNED',dateField:'RECEIPT',page:1};
     const refundController=new AbortController();
     d.d.addEventListener('close',()=>refundController.abort(),{once:true});
     if(currency!=='CNY'&&profit?.fx&&Number.isFinite(costRate)&&costRate>0)footnote(d.body,'所有成本项目均使用合计的同一参考汇率：1 '+currency+' = '+costRate.toLocaleString('zh-CN',{maximumFractionDigits:12})+' CNY；成本表人民币原值不变。');
-    footnote(d.body,'退款金额来自千易售后接口，仅统计退款状态为“退款完成”的单据，按千易创建日期筛选、原币分开显示。此金额用于核对，不再次扣减营业成本或利润。');
+    footnote(d.body,'金额来自千易售后接口，按北京时间的收货日期筛选，仅统计有收货时间、退货已完成且退回已签收的退货单，原币分开显示。此金额用于核对，不冲回营业成本、不改变利润。');
     async function loadRefunds(){
       refundStatus.textContent='正在读取千易退款金额…';refundRows.replaceChildren();
       try{
@@ -295,11 +295,11 @@
         if(!d.d.isConnected)return;
         const amounts=result.summary?.refundTotals||[];
         table(refundRows,['项目','退款金额（千易原币）','说明'],amounts.map(r=>[
-          button('已完成退款（千易）',null,()=>FinanceQianyi.openReturns({request,shops:snapshot.shops,groups:snapshot.groups,selection:refundSelection}),'fi-cost-link'),
+          button('已收货退货单（千易）',null,()=>FinanceQianyi.openReturns({request,shops:snapshot.shops,groups:snapshot.groups,selection:refundSelection}),'fi-cost-link'),
           r.currency==='UNKNOWN'?'币种未返回，暂不合计':number(r.amount)+' '+r.currency+(Number(r.known_count)<Number(r.records)?' · 部分金额未返回':''),
           '来源：千易 ERP · 仅供核对'
         ]));
-        refundStatus.textContent=amounts.length?'':'当前筛选没有千易已完成退款单。';
+        refundStatus.textContent=Number(result.summary?.awaitingLogistics)>0?'另有 '+result.summary.awaitingLogistics+' 笔待确认返程物流，未计入当前金额。':amounts.length?'':'当前筛选没有符合收货统计条件的千易退货单。';
       }catch(e){
         if(!d.d.isConnected||refundController.signal.aborted)return;
         refundStatus.textContent='千易退款金额读取失败，请重试。';
@@ -1129,10 +1129,10 @@
       if(qianyiView()){
         const host=root.querySelector('[data-finance-qianyi]');
         if(globalThis.FinanceQianyi)qianyiCleanup=FinanceQianyi.mountReturns(host,{
-          request,shops:data.shops,groups:data.groups,selection:{...filters,dateField:'CREATED',...qianyiSelection},
+          request,shops:data.shops,groups:data.groups,selection:{...filters,dateField:'RECEIPT',...qianyiSelection},
           onSelection:value=>{
             if(run!==generation||!active)return;
-            qianyiSelection=Object.fromEntries(['type','returnStatus','refundStatus','costStatus','dateField','numbers'].map(k=>[k,value[k]]));
+            qianyiSelection=Object.fromEntries(['type','returnStatus','refundStatus','costStatus','receiptScope','receiptStatus','dateField','numbers'].map(k=>[k,value[k]]));
             if(!value.start&&!value.end)Object.assign(qianyiSelection,{start:'',end:''});
             for(const key of ['shopId','groupId','platform'])filters[key]=value[key]||'';
             filters.currency='';filters.fxSnapshot='';

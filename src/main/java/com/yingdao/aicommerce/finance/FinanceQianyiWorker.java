@@ -62,6 +62,7 @@ public class FinanceQianyiWorker {
             checkpoint.put("from",from.toString());checkpoint.put("until",today.toString());checkpoint.put("page",1);
             checkpoint.put("sourceVersion",2);
         }
+        checkpoint=new LinkedHashMap<>(FinanceQianyiReceipt.plan(config,checkpoint,today));
         LocalDate from=LocalDate.parse(text(checkpoint.get("from"))),until=LocalDate.parse(text(checkpoint.get("until")));
         LocalDate to=from.plusDays(6);if(to.isAfter(until))to=until;
         long page=Math.max(1,number(checkpoint.get("page")));
@@ -70,7 +71,13 @@ public class FinanceQianyiWorker {
             repo.write(checkpoint),config.get("organization_id"),config.get("shop_id"),lease);
         var parameters=new LinkedHashMap<String,Object>();
         parameters.put("shopIdList",List.of(new java.math.BigInteger(text(config.get("remote_shop_id")))));
-        parameters.put("withoutType",true);parameters.put("updateTimeFrom",from.toString());parameters.put("updateTimeTo",to.toString());
+        boolean receiptScan=Boolean.TRUE.equals(checkpoint.get("receiptScan"));
+        if(receiptScan){
+            parameters.put("typeList",List.of("SALES_RETURN"));parameters.put("returnStatus","FINISH");
+            parameters.put("receiveTimeFrom",from+" 00:00:00");parameters.put("receiveTimeTo",to+" 23:59:59");
+        }else{
+            parameters.put("withoutType",true);parameters.put("updateTimeFrom",from.toString());parameters.put("updateTimeTo",to.toString());
+        }
         parameters.put("page",page);parameters.put("pageSize",100);
         var result=integration.client.query(integration.credentials(config),"QUERY_RETURN_ORDER_LIST",parameters);
         if(result.items().isEmpty()&&(page-1)*100<result.total())throw bad("千易售后分页不完整，保留当前页重试");
@@ -78,7 +85,10 @@ public class FinanceQianyiWorker {
         if(page*100<result.total())checkpoint.put("page",page+1);
         else if(to.isBefore(until)){checkpoint.put("from",to.plusDays(1).toString());checkpoint.put("page",1);}
         else done=true;
-        integration.acceptPage(config,lease,result,checkpoint,done);
+        boolean receiptFinished=done&&receiptScan;
+        if(done&&checkpoint.get("backfillResume") instanceof Map<?,?>){checkpoint=new LinkedHashMap<>(map(checkpoint.get("backfillResume")));done=false;}
+        if(receiptFinished)checkpoint.put("receiptScanFinished",true);
+        integration.acceptPage(config,lease,FinanceQianyiReceipt.enrich(integration,config,result),checkpoint,done);
     }
     void readCosts(Map<String,Object> config,String lease){
         String org=text(config.get("organization_id")),shop=text(config.get("shop_id"));

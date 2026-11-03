@@ -160,24 +160,40 @@ public class FinanceMarketplace {
         String start=Instant.ofEpochSecond(from).atZone(ZoneId.of(zone)).toLocalDate().toString();
         String end=Instant.ofEpochSecond(to).atZone(ZoneId.of(zone)).toLocalDate().toString();
         if(start.equals(end))end=LocalDate.parse(start).plusDays(1).toString();
-        q.putAll(Map.of("date_from",start,"date_to",end,"income_status",1,"page_size",5,"cursor",cursor));
+        boolean missingPass=Boolean.TRUE.equals(cp.get("missingSettlementPass"));
+        // A fresh gap scan has its own 30-row cursor chain; saved 5-row refresh cursors stay intact.
+        q.putAll(Map.of("date_from",start,"date_to",end,"income_status",1,"page_size",missingPass?30:5,"cursor",cursor));
         Map<String,Object> envelope=shopee.shopGet("/api/v2/payment/get_income_detail",c,q);
         data=shopeeIncomePage(envelope);
-        for(var row:data.isEmpty()?List.<Map<String,Object>>of():requiredRows(data,"list")){
+        var incomeRows=data.isEmpty()?List.<Map<String,Object>>of():requiredRows(data,"list");
+        var complete=missingPass?FinanceShopeeIncome.complete(repo,s,c.shop().getId(),incomeRows,zone):Set.<String>of();
+        var fetch=incomeRows.stream().filter(r->!complete.contains(first(r,"order_sn"))).toList();
+        var batch=missingPass?FinanceShopeeIncome.details(shopee,c,repo,fetch):Map.<String,Map<String,Object>>of();
+        for(var row:fetch){
             String id=first(row,"order_sn"),currency=first(row,"currency");
             if(id.isBlank())throw bad("收入明细缺少订单编号，已保留同步进度");
             LocalDate day=settlementDay(row.get("actual_payout_time"),zone);
-            save(s,c,"BILL",id,id,id,"订单释放收入","PARTIAL",day,currency,amount(row,"released_amount"),row);
-            Map<String,Object> detail=map(shopee.shopGet("/api/v2/payment/get_escrow_detail",c,Map.of("order_sn",id)).get("response"));
+            BigDecimal released=amount(row,"released_amount");
+            if(released==null)throw bad("收入明细缺少有效的实际释放金额，已保留同步进度");
+            save(s,c,"BILL",id,id,id,"订单释放收入","PARTIAL",day,currency,released,row);
+            Map<String,Object> detail=missingPass?batch.get(id):
+                map(shopee.shopGet("/api/v2/payment/get_escrow_detail",c,Map.of("order_sn",id)).get("response"));
             Map<String,Object> income=map(detail.get("order_income"));
             if(income.isEmpty())throw bad("平台尚未返回订单结算拆分");
             detail=new LinkedHashMap<>(detail);detail.put("_finance_actual_payout_time",row.get("actual_payout_time"));
             detail.put("_finance_date_source","Shopee actual_payout_time（实际收入释放时间，按店铺时区）");
-            save(s,c,"SETTLEMENT",id,id,id,"订单结算","SETTLED",day,currency,amount(income,"escrow_amount_after_adjustment","escrow_amount"),detail);
-            save(s,c,"BILL",id,id,id,"订单释放收入","SETTLED",day,currency,amount(row,"released_amount"),row);
+            detail.put("_finance_released_amount",released);
+            // Monthly Income rows represent this payout, not the order's cumulative
+            // escrow balance after later adjustments. Retain those fields as evidence.
+            save(s,c,"SETTLEMENT",id,id,id,"订单结算","SETTLED",day,currency,released,detail);
+            save(s,c,"BILL",id,id,id,"订单释放收入","SETTLED",day,currency,released,row);
         }
         Object pagination=data.get("next_page");
         if(pagination!=null&&!(pagination instanceof Map<?,?>))throw bad("平台收入分页结构异常，已保留同步进度");
+        if(missingPass){
+            next.put("missingRowsChecked",number(cp.get("missingRowsChecked"))+incomeRows.size());
+            next.put("missingRowsFetched",number(cp.get("missingRowsFetched"))+fetch.size());
+        }
         return advance(next,map(pagination),cursor,"cursor");
     }
     static Map<String,Object> shopeeIncomePage(Map<String,Object> envelope){

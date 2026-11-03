@@ -16,7 +16,8 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 @Component
 public class FinanceQianyiClient {
     static final Map<String,String> HOSTS=Map.of("CN","www.qianyierp.com","ASIA","asia.qianyierp.com","TEST","gerp-test1.800best.com");
-    static final Map<String,String> SERVICES=Map.of("QUERY_SHOP_LIST","shop","QUERY_RETURN_ORDER_LIST","returnOrder","QUERY_INVENTORY_LOG_LIST","inventory");
+    static final Map<String,String> SERVICES=Map.of("QUERY_SHOP_LIST","shop","QUERY_RETURN_ORDER_LIST","returnOrder","QUERY_INVENTORY_LOG_LIST","inventory",
+        "QUERY_FIRST_LRG_TRACKING_PACKAGE","firstLeg");
     static final int MAX_RESPONSE_BYTES=2*1024*1024;
     final FinanceRepository repo;
     final HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).followRedirects(HttpClient.Redirect.NEVER).build();

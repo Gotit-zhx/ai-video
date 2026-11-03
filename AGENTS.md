@@ -1,7 +1,7 @@
 # Production storage and release rules
 
 For production operations, use the latest release document, currently
-`docs/finance-query-reuse-20261103.md`; storage safeguards also remain in
+`docs/finance-qianyi-receipt-20261103.md`; storage safeguards also remain in
 `docs/storage-cleanup-20261102.md`. Preserve credentials, runtime configuration,
 business volumes, synchronization checkpoints, rate limits, and current
 financial calculation rules.
