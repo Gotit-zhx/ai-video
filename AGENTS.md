@@ -1,9 +1,12 @@
 # Production storage and release rules
 
 For production operations, use the latest release document,
-`docs/finance-fee-export-20261104.md` (active backend:
-`ai-commerce-platform:finance-fee-native-20261104`; frontend:
-`ai-commerce-frontend:finance-fee-native-layout-20261104`). Fee-matrix exports always
+`docs/finance-cost-dedupe-20261104.md` (active backend:
+`ai-commerce-platform:finance-cost-dedupe-20261104`; frontend:
+`ai-commerce-frontend:finance-fee-native-layout-20261104`). Cost imports keep one
+entry when warehouse, model, month and numeric unit price are identical; different
+prices for the same key still require review. Fee export acceptance remains in
+`docs/finance-fee-export-20261104.md`. Fee-matrix exports always
 retain native currency in separate currency sheets, regardless of the dashboard's
 CNY display. Receipt recognition remains in
 `docs/qianyi-reverse-phrases-20261104.md`. Return-cost totals are in

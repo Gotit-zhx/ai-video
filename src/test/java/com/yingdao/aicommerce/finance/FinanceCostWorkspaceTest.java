@@ -42,6 +42,30 @@ class FinanceCostWorkspaceTest {
         assertThrows(BusinessException.class,()->FinanceCostWorkspace.parseCosts("仓库,型号,月份,单价\nA,P,2026-09,2\nA,P,2026-09,3\n".getBytes(),"cost.csv"));
         assertThrows(BusinessException.class,()->FinanceCostWorkspace.parseCosts("仓库,型号,月份,单价\nA,P,2026-09,[FORMULA]\n".getBytes(),"cost.csv"));
     }
+    @Test void identicalMonthlyCostsAreKeptOnceWithoutDiscardingOtherMonthsOrWarehouses(){
+        byte[] data=("月份,,20261,20262,20263\n仓库,型号,期末单价,期末单价,期末单价\n"
+                +"菲律宾仓,PACK-A+PACK-B+PACK-C,12.34567891,0,\n"
+                +",PACK-A+PACK-B+PACK-C,12.345678910,0.00,9.87654321\n"
+                +"泰国仓,PACK-A+PACK-B+PACK-C,9,,\n").getBytes(StandardCharsets.UTF_8);
+        var rows=FinanceCostWorkspace.parseCosts(data,"cost.csv");
+        assertEquals(2,rows.size());
+        var prices=map(rows.getFirst().get("prices"));
+        assertEquals(3,prices.size());
+        assertEquals(new BigDecimal("12.34567891"),prices.get("2026-01"));
+        assertEquals(BigDecimal.ZERO,prices.get("2026-02"));
+        assertEquals(new BigDecimal("9.87654321"),prices.get("2026-03"));
+        assertEquals(new BigDecimal("9"),map(rows.get(1).get("prices")).get("2026-01"));
+    }
+    @Test void identicalLongFormCostsAreKeptOnceButConflictingPricesStillRequireReview(){
+        byte[] identical="仓库,型号,月份,单价\nA,P,2026-09,2.00\nA,P,2026-09,2\n".getBytes(StandardCharsets.UTF_8);
+        var rows=FinanceCostWorkspace.parseCosts(identical,"cost.csv");
+        assertEquals(1,rows.size());
+        assertEquals(Map.of("2026-09",new BigDecimal("2.00")),map(rows.getFirst().get("prices")));
+        var conflict=assertThrows(BusinessException.class,()->FinanceCostWorkspace.parseCosts(
+                "仓库,型号,月份,单价\nA,P,2026-09,2\nA,P,2026-09,3\n".getBytes(StandardCharsets.UTF_8),"cost.csv"));
+        assertTrue(conflict.getMessage().contains("单价不一致"));
+        assertTrue(conflict.getMessage().contains("第 3 行"));
+    }
     @Test void suppliedWorkbookCanBeCheckedLocallyWithoutCommittingPrivateData()throws Exception{
         String path=System.getenv("FINANCE_COST_SOURCE");if(path==null)return;
         var rows=FinanceCostWorkspace.parseCosts(Files.readAllBytes(Path.of(path)),Path.of(path).getFileName().toString());

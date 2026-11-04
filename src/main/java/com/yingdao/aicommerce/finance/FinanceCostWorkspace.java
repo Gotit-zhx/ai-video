@@ -213,7 +213,10 @@ public class FinanceCostWorkspace {
                 BigDecimal value=decimal(raw.replace(",",""));
                 if(value==null||value.signum()<0||value.precision()-value.scale()>18)throw bad("第 "+(i+1)+" 行单价不正确");
                 if(value.scale()>18)throw bad("第 "+(i+1)+" 行成本精度过高");
-                if(prices.containsKey(column.getValue()))throw bad("成本表存在重复型号、仓库和月份，请先核对");
+                if(prices.containsKey(column.getValue())){
+                    if(value.compareTo(decimal(prices.get(column.getValue())))==0)continue;
+                    throw bad("第 "+(i+1)+" 行同型号、仓库和月份的单价不一致，请先核对");
+                }
                 prices.put(column.getValue(),value);
             }
         }
