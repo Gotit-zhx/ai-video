@@ -45,6 +45,10 @@ such as `Black/1` or `White-1` identifies source pattern 1 across those colors,
 including when only one color is present. Distinct source pattern numbers stay
 separate. Without a pattern axis, a source product's color/size variants share
 one style code. Unnumbered options in a numbered matrix remain separate.
+An explicit `Pure white` option (PWH) without a pattern attribute receives a
+separate source-option style. Live source images for both acceptance products
+showed this option was an unprinted shirt. An explicit matching pattern
+attribute still links it to that verified pattern group.
 
 This is source-pattern identity, not visual similarity inference between
 unrelated products. Different source products are not automatically merged
@@ -62,7 +66,7 @@ are not silently renamed. Publishing providers use the saved merchant SKU.
 
 ## Release
 
-Backend image: `ai-commerce-platform:product-sku-naming-20261104`.
+Initial backend image: `ai-commerce-platform:product-sku-naming-20261104`.
 Helper: `scripts/release-product-sku-naming.py`.
 Directory: `/opt/heyi/releases/product-sku-naming-20261104`.
 
@@ -93,8 +97,48 @@ retention is unchanged. Owned class staging, the temporary JAR build directory
 and the loose migration copy were removed. Preserve this release's Compose
 overrides and its imported helper dependency chain.
 
-The two requested new marketplace publications have not been submitted.
-Both available browser environments showed the HOYEE login page; authenticated
-collection/recapture and live publication acceptance still require a login.
-The existing TikTok workflow that completed during deployment was a prior
-publication, not a test publication of this new SKU policy.
+## Follow-up activation and real marketplace acceptance
+
+Current backend: `ai-commerce-platform:product-sku-pattern-option-20261104`.
+Helper: `scripts/release-product-sku-pattern-option.py`.
+Directory: `/opt/heyi/releases/product-sku-pattern-option-20261104`.
+
+The pure-white grouping fix passed 75 naming/capture tests. The baseline policy
+class matched the active bytecode before replacement. The overlay changed only
+ProductSkuNaming.class; every other JAR entry remained byte-identical. Image
+compaction guard, queue drain/restore, schema, HTTP health, config equality and
+unchanged frontend checks passed. No persistent logs were enabled.
+
+After the user logged in, two untouched CAPTURED drafts (version 0, no previous
+approval, image job, publish workflow/audit or USER field edits) received the
+new naming through the production naming service in one guarded transaction.
+Only merchant codes, their source metadata, normalized SKU copies and draft
+version/update timestamps changed. All source facts, raw data, source SKU IDs,
+images, prices and stocks were compared before/after. Each draft has 16 SKUs:
+12 printed variants sharing one style and four plain white sizes sharing a
+second style. Reapplying naming preserved every complete code.
+
+Both products were then submitted once through the authenticated normal upload
+workflow, with the shop's existing defaults and no extra style-image template:
+
+| Platform / shop | Capture | Platform product ID | Remote state | SKU verification |
+| --- | --- | --- | --- | --- |
+| TikTok / Sweet Me | ccf65d96-2fc1-4f90-8776-2972eb85ad1a | 1738362825316140719 | DRAFT | 16/16 seller_sku values equal; unique |
+| Shopee / CurveLuxe PH | 45560ef2-7313-4d02-a48b-15c29557d70b | 48671198380 | UNLIST | 16/16 model_sku values equal; unique |
+
+These are actual platform products in the configured pending-listing state,
+not publicly available listings. TikTok verified through Get Product; Shopee
+verified through Get Model List and Get Item Base Info. Audit IDs are
+`69fe3872-815d-4826-a556-acb80c2aadf3` and
+`dd6fde66-5f0a-44fc-985b-4ae69ea53246`, respectively.
+Examples: `BK-P095998-L-3615C3E4` and `BK-R133988-L-3507FC05`.
+
+Small receipts: `draft-sku-verification.json`,
+`live-publication-verification.json`, `activation.json`, `prepared.json`,
+`drain-restored.json` and `staging-cleanup.json`. Temporary classes/JAR staging
+and the maintenance runtime/private environment were deleted.
+Retain the active backend and the verified `product-sku-naming-20261104` and
+`finance-qianyi-receipt-20261103` backend rollbacks. The now-unreferenced
+`finance-calendar-month-20261103` backend image was removed; its release helpers
+remain because they are required by the current deployment chain. Frontend
+rollback retention is unchanged.

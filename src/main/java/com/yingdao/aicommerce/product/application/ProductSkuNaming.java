@@ -40,6 +40,11 @@ final class ProductSkuNaming {
             if (pattern.isBlank() && suffix.matches() && numberedColors.contains(normalize(suffix.group(1)))) {
                 pattern = "source-style:" + suffix.group(2);
                 colorLabel = suffix.group(1).strip();
+            } else if (pattern.isBlank() && "PWH".equals(color(colorLabel))) {
+                // Sources use "Pure white" for an independent unprinted option.
+                // Keep this named option separate unless an explicit pattern
+                // attribute proves it belongs to another color's pattern.
+                pattern = "source-option:PUREWHITE";
             } else if (pattern.isBlank() && !numberedColors.isEmpty()) {
                 // A plain, unnumbered color must not be merged into one of the printed variants.
                 pattern = "unnumbered:" + normalize(colorLabel);

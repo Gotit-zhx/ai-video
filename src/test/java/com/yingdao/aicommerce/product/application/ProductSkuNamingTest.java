@@ -88,6 +88,23 @@ class ProductSkuNamingTest {
         assertNotEquals(style(expanded.get(0)),style(expanded.get(1)));
     }
 
+    @Test void pureWhiteOptionDoesNotInheritThePrintedProductsStyle() {
+        var result=assign(List.of(sku("1","White","M"),sku("2","Black","M"),
+                sku("3","Pure white","M"),sku("4","纯白色","L")),List.of());
+        assertEquals(style(result.get(0)),style(result.get(1)));
+        assertEquals(style(result.get(2)),style(result.get(3)));
+        assertNotEquals(style(result.get(0)),style(result.get(2)));
+        var again=assign(List.of(sku("3","Pure white","M")),result);
+        assertEquals(code(result.get(2)),code(again.getFirst()));
+    }
+
+    @Test void explicitPatternCanLinkPureWhiteToItsVerifiedPrintedGroup() {
+        var a=sku("1","Pure white","M");a.put("attributes",Map.of("Color","Pure white","Size","M","Pattern","Bear"));
+        var b=sku("2","Black","M");b.put("attributes",Map.of("Color","Black","Size","M","Pattern","Bear"));
+        var result=assign(List.of(a,b),List.of());
+        assertEquals(style(result.get(0)),style(result.get(1)));
+    }
+
     @Test void independentProductsAndCompaniesDoNotShareUnprovenPatternIdentity() {
         var input=List.of(sku("1","Black","M"));
         var a=ProductSkuNaming.assign("org","one",input,List.of(),styles);
