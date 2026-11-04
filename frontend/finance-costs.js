@@ -546,7 +546,16 @@
       const hero=el('div',null,root,'fc-hero'),copy=el('div',null,hero);el('h2','成本管理',copy);el('p','月度账单自动绑定订单，商品成本按分组维护。',copy);
       const shopControl=el('div',null,hero,'fc-shop-select');
       const groupSelect=select(shopControl,'成本分组',[['','请选择分组'],...(context.groups||[]).map(g=>[g.id,g.name])],state.groupId,v=>{
-        groupSelect.disabled=true;chooseGroup(v).catch(e=>{groupSelect.value=state.groupId;toast(e.message);}).finally(()=>{groupSelect.disabled=false;});
+        if(!v){groupSelect.value=state.groupId;return;}
+        groupSelect.disabled=true;shopSelect.disabled=true;
+        shopSelect.replaceChildren();el('option','正在读取该分组店铺…',shopSelect).value='';
+        for(const s of shops.filter(s=>s.group_id===v))el('option',s.display_name||s.name,shopSelect).value=s.id;
+        shopSelect.value='';
+        chooseGroup(v).catch(e=>{
+          groupSelect.value=state.groupId;shopSelect.replaceChildren();
+          for(const s of groupShops)el('option',(s.display_name||s.name)+(catalogFor(s).costRows?' · 已有成本资料':''),shopSelect).value=s.id;
+          shopSelect.value=state.shopId;toast(e.message);
+        }).finally(()=>{groupSelect.disabled=false;shopSelect.disabled=false;});
       });
       const shopSelect=select(shopControl,'财务店铺',groupShops.map(s=>[s.id,(s.display_name||s.name)+(catalogFor(s).costRows?' · 已有成本资料':'')]),state.shopId,v=>{
         shopSelect.disabled=true;chooseShop(v).catch(e=>{shopSelect.value=state.shopId;toast(e.message);}).finally(()=>{shopSelect.disabled=false;});

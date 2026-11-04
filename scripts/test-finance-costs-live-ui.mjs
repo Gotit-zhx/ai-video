@@ -11,7 +11,7 @@ const shops=[{id:'other',name:'无成本店',platform:'SHOPEE',group_id:'other-g
 let costs={live:true,shopId:'shop',groupId:'group',groupName:'母婴组',sourceName:'成本.csv',costs:[{sku:'PACK',warehouse:'海外仓',prices:{'2026-09':2}},{sku:'DUP*2',warehouse:'海外仓',prices:{'2026-09':3}},{sku:'(DUP)*2',warehouse:'海外仓',prices:{'2026-09':4}}],
   products:[{shop_id:'shop',product_id:'product',sku_id:'variant',seller_sku:'PACK',name:'商品',spec:'一包'},{shop_id:'shop',product_id:'product',sku_id:'unmatched',seller_sku:'OTHER-CODE',name:'商品',spec:'其他规格'},{shop_id:'shop',product_id:'product',sku_id:'review',seller_sku:'（DUP） ×2',name:'商品',spec:'Pants-XXXL'}],sampleOrders:1,orderLimit:2000,
   settings:{warehouse:'海外仓',rules:{currency:'CNY',unit:'包',basis:'shipment',missing:'pending',freight:'',inbound:''}},settingsVersion:1,mappings:{},shopCatalogs:{shop:{costRows:1,sourceName:'成本.csv'},other:{costRows:0,sourceName:''}}};
-const reads=[];let failOther=false;
+const reads=[];let failOther=false,otherGate=null;
 const exports=[];let exportFails=false,downloads=0;
 w.AbortSignal.timeout=()=>undefined;
 w.URL.createObjectURL=()=> 'blob:test-cost-export';w.URL.revokeObjectURL=()=>{};
@@ -36,6 +36,7 @@ w.api=async(path,options={})=>{
   if(url.pathname==='/api/v1/finance/workspace/costs'){
     reads.push(url.searchParams.get('shopId'));
     if(url.searchParams.get('shopId')==='other'||url.searchParams.get('groupId')==='other-group'){
+      if(otherGate)await otherGate;
       if(failOther)throw Error('店铺读取暂时失败');
       return {data:{...structuredClone(costs),shopId:'other',groupId:'other-group',sourceName:'',costs:[],mappings:{},settings:{},products:[{shop_id:'other',product_id:'product',sku_id:'variant',seller_sku:'OTHER',name:'其他店商品',spec:'其他规格'}]}};
     }
@@ -136,7 +137,12 @@ await click('成本表设置');field('默认计价单位','箱');await click('�
 const settings=mutations.find(r=>r.path.endsWith('/settings'));
 assert.equal(settings.body.rules.unit,'箱');assert.equal(settings.body.version,1);
 await click('SKU 关联');
-field('成本分组','other-group');await settle();
+let releaseOther;otherGate=new Promise(r=>releaseOther=r);
+field('成本分组','other-group');
+assert(d.querySelector('[aria-label="财务店铺"]').disabled,'old shop cannot be selected during group loading');
+assert.deepEqual([...d.querySelector('[aria-label="财务店铺"]').options].map(n=>n.value),['','other']);
+assert.equal(d.querySelector('[aria-label="财务店铺"]').value,'');
+releaseOther();otherGate=null;await settle();
 assert(d.querySelector('tbody').textContent.includes('OTHER'));assert(!d.querySelector('tbody').textContent.includes('已关联'),'another shop with the same SKU identity has no inherited mapping');
 assert(!d.querySelector('.fc-shop-source').textContent.includes('成本.csv'),'cost tables do not bleed into another group');
 field('成本分组','group');await settle();

@@ -6,6 +6,11 @@ const w=dom.window,d=w.document,requests=[];
 w.currentUser={permissions:['finance:view']};w.matchMedia=()=>({matches:false});
 w.ResizeObserver=class{observe(){}disconnect(){}};
 let overviewGate=null,recordsGate=null;
+const shops=[{id:'baby-ph',group_id:'baby',name:'母婴原名',display_name:'母婴别名',platform:'SHOPEE'},
+  {id:'baby-tk',group_id:'baby',name:'母婴 TK',platform:'TIKTOK_SHOP'},
+  {id:'perfume',group_id:'perfume',name:'香水店',platform:'SHOPEE'},
+  {id:'ungrouped',name:'未分组店',platform:'SHOPEE'}];
+const groups=[{id:'baby',name:'母婴组'},{id:'perfume',name:'香水组'},{id:'empty',name:'空分组'}];
 w.api=async path=>{
   const url=new URL(path,'https://example.test');requests.push(url);
   const cny=url.searchParams.get('displayCurrency')==='CNY';
@@ -13,7 +18,7 @@ w.api=async path=>{
     if(overviewGate)await overviewGate;
     return {data:{filters:{...Object.fromEntries(url.searchParams),currency:cny?'':'PHP',displayCurrency:cny?'CNY':'PHP'},
       ...(cny?{fx:{id:'test-cny-snapshot',time:'2026-10-24T00:00:00Z',provider:'test'}}:{}),
-      currencies:['PHP','MYR'],shops:[],groups:[],sync:[],totals:[],trend:[],fees:[],statuses:[],ranking:[],
+      currencies:['PHP','MYR'],shops,groups,sync:[],totals:[],trend:[],fees:[],statuses:[],ranking:[],
       productCosts:{scope:'SETTLED_ORDER',total:{amount_cny:12,pending_count:0},shops:[],basis:'首次平台结算'}}};
   }
   assert(url.pathname.endsWith('/records'));
@@ -62,6 +67,24 @@ const start=d.querySelector('[aria-label="开始日期"]');start.value='2026-10-
 const latest=d.querySelector('tbody tr');firstRecords();firstOverview();await pause();
 assert.equal(d.querySelector('tbody tr'),latest);
 assert.equal(d.querySelector('[aria-label="开始日期"]').value,'2026-10-01');
+const choose=(label,value)=>{const n=d.querySelector(`[aria-label="${label}"]`);n.value=value;n.dispatchEvent(new w.Event('change'));};
+const shopValues=()=>[...d.querySelector('[aria-label="店铺"]').options].map(n=>n.value);
+choose('店铺分组','baby');await ready();choose('店铺','baby-ph');await ready();
+assert.equal(d.querySelector('[aria-label="店铺"]').selectedOptions[0].textContent,'母婴别名');
+overviewGate=new Promise(r=>releaseOverview=r);
+choose('店铺分组','perfume');
+assert.deepEqual(shopValues(),['','perfume'],'group/shop cascade is synchronous even while summary is blocked');
+assert.equal(d.querySelector('[aria-label="店铺"]').value,'');
+assert.equal(requests.at(-1).searchParams.get('groupId'),'perfume');assert.equal(requests.at(-1).searchParams.get('shopId'),'');
+const staleGroup=releaseOverview;overviewGate=null;
+choose('店铺分组','baby');choose('平台','TIKTOK_SHOP');
+assert.deepEqual(shopValues(),['','baby-tk'],'group and platform filters intersect immediately');
+await ready();staleGroup();await pause();
+assert.deepEqual(shopValues(),['','baby-tk'],'late results cannot restore obsolete shops');
+choose('平台','');await ready();choose('店铺分组','UNGROUPED');
+assert.deepEqual(shopValues(),['','ungrouped']);await ready();
+choose('店铺分组','empty');assert.deepEqual(shopValues(),['']);await ready();
+choose('店铺分组','');assert.deepEqual(shopValues(),['','baby-ph','baby-tk','perfume','ungrouped']);await ready();
 const nativeStart=requests.length;
 button('原币').click();await ready();
 assert.equal(requests[nativeStart].searchParams.get('currency'),'');

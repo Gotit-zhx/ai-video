@@ -55,6 +55,7 @@
     // A resolved native currency belongs to its shop/group/platform, not to the next scope.
     if(scopeSelected||'displayCurrency' in changes){filters.currency='';filters.fxSnapshot='';}
     else if('currency' in changes)filters.fxSnapshot='';
+    if(scopeSelected)refreshShopFilters();
     page=1;
   }
   function selectFilters(changes){updateFilters(changes);return load();}
@@ -99,6 +100,20 @@
   const groupOptions=()=>[['','全部分组'],['UNGROUPED','未分组'],...(data?.groups||[]).map(g=>[g.id,g.name])];
   const inGroup=shop=>!filters.groupId||(filters.groupId==='UNGROUPED'?!shop.group_id:shop.group_id===filters.groupId);
   function groupSelect(parent){return select(parent,'店铺分组',groupOptions(),filters.groupId,v=>selectFilters({groupId:v,shopId:''}));}
+  const scopedShops=()=>(data?.shops||[]).filter(s=>inGroup(s)&&(!filters.platform||s.platform===filters.platform));
+  function shopFilter(parent,allLabel='全部店铺'){
+    const n=select(parent,'店铺',[['',allLabel],...scopedShops().map(s=>[s.id,s.display_name||s.name])],filters.shopId,v=>selectFilters({shopId:v}));
+    n.dataset.financeShopFilter=allLabel;return n;
+  }
+  function refreshShopFilters(){
+    const shops=scopedShops();
+    if(data?.shops&&filters.shopId&&!shops.some(s=>s.id===filters.shopId))filters.shopId='';
+    for(const n of root.querySelectorAll('select[data-finance-shop-filter]')){
+      n.replaceChildren();
+      for(const [value,label]of [['',n.dataset.financeShopFilter],...shops.map(s=>[s.id,s.display_name||s.name])])el('option',label,n).value=value;
+      n.value=filters.shopId;
+    }
+  }
   const groupName=id=>id?(data?.groups||[]).find(g=>g.id===id)?.name||'已删除分组':'未分组';
   const qs=extra=>new URLSearchParams({...filters,...extra}).toString();
   async function request(path,options={}){
@@ -169,7 +184,7 @@
       const bar=el('div',null,root,'fi-filters');
       groupSelect(bar);
       select(bar,'平台',[['','全部平台'],['SHOPEE','Shopee'],['TIKTOK_SHOP','TikTok Shop']],filters.platform,v=>selectFilters({platform:v,shopId:''}));
-      select(bar,'店铺',[['','全部店铺'],...(data?.shops||[]).filter(s=>inGroup(s)&&(!filters.platform||s.platform===filters.platform)).map(s=>[s.id,s.display_name||s.name])],filters.shopId,v=>selectFilters({shopId:v}));
+      shopFilter(bar);
       select(bar,'原币',[['',filters.displayCurrency==='CNY'?'全部币种':'全部币种（人民币汇总）'],...(data?.currencies||[]).map(c=>[c,c])],filters.currency,selectCurrency);
       const currencyToggle=el('div',null,bar,'fi-pills');currencyToggle.setAttribute('aria-label','金额展示币种');
       for(const [key,label] of [['ORIGINAL','原币'],['CNY','人民币 ¥']])button(label,currencyToggle,()=>selectFilters({displayCurrency:key})).setAttribute('aria-pressed',String(filters.displayCurrency===key));
@@ -1010,7 +1025,7 @@
     const controls=el('div',null,top,'fi-actions');
     loadingIndicator(controls);
     groupSelect(controls);
-    select(controls,'店铺',[['','全部财务店铺'],...data.shops.filter(s=>inGroup(s)&&(!filters.platform||s.platform===filters.platform)).map(shop=>[shop.id,shop.display_name||shop.name])],filters.shopId,v=>selectFilters({shopId:v}));
+    shopFilter(controls,'全部财务店铺');
     select(controls,'金额口径',[['CNY','人民币 ¥'],['ORIGINAL','原币']],filters.displayCurrency,v=>selectFilters({displayCurrency:v}));
     if(filters.displayCurrency==='ORIGINAL')select(controls,'原币',[['','全部币种（人民币汇总）'],...data.currencies.map(c=>[c,c])],data.filters.currency,selectCurrency);
     button('返回总览',controls,async()=>{if(document.fullscreenElement)await document.exitFullscreen();navigate('overview');});

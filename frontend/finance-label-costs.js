@@ -60,8 +60,16 @@
     button(controls,'刷新',()=>refresh());
     const filters=el('div',null,root,'fi-filters');
     const change=(detailsOnly=false)=>{scope.page=1;options.onFiltersChange?.({...scope});syncStatusFilters();refresh({detailsOnly}).catch(e=>{feedback.textContent=e.message;});};
-    select(filters,'账单所属分组',[['','全部分组'],...groups.map(g=>[g.id,g.name])],scope.groupId,v=>{scope.groupId=v;scope.shopId='';shopSelection.value='';change();});
-    const shopSelection=select(filters,'账单匹配店铺',[['','全部店铺'],...shops.map(s=>[s.id,s.display_name||s.name])],scope.shopId,v=>{scope.shopId=v;change();});
+    select(filters,'账单所属分组',[['','全部分组'],['UNGROUPED','未分组'],...groups.map(g=>[g.id,g.name])],scope.groupId,v=>{scope.groupId=v;scope.shopId='';shopOptions();change();});
+    const shopSelection=select(filters,'账单匹配店铺',[],'',v=>{scope.shopId=v;change();});
+    function shopOptions(){
+      const available=shops.filter(s=>(!scope.groupId||(scope.groupId==='UNGROUPED'?!s.group_id:s.group_id===scope.groupId))&&(!scope.platform||s.platform===scope.platform));
+      if(!available.some(s=>s.id===scope.shopId))scope.shopId='';
+      shopSelection.replaceChildren();el('option','全部店铺',shopSelection).value='';
+      for(const s of available)el('option',s.display_name||s.name,shopSelection).value=s.id;
+      shopSelection.value=scope.shopId;
+    }
+    shopOptions();
     for(const [key,name]of [['start','结算开始日期'],['end','结算结束日期']]){
       const label=el('label',null,filters);el('span',name,label);const n=el('input',null,label);n.type='date';n.value=scope[key];n.setAttribute('aria-label',name);
       n.onchange=()=>{if(!n.value)return;const next={...scope,[key]:n.value};if(next.start&&next.end&&next.start>next.end){feedback.textContent='开始日期不能晚于结束日期';n.value=scope[key];return;}scope[key]=n.value;change();};

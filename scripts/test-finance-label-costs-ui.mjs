@@ -30,9 +30,15 @@ const wait=()=>new Promise(r=>setTimeout(r,15));
 const button=(text,scope=d)=>[...scope.querySelectorAll('button')].find(b=>b.textContent===text);
 async function click(text,scope=d){const b=button(text,scope);assert(b,text);b.click();await wait();}
 function field(label,value){const n=d.querySelector(`[aria-label="${label}"]`);assert(n,label);n.value=value;n.dispatchEvent(new w.Event('change'));}
-const options={request,canManage:true,groups:[{id:'baby',name:'母婴组'}],shops:[{id:'ph',group_id:'baby',name:'菲律宾店'}],
-  filters:{start:'2026-09-01',end:'2026-09-30'}};
+const options={request,canManage:true,groups:[{id:'baby',name:'母婴组'},{id:'perfume',name:'香水组'},{id:'empty',name:'空分组'}],shops:[
+  {id:'ph',group_id:'baby',name:'菲律宾店',display_name:'母婴别名',platform:'SHOPEE'},
+  {id:'tk',group_id:'baby',name:'母婴 TK 店',platform:'TIKTOK_SHOP'},
+  {id:'perfume',group_id:'perfume',name:'香水店',platform:'SHOPEE'},
+  {id:'ungrouped',name:'未分组店',platform:'SHOPEE'}],
+  filters:{start:'2026-09-01',end:'2026-09-30',groupId:'baby',shopId:'ph'}};
 w.FinanceLabelCosts.mount(root,options);await wait();
+const shopValues=()=>[...d.querySelector('[aria-label="账单匹配店铺"]').options].map(n=>n.value);
+assert.deepEqual(shopValues(),['','ph','tk']);assert.equal(d.querySelector('[aria-label="账单匹配店铺"]').selectedOptions[0].textContent,'母婴别名');
 assert(root.textContent.includes('已完成 · 有待处理项'));assert(!root.textContent.includes('计费失败'));
 assert(root.textContent.includes('504,467.50'));assert(root.textContent.includes('待同步匹配'));
 const retained=root.querySelector('tbody tr');
@@ -65,6 +71,16 @@ assert.equal(reads.at(-1).searchParams.get('page'),'1');
 field('贴单订单编号','586208660231587825');await wait();assert.equal(reads.at(-1).searchParams.get('numbers'),'586208660231587825');
 field('账单匹配店铺','ph');await wait();field('账单所属分组','baby');await wait();
 assert.equal(d.querySelector('[aria-label="账单匹配店铺"]').value,'');assert(!reads.at(-1).searchParams.has('shopId'));
+holdReads=true;pending.length=0;
+field('账单匹配店铺','ph');field('账单所属分组','perfume');
+assert.deepEqual(shopValues(),['','perfume'],'group changes narrow shops before the query returns');
+assert.equal(d.querySelector('[aria-label="账单匹配店铺"]').value,'');
+assert.equal(reads.at(-1).searchParams.get('groupId'),'perfume');assert(!reads.at(-1).searchParams.has('shopId'));
+field('账单所属分组','UNGROUPED');assert.deepEqual(shopValues(),['','ungrouped']);
+field('账单所属分组','empty');assert.deepEqual(shopValues(),['']);
+field('账单所属分组','');assert.deepEqual(shopValues(),['','ph','tk','perfume','ungrouped']);
+for(const read of [...pending].reverse())read.resolve(read.result);
+holdReads=false;await wait();assert.deepEqual(shopValues(),['','ph','tk','perfume','ungrouped'],'late responses cannot restore the previous group');
 const previousReads=reads.length;field('结算开始日期','2026-10-01');await wait();
 assert(root.textContent.includes('开始日期不能晚于结束日期'));assert.equal(reads.length,previousReads);
 await click('导入月度账单');
@@ -84,7 +100,9 @@ await click('刷新');assert(!root.textContent.includes('有待处理项'));asse
 assert(root.textContent.includes('¥ 0.00'));assert(root.querySelector('tbody tr:last-child'));
 await click('移除');await click('确认移除',d.querySelector('dialog'));assert.equal(writes.at(-1).method,'DELETE');
 await click('重新匹配');assert.equal(writes.at(-1).path,'/label-costs/rematch');
-w.FinanceLabelCosts.reset();w.FinanceLabelCosts.mount(root,{...options,canManage:false});await wait();
+w.FinanceLabelCosts.reset();w.FinanceLabelCosts.mount(root,{...options,canManage:false,filters:{...options.filters,platform:'TIKTOK_SHOP'}});await wait();
+assert.deepEqual(shopValues(),['','tk'],'inherited platform and group restrictions intersect');
+assert.equal(d.querySelector('[aria-label="账单匹配店铺"]').value,'');assert(!reads.at(-1).searchParams.has('shopId'),'invalid restored shops are cleared before querying');
 assert(!button('导入月度账单'));assert(!button('移除'));assert(!button('重试'));assert(!button('重新匹配'));
 w.FinanceLabelCosts.reset();w.close();
 console.log('PASS invoice UI: asynchronous status/progress/errors, multi-file dedupe, filters, stable DOM, removals and read-only access.');

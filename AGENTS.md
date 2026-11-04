@@ -1,9 +1,12 @@
 # Production storage and release rules
 
 For production operations, use the latest release document,
-`docs/finance-cost-dedupe-20261104.md` (active backend:
+`docs/finance-group-shops-20261104.md` (active backend:
 `ai-commerce-platform:finance-cost-dedupe-20261104`; frontend:
-`ai-commerce-frontend:finance-fee-native-layout-20261104`). Cost imports keep one
+`ai-commerce-frontend:finance-group-shops-20261104`). Finance group and platform
+filters immediately restrict shop options and clear obsolete shop selections,
+including monthly label invoices. Cost-import acceptance is in
+`docs/finance-cost-dedupe-20261104.md`. Cost imports keep one
 entry when warehouse, model, month and numeric unit price are identical; different
 prices for the same key still require review. Fee export acceptance remains in
 `docs/finance-fee-export-20261104.md`. Fee-matrix exports always
