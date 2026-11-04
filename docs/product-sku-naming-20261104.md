@@ -78,3 +78,23 @@ The disposable test database and account were removed.
 
 Actual marketplace publication is a separate acceptance step. Passing local
 provider tests does not prove a live listing was created or approved.
+
+Production activation completed after an existing TikTok publication finished.
+The first deployment attempt correctly deferred while that request was running;
+it was not interrupted or resubmitted. V145, the exact JAR hash, HTTP health,
+anonymous access protection, unchanged runtime configuration and frontend,
+and restoration of financial schedules/checkpoints passed after activation.
+No persistent logging was added. `activation.json`, `prepared.json`,
+`drain-restored.json` and `staging-cleanup.json` retain the small release receipts.
+
+The active backend and verified `finance-qianyi-receipt-20261103` and
+`finance-calendar-month-20261103` rollback images are retained. Frontend rollback
+retention is unchanged. Owned class staging, the temporary JAR build directory
+and the loose migration copy were removed. Preserve this release's Compose
+overrides and its imported helper dependency chain.
+
+The two requested new marketplace publications have not been submitted.
+Both available browser environments showed the HOYEE login page; authenticated
+collection/recapture and live publication acceptance still require a login.
+The existing TikTok workflow that completed during deployment was a prior
+publication, not a test publication of this new SKU policy.
