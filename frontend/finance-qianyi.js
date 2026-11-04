@@ -83,6 +83,14 @@
       const proof=s._returnReceipt||{};
       const fields=[['数据来源','千易 ERP · 售后与物流接口'],['千易售后单号',value.return_number],['平台订单号',value.order_id],['千易销售订单号',s.orderNumber],['财务店铺',value.shop_name],['千易店铺',s.shop],['类型',state(types,s.type)],['退货状态',state(returnStates,s.returnStatus||s.status)],['退款状态',state(refundStates,s.refundStatus)],['退回物流状态',state(receiptStates,value.return_receipt_state)],['退货运单号',s.customNumber],['返程物流依据',proof.event||'千易暂未返回明确的返程签收轨迹'],['物流事件时间（北京时间）',stamp(proof.eventDate)],['千易仓库',s.warehouse],['入库单号',s.asnNumber||s.warehouseEntryNumber],['创建时间（北京时间）',stamp(s.createTime)],['更新时间（北京时间）',stamp(s.updateTime)],['收货时间（北京时间）',stamp(value.source_received_at)],['完成时间（北京时间）',stamp(s.finishTime)],['千易订单退款金额（'+(s.currency||'币种未返回')+'）',num(s.orderRefundAmount)]];
       for(const [label,text]of fields){const item=el('div',null,grid);el('dt',label,item);el('dd',text||'—',item);}
+      const cost=value.returnCost;
+      if(cost){
+        const item=el('div',null,grid);el('dt','退货成本（CNY）',item);
+        el('dd',cost.amountCny==null?'已匹配 '+num(cost.knownAmountCny)+' · 成本待补齐':num(cost.amountCny),item);
+        el('p',cost.note,m.body,'fi-muted');
+        if(cost.lines?.length)table(m.body,['成本 SKU','退货数量','换算数量','成本月份','人民币单价','人民币成本','匹配结果'],
+          cost.lines.map(r=>[r.costCode||r.sellerSku,num(r.quantity),num(r.factor),r.priceMonth||'—',num(r.unitPriceCny),num(r.amountCny),r.issue||(r.previousPrice?'使用历史成本价':'已匹配')]));
+      }
       el('h3','千易退货商品',m.body);const lines=s.returnSkuList||[];
       table(m.body,['商品 SKU','千易订单商品 ID','退货数量','良品数量','不良品数量','明细状态'],lines.map(r=>[r.sku,r.orderSkuId,num(r.quantity),num(r.goodQuantity),num(r.badQuantity),r.isDeleted===1||r.isDeleted===true?'千易已删除':r.selected===0?'千易未选中':'有效']));
       if(!lines.length)el('p','千易尚未返回商品明细。',m.body,'fi-muted');
@@ -129,7 +137,14 @@
       if(Number(summary.awaitingLogistics)>0)rows.push(['物流待确认（未计入）',num(summary.awaitingLogistics)+' 笔']);
       for(const amount of summary.refundTotals||[])rows.push(['千易订单退款金额（'+(amount.currency==='UNKNOWN'?'币种未返回':amount.currency)+'）',
         amount.currency==='UNKNOWN'?'币种待确认，暂不合计':num(amount.amount)+(Number(amount.known_count)<Number(amount.records)?' · 部分金额未返回':'')]);
+      const cost=summary.returnCost;
+      if(cost){
+        rows.push(['退货成本合计（CNY）',cost.amountCny==null?'已匹配 '+num(cost.knownAmountCny):num(cost.amountCny)]);
+        if(Number(cost.pendingRecords)>0)rows.push(['退货成本待补齐',num(cost.pendingRecords)+' 笔 · 合计仅含已匹配部分']);
+        if(Number(cost.estimatedRecords)>0)rows.push(['使用历史成本价',num(cost.estimatedRecords)+' 笔']);
+      }
       for(const [label,value]of rows){const item=el('section',null,totals);el('span',label,item);el('strong',value,item);}
+      if(cost){const note=el('p','按当前筛选全部页面 · 收货月标准成本 · 不含贴单费',totals,'fi-muted');note.style.gridColumn='1 / -1';note.title=cost.basis||'';}
     }
     async function load(){
       controller?.abort();controller=new AbortController();

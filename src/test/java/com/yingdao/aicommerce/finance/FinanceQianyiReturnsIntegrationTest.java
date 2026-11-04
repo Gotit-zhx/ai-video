@@ -6,6 +6,49 @@ import static org.junit.jupiter.api.Assertions.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 
 class FinanceQianyiReturnsIntegrationTest extends FinanceQianyiIntegrationTest {
+    @Test void returnedCostCoversAllPagesMatchesExportAndNeverRestoresProfitCredits() throws Exception {
+        qianyi();integration.save(owner,shop,form());
+        var sources=new ArrayList<Map<String,Object>>();
+        for(int i=0;i<53;i++){
+            var s=FinanceQianyiReceiptTest.qualified();s.put("returnNumber","COST-"+String.format("%03d",i));
+            s.put("currency","PHP");s.put("orderRefundAmount","100");
+            var lines=new ArrayList<Map<String,Object>>();
+            lines.add(Map.of("sku","PACK","quantity",1,"orderSkuId","one","selected",1));
+            if(i==52)lines.add(Map.of("sku","NO-COST","quantity",1,"orderSkuId","two","selected",1));
+            s.put("returnSkuList",lines);sources.add(s);
+        }
+        var unqualified=new LinkedHashMap<>(sources.getFirst());unqualified.put("returnNumber","NOT-SIGNED");
+        unqualified.remove(FinanceQianyiReceipt.FIELD);sources.add(unqualified);
+        // Batch the fixture so a high-latency QA tunnel does not consume a sync transaction's deadline.
+        db.batchUpdate("""
+            INSERT INTO finance_qianyi_returns(organization_id,shop_id,return_number,account_key,order_id,source_updated_at,source_hash,data_json)
+            VALUES(?,?,?,'qa-account',?,?,?,?)
+            """,sources.stream().map(s->new Object[]{owner.organizationId(),shop,s.get("returnNumber"),s.get("onlineOrderNumber"),
+                s.get("updateTime"),hash(repo.write(s)),repo.write(s)}).toList());
+        var read=new FinanceQianyiReturns(repo,service);
+        var filter=new HashMap<String,String>(Map.of("shopId",shop,"start","2026-09-01","end","2026-09-30","page","2"));
+        var list=read.list(owner,filter);var total=map(map(list.get("summary")).get("returnCost"));
+        equalMoney("530",total.get("knownAmountCny"));assertNull(total.get("amountCny"));
+        assertEquals(52,number(total.get("completeRecords")));assertEquals(1,number(total.get("pendingRecords")));
+        assertEquals(3,rows(list.get("items")).size());assertFalse(rows(list.get("items")).getFirst().containsKey("data_json"));
+        equalMoney("5300",rows(map(list.get("summary")).get("refundTotals")).getFirst().get("amount"));
+        var sheet=FinanceCostExportTest.sheet(read.export(owner,filter),1);
+        equalMoney("530",FinanceCostExportTest.summaryValue(sheet,"退货成本已匹配金额（CNY）"));
+        assertEquals("1",FinanceCostExportTest.summaryValue(sheet,"退货成本待补齐单据"));
+        var detail=map(read.detail(owner,shop,"COST-052").get("returnCost"));
+        assertNull(detail.get("amountCny"));equalMoney("10",detail.get("knownAmountCny"));
+        filter.put("numbers","COST-000");filter.put("page","1");
+        total=map(map(read.list(owner,filter).get("summary")).get("returnCost"));equalMoney("10",total.get("amountCny"));
+        filter.put("receiptScope","ALL");filter.put("numbers","NOT-SIGNED");
+        list=read.list(owner,filter);total=map(map(list.get("summary")).get("returnCost"));
+        equalMoney("0",total.get("amountCny"));assertFalse(rows(list.get("items")).getFirst().containsKey("returnCost"));
+        total=map(map(read.list(other,Map.of("start","2026-09-01","end","2026-09-30")).get("summary")).get("returnCost"));
+        equalMoney("0",total.get("amountCny"));assertThrows(RuntimeException.class,()->read.detail(other,shop,"COST-000"));
+        var summary=new LinkedHashMap<String,Object>(Map.of("total",new LinkedHashMap<>()));
+        actual.attachReturns(owner,period(9),summary);equalMoney("0",map(summary.get("total")).get("return_cost_cny"));
+        assertEquals(false,summary.get("returnCostReversalEnabled"));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM finance_qianyi_return_costs",Integer.class));
+    }
     @Test void filteredTotalsCoverAllPagesAndKeepUnknownCostsAndCurrenciesSeparate() {
         qianyi();integration.save(owner,shop,form());addOrder("586208660231587825","COMPLETED");
         var first=FinanceQianyiReceiptTest.qualified();

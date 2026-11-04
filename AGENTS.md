@@ -1,9 +1,10 @@
 # Production storage and release rules
 
 For production operations, use the latest backend release document,
-`docs/sku-shared-cost-total-20261104.md` (active backend and frontend:
-`ai-commerce-platform:sku-shared-cost-total-20261104` and
-`ai-commerce-frontend:sku-shared-cost-total-layout-20261104`). Prior SKU acceptance is in
+`docs/qianyi-return-total-20261104.md` (active backend and frontend:
+`ai-commerce-platform:qianyi-return-total-20261104` and
+`ai-commerce-frontend:qianyi-return-total-20261104`). Shared-pattern SKU and
+cost-page behavior is in `docs/sku-shared-cost-total-20261104.md`. Prior SKU acceptance is in
 `docs/product-sku-naming-20261104.md`; financial synchronization and receipt rules
 remain documented in `docs/finance-qianyi-receipt-20261103.md`; storage safeguards remain in
 `docs/storage-cleanup-20261102.md`. Preserve credentials, runtime configuration,

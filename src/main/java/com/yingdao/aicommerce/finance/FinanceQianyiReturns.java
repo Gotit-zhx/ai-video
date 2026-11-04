@@ -15,16 +15,12 @@ public class FinanceQianyiReturns {
          FROM finance_qianyi_returns r JOIN finance_connections c
            ON c.organization_id=r.organization_id AND c.id=r.shop_id WHERE
         """;
-    static final String COST="""
-        (SELECT SUM(k.amount_cny) FROM finance_qianyi_return_costs k
-          WHERE k.organization_id=r.organization_id AND k.shop_id=r.shop_id AND k.return_number=r.return_number)
-        """;
     static final String REFUND_RAW="JSON_UNQUOTE(JSON_EXTRACT(r.data_json,'$.orderRefundAmount'))";
     static final String REFUND="CASE WHEN "+REFUND_RAW+" REGEXP '^-?[0-9]{1,17}([.][0-9]{1,6})?$' THEN CAST("+REFUND_RAW+" AS DECIMAL(24,6)) ELSE NULL END";
     static final String CURRENCY="COALESCE(NULLIF(NULLIF(UPPER(JSON_UNQUOTE(JSON_EXTRACT(r.data_json,'$.currency'))),'NULL'),''),'UNKNOWN')";
     static final String QUALIFIED="r.source_received_at IS NOT NULL AND r.return_state='FINISH' AND r.aftersale_type='SALES_RETURN'"
         +" AND r.return_receipt_state='SIGNED' AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.data_json,'$.isDeleted')),'0') NOT IN ('1','true')";
-    static final String BASIS="数据来源：千易售后及物流接口。按北京时间的收货时间归属月份，不用创建、完成或更新时间替代。统计须同时满足：有收货时间、退货已完成、对应运单的返程轨迹明确已退回卖家。普通发货签收、正在退回及物流未确认不计入；可切换“全部单据”核对。金额按千易接口币种分别汇总，是订单退款金额，不是库存成本；仅供售后核对，不冲回营业成本、不改变利润。";
+    static final String BASIS="数据来源：千易售后及物流接口。按北京时间的收货时间归属月份，不用创建、完成或更新时间替代。统计须同时满足：有收货时间、退货已完成、对应运单的返程轨迹明确已退回卖家。普通发货签收、正在退回及物流未确认不计入；可切换“全部单据”核对。退款金额按千易接口币种分别汇总，与退货成本分开。"+FinanceQianyiReturnCostSummary.BASIS;
     static final String COLUMNS="""
         r.shop_id,r.return_number,r.order_id,r.receipt_date,r.source_received_at,r.return_receipt_state,r.return_state,r.refund_state,r.aftersale_type,
         r.cost_status,r.cost_note,r.source_created_at,r.source_updated_at,r.updated_at,
@@ -106,11 +102,13 @@ public class FinanceQianyiReturns {
         all.remove("receiptStatus");
         var pending=query(scope,all);
         return repo.readSnapshot(()->{
-            var summary=summary(query);long total=number(summary.get("matchedRecords"));
+            var costs=new FinanceQianyiReturnCostSummary(repo,scope.organizationId());
+            var summary=summary(query);summary.put("returnCost",costs.totals(query));long total=number(summary.get("matchedRecords"));
             summary.put("awaitingLogistics",repo.jdbc().queryForObject("SELECT COUNT(*)"+FROM+pending.where()+
                 " AND r.source_received_at IS NOT NULL AND r.aftersale_type='SALES_RETURN' AND r.return_state='FINISH' AND r.return_receipt_state='UNKNOWN'"+
                 " AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.data_json,'$.isDeleted')),'0') NOT IN ('1','true')",Long.class,pending.args().toArray()));
-            var items=repo.jdbc().queryForList("SELECT "+COLUMNS+FROM+query.where()+" ORDER BY "+sort+" DESC,r.shop_id,r.return_number LIMIT ? OFFSET ?",args.toArray());
+            var items=repo.jdbc().queryForList("SELECT "+COLUMNS+",r.data_json"+FROM+query.where()+" ORDER BY "+sort+" DESC,r.shop_id,r.return_number LIMIT ? OFFSET ?",args.toArray());
+            for(var item:items)costs.attach(item,repo.read(text(item.remove("data_json"))));
             return Map.of("items",items,"total",total,"page",page,"pageSize",50,"source","QIANYI","dateField",field,
                 "summary",summary,"basis",BASIS);
         });
@@ -129,6 +127,7 @@ public class FinanceQianyiReturns {
             return repo.readSnapshot(()->{
                 var totals=summary(query);long count=number(totals.get("matchedRecords"));
                 if(count>50000)throw bad("千易售后导出最多 50,000 条，请缩小日期或店铺范围");
+                var costs=new FinanceQianyiReturnCostSummary(repo,scope.organizationId());var costTotal=costs.totals(query);
                 try(var book=new FinanceCostWorkbook()){
                     var notes=book.sheet("统计口径",List.of("项目","内容"));
                     notes.row(List.of("来源与口径",BASIS));
@@ -138,18 +137,27 @@ public class FinanceQianyiReturns {
                     notes.row(List.of("符合收货统计条件的单据数",totals.get("records")));
                     for(var money:rows(totals.get("refundTotals")))
                         notes.row(Arrays.asList("千易订单退款金额（"+money.get("currency")+"）",money.get("amount")));
+                    notes.row(Arrays.asList("退货成本合计（CNY，完整金额）",costTotal.get("amountCny")));
+                    notes.row(List.of("退货成本已匹配金额（CNY）",costTotal.get("knownAmountCny")));
+                    notes.row(List.of("退货成本待补齐单据",costTotal.get("pendingRecords")));
+                    notes.row(List.of("使用历史成本价单据",costTotal.get("estimatedRecords")));
                     var detail=book.sheet("千易售后明细",List.of("平台","店铺","千易售后单号","平台订单号","售后类型","退货状态","退款状态",
-                        "千易创建时间（北京时间）","千易更新时间（北京时间）","收货时间（北京时间）","退回物流状态","返程物流依据","计入收货统计","退款金额","退款币种"));
+                        "千易创建时间（北京时间）","千易更新时间（北京时间）","收货时间（北京时间）","退回物流状态","返程物流依据","计入收货统计","退款金额","退款币种",
+                        "退货成本（CNY，完整金额）","已匹配退货成本（CNY）","成本匹配结果"));
                     for(int offset=0;offset<count;offset+=500){
                         var args=new ArrayList<>(query.args());args.add(500);args.add(offset);
-                        var items=repo.jdbc().queryForList("SELECT "+COLUMNS+FROM+query.where()+
+                        var items=repo.jdbc().queryForList("SELECT "+COLUMNS+",r.data_json"+FROM+query.where()+
                             " ORDER BY r.source_received_at DESC,r.shop_id,r.return_number LIMIT ? OFFSET ?",args.toArray());
-                        for(var row:items)detail.row(Arrays.asList(
+                        for(var row:items){
+                            costs.attach(row,repo.read(text(row.remove("data_json"))));var cost=map(row.get("returnCost"));
+                            detail.row(Arrays.asList(
                             "SHOPEE".equals(row.get("platform"))?"虾皮":"TikTok",row.get("shop_name"),row.get("return_number"),row.get("order_id"),
                             label(text(row.get("aftersale_type"))),label(text(row.get("return_state"))),label(text(row.get("refund_state"))),
                             sourceTime(row.get("source_created_at")),sourceTime(row.get("source_updated_at")),sourceTime(row.get("source_received_at")),
                             receiptLabel(text(row.get("return_receipt_state"))),row.get("receipt_event"),number(row.get("receipt_qualified"))==1?"是":"否",
-                            row.get("refund_amount"),row.get("refund_currency")));
+                            row.get("refund_amount"),row.get("refund_currency"),cost.get("amountCny"),cost.get("knownAmountCny"),
+                            cost.isEmpty()?"不符合收货统计条件":cost.get("amountCny")==null?"待补齐":number(cost.get("fallbackLines"))>0?"使用历史成本价":"已匹配"));
+                        }
                     }
                     return book.bytes();
                 }catch(java.io.IOException failure){throw bad("千易报表生成失败，请重试");}
@@ -174,6 +182,7 @@ public class FinanceQianyiReturns {
             if(found.isEmpty())throw bad("没有找到本公司的千易售后单");
             var result=new LinkedHashMap<>(found.getFirst());
             result.put("source","QIANYI");result.put("sourceFields",FinanceQianyiEvidence.sanitize(repo.read(text(result.remove("data_json")))));
+            new FinanceQianyiReturnCostSummary(repo,scope.organizationId()).attach(result,map(result.get("sourceFields")));
             result.put("basis",BASIS);
             return result;
         });
