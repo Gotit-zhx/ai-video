@@ -44,6 +44,23 @@ class FinanceQianyiReceiptTest {
         s=source();s.put("type","RETURN");assertFalse(FinanceQianyiReceipt.candidate(s));
         s=source();s.put("isDeleted",1);assertFalse(FinanceQianyiReceipt.candidate(s));
     }
+    @Test void shopeeReturnedToSenderTerminalUsesTheSameIdentityAndLatestEventChecks(){
+        var s=source();long at=1788291000000L;
+        for(String event:List.of("Parcel has been returned to sender","Parcel has been returned to sender.","Package has been returned to the seller.")){
+            var proof=parcel(event,at);
+            assertEquals("SIGNED",FinanceQianyiReceipt.evidence(s,List.of(proof)).get("state"));
+            for(String key:List.of("trackingNumber","orderNumber","onlineOrderId")){
+                var other=new LinkedHashMap<>(proof);other.put(key,"OTHER");
+                assertEquals("UNKNOWN",FinanceQianyiReceipt.evidence(s,List.of(other)).get("state"));
+            }
+            assertEquals("IN_TRANSIT",FinanceQianyiReceipt.evidence(s,List.of(proof,parcel("Return package out for delivery.",at+1000))).get("state"));
+            assertEquals("UNKNOWN",FinanceQianyiReceipt.evidence(s,List.of(proof,parcel("Return package out for delivery.",at))).get("state"));
+        }
+        for(String event:List.of("Parcel will be returned to sender","Parcel is being returned to sender",
+            "Parcel has not been returned to sender","Parcel has been returned to sorting center","Parcel delivered to buyer")){
+            assertNotEquals("SIGNED",FinanceQianyiReceipt.evidence(s,List.of(parcel(event,at))).get("state"));
+        }
+    }
     @Test void receiptUpgradeAndDailyScanPreserveOriginalPaginationAndDoNotLoop(){
         var original=Map.<String,Object>of("from","2026-10-25","until","2026-11-02","page",7,"sourceVersion",2);
         var config=new LinkedHashMap<String,Object>(Map.of("source_version",2,"sync_start","2026-08-01"));

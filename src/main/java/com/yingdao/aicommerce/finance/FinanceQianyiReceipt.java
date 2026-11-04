@@ -40,7 +40,7 @@ final class FinanceQianyiReceipt {
             for(var event:rows(parcel.get("eventList"))){
                 long at=received(event.get("eventDate"));String message=text(event.get("event")).trim();
                 if(at==0||message.length()>512||!message.toLowerCase(Locale.ROOT).contains("return"))continue;
-                String state=message.matches("(?i)^Your package has been returned to the seller(?: in .+)?\\.?$")?"SIGNED"
+                String state=message.matches("(?i)^(?:Your package has been returned to the seller(?: in .+)?\\.?|Package has been returned to the seller\\.?|Parcel has been returned to sender\\.?)$")?"SIGNED"
                     :message.matches("(?i)^(Your package is being returned to the seller.*|Return package (arrived|out for delivery).*)$")?"IN_TRANSIT":"UNKNOWN";
                 if(at>latest){latest=at;terminal=state;eventText=message;ambiguous=false;}
                 else if(at==latest&&!Objects.equals(terminal,state))ambiguous=true;
