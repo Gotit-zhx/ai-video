@@ -1,9 +1,12 @@
 # Production storage and release rules
 
-For production operations, use the latest backend release document,
-`docs/qianyi-reverse-phrases-20261104.md` (active backend:
-`ai-commerce-platform:qianyi-reverse-phrases-20261104`; frontend:
-`ai-commerce-frontend:qianyi-return-total-20261104`). Return-cost totals are in
+For production operations, use the latest release document,
+`docs/finance-fee-export-20261104.md` (active backend:
+`ai-commerce-platform:finance-fee-native-20261104`; frontend:
+`ai-commerce-frontend:finance-fee-native-layout-20261104`). Fee-matrix exports always
+retain native currency in separate currency sheets, regardless of the dashboard's
+CNY display. Receipt recognition remains in
+`docs/qianyi-reverse-phrases-20261104.md`. Return-cost totals are in
 `docs/qianyi-return-total-20261104.md`. Shared-pattern SKU and
 cost-page behavior is in `docs/sku-shared-cost-total-20261104.md`. Prior SKU acceptance is in
 `docs/product-sku-naming-20261104.md`; financial synchronization and receipt rules

@@ -200,30 +200,7 @@ public class FinanceService {
         // SQL facts are daily and currency-neutral. Display granularity is applied below.
         Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"","day",requested.groupId());
         var costReport=new FinanceCostReport(repo);
-        var factsKey=new FinanceSnapshotCache.Key(s,all,false,"",live);
-        var companyKey=new FinanceSnapshotCache.Key(s,new Filter(all.start(),all.end(),"","","","day"),false,"",live);
-        // A shop-first visit stays a shop query. A previously loaded company snapshot can
-        // serve its shops/groups without repeating the large ledger and cost scans.
-        var wider=factsKey.equals(companyKey)?null:sharedSnapshots==null?dashboardFacts.find(companyKey):sharedSnapshots.findFacts(companyKey);
-        // Unassigned expenses may span platforms, which the existing daily buckets
-        // combine. Preserve the SQL platform filter rather than infer their platform.
-        if(wider!=null&&!all.platform().isBlank()&&rows(wider.get("buckets")).stream()
-                .anyMatch(row->"UNASSIGNED".equals(text(row.get("shop_id")))))wider=null;
-        // The bounded cold read contains multiple queries; a per-query-sized total
-        // transaction deadline previously discarded complete month computations.
-        java.util.function.Supplier<Map<String,Object>> read=()->repo.readSnapshot(180,()->{
-            var buckets=new ArrayList<>(repo.dashboardBuckets(s,all,live));
-            var orders=costReport.dashboardFacts(s,all);
-            if(!live){
-                buckets.removeIf(row->Set.of("ORDER","REFUND").contains(text(row.get("kind"))));
-                buckets.addAll(orders.stream().filter(row->number(row.get("records"))>0).toList());
-                buckets.addAll(repo.settledOrderBuckets(s,all,"REFUND"));
-            }
-            return Map.of("buckets",dailyFactRows(buckets),"orders",dailyFactRows(orders),
-                    "reportingMonths",live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
-        });
-        var facts=wider==null?(sharedSnapshots==null?dashboardFacts.get(factsKey,read):sharedSnapshots.facts(factsKey,read)):
-                narrowDashboardFacts(wider,all,shops(s),live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
+        var facts=loadDashboardFacts(s,all,live);
         var reportingMonths=rows(facts.get("reportingMonths"));
         String trendGranularity=reportingMonths.stream().anyMatch(r->Boolean.TRUE.equals(r.get("included")))?"month":requested.granularity();
         var buckets=rows(facts.get("buckets"));
@@ -281,6 +258,42 @@ public class FinanceService {
         for(String key:List.of("_financeDataRevision","_financeFactsBuilt"))
             if(facts.containsKey(key))out.put(key,facts.get(key));
         return out;
+    }
+    private Map<String,Object> loadDashboardFacts(Scope s,Filter all,boolean live){
+        var costReport=new FinanceCostReport(repo);
+        var factsKey=new FinanceSnapshotCache.Key(s,all,false,"",live);
+        var companyKey=new FinanceSnapshotCache.Key(s,new Filter(all.start(),all.end(),"","","","day"),false,"",live);
+        // A shop-first visit stays a shop query. A previously loaded company snapshot can
+        // serve its shops/groups without repeating the large ledger and cost scans.
+        var wider=factsKey.equals(companyKey)?null:sharedSnapshots==null?dashboardFacts.find(companyKey):sharedSnapshots.findFacts(companyKey);
+        // Unassigned expenses may span platforms, which the existing daily buckets
+        // combine. Preserve the SQL platform filter rather than infer their platform.
+        if(wider!=null&&!all.platform().isBlank()&&rows(wider.get("buckets")).stream()
+                .anyMatch(row->"UNASSIGNED".equals(text(row.get("shop_id")))))wider=null;
+        // The bounded cold read contains multiple queries; a per-query-sized total
+        // transaction deadline previously discarded complete month computations.
+        java.util.function.Supplier<Map<String,Object>> read=()->repo.readSnapshot(180,()->{
+            var buckets=new ArrayList<>(repo.dashboardBuckets(s,all,live));
+            var orders=costReport.dashboardFacts(s,all);
+            if(!live){
+                buckets.removeIf(row->Set.of("ORDER","REFUND").contains(text(row.get("kind"))));
+                buckets.addAll(orders.stream().filter(row->number(row.get("records"))>0).toList());
+                buckets.addAll(repo.settledOrderBuckets(s,all,"REFUND"));
+            }
+            return Map.of("buckets",dailyFactRows(buckets),"orders",dailyFactRows(orders),
+                    "reportingMonths",live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
+        });
+        var facts=wider==null?(sharedSnapshots==null?dashboardFacts.get(factsKey,read):sharedSnapshots.facts(factsKey,read)):
+                narrowDashboardFacts(wider,all,shops(s),live?List.of():new FinanceReportingMonths(repo).coverage(s,all));
+        return facts;
+    }
+    Map<String,Object> feeExportFacts(Scope s,Filter requested){
+        Filter all=new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),"","day",requested.groupId());
+        var facts=loadDashboardFacts(s,all,false);
+        var fees=rows(facts.get("buckets")).stream().filter(row->"FEE".equals(row.get("kind")))
+                .filter(row->requested.currency().isBlank()||requested.currency().equals(text(row.get("currency")))).toList();
+        return Map.of("shops",shops(s).stream().filter(shop->FinanceGroups.matches(shop,requested)).toList(),
+                "groups",groups(s),"fees",aggregate(fees,"shop_id","category"));
     }
     static List<Map<String,Object>> dailyFactRows(List<Map<String,Object>> rows){
         return rows.stream().map(row->{

@@ -38,27 +38,49 @@ public final class FinanceWorkbook {
         if(value.length()>0||!row.isEmpty()){row.add(value.toString());rows.add(row);}return rows;
     }
     public static byte[] xlsx(Map<String,List<List<String>>> sheets){
+        return xlsx(sheets,Map.of());
+    }
+    /** Explicit numeric columns keep dynamic shop headers numeric without treating identifiers as numbers. */
+    static byte[] xlsx(Map<String,List<List<String>>> sheets,Map<String,Set<Integer>> numericColumns){
         try(var bytes=new ByteArrayOutputStream();var zip=new ZipOutputStream(bytes)){
             StringBuilder types=new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>");
             StringBuilder book=new StringBuilder("<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>");
             StringBuilder rels=new StringBuilder("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
+            if(!numericColumns.isEmpty()){
+                types.append("<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>");
+                rels.append("<Relationship Id=\"styles\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>");
+                put(zip,"xl/styles.xml","""
+                    <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                    <fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>
+                    <fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF354DA0"/><bgColor indexed="64"/></patternFill></fill></fills>
+                    <borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs>
+                    <cellXfs count="4"><xf fontId="0" fillId="0" borderId="0"/><xf fontId="1" fillId="2" borderId="0" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf><xf numFmtId="4" fontId="0" fillId="0" borderId="0" applyNumberFormat="1"/><xf numFmtId="3" fontId="0" fillId="0" borderId="0" applyNumberFormat="1"/></cellXfs>
+                    </styleSheet>
+                    """);
+            }
             int i=0;
             for(var sheet:sheets.entrySet()){
                 i++;String path="worksheets/sheet"+i+".xml";
                 types.append("<Override PartName=\"/xl/").append(path).append("\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>");
                 book.append("<sheet name=\"").append(xml(sheet.getKey())).append("\" sheetId=\"").append(i).append("\" r:id=\"rId").append(i).append("\"/>");
                 rels.append("<Relationship Id=\"rId").append(i).append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"").append(path).append("\"/>");
-                StringBuilder body=new StringBuilder("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" state=\"frozen\"/></sheetView></sheetViews><sheetData>");
+                boolean matrix=numericColumns.containsKey(sheet.getKey());
+                StringBuilder body=new StringBuilder("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" "
+                        +(matrix?"xSplit=\"1\" topLeftCell=\"B2\"":"topLeftCell=\"A2\"")+" state=\"frozen\"/></sheetView></sheetViews>");
+                int widthColumns=Math.max(2,sheet.getValue().isEmpty()?2:sheet.getValue().getFirst().size());
+                if(!numericColumns.isEmpty())body.append("<cols><col min=\"1\" max=\"1\" width=\"32\" customWidth=\"1\"/><col min=\"2\" max=\"").append(widthColumns).append("\" width=\"")
+                        .append(matrix?"26":"100").append("\" customWidth=\"1\"/></cols>");
+                body.append("<sheetData>");
                 Set<String> numericHeaders=FinanceFields.numericLabels();
                 var headers=sheet.getValue().isEmpty()?List.<String>of():sheet.getValue().getFirst();
                 int rowIndex=0;
                 for(var row:sheet.getValue()){
-                    body.append("<row>");int col=0;
+                    body.append(matrix&&rowIndex==0?"<row ht=\"72\" customHeight=\"1\">":"<row>");int col=0;
                     for(String cell:row){
-                        boolean numeric=rowIndex>0&&col<headers.size()&&numericHeaders.contains(headers.get(col))
+                        boolean numeric=rowIndex>0&&col<headers.size()&&(matrix?numericColumns.get(sheet.getKey()).contains(col):numericHeaders.contains(headers.get(col)))
                                 &&text(cell).matches("-?\\d+(\\.\\d+)?");
-                        if(numeric)body.append("<c><v>").append(cell).append("</v></c>");
-                        else body.append("<c t=\"inlineStr\"><is><t xml:space=\"preserve\">").append(xml(cell)).append("</t></is></c>");
+                        if(numeric)body.append(matrix?(sheet.getKey().startsWith("记录数-")?"<c s=\"3\"><v>":"<c s=\"2\"><v>"):"<c><v>").append(cell).append("</v></c>");
+                        else body.append(matrix&&rowIndex==0?"<c s=\"1\" t=\"inlineStr\"><is><t xml:space=\"preserve\">":"<c t=\"inlineStr\"><is><t xml:space=\"preserve\">").append(xml(cell)).append("</t></is></c>");
                         col++;
                     }body.append("</row>");rowIndex++;
                 }

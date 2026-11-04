@@ -129,7 +129,7 @@
   function setLoading(busy){root.setAttribute('aria-busy',String(busy));const n=root.querySelector('.fi-loading');if(n){n.hidden=!busy;n.textContent=view==='shops'?'正在读取店铺同步进度…':view==='live'?'正在读取最新经营数据…':'正在加载所选店铺和日期…';n.title=filters.start+' 至 '+filters.end;}}
   function navigate(route){location.hash='finance-'+route;}
   function cleanup(){qianyiCleanup?.();qianyiCleanup=null;mountedSelection='';root.classList.remove('fi-selection-pending');clearInterval(clockTimer);clockTimer=null;charts.forEach(c=>c.dispose());charts=[];observer?.disconnect();themeObserver?.disconnect();observer=themeObserver=null;mountedView='';}
-  function reset(){shopMonthFilter='ALL';shopSearch='';qianyiSelection={};active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
+  function reset(){shopMonthFilter='ALL';shopSearch='';qianyiSelection={};active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();globalThis.FinanceFeeExports?.reset();globalThis.FinanceCosts?.reset();globalThis.FinanceExpensesDesign?.reset();globalThis.FinanceCharges?.reset();root.replaceChildren();data=null;page=1;try{if(filterScope)sessionStorage.removeItem(filterScope);}catch{}filterScope=null;pinnedDates=false;reportFilters=null;filters=defaultFilters();numberQueries={};document.querySelectorAll('.fi-dialog').forEach(d=>d.remove());}
   function leave(){active=false;generation++;activeLoadKey='';clearInterval(waitingTimer);loadController?.abort();loadController=null;clearTimeout(refreshTimer);cleanup();}
   function refreshWhenIdle(){
     if(!active)return;
@@ -155,6 +155,10 @@
     if(view==='shops'){if(canManage())action('连接店铺','plus',actions,()=>authorizeDialog(),'fi-primary');}
     else if(view==='expense-ledger'){action('成本管理','chart',actions,()=>navigate('costs'));}
     else if(view!=='costs'&&!qianyiView()){action('字段设置','fee',actions,()=>fieldsDialog(currentFieldView()));if(canManage())action('导入账单','plus',actions,()=>importDialog());action('导出报表','download',actions,()=>exportDialog(view==='settlements'?selectedKind:''),'fi-primary');}
+    if(view!=='shops')globalThis.FinanceFeeExports?.mount(actions,{request,
+      identity:()=>typeof currentUser==='undefined'?'':JSON.stringify([currentUser?.organizationId,currentUser?.userId]),
+      isPending:()=>root.classList.contains('fi-selection-pending'),
+      selection:{...filters},shops:data?.shops||[],groups:data?.groups||[],canCreate:['fees','fee-records'].includes(view)});
     if(['fee-records','expense-ledger'].includes(view)){
       const sections=el('nav',null,root,'fc-tabs fi-expense-sections');sections.setAttribute('aria-label','费用数据分类');
       for(const [route,label,note]of [['fee-records','平台费用','平台同步与原有导入明细'],['expense-ledger','贴单成本与刷单成本','分组贴单价、费用导入与订单标记']]){
@@ -494,6 +498,7 @@
     const grid=el('div',null,parent,'fi-chart-grid'+(view==='settlements'?' fi-settlement-chart':''));trend(grid,(view==='settlements'?[selectedKind]:allowedKinds).map(k=>[k,kinds[k]]),routes[view]+'趋势',selectedKind==='PENDING'?'尚无结算日期，按订单日期显示预估净额':'按结算账单日期及当前展示币种统计',12);
     if(selectedKind==='FEE'){
       const detail=card(parent,'已结算平台费用构成','正数为扣减，负数为补贴或返还；商家优惠与退款已计入销售收入',12);
+      action('全体导出','download',detail.h,()=>globalThis.FinanceFeeExports?.open());
       table(detail.n,['费用项目','金额（'+(data.filters.displayCurrency||data.filters.currency)+'）','记录数'],(data.fees||[]).filter(r=>Number(r.amount)!==0).map(r=>[feeName(r.category),number(r.amount),number(r.records)]));
     }
     if(run!==generation)return;
