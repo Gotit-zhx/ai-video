@@ -433,10 +433,16 @@ class FinanceConfigurationIntegrationTest {
         String queued=db.queryForObject("SELECT id FROM finance_records WHERE shop_id=? AND external_id='historic-55' AND kind='ORDER'",String.class,shop);
         db.update("INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id) VALUES(?,?,?)",queued,owner.organizationId(),shop);
         db.update("DELETE FROM finance_order_costs WHERE shop_id=? AND order_id='historic-56'",shop);
+        db.update("UPDATE finance_order_costs SET known_amount_cny=12.3456 WHERE shop_id=? AND order_id='historic-0'",shop);
         repo.save(owner,new Entry(shop,"SHOPEE","SETTLEMENT","no-order","missing-order","","结算","SETTLED",filter.start(),"PHP",BigDecimal.ONE,null,null,null,null,"API",Map.of()));
         var reports=new FinanceCostReport(repo);var q=new Filter(filter.start(),filter.end(),shop,"","","day",group);
         var first=reports.orders(owner,q,"SETTLED_ORDER","",1,"PENDING");
         var second=reports.orders(owner,q,"SETTLED_ORDER","",2,"PENDING");
+        assertEquals(map(first.get("costAmountSummary")),map(second.get("costAmountSummary")));
+        var selectedAmounts=map(first.get("costAmountSummary"));
+        assertNull(selectedAmounts.get("amount_cny"));
+        assertEquals(0,decimal("12.3456").compareTo(decimal(selectedAmounts.get("known_amount_cny"))));
+        assertEquals(58,number(selectedAmounts.get("order_count")));
         assertEquals(58,number(first.get("total")));assertEquals(50,rows(first.get("items")).size());assertEquals(8,rows(second.get("items")).size());
         var ids=new HashSet<String>();
         for(var page:List.of(first,second))for(var row:rows(page.get("items"))){
@@ -453,6 +459,10 @@ class FinanceConfigurationIntegrationTest {
         var outside=new Filter(filter.end().plusDays(1),filter.end().plusDays(1),shop,"","","day");
         assertEquals(0,number(reports.orders(owner,outside,"SETTLED_ORDER","",1,"PENDING").get("total")));
         byte[] exported=new FinanceCostExport(repo).export(owner,q,"SETTLED_ORDER","","PENDING");
+        assertEquals(0,decimal(FinanceCostExportTest.summaryValue(FinanceCostExportTest.sheet(exported,1),"已计算部分成本（人民币）"))
+                .compareTo(decimal(selectedAmounts.get("known_amount_cny"))));
+        var allAmounts=map(reports.orders(owner,q,"SETTLED_ORDER","",1,"ALL").get("costAmountSummary"));
+        assertEquals(0,decimal("32.3456").compareTo(decimal(allAmounts.get("known_amount_cny"))));
         assertEquals(59,FinanceCostExportTest.sheet(exported,2).getElementsByTagName("row").getLength());
         assertTrue(FinanceCostExportTest.sheet(exported,1).getDocumentElement().getTextContent().contains("仅待补齐订单"));
         // Push the unresolved identities beyond the recent-2000 sample without platform calls.

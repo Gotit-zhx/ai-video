@@ -10,8 +10,7 @@ import java.util.regex.Pattern;
 /** Stable merchant codes for captured variants; source IDs remain separate. */
 final class ProductSkuNaming {
     static final String METADATA = "_merchantSkuNaming";
-    private static final String VERSION = "1";
-    private static final Pattern CODE = Pattern.compile("[A-Z0-9]{1,14}-[A-Z][0-9]{6}-[A-Z0-9]{1,10}-[A-F0-9]{8}");
+    private static final String VERSION = "2";
     private static final Pattern STYLE_SUFFIX = Pattern.compile("^(.+?)\\s*[/\\-]\\s*([1-9][0-9]*)$");
     private static final Set<String> SIZE_NAMES = Set.of("size", "sizes", "尺码", "尺碼", "尺寸", "ukuran", "ไซส์", "ขนาด", "kích thước");
     private static final Set<String> PATTERN_NAMES = Set.of("pattern", "print", "design", "style", "motif", "款式", "图案", "圖案", "花型", "款号", "款號", "corak");
@@ -19,10 +18,18 @@ final class ProductSkuNaming {
 
     private ProductSkuNaming() {}
 
+    record PatternCode(String style, String suffix) {
+        PatternCode {
+            if (style == null || !style.matches("[A-Z][0-9]{2}")
+                    || suffix == null || !suffix.matches("[A-F0-9]{8}"))
+                throw new IllegalArgumentException("款式编码不正确");
+        }
+    }
+
     static List<Map<String,Object>> assign(String organization, String sourceIdentity,
                                           List<Map<String,Object>> requested,
                                           List<Map<String,Object>> previous,
-                                          Function<String,String> styleCodes) {
+                                          Function<String,PatternCode> styleCodes) {
         Map<String,Map<String,Object>> saved = new HashMap<>();
         for (var sku : previous) {
             String id = externalId(sku);
@@ -53,20 +60,16 @@ final class ProductSkuNaming {
             String size = size(dimension(attributes, false));
             // The source's pattern group, not variant IDs/colors/sizes, owns the style code.
             String identity = organization + "\n" + sourceIdentity + "\n" + pattern;
-            String style = styleCodes.apply(digest(identity));
-            if (style == null || !style.matches("[A-Z][0-9]{6}")) throw new IllegalArgumentException("款式编码不正确");
-            String prefix = color + "-" + style + "-" + size + "-";
+            PatternCode patternCode = Objects.requireNonNull(styleCodes.apply(digest(identity)));
+            String style = patternCode.style();
             String id = externalId(source);
             Map<String,Object> old = id.isBlank() ? Map.of() : saved.getOrDefault(id, Map.of());
-            String merchant = reusable(old, prefix);
-            if (merchant == null) {
-                do { merchant = prefix + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT); }
-                while (used.contains(merchant));
-            }
-            if (!used.add(merchant)) throw new IllegalArgumentException("采集 SKU 身份重复，不能生成重复商家编码");
+            String merchant = color + "-" + style + "-" + size + "-" + patternCode.suffix();
+            if (!used.add(merchant)) throw new IllegalArgumentException("同一图案存在重复颜色和尺码，请核对规格后采集");
             var metadata = new LinkedHashMap<String,Object>();
             metadata.put("version", VERSION);
             metadata.put("styleCode", style);
+            metadata.put("patternSuffix", patternCode.suffix());
             metadata.put("color", color);
             metadata.put("size", size);
             metadata.put("patternGroup", pattern.isBlank() ? "SOURCE_PRODUCT" : pattern);
@@ -79,12 +82,6 @@ final class ProductSkuNaming {
             result.add(sku);
         }
         return result;
-    }
-
-    private static String reusable(Map<String,Object> old, String prefix) {
-        if (!VERSION.equals(text(map(old.get(METADATA)).get("version")))) return null;
-        String code = text(old.get("sellerSku"));
-        return CODE.matcher(code).matches() && code.startsWith(prefix) ? code : null;
     }
 
     private static String pattern(Map<String,Object> attributes) {

@@ -7,9 +7,9 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ProductSkuNamingTest {
-    private final Map<String,String> catalog = new HashMap<>();
-    private final Function<String,String> styles = key -> catalog.computeIfAbsent(key,
-            ignored -> "K" + String.format("%06d", catalog.size() + 1));
+    private final Map<String,ProductSkuNaming.PatternCode> catalog = new HashMap<>();
+    private final Function<String,ProductSkuNaming.PatternCode> styles = key -> catalog.computeIfAbsent(key,
+            ignored -> new ProductSkuNaming.PatternCode("K" + String.format("%02d", catalog.size() + 1), String.format("%08X", catalog.size() + 1)));
 
     Map<String,Object> sku(String id, String color, String size) {
         return new LinkedHashMap<>(Map.of("externalSkuId", id, "sellerSku", "source-" + id,
@@ -27,9 +27,10 @@ class ProductSkuNamingTest {
         var result = assign(source,List.of());
         assertEquals(1,catalog.size());
         assertEquals(1,result.stream().map(this::style).distinct().count());
+        assertEquals(1,result.stream().map(row -> code(row).split("-")[3]).distinct().count());
         assertEquals(3,result.stream().map(this::code).distinct().count());
         for (int i=0;i<source.size();i++) {
-            assertTrue(code(result.get(i)).matches("[A-Z]+-K\\d{6}-[SM]-[A-F0-9]{8}"));
+            assertTrue(code(result.get(i)).matches("[A-Z]+-K\\d{2}-[SM]-[A-F0-9]{8}"));
             for (String field:List.of("externalSkuId","attributes","price","stock","imageUrl"))
                 assertEquals(source.get(i).get(field),result.get(i).get(field));
             assertEquals("source-"+(i+1),source.get(i).get("sellerSku"),"The capture request remains original evidence");
@@ -51,6 +52,29 @@ class ProductSkuNamingTest {
         var again=assign(List.of(changed),first);
         assertEquals(code(first.getFirst()),code(again.getFirst()));
         assertEquals(9,again.getFirst().get("stock"));
+    }
+
+    @Test void newSizesAndRecaptureWithoutPreviousRowsKeepThePatternsRandomSuffix() {
+        var first=assign(List.of(sku("1","Black","M")),List.of());
+        var later=assign(List.of(sku("2","White","L"),sku("1","Black","M")),List.of());
+        assertEquals(code(first.getFirst()),code(later.get(1)));
+        assertEquals(code(first.getFirst()).split("-")[3],code(later.getFirst()).split("-")[3]);
+    }
+
+    @Test void legacyVariantSuffixesAreReplacedByOnePersistedPatternSuffix() {
+        var old=sku("1","Black","M");
+        old.put("sellerSku","BK-K583204-M-12345678");
+        old.put(ProductSkuNaming.METADATA,Map.of("version","1","originalSellerSku","supplier-1"));
+        var next=assign(List.of(old,sku("2","White","L")),List.of(old));
+        assertEquals(1,next.stream().map(row->code(row).split("-")[3]).distinct().count());
+        assertEquals("supplier-1",((Map<?,?>)next.getFirst().get(ProductSkuNaming.METADATA)).get("originalSellerSku"));
+        assertEquals(3,style(next.getFirst()).length());
+    }
+
+    @Test void ambiguousDuplicateColorAndSizeCannotSilentlyReceiveDifferentPatternSuffixes() {
+        var error=assertThrows(IllegalArgumentException.class,
+                ()->assign(List.of(sku("1","Black","M"),sku("2","黑色","M")),List.of()));
+        assertTrue(error.getMessage().contains("重复颜色和尺码"));
     }
 
     @Test void changedColorOrSizeDoesNotKeepAnIncorrectOldCode() {
@@ -149,7 +173,7 @@ class ProductSkuNamingTest {
         source.put("sellerSku","BLACK-Z999999-M-12345678");
         source.put(ProductSkuNaming.METADATA,Map.of("version","1","styleCode","Z999999"));
         var result=assign(List.of(source),List.of());
-        assertEquals("K000001",style(result.getFirst()));
+        assertEquals("K01",style(result.getFirst()));
         assertNotEquals(source.get("sellerSku"),result.getFirst().get("sellerSku"));
     }
 }

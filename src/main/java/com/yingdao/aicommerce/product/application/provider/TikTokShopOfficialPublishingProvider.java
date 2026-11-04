@@ -87,6 +87,8 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
     private com.yingdao.aicommerce.product.application.ProductMainImageAssets mainImageAssets;
     @org.springframework.beans.factory.annotation.Autowired
     private com.yingdao.aicommerce.product.application.ProductListingWarehouseService listingWarehouses;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.application.ProductPublicationSkuNaming publicationSkuNaming;
 
     @Override public String code() { return "TIKTOK_SHOP_OFFICIAL_202309"; }
     @Override public boolean dryRun() { return false; }
@@ -105,6 +107,8 @@ public class TikTokShopOfficialPublishingProvider implements ProductPublishingPr
         // supplied mode or an earlier publish-options response is not execution authority.
         var listingCapability = listingCapabilityResolver.resolve(connection);
         List<ProductCaptureSku> skus = skus(capture);
+        if (!com.yingdao.aicommerce.product.application.ProductPublicationSkuNaming.style(request.get("merchantStyleCode")).isEmpty())
+            skus = publicationSkuNaming.apply(capture, skus, request);
         List<ProductCaptureImage> images = images(capture);
         var styleGallery = mainImageAssets == null ? null : mainImageAssets.gallery(capture, request);
         rejectDryRunImages(images);

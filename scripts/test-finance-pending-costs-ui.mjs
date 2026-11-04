@@ -8,13 +8,16 @@ const preview={live:true,shopId:'shop',groupId:'group',sourceName:'cost.csv',cos
  products:[{shop_id:'shop',product_id:'old',sku_id:'missing',seller_sku:'',name:'旧商品',spec:'50片1包',historical_cost_pending:true,pending_cost_orders:55,pending_cost_reason:'平台未返回商家 SKU'}]};
 const context={preview,shops:[{id:'shop',name:'测试店',platform:'SHOPEE',group_id:'group'}],downloadOrderCosts:async f=>exports.push(f),request:async path=>{
  const q=new URL(path,'https://example.test').searchParams;reads.push(Object.fromEntries(q));const page=Number(q.get('page')),pending=q.get('costStatus')==='PENDING';
- return {items:[{id:pending?'missing-'+page:'ready',shop_id:'shop',order_id:'order-'+page,product_cost_pending:pending?1:0,product_cost_state:pending?'待补齐':'已计算',product_cost_issue:pending?'平台未返回商家 SKU':''}],total:pending?55:60,page,pageSize:50,productCosts:{total:{pending_count:55,ready_count:5,known_amount_cny:50}}};
+ return {items:[{id:pending?'missing-'+page:'ready',shop_id:'shop',order_id:'order-'+page,product_cost_pending:pending?1:0,product_cost_state:pending?'待补齐':'已计算',product_cost_issue:pending?'平台未返回商家 SKU':''}],total:pending?55:60,page,pageSize:50,costAmountSummary:{order_count:pending?55:60,pending_count:55,known_amount_cny:pending?12.3456:50,amount_cny:null},productCosts:{total:{pending_count:55,ready_count:5,known_amount_cny:50}}};
 }};
 const settle=()=>new Promise(r=>setTimeout(r,10));
 async function click(text){const b=[...d.querySelectorAll('button')].find(x=>x.textContent.trim().endsWith(text));assert(b,text);b.click();await settle();}
 w.FinanceCosts.openOrders({shopId:'shop',start:'2026-08-01',end:'2026-09-30'});w.FinanceCosts.mount(root,context);await settle();
 d.querySelector('[data-cost-status=PENDING]').click();await settle();assert.equal(reads.at(-1).costStatus,'PENDING');assert.equal(reads.at(-1).page,'1');assert(d.body.textContent.includes('平台未返回商家 SKU'));
+assert(d.querySelector('.fc-order-amount-summary').textContent.includes('¥ 12.3456'));
+assert(d.querySelector('.fc-order-amount-summary').textContent.includes('55 笔订单 · 全部页'));
 await click('下一页');assert.equal(reads.at(-1).page,'2');assert.equal(reads.at(-1).costStatus,'PENDING');
+assert(d.querySelector('.fc-order-amount-summary').textContent.includes('¥ 12.3456'));
 await click('导出 Excel');assert.equal(exports.at(-1).costStatus,'PENDING');assert.equal(exports.at(-1).start,'2026-08-01');assert(!('page' in exports.at(-1)));
 d.querySelector('[data-cost-status=ALL]').click();await settle();assert.equal(reads.at(-1).page,'1');assert.equal(reads.at(-1).costStatus,'ALL');
 await click('SKU 关联');assert(d.body.textContent.includes('另补充历史待补齐规格 1 个'));assert(d.body.textContent.includes('历史订单待补齐 · 55 笔'));assert(d.body.textContent.includes('未关联'));

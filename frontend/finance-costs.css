@@ -1,4 +1,5 @@
-.fc-workspace{display:grid;gap:13px;min-width:0;align-content:start;color:var(--fi-ink,#1d2b45)}
+.fc-workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:13px;min-width:0;align-content:start;color:var(--fi-ink,#1d2b45)}
+.fc-tab-content{min-width:0;max-width:100%}
 .fc-dialog .fc-check{display:flex;align-items:flex-start;gap:8px;font-size:12px;line-height:1.7}
 .fc-dialog .fc-check input{width:16px;min-height:16px;height:16px;flex:0 0 16px;margin:3px 0}
 .fc-mapping-editor{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px;border:1px solid #e1e7f5;border-radius:9px;background:#f8faff}
@@ -54,6 +55,10 @@
 .fc-table-tools label{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--fi-muted,#8190a8)}
 .fc-table-tools input{min-width:220px;flex:1}
 .fc-table-tools select{max-width:175px}
+.fc-order-amount-summary{display:grid;gap:3px;margin-left:auto;padding:8px 12px;min-width:190px;border:1px solid var(--fi-border,#e8edf5);border-radius:8px;background:var(--fi-soft,#f8faff)}
+.fc-order-amount-summary>span,.fc-order-amount-summary>small{font-size:10px;color:var(--fi-muted,#8190a8);line-height:1.5}
+.fc-order-amount-summary>strong{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums;color:var(--fi-ink,#1d2b45)}
+@media(max-width:650px){.fc-order-amount-summary{margin-left:0;width:100%;min-width:0;box-sizing:border-box}}
 .fc-table{font-size:11px}
 .fc-table th{padding:9px 14px}
 .fc-table td{padding:9px 14px;vertical-align:middle}

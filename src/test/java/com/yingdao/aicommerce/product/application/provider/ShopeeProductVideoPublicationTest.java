@@ -101,6 +101,29 @@ class ShopeeProductVideoPublicationTest {
         assertThat(payload.getValue()).doesNotContainKey("video_upload_id");
         assertThat(result.providerResponse()).containsEntry("videoCount", 0).containsEntry("remoteStatus", "UNLIST");
     }
+    @Test void explicitMerchantStyleReachesShopeeModelsWithSharedSuffix() {
+        var source=List.of(
+                new ProductCaptureSku("org-1",capture.getId(),"black","1","old-black","Black",BigDecimal.TEN,BigDecimal.TEN,9,"https://source.invalid/original.png","SOURCE","{\"Color\":\"Black\"}","{}",0),
+                new ProductCaptureSku("org-1",capture.getId(),"white","2","old-white","White",BigDecimal.TEN,BigDecimal.TEN,9,"https://source.invalid/original.png","SOURCE","{\"Color\":\"White\"}","{}",1));
+        when(skus.selectList(any())).thenReturn(source);
+        var naming=mock(com.yingdao.aicommerce.product.application.ProductPublicationSkuNaming.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(provider,"publicationSkuNaming",naming);
+        when(naming.apply(eq(capture),eq(source),anyMap())).thenReturn(List.of(
+                source.get(0).forPublication("BK-A01-M-1234ABCD"),source.get(1).forPublication("WH-A01-M-1234ABCD")));
+        when(videos.upload(capture,connection)).thenReturn(ShopeeProductVideoUploader.UploadedVideo.none());
+        when(client.shopPost(eq("/api/v2/product/init_tier_variation"),eq(connection),anyMap())).thenReturn(Map.of("response",Map.of()));
+        when(client.shopGet("/api/v2/product/get_model_list",connection,Map.of("item_id",123456L)))
+                .thenReturn(Map.of("response",Map.of("model",List.of(
+                        Map.of("model_id",1L,"tier_index",List.of(0),"model_sku","BK-A01-M-1234ABCD"),
+                        Map.of("model_id",2L,"tier_index",List.of(1),"model_sku","WH-A01-M-1234ABCD")))));
+        var body=new java.util.LinkedHashMap<>(request());body.put("merchantStyleCode","A01");
+        provider.publish(capture,"SHOPEE",connection.shop().getId(),body,()->events.add("create_boundary"));
+        @SuppressWarnings("unchecked") ArgumentCaptor<Map<String,Object>> payload=ArgumentCaptor.forClass(Map.class);
+        verify(client).shopPost(eq("/api/v2/product/init_tier_variation"),eq(connection),payload.capture());
+        var models=(List<Map<String,Object>>)payload.getValue().get("model");
+        assertThat(models).extracting(m->m.get("model_sku")).containsExactly("BK-A01-M-1234ABCD","WH-A01-M-1234ABCD");
+        assertThat(source).extracting(ProductCaptureSku::getSellerSku).containsExactly("old-black","old-white");
+    }
     @Test void actualAddItemUsesImmutableTemplateDescriptionAndParcelInKg() {
         when(videos.upload(capture,connection)).thenReturn(ShopeeProductVideoUploader.UploadedVideo.none());
         var body=new java.util.LinkedHashMap<>(request());

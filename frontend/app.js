@@ -7288,6 +7288,9 @@ async function openProductBulkUpload(historyKey, captureId) {
   const run = productBulkRuns.get(productBulkStorageKey);
   productBulkItems = run?.items || saved?.items || [];
   productBulkBusy = Boolean(run);
+  const merchantItem = productBulkItems.find(ProductBulkUpload.canChangeShop) || productBulkItems[0];
+  document.querySelector('#product-bulk-merchant-style').value = merchantItem?.payload?.merchantStyleCode || merchantItem?.merchantStyleCode || '';
+  document.querySelector('#product-bulk-merchant-style').setCustomValidity('');
   ProductBulkSizeChart.open(org,productBulkStorageKey,productBulkItems);
   void globalThis.ProductMainImageStyles?.loadBulk(productBulkItems, {org, view});
   const shops = crossPlatformPublishShops();
@@ -7361,11 +7364,13 @@ async function submitProductBulkUpload(event) {
       productBulkItems = nextItems;
     }
     if (!productBulkItems.length) {
+      const merchantStyleCode = ProductBulkUpload.merchantStyle(document.querySelector('#product-bulk-merchant-style').value);
       const items = [...document.querySelectorAll('[data-bulk-item]')].map(row => ({id: row.dataset.bulkItem, title: row.querySelector('strong').textContent}));
       productBulkItems = ProductBulkUpload.plan(items, productBulkShopIds(), newProductIdempotencyKey());
       for (const item of productBulkItems) {
         item.thumbnailUrl = productBulkThumbnail(item);
         item.sizeChartImageKey = ProductBulkSizeChart.key();
+        if (merchantStyleCode) item.merchantStyleCode = merchantStyleCode;
         const styleId = document.querySelector('#product-bulk-main-style')?.value;
         if (styleId) item.mainImageStyleTemplateId = styleId;
       }
@@ -7589,6 +7594,25 @@ function openProductBulkHistory() {
 }
 
 document.querySelector('#open-product-bulk-upload').addEventListener('click', () => void openProductBulkUpload());
+document.querySelector('#product-bulk-merchant-style').addEventListener('change', event => {
+  const input = event.target;
+  if (productBulkBusy || currentUser?.organizationId !== productBulkOrganization) return;
+  try {
+    const code = ProductBulkUpload.merchantStyle(input.value);
+    input.value = code; input.setCustomValidity('');
+    if (productBulkItems.length) {
+      const items = ProductBulkUpload.changeMerchantStyle(productBulkItems, code, newProductIdempotencyKey());
+      saveProductBulkItems(items, productBulkStorageKey, productBulkOrganization);
+      productBulkItems = items;
+      renderProductBulkProgress();
+    }
+    document.querySelector('#product-bulk-error').textContent = '';
+  } catch (error) {
+    input.setCustomValidity(error.message);
+    document.querySelector('#product-bulk-error').textContent = error.message;
+  }
+});
+document.querySelector('#product-bulk-merchant-style').addEventListener('input', event => event.target.setCustomValidity(''));
 document.querySelector('#open-product-bulk-history').addEventListener('click', openProductBulkHistory);
 document.querySelector('#open-product-bulk-history-from-detail').addEventListener('click', openProductBulkHistory);
 document.querySelector('#close-product-bulk-history').addEventListener('click', () => document.querySelector('#product-bulk-history-dialog').close());

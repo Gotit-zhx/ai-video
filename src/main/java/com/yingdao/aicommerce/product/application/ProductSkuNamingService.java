@@ -19,7 +19,7 @@ public class ProductSkuNamingService {
 
     @org.springframework.beans.factory.annotation.Autowired
     public ProductSkuNamingService(JdbcTemplate db, PlatformTransactionManager transactions) {
-        this(db, transactions, () -> RANDOM.nextInt(26_000_000));
+        this(db, transactions, () -> RANDOM.nextInt(2600));
     }
 
     ProductSkuNamingService(JdbcTemplate db, PlatformTransactionManager transactions, IntSupplier random) {
@@ -33,26 +33,34 @@ public class ProductSkuNamingService {
 
     public List<Map<String,Object>> assign(String organization, String sourceIdentity,
                                           List<Map<String,Object>> requested, List<Map<String,Object>> previous) {
-        var codes = new HashMap<String,String>();
+        var codes = new HashMap<String,ProductSkuNaming.PatternCode>();
         return ProductSkuNaming.assign(organization, sourceIdentity, requested, previous,
                 identity -> codes.computeIfAbsent(identity, key -> resolve(organization, key)));
     }
 
-    private String resolve(String organization, String identity) {
+    private ProductSkuNaming.PatternCode resolve(String organization, String identity) {
         for (int attempt = 0; attempt < 20; attempt++) {
             try {
                 return Objects.requireNonNull(allocate.execute(status -> {
-                    var existing = db.queryForList("""
-                            SELECT style_code FROM product_sku_styles WHERE organization_id=? AND pattern_key=?
-                            """, String.class, organization, identity);
+                    var existing = db.query("""
+                            SELECT style_code,random_suffix FROM product_sku_pattern_codes WHERE organization_id=? AND pattern_key=?
+                            """, (rs, index) -> new ProductSkuNaming.PatternCode(rs.getString(1), rs.getString(2)), organization, identity);
                     if (!existing.isEmpty()) return existing.getFirst();
                     int number = random.getAsInt();
-                    if (number < 0 || number >= 26_000_000) throw new IllegalStateException("随机款式编码不正确");
-                    String result = (char) ('A' + number / 1_000_000)
-                            + String.format(Locale.ROOT, "%06d", number % 1_000_000);
+                    if (number < 0 || number >= 2600) throw new IllegalStateException("随机款式编码不正确");
+                    var used = new HashSet<>(db.queryForList(
+                            "SELECT style_code FROM product_sku_pattern_codes WHERE organization_id=?", String.class, organization));
+                    if (used.size() >= 2600) throw new IllegalStateException("三位款式编码已用满，请扩展款式编码长度后再采集");
+                    String style;
+                    do {
+                        style = (char) ('A' + number / 100) + String.format(Locale.ROOT, "%02d", number % 100);
+                        number = (number + 1) % 2600;
+                    } while (used.contains(style));
+                    var result = new ProductSkuNaming.PatternCode(style,
+                            HexFormat.of().withUpperCase().toHexDigits(RANDOM.nextInt()));
                     db.update("""
-                            INSERT INTO product_sku_styles(organization_id,pattern_key,style_code) VALUES(?,?,?)
-                            """, organization, identity, result);
+                            INSERT INTO product_sku_pattern_codes(organization_id,pattern_key,style_code,random_suffix) VALUES(?,?,?,?)
+                            """, organization, identity, result.style(), result.suffix());
                     return result;
                 }));
             } catch (DuplicateKeyException collision) {

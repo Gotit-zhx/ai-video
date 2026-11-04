@@ -94,14 +94,14 @@ class ProductCaptureServiceTest {
         org.springframework.test.util.ReflectionTestUtils.setField(service, "skuNaming", naming);
         when(naming.assign(eq("org-a"), anyString(), any(), any())).thenAnswer(call ->
                 ProductSkuNaming.assign(call.getArgument(0), call.getArgument(1),
-                        call.getArgument(2), call.getArgument(3), ignored -> "K583204"));
+                        call.getArgument(2), call.getArgument(3), ignored -> new ProductSkuNaming.PatternCode("K58", "8F3A6C2D")));
         var source = completeSku("model-1", Map.of("Color", "Black", "Size", "M"));
         service.create(captureRequest(List.of(source), Map.of("complete", true, "expectedCount", 1,
                 "capturedCount", 1, "source", "SHOPEE_PAGE_RESPONSE", "dimensionCount", 2)),
                 "new-merchant-sku", principal("org-a"));
         var saved = ArgumentCaptor.forClass(ProductCaptureSku.class);
         verify(skuMapper).insert(saved.capture());
-        assertTrue(saved.getValue().getSellerSku().matches("BK-K583204-M-[A-F0-9]{8}"));
+        assertTrue(saved.getValue().getSellerSku().matches("BK-K58-M-8F3A6C2D"));
         assertEquals("model-1", saved.getValue().getExternalSkuId());
         assertEquals(new BigDecimal("99.00"), saved.getValue().getPrice());
         assertEquals(8, saved.getValue().getStock());

@@ -6,6 +6,22 @@ const prepare=async item=>({confirmed:true,destinationPlatform:'SHOPEE',shopId:i
 const deps=(overrides={})=>({save:()=>{},prepare,isCurrent:()=>true,changed:()=>{},create:async id=>({id:'workflow-'+id,status:'PENDING'}),...overrides});
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
+test('merchant style is normalized and preserved across shops and image template changes',()=>{
+ const {merchantStyle,changeMerchantStyle,changeStyle,stylePayload}=require('../product-bulk-upload.js');
+ assert.equal(merchantStyle(' b12 '),'B12');assert.equal(merchantStyle(''),'');
+ for(const bad of ['A1','A001','中01','A-1'])assert.throws(()=>merchantStyle(bad));
+ const initial=changeMerchantStyle(plan([{id:'a'}],['one'],'key'),'A01','style');
+ assert.equal(stylePayload(initial[0]).merchantStyleCode,'A01');
+ const shops=changeShops(initial,['one','two'],'shops');
+ assert.equal(shops[1].merchantStyleCode,'A01');
+ const template=changeStyle(shops,'template-id','template');
+ assert.equal(template[0].merchantStyleCode,'A01');
+ assert.equal(template[0].mainImageStyleTemplateId,'template-id');
+ assert.equal(changeMerchantStyle(template,'','clear')[0].merchantStyleCode,'');
+ const sent={...template[0],payload:{merchantStyleCode:'A01'},status:'CREATE_FAILED'};
+ const retry=changeMerchantStyle([sent],'B02','changed');
+ assert.equal(retry[0],sent);assert.equal(retry[0].payload.merchantStyleCode,'A01');
+});
 const manyFixtures=()=>plan(Array.from({length:8},(_,index)=>({id:String(index),title:'Product '+index})),'shop','batch-key');
 
 test('shop-only plan needs no price, currency, weight, category or logistics input and deduplicates captures',()=>{

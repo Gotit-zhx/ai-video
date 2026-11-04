@@ -70,4 +70,15 @@ public class ProductCaptureSku {
     public int getSortOrder() { return sortOrder; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+
+    /** Keep source and SKU identity intact when preparing an explicit upload code. */
+    public ProductCaptureSku forPublication(String merchantCode) {
+        var copy = new ProductCaptureSku(organizationId, captureId, skuKey, externalSkuId,
+                merchantCode, variationName, price, originalPrice, stock, imageUrl,
+                imageSource, attributesJson, sourceJson, sortOrder);
+        copy.id = id;
+        copy.createdAt = createdAt;
+        copy.updatedAt = updatedAt;
+        return copy;
+    }
 }

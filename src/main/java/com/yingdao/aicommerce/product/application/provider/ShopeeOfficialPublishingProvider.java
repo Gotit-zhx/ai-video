@@ -98,6 +98,9 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
     @org.springframework.beans.factory.annotation.Autowired
     private com.yingdao.aicommerce.product.application.ProductMainImageAssets mainImageAssets;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.yingdao.aicommerce.product.application.ProductPublicationSkuNaming publicationSkuNaming;
+
     @Override public String code() { return "SHOPEE_OFFICIAL_V2"; }
     @Override public boolean dryRun() { return false; }
     @Override public boolean supports(String destinationPlatform) {
@@ -113,6 +116,8 @@ public class ShopeeOfficialPublishingProvider implements ProductPublishingProvid
         verifyLocalProductRoute(connection);
         ShopeePublishPricing.validate(connection.shop().getRegion(), capture.getCurrency(), request);
         List<ProductCaptureSku> allSkus = skus(capture);
+        if (!com.yingdao.aicommerce.product.application.ProductPublicationSkuNaming.style(request.get("merchantStyleCode")).isEmpty())
+            allSkus = publicationSkuNaming.apply(capture, allSkus, request);
         List<ProductCaptureSku> skus = client.isSandboxEnvironment() ? allSkus.stream().limit(50).toList() : allSkus;
         List<ProductCaptureImage> images = images(capture);
         var styleGallery = mainImageAssets == null ? null : mainImageAssets.gallery(capture, request);

@@ -67,6 +67,22 @@ class ProductPublishWorkflowServiceTest {
     }
 
     @Test
+    void merchantStyleIsNormalizedSavedAndCannotChangeOnRetry() {
+        var body = new java.util.LinkedHashMap<String,Object>(Map.of("confirmed",true,
+                "destinationPlatform","SHOPEE","shopId","shop-1","merchantStyleCode","a01"));
+        service.create(capture.getId(),body,"merchant-style-key",principal);
+        var inserted=ArgumentCaptor.forClass(ProductPublishWorkflow.class);
+        verify(workflowMapper).insert(inserted.capture());
+        assertEquals("A01",service.request(inserted.getValue()).get("merchantStyleCode"));
+        when(workflowMapper.findByIdempotency("org-a","merchant-style-key")).thenReturn(inserted.getValue());
+        body.put("merchantStyleCode","A01");
+        assertFalse(service.create(capture.getId(),body,"merchant-style-key",principal).created());
+        body.put("merchantStyleCode","B02");
+        assertThrows(BusinessException.class,()->service.create(capture.getId(),body,"merchant-style-key",principal));
+        verify(workflowMapper,times(1)).insert(any(ProductPublishWorkflow.class));
+    }
+
+    @Test
     void unselectedStyleNeverReadsTemplatesAndDiscardsClientSnapshot() {
         var templates = mock(ProductMainImageTemplateService.class);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "mainImageTemplates", templates);

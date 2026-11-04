@@ -50,7 +50,7 @@
   <link rel="stylesheet" href="/product-main-image-styles.css?v=20261019-detail-1">
   <link rel="stylesheet" href="/knowledge-workspace.css?v=20260923-3">
     <link rel="stylesheet" href="/finance-workspace.css?v=20261103-shop-month-2">
-    <link rel="stylesheet" href="/finance-costs.css?v=20261030-label-pages-1">
+    <link rel="stylesheet" href="/finance-costs.css?v=20261104-amount-2">
     <link rel="stylesheet" href="/finance-expenses-design.css?v=20261022-cost-shops-2">
     <link rel="stylesheet" href="/hr-workspace.css?v=20261012-progress-compact-3">
 <link rel="stylesheet" href="/i18n.css?v=20260921-2">
@@ -1936,6 +1936,10 @@
         </div>
         <div id="product-bulk-main-style-preview" class="main-style-bulk-preview" hidden></div>
         <p id="product-bulk-main-style-status" role="status"></p>
+        <div class="product-bulk-fields"><label class="product-bulk-merchant-style">款式编码 <small>选填</small>
+          <input id="product-bulk-merchant-style" aria-label="款式编码" maxlength="3" pattern="[A-Za-z][0-9]{2}" autocomplete="off" placeholder="例如 A01、B12；留空沿用系统编码">
+          <small>用于本次所选商品：颜色简写-款式编码-尺码-图案随机码。同图案共用末尾随机码。</small>
+        </label></div>
       </fieldset>
         <section id="product-bulk-size-chart" class="product-bulk-size-chart" aria-label="本次上传尺码图" hidden>
           <div><strong>尺码图片 <small>选填</small></strong><p>上传适用于本批商品的尺码表；因缺少尺码表而失败的商品可补图后继续上传。</p></div>
@@ -2014,7 +2018,7 @@
     <div id="product-bulk-history-list" role="list" aria-live="polite"><p class="product-bulk-history-empty">暂无批量任务。</p></div>
   </dialog>
   <script src="/i18n.js?v=20261021-on-demand-1" defer></script>
-  <script src="/product-bulk-upload.js?v=20261029-size-chart-repair" defer></script>
+  <script src="/product-bulk-upload.js?v=20261104-merchant-style-1" defer></script>
   <script src="/product-bulk-size-chart.js?v=20261029-size-chart-repair" defer></script>
   <script src="/product-bulk-history.js?v=languages-20260921-2" defer></script>
   <script src="/video-script-terminal.js?v=languages-20260921-2" defer></script>
@@ -2023,13 +2027,13 @@
   <script src="/incremental-dom.js?v=20261021-2" defer></script>
   <script src="/incremental-charts.js?v=20261021-1" defer></script>
   <script src="/video-direct-downloads.js?v=20261102-direct-download-1" defer></script>
-  <script src="/app.js?v=20261102-direct-download-1" defer></script>
+  <script src="/app.js?v=20261104-merchant-style-1" defer></script>
   <script src="/product-main-image-styles.js?v=20261021-incremental-1" defer></script>
   <script src="/hr-desktop-bridge.js?v=20261019-94383ea9f5cb" defer></script>
   <script src="/hr-onboarding.js?v=20261021-incremental-1" defer></script>
   <script src="/finance-label-costs.js?v=20261030-label-zero-1" defer></script>
   <script src="/finance-qianyi.js?v=20261103-qianyi-receipt" defer></script>
-  <script src="/finance-costs.js?v=20261030-invoice-1" defer></script>
+  <script src="/finance-costs.js?v=20261104-amount-1" defer></script>
   <script src="/finance-expenses-design.js?v=20261023-profit-overview-1" defer></script>
   <script src="/finance-charges.js?v=20261030-invoice-1" defer></script>
   <script src="/finance-workspace.js?v=20261103-qianyi-receipt" defer></script>

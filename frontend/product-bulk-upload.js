@@ -58,13 +58,26 @@
   }
   function stylePayload(item) {
     const id = item?.mainImageStyleTemplateId;
-    return id ? {mainImageStyleTemplateId: id} : {};
+    const merchant = merchantStyle(item?.merchantStyleCode);
+    return {...(id ? {mainImageStyleTemplateId: id} : {}), ...(merchant ? {merchantStyleCode: merchant} : {})};
+  }
+  function merchantStyle(value) {
+    const code = String(value || '').trim().toUpperCase();
+    if (code && !/^[A-Z][0-9]{2}$/.test(code)) throw Error('款式编码请输入一个英文字母和两位数字，例如 A01、B12');
+    return code;
+  }
+  function changeMerchantStyle(items, value, key) {
+    const code = merchantStyle(value);
+    if (!key) throw Error('缺少任务编号');
+    return items.map((item, index) => canChangeShop(item) && (item.merchantStyleCode || '') !== code
+      ? {...item, status:'WAITING', error:'', merchantStyleCode:code, idempotencyKey:`${key}-${index}`}
+      : item);
   }
   function changeStyle(items, templateId, key) {
     if (!key) throw Error('缺少任务编号');
     return items.map((item, index) => canChangeShop(item) && (item.mainImageStyleTemplateId || '') !== (templateId || '')
       ? {captureId: item.captureId, title: item.title, shopId: item.shopId, thumbnailUrl: item.thumbnailUrl,
-        status: 'WAITING', idempotencyKey: `${key}-${index}`, ...stylePayload({mainImageStyleTemplateId: templateId}),
+        status: 'WAITING', idempotencyKey: `${key}-${index}`, ...stylePayload({...item, mainImageStyleTemplateId: templateId}),
         ...(item.sizeChartImageKey ? {sizeChartImageKey:item.sizeChartImageKey} : {})}
       : item);
   }
@@ -248,7 +261,7 @@
     await Promise.all(Array.from({ length: Math.min(count, items.length) }, () => worker()));
     if (fatalError) throw fatalError;
   }
-  const api = { plan, canChangeShop, canRepairSizeChart, repairSizeChart, changeShop, changeShops, stylePayload, changeStyle, submit, withDeadline, retryRead, isRetryableReadError };
+  const api = { plan, canChangeShop, canRepairSizeChart, repairSizeChart, changeShop, changeShops, stylePayload, changeStyle, merchantStyle, changeMerchantStyle, submit, withDeadline, retryRead, isRetryableReadError };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ProductBulkUpload = api;
 })(typeof window === 'undefined' ? globalThis : window);

@@ -1,5 +1,10 @@
 # Captured merchant SKU naming — 2026-11-04
 
+This is the version-1 release and marketplace acceptance history. The current
+short style, shared pattern suffix, optional upload style and active images are
+documented in `sku-shared-cost-total-20261104.md`. The two platform products below
+were verified under version 1 and have not been renamed by the later release.
+
 New one-click captures use `COLOR-STYLE-SIZE-RANDOM`, for example
 `BK-K583204-M-8F3A6C2D`. The style has one random uppercase A–Z letter and six
 random Arabic digits. The final segment has eight random uppercase hexadecimal

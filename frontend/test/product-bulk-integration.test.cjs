@@ -33,6 +33,7 @@ function harness(captures = fixture()) {
   const node = selector => {
     if (!nodes.has(selector)) {
       const element={value:'', textContent:'', dataset:{}, disabled:false, open:false, options:[],
+        setCustomValidity(message){this.validationMessage=message;},
         showModal(){this.open=true;}, close(){this.open=false;}, add(option){this.options.push(option);}};
       let html='';
       Object.defineProperty(element,'innerHTML',{get:()=>html,set(value){
@@ -367,6 +368,22 @@ test('optional style choice is sent automatically for each product with no snaps
     assert.equal(Object.hasOwn(body, 'mainImageStyleSnapshot'), false);
     assert.equal(body.confirmed, true);
   }
+});
+test('entered merchant style reaches every upload and a rejected retry keeps its original code',async()=>{
+  const h=harness();h.node('#product-bulk-merchant-style').value='a01';
+  let reject=true;h.state.onPost=async call=>{if(call.id==='a'&&reject)throw new h.c.ApiRequestError('请求未接受',400);};
+  await h.submit();
+  assert.equal(h.posts.length,2);
+  for(const call of h.posts)assert.equal(call.body.merchantStyleCode,'A01');
+  const first=plain(h.posts.find(call=>call.id==='a'));
+  h.node('#product-bulk-merchant-style').value='B02';reject=false;
+  await h.submit();
+  const retry=h.posts.at(-1);assert.deepEqual(retry,first);
+});
+test('invalid merchant style stops before reading or submitting products',async()=>{
+  const h=harness();h.node('#product-bulk-merchant-style').value='A001';
+  await h.submit();assert.equal(h.posts.length,0);assert.equal(h.captureReads.length,0);
+  assert.match(h.node('#product-bulk-error').textContent,/款式编码/);
 });
 
 test('default upload never adds a style-generation field', async () => {

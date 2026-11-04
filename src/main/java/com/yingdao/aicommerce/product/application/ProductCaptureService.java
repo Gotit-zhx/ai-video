@@ -597,6 +597,7 @@ public class ProductCaptureService {
                                  ProductPublishingProvider.ExternalCreateBoundary externalCreateBoundary) {
         ProductCapture capture = requireCapture(id, principal.organizationId());
         Map<String, Object> body = mutableMap(request);
+        ProductPublicationSkuNaming.normalize(body);
         if (!Boolean.TRUE.equals(booleanValue(value(body, "confirmed")))) {
             throw badRequest("一键发布前必须明确提交 confirmed=true");
         }

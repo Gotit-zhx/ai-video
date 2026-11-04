@@ -52,6 +52,9 @@ class TikTokShopOfficialPublishingProviderTest {
     void selectedSizeChartReachesInjectedBuilderAndBothOfficialProductRequests() {
         verifyConfirmedDraftFlow("LOCAL", null, false, false, true);
     }
+    @Test void explicitMerchantStyleReachesListingCheckCreateAndReadback() {
+        verifyConfirmedDraftFlow("LOCAL", null, false, false, false, true);
+    }
     @Test
     void missingWarehouseAutomaticallyReadsDestinationWarehouseAndPreservesDraftCreateBoundary() {
         verifyConfirmedDraftFlow("LOCAL", null, false, true);
@@ -77,6 +80,11 @@ class TikTokShopOfficialPublishingProviderTest {
     }
     private void verifyConfirmedDraftFlow(String sellerType, Object listingMethods, boolean styled,
                                          boolean automaticWarehouse, boolean selectedChart) {
+        verifyConfirmedDraftFlow(sellerType, listingMethods, styled, automaticWarehouse, selectedChart, false);
+    }
+    private void verifyConfirmedDraftFlow(String sellerType, Object listingMethods, boolean styled,
+                                         boolean automaticWarehouse, boolean selectedChart, boolean customSku) {
+        String redCode=customSku?"RD-A01-S-1234ABCD":"RED-S",blueCode=customSku?"BL-A01-M-1234ABCD":"BLUE-M";
         ShopAuthorizationService authorizationService = mock(ShopAuthorizationService.class);
         TikTokShopOfficialClient client = mock(TikTokShopOfficialClient.class);
         ProductCaptureSkuMapper skuMapper = mock(ProductCaptureSkuMapper.class);
@@ -103,6 +111,12 @@ class TikTokShopOfficialPublishingProviderTest {
                         "{\"Color\":\"Red\",\"Size\":\"S\"}", 0),
                 sku("blue-m", "BLUE-M", "Blue / M", "21.90", "https://source.example/blue.jpg",
                         "{\"Color\":\"Blue\",\"Size\":\"M\"}", 1));
+        if (customSku) {
+            var naming=mock(com.yingdao.aicommerce.product.application.ProductPublicationSkuNaming.class);
+            org.springframework.test.util.ReflectionTestUtils.setField(provider,"publicationSkuNaming",naming);
+            when(naming.apply(eq(capture),eq(skus),anyMap())).thenReturn(List.of(
+                    skus.get(0).forPublication(redCode),skus.get(1).forPublication(blueCode)));
+        }
         ProductCaptureImage red = image(capture.getId(), "https://source.example/red.jpg", "MAIN", 0,
                 "/api/v1/product-watermark/assets/red-processed");
         ProductCaptureImage blue = image(capture.getId(), "https://source.example/blue.jpg", "VARIANT", 1,
@@ -150,8 +164,8 @@ class TikTokShopOfficialPublishingProviderTest {
                         "data", Map.of(
                                 "product_id", "product-1",
                                 "skus", List.of(
-                                        Map.of("id", "remote-red", "seller_sku", "RED-S"),
-                                        Map.of("id", "remote-blue", "seller_sku", "BLUE-M"))),
+                                        Map.of("id", "remote-red", "seller_sku", redCode),
+                                        Map.of("id", "remote-blue", "seller_sku", blueCode))),
                         "request_id", "create-request"));
         when(client.apiGet(eq("/product/202309/products/product-1"), eq("access-token"),
                 eq("shop-cipher"), eq(Map.of("return_draft_version", true))))
@@ -160,13 +174,14 @@ class TikTokShopOfficialPublishingProviderTest {
                                 "id", "product-1",
                                 "status", "DRAFT",
                                 "skus", List.of(
-                                        remoteSku("remote-blue", "BLUE-M", "Blue", "M",
+                                        remoteSku("remote-blue", blueCode, "Blue", "M",
                                                 "attribute-blue-uri"),
-                                        remoteSku("remote-red", "RED-S", "Red", "S",
+                                        remoteSku("remote-red", redCode, "Red", "S",
                                                 "attribute-red-uri"))),
                         "request_id", "readback-request"));
 
         var request = new LinkedHashMap<>(publishRequest());
+        if(customSku)request.put("merchantStyleCode","A01");
         if (selectedChart) request.put("sizeChartImageKey", "a".repeat(64) + "/" + "b".repeat(64));
         if (automaticWarehouse) {
             request.remove("warehouseId");
@@ -233,7 +248,7 @@ class TikTokShopOfficialPublishingProviderTest {
                 .containsEntry("listingCheckRequestId", "listing-check-request")
                 .containsEntry("readbackRequestId", "readback-request");
         assertThat(result.providerResponse().get("remoteSkuIds")).isEqualTo(Map.of(
-                "RED-S", "remote-red", "BLUE-M", "remote-blue"));
+                redCode, "remote-red", blueCode, "remote-blue"));
     }
 
     @Test

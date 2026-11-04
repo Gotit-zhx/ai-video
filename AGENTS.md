@@ -1,8 +1,10 @@
 # Production storage and release rules
 
 For production operations, use the latest backend release document,
-`docs/product-sku-naming-20261104.md` (active backend:
-`ai-commerce-platform:product-sku-pattern-option-20261104`). Financial behavior and the active frontend
+`docs/sku-shared-cost-total-20261104.md` (active backend and frontend:
+`ai-commerce-platform:sku-shared-cost-total-20261104` and
+`ai-commerce-frontend:sku-shared-cost-total-layout-20261104`). Prior SKU acceptance is in
+`docs/product-sku-naming-20261104.md`; financial synchronization and receipt rules
 remain documented in `docs/finance-qianyi-receipt-20261103.md`; storage safeguards remain in
 `docs/storage-cleanup-20261102.md`. Preserve credentials, runtime configuration,
 business volumes, synchronization checkpoints, rate limits, and current

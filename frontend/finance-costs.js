@@ -448,15 +448,27 @@
       },'fi-primary');
       exportButton.disabled=true;
       exportButton.title='导出当前筛选的全部订单，含 SKU 单价、数量、成本月份与缺失原因';
+      const amountSummary=el('div',null,bar,'fc-order-amount-summary');amountSummary.setAttribute('role','status');
+      const amountLabel=el('span','成本金额合计（人民币）',amountSummary);
+      const amountValue=el('strong','查询中…',amountSummary),amountNote=el('small','按当前筛选汇总全部页',amountSummary);
       const content=el('div',null,p.n,'fc-order-results'),feedback=el('p','正在读取订单成本…',p.n,'fc-inline-note');
       const run=++loadSequence;let timer,busy=false,signature='',loaded=false;
-      if(!selection.start||!selection.end||selection.start>selection.end){feedback.textContent='请选择完整日期范围，开始日期不能晚于结束日期。';return;}
+      if(!selection.start||!selection.end||selection.start>selection.end){feedback.textContent='请选择完整日期范围，开始日期不能晚于结束日期。';amountValue.textContent='—';amountNote.textContent='请先选择有效日期';return;}
       async function refresh(){
         if(busy||run!==loadSequence||!p.n.isConnected||!selection.start||!selection.end||selection.start>selection.end)return;
         busy=true;clearTimeout(timer);
         try{
         const result=await context.request('/costs/orders?'+new URLSearchParams({...selection,page:state.orderPage}));
         if(run!==loadSequence||!p.n.isConnected)return;feedback.textContent='';
+        const amount=result.costAmountSummary||(selection.costStatus==='ALL'?result.productCosts?.total:null);
+        const partial=Number(amount?.pending_count)>0;
+        const label=partial?'成本金额（已算部分 · 人民币）':'成本金额合计（人民币）';
+        const value=amount?'¥ '+format(partial?amount.known_amount_cny:amount.amount_cny):'—';
+        const note=amount?`${format(amount.order_count??result.total)} 笔订单 · 全部页`+(partial?` · ${format(amount.pending_count)} 笔待补齐`:''):'暂未取得合计';
+        if(amountLabel.textContent!==label)amountLabel.textContent=label;
+        if(amountValue.textContent!==value)amountValue.textContent=value;
+        if(amountNote.textContent!==note)amountNote.textContent=note;
+        amountSummary.title='商品成本按当前店铺、结算日期、订单编号及成本状态筛选汇总，与同条件导出的商品成本一致；不含贴单金额。';
         const nextSignature=JSON.stringify(result);
         if(signature!==nextSignature){
         const next=content.cloneNode(false),totals=result.productCosts?.total||{},stats=el('div',null,next,'fi-cost-stats');
@@ -501,7 +513,7 @@
         }
         loaded=true;exportButton.disabled=exporting;
         if(result.productCosts?.processing)timer=setTimeout(()=>{if(run===loadSequence&&p.n.isConnected&&state.tab==='orders'&&context.isActive?.()!==false&&!document.hidden)void refresh();},15000);
-        }catch(error){if(run===loadSequence&&p.n.isConnected)feedback.textContent=error.message||'成本读取失败，请重试';}
+        }catch(error){if(run===loadSequence&&p.n.isConnected){feedback.textContent=error.message||'成本读取失败，请重试';if(!loaded){amountValue.textContent='—';amountNote.textContent='查询未完成';}}}
         finally{busy=false;if(!loaded)exportButton.disabled=true;}
       }
       await refresh();

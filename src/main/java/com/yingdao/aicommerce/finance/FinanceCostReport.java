@@ -61,6 +61,8 @@ public final class FinanceCostReport {
         SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND c.status='ESTIMATED' THEN 1 ELSE 0 END) estimated_count,
         SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND c.status IN ('READY','ESTIMATED','EXCLUDED') THEN 0 ELSE 1 END) pending_count,
         COALESCE(SUM(CASE WHEN j.order_record_id IS NULL OR j.priority=2 THEN c.known_amount_cny END),0) known_amount_cny,
+        COALESCE(SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2)
+          AND c.status NOT IN ('READY','ESTIMATED','EXCLUDED') THEN c.known_amount_cny END),0) pending_known_amount_cny,
         CASE WHEN SUM(CASE WHEN (j.order_record_id IS NULL OR j.priority=2) AND c.status IN ('READY','ESTIMATED','EXCLUDED') THEN 0 ELSE 1 END)=0
           THEN COALESCE(SUM(c.amount_cny),0) END amount_cny
         """;
@@ -139,7 +141,7 @@ public final class FinanceCostReport {
         new FinanceActualCosts(repo).attachReturns(scope,filter,result);
         return result;
     }
-    static final List<String> COST_SUMS=List.of("order_count","missing_order_count","excluded_count","ready_count","actual_count","estimated_count","pending_count","queued_count","product_queued_count","label_queued_count","known_amount_cny","label_cost_cny","charges_pending","label_matched_count","label_missing_count");
+    static final List<String> COST_SUMS=List.of("order_count","missing_order_count","excluded_count","ready_count","actual_count","estimated_count","pending_count","queued_count","product_queued_count","label_queued_count","known_amount_cny","pending_known_amount_cny","label_cost_cny","charges_pending","label_matched_count","label_missing_count");
     private Map<String,Object> summary(Scope scope,String kind,FinanceRepository.Query q){
         String selected=text(kind).toUpperCase(Locale.ROOT);
         var perShop=repo.jdbc().queryForList("SELECT x.shop_id,"+AGGREGATE+" FROM ("+related(selected)+q.where()+") x"
@@ -215,7 +217,18 @@ public final class FinanceCostReport {
             if(!months.isEmpty()){result.put("reportingMonths",months);result.put("reportingMonthNotice",FinanceReportingMonths.NOTE);}
         }
         result.put("costStatus",selectedStatus);
+        result.put("costAmountSummary",selectedAmountSummary(map(costs.get("total")),selectedStatus));
         result.put("productCosts",costs);return result;
+    }
+    static Map<String,Object> selectedAmountSummary(Map<String,Object> totals,String selectedStatus){
+        boolean pending=costStatus(selectedStatus).equals("PENDING");
+        var summary=new LinkedHashMap<String,Object>();
+        long count=number(totals.get(pending?"pending_count":"order_count")),missing=number(totals.get("pending_count"));
+        BigDecimal known=decimal(totals.get(pending?"pending_known_amount_cny":"known_amount_cny"));
+        if(known==null)known=BigDecimal.ZERO;
+        summary.put("currency","CNY");summary.put("order_count",count);summary.put("pending_count",missing);
+        summary.put("known_amount_cny",known);summary.put("amount_cny",missing==0?known:null);
+        return summary;
     }
     /** Shared page/export amounts: use the first settlement day's provider fields, never buyer payment. */
     void attachSettlementAmounts(Scope scope,List<Map<String,Object>> items){

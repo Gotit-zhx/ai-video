@@ -88,6 +88,7 @@ public class ProductPublishWorkflowService {
                                String idempotencyKey, PlatformPrincipal principal) {
         String key = requireIdempotencyKey(idempotencyKey);
         Map<String, Object> body = mutableMap(request);
+        ProductPublicationSkuNaming.normalize(body);
         body.remove("mainImageStyleSnapshot");
         String styleTemplateId = ProductMainImageStylePolicy.templateId(body);
         if (styleTemplateId == null) body.remove(ProductMainImageStylePolicy.TEMPLATE);
