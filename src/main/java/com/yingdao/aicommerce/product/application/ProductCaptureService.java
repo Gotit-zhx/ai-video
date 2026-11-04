@@ -89,6 +89,8 @@ public class ProductCaptureService {
     private ProductListingTitleService listingTitles;
     @org.springframework.beans.factory.annotation.Autowired
     private ProductListingLogisticsService listingLogistics;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductSkuNamingService skuNaming;
 
     public ProductCaptureService(
             ProductCaptureMapper captureMapper,
@@ -163,6 +165,11 @@ public class ProductCaptureService {
         Object capturedImages = firstNonNull(value(body, "images", "imageUrls"),
                 value(normalized, "images", "imageUrls"));
         List<Map<String, Object>> capturedSkus = resolveSkuImages(rawCapturedSkus, capturedImages);
+        if (skuNaming != null) {
+            capturedSkus = skuNaming.assign(principal.organizationId(), fingerprint, capturedSkus,
+                    existing == null ? List.of() : skuEntityMaps(existing));
+            normalized.put("skus", capturedSkus);
+        }
         ProductCaptureImagePlan.Plan imagePlan = ProductCaptureImagePlan.prepare(
                 capturedImages, capturedSkus, safeImageUrl
         );
