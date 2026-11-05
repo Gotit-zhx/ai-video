@@ -1,9 +1,12 @@
 # Production storage and release rules
 
 For production operations, use the latest release document,
-`docs/finance-source-orders-20261105.md` (active backend:
+`docs/finance-brush-template-20261105.md` (active backend:
 `ai-commerce-platform:finance-source-orders-20261105`; frontend:
-`ai-commerce-frontend:finance-source-orders-20261105`). All official orders are
+`ai-commerce-frontend:finance-brush-template-20261105`). Brush-cost template
+download is a static XLSX using the existing four-column import format; it does
+not change import or financial rules. Source-order lookup remains documented in
+`docs/finance-source-orders-20261105.md`. All official orders are
 queryable by shop-local creation date, including cancelled and unsettled orders;
 exact source-order numbers search across dates while preserving company/shop/group
 restrictions. The separate settled view and financial calculations retain their

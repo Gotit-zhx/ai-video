@@ -63,8 +63,17 @@
       const d=dialog(title);el('p',explanation,d.body);
       button(d.foot,'确认移除',async()=>{await fn();d.n.close();await refresh();},'fi-primary');
     }
+    function templateLink(parent){
+      const link=el('a','下载模板',parent,'fi-action-link');
+      link.href='/assets/templates/finance-brush-cost-template.xlsx?v=20261105';
+      link.download='刷单成本导入模板.xlsx';
+      return link;
+    }
     function importFile(){
-      const group=state.group,d=dialog('导入刷单费用表'),file=field(d.body,'选择 Excel / CSV','','file');file.accept='.xlsx,.csv';
+      const group=state.group,d=dialog('导入刷单费用表');
+      templateLink(el('div',null,d.body,'fi-actions'));
+      el('p','在模板的“费用明细”工作表填写，保留首行表头。订单编号使用文本格式，订单金额填原币，服务费填人民币；每次最多 2000 条。',d.body,'fi-muted');
+      const file=field(d.body,'选择 Excel / CSV','','file');file.accept='.xlsx,.csv';
       el('p','自动识别订单编号、店铺、实际订单金额和人民币服务费。只标记精确匹配的订单；未匹配记录保留，订单同步后自动重试。同单多文件不重复计数。',d.body,'fi-muted');
       const preview=el('div',null,d.body);let chosen=null;
       const form=()=>{const body=new FormData();body.append('groupId',group);body.append('file',chosen);return body;};
@@ -127,6 +136,7 @@
     }
     const tools=el('div',null,toolbar,'fq-controls');
     select(tools,'费用分组',groups.map(g=>[g.id,g.name]),state.group,async group=>{state.group=group;state.page=1;scope.shopId='';remember();renderShopOptions();data=null;drawContent();try{await refresh();}catch(e){feedback.textContent=e.message;}});
+    templateLink(tools);
     if(canManage)primary=button(tools,'导入 Excel',()=>importFile(),'fi-primary');
     feedback=el('p','',root,'fc-feedback');feedback.setAttribute('role','status');
     const filters=el('div',null,root,'fi-filters');
