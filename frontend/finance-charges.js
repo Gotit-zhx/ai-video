@@ -65,16 +65,16 @@
     }
     function templateLink(parent){
       const link=el('a','下载模板',parent,'fi-action-link');
-      link.href='/assets/templates/finance-brush-cost-template.xlsx?v=20261105';
-      link.download='刷单成本导入模板.xlsx';
+      link.href='/assets/templates/finance-brush-cost-template.xlsx?v=20261105-original';
+      link.download='母婴刷单费导入模板.xlsx';
       return link;
     }
     function importFile(){
       const group=state.group,d=dialog('导入刷单费用表');
       templateLink(el('div',null,d.body,'fi-actions'));
-      el('p','在模板的“费用明细”工作表填写，保留首行表头。订单编号使用文本格式，订单金额填原币，服务费填人民币；每次最多 2000 条。',d.body,'fi-muted');
+      el('p','模板沿用“母婴刷单费.xlsx”的原有 11 列和列顺序。保留首行表头，订单编号使用文本格式，订单金额填原币，“代刷费CNY”填人民币刷单费；每次最多 2000 条。',d.body,'fi-muted');
       const file=field(d.body,'选择 Excel / CSV','','file');file.accept='.xlsx,.csv';
-      el('p','自动识别订单编号、店铺、实际订单金额和人民币服务费。只标记精确匹配的订单；未匹配记录保留，订单同步后自动重试。同单多文件不重复计数。',d.body,'fi-muted');
+      el('p','自动识别订单编号、店铺、订单原币金额和人民币刷单费。只标记精确匹配的订单；未匹配记录保留，订单同步后自动重试。同单多文件不重复计数。',d.body,'fi-muted');
       const preview=el('div',null,d.body);let chosen=null;
       const form=()=>{const body=new FormData();body.append('groupId',group);body.append('file',chosen);return body;};
       const submit=button(d.foot,'确认导入',async()=>{
@@ -85,8 +85,8 @@
       button(d.foot,'解析预览',async()=>{
         const selected=file.files[0];if(!selected)throw Error('请先选择文件');chosen=selected;
         const result=await request('/charges/preview',{method:'POST',body:form()});if(file.files[0]!==selected)return;
-        preview.replaceChildren();el('p',`${result.count} 条来源 · 可匹配 ${result.matched} 条 · 服务费 ¥ ${money(result.serviceFeeCny)}（文件合计，非去重经营费用）`,preview,'fq-callout');
-        table(preview,['订单编号','店铺','服务费（¥）','匹配结果'],result.rows.slice(0,30).map(r=>[r.orderId,r.shopHint,money(r.serviceFeeCny),r.match.matchNote]));
+        preview.replaceChildren();el('p',`${result.count} 条来源 · 可匹配 ${result.matched} 条 · 刷单费 ¥ ${money(result.serviceFeeCny)}（文件合计，非去重经营费用）`,preview,'fq-callout');
+        table(preview,['订单编号','店铺','代刷费（¥）','匹配结果'],result.rows.slice(0,30).map(r=>[r.orderId,r.shopHint,money(r.serviceFeeCny),r.match.matchNote]));
         if(result.count>30)el('p','预览前 30 条；确认后保存全部有效来源行。',preview,'fi-muted');submit.disabled=false;
       });
     }
@@ -105,22 +105,22 @@
 
       const metrics=el('div',null,content,'fc-metrics');
       const period=data.periodMarked||data.marked;
-      for(const [name,value] of [['范围内已结算刷单',period?.orders||0],['范围内刷单服务费（¥）',money(period?.service_fee_cny??0)],['累计已标记订单',data.marked?.orders||0],['来源待匹配 / 待核对',data.totals.unmatched||0]]){
+      for(const [name,value] of [['范围内已结算刷单',period?.orders||0],['范围内刷单费（¥）',money(period?.service_fee_cny??0)],['累计已标记订单',data.marked?.orders||0],['来源待匹配 / 待核对',data.totals.unmatched||0]]){
         const box=el('div',null,metrics,'fc-metric');el('span',name,box);el('strong',value,box);
       }
-      el('p','刷单订单不计入经营汇总，服务费单独统计。原始订单、结算及对账记录保留。',content,'fq-description');
-      el('p',`来源共 ${data.totals.records} 条，累计去重服务费 ¥ ${money(data.marked?.service_fee_cny??0)}。下方文件和核对记录保留全部来源，不随结算日期隐藏；未匹配、未结算及范围外订单不计入上方期间金额。`,content,'fq-description');
+      el('p','刷单订单不计入经营汇总，刷单费单独统计。原始订单、结算及对账记录保留。',content,'fq-description');
+      el('p',`来源共 ${data.totals.records} 条，累计去重刷单费 ¥ ${money(data.marked?.service_fee_cny??0)}。下方文件和核对记录保留全部来源，不随结算日期隐藏；未匹配、未结算及范围外订单不计入上方期间金额。`,content,'fq-description');
       if(canManage&&Number(data.totals.unmatched)>0)button(content,'重新匹配',async()=>{await request('/charges/rematch',{method:'POST',...json({groupId:state.group})});await refresh();});
-      if(Number(data.marked?.conflicts)>0)el('p',`${data.marked.conflicts} 笔订单存在不同服务费来源，合计仅包含已确认部分；请核对并移除错误来源。`,content,'fq-callout');
+      if(Number(data.marked?.conflicts)>0)el('p',`${data.marked.conflicts} 笔订单存在不同刷单费来源，合计仅包含已确认部分；请核对并移除错误来源。`,content,'fq-callout');
       const files=el('section',null,content,'fq-section');el('h4','导入文件',files);
       table(files,['文件','来源行数','操作'],data.imports.map(f=>[f.source_name,f.row_count,canManage?button(null,'移除',()=>confirmRemoval('移除费用来源','只撤销这个文件的来源。同单仍有其他来源时保留标签；没有其他来源时自动恢复正常经营汇总。',()=>request('/charges/imports/'+encodeURIComponent(f.id)+'?'+new URLSearchParams({groupId:state.group}),{method:'DELETE'}))):'—']));
       const orders=el('section',null,content,'fq-section');el('h4','订单核对',orders);
       options.numberSearch?.(orders,state.numbers,value=>{state.numbers=value;state.page=1;refresh();},'订单编号');
-      table(orders,['订单编号','下单时间（店铺时区）','来源店铺','本金原币（核对用）','服务费（¥）','匹配状态'],data.rows.map(r=>{
+      table(orders,['订单编号','下单时间（店铺时区）','来源店铺','本金原币（核对用）','代刷费（¥）','匹配状态'],data.rows.map(r=>{
         const matched=r.match.matchStatus==='MATCHED',status=el('span',matched?'刷单':r.match.matchStatus==='REVIEW'?'待核对':'待匹配',null,matched?'fi-marketing-tag':'fi-status');
         status.title=r.match.matchNote+(r.marker?.source_count>1?' · 多文件同单只统计一次':'');const wrap=el('span',null);wrap.append(status);
         if(!matched)el('small',r.match.matchNote,wrap);
-        if(r.marker?.source_count&&r.marker.service_fee_cny==null)el('small',' 服务费冲突',wrap);
+        if(r.marker?.source_count&&r.marker.service_fee_cny==null)el('small',' 刷单费冲突',wrap);
         return [r.order_id,options.dateTimeCell?.(r.order_created_time,r.order_timezone||'UTC')||'—',r.shop_hint,money(r.principal_native)+' '+(r.match.currency||'币种待匹配'),money(r.service_fee_cny),wrap];
       }));
       const pages=el('div',null,orders,'fi-actions fq-pagination');
