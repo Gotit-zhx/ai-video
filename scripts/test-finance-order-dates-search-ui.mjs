@@ -54,6 +54,9 @@ async function tick(){await new Promise(r=>setTimeout(r,15));}
 async function choose(label,value){const select=d.querySelector(`[aria-label="${label}"]`);assert(select,label);select.value=value;select.dispatchEvent(new w.Event('change'));await ready();}
 
 w.FinanceWorkspace.enter('orders');await ready();
+assert(d.querySelector('thead').textContent.includes('下单日期（店铺时区）'));
+assert.equal(requests.filter(r=>r.url.pathname.endsWith('/overview')).length,0);
+await choose('订单范围','SETTLED');
 let row=d.querySelector('tbody tr');assert.equal(row.querySelector('.fi-record-value').textContent,'2026-10-22');
 assert.equal(row.querySelector('time').textContent,'2026-08-28 13:27:54');assert(row.querySelector('time').title.includes('Asia/Manila'));
 assert(d.querySelector('thead').textContent.includes('首次平台结算日期'));assert(d.querySelector('thead').textContent.includes('下单时间（店铺时区）'));

@@ -21,7 +21,7 @@ w.api=async(path,options={})=>{
       items:[{shop_id:'ph',shop_name:'示例菲律宾店',return_number:ready?'Q-DONE':'Q-PENDING',order_id:'586208660231587825',aftersale_type:q.type||'RETURN',refund_state:q.refundStatus||'WAIT_PAYMENT',return_state:'FINISH',source_received_at:1788291000000,return_receipt_state:'SIGNED',cost_status:ready?'READY':'WAIT_COST_BASIS',amount_cny:ready?125.5:null,refund_amount:10,refund_currency:'PHP'}]}};
   }
   if(url.pathname.endsWith('/overview'))return {data:{filters:{...q,currency:'',displayCurrency:'CNY'},fx:{id:'fixed',provider:'QA',time:'2026-11-02'},shops,groups,currencies:['PHP'],sync:[],totals:[],trend:[],fees:[],statuses:[],ranking:[]}};
-  if(url.pathname.endsWith('/records'))return {data:{items:[{order_id:'PLATFORM-ORDER'}],total:1,page:1,pageSize:50,fieldSettings:{fields:[{id:'order_id',label:'订单编号'}],visible:['order_id']}}};
+  if(url.pathname.endsWith('/records'))return {data:{filters:{...q,currency:'',displayCurrency:'CNY'},fx:{id:'fixed',provider:'QA',time:'2026-11-02'},shops,groups,currencies:['PHP'],sync:[],items:[{order_id:'PLATFORM-ORDER'}],total:1,page:1,pageSize:50,fieldSettings:{fields:[{id:'order_id',label:'订单编号'}],visible:['order_id']}}};
   throw Error('Unexpected request '+path);
 };
 for(const file of ['incremental-dom.js','incremental-charts.js','finance-qianyi.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../frontend/'+file,import.meta.url),'utf8'));

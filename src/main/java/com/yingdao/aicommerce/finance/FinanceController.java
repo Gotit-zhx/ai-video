@@ -62,18 +62,32 @@ public class FinanceController {
         s(p);return ApiResponse.ok(service.authorization().start(body.platform,body.market,s(p),p.userId(),body.groupId,body.shopId));
     }
     @GetMapping("/records") public ApiResponse<?> records(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
-        var result=new LinkedHashMap<>(repo.details(s(p),filter(q),q.get("kind"),(int)Math.max(1,number(q.getOrDefault("page","1"))),50,q.get("numbers")));
+        var scope=s(p);var selected=filter(q);boolean allOrders=allOrders(q,q.get("kind"));
+        var result=new LinkedHashMap<>(repo.details(scope,selected,q.get("kind"),(int)Math.max(1,number(q.getOrDefault("page","1"))),50,q.get("numbers"),allOrders));
         result.put("fieldSettings",fields.settings(personal(p),q.get("kind")));
+        if(allOrders){
+            // Raw-order lookup does not need the settlement dashboard or its cost aggregates.
+            var shops=service.shops(scope);
+            result.put("shops",shops);result.put("groups",service.groups(scope));result.put("sync",List.of());
+            result.put("currencies",shops.stream().map(shop->text(shop.get("currency"))).filter(c->!c.isBlank()).distinct().sorted().toList());
+            result.put("filters",Map.of("start",selected.start(),"end",selected.end(),"shopId",selected.shopId(),
+                    "groupId",selected.groupId(),"platform",selected.platform(),"currency",selected.currency(),
+                    "displayCurrency","CNY".equals(q.get("displayCurrency"))?"CNY":selected.currency(),"granularity",selected.granularity()));
+            result.put("orderScope","ALL");
+        }
         // List workspaces already receive this exact settled-order summary from /overview.
         // Refund/bill/settlement summaries keep their own source-specific basis.
         boolean sharedCostScope="SETTLED_ORDER".equals(FinanceCostReport.scopeKind(q.get("kind"),false));
-        if(!sharedCostScope||!"false".equals(q.get("includeProductCosts")))
+        if(!allOrders&&(!sharedCostScope||!"false".equals(q.get("includeProductCosts"))))
             result.put("productCosts",new FinanceCostReport(repo).summary(s(p),filter(q),q.get("kind")));
-        if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(rows(result.get("items")),service.exchangeRates().quote(q.get("fxSnapshot")));
+        if("CNY".equals(q.get("displayCurrency"))){
+            var quote=service.exchangeRates().quote(q.get("fxSnapshot"));
+            service.exchangeRates().enrich(rows(result.get("items")),quote);if(allOrders)result.put("fx",quote.metadata());
+        }
         return ApiResponse.ok(result);
     }
     @GetMapping("/records/{id}") public ApiResponse<?> record(@PathVariable("id") String id,@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
-        var row=repo.detail(s(p),id);
+        var row=repo.detail(s(p),id,"ALL".equals(q.get("orderScope")));
         if("CNY".equals(q.get("displayCurrency")))service.exchangeRates().enrich(List.of(row),service.exchangeRates().quote(q.get("fxSnapshot")));
         return ApiResponse.ok(row);
     }
@@ -119,14 +133,21 @@ public class FinanceController {
         String view=FinanceFields.view(q.getOrDefault("view",q.get("kind")));
         boolean rec=view.equals("RECONCILIATION"),cny="CNY".equals(q.get("displayCurrency"));
         FinanceFx.Quote quote=cny?service.exchangeRates().quote(q.get("fxSnapshot")):null;
+        boolean allOrders=allOrders(q,view);
         var columns=exportColumns(fields.selected(personal(p),view,true,cny));
+        if(allOrders){
+            columns=new ArrayList<>(columns.stream().map(field->field.id().equals("record_date")
+                    ?new FinanceFields.Field(field.id(),"下单日期（店铺时区）",field.type(),field.group(),field.cny(),field.views(),field.path()):field).toList());
+            if(columns.stream().noneMatch(field->field.id().equals("first_settlement_date")))
+                columns.add(new FinanceFields.Field("first_settlement_date","首次平台结算日期","date","结算核对",false,"ORDER",""));
+        }
         var shopNames=exportShopNames(s);
         var rows=exportRows(columns);
         if(rec)appendReconciliation(rows,columns,s,f,quote,q.get("numbers"));
         else {
             int page=1;long total;
             do{
-                var result=repo.details(s,f,view.equals("ALL")?null:view,page,100,q.get("numbers"));total=number(result.get("total"));
+                var result=repo.details(s,f,view.equals("ALL")?null:view,page,100,q.get("numbers"),allOrders);total=number(result.get("total"));
                 if(total>100000)throw bad("本次导出超过 100,000 条，请缩小日期或店铺范围");
                 var items=FinanceData.rows(result.get("items"));
                 if(cny)service.exchangeRates().enrich(items,quote);
@@ -140,14 +161,15 @@ public class FinanceController {
             var sheets=new LinkedHashMap<String,List<List<String>>>();sheets.put(rec?"结算对账":"财务明细",rows);
             sheets.put("统计口径",List.of(List.of("日期范围",f.start()+" 至 "+f.end()),List.of("店铺分组",f.groupId().isBlank()?"全部分组":"UNGROUPED".equals(f.groupId())?"未分组":service.groups(s).stream().filter(g->f.groupId().equals(g.get("id"))).map(g->text(g.get("name"))).findFirst().orElse("所选分组")),List.of("币种",f.currency().isBlank()?"原币分列，禁止跨币种直接合计":f.currency()),
                     List.of("编号查询",String.join("、",FinanceRecordSearch.numbers(q.get("numbers")))),
+                    List.of("编号日期范围",allOrders&&!FinanceRecordSearch.numbers(q.get("numbers")).isEmpty()?"完整订单号跨全部下单日期查找；仍按当前公司、店铺、分组、平台和币种限制":"按所选日期范围"),
                     List.of("范围","当前筛选全部记录；列按当前用户的导出配置生成；平台已结算不代表银行到账"),
                     List.of("刷单口径","原始财务明细保留刷单记录及订单标记；经营汇总排除刷单结算金额、关联费用和成本，原始账单对账不删除记录。"),
-                    List.of("时间口径","已结算订单及关联退款按首次平台结算日期筛选；结算和平台费用按平台结算日期。广告及独立费用按费用日期，待结算按订单日期。"),
+                    List.of("时间口径",allOrders?"全部官方订单按店铺时区的下单日期筛选，包括取消、未结算和跨月结算订单；首次结算日期单列。收入、利润及成本统计仍按原结算口径。":"已结算订单及关联退款按首次平台结算日期筛选；结算和平台费用按平台结算日期。广告及独立费用按费用日期，待结算按订单日期。"),
                     List.of("收入口径","结算明细及账单主金额展示销售收入；商家优惠和退款已体现在收入中，不再重复扣减。平台费用、物流及调整逐项列示；净结算另列，对账使用平台原始净额。"),
                     List.of("商品成本口径","仅平台已结算订单计入商品成本；整单成本归属首次结算，后续结算调整不重复计成本。未结算成本留空并注明；退款关联成本只作核对，不再次扣减。成本固定人民币，历史价估算保留状态。"),
                     List.of("扩展字段","仅展示平台实际返回的字段；空白表示未返回或不适用。标记原币的扩展金额不做人民币转换。"),
                     List.of("生成时间",java.time.Instant.now().toString())));
-            if(!rec){
+            if(!rec&&!allOrders){
                 var rc=exportColumns(fields.selected(personal(p),"RECONCILIATION",true,cny));var rr=exportRows(rc);
                 appendReconciliation(rr,rc,s,f,quote,q.get("numbers"));sheets.put("结算对账",rr);
             }
@@ -162,6 +184,7 @@ public class FinanceController {
         return ResponseEntity.ok().header("Cache-Control","no-store, private").header("Content-Disposition","attachment; filename=\"finance-"+f.start()+"."+(csv?"csv":"xlsx")+"\"")
                 .contentType(MediaType.parseMediaType(csv?"text/csv;charset=UTF-8":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).body(bytes);
     }
+    static boolean allOrders(Map<String,String> q,String kind){return "ORDER".equals(kind)&&"ALL".equals(q.get("orderScope"));}
     static ArrayList<List<String>> exportRows(List<FinanceFields.Field> columns){
         var rows=new ArrayList<List<String>>();rows.add(columns.stream().map(FinanceFields.Field::label).toList());return rows;
     }

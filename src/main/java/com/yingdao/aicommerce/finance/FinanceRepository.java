@@ -243,9 +243,17 @@ public class FinanceRepository {
         return query(s,f,"");
     }
     Query query(Scope s,Filter f,String alias) {
+        return query(s,f,alias,true);
+    }
+    Query query(Scope s,Filter f,String alias,boolean reporting) {
+        return query(s,f,alias,reporting,true);
+    }
+    Query query(Scope s,Filter f,String alias,boolean reporting,boolean dates) {
         String p=alias.isEmpty()?"":alias+".";
-        String w=" "+p+"organization_id=? AND "+p+"record_date>=? AND "+p+"record_date<=? AND "+p+"status<>'DATE_PENDING'";
-        List<Object> a=new ArrayList<>(List.of(s.organizationId(),Date.valueOf(f.start()),Date.valueOf(f.end())));
+        String w=" "+p+"organization_id=?";
+        List<Object> a=new ArrayList<>(List.of(s.organizationId()));
+        if(dates){w+=" AND "+p+"record_date>=? AND "+p+"record_date<=?";a.add(Date.valueOf(f.start()));a.add(Date.valueOf(f.end()));}
+        w+=" AND "+p+"status<>'DATE_PENDING'";
         for(var pair:List.of(new String[]{"shop_id",f.shopId()},new String[]{"platform",f.platform()},new String[]{"currency",f.currency()})){
             if(!pair[1].isEmpty()){w+=" AND "+p+pair[0]+"=?";a.add(pair[1]);}
         }
@@ -261,7 +269,7 @@ public class FinanceRepository {
             if("UNGROUPED".equals(f.groupId()))w+=" AND ("+record+".shop_id='UNASSIGNED' OR "+group+"fg.group_id IS NULL))";
             else {w+=" AND "+group+"fg.group_id=?)";a.add(f.groupId());}
         }
-        return FinanceReportingMonths.constrain(s,new Query(w,a),f,alias);
+        return reporting?FinanceReportingMonths.constrain(s,new Query(w,a),f,alias):new Query(w,a);
     }
     static String visible(String alias){
         return "("+alias+".shop_id='UNASSIGNED' OR EXISTS (SELECT 1 FROM finance_connections fc WHERE fc.id="+alias
@@ -320,14 +328,30 @@ public class FinanceRepository {
     static List<Object> bucketKey(Map<String,Object> row){return java.util.stream.Stream.of("shop_id","record_date","kind","currency","category","status").map(row::get).toList();}
     public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size){return details(s,f,kind,page,size,"");}
     public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size,String numbers){
+        return details(s,f,kind,page,size,numbers,false);
+    }
+    public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size,String numbers,boolean allOrders){
+        allOrders=allOrders&&"ORDER".equals(kind);
         if(text(kind).isBlank())return reportDetails(s,f,page,size,numbers);
-        if(Set.of("ORDER","REFUND").contains(text(kind)))return settledOrderDetails(s,f,kind,page,size,numbers);
-        Query q=FinanceRecordSearch.apply(query(s,f),"finance_records",numbers,true);String where=q.where;List<Object>a=new ArrayList<>(q.args);
+        if(!allOrders&&Set.of("ORDER","REFUND").contains(text(kind)))return settledOrderDetails(s,f,kind,page,size,numbers);
+        boolean lookup=allOrders&&!FinanceRecordSearch.numbers(numbers).isEmpty();
+        Query base=query(s,f,"",!allOrders,!lookup);
+        Query q=lookup?FinanceRecordSearch.orders(base,"finance_records.order_id",numbers)
+                :FinanceRecordSearch.apply(base,"finance_records",numbers,true);
+        String where=q.where;List<Object>a=new ArrayList<>(q.args);
         if(kind!=null&&!kind.isBlank()){if(!KINDS.contains(kind))throw bad("数据类型不正确");where+=" AND kind=?";a.add(kind);}
+        if(allOrders)where+=" AND source='API'";
+        if(lookup){
+            // Bound cross-month lookup by the small company shop set and the existing
+            // (company, shop, kind, order) index; never scan the historical ledger.
+            var shops=db.queryForList("SELECT id FROM finance_connections WHERE organization_id=? AND status<>'REMOVED'",String.class,s.organizationId());
+            if(shops.isEmpty())where+=" AND 1=0";
+            else{where+=" AND shop_id IN ("+String.join(",",Collections.nCopies(shops.size(),"?"))+")";a.addAll(shops);}
+        }
         int safeSize=Math.min(100,Math.max(1,size)),safePage=Math.max(1,page);
         // MySQL can otherwise choose a user-prefixed skip scan for ORDER counts,
         // even when the company/type/date index is available.
-        String source="finance_records FORCE INDEX ("+(kind!=null&&!kind.isBlank()?"idx_finance_company_kind_date":"idx_finance_company_dashboard")+")";
+        String source="finance_records FORCE INDEX ("+(lookup?"idx_finance_settled_order":kind!=null&&!kind.isBlank()?"idx_finance_company_kind_date":"idx_finance_company_dashboard")+")";
         Long total=db.queryForObject("SELECT COUNT(*) FROM "+source+" WHERE "+where,Long.class,a.toArray());
         a.add(safeSize);a.add((long)(safePage-1)*safeSize);
         // Select page identities through the covering index before reading large
@@ -337,26 +361,34 @@ public class FinanceRepository {
                   detail.statement_id,detail.category,detail.status,detail.record_date,detail.currency,
                   detail.amount,detail.revenue,detail.impressions,detail.clicks,detail.conversions,
                   detail.source,detail.updated_at,detail.raw_json
+                """+(allOrders?",detail.record_date source_record_date,(SELECT MIN(r.record_date) FROM finance_records r FORCE INDEX(idx_finance_settled_order)"
+                +" WHERE r.organization_id=detail.organization_id AND r.shop_id=detail.shop_id AND r.order_id=detail.order_id AND "
+                +FinanceCostReport.firstSettlementIdentity("r",true)+") first_settlement_date,'CREATED' order_date_basis\n":"")+"""
                 FROM (SELECT id,record_date FROM
                 """+source+" WHERE "+where+" ORDER BY record_date DESC,id LIMIT ? OFFSET ?) page"
                 +" JOIN finance_records detail ON detail.id=page.id ORDER BY page.record_date DESC,page.id",a.toArray());
-        data.forEach(this::enrich);new FinanceReportingMonths(this).attach(s,data);
+        data.forEach(this::enrich);if(!allOrders)new FinanceReportingMonths(this).attach(s,data);
         new FinanceProductSkus(this).attach(s,data);
         new FinanceCostReport(this).attach(s,data,false);
         presentSettlementAmounts(data);
         return Map.of("items",data,"total",total==null?0:total,"page",safePage,"pageSize",safeSize);
     }
     public Map<String,Object> detail(Scope s,String id){
+        return detail(s,id,false);
+    }
+    public Map<String,Object> detail(Scope s,String id,boolean allOrders){
         var rows=db.queryForList("SELECT * FROM finance_records WHERE organization_id=? AND id=? AND "+visible("finance_records"),s.organizationId(),id);
         if(rows.isEmpty())throw bad("记录不存在");var row=rows.getFirst();
         row.remove("organization_id");row.remove("user_id");
         if(Set.of("ORDER","REFUND").contains(text(row.get("kind")))){
             var day=db.queryForObject("SELECT MIN(record_date) FROM finance_records r WHERE r.organization_id=? AND r.shop_id=? AND r.order_id=? AND "
                     +FinanceCostReport.firstSettlementIdentity("r",true),Date.class,s.organizationId(),row.get("shop_id"),row.get("order_id"));
-            row.put("source_record_date",row.get("record_date"));row.put("first_settlement_date",day);row.put("record_date",day);
+            row.put("source_record_date",row.get("record_date"));row.put("first_settlement_date",day);
+            if(allOrders&&"ORDER".equals(row.get("kind")))row.put("order_date_basis","CREATED");
+            else row.put("record_date",day);
         }
         // Return only selected business fields; raw provider responses may contain buyer PII.
-        enrich(row);new FinanceReportingMonths(this).attach(s,List.of(row));new FinanceProductSkus(this).attach(s,List.of(row));new FinanceCostReport(this).attach(s,List.of(row),true);presentSettlementAmounts(List.of(row));return row;
+        enrich(row);if(!"CREATED".equals(row.get("order_date_basis")))new FinanceReportingMonths(this).attach(s,List.of(row));new FinanceProductSkus(this).attach(s,List.of(row));new FinanceCostReport(this).attach(s,List.of(row),true);presentSettlementAmounts(List.of(row));return row;
     }
     /** Reporting follows the first actual settlement, without placing an order-created date condition on o. */
     String settledOrderRelation(Scope s,Filter f,String kind,boolean normal){

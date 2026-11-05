@@ -14,6 +14,11 @@ const groups=[{id:'baby',name:'母婴组'},{id:'perfume',name:'香水组'},{id:'
 w.api=async path=>{
   const url=new URL(path,'https://example.test');requests.push(url);
   const cny=url.searchParams.get('displayCurrency')==='CNY';
+  if(url.searchParams.get('orderScope')==='ALL')return {data:{
+    filters:{...Object.fromEntries(url.searchParams),currency:'',displayCurrency:'CNY'},
+    fx:{id:'test-cny-snapshot',time:'2026-10-24T00:00:00Z',provider:'test'},shops,groups,currencies:['PHP','MYR'],sync:[],
+    items:[{id:'raw',order_id:'RAW-ORDER',status:'CANCELLED'}],page:1,pageSize:50,total:1,
+    fieldSettings:{fields:[{id:'order_id',label:'订单编号',type:'text'}],visible:['order_id']}}};
   if(url.pathname.endsWith('/overview')){
     if(overviewGate)await overviewGate;
     return {data:{filters:{...Object.fromEntries(url.searchParams),currency:cny?'':'PHP',displayCurrency:cny?'CNY':'PHP'},
@@ -35,6 +40,10 @@ const pause=()=>new Promise(r=>setTimeout(r,5));
 async function ready(){for(let i=0;i<200;i++){await pause();if(d.querySelector('#finance-page').getAttribute('aria-busy')==='false')return;}throw Error('UI timeout');}
 const button=text=>[...d.querySelectorAll('button')].find(n=>n.textContent.trim()===text);
 w.FinanceWorkspace.enter('orders');await ready();
+assert.equal(requests.length,1,'all orders do not wait for settlement charts and cost totals');
+assert.equal(requests[0].searchParams.get('orderScope'),'ALL');
+requests.length=0;
+const scope=d.querySelector('[aria-label="订单范围"]');scope.value='SETTLED';scope.dispatchEvent(new w.Event('change'));await ready();
 assert.equal(d.querySelector('tbody tr').textContent.includes('ORDER-1'),true);
 assert(d.querySelector('.fi-product-cost-summary').textContent.includes('12'));
 assert(d.querySelector('script[src*="echarts"]'),'table is usable while the chart download is still pending');
@@ -94,7 +103,8 @@ assert.equal(requests.at(-2).searchParams.get('currency'),'','switching to CNY c
 assert.equal(requests.at(-1).searchParams.get('displayCurrency'),'CNY');
 button('原币').click();await ready();
 w.FinanceWorkspace.reset();w.FinanceWorkspace.enter('orders');await ready();
-assert.equal(requests.at(-2).searchParams.get('displayCurrency'),'CNY','company/login reset restores CNY');
-assert.equal(requests.at(-2).searchParams.get('currency'),'','company/login reset clears the native filter');
+assert.equal(requests.at(-1).searchParams.get('orderScope'),'ALL','company/login reset restores all orders');
+assert.equal(requests.at(-1).searchParams.get('displayCurrency'),'CNY','company/login reset restores CNY');
+assert.equal(requests.at(-1).searchParams.get('currency'),'','company/login reset clears the native filter');
 w.FinanceWorkspace.leave();dom.window.close();
 console.log('Finance query UI: currency-safe parallel loads, reused costs, nonblocking charts, stable rows and stale-response protection passed.');

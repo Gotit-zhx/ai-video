@@ -1,9 +1,15 @@
 # Production storage and release rules
 
 For production operations, use the latest release document,
-`docs/finance-group-shops-20261104.md` (active backend:
-`ai-commerce-platform:finance-cost-dedupe-20261104`; frontend:
-`ai-commerce-frontend:finance-group-shops-20261104`). Finance group and platform
+`docs/finance-source-orders-20261105.md` (active backend:
+`ai-commerce-platform:finance-source-orders-20261105`; frontend:
+`ai-commerce-frontend:finance-source-orders-20261105`). All official orders are
+queryable by shop-local creation date, including cancelled and unsettled orders;
+exact source-order numbers search across dates while preserving company/shop/group
+restrictions. The separate settled view and financial calculations retain their
+existing settlement basis. Qianyi receipt dates are independent of settlement dates.
+Group/shop cascading remains documented in `docs/finance-group-shops-20261104.md`.
+Finance group and platform
 filters immediately restrict shop options and clear obsolete shop selections,
 including monthly label invoices. Cost-import acceptance is in
 `docs/finance-cost-dedupe-20261104.md`. Cost imports keep one
