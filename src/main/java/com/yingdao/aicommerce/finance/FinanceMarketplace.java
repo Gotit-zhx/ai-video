@@ -75,10 +75,10 @@ public class FinanceMarketplace {
                 boolean completed=FinanceSettlementDates.completed(bill);
                 // Unfinished statements remain stored for retry/reconciliation but are excluded
                 // from dated reports. Their storage date is never presented as completion.
-                LocalDate day=completed?FinanceSettlementDates.day(bill,zone):settlementDay(bill.get("statement_time"),zone);
+                LocalDate day=completed?FinanceSettlementDates.day(bill,zone,c.shop().getSellerType()):settlementDay(bill.get("statement_time"),zone);
                 String finalStatus=completed?"SETTLED":FinanceSettlementDates.PENDING;
                 String currency=text(data.get("currency"));
-                var dateMetadata=FinanceSettlementDates.metadata(bill,zone);
+                var dateMetadata=FinanceSettlementDates.metadata(bill,zone,c.shop().getSellerType());
                 data=new LinkedHashMap<>(data);data.putAll(dateMetadata);
                 var transactions=requiredRows(data,"transactions");
                 save(s,c,"BILL",billId,"",billId,"结算账单",completed?"PARTIAL":FinanceSettlementDates.PENDING,day,currency,amount(data,"total_settlement_amount"),data);
@@ -98,7 +98,12 @@ public class FinanceMarketplace {
                 if(bills.isEmpty()&&Boolean.TRUE.equals(cp.get("lastBillPage")))return new Step(next,true);
                 return new Step(next,false);
             }
-            q.put("sort_field","statement_time");q.put("statement_time_ge",from);q.put("statement_time_lt",to);
+            // Include the preceding report-calendar boundary. Persist the actual API
+            // window with its cursor; a pre-upgrade cursor must keep its original range.
+            long statementFrom=cp.containsKey("statementWindowFrom")?number(cp.get("statementWindowFrom"))
+                    :cursor.isBlank()?Math.max(0,from-2*86400L):from;
+            next.put("statementWindowFrom",statementFrom);
+            q.put("sort_field","statement_time");q.put("statement_time_ge",statementFrom);q.put("statement_time_lt",to);
             data=tikGet(c,"/finance/202309/statements",q);bills=requiredRows(data,"statements");
             next.put("bills",bills);String token=first(data,"next_page_token");
             next.put("cursor",token);next.put("lastBillPage",token.isEmpty());

@@ -44,7 +44,8 @@ public final class FinanceFields {
         new Field("source_record_date","原记录日期（非筛选日期）","date","接口扩展",false,"ORDER REFUND",""),
         extra("settlement_date_source","结算日期来源","text","SETTLEMENT BILL RECONCILIATION","_finance_date_source"),
         extra("statement_time","账单生成时间（UTC，非筛选日期）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_statement_time|create_time"),
-        extra("settlement_completed_time","平台付款时间（UTC，非账单筛选日期）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_payment_time|payment_time"),
+        extra("settlement_completed_time","平台付款／余额入账时间（UTC）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_payment_time|payment_time"),
+        extra("tk_adjustment_id","TK 官方调整单编号","text","SETTLEMENT","adjustment_id"),
         extra("statement_time_local","账单生成时间（店铺当地）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_statement_time|statement_time"),
         extra("statement_time_beijing","账单生成时间（北京时间）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_statement_time|statement_time"),
         extra("payment_time_local","平台付款时间（店铺当地）","datetime","SETTLEMENT BILL RECONCILIATION","_finance_payment_time|payment_time"),
@@ -260,9 +261,9 @@ public final class FinanceFields {
             BigDecimal settlement=decimal(row.get("amount"));
             row.put("settled_net_amount",settlement);
             if(!row.containsKey("settlement_date_source"))row.put("settlement_date_source",platform.equals("SHOPEE")
-                    ?"Shopee 实际收入释放日期（actual_payout_time，店铺时区）":FinanceSettlementDates.completed(raw)?FinanceSettlementDates.SOURCE:"平台结算日期待核对");
+                    ?"Shopee 实际收入释放日期（actual_payout_time，店铺时区）":FinanceSettlementDates.completed(raw)?FinanceSettlementDates.source(raw):"平台结算日期待核对");
             if(platform.equals("TIKTOK_SHOP")&&FinanceSettlementDates.exportBasis(raw))
-                row.put("settlement_date_source","现行报表日期映射：statement_time 的 UTC 日期次日；样例已核验，不代表本店本月已与官方原始报表独立对账");
+                row.put("settlement_date_source",FinanceSettlementDates.source(raw)+"；规则样例已核验，不代表本店本月已与官方原始报表独立对账");
             if(FinanceSettlementDates.PENDING.equals(row.get("status")))row.put("record_date",null);
             if(row.containsKey("settlement_payment_status"))row.put("settlement_payment_status",switch(text(row.get("settlement_payment_status"))){
                 case "PAID"->"已支付";case "SETTLED"->"已结算至卖家账户";case "PROCESSING"->"处理中";case "FAILED"->"支付失败";default->row.get("settlement_payment_status");

@@ -272,7 +272,7 @@
     const partialCost=operatingAmount()==null&&operatingAmount(profit,true)!=null;
     const settled=total('SETTLEMENT'),settledPending=Math.max(0,Number(settled?.records||0)-Number(settled?.known_revenues||0));
     const partialSettlement=profit?.settledGrossAmount==null&&settledPending>0;
-    const definitions=[['SETTLEMENT','销售收入','销售收入 · 按结算账单日期','wallet','settlements'],['ORDER','已结算订单金额','按首次结算日期归属，不限制下单月份','shop','orders'],['FEE','已结算平台费用','已结算订单的佣金、物流、税费及平台调整；逐项可查','fee','fee-records'],['AD','广告消耗','当前期间已同步 / 已导入费用','ad','ads'],['OPERATING_COST','营业成本',partialCost?'仅已算部分 · 查看商品、贴单、样品及退货退款明细':'商品成本 + 物流贴单成本 · 查看样品及退货退款明细','chart',''],['PROFIT','利润额',profit?.amount==null?'数据待补齐 · 查看计算口径':profit.estimated?'暂估 · 查看费用完整性':'扣除平台费用、广告及营业成本','wallet','']];
+    const definitions=[['SETTLEMENT','销售收入','销售收入 · 按结算账单日期','wallet','settlements'],['ORDER','已结算订单金额','原订单金额合计，按首次结算日期归属；非平台净结算，不参与利润计算。','shop','orders'],['FEE','已结算平台费用','已结算订单的佣金、物流、税费及平台调整；逐项可查','fee','fee-records'],['AD','广告消耗','当前期间已同步 / 已导入费用','ad','ads'],['OPERATING_COST','营业成本',partialCost?'仅已算部分 · 查看商品、贴单、样品及退货退款明细':'商品成本 + 物流贴单成本 · 查看样品及退货退款明细','chart',''],['PROFIT','利润额',profit?.amount==null?'数据待补齐 · 查看计算口径':profit.estimated?'暂估 · 查看费用完整性':'扣除平台费用、广告及营业成本','wallet','']];
     definitions.forEach(([kind,label,description,symbol,route],i)=>{
       const amount=kind==='SETTLEMENT'?profit?.settledGrossAmount??(partialSettlement&&Number(settled?.known_revenues)>0?settled.revenue:null):kind==='OPERATING_COST'?operatingAmount()??operatingAmount(profit,true):kind==='PROFIT'?profit?.amount:total(kind)?.amount;
       const n=button('',cards,()=>{if(kind==='PROFIT'){profitDialog();return;}if(kind==='OPERATING_COST'){operatingCostDialog();return;}selectedKind=kind;if(kind==='ORDER')orderScope='SETTLED';navigate(route);},'fi-metric'+(i===0?' is-featured':'')+(kind==='PROFIT'?' is-profit':''));
@@ -452,12 +452,13 @@
     const heading=el('div',null,block,'fi-card-head'),copy=el('div',null,heading);el('h3',compact?'已结算订单成本完整性':report.scope==='REFUND'?'退款关联已结算成本 · 仅供核对':'已结算订单商品成本 · 人民币',copy);
     el('p',report.basis,copy);button('查看已结算订单成本',heading,()=>openCosts({kind:report.scope||'SETTLED_ORDER'}),'fi-record-link');
     const stats=el('div',null,block,'fi-cost-stats'),partial=Number(totals.pending_count)>0;
-    for(const [label,value,note]of [
-      [partial?'已结算订单已算部分':'已结算商品成本','¥ '+number(partial?totals.known_amount_cny:totals.amount_cny),partial?'待补齐部分尚未计入':'实际出库优先，缺少出库凭据时按人民币标准成本'],
-      ['已计算的结算订单',number(totals.ready_count),'不计成本 '+number(totals.excluded_count)+' 单'],
-      ['已结算待补齐订单',number(totals.pending_count),'缺价、缺型号或正在后台计算'],
+    const awaiting=partial&&Number(totals.ready_count||0)+Number(totals.excluded_count||0)===0&&Number(totals.known_amount_cny||0)===0;
+    for(const [index,[label,value,note]]of [
+      [partial?'已结算订单已算部分':'已结算商品成本',awaiting?'待补齐':'¥ '+number(partial?totals.known_amount_cny:totals.amount_cny),awaiting?'尚无可确认成本，不能按零成本计算':partial?'仅含已核算部分，待补齐成本未计入':'实际出库优先，缺少出库凭据时按人民币标准成本'],
+      ['已完成成本计算',number(totals.ready_count),Number(totals.ready_count)>0?'含 GIFT 固定零成本订单；不计成本 '+number(totals.excluded_count)+' 单':'补齐成本资料后自动计算；不计成本 '+number(totals.excluded_count)+' 单'],
+      ['待补齐成本的订单',number(totals.pending_count),'缺价、缺型号或正在后台计算'],
       ['历史价估算',number(totals.estimated_count),'使用最近可用月份，明细保留原月份']
-    ]){if(compact&&value.startsWith('¥ '))continue;const n=el('div',null,stats);el('span',label,n);const valueNode=el('strong',null,n);if(label.includes('成本'))valueNode.append(costLink(value,{kind:report.scope||'ORDER'}));else valueNode.textContent=value;el('small',note,n);}
+    ].entries()){if(compact&&index===0)continue;const n=el('div',null,stats);el('span',label,n);const valueNode=el('strong',null,n);if(index===0)valueNode.append(costLink(value,{kind:report.scope||'ORDER'}));else valueNode.textContent=value;el('small',note,n);}
     if(report.rebuilding)footnote(block,'成本配置已更新，后台正在分批重算；完成后自动更新统计。');
     if(report.processing)calculationIndicator(block,report.labelProcessing&&!report.productProcessing?'贴单费用更新中 · 商品成本已保留':'商品成本计算中 · 已有结果保留');
   }

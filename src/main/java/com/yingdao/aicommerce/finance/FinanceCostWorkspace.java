@@ -133,6 +133,7 @@ public class FinanceCostWorkspace {
         var p=new LinkedHashMap<String,Object>();p.put("shop_id",shopId);
         for(String key:List.of("product_id","sku_id","seller_sku","name","spec","image"))p.put(key,text(row.get(key)));
         if(text(p.get("seller_sku")).isBlank())p.put("seller_sku",text(row.get("item_sku")));
+        p.put("fixed_gift_cost",FinanceOrderCosts.giftSku(p.get("seller_sku")));
         return p;
     }
     /** Include historical unresolved identities, even when absent from the recent-order sample.
@@ -145,9 +146,11 @@ public class FinanceCostWorkspace {
               GROUP_CONCAT(DISTINCT missing.issue_text ORDER BY missing.issue_text SEPARATOR '；') pending_reason
             FROM finance_order_costs c JOIN JSON_TABLE(c.data_json,'$.lines[*]' COLUMNS(
               product_id VARCHAR(128) PATH '$.productId',sku_id VARCHAR(128) PATH '$.skuId',
+              seller_sku VARCHAR(255) PATH '$.sellerSku',
               issue_text VARCHAR(500) PATH '$.issue')) missing
             WHERE c.organization_id=? AND c.shop_id=? AND c.status='INCOMPLETE'
               AND COALESCE(missing.issue_text,'')<>'' AND COALESCE(missing.product_id,'')<>'' AND COALESCE(missing.sku_id,'')<>''
+              AND UPPER(TRIM(COALESCE(missing.seller_sku,'')))<>'GIFT'
               AND
             """+FinanceCostReport.hasSettlement("c","c.order_id")+"""
              GROUP BY missing.product_id,missing.sku_id
@@ -367,6 +370,7 @@ public class FinanceCostWorkspace {
         for(String code:byCode.keySet())normalized.computeIfAbsent(normalizedSku(code),key->new LinkedHashSet<>()).add(code);
         var existing=map(data.get("mappings"));int candidates=0;
         for(var product:rows(data.get("products"))){
+            if(FinanceOrderCosts.giftSku(product.get("seller_sku")))continue;
             var match=matchSku(text(product.get("seller_sku")),byCode.keySet(),normalized);
             if(match==null)continue;
             String code=match.code();

@@ -56,12 +56,7 @@ public class FinanceQianyiWorker {
         var checkpoint=config.get("checkpoint_json")==null?new LinkedHashMap<String,Object>():new LinkedHashMap<>(repo.read(text(config.get("checkpoint_json"))));
         if(number(config.get("source_version"))<2&&number(checkpoint.get("sourceVersion"))<2)checkpoint.clear();
         LocalDate today=LocalDate.now(ZoneId.of("Asia/Shanghai"));
-        if(checkpoint.isEmpty()){
-            LocalDate from=config.get("last_success_at")==null||number(config.get("source_version"))<2?LocalDate.parse(text(config.get("sync_start")))
-                :instant(config.get("last_success_at")).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().minusDays(2);
-            checkpoint.put("from",from.toString());checkpoint.put("until",today.toString());checkpoint.put("page",1);
-            checkpoint.put("sourceVersion",2);
-        }
+        checkpoint=initializeCheckpoint(config,checkpoint,today);
         checkpoint=new LinkedHashMap<>(FinanceQianyiReceipt.plan(config,checkpoint,today));
         LocalDate from=LocalDate.parse(text(checkpoint.get("from"))),until=LocalDate.parse(text(checkpoint.get("until")));
         LocalDate to=from.plusDays(6);if(to.isAfter(until))to=until;
@@ -86,9 +81,26 @@ public class FinanceQianyiWorker {
         else if(to.isBefore(until)){checkpoint.put("from",to.plusDays(1).toString());checkpoint.put("page",1);}
         else done=true;
         boolean receiptFinished=done&&receiptScan;
-        if(done&&checkpoint.get("backfillResume") instanceof Map<?,?>){checkpoint=new LinkedHashMap<>(map(checkpoint.get("backfillResume")));done=false;}
+        if(done&&checkpoint.get("backfillResume") instanceof Map<?,?>){
+            checkpoint=new LinkedHashMap<>(map(checkpoint.get("backfillResume")));
+            done=markerOnly(checkpoint);
+        }
         if(receiptFinished)checkpoint.put("receiptScanFinished",true);
         integration.acceptPage(config,lease,FinanceQianyiReceipt.enrich(integration,config,result),checkpoint,done);
+    }
+    /** Completion flags have no page/window to resume. Never discard a real cursor. */
+    static boolean markerOnly(Map<String,Object> checkpoint){
+        return checkpoint.keySet().stream().allMatch(Set.of("sourceVersion","sourcesChanged")::contains);
+    }
+    static LinkedHashMap<String,Object> initializeCheckpoint(Map<String,Object> config,Map<String,Object> saved,LocalDate today){
+        var checkpoint=new LinkedHashMap<>(saved);
+        if(markerOnly(checkpoint)){
+            LocalDate from=config.get("last_success_at")==null||number(config.get("source_version"))<2?LocalDate.parse(text(config.get("sync_start")))
+                :instant(config.get("last_success_at")).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().minusDays(2);
+            checkpoint.put("from",from.toString());checkpoint.put("until",today.toString());checkpoint.put("page",1);
+            checkpoint.put("sourceVersion",2);
+        }
+        return checkpoint;
     }
     void readCosts(Map<String,Object> config,String lease){
         String org=text(config.get("organization_id")),shop=text(config.get("shop_id"));

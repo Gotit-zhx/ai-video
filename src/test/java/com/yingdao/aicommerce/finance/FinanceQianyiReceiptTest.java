@@ -75,4 +75,50 @@ class FinanceQianyiReceiptTest {
         assertSame(original,FinanceQianyiReceipt.plan(config,original,today));
         assertNotSame(original,FinanceQianyiReceipt.plan(config,original,today.plusDays(1)));
     }
+    @Test void thaiCarrierReturnEventsAreRecognizedWithoutConvertingForwardDeliveryOrFutureReturns(){
+        var s=source();long at=1788291000000L;
+        var terminal=parcel("ผู้ส่งได้รับพัสดุคืนเรียบร้อยแล้ว  ",at);terminal.put("status","UNDELIVERABLE");
+        assertEquals("SIGNED",FinanceQianyiReceipt.evidence(s,List.of(terminal)).get("state"));
+        for(String text:List.of("บริษัทขนส่งกำลังนำส่งพัสดุคืนผู้ส่ง","พัสดุตีกลับไปยังผู้ส่ง อยู่ระหว่างการขนส่ง: SOCW",
+                "บริษัทขนส่งจัดส่งพัสดุไม่สำเร็จและจะถูกส่งกลับไปยังผู้ส่ง")){
+            assertEquals("IN_TRANSIT",FinanceQianyiReceipt.evidence(s,List.of(terminal,parcel(text,at+1000))).get("state"));
+            assertEquals("UNKNOWN",FinanceQianyiReceipt.evidence(s,List.of(terminal,parcel(text,at))).get("state"));
+        }
+        for(String text:List.of("ผู้รับได้รับพัสดุเรียบร้อยแล้ว","ผู้ส่งยังไม่ได้รับพัสดุคืน","ผู้ส่งจะได้รับพัสดุคืนเรียบร้อยแล้ว",
+                "บริษัทขนส่งเข้ารับพัสดุเรียบร้อยแล้ว")){
+            assertNotEquals("SIGNED",FinanceQianyiReceipt.evidence(s,List.of(parcel(text,at))).get("state"));
+        }
+        for(String key:List.of("trackingNumber","orderNumber","onlineOrderId")){
+            var wrong=new LinkedHashMap<>(terminal);wrong.put(key,"OTHER");
+            assertEquals("UNKNOWN",FinanceQianyiReceipt.evidence(s,List.of(wrong)).get("state"));
+        }
+        assertEquals("UNKNOWN",FinanceQianyiReceipt.evidence(s,List.of(terminal,parcel("ผู้ส่งยังไม่ได้รับพัสดุคืน",at+1000))).get("state"));
+    }
+    @Test void listAndDetailLabelsUseTheSameMappingAsExport(){
+        for(String state:List.of("SIGNED","IN_TRANSIT","UNKNOWN","")){
+            var row=new LinkedHashMap<String,Object>(Map.of("return_receipt_state",state));
+            FinanceQianyiReturns.attachReceiptLabel(row);
+            assertEquals(FinanceQianyiReturns.receiptLabel(state),row.get("return_receipt_label"));
+            assertNotEquals("—",row.get("return_receipt_label"));
+            assertNotEquals("待确认",row.get("return_receipt_label"));
+        }
+    }
+    @Test void completedReceiptFlagsAreNotMistakenForHistoricalCursors(){
+        var config=Map.<String,Object>of("source_version",3,"sync_start","2026-08-01",
+                "last_success_at",Instant.parse("2026-11-04T06:36:56Z"));
+        var flags=Map.<String,Object>of("sourceVersion",3,"sourcesChanged",true);
+        assertTrue(FinanceQianyiWorker.markerOnly(flags));
+        var resumed=FinanceQianyiWorker.initializeCheckpoint(config,flags,LocalDate.of(2026,11,5));
+        assertEquals("2026-11-02",resumed.get("from"));assertEquals("2026-11-05",resumed.get("until"));
+        assertEquals(1,number(resumed.get("page")));assertEquals(true,resumed.get("sourcesChanged"));
+        assertEquals(flags,Map.of("sourceVersion",3,"sourcesChanged",true));
+    }
+    @Test void existingOrMalformedRealCursorIsNeverResetByMarkerRecovery(){
+        var config=Map.<String,Object>of("source_version",3,"sync_start","2026-08-01");
+        for(var saved:List.of(Map.<String,Object>of("from","2026-10-01","until","2026-10-31","page",8,"sourceVersion",3),
+                Map.<String,Object>of("page",8,"sourcesChanged",true))){
+            assertFalse(FinanceQianyiWorker.markerOnly(saved));
+            assertEquals(saved,FinanceQianyiWorker.initializeCheckpoint(config,saved,LocalDate.of(2026,11,5)));
+        }
+    }
 }

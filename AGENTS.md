@@ -1,20 +1,36 @@
 # Production storage and release rules
 
 For production operations, use the latest release document,
-`docs/finance-local-month-release-20261105.md` (active backend:
-`ai-commerce-platform:finance-local-month-20261105`; frontend:
-`ai-commerce-frontend:finance-local-month-20261105`). Date inputs use complete
+`docs/finance-gift-zero-20261105.md` (active backend:
+`ai-commerce-platform:finance-gift-zero-20261105`; frontend:
+`ai-commerce-frontend:finance-gift-zero-20261105`). Exact merchant SKU GIFT,
+case-insensitive with surrounding whitespace trimmed, has fixed zero product
+cost and needs no cost mapping. Other SKUs in mixed orders retain their normal
+cost requirements. Original ERP evidence is retained. Unknown costs must not
+appear as confirmed zero. The settled-order amount card is original order value,
+not platform net settlement, and is not used to calculate profit.
+The historical GIFT scan finished for 86 shops and 1,197,175 source orders;
+14,245 GIFT orders passed, with zero pending GIFT cost jobs at final acceptance.
+See gift-final-verification.json in the production GIFT release directory.
+Do not rerun that completed one-shot scan.
+Date and receipt rules remain in `docs/finance-report-basis-20261105.md`.
+Date inputs use complete
 shop-local calendar months independently of the browser timezone. Operational
-timestamps display Beijing time. Existing verified statement dates and amounts
-remain unchanged; ATC local-shop date migration and independent Shopee Adjustment
-reconciliation are still pending original evidence/implementation, not declared
-complete. Native LZ4 write-time compression is enabled on five main finance
+timestamps display Beijing time. TikTok LOCAL uses shop-local payment_time balance
+entry dates; CROSS_BORDER preserves the independently verified Statement Date.
+ATC plus four new October original files have been independently compared;
+historical migration completion must be checked in date-repair-verification.json.
+Independent Shopee Adjustment reconciliation remains pending. Native LZ4
+write-time compression is enabled on five main finance
 tables; do not turn this into recurring large-table OPTIMIZE. The redundant
 idx_finance_bill was dropped (V147); idx_finance_reconcile_tx covers its prefix.
 The cost-dedupe rollback uses the previously filesystem-verified compact image.
-See `docs/qianyi-receipt-display-20261105.md` for missing Qianyi return
-logistics states display a neutral dash; receipt qualification, totals and
-export data remain unchanged. Original brush-cost template acceptance is in
+The report-basis release supersedes `docs/qianyi-receipt-display-20261105.md`:
+Qianyi list/detail/export share the same labels, with 未匹配到返程状态 for unknown
+evidence. Exact Thai reverse-delivery events are recognized. Empty completion
+markers are not pagination cursors; the receipt-resume fix preserves real cursors.
+Do not equate forward DELIVERED or returnStatus=FINISH alone with reverse signed
+delivery. Original brush-cost template acceptance is in
 `docs/finance-brush-original-template-20261105.md`. Brush-cost
 download uses the user's original eleven-column 母婴刷单费.xlsx layout, including
 both positional month headers, with all original data cleared. 代刷费CNY is the

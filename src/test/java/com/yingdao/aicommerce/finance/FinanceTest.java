@@ -187,7 +187,7 @@ class FinanceTest {
         assertFalse(step.done());assertEquals(List.of(paid),step.checkpoint().get("bills"));
         verify(repo,times(3)).save(any(),argThat(e->FinanceSettlementDates.PENDING.equals(e.status())));
         assertTrue(reader.tik(new Scope("org","u"),connection,"SETTLEMENT","Asia/Manila",step.checkpoint()).done());
-        verify(repo).save(any(),argThat(e->e.kind().equals("SETTLEMENT")&&e.status().equals("SETTLED")&&e.date().equals(LocalDate.of(2026,9,2))));
+        verify(repo).save(any(),argThat(e->e.kind().equals("SETTLEMENT")&&e.status().equals("SETTLED")&&e.date().equals(LocalDate.of(2026,9,1))));
     }
     @Test void settledOrderRepairFetchesOldIdsDirectlyAndRetainsCheckpointOnPartialResponse(){
         var tk=mock(TikTokShopOfficialClient.class);var repo=mock(FinanceRepository.class);var db=mock(JdbcTemplate.class);

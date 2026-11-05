@@ -113,17 +113,17 @@ public class FinanceRepository {
             if(!FinanceSettlementBreakdown.supported(text(row.get("platform")),raw))return false;
             var day=java.time.LocalDate.parse(text(row.get("record_date")));
             if("TIKTOK_SHOP".equals(row.get("platform"))){
-                String zone=shopTimezone(scope,shop);
+                String zone=shopTimezone(scope,shop),sellerType=shopSellerType(scope,shop);
                 if(!FinanceSettlementDates.completed(raw)){
                     var bills=db.queryForList("SELECT raw_json FROM finance_records WHERE organization_id=? AND shop_id=?"
                             +" AND kind='BILL' AND statement_id=? AND source='API' LIMIT 1",
                             scope.organizationId(),shop,text(row.get("statement_id")));
                     if(bills.isEmpty())throw bad("结算元数据尚未补齐，不能重新归属账单日期");
                     var merged=new LinkedHashMap<>(raw);
-                    merged.putAll(FinanceSettlementDates.metadata(read(text(bills.getFirst().get("raw_json"))),zone));
+                    merged.putAll(FinanceSettlementDates.metadata(read(text(bills.getFirst().get("raw_json"))),zone,sellerType));
                     raw=merged;
                 }
-                raw=new LinkedHashMap<>(raw);raw.putAll(FinanceSettlementDates.metadata(raw,zone));
+                raw=new LinkedHashMap<>(raw);raw.putAll(FinanceSettlementDates.metadata(raw,zone,sellerType));
                 day=FinanceSettlementDates.day(raw,zone);
             }
             var e=new Entry(shop,text(row.get("platform")),"SETTLEMENT",text(row.get("external_id")),text(row.get("order_id")),
@@ -143,10 +143,13 @@ public class FinanceRepository {
             WHERE organization_id=? AND shop_id=? AND kind='BILL' AND statement_id=? AND source='API' LIMIT 1
             """,scope.organizationId(),shop,statement);
         if(found.isEmpty())throw bad("历史 TikTok 结算缺少原始账单，未猜测结算日期");
-        return FinanceSettlementDates.day(read(text(found.getFirst().get("raw_json"))),shopTimezone(scope,shop));
+        return FinanceSettlementDates.day(read(text(found.getFirst().get("raw_json"))),shopTimezone(scope,shop),shopSellerType(scope,shop));
     }
     String shopTimezone(Scope scope,String shop){
         return db.queryForObject("SELECT timezone FROM finance_connections WHERE organization_id=? AND id=?",String.class,scope.organizationId(),shop);
+    }
+    String shopSellerType(Scope scope,String shop){
+        return db.queryForObject("SELECT seller_type FROM finance_connections WHERE organization_id=? AND id=?",String.class,scope.organizationId(),shop);
     }
     /** Date-only repair from verified official statement metadata. No amount, price or fee derivation. */
     int repairSettlementDates(Scope scope,String shop,Map<String,Object> bill,List<String> ids){
@@ -154,12 +157,12 @@ public class FinanceRepository {
         if(ids.size()>200)throw new IllegalArgumentException("Date repair is limited to 200 records");
         return transaction(()->{
             requireShopWrite(scope,shop);
-            String zone=shopTimezone(scope,shop),statement=text(bill.get("id"));
-            var day=FinanceSettlementDates.day(bill,zone);
-            var metadata=FinanceSettlementDates.metadata(bill,zone);
+            String zone=shopTimezone(scope,shop),statement=text(bill.get("id")),sellerType=shopSellerType(scope,shop);
+            var day=FinanceSettlementDates.day(bill,zone,sellerType);
+            var metadata=FinanceSettlementDates.metadata(bill,zone,sellerType);
             var args=new ArrayList<Object>(List.of(scope.organizationId(),shop,statement));args.addAll(ids);
             var records=db.queryForList("""
-                SELECT id,kind,status,record_date,raw_json,order_id FROM finance_records
+                SELECT id,kind,status,record_date,raw_json,order_id,currency FROM finance_records
                 WHERE organization_id=? AND shop_id=? AND statement_id=? AND platform='TIKTOK_SHOP'
                   AND source='API' AND kind IN ('BILL','SETTLEMENT','FEE') AND id IN (
                 """+String.join(",",Collections.nCopies(ids.size(),"?"))+") ORDER BY id FOR UPDATE",args.toArray());
@@ -173,7 +176,7 @@ public class FinanceRepository {
                 var merged=new LinkedHashMap<>(raw);merged.putAll(rowMetadata);
                 // Version 3 supersedes the legacy month correction and retains its provenance.
                 var projected=new FinanceReportingMonths(this).apply(scope,new Entry(shop,"TIKTOK_SHOP",text(row.get("kind")),
-                        "",text(row.get("order_id")),statement,"",status,day,"PHP",null,null,null,null,null,"API",merged));
+                        "",text(row.get("order_id")),statement,"",status,day,text(row.get("currency")),null,null,null,null,null,"API",merged));
                 if(projected.date().toString().equals(text(row.get("record_date")))&&status.equals(row.get("status"))
                         &&sameJsonValue(raw,projected.raw()))continue;
                 changes.add(new Object[]{Date.valueOf(projected.date()),status,write(projected.raw()),row.get("id")});
@@ -216,7 +219,9 @@ public class FinanceRepository {
             raw.put("fee_group",fee.group());raw.put("basis",fee.note());raw.put("settlement_external_id",e.externalId());
             raw.put("breakdown_version",1);
             for(String key:FinanceReportingMonths.RAW_FIELDS)if(e.raw().containsKey(key))raw.put(key,e.raw().get(key));
-            for(String key:List.of("_finance_date_version","_finance_export_statement_date","_finance_date_source"))
+            for(String key:List.of("_finance_date_version","_finance_export_statement_date","_finance_date_source",
+                    "_finance_date_basis","_finance_seller_type","_finance_timezone",
+                    "_finance_statement_time","_finance_payment_time","_finance_payment_status","_finance_payment_id"))
                 if(e.raw().containsKey(key))raw.put(key,e.raw().get(key));
             var args=entryArgs(s,new Entry(e.shopId(),e.platform(),"FEE",e.externalId()+":d:"+hash(fee.field()).substring(0,24),
                     e.orderId(),e.statementId(),fee.label(),e.status(),e.date(),e.currency(),fee.amount(),null,null,null,null,"API",raw),null);

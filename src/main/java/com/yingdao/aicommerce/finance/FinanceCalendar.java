@@ -7,7 +7,7 @@ import static com.yingdao.aicommerce.finance.FinanceData.*;
 
 /** Query dates are calendar labels, never browser or server-local instants. */
 final class FinanceCalendar {
-    static final String VERSION="shop-calendar-v1";
+    static final String VERSION="shop-calendar-v2-report-basis";
     static final ZoneId DISPLAY_ZONE=ZoneId.of("Asia/Shanghai");
     static final String NOTE="统计日期按店铺当地时间；同步时间按北京时间显示。";
     static final String QUALIFICATION="抓取完成表示接口分页和明细完整，不代表已与官方原始文件逐笔对账。";

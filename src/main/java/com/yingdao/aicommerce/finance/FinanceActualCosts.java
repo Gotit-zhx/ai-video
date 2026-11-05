@@ -59,8 +59,22 @@ public final class FinanceActualCosts {
         String slots=String.join(",",Collections.nCopies(ids.size(),"?"));
         var out=new HashMap<String,Map<String,Object>>();
         for(var r:repo.jdbc().queryForList("SELECT order_record_id,data_json FROM finance_actual_order_costs WHERE order_record_id IN ("+slots+")",ids.toArray()))
-            out.put(text(r.get("order_record_id")),new FinanceOrderCosts(repo).decode(r.get("data_json")));
+            out.put(text(r.get("order_record_id")),giftPolicy(new FinanceOrderCosts(repo).decode(r.get("data_json"))));
         return out;
+    }
+    /** Apply the fixed GIFT policy to the derived result; retain imported warehouse evidence unchanged. */
+    static Map<String,Object> giftPolicy(Map<String,Object> evidence){
+        var original=rows(evidence.get("lines"));
+        if(original.stream().noneMatch(l->FinanceOrderCosts.giftSku(l.get("costCode"))))return evidence;
+        var result=new LinkedHashMap<>(evidence);var lines=new ArrayList<Map<String,Object>>();BigDecimal total=BigDecimal.ZERO;
+        for(var old:original){
+            var line=new LinkedHashMap<>(old);
+            if(FinanceOrderCosts.giftSku(line.get("costCode")))FinanceOrderCosts.fixedGift(line);
+            lines.add(line);total=total.add(decimal(line.get("amountCny")));
+        }
+        result.put("lines",lines);result.put("amountCny",total);result.put("knownAmountCny",total);
+        result.put("note",text(evidence.get("note"))+" GIFT 赠品固定零成本，原始出库凭据保留。");
+        return result;
     }
     /**
      * Maintenance/import entry point. Caller must hold one transaction and invalidate company caches after commit.

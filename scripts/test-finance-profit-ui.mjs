@@ -22,7 +22,7 @@ const response={
     notes:['广告消耗尚无记录，按 0 暂计，补录后利润将变化','商品成本包含历史月份取价估算']}
 };
 const categoryReads=[];let failCategory=false;
-w.api=async path=>{if(path.startsWith('/api/v1/finance/workspace/costs/summary?')){const query=new URL(path,'https://example.test').searchParams;categoryReads.push(Object.fromEntries(query));if(failCategory&&query.get('kind')==='REFUND_SETTLED')throw Error('test failed read');return {data:{total:{amount_cny:query.get('kind')==='SAMPLE_SETTLED'?120:240,known_amount_cny:120,order_count:2,pending_count:0}}};}assert(path.startsWith('/api/v1/finance/overview?'));const query=new URL(path,'https://example.test').searchParams;assert.equal(query.get('displayCurrency'),'CNY');assert.equal(query.get('currency'),'','default and refresh aggregate every source currency');return {data:structuredClone(response)};};
+w.api=async path=>{if(path.startsWith('/api/v1/finance/qianyi/returns?')){if(failCategory)throw Error('test failed read');return {data:{summary:{refundTotals:[{currency:'PHP',amount:240,known_count:2,records:2}]}}};}if(path.startsWith('/api/v1/finance/workspace/costs/summary?')){const query=new URL(path,'https://example.test').searchParams;categoryReads.push(Object.fromEntries(query));assert.equal(query.get('kind'),'SAMPLE_SETTLED');return {data:{total:{amount_cny:120,known_amount_cny:120,order_count:2,pending_count:0}}};}assert(path.startsWith('/api/v1/finance/overview?'));const query=new URL(path,'https://example.test').searchParams;assert.equal(query.get('displayCurrency'),'CNY');assert.equal(query.get('currency'),'','default and refresh aggregate every source currency');return {data:structuredClone(response)};};
 for(const file of ['incremental-dom.js','incremental-charts.js','finance-workspace.js'])w.eval(await fs.readFile(new URL('../frontend/'+file,import.meta.url),'utf8'));
 async function ready(){for(let i=0;i<200;i++){await new Promise(r=>setTimeout(r,5));if(d.querySelector('#finance-page').getAttribute('aria-busy')==='false')return;}throw Error('UI timeout');}
 const metric=key=>d.querySelector(`[data-metric="${key}"]`);
@@ -33,6 +33,7 @@ assert.equal(d.querySelector('.fi-pills [aria-pressed="true"]').textContent,'人
 assert.equal(d.querySelector('select[aria-label="原币"]').value,'');
 assert([...d.querySelectorAll('.fi-metric-value small')].every(n=>n.textContent==='CNY'));
 assert.deepEqual([...d.querySelectorAll('.fi-metric-label>span:first-child')].map(n=>n.textContent),['销售收入','已结算订单金额','已结算平台费用','广告消耗','营业成本','利润额']);
+assert(metric('ORDER').querySelector('.fi-metric-note').textContent.includes('原订单金额合计，按首次结算日期归属；非平台净结算，不参与利润计算。'));
 assert(metric('SETTLEMENT').textContent.includes('116,622.69'));assert(!metric('SETTLEMENT').textContent.includes('82,646.26'));
 assert(metric('OPERATING_COST').textContent.includes('78,473.52'));assert(metric('OPERATING_COST').textContent.includes('CNY'));
 assert(metric('PROFIT').textContent.includes('4,172.74'));assert(metric('PROFIT').textContent.includes('暂估'));
@@ -45,13 +46,13 @@ assert.deepEqual([...d.querySelectorAll('.fi-metric-value')].map(n=>n.textConten
 metric('PROFIT').click();let dialog=d.querySelector('dialog');assert(dialog);assert(dialog.textContent.includes('不再重复扣减'));assert(dialog.textContent.includes('按 0 暂计'));assert.equal(dialog.querySelectorAll('tbody tr').length,5);dialog.close();
 assert.equal(categoryReads.length,0,'overview does not request cost classification');
 metric('OPERATING_COST').click();await new Promise(r=>setTimeout(r,20));dialog=d.querySelector('dialog');
-assert.equal(categoryReads.length,2);assert(dialog.textContent.includes('其中：商品成本—样品'));assert(dialog.textContent.includes('退货退款关联商品成本'));
-assert(dialog.textContent.includes('¥ 120'));assert(dialog.textContent.includes('¥ 240'));assert(dialog.textContent.includes('969.52'));assert(dialog.textContent.includes('不重复扣减'));
+assert.equal(categoryReads.length,1);assert(dialog.textContent.includes('其中：商品成本—样品'));assert(dialog.textContent.includes('退款核对 · 数据来源：千易 ERP'));
+assert(dialog.textContent.includes('120'));assert(dialog.textContent.includes('240 PHP'));assert(dialog.textContent.includes('不改变利润'));
 assert.equal(dialog.querySelector('.fi-operating-total strong').textContent,'78,473.52 CNY','memo categories never add to the operating total');
 if(process.env.FINANCE_BREAKDOWN_PREVIEW_PATH){const css=await fs.readFile(new URL('../frontend/finance-workspace.css',import.meta.url),'utf8');await fs.writeFile(process.env.FINANCE_BREAKDOWN_PREVIEW_PATH,`<!doctype html><meta charset="utf-8"><title>营业成本明细 · 验收示例</title><style>${css}body{background:#f7f8fb;font:14px/1.5 -apple-system,sans-serif}.fi-dialog{position:relative;margin:24px auto;max-height:none}</style>${dialog.outerHTML}`);}
 [...dialog.querySelectorAll('button')].find(n=>n.textContent==='核对订单').click();assert.equal(drilldowns.at(-1).kind,'SAMPLE_SETTLED');
 assert.equal(drilldowns.at(-1).start,categoryReads[0].start);assert.equal(drilldowns.at(-1).end,categoryReads[0].end);
-failCategory=true;metric('OPERATING_COST').click();await new Promise(r=>setTimeout(r,20));dialog=d.querySelector('dialog');assert(dialog.textContent.includes('读取失败'));assert(dialog.textContent.includes('¥ 120'));dialog.close();failCategory=false;
+failCategory=true;metric('OPERATING_COST').click();await new Promise(r=>setTimeout(r,20));dialog=d.querySelector('dialog');assert(dialog.textContent.includes('读取失败'));assert(dialog.textContent.includes('120'));dialog.close();failCategory=false;
 response.profit.labelConfiguration={configuredShops:0,missingShops:[{shopId:'shop',groupId:'baby',name:'示例母婴店',region:'PH'}]};
 refresh();await ready();assert(metric('OPERATING_COST').textContent.includes('贴单账单待补齐'));
 metric('OPERATING_COST').click();await new Promise(r=>setTimeout(r,20));dialog=d.querySelector('dialog');
@@ -117,14 +118,11 @@ w.api=async path=>{
   return previousApi(path);
 };
 refresh();await ready();
-assert(d.querySelector('#finance-page').textContent.includes('退货入库冲回（人民币）'));
+assert(!d.querySelector('#finance-page').textContent.includes('退货入库冲回（人民币）'));
 metric('OPERATING_COST').click();await ready();dialog=[...d.querySelectorAll('dialog')].at(-1);
 const returnedButton=[...dialog.querySelectorAll('button')].find(n=>n.textContent==='退货成本冲回');
-assert(returnedButton.closest('tr').textContent.includes('340.68'));
-returnedButton.click();await ready();
-assert.equal(receiptQueries.length,1);
-assert.equal(receiptQueries[0].start,categoryReads.at(-1).start);
-assert([...d.querySelectorAll('dialog')].at(-1).textContent.includes('ACTUAL-XL'));
-assert([...d.querySelectorAll('dialog')].at(-1).textContent.includes('已确认入库.xlsx'));
+assert(!returnedButton,'cancelled return-cost reversal stays disabled');
+assert.equal(receiptQueries.length,0);
+assert(dialog.textContent.includes('退款核对 · 数据来源：千易 ERP'));
 w.FinanceWorkspace.leave();dom.window.close();
 console.log('Finance profit UI passed: six metrics with operating-cost grouping and lazy subset drilldowns, settled gross, product-cost drilldown, profit explanation, incomplete/negative states and stable refresh.');

@@ -62,7 +62,9 @@
     return {...matchingCosts(bundle[1],costs),bundleQuantity:Number(bundle[2])};
   }
   const automaticMapping=saved=>['EXACT_CODE','NORMALIZED_CODE','BUNDLE_CODE'].includes(saved?.method);
+  const fixedGift=p=>String(p.seller_sku||'').trim().toUpperCase()==='GIFT';
   function candidate(product,costs,warehouse){
+    if(fixedGift(product))return {status:'draft',label:'赠品 · 固定 0 成本',note:'GIFT 商品固定按 0 元计算，无需关联成本资料',code:'GIFT',fixedGift:true};
     const code=String(product.seller_sku||'').trim(),available=costs.filter(c=>!warehouse||c.warehouse===warehouse);
     const match=matchingCosts(code,costs),exact=match.rows.filter(c=>!warehouse||c.warehouse===warehouse);
     if(match.ambiguous)return {status:'conflict',label:'编码重复 · 需核对',note:'忽略括号和空格后对应多个成本型号，请核对后关联',code:'',factor:1};
@@ -106,6 +108,7 @@
         currentCosts().some(c=>c.sku===saved.code&&(!saved.warehouse||c.warehouse===saved.warehouse))&&saved;
     };
     const recommendation=p=>{
+      if(fixedGift(p))return candidate(p,currentCosts(),state.warehouse);
       const saved=mapped(p),suggestion=candidate(p,currentCosts(),state.warehouse);
       if(!saved){const previous=savedMapping(p);return previous?{...previous,status:'missing',label:'成本已移除 · 待关联',note:'原关联的成本资料已移除，请重新选择成本或手动填写'}:suggestion;}
       const review=automaticMapping(saved)&&suggestion.status==='conflict';
@@ -131,7 +134,7 @@
       state.rules=settings?.rules||defaultRules();mount(root,{...context,preview});
     }
     function missingAutomatic(){
-      return live&&editable&&currentProducts().some(p=>automaticCosts(String(p.seller_sku||''),currentCosts()).rows.some(c=>!state.mappings[key(p)+':'+c.warehouse]));
+      return live&&editable&&currentProducts().some(p=>!fixedGift(p)&&automaticCosts(String(p.seller_sku||''),currentCosts()).rows.some(c=>!state.mappings[key(p)+':'+c.warehouse]));
     }
     async function autoMatch(){
       const run=++loadSequence;toast('正在按相同编码自动关联 SKU…');
@@ -358,9 +361,9 @@
         const visible=group.rows.filter(matches).sort((a,b)=>({danger:0,warn:1,good:2})[tone(a.rec)]-({danger:0,warn:1,good:2})[tone(b.rec)]);
         table(detail,['SKU 规格','商家 SKU','成本型号','关联状态','操作'],visible.map(({product,rec})=>{
           const item=el('div',null,null,'fc-product');productImage(item,product,'fc-sku-image');const copy=el('div',null,item);el('strong',product.spec||'规格待补充',copy);el('small','规格 SKU ID：'+product.sku_id,copy);
-          if(product.pending_cost_orders){tag(copy,`历史订单待补齐 · ${product.pending_cost_orders} 笔`,'danger');el('small',product.pending_cost_reason||'请核对历史销售规格对应的成本型号',copy);}
+          if(product.pending_cost_orders&&!rec.fixedGift){tag(copy,`历史订单待补齐 · ${product.pending_cost_orders} 笔`,'danger');el('small',product.pending_cost_reason||'请核对历史销售规格对应的成本型号',copy);}
           const badge=tag(null,rec.status==='missing'&&!rec.label.includes('已移除')?'未关联':rec.label,tone(rec));badge.title=rec.note;
-          const button=editable?action(null,mapped(product)?'查看 / 调整':'核对关联',()=>mappingDialog(product),'fi-record-link'):'只读';
+          const button=rec.fixedGift?'无需关联':editable?action(null,mapped(product)?'查看 / 调整':'核对关联',()=>mappingDialog(product),'fi-record-link'):'只读';
           const costCode=el('span',rec.code||'未找到',null,'fc-code');
           if(rec.bundleQuantity)el('small','组合数量 ×'+rec.bundleQuantity,costCode,'fc-bundle-quantity');
           if(rec.manualCostId){const manual=manualCosts.find(c=>c.id===rec.manualCostId);if(manual)el('small',`手动 · ¥ ${format(manual.unitPriceCny)} / ${manual.unit} · 换算 ×${format(rec.factor)}`,costCode,'fc-bundle-quantity');}
@@ -472,7 +475,8 @@
         const nextSignature=JSON.stringify(result);
         if(signature!==nextSignature){
         const next=content.cloneNode(false),totals=result.productCosts?.total||{},stats=el('div',null,next,'fi-cost-stats');
-        for(const [label,value]of [[Number(totals.pending_count)>0?'已结算订单已算部分':'已结算订单商品成本','¥ '+format(Number(totals.pending_count)>0?totals.known_amount_cny:totals.amount_cny)],['已计算的结算订单',format(totals.ready_count)],['已结算待补齐订单',format(totals.pending_count)],['历史价估算',format(totals.estimated_count)]]){
+        const awaiting=Number(totals.pending_count)>0&&Number(totals.ready_count||0)+Number(totals.excluded_count||0)===0&&Number(totals.known_amount_cny||0)===0;
+        for(const [label,value]of [[Number(totals.pending_count)>0?'已结算订单已算部分':'已结算订单商品成本',awaiting?'待补齐':'¥ '+format(Number(totals.pending_count)>0?totals.known_amount_cny:totals.amount_cny)],['已完成成本计算',format(totals.ready_count)],['待补齐成本的订单',format(totals.pending_count)],['历史价估算',format(totals.estimated_count)]]){
           const n=el('div',null,stats);el('span',label,n);el('strong',value,n);
         }
         if(result.reportingMonthNotice){
@@ -562,7 +566,7 @@
       });
       const shop=getShop();if(shop){const meta=el('div',null,shopControl,'fc-shop-meta');tag(meta,shop.platform==='SHOPEE'?'虾皮':'TikTok');el('span',(shop.region||'')+' · '+(context.groups?.find(g=>g.id===shop.group_id)?.name||'未分组')+' · 已授权',meta);}
       action(shopControl,'成本表设置',()=>{state.tab='rules';draw();},'fi-record-link').disabled=!state.shopId;
-      const metrics=el('div',null,root,'fc-metrics fc-cost-metrics'),linked=currentProducts().filter(p=>mapped(p)).length;
+      const metrics=el('div',null,root,'fc-metrics fc-cost-metrics'),linked=currentProducts().filter(p=>fixedGift(p)||mapped(p)).length;
       for(const [label,value,note]of [
         ['分组成本资料',applies()?costs.length+manualCosts.length:0,applies()?`${preview.imports?.length||0} 份文件 · ${manualCosts.length} 条手动成本`:'请选择成本分组'],
         ['已关联 SKU',linked,`当前店铺共 ${currentProducts().length} 个订单 SKU`],

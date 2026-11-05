@@ -11,6 +11,17 @@ public final class FinanceOrderCosts {
     public FinanceOrderCosts(FinanceRepository repo){this.repo=repo;}
     public record Context(String shopId,String groupId,String region,String timezone,String bookId,
                           List<Map<String,Object>> costs,Map<String,Object> settings,Map<String,Object> mappings){}
+    static boolean giftSku(Object sku){return "GIFT".equalsIgnoreCase(text(sku).trim());}
+    static boolean hasGift(Map<String,Object> raw){
+        return FinanceProductSkus.fromOrder("TIKTOK_SHOP",raw).stream().anyMatch(FinanceOrderCosts::giftSku)
+            ||FinanceProductSkus.fromOrder("SHOPEE",raw).stream().anyMatch(FinanceOrderCosts::giftSku);
+    }
+    static void fixedGift(Map<String,Object> line){
+        line.remove("issue");
+        line.putAll(Map.of("costCode","GIFT","factor",BigDecimal.ONE,"unitPriceCny",BigDecimal.ZERO,
+            "amountCny",BigDecimal.ZERO,"priceMonth","固定零成本","previousPrice",false,
+            "fixedGift",true,"costSource","GIFT 赠品固定零成本"));
+    }
     static String resolveWarehouse(Context context){
         String explicit=text(context.settings().get("warehouse"));
         if(!explicit.isBlank())return explicit;
@@ -78,6 +89,8 @@ public final class FinanceOrderCosts {
             lines.add(line);
             // This report excludes cancelled sales regardless of dispatch. Actual logistics fees stay in the platform ledger.
             if(Set.of("UNPAID","CANCELLED","CANCELED").contains(lineStatus)){line.put("amountCny",BigDecimal.ZERO);line.put("excluded",true);matched++;continue;}
+            // Explicit merchant-SKU rule: no catalogue, warehouse, month or manual mapping is needed.
+            if(giftSku(seller)){fixedGift(line);matched++;continue;}
             if(quantity==null||quantity.signum()<=0||quantity.stripTrailingZeros().scale()>0||quantity.compareTo(new BigDecimal("1000000"))>0){line.put("issue","缺少有效购买数量");continue;}
             if(month.isBlank()){line.put("issue","缺少所选成本口径的业务日期");continue;}
             String mappingKey=context.shopId()+":"+product+":"+sku+":"+warehouse;
@@ -166,7 +179,7 @@ public final class FinanceOrderCosts {
         if(value instanceof List<?> list)return list.stream().map(FinanceOrderCosts::canonical).toList();
         return value;
     }
-    static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash("cancelled-excluded-v2:"+repo.write(canonical(raw))+status);}
+    static String sourceHash(FinanceRepository repo,Map<String,Object> raw,String status){return hash((hasGift(raw)?"gift-zero-v1:":"cancelled-excluded-v2:")+repo.write(canonical(raw))+status);}
     static void enqueue(FinanceRepository repo,Scope s,Entry entry){
         if(!entry.kind().equals("ORDER"))return;
         // INSERT ... SELECT takes shared locks on its source rows in MySQL's
@@ -177,11 +190,11 @@ public final class FinanceOrderCosts {
         boolean required=Boolean.TRUE.equals(repo.jdbc().queryForObject("""
             SELECT NOT EXISTS(SELECT 1 FROM finance_order_costs WHERE order_record_id=? AND source_hash=?) AND EXISTS (
               SELECT 1 FROM finance_connections c WHERE c.organization_id=? AND c.id=? AND c.status<>'REMOVED' AND (
-              EXISTS(SELECT 1 FROM finance_cost_books b WHERE b.organization_id=c.organization_id AND b.group_id=c.group_id)
+              ? OR EXISTS(SELECT 1 FROM finance_cost_books b WHERE b.organization_id=c.organization_id AND b.group_id=c.group_id)
               OR EXISTS(SELECT 1 FROM finance_label_order_totals l JOIN finance_label_state ls
                 ON ls.organization_id=l.organization_id AND ls.active_generation=l.generation
                 WHERE l.organization_id=c.organization_id AND l.shop_id=c.id)))
-            """,Boolean.class,id(s,entry),sourceHash(repo,entry.raw(),entry.status()),s.organizationId(),entry.shopId()));
+            """,Boolean.class,id(s,entry),sourceHash(repo,entry.raw(),entry.status()),s.organizationId(),entry.shopId(),hasGift(entry.raw())));
         if(!required)return;
         repo.jdbc().update("""
             INSERT INTO finance_order_cost_jobs(order_record_id,organization_id,shop_id) VALUES(?,?,?)

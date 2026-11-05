@@ -24,6 +24,19 @@ final class FinanceQianyiReceipt {
             text(source.get("onlineOrderNumber")),text(source.get("customNumber")),text(source.get("receiveTime")),
             first(source,"returnStatus","status"),text(source.get("updateTime")))));
     }
+    /** Exact observed Qianyi carrier wording; generic delivery statuses never prove a return. */
+    static String eventState(String message){
+        if(message.matches("(?i)^(?:Your package has been returned to the seller(?: in .+)?\\.?|Package has been returned to the seller\\.?|Parcel has been returned to sender\\.?)$")
+                ||message.equals("ผู้ส่งได้รับพัสดุคืนเรียบร้อยแล้ว"))return "SIGNED";
+        if(message.matches("(?i)^(Your package is being returned to the seller.*|Return package (arrived|out for delivery).*)$")
+                ||message.equals("บริษัทขนส่งกำลังนำส่งพัสดุคืนผู้ส่ง")
+                ||message.startsWith("พัสดุตีกลับไปยังผู้ส่ง ")
+                ||message.equals("บริษัทขนส่งจัดส่งพัสดุไม่สำเร็จและจะถูกส่งกลับไปยังผู้ส่ง"))return "IN_TRANSIT";
+        // Preserve a later unrecognized/negated reverse event as UNKNOWN instead of
+        // allowing an older signed event to survive just because the language changed.
+        return message.toLowerCase(Locale.ROOT).contains("return")||message.contains("คืน")||message.contains("กลับ")
+            ?"UNKNOWN":null;
+    }
     static Map<String,Object> evidence(Map<String,Object> source,List<Map<String,Object>> parcels){
         String tracking=text(source.get("customNumber"));
         var result=new LinkedHashMap<String,Object>();
@@ -39,9 +52,8 @@ final class FinanceQianyiReceipt {
             if(!orderMatches&&!onlineMatches||!order.isBlank()&&!orderMatches||!online.isBlank()&&!onlineMatches)continue;
             for(var event:rows(parcel.get("eventList"))){
                 long at=received(event.get("eventDate"));String message=text(event.get("event")).trim();
-                if(at==0||message.length()>512||!message.toLowerCase(Locale.ROOT).contains("return"))continue;
-                String state=message.matches("(?i)^(?:Your package has been returned to the seller(?: in .+)?\\.?|Package has been returned to the seller\\.?|Parcel has been returned to sender\\.?)$")?"SIGNED"
-                    :message.matches("(?i)^(Your package is being returned to the seller.*|Return package (arrived|out for delivery).*)$")?"IN_TRANSIT":"UNKNOWN";
+                if(at==0||message.length()>512)continue;
+                String state=eventState(message);if(state==null)continue;
                 if(at>latest){latest=at;terminal=state;eventText=message;ambiguous=false;}
                 else if(at==latest&&!Objects.equals(terminal,state))ambiguous=true;
             }

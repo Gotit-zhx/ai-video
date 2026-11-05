@@ -257,7 +257,7 @@ public class FinanceService {
         }
         out.put("profit",FinanceProfitReport.calculate(totals,productCosts,cny?"CNY":currency,profitQuote));
         out.put("basis","销售收入已扣除商家优惠和退款；平台佣金、物流、税费及调整另列，不重复扣减。"
-                +(live?"实时订单按下单日显示；销售收入与成本按结算账单日期。":"日期筛选使用结算账单日期：TikTok 与 Excel 的 Statement date 口径一致，Shopee 使用 actual_payout_time。订单、关联退款和商品成本按首次结算账单日期归属，不限制下单月份。")
+                +(live?"实时订单按下单日显示；销售收入与成本按结算账单日期。":"日期筛选按对应官方报表：TikTok 本土店按当地余额入账日，跨境店按 Statement Date，Shopee 按当地实际收入释放日。订单、关联退款和商品成本按首次结算账单日期归属，不限制下单月份。")
                 +"已核对的 TikTok 账单日期优先于历史手工月份校正，原始平台时间保留。"
                 +"经营汇总排除刷单；原始账单净额用于对账。广告及独立费用按发生日，待结算尚无结算日期。已结算不代表银行到账。");
         for(String key:List.of("_financeDataRevision","_financeFactsBuilt"))

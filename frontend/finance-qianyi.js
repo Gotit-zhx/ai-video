@@ -5,8 +5,8 @@
   const json=(method,body)=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const syncStates={READY:'等待同步',SYNCING:'同步中',SUCCESS:'同步完成',ERROR:'自动重试中',PAUSED:'已暂停',DISABLED:'已停用'};
   const returnStates={NEW:'待提交',WAIT_AUDIT:'待审核',WAIT_BUYER_RETURN:'待买家退回',WAIT_STORAGE:'待收货',RECEIVING:'部分收货',FINISH:'已完成',CLOSE:'关闭收货',NO_NEED_RETURN:'无需退货'};
-  const receiptStates={SIGNED:'退回已签收',IN_TRANSIT:'退回运输中',UNKNOWN:'—'};
-  const receiptLabel=value=>receiptStates[value]||'—';
+  const receiptStates={SIGNED:'退回已签收',IN_TRANSIT:'退回运输中',UNKNOWN:'未匹配到返程状态'};
+  const receiptLabel=row=>row.return_receipt_label||receiptStates[row.return_receipt_state]||receiptStates.UNKNOWN;
   const refundStates={WAIT_AUDIT:'待审核',WAIT_PAYMENT:'待退款',REFUSE_REFUND:'拒绝退款',FINISH:'退款完成',PAY_FAILED:'退款失败',CLOSE:'退款关闭'};
   const types={SALES_RETURN:'退货单',RETURN:'退款单',RESHIP:'补发货单'};
   const num=value=>value==null?'—':Number(value).toLocaleString('zh-CN',{maximumFractionDigits:6});
@@ -82,7 +82,7 @@
       const value=await request('/qianyi/returns/detail?'+new URLSearchParams({shopId,returnNumber}));if(!m.alive())return;
       m.feedback.textContent='';const s=value.sourceFields||{},grid=el('dl',null,m.body,'fq-facts');
       const proof=s._returnReceipt||{};
-      const fields=[['数据来源','千易 ERP · 售后与物流接口'],['千易售后单号',value.return_number],['平台订单号',value.order_id],['千易销售订单号',s.orderNumber],['财务店铺',value.shop_name],['千易店铺',s.shop],['类型',state(types,s.type)],['退货状态',state(returnStates,s.returnStatus||s.status)],['退款状态',state(refundStates,s.refundStatus)],['退回物流状态',receiptLabel(value.return_receipt_state)],['退货运单号',s.customNumber],['返程物流依据',proof.event||'千易暂未返回明确的返程签收轨迹'],['物流事件时间（北京时间）',stamp(proof.eventDate)],['千易仓库',s.warehouse],['入库单号',s.asnNumber||s.warehouseEntryNumber],['创建时间（北京时间）',stamp(s.createTime)],['更新时间（北京时间）',stamp(s.updateTime)],['收货时间（北京时间）',stamp(value.source_received_at)],['完成时间（北京时间）',stamp(s.finishTime)],['千易订单退款金额（'+(s.currency||'币种未返回')+'）',num(s.orderRefundAmount)]];
+      const fields=[['数据来源','千易 ERP · 售后与物流接口'],['千易售后单号',value.return_number],['平台订单号',value.order_id],['千易销售订单号',s.orderNumber],['财务店铺',value.shop_name],['千易店铺',s.shop],['类型',state(types,s.type)],['退货状态',state(returnStates,s.returnStatus||s.status)],['退款状态',state(refundStates,s.refundStatus)],['退回物流状态',receiptLabel(value)],['退货运单号',s.customNumber],['返程物流依据',proof.event||'千易暂未返回明确的返程签收轨迹'],['物流事件时间（北京时间）',stamp(proof.eventDate)],['千易仓库',s.warehouse],['入库单号',s.asnNumber||s.warehouseEntryNumber],['创建时间（北京时间）',stamp(s.createTime)],['更新时间（北京时间）',stamp(s.updateTime)],['收货时间（北京时间）',stamp(value.source_received_at)],['完成时间（北京时间）',stamp(s.finishTime)],['千易订单退款金额（'+(s.currency||'币种未返回')+'）',num(s.orderRefundAmount)]];
       for(const [label,text]of fields){const item=el('div',null,grid);el('dt',label,item);el('dd',text||'—',item);}
       const cost=value.returnCost;
       if(cost){
@@ -124,7 +124,7 @@
     const type=select(filters,'售后类型',choices(types),selection.type??'SALES_RETURN');
     const returned=select(filters,'退货状态',choices(returnStates),selection.returnStatus??(receiptScope.value==='RECEIVED'?'FINISH':''));
     const refunded=select(filters,'退款状态',choices(refundStates),selection.refundStatus||'');
-    const received=select(filters,'退回物流状态',[['','全部'],...Object.entries({...receiptStates,UNKNOWN:'无明确返程状态'})],selection.receiptStatus??(receiptScope.value==='RECEIVED'?'SIGNED':''));
+    const received=select(filters,'退回物流状态',[['','全部'],...Object.entries(receiptStates)],selection.receiptStatus??(receiptScope.value==='RECEIVED'?'SIGNED':''));
     const date=select(filters,'日期口径',[['RECEIPT','收货时间（北京时间）']],'RECEIPT');
     const now=new Date(Date.now()+8*3600000),year=now.getUTCFullYear(),month=now.getUTCMonth(),prefix=year+'-'+String(month+1).padStart(2,'0');
     const start=input(filters,'开始日期','date',selection.start??prefix+'-01'),end=input(filters,'结束日期','date',selection.end??prefix+'-'+new Date(Date.UTC(year,month+1,0)).getUTCDate());
@@ -158,7 +158,7 @@
         table(records,['店铺 / 平台','千易售后单 / 平台订单','类型','退货状态','退款状态','退回物流状态','收货时间（北京时间）','创建时间（北京时间）','千易订单退款金额','操作'],result.items.map(r=>{
           const lead=el('div',null,null);el('span',r.platform==='SHOPEE'?'虾皮':'TK',lead,'fi-tag');el('span',' '+r.shop_name,lead);
           const ids=el('div',null,null);m.button(ids,r.return_number,()=>openDetail({request,shopId:r.shop_id,returnNumber:r.return_number}),'fi-cost-link');el('small',r.order_id||'千易未返回平台订单号',ids);
-          const receipt=receiptLabel(r.return_receipt_state)==='—'?el('span','—',null,'fi-muted'):tag(receiptLabel(r.return_receipt_state),r.return_receipt_state);receipt.title=r.receipt_event||'千易暂未返回明确的返程物流依据，未计入收货统计';
+          const receipt=tag(receiptLabel(r),r.return_receipt_state);receipt.title=r.receipt_event||'千易暂未返回明确的返程物流依据，未计入收货统计';
           const refund=el('div',num(r.refund_amount),null);el('small',r.refund_currency==='UNKNOWN'?'千易未返回币种':r.refund_currency||'千易未返回币种',refund);
           return [lead,ids,state(types,r.aftersale_type),tag(state(returnStates,r.return_state),r.return_state),tag(state(refundStates,r.refund_state),r.refund_state),receipt,stamp(r.source_received_at),stamp(r.source_created_at),refund,m.button(null,'查看千易数据',()=>openDetail({request,shopId:r.shop_id,returnNumber:r.return_number}),'fi-cost-link')];
         }));

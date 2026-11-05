@@ -184,12 +184,13 @@ public class FinanceCostExport {
                 ()->sourceLines.stream().filter(s->!text(line.get("productId")).isBlank()&&!text(line.get("skuId")).isBlank()
                     &&text(line.get("productId")).equals(first(s,"product_id","item_id"))&&text(line.get("skuId")).equals(first(s,"sku_id","model_id"))).findFirst().orElse(Map.of()));
             boolean excluded=Boolean.TRUE.equals(line.get("excluded"));
-            String issue=text(line.get("issue")),lineState=!issue.isBlank()?"待补齐":excluded?"不计成本":Boolean.TRUE.equals(line.get("previousPrice"))?"历史价估算":"已计算";
+            boolean gift=Boolean.TRUE.equals(line.get("fixedGift"));
+            String issue=text(line.get("issue")),lineState=!issue.isBlank()?"待补齐":excluded?"不计成本":gift?"赠品 · 固定 0 成本":Boolean.TRUE.equals(line.get("previousPrice"))?"历史价估算":"已计算";
             detail.row(Arrays.asList(market,shop,orderId,row.get("region"),row.get("group_name"),settlementDay(row),orderStatus(text(row.get("order_status"))),status,
                 actual?line.get("name"):first(source,"product_name","item_name"),first(source,"sku_name","model_name"),line.get("productId"),line.get("skuId"),line.get("sellerSku"),line.get("lineId"),
                 line.get("costCode"),line.get("warehouse"),line.get("quantity"),line.get("factor"),line.get("unitPriceCny"),line.get("amountCny"),
                 cost.get("costMonth"),line.get("priceMonth"),Boolean.TRUE.equals(line.get("previousPrice"))?"是":"否",lineState,
-                issue.isBlank()?excluded?"未付款或已取消，不计成本":actual?"ERP 已确认出库成本，实际型号及数量见本行":"单价 × 有效购买数量 × 组合数量":issue,costSource,row.get("cost_version"),updated,date,orderType,row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source"),priceBasis,line.get("shipmentId"),line.get("sourceRow")));
+                issue.isBlank()?excluded?"未付款或已取消，不计成本":gift?"GIFT 商品固定零成本，无需成本关联":actual?"ERP 已确认出库成本，实际型号及数量见本行":"单价 × 有效购买数量 × 组合数量":issue,costSource,row.get("cost_version"),updated,date,orderType,row.get("reporting_month"),day(row.get("platform_settlement_date")),row.get("reporting_date_source"),priceBasis,line.get("shipmentId"),line.get("sourceRow")));
             totals.lines++;
         }
     }

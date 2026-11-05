@@ -88,6 +88,7 @@
 .fi-dialog-body>.fi-note{margin-top:12px}
 .fi-metric-note>span{opacity:0;transition:opacity 140ms ease}
 .fi-metric:hover .fi-metric-note>span,.fi-metric:focus-visible .fi-metric-note>span{opacity:1}
+.fi-metric[data-metric="ORDER"] .fi-metric-note>span{opacity:1;line-height:1.55}
 [data-theme=dark] .fi-metric.is-profit{background:#243352;border-color:#3e5484}
 [data-theme=dark] .fi-metric.is-profit .fi-metric-value strong{color:#aabbff}
 [data-theme=dark] .fi-metric.is-profit.is-negative .fi-metric-value strong{color:#f0a6ae}

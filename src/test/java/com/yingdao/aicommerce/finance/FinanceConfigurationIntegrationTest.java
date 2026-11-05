@@ -1410,7 +1410,7 @@ class FinanceConfigurationIntegrationTest {
     }
     @Test void excelStatementDatesSupersedeLegacyMonthAndKeepAllViewsAndExportsAligned()throws Exception{
         String shop=connect(owner,false);
-        db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP',timezone='Asia/Manila' WHERE id=?",shop);
+        db.update("UPDATE finance_connections SET platform='TIKTOK_SHOP',seller_type='CROSS_BORDER',timezone='Asia/Manila' WHERE id=?",shop);
         var entries=new ArrayList<Entry>();var bills=new ArrayList<Map<String,Object>>();
         for(String order:List.of("august-order","october-order","cancelled-order")){
             boolean september=order.equals("august-order"),cancelled=order.equals("cancelled-order");

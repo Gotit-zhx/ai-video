@@ -108,7 +108,7 @@ public class FinanceQianyiReturns {
                 " AND r.source_received_at IS NOT NULL AND r.aftersale_type='SALES_RETURN' AND r.return_state='FINISH' AND r.return_receipt_state='UNKNOWN'"+
                 " AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.data_json,'$.isDeleted')),'0') NOT IN ('1','true')",Long.class,pending.args().toArray()));
             var items=repo.jdbc().queryForList("SELECT "+COLUMNS+",r.data_json"+FROM+query.where()+" ORDER BY "+sort+" DESC,r.shop_id,r.return_number LIMIT ? OFFSET ?",args.toArray());
-            for(var item:items)costs.attach(item,repo.read(text(item.remove("data_json"))));
+            for(var item:items){attachReceiptLabel(item);costs.attach(item,repo.read(text(item.remove("data_json"))));}
             return Map.of("items",items,"total",total,"page",page,"pageSize",50,"source","QIANYI","dateField",field,
                 "summary",summary,"basis",BASIS);
         });
@@ -165,7 +165,8 @@ public class FinanceQianyiReturns {
         }finally{exports.release();}
     }
     static Object sourceTime(Object value){return value==null||number(value)<=0?null:LocalDateTime.ofInstant(Instant.ofEpochMilli(number(value)),ZoneId.of("Asia/Shanghai"));}
-    static String receiptLabel(String value){return switch(value){case "SIGNED"->"退回已签收";case "IN_TRANSIT"->"退回运输中";default->"千易物流待确认";};}
+    static String receiptLabel(String value){return switch(value){case "SIGNED"->"退回已签收";case "IN_TRANSIT"->"退回运输中";default->"未匹配到返程状态";};}
+    static void attachReceiptLabel(Map<String,Object> row){row.put("return_receipt_label",receiptLabel(text(row.get("return_receipt_state"))));}
     static String label(String value){return switch(value){
         case "SALES_RETURN"->"退货单";case "RETURN"->"退款单";case "RESHIP"->"补发货单";
         case "NEW"->"待提交";case "WAIT_AUDIT"->"待审核";case "WAIT_BUYER_RETURN"->"待买家退回";
@@ -181,6 +182,7 @@ public class FinanceQianyiReturns {
                 scope.organizationId(),shop,number);
             if(found.isEmpty())throw bad("没有找到本公司的千易售后单");
             var result=new LinkedHashMap<>(found.getFirst());
+            attachReceiptLabel(result);
             result.put("source","QIANYI");result.put("sourceFields",FinanceQianyiEvidence.sanitize(repo.read(text(result.remove("data_json")))));
             new FinanceQianyiReturnCostSummary(repo,scope.organizationId()).attach(result,map(result.get("sourceFields")));
             result.put("basis",BASIS);

@@ -2,10 +2,58 @@ package com.yingdao.aicommerce.finance;
 
 import org.junit.jupiter.api.Test;
 import java.util.*;
+import java.time.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 import static com.yingdao.aicommerce.finance.FinanceData.*;
 
 class FinanceQianyiReturnsIntegrationTest extends FinanceQianyiIntegrationTest {
+    @Test void receiptScanFinishesWithEmptyResumeAndRetainsRealResumePage(){
+        qianyi();integration.save(owner,shop,form());
+        var today=LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        when(upstream.query(any(),eq("QUERY_RETURN_ORDER_LIST"),anyMap()))
+            .thenReturn(new FinanceQianyiClient.Page(List.of(),0));
+        var worker=new FinanceQianyiWorker(integration);
+        try{
+            for(var resume:List.of(Map.<String,Object>of(),
+                    Map.<String,Object>of("from","2026-08-01","until","2026-10-31","page",8,"sourceVersion",3))){
+                var scan=new LinkedHashMap<String,Object>(Map.of("from",today.toString(),"until",today.toString(),
+                    "page",1,"sourceVersion",3,"receiptScan",true,"backfillResume",resume));
+                db.update("UPDATE finance_qianyi_connections SET checkpoint_json=?,source_version=3 WHERE shop_id=?",repo.write(scan),shop);
+                worker.readReturns(lease(false),"test-lease");
+                var current=integration.connection(owner,shop);
+                if(resume.isEmpty()){
+                    assertEquals("SUCCESS",current.get("status"));assertNull(current.get("checkpoint_json"));
+                }else{
+                    assertEquals("SYNCING",current.get("status"));
+                    assertEquals(resume,repo.read(text(current.get("checkpoint_json"))));
+                }
+                assertNotNull(current.get("last_receipt_scan_at"));
+            }
+        }finally{worker.stop();}
+    }
+    @Test void markerOnlyFailedCheckpointRecoversWithoutDeletingSourceRows(){
+        qianyi();integration.save(owner,shop,form());
+        var today=LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        db.update("""
+            UPDATE finance_qianyi_connections SET source_version=3,last_success_at=UTC_TIMESTAMP(6),
+              last_receipt_scan_at=UTC_TIMESTAMP(6),checkpoint_json='{"sourceVersion":3,"sourcesChanged":true}',
+              status='ERROR',failures=22 WHERE shop_id=?
+            """,shop);
+        when(upstream.query(any(),eq("QUERY_RETURN_ORDER_LIST"),anyMap())).thenAnswer(call->{
+            var params=map(call.getArgument(2));
+            assertEquals(today.minusDays(2).toString(),params.get("updateTimeFrom"));
+            assertEquals(1,number(params.get("page")));
+            return new FinanceQianyiClient.Page(List.of(),0);
+        });
+        var worker=new FinanceQianyiWorker(integration);
+        try{
+            worker.readReturns(lease(false),"test-lease");
+            var current=integration.connection(owner,shop);
+            assertEquals("SUCCESS",current.get("status"));assertNull(current.get("checkpoint_json"));
+            assertEquals(0,number(current.get("failures")));
+        }finally{worker.stop();}
+    }
     @Test void returnedCostCoversAllPagesMatchesExportAndNeverRestoresProfitCredits() throws Exception {
         qianyi();integration.save(owner,shop,form());
         var sources=new ArrayList<Map<String,Object>>();

@@ -14,6 +14,30 @@ class FinanceOrderCostsTest {
     Map<String,Object> tk(String id,String code){return new LinkedHashMap<>(Map.of("id",id,"product_id","product","sku_id","sku","seller_sku",code,"sku_name","Pants-XXXL"));}
     Map<String,Object> order(String platform,String status){return Map.of("platform",platform,"status",status,"record_date","2026-10-21");}
     void amountEquals(String expected,Object value){assertNotNull(value);assertEquals(0,new BigDecimal(expected).compareTo(decimal(value)));}
+    @Test void giftIsFixedZeroOnBothPlatformsWithoutCatalogueDateOrWarehouse(){
+        for(String platform:List.of("TIKTOK_SHOP","SHOPEE"))for(String sku:List.of("GIFT","gift"," Gift ")){
+            var item=platform.equals("SHOPEE")?Map.<String,Object>of("item_id","i","model_id","m","item_sku",sku):tk("gift",sku);
+            var result=FinanceOrderCosts.calculate(Map.of("platform",platform,"status","COMPLETED"),
+                Map.of(platform.equals("SHOPEE")?"item_list":"line_items",List.of(item)),context(List.of(),Map.of(),Map.of()));
+            assertEquals("READY",result.get("status"));amountEquals("0",result.get("amountCny"));
+            assertEquals(1,result.get("matchedLines"));assertEquals(0,result.get("fallbackLines"));
+            var line=rows(result.get("lines")).getFirst();
+            assertEquals(true,line.get("fixedGift"));assertFalse(line.containsKey("issue"));amountEquals("0",line.get("unitPriceCny"));
+        }
+    }
+    @Test void giftOverridesOldNonzeroMappingWithoutMakingOtherGoodsFree(){
+        var costs=List.of(cost("PACK","海外仓-菲律宾","2026-10","7"),cost("GIFT","海外仓-菲律宾","2026-10","100"));
+        var mapping=Map.<String,Object>of("shop:product:sku:海外仓-菲律宾",Map.of("code","PACK","factor",3,"groupId","group"));
+        var gift=tk("gift","GIFT");var ordinary=tk("ordinary","PACK");ordinary.put("sku_id","normal");
+        var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(gift,ordinary)),
+            context(costs,Map.of(),mapping));
+        assertEquals("READY",result.get("status"));amountEquals("7",result.get("amountCny"));
+        var missing=tk("missing","GIFT-BOX");missing.put("sku_id","missing");
+        result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(gift,ordinary,missing)),
+            context(costs,Map.of(),mapping));
+        assertEquals("INCOMPLETE",result.get("status"));assertNull(result.get("amountCny"));amountEquals("7",result.get("knownAmountCny"));
+        for(String sku:List.of("GIFT-BOX","MYGIFT","GIFT*2","GI FT",""))assertFalse(FinanceOrderCosts.giftSku(sku));
+    }
     @Test void merchantSkuControlsSizeAndIndependentBundlePriceWins(){
         var context=context(List.of(cost("YUXI-BPants-XXL","海外仓-菲律宾","2026-10","10"),cost("YUXI-BPants-XXL*2","海外仓-菲律宾","2026-10","23")),Map.of(),Map.of());
         var result=FinanceOrderCosts.calculate(order("TIKTOK_SHOP","COMPLETED"),Map.of("line_items",List.of(tk("line","（YUXI-BPants-XXL） *2"))),context);
