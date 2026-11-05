@@ -191,13 +191,16 @@ public class FinanceReadCache {
                 dirtyScopes.remove(key.scope(),change);
             }
             String revision=Objects.toString(redis.opsForValue().get(revisionKey(key.scope())),"0");
-            return prefix(key.scope())+revision+":"+digest(key.filter()+"|"+key.cny()+"|"+key.snapshot()+"|"+key.live());
+            return prefix(key.scope())+revision+":"+selection(key);
         }catch(RuntimeException unavailable){return null;}
     }
     static String prefix(Scope scope){return "heyi:finance:snapshot:v15-shared-facts:{"+scope.organizationId()+":"+scope.userId()+"}:";}
     private static String revisionKey(Scope scope){return prefix(scope)+"revision";}
     private static String dataRevisionKey(Scope scope){return prefix(scope)+"data-revision";}
     private String dataRevision(Scope scope){return Objects.toString(redis.opsForValue().get(dataRevisionKey(scope)),"0");}
+    private static String selection(FinanceSnapshotCache.Key key){
+        return digest(FinanceCalendar.VERSION+"|"+key.filter()+"|"+key.cny()+"|"+key.snapshot()+"|"+key.live());
+    }
     private static String digest(String value){
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}
         catch(Exception impossible){throw new IllegalStateException(impossible);}
@@ -268,7 +271,7 @@ public class FinanceReadCache {
                             key.filter().shopId(),key.filter().platform(),currency,key.filter().granularity(),key.filter().groupId()),key.cny(),snapshot,key.live());
                     // Preserve the original revision so an in-flight refresh cannot repopulate an invalidated scope.
                     int separator=address.lastIndexOf(':');
-                    save(address.substring(0,separator+1)+digest(alias.filter()+"|"+alias.cny()+"|"+alias.snapshot()+"|"+alias.live()),key.scope(),value);
+                    save(address.substring(0,separator+1)+selection(alias),key.scope(),value);
                 }
             }catch(RuntimeException unavailable){/* A cache failure must not hide a successful database read. */}
             boolean refreshing=true;

@@ -92,6 +92,9 @@ final class FinanceFeeMatrix {
         var notes=new ArrayList<List<String>>();
         notes.add(List.of("统计口径","说明"));
         notes.add(List.of("日期范围",filter.start()+" 至 "+filter.end()));
+        notes.add(List.of("日期选择",FinanceCalendar.NOTE));
+        notes.add(List.of("日期口径版本",FinanceCalendar.VERSION));
+        notes.add(List.of("完成标识",FinanceCalendar.QUALIFICATION));
         notes.add(List.of("店铺分组",filter.groupId().isBlank()?"全部分组":"UNGROUPED".equals(filter.groupId())?"未分组":
                 rows(facts.get("groups")).stream().filter(g->filter.groupId().equals(g.get("id"))).map(g->text(g.get("name"))).findFirst().orElse("所选分组")));
         notes.add(List.of("店铺范围",filter.shopId().isBlank()?"当前分组与平台下的全部店铺":columns.getFirst()));
@@ -102,6 +105,7 @@ final class FinanceFeeMatrix {
         notes.add(List.of("数据完整性",incomplete?"存在金额未返回的记录，标记待补齐，不提供不完整合计":"0 表示当前已同步记录没有该费用；不代表店铺历史同步全部完成"));
         notes.add(List.of("生成时间",java.time.ZonedDateTime.now(java.time.ZoneId.of("Asia/Shanghai")).toString()));
         sheets.put("统计口径",notes);
+        sheets.put("店铺日期范围",FinanceCalendar.exportWindows(filter,rows(facts.get("shops"))));
         return FinanceWorkbook.xlsx(sheets,numeric);
     }
     static String label(String key){

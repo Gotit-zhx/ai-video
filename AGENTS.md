@@ -1,9 +1,18 @@
 # Production storage and release rules
 
 For production operations, use the latest release document,
-`docs/qianyi-receipt-display-20261105.md` (active backend:
-`ai-commerce-platform:finance-source-orders-20261105`; frontend:
-`ai-commerce-frontend:qianyi-receipt-display-20261105`). Missing Qianyi return
+`docs/finance-local-month-release-20261105.md` (active backend:
+`ai-commerce-platform:finance-local-month-20261105`; frontend:
+`ai-commerce-frontend:finance-local-month-20261105`). Date inputs use complete
+shop-local calendar months independently of the browser timezone. Operational
+timestamps display Beijing time. Existing verified statement dates and amounts
+remain unchanged; ATC local-shop date migration and independent Shopee Adjustment
+reconciliation are still pending original evidence/implementation, not declared
+complete. Native LZ4 write-time compression is enabled on five main finance
+tables; do not turn this into recurring large-table OPTIMIZE. The redundant
+idx_finance_bill was dropped (V147); idx_finance_reconcile_tx covers its prefix.
+The cost-dedupe rollback uses the previously filesystem-verified compact image.
+See `docs/qianyi-receipt-display-20261105.md` for missing Qianyi return
 logistics states display a neutral dash; receipt qualification, totals and
 export data remain unchanged. Original brush-cost template acceptance is in
 `docs/finance-brush-original-template-20261105.md`. Brush-cost

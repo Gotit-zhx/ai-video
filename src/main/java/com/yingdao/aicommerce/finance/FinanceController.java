@@ -39,8 +39,9 @@ public class FinanceController {
     Scope s(PlatformPrincipal p){return service.authorize(p);}
     Scope personal(PlatformPrincipal p){return new Scope(p.organizationId(),p.userId());}
     Filter filter(Map<String,String> q){
-        try{return new Filter(LocalDate.parse(q.getOrDefault("start",LocalDate.now().minusDays(29).toString())),
-                LocalDate.parse(q.getOrDefault("end",LocalDate.now().toString())),q.get("shopId"),q.get("platform"),q.get("currency"),q.get("granularity"),q.get("groupId"));}
+        var month=FinanceCalendar.previousMonth(java.time.Instant.now());
+        try{return new Filter(LocalDate.parse(q.getOrDefault("start",month.atDay(1).toString())),
+                LocalDate.parse(q.getOrDefault("end",month.atEndOfMonth().toString())),q.get("shopId"),q.get("platform"),q.get("currency"),q.get("granularity"),q.get("groupId"));}
         catch(java.time.format.DateTimeParseException e){throw bad("日期格式不正确");}
     }
     @GetMapping("/overview") public ApiResponse<?> overview(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){return ApiResponse.ok(service.dashboard(s(p),filter(q),"CNY".equals(q.get("displayCurrency")),q.get("fxSnapshot")));}
@@ -64,6 +65,7 @@ public class FinanceController {
     @GetMapping("/records") public ApiResponse<?> records(@RequestParam Map<String,String> q,@AuthenticationPrincipal PlatformPrincipal p){
         var scope=s(p);var selected=filter(q);boolean allOrders=allOrders(q,q.get("kind"));
         var result=new LinkedHashMap<>(repo.details(scope,selected,q.get("kind"),(int)Math.max(1,number(q.getOrDefault("page","1"))),50,q.get("numbers"),allOrders));
+        result.put("dateBasis",FinanceCalendar.contract());
         result.put("fieldSettings",fields.settings(personal(p),q.get("kind")));
         if(allOrders){
             // Raw-order lookup does not need the settlement dashboard or its cost aggregates.
@@ -159,7 +161,12 @@ public class FinanceController {
         if(csv)bytes=FinanceWorkbook.csv(rows).getBytes(StandardCharsets.UTF_8);
         else{
             var sheets=new LinkedHashMap<String,List<List<String>>>();sheets.put(rec?"结算对账":"财务明细",rows);
+            sheets.put("店铺日期范围",FinanceCalendar.exportWindows(f,service.shops(s)));
             sheets.put("统计口径",List.of(List.of("日期范围",f.start()+" 至 "+f.end()),List.of("店铺分组",f.groupId().isBlank()?"全部分组":"UNGROUPED".equals(f.groupId())?"未分组":service.groups(s).stream().filter(g->f.groupId().equals(g.get("id"))).map(g->text(g.get("name"))).findFirst().orElse("所选分组")),List.of("币种",f.currency().isBlank()?"原币分列，禁止跨币种直接合计":f.currency()),
+                    List.of("日期口径版本",FinanceCalendar.VERSION),List.of("日期选择",FinanceCalendar.NOTE),
+                    List.of("完成标识",FinanceCalendar.QUALIFICATION),
+                    List.of("官方账单日期","Shopee Income 按当地实际收入释放日；TK 保留现行报表账单日期映射，不用付款日统一替换。具体店铺月份须逐笔核对官方原文件。独立 Adjustment 不能仅凭 Income 抓取完成认定已对齐。"),
+                    List.of("千易收货日期","实际 receiveTime 按北京时间独立筛选，不替代平台结算日期。"),
                     List.of("编号查询",String.join("、",FinanceRecordSearch.numbers(q.get("numbers")))),
                     List.of("编号日期范围",allOrders&&!FinanceRecordSearch.numbers(q.get("numbers")).isEmpty()?"完整订单号跨全部下单日期查找；仍按当前公司、店铺、分组、平台和币种限制":"按所选日期范围"),
                     List.of("范围","当前筛选全部记录；列按当前用户的导出配置生成；平台已结算不代表银行到账"),
@@ -168,7 +175,7 @@ public class FinanceController {
                     List.of("收入口径","结算明细及账单主金额展示销售收入；商家优惠和退款已体现在收入中，不再重复扣减。平台费用、物流及调整逐项列示；净结算另列，对账使用平台原始净额。"),
                     List.of("商品成本口径","仅平台已结算订单计入商品成本；整单成本归属首次结算，后续结算调整不重复计成本。未结算成本留空并注明；退款关联成本只作核对，不再次扣减。成本固定人民币，历史价估算保留状态。"),
                     List.of("扩展字段","仅展示平台实际返回的字段；空白表示未返回或不适用。标记原币的扩展金额不做人民币转换。"),
-                    List.of("生成时间",java.time.Instant.now().toString())));
+                    List.of("生成时间（北京时间）",FinanceCalendar.display(java.time.Instant.now()))));
             if(!rec&&!allOrders){
                 var rc=exportColumns(fields.selected(personal(p),"RECONCILIATION",true,cny));var rr=exportRows(rc);
                 appendReconciliation(rr,rc,s,f,quote,q.get("numbers"));sheets.put("结算对账",rr);

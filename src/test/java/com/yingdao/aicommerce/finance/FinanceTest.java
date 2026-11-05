@@ -413,7 +413,7 @@ class FinanceTest {
         var service=classProxy(new FinanceService(repo,policy,mock(FinanceShopAuthorization.class),fx));
         var controller=new FinanceController(service,repo,mock(FinanceImport.class),mock(FinanceAds.class));
         var item=new HashMap<String,Object>(Map.of("external_id","00123456789012345678","currency","PHP","amount",new BigDecimal("100"),"product_skus","SKU-A\n（SKU-B）*2"));
-        when(repo.details(any(),any(),any(),eq(1),eq(100),nullable(String.class))).thenReturn(Map.of("total",1,"items",List.of(item)));
+        when(repo.details(any(),any(),any(),eq(1),eq(100),nullable(String.class),eq(false))).thenReturn(Map.of("total",1,"items",List.of(item)));
         when(repo.reconciliation(any(),any(),eq(100001),nullable(String.class))).thenReturn(List.of());
         var response=controller.export(Map.of("start","2026-10-01","end","2026-10-20","displayCurrency","CNY","fxSnapshot","fixed"),principal);
         var table=FinanceWorkbook.read(response.getBody(),"export.xlsx");

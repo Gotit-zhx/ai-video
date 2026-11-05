@@ -177,8 +177,9 @@ public class FinanceService {
     public void prewarm(Scope s){
         if(sharedSnapshots==null)return;
         LocalDate today=LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        var month=FinanceCalendar.previousMonth(Instant.now());
         for(boolean live:List.of(false,true))for(boolean cny:List.of(false,true)){
-            var filter=new Filter(live?today:today.minusDays(29),today,"","","","day");
+            var filter=new Filter(live?today:month.atDay(1),live?today:month.atEndOfMonth(),"","","","day");
             sharedSnapshots.prime(new FinanceSnapshotCache.Key(s,filter,cny,"",live),
                     ()->live?buildScreen(s,filter,cny,""):buildDashboard(s,filter,cny,"",false));
         }
@@ -192,6 +193,8 @@ public class FinanceService {
                 "platform",requested.platform(),"currency",currency,"granularity",requested.granularity(),
                 "displayCurrency",cny?"CNY":currency,"groupId",requested.groupId()));
         result.put("currencies",currencies);result.put("shops",shops(s));result.put("groups",groups(s));result.put("sync",syncStates(s,requested));
+        result.put("dateBasis",FinanceCalendar.contract());
+        result.put("dateWindows",FinanceCalendar.windows(requested,rows(result.get("shops"))));
         if(cny)result.put("fx",fx.quote(snapshotId).metadata());
         result.put("productCosts",new FinanceCostReport(repo).summary(s,new Filter(requested.start(),requested.end(),requested.shopId(),requested.platform(),currency,requested.granularity(),requested.groupId()),"RECONCILIATION"));
         return result;
@@ -237,6 +240,8 @@ public class FinanceService {
         if(cny)out.put("fx",quote.metadata());
         out.put("currencies",codes);out.put("totals",totals);out.put("trend",new ArrayList<>(points.values()));
         out.put("shops",shops(s));out.put("groups",groups(s));
+        out.put("dateBasis",FinanceCalendar.contract());
+        out.put("dateWindows",FinanceCalendar.windows(f,rows(out.get("shops"))));
         var fees=live?List.<Map<String,Object>>of():aggregate(selected.stream().filter(r->"FEE".equals(r.get("kind"))).toList(),"category","kind");
         var statuses=aggregate(selected.stream().filter(r->"ORDER".equals(r.get("kind"))).toList(),"status","kind");
         out.put("ranking",FinanceProfitReport.withGross(cny?FinanceFx.groups(ranking,quote,"shop_id","kind"):ranking,"shop_id"));
