@@ -36,7 +36,7 @@ assert.equal(refundCalls.at(-1).q.type,'SALES_RETURN');assert.equal(d.querySelec
 assert.equal(refundCalls.at(-1).q.returnStatus,'FINISH');assert.equal(refundCalls.at(-1).q.receiptStatus,'SIGNED');assert.equal(refundCalls.at(-1).q.dateField,'RECEIPT');
 assert.equal(refundCalls.at(-1).q.receiptScope,'RECEIVED');
 assert([...d.querySelectorAll('th')].some(n=>n.textContent==='收货时间（北京时间）'));
-assert(d.querySelector('.fq-totals').textContent.includes('物流待确认（未计入）'));
+assert(d.querySelector('.fq-totals').textContent.includes('缺少返程物流依据（未计入）'));
 assert(d.querySelector('.fq-totals').textContent.includes('退货成本合计（CNY）'));
 assert(d.querySelector('.fq-totals').textContent.includes('已匹配 80'));
 assert(d.querySelector('.fq-totals').textContent.includes('5 笔 · 合计仅含已匹配部分'));

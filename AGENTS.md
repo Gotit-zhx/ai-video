@@ -1,9 +1,12 @@
 # Production storage and release rules
 
 For production operations, use the latest release document,
-`docs/finance-brush-original-template-20261105.md` (active backend:
+`docs/qianyi-receipt-display-20261105.md` (active backend:
 `ai-commerce-platform:finance-source-orders-20261105`; frontend:
-`ai-commerce-frontend:finance-brush-original-template-20261105`). Brush-cost
+`ai-commerce-frontend:qianyi-receipt-display-20261105`). Missing Qianyi return
+logistics states display a neutral dash; receipt qualification, totals and
+export data remain unchanged. Original brush-cost template acceptance is in
+`docs/finance-brush-original-template-20261105.md`. Brush-cost
 download uses the user's original eleven-column 母婴刷单费.xlsx layout, including
 both positional month headers, with all original data cleared. 代刷费CNY is the
 existing brush fee; no extra service-fee field or financial rule is added.
