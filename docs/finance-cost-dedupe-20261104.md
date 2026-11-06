@@ -27,7 +27,7 @@ synthetic; the private workbook is not included in the repository.
 
 Active backend: `ai-commerce-platform:finance-cost-dedupe-20261104`.
 Frontend remains `ai-commerce-frontend:finance-fee-native-layout-20261104`.
-Release helper: `scripts/release-finance-cost-dedupe.py`.
+Release helper: `scripts/release/release-finance-cost-dedupe.py`.
 Release root: `/opt/heyi/releases/finance-cost-dedupe-20261104`.
 
 Only the `FinanceCostWorkspace` class family is replaced over the verified live

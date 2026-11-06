@@ -96,7 +96,7 @@ services:
 
   pi-runtime:
     build:
-      context: ./pi-runtime
+      context: ./services/pi-runtime
     image: heyi-pi-runtime:local
     container_name: heyi-pi-runtime
     environment:

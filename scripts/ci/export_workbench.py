@@ -12,9 +12,9 @@ import shutil
 import zipfile
 
 PIN = json.loads((Path(__file__).resolve().parents[2] /
-                  "hr-desktop/client-workbench/windows-original.json").read_text(encoding="utf-8"))["files"]
+                  "apps/hr-desktop/client-workbench/windows-original.json").read_text(encoding="utf-8"))["files"]
 BRAND = json.loads((Path(__file__).resolve().parents[2] /
-                    "hr-desktop/client-workbench/assets/brand.json").read_text(encoding="utf-8"))
+                    "apps/hr-desktop/client-workbench/assets/brand.json").read_text(encoding="utf-8"))
 REQUIRED = (
     BRAND["windowsExecutable"],
     "native-client/resources/heyi/assets/brand.json",

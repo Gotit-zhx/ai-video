@@ -64,11 +64,11 @@ try {
     $workbench = $null
     if ($env:HEYI_NATIVE_BUILD_WORKBENCH -eq 'true') {
         $workbench = Join-Path $root 'workbench'
-        & python (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\build_windows.py') `
+        & python (Join-Path $PSScriptRoot '..\..\apps\hr-desktop\client-workbench\build_windows.py') `
             --source-dir (Split-Path $app) --output-dir $workbench
         if ($LASTEXITCODE -ne 0) { throw 'Windows workbench build did not complete' }
         $artifactCommit = if ($env:HEYI_NATIVE_ARTIFACT_COMMIT) { $env:HEYI_NATIVE_ARTIFACT_COMMIT } else { $env:GITHUB_SHA }
-        & python (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\build_windows_installer.py') `
+        & python (Join-Path $PSScriptRoot '..\..\apps\hr-desktop\client-workbench\build_windows_installer.py') `
             --package $workbench --output (Join-Path $root 'setup') --commit $artifactCommit
         if ($LASTEXITCODE -ne 0) { throw 'Windows installer build did not complete' }
     }
@@ -88,7 +88,7 @@ try {
         ConvertTo-Json | Set-Content (Join-Path $root 'firewall.json') -Encoding utf8NoBOM
     $workbenchCode = 0
     if ($workbench) {
-        $brand = Get-Content (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\assets\brand.json') -Raw | ConvertFrom-Json
+        $brand = Get-Content (Join-Path $PSScriptRoot '..\..\apps\hr-desktop\client-workbench\assets\brand.json') -Raw | ConvertFrom-Json
         $packagedExe = Join-Path $workbench $brand.windowsExecutable
         $testEnvironment = @{
             ELECTRON_RUN_AS_NODE = $null
@@ -158,7 +158,7 @@ try {
     } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     if (!$exited) { $baselineProcess.WaitForExit(5000) | Out-Null }
     $result.originalExecuted = $true
-    & node (Join-Path $PSScriptRoot '..\..\hr-desktop\client-workbench\probe-windows-runtime.cjs') $app $root
+    & node (Join-Path $PSScriptRoot '..\..\apps\hr-desktop\client-workbench\probe-windows-runtime.cjs') $app $root
     if ($LASTEXITCODE -ne 0) { throw 'Windows original-runtime probe did not complete' }
     if ($workbenchCode -ne 0) { throw 'Packaged Windows workbench did not pass' }
     $result.ok = $true

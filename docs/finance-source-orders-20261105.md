@@ -62,7 +62,7 @@ Validation:
   Both application containers were running with logging disabled. Original
   schedules were restored and Qianyi reservations released after deployment.
 
-Release helper: `scripts/release-finance-source-orders.py`.
+Release helper: `scripts/release/release-finance-source-orders.py`.
 Release root: `/opt/heyi/releases/finance-source-orders-20261105`.
 Backend image: `ai-commerce-platform:finance-source-orders-20261105`.
 Frontend image: `ai-commerce-frontend:finance-source-orders-20261105`.

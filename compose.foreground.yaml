@@ -3,7 +3,7 @@ services:
   watermark-detector:
     image: heyi-watermark-custom:local
     build:
-      context: ./watermark-detector
+      context: ./services/watermark-detector
       dockerfile: Dockerfile.custom
     container_name: web_sdk_-watermark-detector-1
     env_file: ${HEYI_WATERMARK_ENV_FILE:-.watermark.local.env}

@@ -7,7 +7,7 @@ import tempfile
 import urllib.parse
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT.parent / "scripts/boss-agent"))
+sys.path.insert(0, str(ROOT.parent / "services/recruitment"))
 import talent_pool
 import recruitment_demands
 import hr_departments

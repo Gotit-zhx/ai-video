@@ -1,0 +1,49 @@
+# Poster Analysis Startup Timeout
+
+> 历史发布记录；镜像、测试与“当前/最新”均指记录当时。 当前入口见[业务说明](../../business/README.md)与[运维指南](../../guides/operations.md)。
+
+## Cause
+
+The runtime applied its 90-second streaming-inactivity timer immediately when
+the request began. A provider that queued or prepared the first response for
+longer than 90 seconds was aborted before it returned any content. This was
+observed on reference image 3 after switching to the configured `gpt-6.1-sol`.
+
+## Change
+
+- Allow 180 seconds for the first nonempty text or reasoning delta.
+- After content starts, retain the 90-second inactivity timeout.
+- Retain the 240-second total limit and pass it explicitly to the native SDK.
+- Empty events and application progress heartbeats do not extend deadlines.
+- Continue elapsed-time progress while waiting; validation no longer resets it.
+- Timeout and cancellation settle the caller even if SDK cancellation stalls.
+- Keep SDK retries disabled, never switch the user's model, and never
+  automatically replay a request with an ambiguous upstream outcome.
+
+## Verification And Release
+
+Unit tests exercise slow startup, live reasoning activity without disclosure,
+silent providers, empty events, partial-stream stalls, the hard deadline,
+external cancellation, late events, and elapsed-time preservation.
+
+The native SDK integration tests run against loopback HTTP fixtures in the
+candidate image with external networking disabled. They cover delayed response
+headers, a silent upstream, a stalled partial stream, and normal validated JSON.
+
+`scripts/release/release-main-image-timeout.py` overlays only the analysis module on the
+exact running runtime image, verifies the old source hash, checks for active
+tasks, preserves the complete Compose chain and configuration, and retains a
+rollback image. The application, frontend, model configuration, stored source
+images and successful analyses are not rewritten.
+
+## Production Verification
+
+Deployed source commit `fbfe7f3` on October 19, 2026. All 28 local focused tests
+and 26 candidate-image SDK/regression tests passed. Deployment waited for two
+active video analyses to finish before replacing the runtime.
+
+The previously timed-out reference image 3 completed successfully through the
+normal retry API using the user's configured `gpt-6.1-sol`. The five previously
+successful results retained identical stored hashes. Image 7 still failed
+semantic validation, independently of timeout handling; it is a product-free
+information page addressed by the subsequent original-preservation change.

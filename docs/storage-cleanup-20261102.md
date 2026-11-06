@@ -1,5 +1,7 @@
 # Production storage cleanup — 2026-11-02
 
+> Historical release snapshot with continuing storage safeguards. Active/rollback tags below describe 2026-11-02 only; use [operations](guides/operations.md) and [AGENTS.md](../AGENTS.md) for the latest recorded release. The compaction guard, no persistent logging, cleanup bounds and `Persistent=false` backup rules remain applicable.
+
 ## Verified causes
 
 - The application image accumulated 44 layers because each release copied a
@@ -73,7 +75,7 @@ Retained application rollback images:
 Frontend remains `ai-commerce-frontend:finance-cache-reuse-20261102`, with its
 two recent rollback versions retained. Other service images were preserved.
 
-Release helper: `scripts/release-storage-compact.py`.
+Release helper: `scripts/release/release-storage-compact.py`.
 Production receipts and live Compose dependency:
 `/opt/heyi/releases/storage-compact-20261102`.
 
