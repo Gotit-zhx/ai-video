@@ -197,7 +197,7 @@ public class FinanceQianyi {
             // Initial source collection and identical overlap pages do not alter
             // financial amounts. Do not evict the whole BI cache on every page.
             if(changed&&Boolean.TRUE.equals(config.get("cost_basis_verified"))||done&&Boolean.TRUE.equals(progress.get("sourcesChanged")))
-                finance.invalidateAfterCommit(scope);
+                finance.refreshAfterCommit(scope);
             return null;
         });
     }
@@ -235,7 +235,7 @@ public class FinanceQianyi {
                   next_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 10 MINUTE),updated_at=UTC_TIMESTAMP(6)
                 WHERE organization_id=? AND shop_id=? AND return_number=?
                 """,result.status(),result.note(),order.get("id"),org,shop,number);
-            if(Boolean.TRUE.equals(config.get("cost_basis_verified")))finance.invalidateAfterCommit(companyScope(org));
+            if(Boolean.TRUE.equals(config.get("cost_basis_verified")))finance.refreshAfterCommit(companyScope(org));
             return null;
         });
     }

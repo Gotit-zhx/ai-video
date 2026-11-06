@@ -294,8 +294,12 @@ public class FinanceRepository {
     }
     /** Historical dashboards obtain orders/refunds by settlement date in separate indexed reads. */
     List<Map<String,Object>> dashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders){
+        // Keep every partition and the marketing exclusion in the same MVCC snapshot.
+        return readSnapshot(180,()->readDashboardBuckets(s,f,includeCreatedOrders));
+    }
+    private List<Map<String,Object>> readDashboardBuckets(Scope s,Filter f,boolean includeCreatedOrders){
         Query q=query(s,f);
-        var buckets=db.queryForList("""
+        var buckets=dailyAggregate(f,q,"finance_records.record_date",range->db.queryForList("""
             SELECT shop_id,record_date,kind,currency,
               CASE WHEN kind='FEE' THEN category ELSE '' END category,
               CASE WHEN kind='ORDER' THEN status ELSE '' END status,
@@ -303,10 +307,10 @@ public class FinanceRepository {
               SUM(revenue) revenue,SUM(impressions) impressions,SUM(clicks) clicks,SUM(conversions) conversions
             FROM finance_records FORCE INDEX (
             """+(f.shopId().isBlank()?"idx_finance_company_dashboard":"idx_finance_shop_dashboard")+") WHERE "
-                +q.where+" AND NOT(kind='BILL' AND source='IMPORT')"
+                +range.where+" AND NOT(kind='BILL' AND source='IMPORT')"
                 +(includeCreatedOrders?"":" AND kind NOT IN ('ORDER','REFUND')")
                 +" GROUP BY shop_id,record_date,kind,currency,"
-                +"CASE WHEN kind='FEE' THEN category ELSE '' END,CASE WHEN kind='ORDER' THEN status ELSE '' END",q.args.toArray());
+                +"CASE WHEN kind='FEE' THEN category ELSE '' END,CASE WHEN kind='ORDER' THEN status ELSE '' END",range.args.toArray()));
         // Keep the covering scan. Only tagged order identities need the secondary lookup.
         var markedQuery=query(s,f,"r");
         var removed=db.queryForList("""
@@ -329,6 +333,26 @@ public class FinanceRepository {
             if(number(row.get("known_amounts"))==0)row.put("amount",null);
         }
         return buckets.stream().filter(row->number(row.get("records"))>0).toList();
+    }
+    /** Daily groups are disjoint across windows. Bound the MySQL aggregate's working
+     * set without increasing global memory or spilling a whole month to disk.
+     * The original query remains intact: monthly provenance uses the requested
+     * period, not the internal scan window. Callers must own one read snapshot. */
+    List<Map<String,Object>> dailyAggregate(Filter filter,Query query,String dateColumn,
+            java.util.function.Function<Query,List<Map<String,Object>>> read){
+        return aggregateWindows(filter,query,dateColumn,7,read);
+    }
+    List<Map<String,Object>> aggregateWindows(Filter filter,Query query,String dateColumn,int days,
+            java.util.function.Function<Query,List<Map<String,Object>>> read){
+        if(days<1||days>7)throw new IllegalArgumentException("Invalid aggregation window");
+        if(!filter.start().plusDays(days-1).isBefore(filter.end()))return read.apply(query);
+        var result=new ArrayList<Map<String,Object>>();
+        for(var start=filter.start();!start.isAfter(filter.end());start=start.plusDays(days)){
+            var end=start.plusDays(days-1);if(end.isAfter(filter.end()))end=filter.end();
+            var args=new ArrayList<>(query.args());args.add(Date.valueOf(start));args.add(Date.valueOf(end));
+            result.addAll(read.apply(new Query(query.where()+" AND "+dateColumn+">=? AND "+dateColumn+"<=?",args)));
+        }
+        return result;
     }
     static List<Object> bucketKey(Map<String,Object> row){return java.util.stream.Stream.of("shop_id","record_date","kind","currency","category","status").map(row::get).toList();}
     public Map<String,Object> details(Scope s,Filter f,String kind,int page,int size){return details(s,f,kind,page,size,"");}
