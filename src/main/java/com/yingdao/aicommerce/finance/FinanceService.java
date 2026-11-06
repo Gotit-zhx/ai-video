@@ -164,6 +164,15 @@ public class FinanceService {
         snapshots.invalidateCompany(s.organizationId());dashboardFacts.invalidateCompany(s.organizationId());
         if(sharedSnapshots!=null)sharedSnapshots.refresh(companyScope(s.organizationId()));
     }
+    /** Source/cost worker commits advance freshness without fencing every historical
+     * month. Manual configuration, authorization and removals use hard invalidation. */
+    void refreshAfterCommit(Scope s){
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+                @Override public void afterCommit(){refreshCostSnapshots(s);}
+            });
+        else refreshCostSnapshots(s);
+    }
     public Map<String,Object> dashboard(Scope s,Filter requested,boolean cny,String snapshotId){
         var key=new FinanceSnapshotCache.Key(s,requested,cny,text(snapshotId),false);
         java.util.function.Supplier<Map<String,Object>> load=()->buildDashboard(s,requested,cny,snapshotId,false);
