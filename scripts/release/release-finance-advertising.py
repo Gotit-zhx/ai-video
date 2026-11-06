@@ -110,7 +110,10 @@ def preflight_compose(before):
         for field, image_key in (("command", "Cmd"), ("entrypoint", "Entrypoint"), ("user", "User"), ("working_dir", "WorkingDir")):
             value = selected.get(field)
             if value is None: value = image.get(image_key)
-            assert value == before[name]["Config"].get(image_key), "Rendered process differs: " + field
+            actual = before[name]["Config"].get(image_key)
+            if field in ("user", "working_dir"):
+                value, actual = value or "", actual or ""
+            assert value == actual, "Rendered process differs: " + field
     write("compose-preflight-verification.json", {"environmentPreserved": True, "processConfigurationPreserved": True})
 
 
@@ -173,6 +176,12 @@ def prepare():
         + " /usr/share/nginx/html/\nRUN rm -f " + removed + labels)
     core.run("docker", "build", "--pull=false", "-t", IMAGES[FRONT], str(frontdir))
     preflight_compose(before)
+    complete_preparation(before, classes, files)
+
+
+def complete_preparation(before, classes, files):
+    baseline, provenance = read("baseline.json"), read("provenance.json")
+    appdir = ROOT / "app-image"
     write("prepared.json", {"sourceCommit": provenance["sourceCommit"], "version": VERSION,
         "sourceImages": {n: before[n]["Image"] for n in before},
         "sourceContainerIds": {n: before[n]["Id"] for n in before},
@@ -183,6 +192,48 @@ def prepare():
         "configurationHashes": {n: config_hash(info) for n, info in before.items()},
         "unrelatedJarEntriesPreserved": True, "schemaChanged": False})
     print("Candidate images prepared; baseline, class scope, unrelated entries and compaction verified.", flush=True)
+
+
+def resume_preparation():
+    """Finalize an interrupted preflight only after verifying the immutable built artifacts."""
+    require_qa()
+    assert not (ROOT / "prepared.json").exists()
+    baseline, provenance = read("baseline.json"), read("provenance.json")
+    before = {n: core.inspect(n) for n in (APP, FRONT)}
+    assert all(before[n]["Id"] == baseline["containerIds"][n] and before[n]["Image"] == baseline["images"][n] for n in before)
+    assert all(config_hash(before[n]) == baseline["configurationHashes"][n] for n in before)
+    assert jar_hash() == baseline["jarHash"]
+    classes = {"BOOT-INF/classes/" + str(p.relative_to(ROOT / "build/classes")): p.read_bytes()
+               for p in (ROOT / "build/classes").rglob("*.class")}
+    assert {name: sha(value) for name, value in classes.items()} == read("candidate-classes.json")
+    assert classes and all(replaced(name) for name in classes)
+    with zipfile.ZipFile(ROOT / "build/previous.jar") as old, zipfile.ZipFile(ROOT / "app-image/app.jar") as new:
+        assert set(new.namelist()) == {name for name in old.namelist() if not replaced(name)} | set(classes)
+        assert all(new.read(name) == old.read(name) for name in old.namelist() if not replaced(name))
+        assert all(new.read(name) == value for name, value in classes.items())
+    for name, guard_file in ((APP, "app-image-guard.json"), (FRONT, "frontend-image-guard.json")):
+        guard = read(guard_file)
+        if guard["compacted"]:
+            assert guard["sourceId"] == before[name]["Image"] and guard["configurationEqual"] and guard["filesystemEqual"]
+        else:
+            assert guard["baseImage"] == before[name]["Image"]
+        image = core.inspect(IMAGES[name])
+        assert image["Config"]["Labels"]["org.opencontainers.image.revision"] == provenance["sourceCommit"]
+        assert image["Config"]["Labels"]["org.opencontainers.image.version"] == VERSION
+    def image_hash(image, path):
+        return core.run("docker", "run", "--rm", "--network", "none", "--read-only", "--memory", "128m",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--log-driver", "none",
+            "--entrypoint", "sha256sum", image, path).decode().split()[0]
+    assert image_hash(IMAGES[APP], "/app/app.jar") == sha((ROOT / "app-image/app.jar").read_bytes())
+    files = {}
+    for name in FILES:
+        assert sha(live_file(name)) == baseline["frontendFiles"][name]
+        value = (ROOT / "build/frontend" / name).read_bytes()
+        files[name] = sha(value)
+        assert image_hash(IMAGES[FRONT], "/usr/share/nginx/html/" + name) == files[name]
+        assert image_hash(IMAGES[FRONT], "/usr/share/nginx/html/" + name + ".gz") == sha((ROOT / "frontend-image" / (name + ".gz")).read_bytes())
+    preflight_compose(before)
+    complete_preparation(before, classes, files)
 
 
 def read_verify():
@@ -345,7 +396,7 @@ if __name__ == "__main__":
     try:
         with open("/run/lock/heyi-application-release.lock", "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            {"prepare": prepare, "read-verify": read_verify, "drain-deploy": drain_deploy, "verify": verify}[sys.argv[2]]()
+            {"prepare": prepare, "resume-prepare": resume_preparation, "read-verify": read_verify, "drain-deploy": drain_deploy, "verify": verify}[sys.argv[2]]()
     except BaseException as failure:
         # Nested helpers can carry private environment values in command exceptions.
         # Do not emit their command, traceback or raw stderr into deployment output.
