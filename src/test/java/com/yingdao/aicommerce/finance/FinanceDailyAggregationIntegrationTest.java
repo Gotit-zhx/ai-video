@@ -113,4 +113,26 @@ class FinanceDailyAggregationIntegrationTest extends FinanceConfigurationIntegra
         assertEquals(expected,indexed(observed.dashboardBuckets(owner,full,false)));
         assertNotEquals(expected,indexed(unsplit().dashboardBuckets(owner,full,false)));
     }
+    @Test void partitionedAdvertisingKeepsAllLedgerFeesBeforeOperatingExclusions(){
+        String shop=connect(owner,false),foreign=connect(other,false);
+        for(var scope:List.of(owner,other))for(int day:List.of(1,7,8,15,31)){
+            String id=scope.equals(owner)?shop:foreign,order="ad-order-"+day;
+            for(var values:List.of(List.of("FEE","达人广告佣金","2"),List.of("AD","独立消耗","3"),
+                    List.of("FEE","普通佣金","9"),List.of("AD_GMV","专项","11")))
+                repo.save(scope,new Entry(id,"SHOPEE",values.get(0),values.get(1)+day,order,"bill"+day,values.get(1),"SETTLED",
+                        LocalDate.of(2026,10,day),"PHP",decimal(values.get(2)),null,null,null,null,"API",Map.of()));
+        }
+        db.update("INSERT INTO finance_marketing_orders(organization_id,shop_id,order_id,source_count) VALUES(?,?,?,1)",owner.organizationId(),shop,"ad-order-8");
+        var full=new Filter(LocalDate.of(2026,10,1),LocalDate.of(2026,10,31),"","","PHP","day");
+        var expected=new ArrayList<Map<String,Object>>();unsplit().dashboardBuckets(owner,full,false,expected);
+        var actual=new ArrayList<Map<String,Object>>();var operating=repo.dashboardBuckets(owner,full,false,actual);
+        assertEquals(indexed(expected),indexed(actual));
+        var report=FinanceAdvertisingReport.build(actual,List.of(Map.of("id",shop,"group_id","")),full,false,null,"day");
+        assertEquals(0,decimal("25").compareTo(decimal(map(report.get("total")).get("amount"))));
+        assertEquals(10,number(map(report.get("total")).get("records")));
+        assertEquals(0,decimal("10").compareTo(decimal(map(report.get("commission")).get("amount"))));
+        assertEquals(0,decimal("55").compareTo(decimal(map(report.get("gmv")).get("amount"))));
+        assertEquals(0,decimal("8").compareTo(operating.stream().filter(r->"达人广告佣金".equals(r.get("category")))
+                .map(r->decimal(r.get("amount"))).reduce(java.math.BigDecimal.ZERO,java.math.BigDecimal::add)));
+    }
 }

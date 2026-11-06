@@ -430,7 +430,9 @@ class FinanceTest {
     }
     @Test void orderCostHttpEndpointWorksThroughSpringClassProxies()throws Exception{
         var db=mock(JdbcTemplate.class);
-        var repository=classProxy(new FinanceRepository(db,new ObjectMapper()));
+        var target=spy(new FinanceRepository(db,new ObjectMapper()));
+        doAnswer(call->((java.util.function.Supplier<?>)call.getArgument(1)).get()).when(target).readSnapshot(eq(180),any());
+        var repository=classProxy(target);
         var service=classProxy(new FinanceService(repository,mock(OrganizationAccessPolicy.class),
                 mock(FinanceShopAuthorization.class),mock(FinanceFx.class)));
         var workspace=classProxy(new FinanceCostWorkspace(repository,service));
@@ -449,9 +451,16 @@ class FinanceTest {
                 .andExpect(jsonPath("$.data.items").isArray())
                 .andExpect(jsonPath("$.data.productCosts.currency").value("CNY"))
                 .andExpect(jsonPath("$.data.productCosts.scope").value("SETTLED_ORDER"));
-        verify(db).queryForList(startsWith("SELECT x.shop_id,"),
-                eq("org"),eq(java.sql.Date.valueOf("2026-10-01")),eq(java.sql.Date.valueOf("2026-10-23")),eq("org"),
-                eq("org"),eq(java.sql.Date.valueOf("2026-10-01")),eq(java.sql.Date.valueOf("2026-10-23")));
+        var aggregates=mockingDetails(db).getInvocations().stream().filter(call->call.getMethod().getName().equals("queryForList")
+                &&((String)call.getArgument(0)).startsWith("SELECT x.shop_id,")).toList();
+        assertEquals(23,aggregates.size());
+        for(int day=0;day<aggregates.size();day++){
+            Object[] args=aggregates.get(day).getArguments();
+            assertEquals("org",args[1]);assertTrue(Arrays.asList(args).contains(java.sql.Date.valueOf("2026-10-01")));
+            assertTrue(Arrays.asList(args).contains(java.sql.Date.valueOf("2026-10-23")));
+            var date=java.sql.Date.valueOf(LocalDate.of(2026,10,1).plusDays(day));
+            assertEquals(date,args[args.length-2]);assertEquals(date,args[args.length-1]);
+        }
         verify(db,never()).queryForObject(startsWith("SELECT COUNT(*) FROM ("),eq(Long.class),any(Object[].class));
         clearInvocations(db);
         mvc.perform(get("/api/v1/finance/workspace/costs/orders")
