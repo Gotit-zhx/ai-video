@@ -2,7 +2,7 @@
 
 现场核查：**2026-11-05 18:09—18:19（北京时间）**，服务器 `8.163.34.81`。本文是该时段的运行快照；排队数量、修复进度、磁盘余量和版本会继续变化。接手后的发布规则见[运维指南](operations.md)，本次检查范围见[基础设施核查记录](../releases/infrastructure/server-deployment-audit-20261105.md)，完整的脱敏配置文件路径、镜像 ID、挂载与状态见[机器可读回执](../releases/infrastructure/server-deployment-audit-20261105.json)。
 
-**后续更新：2026-11-06 11:33 已发布 `2026.11.6`，当前前后端为 `brush-source-summary-20261106`。** 最新源码入口、回滚保留和备份变化见[当日发布验收](../releases/infrastructure/project-sync-20261106.md)与本文末节；以下原核查章节仍按 11 月 5 日时点阅读。
+**后续更新：2026-11-06 14:30 已发布后端 `2026.11.6.1`，后端为 `finance-bi-performance-20261106`，前端保持 `brush-source-summary-20261106`。** 最新性能、回滚和清理见[性能验收](../releases/finance/finance-bi-performance-20261106.md)。11:33 的源码同步和备份变化仍见[当时记录](../releases/infrastructure/project-sync-20261106.md)；以下原核查章节保留原观察时间。
 
 本次通过 SSH 只读检查现场，并从运维机检查主站访问。没有部署、重启、停领任务、修改配置或业务数据，也没有触发备份、续期、恢复、模型调用或平台发布。凭据只用于认证，不写入本文或回执。已有发布回执中的测试结果不是本轮重新执行的测试。
 
@@ -317,3 +317,12 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://hoyee.org.cn/api/v1/finance/ch
 - 11 月 6 日例行 MySQL 备份在发布前于 03:51:10 成功退出，现存两份归档；本轮没有触发备份，没有验证恢复或异地副本。
 - Certbot 与 Aegis 仍 failed；证书 11 月 18 日到期、HR 承接方案、云权限与恢复演练仍需跟进。本次部署没有处理这些独立运维事项。
 - 本轮构建及 QA 暂存和私有停领状态已清理，Compose、发布 helpers、小型回执、活动与两个近期回滚版本保留；源码与凭据没有混放。
+
+
+## 2026-11-06 14:30 性能发布更新
+
+后端已更新至 `finance-bi-performance-20261106` / `8e23c7c1036c`，前端和其余服务的容器保持。保留后端回滚 `brush-source-summary-20261106` 与 `finance-gift-zero-20261105`；无容器引用的更早后端 report-basis-resume 标签已移除，其历史 Compose/helper 目录继续保留。
+
+实际运行制品重复月查询为 171 ms、店铺切换 204 ms；未缓存新月份首次计算仍约 50 秒。成本任务从切换前 71,753 项在 14:44 观测为 0，锁等待为 0。316 个原同步计划已恢复，检查点未改；本次所有预留和 marker 已释放。15:06 清理约 165 MB 自有暂存后，根盘可用约 19.27 GiB，未扩盘。详情与验证边界见[发布回执](../releases/finance/finance-bi-performance-20261106.md)。
+
+本版源码按 `v2026.11.6.1` 留存，仍从 `/opt/heyi/source/current` 进入。旧日期章节描述当时状态，不能用其中的活动镜像、修复进程或积压数替代新的现场检查。
