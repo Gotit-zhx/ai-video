@@ -95,7 +95,7 @@ services:
 
 本地 `origin` 保留上游地址，`fork` 指向个人仓库；默认推送目标为 `fork`。本地配置明确 `gitflow.branch.master=main-tree`、`gitflow.branch.develop=develop` 和对应支持分支前缀。新检出时这些本地 Git 配置不会随源码复制，需要按本表重新配置并核对远端归属。
 
-本轮目录整理、交接文档与刷单合计改动经 `feature/project-handoff-and-brush-summary` 合入个人 fork 的 `develop`。这次提交与推送不代表生产发布；`main-tree` 继续保留同步时的上游基线。
+目录整理、交接文档与刷单合计先经 `feature/project-handoff-and-brush-summary` 合入个人 fork 的 `develop`。随后通过 `release/2026.11.6-project-sync` 完成正式上线，发布标签为 `v2026.11.6`；当前镜像、源提交、验证边界与服务器源码入口见[发布验收](../releases/infrastructure/project-sync-20261106.md)。后续功能仍先进入 `develop`，不得绕过发布流程直接推向 `main-tree`。
 
 ## 测试入口
 
